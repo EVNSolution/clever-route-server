@@ -121,7 +121,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     expect(findFirstInput?.where).toEqual({
       OR: [
         { shopifyOrderGid: 'woocommerce://localhost:8088/orders/123' },
-        { sourceOrderId: '123', sourcePlatform: 'WOOCOMMERCE' }
+        { sourceOrderId: '123', sourcePlatform: 'WOOCOMMERCE', sourceSiteUrl: 'http://localhost:8088' }
       ],
       shopId: 'woo-shop-id'
     });

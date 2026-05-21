@@ -1,18 +1,32 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
+import type {
+  DecryptedWooCommerceConnection,
+  WooCommerceWebhookConnection
+} from '../modules/commerce/commerce-connection.service.js';
 import type { WooCommerceOrder } from '../modules/woocommerce/woocommerce-order.types.js';
 import { verifyWooCommerceWebhookSignature } from '../modules/woocommerce/woocommerce-webhook-signature.js';
 import { getRawBody } from './json-body-parser.js';
 
 export type WooCommerceWebhookDependencies = {
-  orderSyncService: {
+  connectionService: {
+    readDecryptedWooCommerceConnection(input: {
+      connectionId: string;
+    }): Promise<DecryptedWooCommerceConnection | null>;
+    readWooCommerceWebhookConnection(input: {
+      connectionId: string;
+    }): Promise<WooCommerceWebhookConnection | null>;
+  };
+  createOrderSyncService(input: { connection: DecryptedWooCommerceConnection }): {
     syncOrders(input: {
       orders: WooCommerceOrder[];
       reason: 'manual_backfill' | 'scheduled_incremental' | 'webhook';
     }): Promise<{ sync: { created: number; received: number; updated: number; unchanged: number } }>;
   };
-  siteUrl: string;
-  webhookSecret: string;
+};
+
+type WooCommerceWebhookParams = {
+  connectionId: string;
 };
 
 type WooCommerceWebhookHeaders = {
@@ -27,55 +41,78 @@ export function registerWooCommerceWebhookRoutes(
   app: FastifyInstance,
   dependencies: WooCommerceWebhookDependencies
 ): void {
-  app.post('/woocommerce/webhooks/orders', async (request, reply) => {
-    const rawBody = getRawBody(request);
-    if (rawBody === null) {
-      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Raw request body is required'));
+  app.post<{ Params: WooCommerceWebhookParams }>(
+    '/woocommerce/webhooks/:connectionId/orders',
+    async (request, reply) => {
+      if (!isUuid(request.params.connectionId)) {
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'WooCommerce connection id must be a UUID'));
+      }
+
+      const rawBody = getRawBody(request);
+      if (rawBody === null) {
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Raw request body is required'));
+      }
+
+      const headers = readWooCommerceWebhookHeaders(request);
+      if (headers === null) {
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Missing WooCommerce webhook signature'));
+      }
+
+      const webhookConnection = await dependencies.connectionService.readWooCommerceWebhookConnection({
+        connectionId: request.params.connectionId
+      });
+      if (webhookConnection === null) {
+        return reply.code(404).send(errorResponse('NOT_FOUND', 'WooCommerce connection not found'));
+      }
+
+      const signatureValid = verifyWooCommerceWebhookSignature({
+        rawBody,
+        secret: webhookConnection.webhookSecret,
+        signature: headers.signature
+      });
+      if (!signatureValid) {
+        return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Invalid WooCommerce webhook signature'));
+      }
+
+      const order = readWebhookOrder(request.body);
+      if (order === null) {
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'WooCommerce order webhook payload is required'));
+      }
+
+      const connection = await dependencies.connectionService.readDecryptedWooCommerceConnection({
+        connectionId: webhookConnection.id
+      });
+      if (connection === null) {
+        return reply.code(404).send(errorResponse('NOT_FOUND', 'WooCommerce connection not found'));
+      }
+
+      const orderSyncService = dependencies.createOrderSyncService({ connection });
+      const result = await orderSyncService.syncOrders({ orders: [order], reason: 'webhook' });
+
+      request.log.info(
+        {
+          connectionId: connection.id,
+          created: result.sync.created,
+          event: headers.event,
+          received: result.sync.received,
+          resource: headers.resource,
+          topic: headers.topic,
+          unchanged: result.sync.unchanged,
+          updated: result.sync.updated,
+          webhookDeliveryIdPresent: headers.deliveryId !== null
+        },
+        'woocommerce webhook processed'
+      );
+
+      return reply.code(202).send({
+        data: {
+          received: result.sync.received,
+          sync: result.sync
+        },
+        error: null
+      });
     }
-
-    const headers = readWooCommerceWebhookHeaders(request);
-    if (headers === null) {
-      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Missing WooCommerce webhook signature'));
-    }
-
-    const signatureValid = verifyWooCommerceWebhookSignature({
-      rawBody,
-      secret: dependencies.webhookSecret,
-      signature: headers.signature
-    });
-    if (!signatureValid) {
-      return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Invalid WooCommerce webhook signature'));
-    }
-
-    const order = readWebhookOrder(request.body);
-    if (order === null) {
-      return reply.code(400).send(errorResponse('BAD_REQUEST', 'WooCommerce order webhook payload is required'));
-    }
-
-    const result = await dependencies.orderSyncService.syncOrders({ orders: [order], reason: 'webhook' });
-
-    request.log.info(
-      {
-        created: result.sync.created,
-        event: headers.event,
-        received: result.sync.received,
-        resource: headers.resource,
-        topic: headers.topic,
-        unchanged: result.sync.unchanged,
-        updated: result.sync.updated,
-        webhookDeliveryIdPresent: headers.deliveryId !== null
-      },
-      'woocommerce webhook processed'
-    );
-
-    return reply.code(202).send({
-      data: {
-        received: result.sync.received,
-        sync: result.sync
-      },
-      error: null
-    });
-  });
+  );
 }
 
 function readWooCommerceWebhookHeaders(request: FastifyRequest): WooCommerceWebhookHeaders | null {
@@ -110,4 +147,8 @@ function readOptionalHeader(request: FastifyRequest, name: string): string | nul
 
 function errorResponse(code: string, message: string): { data: null; error: { code: string; message: string } } {
   return { data: null, error: { code, message } };
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value);
 }

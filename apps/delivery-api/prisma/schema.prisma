@@ -20,6 +20,11 @@ enum CommerceSourcePlatform {
   WOOCOMMERCE
 }
 
+enum CommerceConnectionStatus {
+  ACTIVE
+  DISABLED
+}
+
 enum DeliveryOrderStatus {
   PENDING
   READY
@@ -138,10 +143,35 @@ model Shop {
   driverProofMedia              DriverProofMedia[]
   driverRouteFeedback           DriverRouteFeedback[]
   driverAccountDeletionRequests DriverAccountDeletionRequest[]
+  commerceConnections           CommerceConnection[]
 
   @@unique([shopDomain])
   @@unique([shopifyShopGid])
   @@map("shops")
+}
+
+model CommerceConnection {
+  id                       String                   @id @default(uuid()) @db.Uuid
+  shopId                   String                   @db.Uuid
+  shop                     Shop                     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  platform                 CommerceSourcePlatform
+  status                   CommerceConnectionStatus @default(ACTIVE)
+  label                    String?                  @db.Text
+  siteUrl                  String                   @db.Text
+  shopDomain               String                   @db.Text
+  timezone                 String?                  @db.Text
+  consumerKeyCiphertext    String                   @db.Text
+  consumerSecretCiphertext String                   @db.Text
+  webhookSecretCiphertext  String                   @db.Text
+  lastSyncAt               DateTime?                @db.Timestamptz(6)
+  lastSyncStatus           String?                  @db.Text
+  createdAt                DateTime                 @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime                 @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, platform, siteUrl])
+  @@index([shopId, platform, status])
+  @@index([platform, siteUrl])
+  @@map("commerce_connections")
 }
 
 model ShopifyWebhookEvent {
@@ -198,9 +228,9 @@ model Order {
   deliveryStops        DeliveryStop[]
 
   @@unique([shopId, shopifyOrderGid])
-  @@unique([shopId, sourcePlatform, sourceOrderId])
+  @@unique([shopId, sourcePlatform, sourceSiteUrl, sourceOrderId])
   @@index([shopId, name])
-  @@index([shopId, sourcePlatform, sourceOrderNumber])
+  @@index([shopId, sourcePlatform, sourceSiteUrl, sourceOrderNumber])
   @@index([shopId, sourcePlatform, sourceUpdatedAt])
   @@index([shopId, deliveryStatus, processedAt])
   @@map("orders")

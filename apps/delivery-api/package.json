@@ -21,7 +21,9 @@
     "prisma:validate": "DATABASE_URL=${DATABASE_URL:-postgresql://clever:clever@localhost:5432/clever_route} prisma validate",
     "driver:proof-media:cleanup": "tsx src/scripts/cleanup-driver-proof-media.ts",
     "driver:proof-media:evidence:seed": "tsx src/scripts/proof-media-evidence-seed.ts",
-    "driver:proof-media:evidence:verify": "tsx src/scripts/proof-media-evidence-verify.ts"
+    "driver:proof-media:evidence:verify": "tsx src/scripts/proof-media-evidence-verify.ts",
+    "woocommerce:connection:bootstrap": "tsx src/scripts/bootstrap-woocommerce-connection.ts",
+    "prisma:migrate:deploy": "DATABASE_URL=${DATABASE_URL:-postgresql://clever:clever@localhost:5432/clever_route} prisma migrate deploy"
   },
   "keywords": [
     "delivery",

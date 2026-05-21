@@ -118,7 +118,8 @@ export class PrismaOrderSyncRepository {
             : [
                 {
                   sourceOrderId: sourceIdentity.sourceOrderId,
-                  sourcePlatform: sourceIdentity.sourcePlatform
+                  sourcePlatform: sourceIdentity.sourcePlatform,
+                  sourceSiteUrl: sourceIdentity.sourceSiteUrl
                 }
               ])
         ]

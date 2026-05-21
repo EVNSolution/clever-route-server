@@ -1,3 +1,4 @@
+import type { DecryptedWooCommerceConnection } from '../commerce/commerce-connection.service.js';
 import type { WooCommerceOrder } from './woocommerce-order.types.js';
 
 export type WooCommerceOrdersPageInput = {
@@ -80,6 +81,18 @@ export class WooCommerceOrderClient {
       totalPages: parseHeaderNumber(response.headers.get('x-wp-totalpages'))
     };
   }
+}
+
+export function createWooCommerceOrderClientFromConnection(
+  connection: Pick<DecryptedWooCommerceConnection, 'consumerKey' | 'consumerSecret' | 'siteUrl'>,
+  input: { fetchImpl?: FetchLike } = {}
+): WooCommerceOrderClient {
+  return new WooCommerceOrderClient({
+    consumerKey: connection.consumerKey,
+    consumerSecret: connection.consumerSecret,
+    ...(input.fetchImpl === undefined ? {} : { fetchImpl: input.fetchImpl }),
+    siteUrl: connection.siteUrl
+  });
 }
 
 function assertPositiveInteger(value: number, name: string): number {

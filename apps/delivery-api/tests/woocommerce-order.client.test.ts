@@ -1,6 +1,9 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import { WooCommerceOrderClient } from '../src/modules/woocommerce/woocommerce-order.client.js';
+import {
+  createWooCommerceOrderClientFromConnection,
+  WooCommerceOrderClient
+} from '../src/modules/woocommerce/woocommerce-order.client.js';
 
 describe('WooCommerceOrderClient', () => {
   test('requests paginated modified orders with HTTPS Basic Auth and reads total headers', async () => {
@@ -75,5 +78,30 @@ describe('WooCommerceOrderClient', () => {
       'WooCommerce perPage must be 100 or less'
     );
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test('can be constructed from decrypted DB connection credentials', async () => {
+    const fetchImpl = vi.fn((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): ReturnType<typeof fetch> => {
+      void input;
+      void init;
+      return Promise.resolve(new Response(JSON.stringify([{ id: 7, number: '7' }]), { status: 200 }));
+    });
+    const client = createWooCommerceOrderClientFromConnection(
+      {
+        consumerKey: 'ck_from_db',
+        consumerSecret: 'cs_from_db',
+        siteUrl: 'https://woo.example.test'
+      },
+      { fetchImpl }
+    );
+
+    await client.listOrdersPage({ page: 1, perPage: 10 });
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [undefined, undefined];
+    expect(init?.headers).toEqual(
+      expect.objectContaining({
+        Authorization: `Basic ${Buffer.from('ck_from_db:cs_from_db').toString('base64')}`
+      })
+    );
   });
 });
