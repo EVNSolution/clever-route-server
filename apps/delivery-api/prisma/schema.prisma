@@ -15,6 +15,11 @@ enum ShopifyWebhookEventStatus {
   IGNORED
 }
 
+enum CommerceSourcePlatform {
+  SHOPIFY
+  WOOCOMMERCE
+}
+
 enum DeliveryOrderStatus {
   PENDING
   READY
@@ -165,30 +170,38 @@ model ShopifyWebhookEvent {
 }
 
 model Order {
-  id                   String              @id @default(uuid()) @db.Uuid
-  shopId               String              @db.Uuid
-  shop                 Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  shopifyOrderGid      String              @db.Text
+  id                   String                 @id @default(uuid()) @db.Uuid
+  shopId               String                 @db.Uuid
+  shop                 Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shopifyOrderGid      String                 @db.Text
   shopifyOrderLegacyId BigInt?
-  name                 String              @db.Text
-  email                String?             @db.Text
-  phone                String?             @db.Text
-  financialStatus      String?             @db.Text
-  fulfillmentStatus    String?             @db.Text
-  cancelledAt          DateTime?           @db.Timestamptz(6)
-  processedAt          DateTime?           @db.Timestamptz(6)
-  updatedAtShopify     DateTime?           @db.Timestamptz(6)
-  totalPriceAmount     Decimal?            @db.Decimal(12, 2)
-  currencyCode         String?             @db.Text
+  sourcePlatform       CommerceSourcePlatform @default(SHOPIFY)
+  sourceSiteUrl        String?                @db.Text
+  sourceOrderId        String?                @db.Text
+  sourceOrderNumber    String?                @db.Text
+  sourceUpdatedAt      DateTime?              @db.Timestamptz(6)
+  name                 String                 @db.Text
+  email                String?                @db.Text
+  phone                String?                @db.Text
+  financialStatus      String?                @db.Text
+  fulfillmentStatus    String?                @db.Text
+  cancelledAt          DateTime?              @db.Timestamptz(6)
+  processedAt          DateTime?              @db.Timestamptz(6)
+  updatedAtShopify     DateTime?              @db.Timestamptz(6)
+  totalPriceAmount     Decimal?               @db.Decimal(12, 2)
+  currencyCode         String?                @db.Text
   shippingAddress      Json?
   rawPayload           Json
-  deliveryStatus       DeliveryOrderStatus @default(PENDING)
-  createdAt            DateTime            @default(now()) @db.Timestamptz(6)
-  updatedAt            DateTime            @updatedAt @db.Timestamptz(6)
+  deliveryStatus       DeliveryOrderStatus    @default(PENDING)
+  createdAt            DateTime               @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime               @updatedAt @db.Timestamptz(6)
   deliveryStops        DeliveryStop[]
 
   @@unique([shopId, shopifyOrderGid])
+  @@unique([shopId, sourcePlatform, sourceOrderId])
   @@index([shopId, name])
+  @@index([shopId, sourcePlatform, sourceOrderNumber])
+  @@index([shopId, sourcePlatform, sourceUpdatedAt])
   @@index([shopId, deliveryStatus, processedAt])
   @@map("orders")
 }

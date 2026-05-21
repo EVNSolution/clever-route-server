@@ -3,6 +3,7 @@ import { Prisma, type PrismaClient } from '@prisma/client';
 import type {
   CanonicalOrderReadiness,
   CanonicalOrderRow,
+  CommerceSourcePlatform,
   DeliveryServiceType,
   DeliveryWeekday,
   PlanningStatus,
@@ -44,6 +45,7 @@ type OrderSyncPrismaClient = Pick<PrismaClient, 'deliveryStop' | 'order' | 'shop
 
 type ExistingOrder = {
   id: string;
+  sourceUpdatedAt: Date | null;
   updatedAtShopify: Date | null;
 };
 
@@ -62,6 +64,11 @@ type CanonicalOrderRecord = {
   shippingAddress: unknown;
   shopifyOrderGid: string;
   shopifyOrderLegacyId: bigint | number | string | null;
+  sourceOrderId?: string | null;
+  sourceOrderNumber?: string | null;
+  sourcePlatform?: CommerceSourcePlatform | null;
+  sourceSiteUrl?: string | null;
+  sourceUpdatedAt?: Date | null;
   totalPriceAmount: unknown;
   updatedAtShopify: Date | null;
 };
@@ -86,26 +93,39 @@ type DeliveryStopRecord = {
 };
 
 export class PrismaOrderSyncRepository {
-  constructor(private readonly prisma: OrderSyncPrismaClient) {}
+  constructor(
+    private readonly prisma: OrderSyncPrismaClient,
+    private readonly options: { allowAnyShopDomain?: boolean; createMissingShop?: boolean } = {}
+  ) {}
 
   async upsertOrderWithDeliveryStop(
     input: UpsertOrderWithDeliveryStopInput
   ): Promise<UpsertOrderWithDeliveryStopResult> {
-    const shopDomain = normalizeShopDomain(input.shopDomain);
-    const shop = await this.prisma.shop.findUnique({ where: { shopDomain } });
+    const shop = await this.findShop(input.shopDomain);
     if (shop === null) {
-      throw new Error(`Shop not installed: ${shopDomain}`);
+      throw new Error(`Shop not installed: ${input.shopDomain}`);
     }
 
+    const sourceIdentity = readSourceIdentity(input.synced.order);
     const existing = await this.prisma.order.findFirst({
-      select: { id: true, updatedAtShopify: true },
+      select: { id: true, sourceUpdatedAt: true, updatedAtShopify: true },
       where: {
         shopId: shop.id,
-        shopifyOrderGid: input.synced.order.shopifyOrderGid
+        OR: [
+          { shopifyOrderGid: input.synced.order.shopifyOrderGid },
+          ...(sourceIdentity.sourceOrderId === null
+            ? []
+            : [
+                {
+                  sourceOrderId: sourceIdentity.sourceOrderId,
+                  sourcePlatform: sourceIdentity.sourcePlatform
+                }
+              ])
+        ]
       }
     });
 
-    if (existing !== null && isExistingNewerThanSnapshot(existing, input.synced.order.updatedAtShopify)) {
+    if (existing !== null && isExistingNewerThanSnapshot(existing, sourceIdentity.sourceUpdatedAt)) {
       return { orderId: existing.id, status: 'unchanged', stopId: null };
     }
 
@@ -181,15 +201,25 @@ export class PrismaOrderSyncRepository {
   }
 
   private async findShop(shopDomain: string): Promise<{ id: string } | null> {
-    return this.prisma.shop.findUnique({
+    const normalized = normalizeShopDomain(shopDomain, { allowAnyDomain: this.options.allowAnyShopDomain === true });
+    const shop = await this.prisma.shop.findUnique({
       select: { id: true },
-      where: { shopDomain: normalizeShopDomain(shopDomain) }
+      where: { shopDomain: normalized }
+    });
+    if (shop !== null || this.options.createMissingShop !== true) {
+      return shop;
+    }
+
+    return this.prisma.shop.create({
+      data: { shopDomain: normalized },
+      select: { id: true }
     });
   }
 }
 
 function isExistingNewerThanSnapshot(existing: ExistingOrder, incomingUpdatedAt: Date): boolean {
-  return existing.updatedAtShopify !== null && existing.updatedAtShopify.getTime() > incomingUpdatedAt.getTime();
+  const existingUpdatedAt = existing.sourceUpdatedAt ?? existing.updatedAtShopify;
+  return existingUpdatedAt !== null && existingUpdatedAt.getTime() > incomingUpdatedAt.getTime();
 }
 
 function canonicalOrderInclude(): {
@@ -312,6 +342,23 @@ function toDeliveryStopWrite(input: SyncedOrderWithDeliveryStopInput['deliverySt
   };
 }
 
+function readSourceIdentity(input: SyncedOrderWithDeliveryStopInput['order']): {
+  sourceOrderId: string | null;
+  sourceOrderNumber: string | null;
+  sourcePlatform: CommerceSourcePlatform;
+  sourceSiteUrl: string | null;
+  sourceUpdatedAt: Date;
+} {
+  const sourcePlatform = input.sourcePlatform ?? 'SHOPIFY';
+  return {
+    sourceOrderId: input.sourceOrderId ?? input.shopifyOrderGid,
+    sourceOrderNumber: input.sourceOrderNumber ?? input.name,
+    sourcePlatform,
+    sourceSiteUrl: input.sourceSiteUrl ?? null,
+    sourceUpdatedAt: input.sourceUpdatedAt ?? input.updatedAtShopify
+  };
+}
+
 function toOrderWrite(input: SyncedOrderWithDeliveryStopInput['order']): {
   cancelledAt: Date | null;
   currencyCode: string | null;
@@ -325,9 +372,15 @@ function toOrderWrite(input: SyncedOrderWithDeliveryStopInput['order']): {
   shippingAddress: Prisma.InputJsonValue;
   shopifyOrderGid: string;
   shopifyOrderLegacyId: bigint | null;
+  sourceOrderId: string | null;
+  sourceOrderNumber: string | null;
+  sourcePlatform: CommerceSourcePlatform;
+  sourceSiteUrl: string | null;
+  sourceUpdatedAt: Date | null;
   totalPriceAmount: string | null;
   updatedAtShopify: Date;
 } {
+  const sourceIdentity = readSourceIdentity(input);
   return {
     cancelledAt: input.cancelledAt,
     currencyCode: input.currencyCode,
@@ -341,6 +394,11 @@ function toOrderWrite(input: SyncedOrderWithDeliveryStopInput['order']): {
     shippingAddress: toJson(readShippingAddressFromRawPayload(input.rawPayload)),
     shopifyOrderGid: input.shopifyOrderGid,
     shopifyOrderLegacyId: input.shopifyOrderLegacyId,
+    sourceOrderId: sourceIdentity.sourceOrderId,
+    sourceOrderNumber: sourceIdentity.sourceOrderNumber,
+    sourcePlatform: sourceIdentity.sourcePlatform,
+    sourceSiteUrl: sourceIdentity.sourceSiteUrl,
+    sourceUpdatedAt: sourceIdentity.sourceUpdatedAt,
     totalPriceAmount: input.totalPriceAmount,
     updatedAtShopify: input.updatedAtShopify
   };
@@ -359,8 +417,8 @@ function readShippingAddressFromRawPayload(rawPayload: SyncedOrderWithDeliverySt
     address1: readString(shippingAddress?.address1),
     address2: readString(shippingAddress?.address2),
     city: readString(shippingAddress?.city),
-    countryCode: readString(shippingAddress?.countryCodeV2),
-    postalCode: readString(shippingAddress?.zip),
+    countryCode: readString(shippingAddress?.countryCodeV2) ?? readString(shippingAddress?.countryCode),
+    postalCode: readString(shippingAddress?.zip) ?? readString(shippingAddress?.postalCode),
     province: readString(shippingAddress?.province)
   };
 }
@@ -412,6 +470,11 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     shippingAddress,
     shopifyOrderGid: order.shopifyOrderGid,
     shopifyOrderLegacyId: order.shopifyOrderLegacyId === null ? null : String(order.shopifyOrderLegacyId),
+    sourceOrderId: order.sourceOrderId ?? null,
+    sourceOrderNumber: order.sourceOrderNumber ?? null,
+    sourcePlatform: order.sourcePlatform ?? 'SHOPIFY',
+    sourceSiteUrl: order.sourceSiteUrl ?? null,
+    sourceUpdatedAt: formatDateTime(order.sourceUpdatedAt ?? order.updatedAtShopify),
     timeWindowEnd: readString(raw?.timeWindowEnd),
     timeWindowStart: readString(raw?.timeWindowStart),
     totalPriceAmount: decimalLikeString(order.totalPriceAmount),
@@ -580,9 +643,16 @@ function formatDateTime(value: Date | null): string | null {
   return value === null ? null : value.toISOString();
 }
 
-function normalizeShopDomain(value: string): string {
+function normalizeShopDomain(value: string, options: { allowAnyDomain?: boolean } = {}): string {
   const trimmed = value.trim().toLowerCase();
-  const withoutProtocol = trimmed.replace(/^https?:\/\//u, '').replace(/\/$/u, '');
+  const withoutProtocol = readHostLikeValue(trimmed);
+
+  if (options.allowAnyDomain === true) {
+    if (!isValidHostLikeValue(withoutProtocol)) {
+      throw new Error('Shop domain is not a valid host name');
+    }
+    return withoutProtocol;
+  }
 
   if (!withoutProtocol.endsWith('.myshopify.com')) {
     throw new Error('Shop domain must end with .myshopify.com');
@@ -593,4 +663,31 @@ function normalizeShopDomain(value: string): string {
   }
 
   return withoutProtocol;
+}
+
+function readHostLikeValue(value: string): string {
+  if (/^https?:\/\//u.test(value)) {
+    return new URL(value).host;
+  }
+  return value.replace(/\/$/u, '');
+}
+
+function isValidHostLikeValue(value: string): boolean {
+  const [host, port] = splitHostAndPort(value);
+  if (port !== null && (!/^\d{1,5}$/u.test(port) || Number(port) < 1 || Number(port) > 65535)) {
+    return false;
+  }
+  return (
+    host === 'localhost' ||
+    /^(?:\d{1,3}\.){3}\d{1,3}$/u.test(host) ||
+    /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/u.test(host)
+  );
+}
+
+function splitHostAndPort(value: string): [string, string | null] {
+  const match = /^(?<host>.+):(?<port>\d+)$/u.exec(value);
+  if (match?.groups === undefined || match.groups.host === undefined || match.groups.port === undefined) {
+    return [value, null];
+  }
+  return [match.groups.host, match.groups.port];
 }

@@ -45,7 +45,13 @@ describe('Prisma schema', () => {
     }
 
     expect(schema).toMatch(/@@unique\(\[shopId, webhookId\]/);
+    expect(schema).toContain('enum CommerceSourcePlatform');
+    expect(schema).toContain('sourcePlatform');
+    expect(schema).toContain('sourceOrderId');
+    expect(schema).toContain('sourceOrderNumber');
+    expect(schema).toContain('sourceUpdatedAt');
     expect(schema).toMatch(/@@unique\(\[shopId, shopifyOrderGid\]/);
+    expect(schema).toMatch(/@@unique\(\[shopId, sourcePlatform, sourceOrderId\]/);
     expect(schema).toMatch(/@@unique\(\[routePlanId, sequence\]/);
     expect(schema).toMatch(/@@unique\(\[routePlanId, deliveryStopId\]/);
     expect(schema).toContain('enum DriverConsentType');

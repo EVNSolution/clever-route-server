@@ -1,0 +1,41 @@
+{
+  "id": 11388,
+  "number": "11388",
+  "status": "processing",
+  "currency": "CAD",
+  "total": "54.25",
+  "payment_method": "cheque",
+  "payment_method_title": "Check - Other",
+  "date_created_gmt": "2026-05-19T20:03:00",
+  "date_modified_gmt": "2026-05-19T20:06:34",
+  "billing": {
+    "first_name": "Hana",
+    "last_name": "Kim",
+    "email": "hana@example.test",
+    "phone": "+14165550101",
+    "address_1": "10 Billing Rd",
+    "address_2": "",
+    "city": "Markham",
+    "state": "ON",
+    "postcode": "L3R 0A1",
+    "country": "CA"
+  },
+  "shipping": {
+    "first_name": "Hana",
+    "last_name": "Kim",
+    "address_1": "100 Synthetic Ave",
+    "address_2": "Unit 4",
+    "city": "Markham",
+    "state": "ON",
+    "postcode": "L3R 0A1",
+    "country": "CA"
+  },
+  "customer_note": "Synthetic note",
+  "meta_data": [
+    { "key": "delivery_date", "value": "2026-05-21" },
+    { "key": "delivery_area", "value": "Markham" }
+  ],
+  "line_items": [
+    { "id": 1, "name": "Synthetic meal box", "quantity": 1, "sku": "SYN-BOX", "meta_data": [] }
+  ]
+}
