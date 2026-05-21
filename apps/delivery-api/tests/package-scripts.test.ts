@@ -9,5 +9,9 @@ describe('package scripts', () => {
 
     expect(packageJson.scripts?.['driver:proof-media:cleanup']).toBe('tsx src/scripts/cleanup-driver-proof-media.ts');
     expect(packageJson.scripts?.['driver:proof-media:evidence:seed']).toBe('tsx src/scripts/proof-media-evidence-seed.ts');
+    expect(packageJson.scripts?.['woocommerce:connection:bootstrap']).toBe(
+      'tsx src/scripts/bootstrap-woocommerce-connection.ts'
+    );
+    expect(packageJson.scripts?.['prisma:migrate:deploy']).toContain('prisma migrate deploy');
   });
 });

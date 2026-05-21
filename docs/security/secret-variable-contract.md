@@ -40,7 +40,7 @@ node -e "console.log('base64:' + require('crypto').randomBytes(32).toString('bas
 Customer-specific commerce credentials do **not** belong in shared `.env` files for the product runtime.
 They must be encrypted into DB rows with `CREDENTIAL_ENCRYPTION_KEY`.
 
-Recommended DB field names for the WooCommerce connector credential store:
+DB fields used by the WooCommerce connector credential store:
 
 | DB field | Secret value |
 | --- | --- |
@@ -48,7 +48,7 @@ Recommended DB field names for the WooCommerce connector credential store:
 | `consumerSecretCiphertext` | WooCommerce REST consumer secret |
 | `webhookSecretCiphertext` | WooCommerce webhook secret |
 
-Recommended AAD strings:
+AAD strings:
 
 ```text
 woocommerce:consumer-key:<connectionId>
@@ -60,3 +60,28 @@ woocommerce:webhook-secret:<connectionId>
 
 `apps/delivery-api/.env.woocommerce.local` may exist on a developer machine for one-off read-only payload discovery.
 It is ignored by git and must not become the multi-tenant product credential store.
+
+## Local WooCommerce connection bootstrap
+
+Apply DB migrations first, then insert or rotate a local WooCommerce connection without writing secrets to git:
+
+```bash
+cd apps/delivery-api
+set -a
+source .env
+set +a
+npm run prisma:migrate:deploy
+WOOCOMMERCE_BOOTSTRAP_SHOP_DOMAIN=tomatonofood.com \
+WOOCOMMERCE_BOOTSTRAP_SITE_URL=https://tomatonofood.com \
+WOOCOMMERCE_BOOTSTRAP_CONSUMER_KEY=ck_local \
+WOOCOMMERCE_BOOTSTRAP_CONSUMER_SECRET=cs_local \
+WOOCOMMERCE_BOOTSTRAP_WEBHOOK_SECRET=whsec_local \
+WOOCOMMERCE_BOOTSTRAP_TIMEZONE=America/Toronto \
+npm run woocommerce:connection:bootstrap
+```
+
+The command prints only safe identifiers plus the webhook path:
+
+```text
+/woocommerce/webhooks/<connectionId>/orders
+```

@@ -39,6 +39,28 @@ WC_CONSUMER_KEY=ck_local WC_CONSUMER_SECRET=cs_local ./scripts/smoke-rest.sh
 
 The script only targets the local sandbox URL by default. Override with `WC_BASE_URL` for another disposable local target; do not point it at production WordPress.
 
+## Register a local CLEVER connection
+
+From the server package, source the ignored local `.env` and bootstrap the encrypted DB row:
+
+```bash
+cd ../../apps/delivery-api
+set -a
+source .env
+set +a
+npm run prisma:migrate:deploy
+WOOCOMMERCE_BOOTSTRAP_SHOP_DOMAIN=localhost:8088 \
+WOOCOMMERCE_BOOTSTRAP_SITE_URL=http://localhost:8088 \
+WOOCOMMERCE_BOOTSTRAP_CONSUMER_KEY=ck_local \
+WOOCOMMERCE_BOOTSTRAP_CONSUMER_SECRET=cs_local \
+WOOCOMMERCE_BOOTSTRAP_WEBHOOK_SECRET=whsec_local \
+WOOCOMMERCE_BOOTSTRAP_LABEL="Local Woo sandbox" \
+WOOCOMMERCE_BOOTSTRAP_TIMEZONE=America/Toronto \
+npm run woocommerce:connection:bootstrap
+```
+
+Use the printed `/woocommerce/webhooks/<connectionId>/orders` path when creating a local WooCommerce webhook.
+
 ## Synthetic fixtures
 
 Server-side tests use committed synthetic fixtures under:

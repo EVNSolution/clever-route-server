@@ -34,6 +34,9 @@ var/driver-proof-media/
 backups/
 *.dump
 *.sql
+!prisma/migrations/
+!prisma/migrations/**/
+!prisma/migrations/**/migration.sql
 *.sql.gz
 *.sqlite
 *.sqlite3
