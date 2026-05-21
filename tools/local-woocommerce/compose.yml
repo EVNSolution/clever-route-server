@@ -9,6 +9,7 @@ services:
       WORDPRESS_DB_NAME: wordpress
       WORDPRESS_DB_PASSWORD: wordpress
       WORDPRESS_DB_USER: wordpress
+      WP_CLI_CACHE_DIR: /tmp/wp-cli-cache
       WORDPRESS_DEBUG: "1"
     ports:
       - "8088:80"
@@ -42,10 +43,12 @@ services:
       WORDPRESS_DB_NAME: wordpress
       WORDPRESS_DB_PASSWORD: wordpress
       WORDPRESS_DB_USER: wordpress
+      WP_CLI_CACHE_DIR: /tmp/wp-cli-cache
     user: "33:33"
     volumes:
       - wordpress_data:/var/www/html
       - ./seed-orders.example.json:/tmp/seed-orders.example.json:ro
+      - ./scripts:/tmp/clever-scripts:ro
     entrypoint: ["wp"]
 
 volumes:

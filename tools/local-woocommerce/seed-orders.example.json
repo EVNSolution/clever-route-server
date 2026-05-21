@@ -4,10 +4,23 @@
     "status": "processing",
     "delivery_date": "2026-05-21",
     "delivery_area": "Markham",
+    "delivery_window": "Thursday",
+    "billing": {
+      "first_name": "Hana",
+      "last_name": "Kim",
+      "email": "hana@example.test",
+      "phone": "+14165550101",
+      "address_1": "10 Billing Rd",
+      "city": "Markham",
+      "state": "ON",
+      "postcode": "L3R 0A1",
+      "country": "CA"
+    },
     "shipping": {
-      "first_name": "Synthetic",
-      "last_name": "Customer",
-      "address_1": "100 Sandbox Ave",
+      "first_name": "Hana",
+      "last_name": "Kim",
+      "address_1": "100 Synthetic Ave",
+      "address_2": "Unit 4",
       "city": "Markham",
       "state": "ON",
       "postcode": "L3R 0A1",
@@ -19,13 +32,106 @@
     "status": "processing",
     "delivery_date": null,
     "delivery_area": "North York",
-    "shipping": {
-      "first_name": "Date",
-      "last_name": "Pending",
-      "address_1": "200 Sandbox St",
+    "delivery_window": "Friday 5pm to 9pm",
+    "billing": {
+      "first_name": "Min",
+      "last_name": "Park",
+      "email": "min@example.test",
+      "phone": "+14165550102",
+      "address_1": "200 Billing St",
       "city": "North York",
       "state": "ON",
       "postcode": "M2N 1A1",
+      "country": "CA"
+    },
+    "shipping": {
+      "first_name": "Min",
+      "last_name": "Park",
+      "address_1": "200 Synthetic St",
+      "city": "North York",
+      "state": "ON",
+      "postcode": "M2N 1A1",
+      "country": "CA"
+    }
+  },
+  {
+    "number": "9003",
+    "status": "cancelled",
+    "delivery_date": "2026-05-23",
+    "delivery_area": "Downtown",
+    "delivery_window": "Saturday",
+    "billing": {
+      "first_name": "Cancelled",
+      "last_name": "Order",
+      "email": "cancelled@example.test",
+      "phone": "+14165550103",
+      "address_1": "300 Billing St",
+      "city": "Downtown",
+      "state": "ON",
+      "postcode": "M5V 1A1",
+      "country": "CA"
+    },
+    "shipping": {
+      "first_name": "Cancelled",
+      "last_name": "Order",
+      "address_1": "300 Synthetic St",
+      "city": "Downtown",
+      "state": "ON",
+      "postcode": "M5V 1A1",
+      "country": "CA"
+    }
+  },
+  {
+    "number": "9004",
+    "status": "processing",
+    "delivery_date": "2026-05-24",
+    "delivery_area": "Vaughan",
+    "delivery_window": "Sunday",
+    "billing": {
+      "first_name": "Billing",
+      "last_name": "Phone",
+      "email": "billing-phone@example.test",
+      "phone": "+14165550104",
+      "address_1": "400 Billing Blvd",
+      "city": "Vaughan",
+      "state": "ON",
+      "postcode": "L4K 1A1",
+      "country": "CA"
+    },
+    "shipping": {
+      "first_name": "Billing",
+      "last_name": "Phone",
+      "address_1": "400 Synthetic Blvd",
+      "city": "Vaughan",
+      "state": "ON",
+      "postcode": "L4K 1A1",
+      "country": "CA"
+    }
+  },
+  {
+    "number": "9005",
+    "status": "on-hold",
+    "delivery_date": "2026-05-25",
+    "delivery_area": "Richmond Hill",
+    "delivery_window": "Monday",
+    "billing": {
+      "first_name": "Hold",
+      "last_name": "Customer",
+      "email": "hold@example.test",
+      "phone": "+14165550105",
+      "address_1": "500 Billing Cres",
+      "city": "Richmond Hill",
+      "state": "ON",
+      "postcode": "L4C 1A1",
+      "country": "CA"
+    },
+    "shipping": {
+      "first_name": "Hold",
+      "last_name": "Customer",
+      "address_1": "500 Synthetic Cres",
+      "city": "Richmond Hill",
+      "state": "ON",
+      "postcode": "L4C 1A1",
       "country": "CA"
     }
   }
