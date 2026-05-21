@@ -52,6 +52,8 @@ Recommended services:
 - `mysql` or `mariadb` — local-only DB volume.
 - optional `wp-cli` — to install/activate WooCommerce and seed orders.
 
+A repo-local disposable Compose scaffold now lives at `tools/local-woocommerce/`. It is for synthetic local development only and must not receive production credentials or customer exports.
+
 Keep this sandbox outside production deploy paths. If it is later committed, use fake data only.
 
 ## Setup checklist

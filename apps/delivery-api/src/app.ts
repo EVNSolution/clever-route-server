@@ -20,6 +20,10 @@ import {
   registerShopifyWebhookRoutes,
   type ShopifyWebhookDependencies
 } from './routes/shopify-webhook.routes.js';
+import {
+  registerWooCommerceWebhookRoutes,
+  type WooCommerceWebhookDependencies
+} from './routes/woocommerce-webhook.routes.js';
 
 type BuildAppOptions = {
   adminDrivers?: AdminDriversDependencies;
@@ -31,6 +35,7 @@ type BuildAppOptions = {
   logger?: FastifyServerOptions['logger'];
   shopifyAuth?: ShopifyAuthDependencies;
   shopifyWebhook?: ShopifyWebhookDependencies;
+  wooCommerceWebhook?: WooCommerceWebhookDependencies;
 };
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
@@ -76,6 +81,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   if (options.shopifyWebhook !== undefined) {
     registerShopifyWebhookRoutes(app, options.shopifyWebhook);
+  }
+
+  if (options.wooCommerceWebhook !== undefined) {
+    registerWooCommerceWebhookRoutes(app, options.wooCommerceWebhook);
   }
 
   return app;

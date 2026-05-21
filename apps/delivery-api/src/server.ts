@@ -9,6 +9,7 @@ import { loadAdminRoutePlanDependencies } from './modules/route-plans/route-plan
 import { loadAdminOrdersDependencies } from './modules/shopify/order-sync.dependencies.js';
 import { loadShopifyAuthDependencies } from './modules/shopify/auth.dependencies.js';
 import { loadShopifyWebhookDependencies } from './modules/shopify/webhook.dependencies.js';
+import { loadWooCommerceWebhookDependencies } from './modules/woocommerce/woocommerce.dependencies.js';
 import type { AdminRoutePlanDependencies } from './routes/admin-route-plans.routes.js';
 import type { AdminDriversDependencies } from './routes/admin-drivers.routes.js';
 import type { AdminOrdersDependencies } from './routes/admin-orders.routes.js';
@@ -16,6 +17,7 @@ import type { DriverApiDependencies } from './routes/driver-events.routes.js';
 import type { DriverAuthDependencies } from './routes/driver-auth.routes.js';
 import type { ShopifyAuthDependencies } from './routes/shopify-auth.routes.js';
 import type { ShopifyWebhookDependencies } from './routes/shopify-webhook.routes.js';
+import type { WooCommerceWebhookDependencies } from './routes/woocommerce-webhook.routes.js';
 
 const env = loadEnv();
 const prisma = new PrismaClient();
@@ -26,6 +28,7 @@ const driverApi = loadDriverApiDependencies({ env: process.env, prisma });
 const driverAuth = loadDriverAuthDependencies({ env: process.env, prisma });
 const shopifyAuth = loadShopifyAuthDependencies({ env: process.env, prisma });
 const shopifyWebhook = loadShopifyWebhookDependencies({ env: process.env, prisma });
+const wooCommerceWebhook = loadWooCommerceWebhookDependencies({ env: process.env, prisma });
 const logger = env.nodeEnv === 'test' ? false : { level: env.logLevel };
 const app = await buildApp(
   createBuildAppOptions({
@@ -37,7 +40,8 @@ const app = await buildApp(
     driverAuth,
     logger,
     shopifyAuth,
-    shopifyWebhook
+    shopifyWebhook,
+    wooCommerceWebhook
   })
 );
 
@@ -69,6 +73,7 @@ function createBuildAppOptions(input: {
   logger: false | { level: string };
   shopifyAuth: ShopifyAuthDependencies | undefined;
   shopifyWebhook: ShopifyWebhookDependencies | undefined;
+  wooCommerceWebhook: WooCommerceWebhookDependencies | undefined;
 }): {
   adminDrivers?: AdminDriversDependencies;
   adminOrders?: AdminOrdersDependencies;
@@ -79,6 +84,7 @@ function createBuildAppOptions(input: {
   logger: false | { level: string };
   shopifyAuth?: ShopifyAuthDependencies;
   shopifyWebhook?: ShopifyWebhookDependencies;
+  wooCommerceWebhook?: WooCommerceWebhookDependencies;
 } {
   return {
     ...(input.adminDrivers === undefined ? {} : { adminDrivers: input.adminDrivers }),
@@ -89,7 +95,8 @@ function createBuildAppOptions(input: {
     ...(input.driverAuth === undefined ? {} : { driverAuth: input.driverAuth }),
     logger: input.logger,
     ...(input.shopifyAuth === undefined ? {} : { shopifyAuth: input.shopifyAuth }),
-    ...(input.shopifyWebhook === undefined ? {} : { shopifyWebhook: input.shopifyWebhook })
+    ...(input.shopifyWebhook === undefined ? {} : { shopifyWebhook: input.shopifyWebhook }),
+    ...(input.wooCommerceWebhook === undefined ? {} : { wooCommerceWebhook: input.wooCommerceWebhook })
   };
 }
 

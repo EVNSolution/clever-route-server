@@ -58,6 +58,7 @@ type ShopifyShippingAddress = {
 export type DeliveryWeekday = 'SUNDAY' | 'MONDAY' | 'TUESDAY' | 'WEDNESDAY' | 'THURSDAY' | 'FRIDAY' | 'SATURDAY';
 export type DeliveryServiceType = 'DELIVERY' | 'EVENING_DELIVERY' | 'PICKUP';
 export type CanonicalOrderReadiness = 'READY_TO_PLAN' | 'NEEDS_REVIEW' | 'SKIPPED';
+export type CommerceSourcePlatform = 'SHOPIFY' | 'WOOCOMMERCE';
 export type PlanningStatus = 'UNPLANNED' | 'PLANNED';
 
 export type CanonicalOrderRow = {
@@ -103,6 +104,11 @@ export type CanonicalOrderRow = {
   };
   shopifyOrderGid: string;
   shopifyOrderLegacyId: string | null;
+  sourceOrderId?: string | null;
+  sourceOrderNumber?: string | null;
+  sourcePlatform?: CommerceSourcePlatform;
+  sourceSiteUrl?: string | null;
+  sourceUpdatedAt?: string | null;
   timeWindowEnd: string | null;
   timeWindowStart: string | null;
   totalPriceAmount: string | null;
@@ -137,6 +143,11 @@ export type SyncedOrderInput = {
   serviceType: DeliveryServiceType | null;
   shopifyOrderGid: string;
   shopifyOrderLegacyId: bigint | null;
+  sourceOrderId?: string | null;
+  sourceOrderNumber?: string | null;
+  sourcePlatform?: CommerceSourcePlatform;
+  sourceSiteUrl?: string | null;
+  sourceUpdatedAt?: Date | null;
   timeWindowEnd: string | null;
   timeWindowStart: string | null;
   totalPriceAmount: string | null;
@@ -275,6 +286,11 @@ export function mapShopifyOrderNodeToDeliveryInputs(
       serviceType: scope.serviceType,
       shopifyOrderGid: node.id,
       shopifyOrderLegacyId: parseLegacyResourceId(node.legacyResourceId),
+      sourceOrderId: node.id,
+      sourceOrderNumber: node.name,
+      sourcePlatform: 'SHOPIFY',
+      sourceSiteUrl: null,
+      sourceUpdatedAt: parseRequiredDate(node.updatedAt),
       timeWindowEnd: scope.timeWindowEnd,
       timeWindowStart: scope.timeWindowStart,
       totalPriceAmount: node.currentTotalPriceSet?.shopMoney.amount ?? null,

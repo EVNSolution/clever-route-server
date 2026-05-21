@@ -85,6 +85,68 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     expect(prisma.deliveryStop.upsert).toHaveBeenCalledOnce();
   });
 
+
+
+  test('uses additive WooCommerce source identity without colliding with Shopify numeric order ids', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
+    prisma.shop.findUnique.mockResolvedValueOnce(null);
+    prisma.shop.create = vi.fn(() => Promise.resolve({ id: 'woo-shop-id' }));
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0],
+      { allowAnyShopDomain: true, createMissingShop: true }
+    );
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'localhost:8088',
+      synced: syncedOrder({
+        name: '#123',
+        shopifyOrderGid: 'woocommerce://localhost:8088/orders/123',
+        shopifyOrderLegacyId: null,
+        sourceOrderId: '123',
+        sourceOrderNumber: '123',
+        sourcePlatform: 'WOOCOMMERCE',
+        sourceSiteUrl: 'http://localhost:8088',
+        sourceUpdatedAt: new Date('2026-05-21T00:00:00.000Z'),
+        updatedAtShopify: new Date('2026-05-21T00:00:00.000Z')
+      })
+    });
+
+    expect(prisma.shop.create).toHaveBeenCalledWith({
+      data: { shopDomain: 'localhost:8088' },
+      select: { id: true }
+    });
+    const findFirstInput = prisma.order.findFirst.mock.calls[0]?.[0] as
+      | { where?: { OR?: unknown[]; shopId?: string } }
+      | undefined;
+    expect(findFirstInput?.where).toEqual({
+      OR: [
+        { shopifyOrderGid: 'woocommerce://localhost:8088/orders/123' },
+        { sourceOrderId: '123', sourcePlatform: 'WOOCOMMERCE' }
+      ],
+      shopId: 'woo-shop-id'
+    });
+
+    const upsertInput = prisma.order.upsert.mock.calls[0]?.[0] as
+      | {
+          create?: {
+            shopId?: string;
+            shopifyOrderGid?: string;
+            sourceOrderId?: string | null;
+            sourceOrderNumber?: string | null;
+            sourcePlatform?: string | null;
+            sourceSiteUrl?: string | null;
+          };
+        }
+      | undefined;
+    expect(upsertInput?.create).toMatchObject({
+      shopId: 'woo-shop-id',
+      shopifyOrderGid: 'woocommerce://localhost:8088/orders/123',
+      sourceOrderId: '123',
+      sourceOrderNumber: '123',
+      sourcePlatform: 'WOOCOMMERCE',
+      sourceSiteUrl: 'http://localhost:8088'
+    });
+  });
   test('clears stale delivery stop fields when a newer snapshot has no shipping address', async () => {
     const { prisma } = createPrismaHarness({
       existingOrder: { id: 'order-id', updatedAtShopify: new Date('2026-05-07T12:00:00.000Z') },
@@ -146,7 +208,7 @@ function createPrismaHarness(input: {
       update: ReturnType<typeof vi.fn>;
       upsert: ReturnType<typeof vi.fn>;
     };
-    shop: { findUnique: ReturnType<typeof vi.fn> };
+    shop: { create?: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn> };
   };
 } {
   const orderRecord = canonicalOrderRecord(input.routeStopCount);

@@ -1,0 +1,34 @@
+{
+  "id": 11386,
+  "number": "11386",
+  "status": "cancelled",
+  "currency": "CAD",
+  "total": "0.00",
+  "date_created_gmt": "2026-05-19T19:55:00",
+  "date_modified_gmt": "2026-05-19T20:06:35",
+  "billing": {
+    "first_name": "Cancelled",
+    "last_name": "Order",
+    "email": "cancelled@example.test",
+    "phone": "+14165550103",
+    "address_1": "300 Billing St",
+    "city": "Downtown",
+    "state": "ON",
+    "postcode": "M5V 1A1",
+    "country": "CA"
+  },
+  "shipping": {
+    "first_name": "Cancelled",
+    "last_name": "Order",
+    "address_1": "300 Synthetic St",
+    "city": "Downtown",
+    "state": "ON",
+    "postcode": "M5V 1A1",
+    "country": "CA"
+  },
+  "meta_data": [
+    { "key": "delivery_date", "value": "2026-05-23" },
+    { "key": "delivery_area", "value": "Downtown" }
+  ],
+  "line_items": []
+}

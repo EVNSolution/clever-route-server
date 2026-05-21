@@ -1,0 +1,35 @@
+{
+  "id": 11387,
+  "number": "11387",
+  "status": "processing",
+  "currency": "CAD",
+  "total": "41.00",
+  "date_created_gmt": "2026-05-19T19:59:00",
+  "date_modified_gmt": "2026-05-19T20:06:34",
+  "billing": {
+    "first_name": "Min",
+    "last_name": "Park",
+    "email": "min@example.test",
+    "phone": "+14165550102",
+    "address_1": "200 Billing St",
+    "city": "North York",
+    "state": "ON",
+    "postcode": "M2N 1A1",
+    "country": "CA"
+  },
+  "shipping": {
+    "first_name": "Min",
+    "last_name": "Park",
+    "address_1": "200 Synthetic St",
+    "city": "North York",
+    "state": "ON",
+    "postcode": "M2N 1A1",
+    "country": "CA"
+  },
+  "meta_data": [
+    { "key": "delivery_area", "value": "North York" }
+  ],
+  "line_items": [
+    { "id": 2, "name": "Synthetic soup", "quantity": 2, "sku": "SYN-SOUP", "meta_data": [] }
+  ]
+}
