@@ -1,0 +1,69 @@
+# Local agent/runtime state
+.omx/
+
+# Dependencies
+node_modules/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+.envrc
+*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build, test, and compiler outputs
+dist/
+build/
+coverage/
+.cache/
+.eslintcache
+.vitest/
+tmp/
+temp/
+*.tsbuildinfo
+
+# Runtime/generated data and database artifacts
+var/driver-proof-media/
+backups/
+*.dump
+*.sql
+*.sql.gz
+*.sqlite
+*.sqlite3
+*.db
+
+# Private release/smoke/security evidence artifacts
+evidence/
+release-evidence/
+smoke-evidence/
+docs/evidence/
+docs/release-evidence/
+docs/smoke-evidence/
+release-evidence-manifest-*.md
+docs/release-evidence-manifest-*.md
+proof-media-production-evidence-manifest-*.md
+docs/proof-media-production-evidence-manifest-*.md
+
+# Local certificates and secret key material
+*.pem
+*.key
+*.crt
+*.p12
+*.p8
+
+# Package manager caches
+.npm/
+.pnpm-store/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

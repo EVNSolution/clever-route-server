@@ -1,0 +1,466 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ShopifyWebhookEventStatus {
+  RECEIVED
+  PROCESSING
+  PROCESSED
+  FAILED
+  IGNORED
+}
+
+enum DeliveryOrderStatus {
+  PENDING
+  READY
+  ASSIGNED
+  OUT_FOR_DELIVERY
+  DELIVERED
+  FAILED
+  CANCELLED
+}
+
+enum GeocodeStatus {
+  NOT_REQUIRED
+  PENDING
+  RESOLVED
+  FAILED
+}
+
+enum DeliveryStopStatus {
+  PENDING
+  ASSIGNED
+  EN_ROUTE
+  ARRIVED
+  DELIVERED
+  FAILED
+  SKIPPED
+  CANCELLED
+}
+
+enum RoutePlanStatus {
+  DRAFT
+  OPTIMIZED
+  ASSIGNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum DriverStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum VehicleType {
+  CAR
+  VAN
+  TRUCK
+  BIKE
+  SCOOTER
+  OTHER
+}
+
+enum VehicleStatus {
+  ACTIVE
+  INACTIVE
+  MAINTENANCE
+}
+
+enum DriverEventType {
+  ROUTE_STARTED
+  ROUTE_PAUSED
+  ROUTE_COMPLETED
+  STOP_ARRIVED
+  STOP_DELIVERED
+  STOP_FAILED
+  LOCATION_UPDATED
+  NOTE_ADDED
+}
+
+enum DriverConsentType {
+  LOCATION_INFORMATION
+  PERSONAL_INFORMATION
+}
+
+enum DriverProofMediaKind {
+  PHOTO
+}
+
+enum DriverProofMediaSource {
+  CAMERA
+  LIBRARY
+}
+
+enum RetentionJobRunStatus {
+  SUCCEEDED
+  FAILED
+}
+
+enum DriverAccountDeletionRequestStatus {
+  REQUESTED
+}
+
+model Shop {
+  id                            String                         @id @default(uuid()) @db.Uuid
+  shopDomain                    String                         @db.Text
+  shopifyShopGid                String?                        @db.Text
+  apiVersion                    String                         @default("2026-04") @db.Text
+  adminAccessTokenCiphertext    String?                        @db.Text
+  adminAccessTokenExpiresAt     DateTime?                      @db.Timestamptz(6)
+  adminRefreshTokenCiphertext   String?                        @db.Text
+  adminRefreshTokenExpiresAt    DateTime?                      @db.Timestamptz(6)
+  tokenScopes                   String[]                       @default([])
+  tokenIssuedAt                 DateTime?                      @db.Timestamptz(6)
+  installedAt                   DateTime                       @default(now()) @db.Timestamptz(6)
+  uninstalledAt                 DateTime?                      @db.Timestamptz(6)
+  createdAt                     DateTime                       @default(now()) @db.Timestamptz(6)
+  updatedAt                     DateTime                       @updatedAt @db.Timestamptz(6)
+  webhookEvents                 ShopifyWebhookEvent[]
+  orders                        Order[]
+  deliveryStops                 DeliveryStop[]
+  routePlans                    RoutePlan[]
+  drivers                       Driver[]
+  vehicles                      Vehicle[]
+  driverEvents                  DriverEvent[]
+  driverConsentRecords          DriverConsentRecord[]
+  driverProofMedia              DriverProofMedia[]
+  driverRouteFeedback           DriverRouteFeedback[]
+  driverAccountDeletionRequests DriverAccountDeletionRequest[]
+
+  @@unique([shopDomain])
+  @@unique([shopifyShopGid])
+  @@map("shops")
+}
+
+model ShopifyWebhookEvent {
+  id            String                    @id @default(uuid()) @db.Uuid
+  shopId        String                    @db.Uuid
+  shop          Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  webhookId     String                    @db.Text
+  eventId       String?                   @db.Text
+  topic         String                    @db.Text
+  apiVersion    String?                   @db.Text
+  triggeredAt   DateTime?                 @db.Timestamptz(6)
+  rawBodySha256 String                    @db.Text
+  payload       Json
+  status        ShopifyWebhookEventStatus @default(RECEIVED)
+  attemptCount  Int                       @default(0)
+  lastError     String?                   @db.Text
+  receivedAt    DateTime                  @default(now()) @db.Timestamptz(6)
+  processedAt   DateTime?                 @db.Timestamptz(6)
+  createdAt     DateTime                  @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime                  @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, webhookId])
+  @@index([shopId, topic, receivedAt])
+  @@index([status, receivedAt])
+  @@map("shopify_webhook_events")
+}
+
+model Order {
+  id                   String              @id @default(uuid()) @db.Uuid
+  shopId               String              @db.Uuid
+  shop                 Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shopifyOrderGid      String              @db.Text
+  shopifyOrderLegacyId BigInt?
+  name                 String              @db.Text
+  email                String?             @db.Text
+  phone                String?             @db.Text
+  financialStatus      String?             @db.Text
+  fulfillmentStatus    String?             @db.Text
+  cancelledAt          DateTime?           @db.Timestamptz(6)
+  processedAt          DateTime?           @db.Timestamptz(6)
+  updatedAtShopify     DateTime?           @db.Timestamptz(6)
+  totalPriceAmount     Decimal?            @db.Decimal(12, 2)
+  currencyCode         String?             @db.Text
+  shippingAddress      Json?
+  rawPayload           Json
+  deliveryStatus       DeliveryOrderStatus @default(PENDING)
+  createdAt            DateTime            @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime            @updatedAt @db.Timestamptz(6)
+  deliveryStops        DeliveryStop[]
+
+  @@unique([shopId, shopifyOrderGid])
+  @@index([shopId, name])
+  @@index([shopId, deliveryStatus, processedAt])
+  @@map("orders")
+}
+
+model DeliveryStop {
+  id               String             @id @default(uuid()) @db.Uuid
+  shopId           String             @db.Uuid
+  shop             Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  orderId          String             @db.Uuid
+  order            Order              @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  recipientName    String?            @db.Text
+  phone            String?            @db.Text
+  address1         String?            @db.Text
+  address2         String?            @db.Text
+  city             String?            @db.Text
+  province         String?            @db.Text
+  postalCode       String?            @db.Text
+  countryCode      String?            @db.Text
+  latitude         Decimal?           @db.Decimal(10, 7)
+  longitude        Decimal?           @db.Decimal(10, 7)
+  geocodeStatus    GeocodeStatus      @default(PENDING)
+  deliveryDate     DateTime?          @db.Date
+  timeWindowStart  DateTime?          @db.Timestamptz(6)
+  timeWindowEnd    DateTime?          @db.Timestamptz(6)
+  serviceMinutes   Int                @default(5)
+  priority         Int                @default(0)
+  instructions     String?            @db.Text
+  status           DeliveryStopStatus @default(PENDING)
+  createdAt        DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt        DateTime           @updatedAt @db.Timestamptz(6)
+  routePlanStops   RoutePlanStop[]
+  driverEvents     DriverEvent[]
+  driverProofMedia DriverProofMedia[]
+
+  @@unique([shopId, orderId])
+  @@index([shopId, deliveryDate, status])
+  @@map("delivery_stops")
+}
+
+model RoutePlan {
+  id                  String                @id @default(uuid()) @db.Uuid
+  shopId              String                @db.Uuid
+  shop                Shop                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  name                String                @db.Text
+  planDate            DateTime              @db.Date
+  status              RoutePlanStatus       @default(DRAFT)
+  driverId            String?               @db.Uuid
+  driver              Driver?               @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  vehicleId           String?               @db.Uuid
+  vehicle             Vehicle?              @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  depotLatitude       Decimal?              @db.Decimal(10, 7)
+  depotLongitude      Decimal?              @db.Decimal(10, 7)
+  optimizerVersion    String                @db.Text
+  constraints         Json
+  metrics             Json
+  createdBy           String?               @db.Text
+  createdAt           DateTime              @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime              @updatedAt @db.Timestamptz(6)
+  routeStops          RoutePlanStop[]
+  driverEvents        DriverEvent[]
+  driverProofMedia    DriverProofMedia[]
+  driverRouteFeedback DriverRouteFeedback[]
+
+  @@index([shopId, planDate, status])
+  @@index([shopId, driverId, status])
+  @@map("route_plans")
+}
+
+model RoutePlanStop {
+  id                          String       @id @default(uuid()) @db.Uuid
+  routePlanId                 String       @db.Uuid
+  routePlan                   RoutePlan    @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
+  deliveryStopId              String       @db.Uuid
+  deliveryStop                DeliveryStop @relation(fields: [deliveryStopId], references: [id], onDelete: Cascade)
+  sequence                    Int
+  estimatedArrivalAt          DateTime?    @db.Timestamptz(6)
+  distanceFromPreviousMeters  Int?
+  durationFromPreviousSeconds Int?
+  createdAt                   DateTime     @default(now()) @db.Timestamptz(6)
+  updatedAt                   DateTime     @updatedAt @db.Timestamptz(6)
+
+  @@unique([routePlanId, sequence])
+  @@unique([routePlanId, deliveryStopId])
+  @@map("route_plan_stops")
+}
+
+model Driver {
+  id                      String                         @id @default(uuid()) @db.Uuid
+  shopId                  String                         @db.Uuid
+  shop                    Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  displayName             String                         @db.Text
+  phone                   String?                        @db.Text
+  status                  DriverStatus                   @default(ACTIVE)
+  inviteCode              String?                        @db.Text
+  inviteCodeExpiresAt     DateTime?                      @db.Timestamptz(6)
+  authSubject             String?                        @unique @db.Text
+  tokenVersion            Int                            @default(0)
+  tokensInvalidatedAt     DateTime?                      @db.Timestamptz(6)
+  lastSeenAt              DateTime?                      @db.Timestamptz(6)
+  createdAt               DateTime                       @default(now()) @db.Timestamptz(6)
+  updatedAt               DateTime                       @updatedAt @db.Timestamptz(6)
+  sessions                DriverSession[]
+  routePlans              RoutePlan[]
+  driverEvents            DriverEvent[]
+  consentRecords          DriverConsentRecord[]
+  driverProofMedia        DriverProofMedia[]
+  driverRouteFeedback     DriverRouteFeedback[]
+  accountDeletionRequests DriverAccountDeletionRequest[]
+
+  @@unique([shopId, inviteCode])
+  @@index([shopId, status])
+  @@map("drivers")
+}
+
+model DriverSession {
+  id               String    @id @default(uuid()) @db.Uuid
+  driverId         String    @db.Uuid
+  driver           Driver    @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  refreshTokenHash String    @unique @db.Text
+  expiresAt        DateTime  @db.Timestamptz(6)
+  revokedAt        DateTime? @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @db.Timestamptz(6)
+  lastUsedAt       DateTime? @db.Timestamptz(6)
+
+  @@index([driverId, expiresAt])
+  @@map("driver_sessions")
+}
+
+model DriverConsentRecord {
+  id             String            @id @default(uuid()) @db.Uuid
+  shopId         String            @db.Uuid
+  shop           Shop              @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  driverId       String            @db.Uuid
+  driver         Driver            @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  consentType    DriverConsentType
+  consentVersion String            @db.Text
+  accepted       Boolean
+  routeContext   String?           @db.Text
+  deviceContext  Json?
+  appContext     Json?
+  recordedAt     DateTime          @db.Timestamptz(6)
+  createdAt      DateTime          @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime          @updatedAt @db.Timestamptz(6)
+
+  @@unique([driverId, consentType, consentVersion])
+  @@index([shopId, driverId, recordedAt])
+  @@map("driver_consent_records")
+}
+
+model DriverProofMedia {
+  id               String                 @id @default(uuid()) @db.Uuid
+  shopId           String                 @db.Uuid
+  shop             Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  driverId         String                 @db.Uuid
+  driver           Driver                 @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  routePlanId      String                 @db.Uuid
+  routePlan        RoutePlan              @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
+  deliveryStopId   String                 @db.Uuid
+  deliveryStop     DeliveryStop           @relation(fields: [deliveryStopId], references: [id], onDelete: Cascade)
+  kind             DriverProofMediaKind   @default(PHOTO)
+  source           DriverProofMediaSource
+  contentType      String                 @db.Text
+  originalFilename String?                @db.Text
+  storageKey       String                 @db.Text
+  sizeBytes        Int
+  sha256           String                 @db.Text
+  uploadedAt       DateTime               @db.Timestamptz(6)
+  deletedAt        DateTime?              @db.Timestamptz(6)
+  createdAt        DateTime               @default(now()) @db.Timestamptz(6)
+
+  @@unique([shopId, storageKey])
+  @@index([shopId, routePlanId, deliveryStopId, uploadedAt])
+  @@index([driverId, uploadedAt])
+  @@map("driver_proof_media")
+}
+
+model DriverRouteFeedback {
+  id          String    @id @default(uuid()) @db.Uuid
+  shopId      String    @db.Uuid
+  shop        Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  driverId    String    @db.Uuid
+  driver      Driver    @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  routePlanId String    @db.Uuid
+  routePlan   RoutePlan @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
+  reviewNote  String    @db.Text
+  submittedAt DateTime  @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(6)
+
+  @@index([shopId, routePlanId, submittedAt])
+  @@index([driverId, submittedAt])
+  @@map("driver_route_feedback")
+}
+
+model DriverAccountDeletionRequest {
+  id                String                             @id @default(uuid()) @db.Uuid
+  shopId            String?                            @db.Uuid
+  shop              Shop?                              @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  driverId          String?                            @db.Uuid
+  driver            Driver?                            @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  shopDomain        String                             @db.Text
+  driverDisplayName String?                            @db.Text
+  driverPhone       String?                            @db.Text
+  status            DriverAccountDeletionRequestStatus @default(REQUESTED)
+  reason            String?                            @db.Text
+  requestedAt       DateTime                           @db.Timestamptz(6)
+  createdAt         DateTime                           @default(now()) @db.Timestamptz(6)
+
+  @@index([shopDomain, requestedAt])
+  @@index([driverId, requestedAt])
+  @@map("driver_account_deletion_requests")
+}
+
+model RetentionJobRun {
+  id                String                @id @default(uuid()) @db.Uuid
+  jobName           String                @db.Text
+  status            RetentionJobRunStatus
+  startedAt         DateTime              @db.Timestamptz(6)
+  finishedAt        DateTime              @db.Timestamptz(6)
+  retentionDays     Int?
+  uploadedBefore    DateTime?             @db.Timestamptz(6)
+  batchLimit        Int?
+  scannedCount      Int?
+  deletedCount      Int?
+  missingFilesCount Int?
+  errorSummary      String?               @db.Text
+  evidenceRef       String?               @db.Text
+  createdAt         DateTime              @default(now()) @db.Timestamptz(6)
+
+  @@index([jobName, finishedAt])
+  @@index([status, finishedAt])
+  @@map("retention_job_runs")
+}
+
+model Vehicle {
+  id            String        @id @default(uuid()) @db.Uuid
+  shopId        String        @db.Uuid
+  shop          Shop          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  label         String        @db.Text
+  licensePlate  String?       @db.Text
+  vehicleType   VehicleType   @default(OTHER)
+  capacityUnits Int           @default(0)
+  status        VehicleStatus @default(ACTIVE)
+  createdAt     DateTime      @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime      @updatedAt @db.Timestamptz(6)
+  routePlans    RoutePlan[]
+
+  @@unique([shopId, licensePlate])
+  @@index([shopId, status])
+  @@map("vehicles")
+}
+
+model DriverEvent {
+  id             String          @id @default(uuid()) @db.Uuid
+  shopId         String          @db.Uuid
+  shop           Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  driverId       String          @db.Uuid
+  driver         Driver          @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  routePlanId    String?         @db.Uuid
+  routePlan      RoutePlan?      @relation(fields: [routePlanId], references: [id], onDelete: SetNull)
+  deliveryStopId String?         @db.Uuid
+  deliveryStop   DeliveryStop?   @relation(fields: [deliveryStopId], references: [id], onDelete: SetNull)
+  clientEventId  String?         @db.Text
+  eventType      DriverEventType
+  occurredAt     DateTime        @db.Timestamptz(6)
+  latitude       Decimal?        @db.Decimal(10, 7)
+  longitude      Decimal?        @db.Decimal(10, 7)
+  payload        Json
+  createdAt      DateTime        @default(now()) @db.Timestamptz(6)
+
+  @@unique([driverId, clientEventId])
+  @@index([shopId, routePlanId, occurredAt])
+  @@index([shopId, deliveryStopId, occurredAt])
+  @@map("driver_events")
+}

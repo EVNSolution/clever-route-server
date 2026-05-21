@@ -1,0 +1,4 @@
+clever-route.cleversystem.ai {
+  encode zstd gzip
+  reverse_proxy delivery-api:3000
+}

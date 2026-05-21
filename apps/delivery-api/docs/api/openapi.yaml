@@ -1,0 +1,2183 @@
+openapi: 3.1.0
+info:
+  title: CLEVER Route Server Delivery API
+  version: 0.1.0
+  license:
+    name: UNLICENSED
+    identifier: LicenseRef-UNLICENSED
+  summary: CLEVER route server delivery API HTTP contract
+  description: >-
+    Machine-readable contract for CLEVER route server communication with current
+    admin clients, legacy Shopify compatibility routes, native driver mobile
+    clients, and operational health checks. Human behavior notes live beside
+    this file in docs/api/*.md.
+  x-contract-revision: 2026-05-14
+  x-source-repository: EVNSolution/clever-route-server
+servers:
+  - url: http://localhost:3000
+    description: Local development server
+  - url: https://{deliveryServerHost}
+    description: Deployed delivery server
+    variables:
+      deliveryServerHost:
+        default: delivery.example.com
+security: []
+tags:
+  - name: API Documentation
+    description: Browser-accessible Swagger UI and raw OpenAPI document
+  - name: Health
+    description: Operational readiness and liveness probes
+  - name: Shopify Embedded Admin
+    description: Shopify embedded/admin app calls protected by Shopify session tokens
+  - name: Shopify Webhooks
+    description: Shopify HTTPS webhook ingress protected by HMAC headers
+  - name: Driver Mobile
+    description: Native driver app API calls
+paths:
+  /docs:
+    get:
+      tags: [API Documentation]
+      summary: Browser Swagger UI for this service contract
+      operationId: getApiDocsUi
+      x-source-file: src/routes/api-docs.routes.ts
+      responses:
+        '200':
+          description: Swagger UI HTML that loads same-origin Swagger UI assets and `/docs/openapi.yaml`.
+          content:
+            text/html:
+              schema:
+                type: string
+  /docs/swagger-ui/swagger-ui.css:
+    get:
+      tags: [API Documentation]
+      summary: Same-origin Swagger UI stylesheet asset
+      operationId: getSwaggerUiStylesheet
+      x-source-file: src/routes/api-docs.routes.ts
+      responses:
+        '200':
+          description: Swagger UI stylesheet served by the API server so `/docs` does not depend on a public CDN.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              description: Public immutable cache directive for versioned container assets.
+          content:
+            text/css:
+              schema:
+                type: string
+  /docs/swagger-ui/swagger-ui-bundle.js:
+    get:
+      tags: [API Documentation]
+      summary: Same-origin Swagger UI JavaScript bundle asset
+      operationId: getSwaggerUiBundle
+      x-source-file: src/routes/api-docs.routes.ts
+      responses:
+        '200':
+          description: Swagger UI JavaScript bundle served by the API server so `/docs` does not depend on a public CDN.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+              description: Public immutable cache directive for versioned container assets.
+          content:
+            application/javascript:
+              schema:
+                type: string
+  /docs/swagger-ui/init.js:
+    get:
+      tags: [API Documentation]
+      summary: Same-origin Swagger UI initialization script
+      operationId: getSwaggerUiInitScript
+      x-source-file: src/routes/api-docs.routes.ts
+      responses:
+        '200':
+          description: Small initialization script for the interactive Swagger UI. Served externally so the `/docs` CSP does not require inline scripts.
+          content:
+            application/javascript:
+              schema:
+                type: string
+  /docs/openapi.yaml:
+    get:
+      tags: [API Documentation]
+      summary: Raw OpenAPI YAML document for this service
+      operationId: getOpenApiYaml
+      x-source-file: src/routes/api-docs.routes.ts
+      responses:
+        '200':
+          description: OpenAPI YAML contract.
+          content:
+            application/yaml:
+              schema:
+                type: string
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Liveness probe
+      operationId: getHealthz
+      x-source-file: src/routes/health.routes.ts
+      responses:
+        '200':
+          description: Service is alive.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                ok:
+                  value:
+                    service: clever-route-server
+                    status: ok
+  /readyz:
+    get:
+      tags: [Health]
+      summary: Readiness probe
+      operationId: getReadyz
+      x-source-file: src/routes/health.routes.ts
+      responses:
+        '200':
+          description: Service is ready for the current HTTP scaffold.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+  /shopify/auth/token-exchange:
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Exchange a Shopify session token and store Admin API token metadata
+      operationId: exchangeShopifySessionToken
+      x-source-file: src/routes/shopify-auth.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ShopifyTokenExchangeRequest'
+            examples:
+              expectedShop:
+                value:
+                  shopDomain: example.myshopify.com
+      responses:
+        '200':
+          description: Token material was exchanged and stored without exposing plaintext tokens.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShopifyTokenExchangeEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '502':
+          description: Shopify token exchange or token persistence failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                exchangeFailed:
+                  value:
+                    data: null
+                    error:
+                      code: SHOPIFY_TOKEN_EXCHANGE_FAILED
+                      message: Shopify token exchange failed
+  /shopify/webhooks:
+    post:
+      tags: [Shopify Webhooks]
+      summary: Receive and idempotently record a Shopify webhook
+      operationId: receiveShopifyWebhook
+      x-source-file: src/routes/shopify-webhook.routes.ts
+      security:
+        - ShopifyWebhookHmac: []
+      parameters:
+        - $ref: '#/components/parameters/ShopifyTopicHeader'
+        - $ref: '#/components/parameters/ShopifyShopDomainHeader'
+        - $ref: '#/components/parameters/ShopifyWebhookIdHeader'
+        - $ref: '#/components/parameters/ShopifyApiVersionHeader'
+        - $ref: '#/components/parameters/ShopifyEventIdHeader'
+        - $ref: '#/components/parameters/ShopifyTriggeredAtHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: true
+      responses:
+        '200':
+          description: Duplicate webhook receipt was already recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShopifyWebhookEnvelope'
+        '202':
+          description: New webhook receipt was accepted for storage.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShopifyWebhookEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /admin/orders/sync:
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Sync an embedded-admin Shopify order snapshot into canonical orders
+      operationId: syncAdminOrders
+      x-source-file: src/routes/admin-orders.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminOrdersSyncRequest'
+      responses:
+        '200':
+          description: Snapshot processed and canonical rows returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminOrdersSyncEnvelope'
+        '400':
+          description: Invalid order sync payload.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                invalidPayload:
+                  value:
+                    data: null
+                    error:
+                      code: INVALID_ORDER_SYNC_PAYLOAD
+                      message: Invalid order sync payload
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /admin/orders:
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: List canonical orders for the authenticated shop
+      operationId: listAdminOrders
+      x-source-file: src/routes/admin-orders.routes.ts
+      security:
+        - ShopifySessionToken: []
+      parameters:
+        - name: readiness
+          in: query
+          schema:
+            $ref: '#/components/schemas/CanonicalOrderReadiness'
+        - name: planned
+          in: query
+          schema:
+            type: boolean
+        - name: deliveryWeekday
+          in: query
+          schema:
+            enum: [SUNDAY, MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY]
+            type: string
+        - name: serviceType
+          in: query
+          schema:
+            $ref: '#/components/schemas/DeliveryServiceType'
+        - name: geocodeStatus
+          in: query
+          schema:
+            enum: [PENDING, RESOLVED, FAILED, NOT_REQUIRED]
+            type: string
+        - name: deliveryDate
+          in: query
+          schema:
+            format: date
+            type: string
+        - name: deliveryBatchStartDate
+          in: query
+          schema:
+            format: date
+            type: string
+        - name: deliveryBatchEndDate
+          in: query
+          schema:
+            format: date
+            type: string
+        - name: deliverySession
+          in: query
+          schema:
+            enum: [DAY, EVENING, PICKUP]
+            type: string
+        - name: routeScopeKey
+          in: query
+          schema:
+            type: string
+        - name: planningGroupKey
+          in: query
+          schema:
+            type: string
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Canonical orders for the authenticated shop.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminOrdersListEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /admin/drivers:
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: List drivers for the authenticated shop
+      operationId: listAdminDrivers
+      x-source-file: src/routes/admin-drivers.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Drivers for the authenticated shop.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDriversListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Create a pending driver for the authenticated shop
+      operationId: createAdminDriver
+      x-source-file: src/routes/admin-drivers.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminDriverCreateRequest'
+      responses:
+        '201':
+          description: Driver was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDriverEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /admin/route-plans:
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: List route plans for the authenticated shop
+      operationId: listAdminRoutePlans
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Route plans for the authenticated shop.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutePlansListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Create a draft route plan from selected Shopify orders
+      operationId: createAdminRoutePlan
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRoutePlanRequest'
+      responses:
+        '201':
+          description: Draft route plan created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutePlanEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/route-plans/{routePlanId}:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read a route plan detail for the authenticated shop
+      operationId: getAdminRoutePlan
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Route plan detail, stops, and optional geometry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutePlanDetailEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Shopify Embedded Admin]
+      summary: Delete a route plan for the authenticated shop
+      operationId: deleteAdminRoutePlan
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Route plan deletion result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /admin/route-plans/{routePlanId}/stops:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Replace ordered stops for a route plan
+      operationId: updateAdminRoutePlanStops
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRoutePlanStopsRequest'
+      responses:
+        '200':
+          description: Updated route plan detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RoutePlanDetailEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /driver/route-access/lookup:
+    post:
+      tags: [Driver Mobile]
+      summary: Phone-first route access lookup for the driver app
+      operationId: lookupDriverRouteAccess
+      x-source-file: src/routes/driver-events.routes.ts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriverRouteAccessLookupRequest'
+      responses:
+        '200':
+          description: Safe route-access result. Denials use HTTP 200 with status in data.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverRouteAccessEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /driver/assigned-route:
+    get:
+      tags: [Driver Mobile]
+      summary: Read the assigned route for the bearer-token driver
+      operationId: getDriverAssignedRoute
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      parameters:
+        - name: routeContext
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Assigned route details or a safe empty status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverAssignedRouteEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /driver/routes:
+    get:
+      tags: [Driver Mobile]
+      summary: List route-history summaries for the bearer-token driver
+      operationId: listDriverRoutes
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema:
+            format: date
+            type: string
+        - name: to
+          in: query
+          required: false
+          schema:
+            format: date
+            type: string
+        - name: status
+          in: query
+          required: false
+          schema:
+            enum: [pending, active, completed]
+            type: string
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Token-scoped route summary list. Actionable stop/proof details remain on `/driver/assigned-route`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverRoutesHistoryEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /driver/routes/{routePlanId}/feedback:
+    post:
+      tags: [Driver Mobile]
+      summary: Record a route-level driver review note
+      operationId: submitDriverRouteFeedback
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/RoutePlanId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriverRouteFeedbackRequest'
+      responses:
+        '201':
+          description: Driver route feedback was accepted and persisted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverRouteFeedbackEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /driver/profile:
+    get:
+      tags: [Driver Mobile]
+      summary: Read the bearer-token driver's self profile
+      operationId: getDriverProfile
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      responses:
+        '200':
+          description: Token-scoped driver profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverProfileEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    patch:
+      tags: [Driver Mobile]
+      summary: Update the bearer-token driver's display name only
+      operationId: updateDriverProfile
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriverProfileUpdateRequest'
+      responses:
+        '200':
+          description: Updated token-scoped driver profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverProfileEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /driver/account-deletion-requests:
+    post:
+      tags: [Driver Mobile]
+      summary: Request account deletion without deleting operational records
+      operationId: requestDriverAccountDeletion
+      x-source-file: src/routes/driver-events.routes.ts
+      description: >-
+        First-pass compliance-safe receive path. This creates an audit request only;
+        it does not delete, anonymize, revoke tokens, remove proof media, or alter route assignments.
+      security:
+        - DriverAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriverAccountDeletionRequest'
+      responses:
+        '202':
+          description: Deletion request was accepted for later policy handling.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverAccountDeletionEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /driver/earnings:
+    get:
+      tags: [Driver Mobile]
+      summary: Read conservative earnings readiness for the bearer-token driver
+      operationId: getDriverEarnings
+      x-source-file: src/routes/driver-events.routes.ts
+      description: >-
+        Returns completed scoped work counts with zero monetary values until payout/rate rules are approved.
+      security:
+        - DriverAccessToken: []
+      parameters:
+        - name: period
+          in: query
+          required: false
+          schema:
+            pattern: '^\d{4}-\d{2}$'
+            type: string
+          example: 2026-05
+      responses:
+        '200':
+          description: Scoped earnings readiness response.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverEarningsEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /driver/consents:
+    post:
+      tags: [Driver Mobile]
+      summary: Record required driver consent evidence
+      operationId: recordDriverConsents
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriverConsentRequest'
+      responses:
+        '201':
+          description: Consent evidence recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverConsentEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /driver/proof-media/{mediaId}/access:
+    get:
+      tags: [Driver Mobile]
+      summary: Create short-lived read access for driver proof media
+      operationId: getDriverProofMediaAccess
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      parameters:
+        - $ref: '#/components/parameters/MediaId'
+      responses:
+        '200':
+          description: Short-lived proof media read access.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverProofMediaAccessEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          description: Proof-media read access is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                unavailable:
+                  value:
+                    data: null
+                    error:
+                      code: PROOF_MEDIA_ACCESS_UNAVAILABLE
+                      message: Proof media access is not configured
+  /driver/proof-media:
+    post:
+      tags: [Driver Mobile]
+      summary: Upload proof-of-delivery media
+      operationId: uploadDriverProofMedia
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/DriverProofMediaUploadRequest'
+      responses:
+        '201':
+          description: Proof media metadata was persisted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverProofMediaEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          description: Proof media was rejected by safety scan.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                rejected:
+                  value:
+                    data: null
+                    error:
+                      code: PROOF_MEDIA_REJECTED
+                      message: Proof media rejected by safety scan
+  /driver/events:
+    post:
+      tags: [Driver Mobile]
+      summary: Record an idempotent driver event
+      operationId: recordDriverEvent
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriverEventRequest'
+      responses:
+        '200':
+          description: Duplicate event already exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverEventEnvelope'
+        '202':
+          description: Event was accepted and recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverEventEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+components:
+  securitySchemes:
+    ShopifySessionToken:
+      type: http
+      scheme: bearer
+      bearerFormat: Shopify App Bridge session JWT
+      description: Server-verified Shopify embedded app session token.
+    DriverAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Server-issued short-lived driver JWT with audience clever-delivery-driver.
+    ShopifyWebhookHmac:
+      type: apiKey
+      in: header
+      name: X-Shopify-Hmac-Sha256
+      description: Base64 HMAC generated by Shopify over the raw request body.
+  parameters:
+    RoutePlanId:
+      name: routePlanId
+      in: path
+      required: true
+      schema:
+        type: string
+    MediaId:
+      name: mediaId
+      in: path
+      required: true
+      schema:
+        type: string
+    ShopifyTopicHeader:
+      name: X-Shopify-Topic
+      in: header
+      required: true
+      schema:
+        type: string
+      example: orders/create
+    ShopifyShopDomainHeader:
+      name: X-Shopify-Shop-Domain
+      in: header
+      required: true
+      schema:
+        pattern: '^[a-z0-9][a-z0-9-]*\.myshopify\.com$'
+        type: string
+      example: example.myshopify.com
+    ShopifyWebhookIdHeader:
+      name: X-Shopify-Webhook-Id
+      in: header
+      required: true
+      schema:
+        type: string
+    ShopifyApiVersionHeader:
+      name: X-Shopify-API-Version
+      in: header
+      required: false
+      schema:
+        type: string
+      example: 2026-04
+    ShopifyEventIdHeader:
+      name: X-Shopify-Event-Id
+      in: header
+      required: false
+      schema:
+        type: string
+    ShopifyTriggeredAtHeader:
+      name: X-Shopify-Triggered-At
+      in: header
+      required: false
+      schema:
+        format: date-time
+        type: string
+  responses:
+    BadRequest:
+      description: Invalid request payload, query, path, or headers.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthorized:
+      description: Missing or invalid bearer token or HMAC.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: Authenticated caller is outside the requested shop/driver/route scope.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    NotFound:
+      description: Requested resource was not found under the authenticated boundary.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Conflict:
+      description: Request conflicts with existing route/order assignment state.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+      additionalProperties: true
+    ErrorEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: 'null'
+        error:
+          $ref: '#/components/schemas/Error'
+    GenericDataEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          additionalProperties: true
+        error:
+          type: 'null'
+    HealthResponse:
+      type: object
+      required: [service, status]
+      properties:
+        service:
+          const: clever-route-server
+        status:
+          const: ok
+    ReadyResponse:
+      type: object
+      required: [checks, service, status]
+      properties:
+        checks:
+          type: object
+          required: [http]
+          properties:
+            http:
+              type: boolean
+        service:
+          const: clever-route-server
+        status:
+          const: ready
+    ShopifyTokenExchangeRequest:
+      type: object
+      properties:
+        shopDomain:
+          type: string
+          minLength: 1
+          description: Optional expected-shop guard for session token verification.
+      additionalProperties: false
+    ShopifyTokenExchangeEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [shopDomain, tokenScopes, tokenStored]
+          properties:
+            shopDomain:
+              type: string
+            tokenScopes:
+              type: array
+              items:
+                type: string
+            tokenStored:
+              const: true
+        error:
+          type: 'null'
+    ShopifyWebhookEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [duplicate, webhookId]
+          properties:
+            duplicate:
+              type: boolean
+            webhookId:
+              type: string
+        error:
+          type: 'null'
+    AdminOrdersSyncRequest:
+      type: object
+      required: [source, reason, orders]
+      properties:
+        source:
+          const: clever-app-orders
+        reason:
+          enum: [orders_page_open, manual_refresh, route_create_preflight]
+          type: string
+        orders:
+          type: array
+          items:
+            $ref: '#/components/schemas/ShopifyOrderNode'
+      additionalProperties: false
+    ShopifyOrderNode:
+      type: object
+      required: [id, legacyResourceId, name, updatedAt]
+      properties:
+        id:
+          type: string
+          example: gid://shopify/Order/123
+        legacyResourceId:
+          type: string
+        name:
+          type: string
+          example: '#1001'
+        updatedAt:
+          format: date-time
+          type: string
+        createdAt:
+          format: date-time
+          type:
+            - string
+            - 'null'
+        processedAt:
+          format: date-time
+          type:
+            - string
+            - 'null'
+        cancelledAt:
+          format: date-time
+          type:
+            - string
+            - 'null'
+        currentTotalPriceSet:
+          type:
+            - object
+            - 'null'
+          additionalProperties: true
+        customAttributes:
+          type:
+            - array
+            - 'null'
+          items:
+            $ref: '#/components/schemas/KeyValueAttribute'
+        displayFinancialStatus:
+          type:
+            - string
+            - 'null'
+        displayFulfillmentStatus:
+          type:
+            - string
+            - 'null'
+        email:
+          type:
+            - string
+            - 'null'
+        phone:
+          type:
+            - string
+            - 'null'
+        shippingAddress:
+          type:
+            - object
+            - 'null'
+          additionalProperties: true
+        lineItems:
+          type:
+            - object
+            - 'null'
+          additionalProperties: true
+      additionalProperties: true
+    AdminOrdersSyncEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [orders, sync]
+          properties:
+            orders:
+              type: array
+              items:
+                $ref: '#/components/schemas/CanonicalOrder'
+            sync:
+              $ref: '#/components/schemas/OrdersSyncSummary'
+            warnings:
+              type: array
+              items:
+                type: object
+                required: [code, field, message, orderIndex, orderName]
+                properties:
+                  code:
+                    const: ORDER_SYNC_SNAPSHOT_SKIPPED
+                  field:
+                    type: string
+                  message:
+                    type: string
+                  orderIndex:
+                    type: integer
+                  orderName:
+                    type: string
+        error:
+          type: 'null'
+    AdminOrdersListEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [orders]
+          properties:
+            orders:
+              type: array
+              items:
+                $ref: '#/components/schemas/CanonicalOrder'
+        error:
+          type: 'null'
+    OrdersSyncSummary:
+      type: object
+      required: [created, needsReview, readyToPlan, received, skipped, unchanged, updated]
+      properties:
+        created:
+          type: integer
+          minimum: 0
+        needsReview:
+          type: integer
+          minimum: 0
+        readyToPlan:
+          type: integer
+          minimum: 0
+        received:
+          type: integer
+          minimum: 0
+        skipped:
+          type: integer
+          minimum: 0
+        unchanged:
+          type: integer
+          minimum: 0
+        updated:
+          type: integer
+          minimum: 0
+    CanonicalOrder:
+      type: object
+      required: [orderId, shopifyOrderGid, name, readiness, planningStatus, shippingAddress]
+      properties:
+        orderId:
+          type: string
+        shopifyOrderGid:
+          type: string
+        shopifyOrderLegacyId:
+          type:
+            - string
+            - 'null'
+        name:
+          type: string
+        readiness:
+          $ref: '#/components/schemas/CanonicalOrderReadiness'
+        planningStatus:
+          enum: [UNPLANNED, PLANNED]
+          type: string
+        shippingAddress:
+          $ref: '#/components/schemas/ShippingAddress'
+        deliveryStopId:
+          type:
+            - string
+            - 'null'
+        routeScopeKey:
+          type:
+            - string
+            - 'null'
+        serviceType:
+          oneOf:
+            - $ref: '#/components/schemas/DeliveryServiceType'
+            - type: 'null'
+      additionalProperties: true
+    CanonicalOrderReadiness:
+      enum: [READY_TO_PLAN, NEEDS_REVIEW, SKIPPED]
+      type: string
+    AdminDriverCreateRequest:
+      type: object
+      required: [source, phone]
+      properties:
+        source:
+          const: clever-app-driver-invite
+        phone:
+          pattern: '^\+[1-9]\d{6,14}$'
+          type: string
+        displayName:
+          type:
+            - string
+            - 'null'
+        inviteLink:
+          type:
+            - string
+            - 'null'
+          format: uri
+      additionalProperties: false
+    AdminDriver:
+      type: object
+      properties:
+        id:
+          type: string
+        phone:
+          type: string
+        displayName:
+          type:
+            - string
+            - 'null'
+      additionalProperties: true
+    AdminDriverEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [driver]
+          properties:
+            driver:
+              $ref: '#/components/schemas/AdminDriver'
+        error:
+          type: 'null'
+    AdminDriversListEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [drivers]
+          properties:
+            drivers:
+              type: array
+              items:
+                $ref: '#/components/schemas/AdminDriver'
+        error:
+          type: 'null'
+    CreateRoutePlanRequest:
+      type: object
+      required: [name, planDate, depot, orders]
+      properties:
+        name:
+          type: string
+        planDate:
+          format: date
+          type: string
+        depot:
+          type: object
+          required: [address, latitude, longitude]
+          properties:
+            address:
+              type:
+                - string
+                - 'null'
+            latitude:
+              type:
+                - number
+                - 'null'
+            longitude:
+              type:
+                - number
+                - 'null'
+        routeScope:
+          $ref: '#/components/schemas/RouteScope'
+        orders:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/RoutePlanOrderInput'
+      additionalProperties: false
+    RouteScope:
+      type: object
+      required: [deliveryDate, deliverySession, routeScopeKey, serviceType]
+      properties:
+        deliveryDate:
+          format: date
+          type: string
+        deliverySession:
+          enum: [DAY, EVENING, PICKUP]
+          type: string
+        routeScopeKey:
+          type: string
+        serviceType:
+          $ref: '#/components/schemas/DeliveryServiceType'
+        timeWindowStart:
+          type:
+            - string
+            - 'null'
+          pattern: '^\d{2}:\d{2}$'
+        timeWindowEnd:
+          type:
+            - string
+            - 'null'
+          pattern: '^\d{2}:\d{2}$'
+    RoutePlanOrderInput:
+      type: object
+      required: [name, shippingAddress, shopifyOrderGid]
+      properties:
+        shopifyOrderGid:
+          type: string
+        name:
+          type: string
+        email:
+          type:
+            - string
+            - 'null'
+        phone:
+          type:
+            - string
+            - 'null'
+        financialStatus:
+          type:
+            - string
+            - 'null'
+        fulfillmentStatus:
+          type:
+            - string
+            - 'null'
+        processedAt:
+          format: date-time
+          type:
+            - string
+            - 'null'
+        totalPriceAmount:
+          type:
+            - string
+            - 'null'
+        currencyCode:
+          type:
+            - string
+            - 'null'
+        recipientName:
+          type:
+            - string
+            - 'null'
+        shippingAddress:
+          $ref: '#/components/schemas/ShippingAddress'
+        latitude:
+          type:
+            - number
+            - 'null'
+        longitude:
+          type:
+            - number
+            - 'null'
+        deliveryArea:
+          type:
+            - string
+            - 'null'
+        deliveryDay:
+          type:
+            - string
+            - 'null'
+        attributes:
+          type: array
+          items:
+            $ref: '#/components/schemas/KeyValueAttribute'
+        rawPayload:
+          type: object
+          additionalProperties: true
+        routeScopeKey:
+          type:
+            - string
+            - 'null'
+        deliveryDate:
+          format: date
+          type:
+            - string
+            - 'null'
+        deliverySession:
+          type:
+            - string
+            - 'null'
+          enum: [DAY, EVENING, PICKUP, null]
+        serviceType:
+          oneOf:
+            - $ref: '#/components/schemas/DeliveryServiceType'
+            - type: 'null'
+        timeWindowStart:
+          type:
+            - string
+            - 'null'
+        timeWindowEnd:
+          type:
+            - string
+            - 'null'
+      additionalProperties: true
+    UpdateRoutePlanStopsRequest:
+      type: object
+      required: [stops]
+      properties:
+        stops:
+          type: array
+          items:
+            type: object
+            required: [sequence, shopifyOrderGid]
+            properties:
+              deliveryStopId:
+                type:
+                  - string
+                  - 'null'
+              sequence:
+                type: integer
+                minimum: 1
+              shopifyOrderGid:
+                type: string
+      additionalProperties: false
+    RoutePlanSummary:
+      type: object
+      required: [id, name, status]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+        planDate:
+          format: date
+          type:
+            - string
+            - 'null'
+        stopsCount:
+          type: integer
+        missingCoordinates:
+          type: integer
+        deliveryAreas:
+          type: array
+          items:
+            type: string
+        deliveryDays:
+          type: array
+          items:
+            type: string
+        depot:
+          type: object
+          additionalProperties: true
+        createdAt:
+          format: date-time
+          type: string
+        updatedAt:
+          format: date-time
+          type: string
+      additionalProperties: true
+    RoutePlanEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [routePlan]
+          properties:
+            routePlan:
+              $ref: '#/components/schemas/RoutePlanSummary'
+        error:
+          type: 'null'
+    RoutePlansListEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [routePlans]
+          properties:
+            routePlans:
+              type: array
+              items:
+                $ref: '#/components/schemas/RoutePlanSummary'
+        error:
+          type: 'null'
+    RoutePlanDetailEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [routePlan, stops]
+          properties:
+            routePlan:
+              $ref: '#/components/schemas/RoutePlanSummary'
+            routeGeometry:
+              type:
+                - object
+                - 'null'
+              additionalProperties: true
+            routeStopPoints:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+            stops:
+              type: array
+              items:
+                type: object
+                additionalProperties: true
+          additionalProperties: true
+        error:
+          type: 'null'
+    DriverRouteAccessLookupRequest:
+      type: object
+      required: [phoneE164]
+      properties:
+        phoneE164:
+          pattern: '^\+[1-9]\d{7,14}$'
+          type: string
+        routeContext:
+          type:
+            - string
+            - 'null'
+      additionalProperties: false
+    DriverRouteAccessEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          oneOf:
+            - $ref: '#/components/schemas/DriverInvitedRouteAccess'
+            - $ref: '#/components/schemas/DriverRoutesFoundAccess'
+            - $ref: '#/components/schemas/DriverMultipleMatchesAccess'
+            - $ref: '#/components/schemas/DriverDeniedAccess'
+        error:
+          type: 'null'
+    DriverInvitedRouteAccess:
+      type: object
+      required: [companyGuidance, driverAccess, routeAccess, status]
+      properties:
+        status:
+          const: INVITED
+        routeAccess:
+          $ref: '#/components/schemas/DriverRouteAccessContext'
+        driverAccess:
+          $ref: '#/components/schemas/DriverAccessTokenData'
+        companyGuidance:
+          $ref: '#/components/schemas/DriverCompanyGuidance'
+    DriverRoutesFoundAccess:
+      type: object
+      required: [routes, status]
+      properties:
+        status:
+          const: ROUTES_FOUND
+        routes:
+          type: array
+          items:
+            type: object
+            required: [companyGuidance, driverAccess, routeAccess]
+            properties:
+              routeAccess:
+                $ref: '#/components/schemas/DriverRouteAccessContext'
+              driverAccess:
+                $ref: '#/components/schemas/DriverAccessTokenData'
+              companyGuidance:
+                $ref: '#/components/schemas/DriverCompanyGuidance'
+    DriverMultipleMatchesAccess:
+      type: object
+      required: [matches, resolutionHint, status]
+      properties:
+        status:
+          const: MULTIPLE_MATCHES
+        matches:
+          type: array
+          items:
+            $ref: '#/components/schemas/DriverRouteAccessAmbiguousMatch'
+        resolutionHint:
+          type: string
+    DriverDeniedAccess:
+      type: object
+      required: [status]
+      properties:
+        status:
+          enum: [BLOCKED, DISABLED, NOT_FOUND]
+          type: string
+    DriverRouteAccessContext:
+      type: object
+      required: [nextState, routeContext, routePlanId]
+      properties:
+        nextState:
+          const: consent_required
+        routeContext:
+          type: string
+        routePlanId:
+          type: string
+    DriverAccessTokenData:
+      type: object
+      required: [accessToken, expiresAt, tokenType, ttlSeconds, use]
+      properties:
+        accessToken:
+          type: string
+        expiresAt:
+          format: date-time
+          type: string
+        tokenType:
+          const: Bearer
+        ttlSeconds:
+          type: integer
+          example: 900
+        use:
+          const: consent_and_assigned_route
+        scopes:
+          type: array
+          description: >-
+            Additive app-facing capability metadata. Existing app clients may ignore this field.
+            Server authorization for these endpoints still uses the signed driver/shop/tokenVersion
+            bearer token, not scope claims.
+          items:
+            type: string
+    DriverCompanyGuidance:
+      type: object
+      required: [companyDisplayName, deliveryDate, driverInstructions, operatorSupportContact, pickupGuidance, routeName, shopDomain, timezone]
+      properties:
+        companyDisplayName:
+          type: string
+        deliveryDate:
+          format: date
+          type: string
+        driverInstructions:
+          type: array
+          items:
+            type: string
+        operatorSupportContact:
+          type:
+            - string
+            - 'null'
+        pickupGuidance:
+          type:
+            - string
+            - 'null'
+        routeName:
+          type: string
+        shopDomain:
+          type: string
+        timezone:
+          type:
+            - string
+            - 'null'
+    DriverRouteAccessAmbiguousMatch:
+      type: object
+      required: [companyDisplayName, deliveryDate, routeName, shopDomain, timezone]
+      properties:
+        companyDisplayName:
+          type: string
+        deliveryDate:
+          format: date
+          type: string
+        operatorSupportContact:
+          type:
+            - string
+            - 'null'
+        pickupGuidance:
+          type:
+            - string
+            - 'null'
+        routeName:
+          type: string
+        shopDomain:
+          type: string
+        timezone:
+          type:
+            - string
+            - 'null'
+    DriverAssignedRouteEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          oneOf:
+            - type: object
+              required: [status]
+              properties:
+                status:
+                  const: NO_ASSIGNED_ROUTE
+            - type: object
+              required: [route, status]
+              properties:
+                status:
+                  const: ASSIGNED_ROUTE
+                route:
+                  $ref: '#/components/schemas/DriverAssignedRoute'
+        error:
+          type: 'null'
+    DriverAssignedRoute:
+      type: object
+      required: [deliveryDate, id, name, shopDomain, stops, timezone]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        deliveryDate:
+          format: date
+          type: string
+        shopDomain:
+          type: string
+        timezone:
+          type: string
+        stops:
+          type: array
+          items:
+            $ref: '#/components/schemas/DriverAssignedRouteStop'
+    DriverAssignedRouteStop:
+      type: object
+      required: [address, coordinates, deliveryStopId, orderName, phone, recipientName, sequence, status]
+      properties:
+        deliveryStopId:
+          type: string
+        sequence:
+          type: integer
+        status:
+          type: string
+        orderName:
+          type: string
+        recipientName:
+          type:
+            - string
+            - 'null'
+        phone:
+          type:
+            - string
+            - 'null'
+        address:
+          $ref: '#/components/schemas/ShippingAddress'
+        coordinates:
+          type:
+            - object
+            - 'null'
+          required: [latitude, longitude]
+          properties:
+            latitude:
+              type: number
+            longitude:
+              type: number
+    DriverRoutesHistoryEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [routes, pageInfo]
+          properties:
+            routes:
+              type: array
+              items:
+                $ref: '#/components/schemas/DriverRouteHistoryItem'
+            pageInfo:
+              type: object
+              required: [hasNextPage, endCursor]
+              properties:
+                hasNextPage:
+                  type: boolean
+                endCursor:
+                  type:
+                    - string
+                    - 'null'
+        error:
+          type: 'null'
+    DriverRouteHistoryItem:
+      type: object
+      required: [routePlanId, shopDomain, companyDisplayName, name, deliveryDate, timezone, status, stopCount, completedStopCount, failedStopCount, completedAt]
+      properties:
+        routePlanId:
+          type: string
+        shopDomain:
+          type: string
+        companyDisplayName:
+          type: string
+        name:
+          type: string
+        deliveryDate:
+          format: date
+          type: string
+        timezone:
+          type: string
+          description: Valid IANA timezone. Server falls back to UTC rather than device-local time when route config is missing.
+        status:
+          enum: [pending, active, completed]
+          type: string
+        stopCount:
+          type: integer
+          minimum: 0
+        completedStopCount:
+          type: integer
+          minimum: 0
+        failedStopCount:
+          type: integer
+          minimum: 0
+        completedAt:
+          format: date-time
+          type:
+            - string
+            - 'null'
+    DriverRouteFeedbackRequest:
+      type: object
+      required: [reviewNote]
+      properties:
+        reviewNote:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        submittedAt:
+          format: date-time
+          type: string
+      additionalProperties: false
+    DriverRouteFeedbackEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [feedbackId, routePlanId, reviewNote, submittedAt]
+          properties:
+            feedbackId:
+              type: string
+            routePlanId:
+              type: string
+            reviewNote:
+              type: string
+            submittedAt:
+              format: date-time
+              type: string
+        error:
+          type: 'null'
+    DriverProfileEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [driver]
+          properties:
+            driver:
+              $ref: '#/components/schemas/DriverSelfProfile'
+        error:
+          type: 'null'
+    DriverSelfProfile:
+      type: object
+      required: [id, displayName, phone, status]
+      properties:
+        id:
+          type: string
+        displayName:
+          type: string
+        phone:
+          type:
+            - string
+            - 'null'
+        status:
+          enum: [ACTIVE, INACTIVE, SUSPENDED]
+          type: string
+    DriverProfileUpdateRequest:
+      type: object
+      required: [displayName]
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 80
+      additionalProperties: false
+    DriverAccountDeletionRequest:
+      type: object
+      required: [confirmation]
+      properties:
+        confirmation:
+          const: DELETE
+        reason:
+          type:
+            - string
+            - 'null'
+          maxLength: 500
+      additionalProperties: false
+    DriverAccountDeletionEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [requestId, status]
+          properties:
+            requestId:
+              type: string
+            status:
+              const: REQUESTED
+        error:
+          type: 'null'
+    DriverEarningsEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [currency, period, summary, items]
+          properties:
+            currency:
+              type: string
+              minLength: 3
+              maxLength: 3
+            period:
+              pattern: '^\d{4}-\d{2}$'
+              type: string
+            summary:
+              type: object
+              required: [completedRoutes, completedStops, grossAmount, adjustments, estimatedPayout]
+              properties:
+                completedRoutes:
+                  type: integer
+                  minimum: 0
+                completedStops:
+                  type: integer
+                  minimum: 0
+                grossAmount:
+                  type: number
+                  const: 0
+                adjustments:
+                  type: number
+                  const: 0
+                estimatedPayout:
+                  type: number
+                  const: 0
+            items:
+              type: array
+              maxItems: 0
+        error:
+          type: 'null'
+    DriverConsentRequest:
+      type: object
+      required: [consents]
+      properties:
+        routeContext:
+          type:
+            - string
+            - 'null'
+        recordedAt:
+          format: date-time
+          type: string
+        deviceContext:
+          type:
+            - object
+            - 'null'
+          additionalProperties: true
+        appContext:
+          type:
+            - object
+            - 'null'
+          additionalProperties: true
+        consents:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items:
+            $ref: '#/components/schemas/DriverConsentRecordInput'
+    DriverConsentRecordInput:
+      type: object
+      required: [accepted, type, version]
+      properties:
+        accepted:
+          const: true
+        type:
+          enum: [LOCATION_INFORMATION, PERSONAL_INFORMATION]
+          type: string
+        version:
+          type: string
+    DriverConsentEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [recordedAt, records, status]
+          properties:
+            status:
+              const: CONSENT_RECORDED
+            recordedAt:
+              format: date-time
+              type: string
+            records:
+              type: array
+              items:
+                type: object
+                required: [accepted, type, version]
+                properties:
+                  accepted:
+                    type: boolean
+                  type:
+                    enum: [LOCATION_INFORMATION, PERSONAL_INFORMATION]
+                    type: string
+                  version:
+                    type: string
+        error:
+          type: 'null'
+    DriverProofMediaUploadRequest:
+      type: object
+      required: [deliveryStopId, routePlanId, source, file]
+      properties:
+        deliveryStopId:
+          type: string
+        routePlanId:
+          type: string
+        source:
+          enum: [camera, library]
+          type: string
+        file:
+          format: binary
+          type: string
+    DriverProofMediaEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          $ref: '#/components/schemas/DriverProofMediaReference'
+        error:
+          type: 'null'
+    DriverProofMediaReference:
+      type: object
+      required: [contentType, kind, mediaId, source, storageKey, uploadedAt]
+      properties:
+        kind:
+          const: photo
+        mediaId:
+          type: string
+        storageKey:
+          type: string
+        contentType:
+          type: string
+        source:
+          enum: [camera, library]
+          type: string
+        uploadedAt:
+          format: date-time
+          type: string
+        sizeBytes:
+          type: integer
+          minimum: 0
+        sha256:
+          type: string
+    DriverProofMediaAccessEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [contentType, expiresAt, kind, mediaId, url]
+          properties:
+            kind:
+              const: photo
+            mediaId:
+              type: string
+            contentType:
+              type: string
+            url:
+              format: uri
+              type: string
+            expiresAt:
+              format: date-time
+              type: string
+        error:
+          type: 'null'
+    DriverEventRequest:
+      type: object
+      required: [eventType, occurredAt]
+      properties:
+        clientEventId:
+          type:
+            - string
+            - 'null'
+        deliveryStopId:
+          type:
+            - string
+            - 'null'
+        eventType:
+          enum: [ROUTE_STARTED, ROUTE_PAUSED, ROUTE_COMPLETED, STOP_ARRIVED, STOP_DELIVERED, STOP_FAILED, LOCATION_UPDATED, NOTE_ADDED]
+          type: string
+        latitude:
+          type:
+            - number
+            - 'null'
+        longitude:
+          type:
+            - number
+            - 'null'
+        occurredAt:
+          format: date-time
+          type: string
+        routePlanId:
+          type:
+            - string
+            - 'null'
+      additionalProperties: true
+    DriverEventEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [duplicate, eventId]
+          properties:
+            duplicate:
+              type: boolean
+            eventId:
+              type: string
+        error:
+          type: 'null'
+    ShippingAddress:
+      type: object
+      properties:
+        address1:
+          type:
+            - string
+            - 'null'
+        address2:
+          type:
+            - string
+            - 'null'
+        city:
+          type:
+            - string
+            - 'null'
+        province:
+          type:
+            - string
+            - 'null'
+        postalCode:
+          type:
+            - string
+            - 'null'
+        countryCode:
+          type:
+            - string
+            - 'null'
+      additionalProperties: false
+    KeyValueAttribute:
+      type: object
+      required: [key, value]
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+      additionalProperties: false
+    DeliveryServiceType:
+      enum: [DELIVERY, EVENING_DELIVERY, PICKUP]
+      type: string

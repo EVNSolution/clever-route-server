@@ -1,0 +1,53 @@
+{
+  "name": "clever-route-delivery-api",
+  "version": "0.1.0",
+  "description": "CLEVER route delivery API server for driver, routing, and commerce-source integrations.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check:workspace": "npm run prisma:generate && npm run prisma:validate && npm run lint && npm run typecheck && npm run test",
+    "prisma:generate": "DATABASE_URL=${DATABASE_URL:-postgresql://clever:clever@localhost:5432/clever_route} prisma generate",
+    "prisma:format": "prisma format",
+    "prisma:validate": "DATABASE_URL=${DATABASE_URL:-postgresql://clever:clever@localhost:5432/clever_route} prisma validate",
+    "driver:proof-media:cleanup": "tsx src/scripts/cleanup-driver-proof-media.ts",
+    "driver:proof-media:evidence:seed": "tsx src/scripts/proof-media-evidence-seed.ts",
+    "driver:proof-media:evidence:verify": "tsx src/scripts/proof-media-evidence-verify.ts"
+  },
+  "keywords": [
+    "delivery",
+    "routing",
+    "driver-app",
+    "woocommerce",
+    "fastify",
+    "typescript"
+  ],
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@fastify/helmet": "^13.0.2",
+    "@fastify/multipart": "^9.4.0",
+    "@prisma/client": "^6.19.3",
+    "fastify": "^5.8.5",
+    "swagger-ui-dist": "^5.32.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^22.19.17",
+    "eslint": "^10.3.0",
+    "prisma": "^6.19.3",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.59.2",
+    "vitest": "^4.1.5"
+  }
+}

@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+apps/*/node_modules/
+
+# Build/test output
+dist/
+apps/*/dist/
+build/
+coverage/
+.cache/
+.vitest/
+*.tsbuildinfo
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+infra/env/*.env
+!infra/env/*.env.example
+*.local
+.envrc
+
+# Runtime/generated data
+var/
+backups/
+*.dump
+*.sql
+*.sql.gz
+*.sqlite
+*.sqlite3
+*.db
+
+# Evidence/private artifacts
+evidence/
+release-evidence/
+smoke-evidence/
+docs/evidence/
+docs/release-evidence/
+docs/smoke-evidence/
+proof-media-production-evidence-manifest-*.md
+docs/proof-media-production-evidence-manifest-*.md
+
+# Local orchestration/editor noise
+.omx/
+worktrees/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

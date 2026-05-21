@@ -1,0 +1,20 @@
+name: Inspect CLEVER route server runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      log_since:
+        description: Recent log window, for example 2h or 30m
+        required: false
+        default: 2h
+
+jobs:
+  inspect:
+    runs-on: [self-hosted]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect clever-route-server runtime
+        env:
+          APP_DIR: /srv/clever-route-server
+          LOG_SINCE: ${{ inputs.log_since }}
+        run: scripts/inspect-ec2-runtime.sh

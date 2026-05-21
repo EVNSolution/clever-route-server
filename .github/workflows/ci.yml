@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  delivery-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/delivery-api/package-lock.json
+      - name: Install delivery API dependencies
+        run: npm --prefix apps/delivery-api ci
+      - name: Prisma generate
+        run: npm --prefix apps/delivery-api run prisma:generate
+      - name: Lint
+        run: npm --prefix apps/delivery-api run lint
+      - name: Typecheck
+        run: npm --prefix apps/delivery-api run typecheck
+      - name: Test
+        run: npm --prefix apps/delivery-api run test
+      - name: Build
+        run: npm --prefix apps/delivery-api run build
+      - name: Compose config validation
+        run: |
+          cp infra/env/delivery-api.env.example infra/env/delivery-api.env
+          docker compose -f infra/compose/docker-compose.prod.yml config --quiet
+          rm -f infra/env/delivery-api.env
