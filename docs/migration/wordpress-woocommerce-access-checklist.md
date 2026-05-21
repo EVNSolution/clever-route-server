@@ -11,6 +11,11 @@ Purpose: classify the customer WordPress commerce environment before implementin
 - Webhook setup authority: unknown.
 - Plugin install/custom plugin authority: unknown.
 
+
+## Related local sandbox
+
+After completing the admin discovery checks, use `docs/migration/local-woocommerce-sandbox-checklist.md` to create a non-production WooCommerce sandbox with synthetic orders that match the discovered metadata shape.
+
 ## Access checks to perform in WordPress admin
 
 ### Commerce platform
