@@ -17,6 +17,12 @@ The Shopify embedded admin app is intentionally **not** part of this repository.
   remain available until the WordPress/WooCommerce connector and tenant/order
   identity migration are complete
 - Intended public endpoint: `https://clever-route.cleversystem.ai`
+- Public and operator-facing surfaces for this lane stay on this same host:
+  `/privacy`, `/privacy-policy`, `/docs`, `/admin/...`, and
+  `/woocommerce/webhooks/...`. `/docs` is public only under the sanitized docs
+  review in `docs/security/public-docs-sanitized-review.md`; otherwise protect
+  it by default. Do not introduce a separate CLEVER Admin Web
+  domain for the current WordPress/WooCommerce migration lane.
 - Infrastructure changes are staged only; this bootstrap does not mutate AWS,
   EC2, EIP, or Route53
 

@@ -18,6 +18,7 @@ import { registerApiDocsRoutes } from './routes/api-docs.routes.js';
 import { registerDriverEventRoutes, type DriverApiDependencies } from './routes/driver-events.routes.js';
 import { registerDriverAuthRoutes, type DriverAuthDependencies } from './routes/driver-auth.routes.js';
 import { registerJsonBodyParser } from './routes/json-body-parser.js';
+import { registerPrivacyRoutes } from './routes/privacy.routes.js';
 import { registerHealthRoutes } from './routes/health.routes.js';
 import { registerShopifyAuthRoutes, type ShopifyAuthDependencies } from './routes/shopify-auth.routes.js';
 import {
@@ -58,6 +59,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(helmet);
   await app.register(cors, { origin: options.corsOrigin ?? false });
   registerApiDocsRoutes(app);
+  registerPrivacyRoutes(app);
   registerHealthRoutes(app);
 
   if (options.adminCommerceConnections !== undefined) {

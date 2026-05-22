@@ -63,6 +63,32 @@ describe('API documentation routes', () => {
     }
   });
 
+  test('public docs exposure is backed by a sanitized review and omits private operator material', async () => {
+    const app = await buildApp();
+    const review = await readFile(
+      new URL('../../../docs/security/public-docs-sanitized-review.md', import.meta.url),
+      'utf8'
+    );
+    const openApiDocument = await readFile(new URL('../docs/api/openapi.yaml', import.meta.url), 'utf8');
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs' });
+      const publishedDocs = [response.body, openApiDocument].join('\n--- openapi ---\n');
+
+      expect(response.statusCode).toBe(200);
+      expect(review).toContain('Status: approved');
+      expect(review).toContain('protect `/docs`');
+      expect(review).toContain('query-string credential examples');
+      expect(publishedDocs).not.toMatch(
+        /CLEVER_ADMIN_API_TOKEN|DELIVERY_API_PUBLIC_URL|consumerSecret|consumer_secret|consumerKey|consumer_key|webhookSecret|webhook_secret/u
+      );
+      expect(publishedDocs).not.toMatch(/curl -sS|docker compose|Route53|Caddy|admin\.cleversystem\.ai|apps\/admin-web/u);
+      expect(publishedDocs).not.toMatch(/sk_live_[A-Za-z0-9]+|AKIA[0-9A-Z]{16}|-----BEGIN (?:RSA |EC |OPENSSH |)PRIVATE KEY-----/u);
+    } finally {
+      await app.close();
+    }
+  });
+
   test('GET /docs/openapi.yaml serves the committed OpenAPI contract', async () => {
     const app = await buildApp();
     const expected = await readFile(new URL('../docs/api/openapi.yaml', import.meta.url), 'utf8');
