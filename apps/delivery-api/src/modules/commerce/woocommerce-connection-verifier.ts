@@ -23,6 +23,44 @@ export type WooCommerceHttpsRequestInput = {
 
 type SendHttpsRequest = (input: WooCommerceHttpsRequestInput) => Promise<{ status: number }>;
 
+const NON_PUBLIC_TARGET_MESSAGE = 'WooCommerce site URL must not target localhost, private, or non-public network addresses';
+const NON_PUBLIC_RESOLUTION_MESSAGE = 'WooCommerce site URL must not resolve to localhost, private, or non-public network addresses';
+
+const NON_PUBLIC_IPV4_RANGES = [
+  ['0.0.0.0', 8],
+  ['10.0.0.0', 8],
+  ['100.64.0.0', 10],
+  ['127.0.0.0', 8],
+  ['169.254.0.0', 16],
+  ['172.16.0.0', 12],
+  ['192.0.0.0', 24],
+  ['192.0.2.0', 24],
+  ['192.31.196.0', 24],
+  ['192.52.193.0', 24],
+  ['192.88.99.0', 24],
+  ['192.168.0.0', 16],
+  ['192.175.48.0', 24],
+  ['198.18.0.0', 15],
+  ['198.51.100.0', 24],
+  ['203.0.113.0', 24],
+  ['224.0.0.0', 4],
+  ['240.0.0.0', 4]
+] as const;
+
+const NON_PUBLIC_IPV6_RANGES = [
+  ['::', 96],
+  ['::ffff:0:0', 96],
+  ['64:ff9b::', 96],
+  ['64:ff9b:1::', 48],
+  ['100::', 64],
+  ['2001::', 23],
+  ['2001:db8::', 32],
+  ['2002::', 16],
+  ['fc00::', 7],
+  ['fe80::', 10],
+  ['ff00::', 8]
+] as const;
+
 export type WooCommerceConnectionVerifierInput = {
   consumerKey: string;
   consumerSecret: string;
@@ -117,7 +155,7 @@ export function assertHttpsWooSiteUrl(value: string): string {
     throw new Error('WooCommerce site URL must use HTTPS');
   }
   if (isPrivateNetworkHostname(url.hostname)) {
-    throw new Error('WooCommerce site URL must not target localhost or private network addresses');
+    throw new Error(NON_PUBLIC_TARGET_MESSAGE);
   }
   return normalized;
 }
@@ -137,15 +175,15 @@ export async function resolvePublicWooSiteAddresses(
   const addresses = isIP(hostname) === 0 ? await resolveHostAddressesForPolicy(hostname, resolveHostAddresses) : [hostname];
   const normalizedAddresses = addresses.map((address) => normalizeHostname(address));
   if (normalizedAddresses.some((address) => isPrivateNetworkHostname(address))) {
-    throw new Error('WooCommerce site URL must not resolve to localhost or private network addresses');
+    throw new Error(NON_PUBLIC_RESOLUTION_MESSAGE);
   }
   return normalizedAddresses;
 }
 
 export function createPinnedPublicLookup(addresses: string[]): PinnedLookup {
-  const publicAddresses = addresses.map((address) => normalizeHostname(address)).filter((address) => !isPrivateNetworkHostname(address));
-  if (publicAddresses.length === 0) {
-    throw new Error('WooCommerce site URL must not resolve to localhost or private network addresses');
+  const publicAddresses = addresses.map((address) => normalizeHostname(address));
+  if (publicAddresses.length === 0 || publicAddresses.some((address) => isPrivateNetworkHostname(address))) {
+    throw new Error(NON_PUBLIC_RESOLUTION_MESSAGE);
   }
 
   return (_hostname, options, callback) => {
@@ -218,56 +256,94 @@ async function sendHttpsRequestWithPinnedLookup(input: WooCommerceHttpsRequestIn
 function isPrivateNetworkHostname(hostname: string): boolean {
   const normalized = normalizeHostname(hostname);
   if (normalized === 'localhost' || normalized.endsWith('.localhost')) return true;
-  if (isPrivateIpv4Address(normalized)) return true;
-  const mappedIpv4 = readIpv4MappedIpv6Address(normalized);
-  if (mappedIpv4 !== null && isPrivateIpv4Address(mappedIpv4)) return true;
-  return isPrivateIpv6Address(normalized);
+  if (isIP(normalized) === 4) return isNonPublicIpv4Address(normalized);
+  if (isIP(normalized) === 6) return isNonPublicIpv6Address(normalized);
+  return false;
 }
 
-function isPrivateIpv4Address(value: string): boolean {
-  const octets = value.split('.').map((part) => Number.parseInt(part, 10));
-  if (octets.length !== 4 || !octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255)) {
-    return false;
+function isNonPublicIpv4Address(value: string): boolean {
+  const address = readIpv4AddressAsNumber(value);
+  if (address === null) return false;
+  return NON_PUBLIC_IPV4_RANGES.some(([base, prefixLength]) => {
+    const baseAddress = readIpv4AddressAsNumber(base);
+    return baseAddress !== null && isIpv4AddressInRange(address, baseAddress, prefixLength);
+  });
+}
+
+function isNonPublicIpv6Address(value: string): boolean {
+  const address = readIpv6AddressAsBigInt(value);
+  if (address === null) return true;
+  return NON_PUBLIC_IPV6_RANGES.some(([base, prefixLength]) => {
+    const baseAddress = readIpv6AddressAsBigInt(base);
+    return baseAddress !== null && isIpv6AddressInRange(address, baseAddress, prefixLength);
+  });
+}
+
+function readIpv4AddressAsNumber(value: string): number | null {
+  const parts = value.split('.');
+  if (parts.length !== 4) return null;
+  const octets: number[] = [];
+  for (const part of parts) {
+    if (!/^\d{1,3}$/u.test(part)) return null;
+    const octet = Number.parseInt(part, 10);
+    if (!Number.isInteger(octet) || octet < 0 || octet > 255) return null;
+    octets.push(octet);
   }
-  const [first = 0, second = 0] = octets;
-  return (
-    first === 0 ||
-    first === 10 ||
-    first === 127 ||
-    (first === 169 && second === 254) ||
-    (first === 172 && second >= 16 && second <= 31) ||
-    (first === 192 && second === 168)
-  );
+  const [first, second, third, fourth] = octets;
+  if (first === undefined || second === undefined || third === undefined || fourth === undefined) return null;
+  return (((first * 256 + second) * 256 + third) * 256 + fourth) >>> 0;
 }
 
-function isPrivateIpv6Address(value: string): boolean {
-  if (isIP(value) !== 6) return false;
-  if (value === '::' || value === '::1') return true;
-  const firstHextet = Number.parseInt(value.split(':')[0] ?? '', 16);
-  if (!Number.isInteger(firstHextet)) return false;
-  return (firstHextet & 0xfe00) === 0xfc00 || (firstHextet & 0xffc0) === 0xfe80;
+function isIpv4AddressInRange(address: number, baseAddress: number, prefixLength: number): boolean {
+  const mask = prefixLength === 0 ? 0 : (0xffffffff << (32 - prefixLength)) >>> 0;
+  return ((address & mask) >>> 0) === ((baseAddress & mask) >>> 0);
 }
 
-function readIpv4MappedIpv6Address(value: string): string | null {
-  if (!value.startsWith('::ffff:')) return null;
-  const suffix = value.slice('::ffff:'.length);
-  if (suffix.includes('.')) return suffix;
-  const parts = suffix.split(':');
-  if (parts.length !== 2) return null;
-  const [high, low] = parts.map((part) => Number.parseInt(part, 16));
-  if (
-    high === undefined ||
-    low === undefined ||
-    !Number.isInteger(high) ||
-    !Number.isInteger(low) ||
-    high < 0 ||
-    high > 0xffff ||
-    low < 0 ||
-    low > 0xffff
-  ) {
-    return null;
+function readIpv6AddressAsBigInt(value: string): bigint | null {
+  const normalized = normalizeHostname(value);
+  if (isIP(normalized) !== 6) return null;
+  const parts = normalized.split('::');
+  if (parts.length > 2) return null;
+
+  const head = readIpv6Hextets(parts[0] ?? '');
+  const tail = readIpv6Hextets(parts[1] ?? '');
+  if (head === null || tail === null) return null;
+
+  const hasCompression = parts.length === 2;
+  const missingHextets = 8 - head.length - tail.length;
+  const hextets = hasCompression
+    ? missingHextets >= 1
+      ? [...head, ...Array.from({ length: missingHextets }, () => 0), ...tail]
+      : []
+    : head;
+  if (hextets.length !== 8) return null;
+
+  return hextets.reduce((address, hextet) => (address << 16n) + BigInt(hextet), 0n);
+}
+
+function readIpv6Hextets(value: string): number[] | null {
+  if (value === '') return [];
+  const segments = value.split(':');
+  const hextets: number[] = [];
+  for (const [index, segment] of segments.entries()) {
+    if (segment === '') return null;
+    if (segment.includes('.')) {
+      if (index !== segments.length - 1) return null;
+      const ipv4Address = readIpv4AddressAsNumber(segment);
+      if (ipv4Address === null) return null;
+      hextets.push((ipv4Address >>> 16) & 0xffff, ipv4Address & 0xffff);
+      continue;
+    }
+    if (!/^[0-9a-f]{1,4}$/u.test(segment)) return null;
+    hextets.push(Number.parseInt(segment, 16));
   }
-  return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
+  return hextets;
+}
+
+function isIpv6AddressInRange(address: bigint, baseAddress: bigint, prefixLength: number): boolean {
+  const hostBits = 128n - BigInt(prefixLength);
+  const mask = prefixLength === 0 ? 0n : ((1n << 128n) - 1n) ^ ((1n << hostBits) - 1n);
+  return (address & mask) === (baseAddress & mask);
 }
 
 function normalizeHostname(hostname: string): string {
