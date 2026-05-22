@@ -22,12 +22,27 @@ describe('CommerceConnectionCredentialService', () => {
     const stored = repository.records.get(safe.id);
 
     expect(safe).toEqual({
+      credential: {
+        fingerprint: null,
+        rotatedAt: null,
+        status: 'stored'
+      },
       id: safe.id,
       label: 'Tomatono local',
+      lastRestSyncAt: null,
+      lastWebhookAt: null,
       shopDomain: 'tomatonofood.com',
       siteUrl: 'https://tomatonofood.com',
       status: 'ACTIVE',
-      timezone: 'America/Toronto'
+      timezone: 'America/Toronto',
+      verification: {
+        lastVerifiedAt: null,
+        status: null
+      },
+      webhook: {
+        rotatedAt: null,
+        status: 'stored'
+      }
     });
     expect(stored).toBeDefined();
     expect(stored?.consumerKeyCiphertext).toMatch(/^v1:/u);
@@ -85,6 +100,45 @@ describe('CommerceConnectionCredentialService', () => {
     await expect(wrongKeyService.readDecryptedWooCommerceConnection({ connectionId: safe.id })).rejects.toThrow(
       'Failed to decrypt secret'
     );
+  });
+
+  test('re-upsert rotates ciphertext while preserving the same tenant/site connection id', async () => {
+    const repository = createRepositoryHarness();
+    const service = new CommerceConnectionCredentialService({ credentialKey: key, repository });
+    const first = await service.upsertWooCommerceConnection(connectionInput());
+    const firstStored = repository.records.get(first.id);
+    const second = await service.upsertWooCommerceConnection(
+      connectionInput({
+        consumerKey: 'ck_rotated_value',
+        consumerSecret: 'cs_rotated_value',
+        webhookSecret: 'whsec_rotated_value'
+      })
+    );
+    const secondStored = repository.records.get(second.id);
+
+    expect(second.id).toBe(first.id);
+    expect(firstStored?.consumerKeyCiphertext).not.toBe(secondStored?.consumerKeyCiphertext);
+    expect(secondStored?.consumerKeyCiphertext).not.toContain('ck_rotated_value');
+    expect(secondStored?.consumerSecretCiphertext).not.toContain('cs_rotated_value');
+    expect(secondStored?.webhookSecretCiphertext).not.toContain('whsec_rotated_value');
+  });
+
+  test('rejects blank secrets before encryption and keeps safe DTO secret-free', async () => {
+    const repository = createRepositoryHarness();
+    const service = new CommerceConnectionCredentialService({ credentialKey: key, repository });
+
+    await expect(
+      service.upsertWooCommerceConnection(connectionInput({ consumerSecret: '   ' }))
+    ).rejects.toThrow('WooCommerce consumer secret is required');
+    expect(repository.records.size).toBe(0);
+
+    const safe = await service.upsertWooCommerceConnection(connectionInput());
+    const serialized = JSON.stringify(safe);
+    expect(serialized).not.toContain('ck_test_value');
+    expect(serialized).not.toContain('cs_test_value');
+    expect(serialized).not.toContain('whsec_test_value');
+    expect(serialized).not.toContain('consumerKey');
+    expect(serialized).not.toContain('consumerSecret');
   });
 
   test('documents stable WooCommerce AAD strings used for DB credential rows', () => {
@@ -153,17 +207,24 @@ function toRecord(input: {
   webhookSecretCiphertext: string;
 }): CommerceConnectionRecord {
   return {
+    credentialFingerprint: null,
+    credentialRotatedAt: null,
     consumerKeyCiphertext: input.consumerKeyCiphertext,
     consumerSecretCiphertext: input.consumerSecretCiphertext,
     id: input.connectionId,
     label: input.label,
+    lastRestSyncAt: null,
+    lastVerifiedAt: null,
+    lastVerificationStatus: null,
+    lastWebhookAt: null,
     platform: 'WOOCOMMERCE',
     shopDomain: input.shopDomain,
     shopId: `shop-${input.shopDomain}`,
     siteUrl: input.siteUrl,
     status: 'ACTIVE',
     timezone: input.timezone,
-    webhookSecretCiphertext: input.webhookSecretCiphertext
+    webhookSecretCiphertext: input.webhookSecretCiphertext,
+    webhookSecretRotatedAt: null
   };
 }
 

@@ -8,6 +8,10 @@ import {
   registerAdminRoutePlanRoutes,
   type AdminRoutePlanDependencies
 } from './routes/admin-route-plans.routes.js';
+import {
+  registerAdminCommerceConnectionsRoutes,
+  type AdminCommerceConnectionsDependencies
+} from './routes/admin-commerce-connections.routes.js';
 import { registerAdminDriversRoutes, type AdminDriversDependencies } from './routes/admin-drivers.routes.js';
 import { registerAdminOrdersRoutes, type AdminOrdersDependencies } from './routes/admin-orders.routes.js';
 import { registerApiDocsRoutes } from './routes/api-docs.routes.js';
@@ -26,6 +30,7 @@ import {
 } from './routes/woocommerce-webhook.routes.js';
 
 type BuildAppOptions = {
+  adminCommerceConnections?: AdminCommerceConnectionsDependencies;
   adminDrivers?: AdminDriversDependencies;
   adminOrders?: AdminOrdersDependencies;
   adminRoutePlans?: AdminRoutePlanDependencies;
@@ -54,6 +59,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(cors, { origin: options.corsOrigin ?? false });
   registerApiDocsRoutes(app);
   registerHealthRoutes(app);
+
+  if (options.adminCommerceConnections !== undefined) {
+    registerAdminCommerceConnectionsRoutes(app, options.adminCommerceConnections);
+  }
 
   if (options.adminDrivers !== undefined) {
     registerAdminDriversRoutes(app, options.adminDrivers);
@@ -86,6 +95,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   if (options.wooCommerceWebhook !== undefined) {
     registerWooCommerceWebhookRoutes(app, options.wooCommerceWebhook);
   }
+
 
   return app;
 }

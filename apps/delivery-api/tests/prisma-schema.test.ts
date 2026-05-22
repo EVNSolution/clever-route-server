@@ -6,6 +6,14 @@ const commerceConnectionMigrationPath = new URL(
   '../prisma/migrations/20260521074000_add_commerce_connections/migration.sql',
   import.meta.url
 );
+const wordpressPluginMigrationPath = new URL(
+  '../prisma/migrations/20260522013000_add_wordpress_plugin_access/migration.sql',
+  import.meta.url
+);
+const wooOnboardingMigrationPath = new URL(
+  '../prisma/migrations/20260522043000_add_woocommerce_onboarding_admin/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
@@ -34,6 +42,9 @@ describe('Prisma schema', () => {
     for (const modelName of [
       'ShopifyWebhookEvent',
       'CommerceConnection',
+      'CommerceConnectionAuditLog',
+      'WordPressPluginToken',
+      'WordPressPluginPairingCode',
       'Order',
       'DeliveryStop',
       'RoutePlan',
@@ -56,6 +67,14 @@ describe('Prisma schema', () => {
     expect(schema).toContain('consumerKeyCiphertext');
     expect(schema).toContain('consumerSecretCiphertext');
     expect(schema).toContain('webhookSecretCiphertext');
+    expect(schema).toContain('lastWebhookAt');
+    expect(schema).toContain('lastRestSyncAt');
+    expect(schema).toContain('lastVerifiedAt');
+    expect(schema).toContain('lastVerificationStatus');
+    expect(schema).toContain('credentialRotatedAt');
+    expect(schema).toContain('webhookSecretRotatedAt');
+    expect(schema).toContain('credentialFingerprint');
+    expect(schema).toContain('commerceConnectionAuditLogs');
     expect(schema).toMatch(/@@unique\(\[shopId, platform, siteUrl\]/);
     expect(schema).toMatch(/@@index\(\[shopId, platform, status\]/);
     expect(schema).toContain('sourcePlatform');
@@ -74,6 +93,13 @@ describe('Prisma schema', () => {
     expect(schema).toMatch(/@@unique\(\[shopId, storageKey\]/);
     expect(schema).toMatch(/@@index\(\[shopId, routePlanId, deliveryStopId, uploadedAt\]/);
     expect(schema).toContain('enum RetentionJobRunStatus');
+    expect(schema).toContain('enum WordPressPluginTokenStatus');
+    expect(schema).toContain('tokenHash');
+    expect(schema).toContain('tokenPrefix');
+    expect(schema).toContain('codeHash');
+    expect(schema).toContain('failedAttemptCount');
+    expect(schema).toMatch(/@@index\(\[commerceConnectionId, status\]/);
+    expect(schema).toMatch(/@@index\(\[commerceConnectionId, createdAt\]/);
     expect(schema).toContain('jobName');
     expect(schema).toContain('scannedCount');
     expect(schema).toContain('deletedCount');
@@ -98,5 +124,27 @@ describe('Prisma schema', () => {
     expect(migration).toContain('"consumerKeyCiphertext"');
     expect(migration).toContain('"webhookSecretCiphertext"');
     expect(migration).toContain('"orders_shopId_sourcePlatform_sourceSiteUrl_sourceOrderId_key"');
+  });
+
+  test('ships a migration for the WordPress plugin connector auth rollout', async () => {
+    const migration = await readFile(wordpressPluginMigrationPath, 'utf8');
+
+    expect(migration).toContain('CREATE TYPE "WordPressPluginTokenStatus"');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "lastWebhookAt"');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "wordpress_plugin_tokens"');
+    expect(migration).toContain('"tokenHash" TEXT NOT NULL');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "wordpress_plugin_pairing_codes"');
+    expect(migration).toContain('"codeHash" TEXT NOT NULL');
+  });
+
+  test('ships a migration for WooCommerce onboarding metadata and audit logs', async () => {
+    const migration = await readFile(wooOnboardingMigrationPath, 'utf8');
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "lastVerifiedAt"');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "credentialFingerprint"');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "commerce_connection_audit_logs"');
+    expect(migration).toContain('"actorSubject" TEXT NOT NULL');
+    expect(migration).toContain('"metadata" JSONB');
+    expect(migration).toContain('"commerce_connection_audit_logs_shopId_createdAt_idx"');
   });
 });

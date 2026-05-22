@@ -1,12 +1,18 @@
-import type { CommerceConnectionStatus, CommerceSourcePlatform, PrismaClient } from '@prisma/client';
+import type { CommerceConnectionStatus, CommerceSourcePlatform, PrismaClient, Prisma } from '@prisma/client';
 
-type CommerceConnectionPrismaClient = Pick<PrismaClient, 'commerceConnection' | 'shop'>;
+type CommerceConnectionPrismaClient = Pick<PrismaClient, 'commerceConnection' | 'commerceConnectionAuditLog' | 'shop'>;
 
 export type CommerceConnectionRecord = {
+  credentialFingerprint: string | null;
+  credentialRotatedAt: Date | null;
   consumerKeyCiphertext: string;
   consumerSecretCiphertext: string;
   id: string;
   label: string | null;
+  lastRestSyncAt: Date | null;
+  lastVerifiedAt: Date | null;
+  lastVerificationStatus: string | null;
+  lastWebhookAt: Date | null;
   platform: CommerceSourcePlatform;
   shopDomain: string;
   shopId: string;
@@ -14,17 +20,32 @@ export type CommerceConnectionRecord = {
   status: CommerceConnectionStatus;
   timezone: string | null;
   webhookSecretCiphertext: string;
+  webhookSecretRotatedAt: Date | null;
 };
 
 export type WooCommerceConnectionWriteInput = {
   connectionId: string;
+  credentialFingerprint?: string | null;
+  credentialRotatedAt?: Date | null;
   consumerKeyCiphertext: string;
   consumerSecretCiphertext: string;
   label: string | null;
+  lastVerifiedAt?: Date | null;
+  lastVerificationStatus?: string | null;
   shopDomain: string;
   siteUrl: string;
   timezone: string | null;
   webhookSecretCiphertext: string;
+  webhookSecretRotatedAt?: Date | null;
+};
+
+export type CommerceConnectionAuditLogInput = {
+  action: string;
+  actorSubject: string;
+  commerceConnectionId?: string | null;
+  metadata?: Prisma.InputJsonValue | null;
+  shopDomain: string;
+  status: string;
 };
 
 export class PrismaCommerceConnectionRepository {
@@ -67,14 +88,19 @@ export class PrismaCommerceConnectionRepository {
       data: {
         consumerKeyCiphertext: input.consumerKeyCiphertext,
         consumerSecretCiphertext: input.consumerSecretCiphertext,
+        credentialFingerprint: input.credentialFingerprint ?? null,
+        credentialRotatedAt: input.credentialRotatedAt ?? null,
         id: input.connectionId,
         label: input.label,
+        lastVerifiedAt: input.lastVerifiedAt ?? null,
+        lastVerificationStatus: input.lastVerificationStatus ?? null,
         platform: 'WOOCOMMERCE',
         shopDomain: normalizeShopDomain(input.shopDomain),
         shopId: shop.id,
         siteUrl: normalizeCommerceSiteUrl(input.siteUrl),
         timezone: input.timezone,
-        webhookSecretCiphertext: input.webhookSecretCiphertext
+        webhookSecretCiphertext: input.webhookSecretCiphertext,
+        webhookSecretRotatedAt: input.webhookSecretRotatedAt ?? null
       },
       select: commerceConnectionSelect()
     });
@@ -85,14 +111,108 @@ export class PrismaCommerceConnectionRepository {
       data: {
         consumerKeyCiphertext: input.consumerKeyCiphertext,
         consumerSecretCiphertext: input.consumerSecretCiphertext,
+        credentialFingerprint: input.credentialFingerprint ?? null,
+        credentialRotatedAt: input.credentialRotatedAt ?? null,
         label: input.label,
+        lastVerifiedAt: input.lastVerifiedAt ?? null,
+        lastVerificationStatus: input.lastVerificationStatus ?? null,
         shopDomain: normalizeShopDomain(input.shopDomain),
         siteUrl: normalizeCommerceSiteUrl(input.siteUrl),
         status: 'ACTIVE',
         timezone: input.timezone,
-        webhookSecretCiphertext: input.webhookSecretCiphertext
+        webhookSecretCiphertext: input.webhookSecretCiphertext,
+        webhookSecretRotatedAt: input.webhookSecretRotatedAt ?? null
       },
       select: commerceConnectionSelect(),
+      where: { id: input.connectionId }
+    });
+  }
+
+  async listWooCommerceConnectionsByShop(input: { shopDomain: string }): Promise<CommerceConnectionRecord[]> {
+    const shop = await this.findShop(normalizeShopDomain(input.shopDomain));
+    if (shop === null) return [];
+
+    return this.prisma.commerceConnection.findMany({
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      select: commerceConnectionSelect(),
+      where: {
+        platform: 'WOOCOMMERCE',
+        shopId: shop.id
+      }
+    });
+  }
+
+  async updateWooCommerceCredentialCiphertexts(input: {
+    at: Date;
+    connectionId: string;
+    consumerKeyCiphertext: string;
+    consumerSecretCiphertext: string;
+    credentialFingerprint: string;
+    lastVerificationStatus: string;
+  }): Promise<CommerceConnectionRecord> {
+    return this.prisma.commerceConnection.update({
+      data: {
+        consumerKeyCiphertext: input.consumerKeyCiphertext,
+        consumerSecretCiphertext: input.consumerSecretCiphertext,
+        credentialFingerprint: input.credentialFingerprint,
+        credentialRotatedAt: input.at,
+        lastVerifiedAt: input.at,
+        lastVerificationStatus: input.lastVerificationStatus
+      },
+      select: commerceConnectionSelect(),
+      where: { id: input.connectionId }
+    });
+  }
+
+  async updateWooCommerceWebhookSecretCiphertext(input: {
+    at: Date;
+    connectionId: string;
+    webhookSecretCiphertext: string;
+  }): Promise<CommerceConnectionRecord> {
+    return this.prisma.commerceConnection.update({
+      data: {
+        webhookSecretCiphertext: input.webhookSecretCiphertext,
+        webhookSecretRotatedAt: input.at
+      },
+      select: commerceConnectionSelect(),
+      where: { id: input.connectionId }
+    });
+  }
+
+  async updateWooCommerceConnectionStatus(input: {
+    connectionId: string;
+    status: CommerceConnectionStatus;
+  }): Promise<CommerceConnectionRecord> {
+    return this.prisma.commerceConnection.update({
+      data: { status: input.status },
+      select: commerceConnectionSelect(),
+      where: { id: input.connectionId }
+    });
+  }
+
+  async recordCommerceConnectionAuditLog(input: CommerceConnectionAuditLogInput): Promise<void> {
+    const shop = await this.findOrCreateShop(normalizeShopDomain(input.shopDomain));
+    await this.prisma.commerceConnectionAuditLog.create({
+      data: {
+        action: input.action,
+        actorSubject: input.actorSubject,
+        ...(input.commerceConnectionId === undefined || input.commerceConnectionId === null
+          ? {}
+          : { commerceConnectionId: input.commerceConnectionId }),
+        ...(input.metadata === undefined || input.metadata === null ? {} : { metadata: input.metadata }),
+        shopId: shop.id,
+        status: input.status
+      }
+    });
+  }
+
+  async markWooCommerceWebhookAccepted(input: { at: Date; connectionId: string }): Promise<void> {
+    await this.prisma.commerceConnection.update({
+      data: {
+        lastSyncAt: input.at,
+        lastSyncStatus: 'webhook',
+        lastWebhookAt: input.at
+      },
       where: { id: input.connectionId }
     });
   }
@@ -137,10 +257,16 @@ export function normalizeShopDomain(value: string): string {
 }
 
 function commerceConnectionSelect(): {
+  credentialFingerprint: true;
+  credentialRotatedAt: true;
   consumerKeyCiphertext: true;
   consumerSecretCiphertext: true;
   id: true;
   label: true;
+  lastRestSyncAt: true;
+  lastVerifiedAt: true;
+  lastVerificationStatus: true;
+  lastWebhookAt: true;
   platform: true;
   shopDomain: true;
   shopId: true;
@@ -148,18 +274,26 @@ function commerceConnectionSelect(): {
   status: true;
   timezone: true;
   webhookSecretCiphertext: true;
+  webhookSecretRotatedAt: true;
 } {
   return {
+    credentialFingerprint: true,
+    credentialRotatedAt: true,
     consumerKeyCiphertext: true,
     consumerSecretCiphertext: true,
     id: true,
     label: true,
+    lastRestSyncAt: true,
+    lastVerifiedAt: true,
+    lastVerificationStatus: true,
+    lastWebhookAt: true,
     platform: true,
     shopDomain: true,
     shopId: true,
     siteUrl: true,
     status: true,
     timezone: true,
-    webhookSecretCiphertext: true
+    webhookSecretCiphertext: true,
+    webhookSecretRotatedAt: true
   };
 }

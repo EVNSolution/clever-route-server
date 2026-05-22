@@ -16,6 +16,7 @@ export type WooCommerceWebhookDependencies = {
     readWooCommerceWebhookConnection(input: {
       connectionId: string;
     }): Promise<WooCommerceWebhookConnection | null>;
+    markWooCommerceWebhookAccepted?(input: { at: Date; connectionId: string }): Promise<void>;
   };
   createOrderSyncService(input: { connection: DecryptedWooCommerceConnection }): {
     syncOrders(input: {
@@ -88,6 +89,10 @@ export function registerWooCommerceWebhookRoutes(
 
       const orderSyncService = dependencies.createOrderSyncService({ connection });
       const result = await orderSyncService.syncOrders({ orders: [order], reason: 'webhook' });
+      await dependencies.connectionService.markWooCommerceWebhookAccepted?.({
+        at: new Date(),
+        connectionId: connection.id
+      });
 
       request.log.info(
         {

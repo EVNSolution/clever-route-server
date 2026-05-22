@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
 import { verifyWooCommerceWebhookSignature } from '../src/modules/woocommerce/woocommerce-webhook-signature.js';
+import type { WooCommerceWebhookDependencies } from '../src/routes/woocommerce-webhook.routes.js';
 
 const connectionId = '11111111-1111-4111-8111-111111111111';
 
@@ -119,9 +120,14 @@ describe('WooCommerce webhook routes', () => {
     );
     const connection = wooConnection();
     const createOrderSyncService = vi.fn(() => ({ syncOrders }));
+    const markWooCommerceWebhookAccepted =
+      vi.fn<NonNullable<WooCommerceWebhookDependencies['connectionService']['markWooCommerceWebhookAccepted']>>(() =>
+        Promise.resolve()
+      );
     const app = await buildApp({
       wooCommerceWebhook: {
         connectionService: {
+          markWooCommerceWebhookAccepted,
           readDecryptedWooCommerceConnection: vi.fn(() => Promise.resolve(connection)),
           readWooCommerceWebhookConnection: vi.fn(() => Promise.resolve(connection))
         },
@@ -156,6 +162,9 @@ describe('WooCommerce webhook routes', () => {
         orders: [expect.objectContaining({ id: 123, number: '123' })],
         reason: 'webhook'
       });
+      const webhookWatermark = markWooCommerceWebhookAccepted.mock.calls[0]?.[0];
+      expect(webhookWatermark?.at).toBeInstanceOf(Date);
+      expect(webhookWatermark?.connectionId).toBe(connectionId);
     } finally {
       await app.close();
     }
@@ -166,12 +175,27 @@ function wooConnection() {
   return {
     consumerKey: 'ck_test',
     consumerSecret: 'cs_test',
+    credential: {
+      fingerprint: null,
+      rotatedAt: null,
+      status: 'stored' as const
+    },
     id: connectionId,
     label: 'Woo test',
+    lastRestSyncAt: null,
+    lastWebhookAt: null,
     shopDomain: 'woo.example.test',
     siteUrl: 'https://woo.example.test',
     status: 'ACTIVE' as const,
     timezone: 'America/Toronto',
+    verification: {
+      lastVerifiedAt: null,
+      status: null
+    },
+    webhook: {
+      rotatedAt: null,
+      status: 'stored' as const
+    },
     webhookSecret: 'secret'
   };
 }

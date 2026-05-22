@@ -25,6 +25,11 @@ enum CommerceConnectionStatus {
   DISABLED
 }
 
+enum WordPressPluginTokenStatus {
+  ACTIVE
+  REVOKED
+}
+
 enum DeliveryOrderStatus {
   PENDING
   READY
@@ -144,6 +149,8 @@ model Shop {
   driverRouteFeedback           DriverRouteFeedback[]
   driverAccountDeletionRequests DriverAccountDeletionRequest[]
   commerceConnections           CommerceConnection[]
+  commerceConnectionAuditLogs    CommerceConnectionAuditLog[]
+  wordpressPluginPairingCodes   WordPressPluginPairingCode[]
 
   @@unique([shopDomain])
   @@unique([shopifyShopGid])
@@ -163,15 +170,83 @@ model CommerceConnection {
   consumerKeyCiphertext    String                   @db.Text
   consumerSecretCiphertext String                   @db.Text
   webhookSecretCiphertext  String                   @db.Text
+  lastWebhookAt            DateTime?                @db.Timestamptz(6)
+  lastRestSyncAt           DateTime?                @db.Timestamptz(6)
+  lastVerifiedAt           DateTime?                @db.Timestamptz(6)
+  lastVerificationStatus   String?                  @db.Text
+  credentialRotatedAt      DateTime?                @db.Timestamptz(6)
+  webhookSecretRotatedAt   DateTime?                @db.Timestamptz(6)
+  credentialFingerprint    String?                  @db.Text
   lastSyncAt               DateTime?                @db.Timestamptz(6)
   lastSyncStatus           String?                  @db.Text
   createdAt                DateTime                 @default(now()) @db.Timestamptz(6)
   updatedAt                DateTime                 @updatedAt @db.Timestamptz(6)
+  wordpressPluginTokens    WordPressPluginToken[]
+  wordpressPairingCodes    WordPressPluginPairingCode[]
+  auditLogs                CommerceConnectionAuditLog[]
 
   @@unique([shopId, platform, siteUrl])
   @@index([shopId, platform, status])
   @@index([platform, siteUrl])
   @@map("commerce_connections")
+}
+
+model CommerceConnectionAuditLog {
+  id                   String             @id @default(uuid()) @db.Uuid
+  shopId               String             @db.Uuid
+  shop                 Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  commerceConnectionId String?            @db.Uuid
+  commerceConnection   CommerceConnection? @relation(fields: [commerceConnectionId], references: [id], onDelete: SetNull)
+  actorSubject         String             @db.Text
+  action               String             @db.Text
+  status               String             @db.Text
+  metadata             Json?
+  createdAt            DateTime           @default(now()) @db.Timestamptz(6)
+
+  @@index([shopId, createdAt])
+  @@index([commerceConnectionId, createdAt])
+  @@map("commerce_connection_audit_logs")
+}
+
+model WordPressPluginToken {
+  id                   String                     @id @default(uuid()) @db.Uuid
+  commerceConnectionId String                     @db.Uuid
+  commerceConnection   CommerceConnection         @relation(fields: [commerceConnectionId], references: [id], onDelete: Cascade)
+  tokenHash            String                     @unique @db.Text
+  tokenPrefix          String                     @db.Text
+  status               WordPressPluginTokenStatus @default(ACTIVE)
+  issuedAt             DateTime                   @default(now()) @db.Timestamptz(6)
+  lastUsedAt           DateTime?                  @db.Timestamptz(6)
+  rotatedAt            DateTime?                  @db.Timestamptz(6)
+  revokedAt            DateTime?                  @db.Timestamptz(6)
+  createdAt            DateTime                   @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime                   @updatedAt @db.Timestamptz(6)
+
+  @@index([commerceConnectionId, status])
+  @@map("wordpress_plugin_tokens")
+}
+
+model WordPressPluginPairingCode {
+  id                   String             @id @default(uuid()) @db.Uuid
+  commerceConnectionId String             @db.Uuid
+  commerceConnection   CommerceConnection @relation(fields: [commerceConnectionId], references: [id], onDelete: Cascade)
+  shopId               String             @db.Uuid
+  shop                 Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  codeHash             String             @unique @db.Text
+  siteUrl              String             @db.Text
+  issuedBy             String?            @db.Text
+  issuedAt             DateTime           @default(now()) @db.Timestamptz(6)
+  expiresAt            DateTime           @db.Timestamptz(6)
+  consumedAt           DateTime?          @db.Timestamptz(6)
+  consumedBySiteUrl    String?            @db.Text
+  failedAttemptCount   Int                @default(0)
+  lastFailedAt         DateTime?          @db.Timestamptz(6)
+  createdAt            DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime           @updatedAt @db.Timestamptz(6)
+
+  @@index([commerceConnectionId, expiresAt])
+  @@index([shopId, expiresAt])
+  @@map("wordpress_plugin_pairing_codes")
 }
 
 model ShopifyWebhookEvent {

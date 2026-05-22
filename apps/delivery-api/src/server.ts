@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 
 import { buildApp } from './app.js';
 import { loadEnv } from './config/env.js';
+import { loadAdminCommerceConnectionsDependencies } from './modules/commerce/admin-commerce-connections.dependencies.js';
 import { loadAdminDriverDependencies } from './modules/driver/admin-driver.dependencies.js';
 import { loadDriverApiDependencies } from './modules/driver/driver.dependencies.js';
 import { loadDriverAuthDependencies } from './modules/driver/driver-auth.dependencies.js';
@@ -18,9 +19,11 @@ import type { DriverAuthDependencies } from './routes/driver-auth.routes.js';
 import type { ShopifyAuthDependencies } from './routes/shopify-auth.routes.js';
 import type { ShopifyWebhookDependencies } from './routes/shopify-webhook.routes.js';
 import type { WooCommerceWebhookDependencies } from './routes/woocommerce-webhook.routes.js';
+import type { AdminCommerceConnectionsDependencies } from './routes/admin-commerce-connections.routes.js';
 
 const env = loadEnv();
 const prisma = new PrismaClient();
+const adminCommerceConnections = loadAdminCommerceConnectionsDependencies({ env: process.env, prisma });
 const adminDrivers = loadAdminDriverDependencies({ env: process.env, prisma });
 const adminOrders = loadAdminOrdersDependencies({ env: process.env, prisma });
 const adminRoutePlans = loadAdminRoutePlanDependencies({ env: process.env, prisma });
@@ -32,6 +35,7 @@ const wooCommerceWebhook = loadWooCommerceWebhookDependencies({ env: process.env
 const logger = env.nodeEnv === 'test' ? false : { level: env.logLevel };
 const app = await buildApp(
   createBuildAppOptions({
+    adminCommerceConnections,
     adminDrivers,
     adminOrders,
     adminRoutePlans,
@@ -64,6 +68,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 }
 
 function createBuildAppOptions(input: {
+  adminCommerceConnections: AdminCommerceConnectionsDependencies | undefined;
   adminDrivers: AdminDriversDependencies | undefined;
   adminOrders: AdminOrdersDependencies | undefined;
   adminRoutePlans: AdminRoutePlanDependencies | undefined;
@@ -75,6 +80,7 @@ function createBuildAppOptions(input: {
   shopifyWebhook: ShopifyWebhookDependencies | undefined;
   wooCommerceWebhook: WooCommerceWebhookDependencies | undefined;
 }): {
+  adminCommerceConnections?: AdminCommerceConnectionsDependencies;
   adminDrivers?: AdminDriversDependencies;
   adminOrders?: AdminOrdersDependencies;
   adminRoutePlans?: AdminRoutePlanDependencies;
@@ -87,6 +93,7 @@ function createBuildAppOptions(input: {
   wooCommerceWebhook?: WooCommerceWebhookDependencies;
 } {
   return {
+    ...(input.adminCommerceConnections === undefined ? {} : { adminCommerceConnections: input.adminCommerceConnections }),
     ...(input.adminDrivers === undefined ? {} : { adminDrivers: input.adminDrivers }),
     ...(input.adminOrders === undefined ? {} : { adminOrders: input.adminOrders }),
     ...(input.adminRoutePlans === undefined ? {} : { adminRoutePlans: input.adminRoutePlans }),
