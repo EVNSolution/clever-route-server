@@ -53,13 +53,17 @@ const NON_PUBLIC_IPV6_RANGES = [
   ['64:ff9b::', 96],
   ['64:ff9b:1::', 48],
   ['100::', 64],
+  ['100:0:0:1::', 64],
   ['2001::', 23],
   ['2001:db8::', 32],
   ['2002::', 16],
+  ['3fff::', 20],
   ['fc00::', 7],
   ['fe80::', 10],
   ['ff00::', 8]
 ] as const;
+
+const IPV6_GLOBAL_UNICAST_RANGE = ['2000::', 3] as const;
 
 export type WooCommerceConnectionVerifierInput = {
   consumerKey: string;
@@ -273,6 +277,10 @@ function isNonPublicIpv4Address(value: string): boolean {
 function isNonPublicIpv6Address(value: string): boolean {
   const address = readIpv6AddressAsBigInt(value);
   if (address === null) return true;
+  const globalUnicastBaseAddress = readIpv6AddressAsBigInt(IPV6_GLOBAL_UNICAST_RANGE[0]);
+  if (globalUnicastBaseAddress === null || !isIpv6AddressInRange(address, globalUnicastBaseAddress, IPV6_GLOBAL_UNICAST_RANGE[1])) {
+    return true;
+  }
   return NON_PUBLIC_IPV6_RANGES.some(([base, prefixLength]) => {
     const baseAddress = readIpv6AddressAsBigInt(base);
     return baseAddress !== null && isIpv6AddressInRange(address, baseAddress, prefixLength);

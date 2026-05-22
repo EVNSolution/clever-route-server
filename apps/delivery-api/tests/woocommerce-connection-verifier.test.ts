@@ -103,7 +103,14 @@ describe('WooCommerceConnectionVerifier', () => {
     expect(() => assertHttpsWooSiteUrl('https://[::ffff:127.0.0.1]')).toThrow(nonPublicTargetMessage);
     expect(() => assertHttpsWooSiteUrl('https://[0:0:0:0:0:0:0:1]')).toThrow(nonPublicTargetMessage);
     expect(() => assertHttpsWooSiteUrl('https://[2001:db8::1]')).toThrow(nonPublicTargetMessage);
+    expect(() => assertHttpsWooSiteUrl('https://[100:0:0:1::1]')).toThrow(nonPublicTargetMessage);
+    expect(() => assertHttpsWooSiteUrl('https://[3fff::1]')).toThrow(nonPublicTargetMessage);
+    expect(() => assertHttpsWooSiteUrl('https://[5f00::1]')).toThrow(nonPublicTargetMessage);
+    expect(() => assertHttpsWooSiteUrl('https://[4000::1]')).toThrow(nonPublicTargetMessage);
+    expect(() => assertHttpsWooSiteUrl('https://[fec0::1]')).toThrow(nonPublicTargetMessage);
+    expect(() => assertHttpsWooSiteUrl('https://[fe00::1]')).toThrow(nonPublicTargetMessage);
     expect(assertHttpsWooSiteUrl('woo.example.test')).toBe('https://woo.example.test');
+    expect(assertHttpsWooSiteUrl('https://[2001:4860:4860::8888]')).toBe('https://[2001:4860:4860::8888]');
   });
 
   test('rejects DNS results that resolve to private, loopback, or otherwise non-public addresses', async () => {
@@ -118,6 +125,12 @@ describe('WooCommerceConnectionVerifier', () => {
       '0:0:0:0:0:ffff:7f00:1',
       '::ffff:7f00:1',
       '2001:db8::1',
+      '100:0:0:1::1',
+      '3fff::1',
+      '5f00::1',
+      '4000::1',
+      'fec0::1',
+      'fe00::1',
       'fc00::1',
       'fe80::1',
       'ff02::1'
@@ -134,5 +147,6 @@ describe('WooCommerceConnectionVerifier', () => {
       assertResolvedWooSiteHostIsPublic('https://woo.example.test', () => Promise.resolve(['2001:4860:4860::8888']))
     ).resolves.toBeUndefined();
     expect(() => createPinnedPublicLookup(['93.184.216.34', '127.0.0.1'])).toThrow(nonPublicResolutionMessage);
+    expect(() => createPinnedPublicLookup(['2001:4860:4860::8888', '3fff::1'])).toThrow(nonPublicResolutionMessage);
   });
 });
