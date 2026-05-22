@@ -451,7 +451,10 @@ function toOnboardingVerificationError(error: unknown): WooCommerceOnboardingErr
     return new WooCommerceOnboardingError(error.code, error.message, 422);
   }
   if (error instanceof Error) {
-    if (error.message.includes('required') || error.message.includes('HTTPS') || error.message.includes('invalid')) {
+    if (error.message.includes('required') ||
+      error.message.includes('HTTPS') ||
+      error.message.includes('invalid') ||
+      error.message.includes('private network')) {
       return new WooCommerceOnboardingError('BAD_REQUEST', error.message, 400);
     }
   }
