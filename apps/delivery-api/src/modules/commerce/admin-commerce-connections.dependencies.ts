@@ -14,7 +14,8 @@ export type AdminCommerceConnectionsRuntimeEnv = Partial<
     | 'CLEVER_ADMIN_API_ACTOR'
     | 'CLEVER_ADMIN_API_TOKEN'
     | 'CREDENTIAL_ENCRYPTION_KEY'
-    | 'DELIVERY_API_PUBLIC_URL',
+    | 'DELIVERY_API_PUBLIC_URL'
+    | 'NODE_ENV',
     string
   >
 >;
@@ -49,7 +50,10 @@ export function loadAdminCommerceConnectionsDependencies(input: {
     onboardingService: new WooCommerceConnectionOnboardingService({
       credentialStore,
       repository,
-      verifier: new WooCommerceConnectionVerifier()
+      verifier: new WooCommerceConnectionVerifier({
+        allowLocalHttp: isLocalWooHttpRuntime(input.env.NODE_ENV),
+        allowPrivateNetworkUrls: isLocalWooHttpRuntime(input.env.NODE_ENV)
+      })
     }),
     ...(publicBaseUrl === undefined ? {} : { publicBaseUrl })
   };
@@ -58,4 +62,8 @@ export function loadAdminCommerceConnectionsDependencies(input: {
 function readOptional(value: string | undefined): string | undefined {
   if (value === undefined || value.trim() === '') return undefined;
   return value.trim();
+}
+
+function isLocalWooHttpRuntime(nodeEnv: string | undefined): boolean {
+  return nodeEnv === 'development' || nodeEnv === 'test';
 }

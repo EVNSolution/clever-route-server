@@ -53,9 +53,24 @@ describe('WooCommerceConnectionVerifier', () => {
     ).rejects.toThrow('WooCommerce REST API rejected the supplied credentials');
   });
 
-  test('rejects non-HTTPS Woo site URLs except local development hosts', () => {
+  test('rejects non-HTTPS and private-network Woo site URLs by default', () => {
     expect(() => assertHttpsWooSiteUrl('http://woo.example.test')).toThrow('WooCommerce site URL must use HTTPS');
-    expect(assertHttpsWooSiteUrl('http://localhost:8080')).toBe('http://localhost:8080');
+    expect(() => assertHttpsWooSiteUrl('http://localhost:8080')).toThrow('WooCommerce site URL must use HTTPS');
+    expect(() => assertHttpsWooSiteUrl('https://127.0.0.1:8443')).toThrow(
+      'WooCommerce site URL must not target localhost or private network addresses'
+    );
+    expect(() => assertHttpsWooSiteUrl('https://10.0.0.5')).toThrow(
+      'WooCommerce site URL must not target localhost or private network addresses'
+    );
     expect(assertHttpsWooSiteUrl('woo.example.test')).toBe('https://woo.example.test');
+  });
+
+  test('allows local HTTP only when explicitly enabled for local dev/test runtime', () => {
+    expect(assertHttpsWooSiteUrl('http://localhost:8080', { allowLocalHttp: true, allowPrivateNetworkUrls: true })).toBe(
+      'http://localhost:8080'
+    );
+    expect(() => assertHttpsWooSiteUrl('http://woo.example.test', { allowLocalHttp: true })).toThrow(
+      'WooCommerce site URL must use HTTPS'
+    );
   });
 });

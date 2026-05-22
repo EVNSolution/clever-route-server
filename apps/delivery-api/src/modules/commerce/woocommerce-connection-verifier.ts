@@ -2,6 +2,11 @@ import { normalizeCommerceSiteUrl } from './commerce-connection.repository.js';
 
 type FetchLike = typeof fetch;
 
+type WooCommerceSiteUrlPolicy = {
+  allowLocalHttp?: boolean;
+  allowPrivateNetworkUrls?: boolean;
+};
+
 export type WooCommerceConnectionVerifierInput = {
   consumerKey: string;
   consumerSecret: string;
@@ -25,15 +30,20 @@ export class WooCommerceCredentialVerificationError extends Error {
 
 export class WooCommerceConnectionVerifier {
   private readonly fetchImpl: FetchLike;
+  private readonly siteUrlPolicy: WooCommerceSiteUrlPolicy;
   private readonly timeoutMs: number;
 
-  constructor(options: { fetchImpl?: FetchLike; timeoutMs?: number } = {}) {
+  constructor(options: { allowLocalHttp?: boolean; allowPrivateNetworkUrls?: boolean; fetchImpl?: FetchLike; timeoutMs?: number } = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.siteUrlPolicy = {
+      ...(options.allowLocalHttp === undefined ? {} : { allowLocalHttp: options.allowLocalHttp }),
+      ...(options.allowPrivateNetworkUrls === undefined ? {} : { allowPrivateNetworkUrls: options.allowPrivateNetworkUrls })
+    };
     this.timeoutMs = options.timeoutMs ?? 10_000;
   }
 
   async verify(input: WooCommerceConnectionVerifierInput): Promise<WooCommerceConnectionVerification> {
-    const siteUrl = assertHttpsWooSiteUrl(input.siteUrl);
+    const siteUrl = assertHttpsWooSiteUrl(input.siteUrl, this.siteUrlPolicy);
     const consumerKey = readRequiredSecret(input.consumerKey, 'WooCommerce consumer key');
     const consumerSecret = readRequiredSecret(input.consumerSecret, 'WooCommerce consumer secret');
     const url = new URL('/wp-json/wc/v3/orders', siteUrl);
@@ -76,18 +86,44 @@ export class WooCommerceConnectionVerifier {
   }
 }
 
-export function assertHttpsWooSiteUrl(value: string): string {
+export function assertHttpsWooSiteUrl(value: string, policy: WooCommerceSiteUrlPolicy = {}): string {
   const normalized = normalizeCommerceSiteUrl(value);
   const url = new URL(normalized);
-  if (url.protocol !== 'https:' && !isLocalHttpUrl(url)) {
+  const allowLocalHttp = policy.allowLocalHttp === true && isLocalHostname(url.hostname);
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && allowLocalHttp)) {
     throw new Error('WooCommerce site URL must use HTTPS');
+  }
+  if (policy.allowPrivateNetworkUrls !== true && isPrivateNetworkHostname(url.hostname)) {
+    throw new Error('WooCommerce site URL must not target localhost or private network addresses');
   }
   return normalized;
 }
 
-function isLocalHttpUrl(url: URL): boolean {
-  if (url.protocol !== 'http:') return false;
-  return ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
+function isLocalHostname(hostname: string): boolean {
+  const normalized = normalizeHostname(hostname);
+  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1';
+}
+
+function isPrivateNetworkHostname(hostname: string): boolean {
+  const normalized = normalizeHostname(hostname);
+  if (normalized === 'localhost' || normalized === '::1') return true;
+  const octets = normalized.split('.').map((value) => Number.parseInt(value, 10));
+  if (octets.length === 4 && octets.every((value) => Number.isInteger(value) && value >= 0 && value <= 255)) {
+    const [first = 0, second = 0] = octets;
+    return (
+      first === 10 ||
+      first === 127 ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168) ||
+      (first === 169 && second === 254) ||
+      (first === 0 && second === 0)
+    );
+  }
+  return normalized.startsWith('fc') || normalized.startsWith('fd') || normalized.startsWith('fe80:');
+}
+
+function normalizeHostname(hostname: string): string {
+  return hostname.trim().toLowerCase().replace(/^\[/u, '').replace(/\]$/u, '');
 }
 
 function readRequiredSecret(value: string, label: string): string {
