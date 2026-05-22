@@ -1,26 +1,41 @@
 import { describe, expect, test, vi } from 'vitest';
+import type { Mock } from 'vitest';
 
 import {
   assertHttpsWooSiteUrl,
   assertResolvedWooSiteHostIsPublic,
-  WooCommerceConnectionVerifier
+  WooCommerceConnectionVerifier,
+  type WooCommerceHttpsRequestInput
 } from '../src/modules/commerce/woocommerce-connection-verifier.js';
 
 const publicResolver = vi.fn(() => Promise.resolve(['93.184.216.34']));
 
 describe('WooCommerceConnectionVerifier', () => {
-  test('uses Basic auth headers and never puts Woo credentials in the URL query string', async () => {
-    const calls: Array<{ init: RequestInit | undefined; url: URL }> = [];
-    const fetchImpl = vi.fn((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-      if (!(input instanceof URL)) {
-        throw new Error('Expected URL input');
-      }
-      calls.push({ init, url: input });
-      return Promise.resolve(new Response('[]', { status: 200 }));
-    }) as unknown as typeof fetch;
+  test('uses Basic auth headers and pins the outbound lookup to vetted public DNS results', async () => {
+    const calls: Array<{
+      headers: Record<string, string>;
+      lookupAddress: string;
+      method: string;
+      servername: string;
+      url: URL;
+    }> = [];
+    const sendHttpsRequest = vi.fn((input: WooCommerceHttpsRequestInput) => {
+      input.lookup(input.url.hostname, { family: 4 }, (error, address) => {
+        if (error !== null) throw error;
+        if (Array.isArray(address)) throw new Error('Expected single pinned address');
+        calls.push({
+          headers: input.headers,
+          lookupAddress: address,
+          method: input.method,
+          servername: input.servername,
+          url: input.url
+        });
+      });
+      return Promise.resolve({ status: 200 });
+    });
     const verifier = new WooCommerceConnectionVerifier({
-      fetchImpl,
       resolveHostAddresses: publicResolver,
+      sendHttpsRequest,
       timeoutMs: 1_000
     });
 
@@ -34,23 +49,20 @@ describe('WooCommerceConnectionVerifier', () => {
 
     const call = calls[0];
     if (call === undefined) {
-      throw new Error('Expected verifier fetch call');
+      throw new Error('Expected verifier request call');
     }
     expect(call.url.toString()).toBe('https://woo.example.test/wp-json/wc/v3/orders?page=1&per_page=1&orderby=date&order=desc');
     expect(call.url.searchParams.has('consumer_key')).toBe(false);
     expect(call.url.searchParams.has('consumer_secret')).toBe(false);
-    const headers = call.init?.headers;
-    if (headers === undefined || Array.isArray(headers) || headers instanceof Headers) {
-      throw new Error('Expected plain verifier headers');
-    }
-    expect(headers.Authorization).toBe(`Basic ${Buffer.from('ck_verify_value:cs_verify_value').toString('base64')}`);
-    expect(call.init?.method).toBe('GET');
-    expect(call.init?.redirect).toBe('manual');
+    expect(call.headers.Authorization).toBe(`Basic ${Buffer.from('ck_verify_value:cs_verify_value').toString('base64')}`);
+    expect(call.method).toBe('GET');
+    expect(call.servername).toBe('woo.example.test');
+    expect(call.lookupAddress).toBe('93.184.216.34');
   });
 
   test('sanitizes rejected credential errors', async () => {
-    const fetchImpl = vi.fn(() => Promise.resolve(new Response('Forbidden ck_verify_value cs_verify_value', { status: 403 }))) as unknown as typeof fetch;
-    const verifier = new WooCommerceConnectionVerifier({ fetchImpl, resolveHostAddresses: publicResolver });
+    const sendHttpsRequest: Mock<(input: WooCommerceHttpsRequestInput) => Promise<{ status: number }>> = vi.fn(() => Promise.resolve({ status: 403 }));
+    const verifier = new WooCommerceConnectionVerifier({ resolveHostAddresses: publicResolver, sendHttpsRequest });
 
     await expect(
       verifier.verify({
@@ -62,10 +74,8 @@ describe('WooCommerceConnectionVerifier', () => {
   });
 
   test('rejects verifier redirects instead of following them', async () => {
-    const fetchImpl = vi.fn(() =>
-      Promise.resolve(new Response(null, { headers: { Location: 'https://127.0.0.1/admin' }, status: 302 }))
-    ) as unknown as typeof fetch;
-    const verifier = new WooCommerceConnectionVerifier({ fetchImpl, resolveHostAddresses: publicResolver });
+    const sendHttpsRequest: Mock<(input: WooCommerceHttpsRequestInput) => Promise<{ status: number }>> = vi.fn(() => Promise.resolve({ status: 302 }));
+    const verifier = new WooCommerceConnectionVerifier({ resolveHostAddresses: publicResolver, sendHttpsRequest });
 
     await expect(
       verifier.verify({

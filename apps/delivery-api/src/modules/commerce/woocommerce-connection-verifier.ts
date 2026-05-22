@@ -1,10 +1,27 @@
+import type { IncomingMessage } from 'node:http';
+import { request as requestHttps, type RequestOptions } from 'node:https';
 import { lookup as lookupDns } from 'node:dns/promises';
 import { isIP } from 'node:net';
 
 import { normalizeCommerceSiteUrl } from './commerce-connection.repository.js';
 
-type FetchLike = typeof fetch;
 type ResolveHostAddresses = (hostname: string) => Promise<string[]>;
+type LookupAddressFamily = 4 | 6;
+type PinnedLookup = (
+  hostname: string,
+  options: { all?: boolean; family?: number },
+  callback: (error: NodeJS.ErrnoException | null, address: string | Array<{ address: string; family: LookupAddressFamily }>, family?: LookupAddressFamily) => void
+) => void;
+export type WooCommerceHttpsRequestInput = {
+  headers: Record<string, string>;
+  lookup: PinnedLookup;
+  method: 'GET';
+  servername: string;
+  timeoutMs: number;
+  url: URL;
+};
+
+type SendHttpsRequest = (input: WooCommerceHttpsRequestInput) => Promise<{ status: number }>;
 
 export type WooCommerceConnectionVerifierInput = {
   consumerKey: string;
@@ -28,19 +45,18 @@ export class WooCommerceCredentialVerificationError extends Error {
 }
 
 export class WooCommerceConnectionVerifier {
-  private readonly fetchImpl: FetchLike;
   private readonly resolveHostAddresses: ResolveHostAddresses;
+  private readonly sendHttpsRequest: SendHttpsRequest;
   private readonly timeoutMs: number;
 
-  constructor(options: { fetchImpl?: FetchLike; resolveHostAddresses?: ResolveHostAddresses; timeoutMs?: number } = {}) {
-    this.fetchImpl = options.fetchImpl ?? fetch;
+  constructor(options: { resolveHostAddresses?: ResolveHostAddresses; sendHttpsRequest?: SendHttpsRequest; timeoutMs?: number } = {}) {
     this.resolveHostAddresses = options.resolveHostAddresses ?? resolveHostAddressesWithDns;
+    this.sendHttpsRequest = options.sendHttpsRequest ?? sendHttpsRequestWithPinnedLookup;
     this.timeoutMs = options.timeoutMs ?? 10_000;
   }
 
   async verify(input: WooCommerceConnectionVerifierInput): Promise<WooCommerceConnectionVerification> {
     const siteUrl = assertHttpsWooSiteUrl(input.siteUrl);
-    await assertResolvedWooSiteHostIsPublic(siteUrl, this.resolveHostAddresses);
     const consumerKey = readRequiredSecret(input.consumerKey, 'WooCommerce consumer key');
     const consumerSecret = readRequiredSecret(input.consumerSecret, 'WooCommerce consumer secret');
     const url = new URL('/wp-json/wc/v3/orders', siteUrl);
@@ -49,18 +65,22 @@ export class WooCommerceConnectionVerifier {
     url.searchParams.set('orderby', 'date');
     url.searchParams.set('order', 'desc');
 
-    let response: Response;
+    let response: { status: number };
     try {
-      response = await this.fetchImpl(url, {
+      const publicAddresses = await resolvePublicWooSiteAddresses(siteUrl, this.resolveHostAddresses);
+      response = await this.sendHttpsRequest({
         headers: {
           Accept: 'application/json',
           Authorization: `Basic ${Buffer.from(`${consumerKey}:${consumerSecret}`).toString('base64')}`
         },
+        lookup: createPinnedPublicLookup(publicAddresses),
         method: 'GET',
-        redirect: 'manual',
-        signal: AbortSignal.timeout(this.timeoutMs)
+        servername: normalizeHostname(url.hostname),
+        timeoutMs: this.timeoutMs,
+        url
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof WooCommerceCredentialVerificationError) throw error;
       throw new WooCommerceCredentialVerificationError(
         'WooCommerce REST API could not be reached with the supplied credentials',
         'WOOCOMMERCE_UNREACHABLE'
@@ -79,7 +99,7 @@ export class WooCommerceConnectionVerifier {
         'WOOCOMMERCE_UNAUTHORIZED'
       );
     }
-    if (!response.ok) {
+    if (response.status < 200 || response.status >= 300) {
       throw new WooCommerceCredentialVerificationError(
         `WooCommerce REST API verification failed with HTTP ${response.status}`,
         'WOOCOMMERCE_UNEXPECTED_RESPONSE'
@@ -106,9 +126,50 @@ export async function assertResolvedWooSiteHostIsPublic(
   siteUrl: string,
   resolveHostAddresses: ResolveHostAddresses = resolveHostAddressesWithDns
 ): Promise<void> {
-  const hostname = normalizeHostname(new URL(siteUrl).hostname);
-  if (isIP(hostname) !== 0) return;
+  await resolvePublicWooSiteAddresses(siteUrl, resolveHostAddresses);
+}
 
+export async function resolvePublicWooSiteAddresses(
+  siteUrl: string,
+  resolveHostAddresses: ResolveHostAddresses = resolveHostAddressesWithDns
+): Promise<string[]> {
+  const hostname = normalizeHostname(new URL(siteUrl).hostname);
+  const addresses = isIP(hostname) === 0 ? await resolveHostAddressesForPolicy(hostname, resolveHostAddresses) : [hostname];
+  const normalizedAddresses = addresses.map((address) => normalizeHostname(address));
+  if (normalizedAddresses.some((address) => isPrivateNetworkHostname(address))) {
+    throw new Error('WooCommerce site URL must not resolve to localhost or private network addresses');
+  }
+  return normalizedAddresses;
+}
+
+export function createPinnedPublicLookup(addresses: string[]): PinnedLookup {
+  const publicAddresses = addresses.map((address) => normalizeHostname(address)).filter((address) => !isPrivateNetworkHostname(address));
+  if (publicAddresses.length === 0) {
+    throw new Error('WooCommerce site URL must not resolve to localhost or private network addresses');
+  }
+
+  return (_hostname, options, callback) => {
+    const requestedFamily = options.family === 4 || options.family === 6 ? options.family : undefined;
+    const selectedAddresses =
+      requestedFamily === undefined ? publicAddresses : publicAddresses.filter((address) => isIP(address) === requestedFamily);
+    const usableAddresses = selectedAddresses.length > 0 ? selectedAddresses : publicAddresses;
+    if (options.all === true) {
+      callback(
+        null,
+        usableAddresses.map((address) => ({ address, family: readAddressFamily(address) }))
+      );
+      return;
+    }
+    const address = usableAddresses[0];
+    if (address === undefined) {
+      callback(Object.assign(new Error('No vetted WooCommerce host address available'), { code: 'ENOTFOUND' }), '', 4);
+      return;
+    }
+    callback(null, address, readAddressFamily(address));
+  };
+}
+
+async function resolveHostAddressesForPolicy(hostname: string, resolveHostAddresses: ResolveHostAddresses): Promise<string[]> {
   let addresses: string[];
   try {
     addresses = await resolveHostAddresses(hostname);
@@ -124,14 +185,34 @@ export async function assertResolvedWooSiteHostIsPublic(
       'WOOCOMMERCE_UNREACHABLE'
     );
   }
-  if (addresses.some((address) => isPrivateNetworkHostname(address))) {
-    throw new Error('WooCommerce site URL must not resolve to localhost or private network addresses');
-  }
+  return addresses;
 }
 
 async function resolveHostAddressesWithDns(hostname: string): Promise<string[]> {
   const records = await lookupDns(hostname, { all: true, verbatim: true });
   return records.map((record) => record.address);
+}
+
+async function sendHttpsRequestWithPinnedLookup(input: WooCommerceHttpsRequestInput): Promise<{ status: number }> {
+  return new Promise((resolve, reject) => {
+    const request = requestHttps(
+      input.url,
+      {
+        headers: input.headers,
+        lookup: input.lookup as RequestOptions['lookup'],
+        method: input.method,
+        servername: input.servername
+      },
+      (response: IncomingMessage) => {
+        const status = response.statusCode ?? 0;
+        response.resume();
+        response.on('end', () => resolve({ status }));
+      }
+    );
+    request.on('error', reject);
+    request.setTimeout(input.timeoutMs, () => request.destroy(new Error('WooCommerce REST API verification timed out')));
+    request.end();
+  });
 }
 
 function isPrivateNetworkHostname(hostname: string): boolean {
@@ -191,6 +272,10 @@ function readIpv4MappedIpv6Address(value: string): string | null {
 
 function normalizeHostname(hostname: string): string {
   return hostname.trim().toLowerCase().replace(/^\[/u, '').replace(/\]$/u, '').replace(/\.+$/u, '');
+}
+
+function readAddressFamily(address: string): LookupAddressFamily {
+  return isIP(address) === 6 ? 6 : 4;
 }
 
 function readRequiredSecret(value: string, label: string): string {
