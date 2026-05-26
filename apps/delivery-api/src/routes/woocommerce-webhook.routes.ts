@@ -54,6 +54,14 @@ export function registerWooCommerceWebhookRoutes(
         return reply.code(400).send(errorResponse('BAD_REQUEST', 'Raw request body is required'));
       }
 
+      if (isWooCommerceDeliveryPing(rawBody)) {
+        request.log.info(
+          { connectionId: request.params.connectionId },
+          'woocommerce webhook delivery ping accepted'
+        );
+        return reply.code(200).send({ data: { accepted: true, type: 'ping' }, error: null });
+      }
+
       const headers = readWooCommerceWebhookHeaders(request);
       if (headers === null) {
         return reply.code(400).send(errorResponse('BAD_REQUEST', 'Missing WooCommerce webhook signature'));
@@ -136,6 +144,12 @@ function readWebhookOrder(value: unknown): WooCommerceOrder | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   const candidate = value as Partial<WooCommerceOrder>;
   return typeof candidate.id === 'number' && Number.isFinite(candidate.id) ? (candidate as WooCommerceOrder) : null;
+}
+
+function isWooCommerceDeliveryPing(rawBody: string): boolean {
+  const params = new URLSearchParams(rawBody);
+  const webhookId = params.get('webhook_id');
+  return params.size === 1 && webhookId !== null && /^\d+$/u.test(webhookId);
 }
 
 function readRequiredHeader(request: FastifyRequest, name: string): string | null {

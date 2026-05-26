@@ -23,6 +23,12 @@ export function registerJsonBodyParser(app: FastifyInstance): void {
       done(error as Error);
     }
   });
+
+  app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (request, body, done) => {
+    const rawBody = Buffer.isBuffer(body) ? body.toString('utf8') : body;
+    request.rawBody = rawBody;
+    done(null, Object.fromEntries(new URLSearchParams(rawBody)));
+  });
 }
 
 export function getRawBody(request: FastifyRequest): string | null {

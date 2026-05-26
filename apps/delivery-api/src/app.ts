@@ -12,6 +12,10 @@ import {
   registerAdminCommerceConnectionsRoutes,
   type AdminCommerceConnectionsDependencies
 } from './routes/admin-commerce-connections.routes.js';
+import {
+  registerAdminCommerceConnectionsUiRoutes,
+  type AdminCommerceConnectionsUiDependencies
+} from './routes/admin-commerce-connections-ui.routes.js';
 import { registerAdminDriversRoutes, type AdminDriversDependencies } from './routes/admin-drivers.routes.js';
 import { registerAdminOrdersRoutes, type AdminOrdersDependencies } from './routes/admin-orders.routes.js';
 import { registerApiDocsRoutes } from './routes/api-docs.routes.js';
@@ -29,9 +33,14 @@ import {
   registerWooCommerceWebhookRoutes,
   type WooCommerceWebhookDependencies
 } from './routes/woocommerce-webhook.routes.js';
+import {
+  registerWordPressPluginRoutes,
+  type WordPressPluginDependencies
+} from './routes/wordpress-plugin.routes.js';
 
 type BuildAppOptions = {
   adminCommerceConnections?: AdminCommerceConnectionsDependencies;
+  adminCommerceConnectionsUi?: AdminCommerceConnectionsUiDependencies;
   adminDrivers?: AdminDriversDependencies;
   adminOrders?: AdminOrdersDependencies;
   adminRoutePlans?: AdminRoutePlanDependencies;
@@ -42,6 +51,7 @@ type BuildAppOptions = {
   shopifyAuth?: ShopifyAuthDependencies;
   shopifyWebhook?: ShopifyWebhookDependencies;
   wooCommerceWebhook?: WooCommerceWebhookDependencies;
+  wordPressPlugin?: WordPressPluginDependencies;
 };
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
@@ -64,6 +74,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   if (options.adminCommerceConnections !== undefined) {
     registerAdminCommerceConnectionsRoutes(app, options.adminCommerceConnections);
+  }
+
+  if (options.adminCommerceConnectionsUi !== undefined) {
+    registerAdminCommerceConnectionsUiRoutes(app, options.adminCommerceConnectionsUi);
   }
 
   if (options.adminDrivers !== undefined) {
@@ -98,6 +112,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     registerWooCommerceWebhookRoutes(app, options.wooCommerceWebhook);
   }
 
+  if (options.wordPressPlugin !== undefined) {
+    registerWordPressPluginRoutes(app, options.wordPressPlugin);
+  }
 
   return app;
 }

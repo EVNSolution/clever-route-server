@@ -1,0 +1,39 @@
+.clever-route-admin .clever-route-panel {
+  background: #fff;
+  border: 1px solid #dcdcde;
+  margin-top: 16px;
+  padding: 16px;
+}
+
+.clever-route-admin code {
+  white-space: normal;
+}
+
+.clever-route-admin .clever-route-fieldset {
+  border: 1px solid #dcdcde;
+  margin: 16px 0;
+  padding: 12px 16px;
+}
+
+.clever-route-admin .clever-route-fieldset legend {
+  font-weight: 600;
+  padding: 0 4px;
+}
+
+.clever-route-admin .clever-route-open-card {
+  background: #f6f7f7;
+  border: 1px solid #dcdcde;
+  border-radius: 4px;
+  margin: 16px 0;
+  padding: 14px 16px;
+}
+
+.clever-route-admin .clever-route-open-card h3 {
+  margin-top: 0;
+}
+
+.clever-route-admin select,
+.clever-route-admin input[type="datetime-local"] {
+  max-width: 360px;
+  width: 100%;
+}

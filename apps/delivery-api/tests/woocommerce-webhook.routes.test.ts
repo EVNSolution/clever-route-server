@@ -114,6 +114,38 @@ describe('WooCommerce webhook routes', () => {
     }
   });
 
+  test('accepts WooCommerce delivery pings sent while a webhook is created', async () => {
+    const readDecryptedWooCommerceConnection = vi.fn();
+    const readWooCommerceWebhookConnection = vi.fn();
+    const syncOrders = vi.fn();
+    const app = await buildApp({
+      wooCommerceWebhook: {
+        connectionService: { readDecryptedWooCommerceConnection, readWooCommerceWebhookConnection },
+        createOrderSyncService: vi.fn(() => ({ syncOrders }))
+      }
+    });
+
+    try {
+      const response = await app.inject({
+        headers: { 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+        method: 'POST',
+        payload: 'webhook_id=123',
+        url: `/woocommerce/webhooks/${connectionId}/orders`
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        data: { accepted: true, type: 'ping' },
+        error: null
+      });
+      expect(readWooCommerceWebhookConnection).not.toHaveBeenCalled();
+      expect(readDecryptedWooCommerceConnection).not.toHaveBeenCalled();
+      expect(syncOrders).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('accepts valid order webhooks and syncs exactly one order', async () => {
     const syncOrders = vi.fn(() =>
       Promise.resolve({ sync: { created: 1, received: 1, unchanged: 0, updated: 0 } })

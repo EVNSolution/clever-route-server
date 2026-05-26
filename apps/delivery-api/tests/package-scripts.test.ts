@@ -12,6 +12,9 @@ describe('package scripts', () => {
     expect(packageJson.scripts?.['woocommerce:connection:bootstrap']).toBe(
       'tsx src/scripts/bootstrap-woocommerce-connection.ts'
     );
+    expect(packageJson.scripts?.['wordpress-plugin:pairing-code:create']).toBe(
+      'tsx src/scripts/create-wordpress-plugin-pairing-code.ts'
+    );
     expect(packageJson.scripts?.['prisma:migrate:deploy']).toContain('prisma migrate deploy');
   });
 });

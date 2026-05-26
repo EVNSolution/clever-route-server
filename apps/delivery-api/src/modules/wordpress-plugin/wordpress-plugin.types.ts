@@ -1,0 +1,158 @@
+import type { CommerceConnectionStatus } from '@prisma/client';
+
+export type WordPressPluginConnectionContext = {
+  connectionId: string;
+  label: string | null;
+  shopDomain: string;
+  shopId: string;
+  siteUrl: string;
+  status: CommerceConnectionStatus;
+  tokenId: string;
+  tokenPrefix: string;
+};
+
+export type WordPressPluginPairInput = {
+  hposEnabled?: boolean | null;
+  pairingCode: string;
+  pluginVersion?: string | null;
+  siteUrl: string;
+  wooVersion?: string | null;
+  wpVersion?: string | null;
+};
+
+export type WordPressPluginPairResult = {
+  connectionId: string;
+  expiresAt: string;
+  siteUrl: string;
+  token: string;
+  tokenPrefix: string;
+};
+
+export type WordPressPluginFreshness = {
+  lastRestSyncAt: string | null;
+  lastRouteUpdatedAt: string | null;
+  lastWebhookAt: string | null;
+  serverTime: string;
+};
+
+export type WordPressPluginHealth = {
+  connection: {
+    connectionId: string;
+    label: string | null;
+    shopDomain: string;
+    siteUrl: string;
+    state: 'connected' | 'disabled';
+    tokenPrefix: string;
+  };
+  freshness: WordPressPluginFreshness;
+};
+
+export type WordPressPluginRoutePlanSummary = {
+  createdAt: string;
+  deliveryDate: string | null;
+  driver: {
+    displayName: string;
+    id: string;
+    status: string;
+  } | null;
+  durationSeconds: number | null;
+  id: string;
+  name: string;
+  planDate: string;
+  status: WordPressPluginRoutePlanStatus;
+  stopCount: number;
+  totalDistanceMeters: number | null;
+  updatedAt: string;
+};
+
+export type WordPressPluginRoutePlanStatus =
+  | 'assigned'
+  | 'cancelled'
+  | 'completed'
+  | 'draft'
+  | 'in_progress'
+  | 'optimized';
+
+export type WordPressPluginStopStatus =
+  | 'arrived'
+  | 'assigned'
+  | 'cancelled'
+  | 'delivered'
+  | 'en_route'
+  | 'failed'
+  | 'pending'
+  | 'skipped';
+
+export type WordPressPluginRoutePlanStop = {
+  address: {
+    address1: string | null;
+    address2: string | null;
+    city: string | null;
+    countryCode: string | null;
+    postalCode: string | null;
+    province: string | null;
+  };
+  deliveryDate: string | null;
+  deliveryStopId: string;
+  estimatedArrivalAt: string | null;
+  order: {
+    id: string;
+    name: string;
+    sourceOrderId: string | null;
+    sourceOrderNumber: string | null;
+    sourcePlatform: string | null;
+    sourceSiteUrl: string | null;
+  };
+  recipientName: string | null;
+  sequence: number;
+  status: WordPressPluginStopStatus;
+  timeWindowEnd: string | null;
+  timeWindowStart: string | null;
+};
+
+export type WordPressPluginRoutePlanDetail = {
+  routePlan: WordPressPluginRoutePlanSummary;
+  stops: WordPressPluginRoutePlanStop[];
+};
+
+export type WordPressPluginRoutePlanFilters = {
+  driverId?: string | null;
+  from?: string | null;
+  status?: string | null;
+  to?: string | null;
+};
+
+export type WordPressPluginMappingConfig = {
+  addressPreference: 'shipping';
+  deliveryAreaMetaKey: string;
+  deliveryDateMetaKey: string;
+  deliveryTimeMetaKey: string;
+  editable: false;
+  notesField: 'customer_note';
+  phonePreference: 'billing_then_shipping';
+  preview: {
+    address: 'redacted';
+    phone: 'redacted';
+    recipientName: 'redacted';
+  };
+};
+
+export type WordPressPluginSyncRequestInput = {
+  modifiedAfter?: Date | null;
+  pageSize: number;
+  status?: string | null;
+};
+
+export type WordPressPluginSyncRequestResult = {
+  pagesRead: number;
+  sync: {
+    created: number;
+    needsReview: number;
+    readyToPlan: number;
+    received: number;
+    skipped: number;
+    unchanged: number;
+    updated: number;
+  };
+  warnings: string[];
+};

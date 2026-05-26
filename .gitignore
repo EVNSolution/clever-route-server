@@ -10,6 +10,7 @@ coverage/
 .cache/
 .vitest/
 *.tsbuildinfo
+apps/clever-route-connector.zip
 
 # Environment and secrets
 .env
