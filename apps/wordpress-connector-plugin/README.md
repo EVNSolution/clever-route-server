@@ -11,7 +11,7 @@ This plugin is a **WP Admin access layer**, not an ingestion source of truth:
 - The plugin can request a server-side REST backfill through `POST /wordpress/plugin/sync/request`.
 - The plugin reads route result DTOs from CLEVER and renders them under WooCommerce Admin.
 - The Orders & Sync page can request either an all-history backfill or a modified-after backfill, with guarded Woo status presets and a custom status slug fallback.
-- Connected sites show an **Open CLEVER Route** link to the server-owned admin workspace, prefilled with the WordPress site domain.
+- Connected sites show **Open CLEVER Route** launch buttons for Order list, Create route, Driver management, and Settings. The plugin asks CLEVER for a short-lived server launch URL so WooCommerce admins can enter the workspace without re-entering the CLEVER admin login secret.
 
 ## ZIP install/update notes
 
@@ -23,7 +23,7 @@ Recommended first-run flow:
 2. Open **WooCommerce → CLEVER Route → Setup** and pair with the CLEVER API base URL plus one-time pairing code.
 3. Open **Orders & Sync** and run **Import all historical orders** once to pull existing WooCommerce orders into CLEVER.
 4. Keep WooCommerce webhooks active for real-time new/updated orders after the backfill.
-5. Use **Open CLEVER Route** for route creation/date work on the CLEVER server workspace.
+5. Use **Open CLEVER Route** to enter the CLEVER server workspace without re-entering the CLEVER admin login secret.
 6. Use **Route Plans**, **Mapping**, and **Diagnostics** as read-only WordPress-side operational views.
 
 ## Explicit non-goals for MVP

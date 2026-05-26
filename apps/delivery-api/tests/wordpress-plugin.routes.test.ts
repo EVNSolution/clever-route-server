@@ -245,6 +245,35 @@ describe('WordPress plugin routes', () => {
     }
   });
 
+  test('issues a short-lived CLEVER admin launch URL for authenticated plugin access', async () => {
+    const { createAdminLaunch, dependencies } = createDependencies();
+    const app = await buildApp({ wordPressPlugin: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer valid-token' },
+        method: 'POST',
+        payload: { section: 'orders' },
+        url: '/wordpress/plugin/admin-launch'
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({
+        data: {
+          expiresAt: '2026-05-26T06:10:00.000Z',
+          launchUrl: 'https://clever-route.cleversystem.ai/admin/ui/plugin-launch?token=launch-token'
+        },
+        error: null
+      });
+      expect(createAdminLaunch).toHaveBeenCalledWith({
+        context: pluginContext(),
+        section: 'orders'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects malformed sync modifiedAfter values before Woo REST backfill', async () => {
     const { dependencies, requestSync } = createDependencies();
     const app = await buildApp({ wordPressPlugin: dependencies });
@@ -308,6 +337,7 @@ describe('WordPress plugin routes', () => {
 
 function createDependencies(input: { validToken?: boolean } = {}): {
   authenticateToken: ReturnType<typeof vi.fn<WordPressPluginDependencies['authService']['authenticateToken']>>;
+  createAdminLaunch: ReturnType<typeof vi.fn<NonNullable<WordPressPluginDependencies['adminLaunchService']>['createAdminLaunch']>>;
   dependencies: WordPressPluginDependencies;
   findRoutePlanDetail: ReturnType<typeof vi.fn<WordPressPluginDependencies['routeResultService']['findRoutePlanDetail']>>;
   listRoutePlans: ReturnType<typeof vi.fn<WordPressPluginDependencies['routeResultService']['listRoutePlans']>>;
@@ -343,9 +373,18 @@ function createDependencies(input: { validToken?: boolean } = {}): {
       warnings: []
     })
   );
+  const createAdminLaunch = vi.fn<NonNullable<WordPressPluginDependencies['adminLaunchService']>['createAdminLaunch']>(
+    () =>
+      Promise.resolve({
+        expiresAt: '2026-05-26T06:10:00.000Z',
+        launchUrl: 'https://clever-route.cleversystem.ai/admin/ui/plugin-launch?token=launch-token'
+      })
+  );
   return {
     authenticateToken,
+    createAdminLaunch,
     dependencies: {
+      adminLaunchService: { createAdminLaunch },
       authService: { authenticateToken, pairPlugin },
       mappingService: {
         readMapping: vi.fn(() =>

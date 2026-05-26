@@ -172,14 +172,17 @@ function normalizeDisplayName(value: string | null): string | null {
 
 function normalizeShopDomain(value: string): string {
   const trimmed = value.trim().toLowerCase();
-  const withoutProtocol = trimmed.replace(/^https?:\/\//u, '').replace(/\/$/u, '');
+  const withoutProtocol = trimmed.replace(/^https?:\/\//u, '').replace(/\/.*$/u, '');
 
-  if (!withoutProtocol.endsWith('.myshopify.com')) {
-    throw new Error('Shop domain must end with .myshopify.com');
-  }
-
-  if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/u.test(withoutProtocol)) {
-    throw new Error('Shop domain is not a valid myshopify.com domain');
+  if (
+    withoutProtocol === '' ||
+    withoutProtocol.length > 255 ||
+    withoutProtocol.startsWith('.') ||
+    withoutProtocol.endsWith('.') ||
+    !withoutProtocol.includes('.') ||
+    !/^[a-z0-9.-]+$/u.test(withoutProtocol)
+  ) {
+    throw new Error('Shop domain is not a valid customer domain');
   }
 
   return withoutProtocol;

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: CLEVER Route Connector
  * Description: Private WooCommerce Admin connector for read-only CLEVER Route results.
- * Version: 0.2.1
+ * Version: 0.3.0
  * Author: EVNSolution
  * Requires at least: 6.5
  * Requires PHP: 8.1
@@ -11,7 +11,7 @@
 
 defined('ABSPATH') || exit;
 
-define('CLEVER_ROUTE_CONNECTOR_VERSION', '0.2.1');
+define('CLEVER_ROUTE_CONNECTOR_VERSION', '0.3.0');
 define('CLEVER_ROUTE_CONNECTOR_FILE', __FILE__);
 define('CLEVER_ROUTE_CONNECTOR_DIR', plugin_dir_path(__FILE__));
 define('CLEVER_ROUTE_CONNECTOR_URL', plugin_dir_url(__FILE__));

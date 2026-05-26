@@ -48,6 +48,23 @@ describe('PrismaAdminDriverRepository', () => {
     );
   });
 
+  test('accepts WooCommerce customer domains for server-owned driver management', async () => {
+    const { prisma } = createPrismaHarness({ existingDriver: null });
+    const repository = new PrismaAdminDriverRepository(prisma as never);
+
+    await repository.createPendingDriver({
+      displayName: 'Alex Driver',
+      phone: '+14165550123',
+      shopDomain: 'https://Dev1.TomatonoFood.com/wp-admin/'
+    });
+
+    expect(prisma.shop.upsert).toHaveBeenCalledWith({
+      create: { shopDomain: 'dev1.tomatonofood.com' },
+      update: {},
+      where: { shopDomain: 'dev1.tomatonofood.com' }
+    });
+  });
+
   test('updates an existing shop driver with the same phone without creating a duplicate', async () => {
     const existingDriver = driverRecord({ displayName: '+821089216198', id: 'existing-driver-id' });
     const updatedDriver = driverRecord({ displayName: 'Minji Kim', id: 'existing-driver-id' });

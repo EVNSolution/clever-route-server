@@ -35,6 +35,7 @@ const adminOrders = loadAdminOrdersDependencies({ env: process.env, prisma });
 const adminRoutePlans = loadAdminRoutePlanDependencies({ env: process.env, prisma });
 const adminCommerceConnectionsUi = loadAdminCommerceConnectionsUiDependencies({
   adminCommerceConnections,
+  adminDrivers,
   adminOrders,
   adminRoutePlans,
   env: process.env,

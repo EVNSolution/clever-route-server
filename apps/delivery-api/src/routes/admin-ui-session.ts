@@ -3,8 +3,10 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypt
 import type { FastifyRequest } from 'fastify';
 
 const SESSION_VERSION = 'v1';
+const LAUNCH_VERSION = 'launch-v1';
 const CSRF_VERSION = 'v1';
 const DEFAULT_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const DEFAULT_LAUNCH_TTL_MS = 2 * 60 * 1000;
 export const ADMIN_UI_COOKIE_PATH = '/admin/ui';
 export const LEGACY_ADMIN_UI_COOKIE_PATH = '/admin/ui/commerce-connections/woocommerce';
 export const BROAD_LEGACY_ADMIN_UI_COOKIE_PATHS = ['/admin', '/'] as const;
@@ -16,6 +18,15 @@ type SessionPayload = {
   expiresAt: number;
   issuedAt: number;
   sessionId: string;
+  subject: string;
+};
+
+type LaunchPayload = {
+  expiresAt: number;
+  issuedAt: number;
+  launchId: string;
+  returnPath: string;
+  shopDomain: string;
   subject: string;
 };
 
@@ -33,6 +44,22 @@ export type CreateAdminWebSessionInput = {
   sessionSecret: string;
   subject: string;
   ttlMs?: number;
+};
+
+export type CreateAdminWebLaunchTokenInput = {
+  now?: () => Date;
+  returnPath: string;
+  sessionSecret: string;
+  shopDomain: string;
+  subject: string;
+  ttlMs?: number;
+};
+
+export type AdminWebLaunchToken = {
+  expiresAt: number;
+  returnPath: string;
+  shopDomain: string;
+  subject: string;
 };
 
 export type VerifiedAdminWebSession = AdminWebSession & {
@@ -81,6 +108,43 @@ export function createAdminWebSession(input: CreateAdminWebSessionInput): {
       value: cookieValue
     }),
     session
+  };
+}
+
+export function createAdminWebLaunchToken(input: CreateAdminWebLaunchTokenInput): {
+  expiresAt: string;
+  token: string;
+} {
+  assertStrongAdminWebSecret(input.sessionSecret, 'CLEVER_ADMIN_WEB_SESSION_SECRET');
+  const now = input.now?.() ?? new Date();
+  const issuedAt = now.getTime();
+  const expiresAt = issuedAt + (input.ttlMs ?? DEFAULT_LAUNCH_TTL_MS);
+  const payload: LaunchPayload = {
+    expiresAt,
+    issuedAt,
+    launchId: randomBytes(16).toString('base64url'),
+    returnPath: normalizeAdminUiReturnPath(input.returnPath),
+    shopDomain: input.shopDomain,
+    subject: input.subject
+  };
+  return {
+    expiresAt: new Date(expiresAt).toISOString(),
+    token: signLaunchPayload(payload, input.sessionSecret)
+  };
+}
+
+export function verifyAdminWebLaunchToken(input: {
+  now?: () => Date;
+  sessionSecret: string;
+  token: string;
+}): AdminWebLaunchToken | null {
+  const payload = verifySignedLaunchPayload(input);
+  if (payload === null) return null;
+  return {
+    expiresAt: payload.expiresAt,
+    returnPath: payload.returnPath,
+    shopDomain: payload.shopDomain,
+    subject: payload.subject
   };
 }
 
@@ -165,6 +229,12 @@ function signPayload(payload: SessionPayload, sessionSecret: string): string {
   return `${SESSION_VERSION}.${encodedPayload}.${signature}`;
 }
 
+function signLaunchPayload(payload: LaunchPayload, sessionSecret: string): string {
+  const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const signature = sign(`${LAUNCH_VERSION}.${encodedPayload}`, sessionSecret);
+  return `${LAUNCH_VERSION}.${encodedPayload}.${signature}`;
+}
+
 function verifySignedPayload(input: {
   now?: () => Date;
   sessionSecret: string;
@@ -190,6 +260,31 @@ function verifySignedPayload(input: {
   }
 }
 
+function verifySignedLaunchPayload(input: {
+  now?: () => Date;
+  sessionSecret: string;
+  token: string;
+}): LaunchPayload | null {
+  assertStrongAdminWebSecret(input.sessionSecret, 'CLEVER_ADMIN_WEB_SESSION_SECRET');
+  const parts = input.token.split('.');
+  if (parts.length !== 3) return null;
+  const [version, encodedPayload, signature] = parts;
+  if (version !== LAUNCH_VERSION || encodedPayload === undefined || signature === undefined) return null;
+
+  const expected = sign(`${LAUNCH_VERSION}.${encodedPayload}`, input.sessionSecret);
+  if (!timingSafeEqual(hashComparableSecret(signature), hashComparableSecret(expected))) return null;
+
+  try {
+    const decoded = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8')) as Partial<LaunchPayload>;
+    if (!isLaunchPayload(decoded)) return null;
+    const now = input.now?.() ?? new Date();
+    if (decoded.expiresAt <= now.getTime()) return null;
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
 function isSessionPayload(value: Partial<SessionPayload>): value is SessionPayload {
   return (
     typeof value.csrfSecret === 'string' &&
@@ -202,6 +297,37 @@ function isSessionPayload(value: Partial<SessionPayload>): value is SessionPaylo
     typeof value.subject === 'string' &&
     value.subject !== ''
   );
+}
+
+function isLaunchPayload(value: Partial<LaunchPayload>): value is LaunchPayload {
+  return (
+    typeof value.expiresAt === 'number' &&
+    Number.isFinite(value.expiresAt) &&
+    typeof value.issuedAt === 'number' &&
+    Number.isFinite(value.issuedAt) &&
+    typeof value.launchId === 'string' &&
+    value.launchId !== '' &&
+    typeof value.returnPath === 'string' &&
+    normalizeAdminUiReturnPath(value.returnPath) === value.returnPath &&
+    typeof value.shopDomain === 'string' &&
+    value.shopDomain !== '' &&
+    typeof value.subject === 'string' &&
+    value.subject !== ''
+  );
+}
+
+function normalizeAdminUiReturnPath(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed === '' || !trimmed.startsWith('/admin/ui')) {
+    return '/admin/ui';
+  }
+  if (trimmed.startsWith('//') || /^https?:\/\//iu.test(trimmed)) {
+    return '/admin/ui';
+  }
+  if (trimmed !== '/admin/ui' && !trimmed.startsWith('/admin/ui/') && !trimmed.startsWith('/admin/ui?')) {
+    return '/admin/ui';
+  }
+  return trimmed;
 }
 
 function createCsrfToken(payload: SessionPayload): string {

@@ -135,6 +135,10 @@ model Shop {
   tokenIssuedAt                 DateTime?                      @db.Timestamptz(6)
   installedAt                   DateTime                       @default(now()) @db.Timestamptz(6)
   uninstalledAt                 DateTime?                      @db.Timestamptz(6)
+  defaultDepotAddress           String?                        @db.Text
+  defaultDepotLatitude          Decimal?                       @db.Decimal(10, 7)
+  defaultDepotLongitude         Decimal?                       @db.Decimal(10, 7)
+  locale                        String?                        @db.Text
   createdAt                     DateTime                       @default(now()) @db.Timestamptz(6)
   updatedAt                     DateTime                       @updatedAt @db.Timestamptz(6)
   webhookEvents                 ShopifyWebhookEvent[]

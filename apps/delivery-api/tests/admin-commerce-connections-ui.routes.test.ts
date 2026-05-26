@@ -8,7 +8,11 @@ import { loadAdminCommerceConnectionsUiDependencies } from '../src/modules/comme
 import type { SafeWooCommerceConnection } from '../src/modules/commerce/commerce-connection.service.js';
 import type { AdminCommerceConnectionsDependencies } from '../src/routes/admin-commerce-connections.routes.js';
 import type { AdminCommerceConnectionsUiDependencies } from '../src/routes/admin-commerce-connections-ui.routes.js';
-import { MIN_ADMIN_WEB_SECRET_BYTES, verifyAdminWebLoginSecret } from '../src/routes/admin-ui-session.js';
+import {
+  createAdminWebLaunchToken,
+  MIN_ADMIN_WEB_SECRET_BYTES,
+  verifyAdminWebLoginSecret
+} from '../src/routes/admin-ui-session.js';
 
 const adminApiToken = `api_${'a'.repeat(48)}`;
 const webLoginSecret = `web_login_${'b'.repeat(48)}`;
@@ -202,8 +206,11 @@ describe('Admin WooCommerce connection UI routes', () => {
       });
       expect(dashboard.statusCode).toBe(200);
       expect(dashboard.body).toContain('WooCommerce connection setup');
-      expect(dashboard.body).toContain('/admin/ui/commerce-connections/woocommerce');
-      expect(dashboard.body).toContain('Open CLEVER Route');
+      expect(dashboard.body).toContain('/admin/ui/orders');
+      expect(dashboard.body).toContain('Order list');
+      expect(dashboard.body).toContain('Create route');
+      expect(dashboard.body).toContain('Driver management');
+      expect(dashboard.body).toContain('Settings');
       expect(dashboard.body).toContain('-apple-system');
 
       const commerce = await app.inject({
@@ -235,6 +242,152 @@ describe('Admin WooCommerce connection UI routes', () => {
       });
       expect(malformedCookie.statusCode).toBe(303);
       expect(malformedCookie.headers.location).toBe('/admin/ui/login');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('accepts a plugin launch token and enters admin UI without the web login secret', async () => {
+    const { app } = await createUiHarness();
+    const { token } = createAdminWebLaunchToken({
+      returnPath: '/admin/ui/orders?shopDomain=tenant-a.example.test',
+      sessionSecret: webSessionSecret,
+      shopDomain: 'tenant-a.example.test',
+      subject: 'wordpress-plugin:tenant-a.example.test'
+    });
+
+    try {
+      const launch = await app.inject({
+        method: 'GET',
+        url: `/admin/ui/plugin-launch?token=${encodeURIComponent(token)}`
+      });
+
+      expect(launch.statusCode).toBe(303);
+      expect(launch.headers.location).toBe('/admin/ui/orders?shopDomain=tenant-a.example.test');
+      const cookie = readSetCookie(launch);
+      expect(cookie).toContain('HttpOnly');
+      expect(cookie).toContain('SameSite=Strict');
+
+      const orders = await app.inject({
+        headers: { cookie },
+        method: 'GET',
+        url: '/admin/ui/orders?shopDomain=tenant-a.example.test'
+      });
+      expect(orders.statusCode).toBe(200);
+      expect(orders.body).toContain('Order list');
+      expect(orders.body).not.toContain('CLEVER Admin login');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('redacts plugin launch tokens from request logs', async () => {
+    const logLines: string[] = [];
+    const { app } = await createUiHarness(
+      {},
+      {
+        logger: {
+          level: 'info',
+          stream: { write: (line: string) => logLines.push(line) }
+        }
+      }
+    );
+
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/admin/ui/plugin-launch?token=super-secret-launch-token'
+      });
+
+      expect(response.statusCode).toBe(401);
+      const joinedLogs = logLines.join('\n');
+      expect(joinedLogs).toContain('/admin/ui/plugin-launch?token=%5Bredacted%5D');
+      expect(joinedLogs).not.toContain('super-secret-launch-token');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('renders Shopify-app-style operating pages for orders, route creation, drivers, and settings', async () => {
+    const listCanonicalOrders = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['orderSyncService']>['listCanonicalOrders']>(
+      (input) => {
+        if (input.filters?.readiness === 'NEEDS_REVIEW') {
+          return Promise.resolve([canonicalOrder({ readiness: 'NEEDS_REVIEW', reviewReasons: ['missing_delivery_date'] })]);
+        }
+        return Promise.resolve([canonicalOrder()]);
+      }
+    );
+    const listDrivers = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['driverService']>['listDrivers']>(
+      () => Promise.resolve([driverRow()])
+    );
+    const getSettings = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['settingsService']>['getSettings']>(
+      () => Promise.resolve(storeSettings())
+    );
+    const { app } = await createUiHarness({
+      driverService: {
+        createPendingDriver: vi.fn(),
+        deleteDriver: vi.fn(),
+        listDrivers,
+        regenerateInviteCode: vi.fn()
+      },
+      orderSyncService: { listCanonicalOrders },
+      routePlanService: {
+        createRoutePlan: vi.fn(),
+        getRoutePlanDetail: vi.fn(),
+        listRoutePlans: vi.fn(() => Promise.resolve([routePlanSummary()])),
+        updateRoutePlanStops: vi.fn()
+      },
+      settingsService: {
+        getSettings,
+        saveSettings: vi.fn(() => Promise.resolve(storeSettings({ locale: 'fr-CA' })))
+      }
+    });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      const orders = await app.inject({
+        headers: { cookie },
+        method: 'GET',
+        url: '/admin/ui/orders?shopDomain=tenant-a.example.test'
+      });
+      const routes = await app.inject({
+        headers: { cookie },
+        method: 'GET',
+        url: '/admin/ui/route-plans?shopDomain=tenant-a.example.test&deliveryDate=2026-05-26'
+      });
+      const drivers = await app.inject({
+        headers: { cookie },
+        method: 'GET',
+        url: '/admin/ui/drivers?shopDomain=tenant-a.example.test'
+      });
+      const settings = await app.inject({
+        headers: { cookie },
+        method: 'GET',
+        url: '/admin/ui/settings?shopDomain=tenant-a.example.test'
+      });
+
+      expect(orders.statusCode).toBe(200);
+      expect(orders.body).toContain('Order list');
+      expect(orders.body).toContain('#1001');
+      expect(orders.body).toContain('missing_delivery_date');
+      expect(routes.statusCode).toBe(200);
+      expect(routes.body).toContain('Create route');
+      expect(routes.body).toContain('Create route from all ready orders');
+      expect(routes.body).toContain('123 Depot St');
+      expect(drivers.statusCode).toBe(200);
+      expect(drivers.body).toContain('Driver management');
+      expect(drivers.body).toContain('Alex Driver');
+      expect(settings.statusCode).toBe(200);
+      expect(settings.body).toContain('Store settings');
+      expect(settings.body).toContain('Store address');
+      expect(settings.body).toContain('Language');
+      expect(settings.body).toContain('123 Depot St');
+      expect(listCanonicalOrders).toHaveBeenCalledWith({
+        filters: { planned: false },
+        shopDomain: 'tenant-a.example.test'
+      });
+      expect(listDrivers).toHaveBeenCalledWith({ shopDomain: 'tenant-a.example.test' });
+      expect(getSettings).toHaveBeenCalledWith({ shopDomain: 'tenant-a.example.test' });
     } finally {
       await app.close();
     }
@@ -804,15 +957,17 @@ describe('Admin WooCommerce connection UI routes', () => {
 async function createUiHarness(overrides: Partial<{
   actor: AdminCommerceActor;
   createConnection: ReturnType<typeof vi.fn>;
+  driverService: AdminCommerceConnectionsUiDependencies['driverService'];
   getConnection: ReturnType<typeof vi.fn>;
   listConnections: ReturnType<typeof vi.fn>;
   orderSyncService: AdminCommerceConnectionsUiDependencies['orderSyncService'];
   rotateCredentials: ReturnType<typeof vi.fn>;
   rotateWebhookSecret: ReturnType<typeof vi.fn>;
   routePlanService: AdminCommerceConnectionsUiDependencies['routePlanService'];
+  settingsService: AdminCommerceConnectionsUiDependencies['settingsService'];
   testConnection: ReturnType<typeof vi.fn>;
   updateStatus: ReturnType<typeof vi.fn>;
-}> = {}) {
+}> = {}, options: { logger?: Exclude<Parameters<typeof buildApp>[0], undefined>['logger'] } = {}) {
   const listConnections = overrides.listConnections ?? vi.fn(() => Promise.resolve([safeConnection()]));
   const testConnection = overrides.testConnection ?? vi.fn(() => Promise.resolve({ checkedAt: '2026-05-24T00:00:00.000Z', status: 'VERIFIED' as const }));
   const createConnection = overrides.createConnection ?? vi.fn(() => Promise.resolve({ connection: safeConnection(), webhookSetup: { oneTimeSecret: 'generated-whsec' } }));
@@ -833,14 +988,19 @@ async function createUiHarness(overrides: Partial<{
     actor: overrides.actor ?? { allowedShopDomains: '*', subject: 'web-operator' },
     loginSecret: webLoginSecret,
     onboardingService,
+    ...(overrides.driverService === undefined ? {} : { driverService: overrides.driverService }),
     ...(overrides.orderSyncService === undefined ? {} : { orderSyncService: overrides.orderSyncService }),
     publicBaseUrl: 'https://clever-route.cleversystem.ai',
     ...(overrides.routePlanService === undefined ? {} : { routePlanService: overrides.routePlanService }),
+    ...(overrides.settingsService === undefined ? {} : { settingsService: overrides.settingsService }),
     secureCookies: false,
     sessionSecret: webSessionSecret
   };
   return {
-    app: await buildApp({ adminCommerceConnectionsUi: dependencies }),
+    app: await buildApp({
+      adminCommerceConnectionsUi: dependencies,
+      ...(options.logger === undefined ? {} : { logger: options.logger })
+    }),
     createConnection,
     getConnection,
     listConnections,
@@ -1050,6 +1210,36 @@ function routePlanDetail() {
         status: 'PENDING'
       }
     ]
+  };
+}
+
+function driverRow() {
+  return {
+    authStatus: 'INVITE_PENDING' as const,
+    authSubject: null,
+    createdAt: '2026-05-26T12:00:00.000Z',
+    displayName: 'Alex Driver',
+    id: 'driver-id',
+    inviteCode: 'DRV123',
+    inviteCodeExpiresAt: '2026-05-27T12:00:00.000Z',
+    lastSeenAt: null,
+    phone: '+14165550123',
+    recentEventsCount: 0,
+    status: 'PENDING' as const,
+    updatedAt: '2026-05-26T12:00:00.000Z'
+  };
+}
+
+function storeSettings(
+  overrides: Partial<NonNullable<Awaited<ReturnType<NonNullable<AdminCommerceConnectionsUiDependencies['settingsService']>['getSettings']>>>> = {}
+) {
+  return {
+    defaultDepotAddress: '123 Depot St, Toronto, ON',
+    defaultDepotLatitude: 43.6532,
+    defaultDepotLongitude: -79.3832,
+    locale: 'en-CA',
+    shopDomain: 'tenant-a.example.test',
+    ...overrides
   };
 }
 

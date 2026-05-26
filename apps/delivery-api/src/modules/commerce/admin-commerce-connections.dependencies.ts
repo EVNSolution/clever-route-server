@@ -2,8 +2,11 @@ import type { PrismaClient } from '@prisma/client';
 
 import type { AdminCommerceConnectionsDependencies } from '../../routes/admin-commerce-connections.routes.js';
 import type { AdminCommerceConnectionsUiDependencies } from '../../routes/admin-commerce-connections-ui.routes.js';
+import type { AdminDriversDependencies } from '../../routes/admin-drivers.routes.js';
 import type { AdminOrdersDependencies } from '../../routes/admin-orders.routes.js';
 import type { AdminRoutePlanDependencies } from '../../routes/admin-route-plans.routes.js';
+import { PrismaAdminDriverRepository } from '../driver/admin-driver.repository.js';
+import { AdminDriverService } from '../driver/admin-driver.service.js';
 import { PrismaRoutePlanRepository } from '../route-plans/route-plan.repository.js';
 import { RoutePlanAdminService } from '../route-plans/route-plan.service.js';
 import { OsrmRouteGeometryProvider } from '../route-plans/osrm-route-geometry.client.js';
@@ -14,6 +17,7 @@ import { loadCredentialEncryptionKey } from './commerce-credential-encryption.js
 import { PrismaCommerceConnectionRepository } from './commerce-connection.repository.js';
 import { CommerceConnectionCredentialService } from './commerce-connection.service.js';
 import { parseAllowedShopDomains, StaticAdminCommerceTokenVerifier } from './admin-commerce-auth.js';
+import { PrismaAdminStoreSettingsService } from './admin-store-settings.service.js';
 import { WooCommerceConnectionOnboardingService } from './woocommerce-connection-onboarding.service.js';
 import { WooCommerceConnectionVerifier } from './woocommerce-connection-verifier.js';
 
@@ -70,6 +74,7 @@ export function loadAdminCommerceConnectionsDependencies(input: {
 
 export function loadAdminCommerceConnectionsUiDependencies(input: {
   adminCommerceConnections: AdminCommerceConnectionsDependencies | undefined;
+  adminDrivers?: AdminDriversDependencies | undefined;
   adminOrders?: AdminOrdersDependencies | undefined;
   adminRoutePlans?: AdminRoutePlanDependencies | undefined;
   env: AdminCommerceConnectionsRuntimeEnv;
@@ -98,13 +103,26 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     },
     cookieName,
     loginSecret,
+    ...readAdminUiDriverService(input),
     onboardingService: input.adminCommerceConnections.onboardingService,
     ...readAdminUiOrderSyncService(input),
     ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
     ...readAdminUiRoutePlanService(input),
     secureCookies: input.nodeEnv !== 'development' && input.nodeEnv !== 'test',
-    sessionSecret
+    sessionSecret,
+    ...readAdminUiSettingsService(input)
   };
+}
+
+function readAdminUiDriverService(input: {
+  adminDrivers?: AdminDriversDependencies | undefined;
+  prisma?: PrismaClient | undefined;
+}): Pick<AdminCommerceConnectionsUiDependencies, 'driverService'> {
+  if (input.adminDrivers !== undefined) {
+    return { driverService: input.adminDrivers.adminDriverService };
+  }
+  if (input.prisma === undefined) return {};
+  return { driverService: new AdminDriverService(new PrismaAdminDriverRepository(input.prisma)) };
 }
 
 function readAdminUiOrderSyncService(input: {
@@ -140,6 +158,13 @@ function readAdminUiRoutePlanService(input: {
       new OsrmRouteGeometryProvider({ baseUrl: readOptional(input.env.OSRM_BASE_URL) })
     )
   };
+}
+
+function readAdminUiSettingsService(input: {
+  prisma?: PrismaClient | undefined;
+}): Pick<AdminCommerceConnectionsUiDependencies, 'settingsService'> {
+  if (input.prisma === undefined) return {};
+  return { settingsService: new PrismaAdminStoreSettingsService(input.prisma) };
 }
 
 function readOptional(value: string | undefined): string | undefined {

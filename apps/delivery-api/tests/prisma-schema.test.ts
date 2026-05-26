@@ -14,6 +14,10 @@ const wooOnboardingMigrationPath = new URL(
   '../prisma/migrations/20260522043000_add_woocommerce_onboarding_admin/migration.sql',
   import.meta.url
 );
+const adminSettingsMigrationPath = new URL(
+  '../prisma/migrations/20260526061000_add_shop_admin_settings/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
@@ -33,6 +37,10 @@ describe('Prisma schema', () => {
     expect(schema).toContain('tokenScopes');
     expect(schema).toContain('installedAt');
     expect(schema).toContain('uninstalledAt');
+    expect(schema).toContain('defaultDepotAddress');
+    expect(schema).toContain('defaultDepotLatitude');
+    expect(schema).toContain('defaultDepotLongitude');
+    expect(schema).toContain('locale');
     expect(schema).toMatch(/@@unique\(\[shopDomain\]\)/);
   });
 
@@ -146,5 +154,14 @@ describe('Prisma schema', () => {
     expect(migration).toContain('"actorSubject" TEXT NOT NULL');
     expect(migration).toContain('"metadata" JSONB');
     expect(migration).toContain('"commerce_connection_audit_logs_shopId_createdAt_idx"');
+  });
+
+  test('ships a migration for shop admin route defaults', async () => {
+    const migration = await readFile(adminSettingsMigrationPath, 'utf8');
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "defaultDepotAddress"');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "defaultDepotLatitude"');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "defaultDepotLongitude"');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "locale"');
   });
 });

@@ -1,7 +1,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import type { AdminCommerceActor } from '../modules/commerce/admin-commerce-auth.js';
+import type { AdminDriverRow, AdminDriverServiceContract } from '../modules/driver/admin-driver.types.js';
 import type { SafeWooCommerceConnection } from '../modules/commerce/commerce-connection.service.js';
+import type { AdminStoreSettings, SaveAdminStoreSettingsInput } from '../modules/commerce/admin-store-settings.service.js';
 import {
   WooCommerceOnboardingError,
   type WooCommerceConnectionOnboardingService,
@@ -26,6 +28,7 @@ import {
   clearLegacyAdminWebSessionCookie,
   createAdminWebSession,
   verifyAdminWebCsrfToken,
+  verifyAdminWebLaunchToken,
   verifyAdminWebLoginSecret,
   verifyAdminWebSessionFromRequest,
   type AdminWebSession
@@ -35,10 +38,14 @@ const ADMIN_ROOT_PATH = '/admin';
 const ADMIN_UI_ROOT_PATH = '/admin/ui';
 const ADMIN_UI_LOGIN_PATH = `${ADMIN_UI_ROOT_PATH}/login`;
 const ADMIN_UI_LOGOUT_PATH = `${ADMIN_UI_ROOT_PATH}/logout`;
+const ADMIN_UI_PLUGIN_LAUNCH_PATH = `${ADMIN_UI_ROOT_PATH}/plugin-launch`;
 const ADMIN_UI_WOOCOMMERCE_TEST_SCRIPT_PATH = `${ADMIN_UI_ROOT_PATH}/assets/woocommerce-test.js`;
 const ADMIN_UI_COMMERCE_CONNECTIONS_PATH = `${ADMIN_UI_ROOT_PATH}/commerce-connections`;
 const ADMIN_UI_WOOCOMMERCE_PATH = `${ADMIN_UI_COMMERCE_CONNECTIONS_PATH}/woocommerce`;
+const ADMIN_UI_ORDERS_PATH = `${ADMIN_UI_ROOT_PATH}/orders`;
 const ADMIN_UI_ROUTE_PLANS_PATH = `${ADMIN_UI_ROOT_PATH}/route-plans`;
+const ADMIN_UI_DRIVERS_PATH = `${ADMIN_UI_ROOT_PATH}/drivers`;
+const ADMIN_UI_SETTINGS_PATH = `${ADMIN_UI_ROOT_PATH}/settings`;
 const LEGACY_ADMIN_UI_WOOCOMMERCE_LOGIN_PATH = `${ADMIN_UI_WOOCOMMERCE_PATH}/login`;
 const LEGACY_ADMIN_UI_WOOCOMMERCE_LOGOUT_PATH = `${ADMIN_UI_WOOCOMMERCE_PATH}/logout`;
 const ADMIN_UI_CSP = [
@@ -104,6 +111,10 @@ type SafeConnectionWithDelivery = SafeWooCommerceConnection & {
 export type AdminCommerceConnectionsUiDependencies = {
   actor: AdminCommerceActor;
   cookieName?: string;
+  driverService?: Pick<
+    AdminDriverServiceContract,
+    'createPendingDriver' | 'deleteDriver' | 'listDrivers' | 'regenerateInviteCode'
+  >;
   loginSecret: string;
   now?: () => Date;
   onboardingService: Pick<
@@ -130,6 +141,10 @@ export type AdminCommerceConnectionsUiDependencies = {
   secureCookies: boolean;
   sessionSecret: string;
   sessionTtlMs?: number;
+  settingsService?: {
+    getSettings(input: { shopDomain: string }): Promise<AdminStoreSettings | null>;
+    saveSettings(input: SaveAdminStoreSettingsInput): Promise<AdminStoreSettings>;
+  };
 };
 
 export function registerAdminCommerceConnectionsUiRoutes(
@@ -145,6 +160,34 @@ export function registerAdminCommerceConnectionsUiRoutes(
       .header('Cache-Control', 'no-store')
       .send(ADMIN_UI_WOOCOMMERCE_TEST_SCRIPT)
   );
+
+  app.get(ADMIN_UI_PLUGIN_LAUNCH_PATH, async (request, reply) => {
+    const token = readQueryString(request.query, 'token');
+    if (token === null) {
+      return sendHtml(reply, 401, renderLoginPage({ error: 'Invalid plugin launch token' }));
+    }
+    const launch = verifyAdminWebLaunchToken({
+      token,
+      sessionSecret: dependencies.sessionSecret,
+      ...(dependencies.now === undefined ? {} : { now: dependencies.now })
+    });
+    if (launch === null) {
+      return sendHtml(reply, 401, renderLoginPage({ error: 'Invalid or expired plugin launch token' }));
+    }
+    const created = createAdminWebSession({
+      secure: dependencies.secureCookies,
+      sessionSecret: dependencies.sessionSecret,
+      subject: launch.subject,
+      ...(dependencies.cookieName === undefined ? {} : { cookieName: dependencies.cookieName }),
+      ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
+      ...(dependencies.sessionTtlMs === undefined ? {} : { ttlMs: dependencies.sessionTtlMs })
+    });
+    return reply
+      .code(303)
+      .header('Set-Cookie', sessionSetCookieHeaders(dependencies, created.cookieHeader))
+      .header('Location', launch.returnPath)
+      .send('');
+  });
 
   app.get(ADMIN_UI_ROOT_PATH, async (request, reply) => {
     const session = readSession(request, dependencies);
@@ -185,25 +228,48 @@ export function registerAdminCommerceConnectionsUiRoutes(
     }
   );
 
-  for (const placeholder of [
-    { path: `${ADMIN_UI_ROOT_PATH}/settings`, title: 'Settings' },
-    { path: `${ADMIN_UI_ROOT_PATH}/orders`, title: 'Orders' },
-    { path: `${ADMIN_UI_ROOT_PATH}/drivers`, title: 'Drivers' }
-  ] as const) {
-    app.get(placeholder.path, async (request, reply) => {
-      const session = readSession(request, dependencies);
-      if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
-      return sendHtml(
-        reply,
-        200,
-        renderPlaceholderPage({
-          actor: dependencies.actor,
-          csrfToken: session.csrfToken,
-          title: placeholder.title
-        })
-      );
+  app.get(ADMIN_UI_ORDERS_PATH, async (request, reply) => {
+    const session = readSession(request, dependencies);
+    if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
+    return renderOrders(reply, request, dependencies, session, {
+      deliveryDate: readQueryString(request.query, 'deliveryDate'),
+      shopDomain: readQueryString(request.query, 'shopDomain'),
+      ...optionalUiMessage('error', readQueryString(request.query, 'error')),
+      ...optionalUiMessage('notice', readQueryString(request.query, 'notice'))
     });
-  }
+  });
+
+  app.get(ADMIN_UI_DRIVERS_PATH, async (request, reply) => {
+    const session = readSession(request, dependencies);
+    if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
+    return renderDrivers(reply, request, dependencies, session, {
+      shopDomain: readQueryString(request.query, 'shopDomain'),
+      ...optionalUiMessage('error', readQueryString(request.query, 'error')),
+      ...optionalUiMessage('notice', readQueryString(request.query, 'notice'))
+    });
+  });
+
+  app.post(ADMIN_UI_DRIVERS_PATH, async (request, reply) => {
+    const session = readSession(request, dependencies);
+    if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
+    return handleDriverCreate(request, reply, dependencies, session);
+  });
+
+  app.get(ADMIN_UI_SETTINGS_PATH, async (request, reply) => {
+    const session = readSession(request, dependencies);
+    if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
+    return renderSettings(reply, request, dependencies, session, {
+      shopDomain: readQueryString(request.query, 'shopDomain'),
+      ...optionalUiMessage('error', readQueryString(request.query, 'error')),
+      ...optionalUiMessage('notice', readQueryString(request.query, 'notice'))
+    });
+  });
+
+  app.post(ADMIN_UI_SETTINGS_PATH, async (request, reply) => {
+    const session = readSession(request, dependencies);
+    if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
+    return handleSettingsSave(request, reply, dependencies, session);
+  });
 
   app.get(LEGACY_ADMIN_UI_WOOCOMMERCE_LOGIN_PATH, async (_request, reply) => redirect(reply, ADMIN_UI_LOGIN_PATH));
   app.post(LEGACY_ADMIN_UI_WOOCOMMERCE_LOGIN_PATH, async (_request, reply) => redirect(reply, ADMIN_UI_LOGIN_PATH));
@@ -452,6 +518,210 @@ export function registerAdminCommerceConnectionsUiRoutes(
   );
 }
 
+async function renderOrders(
+  reply: FastifyReply,
+  _request: FastifyRequest,
+  dependencies: AdminCommerceConnectionsUiDependencies,
+  session: AdminWebSession,
+  input: { deliveryDate?: string | null; error?: string; notice?: string; shopDomain?: string | null }
+): Promise<unknown> {
+  let currentShopDomain: string | null = null;
+  let deliveryDate: string | null = null;
+  let orders: CanonicalOrderRow[] = [];
+  let reviewOrders: CanonicalOrderRow[] = [];
+  let error = input.error;
+
+  try {
+    currentShopDomain = normalizeOptionalShopDomain(input.shopDomain);
+    deliveryDate = normalizeOptionalDate(input.deliveryDate);
+    if (dependencies.orderSyncService === undefined) {
+      error = error ?? 'Order list service is not enabled in this runtime.';
+    } else if (currentShopDomain !== null) {
+      [orders, reviewOrders] = await Promise.all([
+        dependencies.orderSyncService.listCanonicalOrders({
+          filters: {
+            ...(deliveryDate === null ? {} : { deliveryDate }),
+            planned: false
+          },
+          shopDomain: currentShopDomain
+        }),
+        dependencies.orderSyncService.listCanonicalOrders({
+          filters: {
+            ...(deliveryDate === null ? {} : { deliveryDate }),
+            planned: false,
+            readiness: 'NEEDS_REVIEW'
+          },
+          shopDomain: currentShopDomain
+        })
+      ]);
+    }
+  } catch (loadError) {
+    error = error ?? sanitizeErrorMessage(loadError);
+  }
+
+  return sendHtml(
+    reply,
+    200,
+    renderOrdersPage({
+      actor: dependencies.actor,
+      csrfToken: session.csrfToken,
+      currentShopDomain,
+      deliveryDate,
+      orders,
+      reviewOrders,
+      ...(error === undefined ? {} : { error: truncateUiMessage(error) }),
+      ...(input.notice === undefined ? {} : { notice: truncateUiMessage(input.notice) })
+    })
+  );
+}
+
+async function renderDrivers(
+  reply: FastifyReply,
+  _request: FastifyRequest,
+  dependencies: AdminCommerceConnectionsUiDependencies,
+  session: AdminWebSession,
+  input: { error?: string; notice?: string; shopDomain?: string | null }
+): Promise<unknown> {
+  let currentShopDomain: string | null = null;
+  let drivers: AdminDriverRow[] = [];
+  let error = input.error;
+
+  try {
+    currentShopDomain = normalizeOptionalShopDomain(input.shopDomain);
+    if (dependencies.driverService === undefined) {
+      error = error ?? 'Driver management service is not enabled in this runtime.';
+    } else if (currentShopDomain !== null) {
+      drivers = await dependencies.driverService.listDrivers({ shopDomain: currentShopDomain });
+    }
+  } catch (loadError) {
+    error = error ?? sanitizeErrorMessage(loadError);
+  }
+
+  return sendHtml(
+    reply,
+    200,
+    renderDriversPage({
+      actor: dependencies.actor,
+      csrfToken: session.csrfToken,
+      currentShopDomain,
+      drivers,
+      ...(error === undefined ? {} : { error: truncateUiMessage(error) }),
+      ...(input.notice === undefined ? {} : { notice: truncateUiMessage(input.notice) })
+    })
+  );
+}
+
+async function handleDriverCreate(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  dependencies: AdminCommerceConnectionsUiDependencies,
+  session: AdminWebSession
+): Promise<unknown> {
+  let shopDomain: string | null = null;
+  try {
+    assertSameOriginMutation(request, dependencies);
+    if (dependencies.driverService === undefined) {
+      throw new WooCommerceOnboardingError('BAD_REQUEST', 'Driver management service is not enabled in this runtime.', 400);
+    }
+    const fields = await readAdminUiFormFields(request, {
+      allowedFields: ['csrfToken', 'shopDomain', 'displayName', 'phone'],
+      maxFields: 4
+    });
+    assertValidCsrf(session, fields.csrfToken);
+    shopDomain = normalizeRequiredShopDomain(readRequiredField(fields, 'shopDomain', 'shopDomain'));
+    await dependencies.driverService.createPendingDriver({
+      createdBy: dependencies.actor.subject,
+      displayName: readOptionalField(fields, 'displayName'),
+      inviteLink: null,
+      phone: readRequiredField(fields, 'phone', 'driver phone'),
+      shopDomain,
+      source: 'clever-app-driver-invite'
+    });
+    return redirectToAdminModule(reply, ADMIN_UI_DRIVERS_PATH, {
+      notice: 'Driver invite created.',
+      shopDomain
+    });
+  } catch (error) {
+    return redirectToAdminModule(reply, ADMIN_UI_DRIVERS_PATH, {
+      error: sanitizeErrorMessage(error),
+      ...(shopDomain === null ? {} : { shopDomain })
+    });
+  }
+}
+
+async function renderSettings(
+  reply: FastifyReply,
+  _request: FastifyRequest,
+  dependencies: AdminCommerceConnectionsUiDependencies,
+  session: AdminWebSession,
+  input: { error?: string; notice?: string; shopDomain?: string | null }
+): Promise<unknown> {
+  let currentShopDomain: string | null = null;
+  let settings: AdminStoreSettings | null = null;
+  let error = input.error;
+
+  try {
+    currentShopDomain = normalizeOptionalShopDomain(input.shopDomain);
+    if (dependencies.settingsService === undefined) {
+      error = error ?? 'Store settings service is not enabled in this runtime.';
+    } else if (currentShopDomain !== null) {
+      settings = await dependencies.settingsService.getSettings({ shopDomain: currentShopDomain });
+    }
+  } catch (loadError) {
+    error = error ?? sanitizeErrorMessage(loadError);
+  }
+
+  return sendHtml(
+    reply,
+    200,
+    renderSettingsPage({
+      actor: dependencies.actor,
+      csrfToken: session.csrfToken,
+      currentShopDomain,
+      settings,
+      ...(error === undefined ? {} : { error: truncateUiMessage(error) }),
+      ...(input.notice === undefined ? {} : { notice: truncateUiMessage(input.notice) })
+    })
+  );
+}
+
+async function handleSettingsSave(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  dependencies: AdminCommerceConnectionsUiDependencies,
+  session: AdminWebSession
+): Promise<unknown> {
+  let shopDomain: string | null = null;
+  try {
+    assertSameOriginMutation(request, dependencies);
+    if (dependencies.settingsService === undefined) {
+      throw new WooCommerceOnboardingError('BAD_REQUEST', 'Store settings service is not enabled in this runtime.', 400);
+    }
+    const fields = await readAdminUiFormFields(request, {
+      allowedFields: ['csrfToken', 'shopDomain', 'defaultDepotAddress', 'defaultDepotLatitude', 'defaultDepotLongitude', 'locale'],
+      maxFields: 6
+    });
+    assertValidCsrf(session, fields.csrfToken);
+    shopDomain = normalizeRequiredShopDomain(readRequiredField(fields, 'shopDomain', 'shopDomain'));
+    await dependencies.settingsService.saveSettings({
+      defaultDepotAddress: readOptionalField(fields, 'defaultDepotAddress'),
+      defaultDepotLatitude: readOptionalCoordinate(fields.defaultDepotLatitude),
+      defaultDepotLongitude: readOptionalCoordinate(fields.defaultDepotLongitude),
+      locale: readLocaleField(fields.locale),
+      shopDomain
+    });
+    return redirectToAdminModule(reply, ADMIN_UI_SETTINGS_PATH, {
+      notice: 'Store settings saved.',
+      shopDomain
+    });
+  } catch (error) {
+    return redirectToAdminModule(reply, ADMIN_UI_SETTINGS_PATH, {
+      error: sanitizeErrorMessage(error),
+      ...(shopDomain === null ? {} : { shopDomain })
+    });
+  }
+}
+
 async function renderRoutePlans(
   reply: FastifyReply,
   _request: FastifyRequest,
@@ -474,6 +744,7 @@ async function renderRoutePlans(
   let readyOrders: CanonicalOrderRow[] = [];
   let reviewOrders: CanonicalOrderRow[] = [];
   let routeDetail: RoutePlanDetail | null = null;
+  let settings: AdminStoreSettings | null = null;
 
   try {
     currentShopDomain = normalizeOptionalShopDomain(input.shopDomain);
@@ -507,6 +778,13 @@ async function renderRoutePlans(
           shopDomain: currentShopDomain
         })
       ]);
+      if (dependencies.settingsService !== undefined) {
+        try {
+          settings = await dependencies.settingsService.getSettings({ shopDomain: currentShopDomain });
+        } catch {
+          settings = null;
+        }
+      }
     }
   } catch (loadError) {
     error = error ?? sanitizeErrorMessage(loadError);
@@ -525,6 +803,7 @@ async function renderRoutePlans(
       routeDetail,
       routePlans,
       servicesEnabled: services !== null,
+      settings,
       ...(error === undefined ? {} : { error: truncateUiMessage(error) }),
       ...(input.notice === undefined ? {} : { notice: truncateUiMessage(input.notice) })
     })
@@ -818,6 +1097,28 @@ function redirectToWooCommerceHome(
   }
   const query = params.toString();
   return redirect(reply, query === '' ? ADMIN_UI_WOOCOMMERCE_PATH : `${ADMIN_UI_WOOCOMMERCE_PATH}?${query}`);
+}
+
+function redirectToAdminModule(
+  reply: FastifyReply,
+  path: string,
+  input: { deliveryDate?: string | null; error?: string; notice?: string; shopDomain?: string | null }
+): unknown {
+  const params = new URLSearchParams();
+  if (input.shopDomain !== undefined && input.shopDomain !== null && input.shopDomain.trim() !== '') {
+    params.set('shopDomain', input.shopDomain.trim());
+  }
+  if (input.deliveryDate !== undefined && input.deliveryDate !== null && input.deliveryDate.trim() !== '') {
+    params.set('deliveryDate', input.deliveryDate.trim());
+  }
+  if (input.error !== undefined && input.error.trim() !== '') {
+    params.set('error', truncateUiMessage(input.error));
+  }
+  if (input.notice !== undefined && input.notice.trim() !== '') {
+    params.set('notice', truncateUiMessage(input.notice));
+  }
+  const query = params.toString();
+  return redirect(reply, query === '' ? path : `${path}?${query}`);
 }
 
 function assertValidCsrf(session: AdminWebSession, token: string | null | undefined): void {
@@ -1233,6 +1534,14 @@ function readOptionalCoordinate(value: string | undefined): number | null {
   return parsed;
 }
 
+function readLocaleField(value: string | undefined): string {
+  const locale = value?.trim() || 'en-CA';
+  if (!/^[a-z]{2}(?:-[A-Z]{2})?$/u.test(locale)) {
+    throw new WooCommerceOnboardingError('BAD_REQUEST', 'language must be a locale such as en-CA or ko-KR', 400);
+  }
+  return locale;
+}
+
 function sanitizeRouteUiError(error: unknown): string {
   if (error instanceof RoutePlanOrderAlreadyPlannedError) {
     return 'Some selected orders are already assigned to a route. Refresh the page and try again.';
@@ -1275,6 +1584,7 @@ function renderRoutePlansPage(input: {
   routeDetail: RoutePlanDetail | null;
   routePlans: readonly RoutePlanSummary[];
   servicesEnabled: boolean;
+  settings: AdminStoreSettings | null;
 }): string {
   const currentShopDomain = input.currentShopDomain ?? '';
   const deliveryDate = input.deliveryDate ?? new Date().toISOString().slice(0, 10);
@@ -1284,8 +1594,8 @@ function renderRoutePlansPage(input: {
         active: 'route-plans',
         actor: input.actor,
         csrfToken: input.csrfToken,
-        subtitle: 'Server-owned route workspace for WooCommerce orders. WordPress stays as setup/status; route creation and ordering live here.',
-        title: 'Open CLEVER Route'
+        subtitle: 'Open CLEVER Route workspace for WooCommerce orders. WordPress stays as setup/status; route creation and ordering live here.',
+        title: 'Create route'
       })}
       ${input.notice === undefined ? '' : `<p class="alert success">${escapeHtml(input.notice)}</p>`}
       ${input.error === undefined ? '' : `<p class="alert error">${escapeHtml(input.error)}</p>`}
@@ -1311,7 +1621,8 @@ function renderRoutePlansPage(input: {
             currentShopDomain,
             deliveryDate,
             disabled: !input.servicesEnabled || input.currentShopDomain === null || input.readyOrders.length === 0,
-            readyCount: input.readyOrders.length
+            readyCount: input.readyOrders.length,
+            settings: input.settings
           })}
           ${renderRouteDetailCard({
             csrfToken: input.csrfToken,
@@ -1330,17 +1641,225 @@ function renderRoutePlansPage(input: {
   });
 }
 
+function renderOrdersPage(input: {
+  actor: AdminCommerceActor;
+  csrfToken: string;
+  currentShopDomain: string | null;
+  deliveryDate: string | null;
+  error?: string;
+  notice?: string;
+  orders: readonly CanonicalOrderRow[];
+  reviewOrders: readonly CanonicalOrderRow[];
+}): string {
+  const currentShopDomain = input.currentShopDomain ?? '';
+  const deliveryDate = input.deliveryDate ?? '';
+  return renderDocument({
+    body: `<main class="shell">
+      ${renderAdminHero({
+        active: 'orders',
+        actor: input.actor,
+        csrfToken: input.csrfToken,
+        subtitle: 'Review WooCommerce orders before route creation. Orders needing delivery metadata review stay visible here before they can be routed.',
+        title: 'Order list'
+      })}
+      ${input.notice === undefined ? '' : `<p class="alert success">${escapeHtml(input.notice)}</p>`}
+      ${input.error === undefined ? '' : `<p class="alert error">${escapeHtml(input.error)}</p>`}
+      <section class="setup-layout">
+        <div class="setup-main">
+          <article class="card">
+            <p class="eyebrow">Orders</p>
+            <h2>Order list</h2>
+            <p class="muted">Load the customer shop to inspect imported WooCommerce orders, routing readiness, and review blockers.</p>
+            <form method="get" action="${ADMIN_UI_ORDERS_PATH}" class="stack guided-form">
+              <label>Customer shop domain
+                <input type="text" name="shopDomain" value="${escapeHtml(currentShopDomain)}" placeholder="dev1.tomatonofood.com" required />
+              </label>
+              <label>Delivery date
+                <input type="date" name="deliveryDate" value="${escapeHtml(deliveryDate)}" />
+              </label>
+              <button type="submit">Load orders</button>
+            </form>
+          </article>
+          <article class="card">
+            <p class="eyebrow">Unplanned orders</p>
+            <h2>Orders available for review</h2>
+            ${renderOrderRows(input.orders, currentShopDomain === '' ? 'Enter a shop domain to load orders.' : 'No unplanned orders found.')}
+          </article>
+        </div>
+        <aside class="setup-aside">
+          <article class="card">
+            <p class="eyebrow">Needs review</p>
+            <h2>Delivery metadata blockers</h2>
+            <p class="muted">These orders are blocked from automatic route creation until the delivery date/session/address mapping is fixed.</p>
+            ${renderOrderRows(input.reviewOrders, 'No orders currently need delivery metadata review.')}
+          </article>
+          <article class="card">
+            <p class="eyebrow">Next step</p>
+            <h2>Create route</h2>
+            <p class="muted">When orders are ready, create a date-based route from the route workspace.</p>
+            <a class="button-link" href="${ADMIN_UI_ROUTE_PLANS_PATH}${currentShopDomain === '' ? '' : `?${new URLSearchParams({ shopDomain: currentShopDomain }).toString()}`}">Open Create route</a>
+          </article>
+        </aside>
+      </section>
+    </main>`,
+    title: 'CLEVER Route Orders'
+  });
+}
+
+function renderDriversPage(input: {
+  actor: AdminCommerceActor;
+  csrfToken: string;
+  currentShopDomain: string | null;
+  drivers: readonly AdminDriverRow[];
+  error?: string;
+  notice?: string;
+}): string {
+  const currentShopDomain = input.currentShopDomain ?? '';
+  return renderDocument({
+    body: `<main class="shell">
+      ${renderAdminHero({
+        active: 'drivers',
+        actor: input.actor,
+        csrfToken: input.csrfToken,
+        subtitle: 'Manage the delivery people connected to a customer shop. Invite codes are generated server-side and never expose the connector token.',
+        title: 'Driver management'
+      })}
+      ${input.notice === undefined ? '' : `<p class="alert success">${escapeHtml(input.notice)}</p>`}
+      ${input.error === undefined ? '' : `<p class="alert error">${escapeHtml(input.error)}</p>`}
+      <section class="setup-layout">
+        <div class="setup-main">
+          <article class="card">
+            <p class="eyebrow">Drivers</p>
+            <h2>Driver management</h2>
+            <form method="get" action="${ADMIN_UI_DRIVERS_PATH}" class="stack guided-form">
+              <label>Customer shop domain
+                <input type="text" name="shopDomain" value="${escapeHtml(currentShopDomain)}" placeholder="dev1.tomatonofood.com" required />
+              </label>
+              <button type="submit">Load drivers</button>
+            </form>
+          </article>
+          <article class="card">
+            <p class="eyebrow">Driver list</p>
+            <h2>Delivery people</h2>
+            ${renderDriverRows(input.drivers, currentShopDomain === '' ? 'Enter a shop domain to load drivers.' : 'No drivers saved for this shop.')}
+          </article>
+        </div>
+        <aside class="setup-aside">
+          <article class="card">
+            <p class="eyebrow">Invite</p>
+            <h2>Add a driver</h2>
+            <form method="post" action="${ADMIN_UI_DRIVERS_PATH}" enctype="multipart/form-data" class="stack guided-form">
+              <input type="hidden" name="csrfToken" value="${escapeHtml(input.csrfToken)}" />
+              <label>Customer shop domain
+                <input type="text" name="shopDomain" value="${escapeHtml(currentShopDomain)}" placeholder="dev1.tomatonofood.com" required />
+              </label>
+              <label>Driver name
+                <input type="text" name="displayName" placeholder="Alex Driver" />
+              </label>
+              <label>Phone
+                <input type="tel" name="phone" placeholder="+14165550123" required />
+              </label>
+              <button type="submit">Create driver invite</button>
+            </form>
+          </article>
+        </aside>
+      </section>
+    </main>`,
+    title: 'CLEVER Route Drivers'
+  });
+}
+
+function renderSettingsPage(input: {
+  actor: AdminCommerceActor;
+  csrfToken: string;
+  currentShopDomain: string | null;
+  error?: string;
+  notice?: string;
+  settings: AdminStoreSettings | null;
+}): string {
+  const currentShopDomain = input.currentShopDomain ?? input.settings?.shopDomain ?? '';
+  const defaultDepotAddress = input.settings?.defaultDepotAddress ?? '';
+  const defaultDepotLatitude = formatNullableNumber(input.settings?.defaultDepotLatitude ?? null);
+  const defaultDepotLongitude = formatNullableNumber(input.settings?.defaultDepotLongitude ?? null);
+  const locale = input.settings?.locale ?? 'en-CA';
+  return renderDocument({
+    body: `<main class="shell">
+      ${renderAdminHero({
+        active: 'settings',
+        actor: input.actor,
+        csrfToken: input.csrfToken,
+        subtitle: 'Configure store-level routing defaults used by the CLEVER route workspace.',
+        title: 'Store settings'
+      })}
+      ${input.notice === undefined ? '' : `<p class="alert success">${escapeHtml(input.notice)}</p>`}
+      ${input.error === undefined ? '' : `<p class="alert error">${escapeHtml(input.error)}</p>`}
+      <section class="setup-layout">
+        <div class="setup-main">
+          <article class="card">
+            <p class="eyebrow">Settings</p>
+            <h2>Store settings</h2>
+            <p class="muted">Set defaults that make route creation faster: store/depot address, coordinates, and operator language.</p>
+            <form method="get" action="${ADMIN_UI_SETTINGS_PATH}" class="stack guided-form">
+              <label>Customer shop domain
+                <input type="text" name="shopDomain" value="${escapeHtml(currentShopDomain)}" placeholder="dev1.tomatonofood.com" required />
+              </label>
+              <button type="submit">Load settings</button>
+            </form>
+          </article>
+          <article class="card">
+            <p class="eyebrow">Store defaults</p>
+            <h2>Store address and language</h2>
+            <form method="post" action="${ADMIN_UI_SETTINGS_PATH}" enctype="multipart/form-data" class="stack guided-form">
+              <input type="hidden" name="csrfToken" value="${escapeHtml(input.csrfToken)}" />
+              <label>Customer shop domain
+                <input type="text" name="shopDomain" value="${escapeHtml(currentShopDomain)}" placeholder="dev1.tomatonofood.com" required />
+              </label>
+              <label>Store address
+                <input type="text" name="defaultDepotAddress" value="${escapeHtml(defaultDepotAddress)}" placeholder="123 Depot St, Toronto, ON" />
+              </label>
+              <div class="split-fields">
+                <label>Depot latitude<input type="text" name="defaultDepotLatitude" value="${escapeHtml(defaultDepotLatitude)}" placeholder="43.6532" /></label>
+                <label>Depot longitude<input type="text" name="defaultDepotLongitude" value="${escapeHtml(defaultDepotLongitude)}" placeholder="-79.3832" /></label>
+              </div>
+              <label>Language
+                <select name="locale">
+                  ${renderLocaleOption(locale, 'en-CA', 'English (Canada)')}
+                  ${renderLocaleOption(locale, 'fr-CA', 'French (Canada)')}
+                  ${renderLocaleOption(locale, 'ko-KR', 'Korean')}
+                </select>
+              </label>
+              <button type="submit">Save settings</button>
+            </form>
+          </article>
+        </div>
+        <aside class="setup-aside">
+          <article class="card">
+            <p class="eyebrow">Usage</p>
+            <h2>Where this appears</h2>
+            <p class="muted">The route creation page can use this address as the dispatch/depot default. Language controls future operator-facing copy for this shop.</p>
+          </article>
+        </aside>
+      </section>
+    </main>`,
+    title: 'CLEVER Route Settings'
+  });
+}
+
 function renderRouteCreateCard(input: {
   csrfToken: string;
   currentShopDomain: string;
   deliveryDate: string;
   disabled: boolean;
   readyCount: number;
+  settings: AdminStoreSettings | null;
 }): string {
+  const defaultDepotAddress = input.settings?.defaultDepotAddress ?? '';
+  const defaultDepotLatitude = formatNullableNumber(input.settings?.defaultDepotLatitude ?? null);
+  const defaultDepotLongitude = formatNullableNumber(input.settings?.defaultDepotLongitude ?? null);
   return `<article class="card">
     <p class="eyebrow">Manual route draft</p>
     <h2>Create from ready orders</h2>
-    <p class="muted">${input.readyCount} ready unplanned orders are available for this date. Orders needing review are blocked until delivery metadata mapping is fixed.</p>
+    <p class="muted">${input.readyCount} ready unplanned orders are available for this date. Orders needing review are blocked until delivery metadata mapping is fixed. Store settings can prefill the depot address below.</p>
     <form method="post" action="${ADMIN_UI_ROUTE_PLANS_PATH}/create" enctype="multipart/form-data" class="stack guided-form">
       <input type="hidden" name="csrfToken" value="${escapeHtml(input.csrfToken)}" />
       <input type="hidden" name="shopDomain" value="${escapeHtml(input.currentShopDomain)}" />
@@ -1351,11 +1870,11 @@ function renderRouteCreateCard(input: {
         <input type="text" name="routeName" value="${escapeHtml(`${input.deliveryDate} CLEVER route`)}" required />
       </label>
       <label>Depot address
-        <input type="text" name="depotAddress" placeholder="Optional dispatch/depot address" />
+        <input type="text" name="depotAddress" value="${escapeHtml(defaultDepotAddress)}" placeholder="Optional dispatch/depot address" />
       </label>
       <div class="split-fields">
-        <label>Depot latitude<input type="text" name="depotLatitude" placeholder="43.6532" /></label>
-        <label>Depot longitude<input type="text" name="depotLongitude" placeholder="-79.3832" /></label>
+        <label>Depot latitude<input type="text" name="depotLatitude" value="${escapeHtml(defaultDepotLatitude)}" placeholder="43.6532" /></label>
+        <label>Depot longitude<input type="text" name="depotLongitude" value="${escapeHtml(defaultDepotLongitude)}" placeholder="-79.3832" /></label>
       </div>
       <button type="submit" ${input.disabled ? 'disabled' : ''}>Create route from all ready orders</button>
     </form>
@@ -1453,6 +1972,31 @@ function renderOrdersPreview(
   </section>`;
 }
 
+function renderDriverRows(drivers: readonly AdminDriverRow[], emptyMessage: string): string {
+  if (drivers.length === 0) return `<p class="muted">${escapeHtml(emptyMessage)}</p>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Phone</th><th>Status</th><th>Invite code</th><th>Last seen</th></tr></thead><tbody>
+    ${drivers
+      .map(
+        (driver) => `<tr>
+          <td>${escapeHtml(driver.displayName)}</td>
+          <td>${escapeHtml(driver.phone ?? '')}</td>
+          <td>${escapeHtml(driver.status)}</td>
+          <td>${escapeHtml(driver.inviteCode ?? '')}</td>
+          <td>${escapeHtml(driver.lastSeenAt ?? 'Not seen yet')}</td>
+        </tr>`
+      )
+      .join('')}
+  </tbody></table></div>`;
+}
+
+function renderLocaleOption(currentLocale: string, value: string, label: string): string {
+  return `<option value="${escapeHtml(value)}" ${currentLocale === value ? 'selected' : ''}>${escapeHtml(label)}</option>`;
+}
+
+function formatNullableNumber(value: number | null): string {
+  return value === null ? '' : String(value);
+}
+
 function renderOrderRows(orders: readonly CanonicalOrderRow[], emptyMessage: string): string {
   if (orders.length === 0) return `<p class="muted">${escapeHtml(emptyMessage)}</p>`;
   return `<div class="table-wrap"><table><thead><tr><th>Order</th><th>Recipient</th><th>Area</th><th>Reasons</th></tr></thead><tbody>
@@ -1519,28 +2063,34 @@ function renderDashboardPage(input: { actor: AdminCommerceActor; csrfToken: stri
       })}
       <section class="dashboard-grid" aria-label="Admin modules">
         ${renderModuleCard({
-          description: 'Create, test, rotate, and monitor customer WooCommerce REST API and webhook credentials.',
-          href: ADMIN_UI_WOOCOMMERCE_PATH,
+          description: 'Review imported WooCommerce orders, readiness, and delivery metadata blockers before route creation.',
+          href: ADMIN_UI_ORDERS_PATH,
           status: 'Ready',
-          title: 'WooCommerce connection setup'
+          title: 'Order list'
         })}
         ${renderModuleCard({
           description: 'Create date-based route drafts from ready WooCommerce orders and manually adjust stop sequence.',
           href: ADMIN_UI_ROUTE_PLANS_PATH,
           status: 'Ready',
-          title: 'Open CLEVER Route'
+          title: 'Create route'
         })}
         ${renderModuleCard({
-          description: 'Manage future operator settings, tenant controls, and protected admin preferences.',
-          href: `${ADMIN_UI_ROOT_PATH}/settings`,
-          status: 'Planned',
+          description: 'Create driver invites and review delivery-person status for a customer shop.',
+          href: ADMIN_UI_DRIVERS_PATH,
+          status: 'Ready',
+          title: 'Driver management'
+        })}
+        ${renderModuleCard({
+          description: 'Set customer store address/depot defaults and operator language.',
+          href: ADMIN_UI_SETTINGS_PATH,
+          status: 'Ready',
           title: 'Settings'
         })}
         ${renderModuleCard({
-          description: 'Future order and driver operational views will live under this same admin shell.',
-          href: `${ADMIN_UI_ROOT_PATH}/orders`,
-          status: 'Planned',
-          title: 'Orders & Drivers'
+          description: 'Create, test, rotate, and monitor customer WooCommerce REST API and webhook credentials.',
+          href: ADMIN_UI_WOOCOMMERCE_PATH,
+          status: 'Ready',
+          title: 'WooCommerce connection setup'
         })}
       </section>
     </main>`,
@@ -1571,29 +2121,8 @@ function renderCommerceConnectionsPage(input: { actor: AdminCommerceActor; csrfT
   });
 }
 
-function renderPlaceholderPage(input: { actor: AdminCommerceActor; csrfToken: string; title: string }): string {
-  return renderDocument({
-    body: `<main class="shell">
-      ${renderAdminHero({
-        active: 'dashboard',
-        actor: input.actor,
-        csrfToken: input.csrfToken,
-        subtitle: 'This protected page is reserved for the next admin module implementation.',
-        title: input.title
-      })}
-      <section class="card">
-        <p class="eyebrow">Planned module</p>
-        <h2>${escapeHtml(input.title)} is not enabled yet.</h2>
-        <p class="muted">The route is intentionally protected inside the CLEVER admin shell so future work can attach here without changing the URL structure again.</p>
-        <a class="button-link" href="${ADMIN_UI_ROOT_PATH}">Back to dashboard</a>
-      </section>
-    </main>`,
-    title: `CLEVER Route ${input.title}`
-  });
-}
-
 function renderAdminHero(input: {
-  active: 'commerce' | 'dashboard' | 'route-plans' | 'woocommerce';
+  active: 'commerce' | 'dashboard' | 'drivers' | 'orders' | 'route-plans' | 'settings' | 'woocommerce';
   actor: AdminCommerceActor;
   csrfToken: string;
   subtitle: string;
@@ -1606,9 +2135,11 @@ function renderAdminHero(input: {
       <p class="muted">${escapeHtml(input.subtitle)} Signed in as ${escapeHtml(input.actor.subject)}.</p>
       <nav class="page-nav" aria-label="Admin navigation">
         ${renderNavLink('Dashboard', ADMIN_UI_ROOT_PATH, input.active === 'dashboard')}
-        ${renderNavLink('Commerce', ADMIN_UI_COMMERCE_CONNECTIONS_PATH, input.active === 'commerce' || input.active === 'woocommerce')}
-        ${renderNavLink('Route Plans', ADMIN_UI_ROUTE_PLANS_PATH, input.active === 'route-plans')}
-        ${renderNavLink('Settings', `${ADMIN_UI_ROOT_PATH}/settings`, false)}
+        ${renderNavLink('Order list', ADMIN_UI_ORDERS_PATH, input.active === 'orders')}
+        ${renderNavLink('Create route', ADMIN_UI_ROUTE_PLANS_PATH, input.active === 'route-plans')}
+        ${renderNavLink('Drivers', ADMIN_UI_DRIVERS_PATH, input.active === 'drivers')}
+        ${renderNavLink('Settings', ADMIN_UI_SETTINGS_PATH, input.active === 'settings')}
+        ${renderNavLink('Woo setup', ADMIN_UI_WOOCOMMERCE_PATH, input.active === 'commerce' || input.active === 'woocommerce')}
       </nav>
     </div>
     <a class="button-link" href="${ADMIN_UI_LOGOUT_PATH}">Log out</a>

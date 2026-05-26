@@ -77,12 +77,13 @@ describe('WordPress connector plugin static contract', () => {
     const readme = await readFile(new URL('README.md', pluginRoot), 'utf8');
 
     expect(adminSource).toContain('render_open_clever_route_card');
+    expect(adminSource).toContain('open_clever_route');
+    expect(adminSource).toContain('/wordpress/plugin/admin-launch');
     expect(adminSource).toContain('Open CLEVER Route workspace');
-    expect(adminSource).toContain('/admin/ui/route-plans');
-    expect(adminSource).toContain("'shopDomain' => $this->site_domain()");
+    expect(adminSource).toContain('wp_redirect');
     expect(adminSource).toContain("parse_url(home_url('/'), PHP_URL_HOST)");
     expect(readme).toContain('Open CLEVER Route');
-    expect(readme).toContain('server-owned admin workspace');
+    expect(readme).toContain('without re-entering the CLEVER admin login secret');
   });
 
   test('api client uses safe no-redirect HTTP requests', async () => {

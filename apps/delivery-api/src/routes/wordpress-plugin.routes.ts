@@ -23,6 +23,12 @@ import type {
 } from '../modules/wordpress-plugin/wordpress-plugin.types.js';
 
 export type WordPressPluginDependencies = {
+  adminLaunchService?: {
+    createAdminLaunch(input: {
+      context: WordPressPluginConnectionContext;
+      section: WordPressPluginAdminLaunchSection;
+    }): Promise<{ expiresAt: string; launchUrl: string }>;
+  };
   authService: {
     authenticateToken(token: string): Promise<WordPressPluginConnectionContext | null>;
     pairPlugin(input: WordPressPluginPairInput): Promise<WordPressPluginPairResult>;
@@ -51,6 +57,8 @@ export type WordPressPluginDependencies = {
   };
 };
 
+type WordPressPluginAdminLaunchSection = 'drivers' | 'orders' | 'route-plans' | 'settings';
+
 type PairBody = {
   hposEnabled?: boolean | null;
   pairingCode?: string;
@@ -64,6 +72,10 @@ type SyncRequestBody = {
   modifiedAfter?: unknown;
   pageSize?: unknown;
   status?: unknown;
+};
+
+type AdminLaunchBody = {
+  section?: unknown;
 };
 
 export function registerWordPressPluginRoutes(
@@ -164,6 +176,27 @@ export function registerWordPressPluginRoutes(
     return reply.code(202).send({ data: result, error: null });
   });
 
+  app.post<{ Body: unknown }>('/wordpress/plugin/admin-launch', async (request, reply) => {
+    const authenticated = await authenticatePlugin(request, dependencies);
+    if (authenticated.status === 'unauthorized') {
+      return reply.code(authenticated.httpStatus).send(errorResponse(authenticated.code, authenticated.message));
+    }
+    if (dependencies.adminLaunchService === undefined) {
+      return reply.code(503).send(errorResponse('ADMIN_LAUNCH_DISABLED', 'CLEVER admin plugin launch is not enabled'));
+    }
+
+    const section = readAdminLaunchSection(request.body);
+    if (section === null) {
+      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid admin launch payload'));
+    }
+
+    const result = await dependencies.adminLaunchService.createAdminLaunch({
+      context: authenticated.context,
+      section
+    });
+    return reply.code(201).send({ data: result, error: null });
+  });
+
   app.get('/wordpress/plugin/mapping', async (request, reply) => {
     const authenticated = await authenticatePlugin(request, dependencies);
     if (authenticated.status === 'unauthorized') {
@@ -244,6 +277,14 @@ function readSyncRequestBody(body: unknown): WordPressPluginSyncRequestInput | n
     pageSize,
     status: readNullableString(object.status)
   };
+}
+
+function readAdminLaunchSection(body: unknown): WordPressPluginAdminLaunchSection | null {
+  const object = objectOrNull<AdminLaunchBody>(body) ?? {};
+  const section = typeof object.section === 'string' && object.section.trim() !== '' ? object.section.trim() : 'orders';
+  return section === 'orders' || section === 'route-plans' || section === 'drivers' || section === 'settings'
+    ? section
+    : null;
 }
 
 function readRoutePlanFilters(query: unknown): WordPressPluginRoutePlanFilters | null {

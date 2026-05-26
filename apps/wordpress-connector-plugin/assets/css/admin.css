@@ -32,6 +32,23 @@
   margin-top: 0;
 }
 
+.clever-route-admin .clever-route-launch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.clever-route-admin .clever-route-inline-form {
+  display: inline-block;
+  margin: 0;
+}
+
+.clever-route-admin .clever-route-inline-form .submit {
+  margin: 0;
+  padding: 0;
+}
+
 .clever-route-admin select,
 .clever-route-admin input[type="datetime-local"] {
   max-width: 360px;

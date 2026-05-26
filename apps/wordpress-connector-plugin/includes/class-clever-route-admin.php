@@ -225,17 +225,30 @@ final class Clever_Route_Admin {
 
     /** @param array{base_url:string,connection_id:string,token_prefix:string,connected:bool,last_error:string} $summary */
     private function render_open_clever_route_card(array $summary): void {
-        $workspace_url = $this->clever_route_workspace_url($summary['base_url']);
-        if ($workspace_url === '') {
+        if (!$summary['connected'] || $this->normalize_api_base_url($summary['base_url']) === null) {
             return;
         }
 
         echo '<div class="clever-route-open-card">';
         echo '<h3>' . esc_html__('Open CLEVER Route workspace', 'clever-route-connector') . '</h3>';
-        echo '<p>' . esc_html__('Use this server workspace to create route plans by delivery date and adjust stop order. WordPress stays as the connector/status page.', 'clever-route-connector') . '</p>';
-        echo '<p><a class="button button-primary" href="' . esc_url($workspace_url) . '">' . esc_html__('Open CLEVER Route', 'clever-route-connector') . '</a></p>';
-        echo '<p class="description">' . esc_html__('The link includes this WordPress site domain so the CLEVER admin page opens on the matching customer store.', 'clever-route-connector') . '</p>';
+        echo '<p>' . esc_html__('Launch the CLEVER server workspace from this WordPress admin session without re-entering the CLEVER admin login secret. WordPress only requests a short-lived launch URL; the connector token is never placed in the browser URL.', 'clever-route-connector') . '</p>';
+        echo '<div class="clever-route-launch-actions">';
+        $this->render_admin_launch_button('orders', __('Order list', 'clever-route-connector'), true);
+        $this->render_admin_launch_button('route-plans', __('Create route', 'clever-route-connector'), false);
+        $this->render_admin_launch_button('drivers', __('Driver management', 'clever-route-connector'), false);
+        $this->render_admin_launch_button('settings', __('Settings', 'clever-route-connector'), false);
         echo '</div>';
+        echo '<p class="description">' . esc_html__('The server verifies this paired plugin token and opens the matching customer store using this WordPress site domain.', 'clever-route-connector') . '</p>';
+        echo '</div>';
+    }
+
+    private function render_admin_launch_button(string $section, string $label, bool $primary): void {
+        echo '<form method="post" class="clever-route-inline-form">';
+        wp_nonce_field('clever_route_action', 'clever_route_nonce');
+        echo '<input type="hidden" name="clever_route_action" value="open_clever_route" />';
+        echo '<input type="hidden" name="clever_route_section" value="' . esc_attr($section) . '" />';
+        submit_button($label, $primary ? 'primary' : 'secondary', 'submit', false);
+        echo '</form>';
     }
 
     private function render_route_plan_detail(): void {
@@ -340,6 +353,21 @@ final class Clever_Route_Admin {
         if ($action === 'disconnect') {
             $this->options->disconnect_local();
             return __('Local connector token removed. CLEVER server data was not deleted.', 'clever-route-connector');
+        }
+        if ($action === 'open_clever_route') {
+            $section = sanitize_key((string) ($_POST['clever_route_section'] ?? 'orders'));
+            if (!in_array($section, array('orders', 'route-plans', 'drivers', 'settings'), true)) {
+                $section = 'orders';
+            }
+            $result = $this->client->post('/wordpress/plugin/admin-launch', array('section' => $section));
+            $launch_url = $this->text($result['data']['launchUrl'] ?? '');
+            if ($launch_url !== '' && $this->is_allowed_clever_launch_url($launch_url)) {
+                wp_redirect(esc_url_raw($launch_url));
+                exit;
+            }
+            $message = $this->text($result['error']['message'] ?? __('Could not open CLEVER Route workspace.', 'clever-route-connector'));
+            $this->options->save_error($message);
+            return $message;
         }
         if ($action === 'sync') {
             $scope = sanitize_key((string) ($_POST['sync_scope'] ?? 'all'));
@@ -474,6 +502,25 @@ final class Clever_Route_Admin {
             return null;
         }
         return rtrim($url, '/');
+    }
+
+    private function is_allowed_clever_launch_url(string $launch_url): bool {
+        $base_url = $this->normalize_api_base_url($this->options->get_base_url());
+        $launch_url = esc_url_raw(trim($launch_url));
+        if ($base_url === null || $launch_url === '' || wp_http_validate_url($launch_url) === false) {
+            return false;
+        }
+
+        $base_host = parse_url($base_url, PHP_URL_HOST);
+        $launch_host = parse_url($launch_url, PHP_URL_HOST);
+        $launch_scheme = parse_url($launch_url, PHP_URL_SCHEME);
+        $launch_path = parse_url($launch_url, PHP_URL_PATH);
+
+        return is_string($base_host)
+            && is_string($launch_host)
+            && strtolower($base_host) === strtolower($launch_host)
+            && $launch_scheme === 'https'
+            && $launch_path === '/admin/ui/plugin-launch';
     }
 
     private function read_modified_after_iso(string $value): ?string {

@@ -2,7 +2,7 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import helmet from '@fastify/helmet';
 import Fastify from 'fastify';
-import type { FastifyInstance, FastifyServerOptions } from 'fastify';
+import type { FastifyInstance, FastifyRequest, FastifyServerOptions } from 'fastify';
 
 import {
   registerAdminRoutePlanRoutes,
@@ -54,8 +54,10 @@ type BuildAppOptions = {
   wordPressPlugin?: WordPressPluginDependencies;
 };
 
+type AppLoggerOption = Exclude<FastifyServerOptions['logger'], undefined>;
+
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
-  const app = Fastify({ logger: options.logger ?? false });
+  const app = Fastify({ logger: withSafeRequestLogging(options.logger ?? false) });
 
   registerJsonBodyParser(app);
   await app.register(multipart, {
@@ -117,4 +119,47 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   }
 
   return app;
+}
+
+function withSafeRequestLogging(logger: AppLoggerOption): AppLoggerOption {
+  if (logger === false) return false;
+  if (logger === true) {
+    return { serializers: { req: serializeRequestForLog } };
+  }
+  return {
+    ...logger,
+    serializers: {
+      ...logger.serializers,
+      req: serializeRequestForLog
+    }
+  };
+}
+
+function serializeRequestForLog(request: FastifyRequest): {
+  host: string;
+  method: string;
+  remoteAddress: string;
+  remotePort: number;
+  url: string;
+} {
+  return {
+    host: request.hostname,
+    method: request.method,
+    remoteAddress: request.ip,
+    remotePort: request.raw.socket.remotePort ?? 0,
+    url: redactSensitiveUrl(request.url)
+  };
+}
+
+function redactSensitiveUrl(value: string): string {
+  if (!value.startsWith('/admin/ui/plugin-launch')) return value;
+  try {
+    const url = new URL(value, 'https://clever-route.local');
+    if (url.searchParams.has('token')) {
+      url.searchParams.set('token', '[redacted]');
+    }
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return '/admin/ui/plugin-launch?token=[redacted]';
+  }
 }
