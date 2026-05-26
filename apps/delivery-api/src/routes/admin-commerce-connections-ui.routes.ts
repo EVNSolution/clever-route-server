@@ -2371,7 +2371,7 @@ function renderRoutePlansPage(input: {
   const currentShopDomain = input.currentShopDomain ?? '';
   const deliveryDate = input.deliveryDate ?? new Date().toISOString().slice(0, 10);
   return renderDocument({
-    body: `<main class="shell">
+    body: `<main class="shell app-shell">
       ${renderAdminHero({
         active: 'route-plans',
         allowConnectionSetup: !input.shopDomainLocked,
@@ -2455,7 +2455,7 @@ function renderOrdersPage(input: {
       order.routePlanId === null
   );
   return renderDocument({
-    body: `<main class="shell">
+    body: `<main class="shell app-shell">
       ${renderAdminHero({
         active: 'orders',
         allowConnectionSetup: !input.shopDomainLocked,
@@ -2548,7 +2548,7 @@ function renderDriversPage(input: {
 }): string {
   const currentShopDomain = input.currentShopDomain ?? '';
   return renderDocument({
-    body: `<main class="shell">
+    body: `<main class="shell app-shell">
       ${renderAdminHero({
         active: 'drivers',
         allowConnectionSetup: !input.shopDomainLocked,
@@ -2614,7 +2614,7 @@ function renderSettingsPage(input: {
   const defaultDepotLongitude = formatNullableNumber(input.settings?.defaultDepotLongitude ?? null);
   const locale = input.settings?.locale ?? 'en-CA';
   return renderDocument({
-    body: `<main class="shell">
+    body: `<main class="shell app-shell">
       ${renderAdminHero({
         active: 'settings',
         allowConnectionSetup: !input.shopDomainLocked,
@@ -3121,25 +3121,54 @@ function renderAdminHero(input: {
   subtitle: string;
   title: string;
 }): string {
-  const surfaceLabel = input.allowConnectionSetup === false ? 'CLEVER Route App' : 'CLEVER Route Admin';
   const primaryLinks = [
     renderNavLink('Dashboard', withShopDomainQuery(ADMIN_UI_APP_DASHBOARD_PATH, input.currentShopDomain), input.active === 'dashboard'),
     renderNavLink('Orders', withShopDomainQuery(ADMIN_UI_APP_ORDERS_PATH, input.currentShopDomain), input.active === 'orders'),
     renderNavLink('Routes', withShopDomainQuery(ADMIN_UI_APP_ROUTE_PLANS_PATH, input.currentShopDomain), input.active === 'route-plans'),
     renderNavLink('Drivers', withShopDomainQuery(ADMIN_UI_APP_DRIVERS_PATH, input.currentShopDomain), input.active === 'drivers'),
     renderNavLink('Settings', withShopDomainQuery(ADMIN_UI_APP_SETTINGS_PATH, input.currentShopDomain), input.active === 'settings')
-  ].join('');
+  ];
+
+  if (input.allowConnectionSetup === false) {
+    const shopLabel = input.currentShopDomain?.trim() === '' || input.currentShopDomain === undefined || input.currentShopDomain === null ? 'No shop selected' : input.currentShopDomain;
+    return `<aside class="app-sidebar" aria-label="CLEVER Route navigation">
+      <a class="app-logo" href="${withShopDomainQuery(ADMIN_UI_APP_DASHBOARD_PATH, input.currentShopDomain)}" aria-label="CLEVER Route dashboard">
+        <span class="app-logo-mark">C</span><strong>clever route</strong>
+      </a>
+      <nav class="app-nav" aria-label="Operate navigation">
+        ${primaryLinks.join('')}
+      </nav>
+      <div class="app-sidebar-foot">
+        <span class="operator-dot" aria-hidden="true"></span>
+        <span>${escapeHtml(shopLabel)}</span>
+      </div>
+    </aside>
+    <header class="app-topbar">
+      <span>Route operations workspace · WordPress launch</span>
+      <a href="${ADMIN_UI_LOGOUT_PATH}">Log out</a>
+    </header>
+    <section class="app-page-header">
+      <div>
+        <p class="eyebrow">CLEVER Route App</p>
+        <h1>${escapeHtml(input.title)}</h1>
+        <p class="muted">${escapeHtml(input.subtitle)}</p>
+      </div>
+      <span class="shop-chip">${escapeHtml(shopLabel)}</span>
+    </section>`;
+  }
+
+  const primaryNav = primaryLinks.join('');
   return `<header class="hero">
     <div>
-      <p class="eyebrow">${surfaceLabel}</p>
+      <p class="eyebrow">CLEVER Route Admin</p>
       <h1>${escapeHtml(input.title)}</h1>
       <p class="muted">${escapeHtml(input.subtitle)} Signed in as ${escapeHtml(input.actor.subject)}.</p>
       <nav class="page-nav" aria-label="Operate navigation">
-        ${primaryLinks}
+        ${primaryNav}
       </nav>
       <nav class="utility-nav" aria-label="Admin utility navigation">
         ${renderNavLink('Server admin', ADMIN_UI_ROOT_PATH, false)}
-        ${input.allowConnectionSetup === false ? '' : renderNavLink('Connection setup', withShopDomainQuery(ADMIN_UI_WOOCOMMERCE_PATH, input.currentShopDomain), input.active === 'commerce' || input.active === 'woocommerce')}
+        ${renderNavLink('Connection setup', withShopDomainQuery(ADMIN_UI_WOOCOMMERCE_PATH, input.currentShopDomain), input.active === 'commerce' || input.active === 'woocommerce')}
       </nav>
     </div>
     <a class="button-link" href="${ADMIN_UI_LOGOUT_PATH}">Log out</a>
@@ -3427,6 +3456,36 @@ function renderDocument(input: { body: string; title: string }): string {
 	    .shell.narrow { width: min(100% - 32px, 560px); }
 	    .hero, .card, .connection { background: var(--card); border: 1px solid rgba(210, 210, 215, 0.78); border-radius: 24px; padding: 28px; margin-bottom: 20px; box-shadow: 0 18px 45px rgba(0, 0, 0, 0.055); backdrop-filter: blur(18px); }
 	    .hero { display: flex; gap: 20px; align-items: flex-start; justify-content: space-between; }
+	    .app-shell { background: #f7f7f4; margin: 0; min-height: 100vh; padding: 0 28px 42px 248px; width: 100%; max-width: none; }
+	    .app-shell .app-sidebar { background: #edede8; border-right: 1px solid #deded8; bottom: 0; display: flex; flex-direction: column; gap: 18px; left: 0; padding: 24px 18px; position: fixed; top: 0; width: 220px; z-index: 4; }
+	    .app-logo { align-items: center; color: #1f1f1f; display: flex; gap: 9px; margin-bottom: 10px; text-decoration: none; }
+	    .app-logo-mark { align-items: center; background: #1f1f1f; border-radius: 10px; color: white; display: inline-flex; font-weight: 800; height: 30px; justify-content: center; width: 30px; }
+	    .app-logo strong { font-size: 18px; letter-spacing: -0.04em; text-transform: lowercase; }
+	    .app-nav { display: grid; gap: 4px; }
+	    .app-nav a { border-radius: 0; color: #3f403d; display: block; font-weight: 750; padding: 10px 12px; text-decoration: none; }
+	    .app-nav a.active { background: #dcdad4; color: #111; }
+	    .app-sidebar-foot { align-items: center; color: #4f504d; display: flex; gap: 8px; font-size: 13px; margin-top: auto; overflow-wrap: anywhere; }
+	    .operator-dot { background: #111; border-radius: 999px; height: 9px; width: 9px; }
+	    .app-topbar { align-items: center; background: #30302f; color: #f6f6f2; display: flex; font-size: 14px; justify-content: space-between; margin: 0 -28px 26px; min-height: 58px; padding: 0 28px; }
+	    .app-topbar a { background: #f6f6f2; border-radius: 9px; color: #30302f; font-weight: 750; padding: 7px 13px; text-decoration: none; }
+	    .app-page-header { align-items: flex-start; display: flex; justify-content: space-between; gap: 20px; margin: 0 0 24px; }
+	    .app-page-header h1 { font-size: clamp(28px, 3.2vw, 42px); letter-spacing: -0.04em; margin-bottom: 8px; }
+	    .app-page-header .muted { max-width: 820px; margin: 0; }
+	    .shop-chip { background: #fff; border: 1px solid #deded8; border-radius: 999px; color: #4f504d; font-size: 13px; font-weight: 750; padding: 8px 13px; white-space: nowrap; }
+	    .app-shell .card, .app-shell .kpi-card { background: #fff; border-color: #deded8; border-radius: 14px; box-shadow: none; padding: 16px; }
+	    .app-shell .card { margin-bottom: 16px; }
+	    .app-shell h2 { font-size: 20px; letter-spacing: -0.025em; }
+	    .app-shell .setup-layout { grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.45fr); }
+	    .app-shell .guided-form { align-items: end; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px 12px; }
+	    .app-shell .guided-form label { font-size: 13px; gap: 4px; }
+	    .app-shell input, .app-shell textarea, .app-shell select { border-radius: 9px; font-size: 14px; padding: 8px 10px; }
+	    .app-shell button, .app-shell .button-link { border-radius: 9px; min-height: 36px; padding: 8px 12px; }
+	    .app-shell table { font-size: 13px; }
+	    .app-shell th, .app-shell td { padding: 9px 10px; }
+	    .app-shell .table-wrap { border: 1px solid #e4e4df; border-radius: 12px; }
+	    .app-shell .table-wrap table tr:last-child td { border-bottom: 0; }
+	    .app-shell .route-builder { grid-template-columns: minmax(0, 1.65fr) minmax(280px, 0.35fr); }
+	    .app-shell .route-canvas { border-radius: 14px; }
 	    .dashboard-grid { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
 	    .app-kpis { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 20px; }
 	    .kpi-card { background: rgba(255, 255, 255, 0.72); border: 1px solid rgba(210, 210, 215, 0.78); border-radius: 20px; padding: 18px; }
@@ -3503,7 +3562,7 @@ function renderDocument(input: { body: string; title: string }): string {
     .route-canvas { border: 1px solid var(--line); border-radius: 26px; display: block; width: 100%; }
     .route-canvas-empty { align-items: center; background: #f5f5f7; border: 1px dashed var(--line); border-radius: 26px; color: var(--muted); display: flex; min-height: 280px; justify-content: center; padding: 20px; text-align: center; }
     .route-stats { background: #f5f5f7; border: 1px solid var(--line); border-radius: 16px; margin: 0 0 12px; padding: 14px; }
-    @media (max-width: 820px) { .hero, .connection-header { display: grid; } .setup-layout, .split-fields, .route-builder { grid-template-columns: 1fr; } dl { grid-template-columns: 1fr; } }
+    @media (max-width: 820px) { .hero, .connection-header, .app-page-header { display: grid; } .setup-layout, .split-fields, .route-builder, .app-shell .setup-layout, .app-shell .route-builder { grid-template-columns: 1fr; } .app-shell { padding: 0 16px 32px; } .app-shell .app-sidebar { border-bottom: 1px solid #deded8; border-right: 0; flex-direction: row; gap: 10px; height: auto; overflow-x: auto; padding: 10px 14px; position: sticky; width: auto; } .app-logo strong, .app-sidebar-foot { display: none; } .app-nav { display: flex; gap: 4px; } .app-nav a { white-space: nowrap; } .app-topbar { margin: 0 -16px 18px; padding: 0 16px; } dl { grid-template-columns: 1fr; } }
   </style>
   <script src="${ADMIN_UI_WOOCOMMERCE_TEST_SCRIPT_PATH}" defer></script>
   <script src="${ADMIN_UI_ROUTE_APP_SCRIPT_PATH}" defer></script>

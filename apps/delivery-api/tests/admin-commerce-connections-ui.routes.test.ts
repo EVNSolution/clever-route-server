@@ -275,6 +275,9 @@ describe('Admin WooCommerce connection UI routes', () => {
       });
       expect(orders.statusCode).toBe(200);
       expect(orders.body).toContain('Order list');
+      expect(orders.body).toContain('class="app-sidebar"');
+      expect(orders.body).toContain('class="app-topbar"');
+      expect(orders.body).toContain('clever route');
       expect(orders.body).not.toContain('CLEVER Admin login');
     } finally {
       await app.close();
@@ -309,6 +312,8 @@ describe('Admin WooCommerce connection UI routes', () => {
       });
       expect(page.statusCode).toBe(200);
       expect(page.body).toContain('aria-label="Operate navigation"');
+      expect(page.body).toContain('class="app-sidebar"');
+      expect(page.body).toContain('class="app-page-header"');
       expect(page.body).not.toContain('CLEVER Admin login');
       expect(page.body).not.toContain('Connection setup');
     } finally {
