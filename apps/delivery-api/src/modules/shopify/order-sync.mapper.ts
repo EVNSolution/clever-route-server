@@ -72,6 +72,7 @@ export type CanonicalOrderRow = {
   deliveryDayRaw: string | null;
   deliverySession: DeliverySession | null;
   deliveryStopId: string | null;
+  deliveryStopStatus: string | null;
   deliveryWeekday: DeliveryWeekday | null;
   email: string | null;
   financialStatus: string | null;
@@ -92,6 +93,9 @@ export type CanonicalOrderRow = {
   readiness: CanonicalOrderReadiness;
   recipientName: string | null;
   reviewReasons: string[];
+  routePlanId: string | null;
+  routePlanName: string | null;
+  routePlanStatus: string | null;
   routeScopeKey: string | null;
   serviceType: DeliveryServiceType | null;
   shippingAddress: {

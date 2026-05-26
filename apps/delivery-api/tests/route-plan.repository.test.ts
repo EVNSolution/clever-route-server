@@ -88,6 +88,26 @@ describe('PrismaRoutePlanRepository', () => {
     );
   });
 
+  test('filters listed route plans by the selected delivery date at the database boundary', async () => {
+    const { prisma } = createPrismaHarness();
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await repository.listRoutePlans({
+      deliveryDate: '2026-05-08',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(prisma.routePlan.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      orderBy: { createdAt: 'desc' },
+      where: {
+        planDate: new Date('2026-05-08T00:00:00.000Z'),
+        shopId: 'shop-id'
+      }
+    }));
+  });
+
   test('rejects route plan drafts when a selected order already belongs to another route plan', async () => {
     const { prisma, routePlanStopCreateMany } = createPrismaHarness({
       existingRoutePlanStops: [{ deliveryStopId: 'stop-1' }]

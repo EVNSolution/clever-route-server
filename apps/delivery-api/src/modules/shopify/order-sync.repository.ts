@@ -9,6 +9,12 @@ import type {
   PlanningStatus,
   SyncedOrderWithDeliveryStopInput
 } from './order-sync.mapper.js';
+import {
+  deriveOperateDeliveryStatus,
+  deriveOrderHealth,
+  type OperateDeliveryStatus,
+  type OrderHealth
+} from './order-operate-status.js';
 
 export type UpsertOrderWithDeliveryStopInput = {
   shopDomain: string;
@@ -24,10 +30,13 @@ export type UpsertOrderWithDeliveryStopResult = {
 export type ListCanonicalOrdersFilters = {
   deliveryBatchEndDate?: string;
   deliveryBatchStartDate?: string;
+  deliveryArea?: string;
   deliveryDate?: string;
   deliverySession?: 'DAY' | 'EVENING' | 'PICKUP';
   deliveryWeekday?: DeliveryWeekday;
   geocodeStatus?: 'PENDING' | 'RESOLVED' | 'FAILED' | 'NOT_REQUIRED';
+  operateDeliveryStatus?: OperateDeliveryStatus;
+  orderHealth?: OrderHealth;
   planned?: boolean;
   planningGroupKey?: string;
   readiness?: CanonicalOrderReadiness;
@@ -87,9 +96,18 @@ type DeliveryStopRecord = {
   postalCode: string | null;
   province: string | null;
   recipientName: string | null;
-  routePlanStops?: unknown[];
+  routePlanStops?: DeliveryStopRoutePlanStopRecord[];
+  status: string;
   timeWindowEnd: Date | null;
   timeWindowStart: Date | null;
+};
+
+type DeliveryStopRoutePlanStopRecord = {
+  routePlan?: {
+    id: string;
+    name: string;
+    status: string;
+  } | null;
 };
 
 export class PrismaOrderSyncRepository {
@@ -223,17 +241,18 @@ function isExistingNewerThanSnapshot(existing: ExistingOrder, incomingUpdatedAt:
   return existingUpdatedAt !== null && existingUpdatedAt.getTime() > incomingUpdatedAt.getTime();
 }
 
-function canonicalOrderInclude(): {
-  deliveryStops: {
-    include: {
-      routePlanStops: true;
-    };
-    take: 1;
-  };
-} {
+function canonicalOrderInclude(): Prisma.OrderInclude {
   return {
     deliveryStops: {
-      include: { routePlanStops: true },
+      include: {
+        routePlanStops: {
+          include: {
+            routePlan: {
+              select: { id: true, name: true, status: true }
+            }
+          }
+        }
+      },
       take: 1
     }
   };
@@ -246,7 +265,8 @@ function toOrderWhere(shopId: string, filters: ListCanonicalOrdersFilters): Pris
     where.OR = [
       { name: { contains: search, mode: 'insensitive' } },
       { email: { contains: search, mode: 'insensitive' } },
-      { phone: { contains: search, mode: 'insensitive' } }
+      { phone: { contains: search, mode: 'insensitive' } },
+      { sourceOrderNumber: { contains: search, mode: 'insensitive' } }
     ];
   }
   return where;
@@ -295,11 +315,24 @@ function matchesDerivedFilters(row: CanonicalOrderRow, filters: ListCanonicalOrd
   if (filters.serviceType !== undefined && row.serviceType !== filters.serviceType) return false;
   if (filters.geocodeStatus !== undefined && row.geocodeStatus !== filters.geocodeStatus) return false;
   if (filters.deliveryDate !== undefined && row.deliveryDate !== filters.deliveryDate) return false;
+  if (
+    filters.deliveryArea !== undefined &&
+    row.deliveryArea?.toLowerCase() !== filters.deliveryArea.trim().toLowerCase()
+  ) {
+    return false;
+  }
   if (filters.deliveryBatchStartDate !== undefined && row.deliveryBatchStartDate !== filters.deliveryBatchStartDate) return false;
   if (filters.deliveryBatchEndDate !== undefined && row.deliveryBatchEndDate !== filters.deliveryBatchEndDate) return false;
   if (filters.deliverySession !== undefined && row.deliverySession !== filters.deliverySession) return false;
   if (filters.routeScopeKey !== undefined && row.routeScopeKey !== filters.routeScopeKey) return false;
   if (filters.planningGroupKey !== undefined && row.planningGroupKey !== filters.planningGroupKey) return false;
+  if (
+    filters.operateDeliveryStatus !== undefined &&
+    deriveOperateDeliveryStatus(row) !== filters.operateDeliveryStatus
+  ) {
+    return false;
+  }
+  if (filters.orderHealth !== undefined && deriveOrderHealth(row) !== filters.orderHealth) return false;
   return true;
 }
 
@@ -434,6 +467,7 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
   const reviewReasons = readStringArray(raw?.reviewReasons) ?? [];
   const readiness = readReadiness(raw?.readiness, order.cancelledAt, reviewReasons);
   const planningStatus: PlanningStatus = (stop?.routePlanStops?.length ?? 0) > 0 ? 'PLANNED' : 'UNPLANNED';
+  const routePlan = stop?.routePlanStops?.[0]?.routePlan ?? null;
 
   return {
     cancelledAt: formatDateTime(order.cancelledAt),
@@ -446,6 +480,7 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     deliveryDayRaw: readString(raw?.deliveryDayRaw) ?? readString(raw?.deliveryDay),
     deliverySession: readDeliverySession(raw?.deliverySession),
     deliveryStopId: stop?.id ?? null,
+    deliveryStopStatus: stop?.status ?? null,
     deliveryWeekday: readDeliveryWeekday(raw?.deliveryWeekday),
     email: order.email,
     financialStatus: order.financialStatus,
@@ -466,6 +501,9 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     readiness,
     recipientName: stop?.recipientName ?? readString(raw?.recipientName),
     reviewReasons,
+    routePlanId: routePlan?.id ?? null,
+    routePlanName: routePlan?.name ?? null,
+    routePlanStatus: routePlan?.status ?? null,
     routeScopeKey: readString(raw?.routeScopeKey),
     serviceType: readServiceType(raw?.serviceType),
     shippingAddress,

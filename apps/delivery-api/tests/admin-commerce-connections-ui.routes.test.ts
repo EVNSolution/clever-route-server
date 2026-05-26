@@ -206,10 +206,10 @@ describe('Admin WooCommerce connection UI routes', () => {
       });
       expect(dashboard.statusCode).toBe(200);
       expect(dashboard.body).toContain('WooCommerce connection setup');
-      expect(dashboard.body).toContain('/admin/ui/orders');
-      expect(dashboard.body).toContain('Order list');
-      expect(dashboard.body).toContain('Create route');
-      expect(dashboard.body).toContain('Driver management');
+      expect(dashboard.body).toContain('/admin/ui/app/orders');
+      expect(dashboard.body).toContain('Orders');
+      expect(dashboard.body).toContain('Routes');
+      expect(dashboard.body).toContain('Drivers');
       expect(dashboard.body).toContain('Settings');
       expect(dashboard.body).toContain('-apple-system');
 
@@ -250,7 +250,7 @@ describe('Admin WooCommerce connection UI routes', () => {
   test('accepts a plugin launch token and enters admin UI without the web login secret', async () => {
     const { app } = await createUiHarness();
     const { token } = createAdminWebLaunchToken({
-      returnPath: '/admin/ui/orders?shopDomain=tenant-a.example.test',
+      returnPath: '/admin/ui/app/orders?shopDomain=tenant-a.example.test',
       sessionSecret: webSessionSecret,
       shopDomain: 'tenant-a.example.test',
       subject: 'wordpress-plugin:tenant-a.example.test'
@@ -263,7 +263,7 @@ describe('Admin WooCommerce connection UI routes', () => {
       });
 
       expect(launch.statusCode).toBe(303);
-      expect(launch.headers.location).toBe('/admin/ui/orders?shopDomain=tenant-a.example.test');
+      expect(launch.headers.location).toBe('/admin/ui/app/orders?shopDomain=tenant-a.example.test');
       const cookie = readSetCookie(launch);
       expect(cookie).toContain('HttpOnly');
       expect(cookie).toContain('SameSite=Lax');
@@ -271,11 +271,46 @@ describe('Admin WooCommerce connection UI routes', () => {
       const orders = await app.inject({
         headers: { cookie },
         method: 'GET',
-        url: '/admin/ui/orders?shopDomain=tenant-a.example.test'
+        url: '/admin/ui/app/orders?shopDomain=tenant-a.example.test'
       });
       expect(orders.statusCode).toBe(200);
       expect(orders.body).toContain('Order list');
       expect(orders.body).not.toContain('CLEVER Admin login');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test.each([
+    ['orders', '/admin/ui/app/orders'],
+    ['route-plans', '/admin/ui/app/routes'],
+    ['drivers', '/admin/ui/app/drivers'],
+    ['settings', '/admin/ui/app/settings']
+  ])('accepts plugin app launch return path for %s without internal login', async (_section, path) => {
+    const { app } = await createUiHarness();
+    const { token } = createAdminWebLaunchToken({
+      returnPath: `${path}?shopDomain=tenant-a.example.test`,
+      sessionSecret: webSessionSecret,
+      shopDomain: 'tenant-a.example.test',
+      subject: 'wordpress-plugin:tenant-a.example.test'
+    });
+
+    try {
+      const launch = await app.inject({
+        method: 'GET',
+        url: `/admin/ui/plugin-launch?token=${encodeURIComponent(token)}`
+      });
+      expect(launch.statusCode).toBe(303);
+      expect(launch.headers.location).toBe(`${path}?shopDomain=tenant-a.example.test`);
+      const page = await app.inject({
+        headers: { cookie: readSetCookie(launch) },
+        method: 'GET',
+        url: `${path}?shopDomain=tenant-a.example.test`
+      });
+      expect(page.statusCode).toBe(200);
+      expect(page.body).toContain('aria-label="Operate navigation"');
+      expect(page.body).not.toContain('CLEVER Admin login');
+      expect(page.body).not.toContain('Connection setup');
     } finally {
       await app.close();
     }
@@ -308,6 +343,97 @@ describe('Admin WooCommerce connection UI routes', () => {
     }
   });
 
+  test('limits WP-launched operate sessions to the launched shop domain', async () => {
+    const listCanonicalOrders = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['orderSyncService']>['listCanonicalOrders']>(
+      () => Promise.resolve([canonicalOrder()])
+    );
+    const createPendingDriver = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['driverService']>['createPendingDriver']>(
+      () => Promise.resolve(driverRow())
+    );
+    const { app, createConnection, listConnections, testConnection } = await createUiHarness({
+      driverService: {
+        createPendingDriver,
+        deleteDriver: vi.fn(),
+        listDrivers: vi.fn(() => Promise.resolve([])),
+        regenerateInviteCode: vi.fn()
+      },
+      orderSyncService: { listCanonicalOrders }
+    });
+    const { token } = createAdminWebLaunchToken({
+      returnPath: '/admin/ui/app/orders?shopDomain=tenant-a.example.test',
+      sessionSecret: webSessionSecret,
+      shopDomain: 'tenant-a.example.test',
+      subject: 'wordpress-plugin:tenant-a.example.test'
+    });
+
+    try {
+      const launch = await app.inject({
+        method: 'GET',
+        url: `/admin/ui/plugin-launch?token=${encodeURIComponent(token)}`
+      });
+      const cookie = readSetCookie(launch);
+      const matching = await app.inject({
+        headers: { cookie },
+        method: 'GET',
+        url: '/admin/ui/app/drivers?shopDomain=tenant-a.example.test'
+      });
+      const csrfToken = readCsrfFromHtml(matching.body).csrfToken;
+      expect(matching.body).toContain('Locked to the WordPress shop that launched this workspace.');
+      expect(matching.body).not.toContain('type="text" name="shopDomain"');
+      expect(matching.body).not.toContain('Connection setup');
+      listCanonicalOrders.mockClear();
+
+      const mismatched = await app.inject({
+        headers: { cookie },
+        method: 'GET',
+        url: '/admin/ui/app/orders?shopDomain=tenant-b.example.test'
+      });
+      const wooSetup = await app.inject({
+        headers: { cookie },
+        method: 'GET',
+        url: '/admin/ui/commerce-connections/woocommerce?shopDomain=tenant-b.example.test'
+      });
+      const wooTest = await app.inject({
+        method: 'POST',
+        url: '/admin/ui/commerce-connections/woocommerce/test',
+        ...authenticatedMultipartRequest(cookie, credentialFormFields({ csrfToken }), undefined, {
+          accept: 'application/json'
+        })
+      });
+      const mismatchedPost = await app.inject({
+        method: 'POST',
+        url: '/admin/ui/app/drivers',
+        ...authenticatedMultipartRequest(cookie, {
+          csrfToken,
+          displayName: 'Wrong Shop Driver',
+          phone: '+14165550999',
+          shopDomain: 'tenant-b.example.test'
+        })
+      });
+
+      expect(mismatched.statusCode).toBe(200);
+      expect(mismatched.body).toContain('WordPress-launched admin session is limited to its connected shopDomain.');
+      expect(listCanonicalOrders).not.toHaveBeenCalled();
+      expect(wooSetup.statusCode).toBe(303);
+      expect(String(wooSetup.headers.location)).toContain('/admin/ui/app/orders?');
+      expect(String(wooSetup.headers.location)).toContain('shopDomain=tenant-a.example.test');
+      expect(String(wooSetup.headers.location)).toContain('error=');
+      expect(wooTest.statusCode).toBe(403);
+      expect(wooTest.json()).toEqual({
+        message: 'Connection setup requires CLEVER admin login.',
+        ok: false
+      });
+      expect(listConnections).not.toHaveBeenCalled();
+      expect(testConnection).not.toHaveBeenCalled();
+      expect(createConnection).not.toHaveBeenCalled();
+      expect(mismatchedPost.statusCode).toBe(303);
+      expect(String(mismatchedPost.headers.location)).toContain('error=');
+      expect(createPendingDriver).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('renders Shopify-app-style operating pages for orders, route creation, drivers, and settings', async () => {
     const listCanonicalOrders = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['orderSyncService']>['listCanonicalOrders']>(
       (input) => {
@@ -332,6 +458,7 @@ describe('Admin WooCommerce connection UI routes', () => {
       },
       orderSyncService: { listCanonicalOrders },
       routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
         createRoutePlan: vi.fn(),
         getRoutePlanDetail: vi.fn(),
         listRoutePlans: vi.fn(() => Promise.resolve([routePlanSummary()])),
@@ -348,31 +475,34 @@ describe('Admin WooCommerce connection UI routes', () => {
       const orders = await app.inject({
         headers: { cookie },
         method: 'GET',
-        url: '/admin/ui/orders?shopDomain=tenant-a.example.test'
+        url: '/admin/ui/app/orders?shopDomain=tenant-a.example.test'
       });
       const routes = await app.inject({
         headers: { cookie },
         method: 'GET',
-        url: '/admin/ui/route-plans?shopDomain=tenant-a.example.test&deliveryDate=2026-05-26'
+        url: '/admin/ui/app/routes?shopDomain=tenant-a.example.test&deliveryDate=2026-05-26'
       });
       const drivers = await app.inject({
         headers: { cookie },
         method: 'GET',
-        url: '/admin/ui/drivers?shopDomain=tenant-a.example.test'
+        url: '/admin/ui/app/drivers?shopDomain=tenant-a.example.test'
       });
       const settings = await app.inject({
         headers: { cookie },
         method: 'GET',
-        url: '/admin/ui/settings?shopDomain=tenant-a.example.test'
+        url: '/admin/ui/app/settings?shopDomain=tenant-a.example.test'
       });
 
       expect(orders.statusCode).toBe(200);
       expect(orders.body).toContain('Order list');
+      expect(orders.body).toContain('aria-label="Operate navigation"');
+      expect(orders.body).toContain('href="/admin/ui/app/routes?shopDomain=tenant-a.example.test">Routes</a>');
+      expect(orders.body).toContain('Connection setup');
       expect(orders.body).toContain('#1001');
       expect(orders.body).toContain('missing_delivery_date');
       expect(routes.statusCode).toBe(200);
       expect(routes.body).toContain('Create route');
-      expect(routes.body).toContain('Create route from all ready orders');
+      expect(routes.body).toContain('selected ready orders');
       expect(routes.body).toContain('123 Depot St');
       expect(drivers.statusCode).toBe(200);
       expect(drivers.body).toContain('Driver management');
@@ -383,7 +513,7 @@ describe('Admin WooCommerce connection UI routes', () => {
       expect(settings.body).toContain('Language');
       expect(settings.body).toContain('123 Depot St');
       expect(listCanonicalOrders).toHaveBeenCalledWith({
-        filters: { planned: false },
+        filters: {},
         shopDomain: 'tenant-a.example.test'
       });
       expect(listDrivers).toHaveBeenCalledWith({ shopDomain: 'tenant-a.example.test' });
@@ -393,7 +523,57 @@ describe('Admin WooCommerce connection UI routes', () => {
     }
   });
 
-  test('renders the protected Open CLEVER Route page with ready and review order states', async () => {
+  test('normalizes operate order filters and preserves shop context in navigation', async () => {
+    const listCanonicalOrders = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['orderSyncService']>['listCanonicalOrders']>(
+      (input) => {
+        if (input.filters?.readiness === 'NEEDS_REVIEW') {
+          return Promise.resolve([canonicalOrder({ readiness: 'NEEDS_REVIEW', reviewReasons: ['missing_coordinates'] })]);
+        }
+        return Promise.resolve([canonicalOrder()]);
+      }
+    );
+    const { app } = await createUiHarness({
+      orderSyncService: { listCanonicalOrders }
+    });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        headers: { cookie },
+        method: 'GET',
+        url: '/admin/ui/app/orders?shopDomain=tenant-a.example.test&deliveryDate=2026-05-28&deliveryArea=Toronto&operateDeliveryStatus=ready&orderHealth=normal&search=%231001'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('Filtered order list');
+      expect(response.body).toContain('ready');
+      expect(response.body).toContain('normal');
+      expect(response.body).toContain('href="/admin/ui/app/routes?shopDomain=tenant-a.example.test">Routes</a>');
+      expect(listCanonicalOrders).toHaveBeenCalledWith({
+        filters: {
+          deliveryArea: 'Toronto',
+          deliveryDate: '2026-05-28',
+          operateDeliveryStatus: 'ready',
+          orderHealth: 'normal',
+          search: '#1001'
+        },
+        shopDomain: 'tenant-a.example.test'
+      });
+      expect(listCanonicalOrders).toHaveBeenCalledWith({
+        filters: {
+          deliveryArea: 'Toronto',
+          deliveryDate: '2026-05-28',
+          readiness: 'NEEDS_REVIEW',
+          search: '#1001'
+        },
+        shopDomain: 'tenant-a.example.test'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('renders the protected Route Builder workspace with ready and review order states', async () => {
     const listCanonicalOrders = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['orderSyncService']>['listCanonicalOrders']>(
       (input) => {
         if (input.filters?.readiness === 'READY_TO_PLAN') return Promise.resolve([canonicalOrder()]);
@@ -401,12 +581,22 @@ describe('Admin WooCommerce connection UI routes', () => {
         return Promise.resolve([]);
       }
     );
-    const listRoutePlans = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['routePlanService']>['listRoutePlans']>(
-      () => Promise.resolve([routePlanSummary()])
+    const listRoutePlans = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['routePlanService']>['listRoutePlans']>(() =>
+      Promise.resolve([
+        routePlanSummary(),
+        {
+          ...routePlanSummary(),
+          deliveryDate: '2026-05-27',
+          id: 'other-route-plan-id',
+          name: 'Other day route',
+          planDate: '2026-05-27'
+        }
+      ])
     );
     const { app } = await createUiHarness({
       orderSyncService: { listCanonicalOrders },
       routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
         createRoutePlan: vi.fn(),
         getRoutePlanDetail: vi.fn(),
         listRoutePlans,
@@ -419,18 +609,22 @@ describe('Admin WooCommerce connection UI routes', () => {
       const response = await app.inject({
         headers: { cookie },
         method: 'GET',
-        url: '/admin/ui/route-plans?shopDomain=tenant-a.example.test&deliveryDate=2026-05-26'
+        url: '/admin/ui/app/routes?shopDomain=tenant-a.example.test&deliveryDate=2026-05-26'
       });
 
       expect(response.statusCode).toBe(200);
-      expect(response.body).toContain('Open CLEVER Route');
+      expect(response.body).toContain('Route workspace');
       expect(response.body).toContain('Create route for date');
       expect(response.body).toContain('Ready to plan');
       expect(response.body).toContain('Needs review');
       expect(response.body).toContain('Manual route order');
       expect(response.body).toContain('Route draft');
+      expect(response.body).not.toContain('Other day route');
       expect(response.body).toContain('missing_delivery_date');
-      expect(listRoutePlans).toHaveBeenCalledWith({ shopDomain: 'tenant-a.example.test' });
+      expect(listRoutePlans).toHaveBeenCalledWith({
+        deliveryDate: '2026-05-26',
+        shopDomain: 'tenant-a.example.test'
+      });
       expect(listCanonicalOrders).toHaveBeenCalledWith({
         filters: { deliveryDate: '2026-05-26', planned: false, readiness: 'READY_TO_PLAN' },
         shopDomain: 'tenant-a.example.test'
@@ -444,13 +638,49 @@ describe('Admin WooCommerce connection UI routes', () => {
     }
   });
 
-  test('creates a date route from all ready unplanned orders in the admin web UI', async () => {
+  test('hides a selected route detail when it does not match the selected delivery date', async () => {
+    const getRoutePlanDetail = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['routePlanService']>['getRoutePlanDetail']>(
+      () => Promise.resolve(routePlanDetail())
+    );
+    const { app } = await createUiHarness({
+      orderSyncService: { listCanonicalOrders: vi.fn(() => Promise.resolve([])) },
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan: vi.fn(),
+        getRoutePlanDetail,
+        listRoutePlans: vi.fn(() => Promise.resolve([routePlanSummary()])),
+        updateRoutePlanStops: vi.fn()
+      }
+    });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        headers: { cookie },
+        method: 'GET',
+        url: '/admin/ui/app/routes/route-plan-id?shopDomain=tenant-a.example.test&deliveryDate=2026-05-27'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('Route plan is not for the selected delivery date.');
+      expect(response.body).not.toContain('Save route stop order');
+      expect(getRoutePlanDetail).toHaveBeenCalledWith({
+        routePlanId: 'route-plan-id',
+        shopDomain: 'tenant-a.example.test'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('creates a date route from selected ready unplanned orders in the admin web UI', async () => {
     const createRoutePlan = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['routePlanService']>['createRoutePlan']>(
       () => Promise.resolve(routePlanSummary())
     );
     const { app } = await createUiHarness({
       orderSyncService: { listCanonicalOrders: vi.fn(() => Promise.resolve([canonicalOrder()])) },
       routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
         createRoutePlan,
         getRoutePlanDetail: vi.fn(),
         listRoutePlans: vi.fn(() => Promise.resolve([])),
@@ -462,7 +692,7 @@ describe('Admin WooCommerce connection UI routes', () => {
       const { cookie, csrfToken } = await loginAndReadCsrf(app);
       const response = await app.inject({
         method: 'POST',
-        url: '/admin/ui/route-plans/create',
+        url: '/admin/ui/app/routes/create',
         ...authenticatedMultipartRequest(cookie, {
           csrfToken,
           depotAddress: 'Toronto depot',
@@ -470,13 +700,14 @@ describe('Admin WooCommerce connection UI routes', () => {
           depotLongitude: '-79.3832',
           planDate: '2026-05-26',
           routeName: '2026-05-26 Toronto route',
+          selectedOrderGids: 'gid://woocommerce/Order/1001',
           shopDomain: 'tenant-a.example.test'
         })
       });
 
       expect(response.statusCode).toBe(303);
-      expect(response.headers.location).toContain('/admin/ui/route-plans?');
-      expect(response.headers.location).toContain('routePlanId=route-plan-id');
+      expect(response.headers.location).toContain('/admin/ui/app/routes/route-plan-id?');
+      expect(response.headers.location).toContain('/admin/ui/app/routes/route-plan-id');
       expect(createRoutePlan).toHaveBeenCalledOnce();
       const createInput = createRoutePlan.mock.calls[0]?.[0];
       expect(createInput).toBeDefined();
@@ -519,6 +750,7 @@ describe('Admin WooCommerce connection UI routes', () => {
     const { app } = await createUiHarness({
       orderSyncService: { listCanonicalOrders: vi.fn(() => Promise.resolve([])) },
       routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
         createRoutePlan: vi.fn(),
         getRoutePlanDetail,
         listRoutePlans: vi.fn(() => Promise.resolve([])),
@@ -530,7 +762,7 @@ describe('Admin WooCommerce connection UI routes', () => {
       const { cookie, csrfToken } = await loginAndReadCsrf(app);
       const response = await app.inject({
         method: 'POST',
-        url: '/admin/ui/route-plans/route-plan-id/stops',
+        url: '/admin/ui/app/routes/route-plan-id/stops',
         ...authenticatedMultipartRequest(cookie, {
           csrfToken,
           shopDomain: 'tenant-a.example.test',
@@ -539,7 +771,210 @@ describe('Admin WooCommerce connection UI routes', () => {
       });
 
       expect(response.statusCode).toBe(303);
-      expect(response.headers.location).toContain('routePlanId=route-plan-id');
+      expect(response.headers.location).toContain('/admin/ui/app/routes/route-plan-id');
+      expect(updateRoutePlanStops).toHaveBeenCalledWith({
+        payload: {
+          stops: [
+            { deliveryStopId: 'stop-2', sequence: 1, shopifyOrderGid: 'gid://woocommerce/Order/1002' },
+            { deliveryStopId: 'stop-1', sequence: 2, shopifyOrderGid: 'gid://woocommerce/Order/1001' }
+          ]
+        },
+        routePlanId: 'route-plan-id',
+        shopDomain: 'tenant-a.example.test'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('assigns drivers from the protected route detail page', async () => {
+    const assignedDetail = {
+      ...routePlanDetail(),
+      routePlan: { ...routePlanSummary(), driverId: 'driver-id' }
+    };
+    const assignRoutePlanDriver = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['routePlanService']>['assignRoutePlanDriver']>(
+      () => Promise.resolve(assignedDetail)
+    );
+    const getRoutePlanDetail = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['routePlanService']>['getRoutePlanDetail']>(
+      () => Promise.resolve(routePlanDetail())
+    );
+    const listDrivers = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['driverService']>['listDrivers']>(
+      () => Promise.resolve([driverRow()])
+    );
+    const { app } = await createUiHarness({
+      driverService: {
+        createPendingDriver: vi.fn(),
+        deleteDriver: vi.fn(),
+        listDrivers,
+        regenerateInviteCode: vi.fn()
+      },
+      orderSyncService: { listCanonicalOrders: vi.fn(() => Promise.resolve([])) },
+      routePlanService: {
+        assignRoutePlanDriver,
+        createRoutePlan: vi.fn(),
+        getRoutePlanDetail,
+        listRoutePlans: vi.fn(() => Promise.resolve([routePlanSummary()])),
+        updateRoutePlanStops: vi.fn()
+      }
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const detail = await app.inject({
+        headers: { cookie },
+        method: 'GET',
+        url: '/admin/ui/app/routes/route-plan-id?shopDomain=tenant-a.example.test'
+      });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.body).toContain('Assigned driver');
+      expect(detail.body).toContain('Alex Driver');
+      expect(listDrivers).toHaveBeenCalledWith({ shopDomain: 'tenant-a.example.test' });
+
+      const response = await app.inject({
+        method: 'POST',
+        url: '/admin/ui/app/routes/route-plan-id/driver',
+        ...authenticatedMultipartRequest(cookie, {
+          csrfToken,
+          driverId: 'driver-id',
+          shopDomain: 'tenant-a.example.test'
+        })
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain('/admin/ui/app/routes/route-plan-id');
+      expect(assignRoutePlanDriver).toHaveBeenCalledWith({
+        payload: { driverId: 'driver-id' },
+        routePlanId: 'route-plan-id',
+        shopDomain: 'tenant-a.example.test'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('blocks selected route creation when any selected order is not route-ready', async () => {
+    const blockedOrder = canonicalOrder({
+      deliveryStopId: 'stop-2',
+      hasCoordinates: false,
+      latitude: null,
+      longitude: null,
+      name: '#1002',
+      readiness: 'NEEDS_REVIEW',
+      reviewReasons: ['missing_coordinates'],
+      shopifyOrderGid: 'gid://woocommerce/Order/1002',
+      shopifyOrderLegacyId: '1002',
+      sourceOrderId: '1002',
+      sourceOrderNumber: '1002'
+    });
+    const createRoutePlan = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['routePlanService']>['createRoutePlan']>(
+      () => Promise.resolve(routePlanSummary())
+    );
+    const { app } = await createUiHarness({
+      orderSyncService: { listCanonicalOrders: vi.fn(() => Promise.resolve([canonicalOrder(), blockedOrder])) },
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan,
+        getRoutePlanDetail: vi.fn(),
+        listRoutePlans: vi.fn(() => Promise.resolve([])),
+        updateRoutePlanStops: vi.fn()
+      }
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: 'POST',
+        url: '/admin/ui/app/routes/create',
+        ...authenticatedMultipartRequest(cookie, {
+          csrfToken,
+          planDate: '2026-05-26',
+          routeName: 'Blocked route',
+          selectedOrderGids: 'gid://woocommerce/Order/1001\ngid://woocommerce/Order/1002',
+          shopDomain: 'tenant-a.example.test'
+        })
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain('/admin/ui/app/routes?');
+      expect(response.headers.location).toContain('error=');
+      expect(decodeURIComponent(String(response.headers.location)).replace(/\+/gu, ' ')).toContain('Cannot create a partial route');
+      expect(decodeURIComponent(String(response.headers.location)).replace(/\+/gu, ' ')).toContain('missing_coordinates');
+      expect(createRoutePlan).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('renders a local route canvas and saves CLEVER v1 optimized stop order', async () => {
+    const baseDetail = routePlanDetail();
+    const firstStop = baseDetail.stops[0];
+    const secondStop = baseDetail.stops[1];
+    if (firstStop === undefined || secondStop === undefined) {
+      throw new Error('routePlanDetail test fixture must include two stops');
+    }
+    const detail = {
+      ...baseDetail,
+      routePlan: { ...routePlanSummary(), depot: { latitude: 43.6, longitude: -79.3 } },
+      stops: [
+        {
+          ...firstStop,
+          coordinates: { latitude: 44.2, longitude: -79.9 },
+          sequence: 1
+        },
+        {
+          ...secondStop,
+          coordinates: { latitude: 43.61, longitude: -79.31 },
+          sequence: 2
+        }
+      ]
+    };
+    const getRoutePlanDetail = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['routePlanService']>['getRoutePlanDetail']>(
+      () => Promise.resolve(detail)
+    );
+    const updateRoutePlanStops = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['routePlanService']>['updateRoutePlanStops']>(
+      () => Promise.resolve(detail)
+    );
+    const { app } = await createUiHarness({
+      driverService: {
+        createPendingDriver: vi.fn(),
+        deleteDriver: vi.fn(),
+        listDrivers: vi.fn(() => Promise.resolve([driverRow()])),
+        regenerateInviteCode: vi.fn()
+      },
+      orderSyncService: { listCanonicalOrders: vi.fn(() => Promise.resolve([])) },
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan: vi.fn(),
+        getRoutePlanDetail,
+        listRoutePlans: vi.fn(() => Promise.resolve([routePlanSummary()])),
+        updateRoutePlanStops
+      }
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const page = await app.inject({
+        headers: { cookie },
+        method: 'GET',
+        url: '/admin/ui/app/routes/route-plan-id?shopDomain=tenant-a.example.test'
+      });
+      expect(page.statusCode).toBe(200);
+      expect(page.body).toContain('Route Builder');
+      expect(page.body).toContain('data-route-map');
+      expect(page.body).toContain('Optimize sequence · CLEVER v1');
+      expect(page.body).not.toContain('router.project-osrm.org');
+
+      const optimized = await app.inject({
+        method: 'POST',
+        url: '/admin/ui/app/routes/route-plan-id/optimize',
+        ...authenticatedMultipartRequest(cookie, {
+          csrfToken,
+          shopDomain: 'tenant-a.example.test'
+        })
+      });
+
+      expect(optimized.statusCode).toBe(303);
+      expect(decodeURIComponent(String(optimized.headers.location)).replace(/\+/gu, ' ')).toContain('CLEVER v1 optimized sequence saved');
       expect(updateRoutePlanStops).toHaveBeenCalledWith({
         payload: {
           stops: [
@@ -1105,6 +1540,7 @@ function canonicalOrder(overrides: Partial<Awaited<ReturnType<NonNullable<AdminC
     deliveryDayRaw: 'Tuesday',
     deliverySession: 'DAY' as const,
     deliveryStopId: 'stop-1',
+    deliveryStopStatus: 'PENDING',
     deliveryWeekday: 'TUESDAY' as const,
     email: 'customer@example.test',
     financialStatus: 'paid',
@@ -1125,6 +1561,9 @@ function canonicalOrder(overrides: Partial<Awaited<ReturnType<NonNullable<AdminC
     readiness: 'READY_TO_PLAN' as const,
     recipientName: 'Jane Customer',
     reviewReasons: [] as string[],
+    routePlanId: null,
+    routePlanName: null,
+    routePlanStatus: null,
     routeScopeKey: '2026-05-26|DELIVERY||',
     serviceType: 'DELIVERY' as const,
     shippingAddress: {

@@ -22,9 +22,9 @@ export function loadAdminRoutePlanDependencies(input: {
   }
 
   const repository = new PrismaRoutePlanRepository(input.prisma);
-  const routeGeometryProvider = new OsrmRouteGeometryProvider({
-    baseUrl: readOptional(input.env.OSRM_BASE_URL)
-  });
+  const osrmBaseUrl = readOptional(input.env.OSRM_BASE_URL);
+  const routeGeometryProvider =
+    osrmBaseUrl === undefined ? undefined : new OsrmRouteGeometryProvider({ baseUrl: osrmBaseUrl });
   return {
     routePlanService: new RoutePlanAdminService(repository, routeGeometryProvider),
     sessionTokenVerifier: new ShopifySessionTokenVerifier({

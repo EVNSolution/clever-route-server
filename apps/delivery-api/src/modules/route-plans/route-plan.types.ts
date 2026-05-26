@@ -88,6 +88,11 @@ export type RoutePlanSummary = {
   updatedAt: string;
 };
 
+export type ListRoutePlansInput = {
+  deliveryDate?: string;
+  shopDomain: string;
+};
+
 export type RoutePlanDriverSummary = {
   authStatus: 'APP_LINKED' | 'INVITE_PENDING';
   authSubject: 'present' | null;
@@ -184,7 +189,7 @@ export type RoutePlanService = {
     routePlanId: string;
     shopDomain: string;
   }): Promise<RoutePlanDetail | null>;
-  listRoutePlans(input: { shopDomain: string }): Promise<RoutePlanSummary[]>;
+  listRoutePlans(input: ListRoutePlansInput): Promise<RoutePlanSummary[]>;
   updateRoutePlanStops(input: UpdateRoutePlanStopsInput): Promise<RoutePlanDetail | null>;
 };
 

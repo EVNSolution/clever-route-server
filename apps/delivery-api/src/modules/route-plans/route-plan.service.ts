@@ -1,5 +1,6 @@
 import type {
   CreateRoutePlanInput,
+  ListRoutePlansInput,
   RoutePlanDetail,
   RoutePlanRouteResult,
   RoutePlanService,
@@ -31,7 +32,7 @@ export type RoutePlanRepository = {
     routePlanId: string;
     shopDomain: string;
   }): Promise<{ routePlanId: string; deleted: boolean }>;
-  listRoutePlans(input: { shopDomain: string }): Promise<RoutePlanSummary[]>;
+  listRoutePlans(input: ListRoutePlansInput): Promise<RoutePlanSummary[]>;
   updateRoutePlanStops(input: UpdateRoutePlanStopsInput): Promise<RoutePlanDetail | null>;
 };
 
@@ -71,7 +72,7 @@ export class RoutePlanAdminService implements RoutePlanService {
     return this.repository.deleteRoutePlan(input);
   }
 
-  listRoutePlans(input: { shopDomain: string }): Promise<RoutePlanSummary[]> {
+  listRoutePlans(input: ListRoutePlansInput): Promise<RoutePlanSummary[]> {
     return this.repository.listRoutePlans(input);
   }
 

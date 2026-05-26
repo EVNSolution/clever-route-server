@@ -10,6 +10,7 @@ import type {
   RoutePlanDetail,
   RoutePlanDetailStop,
   RoutePlanDriverSummary,
+  ListRoutePlansInput,
   RoutePlanOrderAttributeInput,
   RoutePlanOrderInput,
   UpdateRoutePlanDriverInput,
@@ -256,16 +257,20 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     });
   }
 
-  async listRoutePlans(input: { shopDomain: string }): Promise<RoutePlanSummary[]> {
+  async listRoutePlans(input: ListRoutePlansInput): Promise<RoutePlanSummary[]> {
     const shop = await this.findShop(input.shopDomain);
     if (shop === null) {
       return [];
     }
 
+    const where: Prisma.RoutePlanWhereInput = {
+      shopId: shop.id,
+      ...(input.deliveryDate === undefined ? {} : { planDate: parsePlanDate(input.deliveryDate) })
+    };
     const routePlans = await this.prisma.routePlan.findMany({
       include: routePlanInclude(),
       orderBy: { createdAt: 'desc' },
-      where: { shopId: shop.id }
+      where
     });
 
     return (routePlans as RoutePlanRecord[]).map((routePlan) => toRoutePlanSummary(routePlan));

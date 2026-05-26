@@ -1,7 +1,8 @@
 import { describe, expect, test, vi } from 'vitest';
 
+import { deriveOperateDeliveryStatus, deriveOrderHealth } from '../src/modules/shopify/order-operate-status.js';
 import { PrismaOrderSyncRepository } from '../src/modules/shopify/order-sync.repository.js';
-import type { SyncedOrderWithDeliveryStopInput } from '../src/modules/shopify/order-sync.mapper.js';
+import type { CanonicalOrderRow, SyncedOrderWithDeliveryStopInput } from '../src/modules/shopify/order-sync.mapper.js';
 
 describe('PrismaOrderSyncRepository canonical orders', () => {
   test('creates new orders and lists canonical rows with planned status derived from route stops', async () => {
@@ -37,13 +38,56 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       expect.objectContaining({
         deliverySession: 'EVENING',
       deliveryWeekday: 'FRIDAY',
+        deliveryStopStatus: 'ASSIGNED',
         planningStatus: 'PLANNED',
         readiness: 'READY_TO_PLAN',
+        routePlanName: 'Route draft',
+        routePlanStatus: 'ASSIGNED',
         serviceType: 'EVENING_DELIVERY',
         timeWindowEnd: '21:00',
         timeWindowStart: '17:00'
       })
     );
+  });
+
+  test('filters canonical rows by area, health, and operate delivery status', async () => {
+    const readyHarness = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
+    const readyRepository = new PrismaOrderSyncRepository(
+      readyHarness.prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+
+    await expect(
+      readyRepository.listCanonicalOrders({
+        filters: { deliveryArea: ' mississauga ', operateDeliveryStatus: 'ready', orderHealth: 'normal' },
+        shopDomain: 'example.myshopify.com'
+      })
+    ).resolves.toHaveLength(1);
+    await expect(
+      readyRepository.listCanonicalOrders({
+        filters: { deliveryArea: 'Toronto' },
+        shopDomain: 'example.myshopify.com'
+      })
+    ).resolves.toEqual([]);
+
+    const plannedHarness = createPrismaHarness({ existingOrder: null, routeStopCount: 1 });
+    const plannedRepository = new PrismaOrderSyncRepository(
+      plannedHarness.prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+    await expect(
+      plannedRepository.listCanonicalOrders({
+        filters: { operateDeliveryStatus: 'in_progress' },
+        shopDomain: 'example.myshopify.com'
+      })
+    ).resolves.toHaveLength(1);
+  });
+
+  test('derives first-pass operate delivery status and health from canonical rows', () => {
+    expect(deriveOperateDeliveryStatus(canonicalRow())).toBe('ready');
+    expect(deriveOrderHealth(canonicalRow())).toBe('normal');
+    expect(deriveOperateDeliveryStatus(canonicalRow({ readiness: 'NEEDS_REVIEW', reviewReasons: ['missing_delivery_date'] }))).toBe('preparing');
+    expect(deriveOrderHealth(canonicalRow({ cancelledAt: '2026-05-25T00:00:00.000Z' }))).toBe('needs_review');
+    expect(deriveOperateDeliveryStatus(canonicalRow({ planningStatus: 'PLANNED', routePlanStatus: 'IN_PROGRESS' }))).toBe('in_progress');
+    expect(deriveOperateDeliveryStatus(canonicalRow({ deliveryStopStatus: 'DELIVERED', planningStatus: 'PLANNED' }))).toBe('completed');
   });
 
   test('does not overwrite a local row when the payload is not newer', async () => {
@@ -336,7 +380,11 @@ function canonicalOrderRecord(routeStopCount: number): Record<string, unknown> {
         postalCode: 'L5B 3C1',
         province: 'ON',
         recipientName: 'Noah Yoon',
-        routePlanStops: Array.from({ length: routeStopCount }, (_, index) => ({ id: `rps-${index}` }))
+        routePlanStops: Array.from({ length: routeStopCount }, (_, index) => ({
+          id: `rps-${index}`,
+          routePlan: { id: 'route-plan-id', name: 'Route draft', status: 'ASSIGNED' }
+        })),
+        status: routeStopCount > 0 ? 'ASSIGNED' : 'PENDING',
       }
     ],
     email: 'customer@example.com',
@@ -375,5 +423,66 @@ function canonicalOrderRecord(routeStopCount: number): Record<string, unknown> {
     shopifyOrderLegacyId: BigInt(123),
     totalPriceAmount: '95.00',
     updatedAtShopify: new Date('2026-05-07T13:00:00.000Z')
+  };
+}
+
+function canonicalRow(overrides: Partial<CanonicalOrderRow> = {}): CanonicalOrderRow {
+  return {
+    cancelledAt: null,
+    currencyCode: 'CAD',
+    deliveryArea: 'Mississauga',
+    deliveryBatchEndDate: null,
+    deliveryBatchStartDate: null,
+    deliveryDate: '2026-05-08',
+    deliveryDateSource: 'LINE_ITEM_DATE_RANGE',
+    deliveryDayRaw: 'Friday',
+    deliverySession: 'EVENING',
+    deliveryStopId: 'stop-id',
+    deliveryStopStatus: 'PENDING',
+    deliveryWeekday: 'FRIDAY',
+    email: 'customer@example.com',
+    financialStatus: 'PAID',
+    fulfillmentStatus: 'UNFULFILLED',
+    geocodeStatus: 'RESOLVED',
+    hasCoordinates: true,
+    latitude: 43.589,
+    longitude: -79.644,
+    name: '#1035',
+    orderCreatedAt: '2026-05-05T14:00:00.000Z',
+    orderDateLocal: '2026-05-05',
+    orderId: 'order-id',
+    phone: '+14165550000',
+    pickup: false,
+    planningGroupKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00|Mississauga',
+    planningStatus: 'UNPLANNED',
+    processedAt: '2026-05-07T12:00:00.000Z',
+    readiness: 'READY_TO_PLAN',
+    recipientName: 'Noah Yoon',
+    reviewReasons: [],
+    routePlanId: null,
+    routePlanName: null,
+    routePlanStatus: null,
+    routeScopeKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00',
+    serviceType: 'EVENING_DELIVERY',
+    shippingAddress: {
+      address1: '300 City Centre Dr',
+      address2: '#08',
+      city: 'Mississauga',
+      countryCode: 'CA',
+      postalCode: 'L5B 3C1',
+      province: 'ON'
+    },
+    shopifyOrderGid: 'gid://shopify/Order/123',
+    shopifyOrderLegacyId: '123',
+    sourceOrderId: '123',
+    sourceOrderNumber: '1035',
+    sourcePlatform: 'SHOPIFY',
+    sourceSiteUrl: null,
+    sourceUpdatedAt: '2026-05-07T13:00:00.000Z',
+    timeWindowEnd: '21:00',
+    timeWindowStart: '17:00',
+    totalPriceAmount: '95.00',
+    updatedAtShopify: '2026-05-07T13:00:00.000Z',
+    ...overrides
   };
 }

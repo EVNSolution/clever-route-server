@@ -15,6 +15,7 @@ const canonicalOrder: CanonicalOrderRow = {
   deliveryDayRaw: 'Friday 5pm to 9pm *Check delivery map',
   deliverySession: 'EVENING',
   deliveryStopId: 'stop-id',
+  deliveryStopStatus: 'PENDING',
   deliveryWeekday: 'FRIDAY',
   email: 'customer@example.com',
   financialStatus: 'PAID',
@@ -35,6 +36,9 @@ const canonicalOrder: CanonicalOrderRow = {
   readiness: 'READY_TO_PLAN',
   recipientName: 'Noah Yoon',
   reviewReasons: [],
+  routePlanId: null,
+  routePlanName: null,
+  routePlanStatus: null,
   routeScopeKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00',
   serviceType: 'EVENING_DELIVERY',
   shippingAddress: {

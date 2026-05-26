@@ -152,10 +152,11 @@ function readAdminUiRoutePlanService(input: {
     return { routePlanService: input.adminRoutePlans.routePlanService };
   }
   if (input.prisma === undefined) return {};
+  const osrmBaseUrl = readOptional(input.env.OSRM_BASE_URL);
   return {
     routePlanService: new RoutePlanAdminService(
       new PrismaRoutePlanRepository(input.prisma),
-      new OsrmRouteGeometryProvider({ baseUrl: readOptional(input.env.OSRM_BASE_URL) })
+      osrmBaseUrl === undefined ? undefined : new OsrmRouteGeometryProvider({ baseUrl: osrmBaseUrl })
     )
   };
 }

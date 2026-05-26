@@ -102,10 +102,10 @@ function buildAdminLaunchReturnPath(input: {
   shopDomain: string;
 }): string {
   const pathBySection = {
-    drivers: '/admin/ui/drivers',
-    orders: '/admin/ui/orders',
-    'route-plans': '/admin/ui/route-plans',
-    settings: '/admin/ui/settings'
+    drivers: '/admin/ui/app/drivers',
+    orders: '/admin/ui/app/orders',
+    'route-plans': '/admin/ui/app/routes',
+    settings: '/admin/ui/app/settings'
   } satisfies Record<'drivers' | 'orders' | 'route-plans' | 'settings', string>;
   const params = new URLSearchParams({ shopDomain: input.shopDomain });
   return `${pathBySection[input.section]}?${params.toString()}`;
