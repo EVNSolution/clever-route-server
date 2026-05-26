@@ -40,6 +40,7 @@ export type AdminWebSession = {
 export type CreateAdminWebSessionInput = {
   cookieName?: string;
   now?: () => Date;
+  sameSite?: 'Lax' | 'Strict';
   secure: boolean;
   sessionSecret: string;
   subject: string;
@@ -103,7 +104,7 @@ export function createAdminWebSession(input: CreateAdminWebSessionInput): {
       maxAgeSeconds: Math.max(1, Math.floor((expiresAt - issuedAt) / 1000)),
       name: input.cookieName ?? DEFAULT_ADMIN_UI_COOKIE_NAME,
       path: ADMIN_UI_COOKIE_PATH,
-      sameSite: 'Strict',
+      sameSite: input.sameSite ?? 'Strict',
       secure: input.secure,
       value: cookieValue
     }),
@@ -365,7 +366,7 @@ function serializeCookie(input: {
   maxAgeSeconds: number;
   name: string;
   path: string;
-  sameSite: 'Strict';
+  sameSite: 'Lax' | 'Strict';
   secure: boolean;
   value: string;
 }): string {

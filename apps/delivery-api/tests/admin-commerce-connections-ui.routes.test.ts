@@ -266,7 +266,7 @@ describe('Admin WooCommerce connection UI routes', () => {
       expect(launch.headers.location).toBe('/admin/ui/orders?shopDomain=tenant-a.example.test');
       const cookie = readSetCookie(launch);
       expect(cookie).toContain('HttpOnly');
-      expect(cookie).toContain('SameSite=Strict');
+      expect(cookie).toContain('SameSite=Lax');
 
       const orders = await app.inject({
         headers: { cookie },

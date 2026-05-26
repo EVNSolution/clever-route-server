@@ -175,6 +175,7 @@ export function registerAdminCommerceConnectionsUiRoutes(
       return sendHtml(reply, 401, renderLoginPage({ error: 'Invalid or expired plugin launch token' }));
     }
     const created = createAdminWebSession({
+      sameSite: 'Lax',
       secure: dependencies.secureCookies,
       sessionSecret: dependencies.sessionSecret,
       subject: launch.subject,
