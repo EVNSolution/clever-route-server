@@ -59,17 +59,8 @@ final class Clever_Route_Admin {
             case 'setup':
                 $this->render_setup();
                 break;
-            case 'route-plans':
-                $this->render_route_plans();
-                break;
-            case 'route-plan-detail':
-                $this->render_route_plan_detail();
-                break;
             case 'orders-sync':
                 $this->render_orders_sync();
-                break;
-            case 'mapping':
-                $this->render_mapping();
                 break;
             case 'diagnostics':
                 $this->render_diagnostics();
@@ -93,9 +84,7 @@ final class Clever_Route_Admin {
         $tabs = array(
             'dashboard' => __('Dashboard', 'clever-route-connector'),
             'setup' => __('Setup', 'clever-route-connector'),
-            'route-plans' => __('Route Plans', 'clever-route-connector'),
             'orders-sync' => __('Orders & Sync', 'clever-route-connector'),
-            'mapping' => __('Mapping', 'clever-route-connector'),
             'diagnostics' => __('Diagnostics', 'clever-route-connector'),
         );
         echo '<nav class="nav-tab-wrapper">';
@@ -120,12 +109,13 @@ final class Clever_Route_Admin {
         if ($summary['connected']) {
             $health = $this->client->get('/wordpress/plugin/health');
             $this->render_api_error($health);
-            $this->render_freshness($health['data']['freshness'] ?? array());
+            $this->render_ingestion_status(is_array($health['data'] ?? null) ? $health['data'] : array());
             $this->render_open_clever_route_card($summary);
+        } else {
+            echo '<p class="description">' . esc_html__('Connect this plugin before REST sync, webhook status, or CLEVER workspace launch actions are available.', 'clever-route-connector') . '</p>';
         }
-        echo '<p><a class="button button-primary" href="' . esc_url($this->tab_url('route-plans')) . '">' . esc_html__('Open Route Plans', 'clever-route-connector') . '</a> ';
-        echo '<a class="button" href="' . esc_url($this->tab_url('orders-sync')) . '">' . esc_html__('Run Manual Sync', 'clever-route-connector') . '</a> ';
-        echo '<a class="button" href="' . esc_url($this->tab_url('setup')) . '">' . esc_html__('Go to Settings', 'clever-route-connector') . '</a></p>';
+        echo '<p><a class="button button-primary" href="' . esc_url($this->tab_url('orders-sync')) . '">' . esc_html__('Run Manual Sync', 'clever-route-connector') . '</a> ';
+        echo '<a class="button" href="' . esc_url($this->tab_url('setup')) . '">' . esc_html__('Go to Setup', 'clever-route-connector') . '</a></p>';
     }
 
     private function render_setup(): void {
@@ -162,7 +152,7 @@ final class Clever_Route_Admin {
         echo '<h2>' . esc_html__('Orders & Sync', 'clever-route-connector') . '</h2>';
         $health = $this->client->get('/wordpress/plugin/health');
         $this->render_api_error($health);
-        $this->render_freshness($health['data']['freshness'] ?? array());
+        $this->render_ingestion_status(is_array($health['data'] ?? null) ? $health['data'] : array());
         echo '<h3>' . esc_html__('Historical order import', 'clever-route-connector') . '</h3>';
         echo '<p>' . esc_html__('Use this after initial setup to bring existing WooCommerce orders into CLEVER. The plugin never pushes order payloads from WordPress; it asks the CLEVER server to pull orders through the stored WooCommerce REST credentials.', 'clever-route-connector') . '</p>';
         echo '<form method="post">';
@@ -187,42 +177,6 @@ final class Clever_Route_Admin {
         echo '<p class="description">' . esc_html__('Manual sync calls POST /wordpress/plugin/sync/request. Plugin push orders/batch is intentionally not available in MVP.', 'clever-route-connector') . '</p>';
     }
 
-    private function render_route_plans(): void {
-        $summary = $this->options->summary();
-        echo '<h2>' . esc_html__('Route Plans', 'clever-route-connector') . '</h2>';
-        $this->render_open_clever_route_card($summary);
-        $result = $this->client->get('/wordpress/plugin/route-plans');
-        $this->render_api_error($result);
-        $this->render_freshness($result['data']['freshness'] ?? array());
-        $plans = $result['data']['routePlans'] ?? array();
-        if (!is_array($plans) || count($plans) === 0) {
-            echo '<p>' . esc_html__('No route plans returned by CLEVER.', 'clever-route-connector') . '</p>';
-            return;
-        }
-        echo '<table class="widefat striped"><thead><tr>';
-        foreach (array(__('Date', 'clever-route-connector'), __('Route', 'clever-route-connector'), __('Status', 'clever-route-connector'), __('Driver', 'clever-route-connector'), __('Stops', 'clever-route-connector'), __('Updated', 'clever-route-connector')) as $heading) {
-            echo '<th>' . esc_html($heading) . '</th>';
-        }
-        echo '</tr></thead><tbody>';
-        foreach ($plans as $plan) {
-            if (!is_array($plan)) {
-                continue;
-            }
-            $detail_url = add_query_arg(array('page' => 'clever-route', 'tab' => 'route-plan-detail', 'route_plan_id' => $this->text($plan['id'] ?? '')), admin_url('admin.php'));
-            $driver = is_array($plan['driver'] ?? null) ? $this->text($plan['driver']['displayName'] ?? '') : '';
-            echo '<tr>';
-            echo '<td>' . esc_html($this->text($plan['deliveryDate'] ?? $plan['planDate'] ?? '')) . '</td>';
-            echo '<td><a href="' . esc_url($detail_url) . '">' . esc_html($this->text($plan['name'] ?? '')) . '</a></td>';
-            echo '<td>' . esc_html($this->text($plan['status'] ?? '')) . '</td>';
-            echo '<td>' . esc_html($driver) . '</td>';
-            echo '<td>' . esc_html($this->text($plan['stopCount'] ?? '0')) . '</td>';
-            echo '<td>' . esc_html($this->text($plan['updatedAt'] ?? '')) . '</td>';
-            echo '</tr>';
-        }
-        echo '</tbody></table>';
-        echo '<p class="description">' . esc_html__('Read-only MVP: no create, optimize, assign, reorder, or write-back actions are rendered here.', 'clever-route-connector') . '</p>';
-    }
-
     /** @param array{base_url:string,connection_id:string,token_prefix:string,connected:bool,last_error:string} $summary */
     private function render_open_clever_route_card(array $summary): void {
         if (!$summary['connected'] || $this->normalize_api_base_url($summary['base_url']) === null) {
@@ -233,10 +187,10 @@ final class Clever_Route_Admin {
         echo '<h3>' . esc_html__('Open CLEVER Route workspace', 'clever-route-connector') . '</h3>';
         echo '<p>' . esc_html__('Launch the CLEVER server workspace from this WordPress admin session without re-entering the CLEVER admin login secret. WordPress only requests a short-lived launch URL; the connector token is never placed in the browser URL.', 'clever-route-connector') . '</p>';
         echo '<div class="clever-route-launch-actions">';
-        $this->render_admin_launch_button('orders', __('Order list', 'clever-route-connector'), true);
-        $this->render_admin_launch_button('route-plans', __('Create route', 'clever-route-connector'), false);
-        $this->render_admin_launch_button('drivers', __('Driver management', 'clever-route-connector'), false);
-        $this->render_admin_launch_button('settings', __('Settings', 'clever-route-connector'), false);
+        $this->render_admin_launch_button('orders', __('Open orders in CLEVER', 'clever-route-connector'), true);
+        $this->render_admin_launch_button('route-plans', __('Create route in CLEVER', 'clever-route-connector'), false);
+        $this->render_admin_launch_button('drivers', __('Manage drivers in CLEVER', 'clever-route-connector'), false);
+        $this->render_admin_launch_button('settings', __('Open CLEVER settings', 'clever-route-connector'), false);
         echo '</div>';
         echo '<p class="description">' . esc_html__('The server verifies this paired plugin token and opens the matching customer store using this WordPress site domain.', 'clever-route-connector') . '</p>';
         echo '</div>';
@@ -249,60 +203,6 @@ final class Clever_Route_Admin {
         echo '<input type="hidden" name="clever_route_section" value="' . esc_attr($section) . '" />';
         submit_button($label, $primary ? 'primary' : 'secondary', 'submit', false);
         echo '</form>';
-    }
-
-    private function render_route_plan_detail(): void {
-        $route_plan_id = sanitize_text_field((string) ($_GET['route_plan_id'] ?? ''));
-        echo '<h2>' . esc_html__('Route Plan Detail', 'clever-route-connector') . '</h2>';
-        if ($route_plan_id === '') {
-            echo '<p>' . esc_html__('Choose a route plan from the list.', 'clever-route-connector') . '</p>';
-            return;
-        }
-        $result = $this->client->get('/wordpress/plugin/route-plans/' . rawurlencode($route_plan_id));
-        $this->render_api_error($result);
-        $this->render_freshness($result['data']['freshness'] ?? array());
-        $detail = $result['data']['detail'] ?? array();
-        $stops = is_array($detail) ? ($detail['stops'] ?? array()) : array();
-        echo '<table class="widefat striped"><thead><tr>';
-        foreach (array('#', __('Woo order', 'clever-route-connector'), __('Recipient', 'clever-route-connector'), __('ETA', 'clever-route-connector'), __('Window', 'clever-route-connector'), __('Status', 'clever-route-connector')) as $heading) {
-            echo '<th>' . esc_html($heading) . '</th>';
-        }
-        echo '</tr></thead><tbody>';
-        foreach (is_array($stops) ? $stops : array() as $stop) {
-            if (!is_array($stop)) {
-                continue;
-            }
-            $order = is_array($stop['order'] ?? null) ? $stop['order'] : array();
-            $source_order_id = $this->text($order['sourceOrderId'] ?? '');
-            $order_link = $this->woo_order_edit_url($source_order_id);
-            echo '<tr>';
-            echo '<td>' . esc_html($this->text($stop['sequence'] ?? '')) . '</td>';
-            echo '<td>' . ($order_link === '' ? esc_html($this->text($order['name'] ?? '')) : '<a href="' . esc_url($order_link) . '">' . esc_html($this->text($order['name'] ?? '')) . '</a>') . '</td>';
-            echo '<td>' . esc_html($this->text($stop['recipientName'] ?? '')) . '</td>';
-            echo '<td>' . esc_html($this->text($stop['estimatedArrivalAt'] ?? '')) . '</td>';
-            echo '<td>' . esc_html($this->text($stop['timeWindowStart'] ?? '')) . ' - ' . esc_html($this->text($stop['timeWindowEnd'] ?? '')) . '</td>';
-            echo '<td>' . esc_html($this->text($stop['status'] ?? '')) . '</td>';
-            echo '</tr>';
-        }
-        echo '</tbody></table>';
-        echo '<p class="description">' . esc_html__('Read-only MVP: stop reorder, driver assignment, delivery status changes, callback cache, and Woo write-back are not implemented.', 'clever-route-connector') . '</p>';
-    }
-
-    private function render_mapping(): void {
-        echo '<h2>' . esc_html__('Mapping', 'clever-route-connector') . '</h2>';
-        $result = $this->client->get('/wordpress/plugin/mapping');
-        $this->render_api_error($result);
-        $mapping = is_array($result['data']['mapping'] ?? null) ? $result['data']['mapping'] : array();
-        $this->render_key_values(array(
-            __('Delivery date meta key', 'clever-route-connector') => $this->text($mapping['deliveryDateMetaKey'] ?? ''),
-            __('Delivery time/window meta key', 'clever-route-connector') => $this->text($mapping['deliveryTimeMetaKey'] ?? ''),
-            __('Delivery area/zone meta key', 'clever-route-connector') => $this->text($mapping['deliveryAreaMetaKey'] ?? ''),
-            __('Notes/instructions field', 'clever-route-connector') => $this->text($mapping['notesField'] ?? ''),
-            __('Phone preference', 'clever-route-connector') => $this->text($mapping['phonePreference'] ?? ''),
-            __('Address preference', 'clever-route-connector') => $this->text($mapping['addressPreference'] ?? ''),
-            __('Preview', 'clever-route-connector') => __('Redacted sample only', 'clever-route-connector'),
-        ));
-        echo '<p class="description">' . esc_html__('Mapping is server-owned in MVP; this page is display-only unless a later approved edit flow is enabled.', 'clever-route-connector') . '</p>';
     }
 
     private function render_diagnostics(): void {
@@ -320,7 +220,7 @@ final class Clever_Route_Admin {
             __('Token prefix', 'clever-route-connector') => $summary['token_prefix'],
             __('Last API error', 'clever-route-connector') => $summary['last_error'],
         ));
-        $this->render_freshness($health['data']['freshness'] ?? array());
+        $this->render_ingestion_status(is_array($health['data'] ?? null) ? $health['data'] : array());
         echo '<p class="description">' . esc_html__('Support bundle is token/PII-safe: it shows token prefix only and omits raw order payload, phone, full addresses, and connector token.', 'clever-route-connector') . '</p>';
     }
 
@@ -415,22 +315,73 @@ final class Clever_Route_Admin {
         echo '<div class="notice notice-error inline"><p>' . esc_html($message) . '</p></div>';
     }
 
-    /** @param array<mixed> $freshness */
-    private function render_freshness(array $freshness): void {
-        echo '<h3>' . esc_html__('Freshness', 'clever-route-connector') . '</h3>';
-        $this->render_key_values(array(
-            'lastWebhookAt' => $this->text($freshness['lastWebhookAt'] ?? ''),
-            'lastRestSyncAt' => $this->text($freshness['lastRestSyncAt'] ?? ''),
-            'lastRouteUpdatedAt' => $this->text($freshness['lastRouteUpdatedAt'] ?? ''),
-            'serverTime' => $this->text($freshness['serverTime'] ?? ''),
-        ));
+    /** @param array<string,mixed> $health */
+    private function render_ingestion_status(array $health): void {
+        $freshness = is_array($health['freshness'] ?? null) ? $health['freshness'] : array();
+        $stats = is_array($health['ingestionStats'] ?? null) ? $health['ingestionStats'] : array();
+        echo '<h3>' . esc_html__('Ingestion status', 'clever-route-connector') . '</h3>';
+        echo '<div class="clever-route-status-grid">';
+        $this->render_status_card(
+            __('REST sync', 'clever-route-connector'),
+            $this->format_count_stat($stats, 'rest'),
+            array(
+                __('Last REST sync', 'clever-route-connector') => $this->format_optional_datetime($freshness['lastRestSyncAt'] ?? null, __('No REST sync recorded yet', 'clever-route-connector')),
+            )
+        );
+        $this->render_status_card(
+            __('Webhook', 'clever-route-connector'),
+            $this->format_count_stat($stats, 'webhook'),
+            array(
+                __('Last webhook', 'clever-route-connector') => $this->format_optional_datetime($freshness['lastWebhookAt'] ?? null, __('No webhook received yet', 'clever-route-connector')),
+            )
+        );
+        echo '</div>';
+        $server_time = $this->text($freshness['serverTime'] ?? '');
+        if ($server_time !== '') {
+            echo '<p class="description">' . esc_html(sprintf(__('CLEVER server time: %s', 'clever-route-connector'), $server_time)) . '</p>';
+        }
+    }
+
+    /** @param array<string,mixed> $stats */
+    private function format_count_stat(array $stats, string $channel): string {
+        $channel_stats = is_array($stats[$channel] ?? null) ? $stats[$channel] : array();
+        if (array_key_exists('recordedOrdersReceived', $channel_stats)) {
+            return sprintf(
+                /* translators: 1: count of orders received since stats tracking was enabled */
+                __('%1$s recorded orders received since stats tracking was enabled', 'clever-route-connector'),
+                $this->text($channel_stats['recordedOrdersReceived'])
+            );
+        }
+        return __('Recorded order count is not available from this CLEVER server yet', 'clever-route-connector');
+    }
+
+    /** @param array<string,string> $details */
+    private function render_status_card(string $title, string $summary, array $details): void {
+        echo '<section class="clever-route-status-card">';
+        echo '<h4>' . esc_html($title) . '</h4>';
+        echo '<p class="clever-route-status-summary">' . esc_html($summary) . '</p>';
+        echo '<dl>';
+        foreach ($details as $label => $value) {
+            echo '<dt>' . esc_html($label) . '</dt><dd>' . esc_html($value) . '</dd>';
+        }
+        echo '</dl>';
+        echo '</section>';
+    }
+
+    /** @param mixed $value */
+    private function format_optional_datetime($value, string $empty_text): string {
+        $text = $this->text($value);
+        return $text === '' ? $empty_text : $text;
     }
 
     /** @param array<string,string|int|bool|null> $values */
     private function render_key_values(array $values): void {
-        echo '<table class="form-table"><tbody>';
+        echo '<table class="form-table clever-route-key-values"><tbody>';
         foreach ($values as $key => $value) {
-            echo '<tr><th scope="row">' . esc_html((string) $key) . '</th><td><code>' . esc_html($this->text($value)) . '</code></td></tr>';
+            $text = $this->text($value);
+            $display = $text === '' ? __('Not configured', 'clever-route-connector') : $text;
+            $class = $text === '' ? ' class="clever-route-empty-value"' : '';
+            echo '<tr><th scope="row">' . esc_html((string) $key) . '</th><td><span' . $class . '>' . esc_html($display) . '</span></td></tr>';
         }
         echo '</tbody></table>';
     }
@@ -448,48 +399,12 @@ final class Clever_Route_Admin {
 
     private function current_tab(): string {
         $tab = sanitize_key((string) ($_GET['tab'] ?? 'dashboard'));
-        $allowed = array('dashboard', 'setup', 'route-plans', 'route-plan-detail', 'orders-sync', 'mapping', 'diagnostics');
+        $allowed = array('dashboard', 'setup', 'orders-sync', 'diagnostics');
         return in_array($tab, $allowed, true) ? $tab : 'dashboard';
     }
 
     private function tab_url(string $tab): string {
         return add_query_arg(array('page' => 'clever-route', 'tab' => $tab), admin_url('admin.php'));
-    }
-
-    private function clever_route_workspace_url(string $base_url): string {
-        $base_url = $this->normalize_api_base_url($base_url);
-        if ($base_url === null) {
-            return '';
-        }
-
-        return add_query_arg(
-            array('shopDomain' => $this->site_domain()),
-            $base_url . '/admin/ui/route-plans'
-        );
-    }
-
-    private function site_domain(): string {
-        $host = parse_url(home_url('/'), PHP_URL_HOST);
-        return is_string($host) ? strtolower($host) : '';
-    }
-
-    private function woo_order_edit_url(string $source_order_id): string {
-        if ($source_order_id === '') {
-            return '';
-        }
-        if (function_exists('wc_get_order')) {
-            $woo_order = wc_get_order($source_order_id);
-            if (is_object($woo_order) && method_exists($woo_order, 'get_edit_order_url')) {
-                $url = $woo_order->get_edit_order_url();
-                if (is_string($url) && $url !== '') {
-                    return $url;
-                }
-            }
-        }
-        if ($this->hpos_enabled()) {
-            return admin_url('admin.php?page=wc-orders&action=edit&id=' . rawurlencode($source_order_id));
-        }
-        return admin_url('post.php?post=' . rawurlencode($source_order_id) . '&action=edit');
     }
 
     private function normalize_api_base_url(string $value): ?string {

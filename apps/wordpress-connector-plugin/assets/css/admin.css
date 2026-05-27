@@ -54,3 +54,48 @@
   max-width: 360px;
   width: 100%;
 }
+
+.clever-route-admin .clever-route-key-values td span {
+  display: inline-block;
+  max-width: 680px;
+  overflow-wrap: anywhere;
+}
+
+.clever-route-admin .clever-route-empty-value,
+.clever-route-admin .clever-route-status-summary {
+  color: #50575e;
+}
+
+.clever-route-admin .clever-route-status-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin: 12px 0 16px;
+}
+
+.clever-route-admin .clever-route-status-card {
+  border: 1px solid #dcdcde;
+  border-radius: 4px;
+  padding: 12px 14px;
+}
+
+.clever-route-admin .clever-route-status-card h4 {
+  margin: 0 0 8px;
+}
+
+.clever-route-admin .clever-route-status-card dl {
+  display: grid;
+  gap: 4px 10px;
+  grid-template-columns: max-content 1fr;
+  margin: 10px 0 0;
+}
+
+.clever-route-admin .clever-route-status-card dt {
+  color: #50575e;
+  font-weight: 600;
+}
+
+.clever-route-admin .clever-route-status-card dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
