@@ -1038,6 +1038,7 @@ async function withRouteOpsApi<T>(
       .code(response.statusCode)
       .type('application/json; charset=utf-8')
       .header('Cache-Control', 'no-store')
+      .header('Content-Security-Policy', buildRouteOpsCsp(readRouteOpsMapConfig()))
       .send({ data: response.data, error: null });
   } catch (error) {
     if (error instanceof RoutePlanBatchInvalidError) {
@@ -1079,6 +1080,7 @@ function sendRouteOpsApiError(
     .code(statusCode)
     .type('application/json; charset=utf-8')
     .header('Cache-Control', 'no-store')
+    .header('Content-Security-Policy', buildRouteOpsCsp(readRouteOpsMapConfig()))
     .send({ data: null, error: { code, ...(details === undefined ? {} : { details }), message } });
 }
 
