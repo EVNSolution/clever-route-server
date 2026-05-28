@@ -3,6 +3,7 @@ import type { PrismaClient } from '@prisma/client';
 import { loadCredentialEncryptionKey } from '../commerce/commerce-credential-encryption.js';
 import { PrismaCommerceConnectionRepository } from '../commerce/commerce-connection.repository.js';
 import { CommerceConnectionCredentialService } from '../commerce/commerce-connection.service.js';
+import { loadGeocodingService } from '../geocoding/geocoding.dependencies.js';
 import { PrismaOrderSyncRepository } from '../shopify/order-sync.repository.js';
 import type { WooCommerceWebhookDependencies } from '../../routes/woocommerce-webhook.routes.js';
 import { createWooCommerceOrderClientFromConnection } from './woocommerce-order.client.js';
@@ -11,6 +12,11 @@ import { WooCommerceOrderSyncService } from './woocommerce-order-sync.service.js
 export type WooCommerceRuntimeEnv = Partial<
   Record<
     | 'CREDENTIAL_ENCRYPTION_KEY'
+    | 'GEOCODING_CACHE_TTL_DAYS'
+    | 'GEOCODING_PROVIDER_MODE'
+    | 'GEOCODING_RATE_LIMIT_PER_SECOND'
+    | 'GEOCODING_SEARCH_URL'
+    | 'GEOCODING_USER_AGENT'
     | 'WOOCOMMERCE_SHOP_TIMEZONE',
     string
   >
@@ -38,6 +44,7 @@ export function loadWooCommerceWebhookDependencies(input: {
     credentialKey,
     repository: connectionRepository
   });
+  const geocodingService = loadGeocodingService({ env: input.env });
 
   return {
     connectionService,
@@ -46,6 +53,7 @@ export function loadWooCommerceWebhookDependencies(input: {
       return new WooCommerceOrderSyncService({
         client: createWooCommerceOrderClientFromConnection(connection),
         connectionId: connection.id,
+        geocodingService,
         repository: orderRepository,
         shopDomain: connection.shopDomain,
         ...(resolvedTimezone === undefined ? {} : { shopTimezone: resolvedTimezone }),

@@ -4,6 +4,7 @@ import { PrismaCommerceConnectionRepository } from '../commerce/commerce-connect
 import { assertHttpsWooSiteUrl, assertResolvedWooSiteHostIsPublic } from '../commerce/woocommerce-connection-verifier.js';
 import { CommerceConnectionCredentialService } from '../commerce/commerce-connection.service.js';
 import { loadCredentialEncryptionKey } from '../commerce/commerce-credential-encryption.js';
+import { loadGeocodingService } from '../geocoding/geocoding.dependencies.js';
 import { PrismaOrderSyncRepository } from '../shopify/order-sync.repository.js';
 import { createWooCommerceOrderClientFromConnection } from '../woocommerce/woocommerce-order.client.js';
 import { WooCommerceOrderSyncService } from '../woocommerce/woocommerce-order-sync.service.js';
@@ -15,7 +16,15 @@ import { WordPressPluginSyncRequestService } from './wordpress-plugin-sync.servi
 
 export type WordPressPluginRuntimeEnv = Partial<
   Record<
-    'CLEVER_ADMIN_WEB_SESSION_SECRET' | 'CREDENTIAL_ENCRYPTION_KEY' | 'DELIVERY_API_PUBLIC_URL' | 'WOOCOMMERCE_SHOP_TIMEZONE',
+    | 'CLEVER_ADMIN_WEB_SESSION_SECRET'
+    | 'CREDENTIAL_ENCRYPTION_KEY'
+    | 'DELIVERY_API_PUBLIC_URL'
+    | 'GEOCODING_CACHE_TTL_DAYS'
+    | 'GEOCODING_PROVIDER_MODE'
+    | 'GEOCODING_RATE_LIMIT_PER_SECOND'
+    | 'GEOCODING_SEARCH_URL'
+    | 'GEOCODING_USER_AGENT'
+    | 'WOOCOMMERCE_SHOP_TIMEZONE',
     string
   >
 >;
@@ -44,6 +53,7 @@ export function loadWordPressPluginDependencies(input: {
   });
   const wordpressRepository = new PrismaWordPressPluginRepository(input.prisma);
   const authService = new WordPressPluginAuthService({ repository: wordpressRepository });
+  const geocodingService = loadGeocodingService({ env: input.env });
 
   return {
     ...readAdminLaunchService(input.env),
@@ -63,6 +73,7 @@ export function loadWordPressPluginDependencies(input: {
         return new WooCommerceOrderSyncService({
           client: createWooCommerceOrderClientFromConnection(connection),
           connectionId: connection.id,
+          geocodingService,
           repository: orderRepository,
           shopDomain: connection.shopDomain,
           ...(resolvedTimezone === undefined ? {} : { shopTimezone: resolvedTimezone }),

@@ -101,6 +101,117 @@ describe('WooCommerceOrderSyncService', () => {
       })
     );
   });
+
+  test('geocodes Woo shipping addresses before persisting route stops', async () => {
+    const repository = createRepositoryHarness();
+    const geocodingService = {
+      geocode: vi.fn().mockResolvedValue({
+        cached: false,
+        ok: true,
+        result: {
+          addressLabel: '100 Test St, Markham, ON L3R 0A1, CA',
+          latitude: 43.8561,
+          longitude: -79.337,
+          provider: 'test-geocoder',
+          providerPlaceId: 'place-100',
+          rawLabel: '100 Test Street'
+        }
+      }),
+      status: { mode: 'nominatim_compatible' as const, persistentCacheEnabled: true }
+    };
+    const wooOrder = order(30);
+    const service = new WooCommerceOrderSyncService({
+      geocodingService,
+      repository,
+      shopDomain: 'woo.example.test',
+      siteUrl: 'https://woo.example.test'
+    });
+
+    await service.syncOrders({ orders: [wooOrder], reason: 'webhook' });
+
+    expect(geocodingService.geocode).toHaveBeenCalledWith({
+      address: {
+        address1: '100 Test St',
+        address2: null,
+        city: 'Markham',
+        countryCode: 'CA',
+        postalCode: 'L3R 0A1',
+        province: 'ON'
+      },
+      shopDomain: 'woo.example.test'
+    });
+    const upsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
+    expect(upsert?.synced.deliveryStop).toEqual(
+      expect.objectContaining({
+        geocodeStatus: 'RESOLVED',
+        latitude: '43.8561000',
+        longitude: '-79.3370000'
+      })
+    );
+    expect(upsert?.synced.deliveryFact).toEqual(
+      expect.objectContaining({
+        geocodeStatus: 'RESOLVED',
+        mappingDiagnostics: expect.objectContaining({
+          ingestGeocode: expect.objectContaining({
+            ok: true,
+            provider: 'test-geocoder',
+            providerPlaceId: 'place-100',
+            source: 'server_pre_persist'
+          }) as unknown
+        }) as unknown
+      })
+    );
+    expect(upsert?.synced.order.rawPayload).toEqual(
+      expect.objectContaining({
+        ingestGeocode: expect.objectContaining({
+          ok: true,
+          provider: 'test-geocoder',
+          source: 'server_pre_persist'
+        }) as unknown
+      })
+    );
+  });
+
+  test('keeps saving Woo orders when pre-persist geocoding cannot resolve an address', async () => {
+    const repository = createRepositoryHarness();
+    const geocodingService = {
+      geocode: vi.fn().mockResolvedValue({
+        code: 'GEOCODER_NO_RESULT',
+        message: 'No geocoding result was found.',
+        ok: false
+      }),
+      status: { mode: 'nominatim_compatible' as const, persistentCacheEnabled: true }
+    };
+    const service = new WooCommerceOrderSyncService({
+      geocodingService,
+      repository,
+      shopDomain: 'woo.example.test',
+      siteUrl: 'https://woo.example.test'
+    });
+
+    await service.syncOrders({ orders: [order(31)], reason: 'webhook' });
+
+    const upsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
+    expect(upsert?.synced.deliveryStop).toEqual(
+      expect.objectContaining({
+        geocodeStatus: 'PENDING',
+        latitude: null,
+        longitude: null
+      })
+    );
+    expect(upsert?.synced.deliveryFact).toEqual(
+      expect.objectContaining({
+        geocodeStatus: 'FAILED',
+        mappingDiagnostics: expect.objectContaining({
+          ingestGeocode: expect.objectContaining({
+            code: 'GEOCODER_NO_RESULT',
+            ok: false,
+            source: 'server_pre_persist'
+          }) as unknown
+        }) as unknown
+      })
+    );
+  });
 });
 
 function createRepositoryHarness() {

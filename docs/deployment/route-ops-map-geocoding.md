@@ -32,10 +32,16 @@ Nominatim-compatible mode disabled by default and must enforce:
 - rate limiting, defaulting to one request per second;
 - persistent cache or durable per-order lookup metadata for public provider
   mode;
-- no autocomplete, systematic, or bulk geocoding by default.
+- no autocomplete or unbounded bulk geocoding by default.
 
 Operator corrections must persist in CLEVER canonical delivery facts/stops and
 must not mutate Woo raw payloads.
+
+When geocoding is configured, Woo order ingest attempts server-side geocoding
+before writing canonical delivery stops. Successful lookups are stored with the
+order stop coordinates and delivery fact `geocodeStatus=RESOLVED`; failed
+lookups do not reject the order ingest and leave the stop pending for operator
+repair. Provider approval must explicitly cover this order-ingest volume.
 
 Settings depot geocoding is also server-side only. The Settings tab sends the
 typed depot address to `POST /admin/ui/app/api/settings/geocode`; successful

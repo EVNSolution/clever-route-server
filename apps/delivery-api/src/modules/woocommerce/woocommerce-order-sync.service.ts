@@ -1,4 +1,5 @@
 import type { CanonicalOrderRow } from '../shopify/order-sync.mapper.js';
+import type { GeocodingAddress, GeocodingResult } from '../geocoding/geocoding.types.js';
 import type { DeliveryBatchCandidate, ListCanonicalOrdersFilters, ListDeliveryBatchCandidatesInput, UpsertOrderWithDeliveryStopInput, UpsertOrderWithDeliveryStopResult } from '../shopify/order-sync.repository.js';
 import { mapWooCommerceOrderToDeliveryInputs, type WooOrderMappingConfig } from './woocommerce-order.mapper.js';
 import type { WooCommerceOrder } from './woocommerce-order.types.js';
@@ -42,11 +43,17 @@ type Repository = {
   upsertOrderWithDeliveryStop(input: UpsertOrderWithDeliveryStopInput): Promise<UpsertOrderWithDeliveryStopResult>;
 };
 
+type GeocodingServiceLike = {
+  geocode(input: { address: GeocodingAddress; shopDomain: string }): Promise<GeocodingResult>;
+  status?: { mode: 'disabled' | 'nominatim_compatible'; persistentCacheEnabled: boolean };
+};
+
 export class WooCommerceOrderSyncService {
   constructor(
     private readonly options: {
       client?: Pick<WooCommerceOrderClient, 'listOrdersPage'>;
       connectionId?: string | null;
+      geocodingService?: GeocodingServiceLike;
       repository: Repository;
       shopDomain: string;
       shopTimezone?: string;
@@ -94,12 +101,14 @@ export class WooCommerceOrderSyncService {
     const mappingConfig = await this.readOrderMappingConfig();
 
     for (const order of input.orders) {
-      const synced = mapWooCommerceOrderToDeliveryInputs(order, {
-        connectionId: this.options.connectionId ?? null,
-        mappingConfig,
-        ...(this.options.shopTimezone === undefined ? {} : { shopTimezone: this.options.shopTimezone }),
-        siteUrl: this.options.siteUrl
-      });
+      const synced = await this.geocodeBeforePersisting(
+        mapWooCommerceOrderToDeliveryInputs(order, {
+          connectionId: this.options.connectionId ?? null,
+          mappingConfig,
+          ...(this.options.shopTimezone === undefined ? {} : { shopTimezone: this.options.shopTimezone }),
+          siteUrl: this.options.siteUrl
+        }),
+      );
       const result = await this.options.repository.upsertOrderWithDeliveryStop({
         shopDomain: this.options.shopDomain,
         synced
@@ -145,6 +154,132 @@ export class WooCommerceOrderSyncService {
     const config = await this.options.repository.readOrderMappingConfig({ commerceConnectionId: this.options.connectionId });
     return config === null ? null : normalizeMappingConfig(config);
   }
+
+  private async geocodeBeforePersisting(
+    synced: UpsertOrderWithDeliveryStopInput['synced']
+  ): Promise<UpsertOrderWithDeliveryStopInput['synced']> {
+    const geocodingService = this.options.geocodingService;
+    if (geocodingService === undefined || geocodingService.status?.mode === 'disabled') return synced;
+    if (synced.deliveryStop === null || synced.deliveryStop.geocodeStatus === 'RESOLVED') return synced;
+
+    const address = toGeocodingAddress(synced.deliveryStop);
+    if (!hasGeocodableAddress(address)) return synced;
+
+    const geocode = await geocodingService.geocode({
+      address,
+      shopDomain: this.options.shopDomain
+    });
+    if (!geocode.ok) {
+      return withUpdatedDeliveryFact({
+        ...synced,
+        order: {
+          ...synced.order,
+          rawPayload: mergeRawPayloadGeocodeDiagnostics(
+            synced.order.rawPayload,
+            geocode
+          )
+        }
+      }, geocode.code === 'BLANK_ADDRESS' ? 'PENDING' : 'FAILED', geocode);
+    }
+
+    return withUpdatedDeliveryFact({
+      ...synced,
+      deliveryStop: {
+        ...synced.deliveryStop,
+        geocodeStatus: 'RESOLVED',
+        latitude: geocode.result.latitude.toFixed(7),
+        longitude: geocode.result.longitude.toFixed(7)
+      },
+      order: {
+        ...synced.order,
+        rawPayload: mergeRawPayloadGeocodeDiagnostics(
+          synced.order.rawPayload,
+          geocode
+        )
+      }
+    }, 'RESOLVED', geocode);
+  }
+}
+
+function withUpdatedDeliveryFact(
+  synced: UpsertOrderWithDeliveryStopInput['synced'],
+  geocodeStatus: NonNullable<UpsertOrderWithDeliveryStopInput['synced']['deliveryFact']>['geocodeStatus'],
+  geocode: GeocodingResult
+): UpsertOrderWithDeliveryStopInput['synced'] {
+  if (synced.deliveryFact === undefined) return synced;
+  if (synced.deliveryFact === null) return { ...synced, deliveryFact: null };
+  return {
+    ...synced,
+    deliveryFact: {
+      ...synced.deliveryFact,
+      geocodeStatus,
+      mappingDiagnostics: mergeIngestGeocodeDiagnostics(
+        synced.deliveryFact.mappingDiagnostics,
+        geocode
+      )
+    }
+  };
+}
+
+function toGeocodingAddress(
+  stop: NonNullable<UpsertOrderWithDeliveryStopInput['synced']['deliveryStop']>
+): GeocodingAddress {
+  return {
+    address1: stop.address1,
+    address2: stop.address2,
+    city: stop.city,
+    countryCode: stop.countryCode,
+    postalCode: stop.postalCode,
+    province: stop.province
+  };
+}
+
+function hasGeocodableAddress(address: GeocodingAddress): boolean {
+  return [
+    address.address1,
+    address.city,
+    address.province,
+    address.postalCode,
+    address.countryCode
+  ].some((value) => typeof value === 'string' && value.trim() !== '');
+}
+
+function mergeIngestGeocodeDiagnostics(
+  value: Record<string, unknown> | null | undefined,
+  geocode: GeocodingResult
+): Record<string, unknown> {
+  return {
+    ...(value ?? {}),
+    ingestGeocode: summarizeIngestGeocode(geocode)
+  };
+}
+
+function mergeRawPayloadGeocodeDiagnostics(
+  value: Record<string, unknown>,
+  geocode: GeocodingResult
+): Record<string, unknown> {
+  return {
+    ...value,
+    ingestGeocode: summarizeIngestGeocode(geocode)
+  };
+}
+
+function summarizeIngestGeocode(geocode: GeocodingResult): Record<string, unknown> {
+  if (!geocode.ok) {
+    return {
+      code: geocode.code,
+      ok: false,
+      source: 'server_pre_persist'
+    };
+  }
+  return {
+    cached: geocode.cached,
+    ok: true,
+    provider: geocode.result.provider,
+    providerPlaceId: geocode.result.providerPlaceId,
+    rawLabel: geocode.result.rawLabel,
+    source: 'server_pre_persist'
+  };
 }
 
 function normalizeMappingConfig(value: Record<string, unknown>): WooOrderMappingConfig {
