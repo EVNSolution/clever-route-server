@@ -5,6 +5,7 @@ import {
   formatDeliveryDayLabel,
   formatMethodLabel,
   formatOperationalStatus,
+  getRouteRepairPrompt,
   ORDERS_TABLE_COLUMN_COUNT,
   OrderTable
 } from '../src/pages/OrdersPage';
@@ -83,6 +84,30 @@ describe('Orders compact operations table', () => {
     expect(html).toContain(`colSpan="${ORDERS_TABLE_COLUMN_COUNT}"`);
     expect(html).toContain('No delivery metadata diagnostics saved');
     expect(html).toContain('aria-label="Remove order #11453 11453 from route plan"');
+  });
+
+  test('shows metadata-ok coordinate blockers with an inline geocode action', () => {
+    const missingCoordinates = orderFixture({
+      coordinates: { latitude: null, longitude: null },
+      geocodeStatus: 'PENDING',
+      metadataResolved: true,
+      routeEligible: false
+    });
+    const html = renderOrderTable([missingCoordinates]);
+
+    expect(html).toContain('Need coordinates');
+    expect(html).toContain('Geocode shipping address');
+    expect(html).toContain('Geocode &amp; add');
+    expect(html).toContain('aria-label="Geocode and add order #11453 11453 to route plan"');
+    expect(getRouteRepairPrompt(missingCoordinates)).toEqual({
+      canGeocode: true,
+      routeDetail: 'Need coordinates',
+      statusDetail: 'Geocode shipping address',
+      statusLabel: 'Need coordinates'
+    });
+    expect(formatOperationalStatus(missingCoordinates).label).toBe(
+      'Need coordinates'
+    );
   });
 
   test('empty state remains inside the compact table vocabulary', () => {

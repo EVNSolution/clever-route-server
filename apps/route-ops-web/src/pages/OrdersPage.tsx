@@ -3,6 +3,7 @@ import type { ReactElement } from "react";
 
 import {
   createRoute,
+  geocodeOrder,
   getOrderMetadataDiagnostics,
   getOrders,
   getSettings,
@@ -46,6 +47,9 @@ export function OrdersPage({
   const [diagnosticsByOrder, setDiagnosticsByOrder] = useState<
     Record<string, DeliveryMetadataDiagnosticsDto | null>
   >({});
+  const [geocodingOrderIds, setGeocodingOrderIds] = useState<Set<string>>(
+    new Set(),
+  );
 
   const query = useMemo(() => buildOrderQuery(filters), [filters]);
   const selection = useMemo(
@@ -132,6 +136,36 @@ export function OrdersPage({
       setError(null);
     } catch (error) {
       setError(readErrorMessage(error));
+    }
+  };
+
+  const geocodeAndAddOrder = async (orderId: string): Promise<void> => {
+    setGeocodingOrderIds((current) => new Set([...current, orderId]));
+    try {
+      const payload = await geocodeOrder({
+        csrfToken: bootstrap.csrfToken,
+        orderId,
+        save: true,
+      });
+      if (payload.order !== undefined) {
+        setOrders((current) =>
+          current.map((order) =>
+            order.orderId === payload.order?.orderId ? payload.order : order,
+          ),
+        );
+        if (isRoutePlanEligible(payload.order)) {
+          setSelected((current) => new Set([...current, payload.order!.orderId]));
+        }
+      }
+      setError(null);
+    } catch (error) {
+      setError(readErrorMessage(error));
+    } finally {
+      setGeocodingOrderIds((current) => {
+        const next = new Set(current);
+        next.delete(orderId);
+        return next;
+      });
     }
   };
 
@@ -232,7 +266,9 @@ export function OrdersPage({
           <FilterBar filters={filters} onChange={setFilters} />
           <OrderTable
             diagnosticsByOrder={diagnosticsByOrder}
+            geocodingOrderIds={geocodingOrderIds}
             loading={loading}
+            onGeocodeAndAdd={(orderId) => void geocodeAndAddOrder(orderId)}
             onLoadDiagnostics={(orderId) => void loadDiagnostics(orderId)}
             onTogglePlanOrder={togglePlanOrder}
             orders={orders}
@@ -399,7 +435,9 @@ function FilterBar({
 
 export function OrderTable(input: {
   diagnosticsByOrder: Record<string, DeliveryMetadataDiagnosticsDto | null>;
+  geocodingOrderIds?: ReadonlySet<string>;
   loading: boolean;
+  onGeocodeAndAdd?(orderId: string): void;
   onLoadDiagnostics(orderId: string): void;
   onTogglePlanOrder(orderId: string): void;
   orders: CanonicalOrderDto[];
@@ -452,7 +490,9 @@ export function OrderTable(input: {
               input.orders.map((order) => (
                 <OrderTableRow
                   diagnostics={input.diagnosticsByOrder[order.orderId]}
+                  geocoding={input.geocodingOrderIds?.has(order.orderId) ?? false}
                   key={order.orderId}
+                  onGeocodeAndAdd={input.onGeocodeAndAdd}
                   onLoadDiagnostics={input.onLoadDiagnostics}
                   onTogglePlanOrder={input.onTogglePlanOrder}
                   order={order}
@@ -470,6 +510,8 @@ export function OrderTable(input: {
 
 function OrderTableRow(input: {
   diagnostics: DeliveryMetadataDiagnosticsDto | null | undefined;
+  geocoding: boolean;
+  onGeocodeAndAdd?(orderId: string): void;
   onLoadDiagnostics(orderId: string): void;
   onTogglePlanOrder(orderId: string): void;
   order: CanonicalOrderDto;
@@ -480,11 +522,13 @@ function OrderTableRow(input: {
   const selected = input.selectedOrders.has(order.orderId);
   const canPlan = isRoutePlanEligible(order);
   const day = formatDeliveryDayLabel(order);
+  const routeRepair = getRouteRepairPrompt(order);
   const status = formatOperationalStatus(order);
   const orderLabel = getOrderAccessibleLabel(order);
   const planActionLabel = `${
     selected ? "Remove" : "Add"
   } order ${orderLabel} ${selected ? "from" : "to"} route plan`;
+  const geocodeActionLabel = `Geocode and add order ${orderLabel} to route plan`;
   const diagnosticsLabel = `Load diagnostics for order ${orderLabel}`;
   return (
     <>
@@ -542,9 +586,7 @@ function OrderTableRow(input: {
         </td>
         <td>
           <span className="order-compact-value">{formatRouteLabel(order)}</span>
-          <small className="order-subtle">
-            {formatRouteEligibility(order)}
-          </small>
+          <small className="order-subtle">{routeRepair.routeDetail}</small>
         </td>
         <td>
           <span className={`order-pill ${status.toneClass}`}>
@@ -572,6 +614,16 @@ function OrderTableRow(input: {
             >
               Diagnostics
             </button>
+            {routeRepair.canGeocode ? (
+              <button
+                aria-label={geocodeActionLabel}
+                disabled={input.geocoding || input.onGeocodeAndAdd === undefined}
+                onClick={() => input.onGeocodeAndAdd?.(order.orderId)}
+                type="button"
+              >
+                {input.geocoding ? "Geocoding…" : "Geocode & add"}
+              </button>
+            ) : null}
           </div>
         </td>
       </tr>
@@ -634,9 +686,10 @@ export function formatOperationalStatus(order: CanonicalOrderDto): {
       toneClass: "order-pill--ready",
     };
   }
+  const repair = getRouteRepairPrompt(order);
   return {
-    detail: geocodeDetail(order),
-    label: "Metadata ok",
+    detail: repair.statusDetail,
+    label: repair.statusLabel,
     toneClass: "order-pill--neutral",
   };
 }
@@ -670,11 +723,53 @@ function formatRouteLabel(order: CanonicalOrderDto): string {
   return order.routePlanName ?? humanizeToken(order.planningStatus);
 }
 
-function formatRouteEligibility(order: CanonicalOrderDto): string {
-  if (order.routePlanId !== null) return "Planned";
-  if (isRoutePlanEligible(order)) return "Route eligible";
-  if (order.metadataResolved === true) return "Not route eligible";
-  return "Needs metadata";
+export function getRouteRepairPrompt(order: CanonicalOrderDto): {
+  canGeocode: boolean;
+  routeDetail: string;
+  statusDetail: string | null;
+  statusLabel: string;
+} {
+  if (order.routePlanId !== null || order.planningStatus !== "UNPLANNED") {
+    return {
+      canGeocode: false,
+      routeDetail: "Already planned",
+      statusDetail: order.routePlanName ?? humanizeToken(order.planningStatus),
+      statusLabel: "Planned",
+    };
+  }
+  if (isRoutePlanEligible(order)) {
+    return {
+      canGeocode: false,
+      routeDetail: "Route eligible",
+      statusDetail: null,
+      statusLabel: "Ready",
+    };
+  }
+  if (order.metadataResolved !== true) {
+    return {
+      canGeocode: false,
+      routeDetail: "Needs metadata",
+      statusDetail: geocodeDetail(order),
+      statusLabel: "Metadata review",
+    };
+  }
+  if (!hasResolvedCoordinates(order)) {
+    const canGeocode = hasGeocodableAddress(order);
+    return {
+      canGeocode,
+      routeDetail: canGeocode ? "Need coordinates" : "Need address",
+      statusDetail: canGeocode
+        ? "Geocode shipping address"
+        : "Enter address or coordinates",
+      statusLabel: canGeocode ? "Need coordinates" : "Need address",
+    };
+  }
+  return {
+    canGeocode: false,
+    routeDetail: "Not route eligible",
+    statusDetail: "Review route constraints",
+    statusLabel: "Metadata ok",
+  };
 }
 
 function geocodeDetail(order: CanonicalOrderDto): string | null {
@@ -748,6 +843,24 @@ function humanizeToken(value: string): string {
 
 function isPresent(value: string | null | undefined): value is string {
   return value !== null && value !== undefined && value.trim().length > 0;
+}
+
+function hasResolvedCoordinates(order: CanonicalOrderDto): boolean {
+  return (
+    typeof order.coordinates.latitude === "number" &&
+    Number.isFinite(order.coordinates.latitude) &&
+    typeof order.coordinates.longitude === "number" &&
+    Number.isFinite(order.coordinates.longitude)
+  );
+}
+
+function hasGeocodableAddress(order: CanonicalOrderDto): boolean {
+  return [
+    order.shippingAddress.address1,
+    order.shippingAddress.city,
+    order.shippingAddress.province,
+    order.shippingAddress.postalCode,
+  ].some(isPresent);
 }
 
 function DeliveryDiagnostics({
