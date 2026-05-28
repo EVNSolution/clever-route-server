@@ -50,6 +50,46 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     );
   });
 
+  test('reads canonical time windows from route scope without UTC-shifting stored Toronto times', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+    const order = canonicalOrderRecord(0);
+    prisma.order.findMany.mockResolvedValueOnce([
+      {
+        ...order,
+        deliveryFacts: [canonicalDeliveryFactWithUtcTorontoWindow()],
+        rawPayload: {
+          ...(order.rawPayload as Record<string, unknown>),
+          deliveryDate: '2026-05-29',
+          routeScopeKey: '2026-05-29|EVENING_DELIVERY|17:00|21:00'
+        }
+      }
+    ]);
+
+    const rows = await repository.listCanonicalOrders({
+      filters: {},
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(rows[0]).toEqual(
+      expect.objectContaining({
+        deliveryDate: '2026-05-29',
+        routeScopeKey: '2026-05-29|EVENING_DELIVERY|17:00|21:00',
+        timeWindowEnd: '21:00',
+        timeWindowStart: '17:00'
+      })
+    );
+    expect(rows[0]?.deliveryMetadataDiagnostics?.current).toEqual(
+      expect.objectContaining({
+        routeScopeKey: '2026-05-29|EVENING_DELIVERY|17:00|21:00',
+        timeWindowEnd: '21:00',
+        timeWindowStart: '17:00'
+      })
+    );
+  });
+
   test('filters canonical rows by area, health, and operate delivery status', async () => {
     const readyHarness = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
     const readyRepository = new PrismaOrderSyncRepository(
@@ -422,6 +462,55 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     expect(factCreate.reviewReasons).toEqual(expect.arrayContaining(['missing_delivery_area', 'missing_delivery_date', 'missing_route_scope']));
   });
 
+  test('preserves route-scope local time windows when patching unrelated metadata', async () => {
+    const existingOrder = {
+      ...canonicalOrderRecord(0),
+      deliveryFacts: [canonicalDeliveryFactWithUtcTorontoWindow()],
+      deliveryStops: [
+        {
+          address1: '300 City Centre Dr',
+          address2: null,
+          city: 'Mississauga',
+          countryCode: 'CA',
+          deliveryDate: new Date('2026-05-29T00:00:00.000Z'),
+          geocodeStatus: 'RESOLVED',
+          latitude: '43.5890000',
+          longitude: '-79.6440000',
+          postalCode: 'L5B 3C1',
+          province: 'ON',
+          timeWindowEnd: new Date('2026-05-30T01:00:00.000Z'),
+          timeWindowStart: new Date('2026-05-29T21:00:00.000Z')
+        }
+      ],
+      id: 'order-id',
+      updatedAtShopify: new Date('2026-05-07T12:00:00.000Z')
+    };
+    const { prisma } = createPrismaHarness({
+      existingOrder,
+      routeStopCount: 0
+    });
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+
+    await repository.patchCanonicalOrder({
+      actor: 'dispatcher',
+      orderId: 'order-id',
+      patch: { address1: '4475 Chesswood Dr' },
+      shopDomain: 'example.myshopify.com'
+    });
+
+    const factCall = prisma.orderDeliveryFact.upsert.mock.calls[0];
+    if (factCall === undefined) throw new Error('expected orderDeliveryFact upsert');
+    const factUpdate = (factCall[0] as { update: Record<string, unknown> }).update;
+    expect(factUpdate).toMatchObject({
+      planningGroupKey: '2026-05-29|EVENING_DELIVERY|17:00|21:00|Mississauga',
+      routeScopeKey: '2026-05-29|EVENING_DELIVERY|17:00|21:00'
+    });
+    expect(factUpdate.timeWindowStart).toEqual(new Date('2026-05-29T21:00:00.000Z'));
+    expect(factUpdate.timeWindowEnd).toEqual(new Date('2026-05-30T01:00:00.000Z'));
+  });
+
   test('does not clear unresolved date blockers when only coordinates are corrected', async () => {
     const { prisma } = createPrismaHarness({
       existingOrder: {
@@ -791,6 +880,47 @@ function canonicalOrderRecord(routeStopCount: number): Record<string, unknown> {
     shopifyOrderLegacyId: BigInt(123),
     totalPriceAmount: '95.00',
     updatedAtShopify: new Date('2026-05-07T13:00:00.000Z')
+  };
+}
+
+function canonicalDeliveryFactWithUtcTorontoWindow(): Record<string, unknown> {
+  return {
+    deliveryArea: 'Mississauga',
+    deliveryDate: new Date('2026-05-29T00:00:00.000Z'),
+    deliveryDateWeekday: 'FRIDAY',
+    deliveryDateWeekdayMismatch: false,
+    deliveryDateWeekdayVerified: true,
+    deliveryDayParseStatus: 'PARSED',
+    deliverySession: 'EVENING',
+    deliveryWeekday: 'FRIDAY',
+    mappingDiagnostics: {
+      deliveryMetadata: {
+        candidates: [
+          {
+            parseStatus: 'PARSED',
+            path: 'meta_data.delivery_time',
+            timeWindowEnd: '21:00',
+            timeWindowStart: '17:00',
+            valuePreview: 'Friday 5pm to 9pm',
+            weekday: 'FRIDAY'
+          }
+        ],
+        status: 'RESOLVED'
+      }
+    },
+    matchedMappingPaths: {
+      deliveryDay: 'meta_data.delivery_day',
+      deliveryTimeWindow: 'meta_data.delivery_time'
+    },
+    planningGroupKey: '2026-05-29|EVENING_DELIVERY|17:00|21:00|Mississauga',
+    rawDeliveryDay: 'Friday',
+    rawDeliveryTimeWindow: 'Friday 5pm to 9pm',
+    readiness: 'READY_TO_PLAN',
+    reviewReasons: [],
+    routeScopeKey: '2026-05-29|EVENING_DELIVERY|17:00|21:00',
+    serviceType: 'EVENING_DELIVERY',
+    timeWindowEnd: new Date('2026-05-30T01:00:00.000Z'),
+    timeWindowStart: new Date('2026-05-29T21:00:00.000Z')
   };
 }
 

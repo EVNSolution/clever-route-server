@@ -443,15 +443,17 @@ export class PrismaOrderSyncRepository {
           : patch.deliveryArea;
       const timeWindowStart =
         patch.timeWindowStart === undefined
-          ? formatTimeOnlyNullable(
+          ? (readRouteScopeTime(fact?.routeScopeKey ?? null, "start") ??
+            formatTimeOnlyNullable(
               fact?.timeWindowStart ?? stop?.timeWindowStart ?? null,
-            )
+            ))
           : patch.timeWindowStart;
       const timeWindowEnd =
         patch.timeWindowEnd === undefined
-          ? formatTimeOnlyNullable(
+          ? (readRouteScopeTime(fact?.routeScopeKey ?? null, "end") ??
+            formatTimeOnlyNullable(
               fact?.timeWindowEnd ?? stop?.timeWindowEnd ?? null,
-            )
+            ))
           : patch.timeWindowEnd;
       const scope = buildManualScope({
         deliveryArea,
@@ -1761,10 +1763,18 @@ function buildDeliveryMetadataDiagnostics(input: {
       reviewReasons: input.reviewReasons,
       routeScopeKey: input.routeScopeKey,
       serviceType: input.serviceType,
-      timeWindowEnd: formatTimeOnlyNullable(input.fact?.timeWindowEnd ?? null),
-      timeWindowStart: formatTimeOnlyNullable(
-        input.fact?.timeWindowStart ?? null,
-      ),
+      timeWindowEnd: readCanonicalTimeWindow({
+        factTime: input.fact?.timeWindowEnd ?? null,
+        part: "end",
+        raw: input.raw,
+        routeScopeKey: input.routeScopeKey,
+      }),
+      timeWindowStart: readCanonicalTimeWindow({
+        factTime: input.fact?.timeWindowStart ?? null,
+        part: "start",
+        raw: input.raw,
+        routeScopeKey: input.routeScopeKey,
+      }),
     },
     matchedMappingPaths: readMatchedMappingPaths(
       input.fact?.matchedMappingPaths ?? input.raw?.matchedMappingPaths,
@@ -1938,12 +1948,18 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     sourceUpdatedAt: formatDateTime(
       order.sourceUpdatedAt ?? order.updatedAtShopify,
     ),
-    timeWindowEnd:
-      formatTimeOnlyNullable(fact?.timeWindowEnd ?? null) ??
-      readString(raw?.timeWindowEnd),
-    timeWindowStart:
-      formatTimeOnlyNullable(fact?.timeWindowStart ?? null) ??
-      readString(raw?.timeWindowStart),
+    timeWindowEnd: readCanonicalTimeWindow({
+      factTime: fact?.timeWindowEnd ?? stop?.timeWindowEnd ?? null,
+      part: "end",
+      raw,
+      routeScopeKey,
+    }),
+    timeWindowStart: readCanonicalTimeWindow({
+      factTime: fact?.timeWindowStart ?? stop?.timeWindowStart ?? null,
+      part: "start",
+      raw,
+      routeScopeKey,
+    }),
     totalPriceAmount: decimalLikeString(order.totalPriceAmount),
     updatedAtShopify: formatDateTime(order.updatedAtShopify),
   };
@@ -2099,6 +2115,31 @@ function formatDateOnlyNullable(value: Date | null): string | null {
 
 function formatTimeOnlyNullable(value: Date | null): string | null {
   return value === null ? null : value.toISOString().slice(11, 16);
+}
+
+function readCanonicalTimeWindow(input: {
+  factTime: Date | null;
+  part: "start" | "end";
+  raw: Record<string, unknown> | null;
+  routeScopeKey: string | null;
+}): string | null {
+  const rawKey =
+    input.part === "start" ? "timeWindowStart" : "timeWindowEnd";
+  return (
+    readRouteScopeTime(input.routeScopeKey, input.part) ??
+    readString(input.raw?.[rawKey]) ??
+    formatTimeOnlyNullable(input.factTime)
+  );
+}
+
+function readRouteScopeTime(
+  routeScopeKey: string | null,
+  part: "start" | "end",
+): string | null {
+  if (routeScopeKey === null) return null;
+  const pieces = routeScopeKey.split("|");
+  const value = pieces[part === "start" ? 2 : 3] ?? "";
+  return /^\d{2}:\d{2}$/u.test(value) ? value : null;
 }
 
 function readGeocodeStatus(value: unknown): CanonicalOrderRow["geocodeStatus"] {
