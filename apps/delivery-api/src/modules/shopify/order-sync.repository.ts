@@ -469,6 +469,13 @@ export class PrismaOrderSyncRepository {
         deliveryDate,
         routeScopeKey: scope.routeScopeKey,
         serviceType,
+        timeWindowCorrected: hasCoherentManualTimeWindowCorrection({
+          patch,
+          routeScopeKey: scope.routeScopeKey,
+          serviceType,
+          timeWindowEnd,
+          timeWindowStart,
+        }),
         hasAddress: hasAddressFields({
           address1:
             patch.address1 === undefined
@@ -1309,6 +1316,18 @@ function applyCorrectedFactFields<
             ?.routeOpsCorrections,
         }),
   };
+  const correctedScope = buildManualScope({
+    deliveryArea: existing.deliveryArea,
+    deliveryDate: formatDateOnlyNullable(existing.deliveryDate),
+    deliverySession: readDeliverySession(existing.deliverySession),
+    serviceType: readServiceType(existing.serviceType),
+    timeWindowEnd:
+      readRouteScopeTime(existing.routeScopeKey, "end") ??
+      formatTimeOnlyNullable(existing.timeWindowEnd),
+    timeWindowStart:
+      readRouteScopeTime(existing.routeScopeKey, "start") ??
+      formatTimeOnlyNullable(existing.timeWindowStart),
+  });
   return {
     ...write,
     mappingDiagnostics: toJson(mergedDiagnostics),
@@ -1344,10 +1363,13 @@ function applyCorrectedFactFields<
       ? { geocodeStatus: readGeocodeStatus(existing.geocodeStatus) }
       : {}),
     ...(fields.has("planningGroupKey") || fields.has("routeScopeKey")
-      ? { planningGroupKey: existing.planningGroupKey }
+      ? {
+          planningGroupKey:
+            correctedScope.planningGroupKey ?? existing.planningGroupKey,
+        }
       : {}),
     ...(fields.has("routeScopeKey")
-      ? { routeScopeKey: existing.routeScopeKey }
+      ? { routeScopeKey: correctedScope.routeScopeKey ?? existing.routeScopeKey }
       : {}),
     ...(fields.has("serviceType")
       ? { serviceType: readServiceType(existing.serviceType) }
@@ -1384,18 +1406,41 @@ function buildManualScope(input: {
 }): { planningGroupKey: string | null; routeScopeKey: string | null } {
   if (input.deliveryDate === null || input.serviceType === null)
     return { planningGroupKey: null, routeScopeKey: null };
-  const routeParts = [
+  const routeScopeKey = [
     input.deliveryDate,
     input.serviceType,
-    input.timeWindowStart,
-    input.timeWindowEnd,
-  ].filter((part): part is string => part !== null && part !== "");
-  const routeScopeKey = routeParts.join("|");
+    input.timeWindowStart ?? "",
+    input.timeWindowEnd ?? "",
+  ].join("|");
   const planningGroupKey =
     input.deliveryArea === null
       ? routeScopeKey
       : `${routeScopeKey}|${input.deliveryArea}`;
   return { planningGroupKey, routeScopeKey };
+}
+
+function hasCoherentManualTimeWindowCorrection(input: {
+  patch: RouteOpsCanonicalMetadataPatch;
+  routeScopeKey: string | null;
+  serviceType: DeliveryServiceType | null;
+  timeWindowEnd: string | null;
+  timeWindowStart: string | null;
+}): boolean {
+  const timeWindowPatchProvided =
+    input.patch.timeWindowStart !== undefined ||
+    input.patch.timeWindowEnd !== undefined;
+  if (
+    !timeWindowPatchProvided ||
+    input.routeScopeKey === null ||
+    input.serviceType === null
+  )
+    return false;
+  if (input.timeWindowStart === null && input.timeWindowEnd === null)
+    return true;
+  return (
+    /^\d{2}:\d{2}$/u.test(input.timeWindowStart ?? "") &&
+    /^\d{2}:\d{2}$/u.test(input.timeWindowEnd ?? "")
+  );
 }
 
 function recomputeReviewReasons(
@@ -1406,20 +1451,28 @@ function recomputeReviewReasons(
     hasAddress: boolean;
     routeScopeKey: string | null;
     serviceType: DeliveryServiceType | null;
+    timeWindowCorrected: boolean;
   },
 ): string[] {
-  const kept = current.filter(
-    (reason) =>
-      ![
-        "missing_address",
-        "missing_delivery_area",
-        "missing_delivery_date",
-        "missing_route_scope",
-        "delivery_day_unparsed",
-        "delivery_date_weekday_mismatch",
-        "delivery_date_weekday_unverified",
-      ].includes(reason),
-  );
+  const kept = current.filter((reason) => {
+    const patchClearedReasons = [
+      "missing_address",
+      "missing_delivery_area",
+      "missing_delivery_date",
+      "missing_route_scope",
+      "delivery_day_unparsed",
+      "delivery_date_weekday_mismatch",
+      "delivery_date_weekday_unverified",
+    ];
+    if (patchClearedReasons.includes(reason)) return false;
+    const timeWindowReasons = [
+      "ambiguous_delivery_time_window",
+      "delivery_time_window_unparsed",
+    ];
+    if (timeWindowReasons.includes(reason))
+      return !input.timeWindowCorrected;
+    return true;
+  });
   if (!input.hasAddress) kept.push("missing_address");
   if (input.deliveryArea === null) kept.push("missing_delivery_area");
   if (input.deliveryDate === null) kept.push("missing_delivery_date");
