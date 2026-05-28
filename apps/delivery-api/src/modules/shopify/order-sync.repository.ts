@@ -2119,6 +2119,7 @@ function readDeliveryDateSource(
   return value === "EXPLICIT_ATTRIBUTE" ||
     value === "LINE_ITEM_DATE_RANGE" ||
     value === "ORDER_DATE_CYCLE_RULE" ||
+    value === "ORDER_DATE_WEEK_RULE" ||
     value === "MISSING"
     ? value
     : null;

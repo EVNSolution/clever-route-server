@@ -193,6 +193,7 @@ export function mapWooCommerceOrderToDeliveryInputs(
     lineItems,
     pickupDayRaw: null,
     processedAt: createdAt?.toISOString() ?? null,
+    weekdayFallbackPolicy: "ORDER_WEEK",
     ...(options.shopTimezone === undefined
       ? {}
       : { shopTimezone: options.shopTimezone }),

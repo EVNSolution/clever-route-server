@@ -90,6 +90,34 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     );
   });
 
+  test('preserves order-week delivery date source when reading canonical rows', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+    const order = canonicalOrderRecord(0);
+    prisma.order.findMany.mockResolvedValueOnce([
+      {
+        ...order,
+        rawPayload: {
+          ...(order.rawPayload as Record<string, unknown>),
+          deliveryDateSource: 'ORDER_DATE_WEEK_RULE'
+        }
+      }
+    ]);
+
+    const rows = await repository.listCanonicalOrders({
+      filters: {},
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(rows[0]).toEqual(
+      expect.objectContaining({
+        deliveryDateSource: 'ORDER_DATE_WEEK_RULE'
+      })
+    );
+  });
+
   test('keeps ambiguous or unparsed time-window metadata unresolved in canonical rows', async () => {
     const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
     const repository = new PrismaOrderSyncRepository(

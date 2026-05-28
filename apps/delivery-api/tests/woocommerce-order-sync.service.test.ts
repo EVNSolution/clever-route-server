@@ -72,6 +72,35 @@ describe('WooCommerceOrderSyncService', () => {
       })
     );
   });
+
+  test('threads weekday-only Woo metadata as an order-week route scope', async () => {
+    const repository = createRepositoryHarness();
+    const wooOrder = order(20);
+    wooOrder.meta_data = [{ key: 'delivery_area', value: 'Markham' }];
+    wooOrder.shipping_lines = [{ method_title: 'Thursday Delivery', meta_data: [] }];
+    const service = new WooCommerceOrderSyncService({
+      repository,
+      shopDomain: 'woo.example.test',
+      siteUrl: 'https://woo.example.test'
+    });
+
+    await service.syncOrders({ orders: [wooOrder], reason: 'manual_backfill' });
+
+    const upsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
+    expect(upsert?.synced.order).toEqual(
+      expect.objectContaining({
+        deliveryDate: '2026-05-21',
+        deliveryDateSource: 'ORDER_DATE_WEEK_RULE',
+        routeScopeKey: '2026-05-21|DELIVERY||'
+      })
+    );
+    expect(upsert?.synced.deliveryFact).toEqual(
+      expect.objectContaining({
+        deliveryDate: '2026-05-21',
+        routeScopeKey: '2026-05-21|DELIVERY||'
+      })
+    );
+  });
 });
 
 function createRepositoryHarness() {

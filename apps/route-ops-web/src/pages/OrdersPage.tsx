@@ -25,6 +25,8 @@ import type {
 } from "../types";
 import { readErrorMessage, today } from "../utils/format";
 
+export const ORDERS_TABLE_COLUMN_COUNT = 9;
+
 export function OrdersPage({
   bootstrap,
   navigate,
@@ -395,7 +397,7 @@ function FilterBar({
   );
 }
 
-function OrderTable(input: {
+export function OrderTable(input: {
   diagnosticsByOrder: Record<string, DeliveryMetadataDiagnosticsDto | null>;
   loading: boolean;
   onLoadDiagnostics(orderId: string): void;
@@ -411,7 +413,7 @@ function OrderTable(input: {
       </article>
     );
   return (
-    <article className="panel">
+    <article className="panel orders-table-panel">
       <div className="panel-heading">
         <div>
           <span className="eyebrow">Orders</span>
@@ -419,99 +421,333 @@ function OrderTable(input: {
         </div>
         <Badge>{input.orders.length} orders</Badge>
       </div>
-      <table className="ops-table">
-        <thead>
-          <tr>
-            <th />
-            <th>Order</th>
-            <th>Recipient</th>
-            <th>Date</th>
-            <th>Area</th>
-            <th>Status</th>
-            <th>Route</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {input.orders.flatMap((order) => {
-            const selected = input.selected.has(order.orderId);
-            const canPlan = isRoutePlanEligible(order);
-            const diagnostics = input.diagnosticsByOrder[order.orderId];
-            return [
-              <tr
-                key={order.orderId}
-                className={
-                  order.blockerReasons.length > 0 ? "needs-review" : ""
-                }
-              >
-                <td>
-                  <input
-                    checked={selected}
-                    disabled={!canPlan && !selected}
-                    onChange={(event) => {
-                      const next = new Set(input.selected);
-                      if (event.target.checked && canPlan)
-                        next.add(order.orderId);
-                      else next.delete(order.orderId);
-                      input.setSelected(next);
-                    }}
-                    type="checkbox"
-                  />
+      <div
+        className="orders-table-scroll"
+        data-column-count={ORDERS_TABLE_COLUMN_COUNT}
+      >
+        <table className="orders-compact-table">
+          <thead>
+            <tr>
+              <th className="orders-select-col" scope="col">
+                Select
+              </th>
+              <th scope="col">Order</th>
+              <th scope="col">Customer</th>
+              <th scope="col">Method</th>
+              <th scope="col">Day</th>
+              <th scope="col">Area</th>
+              <th scope="col">Route</th>
+              <th scope="col">Status</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {input.orders.length === 0 ? (
+              <tr className="orders-empty-row">
+                <td colSpan={ORDERS_TABLE_COLUMN_COUNT}>
+                  No imported orders match the current filters.
                 </td>
-                <td>
-                  <strong>{order.orderName}</strong>
-                  <small>
-                    {order.sourcePlatform ?? "source"} ·{" "}
-                    {order.sourceOrderNumber ?? order.sourceOrderId}
-                  </small>
-                </td>
-                <td>{order.recipientName ?? "—"}</td>
-                <td>{order.deliveryDate ?? "Review"}</td>
-                <td>{order.deliveryArea ?? "—"}</td>
-                <td>
-                  <Badge>
-                    {order.metadataResolved
-                      ? order.routeEligible
-                        ? "route eligible"
-                        : "metadata ok"
-                      : "metadata review"}
-                  </Badge>
-                  <small>{order.geocodeStatus}</small>
-                </td>
-                <td>{order.routePlanName ?? order.planningStatus}</td>
-                <td>
-                  <button
-                    className={selected ? "active" : ""}
-                    disabled={!canPlan && !selected}
-                    onClick={() => input.onTogglePlanOrder(order.orderId)}
-                    type="button"
-                  >
-                    {selected ? "Remove" : "Add"}
-                  </button>
-                  <button
-                    onClick={() => input.onLoadDiagnostics(order.orderId)}
-                    type="button"
-                  >
-                    Diagnostics
-                  </button>
-                </td>
-              </tr>,
-              diagnostics === undefined ? null : (
-                <tr
-                  className="diagnostics-row"
-                  key={`${order.orderId}-diagnostics`}
-                >
-                  <td colSpan={8}>
-                    <DeliveryDiagnostics diagnostics={diagnostics} />
-                  </td>
-                </tr>
-              ),
-            ].filter((row): row is ReactElement => row !== null);
-          })}
-        </tbody>
-      </table>
+              </tr>
+            ) : (
+              input.orders.map((order) => (
+                <OrderTableRow
+                  diagnostics={input.diagnosticsByOrder[order.orderId]}
+                  key={order.orderId}
+                  onLoadDiagnostics={input.onLoadDiagnostics}
+                  onTogglePlanOrder={input.onTogglePlanOrder}
+                  order={order}
+                  selectedOrders={input.selected}
+                  setSelected={input.setSelected}
+                />
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </article>
   );
+}
+
+function OrderTableRow(input: {
+  diagnostics: DeliveryMetadataDiagnosticsDto | null | undefined;
+  onLoadDiagnostics(orderId: string): void;
+  onTogglePlanOrder(orderId: string): void;
+  order: CanonicalOrderDto;
+  selectedOrders: Set<string>;
+  setSelected(selected: Set<string>): void;
+}): ReactElement {
+  const { order } = input;
+  const selected = input.selectedOrders.has(order.orderId);
+  const canPlan = isRoutePlanEligible(order);
+  const day = formatDeliveryDayLabel(order);
+  const status = formatOperationalStatus(order);
+  const orderLabel = getOrderAccessibleLabel(order);
+  const planActionLabel = `${
+    selected ? "Remove" : "Add"
+  } order ${orderLabel} ${selected ? "from" : "to"} route plan`;
+  const diagnosticsLabel = `Load diagnostics for order ${orderLabel}`;
+  return (
+    <>
+      <tr
+        className={[
+          "orders-row",
+          order.blockerReasons.length > 0 ? "orders-row--needs-review" : "",
+          !canPlan && !selected ? "orders-row--not-eligible" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+      >
+        <td className="orders-select-cell">
+          <input
+            aria-label={`Select order ${orderLabel}`}
+            checked={selected}
+            disabled={!canPlan && !selected}
+            onChange={(event) => {
+              const next = new Set(input.selectedOrders);
+              if (event.target.checked && canPlan) next.add(order.orderId);
+              else next.delete(order.orderId);
+              input.setSelected(next);
+            }}
+            type="checkbox"
+          />
+        </td>
+        <td className="orders-order-cell">
+          <strong className="order-primary">{order.orderName}</strong>
+          <small className="order-subtle">{formatOrderSource(order)}</small>
+        </td>
+        <td className="orders-customer-cell">
+          <strong className="order-primary">
+            {order.recipientName ?? "—"}
+          </strong>
+          {order.phone === null ? null : (
+            <small className="order-subtle">{order.phone}</small>
+          )}
+          {order.blockerReasons.length === 0 ? null : (
+            <span className="order-pill order-pill--review">Review</span>
+          )}
+        </td>
+        <td>
+          <span className="order-compact-value">
+            {formatMethodLabel(order)}
+          </span>
+        </td>
+        <td className="orders-day-cell">
+          <span className={`order-pill ${day.toneClass}`}>{day.label}</span>
+          {day.detail === null ? null : (
+            <small className="order-subtle">{day.detail}</small>
+          )}
+        </td>
+        <td>
+          <span className="order-compact-value">{formatAreaLabel(order)}</span>
+        </td>
+        <td>
+          <span className="order-compact-value">{formatRouteLabel(order)}</span>
+          <small className="order-subtle">
+            {formatRouteEligibility(order)}
+          </small>
+        </td>
+        <td>
+          <span className={`order-pill ${status.toneClass}`}>
+            {status.label}
+          </span>
+          {status.detail === null ? null : (
+            <small className="order-subtle">{status.detail}</small>
+          )}
+        </td>
+        <td>
+          <div className="orders-actions">
+            <button
+              aria-label={planActionLabel}
+              className={selected ? "active" : ""}
+              disabled={!canPlan && !selected}
+              onClick={() => input.onTogglePlanOrder(order.orderId)}
+              type="button"
+            >
+              {selected ? "Remove" : "Add"}
+            </button>
+            <button
+              aria-label={diagnosticsLabel}
+              onClick={() => input.onLoadDiagnostics(order.orderId)}
+              type="button"
+            >
+              Diagnostics
+            </button>
+          </div>
+        </td>
+      </tr>
+      {input.diagnostics === undefined ? null : (
+        <tr className="diagnostics-row">
+          <td colSpan={ORDERS_TABLE_COLUMN_COUNT}>
+            <DeliveryDiagnostics diagnostics={input.diagnostics} />
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+export function formatMethodLabel(order: CanonicalOrderDto): string {
+  if (isPresent(order.serviceType)) return humanizeToken(order.serviceType);
+  if (isPresent(order.deliverySession))
+    return humanizeToken(order.deliverySession);
+  return "—";
+}
+
+export function formatDeliveryDayLabel(order: CanonicalOrderDto): {
+  detail: string | null;
+  label: string;
+  toneClass: string;
+} {
+  if (order.deliveryDate === null) {
+    return {
+      detail: formatTimeWindow(order),
+      label: "Review",
+      toneClass: "order-pill--review",
+    };
+  }
+  const weekday = weekdayCode(order.deliveryDate) ?? order.deliveryDate;
+  const timeWindow = formatTimeWindow(order);
+  return {
+    detail:
+      [order.deliveryDate, timeWindow].filter(isPresent).join(" · ") || null,
+    label: compactDayLabel(weekday, order.timeWindowStart),
+    toneClass: "order-pill--day",
+  };
+}
+
+export function formatOperationalStatus(order: CanonicalOrderDto): {
+  detail: string | null;
+  label: string;
+  toneClass: string;
+} {
+  if (order.metadataResolved !== true) {
+    return {
+      detail: geocodeDetail(order),
+      label: "Metadata review",
+      toneClass: "order-pill--review",
+    };
+  }
+  if (order.routeEligible === true) {
+    return {
+      detail: geocodeDetail(order),
+      label: "Ready",
+      toneClass: "order-pill--ready",
+    };
+  }
+  return {
+    detail: geocodeDetail(order),
+    label: "Metadata ok",
+    toneClass: "order-pill--neutral",
+  };
+}
+
+function formatOrderSource(order: CanonicalOrderDto): string {
+  const source = [
+    order.sourcePlatform,
+    order.sourceOrderNumber ?? order.sourceOrderId,
+  ]
+    .filter(isPresent)
+    .join(" · ");
+  return source || "—";
+}
+
+function getOrderAccessibleLabel(order: CanonicalOrderDto): string {
+  return [order.orderName, order.sourceOrderNumber ?? order.sourceOrderId]
+    .filter(isPresent)
+    .join(" ") || order.orderId;
+}
+
+function formatAreaLabel(order: CanonicalOrderDto): string {
+  return (
+    order.deliveryArea ??
+    order.shippingAddress.city ??
+    order.shippingAddress.province ??
+    "—"
+  );
+}
+
+function formatRouteLabel(order: CanonicalOrderDto): string {
+  return order.routePlanName ?? humanizeToken(order.planningStatus);
+}
+
+function formatRouteEligibility(order: CanonicalOrderDto): string {
+  if (order.routePlanId !== null) return "Planned";
+  if (isRoutePlanEligible(order)) return "Route eligible";
+  if (order.metadataResolved === true) return "Not route eligible";
+  return "Needs metadata";
+}
+
+function geocodeDetail(order: CanonicalOrderDto): string | null {
+  if (
+    order.geocodeStatus === "RESOLVED" ||
+    order.geocodeStatus === "NOT_REQUIRED"
+  )
+    return null;
+  return humanizeToken(order.geocodeStatus);
+}
+
+function formatTimeWindow(order: CanonicalOrderDto): string | null {
+  if (isPresent(order.timeWindowStart) && isPresent(order.timeWindowEnd)) {
+    return `${formatTime(order.timeWindowStart)}–${formatTime(order.timeWindowEnd)}`;
+  }
+  if (isPresent(order.deliverySession))
+    return humanizeToken(order.deliverySession);
+  return null;
+}
+
+function compactDayLabel(
+  weekday: string,
+  timeWindowStart: string | null,
+): string {
+  if (!isPresent(timeWindowStart)) return weekday;
+  const compactTime = formatTime(timeWindowStart).replace(/\s/g, "");
+  return `${weekday}${compactTime}`;
+}
+
+function weekdayCode(dateString: string): string | null {
+  const parts = dateString.split("-").map((part) => Number.parseInt(part, 10));
+  const [year, month, day] = parts;
+  if (
+    parts.length !== 3 ||
+    year === undefined ||
+    month === undefined ||
+    day === undefined ||
+    !Number.isFinite(year) ||
+    !Number.isFinite(month) ||
+    !Number.isFinite(day)
+  ) {
+    return null;
+  }
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (Number.isNaN(date.valueOf())) return null;
+  return ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"][
+    date.getUTCDay()
+  ] ?? null;
+}
+
+function formatTime(value: string): string {
+  const [hourText, minuteText] = value.split(":");
+  const hour = Number.parseInt(hourText ?? "", 10);
+  const minute = Number.parseInt(minuteText ?? "0", 10);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return value;
+  const period = hour >= 12 ? "PM" : "AM";
+  const hour12 = hour % 12 === 0 ? 12 : hour % 12;
+  return minute === 0
+    ? `${hour12}${period}`
+    : `${hour12}:${String(minute).padStart(2, "0")}${period}`;
+}
+
+function humanizeToken(value: string): string {
+  return value
+    .toLowerCase()
+    .split(/[_\s-]+/u)
+    .filter(Boolean)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function isPresent(value: string | null | undefined): value is string {
+  return value !== null && value !== undefined && value.trim().length > 0;
 }
 
 function DeliveryDiagnostics({

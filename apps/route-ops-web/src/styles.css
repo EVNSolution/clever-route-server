@@ -412,6 +412,156 @@ small,
 .ops-table tr.needs-review {
   background: #fff7ed;
 }
+.orders-table-panel {
+  padding: 14px;
+}
+.orders-table-panel .panel-heading {
+  margin-bottom: 10px;
+}
+.orders-table-scroll {
+  overflow-x: auto;
+}
+.orders-compact-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  color: #303030;
+  font-size: 13px;
+  min-width: 1040px;
+  width: 100%;
+}
+.orders-compact-table th,
+.orders-compact-table td {
+  border-bottom: 1px solid #edf0f5;
+  line-height: 1.25;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: middle;
+}
+.orders-compact-table th {
+  background: #f7f8fa;
+  color: #6d7175;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.orders-compact-table tbody tr:nth-child(4n + 1) {
+  background: #fff;
+}
+.orders-compact-table tbody tr:nth-child(4n + 3) {
+  background: #fbfcfe;
+}
+.orders-compact-table .orders-row--needs-review {
+  box-shadow: inset 3px 0 0 #d97706;
+}
+.orders-compact-table .orders-row--not-eligible {
+  color: #4b5563;
+}
+.orders-compact-table .orders-select-col,
+.orders-compact-table .orders-select-cell {
+  width: 44px;
+}
+.orders-compact-table .orders-select-cell input {
+  cursor: pointer;
+  height: 16px;
+  width: 16px;
+}
+.orders-compact-table .orders-select-cell input:disabled {
+  cursor: not-allowed;
+}
+.orders-compact-table .orders-select-cell input:focus-visible,
+.orders-compact-table .orders-actions button:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+.orders-compact-table .order-primary {
+  color: #1f2937;
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.22;
+}
+.orders-compact-table .order-subtle {
+  color: #6b7280;
+  display: block;
+  font-size: 11.5px;
+  line-height: 1.25;
+  margin-top: 3px;
+}
+.orders-compact-table .order-compact-value {
+  display: inline-block;
+  font-size: 12.5px;
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.orders-compact-table .orders-order-cell,
+.orders-compact-table .orders-customer-cell {
+  max-width: 210px;
+}
+.orders-compact-table .orders-order-cell .order-primary,
+.orders-compact-table .orders-order-cell .order-subtle,
+.orders-compact-table .orders-customer-cell .order-primary,
+.orders-compact-table .orders-customer-cell .order-subtle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.orders-compact-table .orders-empty-row td {
+  color: #6b7280;
+  font-size: 12.5px;
+  padding: 18px 10px;
+  text-align: center;
+}
+.orders-compact-table .orders-day-cell {
+  min-width: 112px;
+}
+.orders-compact-table .order-pill {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  padding: 5px 7px;
+  white-space: nowrap;
+}
+.orders-compact-table .order-pill--day {
+  background: #e0f2fe;
+  color: #075985;
+}
+.orders-compact-table .order-pill--ready {
+  background: #dcfce7;
+  color: #166534;
+}
+.orders-compact-table .order-pill--neutral {
+  background: #eef2ff;
+  color: #3730a3;
+}
+.orders-compact-table .order-pill--review {
+  background: #fff7ed;
+  color: #9a3412;
+}
+.orders-compact-table .orders-actions {
+  align-items: center;
+  display: flex;
+  gap: 6px;
+}
+.orders-compact-table .orders-actions button {
+  border-radius: 9px;
+  font-size: 12px;
+  min-height: 28px;
+  padding: 6px 8px;
+}
+.orders-compact-table .orders-actions button.active {
+  background: #111827;
+  border-color: #111827;
+  color: #fff;
+}
 .mini-list,
 .stop-list {
   display: grid;

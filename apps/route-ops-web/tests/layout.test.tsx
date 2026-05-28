@@ -29,6 +29,18 @@ describe('route ops layout components', () => {
     expect(html).not.toContain('Delivery metadata blockers');
   });
 
+  test('Orders page keeps route tabs and filter controls before the table region', () => {
+    const html = renderToStaticMarkup(<OrdersPage bootstrap={bootstrap()} navigate={() => undefined} setError={() => undefined} />);
+    expect(html).toContain('Imported / Unplanned');
+    expect(html).toContain('Planned');
+    expect(html).toContain('Needs review');
+    expect(html).toContain('Delivery date');
+    expect(html).toContain('Area / region');
+    expect(html).toContain('Delivery status');
+    expect(html).toContain('Order health');
+    expect(html).toContain('Search');
+  });
+
   test('Settings page exposes only English and Korean locale options with geocode action', () => {
     const html = renderToStaticMarkup(<SettingsPage bootstrap={bootstrap()} setError={() => undefined} />);
     expect(html).toContain('Geocode &amp; save coordinates');

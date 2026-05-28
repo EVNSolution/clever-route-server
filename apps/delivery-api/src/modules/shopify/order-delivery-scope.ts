@@ -9,7 +9,10 @@ export type DeliveryDateSource =
   | "EXPLICIT_ATTRIBUTE"
   | "LINE_ITEM_DATE_RANGE"
   | "ORDER_DATE_CYCLE_RULE"
+  | "ORDER_DATE_WEEK_RULE"
   | "MISSING";
+
+export type WeekdayFallbackPolicy = "DELIVERY_CYCLE" | "ORDER_WEEK";
 
 export type DeliveryScopeInput = {
   createdAt: string | null;
@@ -21,6 +24,7 @@ export type DeliveryScopeInput = {
   pickupDayRaw: string | null;
   processedAt: string | null;
   shopTimezone?: string;
+  weekdayFallbackPolicy?: WeekdayFallbackPolicy;
 };
 
 export type DeliveryScope = {
@@ -95,9 +99,16 @@ export function calculateDeliveryScope(
     orderDateLocal,
   );
   const lineItemRange = findLineItemDateRange(input.lineItems, orderDateLocal);
+  const weekdayFallbackPolicy =
+    input.weekdayFallbackPolicy ?? "DELIVERY_CYCLE";
+  const orderDateFallbackRange =
+    orderDateLocal === null
+      ? null
+      : weekdayFallbackPolicy === "ORDER_WEEK"
+        ? calculateOrderWeekRange(orderDateLocal)
+        : calculateCycleRange(orderDateLocal);
   const fallbackRange =
-    lineItemRange ??
-    (orderDateLocal === null ? null : calculateCycleRange(orderDateLocal));
+    lineItemRange ?? orderDateFallbackRange;
   const explicitDeliveryDateWeekday = weekdayFromDate(explicitDeliveryDate);
   const deliveryWeekday =
     service.deliveryWeekday ?? explicitDeliveryDateWeekday;
@@ -116,7 +127,9 @@ export function calculateDeliveryScope(
       : deliveryDate === null
         ? "MISSING"
         : lineItemRange === null
-          ? "ORDER_DATE_CYCLE_RULE"
+          ? weekdayFallbackPolicy === "ORDER_WEEK"
+            ? "ORDER_DATE_WEEK_RULE"
+            : "ORDER_DATE_CYCLE_RULE"
           : "LINE_ITEM_DATE_RANGE";
   const routeScopeKey =
     deliveryDate === null || serviceType === null
@@ -597,6 +610,17 @@ function calculateCycleRange(orderDateLocal: string): DateRange {
   return {
     endDate: formatDate(addDays(cutoffMonday, 5)),
     startDate: formatDate(addDays(cutoffMonday, 3)),
+  };
+}
+
+function calculateOrderWeekRange(orderDateLocal: string): DateRange {
+  const orderDate = parseYmd(orderDateLocal);
+  const day = orderDate.getUTCDay();
+  const daysSinceMonday = (day - 1 + 7) % 7;
+  const monday = addDays(orderDate, -daysSinceMonday);
+  return {
+    endDate: formatDate(addDays(monday, 6)),
+    startDate: formatDate(monday),
   };
 }
 

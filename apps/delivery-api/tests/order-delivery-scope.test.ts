@@ -350,6 +350,97 @@ describe("calculateDeliveryScope", () => {
     );
   });
 
+  test("can fall back to the order local week when explicitly requested", () => {
+    const scope = calculateDeliveryScope({
+      createdAt: "2026-05-05T14:00:00Z",
+      deliveryArea: "North York",
+      deliveryDayRaw: "Friday",
+      lineItems: [],
+      pickupDayRaw: null,
+      processedAt: null,
+      weekdayFallbackPolicy: "ORDER_WEEK",
+    });
+
+    expect(scope).toEqual(
+      expect.objectContaining({
+        orderDateLocal: "2026-05-05",
+        deliveryBatchStartDate: "2026-05-04",
+        deliveryBatchEndDate: "2026-05-10",
+        deliveryDate: "2026-05-08",
+        deliveryDateSource: "ORDER_DATE_WEEK_RULE",
+        routeScopeKey: "2026-05-08|DELIVERY||",
+      }),
+    );
+  });
+
+  test("keeps line item date ranges stronger than order-week fallback", () => {
+    const scope = calculateDeliveryScope({
+      createdAt: "2026-05-19T19:59:00Z",
+      deliveryArea: "Scarborough",
+      deliveryDayRaw: "Thursday",
+      lineItems: [{ title: "Bundle 05/28-05/30" }],
+      pickupDayRaw: null,
+      processedAt: null,
+      weekdayFallbackPolicy: "ORDER_WEEK",
+    });
+
+    expect(scope).toEqual(
+      expect.objectContaining({
+        deliveryBatchStartDate: "2026-05-28",
+        deliveryBatchEndDate: "2026-05-30",
+        deliveryDate: "2026-05-28",
+        deliveryDateSource: "LINE_ITEM_DATE_RANGE",
+        routeScopeKey: "2026-05-28|DELIVERY||",
+      }),
+    );
+  });
+
+  test("uses the local timezone date before order-week fallback", () => {
+    const scope = calculateDeliveryScope({
+      createdAt: "2026-05-19T02:30:00Z",
+      deliveryArea: "North York",
+      deliveryDayRaw: "Monday",
+      lineItems: [],
+      pickupDayRaw: null,
+      processedAt: null,
+      shopTimezone: "America/Toronto",
+      weekdayFallbackPolicy: "ORDER_WEEK",
+    });
+
+    expect(scope).toEqual(
+      expect.objectContaining({
+        orderDateLocal: "2026-05-18",
+        deliveryBatchStartDate: "2026-05-18",
+        deliveryBatchEndDate: "2026-05-24",
+        deliveryDate: "2026-05-18",
+        deliveryDateSource: "ORDER_DATE_WEEK_RULE",
+      }),
+    );
+  });
+
+  test("keeps order-week fallback inside the same local week even when the weekday precedes the order date", () => {
+    const scope = calculateDeliveryScope({
+      createdAt: "2026-05-22T14:00:00Z",
+      deliveryArea: "North York",
+      deliveryDayRaw: "Thursday",
+      lineItems: [],
+      pickupDayRaw: null,
+      processedAt: null,
+      weekdayFallbackPolicy: "ORDER_WEEK",
+    });
+
+    expect(scope).toEqual(
+      expect.objectContaining({
+        orderDateLocal: "2026-05-22",
+        deliveryBatchStartDate: "2026-05-18",
+        deliveryBatchEndDate: "2026-05-24",
+        deliveryDate: "2026-05-21",
+        deliveryDateSource: "ORDER_DATE_WEEK_RULE",
+        routeScopeKey: "2026-05-21|DELIVERY||",
+      }),
+    );
+  });
+
   test("returns missing source when delivery date cannot be derived", () => {
     const scope = calculateDeliveryScope({
       createdAt: null,

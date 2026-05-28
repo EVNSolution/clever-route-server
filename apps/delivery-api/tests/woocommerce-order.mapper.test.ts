@@ -216,7 +216,8 @@ describe("mapWooCommerceOrderToDeliveryInputs", () => {
 
     expect(mapped.order).toEqual(
       expect.objectContaining({
-        deliveryDate: "2026-05-28",
+        deliveryDate: "2026-05-21",
+        deliveryDateSource: "ORDER_DATE_WEEK_RULE",
         deliveryDayRaw: "Delivery - Thursday",
         readiness: "READY_TO_PLAN",
         reviewReasons: [],
@@ -315,7 +316,8 @@ describe("mapWooCommerceOrderToDeliveryInputs", () => {
 
     expect(mapped.order).toEqual(
       expect.objectContaining({
-        deliveryDate: "2026-05-28",
+        deliveryDate: "2026-05-21",
+        deliveryDateSource: "ORDER_DATE_WEEK_RULE",
         deliveryWeekday: "THURSDAY",
         readiness: "READY_TO_PLAN",
       }),
@@ -336,12 +338,13 @@ describe("mapWooCommerceOrderToDeliveryInputs", () => {
 
     expect(mapped.order).toEqual(
       expect.objectContaining({
-        deliveryDate: "2026-05-29",
+        deliveryDate: "2026-05-22",
+        deliveryDateSource: "ORDER_DATE_WEEK_RULE",
         deliveryDayRaw: "Friday",
         deliverySession: "EVENING",
         deliveryWeekday: "FRIDAY",
         readiness: "READY_TO_PLAN",
-        routeScopeKey: "2026-05-29|EVENING_DELIVERY|17:00|21:00",
+        routeScopeKey: "2026-05-22|EVENING_DELIVERY|17:00|21:00",
         serviceType: "EVENING_DELIVERY",
         timeWindowEnd: "21:00",
         timeWindowStart: "17:00",
@@ -383,10 +386,10 @@ describe("mapWooCommerceOrderToDeliveryInputs", () => {
 
     expect(mapped.order).toEqual(
       expect.objectContaining({
-        deliveryDate: "2026-05-29",
+        deliveryDate: "2026-05-22",
         deliveryDayRaw: "Friday",
         readiness: "NEEDS_REVIEW",
-        routeScopeKey: "2026-05-29|DELIVERY||",
+        routeScopeKey: "2026-05-22|DELIVERY||",
       }),
     );
     expect(mapped.order.reviewReasons).toEqual(
@@ -450,9 +453,10 @@ describe("mapWooCommerceOrderToDeliveryInputs", () => {
 
     expect(mapped.order).toEqual(
       expect.objectContaining({
-        deliveryDate: "2026-05-29",
+        deliveryDate: "2026-05-22",
+        deliveryDateSource: "ORDER_DATE_WEEK_RULE",
         deliverySession: "EVENING",
-        routeScopeKey: "2026-05-29|EVENING_DELIVERY|17:00|21:00",
+        routeScopeKey: "2026-05-22|EVENING_DELIVERY|17:00|21:00",
         serviceType: "EVENING_DELIVERY",
         timeWindowEnd: "21:00",
         timeWindowStart: "17:00",
@@ -477,9 +481,10 @@ describe("mapWooCommerceOrderToDeliveryInputs", () => {
 
     expect(mapped.order).toEqual(
       expect.objectContaining({
-        deliveryDate: "2026-05-28",
+        deliveryDate: "2026-05-21",
+        deliveryDateSource: "ORDER_DATE_WEEK_RULE",
         readiness: "READY_TO_PLAN",
-        routeScopeKey: "2026-05-28|EVENING_DELIVERY|17:00|21:00",
+        routeScopeKey: "2026-05-21|EVENING_DELIVERY|17:00|21:00",
       }),
     );
     const diagnostics = mapped.deliveryFact?.mappingDiagnostics
