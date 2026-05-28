@@ -57,6 +57,11 @@ const TIME_WINDOW_KEYS = [
   "time_slot",
   "timeslot",
 ];
+const NORMALIZED_TIME_WINDOW_KEYS = new Set(
+  TIME_WINDOW_KEYS.map(normalizeMetaKey).filter(
+    (key): key is string => key !== null,
+  ),
+);
 
 export type WooOrderMappingConfig = {
   areaPaths?: string[];
@@ -108,6 +113,7 @@ type DeliveryMetadataCandidate = {
     | "line_item_label"
     | "fallback";
   timeWindowEnd: string | null;
+  timeWindowExpected: boolean;
   timeWindowStart: string | null;
   timeWindowAmbiguous: boolean;
   trust: "high" | "medium" | "low";
@@ -127,6 +133,7 @@ type DeliveryDayArbitration = {
   scopeDeliveryDayRaw: string | null;
   selectedTimeWindow: DeliveryTimeWindowParseResult | null;
   timeWindowAmbiguous: boolean;
+  timeWindowUnparsed: boolean;
   timeWindowPath: string | null;
   weekdayAmbiguous: boolean;
 };
@@ -222,6 +229,7 @@ export function mapWooCommerceOrderToDeliveryInputs(
     deliveryDayParseStatus,
     deliveryDateWeekdayMismatch: scope.deliveryDateWeekdayMismatch,
     deliveryTimeWindowAmbiguous: dayArbitration.timeWindowAmbiguous,
+    deliveryTimeWindowUnparsed: dayArbitration.timeWindowUnparsed,
     hasAddress: hasAddressValue,
     orderCreatedAt: scope.orderCreatedAt,
     routeScopeKey: scope.routeScopeKey,
@@ -500,6 +508,7 @@ function buildReviewReasons(input: {
   deliveryDayParseStatus: DeliveryDayParseStatus;
   deliveryDateWeekdayMismatch: boolean;
   deliveryTimeWindowAmbiguous: boolean;
+  deliveryTimeWindowUnparsed: boolean;
   hasAddress: boolean;
   orderCreatedAt: string | null;
   routeScopeKey: string | null;
@@ -527,6 +536,8 @@ function buildReviewReasons(input: {
     reasons.push("delivery_date_weekday_mismatch");
   if (input.deliveryTimeWindowAmbiguous)
     reasons.push("ambiguous_delivery_time_window");
+  if (input.deliveryTimeWindowUnparsed)
+    reasons.push("delivery_time_window_unparsed");
   if (input.routeScopeKey === null || input.serviceType === null)
     reasons.push("missing_route_scope");
   if (isNonDeliverableStatus(input.status))
@@ -726,8 +737,18 @@ function arbitrateDeliveryDayCandidates(input: {
     if (normalizedKey !== null && excludedDateOrAreaKeys.has(normalizedKey))
       return [];
     const pathConfigured =
-      normalizedPath !== null && configuredPaths.has(normalizedPath);
+      (normalizedPath !== null && configuredPaths.has(normalizedPath)) ||
+      (normalizedKey !== null && configuredPaths.has(normalizedKey));
+    const timeWindowConfigured =
+      (normalizedPath !== null &&
+        configuredTimeWindowPaths.has(normalizedPath)) ||
+      (normalizedKey !== null && configuredTimeWindowPaths.has(normalizedKey));
     const knownKey = normalizedKey !== null && knownKeys.has(normalizedKey);
+    const timeWindowKnownKey =
+      normalizedKey !== null && NORMALIZED_TIME_WINDOW_KEYS.has(normalizedKey);
+    const deliveryTimeWindowMatchPath =
+      input.deliveryTimeWindowMatch.path !== null &&
+      item.path === input.deliveryTimeWindowMatch.path;
     const labelSource =
       item.path.includes("shipping_lines[") &&
       /^shipping_lines\[\d+\]\.(?:method_title|method_id)$/u.test(item.path)
@@ -776,10 +797,14 @@ function arbitrateDeliveryDayCandidates(input: {
         source,
         timeWindowAmbiguous: timeWindow.ambiguous,
         timeWindowEnd: timeWindow.timeWindowEnd,
+        timeWindowExpected:
+          timeWindowConfigured ||
+          timeWindowKnownKey ||
+          deliveryTimeWindowMatchPath,
         timeWindowStart: timeWindow.timeWindowStart,
         trust,
         value: item.value,
-        valuePreview: redactCandidateValue(item.value),
+        valuePreview: redactCandidateValue(item.value, item.path),
         weekday: parsed.deliveryWeekday,
         weekdayAmbiguous: parsed.weekdayAmbiguous,
       },
@@ -815,6 +840,10 @@ function arbitrateDeliveryDayCandidates(input: {
   const timeWindowAmbiguous =
     conflictTimeWindows.length > 1 ||
     candidates.some((candidate) => candidate.timeWindowAmbiguous);
+  const timeWindowUnparsed = candidates.some(
+    (candidate) =>
+      candidate.timeWindowExpected && candidate.parseStatus === "UNPARSED",
+  );
   const ambiguous = weekdayAmbiguous || timeWindowAmbiguous;
   const selected = selectBestDeliveryDayCandidate(
     parsedCandidates,
@@ -853,6 +882,7 @@ function arbitrateDeliveryDayCandidates(input: {
             timeWindowStart: selectedTimeWindow.timeWindowStart,
           },
     timeWindowAmbiguous,
+    timeWindowUnparsed,
     timeWindowPath:
       selectedTimeWindow?.path ?? input.deliveryTimeWindowMatch.path,
     weekdayAmbiguous,
@@ -975,15 +1005,23 @@ function containsDeliverySignal(value: string): boolean {
   return false;
 }
 
-function redactCandidateValue(value: string): string {
-  const capped = value.length > 96 ? `${value.slice(0, 93)}...` : value;
-  return capped
+function redactCandidateValue(value: string, path?: string | null): string {
+  if (isSensitiveDiagnosticPath(path)) return "[redacted-secret]";
+  const redacted = value
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, "[redacted-email]")
     .replace(/\+?\d[\d\s().-]{7,}\d/gu, "[redacted-phone]")
     .replace(
       /\b(?:consumer_secret|consumer_key|webhook_secret|token|cookie|password)\s*[:=]\s*\S+/giu,
       "[redacted-secret]",
     );
+  return redacted.length > 96 ? `${redacted.slice(0, 93)}...` : redacted;
+}
+
+function isSensitiveDiagnosticPath(value: string | null | undefined): boolean {
+  const normalized = normalizeString(value)?.toLowerCase() ?? "";
+  return /(?:consumer[_-]?secret|consumer[_-]?key|webhook[_-]?secret|access[_-]?token|refresh[_-]?token|api[_-]?key|private[_-]?key|secret|password|cookie|authorization|auth[_-]?token)/u.test(
+    normalized,
+  );
 }
 
 function normalizeMappingPath(value: string | null | undefined): string | null {

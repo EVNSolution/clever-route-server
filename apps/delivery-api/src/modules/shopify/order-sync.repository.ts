@@ -1715,12 +1715,12 @@ function buildDeliveryMetadataDiagnostics(input: {
     return [
       {
         parseStatus,
-        path,
+        path: redactDiagnosticPath(path),
         ...(source === null ? {} : { source }),
         timeWindowEnd: readString(object.timeWindowEnd),
         timeWindowStart: readString(object.timeWindowStart),
         ...(trust === null ? {} : { trust }),
-        valuePreview,
+        valuePreview: redactDiagnosticValue(valuePreview, path) ?? "",
         weekday: readString(object.weekday),
       },
     ];
@@ -1736,6 +1736,10 @@ function buildDeliveryMetadataDiagnostics(input: {
     counts[type] = (counts[type] ?? 0) + 1;
     return counts;
   }, {});
+  const rawMatchedMappingPaths = readMatchedMappingPaths(
+    input.fact?.matchedMappingPaths ?? input.raw?.matchedMappingPaths,
+  );
+  const matchedMappingPaths = redactMatchedMappingPaths(rawMatchedMappingPaths);
   return {
     candidates,
     conflictTimeWindows:
@@ -1750,15 +1754,18 @@ function buildDeliveryMetadataDiagnostics(input: {
       deliveryWeekday: input.deliveryWeekday,
       rawDeliveryDatePreview: redactDiagnosticValue(
         input.fact?.rawDeliveryDate ?? readString(input.raw?.deliveryDateRaw),
+        rawMatchedMappingPaths.deliveryDate ?? "rawDeliveryDate",
       ),
       rawDeliveryDayPreview: redactDiagnosticValue(
         input.fact?.rawDeliveryDay ??
           readString(input.raw?.deliveryDayRaw) ??
           readString(input.raw?.deliveryDay),
+        rawMatchedMappingPaths.deliveryDay ?? "rawDeliveryDay",
       ),
       rawDeliveryTimeWindowPreview: redactDiagnosticValue(
         input.fact?.rawDeliveryTimeWindow ??
           readString(input.raw?.deliveryTimeWindowRaw),
+        rawMatchedMappingPaths.deliveryTimeWindow ?? "rawDeliveryTimeWindow",
       ),
       reviewReasons: input.reviewReasons,
       routeScopeKey: input.routeScopeKey,
@@ -1776,24 +1783,48 @@ function buildDeliveryMetadataDiagnostics(input: {
         routeScopeKey: input.routeScopeKey,
       }),
     },
-    matchedMappingPaths: readMatchedMappingPaths(
-      input.fact?.matchedMappingPaths ?? input.raw?.matchedMappingPaths,
-    ),
+    matchedMappingPaths,
     status: readString(deliveryMetadata?.status) ?? "UNKNOWN",
     unsupportedValueCounts,
   };
 }
 
-function redactDiagnosticValue(value: string | null): string | null {
+function redactDiagnosticValue(
+  value: string | null,
+  path?: string | null,
+): string | null {
   if (value === null) return null;
-  const capped = value.length > 96 ? `${value.slice(0, 93)}...` : value;
-  return capped
+  if (isSensitiveDiagnosticPath(path)) return "[redacted-secret]";
+  const redacted = value
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, "[redacted-email]")
     .replace(/\+?\d[\d\s().-]{7,}\d/gu, "[redacted-phone]")
     .replace(
       /\b(?:consumer_secret|consumer_key|webhook_secret|token|cookie|password)\s*[:=]\s*\S+/giu,
       "[redacted-secret]",
     );
+  return redacted.length > 96 ? `${redacted.slice(0, 93)}...` : redacted;
+}
+
+function isSensitiveDiagnosticPath(value: string | null | undefined): boolean {
+  const normalized = readString(value)?.toLowerCase() ?? "";
+  return /(?:consumer[_-]?secret|consumer[_-]?key|webhook[_-]?secret|access[_-]?token|refresh[_-]?token|api[_-]?key|private[_-]?key|secret|password|cookie|authorization|auth[_-]?token)/u.test(
+    normalized,
+  );
+}
+
+function redactDiagnosticPath(value: string): string {
+  return isSensitiveDiagnosticPath(value) ? "[redacted-sensitive-path]" : value;
+}
+
+function redactMatchedMappingPaths(
+  value: Record<string, string | null>,
+): Record<string, string | null> {
+  return Object.fromEntries(
+    Object.entries(value).map(([key, rawValue]) => [
+      key,
+      rawValue === null ? null : redactDiagnosticPath(rawValue),
+    ]),
+  );
 }
 
 function readMatchedMappingPaths(
@@ -1826,8 +1857,10 @@ function hasMetadataResolved(input: {
     "missing_delivery_date",
     "missing_route_scope",
     "delivery_day_unparsed",
+    "delivery_time_window_unparsed",
     "delivery_date_weekday_unverified",
     "ambiguous_delivery_day",
+    "ambiguous_delivery_time_window",
     "delivery_date_weekday_mismatch",
     "missing_order_date",
   ]);

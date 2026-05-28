@@ -369,6 +369,74 @@ describe("mapWooCommerceOrderToDeliveryInputs", () => {
     );
   });
 
+  test("blocks explicit Woo delivery time fields that are present but cannot be parsed", async () => {
+    const order = await readFixture("order-date-pending.json");
+    order.meta_data = [
+      { key: "delivery_area", value: "Scarborough" },
+      { key: "Delivery Day", value: "Friday" },
+      { key: "Delivery Time", value: "rush window unknown" },
+    ];
+
+    const mapped = mapWooCommerceOrderToDeliveryInputs(order, {
+      siteUrl: "https://woo.example.test",
+    });
+
+    expect(mapped.order).toEqual(
+      expect.objectContaining({
+        deliveryDate: "2026-05-29",
+        deliveryDayRaw: "Friday",
+        readiness: "NEEDS_REVIEW",
+        routeScopeKey: "2026-05-29|DELIVERY||",
+      }),
+    );
+    expect(mapped.order.reviewReasons).toEqual(
+      expect.arrayContaining(["delivery_time_window_unparsed"]),
+    );
+    expect(mapped.deliveryFact).toEqual(
+      expect.objectContaining({
+        deliveryDayParseStatus: "PARSED",
+        rawDeliveryTimeWindow: "rush window unknown",
+        readiness: "NEEDS_REVIEW",
+      }),
+    );
+    expect(mapped.deliveryFact?.mappingDiagnostics?.deliveryMetadata).toEqual(
+      expect.objectContaining({
+        candidates: expect.arrayContaining([
+          expect.objectContaining({
+            parseStatus: "UNPARSED",
+            path: "meta_data.delivery_time",
+            valuePreview: "rush window unknown",
+          }),
+        ]) as unknown,
+        status: "NEEDS_REVIEW",
+      }),
+    );
+  });
+
+  test("redacts configured sensitive Woo metadata paths from diagnostics", async () => {
+    const order = await readFixture("order-date-pending.json");
+    order.meta_data = [
+      { key: "delivery_area", value: "Scarborough" },
+      { key: "delivery_day", value: "Friday" },
+      { key: "consumer_secret", value: "bare-secret-value" },
+    ];
+
+    const mapped = mapWooCommerceOrderToDeliveryInputs(order, {
+      mappingConfig: { timeWindowPaths: ["consumer_secret"] },
+      siteUrl: "https://woo.example.test",
+    });
+
+    expect(JSON.stringify(mapped.deliveryFact?.mappingDiagnostics)).toContain(
+      "[redacted-secret]",
+    );
+    expect(JSON.stringify(mapped.deliveryFact?.mappingDiagnostics)).not.toContain(
+      "bare-secret-value",
+    );
+    expect(mapped.order.reviewReasons).toEqual(
+      expect.arrayContaining(["delivery_time_window_unparsed"]),
+    );
+  });
+
   test("normalizes Korean weekday and time-window metadata", async () => {
     const order = await readFixture("order-date-pending.json");
     order.meta_data = [

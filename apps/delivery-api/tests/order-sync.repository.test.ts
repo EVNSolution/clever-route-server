@@ -90,6 +90,71 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     );
   });
 
+  test('keeps ambiguous or unparsed time-window metadata unresolved in canonical rows', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+    const order = canonicalOrderRecord(0);
+    prisma.order.findMany.mockResolvedValueOnce([
+      {
+        ...order,
+        deliveryFacts: [
+          {
+            ...canonicalDeliveryFactWithUtcTorontoWindow(),
+            mappingDiagnostics: {
+              deliveryMetadata: {
+                candidates: [
+                  {
+                    parseStatus: 'UNPARSED',
+                    path: 'meta_data.consumer_secret',
+                    valuePreview: 'bare-secret-value',
+                    weekday: null
+                  }
+                ],
+                status: 'NEEDS_REVIEW'
+              }
+            },
+            matchedMappingPaths: {
+              deliveryDay: 'meta_data.delivery_day',
+              deliveryTimeWindow: 'meta_data.consumer_secret'
+            },
+            readiness: 'NEEDS_REVIEW',
+            reviewReasons: ['ambiguous_delivery_time_window', 'delivery_time_window_unparsed'],
+            rawDeliveryTimeWindow: 'bare-secret-value'
+          }
+        ]
+      }
+    ]);
+
+    const rows = await repository.listCanonicalOrders({
+      filters: {},
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(rows[0]).toEqual(
+      expect.objectContaining({
+        metadataResolved: false,
+        readiness: 'NEEDS_REVIEW',
+        routeEligible: false
+      })
+    );
+    expect(rows[0]?.deliveryMetadataDiagnostics?.candidates[0]).toEqual(
+      expect.objectContaining({
+        path: '[redacted-sensitive-path]',
+        valuePreview: '[redacted-secret]'
+      })
+    );
+    expect(
+      rows[0]?.deliveryMetadataDiagnostics?.current.rawDeliveryTimeWindowPreview
+    ).toBe('[redacted-secret]');
+    expect(rows[0]?.deliveryMetadataDiagnostics?.matchedMappingPaths).toEqual(
+      expect.objectContaining({
+        deliveryTimeWindow: '[redacted-sensitive-path]'
+      })
+    );
+  });
+
   test('filters canonical rows by area, health, and operate delivery status', async () => {
     const readyHarness = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
     const readyRepository = new PrismaOrderSyncRepository(

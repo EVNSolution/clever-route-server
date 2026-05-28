@@ -1346,6 +1346,48 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
+  test("marks ambiguous delivery time windows as unresolved metadata in Route Ops DTO fallback", async () => {
+    const order = canonicalOrder({
+      readiness: "NEEDS_REVIEW",
+      reviewReasons: ["ambiguous_delivery_time_window"],
+      routeEligible: false,
+    });
+    const { app } = await createUiHarness({
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([order])),
+      },
+    });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        headers: { accept: "application/json", cookie },
+        method: "GET",
+        url: "/admin/ui/app/api/orders?shopDomain=tenant-a.example.test",
+      });
+
+      expect(response.statusCode).toBe(200);
+      const data = readApiData<{
+        orders: Array<{
+          blockerReasons: string[];
+          metadataResolved: boolean;
+          routeEligible: boolean;
+        }>;
+      }>(response);
+      expect(data.orders[0]).toEqual(
+        expect.objectContaining({
+          blockerReasons: expect.arrayContaining([
+            "ambiguous_delivery_time_window",
+          ]) as unknown,
+          metadataResolved: false,
+          routeEligible: false,
+        }),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
   test("returns redacted Route Ops order metadata diagnostics without raw payload", async () => {
     const diagnosticsOrder = canonicalOrder({
       deliveryMetadataDiagnostics: {

@@ -3902,9 +3902,12 @@ function toRouteOpsOrderDto(order: CanonicalOrderRow): {
     !blockerReasons.some((reason) =>
       [
         "missing_delivery_date",
+        "missing_delivery_area",
         "missing_route_scope",
         "delivery_day_unparsed",
+        "delivery_time_window_unparsed",
         "ambiguous_delivery_day",
+        "ambiguous_delivery_time_window",
         "delivery_date_weekday_mismatch",
         "delivery_date_weekday_unverified",
         "missing_order_date",
