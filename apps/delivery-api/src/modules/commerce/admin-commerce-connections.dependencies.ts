@@ -20,6 +20,7 @@ import { parseAllowedShopDomains, StaticAdminCommerceTokenVerifier } from './adm
 import { PrismaAdminStoreSettingsService } from './admin-store-settings.service.js';
 import { WooCommerceConnectionOnboardingService } from './woocommerce-connection-onboarding.service.js';
 import { WooCommerceConnectionVerifier } from './woocommerce-connection-verifier.js';
+import { loadGeocodingService } from '../geocoding/geocoding.dependencies.js';
 
 export type AdminCommerceConnectionsRuntimeEnv = Partial<
   Record<
@@ -31,6 +32,11 @@ export type AdminCommerceConnectionsRuntimeEnv = Partial<
     | 'CLEVER_ADMIN_WEB_SESSION_SECRET'
     | 'CREDENTIAL_ENCRYPTION_KEY'
     | 'DELIVERY_API_PUBLIC_URL'
+    | 'GEOCODING_CACHE_TTL_DAYS'
+    | 'GEOCODING_PROVIDER_MODE'
+    | 'GEOCODING_RATE_LIMIT_PER_SECOND'
+    | 'GEOCODING_SEARCH_URL'
+    | 'GEOCODING_USER_AGENT'
     | 'OSRM_BASE_URL',
     string
   >
@@ -104,6 +110,7 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     cookieName,
     loginSecret,
     ...readAdminUiDriverService(input),
+    geocodingService: loadGeocodingService({ env: input.env }),
     onboardingService: input.adminCommerceConnections.onboardingService,
     ...readAdminUiOrderSyncService(input),
     ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),

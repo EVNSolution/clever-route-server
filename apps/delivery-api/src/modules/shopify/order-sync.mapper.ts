@@ -1,5 +1,8 @@
-import type { DeliveryDateSource, DeliverySession } from './order-delivery-scope.js';
-import { calculateDeliveryScope } from './order-delivery-scope.js';
+import type {
+  DeliveryDateSource,
+  DeliverySession,
+} from "./order-delivery-scope.js";
+import { calculateDeliveryScope } from "./order-delivery-scope.js";
 
 export type ShopifyOrderAttribute = {
   key: string;
@@ -29,10 +32,13 @@ export type ShopifyOrderNode = {
   email: string | null;
   id: string;
   legacyResourceId: string;
-  lineItems?: {
-    edges?: Array<{ node: ShopifyOrderLineItem }> | null;
-    nodes?: ShopifyOrderLineItem[] | null;
-  } | null | undefined;
+  lineItems?:
+    | {
+        edges?: Array<{ node: ShopifyOrderLineItem }> | null;
+        nodes?: ShopifyOrderLineItem[] | null;
+      }
+    | null
+    | undefined;
   name: string;
   note?: string | null;
   phone: string | null;
@@ -55,12 +61,58 @@ type ShopifyShippingAddress = {
   zip: string | null;
 };
 
-export type DeliveryWeekday = 'SUNDAY' | 'MONDAY' | 'TUESDAY' | 'WEDNESDAY' | 'THURSDAY' | 'FRIDAY' | 'SATURDAY';
-export type DeliveryServiceType = 'DELIVERY' | 'EVENING_DELIVERY' | 'PICKUP';
-export type CanonicalOrderReadiness = 'READY_TO_PLAN' | 'NEEDS_REVIEW' | 'SKIPPED';
-export type CommerceSourcePlatform = 'SHOPIFY' | 'WOOCOMMERCE';
-export type DeliveryDayParseStatus = 'NOT_PROVIDED' | 'PARSED' | 'UNPARSED' | 'UNVERIFIED';
-export type PlanningStatus = 'UNPLANNED' | 'PLANNED';
+export type DeliveryWeekday =
+  | "SUNDAY"
+  | "MONDAY"
+  | "TUESDAY"
+  | "WEDNESDAY"
+  | "THURSDAY"
+  | "FRIDAY"
+  | "SATURDAY";
+export type DeliveryServiceType = "DELIVERY" | "EVENING_DELIVERY" | "PICKUP";
+export type CanonicalOrderReadiness =
+  | "READY_TO_PLAN"
+  | "NEEDS_REVIEW"
+  | "SKIPPED";
+export type CommerceSourcePlatform = "SHOPIFY" | "WOOCOMMERCE";
+export type DeliveryDayParseStatus =
+  | "NOT_PROVIDED"
+  | "PARSED"
+  | "UNPARSED"
+  | "UNVERIFIED";
+export type PlanningStatus = "UNPLANNED" | "PLANNED";
+
+export type DeliveryMetadataDiagnostics = {
+  candidates: Array<{
+    parseStatus: string;
+    path: string;
+    source?: string;
+    timeWindowEnd?: string | null;
+    timeWindowStart?: string | null;
+    trust?: string;
+    valuePreview: string;
+    weekday?: string | null;
+  }>;
+  conflictTimeWindows: string[];
+  conflictWeekdays: string[];
+  current: {
+    deliveryDate: string | null;
+    deliveryDateWeekday: string | null;
+    deliveryDayParseStatus: string | null;
+    deliveryWeekday: string | null;
+    rawDeliveryDatePreview: string | null;
+    rawDeliveryDayPreview: string | null;
+    rawDeliveryTimeWindowPreview: string | null;
+    reviewReasons: string[];
+    routeScopeKey: string | null;
+    serviceType: string | null;
+    timeWindowEnd: string | null;
+    timeWindowStart: string | null;
+  };
+  matchedMappingPaths: Record<string, string | null>;
+  status: string;
+  unsupportedValueCounts: Record<string, number>;
+};
 
 export type CanonicalOrderRow = {
   cancelledAt: string | null;
@@ -72,19 +124,21 @@ export type CanonicalOrderRow = {
   deliveryDateSource: DeliveryDateSource | null;
   deliveryDayRaw: string | null;
   deliverySession: DeliverySession | null;
+  deliveryMetadataDiagnostics?: DeliveryMetadataDiagnostics | null;
   deliveryStopId: string | null;
   deliveryStopStatus: string | null;
   deliveryWeekday: DeliveryWeekday | null;
   email: string | null;
   financialStatus: string | null;
   fulfillmentStatus: string | null;
-  geocodeStatus: 'PENDING' | 'RESOLVED' | 'FAILED' | 'NOT_REQUIRED';
+  geocodeStatus: "PENDING" | "RESOLVED" | "FAILED" | "NOT_REQUIRED";
   hasCoordinates: boolean;
   latitude: number | null;
   longitude: number | null;
   name: string;
   orderCreatedAt: string | null;
   orderDateLocal: string | null;
+  metadataResolved?: boolean;
   orderId: string;
   phone: string | null;
   pickup: boolean;
@@ -96,6 +150,7 @@ export type CanonicalOrderRow = {
   reviewReasons: string[];
   routePlanId: string | null;
   routePlanName: string | null;
+  routeEligible?: boolean;
   routePlanStatus: string | null;
   routeScopeKey: string | null;
   serviceType: DeliveryServiceType | null;
@@ -165,7 +220,7 @@ export type SyncedDeliveryStopInput = {
   city: string | null;
   countryCode: string | null;
   deliveryDate: string | null;
-  geocodeStatus: 'PENDING' | 'RESOLVED';
+  geocodeStatus: "PENDING" | "RESOLVED";
   instructions: string | null;
   timeWindowEnd: string | null;
   timeWindowStart: string | null;
@@ -190,7 +245,7 @@ export type SyncedOrderDeliveryFactInput = {
   deliveryDayUnparsedReason: string | null;
   deliverySession: DeliverySession | null;
   deliveryWeekday: DeliveryWeekday | null;
-  geocodeStatus: 'PENDING' | 'RESOLVED' | 'FAILED' | 'NOT_REQUIRED';
+  geocodeStatus: "PENDING" | "RESOLVED" | "FAILED" | "NOT_REQUIRED";
   mappingDiagnostics?: Record<string, unknown> | null;
   matchedMappingPaths: Record<string, string | null>;
   planningGroupKey: string | null;
@@ -219,13 +274,13 @@ export type SyncedOrderWithDeliveryStopInput = {
 };
 
 export function mapShopifyOrderNodeToDeliveryInputs(
-  node: ShopifyOrderNode
+  node: ShopifyOrderNode,
 ): SyncedOrderWithDeliveryStopInput {
   const attributes = normalizeAttributes(node.customAttributes ?? []);
-  const deliveryArea = readAttribute(attributes, 'Delivery Area');
+  const deliveryArea = readAttribute(attributes, "Delivery Area");
   const deliveryDateRaw = readDeliveryDateAttribute(attributes);
-  const deliveryDayRaw = readAttribute(attributes, 'Delivery Day');
-  const pickupDay = readAttribute(attributes, 'Pickup Day');
+  const deliveryDayRaw = readAttribute(attributes, "Delivery Day");
+  const pickupDay = readAttribute(attributes, "Pickup Day");
   const pickup = pickupDay !== null;
   const canonicalDayRaw = deliveryDayRaw ?? pickupDay;
   const lineItems = normalizeLineItems(node.lineItems);
@@ -236,9 +291,10 @@ export function mapShopifyOrderNodeToDeliveryInputs(
     deliveryDayRaw,
     lineItems,
     pickupDayRaw: pickupDay,
-    processedAt: node.processedAt
+    processedAt: node.processedAt,
   });
-  const hasShippingAddress = node.shippingAddress !== null && hasAddress(node.shippingAddress);
+  const hasShippingAddress =
+    node.shippingAddress !== null && hasAddress(node.shippingAddress);
   const hasCoordinates =
     node.shippingAddress?.latitude !== null &&
     node.shippingAddress?.latitude !== undefined &&
@@ -256,12 +312,15 @@ export function mapShopifyOrderNodeToDeliveryInputs(
     orderCreatedAt: scope.orderCreatedAt,
     routeScopeKey: scope.routeScopeKey,
     serviceType: scope.serviceType,
-    deliveryWeekday: scope.deliveryWeekday
+    deliveryWeekday: scope.deliveryWeekday,
   });
   const readiness: CanonicalOrderReadiness =
-    cancelledAt !== null || scope.deliveryDate === null || scope.routeScopeKey === null || reviewReasons.length > 0
-      ? 'NEEDS_REVIEW'
-      : 'READY_TO_PLAN';
+    cancelledAt !== null ||
+    scope.deliveryDate === null ||
+    scope.routeScopeKey === null ||
+    reviewReasons.length > 0
+      ? "NEEDS_REVIEW"
+      : "READY_TO_PLAN";
 
   return {
     deliveryStop:
@@ -273,7 +332,7 @@ export function mapShopifyOrderNodeToDeliveryInputs(
             hasCoordinates,
             scope.deliveryDate,
             scope.timeWindowStart,
-            scope.timeWindowEnd
+            scope.timeWindowEnd,
           ),
     order: {
       cancelledAt,
@@ -319,7 +378,7 @@ export function mapShopifyOrderNodeToDeliveryInputs(
         routeScopeKey: scope.routeScopeKey,
         serviceType: scope.serviceType,
         timeWindowEnd: scope.timeWindowEnd,
-        timeWindowStart: scope.timeWindowStart
+        timeWindowStart: scope.timeWindowStart,
       },
       readiness,
       reviewReasons,
@@ -329,14 +388,14 @@ export function mapShopifyOrderNodeToDeliveryInputs(
       shopifyOrderLegacyId: parseLegacyResourceId(node.legacyResourceId),
       sourceOrderId: node.id,
       sourceOrderNumber: node.name,
-      sourcePlatform: 'SHOPIFY',
+      sourcePlatform: "SHOPIFY",
       sourceSiteUrl: null,
       sourceUpdatedAt: parseRequiredDate(node.updatedAt),
       timeWindowEnd: scope.timeWindowEnd,
       timeWindowStart: scope.timeWindowStart,
       totalPriceAmount: node.currentTotalPriceSet?.shopMoney.amount ?? null,
-      updatedAtShopify: parseRequiredDate(node.updatedAt)
-    }
+      updatedAtShopify: parseRequiredDate(node.updatedAt),
+    },
   };
 }
 
@@ -346,7 +405,7 @@ function mapShippingAddressToDeliveryStop(
   hasCoordinates: boolean,
   deliveryDate: string | null,
   timeWindowStart: string | null,
-  timeWindowEnd: string | null
+  timeWindowEnd: string | null,
 ): SyncedDeliveryStopInput {
   return {
     address1: address.address1,
@@ -354,7 +413,7 @@ function mapShippingAddressToDeliveryStop(
     city: address.city,
     countryCode: address.countryCodeV2,
     deliveryDate,
-    geocodeStatus: hasCoordinates ? 'RESOLVED' : 'PENDING',
+    geocodeStatus: hasCoordinates ? "RESOLVED" : "PENDING",
     instructions: normalizeOptionalString(note),
     latitude: address.latitude === null ? null : String(address.latitude),
     longitude: address.longitude === null ? null : String(address.longitude),
@@ -363,7 +422,7 @@ function mapShippingAddressToDeliveryStop(
     province: address.province,
     recipientName: address.name,
     timeWindowEnd,
-    timeWindowStart
+    timeWindowStart,
   };
 }
 
@@ -381,47 +440,70 @@ function buildReviewReasons(input: {
   serviceType: DeliveryServiceType | null;
 }): string[] {
   const reasons: string[] = [];
-  if (!input.hasShippingAddress) reasons.push('missing_address');
-  if (input.deliveryArea === null) reasons.push('missing_delivery_area');
-  if (input.deliveryDayRaw === null && input.deliveryDate === null) reasons.push('missing_delivery_day');
-  if (input.deliveryDayRaw !== null && (input.deliveryWeekday === null || input.serviceType === null)) {
-    reasons.push('delivery_day_parse_failed');
+  if (!input.hasShippingAddress) reasons.push("missing_address");
+  if (input.deliveryArea === null) reasons.push("missing_delivery_area");
+  if (input.deliveryDayRaw === null && input.deliveryDate === null)
+    reasons.push("missing_delivery_day");
+  if (
+    input.deliveryDayRaw !== null &&
+    (input.deliveryWeekday === null || input.serviceType === null)
+  ) {
+    reasons.push("delivery_day_parse_failed");
   }
-  if (input.orderCreatedAt === null && input.deliveryDateSource !== 'EXPLICIT_ATTRIBUTE') reasons.push('missing_order_date');
+  if (
+    input.orderCreatedAt === null &&
+    input.deliveryDateSource !== "EXPLICIT_ATTRIBUTE"
+  )
+    reasons.push("missing_order_date");
   if (input.deliveryDate === null) {
-    reasons.push(input.deliveryDateSource === 'MISSING' ? 'missing_delivery_date' : 'delivery_date_parse_failed');
+    reasons.push(
+      input.deliveryDateSource === "MISSING"
+        ? "missing_delivery_date"
+        : "delivery_date_parse_failed",
+    );
   }
-  if (input.routeScopeKey === null) reasons.push('missing_route_scope');
-  if (!input.hasCoordinates) reasons.push('missing_coordinates');
-  if (input.cancelledAt !== null) reasons.push('cancelled_order');
+  if (input.routeScopeKey === null) reasons.push("missing_route_scope");
+  if (!input.hasCoordinates) reasons.push("missing_coordinates");
+  if (input.cancelledAt !== null) reasons.push("cancelled_order");
   return reasons;
 }
 
-function normalizeLineItems(value: ShopifyOrderNode['lineItems']): ShopifyOrderLineItem[] {
+function normalizeLineItems(
+  value: ShopifyOrderNode["lineItems"],
+): ShopifyOrderLineItem[] {
   const nodes = value?.nodes ?? null;
   if (Array.isArray(nodes)) return nodes.map(normalizeLineItem);
   const edges = value?.edges ?? null;
-  if (Array.isArray(edges)) return edges.map((edge) => normalizeLineItem(edge.node));
+  if (Array.isArray(edges))
+    return edges.map((edge) => normalizeLineItem(edge.node));
   return [];
 }
 
 function normalizeLineItem(value: ShopifyOrderLineItem): ShopifyOrderLineItem {
   return {
     name: normalizeOptionalString(value.name),
-    quantity: typeof value.quantity === 'number' && Number.isFinite(value.quantity) ? value.quantity : null,
+    quantity:
+      typeof value.quantity === "number" && Number.isFinite(value.quantity)
+        ? value.quantity
+        : null,
     sku: normalizeOptionalString(value.sku),
     title: normalizeOptionalString(value.title),
-    variantTitle: normalizeOptionalString(value.variantTitle)
+    variantTitle: normalizeOptionalString(value.variantTitle),
   };
 }
 
 function hasAddress(address: ShopifyShippingAddress): boolean {
-  return [address.address1, address.city, address.zip, address.countryCodeV2].some(
-    (value) => normalizeOptionalString(value) !== null
-  );
+  return [
+    address.address1,
+    address.city,
+    address.zip,
+    address.countryCodeV2,
+  ].some((value) => normalizeOptionalString(value) !== null);
 }
 
-function normalizeAttributes(value: ShopifyOrderAttribute[]): ShopifyOrderAttribute[] {
+function normalizeAttributes(
+  value: ShopifyOrderAttribute[],
+): ShopifyOrderAttribute[] {
   return value.flatMap((attribute) => {
     const key = normalizeOptionalString(attribute.key);
     const attributeValue = normalizeOptionalString(attribute.value);
@@ -432,25 +514,36 @@ function normalizeAttributes(value: ShopifyOrderAttribute[]): ShopifyOrderAttrib
   });
 }
 
-function readAttribute(attributes: ShopifyOrderAttribute[], key: string): string | null {
-  return attributes.find((attribute) => attribute.key.toLowerCase() === key.toLowerCase())?.value ?? null;
-}
-
-function readDeliveryDateAttribute(attributes: ShopifyOrderAttribute[]): string | null {
+function readAttribute(
+  attributes: ShopifyOrderAttribute[],
+  key: string,
+): string | null {
   return (
-    readAttribute(attributes, 'Delivery Date') ??
-    readAttribute(attributes, 'deliveryDate') ??
-    readAttribute(attributes, 'delivery_date') ??
-    readAttribute(attributes, 'tomatono_delivery_date')
+    attributes.find(
+      (attribute) => attribute.key.toLowerCase() === key.toLowerCase(),
+    )?.value ?? null
   );
 }
 
-function normalizeOptionalString(value: string | null | undefined): string | null {
+function readDeliveryDateAttribute(
+  attributes: ShopifyOrderAttribute[],
+): string | null {
+  return (
+    readAttribute(attributes, "Delivery Date") ??
+    readAttribute(attributes, "deliveryDate") ??
+    readAttribute(attributes, "delivery_date") ??
+    readAttribute(attributes, "tomatono_delivery_date")
+  );
+}
+
+function normalizeOptionalString(
+  value: string | null | undefined,
+): string | null {
   if (value === null || value === undefined) {
     return null;
   }
   const trimmed = value.trim();
-  return trimmed === '' ? null : trimmed;
+  return trimmed === "" ? null : trimmed;
 }
 
 function parseLegacyResourceId(value: string): bigint | null {

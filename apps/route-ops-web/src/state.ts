@@ -1,4 +1,5 @@
-import type { BootstrapPayload, CanonicalOrderDto, MapProviderStatus, RoutePlanDetailDto, RouteStopDto } from './types';
+import type { BootstrapPayload, CanonicalOrderDto, MapProviderStatus, RoutePlanDetailDto, RouteStopDto, StoreSettingsDto } from './types';
+import type { RouteOpsPoint } from './maps/geojson';
 
 export type OrderFilters = {
   deliveryArea?: string;
@@ -92,7 +93,7 @@ export function mapReadiness(input: {
   coordinatesCount: number;
   mapStatus: MapProviderStatus;
 }): 'interactive_map' | 'no_coordinates' | 'provider_not_configured' {
-  if (input.coordinatesCount === 0) return 'no_coordinates';
+  void input.coordinatesCount;
   if (input.mapStatus === 'not_configured') return 'provider_not_configured';
   return 'interactive_map';
 }
@@ -109,7 +110,29 @@ export function hideSetupActions(bootstrap: BootstrapPayload): boolean {
   return bootstrap.mode === 'plugin';
 }
 
+export function storeSettingsToDepotPoint(settings: StoreSettingsDto | null): RouteOpsPoint | null {
+  if (settings === null) return null;
+  if (!isValidLatitude(settings.defaultDepotLatitude) || !isValidLongitude(settings.defaultDepotLongitude)) return null;
+  const address = settings.defaultDepotAddress?.trim();
+  return {
+    addressLabel: address === undefined || address === '' ? 'Store address' : address,
+    id: 'settings-store-depot',
+    kind: 'depot',
+    label: 'Store',
+    latitude: settings.defaultDepotLatitude,
+    longitude: settings.defaultDepotLongitude
+  };
+}
+
 function setParam(params: URLSearchParams, key: string, value: string | undefined): void {
   if (value === undefined || value.trim() === '' || value === 'all') return;
   params.set(key, value.trim());
+}
+
+function isValidLatitude(value: number | null): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= -90 && value <= 90;
+}
+
+function isValidLongitude(value: number | null): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= -180 && value <= 180;
 }

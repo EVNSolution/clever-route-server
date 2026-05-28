@@ -1,7 +1,9 @@
 import { describe, expect, test, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature, fitBoundsForPoints, getRouteMapPoints } from '../src/maps/geojson';
-import { auditStyleEndpoints, extractStyleEndpointUrls, providerStatusLabel } from '../src/maps/provider';
+import { auditStyleEndpoints, extractStyleEndpointUrls, mapReadiness, providerStatusLabel } from '../src/maps/provider';
 import { installPmtilesProtocol } from '../src/maps/pmtiles';
 import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto } from '../src/types';
 
@@ -18,6 +20,54 @@ describe('route ops map helpers', () => {
       ['ready', 'planned'],
       ['review', 'review']
     ]);
+    expect(collection.features.map((feature) => [feature.properties.pinImage, feature.properties.plannedLabel])).toEqual([
+      ['orders-map-pin-planned', '1'],
+      ['orders-map-pin-review', '']
+    ]);
+  });
+
+  test('uses the Shopify CLEVER lite map style instead of the temporary five-layer fallback', () => {
+    const style = JSON.parse(readFileSync(join(process.cwd(), 'public/vendor/openfreemap-clever-lite.json'), 'utf8')) as {
+      glyphs?: string;
+      metadata?: { cleverRoutePublicHosts?: string[]; cleverRouteSource?: string };
+      layers?: Array<{ id?: string; paint?: Record<string, unknown>; source?: string; type?: string }>;
+      sources?: Record<string, { url?: string }>;
+    };
+    const layerIds = style.layers?.map((layer) => layer.id) ?? [];
+    expect(layerIds).toEqual([
+      'background',
+      'natural_earth',
+      'park',
+      'park_outline',
+      'waterway_river',
+      'waterway_other',
+      'water',
+      'road_link',
+      'road_minor',
+      'road_secondary_tertiary',
+      'road_trunk_primary',
+      'road_motorway',
+      'bridge_link',
+      'bridge_street',
+      'bridge_secondary_tertiary',
+      'bridge_trunk_primary',
+      'bridge_motorway',
+      'highway-name-path',
+      'highway-name-minor',
+      'highway-name-major',
+      'label_town',
+      'label_city',
+      'label_city_capital'
+    ]);
+    expect(style.sources?.overture_buildings).toBeUndefined();
+    expect(style.glyphs).toBe('https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf');
+    expect(style.layers?.find((layer) => layer.id === 'road_link')?.paint?.['line-color']).toBe('#ead9bd');
+    expect(style.layers?.find((layer) => layer.id === 'road_trunk_primary')?.paint?.['line-color']).toBe('#e6cda7');
+    expect(style.layers?.find((layer) => layer.id === 'bridge_motorway')?.paint?.['line-color']).toBe('#e2b282');
+    expect(style.layers?.some((layer) => layer.id === 'building' || layer.source === 'overture_buildings')).toBe(false);
+    expect(style.metadata?.cleverRouteSource).toContain('shopify-clever');
+    expect(style.metadata?.cleverRouteSource).toContain('openfreemap-clever-lite.json');
+    expect(style.metadata?.cleverRoutePublicHosts).toEqual(['tiles.openfreemap.org']);
   });
 
   test('builds route geometry and fit-bound locations with depot + numbered stops', () => {
@@ -65,6 +115,12 @@ describe('route ops map helpers', () => {
     expect(providerStatusLabel(bootstrap({ providerMode: 'public_allowlisted', status: 'configured' }))).toBe('Public map provider allowlisted');
     expect(providerStatusLabel(bootstrap({ disabledReason: 'public_provider_mode_not_enabled', providerMode: null, status: 'not_configured' }))).toBe('public_provider_mode_not_enabled');
   });
+
+  test('keeps configured providers interactive before markers exist', () => {
+    expect(mapReadiness({ coordinatesCount: 0, mapStatus: 'not_configured' })).toBe('provider_not_configured');
+    expect(mapReadiness({ coordinatesCount: 0, mapStatus: 'configured' })).toBe('interactive_map');
+    expect(mapReadiness({ coordinatesCount: 2, mapStatus: 'configured' })).toBe('interactive_map');
+  });
 });
 
 function order(overrides: Partial<CanonicalOrderDto> = {}): CanonicalOrderDto {
@@ -75,6 +131,7 @@ function order(overrides: Partial<CanonicalOrderDto> = {}): CanonicalOrderDto {
     deliveryDate: '2026-05-27',
     deliverySession: 'DAY',
     deliveryStatus: 'ready',
+    geocodeStatus: 'RESOLVED',
     health: 'normal',
     orderId: 'order-1',
     orderName: '#1001',
@@ -83,11 +140,15 @@ function order(overrides: Partial<CanonicalOrderDto> = {}): CanonicalOrderDto {
     recipientName: 'Customer',
     routePlanId: null,
     routePlanName: null,
+    serviceType: 'DELIVERY',
+    shippingAddress: { address1: null, address2: null, city: null, countryCode: null, postalCode: null, province: null },
     sourceOrderId: '1001',
     sourceOrderNumber: '1001',
     sourcePlatform: 'WOOCOMMERCE',
     status: 'unfulfilled',
     stopId: 'stop-1',
+    timeWindowEnd: null,
+    timeWindowStart: null,
     ...overrides
   };
 }

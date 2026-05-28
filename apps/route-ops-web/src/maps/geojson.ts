@@ -3,6 +3,7 @@ import type { CanonicalOrderDto, RoutePlanDetailDto, RouteStopDto } from '../typ
 export type LngLat = [number, number];
 
 export type RouteOpsPoint = {
+  addressLabel?: string;
   id: string;
   label: string;
   latitude: number;
@@ -29,7 +30,9 @@ export type OrderMapFeatureCollection = FeatureCollection<PointGeometry, {
   orderId: string;
   orderName: string;
   pinKind: 'planned' | 'review' | 'unplanned';
+  pinImage: string;
   planned: boolean;
+  plannedLabel: string;
   sortKey: number;
 }>;
 
@@ -55,20 +58,29 @@ export function buildOrdersMapFeatureCollection(orders: CanonicalOrderDto[], pla
     const lngLat = toLngLat(order.coordinates);
     if (lngLat === null) return;
     const planned = plannedOrderIds.has(order.orderId) || order.routePlanId !== null || order.planningStatus !== 'UNPLANNED';
+    const pinKind = order.blockerReasons.length > 0 ? 'review' : planned ? 'planned' : 'unplanned';
     features.push({
       geometry: { coordinates: lngLat, type: 'Point' },
       properties: {
         label: String(index + 1),
         orderId: order.orderId,
         orderName: order.orderName,
-        pinKind: order.blockerReasons.length > 0 ? 'review' : planned ? 'planned' : 'unplanned',
+        pinImage: pinImageForKind(pinKind),
+        pinKind,
         planned,
+        plannedLabel: planned ? String(index + 1) : '',
         sortKey: planned ? index + 1000 : index
       },
       type: 'Feature'
     });
   });
   return { features, type: 'FeatureCollection' };
+}
+
+function pinImageForKind(kind: OrderMapFeatureCollection['features'][number]['properties']['pinKind']): string {
+  if (kind === 'planned') return 'orders-map-pin-planned';
+  if (kind === 'review') return 'orders-map-pin-review';
+  return 'orders-map-pin';
 }
 
 export function buildRouteGeometryFeature(detail: RoutePlanDetailDto | null): RouteLineFeature | null {

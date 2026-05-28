@@ -1,7 +1,6 @@
 import type { ReactElement, ReactNode } from 'react';
 
 import type { BootstrapPayload } from '../types';
-import { providerModeLabel } from '../maps/provider';
 
 export type RouteOpsPage = 'dashboard' | 'drivers' | 'orders' | 'routes' | 'settings';
 
@@ -52,19 +51,10 @@ export function AppShell({
             <span className="eyebrow">CLEVER Route App</span>
             <h1>{title}</h1>
           </div>
-          <div className="topbar-actions">
-            <StatusPill label="Map" status={bootstrap.mapConfig.status} title={providerModeLabel(bootstrap.mapConfig.providerMode)} />
-            <StatusPill label="Router" status={bootstrap.routerConfig.status} />
-            <span className="session-pill">{bootstrap.mode === 'plugin' ? 'No extra login' : 'Internal admin'}</span>
-          </div>
         </header>
         {error === null ? null : <div className="alert error">{error}</div>}
         {children}
       </main>
     </div>
   );
-}
-
-export function StatusPill({ label, status, title }: { label: string; status: string; title?: string }): ReactElement {
-  return <span className={`status-pill ${status === 'configured' ? 'ok' : 'warn'}`} title={title}>{label}: {status.replace('_', ' ')}</span>;
 }

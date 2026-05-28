@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 
 import { withWorkspaceQuery } from '../src/api';
-import { buildOrderQuery, createDefaultOrderFilters, deriveRouteStats, geometryLabel, hideSetupActions, mapReadiness, moveStop, moveStopBefore, summarizeSelection } from '../src/state';
+import { buildOrderQuery, createDefaultOrderFilters, deriveRouteStats, geometryLabel, hideSetupActions, mapReadiness, moveStop, moveStopBefore, storeSettingsToDepotPoint, summarizeSelection } from '../src/state';
 import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStopDto } from '../src/types';
 
 describe('route ops web state helpers', () => {
@@ -73,11 +73,35 @@ describe('route ops web state helpers', () => {
   });
 
   test('keeps map/provider states explicit and plugin mode hides setup actions', () => {
-    expect(mapReadiness({ coordinatesCount: 0, mapStatus: 'configured' })).toBe('no_coordinates');
+    expect(mapReadiness({ coordinatesCount: 0, mapStatus: 'configured' })).toBe('interactive_map');
     expect(mapReadiness({ coordinatesCount: 3, mapStatus: 'not_configured' })).toBe('provider_not_configured');
     expect(mapReadiness({ coordinatesCount: 3, mapStatus: 'configured' })).toBe('interactive_map');
     expect(hideSetupActions(bootstrap('plugin'))).toBe(true);
     expect(hideSetupActions(bootstrap('internal-admin'))).toBe(false);
+  });
+
+  test('turns saved store settings into an orders-map depot point', () => {
+    expect(storeSettingsToDepotPoint({
+      defaultDepotAddress: '123 Depot St, Toronto, ON',
+      defaultDepotLatitude: 43.6532,
+      defaultDepotLongitude: -79.3832,
+      locale: 'en-CA',
+      shopDomain: 'tenant.example.test'
+    })).toEqual({
+      addressLabel: '123 Depot St, Toronto, ON',
+      id: 'settings-store-depot',
+      kind: 'depot',
+      label: 'Store',
+      latitude: 43.6532,
+      longitude: -79.3832
+    });
+    expect(storeSettingsToDepotPoint({
+      defaultDepotAddress: 'No coordinates',
+      defaultDepotLatitude: null,
+      defaultDepotLongitude: null,
+      locale: 'en-CA',
+      shopDomain: 'tenant.example.test'
+    })).toBeNull();
   });
 });
 
@@ -89,6 +113,7 @@ function order(overrides: Partial<CanonicalOrderDto> = {}): CanonicalOrderDto {
     deliveryDate: '2026-05-27',
     deliverySession: 'DAY',
     deliveryStatus: 'ready',
+    geocodeStatus: 'RESOLVED',
     health: 'normal',
     orderId: 'order-1',
     orderName: '#1001',
@@ -97,11 +122,15 @@ function order(overrides: Partial<CanonicalOrderDto> = {}): CanonicalOrderDto {
     recipientName: 'Customer',
     routePlanId: null,
     routePlanName: null,
+    serviceType: 'DELIVERY',
+    shippingAddress: { address1: null, address2: null, city: null, countryCode: null, postalCode: null, province: null },
     sourceOrderId: '1001',
     sourceOrderNumber: '1001',
     sourcePlatform: 'WOOCOMMERCE',
     status: 'unfulfilled',
     stopId: 'stop-1',
+    timeWindowEnd: null,
+    timeWindowStart: null,
     ...overrides
   };
 }

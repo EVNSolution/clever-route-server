@@ -282,6 +282,193 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       sourceSiteUrl: 'http://localhost:8088'
     });
   });
+
+  test('preserves Route Ops operator corrections across later Woo sync snapshots', async () => {
+    const { prisma } = createPrismaHarness({
+      existingOrder: {
+        deliveryFacts: [
+          {
+            deliveryArea: 'Operator Area',
+            deliveryDate: new Date('2026-05-09T00:00:00.000Z'),
+            deliveryDateWeekday: 'SATURDAY',
+            deliveryDateWeekdayMismatch: false,
+            deliveryDateWeekdayVerified: true,
+            deliverySession: 'DAY',
+            geocodeStatus: 'RESOLVED',
+            mappingDiagnostics: {
+              routeOpsCorrections: {
+                fields: {
+                  address1: { actor: 'dispatcher', correctedAt: '2026-05-28T00:00:00.000Z', source: 'operator_metadata_patch' },
+                  deliveryDate: { actor: 'dispatcher', correctedAt: '2026-05-28T00:00:00.000Z', source: 'operator_metadata_patch' },
+                  deliverySession: { actor: 'dispatcher', correctedAt: '2026-05-28T00:00:00.000Z', source: 'operator_metadata_patch' },
+                  geocodeStatus: { actor: 'dispatcher', correctedAt: '2026-05-28T00:00:00.000Z', source: 'geocoder' },
+                  latitude: { actor: 'dispatcher', correctedAt: '2026-05-28T00:00:00.000Z', source: 'geocoder' },
+                  longitude: { actor: 'dispatcher', correctedAt: '2026-05-28T00:00:00.000Z', source: 'geocoder' },
+                  routeScopeKey: { actor: 'dispatcher', correctedAt: '2026-05-28T00:00:00.000Z', source: 'operator_metadata_patch' },
+                  serviceType: { actor: 'dispatcher', correctedAt: '2026-05-28T00:00:00.000Z', source: 'operator_metadata_patch' }
+                },
+                version: 1
+              }
+            },
+            planningGroupKey: '2026-05-09|DELIVERY|Operator Area',
+            readiness: 'READY_TO_PLAN',
+            reviewReasons: [],
+            routeScopeKey: '2026-05-09|DELIVERY',
+            serviceType: 'DELIVERY',
+            timeWindowEnd: null,
+            timeWindowStart: null
+          }
+        ],
+        deliveryStops: [
+          {
+            address1: 'Corrected Address',
+            address2: null,
+            city: 'Mississauga',
+            countryCode: 'CA',
+            deliveryDate: new Date('2026-05-09T00:00:00.000Z'),
+            geocodeStatus: 'RESOLVED',
+            latitude: '43.6000000',
+            longitude: '-79.6500000',
+            postalCode: 'L5B 3C1',
+            province: 'ON',
+            timeWindowEnd: null,
+            timeWindowStart: null
+          }
+        ],
+        id: 'order-id',
+        updatedAtShopify: new Date('2026-05-07T12:00:00.000Z')
+      },
+      routeStopCount: 0
+    });
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: {
+        ...syncedOrder({ updatedAtShopify: new Date('2026-05-08T13:00:00.000Z') }),
+        deliveryFact: syncedDeliveryFact()
+      }
+    });
+
+    const stopCall = prisma.deliveryStop.upsert.mock.calls[0];
+    if (stopCall === undefined) throw new Error('expected deliveryStop upsert');
+    const stopUpdate = (stopCall[0] as { update: Record<string, unknown> }).update;
+    expect(stopUpdate).toMatchObject({
+      address1: 'Corrected Address',
+      geocodeStatus: 'RESOLVED',
+      latitude: '43.6000000',
+      longitude: '-79.6500000'
+    });
+    const factCall = prisma.orderDeliveryFact.upsert.mock.calls[0];
+    if (factCall === undefined) throw new Error('expected orderDeliveryFact upsert');
+    const factUpdate = (factCall[0] as { update: Record<string, unknown> }).update;
+    expect(factUpdate).toMatchObject({
+      deliveryDate: new Date('2026-05-09T00:00:00.000Z'),
+      deliverySession: 'DAY',
+      routeScopeKey: '2026-05-09|DELIVERY',
+      serviceType: 'DELIVERY'
+    });
+    const diagnostics: unknown = factUpdate.mappingDiagnostics;
+    expect(diagnostics).toMatchObject({ routeOpsCorrections: { version: 1 } });
+    const orderCall = prisma.order.upsert.mock.calls[0];
+    if (orderCall === undefined) throw new Error('expected order upsert');
+    const orderUpdate = (orderCall[0] as { update: Record<string, unknown> }).update;
+    expect(orderUpdate.rawPayload).toEqual(expect.objectContaining({ deliveryDate: '2026-05-08' }));
+  });
+
+  test('keeps coordinate-only correction needing review when no delivery fact exists', async () => {
+    const { prisma } = createPrismaHarness({
+      existingOrder: {
+        ...canonicalOrderRecord(0),
+        deliveryFacts: [],
+        deliveryStops: [],
+        id: 'order-id',
+        shippingAddress: {
+          address1: '300 City Centre Dr',
+          city: 'Mississauga',
+          countryCode: 'CA',
+          postalCode: 'L5B 3C1',
+          province: 'ON'
+        },
+        updatedAtShopify: new Date('2026-05-07T12:00:00.000Z')
+      },
+      routeStopCount: 0
+    });
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+
+    await repository.patchCanonicalOrderCoordinates({
+      actor: 'dispatcher',
+      latitude: 43.6,
+      longitude: -79.65,
+      orderId: 'order-id',
+      shopDomain: 'example.myshopify.com',
+      source: 'manual'
+    });
+
+    const factCall = prisma.orderDeliveryFact.upsert.mock.calls[0];
+    if (factCall === undefined) throw new Error('expected orderDeliveryFact upsert');
+    const factCreate = (factCall[0] as { create: Record<string, unknown> }).create;
+    expect(factCreate).toMatchObject({
+      batchEligible: false,
+      deliveryDate: null,
+      planningGroupKey: null,
+      readiness: 'NEEDS_REVIEW',
+      routeScopeKey: null
+    });
+    expect(factCreate.reviewReasons).toEqual(expect.arrayContaining(['missing_delivery_area', 'missing_delivery_date', 'missing_route_scope']));
+  });
+
+  test('does not clear unresolved date blockers when only coordinates are corrected', async () => {
+    const { prisma } = createPrismaHarness({
+      existingOrder: {
+        ...canonicalOrderRecord(0),
+        deliveryFacts: [
+          {
+            deliveryArea: 'Mississauga',
+            deliveryDate: new Date('2026-05-08T00:00:00.000Z'),
+            deliveryDateWeekday: 'FRIDAY',
+            deliverySession: 'EVENING',
+            mappingDiagnostics: {},
+            planningGroupKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00|Mississauga',
+            reviewReasons: ['missing_coordinates', 'delivery_date_weekday_mismatch'],
+            routeScopeKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00',
+            serviceType: 'EVENING_DELIVERY',
+            timeWindowEnd: new Date('2026-05-08T21:00:00.000Z'),
+            timeWindowStart: new Date('2026-05-08T17:00:00.000Z')
+          }
+        ],
+        id: 'order-id',
+        updatedAtShopify: new Date('2026-05-07T12:00:00.000Z')
+      },
+      routeStopCount: 0
+    });
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+
+    await repository.patchCanonicalOrderCoordinates({
+      actor: 'dispatcher',
+      latitude: 43.6,
+      longitude: -79.65,
+      orderId: 'order-id',
+      shopDomain: 'example.myshopify.com',
+      source: 'manual'
+    });
+
+    const factCall = prisma.orderDeliveryFact.upsert.mock.calls[0];
+    if (factCall === undefined) throw new Error('expected orderDeliveryFact upsert');
+    const factUpdate = (factCall[0] as { update: Record<string, unknown> }).update;
+    expect(factUpdate).toMatchObject({
+      batchEligible: false,
+      readiness: 'NEEDS_REVIEW'
+    });
+    expect(factUpdate.reviewReasons).toEqual(['delivery_date_weekday_mismatch']);
+  });
+
   test('clears stale delivery stop fields when a newer snapshot has no shipping address', async () => {
     const { prisma } = createPrismaHarness({
       existingOrder: { id: 'order-id', updatedAtShopify: new Date('2026-05-07T12:00:00.000Z') },
@@ -331,7 +518,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
 });
 
 function createPrismaHarness(input: {
-  existingOrder: { id: string; updatedAtShopify: Date | null } | null;
+  existingOrder: ({ id: string; sourceUpdatedAt?: Date | null; updatedAtShopify: Date | null; deliveryFacts?: Array<Record<string, unknown>>; deliveryStops?: Array<Record<string, unknown>> } & Record<string, unknown>) | null;
   routeStopCount: number;
 }): {
   prisma: {
@@ -361,7 +548,7 @@ function createPrismaHarness(input: {
     },
     order: {
       create: vi.fn(() => Promise.resolve({ id: 'order-id' })),
-      findFirst: vi.fn(() => Promise.resolve(input.existingOrder)),
+      findFirst: vi.fn(() => Promise.resolve(input.existingOrder === null ? null : { sourceUpdatedAt: null, ...input.existingOrder })),
       findMany: vi.fn(() => Promise.resolve([orderRecord])),
       update: vi.fn(() => Promise.resolve({ id: 'order-id' })),
       upsert: vi.fn(() => Promise.resolve({ id: 'order-id' }))

@@ -1,8 +1,10 @@
-export type AppMode = 'internal-admin' | 'plugin';
+export type AppMode = "internal-admin" | "plugin";
 
-export type MapProviderStatus = 'configured' | 'not_configured';
+export type AppLocale = "en-CA" | "ko-KR";
 
-export type MapProviderMode = 'public_allowlisted' | 'self_hosted' | null;
+export type MapProviderStatus = "configured" | "not_configured";
+
+export type MapProviderMode = "public_allowlisted" | "self_hosted" | null;
 
 export type BootstrapPayload = {
   appUrls: {
@@ -32,6 +34,38 @@ export type BootstrapPayload = {
   shopDomain: string | null;
 };
 
+export type DeliveryMetadataDiagnosticsDto = {
+  candidates: Array<{
+    parseStatus: string;
+    path: string;
+    source?: string;
+    timeWindowEnd?: string | null;
+    timeWindowStart?: string | null;
+    trust?: string;
+    valuePreview: string;
+    weekday?: string | null;
+  }>;
+  conflictTimeWindows: string[];
+  conflictWeekdays: string[];
+  current: {
+    deliveryDate: string | null;
+    deliveryDateWeekday: string | null;
+    deliveryDayParseStatus: string | null;
+    deliveryWeekday: string | null;
+    rawDeliveryDatePreview: string | null;
+    rawDeliveryDayPreview: string | null;
+    rawDeliveryTimeWindowPreview: string | null;
+    reviewReasons: string[];
+    routeScopeKey: string | null;
+    serviceType: string | null;
+    timeWindowEnd: string | null;
+    timeWindowStart: string | null;
+  };
+  matchedMappingPaths: Record<string, string | null>;
+  status: string;
+  unsupportedValueCounts: Record<string, number>;
+};
+
 export type CanonicalOrderDto = {
   blockerReasons: string[];
   coordinates: { latitude: number | null; longitude: number | null };
@@ -39,19 +73,33 @@ export type CanonicalOrderDto = {
   deliveryDate: string | null;
   deliverySession: string | null;
   deliveryStatus: string;
+  geocodeStatus: "PENDING" | "RESOLVED" | "FAILED" | "NOT_REQUIRED";
   health: string;
+  metadataResolved?: boolean;
   orderId: string;
   orderName: string;
   phone: string | null;
   planningStatus: string;
   recipientName: string | null;
+  routeEligible?: boolean;
   routePlanId: string | null;
   routePlanName: string | null;
+  serviceType: string | null;
+  shippingAddress: {
+    address1: string | null;
+    address2: string | null;
+    city: string | null;
+    countryCode: string | null;
+    postalCode: string | null;
+    province: string | null;
+  };
   sourceOrderId: string | null;
   sourceOrderNumber: string | null;
   sourcePlatform: string | null;
   status: string | null;
   stopId: string | null;
+  timeWindowEnd: string | null;
+  timeWindowStart: string | null;
 };
 
 export type RoutePlanSummaryDto = {
@@ -86,7 +134,10 @@ export type RouteStopDto = {
 };
 
 export type RoutePlanDetailDto = {
-  routeGeometry: { coordinates: Array<[number, number]>; type: 'LineString' } | null;
+  routeGeometry: {
+    coordinates: Array<[number, number]>;
+    type: "LineString";
+  } | null;
   routePlan: RoutePlanSummaryDto;
   routeStopPoints: Array<{
     deliveryStopId: string;
@@ -111,8 +162,49 @@ export type StoreSettingsDto = {
   defaultDepotAddress: string | null;
   defaultDepotLatitude: number | null;
   defaultDepotLongitude: number | null;
-  locale: string;
+  locale: AppLocale;
   shopDomain: string;
+};
+
+export type GeocodeOrderResponse = {
+  geocode: {
+    cached: boolean;
+    ok: true;
+    result: {
+      addressLabel: string;
+      latitude: number;
+      longitude: number;
+      provider: string;
+      providerPlaceId: string | null;
+      rawLabel: string | null;
+    };
+  };
+  order?: CanonicalOrderDto;
+};
+
+export type GeocodeSettingsResponse = {
+  geocode: {
+    cached: boolean;
+    ok: true;
+    result: {
+      addressLabel: string;
+      latitude: number;
+      longitude: number;
+      provider: string;
+      providerPlaceId: string | null;
+      rawLabel: string | null;
+    };
+  };
+  settings: StoreSettingsDto;
+};
+
+export type OrderMutationResponse = {
+  order: CanonicalOrderDto;
+};
+
+export type OrderMetadataDiagnosticsResponse = {
+  diagnostics: DeliveryMetadataDiagnosticsDto | null;
+  order: CanonicalOrderDto;
 };
 
 export type OrdersResponse = {

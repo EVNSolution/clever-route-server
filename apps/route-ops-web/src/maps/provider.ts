@@ -3,7 +3,7 @@ import type { BootstrapPayload, MapProviderMode, MapProviderStatus } from '../ty
 export type MapReadiness = 'interactive_map' | 'no_coordinates' | 'provider_not_configured';
 
 export function mapReadiness(input: { coordinatesCount: number; mapStatus: MapProviderStatus }): MapReadiness {
-  if (input.coordinatesCount === 0) return 'no_coordinates';
+  void input.coordinatesCount;
   if (input.mapStatus === 'not_configured') return 'provider_not_configured';
   return 'interactive_map';
 }
