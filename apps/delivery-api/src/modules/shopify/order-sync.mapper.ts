@@ -59,6 +59,7 @@ export type DeliveryWeekday = 'SUNDAY' | 'MONDAY' | 'TUESDAY' | 'WEDNESDAY' | 'T
 export type DeliveryServiceType = 'DELIVERY' | 'EVENING_DELIVERY' | 'PICKUP';
 export type CanonicalOrderReadiness = 'READY_TO_PLAN' | 'NEEDS_REVIEW' | 'SKIPPED';
 export type CommerceSourcePlatform = 'SHOPIFY' | 'WOOCOMMERCE';
+export type DeliveryDayParseStatus = 'NOT_PROVIDED' | 'PARSED' | 'UNPARSED' | 'UNVERIFIED';
 export type PlanningStatus = 'UNPLANNED' | 'PLANNED';
 
 export type CanonicalOrderRow = {
@@ -176,7 +177,43 @@ export type SyncedDeliveryStopInput = {
   recipientName: string | null;
 };
 
+export type SyncedOrderDeliveryFactInput = {
+  batchEligible: boolean;
+  commerceConnectionId?: string | null;
+  computedAt?: Date | null;
+  deliveryArea: string | null;
+  deliveryDate: string | null;
+  deliveryDateWeekday: DeliveryWeekday | null;
+  deliveryDateWeekdayMismatch: boolean;
+  deliveryDateWeekdayVerified: boolean;
+  deliveryDayParseStatus: DeliveryDayParseStatus;
+  deliveryDayUnparsedReason: string | null;
+  deliverySession: DeliverySession | null;
+  deliveryWeekday: DeliveryWeekday | null;
+  geocodeStatus: 'PENDING' | 'RESOLVED' | 'FAILED' | 'NOT_REQUIRED';
+  mappingDiagnostics?: Record<string, unknown> | null;
+  matchedMappingPaths: Record<string, string | null>;
+  planningGroupKey: string | null;
+  rawDeliveryArea: string | null;
+  rawDeliveryDate: string | null;
+  rawDeliveryDay: string | null;
+  rawDeliveryTimeWindow: string | null;
+  rawPickupDay: string | null;
+  readiness: CanonicalOrderReadiness;
+  reviewReasons: string[];
+  routeScopeKey: string | null;
+  serviceType: DeliveryServiceType | null;
+  sourceOrderId: string | null;
+  sourceOrderNumber: string | null;
+  sourcePlatform: CommerceSourcePlatform;
+  sourceSiteUrl: string | null;
+  sourceUpdatedAt: Date | null;
+  timeWindowEnd: string | null;
+  timeWindowStart: string | null;
+};
+
 export type SyncedOrderWithDeliveryStopInput = {
+  deliveryFact?: SyncedOrderDeliveryFactInput | null;
   deliveryStop: SyncedDeliveryStopInput | null;
   order: SyncedOrderInput;
 };

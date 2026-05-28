@@ -8,12 +8,10 @@ import type {
 } from './route-plan.types.js';
 import type { RouteGeometryProvider } from './route-plan.service.js';
 
-const DEFAULT_OSRM_BASE_URL = 'https://router.project-osrm.org';
-
 type FetchLike = (url: string, init: { method: 'GET' }) => Promise<Response>;
 
 type OsrmRouteGeometryProviderOptions = {
-  baseUrl?: string | undefined;
+  baseUrl: string;
   fetch?: FetchLike | undefined;
 };
 
@@ -31,8 +29,8 @@ export class OsrmRouteGeometryProvider implements RouteGeometryProvider {
   private readonly baseUrl: string;
   private readonly fetch: FetchLike;
 
-  constructor(options: OsrmRouteGeometryProviderOptions = {}) {
-    this.baseUrl = normalizeBaseUrl(options.baseUrl ?? DEFAULT_OSRM_BASE_URL);
+  constructor(options: OsrmRouteGeometryProviderOptions) {
+    this.baseUrl = normalizeBaseUrl(options.baseUrl);
     this.fetch = options.fetch ?? fetch;
   }
 
@@ -213,7 +211,10 @@ function isOkOsrmPayload(payload: unknown): boolean {
 
 function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim();
-  return (trimmed === '' ? DEFAULT_OSRM_BASE_URL : trimmed).replace(/\/+$/u, '');
+  if (trimmed === '') {
+    throw new Error('OSRM base URL must be configured explicitly.');
+  }
+  return trimmed.replace(/\/+$/u, '');
 }
 
 function objectOrNull(value: unknown): Record<string, unknown> | null {

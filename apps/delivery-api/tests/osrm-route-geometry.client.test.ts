@@ -26,6 +26,10 @@ const detail = {
 } satisfies RoutePlanDetail;
 
 describe('OsrmRouteGeometryProvider', () => {
+  test('requires an explicit OSRM base URL and never falls back to a public router', () => {
+    expect(() => new OsrmRouteGeometryProvider({ baseUrl: '' })).toThrow('OSRM base URL must be configured explicitly.');
+  });
+
   test('requests a full GeoJSON route through depot and ordered stops', async () => {
     const fetch = vi.fn().mockResolvedValue(Response.json(routeOkPayload()));
     const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });

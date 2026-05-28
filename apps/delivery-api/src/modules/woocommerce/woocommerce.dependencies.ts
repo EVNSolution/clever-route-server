@@ -45,6 +45,7 @@ export function loadWooCommerceWebhookDependencies(input: {
       const resolvedTimezone = connection.timezone ?? shopTimezone;
       return new WooCommerceOrderSyncService({
         client: createWooCommerceOrderClientFromConnection(connection),
+        connectionId: connection.id,
         repository: orderRepository,
         shopDomain: connection.shopDomain,
         ...(resolvedTimezone === undefined ? {} : { shopTimezone: resolvedTimezone }),

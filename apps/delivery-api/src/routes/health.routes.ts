@@ -15,4 +15,6 @@ export function registerHealthRoutes(app: FastifyInstance): void {
     service: SERVICE_NAME,
     status: 'ready'
   }));
+
+  app.get('/favicon.ico', (_request, reply) => reply.code(204).send());
 }

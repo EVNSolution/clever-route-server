@@ -68,6 +68,19 @@ export type CreateRoutePlanInput = {
   shopDomain: string;
 };
 
+export type CreateRoutePlanFromOrderIdsPayload = {
+  depot: RoutePlanDepotInput;
+  name: string;
+  orderIds: string[];
+  planDate: string;
+};
+
+export type CreateRoutePlanFromOrderIdsInput = {
+  createdBy: string;
+  payload: CreateRoutePlanFromOrderIdsPayload;
+  shopDomain: string;
+};
+
 export type RoutePlanSummary = {
   createdAt: string;
   deliveryDate?: string | null;
@@ -181,6 +194,7 @@ export type RoutePlanDetail = {
 export type RoutePlanService = {
   assignRoutePlanDriver(input: UpdateRoutePlanDriverInput): Promise<RoutePlanDetail | null>;
   createRoutePlan(input: CreateRoutePlanInput): Promise<RoutePlanSummary>;
+  createRoutePlanFromOrderIds?(input: CreateRoutePlanFromOrderIdsInput): Promise<RoutePlanSummary>;
   deleteRoutePlan(input: { routePlanId: string; shopDomain: string }): Promise<{
     routePlanId: string;
     deleted: boolean;
@@ -218,5 +232,16 @@ export class RoutePlanDriverAssignInvalidError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'RoutePlanDriverAssignInvalidError';
+  }
+}
+
+export class RoutePlanBatchInvalidError extends Error {
+  readonly blockers: string[];
+  readonly code = 'ROUTE_PLAN_BATCH_INVALID';
+
+  constructor(blockers: string[]) {
+    super(`Cannot create route from selected orders: ${blockers.join('; ')}`);
+    this.name = 'RoutePlanBatchInvalidError';
+    this.blockers = blockers;
   }
 }

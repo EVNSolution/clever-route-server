@@ -129,16 +129,18 @@ function readAdminUiOrderSyncService(input: {
   adminOrders?: AdminOrdersDependencies | undefined;
   prisma?: PrismaClient | undefined;
 }): Pick<AdminCommerceConnectionsUiDependencies, 'orderSyncService'> {
-  if (input.adminOrders !== undefined) {
-    return { orderSyncService: input.adminOrders.orderSyncService };
+  if (input.prisma === undefined) {
+    return input.adminOrders === undefined ? {} : { orderSyncService: input.adminOrders.orderSyncService };
   }
-  if (input.prisma === undefined) return {};
   return {
     orderSyncService: new ShopifyOrderSyncService({
       graphqlClient: {
         request: () => Promise.reject(new Error('Admin UI order list does not use Shopify GraphQL snapshot sync'))
       },
-      repository: new PrismaOrderSyncRepository(input.prisma)
+      repository: new PrismaOrderSyncRepository(input.prisma, {
+        allowAnyShopDomain: true,
+        createMissingShop: true
+      })
     })
   };
 }
@@ -148,14 +150,13 @@ function readAdminUiRoutePlanService(input: {
   env: AdminCommerceConnectionsRuntimeEnv;
   prisma?: PrismaClient | undefined;
 }): Pick<AdminCommerceConnectionsUiDependencies, 'routePlanService'> {
-  if (input.adminRoutePlans !== undefined) {
-    return { routePlanService: input.adminRoutePlans.routePlanService };
+  if (input.prisma === undefined) {
+    return input.adminRoutePlans === undefined ? {} : { routePlanService: input.adminRoutePlans.routePlanService };
   }
-  if (input.prisma === undefined) return {};
   const osrmBaseUrl = readOptional(input.env.OSRM_BASE_URL);
   return {
     routePlanService: new RoutePlanAdminService(
-      new PrismaRoutePlanRepository(input.prisma),
+      new PrismaRoutePlanRepository(input.prisma, { allowAnyShopDomain: true }),
       osrmBaseUrl === undefined ? undefined : new OsrmRouteGeometryProvider({ baseUrl: osrmBaseUrl })
     )
   };

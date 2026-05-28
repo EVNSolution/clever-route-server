@@ -1,3 +1,7 @@
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { basename, join, normalize } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import type { AdminCommerceActor } from '../modules/commerce/admin-commerce-auth.js';
@@ -10,7 +14,7 @@ import {
   type WooCommerceOnboardingResult
 } from '../modules/commerce/woocommerce-connection-onboarding.service.js';
 import type { CanonicalOrderRow } from '../modules/shopify/order-sync.mapper.js';
-import type { ListCanonicalOrdersFilters } from '../modules/shopify/order-sync.repository.js';
+import type { DeliveryBatchCandidate, ListCanonicalOrdersFilters } from '../modules/shopify/order-sync.repository.js';
 import {
   deriveOperateDeliveryStatus,
   deriveOrderHealth,
@@ -20,6 +24,7 @@ import {
   type OrderHealth
 } from '../modules/shopify/order-operate-status.js';
 import {
+  RoutePlanBatchInvalidError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanDriverAssignInvalidError,
   RoutePlanStopUpdateInvalidError,
@@ -58,6 +63,9 @@ const ADMIN_UI_APP_ORDERS_PATH = `${ADMIN_UI_APP_PATH}/orders`;
 const ADMIN_UI_APP_ROUTE_PLANS_PATH = `${ADMIN_UI_APP_PATH}/routes`;
 const ADMIN_UI_APP_DRIVERS_PATH = `${ADMIN_UI_APP_PATH}/drivers`;
 const ADMIN_UI_APP_SETTINGS_PATH = `${ADMIN_UI_APP_PATH}/settings`;
+const ADMIN_UI_APP_API_PATH = `${ADMIN_UI_APP_PATH}/api`;
+const ADMIN_UI_APP_ASSETS_PATH = `${ADMIN_UI_APP_PATH}/assets`;
+const ADMIN_UI_APP_VENDOR_PATH = `${ADMIN_UI_APP_PATH}/vendor`;
 const ADMIN_UI_ORDERS_PATH = `${ADMIN_UI_ROOT_PATH}/orders`;
 const ADMIN_UI_ROUTE_PLANS_PATH = `${ADMIN_UI_ROOT_PATH}/route-plans`;
 const ADMIN_UI_DRIVERS_PATH = `${ADMIN_UI_ROOT_PATH}/drivers`;
@@ -74,6 +82,52 @@ const ADMIN_UI_CSP = [
   "style-src 'self' 'unsafe-inline'",
   "script-src 'self'"
 ].join('; ');
+const ROUTE_OPS_WEB_DIST_PATH = resolveRouteOpsWebDistPath();
+const ROUTE_OPS_WEB_PUBLIC_PATH = resolveRouteOpsWebPublicPath();
+
+type RouteOpsMapProviderMode = 'public_allowlisted' | 'self_hosted';
+
+type RouteOpsMapConfig = {
+  allowedHosts: string[];
+  attribution: string | null;
+  disabledReason?: string;
+  providerMode: RouteOpsMapProviderMode | null;
+  status: 'configured' | 'not_configured';
+  styleUrl: string | null;
+  styleAudit: {
+    endpoints: string[];
+    externalHosts: string[];
+  } | null;
+};
+
+function resolveRouteOpsWebDistPath(): string {
+  const explicit = process.env.ROUTE_OPS_WEB_DIST_PATH?.trim();
+  if (explicit !== undefined && explicit !== '') return explicit;
+
+  const defaultCandidate = join(process.cwd(), '../route-ops-web/dist');
+  const candidates = [
+    defaultCandidate,
+    join(process.cwd(), 'apps/route-ops-web/dist'),
+    join(process.cwd(), 'route-ops-web/dist'),
+    fileURLToPath(new URL('../../../route-ops-web/dist/', import.meta.url))
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? defaultCandidate;
+}
+
+function resolveRouteOpsWebPublicPath(): string {
+  const explicit = process.env.ROUTE_OPS_WEB_PUBLIC_PATH?.trim();
+  if (explicit !== undefined && explicit !== '') return explicit;
+
+  const defaultCandidate = join(process.cwd(), '../route-ops-web/public');
+  const candidates = [
+    defaultCandidate,
+    join(process.cwd(), 'apps/route-ops-web/public'),
+    join(process.cwd(), 'route-ops-web/public'),
+    fileURLToPath(new URL('../../../route-ops-web/public/', import.meta.url))
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? defaultCandidate;
+}
+
 
 const ADMIN_UI_WOOCOMMERCE_TEST_SCRIPT = `
 (() => {
@@ -173,6 +227,10 @@ export type AdminCommerceConnectionsUiDependencies = {
     | 'updateStatus'
   >;
   orderSyncService?: {
+    listDeliveryBatchCandidates?(input: {
+      deliveryDate?: string;
+      shopDomain: string;
+    }): Promise<DeliveryBatchCandidate[]>;
     listCanonicalOrders(input: {
       filters?: ListCanonicalOrdersFilters;
       shopDomain: string;
@@ -181,7 +239,7 @@ export type AdminCommerceConnectionsUiDependencies = {
   publicBaseUrl?: string;
   routePlanService?: Pick<
     RoutePlanService,
-    'assignRoutePlanDriver' | 'createRoutePlan' | 'getRoutePlanDetail' | 'listRoutePlans' | 'updateRoutePlanStops'
+    'assignRoutePlanDriver' | 'createRoutePlan' | 'createRoutePlanFromOrderIds' | 'getRoutePlanDetail' | 'listRoutePlans' | 'updateRoutePlanStops'
   >;
   secureCookies: boolean;
   sessionSecret: string;
@@ -213,6 +271,8 @@ export function registerAdminCommerceConnectionsUiRoutes(
       .header('Cache-Control', 'no-store')
       .send(ADMIN_UI_ROUTE_APP_SCRIPT)
   );
+
+  registerRouteOpsAppRoutes(app, dependencies);
 
   app.get(ADMIN_UI_PLUGIN_LAUNCH_PATH, async (request, reply) => {
     const token = readQueryString(request.query, 'token');
@@ -264,69 +324,37 @@ export function registerAdminCommerceConnectionsUiRoutes(
   app.get(ADMIN_UI_APP_PATH, async (request, reply) => {
     const session = readSession(request, dependencies);
     if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
-    return redirectToAdminModule(reply, ADMIN_UI_APP_DASHBOARD_PATH, {
-      shopDomain: readQueryString(request.query, 'shopDomain') ?? readWpPluginSessionShopDomain(session)
-    });
+    return renderRouteOpsSpaShell(reply, request, dependencies, session);
   });
 
   app.get(ADMIN_UI_APP_DASHBOARD_PATH, async (request, reply) => {
     const session = readSession(request, dependencies);
     if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
-    return renderAppDashboard(reply, request, dependencies, session, {
-      shopDomain: readQueryString(request.query, 'shopDomain'),
-      ...optionalUiMessage('error', readQueryString(request.query, 'error')),
-      ...optionalUiMessage('notice', readQueryString(request.query, 'notice'))
-    });
+    return renderRouteOpsSpaShell(reply, request, dependencies, session);
   });
 
   app.get(ADMIN_UI_APP_ORDERS_PATH, async (request, reply) => {
     const session = readSession(request, dependencies);
     if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
-    return renderOrders(reply, request, dependencies, session, {
-      deliveryArea: readQueryString(request.query, 'deliveryArea'),
-      deliveryDate: readQueryString(request.query, 'deliveryDate'),
-      operateDeliveryStatus: readQueryString(request.query, 'operateDeliveryStatus'),
-      orderHealth: readQueryString(request.query, 'orderHealth'),
-      search: readQueryString(request.query, 'search'),
-      shopDomain: readQueryString(request.query, 'shopDomain'),
-      ...optionalUiMessage('error', readQueryString(request.query, 'error')),
-      ...optionalUiMessage('notice', readQueryString(request.query, 'notice'))
-    });
+    return renderRouteOpsSpaShell(reply, request, dependencies, session);
   });
 
   app.get(ADMIN_UI_APP_ROUTE_PLANS_PATH, async (request, reply) => {
     const session = readSession(request, dependencies);
     if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
-    return renderRoutePlans(reply, request, dependencies, session, {
-      deliveryDate: readQueryString(request.query, 'deliveryDate'),
-      routePlanId: readQueryString(request.query, 'routePlanId'),
-      shopDomain: readQueryString(request.query, 'shopDomain'),
-      ...optionalUiMessage('error', readQueryString(request.query, 'error')),
-      ...optionalUiMessage('notice', readQueryString(request.query, 'notice'))
-    });
+    return renderRouteOpsSpaShell(reply, request, dependencies, session);
   });
 
   app.get(`${ADMIN_UI_APP_ROUTE_PLANS_PATH}/new`, async (request, reply) => {
     const session = readSession(request, dependencies);
     if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
-    return renderRoutePlans(reply, request, dependencies, session, {
-      deliveryDate: readQueryString(request.query, 'deliveryDate'),
-      shopDomain: readQueryString(request.query, 'shopDomain'),
-      ...optionalUiMessage('error', readQueryString(request.query, 'error')),
-      ...optionalUiMessage('notice', readQueryString(request.query, 'notice'))
-    });
+    return renderRouteOpsSpaShell(reply, request, dependencies, session);
   });
 
   app.get<{ Params: { routePlanId: string } }>(`${ADMIN_UI_APP_ROUTE_PLANS_PATH}/:routePlanId`, async (request, reply) => {
     const session = readSession(request, dependencies);
     if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
-    return renderRoutePlans(reply, request, dependencies, session, {
-      deliveryDate: readQueryString(request.query, 'deliveryDate'),
-      routePlanId: request.params.routePlanId,
-      shopDomain: readQueryString(request.query, 'shopDomain'),
-      ...optionalUiMessage('error', readQueryString(request.query, 'error')),
-      ...optionalUiMessage('notice', readQueryString(request.query, 'notice'))
-    });
+    return renderRouteOpsSpaShell(reply, request, dependencies, session);
   });
 
   app.post(`${ADMIN_UI_APP_ROUTE_PLANS_PATH}/create`, async (request, reply) => {
@@ -365,11 +393,7 @@ export function registerAdminCommerceConnectionsUiRoutes(
   app.get(ADMIN_UI_APP_DRIVERS_PATH, async (request, reply) => {
     const session = readSession(request, dependencies);
     if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
-    return renderDrivers(reply, request, dependencies, session, {
-      shopDomain: readQueryString(request.query, 'shopDomain'),
-      ...optionalUiMessage('error', readQueryString(request.query, 'error')),
-      ...optionalUiMessage('notice', readQueryString(request.query, 'notice'))
-    });
+    return renderRouteOpsSpaShell(reply, request, dependencies, session);
   });
 
   app.post(ADMIN_UI_APP_DRIVERS_PATH, async (request, reply) => {
@@ -381,11 +405,7 @@ export function registerAdminCommerceConnectionsUiRoutes(
   app.get(ADMIN_UI_APP_SETTINGS_PATH, async (request, reply) => {
     const session = readSession(request, dependencies);
     if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
-    return renderSettings(reply, request, dependencies, session, {
-      shopDomain: readQueryString(request.query, 'shopDomain'),
-      ...optionalUiMessage('error', readQueryString(request.query, 'error')),
-      ...optionalUiMessage('notice', readQueryString(request.query, 'notice'))
-    });
+    return renderRouteOpsSpaShell(reply, request, dependencies, session);
   });
 
   app.post(ADMIN_UI_APP_SETTINGS_PATH, async (request, reply) => {
@@ -744,71 +764,427 @@ export function registerAdminCommerceConnectionsUiRoutes(
   );
 }
 
-async function renderAppDashboard(
-  reply: FastifyReply,
-  _request: FastifyRequest,
-  dependencies: AdminCommerceConnectionsUiDependencies,
-  session: AdminWebSession,
-  input: { error?: string; notice?: string; shopDomain?: string | null }
-): Promise<unknown> {
-  const services = readRouteUiServices(dependencies);
-  let currentShopDomain: string | null = null;
-  let readyOrders: CanonicalOrderRow[] = [];
-  let reviewOrders: CanonicalOrderRow[] = [];
-  let routePlans: RoutePlanSummary[] = [];
-  let drivers: AdminDriverRow[] = [];
-  let settings: AdminStoreSettings | null = null;
-  let error = input.error;
+function registerRouteOpsAppRoutes(
+  app: FastifyInstance,
+  dependencies: AdminCommerceConnectionsUiDependencies
+): void {
+  app.get<{ Params: { '*': string } }>(`${ADMIN_UI_APP_ASSETS_PATH}/*`, async (request, reply) =>
+    sendRouteOpsStaticAsset(reply, request.params['*'])
+  );
 
-  try {
-    currentShopDomain = normalizeOptionalShopDomain(input.shopDomain) ?? readWpPluginSessionShopDomain(session);
-    assertWpPluginShopAccess(session, currentShopDomain);
-    if (services === null) {
-      error = error ?? 'Route planning services are not enabled in this runtime.';
-    } else if (currentShopDomain !== null) {
-      [readyOrders, reviewOrders, routePlans, drivers] = await Promise.all([
-        services.orderSyncService.listCanonicalOrders({
-          filters: { planned: false, readiness: 'READY_TO_PLAN' },
-          shopDomain: currentShopDomain
-        }),
-        services.orderSyncService.listCanonicalOrders({
-          filters: { readiness: 'NEEDS_REVIEW' },
-          shopDomain: currentShopDomain
-        }),
-        services.routePlanService.listRoutePlans({ shopDomain: currentShopDomain }),
-        services.driverService === undefined
-          ? Promise.resolve([])
-          : services.driverService.listDrivers({ shopDomain: currentShopDomain })
-      ]);
-      if (dependencies.settingsService !== undefined) {
-        try {
-          settings = await dependencies.settingsService.getSettings({ shopDomain: currentShopDomain });
-        } catch {
-          settings = null;
-        }
-      }
-    }
-  } catch (loadError) {
-    error = error ?? sanitizeErrorMessage(loadError);
-  }
+  app.get<{ Params: { '*': string } }>(`${ADMIN_UI_APP_VENDOR_PATH}/*`, async (request, reply) =>
+    sendRouteOpsVendorAsset(reply, request.params['*'])
+  );
 
-  return sendHtml(
-    reply,
-    200,
-    renderAppDashboardPage({
-      actor: dependencies.actor,
-      csrfToken: session.csrfToken,
-      currentShopDomain,
-      drivers,
-      readyOrders,
-      reviewOrders,
-      routePlans,
-      settings,
-      shopDomainLocked: isWpPluginSession(session),
-      ...(error === undefined ? {} : { error: truncateUiMessage(error) }),
-      ...(input.notice === undefined ? {} : { notice: truncateUiMessage(input.notice) })
+  app.get(`${ADMIN_UI_APP_API_PATH}/bootstrap`, async (request, reply) =>
+    withRouteOpsApi(request, reply, dependencies, (session) => {
+      const shopDomain = readRouteOpsShopDomain(request, session);
+      return routeOpsData({
+        appUrls: {
+          dashboard: ADMIN_UI_APP_DASHBOARD_PATH,
+          drivers: ADMIN_UI_APP_DRIVERS_PATH,
+          orders: ADMIN_UI_APP_ORDERS_PATH,
+          routes: ADMIN_UI_APP_ROUTE_PLANS_PATH,
+          settings: ADMIN_UI_APP_SETTINGS_PATH
+        },
+        csrfToken: session.csrfToken,
+        mapConfig: readRouteOpsMapConfig(),
+        mode: isWpPluginSession(session) ? 'plugin' : 'internal-admin',
+        routerConfig: readRouteOpsRouterConfig(),
+        shopDomain
+      });
     })
   );
+
+  app.get(`${ADMIN_UI_APP_API_PATH}/orders`, async (request, reply) =>
+    withRouteOpsApi(request, reply, dependencies, async (session) => {
+      const shopDomain = requireRouteOpsShopDomain(request, session);
+      if (dependencies.orderSyncService === undefined) {
+        throw new WooCommerceOnboardingError('BAD_REQUEST', 'Order list service is not enabled in this runtime.', 400);
+      }
+      const filters = readRouteOpsOrderFilters(request.query);
+      const [orders, reviewBlockers] = await Promise.all([
+        dependencies.orderSyncService.listCanonicalOrders({ filters, shopDomain }),
+        dependencies.orderSyncService.listCanonicalOrders({
+          filters: {
+            ...(filters.deliveryArea === undefined ? {} : { deliveryArea: filters.deliveryArea }),
+            ...(filters.deliveryDate === undefined ? {} : { deliveryDate: filters.deliveryDate }),
+            ...(filters.search === undefined ? {} : { search: filters.search }),
+            readiness: 'NEEDS_REVIEW'
+          },
+          shopDomain
+        })
+      ]);
+      return routeOpsData({
+        orders: orders.map(toRouteOpsOrderDto),
+        reviewBlockers: reviewBlockers.map(toRouteOpsOrderDto)
+      });
+    })
+  );
+
+  app.get(`${ADMIN_UI_APP_API_PATH}/order-batches`, async (request, reply) =>
+    withRouteOpsApi(request, reply, dependencies, async (session) => {
+      const shopDomain = requireRouteOpsShopDomain(request, session);
+      if (dependencies.orderSyncService?.listDeliveryBatchCandidates === undefined) {
+        return routeOpsData({ candidates: [] });
+      }
+      const deliveryDate = normalizeOptionalDate(readQueryString(request.query, 'deliveryDate'));
+      const candidates = await dependencies.orderSyncService.listDeliveryBatchCandidates({
+        ...(deliveryDate === null ? {} : { deliveryDate }),
+        shopDomain
+      });
+      return routeOpsData({ candidates: candidates.map(toRouteOpsBatchCandidateDto) });
+    })
+  );
+
+  app.get(`${ADMIN_UI_APP_API_PATH}/routes`, async (request, reply) =>
+    withRouteOpsApi(request, reply, dependencies, async (session) => {
+      const services = requireRouteUiServices(dependencies);
+      const shopDomain = requireRouteOpsShopDomain(request, session);
+      const deliveryDate = normalizeOptionalDate(readQueryString(request.query, 'deliveryDate'));
+      const routePlans = await services.routePlanService.listRoutePlans({
+        ...(deliveryDate === null ? {} : { deliveryDate }),
+        shopDomain
+      });
+      return routeOpsData({ routePlans: filterRoutePlansByDate(routePlans, deliveryDate).map(toRouteOpsRoutePlanDto) });
+    })
+  );
+
+  app.post(`${ADMIN_UI_APP_API_PATH}/routes`, async (request, reply) =>
+    withRouteOpsApi(request, reply, dependencies, async (session) => {
+      assertRouteOpsMutationCsrf(request, session);
+      const services = requireRouteUiServices(dependencies);
+      const shopDomain = requireRouteOpsShopDomain(request, session);
+      const body = readRouteOpsBodyObject(request.body);
+      const planDate = normalizeRequiredDate(readRequiredJsonString(body, 'planDate'));
+      const selectedOrderIds = readSelectedNeutralOrderIds(body.orderIds);
+      const routePlan = await createRoutePlanFromSelectedOrderIds({
+        createdBy: dependencies.actor.subject,
+        depotAddress: readNullableJsonString(body.depotAddress),
+        depotLatitude: readNullableJsonNumber(body.depotLatitude),
+        depotLongitude: readNullableJsonNumber(body.depotLongitude),
+        orderIds: selectedOrderIds,
+        planDate,
+        routeName: readRequiredJsonString(body, 'routeName'),
+        services,
+        shopDomain
+      });
+      return routeOpsData({ routePlan: toRouteOpsRoutePlanDto(routePlan) }, 201);
+    })
+  );
+
+  app.get<{ Params: { routePlanId: string } }>(`${ADMIN_UI_APP_API_PATH}/routes/:routePlanId`, async (request, reply) =>
+    withRouteOpsApi(request, reply, dependencies, async (session) => {
+      const services = requireRouteUiServices(dependencies);
+      const shopDomain = requireRouteOpsShopDomain(request, session);
+      const detail = await services.routePlanService.getRoutePlanDetail({
+        routePlanId: request.params.routePlanId,
+        shopDomain
+      });
+      if (detail === null) {
+        throw new WooCommerceOnboardingError('NOT_FOUND', 'Route plan not found', 404);
+      }
+      return routeOpsData(toRouteOpsRoutePlanDetailDto(detail));
+    })
+  );
+
+  app.patch<{ Params: { routePlanId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/stops`,
+    async (request, reply) =>
+      withRouteOpsApi(request, reply, dependencies, async (session) => {
+        assertRouteOpsMutationCsrf(request, session);
+        const services = requireRouteUiServices(dependencies);
+        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const body = readRouteOpsBodyObject(request.body);
+        const detail = await services.routePlanService.getRoutePlanDetail({
+          routePlanId: request.params.routePlanId,
+          shopDomain
+        });
+        if (detail === null) {
+          throw new WooCommerceOnboardingError('NOT_FOUND', 'Route plan not found', 404);
+        }
+        const updated = await services.routePlanService.updateRoutePlanStops({
+          payload: { stops: readRouteOpsStopSequence(body.stops, detail) },
+          routePlanId: request.params.routePlanId,
+          shopDomain
+        });
+        if (updated === null) {
+          throw new WooCommerceOnboardingError('NOT_FOUND', 'Route plan not found', 404);
+        }
+        return routeOpsData(toRouteOpsRoutePlanDetailDto(updated));
+      })
+  );
+
+  app.post<{ Params: { routePlanId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/optimize`,
+    async (request, reply) =>
+      withRouteOpsApi(request, reply, dependencies, async (session) => {
+        assertRouteOpsMutationCsrf(request, session);
+        const services = requireRouteUiServices(dependencies);
+        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const detail = await services.routePlanService.getRoutePlanDetail({
+          routePlanId: request.params.routePlanId,
+          shopDomain
+        });
+        if (detail === null) {
+          throw new WooCommerceOnboardingError('NOT_FOUND', 'Route plan not found', 404);
+        }
+        const optimized = buildOptimizedStopOrder(detail);
+        const updated = await services.routePlanService.updateRoutePlanStops({
+          payload: { stops: optimized.stops },
+          routePlanId: request.params.routePlanId,
+          shopDomain
+        });
+        if (updated === null) {
+          throw new WooCommerceOnboardingError('NOT_FOUND', 'Route plan not found', 404);
+        }
+        return routeOpsData(toRouteOpsRoutePlanDetailDto(updated));
+      })
+  );
+
+  app.patch<{ Params: { routePlanId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/driver`,
+    async (request, reply) =>
+      withRouteOpsApi(request, reply, dependencies, async (session) => {
+        assertRouteOpsMutationCsrf(request, session);
+        const services = requireRouteUiServices(dependencies);
+        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const body = readRouteOpsBodyObject(request.body);
+        const updated = await services.routePlanService.assignRoutePlanDriver({
+          payload: { driverId: readNullableJsonString(body.driverId) },
+          routePlanId: request.params.routePlanId,
+          shopDomain
+        });
+        if (updated === null) {
+          throw new WooCommerceOnboardingError('NOT_FOUND', 'Route plan not found', 404);
+        }
+        return routeOpsData(toRouteOpsRoutePlanDetailDto(updated));
+      })
+  );
+
+  app.get(`${ADMIN_UI_APP_API_PATH}/drivers`, async (request, reply) =>
+    withRouteOpsApi(request, reply, dependencies, async (session) => {
+      const shopDomain = requireRouteOpsShopDomain(request, session);
+      if (dependencies.driverService === undefined) {
+        return routeOpsData({ drivers: [] });
+      }
+      const drivers = await dependencies.driverService.listDrivers({ shopDomain });
+      return routeOpsData({ drivers: drivers.map(toRouteOpsDriverDto) });
+    })
+  );
+
+  app.post(`${ADMIN_UI_APP_API_PATH}/drivers`, async (request, reply) =>
+    withRouteOpsApi(request, reply, dependencies, async (session) => {
+      assertRouteOpsMutationCsrf(request, session);
+      const shopDomain = requireRouteOpsShopDomain(request, session);
+      if (dependencies.driverService === undefined) {
+        throw new WooCommerceOnboardingError('BAD_REQUEST', 'Driver management service is not enabled in this runtime.', 400);
+      }
+      const body = readRouteOpsBodyObject(request.body);
+      await dependencies.driverService.createPendingDriver({
+        createdBy: dependencies.actor.subject,
+        displayName: readNullableJsonString(body.displayName),
+        inviteLink: null,
+        phone: readRequiredJsonString(body, 'phone'),
+        shopDomain,
+        source: 'clever-app-driver-invite'
+      });
+      const drivers = await dependencies.driverService.listDrivers({ shopDomain });
+      return routeOpsData({ drivers: drivers.map(toRouteOpsDriverDto) }, 201);
+    })
+  );
+
+  app.get(`${ADMIN_UI_APP_API_PATH}/settings`, async (request, reply) =>
+    withRouteOpsApi(request, reply, dependencies, async (session) => {
+      const shopDomain = requireRouteOpsShopDomain(request, session);
+      const settings = dependencies.settingsService === undefined ? null : await dependencies.settingsService.getSettings({ shopDomain });
+      return routeOpsData({ settings: settings === null ? null : toRouteOpsSettingsDto(settings) });
+    })
+  );
+
+  app.patch(`${ADMIN_UI_APP_API_PATH}/settings`, async (request, reply) =>
+    withRouteOpsApi(request, reply, dependencies, async (session) => {
+      assertRouteOpsMutationCsrf(request, session);
+      const shopDomain = requireRouteOpsShopDomain(request, session);
+      if (dependencies.settingsService === undefined) {
+        throw new WooCommerceOnboardingError('BAD_REQUEST', 'Store settings service is not enabled in this runtime.', 400);
+      }
+      const body = readRouteOpsBodyObject(request.body);
+      const settings = await dependencies.settingsService.saveSettings({
+        defaultDepotAddress: readNullableJsonString(body.defaultDepotAddress),
+        defaultDepotLatitude: readNullableJsonNumber(body.defaultDepotLatitude),
+        defaultDepotLongitude: readNullableJsonNumber(body.defaultDepotLongitude),
+        locale: readRouteOpsLocale(body.locale),
+        shopDomain
+      });
+      return routeOpsData({ settings: toRouteOpsSettingsDto(settings) });
+    })
+  );
+}
+
+async function withRouteOpsApi<T>(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  dependencies: AdminCommerceConnectionsUiDependencies,
+  handler: (session: AdminWebSession) => Promise<RouteOpsApiResponse<T>> | RouteOpsApiResponse<T>
+): Promise<unknown> {
+  const session = readSession(request, dependencies);
+  if (session === null) {
+    return sendRouteOpsApiError(reply, 401, 'UNAUTHORIZED', 'Admin UI login required');
+  }
+  try {
+    const response = await handler(session);
+    return reply
+      .code(response.statusCode)
+      .type('application/json; charset=utf-8')
+      .header('Cache-Control', 'no-store')
+      .send({ data: response.data, error: null });
+  } catch (error) {
+    if (error instanceof RoutePlanBatchInvalidError) {
+      request.log.warn(
+        {
+          blockerCounts: countRoutePlanBatchBlockers(error.blockers),
+          blockersCount: error.blockers.length
+        },
+        'route plan batch creation hard-failed'
+      );
+      return sendRouteOpsApiError(reply, 400, error.code, sanitizeRouteUiError(error), {
+        blockerCounts: countRoutePlanBatchBlockers(error.blockers),
+        blockers: error.blockers
+      });
+    }
+    const statusCode = error instanceof WooCommerceOnboardingError ? error.httpStatus : 500;
+    const code = error instanceof WooCommerceOnboardingError ? error.code : 'ADMIN_UI_REQUEST_FAILED';
+    return sendRouteOpsApiError(reply, statusCode, code, sanitizeRouteUiError(error));
+  }
+}
+
+type RouteOpsApiResponse<T> = {
+  data: T;
+  statusCode: number;
+};
+
+function routeOpsData<T>(data: T, statusCode = 200): RouteOpsApiResponse<T> {
+  return { data, statusCode };
+}
+
+function sendRouteOpsApiError(
+  reply: FastifyReply,
+  statusCode: number,
+  code: string,
+  message: string,
+  details?: Record<string, unknown>
+): unknown {
+  return reply
+    .code(statusCode)
+    .type('application/json; charset=utf-8')
+    .header('Cache-Control', 'no-store')
+    .send({ data: null, error: { code, ...(details === undefined ? {} : { details }), message } });
+}
+
+function renderRouteOpsSpaShell(
+  reply: FastifyReply,
+  request: FastifyRequest,
+  _dependencies: AdminCommerceConnectionsUiDependencies,
+  session: AdminWebSession
+): unknown {
+  try {
+    readRouteOpsShopDomain(request, session);
+  } catch (error) {
+    return sendRouteOpsHtml(reply, error instanceof WooCommerceOnboardingError ? error.httpStatus : 500, renderRouteOpsShellError(error));
+  }
+  return sendRouteOpsHtml(reply, 200, renderRouteOpsShellHtml(readRouteOpsManifestAssets()));
+}
+
+function renderRouteOpsShellHtml(assets: { css: string[]; entry: string | null; missing: boolean }): string {
+  const css = assets.css.map((href) => `<link rel="stylesheet" href="${escapeHtml(href)}">`).join('\n');
+  const script = assets.entry === null ? '' : `<script type="module" src="${escapeHtml(assets.entry)}"></script>`;
+  const missing = assets.missing
+    ? '<div id="route-ops-build-missing">Route Ops build assets are not present yet. Run npm --prefix apps/route-ops-web run build.</div>'
+    : '';
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CLEVER Route Ops</title>
+    ${css}
+  </head>
+  <body>
+    <div id="clever-route-ops-root" data-route-ops-build="${assets.missing ? 'missing' : 'present'}">
+      ${missing}
+      <noscript>CLEVER Route App requires JavaScript for map-first route operations.</noscript>
+    </div>
+    ${script}
+  </body>
+</html>`;
+}
+
+function renderRouteOpsShellError(error: unknown): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>CLEVER Route Ops</title></head><body><main id="clever-route-ops-root"><h1>CLEVER Route App</h1><p>${escapeHtml(sanitizeRouteUiError(error))}</p></main></body></html>`;
+}
+
+function readRouteOpsManifestAssets(): { css: string[]; entry: string | null; missing: boolean } {
+  const manifestPath = join(ROUTE_OPS_WEB_DIST_PATH, '.vite', 'manifest.json');
+  if (!existsSync(manifestPath)) {
+    return { css: [], entry: null, missing: true };
+  }
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, { css?: string[]; file?: string }>;
+    const entry = manifest['index.html'] ?? manifest['src/main.tsx'];
+    const file = entry?.file;
+    return {
+      css: (entry?.css ?? []).map((asset) => `${ADMIN_UI_APP_PATH}/${asset}`),
+      entry: typeof file === 'string' ? `${ADMIN_UI_APP_PATH}/${file}` : null,
+      missing: false
+    };
+  } catch {
+    return { css: [], entry: null, missing: true };
+  }
+}
+
+function sendRouteOpsStaticAsset(reply: FastifyReply, rawAssetPath: string): unknown {
+  const assetPath = normalize(rawAssetPath).replace(/^(\.\.(?:\/|\\|$))+/u, '');
+  if (assetPath === '' || assetPath.includes('..')) {
+    return reply.code(404).send('');
+  }
+  const absolute = join(ROUTE_OPS_WEB_DIST_PATH, 'assets', basename(assetPath));
+  if (!existsSync(absolute) || !statSync(absolute).isFile()) {
+    return reply.code(404).send('');
+  }
+  return reply
+    .code(200)
+    .type(contentTypeForAsset(absolute))
+    .header('Cache-Control', 'public, max-age=31536000, immutable')
+      .send(readFileSync(absolute));
+}
+
+function sendRouteOpsVendorAsset(reply: FastifyReply, rawAssetPath: string): unknown {
+  const assetPath = normalize(rawAssetPath).replace(/^(\.\.(?:\/|\\|$))+/u, '');
+  if (assetPath === '' || assetPath.includes('..')) {
+    return reply.code(404).send('');
+  }
+  const absolute = join(ROUTE_OPS_WEB_PUBLIC_PATH, 'vendor', assetPath);
+  if (!existsSync(absolute) || !statSync(absolute).isFile()) {
+    return reply.code(404).send('');
+  }
+  return reply
+    .code(200)
+    .type(contentTypeForAsset(absolute))
+    .header('Cache-Control', 'public, max-age=31536000, immutable')
+    .send(readFileSync(absolute));
+}
+
+function contentTypeForAsset(path: string): string {
+  if (path.endsWith('.css')) return 'text/css; charset=utf-8';
+  if (path.endsWith('.js')) return 'text/javascript; charset=utf-8';
+  if (path.endsWith('.json')) return 'application/json; charset=utf-8';
+  if (path.endsWith('.svg')) return 'image/svg+xml';
+  if (path.endsWith('.png')) return 'image/png';
+  if (path.endsWith('.woff2')) return 'font/woff2';
+  if (path.endsWith('.pbf')) return 'application/x-protobuf';
+  if (path.endsWith('.pmtiles')) return 'application/octet-stream';
+  return 'application/octet-stream';
 }
 
 async function renderOrders(
@@ -1192,17 +1568,15 @@ async function handleRoutePlanCreate(
       selectedOrderGids
     });
 
-    const payload = buildCreateRoutePlanPayload({
+    const routePlan = await createRoutePlanFromSelectedOrderIds({
+      createdBy: dependencies.actor.subject,
       depotAddress: readOptionalField(fields, 'depotAddress'),
       depotLatitude: readOptionalCoordinate(fields.depotLatitude),
       depotLongitude: readOptionalCoordinate(fields.depotLongitude),
-      orders: selectedOrders,
+      orderIds: selectedOrders.map((order) => order.orderId),
       planDate,
-      routeName: readRequiredField(fields, 'routeName', 'route name')
-    });
-    const routePlan = await services.routePlanService.createRoutePlan({
-      createdBy: dependencies.actor.subject,
-      payload,
+      routeName: readRequiredField(fields, 'routeName', 'route name'),
+      services,
       shopDomain
     });
     return redirectToRoutePlans(reply, {
@@ -1512,6 +1886,15 @@ function sendHtml(reply: FastifyReply, statusCode: number, body: string): unknow
     .type('text/html; charset=utf-8')
     .header('Cache-Control', 'no-store')
     .header('Content-Security-Policy', ADMIN_UI_CSP)
+    .send(body);
+}
+
+function sendRouteOpsHtml(reply: FastifyReply, statusCode: number, body: string): unknown {
+  return reply
+    .code(statusCode)
+    .type('text/html; charset=utf-8')
+    .header('Cache-Control', 'no-store')
+    .header('Content-Security-Policy', buildRouteOpsCsp(readRouteOpsMapConfig()))
     .send(body);
 }
 
@@ -1851,6 +2234,497 @@ function requireRouteUiServices(dependencies: AdminCommerceConnectionsUiDependen
   return services;
 }
 
+function readRouteOpsShopDomain(request: FastifyRequest, session: AdminWebSession): string | null {
+  const sessionShopDomain = readWpPluginSessionShopDomain(session);
+  const requestedShopDomain = normalizeOptionalShopDomain(readQueryString(request.query, 'shopDomain'));
+  assertWpPluginShopAccess(session, requestedShopDomain);
+  return sessionShopDomain ?? requestedShopDomain;
+}
+
+function requireRouteOpsShopDomain(request: FastifyRequest, session: AdminWebSession): string {
+  const shopDomain = readRouteOpsShopDomain(request, session);
+  if (shopDomain === null) {
+    throw new WooCommerceOnboardingError('BAD_REQUEST', 'shopDomain is required for this workspace.', 400);
+  }
+  return shopDomain;
+}
+
+function assertRouteOpsMutationCsrf(request: FastifyRequest, session: AdminWebSession): void {
+  const headerToken = readHeader(request.headers['x-csrf-token']);
+  const bodyToken = typeof request.body === 'object' && request.body !== null && !Array.isArray(request.body)
+    ? (request.body as Record<string, unknown>).csrfToken
+    : undefined;
+  const token = headerToken ?? (typeof bodyToken === 'string' ? bodyToken : undefined);
+  if (!verifyAdminWebCsrfToken({ session, token })) {
+    throw new WooCommerceOnboardingError('FORBIDDEN', 'Invalid admin UI CSRF token', 403);
+  }
+}
+
+function readRouteOpsOrderFilters(query: unknown): ListCanonicalOrdersFilters {
+  const deliveryArea = normalizeOptionalText(readQueryString(query, 'deliveryArea'), 'deliveryArea');
+  const deliveryDate = normalizeOptionalDate(readQueryString(query, 'deliveryDate'));
+  const operateDeliveryStatus = normalizeOperateDeliveryStatus(
+    readQueryString(query, 'deliveryStatus') ?? readQueryString(query, 'operateDeliveryStatus')
+  );
+  const orderHealth = normalizeOrderHealth(readQueryString(query, 'health') ?? readQueryString(query, 'orderHealth'));
+  const planned = normalizeRouteOpsPlanningStatus(readQueryString(query, 'status'));
+  const search = normalizeOptionalText(readQueryString(query, 'search'), 'search');
+  return {
+    ...(deliveryArea === null ? {} : { deliveryArea }),
+    ...(deliveryDate === null ? {} : { deliveryDate }),
+    ...(operateDeliveryStatus === null ? {} : { operateDeliveryStatus }),
+    ...(orderHealth === null ? {} : { orderHealth }),
+    ...(planned === null ? {} : { planned }),
+    ...(search === null ? {} : { search })
+  };
+}
+
+function readRouteOpsBodyObject(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new WooCommerceOnboardingError('BAD_REQUEST', 'JSON body is required', 400);
+  }
+  return value as Record<string, unknown>;
+}
+
+function readRequiredJsonString(body: Record<string, unknown>, field: string): string {
+  const value = body[field];
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new WooCommerceOnboardingError('BAD_REQUEST', `${field} is required`, 400);
+  }
+  return value.trim();
+}
+
+function readNullableJsonString(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') {
+    throw new WooCommerceOnboardingError('BAD_REQUEST', 'Expected string or null', 400);
+  }
+  return value.trim() === '' ? null : value.trim();
+}
+
+function readNullableJsonNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new WooCommerceOnboardingError('BAD_REQUEST', 'Expected finite number or null', 400);
+  }
+  return value;
+}
+
+function readRouteOpsLocale(value: unknown): string {
+  if (value === undefined || value === null || value === '') return 'en-CA';
+  if (typeof value !== 'string') {
+    throw new WooCommerceOnboardingError('BAD_REQUEST', 'locale must be a string', 400);
+  }
+  return readLocaleField(value);
+}
+
+function readSelectedNeutralOrderIds(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw new WooCommerceOnboardingError('BAD_REQUEST', 'orderIds must be an array', 400);
+  }
+  const ids = value.map((entry) => {
+    if (typeof entry !== 'string' || entry.trim() === '') {
+      throw new WooCommerceOnboardingError('BAD_REQUEST', 'orderIds must contain non-empty strings', 400);
+    }
+    return entry.trim();
+  });
+  if (ids.length === 0) {
+    throw new WooCommerceOnboardingError('BAD_REQUEST', 'Select at least one ready order before creating a route.', 400);
+  }
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (seen.has(id)) {
+      throw new WooCommerceOnboardingError('BAD_REQUEST', 'Selected orders contain duplicates. Clear the selection and try again.', 400);
+    }
+    seen.add(id);
+  }
+  return ids;
+}
+
+function resolveNeutralOrderIdToGid(orderId: string, orders: readonly CanonicalOrderRow[]): string {
+  const order = orders.find(
+    (candidate) =>
+      candidate.orderId === orderId ||
+      candidate.sourceOrderId === orderId ||
+      candidate.sourceOrderNumber === orderId ||
+      candidate.shopifyOrderGid === orderId
+  );
+  if (order === undefined) return orderId;
+  return order.shopifyOrderGid;
+}
+
+function readRouteOpsStopSequence(
+  value: unknown,
+  detail: RoutePlanDetail
+): Array<{ deliveryStopId: string; sequence: number; shopifyOrderGid: string }> {
+  if (!Array.isArray(value)) {
+    throw new WooCommerceOnboardingError('BAD_REQUEST', 'stops must be an array', 400);
+  }
+  const byStopId = new Map(detail.stops.map((stop) => [stop.deliveryStopId, stop]));
+  const bySource = new Map(detail.stops.flatMap((stop) => [[stop.shopifyOrderGid, stop], [stop.orderId, stop]] as const));
+  if (value.length !== detail.stops.length) {
+    throw new WooCommerceOnboardingError('BAD_REQUEST', 'Stop order must include every current route stop exactly once.', 400);
+  }
+  const seen = new Set<string>();
+  return value.map((entry, index) => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new WooCommerceOnboardingError('BAD_REQUEST', 'Each stop must be an object', 400);
+    }
+    const object = entry as Record<string, unknown>;
+    const deliveryStopId = readNullableJsonString(object.deliveryStopId);
+    const sourceOrderId = readNullableJsonString(object.sourceOrderId);
+    const stop = (deliveryStopId === null ? undefined : byStopId.get(deliveryStopId)) ?? (sourceOrderId === null ? undefined : bySource.get(sourceOrderId));
+    if (stop === undefined || seen.has(stop.deliveryStopId)) {
+      throw new WooCommerceOnboardingError('BAD_REQUEST', 'Stop order contains an unknown or duplicate stop.', 400);
+    }
+    seen.add(stop.deliveryStopId);
+    return {
+      deliveryStopId: stop.deliveryStopId,
+      sequence: index + 1,
+      shopifyOrderGid: stop.shopifyOrderGid
+    };
+  });
+}
+
+function readRouteOpsMapConfig(): RouteOpsMapConfig {
+  const styleUrl = process.env.ROUTE_OPS_MAP_STYLE_URL?.trim() ?? '';
+  if (styleUrl === '') return notConfiguredMapConfig();
+
+  const allowedHosts = readRouteOpsMapAllowedHosts();
+  const styleAudit = auditRouteOpsMapStyle(styleUrl);
+  if (styleAudit === null) {
+    return notConfiguredMapConfig('style_manifest_unavailable');
+  }
+
+  const externalHosts = styleAudit.externalHosts;
+  if (externalHosts.length === 0) {
+    return {
+      allowedHosts: [],
+      attribution: readRouteOpsMapAttribution('Self-hosted OpenFreeMap style'),
+      providerMode: 'self_hosted',
+      status: 'configured',
+      styleAudit,
+      styleUrl
+    };
+  }
+
+  const providerMode = process.env.ROUTE_OPS_MAP_PROVIDER_MODE?.trim();
+  const missingHosts = externalHosts.filter((host) => !allowedHosts.includes(host));
+  if (providerMode !== 'public_allowlisted' || missingHosts.length > 0) {
+    return notConfiguredMapConfig(
+      missingHosts.length > 0 ? `public_style_hosts_not_allowlisted:${missingHosts.join(',')}` : 'public_provider_mode_not_enabled',
+      styleAudit
+    );
+  }
+
+  return {
+    allowedHosts,
+    attribution: readRouteOpsMapAttribution('OpenFreeMap / OpenMapTiles public provider'),
+    providerMode: 'public_allowlisted',
+    status: 'configured',
+    styleAudit,
+    styleUrl
+  };
+}
+
+function notConfiguredMapConfig(disabledReason?: string, styleAudit: RouteOpsMapConfig['styleAudit'] = null): RouteOpsMapConfig {
+  return {
+    allowedHosts: [],
+    attribution: null,
+    ...(disabledReason === undefined ? {} : { disabledReason }),
+    providerMode: null,
+    status: 'not_configured',
+    styleAudit,
+    styleUrl: null
+  };
+}
+
+function readRouteOpsMapAllowedHosts(): string[] {
+  const hosts = (process.env.ROUTE_OPS_MAP_ALLOWED_HOSTS ?? '')
+    .split(',')
+    .map((host) => host.trim().toLowerCase())
+    .filter((host) => host !== '');
+  return [...new Set(hosts)];
+}
+
+function readRouteOpsMapAttribution(defaultAttribution: string): string {
+  const explicit = process.env.ROUTE_OPS_MAP_ATTRIBUTION?.trim();
+  return explicit === undefined || explicit === '' ? defaultAttribution : explicit;
+}
+
+function auditRouteOpsMapStyle(styleUrl: string): RouteOpsMapConfig['styleAudit'] {
+  const manifestEndpoints = readStyleManifestEndpoints(styleUrl);
+  if (manifestEndpoints === null) {
+    if (hostForRouteOpsEndpoint(styleUrl) === null) return null;
+    const externalHosts = [hostForRouteOpsEndpoint(styleUrl)].filter((host): host is string => host !== null).sort();
+    return { endpoints: [styleUrl], externalHosts };
+  }
+  const endpoints = [...new Set([styleUrl, ...manifestEndpoints])];
+  const externalHosts = [...new Set(endpoints.map((endpoint) => hostForRouteOpsEndpoint(endpoint)).filter((host): host is string => host !== null))].sort();
+  return { endpoints, externalHosts };
+}
+
+function readStyleManifestEndpoints(styleUrl: string): string[] | null {
+  if (!styleUrl.startsWith(`${ADMIN_UI_APP_VENDOR_PATH}/`)) {
+    return null;
+  }
+  const relativePath = normalize(styleUrl.slice(`${ADMIN_UI_APP_VENDOR_PATH}/`.length)).replace(/^(\.\.(?:\/|\\|$))+/u, '');
+  if (relativePath === '' || relativePath.includes('..')) return null;
+  const absolute = join(ROUTE_OPS_WEB_PUBLIC_PATH, 'vendor', relativePath);
+  if (!existsSync(absolute) || !statSync(absolute).isFile()) return null;
+  try {
+    const manifest = JSON.parse(readFileSync(absolute, 'utf8')) as unknown;
+    if (!isRouteOpsStyleManifest(manifest)) return null;
+    return extractStyleEndpointUrls(manifest);
+  } catch {
+    return null;
+  }
+}
+
+function isRouteOpsStyleManifest(manifest: unknown): manifest is Record<string, unknown> {
+  if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) return false;
+  const record = manifest as Record<string, unknown>;
+  return record.version === 8 && Array.isArray(record.layers);
+}
+
+function extractStyleEndpointUrls(manifest: unknown): string[] {
+  if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) return [];
+  const record = manifest as Record<string, unknown>;
+  const endpoints: string[] = [];
+  collectStringEndpoint(record.sprite, endpoints);
+  collectStringEndpoint(record.glyphs, endpoints);
+  const sources = record.sources;
+  if (sources !== null && typeof sources === 'object' && !Array.isArray(sources)) {
+    for (const source of Object.values(sources as Record<string, unknown>)) {
+      if (source === null || typeof source !== 'object' || Array.isArray(source)) continue;
+      const sourceRecord = source as Record<string, unknown>;
+      collectStringEndpoint(sourceRecord.url, endpoints);
+      const tiles = sourceRecord.tiles;
+      if (Array.isArray(tiles)) {
+        for (const tile of tiles) collectStringEndpoint(tile, endpoints);
+      }
+    }
+  }
+  return endpoints;
+}
+
+function collectStringEndpoint(value: unknown, endpoints: string[]): void {
+  if (typeof value !== 'string' || value.trim() === '') return;
+  const endpoint = value.trim();
+  endpoints.push(endpoint);
+  if (endpoint.startsWith('pmtiles://')) {
+    const nested = endpoint.slice('pmtiles://'.length);
+    if (nested !== '') endpoints.push(nested);
+  }
+}
+
+function hostForRouteOpsEndpoint(endpoint: string): string | null {
+  const normalized = endpoint.startsWith('pmtiles://') ? endpoint.slice('pmtiles://'.length) : endpoint;
+  if (!/^https?:\/\//iu.test(normalized)) return null;
+  try {
+    return new URL(normalized).host.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function buildRouteOpsCsp(mapConfig: RouteOpsMapConfig): string {
+  const publicHosts = mapConfig.status === 'configured' && mapConfig.providerMode === 'public_allowlisted'
+    ? mapConfig.allowedHosts.map((host) => `https://${host}`)
+    : [];
+  return [
+    "default-src 'none'",
+    "base-uri 'self'",
+    ["connect-src 'self'", ...publicHosts].join(' '),
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+    ["img-src 'self' data:", ...publicHosts].join(' '),
+    "style-src 'self' 'unsafe-inline'",
+    "script-src 'self'",
+    "worker-src 'self' blob:"
+  ].join('; ');
+}
+
+function readRouteOpsRouterConfig(): { status: 'configured' | 'not_configured' } {
+  return process.env.OSRM_BASE_URL?.trim() === '' || process.env.OSRM_BASE_URL === undefined
+    ? { status: 'not_configured' }
+    : { status: 'configured' };
+}
+
+function toRouteOpsOrderDto(order: CanonicalOrderRow): {
+  blockerReasons: string[];
+  coordinates: { latitude: number | null; longitude: number | null };
+  deliveryArea: string | null;
+  deliveryDate: string | null;
+  deliverySession: string | null;
+  deliveryStatus: OperateDeliveryStatus;
+  health: OrderHealth;
+  orderId: string;
+  orderName: string;
+  phone: string | null;
+  planningStatus: string;
+  recipientName: string | null;
+  routePlanId: string | null;
+  routePlanName: string | null;
+  sourceOrderId: string | null;
+  sourceOrderNumber: string | null;
+  sourcePlatform: string | null;
+  status: string | null;
+  stopId: string | null;
+} {
+  return {
+    blockerReasons: readOrderOperateBlockers(order),
+    coordinates: { latitude: order.latitude, longitude: order.longitude },
+    deliveryArea: order.deliveryArea,
+    deliveryDate: order.deliveryDate,
+    deliverySession: order.deliverySession ?? null,
+    deliveryStatus: deriveOperateDeliveryStatus(order),
+    health: deriveOrderHealth(order),
+    orderId: order.orderId,
+    orderName: order.name,
+    phone: order.phone,
+    planningStatus: order.planningStatus,
+    recipientName: order.recipientName,
+    routePlanId: order.routePlanId,
+    routePlanName: order.routePlanName,
+    sourceOrderId: order.sourceOrderId ?? null,
+    sourceOrderNumber: order.sourceOrderNumber ?? null,
+    sourcePlatform: order.sourcePlatform ?? null,
+    status: order.fulfillmentStatus,
+    stopId: order.deliveryStopId
+  };
+}
+
+function toRouteOpsBatchCandidateDto(candidate: DeliveryBatchCandidate): DeliveryBatchCandidate {
+  return candidate;
+}
+
+function readOrderOperateBlockers(order: CanonicalOrderRow): string[] {
+  const blockers: string[] = [];
+  if (order.deliveryDate === null) blockers.push('missing_delivery_date');
+  if (order.readiness !== 'READY_TO_PLAN') {
+    blockers.push(...(order.reviewReasons.length === 0 ? ['needs_delivery_metadata_review'] : order.reviewReasons));
+  }
+  if (order.planningStatus !== 'UNPLANNED' || order.routePlanId !== null) blockers.push('already_planned');
+  if (!order.hasCoordinates || order.latitude === null || order.longitude === null) blockers.push('missing_coordinates');
+  return [...new Set(blockers)];
+}
+
+function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
+  createdAt: string;
+  deliveryAreas: string[];
+  deliveryDate: string | null;
+  driverId: string | null;
+  depot: {
+    latitude: number | null;
+    longitude: number | null;
+  };
+  id: string;
+  missingCoordinates: number;
+  name: string;
+  planDate: string;
+  status: string;
+  stopsCount: number;
+  updatedAt: string;
+} {
+  return {
+    createdAt: routePlan.createdAt,
+    deliveryAreas: routePlan.deliveryAreas,
+    deliveryDate: routePlan.deliveryDate ?? null,
+    driverId: routePlan.driverId ?? null,
+    depot: routePlan.depot,
+    id: routePlan.id,
+    missingCoordinates: routePlan.missingCoordinates,
+    name: routePlan.name,
+    planDate: routePlan.planDate,
+    status: routePlan.status,
+    stopsCount: routePlan.stopsCount,
+    updatedAt: routePlan.updatedAt
+  };
+}
+
+function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
+  routeGeometry: RoutePlanDetail['routeGeometry'];
+  routePlan: ReturnType<typeof toRouteOpsRoutePlanDto>;
+  routeStopPoints: Array<{
+    deliveryStopId: string;
+    inputCoordinates: [number, number] | null;
+    name: string | null;
+    sequence: number;
+    sourceOrderId: string;
+  }>;
+  stops: Array<{
+    addressLabel: string;
+    coordinates: { latitude: number | null; longitude: number | null };
+    deliveryArea: string | null;
+    deliveryStopId: string;
+    orderId: string;
+    orderName: string;
+    recipientName: string | null;
+    sequence: number;
+    sourceOrderId: string;
+    status: string;
+  }>;
+} {
+  return {
+    routeGeometry: detail.routeGeometry,
+    routePlan: toRouteOpsRoutePlanDto(detail.routePlan),
+    routeStopPoints: detail.routeStopPoints.map((point) => ({
+      deliveryStopId: point.deliveryStopId,
+      inputCoordinates: point.inputCoordinates,
+      name: point.name,
+      sequence: point.sequence,
+      sourceOrderId: point.shopifyOrderGid
+    })),
+    stops: detail.stops.map((stop) => ({
+      addressLabel: formatAddressLabel(stop.address),
+      coordinates: stop.coordinates,
+      deliveryArea: stop.deliveryArea,
+      deliveryStopId: stop.deliveryStopId,
+      orderId: stop.orderId,
+      orderName: stop.orderName,
+      recipientName: stop.recipientName,
+      sequence: stop.sequence,
+      sourceOrderId: stop.shopifyOrderGid,
+      status: stop.status
+    }))
+  };
+}
+
+function toRouteOpsDriverDto(driver: AdminDriverRow): {
+  authStatus: string;
+  displayName: string;
+  id: string;
+  lastSeenAt: string | null;
+  phone: string | null;
+  status: string;
+} {
+  return {
+    authStatus: driver.authStatus,
+    displayName: driver.displayName,
+    id: driver.id,
+    lastSeenAt: driver.lastSeenAt,
+    phone: driver.phone,
+    status: driver.status
+  };
+}
+
+function toRouteOpsSettingsDto(settings: AdminStoreSettings): AdminStoreSettings {
+  return {
+    defaultDepotAddress: settings.defaultDepotAddress,
+    defaultDepotLatitude: settings.defaultDepotLatitude,
+    defaultDepotLongitude: settings.defaultDepotLongitude,
+    locale: settings.locale,
+    shopDomain: settings.shopDomain
+  };
+}
+
+function formatAddressLabel(address: RoutePlanDetail['stops'][number]['address']): string {
+  return [address.address1, address.address2, address.city, address.province, address.postalCode, address.countryCode]
+    .filter((part): part is string => typeof part === 'string' && part.trim() !== '')
+    .join(', ');
+}
+
 function readSelectedOrderGids(value: string): string[] {
   const gids = value
     .split(/[\r\n,]+/u)
@@ -1924,6 +2798,54 @@ function readRouteCreationBlockers(order: CanonicalOrderRow, planDate: string): 
     blockers.push('missing delivery coordinates');
   }
   return blockers;
+}
+
+async function createRoutePlanFromSelectedOrderIds(input: {
+  createdBy: string;
+  depotAddress: string | null;
+  depotLatitude: number | null;
+  depotLongitude: number | null;
+  orderIds: string[];
+  planDate: string;
+  routeName: string;
+  services: RouteUiServices;
+  shopDomain: string;
+}): Promise<RoutePlanSummary> {
+  if (input.services.routePlanService.createRoutePlanFromOrderIds !== undefined) {
+    return input.services.routePlanService.createRoutePlanFromOrderIds({
+      createdBy: input.createdBy,
+      payload: {
+        depot: {
+          address: input.depotAddress,
+          latitude: input.depotLatitude,
+          longitude: input.depotLongitude
+        },
+        name: input.routeName,
+        orderIds: input.orderIds,
+        planDate: input.planDate
+      },
+      shopDomain: input.shopDomain
+    });
+  }
+
+  const allOrders = await input.services.orderSyncService.listCanonicalOrders({ shopDomain: input.shopDomain });
+  const selectedOrders = selectRouteReadyOrders({
+    orders: allOrders,
+    planDate: input.planDate,
+    selectedOrderGids: input.orderIds.map((id) => resolveNeutralOrderIdToGid(id, allOrders))
+  });
+  return input.services.routePlanService.createRoutePlan({
+    createdBy: input.createdBy,
+    payload: buildCreateRoutePlanPayload({
+      depotAddress: input.depotAddress,
+      depotLatitude: input.depotLatitude,
+      depotLongitude: input.depotLongitude,
+      orders: selectedOrders,
+      planDate: input.planDate,
+      routeName: input.routeName
+    }),
+    shopDomain: input.shopDomain
+  });
 }
 
 function buildCreateRoutePlanPayload(input: {
@@ -2009,7 +2931,7 @@ function readSharedRouteScope(
     first.serviceType === null ||
     first.serviceType === undefined
   ) {
-    return {};
+    throw new WooCommerceOnboardingError('BAD_REQUEST', 'Selected orders must have an explicit route scope.', 400);
   }
   if (
     orders.some(
@@ -2022,7 +2944,7 @@ function readSharedRouteScope(
         order.timeWindowEnd !== first.timeWindowEnd
     )
   ) {
-    return {};
+    throw new WooCommerceOnboardingError('BAD_REQUEST', 'Selected orders must share the same route scope.', 400);
   }
   return {
     routeScope: {
@@ -2183,6 +3105,14 @@ function normalizeOrderHealth(value: string | null | undefined): OrderHealth | n
   throw new WooCommerceOnboardingError('BAD_REQUEST', 'order health filter is invalid', 400);
 }
 
+function normalizeRouteOpsPlanningStatus(value: string | null | undefined): boolean | null {
+  if (value === undefined || value === null || value.trim() === '') return null;
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed === 'unplanned') return false;
+  if (trimmed === 'planned') return true;
+  throw new WooCommerceOnboardingError('BAD_REQUEST', 'order planning status filter is invalid', 400);
+}
+
 function normalizeRequiredDate(value: string): string {
   const trimmed = value.trim();
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(trimmed)) {
@@ -2213,6 +3143,9 @@ function readLocaleField(value: string | undefined): string {
 }
 
 function sanitizeRouteUiError(error: unknown): string {
+  if (error instanceof RoutePlanBatchInvalidError) {
+    return `Cannot create a partial route. Fix or remove blocked selected orders first: ${error.blockers.join('; ')}`;
+  }
   if (error instanceof RoutePlanOrderAlreadyPlannedError) {
     return 'Some selected orders are already assigned to a route. Refresh the page and try again.';
   }
@@ -2223,6 +3156,30 @@ function sanitizeRouteUiError(error: unknown): string {
     return error.message;
   }
   return sanitizeErrorMessage(error);
+}
+
+function countRoutePlanBatchBlockers(blockers: string[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const blocker of blockers) {
+    const key = normalizeRoutePlanBatchBlocker(blocker);
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function normalizeRoutePlanBatchBlocker(blocker: string): string {
+  const normalized = blocker.toLowerCase();
+  if (normalized.includes('mixed source')) return 'mixed_source_scope';
+  if (normalized.includes('mixed route')) return 'mixed_route_scope';
+  if (normalized.includes('coordinates')) return 'missing_coordinates';
+  if (normalized.includes('already assigned')) return 'already_planned';
+  if (normalized.includes('weekday mismatch')) return 'delivery_date_weekday_mismatch';
+  if (normalized.includes('unverified woo delivery day/time')) return 'delivery_day_unparsed';
+  if (normalized.includes('delivery date does not match')) return 'delivery_date_mismatch';
+  if (normalized.includes('missing route scope')) return 'missing_route_scope';
+  if (normalized.includes('delivery facts not found')) return 'missing_delivery_facts';
+  if (normalized.includes('needs review')) return 'needs_review';
+  return 'other';
 }
 
 function redirectToRoutePlans(
@@ -2285,71 +3242,6 @@ function renderShopDomainControl(input: {
   return `<label>Customer shop domain
     <input type="text" name="shopDomain" value="${escapeHtml(input.currentShopDomain)}" placeholder="${escapeHtml(input.placeholder ?? 'dev1.tomatonofood.com')}" required />
   </label>`;
-}
-
-function renderAppDashboardPage(input: {
-  actor: AdminCommerceActor;
-  csrfToken: string;
-  currentShopDomain: string | null;
-  drivers: readonly AdminDriverRow[];
-  error?: string;
-  notice?: string;
-  readyOrders: readonly CanonicalOrderRow[];
-  reviewOrders: readonly CanonicalOrderRow[];
-  routePlans: readonly RoutePlanSummary[];
-  settings: AdminStoreSettings | null;
-  shopDomainLocked: boolean;
-}): string {
-  const currentShopDomain = input.currentShopDomain ?? '';
-  const today = new Date().toISOString().slice(0, 10);
-  return renderDocument({
-    body: `<main class="shell app-shell">
-      ${renderAdminHero({
-        active: 'dashboard',
-        allowConnectionSetup: !input.shopDomainLocked,
-        actor: input.actor,
-        csrfToken: input.csrfToken,
-        currentShopDomain: input.currentShopDomain,
-        subtitle: 'Daily route operations for the WordPress store launched from the CLEVER Route plugin.',
-        title: 'Route dashboard'
-      })}
-      ${input.notice === undefined ? '' : `<p class="alert success">${escapeHtml(input.notice)}</p>`}
-      ${input.error === undefined ? '' : `<p class="alert error">${escapeHtml(input.error)}</p>`}
-      <section class="app-kpis" aria-label="Route operation summary">
-        ${renderKpiCard('Ready orders', String(input.readyOrders.length), 'Selectable Woo orders not assigned to a route.')}
-        ${renderKpiCard('Needs review', String(input.reviewOrders.length), 'Orders blocked by delivery metadata issues.')}
-        ${renderKpiCard('Routes', String(input.routePlans.length), 'Saved route drafts and active route plans.')}
-        ${renderKpiCard('Drivers', String(input.drivers.length), 'Delivery people available for assignment.')}
-      </section>
-      <section class="dashboard-grid" aria-label="Route app actions">
-        ${renderModuleCard({
-          description: 'Filter WooCommerce orders by date, area, delivery status, and health. Select ready rows before route creation.',
-          href: withShopDomainQuery(ADMIN_UI_APP_ORDERS_PATH, currentShopDomain),
-          status: 'Ready',
-          title: '1. Orders'
-        })}
-        ${renderModuleCard({
-          description: 'Create a route from selected orders, review the route canvas, reorder stops, optimize, and assign a driver.',
-          href: `${withShopDomainQuery(ADMIN_UI_APP_ROUTE_PLANS_PATH, currentShopDomain)}${currentShopDomain === '' ? '?' : '&'}deliveryDate=${today}`,
-          status: 'Ready',
-          title: '2. Routes'
-        })}
-        ${renderModuleCard({
-          description: 'Create driver invites and keep the assignment list ready for route dispatch.',
-          href: withShopDomainQuery(ADMIN_UI_APP_DRIVERS_PATH, currentShopDomain),
-          status: 'Ready',
-          title: '3. Drivers'
-        })}
-        ${renderModuleCard({
-          description: `Store/depot: ${input.settings?.defaultDepotAddress ?? 'not configured yet'}. Set address, coordinates, and operator language.`,
-          href: withShopDomainQuery(ADMIN_UI_APP_SETTINGS_PATH, currentShopDomain),
-          status: 'Ready',
-          title: '4. Settings'
-        })}
-      </section>
-    </main>`,
-    title: 'CLEVER Route App Dashboard'
-  });
 }
 
 function renderRoutePlansPage(input: {
@@ -3182,14 +4074,6 @@ function renderNavLink(label: string, href: string, active: boolean): string {
 function withShopDomainQuery(path: string, shopDomain: string | null | undefined): string {
   if (shopDomain === undefined || shopDomain === null || shopDomain.trim() === '') return path;
   return `${path}?${new URLSearchParams({ shopDomain: shopDomain.trim() }).toString()}`;
-}
-
-function renderKpiCard(label: string, value: string, description: string): string {
-  return `<article class="kpi-card">
-    <p class="eyebrow">${escapeHtml(label)}</p>
-    <strong>${escapeHtml(value)}</strong>
-    <span>${escapeHtml(description)}</span>
-  </article>`;
 }
 
 function renderModuleCard(input: {

@@ -1,0 +1,15 @@
+{
+  "version": 8,
+  "name": "CLEVER self-hosted style audit fixture",
+  "sources": {
+    "local-vector": {
+      "type": "vector",
+      "tiles": ["/admin/ui/app/vendor/tiles/{z}/{x}/{y}.pbf"]
+    }
+  },
+  "sprite": "/admin/ui/app/vendor/sprites/clever",
+  "glyphs": "/admin/ui/app/vendor/fonts/{fontstack}/{range}.pbf",
+  "layers": [
+    { "id": "background", "type": "background", "paint": { "background-color": "#f7f4ed" } }
+  ]
+}

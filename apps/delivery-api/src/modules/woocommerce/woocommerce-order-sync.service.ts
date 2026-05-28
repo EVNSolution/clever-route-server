@@ -1,6 +1,6 @@
 import type { CanonicalOrderRow } from '../shopify/order-sync.mapper.js';
-import type { ListCanonicalOrdersFilters, UpsertOrderWithDeliveryStopInput, UpsertOrderWithDeliveryStopResult } from '../shopify/order-sync.repository.js';
-import { mapWooCommerceOrderToDeliveryInputs } from './woocommerce-order.mapper.js';
+import type { DeliveryBatchCandidate, ListCanonicalOrdersFilters, ListDeliveryBatchCandidatesInput, UpsertOrderWithDeliveryStopInput, UpsertOrderWithDeliveryStopResult } from '../shopify/order-sync.repository.js';
+import { mapWooCommerceOrderToDeliveryInputs, type WooOrderMappingConfig } from './woocommerce-order.mapper.js';
 import type { WooCommerceOrder } from './woocommerce-order.types.js';
 import type { WooCommerceOrderClient, WooCommerceOrdersPage } from './woocommerce-order.client.js';
 
@@ -37,6 +37,8 @@ export type WooCommerceSyncUpdatedOrdersResult = WooCommerceSyncOrdersResult & {
 type Repository = {
   findCanonicalOrderById?(input: { orderId: string; shopDomain: string }): Promise<CanonicalOrderRow | null>;
   listCanonicalOrders(input: { filters?: ListCanonicalOrdersFilters; shopDomain: string }): Promise<CanonicalOrderRow[]>;
+  listDeliveryBatchCandidates?(input: ListDeliveryBatchCandidatesInput): Promise<DeliveryBatchCandidate[]>;
+  readOrderMappingConfig?(input: { commerceConnectionId: string }): Promise<Record<string, unknown> | null>;
   upsertOrderWithDeliveryStop(input: UpsertOrderWithDeliveryStopInput): Promise<UpsertOrderWithDeliveryStopResult>;
 };
 
@@ -44,6 +46,7 @@ export class WooCommerceOrderSyncService {
   constructor(
     private readonly options: {
       client?: Pick<WooCommerceOrderClient, 'listOrdersPage'>;
+      connectionId?: string | null;
       repository: Repository;
       shopDomain: string;
       shopTimezone?: string;
@@ -88,9 +91,12 @@ export class WooCommerceOrderSyncService {
       updated: 0
     };
     const orders: CanonicalOrderRow[] = [];
+    const mappingConfig = await this.readOrderMappingConfig();
 
     for (const order of input.orders) {
       const synced = mapWooCommerceOrderToDeliveryInputs(order, {
+        connectionId: this.options.connectionId ?? null,
+        mappingConfig,
         ...(this.options.shopTimezone === undefined ? {} : { shopTimezone: this.options.shopTimezone }),
         siteUrl: this.options.siteUrl
       });
@@ -117,6 +123,14 @@ export class WooCommerceOrderSyncService {
     });
   }
 
+  listDeliveryBatchCandidates(input: Omit<ListDeliveryBatchCandidatesInput, 'shopDomain'>): Promise<DeliveryBatchCandidate[]> {
+    if (this.options.repository.listDeliveryBatchCandidates === undefined) return Promise.resolve([]);
+    return this.options.repository.listDeliveryBatchCandidates({
+      ...input,
+      shopDomain: this.options.shopDomain
+    });
+  }
+
   private async readCanonicalOrder(orderId: string): Promise<CanonicalOrderRow | null> {
     if (this.options.repository.findCanonicalOrderById !== undefined) {
       return this.options.repository.findCanonicalOrderById({ orderId, shopDomain: this.options.shopDomain });
@@ -124,4 +138,37 @@ export class WooCommerceOrderSyncService {
     const rows = await this.options.repository.listCanonicalOrders({ shopDomain: this.options.shopDomain });
     return rows.find((row) => row.orderId === orderId) ?? null;
   }
+
+  private async readOrderMappingConfig(): Promise<WooOrderMappingConfig | null> {
+    if (this.options.connectionId === undefined || this.options.connectionId === null) return null;
+    if (this.options.repository.readOrderMappingConfig === undefined) return null;
+    const config = await this.options.repository.readOrderMappingConfig({ commerceConnectionId: this.options.connectionId });
+    return config === null ? null : normalizeMappingConfig(config);
+  }
+}
+
+function normalizeMappingConfig(value: Record<string, unknown>): WooOrderMappingConfig {
+  const config: WooOrderMappingConfig = {};
+  const areaPaths = readStringArray(value.areaPaths);
+  if (areaPaths !== undefined) config.areaPaths = areaPaths;
+  const datePaths = readStringArray(value.datePaths);
+  if (datePaths !== undefined) config.datePaths = datePaths;
+  const dayPaths = readStringArray(value.dayPaths);
+  if (dayPaths !== undefined) config.dayPaths = dayPaths;
+  if (value.grouping === 'date_session' || value.grouping === 'date_session_area') config.grouping = value.grouping;
+  const instructionPaths = readStringArray(value.instructionPaths);
+  if (instructionPaths !== undefined) config.instructionPaths = instructionPaths;
+  const pickupPaths = readStringArray(value.pickupPaths);
+  if (pickupPaths !== undefined) config.pickupPaths = pickupPaths;
+  if (typeof value.serviceMinutesDefault === 'number' && Number.isFinite(value.serviceMinutesDefault)) {
+    config.serviceMinutesDefault = value.serviceMinutesDefault;
+  }
+  const timeWindowPaths = readStringArray(value.timeWindowPaths);
+  if (timeWindowPaths !== undefined) config.timeWindowPaths = timeWindowPaths;
+  if (typeof value.version === 'number' && Number.isFinite(value.version)) config.version = value.version;
+  return config;
+}
+
+function readStringArray(value: unknown): string[] | undefined {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : undefined;
 }

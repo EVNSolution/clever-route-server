@@ -63,6 +63,29 @@ describe('calculateDeliveryScope', () => {
     );
   });
 
+  test('flags explicit delivery dates whose weekday disagrees with the Woo day value', () => {
+    const scope = calculateDeliveryScope({
+      createdAt: '2026-05-05T14:00:00Z',
+      deliveryArea: 'Thornhill',
+      deliveryDateRaw: '2026-05-21',
+      deliveryDayRaw: 'Friday',
+      lineItems: [{ title: 'Bundle 05/18-05/31' }],
+      pickupDayRaw: null,
+      processedAt: null
+    });
+
+    expect(scope).toEqual(
+      expect.objectContaining({
+        deliveryDate: '2026-05-21',
+        deliveryDateSource: 'EXPLICIT_ATTRIBUTE',
+        deliveryDateWeekday: 'THURSDAY',
+        deliveryDateWeekdayMismatch: true,
+        deliveryWeekday: 'FRIDAY',
+        routeScopeKey: '2026-05-21|DELIVERY||'
+      })
+    );
+  });
+
   test('falls back to order-date cycle when no line item date range exists', () => {
     const scope = calculateDeliveryScope({
       createdAt: '2026-05-05T14:00:00Z',

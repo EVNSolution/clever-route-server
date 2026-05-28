@@ -58,6 +58,19 @@ enum DeliveryStopStatus {
   CANCELLED
 }
 
+enum DeliveryDayParseStatus {
+  NOT_PROVIDED
+  PARSED
+  UNPARSED
+  UNVERIFIED
+}
+
+enum OrderDeliveryFactReadiness {
+  READY_TO_PLAN
+  NEEDS_REVIEW
+  SKIPPED
+}
+
 enum RoutePlanStatus {
   DRAFT
   OPTIMIZED
@@ -123,38 +136,40 @@ enum DriverAccountDeletionRequestStatus {
 }
 
 model Shop {
-  id                            String                         @id @default(uuid()) @db.Uuid
-  shopDomain                    String                         @db.Text
-  shopifyShopGid                String?                        @db.Text
-  apiVersion                    String                         @default("2026-04") @db.Text
-  adminAccessTokenCiphertext    String?                        @db.Text
-  adminAccessTokenExpiresAt     DateTime?                      @db.Timestamptz(6)
-  adminRefreshTokenCiphertext   String?                        @db.Text
-  adminRefreshTokenExpiresAt    DateTime?                      @db.Timestamptz(6)
-  tokenScopes                   String[]                       @default([])
-  tokenIssuedAt                 DateTime?                      @db.Timestamptz(6)
-  installedAt                   DateTime                       @default(now()) @db.Timestamptz(6)
-  uninstalledAt                 DateTime?                      @db.Timestamptz(6)
-  defaultDepotAddress           String?                        @db.Text
-  defaultDepotLatitude          Decimal?                       @db.Decimal(10, 7)
-  defaultDepotLongitude         Decimal?                       @db.Decimal(10, 7)
-  locale                        String?                        @db.Text
-  createdAt                     DateTime                       @default(now()) @db.Timestamptz(6)
-  updatedAt                     DateTime                       @updatedAt @db.Timestamptz(6)
-  webhookEvents                 ShopifyWebhookEvent[]
-  orders                        Order[]
-  deliveryStops                 DeliveryStop[]
-  routePlans                    RoutePlan[]
-  drivers                       Driver[]
-  vehicles                      Vehicle[]
-  driverEvents                  DriverEvent[]
-  driverConsentRecords          DriverConsentRecord[]
-  driverProofMedia              DriverProofMedia[]
-  driverRouteFeedback           DriverRouteFeedback[]
-  driverAccountDeletionRequests DriverAccountDeletionRequest[]
-  commerceConnections           CommerceConnection[]
-  commerceConnectionAuditLogs    CommerceConnectionAuditLog[]
-  wordpressPluginPairingCodes   WordPressPluginPairingCode[]
+  id                              String                           @id @default(uuid()) @db.Uuid
+  shopDomain                      String                           @db.Text
+  shopifyShopGid                  String?                          @db.Text
+  apiVersion                      String                           @default("2026-04") @db.Text
+  adminAccessTokenCiphertext      String?                          @db.Text
+  adminAccessTokenExpiresAt       DateTime?                        @db.Timestamptz(6)
+  adminRefreshTokenCiphertext     String?                          @db.Text
+  adminRefreshTokenExpiresAt      DateTime?                        @db.Timestamptz(6)
+  tokenScopes                     String[]                         @default([])
+  tokenIssuedAt                   DateTime?                        @db.Timestamptz(6)
+  installedAt                     DateTime                         @default(now()) @db.Timestamptz(6)
+  uninstalledAt                   DateTime?                        @db.Timestamptz(6)
+  defaultDepotAddress             String?                          @db.Text
+  defaultDepotLatitude            Decimal?                         @db.Decimal(10, 7)
+  defaultDepotLongitude           Decimal?                         @db.Decimal(10, 7)
+  locale                          String?                          @db.Text
+  createdAt                       DateTime                         @default(now()) @db.Timestamptz(6)
+  updatedAt                       DateTime                         @updatedAt @db.Timestamptz(6)
+  webhookEvents                   ShopifyWebhookEvent[]
+  orders                          Order[]
+  deliveryStops                   DeliveryStop[]
+  routePlans                      RoutePlan[]
+  drivers                         Driver[]
+  vehicles                        Vehicle[]
+  driverEvents                    DriverEvent[]
+  driverConsentRecords            DriverConsentRecord[]
+  driverProofMedia                DriverProofMedia[]
+  driverRouteFeedback             DriverRouteFeedback[]
+  driverAccountDeletionRequests   DriverAccountDeletionRequest[]
+  commerceConnections             CommerceConnection[]
+  commerceConnectionAuditLogs     CommerceConnectionAuditLog[]
+  commerceConnectionOrderMappings CommerceConnectionOrderMapping[]
+  orderDeliveryFacts              OrderDeliveryFact[]
+  wordpressPluginPairingCodes     WordPressPluginPairingCode[]
 
   @@unique([shopDomain])
   @@unique([shopifyShopGid])
@@ -162,32 +177,34 @@ model Shop {
 }
 
 model CommerceConnection {
-  id                       String                   @id @default(uuid()) @db.Uuid
-  shopId                   String                   @db.Uuid
-  shop                     Shop                     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  id                       String                          @id @default(uuid()) @db.Uuid
+  shopId                   String                          @db.Uuid
+  shop                     Shop                            @relation(fields: [shopId], references: [id], onDelete: Cascade)
   platform                 CommerceSourcePlatform
-  status                   CommerceConnectionStatus @default(ACTIVE)
-  label                    String?                  @db.Text
-  siteUrl                  String                   @db.Text
-  shopDomain               String                   @db.Text
-  timezone                 String?                  @db.Text
-  consumerKeyCiphertext    String                   @db.Text
-  consumerSecretCiphertext String                   @db.Text
-  webhookSecretCiphertext  String                   @db.Text
-  lastWebhookAt            DateTime?                @db.Timestamptz(6)
-  lastRestSyncAt           DateTime?                @db.Timestamptz(6)
-  lastVerifiedAt           DateTime?                @db.Timestamptz(6)
-  lastVerificationStatus   String?                  @db.Text
-  credentialRotatedAt      DateTime?                @db.Timestamptz(6)
-  webhookSecretRotatedAt   DateTime?                @db.Timestamptz(6)
-  credentialFingerprint    String?                  @db.Text
-  lastSyncAt               DateTime?                @db.Timestamptz(6)
-  lastSyncStatus           String?                  @db.Text
-  createdAt                DateTime                 @default(now()) @db.Timestamptz(6)
-  updatedAt                DateTime                 @updatedAt @db.Timestamptz(6)
+  status                   CommerceConnectionStatus        @default(ACTIVE)
+  label                    String?                         @db.Text
+  siteUrl                  String                          @db.Text
+  shopDomain               String                          @db.Text
+  timezone                 String?                         @db.Text
+  consumerKeyCiphertext    String                          @db.Text
+  consumerSecretCiphertext String                          @db.Text
+  webhookSecretCiphertext  String                          @db.Text
+  lastWebhookAt            DateTime?                       @db.Timestamptz(6)
+  lastRestSyncAt           DateTime?                       @db.Timestamptz(6)
+  lastVerifiedAt           DateTime?                       @db.Timestamptz(6)
+  lastVerificationStatus   String?                         @db.Text
+  credentialRotatedAt      DateTime?                       @db.Timestamptz(6)
+  webhookSecretRotatedAt   DateTime?                       @db.Timestamptz(6)
+  credentialFingerprint    String?                         @db.Text
+  lastSyncAt               DateTime?                       @db.Timestamptz(6)
+  lastSyncStatus           String?                         @db.Text
+  createdAt                DateTime                        @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime                        @updatedAt @db.Timestamptz(6)
   wordpressPluginTokens    WordPressPluginToken[]
   wordpressPairingCodes    WordPressPluginPairingCode[]
   auditLogs                CommerceConnectionAuditLog[]
+  orderMappingConfig       CommerceConnectionOrderMapping?
+  orderDeliveryFacts       OrderDeliveryFact[]
 
   @@unique([shopId, platform, siteUrl])
   @@index([shopId, platform, status])
@@ -196,20 +213,36 @@ model CommerceConnection {
 }
 
 model CommerceConnectionAuditLog {
-  id                   String             @id @default(uuid()) @db.Uuid
-  shopId               String             @db.Uuid
-  shop                 Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  commerceConnectionId String?            @db.Uuid
+  id                   String              @id @default(uuid()) @db.Uuid
+  shopId               String              @db.Uuid
+  shop                 Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  commerceConnectionId String?             @db.Uuid
   commerceConnection   CommerceConnection? @relation(fields: [commerceConnectionId], references: [id], onDelete: SetNull)
-  actorSubject         String             @db.Text
-  action               String             @db.Text
-  status               String             @db.Text
+  actorSubject         String              @db.Text
+  action               String              @db.Text
+  status               String              @db.Text
   metadata             Json?
-  createdAt            DateTime           @default(now()) @db.Timestamptz(6)
+  createdAt            DateTime            @default(now()) @db.Timestamptz(6)
 
   @@index([shopId, createdAt])
   @@index([commerceConnectionId, createdAt])
   @@map("commerce_connection_audit_logs")
+}
+
+model CommerceConnectionOrderMapping {
+  id                   String             @id @default(uuid()) @db.Uuid
+  shopId               String             @db.Uuid
+  shop                 Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  commerceConnectionId String             @unique @db.Uuid
+  commerceConnection   CommerceConnection @relation(fields: [commerceConnectionId], references: [id], onDelete: Cascade)
+  version              Int                @default(1)
+  config               Json
+  discoveredPathStats  Json?
+  createdAt            DateTime           @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime           @updatedAt @db.Timestamptz(6)
+
+  @@index([shopId])
+  @@map("commerce_connection_order_mappings")
 }
 
 model WordPressPluginToken {
@@ -305,6 +338,7 @@ model Order {
   createdAt            DateTime               @default(now()) @db.Timestamptz(6)
   updatedAt            DateTime               @updatedAt @db.Timestamptz(6)
   deliveryStops        DeliveryStop[]
+  deliveryFacts        OrderDeliveryFact[]
 
   @@unique([shopId, shopifyOrderGid])
   @@unique([shopId, sourcePlatform, sourceSiteUrl, sourceOrderId])
@@ -348,6 +382,57 @@ model DeliveryStop {
   @@unique([shopId, orderId])
   @@index([shopId, deliveryDate, status])
   @@map("delivery_stops")
+}
+
+model OrderDeliveryFact {
+  id                          String                     @id @default(uuid()) @db.Uuid
+  shopId                      String                     @db.Uuid
+  shop                        Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  orderId                     String                     @db.Uuid
+  order                       Order                      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  commerceConnectionId        String?                    @db.Uuid
+  commerceConnection          CommerceConnection?        @relation(fields: [commerceConnectionId], references: [id], onDelete: SetNull)
+  sourcePlatform              CommerceSourcePlatform
+  sourceSiteUrl               String?                    @db.Text
+  sourceOrderId               String?                    @db.Text
+  sourceOrderNumber           String?                    @db.Text
+  sourceUpdatedAt             DateTime?                  @db.Timestamptz(6)
+  rawDeliveryDate             String?                    @db.Text
+  rawDeliveryDay              String?                    @db.Text
+  rawDeliveryTimeWindow       String?                    @db.Text
+  rawDeliveryArea             String?                    @db.Text
+  rawPickupDay                String?                    @db.Text
+  matchedMappingPaths         Json
+  mappingDiagnostics          Json?
+  deliveryDayParseStatus      DeliveryDayParseStatus     @default(NOT_PROVIDED)
+  deliveryDayUnparsedReason   String?                    @db.Text
+  deliveryDateWeekdayVerified Boolean                    @default(false)
+  deliveryDateWeekdayMismatch Boolean                    @default(false)
+  deliveryDate                DateTime?                  @db.Date
+  deliveryWeekday             String?                    @db.Text
+  deliveryDateWeekday         String?                    @db.Text
+  deliverySession             String?                    @db.Text
+  serviceType                 String?                    @db.Text
+  timeWindowStart             DateTime?                  @db.Timestamptz(6)
+  timeWindowEnd               DateTime?                  @db.Timestamptz(6)
+  deliveryArea                String?                    @db.Text
+  routeScopeKey               String?                    @db.Text
+  planningGroupKey            String?                    @db.Text
+  readiness                   OrderDeliveryFactReadiness @default(NEEDS_REVIEW)
+  reviewReasons               Json
+  batchEligible               Boolean                    @default(false)
+  geocodeStatus               GeocodeStatus              @default(PENDING)
+  computedAt                  DateTime                   @default(now()) @db.Timestamptz(6)
+  createdAt                   DateTime                   @default(now()) @db.Timestamptz(6)
+  updatedAt                   DateTime                   @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, orderId])
+  @@index([shopId, deliveryDate, readiness])
+  @@index([shopId, routeScopeKey, batchEligible])
+  @@index([shopId, planningGroupKey])
+  @@index([commerceConnectionId, sourceUpdatedAt])
+  @@index([shopId, sourcePlatform, sourceSiteUrl, sourceOrderId])
+  @@map("order_delivery_facts")
 }
 
 model RoutePlan {
@@ -394,6 +479,7 @@ model RoutePlanStop {
 
   @@unique([routePlanId, sequence])
   @@unique([routePlanId, deliveryStopId])
+  @@unique([deliveryStopId])
   @@map("route_plan_stops")
 }
 

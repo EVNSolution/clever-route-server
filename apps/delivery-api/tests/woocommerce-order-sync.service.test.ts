@@ -35,6 +35,43 @@ describe('WooCommerceOrderSyncService', () => {
     expect(firstUpsert?.synced.order.sourcePlatform).toBe('WOOCOMMERCE');
     expect(firstUpsert?.synced.order.sourceOrderId).toBe('1');
   });
+
+  test('loads connection-scoped mapping config and threads connection id into delivery facts', async () => {
+    const repository = createRepositoryHarness();
+    repository.readOrderMappingConfig.mockResolvedValueOnce({
+      datePaths: ['line_items.meta_data.jckwds_date'],
+      dayPaths: ['shipping_lines.method_title'],
+      areaPaths: ['shipping_lines.meta_data.delivery_area'],
+      version: 1
+    });
+    const wooOrder = order(10);
+    wooOrder.meta_data = [];
+    wooOrder.line_items = [{ name: 'Delivery item', quantity: 1, meta_data: [{ key: 'jckwds_date', value: '2026-05-21' }] }];
+    wooOrder.shipping_lines = [{ method_title: 'Thursday', meta_data: [{ key: 'delivery_area', value: 'Markham' }] }];
+    const service = new WooCommerceOrderSyncService({
+      connectionId: '8b57ab89-3fe7-4a62-b1f4-b6dbb26ef3ea',
+      repository,
+      shopDomain: 'woo.example.test',
+      siteUrl: 'https://woo.example.test'
+    });
+
+    await service.syncOrders({ orders: [wooOrder], reason: 'manual_backfill' });
+
+    expect(repository.readOrderMappingConfig).toHaveBeenCalledWith({
+      commerceConnectionId: '8b57ab89-3fe7-4a62-b1f4-b6dbb26ef3ea'
+    });
+    const upsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
+    expect(upsert?.synced.deliveryFact).toEqual(
+      expect.objectContaining({
+        commerceConnectionId: '8b57ab89-3fe7-4a62-b1f4-b6dbb26ef3ea',
+        matchedMappingPaths: expect.objectContaining({
+          deliveryArea: 'shipping_lines[0].meta_data.delivery_area',
+          deliveryDate: 'line_items[0].meta_data.jckwds_date',
+          deliveryDay: 'shipping_lines[0].method_title'
+        }) as unknown
+      })
+    );
+  });
 });
 
 function createRepositoryHarness() {
@@ -92,6 +129,7 @@ function createRepositoryHarness() {
       })
     ),
     listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+    readOrderMappingConfig: vi.fn(() => Promise.resolve<Record<string, unknown> | null>(null)),
     upsertOrderWithDeliveryStop: vi.fn(
       (input: { shopDomain: string; synced: SyncedOrderWithDeliveryStopInput }): Promise<UpsertOrderWithDeliveryStopResult> =>
         Promise.resolve({ orderId: input.synced.order.sourceOrderId ?? input.synced.order.shopifyOrderGid, status: 'created', stopId: 'stop-id' })

@@ -49,7 +49,7 @@ export function loadWordPressPluginDependencies(input: {
     ...readAdminLaunchService(input.env),
     authService,
     mappingService: {
-      readMapping: () => Promise.resolve(wordpressRepository.readMapping())
+      readMapping: ({ context }) => wordpressRepository.readMapping({ context })
     },
     routeResultService: wordpressRepository,
     syncService: new WordPressPluginSyncRequestService({
@@ -62,6 +62,7 @@ export function loadWordPressPluginDependencies(input: {
         const resolvedTimezone = connection.timezone ?? shopTimezone;
         return new WooCommerceOrderSyncService({
           client: createWooCommerceOrderClientFromConnection(connection),
+          connectionId: connection.id,
           repository: orderRepository,
           shopDomain: connection.shopDomain,
           ...(resolvedTimezone === undefined ? {} : { shopTimezone: resolvedTimezone }),

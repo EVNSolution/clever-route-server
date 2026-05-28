@@ -124,10 +124,17 @@ export type WordPressPluginRoutePlanFilters = {
 
 export type WordPressPluginMappingConfig = {
   addressPreference: 'shipping';
+  config?: unknown;
   deliveryAreaMetaKey: string;
   deliveryDateMetaKey: string;
   deliveryTimeMetaKey: string;
+  diagnostics?: {
+    discoveredPathStats: Record<string, number>;
+    unparseableValueCount: number;
+    unsupportedValueCount: number;
+  };
   editable: false;
+  matchedMappingPaths?: Record<string, number>;
   notesField: 'customer_note';
   phonePreference: 'billing_then_shipping';
   preview: {

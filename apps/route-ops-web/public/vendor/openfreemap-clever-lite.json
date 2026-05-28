@@ -1,0 +1,23 @@
+{
+  "version": 8,
+  "name": "CLEVER OpenFreeMap Lite Public",
+  "metadata": {
+    "clever:provenance": "Adapted from CLEVER Shopify OpenFreeMap style posture; public endpoints require explicit route-ops allowlist."
+  },
+  "sources": {
+    "openmaptiles": {
+      "type": "vector",
+      "url": "https://tiles.openfreemap.org/planet"
+    }
+  },
+  "sprite": "https://tiles.openfreemap.org/sprites/ofm_f384/ofm",
+  "glyphs": "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf",
+  "layers": [
+    { "id": "background", "type": "background", "paint": { "background-color": "#f7f4ed" } },
+    { "id": "water", "type": "fill", "source": "openmaptiles", "source-layer": "water", "paint": { "fill-color": "#bcd8f6" } },
+    { "id": "park", "type": "fill", "source": "openmaptiles", "source-layer": "park", "paint": { "fill-color": "#dceccf", "fill-opacity": 0.72 } },
+    { "id": "road", "type": "line", "source": "openmaptiles", "source-layer": "transportation", "paint": { "line-color": "#ffffff", "line-width": ["interpolate", ["linear"], ["zoom"], 7, 0.5, 14, 4, 18, 18] } },
+    { "id": "road-casing", "type": "line", "source": "openmaptiles", "source-layer": "transportation", "paint": { "line-color": "#d8d2c8", "line-width": ["interpolate", ["linear"], ["zoom"], 7, 0.8, 14, 6, 18, 22] } },
+    { "id": "place-labels", "type": "symbol", "source": "openmaptiles", "source-layer": "place", "layout": { "text-field": ["coalesce", ["get", "name:en"], ["get", "name"]], "text-size": 12 }, "paint": { "text-color": "#5a6472", "text-halo-color": "#ffffff", "text-halo-width": 1 } }
+  ]
+}

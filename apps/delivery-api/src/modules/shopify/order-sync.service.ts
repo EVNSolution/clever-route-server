@@ -3,7 +3,9 @@ import type { CanonicalOrderRow, ShopifyOrderNode, SyncedOrderWithDeliveryStopIn
 import { mapShopifyOrderNodeToDeliveryInputs } from './order-sync.mapper.js';
 import { buildOrdersUpdatedSinceQuery } from './order-sync.query.js';
 import type {
+  DeliveryBatchCandidate,
   ListCanonicalOrdersFilters,
+  ListDeliveryBatchCandidatesInput,
   UpsertOrderWithDeliveryStopInput,
   UpsertOrderWithDeliveryStopResult
 } from './order-sync.repository.js';
@@ -60,6 +62,7 @@ type OrderSyncRepository = {
     filters?: ListCanonicalOrdersFilters;
     shopDomain: string;
   }): Promise<CanonicalOrderRow[]>;
+  listDeliveryBatchCandidates?(input: ListDeliveryBatchCandidatesInput): Promise<DeliveryBatchCandidate[]>;
   upsertOrderWithDeliveryStop(
     input: UpsertOrderWithDeliveryStopInput
   ): Promise<UpsertOrderWithDeliveryStopResult>;
@@ -133,6 +136,13 @@ export class ShopifyOrderSyncService {
     shopDomain: string;
   }): Promise<CanonicalOrderRow[]> {
     return this.options.repository.listCanonicalOrders(input);
+  }
+
+  listDeliveryBatchCandidates(input: ListDeliveryBatchCandidatesInput): Promise<DeliveryBatchCandidate[]> {
+    if (this.options.repository.listDeliveryBatchCandidates === undefined) {
+      return Promise.resolve([]);
+    }
+    return this.options.repository.listDeliveryBatchCandidates(input);
   }
 
   private async readCanonicalOrder(shopDomain: string, orderId: string): Promise<CanonicalOrderRow | null> {

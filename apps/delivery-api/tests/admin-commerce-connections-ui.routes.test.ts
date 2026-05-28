@@ -6,6 +6,7 @@ import { buildApp } from '../src/app.js';
 import type { AdminCommerceActor } from '../src/modules/commerce/admin-commerce-auth.js';
 import { loadAdminCommerceConnectionsUiDependencies } from '../src/modules/commerce/admin-commerce-connections.dependencies.js';
 import type { SafeWooCommerceConnection } from '../src/modules/commerce/commerce-connection.service.js';
+import { RoutePlanBatchInvalidError } from '../src/modules/route-plans/route-plan.types.js';
 import type { AdminCommerceConnectionsDependencies } from '../src/routes/admin-commerce-connections.routes.js';
 import type { AdminCommerceConnectionsUiDependencies } from '../src/routes/admin-commerce-connections-ui.routes.js';
 import {
@@ -18,6 +19,24 @@ const adminApiToken = `api_${'a'.repeat(48)}`;
 const webLoginSecret = `web_login_${'b'.repeat(48)}`;
 const webSessionSecret = `web_session_${'c'.repeat(48)}`;
 const csrfFieldPattern = /name="csrfToken" value="([^"]+)"/u;
+
+type TestResponseLike = { body: string };
+type ApiErrorBody = { code?: string; message: string };
+type ApiSuccessEnvelope<T> = { data: T; error: null };
+type ApiErrorEnvelope = { data: null; error: ApiErrorBody };
+
+function readApiData<T>(response: TestResponseLike): T {
+  const payload = JSON.parse(response.body) as unknown as ApiSuccessEnvelope<T>;
+  expect(payload.error).toBeNull();
+  return payload.data;
+}
+
+function readApiError(response: TestResponseLike): ApiErrorBody {
+  const payload = JSON.parse(response.body) as unknown as ApiErrorEnvelope;
+  expect(payload.data).toBeNull();
+  return payload.error;
+}
+
 
 describe('Admin WooCommerce connection UI routes', () => {
   test('does not register UI dependencies without dedicated strong web secrets or through JWT fallback', () => {
@@ -73,6 +92,42 @@ describe('Admin WooCommerce connection UI routes', () => {
         nodeEnv: 'production'
       })
     ).toBeDefined();
+  });
+
+  test('uses Woo-compatible Route Ops repositories even when legacy Shopify admin dependencies are configured', async () => {
+    const base = createBaseAdminCommerceDependencies();
+    const shopFindUnique = vi.fn(() => Promise.resolve({ id: 'shop-id' }));
+    const orderFindMany = vi.fn(() => Promise.resolve([]));
+    const routePlanFindMany = vi.fn(() => Promise.resolve([]));
+    const legacyAdminOrderList = vi.fn(() => Promise.reject(new Error('legacy Shopify order service must not handle Woo domains')));
+    const legacyAdminRoutePlanList = vi.fn(() => Promise.reject(new Error('legacy Shopify route plan service must not handle Woo domains')));
+    const uiDependencies = loadAdminCommerceConnectionsUiDependencies({
+      adminCommerceConnections: base.dependencies,
+      adminOrders: { orderSyncService: { listCanonicalOrders: legacyAdminOrderList } } as never,
+      adminRoutePlans: { routePlanService: { listRoutePlans: legacyAdminRoutePlanList } } as never,
+      env: {
+        CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
+        CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
+        DELIVERY_API_PUBLIC_URL: 'https://clever-route.cleversystem.ai'
+      },
+      nodeEnv: 'production',
+      prisma: {
+        order: { findMany: orderFindMany },
+        routePlan: { findMany: routePlanFindMany },
+        shop: { findUnique: shopFindUnique }
+      } as never
+    });
+
+    expect(uiDependencies?.orderSyncService).toBeDefined();
+    expect(uiDependencies?.routePlanService).toBeDefined();
+    await expect(uiDependencies?.orderSyncService?.listCanonicalOrders({ shopDomain: 'dev1.tomatonofood.com' })).resolves.toEqual([]);
+    await expect(uiDependencies?.routePlanService?.listRoutePlans({ shopDomain: 'dev1.tomatonofood.com' })).resolves.toEqual([]);
+    expect(legacyAdminOrderList).not.toHaveBeenCalled();
+    expect(legacyAdminRoutePlanList).not.toHaveBeenCalled();
+    expect(shopFindUnique).toHaveBeenCalledWith({
+      select: { id: true },
+      where: { shopDomain: 'dev1.tomatonofood.com' }
+    });
   });
 
 
@@ -274,11 +329,28 @@ describe('Admin WooCommerce connection UI routes', () => {
         url: '/admin/ui/app/orders?shopDomain=tenant-a.example.test'
       });
       expect(orders.statusCode).toBe(200);
-      expect(orders.body).toContain('Order list');
-      expect(orders.body).toContain('class="app-sidebar"');
-      expect(orders.body).toContain('class="app-topbar"');
-      expect(orders.body).toContain('clever route');
+      expect(orders.body).toContain('id="clever-route-ops-root"');
+      expect(orders.body).toContain('/admin/ui/app/assets/');
+      expect(orders.body).toContain('CLEVER Route App');
       expect(orders.body).not.toContain('CLEVER Admin login');
+      expect(orders.body).not.toContain('Connection setup');
+
+      const bootstrap = await app.inject({
+        headers: { cookie, accept: 'application/json' },
+        method: 'GET',
+        url: '/admin/ui/app/api/bootstrap?shopDomain=tenant-a.example.test'
+      });
+      expect(bootstrap.statusCode).toBe(200);
+      const bootstrapData = readApiData<{
+        mapConfig: { providerMode: string | null; status: string; styleUrl: string | null };
+        mode: string;
+        routerConfig: { status: string };
+        shopDomain: string | null;
+      }>(bootstrap);
+      expect(bootstrapData.mode).toBe('plugin');
+      expect(bootstrapData.shopDomain).toBe('tenant-a.example.test');
+      expect(bootstrapData.mapConfig).toEqual(expect.objectContaining({ providerMode: null, status: 'not_configured', styleUrl: null }));
+      expect(bootstrapData.routerConfig).toEqual({ status: 'not_configured' });
     } finally {
       await app.close();
     }
@@ -311,11 +383,168 @@ describe('Admin WooCommerce connection UI routes', () => {
         url: `${path}?shopDomain=tenant-a.example.test`
       });
       expect(page.statusCode).toBe(200);
-      expect(page.body).toContain('aria-label="Operate navigation"');
-      expect(page.body).toContain('class="app-sidebar"');
-      expect(page.body).toContain('class="app-page-header"');
+      expect(page.body).toContain('id="clever-route-ops-root"');
+      expect(page.body).toContain('/admin/ui/app/assets/');
       expect(page.body).not.toContain('CLEVER Admin login');
       expect(page.body).not.toContain('Connection setup');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('Route Ops bootstrap defaults to no map provider and self-only CSP', async () => {
+    await withRouteOpsMapEnv({}, async () => {
+      const { app } = await createUiHarness();
+      try {
+        const { cookie } = await loginAndReadCsrf(app);
+        const bootstrap = await app.inject({
+          headers: { cookie, accept: 'application/json' },
+          method: 'GET',
+          url: '/admin/ui/app/api/bootstrap?shopDomain=tenant-a.example.test'
+        });
+        expect(bootstrap.statusCode).toBe(200);
+        expect(readApiData<{ mapConfig: unknown }>(bootstrap).mapConfig).toEqual(expect.objectContaining({
+          allowedHosts: [],
+          providerMode: null,
+          status: 'not_configured',
+          styleUrl: null
+        }));
+
+        const shell = await app.inject({ headers: { cookie }, method: 'GET', url: '/admin/ui/app/orders?shopDomain=tenant-a.example.test' });
+        const csp = String(shell.headers['content-security-policy']);
+        expect(csp).toContain("connect-src 'self'");
+        expect(csp).not.toContain('tiles.openfreemap.org');
+        expect(csp).not.toContain('router.project-osrm.org');
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
+  test('Route Ops same-host vendor style is audited and public endpoints require explicit allowlist', async () => {
+    await withRouteOpsMapEnv({
+      ROUTE_OPS_MAP_STYLE_URL: '/admin/ui/app/vendor/openfreemap-clever-lite.json'
+    }, async () => {
+      const { app } = await createUiHarness();
+      try {
+        const { cookie } = await loginAndReadCsrf(app);
+        const bootstrap = await app.inject({
+          headers: { cookie, accept: 'application/json' },
+          method: 'GET',
+          url: '/admin/ui/app/api/bootstrap?shopDomain=tenant-a.example.test'
+        });
+        const data = readApiData<{ mapConfig: { disabledReason?: string; providerMode: string | null; status: string; styleAudit: { externalHosts: string[] } | null; styleUrl: string | null } }>(bootstrap);
+        expect(data.mapConfig.status).toBe('not_configured');
+        expect(data.mapConfig.styleUrl).toBeNull();
+        expect(data.mapConfig.providerMode).toBeNull();
+        expect(data.mapConfig.disabledReason).toContain('public_style_hosts_not_allowlisted');
+        expect(data.mapConfig.styleAudit?.externalHosts).toContain('tiles.openfreemap.org');
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
+  test('Route Ops public OpenFreeMap mode returns provider metadata and CSP only when allowlisted', async () => {
+    await withRouteOpsMapEnv({
+      ROUTE_OPS_MAP_ALLOWED_HOSTS: 'tiles.openfreemap.org',
+      ROUTE_OPS_MAP_PROVIDER_MODE: 'public_allowlisted',
+      ROUTE_OPS_MAP_STYLE_URL: '/admin/ui/app/vendor/openfreemap-clever-lite.json'
+    }, async () => {
+      const { app } = await createUiHarness();
+      try {
+        const { cookie } = await loginAndReadCsrf(app);
+        const bootstrap = await app.inject({
+          headers: { cookie, accept: 'application/json' },
+          method: 'GET',
+          url: '/admin/ui/app/api/bootstrap?shopDomain=tenant-a.example.test'
+        });
+        const data = readApiData<{ mapConfig: { allowedHosts: string[]; providerMode: string | null; status: string; styleUrl: string | null } }>(bootstrap);
+        expect(data.mapConfig).toEqual(expect.objectContaining({
+          allowedHosts: ['tiles.openfreemap.org'],
+          providerMode: 'public_allowlisted',
+          status: 'configured',
+          styleUrl: '/admin/ui/app/vendor/openfreemap-clever-lite.json'
+        }));
+
+        const shell = await app.inject({ headers: { cookie }, method: 'GET', url: '/admin/ui/app/orders?shopDomain=tenant-a.example.test' });
+        const csp = String(shell.headers['content-security-policy']);
+        expect(csp).toContain('https://tiles.openfreemap.org');
+        expect(csp).toContain("worker-src 'self' blob:");
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
+  test('Route Ops self-hosted vendor style configures map with self-only CSP', async () => {
+    await withRouteOpsMapEnv({
+      ROUTE_OPS_MAP_STYLE_URL: '/admin/ui/app/vendor/openfreemap-self-hosted-fixture.json'
+    }, async () => {
+      const { app } = await createUiHarness();
+      try {
+        const { cookie } = await loginAndReadCsrf(app);
+        const bootstrap = await app.inject({
+          headers: { cookie, accept: 'application/json' },
+          method: 'GET',
+          url: '/admin/ui/app/api/bootstrap?shopDomain=tenant-a.example.test'
+        });
+        const data = readApiData<{ mapConfig: { allowedHosts: string[]; providerMode: string | null; status: string; styleAudit: { endpoints: string[]; externalHosts: string[] } | null; styleUrl: string | null } }>(bootstrap);
+        expect(data.mapConfig).toEqual(expect.objectContaining({
+          allowedHosts: [],
+          providerMode: 'self_hosted',
+          status: 'configured',
+          styleUrl: '/admin/ui/app/vendor/openfreemap-self-hosted-fixture.json'
+        }));
+        expect(data.mapConfig.styleAudit?.externalHosts).toEqual([]);
+        expect(data.mapConfig.styleAudit?.endpoints).toContain('/admin/ui/app/vendor/tiles/{z}/{x}/{y}.pbf');
+
+        const shell = await app.inject({ headers: { cookie }, method: 'GET', url: '/admin/ui/app/orders?shopDomain=tenant-a.example.test' });
+        const csp = String(shell.headers['content-security-policy']);
+        expect(csp).toContain("connect-src 'self'");
+        expect(csp).not.toContain('tiles.openfreemap.org');
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
+  test('Route Ops rejects missing or malformed same-host style manifests', async () => {
+    for (const styleUrl of ['/admin/ui/app/vendor/missing-style.json', '/admin/ui/app/vendor/maplibre-gl.css', '/admin/ui/app/not-vendor/style.json']) {
+      await withRouteOpsMapEnv({ ROUTE_OPS_MAP_STYLE_URL: styleUrl }, async () => {
+        const { app } = await createUiHarness();
+        try {
+          const { cookie } = await loginAndReadCsrf(app);
+          const bootstrap = await app.inject({
+            headers: { cookie, accept: 'application/json' },
+            method: 'GET',
+            url: '/admin/ui/app/api/bootstrap?shopDomain=tenant-a.example.test'
+          });
+          const data = readApiData<{ mapConfig: { disabledReason?: string; providerMode: string | null; status: string; styleAudit: unknown; styleUrl: string | null } }>(bootstrap);
+          expect(data.mapConfig).toEqual(expect.objectContaining({
+            disabledReason: 'style_manifest_unavailable',
+            providerMode: null,
+            status: 'not_configured',
+            styleAudit: null,
+            styleUrl: null
+          }));
+        } finally {
+          await app.close();
+        }
+      });
+    }
+  });
+
+  test('serves Route Ops vendor map assets with correct content type', async () => {
+    const { app } = await createUiHarness();
+    try {
+      const css = await app.inject({ method: 'GET', url: '/admin/ui/app/vendor/maplibre-gl.css' });
+      expect(css.statusCode).toBe(200);
+      expect(css.headers['content-type']).toContain('text/css');
+      const style = await app.inject({ method: 'GET', url: '/admin/ui/app/vendor/openfreemap-clever-lite.json' });
+      expect(style.statusCode).toBe(200);
+      expect(style.headers['content-type']).toContain('application/json');
+      expect(style.body).toContain('tiles.openfreemap.org');
     } finally {
       await app.close();
     }
@@ -382,16 +611,22 @@ describe('Admin WooCommerce connection UI routes', () => {
         method: 'GET',
         url: '/admin/ui/app/drivers?shopDomain=tenant-a.example.test'
       });
-      const csrfToken = readCsrfFromHtml(matching.body).csrfToken;
-      expect(matching.body).toContain('Locked to the WordPress shop that launched this workspace.');
-      expect(matching.body).not.toContain('type="text" name="shopDomain"');
+      expect(matching.body).toContain('id="clever-route-ops-root"');
       expect(matching.body).not.toContain('Connection setup');
+      const bootstrap = await app.inject({
+        headers: { cookie, accept: 'application/json' },
+        method: 'GET',
+        url: '/admin/ui/app/api/bootstrap?shopDomain=tenant-a.example.test'
+      });
+      const bootstrapData = readApiData<{ csrfToken: string; mode: string; shopDomain: string }>(bootstrap);
+      const csrfToken = bootstrapData.csrfToken;
+      expect(bootstrapData).toEqual(expect.objectContaining({ mode: 'plugin', shopDomain: 'tenant-a.example.test' }));
       listCanonicalOrders.mockClear();
 
       const mismatched = await app.inject({
-        headers: { cookie },
+        headers: { cookie, accept: 'application/json' },
         method: 'GET',
-        url: '/admin/ui/app/orders?shopDomain=tenant-b.example.test'
+        url: '/admin/ui/app/api/orders?shopDomain=tenant-b.example.test'
       });
       const wooSetup = await app.inject({
         headers: { cookie },
@@ -416,8 +651,8 @@ describe('Admin WooCommerce connection UI routes', () => {
         })
       });
 
-      expect(mismatched.statusCode).toBe(200);
-      expect(mismatched.body).toContain('WordPress-launched admin session is limited to its connected shopDomain.');
+      expect(mismatched.statusCode).toBe(403);
+      expect(readApiError(mismatched).message).toContain('WordPress-launched admin session is limited to its connected shopDomain.');
       expect(listCanonicalOrders).not.toHaveBeenCalled();
       expect(wooSetup.statusCode).toBe(303);
       expect(String(wooSetup.headers.location)).toContain('/admin/ui/app/orders?');
@@ -439,7 +674,7 @@ describe('Admin WooCommerce connection UI routes', () => {
     }
   });
 
-  test('renders Shopify-app-style operating pages for orders, route creation, drivers, and settings', async () => {
+  test('serves the Route Ops SPA shell and WP-session JSON APIs for orders, routes, drivers, and settings', async () => {
     const listCanonicalOrders = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['orderSyncService']>['listCanonicalOrders']>(
       (input) => {
         if (input.filters?.readiness === 'NEEDS_REVIEW') {
@@ -477,50 +712,51 @@ describe('Admin WooCommerce connection UI routes', () => {
 
     try {
       const { cookie } = await loginAndReadCsrf(app);
-      const orders = await app.inject({
+      const shell = await app.inject({
         headers: { cookie },
         method: 'GET',
         url: '/admin/ui/app/orders?shopDomain=tenant-a.example.test'
       });
-      const routes = await app.inject({
-        headers: { cookie },
+      const orders = await app.inject({
+        headers: { cookie, accept: 'application/json' },
         method: 'GET',
-        url: '/admin/ui/app/routes?shopDomain=tenant-a.example.test&deliveryDate=2026-05-26'
+        url: '/admin/ui/app/api/orders?shopDomain=tenant-a.example.test'
+      });
+      const routes = await app.inject({
+        headers: { cookie, accept: 'application/json' },
+        method: 'GET',
+        url: '/admin/ui/app/api/routes?shopDomain=tenant-a.example.test&deliveryDate=2026-05-26'
       });
       const drivers = await app.inject({
-        headers: { cookie },
+        headers: { cookie, accept: 'application/json' },
         method: 'GET',
-        url: '/admin/ui/app/drivers?shopDomain=tenant-a.example.test'
+        url: '/admin/ui/app/api/drivers?shopDomain=tenant-a.example.test'
       });
       const settings = await app.inject({
-        headers: { cookie },
+        headers: { cookie, accept: 'application/json' },
         method: 'GET',
-        url: '/admin/ui/app/settings?shopDomain=tenant-a.example.test'
+        url: '/admin/ui/app/api/settings?shopDomain=tenant-a.example.test'
       });
 
+      expect(shell.statusCode).toBe(200);
+      expect(shell.body).toContain('id="clever-route-ops-root"');
+      expect(shell.body).toContain('/admin/ui/app/assets/');
+      expect(shell.body).not.toContain('Connection setup');
       expect(orders.statusCode).toBe(200);
-      expect(orders.body).toContain('Order list');
-      expect(orders.body).toContain('aria-label="Operate navigation"');
-      expect(orders.body).toContain('href="/admin/ui/app/routes?shopDomain=tenant-a.example.test">Routes</a>');
-      expect(orders.body).toContain('Connection setup');
-      expect(orders.body).toContain('#1001');
-      expect(orders.body).toContain('missing_delivery_date');
+      expect(readApiData<{ orders: Array<{ blockerReasons: string[]; deliveryArea: string | null; orderName: string; sourcePlatform: string }>; reviewBlockers: Array<{ blockerReasons: string[] }> }>(orders).orders[0]).toEqual(expect.objectContaining({
+        blockerReasons: [],
+        deliveryArea: 'Toronto',
+        orderName: '#1001',
+        sourcePlatform: 'WOOCOMMERCE'
+      }));
+      expect(readApiData<{ orders: unknown[]; reviewBlockers: Array<{ blockerReasons: string[] }> }>(orders).reviewBlockers[0]?.blockerReasons).toContain('missing_delivery_date');
       expect(routes.statusCode).toBe(200);
-      expect(routes.body).toContain('Create route');
-      expect(routes.body).toContain('selected ready orders');
-      expect(routes.body).toContain('123 Depot St');
+      expect(readApiData<{ routePlans: Array<{ name: string; stopsCount: number }> }>(routes).routePlans[0]).toEqual(expect.objectContaining({ name: 'Route draft', stopsCount: 2 }));
       expect(drivers.statusCode).toBe(200);
-      expect(drivers.body).toContain('Driver management');
-      expect(drivers.body).toContain('Alex Driver');
+      expect(readApiData<{ drivers: Array<{ displayName: string }> }>(drivers).drivers[0]).toEqual(expect.objectContaining({ displayName: 'Alex Driver' }));
       expect(settings.statusCode).toBe(200);
-      expect(settings.body).toContain('Store settings');
-      expect(settings.body).toContain('Store address');
-      expect(settings.body).toContain('Language');
-      expect(settings.body).toContain('123 Depot St');
-      expect(listCanonicalOrders).toHaveBeenCalledWith({
-        filters: {},
-        shopDomain: 'tenant-a.example.test'
-      });
+      expect(readApiData<{ settings: { defaultDepotAddress: string | null; locale: string } }>(settings).settings).toEqual(expect.objectContaining({ defaultDepotAddress: '123 Depot St, Toronto, ON', locale: 'en-CA' }));
+      expect(listCanonicalOrders).toHaveBeenCalledWith({ filters: {}, shopDomain: 'tenant-a.example.test' });
       expect(listDrivers).toHaveBeenCalledWith({ shopDomain: 'tenant-a.example.test' });
       expect(getSettings).toHaveBeenCalledWith({ shopDomain: 'tenant-a.example.test' });
     } finally {
@@ -528,7 +764,7 @@ describe('Admin WooCommerce connection UI routes', () => {
     }
   });
 
-  test('normalizes operate order filters and preserves shop context in navigation', async () => {
+  test('normalizes operate order filters through the Route Ops orders API', async () => {
     const listCanonicalOrders = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['orderSyncService']>['listCanonicalOrders']>(
       (input) => {
         if (input.filters?.readiness === 'NEEDS_REVIEW') {
@@ -544,22 +780,20 @@ describe('Admin WooCommerce connection UI routes', () => {
     try {
       const { cookie } = await loginAndReadCsrf(app);
       const response = await app.inject({
-        headers: { cookie },
+        headers: { cookie, accept: 'application/json' },
         method: 'GET',
-        url: '/admin/ui/app/orders?shopDomain=tenant-a.example.test&deliveryDate=2026-05-28&deliveryArea=Toronto&operateDeliveryStatus=ready&orderHealth=normal&search=%231001'
+        url: '/admin/ui/app/api/orders?shopDomain=tenant-a.example.test&deliveryDate=2026-05-28&deliveryArea=Toronto&deliveryStatus=ready&health=normal&status=unplanned&search=%231001'
       });
 
       expect(response.statusCode).toBe(200);
-      expect(response.body).toContain('Filtered order list');
-      expect(response.body).toContain('ready');
-      expect(response.body).toContain('normal');
-      expect(response.body).toContain('href="/admin/ui/app/routes?shopDomain=tenant-a.example.test">Routes</a>');
+      expect(readApiData<{ orders: Array<{ orderName: string; health: string }> }>(response).orders[0]).toEqual(expect.objectContaining({ orderName: '#1001', health: 'normal' }));
       expect(listCanonicalOrders).toHaveBeenCalledWith({
         filters: {
           deliveryArea: 'Toronto',
           deliveryDate: '2026-05-28',
           operateDeliveryStatus: 'ready',
           orderHealth: 'normal',
+          planned: false,
           search: '#1001'
         },
         shopDomain: 'tenant-a.example.test'
@@ -573,12 +807,30 @@ describe('Admin WooCommerce connection UI routes', () => {
         },
         shopDomain: 'tenant-a.example.test'
       });
+
+      const planned = await app.inject({
+        headers: { cookie, accept: 'application/json' },
+        method: 'GET',
+        url: '/admin/ui/app/api/orders?shopDomain=tenant-a.example.test&status=planned'
+      });
+      expect(planned.statusCode).toBe(200);
+      expect(listCanonicalOrders).toHaveBeenCalledWith({
+        filters: { planned: true },
+        shopDomain: 'tenant-a.example.test'
+      });
+
+      const invalid = await app.inject({
+        headers: { cookie, accept: 'application/json' },
+        method: 'GET',
+        url: '/admin/ui/app/api/orders?shopDomain=tenant-a.example.test&status=archived'
+      });
+      expect(invalid.statusCode).toBe(400);
     } finally {
       await app.close();
     }
   });
 
-  test('renders the protected Route Builder workspace with ready and review order states', async () => {
+  test('returns protected Route Builder API state with ready and review order buckets', async () => {
     const listCanonicalOrders = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['orderSyncService']>['listCanonicalOrders']>(
       (input) => {
         if (input.filters?.readiness === 'READY_TO_PLAN') return Promise.resolve([canonicalOrder()]);
@@ -611,31 +863,23 @@ describe('Admin WooCommerce connection UI routes', () => {
 
     try {
       const { cookie } = await loginAndReadCsrf(app);
-      const response = await app.inject({
-        headers: { cookie },
+      const routes = await app.inject({
+        headers: { cookie, accept: 'application/json' },
         method: 'GET',
-        url: '/admin/ui/app/routes?shopDomain=tenant-a.example.test&deliveryDate=2026-05-26'
+        url: '/admin/ui/app/api/routes?shopDomain=tenant-a.example.test&deliveryDate=2026-05-26'
+      });
+      const orders = await app.inject({
+        headers: { cookie, accept: 'application/json' },
+        method: 'GET',
+        url: '/admin/ui/app/api/orders?shopDomain=tenant-a.example.test&deliveryDate=2026-05-26'
       });
 
-      expect(response.statusCode).toBe(200);
-      expect(response.body).toContain('Route workspace');
-      expect(response.body).toContain('Create route for date');
-      expect(response.body).toContain('Ready to plan');
-      expect(response.body).toContain('Needs review');
-      expect(response.body).toContain('Manual route order');
-      expect(response.body).toContain('Route draft');
-      expect(response.body).not.toContain('Other day route');
-      expect(response.body).toContain('missing_delivery_date');
+      expect(routes.statusCode).toBe(200);
+      expect(readApiData<{ routePlans: Array<{ name: string }> }>(routes).routePlans.map((routePlan) => routePlan.name)).toEqual(['Route draft']);
+      expect(orders.statusCode).toBe(200);
+      expect(readApiData<{ orders: unknown[]; reviewBlockers: Array<{ blockerReasons: string[] }> }>(orders).reviewBlockers[0]?.blockerReasons).toContain('missing_delivery_date');
       expect(listRoutePlans).toHaveBeenCalledWith({
         deliveryDate: '2026-05-26',
-        shopDomain: 'tenant-a.example.test'
-      });
-      expect(listCanonicalOrders).toHaveBeenCalledWith({
-        filters: { deliveryDate: '2026-05-26', planned: false, readiness: 'READY_TO_PLAN' },
-        shopDomain: 'tenant-a.example.test'
-      });
-      expect(listCanonicalOrders).toHaveBeenCalledWith({
-        filters: { deliveryDate: '2026-05-26', planned: false, readiness: 'NEEDS_REVIEW' },
         shopDomain: 'tenant-a.example.test'
       });
     } finally {
@@ -643,7 +887,7 @@ describe('Admin WooCommerce connection UI routes', () => {
     }
   });
 
-  test('hides a selected route detail when it does not match the selected delivery date', async () => {
+  test('returns route detail through the Route Ops API using neutral stop field names', async () => {
     const getRoutePlanDetail = vi.fn<NonNullable<AdminCommerceConnectionsUiDependencies['routePlanService']>['getRoutePlanDetail']>(
       () => Promise.resolve(routePlanDetail())
     );
@@ -661,14 +905,20 @@ describe('Admin WooCommerce connection UI routes', () => {
     try {
       const { cookie } = await loginAndReadCsrf(app);
       const response = await app.inject({
-        headers: { cookie },
+        headers: { cookie, accept: 'application/json' },
         method: 'GET',
-        url: '/admin/ui/app/routes/route-plan-id?shopDomain=tenant-a.example.test&deliveryDate=2026-05-27'
+        url: '/admin/ui/app/api/routes/route-plan-id?shopDomain=tenant-a.example.test'
       });
 
       expect(response.statusCode).toBe(200);
-      expect(response.body).toContain('Route plan is not for the selected delivery date.');
-      expect(response.body).not.toContain('Save route stop order');
+      const detailData = readApiData<{ routePlan: { id: string; name: string }; stops: Array<{ deliveryStopId: string; orderName: string; sourceOrderId: string }> }>(response);
+      expect(detailData.routePlan).toEqual(expect.objectContaining({ id: 'route-plan-id', name: 'Route draft' }));
+      expect(detailData.stops[0]).toEqual(expect.objectContaining({
+        deliveryStopId: 'stop-1',
+        orderName: '#1001',
+        sourceOrderId: 'gid://woocommerce/Order/1001'
+      }));
+      expect(JSON.stringify(detailData.stops[0])).not.toContain('shopifyOrderGid');
       expect(getRoutePlanDetail).toHaveBeenCalledWith({
         routePlanId: 'route-plan-id',
         shopDomain: 'tenant-a.example.test'
@@ -792,7 +1042,7 @@ describe('Admin WooCommerce connection UI routes', () => {
     }
   });
 
-  test('assigns drivers from the protected route detail page', async () => {
+  test('assigns drivers from the protected Route Ops API', async () => {
     const assignedDetail = {
       ...routePlanDetail(),
       routePlan: { ...routePlanSummary(), driverId: 'driver-id' }
@@ -825,28 +1075,23 @@ describe('Admin WooCommerce connection UI routes', () => {
 
     try {
       const { cookie, csrfToken } = await loginAndReadCsrf(app);
-      const detail = await app.inject({
-        headers: { cookie },
+      const drivers = await app.inject({
+        headers: { cookie, accept: 'application/json' },
         method: 'GET',
-        url: '/admin/ui/app/routes/route-plan-id?shopDomain=tenant-a.example.test'
+        url: '/admin/ui/app/api/drivers?shopDomain=tenant-a.example.test'
       });
-      expect(detail.statusCode).toBe(200);
-      expect(detail.body).toContain('Assigned driver');
-      expect(detail.body).toContain('Alex Driver');
+      expect(drivers.statusCode).toBe(200);
+      expect(readApiData<{ drivers: Array<{ displayName: string }> }>(drivers).drivers[0]).toEqual(expect.objectContaining({ displayName: 'Alex Driver' }));
       expect(listDrivers).toHaveBeenCalledWith({ shopDomain: 'tenant-a.example.test' });
 
       const response = await app.inject({
-        method: 'POST',
-        url: '/admin/ui/app/routes/route-plan-id/driver',
-        ...authenticatedMultipartRequest(cookie, {
-          csrfToken,
-          driverId: 'driver-id',
-          shopDomain: 'tenant-a.example.test'
-        })
+        method: 'PATCH',
+        url: '/admin/ui/app/api/routes/route-plan-id/driver?shopDomain=tenant-a.example.test',
+        ...authenticatedJsonRequest(cookie, { driverId: 'driver-id' }, csrfToken)
       });
 
-      expect(response.statusCode).toBe(303);
-      expect(response.headers.location).toContain('/admin/ui/app/routes/route-plan-id');
+      expect(response.statusCode).toBe(200);
+      expect(readApiData<{ routePlan: { driverId: string } }>(response).routePlan.driverId).toBe('driver-id');
       expect(assignRoutePlanDriver).toHaveBeenCalledWith({
         payload: { driverId: 'driver-id' },
         routePlanId: 'route-plan-id',
@@ -910,7 +1155,54 @@ describe('Admin WooCommerce connection UI routes', () => {
     }
   });
 
-  test('renders a local route canvas and saves CLEVER v1 optimized stop order', async () => {
+  test('Route Ops API returns sanitized batch blockers for selected-order route hard failures', async () => {
+    const createRoutePlanFromOrderIds = vi.fn<
+      NonNullable<NonNullable<AdminCommerceConnectionsUiDependencies['routePlanService']>['createRoutePlanFromOrderIds']>
+    >(() => Promise.reject(new RoutePlanBatchInvalidError(['#1002: missing delivery coordinates', 'selected orders have mixed route scope'])));
+    const { app } = await createUiHarness({
+      orderSyncService: { listCanonicalOrders: vi.fn(() => Promise.resolve([canonicalOrder()])) },
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan: vi.fn(),
+        createRoutePlanFromOrderIds,
+        getRoutePlanDetail: vi.fn(),
+        listRoutePlans: vi.fn(() => Promise.resolve([])),
+        updateRoutePlanStops: vi.fn()
+      }
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: 'POST',
+        url: '/admin/ui/app/api/routes?shopDomain=tenant-a.example.test',
+        ...authenticatedJsonRequest(
+          cookie,
+          {
+            orderIds: ['order-1', 'order-2'],
+            planDate: '2026-05-26',
+            routeName: 'Bad batch'
+          },
+          csrfToken
+        )
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = JSON.parse(response.body) as ApiErrorEnvelope & {
+        error: { code: string; details: { blockerCounts: Record<string, number>; blockers: string[] }; message: string };
+      };
+      expect(body.error.code).toBe('ROUTE_PLAN_BATCH_INVALID');
+      expect(body.error.message).toContain('Cannot create a partial route');
+      expect(body.error.details.blockerCounts).toEqual(
+        expect.objectContaining({ missing_coordinates: 1, mixed_route_scope: 1 })
+      );
+      expect(createRoutePlanFromOrderIds).toHaveBeenCalledOnce();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('serves static Route Ops assets and saves CLEVER v1 optimized stop order via API', async () => {
     const baseDetail = routePlanDetail();
     const firstStop = baseDetail.stops[0];
     const secondStop = baseDetail.stops[1];
@@ -964,22 +1256,22 @@ describe('Admin WooCommerce connection UI routes', () => {
         url: '/admin/ui/app/routes/route-plan-id?shopDomain=tenant-a.example.test'
       });
       expect(page.statusCode).toBe(200);
-      expect(page.body).toContain('Route Builder');
-      expect(page.body).toContain('data-route-map');
-      expect(page.body).toContain('Optimize sequence · CLEVER v1');
+      expect(page.body).toContain('id="clever-route-ops-root"');
+      expect(page.body).toContain('/admin/ui/app/assets/');
       expect(page.body).not.toContain('router.project-osrm.org');
+      const assetPath = /src="([^"]+\.js)"/u.exec(page.body)?.[1];
+      expect(assetPath).toBeDefined();
+      const asset = await app.inject({ method: 'GET', url: assetPath ?? '/missing.js' });
+      expect(asset.statusCode).toBe(200);
+      expect(asset.headers['content-type']).toContain('text/javascript');
 
       const optimized = await app.inject({
         method: 'POST',
-        url: '/admin/ui/app/routes/route-plan-id/optimize',
-        ...authenticatedMultipartRequest(cookie, {
-          csrfToken,
-          shopDomain: 'tenant-a.example.test'
-        })
+        url: '/admin/ui/app/api/routes/route-plan-id/optimize?shopDomain=tenant-a.example.test',
+        ...authenticatedJsonRequest(cookie, {}, csrfToken)
       });
 
-      expect(optimized.statusCode).toBe(303);
-      expect(decodeURIComponent(String(optimized.headers.location)).replace(/\+/gu, ' ')).toContain('CLEVER v1 optimized sequence saved');
+      expect(optimized.statusCode).toBe(200);
       expect(updateRoutePlanStops).toHaveBeenCalledWith({
         payload: {
           stops: [
@@ -1451,6 +1743,22 @@ async function createUiHarness(overrides: Partial<{
   };
 }
 
+async function withRouteOpsMapEnv<T>(env: Record<string, string>, run: () => Promise<T>): Promise<T> {
+  const keys = ['ROUTE_OPS_MAP_ALLOWED_HOSTS', 'ROUTE_OPS_MAP_ATTRIBUTION', 'ROUTE_OPS_MAP_PROVIDER_MODE', 'ROUTE_OPS_MAP_STYLE_URL'];
+  const previous = new Map(keys.map((key) => [key, process.env[key]]));
+  for (const key of keys) delete process.env[key];
+  for (const [key, value] of Object.entries(env)) process.env[key] = value;
+  try {
+    return await run();
+  } finally {
+    for (const key of keys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
 function createBaseAdminCommerceDependencies() {
   const testConnection = vi.fn(() => Promise.resolve({ checkedAt: '2026-05-24T00:00:00.000Z', status: 'VERIFIED' as const }));
   const adminTokenVerifier = {
@@ -1734,6 +2042,21 @@ function authenticatedMultipartRequest(
   return {
     headers: { ...request.headers, ...headers, cookie },
     payload: request.payload
+  };
+}
+
+function authenticatedJsonRequest(cookie: string, body: unknown, csrfToken?: string): {
+  headers: Record<string, string>;
+  payload: string;
+} {
+  return {
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+      cookie,
+      ...(csrfToken === undefined ? {} : { 'x-csrf-token': csrfToken })
+    },
+    payload: JSON.stringify(body)
   };
 }
 

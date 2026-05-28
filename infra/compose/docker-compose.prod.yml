@@ -13,10 +13,7 @@ services:
       - caddy-config:/config
 
   delivery-api:
-    build:
-      context: ../../apps/delivery-api
-      dockerfile: Dockerfile
-    image: clever-route-server-delivery-api:local
+    image: ${DELIVERY_API_IMAGE:?DELIVERY_API_IMAGE is required}
     depends_on:
       postgres:
         condition: service_healthy
@@ -32,17 +29,13 @@ services:
       - /srv/clever-route-server/data/driver-proof-media:/app/var/driver-proof-media
 
   delivery-api-migrate:
-    build:
-      context: ../../apps/delivery-api
-      dockerfile: Dockerfile
-      target: build
-    image: clever-route-server-delivery-api-migrate:local
+    image: ${DELIVERY_API_MIGRATE_IMAGE:?DELIVERY_API_MIGRATE_IMAGE is required}
     depends_on:
       postgres:
         condition: service_healthy
     env_file:
       - ../env/delivery-api.env
-    command: ["npm", "exec", "--", "prisma", "db", "push", "--skip-generate"]
+    command: ["npm", "--prefix", "apps/delivery-api", "exec", "--", "prisma", "db", "push", "--schema", "apps/delivery-api/prisma/schema.prisma", "--skip-generate"]
     restart: "no"
 
   postgres:

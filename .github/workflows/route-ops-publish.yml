@@ -1,0 +1,171 @@
+name: Route Ops image publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      deployed_base_ref:
+        description: "Git SHA/ref currently deployed in production; scope guard compares this ref to HEAD"
+        required: true
+      allow_compose_image_variable_bootstrap:
+        description: "Allow the one-time compose image-variable bootstrap change"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: route-ops-publish
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  RUNTIME_IMAGE: ghcr.io/evnsolution/clever-route-server-delivery-api
+  MIGRATE_IMAGE: ghcr.io/evnsolution/clever-route-server-delivery-api-migrate
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Require main branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "Route Ops publish is manual-only and must run from refs/heads/main." >&2
+          exit 1
+
+      - name: Optional actor allowlist
+        if: vars.DEPLOY_ALLOWED_ACTORS != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra actors <<< "${{ vars.DEPLOY_ALLOWED_ACTORS }}"
+          allowed=false
+          for actor in "${actors[@]}"; do
+            actor="$(echo "$actor" | xargs)"
+            if [ "$actor" = "${{ github.actor }}" ]; then allowed=true; fi
+          done
+          if [ "$allowed" != true ]; then
+            echo "${{ github.actor }} is not allowed to publish Route Ops images." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Guard ignore hygiene
+        run: node scripts/check-ignore-hygiene.mjs
+
+      - name: Install pinned gitleaks
+        env:
+          GITLEAKS_VERSION: "8.28.0"
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Guard secret scans before publish
+        env:
+          SECRET_SCAN_REQUIRE_GITLEAKS: "1"
+        run: scripts/scan-secrets.sh --history --worktree
+
+      - name: Guard Route Ops publish scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          extra=()
+          if [ "${{ inputs.allow_compose_image_variable_bootstrap }}" = "true" ]; then
+            extra+=(--allow-compose-bootstrap)
+          fi
+          scripts/guard-route-ops-deploy-scope.mjs --base "${{ inputs.deployed_base_ref }}" --head "$GITHUB_SHA" --json "${extra[@]}"
+
+      - name: Compute image metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          schema_sha="$(sha256sum apps/delivery-api/prisma/schema.prisma | awk '{print $1}')"
+          echo "schema_sha=${schema_sha}" >> "$GITHUB_OUTPUT"
+          echo "image_tag=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/delivery-api/Dockerfile
+          target: runtime
+          push: true
+          tags: ${{ env.RUNTIME_IMAGE }}:${{ steps.meta.outputs.image_tag }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.clever-route.prisma-schema-sha=${{ steps.meta.outputs.schema_sha }}
+            org.clever-route.image-role=runtime
+
+      - name: Build and push migrate image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/delivery-api/Dockerfile
+          target: migrate
+          push: true
+          tags: ${{ env.MIGRATE_IMAGE }}:${{ steps.meta.outputs.image_tag }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.clever-route.prisma-schema-sha=${{ steps.meta.outputs.schema_sha }}
+            org.clever-route.image-role=migrate
+
+      - name: Redacted manual EC2 deploy summary
+        shell: bash
+        run: |
+          cat > route-ops-publish-summary.md <<SUMMARY
+          # Route Ops image publish summary
+
+          Image tag: \`${{ steps.meta.outputs.image_tag }}\`
+          Prisma schema SHA: \`${{ steps.meta.outputs.schema_sha }}\`
+
+          Runtime image:
+          \`${{ env.RUNTIME_IMAGE }}:${{ steps.meta.outputs.image_tag }}\`
+
+          Migrate image:
+          \`${{ env.MIGRATE_IMAGE }}:${{ steps.meta.outputs.image_tag }}\`
+
+          Manual EC2 deploy command shape, run on the production host only after reviewing this publish:
+
+          \`\`\`bash
+          cd /srv/clever-route-server
+          IMAGE_TAG=${{ steps.meta.outputs.image_tag }} \\
+          PRISMA_SCHEMA_SHA=${{ steps.meta.outputs.schema_sha }} \\
+          DELIVERY_API_IMAGE=${{ env.RUNTIME_IMAGE }}:${{ steps.meta.outputs.image_tag }} \\
+          DELIVERY_API_MIGRATE_IMAGE=${{ env.MIGRATE_IMAGE }}:${{ steps.meta.outputs.image_tag }} \\
+          scripts/deploy-route-ops-image.sh
+          \`\`\`
+
+          This workflow did not SSH to production and did not receive production SSH/admin smoke secrets.
+          SUMMARY
+          cat route-ops-publish-summary.md
+
+      - name: Upload redacted publish summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: route-ops-publish-summary
+          path: route-ops-publish-summary.md
+          retention-days: 1

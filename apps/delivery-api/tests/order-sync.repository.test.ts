@@ -129,6 +129,97 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     expect(prisma.deliveryStop.upsert).toHaveBeenCalledOnce();
   });
 
+  test('upserts delivery facts atomically with order and delivery stop snapshots', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: {
+        ...syncedOrder(),
+        deliveryFact: syncedDeliveryFact()
+      }
+    });
+
+    expect(prisma.$transaction).toHaveBeenCalledOnce();
+    expect(prisma.orderDeliveryFact.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          commerceConnectionId: '8b57ab89-3fe7-4a62-b1f4-b6dbb26ef3ea',
+          deliveryDate: new Date('2026-05-08T00:00:00.000Z'),
+          deliveryDateWeekdayMismatch: false,
+          deliveryDayParseStatus: 'PARSED',
+          orderId: 'order-id',
+          readiness: 'READY_TO_PLAN',
+          shopId: 'shop-id'
+        }) as unknown,
+        where: { shopId_orderId: { orderId: 'order-id', shopId: 'shop-id' } }
+      })
+    );
+  });
+
+  test('summarizes batch candidates from delivery facts with live coordinate and planned-state joins', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
+    prisma.orderDeliveryFact.findMany.mockResolvedValueOnce([
+      deliveryFactCandidate({ orderId: 'order-1', stopId: 'stop-1' }),
+      deliveryFactCandidate({ orderId: 'order-2', planned: true, stopId: 'stop-2' }),
+      deliveryFactCandidate({ latitude: null, orderId: 'order-3', stopId: 'stop-3' })
+    ]);
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+
+    const candidates = await repository.listDeliveryBatchCandidates({
+      deliveryDate: '2026-05-08',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(prisma.orderDeliveryFact.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { deliveryDate: new Date('2026-05-08T00:00:00.000Z'), shopId: 'shop-id' }
+      })
+    );
+    expect(candidates[0]).toEqual(
+      expect.objectContaining({
+        alreadyPlannedCount: 1,
+        blockedCount: 2,
+        missingCoordinatesCount: 1,
+        orderCount: 3,
+        readyCount: 1
+      })
+    );
+  });
+
+  test('does not let stale missing-coordinate fact readiness block a live-resolved batch candidate', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
+    prisma.orderDeliveryFact.findMany.mockResolvedValueOnce([
+      deliveryFactCandidate({
+        orderId: 'order-1',
+        readiness: 'NEEDS_REVIEW',
+        reviewReasons: ['missing_coordinates'],
+        stopId: 'stop-1'
+      })
+    ]);
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+
+    const candidates = await repository.listDeliveryBatchCandidates({
+      deliveryDate: '2026-05-08',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(candidates[0]).toEqual(
+      expect.objectContaining({
+        blockedCount: 0,
+        missingCoordinatesCount: 0,
+        readyCount: 1
+      })
+    );
+  });
+
 
 
   test('uses additive WooCommerce source identity without colliding with Shopify numeric order ids', async () => {
@@ -244,6 +335,8 @@ function createPrismaHarness(input: {
   routeStopCount: number;
 }): {
   prisma: {
+    $transaction: ReturnType<typeof vi.fn>;
+    commerceConnectionOrderMapping: { findUnique: ReturnType<typeof vi.fn> };
     deliveryStop: { updateMany: ReturnType<typeof vi.fn>; upsert: ReturnType<typeof vi.fn> };
     order: {
       create: ReturnType<typeof vi.fn>;
@@ -252,25 +345,35 @@ function createPrismaHarness(input: {
       update: ReturnType<typeof vi.fn>;
       upsert: ReturnType<typeof vi.fn>;
     };
+    orderDeliveryFact: { findMany: ReturnType<typeof vi.fn>; upsert: ReturnType<typeof vi.fn> };
     shop: { create?: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn> };
   };
 } {
   const orderRecord = canonicalOrderRecord(input.routeStopCount);
+  const prisma = {
+    $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(prisma)),
+    commerceConnectionOrderMapping: {
+      findUnique: vi.fn(() => Promise.resolve(null))
+    },
+    deliveryStop: {
+      updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
+      upsert: vi.fn(() => Promise.resolve({ id: 'stop-id' }))
+    },
+    order: {
+      create: vi.fn(() => Promise.resolve({ id: 'order-id' })),
+      findFirst: vi.fn(() => Promise.resolve(input.existingOrder)),
+      findMany: vi.fn(() => Promise.resolve([orderRecord])),
+      update: vi.fn(() => Promise.resolve({ id: 'order-id' })),
+      upsert: vi.fn(() => Promise.resolve({ id: 'order-id' }))
+    },
+    orderDeliveryFact: {
+      findMany: vi.fn(() => Promise.resolve([])),
+      upsert: vi.fn(() => Promise.resolve({ id: 'fact-id' }))
+    },
+    shop: { findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id' })) }
+  };
   return {
-    prisma: {
-      deliveryStop: {
-        updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
-        upsert: vi.fn(() => Promise.resolve({ id: 'stop-id' }))
-      },
-      order: {
-        create: vi.fn(() => Promise.resolve({ id: 'order-id' })),
-        findFirst: vi.fn(() => Promise.resolve(input.existingOrder)),
-        findMany: vi.fn(() => Promise.resolve([orderRecord])),
-        update: vi.fn(() => Promise.resolve({ id: 'order-id' })),
-        upsert: vi.fn(() => Promise.resolve({ id: 'order-id' }))
-      },
-      shop: { findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id' })) }
-    }
+    prisma
   };
 }
 
@@ -359,6 +462,84 @@ function syncedOrder(overrides: Partial<SyncedOrderWithDeliveryStopInput['order'
       updatedAtShopify: new Date('2026-05-07T13:00:00.000Z'),
       ...overrides
     }
+  };
+}
+
+function syncedDeliveryFact(): NonNullable<SyncedOrderWithDeliveryStopInput['deliveryFact']> {
+  return {
+    batchEligible: true,
+    commerceConnectionId: '8b57ab89-3fe7-4a62-b1f4-b6dbb26ef3ea',
+    computedAt: new Date('2026-05-07T13:00:00.000Z'),
+    deliveryArea: 'Mississauga',
+    deliveryDate: '2026-05-08',
+    deliveryDateWeekday: 'FRIDAY',
+    deliveryDateWeekdayMismatch: false,
+    deliveryDateWeekdayVerified: true,
+    deliveryDayParseStatus: 'PARSED',
+    deliveryDayUnparsedReason: null,
+    deliverySession: 'EVENING',
+    deliveryWeekday: 'FRIDAY',
+    geocodeStatus: 'RESOLVED',
+    mappingDiagnostics: { discoveredPathStats: { 'meta_data.delivery_day': 1 } },
+    matchedMappingPaths: {
+      deliveryArea: 'meta_data.delivery_area',
+      deliveryDate: 'meta_data.delivery_date',
+      deliveryDay: 'meta_data.delivery_day',
+      deliveryTimeWindow: null
+    },
+    planningGroupKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00|Mississauga',
+    rawDeliveryArea: 'Mississauga',
+    rawDeliveryDate: '2026-05-08',
+    rawDeliveryDay: 'Friday 5pm to 9pm *Check delivery map',
+    rawDeliveryTimeWindow: null,
+    rawPickupDay: null,
+    readiness: 'READY_TO_PLAN',
+    reviewReasons: [],
+    routeScopeKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00',
+    serviceType: 'EVENING_DELIVERY',
+    sourceOrderId: '123',
+    sourceOrderNumber: '#1035',
+    sourcePlatform: 'WOOCOMMERCE',
+    sourceSiteUrl: 'https://woo.example.test',
+    sourceUpdatedAt: new Date('2026-05-07T13:00:00.000Z'),
+    timeWindowEnd: '21:00',
+    timeWindowStart: '17:00'
+  };
+}
+
+function deliveryFactCandidate(input: {
+  latitude?: string | null;
+  orderId: string;
+  planned?: boolean;
+  readiness?: string;
+  reviewReasons?: string[];
+  stopId: string;
+}): Record<string, unknown> {
+  return {
+    deliveryArea: 'Mississauga',
+    deliveryDate: new Date('2026-05-08T00:00:00.000Z'),
+    deliveryDateWeekdayMismatch: false,
+    deliveryDateWeekdayVerified: true,
+    deliveryDayParseStatus: 'PARSED',
+    deliverySession: 'EVENING',
+    order: {
+      deliveryStops: [
+        {
+          latitude: input.latitude === undefined ? '43.589' : input.latitude,
+          longitude: input.latitude === null ? null : '-79.644',
+          routePlanStops: input.planned === true ? [{ id: 'route-stop-id' }] : [],
+          id: input.stopId
+        }
+      ]
+    },
+    orderId: input.orderId,
+    planningGroupKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00|Mississauga',
+    rawDeliveryDay: 'Friday 5pm to 9pm *Check delivery map',
+    rawDeliveryTimeWindow: null,
+    readiness: input.readiness ?? 'READY_TO_PLAN',
+    reviewReasons: input.reviewReasons ?? [],
+    routeScopeKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00',
+    serviceType: 'EVENING_DELIVERY'
   };
 }
 

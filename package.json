@@ -3,13 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "setup": "npm --prefix apps/delivery-api ci",
+    "setup": "npm --prefix apps/delivery-api ci && npm --prefix apps/route-ops-web ci",
     "dev:api": "npm --prefix apps/delivery-api run dev",
-    "build": "npm --prefix apps/delivery-api run prisma:generate && npm --prefix apps/delivery-api run build",
-    "lint": "npm --prefix apps/delivery-api run lint",
-    "typecheck": "npm --prefix apps/delivery-api run typecheck",
-    "test": "npm --prefix apps/delivery-api run test",
-    "check:workspace": "npm --prefix apps/delivery-api run check:workspace",
+    "build": "npm --prefix apps/route-ops-web run build && npm --prefix apps/delivery-api run prisma:generate && npm --prefix apps/delivery-api run build",
+    "lint": "npm --prefix apps/route-ops-web run lint && npm --prefix apps/delivery-api run lint",
+    "typecheck": "npm --prefix apps/route-ops-web run typecheck && npm --prefix apps/delivery-api run typecheck",
+    "test": "npm --prefix apps/route-ops-web run test && npm --prefix apps/delivery-api run test",
+    "check:workspace": "npm --prefix apps/route-ops-web run lint && npm --prefix apps/route-ops-web run typecheck && npm --prefix apps/route-ops-web run test && npm --prefix apps/route-ops-web run build && npm --prefix apps/delivery-api run check:workspace",
     "compose:config": "docker compose -f infra/compose/docker-compose.prod.yml config --quiet",
     "package:wordpress-plugin": "bash scripts/package-wordpress-plugin.sh"
   }

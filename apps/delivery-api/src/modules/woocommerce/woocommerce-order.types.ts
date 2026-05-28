@@ -25,6 +25,12 @@ export type WooCommerceLineItem = {
   sku?: string | null;
 };
 
+export type WooCommerceShippingLine = {
+  meta_data?: WooCommerceMetaData[] | null;
+  method_id?: string | null;
+  method_title?: string | null;
+};
+
 export type WooCommerceOrder = {
   billing?: WooCommerceAddress | null;
   currency?: string | null;
@@ -40,7 +46,7 @@ export type WooCommerceOrder = {
   payment_method?: string | null;
   payment_method_title?: string | null;
   shipping?: WooCommerceAddress | null;
-  shipping_lines?: Array<{ method_title?: string | null; method_id?: string | null }> | null;
+  shipping_lines?: WooCommerceShippingLine[] | null;
   status?: string | null;
   total?: string | null;
 };

@@ -12,6 +12,18 @@ coverage/
 *.tsbuildinfo
 apps/clever-route-connector.zip
 
+# Playwright/browser/test artifacts
+output/
+playwright-report/
+test-results/
+blob-report/
+.playwright/
+playwright/.auth/
+**/storageState*.json
+**/*cookies*.txt
+**/trace.zip
+**/*.har
+
 # Environment and secrets
 .env
 .env.*
@@ -20,6 +32,22 @@ infra/env/*.env
 !infra/env/*.env.example
 *.local
 .envrc
+*.pem
+*.key
+*.crt
+*.cer
+*.p12
+*.pfx
+*.p8
+*.pub
+*.kubeconfig
+*.mobileprovision
+*.keystore
+*.jks
+*.asc
+*.gpg
+*_rsa
+*_ed25519
 
 # Runtime/generated data
 var/
@@ -30,6 +58,15 @@ backups/
 *.sqlite
 *.sqlite3
 *.db
+*.db-shm
+*.db-wal
+*.bak
+!apps/delivery-api/prisma/migrations/**/migration.sql
+
+# Scanner/local evidence
+.gitleaks-report.*
+.trufflehog-report.*
+.secret-scan/
 
 # Evidence/private artifacts
 evidence/

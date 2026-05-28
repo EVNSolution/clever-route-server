@@ -36,4 +36,17 @@ describe('health routes', () => {
       await app.close();
     }
   });
+
+  test('GET /favicon.ico avoids browser console 404 noise', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/favicon.ico' });
+
+      expect(response.statusCode).toBe(204);
+      expect(response.body).toBe('');
+    } finally {
+      await app.close();
+    }
+  });
 });

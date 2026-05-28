@@ -1,0 +1,20 @@
+title = "CLEVER Route redacted secret scan config"
+
+[allowlist]
+description = "Known non-secret test fixtures only; keep narrow and exact."
+regexes = [
+  '''AKIA_TEST''',
+  '''AKIA_TEST_VALUE''',
+  '''AKIAIOSFODNN7EXAMPLE''',
+  '''wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY''',
+  '''secret-test-key''',
+  '''super-secret-access-key''',
+  '''scanner-token''',
+  '''sk_live_\[A-Za-z0-9\]\+''',
+]
+paths = [
+  '''apps/delivery-api/tests/driver-proof-media-s3-storage\.test\.ts''',
+  '''apps/delivery-api/tests/driver-proof-media-evidence-seed\.test\.ts''',
+  '''apps/delivery-api/tests/driver-proof-media-evidence-verifier\.test\.ts''',
+  '''apps/delivery-api/tests/api-docs\.routes\.test\.ts''',
+]

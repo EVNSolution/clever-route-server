@@ -7,6 +7,7 @@ import type {
   DeliveryServiceType,
   DeliveryWeekday,
   PlanningStatus,
+  SyncedOrderDeliveryFactInput,
   SyncedOrderWithDeliveryStopInput
 } from './order-sync.mapper.js';
 import {
@@ -50,7 +51,32 @@ export type ListCanonicalOrdersInput = {
   shopDomain: string;
 };
 
-type OrderSyncPrismaClient = Pick<PrismaClient, 'deliveryStop' | 'order' | 'shop'>;
+export type DeliveryBatchCandidate = {
+  alreadyPlannedCount: number;
+  blockedCount: number;
+  deliveryArea: string | null;
+  deliveryDate: string | null;
+  deliverySession: string | null;
+  missingCoordinatesCount: number;
+  mismatchCount: number;
+  orderCount: number;
+  planningGroupKey: string | null;
+  readyCount: number;
+  routeScopeKey: string | null;
+  serviceType: string | null;
+};
+
+export type ListDeliveryBatchCandidatesInput = {
+  deliveryDate?: string;
+  shopDomain: string;
+};
+
+type OrderSyncPrismaClient = Pick<
+  PrismaClient,
+  '$transaction' | 'commerceConnectionOrderMapping' | 'deliveryStop' | 'order' | 'orderDeliveryFact' | 'shop'
+>;
+
+type OrderSyncWriteClient = Pick<PrismaClient, 'deliveryStop' | 'order' | 'orderDeliveryFact'>;
 
 type ExistingOrder = {
   id: string;
@@ -61,6 +87,7 @@ type ExistingOrder = {
 type CanonicalOrderRecord = {
   cancelledAt: Date | null;
   currencyCode: string | null;
+  deliveryFacts?: DeliveryFactCanonicalRecord[];
   deliveryStops: DeliveryStopRecord[];
   email: string | null;
   financialStatus: string | null;
@@ -80,6 +107,22 @@ type CanonicalOrderRecord = {
   sourceUpdatedAt?: Date | null;
   totalPriceAmount: unknown;
   updatedAtShopify: Date | null;
+};
+
+type DeliveryFactCanonicalRecord = {
+  deliveryArea: string | null;
+  deliveryDate: Date | null;
+  deliveryDateWeekday: string | null;
+  deliverySession: string | null;
+  deliveryWeekday: string | null;
+  planningGroupKey: string | null;
+  rawDeliveryDay: string | null;
+  readiness: string;
+  reviewReasons: unknown;
+  routeScopeKey: string | null;
+  serviceType: string | null;
+  timeWindowEnd: Date | null;
+  timeWindowStart: Date | null;
 };
 
 type DeliveryStopRecord = {
@@ -108,6 +151,29 @@ type DeliveryStopRoutePlanStopRecord = {
     name: string;
     status: string;
   } | null;
+};
+
+type DeliveryFactCandidateRecord = {
+  deliveryArea: string | null;
+  deliveryDate: Date | null;
+  deliveryDateWeekdayMismatch: boolean;
+  deliverySession: string | null;
+  deliveryDayParseStatus: string;
+  deliveryDateWeekdayVerified: boolean;
+  order: {
+    deliveryStops: Array<{
+      latitude: unknown;
+      longitude: unknown;
+      routePlanStops?: Array<{ id: string }>;
+    }>;
+  };
+  planningGroupKey: string | null;
+  rawDeliveryDay: string | null;
+  rawDeliveryTimeWindow: string | null;
+  readiness: string;
+  reviewReasons: unknown;
+  routeScopeKey: string | null;
+  serviceType: string | null;
 };
 
 export class PrismaOrderSyncRepository {
@@ -148,43 +214,22 @@ export class PrismaOrderSyncRepository {
       return { orderId: existing.id, status: 'unchanged', stopId: null };
     }
 
-    const orderWrite = toOrderWrite(input.synced.order);
-    const order = await this.prisma.order.upsert({
-      create: { ...orderWrite, shopId: shop.id },
-      update: orderWrite,
-      where: {
-        shopId_shopifyOrderGid: {
-          shopId: shop.id,
-          shopifyOrderGid: input.synced.order.shopifyOrderGid
-        }
-      }
+    return this.prisma.$transaction((tx) =>
+      this.writeOrderWithDeliveryStop({
+        existing,
+        shopId: shop.id,
+        synced: input.synced,
+        tx
+      })
+    );
+  }
+
+  async readOrderMappingConfig(input: { commerceConnectionId: string }): Promise<Record<string, unknown> | null> {
+    const mapping = await this.prisma.commerceConnectionOrderMapping.findUnique({
+      select: { config: true },
+      where: { commerceConnectionId: input.commerceConnectionId }
     });
-
-    if (input.synced.deliveryStop === null) {
-      await this.prisma.deliveryStop.updateMany({
-        data: clearedDeliveryStopWrite(),
-        where: { orderId: order.id, shopId: shop.id }
-      });
-      return { orderId: order.id, status: existing === null ? 'created' : 'updated', stopId: null };
-    }
-
-    const deliveryStopWrite = toDeliveryStopWrite(input.synced.deliveryStop);
-    const stop = await this.prisma.deliveryStop.upsert({
-      create: {
-        ...deliveryStopWrite,
-        orderId: order.id,
-        shopId: shop.id
-      },
-      update: deliveryStopWrite,
-      where: {
-        shopId_orderId: {
-          orderId: order.id,
-          shopId: shop.id
-        }
-      }
-    });
-
-    return { orderId: order.id, status: existing === null ? 'created' : 'updated', stopId: stop.id };
+    return objectOrNull(mapping?.config) ?? null;
   }
 
   async findCanonicalOrderById(input: {
@@ -219,6 +264,34 @@ export class PrismaOrderSyncRepository {
     return orders.map((order) => toCanonicalOrderRow(order)).filter((row) => matchesDerivedFilters(row, input.filters ?? {}));
   }
 
+  async listDeliveryBatchCandidates(input: ListDeliveryBatchCandidatesInput): Promise<DeliveryBatchCandidate[]> {
+    const shop = await this.findShop(input.shopDomain);
+    if (shop === null) {
+      return [];
+    }
+    const facts = (await this.prisma.orderDeliveryFact.findMany({
+      include: {
+        order: {
+          include: {
+            deliveryStops: {
+              include: {
+                routePlanStops: {
+                  select: { id: true }
+                }
+              },
+              take: 1
+            }
+          }
+        }
+      },
+      where: {
+        ...(input.deliveryDate === undefined ? {} : { deliveryDate: parseDateOnly(input.deliveryDate) }),
+        shopId: shop.id
+      }
+    })) as DeliveryFactCandidateRecord[];
+    return summarizeDeliveryBatchCandidates(facts);
+  }
+
   private async findShop(shopDomain: string): Promise<{ id: string } | null> {
     const normalized = normalizeShopDomain(shopDomain, { allowAnyDomain: this.options.allowAnyShopDomain === true });
     const shop = await this.prisma.shop.findUnique({
@@ -234,6 +307,70 @@ export class PrismaOrderSyncRepository {
       select: { id: true }
     });
   }
+
+  private async writeOrderWithDeliveryStop(input: {
+    existing: ExistingOrder | null;
+    shopId: string;
+    synced: SyncedOrderWithDeliveryStopInput;
+    tx: OrderSyncWriteClient;
+  }): Promise<UpsertOrderWithDeliveryStopResult> {
+    const orderWrite = toOrderWrite(input.synced.order);
+    const order = await input.tx.order.upsert({
+      create: { ...orderWrite, shopId: input.shopId },
+      update: orderWrite,
+      where: {
+        shopId_shopifyOrderGid: {
+          shopId: input.shopId,
+          shopifyOrderGid: input.synced.order.shopifyOrderGid
+        }
+      }
+    });
+
+    let stopId: string | null = null;
+    if (input.synced.deliveryStop === null) {
+      await input.tx.deliveryStop.updateMany({
+        data: clearedDeliveryStopWrite(),
+        where: { orderId: order.id, shopId: input.shopId }
+      });
+    } else {
+      const deliveryStopWrite = toDeliveryStopWrite(input.synced.deliveryStop);
+      const stop = await input.tx.deliveryStop.upsert({
+        create: {
+          ...deliveryStopWrite,
+          orderId: order.id,
+          shopId: input.shopId
+        },
+        update: deliveryStopWrite,
+        where: {
+          shopId_orderId: {
+            orderId: order.id,
+            shopId: input.shopId
+          }
+        }
+      });
+      stopId = stop.id;
+    }
+
+    if (input.synced.deliveryFact !== undefined && input.synced.deliveryFact !== null) {
+      const factWrite = toOrderDeliveryFactWrite(input.synced.deliveryFact);
+      await input.tx.orderDeliveryFact.upsert({
+        create: {
+          ...factWrite,
+          orderId: order.id,
+          shopId: input.shopId
+        },
+        update: factWrite,
+        where: {
+          shopId_orderId: {
+            orderId: order.id,
+            shopId: input.shopId
+          }
+        }
+      });
+    }
+
+    return { orderId: order.id, status: input.existing === null ? 'created' : 'updated', stopId };
+  }
 }
 
 function isExistingNewerThanSnapshot(existing: ExistingOrder, incomingUpdatedAt: Date): boolean {
@@ -243,6 +380,9 @@ function isExistingNewerThanSnapshot(existing: ExistingOrder, incomingUpdatedAt:
 
 function canonicalOrderInclude(): Prisma.OrderInclude {
   return {
+    deliveryFacts: {
+      take: 1
+    },
     deliveryStops: {
       include: {
         routePlanStops: {
@@ -334,6 +474,82 @@ function matchesDerivedFilters(row: CanonicalOrderRow, filters: ListCanonicalOrd
   }
   if (filters.orderHealth !== undefined && deriveOrderHealth(row) !== filters.orderHealth) return false;
   return true;
+}
+
+function summarizeDeliveryBatchCandidates(facts: DeliveryFactCandidateRecord[]): DeliveryBatchCandidate[] {
+  const groups = new Map<string, DeliveryBatchCandidate>();
+  for (const fact of facts) {
+    const key = [
+      formatDateOnlyNullable(fact.deliveryDate),
+      fact.routeScopeKey ?? '',
+      fact.planningGroupKey ?? '',
+      fact.deliverySession ?? '',
+      fact.serviceType ?? '',
+      fact.deliveryArea ?? ''
+    ].join('|');
+    const candidate =
+      groups.get(key) ??
+      {
+        alreadyPlannedCount: 0,
+        blockedCount: 0,
+        deliveryArea: fact.deliveryArea,
+        deliveryDate: formatDateOnlyNullable(fact.deliveryDate),
+        deliverySession: fact.deliverySession,
+        missingCoordinatesCount: 0,
+        mismatchCount: 0,
+        orderCount: 0,
+        planningGroupKey: fact.planningGroupKey,
+        readyCount: 0,
+        routeScopeKey: fact.routeScopeKey,
+        serviceType: fact.serviceType
+      };
+    const stop = fact.order.deliveryStops[0] ?? null;
+    const hasCoordinates = decimalNumber(stop?.latitude) !== null && decimalNumber(stop?.longitude) !== null;
+    const alreadyPlanned = (stop?.routePlanStops?.length ?? 0) > 0;
+    const reviewReasons = readStringArray(fact.reviewReasons) ?? [];
+    const mismatch = fact.deliveryDateWeekdayMismatch || reviewReasons.includes('delivery_date_weekday_mismatch');
+    const unverifiedDay =
+      (fact.rawDeliveryDay !== null || fact.rawDeliveryTimeWindow !== null) &&
+      (!fact.deliveryDateWeekdayVerified ||
+        fact.deliveryDayParseStatus === 'UNPARSED' ||
+        fact.deliveryDayParseStatus === 'UNVERIFIED' ||
+        reviewReasons.includes('delivery_day_unparsed') ||
+        reviewReasons.includes('delivery_date_weekday_unverified'));
+    const operationalReviewReasons = discountLiveOperationalReviewReasons(reviewReasons, { hasCoordinates, alreadyPlanned });
+    const factReady = fact.readiness === 'READY_TO_PLAN' || operationalReviewReasons.length === 0;
+    const ready =
+      factReady &&
+      fact.routeScopeKey !== null &&
+      fact.deliveryDate !== null &&
+      hasCoordinates &&
+      !alreadyPlanned &&
+      !mismatch &&
+      !unverifiedDay;
+
+    candidate.orderCount += 1;
+    if (ready) candidate.readyCount += 1;
+    else candidate.blockedCount += 1;
+    if (!hasCoordinates) candidate.missingCoordinatesCount += 1;
+    if (alreadyPlanned) candidate.alreadyPlannedCount += 1;
+    if (mismatch) candidate.mismatchCount += 1;
+    groups.set(key, candidate);
+  }
+  return [...groups.values()].sort((left, right) =>
+    (left.deliveryDate ?? '').localeCompare(right.deliveryDate ?? '') ||
+    (left.routeScopeKey ?? '').localeCompare(right.routeScopeKey ?? '') ||
+    (left.planningGroupKey ?? '').localeCompare(right.planningGroupKey ?? '')
+  );
+}
+
+function discountLiveOperationalReviewReasons(
+  reviewReasons: string[],
+  input: { alreadyPlanned: boolean; hasCoordinates: boolean }
+): string[] {
+  return reviewReasons.filter((reason) => {
+    if (reason === 'missing_coordinates' && input.hasCoordinates) return false;
+    if (reason === 'already_planned' && !input.alreadyPlanned) return false;
+    return true;
+  });
 }
 
 
@@ -438,6 +654,76 @@ function toOrderWrite(input: SyncedOrderWithDeliveryStopInput['order']): {
   };
 }
 
+function toOrderDeliveryFactWrite(input: SyncedOrderDeliveryFactInput): {
+  batchEligible: boolean;
+  commerceConnectionId: string | null;
+  computedAt: Date;
+  deliveryArea: string | null;
+  deliveryDate: Date | null;
+  deliveryDateWeekday: string | null;
+  deliveryDateWeekdayMismatch: boolean;
+  deliveryDateWeekdayVerified: boolean;
+  deliveryDayParseStatus: SyncedOrderDeliveryFactInput['deliveryDayParseStatus'];
+  deliveryDayUnparsedReason: string | null;
+  deliverySession: string | null;
+  deliveryWeekday: string | null;
+  geocodeStatus: SyncedOrderDeliveryFactInput['geocodeStatus'];
+  mappingDiagnostics: Prisma.InputJsonValue;
+  matchedMappingPaths: Prisma.InputJsonValue;
+  planningGroupKey: string | null;
+  rawDeliveryArea: string | null;
+  rawDeliveryDate: string | null;
+  rawDeliveryDay: string | null;
+  rawDeliveryTimeWindow: string | null;
+  rawPickupDay: string | null;
+  readiness: SyncedOrderDeliveryFactInput['readiness'];
+  reviewReasons: Prisma.InputJsonValue;
+  routeScopeKey: string | null;
+  serviceType: string | null;
+  sourceOrderId: string | null;
+  sourceOrderNumber: string | null;
+  sourcePlatform: SyncedOrderDeliveryFactInput['sourcePlatform'];
+  sourceSiteUrl: string | null;
+  sourceUpdatedAt: Date | null;
+  timeWindowEnd: Date | null;
+  timeWindowStart: Date | null;
+} {
+  return {
+    batchEligible: input.batchEligible,
+    commerceConnectionId: input.commerceConnectionId ?? null,
+    computedAt: input.computedAt ?? new Date(),
+    deliveryArea: input.deliveryArea,
+    deliveryDate: parseDateOnly(input.deliveryDate),
+    deliveryDateWeekday: input.deliveryDateWeekday,
+    deliveryDateWeekdayMismatch: input.deliveryDateWeekdayMismatch,
+    deliveryDateWeekdayVerified: input.deliveryDateWeekdayVerified,
+    deliveryDayParseStatus: input.deliveryDayParseStatus,
+    deliveryDayUnparsedReason: input.deliveryDayUnparsedReason,
+    deliverySession: input.deliverySession,
+    deliveryWeekday: input.deliveryWeekday,
+    geocodeStatus: input.geocodeStatus,
+    mappingDiagnostics: toJson(input.mappingDiagnostics ?? {}),
+    matchedMappingPaths: toJson(input.matchedMappingPaths),
+    planningGroupKey: input.planningGroupKey,
+    rawDeliveryArea: input.rawDeliveryArea,
+    rawDeliveryDate: input.rawDeliveryDate,
+    rawDeliveryDay: input.rawDeliveryDay,
+    rawDeliveryTimeWindow: input.rawDeliveryTimeWindow,
+    rawPickupDay: input.rawPickupDay,
+    readiness: input.readiness,
+    reviewReasons: toJson(input.reviewReasons),
+    routeScopeKey: input.routeScopeKey,
+    serviceType: input.serviceType,
+    sourceOrderId: input.sourceOrderId,
+    sourceOrderNumber: input.sourceOrderNumber,
+    sourcePlatform: input.sourcePlatform,
+    sourceSiteUrl: input.sourceSiteUrl,
+    sourceUpdatedAt: input.sourceUpdatedAt,
+    timeWindowEnd: parseTorontoTimeWindow(input.deliveryDate, input.timeWindowEnd),
+    timeWindowStart: parseTorontoTimeWindow(input.deliveryDate, input.timeWindowStart)
+  };
+}
+
 function readShippingAddressFromRawPayload(rawPayload: SyncedOrderWithDeliveryStopInput['order']['rawPayload']): {
   address1: string | null;
   address2: string | null;
@@ -459,29 +745,31 @@ function readShippingAddressFromRawPayload(rawPayload: SyncedOrderWithDeliverySt
 
 function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
   const stop = order.deliveryStops[0] ?? null;
+  const fact = order.deliveryFacts?.[0] ?? null;
   const raw = objectOrNull(order.rawPayload);
   const shippingAddress = readShippingAddress(order.shippingAddress, stop);
   const latitude = decimalNumber(stop?.latitude);
   const longitude = decimalNumber(stop?.longitude);
   const hasCoordinates = latitude !== null && longitude !== null;
-  const reviewReasons = readStringArray(raw?.reviewReasons) ?? [];
-  const readiness = readReadiness(raw?.readiness, order.cancelledAt, reviewReasons);
+  const factReviewReasons = readStringArray(fact?.reviewReasons) ?? null;
+  const reviewReasons = factReviewReasons ?? readStringArray(raw?.reviewReasons) ?? [];
+  const readiness = readReadiness(fact?.readiness ?? raw?.readiness, order.cancelledAt, reviewReasons);
   const planningStatus: PlanningStatus = (stop?.routePlanStops?.length ?? 0) > 0 ? 'PLANNED' : 'UNPLANNED';
   const routePlan = stop?.routePlanStops?.[0]?.routePlan ?? null;
 
   return {
     cancelledAt: formatDateTime(order.cancelledAt),
     currencyCode: order.currencyCode,
-    deliveryArea: readString(raw?.deliveryArea),
+    deliveryArea: fact?.deliveryArea ?? readString(raw?.deliveryArea),
     deliveryBatchEndDate: readString(raw?.deliveryBatchEndDate),
     deliveryBatchStartDate: readString(raw?.deliveryBatchStartDate),
-    deliveryDate: readString(raw?.deliveryDate) ?? formatDateOnlyNullable(stop?.deliveryDate ?? null),
+    deliveryDate: formatDateOnlyNullable(fact?.deliveryDate ?? null) ?? readString(raw?.deliveryDate) ?? formatDateOnlyNullable(stop?.deliveryDate ?? null),
     deliveryDateSource: readDeliveryDateSource(raw?.deliveryDateSource),
-    deliveryDayRaw: readString(raw?.deliveryDayRaw) ?? readString(raw?.deliveryDay),
-    deliverySession: readDeliverySession(raw?.deliverySession),
+    deliveryDayRaw: fact?.rawDeliveryDay ?? readString(raw?.deliveryDayRaw) ?? readString(raw?.deliveryDay),
+    deliverySession: readDeliverySession(fact?.deliverySession ?? raw?.deliverySession),
     deliveryStopId: stop?.id ?? null,
     deliveryStopStatus: stop?.status ?? null,
-    deliveryWeekday: readDeliveryWeekday(raw?.deliveryWeekday),
+    deliveryWeekday: readDeliveryWeekday(fact?.deliveryWeekday ?? fact?.deliveryDateWeekday ?? raw?.deliveryWeekday),
     email: order.email,
     financialStatus: order.financialStatus,
     fulfillmentStatus: order.fulfillmentStatus,
@@ -495,7 +783,7 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     orderId: order.id,
     phone: order.phone,
     pickup: readBoolean(raw?.pickup) ?? false,
-    planningGroupKey: readString(raw?.planningGroupKey),
+    planningGroupKey: fact?.planningGroupKey ?? readString(raw?.planningGroupKey),
     planningStatus,
     processedAt: formatDateTime(order.processedAt),
     readiness,
@@ -504,8 +792,8 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     routePlanId: routePlan?.id ?? null,
     routePlanName: routePlan?.name ?? null,
     routePlanStatus: routePlan?.status ?? null,
-    routeScopeKey: readString(raw?.routeScopeKey),
-    serviceType: readServiceType(raw?.serviceType),
+    routeScopeKey: fact?.routeScopeKey ?? readString(raw?.routeScopeKey),
+    serviceType: readServiceType(fact?.serviceType ?? raw?.serviceType),
     shippingAddress,
     shopifyOrderGid: order.shopifyOrderGid,
     shopifyOrderLegacyId: order.shopifyOrderLegacyId === null ? null : String(order.shopifyOrderLegacyId),
@@ -514,8 +802,8 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     sourcePlatform: order.sourcePlatform ?? 'SHOPIFY',
     sourceSiteUrl: order.sourceSiteUrl ?? null,
     sourceUpdatedAt: formatDateTime(order.sourceUpdatedAt ?? order.updatedAtShopify),
-    timeWindowEnd: readString(raw?.timeWindowEnd),
-    timeWindowStart: readString(raw?.timeWindowStart),
+    timeWindowEnd: formatTimeOnlyNullable(fact?.timeWindowEnd ?? null) ?? readString(raw?.timeWindowEnd),
+    timeWindowStart: formatTimeOnlyNullable(fact?.timeWindowStart ?? null) ?? readString(raw?.timeWindowStart),
     totalPriceAmount: decimalLikeString(order.totalPriceAmount),
     updatedAtShopify: formatDateTime(order.updatedAtShopify)
   };
@@ -625,6 +913,10 @@ function zonedTimeToUtc(date: string, time: string, timeZone: string): Date | nu
 
 function formatDateOnlyNullable(value: Date | null): string | null {
   return value === null ? null : value.toISOString().slice(0, 10);
+}
+
+function formatTimeOnlyNullable(value: Date | null): string | null {
+  return value === null ? null : value.toISOString().slice(11, 16);
 }
 
 function readGeocodeStatus(value: unknown): CanonicalOrderRow['geocodeStatus'] {

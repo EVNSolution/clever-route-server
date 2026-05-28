@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 
 import {
+  RoutePlanBatchInvalidError,
   RoutePlanDriverAssignInvalidError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanStopUpdateInvalidError
@@ -26,7 +27,7 @@ const OPTIMIZER_VERSION = 'manual-sequence-mvp';
 
 type RoutePlanPrismaClient = Pick<
   PrismaClient,
-  '$transaction' | 'deliveryStop' | 'driver' | 'order' | 'routePlan' | 'routePlanStop' | 'shop'
+  '$transaction' | 'deliveryStop' | 'driver' | 'order' | 'orderDeliveryFact' | 'routePlan' | 'routePlanStop' | 'shop'
 >;
 
 type RoutePlanRecord = {
@@ -79,10 +80,12 @@ type DeliveryStopRecord = {
   postalCode: string | null;
   province: string | null;
   recipientName: string | null;
+  routePlanStops?: Array<{ id: string }>;
   status: string;
 };
 
 type OrderRecord = {
+  currencyCode?: string | null;
   deliveryStops?: DeliveryStopRecord[];
   email?: string | null;
   financialStatus: string | null;
@@ -95,11 +98,51 @@ type OrderRecord = {
   shopifyOrderGid: string;
 };
 
+type OrderDeliveryFactRecord = {
+  deliveryArea: string | null;
+  deliveryDate: Date | null;
+  deliveryDateWeekday: string | null;
+  deliveryDateWeekdayMismatch: boolean;
+  deliveryDateWeekdayVerified: boolean;
+  deliveryDayParseStatus: string;
+  deliverySession: string | null;
+  deliveryWeekday: string | null;
+  geocodeStatus: string;
+  order: {
+    deliveryStops?: DeliveryFactStopRecord[];
+    name: string;
+  };
+  orderId: string;
+  planningGroupKey: string | null;
+  rawDeliveryDay: string | null;
+  rawDeliveryTimeWindow: string | null;
+  readiness: string;
+  reviewReasons: unknown;
+  routeScopeKey: string | null;
+  serviceType: string | null;
+  sourceOrderId: string | null;
+  sourceOrderNumber: string | null;
+  sourcePlatform: string;
+  sourceSiteUrl: string | null;
+  timeWindowEnd: Date | null;
+  timeWindowStart: Date | null;
+};
+
+type DeliveryFactStopRecord = {
+  id: string;
+  latitude: unknown;
+  longitude: unknown;
+  routePlanStops?: Array<{ id: string }>;
+};
+
 export class PrismaRoutePlanRepository implements RoutePlanRepository {
-  constructor(private readonly prisma: RoutePlanPrismaClient) {}
+  constructor(
+    private readonly prisma: RoutePlanPrismaClient,
+    private readonly options: { allowAnyShopDomain?: boolean } = {}
+  ) {}
 
   async assignRoutePlanDriver(input: UpdateRoutePlanDriverInput): Promise<RoutePlanDetail | null> {
-    const shopDomain = normalizeShopDomain(input.shopDomain);
+    const shopDomain = this.normalizeShopDomain(input.shopDomain);
     const driverId = input.payload.driverId;
 
     const assigned = await this.prisma.$transaction(async (tx) => {
@@ -162,7 +205,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     routeScope?: RoutePlanRouteScopeInput;
     shopDomain: string;
   }): Promise<RoutePlanSummary> {
-    const shopDomain = normalizeShopDomain(input.shopDomain);
+    const shopDomain = this.normalizeShopDomain(input.shopDomain);
     const planDate = parsePlanDate(input.planDate);
     const metrics = createMetrics(input.orders);
     const constraints = createConstraints(input.depot, input.routeScope);
@@ -257,6 +300,101 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     });
   }
 
+  async createRoutePlanDraftFromOrderIds(input: {
+    createdBy: string;
+    depot: RoutePlanDepotInput;
+    name: string;
+    orderIds: string[];
+    planDate: string;
+    shopDomain: string;
+  }): Promise<RoutePlanSummary> {
+    const shopDomain = this.normalizeShopDomain(input.shopDomain);
+    const planDate = parsePlanDate(input.planDate);
+    const orderIds = normalizeSelectedOrderIds(input.orderIds);
+
+    return this.prisma.$transaction(async (tx) => {
+      const shop = await tx.shop.findUnique({
+        select: { id: true },
+        where: { shopDomain }
+      });
+      if (shop === null) {
+        throw new RoutePlanBatchInvalidError(['shop not found']);
+      }
+
+      const facts = (await tx.orderDeliveryFact.findMany({
+        include: {
+          order: {
+            include: {
+              deliveryStops: {
+                include: {
+                  routePlanStops: {
+                    select: { id: true }
+                  }
+                },
+                take: 1
+              }
+            }
+          }
+        },
+        where: {
+          orderId: { in: orderIds },
+          shopId: shop.id
+        }
+      })) as OrderDeliveryFactRecord[];
+
+      const blockers = validateFactsForRouteCreation({
+        facts,
+        orderIds,
+        planDate: input.planDate
+      });
+      if (blockers.length > 0) {
+        throw new RoutePlanBatchInvalidError(blockers);
+      }
+
+      const orderedFacts = orderIds.map((orderId) => facts.find((fact) => fact.orderId === orderId)).filter((fact): fact is OrderDeliveryFactRecord => fact !== undefined);
+      const first = orderedFacts[0];
+      if (first === undefined || first.routeScopeKey === null || first.deliverySession === null || first.serviceType === null) {
+        throw new RoutePlanBatchInvalidError(['selected orders do not have a route scope']);
+      }
+      const routeScope: RoutePlanRouteScopeInput = {
+        deliveryDate: input.planDate,
+        deliverySession: readRouteScopeDeliverySession(first.deliverySession),
+        routeScopeKey: first.routeScopeKey,
+        serviceType: readRouteScopeServiceType(first.serviceType),
+        timeWindowEnd: readRouteScopeTime(first.routeScopeKey, 'end') ?? formatTimeOnlyNullable(first.timeWindowEnd),
+        timeWindowStart: readRouteScopeTime(first.routeScopeKey, 'start') ?? formatTimeOnlyNullable(first.timeWindowStart)
+      };
+      const deliveryStopIds = orderedFacts.map((fact) => fact.order.deliveryStops?.[0]?.id).filter((id): id is string => id !== undefined);
+      const metrics = createMetricsFromFacts(orderedFacts);
+      const constraints = createConstraints(input.depot, routeScope);
+
+      const routePlan = await tx.routePlan.create({
+        data: {
+          constraints,
+          createdBy: input.createdBy,
+          depotLatitude: decimalString(input.depot.latitude),
+          depotLongitude: decimalString(input.depot.longitude),
+          metrics,
+          name: input.name,
+          optimizerVersion: OPTIMIZER_VERSION,
+          planDate,
+          shopId: shop.id,
+          status: 'DRAFT'
+        }
+      });
+
+      await tx.routePlanStop.createMany({
+        data: deliveryStopIds.map((deliveryStopId, index) => ({
+          deliveryStopId,
+          routePlanId: routePlan.id,
+          sequence: index + 1
+        }))
+      });
+
+      return toRoutePlanSummary(routePlan);
+    });
+  }
+
   async listRoutePlans(input: ListRoutePlansInput): Promise<RoutePlanSummary[]> {
     const shop = await this.findShop(input.shopDomain);
     if (shop === null) {
@@ -344,7 +482,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
   async updateRoutePlanStops(input: UpdateRoutePlanStopsInput): Promise<RoutePlanDetail | null> {
     assertNoDuplicateStopUpdateInputs(input.payload.stops);
     const normalizedStops = normalizeStopUpdateInputs(input.payload.stops);
-    const shopDomain = normalizeShopDomain(input.shopDomain);
+    const shopDomain = this.normalizeShopDomain(input.shopDomain);
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const shop = await tx.shop.findUnique({
@@ -483,8 +621,12 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
   private async findShop(shopDomain: string): Promise<{ id: string } | null> {
     return this.prisma.shop.findUnique({
       select: { id: true },
-      where: { shopDomain: normalizeShopDomain(shopDomain) }
+      where: { shopDomain: this.normalizeShopDomain(shopDomain) }
     });
+  }
+
+  private normalizeShopDomain(value: string): string {
+    return normalizeShopDomain(value, { allowAnyDomain: this.options.allowAnyShopDomain === true });
   }
 }
 
@@ -504,6 +646,114 @@ function assertNoDuplicateOrderInputs(orders: RoutePlanOrderInput[]): void {
   if (duplicateOrderNames.length > 0) {
     throw new RoutePlanOrderAlreadyPlannedError(duplicateOrderNames);
   }
+}
+
+function normalizeSelectedOrderIds(orderIds: string[]): string[] {
+  const normalized = orderIds.map((id) => id.trim()).filter((id) => id !== '');
+  if (normalized.length === 0) {
+    throw new RoutePlanBatchInvalidError(['select at least one order']);
+  }
+  const seen = new Set<string>();
+  const duplicates = normalized.filter((id) => {
+    if (seen.has(id)) return true;
+    seen.add(id);
+    return false;
+  });
+  if (duplicates.length > 0) {
+    throw new RoutePlanBatchInvalidError(duplicates.map((id) => `${id}: duplicate selected order`));
+  }
+  return normalized;
+}
+
+function validateFactsForRouteCreation(input: {
+  facts: OrderDeliveryFactRecord[];
+  orderIds: string[];
+  planDate: string;
+}): string[] {
+  const blockers: string[] = [];
+  const factsByOrderId = new Map(input.facts.map((fact) => [fact.orderId, fact]));
+  const missing = input.orderIds.filter((orderId) => !factsByOrderId.has(orderId));
+  blockers.push(...missing.map((orderId) => `${orderId}: delivery facts not found`));
+
+  const sourceScopes = new Set<string>();
+  const routeScopes = new Set<string>();
+  for (const orderId of input.orderIds) {
+    const fact = factsByOrderId.get(orderId);
+    if (fact === undefined) continue;
+    const label = fact.sourceOrderNumber ?? fact.order.name ?? orderId;
+    const reviewReasons = readStringArray(fact.reviewReasons) ?? [];
+    const stop = fact.order.deliveryStops?.[0] ?? null;
+    sourceScopes.add(`${fact.sourcePlatform}|${fact.sourceSiteUrl ?? ''}`);
+    routeScopes.add(`${formatDateOnlyNullable(fact.deliveryDate)}|${fact.routeScopeKey ?? ''}|${fact.deliverySession ?? ''}|${fact.serviceType ?? ''}|${formatTimeOnlyNullable(fact.timeWindowStart) ?? ''}|${formatTimeOnlyNullable(fact.timeWindowEnd) ?? ''}`);
+
+    if (formatDateOnlyNullable(fact.deliveryDate) !== input.planDate) {
+      blockers.push(`${label}: delivery date does not match the route date`);
+    }
+    const hasCoordinates = stop === null ? false : decimalNumber(stop.latitude) !== null && decimalNumber(stop.longitude) !== null;
+    const alreadyPlanned = (stop?.routePlanStops?.length ?? 0) > 0;
+    const operationalReviewReasons = discountLiveOperationalReviewReasons(reviewReasons, { alreadyPlanned, hasCoordinates });
+    const factReady = fact.readiness === 'READY_TO_PLAN' || operationalReviewReasons.length === 0;
+    if (!factReady) {
+      blockers.push(`${label}: needs review (${operationalReviewReasons.length === 0 ? 'needs_delivery_metadata_review' : operationalReviewReasons.join(', ')})`);
+    }
+    if (fact.routeScopeKey === null || fact.deliverySession === null || fact.serviceType === null) {
+      blockers.push(`${label}: missing route scope`);
+    }
+    if (fact.deliveryDateWeekdayMismatch || reviewReasons.includes('delivery_date_weekday_mismatch')) {
+      blockers.push(`${label}: delivery date weekday mismatch`);
+    }
+    if (
+      (fact.rawDeliveryDay !== null || fact.rawDeliveryTimeWindow !== null) &&
+      (!fact.deliveryDateWeekdayVerified ||
+        fact.deliveryDayParseStatus === 'UNPARSED' ||
+        fact.deliveryDayParseStatus === 'UNVERIFIED' ||
+        reviewReasons.includes('delivery_day_unparsed') ||
+        reviewReasons.includes('delivery_date_weekday_unverified'))
+    ) {
+      blockers.push(`${label}: unverified Woo delivery day/time`);
+    }
+    if (stop === null) {
+      blockers.push(`${label}: missing delivery stop`);
+      continue;
+    }
+    if (!hasCoordinates) {
+      blockers.push(`${label}: missing delivery coordinates`);
+    }
+    if (alreadyPlanned) {
+      blockers.push(`${label}: already assigned to a route`);
+    }
+  }
+
+  if (sourceScopes.size > 1) blockers.push('selected orders have mixed source scope');
+  if (routeScopes.size > 1) blockers.push('selected orders have mixed route scope');
+  return [...new Set(blockers)];
+}
+
+function discountLiveOperationalReviewReasons(
+  reviewReasons: string[],
+  input: { alreadyPlanned: boolean; hasCoordinates: boolean }
+): string[] {
+  return reviewReasons.filter((reason) => {
+    if (reason === 'missing_coordinates' && input.hasCoordinates) return false;
+    if (reason === 'already_planned' && !input.alreadyPlanned) return false;
+    return true;
+  });
+}
+
+function readRouteScopeDeliverySession(value: string): RoutePlanRouteScopeInput['deliverySession'] {
+  if (value === 'DAY' || value === 'EVENING' || value === 'PICKUP') return value;
+  throw new RoutePlanBatchInvalidError([`invalid delivery session: ${value}`]);
+}
+
+function readRouteScopeServiceType(value: string): RoutePlanRouteScopeInput['serviceType'] {
+  if (value === 'DELIVERY' || value === 'EVENING_DELIVERY' || value === 'PICKUP') return value;
+  throw new RoutePlanBatchInvalidError([`invalid service type: ${value}`]);
+}
+
+function readRouteScopeTime(routeScopeKey: string, part: 'start' | 'end'): string | null {
+  const pieces = routeScopeKey.split('|');
+  const value = pieces[part === 'start' ? 2 : 3] ?? '';
+  return /^\d{2}:\d{2}$/u.test(value) ? value : null;
 }
 
 function assertNoDuplicateStopUpdateInputs(stops: UpdateRoutePlanStopsInput['payload']['stops']): void {
@@ -626,6 +876,18 @@ function createMetricsFromOrders(
       return decimalNumber(stop?.latitude) === null || decimalNumber(stop?.longitude) === null;
     }).length,
     stopsCount
+  };
+}
+
+function createMetricsFromFacts(facts: OrderDeliveryFactRecord[]): Prisma.InputJsonObject {
+  return {
+    deliveryAreas: uniqueStrings(facts.map((fact) => fact.deliveryArea)),
+    deliveryDays: uniqueStrings(facts.map((fact) => fact.rawDeliveryDay ?? fact.deliveryWeekday)),
+    missingCoordinates: facts.filter((fact) => {
+      const stop = fact.order.deliveryStops?.[0] ?? null;
+      return decimalNumber(stop?.latitude) === null || decimalNumber(stop?.longitude) === null;
+    }).length,
+    stopsCount: facts.length
   };
 }
 
@@ -1002,6 +1264,10 @@ function formatDateOnlyNullable(value: Date | null): string | null {
   return value === null ? null : formatDateOnly(value);
 }
 
+function formatTimeOnlyNullable(value: Date | null): string | null {
+  return value === null ? null : value.toISOString().slice(11, 16);
+}
+
 function parseShopifyOrderLegacyId(value: string): bigint | null {
   const match = /\/(\d+)$/u.exec(value);
   if (match?.[1] === undefined) {
@@ -1011,9 +1277,23 @@ function parseShopifyOrderLegacyId(value: string): bigint | null {
   return BigInt(match[1]);
 }
 
-function normalizeShopDomain(value: string): string {
+function normalizeShopDomain(value: string, options: { allowAnyDomain?: boolean } = {}): string {
   const trimmed = value.trim().toLowerCase();
   const withoutProtocol = trimmed.replace(/^https?:\/\//u, '').replace(/\/$/u, '');
+
+  if (options.allowAnyDomain === true) {
+    if (
+      withoutProtocol === '' ||
+      withoutProtocol.length > 255 ||
+      withoutProtocol.startsWith('.') ||
+      withoutProtocol.endsWith('.') ||
+      !withoutProtocol.includes('.') ||
+      !/^[a-z0-9.-]+$/u.test(withoutProtocol)
+    ) {
+      throw new Error('Shop domain is not a valid customer domain');
+    }
+    return withoutProtocol;
+  }
 
   if (!withoutProtocol.endsWith('.myshopify.com')) {
     throw new Error('Shop domain must end with .myshopify.com');

@@ -17,7 +17,7 @@ import type {
 
 type WordPressPluginPrismaClient = Pick<
   PrismaClient,
-  'commerceConnection' | 'routePlan' | 'wordPressPluginPairingCode' | 'wordPressPluginToken'
+  'commerceConnection' | 'commerceConnectionOrderMapping' | 'orderDeliveryFact' | 'routePlan' | 'wordPressPluginPairingCode' | 'wordPressPluginToken'
 >;
 
 type RoutePlanSummaryRecord = {
@@ -294,8 +294,8 @@ export class PrismaWordPressPluginRepository implements WordPressPluginAuthRepos
     };
   }
 
-  readMapping(): WordPressPluginMappingConfig {
-    return {
+  async readMapping(input?: { context?: WordPressPluginConnectionContext }): Promise<WordPressPluginMappingConfig> {
+    const base: WordPressPluginMappingConfig = {
       addressPreference: 'shipping',
       deliveryAreaMetaKey: 'delivery_area',
       deliveryDateMetaKey: 'delivery_date',
@@ -308,6 +308,26 @@ export class PrismaWordPressPluginRepository implements WordPressPluginAuthRepos
         phone: 'redacted',
         recipientName: 'redacted'
       }
+    };
+    const context = input?.context;
+    if (context === undefined) return base;
+
+    const [mapping, facts] = await Promise.all([
+      this.prisma.commerceConnectionOrderMapping.findUnique({
+        select: { config: true, discoveredPathStats: true },
+        where: { commerceConnectionId: context.connectionId }
+      }),
+      this.prisma.orderDeliveryFact.findMany({
+        select: { mappingDiagnostics: true, matchedMappingPaths: true, reviewReasons: true },
+        take: 500,
+        where: { commerceConnectionId: context.connectionId }
+      })
+    ]);
+    return {
+      ...base,
+      ...(mapping === null ? {} : { config: mapping.config }),
+      diagnostics: summarizeMappingDiagnostics(mapping?.discoveredPathStats ?? null, facts),
+      matchedMappingPaths: summarizeMatchedMappingPaths(facts.map((fact) => fact.matchedMappingPaths))
     };
   }
 
@@ -424,6 +444,54 @@ function formatDateOnly(date: Date): string {
 
 function objectOrNull(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function summarizeMappingDiagnostics(
+  storedStats: unknown,
+  facts: Array<{ mappingDiagnostics: unknown; reviewReasons: unknown }>
+): NonNullable<WordPressPluginMappingConfig['diagnostics']> {
+  const discoveredPathStats = readNumberRecord(storedStats);
+  let unsupportedValueCount = 0;
+  let unparseableValueCount = 0;
+  for (const fact of facts) {
+    const diagnostics = objectOrNull(fact.mappingDiagnostics);
+    const stats = readNumberRecord(diagnostics?.discoveredPathStats);
+    for (const [path, count] of Object.entries(stats)) {
+      discoveredPathStats[path] = (discoveredPathStats[path] ?? 0) + count;
+    }
+    const unsupported = diagnostics?.unsupportedValues;
+    if (Array.isArray(unsupported)) unsupportedValueCount += unsupported.length;
+    const reasons = readStringArray(fact.reviewReasons);
+    if (reasons.includes('delivery_day_unparsed') || reasons.includes('delivery_date_weekday_unverified')) {
+      unparseableValueCount += 1;
+    }
+  }
+  return { discoveredPathStats, unparseableValueCount, unsupportedValueCount };
+}
+
+function summarizeMatchedMappingPaths(values: unknown[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const value of values) {
+    const object = objectOrNull(value);
+    if (object === null) continue;
+    for (const path of Object.values(object)) {
+      if (typeof path !== 'string' || path.trim() === '') continue;
+      counts[path] = (counts[path] ?? 0) + 1;
+    }
+  }
+  return counts;
+}
+
+function readNumberRecord(value: unknown): Record<string, number> {
+  const object = objectOrNull(value);
+  if (object === null) return {};
+  return Object.fromEntries(
+    Object.entries(object).filter((entry): entry is [string, number] => typeof entry[1] === 'number' && Number.isFinite(entry[1]))
+  );
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
 }
 
 function readNumber(value: unknown): number | null {

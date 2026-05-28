@@ -1,5 +1,6 @@
 import type {
   CreateRoutePlanInput,
+  CreateRoutePlanFromOrderIdsInput,
   ListRoutePlansInput,
   RoutePlanDetail,
   RoutePlanRouteResult,
@@ -22,6 +23,14 @@ export type RoutePlanRepository = {
     orders: CreateRoutePlanInput['payload']['orders'];
     planDate: string;
     routeScope?: CreateRoutePlanInput['payload']['routeScope'];
+    shopDomain: string;
+  }): Promise<RoutePlanSummary>;
+  createRoutePlanDraftFromOrderIds?(input: {
+    createdBy: string;
+    depot: CreateRoutePlanInput['payload']['depot'];
+    name: string;
+    orderIds: string[];
+    planDate: string;
     shopDomain: string;
   }): Promise<RoutePlanSummary>;
   findRoutePlanDetail(input: {
@@ -50,6 +59,20 @@ export class RoutePlanAdminService implements RoutePlanService {
       orders: input.payload.orders,
       planDate: input.payload.planDate,
       routeScope: input.payload.routeScope,
+      shopDomain: input.shopDomain
+    });
+  }
+
+  createRoutePlanFromOrderIds(input: CreateRoutePlanFromOrderIdsInput): Promise<RoutePlanSummary> {
+    if (this.repository.createRoutePlanDraftFromOrderIds === undefined) {
+      throw new Error('Route creation from selected order ids is not supported by this repository');
+    }
+    return this.repository.createRoutePlanDraftFromOrderIds({
+      createdBy: input.createdBy,
+      depot: input.payload.depot,
+      name: input.payload.name,
+      orderIds: input.payload.orderIds,
+      planDate: input.payload.planDate,
       shopDomain: input.shopDomain
     });
   }

@@ -19,6 +19,8 @@ export type DeliveryScope = {
   deliveryBatchStartDate: string | null;
   deliveryDate: string | null;
   deliveryDateSource: DeliveryDateSource;
+  deliveryDateWeekday: DeliveryWeekday | null;
+  deliveryDateWeekdayMismatch: boolean;
   deliverySession: DeliverySession | null;
   deliveryWeekday: DeliveryWeekday | null;
   orderCreatedAt: string | null;
@@ -28,6 +30,12 @@ export type DeliveryScope = {
   serviceType: DeliveryServiceType | null;
   timeWindowEnd: string | null;
   timeWindowStart: string | null;
+};
+
+export type DeliveryDayVerification = {
+  deliveryWeekday: DeliveryWeekday | null;
+  serviceType: DeliveryServiceType | null;
+  verified: boolean;
 };
 
 type ParsedService = {
@@ -53,7 +61,8 @@ export function calculateDeliveryScope(input: DeliveryScopeInput): DeliveryScope
   const explicitDeliveryDate = parseExplicitDeliveryDate(input.deliveryDateRaw ?? null, orderDateLocal);
   const lineItemRange = findLineItemDateRange(input.lineItems, orderDateLocal);
   const fallbackRange = lineItemRange ?? (orderDateLocal === null ? null : calculateCycleRange(orderDateLocal));
-  const deliveryWeekday = service.deliveryWeekday ?? weekdayFromDate(explicitDeliveryDate);
+  const explicitDeliveryDateWeekday = weekdayFromDate(explicitDeliveryDate);
+  const deliveryWeekday = service.deliveryWeekday ?? explicitDeliveryDateWeekday;
   const serviceType = service.serviceType ?? (explicitDeliveryDate === null ? null : 'DELIVERY');
   const deliverySession = service.deliverySession ?? (explicitDeliveryDate === null ? null : 'DAY');
   const deliveryDate =
@@ -70,12 +79,19 @@ export function calculateDeliveryScope(input: DeliveryScopeInput): DeliveryScope
       ? null
       : [deliveryDate, serviceType, service.timeWindowStart ?? '', service.timeWindowEnd ?? ''].join('|');
   const deliveryArea = normalizeOptional(input.deliveryArea);
+  const deliveryDateWeekday = weekdayFromDate(deliveryDate);
+  const deliveryDateWeekdayMismatch =
+    service.deliveryWeekday !== null &&
+    deliveryDateWeekday !== null &&
+    service.deliveryWeekday !== deliveryDateWeekday;
 
   return {
     deliveryBatchEndDate: fallbackRange?.endDate ?? null,
     deliveryBatchStartDate: fallbackRange?.startDate ?? null,
     deliveryDate,
     deliveryDateSource,
+    deliveryDateWeekday,
+    deliveryDateWeekdayMismatch,
     deliverySession,
     deliveryWeekday,
     orderCreatedAt,
@@ -85,6 +101,22 @@ export function calculateDeliveryScope(input: DeliveryScopeInput): DeliveryScope
     serviceType,
     timeWindowEnd: service.timeWindowEnd,
     timeWindowStart: service.timeWindowStart
+  };
+}
+
+export function verifyDeliveryDayRaw(value: string | null, options: { pickup?: boolean } = {}): DeliveryDayVerification {
+  if (value === null) {
+    return {
+      deliveryWeekday: null,
+      serviceType: null,
+      verified: false
+    };
+  }
+  const parsed = parseService(value, options.pickup === true);
+  return {
+    deliveryWeekday: parsed.deliveryWeekday,
+    serviceType: parsed.serviceType,
+    verified: parsed.deliveryWeekday !== null && parsed.serviceType !== null
   };
 }
 

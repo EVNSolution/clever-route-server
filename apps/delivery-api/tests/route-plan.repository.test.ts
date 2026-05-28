@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
 import {
+  RoutePlanBatchInvalidError,
   RoutePlanDriverAssignInvalidError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanStopUpdateInvalidError
@@ -143,6 +144,89 @@ describe('PrismaRoutePlanRepository', () => {
     });
     expect(prisma.routePlan.create).not.toHaveBeenCalled();
     expect(routePlanStopCreateMany).not.toHaveBeenCalled();
+  });
+
+  test('creates route drafts from selected order ids by reloading delivery facts and stops', async () => {
+    const { prisma, routePlanStopCreateMany } = createPrismaHarness();
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.createRoutePlanDraftFromOrderIds({
+      createdBy: 'route-ops',
+      depot: { address: 'Depot', latitude: 43.65, longitude: -79.38 },
+      name: 'Woo batch',
+      orderIds: ['order-1', 'order-2'],
+      planDate: '2026-05-08',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result).toEqual(expect.objectContaining({ id: 'route-plan-id', stopsCount: 2 }));
+    expect(prisma.order.upsert).not.toHaveBeenCalled();
+    expect(prisma.deliveryStop.upsert).not.toHaveBeenCalled();
+    expect(prisma.orderDeliveryFact.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { orderId: { in: ['order-1', 'order-2'] }, shopId: 'shop-id' }
+      })
+    );
+    expect(routePlanStopCreateMany).toHaveBeenCalledWith({
+      data: [
+        { deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1 },
+        { deliveryStopId: 'stop-2', routePlanId: 'route-plan-id', sequence: 2 }
+      ]
+    });
+  });
+
+  test('hard-fails selected order id route creation for mixed route scopes without partial routes', async () => {
+    const { prisma, routePlanStopCreateMany } = createPrismaHarness({
+      deliveryFacts: [
+        orderDeliveryFact({ orderId: 'order-1', routeScopeKey: '2026-05-08|DELIVERY||', stopId: 'stop-1' }),
+        orderDeliveryFact({ orderId: 'order-2', routeScopeKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00', serviceType: 'EVENING_DELIVERY', stopId: 'stop-2' })
+      ]
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(
+      repository.createRoutePlanDraftFromOrderIds({
+        createdBy: 'route-ops',
+        depot: { address: 'Depot', latitude: 43.65, longitude: -79.38 },
+        name: 'Woo batch',
+        orderIds: ['order-1', 'order-2'],
+        planDate: '2026-05-08',
+        shopDomain: 'example.myshopify.com'
+      })
+    ).rejects.toBeInstanceOf(RoutePlanBatchInvalidError);
+
+    expect(prisma.routePlan.create).not.toHaveBeenCalled();
+    expect(routePlanStopCreateMany).not.toHaveBeenCalled();
+  });
+
+  test('allows selected order id route creation when stale missing-coordinate fact was resolved live', async () => {
+    const { prisma, routePlanStopCreateMany } = createPrismaHarness({
+      deliveryFacts: [
+        orderDeliveryFact({ orderId: 'order-1', readiness: 'NEEDS_REVIEW', reviewReasons: ['missing_coordinates'], stopId: 'stop-1' })
+      ]
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(
+      repository.createRoutePlanDraftFromOrderIds({
+        createdBy: 'route-ops',
+        depot: { address: 'Depot', latitude: 43.65, longitude: -79.38 },
+        name: 'Woo batch',
+        orderIds: ['order-1'],
+        planDate: '2026-05-08',
+        shopDomain: 'example.myshopify.com'
+      })
+    ).resolves.toEqual(expect.objectContaining({ id: 'route-plan-id' }));
+
+    expect(routePlanStopCreateMany).toHaveBeenCalledWith({
+      data: [{ deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1 }]
+    });
   });
 
 
@@ -443,6 +527,7 @@ describe('PrismaRoutePlanRepository', () => {
 
 function createPrismaHarness(input: {
   deliveryStopForId?: { id: string } | null;
+  deliveryFacts?: Array<Record<string, unknown>>;
   driverForAssignment?: { id: string } | null;
   existingRoutePlanStops?: Array<{ deliveryStopId: string }>;
   orderDeliveryDate?: string;
@@ -461,6 +546,9 @@ function createPrismaHarness(input: {
     order: {
       findMany: ReturnType<typeof vi.fn>;
       upsert: ReturnType<typeof vi.fn>;
+    };
+    orderDeliveryFact: {
+      findMany: ReturnType<typeof vi.fn>;
     };
     routePlan: {
       create: ReturnType<typeof vi.fn>;
@@ -510,6 +598,16 @@ function createPrismaHarness(input: {
         .fn()
         .mockResolvedValueOnce({ id: 'order-1' })
         .mockResolvedValueOnce({ id: 'order-2' })
+    },
+    orderDeliveryFact: {
+      findMany: vi.fn(() =>
+        Promise.resolve(
+          input.deliveryFacts ?? [
+            orderDeliveryFact({ orderId: 'order-1', stopId: 'stop-1', sourceOrderNumber: '#1035' }),
+            orderDeliveryFact({ orderId: 'order-2', stopId: 'stop-2', sourceOrderNumber: '#1036' })
+          ]
+        )
+      )
     },
     routePlan: {
       create: vi.fn(() =>
@@ -631,6 +729,53 @@ function orderRecord(input: { deliveryDate: string; gid: string; id: string; sto
       province: 'ON'
     },
     shopifyOrderGid: input.gid
+  };
+}
+
+function orderDeliveryFact(input: {
+  orderId: string;
+  readiness?: string;
+  reviewReasons?: string[];
+  routeScopeKey?: string;
+  serviceType?: string;
+  sourceOrderNumber?: string;
+  stopId: string;
+}): Record<string, unknown> {
+  return {
+    deliveryArea: 'Mississauga',
+    deliveryDate: new Date('2026-05-08T00:00:00.000Z'),
+    deliveryDateWeekday: 'FRIDAY',
+    deliveryDateWeekdayMismatch: false,
+    deliveryDateWeekdayVerified: true,
+    deliveryDayParseStatus: 'PARSED',
+    deliverySession: input.serviceType === 'EVENING_DELIVERY' ? 'EVENING' : 'DAY',
+    deliveryWeekday: 'FRIDAY',
+    geocodeStatus: 'RESOLVED',
+    order: {
+      deliveryStops: [
+        {
+          id: input.stopId,
+          latitude: '43.589',
+          longitude: '-79.644',
+          routePlanStops: []
+        }
+      ],
+      name: input.sourceOrderNumber ?? '#1035'
+    },
+    orderId: input.orderId,
+    planningGroupKey: `${input.routeScopeKey ?? '2026-05-08|DELIVERY||'}|Mississauga`,
+    rawDeliveryDay: 'Friday',
+    rawDeliveryTimeWindow: null,
+    readiness: input.readiness ?? 'READY_TO_PLAN',
+    reviewReasons: input.reviewReasons ?? [],
+    routeScopeKey: input.routeScopeKey ?? '2026-05-08|DELIVERY||',
+    serviceType: input.serviceType ?? 'DELIVERY',
+    sourceOrderId: input.orderId,
+    sourceOrderNumber: input.sourceOrderNumber ?? '#1035',
+    sourcePlatform: 'WOOCOMMERCE',
+    sourceSiteUrl: 'https://woo.example.test',
+    timeWindowEnd: null,
+    timeWindowStart: null
   };
 }
 

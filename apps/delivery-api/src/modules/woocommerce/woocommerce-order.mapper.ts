@@ -1,6 +1,6 @@
-import type { SyncedDeliveryStopInput, SyncedOrderWithDeliveryStopInput, ShopifyOrderLineItem } from '../shopify/order-sync.mapper.js';
-import { calculateDeliveryScope } from '../shopify/order-delivery-scope.js';
-import type { WooCommerceAddress, WooCommerceLineItem, WooCommerceMetaData, WooCommerceOrder } from './woocommerce-order.types.js';
+import type { DeliveryDayParseStatus, SyncedDeliveryStopInput, SyncedOrderWithDeliveryStopInput, ShopifyOrderLineItem } from '../shopify/order-sync.mapper.js';
+import { calculateDeliveryScope, verifyDeliveryDayRaw } from '../shopify/order-delivery-scope.js';
+import type { WooCommerceAddress, WooCommerceLineItem, WooCommerceMetaData, WooCommerceOrder, WooCommerceShippingLine } from './woocommerce-order.types.js';
 
 const DELIVERY_DATE_KEYS = [
   'delivery date',
@@ -27,10 +27,52 @@ const DELIVERY_AREA_KEYS = [
   'tomatono_delivery_area',
   '_delivery_area'
 ];
+const TIME_WINDOW_KEYS = [
+  'delivery time',
+  'delivery_time',
+  'delivery timeslot',
+  'delivery_timeslot',
+  'jckwds_timeslot',
+  'time_slot',
+  'timeslot'
+];
+
+export type WooOrderMappingConfig = {
+  areaPaths?: string[];
+  datePaths?: string[];
+  dayPaths?: string[];
+  grouping?: 'date_session' | 'date_session_area';
+  instructionPaths?: string[];
+  pickupPaths?: string[];
+  serviceMinutesDefault?: number;
+  timeWindowPaths?: string[];
+  version?: number;
+};
 
 export type MapWooCommerceOrderOptions = {
+  connectionId?: string | null;
+  mappingConfig?: WooOrderMappingConfig | null;
   siteUrl: string;
   shopTimezone?: string;
+};
+
+type NormalizedMetaData = {
+  key: string;
+  path: string;
+  value: string;
+};
+
+type UnsupportedMetaValue = {
+  key: string;
+  path: string;
+  type: string;
+};
+
+type CollectedMetaData = {
+  key: string;
+  path: string;
+  unsupported?: UnsupportedMetaValue[];
+  value: string | null;
 };
 
 export function mapWooCommerceOrderToDeliveryInputs(
@@ -39,10 +81,14 @@ export function mapWooCommerceOrderToDeliveryInputs(
 ): SyncedOrderWithDeliveryStopInput {
   const siteUrl = normalizeSiteUrl(options.siteUrl);
   const host = new URL(siteUrl).host;
-  const metadata = flattenMetaData([...(order.meta_data ?? []), ...lineItemMeta(order.line_items ?? [])]);
-  const deliveryDateRaw = readMeta(metadata, DELIVERY_DATE_KEYS);
-  const deliveryDayRaw = readMeta(metadata, DELIVERY_DAY_KEYS);
-  const deliveryArea = readMeta(metadata, DELIVERY_AREA_KEYS) ?? normalizeString(order.shipping?.city) ?? normalizeString(order.billing?.city);
+  const metadata = collectMetaData(order);
+  const deliveryDateMatch = readMappedMeta(metadata.items, options.mappingConfig?.datePaths, DELIVERY_DATE_KEYS);
+  const deliveryDayMatch = readMappedMeta(metadata.items, options.mappingConfig?.dayPaths, DELIVERY_DAY_KEYS);
+  const deliveryTimeWindowMatch = readMappedMeta(metadata.items, options.mappingConfig?.timeWindowPaths, TIME_WINDOW_KEYS);
+  const deliveryAreaMatch = readMappedMeta(metadata.items, options.mappingConfig?.areaPaths, DELIVERY_AREA_KEYS);
+  const deliveryDateRaw = deliveryDateMatch.value;
+  const deliveryDayRaw = deliveryDayMatch.value ?? deliveryTimeWindowMatch.value;
+  const deliveryArea = deliveryAreaMatch.value ?? normalizeString(order.shipping?.city) ?? normalizeString(order.billing?.city);
   const lineItems = normalizeLineItems(order.line_items ?? []);
   const createdAt = readWooDate(order.date_created_gmt, order.date_created);
   const modifiedAt = readWooDate(order.date_modified_gmt, order.date_modified) ?? createdAt ?? new Date(0);
@@ -56,14 +102,20 @@ export function mapWooCommerceOrderToDeliveryInputs(
     processedAt: createdAt?.toISOString() ?? null,
     ...(options.shopTimezone === undefined ? {} : { shopTimezone: options.shopTimezone })
   });
+  const dayVerification = verifyDeliveryDayRaw(deliveryDayRaw, { pickup: false });
+  const deliveryDayParseStatus: DeliveryDayParseStatus =
+    deliveryDayRaw === null ? 'NOT_PROVIDED' : dayVerification.verified ? 'PARSED' : 'UNPARSED';
+  const deliveryDateWeekdayVerified =
+    deliveryDayRaw !== null && dayVerification.verified && scope.deliveryDateWeekday !== null;
   const shippingAddress = selectAddress(order.shipping ?? null, order.billing ?? null);
   const hasAddressValue = shippingAddress !== null && hasAddress(shippingAddress);
   const reviewReasons = buildReviewReasons({
     deliveryArea,
     deliveryDate: scope.deliveryDate,
     deliveryDateSource: scope.deliveryDateSource,
+    deliveryDayParseStatus,
+    deliveryDateWeekdayMismatch: scope.deliveryDateWeekdayMismatch,
     hasAddress: hasAddressValue,
-    hasCoordinates: false,
     orderCreatedAt: scope.orderCreatedAt,
     routeScopeKey: scope.routeScopeKey,
     status: normalizeString(order.status),
@@ -78,8 +130,19 @@ export function mapWooCommerceOrderToDeliveryInputs(
     deliveryArea,
     deliveryDateRaw,
     deliveryDayRaw,
+    deliveryDayParseStatus,
+    deliveryDayUnparsedReason: deliveryDayParseStatus === 'UNPARSED' ? 'unrecognized_woo_delivery_day_or_time' : null,
+    deliveryDateWeekdayVerified,
+    deliveryTimeWindowRaw: deliveryTimeWindowMatch.value,
     lineItems,
-    metadataKeys: metadata.map((item) => item.key),
+    mappingDiagnostics: buildMappingDiagnostics(metadata),
+    matchedMappingPaths: {
+      deliveryArea: deliveryAreaMatch.path,
+      deliveryDate: deliveryDateMatch.path,
+      deliveryDay: deliveryDayMatch.path,
+      deliveryTimeWindow: deliveryTimeWindowMatch.path
+    },
+    metadataKeys: metadata.items.map((item) => item.key),
     order,
     readiness,
     reviewReasons,
@@ -88,6 +151,44 @@ export function mapWooCommerceOrderToDeliveryInputs(
   });
 
   return {
+    deliveryFact: {
+      batchEligible: readiness === 'READY_TO_PLAN',
+      commerceConnectionId: options.connectionId ?? null,
+      deliveryArea,
+      deliveryDate: scope.deliveryDate,
+      deliveryDateWeekday: scope.deliveryDateWeekday,
+      deliveryDateWeekdayMismatch: scope.deliveryDateWeekdayMismatch,
+      deliveryDateWeekdayVerified,
+      deliveryDayParseStatus,
+      deliveryDayUnparsedReason: deliveryDayParseStatus === 'UNPARSED' ? 'unrecognized_woo_delivery_day_or_time' : null,
+      deliverySession: scope.deliverySession,
+      deliveryWeekday: scope.deliveryWeekday,
+      geocodeStatus: 'PENDING',
+      mappingDiagnostics: buildMappingDiagnostics(metadata),
+      matchedMappingPaths: {
+        deliveryArea: deliveryAreaMatch.path,
+        deliveryDate: deliveryDateMatch.path,
+        deliveryDay: deliveryDayMatch.path,
+        deliveryTimeWindow: deliveryTimeWindowMatch.path
+      },
+      planningGroupKey: scope.planningGroupKey,
+      rawDeliveryArea: deliveryAreaMatch.value,
+      rawDeliveryDate: deliveryDateRaw,
+      rawDeliveryDay: deliveryDayMatch.value,
+      rawDeliveryTimeWindow: deliveryTimeWindowMatch.value,
+      rawPickupDay: null,
+      readiness,
+      reviewReasons,
+      routeScopeKey: scope.routeScopeKey,
+      serviceType: scope.serviceType,
+      sourceOrderId: String(order.id),
+      sourceOrderNumber: orderNumber,
+      sourcePlatform: 'WOOCOMMERCE',
+      sourceSiteUrl: siteUrl,
+      sourceUpdatedAt: modifiedAt,
+      timeWindowEnd: scope.timeWindowEnd,
+      timeWindowStart: scope.timeWindowStart
+    },
     deliveryStop:
       shippingAddress === null
         ? null
@@ -145,7 +246,13 @@ function buildRawPayload(input: {
   deliveryArea: string | null;
   deliveryDateRaw: string | null;
   deliveryDayRaw: string | null;
+  deliveryDayParseStatus: DeliveryDayParseStatus;
+  deliveryDayUnparsedReason: string | null;
+  deliveryDateWeekdayVerified: boolean;
+  deliveryTimeWindowRaw: string | null;
   lineItems: ShopifyOrderLineItem[];
+  mappingDiagnostics: Record<string, unknown>;
+  matchedMappingPaths: Record<string, string | null>;
   metadataKeys: string[];
   order: WooCommerceOrder;
   readiness: 'READY_TO_PLAN' | 'NEEDS_REVIEW' | 'SKIPPED';
@@ -161,10 +268,18 @@ function buildRawPayload(input: {
     deliveryDate: input.scope.deliveryDate,
     deliveryDateRaw: input.deliveryDateRaw,
     deliveryDateSource: input.scope.deliveryDateSource,
+    deliveryDateWeekday: input.scope.deliveryDateWeekday,
+    deliveryDateWeekdayMismatch: input.scope.deliveryDateWeekdayMismatch,
+    deliveryDateWeekdayVerified: input.deliveryDateWeekdayVerified,
+    deliveryDayParseStatus: input.deliveryDayParseStatus,
     deliveryDayRaw: input.deliveryDayRaw,
+    deliveryDayUnparsedReason: input.deliveryDayUnparsedReason,
     deliverySession: input.scope.deliverySession,
+    deliveryTimeWindowRaw: input.deliveryTimeWindowRaw,
     deliveryWeekday: input.scope.deliveryWeekday,
     lineItems: input.lineItems,
+    mappingDiagnostics: input.mappingDiagnostics,
+    matchedMappingPaths: input.matchedMappingPaths,
     metadataKeys: input.metadataKeys,
     orderCreatedAt: input.scope.orderCreatedAt,
     orderDateLocal: input.scope.orderDateLocal,
@@ -241,8 +356,9 @@ function buildReviewReasons(input: {
   deliveryArea: string | null;
   deliveryDate: string | null;
   deliveryDateSource: string;
+  deliveryDayParseStatus: DeliveryDayParseStatus;
+  deliveryDateWeekdayMismatch: boolean;
   hasAddress: boolean;
-  hasCoordinates: boolean;
   orderCreatedAt: string | null;
   routeScopeKey: string | null;
   serviceType: string | null;
@@ -253,8 +369,10 @@ function buildReviewReasons(input: {
   if (input.deliveryArea === null) reasons.push('missing_delivery_area');
   if (input.orderCreatedAt === null && input.deliveryDateSource !== 'EXPLICIT_ATTRIBUTE') reasons.push('missing_order_date');
   if (input.deliveryDate === null) reasons.push('missing_delivery_date');
+  if (input.deliveryDayParseStatus === 'UNPARSED') reasons.push('delivery_day_unparsed');
+  if (input.deliveryDayParseStatus === 'UNVERIFIED') reasons.push('delivery_date_weekday_unverified');
+  if (input.deliveryDateWeekdayMismatch) reasons.push('delivery_date_weekday_mismatch');
   if (input.routeScopeKey === null || input.serviceType === null) reasons.push('missing_route_scope');
-  if (!input.hasCoordinates) reasons.push('missing_coordinates');
   if (isNonDeliverableStatus(input.status)) reasons.push(`non_deliverable_status:${input.status}`);
   return reasons;
 }
@@ -268,10 +386,6 @@ function isNonDeliverableStatus(status: string | null): boolean {
   return status === 'cancelled' || status === 'refunded' || status === 'failed' || status === 'trash';
 }
 
-function lineItemMeta(items: WooCommerceLineItem[]): WooCommerceMetaData[] {
-  return items.flatMap((item) => item.meta_data ?? []);
-}
-
 function normalizeLineItems(items: WooCommerceLineItem[]): ShopifyOrderLineItem[] {
   return items.map((item) => ({
     name: normalizeString(item.name),
@@ -282,18 +396,111 @@ function normalizeLineItems(items: WooCommerceLineItem[]): ShopifyOrderLineItem[
   }));
 }
 
-function flattenMetaData(items: WooCommerceMetaData[]): Array<{ key: string; value: string }> {
-  return items.flatMap((item) => {
+function collectMetaData(order: WooCommerceOrder): {
+  items: NormalizedMetaData[];
+  unsupported: UnsupportedMetaValue[];
+} {
+  const collected = [
+    ...flattenMetaData(order.meta_data ?? [], 'meta_data'),
+    ...flattenLineItemMetaData(order.line_items ?? []),
+    ...flattenShippingLineMetaData(order.shipping_lines ?? [])
+  ];
+  return {
+    items: collected.flatMap((item) => (item.value === null ? [] : [{ key: item.key, path: item.path, value: item.value }])),
+    unsupported: collected.flatMap((item) => item.unsupported ?? [])
+  };
+}
+
+function flattenLineItemMetaData(items: WooCommerceLineItem[]): CollectedMetaData[] {
+  return items.flatMap((item, index) =>
+    flattenMetaData(item.meta_data ?? [], `line_items[${index}].meta_data`)
+  );
+}
+
+function flattenShippingLineMetaData(lines: WooCommerceShippingLine[]): CollectedMetaData[] {
+  return lines.flatMap((line, index) => [
+    ...flattenMetaData(line.meta_data ?? [], `shipping_lines[${index}].meta_data`),
+    ...flattenLiteralMetaCandidates(
+      [
+        { key: 'method_id', value: line.method_id },
+        { key: 'method_title', value: line.method_title }
+      ],
+      `shipping_lines[${index}]`
+    )
+  ]);
+}
+
+function flattenLiteralMetaCandidates(
+  items: Array<{ key: string; value: unknown }>,
+  basePath: string
+): CollectedMetaData[] {
+  return items.flatMap<CollectedMetaData>((item) => {
     const key = normalizeMetaKey(item.key);
-    const value = normalizeMetaValue(item.value);
-    if (key === null || value === null) return [];
-    return [{ key, value }];
+    if (key === null) return [];
+    const normalizedValue = normalizeMetaValue(item.value);
+    if (normalizedValue === null) return [];
+    return [{ key, path: `${basePath}.${key}`, value: normalizedValue }];
   });
 }
 
-function readMeta(items: Array<{ key: string; value: string }>, keys: string[]): string | null {
-  const wanted = new Set(keys.map(normalizeMetaKey).filter((key): key is string => key !== null));
-  return items.find((item) => wanted.has(normalizeMetaKey(item.key) ?? ''))?.value ?? null;
+function flattenMetaData(
+  items: WooCommerceMetaData[],
+  basePath: string
+): CollectedMetaData[] {
+  return items.flatMap<CollectedMetaData>((item) => {
+    const key = normalizeMetaKey(item.key);
+    if (key === null) return [];
+    const path = `${basePath}.${key}`;
+    const value = normalizeMetaValue(item.value);
+    if (value !== null) return [{ key, path, value } satisfies CollectedMetaData];
+    if (item.value === null || item.value === undefined) return [];
+    return [
+      {
+        key,
+        path,
+        unsupported: [{ key, path, type: Array.isArray(item.value) ? 'array' : typeof item.value }],
+        value: null
+      } satisfies CollectedMetaData
+    ];
+  });
+}
+
+function readMappedMeta(
+  items: NormalizedMetaData[],
+  configuredPaths: string[] | undefined,
+  fallbackKeys: string[]
+): { path: string | null; value: string | null } {
+  const normalizedPaths = (configuredPaths ?? []).map(normalizeMappingPath).filter((path): path is string => path !== null);
+  for (const configuredPath of normalizedPaths) {
+    const match = items.find((item) => normalizeMappingPath(item.path) === configuredPath || normalizeMetaKey(item.key) === configuredPath);
+    if (match !== undefined) return { path: match.path, value: match.value };
+  }
+
+  const wanted = new Set(fallbackKeys.map(normalizeMetaKey).filter((key): key is string => key !== null));
+  const fallback = items.find((item) => wanted.has(normalizeMetaKey(item.key) ?? ''));
+  return fallback === undefined ? { path: null, value: null } : { path: fallback.path, value: fallback.value };
+}
+
+function buildMappingDiagnostics(metadata: { items: NormalizedMetaData[]; unsupported: UnsupportedMetaValue[] }): Record<string, unknown> {
+  const discoveredPathStats = metadata.items.reduce<Record<string, number>>((stats, item) => {
+    stats[item.path] = (stats[item.path] ?? 0) + 1;
+    return stats;
+  }, {});
+  return {
+    discoveredPathStats,
+    unsupportedValues: metadata.unsupported
+  };
+}
+
+function normalizeMappingPath(value: string | null | undefined): string | null {
+  const normalized = normalizeString(value)?.toLowerCase().replace(/\[\d+\]/gu, '[]').replace(/[\s-]+/gu, '_') ?? null;
+  if (normalized === null) return null;
+  return normalized
+    .replace(/^order\./u, '')
+    .replace(/\.meta_data\./gu, '.meta_data.')
+    .replace(/^line_items\.meta_data\./u, 'line_items[].meta_data.')
+    .replace(/^shipping_lines\.meta_data\./u, 'shipping_lines[].meta_data.')
+    .replace(/^shipping_lines\./u, 'shipping_lines[].');
 }
 
 function normalizeMetaKey(value: string | null | undefined): string | null {

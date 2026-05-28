@@ -6,30 +6,156 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
-  delivery-api:
+  route-ops-hygiene:
     runs-on: ubuntu-latest
+    timeout-minutes: 4
     steps:
       - uses: actions/checkout@v4
+      - name: Detect Route Ops deploy-lane changes
+        id: route_ops_changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}"
+            files=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "$GITHUB_SHA")
+          else
+            before="${{ github.event.before }}"
+            if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ]; then
+              git fetch --no-tags --depth=1 origin "$before" || true
+              files=$(git diff --name-only "$before" "$GITHUB_SHA" 2>/dev/null || git diff --name-only HEAD^ HEAD 2>/dev/null || true)
+            else
+              files=$(git ls-files)
+            fi
+          fi
+          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/|apps/delivery-api/Dockerfile|apps/delivery-api/src/routes/admin-commerce-connections-ui\.routes\.ts|apps/delivery-api/tests/admin-commerce-connections-ui\.routes\.test\.ts|infra/compose/docker-compose\.prod\.yml|infra/env/delivery-api\.env\.example|infra/env/deploy-image\.env\.example|scripts/(guard-route-ops-deploy-scope|check-ignore-hygiene|scan-secrets|smoke-route-ops-production|deploy-route-ops-image|rollback-route-ops-image)\.(mjs|sh)|docs/deployment/route-ops-github-deploy\.md|\.github/workflows/ci\.yml|\.github/workflows/route-ops-publish\.yml|\.gitignore|\.dockerignore|\.gitleaks\.toml)$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Ignore hygiene
+        run: node scripts/check-ignore-hygiene.mjs
+      - name: Secret scan staged/worktree
+        run: scripts/scan-secrets.sh --worktree
+      - name: Route Ops deploy scope guard (Route Ops PR only)
+        if: github.event_name == 'pull_request' && steps.route_ops_changes.outputs.changed == 'true'
+        run: scripts/guard-route-ops-deploy-scope.mjs --base "${{ github.event.pull_request.base.sha }}" --head "$GITHUB_SHA" --json --allow-compose-bootstrap
+
+  route-ops-web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    needs: route-ops-hygiene
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Detect Route Ops web changes
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}"
+            files=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "$GITHUB_SHA")
+          else
+            before="${{ github.event.before }}"
+            if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ]; then
+              git fetch --no-tags --depth=1 origin "$before" || true
+              files=$(git diff --name-only "$before" "$GITHUB_SHA" 2>/dev/null || git diff --name-only HEAD^ HEAD 2>/dev/null || true)
+            else
+              files=$(git ls-files)
+            fi
+          fi
+          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/|apps/delivery-api/src/routes/admin-commerce-connections-ui\.routes\.ts|apps/delivery-api/tests/admin-commerce-connections-ui\.routes\.test\.ts|apps/delivery-api/Dockerfile|\.github/workflows/ci\.yml|\.github/workflows/route-ops-publish\.yml)$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.changes.outputs.changed == 'true'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/route-ops-web/package-lock.json
+      - name: Install Route Ops web dependencies
+        if: steps.changes.outputs.changed == 'true'
+        run: npm --prefix apps/route-ops-web ci
+      - name: Lint Route Ops web
+        if: steps.changes.outputs.changed == 'true'
+        run: npm --prefix apps/route-ops-web run lint
+      - name: Typecheck Route Ops web
+        if: steps.changes.outputs.changed == 'true'
+        run: npm --prefix apps/route-ops-web run typecheck
+      - name: Test Route Ops web
+        if: steps.changes.outputs.changed == 'true'
+        run: npm --prefix apps/route-ops-web run test
+      - name: Build Route Ops web
+        if: steps.changes.outputs.changed == 'true'
+        run: npm --prefix apps/route-ops-web run build
+
+  delivery-api-route-ops:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: route-ops-hygiene
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Detect delivery API Route Ops changes
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}"
+            files=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "$GITHUB_SHA")
+          else
+            before="${{ github.event.before }}"
+            if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ]; then
+              git fetch --no-tags --depth=1 origin "$before" || true
+              files=$(git diff --name-only "$before" "$GITHUB_SHA" 2>/dev/null || git diff --name-only HEAD^ HEAD 2>/dev/null || true)
+            else
+              files=$(git ls-files)
+            fi
+          fi
+          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/|apps/delivery-api/Dockerfile|apps/delivery-api/src/routes/admin-commerce-connections-ui\.routes\.ts|apps/delivery-api/tests/admin-commerce-connections-ui\.routes\.test\.ts|infra/compose/docker-compose\.prod\.yml|infra/env/delivery-api\.env\.example|infra/env/deploy-image\.env\.example|\.github/workflows/ci\.yml|\.github/workflows/route-ops-publish\.yml)$'; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-node@v4
+        if: steps.changes.outputs.changed == 'true'
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: apps/delivery-api/package-lock.json
       - name: Install delivery API dependencies
+        if: steps.changes.outputs.changed == 'true'
         run: npm --prefix apps/delivery-api ci
       - name: Prisma generate
+        if: steps.changes.outputs.changed == 'true'
         run: npm --prefix apps/delivery-api run prisma:generate
-      - name: Lint
-        run: npm --prefix apps/delivery-api run lint
-      - name: Typecheck
+      - name: Typecheck delivery API
+        if: steps.changes.outputs.changed == 'true'
         run: npm --prefix apps/delivery-api run typecheck
-      - name: Test
-        run: npm --prefix apps/delivery-api run test
-      - name: Build
+      - name: Route Ops targeted tests
+        if: steps.changes.outputs.changed == 'true'
+        run: npm --prefix apps/delivery-api run test -- tests/admin-commerce-connections-ui.routes.test.ts
+      - name: Build delivery API
+        if: steps.changes.outputs.changed == 'true'
         run: npm --prefix apps/delivery-api run build
-      - name: Compose config validation
+      - name: Compose config validation with image placeholders
+        if: steps.changes.outputs.changed == 'true'
         run: |
           cp infra/env/delivery-api.env.example infra/env/delivery-api.env
+          DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api:ci \
+          DELIVERY_API_MIGRATE_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:ci \
           docker compose -f infra/compose/docker-compose.prod.yml config --quiet
           rm -f infra/env/delivery-api.env
