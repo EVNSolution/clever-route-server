@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 4
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Detect Route Ops deploy-lane changes
         id: route_ops_changes
         shell: bash
@@ -37,7 +37,7 @@ jobs:
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
       - name: Ignore hygiene
@@ -61,7 +61,7 @@ jobs:
     timeout-minutes: 8
     needs: route-ops-hygiene
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 2
       - name: Detect Route Ops web changes
@@ -86,7 +86,7 @@ jobs:
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         if: steps.changes.outputs.changed == 'true'
         with:
           node-version: 22
@@ -107,13 +107,23 @@ jobs:
       - name: Build Route Ops web
         if: steps.changes.outputs.changed == 'true'
         run: npm --prefix apps/route-ops-web run build
+      - name: Upload Route Ops web dist
+        if: steps.changes.outputs.changed == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: route-ops-web-dist
+          path: apps/route-ops-web/dist
+          if-no-files-found: error
+          retention-days: 1
 
   delivery-api-route-ops:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: route-ops-hygiene
+    needs:
+      - route-ops-hygiene
+      - route-ops-web
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 2
       - name: Detect delivery API Route Ops changes
@@ -138,7 +148,7 @@ jobs:
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         if: steps.changes.outputs.changed == 'true'
         with:
           node-version: 22
@@ -153,6 +163,12 @@ jobs:
       - name: Typecheck delivery API
         if: steps.changes.outputs.changed == 'true'
         run: npm --prefix apps/delivery-api run typecheck
+      - name: Download Route Ops web dist
+        if: steps.changes.outputs.changed == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          name: route-ops-web-dist
+          path: apps/route-ops-web/dist
       - name: Route Ops targeted tests
         if: steps.changes.outputs.changed == 'true'
         run: npm --prefix apps/delivery-api run test -- tests/admin-commerce-connections-ui.routes.test.ts
