@@ -12,6 +12,7 @@ export const LEGACY_ADMIN_UI_COOKIE_PATH = '/admin/ui/commerce-connections/wooco
 export const BROAD_LEGACY_ADMIN_UI_COOKIE_PATHS = ['/admin', '/'] as const;
 export const DEFAULT_ADMIN_UI_COOKIE_NAME = 'clever_admin_ui';
 export const MIN_ADMIN_WEB_SECRET_BYTES = 32;
+export const MIN_ADMIN_WEB_LOGIN_SECRET_BYTES = 10;
 
 type SessionPayload = {
   csrfSecret: string;
@@ -72,8 +73,13 @@ export function isStrongAdminWebSecret(value: string | undefined): value is stri
   return Buffer.byteLength(value.trim(), 'utf8') >= MIN_ADMIN_WEB_SECRET_BYTES;
 }
 
+export function isValidAdminWebLoginSecret(value: string | undefined): value is string {
+  if (value === undefined) return false;
+  return Buffer.byteLength(value.trim(), 'utf8') >= MIN_ADMIN_WEB_LOGIN_SECRET_BYTES;
+}
+
 export function verifyAdminWebLoginSecret(input: { candidate: string; expected: string }): boolean {
-  if (!isStrongAdminWebSecret(input.expected)) return false;
+  if (!isValidAdminWebLoginSecret(input.expected)) return false;
   const candidate = input.candidate.trim();
   if (candidate === '') return false;
 

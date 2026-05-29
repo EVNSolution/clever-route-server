@@ -12,7 +12,11 @@ import { RoutePlanAdminService } from '../route-plans/route-plan.service.js';
 import { OsrmRouteGeometryProvider } from '../route-plans/osrm-route-geometry.client.js';
 import { PrismaOrderSyncRepository } from '../shopify/order-sync.repository.js';
 import { ShopifyOrderSyncService } from '../shopify/order-sync.service.js';
-import { DEFAULT_ADMIN_UI_COOKIE_NAME, isStrongAdminWebSecret } from '../../routes/admin-ui-session.js';
+import {
+  DEFAULT_ADMIN_UI_COOKIE_NAME,
+  isStrongAdminWebSecret,
+  isValidAdminWebLoginSecret
+} from '../../routes/admin-ui-session.js';
 import { loadCredentialEncryptionKey } from './commerce-credential-encryption.js';
 import { PrismaCommerceConnectionRepository } from './commerce-connection.repository.js';
 import { CommerceConnectionCredentialService } from './commerce-connection.service.js';
@@ -91,7 +95,7 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
 
   const loginSecret = readOptional(input.env.CLEVER_ADMIN_WEB_LOGIN_SECRET);
   const sessionSecret = readOptional(input.env.CLEVER_ADMIN_WEB_SESSION_SECRET);
-  if (!isStrongAdminWebSecret(loginSecret) || !isStrongAdminWebSecret(sessionSecret)) {
+  if (!isValidAdminWebLoginSecret(loginSecret) || !isStrongAdminWebSecret(sessionSecret)) {
     return undefined;
   }
 

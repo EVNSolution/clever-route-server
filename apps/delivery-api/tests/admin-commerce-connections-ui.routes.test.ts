@@ -11,6 +11,7 @@ import type { AdminCommerceConnectionsDependencies } from "../src/routes/admin-c
 import type { AdminCommerceConnectionsUiDependencies } from "../src/routes/admin-commerce-connections-ui.routes.js";
 import {
   createAdminWebLaunchToken,
+  MIN_ADMIN_WEB_LOGIN_SECRET_BYTES,
   MIN_ADMIN_WEB_SECRET_BYTES,
   verifyAdminWebLoginSecret,
 } from "../src/routes/admin-ui-session.js";
@@ -83,6 +84,17 @@ describe("Admin WooCommerce connection UI routes", () => {
         nodeEnv: "production",
       }),
     ).toBeUndefined();
+    expect(
+      loadAdminCommerceConnectionsUiDependencies({
+        adminCommerceConnections: base.dependencies,
+        env: {
+          CLEVER_ADMIN_WEB_LOGIN_SECRET: "abcdefghij",
+          CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
+          DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
+        },
+        nodeEnv: "production",
+      }),
+    ).toBeDefined();
     expect(
       loadAdminCommerceConnectionsUiDependencies({
         adminCommerceConnections: base.dependencies,
@@ -224,10 +236,17 @@ describe("Admin WooCommerce connection UI routes", () => {
 
   test("compares web login secret safely and never accepts the API token by default", () => {
     expect(MIN_ADMIN_WEB_SECRET_BYTES).toBe(32);
+    expect(MIN_ADMIN_WEB_LOGIN_SECRET_BYTES).toBe(10);
     expect(
       verifyAdminWebLoginSecret({
         candidate: webLoginSecret,
         expected: webLoginSecret,
+      }),
+    ).toBe(true);
+    expect(
+      verifyAdminWebLoginSecret({
+        candidate: "abcdefghij",
+        expected: "abcdefghij",
       }),
     ).toBe(true);
     expect(
