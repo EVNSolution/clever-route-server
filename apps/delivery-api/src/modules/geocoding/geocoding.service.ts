@@ -36,7 +36,8 @@ export class GeocodingService {
   }
 
   async geocode(input: { address: GeocodingAddress; shopDomain: string }): Promise<GeocodingResult> {
-    const query = normalizeAddress(input.address);
+    const queries = normalizeAddressQueries(input.address);
+    const query = queries[0] ?? null;
     if (query === null) {
       return { ok: false, code: 'BLANK_ADDRESS', message: 'Address is blank.' };
     }
@@ -60,15 +61,21 @@ export class GeocodingService {
 
     const provider = this.provider;
     const result = await this.runSerialized(async () => {
+      let sawInvalidResult = false;
       try {
-        const lookup = await provider.geocodeAddress(query);
-        if (lookup === null) {
-          return { ok: false, code: 'GEOCODER_NO_RESULT', message: 'No geocoding result was found.' } satisfies GeocodingResult;
+        for (const lookupQuery of queries) {
+          const lookup = await provider.geocodeAddress(lookupQuery);
+          if (lookup === null) continue;
+          if (!isValidCoordinate(lookup.latitude, 'latitude') || !isValidCoordinate(lookup.longitude, 'longitude')) {
+            sawInvalidResult = true;
+            continue;
+          }
+          return { ok: true, cached: false, result: lookup } satisfies GeocodingResult;
         }
-        if (!isValidCoordinate(lookup.latitude, 'latitude') || !isValidCoordinate(lookup.longitude, 'longitude')) {
+        if (sawInvalidResult) {
           return { ok: false, code: 'GEOCODER_INVALID_RESULT', message: 'Geocoding provider returned invalid coordinates.' } satisfies GeocodingResult;
         }
-        return { ok: true, cached: false, result: lookup } satisfies GeocodingResult;
+        return { ok: false, code: 'GEOCODER_NO_RESULT', message: 'No geocoding result was found.' } satisfies GeocodingResult;
       } catch {
         return { ok: false, code: 'GEOCODER_PROVIDER_ERROR', message: 'Geocoding provider failed.' } satisfies GeocodingResult;
       }
@@ -91,11 +98,39 @@ export class GeocodingService {
 }
 
 export function normalizeAddress(address: GeocodingAddress): string | null {
-  const parts = [address.address1, address.address2, address.city, address.province, address.postalCode, address.countryCode]
+  return normalizeAddressParts(addressParts(address));
+}
+
+export function normalizeAddressQueries(address: GeocodingAddress): string[] {
+  const full = normalizeAddress(address);
+  if (full === null) return [];
+
+  const withoutAddress2 = normalizeAddressParts(
+    addressParts({
+      ...address,
+      address2: null
+    })
+  );
+  return uniqueQueries([
+    full,
+    address.address2 === null || address.address2.trim() === '' ? null : withoutAddress2
+  ]);
+}
+
+function addressParts(address: GeocodingAddress): Array<string | null> {
+  return [address.address1, address.address2, address.city, address.province, address.postalCode, address.countryCode];
+}
+
+function normalizeAddressParts(parts: Array<string | null>): string | null {
+  const normalized = parts
     .map((part) => (typeof part === 'string' ? part.trim() : ''))
     .filter((part) => part !== '');
-  if (parts.length === 0) return null;
-  return [...new Set(parts)].join(', ');
+  if (normalized.length === 0) return null;
+  return [...new Set(normalized)].join(', ');
+}
+
+function uniqueQueries(queries: Array<string | null>): string[] {
+  return [...new Set(queries.filter((query): query is string => query !== null && query.trim() !== ''))];
 }
 
 export function isValidCoordinate(value: number, kind: 'latitude' | 'longitude'): boolean {

@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 
 import type { CanonicalOrderRow, SyncedOrderWithDeliveryStopInput } from '../src/modules/shopify/order-sync.mapper.js';
 import type { UpsertOrderWithDeliveryStopResult } from '../src/modules/shopify/order-sync.repository.js';
+import { GeocodingService } from '../src/modules/geocoding/geocoding.service.js';
 import { WooCommerceOrderSyncService } from '../src/modules/woocommerce/woocommerce-order-sync.service.js';
 import type { WooCommerceOrder } from '../src/modules/woocommerce/woocommerce-order.types.js';
 
@@ -168,6 +169,56 @@ describe('WooCommerceOrderSyncService', () => {
           provider: 'test-geocoder',
           source: 'server_pre_persist'
         }) as unknown
+      })
+    );
+  });
+
+
+  test('pre-persist geocoding resolves Woo unit addresses using fallback street queries', async () => {
+    const repository = createRepositoryHarness();
+    const provider = {
+      geocodeAddress: vi.fn((query: string) => {
+        if (query === '1020 Coronation Drive, 302, London, ON, N6H 0B5, CA') return Promise.resolve(null);
+        return Promise.resolve({
+          addressLabel: query,
+          latitude: 42.9965699,
+          longitude: -81.3216486,
+          provider: 'test-geocoder',
+          providerPlaceId: 'place-1020',
+          rawLabel: '1020 Coronation Drive, London, Ontario, Canada'
+        });
+      }),
+      providerName: 'test-geocoder'
+    };
+    const geocodingService = new GeocodingService({ minIntervalMs: 0, mode: 'nominatim_compatible', provider });
+    const wooOrder = order(32);
+    wooOrder.shipping = {
+      address_1: '1020 Coronation Drive',
+      address_2: '302',
+      city: 'London',
+      country: 'CA',
+      first_name: 'Test',
+      last_name: 'User',
+      postcode: 'N6H 0B5',
+      state: 'ON'
+    };
+    const service = new WooCommerceOrderSyncService({
+      geocodingService,
+      repository,
+      shopDomain: 'woo.example.test',
+      siteUrl: 'https://woo.example.test'
+    });
+
+    await service.syncOrders({ orders: [wooOrder], reason: 'webhook' });
+
+    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(1, '1020 Coronation Drive, 302, London, ON, N6H 0B5, CA');
+    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(2, '1020 Coronation Drive, London, ON, N6H 0B5, CA');
+    const upsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
+    expect(upsert?.synced.deliveryStop).toEqual(
+      expect.objectContaining({
+        geocodeStatus: 'RESOLVED',
+        latitude: '42.9965699',
+        longitude: '-81.3216486'
       })
     );
   });

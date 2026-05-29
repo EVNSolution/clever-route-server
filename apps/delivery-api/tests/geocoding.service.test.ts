@@ -73,6 +73,41 @@ describe('Route Ops geocoding', () => {
     expect(provider.geocodeAddress).toHaveBeenCalledOnce();
   });
 
+
+  test('falls back without address line 2 when a unit value prevents a match', async () => {
+    const provider = {
+      geocodeAddress: vi.fn((query: string) => {
+        if (query === '1020 Coronation Drive, 302, London, ON, N6H 0B5, CA') return Promise.resolve(null);
+        return Promise.resolve({
+          addressLabel: query,
+          latitude: 42.9965699,
+          longitude: -81.3216486,
+          provider: 'mock',
+          providerPlaceId: 'place-1020',
+          rawLabel: '1020 Coronation Drive, London, Ontario, Canada'
+        });
+      }),
+      providerName: 'mock'
+    };
+    const service = new GeocodingService({ minIntervalMs: 0, mode: 'nominatim_compatible', provider });
+
+    const result = await service.geocode({
+      address: {
+        address1: '1020 Coronation Drive',
+        address2: '302',
+        city: 'London',
+        countryCode: 'CA',
+        postalCode: 'N6H 0B5',
+        province: 'ON'
+      },
+      shopDomain: 'example.test'
+    });
+
+    expect(result).toEqual(expect.objectContaining({ ok: true }));
+    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(1, '1020 Coronation Drive, 302, London, ON, N6H 0B5, CA');
+    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(2, '1020 Coronation Drive, London, ON, N6H 0B5, CA');
+  });
+
   test('public Nominatim mode requires user agent and durable cache signal', async () => {
     const missingUserAgent = loadGeocodingService({ env: { GEOCODING_PROVIDER_MODE: 'nominatim_compatible' } });
     await expect(missingUserAgent.geocode({ address, shopDomain: 'example.test' })).resolves.toEqual(expect.objectContaining({
