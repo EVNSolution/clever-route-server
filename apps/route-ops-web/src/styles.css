@@ -1066,6 +1066,37 @@ small,
   outline: none;
 }
 
+.order-detail-field-label {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.order-detail-field-help {
+  align-items: center;
+  background: #e8eefc;
+  border: 1px solid #cbd7f6;
+  border-radius: 999px;
+  color: #2563eb;
+  cursor: help;
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 900;
+  height: 16px;
+  justify-content: center;
+  line-height: 1;
+  text-transform: lowercase;
+  width: 16px;
+}
+
+.order-detail-field-hint {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+
 .order-detail-summary-grid {
   display: grid;
   gap: 10px;

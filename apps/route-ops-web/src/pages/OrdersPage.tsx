@@ -47,8 +47,10 @@ export type OrderMetadataPatch = {
 };
 
 type EditableMetadataField = {
+  helpText?: string;
   key: keyof OrderMetadataPatch;
   label: string;
+  placeholder?: string;
 };
 
 const EDITABLE_METADATA_FIELDS: EditableMetadataField[] = [
@@ -59,11 +61,37 @@ const EDITABLE_METADATA_FIELDS: EditableMetadataField[] = [
   { key: "postalCode", label: orderFieldLabels.postalCode },
   { key: "countryCode", label: orderFieldLabels.countryCode },
   { key: "deliveryArea", label: orderFieldLabels.deliveryArea },
-  { key: "deliveryDate", label: orderFieldLabels.deliveryDate },
-  { key: "serviceType", label: orderFieldLabels.serviceType },
-  { key: "deliverySession", label: orderFieldLabels.deliverySession },
-  { key: "timeWindowStart", label: orderFieldLabels.timeWindowStart },
-  { key: "timeWindowEnd", label: orderFieldLabels.timeWindowEnd },
+  {
+    helpText: "Enter the route date as YYYY-MM-DD, for example 2026-05-29.",
+    key: "deliveryDate",
+    label: orderFieldLabels.deliveryDate,
+  },
+  {
+    helpText:
+      "Allowed values: DELIVERY, EVENING_DELIVERY, PICKUP. Example: EVENING_DELIVERY for a 5PM-9PM delivery route.",
+    key: "serviceType",
+    label: orderFieldLabels.serviceType,
+    placeholder: "EVENING_DELIVERY",
+  },
+  {
+    helpText:
+      "Allowed values: DAY, EVENING, PICKUP. Example: EVENING for a 5PM-9PM route.",
+    key: "deliverySession",
+    label: orderFieldLabels.deliverySession,
+    placeholder: "EVENING",
+  },
+  {
+    helpText: "Use 24-hour HH:mm format, for example 17:00.",
+    key: "timeWindowStart",
+    label: orderFieldLabels.timeWindowStart,
+    placeholder: "17:00",
+  },
+  {
+    helpText: "Use 24-hour HH:mm format, for example 21:00.",
+    key: "timeWindowEnd",
+    label: orderFieldLabels.timeWindowEnd,
+    placeholder: "21:00",
+  },
 ];
 
 const EDITABLE_METADATA_FIELDS_BY_KEY = new Map<
@@ -1401,14 +1429,30 @@ function OrderDetailFieldInput({
 }): ReactElement {
   return (
     <label>
-      {field.label}
+      <span className="order-detail-field-label">
+        {field.label}
+        {field.helpText === undefined ? null : (
+          <span
+            aria-label={`${field.label} help: ${field.helpText}`}
+            className="order-detail-field-help"
+            title={field.helpText}
+          >
+            i
+          </span>
+        )}
+      </span>
       <input
         aria-label={field.label}
         name={field.key}
         onChange={(event) => onChange(field.key, event.target.value)}
+        placeholder={field.placeholder}
+        title={field.helpText}
         type={field.key === "deliveryDate" ? "date" : "text"}
         value={value ?? ""}
       />
+      {field.helpText === undefined ? null : (
+        <small className="order-detail-field-hint">{field.helpText}</small>
+      )}
     </label>
   );
 }

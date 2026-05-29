@@ -295,7 +295,11 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("Missing route scope");
     expect(html).toContain('name="deliveryDate"');
     expect(html).toContain('name="serviceType"');
+    expect(html).toContain('placeholder="EVENING_DELIVERY"');
+    expect(html).toContain("Allowed values: DELIVERY, EVENING_DELIVERY, PICKUP");
     expect(html).toContain('name="deliverySession"');
+    expect(html).toContain('placeholder="EVENING"');
+    expect(html).toContain("Allowed values: DAY, EVENING, PICKUP");
     expect(html).toContain("Save fixes");
     expect(html).not.toContain("Required attention");
     expect(html).not.toContain("Coordinates available: 43.653200, -79.383200");
@@ -323,6 +327,8 @@ describe("Orders compact operations table", () => {
     ]) {
       expect(html).toContain(`name="${field}"`);
     }
+    expect(html).toContain("Service type help:");
+    expect(html).toContain("Delivery session help:");
     expect(html).toContain("Save");
     expect(html).toContain("Cancel");
   });
