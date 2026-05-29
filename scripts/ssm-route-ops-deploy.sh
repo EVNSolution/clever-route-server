@@ -6,6 +6,8 @@ ENV_FILE="${ROUTE_OPS_HOST_ENV_FILE:-infra/env/delivery-api.env}"
 LOCK_PATH="${ROUTE_OPS_DEPLOY_LOCK_PATH:-.deploy/route-ops-deploy.lock}"
 LOCK_DIR="${LOCK_PATH}.d"
 LOCK_ACQUIRED="false"
+GHCR_USERNAME_PARAM="${ROUTE_OPS_GHCR_USERNAME_PARAM:-/clever/deploy/github/username}"
+GHCR_TOKEN_PARAM="${ROUTE_OPS_GHCR_TOKEN_PARAM:-/clever/deploy/github/read-token}"
 
 : "${IMAGE_TAG:?IMAGE_TAG is required}"
 : "${PRISMA_SCHEMA_SHA:?PRISMA_SCHEMA_SHA is required}"
@@ -77,6 +79,34 @@ read_host_secret() {
   export ROUTE_OPS_SMOKE_LOGIN_SECRET="$value"
 }
 
+login_to_ghcr() {
+  if [ "${ROUTE_OPS_SKIP_GHCR_LOGIN:-}" = "1" ]; then
+    return 0
+  fi
+  case "$DELIVERY_API_IMAGE $DELIVERY_API_MIGRATE_IMAGE" in
+    *ghcr.io/evnsolution/clever-route-server-delivery-api*) ;;
+    *) return 0 ;;
+  esac
+  command -v aws >/dev/null 2>&1 || fail "aws CLI is required on the host for GHCR credentials"
+  command -v docker >/dev/null 2>&1 || fail "docker is required on the host for GHCR login"
+  export AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-${ROUTE_OPS_AWS_REGION:-ap-northeast-2}}}"
+  local username token
+  username="$(aws ssm get-parameter --name "$GHCR_USERNAME_PARAM" --query 'Parameter.Value' --output text)"
+  token="$(aws ssm get-parameter --name "$GHCR_TOKEN_PARAM" --with-decryption --query 'Parameter.Value' --output text)"
+  if [ -z "$username" ] || [ "$username" = "None" ]; then
+    fail "GHCR username parameter is empty: $GHCR_USERNAME_PARAM"
+  fi
+  if [ -z "$token" ] || [ "$token" = "None" ]; then
+    fail "GHCR token parameter is empty: $GHCR_TOKEN_PARAM"
+  fi
+  if ! printf '%s' "$token" | docker login ghcr.io -u "$username" --password-stdin >/dev/null; then
+    token=""
+    fail "GHCR login failed"
+  fi
+  token=""
+  printf 'GHCR login ready for %s\n' "$username"
+}
+
 validate_publish_evidence() {
   if [ -z "${PUBLISH_EVIDENCE_URL:-}" ]; then
     return 0
@@ -97,6 +127,7 @@ validate_publish_evidence
 cd "$APP_DIR"
 acquire_lock
 read_host_secret
+login_to_ghcr
 
 printf 'Route Ops SSM deploy wrapper starting: tag=%s schema=%s runtime=%s migrate=%s\n' \
   "$IMAGE_TAG" "$PRISMA_SCHEMA_SHA" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE"

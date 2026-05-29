@@ -39,6 +39,7 @@ chmod +x "$tmp/scripts/deploy-route-ops-image.sh"
 output="$tmp/output.txt"
 APP_DIR="$tmp" \
 ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1 \
+ROUTE_OPS_SKIP_GHCR_LOGIN=1 \
 PUBLISH_EVIDENCE_URL="https://github.com/EVNSolution/clever-route-server/actions/runs/123456789" \
 IMAGE_TAG="$IMAGE_TAG" \
 PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
@@ -56,6 +57,7 @@ fi
 
 if APP_DIR="$tmp" \
 ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1 \
+ROUTE_OPS_SKIP_GHCR_LOGIN=1 \
 IMAGE_TAG="latest" \
 PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
 DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
@@ -68,6 +70,7 @@ fi
 mkdir -p "$tmp/.deploy/route-ops-deploy.lock.d"
 if APP_DIR="$tmp" \
 ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1 \
+ROUTE_OPS_SKIP_GHCR_LOGIN=1 \
 IMAGE_TAG="$IMAGE_TAG" \
 PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
 DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
