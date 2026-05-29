@@ -32,7 +32,6 @@ export type OrderMapFeatureCollection = FeatureCollection<PointGeometry, {
   pinKind: 'planned' | 'review' | 'unplanned';
   pinImage: string;
   planned: boolean;
-  plannedLabel: string;
   sortKey: number;
 }>;
 
@@ -68,7 +67,6 @@ export function buildOrdersMapFeatureCollection(orders: CanonicalOrderDto[], pla
         pinImage: pinImageForKind(pinKind),
         pinKind,
         planned,
-        plannedLabel: planned ? String(index + 1) : '',
         sortKey: planned ? index + 1000 : index
       },
       type: 'Feature'

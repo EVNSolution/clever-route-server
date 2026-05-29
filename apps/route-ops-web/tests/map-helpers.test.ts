@@ -20,10 +20,11 @@ describe('route ops map helpers', () => {
       ['ready', 'planned'],
       ['review', 'review']
     ]);
-    expect(collection.features.map((feature) => [feature.properties.pinImage, feature.properties.plannedLabel])).toEqual([
-      ['orders-map-pin-planned', '1'],
-      ['orders-map-pin-review', '']
+    expect(collection.features.map((feature) => feature.properties.pinImage)).toEqual([
+      'orders-map-pin-planned',
+      'orders-map-pin-review'
     ]);
+    expect(collection.features.some((feature) => 'plannedLabel' in feature.properties)).toBe(false);
   });
 
   test('uses the Shopify CLEVER lite map style instead of the temporary five-layer fallback', () => {

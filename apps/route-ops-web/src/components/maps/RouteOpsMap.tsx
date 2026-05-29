@@ -17,7 +17,6 @@ const ORDER_PIN_PLANNED_IMAGE_ID = 'orders-map-pin-planned';
 const ORDER_PIN_REVIEW_IMAGE_ID = 'orders-map-pin-review';
 const ORDER_PIN_PIXEL_RATIO = 2;
 const ORDER_PIN_ICON_SIZE = 0.62;
-const ORDER_PIN_LABEL_OFFSET: [number, number] = [0, -1.92];
 const ORDER_PIN_PATH = 'M20 50C20 50 4 31.5 4 18C4 9.16 11.16 2 20 2s16 7.16 16 16c0 13.5-16 32-16 32Z';
 const EMPTY_ROUTE_LINE_COLLECTION = { features: [], type: 'FeatureCollection' } as const;
 
@@ -48,6 +47,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
   const readiness = mapReadiness({ coordinatesCount: points.length, mapStatus: bootstrap.mapConfig.status });
   const routeGeometry = useMemo(() => buildRouteGeometryFeature(detail), [detail]);
   const sequenceGeometry = useMemo(() => buildSequenceLineFeature(points), [points]);
+  const lineFeature = detail === null ? null : routeGeometry ?? sequenceGeometry;
   const ordersGeojson = useMemo(() => buildOrdersMapFeatureCollection(orders, plannedOrderIds), [orders, plannedOrderIds]);
 
   useEffect(() => {
@@ -129,10 +129,10 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
     if (!isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return;
     const map = mapRef.current;
     if (detail === null) syncOrdersLayer(map, ordersGeojson);
-    syncRouteLayers(map, routeGeometry ?? sequenceGeometry);
+    syncRouteLayers(map, lineFeature);
     syncRouteMarkers(map, maplibreRef.current, detail === null ? points.filter((point) => point.kind === 'depot') : points, markersRef.current);
     fitMap(map, maplibreRef.current, points);
-  }, [detail, fitRequest, isMapReady, ordersGeojson, points, routeGeometry, sequenceGeometry]);
+  }, [detail, fitRequest, isMapReady, lineFeature, ordersGeojson, points]);
 
   useEffect(() => {
     if (!isMapReady || detail !== null || mapRef.current === null || onOrderSelect === undefined) return undefined;
@@ -155,7 +155,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
       </div>
       <div className="route-ops-map-frame" data-map-provider-mode={bootstrap.mapConfig.providerMode ?? 'none'} data-map-provider-status={bootstrap.mapConfig.status}>
         {readiness === 'interactive_map' ? <div className="map-toolbar"><button aria-label="Zoom map to fit" onClick={() => setFitRequest((value) => value + 1)} title="Zoom map to fit" type="button"><FitMapIcon /></button></div> : null}
-        {readiness === 'interactive_map' ? <div className="route-ops-map-canvas" ref={containerRef} aria-label="Interactive CLEVER route map" /> : <SequencePreview points={points} readiness={readiness} />}
+        {readiness === 'interactive_map' ? <div className="route-ops-map-canvas" ref={containerRef} aria-label="Interactive CLEVER route map" /> : <SequencePreview points={points} readiness={readiness} showRouteLine={detail !== null} />}
       </div>
     </article>
   );
@@ -185,17 +185,7 @@ export function syncOrdersLayer(map: MapLibreMap, featureCollection: ReturnType<
         'icon-ignore-placement': true,
         'icon-image': ['get', 'pinImage'],
         'icon-size': ORDER_PIN_ICON_SIZE,
-        'symbol-sort-key': ['get', 'sortKey'],
-        'text-allow-overlap': true,
-        'text-field': ['get', 'plannedLabel'],
-        'text-ignore-placement': true,
-        'text-offset': ORDER_PIN_LABEL_OFFSET,
-        'text-size': 11
-      },
-      paint: {
-        'text-color': '#ffffff',
-        'text-halo-color': 'rgba(0, 0, 0, 0.22)',
-        'text-halo-width': 0.5
+        'symbol-sort-key': ['get', 'sortKey']
       },
       source: 'route-ops-orders',
       type: 'symbol'
@@ -471,7 +461,7 @@ function FitMapIcon(): ReactElement {
   );
 }
 
-function SequencePreview({ points, readiness }: { points: RouteOpsPoint[]; readiness: string }): ReactElement {
+function SequencePreview({ points, readiness, showRouteLine }: { points: RouteOpsPoint[]; readiness: string; showRouteLine: boolean }): ReactElement {
   const bounds = fitBoundsForPoints(points);
   const projected = bounds === null ? [] : points.map((point) => ({ ...point, ...projectPoint(point, bounds) }));
   return (
@@ -480,7 +470,7 @@ function SequencePreview({ points, readiness }: { points: RouteOpsPoint[]; readi
       <rect width="1000" height="560" fill="url(#map-bg)" rx="24" />
       <path d="M-20 120 C200 90 260 210 440 176 C650 135 700 56 1040 85" className="map-road" />
       <path d="M40 470 C190 300 320 390 475 260 C610 145 730 300 955 210" className="map-road secondary" />
-      {projected.length > 1 ? <polyline className="route-line" points={projected.map((point) => `${point.x},${point.y}`).join(' ')} /> : null}
+      {showRouteLine && projected.length > 1 ? <polyline className="route-line" points={projected.map((point) => `${point.x},${point.y}`).join(' ')} /> : null}
       {projected.map((point) => <g key={point.id} transform={`translate(${point.x} ${point.y})`}><circle r="18" className={point.kind === 'depot' ? 'pin depot' : 'pin'} /><text y="5" textAnchor="middle">{point.label}</text></g>)}
     </svg>
   );

@@ -17,6 +17,18 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(sources.get('route-ops-orders')?.setData).toHaveBeenCalledWith(empty);
   });
 
+  test('renders Orders map pins without sequence labels', () => {
+    const { layers, map } = createMapStub();
+    const collection = buildOrdersMapFeatureCollection([order({ orderId: 'order-1', routePlanId: 'route-1' })], new Set());
+
+    syncOrdersLayer(map, collection);
+
+    const orderLayer = layers.get('route-ops-order-pins') as { layout?: Record<string, unknown> } | undefined;
+    expect(orderLayer).toBeDefined();
+    expect(orderLayer?.layout ?? {}).not.toHaveProperty('text-field');
+    expect(orderLayer?.layout ?? {}).not.toHaveProperty('text-offset');
+  });
+
 
   test('clears the route line source when a filter leaves fewer than two points', () => {
     const { map, sources } = createMapStub();
@@ -49,23 +61,24 @@ describe('RouteOpsMap layer lifecycle', () => {
 });
 
 function createMapStub(): {
+  layers: Map<string, unknown>;
   map: Parameters<typeof syncOrdersLayer>[0] & Parameters<typeof syncRouteLayers>[0];
   sources: Map<string, { data: unknown; setData: ReturnType<typeof vi.fn> }>;
 } {
   const sources = new Map<string, { data: unknown; setData: ReturnType<typeof vi.fn> }>();
-  const layers = new Set<string>();
+  const layers = new Map<string, unknown>();
   const map = {
     addLayer: (layer: { id: string }) => {
-      layers.add(layer.id);
+      layers.set(layer.id, layer);
     },
     addSource: (id: string, source: { data: unknown }) => {
       sources.set(id, { data: source.data, setData: vi.fn() });
     },
-    getLayer: (id: string) => (layers.has(id) ? { id } : undefined),
+    getLayer: (id: string) => layers.get(id),
     getSource: (id: string) => sources.get(id),
     setPaintProperty: vi.fn()
   } as unknown as Parameters<typeof syncOrdersLayer>[0];
-  return { map, sources };
+  return { layers, map, sources };
 }
 
 
