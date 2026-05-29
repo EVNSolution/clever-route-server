@@ -151,7 +151,9 @@ export type WordPressPluginSyncRequestInput = {
 };
 
 export type WordPressPluginSyncRequestResult = {
+  message?: string;
   pagesRead: number;
+  queued?: boolean;
   sync: {
     created: number;
     needsReview: number;

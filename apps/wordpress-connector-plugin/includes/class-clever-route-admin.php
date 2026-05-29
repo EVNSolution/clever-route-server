@@ -296,6 +296,9 @@ final class Clever_Route_Admin {
                 $payload['modifiedAfter'] = $modified_after_iso;
             }
             $result = $this->client->post('/wordpress/plugin/sync/request', $payload);
+            if (!empty($result['data']['queued'])) {
+                return $this->summarize_queued_sync_result($result['data']);
+            }
             if (isset($result['data']['sync']) && is_array($result['data']['sync'])) {
                 return $this->summarize_sync_result($result['data']);
             }
@@ -487,6 +490,29 @@ final class Clever_Route_Admin {
             return array('status' => null, 'error' => __('Custom Woo status slug can only contain lowercase letters, numbers, underscores, and hyphens.', 'clever-route-connector'));
         }
         return array('status' => $slug, 'error' => '');
+    }
+
+    /** @param array<string,mixed> $data */
+    private function summarize_queued_sync_result(array $data): string {
+        $message = $this->text($data['message'] ?? '');
+        if ($message === '') {
+            $message = __('Manual sync accepted and is running in the background.', 'clever-route-connector');
+        }
+        $summary = $message . ' ' . __('The counts shown in this acknowledgement are placeholders, not the final sync result. Refresh CLEVER Route after it completes.', 'clever-route-connector');
+
+        $warnings = array();
+        if (is_array($data['warnings'] ?? null)) {
+            foreach ($data['warnings'] as $warning) {
+                $warning_text = $this->text($warning);
+                if ($warning_text !== '') {
+                    $warnings[] = $warning_text;
+                }
+            }
+        }
+        if (count($warnings) > 0) {
+            $summary .= ' ' . __('Warnings:', 'clever-route-connector') . ' ' . implode(' | ', $warnings);
+        }
+        return $summary;
     }
 
     /** @param array<string,mixed> $data */

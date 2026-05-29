@@ -101,6 +101,8 @@ describe("WordPress connector plugin static contract", () => {
     expect(source).toContain("woo_status_preset");
     expect(source).toContain("woo_status_custom");
     expect(source).toContain("custom Woo status slug");
+    expect(source).toContain("summarize_queued_sync_result");
+    expect(source).toContain("placeholders, not the final sync result");
     expect(source).toContain("summarize_sync_result");
     expect(source).toContain("warnings");
     expect(source).not.toContain('type="text" name="woo_status"');

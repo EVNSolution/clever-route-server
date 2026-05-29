@@ -229,10 +229,13 @@ describe('WordPress plugin routes', () => {
       expect(sync.statusCode).toBe(202);
       expect(sync.json()).toEqual({
         data: {
+          message: 'Sync was accepted and is running in the background.',
           pagesRead: 0,
           queued: true,
           sync: { created: 0, needsReview: 0, readyToPlan: 0, received: 0, skipped: 0, unchanged: 0, updated: 0 },
-          warnings: ['Sync was accepted and is running in the background. Refresh CLEVER Route after it completes.']
+          warnings: [
+            'Sync was accepted and is running in the background. The zero counts in this acknowledgement are placeholders, not the final sync result. Refresh CLEVER Route after it completes.'
+          ]
         },
         error: null
       });
@@ -254,6 +257,52 @@ describe('WordPress plugin routes', () => {
         url: '/wordpress/plugin/orders/batch'
       });
       expect(batch.statusCode).toBe(404);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('sync/request does not start duplicate background syncs for the same connection', async () => {
+    const { dependencies, requestSync } = createDependencies();
+    let resolveSync!: (value: Awaited<ReturnType<typeof requestSync>>) => void;
+    requestSync.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSync = resolve;
+        })
+    );
+    const app = await buildApp({ wordPressPlugin: dependencies });
+
+    try {
+      const first = await app.inject({
+        headers: { authorization: 'Bearer valid-token' },
+        method: 'POST',
+        payload: { pageSize: 25, status: 'processing' },
+        url: '/wordpress/plugin/sync/request'
+      });
+      const second = await app.inject({
+        headers: { authorization: 'Bearer valid-token' },
+        method: 'POST',
+        payload: { pageSize: 25, status: 'processing' },
+        url: '/wordpress/plugin/sync/request'
+      });
+
+      expect(first.statusCode).toBe(202);
+      expect(first.json<{ data: { message: string } }>().data.message).toBe(
+        'Sync was accepted and is running in the background.'
+      );
+      expect(second.statusCode).toBe(202);
+      expect(second.json<{ data: { message: string } }>().data.message).toBe(
+        'A sync is already running in the background. This request was accepted without starting a duplicate job.'
+      );
+      expect(requestSync).toHaveBeenCalledOnce();
+
+      resolveSync({
+        pagesRead: 1,
+        sync: { created: 1, needsReview: 0, readyToPlan: 1, received: 1, skipped: 0, unchanged: 0, updated: 0 },
+        warnings: []
+      });
+      await Promise.resolve();
     } finally {
       await app.close();
     }

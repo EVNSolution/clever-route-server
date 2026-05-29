@@ -22,6 +22,8 @@ import type {
   WordPressPluginFreshness
 } from '../modules/wordpress-plugin/wordpress-plugin.types.js';
 
+const activeWordPressPluginSyncRequests = new Set<string>();
+
 export type WordPressPluginDependencies = {
   adminLaunchService?: {
     createAdminLaunch(input: {
@@ -169,34 +171,25 @@ export function registerWordPressPluginRoutes(
       return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid sync request payload'));
     }
 
-    void dependencies.syncService
-      .requestSync({
+    const alreadyRunning = activeWordPressPluginSyncRequests.has(authenticated.context.connectionId);
+    if (!alreadyRunning) {
+      activeWordPressPluginSyncRequests.add(authenticated.context.connectionId);
+      request.log.info(
+        {
+          connectionId: authenticated.context.connectionId,
+          shopDomain: authenticated.context.shopDomain
+        },
+        'wordpress plugin sync request queued'
+      );
+      void runWordPressPluginSyncRequest({
         context: authenticated.context,
+        dependencies,
+        log: request.log,
         payload
-      })
-      .then((result) => {
-        request.log.info(
-          {
-            connectionId: authenticated.context.connectionId,
-            pagesRead: result.pagesRead,
-            received: result.sync.received,
-            shopDomain: authenticated.context.shopDomain
-          },
-          'wordpress plugin sync request processed'
-        );
-      })
-      .catch((error: unknown) => {
-        request.log.error(
-          {
-            connectionId: authenticated.context.connectionId,
-            error: error instanceof Error ? error.message : String(error),
-            shopDomain: authenticated.context.shopDomain
-          },
-          'wordpress plugin background sync request failed'
-        );
       });
+    }
 
-    return reply.code(202).send({ data: queuedSyncRequestResult(), error: null });
+    return reply.code(202).send({ data: queuedSyncRequestResult({ alreadyRunning }), error: null });
   });
 
   app.post<{ Body: unknown }>('/wordpress/plugin/admin-launch', async (request, reply) => {
@@ -231,8 +224,46 @@ export function registerWordPressPluginRoutes(
   });
 }
 
-function queuedSyncRequestResult(): WordPressPluginSyncRequestResult & { queued: true } {
+async function runWordPressPluginSyncRequest(input: {
+  context: WordPressPluginConnectionContext;
+  dependencies: WordPressPluginDependencies;
+  log: FastifyRequest['log'];
+  payload: WordPressPluginSyncRequestInput;
+}): Promise<void> {
+  try {
+    const result = await input.dependencies.syncService.requestSync({
+      context: input.context,
+      payload: input.payload
+    });
+    input.log.info(
+      {
+        connectionId: input.context.connectionId,
+        pagesRead: result.pagesRead,
+        received: result.sync.received,
+        shopDomain: input.context.shopDomain
+      },
+      'wordpress plugin sync request processed'
+    );
+  } catch (error: unknown) {
+    input.log.error(
+      {
+        connectionId: input.context.connectionId,
+        error: error instanceof Error ? error.message : String(error),
+        shopDomain: input.context.shopDomain
+      },
+      'wordpress plugin background sync request failed'
+    );
+  } finally {
+    activeWordPressPluginSyncRequests.delete(input.context.connectionId);
+  }
+}
+
+function queuedSyncRequestResult(input: { alreadyRunning: boolean }): WordPressPluginSyncRequestResult & { queued: true } {
+  const message = input.alreadyRunning
+    ? 'A sync is already running in the background. This request was accepted without starting a duplicate job.'
+    : 'Sync was accepted and is running in the background.';
   return {
+    message,
     pagesRead: 0,
     queued: true,
     sync: {
@@ -244,7 +275,9 @@ function queuedSyncRequestResult(): WordPressPluginSyncRequestResult & { queued:
       unchanged: 0,
       updated: 0
     },
-    warnings: ['Sync was accepted and is running in the background. Refresh CLEVER Route after it completes.']
+    warnings: [
+      `${message} The zero counts in this acknowledgement are placeholders, not the final sync result. Refresh CLEVER Route after it completes.`
+    ]
   };
 }
 
