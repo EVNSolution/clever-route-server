@@ -5,6 +5,8 @@ APP_DIR="${APP_DIR:-/srv/clever-route-server}"
 COMPOSE_FILE="${COMPOSE_FILE:-infra/compose/docker-compose.prod.yml}"
 BASE_URL="${ROUTE_OPS_SMOKE_BASE_URL:-https://clever-route.cleversystem.ai}"
 SHOP_DOMAIN="${ROUTE_OPS_SMOKE_SHOP_DOMAIN:-dev1.tomatonofood.com}"
+EXPECT_PUBLIC_OPENFREEMAP="${ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP:-true}"
+EXPECT_GEOCODER_CONFIGURED="${ROUTE_OPS_EXPECT_GEOCODER_CONFIGURED:-true}"
 : "${IMAGE_TAG:?IMAGE_TAG is required and must be the immutable git SHA tag}"
 : "${DELIVERY_API_IMAGE:?DELIVERY_API_IMAGE is required}"
 : "${DELIVERY_API_MIGRATE_IMAGE:?DELIVERY_API_MIGRATE_IMAGE is required}"
@@ -71,6 +73,30 @@ load_image_env_file() {
   source "$file"
   set +a
 }
+
+run_production_smoke() {
+  if command -v node >/dev/null 2>&1; then
+    ROUTE_OPS_SMOKE_BASE_URL="$BASE_URL" \
+    ROUTE_OPS_SMOKE_SHOP_DOMAIN="$SHOP_DOMAIN" \
+    ROUTE_OPS_SMOKE_LOGIN_SECRET="$ROUTE_OPS_SMOKE_LOGIN_SECRET" \
+    ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP="$EXPECT_PUBLIC_OPENFREEMAP" \
+    ROUTE_OPS_EXPECT_GEOCODER_CONFIGURED="$EXPECT_GEOCODER_CONFIGURED" \
+      node scripts/smoke-route-ops-production.mjs
+    return 0
+  fi
+
+  echo "Host node not found; running Route Ops smoke through the runtime image."
+  docker run --rm \
+    -v "$APP_DIR/scripts/smoke-route-ops-production.mjs:/tmp/route-ops-smoke.mjs:ro" \
+    -e ROUTE_OPS_SMOKE_BASE_URL="$BASE_URL" \
+    -e ROUTE_OPS_SMOKE_SHOP_DOMAIN="$SHOP_DOMAIN" \
+    -e ROUTE_OPS_SMOKE_LOGIN_SECRET="$ROUTE_OPS_SMOKE_LOGIN_SECRET" \
+    -e ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP="$EXPECT_PUBLIC_OPENFREEMAP" \
+    -e ROUTE_OPS_EXPECT_GEOCODER_CONFIGURED="$EXPECT_GEOCODER_CONFIGURED" \
+    "$DELIVERY_API_IMAGE" \
+    node /tmp/route-ops-smoke.mjs
+}
+
 acquire_deploy_lock
 trap 'release_deploy_lock' EXIT
 
@@ -119,10 +145,7 @@ docker compose --env-file .deploy/candidate-image.env -f "$COMPOSE_FILE" run --r
 docker compose --env-file .deploy/candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate --no-deps delivery-api
 docker compose --env-file .deploy/candidate-image.env -f "$COMPOSE_FILE" ps
 
-ROUTE_OPS_SMOKE_BASE_URL="$BASE_URL" \
-ROUTE_OPS_SMOKE_SHOP_DOMAIN="$SHOP_DOMAIN" \
-ROUTE_OPS_SMOKE_LOGIN_SECRET="$ROUTE_OPS_SMOKE_LOGIN_SECRET" \
-node scripts/smoke-route-ops-production.mjs
+run_production_smoke
 
 if [ -f .deploy/current-image.env ]; then cp .deploy/current-image.env .deploy/previous-image.env; fi
 mv .deploy/candidate-image.env .deploy/current-image.env
