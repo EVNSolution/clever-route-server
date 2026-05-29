@@ -45,6 +45,7 @@ export type WordPressPluginHealth = {
     tokenPrefix: string;
   };
   freshness: WordPressPluginFreshness;
+  latestSyncRun?: WordPressPluginSyncRun | null;
 };
 
 export type WordPressPluginRoutePlanSummary = {
@@ -150,18 +151,56 @@ export type WordPressPluginSyncRequestInput = {
   status?: string | null;
 };
 
+export type WordPressPluginSyncRunStatus = 'FAILED' | 'QUEUED' | 'RUNNING' | 'SUCCEEDED';
+
+export type WordPressPluginSyncRunRequest = {
+  modifiedAfter: string | null;
+  pageSize: number;
+  status: string | null;
+};
+
+export type WordPressPluginSyncCounts = {
+  created: number;
+  needsReview: number;
+  readyToPlan: number;
+  received: number;
+  skipped: number;
+  unchanged: number;
+  updated: number;
+};
+
+export type WordPressPluginSyncGeocodeSummary = {
+  failed: number;
+  notRequired: number;
+  pending: number;
+  resolved: number;
+};
+
+export type WordPressPluginSyncRun = {
+  acceptedAt: string;
+  completedAt: string | null;
+  errorMessage: string | null;
+  request: WordPressPluginSyncRunRequest;
+  result: {
+    geocode: WordPressPluginSyncGeocodeSummary;
+    pagesRead: number;
+    sync: WordPressPluginSyncCounts;
+    warnings: string[];
+  } | null;
+  startedAt: string | null;
+  status: WordPressPluginSyncRunStatus;
+  syncRunId: string;
+};
+
 export type WordPressPluginSyncRequestResult = {
-  message?: string;
+  alreadyRunning: boolean;
+  message: string;
+  syncRun: WordPressPluginSyncRun;
+};
+
+export type WordPressPluginSyncRunResult = {
+  geocode: WordPressPluginSyncGeocodeSummary;
   pagesRead: number;
-  queued?: boolean;
-  sync: {
-    created: number;
-    needsReview: number;
-    readyToPlan: number;
-    received: number;
-    skipped: number;
-    unchanged: number;
-    updated: number;
-  };
+  sync: WordPressPluginSyncCounts;
   warnings: string[];
 };

@@ -8,6 +8,7 @@ final class Clever_Route_Options {
     private const OPTION_TOKEN_PREFIX = 'clever_route_connector_token_prefix';
     private const OPTION_CONNECTION_ID = 'clever_route_connection_id';
     private const OPTION_LAST_ERROR = 'clever_route_last_error';
+    private const OPTION_LATEST_SYNC_RUN_ID = 'clever_route_latest_sync_run_id';
 
     /** @return array{base_url:string,connection_id:string,token_prefix:string,connected:bool,last_error:string} */
     public function summary(): array {
@@ -32,12 +33,20 @@ final class Clever_Route_Options {
         return (string) get_option(self::OPTION_TOKEN_PREFIX, '');
     }
 
+    public function latest_sync_run_id(): string {
+        return (string) get_option(self::OPTION_LATEST_SYNC_RUN_ID, '');
+    }
+
     public function save_pairing(string $base_url, string $token, string $token_prefix, string $connection_id): void {
         $this->save_nonautoloaded_option(self::OPTION_BASE_URL, esc_url_raw(rtrim($base_url, '/')));
         $this->save_nonautoloaded_option(self::OPTION_TOKEN, $token);
         $this->save_nonautoloaded_option(self::OPTION_TOKEN_PREFIX, sanitize_text_field($token_prefix));
         $this->save_nonautoloaded_option(self::OPTION_CONNECTION_ID, sanitize_text_field($connection_id));
         delete_option(self::OPTION_LAST_ERROR);
+    }
+
+    public function save_latest_sync_run_id(string $sync_run_id): void {
+        $this->save_nonautoloaded_option(self::OPTION_LATEST_SYNC_RUN_ID, sanitize_text_field($sync_run_id));
     }
 
     public function save_error(string $message): void {
@@ -48,6 +57,7 @@ final class Clever_Route_Options {
         delete_option(self::OPTION_TOKEN);
         delete_option(self::OPTION_TOKEN_PREFIX);
         delete_option(self::OPTION_CONNECTION_ID);
+        delete_option(self::OPTION_LATEST_SYNC_RUN_ID);
     }
 
     public function delete_all(): void {
@@ -56,6 +66,7 @@ final class Clever_Route_Options {
         delete_option(self::OPTION_TOKEN_PREFIX);
         delete_option(self::OPTION_CONNECTION_ID);
         delete_option(self::OPTION_LAST_ERROR);
+        delete_option(self::OPTION_LATEST_SYNC_RUN_ID);
     }
 
     /** @param mixed $value */

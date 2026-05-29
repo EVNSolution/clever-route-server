@@ -80,7 +80,8 @@ export function loadWordPressPluginDependencies(input: {
           siteUrl: connection.siteUrl
         });
       },
-      freshnessRepository: wordpressRepository
+      freshnessRepository: wordpressRepository,
+      syncRunRepository: wordpressRepository
     })
   };
 }

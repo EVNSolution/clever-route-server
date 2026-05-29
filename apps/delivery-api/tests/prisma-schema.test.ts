@@ -18,6 +18,10 @@ const adminSettingsMigrationPath = new URL(
   '../prisma/migrations/20260526061000_add_shop_admin_settings/migration.sql',
   import.meta.url
 );
+const commerceSyncRunsMigrationPath = new URL(
+  '../prisma/migrations/20260529011000_add_commerce_sync_runs/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
@@ -51,6 +55,7 @@ describe('Prisma schema', () => {
       'ShopifyWebhookEvent',
       'CommerceConnection',
       'CommerceConnectionAuditLog',
+      'CommerceSyncRun',
       'WordPressPluginToken',
       'WordPressPluginPairingCode',
       'Order',
@@ -71,7 +76,9 @@ describe('Prisma schema', () => {
     expect(schema).toMatch(/@@unique\(\[shopId, webhookId\]/);
     expect(schema).toContain('enum CommerceSourcePlatform');
     expect(schema).toContain('enum CommerceConnectionStatus');
+    expect(schema).toContain('enum CommerceSyncRunStatus');
     expect(schema).toContain('commerceConnections');
+    expect(schema).toContain('commerceSyncRuns');
     expect(schema).toContain('consumerKeyCiphertext');
     expect(schema).toContain('consumerSecretCiphertext');
     expect(schema).toContain('webhookSecretCiphertext');
@@ -108,6 +115,10 @@ describe('Prisma schema', () => {
     expect(schema).toContain('failedAttemptCount');
     expect(schema).toMatch(/@@index\(\[commerceConnectionId, status\]/);
     expect(schema).toMatch(/@@index\(\[commerceConnectionId, createdAt\]/);
+    expect(schema).toMatch(/@@index\(\[commerceConnectionId, status, createdAt\]/);
+    expect(schema).toContain('requestPayload');
+    expect(schema).toContain('geocodeResolved');
+    expect(schema).toContain('geocodeFailed');
     expect(schema).toContain('jobName');
     expect(schema).toContain('scannedCount');
     expect(schema).toContain('deletedCount');
@@ -163,5 +174,18 @@ describe('Prisma schema', () => {
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS "defaultDepotLatitude"');
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS "defaultDepotLongitude"');
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS "locale"');
+  });
+
+  test('ships a migration for durable WooCommerce REST sync runs', async () => {
+    const migration = await readFile(commerceSyncRunsMigrationPath, 'utf8');
+
+    expect(migration).toContain('CREATE TYPE "CommerceSyncRunStatus"');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "commerce_sync_runs"');
+    expect(migration).toContain('"requestPayload" JSONB NOT NULL');
+    expect(migration).toContain('"geocodeResolved" INTEGER');
+    expect(migration).toContain('"commerce_sync_runs_commerceConnectionId_status_createdAt_idx"');
+    expect(migration).toContain('"commerce_sync_runs_shopId_platform_createdAt_idx"');
+    expect(migration).toContain('"commerce_sync_runs_one_active_per_connection_idx"');
+    expect(migration).toContain('WHERE "status" IN (\'QUEUED\', \'RUNNING\')');
   });
 });

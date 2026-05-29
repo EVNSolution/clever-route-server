@@ -25,6 +25,13 @@ enum CommerceConnectionStatus {
   DISABLED
 }
 
+enum CommerceSyncRunStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
 enum WordPressPluginTokenStatus {
   ACTIVE
   REVOKED
@@ -168,6 +175,7 @@ model Shop {
   commerceConnections             CommerceConnection[]
   commerceConnectionAuditLogs     CommerceConnectionAuditLog[]
   commerceConnectionOrderMappings CommerceConnectionOrderMapping[]
+  commerceSyncRuns                CommerceSyncRun[]
   orderDeliveryFacts              OrderDeliveryFact[]
   wordpressPluginPairingCodes     WordPressPluginPairingCode[]
 
@@ -204,12 +212,50 @@ model CommerceConnection {
   wordpressPairingCodes    WordPressPluginPairingCode[]
   auditLogs                CommerceConnectionAuditLog[]
   orderMappingConfig       CommerceConnectionOrderMapping?
+  syncRuns                 CommerceSyncRun[]
   orderDeliveryFacts       OrderDeliveryFact[]
 
   @@unique([shopId, platform, siteUrl])
   @@index([shopId, platform, status])
   @@index([platform, siteUrl])
   @@map("commerce_connections")
+}
+
+model CommerceSyncRun {
+  id                   String                @id @default(uuid()) @db.Uuid
+  shopId               String                @db.Uuid
+  shop                 Shop                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  commerceConnectionId String                @db.Uuid
+  commerceConnection   CommerceConnection    @relation(fields: [commerceConnectionId], references: [id], onDelete: Cascade)
+  platform             CommerceSourcePlatform
+  source               String                @default("wordpress_plugin") @db.Text
+  trigger              String                @db.Text
+  status               CommerceSyncRunStatus @default(QUEUED)
+  requestPayload       Json
+  pagesRead            Int?
+  received             Int?
+  created              Int?
+  updated              Int?
+  unchanged            Int?
+  skipped              Int?
+  readyToPlan          Int?
+  needsReview          Int?
+  geocodeResolved      Int?
+  geocodeFailed        Int?
+  geocodePending       Int?
+  geocodeNotRequired   Int?
+  warnings             Json
+  errorMessage         String?               @db.Text
+  acceptedAt           DateTime              @default(now()) @db.Timestamptz(6)
+  startedAt            DateTime?             @db.Timestamptz(6)
+  completedAt          DateTime?             @db.Timestamptz(6)
+  createdAt            DateTime              @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime              @updatedAt @db.Timestamptz(6)
+
+  @@index([commerceConnectionId, status, createdAt])
+  @@index([commerceConnectionId, createdAt])
+  @@index([shopId, platform, createdAt])
+  @@map("commerce_sync_runs")
 }
 
 model CommerceConnectionAuditLog {

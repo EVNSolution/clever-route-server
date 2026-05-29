@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient, RoutePlanStatus } from '@prisma/client';
+import type { CommerceSyncRunStatus, Prisma, PrismaClient, RoutePlanStatus } from '@prisma/client';
 
 import { normalizeCommerceSiteUrl } from '../commerce/commerce-connection.repository.js';
 import type { WordPressPluginAuthRepository } from './wordpress-plugin-auth.service.js';
@@ -12,13 +12,48 @@ import type {
   WordPressPluginRoutePlanDetail,
   WordPressPluginRoutePlanFilters,
   WordPressPluginRoutePlanStop,
-  WordPressPluginRoutePlanSummary
+  WordPressPluginRoutePlanSummary,
+  WordPressPluginSyncRun,
+  WordPressPluginSyncRunRequest,
+  WordPressPluginSyncRunResult
 } from './wordpress-plugin.types.js';
 
 type WordPressPluginPrismaClient = Pick<
   PrismaClient,
-  'commerceConnection' | 'commerceConnectionOrderMapping' | 'orderDeliveryFact' | 'routePlan' | 'wordPressPluginPairingCode' | 'wordPressPluginToken'
+  | 'commerceConnection'
+  | 'commerceConnectionOrderMapping'
+  | 'commerceSyncRun'
+  | 'orderDeliveryFact'
+  | 'routePlan'
+  | 'wordPressPluginPairingCode'
+  | 'wordPressPluginToken'
 >;
+
+type SyncRunRecord = {
+  acceptedAt: Date;
+  completedAt: Date | null;
+  created: number | null;
+  errorMessage: string | null;
+  geocodeFailed: number | null;
+  geocodeNotRequired: number | null;
+  geocodePending: number | null;
+  geocodeResolved: number | null;
+  id: string;
+  needsReview: number | null;
+  pagesRead: number | null;
+  readyToPlan: number | null;
+  received: number | null;
+  requestPayload: unknown;
+  skipped: number | null;
+  startedAt: Date | null;
+  status: CommerceSyncRunStatus;
+  unchanged: number | null;
+  updated: number | null;
+  warnings: unknown;
+};
+
+const ACTIVE_SYNC_RUN_RECOVERY_TIMEOUT_MS = 30 * 60 * 1000;
+const STALE_SYNC_RUN_ERROR_MESSAGE = 'Sync run failed because the background worker did not complete before the recovery timeout.';
 
 type RoutePlanSummaryRecord = {
   _count?: { routeStops?: number };
@@ -211,8 +246,204 @@ export class PrismaWordPressPluginRepository implements WordPressPluginAuthRepos
     });
   }
 
+  async createSyncRunUnlessActive(input: {
+    acceptedAt: Date;
+    context: WordPressPluginConnectionContext;
+    request: WordPressPluginSyncRunRequest;
+  }): Promise<{ alreadyRunning: boolean; run: WordPressPluginSyncRun; startBackgroundProcessing: boolean }> {
+    await this.failStaleRunningSyncRuns({ context: input.context, now: input.acceptedAt });
+    const active = await this.findActiveSyncRun(input.context);
+    if (active !== null) {
+      return { alreadyRunning: true, run: toSyncRunDto(active), startBackgroundProcessing: active.status === 'QUEUED' };
+    }
+
+    try {
+      const run = await this.prisma.commerceSyncRun.create({
+        data: {
+          acceptedAt: input.acceptedAt,
+          commerceConnectionId: input.context.connectionId,
+          platform: 'WOOCOMMERCE',
+          requestPayload: input.request,
+          shopId: input.context.shopId,
+          source: 'wordpress_plugin',
+          status: 'QUEUED',
+          trigger: 'manual_rest_backfill',
+          updatedAt: input.acceptedAt,
+          warnings: []
+        },
+        select: syncRunSelect()
+      });
+      return { alreadyRunning: false, run: toSyncRunDto(run), startBackgroundProcessing: true };
+    } catch (error) {
+      if (isPrismaUniqueConstraintError(error)) {
+        await this.failStaleRunningSyncRuns({ context: input.context, now: input.acceptedAt });
+        const activeAfterConflict = await this.findActiveSyncRun(input.context);
+        if (activeAfterConflict !== null) {
+          return {
+            alreadyRunning: true,
+            run: toSyncRunDto(activeAfterConflict),
+            startBackgroundProcessing: activeAfterConflict.status === 'QUEUED'
+          };
+        }
+      }
+      throw error;
+    }
+  }
+
+  private async failStaleRunningSyncRuns(input: {
+    context: WordPressPluginConnectionContext;
+    now: Date;
+  }): Promise<void> {
+    const staleStartedBefore = new Date(input.now.getTime() - ACTIVE_SYNC_RUN_RECOVERY_TIMEOUT_MS);
+    await this.prisma.commerceSyncRun.updateMany({
+      data: {
+        completedAt: input.now,
+        errorMessage: STALE_SYNC_RUN_ERROR_MESSAGE,
+        status: 'FAILED',
+        updatedAt: input.now
+      },
+      where: {
+        commerceConnectionId: input.context.connectionId,
+        OR: [
+          { startedAt: { lt: staleStartedBefore } },
+          { acceptedAt: { lt: staleStartedBefore }, startedAt: null }
+        ],
+        shopId: input.context.shopId,
+        status: 'RUNNING'
+      }
+    });
+  }
+
+  private findActiveSyncRun(context: WordPressPluginConnectionContext): Promise<SyncRunRecord | null> {
+    return this.prisma.commerceSyncRun.findFirst({
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      select: syncRunSelect(),
+      where: {
+        commerceConnectionId: context.connectionId,
+        shopId: context.shopId,
+        status: { in: ['QUEUED', 'RUNNING'] }
+      }
+    });
+  }
+
+  private findScopedSyncRunRecord(input: {
+    context: WordPressPluginConnectionContext;
+    syncRunId: string;
+  }): Promise<SyncRunRecord | null> {
+    return this.prisma.commerceSyncRun.findFirst({
+      select: syncRunSelect(),
+      where: toScopedSyncRunWhere(input.context, input.syncRunId)
+    });
+  }
+
+  async findSyncRunById(input: {
+    context: WordPressPluginConnectionContext;
+    syncRunId: string;
+  }): Promise<WordPressPluginSyncRun | null> {
+    const run = await this.findScopedSyncRunRecord(input);
+    return run === null ? null : toSyncRunDto(run);
+  }
+
+  async findLatestSyncRun(input: { context: WordPressPluginConnectionContext }): Promise<WordPressPluginSyncRun | null> {
+    const run = await this.prisma.commerceSyncRun.findFirst({
+      orderBy: [{ createdAt: 'desc' }, { id: 'asc' }],
+      select: syncRunSelect(),
+      where: {
+        commerceConnectionId: input.context.connectionId,
+        shopId: input.context.shopId
+      }
+    });
+    return run === null ? null : toSyncRunDto(run);
+  }
+
+  async markSyncRunRunning(input: {
+    context: WordPressPluginConnectionContext;
+    startedAt: Date;
+    syncRunId: string;
+  }): Promise<WordPressPluginSyncRun | null> {
+    const updated = await this.prisma.commerceSyncRun.updateMany({
+      data: {
+        startedAt: input.startedAt,
+        status: 'RUNNING',
+        updatedAt: input.startedAt
+      },
+      where: {
+        commerceConnectionId: input.context.connectionId,
+        id: input.syncRunId,
+        shopId: input.context.shopId,
+        status: 'QUEUED'
+      }
+    });
+    if (updated.count !== 1) return null;
+
+    const run = await this.findScopedSyncRunRecord(input);
+    return run === null ? null : toSyncRunDto(run);
+  }
+
+  async markSyncRunSucceeded(input: {
+    completedAt: Date;
+    context: WordPressPluginConnectionContext;
+    result: WordPressPluginSyncRunResult;
+    syncRunId: string;
+  }): Promise<WordPressPluginSyncRun> {
+    const updated = await this.prisma.commerceSyncRun.updateMany({
+      data: {
+        completedAt: input.completedAt,
+        created: input.result.sync.created,
+        errorMessage: null,
+        geocodeFailed: input.result.geocode.failed,
+        geocodeNotRequired: input.result.geocode.notRequired,
+        geocodePending: input.result.geocode.pending,
+        geocodeResolved: input.result.geocode.resolved,
+        needsReview: input.result.sync.needsReview,
+        pagesRead: input.result.pagesRead,
+        readyToPlan: input.result.sync.readyToPlan,
+        received: input.result.sync.received,
+        skipped: input.result.sync.skipped,
+        status: 'SUCCEEDED',
+        unchanged: input.result.sync.unchanged,
+        updated: input.result.sync.updated,
+        updatedAt: input.completedAt,
+        warnings: input.result.warnings
+      },
+      where: toScopedSyncRunWhere(input.context, input.syncRunId)
+    });
+    if (updated.count !== 1) {
+      throw new Error('WordPress plugin sync run not found for connection');
+    }
+    const run = await this.findScopedSyncRunRecord(input);
+    if (run === null) throw new Error('WordPress plugin sync run not found after update');
+    return toSyncRunDto(run);
+  }
+
+  async markSyncRunFailed(input: {
+    completedAt: Date;
+    context: WordPressPluginConnectionContext;
+    errorMessage: string;
+    syncRunId: string;
+  }): Promise<WordPressPluginSyncRun> {
+    const updated = await this.prisma.commerceSyncRun.updateMany({
+      data: {
+        completedAt: input.completedAt,
+        errorMessage: input.errorMessage,
+        status: 'FAILED',
+        updatedAt: input.completedAt
+      },
+      where: toScopedSyncRunWhere(input.context, input.syncRunId)
+    });
+    if (updated.count !== 1) {
+      throw new Error('WordPress plugin sync run not found for connection');
+    }
+    const run = await this.findScopedSyncRunRecord(input);
+    if (run === null) throw new Error('WordPress plugin sync run not found after update');
+    return toSyncRunDto(run);
+  }
+
   async readHealth(input: { context: WordPressPluginConnectionContext; now: Date }): Promise<WordPressPluginHealth> {
-    const freshness = await this.readFreshness(input);
+    const [freshness, latestSyncRun] = await Promise.all([
+      this.readFreshness(input),
+      this.findLatestSyncRun({ context: input.context })
+    ]);
     return {
       connection: {
         connectionId: input.context.connectionId,
@@ -222,7 +453,8 @@ export class PrismaWordPressPluginRepository implements WordPressPluginAuthRepos
         state: input.context.status === 'ACTIVE' ? 'connected' : 'disabled',
         tokenPrefix: input.context.tokenPrefix
       },
-      freshness
+      freshness,
+      latestSyncRun
     };
   }
 
@@ -431,6 +663,107 @@ function toRoutePlanStop(routeStop: RoutePlanStopRecord): WordPressPluginRoutePl
   };
 }
 
+function syncRunSelect(): {
+  acceptedAt: true;
+  completedAt: true;
+  created: true;
+  errorMessage: true;
+  geocodeFailed: true;
+  geocodeNotRequired: true;
+  geocodePending: true;
+  geocodeResolved: true;
+  id: true;
+  needsReview: true;
+  pagesRead: true;
+  readyToPlan: true;
+  received: true;
+  requestPayload: true;
+  skipped: true;
+  startedAt: true;
+  status: true;
+  unchanged: true;
+  updated: true;
+  warnings: true;
+} {
+  return {
+    acceptedAt: true,
+    completedAt: true,
+    created: true,
+    errorMessage: true,
+    geocodeFailed: true,
+    geocodeNotRequired: true,
+    geocodePending: true,
+    geocodeResolved: true,
+    id: true,
+    needsReview: true,
+    pagesRead: true,
+    readyToPlan: true,
+    received: true,
+    requestPayload: true,
+    skipped: true,
+    startedAt: true,
+    status: true,
+    unchanged: true,
+    updated: true,
+    warnings: true
+  };
+}
+
+function toSyncRunDto(run: SyncRunRecord): WordPressPluginSyncRun {
+  const request = readSyncRunRequest(run.requestPayload);
+  const hasResult = run.status === 'SUCCEEDED';
+  return {
+    acceptedAt: run.acceptedAt.toISOString(),
+    completedAt: run.completedAt?.toISOString() ?? null,
+    errorMessage: run.errorMessage,
+    request,
+    result: hasResult
+      ? {
+          geocode: {
+            failed: run.geocodeFailed ?? 0,
+            notRequired: run.geocodeNotRequired ?? 0,
+            pending: run.geocodePending ?? 0,
+            resolved: run.geocodeResolved ?? 0
+          },
+          pagesRead: run.pagesRead ?? 0,
+          sync: {
+            created: run.created ?? 0,
+            needsReview: run.needsReview ?? 0,
+            readyToPlan: run.readyToPlan ?? 0,
+            received: run.received ?? 0,
+            skipped: run.skipped ?? 0,
+            unchanged: run.unchanged ?? 0,
+            updated: run.updated ?? 0
+          },
+          warnings: readStringArray(run.warnings)
+        }
+      : null,
+    startedAt: run.startedAt?.toISOString() ?? null,
+    status: run.status,
+    syncRunId: run.id
+  };
+}
+
+function toScopedSyncRunWhere(
+  context: WordPressPluginConnectionContext,
+  syncRunId: string
+): Prisma.CommerceSyncRunWhereInput {
+  return {
+    commerceConnectionId: context.connectionId,
+    id: syncRunId,
+    shopId: context.shopId
+  };
+}
+
+function readSyncRunRequest(value: unknown): WordPressPluginSyncRunRequest {
+  const object = objectOrNull(value);
+  return {
+    modifiedAfter: typeof object?.modifiedAfter === 'string' ? object.modifiedAfter : null,
+    pageSize: typeof object?.pageSize === 'number' && Number.isInteger(object.pageSize) ? object.pageSize : 100,
+    status: typeof object?.status === 'string' && object.status.trim() !== '' ? object.status : null
+  };
+}
+
 function parseDateFilter(value: string | null): Date | null {
   if (value === null || value.trim() === '') return null;
   if (!/^\d{4}-\d{2}-\d{2}$/u.test(value)) return null;
@@ -496,4 +829,8 @@ function readStringArray(value: unknown): string[] {
 
 function readNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function isPrismaUniqueConstraintError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2002';
 }

@@ -296,11 +296,13 @@ final class Clever_Route_Admin {
                 $payload['modifiedAfter'] = $modified_after_iso;
             }
             $result = $this->client->post('/wordpress/plugin/sync/request', $payload);
-            if (!empty($result['data']['queued'])) {
-                return $this->summarize_queued_sync_result($result['data']);
-            }
-            if (isset($result['data']['sync']) && is_array($result['data']['sync'])) {
-                return $this->summarize_sync_result($result['data']);
+            $data = is_array($result['data'] ?? null) ? $result['data'] : array();
+            if (isset($data['syncRun']) && is_array($data['syncRun'])) {
+                $sync_run_id = $this->text($data['syncRun']['syncRunId'] ?? '');
+                if ($sync_run_id !== '') {
+                    $this->options->save_latest_sync_run_id($sync_run_id);
+                }
+                return $this->summarize_sync_request_result($data);
             }
             $message = $this->text($result['error']['message'] ?? __('Manual sync failed.', 'clever-route-connector'));
             $this->options->save_error($message);
@@ -342,6 +344,12 @@ final class Clever_Route_Admin {
         $server_time = $this->text($freshness['serverTime'] ?? '');
         if ($server_time !== '') {
             echo '<p class="description">' . esc_html(sprintf(__('CLEVER server time: %s', 'clever-route-connector'), $server_time)) . '</p>';
+        }
+        $latest_sync_run = is_array($health['latestSyncRun'] ?? null) ? $health['latestSyncRun'] : array();
+        if (!empty($latest_sync_run)) {
+            $this->render_latest_sync_run_status($latest_sync_run);
+        } elseif ($this->options->latest_sync_run_id() !== '') {
+            echo '<p class="description">' . esc_html(sprintf(__('Latest manual sync request id: %s. Refresh this page to load server-side completion details.', 'clever-route-connector'), $this->options->latest_sync_run_id())) . '</p>';
         }
     }
 
@@ -492,36 +500,106 @@ final class Clever_Route_Admin {
         return array('status' => $slug, 'error' => '');
     }
 
-    /** @param array<string,mixed> $data */
-    private function summarize_queued_sync_result(array $data): string {
-        $message = $this->text($data['message'] ?? '');
-        if ($message === '') {
-            $message = __('Manual sync accepted and is running in the background.', 'clever-route-connector');
-        }
-        $summary = $message . ' ' . __('The counts shown in this acknowledgement are placeholders, not the final sync result. Refresh CLEVER Route after it completes.', 'clever-route-connector');
+    /** @param array<string,mixed> $sync_run */
+    private function render_latest_sync_run_status(array $sync_run): void {
+        $result = is_array($sync_run['result'] ?? null) ? $sync_run['result'] : array();
+        $details = array(
+            __('Run id', 'clever-route-connector') => $this->text($sync_run['syncRunId'] ?? ''),
+            __('Request', 'clever-route-connector') => $this->format_sync_request($sync_run),
+            __('Accepted', 'clever-route-connector') => $this->format_optional_datetime($sync_run['acceptedAt'] ?? null, __('Not recorded', 'clever-route-connector')),
+            __('Started', 'clever-route-connector') => $this->format_optional_datetime($sync_run['startedAt'] ?? null, __('Not started yet', 'clever-route-connector')),
+            __('Completed', 'clever-route-connector') => $this->format_optional_datetime($sync_run['completedAt'] ?? null, __('Not completed yet', 'clever-route-connector')),
+        );
 
-        $warnings = array();
-        if (is_array($data['warnings'] ?? null)) {
-            foreach ($data['warnings'] as $warning) {
-                $warning_text = $this->text($warning);
-                if ($warning_text !== '') {
-                    $warnings[] = $warning_text;
-                }
-            }
+        if (!empty($result)) {
+            $details[__('Orders', 'clever-route-connector')] = $this->format_sync_counts($result);
+            $details[__('Geocoding', 'clever-route-connector')] = $this->format_geocode_summary($result);
         }
+
+        $error_message = $this->text($sync_run['errorMessage'] ?? '');
+        if ($error_message !== '') {
+            $details[__('Error', 'clever-route-connector')] = $error_message;
+        }
+
+        $warnings = $this->sync_result_warnings($result);
         if (count($warnings) > 0) {
-            $summary .= ' ' . __('Warnings:', 'clever-route-connector') . ' ' . implode(' | ', $warnings);
+            $details[__('Warnings', 'clever-route-connector')] = implode(' | ', $warnings);
         }
-        return $summary;
+
+        $this->render_status_card(
+            __('Latest manual sync', 'clever-route-connector'),
+            $this->format_sync_run_status_summary($sync_run),
+            $details
+        );
     }
 
     /** @param array<string,mixed> $data */
-    private function summarize_sync_result(array $data): string {
-        $sync = is_array($data['sync'] ?? null) ? $data['sync'] : array();
-        $summary = sprintf(
+    private function summarize_sync_request_result(array $data): string {
+        $message = $this->text($data['message'] ?? '');
+        if ($message === '') {
+            $message = __('Manual sync request accepted.', 'clever-route-connector');
+        }
+
+        $sync_run = is_array($data['syncRun'] ?? null) ? $data['syncRun'] : array();
+        $status = $this->text($sync_run['status'] ?? '');
+        $sync_run_id = $this->text($sync_run['syncRunId'] ?? '');
+        $summary = $message;
+        if ($sync_run_id !== '') {
+            $summary .= ' ' . sprintf(__('Sync run: %1$s (%2$s).', 'clever-route-connector'), $sync_run_id, $status === '' ? __('status unknown', 'clever-route-connector') : $status);
+        }
+
+        if (!empty($data['alreadyRunning'])) {
+            $summary .= ' ' . __('No duplicate background job was started.', 'clever-route-connector');
+        }
+
+        $result = is_array($sync_run['result'] ?? null) ? $sync_run['result'] : array();
+        if (!empty($result)) {
+            $summary .= ' ' . $this->format_sync_counts($result) . ' ' . $this->format_geocode_summary($result);
+        } else {
+            $summary .= ' ' . __('Final counts and geocoding results will appear in Ingestion status after the server finishes.', 'clever-route-connector');
+        }
+
+        return $summary;
+    }
+
+    /** @param array<string,mixed> $sync_run */
+    private function format_sync_run_status_summary(array $sync_run): string {
+        $status = strtoupper($this->text($sync_run['status'] ?? ''));
+        if ($status === 'SUCCEEDED') {
+            return __('Succeeded. Final server-side order and geocoding counts are stored in CLEVER.', 'clever-route-connector');
+        }
+        if ($status === 'FAILED') {
+            return __('Failed. The redacted server error is shown below.', 'clever-route-connector');
+        }
+        if ($status === 'RUNNING') {
+            return __('Running in the CLEVER server background worker.', 'clever-route-connector');
+        }
+        if ($status === 'QUEUED') {
+            return __('Queued on the CLEVER server.', 'clever-route-connector');
+        }
+        return __('Status is not available yet.', 'clever-route-connector');
+    }
+
+    /** @param array<string,mixed> $sync_run */
+    private function format_sync_request(array $sync_run): string {
+        $request = is_array($sync_run['request'] ?? null) ? $sync_run['request'] : array();
+        $modified_after = $this->text($request['modifiedAfter'] ?? '');
+        $status = $this->text($request['status'] ?? '');
+        return sprintf(
+            __('page size %1$s; modified after %2$s; status %3$s', 'clever-route-connector'),
+            $this->text($request['pageSize'] ?? '100'),
+            $modified_after === '' ? __('all history', 'clever-route-connector') : $modified_after,
+            $status === '' ? __('any supported status', 'clever-route-connector') : $status
+        );
+    }
+
+    /** @param array<string,mixed> $result */
+    private function format_sync_counts(array $result): string {
+        $sync = is_array($result['sync'] ?? null) ? $result['sync'] : array();
+        return sprintf(
             /* translators: 1: pages read, 2: received count, 3: created count, 4: updated count, 5: unchanged count, 6: skipped count, 7: ready-to-plan count, 8: needs-review count */
-            __('Manual sync accepted: pages %1$s; received %2$s; created %3$s; updated %4$s; unchanged %5$s; skipped %6$s; ready to plan %7$s; needs review %8$s.', 'clever-route-connector'),
-            $this->text($data['pagesRead'] ?? '0'),
+            __('pages %1$s; received %2$s; created %3$s; updated %4$s; unchanged %5$s; skipped %6$s; ready to plan %7$s; needs review %8$s', 'clever-route-connector'),
+            $this->text($result['pagesRead'] ?? '0'),
             $this->text($sync['received'] ?? '0'),
             $this->text($sync['created'] ?? '0'),
             $this->text($sync['updated'] ?? '0'),
@@ -530,20 +608,32 @@ final class Clever_Route_Admin {
             $this->text($sync['readyToPlan'] ?? '0'),
             $this->text($sync['needsReview'] ?? '0')
         );
+    }
 
+    /** @param array<string,mixed> $result */
+    private function format_geocode_summary(array $result): string {
+        $geocode = is_array($result['geocode'] ?? null) ? $result['geocode'] : array();
+        return sprintf(
+            __('resolved %1$s; pending %2$s; failed %3$s; not required %4$s', 'clever-route-connector'),
+            $this->text($geocode['resolved'] ?? '0'),
+            $this->text($geocode['pending'] ?? '0'),
+            $this->text($geocode['failed'] ?? '0'),
+            $this->text($geocode['notRequired'] ?? '0')
+        );
+    }
+
+    /** @param array<string,mixed> $result @return string[] */
+    private function sync_result_warnings(array $result): array {
         $warnings = array();
-        if (is_array($data['warnings'] ?? null)) {
-            foreach ($data['warnings'] as $warning) {
+        if (is_array($result['warnings'] ?? null)) {
+            foreach ($result['warnings'] as $warning) {
                 $warning_text = $this->text($warning);
                 if ($warning_text !== '') {
                     $warnings[] = $warning_text;
                 }
             }
         }
-        if (count($warnings) > 0) {
-            $summary .= ' ' . __('Warnings:', 'clever-route-connector') . ' ' . implode(' | ', $warnings);
-        }
-        return $summary;
+        return $warnings;
     }
 
     private function capability(): string {

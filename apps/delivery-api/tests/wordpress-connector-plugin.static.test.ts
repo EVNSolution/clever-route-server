@@ -101,11 +101,30 @@ describe("WordPress connector plugin static contract", () => {
     expect(source).toContain("woo_status_preset");
     expect(source).toContain("woo_status_custom");
     expect(source).toContain("custom Woo status slug");
-    expect(source).toContain("summarize_queued_sync_result");
-    expect(source).toContain("placeholders, not the final sync result");
-    expect(source).toContain("summarize_sync_result");
+    expect(source).toContain("summarize_sync_request_result");
+    expect(source).toContain("render_latest_sync_run_status");
+    expect(source).toContain("Final counts and geocoding results");
     expect(source).toContain("warnings");
     expect(source).not.toContain('type="text" name="woo_status"');
+  });
+
+  test("manual sync state is durable and does not show placeholder result counts", async () => {
+    const adminSource = await readFile(
+      new URL("includes/class-clever-route-admin.php", pluginRoot),
+      "utf8",
+    );
+    const optionsSource = await readFile(
+      new URL("includes/class-clever-route-options.php", pluginRoot),
+      "utf8",
+    );
+
+    expect(adminSource).toContain("latestSyncRun");
+    expect(adminSource).toContain("save_latest_sync_run_id");
+    expect(adminSource).toContain("Latest manual sync");
+    expect(adminSource).toContain("No duplicate background job was started.");
+    expect(adminSource).not.toContain("zero counts in this acknowledgement are placeholders");
+    expect(optionsSource).toContain("clever_route_latest_sync_run_id");
+    expect(optionsSource).toContain("latest_sync_run_id");
   });
 
   test("connected WordPress admin exposes a server-owned Open CLEVER Route link", async () => {

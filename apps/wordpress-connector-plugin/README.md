@@ -8,8 +8,8 @@ This plugin is a **WP Admin connector console**, not a route operations app:
 
 - WooCommerce webhook remains the primary real-time order ingestion path into CLEVER.
 - WooCommerce REST remains the server-side reconciliation/backfill path.
-- The plugin can request a server-side REST backfill through `POST /wordpress/plugin/sync/request`.
-- The plugin shows connection, REST sync, webhook, and support-safe diagnostic status only.
+- The plugin can request a server-side REST backfill through `POST /wordpress/plugin/sync/request`; CLEVER returns a durable sync-run id immediately, then stores final counts and geocoding results server-side for the admin UI to show after refresh.
+- The plugin shows connection, REST sync, webhook, latest durable manual sync-run, and support-safe diagnostic status only.
 - The Orders & Sync page can request either an all-history backfill or a modified-after backfill, with guarded Woo status presets and a custom status slug fallback.
 - Connected sites show **Open CLEVER Route** launch buttons for Order list, Create route, Driver management, and Settings. The plugin asks CLEVER for a short-lived server launch URL so WooCommerce admins can enter the workspace without re-entering the CLEVER admin login secret.
 - Route planning, order operation, mapping review/editing, driver assignment, and stop operations live in the CLEVER web workspace, not inside WordPress.

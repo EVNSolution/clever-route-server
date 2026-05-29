@@ -6,7 +6,8 @@ import type {
   WordPressPluginHealth,
   WordPressPluginMappingConfig,
   WordPressPluginRoutePlanDetail,
-  WordPressPluginRoutePlanSummary
+  WordPressPluginRoutePlanSummary,
+  WordPressPluginSyncRun
 } from '../src/modules/wordpress-plugin/wordpress-plugin.types.js';
 import type { WordPressPluginDependencies } from '../src/routes/wordpress-plugin.routes.js';
 
@@ -208,13 +209,13 @@ describe('WordPress plugin routes', () => {
     }
   });
 
-  test('sync/request accepts quickly while server-side Woo REST backfill runs in the background', async () => {
-    const { dependencies, requestSync } = createDependencies();
-    let resolveSync!: (value: Awaited<ReturnType<typeof requestSync>>) => void;
-    requestSync.mockImplementationOnce(
+  test('sync/request persists a run and returns quickly while server-side Woo REST backfill runs in the background', async () => {
+    const { dependencies, processSyncRun, requestSync } = createDependencies();
+    let resolveProcess!: (value: WordPressPluginSyncRun) => void;
+    processSyncRun.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
-          resolveSync = resolve;
+          resolveProcess = resolve;
         })
     );
     const app = await buildApp({ wordPressPlugin: dependencies });
@@ -228,49 +229,37 @@ describe('WordPress plugin routes', () => {
       });
       expect(sync.statusCode).toBe(202);
       expect(sync.json()).toEqual({
-        data: {
-          message: 'Sync was accepted and is running in the background.',
-          pagesRead: 0,
-          queued: true,
-          sync: { created: 0, needsReview: 0, readyToPlan: 0, received: 0, skipped: 0, unchanged: 0, updated: 0 },
-          warnings: [
-            'Sync was accepted and is running in the background. The zero counts in this acknowledgement are placeholders, not the final sync result. Refresh CLEVER Route after it completes.'
-          ]
-        },
+        data: syncRequestResponse(),
         error: null
       });
       expect(requestSync).toHaveBeenCalledWith({
         context: pluginContext(),
         payload: { modifiedAfter: new Date('2026-05-21T00:00:00.000Z'), pageSize: 25, status: 'processing' }
       });
-      resolveSync({
-        pagesRead: 1,
-        sync: { created: 1, needsReview: 0, readyToPlan: 1, received: 1, skipped: 0, unchanged: 0, updated: 0 },
-        warnings: []
+      expect(processSyncRun).toHaveBeenCalledWith({
+        context: pluginContext(),
+        syncRunId: '11111111-1111-4111-8111-111111111111'
       });
-      await Promise.resolve();
 
-      const batch = await app.inject({
-        headers: { authorization: 'Bearer valid-token' },
-        method: 'POST',
-        payload: { orders: [] },
-        url: '/wordpress/plugin/orders/batch'
-      });
-      expect(batch.statusCode).toBe(404);
+      resolveProcess(syncRun({ status: 'SUCCEEDED' }));
+      await Promise.resolve();
     } finally {
       await app.close();
     }
   });
 
   test('sync/request does not start duplicate background syncs for the same connection', async () => {
-    const { dependencies, requestSync } = createDependencies();
-    let resolveSync!: (value: Awaited<ReturnType<typeof requestSync>>) => void;
-    requestSync.mockImplementationOnce(
-      () =>
-        new Promise((resolve) => {
-          resolveSync = resolve;
+    const { dependencies, processSyncRun, requestSync } = createDependencies();
+    requestSync
+      .mockResolvedValueOnce(syncRequestAccepted())
+      .mockResolvedValueOnce(
+        syncRequestAccepted({
+          alreadyRunning: true,
+          message: 'A sync is already queued or running in the background. Returning the active sync run.',
+          startBackgroundProcessing: false,
+          syncRun: syncRun({ startedAt: '2026-05-25T03:00:01.000Z', status: 'RUNNING' })
         })
-    );
+      );
     const app = await buildApp({ wordPressPlugin: dependencies });
 
     try {
@@ -288,21 +277,83 @@ describe('WordPress plugin routes', () => {
       });
 
       expect(first.statusCode).toBe(202);
-      expect(first.json<{ data: { message: string } }>().data.message).toBe(
-        'Sync was accepted and is running in the background.'
-      );
+      expect(first.json()).toEqual({ data: syncRequestResponse(), error: null });
       expect(second.statusCode).toBe(202);
-      expect(second.json<{ data: { message: string } }>().data.message).toBe(
-        'A sync is already running in the background. This request was accepted without starting a duplicate job.'
-      );
-      expect(requestSync).toHaveBeenCalledOnce();
-
-      resolveSync({
-        pagesRead: 1,
-        sync: { created: 1, needsReview: 0, readyToPlan: 1, received: 1, skipped: 0, unchanged: 0, updated: 0 },
-        warnings: []
+      expect(second.json()).toEqual({
+        data: syncRequestResponse({
+          alreadyRunning: true,
+          message: 'A sync is already queued or running in the background. Returning the active sync run.',
+          syncRun: syncRun({ startedAt: '2026-05-25T03:00:01.000Z', status: 'RUNNING' })
+        }),
+        error: null
       });
-      await Promise.resolve();
+      expect(requestSync).toHaveBeenCalledTimes(2);
+      expect(processSyncRun).toHaveBeenCalledOnce();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('sync/latest and sync/requests expose durable sync-run state scoped by the plugin token', async () => {
+    const { dependencies, readLatestSyncRun, readSyncRun } = createDependencies();
+    readLatestSyncRun.mockResolvedValueOnce(syncRun({ status: 'RUNNING' }));
+    readSyncRun.mockResolvedValueOnce(syncRun({ status: 'SUCCEEDED' }));
+    const app = await buildApp({ wordPressPlugin: dependencies });
+
+    try {
+      const latest = await app.inject({
+        headers: { authorization: 'Bearer valid-token' },
+        method: 'GET',
+        url: '/wordpress/plugin/sync/latest'
+      });
+      expect(latest.statusCode).toBe(200);
+      expect(latest.json()).toEqual({ data: { syncRun: syncRun({ status: 'RUNNING' }) }, error: null });
+      expect(readLatestSyncRun).toHaveBeenCalledWith({ context: pluginContext() });
+
+      const byId = await app.inject({
+        headers: { authorization: 'Bearer valid-token' },
+        method: 'GET',
+        url: '/wordpress/plugin/sync/requests/11111111-1111-4111-8111-111111111111'
+      });
+      expect(byId.statusCode).toBe(200);
+      expect(byId.json()).toEqual({ data: { syncRun: syncRun({ status: 'SUCCEEDED' }) }, error: null });
+      expect(readSyncRun).toHaveBeenCalledWith({
+        context: pluginContext(),
+        syncRunId: '11111111-1111-4111-8111-111111111111'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('sync/requests rejects malformed ids and 404s missing runs', async () => {
+    const { dependencies, readSyncRun } = createDependencies();
+    readSyncRun.mockResolvedValueOnce(null);
+    const app = await buildApp({ wordPressPlugin: dependencies });
+
+    try {
+      const malformed = await app.inject({
+        headers: { authorization: 'Bearer valid-token' },
+        method: 'GET',
+        url: '/wordpress/plugin/sync/requests/not-a-uuid'
+      });
+      expect(malformed.statusCode).toBe(400);
+      expect(malformed.json()).toEqual({
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'Sync run id must be a UUID' }
+      });
+      expect(readSyncRun).not.toHaveBeenCalled();
+
+      const missing = await app.inject({
+        headers: { authorization: 'Bearer valid-token' },
+        method: 'GET',
+        url: '/wordpress/plugin/sync/requests/22222222-2222-4222-8222-222222222222'
+      });
+      expect(missing.statusCode).toBe(404);
+      expect(missing.json()).toEqual({
+        data: null,
+        error: { code: 'NOT_FOUND', message: 'Sync run not found' }
+      });
     } finally {
       await app.close();
     }
@@ -405,7 +456,10 @@ function createDependencies(input: { validToken?: boolean } = {}): {
   findRoutePlanDetail: ReturnType<typeof vi.fn<WordPressPluginDependencies['routeResultService']['findRoutePlanDetail']>>;
   listRoutePlans: ReturnType<typeof vi.fn<WordPressPluginDependencies['routeResultService']['listRoutePlans']>>;
   pairPlugin: ReturnType<typeof vi.fn<WordPressPluginDependencies['authService']['pairPlugin']>>;
+  processSyncRun: ReturnType<typeof vi.fn<WordPressPluginDependencies['syncService']['processSyncRun']>>;
   readHealth: ReturnType<typeof vi.fn<WordPressPluginDependencies['routeResultService']['readHealth']>>;
+  readLatestSyncRun: ReturnType<typeof vi.fn<WordPressPluginDependencies['syncService']['readLatestSyncRun']>>;
+  readSyncRun: ReturnType<typeof vi.fn<WordPressPluginDependencies['syncService']['readSyncRun']>>;
   requestSync: ReturnType<typeof vi.fn<WordPressPluginDependencies['syncService']['requestSync']>>;
 } {
   const authenticateToken = vi.fn<WordPressPluginDependencies['authService']['authenticateToken']>(() =>
@@ -430,11 +484,16 @@ function createDependencies(input: { validToken?: boolean } = {}): {
     Promise.resolve({ detail: routePlanDetail(), freshness: freshness() })
   );
   const requestSync = vi.fn<WordPressPluginDependencies['syncService']['requestSync']>(() =>
-    Promise.resolve({
-      pagesRead: 1,
-      sync: { created: 1, needsReview: 0, readyToPlan: 1, received: 1, skipped: 0, unchanged: 0, updated: 0 },
-      warnings: []
-    })
+    Promise.resolve(syncRequestAccepted())
+  );
+  const processSyncRun = vi.fn<WordPressPluginDependencies['syncService']['processSyncRun']>(() =>
+    Promise.resolve(syncRun({ status: 'SUCCEEDED' }))
+  );
+  const readLatestSyncRun = vi.fn<WordPressPluginDependencies['syncService']['readLatestSyncRun']>(() =>
+    Promise.resolve(syncRun({ status: 'RUNNING' }))
+  );
+  const readSyncRun = vi.fn<WordPressPluginDependencies['syncService']['readSyncRun']>(() =>
+    Promise.resolve(syncRun({ status: 'SUCCEEDED' }))
   );
   const createAdminLaunch = vi.fn<NonNullable<WordPressPluginDependencies['adminLaunchService']>['createAdminLaunch']>(
     () =>
@@ -464,12 +523,15 @@ function createDependencies(input: { validToken?: boolean } = {}): {
         )
       },
       routeResultService: { findRoutePlanDetail, listRoutePlans, readHealth },
-      syncService: { requestSync }
+      syncService: { processSyncRun, readLatestSyncRun, readSyncRun, requestSync }
     },
     findRoutePlanDetail,
     listRoutePlans,
     pairPlugin,
+    processSyncRun,
     readHealth,
+    readLatestSyncRun,
+    readSyncRun,
     requestSync
   };
 }
@@ -506,7 +568,53 @@ function healthPayload(): WordPressPluginHealth {
       state: 'connected',
       tokenPrefix: 'crp_token_prefix'
     },
-    freshness: freshness()
+    freshness: freshness(),
+    latestSyncRun: syncRun({ status: 'SUCCEEDED' })
+  };
+}
+
+function syncRequestAccepted(
+  input: Partial<Awaited<ReturnType<WordPressPluginDependencies['syncService']['requestSync']>>> = {}
+): Awaited<ReturnType<WordPressPluginDependencies['syncService']['requestSync']>> {
+  return {
+    alreadyRunning: false,
+    message: 'Sync accepted. Processing is running in the background.',
+    startBackgroundProcessing: true,
+    syncRun: syncRun({ status: 'QUEUED' }),
+    ...input
+  };
+}
+
+function syncRequestResponse(
+  input: Partial<Awaited<ReturnType<WordPressPluginDependencies['syncService']['requestSync']>>> = {}
+): Omit<Awaited<ReturnType<WordPressPluginDependencies['syncService']['requestSync']>>, 'startBackgroundProcessing'> {
+  const accepted = syncRequestAccepted(input);
+  return {
+    alreadyRunning: accepted.alreadyRunning,
+    message: accepted.message,
+    syncRun: accepted.syncRun
+  };
+}
+
+function syncRun(input: Partial<WordPressPluginSyncRun> = {}): WordPressPluginSyncRun {
+  return {
+    acceptedAt: '2026-05-25T03:00:00.000Z',
+    completedAt: input.status === 'SUCCEEDED' ? '2026-05-25T03:00:05.000Z' : null,
+    errorMessage: null,
+    request: { modifiedAfter: null, pageSize: 100, status: null },
+    result:
+      input.status === 'SUCCEEDED'
+        ? {
+            geocode: { failed: 0, notRequired: 0, pending: 0, resolved: 1 },
+            pagesRead: 1,
+            sync: { created: 1, needsReview: 0, readyToPlan: 1, received: 1, skipped: 0, unchanged: 0, updated: 0 },
+            warnings: []
+          }
+        : null,
+    startedAt: input.status === 'QUEUED' ? null : '2026-05-25T03:00:01.000Z',
+    status: 'QUEUED',
+    syncRunId: '11111111-1111-4111-8111-111111111111',
+    ...input
   };
 }
 

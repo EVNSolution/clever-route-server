@@ -18,11 +18,10 @@ import type {
   WordPressPluginRoutePlanSummary,
   WordPressPluginSyncRequestInput,
   WordPressPluginSyncRequestResult,
+  WordPressPluginSyncRun,
   WordPressPluginHealth,
   WordPressPluginFreshness
 } from '../modules/wordpress-plugin/wordpress-plugin.types.js';
-
-const activeWordPressPluginSyncRequests = new Set<string>();
 
 export type WordPressPluginDependencies = {
   adminLaunchService?: {
@@ -52,10 +51,21 @@ export type WordPressPluginDependencies = {
     readHealth(input: { context: WordPressPluginConnectionContext; now: Date }): Promise<WordPressPluginHealth>;
   };
   syncService: {
+    processSyncRun(input: {
+      context: WordPressPluginConnectionContext;
+      syncRunId: string;
+    }): Promise<WordPressPluginSyncRun | null>;
     requestSync(input: {
       context: WordPressPluginConnectionContext;
       payload: WordPressPluginSyncRequestInput;
-    }): Promise<WordPressPluginSyncRequestResult>;
+    }): Promise<WordPressPluginSyncRequestResult & { startBackgroundProcessing: boolean }>;
+    readLatestSyncRun(input: {
+      context: WordPressPluginConnectionContext;
+    }): Promise<WordPressPluginSyncRun | null>;
+    readSyncRun(input: {
+      context: WordPressPluginConnectionContext;
+      syncRunId: string;
+    }): Promise<WordPressPluginSyncRun | null>;
   };
 };
 
@@ -78,6 +88,10 @@ type SyncRequestBody = {
 
 type AdminLaunchBody = {
   section?: unknown;
+};
+
+type SyncRunParams = {
+  syncRunId: string;
 };
 
 export function registerWordPressPluginRoutes(
@@ -171,25 +185,81 @@ export function registerWordPressPluginRoutes(
       return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid sync request payload'));
     }
 
-    const alreadyRunning = activeWordPressPluginSyncRequests.has(authenticated.context.connectionId);
-    if (!alreadyRunning) {
-      activeWordPressPluginSyncRequests.add(authenticated.context.connectionId);
+    const { startBackgroundProcessing, ...result } = await dependencies.syncService.requestSync({
+      context: authenticated.context,
+      payload
+    });
+
+    if (startBackgroundProcessing) {
       request.log.info(
         {
           connectionId: authenticated.context.connectionId,
-          shopDomain: authenticated.context.shopDomain
+          shopDomain: authenticated.context.shopDomain,
+          syncRunId: result.syncRun.syncRunId
         },
         'wordpress plugin sync request queued'
       );
-      void runWordPressPluginSyncRequest({
-        context: authenticated.context,
-        dependencies,
-        log: request.log,
-        payload
-      });
+      void dependencies.syncService
+        .processSyncRun({
+          context: authenticated.context,
+          syncRunId: result.syncRun.syncRunId
+        })
+        .then((run) => {
+          request.log.info(
+            {
+              connectionId: authenticated.context.connectionId,
+              pagesRead: run?.result?.pagesRead ?? null,
+              received: run?.result?.sync.received ?? null,
+              shopDomain: authenticated.context.shopDomain,
+              status: run?.status ?? null,
+              syncRunId: result.syncRun.syncRunId
+            },
+            'wordpress plugin sync request processed'
+          );
+        })
+        .catch((error: unknown) => {
+          request.log.error(
+            {
+              connectionId: authenticated.context.connectionId,
+              error: sanitizeLogError(error),
+              shopDomain: authenticated.context.shopDomain,
+              syncRunId: result.syncRun.syncRunId
+            },
+            'wordpress plugin background sync request failed'
+          );
+        });
     }
 
-    return reply.code(202).send({ data: queuedSyncRequestResult({ alreadyRunning }), error: null });
+    return reply.code(202).send({ data: result, error: null });
+  });
+
+  app.get('/wordpress/plugin/sync/latest', async (request, reply) => {
+    const authenticated = await authenticatePlugin(request, dependencies);
+    if (authenticated.status === 'unauthorized') {
+      return reply.code(authenticated.httpStatus).send(errorResponse(authenticated.code, authenticated.message));
+    }
+
+    const syncRun = await dependencies.syncService.readLatestSyncRun({ context: authenticated.context });
+    return reply.code(200).send({ data: { syncRun }, error: null });
+  });
+
+  app.get<{ Params: SyncRunParams }>('/wordpress/plugin/sync/requests/:syncRunId', async (request, reply) => {
+    const authenticated = await authenticatePlugin(request, dependencies);
+    if (authenticated.status === 'unauthorized') {
+      return reply.code(authenticated.httpStatus).send(errorResponse(authenticated.code, authenticated.message));
+    }
+    if (!isUuid(request.params.syncRunId)) {
+      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Sync run id must be a UUID'));
+    }
+
+    const syncRun = await dependencies.syncService.readSyncRun({
+      context: authenticated.context,
+      syncRunId: request.params.syncRunId
+    });
+    if (syncRun === null) {
+      return reply.code(404).send(errorResponse('NOT_FOUND', 'Sync run not found'));
+    }
+    return reply.code(200).send({ data: { syncRun }, error: null });
   });
 
   app.post<{ Body: unknown }>('/wordpress/plugin/admin-launch', async (request, reply) => {
@@ -224,62 +294,6 @@ export function registerWordPressPluginRoutes(
   });
 }
 
-async function runWordPressPluginSyncRequest(input: {
-  context: WordPressPluginConnectionContext;
-  dependencies: WordPressPluginDependencies;
-  log: FastifyRequest['log'];
-  payload: WordPressPluginSyncRequestInput;
-}): Promise<void> {
-  try {
-    const result = await input.dependencies.syncService.requestSync({
-      context: input.context,
-      payload: input.payload
-    });
-    input.log.info(
-      {
-        connectionId: input.context.connectionId,
-        pagesRead: result.pagesRead,
-        received: result.sync.received,
-        shopDomain: input.context.shopDomain
-      },
-      'wordpress plugin sync request processed'
-    );
-  } catch (error: unknown) {
-    input.log.error(
-      {
-        connectionId: input.context.connectionId,
-        error: error instanceof Error ? error.message : String(error),
-        shopDomain: input.context.shopDomain
-      },
-      'wordpress plugin background sync request failed'
-    );
-  } finally {
-    activeWordPressPluginSyncRequests.delete(input.context.connectionId);
-  }
-}
-
-function queuedSyncRequestResult(input: { alreadyRunning: boolean }): WordPressPluginSyncRequestResult & { queued: true } {
-  const message = input.alreadyRunning
-    ? 'A sync is already running in the background. This request was accepted without starting a duplicate job.'
-    : 'Sync was accepted and is running in the background.';
-  return {
-    message,
-    pagesRead: 0,
-    queued: true,
-    sync: {
-      created: 0,
-      needsReview: 0,
-      readyToPlan: 0,
-      received: 0,
-      skipped: 0,
-      unchanged: 0,
-      updated: 0
-    },
-    warnings: [
-      `${message} The zero counts in this acknowledgement are placeholders, not the final sync result. Refresh CLEVER Route after it completes.`
-    ]
-  };
-}
 
 async function authenticatePlugin(
   request: FastifyRequest,
@@ -477,4 +491,12 @@ function objectOrNull<T extends Record<string, unknown>>(value: unknown): T | nu
 
 function errorResponse(code: string, message: string): { data: null; error: { code: string; message: string } } {
   return { data: null, error: { code, message } };
+}
+
+function sanitizeLogError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (/private addresses|site URL/iu.test(raw)) return 'WooCommerce site URL failed safety validation.';
+  if (/connection not found/iu.test(raw)) return 'WooCommerce connection was not available for sync.';
+  if (/timeout|timed out|ETIMEDOUT/iu.test(raw)) return 'WooCommerce sync timed out before completion.';
+  return 'WooCommerce background sync failed; internal details redacted.';
 }
