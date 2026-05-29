@@ -16,6 +16,14 @@ function runGit(gitArgs) {
     .filter(Boolean);
 }
 
+function tryRunGit(gitArgs) {
+  try {
+    return runGit(gitArgs);
+  } catch {
+    return null;
+  }
+}
+
 function uniq(items) {
   return [...new Set(items.map((item) => item.replace(/^\.\//, '').replace(/\\/g, '/')).filter(Boolean))].sort();
 }
@@ -32,7 +40,7 @@ function changedFiles() {
     const base = args[baseArgIndex + 1];
     const head = headArgIndex >= 0 ? args[headArgIndex + 1] : 'HEAD';
     if (!base) throw new Error('--base requires a ref');
-    return uniq(runGit(['diff', '--name-only', `${base}...${head}`]));
+    return uniq(tryRunGit(['diff', '--name-only', `${base}...${head}`]) ?? runGit(['diff', '--name-only', base, head]));
   }
   return uniq([
     ...runGit(['diff', '--name-only']),
