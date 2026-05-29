@@ -68,9 +68,19 @@ final class Clever_Route_Api_Client {
             return array('data' => null, 'error' => array('message' => $response->get_error_message()));
         }
 
+        $status_code = (int) wp_remote_retrieve_response_code($response);
         $body = json_decode((string) wp_remote_retrieve_body($response), true);
         if (!is_array($body)) {
             return array('data' => null, 'error' => array('message' => __('CLEVER API returned a non-JSON response.', 'clever-route-connector')));
+        }
+
+        $body['_meta'] = array('statusCode' => $status_code);
+        if ($status_code >= 400 && !is_array($body['error'] ?? null)) {
+            return array(
+                'data' => null,
+                'error' => array('message' => sprintf(__('CLEVER API returned HTTP %s.', 'clever-route-connector'), (string) $status_code)),
+                '_meta' => array('statusCode' => $status_code),
+            );
         }
 
         return $body;

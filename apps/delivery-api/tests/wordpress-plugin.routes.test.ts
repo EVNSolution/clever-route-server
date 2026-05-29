@@ -587,12 +587,32 @@ function syncRequestAccepted(
 
 function syncRequestResponse(
   input: Partial<Awaited<ReturnType<WordPressPluginDependencies['syncService']['requestSync']>>> = {}
-): Omit<Awaited<ReturnType<WordPressPluginDependencies['syncService']['requestSync']>>, 'startBackgroundProcessing'> {
+): Omit<Awaited<ReturnType<WordPressPluginDependencies['syncService']['requestSync']>>, 'startBackgroundProcessing'> & {
+  geocode: { failed: number; notRequired: number; pending: number; resolved: number };
+  pagesRead: number;
+  sync: {
+    created: number;
+    needsReview: number;
+    readyToPlan: number;
+    received: number;
+    skipped: number;
+    unchanged: number;
+    updated: number;
+  };
+  warnings: string[];
+} {
   const accepted = syncRequestAccepted(input);
+  const result = accepted.syncRun.result;
   return {
     alreadyRunning: accepted.alreadyRunning,
+    geocode: result?.geocode ?? { failed: 0, notRequired: 0, pending: 0, resolved: 0 },
     message: accepted.message,
-    syncRun: accepted.syncRun
+    pagesRead: result?.pagesRead ?? 0,
+    sync: result?.sync ?? { created: 0, needsReview: 0, readyToPlan: 0, received: 0, skipped: 0, unchanged: 0, updated: 0 },
+    syncRun: accepted.syncRun,
+    warnings: result?.warnings ?? [
+      'Sync request was accepted and is running in the background. Refresh CLEVER Route after it completes.'
+    ]
   };
 }
 

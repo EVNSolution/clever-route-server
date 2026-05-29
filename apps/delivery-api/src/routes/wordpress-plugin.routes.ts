@@ -16,6 +16,8 @@ import type {
   WordPressPluginRoutePlanDetail,
   WordPressPluginRoutePlanFilters,
   WordPressPluginRoutePlanSummary,
+  WordPressPluginSyncCounts,
+  WordPressPluginSyncGeocodeSummary,
   WordPressPluginSyncRequestInput,
   WordPressPluginSyncRequestResult,
   WordPressPluginSyncRun,
@@ -92,6 +94,13 @@ type AdminLaunchBody = {
 
 type SyncRunParams = {
   syncRunId: string;
+};
+
+type WordPressPluginSyncRequestResponsePayload = WordPressPluginSyncRequestResult & {
+  geocode: WordPressPluginSyncGeocodeSummary;
+  pagesRead: number;
+  sync: WordPressPluginSyncCounts;
+  warnings: string[];
 };
 
 export function registerWordPressPluginRoutes(
@@ -230,7 +239,7 @@ export function registerWordPressPluginRoutes(
         });
     }
 
-    return reply.code(202).send({ data: result, error: null });
+    return reply.code(202).send({ data: toSyncRequestResponsePayload(result), error: null });
   });
 
   app.get('/wordpress/plugin/sync/latest', async (request, reply) => {
@@ -292,6 +301,41 @@ export function registerWordPressPluginRoutes(
     const mapping = await dependencies.mappingService.readMapping({ context: authenticated.context });
     return reply.code(200).send({ data: { mapping }, error: null });
   });
+}
+
+function toSyncRequestResponsePayload(result: WordPressPluginSyncRequestResult): WordPressPluginSyncRequestResponsePayload {
+  return {
+    alreadyRunning: result.alreadyRunning,
+    geocode: result.syncRun.result?.geocode ?? zeroSyncGeocodeSummary(),
+    message: result.message,
+    pagesRead: result.syncRun.result?.pagesRead ?? 0,
+    sync: result.syncRun.result?.sync ?? zeroSyncCounts(),
+    syncRun: result.syncRun,
+    warnings: result.syncRun.result?.warnings ?? [
+      'Sync request was accepted and is running in the background. Refresh CLEVER Route after it completes.'
+    ]
+  };
+}
+
+function zeroSyncCounts(): WordPressPluginSyncCounts {
+  return {
+    created: 0,
+    needsReview: 0,
+    readyToPlan: 0,
+    received: 0,
+    skipped: 0,
+    unchanged: 0,
+    updated: 0
+  };
+}
+
+function zeroSyncGeocodeSummary(): WordPressPluginSyncGeocodeSummary {
+  return {
+    failed: 0,
+    notRequired: 0,
+    pending: 0,
+    resolved: 0
+  };
 }
 
 

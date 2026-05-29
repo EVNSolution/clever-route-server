@@ -304,6 +304,29 @@ final class Clever_Route_Admin {
                 }
                 return $this->summarize_sync_request_result($data);
             }
+            if (isset($data['sync']) && is_array($data['sync'])) {
+                return $this->summarize_legacy_sync_result($data);
+            }
+            if ($this->sync_request_was_accepted_without_run_id($result, $data)) {
+                $latest = $this->client->get('/wordpress/plugin/sync/latest');
+                $latest_data = is_array($latest['data'] ?? null) ? $latest['data'] : array();
+                $latest_sync_run = is_array($latest_data['syncRun'] ?? null) ? $latest_data['syncRun'] : array();
+                if (!empty($latest_sync_run)) {
+                    $sync_run_id = $this->text($latest_sync_run['syncRunId'] ?? '');
+                    if ($sync_run_id !== '') {
+                        $this->options->save_latest_sync_run_id($sync_run_id);
+                    }
+                    return __('Manual sync request reached CLEVER. Loaded the latest server sync status.', 'clever-route-connector') . ' ' . $this->summarize_sync_request_result(array(
+                        'message' => $this->text($data['message'] ?? ''),
+                        'syncRun' => $latest_sync_run,
+                    ));
+                }
+                $message = $this->text($data['message'] ?? '');
+                if ($message === '') {
+                    $message = __('Manual sync request reached CLEVER, but this plugin could not read a sync run id. Refresh Ingestion status to verify completion.', 'clever-route-connector');
+                }
+                return $message;
+            }
             $message = $this->text($result['error']['message'] ?? __('Manual sync failed.', 'clever-route-connector'));
             $this->options->save_error($message);
             return $message;
@@ -560,6 +583,42 @@ final class Clever_Route_Admin {
         }
 
         return $summary;
+    }
+
+    /** @param array<string,mixed> $data */
+    private function summarize_legacy_sync_result(array $data): string {
+        $sync = is_array($data['sync'] ?? null) ? $data['sync'] : array();
+        $summary = sprintf(
+            /* translators: 1: pages read, 2: received count, 3: created count, 4: updated count, 5: unchanged count, 6: skipped count, 7: ready-to-plan count, 8: needs-review count */
+            __('Manual sync accepted: pages %1$s; received %2$s; created %3$s; updated %4$s; unchanged %5$s; skipped %6$s; ready to plan %7$s; needs review %8$s.', 'clever-route-connector'),
+            $this->text($data['pagesRead'] ?? '0'),
+            $this->text($sync['received'] ?? '0'),
+            $this->text($sync['created'] ?? '0'),
+            $this->text($sync['updated'] ?? '0'),
+            $this->text($sync['unchanged'] ?? '0'),
+            $this->text($sync['skipped'] ?? '0'),
+            $this->text($sync['readyToPlan'] ?? '0'),
+            $this->text($sync['needsReview'] ?? '0')
+        );
+
+        $warnings = $this->sync_result_warnings($data);
+        if (count($warnings) > 0) {
+            $summary .= ' ' . __('Warnings:', 'clever-route-connector') . ' ' . implode(' | ', $warnings);
+        }
+        return $summary;
+    }
+
+    /** @param array<string,mixed> $result @param array<string,mixed> $data */
+    private function sync_request_was_accepted_without_run_id(array $result, array $data): bool {
+        $meta = is_array($result['_meta'] ?? null) ? $result['_meta'] : array();
+        $status_code = (int) ($meta['statusCode'] ?? 0);
+        if ($status_code === 202) {
+            return true;
+        }
+        if ($status_code >= 200 && $status_code < 300 && $this->text($data['message'] ?? '') !== '') {
+            return true;
+        }
+        return false;
     }
 
     /** @param array<string,mixed> $sync_run */
