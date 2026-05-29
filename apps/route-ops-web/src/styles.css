@@ -987,46 +987,144 @@ small,
 }
 
 .order-detail-header h3,
-.order-detail-section h4,
+.order-detail-repair-card h4,
+.order-detail-summary-card h4,
 .order-detail-edit h4 {
   margin: 0;
 }
 
-.order-detail-section {
+.order-detail-repair-card {
+  align-items: start;
+  background: #f8fafc;
+  border: 1px solid #e6eaf1;
+  border-radius: 14px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(220px, 0.9fr) minmax(280px, 1.4fr);
+  padding: 12px;
+}
+
+.order-detail-repair-card--attention {
+  background: linear-gradient(135deg, #fff7ed 0%, #fff 55%);
+  border-color: #fed7aa;
+}
+
+.order-detail-repair-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.order-detail-repair-copy p,
+.order-detail-summary-card p,
+.order-detail-summary-card small {
+  margin: 0;
+}
+
+.order-detail-repair-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.order-detail-repair-form {
+  display: grid;
+  gap: 10px;
+}
+
+.order-detail-repair-fields,
+.order-detail-edit-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.order-detail-repair-fields label,
+.order-detail-edit-grid label {
+  color: #1f2937;
+  display: grid;
+  font-size: 13px;
+  font-weight: 800;
+  gap: 6px;
+}
+
+.order-detail-repair-fields input,
+.order-detail-edit-grid input {
+  background: #fff;
+  border: 1px solid #dbe3ef;
+  border-radius: 10px;
+  color: #111827;
+  font: inherit;
+  font-weight: 700;
+  min-height: 38px;
+  padding: 8px 10px;
+}
+
+.order-detail-repair-fields input:focus,
+.order-detail-edit-grid input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+  outline: none;
+}
+
+.order-detail-summary-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.order-detail-summary-card {
   background: #f8fafc;
   border: 1px solid #e6eaf1;
   border-radius: 12px;
   display: grid;
-  gap: 8px;
+  gap: 6px;
+  min-width: 0;
   padding: 10px;
 }
 
-.order-detail-section ul {
-  margin: 0;
-  padding-left: 18px;
-}
-
-.order-detail-list {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  margin: 0;
-}
-
-.order-detail-list div {
-  display: grid;
-  gap: 2px;
-}
-
-.order-detail-list dt {
+.order-detail-summary-card h4 {
   color: #64748b;
   font-size: 11px;
-  font-weight: 700;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
-.order-detail-list dd {
+.order-detail-summary-card p {
+  color: #1f2937;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.order-detail-summary-card small {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.order-detail-mini-list {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   margin: 0;
+}
+
+.order-detail-mini-list div {
+  min-width: 0;
+}
+
+.order-detail-mini-list dt {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.order-detail-mini-list dd {
+  color: #1f2937;
+  font-weight: 700;
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .order-detail-edit {
@@ -1043,10 +1141,11 @@ small,
   margin: 0;
 }
 
-.order-detail-edit-grid {
-  display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+@media (max-width: 900px) {
+  .order-detail-repair-card,
+  .order-detail-summary-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .order-technical-diagnostics {

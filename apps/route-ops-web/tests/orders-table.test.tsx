@@ -74,8 +74,8 @@ describe("Orders compact operations table", () => {
 
     expect(html).toContain('aria-label="Select order #1002 11453"');
     expect(html).toContain('disabled=""');
-    expect(html).toContain('Review');
-    expect(html).toContain('Missing delivery date');
+    expect(html).toContain("Review");
+    expect(html).toContain("Missing delivery date");
   });
 
   test("allows already-selected non-eligible orders to be removed and spans detail across all columns", () => {
@@ -240,11 +240,65 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("Toronto");
     expect(html).toContain("ON");
     expect(html).toContain("M3J 2C3");
-    expect(html).toContain("Coordinates available: 43.653200, -79.383200");
+    expect(html).toContain("43.653200, -79.383200");
+    expect(html).toContain("Ready for the map");
     expect(html).toContain("Edit");
     expect(html).not.toContain('name="address1"');
     expect(html).not.toContain("meta_data._tomatono_delivery_day");
     expect(html).toContain("Delivery day");
+  });
+
+  test("renders single-field delivery date repair without unrelated fields", () => {
+    const html = renderOrderTable(
+      [
+        orderFixture({
+          blockerReasons: ["missing_delivery_date"],
+          deliveryDate: null,
+          metadataResolved: false,
+          routeEligible: false,
+        }),
+      ],
+      {
+        expandedOrderIds: new Set(["order-11453"]),
+      },
+    );
+
+    expect(html).toContain("Delivery date required");
+    expect(html).toContain('name="deliveryDate"');
+    expect(html).not.toContain('name="serviceType"');
+    expect(html).not.toContain('name="deliverySession"');
+    expect(html).toContain("Save fixes");
+  });
+
+  test("renders aggregate repair card when multiple field groups are missing", () => {
+    const html = renderOrderTable(
+      [
+        orderFixture({
+          blockerReasons: ["missing_delivery_date", "missing_route_scope"],
+          deliveryDate: null,
+          deliverySession: null,
+          metadataResolved: false,
+          routeEligible: false,
+          serviceType: null,
+        }),
+      ],
+      {
+        expandedOrderIds: new Set(["order-11453"]),
+      },
+    );
+
+    expect(html).toContain("Fix required order details");
+    expect(html).toContain(
+      "Update the highlighted field, then save this order.",
+    );
+    expect(html).toContain("Missing delivery date");
+    expect(html).toContain("Missing route scope");
+    expect(html).toContain('name="deliveryDate"');
+    expect(html).toContain('name="serviceType"');
+    expect(html).toContain('name="deliverySession"');
+    expect(html).toContain("Save fixes");
+    expect(html).not.toContain("Required attention");
+    expect(html).not.toContain("Coordinates available: 43.653200, -79.383200");
   });
 
   test("renders edit mode with supported metadata fields only", () => {
@@ -301,7 +355,7 @@ describe("Orders compact operations table", () => {
     });
 
     expect(html).toContain("1 orders");
-    expect(html).toContain("Bulk geocode missing");
+    expect(html).toContain("Find missing coordinates");
     expect(html).toContain("Bulk geocode Completed");
     expect(html).not.toContain("Geocode &amp; add");
   });

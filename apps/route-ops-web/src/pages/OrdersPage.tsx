@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ReactElement } from "react";
+import type { FormEvent, ReactElement } from "react";
 
 import {
   bulkGeocodeOrders,
@@ -46,10 +46,12 @@ export type OrderMetadataPatch = {
   timeWindowStart: string | null;
 };
 
-const EDITABLE_METADATA_FIELDS: Array<{
+type EditableMetadataField = {
   key: keyof OrderMetadataPatch;
   label: string;
-}> = [
+};
+
+const EDITABLE_METADATA_FIELDS: EditableMetadataField[] = [
   { key: "address1", label: orderFieldLabels.address1 },
   { key: "address2", label: orderFieldLabels.address2 },
   { key: "city", label: orderFieldLabels.city },
@@ -63,6 +65,21 @@ const EDITABLE_METADATA_FIELDS: Array<{
   { key: "timeWindowStart", label: orderFieldLabels.timeWindowStart },
   { key: "timeWindowEnd", label: orderFieldLabels.timeWindowEnd },
 ];
+
+const EDITABLE_METADATA_FIELDS_BY_KEY = new Map<
+  keyof OrderMetadataPatch,
+  EditableMetadataField
+>(EDITABLE_METADATA_FIELDS.map((field) => [field.key, field]));
+
+function editableMetadataField(
+  key: keyof OrderMetadataPatch,
+): EditableMetadataField {
+  const field = EDITABLE_METADATA_FIELDS_BY_KEY.get(key);
+  if (field === undefined) {
+    throw new Error(`Unknown editable order metadata field: ${key}`);
+  }
+  return field;
+}
 
 export function OrdersPage({
   bootstrap,
@@ -585,10 +602,7 @@ export function OrderTable(input: {
   loading: boolean;
   onBulkGeocode?(): void;
   onCloseDetail?(orderId: string): void;
-  onSaveMetadata?(
-    orderId: string,
-    patch: OrderMetadataPatch,
-  ): Promise<void>;
+  onSaveMetadata?(orderId: string, patch: OrderMetadataPatch): Promise<void>;
   onToggleDetail?(orderId: string): void;
   onTogglePlanOrder(orderId: string): void;
   orders: CanonicalOrderDto[];
@@ -616,8 +630,8 @@ export function OrderTable(input: {
             type="button"
           >
             {input.bulkGeocoding === true
-              ? "Bulk geocoding…"
-              : "Bulk geocode missing"}
+              ? "Finding coordinates…"
+              : "Find missing coordinates"}
           </button>
         </div>
       </div>
@@ -683,10 +697,7 @@ function OrderTableRow(input: {
   diagnostics: DeliveryMetadataDiagnosticsDto | null | undefined;
   expanded: boolean;
   onCloseDetail?(orderId: string): void;
-  onSaveMetadata?(
-    orderId: string,
-    patch: OrderMetadataPatch,
-  ): Promise<void>;
+  onSaveMetadata?(orderId: string, patch: OrderMetadataPatch): Promise<void>;
   onToggleDetail?(orderId: string): void;
   onTogglePlanOrder(orderId: string): void;
   order: CanonicalOrderDto;
@@ -1169,23 +1180,41 @@ function OrderDetailPanel({
   const [saving, setSaving] = useState(false);
   const onSave = onSaveMetadata;
   const status = formatOperationalStatus(order);
-  const addressFields = [
-    [orderFieldLabels.address1, order.shippingAddress.address1],
-    [orderFieldLabels.address2, order.shippingAddress.address2],
-    [orderFieldLabels.city, order.shippingAddress.city],
-    [orderFieldLabels.province, order.shippingAddress.province],
-    [orderFieldLabels.postalCode, order.shippingAddress.postalCode],
-    [orderFieldLabels.countryCode, order.shippingAddress.countryCode],
-  ] as const;
-  const blockers =
-    order.blockerReasons.length === 0
-      ? ["No route-readiness blockers."]
-      : order.blockerReasons.map(formatBlockerReason);
-  const coordinateText = hasResolvedCoordinates(order)
-    ? `Coordinates available: ${order.coordinates.latitude?.toFixed(6)}, ${order.coordinates.longitude?.toFixed(6)}`
-    : hasGeocodableAddress(order)
-      ? "Missing coordinates. Geocode shipping address."
-      : "Missing address. Enter address or coordinates.";
+  const blockers = order.blockerReasons.map(formatBlockerReason);
+  const repairFields = getOrderRepairFields(order);
+  const hasActionableRepair = repairFields.length > 0;
+  const repairTitle = formatRepairCardTitle(repairFields);
+  const addressSummary = formatAddressSummary(order);
+  const coordinateSummary = formatCoordinateSummary(order);
+
+  const setDraftField = (
+    key: keyof OrderMetadataPatch,
+    value: string,
+  ): void => {
+    setDraft((current) => ({
+      ...current,
+      [key]: value.trim().length === 0 ? null : value,
+    }));
+  };
+  const saveDraft = (): void => {
+    if (onSave === undefined || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    void onSave(draft)
+      .then(() => {
+        setEditMode(false);
+      })
+      .catch((error: unknown) => {
+        setSaveError(readErrorMessage(error));
+      })
+      .finally(() => {
+        setSaving(false);
+      });
+  };
+  const submitDraft = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    saveDraft();
+  };
 
   return (
     <div
@@ -1201,7 +1230,7 @@ function OrderDetailPanel({
         <div className="orders-actions">
           {editMode ? null : (
             <button onClick={() => setEditMode(true)} type="button">
-              Edit
+              Edit all fields
             </button>
           )}
           <button onClick={onClose} type="button">
@@ -1209,101 +1238,121 @@ function OrderDetailPanel({
           </button>
         </div>
       </div>
-      <section className="order-detail-section">
-        <h4>Required attention</h4>
-        <p>
-          <strong>{status.label}</strong>
-          {status.detail === null ? "" : ` · ${status.detail}`}
-        </p>
-        <ul>
-          {blockers.map((blocker) => (
-            <li key={blocker}>{blocker}</li>
-          ))}
-        </ul>
-      </section>
-      <section className="order-detail-section">
-        <h4>Destination address</h4>
-        <dl className="order-detail-list">
-          {addressFields.map(([label, value]) => (
-            <div key={label}>
-              <dt>{label}</dt>
-              <dd>{isPresent(value) ? value : "Required"}</dd>
+
+      <section
+        aria-label={hasActionableRepair ? "Fields to fix" : "Order readiness"}
+        className={[
+          "order-detail-repair-card",
+          hasActionableRepair ? "order-detail-repair-card--attention" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+      >
+        <div className="order-detail-repair-copy">
+          <span className="eyebrow">
+            {hasActionableRepair ? "Needs review" : "Order summary"}
+          </span>
+          <h4>{hasActionableRepair ? repairTitle : status.label}</h4>
+          <p>
+            {hasActionableRepair
+              ? "Update the highlighted field, then save this order."
+              : (status.detail ?? "No required fixes for this order.")}
+          </p>
+          {blockers.length === 0 ? null : (
+            <div
+              className="order-detail-repair-pills"
+              aria-label="Current blockers"
+            >
+              {blockers.map((blocker) => (
+                <span className="order-pill order-pill--review" key={blocker}>
+                  {blocker}
+                </span>
+              ))}
             </div>
-          ))}
-        </dl>
+          )}
+        </div>
+        {hasActionableRepair ? (
+          <form className="order-detail-repair-form" onSubmit={submitDraft}>
+            <div className="order-detail-repair-fields">
+              {repairFields.map((field) => (
+                <OrderDetailFieldInput
+                  field={field}
+                  key={field.key}
+                  onChange={setDraftField}
+                  value={draft[field.key]}
+                />
+              ))}
+            </div>
+            {saveError === null ? null : (
+              <p className="order-detail-error" role="alert">
+                {saveError}
+              </p>
+            )}
+            <div className="orders-actions">
+              <button disabled={onSave === undefined || saving} type="submit">
+                {saving ? "Saving…" : "Save fixes"}
+              </button>
+            </div>
+          </form>
+        ) : null}
       </section>
-      <section className="order-detail-section">
-        <h4>Coordinates and geocode</h4>
-        <p>{coordinateText}</p>
-        <p>{orderDetailLabels.geocodeStatus[order.geocodeStatus]}</p>
-      </section>
-      <section className="order-detail-section">
-        <h4>Delivery metadata</h4>
-        <dl className="order-detail-list">
-          <div>
-            <dt>Delivery date</dt>
-            <dd>{order.deliveryDate ?? "Required"}</dd>
-          </div>
-          <div>
-            <dt>Delivery area</dt>
-            <dd>{order.deliveryArea ?? "Required"}</dd>
-          </div>
-          <div>
-            <dt>Route scope/service</dt>
-            <dd>{order.serviceType ?? order.deliverySession ?? "Required"}</dd>
-          </div>
-          <div>
-            <dt>Time window</dt>
-            <dd>{formatTimeWindow(order) ?? "Review if required"}</dd>
-          </div>
-        </dl>
-      </section>
+
+      <div className="order-detail-summary-grid">
+        <section className="order-detail-summary-card">
+          <h4>Destination</h4>
+          <p>{addressSummary.primary}</p>
+          {addressSummary.secondary === null ? null : (
+            <small>{addressSummary.secondary}</small>
+          )}
+        </section>
+        <section className="order-detail-summary-card">
+          <h4>Coordinates</h4>
+          <p>{coordinateSummary.primary}</p>
+          {coordinateSummary.secondary === null ? null : (
+            <small>{coordinateSummary.secondary}</small>
+          )}
+        </section>
+        <section className="order-detail-summary-card">
+          <h4>Delivery</h4>
+          <dl className="order-detail-mini-list">
+            <div>
+              <dt>Date</dt>
+              <dd>{order.deliveryDate ?? "Required"}</dd>
+            </div>
+            <div>
+              <dt>Area</dt>
+              <dd>{order.deliveryArea ?? "Required"}</dd>
+            </div>
+            <div>
+              <dt>Service</dt>
+              <dd>
+                {order.serviceType ?? order.deliverySession ?? "Required"}
+              </dd>
+            </div>
+            <div>
+              <dt>Window</dt>
+              <dd>{formatTimeWindow(order) ?? "Review if required"}</dd>
+            </div>
+          </dl>
+        </section>
+      </div>
+
       {editMode ? (
-        <form
-          className="order-detail-edit"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (onSave === undefined || saving) return;
-            setSaving(true);
-            setSaveError(null);
-            void onSave(draft)
-              .then(() => {
-                setEditMode(false);
-              })
-              .catch((error: unknown) => {
-                setSaveError(readErrorMessage(error));
-              })
-              .finally(() => {
-                setSaving(false);
-              });
-          }}
-        >
-          <h4>Edit order detail</h4>
+        <form className="order-detail-edit" onSubmit={submitDraft}>
+          <h4>Edit all order fields</h4>
           {saveError === null ? null : (
             <p className="order-detail-error" role="alert">
               {saveError}
             </p>
           )}
           <div className="order-detail-edit-grid">
-            {EDITABLE_METADATA_FIELDS.map(({ key, label }) => (
-              <label key={key}>
-                {label}
-                <input
-                  aria-label={label}
-                  name={key}
-                  onChange={(event) =>
-                    setDraft((current) => ({
-                      ...current,
-                      [key]:
-                        event.target.value.trim().length === 0
-                          ? null
-                          : event.target.value,
-                    }))
-                  }
-                  type={key === "deliveryDate" ? "date" : "text"}
-                  value={draft[key] ?? ""}
-                />
-              </label>
+            {EDITABLE_METADATA_FIELDS.map((field) => (
+              <OrderDetailFieldInput
+                field={field}
+                key={field.key}
+                onChange={setDraftField}
+                value={draft[field.key]}
+              />
             ))}
           </div>
           <div className="orders-actions">
@@ -1339,6 +1388,150 @@ function OrderDetailPanel({
       </details>
     </div>
   );
+}
+
+function OrderDetailFieldInput({
+  field,
+  onChange,
+  value,
+}: {
+  field: EditableMetadataField;
+  onChange(key: keyof OrderMetadataPatch, value: string): void;
+  value: string | null;
+}): ReactElement {
+  return (
+    <label>
+      {field.label}
+      <input
+        aria-label={field.label}
+        name={field.key}
+        onChange={(event) => onChange(field.key, event.target.value)}
+        type={field.key === "deliveryDate" ? "date" : "text"}
+        value={value ?? ""}
+      />
+    </label>
+  );
+}
+
+function getOrderRepairFields(
+  order: CanonicalOrderDto,
+): EditableMetadataField[] {
+  const blockers = new Set(order.blockerReasons);
+  const fields: EditableMetadataField[] = [];
+  const addField = (key: keyof OrderMetadataPatch): void => {
+    if (fields.some((field) => field.key === key)) return;
+    fields.push(editableMetadataField(key));
+  };
+
+  if (blockers.has("missing_delivery_date") || order.deliveryDate === null) {
+    addField("deliveryDate");
+  }
+  if (blockers.has("missing_delivery_area") || !isPresent(order.deliveryArea)) {
+    addField("deliveryArea");
+  }
+  if (
+    blockers.has("missing_route_scope") ||
+    (!isPresent(order.serviceType) && !isPresent(order.deliverySession))
+  ) {
+    addField("serviceType");
+    addField("deliverySession");
+  }
+  if (
+    blockers.has("missing_time_window") ||
+    blockers.has("delivery_time_window_unparsed") ||
+    blockers.has("ambiguous_delivery_time_window")
+  ) {
+    addField("timeWindowStart");
+    addField("timeWindowEnd");
+  }
+  if (blockers.has("missing_coordinates") && !hasGeocodableAddress(order)) {
+    addField("address1");
+    addField("city");
+    addField("province");
+    addField("postalCode");
+    addField("countryCode");
+  }
+
+  return fields;
+}
+
+function formatRepairCardTitle(fields: EditableMetadataField[]): string {
+  const keys = new Set(fields.map((field) => field.key));
+  const categories = [
+    keys.has("deliveryDate") ? "deliveryDate" : null,
+    keys.has("deliveryArea") ? "deliveryArea" : null,
+    keys.has("serviceType") || keys.has("deliverySession")
+      ? "routeScope"
+      : null,
+    keys.has("timeWindowStart") || keys.has("timeWindowEnd")
+      ? "timeWindow"
+      : null,
+    keys.has("address1") ||
+    keys.has("city") ||
+    keys.has("province") ||
+    keys.has("postalCode") ||
+    keys.has("countryCode")
+      ? "address"
+      : null,
+  ].filter(isPresent);
+
+  if (categories.length > 1) return "Fix required order details";
+  if (keys.has("deliveryDate")) return "Delivery date required";
+  if (keys.has("deliveryArea")) return "Delivery area required";
+  if (keys.has("serviceType") || keys.has("deliverySession")) {
+    return "Route scope required";
+  }
+  if (keys.has("timeWindowStart") || keys.has("timeWindowEnd")) {
+    return "Time window needs review";
+  }
+  if (categories[0] === "address") return "Destination address required";
+  return "Fix required fields";
+}
+
+function formatAddressSummary(order: CanonicalOrderDto): {
+  primary: string;
+  secondary: string | null;
+} {
+  const street = [
+    order.shippingAddress.address1,
+    order.shippingAddress.address2,
+  ]
+    .filter(isPresent)
+    .join(", ");
+  const locality = [
+    order.shippingAddress.city,
+    order.shippingAddress.province,
+    order.shippingAddress.postalCode,
+    order.shippingAddress.countryCode,
+  ]
+    .filter(isPresent)
+    .join(", ");
+  return {
+    primary: street || "Address required",
+    secondary: locality || null,
+  };
+}
+
+function formatCoordinateSummary(order: CanonicalOrderDto): {
+  primary: string;
+  secondary: string | null;
+} {
+  if (hasResolvedCoordinates(order)) {
+    return {
+      primary: `${order.coordinates.latitude?.toFixed(6)}, ${order.coordinates.longitude?.toFixed(6)}`,
+      secondary: "Ready for the map",
+    };
+  }
+  if (hasGeocodableAddress(order)) {
+    return {
+      primary: "Coordinates needed",
+      secondary: "Use Find missing coordinates from the order list.",
+    };
+  }
+  return {
+    primary: "Address required",
+    secondary: "Enter enough destination detail before geocoding.",
+  };
 }
 
 function sanitizeId(value: string): string {
