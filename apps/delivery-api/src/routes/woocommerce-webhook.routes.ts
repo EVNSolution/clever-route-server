@@ -96,31 +96,48 @@ export function registerWooCommerceWebhookRoutes(
       }
 
       const orderSyncService = dependencies.createOrderSyncService({ connection });
-      const result = await orderSyncService.syncOrders({ orders: [order], reason: 'webhook' });
-      await dependencies.connectionService.markWooCommerceWebhookAccepted?.({
-        at: new Date(),
-        connectionId: connection.id
-      });
+      void orderSyncService
+        .syncOrders({ orders: [order], reason: 'webhook' })
+        .then(async (result) => {
+          await dependencies.connectionService.markWooCommerceWebhookAccepted?.({
+            at: new Date(),
+            connectionId: connection.id
+          });
 
-      request.log.info(
-        {
-          connectionId: connection.id,
-          created: result.sync.created,
-          event: headers.event,
-          received: result.sync.received,
-          resource: headers.resource,
-          topic: headers.topic,
-          unchanged: result.sync.unchanged,
-          updated: result.sync.updated,
-          webhookDeliveryIdPresent: headers.deliveryId !== null
-        },
-        'woocommerce webhook processed'
-      );
+          request.log.info(
+            {
+              connectionId: connection.id,
+              created: result.sync.created,
+              event: headers.event,
+              received: result.sync.received,
+              resource: headers.resource,
+              topic: headers.topic,
+              unchanged: result.sync.unchanged,
+              updated: result.sync.updated,
+              webhookDeliveryIdPresent: headers.deliveryId !== null
+            },
+            'woocommerce webhook processed'
+          );
+        })
+        .catch((error: unknown) => {
+          request.log.error(
+            {
+              connectionId: connection.id,
+              error: error instanceof Error ? error.message : String(error),
+              event: headers.event,
+              resource: headers.resource,
+              topic: headers.topic,
+              webhookDeliveryIdPresent: headers.deliveryId !== null
+            },
+            'woocommerce webhook background sync failed'
+          );
+        });
 
       return reply.code(202).send({
         data: {
-          received: result.sync.received,
-          sync: result.sync
+          accepted: true,
+          queued: true,
+          received: 1
         },
         error: null
       });

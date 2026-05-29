@@ -169,11 +169,34 @@ export function registerWordPressPluginRoutes(
       return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid sync request payload'));
     }
 
-    const result = await dependencies.syncService.requestSync({
-      context: authenticated.context,
-      payload
-    });
-    return reply.code(202).send({ data: result, error: null });
+    void dependencies.syncService
+      .requestSync({
+        context: authenticated.context,
+        payload
+      })
+      .then((result) => {
+        request.log.info(
+          {
+            connectionId: authenticated.context.connectionId,
+            pagesRead: result.pagesRead,
+            received: result.sync.received,
+            shopDomain: authenticated.context.shopDomain
+          },
+          'wordpress plugin sync request processed'
+        );
+      })
+      .catch((error: unknown) => {
+        request.log.error(
+          {
+            connectionId: authenticated.context.connectionId,
+            error: error instanceof Error ? error.message : String(error),
+            shopDomain: authenticated.context.shopDomain
+          },
+          'wordpress plugin background sync request failed'
+        );
+      });
+
+    return reply.code(202).send({ data: queuedSyncRequestResult(), error: null });
   });
 
   app.post<{ Body: unknown }>('/wordpress/plugin/admin-launch', async (request, reply) => {
@@ -206,6 +229,23 @@ export function registerWordPressPluginRoutes(
     const mapping = await dependencies.mappingService.readMapping({ context: authenticated.context });
     return reply.code(200).send({ data: { mapping }, error: null });
   });
+}
+
+function queuedSyncRequestResult(): WordPressPluginSyncRequestResult & { queued: true } {
+  return {
+    pagesRead: 0,
+    queued: true,
+    sync: {
+      created: 0,
+      needsReview: 0,
+      readyToPlan: 0,
+      received: 0,
+      skipped: 0,
+      unchanged: 0,
+      updated: 0
+    },
+    warnings: ['Sync was accepted and is running in the background. Refresh CLEVER Route after it completes.']
+  };
 }
 
 async function authenticatePlugin(

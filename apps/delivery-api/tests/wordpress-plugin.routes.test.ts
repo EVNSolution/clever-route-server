@@ -208,8 +208,15 @@ describe('WordPress plugin routes', () => {
     }
   });
 
-  test('sync/request invokes server-side Woo REST backfill and orders/batch stays absent', async () => {
+  test('sync/request accepts quickly while server-side Woo REST backfill runs in the background', async () => {
     const { dependencies, requestSync } = createDependencies();
+    let resolveSync!: (value: Awaited<ReturnType<typeof requestSync>>) => void;
+    requestSync.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveSync = resolve;
+        })
+    );
     const app = await buildApp({ wordPressPlugin: dependencies });
 
     try {
@@ -222,9 +229,10 @@ describe('WordPress plugin routes', () => {
       expect(sync.statusCode).toBe(202);
       expect(sync.json()).toEqual({
         data: {
-          pagesRead: 1,
-          sync: { created: 1, needsReview: 0, readyToPlan: 1, received: 1, skipped: 0, unchanged: 0, updated: 0 },
-          warnings: []
+          pagesRead: 0,
+          queued: true,
+          sync: { created: 0, needsReview: 0, readyToPlan: 0, received: 0, skipped: 0, unchanged: 0, updated: 0 },
+          warnings: ['Sync was accepted and is running in the background. Refresh CLEVER Route after it completes.']
         },
         error: null
       });
@@ -232,6 +240,12 @@ describe('WordPress plugin routes', () => {
         context: pluginContext(),
         payload: { modifiedAfter: new Date('2026-05-21T00:00:00.000Z'), pageSize: 25, status: 'processing' }
       });
+      resolveSync({
+        pagesRead: 1,
+        sync: { created: 1, needsReview: 0, readyToPlan: 1, received: 1, skipped: 0, unchanged: 0, updated: 0 },
+        warnings: []
+      });
+      await Promise.resolve();
 
       const batch = await app.inject({
         headers: { authorization: 'Bearer valid-token' },

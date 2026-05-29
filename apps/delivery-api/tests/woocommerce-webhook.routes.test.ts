@@ -146,9 +146,14 @@ describe('WooCommerce webhook routes', () => {
     }
   });
 
-  test('accepts valid order webhooks and syncs exactly one order', async () => {
-    const syncOrders = vi.fn(() =>
-      Promise.resolve({ sync: { created: 1, received: 1, unchanged: 0, updated: 0 } })
+  test('accepts valid order webhooks quickly and syncs exactly one order in the background', async () => {
+    type WebhookSyncResult = { sync: { created: number; received: number; unchanged: number; updated: number } };
+    let resolveSync!: (value: WebhookSyncResult) => void;
+    const syncOrders = vi.fn(
+      () =>
+        new Promise<WebhookSyncResult>((resolve) => {
+          resolveSync = resolve;
+        })
     );
     const connection = wooConnection();
     const createOrderSyncService = vi.fn(() => ({ syncOrders }));
@@ -186,7 +191,7 @@ describe('WooCommerce webhook routes', () => {
 
       expect(response.statusCode).toBe(202);
       expect(response.json()).toEqual({
-        data: { received: 1, sync: { created: 1, received: 1, unchanged: 0, updated: 0 } },
+        data: { accepted: true, queued: true, received: 1 },
         error: null
       });
       expect(createOrderSyncService).toHaveBeenCalledWith({ connection });
@@ -194,6 +199,10 @@ describe('WooCommerce webhook routes', () => {
         orders: [expect.objectContaining({ id: 123, number: '123' })],
         reason: 'webhook'
       });
+      expect(markWooCommerceWebhookAccepted).not.toHaveBeenCalled();
+      resolveSync({ sync: { created: 1, received: 1, unchanged: 0, updated: 0 } });
+      await Promise.resolve();
+      await Promise.resolve();
       const webhookWatermark = markWooCommerceWebhookAccepted.mock.calls[0]?.[0];
       expect(webhookWatermark?.at).toBeInstanceOf(Date);
       expect(webhookWatermark?.connectionId).toBe(connectionId);
