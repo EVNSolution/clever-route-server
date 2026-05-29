@@ -15,7 +15,7 @@ export type OrderPlanningStatusFilter = '' | 'planned' | 'unplanned';
 export type OrderFilterState = Required<Omit<OrderFilters, 'status'>> & { status: OrderPlanningStatusFilter };
 
 export function createDefaultOrderFilters(): OrderFilterState {
-  return { deliveryArea: '', deliveryDate: '', deliveryStatus: '', health: '', search: '', status: 'unplanned' };
+  return { deliveryArea: '', deliveryDate: '', deliveryStatus: '', health: '', search: '', status: '' };
 }
 
 export function buildOrderQuery(filters: OrderFilters): string {

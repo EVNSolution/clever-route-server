@@ -9,8 +9,11 @@ describe('route ops web state helpers', () => {
     expect(buildOrderQuery({ deliveryArea: 'Toronto', deliveryDate: '2026-05-27', deliveryStatus: 'all', health: '', search: '#1001', status: 'planned' })).toBe('deliveryDate=2026-05-27&deliveryArea=Toronto&status=planned&search=%231001');
   });
 
-  test('shows imported unplanned orders by default instead of hiding them behind today filter', () => {
-    expect(buildOrderQuery(createDefaultOrderFilters())).toBe('status=unplanned');
+  test('shows all orders by default and lets tabs add planning scope explicitly', () => {
+    expect(buildOrderQuery(createDefaultOrderFilters())).toBe('');
+    expect(buildOrderQuery({ ...createDefaultOrderFilters(), status: 'unplanned' })).toBe('status=unplanned');
+    expect(buildOrderQuery({ ...createDefaultOrderFilters(), status: 'planned' })).toBe('status=planned');
+    expect(buildOrderQuery({ ...createDefaultOrderFilters(), health: 'needs_review' })).toBe('health=needs_review');
   });
 
 

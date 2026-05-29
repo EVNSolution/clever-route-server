@@ -387,6 +387,19 @@ small,
   gap: 12px;
   grid-template-columns: 170px 1fr 170px 170px 1.2fr;
 }
+.filter-panel label {
+  align-self: stretch;
+  font-size: 12px;
+  gap: 7px;
+  letter-spacing: 0.01em;
+}
+.filter-panel input,
+.filter-panel select {
+  border-radius: 12px;
+  height: 44px;
+  line-height: 1.2;
+  padding: 0 12px;
+}
 .ops-table {
   border-collapse: collapse;
   width: 100%;
@@ -417,6 +430,23 @@ small,
 }
 .orders-table-panel .panel-heading {
   margin-bottom: 10px;
+}
+.orders-heading-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.orders-heading-actions button {
+  min-height: 38px;
+  padding: 8px 12px;
+}
+.orders-bulk-status {
+  color: #4b5563;
+  font-size: 12.5px;
+  font-weight: 700;
+  margin: -2px 0 10px;
 }
 .orders-table-scroll {
   overflow-x: auto;
@@ -561,6 +591,12 @@ small,
   background: #111827;
   border-color: #111827;
   color: #fff;
+}
+.orders-compact-table .orders-action-note {
+  color: #6b7280;
+  font-size: 11.5px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 .mini-list,
 .stop-list {

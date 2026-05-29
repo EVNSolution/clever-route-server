@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactElement } from "react";
 
 import {
+  bulkGeocodeOrders,
   createRoute,
-  geocodeOrder,
+  getBulkGeocodeJob,
   getOrderMetadataDiagnostics,
   getOrders,
   getSettings,
@@ -22,6 +23,7 @@ import {
 } from "../state";
 import type {
   BootstrapPayload,
+  BulkGeocodeJobDto,
   CanonicalOrderDto,
   DeliveryMetadataDiagnosticsDto,
   StoreSettingsDto,
@@ -84,9 +86,10 @@ export function OrdersPage({
   const [expandedOrderIds, setExpandedOrderIds] = useState<Set<string>>(
     new Set(),
   );
-  const [geocodingOrderIds, setGeocodingOrderIds] = useState<Set<string>>(
-    new Set(),
+  const [bulkGeocodeStatus, setBulkGeocodeStatus] = useState<string | null>(
+    null,
   );
+  const [bulkGeocoding, setBulkGeocoding] = useState(false);
 
   const query = useMemo(() => buildOrderQuery(filters), [filters]);
   const selection = useMemo(
@@ -232,35 +235,31 @@ export function OrdersPage({
     }
   };
 
-  const geocodeAndAddOrder = async (orderId: string): Promise<void> => {
-    setGeocodingOrderIds((current) => new Set([...current, orderId]));
+  const bulkGeocodeCurrentView = async (): Promise<void> => {
+    setBulkGeocoding(true);
+    setBulkGeocodeStatus(null);
     try {
-      const payload = await geocodeOrder({
+      const payload = await bulkGeocodeOrders({
         csrfToken: bootstrap.csrfToken,
-        orderId,
-        save: true,
+        query,
       });
-      if (payload.order !== undefined) {
-        setOrders((current) =>
-          current.map((order) =>
-            order.orderId === payload.order?.orderId ? payload.order : order,
-          ),
-        );
-        if (isRoutePlanEligible(payload.order)) {
-          setSelected(
-            (current) => new Set([...current, payload.order!.orderId]),
-          );
-        }
+      let job = payload.geocode;
+      setBulkGeocodeStatus(formatBulkGeocodeStatus(job));
+      for (
+        let attempt = 0;
+        attempt < 60 && !isBulkGeocodeTerminal(job);
+        attempt += 1
+      ) {
+        await sleep(1_000);
+        job = (await getBulkGeocodeJob(job.jobId)).geocode;
+        setBulkGeocodeStatus(formatBulkGeocodeStatus(job));
       }
+      await refreshOrders();
       setError(null);
     } catch (error) {
       setError(readErrorMessage(error));
     } finally {
-      setGeocodingOrderIds((current) => {
-        const next = new Set(current);
-        next.delete(orderId);
-        return next;
-      });
+      setBulkGeocoding(false);
     }
   };
 
@@ -317,6 +316,24 @@ export function OrdersPage({
           <div className="route-tabs" aria-label="Order planning filters">
             <button
               className={
+                filters.status === "" && filters.health !== "needs_review"
+                  ? "active"
+                  : ""
+              }
+              onClick={() =>
+                setFilters({
+                  ...filters,
+                  deliveryStatus: "",
+                  health: "",
+                  status: "",
+                })
+              }
+              type="button"
+            >
+              ALL
+            </button>
+            <button
+              className={
                 filters.status === "unplanned" &&
                 filters.health !== "needs_review"
                   ? "active"
@@ -332,7 +349,7 @@ export function OrdersPage({
               }
               type="button"
             >
-              Imported / Unplanned
+              UNPLANNED
             </button>
             <button
               className={filters.status === "planned" ? "active" : ""}
@@ -341,7 +358,7 @@ export function OrdersPage({
               }
               type="button"
             >
-              Planned
+              PLANNED
             </button>
             <button
               className={filters.health === "needs_review" ? "active" : ""}
@@ -355,17 +372,18 @@ export function OrdersPage({
               }
               type="button"
             >
-              Needs review
+              Needs Review
             </button>
           </div>
           <FilterBar filters={filters} onChange={setFilters} />
           <OrderTable
+            bulkGeocodeStatus={bulkGeocodeStatus}
+            bulkGeocoding={bulkGeocoding}
             diagnosticsByOrder={diagnosticsByOrder}
             expandedOrderIds={expandedOrderIds}
-            geocodingOrderIds={geocodingOrderIds}
             loading={loading}
+            onBulkGeocode={() => void bulkGeocodeCurrentView()}
             onCloseDetail={closeOrderDetail}
-            onGeocodeAndAdd={(orderId) => void geocodeAndAddOrder(orderId)}
             onSaveMetadata={saveOrderMetadata}
             onToggleDetail={toggleOrderDetail}
             onTogglePlanOrder={togglePlanOrder}
@@ -531,14 +549,42 @@ function FilterBar({
   );
 }
 
+function formatBulkGeocodeStatus(job: BulkGeocodeJobDto): string {
+  const status = job.status;
+  const counts = job.counts;
+  const parts = [
+    ["matched", counts.matched],
+    ["attempted", counts.attempted],
+    ["resolved", counts.succeeded],
+    ["failed", counts.failed],
+    ["no address", counts.noAddress],
+    ["already had coordinates", counts.skippedAlreadyGeocoded],
+  ]
+    .filter((entry): entry is [string, number] => typeof entry[1] === "number")
+    .map(([label, value]) => `${value} ${label}`);
+  const suffix = parts.length === 0 ? "" : `: ${parts.join(", ")}`;
+  return `Bulk geocode ${humanizeToken(status)}${suffix}.`;
+}
+
+function isBulkGeocodeTerminal(job: BulkGeocodeJobDto): boolean {
+  return job.status === "completed" || job.status === "failed";
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
 export function OrderTable(input: {
+  bulkGeocodeStatus?: string | null;
+  bulkGeocoding?: boolean;
   detailModes?: Record<string, "review" | "edit">;
   diagnosticsByOrder: Record<string, DeliveryMetadataDiagnosticsDto | null>;
   expandedOrderIds?: ReadonlySet<string>;
-  geocodingOrderIds?: ReadonlySet<string>;
   loading: boolean;
+  onBulkGeocode?(): void;
   onCloseDetail?(orderId: string): void;
-  onGeocodeAndAdd?(orderId: string): void;
   onSaveMetadata?(
     orderId: string,
     patch: OrderMetadataPatch,
@@ -562,8 +608,25 @@ export function OrderTable(input: {
           <span className="eyebrow">Orders</span>
           <h2>Imported order list</h2>
         </div>
-        <Badge>{input.orders.length} orders</Badge>
+        <div className="orders-heading-actions">
+          <Badge>{input.orders.length} orders</Badge>
+          <button
+            disabled={input.bulkGeocoding === true}
+            onClick={() => input.onBulkGeocode?.()}
+            type="button"
+          >
+            {input.bulkGeocoding === true
+              ? "Bulk geocoding…"
+              : "Bulk geocode missing"}
+          </button>
+        </div>
       </div>
+      {input.bulkGeocodeStatus === undefined ||
+      input.bulkGeocodeStatus === null ? null : (
+        <p className="orders-bulk-status" role="status">
+          {input.bulkGeocodeStatus}
+        </p>
+      )}
       <div
         className="orders-table-scroll"
         data-column-count={ORDERS_TABLE_COLUMN_COUNT}
@@ -597,12 +660,8 @@ export function OrderTable(input: {
                   detailMode={input.detailModes?.[order.orderId] ?? "review"}
                   diagnostics={input.diagnosticsByOrder[order.orderId]}
                   expanded={input.expandedOrderIds?.has(order.orderId) ?? false}
-                  geocoding={
-                    input.geocodingOrderIds?.has(order.orderId) ?? false
-                  }
                   key={order.orderId}
                   onCloseDetail={input.onCloseDetail}
-                  onGeocodeAndAdd={input.onGeocodeAndAdd}
                   onSaveMetadata={input.onSaveMetadata}
                   onToggleDetail={input.onToggleDetail}
                   onTogglePlanOrder={input.onTogglePlanOrder}
@@ -623,9 +682,7 @@ function OrderTableRow(input: {
   detailMode: "review" | "edit";
   diagnostics: DeliveryMetadataDiagnosticsDto | null | undefined;
   expanded: boolean;
-  geocoding: boolean;
   onCloseDetail?(orderId: string): void;
-  onGeocodeAndAdd?(orderId: string): void;
   onSaveMetadata?(
     orderId: string,
     patch: OrderMetadataPatch,
@@ -646,7 +703,6 @@ function OrderTableRow(input: {
   const planActionLabel = `${
     selected ? "Remove" : "Add"
   } order ${orderLabel} ${selected ? "from" : "to"} route plan`;
-  const geocodeActionLabel = `Geocode and add order ${orderLabel} to route plan`;
   const detailPanelId = `order-detail-${sanitizeId(order.orderId)}`;
   const detailLabel = `${input.expanded ? "Hide" : "Show"} details for order ${orderLabel}`;
   return (
@@ -735,16 +791,7 @@ function OrderTableRow(input: {
               Detail
             </button>
             {routeRepair.canGeocode ? (
-              <button
-                aria-label={geocodeActionLabel}
-                disabled={
-                  input.geocoding || input.onGeocodeAndAdd === undefined
-                }
-                onClick={() => input.onGeocodeAndAdd?.(order.orderId)}
-                type="button"
-              >
-                {input.geocoding ? "Geocoding…" : "Geocode & add"}
-              </button>
+              <span className="orders-action-note">Use bulk geocode</span>
             ) : null}
           </div>
         </td>

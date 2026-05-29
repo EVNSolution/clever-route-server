@@ -1039,6 +1039,7 @@ describe("Admin WooCommerce connection UI routes", () => {
       return Promise.resolve([canonicalOrder()]);
     });
     const { app } = await createUiHarness({
+      now: () => new Date("2026-05-29T12:00:00.000Z"),
       orderSyncService: { listCanonicalOrders },
     });
 
@@ -1072,7 +1073,6 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(listCanonicalOrders).toHaveBeenCalledWith({
         filters: {
           deliveryArea: "Toronto",
-          deliveryDate: "2026-05-28",
           readiness: "NEEDS_REVIEW",
           search: "#1001",
         },
@@ -1086,7 +1086,31 @@ describe("Admin WooCommerce connection UI routes", () => {
       });
       expect(planned.statusCode).toBe(200);
       expect(listCanonicalOrders).toHaveBeenCalledWith({
-        filters: { planned: true },
+        filters: { deliveryDateFrom: "2026-05-29", planned: true },
+        shopDomain: "tenant-a.example.test",
+      });
+
+      listCanonicalOrders.mockClear();
+      const unplanned = await app.inject({
+        headers: { cookie, accept: "application/json" },
+        method: "GET",
+        url: "/admin/ui/app/api/orders?shopDomain=tenant-a.example.test&status=unplanned",
+      });
+      expect(unplanned.statusCode).toBe(200);
+      expect(listCanonicalOrders).toHaveBeenCalledWith({
+        filters: { deliveryDateFrom: "2026-05-29", planned: false },
+        shopDomain: "tenant-a.example.test",
+      });
+
+      listCanonicalOrders.mockClear();
+      const needsReview = await app.inject({
+        headers: { cookie, accept: "application/json" },
+        method: "GET",
+        url: "/admin/ui/app/api/orders?shopDomain=tenant-a.example.test&deliveryDate=2026-05-01&health=needs_review",
+      });
+      expect(needsReview.statusCode).toBe(200);
+      expect(listCanonicalOrders).toHaveBeenCalledWith({
+        filters: { orderHealth: "needs_review" },
         shopDomain: "tenant-a.example.test",
       });
 
@@ -1294,6 +1318,153 @@ describe("Admin WooCommerce connection UI routes", () => {
           latitude: 43.589045,
           longitude: -79.644119,
           provider: "mock",
+          source: "geocoder",
+        }),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("bulk geocodes only current-view orders missing coordinates", async () => {
+    const geocodedOrder = canonicalOrder({
+      geocodeStatus: "RESOLVED",
+      hasCoordinates: true,
+      latitude: 43.589045,
+      longitude: -79.644119,
+      orderId: "order-missing",
+      shopifyOrderGid: "gid://woocommerce/Order/missing",
+    });
+    const listCanonicalOrders = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["orderSyncService"]
+      >["listCanonicalOrders"]
+    >(() =>
+      Promise.resolve([
+        canonicalOrder({
+          geocodeStatus: "PENDING",
+          hasCoordinates: false,
+          latitude: null,
+          longitude: null,
+          orderId: "order-missing",
+          reviewReasons: ["missing_coordinates"],
+          shopifyOrderGid: "gid://woocommerce/Order/missing",
+        }),
+        canonicalOrder({
+          orderId: "order-resolved",
+          shopifyOrderGid: "gid://woocommerce/Order/resolved",
+        }),
+      ]),
+    );
+    const patchCanonicalOrderCoordinates = vi.fn<
+      NonNullable<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["orderSyncService"]
+        >["patchCanonicalOrderCoordinates"]
+      >
+    >(() => Promise.resolve(geocodedOrder));
+    const geocode = vi.fn(() =>
+      Promise.resolve({
+        cached: false,
+        ok: true as const,
+        result: {
+          addressLabel: "100 King St W, Toronto, ON, M5H 1J9, CA",
+          latitude: 43.589045,
+          longitude: -79.644119,
+          provider: "mock",
+          providerPlaceId: "place-1",
+          rawLabel: "Mock place",
+        },
+      }),
+    );
+    const { app } = await createUiHarness({
+      geocodingService: {
+        geocode,
+        status: { mode: "nominatim_compatible", persistentCacheEnabled: true },
+      },
+      orderSyncService: {
+        listCanonicalOrders,
+        patchCanonicalOrderCoordinates,
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/orders/bulk-geocode?shopDomain=tenant-a.example.test&deliveryDate=2026-05-28&deliveryArea=Toronto&status=unplanned&search=%231001",
+        ...authenticatedJsonRequest(cookie, {}, csrfToken),
+      });
+
+      expect(response.statusCode).toBe(202);
+      const accepted = readApiData<{ jobId: string; status: string }>(response);
+      expect(accepted).toEqual(
+        expect.objectContaining({
+          jobId: expect.any(String) as string,
+          status: expect.stringMatching(
+            /accepted|running|completed/u,
+          ) as string,
+        }),
+      );
+
+      type BulkGeocodeStatus = {
+        status: string;
+        summary: {
+          alreadyHasCoordinates: number;
+          attempted: number;
+          failed: number;
+          noAddress: number;
+          resolved: number;
+          skipped: number;
+        };
+      };
+      let completed: BulkGeocodeStatus | null = null;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const statusResponse = await app.inject({
+          headers: { cookie, accept: "application/json" },
+          method: "GET",
+          url: `/admin/ui/app/api/orders/bulk-geocode/${accepted.jobId}?shopDomain=tenant-a.example.test`,
+        });
+        expect(statusResponse.statusCode).toBe(200);
+        const geocode = readApiData<BulkGeocodeStatus>(statusResponse);
+        if (geocode.status === "completed") {
+          completed = geocode;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(completed).toEqual(
+        expect.objectContaining({
+          status: "completed",
+          summary: {
+            alreadyHasCoordinates: 1,
+            attempted: 1,
+            failed: 0,
+            noAddress: 0,
+            resolved: 1,
+            skipped: 1,
+          },
+        }),
+      );
+      expect(listCanonicalOrders).toHaveBeenCalledWith({
+        filters: {
+          deliveryArea: "Toronto",
+          deliveryDate: "2026-05-28",
+          planned: false,
+          search: "#1001",
+        },
+        shopDomain: "tenant-a.example.test",
+      });
+      expect(geocode).toHaveBeenCalledTimes(1);
+      expect(patchCanonicalOrderCoordinates).toHaveBeenCalledTimes(1);
+      expect(patchCanonicalOrderCoordinates).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actor: "web-operator",
+          latitude: 43.589045,
+          longitude: -79.644119,
+          orderId: "order-missing",
+          provider: "mock",
+          shopDomain: "tenant-a.example.test",
           source: "geocoder",
         }),
       );
@@ -2686,6 +2857,7 @@ async function createUiHarness(
     settingsService: AdminCommerceConnectionsUiDependencies["settingsService"];
     testConnection: ReturnType<typeof vi.fn>;
     updateStatus: ReturnType<typeof vi.fn>;
+    now: () => Date;
   }> = {},
   options: {
     logger?: Exclude<Parameters<typeof buildApp>[0], undefined>["logger"];
@@ -2759,6 +2931,7 @@ async function createUiHarness(
     ...(overrides.orderSyncService === undefined
       ? {}
       : { orderSyncService: overrides.orderSyncService }),
+    ...(overrides.now === undefined ? {} : { now: overrides.now }),
     publicBaseUrl: "https://clever-route.cleversystem.ai",
     ...(overrides.routePlanService === undefined
       ? {}

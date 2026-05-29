@@ -100,7 +100,7 @@ describe("Orders compact operations table", () => {
     );
   });
 
-  test("shows metadata-ok coordinate blockers with an inline geocode action", () => {
+  test("shows metadata-ok coordinate blockers without a row-level geocode action", () => {
     const missingCoordinates = orderFixture({
       coordinates: { latitude: null, longitude: null },
       geocodeStatus: "PENDING",
@@ -111,10 +111,9 @@ describe("Orders compact operations table", () => {
 
     expect(html).toContain("Need coordinates");
     expect(html).toContain("Geocode shipping address");
-    expect(html).toContain("Geocode &amp; add");
-    expect(html).toContain(
-      'aria-label="Geocode and add order #11453 11453 to route plan"',
-    );
+    expect(html).toContain("Use bulk geocode");
+    expect(html).not.toContain("Geocode &amp; add");
+    expect(html).not.toContain("Geocode and add order");
     expect(getRouteRepairPrompt(missingCoordinates)).toEqual({
       canGeocode: true,
       routeDetail: "Need coordinates",
@@ -295,6 +294,18 @@ describe("Orders compact operations table", () => {
     expect(html).toContain(`colSpan="${ORDERS_TABLE_COLUMN_COUNT}"`);
   });
 
+  test("renders one bulk geocode control near the order count badge", () => {
+    const html = renderOrderTable([orderFixture()], {
+      bulkGeocodeStatus:
+        "Bulk geocode Completed: 2 attempted, 1 resolved, 1 failed.",
+    });
+
+    expect(html).toContain("1 orders");
+    expect(html).toContain("Bulk geocode missing");
+    expect(html).toContain("Bulk geocode Completed");
+    expect(html).not.toContain("Geocode &amp; add");
+  });
+
   test("formatter precedence uses service type for Method and delivery date for Day", () => {
     const order = orderFixture({
       deliverySession: "MORNING_DELIVERY",
@@ -348,6 +359,7 @@ describe("Orders compact operations table", () => {
 function renderOrderTable(
   orders: CanonicalOrderDto[],
   options: {
+    bulkGeocodeStatus?: string;
     detailModes?: Record<string, "review" | "edit">;
     diagnosticsByOrder?: Record<string, DeliveryMetadataDiagnosticsDto | null>;
     expandedOrderIds?: Set<string>;
@@ -356,10 +368,12 @@ function renderOrderTable(
 ): string {
   return renderToStaticMarkup(
     <OrderTable
+      bulkGeocodeStatus={options.bulkGeocodeStatus}
       detailModes={options.detailModes}
       diagnosticsByOrder={options.diagnosticsByOrder ?? {}}
       expandedOrderIds={options.expandedOrderIds}
       loading={false}
+      onBulkGeocode={() => undefined}
       onToggleDetail={() => undefined}
       onTogglePlanOrder={() => undefined}
       orders={orders}

@@ -1,6 +1,7 @@
 import type {
   ApiEnvelope,
   BootstrapPayload,
+  BulkGeocodeOrdersResponse,
   DriversResponse,
   GeocodeOrderResponse,
   GeocodeSettingsResponse,
@@ -89,6 +90,28 @@ export async function geocodeOrder(input: {
       ...(input.address === undefined ? {} : { address: input.address }),
       save: input.save,
     },
+  );
+}
+
+export async function bulkGeocodeOrders(input: {
+  csrfToken: string;
+  query: string;
+}): Promise<BulkGeocodeOrdersResponse> {
+  return apiMutation<BulkGeocodeOrdersResponse>(
+    input.query === ""
+      ? "/admin/ui/app/api/orders/geocode"
+      : `/admin/ui/app/api/orders/geocode?${input.query}`,
+    "POST",
+    input.csrfToken,
+    {},
+  );
+}
+
+export async function getBulkGeocodeJob(
+  jobId: string,
+): Promise<BulkGeocodeOrdersResponse> {
+  return apiGet<BulkGeocodeOrdersResponse>(
+    `/admin/ui/app/api/orders/geocode/${encodeURIComponent(jobId)}`,
   );
 }
 

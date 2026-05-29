@@ -33,6 +33,7 @@ export type ListCanonicalOrdersFilters = {
   deliveryBatchStartDate?: string;
   deliveryArea?: string;
   deliveryDate?: string;
+  deliveryDateFrom?: string;
   deliverySession?: "DAY" | "EVENING" | "PICKUP";
   deliveryWeekday?: DeliveryWeekday;
   geocodeStatus?: "PENDING" | "RESOLVED" | "FAILED" | "NOT_REQUIRED";
@@ -993,6 +994,11 @@ function matchesDerivedFilters(
   if (
     filters.deliveryDate !== undefined &&
     row.deliveryDate !== filters.deliveryDate
+  )
+    return false;
+  if (
+    filters.deliveryDateFrom !== undefined &&
+    (row.deliveryDate === null || row.deliveryDate < filters.deliveryDateFrom)
   )
     return false;
   if (

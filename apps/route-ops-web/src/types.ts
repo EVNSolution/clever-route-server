@@ -182,6 +182,28 @@ export type GeocodeOrderResponse = {
   order?: CanonicalOrderDto;
 };
 
+export type BulkGeocodeJobDto = {
+  completedAt: string | null;
+  counts: {
+    attempted: number;
+    failed: number;
+    matched: number;
+    noAddress: number;
+    skippedAlreadyGeocoded: number;
+    succeeded: number;
+  };
+  createdAt: string;
+  error: string | null;
+  jobId: string;
+  results: Array<Record<string, unknown>>;
+  status: "accepted" | "completed" | "failed" | "running";
+  updatedAt: string;
+};
+
+export type BulkGeocodeOrdersResponse = {
+  geocode: BulkGeocodeJobDto;
+};
+
 export type GeocodeSettingsResponse = {
   geocode: {
     cached: boolean;

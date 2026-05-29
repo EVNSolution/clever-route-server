@@ -31,9 +31,10 @@ describe('route ops layout components', () => {
 
   test('Orders page keeps route tabs and filter controls before the table region', () => {
     const html = renderToStaticMarkup(<OrdersPage bootstrap={bootstrap()} navigate={() => undefined} setError={() => undefined} />);
-    expect(html).toContain('Imported / Unplanned');
-    expect(html).toContain('Planned');
-    expect(html).toContain('Needs review');
+    expect(html).toContain('ALL');
+    expect(html).toContain('UNPLANNED');
+    expect(html).toContain('PLANNED');
+    expect(html).toContain('Needs Review');
     expect(html).toContain('Delivery date');
     expect(html).toContain('Area / region');
     expect(html).toContain('Delivery status');

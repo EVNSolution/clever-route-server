@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -100,6 +101,59 @@ const ADMIN_UI_CSP = [
 ].join("; ");
 const ROUTE_OPS_WEB_DIST_PATH = resolveRouteOpsWebDistPath();
 const ROUTE_OPS_WEB_PUBLIC_PATH = resolveRouteOpsWebPublicPath();
+
+type BulkGeocodeJobStatus = "accepted" | "running" | "completed" | "failed";
+
+type BulkGeocodeResult =
+  | {
+      cached: boolean;
+      order: ReturnType<typeof toRouteOpsOrderDto>;
+      orderId: string;
+      orderName: string;
+      status: "resolved";
+    }
+  | {
+      code: string;
+      message: string;
+      orderId: string;
+      orderName: string;
+      status: "failed" | "no_address";
+    };
+
+type BulkGeocodeServices = {
+  geocodingService: Pick<GeocodingService, "geocode" | "status">;
+  orderSyncService: NonNullable<
+    AdminCommerceConnectionsUiDependencies["orderSyncService"]
+  > & {
+    patchCanonicalOrderCoordinates: NonNullable<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["orderSyncService"]
+      >["patchCanonicalOrderCoordinates"]
+    >;
+  };
+};
+
+type BulkGeocodeJob = {
+  completedAt: string | null;
+  counts: {
+    attempted: number;
+    failed: number;
+    matched: number;
+    noAddress: number;
+    skippedAlreadyGeocoded: number;
+    succeeded: number;
+  };
+  createdAt: string;
+  error: string | null;
+  filters: ListCanonicalOrdersFilters;
+  jobId: string;
+  results: BulkGeocodeResult[];
+  shopDomain: string;
+  status: BulkGeocodeJobStatus;
+  updatedAt: string;
+};
+
+const bulkGeocodeJobs = new Map<string, BulkGeocodeJob>();
 
 type RouteOpsMapProviderMode = "public_allowlisted" | "self_hosted";
 
@@ -1023,7 +1077,11 @@ function registerRouteOpsAppRoutes(
           400,
         );
       }
-      const filters = readRouteOpsOrderFilters(request.query);
+      const filters = await readRouteOpsOrderFilters({
+        dependencies,
+        query: request.query,
+        shopDomain,
+      });
       const [orders, reviewBlockers] = await Promise.all([
         dependencies.orderSyncService.listCanonicalOrders({
           filters,
@@ -1034,9 +1092,6 @@ function registerRouteOpsAppRoutes(
             ...(filters.deliveryArea === undefined
               ? {}
               : { deliveryArea: filters.deliveryArea }),
-            ...(filters.deliveryDate === undefined
-              ? {}
-              : { deliveryDate: filters.deliveryDate }),
             ...(filters.search === undefined ? {} : { search: filters.search }),
             readiness: "NEEDS_REVIEW",
           },
@@ -1048,6 +1103,79 @@ function registerRouteOpsAppRoutes(
         reviewBlockers: reviewBlockers.map(toRouteOpsOrderDto),
       });
     }),
+  );
+
+  app.post(
+    `${ADMIN_UI_APP_API_PATH}/orders/bulk-geocode`,
+    async (request, reply) =>
+      withRouteOpsApi(request, reply, dependencies, async (session) => {
+        assertRouteOpsMutationCsrf(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const services = requireBulkGeocodeServices(dependencies);
+        const filters = await readRouteOpsOrderFilters({
+          dependencies,
+          query: request.query,
+          shopDomain,
+        });
+        const job = createBulkGeocodeJob({ filters, shopDomain });
+        void runBulkGeocodeJob({
+          actor: dependencies.actor.subject,
+          job,
+          services,
+        });
+
+        return routeOpsData(toBulkGeocodeOrderResponse(job), 202);
+      }),
+  );
+
+  app.get<{ Params: { jobId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/orders/bulk-geocode/:jobId`,
+    async (request, reply) =>
+      withRouteOpsApi(request, reply, dependencies, (session) => {
+        const job = readBulkGeocodeJobForSession(
+          request.params.jobId,
+          requireRouteOpsShopDomain(request, session),
+        );
+        return routeOpsData(toBulkGeocodeOrderResponse(job));
+      }),
+  );
+
+  app.post(`${ADMIN_UI_APP_API_PATH}/orders/geocode`, async (request, reply) =>
+    withRouteOpsApi(request, reply, dependencies, async (session) => {
+      assertRouteOpsMutationCsrf(request, session);
+      const shopDomain = requireRouteOpsShopDomain(request, session);
+      const services = requireBulkGeocodeServices(dependencies);
+      const filters = await readRouteOpsOrderFilters({
+        dependencies,
+        query: request.query,
+        shopDomain,
+      });
+      const job = createBulkGeocodeJob({ filters, shopDomain });
+      void runBulkGeocodeJob({
+        actor: dependencies.actor.subject,
+        job,
+        services,
+      });
+
+      return routeOpsData(
+        {
+          geocode: toBulkGeocodeJobDto(job),
+        },
+        202,
+      );
+    }),
+  );
+
+  app.get<{ Params: { jobId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/orders/geocode/:jobId`,
+    async (request, reply) =>
+      withRouteOpsApi(request, reply, dependencies, (session) => {
+        const job = readBulkGeocodeJobForSession(
+          request.params.jobId,
+          requireRouteOpsShopDomain(request, session),
+        );
+        return routeOpsData({ geocode: toBulkGeocodeJobDto(job) });
+      }),
   );
 
   app.get<{ Params: { orderId: string } }>(
@@ -3168,36 +3296,88 @@ function assertRouteOpsMutationCsrf(
   }
 }
 
-function readRouteOpsOrderFilters(query: unknown): ListCanonicalOrdersFilters {
+async function readRouteOpsOrderFilters(input: {
+  dependencies: AdminCommerceConnectionsUiDependencies;
+  query: unknown;
+  shopDomain: string;
+}): Promise<ListCanonicalOrdersFilters> {
   const deliveryArea = normalizeOptionalText(
-    readQueryString(query, "deliveryArea"),
+    readQueryString(input.query, "deliveryArea"),
     "deliveryArea",
   );
-  const deliveryDate = normalizeOptionalDate(
-    readQueryString(query, "deliveryDate"),
+  const rawDeliveryDate = normalizeOptionalDate(
+    readQueryString(input.query, "deliveryDate"),
   );
   const operateDeliveryStatus = normalizeOperateDeliveryStatus(
-    readQueryString(query, "deliveryStatus") ??
-      readQueryString(query, "operateDeliveryStatus"),
+    readQueryString(input.query, "deliveryStatus") ??
+      readQueryString(input.query, "operateDeliveryStatus"),
   );
   const orderHealth = normalizeOrderHealth(
-    readQueryString(query, "health") ?? readQueryString(query, "orderHealth"),
+    readQueryString(input.query, "health") ??
+      readQueryString(input.query, "orderHealth"),
   );
   const planned = normalizeRouteOpsPlanningStatus(
-    readQueryString(query, "status"),
+    readQueryString(input.query, "status"),
   );
   const search = normalizeOptionalText(
-    readQueryString(query, "search"),
+    readQueryString(input.query, "search"),
     "search",
   );
+  const deliveryDate = orderHealth === "needs_review" ? null : rawDeliveryDate;
+  const deliveryDateFrom =
+    deliveryDate === null && planned !== null && orderHealth !== "needs_review"
+      ? await resolveShopToday(input.dependencies, input.shopDomain)
+      : null;
   return {
     ...(deliveryArea === null ? {} : { deliveryArea }),
     ...(deliveryDate === null ? {} : { deliveryDate }),
+    ...(deliveryDateFrom === null ? {} : { deliveryDateFrom }),
     ...(operateDeliveryStatus === null ? {} : { operateDeliveryStatus }),
     ...(orderHealth === null ? {} : { orderHealth }),
     ...(planned === null ? {} : { planned }),
     ...(search === null ? {} : { search }),
   };
+}
+
+async function resolveShopToday(
+  dependencies: AdminCommerceConnectionsUiDependencies,
+  shopDomain: string,
+): Promise<string> {
+  const timezone = await resolveShopTimezone(dependencies, shopDomain);
+  return formatDateInTimezone(dependencies.now?.() ?? new Date(), timezone);
+}
+
+async function resolveShopTimezone(
+  dependencies: AdminCommerceConnectionsUiDependencies,
+  shopDomain: string,
+): Promise<string> {
+  try {
+    const connections = await dependencies.onboardingService.listConnections({
+      actor: dependencies.actor,
+    });
+    return (
+      connections.find((connection) => connection.shopDomain === shopDomain)
+        ?.timezone ?? "America/Toronto"
+    );
+  } catch {
+    return "America/Toronto";
+  }
+}
+
+function formatDateInTimezone(value: Date, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone,
+    year: "numeric",
+  }).formatToParts(value);
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+  if (year === undefined || month === undefined || day === undefined) {
+    return value.toISOString().slice(0, 10);
+  }
+  return `${year}-${month}-${day}`;
 }
 
 function readRouteOpsBodyObject(value: unknown): Record<string, unknown> {
@@ -3349,6 +3529,248 @@ function isStoredLongitude(value: number | null): value is number {
     Number.isFinite(value) &&
     value >= -180 &&
     value <= 180
+  );
+}
+
+function requireBulkGeocodeServices(
+  dependencies: AdminCommerceConnectionsUiDependencies,
+): BulkGeocodeServices {
+  if (dependencies.orderSyncService === undefined) {
+    throw new WooCommerceOnboardingError(
+      "BAD_REQUEST",
+      "Order list service is not enabled in this runtime.",
+      400,
+    );
+  }
+  if (dependencies.geocodingService === undefined) {
+    throw new WooCommerceOnboardingError(
+      "BAD_REQUEST",
+      "Geocoding is not enabled in this runtime.",
+      400,
+    );
+  }
+  if (
+    dependencies.orderSyncService.patchCanonicalOrderCoordinates === undefined
+  ) {
+    throw new WooCommerceOnboardingError(
+      "BAD_REQUEST",
+      "Order coordinate editing is not enabled in this runtime.",
+      400,
+    );
+  }
+  const orderSyncService = dependencies.orderSyncService;
+  const patchCanonicalOrderCoordinates = (
+    input: PatchCanonicalOrderCoordinatesInput,
+  ): Promise<CanonicalOrderRow | null> =>
+    orderSyncService.patchCanonicalOrderCoordinates === undefined
+      ? Promise.resolve(null)
+      : orderSyncService.patchCanonicalOrderCoordinates(input);
+  return {
+    geocodingService: dependencies.geocodingService,
+    orderSyncService: {
+      listCanonicalOrders:
+        orderSyncService.listCanonicalOrders.bind(orderSyncService),
+      patchCanonicalOrderCoordinates,
+    },
+  };
+}
+
+function createBulkGeocodeJob(input: {
+  filters: ListCanonicalOrdersFilters;
+  shopDomain: string;
+}): BulkGeocodeJob {
+  const now = new Date().toISOString();
+  const job: BulkGeocodeJob = {
+    completedAt: null,
+    counts: {
+      attempted: 0,
+      failed: 0,
+      matched: 0,
+      noAddress: 0,
+      skippedAlreadyGeocoded: 0,
+      succeeded: 0,
+    },
+    createdAt: now,
+    error: null,
+    filters: input.filters,
+    jobId: randomUUID(),
+    results: [],
+    shopDomain: input.shopDomain,
+    status: "accepted",
+    updatedAt: now,
+  };
+  bulkGeocodeJobs.set(job.jobId, job);
+  return job;
+}
+
+async function runBulkGeocodeJob(input: {
+  actor: string;
+  job: BulkGeocodeJob;
+  services: BulkGeocodeServices;
+}): Promise<void> {
+  updateBulkGeocodeJob(input.job, { status: "running" });
+  try {
+    const orders = await input.services.orderSyncService.listCanonicalOrders({
+      filters: input.job.filters,
+      shopDomain: input.job.shopDomain,
+    });
+    input.job.counts.matched = orders.length;
+    touchBulkGeocodeJob(input.job);
+
+    for (const order of orders) {
+      if (hasRouteOpsCoordinates(order)) {
+        input.job.counts.skippedAlreadyGeocoded += 1;
+        touchBulkGeocodeJob(input.job);
+        continue;
+      }
+
+      const geocode = await input.services.geocodingService.geocode({
+        address: readRouteOpsAddress(undefined, order.shippingAddress),
+        shopDomain: input.job.shopDomain,
+      });
+      if (!geocode.ok) {
+        if (geocode.code === "BLANK_ADDRESS") input.job.counts.noAddress += 1;
+        else input.job.counts.failed += 1;
+        input.job.counts.attempted += 1;
+        input.job.results.push({
+          code: geocode.code,
+          message: geocode.message,
+          orderId: order.orderId,
+          orderName: order.name,
+          status: geocode.code === "BLANK_ADDRESS" ? "no_address" : "failed",
+        });
+        touchBulkGeocodeJob(input.job);
+        continue;
+      }
+
+      input.job.counts.attempted += 1;
+      const updatedOrder =
+        await input.services.orderSyncService.patchCanonicalOrderCoordinates({
+          actor: input.actor,
+          latitude: geocode.result.latitude,
+          longitude: geocode.result.longitude,
+          orderId: order.orderId,
+          provider: geocode.result.provider,
+          providerPlaceId: geocode.result.providerPlaceId,
+          rawLabel: geocode.result.rawLabel,
+          shopDomain: input.job.shopDomain,
+          source: "geocoder",
+        });
+      if (updatedOrder === null) {
+        input.job.counts.failed += 1;
+        input.job.results.push({
+          code: "ORDER_NOT_FOUND",
+          message: "Order not found while saving geocoded coordinates.",
+          orderId: order.orderId,
+          orderName: order.name,
+          status: "failed",
+        });
+        touchBulkGeocodeJob(input.job);
+        continue;
+      }
+
+      input.job.counts.succeeded += 1;
+      input.job.results.push({
+        cached: geocode.cached,
+        order: toRouteOpsOrderDto(updatedOrder),
+        orderId: order.orderId,
+        orderName: order.name,
+        status: "resolved",
+      });
+      touchBulkGeocodeJob(input.job);
+    }
+
+    updateBulkGeocodeJob(input.job, { status: "completed" });
+  } catch (error) {
+    updateBulkGeocodeJob(input.job, {
+      error: error instanceof Error ? error.message : "Bulk geocode failed.",
+      status: "failed",
+    });
+  }
+}
+
+function updateBulkGeocodeJob(
+  job: BulkGeocodeJob,
+  patch: Partial<Pick<BulkGeocodeJob, "error" | "status">>,
+): void {
+  if (patch.status !== undefined) job.status = patch.status;
+  if (patch.error !== undefined) job.error = patch.error;
+  if (patch.status === "completed" || patch.status === "failed") {
+    job.completedAt = new Date().toISOString();
+  }
+  touchBulkGeocodeJob(job);
+}
+
+function touchBulkGeocodeJob(job: BulkGeocodeJob): void {
+  job.updatedAt = new Date().toISOString();
+}
+
+function readBulkGeocodeJobForSession(
+  jobId: string,
+  shopDomain: string,
+): BulkGeocodeJob {
+  const job = bulkGeocodeJobs.get(jobId) ?? null;
+  if (job === null || job.shopDomain !== shopDomain) {
+    throw new WooCommerceOnboardingError(
+      "NOT_FOUND",
+      "Bulk geocode job not found",
+      404,
+    );
+  }
+  return job;
+}
+
+function toBulkGeocodeOrderResponse(job: BulkGeocodeJob): {
+  jobId: string;
+  status: BulkGeocodeJobStatus;
+  summary: {
+    alreadyHasCoordinates: number;
+    attempted: number;
+    failed: number;
+    noAddress: number;
+    resolved: number;
+    skipped: number;
+  };
+} {
+  return {
+    jobId: job.jobId,
+    status: job.status,
+    summary: {
+      alreadyHasCoordinates: job.counts.skippedAlreadyGeocoded,
+      attempted: job.counts.attempted,
+      failed: job.counts.failed,
+      noAddress: job.counts.noAddress,
+      resolved: job.counts.succeeded,
+      skipped: job.counts.skippedAlreadyGeocoded + job.counts.noAddress,
+    },
+  };
+}
+
+function toBulkGeocodeJobDto(job: BulkGeocodeJob): {
+  completedAt: string | null;
+  counts: BulkGeocodeJob["counts"];
+  createdAt: string;
+  error: string | null;
+  jobId: string;
+  results: BulkGeocodeResult[];
+  status: BulkGeocodeJobStatus;
+  updatedAt: string;
+} {
+  return {
+    completedAt: job.completedAt,
+    counts: job.counts,
+    createdAt: job.createdAt,
+    error: job.error,
+    jobId: job.jobId,
+    results: job.results,
+    status: job.status,
+    updatedAt: job.updatedAt,
+  };
+}
+
+function hasRouteOpsCoordinates(order: CanonicalOrderRow): boolean {
+  return (
+    order.hasCoordinates && order.latitude !== null && order.longitude !== null
   );
 }
 
