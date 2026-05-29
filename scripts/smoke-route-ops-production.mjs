@@ -8,6 +8,8 @@ const expectedPublicHosts = (process.env.ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP_HOS
   .map((host) => host.trim())
   .filter((host) => host.length > 0);
 const expectGeocoderConfigured = process.env.ROUTE_OPS_EXPECT_GEOCODER_CONFIGURED === 'true';
+const healthRetries = parsePositiveInt(process.env.ROUTE_OPS_SMOKE_HEALTH_RETRIES, 15);
+const healthRetryDelayMs = parsePositiveInt(process.env.ROUTE_OPS_SMOKE_HEALTH_RETRY_DELAY_MS, 2000);
 let csrfToken = '';
 
 const summary = { baseUrl, shopDomain, checks: [] };
@@ -35,6 +37,16 @@ function requiredEnv(name, fallback) {
   return value.trim();
 }
 
+function parsePositiveInt(value, fallback) {
+  if (value === undefined || value.trim() === '') return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function sanitize(value) {
   return value.replaceAll(loginSecret, '<redacted>').replace(/clever_admin_ui=[^;\s]+/g, 'clever_admin_ui=<redacted>');
 }
@@ -58,11 +70,27 @@ async function expectStatus(name, response, expected) {
 }
 
 async function checkHealthz() {
-  const response = await request('/healthz');
-  await expectStatus('healthz', response, 200);
-  const data = await response.json();
-  if (data.status !== 'ok') throw new Error(`healthz status was ${data.status}`);
-  record('healthz', { status: response.status });
+  let lastError = 'healthz did not complete';
+  for (let attempt = 1; attempt <= healthRetries; attempt += 1) {
+    try {
+      const response = await request('/healthz');
+      if (response.status === 200) {
+        const data = await response.json();
+        if (data.status === 'ok') {
+          record('healthz', { attempts: attempt, status: response.status });
+          return;
+        }
+        lastError = `healthz status was ${data.status}`;
+      } else {
+        const body = await response.text().catch(() => '');
+        lastError = `healthz expected 200, got ${response.status}: ${sanitize(body.slice(0, 300))}`;
+      }
+    } catch (error) {
+      lastError = `healthz request failed: ${String(error?.message ?? error)}`;
+    }
+    if (attempt < healthRetries) await sleep(healthRetryDelayMs);
+  }
+  throw new Error(lastError);
 }
 
 async function login() {
