@@ -7,8 +7,10 @@ import {
   getOrderMetadataDiagnostics,
   getOrders,
   getSettings,
+  patchOrderMetadata,
 } from "../api";
 import { Badge } from "../components/primitives";
+import { orderDetailLabels, orderFieldLabels } from "../i18n";
 import { TabLayout } from "../components/TabLayout";
 import { RouteOpsMap } from "../components/maps/RouteOpsMap";
 import {
@@ -27,6 +29,38 @@ import type {
 import { readErrorMessage, today } from "../utils/format";
 
 export const ORDERS_TABLE_COLUMN_COUNT = 9;
+export type OrderMetadataPatch = {
+  address1: string | null;
+  address2: string | null;
+  city: string | null;
+  countryCode: string | null;
+  deliveryArea: string | null;
+  deliveryDate: string | null;
+  deliverySession: string | null;
+  postalCode: string | null;
+  province: string | null;
+  serviceType: string | null;
+  timeWindowEnd: string | null;
+  timeWindowStart: string | null;
+};
+
+const EDITABLE_METADATA_FIELDS: Array<{
+  key: keyof OrderMetadataPatch;
+  label: string;
+}> = [
+  { key: "address1", label: orderFieldLabels.address1 },
+  { key: "address2", label: orderFieldLabels.address2 },
+  { key: "city", label: orderFieldLabels.city },
+  { key: "province", label: orderFieldLabels.province },
+  { key: "postalCode", label: orderFieldLabels.postalCode },
+  { key: "countryCode", label: orderFieldLabels.countryCode },
+  { key: "deliveryArea", label: orderFieldLabels.deliveryArea },
+  { key: "deliveryDate", label: orderFieldLabels.deliveryDate },
+  { key: "serviceType", label: orderFieldLabels.serviceType },
+  { key: "deliverySession", label: orderFieldLabels.deliverySession },
+  { key: "timeWindowStart", label: orderFieldLabels.timeWindowStart },
+  { key: "timeWindowEnd", label: orderFieldLabels.timeWindowEnd },
+];
 
 export function OrdersPage({
   bootstrap,
@@ -47,6 +81,9 @@ export function OrdersPage({
   const [diagnosticsByOrder, setDiagnosticsByOrder] = useState<
     Record<string, DeliveryMetadataDiagnosticsDto | null>
   >({});
+  const [expandedOrderIds, setExpandedOrderIds] = useState<Set<string>>(
+    new Set(),
+  );
   const [geocodingOrderIds, setGeocodingOrderIds] = useState<Set<string>>(
     new Set(),
   );
@@ -133,9 +170,65 @@ export function OrdersPage({
         ...current,
         [orderId]: payload.diagnostics,
       }));
+      setOrders((current) =>
+        current.map((order) =>
+          order.orderId === payload.order.orderId ? payload.order : order,
+        ),
+      );
       setError(null);
     } catch (error) {
       setError(readErrorMessage(error));
+    }
+  };
+
+  const toggleOrderDetail = (orderId: string): void => {
+    let shouldLoad = false;
+    setExpandedOrderIds((current) => {
+      const next = new Set(current);
+      if (next.has(orderId)) {
+        next.delete(orderId);
+      } else {
+        next.add(orderId);
+        shouldLoad = diagnosticsByOrder[orderId] === undefined;
+      }
+      return next;
+    });
+    if (shouldLoad) void loadDiagnostics(orderId);
+  };
+
+  const closeOrderDetail = (orderId: string): void => {
+    setExpandedOrderIds((current) => {
+      const next = new Set(current);
+      next.delete(orderId);
+      return next;
+    });
+  };
+
+  const saveOrderMetadata = async (
+    orderId: string,
+    patch: OrderMetadataPatch,
+  ): Promise<void> => {
+    try {
+      const payload = await patchOrderMetadata({
+        csrfToken: bootstrap.csrfToken,
+        orderId,
+        patch: compactMetadataPatch(patch),
+      });
+      setOrders((current) =>
+        current.map((order) =>
+          order.orderId === payload.order.orderId ? payload.order : order,
+        ),
+      );
+      setDiagnosticsByOrder((current) => {
+        const next = { ...current };
+        delete next[orderId];
+        return next;
+      });
+      await loadDiagnostics(orderId);
+      setError(null);
+    } catch (error) {
+      setError(readErrorMessage(error));
+      throw error;
     }
   };
 
@@ -154,7 +247,9 @@ export function OrdersPage({
           ),
         );
         if (isRoutePlanEligible(payload.order)) {
-          setSelected((current) => new Set([...current, payload.order!.orderId]));
+          setSelected(
+            (current) => new Set([...current, payload.order!.orderId]),
+          );
         }
       }
       setError(null);
@@ -266,10 +361,13 @@ export function OrdersPage({
           <FilterBar filters={filters} onChange={setFilters} />
           <OrderTable
             diagnosticsByOrder={diagnosticsByOrder}
+            expandedOrderIds={expandedOrderIds}
             geocodingOrderIds={geocodingOrderIds}
             loading={loading}
+            onCloseDetail={closeOrderDetail}
             onGeocodeAndAdd={(orderId) => void geocodeAndAddOrder(orderId)}
-            onLoadDiagnostics={(orderId) => void loadDiagnostics(orderId)}
+            onSaveMetadata={saveOrderMetadata}
+            onToggleDetail={toggleOrderDetail}
             onTogglePlanOrder={togglePlanOrder}
             orders={orders}
             selected={selected}
@@ -434,11 +532,18 @@ function FilterBar({
 }
 
 export function OrderTable(input: {
+  detailModes?: Record<string, "review" | "edit">;
   diagnosticsByOrder: Record<string, DeliveryMetadataDiagnosticsDto | null>;
+  expandedOrderIds?: ReadonlySet<string>;
   geocodingOrderIds?: ReadonlySet<string>;
   loading: boolean;
+  onCloseDetail?(orderId: string): void;
   onGeocodeAndAdd?(orderId: string): void;
-  onLoadDiagnostics(orderId: string): void;
+  onSaveMetadata?(
+    orderId: string,
+    patch: OrderMetadataPatch,
+  ): Promise<void>;
+  onToggleDetail?(orderId: string): void;
   onTogglePlanOrder(orderId: string): void;
   orders: CanonicalOrderDto[];
   selected: Set<string>;
@@ -489,11 +594,17 @@ export function OrderTable(input: {
             ) : (
               input.orders.map((order) => (
                 <OrderTableRow
+                  detailMode={input.detailModes?.[order.orderId] ?? "review"}
                   diagnostics={input.diagnosticsByOrder[order.orderId]}
-                  geocoding={input.geocodingOrderIds?.has(order.orderId) ?? false}
+                  expanded={input.expandedOrderIds?.has(order.orderId) ?? false}
+                  geocoding={
+                    input.geocodingOrderIds?.has(order.orderId) ?? false
+                  }
                   key={order.orderId}
+                  onCloseDetail={input.onCloseDetail}
                   onGeocodeAndAdd={input.onGeocodeAndAdd}
-                  onLoadDiagnostics={input.onLoadDiagnostics}
+                  onSaveMetadata={input.onSaveMetadata}
+                  onToggleDetail={input.onToggleDetail}
                   onTogglePlanOrder={input.onTogglePlanOrder}
                   order={order}
                   selectedOrders={input.selected}
@@ -509,10 +620,17 @@ export function OrderTable(input: {
 }
 
 function OrderTableRow(input: {
+  detailMode: "review" | "edit";
   diagnostics: DeliveryMetadataDiagnosticsDto | null | undefined;
+  expanded: boolean;
   geocoding: boolean;
+  onCloseDetail?(orderId: string): void;
   onGeocodeAndAdd?(orderId: string): void;
-  onLoadDiagnostics(orderId: string): void;
+  onSaveMetadata?(
+    orderId: string,
+    patch: OrderMetadataPatch,
+  ): Promise<void>;
+  onToggleDetail?(orderId: string): void;
   onTogglePlanOrder(orderId: string): void;
   order: CanonicalOrderDto;
   selectedOrders: Set<string>;
@@ -529,7 +647,8 @@ function OrderTableRow(input: {
     selected ? "Remove" : "Add"
   } order ${orderLabel} ${selected ? "from" : "to"} route plan`;
   const geocodeActionLabel = `Geocode and add order ${orderLabel} to route plan`;
-  const diagnosticsLabel = `Load diagnostics for order ${orderLabel}`;
+  const detailPanelId = `order-detail-${sanitizeId(order.orderId)}`;
+  const detailLabel = `${input.expanded ? "Hide" : "Show"} details for order ${orderLabel}`;
   return (
     <>
       <tr
@@ -586,7 +705,6 @@ function OrderTableRow(input: {
         </td>
         <td>
           <span className="order-compact-value">{formatRouteLabel(order)}</span>
-          <small className="order-subtle">{routeRepair.routeDetail}</small>
         </td>
         <td>
           <span className={`order-pill ${status.toneClass}`}>
@@ -608,16 +726,20 @@ function OrderTableRow(input: {
               {selected ? "Remove" : "Add"}
             </button>
             <button
-              aria-label={diagnosticsLabel}
-              onClick={() => input.onLoadDiagnostics(order.orderId)}
+              aria-controls={detailPanelId}
+              aria-expanded={input.expanded}
+              aria-label={detailLabel}
+              onClick={() => input.onToggleDetail?.(order.orderId)}
               type="button"
             >
-              Diagnostics
+              Detail
             </button>
             {routeRepair.canGeocode ? (
               <button
                 aria-label={geocodeActionLabel}
-                disabled={input.geocoding || input.onGeocodeAndAdd === undefined}
+                disabled={
+                  input.geocoding || input.onGeocodeAndAdd === undefined
+                }
                 onClick={() => input.onGeocodeAndAdd?.(order.orderId)}
                 type="button"
               >
@@ -627,13 +749,25 @@ function OrderTableRow(input: {
           </div>
         </td>
       </tr>
-      {input.diagnostics === undefined ? null : (
-        <tr className="diagnostics-row">
+      {input.expanded ? (
+        <tr className="order-detail-row">
           <td colSpan={ORDERS_TABLE_COLUMN_COUNT}>
-            <DeliveryDiagnostics diagnostics={input.diagnostics} />
+            <OrderDetailPanel
+              diagnostics={input.diagnostics}
+              id={detailPanelId}
+              initialEditMode={input.detailMode === "edit"}
+              onClose={() => input.onCloseDetail?.(order.orderId)}
+              onSaveMetadata={
+                input.onSaveMetadata === undefined
+                  ? undefined
+                  : (patch: OrderMetadataPatch) =>
+                      input.onSaveMetadata!(order.orderId, patch)
+              }
+              order={order}
+            />
           </td>
         </tr>
-      )}
+      ) : null}
     </>
   );
 }
@@ -672,13 +806,44 @@ export function formatOperationalStatus(order: CanonicalOrderDto): {
   label: string;
   toneClass: string;
 } {
-  if (order.metadataResolved !== true) {
+  if (order.routePlanId !== null || order.planningStatus !== "UNPLANNED") {
+    return {
+      detail: order.routePlanName ?? humanizeToken(order.planningStatus),
+      label: "Planned",
+      toneClass: "order-pill--neutral",
+    };
+  }
+  const blockerLabel = mostSpecificBlockerLabel(order);
+  if (blockerLabel !== null) {
+    return {
+      detail: geocodeDetail(order),
+      label: blockerLabel,
+      toneClass: "order-pill--review",
+    };
+  }
+  if (order.deliveryDate === null) {
+    return {
+      detail: geocodeDetail(order),
+      label: "Missing delivery date",
+      toneClass: "order-pill--review",
+    };
+  }
+  if (!hasResolvedCoordinates(order)) {
+    const canGeocode = hasGeocodableAddress(order);
+    return {
+      detail: canGeocode
+        ? "Geocode shipping address"
+        : "Enter address or coordinates",
+      label: canGeocode ? "Need coordinates" : "Missing address",
+      toneClass: "order-pill--review",
+    };
+  }
+  if (order.metadataResolved !== true)
     return {
       detail: geocodeDetail(order),
       label: "Metadata review",
       toneClass: "order-pill--review",
     };
-  }
   if (order.routeEligible === true) {
     return {
       detail: geocodeDetail(order),
@@ -686,10 +851,9 @@ export function formatOperationalStatus(order: CanonicalOrderDto): {
       toneClass: "order-pill--ready",
     };
   }
-  const repair = getRouteRepairPrompt(order);
   return {
-    detail: repair.statusDetail,
-    label: repair.statusLabel,
+    detail: "Review route constraints",
+    label: "Not route eligible",
     toneClass: "order-pill--neutral",
   };
 }
@@ -705,9 +869,11 @@ function formatOrderSource(order: CanonicalOrderDto): string {
 }
 
 function getOrderAccessibleLabel(order: CanonicalOrderDto): string {
-  return [order.orderName, order.sourceOrderNumber ?? order.sourceOrderId]
-    .filter(isPresent)
-    .join(" ") || order.orderId;
+  return (
+    [order.orderName, order.sourceOrderNumber ?? order.sourceOrderId]
+      .filter(isPresent)
+      .join(" ") || order.orderId
+  );
 }
 
 function formatAreaLabel(order: CanonicalOrderDto): string {
@@ -720,7 +886,9 @@ function formatAreaLabel(order: CanonicalOrderDto): string {
 }
 
 function formatRouteLabel(order: CanonicalOrderDto): string {
-  return order.routePlanName ?? humanizeToken(order.planningStatus);
+  if (order.routePlanName !== null) return order.routePlanName;
+  if (order.planningStatus === "UNPLANNED") return "Unplanned";
+  return humanizeToken(order.planningStatus);
 }
 
 export function getRouteRepairPrompt(order: CanonicalOrderDto): {
@@ -761,14 +929,14 @@ export function getRouteRepairPrompt(order: CanonicalOrderDto): {
       statusDetail: canGeocode
         ? "Geocode shipping address"
         : "Enter address or coordinates",
-      statusLabel: canGeocode ? "Need coordinates" : "Need address",
+      statusLabel: canGeocode ? "Need coordinates" : "Missing address",
     };
   }
   return {
     canGeocode: false,
     routeDetail: "Not route eligible",
     statusDetail: "Review route constraints",
-    statusLabel: "Metadata ok",
+    statusLabel: "Not route eligible",
   };
 }
 
@@ -778,7 +946,7 @@ function geocodeDetail(order: CanonicalOrderDto): string | null {
     order.geocodeStatus === "NOT_REQUIRED"
   )
     return null;
-  return humanizeToken(order.geocodeStatus);
+  return orderDetailLabels.geocodeStatus[order.geocodeStatus];
 }
 
 function formatTimeWindow(order: CanonicalOrderDto): string | null {
@@ -815,9 +983,9 @@ function weekdayCode(dateString: string): string | null {
   }
   const date = new Date(Date.UTC(year, month - 1, day));
   if (Number.isNaN(date.valueOf())) return null;
-  return ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"][
-    date.getUTCDay()
-  ] ?? null;
+  return (
+    ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"][date.getUTCDay()] ?? null
+  );
 }
 
 function formatTime(value: string): string {
@@ -863,48 +1031,271 @@ function hasGeocodableAddress(order: CanonicalOrderDto): boolean {
   ].some(isPresent);
 }
 
-function DeliveryDiagnostics({
-  diagnostics,
-}: {
-  diagnostics: DeliveryMetadataDiagnosticsDto | null;
-}): ReactElement {
-  if (diagnostics === null)
-    return (
-      <div className="metadata-diagnostics">
-        <p>No delivery metadata diagnostics saved for this order yet.</p>
-      </div>
-    );
+function mostSpecificBlockerLabel(order: CanonicalOrderDto): string | null {
+  const blockers = new Set(order.blockerReasons);
+  if (blockers.has("missing_delivery_date") || order.deliveryDate === null)
+    return "Missing delivery date";
+  if (blockers.has("missing_delivery_area")) return "Missing delivery area";
+  if (blockers.has("missing_route_scope")) return "Missing route scope";
+  if (
+    [
+      "delivery_day_unparsed",
+      "ambiguous_delivery_day",
+      "delivery_date_weekday_mismatch",
+      "delivery_date_weekday_unverified",
+    ].some((reason) => blockers.has(reason))
+  )
+    return "Delivery day unclear";
+  if (blockers.has("missing_time_window")) return "Missing time window";
+  if (
+    ["delivery_time_window_unparsed", "ambiguous_delivery_time_window"].some(
+      (reason) => blockers.has(reason),
+    )
+  )
+    return "Delivery time unclear";
+  if (blockers.has("missing_coordinates"))
+    return hasGeocodableAddress(order) ? "Need coordinates" : "Missing address";
+  return null;
+}
+
+export function formatBlockerReason(reason: string): string {
   return (
-    <div className="metadata-diagnostics">
-      <strong>Delivery metadata diagnostics</strong>
-      <p>
-        Status: {diagnostics.status} · matched paths:{" "}
-        {Object.entries(diagnostics.matchedMappingPaths)
-          .filter(([, value]) => value !== null)
-          .map(([key, value]) => `${key}: ${value}`)
-          .join(", ") || "none"}
-      </p>
-      <ul>
-        {diagnostics.candidates.slice(0, 8).map((candidate) => (
-          <li key={`${candidate.path}-${candidate.valuePreview}`}>
-            {candidate.path}: {candidate.valuePreview}{" "}
-            <small>
-              {candidate.parseStatus}
-              {candidate.weekday === null || candidate.weekday === undefined
-                ? ""
-                : ` · ${candidate.weekday}`}
-              {candidate.timeWindowStart === null ||
-              candidate.timeWindowStart === undefined ||
-              candidate.timeWindowEnd === null ||
-              candidate.timeWindowEnd === undefined
-                ? ""
-                : ` · ${candidate.timeWindowStart}-${candidate.timeWindowEnd}`}
-            </small>
-          </li>
-        ))}
-      </ul>
+    orderDetailLabels.blockerReasons[
+      reason as keyof typeof orderDetailLabels.blockerReasons
+    ] ?? "Review route constraints"
+  );
+}
+
+export function formatDiagnosticPathLabel(path: string): string {
+  return (
+    orderDetailLabels.diagnosticPaths[
+      path as keyof typeof orderDetailLabels.diagnosticPaths
+    ] ?? "Order metadata"
+  );
+}
+
+function metadataPatchFromOrder(order: CanonicalOrderDto): OrderMetadataPatch {
+  return {
+    address1: order.shippingAddress.address1,
+    address2: order.shippingAddress.address2,
+    city: order.shippingAddress.city,
+    countryCode: order.shippingAddress.countryCode,
+    deliveryArea: order.deliveryArea,
+    deliveryDate: order.deliveryDate,
+    deliverySession: order.deliverySession,
+    postalCode: order.shippingAddress.postalCode,
+    province: order.shippingAddress.province,
+    serviceType: order.serviceType,
+    timeWindowEnd: order.timeWindowEnd,
+    timeWindowStart: order.timeWindowStart,
+  };
+}
+
+function compactMetadataPatch(
+  patch: OrderMetadataPatch,
+): Record<string, string | null> {
+  return Object.fromEntries(
+    EDITABLE_METADATA_FIELDS.map(({ key }) => [key, patch[key]]),
+  );
+}
+
+function OrderDetailPanel({
+  diagnostics,
+  id: panelId,
+  initialEditMode,
+  onClose,
+  onSaveMetadata,
+  order,
+}: {
+  diagnostics: DeliveryMetadataDiagnosticsDto | null | undefined;
+  id: string;
+  initialEditMode?: boolean;
+  onClose(): void;
+  onSaveMetadata?(patch: OrderMetadataPatch): Promise<void>;
+  order: CanonicalOrderDto;
+}): ReactElement {
+  const [editMode, setEditMode] = useState(initialEditMode ?? false);
+  const [draft, setDraft] = useState<OrderMetadataPatch>(() =>
+    metadataPatchFromOrder(order),
+  );
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const onSave = onSaveMetadata;
+  const status = formatOperationalStatus(order);
+  const addressFields = [
+    [orderFieldLabels.address1, order.shippingAddress.address1],
+    [orderFieldLabels.address2, order.shippingAddress.address2],
+    [orderFieldLabels.city, order.shippingAddress.city],
+    [orderFieldLabels.province, order.shippingAddress.province],
+    [orderFieldLabels.postalCode, order.shippingAddress.postalCode],
+    [orderFieldLabels.countryCode, order.shippingAddress.countryCode],
+  ] as const;
+  const blockers =
+    order.blockerReasons.length === 0
+      ? ["No route-readiness blockers."]
+      : order.blockerReasons.map(formatBlockerReason);
+  const coordinateText = hasResolvedCoordinates(order)
+    ? `Coordinates available: ${order.coordinates.latitude?.toFixed(6)}, ${order.coordinates.longitude?.toFixed(6)}`
+    : hasGeocodableAddress(order)
+      ? "Missing coordinates. Geocode shipping address."
+      : "Missing address. Enter address or coordinates.";
+
+  return (
+    <div
+      aria-labelledby={`${panelId}-heading`}
+      className="order-detail-panel"
+      id={panelId}
+    >
+      <div className="order-detail-header">
+        <div>
+          <span className="eyebrow">Detail</span>
+          <h3 id={`${panelId}-heading`}>Order details for {order.orderName}</h3>
+        </div>
+        <div className="orders-actions">
+          {editMode ? null : (
+            <button onClick={() => setEditMode(true)} type="button">
+              Edit
+            </button>
+          )}
+          <button onClick={onClose} type="button">
+            Close
+          </button>
+        </div>
+      </div>
+      <section className="order-detail-section">
+        <h4>Required attention</h4>
+        <p>
+          <strong>{status.label}</strong>
+          {status.detail === null ? "" : ` · ${status.detail}`}
+        </p>
+        <ul>
+          {blockers.map((blocker) => (
+            <li key={blocker}>{blocker}</li>
+          ))}
+        </ul>
+      </section>
+      <section className="order-detail-section">
+        <h4>Destination address</h4>
+        <dl className="order-detail-list">
+          {addressFields.map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{isPresent(value) ? value : "Required"}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+      <section className="order-detail-section">
+        <h4>Coordinates and geocode</h4>
+        <p>{coordinateText}</p>
+        <p>{orderDetailLabels.geocodeStatus[order.geocodeStatus]}</p>
+      </section>
+      <section className="order-detail-section">
+        <h4>Delivery metadata</h4>
+        <dl className="order-detail-list">
+          <div>
+            <dt>Delivery date</dt>
+            <dd>{order.deliveryDate ?? "Required"}</dd>
+          </div>
+          <div>
+            <dt>Delivery area</dt>
+            <dd>{order.deliveryArea ?? "Required"}</dd>
+          </div>
+          <div>
+            <dt>Route scope/service</dt>
+            <dd>{order.serviceType ?? order.deliverySession ?? "Required"}</dd>
+          </div>
+          <div>
+            <dt>Time window</dt>
+            <dd>{formatTimeWindow(order) ?? "Review if required"}</dd>
+          </div>
+        </dl>
+      </section>
+      {editMode ? (
+        <form
+          className="order-detail-edit"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (onSave === undefined || saving) return;
+            setSaving(true);
+            setSaveError(null);
+            void onSave(draft)
+              .then(() => {
+                setEditMode(false);
+              })
+              .catch((error: unknown) => {
+                setSaveError(readErrorMessage(error));
+              })
+              .finally(() => {
+                setSaving(false);
+              });
+          }}
+        >
+          <h4>Edit order detail</h4>
+          {saveError === null ? null : (
+            <p className="order-detail-error" role="alert">
+              {saveError}
+            </p>
+          )}
+          <div className="order-detail-edit-grid">
+            {EDITABLE_METADATA_FIELDS.map(({ key, label }) => (
+              <label key={key}>
+                {label}
+                <input
+                  aria-label={label}
+                  name={key}
+                  onChange={(event) =>
+                    setDraft((current) => ({
+                      ...current,
+                      [key]:
+                        event.target.value.trim().length === 0
+                          ? null
+                          : event.target.value,
+                    }))
+                  }
+                  type={key === "deliveryDate" ? "date" : "text"}
+                  value={draft[key] ?? ""}
+                />
+              </label>
+            ))}
+          </div>
+          <div className="orders-actions">
+            <button disabled={onSave === undefined || saving} type="submit">
+              {saving ? "Saving…" : "Save"}
+            </button>
+            <button onClick={onClose} type="button">
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : null}
+      <details className="order-technical-diagnostics">
+        <summary>Technical diagnostics</summary>
+        {diagnostics === undefined ? (
+          <p>Loading order detail…</p>
+        ) : diagnostics === null ? (
+          <p>No saved detail diagnostics yet.</p>
+        ) : (
+          <>
+            <p>Status: {humanizeToken(diagnostics.status)}</p>
+            <ul>
+              {diagnostics.candidates.slice(0, 8).map((candidate) => (
+                <li key={`${candidate.path}-${candidate.valuePreview}`}>
+                  {formatDiagnosticPathLabel(candidate.path)}:{" "}
+                  {candidate.valuePreview}
+                  <small> · {humanizeToken(candidate.parseStatus)}</small>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </details>
     </div>
   );
+}
+
+function sanitizeId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]+/gu, "-");
 }
 
 function isRoutePlanEligible(order: CanonicalOrderDto): boolean {

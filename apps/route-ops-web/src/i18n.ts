@@ -68,3 +68,50 @@ export const settingsCopy = {
     defaultDepot: '기본 출발지'
   }
 } as const;
+
+export const orderDetailLabels = {
+  blockerReasons: {
+    ambiguous_delivery_day: 'Delivery day unclear',
+    ambiguous_delivery_time_window: 'Delivery time unclear',
+    delivery_date_weekday_mismatch: 'Delivery day unclear',
+    delivery_date_weekday_unverified: 'Delivery day unclear',
+    delivery_day_unparsed: 'Delivery day unclear',
+    delivery_time_window_unparsed: 'Delivery time unclear',
+    missing_coordinates: 'Need coordinates',
+    missing_delivery_area: 'Missing delivery area',
+    missing_delivery_date: 'Missing delivery date',
+    missing_route_scope: 'Missing route scope',
+    missing_time_window: 'Missing time window',
+  },
+  diagnosticPaths: {
+    'line_items[0].name': 'Ordered items',
+    'meta_data._tomatono_delivery_day': 'Delivery day',
+    'meta_data._tomatono_fulfillment_type': 'Fulfillment type',
+    'meta_data._tomatono_order_type': 'Order type',
+    'shipping_lines[0].method_title': 'Shipping method',
+  },
+  geocodeStatus: {
+    FAILED: 'Geocode failed',
+    NOT_REQUIRED: 'Coordinates not required',
+    PENDING: 'Awaiting geocode',
+    RESOLVED: 'Coordinates available',
+  },
+} as const;
+
+export const orderBlockerLabels = orderDetailLabels.blockerReasons;
+
+export const orderFieldLabels = {
+  ...orderDetailLabels.diagnosticPaths,
+  address1: 'Street address',
+  address2: 'Address line 2',
+  city: 'City',
+  countryCode: 'Country',
+  deliveryArea: 'Delivery area',
+  deliveryDate: 'Delivery date',
+  deliverySession: 'Delivery session',
+  postalCode: 'Postal code',
+  province: 'Province/region',
+  serviceType: 'Service type',
+  timeWindowEnd: 'Time window end',
+  timeWindowStart: 'Time window start',
+} as const;
