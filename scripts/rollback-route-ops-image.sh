@@ -9,6 +9,39 @@ SHOP_DOMAIN="${ROUTE_OPS_SMOKE_SHOP_DOMAIN:-dev1.tomatonofood.com}"
 
 cd "$APP_DIR"
 
+LOCK_PATH="${ROUTE_OPS_DEPLOY_LOCK_PATH:-.deploy/route-ops-deploy.lock}"
+LOCK_DIR="${LOCK_PATH}.d"
+LOCK_ACQUIRED="false"
+
+release_deploy_lock() {
+  if [ "$LOCK_ACQUIRED" = "mkdir" ] && [ -d "$LOCK_DIR" ]; then
+    rmdir "$LOCK_DIR" || true
+  fi
+}
+
+acquire_deploy_lock() {
+  mkdir -p .deploy
+  if [ "${ROUTE_OPS_DEPLOY_LOCK_HELD:-}" = "1" ]; then
+    return 0
+  fi
+  if [ "${ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR:-}" != "1" ] && command -v flock >/dev/null 2>&1; then
+    exec 9>"$LOCK_PATH"
+    if ! flock -n 9; then
+      echo "Another Route Ops deploy or rollback is already running." >&2
+      exit 75
+    fi
+    LOCK_ACQUIRED="flock"
+    export ROUTE_OPS_DEPLOY_LOCK_HELD=1
+    return 0
+  fi
+  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo "Another Route Ops deploy or rollback is already running." >&2
+    exit 75
+  fi
+  LOCK_ACQUIRED="mkdir"
+  export ROUTE_OPS_DEPLOY_LOCK_HELD=1
+}
+
 validate_image_env_file() {
   local file="$1"
   test -f "$file"
@@ -34,6 +67,9 @@ load_image_env_file() {
   source "$file"
   set +a
 }
+acquire_deploy_lock
+trap 'release_deploy_lock' EXIT
+
 test -f .deploy/current-image.env
 test -f .deploy/previous-image.env
 cp .deploy/current-image.env .deploy/rollback-from-image.env
@@ -47,6 +83,7 @@ restore_current() {
     docker compose --env-file .deploy/rollback-from-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate --no-deps delivery-api || true
     rm -f .deploy/candidate-image.env
   fi
+  release_deploy_lock
   exit "$status"
 }
 trap restore_current EXIT
@@ -74,5 +111,6 @@ mv .deploy/current-image.env .deploy/previous-image.env
 mv .deploy/candidate-image.env .deploy/current-image.env
 printf '{"ts":"%s","rollbackTo":"%s","deliveryApiImage":"%s","migrateImage":"%s","prismaSchemaSha":"%s"}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${IMAGE_TAG:-unknown}" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" "$PRISMA_SCHEMA_SHA" >> .deploy/deploy-history.jsonl
+release_deploy_lock
 trap - EXIT
 echo "Route Ops image rollback promoted: ${IMAGE_TAG:-unknown}"

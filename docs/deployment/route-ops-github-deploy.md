@@ -96,3 +96,7 @@ Rollback uses `.deploy/previous-image.env`, verifies the schema fingerprint matc
 - Use a host-local GHCR read token in Docker credential storage.
 - Keep Actions manual, timeout-bounded, and artifact-light; redacted summaries only with one-day retention.
 - If Actions quota is exhausted, use a local maintainer build/push or the existing emergency deploy path after separate approval.
+
+## SSM deploy follow-up
+
+The next approved deployment model is documented in `docs/deployment/route-ops-ssm-deploy.md`: GitHub Actions `workflow_dispatch` uses OIDC to assume an AWS deploy role, invokes a custom constrained SSM document, and runs the host-local deploy wrapper. Production execution remains separately gated; do not store production secrets in GitHub or SSM command parameters.

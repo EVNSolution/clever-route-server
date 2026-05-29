@@ -1,0 +1,260 @@
+name: Route Ops SSM deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Immutable git SHA tag published by Route Ops image publish"
+        required: true
+      prisma_schema_sha:
+        description: "SHA256 of apps/delivery-api/prisma/schema.prisma from publish summary"
+        required: true
+      delivery_api_image:
+        description: "Runtime image ghcr.io/evnsolution/clever-route-server-delivery-api:<sha>"
+        required: true
+      delivery_api_migrate_image:
+        description: "Migrate image ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:<sha>"
+        required: true
+      publish_evidence_url:
+        description: "Successful route-ops-publish workflow run URL for this image tag"
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+concurrency:
+  group: route-ops-production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RUNTIME_IMAGE_REPO: ghcr.io/evnsolution/clever-route-server-delivery-api
+      MIGRATE_IMAGE_REPO: ghcr.io/evnsolution/clever-route-server-delivery-api-migrate
+    steps:
+      - name: Require main branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "Route Ops SSM deploy is manual-only and must run from refs/heads/main." >&2
+          exit 1
+
+      - name: Require deploy actor allowlist
+        shell: bash
+        env:
+          DEPLOY_ALLOWED_ACTORS: ${{ vars.DEPLOY_ALLOWED_ACTORS }}
+          DEPLOY_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_ALLOWED_ACTORS//[[:space:],]/}" ]; then
+            echo "DEPLOY_ALLOWED_ACTORS is required and must fail closed before AWS credentials." >&2
+            exit 1
+          fi
+          IFS=',' read -ra actors <<< "$DEPLOY_ALLOWED_ACTORS"
+          allowed=false
+          for actor in "${actors[@]}"; do
+            actor="$(echo "$actor" | xargs)"
+            if [ "$actor" = "$DEPLOY_ACTOR" ]; then allowed=true; fi
+          done
+          if [ "$allowed" != true ]; then
+            echo "$DEPLOY_ACTOR is not allowed to deploy Route Ops." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate deployment inputs and provenance
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          PRISMA_SCHEMA_SHA: ${{ inputs.prisma_schema_sha }}
+          DELIVERY_API_IMAGE: ${{ inputs.delivery_api_image }}
+          DELIVERY_API_MIGRATE_IMAGE: ${{ inputs.delivery_api_migrate_image }}
+          PUBLISH_EVIDENCE_URL: ${{ inputs.publish_evidence_url }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          hex40='^[0-9a-fA-F]{40}$'
+          hex64='^[0-9a-fA-F]{64}$'
+          if ! [[ "$IMAGE_TAG" =~ $hex40 ]]; then echo "image_tag must be a 40-hex git SHA." >&2; exit 1; fi
+          if ! [[ "$PRISMA_SCHEMA_SHA" =~ $hex64 ]]; then echo "prisma_schema_sha must be a 64-hex SHA256." >&2; exit 1; fi
+          expected_runtime="${RUNTIME_IMAGE_REPO}:${IMAGE_TAG}"
+          expected_migrate="${MIGRATE_IMAGE_REPO}:${IMAGE_TAG}"
+          if [ "$DELIVERY_API_IMAGE" != "$expected_runtime" ]; then echo "delivery_api_image must be $expected_runtime" >&2; exit 1; fi
+          if [ "$DELIVERY_API_MIGRATE_IMAGE" != "$expected_migrate" ]; then echo "delivery_api_migrate_image must be $expected_migrate" >&2; exit 1; fi
+          if ! [[ "$PUBLISH_EVIDENCE_URL" =~ ^https://github\.com/EVNSolution/clever-route-server/actions/runs/[0-9]+/?$ ]]; then
+            echo "publish_evidence_url must be the successful route-ops-publish run URL." >&2
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          git cat-file -e "${IMAGE_TAG}^{commit}"
+          git merge-base --is-ancestor "$IMAGE_TAG" origin/main
+          publish_run_id="${PUBLISH_EVIDENCE_URL%/}"
+          publish_run_id="${publish_run_id##*/}"
+          curl -fsSL \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runs/${publish_run_id}" \
+            -o /tmp/route-ops-publish-run.json
+          python3 - "$IMAGE_TAG" <<'PY'
+          import json
+          import sys
+
+          image_tag = sys.argv[1].lower()
+          with open('/tmp/route-ops-publish-run.json', encoding='utf-8') as fh:
+              run = json.load(fh)
+
+          def fail(message: str) -> None:
+              print(message, file=sys.stderr)
+              sys.exit(1)
+
+          repo = (run.get('repository') or {}).get('full_name')
+          if repo != 'EVNSolution/clever-route-server':
+              fail(f'publish evidence run repository mismatch: {repo}')
+          if run.get('event') != 'workflow_dispatch':
+              fail(f'publish evidence run event must be workflow_dispatch: {run.get("event")}')
+          if run.get('conclusion') != 'success':
+              fail(f'publish evidence run conclusion must be success: {run.get("conclusion")}')
+          if run.get('head_branch') != 'main':
+              fail(f'publish evidence run branch must be main: {run.get("head_branch")}')
+          if str(run.get('head_sha', '')).lower() != image_tag:
+              fail('publish evidence run head_sha must match image_tag')
+          name = run.get('name') or ''
+          path = run.get('path') or ''
+          if name != 'Route Ops image publish' and not path.endswith('route-ops-publish.yml'):
+              fail(f'publish evidence run must be Route Ops image publish: name={name!r} path={path!r}')
+          PY
+          echo "Route Ops deploy input validation passed for ${IMAGE_TAG}."
+
+      - name: Validate AWS/SSM variable configuration
+        shell: bash
+        env:
+          AWS_ROUTE_OPS_DEPLOY_ROLE_ARN: ${{ vars.AWS_ROUTE_OPS_DEPLOY_ROLE_ARN }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          SSM_ROUTE_OPS_TARGET_TAG_KEY: ${{ vars.SSM_ROUTE_OPS_TARGET_TAG_KEY }}
+          SSM_ROUTE_OPS_TARGET_TAG_VALUE: ${{ vars.SSM_ROUTE_OPS_TARGET_TAG_VALUE }}
+          SSM_ROUTE_OPS_DOCUMENT_NAME: ${{ vars.SSM_ROUTE_OPS_DOCUMENT_NAME }}
+          SSM_ROUTE_OPS_DOCUMENT_VERSION: ${{ vars.SSM_ROUTE_OPS_DOCUMENT_VERSION }}
+        run: |
+          set -euo pipefail
+          required=(AWS_ROUTE_OPS_DEPLOY_ROLE_ARN AWS_REGION SSM_ROUTE_OPS_TARGET_TAG_KEY SSM_ROUTE_OPS_TARGET_TAG_VALUE SSM_ROUTE_OPS_DOCUMENT_NAME SSM_ROUTE_OPS_DOCUMENT_VERSION)
+          for name in "${required[@]}"; do
+            if [ -z "${!name:-}" ]; then echo "$name GitHub variable is required." >&2; exit 1; fi
+          done
+          if [ "$SSM_ROUTE_OPS_DOCUMENT_NAME" = "AWS-RunShellScript" ]; then
+            echo "AWS-RunShellScript is not allowed for production Route Ops deploy." >&2
+            exit 1
+          fi
+          if ! [[ "$SSM_ROUTE_OPS_DOCUMENT_VERSION" =~ ^[0-9]+$ ]]; then
+            echo "SSM_ROUTE_OPS_DOCUMENT_VERSION must be an explicit numeric reviewed document version." >&2
+            exit 1
+          fi
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROUTE_OPS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Verify SSM target resolves to one online managed node
+        id: target
+        shell: bash
+        env:
+          SSM_ROUTE_OPS_TARGET_TAG_KEY: ${{ vars.SSM_ROUTE_OPS_TARGET_TAG_KEY }}
+          SSM_ROUTE_OPS_TARGET_TAG_VALUE: ${{ vars.SSM_ROUTE_OPS_TARGET_TAG_VALUE }}
+        run: |
+          set -euo pipefail
+          filter="Key=tag:${SSM_ROUTE_OPS_TARGET_TAG_KEY},Values=${SSM_ROUTE_OPS_TARGET_TAG_VALUE}"
+          target_query="[length(InstanceInformationList), InstanceInformationList[0].InstanceId, InstanceInformationList[0].PingStatus, InstanceInformationList[0].AgentVersion]"
+          read -r total_count instance_id ping_status agent_version <<< "$(aws ssm describe-instance-information --filters "$filter" --query "$target_query" --output text)"
+          if [ "$total_count" != "1" ]; then
+            echo "Route Ops SSM target tag must resolve to exactly one managed node; got $total_count." >&2
+            exit 1
+          fi
+          if [ -z "$instance_id" ] || [ "$instance_id" = "None" ]; then
+            echo "Unable to resolve Route Ops SSM target instance id." >&2
+            exit 1
+          fi
+          if [ "$ping_status" != "Online" ]; then
+            echo "Route Ops SSM target must be Online; got $ping_status for $instance_id." >&2
+            exit 1
+          fi
+          python3 - "$agent_version" <<'PY'
+          import sys
+
+          version = sys.argv[1]
+          minimum = (3, 3, 2746, 0)
+          try:
+              parsed = tuple(int(part) for part in version.split('.'))
+          except ValueError:
+              print(f'Unable to parse SSM AgentVersion: {version}', file=sys.stderr)
+              sys.exit(1)
+          parsed = parsed + (0,) * (len(minimum) - len(parsed))
+          if parsed < minimum:
+              print(f'SSM AgentVersion {version} must be >= 3.3.2746.0 for ENV_VAR interpolation.', file=sys.stderr)
+              sys.exit(1)
+          PY
+          echo "instance_id=$instance_id" >> "$GITHUB_OUTPUT"
+          echo "Resolved exactly one online Route Ops managed node."
+
+      - name: Send custom SSM deploy command
+        id: command
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          PRISMA_SCHEMA_SHA: ${{ inputs.prisma_schema_sha }}
+          DELIVERY_API_IMAGE: ${{ inputs.delivery_api_image }}
+          DELIVERY_API_MIGRATE_IMAGE: ${{ inputs.delivery_api_migrate_image }}
+          PUBLISH_EVIDENCE_URL: ${{ inputs.publish_evidence_url }}
+          INSTANCE_ID: ${{ steps.target.outputs.instance_id }}
+          SSM_ROUTE_OPS_DOCUMENT_NAME: ${{ vars.SSM_ROUTE_OPS_DOCUMENT_NAME }}
+          SSM_ROUTE_OPS_DOCUMENT_VERSION: ${{ vars.SSM_ROUTE_OPS_DOCUMENT_VERSION }}
+        run: |
+          set -euo pipefail
+          send_query="Command.[CommandId,TargetCount]"
+          read -r command_id target_count <<< "$(aws ssm send-command \
+            --document-name "$SSM_ROUTE_OPS_DOCUMENT_NAME" \
+            --document-version "$SSM_ROUTE_OPS_DOCUMENT_VERSION" \
+            --instance-ids "$INSTANCE_ID" \
+            --parameters "ImageTag=${IMAGE_TAG},PrismaSchemaSha=${PRISMA_SCHEMA_SHA},RuntimeImage=${DELIVERY_API_IMAGE},MigrateImage=${DELIVERY_API_MIGRATE_IMAGE},PublishEvidence=${PUBLISH_EVIDENCE_URL}" \
+            --max-concurrency "1" \
+            --max-errors "0" \
+            --comment "Route Ops deploy ${IMAGE_TAG} from GitHub Actions run ${GITHUB_RUN_ID}" \
+            --query "$send_query" \
+            --output text)"
+          if [ "$target_count" != "1" ]; then
+            echo "Route Ops SSM SendCommand TargetCount must be 1; got $target_count." >&2
+            exit 1
+          fi
+          echo "command_id=$command_id" >> "$GITHUB_OUTPUT"
+          echo "SSM command submitted: ${command_id}"
+
+      - name: Poll SSM deploy command status
+        shell: bash
+        env:
+          COMMAND_ID: ${{ steps.command.outputs.command_id }}
+          INSTANCE_ID: ${{ steps.target.outputs.instance_id }}
+        run: |
+          set -euo pipefail
+          terminal='^(Success|Cancelled|TimedOut|Failed|Cancelling)$'
+          status="Pending"
+          for _ in {1..72}; do
+            status="$(aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" --query 'Status' --output text 2>/dev/null || echo Pending)"
+            if [[ "$status" =~ $terminal ]]; then break; fi
+            sleep 10
+          done
+          summary="$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query '{Status:Status,StatusDetails:StatusDetails,ResponseCode:ResponseCode}' \
+            --output json)"
+          echo "$summary"
+          if [ "$status" != "Success" ]; then
+            echo "Route Ops SSM deploy command did not succeed: $status" >&2
+            exit 1
+          fi

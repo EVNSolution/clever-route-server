@@ -48,6 +48,7 @@ const allowedExact = new Set([
   '.gitleaks.toml',
   '.github/workflows/ci.yml',
   '.github/workflows/route-ops-publish.yml',
+  '.github/workflows/route-ops-ssm-deploy.yml',
   'apps/delivery-api/Dockerfile',
   'apps/delivery-api/src/routes/admin-commerce-connections-ui.routes.ts',
   'apps/delivery-api/tests/admin-commerce-connections-ui.routes.test.ts',
@@ -57,9 +58,13 @@ const allowedExact = new Set([
   'scripts/deploy-route-ops-image.sh',
   'scripts/rollback-route-ops-image.sh',
   'scripts/smoke-route-ops-production.mjs',
+  'scripts/ssm-route-ops-deploy.sh',
+  'scripts/test-ssm-route-ops-deploy.sh',
+  'scripts/validate-route-ops-ssm-deploy.mjs',
   'infra/env/delivery-api.env.example',
   'infra/env/deploy-image.env.example',
   'docs/deployment/route-ops-github-deploy.md',
+  'docs/deployment/route-ops-ssm-deploy.md',
 ]);
 
 const allowedPrefixes = [
