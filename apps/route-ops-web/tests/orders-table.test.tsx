@@ -1,12 +1,10 @@
-import { Children, isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ReactElement, ReactNode } from "react";
 import { describe, expect, test } from "vitest";
 
 import {
   buildEditableMetadataFields,
   normalizeOrderMetadataPatchForFields,
-  OrderDetailChoiceButtons,
+  OrderDetailChoiceDropdown,
   formatDeliveryDayLabel,
   formatDiagnosticPathLabel,
   formatBlockerReason,
@@ -302,18 +300,21 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("Missing delivery date");
     expect(html).toContain("Missing route scope");
     expect(html).toContain('name="deliveryDate"');
-    expect(html).toMatch(/<input(?=[^>]*name="serviceType")(?=[^>]*type="hidden")[^>]*>/);
+    expect(html).toMatch(/<select(?=[^>]*name="serviceType")(?=[^>]*data-choice-field="serviceType")[^>]*>/);
     expect(html).not.toMatch(/<input[^>]*name="serviceType"[^>]*type="text"/);
+    expect(html).not.toMatch(/<button[^>]*data-choice-field="serviceType"/);
     expect(html).toContain('data-choice-value="EVENING_DELIVERY"');
-    expect(html).toContain('aria-pressed="false"');
+    expect(html).toContain("Select service type");
     expect(html).toContain("Allowed values: DELIVERY, EVENING_DELIVERY, PICKUP");
     expect(html).toMatch(
-      /<input(?=[^>]*name="deliverySession")(?=[^>]*type="hidden")[^>]*>/,
+      /<select(?=[^>]*name="deliverySession")(?=[^>]*data-choice-field="deliverySession")[^>]*>/,
     );
     expect(html).not.toMatch(
       /<input[^>]*name="deliverySession"[^>]*type="text"/,
     );
+    expect(html).not.toMatch(/<button[^>]*data-choice-field="deliverySession"/);
     expect(html).toContain('data-choice-value="EVENING"');
+    expect(html).toContain("Select delivery session");
     expect(html).toContain("Allowed values: DAY, EVENING, PICKUP");
     expect(html).toContain('aria-label="Service type help"');
     expect(html).toContain('class="order-detail-field-tooltip"');
@@ -413,11 +414,13 @@ describe("Orders compact operations table", () => {
     );
 
     expect(html).toMatch(
-      /<input(?=[^>]*name="serviceType")(?=[^>]*type="hidden")(?=[^>]*value="")[^>]*>/,
+      /<select(?=[^>]*name="serviceType")(?=[^>]*data-choice-field="serviceType")[^>]*>/,
     );
+    expect(html).not.toContain('value="LEGACY_SERVICE"');
     expect(html).toMatch(
-      /<input(?=[^>]*name="deliverySession")(?=[^>]*type="hidden")(?=[^>]*value="")[^>]*>/,
+      /<select(?=[^>]*name="deliverySession")(?=[^>]*data-choice-field="deliverySession")[^>]*>/,
     );
+    expect(html).not.toContain('value="LEGACY_SESSION"');
     expect(html).toMatch(/<button disabled="" type="submit">Save fixes<\/button>/);
 
     const fields = buildEditableMetadataFields(undefined);
@@ -442,7 +445,7 @@ describe("Orders compact operations table", () => {
     expect(normalized.deliverySession).toBeNull();
   });
 
-  test("choice button click path emits existing route-scope patch keys", () => {
+  test("choice dropdown change path emits existing route-scope patch keys", () => {
     const fields = buildEditableMetadataFields(undefined);
     const serviceField = fields.find((field) => field.key === "serviceType");
     const sessionField = fields.find(
@@ -456,8 +459,8 @@ describe("Orders compact operations table", () => {
       changes[key] = value;
     };
 
-    clickChoice(
-      OrderDetailChoiceButtons({
+    changeDropdown(
+      OrderDetailChoiceDropdown({
         field: serviceField!,
         inputId: "service-type",
         labelId: "service-type-label",
@@ -466,8 +469,8 @@ describe("Orders compact operations table", () => {
       }),
       "EVENING_DELIVERY",
     );
-    clickChoice(
-      OrderDetailChoiceButtons({
+    changeDropdown(
+      OrderDetailChoiceDropdown({
         field: sessionField!,
         inputId: "delivery-session",
         labelId: "delivery-session-label",
@@ -647,48 +650,16 @@ function renderOrderTable(
   );
 }
 
-function clickChoice(element: ReactElement, choiceValue: string): void {
-  const button = collectButtons(element).find(
-    (candidate) => candidate.props["data-choice-value"] === choiceValue,
-  );
-  if (button === undefined) {
-    throw new Error(`Choice button not found: ${choiceValue}`);
-  }
-  button.props.onClick();
-}
-
-function collectButtons(
-  node: ReactNode,
-): Array<
-  ReactElement<{
-    children?: ReactNode;
-    "data-choice-value"?: string;
-    onClick(): void;
-  }>
-> {
-  const buttons: Array<
-    ReactElement<{
-      children?: ReactNode;
-      "data-choice-value"?: string;
-      onClick(): void;
-    }>
-  > = [];
-  const visit = (current: ReactNode): void => {
-    if (!isValidElement(current)) return;
-    const element = current as ReactElement<{ children?: ReactNode }>;
-    if (current.type === "button") {
-      buttons.push(
-        current as ReactElement<{
-          children?: ReactNode;
-          "data-choice-value"?: string;
-          onClick(): void;
-        }>,
-      );
-    }
-    Children.forEach(element.props.children, visit);
+function changeDropdown(
+  element: ReturnType<typeof OrderDetailChoiceDropdown>,
+  value: string,
+): void {
+  const select = element as unknown as {
+    props: {
+      onChange(event: { target: { value: string } }): void;
+    };
   };
-  visit(node);
-  return buttons;
+  select.props.onChange({ target: { value } });
 }
 
 function orderFixture(

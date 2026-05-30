@@ -1530,27 +1530,19 @@ function OrderDetailFieldInput({
           value={value ?? ""}
         />
       ) : (
-        <>
-          <input
-            id={inputId}
-            name={field.key}
-            type="hidden"
-            value={selectedChoiceValue ?? ""}
-          />
-          <OrderDetailChoiceButtons
-            field={field}
-            inputId={inputId}
-            labelId={labelId}
-            onChange={onChange}
-            value={selectedChoiceValue}
-          />
-        </>
+        <OrderDetailChoiceDropdown
+          field={field}
+          inputId={inputId}
+          labelId={labelId}
+          onChange={onChange}
+          value={selectedChoiceValue}
+        />
       )}
     </div>
   );
 }
 
-export function OrderDetailChoiceButtons({
+export function OrderDetailChoiceDropdown({
   field,
   inputId,
   labelId,
@@ -1565,37 +1557,37 @@ export function OrderDetailChoiceButtons({
 }): ReactElement {
   const choices = field.choices ?? [];
   return (
-    <div
+    <select
       aria-labelledby={labelId}
-      className="order-detail-choice-group"
-      role="group"
+      className="order-detail-choice-dropdown"
+      data-choice-field={field.key}
+      id={inputId}
+      name={field.key}
+      onChange={(event) => onChange(field.key, event.target.value)}
+      value={value ?? ""}
     >
-      {choices.map((choice) => {
-        const selected = choice.value === value;
-        return (
-          <button
-            aria-pressed={selected}
-            className={[
-              "order-detail-choice",
-              selected ? "order-detail-choice--selected" : "",
-            ]
-              .filter(Boolean)
-              .join(" ")}
-            data-choice-field={field.key}
-            data-choice-value={choice.value}
-            id={`${inputId}-${sanitizeId(choice.value)}`}
-            key={choice.value}
-            onClick={() => onChange(field.key, choice.value)}
-            title={choice.example ?? choice.description ?? choice.value}
-            type="button"
-          >
-            <span>{choice.label}</span>
-            <small>{choice.value}</small>
-          </button>
-        );
-      })}
-    </div>
+      <option disabled value="">
+        Select {field.label.toLowerCase()}
+      </option>
+      {choices.map((choice) => (
+        <option
+          data-choice-value={choice.value}
+          key={choice.value}
+          title={choice.example ?? choice.description ?? choice.value}
+          value={choice.value}
+        >
+          {formatChoiceOptionLabel(choice)}
+        </option>
+      ))}
+    </select>
   );
+}
+
+function formatChoiceOptionLabel(
+  choice: StoreSettingsDto["routeScopeConfig"]["serviceTypes"][number],
+): string {
+  if (choice.label === choice.value) return choice.label;
+  return `${choice.label} · ${choice.value}`;
 }
 
 export function normalizeOrderMetadataPatchForFields(

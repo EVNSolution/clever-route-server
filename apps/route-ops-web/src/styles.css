@@ -1053,7 +1053,9 @@ small,
 }
 
 .order-detail-repair-fields input,
-.order-detail-edit-grid input {
+.order-detail-edit-grid input,
+.order-detail-repair-fields select,
+.order-detail-edit-grid select {
   background: #fff;
   border: 1px solid #dbe3ef;
   border-radius: 10px;
@@ -1064,13 +1066,23 @@ small,
   padding: 8px 10px;
 }
 
-.order-detail-repair-fields input[type="hidden"],
-.order-detail-edit-grid input[type="hidden"] {
-  display: none;
+.order-detail-repair-fields select,
+.order-detail-edit-grid select {
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.order-detail-choice-dropdown option {
+  font-weight: 700;
 }
 
 .order-detail-repair-fields input:focus,
-.order-detail-edit-grid input:focus {
+.order-detail-edit-grid input:focus,
+.order-detail-repair-fields select:focus,
+.order-detail-edit-grid select:focus {
   border-color: #2563eb;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
   outline: none;
@@ -1098,58 +1110,6 @@ small,
   padding: 0;
   text-transform: lowercase;
   width: 16px;
-}
-
-.order-detail-choice-group {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.order-detail-choice {
-  align-items: flex-start;
-  background: #fff;
-  border: 1px solid #dbe3ef;
-  border-radius: 999px;
-  color: #1f2937;
-  display: inline-flex;
-  flex-direction: column;
-  gap: 2px;
-  justify-content: center;
-  min-height: 38px;
-  padding: 7px 10px;
-}
-
-.order-detail-choice span {
-  font-size: 12px;
-  font-weight: 900;
-  line-height: 1;
-}
-
-.order-detail-choice small {
-  color: #64748b;
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  line-height: 1;
-  text-transform: uppercase;
-}
-
-.order-detail-choice:hover,
-.order-detail-choice:focus-visible {
-  background: #f1f5ff;
-  border-color: #9bb6f4;
-  outline: none;
-}
-
-.order-detail-choice--selected {
-  background: #111827;
-  border-color: #111827;
-  color: #fff;
-}
-
-.order-detail-choice--selected small {
-  color: #c7d2fe;
 }
 
 .order-detail-field-help-wrap {
