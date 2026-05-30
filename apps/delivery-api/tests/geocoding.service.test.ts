@@ -1,8 +1,9 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { loadGeocodingService } from '../src/modules/geocoding/geocoding.dependencies.js';
-import { GeocodingService } from '../src/modules/geocoding/geocoding.service.js';
+import { GeocodingService, SerializedGeocodingRateLimiter } from '../src/modules/geocoding/geocoding.service.js';
 import { NominatimGeocodingClient } from '../src/modules/geocoding/nominatim-geocoding.client.js';
+import { GeocodingProviderError, type GeocodingQuery } from '../src/modules/geocoding/geocoding.types.js';
 
 const address = {
   address1: '300 City Centre Dr',
@@ -39,7 +40,19 @@ describe('Route Ops geocoding', () => {
       userAgent: 'CLEVER-Route-Test/1.0 ops@example.test'
     });
 
-    const result = await client.geocodeAddress('300 City Centre Dr, Mississauga, ON, L5B 3C1, CA');
+    const result = await client.geocodeAddress({
+      cacheKey: 'structured:test',
+      kind: 'structured',
+      params: {
+        city: 'Mississauga',
+        country: 'Canada',
+        countrycodes: 'ca',
+        postalcode: 'L5B 3C1',
+        state: 'ON',
+        street: '300 City Centre Dr'
+      },
+      shape: 'structured_without_unit'
+    });
 
     expect(result).toEqual(expect.objectContaining({ latitude: 43.589045, longitude: -79.644119, providerPlaceId: '42' }));
     const call = rawFetch.mock.calls[0];
@@ -47,7 +60,10 @@ describe('Route Ops geocoding', () => {
     const [url, init] = call as unknown as [URL, RequestInit];
     expect(url.toString()).toContain('format=jsonv2');
     expect(url.toString()).toContain('limit=1');
-    expect(url.searchParams.get('q')).toBe('300 City Centre Dr, Mississauga, ON, L5B 3C1, CA');
+    expect(url.searchParams.get('q')).toBe(null);
+    expect(url.searchParams.get('street')).toBe('300 City Centre Dr');
+    expect(url.searchParams.get('city')).toBe('Mississauga');
+    expect(url.searchParams.get('countrycodes')).toBe('ca');
     expect(init.headers).toMatchObject({ 'User-Agent': 'CLEVER-Route-Test/1.0 ops@example.test' });
   });
 
@@ -76,10 +92,10 @@ describe('Route Ops geocoding', () => {
 
   test('falls back without address line 2 when a unit value prevents a match', async () => {
     const provider = {
-      geocodeAddress: vi.fn((query: string) => {
-        if (query === '1020 Coronation Drive, 302, London, ON, N6H 0B5, CA') return Promise.resolve(null);
+      geocodeAddress: vi.fn((query: GeocodingQuery) => {
+        if (query.shape !== 'freeform_without_unit') return Promise.resolve(null);
         return Promise.resolve({
-          addressLabel: query,
+          addressLabel: query.shape,
           latitude: 42.9965699,
           longitude: -81.3216486,
           provider: 'mock',
@@ -104,8 +120,9 @@ describe('Route Ops geocoding', () => {
     });
 
     expect(result).toEqual(expect.objectContaining({ ok: true }));
-    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(1, '1020 Coronation Drive, 302, London, ON, N6H 0B5, CA');
-    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(2, '1020 Coronation Drive, London, ON, N6H 0B5, CA');
+    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(1, expect.objectContaining({ shape: 'structured_without_unit' }));
+    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(2, expect.objectContaining({ shape: 'structured' }));
+    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(3, expect.objectContaining({ shape: 'freeform_without_unit' }));
   });
 
   test('public Nominatim mode requires user agent and durable cache signal', async () => {
@@ -134,9 +151,155 @@ describe('Route Ops geocoding', () => {
         GEOCODING_USER_AGENT: 'CLEVER-Route-Test/1.0 ops@example.test'
       }
     });
-    expect(configured.status).toEqual({
+    expect(configured.status).toEqual(expect.objectContaining({
       mode: 'nominatim_compatible',
       persistentCacheEnabled: true
+    }));
+  });
+
+  test('classifies public provider rate limits without retry burst', async () => {
+    const provider = {
+      geocodeAddress: vi.fn(() => Promise.reject(new GeocodingProviderError('RATE_LIMITED', 'rate limited', { status: 429 }))),
+      providerName: 'mock'
+    };
+    const service = new GeocodingService({
+      minIntervalMs: 0,
+      mode: 'nominatim_compatible',
+      provider,
+      providerPolicy: 'public_nominatim'
     });
+
+    const result = await service.geocode({ address, shopDomain: 'example.test' });
+
+    expect(result).toEqual(expect.objectContaining({
+      code: 'GEOCODER_PROVIDER_RATE_LIMITED',
+      ok: false,
+      transient: true
+    }));
+    expect(provider.geocodeAddress).toHaveBeenCalledTimes(1);
+  });
+
+  test('spaces public fallback query candidates at the provider request limiter', async () => {
+    const calls: number[] = [];
+    const provider = {
+      geocodeAddress: vi.fn((query: GeocodingQuery) => {
+        calls.push(Date.now());
+        if (query.shape === 'structured_without_unit') return Promise.resolve(null);
+        return Promise.resolve({
+          addressLabel: query.shape,
+          latitude: 43.589045,
+          longitude: -79.644119,
+          provider: 'mock',
+          providerPlaceId: 'place-1',
+          rawLabel: null
+        });
+      }),
+      providerName: 'mock'
+    };
+    const service = new GeocodingService({
+      minIntervalMs: 20,
+      mode: 'nominatim_compatible',
+      provider,
+      providerPolicy: 'public_nominatim'
+    });
+
+    await service.geocode({ address, shopDomain: 'example.test' });
+
+    expect(calls).toHaveLength(2);
+    const [firstCall, secondCall] = calls;
+    if (firstCall === undefined || secondCall === undefined) throw new Error('expected two provider calls');
+    expect(secondCall - firstCall).toBeGreaterThanOrEqual(15);
+  });
+
+  test('can share the public provider limiter across service instances', async () => {
+    const calls: number[] = [];
+    const provider = {
+      geocodeAddress: vi.fn(() => {
+        calls.push(Date.now());
+        return Promise.resolve({
+          addressLabel: 'structured_without_unit',
+          latitude: 43.589045,
+          longitude: -79.644119,
+          provider: 'mock',
+          providerPlaceId: 'place-1',
+          rawLabel: null
+        });
+      }),
+      providerName: 'mock'
+    };
+    const rateLimiter = new SerializedGeocodingRateLimiter();
+    const first = new GeocodingService({
+      minIntervalMs: 20,
+      mode: 'nominatim_compatible',
+      provider,
+      providerPolicy: 'public_nominatim',
+      rateLimiter
+    });
+    const second = new GeocodingService({
+      minIntervalMs: 20,
+      mode: 'nominatim_compatible',
+      provider,
+      providerPolicy: 'public_nominatim',
+      rateLimiter
+    });
+
+    await Promise.all([
+      first.geocode({ address, shopDomain: 'one.example.test' }),
+      second.geocode({ address: { ...address, postalCode: 'L5B 3C2' }, shopDomain: 'two.example.test' })
+    ]);
+
+    expect(calls).toHaveLength(2);
+    const ordered = [...calls].sort((left, right) => left - right);
+    const [firstCall, secondCall] = ordered;
+    if (firstCall === undefined || secondCall === undefined) throw new Error('expected two provider calls');
+    expect(secondCall - firstCall).toBeGreaterThanOrEqual(15);
+  });
+
+  test('classifies malformed Nominatim payloads as invalid provider results', async () => {
+    const fetchImpl = vi.fn(() => Promise.resolve({
+      json: () => Promise.resolve({ code: 'not-an-array' }),
+      ok: true,
+      status: 200
+    })) as unknown as typeof fetch;
+    const client = new NominatimGeocodingClient({
+      fetchImpl,
+      searchUrl: 'https://geo.example.test/search',
+      userAgent: 'CLEVER-Route-Test/1.0 ops@example.test'
+    });
+    const service = new GeocodingService({ minIntervalMs: 0, mode: 'nominatim_compatible', provider: client });
+
+    const result = await service.geocode({ address, shopDomain: 'example.test' });
+
+    expect(result).toEqual(expect.objectContaining({
+      code: 'GEOCODER_INVALID_RESULT',
+      ok: false
+    }));
+  });
+
+  test('retries transient provider errors once and records query shapes only', async () => {
+    const provider = {
+      geocodeAddress: vi
+        .fn()
+        .mockRejectedValueOnce(new GeocodingProviderError('HTTP_ERROR', 'bad gateway', { status: 502 }))
+        .mockResolvedValueOnce({
+          addressLabel: 'structured_without_unit',
+          latitude: 43.589045,
+          longitude: -79.644119,
+          provider: 'mock',
+          providerPlaceId: 'place-1',
+          rawLabel: null
+        }),
+      providerName: 'mock'
+    };
+    const service = new GeocodingService({ minIntervalMs: 0, mode: 'nominatim_compatible', provider });
+
+    const result = await service.geocode({ address, shopDomain: 'example.test' });
+
+    expect(result).toEqual(expect.objectContaining({
+      attemptCount: 2,
+      ok: true,
+      queryShapes: ['structured_without_unit']
+    }));
+    expect(JSON.stringify(result)).not.toContain('300 City Centre Dr');
   });
 });

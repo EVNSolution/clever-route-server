@@ -8,6 +8,7 @@ import type {
   OrderMetadataDiagnosticsResponse,
   OrderMutationResponse,
   OrdersResponse,
+  RouteDeleteResponse,
   RoutePlanDetailDto,
   RoutesResponse,
   SettingsResponse,
@@ -165,6 +166,18 @@ export async function createRoute(input: {
   );
 }
 
+export async function deleteRoute(
+  routePlanId: string,
+  csrfToken: string,
+): Promise<RouteDeleteResponse> {
+  return apiMutation<RouteDeleteResponse>(
+    `/admin/ui/app/api/routes/${encodeURIComponent(routePlanId)}`,
+    "DELETE",
+    csrfToken,
+    {},
+  );
+}
+
 export async function saveStopSequence(
   routePlanId: string,
   csrfToken: string,
@@ -251,7 +264,7 @@ async function apiGet<T>(url: string): Promise<T> {
 
 async function apiMutation<T>(
   url: string,
-  method: "PATCH" | "POST",
+  method: "DELETE" | "PATCH" | "POST",
   csrfToken: string,
   body: unknown,
 ): Promise<T> {

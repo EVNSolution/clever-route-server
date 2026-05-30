@@ -38,10 +38,14 @@ export type AdminCommerceConnectionsRuntimeEnv = Partial<
     | 'DELIVERY_API_PUBLIC_URL'
     | 'GEOCODING_CACHE_TTL_DAYS'
     | 'GEOCODING_PROVIDER_MODE'
+    | 'GEOCODING_PUBLIC_BULK_MAX_ATTEMPTS'
     | 'GEOCODING_RATE_LIMIT_PER_SECOND'
     | 'GEOCODING_SEARCH_URL'
+    | 'GEOCODING_TIMEOUT_MS'
     | 'GEOCODING_USER_AGENT'
-    | 'OSRM_BASE_URL',
+    | 'OSRM_BASE_URL'
+    | 'OSRM_TIMEOUT_MS'
+    | 'ROUTE_OPS_ROUTER_COVERAGE',
     string
   >
 >;
@@ -168,7 +172,12 @@ function readAdminUiRoutePlanService(input: {
   return {
     routePlanService: new RoutePlanAdminService(
       new PrismaRoutePlanRepository(input.prisma, { allowAnyShopDomain: true }),
-      osrmBaseUrl === undefined ? undefined : new OsrmRouteGeometryProvider({ baseUrl: osrmBaseUrl })
+      osrmBaseUrl === undefined
+        ? undefined
+        : new OsrmRouteGeometryProvider({
+            baseUrl: osrmBaseUrl,
+            ...optionalTimeout(input.env.OSRM_TIMEOUT_MS),
+          })
     )
   };
 }
@@ -183,4 +192,15 @@ function readAdminUiSettingsService(input: {
 function readOptional(value: string | undefined): string | undefined {
   if (value === undefined || value.trim() === '') return undefined;
   return value.trim();
+}
+
+function readOptionalNumber(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : undefined;
+}
+
+function optionalTimeout(value: string | undefined): { timeoutMs?: number } {
+  const timeoutMs = readOptionalNumber(value);
+  return timeoutMs === undefined ? {} : { timeoutMs };
 }

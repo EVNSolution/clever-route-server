@@ -29,6 +29,17 @@ export function buildOrderQuery(filters: OrderFilters): string {
   return params.toString();
 }
 
+export function buildOrderFetchQuery(filters: OrderFilters): string {
+  const { deliveryDate: _deliveryDate, ...serverFilters } = filters;
+  return buildOrderQuery(serverFilters);
+}
+
+export function applyClientOrderFilters(orders: CanonicalOrderDto[], filters: OrderFilters): CanonicalOrderDto[] {
+  const deliveryDate = filters.deliveryDate?.trim();
+  if (deliveryDate === undefined || deliveryDate === '' || deliveryDate === 'all') return orders;
+  return orders.filter((order) => order.deliveryDate === deliveryDate);
+}
+
 export function summarizeSelection(orders: CanonicalOrderDto[], selectedOrderIds: ReadonlySet<string>): {
   blockers: string[];
   readySelected: CanonicalOrderDto[];
@@ -101,9 +112,9 @@ export function mapReadiness(input: {
 export function geometryLabel(detail: RoutePlanDetailDto | null, routerStatus: MapProviderStatus): string {
   if (detail === null) return 'No route selected';
   if (detail.routeGeometry !== null) return 'Road geometry';
-  if (routerStatus === 'not_configured') return 'Sequence preview';
   if (detail.stops.every((stop) => stop.coordinates.latitude === null || stop.coordinates.longitude === null)) return 'No coordinates';
-  return 'Sequence preview';
+  if (routerStatus === 'not_configured') return 'Sequence preview — router not configured';
+  return 'Sequence preview — router unavailable';
 }
 
 export function hideSetupActions(bootstrap: BootstrapPayload): boolean {

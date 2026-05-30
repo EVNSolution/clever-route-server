@@ -32,6 +32,15 @@ Nominatim-compatible mode disabled by default and must enforce:
 - rate limiting, defaulting to one request per second;
 - persistent cache or durable per-order lookup metadata for public provider
   mode;
+- redacted per-order diagnostics only: stable code, query shape, attempt count,
+  provider id/place id; never provider raw labels, full raw Woo payloads, or
+  full address query text;
+- public Nominatim-compatible bulk jobs capped by
+  `GEOCODING_PUBLIC_BULK_MAX_ATTEMPTS` (default 25 attempted orders);
+- public Nominatim-compatible mode is approved only for the current single
+  delivery-api runtime. If delivery-api is horizontally scaled, switch to a
+  private Nominatim-compatible provider or disable public geocoding before
+  adding replicas;
 - no autocomplete or unbounded bulk geocoding by default.
 
 Operator corrections must persist in CLEVER canonical delivery facts/stops and
@@ -41,7 +50,8 @@ When geocoding is configured, Woo order ingest attempts server-side geocoding
 before writing canonical delivery stops. Successful lookups are stored with the
 order stop coordinates and delivery fact `geocodeStatus=RESOLVED`; failed
 lookups do not reject the order ingest and leave the stop pending for operator
-repair. Provider approval must explicitly cover this order-ingest volume.
+repair with a user-safe `ingestGeocode` diagnostic. Provider approval must
+explicitly cover this order-ingest volume.
 
 Settings depot geocoding is also server-side only. The Settings tab sends the
 typed depot address to `POST /admin/ui/app/api/settings/geocode`; successful
@@ -89,3 +99,12 @@ Code deployment alone must not enable public map tiles or public geocoding. Enab
 2. runtime env update on the server, not a committed secret;
 3. smoke evidence for CSP allowlist/mapConfig and geocoder behavior;
 4. rollback instructions to unset the provider env and restart `delivery-api`.
+
+## OSRM road geometry
+
+Road geometry is server-side only. `delivery-api` calls OSRM Route service only
+when `OSRM_BASE_URL` is set. The app must preserve the stored stop sequence and
+must not use OSRM Trip/Table for optimization.
+
+Phase 1 production operations use the existing EC2 host and an Ontario extract.
+See `docs/deployment/route-ops-osrm-ontario.md`.

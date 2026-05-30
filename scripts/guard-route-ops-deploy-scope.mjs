@@ -4,6 +4,8 @@ import fs from 'node:fs';
 
 const args = process.argv.slice(2);
 const allowComposeBootstrap = args.includes('--allow-compose-bootstrap') || process.env.ALLOW_COMPOSE_IMAGE_VARIABLE_BOOTSTRAP === 'true';
+const allowGeocodeOsrmLane = args.includes('--allow-geocode-osrm-lane') || process.env.ALLOW_GEOCODE_OSRM_LANE === 'true';
+const allowCommerceSyncLane = args.includes('--allow-commerce-sync-lane') || process.env.ALLOW_COMMERCE_SYNC_LANE === 'true';
 const json = args.includes('--json');
 const filesArgIndex = args.indexOf('--files');
 const baseArgIndex = args.indexOf('--base');
@@ -85,12 +87,41 @@ if (allowComposeBootstrap) {
   allowedExact.add('infra/compose/docker-compose.prod.yml');
 }
 
+if (allowGeocodeOsrmLane) {
+  allowedExact.add('apps/delivery-api/src/modules/route-plans/osrm-route-geometry.client.ts');
+  allowedExact.add('apps/delivery-api/src/modules/wordpress-plugin/wordpress-plugin.dependencies.ts');
+  allowedExact.add('apps/delivery-api/tests/geocoding.service.test.ts');
+  allowedExact.add('apps/delivery-api/tests/osrm-route-geometry.client.test.ts');
+  allowedExact.add('docs/deployment/route-ops-map-geocoding.md');
+  allowedExact.add('docs/deployment/route-ops-osrm-ontario.md');
+  allowedExact.add('scripts/prepare-osrm-ontario.sh');
+  allowedExact.add('scripts/smoke-osrm-ontario.sh');
+  allowedPrefixes.push('apps/delivery-api/src/modules/geocoding/');
+}
+
+const commerceSyncAllowedExact = new Set([
+  'apps/delivery-api/src/modules/shopify/order-sync.mapper.ts',
+  'apps/delivery-api/src/modules/shopify/order-sync.repository.ts',
+  'apps/delivery-api/src/modules/shopify/order-sync.service.ts',
+  'apps/delivery-api/src/modules/woocommerce/woocommerce-order-sync.service.ts',
+  'apps/delivery-api/src/modules/woocommerce/woocommerce.dependencies.ts',
+  'apps/delivery-api/tests/woocommerce-order-sync.service.test.ts',
+]);
+
+if (allowCommerceSyncLane) {
+  for (const file of commerceSyncAllowedExact) allowedExact.add(file);
+}
+
 function blockedReason(file) {
   if (file.startsWith('output/')) return 'output artifacts must never be in a Route Ops deploy';
   if (file.startsWith('infra/caddy/')) return 'Caddy/ingress changes require a separate infra lane';
   if (file.startsWith('apps/delivery-api/prisma/')) return 'Prisma schema/migrations require a separate DB lane';
-  if (file.startsWith('apps/delivery-api/src/modules/woocommerce/')) return 'Woo delivery-facts/connector changes require a separate Woo lane';
-  if (file.startsWith('apps/delivery-api/src/modules/shopify/')) return 'Shopify sync/delivery changes require a separate commerce lane';
+  if (file.startsWith('apps/delivery-api/src/modules/woocommerce/') && !(allowCommerceSyncLane && commerceSyncAllowedExact.has(file))) {
+    return 'Woo delivery-facts/connector changes require a separate Woo lane or explicit commerce-sync deploy approval';
+  }
+  if (file.startsWith('apps/delivery-api/src/modules/shopify/') && !(allowCommerceSyncLane && commerceSyncAllowedExact.has(file))) {
+    return 'Shopify sync/delivery changes require a separate commerce lane or explicit commerce-sync deploy approval';
+  }
   if (file.startsWith('infra/compose/')) {
     if (allowComposeBootstrap && file === 'infra/compose/docker-compose.prod.yml') return null;
     return 'compose changes are allowed only for the one-time image-variable bootstrap';
@@ -117,6 +148,8 @@ for (const file of files) {
 const report = {
   ok: blocked.length === 0 && outside.length === 0,
   allowComposeBootstrap,
+  allowGeocodeOsrmLane,
+  allowCommerceSyncLane,
   changedFileCount: files.length,
   blocked,
   outside,

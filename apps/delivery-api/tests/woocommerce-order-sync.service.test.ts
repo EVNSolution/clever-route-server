@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest';
 import type { CanonicalOrderRow, SyncedOrderWithDeliveryStopInput } from '../src/modules/shopify/order-sync.mapper.js';
 import type { UpsertOrderWithDeliveryStopResult } from '../src/modules/shopify/order-sync.repository.js';
 import { GeocodingService } from '../src/modules/geocoding/geocoding.service.js';
+import type { GeocodingQuery } from '../src/modules/geocoding/geocoding.types.js';
 import { WooCommerceOrderSyncService } from '../src/modules/woocommerce/woocommerce-order-sync.service.js';
 import type { WooCommerceOrder } from '../src/modules/woocommerce/woocommerce-order.types.js';
 
@@ -118,7 +119,11 @@ describe('WooCommerceOrderSyncService', () => {
           rawLabel: '100 Test Street'
         }
       }),
-      status: { mode: 'nominatim_compatible' as const, persistentCacheEnabled: true }
+      status: {
+        mode: 'nominatim_compatible' as const,
+        persistentCacheEnabled: true,
+        providerPolicy: 'public_nominatim' as const
+      }
     };
     const wooOrder = order(30);
     const service = new WooCommerceOrderSyncService({
@@ -173,14 +178,54 @@ describe('WooCommerceOrderSyncService', () => {
     );
   });
 
+  test('skips pre-persist geocoding for public-provider paginated sync', async () => {
+    const client = {
+      listOrdersPage: vi.fn().mockResolvedValue({
+        orders: [order(33)],
+        page: 1,
+        perPage: 10,
+        total: 1,
+        totalPages: 1
+      })
+    };
+    const repository = createRepositoryHarness();
+    const geocodingService = {
+      geocode: vi.fn(),
+      status: {
+        mode: 'nominatim_compatible' as const,
+        persistentCacheEnabled: true,
+        providerPolicy: 'public_nominatim' as const
+      }
+    };
+    const service = new WooCommerceOrderSyncService({
+      client,
+      geocodingService,
+      repository,
+      shopDomain: 'woo.example.test',
+      siteUrl: 'https://woo.example.test'
+    });
+
+    await service.syncUpdatedOrders({ pageSize: 10, status: 'processing' });
+
+    expect(geocodingService.geocode).not.toHaveBeenCalled();
+    const upsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
+    expect(upsert?.synced.deliveryStop).toEqual(
+      expect.objectContaining({
+        geocodeStatus: 'PENDING',
+        latitude: null,
+        longitude: null
+      })
+    );
+  });
+
 
   test('pre-persist geocoding resolves Woo unit addresses using fallback street queries', async () => {
     const repository = createRepositoryHarness();
     const provider = {
-      geocodeAddress: vi.fn((query: string) => {
-        if (query === '1020 Coronation Drive, 302, London, ON, N6H 0B5, CA') return Promise.resolve(null);
+      geocodeAddress: vi.fn((query: GeocodingQuery) => {
+        if (query.shape !== 'freeform_without_unit') return Promise.resolve(null);
         return Promise.resolve({
-          addressLabel: query,
+          addressLabel: query.shape,
           latitude: 42.9965699,
           longitude: -81.3216486,
           provider: 'test-geocoder',
@@ -211,8 +256,8 @@ describe('WooCommerceOrderSyncService', () => {
 
     await service.syncOrders({ orders: [wooOrder], reason: 'webhook' });
 
-    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(1, '1020 Coronation Drive, 302, London, ON, N6H 0B5, CA');
-    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(2, '1020 Coronation Drive, London, ON, N6H 0B5, CA');
+    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(1, expect.objectContaining({ shape: 'structured_without_unit' }));
+    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(3, expect.objectContaining({ shape: 'freeform_without_unit' }));
     const upsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
     expect(upsert?.synced.deliveryStop).toEqual(
       expect.objectContaining({

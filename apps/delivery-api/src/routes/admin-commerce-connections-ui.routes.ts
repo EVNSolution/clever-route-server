@@ -33,6 +33,7 @@ import type {
   DeliveryBatchCandidate,
   ListCanonicalOrdersFilters,
   PatchCanonicalOrderCoordinatesInput,
+  PatchCanonicalOrderGeocodeDiagnosticsInput,
   PatchCanonicalOrderInput,
   RouteOpsCanonicalMetadataPatch,
 } from "../modules/shopify/order-sync.repository.js";
@@ -58,6 +59,8 @@ import {
 } from "../modules/route-plans/route-plan.types.js";
 import { readAdminUiFormFields } from "./admin-ui-form.js";
 import type { GeocodingService } from "../modules/geocoding/geocoding.service.js";
+import type { GeocodingResult } from "../modules/geocoding/geocoding.types.js";
+import { summarizeGeocodeDiagnostic } from "../modules/geocoding/geocoding.diagnostics.js";
 import {
   clearAdminWebSessionCookie,
   clearBroadLegacyAdminWebSessionCookies,
@@ -122,7 +125,7 @@ type BulkGeocodeResult =
       message: string;
       orderId: string;
       orderName: string;
-      status: "failed" | "no_address";
+      status: "failed" | "no_address" | "skipped_policy";
     };
 
 type BulkGeocodeServices = {
@@ -135,6 +138,9 @@ type BulkGeocodeServices = {
         AdminCommerceConnectionsUiDependencies["orderSyncService"]
       >["patchCanonicalOrderCoordinates"]
     >;
+    patchCanonicalOrderGeocodeDiagnostics?: (
+      input: PatchCanonicalOrderGeocodeDiagnosticsInput,
+    ) => Promise<CanonicalOrderRow | null>;
   };
 };
 
@@ -145,6 +151,7 @@ type BulkGeocodeJob = {
     failed: number;
     matched: number;
     noAddress: number;
+    skippedByPolicy: number;
     skippedAlreadyGeocoded: number;
     succeeded: number;
   };
@@ -152,6 +159,11 @@ type BulkGeocodeJob = {
   error: string | null;
   filters: ListCanonicalOrdersFilters;
   jobId: string;
+  policyLimit: {
+    active: boolean;
+    attemptedLimit: number | null;
+    reached: boolean;
+  };
   results: BulkGeocodeResult[];
   shopDomain: string;
   status: BulkGeocodeJobStatus;
@@ -323,6 +335,9 @@ export type AdminCommerceConnectionsUiDependencies = {
     patchCanonicalOrderCoordinates?(
       input: PatchCanonicalOrderCoordinatesInput,
     ): Promise<CanonicalOrderRow | null>;
+    patchCanonicalOrderGeocodeDiagnostics?(
+      input: PatchCanonicalOrderGeocodeDiagnosticsInput,
+    ): Promise<CanonicalOrderRow | null>;
   };
   publicBaseUrl?: string;
   routePlanService?: Pick<
@@ -333,7 +348,8 @@ export type AdminCommerceConnectionsUiDependencies = {
     | "getRoutePlanDetail"
     | "listRoutePlans"
     | "updateRoutePlanStops"
-  >;
+  > &
+    Partial<Pick<RoutePlanService, "deleteRoutePlan">>;
   secureCookies: boolean;
   sessionSecret: string;
   sessionTtlMs?: number;
@@ -1357,6 +1373,20 @@ function registerRouteOpsAppRoutes(
           shopDomain,
         });
         if (!geocode.ok) {
+          if (
+            dependencies.orderSyncService.patchCanonicalOrderGeocodeDiagnostics !==
+            undefined
+          ) {
+            await dependencies.orderSyncService.patchCanonicalOrderGeocodeDiagnostics({
+              actor: dependencies.actor.subject,
+              diagnostic: summarizeGeocodeDiagnostic(geocode, "single_order_geocode"),
+              geocodeStatus:
+                geocode.code === "BLANK_ADDRESS" ? "PENDING" : "FAILED",
+              orderId: current.orderId,
+              shopDomain,
+              source: "single_order_geocode",
+            });
+          }
           throw new WooCommerceOnboardingError(
             "BAD_REQUEST",
             geocode.message,
@@ -1377,12 +1407,15 @@ function registerRouteOpsAppRoutes(
           const order =
             await dependencies.orderSyncService.patchCanonicalOrderCoordinates({
               actor: dependencies.actor.subject,
+              geocodeDiagnostic: {
+                diagnostic: summarizeGeocodeDiagnostic(geocode, "single_order_geocode"),
+                source: "single_order_geocode",
+              },
               latitude: geocode.result.latitude,
               longitude: geocode.result.longitude,
               orderId: request.params.orderId,
               provider: geocode.result.provider,
               providerPlaceId: geocode.result.providerPlaceId,
-              rawLabel: geocode.result.rawLabel,
               shopDomain,
               source: "geocoder",
             });
@@ -1392,9 +1425,12 @@ function registerRouteOpsAppRoutes(
               "Order not found",
               404,
             );
-          return routeOpsData({ geocode, order: toRouteOpsOrderDto(order) });
+          return routeOpsData({
+            geocode: toSafeRouteOpsGeocodeResponse(geocode),
+            order: toRouteOpsOrderDto(order),
+          });
         }
-        return routeOpsData({ geocode });
+        return routeOpsData({ geocode: toSafeRouteOpsGeocodeResponse(geocode) });
       }),
   );
 
@@ -1490,6 +1526,28 @@ function registerRouteOpsAppRoutes(
           );
         }
         return routeOpsData(toRouteOpsRoutePlanDetailDto(detail));
+      }),
+  );
+
+  app.delete<{ Params: { routePlanId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId`,
+    async (request, reply) =>
+      withRouteOpsApi(request, reply, dependencies, async (session) => {
+        assertRouteOpsMutationCsrf(request, session);
+        const services = requireRouteUiServices(dependencies);
+        if (services.routePlanService.deleteRoutePlan === undefined) {
+          throw new WooCommerceOnboardingError(
+            "BAD_REQUEST",
+            "Route deletion is not enabled in this runtime.",
+            400,
+          );
+        }
+        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const result = await services.routePlanService.deleteRoutePlan({
+          routePlanId: request.params.routePlanId,
+          shopDomain,
+        });
+        return routeOpsData(result);
       }),
   );
 
@@ -1707,8 +1765,10 @@ function registerRouteOpsAppRoutes(
               400,
             );
           }
+          const rememberedGeocode: Extract<GeocodingResult, { ok: true }> =
+            remembered;
           return routeOpsData({
-            geocode: remembered,
+            geocode: toSafeRouteOpsGeocodeResponse(rememberedGeocode),
             settings: toRouteOpsSettingsDto(currentSettings),
           });
         }
@@ -1740,7 +1800,7 @@ function registerRouteOpsAppRoutes(
           shopDomain,
         });
         return routeOpsData({
-          geocode,
+          geocode: toSafeRouteOpsGeocodeResponse(geocode),
           settings: toRouteOpsSettingsDto(settings),
         });
       }),
@@ -1820,6 +1880,29 @@ type RouteOpsApiResponse<T> = {
 
 function routeOpsData<T>(data: T, statusCode = 200): RouteOpsApiResponse<T> {
   return { data, statusCode };
+}
+
+function toSafeRouteOpsGeocodeResponse(
+  geocode: Extract<GeocodingResult, { ok: true }>,
+): Extract<GeocodingResult, { ok: true }> {
+  return {
+    ...geocode,
+    result: {
+      ...geocode.result,
+      addressLabel: safeGeocodeAddressLabel(geocode.result.addressLabel),
+      rawLabel: null,
+    },
+  };
+}
+
+function safeGeocodeAddressLabel(value: string): string {
+  return value === "freeform" ||
+    value === "freeform_without_unit" ||
+    value === "structured" ||
+    value === "structured_without_unit" ||
+    value === "store_settings"
+    ? value
+    : "geocoded_address";
 }
 
 function sendRouteOpsApiError(
@@ -3516,7 +3599,7 @@ function readRememberedDepotGeocode(
     longitude: number;
     provider: "store_settings";
     providerPlaceId: null;
-    rawLabel: string;
+    rawLabel: null;
   };
 } | null {
   if (
@@ -3533,12 +3616,12 @@ function readRememberedDepotGeocode(
     cached: true,
     ok: true,
     result: {
-      addressLabel: defaultDepotAddress,
+      addressLabel: "store_settings",
       latitude: settings.defaultDepotLatitude,
       longitude: settings.defaultDepotLongitude,
       provider: "store_settings",
       providerPlaceId: null,
-      rawLabel: settings.defaultDepotAddress,
+      rawLabel: null,
     },
   };
 }
@@ -3598,12 +3681,22 @@ function requireBulkGeocodeServices(
     orderSyncService.patchCanonicalOrderCoordinates === undefined
       ? Promise.resolve(null)
       : orderSyncService.patchCanonicalOrderCoordinates(input);
+  const patchCanonicalOrderGeocodeDiagnostics =
+    orderSyncService.patchCanonicalOrderGeocodeDiagnostics === undefined
+      ? undefined
+      : (input: PatchCanonicalOrderGeocodeDiagnosticsInput) =>
+          orderSyncService.patchCanonicalOrderGeocodeDiagnostics === undefined
+            ? Promise.resolve(null)
+            : orderSyncService.patchCanonicalOrderGeocodeDiagnostics(input);
   return {
     geocodingService: dependencies.geocodingService,
     orderSyncService: {
       listCanonicalOrders:
         orderSyncService.listCanonicalOrders.bind(orderSyncService),
       patchCanonicalOrderCoordinates,
+      ...(patchCanonicalOrderGeocodeDiagnostics === undefined
+        ? {}
+        : { patchCanonicalOrderGeocodeDiagnostics }),
     },
   };
 }
@@ -3620,6 +3713,7 @@ function createBulkGeocodeJob(input: {
       failed: 0,
       matched: 0,
       noAddress: 0,
+      skippedByPolicy: 0,
       skippedAlreadyGeocoded: 0,
       succeeded: 0,
     },
@@ -3627,6 +3721,11 @@ function createBulkGeocodeJob(input: {
     error: null,
     filters: input.filters,
     jobId: randomUUID(),
+    policyLimit: {
+      active: false,
+      attemptedLimit: null,
+      reached: false,
+    },
     results: [],
     shopDomain: input.shopDomain,
     status: "accepted",
@@ -3648,11 +3747,38 @@ async function runBulkGeocodeJob(input: {
       shopDomain: input.job.shopDomain,
     });
     input.job.counts.matched = orders.length;
+    const publicAttemptLimit =
+      input.services.geocodingService.status.providerPolicy === "public_nominatim"
+        ? input.services.geocodingService.status.publicBulkAttemptLimit ?? null
+        : null;
+    input.job.policyLimit = {
+      active: publicAttemptLimit !== null,
+      attemptedLimit: publicAttemptLimit,
+      reached: false,
+    };
     touchBulkGeocodeJob(input.job);
 
     for (const order of orders) {
       if (hasRouteOpsCoordinates(order)) {
         input.job.counts.skippedAlreadyGeocoded += 1;
+        touchBulkGeocodeJob(input.job);
+        continue;
+      }
+
+      if (
+        publicAttemptLimit !== null &&
+        input.job.counts.attempted >= publicAttemptLimit
+      ) {
+        input.job.policyLimit.reached = true;
+        input.job.counts.skippedByPolicy += 1;
+        input.job.results.push({
+          code: "GEOCODER_PUBLIC_BULK_LIMIT",
+          message:
+            "Public geocoder limit reached for this job. Run again later or configure a private provider.",
+          orderId: order.orderId,
+          orderName: order.name,
+          status: "skipped_policy",
+        });
         touchBulkGeocodeJob(input.job);
         continue;
       }
@@ -3672,6 +3798,15 @@ async function runBulkGeocodeJob(input: {
           orderName: order.name,
           status: geocode.code === "BLANK_ADDRESS" ? "no_address" : "failed",
         });
+        await input.services.orderSyncService.patchCanonicalOrderGeocodeDiagnostics?.({
+          actor: input.actor,
+          diagnostic: summarizeGeocodeDiagnostic(geocode, "bulk_geocode"),
+          geocodeStatus:
+            geocode.code === "BLANK_ADDRESS" ? "PENDING" : "FAILED",
+          orderId: order.orderId,
+          shopDomain: input.job.shopDomain,
+          source: "bulk_geocode",
+        });
         touchBulkGeocodeJob(input.job);
         continue;
       }
@@ -3680,12 +3815,15 @@ async function runBulkGeocodeJob(input: {
       const updatedOrder =
         await input.services.orderSyncService.patchCanonicalOrderCoordinates({
           actor: input.actor,
+          geocodeDiagnostic: {
+            diagnostic: summarizeGeocodeDiagnostic(geocode, "bulk_geocode"),
+            source: "bulk_geocode",
+          },
           latitude: geocode.result.latitude,
           longitude: geocode.result.longitude,
           orderId: order.orderId,
           provider: geocode.result.provider,
           providerPlaceId: geocode.result.providerPlaceId,
-          rawLabel: geocode.result.rawLabel,
           shopDomain: input.job.shopDomain,
           source: "geocoder",
         });
@@ -3762,11 +3900,14 @@ function toBulkGeocodeOrderResponse(job: BulkGeocodeJob): {
     failed: number;
     noAddress: number;
     resolved: number;
+    skippedByPolicy: number;
     skipped: number;
   };
+  policyLimit: BulkGeocodeJob["policyLimit"];
 } {
   return {
     jobId: job.jobId,
+    policyLimit: job.policyLimit,
     status: job.status,
     summary: {
       alreadyHasCoordinates: job.counts.skippedAlreadyGeocoded,
@@ -3774,7 +3915,11 @@ function toBulkGeocodeOrderResponse(job: BulkGeocodeJob): {
       failed: job.counts.failed,
       noAddress: job.counts.noAddress,
       resolved: job.counts.succeeded,
-      skipped: job.counts.skippedAlreadyGeocoded + job.counts.noAddress,
+      skippedByPolicy: job.counts.skippedByPolicy,
+      skipped:
+        job.counts.skippedAlreadyGeocoded +
+        job.counts.noAddress +
+        job.counts.skippedByPolicy,
     },
   };
 }
@@ -3785,6 +3930,7 @@ function toBulkGeocodeJobDto(job: BulkGeocodeJob): {
   createdAt: string;
   error: string | null;
   jobId: string;
+  policyLimit: BulkGeocodeJob["policyLimit"];
   results: BulkGeocodeResult[];
   status: BulkGeocodeJobStatus;
   updatedAt: string;
@@ -3795,6 +3941,7 @@ function toBulkGeocodeJobDto(job: BulkGeocodeJob): {
     createdAt: job.createdAt,
     error: job.error,
     jobId: job.jobId,
+    policyLimit: job.policyLimit,
     results: job.results,
     status: job.status,
     updatedAt: job.updatedAt,
@@ -4329,12 +4476,20 @@ function buildRouteOpsCsp(mapConfig: RouteOpsMapConfig): string {
 }
 
 function readRouteOpsRouterConfig(): {
+  coverage: string | null;
+  provider: "osrm" | null;
   status: "configured" | "not_configured";
 } {
-  return process.env.OSRM_BASE_URL?.trim() === "" ||
-    process.env.OSRM_BASE_URL === undefined
-    ? { status: "not_configured" }
-    : { status: "configured" };
+  const configured =
+    process.env.OSRM_BASE_URL?.trim() !== "" &&
+    process.env.OSRM_BASE_URL !== undefined;
+  return configured
+    ? {
+        coverage: process.env.ROUTE_OPS_ROUTER_COVERAGE?.trim() || "ontario",
+        provider: "osrm",
+        status: "configured",
+      }
+    : { coverage: null, provider: null, status: "not_configured" };
 }
 
 function toRouteOpsOrderDto(order: CanonicalOrderRow): {
@@ -4346,6 +4501,7 @@ function toRouteOpsOrderDto(order: CanonicalOrderRow): {
   deliveryStatus: OperateDeliveryStatus;
   metadataResolved: boolean;
   geocodeStatus: CanonicalOrderRow["geocodeStatus"];
+  geocodeDiagnostics: CanonicalOrderRow["geocodeDiagnostics"] | null;
   health: OrderHealth;
   orderId: string;
   orderName: string;
@@ -4391,6 +4547,7 @@ function toRouteOpsOrderDto(order: CanonicalOrderRow): {
     deliverySession: order.deliverySession ?? null,
     deliveryStatus: deriveOperateDeliveryStatus(order),
     geocodeStatus: order.geocodeStatus,
+    geocodeDiagnostics: order.geocodeDiagnostics ?? null,
     health: deriveOrderHealth(order),
     metadataResolved,
     orderId: order.orderId,

@@ -442,6 +442,12 @@ small,
   min-height: 38px;
   padding: 8px 12px;
 }
+.orders-selection-summary {
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
 .orders-bulk-status {
   color: #4b5563;
   font-size: 12.5px;
@@ -490,6 +496,15 @@ small,
 .orders-compact-table .orders-select-col,
 .orders-compact-table .orders-select-cell {
   width: 44px;
+}
+.orders-compact-table .orders-select-col {
+  white-space: nowrap;
+}
+.orders-compact-table .orders-select-col input {
+  height: 14px;
+  margin: 0 6px 0 0;
+  vertical-align: -2px;
+  width: 14px;
 }
 .orders-compact-table .orders-select-cell input {
   cursor: pointer;
@@ -650,6 +665,26 @@ small,
 }
 .stop-actions button {
   padding: 7px 10px;
+}
+.route-row-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+button.danger,
+.route-row-actions button.danger {
+  border-color: #fecaca;
+  color: #991b1b;
+}
+button.danger:is(:hover, :focus-visible):not(:disabled),
+.route-row-actions button.danger:is(:hover, :focus-visible):not(:disabled) {
+  background: #fef2f2;
+  border-color: #fca5a5;
+}
+button.danger.subtle {
+  background: #fff;
 }
 
 /* Shopify-inspired compact Route Ops workspace */
@@ -1033,6 +1068,7 @@ small,
 
 .order-detail-repair-fields,
 .order-detail-edit-grid {
+  align-items: start;
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -1044,28 +1080,51 @@ small,
   font-size: 13px;
   font-weight: 800;
   gap: 6px;
+  grid-template-rows: 24px 58px;
 }
 
 .order-detail-field-label-row {
   align-items: center;
   display: inline-flex;
   gap: 6px;
+  line-height: 1.1;
+  min-height: 24px;
 }
 
 .order-detail-repair-fields input,
-.order-detail-edit-grid input {
+.order-detail-edit-grid input,
+.order-detail-repair-fields select,
+.order-detail-edit-grid select {
   background: #fff;
   border: 1px solid #dbe3ef;
   border-radius: 10px;
+  box-sizing: border-box;
   color: #111827;
   font: inherit;
   font-weight: 700;
-  min-height: 38px;
+  height: 58px;
+  line-height: 1.2;
+  min-height: 58px;
   padding: 8px 10px;
 }
 
+.order-detail-repair-fields select,
+.order-detail-edit-grid select {
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.order-detail-choice-dropdown option {
+  font-weight: 700;
+}
+
 .order-detail-repair-fields input:focus,
-.order-detail-edit-grid input:focus {
+.order-detail-edit-grid input:focus,
+.order-detail-repair-fields select:focus,
+.order-detail-edit-grid select:focus {
   border-color: #2563eb;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
   outline: none;

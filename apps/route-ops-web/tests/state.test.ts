@@ -2,12 +2,30 @@ import { describe, expect, test } from 'vitest';
 
 import { withWorkspaceQuery } from '../src/api';
 import { defaultRouteScopeConfig } from '../src/routeScopeConfig';
-import { buildOrderQuery, createDefaultOrderFilters, deriveRouteStats, geometryLabel, hideSetupActions, mapReadiness, moveStop, moveStopBefore, storeSettingsToDepotPoint, summarizeSelection } from '../src/state';
+import { applyClientOrderFilters, buildOrderFetchQuery, buildOrderQuery, createDefaultOrderFilters, deriveRouteStats, geometryLabel, hideSetupActions, mapReadiness, moveStop, moveStopBefore, storeSettingsToDepotPoint, summarizeSelection } from '../src/state';
 import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStopDto } from '../src/types';
 
 describe('route ops web state helpers', () => {
   test('serializes order filters without empty/all values', () => {
     expect(buildOrderQuery({ deliveryArea: 'Toronto', deliveryDate: '2026-05-27', deliveryStatus: 'all', health: '', search: '#1001', status: 'planned' })).toBe('deliveryDate=2026-05-27&deliveryArea=Toronto&status=planned&search=%231001');
+  });
+
+  test('keeps delivery date as a client-side filter to avoid refetching on date changes', () => {
+    const filters = { deliveryArea: 'Toronto', deliveryDate: '2026-05-27', deliveryStatus: '', health: '', search: '#1001', status: 'planned' as const };
+
+    expect(buildOrderQuery(filters)).toBe('deliveryDate=2026-05-27&deliveryArea=Toronto&status=planned&search=%231001');
+    expect(buildOrderFetchQuery(filters)).toBe('deliveryArea=Toronto&status=planned&search=%231001');
+  });
+
+  test('applies the delivery date filter locally against prefetched orders', () => {
+    const orders = [
+      order({ deliveryDate: '2026-05-27', orderId: 'may-27' }),
+      order({ deliveryDate: '2026-05-28', orderId: 'may-28' }),
+      order({ deliveryDate: null, orderId: 'missing-date' }),
+    ];
+
+    expect(applyClientOrderFilters(orders, { deliveryDate: '2026-05-27' }).map((item) => item.orderId)).toEqual(['may-27']);
+    expect(applyClientOrderFilters(orders, { deliveryDate: '' })).toBe(orders);
   });
 
   test('shows all orders by default and lets tabs add planning scope explicitly', () => {
@@ -72,7 +90,7 @@ describe('route ops web state helpers', () => {
       stops: [stop('a', 1, 'COMPLETED'), stop('b', 2, 'ATTEMPTED', null, null)]
     };
     expect(deriveRouteStats(detail)).toEqual({ attempted: 1, completed: 1, missingCoordinates: 1, stops: 2 });
-    expect(geometryLabel(detail, 'not_configured')).toBe('Sequence preview');
+    expect(geometryLabel(detail, 'not_configured')).toBe('Sequence preview — router not configured');
     expect(geometryLabel({ ...detail, routeGeometry: { coordinates: [[-79, 43]], type: 'LineString' } }, 'configured')).toBe('Road geometry');
   });
 

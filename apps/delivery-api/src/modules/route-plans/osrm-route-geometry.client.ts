@@ -8,11 +8,12 @@ import type {
 } from './route-plan.types.js';
 import type { RouteGeometryProvider } from './route-plan.service.js';
 
-type FetchLike = (url: string, init: { method: 'GET' }) => Promise<Response>;
+type FetchLike = (url: string, init: { method: 'GET'; signal?: AbortSignal }) => Promise<Response>;
 
 type OsrmRouteGeometryProviderOptions = {
   baseUrl: string;
   fetch?: FetchLike | undefined;
+  timeoutMs?: number;
 };
 
 type RoutableRoutePoint =
@@ -28,10 +29,15 @@ type OsrmWaypoint = {
 export class OsrmRouteGeometryProvider implements RouteGeometryProvider {
   private readonly baseUrl: string;
   private readonly fetch: FetchLike;
+  private readonly timeoutMs: number;
 
   constructor(options: OsrmRouteGeometryProviderOptions) {
     this.baseUrl = normalizeBaseUrl(options.baseUrl);
     this.fetch = options.fetch ?? fetch;
+    this.timeoutMs =
+      typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+        ? Math.max(1000, Math.floor(options.timeoutMs))
+        : 10000;
   }
 
   async buildRoute(input: RoutePlanDetail): Promise<RoutePlanRouteResult> {
@@ -41,12 +47,24 @@ export class OsrmRouteGeometryProvider implements RouteGeometryProvider {
       return emptyRouteResult();
     }
 
-    const response = await this.fetch(buildRouteUrl(this.baseUrl, routePoints.map((point) => point.coordinate)), { method: 'GET' });
-    if (!response.ok) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    let response: Response;
+    try {
+      response = await this.fetch(buildRouteUrl(this.baseUrl, routePoints.map((point) => point.coordinate)), {
+        method: 'GET',
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        return emptyRouteResult();
+      }
+    } catch {
       return emptyRouteResult();
+    } finally {
+      clearTimeout(timeout);
     }
 
-    const payload = await response.json();
+    const payload = await response.json().catch(() => null);
     if (!isOkOsrmPayload(payload)) {
       return emptyRouteResult();
     }

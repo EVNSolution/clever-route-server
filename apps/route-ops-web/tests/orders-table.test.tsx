@@ -2,6 +2,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
 
 import {
+  buildEditableMetadataFields,
+  normalizeOrderMetadataPatchForFields,
+  OrderDetailChoiceDropdown,
   formatDeliveryDayLabel,
   formatDiagnosticPathLabel,
   formatBlockerReason,
@@ -10,6 +13,7 @@ import {
   getRouteRepairPrompt,
   ORDERS_TABLE_COLUMN_COUNT,
   OrderTable,
+  type OrderMetadataPatch,
 } from "../src/pages/OrdersPage";
 import { orderBlockerLabels, orderFieldLabels } from "../src/i18n";
 import { defaultRouteScopeConfig } from "../src/routeScopeConfig";
@@ -25,8 +29,11 @@ describe("Orders compact operations table", () => {
 
     expect(html).toContain('class="orders-compact-table"');
     expect(html).toContain(`data-column-count="${ORDERS_TABLE_COLUMN_COUNT}"`);
+    expect(html).toContain(
+      'aria-label="Select all route-ready orders in current filters"',
+    );
+    expect(html).toContain("<span>Select</span>");
     for (const header of [
-      "Select",
       "Order",
       "Customer",
       "Method",
@@ -93,7 +100,9 @@ describe("Orders compact operations table", () => {
     });
 
     expect(html).toContain('checked=""');
-    expect(html).not.toContain('disabled=""');
+    expect(html).toMatch(
+      /<button aria-label="Remove order #11453 11453 from route plan" class="active" type="button">Remove<\/button>/,
+    );
     expect(html).toContain(`colSpan="${ORDERS_TABLE_COLUMN_COUNT}"`);
     expect(html).toContain("Order details for #11453");
     expect(html).toContain("No saved detail diagnostics yet.");
@@ -296,11 +305,21 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("Missing delivery date");
     expect(html).toContain("Missing route scope");
     expect(html).toContain('name="deliveryDate"');
-    expect(html).toContain('name="serviceType"');
-    expect(html).toContain('placeholder="EVENING_DELIVERY"');
+    expect(html).toMatch(/<select(?=[^>]*name="serviceType")(?=[^>]*data-choice-field="serviceType")[^>]*>/);
+    expect(html).not.toMatch(/<input[^>]*name="serviceType"[^>]*type="text"/);
+    expect(html).not.toMatch(/<button[^>]*data-choice-field="serviceType"/);
+    expect(html).toContain('data-choice-value="EVENING_DELIVERY"');
+    expect(html).toContain("Select service type");
     expect(html).toContain("Allowed values: DELIVERY, EVENING_DELIVERY, PICKUP");
-    expect(html).toContain('name="deliverySession"');
-    expect(html).toContain('placeholder="EVENING"');
+    expect(html).toMatch(
+      /<select(?=[^>]*name="deliverySession")(?=[^>]*data-choice-field="deliverySession")[^>]*>/,
+    );
+    expect(html).not.toMatch(
+      /<input[^>]*name="deliverySession"[^>]*type="text"/,
+    );
+    expect(html).not.toMatch(/<button[^>]*data-choice-field="deliverySession"/);
+    expect(html).toContain('data-choice-value="EVENING"');
+    expect(html).toContain("Select delivery session");
     expect(html).toContain("Allowed values: DAY, EVENING, PICKUP");
     expect(html).toContain('aria-label="Service type help"');
     expect(html).toContain('class="order-detail-field-tooltip"');
@@ -341,6 +360,14 @@ describe("Orders compact operations table", () => {
                 label: "Morning",
                 value: "MORNING",
               },
+              {
+                builtIn: false,
+                description: "Disabled late session",
+                enabled: false,
+                example: "LATE",
+                label: "Late",
+                value: "LATE",
+              },
             ],
             serviceTypes: [
               ...routeScopeConfig.serviceTypes,
@@ -352,6 +379,14 @@ describe("Orders compact operations table", () => {
                 label: "Morning delivery",
                 value: "MORNING_DELIVERY",
               },
+              {
+                builtIn: false,
+                description: "Disabled late delivery",
+                enabled: false,
+                example: "LATE_DELIVERY",
+                label: "Late delivery",
+                value: "LATE_DELIVERY",
+              },
             ],
           },
           shopDomain: "tenant.example.test",
@@ -359,10 +394,101 @@ describe("Orders compact operations table", () => {
       },
     );
 
-    expect(html).toContain("MORNING_DELIVERY");
-    expect(html).toContain("MORNING");
+    expect(html).toContain('data-choice-value="MORNING_DELIVERY"');
+    expect(html).toContain('data-choice-value="MORNING"');
+    expect(html).not.toContain('data-choice-value="LATE_DELIVERY"');
+    expect(html).not.toContain('data-choice-value="LATE"');
     expect(html).toContain('role="tooltip"');
     expect(html).not.toContain("order-detail-field-hint");
+  });
+
+  test("does not resubmit unsupported route-scope values without an active choice", () => {
+    const html = renderOrderTable(
+      [
+        orderFixture({
+          blockerReasons: ["missing_route_scope"],
+          deliverySession: "LEGACY_SESSION",
+          metadataResolved: false,
+          routeEligible: false,
+          serviceType: "LEGACY_SERVICE",
+        }),
+      ],
+      {
+        expandedOrderIds: new Set(["order-11453"]),
+      },
+    );
+
+    expect(html).toMatch(
+      /<select(?=[^>]*name="serviceType")(?=[^>]*data-choice-field="serviceType")[^>]*>/,
+    );
+    expect(html).not.toContain('value="LEGACY_SERVICE"');
+    expect(html).toMatch(
+      /<select(?=[^>]*name="deliverySession")(?=[^>]*data-choice-field="deliverySession")[^>]*>/,
+    );
+    expect(html).not.toContain('value="LEGACY_SESSION"');
+    expect(html).toMatch(/<button disabled="" type="submit">Save fixes<\/button>/);
+
+    const fields = buildEditableMetadataFields(undefined);
+    const normalized = normalizeOrderMetadataPatchForFields(
+      {
+        address1: null,
+        address2: null,
+        city: null,
+        countryCode: null,
+        deliveryArea: null,
+        deliveryDate: null,
+        deliverySession: "LEGACY_SESSION",
+        postalCode: null,
+        province: null,
+        serviceType: "LEGACY_SERVICE",
+        timeWindowEnd: null,
+        timeWindowStart: null,
+      },
+      fields,
+    );
+    expect(normalized.serviceType).toBeNull();
+    expect(normalized.deliverySession).toBeNull();
+  });
+
+  test("choice dropdown change path emits existing route-scope patch keys", () => {
+    const fields = buildEditableMetadataFields(undefined);
+    const serviceField = fields.find((field) => field.key === "serviceType");
+    const sessionField = fields.find(
+      (field) => field.key === "deliverySession",
+    );
+    expect(serviceField).toBeDefined();
+    expect(sessionField).toBeDefined();
+
+    const changes: Partial<OrderMetadataPatch> = {};
+    const onChange = (key: keyof OrderMetadataPatch, value: string): void => {
+      changes[key] = value;
+    };
+
+    changeDropdown(
+      OrderDetailChoiceDropdown({
+        field: serviceField!,
+        inputId: "service-type",
+        labelId: "service-type-label",
+        onChange,
+        value: null,
+      }),
+      "EVENING_DELIVERY",
+    );
+    changeDropdown(
+      OrderDetailChoiceDropdown({
+        field: sessionField!,
+        inputId: "delivery-session",
+        labelId: "delivery-session-label",
+        onChange,
+        value: null,
+      }),
+      "EVENING",
+    );
+
+    expect(changes).toMatchObject({
+      deliverySession: "EVENING",
+      serviceType: "EVENING_DELIVERY",
+    });
   });
 
   test("uses unique help ids for repair and edit field tooltips", () => {
@@ -450,6 +576,39 @@ describe("Orders compact operations table", () => {
     expect(html).not.toContain("Geocode &amp; add");
   });
 
+  test("renders current-filter group selection controls for route-ready orders only", () => {
+    const html = renderOrderTable(
+      [
+        orderFixture(),
+        orderFixture({
+          blockerReasons: ["missing_delivery_date"],
+          deliveryDate: null,
+          metadataResolved: false,
+          orderId: "blocked-order",
+          orderName: "#1002",
+          routeEligible: false,
+        }),
+        orderFixture({
+          orderId: "planned-order",
+          orderName: "#1003",
+          planningStatus: "PLANNED",
+          routePlanId: "route-1",
+          routePlanName: "Route 1",
+        }),
+      ],
+      {
+        selected: new Set(["order-11453"]),
+      },
+    );
+
+    expect(html).toContain("1/1 selectable");
+    expect(html).toContain("Select filtered");
+    expect(html).toContain("Clear filtered");
+    expect(html).toContain('aria-label="Select all route-ready orders in current filters"');
+    expect(html).toContain('aria-label="Select order #1002 11453"');
+    expect(html).toContain('aria-label="Select order #1003 11453"');
+  });
+
   test("formatter precedence uses service type for Method and delivery date for Day", () => {
     const order = orderFixture({
       deliverySession: "MORNING_DELIVERY",
@@ -527,6 +686,18 @@ function renderOrderTable(
       settings={options.settings}
     />,
   );
+}
+
+function changeDropdown(
+  element: ReturnType<typeof OrderDetailChoiceDropdown>,
+  value: string,
+): void {
+  const select = element as unknown as {
+    props: {
+      onChange(event: { target: { value: string } }): void;
+    };
+  };
+  select.props.onChange({ target: { value } });
 }
 
 function orderFixture(
