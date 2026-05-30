@@ -11,6 +11,16 @@ on:
         required: false
         type: boolean
         default: false
+      allow_geocode_osrm_lane:
+        description: "Allow reviewed geocoding/OSRM support files in this Route Ops publish"
+        required: false
+        type: boolean
+        default: false
+      allow_commerce_sync_lane:
+        description: "Allow reviewed Woo/Shopify sync support files in this Route Ops publish"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -85,6 +95,12 @@ jobs:
           extra=()
           if [ "${{ inputs.allow_compose_image_variable_bootstrap }}" = "true" ]; then
             extra+=(--allow-compose-bootstrap)
+          fi
+          if [ "${{ inputs.allow_geocode_osrm_lane }}" = "true" ]; then
+            extra+=(--allow-geocode-osrm-lane)
+          fi
+          if [ "${{ inputs.allow_commerce_sync_lane }}" = "true" ]; then
+            extra+=(--allow-commerce-sync-lane)
           fi
           scripts/guard-route-ops-deploy-scope.mjs --base "${{ inputs.deployed_base_ref }}" --head "$GITHUB_SHA" --json "${extra[@]}"
 
