@@ -15,7 +15,7 @@ Purpose: enable road-following route geometry for Route Ops without changing sto
 From `/srv/clever-route-server`:
 
 ```sh
-bash scripts/prepare-osrm-ontario.sh
+bash scripts/osrm-ontario.sh prepare
 ```
 
 The script:
@@ -31,7 +31,18 @@ OSRM_MIN_FREE_MB=30000 \
 OSRM_MIN_MEMORY_MB=4096 \
 OSRM_DATA_DIR=/srv/clever-route-server/data/osrm/ontario \
 OSRM_IMAGE=ghcr.io/project-osrm/osrm-backend:latest \
-bash scripts/prepare-osrm-ontario.sh
+bash scripts/osrm-ontario.sh prepare
+```
+
+
+## Validate helper without side effects
+
+For CI or local command-shape validation, use dry-run mode. It does not create directories, download the PBF, run Docker, or call a live OSRM service:
+
+```sh
+OSRM_DRY_RUN=1 bash scripts/osrm-ontario.sh prepare
+OSRM_DRY_RUN=1 bash scripts/osrm-ontario.sh smoke
+bash scripts/osrm-ontario.sh --help
 ```
 
 ## Start and smoke OSRM
@@ -41,13 +52,13 @@ DELIVERY_API_IMAGE="$CURRENT_DELIVERY_API_IMAGE" \
 DELIVERY_API_MIGRATE_IMAGE="$CURRENT_DELIVERY_API_MIGRATE_IMAGE" \
 docker compose -f infra/compose/docker-compose.prod.yml --profile osrm up -d osrm-ontario
 
-OSRM_BASE_URL=http://127.0.0.1:5000 bash scripts/smoke-osrm-ontario.sh
+OSRM_BASE_URL=http://127.0.0.1:5000 bash scripts/osrm-ontario.sh smoke
 ```
 
 If running smoke from a container in the compose network, use:
 
 ```sh
-OSRM_BASE_URL=http://osrm-ontario:5000 bash scripts/smoke-osrm-ontario.sh
+OSRM_BASE_URL=http://osrm-ontario:5000 bash scripts/osrm-ontario.sh smoke
 ```
 
 ## Activate delivery-api

@@ -26,28 +26,63 @@ function tryRunGit(gitArgs) {
   }
 }
 
-function uniq(items) {
-  return [...new Set(items.map((item) => item.replace(/^\.\//, '').replace(/\\/g, '/')).filter(Boolean))].sort();
+function normalizePath(item) {
+  return item.replace(/^\.\//, '').replace(/\\/g, '/').trim();
 }
 
-function changedFiles() {
+function parseNameStatusLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  const tabParts = trimmed.split(/\t+/).map((item) => item.trim()).filter(Boolean);
+  const statusToken = tabParts[0] ?? '';
+  if (/^[ACDMRTUXB][0-9]*$/.test(statusToken) && tabParts.length >= 2) {
+    const status = statusToken[0];
+    if ((status === 'R' || status === 'C') && tabParts.length >= 3) {
+      return {
+        status,
+        file: normalizePath(tabParts[2]),
+        oldFile: normalizePath(tabParts[1]),
+      };
+    }
+    return { status, file: normalizePath(tabParts[1]) };
+  }
+  return { status: null, file: normalizePath(trimmed) };
+}
+
+function uniqEntries(items) {
+  const seen = new Map();
+  for (const item of items) {
+    const entry = typeof item === 'string' ? parseNameStatusLine(item) : item;
+    if (!entry?.file) continue;
+    const key = `${entry.status ?? ''}\t${entry.oldFile ?? ''}\t${entry.file}`;
+    seen.set(key, entry);
+  }
+  return [...seen.values()].sort((a, b) => `${a.oldFile ?? ''}\t${a.file}`.localeCompare(`${b.oldFile ?? ''}\t${b.file}`));
+}
+
+function parseFilesInput(value) {
+  if (!value) return [];
+  return uniqEntries(value.split(/\r?\n|,/));
+}
+
+function changedEntries() {
   if (filesArgIndex >= 0) {
     const value = args[filesArgIndex + 1];
     if (!value) throw new Error('--files requires a path or comma-separated file list');
-    if (fs.existsSync(value)) return uniq(fs.readFileSync(value, 'utf8').split(/\r?\n|,/));
-    return uniq(value.split(','));
+    if (fs.existsSync(value)) return parseFilesInput(fs.readFileSync(value, 'utf8'));
+    return parseFilesInput(value);
   }
-  if (process.env.CHANGED_FILES) return uniq(process.env.CHANGED_FILES.split(/\r?\n|,/));
+  if (process.env.CHANGED_FILES) return parseFilesInput(process.env.CHANGED_FILES);
   if (baseArgIndex >= 0) {
     const base = args[baseArgIndex + 1];
     const head = headArgIndex >= 0 ? args[headArgIndex + 1] : 'HEAD';
     if (!base) throw new Error('--base requires a ref');
-    return uniq(tryRunGit(['diff', '--name-only', `${base}...${head}`]) ?? runGit(['diff', '--name-only', base, head]));
+    return uniqEntries(tryRunGit(['diff', '--name-status', `${base}...${head}`]) ?? runGit(['diff', '--name-status', base, head]));
   }
-  return uniq([
-    ...runGit(['diff', '--name-only']),
-    ...runGit(['diff', '--cached', '--name-only']),
-    ...runGit(['ls-files', '--others', '--exclude-standard']),
+  return uniqEntries([
+    ...runGit(['diff', '--name-status']),
+    ...runGit(['diff', '--cached', '--name-status']),
+    ...runGit(['ls-files', '--others', '--exclude-standard']).map((file) => ({ status: 'A', file: normalizePath(file) })),
   ]);
 }
 
@@ -71,17 +106,27 @@ const allowedExact = new Set([
   'scripts/rollback-route-ops-image.sh',
   'scripts/smoke-route-ops-production.mjs',
   'scripts/ssm-route-ops-deploy.sh',
-  'scripts/test-ssm-route-ops-deploy.sh',
+  'tests/deploy/ssm-route-ops-deploy.test.sh',
   'scripts/validate-route-ops-ssm-deploy.mjs',
   'infra/env/delivery-api.env.example',
   'infra/env/deploy-image.env.example',
   'docs/deployment/route-ops-github-deploy.md',
   'docs/deployment/route-ops-ssm-deploy.md',
+  'docs/development/script-tooling.md',
 ]);
 
 const allowedPrefixes = [
   'apps/route-ops-web/',
 ];
+
+const allowedRemovedExact = new Set([
+  'scripts/test-ssm-route-ops-deploy.sh',
+]);
+
+const geocodeOsrmRemovedExact = new Set([
+  'scripts/prepare-osrm-ontario.sh',
+  'scripts/smoke-osrm-ontario.sh',
+]);
 
 if (allowComposeBootstrap) {
   allowedExact.add('infra/compose/docker-compose.prod.yml');
@@ -94,8 +139,7 @@ if (allowGeocodeOsrmLane) {
   allowedExact.add('apps/delivery-api/tests/osrm-route-geometry.client.test.ts');
   allowedExact.add('docs/deployment/route-ops-map-geocoding.md');
   allowedExact.add('docs/deployment/route-ops-osrm-ontario.md');
-  allowedExact.add('scripts/prepare-osrm-ontario.sh');
-  allowedExact.add('scripts/smoke-osrm-ontario.sh');
+  allowedExact.add('scripts/osrm-ontario.sh');
   allowedPrefixes.push('apps/delivery-api/src/modules/geocoding/');
 }
 
@@ -133,16 +177,40 @@ function allowed(file) {
   return allowedExact.has(file) || allowedPrefixes.some((prefix) => file.startsWith(prefix));
 }
 
-const files = changedFiles();
+function allowedRemoval(file) {
+  return allowedRemovedExact.has(file) || (allowGeocodeOsrmLane && geocodeOsrmRemovedExact.has(file));
+}
+
+function removalProblem(file) {
+  const reason = blockedReason(file);
+  if (reason) return { file, reason, type: 'blocked' };
+  if (!allowedRemoval(file)) return { file, reason: 'removed or renamed-from path is not in Route Ops cleanup removal allowlist', type: 'outside' };
+  return null;
+}
+
+const entries = changedEntries();
 const blocked = [];
 const outside = [];
-for (const file of files) {
-  const reason = blockedReason(file);
-  if (reason) {
-    blocked.push({ file, reason });
+for (const entry of entries) {
+  if (entry.oldFile) {
+    const problem = removalProblem(entry.oldFile);
+    if (problem?.type === 'blocked') blocked.push({ file: problem.file, reason: problem.reason });
+    if (problem?.type === 'outside') outside.push({ file: problem.file, reason: problem.reason });
+  }
+
+  if (entry.status === 'D') {
+    const problem = removalProblem(entry.file);
+    if (problem?.type === 'blocked') blocked.push({ file: problem.file, reason: problem.reason });
+    if (problem?.type === 'outside') outside.push({ file: problem.file, reason: problem.reason });
     continue;
   }
-  if (!allowed(file)) outside.push({ file, reason: 'not in Route Ops publish/deploy allowlist' });
+
+  const reason = blockedReason(entry.file);
+  if (reason) {
+    blocked.push({ file: entry.file, reason });
+    continue;
+  }
+  if (!allowed(entry.file)) outside.push({ file: entry.file, reason: 'not in Route Ops publish/deploy allowlist' });
 }
 
 const report = {
@@ -150,7 +218,7 @@ const report = {
   allowComposeBootstrap,
   allowGeocodeOsrmLane,
   allowCommerceSyncLane,
-  changedFileCount: files.length,
+  changedFileCount: entries.length,
   blocked,
   outside,
 };
@@ -158,7 +226,7 @@ const report = {
 const output = JSON.stringify(report, null, 2);
 if (json) console.log(output);
 else {
-  console.log(`Route Ops deploy-scope guard: ${report.ok ? 'ok' : 'failed'} (${files.length} file(s))`);
+  console.log(`Route Ops deploy-scope guard: ${report.ok ? 'ok' : 'failed'} (${entries.length} file(s))`);
   if (!report.ok) console.log(output);
 }
 if (!report.ok) process.exit(1);
