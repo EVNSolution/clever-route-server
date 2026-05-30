@@ -330,14 +330,8 @@ function readRouteScope(value: unknown): RoutePlanRouteScopeInput | undefined {
   if (value === undefined || value === null) return undefined;
   const object = requireObject(value);
   const deliveryDate = requirePlanDate(object.deliveryDate);
-  const serviceType = requireNonEmptyString(object.serviceType);
-  if (serviceType !== 'DELIVERY' && serviceType !== 'EVENING_DELIVERY' && serviceType !== 'PICKUP') {
-    throw new Error('invalid serviceType');
-  }
-  const deliverySession = requireNonEmptyString(object.deliverySession);
-  if (deliverySession !== 'DAY' && deliverySession !== 'EVENING' && deliverySession !== 'PICKUP') {
-    throw new Error('invalid deliverySession');
-  }
+  const serviceType = readLegacyServiceType(object.serviceType);
+  const deliverySession = readLegacyDeliverySession(object.deliverySession);
   return {
     deliveryDate,
     deliverySession,
@@ -471,21 +465,30 @@ function readNullablePlanDate(value: unknown): string | null {
   return requirePlanDate(value);
 }
 
+const LEGACY_DELIVERY_SESSIONS = new Set(['DAY', 'EVENING', 'PICKUP']);
+const LEGACY_SERVICE_TYPES = new Set(['DELIVERY', 'EVENING_DELIVERY', 'PICKUP']);
+
 function readNullableDeliverySession(value: unknown): RoutePlanOrderInput['deliverySession'] {
   const text = readNullableString(value);
   if (text === null) return null;
-  if (text !== 'DAY' && text !== 'EVENING' && text !== 'PICKUP') {
-    throw new Error('invalid deliverySession');
-  }
-  return text;
+  return readLegacyDeliverySession(text);
 }
 
 function readNullableServiceType(value: unknown): RoutePlanOrderInput['serviceType'] {
   const text = readNullableString(value);
   if (text === null) return null;
-  if (text !== 'DELIVERY' && text !== 'EVENING_DELIVERY' && text !== 'PICKUP') {
-    throw new Error('invalid serviceType');
-  }
+  return readLegacyServiceType(text);
+}
+
+function readLegacyDeliverySession(value: unknown): string {
+  const text = requireNonEmptyString(value);
+  if (!LEGACY_DELIVERY_SESSIONS.has(text)) throw new Error('invalid deliverySession');
+  return text;
+}
+
+function readLegacyServiceType(value: unknown): string {
+  const text = requireNonEmptyString(value);
+  if (!LEGACY_SERVICE_TYPES.has(text)) throw new Error('invalid serviceType');
   return text;
 }
 

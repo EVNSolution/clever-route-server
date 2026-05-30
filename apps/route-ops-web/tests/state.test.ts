@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 
 import { withWorkspaceQuery } from '../src/api';
+import { defaultRouteScopeConfig } from '../src/routeScopeConfig';
 import { buildOrderQuery, createDefaultOrderFilters, deriveRouteStats, geometryLabel, hideSetupActions, mapReadiness, moveStop, moveStopBefore, storeSettingsToDepotPoint, summarizeSelection } from '../src/state';
 import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStopDto } from '../src/types';
 
@@ -89,6 +90,7 @@ describe('route ops web state helpers', () => {
       defaultDepotLatitude: 43.6532,
       defaultDepotLongitude: -79.3832,
       locale: 'en-CA',
+      routeScopeConfig: defaultRouteScopeConfig(),
       shopDomain: 'tenant.example.test'
     })).toEqual({
       addressLabel: '123 Depot St, Toronto, ON',
@@ -103,6 +105,7 @@ describe('route ops web state helpers', () => {
       defaultDepotLatitude: null,
       defaultDepotLongitude: null,
       locale: 'en-CA',
+      routeScopeConfig: defaultRouteScopeConfig(),
       shopDomain: 'tenant.example.test'
     })).toBeNull();
   });

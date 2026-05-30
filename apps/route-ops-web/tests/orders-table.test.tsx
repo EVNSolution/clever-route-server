@@ -12,9 +12,11 @@ import {
   OrderTable,
 } from "../src/pages/OrdersPage";
 import { orderBlockerLabels, orderFieldLabels } from "../src/i18n";
+import { defaultRouteScopeConfig } from "../src/routeScopeConfig";
 import type {
   CanonicalOrderDto,
   DeliveryMetadataDiagnosticsDto,
+  StoreSettingsDto,
 } from "../src/types";
 
 describe("Orders compact operations table", () => {
@@ -300,9 +302,91 @@ describe("Orders compact operations table", () => {
     expect(html).toContain('name="deliverySession"');
     expect(html).toContain('placeholder="EVENING"');
     expect(html).toContain("Allowed values: DAY, EVENING, PICKUP");
+    expect(html).toContain('aria-label="Service type help"');
+    expect(html).toContain('class="order-detail-field-tooltip"');
+    expect(html).not.toContain("order-detail-field-hint");
     expect(html).toContain("Save fixes");
     expect(html).not.toContain("Required attention");
     expect(html).not.toContain("Coordinates available: 43.653200, -79.383200");
+  });
+
+  test("renders configured custom route-scope help in detail tooltips", () => {
+    const routeScopeConfig = defaultRouteScopeConfig();
+    const html = renderOrderTable(
+      [
+        orderFixture({
+          blockerReasons: ["missing_route_scope"],
+          deliverySession: null,
+          metadataResolved: false,
+          routeEligible: false,
+          serviceType: null,
+        }),
+      ],
+      {
+        expandedOrderIds: new Set(["order-11453"]),
+        settings: {
+          defaultDepotAddress: null,
+          defaultDepotLatitude: null,
+          defaultDepotLongitude: null,
+          locale: "en-CA",
+          routeScopeConfig: {
+            ...routeScopeConfig,
+            deliverySessions: [
+              ...routeScopeConfig.deliverySessions,
+              {
+                builtIn: false,
+                description: "Morning",
+                enabled: true,
+                example: "MORNING",
+                label: "Morning",
+                value: "MORNING",
+              },
+            ],
+            serviceTypes: [
+              ...routeScopeConfig.serviceTypes,
+              {
+                builtIn: false,
+                description: "Morning delivery",
+                enabled: true,
+                example: "MORNING_DELIVERY",
+                label: "Morning delivery",
+                value: "MORNING_DELIVERY",
+              },
+            ],
+          },
+          shopDomain: "tenant.example.test",
+        },
+      },
+    );
+
+    expect(html).toContain("MORNING_DELIVERY");
+    expect(html).toContain("MORNING");
+    expect(html).toContain('role="tooltip"');
+    expect(html).not.toContain("order-detail-field-hint");
+  });
+
+  test("uses unique help ids for repair and edit field tooltips", () => {
+    const html = renderOrderTable(
+      [
+        orderFixture({
+          blockerReasons: ["missing_route_scope"],
+          deliverySession: null,
+          metadataResolved: false,
+          routeEligible: false,
+          serviceType: null,
+        }),
+      ],
+      {
+        detailModes: { "order-11453": "edit" },
+        expandedOrderIds: new Set(["order-11453"]),
+      },
+    );
+
+    expect(html).toContain('id="order-detail-order-11453-repair-serviceType-help"');
+    expect(html).toContain('id="order-detail-order-11453-edit-serviceType-help"');
+    expect(html).toContain('aria-describedby="order-detail-order-11453-repair-serviceType-help"');
+    expect(html).toContain('aria-describedby="order-detail-order-11453-edit-serviceType-help"');
+    expect(html).toContain('aria-expanded="false"');
   });
 
   test("renders edit mode with supported metadata fields only", () => {
@@ -327,8 +411,8 @@ describe("Orders compact operations table", () => {
     ]) {
       expect(html).toContain(`name="${field}"`);
     }
-    expect(html).toContain("Service type help:");
-    expect(html).toContain("Delivery session help:");
+    expect(html).toContain('aria-label="Service type help"');
+    expect(html).toContain('aria-label="Delivery session help"');
     expect(html).toContain("Save");
     expect(html).toContain("Cancel");
   });
@@ -424,6 +508,7 @@ function renderOrderTable(
     diagnosticsByOrder?: Record<string, DeliveryMetadataDiagnosticsDto | null>;
     expandedOrderIds?: Set<string>;
     selected?: Set<string>;
+    settings?: StoreSettingsDto;
   } = {},
 ): string {
   return renderToStaticMarkup(
@@ -439,6 +524,7 @@ function renderOrderTable(
       orders={orders}
       selected={options.selected ?? new Set()}
       setSelected={() => undefined}
+      settings={options.settings}
     />,
   );
 }

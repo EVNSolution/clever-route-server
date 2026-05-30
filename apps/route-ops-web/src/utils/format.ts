@@ -1,4 +1,5 @@
 import type { BootstrapPayload, StoreSettingsDto } from '../types';
+import { defaultRouteScopeConfig } from '../routeScopeConfig';
 
 export function readErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'CLEVER Route request failed';
@@ -20,6 +21,7 @@ export function emptySettings(bootstrap: BootstrapPayload): StoreSettingsDto {
     defaultDepotLatitude: null,
     defaultDepotLongitude: null,
     locale: 'en-CA',
+    routeScopeConfig: defaultRouteScopeConfig(),
     shopDomain: bootstrap.shopDomain ?? ''
   };
 }

@@ -22,6 +22,10 @@ const commerceSyncRunsMigrationPath = new URL(
   '../prisma/migrations/20260529011000_add_commerce_sync_runs/migration.sql',
   import.meta.url
 );
+const routeScopeConfigMigrationPath = new URL(
+  '../prisma/migrations/20260530004000_add_shop_route_scope_config/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
@@ -45,6 +49,7 @@ describe('Prisma schema', () => {
     expect(schema).toContain('defaultDepotLatitude');
     expect(schema).toContain('defaultDepotLongitude');
     expect(schema).toContain('locale');
+    expect(schema).toContain('routeScopeConfig');
     expect(schema).toMatch(/@@unique\(\[shopDomain\]\)/);
   });
 
@@ -174,6 +179,12 @@ describe('Prisma schema', () => {
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS "defaultDepotLatitude"');
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS "defaultDepotLongitude"');
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS "locale"');
+  });
+
+  test('ships a migration for shop route-scope config', async () => {
+    const migration = await readFile(routeScopeConfigMigrationPath, 'utf8');
+
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "routeScopeConfig" JSONB');
   });
 
   test('ships a migration for durable WooCommerce REST sync runs', async () => {

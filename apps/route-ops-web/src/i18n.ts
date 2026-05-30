@@ -34,7 +34,24 @@ export const settingsCopy = {
     noProviderSecrets: 'No provider secrets are displayed in the browser. Unconfigured mode never calls public tile/router hosts.',
     none: 'none',
     depot: 'Depot',
-    defaultDepot: 'Default depot'
+    defaultDepot: 'Default depot',
+    routeScopeEyebrow: 'Route scope',
+    routeScopeTitle: 'Service and session values',
+    routeScopeDescription: 'Configure the values operators can use when repairing delivery metadata.',
+    serviceTypes: 'Service types',
+    deliverySessions: 'Delivery sessions',
+    routeScopeValue: 'Value',
+    routeScopeLabel: 'Label',
+    routeScopeDescriptionField: 'Description',
+    routeScopeExample: 'Example',
+    routeScopeEnabled: 'Enabled',
+    addServiceType: 'Add service type',
+    addDeliverySession: 'Add delivery session',
+    remove: 'Remove',
+    builtIn: 'Built-in',
+    timeWindowHelp: 'Time-window help',
+    startExample: 'Start example',
+    endExample: 'End example'
   },
   'ko-KR': {
     settingsEyebrow: '설정',
@@ -65,7 +82,24 @@ export const settingsCopy = {
     noProviderSecrets: '브라우저에는 제공자 비밀값을 표시하지 않습니다. 미설정 모드에서는 공개 지도/경로 호스트를 호출하지 않습니다.',
     none: '없음',
     depot: '출발지',
-    defaultDepot: '기본 출발지'
+    defaultDepot: '기본 출발지',
+    routeScopeEyebrow: '배송 범위',
+    routeScopeTitle: '서비스/세션 값',
+    routeScopeDescription: '배송 메타데이터를 수정할 때 사용할 수 있는 값을 설정합니다.',
+    serviceTypes: '서비스 타입',
+    deliverySessions: '배송 세션',
+    routeScopeValue: '값',
+    routeScopeLabel: '라벨',
+    routeScopeDescriptionField: '설명',
+    routeScopeExample: '예시',
+    routeScopeEnabled: '사용',
+    addServiceType: '서비스 타입 추가',
+    addDeliverySession: '배송 세션 추가',
+    remove: '삭제',
+    builtIn: '기본값',
+    timeWindowHelp: '시간대 도움말',
+    startExample: '시작 예시',
+    endExample: '종료 예시'
   }
 } as const;
 

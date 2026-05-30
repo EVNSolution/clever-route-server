@@ -3,8 +3,15 @@ import { describe, expect, test } from 'vitest';
 
 import { TabLayout } from '../src/components/TabLayout';
 import { OrdersPage } from '../src/pages/OrdersPage';
-import { SettingsPage } from '../src/pages/SettingsPage';
-import type { BootstrapPayload } from '../src/types';
+import {
+  SettingsPage,
+  addRouteScopeValue,
+  buildSettingsSaveInput,
+  removeRouteScopeValue,
+  updateRouteScopeValue
+} from '../src/pages/SettingsPage';
+import { defaultRouteScopeConfig } from '../src/routeScopeConfig';
+import type { BootstrapPayload, StoreSettingsDto } from '../src/types';
 
 describe('route ops layout components', () => {
   test('TabLayout renders primary secondary and lower regions', () => {
@@ -47,7 +54,53 @@ describe('route ops layout components', () => {
     expect(html).toContain('Geocode &amp; save coordinates');
     expect(html).toContain('English');
     expect(html).toContain('한국어');
+    expect(html).toContain('Service and session values');
+    expect(html).toContain('EVENING_DELIVERY');
+    expect(html).toContain('EVENING');
+    expect(html).toContain('17:00');
     expect(html).not.toContain('Français');
+  });
+
+  test('Settings route-scope helpers add edit remove values and build the save payload', () => {
+    const baseConfig = defaultRouteScopeConfig();
+    const withCustomService = addRouteScopeValue(baseConfig, 'serviceTypes');
+    expect(withCustomService.serviceTypes.at(-1)).toEqual(expect.objectContaining({
+      builtIn: false,
+      enabled: true,
+      value: 'CUSTOM_SERVICE_1'
+    }));
+
+    const edited = updateRouteScopeValue(
+      withCustomService,
+      'serviceTypes',
+      withCustomService.serviceTypes.length - 1,
+      { description: 'Morning routes', enabled: false, label: 'Morning', value: 'MORNING_DELIVERY' }
+    );
+    expect(edited.serviceTypes.at(-1)).toEqual(expect.objectContaining({
+      description: 'Morning routes',
+      enabled: false,
+      label: 'Morning',
+      value: 'MORNING_DELIVERY'
+    }));
+
+    const removed = removeRouteScopeValue(edited, 'serviceTypes', edited.serviceTypes.length - 1);
+    expect(removed.serviceTypes).toHaveLength(baseConfig.serviceTypes.length);
+
+    const draft: StoreSettingsDto = {
+      defaultDepotAddress: '123 Depot St',
+      defaultDepotLatitude: 43.6532,
+      defaultDepotLongitude: -79.3832,
+      locale: 'ko-KR',
+      routeScopeConfig: edited,
+      shopDomain: 'tenant.example.test'
+    };
+    expect(buildSettingsSaveInput({ csrfToken: 'csrf', draft, routeScopeConfig: edited })).toEqual(
+      expect.objectContaining({
+        csrfToken: 'csrf',
+        locale: 'ko-KR',
+        routeScopeConfig: edited
+      })
+    );
   });
 });
 

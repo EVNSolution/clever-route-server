@@ -177,6 +177,47 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
+  test('allows selected order id route creation with safe custom route-scope tokens after API preflight', async () => {
+    const { prisma, routePlanStopCreateMany } = createPrismaHarness({
+      deliveryFacts: [
+        orderDeliveryFact({
+          deliverySession: 'MORNING',
+          orderId: 'order-1',
+          routeScopeKey: '2026-05-08|MORNING_DELIVERY|08:00|12:00',
+          serviceType: 'MORNING_DELIVERY',
+          stopId: 'stop-1'
+        })
+      ]
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(
+      repository.createRoutePlanDraftFromOrderIds({
+        createdBy: 'route-ops',
+        depot: { address: 'Depot', latitude: 43.65, longitude: -79.38 },
+        name: 'Morning Woo batch',
+        orderIds: ['order-1'],
+        planDate: '2026-05-08',
+        shopDomain: 'example.myshopify.com'
+      })
+    ).resolves.toEqual(expect.objectContaining({ id: 'route-plan-id' }));
+
+    const createArg = prisma.routePlan.create.mock.calls[0]?.[0] as
+      | { data: { constraints: { routeScope?: { deliverySession?: string; serviceType?: string } } } }
+      | undefined;
+    expect(createArg?.data.constraints.routeScope).toEqual(
+      expect.objectContaining({
+        deliverySession: 'MORNING',
+        serviceType: 'MORNING_DELIVERY'
+      })
+    );
+    expect(routePlanStopCreateMany).toHaveBeenCalledWith({
+      data: [{ deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1 }]
+    });
+  });
+
   test('hard-fails selected order id route creation for mixed route scopes without partial routes', async () => {
     const { prisma, routePlanStopCreateMany } = createPrismaHarness({
       deliveryFacts: [
@@ -733,6 +774,7 @@ function orderRecord(input: { deliveryDate: string; gid: string; id: string; sto
 }
 
 function orderDeliveryFact(input: {
+  deliverySession?: string;
   orderId: string;
   readiness?: string;
   reviewReasons?: string[];
@@ -748,7 +790,7 @@ function orderDeliveryFact(input: {
     deliveryDateWeekdayMismatch: false,
     deliveryDateWeekdayVerified: true,
     deliveryDayParseStatus: 'PARSED',
-    deliverySession: input.serviceType === 'EVENING_DELIVERY' ? 'EVENING' : 'DAY',
+    deliverySession: input.deliverySession ?? (input.serviceType === 'EVENING_DELIVERY' ? 'EVENING' : 'DAY'),
     deliveryWeekday: 'FRIDAY',
     geocodeStatus: 'RESOLVED',
     order: {

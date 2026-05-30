@@ -1,10 +1,17 @@
 import type { PrismaClient } from '@prisma/client';
 
+import {
+  normalizeRouteScopeConfig,
+  validateRouteScopeConfigPayload,
+  type RouteScopeConfigDto
+} from '../route-ops/route-scope-config.js';
+
 export type AdminStoreSettings = {
   defaultDepotAddress: string | null;
   defaultDepotLatitude: number | null;
   defaultDepotLongitude: number | null;
   locale: string;
+  routeScopeConfig: RouteScopeConfigDto;
   shopDomain: string;
 };
 
@@ -13,6 +20,7 @@ export type SaveAdminStoreSettingsInput = {
   defaultDepotLatitude: number | null;
   defaultDepotLongitude: number | null;
   locale: string;
+  routeScopeConfig?: RouteScopeConfigDto;
   shopDomain: string;
 };
 
@@ -28,6 +36,7 @@ export class PrismaAdminStoreSettingsService {
         defaultDepotLatitude: true,
         defaultDepotLongitude: true,
         locale: true,
+        routeScopeConfig: true,
         shopDomain: true
       },
       where: { shopDomain: input.shopDomain }
@@ -36,12 +45,17 @@ export class PrismaAdminStoreSettingsService {
   }
 
   async saveSettings(input: SaveAdminStoreSettingsInput): Promise<AdminStoreSettings> {
+    const routeScopeConfig =
+      input.routeScopeConfig === undefined
+        ? undefined
+        : validateRouteScopeConfigPayload(input.routeScopeConfig);
     const shop = await this.prisma.shop.upsert({
       create: {
         defaultDepotAddress: input.defaultDepotAddress,
         defaultDepotLatitude: input.defaultDepotLatitude,
         defaultDepotLongitude: input.defaultDepotLongitude,
         locale: input.locale,
+        ...(routeScopeConfig === undefined ? {} : { routeScopeConfig }),
         shopDomain: input.shopDomain
       },
       select: {
@@ -49,13 +63,15 @@ export class PrismaAdminStoreSettingsService {
         defaultDepotLatitude: true,
         defaultDepotLongitude: true,
         locale: true,
+        routeScopeConfig: true,
         shopDomain: true
       },
       update: {
         defaultDepotAddress: input.defaultDepotAddress,
         defaultDepotLatitude: input.defaultDepotLatitude,
         defaultDepotLongitude: input.defaultDepotLongitude,
-        locale: input.locale
+        locale: input.locale,
+        ...(routeScopeConfig === undefined ? {} : { routeScopeConfig })
       },
       where: { shopDomain: input.shopDomain }
     });
@@ -68,6 +84,7 @@ function toAdminStoreSettings(input: {
   defaultDepotLatitude: unknown;
   defaultDepotLongitude: unknown;
   locale: string | null;
+  routeScopeConfig: unknown;
   shopDomain: string;
 }): AdminStoreSettings {
   return {
@@ -75,6 +92,7 @@ function toAdminStoreSettings(input: {
     defaultDepotLatitude: decimalToNumber(input.defaultDepotLatitude),
     defaultDepotLongitude: decimalToNumber(input.defaultDepotLongitude),
     locale: input.locale ?? 'en-CA',
+    routeScopeConfig: normalizeRouteScopeConfig(input.routeScopeConfig),
     shopDomain: input.shopDomain
   };
 }

@@ -163,7 +163,28 @@ export type StoreSettingsDto = {
   defaultDepotLatitude: number | null;
   defaultDepotLongitude: number | null;
   locale: AppLocale;
+  routeScopeConfig: RouteScopeConfigDto;
   shopDomain: string;
+};
+
+export type RouteScopeValueDto = {
+  builtIn: boolean;
+  description: string | null;
+  enabled: boolean;
+  example: string | null;
+  label: string;
+  value: string;
+};
+
+export type RouteScopeConfigDto = {
+  deliverySessions: RouteScopeValueDto[];
+  serviceTypes: RouteScopeValueDto[];
+  timeWindow: {
+    endExample: string;
+    helpText: string;
+    startExample: string;
+  };
+  version: 1;
 };
 
 export type GeocodeOrderResponse = {

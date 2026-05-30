@@ -1038,12 +1038,17 @@ small,
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
-.order-detail-repair-fields label,
-.order-detail-edit-grid label {
+.order-detail-field {
   color: #1f2937;
   display: grid;
   font-size: 13px;
   font-weight: 800;
+  gap: 6px;
+}
+
+.order-detail-field-label-row {
+  align-items: center;
+  display: inline-flex;
   gap: 6px;
 }
 
@@ -1085,15 +1090,92 @@ small,
   height: 16px;
   justify-content: center;
   line-height: 1;
+  padding: 0;
   text-transform: lowercase;
   width: 16px;
 }
 
-.order-detail-field-hint {
-  color: #64748b;
+.order-detail-field-help-wrap {
+  display: inline-flex;
+  position: relative;
+}
+
+.order-detail-field-tooltip {
+  background: #111827;
+  border-radius: 8px;
+  bottom: calc(100% + 8px);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.18);
+  color: #fff;
   font-size: 11px;
-  font-weight: 650;
+  font-weight: 700;
+  left: 50%;
   line-height: 1.35;
+  max-width: min(260px, 80vw);
+  opacity: 0;
+  padding: 8px 10px;
+  pointer-events: none;
+  position: absolute;
+  transform: translateX(-50%) translateY(4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  visibility: hidden;
+  width: max-content;
+  z-index: 10;
+}
+
+.order-detail-field-help-wrap:hover .order-detail-field-tooltip,
+.order-detail-field-help:focus + .order-detail-field-tooltip,
+.order-detail-field-help.is-open + .order-detail-field-tooltip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  visibility: visible;
+}
+
+.route-scope-settings {
+  border-top: 1px solid #e6eaf1;
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+  padding-top: 16px;
+}
+
+.route-scope-value-list {
+  display: grid;
+  gap: 8px;
+}
+
+.route-scope-rows {
+  display: grid;
+  gap: 8px;
+}
+
+.route-scope-row {
+  align-items: end;
+  background: #f8fafc;
+  border: 1px solid #e6eaf1;
+  border-radius: 12px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(120px, 0.9fr) minmax(120px, 1fr) minmax(140px, 1.2fr) minmax(140px, 1.2fr) minmax(90px, 0.5fr) auto;
+  padding: 10px;
+}
+
+.route-scope-row label,
+.route-scope-time-window label {
+  display: grid;
+  gap: 5px;
+}
+
+.route-scope-checkbox {
+  align-items: center;
+  display: inline-flex !important;
+  font-size: 12px;
+  gap: 6px !important;
+  min-height: 38px;
+}
+
+.route-scope-time-window {
+  display: grid;
+  gap: 8px;
 }
 
 

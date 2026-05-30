@@ -6,6 +6,7 @@ import {
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanStopUpdateInvalidError
 } from './route-plan.types.js';
+import { assertSafeRouteScopeToken } from '../route-ops/route-scope-config.js';
 import type {
   RoutePlanDepotInput,
   RoutePlanDetail,
@@ -741,13 +742,19 @@ function discountLiveOperationalReviewReasons(
 }
 
 function readRouteScopeDeliverySession(value: string): RoutePlanRouteScopeInput['deliverySession'] {
-  if (value === 'DAY' || value === 'EVENING' || value === 'PICKUP') return value;
-  throw new RoutePlanBatchInvalidError([`invalid delivery session: ${value}`]);
+  try {
+    return assertSafeRouteScopeToken(value, 'delivery session');
+  } catch {
+    throw new RoutePlanBatchInvalidError(['invalid delivery session']);
+  }
 }
 
 function readRouteScopeServiceType(value: string): RoutePlanRouteScopeInput['serviceType'] {
-  if (value === 'DELIVERY' || value === 'EVENING_DELIVERY' || value === 'PICKUP') return value;
-  throw new RoutePlanBatchInvalidError([`invalid service type: ${value}`]);
+  try {
+    return assertSafeRouteScopeToken(value, 'service type');
+  } catch {
+    throw new RoutePlanBatchInvalidError(['invalid service type']);
+  }
 }
 
 function readRouteScopeTime(routeScopeKey: string, part: 'start' | 'end'): string | null {

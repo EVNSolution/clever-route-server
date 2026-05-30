@@ -194,6 +194,36 @@ describe('Admin route plan routes', () => {
     }
   });
 
+  test('keeps the legacy admin route-plan API constrained to built-in route-scope values', async () => {
+    const { createRoutePlan, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+    const payload = scopedRoutePlanPayload();
+    const routeScope = payload.routeScope as Record<string, unknown>;
+    routeScope.deliverySession = 'MORNING';
+    routeScope.routeScopeKey = '2026-05-08|MORNING_DELIVERY|08:00|12:00';
+    routeScope.serviceType = 'MORNING_DELIVERY';
+    routeScope.timeWindowEnd = '12:00';
+    routeScope.timeWindowStart = '08:00';
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload,
+        url: '/admin/route-plans'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'Invalid route plan payload' }
+      });
+      expect(createRoutePlan).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects route plans that mix Friday day and Friday evening scopes', async () => {
     const { createRoutePlan, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminRoutePlans: dependencies });

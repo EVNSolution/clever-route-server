@@ -16,14 +16,19 @@ import type {
   SaveAdminStoreSettingsInput,
 } from "../modules/commerce/admin-store-settings.service.js";
 import {
+  RouteScopeConfigValidationError,
+  defaultRouteScopeConfig,
+  isActiveDeliverySession,
+  isActiveServiceType,
+  validateRouteScopeConfigPayload,
+  type RouteScopeConfigDto,
+} from "../modules/route-ops/route-scope-config.js";
+import {
   WooCommerceOnboardingError,
   type WooCommerceConnectionOnboardingService,
   type WooCommerceOnboardingResult,
 } from "../modules/commerce/woocommerce-connection-onboarding.service.js";
-import type {
-  CanonicalOrderRow,
-  DeliveryServiceType,
-} from "../modules/shopify/order-sync.mapper.js";
+import type { CanonicalOrderRow } from "../modules/shopify/order-sync.mapper.js";
 import type {
   DeliveryBatchCandidate,
   ListCanonicalOrdersFilters,
@@ -1253,10 +1258,14 @@ function registerRouteOpsAppRoutes(
           );
         }
         const body = readRouteOpsBodyObject(request.body);
+        const routeScopeConfig = await readRouteOpsRouteScopeConfig(
+          dependencies,
+          shopDomain,
+        );
         const order = await dependencies.orderSyncService.patchCanonicalOrder({
           actor: dependencies.actor.subject,
           orderId: request.params.orderId,
-          patch: readRouteOpsMetadataPatch(body),
+          patch: readRouteOpsMetadataPatch(body, routeScopeConfig),
           shopDomain,
         });
         if (order === null)
@@ -1440,6 +1449,10 @@ function registerRouteOpsAppRoutes(
         readRequiredJsonString(body, "planDate"),
       );
       const selectedOrderIds = readSelectedNeutralOrderIds(body.orderIds);
+      const routeScopeConfig = await readRouteOpsRouteScopeConfig(
+        dependencies,
+        shopDomain,
+      );
       const routePlan = await createRoutePlanFromSelectedOrderIds({
         createdBy: dependencies.actor.subject,
         depotAddress: readNullableJsonString(body.depotAddress),
@@ -1447,6 +1460,7 @@ function registerRouteOpsAppRoutes(
         depotLongitude: readNullableJsonNumber(body.depotLongitude),
         orderIds: selectedOrderIds,
         planDate,
+        routeScopeConfig,
         routeName: readRequiredJsonString(body, "routeName"),
         services,
         shopDomain,
@@ -1621,7 +1635,10 @@ function registerRouteOpsAppRoutes(
           ? null
           : await dependencies.settingsService.getSettings({ shopDomain });
       return routeOpsData({
-        settings: settings === null ? null : toRouteOpsSettingsDto(settings),
+        settings:
+          settings === null
+            ? defaultRouteOpsSettings(shopDomain)
+            : toRouteOpsSettingsDto(settings),
       });
     }),
   );
@@ -1645,6 +1662,13 @@ function registerRouteOpsAppRoutes(
           body.defaultDepotLongitude,
         ),
         locale: readRouteOpsLocale(body.locale),
+        ...(Object.hasOwn(body, "routeScopeConfig")
+          ? {
+              routeScopeConfig: validateRouteScopeConfigPayload(
+                body.routeScopeConfig,
+              ),
+            }
+          : {}),
         shopDomain,
       });
       return routeOpsData({ settings: toRouteOpsSettingsDto(settings) });
@@ -1770,6 +1794,9 @@ async function withRouteOpsApi<T>(
           blockers: error.blockers,
         },
       );
+    }
+    if (error instanceof RouteScopeConfigValidationError) {
+      return sendRouteOpsApiError(reply, 400, error.code, error.message);
     }
     const statusCode =
       error instanceof WooCommerceOnboardingError ? error.httpStatus : 500;
@@ -2389,9 +2416,14 @@ async function handleRoutePlanCreate(
         shopDomain,
       },
     );
+    const routeScopeConfig = await readRouteOpsRouteScopeConfig(
+      dependencies,
+      shopDomain,
+    );
     const selectedOrders = selectRouteReadyOrders({
       orders: candidateOrders,
       planDate,
+      routeScopeConfig,
       selectedOrderGids,
     });
 
@@ -2402,6 +2434,7 @@ async function handleRoutePlanCreate(
       depotLongitude: readOptionalCoordinate(fields.depotLongitude),
       orderIds: selectedOrders.map((order) => order.orderId),
       planDate,
+      routeScopeConfig,
       routeName: readRequiredField(fields, "routeName", "route name"),
       services,
       shopDomain,
@@ -3789,8 +3822,22 @@ function findRouteOpsOrderByNeutralId(
   );
 }
 
+async function readRouteOpsRouteScopeConfig(
+  dependencies: AdminCommerceConnectionsUiDependencies,
+  shopDomain: string,
+): Promise<RouteScopeConfigDto> {
+  if (dependencies.settingsService === undefined) {
+    return defaultRouteScopeConfig();
+  }
+  const settings = await dependencies.settingsService.getSettings({
+    shopDomain,
+  });
+  return settings?.routeScopeConfig ?? defaultRouteScopeConfig();
+}
+
 function readRouteOpsMetadataPatch(
   body: Record<string, unknown>,
+  routeScopeConfig: RouteScopeConfigDto,
 ): RouteOpsCanonicalMetadataPatch {
   const patch: RouteOpsCanonicalMetadataPatch = {};
   copyNullableString(body, patch, "address1");
@@ -3807,9 +3854,15 @@ function readRouteOpsMetadataPatch(
       readNullableJsonString(body.deliveryDate),
     );
   if (Object.hasOwn(body, "deliverySession"))
-    patch.deliverySession = readRouteOpsDeliverySession(body.deliverySession);
+    patch.deliverySession = readRouteOpsDeliverySession(
+      body.deliverySession,
+      routeScopeConfig,
+    );
   if (Object.hasOwn(body, "serviceType"))
-    patch.serviceType = readRouteOpsServiceType(body.serviceType);
+    patch.serviceType = readRouteOpsServiceType(
+      body.serviceType,
+      routeScopeConfig,
+    );
   if (Object.keys(patch).length === 0) {
     throw new WooCommerceOnboardingError(
       "BAD_REQUEST",
@@ -3848,34 +3901,28 @@ function copyNullableTime<T extends Record<string, unknown>>(
 
 function readRouteOpsDeliverySession(
   value: unknown,
-): "DAY" | "EVENING" | "PICKUP" | null {
+  routeScopeConfig: RouteScopeConfigDto,
+): string | null {
   const text = readNullableJsonString(value);
-  if (
-    text === null ||
-    text === "DAY" ||
-    text === "EVENING" ||
-    text === "PICKUP"
-  )
+  if (text === null || isActiveDeliverySession(routeScopeConfig, text)) {
     return text;
+  }
   throw new WooCommerceOnboardingError(
     "BAD_REQUEST",
-    "deliverySession is invalid",
+    "deliverySession is not enabled in Settings",
     400,
   );
 }
 
-function readRouteOpsServiceType(value: unknown): DeliveryServiceType | null {
+function readRouteOpsServiceType(
+  value: unknown,
+  routeScopeConfig: RouteScopeConfigDto,
+): string | null {
   const text = readNullableJsonString(value);
-  if (
-    text === null ||
-    text === "DELIVERY" ||
-    text === "EVENING_DELIVERY" ||
-    text === "PICKUP"
-  )
-    return text;
+  if (text === null || isActiveServiceType(routeScopeConfig, text)) return text;
   throw new WooCommerceOnboardingError(
     "BAD_REQUEST",
-    "serviceType is invalid",
+    "serviceType is not enabled in Settings",
     400,
   );
 }
@@ -4492,6 +4539,18 @@ function toRouteOpsDriverDto(driver: AdminDriverRow): {
   };
 }
 
+
+function defaultRouteOpsSettings(shopDomain: string): AdminStoreSettings {
+  return {
+    defaultDepotAddress: null,
+    defaultDepotLatitude: null,
+    defaultDepotLongitude: null,
+    locale: "en-CA",
+    routeScopeConfig: defaultRouteScopeConfig(),
+    shopDomain,
+  };
+}
+
 function toRouteOpsSettingsDto(
   settings: AdminStoreSettings,
 ): AdminStoreSettings {
@@ -4500,6 +4559,7 @@ function toRouteOpsSettingsDto(
     defaultDepotLatitude: settings.defaultDepotLatitude,
     defaultDepotLongitude: settings.defaultDepotLongitude,
     locale: settings.locale === "ko-KR" ? "ko-KR" : "en-CA",
+    routeScopeConfig: settings.routeScopeConfig,
     shopDomain: settings.shopDomain,
   };
 }
@@ -4555,6 +4615,7 @@ function readSelectedOrderGids(value: string): string[] {
 function selectRouteReadyOrders(input: {
   orders: readonly CanonicalOrderRow[];
   planDate: string;
+  routeScopeConfig: RouteScopeConfigDto;
   selectedOrderGids: readonly string[];
 }): CanonicalOrderRow[] {
   const ordersByGid = new Map(
@@ -4569,7 +4630,11 @@ function selectRouteReadyOrders(input: {
       blockers.push(`${gid}: not found for this shop/date`);
       continue;
     }
-    const orderBlockers = readRouteCreationBlockers(order, input.planDate);
+    const orderBlockers = readRouteCreationBlockers(
+      order,
+      input.planDate,
+      input.routeScopeConfig,
+    );
     if (orderBlockers.length > 0) {
       blockers.push(
         `${order.sourceOrderNumber ?? order.name}: ${orderBlockers.join(", ")}`,
@@ -4593,6 +4658,7 @@ function selectRouteReadyOrders(input: {
 function readRouteCreationBlockers(
   order: CanonicalOrderRow,
   planDate: string,
+  routeScopeConfig: RouteScopeConfigDto,
 ): string[] {
   const blockers: string[] = [];
   if (order.deliveryDate !== planDate) {
@@ -4615,6 +4681,22 @@ function readRouteCreationBlockers(
   ) {
     blockers.push("missing delivery coordinates");
   }
+  if (
+    order.serviceType !== null &&
+    !isActiveServiceType(routeScopeConfig, order.serviceType)
+  ) {
+    blockers.push(
+      "service type is no longer enabled in Settings; re-enable it or edit the order detail",
+    );
+  }
+  if (
+    order.deliverySession !== null &&
+    !isActiveDeliverySession(routeScopeConfig, order.deliverySession)
+  ) {
+    blockers.push(
+      "delivery session is no longer enabled in Settings; re-enable it or edit the order detail",
+    );
+  }
   return blockers;
 }
 
@@ -4625,10 +4707,23 @@ async function createRoutePlanFromSelectedOrderIds(input: {
   depotLongitude: number | null;
   orderIds: string[];
   planDate: string;
+  routeScopeConfig: RouteScopeConfigDto;
   routeName: string;
   services: RouteUiServices;
   shopDomain: string;
 }): Promise<RoutePlanSummary> {
+  const allOrders = await input.services.orderSyncService.listCanonicalOrders({
+    shopDomain: input.shopDomain,
+  });
+  const selectedOrderGids = input.orderIds.map((id) =>
+    resolveNeutralOrderIdToGid(id, allOrders),
+  );
+  const selectedOrders = selectRouteReadyOrders({
+    orders: allOrders,
+    planDate: input.planDate,
+    routeScopeConfig: input.routeScopeConfig,
+    selectedOrderGids,
+  });
   if (
     input.services.routePlanService.createRoutePlanFromOrderIds !== undefined
   ) {
@@ -4648,16 +4743,6 @@ async function createRoutePlanFromSelectedOrderIds(input: {
     });
   }
 
-  const allOrders = await input.services.orderSyncService.listCanonicalOrders({
-    shopDomain: input.shopDomain,
-  });
-  const selectedOrders = selectRouteReadyOrders({
-    orders: allOrders,
-    planDate: input.planDate,
-    selectedOrderGids: input.orderIds.map((id) =>
-      resolveNeutralOrderIdToGid(id, allOrders),
-    ),
-  });
   return input.services.routePlanService.createRoutePlan({
     createdBy: input.createdBy,
     payload: buildCreateRoutePlanPayload({

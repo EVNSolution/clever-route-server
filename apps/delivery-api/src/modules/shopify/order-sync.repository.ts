@@ -4,12 +4,12 @@ import type {
   CanonicalOrderReadiness,
   CanonicalOrderRow,
   CommerceSourcePlatform,
-  DeliveryServiceType,
   DeliveryWeekday,
   PlanningStatus,
   SyncedOrderDeliveryFactInput,
   SyncedOrderWithDeliveryStopInput,
 } from "./order-sync.mapper.js";
+import { isSafeRouteScopeToken } from "../route-ops/route-scope-config.js";
 import {
   deriveOperateDeliveryStatus,
   deriveOrderHealth,
@@ -34,7 +34,7 @@ export type ListCanonicalOrdersFilters = {
   deliveryArea?: string;
   deliveryDate?: string;
   deliveryDateFrom?: string;
-  deliverySession?: "DAY" | "EVENING" | "PICKUP";
+  deliverySession?: string;
   deliveryWeekday?: DeliveryWeekday;
   geocodeStatus?: "PENDING" | "RESOLVED" | "FAILED" | "NOT_REQUIRED";
   operateDeliveryStatus?: OperateDeliveryStatus;
@@ -44,7 +44,7 @@ export type ListCanonicalOrdersFilters = {
   readiness?: CanonicalOrderReadiness;
   routeScopeKey?: string;
   search?: string;
-  serviceType?: DeliveryServiceType;
+  serviceType?: string;
 };
 
 export type ListCanonicalOrdersInput = {
@@ -79,10 +79,10 @@ export type RouteOpsCanonicalMetadataPatch = {
   countryCode?: string | null;
   deliveryArea?: string | null;
   deliveryDate?: string | null;
-  deliverySession?: "DAY" | "EVENING" | "PICKUP" | null;
+  deliverySession?: string | null;
   postalCode?: string | null;
   province?: string | null;
-  serviceType?: DeliveryServiceType | null;
+  serviceType?: string | null;
   timeWindowEnd?: string | null;
   timeWindowStart?: string | null;
 };
@@ -1395,7 +1395,7 @@ function readResolvedPending(value: unknown): "PENDING" | "RESOLVED" {
 
 function serviceTypeForSession(
   value: CanonicalOrderRow["deliverySession"],
-): DeliveryServiceType | null {
+): string | null {
   if (value === "DAY") return "DELIVERY";
   if (value === "EVENING") return "EVENING_DELIVERY";
   if (value === "PICKUP") return "PICKUP";
@@ -1406,7 +1406,7 @@ function buildManualScope(input: {
   deliveryArea: string | null;
   deliveryDate: string | null;
   deliverySession: CanonicalOrderRow["deliverySession"];
-  serviceType: DeliveryServiceType | null;
+  serviceType: string | null;
   timeWindowEnd: string | null;
   timeWindowStart: string | null;
 }): { planningGroupKey: string | null; routeScopeKey: string | null } {
@@ -1428,7 +1428,7 @@ function buildManualScope(input: {
 function hasCoherentManualTimeWindowCorrection(input: {
   patch: RouteOpsCanonicalMetadataPatch;
   routeScopeKey: string | null;
-  serviceType: DeliveryServiceType | null;
+  serviceType: string | null;
   timeWindowEnd: string | null;
   timeWindowStart: string | null;
 }): boolean {
@@ -1456,7 +1456,7 @@ function recomputeReviewReasons(
     deliveryDate: string | null;
     hasAddress: boolean;
     routeScopeKey: string | null;
-    serviceType: DeliveryServiceType | null;
+    serviceType: string | null;
     timeWindowCorrected: boolean;
   },
 ): string[] {
@@ -1494,7 +1494,7 @@ function recomputeCoordinateReviewReasons(
     deliveryDate: string | null;
     hasAddress: boolean;
     routeScopeKey: string | null;
-    serviceType: DeliveryServiceType | null;
+    serviceType: string | null;
   },
 ): string[] {
   const kept = current.filter((reason) => reason !== "missing_coordinates");
@@ -2103,20 +2103,14 @@ function readDeliveryWeekday(value: unknown): DeliveryWeekday | null {
     : null;
 }
 
-function readServiceType(value: unknown): DeliveryServiceType | null {
-  return value === "DELIVERY" ||
-    value === "EVENING_DELIVERY" ||
-    value === "PICKUP"
-    ? value
-    : null;
+function readServiceType(value: unknown): string | null {
+  return isSafeRouteScopeToken(value) ? value : null;
 }
 
 function readDeliverySession(
   value: unknown,
 ): CanonicalOrderRow["deliverySession"] {
-  return value === "DAY" || value === "EVENING" || value === "PICKUP"
-    ? value
-    : null;
+  return isSafeRouteScopeToken(value) ? value : null;
 }
 
 function readDeliveryDateSource(

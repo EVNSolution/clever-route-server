@@ -159,6 +159,7 @@ model Shop {
   defaultDepotLatitude            Decimal?                         @db.Decimal(10, 7)
   defaultDepotLongitude           Decimal?                         @db.Decimal(10, 7)
   locale                          String?                          @db.Text
+  routeScopeConfig                Json?
   createdAt                       DateTime                         @default(now()) @db.Timestamptz(6)
   updatedAt                       DateTime                         @updatedAt @db.Timestamptz(6)
   webhookEvents                   ShopifyWebhookEvent[]

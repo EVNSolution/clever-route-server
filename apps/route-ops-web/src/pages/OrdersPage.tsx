@@ -28,6 +28,10 @@ import type {
   DeliveryMetadataDiagnosticsDto,
   StoreSettingsDto,
 } from "../types";
+import {
+  normalizeRouteScopeConfig,
+  routeScopeValueSummary,
+} from "../routeScopeConfig";
 import { readErrorMessage, today } from "../utils/format";
 
 export const ORDERS_TABLE_COLUMN_COUNT = 9;
@@ -53,56 +57,76 @@ type EditableMetadataField = {
   placeholder?: string;
 };
 
-const EDITABLE_METADATA_FIELDS: EditableMetadataField[] = [
-  { key: "address1", label: orderFieldLabels.address1 },
-  { key: "address2", label: orderFieldLabels.address2 },
-  { key: "city", label: orderFieldLabels.city },
-  { key: "province", label: orderFieldLabels.province },
-  { key: "postalCode", label: orderFieldLabels.postalCode },
-  { key: "countryCode", label: orderFieldLabels.countryCode },
-  { key: "deliveryArea", label: orderFieldLabels.deliveryArea },
-  {
-    helpText: "Enter the route date as YYYY-MM-DD, for example 2026-05-29.",
-    key: "deliveryDate",
-    label: orderFieldLabels.deliveryDate,
-  },
-  {
-    helpText:
-      "Allowed values: DELIVERY, EVENING_DELIVERY, PICKUP. Example: EVENING_DELIVERY for a 5PM-9PM delivery route.",
-    key: "serviceType",
-    label: orderFieldLabels.serviceType,
-    placeholder: "EVENING_DELIVERY",
-  },
-  {
-    helpText:
-      "Allowed values: DAY, EVENING, PICKUP. Example: EVENING for a 5PM-9PM route.",
-    key: "deliverySession",
-    label: orderFieldLabels.deliverySession,
-    placeholder: "EVENING",
-  },
-  {
-    helpText: "Use 24-hour HH:mm format, for example 17:00.",
-    key: "timeWindowStart",
-    label: orderFieldLabels.timeWindowStart,
-    placeholder: "17:00",
-  },
-  {
-    helpText: "Use 24-hour HH:mm format, for example 21:00.",
-    key: "timeWindowEnd",
-    label: orderFieldLabels.timeWindowEnd,
-    placeholder: "21:00",
-  },
+const EDITABLE_METADATA_FIELD_KEYS: Array<keyof OrderMetadataPatch> = [
+  "address1",
+  "address2",
+  "city",
+  "province",
+  "postalCode",
+  "countryCode",
+  "deliveryArea",
+  "deliveryDate",
+  "serviceType",
+  "deliverySession",
+  "timeWindowStart",
+  "timeWindowEnd",
 ];
 
-const EDITABLE_METADATA_FIELDS_BY_KEY = new Map<
-  keyof OrderMetadataPatch,
-  EditableMetadataField
->(EDITABLE_METADATA_FIELDS.map((field) => [field.key, field]));
+function buildEditableMetadataFields(
+  settings: StoreSettingsDto | null | undefined,
+): EditableMetadataField[] {
+  const config = normalizeRouteScopeConfig(settings?.routeScopeConfig);
+  const eveningService =
+    config.serviceTypes.find((value) => value.value === "EVENING_DELIVERY") ??
+    config.serviceTypes[0];
+  const eveningSession =
+    config.deliverySessions.find((value) => value.value === "EVENING") ??
+    config.deliverySessions[0];
+  return [
+    { key: "address1", label: orderFieldLabels.address1 },
+    { key: "address2", label: orderFieldLabels.address2 },
+    { key: "city", label: orderFieldLabels.city },
+    { key: "province", label: orderFieldLabels.province },
+    { key: "postalCode", label: orderFieldLabels.postalCode },
+    { key: "countryCode", label: orderFieldLabels.countryCode },
+    { key: "deliveryArea", label: orderFieldLabels.deliveryArea },
+    {
+      helpText: "Enter the route date as YYYY-MM-DD, for example 2026-05-29.",
+      key: "deliveryDate",
+      label: orderFieldLabels.deliveryDate,
+    },
+    {
+      helpText: `Allowed values: ${routeScopeValueSummary(config.serviceTypes)}. Example: ${eveningService?.example ?? "EVENING_DELIVERY for a 5PM-9PM delivery route."}`,
+      key: "serviceType",
+      label: orderFieldLabels.serviceType,
+      placeholder: eveningService?.value ?? "EVENING_DELIVERY",
+    },
+    {
+      helpText: `Allowed values: ${routeScopeValueSummary(config.deliverySessions)}. Example: ${eveningSession?.example ?? "EVENING for a 5PM-9PM route."}`,
+      key: "deliverySession",
+      label: orderFieldLabels.deliverySession,
+      placeholder: eveningSession?.value ?? "EVENING",
+    },
+    {
+      helpText: `${config.timeWindow.helpText} Example: ${config.timeWindow.startExample}.`,
+      key: "timeWindowStart",
+      label: orderFieldLabels.timeWindowStart,
+      placeholder: config.timeWindow.startExample,
+    },
+    {
+      helpText: `${config.timeWindow.helpText} Example: ${config.timeWindow.endExample}.`,
+      key: "timeWindowEnd",
+      label: orderFieldLabels.timeWindowEnd,
+      placeholder: config.timeWindow.endExample,
+    },
+  ];
+}
 
 function editableMetadataField(
   key: keyof OrderMetadataPatch,
+  fields: EditableMetadataField[],
 ): EditableMetadataField {
-  const field = EDITABLE_METADATA_FIELDS_BY_KEY.get(key);
+  const field = fields.find((candidate) => candidate.key === key);
   if (field === undefined) {
     throw new Error(`Unknown editable order metadata field: ${key}`);
   }
@@ -435,6 +459,7 @@ export function OrdersPage({
             orders={orders}
             selected={selected}
             setSelected={setSelected}
+            settings={settings}
           />
         </>
       }
@@ -636,6 +661,7 @@ export function OrderTable(input: {
   orders: CanonicalOrderDto[];
   selected: Set<string>;
   setSelected(selected: Set<string>): void;
+  settings?: StoreSettingsDto | null;
 }): ReactElement {
   if (input.loading)
     return (
@@ -710,6 +736,7 @@ export function OrderTable(input: {
                   order={order}
                   selectedOrders={input.selected}
                   setSelected={input.setSelected}
+                  settings={input.settings}
                 />
               ))
             )}
@@ -731,6 +758,7 @@ function OrderTableRow(input: {
   order: CanonicalOrderDto;
   selectedOrders: Set<string>;
   setSelected(selected: Set<string>): void;
+  settings?: StoreSettingsDto | null;
 }): ReactElement {
   const { order } = input;
   const selected = input.selectedOrders.has(order.orderId);
@@ -850,6 +878,7 @@ function OrderTableRow(input: {
                       input.onSaveMetadata!(order.orderId, patch)
               }
               order={order}
+              settings={input.settings}
             />
           </td>
         </tr>
@@ -1181,7 +1210,7 @@ function compactMetadataPatch(
   patch: OrderMetadataPatch,
 ): Record<string, string | null> {
   return Object.fromEntries(
-    EDITABLE_METADATA_FIELDS.map(({ key }) => [key, patch[key]]),
+    EDITABLE_METADATA_FIELD_KEYS.map((key) => [key, patch[key]]),
   );
 }
 
@@ -1192,6 +1221,7 @@ function OrderDetailPanel({
   onClose,
   onSaveMetadata,
   order,
+  settings,
 }: {
   diagnostics: DeliveryMetadataDiagnosticsDto | null | undefined;
   id: string;
@@ -1199,6 +1229,7 @@ function OrderDetailPanel({
   onClose(): void;
   onSaveMetadata?(patch: OrderMetadataPatch): Promise<void>;
   order: CanonicalOrderDto;
+  settings?: StoreSettingsDto | null;
 }): ReactElement {
   const [editMode, setEditMode] = useState(initialEditMode ?? false);
   const [draft, setDraft] = useState<OrderMetadataPatch>(() =>
@@ -1209,7 +1240,11 @@ function OrderDetailPanel({
   const onSave = onSaveMetadata;
   const status = formatOperationalStatus(order);
   const blockers = order.blockerReasons.map(formatBlockerReason);
-  const repairFields = getOrderRepairFields(order);
+  const editableFields = useMemo(
+    () => buildEditableMetadataFields(settings),
+    [settings],
+  );
+  const repairFields = getOrderRepairFields(order, editableFields);
   const hasActionableRepair = repairFields.length > 0;
   const repairTitle = formatRepairCardTitle(repairFields);
   const addressSummary = formatAddressSummary(order);
@@ -1305,6 +1340,8 @@ function OrderDetailPanel({
               {repairFields.map((field) => (
                 <OrderDetailFieldInput
                   field={field}
+                  idPrefix={panelId}
+                  instance="repair"
                   key={field.key}
                   onChange={setDraftField}
                   value={draft[field.key]}
@@ -1374,9 +1411,11 @@ function OrderDetailPanel({
             </p>
           )}
           <div className="order-detail-edit-grid">
-            {EDITABLE_METADATA_FIELDS.map((field) => (
+            {editableFields.map((field) => (
               <OrderDetailFieldInput
                 field={field}
+                idPrefix={panelId}
+                instance="edit"
                 key={field.key}
                 onChange={setDraftField}
                 value={draft[field.key]}
@@ -1420,51 +1459,71 @@ function OrderDetailPanel({
 
 function OrderDetailFieldInput({
   field,
+  idPrefix,
+  instance,
   onChange,
   value,
 }: {
   field: EditableMetadataField;
+  idPrefix: string;
+  instance: "repair" | "edit";
   onChange(key: keyof OrderMetadataPatch, value: string): void;
   value: string | null;
 }): ReactElement {
+  const [helpOpen, setHelpOpen] = useState(false);
+  const inputId = `${idPrefix}-${instance}-${field.key}`;
+  const helpId = `${inputId}-help`;
   return (
-    <label>
-      <span className="order-detail-field-label">
-        {field.label}
+    <div className="order-detail-field">
+      <span className="order-detail-field-label-row">
+        <label className="order-detail-field-label" htmlFor={inputId}>
+          {field.label}
+        </label>
         {field.helpText === undefined ? null : (
-          <span
-            aria-label={`${field.label} help: ${field.helpText}`}
-            className="order-detail-field-help"
-            title={field.helpText}
-          >
-            i
+          <span className="order-detail-field-help-wrap">
+            <button
+              aria-describedby={helpId}
+              aria-expanded={helpOpen}
+              aria-label={`${field.label} help`}
+              className={`order-detail-field-help${helpOpen ? " is-open" : ""}`}
+              onBlur={() => setHelpOpen(false)}
+              onClick={() => setHelpOpen((current) => !current)}
+              type="button"
+            >
+              i
+            </button>
+            <span
+              className="order-detail-field-tooltip"
+              id={helpId}
+              role="tooltip"
+            >
+              {field.helpText}
+            </span>
           </span>
         )}
       </span>
       <input
         aria-label={field.label}
+        id={inputId}
         name={field.key}
         onChange={(event) => onChange(field.key, event.target.value)}
         placeholder={field.placeholder}
-        title={field.helpText}
         type={field.key === "deliveryDate" ? "date" : "text"}
         value={value ?? ""}
       />
-      {field.helpText === undefined ? null : (
-        <small className="order-detail-field-hint">{field.helpText}</small>
-      )}
-    </label>
+    </div>
   );
 }
 
 function getOrderRepairFields(
   order: CanonicalOrderDto,
+  editableFields: EditableMetadataField[],
 ): EditableMetadataField[] {
   const blockers = new Set(order.blockerReasons);
   const fields: EditableMetadataField[] = [];
   const addField = (key: keyof OrderMetadataPatch): void => {
     if (fields.some((field) => field.key === key)) return;
-    fields.push(editableMetadataField(key));
+    fields.push(editableMetadataField(key, editableFields));
   };
 
   if (blockers.has("missing_delivery_date") || order.deliveryDate === null) {

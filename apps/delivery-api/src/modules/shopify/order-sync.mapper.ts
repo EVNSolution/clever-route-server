@@ -123,7 +123,7 @@ export type CanonicalOrderRow = {
   deliveryDate: string | null;
   deliveryDateSource: DeliveryDateSource | null;
   deliveryDayRaw: string | null;
-  deliverySession: DeliverySession | null;
+  deliverySession: string | null;
   deliveryMetadataDiagnostics?: DeliveryMetadataDiagnostics | null;
   deliveryStopId: string | null;
   deliveryStopStatus: string | null;
@@ -153,7 +153,7 @@ export type CanonicalOrderRow = {
   routeEligible?: boolean;
   routePlanStatus: string | null;
   routeScopeKey: string | null;
-  serviceType: DeliveryServiceType | null;
+  serviceType: string | null;
   shippingAddress: {
     address1: string | null;
     address2: string | null;

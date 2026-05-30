@@ -7,6 +7,7 @@ import type { AdminCommerceActor } from "../src/modules/commerce/admin-commerce-
 import { loadAdminCommerceConnectionsUiDependencies } from "../src/modules/commerce/admin-commerce-connections.dependencies.js";
 import type { SafeWooCommerceConnection } from "../src/modules/commerce/commerce-connection.service.js";
 import { RoutePlanBatchInvalidError } from "../src/modules/route-plans/route-plan.types.js";
+import { defaultRouteScopeConfig } from "../src/modules/route-ops/route-scope-config.js";
 import type { AdminCommerceConnectionsDependencies } from "../src/routes/admin-commerce-connections.routes.js";
 import type { AdminCommerceConnectionsUiDependencies } from "../src/routes/admin-commerce-connections-ui.routes.js";
 import {
@@ -1144,6 +1145,173 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
+  test("persists Route Ops route-scope settings through the Settings API", async () => {
+    const baseConfig = defaultRouteScopeConfig();
+    const routeScopeConfig = {
+      ...baseConfig,
+      deliverySessions: [
+        ...baseConfig.deliverySessions,
+        {
+          builtIn: false,
+          description: "Morning deliveries",
+          enabled: true,
+          example: "MORNING",
+          label: "Morning",
+          value: "MORNING",
+        },
+      ],
+      serviceTypes: [
+        ...baseConfig.serviceTypes,
+        {
+          builtIn: false,
+          description: "Morning delivery route",
+          enabled: true,
+          example: "MORNING_DELIVERY",
+          label: "Morning delivery",
+          value: "MORNING_DELIVERY",
+        },
+      ],
+    };
+    const saveSettings = vi.fn<
+      NonNullable<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["settingsService"]
+        >["saveSettings"]
+      >
+    >((input) => Promise.resolve(storeSettings(input)));
+    const { app } = await createUiHarness({
+      settingsService: {
+        getSettings: vi.fn(() => Promise.resolve(storeSettings())),
+        saveSettings,
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/admin/ui/app/api/settings?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(
+          cookie,
+          {
+            defaultDepotAddress: "123 Depot St, Toronto, ON",
+            defaultDepotLatitude: 43.6532,
+            defaultDepotLongitude: -79.3832,
+            locale: "en-CA",
+            routeScopeConfig,
+          },
+          csrfToken,
+        ),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(
+        readApiData<{
+          settings: {
+            routeScopeConfig: { serviceTypes: Array<{ value: string }> };
+          };
+        }>(response).settings.routeScopeConfig.serviceTypes,
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ value: "MORNING_DELIVERY" }),
+        ]),
+      );
+      const savedInput = saveSettings.mock.calls[0]?.[0];
+      expect(savedInput?.routeScopeConfig?.version).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("returns default route-scope settings when no Settings row exists", async () => {
+    const { app } = await createUiHarness({
+      settingsService: {
+        getSettings: vi.fn(() => Promise.resolve(null)),
+        saveSettings: vi.fn(),
+      },
+    });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        headers: { cookie, accept: "application/json" },
+        method: "GET",
+        url: "/admin/ui/app/api/settings?shopDomain=tenant-a.example.test",
+      });
+
+      expect(response.statusCode).toBe(200);
+      const payload = readApiData<{
+        settings: {
+          routeScopeConfig: {
+            deliverySessions: Array<{ value: string }>;
+            serviceTypes: Array<{ value: string }>;
+          };
+          shopDomain: string;
+        };
+      }>(response);
+      expect(payload.settings.shopDomain).toBe("tenant-a.example.test");
+      expect(payload.settings.routeScopeConfig.serviceTypes).toEqual(
+        expect.arrayContaining([expect.objectContaining({ value: "DELIVERY" })]),
+      );
+      expect(payload.settings.routeScopeConfig.deliverySessions).toEqual(
+        expect.arrayContaining([expect.objectContaining({ value: "EVENING" })]),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("rejects route-scope Settings saves that disable built-ins before partial save", async () => {
+    const baseConfig = defaultRouteScopeConfig();
+    const firstServiceType = baseConfig.serviceTypes[0];
+    if (firstServiceType === undefined) throw new Error("missing built-in service type");
+    const saveSettings = vi.fn<
+      NonNullable<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["settingsService"]
+        >["saveSettings"]
+      >
+    >((input) => Promise.resolve(storeSettings(input)));
+    const { app } = await createUiHarness({
+      settingsService: {
+        getSettings: vi.fn(() => Promise.resolve(storeSettings())),
+        saveSettings,
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/admin/ui/app/api/settings?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(
+          cookie,
+          {
+            defaultDepotAddress: "123 Depot St, Toronto, ON",
+            defaultDepotLatitude: 43.6532,
+            defaultDepotLongitude: -79.3832,
+            locale: "en-CA",
+            routeScopeConfig: {
+              ...baseConfig,
+              serviceTypes: [
+                { ...firstServiceType, enabled: false },
+                ...baseConfig.serviceTypes.slice(1),
+              ],
+            },
+          },
+          csrfToken,
+        ),
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = JSON.parse(response.body) as ApiErrorEnvelope;
+      expect(body.error.code).toBe("BAD_REQUEST");
+      expect(saveSettings).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test("returns protected Route Builder API state with ready and review order buckets", async () => {
     const listCanonicalOrders = vi.fn<
       NonNullable<
@@ -1487,6 +1655,166 @@ describe("Admin WooCommerce connection UI routes", () => {
           source: "geocoder",
         }),
       );
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("accepts configured custom route-scope values for manual metadata repair", async () => {
+    const baseConfig = defaultRouteScopeConfig();
+    const routeScopeConfig = {
+      ...baseConfig,
+      deliverySessions: [
+        ...baseConfig.deliverySessions,
+        {
+          builtIn: false,
+          description: "Morning deliveries",
+          enabled: true,
+          example: "MORNING",
+          label: "Morning",
+          value: "MORNING",
+        },
+      ],
+      serviceTypes: [
+        ...baseConfig.serviceTypes,
+        {
+          builtIn: false,
+          description: "Morning delivery route",
+          enabled: true,
+          example: "MORNING_DELIVERY",
+          label: "Morning delivery",
+          value: "MORNING_DELIVERY",
+        },
+      ],
+    };
+    const patchCanonicalOrder = vi.fn<
+      NonNullable<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["orderSyncService"]
+        >["patchCanonicalOrder"]
+      >
+    >(() =>
+      Promise.resolve(
+        canonicalOrder({
+          deliverySession: "MORNING",
+          routeScopeKey: "2026-05-28|MORNING_DELIVERY|08:00|12:00",
+          serviceType: "MORNING_DELIVERY",
+        }),
+      ),
+    );
+    const { app } = await createUiHarness({
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([canonicalOrder()])),
+        patchCanonicalOrder,
+      },
+      settingsService: {
+        getSettings: vi.fn(() =>
+          Promise.resolve(storeSettings({ routeScopeConfig })),
+        ),
+        saveSettings: vi.fn(),
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/admin/ui/app/api/orders/order-1/metadata?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(
+          cookie,
+          {
+            deliverySession: "MORNING",
+            serviceType: "MORNING_DELIVERY",
+          },
+          csrfToken,
+        ),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const patchedInput = patchCanonicalOrder.mock.calls[0]?.[0];
+      expect(patchedInput?.patch.deliverySession).toBe("MORNING");
+      expect(patchedInput?.patch.serviceType).toBe("MORNING_DELIVERY");
+    } finally {
+      await app.close();
+    }
+  });
+
+  test.each([
+    {
+      label: "unconfigured",
+      routeScopeConfig: defaultRouteScopeConfig(),
+    },
+    {
+      label: "disabled",
+      routeScopeConfig: (() => {
+        const baseConfig = defaultRouteScopeConfig();
+        return {
+          ...baseConfig,
+          deliverySessions: [
+            ...baseConfig.deliverySessions,
+            {
+              builtIn: false,
+              description: "Morning deliveries",
+              enabled: false,
+              example: "MORNING",
+              label: "Morning",
+              value: "MORNING",
+            },
+          ],
+          serviceTypes: [
+            ...baseConfig.serviceTypes,
+            {
+              builtIn: false,
+              description: "Morning delivery route",
+              enabled: false,
+              example: "MORNING_DELIVERY",
+              label: "Morning delivery",
+              value: "MORNING_DELIVERY",
+            },
+          ],
+        };
+      })(),
+    },
+  ])("rejects $label route-scope values for manual metadata repair", async ({ routeScopeConfig }) => {
+    const patchCanonicalOrder = vi.fn<
+      NonNullable<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["orderSyncService"]
+        >["patchCanonicalOrder"]
+      >
+    >(() => Promise.resolve(canonicalOrder()));
+    const { app } = await createUiHarness({
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([canonicalOrder()])),
+        patchCanonicalOrder,
+      },
+      settingsService: {
+        getSettings: vi.fn(() =>
+          Promise.resolve(storeSettings({ routeScopeConfig })),
+        ),
+        saveSettings: vi.fn(),
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/admin/ui/app/api/orders/order-1/metadata?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(
+          cookie,
+          {
+            deliverySession: "MORNING",
+            serviceType: "MORNING_DELIVERY",
+          },
+          csrfToken,
+        ),
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = JSON.parse(response.body) as ApiErrorEnvelope;
+      expect(body.error.message).toContain("not enabled in Settings");
+      expect(patchCanonicalOrder).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -1879,7 +2207,19 @@ describe("Admin WooCommerce connection UI routes", () => {
     >(() => Promise.resolve(routePlanSummary()));
     const { app } = await createUiHarness({
       orderSyncService: {
-        listCanonicalOrders: vi.fn(() => Promise.resolve([canonicalOrder()])),
+        listCanonicalOrders: vi.fn(() =>
+          Promise.resolve([
+            canonicalOrder(),
+            canonicalOrder({
+              name: "#1002",
+              orderId: "order-2",
+              shopifyOrderGid: "gid://woocommerce/Order/1002",
+              shopifyOrderLegacyId: "1002",
+              sourceOrderId: "1002",
+              sourceOrderNumber: "1002",
+            }),
+          ]),
+        ),
       },
       routePlanService: {
         assignRoutePlanDriver: vi.fn(),
@@ -2183,7 +2523,19 @@ describe("Admin WooCommerce connection UI routes", () => {
     );
     const { app } = await createUiHarness({
       orderSyncService: {
-        listCanonicalOrders: vi.fn(() => Promise.resolve([canonicalOrder()])),
+        listCanonicalOrders: vi.fn(() =>
+          Promise.resolve([
+            canonicalOrder(),
+            canonicalOrder({
+              name: "#1002",
+              orderId: "order-2",
+              shopifyOrderGid: "gid://woocommerce/Order/1002",
+              shopifyOrderLegacyId: "1002",
+              sourceOrderId: "1002",
+              sourceOrderNumber: "1002",
+            }),
+          ]),
+        ),
       },
       routePlanService: {
         assignRoutePlanDriver: vi.fn(),
@@ -2231,6 +2583,156 @@ describe("Admin WooCommerce connection UI routes", () => {
         }),
       );
       expect(createRoutePlanFromOrderIds).toHaveBeenCalledOnce();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("blocks route creation when selected orders use disabled configured route-scope values", async () => {
+    const baseConfig = defaultRouteScopeConfig();
+    const routeScopeConfig = {
+      ...baseConfig,
+      deliverySessions: [
+        ...baseConfig.deliverySessions,
+        {
+          builtIn: false,
+          description: "Morning deliveries",
+          enabled: false,
+          example: "MORNING",
+          label: "Morning",
+          value: "MORNING",
+        },
+      ],
+      serviceTypes: [
+        ...baseConfig.serviceTypes,
+        {
+          builtIn: false,
+          description: "Morning delivery route",
+          enabled: false,
+          example: "MORNING_DELIVERY",
+          label: "Morning delivery",
+          value: "MORNING_DELIVERY",
+        },
+      ],
+    };
+    const createRoutePlanFromOrderIds = vi.fn<
+      NonNullable<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["routePlanService"]
+        >["createRoutePlanFromOrderIds"]
+      >
+    >(() => Promise.resolve(routePlanSummary()));
+    const { app } = await createUiHarness({
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() =>
+          Promise.resolve([
+            canonicalOrder({
+              deliverySession: "MORNING",
+              routeScopeKey: "2026-05-26|MORNING_DELIVERY|08:00|12:00",
+              serviceType: "MORNING_DELIVERY",
+              timeWindowEnd: "12:00",
+              timeWindowStart: "08:00",
+            }),
+          ]),
+        ),
+      },
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan: vi.fn(),
+        createRoutePlanFromOrderIds,
+        getRoutePlanDetail: vi.fn(),
+        listRoutePlans: vi.fn(() => Promise.resolve([])),
+        updateRoutePlanStops: vi.fn(),
+      },
+      settingsService: {
+        getSettings: vi.fn(() =>
+          Promise.resolve(storeSettings({ routeScopeConfig })),
+        ),
+        saveSettings: vi.fn(),
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/routes?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(
+          cookie,
+          {
+            orderIds: ["order-1"],
+            planDate: "2026-05-26",
+            routeName: "Morning route",
+          },
+          csrfToken,
+        ),
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = JSON.parse(response.body) as ApiErrorEnvelope;
+      expect(body.error.message).toContain("no longer enabled in Settings");
+      expect(createRoutePlanFromOrderIds).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("blocks route creation when selected orders use unconfigured route-scope values", async () => {
+    const createRoutePlanFromOrderIds = vi.fn<
+      NonNullable<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["routePlanService"]
+        >["createRoutePlanFromOrderIds"]
+      >
+    >(() => Promise.resolve(routePlanSummary()));
+    const { app } = await createUiHarness({
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() =>
+          Promise.resolve([
+            canonicalOrder({
+              deliverySession: "MORNING",
+              routeScopeKey: "2026-05-26|MORNING_DELIVERY|08:00|12:00",
+              serviceType: "MORNING_DELIVERY",
+              timeWindowEnd: "12:00",
+              timeWindowStart: "08:00",
+            }),
+          ]),
+        ),
+      },
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan: vi.fn(),
+        createRoutePlanFromOrderIds,
+        getRoutePlanDetail: vi.fn(),
+        listRoutePlans: vi.fn(() => Promise.resolve([])),
+        updateRoutePlanStops: vi.fn(),
+      },
+      settingsService: {
+        getSettings: vi.fn(() => Promise.resolve(storeSettings())),
+        saveSettings: vi.fn(),
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/routes?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(
+          cookie,
+          {
+            orderIds: ["order-1"],
+            planDate: "2026-05-26",
+            routeName: "Morning route",
+          },
+          csrfToken,
+        ),
+      });
+
+      expect(response.statusCode).toBe(400);
+      const body = JSON.parse(response.body) as ApiErrorEnvelope;
+      expect(body.error.message).toContain("no longer enabled in Settings");
+      expect(createRoutePlanFromOrderIds).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -3292,6 +3794,7 @@ function storeSettings(
     defaultDepotLatitude: 43.6532,
     defaultDepotLongitude: -79.3832,
     locale: "en-CA",
+    routeScopeConfig: defaultRouteScopeConfig(),
     shopDomain: "tenant-a.example.test",
     ...overrides,
   };

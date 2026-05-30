@@ -4,7 +4,14 @@ import type { ReactElement } from 'react';
 import { geocodeSettings, getSettings, saveSettings } from '../api';
 import { RouteOpsMap } from '../components/maps/RouteOpsMap';
 import { resolveLocale, settingsCopy } from '../i18n';
-import type { BootstrapPayload, CanonicalOrderDto, StoreSettingsDto } from '../types';
+import { normalizeRouteScopeConfig } from '../routeScopeConfig';
+import type {
+  BootstrapPayload,
+  CanonicalOrderDto,
+  RouteScopeConfigDto,
+  RouteScopeValueDto,
+  StoreSettingsDto
+} from '../types';
 import { emptySettings, readErrorMessage, toNullableNumber } from '../utils/format';
 
 export function SettingsPage({ bootstrap, setError }: { bootstrap: BootstrapPayload; setError(error: string | null): void }): ReactElement {
@@ -18,6 +25,7 @@ export function SettingsPage({ bootstrap, setError }: { bootstrap: BootstrapPayl
   }, [setError]);
 
   const draft = settings ?? emptySettings(bootstrap);
+  const routeScopeConfig = normalizeRouteScopeConfig(draft.routeScopeConfig);
   const locale = resolveLocale(draft.locale);
   const t = settingsCopy[locale];
 
@@ -26,10 +34,18 @@ export function SettingsPage({ bootstrap, setError }: { bootstrap: BootstrapPayl
     setNotice(null);
   };
 
+  const updateRouteScopeConfig = (next: RouteScopeConfigDto): void => {
+    updateDraft({ routeScopeConfig: next });
+  };
+
   const save = async (): Promise<void> => {
     setSaving(true);
     try {
-      const payload = await saveSettings({ ...draft, locale: resolveLocale(draft.locale), csrfToken: bootstrap.csrfToken });
+      const payload = await saveSettings(buildSettingsSaveInput({
+        csrfToken: bootstrap.csrfToken,
+        draft,
+        routeScopeConfig
+      }));
       setSettingsState(payload.settings);
       setNotice(t.saved);
       setError(null);
@@ -90,6 +106,13 @@ export function SettingsPage({ bootstrap, setError }: { bootstrap: BootstrapPayl
             <option value="ko-KR">{t.korean}</option>
           </select>
         </label>
+
+        <RouteScopeSettingsEditor
+          config={routeScopeConfig}
+          labels={t}
+          onChange={updateRouteScopeConfig}
+        />
+
         <div className="button-row">
           <button className="primary" disabled={saving} onClick={() => void save()} type="button">{saving ? t.saving : t.saveSettings}</button>
           <button disabled={geocoding} onClick={() => void geocodeAndSave()} type="button">{geocoding ? t.geocoding : t.geocodeAndSave}</button>
@@ -117,6 +140,181 @@ export function SettingsPage({ bootstrap, setError }: { bootstrap: BootstrapPayl
   );
 }
 
+type SettingsLabels = (typeof settingsCopy)[keyof typeof settingsCopy];
+
+export type RouteScopeKind = 'serviceTypes' | 'deliverySessions';
+
+export function buildSettingsSaveInput(input: {
+  csrfToken: string;
+  draft: StoreSettingsDto;
+  routeScopeConfig: RouteScopeConfigDto;
+}): Parameters<typeof saveSettings>[0] {
+  return {
+    ...input.draft,
+    csrfToken: input.csrfToken,
+    locale: resolveLocale(input.draft.locale),
+    routeScopeConfig: input.routeScopeConfig
+  };
+}
+
+export function addRouteScopeValue(config: RouteScopeConfigDto, kind: RouteScopeKind): RouteScopeConfigDto {
+  const suffix = config[kind].filter((value) => !value.builtIn).length + 1;
+  return {
+    ...config,
+    [kind]: [
+      ...config[kind],
+      {
+        builtIn: false,
+        description: null,
+        enabled: true,
+        example: null,
+        label: 'Custom value',
+        value: kind === 'serviceTypes' ? `CUSTOM_SERVICE_${suffix}` : `CUSTOM_SESSION_${suffix}`
+      }
+    ]
+  };
+}
+
+export function updateRouteScopeValue(
+  config: RouteScopeConfigDto,
+  kind: RouteScopeKind,
+  index: number,
+  patch: Partial<RouteScopeValueDto>
+): RouteScopeConfigDto {
+  return {
+    ...config,
+    [kind]: config[kind].map((value, valueIndex) => (valueIndex === index ? { ...value, ...patch } : value))
+  };
+}
+
+export function removeRouteScopeValue(config: RouteScopeConfigDto, kind: RouteScopeKind, index: number): RouteScopeConfigDto {
+  return {
+    ...config,
+    [kind]: config[kind].filter((_, valueIndex) => valueIndex !== index)
+  };
+}
+
+function RouteScopeSettingsEditor({
+  config,
+  labels,
+  onChange
+}: {
+  config: RouteScopeConfigDto;
+  labels: SettingsLabels;
+  onChange(config: RouteScopeConfigDto): void;
+}): ReactElement {
+  const addValue = (kind: RouteScopeKind): void => {
+    onChange(addRouteScopeValue(config, kind));
+  };
+  const updateValue = (kind: RouteScopeKind, index: number, patch: Partial<RouteScopeValueDto>): void => {
+    onChange(updateRouteScopeValue(config, kind, index, patch));
+  };
+  const removeValue = (kind: RouteScopeKind, index: number): void => {
+    onChange(removeRouteScopeValue(config, kind, index));
+  };
+
+  return (
+    <section className="route-scope-settings" aria-label={labels.routeScopeTitle}>
+      <span className="eyebrow">{labels.routeScopeEyebrow}</span>
+      <h3>{labels.routeScopeTitle}</h3>
+      <p className="muted">{labels.routeScopeDescription}</p>
+      <RouteScopeValueList
+        addLabel={labels.addServiceType}
+        kind="serviceTypes"
+        labels={labels}
+        onAdd={() => addValue('serviceTypes')}
+        onRemove={(index) => removeValue('serviceTypes', index)}
+        onUpdate={(index, patch) => updateValue('serviceTypes', index, patch)}
+        title={labels.serviceTypes}
+        values={config.serviceTypes}
+      />
+      <RouteScopeValueList
+        addLabel={labels.addDeliverySession}
+        kind="deliverySessions"
+        labels={labels}
+        onAdd={() => addValue('deliverySessions')}
+        onRemove={(index) => removeValue('deliverySessions', index)}
+        onUpdate={(index, patch) => updateValue('deliverySessions', index, patch)}
+        title={labels.deliverySessions}
+        values={config.deliverySessions}
+      />
+      <div className="route-scope-time-window">
+        <h4>{labels.timeWindowHelp}</h4>
+        <label>
+          {labels.timeWindowHelp}
+          <input value={config.timeWindow.helpText} onChange={(event) => onChange({ ...config, timeWindow: { ...config.timeWindow, helpText: event.target.value } })} />
+        </label>
+        <div className="form-grid">
+          <label>
+            {labels.startExample}
+            <input value={config.timeWindow.startExample} onChange={(event) => onChange({ ...config, timeWindow: { ...config.timeWindow, startExample: event.target.value } })} />
+          </label>
+          <label>
+            {labels.endExample}
+            <input value={config.timeWindow.endExample} onChange={(event) => onChange({ ...config, timeWindow: { ...config.timeWindow, endExample: event.target.value } })} />
+          </label>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function RouteScopeValueList({
+  addLabel,
+  kind,
+  labels,
+  onAdd,
+  onRemove,
+  onUpdate,
+  title,
+  values
+}: {
+  addLabel: string;
+  kind: RouteScopeKind;
+  labels: SettingsLabels;
+  onAdd(): void;
+  onRemove(index: number): void;
+  onUpdate(index: number, patch: Partial<RouteScopeValueDto>): void;
+  title: string;
+  values: RouteScopeValueDto[];
+}): ReactElement {
+  return (
+    <section className="route-scope-value-list" aria-label={title}>
+      <div className="panel-heading compact-heading">
+        <h4>{title}</h4>
+        <button onClick={onAdd} type="button">{addLabel}</button>
+      </div>
+      <div className="route-scope-rows">
+        {values.map((value, index) => (
+          <div className="route-scope-row" key={`${kind}-${value.value}-${index}`}>
+            <label>
+              {labels.routeScopeValue}
+              <input disabled={value.builtIn} value={value.value} onChange={(event) => onUpdate(index, { value: event.target.value.toUpperCase() })} />
+            </label>
+            <label>
+              {labels.routeScopeLabel}
+              <input value={value.label} onChange={(event) => onUpdate(index, { label: event.target.value })} />
+            </label>
+            <label>
+              {labels.routeScopeDescriptionField}
+              <input value={value.description ?? ''} onChange={(event) => onUpdate(index, { description: event.target.value })} />
+            </label>
+            <label>
+              {labels.routeScopeExample}
+              <input value={value.example ?? ''} onChange={(event) => onUpdate(index, { example: event.target.value })} />
+            </label>
+            <label className="route-scope-checkbox">
+              <input checked={value.enabled} disabled={value.builtIn} onChange={(event) => onUpdate(index, { enabled: event.target.checked })} type="checkbox" />
+              {value.builtIn ? labels.builtIn : labels.routeScopeEnabled}
+            </label>
+            {value.builtIn ? null : <button onClick={() => onRemove(index)} type="button">{labels.remove}</button>}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function depotAsOrders(settings: StoreSettingsDto, depotName: string, fallbackAddress: string): CanonicalOrderDto[] {
   if (settings.defaultDepotLatitude === null || settings.defaultDepotLongitude === null) return [];
   return [{
@@ -133,6 +331,7 @@ function depotAsOrders(settings: StoreSettingsDto, depotName: string, fallbackAd
     phone: null,
     planningStatus: 'UNPLANNED',
     recipientName: settings.defaultDepotAddress ?? fallbackAddress,
+    routeEligible: false,
     routePlanId: null,
     routePlanName: null,
     serviceType: 'DELIVERY',

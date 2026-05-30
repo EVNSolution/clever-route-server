@@ -1,8 +1,8 @@
 export type RoutePlanRouteScopeInput = {
   deliveryDate: string;
-  deliverySession: 'DAY' | 'EVENING' | 'PICKUP';
+  deliverySession: string;
   routeScopeKey: string;
-  serviceType: 'DELIVERY' | 'EVENING_DELIVERY' | 'PICKUP';
+  serviceType: string;
   timeWindowEnd: string | null;
   timeWindowStart: string | null;
 };
@@ -33,7 +33,7 @@ export type RoutePlanOrderInput = {
   deliveryArea: string | null;
   deliveryDate?: string | null | undefined;
   deliveryDay: string | null;
-  deliverySession?: 'DAY' | 'EVENING' | 'PICKUP' | null | undefined;
+  deliverySession?: string | null | undefined;
   email: string | null;
   financialStatus: string | null;
   fulfillmentStatus: string | null;
@@ -46,7 +46,7 @@ export type RoutePlanOrderInput = {
   rawPayload: unknown;
   recipientName: string | null;
   routeScopeKey?: string | null | undefined;
-  serviceType?: 'DELIVERY' | 'EVENING_DELIVERY' | 'PICKUP' | null | undefined;
+  serviceType?: string | null | undefined;
   shippingAddress: RoutePlanShippingAddressInput;
   shopifyOrderGid: string;
   timeWindowEnd?: string | null | undefined;

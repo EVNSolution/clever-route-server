@@ -11,6 +11,7 @@ import type {
   RoutePlanDetailDto,
   RoutesResponse,
   SettingsResponse,
+  StoreSettingsDto,
 } from "./types";
 
 export class ApiError extends Error {
@@ -229,6 +230,7 @@ export async function saveSettings(input: {
   defaultDepotLatitude: number | null;
   defaultDepotLongitude: number | null;
   locale: string;
+  routeScopeConfig?: StoreSettingsDto["routeScopeConfig"];
 }): Promise<SettingsResponse> {
   return apiMutation<SettingsResponse>(
     "/admin/ui/app/api/settings",
