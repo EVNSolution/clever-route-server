@@ -1,7 +1,12 @@
+import { Children, isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import type { ReactElement, ReactNode } from "react";
 import { describe, expect, test } from "vitest";
 
 import {
+  buildEditableMetadataFields,
+  normalizeOrderMetadataPatchForFields,
+  OrderDetailChoiceButtons,
   formatDeliveryDayLabel,
   formatDiagnosticPathLabel,
   formatBlockerReason,
@@ -10,6 +15,7 @@ import {
   getRouteRepairPrompt,
   ORDERS_TABLE_COLUMN_COUNT,
   OrderTable,
+  type OrderMetadataPatch,
 } from "../src/pages/OrdersPage";
 import { orderBlockerLabels, orderFieldLabels } from "../src/i18n";
 import { defaultRouteScopeConfig } from "../src/routeScopeConfig";
@@ -296,11 +302,18 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("Missing delivery date");
     expect(html).toContain("Missing route scope");
     expect(html).toContain('name="deliveryDate"');
-    expect(html).toContain('name="serviceType"');
-    expect(html).toContain('placeholder="EVENING_DELIVERY"');
+    expect(html).toMatch(/<input(?=[^>]*name="serviceType")(?=[^>]*type="hidden")[^>]*>/);
+    expect(html).not.toMatch(/<input[^>]*name="serviceType"[^>]*type="text"/);
+    expect(html).toContain('data-choice-value="EVENING_DELIVERY"');
+    expect(html).toContain('aria-pressed="false"');
     expect(html).toContain("Allowed values: DELIVERY, EVENING_DELIVERY, PICKUP");
-    expect(html).toContain('name="deliverySession"');
-    expect(html).toContain('placeholder="EVENING"');
+    expect(html).toMatch(
+      /<input(?=[^>]*name="deliverySession")(?=[^>]*type="hidden")[^>]*>/,
+    );
+    expect(html).not.toMatch(
+      /<input[^>]*name="deliverySession"[^>]*type="text"/,
+    );
+    expect(html).toContain('data-choice-value="EVENING"');
     expect(html).toContain("Allowed values: DAY, EVENING, PICKUP");
     expect(html).toContain('aria-label="Service type help"');
     expect(html).toContain('class="order-detail-field-tooltip"');
@@ -341,6 +354,14 @@ describe("Orders compact operations table", () => {
                 label: "Morning",
                 value: "MORNING",
               },
+              {
+                builtIn: false,
+                description: "Disabled late session",
+                enabled: false,
+                example: "LATE",
+                label: "Late",
+                value: "LATE",
+              },
             ],
             serviceTypes: [
               ...routeScopeConfig.serviceTypes,
@@ -352,6 +373,14 @@ describe("Orders compact operations table", () => {
                 label: "Morning delivery",
                 value: "MORNING_DELIVERY",
               },
+              {
+                builtIn: false,
+                description: "Disabled late delivery",
+                enabled: false,
+                example: "LATE_DELIVERY",
+                label: "Late delivery",
+                value: "LATE_DELIVERY",
+              },
             ],
           },
           shopDomain: "tenant.example.test",
@@ -359,10 +388,99 @@ describe("Orders compact operations table", () => {
       },
     );
 
-    expect(html).toContain("MORNING_DELIVERY");
-    expect(html).toContain("MORNING");
+    expect(html).toContain('data-choice-value="MORNING_DELIVERY"');
+    expect(html).toContain('data-choice-value="MORNING"');
+    expect(html).not.toContain('data-choice-value="LATE_DELIVERY"');
+    expect(html).not.toContain('data-choice-value="LATE"');
     expect(html).toContain('role="tooltip"');
     expect(html).not.toContain("order-detail-field-hint");
+  });
+
+  test("does not resubmit unsupported route-scope values without an active choice", () => {
+    const html = renderOrderTable(
+      [
+        orderFixture({
+          blockerReasons: ["missing_route_scope"],
+          deliverySession: "LEGACY_SESSION",
+          metadataResolved: false,
+          routeEligible: false,
+          serviceType: "LEGACY_SERVICE",
+        }),
+      ],
+      {
+        expandedOrderIds: new Set(["order-11453"]),
+      },
+    );
+
+    expect(html).toMatch(
+      /<input(?=[^>]*name="serviceType")(?=[^>]*type="hidden")(?=[^>]*value="")[^>]*>/,
+    );
+    expect(html).toMatch(
+      /<input(?=[^>]*name="deliverySession")(?=[^>]*type="hidden")(?=[^>]*value="")[^>]*>/,
+    );
+    expect(html).toMatch(/<button disabled="" type="submit">Save fixes<\/button>/);
+
+    const fields = buildEditableMetadataFields(undefined);
+    const normalized = normalizeOrderMetadataPatchForFields(
+      {
+        address1: null,
+        address2: null,
+        city: null,
+        countryCode: null,
+        deliveryArea: null,
+        deliveryDate: null,
+        deliverySession: "LEGACY_SESSION",
+        postalCode: null,
+        province: null,
+        serviceType: "LEGACY_SERVICE",
+        timeWindowEnd: null,
+        timeWindowStart: null,
+      },
+      fields,
+    );
+    expect(normalized.serviceType).toBeNull();
+    expect(normalized.deliverySession).toBeNull();
+  });
+
+  test("choice button click path emits existing route-scope patch keys", () => {
+    const fields = buildEditableMetadataFields(undefined);
+    const serviceField = fields.find((field) => field.key === "serviceType");
+    const sessionField = fields.find(
+      (field) => field.key === "deliverySession",
+    );
+    expect(serviceField).toBeDefined();
+    expect(sessionField).toBeDefined();
+
+    const changes: Partial<OrderMetadataPatch> = {};
+    const onChange = (key: keyof OrderMetadataPatch, value: string): void => {
+      changes[key] = value;
+    };
+
+    clickChoice(
+      OrderDetailChoiceButtons({
+        field: serviceField!,
+        inputId: "service-type",
+        labelId: "service-type-label",
+        onChange,
+        value: null,
+      }),
+      "EVENING_DELIVERY",
+    );
+    clickChoice(
+      OrderDetailChoiceButtons({
+        field: sessionField!,
+        inputId: "delivery-session",
+        labelId: "delivery-session-label",
+        onChange,
+        value: null,
+      }),
+      "EVENING",
+    );
+
+    expect(changes).toMatchObject({
+      deliverySession: "EVENING",
+      serviceType: "EVENING_DELIVERY",
+    });
   });
 
   test("uses unique help ids for repair and edit field tooltips", () => {
@@ -527,6 +645,50 @@ function renderOrderTable(
       settings={options.settings}
     />,
   );
+}
+
+function clickChoice(element: ReactElement, choiceValue: string): void {
+  const button = collectButtons(element).find(
+    (candidate) => candidate.props["data-choice-value"] === choiceValue,
+  );
+  if (button === undefined) {
+    throw new Error(`Choice button not found: ${choiceValue}`);
+  }
+  button.props.onClick();
+}
+
+function collectButtons(
+  node: ReactNode,
+): Array<
+  ReactElement<{
+    children?: ReactNode;
+    "data-choice-value"?: string;
+    onClick(): void;
+  }>
+> {
+  const buttons: Array<
+    ReactElement<{
+      children?: ReactNode;
+      "data-choice-value"?: string;
+      onClick(): void;
+    }>
+  > = [];
+  const visit = (current: ReactNode): void => {
+    if (!isValidElement(current)) return;
+    const element = current as ReactElement<{ children?: ReactNode }>;
+    if (current.type === "button") {
+      buttons.push(
+        current as ReactElement<{
+          children?: ReactNode;
+          "data-choice-value"?: string;
+          onClick(): void;
+        }>,
+      );
+    }
+    Children.forEach(element.props.children, visit);
+  };
+  visit(node);
+  return buttons;
 }
 
 function orderFixture(

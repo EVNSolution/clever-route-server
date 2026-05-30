@@ -29,6 +29,7 @@ import type {
   StoreSettingsDto,
 } from "../types";
 import {
+  activeRouteScopeValues,
   normalizeRouteScopeConfig,
   routeScopeValueSummary,
 } from "../routeScopeConfig";
@@ -50,7 +51,8 @@ export type OrderMetadataPatch = {
   timeWindowStart: string | null;
 };
 
-type EditableMetadataField = {
+export type EditableMetadataField = {
+  choices?: StoreSettingsDto["routeScopeConfig"]["serviceTypes"];
   helpText?: string;
   key: keyof OrderMetadataPatch;
   label: string;
@@ -72,16 +74,18 @@ const EDITABLE_METADATA_FIELD_KEYS: Array<keyof OrderMetadataPatch> = [
   "timeWindowEnd",
 ];
 
-function buildEditableMetadataFields(
+export function buildEditableMetadataFields(
   settings: StoreSettingsDto | null | undefined,
 ): EditableMetadataField[] {
   const config = normalizeRouteScopeConfig(settings?.routeScopeConfig);
+  const serviceTypeChoices = activeRouteScopeValues(config.serviceTypes);
+  const deliverySessionChoices = activeRouteScopeValues(config.deliverySessions);
   const eveningService =
-    config.serviceTypes.find((value) => value.value === "EVENING_DELIVERY") ??
-    config.serviceTypes[0];
+    serviceTypeChoices.find((value) => value.value === "EVENING_DELIVERY") ??
+    serviceTypeChoices[0];
   const eveningSession =
-    config.deliverySessions.find((value) => value.value === "EVENING") ??
-    config.deliverySessions[0];
+    deliverySessionChoices.find((value) => value.value === "EVENING") ??
+    deliverySessionChoices[0];
   return [
     { key: "address1", label: orderFieldLabels.address1 },
     { key: "address2", label: orderFieldLabels.address2 },
@@ -96,12 +100,14 @@ function buildEditableMetadataFields(
       label: orderFieldLabels.deliveryDate,
     },
     {
+      choices: serviceTypeChoices,
       helpText: `Allowed values: ${routeScopeValueSummary(config.serviceTypes)}. Example: ${eveningService?.example ?? "EVENING_DELIVERY for a 5PM-9PM delivery route."}`,
       key: "serviceType",
       label: orderFieldLabels.serviceType,
       placeholder: eveningService?.value ?? "EVENING_DELIVERY",
     },
     {
+      choices: deliverySessionChoices,
       helpText: `Allowed values: ${routeScopeValueSummary(config.deliverySessions)}. Example: ${eveningSession?.example ?? "EVENING for a 5PM-9PM route."}`,
       key: "deliverySession",
       label: orderFieldLabels.deliverySession,
@@ -1261,9 +1267,10 @@ function OrderDetailPanel({
   };
   const saveDraft = (): void => {
     if (onSave === undefined || saving) return;
+    const patch = normalizeOrderMetadataPatchForFields(draft, editableFields);
     setSaving(true);
     setSaveError(null);
-    void onSave(draft)
+    void onSave(patch)
       .then(() => {
         setEditMode(false);
       })
@@ -1278,6 +1285,10 @@ function OrderDetailPanel({
     event.preventDefault();
     saveDraft();
   };
+  const repairSaveDisabled =
+    onSave === undefined ||
+    saving ||
+    hasUnselectedRequiredChoiceField(repairFields, draft);
 
   return (
     <div
@@ -1354,7 +1365,7 @@ function OrderDetailPanel({
               </p>
             )}
             <div className="orders-actions">
-              <button disabled={onSave === undefined || saving} type="submit">
+              <button disabled={repairSaveDisabled} type="submit">
                 {saving ? "Saving…" : "Save fixes"}
               </button>
             </div>
@@ -1473,10 +1484,16 @@ function OrderDetailFieldInput({
   const [helpOpen, setHelpOpen] = useState(false);
   const inputId = `${idPrefix}-${instance}-${field.key}`;
   const helpId = `${inputId}-help`;
+  const labelId = `${inputId}-label`;
+  const selectedChoiceValue = getSelectedChoiceValue(field, value);
   return (
     <div className="order-detail-field">
       <span className="order-detail-field-label-row">
-        <label className="order-detail-field-label" htmlFor={inputId}>
+        <label
+          className="order-detail-field-label"
+          htmlFor={field.choices === undefined ? inputId : undefined}
+          id={labelId}
+        >
           {field.label}
         </label>
         {field.helpText === undefined ? null : (
@@ -1502,17 +1519,122 @@ function OrderDetailFieldInput({
           </span>
         )}
       </span>
-      <input
-        aria-label={field.label}
-        id={inputId}
-        name={field.key}
-        onChange={(event) => onChange(field.key, event.target.value)}
-        placeholder={field.placeholder}
-        type={field.key === "deliveryDate" ? "date" : "text"}
-        value={value ?? ""}
-      />
+      {field.choices === undefined ? (
+        <input
+          aria-label={field.label}
+          id={inputId}
+          name={field.key}
+          onChange={(event) => onChange(field.key, event.target.value)}
+          placeholder={field.placeholder}
+          type={field.key === "deliveryDate" ? "date" : "text"}
+          value={value ?? ""}
+        />
+      ) : (
+        <>
+          <input
+            id={inputId}
+            name={field.key}
+            type="hidden"
+            value={selectedChoiceValue ?? ""}
+          />
+          <OrderDetailChoiceButtons
+            field={field}
+            inputId={inputId}
+            labelId={labelId}
+            onChange={onChange}
+            value={selectedChoiceValue}
+          />
+        </>
+      )}
     </div>
   );
+}
+
+export function OrderDetailChoiceButtons({
+  field,
+  inputId,
+  labelId,
+  onChange,
+  value,
+}: {
+  field: EditableMetadataField;
+  inputId: string;
+  labelId: string;
+  onChange(key: keyof OrderMetadataPatch, value: string): void;
+  value: string | null;
+}): ReactElement {
+  const choices = field.choices ?? [];
+  return (
+    <div
+      aria-labelledby={labelId}
+      className="order-detail-choice-group"
+      role="group"
+    >
+      {choices.map((choice) => {
+        const selected = choice.value === value;
+        return (
+          <button
+            aria-pressed={selected}
+            className={[
+              "order-detail-choice",
+              selected ? "order-detail-choice--selected" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            data-choice-field={field.key}
+            data-choice-value={choice.value}
+            id={`${inputId}-${sanitizeId(choice.value)}`}
+            key={choice.value}
+            onClick={() => onChange(field.key, choice.value)}
+            title={choice.example ?? choice.description ?? choice.value}
+            type="button"
+          >
+            <span>{choice.label}</span>
+            <small>{choice.value}</small>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+export function normalizeOrderMetadataPatchForFields(
+  patch: OrderMetadataPatch,
+  fields: EditableMetadataField[],
+): OrderMetadataPatch {
+  const normalized = { ...patch };
+  for (const field of fields) {
+    if (field.choices === undefined) continue;
+    if (!isActiveChoiceValue(field, normalized[field.key])) {
+      normalized[field.key] = null;
+    }
+  }
+  return normalized;
+}
+
+function hasUnselectedRequiredChoiceField(
+  fields: EditableMetadataField[],
+  draft: OrderMetadataPatch,
+): boolean {
+  return fields.some(
+    (field) =>
+      field.choices !== undefined && !isActiveChoiceValue(field, draft[field.key]),
+  );
+}
+
+function getSelectedChoiceValue(
+  field: EditableMetadataField,
+  value: string | null,
+): string | null {
+  return isActiveChoiceValue(field, value) ? value : null;
+}
+
+function isActiveChoiceValue(
+  field: EditableMetadataField,
+  value: string | null,
+): value is string {
+  if (field.choices === undefined || value === null) return false;
+  return field.choices.some((choice) => choice.value === value);
 }
 
 function getOrderRepairFields(
