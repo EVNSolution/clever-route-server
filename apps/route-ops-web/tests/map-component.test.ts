@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import { syncOrdersLayer, syncRouteLayers } from '../src/components/maps/RouteOpsMap';
+import { resolveMapHomePoint, syncOrdersLayer, syncRouteLayers } from '../src/components/maps/RouteOpsMap';
 import { buildOrdersMapFeatureCollection, buildSequenceLineFeature } from '../src/maps/geojson';
 import type { CanonicalOrderDto } from '../src/types';
 
@@ -15,6 +15,14 @@ describe('RouteOpsMap layer lifecycle', () => {
 
     syncOrdersLayer(map, empty);
     expect(sources.get('route-ops-orders')?.setData).toHaveBeenCalledWith(empty);
+  });
+
+  test('prefers the store depot as the Orders map home point over visible order coordinates', () => {
+    const depot = { id: 'settings-store-depot', kind: 'depot' as const, label: 'Store', latitude: 43.78, longitude: -79.41 };
+    const outOfAreaOrder = { id: 'order-1', kind: 'order' as const, label: '1', latitude: 42.98, longitude: -81.25 };
+
+    expect(resolveMapHomePoint(null, depot, [depot, outOfAreaOrder])).toBe(depot);
+    expect(resolveMapHomePoint(null, null, [outOfAreaOrder])).toBe(outOfAreaOrder);
   });
 
   test('renders Orders map pins without sequence labels', () => {

@@ -155,6 +155,8 @@ export function OrdersPage({
   const [filters, setFilters] = useState(createDefaultOrderFilters);
   const [routeDate, setRouteDate] = useState(today());
   const [routeName, setRouteName] = useState(`Route ${today()}`);
+  const [autoAppliedDeliveryDateFilter, setAutoAppliedDeliveryDateFilter] =
+    useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [settings, setSettings] = useState<StoreSettingsDto | null>(null);
   const [diagnosticsByOrder, setDiagnosticsByOrder] = useState<
@@ -182,19 +184,15 @@ export function OrdersPage({
     () => storeSettingsToDepotPoint(settings),
     [settings],
   );
-  const plannedOrderIds = useMemo(
-    () =>
-      new Set(
-        visibleOrders
-          .filter(
-            (order) =>
-              order.routePlanId !== null ||
-              order.planningStatus !== "UNPLANNED",
-          )
-          .map((order) => order.orderId),
-      ),
-    [visibleOrders],
-  );
+  const plannedOrderIds = useMemo(() => {
+    const highlighted = new Set(selected);
+    for (const order of visibleOrders) {
+      if (order.routePlanId !== null || order.planningStatus !== "UNPLANNED") {
+        highlighted.add(order.orderId);
+      }
+    }
+    return highlighted;
+  }, [selected, visibleOrders]);
 
   const refreshOrders = async (): Promise<void> => {
     setLoading(true);
@@ -231,6 +229,11 @@ export function OrdersPage({
           "Create route uses ready unplanned orders only. Remove unavailable orders from the plan.",
         );
       }
+      const routeDraftBlocker = getRouteDraftCreateBlocker(
+        selection.readySelected,
+        routeDate || today(),
+      );
+      if (routeDraftBlocker !== null) throw new Error(routeDraftBlocker);
       const result = await createRoute({
         csrfToken: bootstrap.csrfToken,
         depotAddress: settings?.defaultDepotAddress ?? null,
@@ -345,25 +348,61 @@ export function OrdersPage({
     }
   };
 
+  const applyPlanDateLock = (deliveryDate: string): void => {
+    setRouteDate(deliveryDate);
+    setRouteName((current) =>
+      current.trim() === "" || /^Route \d{4}-\d{2}-\d{2}$/u.test(current)
+        ? `Route ${deliveryDate}`
+        : current,
+    );
+    setAutoAppliedDeliveryDateFilter(deliveryDate);
+    setFilters((current) =>
+      current.deliveryDate === deliveryDate
+        ? current
+        : { ...current, deliveryDate },
+    );
+  };
+
+  const clearPlan = (): void => {
+    setSelected(new Set());
+    setError(null);
+    const autoDate = autoAppliedDeliveryDateFilter;
+    setAutoAppliedDeliveryDateFilter(null);
+    if (autoDate !== null) {
+      setFilters((current) =>
+        current.deliveryDate === autoDate
+          ? { ...current, deliveryDate: "" }
+          : current,
+      );
+    }
+  };
+
+  const applyPlanSelection = (requestedSelected: Set<string>): void => {
+    const draft = buildRouteDraftSelection(orders, requestedSelected);
+    setSelected(new Set(draft.orderIds));
+    if (draft.deliveryDate === null) {
+      if (requestedSelected.size === 0) clearPlan();
+      else
+        setError(
+          draft.warning ?? "Select route-ready orders with a delivery date.",
+        );
+      return;
+    }
+    applyPlanDateLock(draft.deliveryDate);
+    setError(draft.warning);
+  };
+
   const togglePlanOrder = (orderId: string): void => {
-    const order = orders.find((candidate) => candidate.orderId === orderId);
-    setSelected((current) => {
-      const next = new Set(current);
-      if (next.has(orderId)) {
-        next.delete(orderId);
-      } else if (order !== undefined && isRoutePlanEligible(order)) {
-        next.add(orderId);
-      }
-      return next;
-    });
+    const next = new Set(selected);
+    if (next.has(orderId)) next.delete(orderId);
+    else next.add(orderId);
+    applyPlanSelection(next);
   };
 
   const addOrderToPlan = (orderId: string): void => {
-    const order = orders.find((candidate) => candidate.orderId === orderId);
-    if (order === undefined || !isRoutePlanEligible(order)) return;
-    setSelected((current) =>
-      current.has(orderId) ? current : new Set([...current, orderId]),
-    );
+    const next = new Set(selected);
+    next.add(orderId);
+    applyPlanSelection(next);
   };
 
   return (
@@ -383,7 +422,7 @@ export function OrdersPage({
       secondary={
         <RoutePlanPanel
           invalidSelectionCount={selected.size - selection.readySelected.length}
-          onClear={() => setSelected(new Set())}
+          onClear={clearPlan}
           onCreate={() => void create()}
           routeDate={routeDate}
           routeName={routeName}
@@ -471,7 +510,7 @@ export function OrdersPage({
             onTogglePlanOrder={togglePlanOrder}
             orders={visibleOrders}
             selected={selected}
-            setSelected={setSelected}
+            setSelected={applyPlanSelection}
             settings={settings}
           />
         </>
@@ -858,12 +897,7 @@ function OrderTableRow(input: {
             aria-label={`Select order ${orderLabel}`}
             checked={selected}
             disabled={!canPlan && !selected}
-            onChange={(event) => {
-              const next = new Set(input.selectedOrders);
-              if (event.target.checked && canPlan) next.add(order.orderId);
-              else next.delete(order.orderId);
-              input.setSelected(next);
-            }}
+            onChange={() => input.onTogglePlanOrder(order.orderId)}
             type="checkbox"
           />
         </td>
@@ -1842,6 +1876,89 @@ function formatCoordinateSummary(order: CanonicalOrderDto): {
 
 function sanitizeId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]+/gu, "-");
+}
+
+export function buildRouteDraftSelection(
+  orders: CanonicalOrderDto[],
+  requestedSelectedOrderIds: ReadonlySet<string>,
+): {
+  deliveryDate: string | null;
+  orderIds: string[];
+  routeScopeKey: string | null;
+  warning: string | null;
+} {
+  const ordersById = new Map(orders.map((order) => [order.orderId, order]));
+  const requestedOrders = [...requestedSelectedOrderIds]
+    .map((orderId) => ordersById.get(orderId))
+    .filter((order): order is CanonicalOrderDto => order !== undefined);
+  const routeReadyOrders = requestedOrders.filter(isRoutePlanEligible);
+  const anchor = routeReadyOrders.find(
+    (order) => getRouteDraftScopeKey(order) !== null,
+  );
+
+  if (anchor === undefined || anchor.deliveryDate === null) {
+    return {
+      deliveryDate: null,
+      orderIds: [],
+      routeScopeKey: null,
+      warning:
+        requestedSelectedOrderIds.size === 0
+          ? null
+          : "Select route-ready orders with a delivery date and route scope.",
+    };
+  }
+
+  const anchorScopeKey = getRouteDraftScopeKey(anchor);
+  const selectedOrders = routeReadyOrders.filter(
+    (order) =>
+      order.deliveryDate === anchor.deliveryDate &&
+      getRouteDraftScopeKey(order) === anchorScopeKey,
+  );
+  const warning =
+    selectedOrders.length === requestedOrders.length
+      ? null
+      : "Only orders with the same delivery date and delivery session were added to the plan.";
+
+  return {
+    deliveryDate: anchor.deliveryDate,
+    orderIds: selectedOrders.map((order) => order.orderId),
+    routeScopeKey: anchorScopeKey,
+    warning,
+  };
+}
+
+export function getRouteDraftCreateBlocker(
+  selectedOrders: CanonicalOrderDto[],
+  routeDate: string,
+): string | null {
+  if (selectedOrders.length === 0) return null;
+  if (selectedOrders.some((order) => order.deliveryDate !== routeDate)) {
+    return "Route date must match the selected orders delivery date.";
+  }
+  const scopeKeys = new Set(
+    selectedOrders.map((order) => getRouteDraftScopeKey(order)),
+  );
+  if (scopeKeys.size !== 1 || scopeKeys.has(null)) {
+    return "Selected orders must share the same delivery date and delivery session.";
+  }
+  return null;
+}
+
+export function getRouteDraftScopeKey(order: CanonicalOrderDto): string | null {
+  if (
+    !isPresent(order.deliveryDate) ||
+    !isPresent(order.serviceType) ||
+    !isPresent(order.deliverySession)
+  ) {
+    return null;
+  }
+  return [
+    order.deliveryDate,
+    order.serviceType,
+    order.deliverySession,
+    order.timeWindowStart ?? "",
+    order.timeWindowEnd ?? "",
+  ].join("|");
 }
 
 function isRoutePlanEligible(order: CanonicalOrderDto): boolean {

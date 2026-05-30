@@ -3,6 +3,8 @@ import { describe, expect, test } from "vitest";
 
 import {
   buildEditableMetadataFields,
+  buildRouteDraftSelection,
+  getRouteDraftCreateBlocker,
   normalizeOrderMetadataPatchForFields,
   OrderDetailChoiceDropdown,
   formatDeliveryDayLabel,
@@ -305,12 +307,16 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("Missing delivery date");
     expect(html).toContain("Missing route scope");
     expect(html).toContain('name="deliveryDate"');
-    expect(html).toMatch(/<select(?=[^>]*name="serviceType")(?=[^>]*data-choice-field="serviceType")[^>]*>/);
+    expect(html).toMatch(
+      /<select(?=[^>]*name="serviceType")(?=[^>]*data-choice-field="serviceType")[^>]*>/,
+    );
     expect(html).not.toMatch(/<input[^>]*name="serviceType"[^>]*type="text"/);
     expect(html).not.toMatch(/<button[^>]*data-choice-field="serviceType"/);
     expect(html).toContain('data-choice-value="EVENING_DELIVERY"');
     expect(html).toContain("Select service type");
-    expect(html).toContain("Allowed values: DELIVERY, EVENING_DELIVERY, PICKUP");
+    expect(html).toContain(
+      "Allowed values: DELIVERY, EVENING_DELIVERY, PICKUP",
+    );
     expect(html).toMatch(
       /<select(?=[^>]*name="deliverySession")(?=[^>]*data-choice-field="deliverySession")[^>]*>/,
     );
@@ -426,7 +432,9 @@ describe("Orders compact operations table", () => {
       /<select(?=[^>]*name="deliverySession")(?=[^>]*data-choice-field="deliverySession")[^>]*>/,
     );
     expect(html).not.toContain('value="LEGACY_SESSION"');
-    expect(html).toMatch(/<button disabled="" type="submit">Save fixes<\/button>/);
+    expect(html).toMatch(
+      /<button disabled="" type="submit">Save fixes<\/button>/,
+    );
 
     const fields = buildEditableMetadataFields(undefined);
     const normalized = normalizeOrderMetadataPatchForFields(
@@ -508,10 +516,18 @@ describe("Orders compact operations table", () => {
       },
     );
 
-    expect(html).toContain('id="order-detail-order-11453-repair-serviceType-help"');
-    expect(html).toContain('id="order-detail-order-11453-edit-serviceType-help"');
-    expect(html).toContain('aria-describedby="order-detail-order-11453-repair-serviceType-help"');
-    expect(html).toContain('aria-describedby="order-detail-order-11453-edit-serviceType-help"');
+    expect(html).toContain(
+      'id="order-detail-order-11453-repair-serviceType-help"',
+    );
+    expect(html).toContain(
+      'id="order-detail-order-11453-edit-serviceType-help"',
+    );
+    expect(html).toContain(
+      'aria-describedby="order-detail-order-11453-repair-serviceType-help"',
+    );
+    expect(html).toContain(
+      'aria-describedby="order-detail-order-11453-edit-serviceType-help"',
+    );
     expect(html).toContain('aria-expanded="false"');
   });
 
@@ -604,9 +620,50 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("1/1 selectable");
     expect(html).toContain("Select filtered");
     expect(html).toContain("Clear filtered");
-    expect(html).toContain('aria-label="Select all route-ready orders in current filters"');
+    expect(html).toContain(
+      'aria-label="Select all route-ready orders in current filters"',
+    );
     expect(html).toContain('aria-label="Select order #1002 11453"');
     expect(html).toContain('aria-label="Select order #1003 11453"');
+  });
+
+  test("route draft selection locks to one delivery date and session", () => {
+    const first = orderFixture({ orderId: "first" });
+    const sameScope = orderFixture({
+      orderId: "same-scope",
+      orderName: "#11454",
+    });
+    const otherDate = orderFixture({
+      deliveryDate: "2026-05-30",
+      orderId: "other-date",
+      orderName: "#11455",
+    });
+    const otherSession = orderFixture({
+      deliverySession: "DAY",
+      orderId: "other-session",
+      orderName: "#11456",
+      serviceType: "DELIVERY",
+      timeWindowEnd: null,
+      timeWindowStart: null,
+    });
+
+    const draft = buildRouteDraftSelection(
+      [first, sameScope, otherDate, otherSession],
+      new Set(["first", "same-scope", "other-date", "other-session"]),
+    );
+
+    expect(draft.deliveryDate).toBe("2026-05-29");
+    expect(draft.orderIds).toEqual(["first", "same-scope"]);
+    expect(draft.warning).toContain("same delivery date and delivery session");
+    expect(
+      getRouteDraftCreateBlocker([first, sameScope], "2026-05-29"),
+    ).toBeNull();
+    expect(getRouteDraftCreateBlocker([first], "2026-05-30")).toContain(
+      "Route date must match",
+    );
+    expect(
+      getRouteDraftCreateBlocker([first, otherSession], "2026-05-29"),
+    ).toContain("same delivery date");
   });
 
   test("formatter precedence uses service type for Method and delivery date for Day", () => {

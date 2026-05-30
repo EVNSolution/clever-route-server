@@ -39,11 +39,15 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
   const markersRef = useRef<MapLibreMarker[]>([]);
   const onMapClickCoordinateRef = useRef(onMapClickCoordinate);
   const onOrderSelectRef = useRef(onOrderSelect);
+  const homePointRef = useRef<RouteOpsPoint | null>(null);
+  const pointsRef = useRef<RouteOpsPoint[]>([]);
+  const ordersHomeAppliedRef = useRef<string | null>(null);
   const [isMapReady, setIsMapReady] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [fitRequest, setFitRequest] = useState(0);
 
   const points = useMemo(() => (detail === null ? prependDepotPoint(depot, getOrderMapPoints(orders)) : getRouteMapPoints(detail)), [depot, detail, orders]);
+  const homePoint = useMemo(() => resolveMapHomePoint(detail, depot, points), [depot, detail, points]);
   const readiness = mapReadiness({ coordinatesCount: points.length, mapStatus: bootstrap.mapConfig.status });
   const routeGeometry = useMemo(() => buildRouteGeometryFeature(detail), [detail]);
   const sequenceGeometry = useMemo(() => buildSequenceLineFeature(points), [points]);
@@ -59,6 +63,14 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
   }, [onOrderSelect]);
 
   useEffect(() => {
+    homePointRef.current = homePoint;
+  }, [homePoint]);
+
+  useEffect(() => {
+    pointsRef.current = points;
+  }, [points]);
+
+  useEffect(() => {
     if (readiness !== 'interactive_map' || bootstrap.mapConfig.styleUrl === null || containerRef.current === null || mapRef.current !== null) return undefined;
     let mounted = true;
 
@@ -72,7 +84,8 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
         if (!mounted || containerRef.current === null || mapRef.current !== null || bootstrap.mapConfig.styleUrl === null) return;
         if (pmtilesModule !== null) installPmtilesProtocol(maplibregl, pmtilesModule.Protocol);
         maplibreRef.current = maplibregl;
-        const firstPoint = points[0];
+        ordersHomeAppliedRef.current = null;
+        const firstPoint = homePointRef.current ?? pointsRef.current[0];
         const map = new maplibregl.Map({
           attributionControl: { compact: true },
           cancelPendingTileRequestsWhileZooming: true,
@@ -88,7 +101,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
           style: bootstrap.mapConfig.styleUrl,
           touchPitch: false,
           validateStyle: false,
-          zoom: points.length > 1 ? 10 : 12
+          zoom: firstPoint?.kind === 'depot' ? 10 : 12
         });
         mapRef.current = map;
         installMissingMapImageFallback(map);
@@ -120,6 +133,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
       const map = mapRef.current;
       mapRef.current = null;
       maplibreRef.current = null;
+      ordersHomeAppliedRef.current = null;
       setIsMapReady(false);
       if (map !== null) safeRemoveMap(map);
     };
@@ -131,8 +145,23 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
     if (detail === null) syncOrdersLayer(map, ordersGeojson);
     syncRouteLayers(map, lineFeature);
     syncRouteMarkers(map, maplibreRef.current, detail === null ? points.filter((point) => point.kind === 'depot') : points, markersRef.current);
+    if (detail !== null) {
+      fitMap(map, maplibreRef.current, points);
+      return;
+    }
+    applyOrdersHomeViewport(map, homePoint, ordersHomeAppliedRef);
+  }, [detail, homePoint, isMapReady, lineFeature, ordersGeojson, points]);
+
+  useEffect(() => {
+    if (fitRequest === 0 || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return;
+    const map = mapRef.current;
+    if (detail === null) {
+      const target = homePoint ?? points[0] ?? null;
+      if (target !== null) centerMapOnPoint(map, target);
+      return;
+    }
     fitMap(map, maplibreRef.current, points);
-  }, [detail, fitRequest, isMapReady, lineFeature, ordersGeojson, points]);
+  }, [detail, fitRequest, homePoint, isMapReady, points]);
 
   useEffect(() => {
     if (!isMapReady || detail !== null || mapRef.current === null || onOrderSelect === undefined) return undefined;
@@ -154,7 +183,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
         <div><h2>{title}</h2><p>{subtitle}</p></div>
       </div>
       <div className="route-ops-map-frame" data-map-provider-mode={bootstrap.mapConfig.providerMode ?? 'none'} data-map-provider-status={bootstrap.mapConfig.status}>
-        {readiness === 'interactive_map' ? <div className="map-toolbar"><button aria-label="Zoom map to fit" onClick={() => setFitRequest((value) => value + 1)} title="Zoom map to fit" type="button"><FitMapIcon /></button></div> : null}
+        {readiness === 'interactive_map' ? <div className="map-toolbar"><button aria-label={detail === null ? 'Center map on store' : 'Zoom map to fit'} onClick={() => setFitRequest((value) => value + 1)} title={detail === null ? 'Center map on store' : 'Zoom map to fit'} type="button"><FitMapIcon /></button></div> : null}
         {readiness === 'interactive_map' ? <div className="route-ops-map-canvas" ref={containerRef} aria-label="Interactive CLEVER route map" /> : <SequencePreview points={points} readiness={readiness} showRouteLine={detail !== null} />}
       </div>
     </article>
@@ -164,6 +193,11 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
 function prependDepotPoint(depot: RouteOpsPoint | null, points: RouteOpsPoint[]): RouteOpsPoint[] {
   if (depot === null) return points;
   return [depot, ...points.filter((point) => point.id !== depot.id)];
+}
+
+export function resolveMapHomePoint(detail: RoutePlanDetailDto | null, depot: RouteOpsPoint | null, points: RouteOpsPoint[]): RouteOpsPoint | null {
+  if (detail === null) return depot ?? points[0] ?? null;
+  return points.find((point) => point.kind === 'depot') ?? points[0] ?? null;
 }
 
 export function syncOrdersLayer(map: MapLibreMap, featureCollection: ReturnType<typeof buildOrdersMapFeatureCollection>): void {
@@ -437,6 +471,24 @@ function createRouteStopMarkerElement(point: RouteOpsPoint): HTMLElement {
   labelElement.textContent = point.label;
   markerElement.append(labelElement);
   return markerElement;
+}
+
+function applyOrdersHomeViewport(map: MapLibreMap, homePoint: RouteOpsPoint | null, appliedRef: { current: string | null }): void {
+  if (homePoint === null) return;
+  const key = mapHomePointKey(homePoint);
+  const previousKey = appliedRef.current;
+  const shouldApply = previousKey === null || (homePoint.kind === 'depot' && previousKey !== key);
+  if (!shouldApply) return;
+  centerMapOnPoint(map, homePoint);
+  appliedRef.current = key;
+}
+
+function centerMapOnPoint(map: MapLibreMap, point: RouteOpsPoint): void {
+  map.easeTo({ center: [point.longitude, point.latitude], duration: 0, zoom: point.kind === 'depot' ? 10 : 12 });
+}
+
+function mapHomePointKey(point: RouteOpsPoint): string {
+  return `${point.kind}:${point.id}:${point.latitude}:${point.longitude}`;
 }
 
 function fitMap(map: MapLibreMap, maplibregl: MapLibreModule | null, points: RouteOpsPoint[]): void {
