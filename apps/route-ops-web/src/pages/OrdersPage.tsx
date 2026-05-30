@@ -15,6 +15,8 @@ import { orderDetailLabels, orderFieldLabels } from "../i18n";
 import { TabLayout } from "../components/TabLayout";
 import { RouteOpsMap } from "../components/maps/RouteOpsMap";
 import {
+  applyClientOrderFilters,
+  buildOrderFetchQuery,
   buildOrderQuery,
   createDefaultOrderFilters,
   storeSettingsToDepotPoint,
@@ -167,6 +169,11 @@ export function OrdersPage({
   const [bulkGeocoding, setBulkGeocoding] = useState(false);
 
   const query = useMemo(() => buildOrderQuery(filters), [filters]);
+  const fetchQuery = useMemo(() => buildOrderFetchQuery(filters), [filters]);
+  const visibleOrders = useMemo(
+    () => applyClientOrderFilters(orders, filters),
+    [orders, filters],
+  );
   const selection = useMemo(
     () => summarizeSelection(orders, selected),
     [orders, selected],
@@ -178,7 +185,7 @@ export function OrdersPage({
   const plannedOrderIds = useMemo(
     () =>
       new Set(
-        orders
+        visibleOrders
           .filter(
             (order) =>
               order.routePlanId !== null ||
@@ -186,13 +193,13 @@ export function OrdersPage({
           )
           .map((order) => order.orderId),
       ),
-    [orders],
+    [visibleOrders],
   );
 
   const refreshOrders = async (): Promise<void> => {
     setLoading(true);
     try {
-      const payload = await getOrders(query);
+      const payload = await getOrders(fetchQuery);
       setOrders(payload.orders);
       setError(null);
     } catch (error) {
@@ -204,7 +211,7 @@ export function OrdersPage({
 
   useEffect(() => {
     void refreshOrders();
-  }, [query]);
+  }, [fetchQuery]);
 
   useEffect(() => {
     getSettings()
@@ -367,7 +374,7 @@ export function OrdersPage({
           bootstrap={bootstrap}
           depot={depotPoint}
           onOrderSelect={addOrderToPlan}
-          orders={orders}
+          orders={visibleOrders}
           plannedOrderIds={plannedOrderIds}
           subtitle="Imported WooCommerce stops by current filters"
           title="Orders map"
@@ -462,7 +469,7 @@ export function OrdersPage({
             onSaveMetadata={saveOrderMetadata}
             onToggleDetail={toggleOrderDetail}
             onTogglePlanOrder={togglePlanOrder}
-            orders={orders}
+            orders={visibleOrders}
             selected={selected}
             setSelected={setSelected}
             settings={settings}
