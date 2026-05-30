@@ -44,8 +44,8 @@ jobs:
         run: node scripts/check-ignore-hygiene.mjs
       - name: Secret scan staged/worktree
         run: scripts/scan-secrets.sh --worktree
-      - name: Route Ops deploy scope guard (Route Ops PR only)
-        if: github.event_name == 'pull_request' && steps.route_ops_changes.outputs.changed == 'true'
+      - name: Route Ops deploy scope guard (opt-in PR only)
+        if: github.event_name == 'pull_request' && steps.route_ops_changes.outputs.changed == 'true' && contains(github.event.pull_request.labels.*.name, 'route-ops-deploy-scope')
         run: scripts/guard-route-ops-deploy-scope.mjs --base "${{ github.event.pull_request.base.sha }}" --head "$GITHUB_SHA" --json --allow-compose-bootstrap
       - name: Route Ops SSM deploy static checks
         if: steps.route_ops_changes.outputs.changed == 'true'
@@ -144,7 +144,7 @@ jobs:
               files=$(git ls-files)
             fi
           fi
-          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/|apps/delivery-api/Dockerfile|apps/delivery-api/src/routes/admin-commerce-connections-ui\.routes\.ts|apps/delivery-api/tests/admin-commerce-connections-ui\.routes\.test\.ts|infra/compose/docker-compose\.prod\.yml|infra/env/delivery-api\.env\.example|infra/env/deploy-image\.env\.example|\.github/workflows/ci\.yml|\.github/workflows/route-ops-publish\.yml)$'; then
+          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/|apps/delivery-api/Dockerfile|apps/delivery-api/prisma/|apps/delivery-api/src/routes/(admin-commerce-connections-ui|admin-route-plans)\.routes\.ts|apps/delivery-api/src/modules/(commerce|geocoding|route-plans|route-ops|shopify|woocommerce|wordpress-plugin)/|apps/delivery-api/tests/(admin-commerce-connections-ui\.routes|admin-route-plans\.routes|geocoding\.service|osrm-route-geometry\.client|woocommerce-order-sync\.service|route-plan\.repository|route-scope-config|prisma-schema)\.test\.ts|infra/compose/docker-compose\.prod\.yml|infra/env/delivery-api\.env\.example|infra/env/deploy-image\.env\.example|\.github/workflows/ci\.yml|\.github/workflows/route-ops-publish\.yml)$'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -161,6 +161,9 @@ jobs:
       - name: Prisma generate
         if: steps.changes.outputs.changed == 'true'
         run: npm --prefix apps/delivery-api run prisma:generate
+      - name: Lint delivery API
+        if: steps.changes.outputs.changed == 'true'
+        run: npm --prefix apps/delivery-api run lint
       - name: Typecheck delivery API
         if: steps.changes.outputs.changed == 'true'
         run: npm --prefix apps/delivery-api run typecheck
@@ -172,7 +175,16 @@ jobs:
           path: apps/route-ops-web/dist
       - name: Route Ops targeted tests
         if: steps.changes.outputs.changed == 'true'
-        run: npm --prefix apps/delivery-api run test -- tests/admin-commerce-connections-ui.routes.test.ts
+        run: >
+          npm --prefix apps/delivery-api run test --
+          tests/admin-commerce-connections-ui.routes.test.ts
+          tests/admin-route-plans.routes.test.ts
+          tests/geocoding.service.test.ts
+          tests/osrm-route-geometry.client.test.ts
+          tests/woocommerce-order-sync.service.test.ts
+          tests/route-plan.repository.test.ts
+          tests/route-scope-config.test.ts
+          tests/prisma-schema.test.ts
       - name: Build delivery API
         if: steps.changes.outputs.changed == 'true'
         run: npm --prefix apps/delivery-api run build
