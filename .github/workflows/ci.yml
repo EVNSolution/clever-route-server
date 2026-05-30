@@ -32,7 +32,7 @@ jobs:
               files=$(git ls-files)
             fi
           fi
-          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/|apps/delivery-api/Dockerfile|apps/delivery-api/src/routes/admin-commerce-connections-ui\.routes\.ts|apps/delivery-api/tests/admin-commerce-connections-ui\.routes\.test\.ts|infra/compose/docker-compose\.prod\.yml|infra/env/delivery-api\.env\.example|infra/env/deploy-image\.env\.example|scripts/(guard-route-ops-deploy-scope|check-ignore-hygiene|scan-secrets|smoke-route-ops-production|deploy-route-ops-image|rollback-route-ops-image|ssm-route-ops-deploy|test-ssm-route-ops-deploy|validate-route-ops-ssm-deploy)\.(mjs|sh)|docs/deployment/(route-ops-github-deploy|route-ops-ssm-deploy)\.md|\.github/workflows/ci\.yml|\.github/workflows/route-ops-publish\.yml|\.github/workflows/route-ops-ssm-deploy\.yml|\.gitignore|\.dockerignore|\.gitleaks\.toml)$'; then
+          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/|apps/delivery-api/Dockerfile|apps/delivery-api/src/routes/admin-commerce-connections-ui\.routes\.ts|apps/delivery-api/tests/admin-commerce-connections-ui\.routes\.test\.ts|infra/compose/docker-compose\.prod\.yml|infra/env/delivery-api\.env\.example|infra/env/deploy-image\.env\.example|scripts/(guard-route-ops-deploy-scope|check-ignore-hygiene|scan-secrets|smoke-route-ops-production|deploy-route-ops-image|rollback-route-ops-image|ssm-route-ops-deploy|osrm-ontario|validate-route-ops-ssm-deploy)\.(mjs|sh)|tests/deploy/ssm-route-ops-deploy\.test\.sh|docs/(deployment/(route-ops-github-deploy|route-ops-ssm-deploy|route-ops-osrm-ontario)\.md|development/script-tooling\.md)|\.github/workflows/ci\.yml|\.github/workflows/route-ops-publish\.yml|\.github/workflows/route-ops-ssm-deploy\.yml|\.gitignore|\.dockerignore|\.gitleaks\.toml)$'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -51,10 +51,12 @@ jobs:
         if: steps.route_ops_changes.outputs.changed == 'true'
         run: |
           node scripts/validate-route-ops-ssm-deploy.mjs
-          for script in scripts/ssm-route-ops-deploy.sh scripts/deploy-route-ops-image.sh scripts/rollback-route-ops-image.sh scripts/test-ssm-route-ops-deploy.sh; do
+          for script in scripts/ssm-route-ops-deploy.sh scripts/deploy-route-ops-image.sh scripts/rollback-route-ops-image.sh scripts/osrm-ontario.sh tests/deploy/ssm-route-ops-deploy.test.sh; do
             bash -n "$script"
           done
-          scripts/test-ssm-route-ops-deploy.sh
+          tests/deploy/ssm-route-ops-deploy.test.sh
+          OSRM_DRY_RUN=1 scripts/osrm-ontario.sh prepare
+          OSRM_DRY_RUN=1 scripts/osrm-ontario.sh smoke
 
   route-ops-web:
     runs-on: ubuntu-latest
