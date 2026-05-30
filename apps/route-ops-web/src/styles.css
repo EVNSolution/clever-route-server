@@ -1033,6 +1033,7 @@ small,
 
 .order-detail-repair-fields,
 .order-detail-edit-grid {
+  align-items: start;
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -1044,12 +1045,15 @@ small,
   font-size: 13px;
   font-weight: 800;
   gap: 6px;
+  grid-template-rows: 24px 58px;
 }
 
 .order-detail-field-label-row {
   align-items: center;
   display: inline-flex;
   gap: 6px;
+  line-height: 1.1;
+  min-height: 24px;
 }
 
 .order-detail-repair-fields input,
@@ -1059,10 +1063,13 @@ small,
   background: #fff;
   border: 1px solid #dbe3ef;
   border-radius: 10px;
+  box-sizing: border-box;
   color: #111827;
   font: inherit;
   font-weight: 700;
-  min-height: 38px;
+  height: 58px;
+  line-height: 1.2;
+  min-height: 58px;
   padding: 8px 10px;
 }
 
