@@ -96,14 +96,26 @@ export type PatchCanonicalOrderInput = {
 
 export type PatchCanonicalOrderCoordinatesInput = {
   actor: string;
+  geocodeDiagnostic?: {
+    diagnostic: Record<string, unknown>;
+    source: PatchCanonicalOrderGeocodeDiagnosticsInput["source"];
+  };
   latitude: number;
   longitude: number;
   orderId: string;
   provider?: string | null;
   providerPlaceId?: string | null;
-  rawLabel?: string | null;
   shopDomain: string;
   source: "geocoder" | "manual" | "map_click";
+};
+
+export type PatchCanonicalOrderGeocodeDiagnosticsInput = {
+  actor: string;
+  diagnostic: Record<string, unknown>;
+  geocodeStatus: "FAILED" | "PENDING" | "RESOLVED";
+  orderId: string;
+  shopDomain: string;
+  source: "bulk_geocode" | "server_pre_persist" | "single_order_geocode";
 };
 
 type OrderSyncPrismaClient = Pick<
@@ -196,6 +208,7 @@ type DeliveryFactCanonicalRecord = {
   deliveryDateWeekdayVerified?: boolean;
   deliveryDayParseStatus?: string | null;
   deliverySession: string | null;
+  geocodeStatus?: string | null;
   mappingDiagnostics?: unknown;
   matchedMappingPaths?: unknown;
   deliveryWeekday: string | null;
@@ -653,19 +666,28 @@ export class PrismaOrderSyncRepository {
         fact.routeScopeKey !== null
           ? "READY_TO_PLAN"
           : "NEEDS_REVIEW";
-      const mappingDiagnostics = mergeRouteOpsCorrectionMetadata(
+      const correctionDiagnostics = mergeRouteOpsCorrectionMetadata(
         fact?.mappingDiagnostics,
         ["latitude", "longitude", "geocodeStatus"],
         {
           actor: input.actor,
           geocode: {
+            ok: true,
             provider: input.provider ?? null,
             providerPlaceId: input.providerPlaceId ?? null,
-            rawLabel: input.rawLabel ?? null,
+            source: input.source,
           },
           source: input.source,
         },
       );
+      const mappingDiagnostics =
+        input.geocodeDiagnostic === undefined
+          ? correctionDiagnostics
+          : mergeRouteOpsGeocodeDiagnostics(correctionDiagnostics, {
+              actor: input.actor,
+              diagnostic: input.geocodeDiagnostic.diagnostic,
+              source: input.geocodeDiagnostic.source,
+            });
       await tx.deliveryStop.upsert({
         create: {
           address1: shippingAddress.address1,
@@ -741,6 +763,128 @@ export class PrismaOrderSyncRepository {
         where: { shopId_orderId: { orderId: order.id, shopId: shop.id } },
       });
     });
+    return this.findCanonicalOrderById({
+      orderId: order.id,
+      shopDomain: input.shopDomain,
+    });
+  }
+
+  async patchCanonicalOrderGeocodeDiagnostics(
+    input: PatchCanonicalOrderGeocodeDiagnosticsInput,
+  ): Promise<CanonicalOrderRow | null> {
+    const shop = await this.findShop(input.shopDomain);
+    if (shop === null) return null;
+    const order = await this.findOrderForPatch({
+      orderId: input.orderId,
+      shopId: shop.id,
+    });
+    if (order === null) return null;
+
+    await this.prisma.$transaction(async (tx) => {
+      const fact = order.deliveryFacts?.[0] ?? null;
+      const stop = order.deliveryStops?.[0] ?? null;
+      const shippingAddress = readShippingAddress(order.shippingAddress, stop);
+      const existingReasons = readStringArray(fact?.reviewReasons) ?? [];
+      const reviewReasons = recomputeGeocodeFailureReviewReasons(existingReasons, {
+        deliveryArea: fact?.deliveryArea ?? null,
+        deliveryDate: formatDateOnlyNullable(fact?.deliveryDate ?? null),
+        geocodeStatus: input.geocodeStatus,
+        hasAddress: hasAddressFields(shippingAddress),
+        routeScopeKey: fact?.routeScopeKey ?? null,
+        serviceType: readServiceType(fact?.serviceType),
+      });
+      const readiness: CanonicalOrderReadiness =
+        input.geocodeStatus === "RESOLVED" &&
+        reviewReasons.length === 0 &&
+        fact !== null &&
+        fact.deliveryDate !== null &&
+        fact.routeScopeKey !== null
+          ? "READY_TO_PLAN"
+          : "NEEDS_REVIEW";
+      const mappingDiagnostics = mergeRouteOpsGeocodeDiagnostics(
+        fact?.mappingDiagnostics,
+        {
+          actor: input.actor,
+          diagnostic: input.diagnostic,
+          source: input.source,
+        },
+      );
+      const geocodeStatus = input.geocodeStatus;
+
+      await tx.deliveryStop.upsert({
+        create: {
+          address1: shippingAddress.address1,
+          address2: shippingAddress.address2,
+          city: shippingAddress.city,
+          countryCode: shippingAddress.countryCode,
+          deliveryDate: fact?.deliveryDate ?? null,
+          geocodeStatus,
+          latitude: null,
+          longitude: null,
+          orderId: order.id,
+          postalCode: shippingAddress.postalCode,
+          province: shippingAddress.province,
+          shopId: shop.id,
+          timeWindowEnd: fact?.timeWindowEnd ?? null,
+          timeWindowStart: fact?.timeWindowStart ?? null,
+        },
+        update: {
+          geocodeStatus,
+        },
+        where: { shopId_orderId: { orderId: order.id, shopId: shop.id } },
+      });
+      await tx.orderDeliveryFact.upsert({
+        create: {
+          batchEligible: false,
+          computedAt: new Date(),
+          deliveryArea: fact?.deliveryArea ?? null,
+          deliveryDate: fact?.deliveryDate ?? null,
+          deliveryDateWeekday: readDeliveryWeekday(fact?.deliveryDateWeekday),
+          deliveryDateWeekdayMismatch:
+            fact?.deliveryDateWeekdayMismatch ?? false,
+          deliveryDateWeekdayVerified:
+            fact?.deliveryDateWeekdayVerified ?? false,
+          deliveryDayParseStatus:
+            fact?.deliveryDate === null || fact === null
+              ? "NOT_PROVIDED"
+              : "PARSED",
+          deliveryDayUnparsedReason: null,
+          deliverySession: readDeliverySession(fact?.deliverySession),
+          deliveryWeekday: readDeliveryWeekday(fact?.deliveryDateWeekday),
+          geocodeStatus,
+          mappingDiagnostics: toJson(mappingDiagnostics),
+          matchedMappingPaths: toJson({ routeOpsGeocode: true }),
+          orderId: order.id,
+          planningGroupKey: fact?.planningGroupKey ?? null,
+          rawDeliveryArea: null,
+          rawDeliveryDate: null,
+          rawDeliveryDay: null,
+          rawDeliveryTimeWindow: null,
+          rawPickupDay: null,
+          readiness,
+          reviewReasons: toJson(reviewReasons),
+          routeScopeKey: fact?.routeScopeKey ?? null,
+          serviceType: readServiceType(fact?.serviceType),
+          shopId: shop.id,
+          sourceOrderId: order.sourceOrderId ?? null,
+          sourceOrderNumber: order.sourceOrderNumber ?? null,
+          sourcePlatform: order.sourcePlatform ?? "SHOPIFY",
+          sourceSiteUrl: order.sourceSiteUrl ?? null,
+          sourceUpdatedAt: order.sourceUpdatedAt ?? order.updatedAtShopify,
+          timeWindowEnd: fact?.timeWindowEnd ?? null,
+          timeWindowStart: fact?.timeWindowStart ?? null,
+        },
+        update: {
+          batchEligible: readiness === "READY_TO_PLAN",
+          geocodeStatus,
+          mappingDiagnostics: toJson(mappingDiagnostics),
+          readiness,
+          reviewReasons: toJson(reviewReasons),
+        },
+        where: { shopId_orderId: { orderId: order.id, shopId: shop.id } },
+      });
+    });
+
     return this.findCanonicalOrderById({
       orderId: order.id,
       shopDomain: input.shopDomain,
@@ -1248,6 +1392,22 @@ function mergeRouteOpsCorrectionMetadata(
   return diagnostics;
 }
 
+function mergeRouteOpsGeocodeDiagnostics(
+  value: unknown,
+  input: { actor: string; diagnostic: Record<string, unknown>; source: string },
+): Record<string, unknown> {
+  const diagnostics = { ...(objectOrNull(value) ?? {}) };
+  const now = new Date().toISOString();
+  diagnostics.routeOpsGeocode = {
+    ...input.diagnostic,
+    actor: input.actor,
+    source: input.source,
+    updatedAt: now,
+    version: 1,
+  };
+  return diagnostics;
+}
+
 function hasCorrectedStopFields(fields: Set<string>): boolean {
   return [
     "address1",
@@ -1499,6 +1659,33 @@ function recomputeCoordinateReviewReasons(
 ): string[] {
   const kept = current.filter((reason) => reason !== "missing_coordinates");
   if (!input.hasAddress) kept.push("missing_address");
+  if (input.deliveryArea === null) kept.push("missing_delivery_area");
+  if (input.deliveryDate === null) kept.push("missing_delivery_date");
+  if (input.routeScopeKey === null || input.serviceType === null)
+    kept.push("missing_route_scope");
+  return [...new Set(kept)];
+}
+
+function recomputeGeocodeFailureReviewReasons(
+  current: string[],
+  input: {
+    deliveryArea: string | null;
+    deliveryDate: string | null;
+    geocodeStatus: "FAILED" | "PENDING" | "RESOLVED";
+    hasAddress: boolean;
+    routeScopeKey: string | null;
+    serviceType: string | null;
+  },
+): string[] {
+  const kept = current.filter((reason) =>
+    reason !== "missing_address" &&
+    reason !== "missing_coordinates" &&
+    reason !== "missing_delivery_area" &&
+    reason !== "missing_delivery_date" &&
+    reason !== "missing_route_scope",
+  );
+  if (!input.hasAddress) kept.push("missing_address");
+  if (input.geocodeStatus !== "RESOLVED") kept.push("missing_coordinates");
   if (input.deliveryArea === null) kept.push("missing_delivery_area");
   if (input.deliveryDate === null) kept.push("missing_delivery_date");
   if (input.routeScopeKey === null || input.serviceType === null)
@@ -1848,6 +2035,33 @@ function buildDeliveryMetadataDiagnostics(input: {
   };
 }
 
+function buildGeocodeDiagnostics(
+  value: unknown,
+): CanonicalOrderRow["geocodeDiagnostics"] {
+  const diagnostics = objectOrNull(value);
+  const routeOpsGeocode = objectOrNull(diagnostics?.routeOpsGeocode);
+  const corrections = objectOrNull(diagnostics?.routeOpsCorrections);
+  const correctionGeocode = objectOrNull(corrections?.geocode);
+  const ingestGeocode = objectOrNull(diagnostics?.ingestGeocode);
+  const source =
+    routeOpsGeocode ?? correctionGeocode ?? ingestGeocode ?? null;
+  if (source === null) return null;
+  return {
+    attemptCount: readNumber(source.attemptCount),
+    code: readString(source.code),
+    messageKey: readString(source.messageKey),
+    ok: readBoolean(source.ok),
+    provider: readString(source.provider),
+    queryShapes: readStringArray(source.queryShapes) ?? [],
+    source: readString(source.source),
+    transient: readBoolean(source.transient),
+    updatedAt:
+      readString(source.updatedAt) ??
+      readString(source.attemptedAt) ??
+      readString(corrections?.lastUpdatedAt),
+  };
+}
+
 function redactDiagnosticValue(
   value: string | null,
   path?: string | null,
@@ -1980,6 +2194,7 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
       routeScopeKey,
       serviceType,
     }) ?? null;
+  const geocodeDiagnostics = buildGeocodeDiagnostics(fact?.mappingDiagnostics) ?? null;
 
   return {
     cancelledAt: formatDateTime(order.cancelledAt),
@@ -2003,7 +2218,8 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     email: order.email,
     financialStatus: order.financialStatus,
     fulfillmentStatus: order.fulfillmentStatus,
-    geocodeStatus: readGeocodeStatus(stop?.geocodeStatus),
+    geocodeDiagnostics,
+    geocodeStatus: readGeocodeStatus(stop?.geocodeStatus ?? fact?.geocodeStatus),
     hasCoordinates,
     latitude,
     longitude,
@@ -2241,6 +2457,10 @@ function readBoolean(value: unknown): boolean | null {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function readStringArray(value: unknown): string[] | null {

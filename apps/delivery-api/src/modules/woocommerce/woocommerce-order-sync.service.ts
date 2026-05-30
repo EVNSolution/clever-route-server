@@ -1,5 +1,6 @@
 import type { CanonicalOrderRow } from '../shopify/order-sync.mapper.js';
 import type { GeocodingAddress, GeocodingResult } from '../geocoding/geocoding.types.js';
+import { summarizeGeocodeDiagnostic } from '../geocoding/geocoding.diagnostics.js';
 import type { DeliveryBatchCandidate, ListCanonicalOrdersFilters, ListDeliveryBatchCandidatesInput, UpsertOrderWithDeliveryStopInput, UpsertOrderWithDeliveryStopResult } from '../shopify/order-sync.repository.js';
 import { mapWooCommerceOrderToDeliveryInputs, type WooOrderMappingConfig } from './woocommerce-order.mapper.js';
 import type { WooCommerceOrder } from './woocommerce-order.types.js';
@@ -45,7 +46,11 @@ type Repository = {
 
 type GeocodingServiceLike = {
   geocode(input: { address: GeocodingAddress; shopDomain: string }): Promise<GeocodingResult>;
-  status?: { mode: 'disabled' | 'nominatim_compatible'; persistentCacheEnabled: boolean };
+  status?: {
+    mode: 'disabled' | 'nominatim_compatible';
+    persistentCacheEnabled: boolean;
+    providerPolicy?: 'disabled' | 'private_nominatim_compatible' | 'public_nominatim';
+  };
 };
 
 export class WooCommerceOrderSyncService {
@@ -108,6 +113,7 @@ export class WooCommerceOrderSyncService {
           ...(this.options.shopTimezone === undefined ? {} : { shopTimezone: this.options.shopTimezone }),
           siteUrl: this.options.siteUrl
         }),
+        input.reason,
       );
       const result = await this.options.repository.upsertOrderWithDeliveryStop({
         shopDomain: this.options.shopDomain,
@@ -156,11 +162,18 @@ export class WooCommerceOrderSyncService {
   }
 
   private async geocodeBeforePersisting(
-    synced: UpsertOrderWithDeliveryStopInput['synced']
+    synced: UpsertOrderWithDeliveryStopInput['synced'],
+    reason: WooCommerceSyncOrdersInput['reason']
   ): Promise<UpsertOrderWithDeliveryStopInput['synced']> {
     const geocodingService = this.options.geocodingService;
     if (geocodingService === undefined || geocodingService.status?.mode === 'disabled') return synced;
     if (synced.deliveryStop === null || synced.deliveryStop.geocodeStatus === 'RESOLVED') return synced;
+    if (
+      geocodingService.status?.providerPolicy === 'public_nominatim' &&
+      reason !== 'webhook'
+    ) {
+      return synced;
+    }
 
     const address = toGeocodingAddress(synced.deliveryStop);
     if (!hasGeocodableAddress(address)) return synced;
@@ -265,21 +278,7 @@ function mergeRawPayloadGeocodeDiagnostics(
 }
 
 function summarizeIngestGeocode(geocode: GeocodingResult): Record<string, unknown> {
-  if (!geocode.ok) {
-    return {
-      code: geocode.code,
-      ok: false,
-      source: 'server_pre_persist'
-    };
-  }
-  return {
-    cached: geocode.cached,
-    ok: true,
-    provider: geocode.result.provider,
-    providerPlaceId: geocode.result.providerPlaceId,
-    rawLabel: geocode.result.rawLabel,
-    source: 'server_pre_persist'
-  };
+  return summarizeGeocodeDiagnostic(geocode, 'server_pre_persist');
 }
 
 function normalizeMappingConfig(value: Record<string, unknown>): WooOrderMappingConfig {

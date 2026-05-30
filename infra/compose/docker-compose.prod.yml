@@ -52,6 +52,27 @@ services:
       - /srv/clever-route-server/data/postgres:/var/lib/postgresql/data
       - /srv/clever-route-server/data/postgres-backups:/backups
 
+  osrm-ontario:
+    image: ${OSRM_IMAGE:-ghcr.io/project-osrm/osrm-backend:latest}
+    command:
+      [
+        "osrm-routed",
+        "--algorithm",
+        "mld",
+        "--port",
+        "5000",
+        "/data/ontario-latest.osrm"
+      ]
+    expose:
+      - "5000"
+    ports:
+      - "127.0.0.1:5000:5000"
+    profiles:
+      - osrm
+    restart: unless-stopped
+    volumes:
+      - /srv/clever-route-server/data/osrm/ontario:/data:ro
+
 volumes:
   caddy-data:
   caddy-config:

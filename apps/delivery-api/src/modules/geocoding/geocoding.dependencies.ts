@@ -1,4 +1,4 @@
-import { GeocodingService } from './geocoding.service.js';
+import { GeocodingService, SerializedGeocodingRateLimiter } from './geocoding.service.js';
 import { NominatimGeocodingClient } from './nominatim-geocoding.client.js';
 
 export type GeocodingRuntimeEnv = Partial<
@@ -7,12 +7,15 @@ export type GeocodingRuntimeEnv = Partial<
     | 'GEOCODING_SEARCH_URL'
     | 'GEOCODING_USER_AGENT'
     | 'GEOCODING_RATE_LIMIT_PER_SECOND'
-    | 'GEOCODING_CACHE_TTL_DAYS',
+    | 'GEOCODING_CACHE_TTL_DAYS'
+    | 'GEOCODING_PUBLIC_BULK_MAX_ATTEMPTS'
+    | 'GEOCODING_TIMEOUT_MS',
     string
   >
 >;
 
 const PUBLIC_NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
+const publicProviderLimiters = new Map<string, SerializedGeocodingRateLimiter>();
 
 export function loadGeocodingService(input: { env: GeocodingRuntimeEnv }): GeocodingService {
   const mode = readMode(input.env.GEOCODING_PROVIDER_MODE);
@@ -28,8 +31,19 @@ export function loadGeocodingService(input: { env: GeocodingRuntimeEnv }): Geoco
     return new GeocodingService({
       minIntervalMs: Math.ceil(1000 / rateLimit),
       mode: 'nominatim_compatible',
+      bulkAttemptLimit: readBulkAttemptLimit(input.env.GEOCODING_PUBLIC_BULK_MAX_ATTEMPTS, 25),
       persistentCacheEnabled,
-      ...(userAgent === undefined ? {} : { provider: new NominatimGeocodingClient({ searchUrl, userAgent }) }),
+      providerPolicy: 'public_nominatim',
+      rateLimiter: readSharedPublicProviderLimiter(searchUrl),
+      ...(userAgent === undefined
+        ? {}
+        : {
+            provider: new NominatimGeocodingClient({
+              searchUrl,
+              ...optionalTimeout(input.env.GEOCODING_TIMEOUT_MS),
+              userAgent,
+            }),
+          }),
       requirePersistentCache: true
     });
   }
@@ -37,13 +51,25 @@ export function loadGeocodingService(input: { env: GeocodingRuntimeEnv }): Geoco
   return new GeocodingService({
     minIntervalMs: Math.ceil(1000 / rateLimit),
     mode,
+    bulkAttemptLimit: readBulkAttemptLimit(input.env.GEOCODING_PUBLIC_BULK_MAX_ATTEMPTS, null),
     persistentCacheEnabled,
     provider: new NominatimGeocodingClient({
       searchUrl,
+      ...optionalTimeout(input.env.GEOCODING_TIMEOUT_MS),
       userAgent: userAgent ?? 'CLEVER-Route-Ops-Geocoder/disabled-contact-required'
     }),
+    providerPolicy: 'private_nominatim_compatible',
     requirePersistentCache: isPublicNominatim
   });
+}
+
+function readSharedPublicProviderLimiter(searchUrl: string): SerializedGeocodingRateLimiter {
+  const key = normalizeUrl(searchUrl);
+  const current = publicProviderLimiters.get(key);
+  if (current !== undefined) return current;
+  const next = new SerializedGeocodingRateLimiter();
+  publicProviderLimiters.set(key, next);
+  return next;
 }
 
 function readMode(value: string | undefined): 'disabled' | 'nominatim_compatible' {
@@ -65,6 +91,25 @@ function readOptional(value: string | undefined): string | undefined {
 function readPersistentCacheSignal(value: string | undefined): boolean {
   const parsed = Number(value ?? '');
   return Number.isFinite(parsed) && parsed > 0;
+}
+
+function readBulkAttemptLimit(value: string | undefined, fallback: number | null): number | null {
+  if (value === undefined || value.trim() === '') return fallback;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+  return Math.floor(parsed);
+}
+
+function readTimeoutMs(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.floor(parsed);
+}
+
+function optionalTimeout(value: string | undefined): { timeoutMs?: number } {
+  const timeoutMs = readTimeoutMs(value);
+  return timeoutMs === undefined ? {} : { timeoutMs };
 }
 
 function normalizeUrl(value: string): string {

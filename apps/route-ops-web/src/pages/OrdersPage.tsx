@@ -641,12 +641,17 @@ function formatBulkGeocodeStatus(job: BulkGeocodeJobDto): string {
     ["resolved", counts.succeeded],
     ["failed", counts.failed],
     ["no address", counts.noAddress],
+    ["skipped by policy", counts.skippedByPolicy],
     ["already had coordinates", counts.skippedAlreadyGeocoded],
   ]
     .filter((entry): entry is [string, number] => typeof entry[1] === "number")
     .map(([label, value]) => `${value} ${label}`);
   const suffix = parts.length === 0 ? "" : `: ${parts.join(", ")}`;
-  return `Bulk geocode ${humanizeToken(status)}${suffix}.`;
+  const policy =
+    job.policyLimit?.reached === true
+      ? ` Public geocoder cap reached (${job.policyLimit.attemptedLimit ?? "configured"} attempts).`
+      : "";
+  return `Bulk geocode ${humanizeToken(status)}${suffix}.${policy}`;
 }
 
 function isBulkGeocodeTerminal(job: BulkGeocodeJobDto): boolean {
@@ -676,6 +681,32 @@ export function OrderTable(input: {
   setSelected(selected: Set<string>): void;
   settings?: StoreSettingsDto | null;
 }): ReactElement {
+  const selectableOrderIds = input.orders
+    .filter(isRoutePlanEligible)
+    .map((order) => order.orderId);
+  const visibleOrderIds = input.orders.map((order) => order.orderId);
+  const selectedFilteredCount = selectableOrderIds.filter((orderId) =>
+    input.selected.has(orderId),
+  ).length;
+  const visibleSelectedCount = visibleOrderIds.filter((orderId) =>
+    input.selected.has(orderId),
+  ).length;
+  const allFilteredSelected =
+    selectableOrderIds.length > 0 &&
+    selectedFilteredCount === selectableOrderIds.length;
+  const selectFilteredOrders = (): void => {
+    input.setSelected(new Set([...input.selected, ...selectableOrderIds]));
+  };
+  const clearFilteredOrders = (): void => {
+    const next = new Set(input.selected);
+    for (const orderId of visibleOrderIds) next.delete(orderId);
+    input.setSelected(next);
+  };
+  const toggleFilteredSelection = (checked: boolean): void => {
+    if (checked) selectFilteredOrders();
+    else clearFilteredOrders();
+  };
+
   if (input.loading)
     return (
       <article className="panel">
@@ -691,6 +722,23 @@ export function OrderTable(input: {
         </div>
         <div className="orders-heading-actions">
           <Badge>{input.orders.length} orders</Badge>
+          <span className="orders-selection-summary">
+            {selectedFilteredCount}/{selectableOrderIds.length} selectable
+          </span>
+          <button
+            disabled={selectableOrderIds.length === 0 || allFilteredSelected}
+            onClick={selectFilteredOrders}
+            type="button"
+          >
+            Select filtered
+          </button>
+          <button
+            disabled={visibleSelectedCount === 0}
+            onClick={clearFilteredOrders}
+            type="button"
+          >
+            Clear filtered
+          </button>
           <button
             disabled={input.bulkGeocoding === true}
             onClick={() => input.onBulkGeocode?.()}
@@ -716,7 +764,16 @@ export function OrderTable(input: {
           <thead>
             <tr>
               <th className="orders-select-col" scope="col">
-                Select
+                <input
+                  aria-label="Select all route-ready orders in current filters"
+                  checked={allFilteredSelected}
+                  disabled={selectableOrderIds.length === 0}
+                  onChange={(event) =>
+                    toggleFilteredSelection(event.target.checked)
+                  }
+                  type="checkbox"
+                />
+                <span>Select</span>
               </th>
               <th scope="col">Order</th>
               <th scope="col">Customer</th>
@@ -1074,7 +1131,32 @@ function geocodeDetail(order: CanonicalOrderDto): string | null {
     order.geocodeStatus === "NOT_REQUIRED"
   )
     return null;
+  const code = order.geocodeDiagnostics?.code ?? order.geocodeDiagnostics?.messageKey ?? null;
+  if (code !== null) return geocodeMessageForCode(code);
   return orderDetailLabels.geocodeStatus[order.geocodeStatus];
+}
+
+function geocodeMessageForCode(code: string): string {
+  switch (code) {
+    case "BLANK_ADDRESS":
+      return "Address is missing or incomplete";
+    case "GEOCODER_NO_RESULT":
+      return "No matching address found";
+    case "GEOCODER_PROVIDER_RATE_LIMITED":
+      return "Geocoder is rate limited; try bulk geocode later";
+    case "GEOCODER_PROVIDER_TIMEOUT":
+      return "Geocoder timed out";
+    case "GEOCODER_PROVIDER_HTTP_ERROR":
+    case "GEOCODER_PROVIDER_ERROR":
+      return "Geocoder provider failed";
+    case "GEOCODER_NOT_CONFIGURED":
+    case "GEOCODER_DISABLED":
+      return "Geocoder is not configured";
+    case "GEOCODER_INVALID_RESULT":
+      return "Geocoder returned an invalid result";
+    default:
+      return humanizeToken(code);
+  }
 }
 
 function formatTimeWindow(order: CanonicalOrderDto): string | null {
@@ -1763,11 +1845,13 @@ function sanitizeId(value: string): string {
 }
 
 function isRoutePlanEligible(order: CanonicalOrderDto): boolean {
+  if (order.routePlanId !== null || order.planningStatus !== "UNPLANNED") {
+    return false;
+  }
   return (
     order.routeEligible === true ||
     (order.routeEligible !== false &&
       order.blockerReasons.length === 0 &&
-      order.planningStatus === "UNPLANNED" &&
-      order.routePlanId === null)
+      order.planningStatus === "UNPLANNED")
   );
 }

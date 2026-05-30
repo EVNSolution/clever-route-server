@@ -90,7 +90,7 @@ describe('route ops web state helpers', () => {
       stops: [stop('a', 1, 'COMPLETED'), stop('b', 2, 'ATTEMPTED', null, null)]
     };
     expect(deriveRouteStats(detail)).toEqual({ attempted: 1, completed: 1, missingCoordinates: 1, stops: 2 });
-    expect(geometryLabel(detail, 'not_configured')).toBe('Sequence preview');
+    expect(geometryLabel(detail, 'not_configured')).toBe('Sequence preview — router not configured');
     expect(geometryLabel({ ...detail, routeGeometry: { coordinates: [[-79, 43]], type: 'LineString' } }, 'configured')).toBe('Road geometry');
   });
 

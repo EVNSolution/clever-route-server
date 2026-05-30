@@ -7,6 +7,7 @@ import type {
   ListCanonicalOrdersFilters,
   ListDeliveryBatchCandidatesInput,
   PatchCanonicalOrderCoordinatesInput,
+  PatchCanonicalOrderGeocodeDiagnosticsInput,
   PatchCanonicalOrderInput,
   UpsertOrderWithDeliveryStopInput,
   UpsertOrderWithDeliveryStopResult
@@ -67,6 +68,7 @@ type OrderSyncRepository = {
   listDeliveryBatchCandidates?(input: ListDeliveryBatchCandidatesInput): Promise<DeliveryBatchCandidate[]>;
   patchCanonicalOrder?(input: PatchCanonicalOrderInput): Promise<CanonicalOrderRow | null>;
   patchCanonicalOrderCoordinates?(input: PatchCanonicalOrderCoordinatesInput): Promise<CanonicalOrderRow | null>;
+  patchCanonicalOrderGeocodeDiagnostics?(input: PatchCanonicalOrderGeocodeDiagnosticsInput): Promise<CanonicalOrderRow | null>;
   upsertOrderWithDeliveryStop(
     input: UpsertOrderWithDeliveryStopInput
   ): Promise<UpsertOrderWithDeliveryStopResult>;
@@ -162,6 +164,13 @@ export class ShopifyOrderSyncService {
       return Promise.resolve(null);
     }
     return this.options.repository.patchCanonicalOrderCoordinates(input);
+  }
+
+  patchCanonicalOrderGeocodeDiagnostics(input: PatchCanonicalOrderGeocodeDiagnosticsInput): Promise<CanonicalOrderRow | null> {
+    if (this.options.repository.patchCanonicalOrderGeocodeDiagnostics === undefined) {
+      return Promise.resolve(null);
+    }
+    return this.options.repository.patchCanonicalOrderGeocodeDiagnostics(input);
   }
 
   private async readCanonicalOrder(shopDomain: string, orderId: string): Promise<CanonicalOrderRow | null> {

@@ -29,6 +29,8 @@ export type BootstrapPayload = {
   };
   mode: AppMode;
   routerConfig: {
+    coverage?: string | null;
+    provider?: "osrm" | null;
     status: MapProviderStatus;
   };
   shopDomain: string | null;
@@ -74,6 +76,17 @@ export type CanonicalOrderDto = {
   deliverySession: string | null;
   deliveryStatus: string;
   geocodeStatus: "PENDING" | "RESOLVED" | "FAILED" | "NOT_REQUIRED";
+  geocodeDiagnostics?: {
+    attemptCount: number | null;
+    code: string | null;
+    messageKey: string | null;
+    ok: boolean | null;
+    provider: string | null;
+    queryShapes: string[];
+    source: string | null;
+    transient: boolean | null;
+    updatedAt: string | null;
+  } | null;
   health: string;
   metadataResolved?: boolean;
   orderId: string;
@@ -197,7 +210,7 @@ export type GeocodeOrderResponse = {
       longitude: number;
       provider: string;
       providerPlaceId: string | null;
-      rawLabel: string | null;
+      rawLabel?: string | null;
     };
   };
   order?: CanonicalOrderDto;
@@ -211,11 +224,17 @@ export type BulkGeocodeJobDto = {
     matched: number;
     noAddress: number;
     skippedAlreadyGeocoded: number;
+    skippedByPolicy: number;
     succeeded: number;
   };
   createdAt: string;
   error: string | null;
   jobId: string;
+  policyLimit?: {
+    active: boolean;
+    attemptedLimit: number | null;
+    reached: boolean;
+  };
   results: Array<Record<string, unknown>>;
   status: "accepted" | "completed" | "failed" | "running";
   updatedAt: string;
@@ -235,7 +254,7 @@ export type GeocodeSettingsResponse = {
       longitude: number;
       provider: string;
       providerPlaceId: string | null;
-      rawLabel: string | null;
+      rawLabel?: string | null;
     };
   };
   settings: StoreSettingsDto;
@@ -257,6 +276,11 @@ export type OrdersResponse = {
 
 export type RoutesResponse = {
   routePlans: RoutePlanSummaryDto[];
+};
+
+export type RouteDeleteResponse = {
+  deleted: boolean;
+  routePlanId: string;
 };
 
 export type DriversResponse = {

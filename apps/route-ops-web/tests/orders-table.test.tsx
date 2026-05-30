@@ -29,8 +29,11 @@ describe("Orders compact operations table", () => {
 
     expect(html).toContain('class="orders-compact-table"');
     expect(html).toContain(`data-column-count="${ORDERS_TABLE_COLUMN_COUNT}"`);
+    expect(html).toContain(
+      'aria-label="Select all route-ready orders in current filters"',
+    );
+    expect(html).toContain("<span>Select</span>");
     for (const header of [
-      "Select",
       "Order",
       "Customer",
       "Method",
@@ -97,7 +100,9 @@ describe("Orders compact operations table", () => {
     });
 
     expect(html).toContain('checked=""');
-    expect(html).not.toContain('disabled=""');
+    expect(html).toMatch(
+      /<button aria-label="Remove order #11453 11453 from route plan" class="active" type="button">Remove<\/button>/,
+    );
     expect(html).toContain(`colSpan="${ORDERS_TABLE_COLUMN_COUNT}"`);
     expect(html).toContain("Order details for #11453");
     expect(html).toContain("No saved detail diagnostics yet.");
@@ -569,6 +574,39 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("Find missing coordinates");
     expect(html).toContain("Bulk geocode Completed");
     expect(html).not.toContain("Geocode &amp; add");
+  });
+
+  test("renders current-filter group selection controls for route-ready orders only", () => {
+    const html = renderOrderTable(
+      [
+        orderFixture(),
+        orderFixture({
+          blockerReasons: ["missing_delivery_date"],
+          deliveryDate: null,
+          metadataResolved: false,
+          orderId: "blocked-order",
+          orderName: "#1002",
+          routeEligible: false,
+        }),
+        orderFixture({
+          orderId: "planned-order",
+          orderName: "#1003",
+          planningStatus: "PLANNED",
+          routePlanId: "route-1",
+          routePlanName: "Route 1",
+        }),
+      ],
+      {
+        selected: new Set(["order-11453"]),
+      },
+    );
+
+    expect(html).toContain("1/1 selectable");
+    expect(html).toContain("Select filtered");
+    expect(html).toContain("Clear filtered");
+    expect(html).toContain('aria-label="Select all route-ready orders in current filters"');
+    expect(html).toContain('aria-label="Select order #1002 11453"');
+    expect(html).toContain('aria-label="Select order #1003 11453"');
   });
 
   test("formatter precedence uses service type for Method and delivery date for Day", () => {

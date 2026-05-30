@@ -1,8 +1,14 @@
-import type { GeocodingLookupResult, GeocodingProvider } from './geocoding.types.js';
+import {
+  GeocodingProviderError,
+  type GeocodingLookupResult,
+  type GeocodingProvider,
+  type GeocodingQuery,
+} from './geocoding.types.js';
 
 export type NominatimGeocodingClientOptions = {
   fetchImpl?: typeof fetch;
   searchUrl: string;
+  timeoutMs?: number;
   userAgent: string;
 };
 
@@ -18,50 +24,107 @@ export class NominatimGeocodingClient implements GeocodingProvider {
   readonly providerName = 'nominatim_compatible';
   private readonly fetchImpl: typeof fetch;
   private readonly searchUrl: string;
+  private readonly timeoutMs: number;
   private readonly userAgent: string;
 
   constructor(options: NominatimGeocodingClientOptions) {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.searchUrl = options.searchUrl;
+    this.timeoutMs =
+      typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+        ? Math.max(1000, Math.floor(options.timeoutMs))
+        : 10000;
     this.userAgent = options.userAgent;
   }
 
-  async geocodeAddress(query: string): Promise<GeocodingLookupResult | null> {
+  async geocodeAddress(query: GeocodingQuery): Promise<GeocodingLookupResult | null> {
     const url = new URL(this.searchUrl);
     url.searchParams.set('format', 'jsonv2');
     url.searchParams.set('limit', '1');
-    url.searchParams.set('q', query);
+    applyQueryParams(url, query);
 
-    const response = await this.fetchImpl(url, {
-      headers: {
-        Accept: 'application/json',
-        'User-Agent': this.userAgent
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, {
+        headers: {
+          Accept: 'application/json',
+          'User-Agent': this.userAgent
+        },
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw new GeocodingProviderError('TIMEOUT', 'Geocoding provider timed out.', { transient: true });
       }
-    });
-    if (!response.ok) {
-      throw new Error(`Geocoding provider returned ${response.status}`);
+      throw new GeocodingProviderError('NETWORK_ERROR', 'Geocoding provider network error.', { transient: true });
+    } finally {
+      clearTimeout(timeout);
     }
 
-    const payload = await response.json();
-    if (!Array.isArray(payload) || payload.length === 0) return null;
-    return toResult(payload[0], query);
+    if (!response.ok) {
+      if (response.status === 429) {
+        throw new GeocodingProviderError('RATE_LIMITED', 'Geocoding provider rate limit reached.', {
+          status: response.status,
+          transient: true,
+        });
+      }
+      throw new GeocodingProviderError('HTTP_ERROR', 'Geocoding provider HTTP error.', {
+        status: response.status,
+        transient: response.status >= 500,
+      });
+    }
+
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      throw new GeocodingProviderError('INVALID_RESPONSE', 'Geocoding provider returned invalid JSON.', {
+        transient: false,
+      });
+    }
+    if (!Array.isArray(payload)) {
+      throw new GeocodingProviderError('INVALID_RESPONSE', 'Geocoding provider returned invalid JSON shape.', {
+        transient: false,
+      });
+    }
+    if (payload.length === 0) return null;
+    const result = toResult(payload[0], query);
+    if (result === null) {
+      throw new GeocodingProviderError('INVALID_RESPONSE', 'Geocoding provider returned invalid result.', {
+        transient: false,
+      });
+    }
+    return result;
   }
 }
 
-function toResult(value: unknown, query: string): GeocodingLookupResult | null {
+function applyQueryParams(url: URL, query: GeocodingQuery): void {
+  if (query.kind === 'freeform') {
+    url.searchParams.set('q', query.q);
+    return;
+  }
+  for (const [key, value] of Object.entries(query.params)) {
+    if (typeof value === 'string' && value.trim() !== '') {
+      url.searchParams.set(key, value.trim());
+    }
+  }
+}
+
+function toResult(value: unknown, query: GeocodingQuery): GeocodingLookupResult | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
   const item = value as NominatimSearchItem;
   const latitude = readCoordinate(item.lat, 'latitude');
   const longitude = readCoordinate(item.lon, 'longitude');
   if (latitude === null || longitude === null) return null;
-  const label = typeof item.display_name === 'string' && item.display_name.trim() !== '' ? item.display_name.trim() : query;
   return {
-    addressLabel: query,
+    addressLabel: query.shape,
     latitude,
     longitude,
     provider: 'nominatim_compatible',
     providerPlaceId: readPlaceId(item),
-    rawLabel: label
+    rawLabel: null
   };
 }
 
@@ -77,4 +140,8 @@ function readPlaceId(item: NominatimSearchItem): string | null {
   if (typeof value === 'string' && value.trim() !== '') return value.trim();
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   return null;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError');
 }

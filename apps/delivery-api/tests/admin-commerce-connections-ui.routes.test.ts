@@ -446,7 +446,9 @@ describe("Admin WooCommerce connection UI routes", () => {
           styleUrl: null,
         }),
       );
-      expect(bootstrapData.routerConfig).toEqual({ status: "not_configured" });
+      expect(bootstrapData.routerConfig).toEqual(
+        expect.objectContaining({ status: "not_configured" }),
+      );
     } finally {
       await app.close();
     }
@@ -1421,8 +1423,10 @@ describe("Admin WooCommerce connection UI routes", () => {
     >(() => Promise.resolve(geocodedOrder));
     const geocode = vi.fn(() =>
       Promise.resolve({
+        attemptCount: 2,
         cached: false,
         ok: true as const,
+        queryShapes: ["structured_without_unit" as const],
         result: {
           addressLabel: "100 King St W, Toronto, ON, M5H 1J9, CA",
           latitude: 43.589045,
@@ -1552,8 +1556,10 @@ describe("Admin WooCommerce connection UI routes", () => {
     >(() => Promise.resolve(geocodedOrder));
     const geocode = vi.fn(() =>
       Promise.resolve({
+        attemptCount: 2,
         cached: false,
         ok: true as const,
+        queryShapes: ["structured_without_unit" as const],
         result: {
           addressLabel: "100 King St W, Toronto, ON, M5H 1J9, CA",
           latitude: 43.589045,
@@ -1623,14 +1629,16 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(completed).toEqual(
         expect.objectContaining({
           status: "completed",
-          summary: {
-            alreadyHasCoordinates: 1,
-            attempted: 1,
-            failed: 0,
-            noAddress: 0,
-            resolved: 1,
-            skipped: 1,
-          },
+        }),
+      );
+      expect(completed?.summary).toEqual(
+        expect.objectContaining({
+          alreadyHasCoordinates: 1,
+          attempted: 1,
+          failed: 0,
+          noAddress: 0,
+          resolved: 1,
+          skipped: 1,
         }),
       );
       expect(listCanonicalOrders).toHaveBeenCalledWith({
@@ -1647,6 +1655,18 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(patchCanonicalOrderCoordinates).toHaveBeenCalledWith(
         expect.objectContaining({
           actor: "web-operator",
+          geocodeDiagnostic: {
+            diagnostic: expect.objectContaining({
+              attemptCount: 2,
+              code: "RESOLVED",
+              ok: true,
+              provider: "mock",
+              providerPlaceId: "place-1",
+              queryShapes: ["structured_without_unit"],
+              source: "bulk_geocode",
+            }) as unknown,
+            source: "bulk_geocode",
+          },
           latitude: 43.589045,
           longitude: -79.644119,
           orderId: "order-missing",
@@ -1655,6 +1675,187 @@ describe("Admin WooCommerce connection UI routes", () => {
           source: "geocoder",
         }),
       );
+      expect(JSON.stringify(patchCanonicalOrderCoordinates.mock.calls)).not.toContain(
+        "Mock place",
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("bulk geocode persists redacted failure diagnostics", async () => {
+    const listCanonicalOrders = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["orderSyncService"]
+      >["listCanonicalOrders"]
+    >(() =>
+      Promise.resolve([
+        canonicalOrder({
+          geocodeStatus: "PENDING",
+          hasCoordinates: false,
+          latitude: null,
+          longitude: null,
+          orderId: "order-missing",
+          reviewReasons: ["missing_coordinates"],
+        }),
+      ]),
+    );
+    const patchCanonicalOrderCoordinates = vi.fn<
+      NonNullable<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["orderSyncService"]
+        >["patchCanonicalOrderCoordinates"]
+      >
+    >(() => Promise.resolve(null));
+    const patchCanonicalOrderGeocodeDiagnostics = vi.fn<
+      NonNullable<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["orderSyncService"]
+        >["patchCanonicalOrderGeocodeDiagnostics"]
+      >
+    >(() => Promise.resolve(canonicalOrder({ geocodeStatus: "FAILED" })));
+    const geocode = vi.fn(() =>
+      Promise.resolve({
+        attemptCount: 1,
+        code: "GEOCODER_NO_RESULT" as const,
+        message: "No geocoding result was found.",
+        ok: false as const,
+        queryShapes: ["structured_without_unit" as const],
+      }),
+    );
+    const { app } = await createUiHarness({
+      geocodingService: {
+        geocode,
+        status: { mode: "nominatim_compatible", persistentCacheEnabled: true },
+      },
+      orderSyncService: {
+        listCanonicalOrders,
+        patchCanonicalOrderCoordinates,
+        patchCanonicalOrderGeocodeDiagnostics,
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/orders/bulk-geocode?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {}, csrfToken),
+      });
+      expect(response.statusCode).toBe(202);
+      const accepted = readApiData<{ jobId: string }>(response);
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const statusResponse = await app.inject({
+          headers: { cookie, accept: "application/json" },
+          method: "GET",
+          url: `/admin/ui/app/api/orders/bulk-geocode/${accepted.jobId}?shopDomain=tenant-a.example.test`,
+        });
+        if (readApiData<{ status: string }>(statusResponse).status === "completed") break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      const diagnosticPatch =
+        patchCanonicalOrderGeocodeDiagnostics.mock.calls[0]?.[0];
+      expect(diagnosticPatch).toEqual(
+        expect.objectContaining({
+          geocodeStatus: "FAILED",
+          orderId: "order-missing",
+          source: "bulk_geocode",
+        }),
+      );
+      expect(diagnosticPatch?.diagnostic).toEqual(
+        expect.objectContaining({
+          attemptCount: 1,
+          code: "GEOCODER_NO_RESULT",
+          ok: false,
+          queryShapes: ["structured_without_unit"],
+        }),
+      );
+      expect(JSON.stringify(diagnosticPatch)).not.toContain("Mock place");
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("public bulk geocode caps attempted missing-coordinate orders", async () => {
+    const listCanonicalOrders = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["orderSyncService"]
+      >["listCanonicalOrders"]
+    >(() =>
+      Promise.resolve([
+        canonicalOrder({ hasCoordinates: false, latitude: null, longitude: null, orderId: "order-a" }),
+        canonicalOrder({ hasCoordinates: false, latitude: null, longitude: null, orderId: "order-b" }),
+      ]),
+    );
+    const patchCanonicalOrderCoordinates = vi.fn<
+      NonNullable<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["orderSyncService"]
+        >["patchCanonicalOrderCoordinates"]
+      >
+    >(() => Promise.resolve(canonicalOrder({ orderId: "order-a" })));
+    const geocode = vi.fn(() =>
+      Promise.resolve({
+        cached: false,
+        ok: true as const,
+        result: {
+          addressLabel: "structured_without_unit",
+          latitude: 43.589045,
+          longitude: -79.644119,
+          provider: "mock",
+          providerPlaceId: "place-1",
+          rawLabel: null,
+        },
+      }),
+    );
+    const { app } = await createUiHarness({
+      geocodingService: {
+        geocode,
+        status: {
+          mode: "nominatim_compatible",
+          persistentCacheEnabled: true,
+          providerPolicy: "public_nominatim",
+          publicBulkAttemptLimit: 1,
+        },
+      },
+      orderSyncService: {
+        listCanonicalOrders,
+        patchCanonicalOrderCoordinates,
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/orders/bulk-geocode?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {}, csrfToken),
+      });
+      const accepted = readApiData<{ jobId: string }>(response);
+      type BulkGeocodeJobBody = {
+        counts: { skippedByPolicy: number };
+        policyLimit: { reached: boolean };
+        status: string;
+      };
+      let completed: BulkGeocodeJobBody | null = null;
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const statusResponse = await app.inject({
+          headers: { cookie, accept: "application/json" },
+          method: "GET",
+          url: `/admin/ui/app/api/orders/geocode/${accepted.jobId}?shopDomain=tenant-a.example.test`,
+        });
+        const body = readApiData<{ geocode: BulkGeocodeJobBody }>(statusResponse).geocode;
+        if (body?.status === "completed") {
+          completed = body;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      expect(geocode).toHaveBeenCalledTimes(1);
+      expect(completed?.policyLimit.reached).toBe(true);
+      expect(completed?.counts.skippedByPolicy).toBe(1);
     } finally {
       await app.close();
     }
@@ -2191,6 +2392,51 @@ describe("Admin WooCommerce connection UI routes", () => {
         "shopifyOrderGid",
       );
       expect(getRoutePlanDetail).toHaveBeenCalledWith({
+        routePlanId: "route-plan-id",
+        shopDomain: "tenant-a.example.test",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("deletes a route through the protected Route Ops API for the current shop", async () => {
+    const deleteRoutePlan = vi.fn<
+      NonNullable<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["routePlanService"]
+        >["deleteRoutePlan"]
+      >
+    >(() =>
+      Promise.resolve({ deleted: true, routePlanId: "route-plan-id" }),
+    );
+    const { app } = await createUiHarness({
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+      },
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan: vi.fn(),
+        deleteRoutePlan,
+        getRoutePlanDetail: vi.fn(),
+        listRoutePlans: vi.fn(() => Promise.resolve([routePlanSummary()])),
+        updateRoutePlanStops: vi.fn(),
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "DELETE",
+        url: "/admin/ui/app/api/routes/route-plan-id?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {}, csrfToken),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(
+        readApiData<{ deleted: boolean; routePlanId: string }>(response),
+      ).toEqual({ deleted: true, routePlanId: "route-plan-id" });
+      expect(deleteRoutePlan).toHaveBeenCalledWith({
         routePlanId: "route-plan-id",
         shopDomain: "tenant-a.example.test",
       });

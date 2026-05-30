@@ -1,10 +1,25 @@
-import type { GeocodingAddress, GeocodingProvider, GeocodingResult } from './geocoding.types.js';
+import {
+  GeocodingProviderError,
+  type GeocodingAddress,
+  type GeocodingFailureCode,
+  type GeocodingLookupResult,
+  type GeocodingProvider,
+  type GeocodingQuery,
+  type GeocodingQueryShape,
+  type GeocodingResult,
+} from './geocoding.types.js';
+
+export type GeocodingProviderPolicy = 'disabled' | 'private_nominatim_compatible' | 'public_nominatim';
 
 export type GeocodingServiceOptions = {
+  bulkAttemptLimit?: number | null;
+  maxRetries?: number;
   minIntervalMs?: number;
   mode: 'disabled' | 'nominatim_compatible';
   persistentCacheEnabled?: boolean;
   provider?: GeocodingProvider;
+  providerPolicy?: GeocodingProviderPolicy;
+  rateLimiter?: GeocodingRateLimiter;
   requirePersistentCache?: boolean;
 };
 
@@ -13,32 +28,85 @@ type CachedGeocode = {
   result: GeocodingResult;
 };
 
+type ProviderCallState = {
+  attemptCount: number;
+  queryShapes: GeocodingQueryShape[];
+};
+
+export type GeocodingServiceStatus = {
+  mode: GeocodingServiceOptions['mode'];
+  persistentCacheEnabled: boolean;
+  providerPolicy?: GeocodingProviderPolicy;
+  publicBulkAttemptLimit?: number | null;
+};
+
+export type GeocodingRateLimiter = {
+  wait(minIntervalMs: number): Promise<void>;
+};
+
+export class SerializedGeocodingRateLimiter implements GeocodingRateLimiter {
+  private queue: Promise<void> = Promise.resolve();
+  private lastRequestAt = 0;
+
+  async wait(minIntervalMs: number): Promise<void> {
+    const run = this.queue.then(async () => {
+      const now = Date.now();
+      const waitMs = Math.max(0, minIntervalMs - (now - this.lastRequestAt));
+      if (waitMs > 0) await sleep(waitMs);
+      this.lastRequestAt = Date.now();
+    });
+    this.queue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+}
+
 export class GeocodingService {
+  private readonly bulkAttemptLimit: number | null;
   private readonly cache = new Map<string, CachedGeocode>();
+  private readonly maxRetries: number;
   private readonly minIntervalMs: number;
   private readonly mode: GeocodingServiceOptions['mode'];
   private readonly persistentCacheEnabled: boolean;
   private readonly provider: GeocodingProvider | undefined;
+  private readonly providerPolicy: GeocodingProviderPolicy;
+  private readonly rateLimiter: GeocodingRateLimiter;
   private readonly requirePersistentCache: boolean;
   private queue: Promise<void> = Promise.resolve();
-  private lastRequestAt = 0;
 
   constructor(options: GeocodingServiceOptions) {
+    this.bulkAttemptLimit =
+      typeof options.bulkAttemptLimit === 'number' && Number.isFinite(options.bulkAttemptLimit)
+        ? Math.max(0, Math.floor(options.bulkAttemptLimit))
+        : null;
+    this.maxRetries =
+      typeof options.maxRetries === 'number' && Number.isFinite(options.maxRetries)
+        ? Math.max(0, Math.floor(options.maxRetries))
+        : 1;
     this.minIntervalMs = options.minIntervalMs ?? 1000;
     this.mode = options.mode;
     this.persistentCacheEnabled = options.persistentCacheEnabled === true;
     this.provider = options.provider;
+    this.providerPolicy =
+      options.providerPolicy ??
+      (options.mode === 'disabled' ? 'disabled' : 'private_nominatim_compatible');
+    this.rateLimiter = options.rateLimiter ?? new SerializedGeocodingRateLimiter();
     this.requirePersistentCache = options.requirePersistentCache === true;
   }
 
-  get status(): { mode: GeocodingServiceOptions['mode']; persistentCacheEnabled: boolean } {
-    return { mode: this.mode, persistentCacheEnabled: this.persistentCacheEnabled };
+  get status(): GeocodingServiceStatus {
+    return {
+      mode: this.mode,
+      persistentCacheEnabled: this.persistentCacheEnabled,
+      providerPolicy: this.providerPolicy,
+      publicBulkAttemptLimit:
+        this.providerPolicy === 'public_nominatim' ? this.bulkAttemptLimit : null,
+    };
   }
 
   async geocode(input: { address: GeocodingAddress; shopDomain: string }): Promise<GeocodingResult> {
-    const queries = normalizeAddressQueries(input.address);
-    const query = queries[0] ?? null;
-    if (query === null) {
+    const queries = buildGeocodingQueries(input.address);
+    const primaryQuery = queries[0] ?? null;
+    if (primaryQuery === null) {
       return { ok: false, code: 'BLANK_ADDRESS', message: 'Address is blank.' };
     }
     if (this.mode === 'disabled') {
@@ -55,45 +123,106 @@ export class GeocodingService {
       };
     }
 
-    const key = `${input.shopDomain.trim().toLowerCase()}|${query.toLowerCase()}`;
+    const key = `${input.shopDomain.trim().toLowerCase()}|${primaryQuery.cacheKey}`;
     const cached = this.cache.get(key);
-    if (cached !== undefined) return cached.result.ok ? { ...cached.result, cached: true } : cached.result;
+    if (cached !== undefined) {
+      return cached.result.ok ? { ...cached.result, cached: true } : cached.result;
+    }
 
     const provider = this.provider;
     const result = await this.runSerialized(async () => {
+      const state: ProviderCallState = { attemptCount: 0, queryShapes: [] };
       let sawInvalidResult = false;
-      try {
-        for (const lookupQuery of queries) {
-          const lookup = await provider.geocodeAddress(lookupQuery);
-          if (lookup === null) continue;
-          if (!isValidCoordinate(lookup.latitude, 'latitude') || !isValidCoordinate(lookup.longitude, 'longitude')) {
-            sawInvalidResult = true;
-            continue;
-          }
-          return { ok: true, cached: false, result: lookup } satisfies GeocodingResult;
+      for (const lookupQuery of queries) {
+        state.queryShapes.push(lookupQuery.shape);
+        const lookup = await this.geocodeQuery(provider, lookupQuery, state);
+        if (lookup.kind === 'provider_error') {
+          return buildFailureFromProviderError(lookup.error, state);
         }
-        if (sawInvalidResult) {
-          return { ok: false, code: 'GEOCODER_INVALID_RESULT', message: 'Geocoding provider returned invalid coordinates.' } satisfies GeocodingResult;
+        if (lookup.kind === 'invalid_result') {
+          sawInvalidResult = true;
+          continue;
         }
-        return { ok: false, code: 'GEOCODER_NO_RESULT', message: 'No geocoding result was found.' } satisfies GeocodingResult;
-      } catch {
-        return { ok: false, code: 'GEOCODER_PROVIDER_ERROR', message: 'Geocoding provider failed.' } satisfies GeocodingResult;
+        if (lookup.kind === 'no_result') continue;
+        return {
+          attemptCount: state.attemptCount,
+          cached: false,
+          ok: true,
+          queryShapes: [...new Set(state.queryShapes)],
+          result: lookup.result,
+        } satisfies GeocodingResult;
       }
+      const queryShapes = [...new Set(state.queryShapes)];
+      if (sawInvalidResult) {
+        return {
+          attemptCount: state.attemptCount,
+          code: 'GEOCODER_INVALID_RESULT',
+          message: 'Geocoding provider returned invalid coordinates.',
+          ok: false,
+          queryShapes,
+        } satisfies GeocodingResult;
+      }
+      return {
+        attemptCount: state.attemptCount,
+        code: 'GEOCODER_NO_RESULT',
+        message: 'No geocoding result was found.',
+        ok: false,
+        queryShapes,
+      } satisfies GeocodingResult;
     });
-    this.cache.set(key, { cachedAt: Date.now(), result });
+    if (result.ok || result.transient !== true) {
+      this.cache.set(key, { cachedAt: Date.now(), result });
+    }
     return result;
   }
 
+  private async geocodeQuery(
+    provider: GeocodingProvider,
+    query: GeocodingQuery,
+    state: ProviderCallState,
+  ): Promise<
+    | { kind: 'found'; result: GeocodingLookupResult }
+    | { kind: 'invalid_result' }
+    | { error: GeocodingProviderError; kind: 'provider_error' }
+    | { kind: 'no_result' }
+  > {
+    let attempt = 0;
+    while (true) {
+      attempt += 1;
+      state.attemptCount += 1;
+      try {
+        await this.waitForProviderRateLimit();
+        const lookup = await provider.geocodeAddress(query);
+        if (lookup === null) return { kind: 'no_result' };
+        if (!isValidCoordinate(lookup.latitude, 'latitude') || !isValidCoordinate(lookup.longitude, 'longitude')) {
+          return { kind: 'invalid_result' };
+        }
+        return { kind: 'found', result: lookup };
+      } catch (error) {
+        const providerError = normalizeProviderError(error);
+        if (!this.shouldRetryProviderError(providerError, attempt)) {
+          return { error: providerError, kind: 'provider_error' };
+        }
+        await sleep(Math.max(this.minIntervalMs, 250 * attempt));
+      }
+    }
+  }
+
+  private shouldRetryProviderError(error: GeocodingProviderError, attempt: number): boolean {
+    if (error.kind === 'RATE_LIMITED') return false;
+    if (!error.transient) return false;
+    if (this.providerPolicy === 'public_nominatim') return attempt <= Math.min(this.maxRetries, 1);
+    return attempt <= this.maxRetries;
+  }
+
   private async runSerialized<T>(task: () => Promise<T>): Promise<T> {
-    const run = this.queue.then(async () => {
-      const now = Date.now();
-      const waitMs = Math.max(0, this.minIntervalMs - (now - this.lastRequestAt));
-      if (waitMs > 0) await sleep(waitMs);
-      this.lastRequestAt = Date.now();
-      return task();
-    });
+    const run = this.queue.then(task);
     this.queue = run.then(() => undefined, () => undefined);
     return run;
+  }
+
+  private async waitForProviderRateLimit(): Promise<void> {
+    await this.rateLimiter.wait(this.minIntervalMs);
   }
 }
 
@@ -102,19 +231,68 @@ export function normalizeAddress(address: GeocodingAddress): string | null {
 }
 
 export function normalizeAddressQueries(address: GeocodingAddress): string[] {
+  return buildGeocodingQueries(address).flatMap((query) =>
+    query.kind === 'freeform' ? [query.q] : [],
+  );
+}
+
+export function buildGeocodingQueries(address: GeocodingAddress): GeocodingQuery[] {
   const full = normalizeAddress(address);
   if (full === null) return [];
 
-  const withoutAddress2 = normalizeAddressParts(
-    addressParts({
-      ...address,
-      address2: null
-    })
-  );
-  return uniqueQueries([
-    full,
-    address.address2 === null || address.address2.trim() === '' ? null : withoutAddress2
+  const withoutUnitAddress: GeocodingAddress = { ...address, address2: null };
+  const withoutUnit = normalizeAddress(withoutUnitAddress);
+  const structuredWithoutUnit = buildStructuredQuery(withoutUnitAddress, 'structured_without_unit');
+  const structuredFull =
+    address.address2 === null || address.address2.trim() === ''
+      ? null
+      : buildStructuredQuery(address, 'structured');
+
+  return uniqueGeocodingQueries([
+    structuredWithoutUnit,
+    structuredFull,
+    withoutUnit === null ? null : buildFreeformQuery(withoutUnit, 'freeform_without_unit'),
+    full === null ? null : buildFreeformQuery(full, 'freeform'),
   ]);
+}
+
+function buildStructuredQuery(
+  address: GeocodingAddress,
+  shape: 'structured' | 'structured_without_unit',
+): GeocodingQuery | null {
+  const street = normalizeAddressParts([address.address1, shape === 'structured' ? address.address2 : null]);
+  const city = clean(address.city);
+  const state = clean(address.province);
+  const postalcode = clean(address.postalCode);
+  const country = countryName(address.countryCode);
+  const countrycodes = countryCodeFilter(address.countryCode);
+  if (street === null && city === null && state === null && postalcode === null && country === null) return null;
+  if (street === null && postalcode === null) return null;
+  const params = {
+    ...(street === null ? {} : { street }),
+    ...(city === null ? {} : { city }),
+    ...(state === null ? {} : { state }),
+    ...(postalcode === null ? {} : { postalcode }),
+    ...(country === null ? {} : { country }),
+    ...(countrycodes === null ? {} : { countrycodes }),
+  };
+  return {
+    cacheKey: `structured:${Object.entries(params)
+      .map(([key, value]) => `${key}=${String(value).toLowerCase()}`)
+      .join('&')}`,
+    kind: 'structured',
+    params,
+    shape,
+  };
+}
+
+function buildFreeformQuery(q: string, shape: 'freeform' | 'freeform_without_unit'): GeocodingQuery {
+  return {
+    cacheKey: `freeform:${q.toLowerCase()}`,
+    kind: 'freeform',
+    q,
+    shape,
+  };
 }
 
 function addressParts(address: GeocodingAddress): Array<string | null> {
@@ -129,8 +307,83 @@ function normalizeAddressParts(parts: Array<string | null>): string | null {
   return [...new Set(normalized)].join(', ');
 }
 
-function uniqueQueries(queries: Array<string | null>): string[] {
-  return [...new Set(queries.filter((query): query is string => query !== null && query.trim() !== ''))];
+function uniqueGeocodingQueries(queries: Array<GeocodingQuery | null>): GeocodingQuery[] {
+  const unique = new Map<string, GeocodingQuery>();
+  for (const query of queries) {
+    if (query === null) continue;
+    unique.set(query.cacheKey, query);
+  }
+  return [...unique.values()];
+}
+
+function clean(value: string | null): string | null {
+  if (value === null) return null;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+function countryName(value: string | null): string | null {
+  const countryCode = clean(value)?.toUpperCase() ?? null;
+  if (countryCode === null) return null;
+  if (countryCode === 'CA' || countryCode === 'CAN') return 'Canada';
+  if (countryCode === 'US' || countryCode === 'USA') return 'United States';
+  return countryCode;
+}
+
+function countryCodeFilter(value: string | null): string | null {
+  const countryCode = clean(value)?.toLowerCase() ?? null;
+  if (countryCode === null) return null;
+  if (countryCode === 'ca' || countryCode === 'can') return 'ca';
+  if (countryCode === 'us' || countryCode === 'usa') return 'us';
+  return /^[a-z]{2}$/u.test(countryCode) ? countryCode : null;
+}
+
+function buildFailureFromProviderError(error: GeocodingProviderError, state: ProviderCallState): GeocodingResult {
+  const code = geocodingFailureCodeForProviderError(error);
+  return {
+    attemptCount: state.attemptCount,
+    code,
+    message: geocodingFailureMessage(code),
+    ok: false,
+    queryShapes: [...new Set(state.queryShapes)],
+    transient: error.transient,
+  };
+}
+
+function normalizeProviderError(error: unknown): GeocodingProviderError {
+  if (error instanceof GeocodingProviderError) return error;
+  return new GeocodingProviderError('NETWORK_ERROR', 'Geocoding provider failed.', { transient: true });
+}
+
+function geocodingFailureCodeForProviderError(error: GeocodingProviderError): GeocodingFailureCode {
+  if (error.kind === 'RATE_LIMITED') return 'GEOCODER_PROVIDER_RATE_LIMITED';
+  if (error.kind === 'TIMEOUT') return 'GEOCODER_PROVIDER_TIMEOUT';
+  if (error.kind === 'HTTP_ERROR') return 'GEOCODER_PROVIDER_HTTP_ERROR';
+  if (error.kind === 'INVALID_RESPONSE') return 'GEOCODER_INVALID_RESULT';
+  return 'GEOCODER_PROVIDER_ERROR';
+}
+
+function geocodingFailureMessage(code: GeocodingFailureCode): string {
+  switch (code) {
+    case 'GEOCODER_PROVIDER_RATE_LIMITED':
+      return 'Geocoding provider rate limit was reached. Try again later or use a private provider.';
+    case 'GEOCODER_PROVIDER_TIMEOUT':
+      return 'Geocoding provider timed out.';
+    case 'GEOCODER_PROVIDER_HTTP_ERROR':
+      return 'Geocoding provider returned an HTTP error.';
+    case 'GEOCODER_INVALID_RESULT':
+      return 'Geocoding provider returned invalid coordinates.';
+    case 'GEOCODER_PROVIDER_ERROR':
+      return 'Geocoding provider failed.';
+    case 'BLANK_ADDRESS':
+      return 'Address is blank.';
+    case 'GEOCODER_DISABLED':
+      return 'Geocoding is disabled for this runtime.';
+    case 'GEOCODER_NOT_CONFIGURED':
+      return 'Geocoding provider is not configured.';
+    case 'GEOCODER_NO_RESULT':
+      return 'No geocoding result was found.';
+  }
 }
 
 export function isValidCoordinate(value: number, kind: 'latitude' | 'longitude'): boolean {

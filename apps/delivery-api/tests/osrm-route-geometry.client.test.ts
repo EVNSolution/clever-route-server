@@ -43,7 +43,7 @@ describe('OsrmRouteGeometryProvider', () => {
 
     expect(fetch).toHaveBeenCalledWith(
       'https://osrm.example/route/v1/driving/-79.3832,43.6532;-79.2571,43.7764;-79.337,43.8561?overview=full&geometries=geojson&steps=false',
-      { method: 'GET' }
+      expect.objectContaining({ method: 'GET' })
     );
     expect(result).toEqual({
       routeGeometry: {

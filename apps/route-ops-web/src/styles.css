@@ -442,6 +442,12 @@ small,
   min-height: 38px;
   padding: 8px 12px;
 }
+.orders-selection-summary {
+  color: #4b5563;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
 .orders-bulk-status {
   color: #4b5563;
   font-size: 12.5px;
@@ -490,6 +496,15 @@ small,
 .orders-compact-table .orders-select-col,
 .orders-compact-table .orders-select-cell {
   width: 44px;
+}
+.orders-compact-table .orders-select-col {
+  white-space: nowrap;
+}
+.orders-compact-table .orders-select-col input {
+  height: 14px;
+  margin: 0 6px 0 0;
+  vertical-align: -2px;
+  width: 14px;
 }
 .orders-compact-table .orders-select-cell input {
   cursor: pointer;
@@ -650,6 +665,26 @@ small,
 }
 .stop-actions button {
   padding: 7px 10px;
+}
+.route-row-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+button.danger,
+.route-row-actions button.danger {
+  border-color: #fecaca;
+  color: #991b1b;
+}
+button.danger:is(:hover, :focus-visible):not(:disabled),
+.route-row-actions button.danger:is(:hover, :focus-visible):not(:disabled) {
+  background: #fef2f2;
+  border-color: #fca5a5;
+}
+button.danger.subtle {
+  background: #fff;
 }
 
 /* Shopify-inspired compact Route Ops workspace */

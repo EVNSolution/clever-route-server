@@ -114,6 +114,18 @@ export type DeliveryMetadataDiagnostics = {
   unsupportedValueCounts: Record<string, number>;
 };
 
+export type GeocodeDiagnostics = {
+  attemptCount: number | null;
+  code: string | null;
+  messageKey: string | null;
+  ok: boolean | null;
+  provider: string | null;
+  queryShapes: string[];
+  source: string | null;
+  transient: boolean | null;
+  updatedAt: string | null;
+};
+
 export type CanonicalOrderRow = {
   cancelledAt: string | null;
   currencyCode: string | null;
@@ -132,6 +144,7 @@ export type CanonicalOrderRow = {
   financialStatus: string | null;
   fulfillmentStatus: string | null;
   geocodeStatus: "PENDING" | "RESOLVED" | "FAILED" | "NOT_REQUIRED";
+  geocodeDiagnostics?: GeocodeDiagnostics | null;
   hasCoordinates: boolean;
   latitude: number | null;
   longitude: number | null;

@@ -112,9 +112,9 @@ export function mapReadiness(input: {
 export function geometryLabel(detail: RoutePlanDetailDto | null, routerStatus: MapProviderStatus): string {
   if (detail === null) return 'No route selected';
   if (detail.routeGeometry !== null) return 'Road geometry';
-  if (routerStatus === 'not_configured') return 'Sequence preview';
   if (detail.stops.every((stop) => stop.coordinates.latitude === null || stop.coordinates.longitude === null)) return 'No coordinates';
-  return 'Sequence preview';
+  if (routerStatus === 'not_configured') return 'Sequence preview — router not configured';
+  return 'Sequence preview — router unavailable';
 }
 
 export function hideSetupActions(bootstrap: BootstrapPayload): boolean {
