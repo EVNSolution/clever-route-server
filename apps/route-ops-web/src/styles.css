@@ -49,6 +49,14 @@ button.primary:hover {
   background: #2f6fed;
   border-color: #2f6fed;
 }
+button.primary:disabled,
+button.primary:disabled:hover {
+  background: #e5e7eb;
+  border-color: #d1d5db;
+  box-shadow: none;
+  color: #9ca3af;
+  opacity: 1;
+}
 button.full {
   width: 100%;
 }

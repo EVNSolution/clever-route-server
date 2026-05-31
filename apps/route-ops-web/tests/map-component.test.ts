@@ -1,8 +1,8 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { resolveMapHomePoint, syncOrdersLayer, syncRouteLayers } from '../src/components/maps/RouteOpsMap';
-import { buildOrdersMapFeatureCollection, buildSequenceLineFeature } from '../src/maps/geojson';
-import type { CanonicalOrderDto } from '../src/types';
+import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature, buildSequenceLineFeature } from '../src/maps/geojson';
+import type { CanonicalOrderDto, RoutePlanDetailDto } from '../src/types';
 
 describe('RouteOpsMap layer lifecycle', () => {
   test('updates the orders GeoJSON source to an empty collection instead of leaving stale pins', () => {
@@ -37,6 +37,21 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(orderLayer?.layout ?? {}).not.toHaveProperty('text-offset');
   });
 
+
+  test('uses the Shopify Route Builder red road-geometry line theme', () => {
+    const { layers, map } = createMapStub();
+    const line = buildRouteGeometryFeature(routeDetail());
+    expect(line).not.toBeNull();
+
+    syncRouteLayers(map, line);
+
+    expect((layers.get('route-ops-route-line') as { paint?: Record<string, unknown> } | undefined)?.paint).toEqual({
+      'line-color': '#e11900',
+      'line-dasharray': [1, 0],
+      'line-opacity': 0.78,
+      'line-width': 4
+    });
+  });
 
   test('clears the route line source when a filter leaves fewer than two points', () => {
     const { map, sources } = createMapStub();
@@ -132,5 +147,27 @@ function order(overrides: Partial<CanonicalOrderDto> = {}): CanonicalOrderDto {
     timeWindowEnd: null,
     timeWindowStart: null,
     ...overrides
+  };
+}
+
+function routeDetail(): RoutePlanDetailDto {
+  return {
+    routeGeometry: { coordinates: [[-79.5, 43.7], [-79.4, 43.65]], type: 'LineString' },
+    routePlan: {
+      createdAt: '',
+      deliveryAreas: ['Toronto'],
+      deliveryDate: '2026-05-27',
+      depot: { latitude: 43.7, longitude: -79.5 },
+      driverId: null,
+      id: 'route-1',
+      missingCoordinates: 0,
+      name: 'Route 1',
+      planDate: '2026-05-27',
+      status: 'DRAFT',
+      stopsCount: 0,
+      updatedAt: ''
+    },
+    routeStopPoints: [],
+    stops: []
   };
 }

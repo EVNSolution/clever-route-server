@@ -4638,6 +4638,8 @@ function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
     inputCoordinates: [number, number] | null;
     name: string | null;
     sequence: number;
+    snapDistanceMeters: number | null;
+    snappedCoordinates: [number, number] | null;
     sourceOrderId: string;
   }>;
   stops: Array<{
@@ -4661,6 +4663,8 @@ function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
       inputCoordinates: point.inputCoordinates,
       name: point.name,
       sequence: point.sequence,
+      snapDistanceMeters: point.snapDistanceMeters,
+      snappedCoordinates: point.snappedCoordinates,
       sourceOrderId: point.shopifyOrderGid,
     })),
     stops: detail.stops.map((stop) => ({

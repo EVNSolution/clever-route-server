@@ -8,7 +8,7 @@ export type RouteOpsPoint = {
   label: string;
   latitude: number;
   longitude: number;
-  kind: 'depot' | 'order' | 'stop';
+  kind: 'depot' | 'order' | 'snapped-stop' | 'stop';
 };
 
 type Feature<Geometry, Properties extends Record<string, unknown>> = {
@@ -106,6 +106,24 @@ export function getOrderMapPoints(orders: CanonicalOrderDto[]): RouteOpsPoint[] 
     const lngLat = toLngLat(order.coordinates);
     if (lngLat === null) return [];
     return [{ id: order.orderId, kind: 'order', label: String(index + 1), latitude: lngLat[1], longitude: lngLat[0] }];
+  });
+}
+
+export function getRouteSnappedStopPoints(detail: RoutePlanDetailDto | null): RouteOpsPoint[] {
+  if (detail === null) return [];
+  return detail.routeStopPoints.flatMap((point) => {
+    const snappedCoordinates = point.snappedCoordinates;
+    if (snappedCoordinates === null) return [];
+    const [longitude, latitude] = snappedCoordinates;
+    if (!isValidLongitude(longitude) || !isValidLatitude(latitude)) return [];
+    return [{
+      addressLabel: point.name ?? undefined,
+      id: `${point.deliveryStopId}:snapped`,
+      kind: 'snapped-stop' as const,
+      label: String(point.sequence),
+      latitude,
+      longitude
+    }];
   });
 }
 

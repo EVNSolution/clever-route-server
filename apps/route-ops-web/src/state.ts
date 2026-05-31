@@ -52,6 +52,19 @@ export function summarizeSelection(orders: CanonicalOrderDto[], selectedOrderIds
   };
 }
 
+export function routeStopOrderKey(stop: RouteStopDto): string {
+  return stop.deliveryStopId || stop.sourceOrderId || stop.orderId;
+}
+
+export function hasStopSequenceChanged(savedStops: RouteStopDto[] | null | undefined, draftStops: RouteStopDto[]): boolean {
+  if (savedStops === null || savedStops === undefined) return false;
+  if (savedStops.length !== draftStops.length) return true;
+  return savedStops.some((stop, index) => {
+    const draftStop = draftStops[index];
+    return draftStop === undefined || routeStopOrderKey(stop) !== routeStopOrderKey(draftStop);
+  });
+}
+
 export function moveStop(stops: RouteStopDto[], deliveryStopId: string, direction: -1 | 1): RouteStopDto[] {
   const index = stops.findIndex((stop) => stop.deliveryStopId === deliveryStopId);
   if (index < 0) return stops;
@@ -113,8 +126,8 @@ export function geometryLabel(detail: RoutePlanDetailDto | null, routerStatus: M
   if (detail === null) return 'No route selected';
   if (detail.routeGeometry !== null) return 'Road geometry';
   if (detail.stops.every((stop) => stop.coordinates.latitude === null || stop.coordinates.longitude === null)) return 'No coordinates';
-  if (routerStatus === 'not_configured') return 'Sequence preview — router not configured';
-  return 'Sequence preview — router unavailable';
+  if (routerStatus === 'not_configured') return 'Router not configured';
+  return 'Road geometry unavailable';
 }
 
 export function hideSetupActions(bootstrap: BootstrapPayload): boolean {

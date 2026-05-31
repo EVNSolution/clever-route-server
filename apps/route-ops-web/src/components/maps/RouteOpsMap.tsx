@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 
-import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature, buildSequenceLineFeature, fitBoundsForPoints, getOrderMapPoints, getRouteMapPoints, type RouteOpsPoint } from '../../maps/geojson';
+import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature, fitBoundsForPoints, getOrderMapPoints, getRouteMapPoints, getRouteSnappedStopPoints, type RouteLineFeature, type RouteOpsPoint } from '../../maps/geojson';
 import { installMissingMapImageFallback } from '../../maps/maplibre-missing-images';
 import { installPmtilesProtocol } from '../../maps/pmtiles';
 import { mapReadiness } from '../../maps/provider';
@@ -50,8 +50,8 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
   const homePoint = useMemo(() => resolveMapHomePoint(detail, depot, points), [depot, detail, points]);
   const readiness = mapReadiness({ coordinatesCount: points.length, mapStatus: bootstrap.mapConfig.status });
   const routeGeometry = useMemo(() => buildRouteGeometryFeature(detail), [detail]);
-  const sequenceGeometry = useMemo(() => buildSequenceLineFeature(points), [points]);
-  const lineFeature = detail === null ? null : routeGeometry ?? sequenceGeometry;
+  const snappedStopPoints = useMemo(() => getRouteSnappedStopPoints(detail), [detail]);
+  const lineFeature = detail === null ? null : routeGeometry;
   const ordersGeojson = useMemo(() => buildOrdersMapFeatureCollection(orders, plannedOrderIds), [orders, plannedOrderIds]);
 
   useEffect(() => {
@@ -144,13 +144,13 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
     const map = mapRef.current;
     if (detail === null) syncOrdersLayer(map, ordersGeojson);
     syncRouteLayers(map, lineFeature);
-    syncRouteMarkers(map, maplibreRef.current, detail === null ? points.filter((point) => point.kind === 'depot') : points, markersRef.current);
+    syncRouteMarkers(map, maplibreRef.current, detail === null ? points.filter((point) => point.kind === 'depot') : [...snappedStopPoints, ...points], markersRef.current);
     if (detail !== null) {
       fitMap(map, maplibreRef.current, points);
       return;
     }
     applyOrdersHomeViewport(map, homePoint, ordersHomeAppliedRef);
-  }, [detail, homePoint, isMapReady, lineFeature, ordersGeojson, points]);
+  }, [detail, homePoint, isMapReady, lineFeature, ordersGeojson, points, snappedStopPoints]);
 
   useEffect(() => {
     if (fitRequest === 0 || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return;
@@ -286,7 +286,7 @@ function createOrderPinImageData(color: string, options: { borderWidth?: number;
   return context.getImageData(0, 0, width, height);
 }
 
-export function syncRouteLayers(map: MapLibreMap, lineFeature: ReturnType<typeof buildRouteGeometryFeature> | ReturnType<typeof buildSequenceLineFeature>): void {
+export function syncRouteLayers(map: MapLibreMap, lineFeature: RouteLineFeature | null): void {
   if (lineFeature === null) {
     const existing = safeGetSource(map, 'route-ops-route-line') as { setData?(data: unknown): void } | undefined;
     if (existing?.setData) safeSetSourceData(existing, EMPTY_ROUTE_LINE_COLLECTION);
@@ -309,6 +309,7 @@ export function syncRouteLayers(map: MapLibreMap, lineFeature: ReturnType<typeof
   }
   safeSetPaintProperty(map, 'route-ops-route-line', 'line-color', paint['line-color']);
   safeSetPaintProperty(map, 'route-ops-route-line', 'line-dasharray', paint['line-dasharray']);
+  safeSetPaintProperty(map, 'route-ops-route-line', 'line-opacity', paint['line-opacity']);
   safeSetPaintProperty(map, 'route-ops-route-line', 'line-width', paint['line-width']);
 }
 
@@ -414,11 +415,12 @@ function safeAddImage(imageApi: { addImage?(id: string, image: ImageData, option
   }
 }
 
-function routeLinePaintForKind(kind: 'road_geometry' | 'sequence_preview'): { 'line-color': string; 'line-dasharray': [number, number]; 'line-width': number } {
+function routeLinePaintForKind(kind: 'road_geometry' | 'sequence_preview'): { 'line-color': string; 'line-dasharray': [number, number]; 'line-opacity': number; 'line-width': number } {
   return {
     'line-color': kind === 'road_geometry' ? '#e11900' : '#64748b',
     'line-dasharray': kind === 'road_geometry' ? [1, 0] : [2, 2],
-    'line-width': kind === 'road_geometry' ? 4 : 5
+    'line-opacity': kind === 'road_geometry' ? 0.78 : 0.72,
+    'line-width': kind === 'road_geometry' ? 4 : 4
   };
 }
 
@@ -431,7 +433,7 @@ function syncRouteMarkers(map: MapLibreMap, maplibregl: MapLibreModule | null, p
   markers.forEach((marker) => safeRemoveMarker(marker));
   markers.length = 0;
   for (const point of points) {
-    const element = point.kind === 'depot' ? createRouteStartMarkerElement(point) : createRouteStopMarkerElement(point);
+    const element = point.kind === 'depot' ? createRouteStartMarkerElement(point) : point.kind === 'snapped-stop' ? createRouteSnappedStopPointElement(point) : createRouteStopMarkerElement(point);
     markers.push(new maplibregl.Marker({ element, anchor: point.kind === 'depot' ? 'bottom' : 'center' }).setLngLat([point.longitude, point.latitude]).addTo(map));
   }
 }
@@ -458,6 +460,15 @@ function createDepartureMarkerIconElement(): SVGSVGElement {
   iconPathElement.setAttribute('d', 'M10 3.2 3.5 8.4v8.1h4v-5h5v5h4V8.4L10 3.2Z');
   iconElement.append(iconPathElement);
   return iconElement;
+}
+
+function createRouteSnappedStopPointElement(point: RouteOpsPoint): HTMLElement {
+  const markerElement = document.createElement('span');
+  markerElement.className = 'route-detail-snapped-stop-point';
+  markerElement.style.zIndex = '3100';
+  markerElement.setAttribute('aria-hidden', 'true');
+  if (point.addressLabel !== undefined) markerElement.title = point.addressLabel;
+  return markerElement;
 }
 
 function createRouteStopMarkerElement(point: RouteOpsPoint): HTMLElement {

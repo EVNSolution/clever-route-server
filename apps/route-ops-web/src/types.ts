@@ -157,6 +157,8 @@ export type RoutePlanDetailDto = {
     inputCoordinates: [number, number] | null;
     name: string | null;
     sequence: number;
+    snapDistanceMeters: number | null;
+    snappedCoordinates: [number, number] | null;
     sourceOrderId: string;
   }>;
   stops: RouteStopDto[];

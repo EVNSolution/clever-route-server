@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature, fitBoundsForPoints, getRouteMapPoints } from '../src/maps/geojson';
+import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature, fitBoundsForPoints, getRouteMapPoints, getRouteSnappedStopPoints } from '../src/maps/geojson';
 import { auditStyleEndpoints, extractStyleEndpointUrls, mapReadiness, providerStatusLabel } from '../src/maps/provider';
 import { installPmtilesProtocol } from '../src/maps/pmtiles';
 import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto } from '../src/types';
@@ -77,6 +77,18 @@ describe('route ops map helpers', () => {
     const points = getRouteMapPoints(detail);
     expect(points.map((point) => `${point.kind}:${point.label}`)).toEqual(['depot:D', 'stop:1', 'stop:2']);
     expect(fitBoundsForPoints(points)).toEqual({ east: -79.3, north: 43.7, south: 43.6, west: -79.5 });
+  });
+
+  test('maps OSRM snapped stop points for Shopify-themed route detail markers', () => {
+    expect(getRouteSnappedStopPoints({
+      ...routeDetail(),
+      routeStopPoints: [
+        { deliveryStopId: 'a', inputCoordinates: [-79.3, 43.6], name: 'Road A', sequence: 1, snapDistanceMeters: 12.3, snappedCoordinates: [-79.31, 43.61], sourceOrderId: 'source-a' },
+        { deliveryStopId: 'b', inputCoordinates: [-79.4, 43.65], name: null, sequence: 2, snapDistanceMeters: null, snappedCoordinates: null, sourceOrderId: 'source-b' }
+      ]
+    })).toEqual([
+      { addressLabel: 'Road A', id: 'a:snapped', kind: 'snapped-stop', label: '1', latitude: 43.61, longitude: -79.31 }
+    ]);
   });
 
   test('extracts style manifest endpoints and classifies public vs self-hosted hosts', () => {

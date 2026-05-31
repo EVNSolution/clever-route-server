@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest';
 
 import { withWorkspaceQuery } from '../src/api';
 import { defaultRouteScopeConfig } from '../src/routeScopeConfig';
-import { applyClientOrderFilters, buildOrderFetchQuery, buildOrderQuery, createDefaultOrderFilters, deriveRouteStats, geometryLabel, hideSetupActions, mapReadiness, moveStop, moveStopBefore, storeSettingsToDepotPoint, summarizeSelection } from '../src/state';
+import { applyClientOrderFilters, buildOrderFetchQuery, buildOrderQuery, createDefaultOrderFilters, deriveRouteStats, geometryLabel, hasStopSequenceChanged, hideSetupActions, mapReadiness, moveStop, moveStopBefore, storeSettingsToDepotPoint, summarizeSelection } from '../src/state';
 import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStopDto } from '../src/types';
 
 describe('route ops web state helpers', () => {
@@ -60,6 +60,14 @@ describe('route ops web state helpers', () => {
     expect(moveStop(stops, 'c', 1)).toBe(stops);
   });
 
+  test('detects unsaved route sequence changes by stable stop identity', () => {
+    const savedStops = [stop('a', 1), stop('b', 2), stop('c', 3)];
+    expect(hasStopSequenceChanged(savedStops, [stop('a', 1), stop('b', 2), stop('c', 3)])).toBe(false);
+    expect(hasStopSequenceChanged(savedStops, [stop('b', 1), stop('a', 2), stop('c', 3)])).toBe(true);
+    expect(hasStopSequenceChanged(savedStops, [stop('a', 1), stop('b', 2)])).toBe(true);
+    expect(hasStopSequenceChanged(null, savedStops)).toBe(false);
+  });
+
 
 
   test('supports drag/drop stop insertion before a target stop', () => {
@@ -90,8 +98,9 @@ describe('route ops web state helpers', () => {
       stops: [stop('a', 1, 'COMPLETED'), stop('b', 2, 'ATTEMPTED', null, null)]
     };
     expect(deriveRouteStats(detail)).toEqual({ attempted: 1, completed: 1, missingCoordinates: 1, stops: 2 });
-    expect(geometryLabel(detail, 'not_configured')).toBe('Sequence preview — router not configured');
+    expect(geometryLabel(detail, 'not_configured')).toBe('Router not configured');
     expect(geometryLabel({ ...detail, routeGeometry: { coordinates: [[-79, 43]], type: 'LineString' } }, 'configured')).toBe('Road geometry');
+    expect(geometryLabel(detail, 'configured')).toBe('Road geometry unavailable');
   });
 
   test('keeps map/provider states explicit and plugin mode hides setup actions', () => {

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactElement } from 'react';
 
-import { assignDriver, deleteRoute, getDrivers, getRouteDetail, getRoutes, optimizeRoute, saveStopSequence } from '../api';
+import { assignDriver, deleteRoute, getDrivers, getRouteDetail, getRoutes, saveStopSequence } from '../api';
 import { Badge, Kpi } from '../components/primitives';
 import { TabLayout } from '../components/TabLayout';
 import { RouteOpsMap } from '../components/maps/RouteOpsMap';
-import { deriveRouteStats, geometryLabel, moveStop, moveStopBefore } from '../state';
+import { deriveRouteStats, geometryLabel, hasStopSequenceChanged, moveStop, moveStopBefore } from '../state';
 import type { BootstrapPayload, DriverDto, RoutePlanDetailDto, RoutePlanSummaryDto, RouteStopDto } from '../types';
 import { readErrorMessage } from '../utils/format';
 
@@ -90,28 +90,23 @@ function RouteBuilder(input: {
 }): ReactElement {
   const [draftStops, setDraftStops] = useState<RouteStopDto[]>([]);
   const [draggingStopId, setDraggingStopId] = useState<string | null>(null);
+  const [isSavingSequence, setIsSavingSequence] = useState(false);
   const detail = input.detail;
   useEffect(() => setDraftStops(detail?.stops ?? []), [detail]);
   const stats = deriveRouteStats(detail);
+  const hasSequenceChanges = hasStopSequenceChanged(detail?.stops, draftStops);
 
   const save = async (): Promise<void> => {
-    if (detail === null) return;
+    if (detail === null || !hasSequenceChanges || isSavingSequence) return;
+    setIsSavingSequence(true);
     try {
       const updated = await saveStopSequence(detail.routePlan.id, input.bootstrap.csrfToken, draftStops.map((stop) => ({ deliveryStopId: stop.deliveryStopId, sourceOrderId: stop.sourceOrderId })));
       input.setDetail(updated);
       input.setError(null);
     } catch (error) {
       input.setError(readErrorMessage(error));
-    }
-  };
-
-  const optimize = async (): Promise<void> => {
-    if (detail === null) return;
-    try {
-      input.setDetail(await optimizeRoute(detail.routePlan.id, input.bootstrap.csrfToken));
-      input.setError(null);
-    } catch (error) {
-      input.setError(readErrorMessage(error));
+    } finally {
+      setIsSavingSequence(false);
     }
   };
 
@@ -132,8 +127,8 @@ function RouteBuilder(input: {
       secondary={<div className="panel side-panel wide">
         <div className="panel-heading"><div><span className="eyebrow">Route Builder</span><h2>{detail?.routePlan.name ?? 'Loading route…'}</h2></div><div className="route-row-actions"><button onClick={() => input.navigate('/admin/ui/app/routes')} type="button">All routes</button><button className="danger subtle" disabled={detail === null || input.deletingRouteId === detail.routePlan.id} onClick={() => { if (detail !== null) input.onDeleteRoute(detail.routePlan.id); }} type="button">{detail !== null && input.deletingRouteId === detail.routePlan.id ? 'Deleting…' : 'Delete'}</button></div></div>
         <label>Assigned driver<select value={detail?.routePlan.driverId ?? ''} onChange={(event) => void assign(event.target.value)}><option value="">Unassigned</option>{input.drivers.map((driver) => <option key={driver.id} value={driver.id}>{driver.displayName}</option>)}</select></label>
-        <div className="button-row"><button className="primary" onClick={() => void save()} type="button">Save sequence</button><button onClick={() => void optimize()} type="button">Optimize sequence · CLEVER v1</button></div>
-        <ol className="stop-list">{draftStops.map((stop) => <li className={draggingStopId === stop.deliveryStopId ? 'dragging' : ''} draggable key={stop.deliveryStopId} onDragEnd={() => setDraggingStopId(null)} onDragOver={(event) => event.preventDefault()} onDragStart={() => setDraggingStopId(stop.deliveryStopId)} onDrop={(event) => { event.preventDefault(); if (draggingStopId !== null) setDraftStops(moveStopBefore(draftStops, draggingStopId, stop.deliveryStopId)); setDraggingStopId(null); }}><span className="stop-number">{stop.sequence}</span><div><strong>{stop.orderName}</strong><small>{stop.recipientName ?? 'No recipient'} · {stop.addressLabel}</small></div><div className="stop-actions"><button onClick={() => setDraftStops(moveStop(draftStops, stop.deliveryStopId, -1))} type="button">↑</button><button onClick={() => setDraftStops(moveStop(draftStops, stop.deliveryStopId, 1))} type="button">↓</button></div></li>)}</ol>
+        <div className="button-row"><button aria-label="save route stop sequence" className="primary route-save-button" disabled={!hasSequenceChanges || isSavingSequence} onClick={() => void save()} type="button">{isSavingSequence ? 'saving…' : 'save'}</button></div>
+        <ol className="stop-list">{draftStops.map((stop, index) => <li className={draggingStopId === stop.deliveryStopId ? 'dragging' : ''} draggable key={stop.deliveryStopId} onDragEnd={() => setDraggingStopId(null)} onDragOver={(event) => event.preventDefault()} onDragStart={() => setDraggingStopId(stop.deliveryStopId)} onDrop={(event) => { event.preventDefault(); if (draggingStopId !== null) setDraftStops(moveStopBefore(draftStops, draggingStopId, stop.deliveryStopId)); setDraggingStopId(null); }}><span className="stop-number">{stop.sequence}</span><div><strong>{stop.orderName}</strong><small>{stop.recipientName ?? 'No recipient'} · {stop.addressLabel}</small></div><div className="stop-actions"><button aria-label={`Move ${stop.orderName} up`} disabled={index === 0} onClick={() => setDraftStops(moveStop(draftStops, stop.deliveryStopId, -1))} type="button">↑</button><button aria-label={`Move ${stop.orderName} down`} disabled={index === draftStops.length - 1} onClick={() => setDraftStops(moveStop(draftStops, stop.deliveryStopId, 1))} type="button">↓</button></div></li>)}</ol>
       </div>}
       lower={<div className="summary-strip compact-kpis"><Kpi label="Stops" value={stats.stops} /><Kpi label="Completed" value={stats.completed} /><Kpi label="Attempted" value={stats.attempted} /><Kpi label="Missing coords" value={stats.missingCoordinates} /></div>}
     />
