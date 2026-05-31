@@ -79,6 +79,12 @@ describe('route ops map helpers', () => {
     expect(fitBoundsForPoints(points)).toEqual({ east: -79.3, north: 43.7, south: 43.6, west: -79.5 });
   });
 
+  test('does not synthesize fake route lines when OSRM geometry is unavailable', () => {
+    const detail = { ...routeDetail(), routeGeometry: null };
+    expect(buildRouteGeometryFeature(detail)).toBeNull();
+    expect(getRouteMapPoints(detail).map((point) => `${point.kind}:${point.label}`)).toEqual(['depot:D', 'stop:1', 'stop:2']);
+  });
+
   test('maps OSRM snapped stop points for Shopify-themed route detail markers', () => {
     expect(getRouteSnappedStopPoints({
       ...routeDetail(),

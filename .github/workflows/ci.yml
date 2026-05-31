@@ -55,6 +55,7 @@ jobs:
             bash -n "$script"
           done
           tests/deploy/ssm-route-ops-deploy.test.sh
+          OSRM_DRY_RUN=1 scripts/osrm-ontario.sh preflight
           OSRM_DRY_RUN=1 scripts/osrm-ontario.sh prepare
           OSRM_DRY_RUN=1 scripts/osrm-ontario.sh smoke
 

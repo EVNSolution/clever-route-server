@@ -3,15 +3,17 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/osrm-ontario.sh <prepare|smoke> [--dry-run]
+Usage: scripts/osrm-ontario.sh <preflight|prepare|smoke> [--dry-run]
 
 Ontario-only OSRM helper for Route Ops road geometry.
 
 Subcommands:
+  preflight Check existing OSRM data/service/env plus disk and memory.
   prepare   Download/preprocess the Ontario extract with OSRM tools.
   smoke     Request one sample route and verify GeoJSON geometry exists.
 
 Dry-run:
+  OSRM_DRY_RUN=1 scripts/osrm-ontario.sh preflight
   OSRM_DRY_RUN=1 scripts/osrm-ontario.sh prepare
   OSRM_DRY_RUN=1 scripts/osrm-ontario.sh smoke
   scripts/osrm-ontario.sh prepare --dry-run
@@ -19,6 +21,8 @@ Dry-run:
 Environment:
   ROOT_DIR              Default: /srv/clever-route-server
   OSRM_DATA_DIR         Default: $ROOT_DIR/data/osrm/ontario
+  OSRM_ENV_FILE         Default: $ROOT_DIR/infra/env/delivery-api.env
+  OSRM_COMPOSE_FILE     Default: $ROOT_DIR/infra/compose/docker-compose.prod.yml
   OSRM_PBF_URL          Default: Geofabrik Ontario extract
   PBF_FILE              Default: ontario-latest.osm.pbf
   OSRM_FILE             Default: ontario-latest.osrm
@@ -64,6 +68,142 @@ print_cmd() {
   printf 'dry-run:'
   printf ' %q' "$@"
   printf '\n'
+}
+
+nearest_existing_path() {
+  local path
+  path="$1"
+  while [[ ! -e "$path" && "$path" != "/" ]]; do
+    path="$(dirname "$path")"
+  done
+  printf '%s\n' "$path"
+}
+
+read_env_value() {
+  local env_file key
+  env_file="$1"
+  key="$2"
+  awk -F= -v key="$key" '$1 == key { print substr($0, index($0, "=") + 1); exit }' "$env_file"
+}
+
+print_env_presence() {
+  local env_file key value
+  env_file="$1"
+  key="$2"
+  if [[ ! -f "$env_file" ]]; then
+    echo "${key} configured: unknown (env file missing)"
+    return 0
+  fi
+
+  value="$(read_env_value "$env_file" "$key")"
+  if [[ -n "${value//[[:space:]]/}" ]]; then
+    echo "${key} configured: yes"
+  else
+    echo "${key} configured: no"
+  fi
+}
+
+preflight_osrm() {
+  local root_dir data_dir env_file compose_file osrm_file min_free_mb min_memory_mb
+  root_dir="${ROOT_DIR:-/srv/clever-route-server}"
+  data_dir="${OSRM_DATA_DIR:-${root_dir}/data/osrm/ontario}"
+  env_file="${OSRM_ENV_FILE:-${root_dir}/infra/env/delivery-api.env}"
+  compose_file="${OSRM_COMPOSE_FILE:-${root_dir}/infra/compose/docker-compose.prod.yml}"
+  osrm_file="${OSRM_FILE:-ontario-latest.osrm}"
+  min_free_mb="${OSRM_MIN_FREE_MB:-20000}"
+  min_memory_mb="${OSRM_MIN_MEMORY_MB:-4096}"
+
+  echo "OSRM Ontario preflight"
+  echo "Root dir: ${root_dir}"
+  echo "Data dir: ${data_dir}"
+  echo "Env file: ${env_file}"
+  echo "Compose file: ${compose_file}"
+  echo "Minimum free disk MB: ${min_free_mb}"
+  echo "Minimum memory+swap MB: ${min_memory_mb}"
+
+  if is_dry_run; then
+    print_cmd test -d "$data_dir"
+    print_cmd find "$data_dir" -maxdepth 1 -type f -name "${osrm_file}*"
+    print_cmd df -Pm "$data_dir"
+    print_cmd docker ps -a --filter name=osrm --format '{{.Names}}\t{{.Status}}\t{{.Ports}}'
+    print_cmd grep -E '^(OSRM_BASE_URL|OSRM_TIMEOUT_MS|ROUTE_OPS_ROUTER_COVERAGE)=' "$env_file"
+    print_cmd curl -fsS "http://127.0.0.1:5000/route/v1/driving/-79.3832,43.6532;-79.6441,43.5890?overview=full&geometries=geojson&steps=false"
+    echo "dry-run: no filesystem, Docker, env, or live OSRM checks executed."
+    return 0
+  fi
+
+  local disk_path free_mb
+  disk_path="$(nearest_existing_path "$data_dir")"
+  free_mb="$(df -Pm "$disk_path" | awk 'NR==2 { print $4 }')"
+  echo "Disk check path: ${disk_path}"
+  echo "Free disk MB: ${free_mb:-unknown}"
+  if [[ -z "$free_mb" || "$free_mb" -lt "$min_free_mb" ]]; then
+    echo "Storage decision: expansion_required_before_prepare"
+  else
+    echo "Storage decision: ok_for_prepare_threshold"
+  fi
+
+  if command -v free >/dev/null 2>&1; then
+    local available_memory_mb free_swap_mb total_available_mb
+    available_memory_mb="$(free -m | awk '/^Mem:/ { print $7 }')"
+    free_swap_mb="$(free -m | awk '/^Swap:/ { print $4 }')"
+    total_available_mb="$(( ${available_memory_mb:-0} + ${free_swap_mb:-0} ))"
+    echo "Available memory+swap MB: ${total_available_mb}"
+    if [[ "$total_available_mb" -lt "$min_memory_mb" ]]; then
+      echo "Memory decision: below_prepare_threshold"
+    else
+      echo "Memory decision: ok_for_prepare_threshold"
+    fi
+  else
+    echo "Memory decision: unknown (free command unavailable)"
+  fi
+
+  if [[ -d "$data_dir" ]]; then
+    echo "Data dir exists: yes"
+    du -sh "$data_dir" 2>/dev/null || true
+    local missing=0
+    for suffix in "" ".cells" ".partition"; do
+      if [[ ! -s "${data_dir}/${osrm_file}${suffix}" ]]; then
+        echo "Missing prepared artifact: ${osrm_file}${suffix}"
+        missing=1
+      fi
+    done
+    if [[ "$missing" -eq 0 ]]; then
+      echo "Prepared data decision: likely_complete_for_mld"
+    else
+      echo "Prepared data decision: incomplete_or_absent"
+    fi
+    find "$data_dir" -maxdepth 1 -type f \( -name "${osrm_file}*" -o -name "*.osm.pbf" \) -exec ls -lh {} + 2>/dev/null | head -40 || true
+  else
+    echo "Data dir exists: no"
+    echo "Prepared data decision: absent"
+  fi
+
+  echo "Runtime env presence (values redacted):"
+  print_env_presence "$env_file" "OSRM_BASE_URL"
+  print_env_presence "$env_file" "OSRM_TIMEOUT_MS"
+  print_env_presence "$env_file" "ROUTE_OPS_ROUTER_COVERAGE"
+
+  if [[ -f "$compose_file" ]]; then
+    if grep -q 'osrm-ontario:' "$compose_file" && grep -q '127.0.0.1:5000:5000' "$compose_file"; then
+      echo "Compose decision: osrm_service_defined_internal_loopback"
+    else
+      echo "Compose decision: osrm_service_missing_or_not_loopback"
+    fi
+  else
+    echo "Compose decision: compose_file_missing"
+  fi
+
+  if command -v docker >/dev/null 2>&1; then
+    echo "Docker OSRM containers:"
+    docker ps -a --filter name=osrm --format '{{.Names}}\t{{.Status}}\t{{.Ports}}' || true
+    echo "Docker OSRM images:"
+    docker images --format '{{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.Size}}' | grep -E '(^|/)osrm-backend:' || true
+  else
+    echo "Docker decision: unavailable"
+  fi
+
+  echo "Preflight complete."
 }
 
 prepare_osrm() {
@@ -155,21 +295,55 @@ smoke_osrm() {
 
   local payload
   payload="$(curl -fsS "$url")"
-  node -e '
-const payload = JSON.parse(process.argv[1]);
-if (payload.code !== "Ok" || !Array.isArray(payload.routes) || !payload.routes[0]?.geometry) {
-  throw new Error("OSRM smoke did not return route geometry");
-}
-console.log(JSON.stringify({
-  code: payload.code,
-  distance: payload.routes[0].distance ?? null,
-  duration: payload.routes[0].duration ?? null,
-  coordinates: payload.routes[0].geometry?.coordinates?.length ?? 0
-}));
-' "$payload"
+  if command -v node >/dev/null 2>&1; then
+    printf '%s' "$payload" | node -e '
+let raw = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", chunk => { raw += chunk; });
+process.stdin.on("end", () => {
+  const payload = JSON.parse(raw);
+  if (payload.code !== "Ok" || !Array.isArray(payload.routes) || !payload.routes[0]?.geometry) {
+    throw new Error("OSRM smoke did not return route geometry");
+  }
+  console.log(JSON.stringify({
+    code: payload.code,
+    distance: payload.routes[0].distance ?? null,
+    duration: payload.routes[0].duration ?? null,
+    coordinates: payload.routes[0].geometry?.coordinates?.length ?? 0
+  }));
+});
+'
+    return 0
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    printf '%s' "$payload" | python3 -c '
+import json
+import sys
+
+payload = json.load(sys.stdin)
+routes = payload.get("routes")
+geometry = routes[0].get("geometry") if isinstance(routes, list) and routes else None
+if payload.get("code") != "Ok" or not geometry:
+    raise SystemExit("OSRM smoke did not return route geometry")
+print(json.dumps({
+    "code": payload.get("code"),
+    "distance": routes[0].get("distance"),
+    "duration": routes[0].get("duration"),
+    "coordinates": len(geometry.get("coordinates") or []),
+}, separators=(",", ":")))
+'
+    return 0
+  fi
+
+  echo "OSRM smoke requires node or python3 to validate the JSON payload." >&2
+  return 1
 }
 
 case "$COMMAND" in
+  preflight)
+    preflight_osrm
+    ;;
   prepare)
     prepare_osrm
     ;;

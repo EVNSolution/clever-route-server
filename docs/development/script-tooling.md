@@ -26,9 +26,10 @@ These are not production commands. They are kept separate so each failure domain
 
 ## Environment preparation helpers
 
+- `scripts/osrm-ontario.sh preflight` — read-only EC2 check for existing OSRM data/service/env plus disk and memory thresholds before deciding whether EBS expansion or preparation is needed.
 - `scripts/osrm-ontario.sh prepare` — optional Ontario OSRM data preparation on the EC2 host.
 - `scripts/osrm-ontario.sh smoke` — optional OSRM route-geometry smoke.
-- `OSRM_DRY_RUN=1 scripts/osrm-ontario.sh prepare|smoke` — validates command construction without downloads, Docker, or live OSRM requests.
+- `OSRM_DRY_RUN=1 scripts/osrm-ontario.sh preflight|prepare|smoke` — validates command construction without downloads, Docker, env reads, or live OSRM requests.
 
 ## Test harnesses
 

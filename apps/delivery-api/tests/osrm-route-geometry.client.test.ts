@@ -45,6 +45,11 @@ describe('OsrmRouteGeometryProvider', () => {
       'https://osrm.example/route/v1/driving/-79.3832,43.6532;-79.2571,43.7764;-79.337,43.8561?overview=full&geometries=geojson&steps=false',
       expect.objectContaining({ method: 'GET' })
     );
+    const requestedUrl = String(fetch.mock.calls[0]?.[0] ?? '');
+    expect(requestedUrl).toContain('/route/v1/driving/');
+    expect(requestedUrl).not.toContain('/trip/v1/');
+    expect(requestedUrl).not.toContain('/table/v1/');
+    expect(requestedUrl).not.toContain('router.project-osrm.org');
     expect(result).toEqual({
       routeGeometry: {
         type: 'LineString',
