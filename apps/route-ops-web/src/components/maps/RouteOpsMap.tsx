@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 
-import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature, fitBoundsForPoints, getOrderMapPoints, getRouteMapPoints, type RouteLineFeature, type RouteOpsPoint } from '../../maps/geojson';
+import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection, fitBoundsForPoints, getOrderMapPoints, getRouteMapPoints, type RouteLineFeature, type RouteOpsPoint, type RouteStopMarkerFeatureCollection } from '../../maps/geojson';
 import { installMissingMapImageFallback } from '../../maps/maplibre-missing-images';
 import { installPmtilesProtocol } from '../../maps/pmtiles';
 import { mapReadiness } from '../../maps/provider';
@@ -18,7 +18,9 @@ const ORDER_PIN_REVIEW_IMAGE_ID = 'orders-map-pin-review';
 const ORDER_PIN_PIXEL_RATIO = 2;
 const ORDER_PIN_ICON_SIZE = 0.62;
 const ORDER_PIN_PATH = 'M20 50C20 50 4 31.5 4 18C4 9.16 11.16 2 20 2s16 7.16 16 16c0 13.5-16 32-16 32Z';
+const EMPTY_ORDERS_COLLECTION = buildOrdersMapFeatureCollection([], new Set<string>());
 const EMPTY_ROUTE_LINE_COLLECTION = { features: [], type: 'FeatureCollection' } as const;
+const EMPTY_ROUTE_STOP_COLLECTION = buildRouteStopMarkerFeatureCollection([]);
 
 type RouteOpsMapProps = {
   bootstrap: BootstrapPayload;
@@ -52,6 +54,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
   const routeGeometry = useMemo(() => buildRouteGeometryFeature(detail), [detail]);
   const lineFeature = detail === null ? null : routeGeometry;
   const ordersGeojson = useMemo(() => buildOrdersMapFeatureCollection(orders, plannedOrderIds), [orders, plannedOrderIds]);
+  const routeStopGeojson = useMemo(() => (detail === null ? EMPTY_ROUTE_STOP_COLLECTION : buildRouteStopMarkerFeatureCollection(points)), [detail, points]);
 
   useEffect(() => {
     onMapClickCoordinateRef.current = onMapClickCoordinate;
@@ -141,15 +144,16 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
   useEffect(() => {
     if (!isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return;
     const map = mapRef.current;
-    if (detail === null) syncOrdersLayer(map, ordersGeojson);
+    syncOrdersLayer(map, detail === null ? ordersGeojson : EMPTY_ORDERS_COLLECTION);
     syncRouteLayers(map, lineFeature);
-    syncRouteMarkers(map, maplibreRef.current, detail === null ? points.filter((point) => point.kind === 'depot') : points, markersRef.current);
+    syncRouteStopLayers(map, routeStopGeojson);
+    syncRouteMarkers(map, maplibreRef.current, points.filter((point) => point.kind === 'depot'), markersRef.current);
     if (detail !== null) {
       fitMap(map, maplibreRef.current, points);
       return;
     }
     applyOrdersHomeViewport(map, homePoint, ordersHomeAppliedRef);
-  }, [detail, homePoint, isMapReady, lineFeature, ordersGeojson, points]);
+  }, [detail, homePoint, isMapReady, lineFeature, ordersGeojson, points, routeStopGeojson]);
 
   useEffect(() => {
     if (fitRequest === 0 || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return;
@@ -312,6 +316,45 @@ export function syncRouteLayers(map: MapLibreMap, lineFeature: RouteLineFeature 
   safeSetPaintProperty(map, 'route-ops-route-line', 'line-width', paint['line-width']);
 }
 
+export function syncRouteStopLayers(map: MapLibreMap, featureCollection: RouteStopMarkerFeatureCollection): void {
+  const existing = safeGetSource(map, 'route-ops-route-stops') as { setData?(data: unknown): void } | undefined;
+  if (existing?.setData) safeSetSourceData(existing, featureCollection);
+  else if (!safeAddSource(map, 'route-ops-route-stops', { data: featureCollection, type: 'geojson' })) return;
+
+  if (!safeGetLayer(map, 'route-ops-route-stop-circles')) {
+    safeAddLayer(map, {
+      id: 'route-ops-route-stop-circles',
+      paint: {
+        'circle-color': '#303030',
+        'circle-radius': 10,
+        'circle-stroke-color': '#ffffff',
+        'circle-stroke-width': 2
+      },
+      source: 'route-ops-route-stops',
+      type: 'circle'
+    });
+  }
+
+  if (!safeGetLayer(map, 'route-ops-route-stop-labels')) {
+    safeAddLayer(map, {
+      id: 'route-ops-route-stop-labels',
+      layout: {
+        'symbol-sort-key': ['get', 'sortKey'],
+        'text-allow-overlap': true,
+        'text-field': ['get', 'label'],
+        'text-font': ['Noto Sans Bold'],
+        'text-ignore-placement': true,
+        'text-size': 10
+      },
+      paint: {
+        'text-color': '#ffffff'
+      },
+      source: 'route-ops-route-stops',
+      type: 'symbol'
+    });
+  }
+}
+
 function isMapUsable(map: MapLibreMap): boolean {
   const candidate = map as unknown as { getStyle?(): unknown; removed?: boolean; _removed?: boolean };
   if (candidate.removed === true || candidate._removed === true) return false;
@@ -432,8 +475,9 @@ function syncRouteMarkers(map: MapLibreMap, maplibregl: MapLibreModule | null, p
   markers.forEach((marker) => safeRemoveMarker(marker));
   markers.length = 0;
   for (const point of points) {
-    const element = point.kind === 'depot' ? createRouteStartMarkerElement(point) : createRouteStopMarkerElement(point);
-    markers.push(new maplibregl.Marker({ element, anchor: point.kind === 'depot' ? 'bottom' : 'center' }).setLngLat([point.longitude, point.latitude]).addTo(map));
+    if (point.kind !== 'depot') continue;
+    const element = createRouteStartMarkerElement(point);
+    markers.push(new maplibregl.Marker({ element, anchor: 'bottom' }).setLngLat([point.longitude, point.latitude]).addTo(map));
   }
 }
 
@@ -459,19 +503,6 @@ function createDepartureMarkerIconElement(): SVGSVGElement {
   iconPathElement.setAttribute('d', 'M10 3.2 3.5 8.4v8.1h4v-5h5v5h4V8.4L10 3.2Z');
   iconElement.append(iconPathElement);
   return iconElement;
-}
-
-function createRouteStopMarkerElement(point: RouteOpsPoint): HTMLElement {
-  const markerElement = document.createElement('button');
-  const labelElement = document.createElement('span');
-  markerElement.type = 'button';
-  markerElement.className = 'route-detail-stop-marker';
-  markerElement.style.zIndex = '3200';
-  markerElement.setAttribute('aria-label', `Stop ${point.label}`);
-  labelElement.className = 'route-detail-stop-marker__label';
-  labelElement.textContent = point.label;
-  markerElement.append(labelElement);
-  return markerElement;
 }
 
 function applyOrdersHomeViewport(map: MapLibreMap, homePoint: RouteOpsPoint | null, appliedRef: { current: string | null }): void {

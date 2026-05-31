@@ -38,6 +38,11 @@ export type OrderMapFeatureCollection = FeatureCollection<PointGeometry, {
 }>;
 
 export type RouteLineFeature = Feature<LineStringGeometry, { kind: 'road_geometry' }>;
+export type RouteStopMarkerFeatureCollection = FeatureCollection<PointGeometry, {
+  id: string;
+  label: string;
+  sortKey: number;
+}>;
 
 export function toLngLat(coordinates: { latitude: number | null; longitude: number | null }): LngLat | null {
   const { latitude, longitude } = coordinates;
@@ -113,6 +118,22 @@ export function getRouteMapPoints(detail: RoutePlanDetailDto | null): RouteOpsPo
     if (stopPoint !== null) points.push(stopPoint);
   }
   return points;
+}
+
+export function buildRouteStopMarkerFeatureCollection(points: readonly RouteOpsPoint[]): RouteStopMarkerFeatureCollection {
+  const stopPoints = points.filter((point) => point.kind === 'stop');
+  return {
+    features: stopPoints.map((point, index) => ({
+      geometry: { coordinates: [point.longitude, point.latitude], type: 'Point' },
+      properties: {
+        id: point.id,
+        label: point.label,
+        sortKey: index
+      },
+      type: 'Feature'
+    })),
+    type: 'FeatureCollection'
+  };
 }
 
 export function routeStopToPoint(stop: RouteStopDto, routeStopPoints: readonly RouteStopPointDto[] = []): RouteOpsPoint | null {

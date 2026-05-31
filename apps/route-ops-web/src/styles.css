@@ -766,36 +766,6 @@ button.danger.subtle {
 .pin.depot {
   fill: #008060;
 }
-.route-detail-stop-marker {
-  appearance: none;
-  background: #303030;
-  border: 2px solid #ffffff;
-  border-radius: 999px;
-  box-sizing: border-box;
-  box-shadow:
-    0 2px 4px rgba(0, 0, 0, 0.32),
-    0 0 0 1px rgba(48, 48, 48, 0.18);
-  color: #ffffff;
-  cursor: pointer;
-  display: grid;
-  font-size: 10px;
-  font-weight: 700;
-  height: 20px;
-  line-height: 1;
-  padding: 0;
-  place-items: center;
-  position: relative;
-  width: 20px;
-}
-.route-detail-stop-marker:is(:hover, :focus-visible) {
-  background: #000000;
-  outline: 2px solid rgba(0, 0, 0, 0.22);
-  outline-offset: 2px;
-}
-.route-detail-stop-marker__label {
-  line-height: 1;
-  transform: translateY(-0.5px);
-}
 .departure-map-marker {
   appearance: none;
   background-color: transparent;

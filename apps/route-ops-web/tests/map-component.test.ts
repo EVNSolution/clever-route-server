@@ -2,8 +2,8 @@ import { describe, expect, test, vi } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import { resolveMapHomePoint, RouteOpsMap, syncOrdersLayer, syncRouteLayers } from '../src/components/maps/RouteOpsMap';
-import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature } from '../src/maps/geojson';
+import { resolveMapHomePoint, RouteOpsMap, syncOrdersLayer, syncRouteLayers, syncRouteStopLayers } from '../src/components/maps/RouteOpsMap';
+import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection } from '../src/maps/geojson';
 import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStopDto } from '../src/types';
 
 describe('RouteOpsMap layer lifecycle', () => {
@@ -53,6 +53,33 @@ describe('RouteOpsMap layer lifecycle', () => {
       'line-opacity': 0.78,
       'line-width': 4
     });
+  });
+
+  test('renders numbered route stops as MapLibre layers instead of DOM overlay markers', () => {
+    const { layers, map, sources } = createMapStub();
+    const collection = buildRouteStopMarkerFeatureCollection([
+      { id: 'route-1:depot', kind: 'depot', label: 'D', latitude: 43.7, longitude: -79.5 },
+      { id: 'stop-1', kind: 'stop', label: '1', latitude: 43.61, longitude: -79.31 }
+    ]);
+
+    syncRouteStopLayers(map, collection);
+
+    expect(sources.get('route-ops-route-stops')?.data).toEqual(collection);
+    expect((layers.get('route-ops-route-stop-circles') as { paint?: Record<string, unknown> } | undefined)?.paint).toEqual({
+      'circle-color': '#303030',
+      'circle-radius': 10,
+      'circle-stroke-color': '#ffffff',
+      'circle-stroke-width': 2
+    });
+    expect((layers.get('route-ops-route-stop-labels') as { layout?: Record<string, unknown>; paint?: Record<string, unknown> } | undefined)?.layout).toMatchObject({
+      'text-allow-overlap': true,
+      'text-field': ['get', 'label'],
+      'text-ignore-placement': true
+    });
+
+    const empty = buildRouteStopMarkerFeatureCollection([]);
+    syncRouteStopLayers(map, empty);
+    expect(sources.get('route-ops-route-stops')?.setData).toHaveBeenCalledWith(empty);
   });
 
   test('clears the route line source when route geometry becomes unavailable', () => {

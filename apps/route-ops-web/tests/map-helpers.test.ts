@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature, fitBoundsForPoints, getRouteMapPoints } from '../src/maps/geojson';
+import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection, fitBoundsForPoints, getRouteMapPoints } from '../src/maps/geojson';
 import { auditStyleEndpoints, extractStyleEndpointUrls, mapReadiness, providerStatusLabel } from '../src/maps/provider';
 import { installPmtilesProtocol } from '../src/maps/pmtiles';
 import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto } from '../src/types';
@@ -100,6 +100,13 @@ describe('route ops map helpers', () => {
       { id: 'b', kind: 'stop', label: '2', latitude: 43.65, longitude: -79.4 }
     ]);
     expect(fitBoundsForPoints(points)).toEqual({ east: -79.31, north: 43.7, south: 43.61, west: -79.5 });
+    expect(buildRouteStopMarkerFeatureCollection(points)).toEqual({
+      features: [
+        { geometry: { coordinates: [-79.31, 43.61], type: 'Point' }, properties: { id: 'a', label: '1', sortKey: 0 }, type: 'Feature' },
+        { geometry: { coordinates: [-79.4, 43.65], type: 'Point' }, properties: { id: 'b', label: '2', sortKey: 1 }, type: 'Feature' }
+      ],
+      type: 'FeatureCollection'
+    });
   });
 
   test('extracts style manifest endpoints and classifies public vs self-hosted hosts', () => {
