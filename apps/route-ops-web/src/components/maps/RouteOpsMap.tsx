@@ -184,7 +184,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
       </div>
       <div className="route-ops-map-frame" data-map-provider-mode={bootstrap.mapConfig.providerMode ?? 'none'} data-map-provider-status={bootstrap.mapConfig.status}>
         {readiness === 'interactive_map' ? <div className="map-toolbar"><button aria-label={detail === null ? 'Center map on store' : 'Zoom map to fit'} onClick={() => setFitRequest((value) => value + 1)} title={detail === null ? 'Center map on store' : 'Zoom map to fit'} type="button"><FitMapIcon /></button></div> : null}
-        {readiness === 'interactive_map' ? <div className="route-ops-map-canvas" ref={containerRef} aria-label="Interactive CLEVER route map" /> : <SequencePreview points={points} readiness={readiness} showRouteLine={detail !== null} />}
+        {readiness === 'interactive_map' ? <div className="route-ops-map-canvas" ref={containerRef} aria-label="Interactive CLEVER route map" /> : <SequencePreview points={points} readiness={readiness} />}
       </div>
     </article>
   );
@@ -296,7 +296,7 @@ export function syncRouteLayers(map: MapLibreMap, lineFeature: RouteLineFeature 
   if (existing?.setData) safeSetSourceData(existing, lineFeature);
   else if (!safeAddSource(map, 'route-ops-route-line', { data: lineFeature, type: 'geojson' })) return;
 
-  const paint = routeLinePaintForKind(lineFeature.properties.kind);
+  const paint = routeLinePaint();
   if (!safeGetLayer(map, 'route-ops-route-line')) {
     safeAddLayer(map, {
       id: 'route-ops-route-line',
@@ -415,12 +415,12 @@ function safeAddImage(imageApi: { addImage?(id: string, image: ImageData, option
   }
 }
 
-function routeLinePaintForKind(kind: 'road_geometry' | 'sequence_preview'): { 'line-color': string; 'line-dasharray': [number, number]; 'line-opacity': number; 'line-width': number } {
+function routeLinePaint(): { 'line-color': string; 'line-dasharray': [number, number]; 'line-opacity': number; 'line-width': number } {
   return {
-    'line-color': kind === 'road_geometry' ? '#e11900' : '#64748b',
-    'line-dasharray': kind === 'road_geometry' ? [1, 0] : [2, 2],
-    'line-opacity': kind === 'road_geometry' ? 0.78 : 0.72,
-    'line-width': kind === 'road_geometry' ? 4 : 4
+    'line-color': '#e11900',
+    'line-dasharray': [1, 0],
+    'line-opacity': 0.78,
+    'line-width': 4
   };
 }
 
@@ -524,16 +524,15 @@ function FitMapIcon(): ReactElement {
   );
 }
 
-function SequencePreview({ points, readiness, showRouteLine }: { points: RouteOpsPoint[]; readiness: string; showRouteLine: boolean }): ReactElement {
+function SequencePreview({ points, readiness }: { points: RouteOpsPoint[]; readiness: string }): ReactElement {
   const bounds = fitBoundsForPoints(points);
   const projected = bounds === null ? [] : points.map((point) => ({ ...point, ...projectPoint(point, bounds) }));
   return (
-    <svg viewBox="0 0 1000 560" role="img" aria-label={readiness === 'provider_not_configured' ? 'Safe same-host route sequence preview' : 'Route coordinate preview'}>
+    <svg viewBox="0 0 1000 560" role="img" aria-label={readiness === 'provider_not_configured' ? 'Marker-only coordinate preview' : 'Route coordinate preview'}>
       <defs><linearGradient id="map-bg" x1="0" x2="1" y1="0" y2="1"><stop offset="0%" stopColor="#eef4fb" /><stop offset="100%" stopColor="#f8f4ec" /></linearGradient></defs>
       <rect width="1000" height="560" fill="url(#map-bg)" rx="24" />
       <path d="M-20 120 C200 90 260 210 440 176 C650 135 700 56 1040 85" className="map-road" />
       <path d="M40 470 C190 300 320 390 475 260 C610 145 730 300 955 210" className="map-road secondary" />
-      {showRouteLine && projected.length > 1 ? <polyline className="route-line" points={projected.map((point) => `${point.x},${point.y}`).join(' ')} /> : null}
       {projected.map((point) => <g key={point.id} transform={`translate(${point.x} ${point.y})`}><circle r="18" className={point.kind === 'depot' ? 'pin depot' : 'pin'} /><text y="5" textAnchor="middle">{point.label}</text></g>)}
     </svg>
   );

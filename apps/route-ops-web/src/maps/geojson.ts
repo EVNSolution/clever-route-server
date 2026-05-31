@@ -35,7 +35,7 @@ export type OrderMapFeatureCollection = FeatureCollection<PointGeometry, {
   sortKey: number;
 }>;
 
-export type RouteLineFeature = Feature<LineStringGeometry, { kind: 'road_geometry' | 'sequence_preview' }>;
+export type RouteLineFeature = Feature<LineStringGeometry, { kind: 'road_geometry' }>;
 
 export function toLngLat(coordinates: { latitude: number | null; longitude: number | null }): LngLat | null {
   const { latitude, longitude } = coordinates;
@@ -87,16 +87,6 @@ export function buildRouteGeometryFeature(detail: RoutePlanDetailDto | null): Ro
   return {
     geometry: { coordinates, type: 'LineString' },
     properties: { kind: 'road_geometry' },
-    type: 'Feature'
-  };
-}
-
-export function buildSequenceLineFeature(points: RouteOpsPoint[]): RouteLineFeature | null {
-  const coordinates = points.map((point): LngLat => [point.longitude, point.latitude]);
-  if (coordinates.length < 2) return null;
-  return {
-    geometry: { coordinates, type: 'LineString' },
-    properties: { kind: 'sequence_preview' },
     type: 'Feature'
   };
 }

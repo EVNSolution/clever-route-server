@@ -8,7 +8,7 @@ Purpose: enable road-following route geometry for Route Ops without changing sto
 - OSRM is internal-only: compose binds port 5000 to host loopback only
   (`127.0.0.1:5000`); do not expose it through Caddy or security groups.
 - Do not set `OSRM_BASE_URL` for `delivery-api` until OSRM smoke passes.
-- Rollback is env-only: unset `OSRM_BASE_URL`, restart `delivery-api`, and Route Ops falls back to sequence preview.
+- Rollback is env-only: unset `OSRM_BASE_URL`, restart `delivery-api`, and Route Ops removes road geometry instead of drawing fake straight lines.
 - Run preflight before any storage expansion or data preparation. This server may
   already contain OSRM data/service from the previous Shopify/delivery-api lane;
   expand EBS only when preflight proves the prepared Ontario data is absent or
@@ -26,7 +26,8 @@ bash scripts/osrm-ontario.sh preflight
 
 Preflight checks, without printing env values:
 
-1. existing Ontario OSRM data files under `data/osrm/ontario`;
+1. existing Ontario OSRM MLD data files under `data/osrm/ontario`
+   (`.fileIndex`, `.cells`, `.partition`, `.mldgr`);
 2. whether `OSRM_BASE_URL`, `OSRM_TIMEOUT_MS`, and
    `ROUTE_OPS_ROUTER_COVERAGE` are present in the host env file;
 3. Docker containers/images whose names include OSRM;
@@ -123,7 +124,7 @@ Smoke:
 - `/healthz` returns 200;
 - `/admin/ui/app/api/bootstrap` has `routerConfig.status=configured`, `provider=osrm`, `coverage=ontario`;
 - an Ontario route detail has non-null `routeGeometry`;
-- Routes page label shows `Road geometry`, not only sequence preview.
+- Routes page label shows `Road geometry`.
 
 ## Rollback
 
@@ -138,7 +139,7 @@ docker compose -f infra/compose/docker-compose.prod.yml --profile osrm stop osrm
 Expected rollback behavior:
 
 - bootstrap returns `routerConfig.status=not_configured`;
-- route UI falls back to `Sequence preview — router not configured`;
+- route UI falls back to `Router not configured` / `Road geometry unavailable` with marker-only coordinates, not a fake route line;
 - health remains 200.
 
 ## Known limits

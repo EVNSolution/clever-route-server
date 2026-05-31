@@ -371,14 +371,6 @@ small,
   stroke-width: 24;
   opacity: 0.8;
 }
-.route-line {
-  fill: none;
-  stroke: #2f6fed;
-  stroke-dasharray: 8 7;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 7;
-}
 .pin {
   fill: #111827;
   stroke: #fff;

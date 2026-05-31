@@ -162,7 +162,7 @@ preflight_osrm() {
     echo "Data dir exists: yes"
     du -sh "$data_dir" 2>/dev/null || true
     local missing=0
-    for suffix in "" ".cells" ".partition"; do
+    for suffix in ".fileIndex" ".cells" ".partition" ".mldgr"; do
       if [[ ! -s "${data_dir}/${osrm_file}${suffix}" ]]; then
         echo "Missing prepared artifact: ${osrm_file}${suffix}"
         missing=1
@@ -302,14 +302,28 @@ process.stdin.setEncoding("utf8");
 process.stdin.on("data", chunk => { raw += chunk; });
 process.stdin.on("end", () => {
   const payload = JSON.parse(raw);
-  if (payload.code !== "Ok" || !Array.isArray(payload.routes) || !payload.routes[0]?.geometry) {
+  const route = Array.isArray(payload.routes) ? payload.routes[0] : null;
+  const geometry = route?.geometry ?? null;
+  const coordinates = Array.isArray(geometry?.coordinates) ? geometry.coordinates : [];
+  const validCoordinates = coordinates.filter((coordinate) => (
+    Array.isArray(coordinate) &&
+    coordinate.length >= 2 &&
+    Number.isFinite(coordinate[0]) &&
+    Number.isFinite(coordinate[1])
+  ));
+  if (
+    payload.code !== "Ok" ||
+    geometry?.type !== "LineString" ||
+    coordinates.length < 2 ||
+    validCoordinates.length !== coordinates.length
+  ) {
     throw new Error("OSRM smoke did not return route geometry");
   }
   console.log(JSON.stringify({
     code: payload.code,
-    distance: payload.routes[0].distance ?? null,
-    duration: payload.routes[0].duration ?? null,
-    coordinates: payload.routes[0].geometry?.coordinates?.length ?? 0
+    distance: route.distance ?? null,
+    duration: route.duration ?? null,
+    coordinates: coordinates.length
   }));
 });
 '
@@ -319,18 +333,38 @@ process.stdin.on("end", () => {
   if command -v python3 >/dev/null 2>&1; then
     printf '%s' "$payload" | python3 -c '
 import json
+import math
 import sys
 
 payload = json.load(sys.stdin)
 routes = payload.get("routes")
-geometry = routes[0].get("geometry") if isinstance(routes, list) and routes else None
-if payload.get("code") != "Ok" or not geometry:
+route = routes[0] if isinstance(routes, list) and routes else None
+geometry = route.get("geometry") if isinstance(route, dict) else None
+coordinates = geometry.get("coordinates") if isinstance(geometry, dict) else None
+valid_coordinates = [
+    coordinate
+    for coordinate in coordinates
+    if isinstance(coordinate, list)
+    and len(coordinate) >= 2
+    and isinstance(coordinate[0], (int, float))
+    and isinstance(coordinate[1], (int, float))
+    and math.isfinite(coordinate[0])
+    and math.isfinite(coordinate[1])
+]
+if (
+    payload.get("code") != "Ok"
+    or not isinstance(geometry, dict)
+    or geometry.get("type") != "LineString"
+    or not isinstance(coordinates, list)
+    or len(coordinates) < 2
+    or len(valid_coordinates) != len(coordinates)
+):
     raise SystemExit("OSRM smoke did not return route geometry")
 print(json.dumps({
     "code": payload.get("code"),
-    "distance": routes[0].get("distance"),
-    "duration": routes[0].get("duration"),
-    "coordinates": len(geometry.get("coordinates") or []),
+    "distance": route.get("distance"),
+    "duration": route.get("duration"),
+    "coordinates": len(coordinates),
 }, separators=(",", ":")))
 '
     return 0

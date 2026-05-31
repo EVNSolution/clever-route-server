@@ -1,8 +1,10 @@
 import { describe, expect, test, vi } from 'vitest';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 
-import { resolveMapHomePoint, syncOrdersLayer, syncRouteLayers } from '../src/components/maps/RouteOpsMap';
-import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature, buildSequenceLineFeature } from '../src/maps/geojson';
-import type { CanonicalOrderDto, RoutePlanDetailDto } from '../src/types';
+import { resolveMapHomePoint, RouteOpsMap, syncOrdersLayer, syncRouteLayers } from '../src/components/maps/RouteOpsMap';
+import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature } from '../src/maps/geojson';
+import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStopDto } from '../src/types';
 
 describe('RouteOpsMap layer lifecycle', () => {
   test('updates the orders GeoJSON source to an empty collection instead of leaving stale pins', () => {
@@ -53,12 +55,9 @@ describe('RouteOpsMap layer lifecycle', () => {
     });
   });
 
-  test('clears the route line source when a filter leaves fewer than two points', () => {
+  test('clears the route line source when route geometry becomes unavailable', () => {
     const { map, sources } = createMapStub();
-    const line = buildSequenceLineFeature([
-      { id: 'a', kind: 'order', label: '1', latitude: 43.6, longitude: -79.3 },
-      { id: 'b', kind: 'order', label: '2', latitude: 43.7, longitude: -79.4 }
-    ]);
+    const line = buildRouteGeometryFeature(routeDetail());
     expect(line).not.toBeNull();
 
     syncRouteLayers(map, line);
@@ -68,14 +67,32 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(sources.get('route-ops-route-line')?.setData).toHaveBeenCalledWith({ features: [], type: 'FeatureCollection' });
   });
 
+  test('does not draw a synthetic route polyline in provider fallback preview', () => {
+    const detail = routeDetail({
+      routeGeometry: null,
+      stops: [
+        routeStop('stop-1', 1, 43.6, -79.3),
+        routeStop('stop-2', 2, 43.7, -79.4)
+      ]
+    });
+
+    const html = renderToStaticMarkup(createElement(RouteOpsMap, {
+      bootstrap: bootstrapNotConfigured(),
+      detail,
+      subtitle: 'Preview',
+      title: 'Route'
+    }));
+
+    expect(html).toContain('Marker-only coordinate preview');
+    expect(html).not.toContain('<polyline');
+    expect(html).not.toContain('route-line');
+  });
+
 
   test('ignores MapLibre style teardown races during SPA tab navigation', () => {
     const map = createStyleTeardownMapStub();
     const collection = buildOrdersMapFeatureCollection([order({ orderId: 'order-1' })], new Set());
-    const line = buildSequenceLineFeature([
-      { id: 'a', kind: 'order', label: '1', latitude: 43.6, longitude: -79.3 },
-      { id: 'b', kind: 'order', label: '2', latitude: 43.7, longitude: -79.4 }
-    ]);
+    const line = buildRouteGeometryFeature(routeDetail());
 
     expect(() => syncOrdersLayer(map, collection)).not.toThrow();
     expect(() => syncRouteLayers(map, line)).not.toThrow();
@@ -150,7 +167,7 @@ function order(overrides: Partial<CanonicalOrderDto> = {}): CanonicalOrderDto {
   };
 }
 
-function routeDetail(): RoutePlanDetailDto {
+function routeDetail(overrides: Partial<RoutePlanDetailDto> = {}): RoutePlanDetailDto {
   return {
     routeGeometry: { coordinates: [[-79.5, 43.7], [-79.4, 43.65]], type: 'LineString' },
     routePlan: {
@@ -168,6 +185,46 @@ function routeDetail(): RoutePlanDetailDto {
       updatedAt: ''
     },
     routeStopPoints: [],
-    stops: []
+    stops: [],
+    ...overrides
+  };
+}
+
+function routeStop(id: string, sequence: number, latitude: number, longitude: number): RouteStopDto {
+  return {
+    addressLabel: `${sequence} Test Street, Toronto, ON`,
+    coordinates: { latitude, longitude },
+    deliveryArea: 'Toronto',
+    deliveryStopId: id,
+    orderId: `order-${sequence}`,
+    orderName: `#10${sequence}`,
+    recipientName: `Customer ${sequence}`,
+    sequence,
+    sourceOrderId: `source-${sequence}`,
+    status: 'PENDING'
+  };
+}
+
+function bootstrapNotConfigured(): BootstrapPayload {
+  return {
+    appUrls: {
+      dashboard: '/admin/ui/app',
+      drivers: '/admin/ui/app/drivers',
+      orders: '/admin/ui/app/orders',
+      routes: '/admin/ui/app/routes',
+      settings: '/admin/ui/app/settings'
+    },
+    csrfToken: 'csrf',
+    mapConfig: {
+      allowedHosts: [],
+      attribution: null,
+      providerMode: null,
+      status: 'not_configured',
+      styleAudit: null,
+      styleUrl: null
+    },
+    mode: 'internal-admin',
+    routerConfig: { coverage: null, provider: null, status: 'not_configured' },
+    shopDomain: 'tenant.example.test'
   };
 }
