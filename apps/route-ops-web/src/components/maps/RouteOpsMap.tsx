@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 
-import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature, fitBoundsForPoints, getOrderMapPoints, getRouteMapPoints, getRouteSnappedStopPoints, type RouteLineFeature, type RouteOpsPoint } from '../../maps/geojson';
+import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature, fitBoundsForPoints, getOrderMapPoints, getRouteMapPoints, type RouteLineFeature, type RouteOpsPoint } from '../../maps/geojson';
 import { installMissingMapImageFallback } from '../../maps/maplibre-missing-images';
 import { installPmtilesProtocol } from '../../maps/pmtiles';
 import { mapReadiness } from '../../maps/provider';
@@ -50,7 +50,6 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
   const homePoint = useMemo(() => resolveMapHomePoint(detail, depot, points), [depot, detail, points]);
   const readiness = mapReadiness({ coordinatesCount: points.length, mapStatus: bootstrap.mapConfig.status });
   const routeGeometry = useMemo(() => buildRouteGeometryFeature(detail), [detail]);
-  const snappedStopPoints = useMemo(() => getRouteSnappedStopPoints(detail), [detail]);
   const lineFeature = detail === null ? null : routeGeometry;
   const ordersGeojson = useMemo(() => buildOrdersMapFeatureCollection(orders, plannedOrderIds), [orders, plannedOrderIds]);
 
@@ -144,13 +143,13 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
     const map = mapRef.current;
     if (detail === null) syncOrdersLayer(map, ordersGeojson);
     syncRouteLayers(map, lineFeature);
-    syncRouteMarkers(map, maplibreRef.current, detail === null ? points.filter((point) => point.kind === 'depot') : [...snappedStopPoints, ...points], markersRef.current);
+    syncRouteMarkers(map, maplibreRef.current, detail === null ? points.filter((point) => point.kind === 'depot') : points, markersRef.current);
     if (detail !== null) {
       fitMap(map, maplibreRef.current, points);
       return;
     }
     applyOrdersHomeViewport(map, homePoint, ordersHomeAppliedRef);
-  }, [detail, homePoint, isMapReady, lineFeature, ordersGeojson, points, snappedStopPoints]);
+  }, [detail, homePoint, isMapReady, lineFeature, ordersGeojson, points]);
 
   useEffect(() => {
     if (fitRequest === 0 || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return;
@@ -433,7 +432,7 @@ function syncRouteMarkers(map: MapLibreMap, maplibregl: MapLibreModule | null, p
   markers.forEach((marker) => safeRemoveMarker(marker));
   markers.length = 0;
   for (const point of points) {
-    const element = point.kind === 'depot' ? createRouteStartMarkerElement(point) : point.kind === 'snapped-stop' ? createRouteSnappedStopPointElement(point) : createRouteStopMarkerElement(point);
+    const element = point.kind === 'depot' ? createRouteStartMarkerElement(point) : createRouteStopMarkerElement(point);
     markers.push(new maplibregl.Marker({ element, anchor: point.kind === 'depot' ? 'bottom' : 'center' }).setLngLat([point.longitude, point.latitude]).addTo(map));
   }
 }
@@ -460,15 +459,6 @@ function createDepartureMarkerIconElement(): SVGSVGElement {
   iconPathElement.setAttribute('d', 'M10 3.2 3.5 8.4v8.1h4v-5h5v5h4V8.4L10 3.2Z');
   iconElement.append(iconPathElement);
   return iconElement;
-}
-
-function createRouteSnappedStopPointElement(point: RouteOpsPoint): HTMLElement {
-  const markerElement = document.createElement('span');
-  markerElement.className = 'route-detail-snapped-stop-point';
-  markerElement.style.zIndex = '3100';
-  markerElement.setAttribute('aria-hidden', 'true');
-  if (point.addressLabel !== undefined) markerElement.title = point.addressLabel;
-  return markerElement;
 }
 
 function createRouteStopMarkerElement(point: RouteOpsPoint): HTMLElement {

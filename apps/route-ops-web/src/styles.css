@@ -796,20 +796,6 @@ button.danger.subtle {
   line-height: 1;
   transform: translateY(-0.5px);
 }
-.route-detail-snapped-stop-point {
-  background: #1473e6;
-  border: 2px solid #ffffff;
-  border-radius: 999px;
-  box-sizing: border-box;
-  box-shadow:
-    0 0 0 1px rgba(20, 115, 230, 0.24),
-    0 2px 4px rgba(20, 115, 230, 0.34);
-  display: block;
-  height: 11px;
-  pointer-events: none;
-  position: relative;
-  width: 11px;
-}
 .departure-map-marker {
   appearance: none;
   background-color: transparent;
