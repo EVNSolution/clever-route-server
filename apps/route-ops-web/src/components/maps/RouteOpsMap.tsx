@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 
-import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection, fitBoundsForPoints, getOrderMapPoints, getRouteMapPoints, type RouteLineFeature, type RouteOpsPoint, type RouteStopMarkerFeatureCollection } from '../../maps/geojson';
+import { buildOrdersMapFeatureCollection, buildRouteDropoffPointFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection, fitBoundsForPoints, getOrderMapPoints, getRouteDropoffPoints, getRouteMapPoints, type RouteDropoffPointFeatureCollection, type RouteLineFeature, type RouteOpsPoint, type RouteStopMarkerFeatureCollection } from '../../maps/geojson';
 import { installMissingMapImageFallback } from '../../maps/maplibre-missing-images';
 import { installPmtilesProtocol } from '../../maps/pmtiles';
 import { mapReadiness } from '../../maps/provider';
@@ -19,6 +19,7 @@ const ORDER_PIN_PIXEL_RATIO = 2;
 const ORDER_PIN_ICON_SIZE = 0.62;
 const ORDER_PIN_PATH = 'M20 50C20 50 4 31.5 4 18C4 9.16 11.16 2 20 2s16 7.16 16 16c0 13.5-16 32-16 32Z';
 const EMPTY_ORDERS_COLLECTION = buildOrdersMapFeatureCollection([], new Set<string>());
+const EMPTY_ROUTE_DROPOFF_COLLECTION = buildRouteDropoffPointFeatureCollection([]);
 const EMPTY_ROUTE_LINE_COLLECTION = { features: [], type: 'FeatureCollection' } as const;
 const EMPTY_ROUTE_STOP_COLLECTION = buildRouteStopMarkerFeatureCollection([]);
 
@@ -49,11 +50,14 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
   const [fitRequest, setFitRequest] = useState(0);
 
   const points = useMemo(() => (detail === null ? prependDepotPoint(depot, getOrderMapPoints(orders)) : getRouteMapPoints(detail)), [depot, detail, orders]);
+  const dropoffPoints = useMemo(() => getRouteDropoffPoints(detail), [detail]);
+  const fitPoints = useMemo(() => (detail === null ? points : [...points, ...dropoffPoints]), [detail, dropoffPoints, points]);
   const homePoint = useMemo(() => resolveMapHomePoint(detail, depot, points), [depot, detail, points]);
   const readiness = mapReadiness({ coordinatesCount: points.length, mapStatus: bootstrap.mapConfig.status });
   const routeGeometry = useMemo(() => buildRouteGeometryFeature(detail), [detail]);
   const lineFeature = detail === null ? null : routeGeometry;
   const ordersGeojson = useMemo(() => buildOrdersMapFeatureCollection(orders, plannedOrderIds), [orders, plannedOrderIds]);
+  const routeDropoffGeojson = useMemo(() => (detail === null ? EMPTY_ROUTE_DROPOFF_COLLECTION : buildRouteDropoffPointFeatureCollection(dropoffPoints)), [detail, dropoffPoints]);
   const routeStopGeojson = useMemo(() => (detail === null ? EMPTY_ROUTE_STOP_COLLECTION : buildRouteStopMarkerFeatureCollection(points)), [detail, points]);
 
   useEffect(() => {
@@ -146,14 +150,15 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
     const map = mapRef.current;
     syncOrdersLayer(map, detail === null ? ordersGeojson : EMPTY_ORDERS_COLLECTION);
     syncRouteLayers(map, lineFeature);
+    syncRouteDropoffLayers(map, routeDropoffGeojson);
     syncRouteStopLayers(map, routeStopGeojson);
     syncRouteMarkers(map, maplibreRef.current, points.filter((point) => point.kind === 'depot'), markersRef.current);
     if (detail !== null) {
-      fitMap(map, maplibreRef.current, points);
+      fitMap(map, maplibreRef.current, fitPoints);
       return;
     }
     applyOrdersHomeViewport(map, homePoint, ordersHomeAppliedRef);
-  }, [detail, homePoint, isMapReady, lineFeature, ordersGeojson, points, routeStopGeojson]);
+  }, [detail, fitPoints, homePoint, isMapReady, lineFeature, ordersGeojson, points, routeDropoffGeojson, routeStopGeojson]);
 
   useEffect(() => {
     if (fitRequest === 0 || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return;
@@ -163,8 +168,8 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
       if (target !== null) centerMapOnPoint(map, target);
       return;
     }
-    fitMap(map, maplibreRef.current, points);
-  }, [detail, fitRequest, homePoint, isMapReady, points]);
+    fitMap(map, maplibreRef.current, fitPoints);
+  }, [detail, fitPoints, fitRequest, homePoint, isMapReady, points]);
 
   useEffect(() => {
     if (!isMapReady || detail !== null || mapRef.current === null || onOrderSelect === undefined) return undefined;
@@ -316,6 +321,27 @@ export function syncRouteLayers(map: MapLibreMap, lineFeature: RouteLineFeature 
   safeSetPaintProperty(map, 'route-ops-route-line', 'line-width', paint['line-width']);
 }
 
+export function syncRouteDropoffLayers(map: MapLibreMap, featureCollection: RouteDropoffPointFeatureCollection): void {
+  const existing = safeGetSource(map, 'route-ops-route-dropoffs') as { setData?(data: unknown): void } | undefined;
+  if (existing?.setData) safeSetSourceData(existing, featureCollection);
+  else if (!safeAddSource(map, 'route-ops-route-dropoffs', { data: featureCollection, type: 'geojson' })) return;
+
+  if (!safeGetLayer(map, 'route-ops-route-dropoff-points')) {
+    safeAddLayer(map, {
+      id: 'route-ops-route-dropoff-points',
+      paint: {
+        'circle-color': '#1473e6',
+        'circle-radius': 5,
+        'circle-stroke-color': '#ffffff',
+        'circle-stroke-width': 1.6
+      },
+      source: 'route-ops-route-dropoffs',
+      type: 'circle'
+    });
+  }
+  enforceRouteLayerOrder(map);
+}
+
 export function syncRouteStopLayers(map: MapLibreMap, featureCollection: RouteStopMarkerFeatureCollection): void {
   const existing = safeGetSource(map, 'route-ops-route-stops') as { setData?(data: unknown): void } | undefined;
   if (existing?.setData) safeSetSourceData(existing, featureCollection);
@@ -353,6 +379,14 @@ export function syncRouteStopLayers(map: MapLibreMap, featureCollection: RouteSt
       type: 'symbol'
     });
   }
+  enforceRouteLayerOrder(map);
+}
+
+function enforceRouteLayerOrder(map: MapLibreMap): void {
+  safeMoveLayer(map, 'route-ops-route-line', 'route-ops-route-dropoff-points');
+  safeMoveLayer(map, 'route-ops-route-dropoff-points', 'route-ops-route-stop-circles');
+  safeMoveLayer(map, 'route-ops-route-stop-circles', 'route-ops-route-stop-labels');
+  safeMoveLayer(map, 'route-ops-route-stop-labels');
 }
 
 function isMapUsable(map: MapLibreMap): boolean {
@@ -397,6 +431,16 @@ function safeAddLayer(map: MapLibreMap, layer: Parameters<MapLibreMap['addLayer'
     return true;
   } catch {
     return false;
+  }
+}
+
+function safeMoveLayer(map: MapLibreMap, layerId: string, beforeId?: string): void {
+  try {
+    if (!safeGetLayer(map, layerId)) return;
+    if (beforeId !== undefined && !safeGetLayer(map, beforeId)) return;
+    map.moveLayer(layerId, beforeId);
+  } catch {
+    // Layer ordering is best-effort while MapLibre styles are being torn down or rebuilt.
   }
 }
 
@@ -462,7 +506,7 @@ function routeLinePaint(): { 'line-color': string; 'line-dasharray': [number, nu
     'line-color': '#e11900',
     'line-dasharray': [1, 0],
     'line-opacity': 0.78,
-    'line-width': 4
+    'line-width': 3
   };
 }
 

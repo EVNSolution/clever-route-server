@@ -2,8 +2,8 @@ import { describe, expect, test, vi } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import { resolveMapHomePoint, RouteOpsMap, syncOrdersLayer, syncRouteLayers, syncRouteStopLayers } from '../src/components/maps/RouteOpsMap';
-import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection } from '../src/maps/geojson';
+import { resolveMapHomePoint, RouteOpsMap, syncOrdersLayer, syncRouteDropoffLayers, syncRouteLayers, syncRouteStopLayers } from '../src/components/maps/RouteOpsMap';
+import { buildOrdersMapFeatureCollection, buildRouteDropoffPointFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection } from '../src/maps/geojson';
 import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStopDto } from '../src/types';
 
 describe('RouteOpsMap layer lifecycle', () => {
@@ -51,20 +51,33 @@ describe('RouteOpsMap layer lifecycle', () => {
       'line-color': '#e11900',
       'line-dasharray': [1, 0],
       'line-opacity': 0.78,
-      'line-width': 4
+      'line-width': 3
     });
   });
 
-  test('renders numbered route stops as MapLibre layers instead of DOM overlay markers', () => {
-    const { layers, map, sources } = createMapStub();
-    const collection = buildRouteStopMarkerFeatureCollection([
+  test('layers route markers as black orders above blue dropoffs above red road geometry', () => {
+    const { layerOrder, layers, map, sources } = createMapStub();
+    const line = buildRouteGeometryFeature(routeDetail());
+    const dropoffCollection = buildRouteDropoffPointFeatureCollection([
+      { id: 'dropoff-1', kind: 'dropoff', label: '1', latitude: 43.61, longitude: -79.31 }
+    ]);
+    const stopCollection = buildRouteStopMarkerFeatureCollection([
       { id: 'route-1:depot', kind: 'depot', label: 'D', latitude: 43.7, longitude: -79.5 },
-      { id: 'stop-1', kind: 'stop', label: '1', latitude: 43.61, longitude: -79.31 }
+      { id: 'stop-1', kind: 'stop', label: '1', latitude: 43.6, longitude: -79.3 }
     ]);
 
-    syncRouteStopLayers(map, collection);
+    syncRouteLayers(map, line);
+    syncRouteDropoffLayers(map, dropoffCollection);
+    syncRouteStopLayers(map, stopCollection);
 
-    expect(sources.get('route-ops-route-stops')?.data).toEqual(collection);
+    expect(sources.get('route-ops-route-dropoffs')?.data).toEqual(dropoffCollection);
+    expect(sources.get('route-ops-route-stops')?.data).toEqual(stopCollection);
+    expect((layers.get('route-ops-route-dropoff-points') as { paint?: Record<string, unknown> } | undefined)?.paint).toEqual({
+      'circle-color': '#1473e6',
+      'circle-radius': 5,
+      'circle-stroke-color': '#ffffff',
+      'circle-stroke-width': 1.6
+    });
     expect((layers.get('route-ops-route-stop-circles') as { paint?: Record<string, unknown> } | undefined)?.paint).toEqual({
       'circle-color': '#303030',
       'circle-radius': 10,
@@ -76,6 +89,12 @@ describe('RouteOpsMap layer lifecycle', () => {
       'text-field': ['get', 'label'],
       'text-ignore-placement': true
     });
+    expect(layerOrder.slice(-4)).toEqual([
+      'route-ops-route-line',
+      'route-ops-route-dropoff-points',
+      'route-ops-route-stop-circles',
+      'route-ops-route-stop-labels'
+    ]);
 
     const empty = buildRouteStopMarkerFeatureCollection([]);
     syncRouteStopLayers(map, empty);
@@ -128,24 +147,42 @@ describe('RouteOpsMap layer lifecycle', () => {
 });
 
 function createMapStub(): {
+  layerOrder: string[];
   layers: Map<string, unknown>;
-  map: Parameters<typeof syncOrdersLayer>[0] & Parameters<typeof syncRouteLayers>[0];
+  map: Parameters<typeof syncOrdersLayer>[0] & Parameters<typeof syncRouteLayers>[0] & Parameters<typeof syncRouteDropoffLayers>[0] & Parameters<typeof syncRouteStopLayers>[0];
   sources: Map<string, { data: unknown; setData: ReturnType<typeof vi.fn> }>;
 } {
   const sources = new Map<string, { data: unknown; setData: ReturnType<typeof vi.fn> }>();
   const layers = new Map<string, unknown>();
+  const layerOrder: string[] = [];
   const map = {
     addLayer: (layer: { id: string }) => {
       layers.set(layer.id, layer);
+      layerOrder.push(layer.id);
     },
     addSource: (id: string, source: { data: unknown }) => {
       sources.set(id, { data: source.data, setData: vi.fn() });
     },
     getLayer: (id: string) => layers.get(id),
     getSource: (id: string) => sources.get(id),
+    moveLayer: (id: string, beforeId?: string) => {
+      const currentIndex = layerOrder.indexOf(id);
+      if (currentIndex === -1) return;
+      layerOrder.splice(currentIndex, 1);
+      if (beforeId === undefined) {
+        layerOrder.push(id);
+        return;
+      }
+      const beforeIndex = layerOrder.indexOf(beforeId);
+      if (beforeIndex === -1) {
+        layerOrder.push(id);
+        return;
+      }
+      layerOrder.splice(beforeIndex, 0, id);
+    },
     setPaintProperty: vi.fn()
   } as unknown as Parameters<typeof syncOrdersLayer>[0];
-  return { layers, map, sources };
+  return { layerOrder, layers, map, sources };
 }
 
 

@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { buildOrdersMapFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection, fitBoundsForPoints, getRouteMapPoints } from '../src/maps/geojson';
+import { buildOrdersMapFeatureCollection, buildRouteDropoffPointFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection, fitBoundsForPoints, getRouteDropoffPoints, getRouteMapPoints } from '../src/maps/geojson';
 import { auditStyleEndpoints, extractStyleEndpointUrls, mapReadiness, providerStatusLabel } from '../src/maps/provider';
 import { installPmtilesProtocol } from '../src/maps/pmtiles';
 import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto } from '../src/types';
@@ -85,25 +85,36 @@ describe('route ops map helpers', () => {
     expect(getRouteMapPoints(detail).map((point) => `${point.kind}:${point.label}`)).toEqual(['depot:D', 'stop:1', 'stop:2']);
   });
 
-  test('uses OSRM snapped stop coordinates for the numbered route detail markers', () => {
-    const points = getRouteMapPoints({
+  test('splits numbered order markers from OSRM snapped dropoff points', () => {
+    const detail: RoutePlanDetailDto = {
       ...routeDetail(),
       routeStopPoints: [
         { deliveryStopId: 'a', inputCoordinates: [-79.3, 43.6], name: 'Road A', sequence: 1, snapDistanceMeters: 12.3, snappedCoordinates: [-79.31, 43.61], sourceOrderId: 'source-a' },
         { deliveryStopId: 'b', inputCoordinates: [-79.4, 43.65], name: null, sequence: 2, snapDistanceMeters: null, snappedCoordinates: null, sourceOrderId: 'source-b' }
       ]
-    });
+    };
+    const points = getRouteMapPoints(detail);
+    const dropoffPoints = getRouteDropoffPoints(detail);
 
     expect(points).toEqual([
       { id: 'route-1:depot', kind: 'depot', label: 'D', latitude: 43.7, longitude: -79.5 },
-      { id: 'a', kind: 'stop', label: '1', latitude: 43.61, longitude: -79.31 },
+      { id: 'a', kind: 'stop', label: '1', latitude: 43.6, longitude: -79.3 },
       { id: 'b', kind: 'stop', label: '2', latitude: 43.65, longitude: -79.4 }
     ]);
-    expect(fitBoundsForPoints(points)).toEqual({ east: -79.31, north: 43.7, south: 43.61, west: -79.5 });
+    expect(dropoffPoints).toEqual([
+      { addressLabel: 'Road A', id: 'a:dropoff', kind: 'dropoff', label: '1', latitude: 43.61, longitude: -79.31 }
+    ]);
+    expect(fitBoundsForPoints([...points, ...dropoffPoints])).toEqual({ east: -79.3, north: 43.7, south: 43.6, west: -79.5 });
     expect(buildRouteStopMarkerFeatureCollection(points)).toEqual({
       features: [
-        { geometry: { coordinates: [-79.31, 43.61], type: 'Point' }, properties: { id: 'a', label: '1', sortKey: 0 }, type: 'Feature' },
+        { geometry: { coordinates: [-79.3, 43.6], type: 'Point' }, properties: { id: 'a', label: '1', sortKey: 0 }, type: 'Feature' },
         { geometry: { coordinates: [-79.4, 43.65], type: 'Point' }, properties: { id: 'b', label: '2', sortKey: 1 }, type: 'Feature' }
+      ],
+      type: 'FeatureCollection'
+    });
+    expect(buildRouteDropoffPointFeatureCollection(dropoffPoints)).toEqual({
+      features: [
+        { geometry: { coordinates: [-79.31, 43.61], type: 'Point' }, properties: { id: 'a:dropoff', sortKey: 0 }, type: 'Feature' }
       ],
       type: 'FeatureCollection'
     });

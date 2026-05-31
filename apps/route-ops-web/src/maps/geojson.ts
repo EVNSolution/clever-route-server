@@ -8,10 +8,8 @@ export type RouteOpsPoint = {
   label: string;
   latitude: number;
   longitude: number;
-  kind: 'depot' | 'order' | 'stop';
+  kind: 'depot' | 'dropoff' | 'order' | 'stop';
 };
-
-type RouteStopPointDto = RoutePlanDetailDto['routeStopPoints'][number];
 
 type Feature<Geometry, Properties extends Record<string, unknown>> = {
   geometry: Geometry;
@@ -38,6 +36,10 @@ export type OrderMapFeatureCollection = FeatureCollection<PointGeometry, {
 }>;
 
 export type RouteLineFeature = Feature<LineStringGeometry, { kind: 'road_geometry' }>;
+export type RouteDropoffPointFeatureCollection = FeatureCollection<PointGeometry, {
+  id: string;
+  sortKey: number;
+}>;
 export type RouteStopMarkerFeatureCollection = FeatureCollection<PointGeometry, {
   id: string;
   label: string;
@@ -114,10 +116,44 @@ export function getRouteMapPoints(detail: RoutePlanDetailDto | null): RouteOpsPo
     points.push({ id: `${detail.routePlan.id}:depot`, kind: 'depot', label: 'D', latitude: depotLngLat[1], longitude: depotLngLat[0] });
   }
   for (const stop of [...detail.stops].sort((left, right) => left.sequence - right.sequence)) {
-    const stopPoint = routeStopToPoint(stop, detail.routeStopPoints);
+    const stopPoint = routeStopToPoint(stop);
     if (stopPoint !== null) points.push(stopPoint);
   }
   return points;
+}
+
+export function getRouteDropoffPoints(detail: RoutePlanDetailDto | null): RouteOpsPoint[] {
+  if (detail === null) return [];
+  return [...detail.routeStopPoints]
+    .sort((left, right) => left.sequence - right.sequence)
+    .flatMap((point) => {
+      const snappedCoordinates = point.snappedCoordinates;
+      if (!isLngLat(snappedCoordinates)) return [];
+      const [longitude, latitude] = snappedCoordinates;
+      return [{
+        addressLabel: point.name ?? undefined,
+        id: `${point.deliveryStopId}:dropoff`,
+        kind: 'dropoff' as const,
+        label: String(point.sequence),
+        latitude,
+        longitude
+      }];
+    });
+}
+
+export function buildRouteDropoffPointFeatureCollection(points: readonly RouteOpsPoint[]): RouteDropoffPointFeatureCollection {
+  const dropoffPoints = points.filter((point) => point.kind === 'dropoff');
+  return {
+    features: dropoffPoints.map((point, index) => ({
+      geometry: { coordinates: [point.longitude, point.latitude], type: 'Point' },
+      properties: {
+        id: point.id,
+        sortKey: index
+      },
+      type: 'Feature'
+    })),
+    type: 'FeatureCollection'
+  };
 }
 
 export function buildRouteStopMarkerFeatureCollection(points: readonly RouteOpsPoint[]): RouteStopMarkerFeatureCollection {
@@ -136,22 +172,10 @@ export function buildRouteStopMarkerFeatureCollection(points: readonly RouteOpsP
   };
 }
 
-export function routeStopToPoint(stop: RouteStopDto, routeStopPoints: readonly RouteStopPointDto[] = []): RouteOpsPoint | null {
-  const lngLat = resolveRouteStopDisplayLngLat(stop, routeStopPoints);
+export function routeStopToPoint(stop: RouteStopDto): RouteOpsPoint | null {
+  const lngLat = toLngLat(stop.coordinates);
   if (lngLat === null) return null;
   return { id: stop.deliveryStopId, kind: 'stop', label: String(stop.sequence), latitude: lngLat[1], longitude: lngLat[0] };
-}
-
-function resolveRouteStopDisplayLngLat(stop: RouteStopDto, routeStopPoints: readonly RouteStopPointDto[]): LngLat | null {
-  const snappedLngLat = findRouteStopPoint(stop, routeStopPoints)?.snappedCoordinates;
-  if (isLngLat(snappedLngLat)) return snappedLngLat;
-  return toLngLat(stop.coordinates);
-}
-
-function findRouteStopPoint(stop: RouteStopDto, routeStopPoints: readonly RouteStopPointDto[]): RouteStopPointDto | null {
-  return routeStopPoints.find((point) => point.deliveryStopId === stop.deliveryStopId || point.sourceOrderId === stop.sourceOrderId)
-    ?? routeStopPoints.find((point) => point.sequence === stop.sequence)
-    ?? null;
 }
 
 function isLngLat(value: LngLat | null | undefined): value is LngLat {
