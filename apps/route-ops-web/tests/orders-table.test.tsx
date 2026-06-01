@@ -123,14 +123,14 @@ describe("Orders compact operations table", () => {
     const html = renderOrderTable([missingCoordinates]);
 
     expect(html).toContain("Need coordinates");
-    expect(html).toContain("Geocode shipping address");
-    expect(html).toContain("Use bulk geocode");
+    expect(html).toContain("use bulk geocode");
     expect(html).not.toContain("Geocode &amp; add");
     expect(html).not.toContain("Geocode and add order");
+    expect(html).not.toContain("Use bulk geocode");
     expect(getRouteRepairPrompt(missingCoordinates)).toEqual({
       canGeocode: true,
       routeDetail: "Need coordinates",
-      statusDetail: "Geocode shipping address",
+      statusDetail: "use bulk geocode",
       statusLabel: "Need coordinates",
     });
     expect(formatOperationalStatus(missingCoordinates).label).toBe(
@@ -587,7 +587,7 @@ describe("Orders compact operations table", () => {
     });
 
     expect(html).toContain("1 orders");
-    expect(html).toContain("Find missing coordinates");
+    expect(html).toContain("Bulk geocode");
     expect(html).toContain("Bulk geocode Completed");
     expect(html).not.toContain("Geocode &amp; add");
   });
@@ -618,8 +618,9 @@ describe("Orders compact operations table", () => {
     );
 
     expect(html).toContain("1/1 selectable");
-    expect(html).toContain("Select filtered");
-    expect(html).toContain("Clear filtered");
+    expect(html).not.toContain("Select filtered");
+    expect(html).not.toContain("Clear filtered");
+    expect(html).toContain(">Clear</button>");
     expect(html).toContain(
       'aria-label="Select all route-ready orders in current filters"',
     );

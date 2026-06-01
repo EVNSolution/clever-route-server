@@ -1699,6 +1699,42 @@ function registerRouteOpsAppRoutes(
     }),
   );
 
+  app.post<{ Params: { driverId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/drivers/:driverId/regenerate-invite-code`,
+    async (request, reply) =>
+      withRouteOpsApi(request, reply, dependencies, async (session) => {
+        assertRouteOpsMutationCsrf(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session);
+        if (dependencies.driverService === undefined) {
+          throw new WooCommerceOnboardingError(
+            "BAD_REQUEST",
+            "Driver management service is not enabled in this runtime.",
+            400,
+          );
+        }
+        const currentDrivers = await dependencies.driverService.listDrivers({
+          shopDomain,
+        });
+        if (
+          !currentDrivers.some((driver) => driver.id === request.params.driverId)
+        ) {
+          throw new WooCommerceOnboardingError(
+            "NOT_FOUND",
+            "Driver not found",
+            404,
+          );
+        }
+        await dependencies.driverService.regenerateInviteCode({
+          driverId: request.params.driverId,
+          shopDomain,
+        });
+        const drivers = await dependencies.driverService.listDrivers({
+          shopDomain,
+        });
+        return routeOpsData({ drivers: drivers.map(toRouteOpsDriverDto) });
+      }),
+  );
+
   app.get(`${ADMIN_UI_APP_API_PATH}/settings`, async (request, reply) =>
     withRouteOpsApi(request, reply, dependencies, async (session) => {
       const shopDomain = requireRouteOpsShopDomain(request, session);
@@ -4738,20 +4774,32 @@ function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
 }
 
 function toRouteOpsDriverDto(driver: AdminDriverRow): {
+  appLinked: boolean;
   authStatus: string;
+  createdAt: string;
   displayName: string;
   id: string;
+  inviteCode: string | null;
+  inviteCodeExpiresAt: string | null;
   lastSeenAt: string | null;
   phone: string | null;
+  recentEventsCount: number;
   status: string;
+  updatedAt: string;
 } {
   return {
+    appLinked: driver.authStatus === "APP_LINKED",
     authStatus: driver.authStatus,
+    createdAt: driver.createdAt,
     displayName: driver.displayName,
     id: driver.id,
+    inviteCode: driver.inviteCode,
+    inviteCodeExpiresAt: driver.inviteCodeExpiresAt,
     lastSeenAt: driver.lastSeenAt,
     phone: driver.phone,
+    recentEventsCount: driver.recentEventsCount,
     status: driver.status,
+    updatedAt: driver.updatedAt,
   };
 }
 

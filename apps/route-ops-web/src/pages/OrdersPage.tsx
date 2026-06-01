@@ -610,7 +610,7 @@ function FilterBar({
 }): ReactElement {
   return (
     <article className="panel filter-panel">
-      <label>
+      <label className="filter-field filter-field--date">
         Delivery date
         <input
           type="date"
@@ -620,7 +620,7 @@ function FilterBar({
           }
         />
       </label>
-      <label>
+      <label className="filter-field filter-field--area">
         Area / region
         <input
           placeholder="Toronto"
@@ -630,7 +630,7 @@ function FilterBar({
           }
         />
       </label>
-      <label>
+      <label className="filter-field filter-field--status">
         Delivery status
         <select
           value={filters.deliveryStatus}
@@ -644,7 +644,7 @@ function FilterBar({
           <option value="completed">Completed</option>
         </select>
       </label>
-      <label>
+      <label className="filter-field filter-field--health">
         Order health
         <select
           value={filters.health}
@@ -657,7 +657,7 @@ function FilterBar({
           <option value="needs_review">Needs review</option>
         </select>
       </label>
-      <label>
+      <label className="filter-field filter-field--search">
         Search
         <input
           placeholder="#1001, email, phone"
@@ -765,27 +765,18 @@ export function OrderTable(input: {
             {selectedFilteredCount}/{selectableOrderIds.length} selectable
           </span>
           <button
-            disabled={selectableOrderIds.length === 0 || allFilteredSelected}
-            onClick={selectFilteredOrders}
-            type="button"
-          >
-            Select filtered
-          </button>
-          <button
             disabled={visibleSelectedCount === 0}
             onClick={clearFilteredOrders}
             type="button"
           >
-            Clear filtered
+            Clear
           </button>
           <button
             disabled={input.bulkGeocoding === true}
             onClick={() => input.onBulkGeocode?.()}
             type="button"
           >
-            {input.bulkGeocoding === true
-              ? "Finding coordinates…"
-              : "Find missing coordinates"}
+            {input.bulkGeocoding === true ? "Bulk geocoding…" : "Bulk geocode"}
           </button>
         </div>
       </div>
@@ -873,7 +864,6 @@ function OrderTableRow(input: {
   const selected = input.selectedOrders.has(order.orderId);
   const canPlan = isRoutePlanEligible(order);
   const day = formatDeliveryDayLabel(order);
-  const routeRepair = getRouteRepairPrompt(order);
   const status = formatOperationalStatus(order);
   const orderLabel = getOrderAccessibleLabel(order);
   const planActionLabel = `${
@@ -961,9 +951,6 @@ function OrderTableRow(input: {
             >
               Detail
             </button>
-            {routeRepair.canGeocode ? (
-              <span className="orders-action-note">Use bulk geocode</span>
-            ) : null}
           </div>
         </td>
       </tr>
@@ -1050,9 +1037,7 @@ export function formatOperationalStatus(order: CanonicalOrderDto): {
   if (!hasResolvedCoordinates(order)) {
     const canGeocode = hasGeocodableAddress(order);
     return {
-      detail: canGeocode
-        ? "Geocode shipping address"
-        : "Enter address or coordinates",
+      detail: canGeocode ? "use bulk geocode" : "Enter address or coordinates",
       label: canGeocode ? "Need coordinates" : "Missing address",
       toneClass: "order-pill--review",
     };
@@ -1145,9 +1130,7 @@ export function getRouteRepairPrompt(order: CanonicalOrderDto): {
     return {
       canGeocode,
       routeDetail: canGeocode ? "Need coordinates" : "Need address",
-      statusDetail: canGeocode
-        ? "Geocode shipping address"
-        : "Enter address or coordinates",
+      statusDetail: canGeocode ? "use bulk geocode" : "Enter address or coordinates",
       statusLabel: canGeocode ? "Need coordinates" : "Missing address",
     };
   }
@@ -1175,7 +1158,7 @@ function geocodeMessageForCode(code: string): string {
     case "BLANK_ADDRESS":
       return "Address is missing or incomplete";
     case "GEOCODER_NO_RESULT":
-      return "No matching address found";
+      return "use bulk geocode";
     case "GEOCODER_PROVIDER_RATE_LIMITED":
       return "Geocoder is rate limited; try bulk geocode later";
     case "GEOCODER_PROVIDER_TIMEOUT":
@@ -1865,7 +1848,7 @@ function formatCoordinateSummary(order: CanonicalOrderDto): {
   if (hasGeocodableAddress(order)) {
     return {
       primary: "Coordinates needed",
-      secondary: "Use Find missing coordinates from the order list.",
+      secondary: "Use Bulk geocode from the order list.",
     };
   }
   return {

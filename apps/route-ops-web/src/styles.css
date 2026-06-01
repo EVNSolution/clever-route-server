@@ -385,20 +385,32 @@ small,
   align-items: end;
   display: grid;
   gap: 12px;
-  grid-template-columns: 170px 1fr 170px 170px 1.2fr;
+  grid-template-columns:
+    minmax(min(100%, 8.5rem), 0.8fr)
+    minmax(min(100%, 7.25rem), 0.55fr)
+    minmax(min(100%, 8.25rem), 0.75fr)
+    minmax(min(100%, 8.25rem), 0.75fr)
+    minmax(min(100%, 11rem), 1.15fr);
+  max-width: 100%;
+  min-width: 0;
 }
 .filter-panel label {
   align-self: stretch;
   font-size: 12px;
   gap: 7px;
   letter-spacing: 0.01em;
+  min-width: 0;
 }
 .filter-panel input,
 .filter-panel select {
   border-radius: 12px;
   height: 44px;
   line-height: 1.2;
+  min-width: 0;
   padding: 0 12px;
+}
+.filter-field--area input {
+  padding-inline: 10px;
 }
 .ops-table {
   border-collapse: collapse;
@@ -425,7 +437,68 @@ small,
 .ops-table tr.needs-review {
   background: #fff7ed;
 }
+.table-scroll {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  width: 100%;
+}
+.drivers-workspace {
+  align-items: start;
+}
+.drivers-panel,
+.driver-invite-panel {
+  min-width: 0;
+}
+.driver-kpis {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 12px 0;
+}
+.driver-notice {
+  margin: 10px 0;
+}
+.driver-table {
+  min-width: 980px;
+}
+.driver-table td {
+  vertical-align: top;
+}
+.driver-invite-actions {
+  display: grid;
+  gap: 6px;
+}
+.invite-code {
+  background: #111827;
+  border-radius: 10px;
+  color: #fff;
+  display: inline-flex;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  padding: 7px 10px;
+  width: fit-content;
+}
+.compact-actions {
+  gap: 6px;
+}
+.compact-actions button {
+  padding: 7px 9px;
+}
+.empty-state {
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  color: #4b5563;
+  font-weight: 800;
+  margin: 12px 0 0;
+  padding: 14px;
+}
 .orders-table-panel {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
   padding: 14px;
 }
 .orders-table-panel .panel-heading {
@@ -455,14 +528,18 @@ small,
   margin: -2px 0 10px;
 }
 .orders-table-scroll {
+  max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
+  overscroll-behavior-x: contain;
+  width: 100%;
 }
 .orders-compact-table {
   border-collapse: separate;
   border-spacing: 0;
   color: #303030;
   font-size: 13px;
-  min-width: 1040px;
+  min-width: 960px;
   width: 100%;
 }
 .orders-compact-table th,
@@ -606,12 +683,6 @@ small,
   background: #111827;
   border-color: #111827;
   color: #fff;
-}
-.orders-compact-table .orders-action-note {
-  color: #6b7280;
-  font-size: 11.5px;
-  font-weight: 700;
-  white-space: nowrap;
 }
 .mini-list,
 .stop-list {
@@ -841,7 +912,18 @@ button.danger.subtle {
     position: static;
   }
   .filter-panel {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .filter-field--search {
+    grid-column: 1 / -1;
+  }
+}
+@media (max-width: 620px) {
+  .filter-panel {
     grid-template-columns: 1fr;
+  }
+  .filter-field--search {
+    grid-column: auto;
   }
 }
 .map-toolbar {
@@ -1195,10 +1277,6 @@ button.danger.subtle {
   min-width: 0;
 }
 
-.settings-field-grid--time-window {
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
-}
-
 .settings-field,
 .route-scope-field {
   display: grid;
@@ -1209,6 +1287,8 @@ button.danger.subtle {
 .settings-field input,
 .settings-field select,
 .route-scope-field input {
+  font-size: 12px;
+  line-height: 1.25;
   min-width: 0;
 }
 
@@ -1345,25 +1425,30 @@ button.danger.subtle {
 }
 
 @media (max-width: 1179px) {
+  .ops-shell--orders,
   .ops-shell--settings {
     min-width: 0;
     grid-template-columns: 248px minmax(0, 1fr);
   }
 
+  .ops-shell--orders .ops-main,
   .ops-shell--settings .ops-main {
     min-width: 0;
   }
 }
 
 @media (max-width: 720px) {
+  .ops-shell--orders,
   .ops-shell--settings {
     grid-template-columns: 150px minmax(0, 1fr);
   }
 
+  .ops-shell--orders .ops-sidebar,
   .ops-shell--settings .ops-sidebar {
     padding: 20px 10px;
   }
 
+  .ops-shell--orders .ops-main,
   .ops-shell--settings .ops-main {
     padding: 14px;
   }
@@ -1374,8 +1459,7 @@ button.danger.subtle {
     padding: 12px;
   }
 
-  .settings-field-grid,
-  .settings-field-grid--time-window {
+  .settings-field-grid {
     grid-template-columns: 1fr;
   }
 

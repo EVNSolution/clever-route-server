@@ -233,6 +233,18 @@ export async function createDriver(input: {
   );
 }
 
+export async function regenerateDriverInviteCode(input: {
+  csrfToken: string;
+  driverId: string;
+}): Promise<DriversResponse> {
+  return apiMutation<DriversResponse>(
+    `/admin/ui/app/api/drivers/${encodeURIComponent(input.driverId)}/regenerate-invite-code`,
+    "POST",
+    input.csrfToken,
+    {},
+  );
+}
+
 export async function getSettings(): Promise<SettingsResponse> {
   return apiGet<SettingsResponse>("/admin/ui/app/api/settings");
 }

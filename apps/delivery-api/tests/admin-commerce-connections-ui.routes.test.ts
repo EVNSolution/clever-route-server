@@ -1067,10 +1067,30 @@ describe("Admin WooCommerce connection UI routes", () => {
         expect.objectContaining({ name: "Route draft", stopsCount: 2 }),
       );
       expect(drivers.statusCode).toBe(200);
-      expect(
-        readApiData<{ drivers: Array<{ displayName: string }> }>(drivers)
-          .drivers[0],
-      ).toEqual(expect.objectContaining({ displayName: "Alex Driver" }));
+      const driverData =
+        readApiData<{
+          drivers: Array<{
+            appLinked: boolean;
+            authStatus: string;
+            createdAt: string;
+            displayName: string;
+            inviteCode: string | null;
+            inviteCodeExpiresAt: string | null;
+            recentEventsCount: number;
+          }>;
+        }>(drivers).drivers[0];
+      expect(driverData).toEqual(
+        expect.objectContaining({
+          appLinked: false,
+          authStatus: "INVITE_PENDING",
+          createdAt: "2026-05-26T12:00:00.000Z",
+          displayName: "Alex Driver",
+          inviteCode: "DRV123",
+          inviteCodeExpiresAt: "2026-05-27T12:00:00.000Z",
+          recentEventsCount: 0,
+        }),
+      );
+      expect(JSON.stringify(driverData)).not.toContain("authSubject");
       expect(settings.statusCode).toBe(200);
       expect(
         readApiData<{
@@ -2650,6 +2670,172 @@ describe("Admin WooCommerce connection UI routes", () => {
         routePlanId: "route-plan-id",
         shopDomain: "tenant-a.example.test",
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("creates a pending Route Ops driver and returns the admin-visible invite code", async () => {
+    const createdDriver = {
+      ...driverRow(),
+      inviteCode: "FACE12",
+      inviteCodeExpiresAt: "2026-05-28T12:00:00.000Z",
+    };
+    const createPendingDriver = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["driverService"]
+      >["createPendingDriver"]
+    >(() => Promise.resolve(createdDriver));
+    const listDrivers = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["driverService"]
+      >["listDrivers"]
+    >(() => Promise.resolve([createdDriver]));
+    const { app } = await createUiHarness({
+      driverService: {
+        createPendingDriver,
+        deleteDriver: vi.fn(),
+        listDrivers,
+        regenerateInviteCode: vi.fn(),
+      },
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/drivers?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(
+          cookie,
+          { displayName: "Alex Driver", phone: "+14165550123" },
+          csrfToken,
+        ),
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(createPendingDriver).toHaveBeenCalledWith({
+        createdBy: "web-operator",
+        displayName: "Alex Driver",
+        inviteLink: null,
+        phone: "+14165550123",
+        shopDomain: "tenant-a.example.test",
+        source: "clever-app-driver-invite",
+      });
+      const driverData = readApiData<{
+        drivers: Array<{ appLinked: boolean; inviteCode: string | null }>;
+      }>(response).drivers[0];
+      expect(driverData).toEqual(
+        expect.objectContaining({ appLinked: false, inviteCode: "FACE12" }),
+      );
+      expect(JSON.stringify(driverData)).not.toContain("authSubject");
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("regenerates a Route Ops driver invite code behind CSRF without exposing raw auth subject", async () => {
+    const regeneratedDriver = {
+      ...driverRow(),
+      inviteCode: "BEE123",
+      inviteCodeExpiresAt: "2026-05-28T12:00:00.000Z",
+      updatedAt: "2026-05-26T13:00:00.000Z",
+    };
+    const regenerateInviteCode = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["driverService"]
+      >["regenerateInviteCode"]
+    >(() => Promise.resolve(regeneratedDriver));
+    const listDrivers = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["driverService"]
+      >["listDrivers"]
+    >(() => Promise.resolve([regeneratedDriver]));
+    const { app } = await createUiHarness({
+      driverService: {
+        createPendingDriver: vi.fn(),
+        deleteDriver: vi.fn(),
+        listDrivers,
+        regenerateInviteCode,
+      },
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/drivers/driver-id/regenerate-invite-code?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {}, csrfToken),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(regenerateInviteCode).toHaveBeenCalledWith({
+        driverId: "driver-id",
+        shopDomain: "tenant-a.example.test",
+      });
+      const driverData = readApiData<{
+        drivers: Array<{ appLinked: boolean; inviteCode: string | null }>;
+      }>(response).drivers[0];
+      expect(driverData).toEqual(
+        expect.objectContaining({ appLinked: false, inviteCode: "BEE123" }),
+      );
+      expect(JSON.stringify(driverData)).not.toContain("authSubject");
+
+      const blocked = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/drivers/driver-id/regenerate-invite-code?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {}),
+      });
+      expect(blocked.statusCode).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("returns a safe not found response when regenerating an unknown Route Ops driver", async () => {
+    const regenerateInviteCode = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["driverService"]
+      >["regenerateInviteCode"]
+    >(() => Promise.resolve(driverRow()));
+    const listDrivers = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["driverService"]
+      >["listDrivers"]
+    >(() => Promise.resolve([]));
+    const { app } = await createUiHarness({
+      driverService: {
+        createPendingDriver: vi.fn(),
+        deleteDriver: vi.fn(),
+        listDrivers,
+        regenerateInviteCode,
+      },
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/drivers/other-shop-driver/regenerate-invite-code?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {}, csrfToken),
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(readApiError(response)).toEqual(
+        expect.objectContaining({
+          code: "NOT_FOUND",
+          message: "Driver not found",
+        }),
+      );
+      expect(regenerateInviteCode).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

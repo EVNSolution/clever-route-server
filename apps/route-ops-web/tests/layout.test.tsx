@@ -78,7 +78,8 @@ describe('route ops layout components', () => {
     expect(html).toContain('route-scope-config-block');
     expect(html).toContain('EVENING_DELIVERY');
     expect(html).toContain('EVENING');
-    expect(html).toContain('17:00');
+    expect(html).not.toContain('17:00');
+    expect(html).not.toContain('Time window');
     expect(html).not.toContain('Français');
   });
 
@@ -86,7 +87,9 @@ describe('route ops layout components', () => {
     const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
     expect(css).toContain('.settings-workspace');
     expect(css).toContain('.ops-shell--settings');
+    expect(css).toContain('.ops-shell--orders');
     expect(css).toContain('grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));');
+    expect(css).toContain('font-size: 12px;');
     expect(css).toContain('@media (max-width: 720px)');
     expect(css).not.toContain('minmax(120px, 0.9fr) minmax(120px, 1fr) minmax(140px, 1.2fr) minmax(140px, 1.2fr) minmax(90px, 0.5fr) auto');
   });

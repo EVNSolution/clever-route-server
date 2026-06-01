@@ -165,12 +165,18 @@ export type RoutePlanDetailDto = {
 };
 
 export type DriverDto = {
+  appLinked: boolean;
   authStatus: string;
+  createdAt: string;
   displayName: string;
   id: string;
+  inviteCode: string | null;
+  inviteCodeExpiresAt: string | null;
   lastSeenAt: string | null;
   phone: string | null;
+  recentEventsCount: number;
   status: string;
+  updatedAt: string;
 };
 
 export type StoreSettingsDto = {

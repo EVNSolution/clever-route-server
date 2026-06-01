@@ -286,25 +286,6 @@ function RouteScopeSettingsEditor({
           title={labels.deliverySessions}
           values={config.deliverySessions}
         />
-        <section className="route-scope-config-block" aria-label={labels.timeWindowHelp}>
-          <div className="route-scope-block-heading">
-            <h4>{labels.timeWindowHelp}</h4>
-          </div>
-          <div className="settings-field-grid settings-field-grid--time-window">
-            <label className="settings-field settings-field--wide">
-              {labels.timeWindowHelp}
-              <input value={config.timeWindow.helpText} onChange={(event) => onChange({ ...config, timeWindow: { ...config.timeWindow, helpText: event.target.value } })} />
-            </label>
-            <label className="settings-field">
-              {labels.startExample}
-              <input value={config.timeWindow.startExample} onChange={(event) => onChange({ ...config, timeWindow: { ...config.timeWindow, startExample: event.target.value } })} />
-            </label>
-            <label className="settings-field">
-              {labels.endExample}
-              <input value={config.timeWindow.endExample} onChange={(event) => onChange({ ...config, timeWindow: { ...config.timeWindow, endExample: event.target.value } })} />
-            </label>
-          </div>
-        </section>
       </div>
     </SettingsCategorySection>
   );

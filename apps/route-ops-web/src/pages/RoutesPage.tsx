@@ -9,6 +9,17 @@ import { deriveRouteStats, geometryLabel, hasStopSequenceChanged, moveStop, move
 import type { BootstrapPayload, DriverDto, RoutePlanDetailDto, RoutePlanSummaryDto, RouteStopDto } from '../types';
 import { readErrorMessage } from '../utils/format';
 
+export function getDriverOptionLabel(driver: DriverDto): string {
+  const appAccess = driver.appLinked || driver.authStatus === 'APP_LINKED' ? 'App linked' : 'Invite pending';
+  return `${driver.displayName} · ${appAccess}`;
+}
+
+export function getRouteDriverDisplay(routePlan: Pick<RoutePlanSummaryDto, 'driverId'> | null, drivers: DriverDto[]): string {
+  if (routePlan?.driverId == null) return 'Unassigned';
+  const driver = drivers.find((item) => item.id === routePlan.driverId);
+  return driver === undefined ? routePlan.driverId : getDriverOptionLabel(driver);
+}
+
 export function RoutesPage({ bootstrap, navigate, routePlanId, setError }: { bootstrap: BootstrapPayload; navigate(path: string): void; routePlanId: string | null; setError(error: string | null): void }): ReactElement {
   const [routes, setRoutes] = useState<RoutePlanSummaryDto[]>([]);
   const [detail, setDetail] = useState<RoutePlanDetailDto | null>(null);
@@ -72,7 +83,7 @@ export function RoutesPage({ bootstrap, navigate, routePlanId, setError }: { boo
       </div>
       <article className="panel">
         <div className="panel-heading"><div><span className="eyebrow">Routes</span><h2>Recent route plans</h2></div><button className="primary" onClick={() => navigate('/admin/ui/app/orders')} type="button">Create route</button></div>
-        <table className="ops-table"><thead><tr><th>Name</th><th>Status</th><th>Stops</th><th>Date</th><th>Driver</th><th /></tr></thead><tbody>{routes.map((item) => <tr key={item.id}><td><strong>{item.name}</strong></td><td><Badge>{item.status}</Badge></td><td>{item.stopsCount}</td><td>{item.deliveryDate ?? item.planDate}</td><td>{item.driverId ?? 'Unassigned'}</td><td><div className="route-row-actions"><button onClick={() => navigate(`/admin/ui/app/routes/${encodeURIComponent(item.id)}`)} type="button">Open</button><button className="danger subtle" disabled={deletingRouteId === item.id} onClick={() => void deleteRoutePlan(item.id)} type="button">{deletingRouteId === item.id ? 'Deleting…' : 'Delete'}</button></div></td></tr>)}</tbody></table>
+        <table className="ops-table"><thead><tr><th>Name</th><th>Status</th><th>Stops</th><th>Date</th><th>Driver</th><th /></tr></thead><tbody>{routes.map((item) => <tr key={item.id}><td><strong>{item.name}</strong></td><td><Badge>{item.status}</Badge></td><td>{item.stopsCount}</td><td>{item.deliveryDate ?? item.planDate}</td><td>{getRouteDriverDisplay(item, drivers)}</td><td><div className="route-row-actions"><button onClick={() => navigate(`/admin/ui/app/routes/${encodeURIComponent(item.id)}`)} type="button">Open</button><button className="danger subtle" disabled={deletingRouteId === item.id} onClick={() => void deleteRoutePlan(item.id)} type="button">{deletingRouteId === item.id ? 'Deleting…' : 'Delete'}</button></div></td></tr>)}</tbody></table>
       </article>
     </section>
   );
@@ -89,12 +100,16 @@ function RouteBuilder(input: {
   setError(error: string | null): void;
 }): ReactElement {
   const [draftStops, setDraftStops] = useState<RouteStopDto[]>([]);
+  const [draftDriverId, setDraftDriverId] = useState('');
   const [draggingStopId, setDraggingStopId] = useState<string | null>(null);
+  const [isSavingDriver, setIsSavingDriver] = useState(false);
   const [isSavingSequence, setIsSavingSequence] = useState(false);
   const detail = input.detail;
   useEffect(() => setDraftStops(detail?.stops ?? []), [detail]);
+  useEffect(() => setDraftDriverId(detail?.routePlan.driverId ?? ''), [detail?.routePlan.driverId]);
   const stats = deriveRouteStats(detail);
   const hasSequenceChanges = hasStopSequenceChanged(detail?.stops, draftStops);
+  const hasDriverChanges = detail !== null && draftDriverId !== (detail.routePlan.driverId ?? '');
 
   const save = async (): Promise<void> => {
     if (detail === null || !hasSequenceChanges || isSavingSequence) return;
@@ -110,13 +125,16 @@ function RouteBuilder(input: {
     }
   };
 
-  const assign = async (driverId: string): Promise<void> => {
-    if (detail === null) return;
+  const assign = async (): Promise<void> => {
+    if (detail === null || !hasDriverChanges || isSavingDriver) return;
+    setIsSavingDriver(true);
     try {
-      input.setDetail(await assignDriver(detail.routePlan.id, input.bootstrap.csrfToken, driverId === '' ? null : driverId));
+      input.setDetail(await assignDriver(detail.routePlan.id, input.bootstrap.csrfToken, draftDriverId === '' ? null : draftDriverId));
       input.setError(null);
     } catch (error) {
       input.setError(readErrorMessage(error));
+    } finally {
+      setIsSavingDriver(false);
     }
   };
 
@@ -126,7 +144,8 @@ function RouteBuilder(input: {
       primary={<RouteOpsMap bootstrap={input.bootstrap} detail={detail} subtitle={geometryLabel(detail, input.bootstrap.routerConfig.status)} title={detail?.routePlan.name ?? 'Route Builder'} />}
       secondary={<div className="panel side-panel wide">
         <div className="panel-heading"><div><span className="eyebrow">Route Builder</span><h2>{detail?.routePlan.name ?? 'Loading route…'}</h2></div><div className="route-row-actions"><button onClick={() => input.navigate('/admin/ui/app/routes')} type="button">All routes</button><button className="danger subtle" disabled={detail === null || input.deletingRouteId === detail.routePlan.id} onClick={() => { if (detail !== null) input.onDeleteRoute(detail.routePlan.id); }} type="button">{detail !== null && input.deletingRouteId === detail.routePlan.id ? 'Deleting…' : 'Delete'}</button></div></div>
-        <label>Assigned driver<select value={detail?.routePlan.driverId ?? ''} onChange={(event) => void assign(event.target.value)}><option value="">Unassigned</option>{input.drivers.map((driver) => <option key={driver.id} value={driver.id}>{driver.displayName}</option>)}</select></label>
+        <label>Assigned driver<select value={draftDriverId} onChange={(event) => setDraftDriverId(event.target.value)}><option value="">Unassigned</option>{input.drivers.map((driver) => <option key={driver.id} value={driver.id}>{getDriverOptionLabel(driver)}</option>)}</select></label>
+        <div className="button-row"><button aria-label="save assigned driver" className="primary route-save-button" disabled={!hasDriverChanges || isSavingDriver} onClick={() => void assign()} type="button">{isSavingDriver ? 'saving driver…' : 'save driver'}</button><small className="muted">{getRouteDriverDisplay(detail?.routePlan ?? null, input.drivers)}</small></div>
         <div className="button-row"><button aria-label="save route stop sequence" className="primary route-save-button" disabled={!hasSequenceChanges || isSavingSequence} onClick={() => void save()} type="button">{isSavingSequence ? 'saving…' : 'save'}</button></div>
         <ol className="stop-list">{draftStops.map((stop, index) => <li className={draggingStopId === stop.deliveryStopId ? 'dragging' : ''} draggable key={stop.deliveryStopId} onDragEnd={() => setDraggingStopId(null)} onDragOver={(event) => event.preventDefault()} onDragStart={() => setDraggingStopId(stop.deliveryStopId)} onDrop={(event) => { event.preventDefault(); if (draggingStopId !== null) setDraftStops(moveStopBefore(draftStops, draggingStopId, stop.deliveryStopId)); setDraggingStopId(null); }}><span className="stop-number">{stop.sequence}</span><div><strong>{stop.orderName}</strong><small>{stop.recipientName ?? 'No recipient'} · {stop.addressLabel}</small></div><div className="stop-actions"><button aria-label={`Move ${stop.orderName} up`} disabled={index === 0} onClick={() => setDraftStops(moveStop(draftStops, stop.deliveryStopId, -1))} type="button">↑</button><button aria-label={`Move ${stop.orderName} down`} disabled={index === draftStops.length - 1} onClick={() => setDraftStops(moveStop(draftStops, stop.deliveryStopId, 1))} type="button">↓</button></div></li>)}</ol>
       </div>}
