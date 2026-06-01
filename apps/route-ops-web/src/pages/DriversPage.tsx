@@ -1,5 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactElement } from 'react';
+import {
+  CountryCode,
+  getCountryCallingCode,
+  getCountries,
+  parsePhoneNumberFromString,
+} from 'libphonenumber-js';
 
 import { createDriver, getDrivers, regenerateDriverInviteCode } from '../api';
 import { Badge, Kpi } from '../components/primitives';
@@ -7,14 +13,34 @@ import type { BootstrapPayload, DriverDto } from '../types';
 import { readErrorMessage } from '../utils/format';
 
 const DRIVER_APP_DOWNLOAD_LINK_PLACEHOLDER = 'Driver app download link: ask CLEVER admin';
+const DEFAULT_COUNTRY: CountryCode = 'US';
+
+export function buildCanonicalPhone(countryCode: CountryCode, nationalPhone: string): string {
+  const normalizedNational = nationalPhone.trim();
+  if (normalizedNational === '') return '';
+
+  const parsed = parsePhoneNumberFromString(normalizedNational, countryCode);
+  if (parsed === undefined || !parsed.isValid()) return '';
+
+  return parsed.number;
+}
+
+function sortCountries(countries: readonly CountryCode[]): CountryCode[] {
+  return [...countries].sort((left, right) => left.localeCompare(right));
+}
 
 export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPayload; setError(error: string | null): void }): ReactElement {
   const [drivers, setDrivers] = useState<DriverDto[]>([]);
   const [displayName, setDisplayName] = useState('');
-  const [phone, setPhone] = useState('');
+  const [phoneCountryCode, setPhoneCountryCode] = useState<CountryCode>(DEFAULT_COUNTRY);
+  const [phoneNational, setPhoneNational] = useState('');
   const [notice, setNotice] = useState<string | null>(null);
   const [savingDriver, setSavingDriver] = useState(false);
   const [regeneratingDriverId, setRegeneratingDriverId] = useState<string | null>(null);
+  const sortedCountryCodes = useMemo(() => sortCountries(getCountries()), []);
+  const canonicalPhone = buildCanonicalPhone(phoneCountryCode, phoneNational);
+
+  const canSubmitDriver = canonicalPhone !== '' && !savingDriver;
 
   const refresh = useCallback((): void => {
     getDrivers()
@@ -28,17 +54,17 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
   useEffect(refresh, [refresh]);
 
   const submit = async (): Promise<void> => {
-    if (savingDriver || phone.trim() === '') return;
+    if (savingDriver || canonicalPhone === '') return;
     setSavingDriver(true);
     try {
       const payload = await createDriver({
         csrfToken: bootstrap.csrfToken,
         displayName: displayName.trim() === '' ? null : displayName.trim(),
-        phone: phone.trim(),
+        phone: canonicalPhone,
       });
       setDrivers(payload.drivers);
       setDisplayName('');
-      setPhone('');
+      setPhoneNational('');
       setNotice('Driver invite created. Share the app code with the driver, then assign routes any time.');
       setError(null);
     } catch (error) {
@@ -114,10 +140,37 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
         </label>
         <label>
           Phone
-          <input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="+14165550123" />
-          <small>Use E.164 format. The driver verifies this phone with the app code.</small>
+          <div className="driver-phone-inputs">
+            <label className="driver-country-field">
+              <span className="muted">Country</span>
+              <select
+                value={phoneCountryCode}
+                onChange={(event) => setPhoneCountryCode(event.target.value as CountryCode)}
+              >
+                {sortedCountryCodes.map((countryCode) => (
+                  <option key={countryCode} value={countryCode}>
+                    {countryCode} (+{getCountryCallingCode(countryCode)})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="driver-national-field">
+              <span className="muted">National number</span>
+              <input
+                type="tel"
+                value={phoneNational}
+                onChange={(event) => setPhoneNational(event.target.value)}
+                placeholder="4165550123"
+              />
+            </label>
+          </div>
+          <small>
+            {canonicalPhone === ''
+              ? 'Enter a valid number in national format to preview E.164.'
+              : `E.164 preview: ${canonicalPhone}`}
+          </small>
         </label>
-        <button className="primary full" disabled={savingDriver || phone.trim() === ''} onClick={() => void submit()} type="button">
+        <button className="primary full" disabled={!canSubmitDriver} onClick={() => void submit()} type="button">
           {savingDriver ? 'Creating…' : 'Create driver invite'}
         </button>
         <p className="muted">Pending drivers can be assigned in Route Builder now. They will see route details only after app authentication.</p>

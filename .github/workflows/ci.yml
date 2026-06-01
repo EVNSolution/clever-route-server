@@ -32,7 +32,7 @@ jobs:
               files=$(git ls-files)
             fi
           fi
-          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/|apps/delivery-api/Dockerfile|apps/delivery-api/src/routes/admin-commerce-connections-ui\.routes\.ts|apps/delivery-api/tests/admin-commerce-connections-ui\.routes\.test\.ts|infra/compose/docker-compose\.prod\.yml|infra/env/delivery-api\.env\.example|infra/env/deploy-image\.env\.example|scripts/(guard-route-ops-deploy-scope|check-ignore-hygiene|scan-secrets|smoke-route-ops-production|deploy-route-ops-image|rollback-route-ops-image|ssm-route-ops-deploy|osrm-ontario|validate-route-ops-ssm-deploy)\.(mjs|sh)|tests/deploy/ssm-route-ops-deploy\.test\.sh|docs/(deployment/(route-ops-github-deploy|route-ops-ssm-deploy|route-ops-osrm-ontario)\.md|development/script-tooling\.md)|\.github/workflows/ci\.yml|\.github/workflows/route-ops-publish\.yml|\.github/workflows/route-ops-ssm-deploy\.yml|\.gitignore|\.dockerignore|\.gitleaks\.toml)$'; then
+          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/.*|apps/delivery-api/Dockerfile|apps/delivery-api/src/routes/admin-commerce-connections-ui\.routes\.ts|apps/delivery-api/tests/admin-commerce-connections-ui\.routes\.test\.ts|infra/compose/docker-compose\.prod\.yml|infra/env/delivery-api\.env\.example|infra/env/deploy-image\.env\.example|scripts/(guard-route-ops-deploy-scope|check-ignore-hygiene|scan-secrets|smoke-route-ops-production|deploy-route-ops-image|rollback-route-ops-image|ssm-route-ops-deploy|osrm-ontario|validate-route-ops-ssm-deploy)\.(mjs|sh)|tests/deploy/ssm-route-ops-deploy\.test\.sh|docs/(deployment/(route-ops-github-deploy|route-ops-ssm-deploy|route-ops-osrm-ontario)\.md|development/script-tooling\.md)|\.github/workflows/ci\.yml|\.github/workflows/route-ops-publish\.yml|\.github/workflows/route-ops-ssm-deploy\.yml|\.gitignore|\.dockerignore|\.gitleaks\.toml)$'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -84,7 +84,7 @@ jobs:
               files=$(git ls-files)
             fi
           fi
-          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/|apps/delivery-api/src/routes/admin-commerce-connections-ui\.routes\.ts|apps/delivery-api/tests/admin-commerce-connections-ui\.routes\.test\.ts|apps/delivery-api/Dockerfile|\.github/workflows/ci\.yml|\.github/workflows/route-ops-publish\.yml)$'; then
+          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/.*|apps/delivery-api/src/routes/admin-commerce-connections-ui\.routes\.ts|apps/delivery-api/tests/admin-commerce-connections-ui\.routes\.test\.ts|apps/delivery-api/Dockerfile|\.github/workflows/ci\.yml|\.github/workflows/route-ops-publish\.yml)$'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -147,7 +147,7 @@ jobs:
               files=$(git ls-files)
             fi
           fi
-          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/|apps/delivery-api/Dockerfile|apps/delivery-api/prisma/|apps/delivery-api/src/routes/(admin-commerce-connections-ui|admin-route-plans)\.routes\.ts|apps/delivery-api/src/modules/(commerce|geocoding|route-plans|route-ops|shopify|woocommerce|wordpress-plugin)/|apps/delivery-api/tests/(admin-commerce-connections-ui\.routes|admin-route-plans\.routes|geocoding\.service|osrm-route-geometry\.client|woocommerce-order-sync\.service|route-plan\.repository|route-scope-config|prisma-schema)\.test\.ts|infra/compose/docker-compose\.prod\.yml|infra/env/delivery-api\.env\.example|infra/env/deploy-image\.env\.example|\.github/workflows/ci\.yml|\.github/workflows/route-ops-publish\.yml)$'; then
+          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/.*|apps/delivery-api/Dockerfile|apps/delivery-api/prisma/.*|apps/delivery-api/src/routes/(admin-commerce-connections-ui|admin-route-plans)\.routes\.ts|apps/delivery-api/src/modules/(commerce|geocoding|route-plans|route-ops|shopify|woocommerce|wordpress-plugin)/.*|apps/delivery-api/tests/(admin-commerce-connections-ui\.routes|admin-route-plans\.routes|geocoding\.service|osrm-route-geometry\.client|woocommerce-order-sync\.service|route-plan\.repository|route-scope-config|prisma-schema)\.test\.ts|infra/compose/docker-compose\.prod\.yml|infra/env/delivery-api\.env\.example|infra/env/deploy-image\.env\.example|\.github/workflows/ci\.yml|\.github/workflows/route-ops-publish\.yml)$'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
