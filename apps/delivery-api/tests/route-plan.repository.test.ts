@@ -512,6 +512,56 @@ describe('PrismaRoutePlanRepository', () => {
     expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalled();
   });
 
+  test('maps a pending invite driver to INVITE_PENDING on route plan detail fetch', async () => {
+    const { prisma } = createPrismaHarness();
+    prisma.routePlan.findFirst = vi.fn(() =>
+      Promise.resolve({
+        createdAt: new Date('2026-05-07T12:30:00.000Z'),
+        depotLatitude: '43.6532',
+        depotLongitude: '-79.3832',
+        driver: {
+          _count: { driverEvents: 3 },
+          authSubject: null,
+          createdAt: new Date('2026-05-07T12:00:00.000Z'),
+          displayName: 'Test Driver',
+          id: 'driver-id',
+          lastSeenAt: new Date('2026-05-07T12:15:00.000Z'),
+          phone: '+14165550111',
+          status: 'ACTIVE',
+          updatedAt: new Date('2026-05-07T12:20:00.000Z')
+        },
+        id: 'route-plan-id',
+        metrics: {
+          deliveryAreas: ['Mississauga'],
+          deliveryDays: ['Thursday'],
+          missingCoordinates: 0,
+          stopsCount: 0
+        },
+        name: 'Pending driver route',
+        planDate: new Date('2026-05-08T00:00:00.000Z'),
+        status: 'DRAFT',
+        updatedAt: new Date('2026-05-07T12:30:00.000Z')
+      } satisfies unknown)
+    );
+
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const detail = await repository.findRoutePlanDetail({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(detail?.routePlan.driver).toEqual(expect.objectContaining({
+      authStatus: 'INVITE_PENDING',
+      authSubject: null,
+      id: 'driver-id',
+      status: 'PENDING'
+    }));
+    expect(detail?.routePlan.driver?.recentEventsCount).toBe(3);
+  });
+
   test('deletes route-plan stops first and then deletes the route plan within shop scope', async () => {
     const { prisma } = createPrismaHarness();
     const repository = new PrismaRoutePlanRepository(
