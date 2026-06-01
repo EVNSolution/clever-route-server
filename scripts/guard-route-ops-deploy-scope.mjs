@@ -99,6 +99,7 @@ const allowedExact = new Set([
   'apps/delivery-api/src/routes/admin-commerce-connections-ui.routes.ts',
   'apps/delivery-api/src/routes/admin-ui-session.ts',
   'apps/delivery-api/tests/admin-commerce-connections-ui.routes.test.ts',
+  'apps/delivery-api/tests/route-plan.repository.test.ts',
   'scripts/guard-route-ops-deploy-scope.mjs',
   'scripts/check-ignore-hygiene.mjs',
   'scripts/scan-secrets.sh',
