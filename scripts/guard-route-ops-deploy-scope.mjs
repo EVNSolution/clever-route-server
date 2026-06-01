@@ -135,6 +135,7 @@ const allowedExact = new Set([
   'scripts/rollback-route-ops-image.sh',
   'scripts/smoke-route-ops-production.mjs',
   'scripts/ssm-route-ops-deploy.sh',
+  'tests/deploy/deploy-route-ops-image-disk-guard.test.sh',
   'tests/deploy/ssm-route-ops-deploy.test.sh',
   'scripts/validate-route-ops-ssm-deploy.mjs',
   'infra/env/delivery-api.env.example',

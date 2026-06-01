@@ -187,6 +187,44 @@ Pin the reviewed `DocumentVersion` in GitHub variable `SSM_ROUTE_OPS_DOCUMENT_VE
 
 `deploy-route-ops-image.sh` and `rollback-route-ops-image.sh` also acquire the same lock unless a wrapper already holds it. This keeps emergency Session Manager commands from racing the workflow path.
 
+## Host disk and image retention guard
+
+`deploy-route-ops-image.sh` owns the production Docker image retention guard so normal SSM deploys do not depend on manual host cleanup.
+
+Before `docker compose pull delivery-api delivery-api-migrate`, the script checks `/` and Docker's root directory from `docker info --format '{{.DockerRootDir}}'`. The defaults are:
+
+```text
+ROUTE_OPS_DEPLOY_MIN_FREE_MB=4096
+ROUTE_OPS_DEPLOY_MIN_FREE_PERCENT=20
+```
+
+If either threshold is not met, the script prunes stale Route Ops images once and checks disk again before pulling the new image. If disk is still below threshold, the deploy fails before image pull/promotion and prints a disk summary.
+
+The retention cleanup is intentionally narrow. It keeps current, previous, candidate, and active images:
+
+- images referenced by `.deploy/current-image.env`;
+- images referenced by `.deploy/previous-image.env`;
+- images referenced by `.deploy/candidate-image.env` and the current deploy inputs;
+- images currently used by running containers;
+- extra tags listed in `ROUTE_OPS_IMAGE_KEEP_TAGS`.
+
+It may remove only old SHA-tagged images from:
+
+```text
+ghcr.io/evnsolution/clever-route-server-delivery-api:<sha>
+ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:<sha>
+```
+
+The cleanup must not run `docker system prune`, `docker volume prune`, or `docker container prune`; it removes explicit stale Route Ops image refs only. A post-promote cleanup runs after smoke succeeds so the host keeps the current image and one previous rollback image by default.
+
+Optional host-side knobs:
+
+```text
+ROUTE_OPS_IMAGE_KEEP_TAGS=<space-or-comma-separated extra SHA tags or image refs>
+ROUTE_OPS_IMAGE_PRUNE_DRY_RUN=1
+ROUTE_OPS_PRUNE_LEGACY_LOCAL_IMAGE=1
+```
+
 ## Operator flow
 
 1. Run `Route Ops image publish` on `main`.
