@@ -46,6 +46,7 @@ assert(deploy.includes("run.get('head_branch') != 'main'"), 'deploy workflow mus
 assert(deploy.includes("head_sha"), 'deploy workflow must require publish run SHA to match image tag');
 assert(deploy.includes('AWS-RunShellScript is not allowed'), 'deploy workflow must explicitly reject AWS-RunShellScript document configuration');
 assert(deploy.includes('Reconcile Route Ops Caddy ingress'), 'deploy workflow must reconcile Route Ops Caddy ingress before deploy smoke');
+assert(deploy.includes("vars.ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT == 'true'"), 'AWS-RunShellScript ingress reconcile must be explicitly opt-in by repository variable');
 assert(deploy.includes('--document-name "AWS-RunShellScript"'), 'deploy workflow must use a fixed AWS-RunShellScript ingress reconcile command');
 assert(deploy.includes('docker compose --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml up -d --no-build --force-recreate --no-deps caddy'), 'ingress reconcile must force-recreate only the Route Ops Caddy service');
 assert(deploy.indexOf('Reconcile Route Ops Caddy ingress') < deploy.indexOf('Send custom SSM deploy command'), 'ingress reconcile must run before the deploy wrapper smoke');

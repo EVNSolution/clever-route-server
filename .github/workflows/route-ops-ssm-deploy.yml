@@ -203,6 +203,7 @@ jobs:
           echo "Resolved exactly one online Route Ops managed node."
 
       - name: Reconcile Route Ops Caddy ingress
+        if: vars.ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT == 'true'
         shell: bash
         env:
           INSTANCE_ID: ${{ steps.target.outputs.instance_id }}

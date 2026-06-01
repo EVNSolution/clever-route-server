@@ -33,7 +33,7 @@ Production execution is **not automatic**. The workflow exists so a maintainer c
 - The deploy target tag must resolve to exactly one managed node total, that node must be `Online`, and SSM Agent must be version `3.3.2746.0` or later for `ENV_VAR` interpolation support.
 - The workflow sends the command to the resolved instance ID, not back to a mutable tag selector.
 - SSM uses `max-concurrency=1` and `max-errors=0`, and the workflow asserts `Command.TargetCount == 1`.
-- Before the deploy wrapper smoke, the workflow reconciles the Route Ops Caddy ingress on the same resolved instance ID with a fixed no-secret command that force-recreates only the `caddy` service from `/srv/clever-route-server/infra/caddy/Caddyfile`.
+- If `ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT=true` is deliberately enabled and IAM allows it, the workflow reconciles the Route Ops Caddy ingress on the same resolved instance ID with a fixed no-secret command that force-recreates only the `caddy` service from `/srv/clever-route-server/infra/caddy/Caddyfile`.
 - Logs are redacted status summaries only; command parameters contain no production secrets.
 
 ## GitHub variables
@@ -92,7 +92,7 @@ Example trust policy skeleton, with account/provider values filled in AWS only:
 
 ## Deploy role policy shape
 
-The GitHub deploy role should primarily invoke the reviewed custom document against the production managed node target. Do not grant broad EC2/IAM/Secrets permissions. If `AWS-RunShellScript` is allowed for this workflow, keep it limited to the fixed Route Ops Caddy ingress reconcile command in `.github/workflows/route-ops-ssm-deploy.yml`; do not use it for image deploy, rollback, secrets, database mutation, or arbitrary operator shell.
+The GitHub deploy role should primarily invoke the reviewed custom document against the production managed node target. Do not grant broad EC2/IAM/Secrets permissions. If `AWS-RunShellScript` is ever allowed for this workflow, keep it opt-in through `ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT=true` and limited to the fixed Route Ops Caddy ingress reconcile command in `.github/workflows/route-ops-ssm-deploy.yml`; do not use it for image deploy, rollback, secrets, database mutation, or arbitrary operator shell.
 
 Example skeleton:
 
