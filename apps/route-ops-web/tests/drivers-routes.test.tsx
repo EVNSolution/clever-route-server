@@ -4,11 +4,15 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { deleteDriver, regenerateDriverInviteCode } from '../src/api';
 import {
   DriverTable,
+  DriversPage,
+  buildCountrySearchOption,
   buildDriverInviteMessage,
+  filterCountrySearchOptions,
   formatDriverAuthLabel,
+  matchCountrySearchInput,
 } from '../src/pages/DriversPage';
 import { getDriverOptionLabel, getRouteDriverDisplay } from '../src/pages/RoutesPage';
-import type { DriverDto, RoutePlanSummaryDto } from '../src/types';
+import type { BootstrapPayload, DriverDto, RoutePlanSummaryDto } from '../src/types';
 
 describe('Route Ops driver invite and route assignment UI helpers', () => {
   afterEach(() => {
@@ -34,6 +38,33 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('Re-login code');
     expect(html).not.toContain('authSubject');
     expect(html).not.toContain('refreshToken');
+  });
+
+  test('driver create form uses a searchable country combobox without placeholders', () => {
+    const html = renderToStaticMarkup(
+      <DriversPage bootstrap={bootstrap()} setError={() => undefined} />,
+    );
+
+    expect(html).toContain('role="combobox"');
+    expect(html).toContain('aria-label="Search country"');
+    expect(html).toContain('value="United States (US +1)"');
+    expect(html).not.toContain('<select');
+    expect(html).not.toContain('placeholder=');
+  });
+
+  test('country phone input helpers support searchable country names codes and calling prefixes', () => {
+    const options = [
+      buildCountrySearchOption('CA'),
+      buildCountrySearchOption('KR'),
+      buildCountrySearchOption('US'),
+    ];
+
+    expect(filterCountrySearchOptions(options, 'korea').map((option) => option.countryCode)).toEqual(['KR']);
+    expect(filterCountrySearchOptions(options, 'kr').map((option) => option.countryCode)).toEqual(['KR']);
+    expect(filterCountrySearchOptions(options, '+82').map((option) => option.countryCode)).toEqual(['KR']);
+    expect(filterCountrySearchOptions(options, '+1').map((option) => option.countryCode)).toEqual(['CA', 'US']);
+    expect(matchCountrySearchInput(options, 'Canada')?.countryCode).toBe('CA');
+    expect(matchCountrySearchInput(options, 'US')?.countryCode).toBe('US');
   });
 
   test('builds copyable invite text from the current code only', () => {
@@ -159,5 +190,29 @@ function routePlanFixture(overrides: Partial<RoutePlanSummaryDto> = {}): RoutePl
     stopsCount: 2,
     updatedAt: '2026-05-26T12:00:00.000Z',
     ...overrides,
+  };
+}
+
+function bootstrap(): BootstrapPayload {
+  return {
+    appUrls: {
+      dashboard: '/admin/ui/app',
+      drivers: '/admin/ui/app/drivers',
+      orders: '/admin/ui/app/orders',
+      routes: '/admin/ui/app/routes',
+      settings: '/admin/ui/app/settings',
+    },
+    csrfToken: 'csrf-token',
+    mapConfig: {
+      allowedHosts: [],
+      attribution: null,
+      providerMode: null,
+      status: 'not_configured',
+      styleAudit: null,
+      styleUrl: null,
+    },
+    mode: 'internal-admin',
+    routerConfig: { provider: null, status: 'not_configured' },
+    shopDomain: 'dev1.tomatonofood.com',
   };
 }

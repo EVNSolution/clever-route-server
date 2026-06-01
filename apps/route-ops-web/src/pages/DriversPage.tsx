@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactElement } from 'react';
 import {
-  CountryCode,
   getCountryCallingCode,
   getCountries,
   parsePhoneNumberFromString,
 } from 'libphonenumber-js';
+import type { CountryCode } from 'libphonenumber-js';
 
 import { createDriver, deleteDriver, getDrivers, regenerateDriverInviteCode } from '../api';
 import { Badge, Kpi } from '../components/primitives';
@@ -14,6 +14,76 @@ import { readErrorMessage } from '../utils/format';
 
 const DRIVER_APP_DOWNLOAD_LINK_PLACEHOLDER = 'Driver app download link: ask CLEVER admin';
 const DEFAULT_COUNTRY: CountryCode = 'US';
+const COUNTRY_RESULT_LIMIT = 12;
+
+export type CountrySearchOption = {
+  callingCode: string;
+  countryCode: CountryCode;
+  label: string;
+  name: string;
+  searchText: string;
+};
+
+const countryNameFormatter =
+  typeof Intl !== 'undefined' && 'DisplayNames' in Intl
+    ? new Intl.DisplayNames(['en'], { type: 'region' })
+    : null;
+
+function normalizeCountryQuery(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+function getCountryName(countryCode: CountryCode): string {
+  return countryNameFormatter?.of(countryCode) ?? countryCode;
+}
+
+export function buildCountrySearchOption(countryCode: CountryCode): CountrySearchOption {
+  const callingCode = getCountryCallingCode(countryCode);
+  const name = getCountryName(countryCode);
+  const label = `${name} (${countryCode} +${callingCode})`;
+  return {
+    callingCode,
+    countryCode,
+    label,
+    name,
+    searchText: normalizeCountryQuery(`${name} ${countryCode} +${callingCode} ${callingCode}`),
+  };
+}
+
+function buildCountrySearchOptions(countries: readonly CountryCode[]): CountrySearchOption[] {
+  return countries
+    .map((countryCode) => buildCountrySearchOption(countryCode))
+    .sort((left, right) => left.name.localeCompare(right.name) || left.countryCode.localeCompare(right.countryCode));
+}
+
+export function filterCountrySearchOptions(
+  options: readonly CountrySearchOption[],
+  query: string,
+  limit = COUNTRY_RESULT_LIMIT,
+): CountrySearchOption[] {
+  const normalizedQuery = normalizeCountryQuery(query);
+  if (normalizedQuery === '') return options.slice(0, limit);
+  return options
+    .filter((option) => option.searchText.includes(normalizedQuery))
+    .slice(0, limit);
+}
+
+export function matchCountrySearchInput(
+  options: readonly CountrySearchOption[],
+  value: string,
+): CountrySearchOption | null {
+  const normalizedValue = normalizeCountryQuery(value);
+  if (normalizedValue === '') return null;
+  return options.find((option) => (
+    normalizeCountryQuery(option.label) === normalizedValue
+      || normalizeCountryQuery(option.countryCode) === normalizedValue
+      || normalizeCountryQuery(option.name) === normalizedValue
+  )) ?? null;
+}
 
 export function buildCanonicalPhone(countryCode: CountryCode, nationalPhone: string): string {
   const normalizedNational = nationalPhone.trim();
@@ -25,10 +95,6 @@ export function buildCanonicalPhone(countryCode: CountryCode, nationalPhone: str
   return parsed.number;
 }
 
-function sortCountries(countries: readonly CountryCode[]): CountryCode[] {
-  return [...countries].sort((left, right) => left.localeCompare(right));
-}
-
 export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPayload; setError(error: string | null): void }): ReactElement {
   const [drivers, setDrivers] = useState<DriverDto[]>([]);
   const [displayName, setDisplayName] = useState('');
@@ -38,7 +104,17 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
   const [savingDriver, setSavingDriver] = useState(false);
   const [regeneratingDriverId, setRegeneratingDriverId] = useState<string | null>(null);
   const [deletingDriverId, setDeletingDriverId] = useState<string | null>(null);
-  const sortedCountryCodes = useMemo(() => sortCountries(getCountries()), []);
+  const [countryPickerOpen, setCountryPickerOpen] = useState(false);
+  const countryOptions = useMemo(() => buildCountrySearchOptions(getCountries()), []);
+  const selectedCountryOption = useMemo(
+    () => countryOptions.find((option) => option.countryCode === phoneCountryCode) ?? buildCountrySearchOption(phoneCountryCode),
+    [countryOptions, phoneCountryCode],
+  );
+  const [countrySearch, setCountrySearch] = useState(selectedCountryOption.label);
+  const visibleCountryOptions = useMemo(
+    () => filterCountrySearchOptions(countryOptions, countrySearch),
+    [countryOptions, countrySearch],
+  );
   const canonicalPhone = buildCanonicalPhone(phoneCountryCode, phoneNational);
 
   const canSubmitDriver = canonicalPhone !== '' && !savingDriver;
@@ -53,6 +129,23 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
   }, [setError]);
 
   useEffect(refresh, [refresh]);
+
+  useEffect(() => {
+    if (!countryPickerOpen) setCountrySearch(selectedCountryOption.label);
+  }, [countryPickerOpen, selectedCountryOption.label]);
+
+  const selectCountry = (option: CountrySearchOption): void => {
+    setPhoneCountryCode(option.countryCode);
+    setCountrySearch(option.label);
+    setCountryPickerOpen(false);
+  };
+
+  const updateCountrySearch = (value: string): void => {
+    setCountrySearch(value);
+    setCountryPickerOpen(true);
+    const exactMatch = matchCountrySearchInput(countryOptions, value);
+    if (exactMatch !== null) setPhoneCountryCode(exactMatch.countryCode);
+  };
 
   const submit = async (): Promise<void> => {
     if (savingDriver || canonicalPhone === '') return;
@@ -158,23 +251,62 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
         <h2>Create pending driver</h2>
         <label>
           Driver name
-          <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Alex Driver" />
+          <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
         </label>
         <label>
           Phone
           <div className="driver-phone-inputs">
             <label className="driver-country-field">
               <span className="muted">Country</span>
-              <select
-                value={phoneCountryCode}
-                onChange={(event) => setPhoneCountryCode(event.target.value as CountryCode)}
-              >
-                {sortedCountryCodes.map((countryCode) => (
-                  <option key={countryCode} value={countryCode}>
-                    {countryCode} (+{getCountryCallingCode(countryCode)})
-                  </option>
-                ))}
-              </select>
+              <div className="driver-country-combobox">
+                <input
+                  aria-autocomplete="list"
+                  aria-controls="driver-country-options"
+                  aria-expanded={countryPickerOpen}
+                  aria-label="Search country"
+                  autoComplete="off"
+                  role="combobox"
+                  spellCheck={false}
+                  value={countrySearch}
+                  onBlur={() => setCountryPickerOpen(false)}
+                  onChange={(event) => updateCountrySearch(event.target.value)}
+                  onFocus={(event) => {
+                    setCountryPickerOpen(true);
+                    event.currentTarget.select();
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                      setCountryPickerOpen(false);
+                      return;
+                    }
+                    if (event.key !== 'Enter') return;
+                    const firstOption = visibleCountryOptions[0];
+                    if (firstOption === undefined) return;
+                    event.preventDefault();
+                    selectCountry(firstOption);
+                  }}
+                />
+                {countryPickerOpen ? (
+                  <div className="driver-country-results" id="driver-country-options" role="listbox">
+                    {visibleCountryOptions.length === 0 ? (
+                      <span className="driver-country-empty">No country match</span>
+                    ) : visibleCountryOptions.map((option) => (
+                      <button
+                        key={option.countryCode}
+                        aria-selected={option.countryCode === phoneCountryCode}
+                        className="driver-country-option"
+                        onClick={() => selectCountry(option)}
+                        onMouseDown={(event) => event.preventDefault()}
+                        role="option"
+                        type="button"
+                      >
+                        <span>{option.name}</span>
+                        <small>{option.countryCode} +{option.callingCode}</small>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
             </label>
             <label className="driver-national-field">
               <span className="muted">National number</span>
@@ -182,7 +314,6 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
                 type="tel"
                 value={phoneNational}
                 onChange={(event) => setPhoneNational(event.target.value)}
-                placeholder="4165550123"
               />
             </label>
           </div>
