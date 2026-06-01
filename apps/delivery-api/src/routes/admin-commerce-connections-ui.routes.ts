@@ -1735,6 +1735,42 @@ function registerRouteOpsAppRoutes(
       }),
   );
 
+  app.delete<{ Params: { driverId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/drivers/:driverId`,
+    async (request, reply) =>
+      withRouteOpsApi(request, reply, dependencies, async (session) => {
+        assertRouteOpsMutationCsrf(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session);
+        if (dependencies.driverService === undefined) {
+          throw new WooCommerceOnboardingError(
+            "BAD_REQUEST",
+            "Driver management service is not enabled in this runtime.",
+            400,
+          );
+        }
+        const currentDrivers = await dependencies.driverService.listDrivers({
+          shopDomain,
+        });
+        if (
+          !currentDrivers.some((driver) => driver.id === request.params.driverId)
+        ) {
+          throw new WooCommerceOnboardingError(
+            "NOT_FOUND",
+            "Driver not found",
+            404,
+          );
+        }
+        await dependencies.driverService.deleteDriver({
+          driverId: request.params.driverId,
+          shopDomain,
+        });
+        const drivers = await dependencies.driverService.listDrivers({
+          shopDomain,
+        });
+        return routeOpsData({ drivers: drivers.map(toRouteOpsDriverDto) });
+      }),
+  );
+
   app.get(`${ADMIN_UI_APP_API_PATH}/settings`, async (request, reply) =>
     withRouteOpsApi(request, reply, dependencies, async (session) => {
       const shopDomain = requireRouteOpsShopDomain(request, session);

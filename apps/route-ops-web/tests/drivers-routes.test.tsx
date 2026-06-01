@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
-import { regenerateDriverInviteCode } from '../src/api';
+import { deleteDriver, regenerateDriverInviteCode } from '../src/api';
 import {
   DriverTable,
   buildDriverInviteMessage,
@@ -28,6 +28,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('A1B2C3');
     expect(html).toContain('Copy invite');
     expect(html).toContain('Regenerate');
+    expect(html).toContain('Delete');
     expect(html).toContain('App linked');
     expect(html).toContain('No active code');
     expect(html).toContain('Re-login code');
@@ -82,6 +83,31 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         credentials: 'same-origin',
         headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-token' }),
         method: 'POST',
+      }),
+    );
+  });
+
+  test('deleteDriver calls the protected Route Ops API with CSRF', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ data: { drivers: [] }, error: null }), {
+          headers: { 'Content-Type': 'application/json' },
+          status: 200,
+        }),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('window', { location: { search: '?shopDomain=tenant-a.example.test' } });
+
+    await deleteDriver({ csrfToken: 'csrf-token', driverId: 'driver/id' });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/admin/ui/app/api/drivers/driver%2Fid?shopDomain=tenant-a.example.test',
+      expect.objectContaining({
+        body: '{}',
+        credentials: 'same-origin',
+        headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-token' }),
+        method: 'DELETE',
       }),
     );
   });

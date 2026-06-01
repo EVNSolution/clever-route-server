@@ -2841,6 +2841,101 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
+  test("deletes a Route Ops driver behind CSRF and returns the refreshed driver list", async () => {
+    const deleteDriver = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["driverService"]
+      >["deleteDriver"]
+    >(() => Promise.resolve("driver-id"));
+    const listDrivers = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["driverService"]
+      >["listDrivers"]
+    >()
+      .mockResolvedValueOnce([driverRow()])
+      .mockResolvedValueOnce([]);
+    const { app } = await createUiHarness({
+      driverService: {
+        createPendingDriver: vi.fn(),
+        deleteDriver,
+        listDrivers,
+        regenerateInviteCode: vi.fn(),
+      },
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "DELETE",
+        url: "/admin/ui/app/api/drivers/driver-id?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {}, csrfToken),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(deleteDriver).toHaveBeenCalledWith({
+        driverId: "driver-id",
+        shopDomain: "tenant-a.example.test",
+      });
+      expect(readApiData<{ drivers: unknown[] }>(response).drivers).toEqual([]);
+
+      const blocked = await app.inject({
+        method: "DELETE",
+        url: "/admin/ui/app/api/drivers/driver-id?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {}),
+      });
+      expect(blocked.statusCode).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("returns a safe not found response when deleting an unknown Route Ops driver", async () => {
+    const deleteDriver = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["driverService"]
+      >["deleteDriver"]
+    >(() => Promise.resolve("other-shop-driver"));
+    const listDrivers = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["driverService"]
+      >["listDrivers"]
+    >(() => Promise.resolve([]));
+    const { app } = await createUiHarness({
+      driverService: {
+        createPendingDriver: vi.fn(),
+        deleteDriver,
+        listDrivers,
+        regenerateInviteCode: vi.fn(),
+      },
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "DELETE",
+        url: "/admin/ui/app/api/drivers/other-shop-driver?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {}, csrfToken),
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(readApiError(response)).toEqual(
+        expect.objectContaining({
+          code: "NOT_FOUND",
+          message: "Driver not found",
+        }),
+      );
+      expect(deleteDriver).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test("assigns drivers from the protected Route Ops API", async () => {
     const assignedDetail = {
       ...routePlanDetail(),

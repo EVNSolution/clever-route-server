@@ -7,7 +7,7 @@ import {
   parsePhoneNumberFromString,
 } from 'libphonenumber-js';
 
-import { createDriver, getDrivers, regenerateDriverInviteCode } from '../api';
+import { createDriver, deleteDriver, getDrivers, regenerateDriverInviteCode } from '../api';
 import { Badge, Kpi } from '../components/primitives';
 import type { BootstrapPayload, DriverDto } from '../types';
 import { readErrorMessage } from '../utils/format';
@@ -37,6 +37,7 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
   const [notice, setNotice] = useState<string | null>(null);
   const [savingDriver, setSavingDriver] = useState(false);
   const [regeneratingDriverId, setRegeneratingDriverId] = useState<string | null>(null);
+  const [deletingDriverId, setDeletingDriverId] = useState<string | null>(null);
   const sortedCountryCodes = useMemo(() => sortCountries(getCountries()), []);
   const canonicalPhone = buildCanonicalPhone(phoneCountryCode, phoneNational);
 
@@ -75,7 +76,7 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
   };
 
   const regenerate = async (driverId: string): Promise<void> => {
-    if (regeneratingDriverId !== null) return;
+    if (regeneratingDriverId !== null || deletingDriverId !== null) return;
     setRegeneratingDriverId(driverId);
     try {
       const payload = await regenerateDriverInviteCode({ csrfToken: bootstrap.csrfToken, driverId });
@@ -86,6 +87,25 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
       setError(readErrorMessage(error));
     } finally {
       setRegeneratingDriverId(null);
+    }
+  };
+
+  const removeDriver = async (driver: DriverDto): Promise<void> => {
+    if (deletingDriverId !== null || regeneratingDriverId !== null) return;
+    const confirmed = window.confirm(
+      `Delete ${driver.displayName}? This removes the driver invite/app access from CLEVER Route.`,
+    );
+    if (!confirmed) return;
+    setDeletingDriverId(driver.id);
+    try {
+      const payload = await deleteDriver({ csrfToken: bootstrap.csrfToken, driverId: driver.id });
+      setDrivers(payload.drivers);
+      setNotice(`Driver deleted: ${driver.displayName}.`);
+      setError(null);
+    } catch (error) {
+      setError(readErrorMessage(error));
+    } finally {
+      setDeletingDriverId(null);
     }
   };
 
@@ -127,7 +147,9 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
         <DriverTable
           drivers={drivers}
           onCopyInvite={(driver) => void copyInvite(driver)}
+          onDelete={(driver) => void removeDriver(driver)}
           onRegenerateInvite={(driverId) => void regenerate(driverId)}
+          deletingDriverId={deletingDriverId}
           regeneratingDriverId={regeneratingDriverId}
         />
       </article>
@@ -180,8 +202,10 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
 }
 
 export function DriverTable(input: {
+  deletingDriverId?: string | null;
   drivers: DriverDto[];
   onCopyInvite?: (driver: DriverDto) => void;
+  onDelete?: (driver: DriverDto) => void;
   onRegenerateInvite?: (driverId: string) => void;
   regeneratingDriverId?: string | null;
 }): ReactElement {
@@ -215,6 +239,8 @@ export function DriverTable(input: {
               <td>
                 <DriverInviteActions
                   driver={driver}
+                  deletingDriverId={input.deletingDriverId ?? null}
+                  onDelete={input.onDelete}
                   onCopyInvite={input.onCopyInvite}
                   onRegenerateInvite={input.onRegenerateInvite}
                   regeneratingDriverId={input.regeneratingDriverId ?? null}
@@ -234,21 +260,27 @@ export function DriverTable(input: {
 }
 
 function DriverInviteActions(input: {
+  deletingDriverId: string | null;
   driver: DriverDto;
   onCopyInvite?: (driver: DriverDto) => void;
+  onDelete?: (driver: DriverDto) => void;
   onRegenerateInvite?: (driverId: string) => void;
   regeneratingDriverId: string | null;
 }): ReactElement {
   const { driver } = input;
   const isRegenerating = input.regeneratingDriverId === driver.id;
+  const isDeleting = input.deletingDriverId === driver.id;
   return (
     <div className="driver-invite-actions">
       {driver.inviteCode === null ? <span className="muted">No active code</span> : <span className="invite-code">{driver.inviteCode}</span>}
       <small>{driver.inviteCodeExpiresAt === null ? 'No expiry' : `Expires ${formatDriverDate(driver.inviteCodeExpiresAt)}`}</small>
       <div className="button-row compact-actions">
         <button disabled={driver.inviteCode === null} onClick={() => input.onCopyInvite?.(driver)} type="button">Copy invite</button>
-        <button disabled={isRegenerating} onClick={() => input.onRegenerateInvite?.(driver.id)} type="button">
+        <button disabled={isRegenerating || isDeleting} onClick={() => input.onRegenerateInvite?.(driver.id)} type="button">
           {isRegenerating ? 'Regenerating…' : driver.appLinked ? 'Re-login code' : 'Regenerate'}
+        </button>
+        <button className="danger subtle" disabled={isDeleting || isRegenerating} onClick={() => input.onDelete?.(driver)} type="button">
+          {isDeleting ? 'Deleting…' : 'Delete'}
         </button>
       </div>
     </div>

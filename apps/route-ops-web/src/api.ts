@@ -245,6 +245,18 @@ export async function regenerateDriverInviteCode(input: {
   );
 }
 
+export async function deleteDriver(input: {
+  csrfToken: string;
+  driverId: string;
+}): Promise<DriversResponse> {
+  return apiMutation<DriversResponse>(
+    `/admin/ui/app/api/drivers/${encodeURIComponent(input.driverId)}`,
+    "DELETE",
+    input.csrfToken,
+    {},
+  );
+}
+
 export async function getSettings(): Promise<SettingsResponse> {
   return apiGet<SettingsResponse>("/admin/ui/app/api/settings");
 }
