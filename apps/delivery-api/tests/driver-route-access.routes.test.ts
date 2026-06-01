@@ -75,6 +75,7 @@ describe('Driver route access lookup route', () => {
         ]
       });
       expect(body.data.routes[0]?.driverAccess.accessToken).toEqual(expect.any(String));
+      expect(body.data.routes[0]).not.toHaveProperty('status');
       expect(lookupRouteAccess).toHaveBeenCalledWith({
         phoneE164: '+14165550123',
         routeContext: null
