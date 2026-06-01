@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
+import { verifyDriverToken } from '../src/modules/driver/driver-token-verifier.js';
 import type { DriverAuthDependencies } from '../src/routes/driver-auth.routes.js';
 
 const anyStringMatcher: unknown = expect.any(String);
@@ -43,6 +44,58 @@ describe('Driver auth routes', () => {
           refreshTokenExpiresAt: '2026-06-15T00:00:00.000Z'
         },
         error: null
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns driver access tokens for Woo customer-domain drivers', async () => {
+    const verifyInvite = vi.fn<DriverAuthDependencies['driverAuthRepository']['verifyInvite']>(() =>
+      Promise.resolve({
+        driverId: 'driver-id',
+        expiresAt: new Date('2026-06-15T00:00:00.000Z'),
+        refreshToken: 'refresh-token',
+        shopDomain: 'dev1.tomatonofood.com',
+        tokenVersion: 4
+      })
+    );
+    const app = await buildApp({
+      driverAuth: {
+        driverAuthRepository: { verifyInvite } as never,
+        jwtSecret: 'test-secret'
+      }
+    });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        payload: { phone: '+821089216198', inviteCode: 'face12', displayName: '  임 지인  ' },
+        url: '/driver/auth/verify-invite'
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = JSON.parse(response.body) as {
+        data: {
+          accessToken: string;
+          refreshToken: string;
+          refreshTokenExpiresAt: string;
+        };
+        error: null;
+      };
+      expect(body).toMatchObject({
+        data: {
+          accessToken: anyStringMatcher,
+          refreshToken: 'refresh-token',
+          refreshTokenExpiresAt: '2026-06-15T00:00:00.000Z'
+        },
+        error: null
+      });
+      expect(verifyDriverToken(body.data.accessToken, { secret: 'test-secret' })).toMatchObject({
+        driverId: 'driver-id',
+        shopDomain: 'dev1.tomatonofood.com',
+        subject: 'driver:driver-id',
+        tokenVersion: 4
       });
     } finally {
       await app.close();

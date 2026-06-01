@@ -6,7 +6,9 @@ const routePlanId = '11111111-1111-4111-8111-111111111111';
 
 describe('PrismaDriverRouteAccessRepository', () => {
   test('matches an active assigned driver and maps non-sensitive company guidance', async () => {
-    const { prisma } = createPrismaHarness();
+    const { prisma } = createPrismaHarness({
+      routePlan: routePlanRecord({ shopDomain: 'https://Dev1.TomatonoFood.com/admin' })
+    });
     const repository = new PrismaDriverRouteAccessRepository(prisma as never);
 
     const result = await repository.lookupRouteAccess({
@@ -28,7 +30,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
     expect(result).toEqual({
       driverContext: {
         driverId: 'driver-id',
-        shopDomain: 'tomatono.myshopify.com',
+        shopDomain: 'dev1.tomatonofood.com',
         tokenVersion: 4
       },
       status: 'INVITED',
@@ -44,15 +46,13 @@ describe('PrismaDriverRouteAccessRepository', () => {
         operatorSupportContact: '+14165550000',
         pickupGuidance: 'Meet at dispatch desk by 9:00 AM',
         routeName: 'Tuesday AM Route',
-        shopDomain: 'tomatono.myshopify.com',
+        shopDomain: 'dev1.tomatonofood.com',
         timezone: 'America/Toronto'
       }
     });
     expect(JSON.stringify(result)).not.toContain('routeStops');
     expect(JSON.stringify(result)).not.toContain('address1');
   });
-
-
 
   test('finds active route choices by phone without requiring route context', async () => {
     const { prisma } = createPrismaHarness({

@@ -10,7 +10,7 @@ describe('PrismaDriverTokenAccessRepository', () => {
     await expect(
       repository.isDriverAccessTokenActive({
         driverId: 'driver-id',
-        shopDomain: 'Example.myshopify.com',
+        shopDomain: 'https://Dev1.TomatonoFood.com/driver',
         tokenVersion: 3
       })
     ).resolves.toBe(true);
@@ -20,7 +20,7 @@ describe('PrismaDriverTokenAccessRepository', () => {
       where: {
         authSubject: { not: null },
         id: 'driver-id',
-        shop: { shopDomain: 'example.myshopify.com' },
+        shop: { shopDomain: 'dev1.tomatonofood.com' },
         status: 'ACTIVE'
       }
     });

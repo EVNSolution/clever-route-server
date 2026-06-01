@@ -29,11 +29,11 @@ describe('PrismaDriverProofMediaRepository', () => {
       fileBytes: uploadBytes,
       filename: 'proof.jpg',
       routePlanId: 'route-plan-id',
-      shopDomain: 'Tomatono.myshopify.com',
+      shopDomain: 'Dev1.TomatonoFood.com',
       source: 'camera'
     });
 
-    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { shopDomain: 'tomatono.myshopify.com' } });
+    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { shopDomain: 'dev1.tomatonofood.com' } });
     expect(prisma.driver.findUnique).toHaveBeenCalledWith({ where: { id: 'driver-id' } });
     expect(prisma.routePlan.findFirst).toHaveBeenCalledWith({
       where: {
@@ -64,12 +64,12 @@ describe('PrismaDriverProofMediaRepository', () => {
         shopId: 'shop-id',
         sizeBytes: uploadBytes.byteLength,
         source: 'CAMERA',
-        storageKey: 'driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/11111111-1111-4111-8111-111111111111.jpg',
+        storageKey: 'driver-proof/dev1.tomatonofood.com/route-plan-id/stop-id/11111111-1111-4111-8111-111111111111.jpg',
         uploadedAt: now
       }
     });
     await expect(
-      readFile(join(storageRoot, 'driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/11111111-1111-4111-8111-111111111111.jpg'))
+      readFile(join(storageRoot, 'driver-proof/dev1.tomatonofood.com/route-plan-id/stop-id/11111111-1111-4111-8111-111111111111.jpg'))
     ).resolves.toEqual(uploadBytes);
     expect(result).toEqual({
       contentType: 'image/jpeg',
@@ -78,7 +78,7 @@ describe('PrismaDriverProofMediaRepository', () => {
       sha256: 'dad2f603ccde777ba84635fb7bea4cea8f2d1147e59fd02f74cbd720a9bd15c7',
       sizeBytes: uploadBytes.byteLength,
       source: 'camera',
-      storageKey: 'driver-proof/tomatono.myshopify.com/route-plan-id/stop-id/11111111-1111-4111-8111-111111111111.jpg',
+      storageKey: 'driver-proof/dev1.tomatonofood.com/route-plan-id/stop-id/11111111-1111-4111-8111-111111111111.jpg',
       uploadedAt: '2026-05-12T10:00:00.000Z'
     });
   });

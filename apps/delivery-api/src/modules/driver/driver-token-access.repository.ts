@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
+import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 
 export type DriverTokenAccessPrismaClient = Pick<PrismaClient, 'driver'>;
 
@@ -21,26 +22,11 @@ export class PrismaDriverTokenAccessRepository implements DriverTokenAccessRepos
       where: {
         authSubject: { not: null },
         id: input.driverId,
-        shop: { shopDomain: normalizeShopDomain(input.shopDomain) },
+        shop: { shopDomain: normalizeDriverCommerceDomain(input.shopDomain) },
         status: 'ACTIVE'
       }
     });
 
     return driver !== null && driver.tokenVersion === input.tokenVersion;
   }
-}
-
-function normalizeShopDomain(value: string): string {
-  const trimmed = value.trim().toLowerCase();
-  const withoutProtocol = trimmed.replace(/^https?:\/\//u, '').replace(/\/$/u, '');
-
-  if (!withoutProtocol.endsWith('.myshopify.com')) {
-    throw new Error('Shop domain must end with .myshopify.com');
-  }
-
-  if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/u.test(withoutProtocol)) {
-    throw new Error('Shop domain is not a valid myshopify.com domain');
-  }
-
-  return withoutProtocol;
 }

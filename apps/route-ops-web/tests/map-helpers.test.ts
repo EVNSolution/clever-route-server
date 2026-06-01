@@ -31,7 +31,7 @@ describe('route ops map helpers', () => {
     const style = JSON.parse(readFileSync(join(process.cwd(), 'public/vendor/openfreemap-clever-lite.json'), 'utf8')) as {
       glyphs?: string;
       metadata?: { cleverRoutePublicHosts?: string[]; cleverRouteSource?: string };
-      layers?: Array<{ id?: string; paint?: Record<string, unknown>; source?: string; type?: string }>;
+      layers?: Array<{ id?: string; minzoom?: number; paint?: Record<string, unknown>; source?: string; type?: string; ['source-layer']?: string }>;
       sources?: Record<string, { url?: string }>;
     };
     const layerIds = style.layers?.map((layer) => layer.id) ?? [];
@@ -43,6 +43,7 @@ describe('route ops map helpers', () => {
       'waterway_river',
       'waterway_other',
       'water',
+      'building_footprints',
       'road_link',
       'road_minor',
       'road_secondary_tertiary',
@@ -65,6 +66,23 @@ describe('route ops map helpers', () => {
     expect(style.layers?.find((layer) => layer.id === 'road_link')?.paint?.['line-color']).toBe('#ead9bd');
     expect(style.layers?.find((layer) => layer.id === 'road_trunk_primary')?.paint?.['line-color']).toBe('#e6cda7');
     expect(style.layers?.find((layer) => layer.id === 'bridge_motorway')?.paint?.['line-color']).toBe('#e2b282');
+    expect(style.layers?.find((layer) => layer.id === 'building_footprints')).toMatchObject({
+      minzoom: 15,
+      source: 'openmaptiles',
+      'source-layer': 'building',
+      type: 'fill'
+    });
+    expect(style.layers?.find((layer) => layer.id === 'building_footprints')?.paint?.['fill-opacity']).toEqual([
+      'interpolate',
+      ['linear'],
+      ['zoom'],
+      15,
+      0,
+      16,
+      0.22,
+      19,
+      0.3
+    ]);
     expect(style.layers?.some((layer) => layer.id === 'building' || layer.source === 'overture_buildings')).toBe(false);
     expect(style.metadata?.cleverRouteSource).toContain('shopify-clever');
     expect(style.metadata?.cleverRouteSource).toContain('openfreemap-clever-lite.json');

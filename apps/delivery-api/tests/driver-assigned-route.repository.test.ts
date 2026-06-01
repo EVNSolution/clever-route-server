@@ -33,7 +33,7 @@ const routePlanRecord = {
     }
   ],
   shop: {
-    shopDomain: 'example.myshopify.com'
+    shopDomain: 'dev1.tomatonofood.com'
   },
   status: 'ASSIGNED'
 };
@@ -46,10 +46,10 @@ describe('PrismaDriverAssignedRouteRepository', () => {
     const result = await repository.getAssignedRoute({
       driverId: 'driver-id',
       routeContext: 'route-plan-id',
-      shopDomain: 'Example.myshopify.com'
+      shopDomain: 'https://Dev1.TomatonoFood.com/routes'
     });
 
-    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { shopDomain: 'example.myshopify.com' } });
+    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { shopDomain: 'dev1.tomatonofood.com' } });
     expect(prisma.driver.findUnique).toHaveBeenCalledWith({ where: { id: 'driver-id' } });
     const routePlanFindArgs = prisma.routePlan.findFirst.mock.calls[0]?.[0];
     expect(routePlanFindArgs?.where).toMatchObject({
@@ -63,7 +63,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
         deliveryDate: '2026-05-12',
         id: 'route-plan-id',
         name: 'Tuesday AM Route',
-        shopDomain: 'example.myshopify.com',
+        shopDomain: 'dev1.tomatonofood.com',
         stops: [
           {
             address: {

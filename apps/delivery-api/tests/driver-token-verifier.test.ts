@@ -28,6 +28,27 @@ describe('verifyDriverToken', () => {
     });
   });
 
+  test('signs and verifies driver JWTs for Woo/customer domains', () => {
+    const result = signDriverToken(
+      {
+        driverId: 'driver-id',
+        expiresInSeconds: 900,
+        shopDomain: 'Dev1.TomatonoFood.com',
+        subject: 'driver:driver-id',
+        tokenVersion: 4
+      },
+      { now, secret }
+    );
+
+    expect(verifyDriverToken(result.token, { now, secret })).toEqual({
+      driverId: 'driver-id',
+      issuedAt: new Date('2026-05-07T06:10:00.000Z'),
+      shopDomain: 'dev1.tomatonofood.com',
+      subject: 'driver:driver-id',
+      tokenVersion: 4
+    });
+  });
+
   test('accepts a server-issued driver JWT and returns driver context', () => {
     const token = legacySignDriverToken({
       aud: 'clever-delivery-driver',
@@ -46,6 +67,18 @@ describe('verifyDriverToken', () => {
       subject: 'driver-auth-subject',
       tokenVersion: 3
     });
+  });
+
+  test('rejects invalid commerce domains in server-issued tokens', () => {
+    expect(() => signDriverToken(
+      {
+        driverId: 'driver-id',
+        expiresInSeconds: 900,
+        shopDomain: 'localhost',
+        subject: 'driver:driver-id'
+      },
+      { now, secret }
+    )).toThrow('Commerce domain is not a valid customer domain');
   });
 
   test('rejects tokens with invalid signatures', () => {

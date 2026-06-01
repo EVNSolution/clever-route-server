@@ -178,6 +178,31 @@
       }
     },
     {
+      "id": "building_footprints",
+      "type": "fill",
+      "source": "openmaptiles",
+      "source-layer": "building",
+      "minzoom": 15,
+      "paint": {
+        "fill-color": "#e7ded2",
+        "fill-opacity": [
+          "interpolate",
+          [
+            "linear"
+          ],
+          [
+            "zoom"
+          ],
+          15,
+          0,
+          16,
+          0.22,
+          19,
+          0.3
+        ]
+      }
+    },
+    {
       "id": "road_link",
       "type": "line",
       "source": "openmaptiles",

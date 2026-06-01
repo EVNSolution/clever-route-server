@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 
+import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 import type {
   DriverRouteAccessAmbiguousMatch,
   DriverRouteAccessCompanyGuidance,
@@ -109,7 +110,7 @@ export class PrismaDriverRouteAccessRepository implements DriverRouteAccessServi
       return { status: 'NOT_FOUND' };
     }
 
-    return {
+  return {
       status: 'DISABLED'
     };
   }
@@ -170,10 +171,10 @@ function mapRoutePlan(
     return { status: 'NOT_FOUND' };
   }
 
-  return {
+    return {
     driverContext: {
       driverId: routePlan.driver.id,
-      shopDomain: normalizeShopDomain(routePlan.shop.shopDomain),
+      shopDomain: normalizeDriverCommerceDomain(routePlan.shop.shopDomain),
       tokenVersion: routePlan.driver.tokenVersion
     },
     status: 'INVITED',
@@ -188,7 +189,7 @@ function mapRoutePlan(
 
 function buildCompanyGuidance(routePlan: DriverRoutePlanRecord): DriverRouteAccessCompanyGuidance {
   const constraints = objectOrNull(routePlan.constraints);
-  const shopDomain = normalizeShopDomain(routePlan.shop.shopDomain);
+  const shopDomain = normalizeDriverCommerceDomain(routePlan.shop.shopDomain);
   const companyDisplayName = readString(constraints?.companyDisplayName) ?? displayNameFromShopDomain(shopDomain);
 
   return {
@@ -242,10 +243,6 @@ function readStringArray(value: unknown): string[] {
     const text = readString(item);
     return text === null ? [] : [text];
   });
-}
-
-function normalizeShopDomain(value: string): string {
-  return value.trim().toLowerCase().replace(/^https?:\/\//u, '').replace(/\/$/u, '');
 }
 
 function displayNameFromShopDomain(shopDomain: string): string {

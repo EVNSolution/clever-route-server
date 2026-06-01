@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, resolve, sep } from 'node:path';
 import type { PrismaClient } from '@prisma/client';
+import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 
 import {
   DriverProofMediaAccessUnavailableError,
@@ -90,7 +91,7 @@ export class PrismaDriverProofMediaRepository {
   async createProofMediaReadAccess(
     input: CreateDriverProofMediaReadAccessInput
   ): Promise<CreateDriverProofMediaReadAccessResult> {
-    const shopDomain = normalizeShopDomain(input.shopDomain);
+    const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
     const shop = await this.prisma.shop.findUnique({ where: { shopDomain } });
     if (shop === null) {
       throw new DriverProofMediaScopeError(`Shop not installed: ${shopDomain}`);
@@ -129,7 +130,7 @@ export class PrismaDriverProofMediaRepository {
   }
 
   async storeProofMedia(input: StoreDriverProofMediaInput): Promise<StoreDriverProofMediaResult> {
-    const shopDomain = normalizeShopDomain(input.shopDomain);
+    const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
     const shop = await this.prisma.shop.findUnique({ where: { shopDomain } });
     if (shop === null) {
       throw new DriverProofMediaScopeError(`Shop not installed: ${shopDomain}`);
@@ -458,20 +459,6 @@ function safePathSegment(value: string): string {
   return value;
 }
 
-function normalizeShopDomain(value: string): string {
-  const trimmed = value.trim().toLowerCase();
-  const withoutProtocol = trimmed.replace(/^https?:\/\//u, '').replace(/\/$/u, '');
-
-  if (!withoutProtocol.endsWith('.myshopify.com')) {
-    throw new Error('Shop domain must end with .myshopify.com');
-  }
-
-  if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/u.test(withoutProtocol)) {
-    throw new Error('Shop domain is not a valid myshopify.com domain');
-  }
-
-  return withoutProtocol;
-}
 
 function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
   return typeof error === 'object' && error !== null && 'code' in error;

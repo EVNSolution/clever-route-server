@@ -1,4 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 
 const DRIVER_AUDIENCE = 'clever-delivery-driver';
 
@@ -72,7 +73,7 @@ export function verifyDriverToken(
   const driverId = requireStringClaim(claims.driverId, 'driverId');
   const expiresAt = requireNumberClaim(claims.exp, 'exp');
   const issuedAtSeconds = requireNumberClaim(claims.iat, 'iat');
-  const shopDomain = normalizeShopDomain(requireStringClaim(claims.shopDomain, 'shopDomain'));
+  const shopDomain = normalizeDriverCommerceDomain(requireStringClaim(claims.shopDomain, 'shopDomain'));
   const subject = requireStringClaim(claims.sub, 'sub');
   const tokenVersion = readTokenVersionClaim(claims.tokenVersion);
 
@@ -104,7 +105,7 @@ export function signDriverToken(
   const now = options.now ?? new Date();
   const issuedAtSeconds = Math.floor(now.getTime() / 1000);
   const expiresAtSeconds = issuedAtSeconds + readPositiveTtl(input.expiresInSeconds);
-  const shopDomain = normalizeShopDomain(input.shopDomain);
+  const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
   const header = { alg: 'HS256', typ: 'JWT' };
   const claims = {
     aud: DRIVER_AUDIENCE,
@@ -202,19 +203,4 @@ function readPositiveTtl(value: number): number {
   }
 
   return value;
-}
-
-function normalizeShopDomain(value: string): string {
-  const trimmed = value.trim().toLowerCase();
-  const withoutProtocol = trimmed.replace(/^https?:\/\//u, '').replace(/\/$/u, '');
-
-  if (!withoutProtocol.endsWith('.myshopify.com')) {
-    throw new Error('Shop domain must end with .myshopify.com');
-  }
-
-  if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/u.test(withoutProtocol)) {
-    throw new Error('Shop domain is not a valid myshopify.com domain');
-  }
-
-  return withoutProtocol;
 }

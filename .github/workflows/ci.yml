@@ -184,6 +184,15 @@ jobs:
           tests/admin-route-plans.routes.test.ts
           tests/driver-auth.repository.test.ts
           tests/driver-auth.routes.test.ts
+          tests/driver-commerce-domain.test.ts
+          tests/driver-token-verifier.test.ts
+          tests/driver-token-access.repository.test.ts
+          tests/driver-consent.repository.test.ts
+          tests/driver-event.repository.test.ts
+          tests/driver-assigned-route.repository.test.ts
+          tests/driver-route-access.repository.test.ts
+          tests/driver-proof-media.repository.test.ts
+          tests/driver-self-service.repository.test.ts
           tests/geocoding.service.test.ts
           tests/osrm-route-geometry.client.test.ts
           tests/woocommerce-order-sync.service.test.ts

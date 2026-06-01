@@ -58,6 +58,23 @@ describe('PrismaDriverSelfServiceRepository', () => {
     expect(result.pageInfo).toEqual({ endCursor: anyStringMatcher, hasNextPage: false });
   });
 
+
+  test('resolves driver profiles for Woo customer domains', async () => {
+    const { prisma } = createPrismaHarness();
+    const repository = new PrismaDriverSelfServiceRepository(prisma as never);
+
+    await expect(repository.getDriverProfile({
+      driverId: 'driver-id',
+      shopDomain: 'https://Dev1.TomatonoFood.com/driver'
+    })).resolves.toEqual({
+      driver: { displayName: 'Minji Kim', id: 'driver-id', phone: '+14165550123', status: 'ACTIVE' }
+    });
+    expect(prisma.shop.findUnique).toHaveBeenCalledWith({
+      select: { id: true, shopDomain: true },
+      where: { shopDomain: 'dev1.tomatonofood.com' }
+    });
+  });
+
   test('returns a next page cursor and composes cursor predicates', async () => {
     const firstPage = Array.from({ length: 26 }, (_, index) => routePlanRecord({
       id: `${String(index).padStart(8, '0')}-1111-4111-8111-111111111111`

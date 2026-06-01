@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
+import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 
 import type {
   RecordDriverConsentsInput,
@@ -12,7 +13,7 @@ export class PrismaDriverConsentRepository {
   constructor(private readonly prisma: DriverConsentPrismaClient) {}
 
   async recordDriverConsents(input: RecordDriverConsentsInput): Promise<RecordDriverConsentsResult> {
-    const shopDomain = normalizeShopDomain(input.shopDomain);
+    const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
     const shop = await this.prisma.shop.findUnique({ where: { shopDomain } });
     if (shop === null) {
       throw new Error(`Shop not installed: ${shopDomain}`);
@@ -79,19 +80,4 @@ function jsonOrNull(value: Record<string, unknown> | null): Prisma.InputJsonValu
   }
 
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
-}
-
-function normalizeShopDomain(value: string): string {
-  const trimmed = value.trim().toLowerCase();
-  const withoutProtocol = trimmed.replace(/^https?:\/\//u, '').replace(/\/$/u, '');
-
-  if (!withoutProtocol.endsWith('.myshopify.com')) {
-    throw new Error('Shop domain must end with .myshopify.com');
-  }
-
-  if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/u.test(withoutProtocol)) {
-    throw new Error('Shop domain is not a valid myshopify.com domain');
-  }
-
-  return withoutProtocol;
 }

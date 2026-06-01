@@ -1,5 +1,6 @@
 import { RoutePlanStatus } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
+import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 
 import {
   DriverSelfServiceScopeError,
@@ -206,7 +207,7 @@ export class PrismaDriverSelfServiceRepository implements DriverSelfServiceContr
   }
 
   private async resolveScopedDriver(input: DriverSelfServiceScopeInput): Promise<ScopedDriverRecord> {
-    const shopDomain = normalizeShopDomain(input.shopDomain);
+    const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
     const shop = await this.prisma.shop.findUnique({
       select: { id: true, shopDomain: true },
       where: { shopDomain }
@@ -285,7 +286,7 @@ function toRouteHistoryItem(routePlan: RoutePlanHistoryRecord): DriverRouteHisto
     failedStopCount: stopStatuses.filter((status) => status === 'FAILED').length,
     name: routePlan.name,
     routePlanId: routePlan.id,
-    shopDomain: normalizeShopDomain(routePlan.shop.shopDomain),
+    shopDomain: normalizeDriverCommerceDomain(routePlan.shop.shopDomain),
     companyDisplayName: readCompanyDisplayName(routePlan.constraints, routePlan.shop.shopDomain),
     status: toHistoryStatus(routePlan.status),
     stopCount: stopStatuses.length,
@@ -408,21 +409,7 @@ function readString(value: unknown): string | null {
   return trimmed === '' ? null : trimmed;
 }
 
-function normalizeShopDomain(value: string): string {
-  const trimmed = value.trim().toLowerCase();
-  const withoutProtocol = trimmed.replace(/^https?:\/\//u, '').replace(/\/$/u, '');
-
-  if (!withoutProtocol.endsWith('.myshopify.com')) {
-    throw new Error('Shop domain must end with .myshopify.com');
-  }
-
-  if (!/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/u.test(withoutProtocol)) {
-    throw new Error('Shop domain is not a valid myshopify.com domain');
-  }
-
-  return withoutProtocol;
-}
 
 function displayNameFromShopDomain(shopDomain: string): string {
-  return normalizeShopDomain(shopDomain).replace(/\.myshopify\.com$/u, '');
+  return normalizeDriverCommerceDomain(shopDomain).replace(/\.myshopify\.com$/u, '');
 }

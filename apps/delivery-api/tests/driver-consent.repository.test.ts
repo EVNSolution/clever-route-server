@@ -19,10 +19,10 @@ describe('PrismaDriverConsentRepository', () => {
       driverId: 'driver-id',
       recordedAt,
       routeContext: 'route-context',
-      shopDomain: 'Example.myshopify.com'
+      shopDomain: 'https://Dev1.TomatonoFood.com/admin'
     });
 
-    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { shopDomain: 'example.myshopify.com' } });
+    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { shopDomain: 'dev1.tomatonofood.com' } });
     expect(prisma.driver.findUnique).toHaveBeenCalledWith({ where: { id: 'driver-id' } });
     expect(prisma.driverConsentRecord.upsert).toHaveBeenCalledTimes(2);
     expect(prisma.driverConsentRecord.upsert).toHaveBeenNthCalledWith(1, {
