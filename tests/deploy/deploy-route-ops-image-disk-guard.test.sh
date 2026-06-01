@@ -210,6 +210,7 @@ run_success_case() {
   grep -q "DELIVERY_API_IMAGE=${RUNTIME_REPO}:${CURRENT_TAG}" "$tmp/.deploy/previous-image.env"
   grep -q "DELIVERY_API_MIGRATE_IMAGE=${MIGRATE_REPO}:${CURRENT_TAG}" "$tmp/.deploy/previous-image.env"
   grep -q "pull delivery-api delivery-api-migrate" "$tmp/state/compose.log"
+  grep -q "up -d --no-build --force-recreate --no-deps caddy" "$tmp/state/compose.log"
   grep -q "Route Ops image retention cleanup finished" "$tmp/output.log"
   if grep -Eq 'system prune|volume prune|container prune' "$tmp/state/docker.log"; then
     echo "forbidden prune command was invoked" >&2

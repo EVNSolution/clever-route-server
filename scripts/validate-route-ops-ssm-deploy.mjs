@@ -45,7 +45,10 @@ assert(deploy.includes("run.get('conclusion') != 'success'"), 'deploy workflow m
 assert(deploy.includes("run.get('head_branch') != 'main'"), 'deploy workflow must require publish run on main');
 assert(deploy.includes("head_sha"), 'deploy workflow must require publish run SHA to match image tag');
 assert(deploy.includes('AWS-RunShellScript is not allowed'), 'deploy workflow must explicitly reject AWS-RunShellScript document configuration');
-assert(!deploy.includes('--document-name AWS-RunShellScript'), 'deploy workflow must not send AWS-RunShellScript');
+assert(deploy.includes('Reconcile Route Ops Caddy ingress'), 'deploy workflow must reconcile Route Ops Caddy ingress before deploy smoke');
+assert(deploy.includes('--document-name "AWS-RunShellScript"'), 'deploy workflow must use a fixed AWS-RunShellScript ingress reconcile command');
+assert(deploy.includes('docker compose --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml up -d --no-build --force-recreate --no-deps caddy'), 'ingress reconcile must force-recreate only the Route Ops Caddy service');
+assert(deploy.indexOf('Reconcile Route Ops Caddy ingress') < deploy.indexOf('Send custom SSM deploy command'), 'ingress reconcile must run before the deploy wrapper smoke');
 assert(deploy.includes('target_query="[length(InstanceInformationList), InstanceInformationList[0].InstanceId, InstanceInformationList[0].PingStatus, InstanceInformationList[0].AgentVersion]"'), 'deploy workflow must resolve target count, instance id, online status, and agent version from one describe-instance-information call');
 assert(deploy.includes('3.3.2746.0'), 'deploy workflow must require SSM AgentVersion >= 3.3.2746.0 for ENV_VAR interpolation');
 assert(deploy.includes('--instance-ids "$INSTANCE_ID"'), 'deploy workflow must send command to the resolved exact instance id');
@@ -83,6 +86,7 @@ assert(imageDeploy.includes('ROUTE_OPS_DEPLOY_MIN_FREE_MB'), 'image deploy scrip
 assert(imageDeploy.includes('ROUTE_OPS_DEPLOY_MIN_FREE_PERCENT'), 'image deploy script must expose minimum free percent threshold');
 assert(imageDeploy.includes('ROUTE_OPS_RUNTIME_IMAGE_REPO'), 'image deploy script must scope cleanup to the Route Ops runtime image repository');
 assert(imageDeploy.includes('ROUTE_OPS_MIGRATE_IMAGE_REPO'), 'image deploy script must scope cleanup to the Route Ops migrate image repository');
+assert(imageDeploy.includes('ensure_route_ops_ingress'), 'image deploy script must force Route Ops ingress back to this repo before smoke');
 assert(imageDeploy.includes('docker image rm "$image"'), 'image deploy cleanup must remove explicit image refs only');
 assert(!imageDeploy.includes('docker system prune'), 'image deploy cleanup must not use docker system prune');
 assert(!imageDeploy.includes('docker volume prune'), 'image deploy cleanup must not use docker volume prune');

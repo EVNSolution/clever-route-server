@@ -202,6 +202,68 @@ jobs:
           echo "instance_id=$instance_id" >> "$GITHUB_OUTPUT"
           echo "Resolved exactly one online Route Ops managed node."
 
+      - name: Reconcile Route Ops Caddy ingress
+        shell: bash
+        env:
+          INSTANCE_ID: ${{ steps.target.outputs.instance_id }}
+        run: |
+          set -euo pipefail
+          cat > /tmp/route-ops-ingress-reconcile.json <<'JSON'
+          {
+            "commands": [
+              "set -euo pipefail",
+              "cd /srv/clever-route-server",
+              "test -f infra/caddy/Caddyfile",
+              "test -f infra/compose/docker-compose.prod.yml",
+              "test -f .deploy/current-image.env",
+              "docker compose --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml config --quiet",
+              "docker compose --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml up -d --no-build --force-recreate --no-deps caddy",
+              "docker compose --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml ps caddy"
+            ]
+          }
+          JSON
+          read -r command_id target_count <<< "$(aws ssm send-command \
+            --document-name "AWS-RunShellScript" \
+            --instance-ids "$INSTANCE_ID" \
+            --parameters file:///tmp/route-ops-ingress-reconcile.json \
+            --max-concurrency "1" \
+            --max-errors "0" \
+            --comment "Route Ops ingress reconcile from GitHub Actions run ${GITHUB_RUN_ID}" \
+            --query 'Command.[CommandId,TargetCount]' \
+            --output text)"
+          if [ "$target_count" != "1" ]; then
+            echo "Route Ops ingress reconcile TargetCount must be 1; got $target_count." >&2
+            exit 1
+          fi
+          terminal='^(Success|Cancelled|TimedOut|Failed|Cancelling)$'
+          status="Pending"
+          for _ in {1..24}; do
+            status="$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" --query 'Status' --output text 2>/dev/null || echo Pending)"
+            if [[ "$status" =~ $terminal ]]; then break; fi
+            sleep 5
+          done
+          summary="$(aws ssm get-command-invocation \
+            --command-id "$command_id" \
+            --instance-id "$INSTANCE_ID" \
+            --query '{Status:Status,StatusDetails:StatusDetails,ResponseCode:ResponseCode,StandardOutputContent:StandardOutputContent,StandardErrorContent:StandardErrorContent}' \
+            --output json)"
+          SUMMARY_JSON="$summary" python3 - <<'PY'
+          import json
+          import os
+
+          data = json.loads(os.environ['SUMMARY_JSON'])
+          for key in ('StandardOutputContent', 'StandardErrorContent'):
+              value = str(data.get(key) or '')
+              if len(value) > 4000:
+                  value = value[:4000] + '\n...<truncated>...'
+              data[key] = value
+          print(json.dumps(data, indent=2))
+          PY
+          if [ "$status" != "Success" ]; then
+            echo "Route Ops ingress reconcile command did not succeed: $status" >&2
+            exit 1
+          fi
+
       - name: Send custom SSM deploy command
         id: command
         shell: bash

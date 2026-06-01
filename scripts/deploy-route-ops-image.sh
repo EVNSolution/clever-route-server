@@ -286,6 +286,11 @@ run_production_smoke() {
     node /tmp/route-ops-smoke.mjs
 }
 
+ensure_route_ops_ingress() {
+  echo "Ensuring Route Ops Caddy ingress uses this repo's production Caddyfile."
+  docker compose --env-file .deploy/candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate --no-deps caddy
+}
+
 acquire_deploy_lock
 trap 'release_deploy_lock' EXIT
 
@@ -303,6 +308,7 @@ restore_current() {
     load_image_env_file .deploy/current-image.env
     if [ "$ROUTE_OPS_SERVICE_MUTATED" = "true" ]; then
       docker compose --env-file .deploy/current-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate --no-deps delivery-api || true
+      docker compose --env-file .deploy/current-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate --no-deps caddy || true
     else
       echo "Deploy failed before delivery-api service mutation; skipping service restore." >&2
     fi
@@ -338,6 +344,7 @@ docker run --rm "$DELIVERY_API_MIGRATE_IMAGE" sh -lc 'test -f apps/delivery-api/
 docker compose --env-file .deploy/candidate-image.env -f "$COMPOSE_FILE" run --rm delivery-api-migrate
 ROUTE_OPS_SERVICE_MUTATED="true"
 docker compose --env-file .deploy/candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate --no-deps delivery-api
+ensure_route_ops_ingress
 docker compose --env-file .deploy/candidate-image.env -f "$COMPOSE_FILE" ps
 
 run_production_smoke

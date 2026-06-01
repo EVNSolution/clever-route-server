@@ -33,6 +33,7 @@ Production execution is **not automatic**. The workflow exists so a maintainer c
 - The deploy target tag must resolve to exactly one managed node total, that node must be `Online`, and SSM Agent must be version `3.3.2746.0` or later for `ENV_VAR` interpolation support.
 - The workflow sends the command to the resolved instance ID, not back to a mutable tag selector.
 - SSM uses `max-concurrency=1` and `max-errors=0`, and the workflow asserts `Command.TargetCount == 1`.
+- Before the deploy wrapper smoke, the workflow reconciles the Route Ops Caddy ingress on the same resolved instance ID with a fixed no-secret command that force-recreates only the `caddy` service from `/srv/clever-route-server/infra/caddy/Caddyfile`.
 - Logs are redacted status summaries only; command parameters contain no production secrets.
 
 ## GitHub variables
@@ -91,7 +92,7 @@ Example trust policy skeleton, with account/provider values filled in AWS only:
 
 ## Deploy role policy shape
 
-The GitHub deploy role should only invoke the reviewed custom document against the production managed node target. Do not grant broad EC2/IAM/Secrets permissions and do not allow production `AWS-RunShellScript`.
+The GitHub deploy role should primarily invoke the reviewed custom document against the production managed node target. Do not grant broad EC2/IAM/Secrets permissions. If `AWS-RunShellScript` is allowed for this workflow, keep it limited to the fixed Route Ops Caddy ingress reconcile command in `.github/workflows/route-ops-ssm-deploy.yml`; do not use it for image deploy, rollback, secrets, database mutation, or arbitrary operator shell.
 
 Example skeleton:
 
@@ -105,6 +106,7 @@ Example skeleton:
       "Action": "ssm:SendCommand",
       "Resource": [
         "arn:aws:ssm:<region>:<account-id>:document/CleverRoute-RouteOpsDeploy",
+        "arn:aws:ssm:<region>:<account-id>:document/AWS-RunShellScript",
         "arn:aws:ec2:<region>:<account-id>:instance/<production-instance-id>"
       ],
       "Condition": {
@@ -128,11 +130,11 @@ Example skeleton:
 }
 ```
 
-AWS resource-level support differs by Systems Manager API and target style. If a specific condition/resource is not enforceable in your AWS account, document that residual risk and keep the compensating controls: custom document, exact target-count preflight, `max-concurrency=1`, `max-errors=0`, and branch/CODEOWNERS controls.
+AWS resource-level support differs by Systems Manager API and target style. If a specific condition/resource is not enforceable in your AWS account, document that residual risk and keep the compensating controls: custom document for deploy, fixed ingress reconcile command, exact target-count preflight, `max-concurrency=1`, `max-errors=0`, and branch/CODEOWNERS controls.
 
 ## Custom SSM document
 
-Production deploy must use a reviewed custom SSM document. `AWS-RunShellScript` is allowed only for read-only/no-op bootstrap/preflight in a separate setup path, not for the normal production deploy role.
+Production image deploy must use a reviewed custom SSM document. `AWS-RunShellScript` is not the image deploy path; the only production workflow exception is the fixed Route Ops Caddy ingress reconcile command that force-recreates the already-reviewed `caddy` service from this repo before smoke.
 
 Use schema 2.2 and prefer `interpolationType: ENV_VAR` so parameters are exposed as environment variables. The host wrapper still validates every value before invoking the deploy script.
 

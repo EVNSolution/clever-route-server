@@ -67,6 +67,12 @@ load_image_env_file() {
   source "$file"
   set +a
 }
+
+ensure_route_ops_ingress() {
+  echo "Ensuring Route Ops Caddy ingress uses this repo's production Caddyfile."
+  docker compose --env-file .deploy/candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate --no-deps caddy
+}
+
 acquire_deploy_lock
 trap 'release_deploy_lock' EXIT
 
@@ -81,6 +87,7 @@ restore_current() {
     echo "Rollback failed; restoring pre-rollback current image metadata." >&2
     load_image_env_file .deploy/rollback-from-image.env
     docker compose --env-file .deploy/rollback-from-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate --no-deps delivery-api || true
+    docker compose --env-file .deploy/rollback-from-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate --no-deps caddy || true
     rm -f .deploy/candidate-image.env
   fi
   release_deploy_lock
@@ -101,6 +108,7 @@ test "$migrate_role" = "migrate"
 docker run --rm "$DELIVERY_API_MIGRATE_IMAGE" sh -lc 'test -f apps/delivery-api/prisma/schema.prisma && npm --prefix apps/delivery-api exec -- prisma --version'
 docker compose --env-file .deploy/candidate-image.env -f "$COMPOSE_FILE" run --rm delivery-api-migrate
 docker compose --env-file .deploy/candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate --no-deps delivery-api
+ensure_route_ops_ingress
 
 ROUTE_OPS_SMOKE_BASE_URL="$BASE_URL" \
 ROUTE_OPS_SMOKE_SHOP_DOMAIN="$SHOP_DOMAIN" \
