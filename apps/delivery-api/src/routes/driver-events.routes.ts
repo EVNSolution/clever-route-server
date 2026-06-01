@@ -601,7 +601,9 @@ function buildDriverRouteAccessResponse(
   if (result.status === 'ROUTES_FOUND') {
     return {
       status: 'ROUTES_FOUND',
-      routes: result.routes.map((route) => buildInvitedDriverRouteAccessResponse(route, dependencies))
+      routes: result.routes.map((route) =>
+        buildInvitedDriverRouteAccessResponse(route, dependencies, { includeStatus: false })
+      )
     };
   }
 
@@ -609,12 +611,13 @@ function buildDriverRouteAccessResponse(
     return result;
   }
 
-  return buildInvitedDriverRouteAccessResponse(result, dependencies);
+  return buildInvitedDriverRouteAccessResponse(result, dependencies, { includeStatus: true });
 }
 
 function buildInvitedDriverRouteAccessResponse(
   result: DriverRouteAccessInvitedRoute,
-  dependencies: DriverApiDependencies
+  dependencies: DriverApiDependencies,
+  options: { includeStatus: boolean }
 ): unknown {
   const now = dependencies.now?.();
   const token = signDriverToken(
@@ -649,7 +652,7 @@ function buildInvitedDriverRouteAccessResponse(
       use: 'consent_and_assigned_route'
     },
     routeAccess: result.routeAccess,
-    status: result.status
+    ...(options.includeStatus ? { status: result.status } : {})
   };
 }
 
