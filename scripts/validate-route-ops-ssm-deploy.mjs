@@ -14,12 +14,14 @@ const deployWorkflowPath = '.github/workflows/route-ops-ssm-deploy.yml';
 const publishWorkflowPath = '.github/workflows/route-ops-publish.yml';
 const ciWorkflowPath = '.github/workflows/ci.yml';
 const wrapperPath = 'scripts/ssm-route-ops-deploy.sh';
+const imageDeployPath = 'scripts/deploy-route-ops-image.sh';
 const docPath = 'docs/deployment/route-ops-ssm-deploy.md';
 
 const deploy = read(deployWorkflowPath);
 const publish = read(publishWorkflowPath);
 const ci = read(ciWorkflowPath);
 const wrapper = read(wrapperPath);
+const imageDeploy = read(imageDeployPath);
 const doc = read(docPath);
 
 assert(/workflow_dispatch:\n/.test(deploy), 'deploy workflow must be workflow_dispatch');
@@ -75,6 +77,18 @@ assert(wrapper.includes('PUBLISH_EVIDENCE_URL'), 'wrapper must validate and reco
 assert(!wrapper.includes('set -x'), 'wrapper must not enable shell xtrace');
 assert(/ROUTE_OPS_SMOKE_LOGIN_SECRET="\$value"/.test(wrapper), 'wrapper must export smoke secret from parsed local value');
 
+assert(imageDeploy.includes('ensure_deploy_disk_headroom "pre-pull"'), 'image deploy script must check disk headroom before pulling images');
+assert(imageDeploy.indexOf('ensure_deploy_disk_headroom "pre-pull"') < imageDeploy.indexOf('pull delivery-api delivery-api-migrate'), 'disk headroom check must run before docker compose pull');
+assert(imageDeploy.includes('ROUTE_OPS_DEPLOY_MIN_FREE_MB'), 'image deploy script must expose minimum free MB threshold');
+assert(imageDeploy.includes('ROUTE_OPS_DEPLOY_MIN_FREE_PERCENT'), 'image deploy script must expose minimum free percent threshold');
+assert(imageDeploy.includes('ROUTE_OPS_RUNTIME_IMAGE_REPO'), 'image deploy script must scope cleanup to the Route Ops runtime image repository');
+assert(imageDeploy.includes('ROUTE_OPS_MIGRATE_IMAGE_REPO'), 'image deploy script must scope cleanup to the Route Ops migrate image repository');
+assert(imageDeploy.includes('docker image rm "$image"'), 'image deploy cleanup must remove explicit image refs only');
+assert(!imageDeploy.includes('docker system prune'), 'image deploy cleanup must not use docker system prune');
+assert(!imageDeploy.includes('docker volume prune'), 'image deploy cleanup must not use docker volume prune');
+assert(!imageDeploy.includes('docker container prune'), 'image deploy cleanup must not use docker container prune');
+assert(imageDeploy.includes('prune_old_route_ops_images "post-promote"'), 'image deploy script must run retention cleanup after promotion');
+
 for (const pattern of [
   'ImageTag.*allowedPattern',
   'PrismaSchemaSha.*allowedPattern',
@@ -88,6 +102,9 @@ for (const pattern of [
   'SSM_PublishEvidence',
   'AWS-RunShellScript',
   'repo:EVNSolution/clever-route-server:ref:refs/heads/main',
+  'ROUTE_OPS_DEPLOY_MIN_FREE_MB',
+  'ROUTE_OPS_DEPLOY_MIN_FREE_PERCENT',
+  'current.*previous.*candidate',
 ]) {
   assert(new RegExp(pattern, 's').test(doc), `docs must include ${pattern}`);
 }
@@ -98,4 +115,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checked: [deployWorkflowPath, wrapperPath, docPath, publishWorkflowPath, ciWorkflowPath] }, null, 2));
+console.log(JSON.stringify({ ok: true, checked: [deployWorkflowPath, wrapperPath, imageDeployPath, docPath, publishWorkflowPath, ciWorkflowPath] }, null, 2));
