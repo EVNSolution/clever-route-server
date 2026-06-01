@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs';
+
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, test } from 'vitest';
 
 import { TabLayout } from '../src/components/TabLayout';
+import { AppShell } from '../src/components/AppShell';
 import { OrdersPage } from '../src/pages/OrdersPage';
 import {
   SettingsPage,
@@ -25,6 +28,22 @@ describe('route ops layout components', () => {
     const html = renderToStaticMarkup(<TabLayout title="Orders" primary={<div>Map</div>} secondary={<div>Tray</div>} primaryExpanded />);
     expect(html).toContain('primary-expanded');
     expect(html).toContain('hidden=""');
+  });
+
+  test('AppShell exposes the active page as a scoped shell class', () => {
+    const html = renderToStaticMarkup(
+      <AppShell
+        activePage="settings"
+        bootstrap={bootstrap()}
+        error={null}
+        navItems={[{ label: 'Settings', page: 'settings', path: '/admin/ui/app/settings' }]}
+        navigate={() => undefined}
+        title="Settings"
+      >
+        <div>Settings body</div>
+      </AppShell>
+    );
+    expect(html).toContain('ops-shell--settings');
   });
 
   test('Orders page secondary region is only a compact add plan panel', () => {
@@ -51,14 +70,25 @@ describe('route ops layout components', () => {
 
   test('Settings page exposes only English and Korean locale options with geocode action', () => {
     const html = renderToStaticMarkup(<SettingsPage bootstrap={bootstrap()} setError={() => undefined} />);
+    expect(html).toContain('data-settings-layout="category-sections"');
     expect(html).toContain('Geocode &amp; save coordinates');
     expect(html).toContain('English');
     expect(html).toContain('한국어');
     expect(html).toContain('Service and session values');
+    expect(html).toContain('route-scope-config-block');
     expect(html).toContain('EVENING_DELIVERY');
     expect(html).toContain('EVENING');
     expect(html).toContain('17:00');
     expect(html).not.toContain('Français');
+  });
+
+  test('Settings CSS uses responsive route value rows instead of the old fixed six-column grid', () => {
+    const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+    expect(css).toContain('.settings-workspace');
+    expect(css).toContain('.ops-shell--settings');
+    expect(css).toContain('grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));');
+    expect(css).toContain('@media (max-width: 720px)');
+    expect(css).not.toContain('minmax(120px, 0.9fr) minmax(120px, 1fr) minmax(140px, 1.2fr) minmax(140px, 1.2fr) minmax(90px, 0.5fr) auto');
   });
 
   test('Settings route-scope helpers add edit remove values and build the save payload', () => {

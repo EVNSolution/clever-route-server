@@ -18,7 +18,7 @@
 }
 body {
   margin: 0;
-  min-width: 1180px;
+  min-width: 0;
   background: #f4f5f7;
 }
 button,
@@ -1145,39 +1145,190 @@ button.danger.subtle {
   visibility: visible;
 }
 
-.route-scope-settings {
-  border-top: 1px solid #e6eaf1;
+.settings-workspace,
+.settings-main-panel,
+.settings-side-panel,
+.settings-provider-panel {
+  min-width: 0;
+}
+
+.settings-category-stack {
   display: grid;
   gap: 14px;
-  margin-top: 16px;
-  padding-top: 16px;
 }
 
-.route-scope-value-list {
+.settings-category {
+  background: #fbfcfe;
+  border: 1px solid #e6eaf1;
+  border-radius: 16px;
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 14px;
+}
+
+.settings-category-header {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.settings-category-header h2,
+.settings-category-header h3,
+.settings-category-header p {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-field-stack,
+.route-scope-settings {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.settings-field-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  min-width: 0;
+}
+
+.settings-field-grid--time-window {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+}
+
+.settings-field,
+.route-scope-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.settings-field input,
+.settings-field select,
+.route-scope-field input {
+  min-width: 0;
+}
+
+.settings-field--full,
+.settings-field--wide {
+  grid-column: 1 / -1;
+}
+
+.settings-action-row,
+.settings-save-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+.settings-save-row {
+  border-top: 1px solid #e6eaf1;
+  padding-top: 14px;
+}
+
+.settings-save-row p {
+  margin: 0;
+}
+
+.settings-status-list {
   display: grid;
   gap: 8px;
+  margin: 0;
+  min-width: 0;
 }
 
-.route-scope-rows {
-  display: grid;
-  gap: 8px;
-}
-
-.route-scope-row {
-  align-items: end;
+.settings-status-list div {
+  align-items: center;
   background: #f8fafc;
   border: 1px solid #e6eaf1;
   border-radius: 12px;
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(120px, 0.9fr) minmax(120px, 1fr) minmax(140px, 1.2fr) minmax(140px, 1.2fr) minmax(90px, 0.5fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
   padding: 10px;
 }
 
-.route-scope-row label,
-.route-scope-time-window label {
+.settings-status-list dt {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 900;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.settings-status-list dd {
+  color: #111827;
+  font-weight: 900;
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.route-scope-config-block {
+  background: #fff;
+  border: 1px solid #e6eaf1;
+  border-radius: 14px;
   display: grid;
-  gap: 5px;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+}
+
+.route-scope-block-heading {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.route-scope-block-heading h4 {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.route-scope-rows {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.route-scope-row {
+  align-items: start;
+  background: #f8fafc;
+  border: 1px solid #e6eaf1;
+  border-radius: 12px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+  min-width: 0;
+  padding: 10px;
+}
+
+.route-scope-field--value input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.route-scope-field--text input {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.route-scope-row-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  grid-column: 1 / -1;
+  min-width: 0;
 }
 
 .route-scope-checkbox {
@@ -1185,12 +1336,57 @@ button.danger.subtle {
   display: inline-flex !important;
   font-size: 12px;
   gap: 6px !important;
-  min-height: 38px;
+  min-height: 36px;
+  min-width: 0;
 }
 
-.route-scope-time-window {
-  display: grid;
-  gap: 8px;
+.route-scope-checkbox input {
+  width: auto;
+}
+
+@media (max-width: 1179px) {
+  .ops-shell--settings {
+    min-width: 0;
+    grid-template-columns: 248px minmax(0, 1fr);
+  }
+
+  .ops-shell--settings .ops-main {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 720px) {
+  .ops-shell--settings {
+    grid-template-columns: 150px minmax(0, 1fr);
+  }
+
+  .ops-shell--settings .ops-sidebar {
+    padding: 20px 10px;
+  }
+
+  .ops-shell--settings .ops-main {
+    padding: 14px;
+  }
+
+  .settings-category,
+  .route-scope-config-block {
+    border-radius: 14px;
+    padding: 12px;
+  }
+
+  .settings-field-grid,
+  .settings-field-grid--time-window {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-status-list div {
+    align-items: start;
+    grid-template-columns: 1fr;
+  }
+
+  .settings-status-list dd {
+    text-align: left;
+  }
 }
 
 

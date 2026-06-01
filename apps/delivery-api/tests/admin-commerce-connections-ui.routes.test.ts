@@ -272,12 +272,65 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(adminEntry.statusCode).toBe(303);
       expect(adminEntry.headers.location).toBe("/admin/ui");
 
+      const rootEntry = await app.inject({ method: "GET", url: "/" });
+      expect(rootEntry.statusCode).toBe(303);
+      expect(rootEntry.headers.location).toBe("/admin/ui");
+
       const dashboardRedirect = await app.inject({
         method: "GET",
         url: "/admin/ui",
       });
       expect(dashboardRedirect.statusCode).toBe(303);
       expect(dashboardRedirect.headers.location).toBe("/admin/ui/login");
+
+      const unknownUiPage = await app.inject({
+        method: "GET",
+        url: "/admin/ui/unknown",
+      });
+      expect(unknownUiPage.statusCode).toBe(303);
+      expect(unknownUiPage.headers.location).toBe("/admin/ui");
+
+      const unknownRouteOpsPage = await app.inject({
+        method: "GET",
+        url: "/admin/ui/app/unknown",
+      });
+      expect(unknownRouteOpsPage.statusCode).toBe(303);
+      expect(unknownRouteOpsPage.headers.location).toBe("/admin/ui");
+
+      const unknownNestedRouteOpsPage = await app.inject({
+        method: "GET",
+        url: "/admin/ui/app/routes/route-id/extra",
+      });
+      expect(unknownNestedRouteOpsPage.statusCode).toBe(303);
+      expect(unknownNestedRouteOpsPage.headers.location).toBe("/admin/ui");
+
+      const unknownUiJson = await app.inject({
+        headers: { accept: "application/json" },
+        method: "GET",
+        url: "/admin/ui/unknown",
+      });
+      expect(unknownUiJson.statusCode).toBe(404);
+      expect(unknownUiJson.headers.location).toBeUndefined();
+      expect(unknownUiJson.headers["content-type"]).toContain(
+        "application/json",
+      );
+
+      const unknownRouteOpsApi = await app.inject({
+        method: "GET",
+        url: "/admin/ui/app/api/unknown",
+      });
+      expect(unknownRouteOpsApi.statusCode).toBe(404);
+      expect(unknownRouteOpsApi.headers.location).toBeUndefined();
+      expect(unknownRouteOpsApi.headers["content-type"]).toContain(
+        "application/json",
+      );
+
+      const unknownRouteOpsAssetLikePath = await app.inject({
+        method: "GET",
+        url: "/admin/ui/app/unknown.js",
+      });
+      expect(unknownRouteOpsAssetLikePath.statusCode).toBe(404);
+      expect(unknownRouteOpsAssetLikePath.headers.location).toBeUndefined();
 
       const redirected = await app.inject({
         method: "GET",

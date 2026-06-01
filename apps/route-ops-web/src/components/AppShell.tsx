@@ -24,7 +24,7 @@ export function AppShell({
   title: string;
 }): ReactElement {
   return (
-    <div className="ops-shell" data-clever-route-ops-app>
+    <div className={`ops-shell ops-shell--${activePage}`} data-clever-route-ops-app>
       <aside className="ops-sidebar" aria-label="Operate navigation">
         <div className="brand-mark"><span>CR</span><strong>clever route</strong></div>
         <nav>

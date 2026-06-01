@@ -367,6 +367,8 @@ export function registerAdminCommerceConnectionsUiRoutes(
   app: FastifyInstance,
   dependencies: AdminCommerceConnectionsUiDependencies,
 ): void {
+  app.get("/", async (_request, reply) => redirect(reply, ADMIN_UI_ROOT_PATH));
+
   app.get(ADMIN_ROOT_PATH, async (_request, reply) =>
     redirect(reply, ADMIN_UI_ROOT_PATH),
   );
@@ -1049,6 +1051,18 @@ export function registerAdminCommerceConnectionsUiRoutes(
         );
       }
     },
+  );
+
+  app.get<{ Params: { "*": string } }>(
+    `${ADMIN_UI_APP_PATH}/*`,
+    async (request, reply) =>
+      redirectAdminUiBrowserFallback(request, reply),
+  );
+
+  app.get<{ Params: { "*": string } }>(
+    `${ADMIN_UI_ROOT_PATH}/*`,
+    async (request, reply) =>
+      redirectAdminUiBrowserFallback(request, reply),
   );
 }
 
@@ -1804,6 +1818,15 @@ function registerRouteOpsAppRoutes(
           settings: toRouteOpsSettingsDto(settings),
         });
       }),
+  );
+
+  app.get(ADMIN_UI_APP_API_PATH, async (_request, reply) =>
+    reply.callNotFound(),
+  );
+
+  app.get<{ Params: { "*": string } }>(
+    `${ADMIN_UI_APP_API_PATH}/*`,
+    async (_request, reply) => reply.callNotFound(),
   );
 }
 
@@ -2916,6 +2939,38 @@ function sendJson(
 
 function redirect(reply: FastifyReply, location: string): unknown {
   return reply.code(303).header("Location", location).send("");
+}
+
+function redirectAdminUiBrowserFallback(
+  request: FastifyRequest,
+  reply: FastifyReply,
+): unknown {
+  if (!shouldRedirectAdminUiBrowserFallback(request)) {
+    reply.callNotFound();
+    return undefined;
+  }
+  return redirect(reply, ADMIN_UI_ROOT_PATH);
+}
+
+function shouldRedirectAdminUiBrowserFallback(
+  request: FastifyRequest,
+): boolean {
+  if (wantsJson(request)) return false;
+
+  const pathname = request.url.split("?", 1)[0] ?? request.url;
+  if (
+    pathname === ADMIN_UI_APP_API_PATH ||
+    pathname.startsWith(`${ADMIN_UI_APP_API_PATH}/`)
+  ) {
+    return false;
+  }
+
+  return !isFileLikeAdminUiPath(pathname);
+}
+
+function isFileLikeAdminUiPath(pathname: string): boolean {
+  const segment = pathname.split("/").at(-1) ?? "";
+  return /\.[A-Za-z0-9]{1,12}$/u.test(segment);
 }
 
 function redirectToWooCommerceHome(

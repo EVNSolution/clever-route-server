@@ -81,45 +81,55 @@ export function SettingsPage({ bootstrap, setError }: { bootstrap: BootstrapPayl
 
   const depotOrders = depotAsOrders(draft, t.depot, t.defaultDepot);
   return (
-    <section className="workspace-grid compact">
-      <article className="panel">
-        <span className="eyebrow">{t.settingsEyebrow}</span>
-        <h2>{t.settingsTitle}</h2>
-        <label>
-          {t.storeAddress}
-          <input value={draft.defaultDepotAddress ?? ''} onChange={(event) => updateDraft({ defaultDepotAddress: event.target.value })} />
-        </label>
-        <div className="form-grid">
-          <label>
-            {t.latitude}
-            <input value={draft.defaultDepotLatitude?.toString() ?? ''} onChange={(event) => updateDraft({ defaultDepotLatitude: toNullableNumber(event.target.value) })} />
-          </label>
-          <label>
-            {t.longitude}
-            <input value={draft.defaultDepotLongitude?.toString() ?? ''} onChange={(event) => updateDraft({ defaultDepotLongitude: toNullableNumber(event.target.value) })} />
-          </label>
-        </div>
-        <label>
-          {t.language}
-          <select value={locale} onChange={(event) => updateDraft({ locale: resolveLocale(event.target.value) })}>
-            <option value="en-CA">{t.english}</option>
-            <option value="ko-KR">{t.korean}</option>
-          </select>
-        </label>
+    <section className="workspace-grid compact settings-workspace" data-settings-layout="category-sections">
+      <article className="panel settings-main-panel">
+        <div className="settings-category-stack">
+          <SettingsCategorySection
+            description={t.depotMapSubtitle}
+            eyebrow={t.settingsEyebrow}
+            title={t.settingsTitle}
+          >
+            <div className="settings-field-stack">
+              <label className="settings-field settings-field--full">
+                {t.storeAddress}
+                <input value={draft.defaultDepotAddress ?? ''} onChange={(event) => updateDraft({ defaultDepotAddress: event.target.value })} />
+              </label>
+              <div className="settings-field-grid">
+                <label className="settings-field">
+                  {t.latitude}
+                  <input value={draft.defaultDepotLatitude?.toString() ?? ''} onChange={(event) => updateDraft({ defaultDepotLatitude: toNullableNumber(event.target.value) })} />
+                </label>
+                <label className="settings-field">
+                  {t.longitude}
+                  <input value={draft.defaultDepotLongitude?.toString() ?? ''} onChange={(event) => updateDraft({ defaultDepotLongitude: toNullableNumber(event.target.value) })} />
+                </label>
+                <label className="settings-field">
+                  {t.language}
+                  <select value={locale} onChange={(event) => updateDraft({ locale: resolveLocale(event.target.value) })}>
+                    <option value="en-CA">{t.english}</option>
+                    <option value="ko-KR">{t.korean}</option>
+                  </select>
+                </label>
+              </div>
+              <div className="settings-action-row">
+                <button disabled={geocoding} onClick={() => void geocodeAndSave()} type="button">{geocoding ? t.geocoding : t.geocodeAndSave}</button>
+              </div>
+            </div>
+          </SettingsCategorySection>
 
-        <RouteScopeSettingsEditor
-          config={routeScopeConfig}
-          labels={t}
-          onChange={updateRouteScopeConfig}
-        />
+          <RouteScopeSettingsEditor
+            config={routeScopeConfig}
+            labels={t}
+            onChange={updateRouteScopeConfig}
+          />
 
-        <div className="button-row">
-          <button className="primary" disabled={saving} onClick={() => void save()} type="button">{saving ? t.saving : t.saveSettings}</button>
-          <button disabled={geocoding} onClick={() => void geocodeAndSave()} type="button">{geocoding ? t.geocoding : t.geocodeAndSave}</button>
+          <div className="settings-save-row">
+            <button className="primary" disabled={saving} onClick={() => void save()} type="button">{saving ? t.saving : t.saveSettings}</button>
+            {notice === null ? null : <p className="muted">{notice}</p>}
+          </div>
         </div>
-        {notice === null ? null : <p className="muted">{notice}</p>}
       </article>
-      <aside className="side-panel">
+      <aside className="side-panel settings-side-panel">
         <RouteOpsMap
           bootstrap={bootstrap}
           onMapClickCoordinate={(coordinate) => updateDraft({ defaultDepotLatitude: coordinate.latitude, defaultDepotLongitude: coordinate.longitude })}
@@ -127,12 +137,25 @@ export function SettingsPage({ bootstrap, setError }: { bootstrap: BootstrapPayl
           subtitle={t.depotMapSubtitle}
           title={t.depotMapTitle}
         />
-        <article className="panel">
-          <span className="eyebrow">{t.providersEyebrow}</span>
-          <h2>{t.providersTitle}</h2>
-          <p>{t.mapProvider}: <strong>{bootstrap.mapConfig.status}</strong></p>
-          <p>{t.providerMode}: <strong>{bootstrap.mapConfig.providerMode ?? t.none}</strong></p>
-          <p>{t.routeGeometryProvider}: <strong>{bootstrap.routerConfig.status}</strong></p>
+        <article className="panel settings-provider-panel">
+          <div className="settings-category-header">
+            <span className="eyebrow">{t.providersEyebrow}</span>
+            <h2>{t.providersTitle}</h2>
+          </div>
+          <dl className="settings-status-list">
+            <div>
+              <dt>{t.mapProvider}</dt>
+              <dd>{bootstrap.mapConfig.status}</dd>
+            </div>
+            <div>
+              <dt>{t.providerMode}</dt>
+              <dd>{bootstrap.mapConfig.providerMode ?? t.none}</dd>
+            </div>
+            <div>
+              <dt>{t.routeGeometryProvider}</dt>
+              <dd>{bootstrap.routerConfig.status}</dd>
+            </div>
+          </dl>
           <p className="muted">{t.noProviderSecrets}</p>
         </article>
       </aside>
@@ -194,6 +217,29 @@ export function removeRouteScopeValue(config: RouteScopeConfigDto, kind: RouteSc
   };
 }
 
+function SettingsCategorySection({
+  children,
+  description,
+  eyebrow,
+  title
+}: {
+  children: ReactElement | ReactElement[];
+  description?: string;
+  eyebrow: string;
+  title: string;
+}): ReactElement {
+  return (
+    <section className="settings-category">
+      <div className="settings-category-header">
+        <span className="eyebrow">{eyebrow}</span>
+        <h2>{title}</h2>
+        {description === undefined ? null : <p className="muted">{description}</p>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
 function RouteScopeSettingsEditor({
   config,
   labels,
@@ -214,48 +260,53 @@ function RouteScopeSettingsEditor({
   };
 
   return (
-    <section className="route-scope-settings" aria-label={labels.routeScopeTitle}>
-      <span className="eyebrow">{labels.routeScopeEyebrow}</span>
-      <h3>{labels.routeScopeTitle}</h3>
-      <p className="muted">{labels.routeScopeDescription}</p>
-      <RouteScopeValueList
-        addLabel={labels.addServiceType}
-        kind="serviceTypes"
-        labels={labels}
-        onAdd={() => addValue('serviceTypes')}
-        onRemove={(index) => removeValue('serviceTypes', index)}
-        onUpdate={(index, patch) => updateValue('serviceTypes', index, patch)}
-        title={labels.serviceTypes}
-        values={config.serviceTypes}
-      />
-      <RouteScopeValueList
-        addLabel={labels.addDeliverySession}
-        kind="deliverySessions"
-        labels={labels}
-        onAdd={() => addValue('deliverySessions')}
-        onRemove={(index) => removeValue('deliverySessions', index)}
-        onUpdate={(index, patch) => updateValue('deliverySessions', index, patch)}
-        title={labels.deliverySessions}
-        values={config.deliverySessions}
-      />
-      <div className="route-scope-time-window">
-        <h4>{labels.timeWindowHelp}</h4>
-        <label>
-          {labels.timeWindowHelp}
-          <input value={config.timeWindow.helpText} onChange={(event) => onChange({ ...config, timeWindow: { ...config.timeWindow, helpText: event.target.value } })} />
-        </label>
-        <div className="form-grid">
-          <label>
-            {labels.startExample}
-            <input value={config.timeWindow.startExample} onChange={(event) => onChange({ ...config, timeWindow: { ...config.timeWindow, startExample: event.target.value } })} />
-          </label>
-          <label>
-            {labels.endExample}
-            <input value={config.timeWindow.endExample} onChange={(event) => onChange({ ...config, timeWindow: { ...config.timeWindow, endExample: event.target.value } })} />
-          </label>
-        </div>
+    <SettingsCategorySection
+      description={labels.routeScopeDescription}
+      eyebrow={labels.routeScopeEyebrow}
+      title={labels.routeScopeTitle}
+    >
+      <div className="route-scope-settings" aria-label={labels.routeScopeTitle}>
+        <RouteScopeValueList
+          addLabel={labels.addServiceType}
+          kind="serviceTypes"
+          labels={labels}
+          onAdd={() => addValue('serviceTypes')}
+          onRemove={(index) => removeValue('serviceTypes', index)}
+          onUpdate={(index, patch) => updateValue('serviceTypes', index, patch)}
+          title={labels.serviceTypes}
+          values={config.serviceTypes}
+        />
+        <RouteScopeValueList
+          addLabel={labels.addDeliverySession}
+          kind="deliverySessions"
+          labels={labels}
+          onAdd={() => addValue('deliverySessions')}
+          onRemove={(index) => removeValue('deliverySessions', index)}
+          onUpdate={(index, patch) => updateValue('deliverySessions', index, patch)}
+          title={labels.deliverySessions}
+          values={config.deliverySessions}
+        />
+        <section className="route-scope-config-block" aria-label={labels.timeWindowHelp}>
+          <div className="route-scope-block-heading">
+            <h4>{labels.timeWindowHelp}</h4>
+          </div>
+          <div className="settings-field-grid settings-field-grid--time-window">
+            <label className="settings-field settings-field--wide">
+              {labels.timeWindowHelp}
+              <input value={config.timeWindow.helpText} onChange={(event) => onChange({ ...config, timeWindow: { ...config.timeWindow, helpText: event.target.value } })} />
+            </label>
+            <label className="settings-field">
+              {labels.startExample}
+              <input value={config.timeWindow.startExample} onChange={(event) => onChange({ ...config, timeWindow: { ...config.timeWindow, startExample: event.target.value } })} />
+            </label>
+            <label className="settings-field">
+              {labels.endExample}
+              <input value={config.timeWindow.endExample} onChange={(event) => onChange({ ...config, timeWindow: { ...config.timeWindow, endExample: event.target.value } })} />
+            </label>
+          </div>
+        </section>
       </div>
-    </section>
+    </SettingsCategorySection>
   );
 }
 
@@ -279,35 +330,37 @@ function RouteScopeValueList({
   values: RouteScopeValueDto[];
 }): ReactElement {
   return (
-    <section className="route-scope-value-list" aria-label={title}>
-      <div className="panel-heading compact-heading">
+    <section className="route-scope-config-block" aria-label={title}>
+      <div className="route-scope-block-heading">
         <h4>{title}</h4>
         <button onClick={onAdd} type="button">{addLabel}</button>
       </div>
       <div className="route-scope-rows">
         {values.map((value, index) => (
           <div className="route-scope-row" key={`${kind}-${value.value}-${index}`}>
-            <label>
+            <label className="settings-field route-scope-field route-scope-field--value">
               {labels.routeScopeValue}
               <input disabled={value.builtIn} value={value.value} onChange={(event) => onUpdate(index, { value: event.target.value.toUpperCase() })} />
             </label>
-            <label>
+            <label className="settings-field route-scope-field">
               {labels.routeScopeLabel}
               <input value={value.label} onChange={(event) => onUpdate(index, { label: event.target.value })} />
             </label>
-            <label>
+            <label className="settings-field route-scope-field route-scope-field--text">
               {labels.routeScopeDescriptionField}
               <input value={value.description ?? ''} onChange={(event) => onUpdate(index, { description: event.target.value })} />
             </label>
-            <label>
+            <label className="settings-field route-scope-field route-scope-field--text">
               {labels.routeScopeExample}
               <input value={value.example ?? ''} onChange={(event) => onUpdate(index, { example: event.target.value })} />
             </label>
-            <label className="route-scope-checkbox">
-              <input checked={value.enabled} disabled={value.builtIn} onChange={(event) => onUpdate(index, { enabled: event.target.checked })} type="checkbox" />
-              {value.builtIn ? labels.builtIn : labels.routeScopeEnabled}
-            </label>
-            {value.builtIn ? null : <button onClick={() => onRemove(index)} type="button">{labels.remove}</button>}
+            <div className="route-scope-row-actions">
+              <label className="route-scope-checkbox">
+                <input checked={value.enabled} disabled={value.builtIn} onChange={(event) => onUpdate(index, { enabled: event.target.checked })} type="checkbox" />
+                {value.builtIn ? labels.builtIn : labels.routeScopeEnabled}
+              </label>
+              {value.builtIn ? null : <button onClick={() => onRemove(index)} type="button">{labels.remove}</button>}
+            </div>
           </div>
         ))}
       </div>
