@@ -188,6 +188,7 @@ describe('RoutePlanAdminService route geometry', () => {
 
 function createHarness(detail: RoutePlanDetail): {
   assignRoutePlanDriver: ReturnType<typeof vi.fn<RoutePlanRepository['assignRoutePlanDriver']>>;
+  publishRoutePlan: ReturnType<typeof vi.fn<RoutePlanRepository['publishRoutePlan']>>;
   repository: RoutePlanRepository;
   routeGeometryProvider: {
     buildRoute: ReturnType<typeof vi.fn<RouteGeometryProvider['buildRoute']>>;
@@ -195,6 +196,7 @@ function createHarness(detail: RoutePlanDetail): {
   updateRoutePlanStops: ReturnType<typeof vi.fn<RoutePlanRepository['updateRoutePlanStops']>>;
 } {
   const assignRoutePlanDriver = vi.fn<RoutePlanRepository['assignRoutePlanDriver']>().mockResolvedValue(detail);
+  const publishRoutePlan = vi.fn<RoutePlanRepository['publishRoutePlan']>().mockResolvedValue(detail);
   const updateRoutePlanStops = vi.fn<RoutePlanRepository['updateRoutePlanStops']>().mockResolvedValue(detail);
   const repository = {
     assignRoutePlanDriver,
@@ -202,6 +204,7 @@ function createHarness(detail: RoutePlanDetail): {
     deleteRoutePlan: vi.fn(),
     findRoutePlanDetail: vi.fn().mockResolvedValue(detail),
     listRoutePlans: vi.fn(),
+    publishRoutePlan,
     updateRoutePlanStops
   } satisfies RoutePlanRepository;
 
@@ -238,7 +241,7 @@ function createHarness(detail: RoutePlanDetail): {
     } satisfies RoutePlanRouteResult))
   };
 
-  return { assignRoutePlanDriver, repository, routeGeometryProvider, updateRoutePlanStops };
+  return { assignRoutePlanDriver, publishRoutePlan, repository, routeGeometryProvider, updateRoutePlanStops };
 }
 
 function routeStop(input: { latitude: number; longitude: number; sequence: number }): RoutePlanDetail['stops'][number] {

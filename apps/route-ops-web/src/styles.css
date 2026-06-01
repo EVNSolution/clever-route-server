@@ -307,6 +307,30 @@ small,
   flex-wrap: wrap;
   gap: 10px;
 }
+.route-publish-notice {
+  border: 1px solid #d9e1ee;
+  border-radius: 14px;
+  color: #374151;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+  padding: 10px 12px;
+}
+.route-publish-notice.green {
+  background: #ecfdf5;
+  border-color: #bbf7d0;
+  color: #166534;
+}
+.route-publish-notice.orange {
+  background: #fff7ed;
+  border-color: #fed7aa;
+  color: #9a3412;
+}
+.route-publish-notice.neutral {
+  background: #f8fafc;
+  border-color: #d9e1ee;
+  color: #475569;
+}
 .divider {
   border-top: 1px solid #e5e7eb;
   margin: 4px 0;

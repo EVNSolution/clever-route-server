@@ -6,7 +6,7 @@ import { buildApp } from "../src/app.js";
 import type { AdminCommerceActor } from "../src/modules/commerce/admin-commerce-auth.js";
 import { loadAdminCommerceConnectionsUiDependencies } from "../src/modules/commerce/admin-commerce-connections.dependencies.js";
 import type { SafeWooCommerceConnection } from "../src/modules/commerce/commerce-connection.service.js";
-import { RoutePlanBatchInvalidError } from "../src/modules/route-plans/route-plan.types.js";
+import { RoutePlanBatchInvalidError, type RoutePlanService } from "../src/modules/route-plans/route-plan.types.js";
 import { defaultRouteScopeConfig } from "../src/modules/route-ops/route-scope-config.js";
 import type { AdminCommerceConnectionsDependencies } from "../src/routes/admin-commerce-connections.routes.js";
 import type { AdminCommerceConnectionsUiDependencies } from "../src/routes/admin-commerce-connections-ui.routes.js";
@@ -473,6 +473,20 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(orders.body).toContain("CLEVER Route App");
       expect(orders.body).not.toContain("CLEVER Admin login");
       expect(orders.body).not.toContain("Connection setup");
+
+      const root = await app.inject({
+        headers: { cookie },
+        method: "GET",
+        url: "/admin/ui",
+      });
+      expect(root.statusCode).toBe(200);
+      expect(root.headers.location).toBeUndefined();
+      expect(root.body).toContain("Store workspace session active");
+      expect(root.body).toContain("tenant-a.example.test");
+      expect(root.body).toContain(
+        "/admin/ui/app/orders?shopDomain=tenant-a.example.test",
+      );
+      expect(root.body).not.toContain('id="clever-route-ops-root"');
 
       const bootstrap = await app.inject({
         headers: { cookie, accept: "application/json" },
@@ -3008,6 +3022,58 @@ describe("Admin WooCommerce connection UI routes", () => {
       ).toBe("driver-id");
       expect(assignRoutePlanDriver).toHaveBeenCalledWith({
         payload: { driverId: "driver-id" },
+        routePlanId: "route-plan-id",
+        shopDomain: "tenant-a.example.test",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("publishes a driver-assigned draft route from the protected Route Ops API", async () => {
+    const publishedDetail = {
+      ...routePlanDetail(),
+      routePlan: {
+        ...routePlanSummary(),
+        driverId: "driver-id",
+        status: "ASSIGNED",
+      },
+    };
+    const publishRoutePlan = vi.fn<
+      RoutePlanService["publishRoutePlan"]
+    >(() => Promise.resolve(publishedDetail));
+    const { app } = await createUiHarness({
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+      },
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan: vi.fn(),
+        getRoutePlanDetail: vi.fn(),
+        listRoutePlans: vi.fn(() => Promise.resolve([routePlanSummary()])),
+        publishRoutePlan,
+        updateRoutePlanStops: vi.fn(),
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/routes/route-plan-id/publish?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {}, csrfToken),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(
+        readApiData<{ routePlan: { driverId: string; status: string } }>(
+          response,
+        ).routePlan,
+      ).toEqual(expect.objectContaining({
+        driverId: "driver-id",
+        status: "ASSIGNED",
+      }));
+      expect(publishRoutePlan).toHaveBeenCalledWith({
         routePlanId: "route-plan-id",
         shopDomain: "tenant-a.example.test",
       });

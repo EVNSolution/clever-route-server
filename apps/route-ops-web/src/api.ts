@@ -178,6 +178,18 @@ export async function deleteRoute(
   );
 }
 
+export async function publishRoute(
+  routePlanId: string,
+  csrfToken: string,
+): Promise<RoutePlanDetailDto> {
+  return apiMutation<RoutePlanDetailDto>(
+    `/admin/ui/app/api/routes/${encodeURIComponent(routePlanId)}/publish`,
+    "POST",
+    csrfToken,
+    {},
+  );
+}
+
 export async function saveStopSequence(
   routePlanId: string,
   csrfToken: string,

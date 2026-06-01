@@ -2,6 +2,7 @@ import type {
   CreateRoutePlanInput,
   CreateRoutePlanFromOrderIdsInput,
   ListRoutePlansInput,
+  PublishRoutePlanInput,
   RoutePlanDetail,
   RoutePlanRouteResult,
   RoutePlanService,
@@ -42,6 +43,7 @@ export type RoutePlanRepository = {
     shopDomain: string;
   }): Promise<{ routePlanId: string; deleted: boolean }>;
   listRoutePlans(input: ListRoutePlansInput): Promise<RoutePlanSummary[]>;
+  publishRoutePlan(input: PublishRoutePlanInput): Promise<RoutePlanDetail | null>;
   updateRoutePlanStops(input: UpdateRoutePlanStopsInput): Promise<RoutePlanDetail | null>;
 };
 
@@ -97,6 +99,10 @@ export class RoutePlanAdminService implements RoutePlanService {
 
   listRoutePlans(input: ListRoutePlansInput): Promise<RoutePlanSummary[]> {
     return this.repository.listRoutePlans(input);
+  }
+
+  async publishRoutePlan(input: PublishRoutePlanInput): Promise<RoutePlanDetail | null> {
+    return this.withRouteGeometry(await this.repository.publishRoutePlan(input));
   }
 
   async updateRoutePlanStops(input: UpdateRoutePlanStopsInput): Promise<RoutePlanDetail | null> {

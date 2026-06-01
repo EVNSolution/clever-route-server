@@ -4,6 +4,7 @@ import {
   RoutePlanBatchInvalidError,
   RoutePlanDriverAssignInvalidError,
   RoutePlanOrderAlreadyPlannedError,
+  RoutePlanPublishInvalidError,
   RoutePlanStopUpdateInvalidError
 } from './route-plan.types.js';
 import { assertSafeRouteScopeToken } from '../route-ops/route-scope-config.js';
@@ -15,6 +16,7 @@ import type {
   ListRoutePlansInput,
   RoutePlanOrderAttributeInput,
   RoutePlanOrderInput,
+  PublishRoutePlanInput,
   UpdateRoutePlanDriverInput,
   UpdateRoutePlanStopsInput,
   RoutePlanShippingAddressInput,
@@ -188,6 +190,66 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     });
 
     if (!assigned) {
+      return null;
+    }
+
+    return this.findRoutePlanDetail({
+      routePlanId: input.routePlanId,
+      shopDomain: input.shopDomain
+    });
+  }
+
+  async publishRoutePlan(input: PublishRoutePlanInput): Promise<RoutePlanDetail | null> {
+    const shopDomain = this.normalizeShopDomain(input.shopDomain);
+
+    const published = await this.prisma.$transaction(async (tx) => {
+      const shop = await tx.shop.findUnique({
+        select: { id: true },
+        where: { shopDomain }
+      });
+      if (shop === null) {
+        return false;
+      }
+
+      const routePlan = await tx.routePlan.findFirst({
+        select: {
+          driverId: true,
+          id: true,
+          status: true,
+          _count: { select: { routeStops: true } }
+        },
+        where: {
+          id: input.routePlanId,
+          shopId: shop.id
+        }
+      });
+      if (routePlan === null) {
+        return false;
+      }
+
+      if (routePlan.status === 'CANCELLED' || routePlan.status === 'COMPLETED') {
+        throw new RoutePlanPublishInvalidError('Completed or cancelled routes cannot be published to drivers.');
+      }
+
+      if (routePlan.driverId === null) {
+        throw new RoutePlanPublishInvalidError('Assign a driver before publishing this route.');
+      }
+
+      if (routePlan._count.routeStops === 0) {
+        throw new RoutePlanPublishInvalidError('Add at least one stop before publishing this route.');
+      }
+
+      if (routePlan.status === 'DRAFT') {
+        await tx.routePlan.update({
+          data: { status: 'ASSIGNED' },
+          where: { id: routePlan.id }
+        });
+      }
+
+      return true;
+    });
+
+    if (!published) {
       return null;
     }
 

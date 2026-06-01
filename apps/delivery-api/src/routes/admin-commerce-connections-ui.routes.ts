@@ -49,6 +49,7 @@ import {
   RoutePlanBatchInvalidError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanDriverAssignInvalidError,
+  RoutePlanPublishInvalidError,
   RoutePlanStopUpdateInvalidError,
   type CreateRoutePlanPayload,
   type RoutePlanDetail,
@@ -349,7 +350,7 @@ export type AdminCommerceConnectionsUiDependencies = {
     | "listRoutePlans"
     | "updateRoutePlanStops"
   > &
-    Partial<Pick<RoutePlanService, "deleteRoutePlan">>;
+    Partial<Pick<RoutePlanService, "deleteRoutePlan" | "publishRoutePlan">>;
   secureCookies: boolean;
   sessionSecret: string;
   sessionTtlMs?: number;
@@ -439,7 +440,11 @@ export function registerAdminCommerceConnectionsUiRoutes(
     const session = readSession(request, dependencies);
     if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
     if (isWpPluginSession(session)) {
-      return redirectWpPluginSessionToOperate(reply, session);
+      return sendHtml(
+        reply,
+        200,
+        renderWpPluginSessionLandingPage({ session }),
+      );
     }
     return sendHtml(
       reply,
@@ -1656,6 +1661,46 @@ function registerRouteOpsAppRoutes(
           );
         }
         return routeOpsData(toRouteOpsRoutePlanDetailDto(updated));
+      }),
+  );
+
+  app.post<{ Params: { routePlanId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/publish`,
+    async (request, reply) =>
+      withRouteOpsApi(request, reply, dependencies, async (session) => {
+        assertRouteOpsMutationCsrf(request, session);
+        const services = requireRouteUiServices(dependencies);
+        if (services.routePlanService.publishRoutePlan === undefined) {
+          throw new WooCommerceOnboardingError(
+            "BAD_REQUEST",
+            "Route publishing is not enabled in this runtime.",
+            400,
+          );
+        }
+        const shopDomain = requireRouteOpsShopDomain(request, session);
+        try {
+          const updated = await services.routePlanService.publishRoutePlan({
+            routePlanId: request.params.routePlanId,
+            shopDomain,
+          });
+          if (updated === null) {
+            throw new WooCommerceOnboardingError(
+              "NOT_FOUND",
+              "Route plan not found",
+              404,
+            );
+          }
+          return routeOpsData(toRouteOpsRoutePlanDetailDto(updated));
+        } catch (error) {
+          if (error instanceof RoutePlanPublishInvalidError) {
+            throw new WooCommerceOnboardingError(
+              error.code,
+              error.message,
+              400,
+            );
+          }
+          throw error;
+        }
       }),
   );
 
@@ -6399,6 +6444,36 @@ function renderDashboardPage(input: {
       </section>
     </main>`,
     title: "CLEVER Route Admin",
+  });
+}
+
+function renderWpPluginSessionLandingPage(input: {
+  session: AdminWebSession;
+}): string {
+  const shopDomain = readWpPluginSessionShopDomain(input.session);
+  const ordersHref =
+    shopDomain === null
+      ? ADMIN_UI_LOGIN_PATH
+      : withShopDomainQuery(ADMIN_UI_APP_ORDERS_PATH, shopDomain);
+  return renderDocument({
+    body: `<main class="shell narrow">
+      <section class="card">
+        <p class="eyebrow">CLEVER Route WordPress launch session</p>
+        <h1>Store workspace session active</h1>
+        <p class="muted">This browser has a WordPress-launched session scoped to one store. The main CLEVER Route URL does not automatically open a tenant workspace.</p>
+        <dl>
+          <dt>Store</dt>
+          <dd>${escapeHtml(shopDomain ?? "Unknown store")}</dd>
+          <dt>Access</dt>
+          <dd>Store-scoped, not full admin</dd>
+        </dl>
+        <div class="actions">
+          <a class="button-link" href="${escapeHtml(ordersHref)}">Continue to this store</a>
+          <a class="button-link muted-link" href="${ADMIN_UI_LOGOUT_PATH}">Log out</a>
+        </div>
+      </section>
+    </main>`,
+    title: "CLEVER Route Store Session",
   });
 }
 

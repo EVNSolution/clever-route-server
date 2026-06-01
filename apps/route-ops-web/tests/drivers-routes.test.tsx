@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
-import { deleteDriver, regenerateDriverInviteCode } from '../src/api';
+import { deleteDriver, publishRoute, regenerateDriverInviteCode } from '../src/api';
 import {
   DriverTable,
   DriversPage,
@@ -11,7 +11,12 @@ import {
   formatDriverAuthLabel,
   matchCountrySearchInput,
 } from '../src/pages/DriversPage';
-import { getDriverOptionLabel, getRouteDriverDisplay } from '../src/pages/RoutesPage';
+import {
+  getDriverOptionLabel,
+  getRouteDriverDisplay,
+  getRoutePublishNotice,
+  isRouteVisibleToLinkedDriver,
+} from '../src/pages/RoutesPage';
 import type { BootstrapPayload, DriverDto, RoutePlanSummaryDto } from '../src/types';
 
 describe('Route Ops driver invite and route assignment UI helpers', () => {
@@ -93,6 +98,21 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     );
   });
 
+  test('explains when draft and published routes are visible to drivers', () => {
+    const pending = driverFixture();
+    const linked = linkedDriverFixture();
+    const draftAssigned = routePlanFixture({ driverId: linked.id, status: 'DRAFT' });
+    const publishedLinked = routePlanFixture({ driverId: linked.id, status: 'ASSIGNED' });
+    const publishedPending = routePlanFixture({ driverId: pending.id, status: 'ASSIGNED' });
+
+    expect(isRouteVisibleToLinkedDriver(draftAssigned, [linked])).toBe(false);
+    expect(getRoutePublishNotice(draftAssigned, [linked])?.text).toContain('not visible');
+    expect(isRouteVisibleToLinkedDriver(publishedLinked, [linked])).toBe(true);
+    expect(getRoutePublishNotice(publishedLinked, [linked])?.text).toContain('visible');
+    expect(isRouteVisibleToLinkedDriver(publishedPending, [pending])).toBe(false);
+    expect(getRoutePublishNotice(publishedPending, [pending])?.text).toContain('after app authentication');
+  });
+
   test('regenerateDriverInviteCode posts to the protected Route Ops API with CSRF', async () => {
     const fetchMock = vi.fn(() =>
       Promise.resolve(
@@ -139,6 +159,42 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         credentials: 'same-origin',
         headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-token' }),
         method: 'DELETE',
+      }),
+    );
+  });
+
+  test('publishRoute posts to the protected Route Ops API with CSRF', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            data: {
+              routeGeometry: null,
+              routePlan: routePlanFixture({ status: 'ASSIGNED' }),
+              routeStopPoints: [],
+              stops: [],
+            },
+            error: null,
+          }),
+          {
+            headers: { 'Content-Type': 'application/json' },
+            status: 200,
+          },
+        ),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('window', { location: { search: '?shopDomain=tenant-a.example.test' } });
+
+    await publishRoute('route/id', 'csrf-token');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/admin/ui/app/api/routes/route%2Fid/publish?shopDomain=tenant-a.example.test',
+      expect.objectContaining({
+        body: '{}',
+        credentials: 'same-origin',
+        headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-token' }),
+        method: 'POST',
       }),
     );
   });

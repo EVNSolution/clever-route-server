@@ -5,6 +5,7 @@ import {
   RoutePlanBatchInvalidError,
   RoutePlanDriverAssignInvalidError,
   RoutePlanOrderAlreadyPlannedError,
+  RoutePlanPublishInvalidError,
   RoutePlanStopUpdateInvalidError
 } from '../src/modules/route-plans/route-plan.types.js';
 import type { RoutePlanOrderInput } from '../src/modules/route-plans/route-plan.types.js';
@@ -347,6 +348,73 @@ describe('PrismaRoutePlanRepository', () => {
       data: { driverId: 'driver-id' },
       where: { id: 'route-plan-id' }
     });
+  });
+
+  test('publishes a driver-assigned draft route as assigned for driver app visibility', async () => {
+    const { prisma } = createPrismaHarness();
+    prisma.routePlan.findFirst
+      .mockResolvedValueOnce({
+        _count: { routeStops: 2 },
+        driverId: 'driver-id',
+        id: 'route-plan-id',
+        status: 'DRAFT'
+      })
+      .mockResolvedValueOnce({
+        createdAt: new Date('2026-05-07T12:30:00.000Z'),
+        depotLatitude: '43.6532',
+        depotLongitude: '-79.3832',
+        driverId: 'driver-id',
+        id: 'route-plan-id',
+        metrics: {
+          deliveryAreas: ['Mississauga'],
+          deliveryDays: ['Thursday'],
+          missingCoordinates: 0,
+          stopsCount: 2
+        },
+        name: 'CLEVER route draft',
+        planDate: new Date('2026-05-08T00:00:00.000Z'),
+        routeStops: [],
+        status: 'ASSIGNED',
+        updatedAt: new Date('2026-05-07T12:30:00.000Z')
+      });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.publishRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.routePlan.status).toBe('ASSIGNED');
+    expect(prisma.routePlan.update).toHaveBeenCalledWith({
+      data: { status: 'ASSIGNED' },
+      where: { id: 'route-plan-id' }
+    });
+  });
+
+  test('rejects publishing a route before a driver is assigned', async () => {
+    const { prisma } = createPrismaHarness();
+    prisma.routePlan.findFirst.mockResolvedValueOnce({
+      _count: { routeStops: 2 },
+      driverId: null,
+      id: 'route-plan-id',
+      status: 'DRAFT'
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(
+      repository.publishRoutePlan({
+        routePlanId: 'route-plan-id',
+        shopDomain: 'example.myshopify.com'
+      })
+    ).rejects.toBeInstanceOf(RoutePlanPublishInvalidError);
+
+    expect(prisma.routePlan.update).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: { status: 'ASSIGNED' }
+    }));
   });
 
   test('rejects assigning a driver from another shop before updating the route', async () => {

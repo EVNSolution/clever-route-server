@@ -184,6 +184,11 @@ export type UpdateRoutePlanDriverInput = {
   payload: UpdateRoutePlanDriverPayload;
 };
 
+export type PublishRoutePlanInput = {
+  routePlanId: string;
+  shopDomain: string;
+};
+
 export type RoutePlanDetail = {
   routePlan: RoutePlanSummary;
   routeGeometry: RoutePlanRouteGeometry | null;
@@ -204,6 +209,7 @@ export type RoutePlanService = {
     shopDomain: string;
   }): Promise<RoutePlanDetail | null>;
   listRoutePlans(input: ListRoutePlansInput): Promise<RoutePlanSummary[]>;
+  publishRoutePlan(input: PublishRoutePlanInput): Promise<RoutePlanDetail | null>;
   updateRoutePlanStops(input: UpdateRoutePlanStopsInput): Promise<RoutePlanDetail | null>;
 };
 
@@ -232,6 +238,15 @@ export class RoutePlanDriverAssignInvalidError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'RoutePlanDriverAssignInvalidError';
+  }
+}
+
+export class RoutePlanPublishInvalidError extends Error {
+  readonly code = 'ROUTE_PUBLISH_INVALID';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'RoutePlanPublishInvalidError';
   }
 }
 

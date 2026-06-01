@@ -750,6 +750,9 @@ function createDependencyHarness(): {
   listRoutePlans: ReturnType<
     typeof vi.fn<AdminRoutePlanDependencies['routePlanService']['listRoutePlans']>
   >;
+  publishRoutePlan: ReturnType<
+    typeof vi.fn<AdminRoutePlanDependencies['routePlanService']['publishRoutePlan']>
+  >;
   updateRoutePlanStops: ReturnType<
     typeof vi.fn<AdminRoutePlanDependencies['routePlanService']['updateRoutePlanStops']>
   >;
@@ -793,6 +796,19 @@ function createDependencyHarness(): {
   const deleteRoutePlan = vi.fn<
     AdminRoutePlanDependencies['routePlanService']['deleteRoutePlan']
   >(() => Promise.resolve({ routePlanId: 'route-plan-id', deleted: true }));
+  const publishRoutePlan = vi.fn<
+    AdminRoutePlanDependencies['routePlanService']['publishRoutePlan']
+  >(() =>
+    Promise.resolve({
+      routePlan: { ...routePlanSummary, status: 'ASSIGNED' },
+      routeGeometry: null,
+      routeStopPoints: routePlanStopPoints(),
+      stops: [
+        routePlanStop({ orderName: '#1035', sequence: 1 }),
+        routePlanStop({ orderName: '#1036', sequence: 2 })
+      ]
+    })
+  );
   const updateRoutePlanStops = vi.fn<
     AdminRoutePlanDependencies['routePlanService']['updateRoutePlanStops']
   >(() =>
@@ -817,6 +833,7 @@ function createDependencyHarness(): {
         deleteRoutePlan,
         getRoutePlanDetail,
         listRoutePlans,
+        publishRoutePlan,
         updateRoutePlanStops
       },
       sessionTokenVerifier: {
@@ -826,6 +843,7 @@ function createDependencyHarness(): {
     getRoutePlanDetail,
     deleteRoutePlan,
     listRoutePlans,
+    publishRoutePlan,
     updateRoutePlanStops
   };
 }

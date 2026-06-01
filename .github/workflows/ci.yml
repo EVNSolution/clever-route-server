@@ -147,7 +147,7 @@ jobs:
               files=$(git ls-files)
             fi
           fi
-          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/.*|apps/delivery-api/Dockerfile|apps/delivery-api/prisma/.*|apps/delivery-api/src/routes/(admin-commerce-connections-ui|admin-route-plans|driver-auth)\.routes\.ts|apps/delivery-api/src/modules/(commerce|driver|geocoding|route-plans|route-ops|shopify|woocommerce|wordpress-plugin)/.*|apps/delivery-api/tests/(admin-commerce-connections-ui\.routes|admin-route-plans\.routes|driver-auth\.(repository|routes)|geocoding\.service|osrm-route-geometry\.client|woocommerce-order-sync\.service|route-plan\.repository|route-scope-config|prisma-schema)\.test\.ts|infra/compose/docker-compose\.prod\.yml|infra/env/delivery-api\.env\.example|infra/env/deploy-image\.env\.example|\.github/workflows/ci\.yml|\.github/workflows/route-ops-publish\.yml)$'; then
+          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/.*|apps/delivery-api/Dockerfile|apps/delivery-api/prisma/.*|apps/delivery-api/src/routes/(admin-commerce-connections-ui|admin-route-plans|driver-auth)\.routes\.ts|apps/delivery-api/src/modules/(commerce|driver|geocoding|route-plans|route-ops|shopify|woocommerce|wordpress-plugin)/.*|apps/delivery-api/tests/(admin-commerce-connections-ui\.routes|admin-route-plans\.routes|driver-auth\.(repository|routes)|geocoding\.service|osrm-route-geometry\.client|woocommerce-order-sync\.service|route-plan\.(repository|service)|route-scope-config|prisma-schema)\.test\.ts|infra/compose/docker-compose\.prod\.yml|infra/env/delivery-api\.env\.example|infra/env/deploy-image\.env\.example|\.github/workflows/ci\.yml|\.github/workflows/route-ops-publish\.yml)$'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -197,6 +197,7 @@ jobs:
           tests/osrm-route-geometry.client.test.ts
           tests/woocommerce-order-sync.service.test.ts
           tests/route-plan.repository.test.ts
+          tests/route-plan.service.test.ts
           tests/route-scope-config.test.ts
           tests/prisma-schema.test.ts
       - name: Build delivery API
