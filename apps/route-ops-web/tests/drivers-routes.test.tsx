@@ -15,6 +15,7 @@ import {
   getDriverOptionLabel,
   getRouteDriverDisplay,
   getRoutePublishNotice,
+  formatRoutePlanStatus,
   isRouteVisibleToLinkedDriver,
 } from '../src/pages/RoutesPage';
 import type { BootstrapPayload, DriverDto, RoutePlanSummaryDto } from '../src/types';
@@ -109,6 +110,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     );
     expect(formatDriverAuthLabel(driverFixture())).toBe('Invite pending');
     expect(formatDriverAuthLabel(linkedDriverFixture())).toBe('Linked');
+    expect(buildDriverInviteMessage(driverFixture(), 'ko-KR')).toContain(
+      '인증 코드: A1B2C3',
+    );
+    expect(formatDriverAuthLabel(driverFixture(), 'ko-KR')).toBe('초대 대기');
+    expect(formatDriverAuthLabel(linkedDriverFixture(), 'ko-KR')).toBe('연결됨');
   });
 
   test('labels pending drivers in route assignment and route lists', () => {
@@ -127,6 +133,13 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(getRouteDriverDisplay(routePlanFixture({ driverId: 'unknown-driver' }), [pending])).toBe(
       'unknown-driver',
     );
+    expect(getDriverOptionLabel(pending, 'ko-KR')).toBe('Alex Driver · 초대 대기');
+    expect(getDriverOptionLabel(linked, 'ko-KR')).toBe('Minji Driver · 앱 연결됨');
+    expect(getRouteDriverDisplay(routePlanFixture({ driverId: null }), [pending], 'ko-KR')).toBe(
+      '미배정',
+    );
+    expect(formatRoutePlanStatus('DRAFT', 'ko-KR')).toBe('초안');
+    expect(formatRoutePlanStatus('ASSIGNED', 'ko-KR')).toBe('배정됨');
   });
 
   test('explains when draft and published routes are visible to drivers', () => {

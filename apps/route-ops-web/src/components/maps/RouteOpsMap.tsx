@@ -5,6 +5,7 @@ import { buildOrdersMapFeatureCollection, buildRouteDropoffPointFeatureCollectio
 import { installMissingMapImageFallback } from '../../maps/maplibre-missing-images';
 import { installPmtilesProtocol } from '../../maps/pmtiles';
 import { mapReadiness } from '../../maps/provider';
+import { getMapCopy, resolveLocale } from '../../i18n';
 import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto } from '../../types';
 
 type MapLibreModule = typeof import('maplibre-gl');
@@ -36,12 +37,15 @@ type RouteOpsMapProps = {
 };
 
 export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClickCoordinate, onOrderSelect, orders = [], plannedOrderIds = new Set<string>(), subtitle, title }: RouteOpsMapProps): ReactElement {
+  const locale = resolveLocale(bootstrap.locale);
+  const t = getMapCopy(locale);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const maplibreRef = useRef<MapLibreModule | null>(null);
   const markersRef = useRef<MapLibreMarker[]>([]);
   const onMapClickCoordinateRef = useRef(onMapClickCoordinate);
   const onOrderSelectRef = useRef(onOrderSelect);
+  const mapCopyRef = useRef(t);
   const homePointRef = useRef<RouteOpsPoint | null>(null);
   const pointsRef = useRef<RouteOpsPoint[]>([]);
   const ordersHomeAppliedRef = useRef<string | null>(null);
@@ -63,6 +67,10 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
   useEffect(() => {
     onMapClickCoordinateRef.current = onMapClickCoordinate;
   }, [onMapClickCoordinate]);
+
+  useEffect(() => {
+    mapCopyRef.current = t;
+  }, [t]);
 
   useEffect(() => {
     onOrderSelectRef.current = onOrderSelect;
@@ -123,11 +131,11 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
         });
         map.on('error', (event: { error?: { message?: string } }) => {
           if (!mounted) return;
-          setMapError(event.error?.message ?? 'Map provider request failed');
+          setMapError(event.error?.message ?? mapCopyRef.current.providerRequestFailed);
         });
       } catch (error) {
         if (!mounted) return;
-        setMapError(error instanceof Error ? error.message : 'Map library failed to load');
+        setMapError(error instanceof Error ? error.message : mapCopyRef.current.libraryFailed);
       }
     }
 
@@ -152,13 +160,13 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
     syncRouteLayers(map, lineFeature);
     syncRouteDropoffLayers(map, routeDropoffGeojson);
     syncRouteStopLayers(map, routeStopGeojson);
-    syncRouteMarkers(map, maplibreRef.current, points.filter((point) => point.kind === 'depot'), markersRef.current);
+    syncRouteMarkers(map, maplibreRef.current, points.filter((point) => point.kind === 'depot'), markersRef.current, locale);
     if (detail !== null) {
       fitMap(map, maplibreRef.current, fitPoints);
       return;
     }
     applyOrdersHomeViewport(map, homePoint, ordersHomeAppliedRef);
-  }, [detail, fitPoints, homePoint, isMapReady, lineFeature, ordersGeojson, points, routeDropoffGeojson, routeStopGeojson]);
+  }, [detail, fitPoints, homePoint, isMapReady, lineFeature, locale, ordersGeojson, points, routeDropoffGeojson, routeStopGeojson]);
 
   useEffect(() => {
     if (fitRequest === 0 || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return;
@@ -191,8 +199,8 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
         <div><h2>{title}</h2><p>{subtitle}</p></div>
       </div>
       <div className="route-ops-map-frame" data-map-provider-mode={bootstrap.mapConfig.providerMode ?? 'none'} data-map-provider-status={bootstrap.mapConfig.status}>
-        {readiness === 'interactive_map' ? <div className="map-toolbar"><button aria-label={detail === null ? 'Center map on store' : 'Zoom map to fit'} onClick={() => setFitRequest((value) => value + 1)} title={detail === null ? 'Center map on store' : 'Zoom map to fit'} type="button"><FitMapIcon /></button></div> : null}
-        {readiness === 'interactive_map' ? <div className="route-ops-map-canvas" ref={containerRef} aria-label="Interactive CLEVER route map" /> : <SequencePreview points={points} readiness={readiness} />}
+        {readiness === 'interactive_map' ? <div className="map-toolbar"><button aria-label={detail === null ? t.centerOnStore : t.fitMap} onClick={() => setFitRequest((value) => value + 1)} title={detail === null ? t.centerOnStore : t.fitMap} type="button"><FitMapIcon /></button></div> : null}
+        {readiness === 'interactive_map' ? <div className="route-ops-map-canvas" ref={containerRef} aria-label={t.interactiveMap} /> : <SequencePreview locale={locale} points={points} readiness={readiness} />}
       </div>
     </article>
   );
@@ -514,24 +522,25 @@ function styleRequiresPmtiles(endpoints: readonly string[]): boolean {
   return endpoints.some((endpoint) => endpoint.startsWith('pmtiles://'));
 }
 
-function syncRouteMarkers(map: MapLibreMap, maplibregl: MapLibreModule | null, points: RouteOpsPoint[], markers: MapLibreMarker[]): void {
+function syncRouteMarkers(map: MapLibreMap, maplibregl: MapLibreModule | null, points: RouteOpsPoint[], markers: MapLibreMarker[], locale: string | null | undefined = 'en-CA'): void {
   if (maplibregl === null) return;
   markers.forEach((marker) => safeRemoveMarker(marker));
   markers.length = 0;
   for (const point of points) {
     if (point.kind !== 'depot') continue;
-    const element = createRouteStartMarkerElement(point);
+    const element = createRouteStartMarkerElement(point, locale);
     markers.push(new maplibregl.Marker({ element, anchor: 'bottom' }).setLngLat([point.longitude, point.latitude]).addTo(map));
   }
 }
 
-function createRouteStartMarkerElement(point: RouteOpsPoint): HTMLElement {
+function createRouteStartMarkerElement(point: RouteOpsPoint, locale: string | null | undefined = 'en-CA'): HTMLElement {
+  const t = getMapCopy(locale);
   const markerElement = document.createElement('button');
   const markerPinElement = document.createElement('span');
   markerElement.type = 'button';
   markerElement.className = 'departure-map-marker';
   markerElement.style.zIndex = '3000';
-  markerElement.setAttribute('aria-label', point.addressLabel === undefined ? `Route start: ${point.label}` : `Store address: ${point.addressLabel}`);
+  markerElement.setAttribute('aria-label', point.addressLabel === undefined ? t.routeStart(point.label) : t.storeAddress(point.addressLabel));
   markerPinElement.className = 'departure-map-marker__pin';
   markerPinElement.append(createDepartureMarkerIconElement());
   markerElement.append(markerPinElement);
@@ -589,11 +598,12 @@ function FitMapIcon(): ReactElement {
   );
 }
 
-function SequencePreview({ points, readiness }: { points: RouteOpsPoint[]; readiness: string }): ReactElement {
+function SequencePreview({ locale, points, readiness }: { locale?: string | null; points: RouteOpsPoint[]; readiness: string }): ReactElement {
+  const t = getMapCopy(locale);
   const bounds = fitBoundsForPoints(points);
   const projected = bounds === null ? [] : points.map((point) => ({ ...point, ...projectPoint(point, bounds) }));
   return (
-    <svg viewBox="0 0 1000 560" role="img" aria-label={readiness === 'provider_not_configured' ? 'Marker-only coordinate preview' : 'Route coordinate preview'}>
+    <svg viewBox="0 0 1000 560" role="img" aria-label={readiness === 'provider_not_configured' ? t.markerPreview : t.routePreview}>
       <defs><linearGradient id="map-bg" x1="0" x2="1" y1="0" y2="1"><stop offset="0%" stopColor="#eef4fb" /><stop offset="100%" stopColor="#f8f4ec" /></linearGradient></defs>
       <rect width="1000" height="560" fill="url(#map-bg)" rx="24" />
       <path d="M-20 120 C200 90 260 210 440 176 C650 135 700 56 1040 85" className="map-road" />

@@ -7,6 +7,7 @@ import type {
   StoreSettingsDto
 } from './types';
 import type { RouteOpsPoint } from './maps/geojson';
+import { getStateCopy } from './i18n';
 
 export type OrderFilters = {
   deliveryArea?: string;
@@ -41,7 +42,6 @@ export type OrderWorksetUnavailableReason =
   | 'completed_or_cancelled'
   | 'different_delivery_date'
   | 'different_route_scope'
-  | 'history_read_only'
   | 'missing_address'
   | 'missing_coordinates'
   | 'missing_delivery_date'
@@ -70,7 +70,6 @@ export const ORDER_WORKSET_REASON_LABELS: Record<
   completed_or_cancelled: 'Completed/cancelled',
   different_delivery_date: 'Different delivery date',
   different_route_scope: 'Different delivery session',
-  history_read_only: 'History read-only',
   missing_address: 'Missing address',
   missing_coordinates: 'Missing coordinates',
   missing_delivery_date: 'Missing delivery date',
@@ -154,7 +153,6 @@ export function getOrderWorksetUnavailableReasons(
   context: OrderWorksetContext = {}
 ): OrderWorksetReason[] {
   const reasons = new Set<OrderWorksetUnavailableReason>();
-  if (context.scope === 'history') reasons.add('history_read_only');
   if (isCompletedOrCancelledOrder(order)) reasons.add('completed_or_cancelled');
   if (isPlannedOrder(order)) reasons.add('already_planned');
   if (order.deliveryDate === null) reasons.add('missing_delivery_date');
@@ -195,6 +193,14 @@ export function getOrderWorksetUnavailableReasons(
   }));
 }
 
+export function formatOrderWorksetUnavailableReasons(
+  reasons: OrderWorksetReason[],
+  locale: string | null | undefined = 'en-CA'
+): OrderWorksetReason[] {
+  const labels = getStateCopy(locale).worksetReasons;
+  return reasons.map((reason) => ({ ...reason, label: labels[reason.code] }));
+}
+
 export function isOrderWorksetEligible(
   order: CanonicalOrderDto,
   context: OrderWorksetContext = {}
@@ -208,8 +214,10 @@ export function isOrderWorksetEligible(
 export function summarizeOrderWorkset(
   orders: CanonicalOrderDto[],
   selectedOrderIds: ReadonlySet<string>,
-  context: OrderWorksetContext = {}
+  context: OrderWorksetContext = {},
+  locale: string | null | undefined = 'en-CA'
 ): OrderWorksetSummary {
+  const labels = getStateCopy(locale).worksetReasons;
   const reasonsByCode = Object.fromEntries(
     Object.keys(ORDER_WORKSET_REASON_LABELS).map((code) => [code, 0])
   ) as Record<OrderWorksetUnavailableReason, number>;
@@ -228,7 +236,7 @@ export function summarizeOrderWorkset(
     >
   )
     .filter(([, count]) => count > 0)
-    .map(([code, count]) => `${ORDER_WORKSET_REASON_LABELS[code]} ${count}`);
+    .map(([code, count]) => `${labels[code]} ${count}`);
   return {
     reasonLabels,
     reasonsByCode,
@@ -406,27 +414,28 @@ export function mapReadiness(input: {
   return 'interactive_map';
 }
 
-export function geometryLabel(detail: RoutePlanDetailDto | null, routerStatus: MapProviderStatus): string {
-  if (detail === null) return 'No route selected';
-  if (detail.routeGeometry !== null) return 'Road geometry';
-  if (detail.stops.every((stop) => stop.coordinates.latitude === null || stop.coordinates.longitude === null)) return 'No coordinates';
-  if (routerStatus === 'not_configured') return 'Router not configured';
-  return 'Road geometry unavailable';
+export function geometryLabel(detail: RoutePlanDetailDto | null, routerStatus: MapProviderStatus, locale: string | null | undefined = 'en-CA'): string {
+  const t = getStateCopy(locale).geometry;
+  if (detail === null) return t.noRouteSelected;
+  if (detail.routeGeometry !== null) return t.roadGeometry;
+  if (detail.stops.every((stop) => stop.coordinates.latitude === null || stop.coordinates.longitude === null)) return t.noCoordinates;
+  if (routerStatus === 'not_configured') return t.routerNotConfigured;
+  return t.roadGeometryUnavailable;
 }
 
 export function hideSetupActions(bootstrap: BootstrapPayload): boolean {
   return bootstrap.mode === 'plugin';
 }
 
-export function storeSettingsToDepotPoint(settings: StoreSettingsDto | null): RouteOpsPoint | null {
+export function storeSettingsToDepotPoint(settings: StoreSettingsDto | null, locale: string | null | undefined = settings?.locale): RouteOpsPoint | null {
   if (settings === null) return null;
   if (!isValidLatitude(settings.defaultDepotLatitude) || !isValidLongitude(settings.defaultDepotLongitude)) return null;
   const address = settings.defaultDepotAddress?.trim();
   return {
-    addressLabel: address === undefined || address === '' ? 'Store address' : address,
+    addressLabel: address === undefined || address === '' ? getStateCopy(locale).storeAddress : address,
     id: 'settings-store-depot',
     kind: 'depot',
-    label: 'Store',
+    label: getStateCopy(locale).store,
     latitude: settings.defaultDepotLatitude,
     longitude: settings.defaultDepotLongitude
   };

@@ -1,5 +1,6 @@
 import type { ReactElement, ReactNode } from 'react';
 
+import { getAppCopy } from '../i18n';
 import type { BootstrapPayload } from '../types';
 
 export type RouteOpsPage = 'dashboard' | 'drivers' | 'orders' | 'routes' | 'settings';
@@ -23,9 +24,10 @@ export function AppShell({
   navigate(path: string): void;
   title: string;
 }): ReactElement {
+  const t = getAppCopy(bootstrap.locale);
   return (
     <div className={`ops-shell ops-shell--${activePage}`} data-clever-route-ops-app>
-      <aside className="ops-sidebar" aria-label="Operate navigation">
+      <aside className="ops-sidebar" aria-label={t.navigationLabel}>
         <div className="brand-mark"><span>CR</span><strong>clever route</strong></div>
         <nav>
           {navItems.map((item) => (
@@ -40,15 +42,15 @@ export function AppShell({
           ))}
         </nav>
         <div className="sidebar-footer">
-          <span className="store-label">Store</span>
-          <strong>{bootstrap.shopDomain ?? 'Select shop'}</strong>
-          <small>{bootstrap.mode === 'plugin' ? 'WordPress launch session' : 'CLEVER internal admin'}</small>
+          <span className="store-label">{t.storeLabel}</span>
+          <strong>{bootstrap.shopDomain ?? t.selectShop}</strong>
+          <small>{bootstrap.mode === 'plugin' ? t.wordpressSession : t.internalAdmin}</small>
         </div>
       </aside>
       <main className="ops-main">
         <header className="ops-topbar">
           <div>
-            <span className="eyebrow">CLEVER Route App</span>
+            <span className="eyebrow">{t.brandEyebrow}</span>
             <h1>{title}</h1>
           </div>
         </header>

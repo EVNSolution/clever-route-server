@@ -73,11 +73,15 @@ describe('route ops web state helpers', () => {
     expect(matchesOrderTab(missingDate, 'needs_review', '2026-05-29')).toBe(true);
 
     expect(getOrderWorksetUnavailableReasons(planned, { scope: 'planning' }).map((reason) => reason.code)).toContain('already_planned');
-    expect(getOrderWorksetUnavailableReasons(ready, { scope: 'history' }).map((reason) => reason.code)).toContain('history_read_only');
+    expect(getOrderWorksetUnavailableReasons(ready, { scope: 'history' })).toEqual([]);
+    expect(getOrderWorksetUnavailableReasons(missingDate, { scope: 'history' }).map((reason) => reason.code)).toContain('needs_review');
     const summary = summarizeOrderWorkset([ready, planned, missingDate], new Set(['ready']), { scope: 'planning' });
     expect(summary).toEqual(expect.objectContaining({ selectableCount: 1, selectedCount: 1, unavailableCount: 2 }));
     expect(summary.reasonLabels.join(' ')).toContain('Already planned');
     expect(summary.reasonLabels.join(' ')).toContain('Missing delivery date');
+    const koreanSummary = summarizeOrderWorkset([ready, planned, missingDate], new Set(['ready']), { scope: 'planning' }, 'ko-KR');
+    expect(koreanSummary.reasonLabels.join(' ')).toContain('이미 배정됨');
+    expect(koreanSummary.reasonLabels.join(' ')).toContain('배송 날짜 누락');
   });
 
 
@@ -144,7 +148,9 @@ describe('route ops web state helpers', () => {
     };
     expect(deriveRouteStats(detail)).toEqual({ attempted: 1, completed: 1, missingCoordinates: 1, stops: 2 });
     expect(geometryLabel(detail, 'not_configured')).toBe('Router not configured');
+    expect(geometryLabel(detail, 'not_configured', 'ko-KR')).toBe('라우터 미설정');
     expect(geometryLabel({ ...detail, routeGeometry: { coordinates: [[-79, 43]], type: 'LineString' } }, 'configured')).toBe('Road geometry');
+    expect(geometryLabel({ ...detail, routeGeometry: { coordinates: [[-79, 43]], type: 'LineString' } }, 'configured', 'ko-KR')).toBe('도로 경로');
     expect(geometryLabel(detail, 'configured')).toBe('Road geometry unavailable');
   });
 
@@ -180,6 +186,14 @@ describe('route ops web state helpers', () => {
       routeScopeConfig: defaultRouteScopeConfig(),
       shopDomain: 'tenant.example.test'
     })).toBeNull();
+    expect(storeSettingsToDepotPoint({
+      defaultDepotAddress: null,
+      defaultDepotLatitude: 43.6532,
+      defaultDepotLongitude: -79.3832,
+      locale: 'ko-KR',
+      routeScopeConfig: defaultRouteScopeConfig(),
+      shopDomain: 'tenant.example.test'
+    })?.label).toBe('매장');
   });
 });
 

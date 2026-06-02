@@ -414,6 +414,25 @@ small,
   min-width: 0;
   overflow: hidden;
 }
+.filter-panel-header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  grid-column: 1 / -1;
+  justify-content: space-between;
+  min-width: 0;
+}
+.filter-panel-header h3 {
+  font-size: 16px;
+  line-height: 1.2;
+  margin: 2px 0 0;
+}
+.filter-panel-header button {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 8px 12px;
+  white-space: nowrap;
+}
 .filter-panel label {
   align-self: stretch;
   font-size: 12px;
@@ -429,15 +448,6 @@ small,
   max-width: 100%;
   min-width: 0;
   padding: 0 12px;
-  width: 100%;
-}
-.filter-actions {
-  align-items: end;
-  display: flex;
-  min-width: 0;
-}
-.filter-actions button {
-  min-height: 44px;
   width: 100%;
 }
 .filter-field--area input {
@@ -598,7 +608,9 @@ small,
   border-radius: 10px;
   color: #fff;
   display: inline-flex;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    monospace;
   font-size: 13px;
   font-weight: 900;
   letter-spacing: 0.12em;
@@ -636,6 +648,12 @@ small,
 }
 .orders-selection-summary {
   color: #4b5563;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+.orders-refresh-status {
+  color: #6b7280;
   font-size: 12px;
   font-weight: 800;
   white-space: nowrap;
@@ -906,17 +924,23 @@ button.danger.subtle {
   gap: 14px;
   grid-column: 1 / -1;
 }
+.order-mode-tabs,
 .route-tabs {
   align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
+.order-mode-tabs {
+  margin-bottom: -2px;
+}
+.order-mode-tabs button,
 .route-tabs button {
   background: #f8fafc;
   border-radius: 999px;
   padding: 9px 13px;
 }
+.order-mode-tabs button.active,
 .route-tabs button.active {
   background: #111827;
   border-color: #111827;
@@ -1044,6 +1068,13 @@ button.danger.subtle {
   }
 }
 @media (max-width: 620px) {
+  .filter-panel-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .filter-panel-header button {
+    width: 100%;
+  }
   .filter-panel {
     grid-template-columns: 1fr;
   }
@@ -1338,7 +1369,9 @@ button.danger.subtle {
   pointer-events: none;
   position: absolute;
   transform: translateX(-50%) translateY(4px);
-  transition: opacity 120ms ease, transform 120ms ease;
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
   visibility: hidden;
   width: max-content;
   z-index: 10;
@@ -1519,7 +1552,9 @@ button.danger.subtle {
 }
 
 .route-scope-field--value input {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-family:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    monospace;
 }
 
 .route-scope-field--text input {
@@ -1597,7 +1632,6 @@ button.danger.subtle {
     text-align: left;
   }
 }
-
 
 .order-detail-summary-grid {
   display: grid;

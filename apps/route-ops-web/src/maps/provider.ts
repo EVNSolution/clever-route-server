@@ -1,4 +1,5 @@
 import type { BootstrapPayload, MapProviderMode, MapProviderStatus } from '../types';
+import { settingsCopy, resolveLocale } from '../i18n';
 
 export type MapReadiness = 'interactive_map' | 'no_coordinates' | 'provider_not_configured';
 
@@ -8,15 +9,21 @@ export function mapReadiness(input: { coordinatesCount: number; mapStatus: MapPr
   return 'interactive_map';
 }
 
-export function providerModeLabel(mode: MapProviderMode): string {
+export function providerModeLabel(mode: MapProviderMode, locale: string | null | undefined = 'en-CA'): string {
+  if (resolveLocale(locale) === 'ko-KR') {
+    const t = settingsCopy['ko-KR'];
+    if (mode === 'self_hosted') return t.selfHosted;
+    if (mode === 'public_allowlisted') return t.publicAllowlisted;
+    return t.notConfigured;
+  }
   if (mode === 'self_hosted') return 'Self-hosted map';
   if (mode === 'public_allowlisted') return 'Public map provider allowlisted';
   return 'Map provider not configured';
 }
 
-export function providerStatusLabel(mapConfig: BootstrapPayload['mapConfig']): string {
+export function providerStatusLabel(mapConfig: BootstrapPayload['mapConfig'], locale: string | null | undefined = 'en-CA'): string {
   if (mapConfig.status === 'not_configured') return mapConfig.disabledReason ?? 'not_configured';
-  return providerModeLabel(mapConfig.providerMode);
+  return providerModeLabel(mapConfig.providerMode, locale);
 }
 
 export function extractStyleEndpointUrls(manifest: unknown): string[] {

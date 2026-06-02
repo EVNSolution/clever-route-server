@@ -1064,14 +1064,12 @@ export function registerAdminCommerceConnectionsUiRoutes(
 
   app.get<{ Params: { "*": string } }>(
     `${ADMIN_UI_APP_PATH}/*`,
-    async (request, reply) =>
-      redirectAdminUiBrowserFallback(request, reply),
+    async (request, reply) => redirectAdminUiBrowserFallback(request, reply),
   );
 
   app.get<{ Params: { "*": string } }>(
     `${ADMIN_UI_ROOT_PATH}/*`,
-    async (request, reply) =>
-      redirectAdminUiBrowserFallback(request, reply),
+    async (request, reply) => redirectAdminUiBrowserFallback(request, reply),
   );
 }
 
@@ -1092,8 +1090,12 @@ function registerRouteOpsAppRoutes(
   );
 
   app.get(`${ADMIN_UI_APP_API_PATH}/bootstrap`, async (request, reply) =>
-    withRouteOpsApi(request, reply, dependencies, (session) => {
+    withRouteOpsApi(request, reply, dependencies, async (session) => {
       const shopDomain = readRouteOpsShopDomain(request, session);
+      const settings =
+        shopDomain === null || dependencies.settingsService === undefined
+          ? null
+          : await dependencies.settingsService.getSettings({ shopDomain });
       return routeOpsData({
         appUrls: {
           dashboard: ADMIN_UI_APP_DASHBOARD_PATH,
@@ -1103,6 +1105,7 @@ function registerRouteOpsAppRoutes(
           settings: ADMIN_UI_APP_SETTINGS_PATH,
         },
         csrfToken: session.csrfToken,
+        locale: settings?.locale === "ko-KR" ? "ko-KR" : "en-CA",
         mapConfig: readRouteOpsMapConfig(),
         mode: isWpPluginSession(session) ? "plugin" : "internal-admin",
         routerConfig: readRouteOpsRouterConfig(),
@@ -1176,7 +1179,6 @@ function registerRouteOpsAppRoutes(
           query: request.query,
           shopDomain,
         });
-        assertRouteOpsBulkGeocodeScope(filters);
         const job = createBulkGeocodeJob({ filters, shopDomain });
         void runBulkGeocodeJob({
           actor: dependencies.actor.subject,
@@ -1210,7 +1212,6 @@ function registerRouteOpsAppRoutes(
         query: request.query,
         shopDomain,
       });
-      assertRouteOpsBulkGeocodeScope(filters);
       const job = createBulkGeocodeJob({ filters, shopDomain });
       void runBulkGeocodeJob({
         actor: dependencies.actor.subject,
@@ -1314,9 +1315,6 @@ function registerRouteOpsAppRoutes(
           );
         }
         const body = readRouteOpsBodyObject(request.body);
-        assertRouteOpsWritableScope(
-          readRouteOpsMutationScope(request.query, body),
-        );
         const routeScopeConfig = await readRouteOpsRouteScopeConfig(
           dependencies,
           shopDomain,
@@ -1354,9 +1352,6 @@ function registerRouteOpsAppRoutes(
           );
         }
         const body = readRouteOpsBodyObject(request.body);
-        assertRouteOpsWritableScope(
-          readRouteOpsMutationScope(request.query, body),
-        );
         const order =
           await dependencies.orderSyncService.patchCanonicalOrderCoordinates({
             actor: dependencies.actor.subject,
@@ -1397,9 +1392,6 @@ function registerRouteOpsAppRoutes(
           );
         }
         const body = readRouteOpsBodyObject(request.body);
-        assertRouteOpsWritableScope(
-          readRouteOpsMutationScope(request.query, body),
-        );
         const orders = await dependencies.orderSyncService.listCanonicalOrders({
           shopDomain,
         });
@@ -1423,18 +1415,23 @@ function registerRouteOpsAppRoutes(
         });
         if (!geocode.ok) {
           if (
-            dependencies.orderSyncService.patchCanonicalOrderGeocodeDiagnostics !==
-            undefined
+            dependencies.orderSyncService
+              .patchCanonicalOrderGeocodeDiagnostics !== undefined
           ) {
-            await dependencies.orderSyncService.patchCanonicalOrderGeocodeDiagnostics({
-              actor: dependencies.actor.subject,
-              diagnostic: summarizeGeocodeDiagnostic(geocode, "single_order_geocode"),
-              geocodeStatus:
-                geocode.code === "BLANK_ADDRESS" ? "PENDING" : "FAILED",
-              orderId: current.orderId,
-              shopDomain,
-              source: "single_order_geocode",
-            });
+            await dependencies.orderSyncService.patchCanonicalOrderGeocodeDiagnostics(
+              {
+                actor: dependencies.actor.subject,
+                diagnostic: summarizeGeocodeDiagnostic(
+                  geocode,
+                  "single_order_geocode",
+                ),
+                geocodeStatus:
+                  geocode.code === "BLANK_ADDRESS" ? "PENDING" : "FAILED",
+                orderId: current.orderId,
+                shopDomain,
+                source: "single_order_geocode",
+              },
+            );
           }
           throw new WooCommerceOnboardingError(
             "BAD_REQUEST",
@@ -1457,7 +1454,10 @@ function registerRouteOpsAppRoutes(
             await dependencies.orderSyncService.patchCanonicalOrderCoordinates({
               actor: dependencies.actor.subject,
               geocodeDiagnostic: {
-                diagnostic: summarizeGeocodeDiagnostic(geocode, "single_order_geocode"),
+                diagnostic: summarizeGeocodeDiagnostic(
+                  geocode,
+                  "single_order_geocode",
+                ),
                 source: "single_order_geocode",
               },
               latitude: geocode.result.latitude,
@@ -1479,7 +1479,9 @@ function registerRouteOpsAppRoutes(
             order: toRouteOpsOrderDto(order),
           });
         }
-        return routeOpsData({ geocode: toSafeRouteOpsGeocodeResponse(geocode) });
+        return routeOpsData({
+          geocode: toSafeRouteOpsGeocodeResponse(geocode),
+        });
       }),
   );
 
@@ -1530,9 +1532,6 @@ function registerRouteOpsAppRoutes(
       const services = requireRouteUiServices(dependencies);
       const shopDomain = requireRouteOpsShopDomain(request, session);
       const body = readRouteOpsBodyObject(request.body);
-      assertRouteOpsWritableScope(
-        readRouteOpsMutationScope(request.query, body),
-      );
       const planDate = normalizeRequiredDate(
         readRequiredJsonString(body, "planDate"),
       );
@@ -1794,7 +1793,9 @@ function registerRouteOpsAppRoutes(
           shopDomain,
         });
         if (
-          !currentDrivers.some((driver) => driver.id === request.params.driverId)
+          !currentDrivers.some(
+            (driver) => driver.id === request.params.driverId,
+          )
         ) {
           throw new WooCommerceOnboardingError(
             "NOT_FOUND",
@@ -1830,7 +1831,9 @@ function registerRouteOpsAppRoutes(
           shopDomain,
         });
         if (
-          !currentDrivers.some((driver) => driver.id === request.params.driverId)
+          !currentDrivers.some(
+            (driver) => driver.id === request.params.driverId,
+          )
         ) {
           throw new WooCommerceOnboardingError(
             "NOT_FOUND",
@@ -3324,7 +3327,9 @@ async function readRouteOpsOrderFilters(input: {
   query: unknown;
   shopDomain: string;
 }): Promise<ListCanonicalOrdersFilters> {
-  const scope = normalizeRouteOpsOrderScope(readQueryString(input.query, "scope"));
+  const scope = normalizeRouteOpsOrderScope(
+    readQueryString(input.query, "scope"),
+  );
   const tab = normalizeRouteOpsOrderTab(readQueryString(input.query, "tab"));
   const rawServiceType = readQueryString(input.query, "serviceType");
   const rawDeliverySession = readQueryString(input.query, "deliverySession");
@@ -3413,26 +3418,6 @@ async function readRouteOpsOrderFilters(input: {
     ...(search === null ? {} : { search }),
     ...(serviceType === null ? {} : { serviceType }),
   };
-}
-
-function readRouteOpsMutationScope(
-  query: unknown,
-  body: Record<string, unknown>,
-): "history" | "planning" | null {
-  const queryScope = normalizeRouteOpsOrderScope(readQueryString(query, "scope"));
-  if (queryScope !== null) return queryScope;
-  const bodyScope = body.scope;
-  if (typeof bodyScope !== "string") return null;
-  return normalizeRouteOpsOrderScope(bodyScope);
-}
-
-function assertRouteOpsWritableScope(scope: "history" | "planning" | null): void {
-  if (scope !== "history") return;
-  throw new WooCommerceOnboardingError(
-    "BAD_REQUEST",
-    "History scope is read-only",
-    400,
-  );
 }
 
 async function resolveShopToday(
@@ -3715,15 +3700,6 @@ function createBulkGeocodeJob(input: {
   return job;
 }
 
-function assertRouteOpsBulkGeocodeScope(filters: ListCanonicalOrdersFilters): void {
-  if (filters.routeOpsScope !== "history") return;
-  throw new WooCommerceOnboardingError(
-    "BAD_REQUEST",
-    "Bulk geocode is disabled in history scope",
-    400,
-  );
-}
-
 async function runBulkGeocodeJob(input: {
   actor: string;
   job: BulkGeocodeJob;
@@ -3737,8 +3713,10 @@ async function runBulkGeocodeJob(input: {
     });
     input.job.counts.matched = orders.length;
     const publicAttemptLimit =
-      input.services.geocodingService.status.providerPolicy === "public_nominatim"
-        ? input.services.geocodingService.status.publicBulkAttemptLimit ?? null
+      input.services.geocodingService.status.providerPolicy ===
+      "public_nominatim"
+        ? (input.services.geocodingService.status.publicBulkAttemptLimit ??
+          null)
         : null;
     input.job.policyLimit = {
       active: publicAttemptLimit !== null,
@@ -3787,15 +3765,17 @@ async function runBulkGeocodeJob(input: {
           orderName: order.name,
           status: geocode.code === "BLANK_ADDRESS" ? "no_address" : "failed",
         });
-        await input.services.orderSyncService.patchCanonicalOrderGeocodeDiagnostics?.({
-          actor: input.actor,
-          diagnostic: summarizeGeocodeDiagnostic(geocode, "bulk_geocode"),
-          geocodeStatus:
-            geocode.code === "BLANK_ADDRESS" ? "PENDING" : "FAILED",
-          orderId: order.orderId,
-          shopDomain: input.job.shopDomain,
-          source: "bulk_geocode",
-        });
+        await input.services.orderSyncService.patchCanonicalOrderGeocodeDiagnostics?.(
+          {
+            actor: input.actor,
+            diagnostic: summarizeGeocodeDiagnostic(geocode, "bulk_geocode"),
+            geocodeStatus:
+              geocode.code === "BLANK_ADDRESS" ? "PENDING" : "FAILED",
+            orderId: order.orderId,
+            shopDomain: input.job.shopDomain,
+            source: "bulk_geocode",
+          },
+        );
         touchBulkGeocodeJob(input.job);
         continue;
       }
@@ -4700,7 +4680,6 @@ function toRouteOpsDriverDto(driver: AdminDriverRow): {
     updatedAt: driver.updatedAt,
   };
 }
-
 
 function defaultRouteOpsSettings(shopDomain: string): AdminStoreSettings {
   return {

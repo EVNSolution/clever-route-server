@@ -8,6 +8,7 @@ import { DriversPage } from './pages/DriversPage';
 import { OrdersPage } from './pages/OrdersPage';
 import { RoutesPage } from './pages/RoutesPage';
 import { SettingsPage } from './pages/SettingsPage';
+import { getAppCopy, resolveLocale } from './i18n';
 import type { BootstrapPayload } from './types';
 import { readErrorMessage } from './utils/format';
 
@@ -18,13 +19,16 @@ type AppRoute = {
   routePlanId: string | null;
 };
 
-const navItems: NavItem[] = [
-  { label: 'Dashboard', page: 'dashboard', path: '/admin/ui/app/dashboard' },
-  { label: 'Orders', page: 'orders', path: '/admin/ui/app/orders' },
-  { label: 'Routes', page: 'routes', path: '/admin/ui/app/routes' },
-  { label: 'Drivers & Vehicles', page: 'drivers', path: '/admin/ui/app/drivers' },
-  { label: 'Settings', page: 'settings', path: '/admin/ui/app/settings' }
-];
+function buildNavItems(locale: string | null | undefined): NavItem[] {
+  const t = getAppCopy(locale);
+  return [
+    { label: t.nav.dashboard, page: 'dashboard', path: '/admin/ui/app/dashboard' },
+    { label: t.nav.orders, page: 'orders', path: '/admin/ui/app/orders' },
+    { label: t.nav.routes, page: 'routes', path: '/admin/ui/app/routes' },
+    { label: t.nav.drivers, page: 'drivers', path: '/admin/ui/app/drivers' },
+    { label: t.nav.settings, page: 'settings', path: '/admin/ui/app/settings' }
+  ];
+}
 
 export function App(): ReactElement {
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
@@ -54,22 +58,28 @@ export function App(): ReactElement {
   if (bootstrap === null) return <BootFrame error={error} />;
 
   return (
-    <AppShell activePage={route.page} bootstrap={bootstrap} error={error} navItems={navItems} navigate={navigate} title={pageTitle(route)}>
+    <AppShell activePage={route.page} bootstrap={bootstrap} error={error} navItems={buildNavItems(bootstrap.locale)} navigate={navigate} title={pageTitle(route, bootstrap.locale)}>
       <PageBody bootstrap={bootstrap} navigate={navigate} route={route} setError={setError} />
     </AppShell>
   );
 }
 
 function BootFrame({ error }: { error: string | null }): ReactElement {
+  const t = getAppCopy(readBrowserLocale());
   return (
     <main className="boot-frame">
       <div className="boot-card">
-        <span className="eyebrow">CLEVER Route App</span>
-        <h1>Loading route operations…</h1>
-        {error === null ? <p>Checking the WordPress launch session and operator workspace.</p> : <div className="alert error">{error}</div>}
+        <span className="eyebrow">{t.brandEyebrow}</span>
+        <h1>{t.bootTitle}</h1>
+        {error === null ? <p>{t.bootMessage}</p> : <div className="alert error">{error}</div>}
       </div>
     </main>
   );
+}
+
+function readBrowserLocale(): string | null {
+  if (typeof navigator === 'undefined') return null;
+  return navigator.language;
 }
 
 function PageBody(input: {
@@ -95,13 +105,14 @@ function parseRoute(pathname: string): AppRoute {
   return { page: 'dashboard', routePlanId: null };
 }
 
-function pageTitle(route: AppRoute): string {
-  if (route.page === 'orders') return 'Orders';
-  if (route.page === 'routes' && route.routePlanId !== null) return 'Route Builder';
-  if (route.page === 'routes') return 'Routes';
-  if (route.page === 'drivers') return 'Drivers & Vehicles';
-  if (route.page === 'settings') return 'Settings';
-  return 'Dashboard';
+function pageTitle(route: AppRoute, locale: string | null | undefined): string {
+  const t = getAppCopy(resolveLocale(locale)).pageTitle;
+  if (route.page === 'orders') return t.orders;
+  if (route.page === 'routes' && route.routePlanId !== null) return t.routeBuilder;
+  if (route.page === 'routes') return t.routes;
+  if (route.page === 'drivers') return t.drivers;
+  if (route.page === 'settings') return t.settings;
+  return t.dashboard;
 }
 
 function withExistingSearch(path: string): string {
