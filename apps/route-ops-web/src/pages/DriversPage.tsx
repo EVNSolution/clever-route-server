@@ -396,24 +396,20 @@ function DriverInviteActions(input: {
   const isDeleting = input.deletingDriverId === driver.id;
   return (
     <div className="driver-invite-actions">
-      <div className="driver-invite-row">
+      <div className="driver-invite-meta-stack">
         <span className="driver-invite-meta">
           {driver.inviteCode === null ? <span className="muted">No active code</span> : <span className="invite-code">{driver.inviteCode}</span>}
         </span>
-        <div className="driver-invite-controls">
-          <button disabled={driver.inviteCode === null} onClick={() => input.onCopyInvite?.(driver)} type="button">copy</button>
-          <button disabled={isRegenerating || isDeleting} onClick={() => input.onRegenerateInvite?.(driver.id)} type="button">
-            {isRegenerating ? 're-login…' : 're-login'}
-          </button>
-        </div>
-      </div>
-      <div className="driver-invite-row">
         <small className="driver-invite-meta">{driver.inviteCodeExpiresAt === null ? 'No expiry' : `Expires ${formatDriverDate(driver.inviteCodeExpiresAt)}`}</small>
-        <div className="driver-invite-controls">
-          <button className="danger subtle" disabled={isDeleting || isRegenerating} onClick={() => input.onDelete?.(driver)} type="button">
-            {isDeleting ? 'delete…' : 'delete'}
-          </button>
-        </div>
+      </div>
+      <div className="driver-invite-controls">
+        <button disabled={driver.inviteCode === null} onClick={() => input.onCopyInvite?.(driver)} type="button">copy</button>
+        <button disabled={isRegenerating || isDeleting} onClick={() => input.onRegenerateInvite?.(driver.id)} type="button">
+          {isRegenerating ? 're-login…' : 're-login'}
+        </button>
+        <button className="danger subtle" disabled={isDeleting || isRegenerating} onClick={() => input.onDelete?.(driver)} type="button">
+          {isDeleting ? 'delete…' : 'delete'}
+        </button>
       </div>
     </div>
   );
@@ -432,7 +428,9 @@ export function formatDriverAuthLabel(driver: Pick<DriverDto, 'appLinked' | 'aut
 }
 
 export function formatDriverStatus(driver: Pick<DriverDto, 'status'>): string {
-  return driver.status === 'PENDING' ? 'Pending' : driver.status;
+  if (driver.status === 'PENDING') return 'Pending';
+  if (driver.status === 'ACTIVE') return 'Active';
+  return driver.status;
 }
 
 export function formatDriverDate(value: string): string {
