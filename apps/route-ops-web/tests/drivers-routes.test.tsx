@@ -29,20 +29,49 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     const html = renderToStaticMarkup(
       <DriverTable drivers={[driverFixture(), linkedDriverFixture()]} />,
     );
+    const tableHeaderHtml = extractFirstMatch(html, /<thead>([\s\S]*?)<\/thead>/);
+    const inviteCellHtml = extractFirstMatch(html, /<td><div class="driver-invite-actions">([\s\S]*?)<\/div><\/td>/);
 
-    expect(html).toContain('Driver');
-    expect(html).toContain('Phone');
-    expect(html).toContain('App access');
-    expect(html).toContain('Invite code / action');
+    expect(tableHeaderHtml).toContain('Driver');
+    expect(tableHeaderHtml).toContain('Phone');
+    expect(tableHeaderHtml).toContain('Status');
+    expect(tableHeaderHtml).toContain('App access');
+    expect(tableHeaderHtml).toContain('Invite code / action');
+    expect(tableHeaderHtml).not.toContain('Last seen / joined');
+    expect(tableHeaderHtml).not.toContain('Recent events');
     expect(html).toContain('A1B2C3');
-    expect(html).toContain('Copy invite');
-    expect(html).toContain('Regenerate');
-    expect(html).toContain('Delete');
-    expect(html).toContain('App linked');
+    expect(inviteCellHtml).toContain('copy');
+    expect(inviteCellHtml).toContain('re-login');
+    expect(inviteCellHtml).toContain('delete');
+    expect(html).toContain('<small>Linked</small>');
+    expect(html).toContain('<span class="status-pill ok">Linked</span>');
+    expect(html).toContain('<span class="status-pill warn">Invite pending</span>');
     expect(html).toContain('No active code');
-    expect(html).toContain('Re-login code');
+    expect(html).toContain('No expiry');
+    expect(html).not.toContain('Copy invite');
+    expect(html).not.toContain('Re-login code');
+    expect(html).not.toContain('Regenerate');
+    expect(html).not.toContain('Delete');
+    expect(html).not.toContain('App linked');
+    expect(html).not.toContain('Not seen yet');
+    expect(html).not.toContain('Joined');
     expect(html).not.toContain('authSubject');
     expect(html).not.toContain('refreshToken');
+
+    expect(html.match(/class="driver-invite-actions"/g)).toHaveLength(2);
+    expect(html.match(/class="driver-invite-row"/g)).toHaveLength(4);
+    expect(html.match(/class="driver-invite-meta"/g)).toHaveLength(4);
+    expect(html.match(/class="driver-invite-controls"/g)).toHaveLength(4);
+  });
+
+  test('drivers page KPI shortens linked app copy', () => {
+    const html = renderToStaticMarkup(
+      <DriversPage bootstrap={bootstrap()} setError={() => undefined} />,
+    );
+    const driverKpisHtml = extractFirstMatch(html, /<div class="summary-strip compact-kpis driver-kpis"[\s\S]*?>([\s\S]*?)<\/div><p class="empty-state"/);
+
+    expect(driverKpisHtml).toContain('<span>Linked</span>');
+    expect(driverKpisHtml).not.toContain('App linked');
   });
 
   test('driver create form uses a searchable country combobox without placeholders', () => {
@@ -77,7 +106,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
       'Authentication code: A1B2C3',
     );
     expect(formatDriverAuthLabel(driverFixture())).toBe('Invite pending');
-    expect(formatDriverAuthLabel(linkedDriverFixture())).toBe('App linked');
+    expect(formatDriverAuthLabel(linkedDriverFixture())).toBe('Linked');
   });
 
   test('labels pending drivers in route assignment and route lists', () => {
@@ -271,4 +300,8 @@ function bootstrap(): BootstrapPayload {
     routerConfig: { provider: null, status: 'not_configured' },
     shopDomain: 'dev1.tomatonofood.com',
   };
+}
+
+function extractFirstMatch(value: string, pattern: RegExp): string {
+  return pattern.exec(value)?.[1] ?? '';
 }
