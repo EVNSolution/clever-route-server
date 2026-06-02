@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
 
 import {
@@ -11,7 +11,12 @@ import {
   patchOrderMetadata,
 } from "../api";
 import { Badge } from "../components/primitives";
-import { orderDetailLabels, orderFieldLabels } from "../i18n";
+import {
+  getOrderDetailLabels,
+  getOrderFieldLabels,
+  getOrdersCopy,
+  resolveLocale,
+} from "../i18n";
 import { TabLayout } from "../components/TabLayout";
 import { RouteOpsMap } from "../components/maps/RouteOpsMap";
 import {
@@ -19,13 +24,13 @@ import {
   buildOrderFetchQuery,
   buildOrderQuery,
   createDefaultOrderFilters,
+  formatOrderWorksetUnavailableReasons,
   getOrderWorksetUnavailableReasons,
   isOrderWorksetEligible,
   storeSettingsToDepotPoint,
   summarizeOrderWorkset,
   summarizeSelection,
   type OrderFilterState,
-  type OrderScopeFilter,
   type OrderWorksetContext,
 } from "../state";
 import type {
@@ -83,10 +88,15 @@ const EDITABLE_METADATA_FIELD_KEYS: Array<keyof OrderMetadataPatch> = [
 
 export function buildEditableMetadataFields(
   settings: StoreSettingsDto | null | undefined,
+  locale: string | null | undefined = settings?.locale,
 ): EditableMetadataField[] {
+  const t = getOrdersCopy(locale);
+  const orderFieldLabels = getOrderFieldLabels(locale);
   const config = normalizeRouteScopeConfig(settings?.routeScopeConfig);
   const serviceTypeChoices = activeRouteScopeValues(config.serviceTypes);
-  const deliverySessionChoices = activeRouteScopeValues(config.deliverySessions);
+  const deliverySessionChoices = activeRouteScopeValues(
+    config.deliverySessions,
+  );
   const eveningService =
     serviceTypeChoices.find((value) => value.value === "EVENING_DELIVERY") ??
     serviceTypeChoices[0];
@@ -102,32 +112,32 @@ export function buildEditableMetadataFields(
     { key: "countryCode", label: orderFieldLabels.countryCode },
     { key: "deliveryArea", label: orderFieldLabels.deliveryArea },
     {
-      helpText: "Enter the route date as YYYY-MM-DD, for example 2026-05-29.",
+      helpText: t.editableHelp.deliveryDate,
       key: "deliveryDate",
       label: orderFieldLabels.deliveryDate,
     },
     {
       choices: serviceTypeChoices,
-      helpText: `Allowed values: ${routeScopeValueSummary(config.serviceTypes)}. Example: ${eveningService?.example ?? "EVENING_DELIVERY for a 5PM-9PM delivery route."}`,
+      helpText: t.editableHelp.serviceType(routeScopeValueSummary(config.serviceTypes), eveningService?.example ?? "EVENING_DELIVERY for a 5PM-9PM delivery route."),
       key: "serviceType",
       label: orderFieldLabels.serviceType,
       placeholder: eveningService?.value ?? "EVENING_DELIVERY",
     },
     {
       choices: deliverySessionChoices,
-      helpText: `Allowed values: ${routeScopeValueSummary(config.deliverySessions)}. Example: ${eveningSession?.example ?? "EVENING for a 5PM-9PM route."}`,
+      helpText: t.editableHelp.deliverySession(routeScopeValueSummary(config.deliverySessions), eveningSession?.example ?? "EVENING for a 5PM-9PM route."),
       key: "deliverySession",
       label: orderFieldLabels.deliverySession,
       placeholder: eveningSession?.value ?? "EVENING",
     },
     {
-      helpText: `${config.timeWindow.helpText} Example: ${config.timeWindow.startExample}.`,
+      helpText: t.editableHelp.timeWindow(config.timeWindow.helpText, config.timeWindow.startExample),
       key: "timeWindowStart",
       label: orderFieldLabels.timeWindowStart,
       placeholder: config.timeWindow.startExample,
     },
     {
-      helpText: `${config.timeWindow.helpText} Example: ${config.timeWindow.endExample}.`,
+      helpText: t.editableHelp.timeWindow(config.timeWindow.helpText, config.timeWindow.endExample),
       key: "timeWindowEnd",
       label: orderFieldLabels.timeWindowEnd,
       placeholder: config.timeWindow.endExample,
@@ -158,11 +168,14 @@ export function OrdersPage({
   const [orders, setOrders] = useState<CanonicalOrderDto[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [filters, setFilters] = useState(createDefaultOrderFilters);
+  const initialCopy = getOrdersCopy(bootstrap.locale);
   const [routeDate, setRouteDate] = useState(today());
-  const [routeName, setRouteName] = useState(`Route ${today()}`);
+  const [routeName, setRouteName] = useState(() => initialCopy.defaultRouteName(today()));
   const [autoAppliedDeliveryDateFilter, setAutoAppliedDeliveryDateFilter] =
     useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [ordersLoaded, setOrdersLoaded] = useState(false);
+  const [refreshingOrders, setRefreshingOrders] = useState(false);
   const [settings, setSettings] = useState<StoreSettingsDto | null>(null);
   const [diagnosticsByOrder, setDiagnosticsByOrder] = useState<
     Record<string, DeliveryMetadataDiagnosticsDto | null>
@@ -174,6 +187,12 @@ export function OrdersPage({
     null,
   );
   const [bulkGeocoding, setBulkGeocoding] = useState(false);
+  const locale = resolveLocale(settings?.locale ?? bootstrap.locale);
+  const t = getOrdersCopy(locale);
+  const pendingScrollRestoreRef = useRef<{
+    x: number;
+    y: number;
+  } | null>(null);
 
   const query = useMemo(() => buildOrderQuery(filters), [filters]);
   const fetchQuery = useMemo(() => buildOrderFetchQuery(filters), [filters]);
@@ -181,7 +200,6 @@ export function OrdersPage({
     () => applyClientOrderFilters(orders, filters),
     [orders, filters],
   );
-  const routeActionsReadOnly = filters.scope === "history";
   const worksetContext = useMemo<OrderWorksetContext>(
     () => ({ scope: filters.scope }),
     [filters.scope],
@@ -191,8 +209,8 @@ export function OrdersPage({
     [orders, selected],
   );
   const depotPoint = useMemo(
-    () => storeSettingsToDepotPoint(settings),
-    [settings],
+    () => storeSettingsToDepotPoint(settings, locale),
+    [locale, settings],
   );
   const plannedOrderIds = useMemo(() => {
     const highlighted = new Set(selected);
@@ -205,7 +223,12 @@ export function OrdersPage({
   }, [selected, visibleOrders]);
 
   const refreshOrders = async (): Promise<void> => {
-    setLoading(true);
+    if (ordersLoaded) {
+      pendingScrollRestoreRef.current = captureWindowScroll();
+      setRefreshingOrders(true);
+    } else {
+      setLoading(true);
+    }
     try {
       const payload = await getOrders(fetchQuery);
       setOrders(payload.orders);
@@ -213,13 +236,24 @@ export function OrdersPage({
     } catch (error) {
       setError(readErrorMessage(error));
     } finally {
+      setOrdersLoaded(true);
       setLoading(false);
+      setRefreshingOrders(false);
     }
   };
 
   useEffect(() => {
     void refreshOrders();
   }, [fetchQuery]);
+
+  useLayoutEffect(() => {
+    const snapshot = pendingScrollRestoreRef.current;
+    if (snapshot === null) return;
+    pendingScrollRestoreRef.current = null;
+    window.requestAnimationFrame(() => {
+      window.scrollTo(snapshot.x, snapshot.y);
+    });
+  }, [orders, loading, refreshingOrders]);
 
   useEffect(() => {
     getSettings()
@@ -236,12 +270,13 @@ export function OrdersPage({
         selection.readySelected.length !== selected.size
       ) {
         throw new Error(
-          "Create route uses ready unplanned orders only. Remove unavailable orders from the plan.",
+          t.createRouteReadyOnly,
         );
       }
       const routeDraftBlocker = getRouteDraftCreateBlocker(
         selection.readySelected,
         routeDate || today(),
+        locale,
       );
       if (routeDraftBlocker !== null) throw new Error(routeDraftBlocker);
       const result = await createRoute({
@@ -341,7 +376,7 @@ export function OrdersPage({
         query,
       });
       let job = payload.geocode;
-      setBulkGeocodeStatus(formatBulkGeocodeStatus(job));
+      setBulkGeocodeStatus(formatBulkGeocodeStatus(job, locale));
       for (
         let attempt = 0;
         attempt < 60 && !isBulkGeocodeTerminal(job);
@@ -349,7 +384,7 @@ export function OrdersPage({
       ) {
         await sleep(1_000);
         job = (await getBulkGeocodeJob(job.jobId)).geocode;
-        setBulkGeocodeStatus(formatBulkGeocodeStatus(job));
+        setBulkGeocodeStatus(formatBulkGeocodeStatus(job, locale));
       }
       await refreshOrders();
       setError(null);
@@ -363,8 +398,8 @@ export function OrdersPage({
   const applyPlanDateLock = (deliveryDate: string): void => {
     setRouteDate(deliveryDate);
     setRouteName((current) =>
-      current.trim() === "" || /^Route \d{4}-\d{2}-\d{2}$/u.test(current)
-        ? `Route ${deliveryDate}`
+      current.trim() === "" || /^(Route|경로) \d{4}-\d{2}-\d{2}$/u.test(current)
+        ? t.defaultRouteName(deliveryDate)
         : current,
     );
     setAutoAppliedDeliveryDateFilter(deliveryDate);
@@ -390,13 +425,13 @@ export function OrdersPage({
   };
 
   const applyPlanSelection = (requestedSelected: Set<string>): void => {
-    const draft = buildRouteDraftSelection(orders, requestedSelected);
+    const draft = buildRouteDraftSelection(orders, requestedSelected, locale);
     setSelected(new Set(draft.orderIds));
     if (draft.deliveryDate === null) {
       if (requestedSelected.size === 0) clearPlan();
       else
         setError(
-          draft.warning ?? "Select route-ready orders with a delivery date.",
+          draft.warning ?? t.selectRouteReady,
         );
       return;
     }
@@ -416,13 +451,16 @@ export function OrdersPage({
       visibleOrders.find((candidate) => candidate.orderId === orderId) ??
       orders.find((candidate) => candidate.orderId === orderId);
     if (order === undefined) return;
-    const reasons = getOrderWorksetUnavailableReasons(order, worksetContext);
+    const reasons = formatOrderWorksetUnavailableReasons(
+      getOrderWorksetUnavailableReasons(order, worksetContext),
+      locale,
+    );
     if (!isOrderWorksetEligible(order, worksetContext)) {
       setError(
-        `Order is not available for this plan: ${
+        t.orderUnavailable(
           reasons.map((reason) => reason.label).join(", ") ||
-          "Review route constraints"
-        }.`,
+            t.routeConstraintFallback,
+        ),
       );
       return;
     }
@@ -433,16 +471,16 @@ export function OrdersPage({
 
   return (
     <TabLayout
-      title="Orders"
+      title={t.title}
       primary={
         <RouteOpsMap
           bootstrap={bootstrap}
           depot={depotPoint}
-          onOrderSelect={routeActionsReadOnly ? undefined : addOrderToPlan}
+          onOrderSelect={addOrderToPlan}
           orders={visibleOrders}
           plannedOrderIds={plannedOrderIds}
-          subtitle="Imported WooCommerce stops by current filters"
-          title="Orders map"
+          subtitle={t.mapSubtitle}
+          title={t.mapTitle}
         />
       }
       secondary={
@@ -450,18 +488,34 @@ export function OrdersPage({
           invalidSelectionCount={selected.size - selection.readySelected.length}
           onClear={clearPlan}
           onCreate={() => void create()}
-          readOnly={routeActionsReadOnly}
           routeDate={routeDate}
           routeName={routeName}
           selectedOrders={selection.readySelected}
           setRouteDate={setRouteDate}
           setRouteName={setRouteName}
+          locale={locale}
           totalSelected={selected.size}
         />
       }
       lower={
         <>
-          <div className="route-tabs" aria-label="Order planning filters">
+          <div className="order-mode-tabs" aria-label={t.modeLabel}>
+            <button
+              className={filters.scope === "planning" ? "active" : ""}
+              onClick={() => setFilters({ ...filters, scope: "planning" })}
+              type="button"
+            >
+              {t.planning}
+            </button>
+            <button
+              className={filters.scope === "history" ? "active" : ""}
+              onClick={() => setFilters({ ...filters, scope: "history" })}
+              type="button"
+            >
+              {t.history}
+            </button>
+          </div>
+          <div className="route-tabs" aria-label={t.statusTabsLabel}>
             <button
               className={filters.tab === "all" ? "active" : ""}
               onClick={() =>
@@ -474,7 +528,7 @@ export function OrdersPage({
               }
               type="button"
             >
-              All
+              {t.all}
             </button>
             <button
               className={filters.tab === "unplanned" ? "active" : ""}
@@ -488,7 +542,7 @@ export function OrdersPage({
               }
               type="button"
             >
-              Unplanned
+              {t.unplanned}
             </button>
             <button
               className={filters.tab === "planned" ? "active" : ""}
@@ -497,7 +551,7 @@ export function OrdersPage({
               }
               type="button"
             >
-              Planned
+              {t.planned}
             </button>
             <button
               className={filters.tab === "needs_review" ? "active" : ""}
@@ -511,10 +565,15 @@ export function OrdersPage({
               }
               type="button"
             >
-              Needs Review
+              {t.needsReview}
             </button>
           </div>
-          <FilterBar filters={filters} onChange={setFilters} settings={settings} />
+          <FilterBar
+            filters={filters}
+            locale={locale}
+            onChange={setFilters}
+            settings={settings}
+          />
           <OrderTable
             bulkGeocodeStatus={bulkGeocodeStatus}
             bulkGeocoding={bulkGeocoding}
@@ -527,7 +586,8 @@ export function OrdersPage({
             onToggleDetail={toggleOrderDetail}
             onTogglePlanOrder={togglePlanOrder}
             orders={visibleOrders}
-            readOnly={routeActionsReadOnly}
+            locale={locale}
+            refreshing={refreshingOrders}
             selected={selected}
             setSelected={applyPlanSelection}
             settings={settings}
@@ -541,9 +601,9 @@ export function OrdersPage({
 
 function RoutePlanPanel(input: {
   invalidSelectionCount: number;
+  locale?: string | null;
   onClear(): void;
   onCreate(): void;
-  readOnly?: boolean;
   routeDate: string;
   routeName: string;
   selectedOrders: CanonicalOrderDto[];
@@ -551,29 +611,24 @@ function RoutePlanPanel(input: {
   setRouteName(value: string): void;
   totalSelected: number;
 }): ReactElement {
+  const t = getOrdersCopy(input.locale);
   const canCreate =
-    input.readOnly !== true &&
-    input.selectedOrders.length > 0 &&
-    input.invalidSelectionCount === 0;
+    input.selectedOrders.length > 0 && input.invalidSelectionCount === 0;
   return (
     <div
       className="panel side-panel route-plan-panel"
-      aria-label="New route add plan"
+      aria-label={t.addPlanPanelLabel}
     >
       <div className="panel-heading compact-heading route-plan-header">
         <div>
-          <span className="eyebrow">New route</span>
-          <h2>Add plan</h2>
+          <span className="eyebrow">{t.newRoute}</span>
+          <h2>{t.addPlan}</h2>
         </div>
-        <Badge>{input.selectedOrders.length} orders</Badge>
+        <Badge>{input.selectedOrders.length} {t.orders}</Badge>
       </div>
-      <p className="muted">
-        {input.readOnly === true
-          ? "History scope is read-only. Switch back to planning to create a route."
-          : "Use the map or order list to add ready unplanned orders, then create the route."}
-      </p>
+      <p className="muted">{t.planInstructions}</p>
       <label>
-        Route date
+        {t.routeDate}
         <input
           type="date"
           value={input.routeDate}
@@ -581,7 +636,7 @@ function RoutePlanPanel(input: {
         />
       </label>
       <label>
-        Route name
+        {t.routeName}
         <input
           value={input.routeName}
           onChange={(event) => input.setRouteName(event.target.value)}
@@ -594,19 +649,19 @@ function RoutePlanPanel(input: {
           onClick={input.onCreate}
           type="button"
         >
-          Create route
+          {t.createRoute}
         </button>
         <button
           disabled={input.totalSelected === 0}
           onClick={input.onClear}
           type="button"
         >
-          Clear plan
+          {t.clearPlan}
         </button>
       </div>
-      <div className="route-plan-draft" aria-label="Add plan orders">
+      <div className="route-plan-draft" aria-label={t.addPlanOrdersLabel}>
         {input.selectedOrders.length === 0 ? (
-          <p className="route-plan-empty">Plan is empty.</p>
+          <p className="route-plan-empty">{t.planEmpty}</p>
         ) : (
           input.selectedOrders.map((order, index) => (
             <div className="route-plan-item" key={order.orderId}>
@@ -614,8 +669,8 @@ function RoutePlanPanel(input: {
                 {index + 1}. {order.orderName}
               </strong>
               <small>
-                {order.recipientName ?? "Recipient"} ·{" "}
-                {order.deliveryArea ?? "Area"} · {order.deliveryDate ?? "Date"}
+                {order.recipientName ?? t.recipientFallback} ·{" "}
+                {order.deliveryArea ?? t.areaFallback} · {order.deliveryDate ?? t.dateFallback}
               </small>
             </div>
           ))
@@ -627,44 +682,38 @@ function RoutePlanPanel(input: {
 
 function FilterBar({
   filters,
+  locale,
   onChange,
   settings,
 }: {
   filters: OrderFilterState;
+  locale?: string | null;
   onChange(filters: OrderFilterState): void;
   settings?: StoreSettingsDto | null;
 }): ReactElement {
+  const t = getOrdersCopy(locale);
   const config = normalizeRouteScopeConfig(settings?.routeScopeConfig);
   const serviceTypes = activeRouteScopeValues(config.serviceTypes);
   const deliverySessions = activeRouteScopeValues(config.deliverySessions);
-  const resetFilters = (): void => onChange(createDefaultOrderFilters());
-  const setScope = (scope: OrderScopeFilter): void => {
+  const resetFilters = (): void =>
     onChange({
-      ...filters,
-      health: "",
-      scope,
-      tab:
-        scope === "history"
-          ? "all"
-          : filters.tab === "all"
-            ? "unplanned"
-            : filters.tab,
+      ...createDefaultOrderFilters(),
+      scope: filters.scope,
+      tab: filters.tab,
     });
-  };
   return (
     <article className="panel filter-panel">
-      <label className="filter-field filter-field--scope">
-        Scope
-        <select
-          value={filters.scope}
-          onChange={(event) => setScope(event.target.value as OrderScopeFilter)}
-        >
-          <option value="planning">Planning orders</option>
-          <option value="history">History / all orders</option>
-        </select>
-      </label>
+      <div className="filter-panel-header">
+        <div>
+          <span className="eyebrow">{t.filtersEyebrow}</span>
+          <h3>{t.filtersTitle}</h3>
+        </div>
+        <button onClick={resetFilters} type="button">
+          {t.clearFilters}
+        </button>
+      </div>
       <label className="filter-field filter-field--date">
-        Delivery date
+        {t.deliveryDate}
         <input
           type="date"
           value={filters.deliveryDate}
@@ -674,9 +723,9 @@ function FilterBar({
         />
       </label>
       <label className="filter-field filter-field--area">
-        Area / region
+        {t.areaRegion}
         <input
-          placeholder="Toronto"
+          placeholder={t.areaPlaceholder}
           value={filters.deliveryArea}
           onChange={(event) =>
             onChange({ ...filters, deliveryArea: event.target.value })
@@ -684,115 +733,124 @@ function FilterBar({
         />
       </label>
       <label className="filter-field filter-field--status">
-        Delivery status
+        {t.deliveryStatus}
         <select
           value={filters.deliveryStatus}
           onChange={(event) =>
             onChange({ ...filters, deliveryStatus: event.target.value })
           }
         >
-          <option value="">All</option>
-          <option value="ready">Ready</option>
-          <option value="needs_review">Needs review</option>
-          <option value="completed">Completed</option>
+          <option value="">{t.allOption}</option>
+          <option value="ready">{t.ready}</option>
+          <option value="needs_review">{t.needsReview}</option>
+          <option value="completed">{t.completed}</option>
         </select>
       </label>
       <label className="filter-field filter-field--health">
-        Order health
+        {t.orderHealth}
         <select
           value={filters.health}
           onChange={(event) =>
             onChange({ ...filters, health: event.target.value })
           }
         >
-          <option value="">All</option>
-          <option value="normal">Normal</option>
-          <option value="needs_review">Needs review</option>
+          <option value="">{t.allOption}</option>
+          <option value="normal">{t.normal}</option>
+          <option value="needs_review">{t.needsReview}</option>
         </select>
       </label>
       <label className="filter-field filter-field--service">
-        Service type
+        {t.serviceType}
         <select
           value={filters.serviceType}
           onChange={(event) =>
             onChange({ ...filters, serviceType: event.target.value })
           }
         >
-          <option value="">All</option>
+          <option value="">{t.allOption}</option>
           {serviceTypes.map((option) => (
             <option key={option.value} value={option.value}>
-              {formatFilterOptionLabel(option.label)}
+              {formatFilterOptionLabel(option.label, locale)}
             </option>
           ))}
         </select>
       </label>
       <label className="filter-field filter-field--session">
-        Delivery session
+        {t.deliverySession}
         <select
           value={filters.deliverySession}
           onChange={(event) =>
             onChange({ ...filters, deliverySession: event.target.value })
           }
         >
-          <option value="">All</option>
+          <option value="">{t.allOption}</option>
           {deliverySessions.map((option) => (
             <option key={option.value} value={option.value}>
-              {formatFilterOptionLabel(option.label)}
+              {formatFilterOptionLabel(option.label, locale)}
             </option>
           ))}
         </select>
       </label>
       <label className="filter-field filter-field--search">
-        Search
+        {t.search}
         <input
-          placeholder="#1001, email, phone"
+          placeholder={t.searchPlaceholder}
           value={filters.search}
           onChange={(event) =>
             onChange({ ...filters, search: event.target.value })
           }
         />
       </label>
-      <div className="filter-actions">
-        <button onClick={resetFilters} type="button">
-          Clear filters
-        </button>
-      </div>
     </article>
   );
 }
 
-function formatFilterOptionLabel(value: string): string {
+function formatFilterOptionLabel(value: string, locale: string | null | undefined = 'en-CA'): string {
   const normalized = value.trim();
-  const builtInLabel = new Map<string, string>([
-    ["day", "Day"],
-    ["delivery", "Delivery"],
-    ["evening", "Evening"],
-    ["evening delivery", "Evening Delivery"],
-    ["pickup", "Pickup"],
-  ]).get(normalized.toLowerCase());
+  const labels = resolveLocale(locale) === "ko-KR"
+    ? new Map<string, string>([
+        ["day", "주간"],
+        ["delivery", "배송"],
+        ["evening", "저녁"],
+        ["evening delivery", "저녁 배송"],
+        ["pickup", "픽업"],
+      ])
+    : new Map<string, string>([
+        ["day", "Day"],
+        ["delivery", "Delivery"],
+        ["evening", "Evening"],
+        ["evening delivery", "Evening Delivery"],
+        ["pickup", "Pickup"],
+      ]);
+  const builtInLabel = labels.get(normalized.toLowerCase());
   return builtInLabel ?? normalized;
 }
 
-function formatBulkGeocodeStatus(job: BulkGeocodeJobDto): string {
+function formatBulkGeocodeStatus(job: BulkGeocodeJobDto, locale: string | null | undefined = 'en-CA'): string {
+  const t = getOrdersCopy(locale).bulkStatus;
   const status = job.status;
   const counts = job.counts;
-  const parts = [
-    ["matched", counts.matched],
-    ["attempted", counts.attempted],
-    ["resolved", counts.succeeded],
-    ["failed", counts.failed],
-    ["no address", counts.noAddress],
-    ["skipped by policy", counts.skippedByPolicy],
-    ["already had coordinates", counts.skippedAlreadyGeocoded],
-  ]
+  const countEntries: Array<[string, number | undefined]> = [
+    [t.matched, counts.matched],
+    [t.attempted, counts.attempted],
+    [t.resolved, counts.succeeded],
+    [t.failed, counts.failed],
+    [t.noAddress, counts.noAddress],
+    [t.skippedByPolicy, counts.skippedByPolicy],
+    [t.alreadyHadCoordinates, counts.skippedAlreadyGeocoded],
+  ];
+  const parts = countEntries
     .filter((entry): entry is [string, number] => typeof entry[1] === "number")
     .map(([label, value]) => `${value} ${label}`);
   const suffix = parts.length === 0 ? "" : `: ${parts.join(", ")}`;
   const policy =
     job.policyLimit?.reached === true
-      ? ` Public geocoder cap reached (${job.policyLimit.attemptedLimit ?? "configured"} attempts).`
+      ? t.policyReached(job.policyLimit.attemptedLimit ?? "configured")
       : "";
-  return `Bulk geocode ${humanizeToken(status)}${suffix}.${policy}`;
+  const statusLabel = resolveLocale(locale) === "ko-KR"
+    ? ({ accepted: "접수됨", completed: "완료됨", failed: "실패", running: "진행 중" } as const)[status]
+    : humanizeToken(status);
+  return `${getOrdersCopy(locale).bulkGeocode} ${statusLabel}${suffix}.${policy}`;
 }
 
 function isBulkGeocodeTerminal(job: BulkGeocodeJobDto): boolean {
@@ -805,6 +863,10 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+function captureWindowScroll(): { x: number; y: number } {
+  return { x: window.scrollX, y: window.scrollY };
+}
+
 export function OrderTable(input: {
   bulkGeocodeStatus?: string | null;
   bulkGeocoding?: boolean;
@@ -812,26 +874,28 @@ export function OrderTable(input: {
   diagnosticsByOrder: Record<string, DeliveryMetadataDiagnosticsDto | null>;
   expandedOrderIds?: ReadonlySet<string>;
   loading: boolean;
+  locale?: string | null;
   onBulkGeocode?(): void;
   onCloseDetail?(orderId: string): void;
   onSaveMetadata?(orderId: string, patch: OrderMetadataPatch): Promise<void>;
   onToggleDetail?(orderId: string): void;
   onTogglePlanOrder(orderId: string): void;
   orders: CanonicalOrderDto[];
-  readOnly?: boolean;
+  refreshing?: boolean;
   selected: Set<string>;
   setSelected(selected: Set<string>): void;
   settings?: StoreSettingsDto | null;
   worksetContext?: OrderWorksetContext;
 }): ReactElement {
+  const t = getOrdersCopy(input.locale);
   const worksetContext = input.worksetContext ?? {};
   const worksetSummary = summarizeOrderWorkset(
     input.orders,
     input.selected,
     worksetContext,
+    input.locale,
   );
-  const selectableOrderIds =
-    input.readOnly === true ? [] : worksetSummary.selectableOrderIds;
+  const selectableOrderIds = worksetSummary.selectableOrderIds;
   const visibleOrderIds = input.orders.map((order) => order.orderId);
   const selectedFilteredCount = selectableOrderIds.filter((orderId) =>
     input.selected.has(orderId),
@@ -855,52 +919,41 @@ export function OrderTable(input: {
     else clearFilteredOrders();
   };
 
-  if (input.loading)
+  if (input.loading && input.orders.length === 0)
     return (
       <article className="panel">
-        <p>Loading imported WooCommerce orders…</p>
+        <p>{t.loadingOrders}</p>
       </article>
     );
   return (
     <article className="panel orders-table-panel">
       <div className="panel-heading">
         <div>
-          <span className="eyebrow">Orders</span>
-          <h2>Imported order list</h2>
+          <span className="eyebrow">{t.tableEyebrow}</span>
+          <h2>{t.tableTitle}</h2>
         </div>
         <div className="orders-heading-actions">
-          <Badge>{input.orders.length} orders</Badge>
+          <Badge>{input.orders.length} {t.orders}</Badge>
           <span className="orders-selection-summary">
-            {visibleSelectedCount} selected · {worksetSummary.selectableCount}{" "}
-            selectable · {worksetSummary.unavailableCount} unavailable
+            {t.selectedSummary(visibleSelectedCount, worksetSummary.selectableCount, worksetSummary.unavailableCount)}
           </span>
+          {input.loading || input.refreshing === true ? (
+            <span className="orders-refresh-status" role="status">
+              {t.updating}
+            </span>
+          ) : null}
           <button
-            disabled={visibleSelectedCount === 0}
-            onClick={clearFilteredOrders}
-            type="button"
-          >
-            Clear selection
-          </button>
-          <button
-            disabled={input.bulkGeocoding === true || input.readOnly === true}
+            disabled={input.bulkGeocoding === true}
             onClick={() => input.onBulkGeocode?.()}
             type="button"
-            title={
-              input.readOnly === true ? "History scope is read-only." : undefined
-            }
           >
-            {input.bulkGeocoding === true ? "Bulk geocoding…" : "Bulk geocode"}
+            {input.bulkGeocoding === true ? t.bulkGeocoding : t.bulkGeocode}
           </button>
         </div>
       </div>
-      {input.readOnly === true ? (
+      {worksetSummary.reasonLabels.length === 0 ? null : (
         <p className="orders-workset-note">
-          History scope is read-only. Switch to planning to select orders, bulk
-          geocode, or create routes.
-        </p>
-      ) : worksetSummary.reasonLabels.length === 0 ? null : (
-        <p className="orders-workset-note">
-          Unavailable: {worksetSummary.reasonLabels.join(" · ")}
+          {t.unavailablePrefix} {worksetSummary.reasonLabels.join(" · ")}
         </p>
       )}
       {input.bulkGeocodeStatus === undefined ||
@@ -918,7 +971,7 @@ export function OrderTable(input: {
             <tr>
               <th className="orders-select-col" scope="col">
                 <input
-                  aria-label="Select all eligible orders in current workset"
+                aria-label={t.selectAllEligible}
                   checked={allFilteredSelected}
                   disabled={selectableOrderIds.length === 0}
                   onChange={(event) =>
@@ -926,23 +979,23 @@ export function OrderTable(input: {
                   }
                   type="checkbox"
                 />
-                <span>Select</span>
+                <span>{t.columns.select}</span>
               </th>
-              <th scope="col">Order</th>
-              <th scope="col">Customer</th>
-              <th scope="col">Method</th>
-              <th scope="col">Day</th>
-              <th scope="col">Area</th>
-              <th scope="col">Route</th>
-              <th scope="col">Status</th>
-              <th scope="col">Actions</th>
+              <th scope="col">{t.columns.order}</th>
+              <th scope="col">{t.columns.customer}</th>
+              <th scope="col">{t.columns.method}</th>
+              <th scope="col">{t.columns.day}</th>
+              <th scope="col">{t.columns.area}</th>
+              <th scope="col">{t.columns.route}</th>
+              <th scope="col">{t.columns.status}</th>
+              <th scope="col">{t.columns.actions}</th>
             </tr>
           </thead>
           <tbody>
             {input.orders.length === 0 ? (
               <tr className="orders-empty-row">
                 <td colSpan={ORDERS_TABLE_COLUMN_COUNT}>
-                  No imported orders match the current filters.
+                  {t.noOrders}
                 </td>
               </tr>
             ) : (
@@ -952,12 +1005,12 @@ export function OrderTable(input: {
                   diagnostics={input.diagnosticsByOrder[order.orderId]}
                   expanded={input.expandedOrderIds?.has(order.orderId) ?? false}
                   key={order.orderId}
+                  locale={input.locale}
                   onCloseDetail={input.onCloseDetail}
                   onSaveMetadata={input.onSaveMetadata}
                   onToggleDetail={input.onToggleDetail}
                   onTogglePlanOrder={input.onTogglePlanOrder}
                   order={order}
-                  readOnly={input.readOnly === true}
                   selectedOrders={input.selected}
                   setSelected={input.setSelected}
                   settings={input.settings}
@@ -976,35 +1029,39 @@ function OrderTableRow(input: {
   detailMode: "review" | "edit";
   diagnostics: DeliveryMetadataDiagnosticsDto | null | undefined;
   expanded: boolean;
+  locale?: string | null;
   onCloseDetail?(orderId: string): void;
   onSaveMetadata?(orderId: string, patch: OrderMetadataPatch): Promise<void>;
   onToggleDetail?(orderId: string): void;
   onTogglePlanOrder(orderId: string): void;
   order: CanonicalOrderDto;
-  readOnly?: boolean;
   selectedOrders: Set<string>;
   setSelected(selected: Set<string>): void;
   settings?: StoreSettingsDto | null;
   worksetContext?: OrderWorksetContext;
 }): ReactElement {
   const { order } = input;
+  const t = getOrdersCopy(input.locale);
   const selected = input.selectedOrders.has(order.orderId);
-  const unavailableReasons = getOrderWorksetUnavailableReasons(
-    order,
-    input.worksetContext,
+  const unavailableReasons = formatOrderWorksetUnavailableReasons(
+    getOrderWorksetUnavailableReasons(
+      order,
+      input.worksetContext,
+    ),
+    input.locale,
   );
   const canPlan =
-    input.readOnly !== true &&
     unavailableReasons.length === 0 &&
     isOrderWorksetEligible(order, input.worksetContext);
-  const day = formatDeliveryDayLabel(order);
-  const status = formatOperationalStatus(order);
+  const day = formatDeliveryDayLabel(order, input.locale);
+  const status = formatOperationalStatus(order, input.locale);
   const orderLabel = getOrderAccessibleLabel(order);
-  const planActionLabel = `${
-    selected ? "Remove" : "Add"
-  } order ${orderLabel} ${selected ? "from" : "to"} route plan`;
+  const planActionLabel = t.planOrderAction(
+    selected ? "Remove" : "Add",
+    orderLabel,
+  );
   const detailPanelId = `order-detail-${sanitizeId(order.orderId)}`;
-  const detailLabel = `${input.expanded ? "Hide" : "Show"} details for order ${orderLabel}`;
+  const detailLabel = t.detailToggle(input.expanded, orderLabel);
   return (
     <>
       <tr
@@ -1018,7 +1075,7 @@ function OrderTableRow(input: {
       >
         <td className="orders-select-cell">
           <input
-            aria-label={`Select order ${orderLabel}`}
+            aria-label={t.selectOrder(orderLabel)}
             checked={selected}
             disabled={!canPlan && !selected}
             onChange={() => input.onTogglePlanOrder(order.orderId)}
@@ -1037,12 +1094,12 @@ function OrderTableRow(input: {
             <small className="order-subtle">{order.phone}</small>
           )}
           {order.blockerReasons.length === 0 ? null : (
-            <span className="order-pill order-pill--review">Review</span>
+            <span className="order-pill order-pill--review">{t.review}</span>
           )}
         </td>
         <td>
           <span className="order-compact-value">
-            {formatMethodLabel(order)}
+            {formatMethodLabel(order, input.locale)}
           </span>
         </td>
         <td className="orders-day-cell">
@@ -1055,7 +1112,7 @@ function OrderTableRow(input: {
           <span className="order-compact-value">{formatAreaLabel(order)}</span>
         </td>
         <td>
-          <span className="order-compact-value">{formatRouteLabel(order)}</span>
+          <span className="order-compact-value">{formatRouteLabel(order, input.locale)}</span>
         </td>
         <td>
           <span className={`order-pill ${status.toneClass}`}>
@@ -1079,7 +1136,7 @@ function OrderTableRow(input: {
                   : unavailableReasons.map((reason) => reason.label).join(", ")
               }
             >
-              {selected ? "Remove" : "Add"}
+              {selected ? t.remove : t.add}
             </button>
             <button
               aria-controls={detailPanelId}
@@ -1088,7 +1145,7 @@ function OrderTableRow(input: {
               onClick={() => input.onToggleDetail?.(order.orderId)}
               type="button"
             >
-              Detail
+              {t.detail}
             </button>
           </div>
         </td>
@@ -1102,13 +1159,13 @@ function OrderTableRow(input: {
               initialEditMode={input.detailMode === "edit"}
               onClose={() => input.onCloseDetail?.(order.orderId)}
               onSaveMetadata={
-                input.readOnly === true || input.onSaveMetadata === undefined
+                input.onSaveMetadata === undefined
                   ? undefined
                   : (patch: OrderMetadataPatch) =>
                       input.onSaveMetadata!(order.orderId, patch)
               }
               order={order}
-              readOnly={input.readOnly === true}
+              locale={input.locale}
               settings={input.settings}
             />
           </td>
@@ -1118,27 +1175,28 @@ function OrderTableRow(input: {
   );
 }
 
-export function formatMethodLabel(order: CanonicalOrderDto): string {
-  if (isPresent(order.serviceType)) return humanizeToken(order.serviceType);
+export function formatMethodLabel(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): string {
+  if (isPresent(order.serviceType)) return humanizeToken(order.serviceType, locale);
   if (isPresent(order.deliverySession))
-    return humanizeToken(order.deliverySession);
+    return humanizeToken(order.deliverySession, locale);
   return "—";
 }
 
-export function formatDeliveryDayLabel(order: CanonicalOrderDto): {
+export function formatDeliveryDayLabel(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {
   detail: string | null;
   label: string;
   toneClass: string;
 } {
+  const t = getOrdersCopy(locale);
   if (order.deliveryDate === null) {
     return {
-      detail: formatTimeWindow(order),
-      label: "Review",
+      detail: formatTimeWindow(order, locale),
+      label: t.review,
       toneClass: "order-pill--review",
     };
   }
   const weekday = weekdayCode(order.deliveryDate) ?? order.deliveryDate;
-  const timeWindow = formatTimeWindow(order);
+  const timeWindow = formatTimeWindow(order, locale);
   return {
     detail:
       [order.deliveryDate, timeWindow].filter(isPresent).join(" · ") || null,
@@ -1147,57 +1205,58 @@ export function formatDeliveryDayLabel(order: CanonicalOrderDto): {
   };
 }
 
-export function formatOperationalStatus(order: CanonicalOrderDto): {
+export function formatOperationalStatus(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {
   detail: string | null;
   label: string;
   toneClass: string;
 } {
+  const t = getOrdersCopy(locale);
   if (order.routePlanId !== null || order.planningStatus !== "UNPLANNED") {
     return {
-      detail: order.routePlanName ?? humanizeToken(order.planningStatus),
-      label: "Planned",
+      detail: order.routePlanName ?? humanizeToken(order.planningStatus, locale),
+      label: t.statusLabels.planned,
       toneClass: "order-pill--neutral",
     };
   }
-  const blockerLabel = mostSpecificBlockerLabel(order);
+  const blockerLabel = mostSpecificBlockerLabel(order, locale);
   if (blockerLabel !== null) {
     return {
-      detail: geocodeDetail(order),
+      detail: geocodeDetail(order, locale),
       label: blockerLabel,
       toneClass: "order-pill--review",
     };
   }
   if (order.deliveryDate === null) {
     return {
-      detail: geocodeDetail(order),
-      label: "Missing delivery date",
+      detail: geocodeDetail(order, locale),
+      label: t.statusLabels.missingDeliveryDate,
       toneClass: "order-pill--review",
     };
   }
   if (!hasResolvedCoordinates(order)) {
     const canGeocode = hasGeocodableAddress(order);
     return {
-      detail: canGeocode ? "use bulk geocode" : "Enter address or coordinates",
-      label: canGeocode ? "Need coordinates" : "Missing address",
+      detail: canGeocode ? t.statusDetails.useBulkGeocode : t.statusDetails.enterAddressOrCoordinates,
+      label: canGeocode ? t.statusLabels.needCoordinates : t.statusLabels.missingAddress,
       toneClass: "order-pill--review",
     };
   }
   if (order.metadataResolved !== true)
     return {
-      detail: geocodeDetail(order),
-      label: "Metadata review",
+      detail: geocodeDetail(order, locale),
+      label: t.statusLabels.metadataReview,
       toneClass: "order-pill--review",
     };
   if (order.routeEligible === true) {
     return {
-      detail: geocodeDetail(order),
-      label: "Ready",
+      detail: geocodeDetail(order, locale),
+      label: t.statusLabels.ready,
       toneClass: "order-pill--ready",
     };
   }
   return {
-    detail: "Review route constraints",
-    label: "Not route eligible",
+    detail: t.statusDetails.reviewRouteConstraints,
+    label: t.statusLabels.notRouteEligible,
     toneClass: "order-pill--neutral",
   };
 }
@@ -1229,99 +1288,106 @@ function formatAreaLabel(order: CanonicalOrderDto): string {
   );
 }
 
-function formatRouteLabel(order: CanonicalOrderDto): string {
+function formatRouteLabel(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): string {
   if (order.routePlanName !== null) return order.routePlanName;
-  if (order.planningStatus === "UNPLANNED") return "Unplanned";
-  return humanizeToken(order.planningStatus);
+  if (order.planningStatus === "UNPLANNED") return getOrdersCopy(locale).unplanned;
+  return humanizeToken(order.planningStatus, locale);
 }
 
-export function getRouteRepairPrompt(order: CanonicalOrderDto): {
+export function getRouteRepairPrompt(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {
   canGeocode: boolean;
   routeDetail: string;
   statusDetail: string | null;
   statusLabel: string;
 } {
+  const t = getOrdersCopy(locale);
   if (order.routePlanId !== null || order.planningStatus !== "UNPLANNED") {
     return {
       canGeocode: false,
-      routeDetail: "Already planned",
-      statusDetail: order.routePlanName ?? humanizeToken(order.planningStatus),
-      statusLabel: "Planned",
+      routeDetail: t.statusLabels.alreadyPlanned,
+      statusDetail: order.routePlanName ?? humanizeToken(order.planningStatus, locale),
+      statusLabel: t.statusLabels.planned,
     };
   }
   if (isRoutePlanEligible(order)) {
     return {
       canGeocode: false,
-      routeDetail: "Route eligible",
+      routeDetail: t.statusLabels.routeEligible,
       statusDetail: null,
-      statusLabel: "Ready",
+      statusLabel: t.statusLabels.ready,
     };
   }
   if (order.metadataResolved !== true) {
     return {
       canGeocode: false,
-      routeDetail: "Needs metadata",
-      statusDetail: geocodeDetail(order),
-      statusLabel: "Metadata review",
+      routeDetail: t.statusLabels.needsMetadata,
+      statusDetail: geocodeDetail(order, locale),
+      statusLabel: t.statusLabels.metadataReview,
     };
   }
   if (!hasResolvedCoordinates(order)) {
     const canGeocode = hasGeocodableAddress(order);
     return {
       canGeocode,
-      routeDetail: canGeocode ? "Need coordinates" : "Need address",
-      statusDetail: canGeocode ? "use bulk geocode" : "Enter address or coordinates",
-      statusLabel: canGeocode ? "Need coordinates" : "Missing address",
+      routeDetail: canGeocode ? t.statusLabels.needCoordinates : t.statusLabels.needAddress,
+      statusDetail: canGeocode
+        ? t.statusDetails.useBulkGeocode
+        : t.statusDetails.enterAddressOrCoordinates,
+      statusLabel: canGeocode ? t.statusLabels.needCoordinates : t.statusLabels.missingAddress,
     };
   }
   return {
     canGeocode: false,
-    routeDetail: "Not route eligible",
-    statusDetail: "Review route constraints",
-    statusLabel: "Not route eligible",
+    routeDetail: t.statusLabels.notRouteEligible,
+    statusDetail: t.statusDetails.reviewRouteConstraints,
+    statusLabel: t.statusLabels.notRouteEligible,
   };
 }
 
-function geocodeDetail(order: CanonicalOrderDto): string | null {
+function geocodeDetail(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): string | null {
   if (
     order.geocodeStatus === "RESOLVED" ||
     order.geocodeStatus === "NOT_REQUIRED"
   )
     return null;
-  const code = order.geocodeDiagnostics?.code ?? order.geocodeDiagnostics?.messageKey ?? null;
-  if (code !== null) return geocodeMessageForCode(code);
-  return orderDetailLabels.geocodeStatus[order.geocodeStatus];
+  const code =
+    order.geocodeDiagnostics?.code ??
+    order.geocodeDiagnostics?.messageKey ??
+    null;
+  if (code !== null) return geocodeMessageForCode(code, locale);
+  return getOrderDetailLabels(locale).geocodeStatus[order.geocodeStatus];
 }
 
-function geocodeMessageForCode(code: string): string {
+function geocodeMessageForCode(code: string, locale: string | null | undefined = 'en-CA'): string {
+  const t = getOrdersCopy(locale).geocodeMessages;
   switch (code) {
     case "BLANK_ADDRESS":
-      return "Address is missing or incomplete";
+      return t.blankAddress;
     case "GEOCODER_NO_RESULT":
-      return "use bulk geocode";
+      return t.noResult;
     case "GEOCODER_PROVIDER_RATE_LIMITED":
-      return "Geocoder is rate limited; try bulk geocode later";
+      return t.rateLimited;
     case "GEOCODER_PROVIDER_TIMEOUT":
-      return "Geocoder timed out";
+      return t.timeout;
     case "GEOCODER_PROVIDER_HTTP_ERROR":
     case "GEOCODER_PROVIDER_ERROR":
-      return "Geocoder provider failed";
+      return t.providerFailed;
     case "GEOCODER_NOT_CONFIGURED":
     case "GEOCODER_DISABLED":
-      return "Geocoder is not configured";
+      return t.notConfigured;
     case "GEOCODER_INVALID_RESULT":
-      return "Geocoder returned an invalid result";
+      return t.invalidResult;
     default:
-      return humanizeToken(code);
+      return humanizeToken(code, locale);
   }
 }
 
-function formatTimeWindow(order: CanonicalOrderDto): string | null {
+function formatTimeWindow(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): string | null {
   if (isPresent(order.timeWindowStart) && isPresent(order.timeWindowEnd)) {
     return `${formatTime(order.timeWindowStart)}–${formatTime(order.timeWindowEnd)}`;
   }
   if (isPresent(order.deliverySession))
-    return humanizeToken(order.deliverySession);
+    return humanizeToken(order.deliverySession, locale);
   return null;
 }
 
@@ -1367,7 +1433,25 @@ function formatTime(value: string): string {
     : `${hour12}:${String(minute).padStart(2, "0")}${period}`;
 }
 
-function humanizeToken(value: string): string {
+function humanizeToken(value: string, locale: string | null | undefined = 'en-CA'): string {
+  const normalized = value.trim().toLowerCase().replace(/[_-]+/gu, " ");
+  const builtInLabel = new Map<string, string>(
+    resolveLocale(locale) === "ko-KR"
+      ? [
+          ["day", "주간"],
+          ["delivery", "배송"],
+          ["evening", "저녁"],
+          ["evening delivery", "저녁 배송"],
+          ["pickup", "픽업"],
+          ["planned", "배정됨"],
+          ["unplanned", "미배정"],
+          ["completed", "완료됨"],
+          ["cancelled", "취소됨"],
+          ["needs review", "리뷰 필요"],
+        ]
+      : [],
+  ).get(normalized);
+  if (builtInLabel !== undefined) return builtInLabel;
   return value
     .toLowerCase()
     .split(/[_\s-]+/u)
@@ -1398,12 +1482,13 @@ function hasGeocodableAddress(order: CanonicalOrderDto): boolean {
   ].some(isPresent);
 }
 
-function mostSpecificBlockerLabel(order: CanonicalOrderDto): string | null {
+function mostSpecificBlockerLabel(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): string | null {
+  const t = getOrdersCopy(locale);
   const blockers = new Set(order.blockerReasons);
   if (blockers.has("missing_delivery_date") || order.deliveryDate === null)
-    return "Missing delivery date";
-  if (blockers.has("missing_delivery_area")) return "Missing delivery area";
-  if (blockers.has("missing_route_scope")) return "Missing route scope";
+    return t.statusLabels.missingDeliveryDate;
+  if (blockers.has("missing_delivery_area")) return t.statusLabels.missingDeliveryArea;
+  if (blockers.has("missing_route_scope")) return t.statusLabels.missingRouteScope;
   if (
     [
       "delivery_day_unparsed",
@@ -1412,32 +1497,34 @@ function mostSpecificBlockerLabel(order: CanonicalOrderDto): string | null {
       "delivery_date_weekday_unverified",
     ].some((reason) => blockers.has(reason))
   )
-    return "Delivery day unclear";
-  if (blockers.has("missing_time_window")) return "Missing time window";
+    return t.statusLabels.deliveryDayUnclear;
+  if (blockers.has("missing_time_window")) return t.statusLabels.missingTimeWindow;
   if (
     ["delivery_time_window_unparsed", "ambiguous_delivery_time_window"].some(
       (reason) => blockers.has(reason),
     )
   )
-    return "Delivery time unclear";
+    return t.statusLabels.deliveryTimeUnclear;
   if (blockers.has("missing_coordinates"))
-    return hasGeocodableAddress(order) ? "Need coordinates" : "Missing address";
+    return hasGeocodableAddress(order) ? t.statusLabels.needCoordinates : t.statusLabels.missingAddress;
   return null;
 }
 
-export function formatBlockerReason(reason: string): string {
+export function formatBlockerReason(reason: string, locale: string | null | undefined = 'en-CA'): string {
+  const labels = getOrderDetailLabels(locale).blockerReasons;
   return (
-    orderDetailLabels.blockerReasons[
-      reason as keyof typeof orderDetailLabels.blockerReasons
-    ] ?? "Review route constraints"
+    labels[
+      reason as keyof typeof labels
+    ] ?? getOrdersCopy(locale).routeConstraintFallback
   );
 }
 
-export function formatDiagnosticPathLabel(path: string): string {
+export function formatDiagnosticPathLabel(path: string, locale: string | null | undefined = 'en-CA'): string {
+  const labels = getOrderDetailLabels(locale).diagnosticPaths;
   return (
-    orderDetailLabels.diagnosticPaths[
-      path as keyof typeof orderDetailLabels.diagnosticPaths
-    ] ?? "Order metadata"
+    labels[
+      path as keyof typeof labels
+    ] ?? getOrdersCopy(locale).diagnosticMetadata
   );
 }
 
@@ -1473,40 +1560,40 @@ function OrderDetailPanel({
   onClose,
   onSaveMetadata,
   order,
-  readOnly,
+  locale,
   settings,
 }: {
   diagnostics: DeliveryMetadataDiagnosticsDto | null | undefined;
   id: string;
   initialEditMode?: boolean;
+  locale?: string | null;
   onClose(): void;
   onSaveMetadata?(patch: OrderMetadataPatch): Promise<void>;
   order: CanonicalOrderDto;
-  readOnly?: boolean;
   settings?: StoreSettingsDto | null;
 }): ReactElement {
-  const canEditMetadata = readOnly !== true;
-  const canPersistMetadata = canEditMetadata && onSaveMetadata !== undefined;
-  const [editMode, setEditMode] = useState(
-    canEditMetadata && (initialEditMode ?? false),
-  );
+  const canPersistMetadata = onSaveMetadata !== undefined;
+  const [editMode, setEditMode] = useState(initialEditMode ?? false);
   const [draft, setDraft] = useState<OrderMetadataPatch>(() =>
     metadataPatchFromOrder(order),
   );
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const onSave = onSaveMetadata;
-  const status = formatOperationalStatus(order);
-  const blockers = order.blockerReasons.map(formatBlockerReason);
+  const t = getOrdersCopy(locale);
+  const status = formatOperationalStatus(order, locale);
+  const blockers = order.blockerReasons.map((reason) =>
+    formatBlockerReason(reason, locale),
+  );
   const editableFields = useMemo(
-    () => buildEditableMetadataFields(settings),
-    [settings],
+    () => buildEditableMetadataFields(settings, locale),
+    [locale, settings],
   );
   const repairFields = getOrderRepairFields(order, editableFields);
   const hasActionableRepair = repairFields.length > 0;
-  const repairTitle = formatRepairCardTitle(repairFields);
-  const addressSummary = formatAddressSummary(order);
-  const coordinateSummary = formatCoordinateSummary(order);
+  const repairTitle = formatRepairCardTitle(repairFields, locale);
+  const addressSummary = formatAddressSummary(order, locale);
+  const coordinateSummary = formatCoordinateSummary(order, locale);
 
   const setDraftField = (
     key: keyof OrderMetadataPatch,
@@ -1550,23 +1637,23 @@ function OrderDetailPanel({
     >
       <div className="order-detail-header">
         <div>
-          <span className="eyebrow">Detail</span>
-          <h3 id={`${panelId}-heading`}>Order details for {order.orderName}</h3>
+          <span className="eyebrow">{t.detailEyebrow}</span>
+          <h3 id={`${panelId}-heading`}>{t.detailsFor(order.orderName)}</h3>
         </div>
         <div className="orders-actions">
-          {editMode || !canEditMetadata ? null : (
+          {editMode ? null : (
             <button onClick={() => setEditMode(true)} type="button">
-              Edit all fields
+              {t.editAllFields}
             </button>
           )}
           <button onClick={onClose} type="button">
-            Close
+            {t.close}
           </button>
         </div>
       </div>
 
       <section
-        aria-label={hasActionableRepair ? "Fields to fix" : "Order readiness"}
+        aria-label={hasActionableRepair ? t.fieldsToFix : t.orderReadiness}
         className={[
           "order-detail-repair-card",
           hasActionableRepair ? "order-detail-repair-card--attention" : "",
@@ -1576,20 +1663,18 @@ function OrderDetailPanel({
       >
         <div className="order-detail-repair-copy">
           <span className="eyebrow">
-            {hasActionableRepair ? "Needs review" : "Order summary"}
+            {hasActionableRepair ? t.needsReview : t.orderSummary}
           </span>
           <h4>{hasActionableRepair ? repairTitle : status.label}</h4>
           <p>
             {hasActionableRepair
-              ? readOnly === true
-                ? "History scope is read-only. Switch to planning to edit this order."
-                : "Update the highlighted field, then save this order."
-              : (status.detail ?? "No required fixes for this order.")}
+              ? t.repairInstruction
+              : (status.detail ?? t.noFixes)}
           </p>
           {blockers.length === 0 ? null : (
             <div
               className="order-detail-repair-pills"
-              aria-label="Current blockers"
+              aria-label={t.currentBlockers}
             >
               {blockers.map((blocker) => (
                 <span className="order-pill order-pill--review" key={blocker}>
@@ -1599,7 +1684,7 @@ function OrderDetailPanel({
             </div>
           )}
         </div>
-        {hasActionableRepair && canEditMetadata ? (
+        {hasActionableRepair ? (
           <form className="order-detail-repair-form" onSubmit={submitDraft}>
             <div className="order-detail-repair-fields">
               {repairFields.map((field) => (
@@ -1608,6 +1693,7 @@ function OrderDetailPanel({
                   idPrefix={panelId}
                   instance="repair"
                   key={field.key}
+                  locale={locale}
                   onChange={setDraftField}
                   value={draft[field.key]}
                 />
@@ -1620,7 +1706,7 @@ function OrderDetailPanel({
             )}
             <div className="orders-actions">
               <button disabled={repairSaveDisabled} type="submit">
-                {saving ? "Saving…" : "Save fixes"}
+                {saving ? t.saving : t.saveFixes}
               </button>
             </div>
           </form>
@@ -1629,47 +1715,51 @@ function OrderDetailPanel({
 
       <div className="order-detail-summary-grid">
         <section className="order-detail-summary-card">
-          <h4>Destination</h4>
+          <h4>{t.destination}</h4>
           <p>{addressSummary.primary}</p>
           {addressSummary.secondary === null ? null : (
             <small>{addressSummary.secondary}</small>
           )}
         </section>
         <section className="order-detail-summary-card">
-          <h4>Coordinates</h4>
+          <h4>{t.coordinates}</h4>
           <p>{coordinateSummary.primary}</p>
           {coordinateSummary.secondary === null ? null : (
             <small>{coordinateSummary.secondary}</small>
           )}
         </section>
         <section className="order-detail-summary-card">
-          <h4>Delivery</h4>
+          <h4>{t.delivery}</h4>
           <dl className="order-detail-mini-list">
             <div>
-              <dt>Date</dt>
-              <dd>{order.deliveryDate ?? "Required"}</dd>
+              <dt>{t.date}</dt>
+              <dd>{order.deliveryDate ?? t.required}</dd>
             </div>
             <div>
-              <dt>Area</dt>
-              <dd>{order.deliveryArea ?? "Required"}</dd>
+              <dt>{t.area}</dt>
+              <dd>{order.deliveryArea ?? t.required}</dd>
             </div>
             <div>
-              <dt>Service</dt>
+              <dt>{t.service}</dt>
               <dd>
-                {order.serviceType ?? order.deliverySession ?? "Required"}
+                {isPresent(order.serviceType)
+                  ? humanizeToken(order.serviceType, locale)
+                  : isPresent(order.deliverySession)
+                    ? humanizeToken(order.deliverySession, locale)
+                    : t.required}
               </dd>
             </div>
             <div>
-              <dt>Window</dt>
-              <dd>{formatTimeWindow(order) ?? "Review if required"}</dd>
+              <dt>{t.window}</dt>
+              <dd>{formatTimeWindow(order, locale) ?? t.reviewIfRequired}</dd>
             </div>
           </dl>
         </section>
       </div>
 
-      {editMode && canEditMetadata ? (
+      {editMode ? (
         <form className="order-detail-edit" onSubmit={submitDraft}>
-          <h4>Edit all order fields</h4>
+          <h4>{t.editAllOrderFields}</h4>
           {saveError === null ? null : (
             <p className="order-detail-error" role="alert">
               {saveError}
@@ -1682,6 +1772,7 @@ function OrderDetailPanel({
                 idPrefix={panelId}
                 instance="edit"
                 key={field.key}
+                locale={locale}
                 onChange={setDraftField}
                 value={draft[field.key]}
               />
@@ -1689,29 +1780,29 @@ function OrderDetailPanel({
           </div>
           <div className="orders-actions">
             <button disabled={!canPersistMetadata || saving} type="submit">
-              {saving ? "Saving…" : "Save"}
+              {saving ? t.saving : t.save}
             </button>
             <button onClick={onClose} type="button">
-              Cancel
+              {t.cancel}
             </button>
           </div>
         </form>
       ) : null}
       <details className="order-technical-diagnostics">
-        <summary>Technical diagnostics</summary>
+        <summary>{t.technicalDiagnostics}</summary>
         {diagnostics === undefined ? (
-          <p>Loading order detail…</p>
+          <p>{t.loadingDetail}</p>
         ) : diagnostics === null ? (
-          <p>No saved detail diagnostics yet.</p>
+          <p>{t.noDiagnostics}</p>
         ) : (
           <>
-            <p>Status: {humanizeToken(diagnostics.status)}</p>
+            <p>{t.diagnosticsStatus}: {humanizeToken(diagnostics.status, locale)}</p>
             <ul>
               {diagnostics.candidates.slice(0, 8).map((candidate) => (
                 <li key={`${candidate.path}-${candidate.valuePreview}`}>
-                  {formatDiagnosticPathLabel(candidate.path)}:{" "}
+                  {formatDiagnosticPathLabel(candidate.path, locale)}:{" "}
                   {candidate.valuePreview}
-                  <small> · {humanizeToken(candidate.parseStatus)}</small>
+                  <small> · {humanizeToken(candidate.parseStatus, locale)}</small>
                 </li>
               ))}
             </ul>
@@ -1726,15 +1817,18 @@ function OrderDetailFieldInput({
   field,
   idPrefix,
   instance,
+  locale,
   onChange,
   value,
 }: {
   field: EditableMetadataField;
   idPrefix: string;
   instance: "repair" | "edit";
+  locale?: string | null;
   onChange(key: keyof OrderMetadataPatch, value: string): void;
   value: string | null;
 }): ReactElement {
+  const t = getOrdersCopy(locale);
   const [helpOpen, setHelpOpen] = useState(false);
   const inputId = `${idPrefix}-${instance}-${field.key}`;
   const helpId = `${inputId}-help`;
@@ -1755,7 +1849,7 @@ function OrderDetailFieldInput({
             <button
               aria-describedby={helpId}
               aria-expanded={helpOpen}
-              aria-label={`${field.label} help`}
+              aria-label={t.fieldHelp(field.label)}
               className={`order-detail-field-help${helpOpen ? " is-open" : ""}`}
               onBlur={() => setHelpOpen(false)}
               onClick={() => setHelpOpen((current) => !current)}
@@ -1788,6 +1882,7 @@ function OrderDetailFieldInput({
           field={field}
           inputId={inputId}
           labelId={labelId}
+          locale={locale}
           onChange={onChange}
           value={selectedChoiceValue}
         />
@@ -1800,16 +1895,19 @@ export function OrderDetailChoiceDropdown({
   field,
   inputId,
   labelId,
+  locale,
   onChange,
   value,
 }: {
   field: EditableMetadataField;
   inputId: string;
   labelId: string;
+  locale?: string | null;
   onChange(key: keyof OrderMetadataPatch, value: string): void;
   value: string | null;
 }): ReactElement {
   const choices = field.choices ?? [];
+  const t = getOrdersCopy(locale);
   return (
     <select
       aria-labelledby={labelId}
@@ -1821,7 +1919,7 @@ export function OrderDetailChoiceDropdown({
       value={value ?? ""}
     >
       <option disabled value="">
-        Select {field.label.toLowerCase()}
+        {t.selectChoice(field.label)}
       </option>
       {choices.map((choice) => (
         <option
@@ -1864,7 +1962,8 @@ function hasUnselectedRequiredChoiceField(
 ): boolean {
   return fields.some(
     (field) =>
-      field.choices !== undefined && !isActiveChoiceValue(field, draft[field.key]),
+      field.choices !== undefined &&
+      !isActiveChoiceValue(field, draft[field.key]),
   );
 }
 
@@ -1926,7 +2025,8 @@ function getOrderRepairFields(
   return fields;
 }
 
-function formatRepairCardTitle(fields: EditableMetadataField[]): string {
+function formatRepairCardTitle(fields: EditableMetadataField[], locale: string | null | undefined = 'en-CA'): string {
+  const t = getOrdersCopy(locale).repairTitles;
   const keys = new Set(fields.map((field) => field.key));
   const categories = [
     keys.has("deliveryDate") ? "deliveryDate" : null,
@@ -1946,23 +2046,24 @@ function formatRepairCardTitle(fields: EditableMetadataField[]): string {
       : null,
   ].filter(isPresent);
 
-  if (categories.length > 1) return "Fix required order details";
-  if (keys.has("deliveryDate")) return "Delivery date required";
-  if (keys.has("deliveryArea")) return "Delivery area required";
+  if (categories.length > 1) return t.aggregate;
+  if (keys.has("deliveryDate")) return t.deliveryDate;
+  if (keys.has("deliveryArea")) return t.deliveryArea;
   if (keys.has("serviceType") || keys.has("deliverySession")) {
-    return "Route scope required";
+    return t.routeScope;
   }
   if (keys.has("timeWindowStart") || keys.has("timeWindowEnd")) {
-    return "Time window needs review";
+    return t.timeWindow;
   }
-  if (categories[0] === "address") return "Destination address required";
-  return "Fix required fields";
+  if (categories[0] === "address") return t.address;
+  return t.fallback;
 }
 
-function formatAddressSummary(order: CanonicalOrderDto): {
+function formatAddressSummary(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {
   primary: string;
   secondary: string | null;
 } {
+  const t = getOrdersCopy(locale);
   const street = [
     order.shippingAddress.address1,
     order.shippingAddress.address2,
@@ -1978,30 +2079,31 @@ function formatAddressSummary(order: CanonicalOrderDto): {
     .filter(isPresent)
     .join(", ");
   return {
-    primary: street || "Address required",
+    primary: street || t.addressRequired,
     secondary: locality || null,
   };
 }
 
-function formatCoordinateSummary(order: CanonicalOrderDto): {
+function formatCoordinateSummary(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {
   primary: string;
   secondary: string | null;
 } {
+  const t = getOrdersCopy(locale);
   if (hasResolvedCoordinates(order)) {
     return {
       primary: `${order.coordinates.latitude?.toFixed(6)}, ${order.coordinates.longitude?.toFixed(6)}`,
-      secondary: "Ready for the map",
+      secondary: t.coordinatesReady,
     };
   }
   if (hasGeocodableAddress(order)) {
     return {
-      primary: "Coordinates needed",
-      secondary: "Use Bulk geocode from the order list.",
+      primary: t.coordinatesNeeded,
+      secondary: t.useBulkGeocodeFromList,
     };
   }
   return {
-    primary: "Address required",
-    secondary: "Enter enough destination detail before geocoding.",
+    primary: t.addressRequired,
+    secondary: t.enterAddressBeforeGeocoding,
   };
 }
 
@@ -2012,12 +2114,14 @@ function sanitizeId(value: string): string {
 export function buildRouteDraftSelection(
   orders: CanonicalOrderDto[],
   requestedSelectedOrderIds: ReadonlySet<string>,
+  locale: string | null | undefined = 'en-CA',
 ): {
   deliveryDate: string | null;
   orderIds: string[];
   routeScopeKey: string | null;
   warning: string | null;
 } {
+  const t = getOrdersCopy(locale).routeDraft;
   const ordersById = new Map(orders.map((order) => [order.orderId, order]));
   const requestedOrders = [...requestedSelectedOrderIds]
     .map((orderId) => ordersById.get(orderId))
@@ -2035,7 +2139,7 @@ export function buildRouteDraftSelection(
       warning:
         requestedSelectedOrderIds.size === 0
           ? null
-          : "Select route-ready orders with a delivery date and route scope.",
+          : t.selectReady,
     };
   }
 
@@ -2048,7 +2152,7 @@ export function buildRouteDraftSelection(
   const warning =
     selectedOrders.length === requestedOrders.length
       ? null
-      : "Only orders with the same delivery date and delivery session were added to the plan.";
+      : t.onlySameScope;
 
   return {
     deliveryDate: anchor.deliveryDate,
@@ -2061,16 +2165,18 @@ export function buildRouteDraftSelection(
 export function getRouteDraftCreateBlocker(
   selectedOrders: CanonicalOrderDto[],
   routeDate: string,
+  locale: string | null | undefined = 'en-CA',
 ): string | null {
+  const t = getOrdersCopy(locale).routeDraft;
   if (selectedOrders.length === 0) return null;
   if (selectedOrders.some((order) => order.deliveryDate !== routeDate)) {
-    return "Route date must match the selected orders delivery date.";
+    return t.dateMustMatch;
   }
   const scopeKeys = new Set(
     selectedOrders.map((order) => getRouteDraftScopeKey(order)),
   );
   if (scopeKeys.size !== 1 || scopeKeys.has(null)) {
-    return "Selected orders must share the same delivery date and delivery session.";
+    return t.selectedMustShareScope;
   }
   return null;
 }

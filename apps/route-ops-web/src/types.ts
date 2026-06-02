@@ -28,6 +28,7 @@ export type BootstrapPayload = {
     styleUrl: string | null;
   };
   mode: AppMode;
+  locale?: AppLocale;
   routerConfig: {
     coverage?: string | null;
     provider?: "osrm" | null;

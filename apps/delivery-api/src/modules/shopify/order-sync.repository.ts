@@ -788,14 +788,17 @@ export class PrismaOrderSyncRepository {
       const stop = order.deliveryStops?.[0] ?? null;
       const shippingAddress = readShippingAddress(order.shippingAddress, stop);
       const existingReasons = readStringArray(fact?.reviewReasons) ?? [];
-      const reviewReasons = recomputeGeocodeFailureReviewReasons(existingReasons, {
-        deliveryArea: fact?.deliveryArea ?? null,
-        deliveryDate: formatDateOnlyNullable(fact?.deliveryDate ?? null),
-        geocodeStatus: input.geocodeStatus,
-        hasAddress: hasAddressFields(shippingAddress),
-        routeScopeKey: fact?.routeScopeKey ?? null,
-        serviceType: readServiceType(fact?.serviceType),
-      });
+      const reviewReasons = recomputeGeocodeFailureReviewReasons(
+        existingReasons,
+        {
+          deliveryArea: fact?.deliveryArea ?? null,
+          deliveryDate: formatDateOnlyNullable(fact?.deliveryDate ?? null),
+          geocodeStatus: input.geocodeStatus,
+          hasAddress: hasAddressFields(shippingAddress),
+          routeScopeKey: fact?.routeScopeKey ?? null,
+          serviceType: readServiceType(fact?.serviceType),
+        },
+      );
       const readiness: CanonicalOrderReadiness =
         input.geocodeStatus === "RESOLVED" &&
         reviewReasons.length === 0 &&
@@ -1200,12 +1203,20 @@ function matchesRouteOpsScopeAndTab(
   filters: ListCanonicalOrdersFilters,
 ): boolean {
   if (filters.routeOpsScope === undefined) return true;
-  if (filters.routeOpsScope === "history") return true;
-  const today = filters.routeOpsToday;
-  if (today === undefined || !matchesRouteOpsPlanningScope(row, today)) {
-    return false;
+  if (filters.routeOpsScope === "planning") {
+    const today = filters.routeOpsToday;
+    if (today === undefined || !matchesRouteOpsPlanningScope(row, today)) {
+      return false;
+    }
   }
-  switch (filters.routeOpsTab ?? "all") {
+  return matchesRouteOpsTabOrAll(row, filters.routeOpsTab ?? "all");
+}
+
+function matchesRouteOpsTabOrAll(
+  row: CanonicalOrderRow,
+  tab: NonNullable<ListCanonicalOrdersFilters["routeOpsTab"]>,
+): boolean {
+  switch (tab) {
     case "all":
       return (
         matchesRouteOpsTab(row, "unplanned") ||
@@ -1236,7 +1247,11 @@ function matchesRouteOpsTab(
 ): boolean {
   if (tab === "planned") return isRouteOpsPlanned(row);
   if (tab === "needs_review") return isRouteOpsReview(row);
-  return !isRouteOpsPlanned(row) && row.routeEligible === true;
+  return (
+    !isRouteOpsTerminal(row) &&
+    !isRouteOpsPlanned(row) &&
+    row.routeEligible === true
+  );
 }
 
 function isRouteOpsTerminal(row: CanonicalOrderRow): boolean {
@@ -1253,6 +1268,7 @@ function isRouteOpsPlanned(row: CanonicalOrderRow): boolean {
 
 function isRouteOpsReview(row: CanonicalOrderRow): boolean {
   return (
+    isRouteOpsTerminal(row) ||
     deriveOrderHealth(row) === "needs_review" ||
     row.reviewReasons.length > 0 ||
     row.readiness !== "READY_TO_PLAN" ||
@@ -1608,7 +1624,9 @@ function applyCorrectedFactFields<
         }
       : {}),
     ...(fields.has("routeScopeKey")
-      ? { routeScopeKey: correctedScope.routeScopeKey ?? existing.routeScopeKey }
+      ? {
+          routeScopeKey: correctedScope.routeScopeKey ?? existing.routeScopeKey,
+        }
       : {}),
     ...(fields.has("serviceType")
       ? { serviceType: readServiceType(existing.serviceType) }
@@ -1708,8 +1726,7 @@ function recomputeReviewReasons(
       "ambiguous_delivery_time_window",
       "delivery_time_window_unparsed",
     ];
-    if (timeWindowReasons.includes(reason))
-      return !input.timeWindowCorrected;
+    if (timeWindowReasons.includes(reason)) return !input.timeWindowCorrected;
     return true;
   });
   if (!input.hasAddress) kept.push("missing_address");
@@ -1750,12 +1767,13 @@ function recomputeGeocodeFailureReviewReasons(
     serviceType: string | null;
   },
 ): string[] {
-  const kept = current.filter((reason) =>
-    reason !== "missing_address" &&
-    reason !== "missing_coordinates" &&
-    reason !== "missing_delivery_area" &&
-    reason !== "missing_delivery_date" &&
-    reason !== "missing_route_scope",
+  const kept = current.filter(
+    (reason) =>
+      reason !== "missing_address" &&
+      reason !== "missing_coordinates" &&
+      reason !== "missing_delivery_area" &&
+      reason !== "missing_delivery_date" &&
+      reason !== "missing_route_scope",
   );
   if (!input.hasAddress) kept.push("missing_address");
   if (input.geocodeStatus !== "RESOLVED") kept.push("missing_coordinates");
@@ -2116,8 +2134,7 @@ function buildGeocodeDiagnostics(
   const corrections = objectOrNull(diagnostics?.routeOpsCorrections);
   const correctionGeocode = objectOrNull(corrections?.geocode);
   const ingestGeocode = objectOrNull(diagnostics?.ingestGeocode);
-  const source =
-    routeOpsGeocode ?? correctionGeocode ?? ingestGeocode ?? null;
+  const source = routeOpsGeocode ?? correctionGeocode ?? ingestGeocode ?? null;
   if (source === null) return null;
   return {
     attemptCount: readNumber(source.attemptCount),
@@ -2267,7 +2284,8 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
       routeScopeKey,
       serviceType,
     }) ?? null;
-  const geocodeDiagnostics = buildGeocodeDiagnostics(fact?.mappingDiagnostics) ?? null;
+  const geocodeDiagnostics =
+    buildGeocodeDiagnostics(fact?.mappingDiagnostics) ?? null;
 
   return {
     cancelledAt: formatDateTime(order.cancelledAt),
@@ -2292,7 +2310,9 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     financialStatus: order.financialStatus,
     fulfillmentStatus: order.fulfillmentStatus,
     geocodeDiagnostics,
-    geocodeStatus: readGeocodeStatus(stop?.geocodeStatus ?? fact?.geocodeStatus),
+    geocodeStatus: readGeocodeStatus(
+      stop?.geocodeStatus ?? fact?.geocodeStatus,
+    ),
     hasCoordinates,
     latitude,
     longitude,
@@ -2499,8 +2519,7 @@ function readCanonicalTimeWindow(input: {
   raw: Record<string, unknown> | null;
   routeScopeKey: string | null;
 }): string | null {
-  const rawKey =
-    input.part === "start" ? "timeWindowStart" : "timeWindowEnd";
+  const rawKey = input.part === "start" ? "timeWindowStart" : "timeWindowEnd";
   return (
     readRouteScopeTime(input.routeScopeKey, input.part) ??
     readString(input.raw?.[rawKey]) ??

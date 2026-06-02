@@ -6,7 +6,10 @@ import { buildApp } from "../src/app.js";
 import type { AdminCommerceActor } from "../src/modules/commerce/admin-commerce-auth.js";
 import { loadAdminCommerceConnectionsUiDependencies } from "../src/modules/commerce/admin-commerce-connections.dependencies.js";
 import type { SafeWooCommerceConnection } from "../src/modules/commerce/commerce-connection.service.js";
-import { RoutePlanBatchInvalidError, type RoutePlanService } from "../src/modules/route-plans/route-plan.types.js";
+import {
+  RoutePlanBatchInvalidError,
+  type RoutePlanService,
+} from "../src/modules/route-plans/route-plan.types.js";
 import { defaultRouteScopeConfig } from "../src/modules/route-ops/route-scope-config.js";
 import type { AdminCommerceConnectionsDependencies } from "../src/routes/admin-commerce-connections.routes.js";
 import type { AdminCommerceConnectionsUiDependencies } from "../src/routes/admin-commerce-connections-ui.routes.js";
@@ -1082,7 +1085,7 @@ describe("Admin WooCommerce connection UI routes", () => {
       NonNullable<
         AdminCommerceConnectionsUiDependencies["settingsService"]
       >["getSettings"]
-    >(() => Promise.resolve(storeSettings()));
+    >(() => Promise.resolve(storeSettings({ locale: "ko-KR" })));
     const { app } = await createUiHarness({
       driverService: {
         createPendingDriver: vi.fn(),
@@ -1117,6 +1120,11 @@ describe("Admin WooCommerce connection UI routes", () => {
         headers: { cookie, accept: "application/json" },
         method: "GET",
         url: "/admin/ui/app/api/orders?shopDomain=tenant-a.example.test",
+      });
+      const bootstrap = await app.inject({
+        headers: { cookie, accept: "application/json" },
+        method: "GET",
+        url: "/admin/ui/app/api/bootstrap?shopDomain=tenant-a.example.test",
       });
       const routes = await app.inject({
         headers: { cookie, accept: "application/json" },
@@ -1163,6 +1171,12 @@ describe("Admin WooCommerce connection UI routes", () => {
           reviewBlockers: Array<{ blockerReasons: string[] }>;
         }>(orders).reviewBlockers[0]?.blockerReasons,
       ).toContain("missing_delivery_date");
+      expect(bootstrap.statusCode).toBe(200);
+      expect(
+        readApiData<{
+          locale: string;
+        }>(bootstrap).locale,
+      ).toBe("ko-KR");
       expect(routes.statusCode).toBe(200);
       expect(
         readApiData<{
@@ -1172,18 +1186,17 @@ describe("Admin WooCommerce connection UI routes", () => {
         expect.objectContaining({ name: "Route draft", stopsCount: 2 }),
       );
       expect(drivers.statusCode).toBe(200);
-      const driverData =
-        readApiData<{
-          drivers: Array<{
-            appLinked: boolean;
-            authStatus: string;
-            createdAt: string;
-            displayName: string;
-            inviteCode: string | null;
-            inviteCodeExpiresAt: string | null;
-            recentEventsCount: number;
-          }>;
-        }>(drivers).drivers[0];
+      const driverData = readApiData<{
+        drivers: Array<{
+          appLinked: boolean;
+          authStatus: string;
+          createdAt: string;
+          displayName: string;
+          inviteCode: string | null;
+          inviteCodeExpiresAt: string | null;
+          recentEventsCount: number;
+        }>;
+      }>(drivers).drivers[0];
       expect(driverData).toEqual(
         expect.objectContaining({
           appLinked: false,
@@ -1204,7 +1217,7 @@ describe("Admin WooCommerce connection UI routes", () => {
       ).toEqual(
         expect.objectContaining({
           defaultDepotAddress: "123 Depot St, Toronto, ON",
-          locale: "en-CA",
+          locale: "ko-KR",
         }),
       );
       expect(listCanonicalOrders).toHaveBeenCalledWith({
@@ -1357,6 +1370,25 @@ describe("Admin WooCommerce connection UI routes", () => {
         shopDomain: "tenant-a.example.test",
       });
 
+      for (const tab of ["planned", "needs_review"] as const) {
+        listCanonicalOrders.mockClear();
+        const planningTab = await app.inject({
+          headers: { cookie, accept: "application/json" },
+          method: "GET",
+          url: `/admin/ui/app/api/orders?shopDomain=tenant-a.example.test&scope=planning&tab=${tab}`,
+        });
+        expect(planningTab.statusCode).toBe(200);
+        expect(listCanonicalOrders).toHaveBeenCalledWith({
+          filters: {
+            ...(tab === "planned" ? { planned: true } : {}),
+            routeOpsScope: "planning",
+            routeOpsTab: tab,
+            routeOpsToday: "2026-05-29",
+          },
+          shopDomain: "tenant-a.example.test",
+        });
+      }
+
       listCanonicalOrders.mockClear();
       const history = await app.inject({
         headers: { cookie, accept: "application/json" },
@@ -1372,6 +1404,25 @@ describe("Admin WooCommerce connection UI routes", () => {
         },
         shopDomain: "tenant-a.example.test",
       });
+
+      for (const tab of ["unplanned", "planned", "needs_review"] as const) {
+        listCanonicalOrders.mockClear();
+        const historyTab = await app.inject({
+          headers: { cookie, accept: "application/json" },
+          method: "GET",
+          url: `/admin/ui/app/api/orders?shopDomain=tenant-a.example.test&scope=history&tab=${tab}`,
+        });
+        expect(historyTab.statusCode).toBe(200);
+        expect(listCanonicalOrders).toHaveBeenCalledWith({
+          filters: {
+            ...(tab === "planned" ? { planned: true } : {}),
+            ...(tab === "unplanned" ? { planned: false } : {}),
+            routeOpsScope: "history",
+            routeOpsTab: tab,
+          },
+          shopDomain: "tenant-a.example.test",
+        });
+      }
 
       for (const query of [
         "scope=everything",
@@ -1497,7 +1548,9 @@ describe("Admin WooCommerce connection UI routes", () => {
       }>(response);
       expect(payload.settings.shopDomain).toBe("tenant-a.example.test");
       expect(payload.settings.routeScopeConfig.serviceTypes).toEqual(
-        expect.arrayContaining([expect.objectContaining({ value: "DELIVERY" })]),
+        expect.arrayContaining([
+          expect.objectContaining({ value: "DELIVERY" }),
+        ]),
       );
       expect(payload.settings.routeScopeConfig.deliverySessions).toEqual(
         expect.arrayContaining([expect.objectContaining({ value: "EVENING" })]),
@@ -1510,7 +1563,8 @@ describe("Admin WooCommerce connection UI routes", () => {
   test("rejects route-scope Settings saves that disable built-ins before partial save", async () => {
     const baseConfig = defaultRouteScopeConfig();
     const firstServiceType = baseConfig.serviceTypes[0];
-    if (firstServiceType === undefined) throw new Error("missing built-in service type");
+    if (firstServiceType === undefined)
+      throw new Error("missing built-in service type");
     const saveSettings = vi.fn<
       NonNullable<
         NonNullable<
@@ -1740,11 +1794,14 @@ describe("Admin WooCommerce connection UI routes", () => {
           csrfToken,
         ),
       });
-      expect(historyMetadataResponse.statusCode).toBe(400);
-      expect(readApiError(historyMetadataResponse).message).toContain(
-        "History scope is read-only",
+      expect(historyMetadataResponse.statusCode).toBe(200);
+      expect(patchCanonicalOrder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actor: "web-operator",
+          orderId: "order-1",
+          shopDomain: "tenant-a.example.test",
+        }),
       );
-      expect(patchCanonicalOrder).not.toHaveBeenCalled();
 
       const geocodeResponse = await app.inject({
         method: "POST",
@@ -1935,15 +1992,15 @@ describe("Admin WooCommerce connection UI routes", () => {
           source: "geocoder",
         }),
       );
-      expect(JSON.stringify(patchCanonicalOrderCoordinates.mock.calls)).not.toContain(
-        "Mock place",
-      );
+      expect(
+        JSON.stringify(patchCanonicalOrderCoordinates.mock.calls),
+      ).not.toContain("Mock place");
     } finally {
       await app.close();
     }
   });
 
-  test("rejects bulk geocode mutations in history scope", async () => {
+  test("accepts bulk geocode mutations in history scope", async () => {
     const listCanonicalOrders = vi.fn<
       NonNullable<
         AdminCommerceConnectionsUiDependencies["orderSyncService"]
@@ -1954,7 +2011,10 @@ describe("Admin WooCommerce connection UI routes", () => {
         geocode: vi.fn(),
         status: { mode: "nominatim_compatible", persistentCacheEnabled: true },
       },
-      orderSyncService: { listCanonicalOrders },
+      orderSyncService: {
+        listCanonicalOrders,
+        patchCanonicalOrderCoordinates: vi.fn(),
+      },
     });
 
     try {
@@ -1965,8 +2025,10 @@ describe("Admin WooCommerce connection UI routes", () => {
         ...authenticatedJsonRequest(cookie, {}, csrfToken),
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(listCanonicalOrders).not.toHaveBeenCalled();
+      expect(response.statusCode).toBe(202);
+      expect(
+        readApiData<{ geocode: { status: string } }>(response).geocode.status,
+      ).toMatch(/^(accepted|running)$/u);
     } finally {
       await app.close();
     }
@@ -2039,7 +2101,10 @@ describe("Admin WooCommerce connection UI routes", () => {
           method: "GET",
           url: `/admin/ui/app/api/orders/bulk-geocode/${accepted.jobId}?shopDomain=tenant-a.example.test`,
         });
-        if (readApiData<{ status: string }>(statusResponse).status === "completed") break;
+        if (
+          readApiData<{ status: string }>(statusResponse).status === "completed"
+        )
+          break;
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
 
@@ -2073,8 +2138,18 @@ describe("Admin WooCommerce connection UI routes", () => {
       >["listCanonicalOrders"]
     >(() =>
       Promise.resolve([
-        canonicalOrder({ hasCoordinates: false, latitude: null, longitude: null, orderId: "order-a" }),
-        canonicalOrder({ hasCoordinates: false, latitude: null, longitude: null, orderId: "order-b" }),
+        canonicalOrder({
+          hasCoordinates: false,
+          latitude: null,
+          longitude: null,
+          orderId: "order-a",
+        }),
+        canonicalOrder({
+          hasCoordinates: false,
+          latitude: null,
+          longitude: null,
+          orderId: "order-b",
+        }),
       ]),
     );
     const patchCanonicalOrderCoordinates = vi.fn<
@@ -2134,7 +2209,9 @@ describe("Admin WooCommerce connection UI routes", () => {
           method: "GET",
           url: `/admin/ui/app/api/orders/geocode/${accepted.jobId}?shopDomain=tenant-a.example.test`,
         });
-        const body = readApiData<{ geocode: BulkGeocodeJobBody }>(statusResponse).geocode;
+        const body = readApiData<{ geocode: BulkGeocodeJobBody }>(
+          statusResponse,
+        ).geocode;
         if (body?.status === "completed") {
           completed = body;
           break;
@@ -2265,50 +2342,53 @@ describe("Admin WooCommerce connection UI routes", () => {
         };
       })(),
     },
-  ])("rejects $label route-scope values for manual metadata repair", async ({ routeScopeConfig }) => {
-    const patchCanonicalOrder = vi.fn<
-      NonNullable<
+  ])(
+    "rejects $label route-scope values for manual metadata repair",
+    async ({ routeScopeConfig }) => {
+      const patchCanonicalOrder = vi.fn<
         NonNullable<
-          AdminCommerceConnectionsUiDependencies["orderSyncService"]
-        >["patchCanonicalOrder"]
-      >
-    >(() => Promise.resolve(canonicalOrder()));
-    const { app } = await createUiHarness({
-      orderSyncService: {
-        listCanonicalOrders: vi.fn(() => Promise.resolve([canonicalOrder()])),
-        patchCanonicalOrder,
-      },
-      settingsService: {
-        getSettings: vi.fn(() =>
-          Promise.resolve(storeSettings({ routeScopeConfig })),
-        ),
-        saveSettings: vi.fn(),
-      },
-    });
-
-    try {
-      const { cookie, csrfToken } = await loginAndReadCsrf(app);
-      const response = await app.inject({
-        method: "PATCH",
-        url: "/admin/ui/app/api/orders/order-1/metadata?shopDomain=tenant-a.example.test",
-        ...authenticatedJsonRequest(
-          cookie,
-          {
-            deliverySession: "MORNING",
-            serviceType: "MORNING_DELIVERY",
-          },
-          csrfToken,
-        ),
+          NonNullable<
+            AdminCommerceConnectionsUiDependencies["orderSyncService"]
+          >["patchCanonicalOrder"]
+        >
+      >(() => Promise.resolve(canonicalOrder()));
+      const { app } = await createUiHarness({
+        orderSyncService: {
+          listCanonicalOrders: vi.fn(() => Promise.resolve([canonicalOrder()])),
+          patchCanonicalOrder,
+        },
+        settingsService: {
+          getSettings: vi.fn(() =>
+            Promise.resolve(storeSettings({ routeScopeConfig })),
+          ),
+          saveSettings: vi.fn(),
+        },
       });
 
-      expect(response.statusCode).toBe(400);
-      const body = JSON.parse(response.body) as ApiErrorEnvelope;
-      expect(body.error.message).toContain("not enabled in Settings");
-      expect(patchCanonicalOrder).not.toHaveBeenCalled();
-    } finally {
-      await app.close();
-    }
-  });
+      try {
+        const { cookie, csrfToken } = await loginAndReadCsrf(app);
+        const response = await app.inject({
+          method: "PATCH",
+          url: "/admin/ui/app/api/orders/order-1/metadata?shopDomain=tenant-a.example.test",
+          ...authenticatedJsonRequest(
+            cookie,
+            {
+              deliverySession: "MORNING",
+              serviceType: "MORNING_DELIVERY",
+            },
+            csrfToken,
+          ),
+        });
+
+        expect(response.statusCode).toBe(400);
+        const body = JSON.parse(response.body) as ApiErrorEnvelope;
+        expect(body.error.message).toContain("not enabled in Settings");
+        expect(patchCanonicalOrder).not.toHaveBeenCalled();
+      } finally {
+        await app.close();
+      }
+    },
+  );
 
   test("marks missing delivery area as unresolved metadata while keeping coordinates operational", async () => {
     const order = canonicalOrder({
@@ -2696,9 +2776,7 @@ describe("Admin WooCommerce connection UI routes", () => {
           AdminCommerceConnectionsUiDependencies["routePlanService"]
         >["deleteRoutePlan"]
       >
-    >(() =>
-      Promise.resolve({ deleted: true, routePlanId: "route-plan-id" }),
-    );
+    >(() => Promise.resolve({ deleted: true, routePlanId: "route-plan-id" }));
     const { app } = await createUiHarness({
       orderSyncService: {
         listCanonicalOrders: vi.fn(() => Promise.resolve([])),
@@ -3063,11 +3141,12 @@ describe("Admin WooCommerce connection UI routes", () => {
         AdminCommerceConnectionsUiDependencies["driverService"]
       >["deleteDriver"]
     >(() => Promise.resolve("driver-id"));
-    const listDrivers = vi.fn<
-      NonNullable<
-        AdminCommerceConnectionsUiDependencies["driverService"]
-      >["listDrivers"]
-    >()
+    const listDrivers = vi
+      .fn<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["driverService"]
+        >["listDrivers"]
+      >()
       .mockResolvedValueOnce([driverRow()])
       .mockResolvedValueOnce([]);
     const { app } = await createUiHarness({
@@ -3241,9 +3320,9 @@ describe("Admin WooCommerce connection UI routes", () => {
         status: "ASSIGNED",
       },
     };
-    const publishRoutePlan = vi.fn<
-      RoutePlanService["publishRoutePlan"]
-    >(() => Promise.resolve(publishedDetail));
+    const publishRoutePlan = vi.fn<RoutePlanService["publishRoutePlan"]>(() =>
+      Promise.resolve(publishedDetail),
+    );
     const { app } = await createUiHarness({
       orderSyncService: {
         listCanonicalOrders: vi.fn(() => Promise.resolve([])),
@@ -3271,10 +3350,12 @@ describe("Admin WooCommerce connection UI routes", () => {
         readApiData<{ routePlan: { driverId: string; status: string } }>(
           response,
         ).routePlan,
-      ).toEqual(expect.objectContaining({
-        driverId: "driver-id",
-        status: "ASSIGNED",
-      }));
+      ).toEqual(
+        expect.objectContaining({
+          driverId: "driver-id",
+          status: "ASSIGNED",
+        }),
+      );
       expect(publishRoutePlan).toHaveBeenCalledWith({
         routePlanId: "route-plan-id",
         shopDomain: "tenant-a.example.test",
@@ -3436,7 +3517,7 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
-  test("rejects Route Ops route creation when requested from history scope", async () => {
+  test("allows Route Ops route creation from history scope when selected orders are valid", async () => {
     const createRoutePlanFromOrderIds = vi.fn<
       NonNullable<
         NonNullable<
@@ -3474,11 +3555,8 @@ describe("Admin WooCommerce connection UI routes", () => {
         ),
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(readApiError(response).message).toContain(
-        "History scope is read-only",
-      );
-      expect(createRoutePlanFromOrderIds).not.toHaveBeenCalled();
+      expect(response.statusCode).toBe(201);
+      expect(createRoutePlanFromOrderIds).toHaveBeenCalledOnce();
     } finally {
       await app.close();
     }

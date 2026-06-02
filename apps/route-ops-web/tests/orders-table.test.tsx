@@ -17,7 +17,12 @@ import {
   OrderTable,
   type OrderMetadataPatch,
 } from "../src/pages/OrdersPage";
-import { orderBlockerLabels, orderFieldLabels } from "../src/i18n";
+import {
+  getOrderBlockerLabels,
+  getOrderFieldLabels,
+  orderBlockerLabels,
+  orderFieldLabels,
+} from "../src/i18n";
 import { defaultRouteScopeConfig } from "../src/routeScopeConfig";
 import type {
   CanonicalOrderDto,
@@ -72,6 +77,17 @@ describe("Orders compact operations table", () => {
     expect(html).not.toContain("Route eligible");
   });
 
+  test("keeps the order table mounted during filter refreshes to avoid scroll jumps", () => {
+    const html = renderOrderTable([orderFixture()], {
+      loading: true,
+      refreshing: true,
+    });
+
+    expect(html).toContain('class="orders-compact-table"');
+    expect(html).toContain("Updating…");
+    expect(html).not.toContain("Loading imported WooCommerce orders…");
+  });
+
   test("keeps selection accessibility and disabled eligibility semantics", () => {
     const blocked = orderFixture({
       blockerReasons: ["missing_delivery_date"],
@@ -115,19 +131,21 @@ describe("Orders compact operations table", () => {
     );
   });
 
-  test("renders explicit clear labels and disables route actions in history scope", () => {
+  test("does not make history scope read-only by itself", () => {
     const html = renderOrderTable([orderFixture()], {
-      readOnly: true,
       worksetContext: { scope: "history" },
     });
 
-    expect(html).toContain("Clear selection");
+    expect(html).not.toContain("Clear selection");
     expect(html).not.toMatch(/>Clear<\/button>/u);
-    expect(html).toContain("History scope is read-only");
-    expect(html).toContain("disabled");
+    expect(html).not.toContain("History scope is read-only");
+    expect(html).toContain('aria-label="Add order #11453 11453 to route plan"');
+    expect(html).not.toMatch(
+      /aria-label="Add order #11453 11453 to route plan"[^>]*disabled/u,
+    );
   });
 
-  test("renders expanded history-scope order detail as read-only", () => {
+  test("renders expanded history-scope order detail as editable when blockers need repair", () => {
     const html = renderOrderTable(
       [
         orderFixture({
@@ -141,21 +159,19 @@ describe("Orders compact operations table", () => {
       ],
       {
         expandedOrderIds: new Set(["order-11453"]),
-        readOnly: true,
         worksetContext: { scope: "history" },
       },
     );
 
     expect(html).toContain("Order details for #11453");
     expect(html).toContain(
-      "History scope is read-only. Switch to planning to edit this order.",
+      "Update the highlighted field, then save this order.",
     );
-    expect(html).not.toContain("Edit all fields");
-    expect(html).not.toContain("Save fixes");
-    expect(html).not.toContain("Edit all order fields");
-    expect(html).not.toContain('name="deliveryDate"');
-    expect(html).not.toContain('name="serviceType"');
-    expect(html).not.toContain('name="deliverySession"');
+    expect(html).toContain("Save fixes");
+    expect(html).not.toContain("History scope is read-only");
+    expect(html).toContain('name="deliveryDate"');
+    expect(html).toContain('name="serviceType"');
+    expect(html).toContain('name="deliverySession"');
   });
 
   test("shows metadata-ok coordinate blockers without a row-level geocode action", () => {
@@ -616,6 +632,10 @@ describe("Orders compact operations table", () => {
       "Missing delivery date",
     );
     expect(orderBlockerLabels.missing_coordinates).toBe("Need coordinates");
+    expect(getOrderFieldLabels("ko-KR").address1).toBe("도로명 주소");
+    expect(getOrderBlockerLabels("ko-KR").missing_coordinates).toBe("좌표 필요");
+    expect(formatDiagnosticPathLabel("unknown.path")).toBe("Order metadata");
+    expect(formatDiagnosticPathLabel("unknown.path", "ko-KR")).toBe("주문 메타데이터");
   });
 
   test("empty state remains inside the compact table vocabulary", () => {
@@ -665,13 +685,52 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("1 selected · 1 selectable · 2 unavailable");
     expect(html).not.toContain("Select filtered");
     expect(html).not.toContain("Clear filtered");
-    expect(html).toContain(">Clear selection</button>");
+    expect(html).not.toContain("Clear selection");
     expect(html).not.toMatch(/>Clear<\/button>/u);
     expect(html).toContain(
       'aria-label="Select all eligible orders in current workset"',
     );
     expect(html).toContain('aria-label="Select order #1002 11453"');
     expect(html).toContain('aria-label="Select order #1003 11453"');
+  });
+
+  test("renders Korean order table and detail labels when locale is ko-KR", () => {
+    const html = renderOrderTable(
+      [
+        orderFixture({
+          blockerReasons: ["missing_delivery_date", "missing_route_scope"],
+          deliveryDate: null,
+          deliverySession: null,
+          metadataResolved: false,
+          routeEligible: false,
+          serviceType: null,
+        }),
+      ],
+      {
+        expandedOrderIds: new Set(["order-11453"]),
+        locale: "ko-KR",
+      },
+    );
+
+    expect(html).toContain("<span>선택</span>");
+    for (const header of ["주문", "고객", "방식", "요일", "지역", "경로", "상태", "작업"]) {
+      expect(html).toContain(`>${header}</th>`);
+    }
+    expect(html).toContain("가져온 주문 목록");
+    expect(html).toContain("1 주문");
+    expect(html).toContain("0개 선택 · 0개 선택 가능 · 1개 불가");
+    expect(html).toContain("리뷰");
+    expect(html).toContain("배송 날짜 누락");
+    expect(html).toContain("경로 범위 누락");
+    expect(html).toContain("필수 주문 정보 수정");
+    expect(html).toContain("강조된 필드를 수정한 뒤 이 주문을 저장하세요.");
+    expect(html).toContain("수정 저장");
+    expect(html).toContain("상세");
+    expect(html).toContain("배송지");
+    expect(html).toContain("좌표");
+    expect(html).toContain("기술 진단");
+    expect(html).not.toContain("Order details for");
+    expect(html).not.toContain("Missing delivery date");
   });
 
   test("route draft selection locks to one delivery date and session", () => {
@@ -770,9 +829,11 @@ function renderOrderTable(
     detailModes?: Record<string, "review" | "edit">;
     diagnosticsByOrder?: Record<string, DeliveryMetadataDiagnosticsDto | null>;
     expandedOrderIds?: Set<string>;
-    readOnly?: boolean;
+    loading?: boolean;
+    refreshing?: boolean;
     selected?: Set<string>;
     settings?: StoreSettingsDto;
+    locale?: string;
     worksetContext?: { scope: "history" | "planning" };
   } = {},
 ): string {
@@ -782,12 +843,13 @@ function renderOrderTable(
       detailModes={options.detailModes}
       diagnosticsByOrder={options.diagnosticsByOrder ?? {}}
       expandedOrderIds={options.expandedOrderIds}
-      loading={false}
+      loading={options.loading ?? false}
+      locale={options.locale}
       onBulkGeocode={() => undefined}
       onToggleDetail={() => undefined}
       onTogglePlanOrder={() => undefined}
       orders={orders}
-      readOnly={options.readOnly}
+      refreshing={options.refreshing}
       selected={options.selected ?? new Set()}
       setSelected={() => undefined}
       settings={options.settings}

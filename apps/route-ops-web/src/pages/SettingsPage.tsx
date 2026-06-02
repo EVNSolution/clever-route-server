@@ -145,15 +145,15 @@ export function SettingsPage({ bootstrap, setError }: { bootstrap: BootstrapPayl
           <dl className="settings-status-list">
             <div>
               <dt>{t.mapProvider}</dt>
-              <dd>{bootstrap.mapConfig.status}</dd>
+              <dd>{formatProviderStatus(bootstrap.mapConfig.status, t)}</dd>
             </div>
             <div>
               <dt>{t.providerMode}</dt>
-              <dd>{bootstrap.mapConfig.providerMode ?? t.none}</dd>
+              <dd>{formatProviderMode(bootstrap.mapConfig.providerMode, t)}</dd>
             </div>
             <div>
               <dt>{t.routeGeometryProvider}</dt>
-              <dd>{bootstrap.routerConfig.status}</dd>
+              <dd>{formatProviderStatus(bootstrap.routerConfig.status, t)}</dd>
             </div>
           </dl>
           <p className="muted">{t.noProviderSecrets}</p>
@@ -180,7 +180,7 @@ export function buildSettingsSaveInput(input: {
   };
 }
 
-export function addRouteScopeValue(config: RouteScopeConfigDto, kind: RouteScopeKind): RouteScopeConfigDto {
+export function addRouteScopeValue(config: RouteScopeConfigDto, kind: RouteScopeKind, label = 'Custom value'): RouteScopeConfigDto {
   const suffix = config[kind].filter((value) => !value.builtIn).length + 1;
   return {
     ...config,
@@ -191,7 +191,7 @@ export function addRouteScopeValue(config: RouteScopeConfigDto, kind: RouteScope
         description: null,
         enabled: true,
         example: null,
-        label: 'Custom value',
+        label,
         value: kind === 'serviceTypes' ? `CUSTOM_SERVICE_${suffix}` : `CUSTOM_SESSION_${suffix}`
       }
     ]
@@ -250,7 +250,7 @@ function RouteScopeSettingsEditor({
   onChange(config: RouteScopeConfigDto): void;
 }): ReactElement {
   const addValue = (kind: RouteScopeKind): void => {
-    onChange(addRouteScopeValue(config, kind));
+    onChange(addRouteScopeValue(config, kind, labels.customValue));
   };
   const updateValue = (kind: RouteScopeKind, index: number, patch: Partial<RouteScopeValueDto>): void => {
     onChange(updateRouteScopeValue(config, kind, index, patch));
@@ -378,4 +378,15 @@ function depotAsOrders(settings: StoreSettingsDto, depotName: string, fallbackAd
     timeWindowEnd: null,
     timeWindowStart: null
   }];
+}
+
+
+function formatProviderStatus(status: BootstrapPayload['mapConfig']['status'], labels: SettingsLabels): string {
+  return status === 'configured' ? labels.configured : labels.notConfigured;
+}
+
+function formatProviderMode(mode: BootstrapPayload['mapConfig']['providerMode'], labels: SettingsLabels): string {
+  if (mode === 'public_allowlisted') return labels.publicAllowlisted;
+  if (mode === 'self_hosted') return labels.selfHosted;
+  return labels.none;
 }

@@ -9,10 +9,10 @@ import type { CountryCode } from 'libphonenumber-js';
 
 import { createDriver, deleteDriver, getDrivers, regenerateDriverInviteCode } from '../api';
 import { Badge, Kpi } from '../components/primitives';
+import { getDriversCopy, resolveLocale } from '../i18n';
 import type { BootstrapPayload, DriverDto } from '../types';
 import { readErrorMessage } from '../utils/format';
 
-const DRIVER_APP_DOWNLOAD_LINK_PLACEHOLDER = 'Driver app download link: ask CLEVER admin';
 const DEFAULT_COUNTRY: CountryCode = 'US';
 const COUNTRY_RESULT_LIMIT = 12;
 
@@ -24,11 +24,6 @@ export type CountrySearchOption = {
   searchText: string;
 };
 
-const countryNameFormatter =
-  typeof Intl !== 'undefined' && 'DisplayNames' in Intl
-    ? new Intl.DisplayNames(['en'], { type: 'region' })
-    : null;
-
 function normalizeCountryQuery(value: string): string {
   return value
     .normalize('NFKD')
@@ -37,13 +32,18 @@ function normalizeCountryQuery(value: string): string {
     .trim();
 }
 
-function getCountryName(countryCode: CountryCode): string {
-  return countryNameFormatter?.of(countryCode) ?? countryCode;
+function createCountryDisplayNames(locale: string | null | undefined = 'en-CA'): Intl.DisplayNames | null {
+  if (typeof Intl === 'undefined' || !('DisplayNames' in Intl)) return null;
+  return new Intl.DisplayNames([resolveLocale(locale)], { type: 'region' });
 }
 
-export function buildCountrySearchOption(countryCode: CountryCode): CountrySearchOption {
+function getCountryName(countryCode: CountryCode, locale: string | null | undefined = 'en-CA', displayNames = createCountryDisplayNames(locale)): string {
+  return displayNames?.of(countryCode) ?? countryCode;
+}
+
+export function buildCountrySearchOption(countryCode: CountryCode, locale: string | null | undefined = 'en-CA', displayNames = createCountryDisplayNames(locale)): CountrySearchOption {
   const callingCode = getCountryCallingCode(countryCode);
-  const name = getCountryName(countryCode);
+  const name = getCountryName(countryCode, locale, displayNames);
   const label = `${name} (${countryCode} +${callingCode})`;
   return {
     callingCode,
@@ -54,9 +54,10 @@ export function buildCountrySearchOption(countryCode: CountryCode): CountrySearc
   };
 }
 
-function buildCountrySearchOptions(countries: readonly CountryCode[]): CountrySearchOption[] {
+function buildCountrySearchOptions(countries: readonly CountryCode[], locale: string | null | undefined): CountrySearchOption[] {
+  const displayNames = createCountryDisplayNames(locale);
   return countries
-    .map((countryCode) => buildCountrySearchOption(countryCode))
+    .map((countryCode) => buildCountrySearchOption(countryCode, locale, displayNames))
     .sort((left, right) => left.name.localeCompare(right.name) || left.countryCode.localeCompare(right.countryCode));
 }
 
@@ -96,6 +97,8 @@ export function buildCanonicalPhone(countryCode: CountryCode, nationalPhone: str
 }
 
 export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPayload; setError(error: string | null): void }): ReactElement {
+  const locale = resolveLocale(bootstrap.locale);
+  const t = getDriversCopy(locale);
   const [drivers, setDrivers] = useState<DriverDto[]>([]);
   const [displayName, setDisplayName] = useState('');
   const [phoneCountryCode, setPhoneCountryCode] = useState<CountryCode>(DEFAULT_COUNTRY);
@@ -105,10 +108,10 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
   const [regeneratingDriverId, setRegeneratingDriverId] = useState<string | null>(null);
   const [deletingDriverId, setDeletingDriverId] = useState<string | null>(null);
   const [countryPickerOpen, setCountryPickerOpen] = useState(false);
-  const countryOptions = useMemo(() => buildCountrySearchOptions(getCountries()), []);
+  const countryOptions = useMemo(() => buildCountrySearchOptions(getCountries(), locale), [locale]);
   const selectedCountryOption = useMemo(
-    () => countryOptions.find((option) => option.countryCode === phoneCountryCode) ?? buildCountrySearchOption(phoneCountryCode),
-    [countryOptions, phoneCountryCode],
+    () => countryOptions.find((option) => option.countryCode === phoneCountryCode) ?? buildCountrySearchOption(phoneCountryCode, locale),
+    [countryOptions, locale, phoneCountryCode],
   );
   const [countrySearch, setCountrySearch] = useState(selectedCountryOption.label);
   const visibleCountryOptions = useMemo(
@@ -159,7 +162,7 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
       setDrivers(payload.drivers);
       setDisplayName('');
       setPhoneNational('');
-      setNotice('Driver invite created. Share the app code with the driver, then assign routes any time.');
+      setNotice(t.createdNotice);
       setError(null);
     } catch (error) {
       setError(readErrorMessage(error));
@@ -174,7 +177,7 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
     try {
       const payload = await regenerateDriverInviteCode({ csrfToken: bootstrap.csrfToken, driverId });
       setDrivers(payload.drivers);
-      setNotice('Driver app code regenerated. Previous app sessions were invalidated by the server.');
+      setNotice(t.regeneratedNotice);
       setError(null);
     } catch (error) {
       setError(readErrorMessage(error));
@@ -186,14 +189,14 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
   const removeDriver = async (driver: DriverDto): Promise<void> => {
     if (deletingDriverId !== null || regeneratingDriverId !== null) return;
     const confirmed = window.confirm(
-      `Delete ${driver.displayName}? This removes the driver invite/app access from CLEVER Route.`,
+      t.deleteConfirm(driver.displayName),
     );
     if (!confirmed) return;
     setDeletingDriverId(driver.id);
     try {
       const payload = await deleteDriver({ csrfToken: bootstrap.csrfToken, driverId: driver.id });
       setDrivers(payload.drivers);
-      setNotice(`Driver deleted: ${driver.displayName}.`);
+      setNotice(t.deletedNotice(driver.displayName));
       setError(null);
     } catch (error) {
       setError(readErrorMessage(error));
@@ -204,11 +207,11 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
 
   const copyInvite = async (driver: DriverDto): Promise<void> => {
     if (driver.inviteCode === null) return;
-    const message = buildDriverInviteMessage(driver);
+    const message = buildDriverInviteMessage(driver, locale);
     try {
       if (typeof navigator !== 'undefined' && navigator.clipboard !== undefined) {
         await navigator.clipboard.writeText(message);
-        setNotice(`Invite copied for ${driver.displayName}.`);
+        setNotice(t.copiedNotice(driver.displayName));
       } else {
         setNotice(message);
       }
@@ -226,15 +229,15 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
       <article className="panel drivers-panel">
         <div className="panel-heading">
           <div>
-            <span className="eyebrow">Drivers</span>
-            <h2>Driver management</h2>
-            <p className="muted">Create a driver invite, share the six-character app code, and assign routes before app verification.</p>
+            <span className="eyebrow">{t.eyebrow}</span>
+            <h2>{t.title}</h2>
+            <p className="muted">{t.description}</p>
           </div>
         </div>
-        <div className="summary-strip compact-kpis driver-kpis" aria-label="Driver summary">
-          <Kpi label="Drivers" value={drivers.length} />
-          <Kpi label="Invite pending" value={pendingCount} />
-          <Kpi label="Linked" value={linkedCount} />
+        <div className="summary-strip compact-kpis driver-kpis" aria-label={t.summaryLabel}>
+          <Kpi label={t.drivers} value={drivers.length} />
+          <Kpi label={t.invitePending} value={pendingCount} />
+          <Kpi label={t.linked} value={linkedCount} />
         </div>
         {notice === null ? null : <p className="alert success driver-notice">{notice}</p>}
         <DriverTable
@@ -243,27 +246,28 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
           onDelete={(driver) => void removeDriver(driver)}
           onRegenerateInvite={(driverId) => void regenerate(driverId)}
           deletingDriverId={deletingDriverId}
+          locale={locale}
           regeneratingDriverId={regeneratingDriverId}
         />
       </article>
       <aside className="panel side-panel driver-invite-panel">
-        <span className="eyebrow">Invite</span>
-        <h2>Create pending driver</h2>
+        <span className="eyebrow">{t.inviteEyebrow}</span>
+        <h2>{t.createPendingDriver}</h2>
         <label>
-          Driver name
+          {t.driverName}
           <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} />
         </label>
         <label>
-          Phone
+          {t.phone}
           <div className="driver-phone-inputs">
             <label className="driver-country-field">
-              <span className="muted">Country</span>
+              <span className="muted">{t.country}</span>
               <div className="driver-country-combobox">
                 <input
                   aria-autocomplete="list"
                   aria-controls="driver-country-options"
                   aria-expanded={countryPickerOpen}
-                  aria-label="Search country"
+                  aria-label={t.searchCountry}
                   autoComplete="off"
                   role="combobox"
                   spellCheck={false}
@@ -289,7 +293,7 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
                 {countryPickerOpen ? (
                   <div className="driver-country-results" id="driver-country-options" role="listbox">
                     {visibleCountryOptions.length === 0 ? (
-                      <span className="driver-country-empty">No country match</span>
+                      <span className="driver-country-empty">{t.noCountryMatch}</span>
                     ) : visibleCountryOptions.map((option) => (
                       <button
                         key={option.countryCode}
@@ -309,7 +313,7 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
               </div>
             </label>
             <label className="driver-national-field">
-              <span className="muted">National number</span>
+              <span className="muted">{t.nationalNumber}</span>
               <input
                 type="tel"
                 value={phoneNational}
@@ -319,14 +323,14 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
           </div>
           <small>
             {canonicalPhone === ''
-              ? 'Enter a valid number in national format to preview E.164.'
-              : `E.164 preview: ${canonicalPhone}`}
+              ? t.invalidPhonePreview
+              : t.e164Preview(canonicalPhone)}
           </small>
         </label>
         <button className="primary full" disabled={!canSubmitDriver} onClick={() => void submit()} type="button">
-          {savingDriver ? 'Creating…' : 'Create driver invite'}
+          {savingDriver ? t.creating : t.createInvite}
         </button>
-        <p className="muted">Pending drivers can be assigned in Route Builder now. They will see route details only after app authentication.</p>
+        <p className="muted">{t.pendingHelp}</p>
       </aside>
     </section>
   );
@@ -335,24 +339,26 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
 export function DriverTable(input: {
   deletingDriverId?: string | null;
   drivers: DriverDto[];
+  locale?: string | null;
   onCopyInvite?: (driver: DriverDto) => void;
   onDelete?: (driver: DriverDto) => void;
   onRegenerateInvite?: (driverId: string) => void;
   regeneratingDriverId?: string | null;
 }): ReactElement {
+  const t = getDriversCopy(input.locale);
   if (input.drivers.length === 0) {
-    return <p className="empty-state">No drivers yet. Create the first pending driver invite.</p>;
+    return <p className="empty-state">{t.noDrivers}</p>;
   }
   return (
     <div className="table-scroll" data-driver-table="true">
       <table className="ops-table driver-table">
         <thead>
           <tr>
-            <th>Driver</th>
-            <th>Phone</th>
-            <th>Status</th>
-            <th>App access</th>
-            <th>Invite code / action</th>
+            <th>{t.table.driver}</th>
+            <th>{t.table.phone}</th>
+            <th>{t.table.status}</th>
+            <th>{t.table.appAccess}</th>
+            <th>{t.table.inviteAction}</th>
           </tr>
         </thead>
         <tbody>
@@ -360,15 +366,16 @@ export function DriverTable(input: {
             <tr key={driver.id}>
               <td>
                 <strong>{driver.displayName}</strong>
-                <small>{driver.appLinked ? 'Linked' : 'Can be assigned before app verification'}</small>
+                <small>{driver.appLinked ? t.linked : t.canAssignBeforeVerification}</small>
               </td>
               <td>{driver.phone ?? '—'}</td>
-              <td><Badge>{formatDriverStatus(driver)}</Badge></td>
-              <td><span className={driver.appLinked ? 'status-pill ok' : 'status-pill warn'}>{formatDriverAuthLabel(driver)}</span></td>
+              <td><Badge>{formatDriverStatus(driver, input.locale)}</Badge></td>
+              <td><span className={driver.appLinked ? 'status-pill ok' : 'status-pill warn'}>{formatDriverAuthLabel(driver, input.locale)}</span></td>
               <td>
                 <DriverInviteActions
                   driver={driver}
                   deletingDriverId={input.deletingDriverId ?? null}
+                  locale={input.locale}
                   onDelete={input.onDelete}
                   onCopyInvite={input.onCopyInvite}
                   onRegenerateInvite={input.onRegenerateInvite}
@@ -386,50 +393,55 @@ export function DriverTable(input: {
 function DriverInviteActions(input: {
   deletingDriverId: string | null;
   driver: DriverDto;
+  locale?: string | null;
   onCopyInvite?: (driver: DriverDto) => void;
   onDelete?: (driver: DriverDto) => void;
   onRegenerateInvite?: (driverId: string) => void;
   regeneratingDriverId: string | null;
 }): ReactElement {
   const { driver } = input;
+  const t = getDriversCopy(input.locale);
   const isRegenerating = input.regeneratingDriverId === driver.id;
   const isDeleting = input.deletingDriverId === driver.id;
   return (
     <div className="driver-invite-actions">
       <div className="driver-invite-meta-stack">
         <span className="driver-invite-meta">
-          {driver.inviteCode === null ? <span className="muted">No active code</span> : <span className="invite-code">{driver.inviteCode}</span>}
+          {driver.inviteCode === null ? <span className="muted">{t.noActiveCode}</span> : <span className="invite-code">{driver.inviteCode}</span>}
         </span>
-        <small className="driver-invite-meta">{driver.inviteCodeExpiresAt === null ? 'No expiry' : `Expires ${formatDriverDate(driver.inviteCodeExpiresAt)}`}</small>
+        <small className="driver-invite-meta">{driver.inviteCodeExpiresAt === null ? t.noExpiry : t.expires(formatDriverDate(driver.inviteCodeExpiresAt))}</small>
       </div>
       <div className="driver-invite-controls">
-        <button disabled={driver.inviteCode === null} onClick={() => input.onCopyInvite?.(driver)} type="button">copy</button>
+        <button disabled={driver.inviteCode === null} onClick={() => input.onCopyInvite?.(driver)} type="button">{t.copy}</button>
         <button disabled={isRegenerating || isDeleting} onClick={() => input.onRegenerateInvite?.(driver.id)} type="button">
-          {isRegenerating ? 're-login…' : 're-login'}
+          {isRegenerating ? t.reLoginBusy : t.reLogin}
         </button>
         <button className="danger subtle" disabled={isDeleting || isRegenerating} onClick={() => input.onDelete?.(driver)} type="button">
-          {isDeleting ? 'delete…' : 'delete'}
+          {isDeleting ? t.deleteBusy : t.delete}
         </button>
       </div>
     </div>
   );
 }
 
-export function buildDriverInviteMessage(driver: DriverDto): string {
+export function buildDriverInviteMessage(driver: DriverDto, locale: string | null | undefined = 'en-CA'): string {
+  const t = getDriversCopy(locale);
   return [
-    DRIVER_APP_DOWNLOAD_LINK_PLACEHOLDER,
-    `Authentication code: ${driver.inviteCode ?? ''}`,
+    t.inviteMessageLink,
+    `${t.authenticationCode}: ${driver.inviteCode ?? ''}`,
   ].join('\n');
 }
 
-export function formatDriverAuthLabel(driver: Pick<DriverDto, 'appLinked' | 'authStatus'>): string {
-  if (driver.appLinked || driver.authStatus === 'APP_LINKED') return 'Linked';
-  return 'Invite pending';
+export function formatDriverAuthLabel(driver: Pick<DriverDto, 'appLinked' | 'authStatus'>, locale: string | null | undefined = 'en-CA'): string {
+  const t = getDriversCopy(locale);
+  if (driver.appLinked || driver.authStatus === 'APP_LINKED') return t.linked;
+  return t.invitePending;
 }
 
-export function formatDriverStatus(driver: Pick<DriverDto, 'status'>): string {
-  if (driver.status === 'PENDING') return 'Pending';
-  if (driver.status === 'ACTIVE') return 'Active';
+export function formatDriverStatus(driver: Pick<DriverDto, 'status'>, locale: string | null | undefined = 'en-CA'): string {
+  const t = getDriversCopy(locale);
+  if (driver.status === 'PENDING') return t.statusLabel.pending;
+  if (driver.status === 'ACTIVE') return t.statusLabel.active;
   return driver.status;
 }
 

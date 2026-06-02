@@ -20,7 +20,7 @@ export function emptySettings(bootstrap: BootstrapPayload): StoreSettingsDto {
     defaultDepotAddress: null,
     defaultDepotLatitude: null,
     defaultDepotLongitude: null,
-    locale: 'en-CA',
+    locale: bootstrap.locale === 'ko-KR' ? 'ko-KR' : 'en-CA',
     routeScopeConfig: defaultRouteScopeConfig(),
     shopDomain: bootstrap.shopDomain ?? ''
   };
