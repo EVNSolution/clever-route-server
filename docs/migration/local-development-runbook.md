@@ -4,10 +4,12 @@ Parent workspace:
 
 ```text
 04_CLEVER_Route/
-  clever-route-server/   # main route server repo
-  shopify-clever/        # legacy Shopify monorepo/source baseline
-  clever-driver-app/     # mobile app repo; preserve existing WIP
+  clever-route-server/   # active Route Ops monorepo
+  clever-driver-app/     # sibling mobile app repo; preserve existing WIP
   worktrees/             # disposable local worktrees, ignored
+
+05_CLEVER_Shopify/
+  shopify-clever/        # relocated legacy Shopify reference/backup repo
 ```
 
 ## Ports
@@ -26,7 +28,7 @@ Use explicit project names if running main and legacy stacks on the same machine
 docker compose -p clever-route-server -f infra/compose/docker-compose.prod.yml config
 ```
 
-Keep legacy Shopify compose project names separate, for example `shopify-clever-legacy`.
+If the relocated Shopify reference repo is run for comparison, keep its compose project name separate, for example `shopify-clever-legacy`.
 
 ## Env templates
 
@@ -62,5 +64,4 @@ rm -f infra/env/delivery-api.env
 rm -rf apps/delivery-api/dist apps/delivery-api/coverage apps/delivery-api/.vitest
 ```
 
-Do not delete or reset `shopify-clever` or `clever-driver-app` from this repo's
-workflow.
+Do not delete or reset `../05_CLEVER_Shopify/shopify-clever` or `clever-driver-app` from this workflow. Shopify is reference-only and no longer part of the active Route workspace.

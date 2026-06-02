@@ -4,7 +4,11 @@ Date: 2026-05-21
 
 ## Imported source
 
+This document records the historical delivery-api bootstrap. It does not make Shopify an active Route Ops implementation target.
+
+
 - Source repo: `EVNSolution/shopify-clever`
+- Local reference path after architecture separation: `../05_CLEVER_Shopify/shopify-clever`
 - Source path: `apps/delivery-api`
 - Source baseline branch: `main`
 - Source baseline commit: `0bab133 Keep route planning filters from deleting user intent`
@@ -21,7 +25,7 @@ Date: 2026-05-21
 - `apps/delivery-api/docs/api`
 - delivery API build/test config and Dockerfile
 
-## Intentionally not imported
+## Intentionally not imported into the active Route workspace
 
 - Shopify embedded admin app (`apps/shopify-app`)
 - Shopify CLI app configuration (`shopify.app*.toml`)

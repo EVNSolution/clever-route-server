@@ -100,6 +100,10 @@ for (const [path, text] of otherWorkflows) {
 assert(!/id-token:\s*write/.test(publish), 'publish workflow must not request id-token:write for deploy role');
 assert(!/id-token:\s*write/.test(ci), 'ci workflow must not request id-token:write for deploy role');
 assert(!/actions:\s*read/.test(publish), 'publish workflow must not request actions:read for deploy provenance checks');
+assert(publish.includes('FRONTEND_STATIC_IMAGE'), 'publish workflow must define a frontend static image repo');
+assert(publish.includes('apps/route-ops-web/Dockerfile'), 'publish workflow must build the Route Ops web static Dockerfile');
+assert(publish.includes('org.clever-route.route-ops-web-static-sha'), 'publish workflow must label the frontend static artifact SHA');
+assert(publish.includes('org.clever-route.image-role=route-ops-web-static'), 'publish workflow must label the frontend static image role');
 
 assert(wrapper.includes('ROUTE_OPS_DEPLOY_LOCK_HELD=1'), 'wrapper must export lock-held marker');
 assert(wrapper.includes('ROUTE_OPS_COMPOSE_PROJECT_NAME="${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}"'), 'wrapper must default Route Ops compose project name to clever-route');
@@ -107,11 +111,13 @@ assert(wrapper.includes('ROUTE_OPS_COMPOSE_PROJECT_NAME must be exactly clever-r
 assert(wrapper.includes('COMPOSE_PROJECT_NAME="$ROUTE_OPS_COMPOSE_PROJECT_NAME"'), 'wrapper must export COMPOSE_PROJECT_NAME as a secondary guard');
 assert(wrapper.includes('CLEVER_ADMIN_WEB_LOGIN_SECRET'), 'wrapper must read host-local admin secret key');
 assert(wrapper.includes('PUBLISH_EVIDENCE_URL'), 'wrapper must validate and record publish evidence URL when provided');
+assert(wrapper.includes('ROUTE_OPS_WEB_STATIC_IMAGE'), 'wrapper must derive and validate the frontend static image');
+assert(wrapper.includes('ROUTE_OPS_WEB_STATIC_VOLUME'), 'wrapper must derive and validate the SHA-scoped frontend static volume');
 assert(!wrapper.includes('set -x'), 'wrapper must not enable shell xtrace');
 assert(/ROUTE_OPS_SMOKE_LOGIN_SECRET="\$value"/.test(wrapper), 'wrapper must export smoke secret from parsed local value');
 
 assert(imageDeploy.includes('ensure_deploy_disk_headroom "pre-pull"'), 'image deploy script must check disk headroom before pulling images');
-assert(imageDeploy.indexOf('ensure_deploy_disk_headroom "pre-pull"') < imageDeploy.indexOf('pull delivery-api delivery-api-migrate'), 'disk headroom check must run before docker compose pull');
+assert(imageDeploy.indexOf('ensure_deploy_disk_headroom "pre-pull"') < imageDeploy.indexOf('pull route-ops-web-static delivery-api delivery-api-migrate'), 'disk headroom check must run before docker compose pull');
 assert(imageDeploy.includes('docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME"'), 'image deploy script must invoke compose with explicit project name');
 assert(imageDeploy.includes('ROUTE_OPS_COMPOSE_PROJECT_NAME="${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}"'), 'image deploy script must default compose project name to clever-route');
 assert(imageDeploy.includes('ROUTE_OPS_COMPOSE_PROJECT_NAME must be exactly clever-route'), 'image deploy script must reject compose project overrides');
@@ -120,6 +126,15 @@ assert(imageDeploy.includes('ROUTE_OPS_DEPLOY_MIN_FREE_MB'), 'image deploy scrip
 assert(imageDeploy.includes('ROUTE_OPS_DEPLOY_MIN_FREE_PERCENT'), 'image deploy script must expose minimum free percent threshold');
 assert(imageDeploy.includes('ROUTE_OPS_RUNTIME_IMAGE_REPO'), 'image deploy script must scope cleanup to the Route Ops runtime image repository');
 assert(imageDeploy.includes('ROUTE_OPS_MIGRATE_IMAGE_REPO'), 'image deploy script must scope cleanup to the Route Ops migrate image repository');
+assert(imageDeploy.includes('ROUTE_OPS_WEB_STATIC_IMAGE_REPO'), 'image deploy script must scope cleanup to the Route Ops web static image repository');
+assert(imageDeploy.includes('ROUTE_OPS_WEB_STATIC_IMAGE'), 'image deploy script must track the frontend static image in deploy metadata');
+assert(imageDeploy.includes('ROUTE_OPS_WEB_STATIC_VOLUME'), 'image deploy script must track the SHA-scoped frontend static volume in deploy metadata');
+assert(imageDeploy.includes('ROUTE_OPS_STATIC_ARTIFACT_STAGED'), 'image deploy script must track static artifact staging separately from backend mutation');
+assert(imageDeploy.includes('ensure_static_artifact_env_file .deploy/current-image.env'), 'image deploy script must normalize legacy current static artifact metadata before mutation');
+assert(imageDeploy.includes('validate_loaded_static_artifact_contract .deploy/candidate-image.env'), 'image deploy script must semantically validate candidate static image and volume before compose mutation');
+assert(imageDeploy.includes('require_candidate_static_volume_isolated_from_current'), 'image deploy script must reject candidate static volumes shared with current metadata');
+assert(imageDeploy.includes('pull route-ops-web-static delivery-api delivery-api-migrate'), 'image deploy script must pull frontend static, runtime, and migrate images together');
+assert(imageDeploy.includes('up --no-build --force-recreate route-ops-web-static'), 'image deploy script must stage the frontend static artifact before backend activation');
 assert(imageDeploy.includes('ensure_route_ops_ingress'), 'image deploy script must force Route Ops ingress back to this repo before smoke');
 assert(imageDeploy.includes('docker image rm "$image"'), 'image deploy cleanup must remove explicit image refs only');
 assert(!imageDeploy.includes('docker system prune'), 'image deploy cleanup must not use docker system prune');
@@ -128,6 +143,14 @@ assert(!imageDeploy.includes('docker container prune'), 'image deploy cleanup mu
 assert(imageDeploy.includes('prune_old_route_ops_images "post-promote"'), 'image deploy script must run retention cleanup after promotion');
 
 assert(compose.includes('name: ${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}'), 'production compose file must declare defensive top-level project name');
+assert(compose.includes('route-ops-web-static:'), 'production compose must declare the Route Ops web static artifact service');
+assert(compose.includes('ROUTE_OPS_WEB_STATIC_IMAGE'), 'production compose must require the frontend static image variable');
+assert(compose.includes('ROUTE_OPS_WEB_STATIC_VOLUME'), 'production compose must require a SHA-scoped frontend static volume variable');
+assert(compose.includes('$$staging'), 'production compose static handoff command must escape shell variables from compose interpolation');
+assert(compose.includes('route-ops-web-static:/app/external/route-ops-web:ro'), 'delivery-api must mount the frontend static artifact read-only');
+assert(imageRollback.includes('ROUTE_OPS_ROLLBACK_STATIC_ARTIFACT_STAGED'), 'rollback script must track static artifact staging separately from backend mutation');
+assert(imageRollback.includes('validate_loaded_static_artifact_contract .deploy/candidate-image.env'), 'rollback script must semantically validate candidate static image and volume before compose mutation');
+assert(imageRollback.includes('require_candidate_static_volume_isolated_from_rollback_from'), 'rollback script must reject candidate static volumes shared with pre-rollback current metadata');
 assert(imageRollback.includes('ROUTE_OPS_COMPOSE_PROJECT_NAME must be exactly clever-route'), 'rollback script must reject compose project overrides');
 assert(imageRollback.includes('enforce_no_legacy_route_ops_compose_project'), 'rollback script must fail closed when legacy implicit Route Ops compose containers are still running');
 assert(smoke.includes('/admin/ui/app/api/drivers?shopDomain=${encodeURIComponent(shopDomain)}'), 'production smoke must include shopDomain when checking Drivers API');
@@ -148,11 +171,20 @@ for (const [path, text] of [
   assertNoImplicitProdCompose(path, text);
 }
 
+assert(githubDoc.includes('route-ops-web-static'), 'GitHub deploy docs must include frontend static artifact identity');
+assert(githubDoc.includes('ROUTE_OPS_WEB_STATIC_IMAGE'), 'GitHub deploy docs must include frontend static deploy env');
+assert(githubDoc.includes('ROUTE_OPS_WEB_STATIC_VOLUME'), 'GitHub deploy docs must include frontend static volume deploy env');
+
 for (const pattern of [
   'ImageTag.*allowedPattern',
   'PrismaSchemaSha.*allowedPattern',
   'RuntimeImage.*allowedPattern',
   'MigrateImage.*allowedPattern',
+  'route-ops-web-static',
+  'clever-route-server-route-ops-web-static:<sha>',
+  'ROUTE_OPS_WEB_STATIC_IMAGE',
+  'ROUTE_OPS_WEB_STATIC_VOLUME',
+  'SHA-scoped',
   'DocumentVersion',
   'SSM_ImageTag',
   'SSM_PrismaSchemaSha',

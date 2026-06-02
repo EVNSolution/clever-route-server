@@ -32,7 +32,7 @@ jobs:
               files=$(git ls-files)
             fi
           fi
-          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/.*|apps/delivery-api/Dockerfile|apps/delivery-api/src/routes/admin-commerce-connections-ui\.routes\.ts|apps/delivery-api/tests/admin-commerce-connections-ui\.routes\.test\.ts|infra/compose/docker-compose\.prod\.yml|infra/env/delivery-api\.env\.example|infra/env/deploy-image\.env\.example|scripts/(guard-route-ops-deploy-scope|check-ignore-hygiene|scan-secrets|smoke-route-ops-production|deploy-route-ops-image|rollback-route-ops-image|ssm-route-ops-deploy|osrm-ontario|validate-route-ops-ssm-deploy)\.(mjs|sh)|tests/deploy/(ssm-route-ops-deploy|deploy-route-ops-image-disk-guard)\.test\.sh|docs/(deployment/(route-ops-github-deploy|route-ops-ssm-deploy|route-ops-osrm-ontario)\.md|development/script-tooling\.md)|\.github/workflows/ci\.yml|\.github/workflows/route-ops-publish\.yml|\.github/workflows/route-ops-ssm-deploy\.yml|\.gitignore|\.dockerignore|\.gitleaks\.toml)$'; then
+          if printf '%s\n' "$files" | grep -Eq '^(AGENTS\.md|apps/route-ops-web/.*|apps/delivery-api/AGENTS\.md|apps/delivery-api/Dockerfile|apps/delivery-api/src/routes/admin-commerce-connections-ui\.routes\.ts|apps/delivery-api/tests/admin-commerce-connections-ui\.routes\.test\.ts|infra/compose/docker-compose\.prod\.yml|infra/env/delivery-api\.env\.example|infra/env/deploy-image\.env\.example|scripts/(guard-route-ops-deploy-scope|check-ignore-hygiene|scan-secrets|smoke-route-ops-production|deploy-route-ops-image|rollback-route-ops-image|ssm-route-ops-deploy|osrm-ontario|validate-route-ops-ssm-deploy)\.(mjs|sh)|tests/deploy/(ssm-route-ops-deploy|deploy-route-ops-image-disk-guard)\.test\.sh|docs/(architecture/.*|migration/(local-development-runbook|source-inventory)\.md|deployment/(route-ops-github-deploy|route-ops-ssm-deploy|route-ops-osrm-ontario)\.md|development/script-tooling\.md)|\.github/workflows/ci\.yml|\.github/workflows/route-ops-publish\.yml|\.github/workflows/route-ops-ssm-deploy\.yml|\.gitignore|\.dockerignore|\.gitleaks\.toml)$'; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -212,5 +212,7 @@ jobs:
           ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route \
           DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api:ci \
           DELIVERY_API_MIGRATE_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:ci \
+          ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static:ci \
+          ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-ci \
           docker compose -p clever-route -f infra/compose/docker-compose.prod.yml config --quiet
           rm -f infra/env/delivery-api.env

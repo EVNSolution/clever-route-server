@@ -14,12 +14,34 @@ services:
       - caddy-data:/data
       - caddy-config:/config
 
+  route-ops-web-static:
+    image: ${ROUTE_OPS_WEB_STATIC_IMAGE:?ROUTE_OPS_WEB_STATIC_IMAGE is required}
+    command:
+      - sh
+      - -c
+      - >-
+        set -eu; staging=/route-ops-web/.next;
+        rm -rf "$$staging"; mkdir -p "$$staging";
+        cp -a /opt/route-ops-web/dist "$$staging/dist";
+        cp -a /opt/route-ops-web/public "$$staging/public";
+        find "$$staging" -type d -exec chmod 0555 {} +;
+        find "$$staging" -type f -exec chmod 0444 {} +;
+        rm -rf /route-ops-web/dist /route-ops-web/public;
+        mv "$$staging/dist" /route-ops-web/dist;
+        mv "$$staging/public" /route-ops-web/public;
+        rmdir "$$staging"
+    restart: "no"
+    volumes:
+      - route-ops-web-static:/route-ops-web
+
   delivery-api:
     image: ${DELIVERY_API_IMAGE:?DELIVERY_API_IMAGE is required}
     depends_on:
       postgres:
         condition: service_healthy
       delivery-api-migrate:
+        condition: service_completed_successfully
+      route-ops-web-static:
         condition: service_completed_successfully
     env_file:
       - ../env/delivery-api.env
@@ -28,6 +50,7 @@ services:
       PORT: 3000
     restart: unless-stopped
     volumes:
+      - route-ops-web-static:/app/external/route-ops-web:ro
       - /srv/clever-route-server/data/driver-proof-media:/app/var/driver-proof-media
 
   delivery-api-migrate:
@@ -78,3 +101,5 @@ services:
 volumes:
   caddy-data:
   caddy-config:
+  route-ops-web-static:
+    name: ${ROUTE_OPS_WEB_STATIC_VOLUME:?ROUTE_OPS_WEB_STATIC_VOLUME is required}

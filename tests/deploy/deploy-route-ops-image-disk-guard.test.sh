@@ -12,8 +12,13 @@ ACTIVE_TAG="4444444444444444444444444444444444444444"
 SCHEMA_SHA="abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
 RUNTIME_REPO="ghcr.io/evnsolution/clever-route-server-delivery-api"
 MIGRATE_REPO="ghcr.io/evnsolution/clever-route-server-delivery-api-migrate"
+STATIC_REPO="ghcr.io/evnsolution/clever-route-server-route-ops-web-static"
 RUNTIME_IMAGE="${RUNTIME_REPO}:${IMAGE_TAG}"
 MIGRATE_IMAGE="${MIGRATE_REPO}:${IMAGE_TAG}"
+STATIC_IMAGE="${STATIC_REPO}:${IMAGE_TAG}"
+STATIC_VOLUME="clever-route-route-ops-web-static-${IMAGE_TAG}"
+CURRENT_STATIC_VOLUME="clever-route-route-ops-web-static-${CURRENT_TAG}"
+PREVIOUS_STATIC_VOLUME="clever-route-route-ops-web-static-${PREVIOUS_TAG}"
 
 make_fake_bin() {
   local tmp="$1"
@@ -88,6 +93,12 @@ case "${1:-}" in
             echo "ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:2222222222222222222222222222222222222222"
             echo "ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:3333333333333333333333333333333333333333"
             ;;
+          ghcr.io/evnsolution/clever-route-server-route-ops-web-static)
+            echo "ghcr.io/evnsolution/clever-route-server-route-ops-web-static:0123456789abcdef0123456789abcdef01234567"
+            echo "ghcr.io/evnsolution/clever-route-server-route-ops-web-static:1111111111111111111111111111111111111111"
+            echo "ghcr.io/evnsolution/clever-route-server-route-ops-web-static:2222222222222222222222222222222222222222"
+            echo "ghcr.io/evnsolution/clever-route-server-route-ops-web-static:3333333333333333333333333333333333333333"
+            ;;
         esac
         ;;
       inspect)
@@ -107,6 +118,7 @@ case "${1:-}" in
           *'org.clever-route.image-role'*)
             case "$image" in
               *delivery-api-migrate*) echo "migrate" ;;
+              *route-ops-web-static*) echo "route-ops-web-static" ;;
               *) echo "runtime" ;;
             esac
             ;;
@@ -121,7 +133,27 @@ case "${1:-}" in
     esac
     ;;
   compose)
-    echo "compose ${*:2}" >> "$state/compose.log"
+    args="${*:2}"
+    echo "compose ${args}" >> "$state/compose.log"
+    env_file=""
+    previous=""
+    for token in "${@:2}"; do
+      if [ "$previous" = "--env-file" ]; then
+        env_file="$token"
+        break
+      fi
+      previous="$token"
+    done
+    if [ -n "$env_file" ] && [ -f "$env_file" ]; then
+      volume_line="$(grep -m1 '^ROUTE_OPS_WEB_STATIC_VOLUME=' "$env_file" || true)"
+      echo "env-file ${env_file} ${volume_line}" >> "$state/compose-env.log"
+    fi
+    if [[ "$args" == *"up --no-build --force-recreate route-ops-web-static"* ]] && [ "${FAKE_STATIC_UP_FAIL:-0}" = "1" ]; then
+      exit 17
+    fi
+    if [[ "$args" == *"run --rm delivery-api-migrate"* ]] && [ "${FAKE_MIGRATE_FAIL:-0}" = "1" ]; then
+      exit 18
+    fi
     ;;
   run)
     echo "run ${*:2}" >> "$state/docker-run.log"
@@ -169,12 +201,16 @@ prepare_app_dir() {
 IMAGE_TAG=${CURRENT_TAG}
 DELIVERY_API_IMAGE=${RUNTIME_REPO}:${CURRENT_TAG}
 DELIVERY_API_MIGRATE_IMAGE=${MIGRATE_REPO}:${CURRENT_TAG}
+ROUTE_OPS_WEB_STATIC_IMAGE=${STATIC_REPO}:${CURRENT_TAG}
+ROUTE_OPS_WEB_STATIC_VOLUME=${CURRENT_STATIC_VOLUME}
 PRISMA_SCHEMA_SHA=${SCHEMA_SHA}
 EOF_CURRENT
   cat > "$tmp/.deploy/previous-image.env" <<EOF_PREVIOUS
 IMAGE_TAG=${PREVIOUS_TAG}
 DELIVERY_API_IMAGE=${RUNTIME_REPO}:${PREVIOUS_TAG}
 DELIVERY_API_MIGRATE_IMAGE=${MIGRATE_REPO}:${PREVIOUS_TAG}
+ROUTE_OPS_WEB_STATIC_IMAGE=${STATIC_REPO}:${PREVIOUS_TAG}
+ROUTE_OPS_WEB_STATIC_VOLUME=${PREVIOUS_STATIC_VOLUME}
 PRISMA_SCHEMA_SHA=${SCHEMA_SHA}
 EOF_PREVIOUS
   touch "$tmp/infra/compose/docker-compose.prod.yml" "$tmp/scripts/smoke-route-ops-production.mjs"
@@ -205,11 +241,13 @@ run_success_case() {
 
   grep -q "${RUNTIME_REPO}:${STALE_TAG}" "$tmp/state/removed.log"
   grep -q "${MIGRATE_REPO}:${STALE_TAG}" "$tmp/state/removed.log"
+  grep -q "${STATIC_REPO}:${STALE_TAG}" "$tmp/state/removed.log"
   for protected in \
     "${RUNTIME_REPO}:${CURRENT_TAG}" \
     "${MIGRATE_REPO}:${CURRENT_TAG}" \
     "${RUNTIME_IMAGE}" \
     "${MIGRATE_IMAGE}" \
+    "${STATIC_IMAGE}" \
     "${RUNTIME_REPO}:${ACTIVE_TAG}"; do
     if grep -q "$protected" "$tmp/state/removed.log"; then
       echo "protected image was removed: $protected" >&2
@@ -218,10 +256,14 @@ run_success_case() {
   done
   grep -q "DELIVERY_API_IMAGE=${RUNTIME_IMAGE}" "$tmp/.deploy/current-image.env"
   grep -q "DELIVERY_API_MIGRATE_IMAGE=${MIGRATE_IMAGE}" "$tmp/.deploy/current-image.env"
+  grep -q "ROUTE_OPS_WEB_STATIC_IMAGE=${STATIC_IMAGE}" "$tmp/.deploy/current-image.env"
+  grep -q "ROUTE_OPS_WEB_STATIC_VOLUME=${STATIC_VOLUME}" "$tmp/.deploy/current-image.env"
   grep -q "DELIVERY_API_IMAGE=${RUNTIME_REPO}:${CURRENT_TAG}" "$tmp/.deploy/previous-image.env"
   grep -q "DELIVERY_API_MIGRATE_IMAGE=${MIGRATE_REPO}:${CURRENT_TAG}" "$tmp/.deploy/previous-image.env"
+  grep -q "ROUTE_OPS_WEB_STATIC_VOLUME=${CURRENT_STATIC_VOLUME}" "$tmp/.deploy/previous-image.env"
   grep -q -- "-p clever-route" "$tmp/state/compose.log"
-  grep -q "pull delivery-api delivery-api-migrate" "$tmp/state/compose.log"
+  grep -q "pull route-ops-web-static delivery-api delivery-api-migrate" "$tmp/state/compose.log"
+  grep -q "up --no-build --force-recreate route-ops-web-static" "$tmp/state/compose.log"
   grep -q "up -d --no-build --force-recreate --no-deps caddy" "$tmp/state/compose.log"
   if grep -q "compose --env-file" "$tmp/state/docker.log"; then
     echo "compose command omitted explicit project name" >&2
@@ -256,6 +298,7 @@ run_failure_case() {
     PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
     DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
     DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
+    ROUTE_OPS_WEB_STATIC_IMAGE="$STATIC_IMAGE" \
       scripts/deploy-route-ops-image.sh > "$tmp/output.log" 2>&1; then
     echo "low disk deploy unexpectedly passed" >&2
     exit 1
@@ -289,6 +332,7 @@ run_invalid_project_case() {
     PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
     DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
     DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
+    ROUTE_OPS_WEB_STATIC_IMAGE="$STATIC_IMAGE" \
       scripts/deploy-route-ops-image.sh > "$tmp/output.log" 2>&1; then
     echo "invalid compose project deploy unexpectedly passed" >&2
     exit 1
@@ -322,6 +366,7 @@ run_legacy_project_guard_case() {
     PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
     DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
     DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
+    ROUTE_OPS_WEB_STATIC_IMAGE="$STATIC_IMAGE" \
       scripts/deploy-route-ops-image.sh > "$tmp/output.log" 2>&1; then
     echo "legacy compose project deploy unexpectedly passed" >&2
     exit 1
@@ -336,9 +381,227 @@ run_legacy_project_guard_case() {
   fi
 }
 
+run_legacy_rollback_metadata_case() {
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-rollback-legacy.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  prepare_app_dir "$tmp"
+  make_fake_bin "$tmp"
+  mkdir -p "$tmp/state"
+
+  grep -v '^ROUTE_OPS_WEB_STATIC_IMAGE=' "$tmp/.deploy/previous-image.env" > "$tmp/.deploy/previous-image.env.legacy"
+  mv "$tmp/.deploy/previous-image.env.legacy" "$tmp/.deploy/previous-image.env"
+  grep -v '^ROUTE_OPS_WEB_STATIC_VOLUME=' "$tmp/.deploy/previous-image.env" > "$tmp/.deploy/previous-image.env.legacy"
+  mv "$tmp/.deploy/previous-image.env.legacy" "$tmp/.deploy/previous-image.env"
+
+  PATH="$tmp/bin:$PATH" \
+  FAKE_DOCKER_STATE="$tmp/state" \
+  FAKE_DOCKER_ROOT="$tmp/docker-root" \
+  APP_DIR="$tmp" \
+  ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1 \
+  ROUTE_OPS_SMOKE_LOGIN_SECRET="unit-test-secret-not-real" \
+    scripts/rollback-route-ops-image.sh > "$tmp/output.log"
+
+  grep -q "ROUTE_OPS_WEB_STATIC_IMAGE=${STATIC_REPO}:${PREVIOUS_TAG}" "$tmp/.deploy/current-image.env"
+  grep -q "ROUTE_OPS_WEB_STATIC_VOLUME=${PREVIOUS_STATIC_VOLUME}" "$tmp/.deploy/current-image.env"
+  grep -q "pull route-ops-web-static delivery-api delivery-api-migrate" "$tmp/state/compose.log"
+  grep -q "up --no-build --force-recreate route-ops-web-static" "$tmp/state/compose.log"
+  grep -q '"routeOpsWebStaticImage":"'"${STATIC_REPO}:${PREVIOUS_TAG}"'"' "$tmp/.deploy/deploy-history.jsonl"
+  grep -q '"routeOpsWebStaticVolume":"'"${PREVIOUS_STATIC_VOLUME}"'"' "$tmp/.deploy/deploy-history.jsonl"
+  if grep -q "Rollback failed before Route Ops service mutation" "$tmp/output.log"; then
+    echo "legacy rollback unexpectedly skipped service mutation" >&2
+    exit 1
+  fi
+}
+
+
+run_deploy_static_failure_restores_current_static_case() {
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-deploy-static-fail.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  prepare_app_dir "$tmp"
+  make_fake_bin "$tmp"
+  mkdir -p "$tmp/state"
+
+  if PATH="$tmp/bin:$PATH"     FAKE_DOCKER_STATE="$tmp/state"     FAKE_DOCKER_ROOT="$tmp/docker-root"     FAKE_DF_MODE="recover"     FAKE_STATIC_UP_FAIL=1     APP_DIR="$tmp"     ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1     ROUTE_OPS_SMOKE_LOGIN_SECRET="unit-test-secret-not-real"     IMAGE_TAG="$IMAGE_TAG"     PRISMA_SCHEMA_SHA="$SCHEMA_SHA"     DELIVERY_API_IMAGE="$RUNTIME_IMAGE"     DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE"     ROUTE_OPS_WEB_STATIC_IMAGE="$STATIC_IMAGE"       scripts/deploy-route-ops-image.sh > "$tmp/output.log" 2>&1; then
+    echo "deploy static failure unexpectedly passed" >&2
+    exit 1
+  fi
+
+  grep -q -- "--env-file .deploy/candidate-image.env .*up --no-build --force-recreate route-ops-web-static" "$tmp/state/compose.log"
+  grep -q "env-file .deploy/candidate-image.env ROUTE_OPS_WEB_STATIC_VOLUME=${STATIC_VOLUME}" "$tmp/state/compose-env.log"
+  grep -q "ROUTE_OPS_WEB_STATIC_VOLUME=${CURRENT_STATIC_VOLUME}" "$tmp/.deploy/current-image.env"
+  if grep -q -- "--env-file .deploy/current-image.env .*up --no-build --force-recreate route-ops-web-static" "$tmp/state/compose.log"; then
+    echo "current static volume was rewritten even though candidate static is isolated by SHA volume" >&2
+    cat "$tmp/state/compose.log" >&2
+    exit 1
+  fi
+  if grep -q "up -d --no-build --force-recreate --no-deps delivery-api" "$tmp/state/compose.log"; then
+    echo "delivery-api was restored or recreated after static-only deploy failure" >&2
+    cat "$tmp/state/compose.log" >&2
+    exit 1
+  fi
+}
+
+run_deploy_migrate_failure_restores_current_static_case() {
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-deploy-migrate-fail.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  prepare_app_dir "$tmp"
+  make_fake_bin "$tmp"
+  mkdir -p "$tmp/state"
+
+  if PATH="$tmp/bin:$PATH"     FAKE_DOCKER_STATE="$tmp/state"     FAKE_DOCKER_ROOT="$tmp/docker-root"     FAKE_DF_MODE="recover"     FAKE_MIGRATE_FAIL=1     APP_DIR="$tmp"     ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1     ROUTE_OPS_SMOKE_LOGIN_SECRET="unit-test-secret-not-real"     IMAGE_TAG="$IMAGE_TAG"     PRISMA_SCHEMA_SHA="$SCHEMA_SHA"     DELIVERY_API_IMAGE="$RUNTIME_IMAGE"     DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE"     ROUTE_OPS_WEB_STATIC_IMAGE="$STATIC_IMAGE"       scripts/deploy-route-ops-image.sh > "$tmp/output.log" 2>&1; then
+    echo "deploy migrate failure unexpectedly passed" >&2
+    exit 1
+  fi
+
+  grep -q -- "--env-file .deploy/candidate-image.env .*run --rm delivery-api-migrate" "$tmp/state/compose.log"
+  grep -q "env-file .deploy/candidate-image.env ROUTE_OPS_WEB_STATIC_VOLUME=${STATIC_VOLUME}" "$tmp/state/compose-env.log"
+  grep -q "ROUTE_OPS_WEB_STATIC_VOLUME=${CURRENT_STATIC_VOLUME}" "$tmp/.deploy/current-image.env"
+  if grep -q -- "--env-file .deploy/current-image.env .*up --no-build --force-recreate route-ops-web-static" "$tmp/state/compose.log"; then
+    echo "current static volume was rewritten after candidate migration failure" >&2
+    cat "$tmp/state/compose.log" >&2
+    exit 1
+  fi
+  if grep -q "up -d --no-build --force-recreate --no-deps delivery-api" "$tmp/state/compose.log"; then
+    echo "delivery-api was restored or recreated before backend mutation" >&2
+    cat "$tmp/state/compose.log" >&2
+    exit 1
+  fi
+}
+
+run_rollback_static_failure_restores_current_static_case() {
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-rollback-static-fail.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  prepare_app_dir "$tmp"
+  make_fake_bin "$tmp"
+  mkdir -p "$tmp/state"
+
+  if PATH="$tmp/bin:$PATH"     FAKE_DOCKER_STATE="$tmp/state"     FAKE_DOCKER_ROOT="$tmp/docker-root"     FAKE_STATIC_UP_FAIL=1     APP_DIR="$tmp"     ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1     ROUTE_OPS_SMOKE_LOGIN_SECRET="unit-test-secret-not-real"       scripts/rollback-route-ops-image.sh > "$tmp/output.log" 2>&1; then
+    echo "rollback static failure unexpectedly passed" >&2
+    exit 1
+  fi
+
+  grep -q -- "--env-file .deploy/candidate-image.env .*up --no-build --force-recreate route-ops-web-static" "$tmp/state/compose.log"
+  grep -q "env-file .deploy/candidate-image.env ROUTE_OPS_WEB_STATIC_VOLUME=${PREVIOUS_STATIC_VOLUME}" "$tmp/state/compose-env.log"
+  grep -q "ROUTE_OPS_WEB_STATIC_VOLUME=${CURRENT_STATIC_VOLUME}" "$tmp/.deploy/rollback-from-image.env"
+  if grep -q -- "--env-file .deploy/rollback-from-image.env .*up --no-build --force-recreate route-ops-web-static" "$tmp/state/compose.log"; then
+    echo "pre-rollback static volume was rewritten even though rollback candidate is isolated by SHA volume" >&2
+    cat "$tmp/state/compose.log" >&2
+    exit 1
+  fi
+  if grep -q "up -d --no-build --force-recreate --no-deps delivery-api" "$tmp/state/compose.log"; then
+    echo "delivery-api was restored or recreated after static-only rollback failure" >&2
+    cat "$tmp/state/compose.log" >&2
+    exit 1
+  fi
+}
+
+run_rollback_migrate_failure_restores_current_static_case() {
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-rollback-migrate-fail.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  prepare_app_dir "$tmp"
+  make_fake_bin "$tmp"
+  mkdir -p "$tmp/state"
+
+  if PATH="$tmp/bin:$PATH"     FAKE_DOCKER_STATE="$tmp/state"     FAKE_DOCKER_ROOT="$tmp/docker-root"     FAKE_MIGRATE_FAIL=1     APP_DIR="$tmp"     ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1     ROUTE_OPS_SMOKE_LOGIN_SECRET="unit-test-secret-not-real"       scripts/rollback-route-ops-image.sh > "$tmp/output.log" 2>&1; then
+    echo "rollback migrate failure unexpectedly passed" >&2
+    exit 1
+  fi
+
+  grep -q -- "--env-file .deploy/candidate-image.env .*run --rm delivery-api-migrate" "$tmp/state/compose.log"
+  grep -q "env-file .deploy/candidate-image.env ROUTE_OPS_WEB_STATIC_VOLUME=${PREVIOUS_STATIC_VOLUME}" "$tmp/state/compose-env.log"
+  grep -q "ROUTE_OPS_WEB_STATIC_VOLUME=${CURRENT_STATIC_VOLUME}" "$tmp/.deploy/rollback-from-image.env"
+  if grep -q -- "--env-file .deploy/rollback-from-image.env .*up --no-build --force-recreate route-ops-web-static" "$tmp/state/compose.log"; then
+    echo "pre-rollback static volume was rewritten after rollback migration failure" >&2
+    cat "$tmp/state/compose.log" >&2
+    exit 1
+  fi
+  if grep -q "up -d --no-build --force-recreate --no-deps delivery-api" "$tmp/state/compose.log"; then
+    echo "delivery-api was restored or recreated before rollback backend mutation" >&2
+    cat "$tmp/state/compose.log" >&2
+    exit 1
+  fi
+}
+
+run_deploy_rejects_shared_current_static_volume_case() {
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-deploy-shared-volume.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  prepare_app_dir "$tmp"
+  make_fake_bin "$tmp"
+  mkdir -p "$tmp/state"
+
+  if PATH="$tmp/bin:$PATH"     FAKE_DOCKER_STATE="$tmp/state"     FAKE_DOCKER_ROOT="$tmp/docker-root"     FAKE_DF_MODE="recover"     APP_DIR="$tmp"     ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1     ROUTE_OPS_SMOKE_LOGIN_SECRET="unit-test-secret-not-real"     IMAGE_TAG="$IMAGE_TAG"     PRISMA_SCHEMA_SHA="$SCHEMA_SHA"     DELIVERY_API_IMAGE="$RUNTIME_IMAGE"     DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE"     ROUTE_OPS_WEB_STATIC_IMAGE="$STATIC_IMAGE"     ROUTE_OPS_WEB_STATIC_VOLUME="$CURRENT_STATIC_VOLUME"       scripts/deploy-route-ops-image.sh > "$tmp/output.log" 2>&1; then
+    echo "deploy with shared current static volume unexpectedly passed" >&2
+    exit 1
+  fi
+
+  grep -q "ROUTE_OPS_WEB_STATIC_VOLUME must be ${STATIC_VOLUME}" "$tmp/output.log"
+  if [ -f "$tmp/state/compose.log" ]; then
+    echo "compose was invoked despite invalid static volume" >&2
+    cat "$tmp/state/compose.log" >&2
+    exit 1
+  fi
+}
+
+run_deploy_rejects_mismatched_static_image_case() {
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-deploy-bad-static-image.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  prepare_app_dir "$tmp"
+  make_fake_bin "$tmp"
+  mkdir -p "$tmp/state"
+
+  if PATH="$tmp/bin:$PATH"     FAKE_DOCKER_STATE="$tmp/state"     FAKE_DOCKER_ROOT="$tmp/docker-root"     FAKE_DF_MODE="recover"     APP_DIR="$tmp"     ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1     ROUTE_OPS_SMOKE_LOGIN_SECRET="unit-test-secret-not-real"     IMAGE_TAG="$IMAGE_TAG"     PRISMA_SCHEMA_SHA="$SCHEMA_SHA"     DELIVERY_API_IMAGE="$RUNTIME_IMAGE"     DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE"     ROUTE_OPS_WEB_STATIC_IMAGE="${STATIC_REPO}:${CURRENT_TAG}"     ROUTE_OPS_WEB_STATIC_VOLUME="$STATIC_VOLUME"       scripts/deploy-route-ops-image.sh > "$tmp/output.log" 2>&1; then
+    echo "deploy with mismatched static image unexpectedly passed" >&2
+    exit 1
+  fi
+
+  grep -q "ROUTE_OPS_WEB_STATIC_IMAGE must match IMAGE_TAG" "$tmp/output.log"
+  if [ -f "$tmp/state/compose.log" ]; then
+    echo "compose was invoked despite mismatched static image" >&2
+    cat "$tmp/state/compose.log" >&2
+    exit 1
+  fi
+}
+
+run_rollback_rejects_shared_current_static_volume_case() {
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-rollback-shared-volume.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  prepare_app_dir "$tmp"
+  make_fake_bin "$tmp"
+  mkdir -p "$tmp/state"
+  # Simulate poisoned previous metadata that would stage rollback static into the current backend's volume.
+  perl -0pi -e 's/ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-2222222222222222222222222222222222222222/ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-1111111111111111111111111111111111111111/' "$tmp/.deploy/previous-image.env"
+
+  if PATH="$tmp/bin:$PATH"     FAKE_DOCKER_STATE="$tmp/state"     FAKE_DOCKER_ROOT="$tmp/docker-root"     APP_DIR="$tmp"     ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1     ROUTE_OPS_SMOKE_LOGIN_SECRET="unit-test-secret-not-real"       scripts/rollback-route-ops-image.sh > "$tmp/output.log" 2>&1; then
+    echo "rollback with shared current static volume unexpectedly passed" >&2
+    exit 1
+  fi
+
+  grep -q "ROUTE_OPS_WEB_STATIC_VOLUME must be ${PREVIOUS_STATIC_VOLUME}" "$tmp/output.log"
+  if [ -f "$tmp/state/compose.log" ]; then
+    echo "compose was invoked despite invalid rollback static volume" >&2
+    cat "$tmp/state/compose.log" >&2
+    exit 1
+  fi
+}
 run_success_case
 run_failure_case
 run_invalid_project_case
 run_legacy_project_guard_case
+run_legacy_rollback_metadata_case
+run_deploy_rejects_shared_current_static_volume_case
+run_deploy_rejects_mismatched_static_image_case
+run_rollback_rejects_shared_current_static_volume_case
+run_deploy_static_failure_restores_current_static_case
+run_deploy_migrate_failure_restores_current_static_case
+run_rollback_static_failure_restores_current_static_case
+run_rollback_migrate_failure_restores_current_static_case
 
 printf '{"ok":true,"test":"deploy-route-ops-image-disk-guard"}\n'

@@ -398,11 +398,17 @@ describe("Admin WooCommerce connection UI routes", () => {
       });
       expect(dashboard.statusCode).toBe(200);
       expect(dashboard.body).toContain("WooCommerce connection setup");
-      expect(dashboard.body).toContain("/admin/ui/app/orders");
-      expect(dashboard.body).toContain("Orders");
-      expect(dashboard.body).toContain("Routes");
-      expect(dashboard.body).toContain("Drivers");
-      expect(dashboard.body).toContain("Settings");
+      expect(dashboard.body).toContain(
+        "/admin/ui/commerce-connections/woocommerce",
+      );
+      expect(dashboard.body).not.toContain("/admin/ui/app/orders");
+      expect(dashboard.body).not.toContain("/admin/ui/app/routes");
+      expect(dashboard.body).not.toContain("/admin/ui/app/drivers");
+      expect(dashboard.body).not.toContain("/admin/ui/app/settings");
+      expect(dashboard.body).not.toContain(">Orders<");
+      expect(dashboard.body).not.toContain(">Routes<");
+      expect(dashboard.body).not.toContain(">Drivers<");
+      expect(dashboard.body).not.toContain(">Settings<");
       expect(dashboard.body).toContain("-apple-system");
 
       const commerce = await app.inject({
@@ -515,6 +521,91 @@ describe("Admin WooCommerce connection UI routes", () => {
       );
       expect(bootstrapData.routerConfig).toEqual(
         expect.objectContaining({ status: "not_configured" }),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("redirects legacy operation GET paths to SPA routes after auth", async () => {
+    const { app } = await createUiHarness();
+    const cases: Array<readonly [string, string]> = [
+      [
+        "/admin/ui/orders?shopDomain=tenant-a.example.test&notice=ready&search=%231001",
+        "/admin/ui/app/orders?shopDomain=tenant-a.example.test&notice=ready&search=%231001",
+      ],
+      [
+        "/admin/ui/route-plans?shopDomain=tenant-a.example.test&deliveryDate=2026-05-30&routePlanId=route-1",
+        "/admin/ui/app/routes?shopDomain=tenant-a.example.test&deliveryDate=2026-05-30&routePlanId=route-1",
+      ],
+      [
+        "/admin/ui/drivers?shopDomain=tenant-a.example.test&notice=driver",
+        "/admin/ui/app/drivers?shopDomain=tenant-a.example.test&notice=driver",
+      ],
+      [
+        "/admin/ui/settings?shopDomain=tenant-a.example.test&error=check",
+        "/admin/ui/app/settings?shopDomain=tenant-a.example.test&error=check",
+      ],
+    ];
+
+    try {
+      for (const [legacyPath] of cases) {
+        const response = await app.inject({ method: "GET", url: legacyPath });
+        expect(response.statusCode).toBe(303);
+        expect(response.headers.location).toBe("/admin/ui/login");
+      }
+
+      const { cookie } = await loginAndReadCsrf(app);
+      for (const [legacyPath, spaPath] of cases) {
+        const response = await app.inject({
+          headers: { cookie },
+          method: "GET",
+          url: legacyPath,
+        });
+        expect(response.statusCode).toBe(303);
+        expect(response.headers.location).toBe(spaPath);
+        expect(response.body).not.toContain("Imported order list");
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("redirects WordPress-launched legacy operation GET paths while preserving query params", async () => {
+    const { app } = await createUiHarness();
+    const { token } = createAdminWebLaunchToken({
+      returnPath: "/admin/ui/app/orders?shopDomain=tenant-a.example.test",
+      sessionSecret: webSessionSecret,
+      shopDomain: "tenant-a.example.test",
+      subject: "wordpress-plugin:tenant-a.example.test",
+    });
+
+    try {
+      const launch = await app.inject({
+        method: "GET",
+        url: `/admin/ui/plugin-launch?token=${encodeURIComponent(token)}`,
+      });
+      expect(launch.statusCode).toBe(303);
+      const cookie = readSetCookie(launch);
+      const response = await app.inject({
+        headers: { cookie },
+        method: "GET",
+        url: "/admin/ui/route-plans?shopDomain=tenant-a.example.test&deliveryDate=2026-05-30&source=wp",
+      });
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toBe(
+        "/admin/ui/app/routes?shopDomain=tenant-a.example.test&deliveryDate=2026-05-30&source=wp",
+      );
+
+      const root = await app.inject({
+        headers: { cookie },
+        method: "GET",
+        url: "/admin/ui?shopDomain=tenant-a.example.test",
+      });
+      expect(root.statusCode).toBe(200);
+      expect(root.body).toContain("Store workspace session active");
+      expect(root.body).toContain(
+        "/admin/ui/app/orders?shopDomain=tenant-a.example.test",
       );
     } finally {
       await app.close();

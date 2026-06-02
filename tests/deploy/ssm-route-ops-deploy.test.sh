@@ -8,6 +8,8 @@ IMAGE_TAG="0123456789abcdef0123456789abcdef01234567"
 SCHEMA_SHA="abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd"
 RUNTIME_IMAGE="ghcr.io/evnsolution/clever-route-server-delivery-api:${IMAGE_TAG}"
 MIGRATE_IMAGE="ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:${IMAGE_TAG}"
+STATIC_IMAGE="ghcr.io/evnsolution/clever-route-server-route-ops-web-static:${IMAGE_TAG}"
+STATIC_VOLUME="clever-route-route-ops-web-static-${IMAGE_TAG}"
 SECRET_VALUE="unit-test-secret-not-real"
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-ssm-test.XXXXXX")"
@@ -27,8 +29,11 @@ set -euo pipefail
 : "${PRISMA_SCHEMA_SHA:?schema sha required}"
 : "${DELIVERY_API_IMAGE:?runtime image required}"
 : "${DELIVERY_API_MIGRATE_IMAGE:?migrate image required}"
+: "${ROUTE_OPS_WEB_STATIC_IMAGE:?frontend static image required}"
+: "${ROUTE_OPS_WEB_STATIC_VOLUME:?frontend static volume required}"
 : "${ROUTE_OPS_COMPOSE_PROJECT_NAME:?compose project required}"
 test "$ROUTE_OPS_COMPOSE_PROJECT_NAME" = "clever-route"
+test "$ROUTE_OPS_WEB_STATIC_VOLUME" = "clever-route-route-ops-web-static-${IMAGE_TAG}"
 if [ "$ROUTE_OPS_SMOKE_LOGIN_SECRET" = "unit-test-secret-not-real" ]; then
   echo "deploy-called tag=${IMAGE_TAG}" > .deploy/fake-result.txt
 else
@@ -47,6 +52,7 @@ IMAGE_TAG="$IMAGE_TAG" \
 PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
 DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
 DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
+ROUTE_OPS_WEB_STATIC_IMAGE="$STATIC_IMAGE" \
 scripts/ssm-route-ops-deploy.sh > "$output"
 
 test -f "$tmp/.deploy/fake-result.txt"
@@ -65,6 +71,7 @@ IMAGE_TAG="$IMAGE_TAG" \
 PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
 DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
 DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
+ROUTE_OPS_WEB_STATIC_IMAGE="$STATIC_IMAGE" \
 scripts/ssm-route-ops-deploy.sh >/dev/null 2>&1; then
   echo "invalid compose project unexpectedly passed" >&2
   exit 1
@@ -77,8 +84,23 @@ IMAGE_TAG="latest" \
 PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
 DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
 DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
+ROUTE_OPS_WEB_STATIC_IMAGE="$STATIC_IMAGE" \
 scripts/ssm-route-ops-deploy.sh >/dev/null 2>&1; then
   echo "invalid tag unexpectedly passed" >&2
+  exit 1
+fi
+
+if APP_DIR="$tmp" \
+ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1 \
+ROUTE_OPS_SKIP_GHCR_LOGIN=1 \
+IMAGE_TAG="$IMAGE_TAG" \
+PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
+DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
+DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
+ROUTE_OPS_WEB_STATIC_IMAGE="$STATIC_IMAGE" \
+ROUTE_OPS_WEB_STATIC_VOLUME="clever-route-route-ops-web-static-wrong" \
+scripts/ssm-route-ops-deploy.sh >/dev/null 2>&1; then
+  echo "invalid static volume unexpectedly passed" >&2
   exit 1
 fi
 
@@ -90,6 +112,7 @@ IMAGE_TAG="$IMAGE_TAG" \
 PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
 DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
 DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
+ROUTE_OPS_WEB_STATIC_IMAGE="$STATIC_IMAGE" \
 scripts/ssm-route-ops-deploy.sh >/dev/null 2>&1; then
   echo "pre-existing lock unexpectedly passed" >&2
   exit 1

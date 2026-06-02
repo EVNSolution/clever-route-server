@@ -8,9 +8,11 @@ Phase 1 is intentionally **publish-only** from GitHub Actions because this repo 
 
 It:
 - runs ignore hygiene, a pinned gitleaks full-history scan plus worktree scan, and Route Ops deploy-scope guard;
+- builds the `route-ops-web-static` target from `apps/route-ops-web/Dockerfile` as a separately identifiable frontend static artifact;
 - builds `runtime` and `migrate` targets from `apps/delivery-api/Dockerfile`;
 - pushes immutable git SHA tags to GHCR;
-- labels both images with `org.opencontainers.image.revision`, `org.clever-route.prisma-schema-sha`, and `org.clever-route.image-role`;
+- labels backend images with `org.opencontainers.image.revision`, `org.clever-route.prisma-schema-sha`, and `org.clever-route.image-role`;
+- labels the frontend static image with `org.opencontainers.image.revision`, `org.clever-route.route-ops-web-static-sha`, and `org.clever-route.image-role=route-ops-web-static`;
 - prints a redacted EC2 command block.
 
 It does **not** SSH to production and does not receive production SSH/admin smoke secrets.
@@ -41,6 +43,8 @@ cat > .deploy/current-image.env <<EOF_IMAGE
 IMAGE_TAG=bootstrap-local
 DELIVERY_API_IMAGE=clever-route-server-delivery-api:local
 DELIVERY_API_MIGRATE_IMAGE=clever-route-server-delivery-api-migrate:local
+ROUTE_OPS_WEB_STATIC_IMAGE=clever-route-server-route-ops-web-static:local
+ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-bootstrap-local
 PRISMA_SCHEMA_SHA=${PRISMA_SCHEMA_SHA}
 EOF_IMAGE
 set -a; source .deploy/current-image.env; set +a
@@ -59,6 +63,8 @@ export IMAGE_TAG=<immutable-git-sha-from-publish>
 export PRISMA_SCHEMA_SHA=<schema-sha-from-publish>
 export DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api:${IMAGE_TAG}
 export DELIVERY_API_MIGRATE_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:${IMAGE_TAG}
+export ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static:${IMAGE_TAG}
+export ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-${IMAGE_TAG}
 export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
 export ROUTE_OPS_SMOKE_BASE_URL=https://clever-route.cleversystem.ai
 export ROUTE_OPS_SMOKE_SHOP_DOMAIN=dev1.tomatonofood.com
@@ -66,7 +72,7 @@ export ROUTE_OPS_SMOKE_LOGIN_SECRET=<read locally from host secret manager, neve
 scripts/deploy-route-ops-image.sh
 ```
 
-The deploy script prepares `.deploy/candidate-image.env`, pulls both images, verifies labels and schema SHA, runs the existing migration command as a schema-gated no-op for this Route Ops lane, recreates only `delivery-api`, runs authenticated smoke, and promotes metadata only after smoke succeeds. On failure it restores `.deploy/current-image.env`.
+The deploy script prepares `.deploy/candidate-image.env`, pulls the frontend static, runtime, and migrate images, stages the frontend artifact into a SHA-scoped `ROUTE_OPS_WEB_STATIC_VOLUME`, verifies labels and schema SHA, runs the existing migration command as a schema-gated no-op for this Route Ops lane, recreates only `delivery-api` to switch to the candidate volume, runs authenticated smoke, and promotes metadata only after smoke succeeds. On failure before backend recreation, the running backend keeps its previous static volume.
 
 ## Smoke coverage
 
@@ -90,15 +96,20 @@ export ROUTE_OPS_SMOKE_LOGIN_SECRET=<read locally, never commit>
 scripts/rollback-route-ops-image.sh
 ```
 
-Rollback uses `.deploy/previous-image.env`, verifies the schema fingerprint matches the current lane, activates the previous image, runs the same smoke, and restores the pre-rollback current image if rollback smoke fails.
+Rollback uses `.deploy/previous-image.env`, verifies the schema fingerprint matches the current lane, stages the previous frontend static artifact into its own SHA-scoped volume, activates the previous image, runs the same smoke, and restores the pre-rollback current image if rollback smoke fails. During the first static-artifact cutover, legacy image metadata that lacks `ROUTE_OPS_WEB_STATIC_IMAGE` or `ROUTE_OPS_WEB_STATIC_VOLUME` is normalized from the immutable `IMAGE_TAG` before backend service mutation; if the tag is not a 40-hex git SHA, rollback fails closed before touching services.
 
 ## Secrets and billing constraints
 
 - No production SSH key, admin smoke secret, cookie, or runtime `.env` is stored in GitHub.
 - Use a host-local GHCR read token in Docker credential storage.
+- `ROUTE_OPS_WEB_STATIC_IMAGE` and `ROUTE_OPS_WEB_STATIC_VOLUME` are deploy metadata, not runtime secrets; both must use the same immutable git SHA tag as the backend images.
 - Keep Actions manual, timeout-bounded, and artifact-light; redacted summaries only with one-day retention.
 - If Actions quota is exhausted, use a local maintainer build/push or the existing emergency deploy path after separate approval.
 
 ## SSM deploy follow-up
 
 The next approved deployment model is documented in `docs/deployment/route-ops-ssm-deploy.md`: GitHub Actions `workflow_dispatch` uses OIDC to assume an AWS deploy role, invokes a custom constrained SSM document, and runs the host-local deploy wrapper. Production execution remains separately gated; do not store production secrets in GitHub or SSM command parameters.
+
+## Frontend static artifact boundary
+
+Route Ops web is no longer primarily baked into the `delivery-api` runtime image. The frontend build is published as `ghcr.io/evnsolution/clever-route-server-route-ops-web-static:<git-sha>`. Compose runs the `route-ops-web-static` one-shot service to copy `/opt/route-ops-web/dist` and `/opt/route-ops-web/public` into the `route-ops-web-static` named volume. `delivery-api` mounts that volume read-only at `/app/external/route-ops-web` and serves the authenticated shell/assets from `ROUTE_OPS_WEB_DIST_PATH` and `ROUTE_OPS_WEB_PUBLIC_PATH`.

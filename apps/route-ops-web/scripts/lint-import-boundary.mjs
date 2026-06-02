@@ -10,6 +10,7 @@ const forbidden = [
   /app-bridge/u,
   /gid:\/\/shopify\//iu,
   /\.\.\/shopify-clever/u,
+  /05_CLEVER_Shopify/u,
   /shopify-clever\/apps\/shopify-app/u
 ];
 const extensions = new Set(['.ts', '.tsx', '.js', '.jsx']);

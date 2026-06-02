@@ -171,7 +171,7 @@ mainSteps:
       timeoutSeconds: '900'
       runCommand:
         - 'cd /srv/clever-route-server'
-        - 'IMAGE_TAG="$SSM_ImageTag" PRISMA_SCHEMA_SHA="$SSM_PrismaSchemaSha" DELIVERY_API_IMAGE="$SSM_RuntimeImage" DELIVERY_API_MIGRATE_IMAGE="$SSM_MigrateImage" PUBLISH_EVIDENCE_URL="$SSM_PublishEvidence" scripts/ssm-route-ops-deploy.sh'
+        - 'IMAGE_TAG="$SSM_ImageTag" PRISMA_SCHEMA_SHA="$SSM_PrismaSchemaSha" DELIVERY_API_IMAGE="$SSM_RuntimeImage" DELIVERY_API_MIGRATE_IMAGE="$SSM_MigrateImage" ROUTE_OPS_WEB_STATIC_IMAGE="ghcr.io/evnsolution/clever-route-server-route-ops-web-static:$SSM_ImageTag" ROUTE_OPS_WEB_STATIC_VOLUME="clever-route-route-ops-web-static-$SSM_ImageTag" PUBLISH_EVIDENCE_URL="$SSM_PublishEvidence" scripts/ssm-route-ops-deploy.sh'
 ```
 
 Pin the reviewed `DocumentVersion` in GitHub variable `SSM_ROUTE_OPS_DOCUMENT_VERSION` and update it deliberately when the document changes.
@@ -180,12 +180,12 @@ Pin the reviewed `DocumentVersion` in GitHub variable `SSM_ROUTE_OPS_DOCUMENT_VE
 
 `scripts/ssm-route-ops-deploy.sh` runs on the EC2 host. It:
 
-- validates image tag/schema/image coordinates again;
+- validates image tag/schema/image coordinates again, including the `route-ops-web-static` frontend artifact image and SHA-scoped Docker volume derived from the immutable git SHA;
 - exports `ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route` by default and all production compose calls use `docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME"`; the top-level compose `name:` is defense in depth, not the primary selector;
 - takes an exclusive `.deploy/route-ops-deploy.lock` lock before `.deploy/*` mutation;
 - reads `CLEVER_ADMIN_WEB_LOGIN_SECRET` locally from `infra/env/delivery-api.env` if `ROUTE_OPS_SMOKE_LOGIN_SECRET` is not already set by a host-local secure source;
 - never prints the secret;
-- calls `scripts/deploy-route-ops-image.sh`;
+- calls `scripts/deploy-route-ops-image.sh`, which stages the `route-ops-web-static` artifact into a SHA-scoped named volume before recreating `delivery-api` to switch mounts;
 - records non-secret `PUBLISH_EVIDENCE_URL` to `.deploy/deploy-evidence.jsonl` after a successful deploy.
 
 `deploy-route-ops-image.sh` and `rollback-route-ops-image.sh` also acquire the same lock unless a wrapper already holds it. This keeps emergency Session Manager commands from racing the workflow path.
@@ -321,7 +321,7 @@ After cleanup has succeeded, rollback stays within the `clever-route` project us
 
 `deploy-route-ops-image.sh` owns the production Docker image retention guard so normal SSM deploys do not depend on manual host cleanup.
 
-Before `docker compose pull delivery-api delivery-api-migrate`, the script checks `/` and Docker's root directory from `docker info --format '{{.DockerRootDir}}'`. The defaults are:
+Before `docker compose pull route-ops-web-static delivery-api delivery-api-migrate`, the script checks `/` and Docker's root directory from `docker info --format '{{.DockerRootDir}}'`. The defaults are:
 
 ```text
 ROUTE_OPS_DEPLOY_MIN_FREE_MB=4096
@@ -343,9 +343,10 @@ It may remove only old SHA-tagged images from:
 ```text
 ghcr.io/evnsolution/clever-route-server-delivery-api:<sha>
 ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:<sha>
+ghcr.io/evnsolution/clever-route-server-route-ops-web-static:<sha>
 ```
 
-The cleanup must not run `docker system prune`, `docker volume prune`, or `docker container prune`; it removes explicit stale Route Ops image refs only. A post-promote cleanup runs after smoke succeeds so the host keeps the current image and one previous rollback image by default.
+The cleanup must not run `docker system prune`, `docker volume prune`, or `docker container prune`; it removes explicit stale Route Ops image refs only. Static artifacts use SHA-scoped named volumes (`ROUTE_OPS_WEB_STATIC_VOLUME`) so staging a candidate frontend does not mutate the volume currently mounted by the running backend. A post-promote cleanup runs after smoke succeeds so the host keeps the current image and one previous rollback image by default.
 
 Optional host-side knobs:
 
@@ -384,7 +385,7 @@ export ROUTE_OPS_SMOKE_LOGIN_SECRET=<read locally; never paste into GitHub or SS
 scripts/rollback-route-ops-image.sh
 ```
 
-The rollback script uses `.deploy/previous-image.env`, checks schema compatibility, runs smoke before promotion, and restores pre-rollback current metadata on failure.
+The rollback script uses `.deploy/previous-image.env`, checks schema compatibility, runs smoke before promotion, and restores pre-rollback current metadata on failure. During the first static-artifact cutover, rollback normalizes legacy `.deploy/current-image.env` or `.deploy/previous-image.env` files that lack `ROUTE_OPS_WEB_STATIC_IMAGE` or `ROUTE_OPS_WEB_STATIC_VOLUME` by deriving `ghcr.io/evnsolution/clever-route-server-route-ops-web-static:<IMAGE_TAG>` and `clever-route-route-ops-web-static-<IMAGE_TAG>` from the immutable 40-hex tag before backend service mutation. If that derivation cannot be proven, rollback fails closed.
 
 ## Public SSH inbound policy
 
@@ -409,3 +410,7 @@ The deploy workflow is cheap by design:
 - no large artifacts.
 
 If GitHub Actions quota is exhausted, do not weaken guards. Use Session Manager emergency runbook only after separate approval.
+
+## Frontend static artifact handoff
+
+The SSM path deploys three immutable images for the same git SHA: runtime, migrate, and `route-ops-web-static`. The host wrapper exports `ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static:<ImageTag>` and `ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-<ImageTag>` when the command does not pass them explicitly. The deploy script writes those values to `.deploy/candidate-image.env`, pulls `route-ops-web-static delivery-api delivery-api-migrate`, runs the one-shot `route-ops-web-static` compose service against the candidate SHA-scoped volume, and only then recreates `delivery-api` to mount that volume. This preserves the backend-authenticated `/admin/ui/app/*` shell while keeping the frontend static artifact separately identifiable and avoiding a candidate SPA/current backend mismatch during migration failure.

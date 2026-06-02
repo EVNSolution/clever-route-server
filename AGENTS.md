@@ -45,3 +45,13 @@ rm -f infra/env/delivery-api.env
 ```
 
 Report any command that could not run and why.
+## Deployable boundaries
+
+`clever-route-server` stays a monorepo, but its deployables must remain distinct:
+
+- `apps/delivery-api` owns backend API/server behavior, authenticated `/admin/ui/app/*` shell/session checks, Prisma, and server-side integration contracts.
+- `apps/route-ops-web` owns the Route Ops React/Vite SPA, frontend tests, styles, MapLibre/PMTiles assets, and the static web artifact.
+- The production backend runtime image must not absorb `route-ops-web` as a baked frontend payload by default. Route Ops web is shipped as a separately identifiable static artifact/image and supplied to `delivery-api` read-only at runtime.
+- `apps/wordpress-connector-plugin` is setup/status/sync/launch glue only; do not turn it into a second admin app.
+- `worktrees/` is a local Git branch checkout area, not product architecture.
+- The relocated Shopify repo lives at `../05_CLEVER_Shopify/shopify-clever` as reference/backup only. Do not treat it as an active Route Ops implementation target unless the user explicitly scopes reference lookup.

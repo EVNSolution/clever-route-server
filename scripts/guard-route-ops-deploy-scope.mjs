@@ -88,6 +88,7 @@ function changedEntries() {
 
 const allowedExact = new Set([
   'package.json',
+  'AGENTS.md',
   '.gitignore',
   '.dockerignore',
   '.gitleaks.toml',
@@ -95,6 +96,7 @@ const allowedExact = new Set([
   '.github/workflows/route-ops-publish.yml',
   '.github/workflows/route-ops-ssm-deploy.yml',
   'apps/delivery-api/Dockerfile',
+  'apps/delivery-api/AGENTS.md',
   'apps/delivery-api/src/modules/commerce/admin-commerce-connections.dependencies.ts',
   'apps/delivery-api/src/modules/driver/driver-auth.repository.ts',
   'apps/delivery-api/src/modules/driver/driver-assigned-route.repository.ts',
@@ -140,6 +142,10 @@ const allowedExact = new Set([
   'scripts/validate-route-ops-ssm-deploy.mjs',
   'infra/env/delivery-api.env.example',
   'infra/env/deploy-image.env.example',
+  'docs/architecture/system-architecture.md',
+  'docs/architecture/deployable-boundaries.md',
+  'docs/migration/local-development-runbook.md',
+  'docs/migration/source-inventory.md',
   'docs/deployment/route-ops-github-deploy.md',
   'docs/deployment/route-ops-ssm-deploy.md',
   'docs/development/script-tooling.md',

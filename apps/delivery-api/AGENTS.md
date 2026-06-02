@@ -12,3 +12,7 @@ Rules:
   JWT secrets, DB dumps, proof media, or private evidence.
 - Run `npm run prisma:generate`, `npm run lint`, `npm run typecheck`,
   `npm run test`, and `npm run build` before claiming server changes complete.
+Deployable boundary:
+- `delivery-api` is the backend runtime, API, server-rendered authenticated shell, and Prisma owner.
+- Do not build or copy `apps/route-ops-web/dist` into the backend runtime image as the production frontend payload. Consume the separately supplied Route Ops web static artifact through `ROUTE_OPS_WEB_DIST_PATH` and `ROUTE_OPS_WEB_PUBLIC_PATH`.
+- Keep frontend SPA styling/component changes in `apps/route-ops-web`; backend route changes should preserve `/admin/ui/app/*` session and `shopDomain` gates.

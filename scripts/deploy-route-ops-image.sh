@@ -21,9 +21,14 @@ export COMPOSE_PROJECT_NAME="$ROUTE_OPS_COMPOSE_PROJECT_NAME"
 LOCK_PATH="${ROUTE_OPS_DEPLOY_LOCK_PATH:-.deploy/route-ops-deploy.lock}"
 LOCK_DIR="${LOCK_PATH}.d"
 LOCK_ACQUIRED="false"
+ROUTE_OPS_STATIC_ARTIFACT_STAGED="false"
 ROUTE_OPS_SERVICE_MUTATED="false"
 ROUTE_OPS_RUNTIME_IMAGE_REPO="${ROUTE_OPS_RUNTIME_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-delivery-api}"
 ROUTE_OPS_MIGRATE_IMAGE_REPO="${ROUTE_OPS_MIGRATE_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-delivery-api-migrate}"
+ROUTE_OPS_WEB_STATIC_IMAGE_REPO="${ROUTE_OPS_WEB_STATIC_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-route-ops-web-static}"
+ROUTE_OPS_WEB_STATIC_IMAGE="${ROUTE_OPS_WEB_STATIC_IMAGE:-${ROUTE_OPS_WEB_STATIC_IMAGE_REPO}:${IMAGE_TAG}}"
+ROUTE_OPS_WEB_STATIC_VOLUME="${ROUTE_OPS_WEB_STATIC_VOLUME:-clever-route-route-ops-web-static-${IMAGE_TAG}}"
+export ROUTE_OPS_WEB_STATIC_IMAGE ROUTE_OPS_WEB_STATIC_VOLUME
 ROUTE_OPS_DEPLOY_MIN_FREE_MB="${ROUTE_OPS_DEPLOY_MIN_FREE_MB:-4096}"
 ROUTE_OPS_DEPLOY_MIN_FREE_PERCENT="${ROUTE_OPS_DEPLOY_MIN_FREE_PERCENT:-20}"
 ROUTE_OPS_IMAGE_PRUNE_DRY_RUN="${ROUTE_OPS_IMAGE_PRUNE_DRY_RUN:-0}"
@@ -102,7 +107,7 @@ validate_image_env_file() {
   while IFS= read -r line || [ -n "$line" ]; do
     [ -z "$line" ] && continue
     case "$line" in
-      IMAGE_TAG=*|DELIVERY_API_IMAGE=*|DELIVERY_API_MIGRATE_IMAGE=*|PRISMA_SCHEMA_SHA=*) ;;
+      IMAGE_TAG=*|DELIVERY_API_IMAGE=*|DELIVERY_API_MIGRATE_IMAGE=*|ROUTE_OPS_WEB_STATIC_IMAGE=*|ROUTE_OPS_WEB_STATIC_VOLUME=*|PRISMA_SCHEMA_SHA=*) ;;
       *) echo "Invalid image env key in $file: ${line%%=*}" >&2; return 1 ;;
     esac
     local value="${line#*=}"
@@ -119,8 +124,72 @@ load_image_env_file() {
   set -a
   # shellcheck disable=SC1090
   source "$file"
+  if [ -z "${ROUTE_OPS_WEB_STATIC_IMAGE:-}" ] && [ -n "${IMAGE_TAG:-}" ] && [[ "$IMAGE_TAG" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    ROUTE_OPS_WEB_STATIC_IMAGE="${ROUTE_OPS_WEB_STATIC_IMAGE_REPO}:${IMAGE_TAG}"
+    export ROUTE_OPS_WEB_STATIC_IMAGE
+  fi
+  if [ -z "${ROUTE_OPS_WEB_STATIC_VOLUME:-}" ] && [ -n "${IMAGE_TAG:-}" ] && [[ "$IMAGE_TAG" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    ROUTE_OPS_WEB_STATIC_VOLUME="clever-route-route-ops-web-static-${IMAGE_TAG}"
+    export ROUTE_OPS_WEB_STATIC_VOLUME
+  fi
   set +a
 }
+
+ensure_static_artifact_env_file() {
+  local file="$1"
+  test -f "$file"
+  local image_tag
+  image_tag="$(grep -m1 '^IMAGE_TAG=' "$file" | cut -d= -f2- || true)"
+  if [ -z "$image_tag" ] || ! [[ "$image_tag" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    echo "Cannot derive Route Ops static artifact metadata without a 40-hex IMAGE_TAG in $file." >&2
+    exit 65
+  fi
+  if ! grep -q '^ROUTE_OPS_WEB_STATIC_IMAGE=' "$file"; then
+    printf 'ROUTE_OPS_WEB_STATIC_IMAGE=%s:%s\n' "$ROUTE_OPS_WEB_STATIC_IMAGE_REPO" "$image_tag" >> "$file"
+  fi
+  if ! grep -q '^ROUTE_OPS_WEB_STATIC_VOLUME=' "$file"; then
+    printf 'ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-%s\n' "$image_tag" >> "$file"
+  fi
+}
+expected_static_volume_for_tag() {
+  local image_tag="$1"
+  printf 'clever-route-route-ops-web-static-%s
+' "$image_tag"
+}
+
+validate_loaded_static_artifact_contract() {
+  local file="$1"
+  : "${IMAGE_TAG:?IMAGE_TAG must be loaded before static artifact validation}"
+  : "${ROUTE_OPS_WEB_STATIC_IMAGE:?ROUTE_OPS_WEB_STATIC_IMAGE must be loaded before static artifact validation}"
+  : "${ROUTE_OPS_WEB_STATIC_VOLUME:?ROUTE_OPS_WEB_STATIC_VOLUME must be loaded before static artifact validation}"
+  if ! [[ "$IMAGE_TAG" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    echo "Invalid IMAGE_TAG in $file for Route Ops static artifact validation." >&2
+    exit 65
+  fi
+  if [ "$ROUTE_OPS_WEB_STATIC_IMAGE" != "${ROUTE_OPS_WEB_STATIC_IMAGE_REPO}:${IMAGE_TAG}" ]; then
+    echo "ROUTE_OPS_WEB_STATIC_IMAGE must match IMAGE_TAG in $file." >&2
+    exit 65
+  fi
+  local expected_volume
+  expected_volume="$(expected_static_volume_for_tag "$IMAGE_TAG")"
+  if [ "$ROUTE_OPS_WEB_STATIC_VOLUME" != "$expected_volume" ]; then
+    echo "ROUTE_OPS_WEB_STATIC_VOLUME must be ${expected_volume} in $file." >&2
+    exit 65
+  fi
+}
+
+require_candidate_static_volume_isolated_from_current() {
+  local current_file="$1"
+  [ -f "$current_file" ] || return 0
+  local current_tag current_volume
+  current_tag="$(grep -m1 '^IMAGE_TAG=' "$current_file" | cut -d= -f2- || true)"
+  current_volume="$(grep -m1 '^ROUTE_OPS_WEB_STATIC_VOLUME=' "$current_file" | cut -d= -f2- || true)"
+  if [ -n "$current_tag" ] && [ "$current_tag" != "$IMAGE_TAG" ] && [ -n "$current_volume" ] && [ "$current_volume" = "$ROUTE_OPS_WEB_STATIC_VOLUME" ]; then
+    echo "Refusing Route Ops deploy: candidate static volume matches current static volume for a different image tag." >&2
+    exit 65
+  fi
+}
+
 
 docker_root_dir() {
   local root
@@ -191,6 +260,8 @@ add_keep_images_from_env_file() {
   add_keep_image "$keep_file" "$image"
   image="$(grep -m1 '^DELIVERY_API_MIGRATE_IMAGE=' "$file" | cut -d= -f2- || true)"
   add_keep_image "$keep_file" "$image"
+  image="$(grep -m1 '^ROUTE_OPS_WEB_STATIC_IMAGE=' "$file" | cut -d= -f2- || true)"
+  add_keep_image "$keep_file" "$image"
 }
 
 build_keep_image_file() {
@@ -198,6 +269,7 @@ build_keep_image_file() {
   : > "$keep_file"
   add_keep_image "$keep_file" "${DELIVERY_API_IMAGE:-}"
   add_keep_image "$keep_file" "${DELIVERY_API_MIGRATE_IMAGE:-}"
+  add_keep_image "$keep_file" "${ROUTE_OPS_WEB_STATIC_IMAGE:-}"
   add_keep_images_from_env_file "$keep_file" ".deploy/current-image.env"
   add_keep_images_from_env_file "$keep_file" ".deploy/previous-image.env"
   add_keep_images_from_env_file "$keep_file" ".deploy/candidate-image.env"
@@ -248,7 +320,7 @@ prune_old_route_ops_images() {
   local kept_count=0
   local skipped_count=0
   local repo image tag
-  for repo in "$ROUTE_OPS_RUNTIME_IMAGE_REPO" "$ROUTE_OPS_MIGRATE_IMAGE_REPO"; do
+  for repo in "$ROUTE_OPS_RUNTIME_IMAGE_REPO" "$ROUTE_OPS_MIGRATE_IMAGE_REPO" "$ROUTE_OPS_WEB_STATIC_IMAGE_REPO"; do
     while IFS= read -r image || [ -n "$image" ]; do
       [ -n "$image" ] || continue
       tag="${image##*:}"
@@ -340,8 +412,13 @@ cat > .deploy/candidate-image.env <<EOF_IMAGE
 IMAGE_TAG=${IMAGE_TAG}
 DELIVERY_API_IMAGE=${DELIVERY_API_IMAGE}
 DELIVERY_API_MIGRATE_IMAGE=${DELIVERY_API_MIGRATE_IMAGE}
+ROUTE_OPS_WEB_STATIC_IMAGE=${ROUTE_OPS_WEB_STATIC_IMAGE}
+ROUTE_OPS_WEB_STATIC_VOLUME=${ROUTE_OPS_WEB_STATIC_VOLUME}
 PRISMA_SCHEMA_SHA=${PRISMA_SCHEMA_SHA}
 EOF_IMAGE
+
+if [ -f .deploy/current-image.env ]; then ensure_static_artifact_env_file .deploy/current-image.env; fi
+if [ -f .deploy/previous-image.env ]; then ensure_static_artifact_env_file .deploy/previous-image.env; fi
 
 restore_current() {
   local status=$?
@@ -351,8 +428,13 @@ restore_current() {
     if [ "$ROUTE_OPS_SERVICE_MUTATED" = "true" ]; then
       route_ops_compose .deploy/current-image.env up -d --no-build --force-recreate --no-deps delivery-api || true
       route_ops_compose .deploy/current-image.env up -d --no-build --force-recreate --no-deps caddy || true
-    else
-      echo "Deploy failed before delivery-api service mutation; skipping service restore." >&2
+    fi
+    if [ "$ROUTE_OPS_SERVICE_MUTATED" != "true" ]; then
+      if [ "$ROUTE_OPS_STATIC_ARTIFACT_STAGED" = "true" ]; then
+        echo "Deploy failed after staging candidate static artifact but before Route Ops backend service mutation; existing backend keeps its current static volume." >&2
+      else
+        echo "Deploy failed before Route Ops static artifact or backend service mutation; existing backend keeps its current static volume." >&2
+      fi
     fi
     rm -f .deploy/candidate-image.env
   fi
@@ -362,27 +444,35 @@ restore_current() {
 trap restore_current EXIT
 
 load_image_env_file .deploy/candidate-image.env
+validate_loaded_static_artifact_contract .deploy/candidate-image.env
+require_candidate_static_volume_isolated_from_current .deploy/current-image.env
 ensure_deploy_disk_headroom "pre-pull"
-route_ops_compose .deploy/candidate-image.env pull delivery-api delivery-api-migrate
+route_ops_compose .deploy/candidate-image.env pull route-ops-web-static delivery-api delivery-api-migrate
 
 runtime_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$DELIVERY_API_IMAGE")"
 migrate_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$DELIVERY_API_MIGRATE_IMAGE")"
+static_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ROUTE_OPS_WEB_STATIC_IMAGE")"
 runtime_schema="$(docker image inspect --format '{{ index .Config.Labels "org.clever-route.prisma-schema-sha" }}' "$DELIVERY_API_IMAGE")"
 migrate_schema="$(docker image inspect --format '{{ index .Config.Labels "org.clever-route.prisma-schema-sha" }}' "$DELIVERY_API_MIGRATE_IMAGE")"
 runtime_role="$(docker image inspect --format '{{ index .Config.Labels "org.clever-route.image-role" }}' "$DELIVERY_API_IMAGE")"
 migrate_role="$(docker image inspect --format '{{ index .Config.Labels "org.clever-route.image-role" }}' "$DELIVERY_API_MIGRATE_IMAGE")"
+static_role="$(docker image inspect --format '{{ index .Config.Labels "org.clever-route.image-role" }}' "$ROUTE_OPS_WEB_STATIC_IMAGE")"
 test "$runtime_revision" = "$IMAGE_TAG"
 test "$migrate_revision" = "$IMAGE_TAG"
+test "$static_revision" = "$IMAGE_TAG"
 test "$runtime_schema" = "$PRISMA_SCHEMA_SHA"
 test "$migrate_schema" = "$PRISMA_SCHEMA_SHA"
 test "$runtime_role" = "runtime"
 test "$migrate_role" = "migrate"
+test "$static_role" = "route-ops-web-static"
 
 CURRENT_PRISMA_SCHEMA_SHA="$(grep '^PRISMA_SCHEMA_SHA=' .deploy/current-image.env | cut -d= -f2- || true)"
 test -n "$CURRENT_PRISMA_SCHEMA_SHA"
 test "$CURRENT_PRISMA_SCHEMA_SHA" = "$PRISMA_SCHEMA_SHA"
 
 docker run --rm "$DELIVERY_API_MIGRATE_IMAGE" sh -lc 'test -f apps/delivery-api/prisma/schema.prisma && npm --prefix apps/delivery-api exec -- prisma --version'
+ROUTE_OPS_STATIC_ARTIFACT_STAGED="true"
+route_ops_compose .deploy/candidate-image.env up --no-build --force-recreate route-ops-web-static
 route_ops_compose .deploy/candidate-image.env run --rm delivery-api-migrate
 ROUTE_OPS_SERVICE_MUTATED="true"
 route_ops_compose .deploy/candidate-image.env up -d --no-build --force-recreate --no-deps delivery-api
@@ -393,8 +483,8 @@ run_production_smoke
 
 if [ -f .deploy/current-image.env ]; then cp .deploy/current-image.env .deploy/previous-image.env; fi
 mv .deploy/candidate-image.env .deploy/current-image.env
-printf '{"ts":"%s","imageTag":"%s","deliveryApiImage":"%s","migrateImage":"%s","prismaSchemaSha":"%s"}\n' \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$IMAGE_TAG" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" "$PRISMA_SCHEMA_SHA" >> .deploy/deploy-history.jsonl
+printf '{"ts":"%s","imageTag":"%s","deliveryApiImage":"%s","migrateImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","prismaSchemaSha":"%s"}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$IMAGE_TAG" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$PRISMA_SCHEMA_SHA" >> .deploy/deploy-history.jsonl
 prune_old_route_ops_images "post-promote" || echo "Route Ops post-promote image cleanup failed; deploy promotion remains complete." >&2
 release_deploy_lock
 trap - EXIT
