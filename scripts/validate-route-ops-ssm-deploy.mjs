@@ -71,9 +71,45 @@ assert(deploy.includes("run.get('conclusion') != 'success'"), 'deploy workflow m
 assert(deploy.includes("run.get('head_branch') != 'main'"), 'deploy workflow must require publish run on main');
 assert(deploy.includes("head_sha"), 'deploy workflow must require publish run SHA to match image tag');
 assert(deploy.includes('AWS-RunShellScript is not allowed'), 'deploy workflow must explicitly reject AWS-RunShellScript document configuration');
+assert(deploy.includes('Sync deploy control files to Route Ops host'), 'deploy workflow must sync reviewed deploy-control files before running the host deploy wrapper');
+assert(deploy.includes('deploy_control_files=('), 'deploy workflow must declare an explicit deploy-control file allowlist');
+const expectedDeployControlFiles = [
+  'infra/caddy/Caddyfile',
+  'infra/compose/docker-compose.prod.yml',
+  'scripts/deploy-route-ops-image.sh',
+  'scripts/rollback-route-ops-image.sh',
+  'scripts/ssm-route-ops-deploy.sh',
+  'scripts/smoke-route-ops-production.mjs',
+];
+for (const file of expectedDeployControlFiles) {
+  assert(deploy.includes(file), `deploy-control source sync must include ${file}`);
+}
+const deployControlListMatch = deploy.match(/deploy_control_files=\(\n(?<body>[\s\S]*?)\n\s*\)/);
+if (deployControlListMatch?.groups?.body) {
+  const actualDeployControlFiles = deployControlListMatch.groups.body
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  assert(
+    JSON.stringify(actualDeployControlFiles) === JSON.stringify(expectedDeployControlFiles),
+    `deploy-control source sync allowlist must exactly match reviewed files; got ${JSON.stringify(actualDeployControlFiles)}`,
+  );
+} else {
+  assert(false, 'deploy-control source sync allowlist block must be parseable');
+}
+assert(deploy.includes('deploy control bundle must not contain secret-like file'), 'deploy-control source sync must reject secret-like paths before bundling');
+assert(deploy.includes('Route Ops deploy control bundle is too large'), 'deploy-control source sync must enforce an inline bundle size ceiling');
+assert(deploy.includes('Route Ops source sync bundle SHA mismatch'), 'deploy-control source sync must verify bundle SHA on the host');
+assert(deploy.includes('Route Ops source sync bundle manifest mismatch'), 'deploy-control source sync must verify an exact host manifest');
+assert(deploy.includes('.deploy/source-backups'), 'deploy-control source sync must back up host files before replacement');
+assert(deploy.includes('Route Ops source sync TargetCount must be 1'), 'deploy-control source sync must assert SendCommand TargetCount is 1');
+assert(deploy.includes('Route Ops deploy control source sync did not succeed'), 'deploy-control source sync must fail the workflow on SSM command failure');
+assert(deploy.indexOf('Sync deploy control files to Route Ops host') > deploy.indexOf('Verify SSM target resolves to one online managed node'), 'deploy-control source sync must run after the exact online target is resolved');
+assert(deploy.indexOf('Sync deploy control files to Route Ops host') < deploy.indexOf('Reconcile Route Ops Caddy ingress'), 'deploy-control source sync must run before Caddy reconcile');
+assert(deploy.indexOf('Sync deploy control files to Route Ops host') < deploy.indexOf('Send custom SSM deploy command'), 'deploy-control source sync must run before the custom deploy document');
 assert(deploy.includes('Reconcile Route Ops Caddy ingress'), 'deploy workflow must reconcile Route Ops Caddy ingress before deploy smoke');
 assert(deploy.includes("vars.ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT == 'true'"), 'AWS-RunShellScript ingress reconcile must be explicitly opt-in by repository variable');
-assert(deploy.includes('--document-name "AWS-RunShellScript"'), 'deploy workflow must use a fixed AWS-RunShellScript ingress reconcile command');
+assert(deploy.includes('--document-name "AWS-RunShellScript"'), 'deploy workflow must use fixed AWS-RunShellScript commands only for deploy-control source sync and optional ingress reconcile');
 assert(/docker compose -p \\"?\$ROUTE_OPS_COMPOSE_PROJECT_NAME\\"? --env-file \.deploy\/current-image\.env -f infra\/compose\/docker-compose\.prod\.yml up -d --no-build --force-recreate --no-deps caddy/.test(deploy), 'ingress reconcile must force-recreate only the Route Ops Caddy service under explicit project');
 assert(deploy.indexOf('Reconcile Route Ops Caddy ingress') < deploy.indexOf('Send custom SSM deploy command'), 'ingress reconcile must run before the deploy wrapper smoke');
 assert(deploy.includes('target_query="[length(InstanceInformationList), InstanceInformationList[0].InstanceId, InstanceInformationList[0].PingStatus, InstanceInformationList[0].AgentVersion]"'), 'deploy workflow must resolve target count, instance id, online status, and agent version from one describe-instance-information call');

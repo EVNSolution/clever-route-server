@@ -33,8 +33,37 @@ Production execution is **not automatic**. The workflow exists so a maintainer c
 - The deploy target tag must resolve to exactly one managed node total, that node must be `Online`, and SSM Agent must be version `3.3.2746.0` or later for `ENV_VAR` interpolation support.
 - The workflow sends the command to the resolved instance ID, not back to a mutable tag selector.
 - SSM uses `max-concurrency=1` and `max-errors=0`, and the workflow asserts `Command.TargetCount == 1`.
+- Before the custom deploy document runs, the workflow syncs a small reviewed deploy-control bundle to `/srv/clever-route-server` on the same resolved instance. This keeps the host wrapper, compose file, smoke script, and Caddy config aligned with the image being activated without turning the host directory into a mutable Git checkout.
 - If `ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT=true` is deliberately enabled and IAM allows it, the workflow reconciles the Route Ops Caddy ingress on the same resolved instance ID with a fixed no-secret command that force-recreates only the `caddy` service from `/srv/clever-route-server/infra/caddy/Caddyfile`.
 - Logs are redacted status summaries only; command parameters contain no production secrets.
+
+## Deploy-control source sync
+
+The production host currently keeps `/srv/clever-route-server` as a deploy directory, not a live Git checkout. The deploy workflow therefore performs a narrow source sync before the custom SSM deploy document so repo-reviewed deploy controls match the image being activated.
+
+This source sync does **not** add S3, a new EC2 instance, EBS expansion, GitHub secrets, runtime `.env`, Parameter Store payloads, or database credentials. It uses the same GitHub OIDC → AWS SSM Run Command session and an inline, deterministic tarball containing only these allowlisted files:
+
+```text
+infra/caddy/Caddyfile
+infra/compose/docker-compose.prod.yml
+scripts/deploy-route-ops-image.sh
+scripts/rollback-route-ops-image.sh
+scripts/ssm-route-ops-deploy.sh
+scripts/smoke-route-ops-production.mjs
+```
+
+Guardrails:
+
+- secret-like paths are rejected before bundling and again on the host (`*.env`, `*.env.*`, `*secret*`, `*token*`, `*cookie*`, `*storageState*`);
+- the bundle is deterministic and SHA-256 verified on the host before extraction;
+- the host verifies the exact tar manifest before copying files;
+- the inline bundle is capped at 60KB;
+- existing host files are backed up under `.deploy/source-backups/<image-tag>-<github-run-id>-<timestamp>/` before replacement;
+- shell deploy scripts must pass `bash -n` after sync;
+- the command is sent only to the resolved instance ID, uses `max-concurrency=1`, `max-errors=0`, and asserts `TargetCount == 1`;
+- source sync runs before optional Caddy ingress reconcile and before the custom deploy document.
+
+This keeps the reviewed custom deploy document stable while allowing the host-local deploy wrapper, compose contract, and smoke test to evolve safely with the repository.
 
 ## GitHub variables
 
@@ -92,7 +121,7 @@ Example trust policy skeleton, with account/provider values filled in AWS only:
 
 ## Deploy role policy shape
 
-The GitHub deploy role should primarily invoke the reviewed custom document against the production managed node target. Do not grant broad EC2/IAM/Secrets permissions. If `AWS-RunShellScript` is ever allowed for this workflow, keep it opt-in through `ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT=true` and limited to the fixed Route Ops Caddy ingress reconcile command in `.github/workflows/route-ops-ssm-deploy.yml`; do not use it for image deploy, rollback, secrets, database mutation, or arbitrary operator shell.
+The GitHub deploy role should primarily invoke the reviewed custom document against the production managed node target. Do not grant broad EC2/IAM/Secrets permissions. `AWS-RunShellScript` use in this workflow is restricted to fixed, no-secret commands in `.github/workflows/route-ops-ssm-deploy.yml`: the deploy-control source sync allowlisted bundle, plus optional Caddy ingress reconcile when `ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT=true`. Do not use it for image deploy, rollback, secrets, database mutation outside the reviewed wrapper, or arbitrary operator shell.
 
 Example skeleton:
 
@@ -130,11 +159,11 @@ Example skeleton:
 }
 ```
 
-AWS resource-level support differs by Systems Manager API and target style. If a specific condition/resource is not enforceable in your AWS account, document that residual risk and keep the compensating controls: custom document for deploy, fixed ingress reconcile command, exact target-count preflight, `max-concurrency=1`, `max-errors=0`, and branch/CODEOWNERS controls.
+AWS resource-level support differs by Systems Manager API and target style. If a specific condition/resource is not enforceable in your AWS account, document that residual risk and keep the compensating controls: custom document for deploy, fixed source sync and ingress reconcile commands, exact target-count preflight, `max-concurrency=1`, `max-errors=0`, and branch/CODEOWNERS controls.
 
 ## Custom SSM document
 
-Production image deploy must use a reviewed custom SSM document. `AWS-RunShellScript` is not the image deploy path; the only production workflow exception is the fixed Route Ops Caddy ingress reconcile command that force-recreates the already-reviewed `caddy` service from this repo before smoke.
+Production image deploy must use a reviewed custom SSM document. `AWS-RunShellScript` is not the image deploy path; the production workflow exceptions are the fixed deploy-control source sync command and the optional fixed Route Ops Caddy ingress reconcile command that force-recreates the already-reviewed `caddy` service from this repo before smoke.
 
 Use schema 2.2 and prefer `interpolationType: ENV_VAR` so parameters are exposed as environment variables. The host wrapper still validates every value before invoking the deploy script.
 
