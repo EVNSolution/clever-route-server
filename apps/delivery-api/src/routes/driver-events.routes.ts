@@ -35,6 +35,10 @@ import {
   type DriverRouteHistoryStatus,
   type DriverSelfServiceContract
 } from '../modules/driver/driver-self-service.types.js';
+import {
+  DriverEventContextError,
+  DriverEventScopeError
+} from '../modules/driver/driver-event.repository.js';
 
 export type DriverApiDependencies = {
   driverAssignedRouteService?: DriverAssignedRouteServiceContract;
@@ -538,12 +542,24 @@ export function registerDriverEventRoutes(
       return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid driver event payload'));
     }
 
-    const result = await dependencies.driverEventService.recordDriverEvent({
-      ...eventInput,
-      driverId: driverContext.driverId,
-      payload: request.body,
-      shopDomain: driverContext.shopDomain
-    });
+    let result: { duplicate: boolean; eventId: string };
+    try {
+      result = await dependencies.driverEventService.recordDriverEvent({
+        ...eventInput,
+        driverId: driverContext.driverId,
+        payload: request.body,
+        shopDomain: driverContext.shopDomain
+      });
+    } catch (error) {
+      if (error instanceof DriverEventContextError) {
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid driver event route or stop context'));
+      }
+      if (error instanceof DriverEventScopeError) {
+        return reply.code(403).send(errorResponse('FORBIDDEN', 'Driver event route or stop scope rejected'));
+      }
+
+      throw error;
+    }
 
     return reply.code(result.duplicate ? 200 : 202).send({
       data: {
