@@ -486,6 +486,9 @@ small,
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: 12px 0;
 }
+.driver-kpis .kpi span {
+  text-transform: none;
+}
 .driver-notice {
   margin: 10px 0;
 }
@@ -548,14 +551,38 @@ small,
   padding: 10px;
 }
 .driver-table {
-  min-width: 980px;
+  min-width: 760px;
 }
 .driver-table td {
   vertical-align: top;
 }
+.driver-table .status-pill {
+  text-transform: none;
+  white-space: nowrap;
+}
 .driver-invite-actions {
   display: grid;
+  gap: 8px;
+  min-width: min(100%, 320px);
+}
+.driver-invite-row {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) max-content;
+}
+.driver-invite-meta {
+  min-width: 0;
+}
+.driver-invite-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+  justify-content: flex-end;
+}
+.driver-invite-controls button {
+  padding: 7px 9px;
 }
 .invite-code {
   background: #111827;
@@ -568,12 +595,6 @@ small,
   letter-spacing: 0.12em;
   padding: 7px 10px;
   width: fit-content;
-}
-.compact-actions {
-  gap: 6px;
-}
-.compact-actions button {
-  padding: 7px 9px;
 }
 .empty-state {
   background: #f8fafc;

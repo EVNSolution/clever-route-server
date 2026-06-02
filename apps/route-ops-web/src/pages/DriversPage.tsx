@@ -234,7 +234,7 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
         <div className="summary-strip compact-kpis driver-kpis" aria-label="Driver summary">
           <Kpi label="Drivers" value={drivers.length} />
           <Kpi label="Invite pending" value={pendingCount} />
-          <Kpi label="App linked" value={linkedCount} />
+          <Kpi label="Linked" value={linkedCount} />
         </div>
         {notice === null ? null : <p className="alert success driver-notice">{notice}</p>}
         <DriverTable
@@ -353,8 +353,6 @@ export function DriverTable(input: {
             <th>Status</th>
             <th>App access</th>
             <th>Invite code / action</th>
-            <th>Last seen / joined</th>
-            <th>Recent events</th>
           </tr>
         </thead>
         <tbody>
@@ -362,7 +360,7 @@ export function DriverTable(input: {
             <tr key={driver.id}>
               <td>
                 <strong>{driver.displayName}</strong>
-                <small>{driver.appLinked ? 'App linked' : 'Can be assigned before app verification'}</small>
+                <small>{driver.appLinked ? 'Linked' : 'Can be assigned before app verification'}</small>
               </td>
               <td>{driver.phone ?? '—'}</td>
               <td><Badge>{formatDriverStatus(driver)}</Badge></td>
@@ -377,11 +375,6 @@ export function DriverTable(input: {
                   regeneratingDriverId={input.regeneratingDriverId ?? null}
                 />
               </td>
-              <td>
-                <span>{driver.lastSeenAt === null ? 'Not seen yet' : formatDriverDate(driver.lastSeenAt)}</span>
-                <small>Joined {formatDriverDate(driver.createdAt)}</small>
-              </td>
-              <td>{driver.recentEventsCount}</td>
             </tr>
           ))}
         </tbody>
@@ -403,16 +396,24 @@ function DriverInviteActions(input: {
   const isDeleting = input.deletingDriverId === driver.id;
   return (
     <div className="driver-invite-actions">
-      {driver.inviteCode === null ? <span className="muted">No active code</span> : <span className="invite-code">{driver.inviteCode}</span>}
-      <small>{driver.inviteCodeExpiresAt === null ? 'No expiry' : `Expires ${formatDriverDate(driver.inviteCodeExpiresAt)}`}</small>
-      <div className="button-row compact-actions">
-        <button disabled={driver.inviteCode === null} onClick={() => input.onCopyInvite?.(driver)} type="button">Copy invite</button>
-        <button disabled={isRegenerating || isDeleting} onClick={() => input.onRegenerateInvite?.(driver.id)} type="button">
-          {isRegenerating ? 'Regenerating…' : driver.appLinked ? 'Re-login code' : 'Regenerate'}
-        </button>
-        <button className="danger subtle" disabled={isDeleting || isRegenerating} onClick={() => input.onDelete?.(driver)} type="button">
-          {isDeleting ? 'Deleting…' : 'Delete'}
-        </button>
+      <div className="driver-invite-row">
+        <span className="driver-invite-meta">
+          {driver.inviteCode === null ? <span className="muted">No active code</span> : <span className="invite-code">{driver.inviteCode}</span>}
+        </span>
+        <div className="driver-invite-controls">
+          <button disabled={driver.inviteCode === null} onClick={() => input.onCopyInvite?.(driver)} type="button">copy</button>
+          <button disabled={isRegenerating || isDeleting} onClick={() => input.onRegenerateInvite?.(driver.id)} type="button">
+            {isRegenerating ? 're-login…' : 're-login'}
+          </button>
+        </div>
+      </div>
+      <div className="driver-invite-row">
+        <small className="driver-invite-meta">{driver.inviteCodeExpiresAt === null ? 'No expiry' : `Expires ${formatDriverDate(driver.inviteCodeExpiresAt)}`}</small>
+        <div className="driver-invite-controls">
+          <button className="danger subtle" disabled={isDeleting || isRegenerating} onClick={() => input.onDelete?.(driver)} type="button">
+            {isDeleting ? 'delete…' : 'delete'}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -426,7 +427,7 @@ export function buildDriverInviteMessage(driver: DriverDto): string {
 }
 
 export function formatDriverAuthLabel(driver: Pick<DriverDto, 'appLinked' | 'authStatus'>): string {
-  if (driver.appLinked || driver.authStatus === 'APP_LINKED') return 'App linked';
+  if (driver.appLinked || driver.authStatus === 'APP_LINKED') return 'Linked';
   return 'Invite pending';
 }
 
