@@ -17,6 +17,7 @@ const wrapperPath = 'scripts/ssm-route-ops-deploy.sh';
 const imageDeployPath = 'scripts/deploy-route-ops-image.sh';
 const imageRollbackPath = 'scripts/rollback-route-ops-image.sh';
 const composePath = 'infra/compose/docker-compose.prod.yml';
+const ssmDocumentPath = 'infra/ssm/route-ops-deploy-document.json';
 const osrmHelperPath = 'scripts/osrm-ontario.sh';
 const docPath = 'docs/deployment/route-ops-ssm-deploy.md';
 const githubDocPath = 'docs/deployment/route-ops-github-deploy.md';
@@ -29,6 +30,7 @@ const wrapper = read(wrapperPath);
 const imageDeploy = read(imageDeployPath);
 const imageRollback = read(imageRollbackPath);
 const compose = read(composePath);
+const ssmDocument = read(ssmDocumentPath);
 const osrmHelper = read(osrmHelperPath);
 const smoke = read('scripts/smoke-route-ops-production.mjs');
 const doc = read(docPath);
@@ -71,7 +73,7 @@ assert(deploy.includes("run.get('conclusion') != 'success'"), 'deploy workflow m
 assert(deploy.includes("run.get('head_branch') != 'main'"), 'deploy workflow must require publish run on main');
 assert(deploy.includes("head_sha"), 'deploy workflow must require publish run SHA to match image tag');
 assert(deploy.includes('AWS-RunShellScript is not allowed'), 'deploy workflow must explicitly reject AWS-RunShellScript document configuration');
-assert(deploy.includes('Sync deploy control files to Route Ops host'), 'deploy workflow must sync reviewed deploy-control files before running the host deploy wrapper');
+assert(deploy.includes('Prepare deploy control files for custom SSM document'), 'deploy workflow must prepare reviewed deploy-control files before running the host deploy wrapper');
 assert(deploy.includes('deploy_control_files=('), 'deploy workflow must declare an explicit deploy-control file allowlist');
 const expectedDeployControlFiles = [
   'infra/caddy/Caddyfile',
@@ -99,17 +101,18 @@ if (deployControlListMatch?.groups?.body) {
 }
 assert(deploy.includes('deploy control bundle must not contain secret-like file'), 'deploy-control source sync must reject secret-like paths before bundling');
 assert(deploy.includes('Route Ops deploy control bundle is too large'), 'deploy-control source sync must enforce an inline bundle size ceiling');
-assert(deploy.includes('Route Ops source sync bundle SHA mismatch'), 'deploy-control source sync must verify bundle SHA on the host');
-assert(deploy.includes('Route Ops source sync bundle manifest mismatch'), 'deploy-control source sync must verify an exact host manifest');
-assert(deploy.includes('.deploy/source-backups'), 'deploy-control source sync must back up host files before replacement');
-assert(deploy.includes('Route Ops source sync TargetCount must be 1'), 'deploy-control source sync must assert SendCommand TargetCount is 1');
-assert(deploy.includes('Route Ops deploy control source sync did not succeed'), 'deploy-control source sync must fail the workflow on SSM command failure');
-assert(deploy.indexOf('Sync deploy control files to Route Ops host') > deploy.indexOf('Verify SSM target resolves to one online managed node'), 'deploy-control source sync must run after the exact online target is resolved');
-assert(deploy.indexOf('Sync deploy control files to Route Ops host') < deploy.indexOf('Reconcile Route Ops Caddy ingress'), 'deploy-control source sync must run before Caddy reconcile');
-assert(deploy.indexOf('Sync deploy control files to Route Ops host') < deploy.indexOf('Send custom SSM deploy command'), 'deploy-control source sync must run before the custom deploy document');
+assert(deploy.includes('Route Ops deploy control base64 payload is too large'), 'deploy-control source sync must enforce a custom document parameter size ceiling');
+assert(deploy.includes('DeployControlBundleBase64'), 'deploy workflow must pass deploy-control bundle base64 to the custom SSM document');
+assert(deploy.includes('DeployControlBundleSha'), 'deploy workflow must pass deploy-control bundle SHA to the custom SSM document');
+assert(deploy.includes('GitHubRunId'), 'deploy workflow must pass GitHub run id to the custom SSM document');
+assert(deploy.includes('/tmp/route-ops-deploy-parameters.json'), 'deploy workflow must prepare one parameter file for the custom SSM document');
+assert(deploy.includes('--parameters file:///tmp/route-ops-deploy-parameters.json'), 'custom deploy SendCommand must use the prepared parameter file');
+assert(deploy.indexOf('Prepare deploy control files for custom SSM document') > deploy.indexOf('Verify SSM target resolves to one online managed node'), 'deploy-control source prep must run after the exact online target is resolved');
+assert(deploy.indexOf('Prepare deploy control files for custom SSM document') < deploy.indexOf('Reconcile Route Ops Caddy ingress'), 'deploy-control source prep must run before Caddy reconcile');
+assert(deploy.indexOf('Prepare deploy control files for custom SSM document') < deploy.indexOf('Send custom SSM deploy command'), 'deploy-control source prep must run before the custom deploy document');
 assert(deploy.includes('Reconcile Route Ops Caddy ingress'), 'deploy workflow must reconcile Route Ops Caddy ingress before deploy smoke');
 assert(deploy.includes("vars.ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT == 'true'"), 'AWS-RunShellScript ingress reconcile must be explicitly opt-in by repository variable');
-assert(deploy.includes('--document-name "AWS-RunShellScript"'), 'deploy workflow must use fixed AWS-RunShellScript commands only for deploy-control source sync and optional ingress reconcile');
+assert(deploy.includes('--document-name "AWS-RunShellScript"'), 'deploy workflow must use a fixed AWS-RunShellScript command only for optional ingress reconcile');
 assert(/docker compose -p \\"?\$ROUTE_OPS_COMPOSE_PROJECT_NAME\\"? --env-file \.deploy\/current-image\.env -f infra\/compose\/docker-compose\.prod\.yml up -d --no-build --force-recreate --no-deps caddy/.test(deploy), 'ingress reconcile must force-recreate only the Route Ops Caddy service under explicit project');
 assert(deploy.indexOf('Reconcile Route Ops Caddy ingress') < deploy.indexOf('Send custom SSM deploy command'), 'ingress reconcile must run before the deploy wrapper smoke');
 assert(deploy.includes('target_query="[length(InstanceInformationList), InstanceInformationList[0].InstanceId, InstanceInformationList[0].PingStatus, InstanceInformationList[0].AgentVersion]"'), 'deploy workflow must resolve target count, instance id, online status, and agent version from one describe-instance-information call');
@@ -184,6 +187,14 @@ assert(compose.includes('ROUTE_OPS_WEB_STATIC_IMAGE'), 'production compose must 
 assert(compose.includes('ROUTE_OPS_WEB_STATIC_VOLUME'), 'production compose must require a SHA-scoped frontend static volume variable');
 assert(compose.includes('$$staging'), 'production compose static handoff command must escape shell variables from compose interpolation');
 assert(compose.includes('route-ops-web-static:/app/external/route-ops-web:ro'), 'delivery-api must mount the frontend static artifact read-only');
+assert(ssmDocument.includes('DeployControlBundleBase64'), 'SSM deploy document must accept the deploy-control source bundle');
+assert(ssmDocument.includes('DeployControlBundleSha'), 'SSM deploy document must accept the deploy-control source bundle SHA');
+assert(ssmDocument.includes('Route Ops source sync bundle SHA mismatch'), 'SSM deploy document must verify deploy-control bundle SHA on the host');
+assert(ssmDocument.includes('Route Ops source sync bundle manifest mismatch'), 'SSM deploy document must verify an exact host manifest');
+assert(ssmDocument.includes('.deploy/source-backups'), 'SSM deploy document must back up host files before replacement');
+assert(ssmDocument.includes('Refusing to sync secret-like deploy control path'), 'SSM deploy document must reject secret-like deploy-control paths on the host');
+assert(ssmDocument.includes('bash -n scripts/deploy-route-ops-image.sh scripts/rollback-route-ops-image.sh scripts/ssm-route-ops-deploy.sh'), 'SSM deploy document must syntax-check synced shell scripts before deploy');
+assert(ssmDocument.includes('scripts/ssm-route-ops-deploy.sh'), 'SSM deploy document must invoke the reviewed host deploy wrapper after source sync');
 assert(imageRollback.includes('ROUTE_OPS_ROLLBACK_STATIC_ARTIFACT_STAGED'), 'rollback script must track static artifact staging separately from backend mutation');
 assert(imageRollback.includes('validate_loaded_static_artifact_contract .deploy/candidate-image.env'), 'rollback script must semantically validate candidate static image and volume before compose mutation');
 assert(imageRollback.includes('require_candidate_static_volume_isolated_from_rollback_from'), 'rollback script must reject candidate static volumes shared with pre-rollback current metadata');
@@ -227,6 +238,9 @@ for (const pattern of [
   'SSM_RuntimeImage',
   'SSM_MigrateImage',
   'SSM_PublishEvidence',
+  'DeployControlBundleBase64',
+  'DeployControlBundleSha',
+  'GitHubRunId',
   'AWS-RunShellScript',
   'repo:EVNSolution/clever-route-server:ref:refs/heads/main',
   'ROUTE_OPS_DEPLOY_MIN_FREE_MB',
@@ -248,4 +262,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checked: [deployWorkflowPath, wrapperPath, imageDeployPath, imageRollbackPath, composePath, osrmHelperPath, docPath, githubDocPath, osrmDocPath, publishWorkflowPath, ciWorkflowPath] }, null, 2));
+console.log(JSON.stringify({ ok: true, checked: [deployWorkflowPath, wrapperPath, imageDeployPath, imageRollbackPath, composePath, ssmDocumentPath, osrmHelperPath, docPath, githubDocPath, osrmDocPath, publishWorkflowPath, ciWorkflowPath] }, null, 2));

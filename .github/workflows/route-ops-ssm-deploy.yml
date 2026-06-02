@@ -202,12 +202,15 @@ jobs:
           echo "instance_id=$instance_id" >> "$GITHUB_OUTPUT"
           echo "Resolved exactly one online Route Ops managed node."
 
-      - name: Sync deploy control files to Route Ops host
+      - name: Prepare deploy control files for custom SSM document
         id: source_sync
         shell: bash
         env:
-          INSTANCE_ID: ${{ steps.target.outputs.instance_id }}
           IMAGE_TAG: ${{ inputs.image_tag }}
+          PRISMA_SCHEMA_SHA: ${{ inputs.prisma_schema_sha }}
+          DELIVERY_API_IMAGE: ${{ inputs.delivery_api_image }}
+          DELIVERY_API_MIGRATE_IMAGE: ${{ inputs.delivery_api_migrate_image }}
+          PUBLISH_EVIDENCE_URL: ${{ inputs.publish_evidence_url }}
         run: |
           set -euo pipefail
           deploy_control_files=(
@@ -236,109 +239,37 @@ jobs:
           fi
           bundle_sha="$(sha256sum "$bundle_path" | awk '{print $1}')"
           bundle_b64="$(base64 -w0 "$bundle_path")"
-          manifest="$(printf '%s\n' "${deploy_control_files[@]}" | sort)"
-          python3 - "$bundle_b64" "$bundle_sha" "$IMAGE_TAG" "$GITHUB_RUN_ID" "$manifest" <<'PY' > /tmp/route-ops-source-sync.json
+          bundle_b64_chars="${#bundle_b64}"
+          if [ "$bundle_b64_chars" -gt 20000 ]; then
+            echo "Route Ops deploy control base64 payload is too large for the custom SSM document parameter: ${bundle_b64_chars} chars" >&2
+            exit 1
+          fi
+          python3 - "$IMAGE_TAG" "$PRISMA_SCHEMA_SHA" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" "$PUBLISH_EVIDENCE_URL" "$bundle_b64" "$bundle_sha" "$GITHUB_RUN_ID" <<'PY' > /tmp/route-ops-deploy-parameters.json
           import json
-          import shlex
           import sys
 
-          bundle_b64, bundle_sha, image_tag, run_id, manifest = sys.argv[1:6]
-          files = [line for line in manifest.splitlines() if line]
-          file_list = ' '.join(shlex.quote(file) for file in files)
-          manifest_literal = '\n'.join(files)
-          script = f'''
-          set -euo pipefail
-          app_dir=/srv/clever-route-server
-          cd "$app_dir"
-          mkdir -p .deploy/source-backups
-          tmp_dir="$(mktemp -d .deploy/source-sync.XXXXXX)"
-          cleanup() {{ rm -rf "$tmp_dir"; }}
-          trap cleanup EXIT
-          cat > "$tmp_dir/bundle.tar.gz.b64" <<'BUNDLE'
-          {bundle_b64}
-          BUNDLE
-          base64 -d "$tmp_dir/bundle.tar.gz.b64" > "$tmp_dir/bundle.tar.gz"
-          actual_sha="$(sha256sum "$tmp_dir/bundle.tar.gz" | awk '{{print $1}}')"
-          if [ "$actual_sha" != "{bundle_sha}" ]; then
-            echo "Route Ops source sync bundle SHA mismatch." >&2
-            exit 65
-          fi
-          tar -tzf "$tmp_dir/bundle.tar.gz" | sort > "$tmp_dir/actual-manifest"
-          cat > "$tmp_dir/expected-manifest" <<'MANIFEST'
-          {manifest_literal}
-          MANIFEST
-          if ! diff -u "$tmp_dir/expected-manifest" "$tmp_dir/actual-manifest"; then
-            echo "Route Ops source sync bundle manifest mismatch." >&2
-            exit 65
-          fi
-          tar -xzf "$tmp_dir/bundle.tar.gz" -C "$tmp_dir"
-          backup_dir=".deploy/source-backups/{image_tag}-{run_id}-$(date -u +%Y%m%dT%H%M%SZ)"
-          mkdir -p "$backup_dir"
-          for file in {file_list}; do
-            case "$file" in
-              *.env|*.env.*|*secret*|*token*|*cookie*|*storageState*)
-                echo "Refusing to sync secret-like deploy control path: $file" >&2
-                exit 65
-                ;;
-            esac
-            if [ -f "$file" ]; then
-              mkdir -p "$backup_dir/$(dirname "$file")"
-              cp "$file" "$backup_dir/$file"
-            fi
-            mkdir -p "$(dirname "$file")"
-            cp "$tmp_dir/$file" "$file"
-          done
-          chmod 0755 scripts/deploy-route-ops-image.sh scripts/rollback-route-ops-image.sh scripts/ssm-route-ops-deploy.sh scripts/smoke-route-ops-production.mjs
-          bash -n scripts/deploy-route-ops-image.sh scripts/rollback-route-ops-image.sh scripts/ssm-route-ops-deploy.sh
-          echo "Route Ops deploy control source sync complete: imageTag={image_tag} bundleSha={bundle_sha} backup=$backup_dir"
-          sha256sum {file_list}
-          '''
-          print(json.dumps({'commands': ['bash -lc ' + shlex.quote(script)]}))
+          (
+              image_tag,
+              schema_sha,
+              runtime_image,
+              migrate_image,
+              publish_evidence_url,
+              bundle_b64,
+              bundle_sha,
+              github_run_id,
+          ) = sys.argv[1:9]
+          print(json.dumps({
+              'ImageTag': [image_tag],
+              'PrismaSchemaSha': [schema_sha],
+              'RuntimeImage': [runtime_image],
+              'MigrateImage': [migrate_image],
+              'PublishEvidence': [publish_evidence_url],
+              'DeployControlBundleBase64': [bundle_b64],
+              'DeployControlBundleSha': [bundle_sha],
+              'GitHubRunId': [github_run_id],
+          }))
           PY
-          read -r command_id target_count <<< "$(aws ssm send-command \
-            --document-name "AWS-RunShellScript" \
-            --instance-ids "$INSTANCE_ID" \
-            --parameters file:///tmp/route-ops-source-sync.json \
-            --max-concurrency "1" \
-            --max-errors "0" \
-            --comment "Route Ops deploy control source sync ${IMAGE_TAG} from GitHub Actions run ${GITHUB_RUN_ID}" \
-            --query 'Command.[CommandId,TargetCount]' \
-            --output text)"
-          if [ "$target_count" != "1" ]; then
-            echo "Route Ops source sync TargetCount must be 1; got $target_count." >&2
-            exit 1
-          fi
-          echo "command_id=$command_id" >> "$GITHUB_OUTPUT"
-          terminal='^(Success|Cancelled|TimedOut|Failed|Cancelling)$'
-          status="Pending"
-          for _ in {1..36}; do
-            status="$(aws ssm get-command-invocation --command-id "$command_id" --instance-id "$INSTANCE_ID" --query 'Status' --output text 2>/dev/null || echo Pending)"
-            if [[ "$status" =~ $terminal ]]; then break; fi
-            sleep 5
-          done
-          summary="$(aws ssm get-command-invocation \
-            --command-id "$command_id" \
-            --instance-id "$INSTANCE_ID" \
-            --query '{Status:Status,StatusDetails:StatusDetails,ResponseCode:ResponseCode,StandardOutputContent:StandardOutputContent,StandardErrorContent:StandardErrorContent}' \
-            --output json)"
-          SUMMARY_JSON="$summary" python3 - <<'PY'
-          import json
-          import os
-          import re
-
-          data = json.loads(os.environ['SUMMARY_JSON'])
-          for key in ('StandardOutputContent', 'StandardErrorContent'):
-              value = str(data.get(key) or '')
-              value = re.sub(r'(?i)(secret|token|password)=\S+', r'\1=<redacted>', value)
-              if len(value) > 5000:
-                  value = value[:5000] + '\n...<truncated>...'
-              data[key] = value
-          print(json.dumps(data, indent=2))
-          PY
-          if [ "$status" != "Success" ]; then
-            echo "Route Ops deploy control source sync did not succeed: $status" >&2
-            exit 1
-          fi
+          echo "Route Ops deploy control bundle prepared: bytes=${bundle_size} base64Chars=${bundle_b64_chars} sha=${bundle_sha}"
 
       - name: Reconcile Route Ops Caddy ingress
         if: vars.ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT == 'true'
@@ -419,12 +350,13 @@ jobs:
           SSM_ROUTE_OPS_DOCUMENT_VERSION: ${{ vars.SSM_ROUTE_OPS_DOCUMENT_VERSION }}
         run: |
           set -euo pipefail
+          test -f /tmp/route-ops-deploy-parameters.json
           send_query="Command.[CommandId,TargetCount]"
           read -r command_id target_count <<< "$(aws ssm send-command \
             --document-name "$SSM_ROUTE_OPS_DOCUMENT_NAME" \
             --document-version "$SSM_ROUTE_OPS_DOCUMENT_VERSION" \
             --instance-ids "$INSTANCE_ID" \
-            --parameters "ImageTag=${IMAGE_TAG},PrismaSchemaSha=${PRISMA_SCHEMA_SHA},RuntimeImage=${DELIVERY_API_IMAGE},MigrateImage=${DELIVERY_API_MIGRATE_IMAGE},PublishEvidence=${PUBLISH_EVIDENCE_URL}" \
+            --parameters file:///tmp/route-ops-deploy-parameters.json \
             --max-concurrency "1" \
             --max-errors "0" \
             --comment "Route Ops deploy ${IMAGE_TAG} from GitHub Actions run ${GITHUB_RUN_ID}" \

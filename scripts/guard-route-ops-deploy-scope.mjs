@@ -142,6 +142,7 @@ const allowedExact = new Set([
   'scripts/validate-route-ops-ssm-deploy.mjs',
   'infra/env/delivery-api.env.example',
   'infra/env/deploy-image.env.example',
+  'infra/ssm/route-ops-deploy-document.json',
   'docs/architecture/system-architecture.md',
   'docs/architecture/deployable-boundaries.md',
   'docs/migration/local-development-runbook.md',
