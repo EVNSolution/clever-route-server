@@ -8,7 +8,9 @@ Purpose: enable road-following route geometry for Route Ops without changing sto
 - OSRM is internal-only: compose binds port 5000 to host loopback only
   (`127.0.0.1:5000`); do not expose it through Caddy or security groups.
 - Do not set `OSRM_BASE_URL` for `delivery-api` until OSRM smoke passes.
-- Rollback is env-only: unset `OSRM_BASE_URL`, restart `delivery-api`, and Route Ops removes road geometry instead of drawing fake straight lines.
+- `infra/env/delivery-api.env` is the authoritative runtime source for OSRM enablement; deploy history records `osrmEnabled` at promotion/rollback time for auditability.
+- When `OSRM_BASE_URL` is configured, the reviewed image deploy and rollback scripts must start `osrm-ontario` through the `clever-route` compose project and smoke it before `delivery-api` restarts. Do not leave OSRM as a manually attached sidecar/container.
+- Rollback is env-only for disabling road geometry: unset `OSRM_BASE_URL`, restart `delivery-api`, and Route Ops removes road geometry instead of drawing fake straight lines. When disabled, deploy/rollback automatically stops `osrm-ontario` after the app restarts with the disabled env.
 - Run preflight before any storage expansion or data preparation. This server may
   already contain OSRM data/service from the previous Shopify/delivery-api lane;
   expand EBS only when preflight proves the prepared Ontario data is absent or
@@ -84,6 +86,18 @@ bash scripts/osrm-ontario.sh --help
 
 ## Start and smoke OSRM
 
+Normal image deploy/rollback is now the durable activation path. If `infra/env/delivery-api.env` contains a non-empty `OSRM_BASE_URL`, `scripts/deploy-route-ops-image.sh` and `scripts/rollback-route-ops-image.sh` automatically:
+
+1. start `osrm-ontario` with `docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" --profile osrm up -d --no-build osrm-ontario`;
+2. smoke `http://127.0.0.1:5000` from the host loopback;
+3. smoke `http://osrm-ontario:5000` from a one-off `delivery-api` runtime container on the compose network;
+4. only then restart `delivery-api`;
+5. append `osrmEnabled` to `.deploy/deploy-history.jsonl` so the promotion record shows whether OSRM was expected to be live.
+
+If `OSRM_BASE_URL` is blank, deploy/rollback restarts `delivery-api` without OSRM and automatically stops `osrm-ontario` after the app restarts.
+
+Manual start is for preflight/diagnostics only, not the steady-state deployment model:
+
 ```sh
 export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
 DELIVERY_API_IMAGE="$CURRENT_DELIVERY_API_IMAGE" \
@@ -112,7 +126,7 @@ OSRM_TIMEOUT_MS=10000
 ROUTE_OPS_ROUTER_COVERAGE=ontario
 ```
 
-Then restart only the app:
+Then run the normal reviewed image deploy/rollback path. It will keep OSRM in the same `clever-route` compose project and smoke it before the app restart. For emergency host-only activation, restart only the app after manually starting/smoking OSRM:
 
 ```sh
 export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
@@ -138,6 +152,8 @@ DELIVERY_API_MIGRATE_IMAGE="$CURRENT_DELIVERY_API_MIGRATE_IMAGE" \
 docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" -f infra/compose/docker-compose.prod.yml up -d delivery-api
 docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" -f infra/compose/docker-compose.prod.yml --profile osrm stop osrm-ontario
 ```
+
+The reviewed deploy/rollback scripts perform the app restart and OSRM stop automatically when `OSRM_BASE_URL` is blank. The manual commands above are emergency host-only equivalents.
 
 Expected rollback behavior:
 

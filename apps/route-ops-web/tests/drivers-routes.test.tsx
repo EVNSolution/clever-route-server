@@ -17,8 +17,9 @@ import {
   getRoutePublishNotice,
   formatRoutePlanStatus,
   isRouteVisibleToLinkedDriver,
+  RouteBuilder,
 } from '../src/pages/RoutesPage';
-import type { BootstrapPayload, DriverDto, RoutePlanSummaryDto } from '../src/types';
+import type { BootstrapPayload, DriverDto, RoutePlanDetailDto, RoutePlanSummaryDto } from '../src/types';
 
 describe('Route Ops driver invite and route assignment UI helpers', () => {
   afterEach(() => {
@@ -157,6 +158,42 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(getRoutePublishNotice(publishedPending, [pending])?.text).toContain('after app authentication');
   });
 
+  test('renders assigned past route geometry while unchanged edit controls stay disabled', () => {
+    const linked = linkedDriverFixture();
+    const detail = routePlanDetailFixture({
+      routeGeometry: { coordinates: [[-79.5, 43.7], [-79.4, 43.65]], type: 'LineString' },
+      routePlan: routePlanFixture({
+        deliveryDate: '2026-05-30',
+        driverId: linked.id,
+        planDate: '2026-05-30',
+        status: 'ASSIGNED',
+      }),
+    });
+
+    const html = renderToStaticMarkup(
+      <RouteBuilder
+        bootstrap={bootstrap({
+          routerConfig: { coverage: 'ontario', provider: 'osrm', status: 'configured' },
+        })}
+        deletingRouteId={null}
+        detail={detail}
+        drivers={[linked]}
+        navigate={() => undefined}
+        onDeleteRoute={() => undefined}
+        onRefreshRoutes={() => undefined}
+        setDetail={() => undefined}
+        setError={() => undefined}
+      />,
+    );
+
+    expect(html).toContain('Road path ready');
+    expect(html).toContain('Published route — visible to the linked driver after the app refreshes.');
+    expect(html).toContain('Driver app visible');
+    expect(html).toMatch(/aria-label="save driver"[^>]*disabled=""/);
+    expect(html).toMatch(/aria-label="save"[^>]*disabled=""/);
+    expect(html).not.toContain('Stops ready · road path not generated');
+  });
+
   test('regenerateDriverInviteCode posts to the protected Route Ops API with CSRF', async () => {
     const fetchMock = vi.fn(() =>
       Promise.resolve(
@@ -293,7 +330,7 @@ function routePlanFixture(overrides: Partial<RoutePlanSummaryDto> = {}): RoutePl
   };
 }
 
-function bootstrap(): BootstrapPayload {
+function bootstrap(overrides: Partial<BootstrapPayload> = {}): BootstrapPayload {
   return {
     appUrls: {
       dashboard: '/admin/ui/app',
@@ -314,6 +351,42 @@ function bootstrap(): BootstrapPayload {
     mode: 'internal-admin',
     routerConfig: { provider: null, status: 'not_configured' },
     shopDomain: 'dev1.tomatonofood.com',
+    ...overrides,
+  };
+}
+
+function routePlanDetailFixture(overrides: Partial<RoutePlanDetailDto> = {}): RoutePlanDetailDto {
+  return {
+    routeGeometry: null,
+    routePlan: routePlanFixture(),
+    routeStopPoints: [],
+    stops: [
+      {
+        addressLabel: '100 King St W, Toronto, ON',
+        coordinates: { latitude: 43.6532, longitude: -79.3832 },
+        deliveryArea: 'Toronto',
+        deliveryStopId: 'stop-1',
+        orderId: 'order-1',
+        orderName: '#1001',
+        recipientName: 'Jane Customer',
+        sequence: 1,
+        sourceOrderId: 'gid://woocommerce/Order/1001',
+        status: 'PENDING',
+      },
+      {
+        addressLabel: '200 King St W, Toronto, ON',
+        coordinates: { latitude: 43.65, longitude: -79.4 },
+        deliveryArea: 'Toronto',
+        deliveryStopId: 'stop-2',
+        orderId: 'order-2',
+        orderName: '#1002',
+        recipientName: 'John Customer',
+        sequence: 2,
+        sourceOrderId: 'gid://woocommerce/Order/1002',
+        status: 'PENDING',
+      },
+    ],
+    ...overrides,
   };
 }
 

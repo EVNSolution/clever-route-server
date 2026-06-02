@@ -164,11 +164,6 @@ export class WordPressPluginAuthService {
       throw new WordPressPluginConnectionDisabledError();
     }
 
-    await this.options.repository.touchPluginToken({
-      lastUsedAt: this.now(),
-      tokenId: tokenRecord.id
-    });
-
     return {
       connectionId: tokenRecord.commerceConnection.id,
       label: tokenRecord.commerceConnection.label,

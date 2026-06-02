@@ -130,7 +130,7 @@ export function RoutesPage({ bootstrap, navigate, routePlanId, setError }: { boo
   );
 }
 
-function RouteBuilder(input: {
+export function RouteBuilder(input: {
   bootstrap: BootstrapPayload;
   deletingRouteId: string | null;
   detail: RoutePlanDetailDto | null;
@@ -142,8 +142,8 @@ function RouteBuilder(input: {
   setDetail(detail: RoutePlanDetailDto): void;
   setError(error: string | null): void;
 }): ReactElement {
-  const [draftStops, setDraftStops] = useState<RouteStopDto[]>([]);
-  const [draftDriverId, setDraftDriverId] = useState('');
+  const [draftStops, setDraftStops] = useState<RouteStopDto[]>(() => input.detail?.stops ?? []);
+  const [draftDriverId, setDraftDriverId] = useState(() => input.detail?.routePlan.driverId ?? '');
   const [draggingStopId, setDraggingStopId] = useState<string | null>(null);
   const [isSavingDriver, setIsSavingDriver] = useState(false);
   const [isSavingSequence, setIsSavingSequence] = useState(false);

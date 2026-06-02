@@ -169,6 +169,42 @@ describe('RoutePlanAdminService route geometry', () => {
     ]);
   });
 
+  test('enriches published route detail with OSRM geometry after repository publish', async () => {
+    const { publishRoutePlan, repository, routeGeometryProvider } = createHarness(routePlanDetail);
+    const service = new RoutePlanAdminService(repository, routeGeometryProvider);
+
+    const detail = await service.publishRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(publishRoutePlan).toHaveBeenCalledWith({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+    expect(routeGeometryProvider.buildRoute).toHaveBeenCalledWith(routePlanDetail);
+    expect(detail?.routeGeometry).toEqual({
+      type: 'LineString',
+      coordinates: [
+        [-79.3832, 43.6532],
+        [-79.2571, 43.7764],
+        [-79.337, 43.8561]
+      ]
+    });
+    expect(detail?.routeStopPoints).toEqual([
+      expect.objectContaining({
+        deliveryStopId: 'stop-1',
+        sequence: 1,
+        snappedCoordinates: [-79.2572, 43.7765]
+      }),
+      expect.objectContaining({
+        deliveryStopId: 'stop-2',
+        sequence: 2,
+        snappedCoordinates: [-79.3372, 43.8562]
+      })
+    ]);
+  });
+
   test('returns updated route stops with null geometry and empty stop points when OSRM fails', async () => {
     const { repository, routeGeometryProvider } = createHarness(routePlanDetail);
     routeGeometryProvider.buildRoute.mockRejectedValueOnce(new Error('OSRM unavailable'));

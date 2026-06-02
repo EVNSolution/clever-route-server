@@ -211,22 +211,29 @@ describe('WordPress plugin routes', () => {
 
   test('sync/request persists a run and returns quickly while server-side Woo REST backfill runs in the background', async () => {
     const { dependencies, processSyncRun, requestSync } = createDependencies();
+    let processResolved = false;
     let resolveProcess!: (value: WordPressPluginSyncRun) => void;
     processSyncRun.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
-          resolveProcess = resolve;
+          resolveProcess = (value) => {
+            processResolved = true;
+            resolve(value);
+          };
         })
     );
     const app = await buildApp({ wordPressPlugin: dependencies });
 
     try {
+      const startedAt = performance.now();
       const sync = await app.inject({
         headers: { authorization: 'Bearer valid-token' },
         method: 'POST',
         payload: { modifiedAfter: '2026-05-21T00:00:00.000Z', pageSize: 25, status: 'processing' },
         url: '/wordpress/plugin/sync/request'
       });
+      expect(performance.now() - startedAt).toBeLessThan(2000);
+      expect(processResolved).toBe(false);
       expect(sync.statusCode).toBe(202);
       expect(sync.json()).toEqual({
         data: syncRequestResponse(),
@@ -359,7 +366,41 @@ describe('WordPress plugin routes', () => {
     }
   });
 
-  test('issues a short-lived CLEVER admin launch URL for authenticated plugin access', async () => {
+  test('issues short-lived CLEVER admin launch URLs for each Route Ops section without starting sync work', async () => {
+    const { createAdminLaunch, dependencies, processSyncRun, requestSync } = createDependencies();
+    const app = await buildApp({ wordPressPlugin: dependencies });
+
+    try {
+      for (const section of ['orders', 'route-plans', 'drivers', 'settings'] as const) {
+        const response = await app.inject({
+          headers: { authorization: 'Bearer valid-token' },
+          method: 'POST',
+          payload: { section },
+          url: '/wordpress/plugin/admin-launch'
+        });
+
+        expect(response.statusCode).toBe(201);
+        expect(response.json()).toEqual({
+          data: {
+            expiresAt: '2026-05-26T06:10:00.000Z',
+            launchUrl: 'https://clever-route.cleversystem.ai/admin/ui/plugin-launch?token=launch-token'
+          },
+          error: null
+        });
+      }
+      expect(createAdminLaunch).toHaveBeenCalledTimes(4);
+      expect(createAdminLaunch).toHaveBeenNthCalledWith(1, { context: pluginContext(), section: 'orders' });
+      expect(createAdminLaunch).toHaveBeenNthCalledWith(2, { context: pluginContext(), section: 'route-plans' });
+      expect(createAdminLaunch).toHaveBeenNthCalledWith(3, { context: pluginContext(), section: 'drivers' });
+      expect(createAdminLaunch).toHaveBeenNthCalledWith(4, { context: pluginContext(), section: 'settings' });
+      expect(requestSync).not.toHaveBeenCalled();
+      expect(processSyncRun).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects invalid admin launch sections before creating a launch token', async () => {
     const { createAdminLaunch, dependencies } = createDependencies();
     const app = await buildApp({ wordPressPlugin: dependencies });
 
@@ -367,22 +408,58 @@ describe('WordPress plugin routes', () => {
       const response = await app.inject({
         headers: { authorization: 'Bearer valid-token' },
         method: 'POST',
-        payload: { section: 'orders' },
+        payload: { section: 'wp-admin/raw-route-editor' },
         url: '/wordpress/plugin/admin-launch'
       });
 
-      expect(response.statusCode).toBe(201);
+      expect(response.statusCode).toBe(400);
       expect(response.json()).toEqual({
-        data: {
-          expiresAt: '2026-05-26T06:10:00.000Z',
-          launchUrl: 'https://clever-route.cleversystem.ai/admin/ui/plugin-launch?token=launch-token'
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'Invalid admin launch payload' }
+      });
+      expect(createAdminLaunch).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('logs WordPress connector timing without token payload or customer fields', async () => {
+    const { dependencies } = createDependencies();
+    const logLines: string[] = [];
+    const app = await buildApp({
+      logger: {
+        level: 'info',
+        stream: { write: (line: string) => logLines.push(line) }
+      },
+      wordPressPlugin: dependencies
+    });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer super-secret-plugin-token' },
+        method: 'POST',
+        payload: {
+          modifiedAfter: '2026-05-21T00:00:00.000Z',
+          pageSize: 25,
+          status: 'processing'
         },
-        error: null
+        url: '/wordpress/plugin/sync/request'
       });
-      expect(createAdminLaunch).toHaveBeenCalledWith({
-        context: pluginContext(),
-        section: 'orders'
-      });
+
+      expect(response.statusCode).toBe(202);
+      const joinedLogs = logLines.join('\n');
+      expect(joinedLogs).toContain('wordpress plugin request authenticated');
+      expect(joinedLogs).toContain('wordpress plugin sync request accepted');
+      expect(joinedLogs).toContain('connection-id');
+      expect(joinedLogs).toContain('woo.example.test');
+      expect(joinedLogs).not.toContain('super-secret-plugin-token');
+      expect(joinedLogs).not.toContain('Authorization');
+      expect(joinedLogs).not.toContain('Bearer');
+      expect(joinedLogs).not.toContain('launch-token');
+      expect(joinedLogs).not.toContain('consumer_secret');
+      expect(joinedLogs).not.toContain('customer@example.test');
+      expect(joinedLogs).not.toContain('+1416');
+      expect(joinedLogs).not.toContain('100 King St');
     } finally {
       await app.close();
     }

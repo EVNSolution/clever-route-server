@@ -184,10 +184,20 @@ export function registerWordPressPluginRoutes(
   });
 
   app.post<{ Body: unknown }>('/wordpress/plugin/sync/request', async (request, reply) => {
+    const startedAt = Date.now();
     const authenticated = await authenticatePlugin(request, dependencies);
     if (authenticated.status === 'unauthorized') {
       return reply.code(authenticated.httpStatus).send(errorResponse(authenticated.code, authenticated.message));
     }
+    request.log.info(
+      {
+        connectionId: authenticated.context.connectionId,
+        elapsedMs: Date.now() - startedAt,
+        endpoint: 'sync/request',
+        shopDomain: authenticated.context.shopDomain
+      },
+      'wordpress plugin request authenticated'
+    );
 
     const payload = readSyncRequestBody(request.body);
     if (payload === null) {
@@ -199,6 +209,19 @@ export function registerWordPressPluginRoutes(
       payload
     });
 
+    request.log.info(
+      {
+        alreadyRunning: result.alreadyRunning,
+        connectionId: authenticated.context.connectionId,
+        elapsedMs: Date.now() - startedAt,
+        shopDomain: authenticated.context.shopDomain,
+        startBackgroundProcessing,
+        status: result.syncRun.status,
+        syncRunId: result.syncRun.syncRunId
+      },
+      'wordpress plugin sync request accepted'
+    );
+
     if (startBackgroundProcessing) {
       request.log.info(
         {
@@ -206,7 +229,7 @@ export function registerWordPressPluginRoutes(
           shopDomain: authenticated.context.shopDomain,
           syncRunId: result.syncRun.syncRunId
         },
-        'wordpress plugin sync request queued'
+        'wordpress plugin background sync scheduled'
       );
       void dependencies.syncService
         .processSyncRun({
@@ -272,10 +295,20 @@ export function registerWordPressPluginRoutes(
   });
 
   app.post<{ Body: unknown }>('/wordpress/plugin/admin-launch', async (request, reply) => {
+    const startedAt = Date.now();
     const authenticated = await authenticatePlugin(request, dependencies);
     if (authenticated.status === 'unauthorized') {
       return reply.code(authenticated.httpStatus).send(errorResponse(authenticated.code, authenticated.message));
     }
+    request.log.info(
+      {
+        connectionId: authenticated.context.connectionId,
+        elapsedMs: Date.now() - startedAt,
+        endpoint: 'admin-launch',
+        shopDomain: authenticated.context.shopDomain
+      },
+      'wordpress plugin request authenticated'
+    );
     if (dependencies.adminLaunchService === undefined) {
       return reply.code(503).send(errorResponse('ADMIN_LAUNCH_DISABLED', 'CLEVER admin plugin launch is not enabled'));
     }
@@ -289,6 +322,15 @@ export function registerWordPressPluginRoutes(
       context: authenticated.context,
       section
     });
+    request.log.info(
+      {
+        connectionId: authenticated.context.connectionId,
+        elapsedMs: Date.now() - startedAt,
+        section,
+        shopDomain: authenticated.context.shopDomain
+      },
+      'wordpress plugin admin launch created'
+    );
     return reply.code(201).send({ data: result, error: null });
   });
 

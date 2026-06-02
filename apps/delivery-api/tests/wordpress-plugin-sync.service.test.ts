@@ -19,7 +19,18 @@ describe('WordPressPluginSyncRequestService', () => {
       startBackgroundProcessing: true
     });
     const syncUpdatedOrders = vi.fn();
-    const service = createService({ syncRunRepository, syncUpdatedOrders });
+    const readDecryptedWooCommerceConnection = vi.fn(() => Promise.resolve(wooConnection()));
+    const createOrderSyncService = vi.fn(() => ({ syncUpdatedOrders }));
+    const markRestSyncCompleted = vi.fn(() => Promise.resolve());
+    const validateConnectionSiteUrl = vi.fn(() => Promise.resolve());
+    const service = new WordPressPluginSyncRequestService({
+      connectionService: { readDecryptedWooCommerceConnection },
+      createOrderSyncService,
+      freshnessRepository: { markRestSyncCompleted },
+      now: () => acceptedAt,
+      syncRunRepository,
+      validateConnectionSiteUrl
+    });
 
     await expect(
       service.requestSync({
@@ -37,7 +48,11 @@ describe('WordPressPluginSyncRequestService', () => {
       context: pluginContext(),
       request: { modifiedAfter: '2026-05-21T00:00:00.000Z', pageSize: 25, status: 'processing' }
     });
+    expect(readDecryptedWooCommerceConnection).not.toHaveBeenCalled();
+    expect(validateConnectionSiteUrl).not.toHaveBeenCalled();
+    expect(createOrderSyncService).not.toHaveBeenCalled();
     expect(syncUpdatedOrders).not.toHaveBeenCalled();
+    expect(markRestSyncCompleted).not.toHaveBeenCalled();
   });
 
   test('returns the active durable sync run instead of starting a duplicate request', async () => {
