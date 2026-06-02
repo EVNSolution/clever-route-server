@@ -179,6 +179,7 @@ const commerceSyncAllowedExact = new Set([
   'apps/delivery-api/src/modules/shopify/order-sync.service.ts',
   'apps/delivery-api/src/modules/woocommerce/woocommerce-order-sync.service.ts',
   'apps/delivery-api/src/modules/woocommerce/woocommerce.dependencies.ts',
+  'apps/delivery-api/tests/order-sync.repository.test.ts',
   'apps/delivery-api/tests/woocommerce-order-sync.service.test.ts',
 ]);
 
