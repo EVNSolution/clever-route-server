@@ -51,7 +51,7 @@
       "inputs": {
         "timeoutSeconds": "900",
         "runCommand": [
-          "set -euo pipefail",
+          "set -eu",
           "cd /srv/clever-route-server",
           "mkdir -p .deploy/source-backups",
           "tmp_dir=\"$(mktemp -d .deploy/source-sync.XXXXXX)\"",

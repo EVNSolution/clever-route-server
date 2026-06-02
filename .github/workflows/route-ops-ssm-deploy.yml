@@ -281,7 +281,7 @@ jobs:
           cat > /tmp/route-ops-ingress-reconcile.json <<'JSON'
           {
             "commands": [
-              "set -euo pipefail",
+              "set -eu",
               "cd /srv/clever-route-server",
               "export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route",
               "export COMPOSE_PROJECT_NAME=$ROUTE_OPS_COMPOSE_PROJECT_NAME",

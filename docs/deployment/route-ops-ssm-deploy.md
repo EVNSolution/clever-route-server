@@ -213,7 +213,7 @@ mainSteps:
     inputs:
       timeoutSeconds: '900'
       runCommand:
-        - 'set -euo pipefail'
+        - 'set -eu'
         - 'cd /srv/clever-route-server'
         - '<verify SHA + exact manifest, back up files under .deploy/source-backups, sync allowlisted deploy controls, bash -n shell scripts>'
         - 'IMAGE_TAG="$SSM_ImageTag" PRISMA_SCHEMA_SHA="$SSM_PrismaSchemaSha" DELIVERY_API_IMAGE="$SSM_RuntimeImage" DELIVERY_API_MIGRATE_IMAGE="$SSM_MigrateImage" PUBLISH_EVIDENCE_URL="$SSM_PublishEvidence" scripts/ssm-route-ops-deploy.sh'
