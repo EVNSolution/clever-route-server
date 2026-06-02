@@ -32,7 +32,7 @@ describe("Orders compact operations table", () => {
     expect(html).toContain('class="orders-compact-table"');
     expect(html).toContain(`data-column-count="${ORDERS_TABLE_COLUMN_COUNT}"`);
     expect(html).toContain(
-      'aria-label="Select all route-ready orders in current filters"',
+      'aria-label="Select all eligible orders in current workset"',
     );
     expect(html).toContain("<span>Select</span>");
     for (const header of [
@@ -87,6 +87,8 @@ describe("Orders compact operations table", () => {
     expect(html).toContain('disabled=""');
     expect(html).toContain("Review");
     expect(html).toContain("Missing delivery date");
+    expect(html).toContain("0 selectable");
+    expect(html).toContain("1 unavailable");
   });
 
   test("allows already-selected non-eligible orders to be removed and spans detail across all columns", () => {
@@ -111,6 +113,49 @@ describe("Orders compact operations table", () => {
     expect(html).toContain(
       'aria-label="Remove order #11453 11453 from route plan"',
     );
+  });
+
+  test("renders explicit clear labels and disables route actions in history scope", () => {
+    const html = renderOrderTable([orderFixture()], {
+      readOnly: true,
+      worksetContext: { scope: "history" },
+    });
+
+    expect(html).toContain("Clear selection");
+    expect(html).not.toMatch(/>Clear<\/button>/u);
+    expect(html).toContain("History scope is read-only");
+    expect(html).toContain("disabled");
+  });
+
+  test("renders expanded history-scope order detail as read-only", () => {
+    const html = renderOrderTable(
+      [
+        orderFixture({
+          blockerReasons: ["missing_delivery_date", "missing_route_scope"],
+          deliveryDate: null,
+          deliverySession: null,
+          metadataResolved: false,
+          routeEligible: false,
+          serviceType: null,
+        }),
+      ],
+      {
+        expandedOrderIds: new Set(["order-11453"]),
+        readOnly: true,
+        worksetContext: { scope: "history" },
+      },
+    );
+
+    expect(html).toContain("Order details for #11453");
+    expect(html).toContain(
+      "History scope is read-only. Switch to planning to edit this order.",
+    );
+    expect(html).not.toContain("Edit all fields");
+    expect(html).not.toContain("Save fixes");
+    expect(html).not.toContain("Edit all order fields");
+    expect(html).not.toContain('name="deliveryDate"');
+    expect(html).not.toContain('name="serviceType"');
+    expect(html).not.toContain('name="deliverySession"');
   });
 
   test("shows metadata-ok coordinate blockers without a row-level geocode action", () => {
@@ -617,12 +662,13 @@ describe("Orders compact operations table", () => {
       },
     );
 
-    expect(html).toContain("1/1 selectable");
+    expect(html).toContain("1 selected · 1 selectable · 2 unavailable");
     expect(html).not.toContain("Select filtered");
     expect(html).not.toContain("Clear filtered");
-    expect(html).toContain(">Clear</button>");
+    expect(html).toContain(">Clear selection</button>");
+    expect(html).not.toMatch(/>Clear<\/button>/u);
     expect(html).toContain(
-      'aria-label="Select all route-ready orders in current filters"',
+      'aria-label="Select all eligible orders in current workset"',
     );
     expect(html).toContain('aria-label="Select order #1002 11453"');
     expect(html).toContain('aria-label="Select order #1003 11453"');
@@ -724,8 +770,10 @@ function renderOrderTable(
     detailModes?: Record<string, "review" | "edit">;
     diagnosticsByOrder?: Record<string, DeliveryMetadataDiagnosticsDto | null>;
     expandedOrderIds?: Set<string>;
+    readOnly?: boolean;
     selected?: Set<string>;
     settings?: StoreSettingsDto;
+    worksetContext?: { scope: "history" | "planning" };
   } = {},
 ): string {
   return renderToStaticMarkup(
@@ -739,9 +787,11 @@ function renderOrderTable(
       onToggleDetail={() => undefined}
       onTogglePlanOrder={() => undefined}
       orders={orders}
+      readOnly={options.readOnly}
       selected={options.selected ?? new Set()}
       setSelected={() => undefined}
       settings={options.settings}
+      worksetContext={options.worksetContext}
     />,
   );
 }

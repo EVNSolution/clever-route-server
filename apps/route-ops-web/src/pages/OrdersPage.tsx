@@ -19,9 +19,14 @@ import {
   buildOrderFetchQuery,
   buildOrderQuery,
   createDefaultOrderFilters,
+  getOrderWorksetUnavailableReasons,
+  isOrderWorksetEligible,
   storeSettingsToDepotPoint,
+  summarizeOrderWorkset,
   summarizeSelection,
   type OrderFilterState,
+  type OrderScopeFilter,
+  type OrderWorksetContext,
 } from "../state";
 import type {
   BootstrapPayload,
@@ -176,6 +181,11 @@ export function OrdersPage({
     () => applyClientOrderFilters(orders, filters),
     [orders, filters],
   );
+  const routeActionsReadOnly = filters.scope === "history";
+  const worksetContext = useMemo<OrderWorksetContext>(
+    () => ({ scope: filters.scope }),
+    [filters.scope],
+  );
   const selection = useMemo(
     () => summarizeSelection(orders, selected),
     [orders, selected],
@@ -242,6 +252,7 @@ export function OrdersPage({
         orderIds: [...selected],
         planDate: routeDate || today(),
         routeName,
+        scope: filters.scope,
       });
       navigate(
         `/admin/ui/app/routes/${encodeURIComponent(result.routePlan.id)}`,
@@ -301,6 +312,7 @@ export function OrdersPage({
         csrfToken: bootstrap.csrfToken,
         orderId,
         patch: compactMetadataPatch(patch),
+        scope: filters.scope,
       });
       setOrders((current) =>
         current.map((order) =>
@@ -400,6 +412,20 @@ export function OrdersPage({
   };
 
   const addOrderToPlan = (orderId: string): void => {
+    const order =
+      visibleOrders.find((candidate) => candidate.orderId === orderId) ??
+      orders.find((candidate) => candidate.orderId === orderId);
+    if (order === undefined) return;
+    const reasons = getOrderWorksetUnavailableReasons(order, worksetContext);
+    if (!isOrderWorksetEligible(order, worksetContext)) {
+      setError(
+        `Order is not available for this plan: ${
+          reasons.map((reason) => reason.label).join(", ") ||
+          "Review route constraints"
+        }.`,
+      );
+      return;
+    }
     const next = new Set(selected);
     next.add(orderId);
     applyPlanSelection(next);
@@ -412,7 +438,7 @@ export function OrdersPage({
         <RouteOpsMap
           bootstrap={bootstrap}
           depot={depotPoint}
-          onOrderSelect={addOrderToPlan}
+          onOrderSelect={routeActionsReadOnly ? undefined : addOrderToPlan}
           orders={visibleOrders}
           plannedOrderIds={plannedOrderIds}
           subtitle="Imported WooCommerce stops by current filters"
@@ -424,6 +450,7 @@ export function OrdersPage({
           invalidSelectionCount={selected.size - selection.readySelected.length}
           onClear={clearPlan}
           onCreate={() => void create()}
+          readOnly={routeActionsReadOnly}
           routeDate={routeDate}
           routeName={routeName}
           selectedOrders={selection.readySelected}
@@ -436,59 +463,50 @@ export function OrdersPage({
         <>
           <div className="route-tabs" aria-label="Order planning filters">
             <button
-              className={
-                filters.status === "" && filters.health !== "needs_review"
-                  ? "active"
-                  : ""
-              }
+              className={filters.tab === "all" ? "active" : ""}
               onClick={() =>
                 setFilters({
                   ...filters,
                   deliveryStatus: "",
                   health: "",
-                  status: "",
+                  tab: "all",
                 })
               }
               type="button"
             >
-              ALL
+              All
             </button>
             <button
-              className={
-                filters.status === "unplanned" &&
-                filters.health !== "needs_review"
-                  ? "active"
-                  : ""
-              }
+              className={filters.tab === "unplanned" ? "active" : ""}
               onClick={() =>
                 setFilters({
                   ...filters,
                   deliveryStatus: "",
                   health: "",
-                  status: "unplanned",
+                  tab: "unplanned",
                 })
               }
               type="button"
             >
-              UNPLANNED
+              Unplanned
             </button>
             <button
-              className={filters.status === "planned" ? "active" : ""}
+              className={filters.tab === "planned" ? "active" : ""}
               onClick={() =>
-                setFilters({ ...filters, health: "", status: "planned" })
+                setFilters({ ...filters, health: "", tab: "planned" })
               }
               type="button"
             >
-              PLANNED
+              Planned
             </button>
             <button
-              className={filters.health === "needs_review" ? "active" : ""}
+              className={filters.tab === "needs_review" ? "active" : ""}
               onClick={() =>
                 setFilters({
                   ...filters,
                   deliveryStatus: "",
-                  health: "needs_review",
-                  status: "",
+                  health: "",
+                  tab: "needs_review",
                 })
               }
               type="button"
@@ -496,7 +514,7 @@ export function OrdersPage({
               Needs Review
             </button>
           </div>
-          <FilterBar filters={filters} onChange={setFilters} />
+          <FilterBar filters={filters} onChange={setFilters} settings={settings} />
           <OrderTable
             bulkGeocodeStatus={bulkGeocodeStatus}
             bulkGeocoding={bulkGeocoding}
@@ -509,9 +527,11 @@ export function OrdersPage({
             onToggleDetail={toggleOrderDetail}
             onTogglePlanOrder={togglePlanOrder}
             orders={visibleOrders}
+            readOnly={routeActionsReadOnly}
             selected={selected}
             setSelected={applyPlanSelection}
             settings={settings}
+            worksetContext={worksetContext}
           />
         </>
       }
@@ -523,6 +543,7 @@ function RoutePlanPanel(input: {
   invalidSelectionCount: number;
   onClear(): void;
   onCreate(): void;
+  readOnly?: boolean;
   routeDate: string;
   routeName: string;
   selectedOrders: CanonicalOrderDto[];
@@ -531,7 +552,9 @@ function RoutePlanPanel(input: {
   totalSelected: number;
 }): ReactElement {
   const canCreate =
-    input.selectedOrders.length > 0 && input.invalidSelectionCount === 0;
+    input.readOnly !== true &&
+    input.selectedOrders.length > 0 &&
+    input.invalidSelectionCount === 0;
   return (
     <div
       className="panel side-panel route-plan-panel"
@@ -545,8 +568,9 @@ function RoutePlanPanel(input: {
         <Badge>{input.selectedOrders.length} orders</Badge>
       </div>
       <p className="muted">
-        Use the map or order list to add ready unplanned orders, then create the
-        route.
+        {input.readOnly === true
+          ? "History scope is read-only. Switch back to planning to create a route."
+          : "Use the map or order list to add ready unplanned orders, then create the route."}
       </p>
       <label>
         Route date
@@ -577,7 +601,7 @@ function RoutePlanPanel(input: {
           onClick={input.onClear}
           type="button"
         >
-          Clear
+          Clear plan
         </button>
       </div>
       <div className="route-plan-draft" aria-label="Add plan orders">
@@ -604,12 +628,41 @@ function RoutePlanPanel(input: {
 function FilterBar({
   filters,
   onChange,
+  settings,
 }: {
   filters: OrderFilterState;
   onChange(filters: OrderFilterState): void;
+  settings?: StoreSettingsDto | null;
 }): ReactElement {
+  const config = normalizeRouteScopeConfig(settings?.routeScopeConfig);
+  const serviceTypes = activeRouteScopeValues(config.serviceTypes);
+  const deliverySessions = activeRouteScopeValues(config.deliverySessions);
+  const resetFilters = (): void => onChange(createDefaultOrderFilters());
+  const setScope = (scope: OrderScopeFilter): void => {
+    onChange({
+      ...filters,
+      health: "",
+      scope,
+      tab:
+        scope === "history"
+          ? "all"
+          : filters.tab === "all"
+            ? "unplanned"
+            : filters.tab,
+    });
+  };
   return (
     <article className="panel filter-panel">
+      <label className="filter-field filter-field--scope">
+        Scope
+        <select
+          value={filters.scope}
+          onChange={(event) => setScope(event.target.value as OrderScopeFilter)}
+        >
+          <option value="planning">Planning orders</option>
+          <option value="history">History / all orders</option>
+        </select>
+      </label>
       <label className="filter-field filter-field--date">
         Delivery date
         <input
@@ -657,6 +710,38 @@ function FilterBar({
           <option value="needs_review">Needs review</option>
         </select>
       </label>
+      <label className="filter-field filter-field--service">
+        Service type
+        <select
+          value={filters.serviceType}
+          onChange={(event) =>
+            onChange({ ...filters, serviceType: event.target.value })
+          }
+        >
+          <option value="">All</option>
+          {serviceTypes.map((option) => (
+            <option key={option.value} value={option.value}>
+              {formatFilterOptionLabel(option.label)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="filter-field filter-field--session">
+        Delivery session
+        <select
+          value={filters.deliverySession}
+          onChange={(event) =>
+            onChange({ ...filters, deliverySession: event.target.value })
+          }
+        >
+          <option value="">All</option>
+          {deliverySessions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {formatFilterOptionLabel(option.label)}
+            </option>
+          ))}
+        </select>
+      </label>
       <label className="filter-field filter-field--search">
         Search
         <input
@@ -667,8 +752,25 @@ function FilterBar({
           }
         />
       </label>
+      <div className="filter-actions">
+        <button onClick={resetFilters} type="button">
+          Clear filters
+        </button>
+      </div>
     </article>
   );
+}
+
+function formatFilterOptionLabel(value: string): string {
+  const normalized = value.trim();
+  const builtInLabel = new Map<string, string>([
+    ["day", "Day"],
+    ["delivery", "Delivery"],
+    ["evening", "Evening"],
+    ["evening delivery", "Evening Delivery"],
+    ["pickup", "Pickup"],
+  ]).get(normalized.toLowerCase());
+  return builtInLabel ?? normalized;
 }
 
 function formatBulkGeocodeStatus(job: BulkGeocodeJobDto): string {
@@ -716,13 +818,20 @@ export function OrderTable(input: {
   onToggleDetail?(orderId: string): void;
   onTogglePlanOrder(orderId: string): void;
   orders: CanonicalOrderDto[];
+  readOnly?: boolean;
   selected: Set<string>;
   setSelected(selected: Set<string>): void;
   settings?: StoreSettingsDto | null;
+  worksetContext?: OrderWorksetContext;
 }): ReactElement {
-  const selectableOrderIds = input.orders
-    .filter(isRoutePlanEligible)
-    .map((order) => order.orderId);
+  const worksetContext = input.worksetContext ?? {};
+  const worksetSummary = summarizeOrderWorkset(
+    input.orders,
+    input.selected,
+    worksetContext,
+  );
+  const selectableOrderIds =
+    input.readOnly === true ? [] : worksetSummary.selectableOrderIds;
   const visibleOrderIds = input.orders.map((order) => order.orderId);
   const selectedFilteredCount = selectableOrderIds.filter((orderId) =>
     input.selected.has(orderId),
@@ -762,24 +871,38 @@ export function OrderTable(input: {
         <div className="orders-heading-actions">
           <Badge>{input.orders.length} orders</Badge>
           <span className="orders-selection-summary">
-            {selectedFilteredCount}/{selectableOrderIds.length} selectable
+            {visibleSelectedCount} selected · {worksetSummary.selectableCount}{" "}
+            selectable · {worksetSummary.unavailableCount} unavailable
           </span>
           <button
             disabled={visibleSelectedCount === 0}
             onClick={clearFilteredOrders}
             type="button"
           >
-            Clear
+            Clear selection
           </button>
           <button
-            disabled={input.bulkGeocoding === true}
+            disabled={input.bulkGeocoding === true || input.readOnly === true}
             onClick={() => input.onBulkGeocode?.()}
             type="button"
+            title={
+              input.readOnly === true ? "History scope is read-only." : undefined
+            }
           >
             {input.bulkGeocoding === true ? "Bulk geocoding…" : "Bulk geocode"}
           </button>
         </div>
       </div>
+      {input.readOnly === true ? (
+        <p className="orders-workset-note">
+          History scope is read-only. Switch to planning to select orders, bulk
+          geocode, or create routes.
+        </p>
+      ) : worksetSummary.reasonLabels.length === 0 ? null : (
+        <p className="orders-workset-note">
+          Unavailable: {worksetSummary.reasonLabels.join(" · ")}
+        </p>
+      )}
       {input.bulkGeocodeStatus === undefined ||
       input.bulkGeocodeStatus === null ? null : (
         <p className="orders-bulk-status" role="status">
@@ -795,7 +918,7 @@ export function OrderTable(input: {
             <tr>
               <th className="orders-select-col" scope="col">
                 <input
-                  aria-label="Select all route-ready orders in current filters"
+                  aria-label="Select all eligible orders in current workset"
                   checked={allFilteredSelected}
                   disabled={selectableOrderIds.length === 0}
                   onChange={(event) =>
@@ -834,9 +957,11 @@ export function OrderTable(input: {
                   onToggleDetail={input.onToggleDetail}
                   onTogglePlanOrder={input.onTogglePlanOrder}
                   order={order}
+                  readOnly={input.readOnly === true}
                   selectedOrders={input.selected}
                   setSelected={input.setSelected}
                   settings={input.settings}
+                  worksetContext={worksetContext}
                 />
               ))
             )}
@@ -856,13 +981,22 @@ function OrderTableRow(input: {
   onToggleDetail?(orderId: string): void;
   onTogglePlanOrder(orderId: string): void;
   order: CanonicalOrderDto;
+  readOnly?: boolean;
   selectedOrders: Set<string>;
   setSelected(selected: Set<string>): void;
   settings?: StoreSettingsDto | null;
+  worksetContext?: OrderWorksetContext;
 }): ReactElement {
   const { order } = input;
   const selected = input.selectedOrders.has(order.orderId);
-  const canPlan = isRoutePlanEligible(order);
+  const unavailableReasons = getOrderWorksetUnavailableReasons(
+    order,
+    input.worksetContext,
+  );
+  const canPlan =
+    input.readOnly !== true &&
+    unavailableReasons.length === 0 &&
+    isOrderWorksetEligible(order, input.worksetContext);
   const day = formatDeliveryDayLabel(order);
   const status = formatOperationalStatus(order);
   const orderLabel = getOrderAccessibleLabel(order);
@@ -939,6 +1073,11 @@ function OrderTableRow(input: {
               disabled={!canPlan && !selected}
               onClick={() => input.onTogglePlanOrder(order.orderId)}
               type="button"
+              title={
+                canPlan || selected
+                  ? undefined
+                  : unavailableReasons.map((reason) => reason.label).join(", ")
+              }
             >
               {selected ? "Remove" : "Add"}
             </button>
@@ -963,12 +1102,13 @@ function OrderTableRow(input: {
               initialEditMode={input.detailMode === "edit"}
               onClose={() => input.onCloseDetail?.(order.orderId)}
               onSaveMetadata={
-                input.onSaveMetadata === undefined
+                input.readOnly === true || input.onSaveMetadata === undefined
                   ? undefined
                   : (patch: OrderMetadataPatch) =>
                       input.onSaveMetadata!(order.orderId, patch)
               }
               order={order}
+              readOnly={input.readOnly === true}
               settings={input.settings}
             />
           </td>
@@ -1333,6 +1473,7 @@ function OrderDetailPanel({
   onClose,
   onSaveMetadata,
   order,
+  readOnly,
   settings,
 }: {
   diagnostics: DeliveryMetadataDiagnosticsDto | null | undefined;
@@ -1341,9 +1482,14 @@ function OrderDetailPanel({
   onClose(): void;
   onSaveMetadata?(patch: OrderMetadataPatch): Promise<void>;
   order: CanonicalOrderDto;
+  readOnly?: boolean;
   settings?: StoreSettingsDto | null;
 }): ReactElement {
-  const [editMode, setEditMode] = useState(initialEditMode ?? false);
+  const canEditMetadata = readOnly !== true;
+  const canPersistMetadata = canEditMetadata && onSaveMetadata !== undefined;
+  const [editMode, setEditMode] = useState(
+    canEditMetadata && (initialEditMode ?? false),
+  );
   const [draft, setDraft] = useState<OrderMetadataPatch>(() =>
     metadataPatchFromOrder(order),
   );
@@ -1392,7 +1538,7 @@ function OrderDetailPanel({
     saveDraft();
   };
   const repairSaveDisabled =
-    onSave === undefined ||
+    !canPersistMetadata ||
     saving ||
     hasUnselectedRequiredChoiceField(repairFields, draft);
 
@@ -1408,7 +1554,7 @@ function OrderDetailPanel({
           <h3 id={`${panelId}-heading`}>Order details for {order.orderName}</h3>
         </div>
         <div className="orders-actions">
-          {editMode ? null : (
+          {editMode || !canEditMetadata ? null : (
             <button onClick={() => setEditMode(true)} type="button">
               Edit all fields
             </button>
@@ -1435,7 +1581,9 @@ function OrderDetailPanel({
           <h4>{hasActionableRepair ? repairTitle : status.label}</h4>
           <p>
             {hasActionableRepair
-              ? "Update the highlighted field, then save this order."
+              ? readOnly === true
+                ? "History scope is read-only. Switch to planning to edit this order."
+                : "Update the highlighted field, then save this order."
               : (status.detail ?? "No required fixes for this order.")}
           </p>
           {blockers.length === 0 ? null : (
@@ -1451,7 +1599,7 @@ function OrderDetailPanel({
             </div>
           )}
         </div>
-        {hasActionableRepair ? (
+        {hasActionableRepair && canEditMetadata ? (
           <form className="order-detail-repair-form" onSubmit={submitDraft}>
             <div className="order-detail-repair-fields">
               {repairFields.map((field) => (
@@ -1519,7 +1667,7 @@ function OrderDetailPanel({
         </section>
       </div>
 
-      {editMode ? (
+      {editMode && canEditMetadata ? (
         <form className="order-detail-edit" onSubmit={submitDraft}>
           <h4>Edit all order fields</h4>
           {saveError === null ? null : (
@@ -1540,7 +1688,7 @@ function OrderDetailPanel({
             ))}
           </div>
           <div className="orders-actions">
-            <button disabled={onSave === undefined || saving} type="submit">
+            <button disabled={!canPersistMetadata || saving} type="submit">
               {saving ? "Saving…" : "Save"}
             </button>
             <button onClick={onClose} type="button">

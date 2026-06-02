@@ -43,6 +43,9 @@ export type ListCanonicalOrdersFilters = {
   planningGroupKey?: string;
   readiness?: CanonicalOrderReadiness;
   routeScopeKey?: string;
+  routeOpsScope?: "history" | "planning";
+  routeOpsTab?: "all" | "needs_review" | "planned" | "unplanned";
+  routeOpsToday?: string;
   search?: string;
   serviceType?: string;
 };
@@ -1113,6 +1116,7 @@ function matchesDerivedFilters(
   row: CanonicalOrderRow,
   filters: ListCanonicalOrdersFilters,
 ): boolean {
+  if (!matchesRouteOpsScopeAndTab(row, filters)) return false;
   if (filters.readiness !== undefined && row.readiness !== filters.readiness)
     return false;
   if (
@@ -1189,6 +1193,75 @@ function matchesDerivedFilters(
   )
     return false;
   return true;
+}
+
+function matchesRouteOpsScopeAndTab(
+  row: CanonicalOrderRow,
+  filters: ListCanonicalOrdersFilters,
+): boolean {
+  if (filters.routeOpsScope === undefined) return true;
+  if (filters.routeOpsScope === "history") return true;
+  const today = filters.routeOpsToday;
+  if (today === undefined || !matchesRouteOpsPlanningScope(row, today)) {
+    return false;
+  }
+  switch (filters.routeOpsTab ?? "all") {
+    case "all":
+      return (
+        matchesRouteOpsTab(row, "unplanned") ||
+        matchesRouteOpsTab(row, "planned") ||
+        matchesRouteOpsTab(row, "needs_review")
+      );
+    case "needs_review":
+      return matchesRouteOpsTab(row, "needs_review");
+    case "planned":
+      return matchesRouteOpsTab(row, "planned");
+    case "unplanned":
+      return matchesRouteOpsTab(row, "unplanned");
+  }
+}
+
+function matchesRouteOpsPlanningScope(
+  row: CanonicalOrderRow,
+  today: string,
+): boolean {
+  if (isRouteOpsTerminal(row)) return false;
+  if (row.deliveryDate !== null) return row.deliveryDate >= today;
+  return matchesRouteOpsTab(row, "needs_review");
+}
+
+function matchesRouteOpsTab(
+  row: CanonicalOrderRow,
+  tab: Exclude<NonNullable<ListCanonicalOrdersFilters["routeOpsTab"]>, "all">,
+): boolean {
+  if (tab === "planned") return isRouteOpsPlanned(row);
+  if (tab === "needs_review") return isRouteOpsReview(row);
+  return !isRouteOpsPlanned(row) && row.routeEligible === true;
+}
+
+function isRouteOpsTerminal(row: CanonicalOrderRow): boolean {
+  return (
+    row.cancelledAt !== null ||
+    row.deliveryStopStatus === "DELIVERED" ||
+    row.routePlanStatus === "COMPLETED"
+  );
+}
+
+function isRouteOpsPlanned(row: CanonicalOrderRow): boolean {
+  return row.planningStatus === "PLANNED" || row.routePlanId !== null;
+}
+
+function isRouteOpsReview(row: CanonicalOrderRow): boolean {
+  return (
+    deriveOrderHealth(row) === "needs_review" ||
+    row.reviewReasons.length > 0 ||
+    row.readiness !== "READY_TO_PLAN" ||
+    row.deliveryDate === null ||
+    row.routeScopeKey === null ||
+    row.serviceType === null ||
+    row.deliverySession === null ||
+    (row.serviceType !== "PICKUP" && !row.hasCoordinates)
+  );
 }
 
 function summarizeDeliveryBatchCandidates(

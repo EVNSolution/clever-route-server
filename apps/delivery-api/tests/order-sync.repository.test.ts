@@ -214,6 +214,71 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     ).resolves.toHaveLength(1);
   });
 
+  test('filters Route Ops planning scope and tabs without leaking completed history', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+    const ready = canonicalOrderRecord(0);
+    const completed = {
+      ...canonicalOrderRecord(0),
+      id: 'completed-order',
+      deliveryStops: [
+        {
+          ...((canonicalOrderRecord(0).deliveryStops as Array<Record<string, unknown>>)[0] ?? {}),
+          status: 'DELIVERED'
+        }
+      ],
+      name: '#completed'
+    };
+    const missingDate = {
+      ...canonicalOrderRecord(0),
+      id: 'missing-date-order',
+      name: '#missing-date',
+      rawPayload: {
+        ...(canonicalOrderRecord(0).rawPayload as Record<string, unknown>),
+        deliveryDate: null,
+        readiness: 'NEEDS_REVIEW',
+        reviewReasons: ['missing_delivery_date'],
+        routeScopeKey: null,
+        serviceType: null
+      }
+    };
+    const planned = {
+      ...canonicalOrderRecord(1),
+      id: 'planned-order',
+      name: '#planned'
+    };
+
+    prisma.order.findMany.mockResolvedValueOnce([ready, completed, missingDate, planned]);
+    await expect(
+      repository.listCanonicalOrders({
+        filters: { routeOpsScope: 'planning', routeOpsTab: 'all', routeOpsToday: '2026-05-08' },
+        shopDomain: 'example.myshopify.com'
+      })
+    ).resolves.toEqual([
+      expect.objectContaining({ orderId: 'order-id' }),
+      expect.objectContaining({ orderId: 'missing-date-order' }),
+      expect.objectContaining({ orderId: 'planned-order' })
+    ]);
+
+    prisma.order.findMany.mockResolvedValueOnce([ready, completed, missingDate, planned]);
+    await expect(
+      repository.listCanonicalOrders({
+        filters: { routeOpsScope: 'planning', routeOpsTab: 'needs_review', routeOpsToday: '2026-05-08' },
+        shopDomain: 'example.myshopify.com'
+      })
+    ).resolves.toEqual([expect.objectContaining({ orderId: 'missing-date-order' })]);
+
+    prisma.order.findMany.mockResolvedValueOnce([ready, completed, missingDate, planned]);
+    await expect(
+      repository.listCanonicalOrders({
+        filters: { routeOpsScope: 'history', routeOpsTab: 'all' },
+        shopDomain: 'example.myshopify.com'
+      })
+    ).resolves.toHaveLength(4);
+  });
+
   test('derives first-pass operate delivery status and health from canonical rows', () => {
     expect(deriveOperateDeliveryStatus(canonicalRow())).toBe('ready');
     expect(deriveOrderHealth(canonicalRow())).toBe('normal');

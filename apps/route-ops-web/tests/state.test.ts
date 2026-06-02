@@ -2,19 +2,37 @@ import { describe, expect, test } from 'vitest';
 
 import { withWorkspaceQuery } from '../src/api';
 import { defaultRouteScopeConfig } from '../src/routeScopeConfig';
-import { applyClientOrderFilters, buildOrderFetchQuery, buildOrderQuery, createDefaultOrderFilters, deriveRouteStats, geometryLabel, hasStopSequenceChanged, hideSetupActions, mapReadiness, moveStop, moveStopBefore, storeSettingsToDepotPoint, summarizeSelection } from '../src/state';
+import {
+  applyClientOrderFilters,
+  buildOrderFetchQuery,
+  buildOrderQuery,
+  createDefaultOrderFilters,
+  deriveRouteStats,
+  geometryLabel,
+  getOrderWorksetUnavailableReasons,
+  hasStopSequenceChanged,
+  hideSetupActions,
+  mapReadiness,
+  matchesOrderTab,
+  matchesPlanningScope,
+  moveStop,
+  moveStopBefore,
+  storeSettingsToDepotPoint,
+  summarizeOrderWorkset,
+  summarizeSelection
+} from '../src/state';
 import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStopDto } from '../src/types';
 
 describe('route ops web state helpers', () => {
   test('serializes order filters without empty/all values', () => {
-    expect(buildOrderQuery({ deliveryArea: 'Toronto', deliveryDate: '2026-05-27', deliveryStatus: 'all', health: '', search: '#1001', status: 'planned' })).toBe('deliveryDate=2026-05-27&deliveryArea=Toronto&status=planned&search=%231001');
+    expect(buildOrderQuery({ deliveryArea: 'Toronto', deliveryDate: '2026-05-27', deliveryStatus: 'all', health: '', scope: 'planning', search: '#1001', serviceType: 'EVENING_DELIVERY', tab: 'planned' })).toBe('deliveryDate=2026-05-27&deliveryArea=Toronto&scope=planning&tab=planned&serviceType=EVENING_DELIVERY&search=%231001');
   });
 
   test('keeps delivery date as a client-side filter to avoid refetching on date changes', () => {
-    const filters = { deliveryArea: 'Toronto', deliveryDate: '2026-05-27', deliveryStatus: '', health: '', search: '#1001', status: 'planned' as const };
+    const filters = { ...createDefaultOrderFilters(), deliveryArea: 'Toronto', deliveryDate: '2026-05-27', search: '#1001', tab: 'planned' as const };
 
-    expect(buildOrderQuery(filters)).toBe('deliveryDate=2026-05-27&deliveryArea=Toronto&status=planned&search=%231001');
-    expect(buildOrderFetchQuery(filters)).toBe('deliveryArea=Toronto&status=planned&search=%231001');
+    expect(buildOrderQuery(filters)).toBe('deliveryDate=2026-05-27&deliveryArea=Toronto&scope=planning&tab=planned&search=%231001');
+    expect(buildOrderFetchQuery(filters)).toBe('deliveryArea=Toronto&scope=planning&tab=planned&search=%231001');
   });
 
   test('applies the delivery date filter locally against prefetched orders', () => {
@@ -28,11 +46,38 @@ describe('route ops web state helpers', () => {
     expect(applyClientOrderFilters(orders, { deliveryDate: '' })).toBe(orders);
   });
 
-  test('shows all orders by default and lets tabs add planning scope explicitly', () => {
-    expect(buildOrderQuery(createDefaultOrderFilters())).toBe('');
-    expect(buildOrderQuery({ ...createDefaultOrderFilters(), status: 'unplanned' })).toBe('status=unplanned');
-    expect(buildOrderQuery({ ...createDefaultOrderFilters(), status: 'planned' })).toBe('status=planned');
-    expect(buildOrderQuery({ ...createDefaultOrderFilters(), health: 'needs_review' })).toBe('health=needs_review');
+  test('defaults to the planning unplanned workset and serializes All/History explicitly', () => {
+    expect(createDefaultOrderFilters()).toEqual(expect.objectContaining({ scope: 'planning', tab: 'unplanned' }));
+    expect(buildOrderQuery(createDefaultOrderFilters())).toBe('scope=planning&tab=unplanned');
+    expect(buildOrderQuery({ ...createDefaultOrderFilters(), tab: 'all' })).toBe('scope=planning&tab=all');
+    expect(buildOrderQuery({ ...createDefaultOrderFilters(), scope: 'history', tab: 'all' })).toBe('scope=history&tab=all');
+    expect(buildOrderQuery({ ...createDefaultOrderFilters(), tab: 'needs_review' })).toBe('scope=planning&tab=needs_review');
+  });
+
+  test('serializes service type and delivery session filters while preserving enum values', () => {
+    expect(buildOrderQuery({ ...createDefaultOrderFilters(), deliverySession: 'EVENING', serviceType: 'EVENING_DELIVERY' })).toBe(
+      'scope=planning&tab=unplanned&serviceType=EVENING_DELIVERY&deliverySession=EVENING'
+    );
+  });
+
+  test('classifies planning scope tabs and workset availability reasons', () => {
+    const ready = order({ deliveryDate: '2026-05-29', orderId: 'ready' });
+    const planned = order({ deliveryDate: '2026-05-29', orderId: 'planned', planningStatus: 'PLANNED', routePlanId: 'route-1' });
+    const missingDate = order({ blockerReasons: ['missing_delivery_date'], deliveryDate: null, metadataResolved: false, orderId: 'missing-date', routeEligible: false });
+    const completed = order({ deliveryDate: '2026-05-29', deliveryStatus: 'completed', orderId: 'completed' });
+
+    expect(matchesPlanningScope(ready, '2026-05-29')).toBe(true);
+    expect(matchesPlanningScope(completed, '2026-05-29')).toBe(false);
+    expect(matchesOrderTab(ready, 'unplanned', '2026-05-29')).toBe(true);
+    expect(matchesOrderTab(planned, 'planned', '2026-05-29')).toBe(true);
+    expect(matchesOrderTab(missingDate, 'needs_review', '2026-05-29')).toBe(true);
+
+    expect(getOrderWorksetUnavailableReasons(planned, { scope: 'planning' }).map((reason) => reason.code)).toContain('already_planned');
+    expect(getOrderWorksetUnavailableReasons(ready, { scope: 'history' }).map((reason) => reason.code)).toContain('history_read_only');
+    const summary = summarizeOrderWorkset([ready, planned, missingDate], new Set(['ready']), { scope: 'planning' });
+    expect(summary).toEqual(expect.objectContaining({ selectableCount: 1, selectedCount: 1, unavailableCount: 2 }));
+    expect(summary.reasonLabels.join(' ')).toContain('Already planned');
+    expect(summary.reasonLabels.join(' ')).toContain('Missing delivery date');
   });
 
 

@@ -1229,6 +1229,72 @@ describe("Admin WooCommerce connection UI routes", () => {
         url: "/admin/ui/app/api/orders?shopDomain=tenant-a.example.test&status=archived",
       });
       expect(invalid.statusCode).toBe(400);
+
+      listCanonicalOrders.mockClear();
+      const scoped = await app.inject({
+        headers: { cookie, accept: "application/json" },
+        method: "GET",
+        url: "/admin/ui/app/api/orders?shopDomain=tenant-a.example.test&scope=planning&tab=unplanned&serviceType=DELIVERY&deliverySession=DAY&search=%231001",
+      });
+      expect(scoped.statusCode).toBe(200);
+      expect(listCanonicalOrders).toHaveBeenCalledWith({
+        filters: {
+          deliverySession: "DAY",
+          planned: false,
+          routeOpsScope: "planning",
+          routeOpsTab: "unplanned",
+          routeOpsToday: "2026-05-29",
+          search: "#1001",
+          serviceType: "DELIVERY",
+        },
+        shopDomain: "tenant-a.example.test",
+      });
+
+      listCanonicalOrders.mockClear();
+      const allPlanning = await app.inject({
+        headers: { cookie, accept: "application/json" },
+        method: "GET",
+        url: "/admin/ui/app/api/orders?shopDomain=tenant-a.example.test&scope=planning&tab=all",
+      });
+      expect(allPlanning.statusCode).toBe(200);
+      expect(listCanonicalOrders).toHaveBeenCalledWith({
+        filters: {
+          routeOpsScope: "planning",
+          routeOpsTab: "all",
+          routeOpsToday: "2026-05-29",
+        },
+        shopDomain: "tenant-a.example.test",
+      });
+
+      listCanonicalOrders.mockClear();
+      const history = await app.inject({
+        headers: { cookie, accept: "application/json" },
+        method: "GET",
+        url: "/admin/ui/app/api/orders?shopDomain=tenant-a.example.test&scope=history&tab=all&search=past",
+      });
+      expect(history.statusCode).toBe(200);
+      expect(listCanonicalOrders).toHaveBeenCalledWith({
+        filters: {
+          routeOpsScope: "history",
+          routeOpsTab: "all",
+          search: "past",
+        },
+        shopDomain: "tenant-a.example.test",
+      });
+
+      for (const query of [
+        "scope=everything",
+        "tab=archived",
+        "serviceType=BOGUS",
+        "deliverySession=OVERNIGHT",
+      ]) {
+        const invalidScoped = await app.inject({
+          headers: { cookie, accept: "application/json" },
+          method: "GET",
+          url: `/admin/ui/app/api/orders?shopDomain=tenant-a.example.test&${query}`,
+        });
+        expect(invalidScoped.statusCode).toBe(400);
+      }
     } finally {
       await app.close();
     }
@@ -1573,6 +1639,22 @@ describe("Admin WooCommerce connection UI routes", () => {
         }),
       );
 
+      patchCanonicalOrder.mockClear();
+      const historyMetadataResponse = await app.inject({
+        method: "PATCH",
+        url: "/admin/ui/app/api/orders/order-1/metadata?shopDomain=tenant-a.example.test&scope=history",
+        ...authenticatedJsonRequest(
+          cookie,
+          { deliveryDate: "2026-05-28" },
+          csrfToken,
+        ),
+      });
+      expect(historyMetadataResponse.statusCode).toBe(400);
+      expect(readApiError(historyMetadataResponse).message).toContain(
+        "History scope is read-only",
+      );
+      expect(patchCanonicalOrder).not.toHaveBeenCalled();
+
       const geocodeResponse = await app.inject({
         method: "POST",
         url: "/admin/ui/app/api/orders/order-1/geocode?shopDomain=tenant-a.example.test",
@@ -1765,6 +1847,35 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(JSON.stringify(patchCanonicalOrderCoordinates.mock.calls)).not.toContain(
         "Mock place",
       );
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("rejects bulk geocode mutations in history scope", async () => {
+    const listCanonicalOrders = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["orderSyncService"]
+      >["listCanonicalOrders"]
+    >(() => Promise.resolve([]));
+    const { app } = await createUiHarness({
+      geocodingService: {
+        geocode: vi.fn(),
+        status: { mode: "nominatim_compatible", persistentCacheEnabled: true },
+      },
+      orderSyncService: { listCanonicalOrders },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/orders/geocode?shopDomain=tenant-a.example.test&scope=history&tab=all",
+        ...authenticatedJsonRequest(cookie, {}, csrfToken),
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(listCanonicalOrders).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -3229,6 +3340,54 @@ describe("Admin WooCommerce connection UI routes", () => {
         }),
       );
       expect(createRoutePlanFromOrderIds).toHaveBeenCalledOnce();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("rejects Route Ops route creation when requested from history scope", async () => {
+    const createRoutePlanFromOrderIds = vi.fn<
+      NonNullable<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["routePlanService"]
+        >["createRoutePlanFromOrderIds"]
+      >
+    >(() => Promise.resolve(routePlanSummary()));
+    const { app } = await createUiHarness({
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([canonicalOrder()])),
+      },
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan: vi.fn(),
+        createRoutePlanFromOrderIds,
+        getRoutePlanDetail: vi.fn(),
+        listRoutePlans: vi.fn(() => Promise.resolve([])),
+        updateRoutePlanStops: vi.fn(),
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/routes?shopDomain=tenant-a.example.test&scope=history",
+        ...authenticatedJsonRequest(
+          cookie,
+          {
+            orderIds: ["order-1"],
+            planDate: "2026-05-26",
+            routeName: "History route",
+          },
+          csrfToken,
+        ),
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(readApiError(response).message).toContain(
+        "History scope is read-only",
+      );
+      expect(createRoutePlanFromOrderIds).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

@@ -50,9 +50,13 @@ export async function patchOrderMetadata(input: {
   csrfToken: string;
   orderId: string;
   patch: Record<string, string | null>;
+  scope?: "history" | "planning";
 }): Promise<OrderMutationResponse> {
   return apiMutation<OrderMutationResponse>(
-    `/admin/ui/app/api/orders/${encodeURIComponent(input.orderId)}/metadata`,
+    appendRouteOpsScope(
+      `/admin/ui/app/api/orders/${encodeURIComponent(input.orderId)}/metadata`,
+      input.scope,
+    ),
     "PATCH",
     input.csrfToken,
     input.patch,
@@ -157,9 +161,10 @@ export async function createRoute(input: {
   orderIds: string[];
   planDate: string;
   routeName: string;
+  scope?: "history" | "planning";
 }): Promise<{ routePlan: { id: string } }> {
   return apiMutation<{ routePlan: { id: string } }>(
-    "/admin/ui/app/api/routes",
+    appendRouteOpsScope("/admin/ui/app/api/routes", input.scope),
     "POST",
     input.csrfToken,
     input,
@@ -287,6 +292,15 @@ export async function saveSettings(input: {
     input.csrfToken,
     input,
   );
+}
+
+function appendRouteOpsScope(
+  path: string,
+  scope: "history" | "planning" | undefined,
+): string {
+  if (scope === undefined) return path;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}scope=${encodeURIComponent(scope)}`;
 }
 
 async function apiGet<T>(url: string): Promise<T> {

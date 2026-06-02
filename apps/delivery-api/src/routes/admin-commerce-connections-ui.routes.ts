@@ -1132,7 +1132,22 @@ function registerRouteOpsAppRoutes(
             ...(filters.deliveryArea === undefined
               ? {}
               : { deliveryArea: filters.deliveryArea }),
+            ...(filters.deliverySession === undefined
+              ? {}
+              : { deliverySession: filters.deliverySession }),
+            ...(filters.routeOpsScope === undefined
+              ? {}
+              : { routeOpsScope: filters.routeOpsScope }),
+            ...(filters.routeOpsToday === undefined
+              ? {}
+              : { routeOpsToday: filters.routeOpsToday }),
+            ...(filters.routeOpsScope === undefined
+              ? {}
+              : { routeOpsTab: "needs_review" }),
             ...(filters.search === undefined ? {} : { search: filters.search }),
+            ...(filters.serviceType === undefined
+              ? {}
+              : { serviceType: filters.serviceType }),
             readiness: "NEEDS_REVIEW",
           },
           shopDomain,
@@ -1157,6 +1172,7 @@ function registerRouteOpsAppRoutes(
           query: request.query,
           shopDomain,
         });
+        assertRouteOpsBulkGeocodeScope(filters);
         const job = createBulkGeocodeJob({ filters, shopDomain });
         void runBulkGeocodeJob({
           actor: dependencies.actor.subject,
@@ -1190,6 +1206,7 @@ function registerRouteOpsAppRoutes(
         query: request.query,
         shopDomain,
       });
+      assertRouteOpsBulkGeocodeScope(filters);
       const job = createBulkGeocodeJob({ filters, shopDomain });
       void runBulkGeocodeJob({
         actor: dependencies.actor.subject,
@@ -1293,6 +1310,9 @@ function registerRouteOpsAppRoutes(
           );
         }
         const body = readRouteOpsBodyObject(request.body);
+        assertRouteOpsWritableScope(
+          readRouteOpsMutationScope(request.query, body),
+        );
         const routeScopeConfig = await readRouteOpsRouteScopeConfig(
           dependencies,
           shopDomain,
@@ -1330,6 +1350,9 @@ function registerRouteOpsAppRoutes(
           );
         }
         const body = readRouteOpsBodyObject(request.body);
+        assertRouteOpsWritableScope(
+          readRouteOpsMutationScope(request.query, body),
+        );
         const order =
           await dependencies.orderSyncService.patchCanonicalOrderCoordinates({
             actor: dependencies.actor.subject,
@@ -1370,6 +1393,9 @@ function registerRouteOpsAppRoutes(
           );
         }
         const body = readRouteOpsBodyObject(request.body);
+        assertRouteOpsWritableScope(
+          readRouteOpsMutationScope(request.query, body),
+        );
         const orders = await dependencies.orderSyncService.listCanonicalOrders({
           shopDomain,
         });
@@ -1500,6 +1526,9 @@ function registerRouteOpsAppRoutes(
       const services = requireRouteUiServices(dependencies);
       const shopDomain = requireRouteOpsShopDomain(request, session);
       const body = readRouteOpsBodyObject(request.body);
+      assertRouteOpsWritableScope(
+        readRouteOpsMutationScope(request.query, body),
+      );
       const planDate = normalizeRequiredDate(
         readRequiredJsonString(body, "planDate"),
       );
@@ -3589,6 +3618,17 @@ async function readRouteOpsOrderFilters(input: {
   query: unknown;
   shopDomain: string;
 }): Promise<ListCanonicalOrdersFilters> {
+  const scope = normalizeRouteOpsOrderScope(readQueryString(input.query, "scope"));
+  const tab = normalizeRouteOpsOrderTab(readQueryString(input.query, "tab"));
+  const rawServiceType = readQueryString(input.query, "serviceType");
+  const rawDeliverySession = readQueryString(input.query, "deliverySession");
+  const routeScopeConfig =
+    rawServiceType === null && rawDeliverySession === null
+      ? null
+      : await readRouteOpsRouteScopeConfig(
+          input.dependencies,
+          input.shopDomain,
+        );
   const deliveryArea = normalizeOptionalText(
     readQueryString(input.query, "deliveryArea"),
     "deliveryArea",
@@ -3607,24 +3647,86 @@ async function readRouteOpsOrderFilters(input: {
   const planned = normalizeRouteOpsPlanningStatus(
     readQueryString(input.query, "status"),
   );
+  const serviceType = normalizeRouteOpsServiceTypeFilter(
+    rawServiceType,
+    routeScopeConfig ?? defaultRouteScopeConfig(),
+  );
+  const deliverySession = normalizeRouteOpsDeliverySessionFilter(
+    rawDeliverySession,
+    routeScopeConfig ?? defaultRouteScopeConfig(),
+  );
   const search = normalizeOptionalText(
     readQueryString(input.query, "search"),
     "search",
   );
-  const deliveryDate = orderHealth === "needs_review" ? null : rawDeliveryDate;
+  const effectiveTab =
+    tab ??
+    (planned === true
+      ? "planned"
+      : planned === false
+        ? "unplanned"
+        : orderHealth === "needs_review"
+          ? "needs_review"
+          : null);
+  const deliveryDate =
+    orderHealth === "needs_review" || effectiveTab === "needs_review"
+      ? null
+      : rawDeliveryDate;
+  const routeOpsToday =
+    scope === "planning"
+      ? await resolveShopToday(input.dependencies, input.shopDomain)
+      : null;
   const deliveryDateFrom =
-    deliveryDate === null && planned !== null && orderHealth !== "needs_review"
+    scope === null &&
+    deliveryDate === null &&
+    planned !== null &&
+    orderHealth !== "needs_review"
       ? await resolveShopToday(input.dependencies, input.shopDomain)
       : null;
   return {
     ...(deliveryArea === null ? {} : { deliveryArea }),
     ...(deliveryDate === null ? {} : { deliveryDate }),
     ...(deliveryDateFrom === null ? {} : { deliveryDateFrom }),
+    ...(deliverySession === null ? {} : { deliverySession }),
     ...(operateDeliveryStatus === null ? {} : { operateDeliveryStatus }),
-    ...(orderHealth === null ? {} : { orderHealth }),
-    ...(planned === null ? {} : { planned }),
+    ...(scope !== null && effectiveTab === "needs_review"
+      ? {}
+      : orderHealth === null
+        ? {}
+        : { orderHealth }),
+    ...(scope === null && planned !== null ? { planned } : {}),
+    ...(scope !== null && effectiveTab === "planned" ? { planned: true } : {}),
+    ...(scope !== null && effectiveTab === "unplanned"
+      ? { planned: false }
+      : {}),
+    ...(scope === null ? {} : { routeOpsScope: scope }),
+    ...(scope === null || effectiveTab === null
+      ? {}
+      : { routeOpsTab: effectiveTab }),
+    ...(routeOpsToday === null ? {} : { routeOpsToday }),
     ...(search === null ? {} : { search }),
+    ...(serviceType === null ? {} : { serviceType }),
   };
+}
+
+function readRouteOpsMutationScope(
+  query: unknown,
+  body: Record<string, unknown>,
+): "history" | "planning" | null {
+  const queryScope = normalizeRouteOpsOrderScope(readQueryString(query, "scope"));
+  if (queryScope !== null) return queryScope;
+  const bodyScope = body.scope;
+  if (typeof bodyScope !== "string") return null;
+  return normalizeRouteOpsOrderScope(bodyScope);
+}
+
+function assertRouteOpsWritableScope(scope: "history" | "planning" | null): void {
+  if (scope !== "history") return;
+  throw new WooCommerceOnboardingError(
+    "BAD_REQUEST",
+    "History scope is read-only",
+    400,
+  );
 }
 
 async function resolveShopToday(
@@ -3905,6 +4007,15 @@ function createBulkGeocodeJob(input: {
   };
   bulkGeocodeJobs.set(job.jobId, job);
   return job;
+}
+
+function assertRouteOpsBulkGeocodeScope(filters: ListCanonicalOrdersFilters): void {
+  if (filters.routeOpsScope !== "history") return;
+  throw new WooCommerceOnboardingError(
+    "BAD_REQUEST",
+    "Bulk geocode is disabled in history scope",
+    400,
+  );
 }
 
 async function runBulkGeocodeJob(input: {
@@ -5429,6 +5540,39 @@ function normalizeOrderHealth(
   );
 }
 
+function normalizeRouteOpsOrderScope(
+  value: string | null | undefined,
+): "history" | "planning" | null {
+  if (value === undefined || value === null || value.trim() === "") return null;
+  const trimmed = value.trim().toLowerCase();
+  if (trimmed === "history" || trimmed === "planning") return trimmed;
+  throw new WooCommerceOnboardingError(
+    "BAD_REQUEST",
+    "order scope filter is invalid",
+    400,
+  );
+}
+
+function normalizeRouteOpsOrderTab(
+  value: string | null | undefined,
+): "all" | "needs_review" | "planned" | "unplanned" | null {
+  if (value === undefined || value === null || value.trim() === "") return null;
+  const trimmed = value.trim().toLowerCase();
+  if (
+    trimmed === "all" ||
+    trimmed === "needs_review" ||
+    trimmed === "planned" ||
+    trimmed === "unplanned"
+  ) {
+    return trimmed;
+  }
+  throw new WooCommerceOnboardingError(
+    "BAD_REQUEST",
+    "order tab filter is invalid",
+    400,
+  );
+}
+
 function normalizeRouteOpsPlanningStatus(
   value: string | null | undefined,
 ): boolean | null {
@@ -5439,6 +5583,34 @@ function normalizeRouteOpsPlanningStatus(
   throw new WooCommerceOnboardingError(
     "BAD_REQUEST",
     "order planning status filter is invalid",
+    400,
+  );
+}
+
+function normalizeRouteOpsServiceTypeFilter(
+  value: string | null | undefined,
+  routeScopeConfig: RouteScopeConfigDto,
+): string | null {
+  if (value === undefined || value === null || value.trim() === "") return null;
+  const trimmed = value.trim();
+  if (isActiveServiceType(routeScopeConfig, trimmed)) return trimmed;
+  throw new WooCommerceOnboardingError(
+    "BAD_REQUEST",
+    "service type filter is invalid",
+    400,
+  );
+}
+
+function normalizeRouteOpsDeliverySessionFilter(
+  value: string | null | undefined,
+  routeScopeConfig: RouteScopeConfigDto,
+): string | null {
+  if (value === undefined || value === null || value.trim() === "") return null;
+  const trimmed = value.trim();
+  if (isActiveDeliverySession(routeScopeConfig, trimmed)) return trimmed;
+  throw new WooCommerceOnboardingError(
+    "BAD_REQUEST",
+    "delivery session filter is invalid",
     400,
   );
 }
