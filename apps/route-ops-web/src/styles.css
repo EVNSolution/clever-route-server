@@ -556,28 +556,37 @@ small,
 .driver-table td {
   vertical-align: top;
 }
+.driver-table .badge,
 .driver-table .status-pill {
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  padding: 8px 10px;
   text-transform: none;
   white-space: nowrap;
 }
 .driver-invite-actions {
-  display: grid;
-  gap: 8px;
-  min-width: min(100%, 320px);
-}
-.driver-invite-row {
   align-items: center;
   display: grid;
-  gap: 10px;
+  gap: 12px;
   grid-template-columns: minmax(0, 1fr) max-content;
+  min-width: min(100%, 360px);
+}
+.driver-invite-meta-stack {
+  display: grid;
+  gap: 2px;
 }
 .driver-invite-meta {
   min-width: 0;
 }
+.driver-invite-meta-stack .driver-invite-meta {
+  margin-top: 0;
+}
 .driver-invite-controls {
   align-items: center;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 6px;
   justify-content: flex-end;
 }

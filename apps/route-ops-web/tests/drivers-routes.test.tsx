@@ -44,6 +44,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(inviteCellHtml).toContain('re-login');
     expect(inviteCellHtml).toContain('delete');
     expect(html).toContain('<small>Linked</small>');
+    expect(html).toContain('<span class="badge">Active</span>');
     expect(html).toContain('<span class="status-pill ok">Linked</span>');
     expect(html).toContain('<span class="status-pill warn">Invite pending</span>');
     expect(html).toContain('No active code');
@@ -59,9 +60,10 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('refreshToken');
 
     expect(html.match(/class="driver-invite-actions"/g)).toHaveLength(2);
-    expect(html.match(/class="driver-invite-row"/g)).toHaveLength(4);
+    expect(html.match(/class="driver-invite-meta-stack"/g)).toHaveLength(2);
     expect(html.match(/class="driver-invite-meta"/g)).toHaveLength(4);
-    expect(html.match(/class="driver-invite-controls"/g)).toHaveLength(4);
+    expect(html.match(/class="driver-invite-controls"/g)).toHaveLength(2);
+    expect(inviteCellHtml).toMatch(/<div class="driver-invite-controls"><button[^>]*>copy<\/button><button[^>]*>re-login<\/button><button class="danger subtle"[^>]*>delete<\/button><\/div>/);
   });
 
   test('drivers page KPI shortens linked app copy', () => {
