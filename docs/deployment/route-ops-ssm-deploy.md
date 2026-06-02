@@ -181,6 +181,7 @@ Pin the reviewed `DocumentVersion` in GitHub variable `SSM_ROUTE_OPS_DOCUMENT_VE
 `scripts/ssm-route-ops-deploy.sh` runs on the EC2 host. It:
 
 - validates image tag/schema/image coordinates again;
+- exports `ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route` by default and all production compose calls use `docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME"`; the top-level compose `name:` is defense in depth, not the primary selector;
 - takes an exclusive `.deploy/route-ops-deploy.lock` lock before `.deploy/*` mutation;
 - reads `CLEVER_ADMIN_WEB_LOGIN_SECRET` locally from `infra/env/delivery-api.env` if `ROUTE_OPS_SMOKE_LOGIN_SECRET` is not already set by a host-local secure source;
 - never prints the secret;
@@ -188,6 +189,133 @@ Pin the reviewed `DocumentVersion` in GitHub variable `SSM_ROUTE_OPS_DOCUMENT_VE
 - records non-secret `PUBLISH_EVIDENCE_URL` to `.deploy/deploy-evidence.jsonl` after a successful deploy.
 
 `deploy-route-ops-image.sh` and `rollback-route-ops-image.sh` also acquire the same lock unless a wrapper already holds it. This keeps emergency Session Manager commands from racing the workflow path.
+
+The host deploy/rollback scripts now fail closed before any service mutation when:
+
+- `ROUTE_OPS_COMPOSE_PROJECT_NAME` is anything other than exactly `clever-route`;
+- a legacy implicit Route Ops container is still running under `com.docker.compose.project=compose` for `caddy`, `delivery-api`, `delivery-api-migrate`, `postgres`, or `osrm-ontario`.
+
+This means normal image deploys must wait until the one-time compose-project migration/cutover has completed. Do not bypass this guard with environment overrides.
+
+## Compose project isolation and migration guard
+
+Route Ops production must not run under Docker Compose's implicit/default `compose` project. The canonical project is:
+
+```text
+ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
+```
+
+Every Route Ops deploy, rollback, Caddy reconcile, and OSRM compose command must use:
+
+```bash
+docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml config --quiet
+```
+
+The compose file also declares `name: ${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}` so ad-hoc `config` output is self-documenting, but scripts must still pass `-p`. `COMPOSE_PROJECT_NAME` is exported only as a secondary guard.
+
+### Read-only preflight before any production migration
+
+Run through SSM Session Manager/Run Command and keep output redacted:
+
+```bash
+cd /srv/clever-route-server
+docker compose ls
+docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}|{{.Label "com.docker.compose.project.config_files"}}|{{.Image}}|{{.Status}}|{{.Ports}}'
+docker inspect compose-caddy-1 compose-delivery-api-1 compose-postgres-1 clever-route-caddy-1 clever-route-delivery-api-1 clever-route-postgres-1 \
+  --format '{{.Name}}|{{json .Config.Labels}}|{{json .Mounts}}' 2>/dev/null || true
+docker ps -a --filter name=osrm --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}|{{.Status}}|{{.Ports}}'
+curl -fsS https://clever-route.cleversystem.ai/healthz
+```
+
+Before any stop/start, prove:
+
+- exactly which Caddy owns 80/443 and that it uses this repo's `infra/caddy/Caddyfile`;
+- the active delivery-api image revision matches `.deploy/current-image.env`;
+- the active Postgres data root is `/srv/clever-route-server/data/postgres`;
+- duplicate Postgres containers, if present, do not point at different data roots;
+- OSRM port `127.0.0.1:5000` is free or owned by the Route Ops OSRM container that will be cut over.
+
+Stop and escalate if the active Route Ops DB bind mount cannot be proven. Do not run project-wide `docker compose -p compose down`, `docker system prune -a`, `docker volume prune`, or `docker container prune`.
+
+### Controlled cutover order
+
+This cutover is a separate production action, not part of repo-side implementation tests.
+
+1. Acquire `.deploy/route-ops-deploy.lock`.
+2. Preserve or intentionally reissue Caddy cert storage before changing the serving Caddy:
+   - preferred: copy/attach the existing Route Ops Caddy data/config volume to the `clever-route` project;
+   - fallback: document intentional reissue only after DNS points to this host and ports are free.
+3. Stop only verified old Route Ops containers by exact name plus labels, not the shared `compose` project:
+   - stop `compose-caddy-1` first to free 80/443;
+   - stop `compose-delivery-api-1` and any old Route Ops `delivery-api-migrate` one-off to prevent old/new DB writer overlap;
+   - stop `compose-postgres-1` only after proving it is the active Route Ops Postgres with service label `postgres`, this repo compose config label, and the verified bind mount;
+   - stop `compose-osrm-ontario-1` first if OSRM is enabled because it owns `127.0.0.1:5000`;
+   - do not stop unrelated containers such as `compose-shopify-app-1`.
+4. Hard rule: old and new Route Ops Postgres containers must never run concurrently against the same verified bind mount.
+5. Start the coherent unit under `clever-route`:
+
+```bash
+export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
+docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml up -d --no-build postgres
+docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml run --rm delivery-api-migrate
+docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml up -d --no-build delivery-api caddy
+```
+
+If OSRM is enabled, include `--profile osrm up -d osrm-ontario` only after the old OSRM service has released port 5000. Otherwise keep OSRM disabled and verify the app fails closed for route geometry.
+
+### Caddy certificate volume handoff
+
+Docker Compose volume names are project-scoped. For the current implicit project, Caddy volumes are expected to be:
+
+```text
+compose_caddy-data
+compose_caddy-config
+```
+
+For the new Route Ops project, the expected names are:
+
+```text
+clever-route_caddy-data
+clever-route_caddy-config
+```
+
+Confirm the real source volumes before copying:
+
+```bash
+docker inspect compose-caddy-1 --format '{{range .Mounts}}{{.Name}} -> {{.Destination}}{{"\n"}}{{end}}'
+docker volume inspect compose_caddy-data compose_caddy-config >/dev/null
+docker volume create clever-route_caddy-data
+docker volume create clever-route_caddy-config
+docker run --rm -v compose_caddy-data:/from:ro -v clever-route_caddy-data:/to alpine sh -c 'cp -a /from/. /to/'
+docker run --rm -v compose_caddy-config:/from:ro -v clever-route_caddy-config:/to alpine sh -c 'cp -a /from/. /to/'
+docker run --rm -v clever-route_caddy-data:/data:ro alpine sh -c 'test -d /data/caddy || test -d /data'
+```
+
+Do not print certificate material. If either source volume cannot be verified, do not copy guessed volumes. Use the documented intentional reissue fallback only after confirming DNS and rate-limit risk.
+
+### Post-cutover smoke and cleanup gate
+
+Before cleanup, verify:
+
+- exactly one Caddy binds 80/443 and its project label is `clever-route`;
+- `/healthz` returns ok;
+- unauthenticated `/admin/ui/app/drivers?shopDomain=dev1.tomatonofood.com` redirects to `/admin/ui/login`;
+- authenticated smoke passes for `/admin/ui/app`, `/admin/ui/app/orders`, `/admin/ui/app/drivers`, `/admin/ui/app/api/bootstrap`, `/admin/ui/app/api/drivers`, vendor assets, CSP/map config;
+- OSRM road geometry works when enabled or returns null/empty geometry on failure; no fake straight line.
+
+Cleanup after successful smoke is removal of already-stopped old Route Ops containers by exact name/label allowlist only. Do not remove volumes or bind-mounted data.
+
+### Rollback during migration
+
+If smoke fails before cleanup after new Postgres started:
+
+1. stop the newly created `clever-route` Caddy/app/Postgres as needed;
+2. restart the prior verified old Postgres first;
+3. restart the old delivery-api;
+4. restart the old Caddy;
+5. preserve `.deploy/current-image.env` and record the failure.
+
+After cleanup has succeeded, rollback stays within the `clever-route` project using `.deploy/previous-image.env`; it must not resurrect implicit `compose` Route Ops containers.
 
 ## Host disk and image retention guard
 

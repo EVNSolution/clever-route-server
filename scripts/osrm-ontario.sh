@@ -27,6 +27,7 @@ Environment:
   PBF_FILE              Default: ontario-latest.osm.pbf
   OSRM_FILE             Default: ontario-latest.osrm
   OSRM_IMAGE            Default: ghcr.io/project-osrm/osrm-backend:latest
+  ROUTE_OPS_COMPOSE_PROJECT_NAME Default: clever-route
   OSRM_MIN_FREE_MB      Default: 20000
   OSRM_MIN_MEMORY_MB    Default: 4096
   OSRM_BASE_URL         Default: http://127.0.0.1:5000 (smoke only)
@@ -106,6 +107,8 @@ print_env_presence() {
 preflight_osrm() {
   local root_dir data_dir env_file compose_file osrm_file min_free_mb min_memory_mb
   root_dir="${ROOT_DIR:-/srv/clever-route-server}"
+  local compose_project_name
+  compose_project_name="${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}"
   data_dir="${OSRM_DATA_DIR:-${root_dir}/data/osrm/ontario}"
   env_file="${OSRM_ENV_FILE:-${root_dir}/infra/env/delivery-api.env}"
   compose_file="${OSRM_COMPOSE_FILE:-${root_dir}/infra/compose/docker-compose.prod.yml}"
@@ -118,6 +121,7 @@ preflight_osrm() {
   echo "Data dir: ${data_dir}"
   echo "Env file: ${env_file}"
   echo "Compose file: ${compose_file}"
+  echo "Compose project: ${compose_project_name}"
   echo "Minimum free disk MB: ${min_free_mb}"
   echo "Minimum memory+swap MB: ${min_memory_mb}"
 
@@ -127,6 +131,7 @@ preflight_osrm() {
     print_cmd df -Pm "$data_dir"
     print_cmd docker ps -a --filter name=osrm --format '{{.Names}}\t{{.Status}}\t{{.Ports}}'
     print_cmd grep -E '^(OSRM_BASE_URL|OSRM_TIMEOUT_MS|ROUTE_OPS_ROUTER_COVERAGE)=' "$env_file"
+    print_cmd docker compose -p "$compose_project_name" -f "$compose_file" --profile osrm ps osrm-ontario
     print_cmd curl -fsS "http://127.0.0.1:5000/route/v1/driving/-79.3832,43.6532;-79.6441,43.5890?overview=full&geometries=geojson&steps=false"
     echo "dry-run: no filesystem, Docker, env, or live OSRM checks executed."
     return 0
@@ -275,7 +280,7 @@ prepare_osrm() {
     osrm-customize "/data/${osrm_file}"
 
   echo "OSRM Ontario data prepared: ${data_dir}/${osrm_file}"
-  echo "Next: docker compose -f infra/compose/docker-compose.prod.yml --profile osrm up -d osrm-ontario"
+  echo "Next: docker compose -p ${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route} -f infra/compose/docker-compose.prod.yml --profile osrm up -d osrm-ontario"
 }
 
 smoke_osrm() {

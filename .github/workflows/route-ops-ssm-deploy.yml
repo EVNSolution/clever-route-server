@@ -214,12 +214,14 @@ jobs:
             "commands": [
               "set -euo pipefail",
               "cd /srv/clever-route-server",
+              "export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route",
+              "export COMPOSE_PROJECT_NAME=$ROUTE_OPS_COMPOSE_PROJECT_NAME",
               "test -f infra/caddy/Caddyfile",
               "test -f infra/compose/docker-compose.prod.yml",
               "test -f .deploy/current-image.env",
-              "docker compose --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml config --quiet",
-              "docker compose --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml up -d --no-build --force-recreate --no-deps caddy",
-              "docker compose --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml ps caddy"
+              "docker compose -p \"$ROUTE_OPS_COMPOSE_PROJECT_NAME\" --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml config --quiet",
+              "docker compose -p \"$ROUTE_OPS_COMPOSE_PROJECT_NAME\" --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml up -d --no-build --force-recreate --no-deps caddy",
+              "docker compose -p \"$ROUTE_OPS_COMPOSE_PROJECT_NAME\" --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml ps caddy"
             ]
           }
           JSON

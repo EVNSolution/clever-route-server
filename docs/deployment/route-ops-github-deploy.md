@@ -35,6 +35,7 @@ rsync -azR --itemize-changes \
   ubuntu@HOST:/srv/clever-route-server/
 
 ssh ubuntu@HOST 'cd /srv/clever-route-server && mkdir -p .deploy
+export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
 PRISMA_SCHEMA_SHA=$(sha256sum apps/delivery-api/prisma/schema.prisma | awk "{print \$1}")
 cat > .deploy/current-image.env <<EOF_IMAGE
 IMAGE_TAG=bootstrap-local
@@ -43,7 +44,7 @@ DELIVERY_API_MIGRATE_IMAGE=clever-route-server-delivery-api-migrate:local
 PRISMA_SCHEMA_SHA=${PRISMA_SCHEMA_SHA}
 EOF_IMAGE
 set -a; source .deploy/current-image.env; set +a
-docker compose --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml config --quiet'
+docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml config --quiet'
 ```
 
 If the host cannot compute the real schema fingerprint, stop and use the DB/infra lane.
@@ -58,6 +59,7 @@ export IMAGE_TAG=<immutable-git-sha-from-publish>
 export PRISMA_SCHEMA_SHA=<schema-sha-from-publish>
 export DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api:${IMAGE_TAG}
 export DELIVERY_API_MIGRATE_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:${IMAGE_TAG}
+export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
 export ROUTE_OPS_SMOKE_BASE_URL=https://clever-route.cleversystem.ai
 export ROUTE_OPS_SMOKE_SHOP_DOMAIN=dev1.tomatonofood.com
 export ROUTE_OPS_SMOKE_LOGIN_SECRET=<read locally from host secret manager, never commit>

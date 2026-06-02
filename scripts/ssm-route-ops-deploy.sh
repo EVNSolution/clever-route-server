@@ -3,6 +3,7 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-/srv/clever-route-server}"
 ENV_FILE="${ROUTE_OPS_HOST_ENV_FILE:-infra/env/delivery-api.env}"
+ROUTE_OPS_COMPOSE_PROJECT_NAME="${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}"
 LOCK_PATH="${ROUTE_OPS_DEPLOY_LOCK_PATH:-.deploy/route-ops-deploy.lock}"
 LOCK_DIR="${LOCK_PATH}.d"
 LOCK_ACQUIRED="false"
@@ -125,12 +126,18 @@ record_publish_evidence() {
 validate_inputs
 validate_publish_evidence
 cd "$APP_DIR"
+export ROUTE_OPS_COMPOSE_PROJECT_NAME
+export COMPOSE_PROJECT_NAME="$ROUTE_OPS_COMPOSE_PROJECT_NAME"
+
+if [ "$ROUTE_OPS_COMPOSE_PROJECT_NAME" != "clever-route" ]; then
+  fail "ROUTE_OPS_COMPOSE_PROJECT_NAME must be exactly clever-route; got: ${ROUTE_OPS_COMPOSE_PROJECT_NAME}"
+fi
 acquire_lock
 read_host_secret
 login_to_ghcr
 
-printf 'Route Ops SSM deploy wrapper starting: tag=%s schema=%s runtime=%s migrate=%s\n' \
-  "$IMAGE_TAG" "$PRISMA_SCHEMA_SHA" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE"
+printf 'Route Ops SSM deploy wrapper starting: tag=%s schema=%s runtime=%s migrate=%s composeProject=%s\n' \
+  "$IMAGE_TAG" "$PRISMA_SCHEMA_SHA" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" "$ROUTE_OPS_COMPOSE_PROJECT_NAME"
 
 scripts/deploy-route-ops-image.sh
 record_publish_evidence

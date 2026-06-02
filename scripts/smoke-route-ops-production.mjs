@@ -22,7 +22,9 @@ try {
   await checkAssets(appHtml);
   await checkBootstrap();
   await checkOrdersPage();
+  await checkDriversPage();
   const orders = await checkOrdersApi();
+  await checkDriversApi();
   await checkGeocoderGate(orders);
   await checkVendorAssets();
   console.log(JSON.stringify({ ok: true, ...summary }, null, 2));
@@ -156,6 +158,10 @@ async function checkOrdersPage() {
   await checkAppShell('/admin/ui/app/orders');
 }
 
+async function checkDriversPage() {
+  await checkAppShell('/admin/ui/app/drivers');
+}
+
 async function checkOrdersApi() {
   const response = await request(`/admin/ui/app/api/orders?shopDomain=${encodeURIComponent(shopDomain)}&status=unplanned`);
   await expectStatus('orders-api', response, 200);
@@ -169,6 +175,14 @@ async function checkOrdersApi() {
   const markerReady = body.data.orders.filter((order) => order.coordinates?.latitude !== null && order.coordinates?.longitude !== null).length;
   record('orders-api', { markerReady, orders: body.data.orders.length, status: response.status });
   return body.data.orders;
+}
+
+async function checkDriversApi() {
+  const response = await request(`/admin/ui/app/api/drivers?shopDomain=${encodeURIComponent(shopDomain)}`);
+  await expectStatus('drivers-api', response, 200);
+  const body = await response.json();
+  if (!body.data || !Array.isArray(body.data.drivers)) throw new Error('drivers-api did not return data.drivers array');
+  record('drivers-api', { drivers: body.data.drivers.length, status: response.status });
 }
 
 async function checkGeocoderGate(orders) {

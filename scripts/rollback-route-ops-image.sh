@@ -3,11 +3,14 @@ set -euo pipefail
 
 APP_DIR="${APP_DIR:-/srv/clever-route-server}"
 COMPOSE_FILE="${COMPOSE_FILE:-infra/compose/docker-compose.prod.yml}"
+ROUTE_OPS_COMPOSE_PROJECT_NAME="${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}"
 BASE_URL="${ROUTE_OPS_SMOKE_BASE_URL:-https://clever-route.cleversystem.ai}"
 SHOP_DOMAIN="${ROUTE_OPS_SMOKE_SHOP_DOMAIN:-dev1.tomatonofood.com}"
 : "${ROUTE_OPS_SMOKE_LOGIN_SECRET:?ROUTE_OPS_SMOKE_LOGIN_SECRET is required locally for rollback smoke}"
 
 cd "$APP_DIR"
+export ROUTE_OPS_COMPOSE_PROJECT_NAME
+export COMPOSE_PROJECT_NAME="$ROUTE_OPS_COMPOSE_PROJECT_NAME"
 
 LOCK_PATH="${ROUTE_OPS_DEPLOY_LOCK_PATH:-.deploy/route-ops-deploy.lock}"
 LOCK_DIR="${LOCK_PATH}.d"
@@ -18,6 +21,44 @@ release_deploy_lock() {
     rmdir "$LOCK_DIR" || true
   fi
 }
+
+route_ops_compose() {
+  require_route_ops_compose_project_name
+  local image_env_file="$1"
+  shift
+  docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" --env-file "$image_env_file" -f "$COMPOSE_FILE" "$@"
+}
+
+require_route_ops_compose_project_name() {
+  if [ "$ROUTE_OPS_COMPOSE_PROJECT_NAME" != "clever-route" ]; then
+    echo "ROUTE_OPS_COMPOSE_PROJECT_NAME must be exactly clever-route for production Route Ops rollback; got: ${ROUTE_OPS_COMPOSE_PROJECT_NAME}" >&2
+    exit 64
+  fi
+}
+
+enforce_no_legacy_route_ops_compose_project() {
+  require_route_ops_compose_project_name
+  local offenders=""
+  local name project service ports
+  while IFS='|' read -r name project service ports || [ -n "$name" ]; do
+    [ -n "${name:-}" ] || continue
+    if [ "$project" = "compose" ]; then
+      case "$service" in
+        caddy|delivery-api|delivery-api-migrate|postgres|osrm-ontario)
+          offenders="${offenders}${name} service=${service} ports=${ports:-none}"$'\n'
+          ;;
+      esac
+    fi
+  done < <(docker ps --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}|{{.Ports}}')
+  if [ -n "$offenders" ]; then
+    echo "Refusing Route Ops rollback because legacy implicit compose project containers are still running." >&2
+    echo "Run the compose-project migration preflight/cutover first; do not rollback over project=compose." >&2
+    printf '%s' "$offenders" >&2
+    exit 78
+  fi
+}
+
+require_route_ops_compose_project_name
 
 acquire_deploy_lock() {
   mkdir -p .deploy
@@ -69,12 +110,13 @@ load_image_env_file() {
 }
 
 ensure_route_ops_ingress() {
-  echo "Ensuring Route Ops Caddy ingress uses this repo's production Caddyfile."
-  docker compose --env-file .deploy/candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate --no-deps caddy
+  echo "Ensuring Route Ops Caddy ingress uses this repo's production Caddyfile under compose project ${ROUTE_OPS_COMPOSE_PROJECT_NAME}."
+  route_ops_compose .deploy/candidate-image.env up -d --no-build --force-recreate --no-deps caddy
 }
 
 acquire_deploy_lock
 trap 'release_deploy_lock' EXIT
+enforce_no_legacy_route_ops_compose_project
 
 test -f .deploy/current-image.env
 test -f .deploy/previous-image.env
@@ -86,8 +128,8 @@ restore_current() {
   if [ "$status" -ne 0 ] && [ -f .deploy/rollback-from-image.env ]; then
     echo "Rollback failed; restoring pre-rollback current image metadata." >&2
     load_image_env_file .deploy/rollback-from-image.env
-    docker compose --env-file .deploy/rollback-from-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate --no-deps delivery-api || true
-    docker compose --env-file .deploy/rollback-from-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate --no-deps caddy || true
+    route_ops_compose .deploy/rollback-from-image.env up -d --no-build --force-recreate --no-deps delivery-api || true
+    route_ops_compose .deploy/rollback-from-image.env up -d --no-build --force-recreate --no-deps caddy || true
     rm -f .deploy/candidate-image.env
   fi
   release_deploy_lock
@@ -100,14 +142,14 @@ CURRENT_PRISMA_SCHEMA_SHA="$(grep '^PRISMA_SCHEMA_SHA=' .deploy/rollback-from-im
 test -n "$CURRENT_PRISMA_SCHEMA_SHA"
 test "$CURRENT_PRISMA_SCHEMA_SHA" = "$PRISMA_SCHEMA_SHA"
 
-docker compose --env-file .deploy/candidate-image.env -f "$COMPOSE_FILE" pull delivery-api delivery-api-migrate
+route_ops_compose .deploy/candidate-image.env pull delivery-api delivery-api-migrate
 runtime_role="$(docker image inspect --format '{{ index .Config.Labels "org.clever-route.image-role" }}' "$DELIVERY_API_IMAGE")"
 migrate_role="$(docker image inspect --format '{{ index .Config.Labels "org.clever-route.image-role" }}' "$DELIVERY_API_MIGRATE_IMAGE")"
 test "$runtime_role" = "runtime"
 test "$migrate_role" = "migrate"
 docker run --rm "$DELIVERY_API_MIGRATE_IMAGE" sh -lc 'test -f apps/delivery-api/prisma/schema.prisma && npm --prefix apps/delivery-api exec -- prisma --version'
-docker compose --env-file .deploy/candidate-image.env -f "$COMPOSE_FILE" run --rm delivery-api-migrate
-docker compose --env-file .deploy/candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate --no-deps delivery-api
+route_ops_compose .deploy/candidate-image.env run --rm delivery-api-migrate
+route_ops_compose .deploy/candidate-image.env up -d --no-build --force-recreate --no-deps delivery-api
 ensure_route_ops_ingress
 
 ROUTE_OPS_SMOKE_BASE_URL="$BASE_URL" \

@@ -209,7 +209,8 @@ jobs:
         if: steps.changes.outputs.changed == 'true'
         run: |
           cp infra/env/delivery-api.env.example infra/env/delivery-api.env
+          ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route \
           DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api:ci \
           DELIVERY_API_MIGRATE_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:ci \
-          docker compose -f infra/compose/docker-compose.prod.yml config --quiet
+          docker compose -p clever-route -f infra/compose/docker-compose.prod.yml config --quiet
           rm -f infra/env/delivery-api.env

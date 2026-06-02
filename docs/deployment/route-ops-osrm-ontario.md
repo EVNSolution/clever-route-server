@@ -85,9 +85,10 @@ bash scripts/osrm-ontario.sh --help
 ## Start and smoke OSRM
 
 ```sh
+export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
 DELIVERY_API_IMAGE="$CURRENT_DELIVERY_API_IMAGE" \
 DELIVERY_API_MIGRATE_IMAGE="$CURRENT_DELIVERY_API_MIGRATE_IMAGE" \
-docker compose -f infra/compose/docker-compose.prod.yml --profile osrm up -d osrm-ontario
+docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" -f infra/compose/docker-compose.prod.yml --profile osrm up -d osrm-ontario
 
 OSRM_BASE_URL=http://127.0.0.1:5000 bash scripts/osrm-ontario.sh smoke
 ```
@@ -114,9 +115,10 @@ ROUTE_OPS_ROUTER_COVERAGE=ontario
 Then restart only the app:
 
 ```sh
+export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
 DELIVERY_API_IMAGE="$CURRENT_DELIVERY_API_IMAGE" \
 DELIVERY_API_MIGRATE_IMAGE="$CURRENT_DELIVERY_API_MIGRATE_IMAGE" \
-docker compose -f infra/compose/docker-compose.prod.yml --profile osrm up -d delivery-api
+docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" -f infra/compose/docker-compose.prod.yml --profile osrm up -d delivery-api
 ```
 
 Smoke:
@@ -130,10 +132,11 @@ Smoke:
 
 ```sh
 # remove/blank OSRM_BASE_URL in infra/env/delivery-api.env
+export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
 DELIVERY_API_IMAGE="$CURRENT_DELIVERY_API_IMAGE" \
 DELIVERY_API_MIGRATE_IMAGE="$CURRENT_DELIVERY_API_MIGRATE_IMAGE" \
-docker compose -f infra/compose/docker-compose.prod.yml up -d delivery-api
-docker compose -f infra/compose/docker-compose.prod.yml --profile osrm stop osrm-ontario
+docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" -f infra/compose/docker-compose.prod.yml up -d delivery-api
+docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" -f infra/compose/docker-compose.prod.yml --profile osrm stop osrm-ontario
 ```
 
 Expected rollback behavior:

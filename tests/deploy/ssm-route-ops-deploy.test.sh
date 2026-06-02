@@ -27,6 +27,8 @@ set -euo pipefail
 : "${PRISMA_SCHEMA_SHA:?schema sha required}"
 : "${DELIVERY_API_IMAGE:?runtime image required}"
 : "${DELIVERY_API_MIGRATE_IMAGE:?migrate image required}"
+: "${ROUTE_OPS_COMPOSE_PROJECT_NAME:?compose project required}"
+test "$ROUTE_OPS_COMPOSE_PROJECT_NAME" = "clever-route"
 if [ "$ROUTE_OPS_SMOKE_LOGIN_SECRET" = "unit-test-secret-not-real" ]; then
   echo "deploy-called tag=${IMAGE_TAG}" > .deploy/fake-result.txt
 else
@@ -52,6 +54,19 @@ test -f "$tmp/.deploy/deploy-evidence.jsonl"
 grep -q "actions/runs/123456789" "$tmp/.deploy/deploy-evidence.jsonl"
 if grep -q "$SECRET_VALUE" "$output" "$tmp/.deploy/fake-result.txt" "$tmp/.deploy/deploy-evidence.jsonl"; then
   echo "secret leaked to wrapper output or fake result" >&2
+  exit 1
+fi
+
+if APP_DIR="$tmp" \
+ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1 \
+ROUTE_OPS_SKIP_GHCR_LOGIN=1 \
+ROUTE_OPS_COMPOSE_PROJECT_NAME=compose \
+IMAGE_TAG="$IMAGE_TAG" \
+PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
+DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
+DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
+scripts/ssm-route-ops-deploy.sh >/dev/null 2>&1; then
+  echo "invalid compose project unexpectedly passed" >&2
   exit 1
 fi
 

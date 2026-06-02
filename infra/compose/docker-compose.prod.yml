@@ -1,3 +1,5 @@
+name: ${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}
+
 services:
   caddy:
     image: caddy:2-alpine

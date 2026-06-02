@@ -54,9 +54,20 @@ case "${1:-}" in
     ;;
   ps)
     if [ "${2:-}" = "--format" ]; then
-      echo "postgres:17-bookworm"
-      echo "ghcr.io/evnsolution/clever-route-server-delivery-api:1111111111111111111111111111111111111111"
-      echo "ghcr.io/evnsolution/clever-route-server-delivery-api:4444444444444444444444444444444444444444"
+      format="${3:-}"
+      if [[ "$format" == *'.Names'* ]]; then
+        if [ "${FAKE_LEGACY_COMPOSE_RUNNING:-0}" = "1" ]; then
+          echo "compose-caddy-1|compose|caddy|0.0.0.0:80->80/tcp,0.0.0.0:443->443/tcp"
+          echo "compose-delivery-api-1|compose|delivery-api|3000/tcp"
+          echo "compose-postgres-1|compose|postgres|5432/tcp"
+        else
+          echo "clever-route-caddy-1|clever-route|caddy|0.0.0.0:80->80/tcp,0.0.0.0:443->443/tcp"
+        fi
+      else
+        echo "postgres:17-bookworm"
+        echo "ghcr.io/evnsolution/clever-route-server-delivery-api:1111111111111111111111111111111111111111"
+        echo "ghcr.io/evnsolution/clever-route-server-delivery-api:4444444444444444444444444444444444444444"
+      fi
     fi
     ;;
   image)
@@ -209,8 +220,14 @@ run_success_case() {
   grep -q "DELIVERY_API_MIGRATE_IMAGE=${MIGRATE_IMAGE}" "$tmp/.deploy/current-image.env"
   grep -q "DELIVERY_API_IMAGE=${RUNTIME_REPO}:${CURRENT_TAG}" "$tmp/.deploy/previous-image.env"
   grep -q "DELIVERY_API_MIGRATE_IMAGE=${MIGRATE_REPO}:${CURRENT_TAG}" "$tmp/.deploy/previous-image.env"
+  grep -q -- "-p clever-route" "$tmp/state/compose.log"
   grep -q "pull delivery-api delivery-api-migrate" "$tmp/state/compose.log"
   grep -q "up -d --no-build --force-recreate --no-deps caddy" "$tmp/state/compose.log"
+  if grep -q "compose --env-file" "$tmp/state/docker.log"; then
+    echo "compose command omitted explicit project name" >&2
+    cat "$tmp/state/docker.log" >&2
+    exit 1
+  fi
   grep -q "Route Ops image retention cleanup finished" "$tmp/output.log"
   if grep -Eq 'system prune|volume prune|container prune' "$tmp/state/docker.log"; then
     echo "forbidden prune command was invoked" >&2
@@ -252,7 +269,76 @@ run_failure_case() {
   fi
 }
 
+run_invalid_project_case() {
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-project-fail.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  prepare_app_dir "$tmp"
+  make_fake_bin "$tmp"
+  mkdir -p "$tmp/state"
+
+  if PATH="$tmp/bin:$PATH" \
+    FAKE_DOCKER_STATE="$tmp/state" \
+    FAKE_DOCKER_ROOT="$tmp/docker-root" \
+    FAKE_DF_MODE="recover" \
+    APP_DIR="$tmp" \
+    ROUTE_OPS_COMPOSE_PROJECT_NAME=compose \
+    ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1 \
+    ROUTE_OPS_SMOKE_LOGIN_SECRET="unit-test-secret-not-real" \
+    IMAGE_TAG="$IMAGE_TAG" \
+    PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
+    DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
+    DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
+      scripts/deploy-route-ops-image.sh > "$tmp/output.log" 2>&1; then
+    echo "invalid compose project deploy unexpectedly passed" >&2
+    exit 1
+  fi
+
+  grep -q "must be exactly clever-route" "$tmp/output.log"
+  if [ -f "$tmp/state/compose.log" ]; then
+    echo "compose was invoked despite invalid project name" >&2
+    cat "$tmp/state/compose.log" >&2
+    exit 1
+  fi
+}
+
+run_legacy_project_guard_case() {
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-legacy-fail.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  prepare_app_dir "$tmp"
+  make_fake_bin "$tmp"
+  mkdir -p "$tmp/state"
+
+  if PATH="$tmp/bin:$PATH" \
+    FAKE_DOCKER_STATE="$tmp/state" \
+    FAKE_DOCKER_ROOT="$tmp/docker-root" \
+    FAKE_DF_MODE="recover" \
+    FAKE_LEGACY_COMPOSE_RUNNING=1 \
+    APP_DIR="$tmp" \
+    ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1 \
+    ROUTE_OPS_SMOKE_LOGIN_SECRET="unit-test-secret-not-real" \
+    IMAGE_TAG="$IMAGE_TAG" \
+    PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
+    DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
+    DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
+      scripts/deploy-route-ops-image.sh > "$tmp/output.log" 2>&1; then
+    echo "legacy compose project deploy unexpectedly passed" >&2
+    exit 1
+  fi
+
+  grep -q "legacy implicit compose project containers are still running" "$tmp/output.log"
+  grep -q "compose-postgres-1 service=postgres" "$tmp/output.log"
+  if [ -f "$tmp/state/compose.log" ]; then
+    echo "compose was invoked despite legacy project guard" >&2
+    cat "$tmp/state/compose.log" >&2
+    exit 1
+  fi
+}
+
 run_success_case
 run_failure_case
+run_invalid_project_case
+run_legacy_project_guard_case
 
 printf '{"ok":true,"test":"deploy-route-ops-image-disk-guard"}\n'
