@@ -365,6 +365,40 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(loginPage.body).toContain("CLEVER Admin login");
       expect(loginPage.body).not.toContain(adminApiToken);
 
+      const routeOpsDeepLink =
+        "/admin/ui/app/orders?shopDomain=tomatonofood.com";
+      const routeOpsRedirect = await app.inject({
+        method: "GET",
+        url: routeOpsDeepLink,
+      });
+      expect(routeOpsRedirect.statusCode).toBe(401);
+      expect(routeOpsRedirect.headers.location).toBeUndefined();
+      expect(routeOpsRedirect.body).toContain("Store session entry required");
+      expect(routeOpsRedirect.body).not.toContain(
+        'name="loginSecret"',
+      );
+
+      const unauthenticatedBootstrap = await app.inject({
+        method: "GET",
+        url: "/admin/ui/app/api/bootstrap?shopDomain=tomatonofood.com",
+      });
+      expect(unauthenticatedBootstrap.statusCode).toBe(401);
+      expect(unauthenticatedBootstrap.headers.location).toBeUndefined();
+      expect(readApiError(unauthenticatedBootstrap)).toEqual({
+        code: "UNAUTHORIZED",
+        message: "Admin UI login required",
+      });
+
+      const deepLinkLoginPage = await app.inject({
+        method: "GET",
+        url: "/admin/ui/login?returnTo=%2Fadmin%2Fui%2Fapp%2Forders%3FshopDomain%3Dtomatonofood.com",
+      });
+      expect(deepLinkLoginPage.statusCode).toBe(200);
+      expect(deepLinkLoginPage.body).toContain(
+        'name="returnTo" value="/admin/ui/store-sessions"',
+      );
+      expect(deepLinkLoginPage.body).not.toContain("https://evil.example");
+
       const apiTokenLogin = await app.inject({
         method: "POST",
         url: "/admin/ui/login",
@@ -380,8 +414,61 @@ describe("Admin WooCommerce connection UI routes", () => {
         ...multipartRequest({ loginSecret: webLoginSecret }),
       });
       expect(login.statusCode).toBe(303);
-      expect(login.headers.location).toBe("/admin/ui");
+      expect(login.headers.location).toBe("/admin/ui/store-sessions");
       const setCookies = readSetCookies(login);
+
+      const deepLinkLogin = await app.inject({
+        method: "POST",
+        url: "/admin/ui/login",
+        ...multipartRequest({
+          loginSecret: webLoginSecret,
+          returnTo: "/admin/ui/app/orders?shopDomain=tomatonofood.com",
+        }),
+      });
+      expect(deepLinkLogin.statusCode).toBe(303);
+      expect(deepLinkLogin.headers.location).toBe(
+        "/admin/ui/store-sessions",
+      );
+
+      const externalReturnLogin = await app.inject({
+        method: "POST",
+        url: "/admin/ui/login",
+        ...multipartRequest({
+          loginSecret: webLoginSecret,
+          returnTo: "https://evil.example/admin/ui/app/orders",
+        }),
+      });
+      expect(externalReturnLogin.statusCode).toBe(303);
+      expect(externalReturnLogin.headers.location).toBe(
+        "/admin/ui/store-sessions",
+      );
+
+      const loginEndpointReturnLogin = await app.inject({
+        method: "POST",
+        url: "/admin/ui/login",
+        ...multipartRequest({
+          loginSecret: webLoginSecret,
+          returnTo: "/admin/ui/login",
+        }),
+      });
+      expect(loginEndpointReturnLogin.statusCode).toBe(303);
+      expect(loginEndpointReturnLogin.headers.location).toBe(
+        "/admin/ui/store-sessions",
+      );
+
+      const dotSegmentReturnLogin = await app.inject({
+        method: "POST",
+        url: "/admin/ui/login",
+        ...multipartRequest({
+          loginSecret: webLoginSecret,
+          returnTo: "/admin/ui/app/orders/../settings",
+        }),
+      });
+      expect(dotSegmentReturnLogin.statusCode).toBe(303);
+      expect(dotSegmentReturnLogin.headers.location).toBe(
+        "/admin/ui/store-sessions",
+      );
+
       expect(setCookies).toHaveLength(4);
       const cookie = setCookies[0] ?? "";
       expect(cookie).toContain("HttpOnly");
@@ -400,6 +487,8 @@ describe("Admin WooCommerce connection UI routes", () => {
         url: "/admin/ui",
       });
       expect(dashboard.statusCode).toBe(200);
+      expect(dashboard.body).toContain("Store sessions");
+      expect(dashboard.body).toContain("/admin/ui/store-sessions");
       expect(dashboard.body).toContain("WooCommerce connection setup");
       expect(dashboard.body).toContain(
         "/admin/ui/commerce-connections/woocommerce",
@@ -413,6 +502,30 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(dashboard.body).not.toContain(">Drivers<");
       expect(dashboard.body).not.toContain(">Settings<");
       expect(dashboard.body).toContain("-apple-system");
+
+      const storeSessions = await app.inject({
+        headers: { cookie },
+        method: "GET",
+        url: "/admin/ui/store-sessions",
+      });
+      expect(storeSessions.statusCode).toBe(200);
+      expect(storeSessions.body).toContain("Store sessions");
+      expect(storeSessions.body).toContain("Choose store domain");
+      expect(storeSessions.body).not.toContain("/admin/ui/app/orders?shopDomain=");
+
+      const storeSessionForShop = await app.inject({
+        headers: { cookie },
+        method: "GET",
+        url: "/admin/ui/store-sessions?shopDomain=tenant-a.example.test",
+      });
+      expect(storeSessionForShop.statusCode).toBe(200);
+      expect(storeSessionForShop.body).toContain("tenant-a.example.test");
+      expect(storeSessionForShop.body).toContain(
+        "/admin/ui/app/orders?shopDomain=tenant-a.example.test",
+      );
+      expect(storeSessionForShop.body).toContain(
+        "/admin/ui/app/routes?shopDomain=tenant-a.example.test",
+      );
 
       const commerce = await app.inject({
         headers: { cookie },

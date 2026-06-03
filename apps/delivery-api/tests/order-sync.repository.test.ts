@@ -138,6 +138,12 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
                     path: 'meta_data.consumer_secret',
                     valuePreview: 'bare-secret-value',
                     weekday: null
+                  },
+                  {
+                    parseStatus: 'UNPARSED',
+                    path: 'meta_data.delivery_note',
+                    valuePreview: '1100 King Street West, 1902A, Toronto, ON M6K 0C6 +14165550100',
+                    weekday: null
                   }
                 ],
                 status: 'NEEDS_REVIEW'
@@ -180,6 +186,15 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       expect.objectContaining({
         deliveryTimeWindow: '[redacted-sensitive-path]'
       })
+    );
+    expect(JSON.stringify(rows[0]?.deliveryMetadataDiagnostics)).not.toContain(
+      '1100 King Street West'
+    );
+    expect(JSON.stringify(rows[0]?.deliveryMetadataDiagnostics)).not.toContain(
+      '+14165550100'
+    );
+    expect(JSON.stringify(rows[0]?.deliveryMetadataDiagnostics)).toContain(
+      '[redacted-address]'
     );
   });
 

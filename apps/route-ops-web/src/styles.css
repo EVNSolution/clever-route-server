@@ -1719,3 +1719,18 @@ button.danger.subtle {
   color: #64748b;
   font-size: 12px;
 }
+
+.order-technical-diagnostics-block {
+  margin: 8px 0;
+}
+
+.order-technical-diagnostics-block dl,
+.order-technical-diagnostics-block ul {
+  margin: 4px 0 0;
+}
+
+.order-technical-diagnostics-block div {
+  display: grid;
+  grid-template-columns: minmax(100px, max-content) 1fr;
+  gap: 6px;
+}

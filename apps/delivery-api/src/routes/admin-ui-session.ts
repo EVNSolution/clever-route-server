@@ -323,18 +323,58 @@ function isLaunchPayload(value: Partial<LaunchPayload>): value is LaunchPayload 
   );
 }
 
-function normalizeAdminUiReturnPath(value: string): string {
+export function normalizeAdminUiReturnPath(value: string): string {
   const trimmed = value.trim();
-  if (trimmed === '' || !trimmed.startsWith('/admin/ui')) {
+  if (trimmed === '' || trimmed.startsWith('//') || /^https?:\/\//iu.test(trimmed)) {
     return '/admin/ui';
   }
-  if (trimmed.startsWith('//') || /^https?:\/\//iu.test(trimmed)) {
+
+  const decoded = safeDecodeUriComponent(trimmed);
+  if (/(?:^|\/)\.{1,2}(?:\/|$)/u.test(decoded)) return '/admin/ui';
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed, 'https://clever-route.local');
+  } catch {
     return '/admin/ui';
   }
-  if (trimmed !== '/admin/ui' && !trimmed.startsWith('/admin/ui/') && !trimmed.startsWith('/admin/ui?')) {
-    return '/admin/ui';
+  if (parsed.origin !== 'https://clever-route.local') return '/admin/ui';
+
+  const pathname = parsed.pathname;
+  if (!isAllowedAdminUiReturnPath(pathname)) return '/admin/ui';
+  return `${pathname}${parsed.search}`;
+}
+
+export function normalizeAdminUiLoginReturnPath(value: string): string {
+  const normalized = normalizeAdminUiReturnPath(value);
+  const pathname = normalized.split('?', 1)[0] ?? normalized;
+  if (pathname.startsWith('/admin/ui/app')) return '/admin/ui/store-sessions';
+  return normalized === '/admin/ui' ? '/admin/ui/store-sessions' : normalized;
+}
+
+function safeDecodeUriComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
   }
-  return trimmed;
+}
+
+function isAllowedAdminUiReturnPath(pathname: string): boolean {
+  if (pathname === '/admin/ui') return true;
+  if (pathname === '/admin/ui/store-sessions') return true;
+  if (pathname === '/admin/ui/commerce-connections') return true;
+  if (pathname === '/admin/ui/commerce-connections/woocommerce') return true;
+  if (pathname === '/admin/ui/app') return true;
+  if (
+    pathname === '/admin/ui/app/dashboard' ||
+    pathname === '/admin/ui/app/orders' ||
+    pathname === '/admin/ui/app/drivers' ||
+    pathname === '/admin/ui/app/settings'
+  ) {
+    return true;
+  }
+  return /^\/admin\/ui\/app\/routes(?:\/(?:new|[^/?#]+))?$/u.test(pathname);
 }
 
 function createCsrfToken(payload: SessionPayload): string {

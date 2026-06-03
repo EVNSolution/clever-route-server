@@ -1797,6 +1797,34 @@ function OrderDetailPanel({
         ) : (
           <>
             <p>{t.diagnosticsStatus}: {humanizeToken(diagnostics.status, locale)}</p>
+            {diagnostics.current.reviewReasons.length === 0 ? null : (
+              <div className="order-technical-diagnostics-block">
+                <strong>{t.currentBlockers}</strong>
+                <ul>
+                  {diagnostics.current.reviewReasons.map((reason) => (
+                    <li key={reason}>{formatBlockerReason(reason, locale)}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {Object.entries(diagnostics.matchedMappingPaths).some(
+              ([, path]) => path !== null,
+            ) ? (
+              <div className="order-technical-diagnostics-block">
+                <strong>{t.matchedMappingPaths}</strong>
+                <dl>
+                  {Object.entries(diagnostics.matchedMappingPaths).map(
+                    ([field, path]) =>
+                      path === null ? null : (
+                        <div key={field}>
+                          <dt>{humanizeToken(field, locale)}</dt>
+                          <dd>{formatDiagnosticPathLabel(path, locale)}</dd>
+                        </div>
+                      ),
+                  )}
+                </dl>
+              </div>
+            ) : null}
             <ul>
               {diagnostics.candidates.slice(0, 8).map((candidate) => (
                 <li key={`${candidate.path}-${candidate.valuePreview}`}>

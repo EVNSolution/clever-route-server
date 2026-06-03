@@ -1,5 +1,7 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 
+import { redactDiagnosticPath, redactDiagnosticValue } from "../security/diagnostic-redaction.js";
+
 import type {
   CanonicalOrderReadiness,
   CanonicalOrderRow,
@@ -2150,33 +2152,6 @@ function buildGeocodeDiagnostics(
       readString(source.attemptedAt) ??
       readString(corrections?.lastUpdatedAt),
   };
-}
-
-function redactDiagnosticValue(
-  value: string | null,
-  path?: string | null,
-): string | null {
-  if (value === null) return null;
-  if (isSensitiveDiagnosticPath(path)) return "[redacted-secret]";
-  const redacted = value
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, "[redacted-email]")
-    .replace(/\+?\d[\d\s().-]{7,}\d/gu, "[redacted-phone]")
-    .replace(
-      /\b(?:consumer_secret|consumer_key|webhook_secret|token|cookie|password)\s*[:=]\s*\S+/giu,
-      "[redacted-secret]",
-    );
-  return redacted.length > 96 ? `${redacted.slice(0, 93)}...` : redacted;
-}
-
-function isSensitiveDiagnosticPath(value: string | null | undefined): boolean {
-  const normalized = readString(value)?.toLowerCase() ?? "";
-  return /(?:consumer[_-]?secret|consumer[_-]?key|webhook[_-]?secret|access[_-]?token|refresh[_-]?token|api[_-]?key|private[_-]?key|secret|password|cookie|authorization|auth[_-]?token)/u.test(
-    normalized,
-  );
-}
-
-function redactDiagnosticPath(value: string): string {
-  return isSensitiveDiagnosticPath(value) ? "[redacted-sensitive-path]" : value;
 }
 
 function redactMatchedMappingPaths(

@@ -12,6 +12,7 @@ import {
   parseDeliveryTimeWindow,
   verifyDeliveryDayRaw,
 } from "../shopify/order-delivery-scope.js";
+import { redactDiagnosticValue } from "../security/diagnostic-redaction.js";
 import type {
   DeliveryTimeWindowParseResult,
 } from "../shopify/order-delivery-scope.js";
@@ -805,7 +806,7 @@ function arbitrateDeliveryDayCandidates(input: {
         timeWindowStart: timeWindow.timeWindowStart,
         trust,
         value: item.value,
-        valuePreview: redactCandidateValue(item.value, item.path),
+        valuePreview: redactDiagnosticValue(item.value, item.path) ?? "",
         weekday: parsed.deliveryWeekday,
         weekdayAmbiguous: parsed.weekdayAmbiguous,
       },
@@ -1004,25 +1005,6 @@ function containsDeliverySignal(value: string): boolean {
     return true;
   if (/[월화수목금토일](?:요일)?/u.test(normalized)) return true;
   return false;
-}
-
-function redactCandidateValue(value: string, path?: string | null): string {
-  if (isSensitiveDiagnosticPath(path)) return "[redacted-secret]";
-  const redacted = value
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, "[redacted-email]")
-    .replace(/\+?\d[\d\s().-]{7,}\d/gu, "[redacted-phone]")
-    .replace(
-      /\b(?:consumer_secret|consumer_key|webhook_secret|token|cookie|password)\s*[:=]\s*\S+/giu,
-      "[redacted-secret]",
-    );
-  return redacted.length > 96 ? `${redacted.slice(0, 93)}...` : redacted;
-}
-
-function isSensitiveDiagnosticPath(value: string | null | undefined): boolean {
-  const normalized = normalizeString(value)?.toLowerCase() ?? "";
-  return /(?:consumer[_-]?secret|consumer[_-]?key|webhook[_-]?secret|access[_-]?token|refresh[_-]?token|api[_-]?key|private[_-]?key|secret|password|cookie|authorization|auth[_-]?token)/u.test(
-    normalized,
-  );
 }
 
 function normalizeMappingPath(value: string | null | undefined): string | null {

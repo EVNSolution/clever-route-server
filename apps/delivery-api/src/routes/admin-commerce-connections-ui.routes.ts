@@ -71,6 +71,7 @@ import {
   verifyAdminWebLaunchToken,
   verifyAdminWebLoginSecret,
   verifyAdminWebSessionFromRequest,
+  normalizeAdminUiLoginReturnPath,
   type AdminWebSession,
 } from "./admin-ui-session.js";
 
@@ -79,6 +80,7 @@ const ADMIN_UI_ROOT_PATH = "/admin/ui";
 const ADMIN_UI_LOGIN_PATH = `${ADMIN_UI_ROOT_PATH}/login`;
 const ADMIN_UI_LOGOUT_PATH = `${ADMIN_UI_ROOT_PATH}/logout`;
 const ADMIN_UI_PLUGIN_LAUNCH_PATH = `${ADMIN_UI_ROOT_PATH}/plugin-launch`;
+const ADMIN_UI_STORE_SESSIONS_PATH = `${ADMIN_UI_ROOT_PATH}/store-sessions`;
 const ADMIN_UI_WOOCOMMERCE_TEST_SCRIPT_PATH = `${ADMIN_UI_ROOT_PATH}/assets/woocommerce-test.js`;
 const ADMIN_UI_ROUTE_APP_SCRIPT_PATH = `${ADMIN_UI_ROOT_PATH}/assets/route-app.js`;
 const ADMIN_UI_COMMERCE_CONNECTIONS_PATH = `${ADMIN_UI_ROOT_PATH}/commerce-connections`;
@@ -470,6 +472,19 @@ export function registerAdminCommerceConnectionsUiRoutes(
     );
   });
 
+  app.get(ADMIN_UI_STORE_SESSIONS_PATH, async (request, reply) => {
+    const session = readSession(request, dependencies);
+    if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
+    if (isWpPluginSession(session)) {
+      return redirectWpPluginSessionToOperate(
+        reply,
+        session,
+        "Store session picker requires CLEVER admin login.",
+      );
+    }
+    return renderStoreSessions(reply, request, dependencies, session);
+  });
+
   app.get(ADMIN_UI_COMMERCE_CONNECTIONS_PATH, async (request, reply) => {
     const session = readSession(request, dependencies);
     if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
@@ -492,31 +507,31 @@ export function registerAdminCommerceConnectionsUiRoutes(
 
   app.get(ADMIN_UI_APP_PATH, async (request, reply) => {
     const session = readSession(request, dependencies);
-    if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
+    if (session === null) return rejectDirectRouteOpsWorkspaceLink(reply);
     return renderRouteOpsSpaShell(reply, request, dependencies, session);
   });
 
   app.get(ADMIN_UI_APP_DASHBOARD_PATH, async (request, reply) => {
     const session = readSession(request, dependencies);
-    if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
+    if (session === null) return rejectDirectRouteOpsWorkspaceLink(reply);
     return renderRouteOpsSpaShell(reply, request, dependencies, session);
   });
 
   app.get(ADMIN_UI_APP_ORDERS_PATH, async (request, reply) => {
     const session = readSession(request, dependencies);
-    if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
+    if (session === null) return rejectDirectRouteOpsWorkspaceLink(reply);
     return renderRouteOpsSpaShell(reply, request, dependencies, session);
   });
 
   app.get(ADMIN_UI_APP_ROUTE_PLANS_PATH, async (request, reply) => {
     const session = readSession(request, dependencies);
-    if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
+    if (session === null) return rejectDirectRouteOpsWorkspaceLink(reply);
     return renderRouteOpsSpaShell(reply, request, dependencies, session);
   });
 
   app.get(`${ADMIN_UI_APP_ROUTE_PLANS_PATH}/new`, async (request, reply) => {
     const session = readSession(request, dependencies);
-    if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
+    if (session === null) return rejectDirectRouteOpsWorkspaceLink(reply);
     return renderRouteOpsSpaShell(reply, request, dependencies, session);
   });
 
@@ -524,7 +539,7 @@ export function registerAdminCommerceConnectionsUiRoutes(
     `${ADMIN_UI_APP_ROUTE_PLANS_PATH}/:routePlanId`,
     async (request, reply) => {
       const session = readSession(request, dependencies);
-      if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
+      if (session === null) return rejectDirectRouteOpsWorkspaceLink(reply);
       return renderRouteOpsSpaShell(reply, request, dependencies, session);
     },
   );
@@ -585,7 +600,7 @@ export function registerAdminCommerceConnectionsUiRoutes(
 
   app.get(ADMIN_UI_APP_DRIVERS_PATH, async (request, reply) => {
     const session = readSession(request, dependencies);
-    if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
+    if (session === null) return rejectDirectRouteOpsWorkspaceLink(reply);
     return renderRouteOpsSpaShell(reply, request, dependencies, session);
   });
 
@@ -597,7 +612,7 @@ export function registerAdminCommerceConnectionsUiRoutes(
 
   app.get(ADMIN_UI_APP_SETTINGS_PATH, async (request, reply) => {
     const session = readSession(request, dependencies);
-    if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
+    if (session === null) return rejectDirectRouteOpsWorkspaceLink(reply);
     return renderRouteOpsSpaShell(reply, request, dependencies, session);
   });
 
@@ -703,19 +718,24 @@ export function registerAdminCommerceConnectionsUiRoutes(
   );
 
   app.get(ADMIN_UI_LOGIN_PATH, async (request, reply) => {
+    const returnTo = readAdminUiLoginReturnTo(request);
     const session = readSession(request, dependencies);
     if (session !== null) {
-      return redirect(reply, ADMIN_UI_ROOT_PATH);
+      return redirect(reply, returnTo);
     }
-    return sendHtml(reply, 200, renderLoginPage());
+    return sendHtml(reply, 200, renderLoginPage({ returnTo }));
   });
 
   app.post(ADMIN_UI_LOGIN_PATH, async (request, reply) => {
+    let returnTo = ADMIN_UI_ROOT_PATH;
     try {
       const fields = await readAdminUiFormFields(request, {
-        allowedFields: ["loginSecret"],
-        maxFields: 1,
+        allowedFields: ["loginSecret", "returnTo"],
+        maxFields: 2,
       });
+      returnTo = normalizeAdminUiLoginReturnPath(
+        readOptionalField(fields, "returnTo") ?? ADMIN_UI_ROOT_PATH,
+      );
       const loginSecret = readRequiredField(
         fields,
         "loginSecret",
@@ -737,7 +757,10 @@ export function registerAdminCommerceConnectionsUiRoutes(
         return sendHtml(
           reply,
           401,
-          renderLoginPage({ error: "Invalid admin login secret" }),
+          renderLoginPage({
+            error: "Invalid admin login secret",
+            returnTo,
+          }),
         );
       }
 
@@ -759,10 +782,20 @@ export function registerAdminCommerceConnectionsUiRoutes(
           "Set-Cookie",
           sessionSetCookieHeaders(dependencies, created.cookieHeader),
         )
-        .header("Location", ADMIN_UI_ROOT_PATH)
+        .header("Location", returnTo)
         .send("");
     } catch (error) {
-      return sendUiError(reply, request, dependencies, null, error);
+      if (!(error instanceof WooCommerceOnboardingError)) {
+        request.log.error(
+          { event: "clever_admin_ui_login_failed" },
+          "CLEVER admin UI login failed",
+        );
+      }
+      return sendHtml(
+        reply,
+        error instanceof WooCommerceOnboardingError ? error.httpStatus : 500,
+        renderLoginPage({ error: sanitizeErrorMessage(error), returnTo }),
+      );
     }
   });
 
@@ -2610,6 +2643,16 @@ async function handleLogout(
   }
 }
 
+function rejectDirectRouteOpsWorkspaceLink(reply: FastifyReply): unknown {
+  return sendHtml(reply, 401, renderRouteOpsWorkspaceEntryRequiredPage());
+}
+
+function readAdminUiLoginReturnTo(request: FastifyRequest): string {
+  return normalizeAdminUiLoginReturnPath(
+    readQueryString(request.query, "returnTo") ?? ADMIN_UI_STORE_SESSIONS_PATH,
+  );
+}
+
 function redirectWithClearedSession(
   reply: FastifyReply,
   dependencies: AdminCommerceConnectionsUiDependencies,
@@ -2716,6 +2759,52 @@ async function renderHome(
       ...(input.webhookSetup === undefined
         ? {}
         : { webhookSetup: input.webhookSetup }),
+    }),
+  );
+}
+
+async function renderStoreSessions(
+  reply: FastifyReply,
+  request: FastifyRequest,
+  dependencies: AdminCommerceConnectionsUiDependencies,
+  session: AdminWebSession,
+): Promise<unknown> {
+  let connections: SafeConnectionWithDelivery[] = [];
+  let currentShopDomain: string | null = null;
+  let error: string | undefined;
+  let statusCode = 200;
+
+  const requestedShopDomain = readQueryString(request.query, "shopDomain");
+  if (requestedShopDomain !== null) {
+    try {
+      currentShopDomain = normalizeOptionalShopDomain(requestedShopDomain);
+      if (currentShopDomain !== null) {
+        const listed = await dependencies.onboardingService.listConnections({
+          actor: dependencies.actor,
+          shopDomain: currentShopDomain,
+        });
+        connections = listed.map((connection) =>
+          withWebhookDelivery(request, dependencies, connection),
+        );
+      }
+    } catch (loadError) {
+      error = sanitizeErrorMessage(loadError);
+      statusCode =
+        loadError instanceof WooCommerceOnboardingError
+          ? loadError.httpStatus
+          : 500;
+    }
+  }
+
+  return sendHtml(
+    reply,
+    statusCode,
+    renderStoreSessionsPage({
+      actor: dependencies.actor,
+      connections,
+      csrfToken: session.csrfToken,
+      currentShopDomain,
+      ...(error === undefined ? {} : { error }),
     }),
   );
 }
@@ -5458,7 +5547,7 @@ function routePlanMatchesDate(
   );
 }
 
-function renderLoginPage(input: { error?: string } = {}): string {
+function renderLoginPage(input: { error?: string; returnTo?: string } = {}): string {
   return renderDocument({
     body: `<main class="shell narrow">
       <section class="card">
@@ -5467,6 +5556,7 @@ function renderLoginPage(input: { error?: string } = {}): string {
         <p class="muted">Use the dedicated admin web login secret. The internal JSON API bearer token is not accepted here.</p>
         ${input.error === undefined ? "" : `<p class="alert error">${escapeHtml(input.error)}</p>`}
         <form method="post" action="${ADMIN_UI_LOGIN_PATH}" enctype="multipart/form-data" class="stack">
+          <input type="hidden" name="returnTo" value="${escapeHtml(input.returnTo ?? ADMIN_UI_ROOT_PATH)}" />
           <label>Admin web login secret
             <input type="password" name="loginSecret" autocomplete="off" required />
           </label>
@@ -5475,6 +5565,22 @@ function renderLoginPage(input: { error?: string } = {}): string {
       </section>
     </main>`,
     title: "CLEVER Route Admin Login",
+  });
+}
+
+function renderRouteOpsWorkspaceEntryRequiredPage(): string {
+  return renderDocument({
+    body: `<main class="shell narrow">
+      <section class="card">
+        <p class="eyebrow">CLEVER Route Admin</p>
+        <h1>Store session entry required</h1>
+        <p class="muted">Direct Route Ops workspace links do not open a password prompt and do not create a store session. Sign in through the CLEVER admin entry, then use Store sessions to choose the customer shop domain.</p>
+        <div class="actions">
+          <a class="button-link" href="${ADMIN_UI_LOGIN_PATH}">Open admin login</a>
+        </div>
+      </section>
+    </main>`,
+    title: "CLEVER Route Store Session Required",
   });
 }
 
@@ -5489,10 +5595,17 @@ function renderDashboardPage(input: {
         actor: input.actor,
         csrfToken: input.csrfToken,
         subtitle:
-          "Use this server-admin entry for WooCommerce setup and credential health. Store operations open from WordPress-launched Route Ops sessions.",
+          "Use this server-admin entry for internal store sessions and WooCommerce credential health. Customer WordPress sessions remain scoped to one store.",
         title: "CLEVER Route Admin",
       })}
       <section class="dashboard-grid" aria-label="Server admin modules">
+        ${renderModuleCard({
+          description:
+            "Internal-only entry for choosing a connected shop domain and opening that store's Route Ops workspace.",
+          href: ADMIN_UI_STORE_SESSIONS_PATH,
+          status: "Ready",
+          title: "Store sessions",
+        })}
         ${renderModuleCard({
           description:
             "Create, test, rotate, and monitor customer WooCommerce REST API and webhook credentials.",
@@ -5504,6 +5617,91 @@ function renderDashboardPage(input: {
     </main>`,
     title: "CLEVER Route Admin",
   });
+}
+
+function renderStoreSessionsPage(input: {
+  actor: AdminCommerceActor;
+  connections: readonly SafeConnectionWithDelivery[];
+  csrfToken: string;
+  currentShopDomain: string | null;
+  error?: string;
+}): string {
+  const currentShopDomain = input.currentShopDomain ?? "";
+  return renderDocument({
+    body: `<main class="shell">
+      ${renderAdminHero({
+        active: "store-sessions",
+        actor: input.actor,
+        csrfToken: input.csrfToken,
+        subtitle:
+          "Internal CLEVER admin entry for selecting a connected customer store. This page is not available to WordPress-launched customer sessions.",
+        title: "Store sessions",
+      })}
+      ${input.error === undefined ? "" : `<p class="alert error">${escapeHtml(input.error)}</p>`}
+      <section class="setup-layout">
+        <article class="card">
+          <p class="eyebrow">Internal store access</p>
+          <h2>Choose store domain</h2>
+          <p class="muted">Enter the customer shopDomain, then open the Route Ops workspace from the verified connection result. Direct workspace links without an admin session are rejected.</p>
+          <form method="get" action="${ADMIN_UI_STORE_SESSIONS_PATH}" class="stack">
+            <label>Customer shop domain
+              <span class="field-help">No protocol or path. Example: tomatonofood.com.</span>
+              <input type="text" name="shopDomain" value="${escapeHtml(currentShopDomain)}" placeholder="tomatonofood.com" required />
+            </label>
+            <button type="submit">Load store session</button>
+          </form>
+        </article>
+        <article class="card">
+          <p class="eyebrow">Boundary</p>
+          <h2>Admin-only, not customer-facing</h2>
+          <p class="muted">Customers should continue launching from the WordPress plugin. Those sessions are limited to their own shopDomain and cannot use this picker to switch stores.</p>
+        </article>
+      </section>
+      <section class="card">
+        <h2>Store workspace entry</h2>
+        ${input.currentShopDomain === null ? '<p class="muted">Enter a shop domain to load its saved WooCommerce connection and workspace links.</p>' : renderStoreSessionEntries(input.connections)}
+      </section>
+    </main>`,
+    title: "CLEVER Route Store Sessions",
+  });
+}
+
+function renderStoreSessionEntries(
+  connections: readonly SafeConnectionWithDelivery[],
+): string {
+  if (connections.length === 0) {
+    return '<p class="muted">No WooCommerce connection is saved for this shop domain.</p>';
+  }
+  return `<div class="connections">${connections.map(renderStoreSessionEntry).join("")}</div>`;
+}
+
+function renderStoreSessionEntry(connection: SafeConnectionWithDelivery): string {
+  assertSafeConnectionForRender(connection);
+  const readiness = connectionReadiness(connection);
+  const shopDomain = connection.shopDomain;
+  return `<article class="connection">
+    <div class="connection-header">
+      <div>
+        <p class="eyebrow">Store session</p>
+        <h3>${escapeHtml(connection.label ?? shopDomain)}</h3>
+      </div>
+      <span class="pill ${readiness.className}">${escapeHtml(readiness.label)}</span>
+    </div>
+    <p class="muted">${escapeHtml(readiness.description)}</p>
+    <dl>
+      <dt>Shop domain</dt><dd>${escapeHtml(shopDomain)}</dd>
+      <dt>Site URL</dt><dd>${escapeHtml(connection.siteUrl)}</dd>
+      <dt>Status</dt><dd>${escapeHtml(connection.status)}</dd>
+      <dt>Last REST sync</dt><dd>${escapeHtml(connection.lastRestSyncAt ?? "Not recorded yet")}</dd>
+      <dt>Last webhook</dt><dd>${escapeHtml(connection.lastWebhookAt ?? "No order webhook received yet")}</dd>
+    </dl>
+    <div class="actions">
+      <a class="button-link" href="${escapeHtml(withShopDomainQuery(ADMIN_UI_APP_ORDERS_PATH, shopDomain))}">Open orders</a>
+      <a class="button-link secondary-link" href="${escapeHtml(withShopDomainQuery(ADMIN_UI_APP_ROUTE_PLANS_PATH, shopDomain))}">Open routes</a>
+      <a class="button-link secondary-link" href="${escapeHtml(withShopDomainQuery(ADMIN_UI_APP_DRIVERS_PATH, shopDomain))}">Open drivers</a>
+      <a class="button-link muted-link" href="${escapeHtml(withShopDomainQuery(ADMIN_UI_WOOCOMMERCE_PATH, shopDomain))}">Connection setup</a>
+    </div>
+  </article>`;
 }
 
 function renderWpPluginSessionLandingPage(input: {
@@ -5572,6 +5770,7 @@ function renderAdminHero(input: {
     | "orders"
     | "route-plans"
     | "settings"
+    | "store-sessions"
     | "woocommerce";
   allowConnectionSetup?: boolean;
   actor: AdminCommerceActor;
@@ -5651,6 +5850,7 @@ function renderAdminHero(input: {
       <p class="muted">${escapeHtml(input.subtitle)} Signed in as ${escapeHtml(input.actor.subject)}.</p>
       <nav class="utility-nav" aria-label="Admin utility navigation">
         ${renderNavLink("Server admin", ADMIN_UI_ROOT_PATH, false)}
+        ${renderNavLink("Store sessions", ADMIN_UI_STORE_SESSIONS_PATH, input.active === "store-sessions")}
         ${renderNavLink("Connection setup", withShopDomainQuery(ADMIN_UI_WOOCOMMERCE_PATH, input.currentShopDomain), input.active === "commerce" || input.active === "woocommerce")}
       </nav>
     </div>

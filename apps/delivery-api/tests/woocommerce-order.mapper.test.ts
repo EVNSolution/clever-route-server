@@ -603,4 +603,27 @@ describe("mapWooCommerceOrderToDeliveryInputs", () => {
       }),
     );
   });
+
+  test("redacts address-like Woo diagnostic candidate values", async () => {
+    const order = await readFixture("order-date-pending.json");
+    order.meta_data = [
+      { key: "delivery_area", value: "Scarborough" },
+      {
+        key: "delivery_day",
+        value: "1100 King Street West, 1902A, Toronto, ON M6K 0C6 +14165550100",
+      },
+    ];
+
+    const mapped = mapWooCommerceOrderToDeliveryInputs(order, {
+      siteUrl: "https://woo.example.test",
+    });
+    const diagnosticsText = JSON.stringify(
+      mapped.deliveryFact?.mappingDiagnostics,
+    );
+
+    expect(diagnosticsText).toContain("[redacted-address]");
+    expect(diagnosticsText).not.toContain("1100 King Street West");
+    expect(diagnosticsText).not.toContain("+14165550100");
+  });
+
 });

@@ -457,6 +457,7 @@ export const ordersCopy = {
     loadingDetail: 'Loading order detail…',
     noDiagnostics: 'No saved detail diagnostics yet.',
     diagnosticsStatus: 'Status',
+    matchedMappingPaths: 'Matched mapping paths',
     fieldHelp(label: string): string { return `${label} help`; },
     selectChoice(label: string): string { return `Select ${label.toLowerCase()}`; },
     repairTitles: {
@@ -632,6 +633,7 @@ export const ordersCopy = {
     loadingDetail: '주문 상세를 불러오는 중…',
     noDiagnostics: '저장된 상세 진단이 아직 없습니다.',
     diagnosticsStatus: '상태',
+    matchedMappingPaths: '매칭된 매핑 경로',
     fieldHelp(label: string): string { return `${label} 도움말`; },
     selectChoice(label: string): string { return `${label} 선택`; },
     repairTitles: {
