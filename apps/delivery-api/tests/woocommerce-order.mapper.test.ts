@@ -273,10 +273,14 @@ describe("mapWooCommerceOrderToDeliveryInputs", () => {
     ).not.toContain("rawPayload");
   });
 
-  test("records generic Local delivery as unparsed without fabricating a date", async () => {
+  test("ignores generic Woo fulfillment labels as non-date evidence", async () => {
     const order = await readFixture("order-date-pending.json");
-    order.meta_data = [{ key: "delivery_area", value: "Scarborough" }];
-    order.shipping_lines = [{ method_title: "Local delivery", meta_data: [] }];
+    order.meta_data = [
+      { key: "delivery_area", value: "Scarborough" },
+      { key: "_tomatono_order_type", value: "Delivery" },
+      { key: "_tomatono_fulfillment_type", value: "Delivery" },
+    ];
+    order.shipping_lines = [{ method_title: "Free Delivery", meta_data: [] }];
 
     const mapped = mapWooCommerceOrderToDeliveryInputs(order, {
       siteUrl: "https://woo.example.test",
@@ -284,21 +288,42 @@ describe("mapWooCommerceOrderToDeliveryInputs", () => {
 
     expect(mapped.order.deliveryDate).toBeNull();
     expect(mapped.order.readiness).toBe("NEEDS_REVIEW");
-    expect(mapped.order.reviewReasons).toEqual(
-      expect.arrayContaining([
-        "delivery_day_unparsed",
-        "missing_delivery_date",
-      ]),
-    );
+    expect(mapped.order.reviewReasons).toContain("missing_delivery_date");
+    expect(mapped.order.reviewReasons).toContain("missing_route_scope");
+    expect(mapped.order.reviewReasons).not.toContain("delivery_day_unparsed");
+    expect(mapped.order.deliveryDayRaw).toBeNull();
     expect(mapped.deliveryFact?.mappingDiagnostics?.deliveryMetadata).toEqual(
       expect.objectContaining({
-        candidates: expect.arrayContaining([
-          expect.objectContaining({
-            parseStatus: "UNPARSED",
-            valuePreview: "Local delivery",
-          }),
-        ]) as unknown,
-        status: "NEEDS_REVIEW",
+        candidateCount: 0,
+        status: "NOT_PROVIDED",
+      }),
+    );
+  });
+
+  test("does not treat Korean weekday glyphs inside product names as delivery-day metadata", async () => {
+    const order = await readFixture("order-date-pending.json");
+    order.meta_data = [{ key: "delivery_area", value: "Scarborough" }];
+    order.line_items = [
+      {
+        name: "토마토노 밀키트 세트 6/4-6/6 TOMATONO MEAL KIT SET",
+        quantity: 1,
+        meta_data: [],
+      },
+    ];
+    order.shipping_lines = [];
+
+    const mapped = mapWooCommerceOrderToDeliveryInputs(order, {
+      siteUrl: "https://woo.example.test",
+    });
+
+    expect(mapped.order.deliveryDate).toBeNull();
+    expect(mapped.order.reviewReasons).toContain("missing_delivery_date");
+    expect(mapped.order.reviewReasons).not.toContain("delivery_day_unparsed");
+    expect(mapped.order.deliveryDayRaw).toBeNull();
+    expect(mapped.deliveryFact?.mappingDiagnostics?.deliveryMetadata).toEqual(
+      expect.objectContaining({
+        candidateCount: 0,
+        status: "NOT_PROVIDED",
       }),
     );
   });

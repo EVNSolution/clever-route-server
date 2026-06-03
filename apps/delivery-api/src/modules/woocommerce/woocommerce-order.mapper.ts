@@ -993,17 +993,17 @@ function containsDeliverySignal(value: string): boolean {
     (timeWindow.timeWindowStart !== null && timeWindow.timeWindowEnd !== null)
   )
     return true;
-  if (
-    /\b(?:delivery|deliver|weekday|timeslot|time slot|pickup|shipping)\b/iu.test(
-      normalized,
-    )
-  )
+
+  const parsedService = parseDeliveryServiceRaw(value, false);
+  if (parsedService.deliveryWeekday !== null || parsedService.weekdayAmbiguous)
     return true;
-  if (
-    /\b(?:sun|mon|tue|wed|thu|thur|thurs|fri|sat)(?:day)?\b/iu.test(normalized)
-  )
-    return true;
-  if (/[월화수목금토일](?:요일)?/u.test(normalized)) return true;
+
+  // Generic fulfillment labels such as "Delivery", "Free Delivery",
+  // "Local delivery", or product names containing Korean weekday glyphs
+  // (for example "토마토노") are not delivery-day evidence by themselves.
+  // Keep review pressure only for explicit/configured/known delivery fields,
+  // or labels that contain a parseable weekday/time window.
+  if (/\b(?:weekday|timeslot|time slot)\b/iu.test(normalized)) return true;
   return false;
 }
 
