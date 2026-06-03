@@ -122,6 +122,7 @@ const allowedExact = new Set([
   'apps/delivery-api/tests/driver-commerce-domain.test.ts',
   'apps/delivery-api/tests/driver-consent.repository.test.ts',
   'apps/delivery-api/tests/driver-event.repository.test.ts',
+  'apps/delivery-api/tests/driver-events.routes.test.ts',
   'apps/delivery-api/tests/driver-proof-media.repository.test.ts',
   'apps/delivery-api/tests/driver-route-access.repository.test.ts',
   'apps/delivery-api/tests/driver-route-access.routes.test.ts',
@@ -181,23 +182,47 @@ if (allowGeocodeOsrmLane) {
 }
 
 const commerceSyncAllowedExact = new Set([
+  'apps/delivery-api/prisma/schema.prisma',
   'apps/delivery-api/src/modules/shopify/order-sync.mapper.ts',
   'apps/delivery-api/src/modules/shopify/order-sync.repository.ts',
   'apps/delivery-api/src/modules/shopify/order-sync.service.ts',
   'apps/delivery-api/src/modules/woocommerce/woocommerce-order-sync.service.ts',
   'apps/delivery-api/src/modules/woocommerce/woocommerce.dependencies.ts',
+  'apps/delivery-api/src/modules/wordpress-plugin/wordpress-plugin-auth.service.ts',
+  'apps/delivery-api/src/modules/wordpress-plugin/wordpress-plugin-sync.service.ts',
+  'apps/delivery-api/src/modules/wordpress-plugin/wordpress-plugin.repository.ts',
+  'apps/delivery-api/src/modules/wordpress-plugin/wordpress-plugin.types.ts',
+  'apps/delivery-api/src/routes/wordpress-plugin.routes.ts',
   'apps/delivery-api/tests/order-sync.repository.test.ts',
+  'apps/delivery-api/tests/prisma-schema.test.ts',
   'apps/delivery-api/tests/woocommerce-order-sync.service.test.ts',
+  'apps/delivery-api/tests/wordpress-connector-plugin.static.test.ts',
+  'apps/delivery-api/tests/wordpress-plugin-auth.service.test.ts',
+  'apps/delivery-api/tests/wordpress-plugin-sync.service.test.ts',
+  'apps/delivery-api/tests/wordpress-plugin.repository.test.ts',
+  'apps/delivery-api/tests/wordpress-plugin.routes.test.ts',
+  'apps/wordpress-connector-plugin/README.md',
+  'apps/wordpress-connector-plugin/includes/class-clever-route-admin.php',
+  'docs/architecture/woo-raw-order-processing-handoff.md',
 ]);
 
 if (allowCommerceSyncLane) {
   for (const file of commerceSyncAllowedExact) allowedExact.add(file);
+  allowedPrefixes.push('apps/delivery-api/prisma/migrations/');
 }
 
 function blockedReason(file) {
   if (file.startsWith('output/')) return 'output artifacts must never be in a Route Ops deploy';
   if (file.startsWith('infra/caddy/')) return 'Caddy/ingress changes require a separate infra lane';
-  if (file.startsWith('apps/delivery-api/prisma/')) return 'Prisma schema/migrations require a separate DB lane';
+  if (file.startsWith('apps/delivery-api/prisma/')) {
+    if (
+      allowCommerceSyncLane &&
+      (file === 'apps/delivery-api/prisma/schema.prisma' || file.startsWith('apps/delivery-api/prisma/migrations/'))
+    ) {
+      return null;
+    }
+    return 'Prisma schema/migrations require a separate DB lane';
+  }
   if (file.startsWith('apps/delivery-api/src/modules/woocommerce/') && !(allowCommerceSyncLane && commerceSyncAllowedExact.has(file))) {
     return 'Woo delivery-facts/connector changes require a separate Woo lane or explicit commerce-sync deploy approval';
   }
