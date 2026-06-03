@@ -13,6 +13,7 @@ import {
   hasStopSequenceChanged,
   hideSetupActions,
   isAddressReviewRequired,
+  isDeliveryDateReviewRequired,
   mapReadiness,
   matchesOrderTab,
   matchesPlanningScope,
@@ -136,6 +137,40 @@ describe('route ops web state helpers', () => {
     expect(
       getOrderWorksetUnavailableReasons(pendingCoordinates).map((reason) => reason.code)
     ).toEqual(['missing_coordinates']);
+  });
+
+  test('separates missing delivery dates from delivery date review blockers', () => {
+    const actuallyMissing = order({
+      blockerReasons: ['missing_delivery_date'],
+      deliveryDate: null,
+      metadataResolved: false,
+      orderId: 'missing-date',
+      routeEligible: false
+    });
+    const reviewNeeded = order({
+      blockerReasons: ['ambiguous_delivery_day', 'missing_delivery_date'],
+      deliveryDate: null,
+      metadataResolved: false,
+      orderId: 'date-review',
+      routeEligible: false
+    });
+
+    expect(isDeliveryDateReviewRequired(actuallyMissing)).toBe(false);
+    expect(isDeliveryDateReviewRequired(reviewNeeded)).toBe(true);
+    expect(
+      getOrderWorksetUnavailableReasons(actuallyMissing).map((reason) => reason.code)
+    ).toEqual(['missing_delivery_date']);
+    expect(
+      getOrderWorksetUnavailableReasons(reviewNeeded).map((reason) => reason.code)
+    ).toEqual(['delivery_date_review']);
+
+    const summary = summarizeOrderWorkset([actuallyMissing, reviewNeeded], new Set());
+    expect(summary.reasonLabels).toEqual([
+      'Delivery date review 1',
+      'Missing delivery date 1'
+    ]);
+    expect(summary.reasonsByCode.delivery_date_review).toBe(1);
+    expect(summary.reasonsByCode.missing_delivery_date).toBe(1);
   });
 
 

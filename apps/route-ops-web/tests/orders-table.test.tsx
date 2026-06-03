@@ -234,11 +234,66 @@ describe("Orders compact operations table", () => {
       statusDetail: "Verify address",
       statusLabel: "Address Review",
     });
-    expect(formatOperationalStatus(addressReview)).toEqual({
-      detail: "Verify address",
-      label: "Address Review",
-      toneClass: "order-pill--review",
+    expect(formatOperationalStatus(addressReview)).toEqual(
+      expect.objectContaining({
+        detail: "Verify address",
+        label: "Address Review",
+        toneClass: "order-pill--review",
+      }),
+    );
+    expect(formatOperationalStatus(addressReview).meaning).toContain(
+      "Warning meaning: Bulk geocode already tried",
+    );
+    expect(html).toContain('role="tooltip"');
+  });
+
+  test("separates missing delivery date from delivery date review and explains both on hover", () => {
+    const missingDate = orderFixture({
+      blockerReasons: ["missing_delivery_date"],
+      deliveryDate: null,
+      metadataResolved: false,
+      orderId: "missing-date",
+      routeEligible: false,
     });
+    const dateReview = orderFixture({
+      blockerReasons: ["delivery_day_unparsed", "missing_delivery_date"],
+      deliveryDate: null,
+      metadataResolved: false,
+      orderId: "date-review",
+      routeEligible: false,
+    });
+    const html = renderOrderTable([missingDate, dateReview], {
+      expandedOrderIds: new Set(["date-review"]),
+    });
+
+    expect(formatOperationalStatus(missingDate)).toEqual(
+      expect.objectContaining({
+        detail: null,
+        label: "Missing delivery date",
+      }),
+    );
+    expect(formatOperationalStatus(missingDate).meaning).toContain(
+      "No delivery date value was found",
+    );
+    expect(formatOperationalStatus(dateReview)).toEqual(
+      expect.objectContaining({
+        detail: "Verify delivery date",
+        label: "Delivery date review",
+      }),
+    );
+    expect(formatOperationalStatus(dateReview).meaning).toContain(
+      "A delivery date hint exists",
+    );
+    expect(getRouteRepairPrompt(dateReview)).toEqual({
+      canGeocode: false,
+      routeDetail: "Delivery date review",
+      statusDetail: "Verify delivery date",
+      statusLabel: "Delivery date review",
+    });
+    expect(html).toContain("Delivery date review");
+    expect(html).toContain("Verify delivery date");
+    expect(html).toContain("Warning meaning: A delivery date hint exists");
+    expect(html).toContain("Warning meaning: No delivery date value was found");
   });
 
   test("maps operational status blockers with deterministic user-facing labels", () => {
@@ -278,7 +333,7 @@ describe("Orders compact operations table", () => {
           routeEligible: false,
         }),
       ).label,
-    ).toBe("Delivery day unclear");
+    ).toBe("Delivery date review");
     expect(
       formatOperationalStatus(
         orderFixture({
