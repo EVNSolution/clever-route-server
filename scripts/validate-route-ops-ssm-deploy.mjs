@@ -157,6 +157,9 @@ assert(/ROUTE_OPS_SMOKE_LOGIN_SECRET="\$value"/.test(wrapper), 'wrapper must exp
 
 assert(imageDeploy.includes('ensure_deploy_disk_headroom "pre-pull"'), 'image deploy script must check disk headroom before pulling images');
 assert(imageDeploy.indexOf('ensure_deploy_disk_headroom "pre-pull"') < imageDeploy.indexOf('pull route-ops-web-static delivery-api delivery-api-migrate'), 'disk headroom check must run before docker compose pull');
+assert(imageDeploy.includes('prune_old_route_ops_images "pre-pull-retention"'), 'image deploy script must prune stale Route Ops images before docker compose pull');
+assert(imageDeploy.indexOf('prune_old_route_ops_images "pre-pull-retention"') < imageDeploy.indexOf('pull route-ops-web-static delivery-api delivery-api-migrate'), 'pre-pull stale image cleanup must run before docker compose pull');
+assert(imageDeploy.includes('ensure_deploy_disk_headroom "post-pull"'), 'image deploy script must re-check disk headroom after pulling images');
 assert(imageDeploy.includes('docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME"'), 'image deploy script must invoke compose with explicit project name');
 assert(imageDeploy.includes('ROUTE_OPS_COMPOSE_PROJECT_NAME="${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}"'), 'image deploy script must default compose project name to clever-route');
 assert(imageDeploy.includes('ROUTE_OPS_COMPOSE_PROJECT_NAME must be exactly clever-route'), 'image deploy script must reject compose project overrides');

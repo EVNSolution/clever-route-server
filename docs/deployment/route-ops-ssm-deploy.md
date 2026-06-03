@@ -373,7 +373,7 @@ ROUTE_OPS_DEPLOY_MIN_FREE_MB=4096
 ROUTE_OPS_DEPLOY_MIN_FREE_PERCENT=20
 ```
 
-If either threshold is not met, the script prunes stale Route Ops images once and checks disk again before pulling the new image. If disk is still below threshold, the deploy fails before image pull/promotion and prints a disk summary.
+The script always prunes stale Route Ops images before pulling a new image, then checks disk again after cleanup and after pull. If either threshold is not met after cleanup, the deploy fails before promotion and prints a disk summary.
 
 The retention cleanup is intentionally narrow. It keeps current, previous, candidate, and active images:
 
@@ -417,7 +417,7 @@ ROUTE_OPS_PRUNE_LEGACY_LOCAL_IMAGE=1
    - publish evidence URL;
    - custom SSM document name/version;
    - exactly one online managed target.
-5. The host deploy script verifies labels/schema and runs smoke before promotion.
+5. The host deploy script verifies labels/schema, runs the candidate migrate image, and runs smoke before promotion.
 6. If smoke fails, the deploy script restores current image metadata and the workflow fails.
 
 ## Rollback

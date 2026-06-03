@@ -72,7 +72,7 @@ export ROUTE_OPS_SMOKE_LOGIN_SECRET=<read locally from host secret manager, neve
 scripts/deploy-route-ops-image.sh
 ```
 
-The deploy script prepares `.deploy/candidate-image.env`, pulls the frontend static, runtime, and migrate images, stages the frontend artifact into a SHA-scoped `ROUTE_OPS_WEB_STATIC_VOLUME`, verifies labels and schema SHA, runs the existing migration command as a schema-gated no-op for this Route Ops lane, recreates only `delivery-api` to switch to the candidate volume, runs authenticated smoke, and promotes metadata only after smoke succeeds. On failure before backend recreation, the running backend keeps its previous static volume.
+The deploy script prepares `.deploy/candidate-image.env`, prunes stale Route Ops images before pull, pulls the frontend static, runtime, and migrate images, stages the frontend artifact into a SHA-scoped `ROUTE_OPS_WEB_STATIC_VOLUME`, verifies labels and schema SHA, runs the existing migration command, recreates only `delivery-api` to switch to the candidate volume, runs authenticated smoke, and promotes metadata only after smoke succeeds. On failure before backend recreation, the running backend keeps its previous static volume.
 
 ## Smoke coverage
 

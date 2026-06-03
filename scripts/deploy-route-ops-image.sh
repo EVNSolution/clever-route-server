@@ -570,7 +570,10 @@ load_image_env_file .deploy/candidate-image.env
 validate_loaded_static_artifact_contract .deploy/candidate-image.env
 require_candidate_static_volume_isolated_from_current .deploy/current-image.env
 ensure_deploy_disk_headroom "pre-pull"
+prune_old_route_ops_images "pre-pull-retention"
+ensure_deploy_disk_headroom "pre-pull-after-retention"
 route_ops_compose .deploy/candidate-image.env pull route-ops-web-static delivery-api delivery-api-migrate
+ensure_deploy_disk_headroom "post-pull"
 
 runtime_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$DELIVERY_API_IMAGE")"
 migrate_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$DELIVERY_API_MIGRATE_IMAGE")"
@@ -591,7 +594,9 @@ test "$static_role" = "route-ops-web-static"
 
 CURRENT_PRISMA_SCHEMA_SHA="$(grep '^PRISMA_SCHEMA_SHA=' .deploy/current-image.env | cut -d= -f2- || true)"
 test -n "$CURRENT_PRISMA_SCHEMA_SHA"
-test "$CURRENT_PRISMA_SCHEMA_SHA" = "$PRISMA_SCHEMA_SHA"
+if [ "$CURRENT_PRISMA_SCHEMA_SHA" != "$PRISMA_SCHEMA_SHA" ]; then
+  echo "Route Ops deploy schema change detected: current=${CURRENT_PRISMA_SCHEMA_SHA} candidate=${PRISMA_SCHEMA_SHA}; running candidate migrate before promotion."
+fi
 
 docker run --rm "$DELIVERY_API_MIGRATE_IMAGE" sh -lc 'test -f apps/delivery-api/prisma/schema.prisma && npm --prefix apps/delivery-api exec -- prisma --version'
 ROUTE_OPS_STATIC_ARTIFACT_STAGED="true"
