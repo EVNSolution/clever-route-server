@@ -277,6 +277,78 @@ run_success_case() {
   fi
 }
 
+run_headroom_ok_still_prunes_before_pull_case() {
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-disk-headroom-ok.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  prepare_app_dir "$tmp"
+  make_fake_bin "$tmp"
+  mkdir -p "$tmp/state"
+
+  PATH="$tmp/bin:$PATH" \
+  FAKE_DOCKER_STATE="$tmp/state" \
+  FAKE_DOCKER_ROOT="$tmp/docker-root" \
+  FAKE_DF_MODE="always-ok" \
+  APP_DIR="$tmp" \
+  ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1 \
+  ROUTE_OPS_DEPLOY_MIN_FREE_MB=4096 \
+  ROUTE_OPS_DEPLOY_MIN_FREE_PERCENT=20 \
+  ROUTE_OPS_SMOKE_LOGIN_SECRET="unit-test-secret-not-real" \
+  IMAGE_TAG="$IMAGE_TAG" \
+  PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
+  DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
+  DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
+    scripts/deploy-route-ops-image.sh > "$tmp/output.log"
+
+  grep -q "${RUNTIME_REPO}:${STALE_TAG}" "$tmp/state/removed.log"
+  grep -q "${MIGRATE_REPO}:${STALE_TAG}" "$tmp/state/removed.log"
+  grep -q "${STATIC_REPO}:${STALE_TAG}" "$tmp/state/removed.log"
+  grep -q "Route Ops image retention cleanup finished" "$tmp/output.log"
+
+  local pull_line
+  pull_line="$(grep -n "docker compose .* pull route-ops-web-static delivery-api delivery-api-migrate" "$tmp/state/docker.log" | head -n1 | cut -d: -f1)"
+  if [ -z "$pull_line" ]; then
+    echo "docker compose pull was not recorded" >&2
+    cat "$tmp/state/docker.log" >&2
+    exit 1
+  fi
+
+  for stale_image in \
+    "${RUNTIME_REPO}:${STALE_TAG}" \
+    "${MIGRATE_REPO}:${STALE_TAG}" \
+    "${STATIC_REPO}:${STALE_TAG}"; do
+    local prune_line
+    prune_line="$(grep -n "docker image rm ${stale_image}" "$tmp/state/docker.log" | head -n1 | cut -d: -f1)"
+    if [ -z "$prune_line" ]; then
+      echo "stale image was not pruned: $stale_image" >&2
+      cat "$tmp/state/docker.log" >&2
+      exit 1
+    fi
+    if [ "$prune_line" -ge "$pull_line" ]; then
+      echo "stale image was pruned after pull instead of before pull: $stale_image" >&2
+      cat "$tmp/state/docker.log" >&2
+      exit 1
+    fi
+  done
+
+  for protected in \
+    "${RUNTIME_REPO}:${CURRENT_TAG}" \
+    "${MIGRATE_REPO}:${CURRENT_TAG}" \
+    "${RUNTIME_IMAGE}" \
+    "${MIGRATE_IMAGE}" \
+    "${STATIC_IMAGE}" \
+    "${RUNTIME_REPO}:${ACTIVE_TAG}"; do
+    if grep -q "$protected" "$tmp/state/removed.log"; then
+      echo "protected image was removed: $protected" >&2
+      exit 1
+    fi
+  done
+  if grep -Eq 'system prune|volume prune|container prune' "$tmp/state/docker.log"; then
+    echo "forbidden prune command was invoked" >&2
+    exit 1
+  fi
+}
+
 run_failure_case() {
   local tmp
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-disk-fail.XXXXXX")"
@@ -592,6 +664,7 @@ run_rollback_rejects_shared_current_static_volume_case() {
   fi
 }
 run_success_case
+run_headroom_ok_still_prunes_before_pull_case
 run_failure_case
 run_invalid_project_case
 run_legacy_project_guard_case
