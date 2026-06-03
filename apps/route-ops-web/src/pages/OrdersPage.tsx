@@ -28,6 +28,7 @@ import {
   createDefaultOrderFilters,
   formatOrderWorksetUnavailableReasons,
   getOrderWorksetUnavailableReasons,
+  isAddressReviewRequired,
   isOrderWorksetEligible,
   storeSettingsToDepotPoint,
   summarizeOrderWorkset,
@@ -1298,6 +1299,13 @@ export function formatOperationalStatus(order: CanonicalOrderDto, locale: string
       toneClass: "order-pill--neutral",
     };
   }
+  if (isAddressReviewRequired(order)) {
+    return {
+      detail: t.statusDetails.verifyAddress,
+      label: t.statusLabels.addressReview,
+      toneClass: "order-pill--review",
+    };
+  }
   const blockerLabel = mostSpecificBlockerLabel(order, locale);
   if (blockerLabel !== null) {
     return {
@@ -1397,6 +1405,14 @@ export function getRouteRepairPrompt(order: CanonicalOrderDto, locale: string | 
       statusLabel: t.statusLabels.ready,
     };
   }
+  if (isAddressReviewRequired(order)) {
+    return {
+      canGeocode: false,
+      routeDetail: t.statusLabels.addressReview,
+      statusDetail: t.statusDetails.verifyAddress,
+      statusLabel: t.statusLabels.addressReview,
+    };
+  }
   if (order.metadataResolved !== true) {
     return {
       canGeocode: false,
@@ -1434,6 +1450,9 @@ function geocodeDetail(order: CanonicalOrderDto, locale: string | null | undefin
     order.geocodeDiagnostics?.code ??
     order.geocodeDiagnostics?.messageKey ??
     null;
+  if (code === "GEOCODER_NO_RESULT" && isAddressReviewRequired(order)) {
+    return getOrdersCopy(locale).statusDetails.verifyAddress;
+  }
   if (code !== null) return geocodeMessageForCode(code, locale);
   return getOrderDetailLabels(locale).geocodeStatus[order.geocodeStatus];
 }
@@ -1565,6 +1584,7 @@ function hasGeocodableAddress(order: CanonicalOrderDto): boolean {
 function mostSpecificBlockerLabel(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): string | null {
   const t = getOrdersCopy(locale);
   const blockers = new Set(order.blockerReasons);
+  if (isAddressReviewRequired(order)) return t.statusLabels.addressReview;
   if (blockers.has("missing_delivery_date") || order.deliveryDate === null)
     return t.statusLabels.missingDeliveryDate;
   if (blockers.has("missing_delivery_area")) return t.statusLabels.missingDeliveryArea;
@@ -1671,7 +1691,7 @@ function OrderDetailPanel({
   );
   const repairFields = getOrderRepairFields(order, editableFields);
   const hasActionableRepair = repairFields.length > 0;
-  const repairTitle = formatRepairCardTitle(repairFields, locale);
+  const repairTitle = formatRepairCardTitle(repairFields, order, locale);
   const addressSummary = formatAddressSummary(order, locale);
   const coordinateSummary = formatCoordinateSummary(order, locale);
 
@@ -2122,7 +2142,10 @@ function getOrderRepairFields(
     addField("timeWindowStart");
     addField("timeWindowEnd");
   }
-  if (blockers.has("missing_coordinates") && !hasGeocodableAddress(order)) {
+  if (
+    blockers.has("missing_coordinates") &&
+    (!hasGeocodableAddress(order) || isAddressReviewRequired(order))
+  ) {
     addField("address1");
     addField("city");
     addField("province");
@@ -2133,7 +2156,11 @@ function getOrderRepairFields(
   return fields;
 }
 
-function formatRepairCardTitle(fields: EditableMetadataField[], locale: string | null | undefined = 'en-CA'): string {
+function formatRepairCardTitle(
+  fields: EditableMetadataField[],
+  order: CanonicalOrderDto,
+  locale: string | null | undefined = 'en-CA',
+): string {
   const t = getOrdersCopy(locale).repairTitles;
   const keys = new Set(fields.map((field) => field.key));
   const categories = [
@@ -2163,7 +2190,9 @@ function formatRepairCardTitle(fields: EditableMetadataField[], locale: string |
   if (keys.has("timeWindowStart") || keys.has("timeWindowEnd")) {
     return t.timeWindow;
   }
-  if (categories[0] === "address") return t.address;
+  if (categories[0] === "address") {
+    return isAddressReviewRequired(order) ? t.addressReview : t.address;
+  }
   return t.fallback;
 }
 
@@ -2201,6 +2230,12 @@ function formatCoordinateSummary(order: CanonicalOrderDto, locale: string | null
     return {
       primary: `${order.coordinates.latitude?.toFixed(6)}, ${order.coordinates.longitude?.toFixed(6)}`,
       secondary: t.coordinatesReady,
+    };
+  }
+  if (isAddressReviewRequired(order)) {
+    return {
+      primary: t.statusLabels.addressReview,
+      secondary: t.statusDetails.verifyAddress,
     };
   }
   if (hasGeocodableAddress(order)) {

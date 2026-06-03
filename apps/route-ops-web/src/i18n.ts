@@ -309,6 +309,7 @@ export const stateCopy = {
   'en-CA': {
     worksetReasons: {
       already_planned: 'Already planned',
+      address_review: 'Address Review',
       completed_or_cancelled: 'Completed/cancelled',
       different_delivery_date: 'Different delivery date',
       different_route_scope: 'Different delivery session',
@@ -331,6 +332,7 @@ export const stateCopy = {
   'ko-KR': {
     worksetReasons: {
       already_planned: '이미 배정됨',
+      address_review: '주소 확인',
       completed_or_cancelled: '완료/취소됨',
       different_delivery_date: '배송 날짜 다름',
       different_route_scope: '배송 세션 다름',
@@ -464,6 +466,7 @@ export const ordersCopy = {
     selectChoice(label: string): string { return `Select ${label.toLowerCase()}`; },
     repairTitles: {
       aggregate: 'Fix required order details',
+      addressReview: 'Verify destination address',
       deliveryDate: 'Delivery date required',
       deliveryArea: 'Delivery area required',
       routeScope: 'Route scope required',
@@ -503,6 +506,7 @@ export const ordersCopy = {
     },
     statusLabels: {
       planned: 'Planned',
+      addressReview: 'Address Review',
       missingDeliveryDate: 'Missing delivery date',
       missingDeliveryArea: 'Missing delivery area',
       missingRouteScope: 'Missing route scope',
@@ -521,6 +525,7 @@ export const ordersCopy = {
     },
     statusDetails: {
       useBulkGeocode: 'use bulk geocode',
+      verifyAddress: 'Verify address',
       enterAddressOrCoordinates: 'Enter address or coordinates',
       reviewRouteConstraints: 'Review route constraints'
     },
@@ -651,6 +656,7 @@ export const ordersCopy = {
     selectChoice(label: string): string { return `${label} 선택`; },
     repairTitles: {
       aggregate: '필수 주문 정보 수정',
+      addressReview: '배송지 주소 확인',
       deliveryDate: '배송 날짜 필요',
       deliveryArea: '배송 지역 필요',
       routeScope: '경로 범위 필요',
@@ -690,6 +696,7 @@ export const ordersCopy = {
     },
     statusLabels: {
       planned: '배정됨',
+      addressReview: '주소 확인',
       missingDeliveryDate: '배송 날짜 누락',
       missingDeliveryArea: '배송 지역 누락',
       missingRouteScope: '경로 범위 누락',
@@ -708,6 +715,7 @@ export const ordersCopy = {
     },
     statusDetails: {
       useBulkGeocode: '일괄 좌표 변환 사용',
+      verifyAddress: '주소 확인',
       enterAddressOrCoordinates: '주소 또는 좌표 입력',
       reviewRouteConstraints: '경로 조건 확인 필요'
     },
