@@ -253,6 +253,49 @@ export type BulkGeocodeOrdersResponse = {
   geocode: BulkGeocodeJobDto;
 };
 
+export type WooSyncRunDto = {
+  acceptedAt: string;
+  completedAt: string | null;
+  errorMessage: string | null;
+  request: {
+    modifiedAfter: string | null;
+    pageSize: number;
+    status: string | null;
+  };
+  result: {
+    geocode: {
+      failed: number;
+      notRequired: number;
+      pending: number;
+      resolved: number;
+    };
+    pagesRead: number;
+    sync: {
+      created: number;
+      needsReview: number;
+      readyToPlan: number;
+      received: number;
+      skipped: number;
+      unchanged: number;
+      updated: number;
+    };
+    warnings: string[];
+  } | null;
+  startedAt: string | null;
+  status: "FAILED" | "QUEUED" | "RUNNING" | "SUCCEEDED";
+  syncRunId: string;
+};
+
+export type WooSyncResponse = {
+  alreadyRunning: boolean;
+  message: string;
+  syncRun: WooSyncRunDto;
+};
+
+export type WooSyncStatusResponse = {
+  syncRun: WooSyncRunDto | null;
+};
+
 export type GeocodeSettingsResponse = {
   geocode: {
     cached: boolean;

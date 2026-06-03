@@ -13,6 +13,8 @@ import type {
   RoutesResponse,
   SettingsResponse,
   StoreSettingsDto,
+  WooSyncResponse,
+  WooSyncStatusResponse,
 } from "./types";
 
 export class ApiError extends Error {
@@ -118,6 +120,34 @@ export async function getBulkGeocodeJob(
 ): Promise<BulkGeocodeOrdersResponse> {
   return apiGet<BulkGeocodeOrdersResponse>(
     `/admin/ui/app/api/orders/geocode/${encodeURIComponent(jobId)}`,
+  );
+}
+
+export async function requestWooOrderSync(input: {
+  csrfToken: string;
+  pageSize?: number;
+}): Promise<WooSyncResponse> {
+  return apiMutation<WooSyncResponse>(
+    "/admin/ui/app/api/orders/sync",
+    "POST",
+    input.csrfToken,
+    {
+      ...(input.pageSize === undefined ? {} : { pageSize: input.pageSize }),
+    },
+  );
+}
+
+export async function getWooOrderSyncRun(
+  syncRunId: string,
+): Promise<WooSyncStatusResponse> {
+  return apiGet<WooSyncStatusResponse>(
+    `/admin/ui/app/api/orders/sync/${encodeURIComponent(syncRunId)}`,
+  );
+}
+
+export async function getLatestWooOrderSync(): Promise<WooSyncStatusResponse> {
+  return apiGet<WooSyncStatusResponse>(
+    "/admin/ui/app/api/orders/sync/latest",
   );
 }
 

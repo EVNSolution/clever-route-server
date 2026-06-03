@@ -15,6 +15,7 @@ import type {
   AdminStoreSettings,
   SaveAdminStoreSettingsInput,
 } from "../modules/commerce/admin-store-settings.service.js";
+import type { AdminWooSyncServiceContract } from "../modules/commerce/admin-woocommerce-sync.service.js";
 import {
   RouteScopeConfigValidationError,
   defaultRouteScopeConfig,
@@ -29,6 +30,10 @@ import {
   type WooCommerceOnboardingResult,
 } from "../modules/commerce/woocommerce-connection-onboarding.service.js";
 import type { CanonicalOrderRow } from "../modules/shopify/order-sync.mapper.js";
+import type {
+  WordPressPluginSyncRequestInput,
+  WordPressPluginSyncRun,
+} from "../modules/wordpress-plugin/wordpress-plugin.types.js";
 import type {
   DeliveryBatchCandidate,
   ListCanonicalOrdersFilters,
@@ -356,6 +361,7 @@ export type AdminCommerceConnectionsUiDependencies = {
       input: PatchCanonicalOrderGeocodeDiagnosticsInput,
     ): Promise<CanonicalOrderRow | null>;
   };
+  wooSyncService?: AdminWooSyncServiceContract;
   publicBaseUrl?: string;
   routePlanService?: Pick<
     RoutePlanService,
@@ -1198,6 +1204,82 @@ function registerRouteOpsAppRoutes(
         reviewBlockers: reviewBlockers.map(toRouteOpsOrderDto),
       });
     }),
+  );
+
+  app.post(`${ADMIN_UI_APP_API_PATH}/orders/sync`, async (request, reply) =>
+    withRouteOpsApi(request, reply, dependencies, async (session) => {
+      assertRouteOpsMutationCsrf(request, session);
+      const shopDomain = requireRouteOpsShopDomain(request, session);
+      if (dependencies.wooSyncService === undefined) {
+        throw new WooCommerceOnboardingError(
+          "BAD_REQUEST",
+          "WooCommerce sync is not enabled in this runtime.",
+          400,
+        );
+      }
+      const accepted = await dependencies.wooSyncService.requestSync({
+        payload: readRouteOpsWooSyncRequestBody(request.body),
+        shopDomain,
+      });
+      scheduleRouteOpsWooSyncProcessing({
+        accepted,
+        dependencies,
+        request,
+        shopDomain,
+      });
+      return routeOpsData(toRouteOpsWooSyncResponse(accepted), 202);
+    }),
+  );
+
+  app.get(`${ADMIN_UI_APP_API_PATH}/orders/sync/latest`, async (request, reply) =>
+    withRouteOpsApi(request, reply, dependencies, async (session) => {
+      const shopDomain = requireRouteOpsShopDomain(request, session);
+      if (dependencies.wooSyncService === undefined) {
+        throw new WooCommerceOnboardingError(
+          "BAD_REQUEST",
+          "WooCommerce sync is not enabled in this runtime.",
+          400,
+        );
+      }
+      const syncRun = await dependencies.wooSyncService.readLatestSyncRun({
+        shopDomain,
+      });
+      return routeOpsData({ syncRun });
+    }),
+  );
+
+  app.get<{ Params: { syncRunId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/orders/sync/:syncRunId`,
+    async (request, reply) =>
+      withRouteOpsApi(request, reply, dependencies, async (session) => {
+        const shopDomain = requireRouteOpsShopDomain(request, session);
+        if (dependencies.wooSyncService === undefined) {
+          throw new WooCommerceOnboardingError(
+            "BAD_REQUEST",
+            "WooCommerce sync is not enabled in this runtime.",
+            400,
+          );
+        }
+        if (!isRouteOpsUuid(request.params.syncRunId)) {
+          throw new WooCommerceOnboardingError(
+            "BAD_REQUEST",
+            "Sync run id must be a UUID",
+            400,
+          );
+        }
+        const syncRun = await dependencies.wooSyncService.readSyncRun({
+          shopDomain,
+          syncRunId: request.params.syncRunId,
+        });
+        if (syncRun === null) {
+          throw new WooCommerceOnboardingError(
+            "NOT_FOUND",
+            "Sync run not found",
+            404,
+          );
+        }
+        return routeOpsData({ syncRun });
+      }),
   );
 
   app.post(
@@ -2089,6 +2171,125 @@ type RouteOpsApiResponse<T> = {
 
 function routeOpsData<T>(data: T, statusCode = 200): RouteOpsApiResponse<T> {
   return { data, statusCode };
+}
+
+type RouteOpsWooSyncAccepted = Awaited<
+  ReturnType<NonNullable<AdminCommerceConnectionsUiDependencies["wooSyncService"]>["requestSync"]>
+>;
+
+function toRouteOpsWooSyncResponse(
+  accepted: RouteOpsWooSyncAccepted,
+): {
+  alreadyRunning: boolean;
+  message: string;
+  syncRun: WordPressPluginSyncRun;
+} {
+  return {
+    alreadyRunning: accepted.alreadyRunning,
+    message: accepted.message,
+    syncRun: accepted.syncRun,
+  };
+}
+
+function scheduleRouteOpsWooSyncProcessing(input: {
+  accepted: RouteOpsWooSyncAccepted;
+  dependencies: AdminCommerceConnectionsUiDependencies;
+  request: FastifyRequest;
+  shopDomain: string;
+}): void {
+  if (
+    input.accepted.startBackgroundProcessing !== true ||
+    input.dependencies.wooSyncService === undefined
+  ) {
+    return;
+  }
+  const syncRunId = input.accepted.syncRun.syncRunId;
+  input.request.log.info(
+    { shopDomain: input.shopDomain, syncRunId },
+    "route ops admin WooCommerce sync background processing scheduled",
+  );
+  void input.dependencies.wooSyncService
+    .processSyncRun({ shopDomain: input.shopDomain, syncRunId })
+    .then((run) => {
+      input.request.log.info(
+        {
+          pagesRead: run?.result?.pagesRead ?? null,
+          received: run?.result?.sync.received ?? null,
+          shopDomain: input.shopDomain,
+          status: run?.status ?? null,
+          syncRunId,
+        },
+        "route ops admin WooCommerce sync processed",
+      );
+    })
+    .catch((error: unknown) => {
+      input.request.log.error(
+        {
+          error: sanitizeRouteUiError(error),
+          shopDomain: input.shopDomain,
+          syncRunId,
+        },
+        "route ops admin WooCommerce sync failed",
+      );
+    });
+}
+
+function readRouteOpsWooSyncRequestBody(
+  value: unknown,
+): WordPressPluginSyncRequestInput {
+  const body =
+    value === undefined || value === null ? {} : readRouteOpsBodyObject(value);
+  const rawPageSize = body.pageSize ?? 100;
+  if (
+    typeof rawPageSize !== "number" ||
+    !Number.isInteger(rawPageSize) ||
+    rawPageSize < 1 ||
+    rawPageSize > 100
+  ) {
+    throw new WooCommerceOnboardingError(
+      "BAD_REQUEST",
+      "pageSize must be an integer from 1 to 100",
+      400,
+    );
+  }
+  return {
+    modifiedAfter: readRouteOpsSyncModifiedAfter(body.modifiedAfter),
+    pageSize: rawPageSize,
+    status: readRouteOpsSyncStatus(body.status),
+  };
+}
+
+function readRouteOpsSyncModifiedAfter(value: unknown): Date | null {
+  const raw = readNullableJsonString(value);
+  if (raw === null) return null;
+  const parsed = new Date(raw);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new WooCommerceOnboardingError(
+      "BAD_REQUEST",
+      "modifiedAfter must be an ISO date-time string",
+      400,
+    );
+  }
+  return parsed;
+}
+
+function readRouteOpsSyncStatus(value: unknown): string | null {
+  const status = readNullableJsonString(value);
+  if (status === null) return null;
+  if (status.length > 64) {
+    throw new WooCommerceOnboardingError(
+      "BAD_REQUEST",
+      "status is too long",
+      400,
+    );
+  }
+  return status;
+}
+
+function isRouteOpsUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+    value,
+  );
 }
 
 function toSafeRouteOpsGeocodeResponse(

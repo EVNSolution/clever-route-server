@@ -31,7 +31,7 @@ import type {
 } from "../src/types";
 
 describe("Orders compact operations table", () => {
-  test("renders the approved Phase A semantic columns without fake Phase B data", () => {
+  test("renders the approved semantic columns with Route Ops list actions", () => {
     const html = renderOrderTable([orderFixture()]);
 
     expect(html).toContain('class="orders-compact-table"');
@@ -55,7 +55,8 @@ describe("Orders compact operations table", () => {
     expect(html).not.toContain("Items");
     expect(html).not.toContain("Total");
     expect(html).not.toContain("EasyRoutes");
-    expect(html).not.toContain("Sync");
+    expect(html).toContain("Sync Woo");
+    expect(html).toContain("Bulk geocode");
   });
 
   test("renders operational order data from current CanonicalOrderDto fields", () => {

@@ -25,6 +25,8 @@ export type WordPressPluginSyncRunRepository = {
     acceptedAt: Date;
     context: WordPressPluginConnectionContext;
     request: WordPressPluginSyncRunRequest;
+    source?: string;
+    trigger?: string;
   }): Promise<{ alreadyRunning: boolean; run: WordPressPluginSyncRun; startBackgroundProcessing: boolean }>;
   createRawSyncRunUnlessActive(input: {
     acceptedAt: Date;
@@ -127,11 +129,15 @@ export class WordPressPluginSyncRequestService {
   async requestSync(input: {
     context: WordPressPluginConnectionContext;
     payload: WordPressPluginSyncRequestInput;
+    source?: string;
+    trigger?: string;
   }): Promise<WordPressPluginSyncRequestAccepted> {
     const accepted = await this.dependencies.syncRunRepository.createSyncRunUnlessActive({
       acceptedAt: this.now(),
       context: input.context,
-      request: toSyncRunRequest(input.payload)
+      request: toSyncRunRequest(input.payload),
+      ...(input.source === undefined ? {} : { source: input.source }),
+      ...(input.trigger === undefined ? {} : { trigger: input.trigger })
     });
 
     return {

@@ -12,6 +12,10 @@ import { RoutePlanAdminService } from '../route-plans/route-plan.service.js';
 import { OsrmRouteGeometryProvider } from '../route-plans/osrm-route-geometry.client.js';
 import { PrismaOrderSyncRepository } from '../shopify/order-sync.repository.js';
 import { ShopifyOrderSyncService } from '../shopify/order-sync.service.js';
+import { createWooCommerceOrderClientFromConnection } from '../woocommerce/woocommerce-order.client.js';
+import { WooCommerceOrderSyncService } from '../woocommerce/woocommerce-order-sync.service.js';
+import { PrismaWordPressPluginRepository } from '../wordpress-plugin/wordpress-plugin.repository.js';
+import { WordPressPluginSyncRequestService } from '../wordpress-plugin/wordpress-plugin-sync.service.js';
 import {
   DEFAULT_ADMIN_UI_COOKIE_NAME,
   isStrongAdminWebSecret,
@@ -21,9 +25,14 @@ import { loadCredentialEncryptionKey } from './commerce-credential-encryption.js
 import { PrismaCommerceConnectionRepository } from './commerce-connection.repository.js';
 import { CommerceConnectionCredentialService } from './commerce-connection.service.js';
 import { parseAllowedShopDomains, StaticAdminCommerceTokenVerifier } from './admin-commerce-auth.js';
+import { AdminWooSyncService } from './admin-woocommerce-sync.service.js';
 import { PrismaAdminStoreSettingsService } from './admin-store-settings.service.js';
 import { WooCommerceConnectionOnboardingService } from './woocommerce-connection-onboarding.service.js';
-import { WooCommerceConnectionVerifier } from './woocommerce-connection-verifier.js';
+import {
+  assertHttpsWooSiteUrl,
+  assertResolvedWooSiteHostIsPublic,
+  WooCommerceConnectionVerifier
+} from './woocommerce-connection-verifier.js';
 import { loadGeocodingService } from '../geocoding/geocoding.dependencies.js';
 
 export type AdminCommerceConnectionsRuntimeEnv = Partial<
@@ -45,7 +54,8 @@ export type AdminCommerceConnectionsRuntimeEnv = Partial<
     | 'GEOCODING_USER_AGENT'
     | 'OSRM_BASE_URL'
     | 'OSRM_TIMEOUT_MS'
-    | 'ROUTE_OPS_ROUTER_COVERAGE',
+    | 'ROUTE_OPS_ROUTER_COVERAGE'
+    | 'WOOCOMMERCE_SHOP_TIMEZONE',
     string
   >
 >;
@@ -121,11 +131,63 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     geocodingService: loadGeocodingService({ env: input.env }),
     onboardingService: input.adminCommerceConnections.onboardingService,
     ...readAdminUiOrderSyncService(input),
+    ...readAdminUiWooSyncService(input),
     ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
     ...readAdminUiRoutePlanService(input),
     secureCookies: input.nodeEnv !== 'development' && input.nodeEnv !== 'test',
     sessionSecret,
     ...readAdminUiSettingsService(input)
+  };
+}
+
+function readAdminUiWooSyncService(input: {
+  env: AdminCommerceConnectionsRuntimeEnv;
+  prisma?: PrismaClient | undefined;
+}): Pick<AdminCommerceConnectionsUiDependencies, 'wooSyncService'> {
+  const rawCredentialKey = readOptional(input.env.CREDENTIAL_ENCRYPTION_KEY);
+  if (input.prisma === undefined || rawCredentialKey === undefined) return {};
+
+  const connectionRepository = new PrismaCommerceConnectionRepository(input.prisma, {
+    createMissingShop: true
+  });
+  const connectionService = new CommerceConnectionCredentialService({
+    credentialKey: loadCredentialEncryptionKey(rawCredentialKey),
+    repository: connectionRepository
+  });
+  const orderRepository = new PrismaOrderSyncRepository(input.prisma, {
+    allowAnyShopDomain: true,
+    createMissingShop: true
+  });
+  const wordpressRepository = new PrismaWordPressPluginRepository(input.prisma);
+  const geocodingService = loadGeocodingService({ env: input.env });
+  const shopTimezone = readOptional(input.env.WOOCOMMERCE_SHOP_TIMEZONE);
+  const syncService = new WordPressPluginSyncRequestService({
+    connectionService,
+    createOrderSyncService: ({ connection }) => {
+      const resolvedTimezone = connection.timezone ?? shopTimezone;
+      return new WooCommerceOrderSyncService({
+        client: createWooCommerceOrderClientFromConnection(connection),
+        connectionId: connection.id,
+        geocodingService,
+        repository: orderRepository,
+        shopDomain: connection.shopDomain,
+        ...(resolvedTimezone === undefined ? {} : { shopTimezone: resolvedTimezone }),
+        siteUrl: connection.siteUrl
+      });
+    },
+    freshnessRepository: wordpressRepository,
+    syncRunRepository: wordpressRepository,
+    validateConnectionSiteUrl: async ({ connection }) => {
+      const siteUrl = assertHttpsWooSiteUrl(connection.siteUrl);
+      await assertResolvedWooSiteHostIsPublic(siteUrl);
+    }
+  });
+
+  return {
+    wooSyncService: new AdminWooSyncService({
+      prisma: input.prisma,
+      syncService
+    })
   };
 }
 

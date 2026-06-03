@@ -401,6 +401,8 @@ export const ordersCopy = {
     diagnosticMetadata: 'Order metadata',
     selectedSummary(selected: number, selectable: number, unavailable: number): string { return `${selected} selected · ${selectable} selectable · ${unavailable} unavailable`; },
     updating: 'Updating…',
+    wooSyncing: 'Syncing Woo…',
+    wooSync: 'Sync Woo',
     bulkGeocoding: 'Bulk geocoding…',
     bulkGeocode: 'Bulk geocode',
     unavailablePrefix: 'Unavailable:',
@@ -490,6 +492,15 @@ export const ordersCopy = {
       alreadyHadCoordinates: 'already had coordinates',
       policyReached(limit: number | string): string { return ` Public geocoder cap reached (${limit} attempts).`; }
     },
+    wooSyncStatus: {
+      queued: 'queued',
+      running: 'running',
+      succeeded: 'completed',
+      failed: 'failed',
+      summary(status: string, counts: { created: number; needsReview: number; readyToPlan: number; received: number; updated: number }): string {
+        return `Sync Woo ${status}: ${counts.received} received, ${counts.created} created, ${counts.updated} updated, ${counts.readyToPlan} ready, ${counts.needsReview} needs review.`;
+      }
+    },
     statusLabels: {
       planned: 'Planned',
       missingDeliveryDate: 'Missing delivery date',
@@ -577,6 +588,8 @@ export const ordersCopy = {
     diagnosticMetadata: '주문 메타데이터',
     selectedSummary(selected: number, selectable: number, unavailable: number): string { return `${selected}개 선택 · ${selectable}개 선택 가능 · ${unavailable}개 불가`; },
     updating: '업데이트 중…',
+    wooSyncing: 'Woo 동기화 중…',
+    wooSync: 'Woo 동기화',
     bulkGeocoding: '일괄 좌표 변환 중…',
     bulkGeocode: '일괄 좌표 변환',
     unavailablePrefix: '사용 불가:',
@@ -665,6 +678,15 @@ export const ordersCopy = {
       skippedByPolicy: '정책으로 건너뜀',
       alreadyHadCoordinates: '기존 좌표 있음',
       policyReached(limit: number | string): string { return ` 공개 지오코더 한도에 도달했습니다(${limit}회 시도).`; }
+    },
+    wooSyncStatus: {
+      queued: '대기 중',
+      running: '진행 중',
+      succeeded: '완료',
+      failed: '실패',
+      summary(status: string, counts: { created: number; needsReview: number; readyToPlan: number; received: number; updated: number }): string {
+        return `Woo 동기화 ${status}: ${counts.received}건 수신, ${counts.created}건 생성, ${counts.updated}건 업데이트, ${counts.readyToPlan}건 준비, ${counts.needsReview}건 리뷰 필요.`;
+      }
     },
     statusLabels: {
       planned: '배정됨',
