@@ -29,6 +29,7 @@ import {
   formatOrderWorksetUnavailableReasons,
   getOrderWorksetUnavailableReasons,
   isAddressReviewRequired,
+  isDeliveryDateReviewRequired,
   isOrderWorksetEligible,
   storeSettingsToDepotPoint,
   summarizeOrderWorkset,
@@ -1143,6 +1144,9 @@ function OrderTableRow(input: {
   );
   const detailPanelId = `order-detail-${sanitizeId(order.orderId)}`;
   const detailLabel = t.detailToggle(input.expanded, orderLabel);
+  const statusTooltipId = status.meaning === null
+    ? undefined
+    : `order-status-${sanitizeId(order.orderId)}-help`;
   return (
     <>
       <tr
@@ -1195,9 +1199,30 @@ function OrderTableRow(input: {
         <td>
           <span className="order-compact-value">{formatRouteLabel(order, input.locale)}</span>
         </td>
-        <td>
-          <span className={`order-pill ${status.toneClass}`}>
-            {status.label}
+        <td className="orders-status-cell">
+          <span className="order-status-tooltip-wrap">
+            <span
+              aria-describedby={statusTooltipId}
+              aria-label={
+                status.meaning === null
+                  ? status.label
+                  : `${status.label}. ${status.meaning}`
+              }
+              className={`order-pill ${status.toneClass}`}
+              tabIndex={status.meaning === null ? undefined : 0}
+              title={status.meaning ?? undefined}
+            >
+              {status.label}
+            </span>
+            {status.meaning === null ? null : (
+              <span
+                className="order-status-tooltip"
+                id={statusTooltipId}
+                role="tooltip"
+              >
+                {status.meaning}
+              </span>
+            )}
           </span>
           {status.detail === null ? null : (
             <small className="order-subtle">{status.detail}</small>
@@ -1289,6 +1314,7 @@ export function formatDeliveryDayLabel(order: CanonicalOrderDto, locale: string 
 export function formatOperationalStatus(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {
   detail: string | null;
   label: string;
+  meaning: string | null;
   toneClass: string;
 } {
   const t = getOrdersCopy(locale);
@@ -1296,6 +1322,7 @@ export function formatOperationalStatus(order: CanonicalOrderDto, locale: string
     return {
       detail: order.routePlanName ?? humanizeToken(order.planningStatus, locale),
       label: t.statusLabels.planned,
+      meaning: null,
       toneClass: "order-pill--neutral",
     };
   }
@@ -1303,6 +1330,15 @@ export function formatOperationalStatus(order: CanonicalOrderDto, locale: string
     return {
       detail: t.statusDetails.verifyAddress,
       label: t.statusLabels.addressReview,
+      meaning: t.statusMeanings.addressReview,
+      toneClass: "order-pill--review",
+    };
+  }
+  if (isDeliveryDateReviewRequired(order)) {
+    return {
+      detail: t.statusDetails.verifyDeliveryDate,
+      label: t.statusLabels.deliveryDateReview,
+      meaning: t.statusMeanings.deliveryDateReview,
       toneClass: "order-pill--review",
     };
   }
@@ -1311,13 +1347,15 @@ export function formatOperationalStatus(order: CanonicalOrderDto, locale: string
     return {
       detail: geocodeDetail(order, locale),
       label: blockerLabel,
+      meaning: statusMeaningForOrder(order, locale),
       toneClass: "order-pill--review",
     };
   }
   if (order.deliveryDate === null) {
     return {
-      detail: geocodeDetail(order, locale),
+      detail: null,
       label: t.statusLabels.missingDeliveryDate,
+      meaning: t.statusMeanings.missingDeliveryDate,
       toneClass: "order-pill--review",
     };
   }
@@ -1326,6 +1364,9 @@ export function formatOperationalStatus(order: CanonicalOrderDto, locale: string
     return {
       detail: canGeocode ? t.statusDetails.useBulkGeocode : t.statusDetails.enterAddressOrCoordinates,
       label: canGeocode ? t.statusLabels.needCoordinates : t.statusLabels.missingAddress,
+      meaning: canGeocode
+        ? t.statusMeanings.missingCoordinates
+        : t.statusMeanings.missingAddress,
       toneClass: "order-pill--review",
     };
   }
@@ -1333,20 +1374,51 @@ export function formatOperationalStatus(order: CanonicalOrderDto, locale: string
     return {
       detail: geocodeDetail(order, locale),
       label: t.statusLabels.metadataReview,
+      meaning: t.statusMeanings.metadataReview,
       toneClass: "order-pill--review",
     };
   if (order.routeEligible === true) {
     return {
       detail: geocodeDetail(order, locale),
       label: t.statusLabels.ready,
+      meaning: null,
       toneClass: "order-pill--ready",
     };
   }
   return {
     detail: t.statusDetails.reviewRouteConstraints,
     label: t.statusLabels.notRouteEligible,
+    meaning: t.statusMeanings.notRouteEligible,
     toneClass: "order-pill--neutral",
   };
+}
+
+function statusMeaningForOrder(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): string | null {
+  const t = getOrdersCopy(locale).statusMeanings;
+  const blockers = new Set(order.blockerReasons);
+  if (blockers.has("missing_delivery_date") || order.deliveryDate === null)
+    return t.missingDeliveryDate;
+  if (blockers.has("missing_delivery_area")) return t.metadataReview;
+  if (blockers.has("missing_route_scope")) return t.missingDeliveryRouteScope;
+  if (
+    [
+      "delivery_day_unparsed",
+      "ambiguous_delivery_day",
+      "delivery_date_weekday_mismatch",
+      "delivery_date_weekday_unverified",
+    ].some((reason) => blockers.has(reason))
+  )
+    return t.deliveryDayUnclear;
+  if (blockers.has("missing_time_window")) return t.deliveryTimeUnclear;
+  if (
+    ["delivery_time_window_unparsed", "ambiguous_delivery_time_window"].some(
+      (reason) => blockers.has(reason),
+    )
+  )
+    return t.deliveryTimeUnclear;
+  if (blockers.has("missing_coordinates"))
+    return hasGeocodableAddress(order) ? t.missingCoordinates : t.missingAddress;
+  return t.metadataReview;
 }
 
 function formatOrderSource(order: CanonicalOrderDto): string {
@@ -1411,6 +1483,22 @@ export function getRouteRepairPrompt(order: CanonicalOrderDto, locale: string | 
       routeDetail: t.statusLabels.addressReview,
       statusDetail: t.statusDetails.verifyAddress,
       statusLabel: t.statusLabels.addressReview,
+    };
+  }
+  if (isDeliveryDateReviewRequired(order)) {
+    return {
+      canGeocode: false,
+      routeDetail: t.statusLabels.deliveryDateReview,
+      statusDetail: t.statusDetails.verifyDeliveryDate,
+      statusLabel: t.statusLabels.deliveryDateReview,
+    };
+  }
+  if (order.deliveryDate === null) {
+    return {
+      canGeocode: false,
+      routeDetail: t.statusLabels.missingDeliveryDate,
+      statusDetail: t.statusDetails.enterDeliveryDate,
+      statusLabel: t.statusLabels.missingDeliveryDate,
     };
   }
   if (order.metadataResolved !== true) {
@@ -1585,6 +1673,7 @@ function mostSpecificBlockerLabel(order: CanonicalOrderDto, locale: string | nul
   const t = getOrdersCopy(locale);
   const blockers = new Set(order.blockerReasons);
   if (isAddressReviewRequired(order)) return t.statusLabels.addressReview;
+  if (isDeliveryDateReviewRequired(order)) return t.statusLabels.deliveryDateReview;
   if (blockers.has("missing_delivery_date") || order.deliveryDate === null)
     return t.statusLabels.missingDeliveryDate;
   if (blockers.has("missing_delivery_area")) return t.statusLabels.missingDeliveryArea;
@@ -2121,7 +2210,11 @@ function getOrderRepairFields(
     fields.push(editableMetadataField(key, editableFields));
   };
 
-  if (blockers.has("missing_delivery_date") || order.deliveryDate === null) {
+  if (
+    blockers.has("missing_delivery_date") ||
+    order.deliveryDate === null ||
+    isDeliveryDateReviewRequired(order)
+  ) {
     addField("deliveryDate");
   }
   if (blockers.has("missing_delivery_area") || !isPresent(order.deliveryArea)) {
@@ -2182,7 +2275,11 @@ function formatRepairCardTitle(
   ].filter(isPresent);
 
   if (categories.length > 1) return t.aggregate;
-  if (keys.has("deliveryDate")) return t.deliveryDate;
+  if (keys.has("deliveryDate")) {
+    return isDeliveryDateReviewRequired(order)
+      ? t.deliveryDateReview
+      : t.deliveryDate;
+  }
   if (keys.has("deliveryArea")) return t.deliveryArea;
   if (keys.has("serviceType") || keys.has("deliverySession")) {
     return t.routeScope;

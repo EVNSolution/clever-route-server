@@ -41,6 +41,7 @@ export type OrderWorksetUnavailableReason =
   | 'already_planned'
   | 'address_review'
   | 'completed_or_cancelled'
+  | 'delivery_date_review'
   | 'different_delivery_date'
   | 'different_route_scope'
   | 'missing_address'
@@ -70,6 +71,7 @@ export const ORDER_WORKSET_REASON_LABELS: Record<
   already_planned: 'Already planned',
   address_review: 'Address Review',
   completed_or_cancelled: 'Completed/cancelled',
+  delivery_date_review: 'Delivery date review',
   different_delivery_date: 'Different delivery date',
   different_route_scope: 'Different delivery session',
   missing_address: 'Missing address',
@@ -157,7 +159,11 @@ export function getOrderWorksetUnavailableReasons(
   const reasons = new Set<OrderWorksetUnavailableReason>();
   if (isCompletedOrCancelledOrder(order)) reasons.add('completed_or_cancelled');
   if (isPlannedOrder(order)) reasons.add('already_planned');
-  if (order.deliveryDate === null) reasons.add('missing_delivery_date');
+  if (isDeliveryDateReviewRequired(order)) {
+    reasons.add('delivery_date_review');
+  } else if (order.deliveryDate === null) {
+    reasons.add('missing_delivery_date');
+  }
   if (!hasRouteScope(order)) reasons.add('missing_route_scope');
   if (!hasResolvedCoordinates(order)) {
     reasons.add(readCoordinateUnavailableReason(order));
@@ -297,6 +303,10 @@ function isNeedsReviewOrder(order: CanonicalOrderDto): boolean {
 const BLOCKER_WORKSET_REASON_MAP: Partial<
   Record<string, OrderWorksetUnavailableReason>
 > = {
+  ambiguous_delivery_day: 'delivery_date_review',
+  delivery_date_weekday_mismatch: 'delivery_date_review',
+  delivery_date_weekday_unverified: 'delivery_date_review',
+  delivery_day_unparsed: 'delivery_date_review',
   missing_address: 'missing_address',
   missing_coordinates: 'missing_coordinates',
   missing_delivery_date: 'missing_delivery_date',
@@ -309,12 +319,16 @@ function hasUnrepresentedNeedsReviewReason(
 ): boolean {
   const hasSpecificMetadataReason =
     reasons.has('address_review') ||
+    reasons.has('delivery_date_review') ||
     reasons.has('missing_address') ||
     reasons.has('missing_coordinates') ||
     reasons.has('missing_delivery_date') ||
     reasons.has('missing_route_scope');
   const hasUnrepresentedBlocker = order.blockerReasons.some((blocker) => {
     if (blocker === 'missing_coordinates' && reasons.has('address_review')) {
+      return false;
+    }
+    if (blocker === 'missing_delivery_date' && reasons.has('delivery_date_review')) {
       return false;
     }
     const mappedReason = BLOCKER_WORKSET_REASON_MAP[blocker];
@@ -383,6 +397,19 @@ export function isAddressReviewRequired(order: CanonicalOrderDto): boolean {
     shape.includes('no_city_no_postal')
   );
 }
+
+export function isDeliveryDateReviewRequired(order: CanonicalOrderDto): boolean {
+  return order.blockerReasons.some((reason) =>
+    DELIVERY_DATE_REVIEW_REASONS.has(reason)
+  );
+}
+
+const DELIVERY_DATE_REVIEW_REASONS = new Set([
+  'ambiguous_delivery_day',
+  'delivery_date_weekday_mismatch',
+  'delivery_date_weekday_unverified',
+  'delivery_day_unparsed'
+]);
 
 function hasGeocodableAddress(order: CanonicalOrderDto): boolean {
   return [

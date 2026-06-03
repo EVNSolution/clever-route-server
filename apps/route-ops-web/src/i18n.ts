@@ -311,6 +311,7 @@ export const stateCopy = {
       already_planned: 'Already planned',
       address_review: 'Address Review',
       completed_or_cancelled: 'Completed/cancelled',
+      delivery_date_review: 'Delivery date review',
       different_delivery_date: 'Different delivery date',
       different_route_scope: 'Different delivery session',
       missing_address: 'Missing address',
@@ -334,6 +335,7 @@ export const stateCopy = {
       already_planned: '이미 배정됨',
       address_review: '주소 확인',
       completed_or_cancelled: '완료/취소됨',
+      delivery_date_review: '배송 날짜 확인',
       different_delivery_date: '배송 날짜 다름',
       different_route_scope: '배송 세션 다름',
       missing_address: '주소 누락',
@@ -468,6 +470,7 @@ export const ordersCopy = {
       aggregate: 'Fix required order details',
       addressReview: 'Verify destination address',
       deliveryDate: 'Delivery date required',
+      deliveryDateReview: 'Verify delivery date',
       deliveryArea: 'Delivery area required',
       routeScope: 'Route scope required',
       timeWindow: 'Time window needs review',
@@ -507,6 +510,7 @@ export const ordersCopy = {
     statusLabels: {
       planned: 'Planned',
       addressReview: 'Address Review',
+      deliveryDateReview: 'Delivery date review',
       missingDeliveryDate: 'Missing delivery date',
       missingDeliveryArea: 'Missing delivery area',
       missingRouteScope: 'Missing route scope',
@@ -526,8 +530,22 @@ export const ordersCopy = {
     statusDetails: {
       useBulkGeocode: 'use bulk geocode',
       verifyAddress: 'Verify address',
+      verifyDeliveryDate: 'Verify delivery date',
+      enterDeliveryDate: 'Enter delivery date',
       enterAddressOrCoordinates: 'Enter address or coordinates',
       reviewRouteConstraints: 'Review route constraints'
+    },
+    statusMeanings: {
+      addressReview: 'Warning meaning: Bulk geocode already tried the available address combinations but no reliable coordinate was found. Verify or correct the destination address manually.',
+      deliveryDateReview: 'Warning meaning: A delivery date hint exists, but CLEVER could not safely parse or verify it. Review the order metadata and choose the route date.',
+      deliveryDayUnclear: 'Warning meaning: Delivery day metadata exists, but it is ambiguous or does not match the resolved date. Review the date before route planning.',
+      deliveryTimeUnclear: 'Warning meaning: Delivery time metadata exists, but the delivery window is ambiguous or unparsed. Review the time window before route planning.',
+      metadataReview: 'Warning meaning: Required delivery metadata is incomplete or inconsistent. Open Detail and fix the highlighted fields.',
+      missingAddress: 'Warning meaning: The destination address is missing or incomplete. Enter enough address detail before geocoding.',
+      missingCoordinates: 'Warning meaning: The address has not been converted to map coordinates yet. Use Bulk geocode while the row is still eligible for automatic geocoding.',
+      missingDeliveryDate: 'Warning meaning: No delivery date value was found. Enter the route date manually.',
+      missingDeliveryRouteScope: 'Warning meaning: Delivery service/session metadata is missing, so CLEVER cannot choose the route scope.',
+      notRouteEligible: 'Warning meaning: The order still has route-planning blockers. Review the order constraints before adding it to a route.'
     },
     geocodeMessages: {
       blankAddress: 'Address is missing or incomplete',
@@ -658,6 +676,7 @@ export const ordersCopy = {
       aggregate: '필수 주문 정보 수정',
       addressReview: '배송지 주소 확인',
       deliveryDate: '배송 날짜 필요',
+      deliveryDateReview: '배송 날짜 확인',
       deliveryArea: '배송 지역 필요',
       routeScope: '경로 범위 필요',
       timeWindow: '시간대 확인 필요',
@@ -697,6 +716,7 @@ export const ordersCopy = {
     statusLabels: {
       planned: '배정됨',
       addressReview: '주소 확인',
+      deliveryDateReview: '배송 날짜 확인',
       missingDeliveryDate: '배송 날짜 누락',
       missingDeliveryArea: '배송 지역 누락',
       missingRouteScope: '경로 범위 누락',
@@ -716,8 +736,22 @@ export const ordersCopy = {
     statusDetails: {
       useBulkGeocode: '일괄 좌표 변환 사용',
       verifyAddress: '주소 확인',
+      verifyDeliveryDate: '배송 날짜 확인',
+      enterDeliveryDate: '배송 날짜 입력',
       enterAddressOrCoordinates: '주소 또는 좌표 입력',
       reviewRouteConstraints: '경로 조건 확인 필요'
+    },
+    statusMeanings: {
+      addressReview: '경고 의미: 일괄 좌표 변환이 가능한 주소 조합을 이미 시도했지만 신뢰 가능한 좌표를 찾지 못했습니다. 배송지 주소를 수동으로 확인하거나 수정하세요.',
+      deliveryDateReview: '경고 의미: 배송 날짜 단서는 있지만 CLEVER가 안전하게 파싱하거나 검증하지 못했습니다. 주문 메타데이터를 확인하고 경로 날짜를 선택하세요.',
+      deliveryDayUnclear: '경고 의미: 배송 요일 메타데이터는 있지만 모호하거나 확정된 날짜와 맞지 않습니다. 경로 계획 전에 날짜를 확인하세요.',
+      deliveryTimeUnclear: '경고 의미: 배송 시간 메타데이터는 있지만 시간대가 모호하거나 파싱되지 않았습니다. 경로 계획 전에 시간대를 확인하세요.',
+      metadataReview: '경고 의미: 필요한 배송 메타데이터가 비어 있거나 일관되지 않습니다. Detail을 열고 강조된 필드를 수정하세요.',
+      missingAddress: '경고 의미: 배송지 주소가 없거나 불완전합니다. 좌표 변환 전에 충분한 주소 정보를 입력하세요.',
+      missingCoordinates: '경고 의미: 주소가 아직 지도 좌표로 변환되지 않았습니다. 자동 좌표 변환 대상인 동안 Bulk geocode를 사용하세요.',
+      missingDeliveryDate: '경고 의미: 배송 날짜 값이 없습니다. 경로 날짜를 수동으로 입력하세요.',
+      missingDeliveryRouteScope: '경고 의미: 배송 서비스/세션 메타데이터가 없어 CLEVER가 경로 범위를 선택할 수 없습니다.',
+      notRouteEligible: '경고 의미: 경로 계획 차단 사유가 아직 남아 있습니다. 경로에 추가하기 전에 주문 조건을 확인하세요.'
     },
     geocodeMessages: {
       blankAddress: '주소가 없거나 불완전합니다',
