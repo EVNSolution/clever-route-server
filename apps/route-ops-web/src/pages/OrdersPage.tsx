@@ -7,8 +7,10 @@ import {
   getBulkGeocodeJob,
   getOrderMetadataDiagnostics,
   getOrders,
+  getWooOrderSyncRun,
   getSettings,
   patchOrderMetadata,
+  requestWooOrderSync,
 } from "../api";
 import { Badge } from "../components/primitives";
 import {
@@ -39,6 +41,7 @@ import type {
   CanonicalOrderDto,
   DeliveryMetadataDiagnosticsDto,
   StoreSettingsDto,
+  WooSyncRunDto,
 } from "../types";
 import {
   activeRouteScopeValues,
@@ -187,6 +190,8 @@ export function OrdersPage({
     null,
   );
   const [bulkGeocoding, setBulkGeocoding] = useState(false);
+  const [wooSyncStatus, setWooSyncStatus] = useState<string | null>(null);
+  const [wooSyncing, setWooSyncing] = useState(false);
   const locale = resolveLocale(settings?.locale ?? bootstrap.locale);
   const t = getOrdersCopy(locale);
   const pendingScrollRestoreRef = useRef<{
@@ -395,6 +400,36 @@ export function OrdersPage({
     }
   };
 
+  const syncWooOrders = async (): Promise<void> => {
+    setWooSyncing(true);
+    setWooSyncStatus(null);
+    try {
+      const accepted = await requestWooOrderSync({
+        csrfToken: bootstrap.csrfToken,
+        pageSize: 100,
+      });
+      let syncRun = accepted.syncRun;
+      setWooSyncStatus(formatWooSyncStatus(syncRun, locale));
+      for (
+        let attempt = 0;
+        attempt < 90 && !isWooSyncTerminal(syncRun);
+        attempt += 1
+      ) {
+        await sleep(1_000);
+        const payload = await getWooOrderSyncRun(syncRun.syncRunId);
+        if (payload.syncRun === null) break;
+        syncRun = payload.syncRun;
+        setWooSyncStatus(formatWooSyncStatus(syncRun, locale));
+      }
+      await refreshOrders();
+      setError(null);
+    } catch (error) {
+      setError(readErrorMessage(error));
+    } finally {
+      setWooSyncing(false);
+    }
+  };
+
   const applyPlanDateLock = (deliveryDate: string): void => {
     setRouteDate(deliveryDate);
     setRouteName((current) =>
@@ -583,6 +618,7 @@ export function OrdersPage({
             onBulkGeocode={() => void bulkGeocodeCurrentView()}
             onCloseDetail={closeOrderDetail}
             onSaveMetadata={saveOrderMetadata}
+            onWooSync={() => void syncWooOrders()}
             onToggleDetail={toggleOrderDetail}
             onTogglePlanOrder={togglePlanOrder}
             orders={visibleOrders}
@@ -592,6 +628,8 @@ export function OrdersPage({
             setSelected={applyPlanSelection}
             settings={settings}
             worksetContext={worksetContext}
+            wooSyncing={wooSyncing}
+            wooSyncStatus={wooSyncStatus}
           />
         </>
       }
@@ -857,6 +895,33 @@ function isBulkGeocodeTerminal(job: BulkGeocodeJobDto): boolean {
   return job.status === "completed" || job.status === "failed";
 }
 
+function formatWooSyncStatus(run: WooSyncRunDto, locale: string | null | undefined = 'en-CA'): string {
+  const t = getOrdersCopy(locale).wooSyncStatus;
+  const statusLabel =
+    run.status === "QUEUED"
+      ? t.queued
+      : run.status === "RUNNING"
+        ? t.running
+        : run.status === "SUCCEEDED"
+          ? t.succeeded
+          : t.failed;
+  if (run.result === null) {
+    return `${getOrdersCopy(locale).wooSync}: ${statusLabel}`;
+  }
+  const sync = run.result.sync;
+  return t.summary(statusLabel, {
+    created: sync.created,
+    needsReview: sync.needsReview,
+    readyToPlan: sync.readyToPlan,
+    received: sync.received,
+    updated: sync.updated,
+  });
+}
+
+function isWooSyncTerminal(run: WooSyncRunDto): boolean {
+  return run.status === "FAILED" || run.status === "SUCCEEDED";
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
@@ -880,12 +945,15 @@ export function OrderTable(input: {
   onSaveMetadata?(orderId: string, patch: OrderMetadataPatch): Promise<void>;
   onToggleDetail?(orderId: string): void;
   onTogglePlanOrder(orderId: string): void;
+  onWooSync?(): void;
   orders: CanonicalOrderDto[];
   refreshing?: boolean;
   selected: Set<string>;
   setSelected(selected: Set<string>): void;
   settings?: StoreSettingsDto | null;
   worksetContext?: OrderWorksetContext;
+  wooSyncing?: boolean;
+  wooSyncStatus?: string | null;
 }): ReactElement {
   const t = getOrdersCopy(input.locale);
   const worksetContext = input.worksetContext ?? {};
@@ -943,6 +1011,13 @@ export function OrderTable(input: {
             </span>
           ) : null}
           <button
+            disabled={input.wooSyncing === true}
+            onClick={() => input.onWooSync?.()}
+            type="button"
+          >
+            {input.wooSyncing === true ? t.wooSyncing : t.wooSync}
+          </button>
+          <button
             disabled={input.bulkGeocoding === true}
             onClick={() => input.onBulkGeocode?.()}
             type="button"
@@ -960,6 +1035,11 @@ export function OrderTable(input: {
       input.bulkGeocodeStatus === null ? null : (
         <p className="orders-bulk-status" role="status">
           {input.bulkGeocodeStatus}
+        </p>
+      )}
+      {input.wooSyncStatus === undefined || input.wooSyncStatus === null ? null : (
+        <p className="orders-bulk-status" role="status">
+          {input.wooSyncStatus}
         </p>
       )}
       <div

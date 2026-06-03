@@ -1595,6 +1595,115 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
+  test("lets Route Ops admin sessions trigger the stored WooCommerce REST sync", async () => {
+    const queuedSyncRun = {
+      acceptedAt: "2026-05-24T00:00:00.000Z",
+      completedAt: null,
+      errorMessage: null,
+      request: {
+        modifiedAfter: null,
+        pageSize: 50,
+        status: null,
+      },
+      result: null,
+      startedAt: null,
+      status: "QUEUED" as const,
+      syncRunId: "22222222-2222-4222-8222-222222222222",
+    };
+    const requestSync = vi.fn(() =>
+      Promise.resolve({
+        alreadyRunning: false,
+        message: "Sync accepted. Processing is running in the background.",
+        startBackgroundProcessing: true,
+        syncRun: queuedSyncRun,
+      }),
+    );
+    const processSyncRun = vi.fn(() =>
+      Promise.resolve({
+        ...queuedSyncRun,
+        completedAt: "2026-05-24T00:00:02.000Z",
+        result: {
+          geocode: { failed: 0, notRequired: 0, pending: 0, resolved: 0 },
+          pagesRead: 2,
+          sync: {
+            created: 3,
+            needsReview: 1,
+            readyToPlan: 2,
+            received: 3,
+            skipped: 0,
+            unchanged: 0,
+            updated: 0,
+          },
+          warnings: ["1 synced orders need delivery metadata review before routing."],
+        },
+        startedAt: "2026-05-24T00:00:01.000Z",
+        status: "SUCCEEDED" as const,
+      }),
+    );
+    const readLatestSyncRun = vi.fn(() => Promise.resolve(queuedSyncRun));
+    const readSyncRun = vi.fn(() => Promise.resolve(queuedSyncRun));
+    const { app } = await createUiHarness({
+      wooSyncService: {
+        processSyncRun,
+        readLatestSyncRun,
+        readSyncRun,
+        requestSync,
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/orders/sync?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, { pageSize: 50 }, csrfToken),
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(response.body).not.toContain("startBackgroundProcessing");
+      expect(
+        readApiData<{
+          alreadyRunning: boolean;
+          message: string;
+          syncRun: { status: string; syncRunId: string };
+        }>(response),
+      ).toEqual({
+        alreadyRunning: false,
+        message: "Sync accepted. Processing is running in the background.",
+        syncRun: {
+          ...queuedSyncRun,
+        },
+      });
+      expect(requestSync).toHaveBeenCalledWith({
+        payload: {
+          modifiedAfter: null,
+          pageSize: 50,
+          status: null,
+        },
+        shopDomain: "tenant-a.example.test",
+      });
+      expect(processSyncRun).toHaveBeenCalledWith({
+        shopDomain: "tenant-a.example.test",
+        syncRunId: queuedSyncRun.syncRunId,
+      });
+
+      const latest = await app.inject({
+        headers: { cookie, accept: "application/json" },
+        method: "GET",
+        url: "/admin/ui/app/api/orders/sync/latest?shopDomain=tenant-a.example.test",
+      });
+      expect(latest.statusCode).toBe(200);
+      expect(readApiData<{ syncRun: { syncRunId: string } }>(latest)).toEqual({
+        syncRun: queuedSyncRun,
+      });
+      expect(readLatestSyncRun).toHaveBeenCalledWith({
+        shopDomain: "tenant-a.example.test",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test("persists Route Ops route-scope settings through the Settings API", async () => {
     const baseConfig = defaultRouteScopeConfig();
     const routeScopeConfig = {
@@ -4610,6 +4719,7 @@ async function createUiHarness(
     settingsService: AdminCommerceConnectionsUiDependencies["settingsService"];
     testConnection: ReturnType<typeof vi.fn>;
     updateStatus: ReturnType<typeof vi.fn>;
+    wooSyncService: AdminCommerceConnectionsUiDependencies["wooSyncService"];
     now: () => Date;
   }> = {},
   options: {
@@ -4692,6 +4802,9 @@ async function createUiHarness(
     ...(overrides.settingsService === undefined
       ? {}
       : { settingsService: overrides.settingsService }),
+    ...(overrides.wooSyncService === undefined
+      ? {}
+      : { wooSyncService: overrides.wooSyncService }),
     secureCookies: false,
     sessionSecret: webSessionSecret,
   };

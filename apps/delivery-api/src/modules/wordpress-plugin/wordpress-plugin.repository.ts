@@ -278,6 +278,8 @@ export class PrismaWordPressPluginRepository implements WordPressPluginAuthRepos
     acceptedAt: Date;
     context: WordPressPluginConnectionContext;
     request: WordPressPluginSyncRunRequest;
+    source?: string;
+    trigger?: string;
   }): Promise<{ alreadyRunning: boolean; run: WordPressPluginSyncRun; startBackgroundProcessing: boolean }> {
     await this.failStaleRunningSyncRuns({ context: input.context, now: input.acceptedAt });
     const active = await this.findActiveSyncRun(input.context);
@@ -293,9 +295,9 @@ export class PrismaWordPressPluginRepository implements WordPressPluginAuthRepos
           platform: 'WOOCOMMERCE',
           requestPayload: input.request,
           shopId: input.context.shopId,
-          source: 'wordpress_plugin',
+          source: input.source ?? 'wordpress_plugin',
           status: 'QUEUED',
-          trigger: 'manual_rest_backfill',
+          trigger: input.trigger ?? 'manual_rest_backfill',
           updatedAt: input.acceptedAt,
           warnings: []
         },
