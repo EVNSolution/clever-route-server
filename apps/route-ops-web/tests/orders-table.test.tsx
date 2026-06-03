@@ -200,6 +200,47 @@ describe("Orders compact operations table", () => {
     );
   });
 
+  test("shows exhausted bulk failures as address review instead of bulk geocode guidance", () => {
+    const addressReview = orderFixture({
+      blockerReasons: ["missing_coordinates"],
+      coordinates: { latitude: null, longitude: null },
+      geocodeDiagnostics: exhaustedBulkNoResultDiagnostic(),
+      geocodeStatus: "FAILED",
+      metadataResolved: false,
+      orderId: "address-review",
+      routeEligible: false,
+      shippingAddress: {
+        address1: "23 Apple Orchard Path",
+        address2: null,
+        city: "Thornhill",
+        countryCode: "CA",
+        postalCode: "L3T 3B5",
+        province: "ON",
+      },
+    });
+    const html = renderOrderTable([addressReview], {
+      expandedOrderIds: new Set(["address-review"]),
+    });
+
+    expect(html).toContain("Address Review");
+    expect(html).toContain("Verify address");
+    expect(html).toContain("Verify destination address");
+    expect(html).toContain('name="address1"');
+    expect(html).not.toContain("use bulk geocode");
+    expect(html).not.toContain("Use Bulk geocode from the order list.");
+    expect(getRouteRepairPrompt(addressReview)).toEqual({
+      canGeocode: false,
+      routeDetail: "Address Review",
+      statusDetail: "Verify address",
+      statusLabel: "Address Review",
+    });
+    expect(formatOperationalStatus(addressReview)).toEqual({
+      detail: "Verify address",
+      label: "Address Review",
+      toneClass: "order-pill--review",
+    });
+  });
+
   test("maps operational status blockers with deterministic user-facing labels", () => {
     expect(
       formatOperationalStatus(
@@ -909,6 +950,29 @@ function orderFixture(
     timeWindowEnd: "21:00",
     timeWindowStart: "17:00",
     ...overrides,
+  };
+}
+
+function exhaustedBulkNoResultDiagnostic(): NonNullable<CanonicalOrderDto["geocodeDiagnostics"]> {
+  return {
+    attemptCount: 8,
+    code: "GEOCODER_NO_RESULT",
+    messageKey: "GEOCODER_NO_RESULT",
+    ok: false,
+    provider: null,
+    queryShapes: [
+      "structured_without_unit",
+      "freeform",
+      "structured_without_unit_no_city",
+      "freeform_no_city",
+      "structured_without_unit_no_postal",
+      "freeform_no_postal",
+      "structured_without_unit_no_city_no_postal",
+      "freeform_no_city_no_postal",
+    ],
+    source: "bulk_geocode",
+    transient: false,
+    updatedAt: "2026-06-03T11:17:01.859Z",
   };
 }
 

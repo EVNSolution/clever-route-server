@@ -39,6 +39,7 @@ export type OrderWorksetContext = {
 
 export type OrderWorksetUnavailableReason =
   | 'already_planned'
+  | 'address_review'
   | 'completed_or_cancelled'
   | 'different_delivery_date'
   | 'different_route_scope'
@@ -67,6 +68,7 @@ export const ORDER_WORKSET_REASON_LABELS: Record<
   string
 > = {
   already_planned: 'Already planned',
+  address_review: 'Address Review',
   completed_or_cancelled: 'Completed/cancelled',
   different_delivery_date: 'Different delivery date',
   different_route_scope: 'Different delivery session',
@@ -157,10 +159,9 @@ export function getOrderWorksetUnavailableReasons(
   if (isPlannedOrder(order)) reasons.add('already_planned');
   if (order.deliveryDate === null) reasons.add('missing_delivery_date');
   if (!hasRouteScope(order)) reasons.add('missing_route_scope');
-  if (!hasResolvedCoordinates(order))
-    reasons.add(
-      hasGeocodableAddress(order) ? 'missing_coordinates' : 'missing_address'
-    );
+  if (!hasResolvedCoordinates(order)) {
+    reasons.add(readCoordinateUnavailableReason(order));
+  }
   if (hasUnrepresentedNeedsReviewReason(order, reasons)) {
     reasons.add('needs_review');
   }
@@ -307,11 +308,15 @@ function hasUnrepresentedNeedsReviewReason(
   reasons: ReadonlySet<OrderWorksetUnavailableReason>
 ): boolean {
   const hasSpecificMetadataReason =
+    reasons.has('address_review') ||
     reasons.has('missing_address') ||
     reasons.has('missing_coordinates') ||
     reasons.has('missing_delivery_date') ||
     reasons.has('missing_route_scope');
   const hasUnrepresentedBlocker = order.blockerReasons.some((blocker) => {
+    if (blocker === 'missing_coordinates' && reasons.has('address_review')) {
+      return false;
+    }
     const mappedReason = BLOCKER_WORKSET_REASON_MAP[blocker];
     return mappedReason === undefined || !reasons.has(mappedReason);
   });
@@ -355,6 +360,27 @@ function hasResolvedCoordinates(order: CanonicalOrderDto): boolean {
     Number.isFinite(order.coordinates.latitude) &&
     typeof order.coordinates.longitude === 'number' &&
     Number.isFinite(order.coordinates.longitude)
+  );
+}
+
+function readCoordinateUnavailableReason(
+  order: CanonicalOrderDto
+): OrderWorksetUnavailableReason {
+  if (!hasGeocodableAddress(order)) return 'missing_address';
+  return isAddressReviewRequired(order) ? 'address_review' : 'missing_coordinates';
+}
+
+export function isAddressReviewRequired(order: CanonicalOrderDto): boolean {
+  if (hasResolvedCoordinates(order)) return false;
+  if (!hasGeocodableAddress(order)) return false;
+  if (order.geocodeStatus !== 'FAILED') return false;
+  const diagnostics = order.geocodeDiagnostics;
+  if (diagnostics === undefined || diagnostics === null) return false;
+  const code = diagnostics.code ?? diagnostics.messageKey;
+  if (code !== 'GEOCODER_NO_RESULT') return false;
+  if (diagnostics.source !== 'bulk_geocode') return false;
+  return diagnostics.queryShapes.some((shape) =>
+    shape.includes('no_city_no_postal')
   );
 }
 

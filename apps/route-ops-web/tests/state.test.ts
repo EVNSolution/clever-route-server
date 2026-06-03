@@ -12,6 +12,7 @@ import {
   getOrderWorksetUnavailableReasons,
   hasStopSequenceChanged,
   hideSetupActions,
+  isAddressReviewRequired,
   mapReadiness,
   matchesOrderTab,
   matchesPlanningScope,
@@ -86,6 +87,55 @@ describe('route ops web state helpers', () => {
     expect(koreanSummary.reasonLabels.join(' ')).toContain('이미 배정됨');
     expect(koreanSummary.reasonLabels.join(' ')).toContain('배송 날짜 누락');
     expect(koreanSummary.reasonLabels.join(' ')).toContain('기타 메타데이터 검토');
+  });
+
+  test('separates exhausted bulk geocode failures as address review', () => {
+    const addressReview = order({
+      blockerReasons: ['missing_coordinates'],
+      coordinates: { latitude: null, longitude: null },
+      geocodeDiagnostics: exhaustedBulkNoResultDiagnostic(),
+      geocodeStatus: 'FAILED',
+      metadataResolved: false,
+      orderId: 'address-review',
+      routeEligible: false,
+      shippingAddress: {
+        address1: '23 Apple Orchard Path',
+        address2: null,
+        city: 'Thornhill',
+        countryCode: 'CA',
+        postalCode: 'L3T 3B5',
+        province: 'ON'
+      }
+    });
+
+    expect(isAddressReviewRequired(addressReview)).toBe(true);
+    expect(
+      getOrderWorksetUnavailableReasons(addressReview).map((reason) => reason.code)
+    ).toEqual(['address_review']);
+    const summary = summarizeOrderWorkset([addressReview], new Set());
+    expect(summary.reasonLabels).toEqual(['Address Review 1']);
+    expect(summary.reasonsByCode.address_review).toBe(1);
+
+    const pendingCoordinates = order({
+      blockerReasons: ['missing_coordinates'],
+      coordinates: { latitude: null, longitude: null },
+      geocodeStatus: 'PENDING',
+      metadataResolved: false,
+      orderId: 'pending-coordinates',
+      routeEligible: false,
+      shippingAddress: {
+        address1: '298 Buttonbush St',
+        address2: null,
+        city: 'Waterloo',
+        countryCode: 'CA',
+        postalCode: 'N2V 0B2',
+        province: 'ON'
+      }
+    });
+    expect(isAddressReviewRequired(pendingCoordinates)).toBe(false);
+    expect(
+      getOrderWorksetUnavailableReasons(pendingCoordinates).map((reason) => reason.code)
+    ).toEqual(['missing_coordinates']);
   });
 
 
@@ -231,6 +281,29 @@ function order(overrides: Partial<CanonicalOrderDto> = {}): CanonicalOrderDto {
     timeWindowEnd: null,
     timeWindowStart: null,
     ...overrides
+  };
+}
+
+function exhaustedBulkNoResultDiagnostic(): NonNullable<CanonicalOrderDto['geocodeDiagnostics']> {
+  return {
+    attemptCount: 8,
+    code: 'GEOCODER_NO_RESULT',
+    messageKey: 'GEOCODER_NO_RESULT',
+    ok: false,
+    provider: null,
+    queryShapes: [
+      'structured_without_unit',
+      'freeform',
+      'structured_without_unit_no_city',
+      'freeform_no_city',
+      'structured_without_unit_no_postal',
+      'freeform_no_postal',
+      'structured_without_unit_no_city_no_postal',
+      'freeform_no_city_no_postal'
+    ],
+    source: 'bulk_geocode',
+    transient: false,
+    updatedAt: '2026-06-03T11:17:01.859Z'
   };
 }
 
