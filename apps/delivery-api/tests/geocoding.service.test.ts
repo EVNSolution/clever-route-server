@@ -161,15 +161,61 @@ describe('Route Ops geocoding', () => {
         'structured',
         'freeform_without_unit',
         'freeform',
+        'structured_without_unit_no_city',
+        'structured_no_city',
+        'freeform_without_unit_no_city',
+        'freeform_no_city',
         'structured_without_unit_no_postal'
       ]
     }));
-    const fifthCall = provider.geocodeAddress.mock.calls[4]?.[0];
-    expect(fifthCall).toEqual(expect.objectContaining({ shape: 'structured_without_unit_no_postal' }));
-    if (fifthCall === undefined || fifthCall.kind !== 'structured') {
-      throw new Error('expected the fifth geocoding attempt to be structured');
+    const ninthCall = provider.geocodeAddress.mock.calls[8]?.[0];
+    expect(ninthCall).toEqual(expect.objectContaining({ shape: 'structured_without_unit_no_postal' }));
+    if (ninthCall === undefined || ninthCall.kind !== 'structured') {
+      throw new Error('expected the ninth geocoding attempt to be structured');
     }
-    expect(fifthCall.params.postalcode).toBeUndefined();
+    expect(ninthCall.params.postalcode).toBeUndefined();
+  });
+
+  test('falls back without city when source city is localized or not the provider municipality', async () => {
+    const provider = {
+      geocodeAddress: vi.fn((query: GeocodingQuery) => {
+        if (query.shape !== 'structured_without_unit_no_city') return Promise.resolve(null);
+        return Promise.resolve({
+          addressLabel: query.shape,
+          latitude: 43.4519214,
+          longitude: -80.5892288,
+          provider: 'mock',
+          providerPlaceId: 'place-11977',
+          rawLabel: '298 Buttonbush Street, Waterloo, Ontario, Canada'
+        });
+      }),
+      providerName: 'mock'
+    };
+    const service = new GeocodingService({ minIntervalMs: 0, mode: 'nominatim_compatible', provider });
+
+    const result = await service.geocode({
+      address: {
+        address1: '298 Buttonbush St',
+        address2: null,
+        city: '워털루',
+        countryCode: 'CA',
+        postalCode: 'N2V 0B2',
+        province: 'ON'
+      },
+      shopDomain: 'tomatonofood.com'
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      queryShapes: ['structured_without_unit', 'freeform', 'structured_without_unit_no_city']
+    }));
+    const thirdCall = provider.geocodeAddress.mock.calls[2]?.[0];
+    expect(thirdCall).toEqual(expect.objectContaining({ shape: 'structured_without_unit_no_city' }));
+    if (thirdCall === undefined || thirdCall.kind !== 'structured') {
+      throw new Error('expected the third geocoding attempt to be structured');
+    }
+    expect(thirdCall.params.city).toBeUndefined();
+    expect(thirdCall.params.postalcode).toBe('N2V 0B2');
   });
 
   test('public Nominatim mode requires user agent and durable cache signal', async () => {
