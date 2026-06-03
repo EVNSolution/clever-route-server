@@ -247,7 +247,25 @@ export function buildGeocodingQueries(address: GeocodingAddress): GeocodingQuery
     address.address2 === null || address.address2.trim() === ''
       ? null
       : buildStructuredQuery(address, 'structured');
+  const hasCity = clean(address.city) !== null;
   const hasPostalCode = clean(address.postalCode) !== null;
+
+  const withoutCityAddress: GeocodingAddress = { ...address, city: null };
+  const withoutUnitAndCityAddress: GeocodingAddress = {
+    ...address,
+    address2: null,
+    city: null,
+  };
+  const withoutUnitAndCity = normalizeAddress(withoutUnitAndCityAddress);
+  const fullWithoutCity = normalizeAddress(withoutCityAddress);
+  const structuredWithoutUnitNoCity = hasCity
+    ? buildStructuredQuery(withoutUnitAndCityAddress, 'structured_without_unit_no_city')
+    : null;
+  const structuredFullNoCity =
+    hasCity && address.address2 !== null && address.address2.trim() !== ''
+      ? buildStructuredQuery(withoutCityAddress, 'structured_no_city')
+      : null;
+
   const withoutPostalAddress: GeocodingAddress = { ...address, postalCode: null };
   const withoutUnitAndPostalAddress: GeocodingAddress = {
     ...address,
@@ -264,11 +282,44 @@ export function buildGeocodingQueries(address: GeocodingAddress): GeocodingQuery
       ? buildStructuredQuery(withoutPostalAddress, 'structured_no_postal')
       : null;
 
+  const withoutCityAndPostalAddress: GeocodingAddress = {
+    ...address,
+    city: null,
+    postalCode: null,
+  };
+  const withoutUnitCityAndPostalAddress: GeocodingAddress = {
+    ...address,
+    address2: null,
+    city: null,
+    postalCode: null,
+  };
+  const withoutUnitCityAndPostal = normalizeAddress(withoutUnitCityAndPostalAddress);
+  const fullWithoutCityAndPostal = normalizeAddress(withoutCityAndPostalAddress);
+  const shouldTryNoCityNoPostal = hasCity && hasPostalCode;
+  const structuredWithoutUnitNoCityNoPostal = shouldTryNoCityNoPostal
+    ? buildStructuredQuery(
+        withoutUnitCityAndPostalAddress,
+        'structured_without_unit_no_city_no_postal',
+      )
+    : null;
+  const structuredFullNoCityNoPostal =
+    shouldTryNoCityNoPostal && address.address2 !== null && address.address2.trim() !== ''
+      ? buildStructuredQuery(withoutCityAndPostalAddress, 'structured_no_city_no_postal')
+      : null;
+
   return uniqueGeocodingQueries([
     structuredWithoutUnit,
     structuredFull,
     withoutUnit === null ? null : buildFreeformQuery(withoutUnit, 'freeform_without_unit'),
     full === null ? null : buildFreeformQuery(full, 'freeform'),
+    structuredWithoutUnitNoCity,
+    structuredFullNoCity,
+    hasCity && withoutUnitAndCity !== null
+      ? buildFreeformQuery(withoutUnitAndCity, 'freeform_without_unit_no_city')
+      : null,
+    hasCity && fullWithoutCity !== null
+      ? buildFreeformQuery(fullWithoutCity, 'freeform_no_city')
+      : null,
     structuredWithoutUnitNoPostal,
     structuredFullNoPostal,
     hasPostalCode && withoutUnitAndPostal !== null
@@ -276,6 +327,14 @@ export function buildGeocodingQueries(address: GeocodingAddress): GeocodingQuery
       : null,
     hasPostalCode && fullWithoutPostal !== null
       ? buildFreeformQuery(fullWithoutPostal, 'freeform_no_postal')
+      : null,
+    structuredWithoutUnitNoCityNoPostal,
+    structuredFullNoCityNoPostal,
+    shouldTryNoCityNoPostal && withoutUnitCityAndPostal !== null
+      ? buildFreeformQuery(withoutUnitCityAndPostal, 'freeform_without_unit_no_city_no_postal')
+      : null,
+    shouldTryNoCityNoPostal && fullWithoutCityAndPostal !== null
+      ? buildFreeformQuery(fullWithoutCityAndPostal, 'freeform_no_city_no_postal')
       : null,
   ]);
 }
@@ -285,14 +344,18 @@ function buildStructuredQuery(
   shape: Extract<
     GeocodingQueryShape,
     | 'structured'
+    | 'structured_no_city'
+    | 'structured_no_city_no_postal'
     | 'structured_no_postal'
     | 'structured_without_unit'
+    | 'structured_without_unit_no_city'
+    | 'structured_without_unit_no_city_no_postal'
     | 'structured_without_unit_no_postal'
   >,
 ): GeocodingQuery | null {
   const street = normalizeAddressParts([
     address.address1,
-    shape === 'structured' || shape === 'structured_no_postal' ? address.address2 : null
+    keepsUnitInStructuredShape(shape) ? address.address2 : null
   ]);
   const city = clean(address.city);
   const state = clean(address.province);
@@ -323,7 +386,14 @@ function buildFreeformQuery(
   q: string,
   shape: Extract<
     GeocodingQueryShape,
-    'freeform' | 'freeform_no_postal' | 'freeform_without_unit' | 'freeform_without_unit_no_postal'
+    | 'freeform'
+    | 'freeform_no_city'
+    | 'freeform_no_city_no_postal'
+    | 'freeform_no_postal'
+    | 'freeform_without_unit'
+    | 'freeform_without_unit_no_city'
+    | 'freeform_without_unit_no_city_no_postal'
+    | 'freeform_without_unit_no_postal'
   >,
 ): GeocodingQuery {
   return {
@@ -332,6 +402,15 @@ function buildFreeformQuery(
     q,
     shape,
   };
+}
+
+function keepsUnitInStructuredShape(shape: GeocodingQuery['shape']): boolean {
+  return (
+    shape === 'structured' ||
+    shape === 'structured_no_city' ||
+    shape === 'structured_no_city_no_postal' ||
+    shape === 'structured_no_postal'
+  );
 }
 
 function addressParts(address: GeocodingAddress): Array<string | null> {

@@ -16,11 +16,19 @@ export type GeocodingLookupInput = {
 
 export type GeocodingQueryShape =
   | 'freeform'
+  | 'freeform_no_city'
+  | 'freeform_no_city_no_postal'
   | 'freeform_no_postal'
   | 'freeform_without_unit'
+  | 'freeform_without_unit_no_city'
+  | 'freeform_without_unit_no_city_no_postal'
   | 'freeform_without_unit_no_postal'
   | 'structured'
+  | 'structured_no_city'
+  | 'structured_no_city_no_postal'
   | 'structured_no_postal'
+  | 'structured_without_unit_no_city'
+  | 'structured_without_unit_no_city_no_postal'
   | 'structured_without_unit_no_postal'
   | 'structured_without_unit';
 
@@ -38,8 +46,12 @@ export type StructuredGeocodingQuery = {
   shape: Extract<
     GeocodingQueryShape,
     | 'structured'
+    | 'structured_no_city'
+    | 'structured_no_city_no_postal'
     | 'structured_no_postal'
     | 'structured_without_unit'
+    | 'structured_without_unit_no_city'
+    | 'structured_without_unit_no_city_no_postal'
     | 'structured_without_unit_no_postal'
   >;
 };
@@ -50,7 +62,14 @@ export type FreeformGeocodingQuery = {
   q: string;
   shape: Extract<
     GeocodingQueryShape,
-    'freeform' | 'freeform_no_postal' | 'freeform_without_unit' | 'freeform_without_unit_no_postal'
+    | 'freeform'
+    | 'freeform_no_city'
+    | 'freeform_no_city_no_postal'
+    | 'freeform_no_postal'
+    | 'freeform_without_unit'
+    | 'freeform_without_unit_no_city'
+    | 'freeform_without_unit_no_city_no_postal'
+    | 'freeform_without_unit_no_postal'
   >;
 };
 
