@@ -125,6 +125,53 @@ describe('Route Ops geocoding', () => {
     expect(provider.geocodeAddress).toHaveBeenNthCalledWith(3, expect.objectContaining({ shape: 'freeform_without_unit' }));
   });
 
+  test('falls back without postal code when street and postal data conflict', async () => {
+    const provider = {
+      geocodeAddress: vi.fn((query: GeocodingQuery) => {
+        if (query.shape !== 'structured_without_unit_no_postal') return Promise.resolve(null);
+        return Promise.resolve({
+          addressLabel: query.shape,
+          latitude: 43.662,
+          longitude: -79.3865,
+          provider: 'mock',
+          providerPlaceId: 'place-11985',
+          rawLabel: '832 Bay Street, Toronto, Ontario, M5S 3M4, Canada'
+        });
+      }),
+      providerName: 'mock'
+    };
+    const service = new GeocodingService({ minIntervalMs: 0, mode: 'nominatim_compatible', provider });
+
+    const result = await service.geocode({
+      address: {
+        address1: '832 Bay Street',
+        address2: '4902',
+        city: 'Toronto',
+        countryCode: 'CA',
+        postalCode: 'M5S 1Z6',
+        province: 'ON'
+      },
+      shopDomain: 'tomatonofood.com'
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      queryShapes: [
+        'structured_without_unit',
+        'structured',
+        'freeform_without_unit',
+        'freeform',
+        'structured_without_unit_no_postal'
+      ]
+    }));
+    const fifthCall = provider.geocodeAddress.mock.calls[4]?.[0];
+    expect(fifthCall).toEqual(expect.objectContaining({ shape: 'structured_without_unit_no_postal' }));
+    if (fifthCall === undefined || fifthCall.kind !== 'structured') {
+      throw new Error('expected the fifth geocoding attempt to be structured');
+    }
+    expect(fifthCall.params.postalcode).toBeUndefined();
+  });
+
   test('public Nominatim mode requires user agent and durable cache signal', async () => {
     const missingUserAgent = loadGeocodingService({ env: { GEOCODING_PROVIDER_MODE: 'nominatim_compatible' } });
     await expect(missingUserAgent.geocode({ address, shopDomain: 'example.test' })).resolves.toEqual(expect.objectContaining({

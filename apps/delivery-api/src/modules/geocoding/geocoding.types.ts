@@ -16,8 +16,12 @@ export type GeocodingLookupInput = {
 
 export type GeocodingQueryShape =
   | 'freeform'
+  | 'freeform_no_postal'
   | 'freeform_without_unit'
+  | 'freeform_without_unit_no_postal'
   | 'structured'
+  | 'structured_no_postal'
+  | 'structured_without_unit_no_postal'
   | 'structured_without_unit';
 
 export type StructuredGeocodingQuery = {
@@ -31,14 +35,23 @@ export type StructuredGeocodingQuery = {
     state?: string;
     street?: string;
   };
-  shape: Extract<GeocodingQueryShape, 'structured' | 'structured_without_unit'>;
+  shape: Extract<
+    GeocodingQueryShape,
+    | 'structured'
+    | 'structured_no_postal'
+    | 'structured_without_unit'
+    | 'structured_without_unit_no_postal'
+  >;
 };
 
 export type FreeformGeocodingQuery = {
   cacheKey: string;
   kind: 'freeform';
   q: string;
-  shape: Extract<GeocodingQueryShape, 'freeform' | 'freeform_without_unit'>;
+  shape: Extract<
+    GeocodingQueryShape,
+    'freeform' | 'freeform_no_postal' | 'freeform_without_unit' | 'freeform_without_unit_no_postal'
+  >;
 };
 
 export type GeocodingQuery = StructuredGeocodingQuery | FreeformGeocodingQuery;
