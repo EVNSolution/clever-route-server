@@ -22,6 +22,10 @@ const commerceSyncRunsMigrationPath = new URL(
   '../prisma/migrations/20260529011000_add_commerce_sync_runs/migration.sql',
   import.meta.url
 );
+const rawOrderIngestsMigrationPath = new URL(
+  '../prisma/migrations/20260603012000_add_commerce_raw_order_ingests/migration.sql',
+  import.meta.url
+);
 const routeScopeConfigMigrationPath = new URL(
   '../prisma/migrations/20260530004000_add_shop_route_scope_config/migration.sql',
   import.meta.url
@@ -61,6 +65,7 @@ describe('Prisma schema', () => {
       'CommerceConnection',
       'CommerceConnectionAuditLog',
       'CommerceSyncRun',
+      'CommerceRawOrderIngest',
       'WordPressPluginToken',
       'WordPressPluginPairingCode',
       'Order',
@@ -82,8 +87,10 @@ describe('Prisma schema', () => {
     expect(schema).toContain('enum CommerceSourcePlatform');
     expect(schema).toContain('enum CommerceConnectionStatus');
     expect(schema).toContain('enum CommerceSyncRunStatus');
+    expect(schema).toContain('enum CommerceRawOrderIngestStatus');
     expect(schema).toContain('commerceConnections');
     expect(schema).toContain('commerceSyncRuns');
+    expect(schema).toContain('commerceRawOrderIngests');
     expect(schema).toContain('consumerKeyCiphertext');
     expect(schema).toContain('consumerSecretCiphertext');
     expect(schema).toContain('webhookSecretCiphertext');
@@ -121,6 +128,10 @@ describe('Prisma schema', () => {
     expect(schema).toMatch(/@@index\(\[commerceConnectionId, status\]/);
     expect(schema).toMatch(/@@index\(\[commerceConnectionId, createdAt\]/);
     expect(schema).toMatch(/@@index\(\[commerceConnectionId, status, createdAt\]/);
+    expect(schema).toMatch(/@@unique\(\[commerceConnectionId, sourceOrderId, rawPayloadSha256\]/);
+    expect(schema).toMatch(/@@unique\(\[syncRunId, chunkId, sourceOrderId, rawPayloadSha256\]/);
+    expect(schema).toMatch(/@@index\(\[syncRunId, status, receivedAt\]/);
+    expect(schema).toMatch(/@@index\(\[commerceConnectionId, sourceOrderId, receivedAt\]/);
     expect(schema).toContain('requestPayload');
     expect(schema).toContain('geocodeResolved');
     expect(schema).toContain('geocodeFailed');
@@ -198,5 +209,18 @@ describe('Prisma schema', () => {
     expect(migration).toContain('"commerce_sync_runs_shopId_platform_createdAt_idx"');
     expect(migration).toContain('"commerce_sync_runs_one_active_per_connection_idx"');
     expect(migration).toContain('WHERE "status" IN (\'QUEUED\', \'RUNNING\')');
+  });
+
+  test('ships a migration for durable raw WooCommerce order ingest rows', async () => {
+    const migration = await readFile(rawOrderIngestsMigrationPath, 'utf8');
+
+    expect(migration).toContain('CREATE TYPE "CommerceRawOrderIngestStatus"');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "commerce_raw_order_ingests"');
+    expect(migration).toContain('"rawPayload" JSONB NOT NULL');
+    expect(migration).toContain('"rawPayloadSha256" TEXT NOT NULL');
+    expect(migration).toContain('"commerce_raw_order_ingests_connection_order_hash_key"');
+    expect(migration).toContain('"commerce_raw_order_ingests_run_chunk_order_hash_key"');
+    expect(migration).toContain('"commerce_raw_order_ingests_syncRunId_status_receivedAt_idx"');
+    expect(migration).toContain('"commerce_raw_order_ingests_connection_order_receivedAt_idx"');
   });
 });

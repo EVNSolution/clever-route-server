@@ -7,8 +7,10 @@ Private WordPress/WooCommerce admin plugin for CLEVER Route connection, sync sta
 This plugin is a **WP Admin connector console**, not a route operations app:
 
 - WooCommerce webhook remains the primary real-time order ingestion path into CLEVER.
-- WooCommerce REST remains the server-side reconciliation/backfill path.
-- The plugin can request a server-side REST backfill through `POST /wordpress/plugin/sync/request`; CLEVER returns a durable sync-run id immediately, then stores final counts and geocoding results server-side for the admin UI to show after refresh.
+- Manual sync defaults to raw WooCommerce order push in bounded background chunks. The plugin first calls `POST /wordpress/plugin/sync/raw/request`, then uploads pages through `/wordpress/plugin/sync/raw/chunk`, and finalizes with `/wordpress/plugin/sync/raw/finalize`.
+- CLEVER stores accepted raw rows before processing them. Chunk/finalize/status reads can re-schedule unfinished raw processing from durable DB state, so accepted rows are not tied to the original WordPress request lifetime.
+- Raw order ingest rows are retained for audit/replay in this phase. Destructive retention or compaction must be introduced by a separate rollback-safe retention policy, not by the connector UI.
+- WooCommerce REST remains the server-side reconciliation/backfill path. The plugin can still request a server-side REST backfill through `POST /wordpress/plugin/sync/request` as advanced recovery; CLEVER returns a durable sync-run id immediately, then stores final counts and geocoding results server-side for the admin UI to show after refresh.
 - Version 0.3.2 hardens manual-sync acknowledgements: a successful `202 Accepted` response is never rendered as the generic `Manual sync failed.` message, and older acknowledgement payloads still show as accepted with a refresh/status hint.
 - The plugin shows connection, REST sync, webhook, latest durable manual sync-run, and support-safe diagnostic status only.
 - The Orders & Sync page can request either an all-history backfill or a modified-after backfill, with guarded Woo status presets and a custom status slug fallback.
@@ -23,14 +25,14 @@ Recommended first-run flow:
 
 1. Upload and activate the ZIP in WordPress Admin.
 2. Open **WooCommerce → CLEVER Route → Setup** and pair with the CLEVER API base URL plus one-time pairing code.
-3. Open **Orders & Sync** and run **Import all historical orders** once to pull existing WooCommerce orders into CLEVER.
+3. Open **Orders & Sync** and run **Import all historical orders** once to upload bounded raw WooCommerce order chunks into CLEVER.
 4. Keep WooCommerce webhooks active for real-time new/updated orders after the backfill.
 5. Use **Open CLEVER Route** to enter the CLEVER server workspace without re-entering the CLEVER admin login secret.
 6. Use **Diagnostics** for support-safe plugin/server/WooCommerce status. Route and mapping operations are handled in the CLEVER web workspace.
 
 ## Explicit non-goals for MVP
 
-- No `POST /wordpress/plugin/orders/batch` plugin-push ingestion.
+- No unbounded `POST /wordpress/plugin/orders/batch` plugin-push ingestion.
 - No public shortcode/block storefront frontend.
 - No WordPress REST callback endpoint for server-pushed route result cache.
 - No Woo order note/meta write-back.

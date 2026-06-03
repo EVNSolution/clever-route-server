@@ -89,7 +89,7 @@ describe("WordPress connector plugin static contract", () => {
     expect(source).toContain("notice-error inline");
   });
 
-  test("orders sync UI makes historical backfill explicit and typo-resistant", async () => {
+  test("orders sync UI makes raw sync default and keeps REST backfill as recovery", async () => {
     const source = await readFile(
       new URL("includes/class-clever-route-admin.php", pluginRoot),
       "utf8",
@@ -97,14 +97,22 @@ describe("WordPress connector plugin static contract", () => {
 
     expect(source).toContain("Import all historical orders");
     expect(source).toContain("Only import orders modified after");
+    expect(source).toContain("Start raw sync");
+    expect(source).toContain("sync/raw/request");
+    expect(source).toContain("clever_route_raw_sync_chunk");
+    expect(source).toContain("as_enqueue_async_action");
+    expect(source).toContain("wp_schedule_single_event");
     expect(source).toContain("Run server-side Woo REST backfill");
+    expect(source).toContain('value="sync_rest_backfill"');
     expect(source).toContain("woo_status_preset");
     expect(source).toContain("woo_status_custom");
     expect(source).toContain("custom Woo status slug");
     expect(source).toContain("summarize_sync_request_result");
     expect(source).toContain("render_latest_sync_run_status");
     expect(source).toContain("Final counts and geocoding results");
+    expect(source).toContain("format_raw_sync_failures");
     expect(source).toContain("warnings");
+    expect(source).not.toContain("plugin raw push is unavailable");
     expect(source).not.toContain('type="text" name="woo_status"');
   });
 
@@ -174,7 +182,22 @@ describe("WordPress connector plugin static contract", () => {
       },
       {
         action: 'value="sync"',
+        endpoint: "/wordpress/plugin/sync/raw/request",
+        method: "post",
+      },
+      {
+        action: 'value="sync_rest_backfill"',
         endpoint: "/wordpress/plugin/sync/request",
+        method: "post",
+      },
+      {
+        action: "handle_raw_sync_chunk_job",
+        endpoint: "/wordpress/plugin/sync/raw/chunk",
+        method: "post",
+      },
+      {
+        action: "handle_raw_sync_chunk_job",
+        endpoint: "/wordpress/plugin/sync/raw/finalize",
         method: "post",
       },
       {
@@ -200,25 +223,42 @@ describe("WordPress connector plugin static contract", () => {
     expect(adminSource).not.toContain("/admin/ui/app/orders");
     expect(adminSource).not.toContain("/admin/ui/app/routes");
     expect(adminSource).not.toContain("/wordpress/plugin/orders/push");
+    expect(adminSource).not.toContain("/wordpress/plugin/orders/batch");
   });
 
-  test("accepted manual sync stores the syncRunId before any legacy latest-status fallback", async () => {
+  test("accepted raw manual sync stores the syncRunId before scheduling chunks or falling back to latest status", async () => {
     const adminSource = await readFile(
       new URL("includes/class-clever-route-admin.php", pluginRoot),
       "utf8",
     );
 
-    const syncRequestIndex = adminSource.indexOf("/wordpress/plugin/sync/request");
+    const syncRequestIndex = adminSource.indexOf("/wordpress/plugin/sync/raw/request");
     const acceptedRunIndex = adminSource.indexOf("isset($data['syncRun'])", syncRequestIndex);
     const saveRunIndex = adminSource.indexOf("save_latest_sync_run_id($sync_run_id)", acceptedRunIndex);
+    const enqueueIndex = adminSource.indexOf("enqueue_raw_sync_chunk($job)", saveRunIndex);
     const fallbackIndex = adminSource.indexOf("/wordpress/plugin/sync/latest", syncRequestIndex);
 
     expect(syncRequestIndex).toBeGreaterThan(-1);
     expect(acceptedRunIndex).toBeGreaterThan(syncRequestIndex);
     expect(saveRunIndex).toBeGreaterThan(acceptedRunIndex);
-    expect(fallbackIndex).toBeGreaterThan(saveRunIndex);
+    expect(enqueueIndex).toBeGreaterThan(saveRunIndex);
+    expect(fallbackIndex).toBeGreaterThan(enqueueIndex);
     expect(adminSource.slice(acceptedRunIndex, fallbackIndex)).toContain("summarize_sync_request_result($data)");
     expect(adminSource.slice(acceptedRunIndex, fallbackIndex)).not.toContain("/wordpress/plugin/sync/latest");
+  });
+
+  test("raw sync status display is redacted and never renders raw payload fields", async () => {
+    const adminSource = await readFile(
+      new URL("includes/class-clever-route-admin.php", pluginRoot),
+      "utf8",
+    );
+
+    expect(adminSource).toContain("format_raw_sync_summary");
+    expect(adminSource).toContain("format_raw_sync_failures");
+    expect(adminSource).toContain("sourceOrderNumber");
+    expect(adminSource).toContain("failureCode");
+    expect(adminSource).toContain("message");
+    expect(adminSource).not.toContain("rawPayload");
   });
 
   test("api client uses safe bounded no-redirect HTTP requests", async () => {

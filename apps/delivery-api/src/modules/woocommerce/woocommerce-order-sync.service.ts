@@ -18,7 +18,7 @@ export type WooCommerceOrderSyncSummary = {
 
 export type WooCommerceSyncOrdersInput = {
   orders: WooCommerceOrder[];
-  reason: 'manual_backfill' | 'scheduled_incremental' | 'webhook';
+  reason: 'manual_backfill' | 'raw_push' | 'scheduled_incremental' | 'webhook';
 };
 
 export type WooCommerceSyncOrdersResult = {
@@ -168,7 +168,7 @@ export class WooCommerceOrderSyncService {
     const geocodingService = this.options.geocodingService;
     if (geocodingService === undefined || geocodingService.status?.mode === 'disabled') return synced;
     if (synced.deliveryStop === null || synced.deliveryStop.geocodeStatus === 'RESOLVED') return synced;
-    if (reason !== 'webhook') return synced;
+    if (reason !== 'webhook' && reason !== 'raw_push') return synced;
 
     const address = toGeocodingAddress(synced.deliveryStop);
     if (!hasGeocodableAddress(address)) return synced;

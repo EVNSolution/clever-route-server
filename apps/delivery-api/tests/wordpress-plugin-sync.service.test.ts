@@ -18,9 +18,10 @@ describe('WordPressPluginSyncRequestService', () => {
       run: syncRun({ acceptedAt: acceptedAt.toISOString(), status: 'QUEUED' }),
       startBackgroundProcessing: true
     });
+    const syncOrders = vi.fn();
     const syncUpdatedOrders = vi.fn();
     const readDecryptedWooCommerceConnection = vi.fn(() => Promise.resolve(wooConnection()));
-    const createOrderSyncService = vi.fn(() => ({ syncUpdatedOrders }));
+    const createOrderSyncService = vi.fn(() => ({ syncOrders, syncUpdatedOrders }));
     const markRestSyncCompleted = vi.fn(() => Promise.resolve());
     const validateConnectionSiteUrl = vi.fn(() => Promise.resolve());
     const service = new WordPressPluginSyncRequestService({
@@ -51,8 +52,157 @@ describe('WordPressPluginSyncRequestService', () => {
     expect(readDecryptedWooCommerceConnection).not.toHaveBeenCalled();
     expect(validateConnectionSiteUrl).not.toHaveBeenCalled();
     expect(createOrderSyncService).not.toHaveBeenCalled();
+    expect(syncOrders).not.toHaveBeenCalled();
     expect(syncUpdatedOrders).not.toHaveBeenCalled();
     expect(markRestSyncCompleted).not.toHaveBeenCalled();
+  });
+
+  test('creates a raw sync run without reading Woo REST or processing orders in the request path', async () => {
+    const syncRunRepository = syncRunRepositoryMock();
+    syncRunRepository.createRawSyncRunUnlessActive.mockResolvedValueOnce({
+      alreadyRunning: false,
+      run: syncRun({ acceptedAt: acceptedAt.toISOString(), request: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'QUEUED' }),
+      startBackgroundProcessing: false
+    });
+    const service = createService({ syncRunRepository });
+
+    await expect(
+      service.requestRawSync({
+        context: pluginContext(),
+        payload: { modifiedAfter: null, pageSize: 100, status: null }
+      })
+    ).resolves.toEqual({
+      alreadyRunning: false,
+      message: 'Raw sync accepted. WordPress will upload order chunks in the background.',
+      startBackgroundProcessing: false,
+      syncRun: syncRun({ acceptedAt: acceptedAt.toISOString(), request: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'QUEUED' })
+    });
+    expect(syncRunRepository.createRawSyncRunUnlessActive).toHaveBeenCalledWith({
+      acceptedAt,
+      context: pluginContext(),
+      request: { modifiedAfter: null, pageSize: 100, status: null }
+    });
+  });
+
+  test('accepts raw chunks by delegating durable persistence and not running canonical sync inline', async () => {
+    const syncRunRepository = syncRunRepositoryMock();
+    syncRunRepository.acceptRawChunk.mockResolvedValueOnce({
+      accepted: 1,
+      duplicate: 0,
+      invalid: 0,
+      message: 'Raw sync chunk accepted. CLEVER will process stored orders in the background.',
+      startBackgroundProcessing: true,
+      syncRun: syncRun({ request: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'RUNNING' })
+    });
+    const syncOrders = vi.fn();
+    const service = createService({ syncOrders, syncRunRepository });
+
+    await expect(
+      service.acceptRawChunk({
+        context: pluginContext(),
+        payload: {
+          chunkId: 'chunk-1',
+          chunkIndex: 0,
+          orders: [{ id: 123, number: '123' }],
+          syncRunId: '11111111-1111-4111-8111-111111111111'
+        }
+      })
+    ).resolves.toMatchObject({ accepted: 1, duplicate: 0, invalid: 0, startBackgroundProcessing: true });
+    expect(syncRunRepository.acceptRawChunk).toHaveBeenCalledWith({
+      context: pluginContext(),
+      now: acceptedAt,
+      payload: {
+        chunkId: 'chunk-1',
+        chunkIndex: 0,
+        orders: [{ id: 123, number: '123' }],
+        syncRunId: '11111111-1111-4111-8111-111111111111'
+      }
+    });
+    expect(syncOrders).not.toHaveBeenCalled();
+  });
+
+  test('processes durable raw rows through Woo canonical sync and records terminal row status', async () => {
+    const syncRunRepository = syncRunRepositoryMock();
+    syncRunRepository.listRawIngestsForProcessing.mockResolvedValueOnce([
+      { id: 'raw-ingest-id', rawPayload: { id: 123, number: '123' }, sourceOrderId: '123', sourceOrderNumber: '123' }
+    ]);
+    syncRunRepository.markRawIngestProcessing.mockResolvedValueOnce(true);
+    syncRunRepository.refreshRawSyncRunStatus.mockResolvedValueOnce(
+      syncRun({ request: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'RUNNING' })
+    );
+    const syncOrders = vi.fn<WordPressPluginOrderSyncService['syncOrders']>(() =>
+      Promise.resolve({
+        orders: [{ orderId: 'canonical-order-id' } as CanonicalOrderRow],
+        sync: { created: 1, needsReview: 0, readyToPlan: 1, received: 1, skipped: 0, unchanged: 0, updated: 0 }
+      })
+    );
+    const service = createService({ syncOrders, syncRunRepository });
+
+    await expect(
+      service.processRawSyncRun({ context: pluginContext(), syncRunId: '11111111-1111-4111-8111-111111111111' })
+    ).resolves.toEqual(syncRun({ request: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'RUNNING' }));
+    expect(syncOrders).toHaveBeenCalledWith({ orders: [{ id: 123, number: '123' }], reason: 'raw_push' });
+    expect(syncRunRepository.markRawIngestProcessed).toHaveBeenCalledWith({
+      canonicalOrderId: 'canonical-order-id',
+      context: pluginContext(),
+      geocode: { failed: 0, notRequired: 0, pending: 1, resolved: 0 },
+      ingestId: 'raw-ingest-id',
+      now: acceptedAt,
+      sync: { created: 1, needsReview: 0, readyToPlan: 1, received: 1, skipped: 0, unchanged: 0, updated: 0 },
+      syncRunId: '11111111-1111-4111-8111-111111111111'
+    });
+  });
+
+  test('marks older raw snapshots as skipped instead of processed when canonical freshness rejects them', async () => {
+    const syncRunRepository = syncRunRepositoryMock();
+    syncRunRepository.listRawIngestsForProcessing.mockResolvedValueOnce([
+      { id: 'raw-ingest-id', rawPayload: { id: 123, number: '123' }, sourceOrderId: '123', sourceOrderNumber: '123' }
+    ]);
+    syncRunRepository.markRawIngestProcessing.mockResolvedValueOnce(true);
+    syncRunRepository.refreshRawSyncRunStatus.mockResolvedValueOnce(syncRun({ status: 'RUNNING' }));
+    const syncOrders = vi.fn<WordPressPluginOrderSyncService['syncOrders']>(() =>
+      Promise.resolve({
+        orders: [{ orderId: 'canonical-order-id' } as CanonicalOrderRow],
+        sync: { created: 0, needsReview: 0, readyToPlan: 0, received: 1, skipped: 0, unchanged: 1, updated: 0 }
+      })
+    );
+    const service = createService({ syncOrders, syncRunRepository });
+
+    await service.processRawSyncRun({ context: pluginContext(), syncRunId: '11111111-1111-4111-8111-111111111111' });
+
+    expect(syncRunRepository.markRawIngestProcessed).not.toHaveBeenCalled();
+    expect(syncRunRepository.markRawIngestSkipped).toHaveBeenCalledWith({
+      context: pluginContext(),
+      failureCode: 'RAW_ORDER_STALE_SOURCE_SNAPSHOT',
+      failureMessage: 'Order was skipped because CLEVER already has a newer WooCommerce snapshot.',
+      ingestId: 'raw-ingest-id',
+      now: acceptedAt,
+      syncRunId: '11111111-1111-4111-8111-111111111111'
+    });
+  });
+
+  test('redacts raw row processing failures before persisting failure summaries', async () => {
+    const syncRunRepository = syncRunRepositoryMock();
+    syncRunRepository.listRawIngestsForProcessing.mockResolvedValueOnce([
+      { id: 'raw-ingest-id', rawPayload: { id: 123, billing: { email: 'jane@example.test' } }, sourceOrderId: '123', sourceOrderNumber: '123' }
+    ]);
+    syncRunRepository.markRawIngestProcessing.mockResolvedValueOnce(true);
+    syncRunRepository.refreshRawSyncRunStatus.mockResolvedValueOnce(syncRun({ status: 'RUNNING' }));
+    const syncOrders = vi.fn<WordPressPluginOrderSyncService['syncOrders']>(() =>
+      Promise.reject(new Error('Woo rejected jane@example.test at 100 King St with ck_secret'))
+    );
+    const service = createService({ syncOrders, syncRunRepository });
+
+    await service.processRawSyncRun({ context: pluginContext(), syncRunId: '11111111-1111-4111-8111-111111111111' });
+    expect(syncRunRepository.markRawIngestFailed).toHaveBeenCalledWith({
+      context: pluginContext(),
+      failureCode: 'RAW_ORDER_PROCESSING_FAILED',
+      failureMessage: 'Raw WooCommerce order could not be processed. Internal details were redacted; use the sync run id to inspect server logs.',
+      ingestId: 'raw-ingest-id',
+      now: acceptedAt,
+      retryable: true,
+      syncRunId: '11111111-1111-4111-8111-111111111111'
+    });
   });
 
   test('returns the active durable sync run instead of starting a duplicate request', async () => {
@@ -232,6 +382,7 @@ function createService(input: {
   markRestSyncCompleted?: ReturnType<typeof vi.fn<(input: { at: Date; connectionId: string }) => Promise<void>>>;
   now?: () => Date;
   syncRunRepository: ReturnType<typeof syncRunRepositoryMock>;
+  syncOrders?: ReturnType<typeof vi.fn<WordPressPluginOrderSyncService['syncOrders']>>;
   syncUpdatedOrders?: ReturnType<typeof vi.fn<WordPressPluginOrderSyncService['syncUpdatedOrders']>>;
   validateConnectionSiteUrl?: (input: { connection: DecryptedWooCommerceConnection }) => Promise<void>;
 }): WordPressPluginSyncRequestService {
@@ -243,9 +394,16 @@ function createService(input: {
         sync: { created: 0, needsReview: 0, readyToPlan: 0, received: 0, skipped: 0, unchanged: 0, updated: 0 }
       })
     );
+  const syncOrders = input.syncOrders ??
+    vi.fn<WordPressPluginOrderSyncService['syncOrders']>(() =>
+      Promise.resolve({
+        orders: [],
+        sync: { created: 0, needsReview: 0, readyToPlan: 0, received: 0, skipped: 0, unchanged: 0, updated: 0 }
+      })
+    );
   return new WordPressPluginSyncRequestService({
     connectionService: { readDecryptedWooCommerceConnection: vi.fn(() => Promise.resolve(input.connection ?? wooConnection())) },
-    createOrderSyncService: vi.fn(() => ({ syncUpdatedOrders })),
+    createOrderSyncService: vi.fn(() => ({ syncOrders, syncUpdatedOrders })),
     freshnessRepository: { markRestSyncCompleted: input.markRestSyncCompleted ?? vi.fn(() => Promise.resolve()) },
     now: input.now ?? (() => acceptedAt),
     syncRunRepository: input.syncRunRepository,
@@ -254,20 +412,38 @@ function createService(input: {
 }
 
 function syncRunRepositoryMock(): WordPressPluginSyncRunRepository & {
+  acceptRawChunk: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['acceptRawChunk']>>;
+  createRawSyncRunUnlessActive: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['createRawSyncRunUnlessActive']>>;
   createSyncRunUnlessActive: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['createSyncRunUnlessActive']>>;
+  finalizeRawSyncRun: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['finalizeRawSyncRun']>>;
   findLatestSyncRun: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['findLatestSyncRun']>>;
   findSyncRunById: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['findSyncRunById']>>;
+  listRawIngestsForProcessing: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['listRawIngestsForProcessing']>>;
+  markRawIngestFailed: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['markRawIngestFailed']>>;
+  markRawIngestProcessed: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['markRawIngestProcessed']>>;
+  markRawIngestProcessing: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['markRawIngestProcessing']>>;
+  markRawIngestSkipped: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['markRawIngestSkipped']>>;
   markSyncRunFailed: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['markSyncRunFailed']>>;
   markSyncRunRunning: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['markSyncRunRunning']>>;
   markSyncRunSucceeded: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['markSyncRunSucceeded']>>;
+  refreshRawSyncRunStatus: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['refreshRawSyncRunStatus']>>;
 } {
   return {
+    acceptRawChunk: vi.fn(),
+    createRawSyncRunUnlessActive: vi.fn(),
     createSyncRunUnlessActive: vi.fn(),
+    finalizeRawSyncRun: vi.fn(),
     findLatestSyncRun: vi.fn(),
     findSyncRunById: vi.fn(),
+    listRawIngestsForProcessing: vi.fn(() => Promise.resolve([])),
+    markRawIngestFailed: vi.fn(),
+    markRawIngestProcessed: vi.fn(),
+    markRawIngestProcessing: vi.fn(),
+    markRawIngestSkipped: vi.fn(),
     markSyncRunFailed: vi.fn(),
     markSyncRunRunning: vi.fn(),
-    markSyncRunSucceeded: vi.fn()
+    markSyncRunSucceeded: vi.fn(),
+    refreshRawSyncRunStatus: vi.fn()
   };
 }
 

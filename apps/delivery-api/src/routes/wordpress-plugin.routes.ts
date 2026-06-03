@@ -13,6 +13,8 @@ import type {
   WordPressPluginMappingConfig,
   WordPressPluginPairInput,
   WordPressPluginPairResult,
+  WordPressPluginRawSyncChunkInput,
+  WordPressPluginRawSyncFinalizeInput,
   WordPressPluginRoutePlanDetail,
   WordPressPluginRoutePlanFilters,
   WordPressPluginRoutePlanSummary,
@@ -57,10 +59,26 @@ export type WordPressPluginDependencies = {
       context: WordPressPluginConnectionContext;
       syncRunId: string;
     }): Promise<WordPressPluginSyncRun | null>;
+    processRawSyncRun(input: {
+      context: WordPressPluginConnectionContext;
+      syncRunId: string;
+    }): Promise<WordPressPluginSyncRun | null>;
     requestSync(input: {
       context: WordPressPluginConnectionContext;
       payload: WordPressPluginSyncRequestInput;
     }): Promise<WordPressPluginSyncRequestResult & { startBackgroundProcessing: boolean }>;
+    requestRawSync(input: {
+      context: WordPressPluginConnectionContext;
+      payload: WordPressPluginSyncRequestInput;
+    }): Promise<WordPressPluginSyncRequestResult & { startBackgroundProcessing: boolean }>;
+    acceptRawChunk(input: {
+      context: WordPressPluginConnectionContext;
+      payload: WordPressPluginRawSyncChunkInput;
+    }): Promise<{ accepted: number; duplicate: number; invalid: number; message: string; startBackgroundProcessing: boolean; syncRun: WordPressPluginSyncRun }>;
+    finalizeRawSync(input: {
+      context: WordPressPluginConnectionContext;
+      payload: WordPressPluginRawSyncFinalizeInput;
+    }): Promise<{ message: string; startBackgroundProcessing: boolean; syncRun: WordPressPluginSyncRun }>;
     readLatestSyncRun(input: {
       context: WordPressPluginConnectionContext;
     }): Promise<WordPressPluginSyncRun | null>;
@@ -86,6 +104,20 @@ type SyncRequestBody = {
   modifiedAfter?: unknown;
   pageSize?: unknown;
   status?: unknown;
+};
+
+type RawSyncChunkBody = {
+  chunkCount?: unknown;
+  chunkId?: unknown;
+  chunkIndex?: unknown;
+  orders?: unknown;
+  syncRunId?: unknown;
+};
+
+type RawSyncFinalizeBody = {
+  expectedChunkCount?: unknown;
+  expectedOrderCount?: unknown;
+  syncRunId?: unknown;
 };
 
 type AdminLaunchBody = {
@@ -265,6 +297,131 @@ export function registerWordPressPluginRoutes(
     return reply.code(202).send({ data: toSyncRequestResponsePayload(result), error: null });
   });
 
+  app.post<{ Body: unknown }>('/wordpress/plugin/sync/raw/request', async (request, reply) => {
+    const startedAt = Date.now();
+    const authenticated = await authenticatePlugin(request, dependencies);
+    if (authenticated.status === 'unauthorized') {
+      return reply.code(authenticated.httpStatus).send(errorResponse(authenticated.code, authenticated.message));
+    }
+
+    const payload = readSyncRequestBody(request.body);
+    if (payload === null) {
+      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid raw sync request payload'));
+    }
+
+    const { startBackgroundProcessing, ...result } = await dependencies.syncService.requestRawSync({
+      context: authenticated.context,
+      payload
+    });
+    request.log.info(
+      {
+        alreadyRunning: result.alreadyRunning,
+        connectionId: authenticated.context.connectionId,
+        elapsedMs: Date.now() - startedAt,
+        endpoint: 'sync/raw/request',
+        shopDomain: authenticated.context.shopDomain,
+        startBackgroundProcessing,
+        syncRunId: result.syncRun.syncRunId
+      },
+      'wordpress plugin raw sync request accepted'
+    );
+    return reply.code(202).send({ data: toSyncRequestResponsePayload(result), error: null });
+  });
+
+  app.post<{ Body: unknown }>('/wordpress/plugin/sync/raw/chunk', async (request, reply) => {
+    const startedAt = Date.now();
+    const authenticated = await authenticatePlugin(request, dependencies);
+    if (authenticated.status === 'unauthorized') {
+      return reply.code(authenticated.httpStatus).send(errorResponse(authenticated.code, authenticated.message));
+    }
+    const payload = readRawSyncChunkBody(request.body);
+    if (payload === null) {
+      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid raw sync chunk payload'));
+    }
+
+    try {
+      const result = await dependencies.syncService.acceptRawChunk({ context: authenticated.context, payload });
+      request.log.info(
+        {
+          accepted: result.accepted,
+          connectionId: authenticated.context.connectionId,
+          duplicate: result.duplicate,
+          elapsedMs: Date.now() - startedAt,
+          endpoint: 'sync/raw/chunk',
+          invalid: result.invalid,
+          shopDomain: authenticated.context.shopDomain,
+          startBackgroundProcessing: result.startBackgroundProcessing,
+          syncRunId: payload.syncRunId
+        },
+        'wordpress plugin raw sync chunk accepted'
+      );
+      if (result.startBackgroundProcessing) scheduleRawSyncProcessing(request, dependencies, authenticated.context, payload.syncRunId);
+      return reply.code(202).send({
+        data: {
+          accepted: result.accepted,
+          duplicate: result.duplicate,
+          invalid: result.invalid,
+          message: result.message,
+          syncRun: result.syncRun
+        },
+        error: null
+      });
+    } catch (error) {
+      request.log.warn(
+        {
+          connectionId: authenticated.context.connectionId,
+          elapsedMs: Date.now() - startedAt,
+          error: sanitizeLogError(error),
+          endpoint: 'sync/raw/chunk',
+          shopDomain: authenticated.context.shopDomain
+        },
+        'wordpress plugin raw sync chunk rejected'
+      );
+      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid raw sync chunk payload'));
+    }
+  });
+
+  app.post<{ Body: unknown }>('/wordpress/plugin/sync/raw/finalize', async (request, reply) => {
+    const startedAt = Date.now();
+    const authenticated = await authenticatePlugin(request, dependencies);
+    if (authenticated.status === 'unauthorized') {
+      return reply.code(authenticated.httpStatus).send(errorResponse(authenticated.code, authenticated.message));
+    }
+    const payload = readRawSyncFinalizeBody(request.body);
+    if (payload === null) {
+      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid raw sync finalize payload'));
+    }
+
+    try {
+      const result = await dependencies.syncService.finalizeRawSync({ context: authenticated.context, payload });
+      request.log.info(
+        {
+          connectionId: authenticated.context.connectionId,
+          elapsedMs: Date.now() - startedAt,
+          endpoint: 'sync/raw/finalize',
+          shopDomain: authenticated.context.shopDomain,
+          startBackgroundProcessing: result.startBackgroundProcessing,
+          syncRunId: payload.syncRunId
+        },
+        'wordpress plugin raw sync finalized'
+      );
+      if (result.startBackgroundProcessing) scheduleRawSyncProcessing(request, dependencies, authenticated.context, payload.syncRunId);
+      return reply.code(202).send({ data: { message: result.message, syncRun: result.syncRun }, error: null });
+    } catch (error) {
+      request.log.warn(
+        {
+          connectionId: authenticated.context.connectionId,
+          elapsedMs: Date.now() - startedAt,
+          error: sanitizeLogError(error),
+          endpoint: 'sync/raw/finalize',
+          shopDomain: authenticated.context.shopDomain
+        },
+        'wordpress plugin raw sync finalize rejected'
+      );
+      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid raw sync finalize payload'));
+    }
+  });
+
   app.get('/wordpress/plugin/sync/latest', async (request, reply) => {
     const authenticated = await authenticatePlugin(request, dependencies);
     if (authenticated.status === 'unauthorized') {
@@ -272,6 +429,9 @@ export function registerWordPressPluginRoutes(
     }
 
     const syncRun = await dependencies.syncService.readLatestSyncRun({ context: authenticated.context });
+    if (shouldScheduleRawSyncProcessing(syncRun)) {
+      scheduleRawSyncProcessing(request, dependencies, authenticated.context, syncRun.syncRunId);
+    }
     return reply.code(200).send({ data: { syncRun }, error: null });
   });
 
@@ -290,6 +450,9 @@ export function registerWordPressPluginRoutes(
     });
     if (syncRun === null) {
       return reply.code(404).send(errorResponse('NOT_FOUND', 'Sync run not found'));
+    }
+    if (shouldScheduleRawSyncProcessing(syncRun)) {
+      scheduleRawSyncProcessing(request, dependencies, authenticated.context, syncRun.syncRunId);
     }
     return reply.code(200).send({ data: { syncRun }, error: null });
   });
@@ -450,6 +613,87 @@ function readSyncRequestBody(body: unknown): WordPressPluginSyncRequestInput | n
     pageSize,
     status: readNullableString(object.status)
   };
+}
+
+function readRawSyncChunkBody(body: unknown): WordPressPluginRawSyncChunkInput | null {
+  const object = objectOrNull<RawSyncChunkBody>(body);
+  if (object === null) return null;
+  if (typeof object.syncRunId !== 'string' || !isUuid(object.syncRunId)) return null;
+  if (typeof object.chunkId !== 'string' || object.chunkId.trim() === '' || object.chunkId.length > 120) return null;
+  if (typeof object.chunkIndex !== 'number' || !Number.isInteger(object.chunkIndex) || object.chunkIndex < 0) return null;
+  if (object.chunkCount !== undefined && object.chunkCount !== null) {
+    if (typeof object.chunkCount !== 'number' || !Number.isInteger(object.chunkCount) || object.chunkCount < 1) return null;
+  }
+  if (!Array.isArray(object.orders) || object.orders.length > 100) return null;
+  const orders = object.orders.filter(
+    (item): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item)
+  );
+  if (orders.length !== object.orders.length) return null;
+  return {
+    ...(object.chunkCount === undefined || object.chunkCount === null ? {} : { chunkCount: object.chunkCount }),
+    chunkId: object.chunkId.trim(),
+    chunkIndex: object.chunkIndex,
+    orders,
+    syncRunId: object.syncRunId
+  };
+}
+
+function readRawSyncFinalizeBody(body: unknown): WordPressPluginRawSyncFinalizeInput | null {
+  const object = objectOrNull<RawSyncFinalizeBody>(body);
+  if (object === null) return null;
+  if (typeof object.syncRunId !== 'string' || !isUuid(object.syncRunId)) return null;
+  const expectedChunkCount = readOptionalPositiveInteger(object.expectedChunkCount);
+  const expectedOrderCount = readOptionalPositiveInteger(object.expectedOrderCount);
+  return {
+    ...(expectedChunkCount === null ? {} : { expectedChunkCount }),
+    ...(expectedOrderCount === null ? {} : { expectedOrderCount }),
+    syncRunId: object.syncRunId
+  };
+}
+
+function readOptionalPositiveInteger(value: unknown): number | null {
+  if (value === undefined || value === null) return null;
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : null;
+}
+
+function scheduleRawSyncProcessing(
+  request: FastifyRequest,
+  dependencies: WordPressPluginDependencies,
+  context: WordPressPluginConnectionContext,
+  syncRunId: string
+): void {
+  request.log.info(
+    { connectionId: context.connectionId, shopDomain: context.shopDomain, syncRunId },
+    'wordpress plugin raw sync background processing scheduled'
+  );
+  void dependencies.syncService
+    .processRawSyncRun({ context, syncRunId })
+    .then((run) => {
+      request.log.info(
+        {
+          connectionId: context.connectionId,
+          failed: run?.raw?.failed ?? null,
+          processed: run?.raw?.processed ?? null,
+          shopDomain: context.shopDomain,
+          status: run?.status ?? null,
+          syncRunId
+        },
+        'wordpress plugin raw sync processed'
+      );
+    })
+    .catch((error: unknown) => {
+      request.log.error(
+        { connectionId: context.connectionId, error: sanitizeLogError(error), shopDomain: context.shopDomain, syncRunId },
+        'wordpress plugin raw sync background processing failed'
+      );
+    });
+}
+
+function shouldScheduleRawSyncProcessing(syncRun: WordPressPluginSyncRun | null): syncRun is WordPressPluginSyncRun {
+  if (syncRun === null || syncRun.request.mode !== 'raw_push' || syncRun.status !== 'RUNNING') return false;
+  const raw = syncRun.raw;
+  if (raw === undefined || raw === null) return true;
+  return raw.accepted > raw.processed + raw.skipped + raw.failed;
 }
 
 function readAdminLaunchSection(body: unknown): WordPressPluginAdminLaunchSection | null {
