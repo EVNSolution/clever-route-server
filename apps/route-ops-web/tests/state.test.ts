@@ -64,6 +64,7 @@ describe('route ops web state helpers', () => {
     const ready = order({ deliveryDate: '2026-05-29', orderId: 'ready' });
     const planned = order({ deliveryDate: '2026-05-29', orderId: 'planned', planningStatus: 'PLANNED', routePlanId: 'route-1' });
     const missingDate = order({ blockerReasons: ['missing_delivery_date'], deliveryDate: null, metadataResolved: false, orderId: 'missing-date', routeEligible: false });
+    const metadataReview = order({ blockerReasons: ['missing_delivery_area'], metadataResolved: false, orderId: 'metadata-review', routeEligible: false });
     const completed = order({ deliveryDate: '2026-05-29', deliveryStatus: 'completed', orderId: 'completed' });
 
     expect(matchesPlanningScope(ready, '2026-05-29')).toBe(true);
@@ -74,14 +75,17 @@ describe('route ops web state helpers', () => {
 
     expect(getOrderWorksetUnavailableReasons(planned, { scope: 'planning' }).map((reason) => reason.code)).toContain('already_planned');
     expect(getOrderWorksetUnavailableReasons(ready, { scope: 'history' })).toEqual([]);
-    expect(getOrderWorksetUnavailableReasons(missingDate, { scope: 'history' }).map((reason) => reason.code)).toContain('needs_review');
-    const summary = summarizeOrderWorkset([ready, planned, missingDate], new Set(['ready']), { scope: 'planning' });
-    expect(summary).toEqual(expect.objectContaining({ selectableCount: 1, selectedCount: 1, unavailableCount: 2 }));
+    expect(getOrderWorksetUnavailableReasons(missingDate, { scope: 'history' }).map((reason) => reason.code)).toEqual(['missing_delivery_date']);
+    expect(getOrderWorksetUnavailableReasons(metadataReview, { scope: 'history' }).map((reason) => reason.code)).toContain('needs_review');
+    const summary = summarizeOrderWorkset([ready, planned, missingDate, metadataReview], new Set(['ready']), { scope: 'planning' });
+    expect(summary).toEqual(expect.objectContaining({ selectableCount: 1, selectedCount: 1, unavailableCount: 3 }));
     expect(summary.reasonLabels.join(' ')).toContain('Already planned');
     expect(summary.reasonLabels.join(' ')).toContain('Missing delivery date');
-    const koreanSummary = summarizeOrderWorkset([ready, planned, missingDate], new Set(['ready']), { scope: 'planning' }, 'ko-KR');
+    expect(summary.reasonLabels.join(' ')).toContain('Other metadata review');
+    const koreanSummary = summarizeOrderWorkset([ready, planned, missingDate, metadataReview], new Set(['ready']), { scope: 'planning' }, 'ko-KR');
     expect(koreanSummary.reasonLabels.join(' ')).toContain('이미 배정됨');
     expect(koreanSummary.reasonLabels.join(' ')).toContain('배송 날짜 누락');
+    expect(koreanSummary.reasonLabels.join(' ')).toContain('기타 메타데이터 검토');
   });
 
 

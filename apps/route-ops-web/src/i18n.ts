@@ -316,7 +316,7 @@ export const stateCopy = {
       missing_coordinates: 'Missing coordinates',
       missing_delivery_date: 'Missing delivery date',
       missing_route_scope: 'Missing route scope',
-      needs_review: 'Needs review'
+      needs_review: 'Other metadata review'
     },
     geometry: {
       noRouteSelected: 'No route selected',
@@ -338,7 +338,7 @@ export const stateCopy = {
       missing_coordinates: '좌표 누락',
       missing_delivery_date: '배송 날짜 누락',
       missing_route_scope: '경로 범위 누락',
-      needs_review: '리뷰 필요'
+      needs_review: '기타 메타데이터 검토'
     },
     geometry: {
       noRouteSelected: '선택된 경로 없음',
@@ -498,7 +498,7 @@ export const ordersCopy = {
       succeeded: 'completed',
       failed: 'failed',
       summary(status: string, counts: { created: number; needsReview: number; readyToPlan: number; received: number; updated: number }): string {
-        return `Sync Woo ${status}: ${counts.received} received, ${counts.created} created, ${counts.updated} updated, ${counts.readyToPlan} ready, ${counts.needsReview} needs review.`;
+        return `Last Woo sync ${status}: ${counts.received} received, ${counts.created} created, ${counts.updated} updated, ${counts.readyToPlan} metadata ready, ${counts.needsReview} metadata review.`;
       }
     },
     statusLabels: {
@@ -685,7 +685,7 @@ export const ordersCopy = {
       succeeded: '완료',
       failed: '실패',
       summary(status: string, counts: { created: number; needsReview: number; readyToPlan: number; received: number; updated: number }): string {
-        return `Woo 동기화 ${status}: ${counts.received}건 수신, ${counts.created}건 생성, ${counts.updated}건 업데이트, ${counts.readyToPlan}건 준비, ${counts.needsReview}건 리뷰 필요.`;
+        return `최근 Woo 동기화 ${status}: ${counts.received}건 수신, ${counts.created}건 생성, ${counts.updated}건 업데이트, ${counts.readyToPlan}건 메타데이터 준비, ${counts.needsReview}건 메타데이터 검토 필요.`;
       }
     },
     statusLabels: {

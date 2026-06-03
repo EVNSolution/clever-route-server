@@ -247,20 +247,53 @@ export function buildGeocodingQueries(address: GeocodingAddress): GeocodingQuery
     address.address2 === null || address.address2.trim() === ''
       ? null
       : buildStructuredQuery(address, 'structured');
+  const hasPostalCode = clean(address.postalCode) !== null;
+  const withoutPostalAddress: GeocodingAddress = { ...address, postalCode: null };
+  const withoutUnitAndPostalAddress: GeocodingAddress = {
+    ...address,
+    address2: null,
+    postalCode: null,
+  };
+  const withoutUnitAndPostal = normalizeAddress(withoutUnitAndPostalAddress);
+  const fullWithoutPostal = normalizeAddress(withoutPostalAddress);
+  const structuredWithoutUnitNoPostal = hasPostalCode
+    ? buildStructuredQuery(withoutUnitAndPostalAddress, 'structured_without_unit_no_postal')
+    : null;
+  const structuredFullNoPostal =
+    hasPostalCode && address.address2 !== null && address.address2.trim() !== ''
+      ? buildStructuredQuery(withoutPostalAddress, 'structured_no_postal')
+      : null;
 
   return uniqueGeocodingQueries([
     structuredWithoutUnit,
     structuredFull,
     withoutUnit === null ? null : buildFreeformQuery(withoutUnit, 'freeform_without_unit'),
     full === null ? null : buildFreeformQuery(full, 'freeform'),
+    structuredWithoutUnitNoPostal,
+    structuredFullNoPostal,
+    hasPostalCode && withoutUnitAndPostal !== null
+      ? buildFreeformQuery(withoutUnitAndPostal, 'freeform_without_unit_no_postal')
+      : null,
+    hasPostalCode && fullWithoutPostal !== null
+      ? buildFreeformQuery(fullWithoutPostal, 'freeform_no_postal')
+      : null,
   ]);
 }
 
 function buildStructuredQuery(
   address: GeocodingAddress,
-  shape: 'structured' | 'structured_without_unit',
+  shape: Extract<
+    GeocodingQueryShape,
+    | 'structured'
+    | 'structured_no_postal'
+    | 'structured_without_unit'
+    | 'structured_without_unit_no_postal'
+  >,
 ): GeocodingQuery | null {
-  const street = normalizeAddressParts([address.address1, shape === 'structured' ? address.address2 : null]);
+  const street = normalizeAddressParts([
+    address.address1,
+    shape === 'structured' || shape === 'structured_no_postal' ? address.address2 : null
+  ]);
   const city = clean(address.city);
   const state = clean(address.province);
   const postalcode = clean(address.postalCode);
@@ -286,7 +319,13 @@ function buildStructuredQuery(
   };
 }
 
-function buildFreeformQuery(q: string, shape: 'freeform' | 'freeform_without_unit'): GeocodingQuery {
+function buildFreeformQuery(
+  q: string,
+  shape: Extract<
+    GeocodingQueryShape,
+    'freeform' | 'freeform_no_postal' | 'freeform_without_unit' | 'freeform_without_unit_no_postal'
+  >,
+): GeocodingQuery {
   return {
     cacheKey: `freeform:${q.toLowerCase()}`,
     kind: 'freeform',

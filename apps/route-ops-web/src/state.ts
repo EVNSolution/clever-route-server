@@ -74,7 +74,7 @@ export const ORDER_WORKSET_REASON_LABELS: Record<
   missing_coordinates: 'Missing coordinates',
   missing_delivery_date: 'Missing delivery date',
   missing_route_scope: 'Missing route scope',
-  needs_review: 'Needs review'
+  needs_review: 'Other metadata review'
 };
 
 export function createDefaultOrderFilters(): OrderFilterState {
@@ -161,7 +161,9 @@ export function getOrderWorksetUnavailableReasons(
     reasons.add(
       hasGeocodableAddress(order) ? 'missing_coordinates' : 'missing_address'
     );
-  if (isNeedsReviewOrder(order)) reasons.add('needs_review');
+  if (hasUnrepresentedNeedsReviewReason(order, reasons)) {
+    reasons.add('needs_review');
+  }
   if (
     context.routeDate !== undefined &&
     context.routeDate !== null &&
@@ -178,14 +180,6 @@ export function getOrderWorksetUnavailableReasons(
     routeScopeKey !== context.routeScopeKey
   ) {
     reasons.add('different_route_scope');
-  }
-  if (
-    order.routeEligible === true &&
-    reasons.has('needs_review') &&
-    order.blockerReasons.length === 0 &&
-    order.metadataResolved !== false
-  ) {
-    reasons.delete('needs_review');
   }
   return [...reasons].map((code) => ({
     code,
@@ -297,6 +291,39 @@ function isNeedsReviewOrder(order: CanonicalOrderDto): boolean {
     !hasRouteScope(order) ||
     !hasResolvedCoordinates(order)
   );
+}
+
+const BLOCKER_WORKSET_REASON_MAP: Partial<
+  Record<string, OrderWorksetUnavailableReason>
+> = {
+  missing_address: 'missing_address',
+  missing_coordinates: 'missing_coordinates',
+  missing_delivery_date: 'missing_delivery_date',
+  missing_route_scope: 'missing_route_scope'
+};
+
+function hasUnrepresentedNeedsReviewReason(
+  order: CanonicalOrderDto,
+  reasons: ReadonlySet<OrderWorksetUnavailableReason>
+): boolean {
+  const hasSpecificMetadataReason =
+    reasons.has('missing_address') ||
+    reasons.has('missing_coordinates') ||
+    reasons.has('missing_delivery_date') ||
+    reasons.has('missing_route_scope');
+  const hasUnrepresentedBlocker = order.blockerReasons.some((blocker) => {
+    const mappedReason = BLOCKER_WORKSET_REASON_MAP[blocker];
+    return mappedReason === undefined || !reasons.has(mappedReason);
+  });
+  if (hasUnrepresentedBlocker) return true;
+  if (
+    order.health === 'needs_review' ||
+    order.metadataResolved === false ||
+    order.routeEligible === false
+  ) {
+    return !hasSpecificMetadataReason;
+  }
+  return false;
 }
 
 function isCompletedOrCancelledOrder(order: CanonicalOrderDto): boolean {
