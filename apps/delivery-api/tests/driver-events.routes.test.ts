@@ -2,6 +2,10 @@ import { createHmac } from 'node:crypto';
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
+import {
+  DriverEventContextError,
+  DriverEventScopeError
+} from '../src/modules/driver/driver-event.repository.js';
 import type { DriverApiDependencies } from '../src/routes/driver-events.routes.js';
 
 const secret = 'driver-secret';
@@ -117,6 +121,93 @@ describe('Driver events route', () => {
           eventId: 'driver-event-id'
         },
         error: null
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('maps missing terminal route/stop context to a deterministic bad request response', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    recordDriverEvent.mockRejectedValueOnce(new DriverEventContextError('missing routePlanId'));
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: {
+          clientEventId: 'mobile-event-2',
+          deliveryStopId: null,
+          eventType: 'STOP_DELIVERED',
+          occurredAt: '2026-05-07T06:09:30.000Z',
+          routePlanId: null
+        },
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'Invalid driver event route or stop context' }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('maps terminal route/stop ownership mismatch to a deterministic forbidden response', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    recordDriverEvent.mockRejectedValueOnce(new DriverEventScopeError('foreign route'));
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: {
+          clientEventId: 'mobile-event-3',
+          deliveryStopId: 'foreign-stop-id',
+          eventType: 'STOP_DELIVERED',
+          occurredAt: '2026-05-07T06:09:30.000Z',
+          routePlanId: 'foreign-route-plan-id'
+        },
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'FORBIDDEN', message: 'Driver event route or stop scope rejected' }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('maps invalid route completion ownership to a deterministic forbidden response', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    recordDriverEvent.mockRejectedValueOnce(new DriverEventScopeError('foreign completed route'));
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: {
+          clientEventId: 'mobile-event-4',
+          deliveryStopId: null,
+          eventType: 'ROUTE_COMPLETED',
+          occurredAt: '2026-05-07T06:09:30.000Z',
+          routePlanId: 'foreign-route-plan-id'
+        },
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'FORBIDDEN', message: 'Driver event route or stop scope rejected' }
       });
     } finally {
       await app.close();

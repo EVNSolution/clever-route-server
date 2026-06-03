@@ -116,17 +116,35 @@ describe('PrismaDriverAssignedRouteRepository', () => {
     const routePlanFindArgs = prisma.routePlan.findFirst.mock.calls[0]?.[0];
     expect(routePlanFindArgs?.where).toMatchObject({ id: 'wrong-route' });
   });
+
+  test('excludes completed routes from assigned-route lookup', async () => {
+    const { prisma } = createPrismaHarness({ routePlan: null });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'completed-route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com'
+    });
+
+    expect(result).toEqual({ status: 'NO_ASSIGNED_ROUTE' });
+    const routePlanFindArgs = prisma.routePlan.findFirst.mock.calls[0]?.[0];
+    expect(routePlanFindArgs?.where.status).toEqual({
+      in: ['ASSIGNED', 'IN_PROGRESS', 'OPTIMIZED']
+    });
+    expect(routePlanFindArgs?.where.status?.in).not.toContain('COMPLETED');
+  });
 });
 
-function createPrismaHarness(input: { driverShopId?: string } = {}) {
+function createPrismaHarness(input: { driverShopId?: string; routePlan?: typeof routePlanRecord | null } = {}) {
   return {
     prisma: {
       driver: {
         findUnique: vi.fn(() => Promise.resolve({ id: 'driver-id', shopId: input.driverShopId ?? 'shop-id' }))
       },
       routePlan: {
-        findFirst: vi.fn((args: { where: { id?: string } }) =>
-          Promise.resolve(args.where.id === 'wrong-route' ? null : routePlanRecord)
+        findFirst: vi.fn((args: { where: { id?: string; status?: { in: string[] } } }) =>
+          Promise.resolve(args.where.id === 'wrong-route' ? null : input.routePlan === undefined ? routePlanRecord : input.routePlan)
         )
       },
       shop: {

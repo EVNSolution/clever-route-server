@@ -181,6 +181,127 @@ ensure_route_ops_ingress() {
   route_ops_compose .deploy/candidate-image.env up -d --no-build --force-recreate --no-deps caddy
 }
 
+read_route_ops_host_env_value() {
+  local key value
+  key="$1"
+  value=""
+  if [ -f infra/env/delivery-api.env ]; then
+    value="$(awk -F= -v key="$key" '
+      /^[[:space:]]*#/ { next }
+      $1 == key { print substr($0, index($0, "=") + 1); exit }
+    ' infra/env/delivery-api.env)"
+  fi
+  value="${value%%#*}"
+  printf '%s' "$value" | tr -d '[:space:]' | sed -e "s/^['\"]//" -e "s/['\"]$//"
+}
+
+route_ops_osrm_configured() {
+  local osrm_base_url
+  osrm_base_url="$(read_route_ops_host_env_value OSRM_BASE_URL)"
+  [ -n "$osrm_base_url" ]
+}
+
+route_ops_osrm_enabled_json() {
+  if route_ops_osrm_configured; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
+smoke_route_ops_osrm_url() {
+  local osrm_base_url route_path url
+  osrm_base_url="$1"
+  route_path="${ROUTE_OPS_OSRM_SMOKE_ROUTE_PATH:--79.3832,43.6532;-79.6441,43.5890}"
+  url="${osrm_base_url%/}/route/v1/driving/${route_path}?overview=full&geometries=geojson&steps=false"
+  echo "Smoking Route Ops OSRM from host loopback."
+  if command -v node >/dev/null 2>&1; then
+    ROUTE_OPS_OSRM_SMOKE_URL="$url" node <<'NODE'
+const response = await fetch(process.env.ROUTE_OPS_OSRM_SMOKE_URL);
+if (!response.ok) throw new Error(`OSRM smoke HTTP ${response.status}`);
+const payload = await response.json();
+const route = Array.isArray(payload.routes) ? payload.routes[0] : null;
+const coordinates = route?.geometry?.coordinates;
+if (payload.code !== 'Ok' || route?.geometry?.type !== 'LineString' || !Array.isArray(coordinates) || coordinates.length < 2) {
+  throw new Error('OSRM smoke did not return a LineString route geometry');
+}
+console.log(JSON.stringify({ code: payload.code, coordinates: coordinates.length }));
+NODE
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$url" <<'PYTHON'
+import json
+import sys
+import urllib.request
+
+with urllib.request.urlopen(sys.argv[1], timeout=10) as response:
+    payload = json.load(response)
+route = payload.get('routes', [None])[0]
+geometry = route.get('geometry') if isinstance(route, dict) else None
+coordinates = geometry.get('coordinates') if isinstance(geometry, dict) else None
+if (
+    payload.get('code') != 'Ok'
+    or not isinstance(geometry, dict)
+    or geometry.get('type') != 'LineString'
+    or not isinstance(coordinates, list)
+    or len(coordinates) < 2
+):
+    raise SystemExit('OSRM smoke did not return a LineString route geometry')
+print(json.dumps({'code': payload.get('code'), 'coordinates': len(coordinates)}, separators=(',', ':')))
+PYTHON
+    return 0
+  fi
+  echo "OSRM smoke requires node or python3 on the deploy host." >&2
+  return 1
+}
+
+smoke_route_ops_osrm_from_runtime_network() {
+  local image_env_file network_url
+  image_env_file="$1"
+  network_url="${ROUTE_OPS_OSRM_NETWORK_SMOKE_URL:-http://osrm-ontario:5000}"
+  echo "Smoking Route Ops OSRM from the delivery-api runtime network."
+  route_ops_compose "$image_env_file" run --rm --no-deps -e ROUTE_OPS_OSRM_SMOKE_URL="$network_url" delivery-api node - <<'NODE'
+const url = `${process.env.ROUTE_OPS_OSRM_SMOKE_URL.replace(/\/+$/, '')}/route/v1/driving/-79.3832,43.6532;-79.6441,43.5890?overview=full&geometries=geojson&steps=false`;
+const response = await fetch(url);
+if (!response.ok) throw new Error(`OSRM smoke HTTP ${response.status}`);
+const payload = await response.json();
+const route = Array.isArray(payload.routes) ? payload.routes[0] : null;
+const coordinates = route?.geometry?.coordinates;
+if (payload.code !== 'Ok' || route?.geometry?.type !== 'LineString' || !Array.isArray(coordinates) || coordinates.length < 2) {
+  throw new Error('OSRM smoke did not return a LineString route geometry');
+}
+console.log(JSON.stringify({ code: payload.code, coordinates: coordinates.length }));
+NODE
+}
+
+ensure_route_ops_osrm() {
+  local image_env_file host_url
+  image_env_file="$1"
+  if ! route_ops_osrm_configured; then
+    echo "Route Ops OSRM disabled in infra/env/delivery-api.env; skipping OSRM service activation."
+    return 0
+  fi
+
+  echo "Ensuring Route Ops OSRM Ontario service is attached to the durable clever-route compose project."
+  route_ops_compose "$image_env_file" --profile osrm up -d --no-build osrm-ontario
+
+  host_url="${ROUTE_OPS_OSRM_HOST_SMOKE_URL:-http://127.0.0.1:5000}"
+  smoke_route_ops_osrm_url "$host_url"
+  smoke_route_ops_osrm_from_runtime_network "$image_env_file"
+}
+
+stop_route_ops_osrm_if_disabled() {
+  local image_env_file
+  image_env_file="$1"
+  if route_ops_osrm_configured; then
+    return 0
+  fi
+
+  echo "Stopping Route Ops OSRM Ontario because OSRM_BASE_URL is disabled in infra/env/delivery-api.env."
+  route_ops_compose "$image_env_file" --profile osrm stop osrm-ontario
+}
+
 acquire_deploy_lock
 trap 'release_deploy_lock' EXIT
 enforce_no_legacy_route_ops_compose_project
@@ -198,7 +319,9 @@ restore_current() {
     echo "Rollback failed; restoring pre-rollback current image metadata." >&2
     load_image_env_file .deploy/rollback-from-image.env
     if [ "$ROUTE_OPS_ROLLBACK_SERVICE_MUTATED" = "true" ]; then
+      ensure_route_ops_osrm .deploy/rollback-from-image.env || true
       route_ops_compose .deploy/rollback-from-image.env up -d --no-build --force-recreate --no-deps delivery-api || true
+      stop_route_ops_osrm_if_disabled .deploy/rollback-from-image.env || true
       route_ops_compose .deploy/rollback-from-image.env up -d --no-build --force-recreate --no-deps caddy || true
     fi
     if [ "$ROUTE_OPS_ROLLBACK_SERVICE_MUTATED" != "true" ]; then
@@ -233,8 +356,10 @@ docker run --rm "$DELIVERY_API_MIGRATE_IMAGE" sh -lc 'test -f apps/delivery-api/
 ROUTE_OPS_ROLLBACK_STATIC_ARTIFACT_STAGED="true"
 route_ops_compose .deploy/candidate-image.env up --no-build --force-recreate route-ops-web-static
 route_ops_compose .deploy/candidate-image.env run --rm delivery-api-migrate
+ensure_route_ops_osrm .deploy/candidate-image.env
 ROUTE_OPS_ROLLBACK_SERVICE_MUTATED="true"
 route_ops_compose .deploy/candidate-image.env up -d --no-build --force-recreate --no-deps delivery-api
+stop_route_ops_osrm_if_disabled .deploy/candidate-image.env
 ensure_route_ops_ingress
 
 ROUTE_OPS_SMOKE_BASE_URL="$BASE_URL" \
@@ -244,8 +369,8 @@ node scripts/smoke-route-ops-production.mjs
 
 mv .deploy/current-image.env .deploy/previous-image.env
 mv .deploy/candidate-image.env .deploy/current-image.env
-printf '{"ts":"%s","rollbackTo":"%s","deliveryApiImage":"%s","migrateImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","prismaSchemaSha":"%s"}\n' \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${IMAGE_TAG:-unknown}" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" "${ROUTE_OPS_WEB_STATIC_IMAGE:-}" "${ROUTE_OPS_WEB_STATIC_VOLUME:-}" "$PRISMA_SCHEMA_SHA" >> .deploy/deploy-history.jsonl
+printf '{"ts":"%s","rollbackTo":"%s","deliveryApiImage":"%s","migrateImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","prismaSchemaSha":"%s","osrmEnabled":%s}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${IMAGE_TAG:-unknown}" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" "${ROUTE_OPS_WEB_STATIC_IMAGE:-}" "${ROUTE_OPS_WEB_STATIC_VOLUME:-}" "$PRISMA_SCHEMA_SHA" "$(route_ops_osrm_enabled_json)" >> .deploy/deploy-history.jsonl
 release_deploy_lock
 trap - EXIT
 echo "Route Ops image rollback promoted: ${IMAGE_TAG:-unknown}"

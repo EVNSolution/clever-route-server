@@ -55,7 +55,7 @@ describe('WordPressPluginAuthService', () => {
     expect(repository.failedAttemptIds).toEqual(['pairing-id', 'pairing-id']);
   });
 
-  test('valid token resolves tenant from token only and touches last-used timestamp', async () => {
+  test('valid token resolves tenant from token only without blocking on last-used telemetry', async () => {
     const repository = createRepositoryHarness();
     repository.tokens.set(hashSecret('token-value'), {
       commerceConnection: connectionRecord(),
@@ -77,7 +77,7 @@ describe('WordPressPluginAuthService', () => {
       tokenId: 'token-id',
       tokenPrefix: 'crp_prefix'
     });
-    expect(repository.touchedTokenIds).toEqual(['token-id']);
+    expect(repository.touchedTokenIds).toEqual([]);
   });
 
   test('invalid and revoked tokens fail closed', async () => {

@@ -147,11 +147,14 @@ describe('route ops web state helpers', () => {
       stops: [stop('a', 1, 'COMPLETED'), stop('b', 2, 'ATTEMPTED', null, null)]
     };
     expect(deriveRouteStats(detail)).toEqual({ attempted: 1, completed: 1, missingCoordinates: 1, stops: 2 });
-    expect(geometryLabel(detail, 'not_configured')).toBe('Router not configured');
-    expect(geometryLabel(detail, 'not_configured', 'ko-KR')).toBe('라우터 미설정');
-    expect(geometryLabel({ ...detail, routeGeometry: { coordinates: [[-79, 43]], type: 'LineString' } }, 'configured')).toBe('Road geometry');
-    expect(geometryLabel({ ...detail, routeGeometry: { coordinates: [[-79, 43]], type: 'LineString' } }, 'configured', 'ko-KR')).toBe('도로 경로');
-    expect(geometryLabel(detail, 'configured')).toBe('Road geometry unavailable');
+    expect(geometryLabel(null, 'configured')).toBe('No route selected');
+    expect(geometryLabel(detail, 'not_configured')).toBe('Stops ready · router not configured');
+    expect(geometryLabel(detail, 'not_configured', 'ko-KR')).toBe('정류장 표시됨 · 라우터 미설정');
+    expect(geometryLabel({ ...detail, routeGeometry: { coordinates: [[-79, 43], [-79.1, 43.1]], type: 'LineString' } }, 'configured')).toBe('Road path ready');
+    expect(geometryLabel({ ...detail, routeGeometry: { coordinates: [[-79, 43], [-79.1, 43.1]], type: 'LineString' } }, 'configured', 'ko-KR')).toBe('도로 경로');
+    expect(geometryLabel(detail, 'configured')).toBe('Stops ready · road path not generated');
+    expect(geometryLabel({ ...detail, routePlan: { ...detail.routePlan, depot: { latitude: null, longitude: null } }, stops: [stop('a', 1, 'PENDING', null, null)] }, 'configured')).toBe('Need coordinates for road path');
+    expect(geometryLabel({ ...detail, routePlan: { ...detail.routePlan, depot: { latitude: null, longitude: null } }, stops: [stop('a', 1, 'PENDING', null, null)] }, 'configured', 'ko-KR')).toBe('경로 선에 필요한 좌표 부족');
   });
 
   test('keeps map/provider states explicit and plugin mode hides setup actions', () => {

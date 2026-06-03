@@ -1,7 +1,12 @@
 import type { CanonicalOrderRow } from '../shopify/order-sync.mapper.js';
+import type { WooCommerceOrder } from '../woocommerce/woocommerce-order.types.js';
 import type { DecryptedWooCommerceConnection } from '../commerce/commerce-connection.service.js';
 import type {
   WordPressPluginConnectionContext,
+  WordPressPluginRawSyncChunkInput,
+  WordPressPluginRawSyncChunkResult,
+  WordPressPluginRawSyncFinalizeInput,
+  WordPressPluginRawSyncFinalizeResult,
   WordPressPluginSyncCounts,
   WordPressPluginSyncGeocodeSummary,
   WordPressPluginSyncRequestInput,
@@ -21,6 +26,64 @@ export type WordPressPluginSyncRunRepository = {
     context: WordPressPluginConnectionContext;
     request: WordPressPluginSyncRunRequest;
   }): Promise<{ alreadyRunning: boolean; run: WordPressPluginSyncRun; startBackgroundProcessing: boolean }>;
+  createRawSyncRunUnlessActive(input: {
+    acceptedAt: Date;
+    context: WordPressPluginConnectionContext;
+    request: WordPressPluginSyncRequestInput;
+  }): Promise<{ alreadyRunning: boolean; run: WordPressPluginSyncRun; startBackgroundProcessing: boolean }>;
+  acceptRawChunk(input: {
+    context: WordPressPluginConnectionContext;
+    now: Date;
+    payload: WordPressPluginRawSyncChunkInput;
+  }): Promise<WordPressPluginRawSyncChunkResult>;
+  finalizeRawSyncRun(input: {
+    context: WordPressPluginConnectionContext;
+    now: Date;
+    payload: WordPressPluginRawSyncFinalizeInput;
+  }): Promise<WordPressPluginRawSyncFinalizeResult>;
+  listRawIngestsForProcessing(input: {
+    context: WordPressPluginConnectionContext;
+    limit: number;
+    now: Date;
+    syncRunId: string;
+  }): Promise<Array<{ id: string; rawPayload: unknown; sourceOrderId: string; sourceOrderNumber: string | null }>>;
+  markRawIngestProcessing(input: {
+    context: WordPressPluginConnectionContext;
+    ingestId: string;
+    now: Date;
+    syncRunId: string;
+  }): Promise<boolean>;
+  markRawIngestProcessed(input: {
+    canonicalOrderId: string | null;
+    context: WordPressPluginConnectionContext;
+    geocode: WordPressPluginSyncGeocodeSummary;
+    ingestId: string;
+    now: Date;
+    sync: WordPressPluginSyncCounts;
+    syncRunId: string;
+  }): Promise<void>;
+  markRawIngestSkipped(input: {
+    context: WordPressPluginConnectionContext;
+    failureCode: string;
+    failureMessage: string;
+    ingestId: string;
+    now: Date;
+    syncRunId: string;
+  }): Promise<void>;
+  markRawIngestFailed(input: {
+    context: WordPressPluginConnectionContext;
+    failureCode: string;
+    failureMessage: string;
+    ingestId: string;
+    now: Date;
+    retryable: boolean;
+    syncRunId: string;
+  }): Promise<void>;
+  refreshRawSyncRunStatus(input: {
+    context: WordPressPluginConnectionContext;
+    now: Date;
+    syncRunId: string;
+  }): Promise<WordPressPluginSyncRun | null>;
   findLatestSyncRun(input: { context: WordPressPluginConnectionContext }): Promise<WordPressPluginSyncRun | null>;
   findSyncRunById(input: {
     context: WordPressPluginConnectionContext;
@@ -79,6 +142,143 @@ export class WordPressPluginSyncRequestService {
       startBackgroundProcessing: accepted.startBackgroundProcessing,
       syncRun: accepted.run
     };
+  }
+
+  async requestRawSync(input: {
+    context: WordPressPluginConnectionContext;
+    payload: WordPressPluginSyncRequestInput;
+  }): Promise<WordPressPluginSyncRequestAccepted> {
+    const accepted = await this.dependencies.syncRunRepository.createRawSyncRunUnlessActive({
+      acceptedAt: this.now(),
+      context: input.context,
+      request: input.payload
+    });
+    return {
+      alreadyRunning: accepted.alreadyRunning,
+      message: accepted.alreadyRunning
+        ? 'A sync is already queued or running in the background. Returning the active sync run.'
+        : 'Raw sync accepted. WordPress will upload order chunks in the background.',
+      startBackgroundProcessing: accepted.startBackgroundProcessing,
+      syncRun: accepted.run
+    };
+  }
+
+  async acceptRawChunk(input: {
+    context: WordPressPluginConnectionContext;
+    payload: WordPressPluginRawSyncChunkInput;
+  }): Promise<WordPressPluginRawSyncChunkResult> {
+    const result = await this.dependencies.syncRunRepository.acceptRawChunk({
+      context: input.context,
+      now: this.now(),
+      payload: input.payload
+    });
+    return result;
+  }
+
+  async finalizeRawSync(input: {
+    context: WordPressPluginConnectionContext;
+    payload: WordPressPluginRawSyncFinalizeInput;
+  }): Promise<WordPressPluginRawSyncFinalizeResult> {
+    const result = await this.dependencies.syncRunRepository.finalizeRawSyncRun({
+      context: input.context,
+      now: this.now(),
+      payload: input.payload
+    });
+    return result;
+  }
+
+  async processRawSyncRun(input: {
+    context: WordPressPluginConnectionContext;
+    syncRunId: string;
+  }): Promise<WordPressPluginSyncRun | null> {
+    const connection = await this.dependencies.connectionService.readDecryptedWooCommerceConnection({
+      connectionId: input.context.connectionId
+    });
+    if (connection === null) {
+      await this.dependencies.syncRunRepository.markSyncRunFailed({
+        completedAt: this.now(),
+        context: input.context,
+        errorMessage: 'WooCommerce connection was not available for sync.',
+        syncRunId: input.syncRunId
+      });
+      return this.dependencies.syncRunRepository.findSyncRunById({ context: input.context, syncRunId: input.syncRunId });
+    }
+
+    const orderSyncService = this.dependencies.createOrderSyncService({ connection });
+    for (let pass = 0; pass < 4; pass += 1) {
+      const rows = await this.dependencies.syncRunRepository.listRawIngestsForProcessing({
+        context: input.context,
+        limit: 100,
+        now: this.now(),
+        syncRunId: input.syncRunId
+      });
+      if (rows.length === 0) break;
+
+      for (const row of rows) {
+        const processing = await this.dependencies.syncRunRepository.markRawIngestProcessing({
+          context: input.context,
+          ingestId: row.id,
+          now: this.now(),
+          syncRunId: input.syncRunId
+        });
+        if (!processing) continue;
+        try {
+          const synced = await orderSyncService.syncOrders({
+            orders: [row.rawPayload as WooCommerceOrder],
+            reason: 'raw_push'
+          });
+          const canonicalOrderId = synced.orders[0]?.orderId ?? null;
+          if (isStaleRawSyncResult(synced.sync)) {
+            await this.dependencies.syncRunRepository.markRawIngestSkipped({
+              context: input.context,
+              failureCode: 'RAW_ORDER_STALE_SOURCE_SNAPSHOT',
+              failureMessage: 'Order was skipped because CLEVER already has a newer WooCommerce snapshot.',
+              ingestId: row.id,
+              now: this.now(),
+              syncRunId: input.syncRunId
+            });
+            continue;
+          }
+          const status = synced.sync.created > 0 || synced.sync.updated > 0 || synced.sync.unchanged > 0 ? 'processed' : 'skipped';
+          if (status === 'processed') {
+            await this.dependencies.syncRunRepository.markRawIngestProcessed({
+              canonicalOrderId,
+              context: input.context,
+              geocode: summarizeGeocode(synced.orders),
+              ingestId: row.id,
+              now: this.now(),
+              sync: synced.sync,
+              syncRunId: input.syncRunId
+            });
+          } else {
+            await this.dependencies.syncRunRepository.markRawIngestSkipped({
+              context: input.context,
+              failureCode: 'RAW_ORDER_SKIPPED',
+              failureMessage: 'Order was skipped by canonical freshness rules.',
+              ingestId: row.id,
+              now: this.now(),
+              syncRunId: input.syncRunId
+            });
+          }
+        } catch (error) {
+          await this.dependencies.syncRunRepository.markRawIngestFailed({
+            context: input.context,
+            failureCode: 'RAW_ORDER_PROCESSING_FAILED',
+            failureMessage: sanitizeRawOrderErrorMessage(error),
+            ingestId: row.id,
+            now: this.now(),
+            retryable: true,
+            syncRunId: input.syncRunId
+          });
+        }
+      }
+    }
+
+    return this.dependencies.syncRunRepository.refreshRawSyncRunStatus({
+      context: input.context,
+      now: this.now(),
+      syncRunId: input.syncRunId
+    });
   }
 
   readSyncRun(input: {
@@ -176,6 +376,10 @@ function deriveWarnings(sync: WordPressPluginSyncCounts): string[] {
   return warnings;
 }
 
+function isStaleRawSyncResult(sync: WordPressPluginSyncCounts): boolean {
+  return sync.created === 0 && sync.updated === 0 && sync.unchanged > 0;
+}
+
 function summarizeGeocode(orders: CanonicalOrderRow[]): WordPressPluginSyncGeocodeSummary {
   const summary: WordPressPluginSyncGeocodeSummary = {
     failed: 0,
@@ -190,6 +394,14 @@ function summarizeGeocode(orders: CanonicalOrderRow[]): WordPressPluginSyncGeoco
     else summary.pending += 1;
   }
   return summary;
+}
+
+function sanitizeRawOrderErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (/timeout|timed out|ETIMEDOUT/iu.test(raw)) {
+    return 'Raw WooCommerce order processing timed out before completion.';
+  }
+  return 'Raw WooCommerce order could not be processed. Internal details were redacted; use the sync run id to inspect server logs.';
 }
 
 function sanitizeErrorMessage(error: unknown): string {
@@ -207,6 +419,13 @@ function sanitizeErrorMessage(error: unknown): string {
 }
 
 export type WordPressPluginOrderSyncService = {
+  syncOrders(input: {
+    orders: WooCommerceOrder[];
+    reason: 'manual_backfill' | 'raw_push' | 'scheduled_incremental' | 'webhook';
+  }): Promise<{
+    orders: CanonicalOrderRow[];
+    sync: WordPressPluginSyncCounts;
+  }>;
   syncUpdatedOrders(input: {
     modifiedAfter?: Date | null;
     pageSize: number;

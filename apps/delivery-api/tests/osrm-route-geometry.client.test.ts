@@ -199,6 +199,49 @@ describe('OsrmRouteGeometryProvider', () => {
     expect(result).toEqual({ routeGeometry: null, routeStopPoints: [] });
   });
 
+  test('returns null geometry and no stop points for invalid OSRM payloads', async () => {
+    const invalidPayloads = [
+      { code: 'Ok', routes: [] },
+      { code: 'Ok', routes: [{ geometry: { type: 'Point', coordinates: [-79.3, 43.6] } }] },
+      { code: 'Ok', routes: [{ geometry: { type: 'LineString', coordinates: [[-79.3, 43.6]] } }] },
+      { code: 'NoRoute', routes: [{ geometry: { type: 'LineString', coordinates: [[-79.3, 43.6], [-79.4, 43.7]] } }] }
+    ];
+
+    for (const payload of invalidPayloads) {
+      const fetch = vi.fn().mockResolvedValue(Response.json(payload));
+      const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
+
+      await expect(provider.buildRoute(detail)).resolves.toEqual({ routeGeometry: null, routeStopPoints: [] });
+    }
+  });
+
+  test('returns null geometry and no stop points when the OSRM provider rejects', async () => {
+    const fetch = vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED'));
+    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
+
+    await expect(provider.buildRoute(detail)).resolves.toEqual({ routeGeometry: null, routeStopPoints: [] });
+  });
+
+  test('aborts slow OSRM requests and returns null geometry', async () => {
+    vi.useFakeTimers();
+    const fetch = vi.fn(
+      (_url: string, init: { method: 'GET'; signal?: AbortSignal }) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+        })
+    );
+    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch, timeoutMs: 1 });
+
+    try {
+      const resultPromise = provider.buildRoute(detail);
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(resultPromise).resolves.toEqual({ routeGeometry: null, routeStopPoints: [] });
+      expect(fetch.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('returns null geometry and no stop points instead of calling OSRM when there are fewer than two routable points', async () => {
     const fetch = vi.fn();
     const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });

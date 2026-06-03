@@ -218,6 +218,46 @@ describe('WooCommerceOrderSyncService', () => {
     );
   });
 
+  test('skips pre-persist geocoding for private-provider paginated sync', async () => {
+    const client = {
+      listOrdersPage: vi.fn().mockResolvedValue({
+        orders: [order(34)],
+        page: 1,
+        perPage: 10,
+        total: 1,
+        totalPages: 1
+      })
+    };
+    const repository = createRepositoryHarness();
+    const geocodingService = {
+      geocode: vi.fn(),
+      status: {
+        mode: 'nominatim_compatible' as const,
+        persistentCacheEnabled: true,
+        providerPolicy: 'private_nominatim_compatible' as const
+      }
+    };
+    const service = new WooCommerceOrderSyncService({
+      client,
+      geocodingService,
+      repository,
+      shopDomain: 'woo.example.test',
+      siteUrl: 'https://woo.example.test'
+    });
+
+    await service.syncUpdatedOrders({ pageSize: 10, status: 'processing' });
+
+    expect(geocodingService.geocode).not.toHaveBeenCalled();
+    const upsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
+    expect(upsert?.synced.deliveryStop).toEqual(
+      expect.objectContaining({
+        geocodeStatus: 'PENDING',
+        latitude: null,
+        longitude: null
+      })
+    );
+  });
+
 
   test('pre-persist geocoding resolves Woo unit addresses using fallback street queries', async () => {
     const repository = createRepositoryHarness();

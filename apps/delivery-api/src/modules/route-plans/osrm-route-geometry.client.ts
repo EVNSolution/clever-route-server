@@ -69,8 +69,13 @@ export class OsrmRouteGeometryProvider implements RouteGeometryProvider {
       return emptyRouteResult();
     }
 
+    const routeGeometry = readOsrmRouteGeometry(payload);
+    if (routeGeometry === null) {
+      return emptyRouteResult();
+    }
+
     return {
-      routeGeometry: readOsrmRouteGeometry(payload),
+      routeGeometry,
       routeStopPoints: buildRouteStopPoints(sortedStops, routePoints, payload)
     };
   }

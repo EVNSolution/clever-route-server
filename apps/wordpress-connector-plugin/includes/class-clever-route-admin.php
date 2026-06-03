@@ -3,6 +3,10 @@
 defined('ABSPATH') || exit;
 
 final class Clever_Route_Admin {
+    private const RAW_SYNC_CHUNK_ACTION = 'clever_route_raw_sync_chunk';
+    private const RAW_SYNC_CHUNK_SIZE = 100;
+    private const RAW_SYNC_MAX_META_ITEMS = 120;
+
     private Clever_Route_Options $options;
     private Clever_Route_Api_Client $client;
     private string $hook_suffix = '';
@@ -15,6 +19,7 @@ final class Clever_Route_Admin {
     public function register(): void {
         add_action('admin_menu', array($this, 'register_menu'));
         add_action('admin_enqueue_scripts', array($this, 'enqueue_assets'));
+        add_action(self::RAW_SYNC_CHUNK_ACTION, array($this, 'handle_raw_sync_chunk_job'), 10, 1);
     }
 
     public function register_menu(): void {
@@ -153,8 +158,8 @@ final class Clever_Route_Admin {
         $health = $this->client->get('/wordpress/plugin/health');
         $this->render_api_error($health);
         $this->render_ingestion_status(is_array($health['data'] ?? null) ? $health['data'] : array());
-        echo '<h3>' . esc_html__('Historical order import', 'clever-route-connector') . '</h3>';
-        echo '<p>' . esc_html__('Use this after initial setup to bring existing WooCommerce orders into CLEVER. The plugin never pushes order payloads from WordPress; it asks the CLEVER server to pull orders through the stored WooCommerce REST credentials.', 'clever-route-connector') . '</p>';
+        echo '<h3>' . esc_html__('Raw order sync', 'clever-route-connector') . '</h3>';
+        echo '<p>' . esc_html__('Use this after initial setup to send WooCommerce order snapshots to CLEVER in bounded background chunks. CLEVER accepts the raw rows quickly, then normalizes and geocodes them on the server without blocking this WordPress request.', 'clever-route-connector') . '</p>';
         echo '<form method="post">';
         wp_nonce_field('clever_route_action', 'clever_route_nonce');
         echo '<input type="hidden" name="clever_route_action" value="sync" />';
@@ -172,9 +177,18 @@ final class Clever_Route_Admin {
         echo '<p><label>' . esc_html__('Advanced custom Woo status slug', 'clever-route-connector') . '<br />';
         echo '<input class="regular-text" type="text" name="woo_status_custom" placeholder="wc-ready-for-delivery" /></label><br />';
         echo '<span class="description">' . esc_html__('Only used when the status filter is Custom. Leave blank for normal WooCommerce statuses.', 'clever-route-connector') . '</span></p>';
-        submit_button(__('Run server-side Woo REST backfill', 'clever-route-connector'));
+        submit_button(__('Start raw sync', 'clever-route-connector'));
         echo '</form>';
-        echo '<p class="description">' . esc_html__('Manual sync calls POST /wordpress/plugin/sync/request. Plugin push orders/batch is intentionally not available in MVP.', 'clever-route-connector') . '</p>';
+        echo '<p class="description">' . esc_html__('Manual sync calls POST /wordpress/plugin/sync/raw/request, then uploads bounded chunks through WordPress background scheduling. Final counts and failures appear in Ingestion status after CLEVER finishes processing.', 'clever-route-connector') . '</p>';
+
+        echo '<hr />';
+        echo '<h3>' . esc_html__('Advanced recovery', 'clever-route-connector') . '</h3>';
+        echo '<p class="description">' . esc_html__('Use REST backfill only for recovery or reconciliation. It asks the CLEVER server to pull from WooCommerce REST credentials and remains available as a fallback.', 'clever-route-connector') . '</p>';
+        echo '<form method="post">';
+        wp_nonce_field('clever_route_action', 'clever_route_nonce');
+        echo '<input type="hidden" name="clever_route_action" value="sync_rest_backfill" />';
+        submit_button(__('Run server-side Woo REST backfill', 'clever-route-connector'), 'secondary');
+        echo '</form>';
     }
 
     /** @param array{base_url:string,connection_id:string,token_prefix:string,connected:bool,last_error:string} $summary */
@@ -269,7 +283,7 @@ final class Clever_Route_Admin {
             $this->options->save_error($message);
             return $message;
         }
-        if ($action === 'sync') {
+        if ($action === 'sync' || $action === 'sync_rest_backfill') {
             $scope = sanitize_key((string) ($_POST['sync_scope'] ?? 'all'));
             $status_preset = sanitize_key((string) ($_POST['woo_status_preset'] ?? ''));
             $status_custom = sanitize_text_field((string) ($_POST['woo_status_custom'] ?? ''));
@@ -295,14 +309,32 @@ final class Clever_Route_Admin {
                 }
                 $payload['modifiedAfter'] = $modified_after_iso;
             }
-            $result = $this->client->post('/wordpress/plugin/sync/request', $payload);
+
+            if ($action === 'sync_rest_backfill') {
+                $result = $this->client->post('/wordpress/plugin/sync/request', $payload);
+                return $this->handle_sync_request_response($result, __('REST backfill failed.', 'clever-route-connector'));
+            }
+
+            $result = $this->client->post('/wordpress/plugin/sync/raw/request', $payload);
             $data = is_array($result['data'] ?? null) ? $result['data'] : array();
             if (isset($data['syncRun']) && is_array($data['syncRun'])) {
                 $sync_run_id = $this->text($data['syncRun']['syncRunId'] ?? '');
                 if ($sync_run_id !== '') {
                     $this->options->save_latest_sync_run_id($sync_run_id);
+                    $job = array(
+                        'chunk_count' => 0,
+                        'expected_order_count' => 0,
+                        'modified_after' => $this->text($payload['modifiedAfter'] ?? ''),
+                        'page' => 1,
+                        'page_size' => self::RAW_SYNC_CHUNK_SIZE,
+                        'status' => $this->text($payload['status'] ?? ''),
+                        'sync_run_id' => $sync_run_id,
+                    );
+                    if (!$this->enqueue_raw_sync_chunk($job)) {
+                        return __('Raw sync was accepted by CLEVER, but WordPress could not schedule the chunk upload job. Use Advanced recovery REST backfill or retry after WP-Cron is enabled.', 'clever-route-connector') . ' ' . $this->summarize_sync_request_result($data);
+                    }
                 }
-                return $this->summarize_sync_request_result($data);
+                return $this->summarize_sync_request_result($data) . ' ' . __('WordPress scheduled bounded raw-order chunk uploads in the background.', 'clever-route-connector');
             }
             if (isset($data['sync']) && is_array($data['sync'])) {
                 return $this->summarize_legacy_sync_result($data);
@@ -332,6 +364,328 @@ final class Clever_Route_Admin {
             return $message;
         }
         return '';
+    }
+
+    /** @param array<string,mixed> $result */
+    private function handle_sync_request_response(array $result, string $fallback_error): string {
+        $data = is_array($result['data'] ?? null) ? $result['data'] : array();
+        if (isset($data['syncRun']) && is_array($data['syncRun'])) {
+            $sync_run_id = $this->text($data['syncRun']['syncRunId'] ?? '');
+            if ($sync_run_id !== '') {
+                $this->options->save_latest_sync_run_id($sync_run_id);
+            }
+            return $this->summarize_sync_request_result($data);
+        }
+        if (isset($data['sync']) && is_array($data['sync'])) {
+            return $this->summarize_legacy_sync_result($data);
+        }
+        if ($this->sync_request_was_accepted_without_run_id($result, $data)) {
+            $latest = $this->client->get('/wordpress/plugin/sync/latest');
+            $latest_data = is_array($latest['data'] ?? null) ? $latest['data'] : array();
+            $latest_sync_run = is_array($latest_data['syncRun'] ?? null) ? $latest_data['syncRun'] : array();
+            if (!empty($latest_sync_run)) {
+                $sync_run_id = $this->text($latest_sync_run['syncRunId'] ?? '');
+                if ($sync_run_id !== '') {
+                    $this->options->save_latest_sync_run_id($sync_run_id);
+                }
+                return __('Manual sync request reached CLEVER. Loaded the latest server sync status.', 'clever-route-connector') . ' ' . $this->summarize_sync_request_result(array(
+                    'message' => $this->text($data['message'] ?? ''),
+                    'syncRun' => $latest_sync_run,
+                ));
+            }
+            $message = $this->text($data['message'] ?? '');
+            if ($message === '') {
+                $message = __('Manual sync request reached CLEVER, but this plugin could not read a sync run id. Refresh Ingestion status to verify completion.', 'clever-route-connector');
+            }
+            return $message;
+        }
+        $message = $this->text($result['error']['message'] ?? $fallback_error);
+        $this->options->save_error($message);
+        return $message;
+    }
+
+    /** @param array<string,mixed> $job */
+    private function enqueue_raw_sync_chunk(array $job): bool {
+        if (function_exists('as_enqueue_async_action')) {
+            $action_id = as_enqueue_async_action(self::RAW_SYNC_CHUNK_ACTION, array($job), 'clever-route');
+            return is_numeric($action_id) && (int) $action_id > 0;
+        }
+
+        return wp_schedule_single_event(time() + 1, self::RAW_SYNC_CHUNK_ACTION, array($job));
+    }
+
+    /** @param mixed $job */
+    public function handle_raw_sync_chunk_job($job): void {
+        if (!is_array($job)) {
+            return;
+        }
+        $sync_run_id = $this->text($job['sync_run_id'] ?? '');
+        if ($sync_run_id === '') {
+            return;
+        }
+
+        $page = max(1, (int) ($job['page'] ?? 1));
+        $page_size = (int) ($job['page_size'] ?? self::RAW_SYNC_CHUNK_SIZE);
+        if ($page_size < 1 || $page_size > self::RAW_SYNC_CHUNK_SIZE) {
+            $page_size = self::RAW_SYNC_CHUNK_SIZE;
+        }
+        $status = $this->text($job['status'] ?? '');
+        $modified_after = $this->text($job['modified_after'] ?? '');
+        $chunk_count = max(0, (int) ($job['chunk_count'] ?? 0));
+        $expected_order_count = max(0, (int) ($job['expected_order_count'] ?? 0));
+
+        $page_result = $this->read_woo_orders_page(array(
+            'modified_after' => $modified_after,
+            'page' => $page,
+            'page_size' => $page_size,
+            'status' => $status,
+        ));
+        $orders = $page_result['orders'];
+        $chunk_id = $sync_run_id . '-page-' . (string) $page;
+
+        $chunk_result = $this->client->post('/wordpress/plugin/sync/raw/chunk', array(
+            'chunkCount' => $page_result['total_pages'] > 0 ? $page_result['total_pages'] : null,
+            'chunkId' => $chunk_id,
+            'chunkIndex' => $page - 1,
+            'orders' => $orders,
+            'syncRunId' => $sync_run_id,
+        ));
+        if (!is_array($chunk_result['data'] ?? null) && is_array($chunk_result['error'] ?? null)) {
+            $this->options->save_error($this->text($chunk_result['error']['message'] ?? __('Raw sync chunk upload failed.', 'clever-route-connector')));
+            return;
+        }
+
+        $chunk_count += 1;
+        $expected_order_count += count($orders);
+        if ($page_result['has_more']) {
+            $this->enqueue_raw_sync_chunk(array(
+                'chunk_count' => $chunk_count,
+                'expected_order_count' => $expected_order_count,
+                'modified_after' => $modified_after,
+                'page' => $page + 1,
+                'page_size' => $page_size,
+                'status' => $status,
+                'sync_run_id' => $sync_run_id,
+            ));
+            return;
+        }
+
+        $finalize = $this->client->post('/wordpress/plugin/sync/raw/finalize', array(
+            'expectedChunkCount' => $chunk_count,
+            'expectedOrderCount' => $expected_order_count,
+            'syncRunId' => $sync_run_id,
+        ));
+        if (!is_array($finalize['data'] ?? null) && is_array($finalize['error'] ?? null)) {
+            $this->options->save_error($this->text($finalize['error']['message'] ?? __('Raw sync finalize failed.', 'clever-route-connector')));
+        }
+    }
+
+    /**
+     * @param array{modified_after:string,page:int,page_size:int,status:string} $input
+     * @return array{orders:array<int,array<string,mixed>>,has_more:bool,total_pages:int}
+     */
+    private function read_woo_orders_page(array $input): array {
+        if (!function_exists('wc_get_orders')) {
+            return array('orders' => array(), 'has_more' => false, 'total_pages' => 0);
+        }
+
+        $query = array(
+            'limit' => $input['page_size'],
+            'orderby' => 'modified',
+            'order' => 'ASC',
+            'page' => $input['page'],
+            'paginate' => true,
+            'return' => 'objects',
+        );
+        if ($input['status'] !== '') {
+            $query['status'] = $input['status'];
+        }
+        if ($input['modified_after'] !== '') {
+            $modified_after = $this->parse_utc_datetime($input['modified_after']);
+            if ($modified_after !== null) {
+                $query['date_modified'] = '>=' . $modified_after->setTimezone(wp_timezone())->format('Y-m-d H:i:s');
+            }
+        }
+
+        $result = wc_get_orders($query);
+        $orders = array();
+        $total_pages = 0;
+        if (is_object($result) && isset($result->orders) && is_array($result->orders)) {
+            $total_pages = isset($result->max_num_pages) ? (int) $result->max_num_pages : 0;
+            foreach ($result->orders as $order) {
+                $serialized = $this->serialize_woo_order($order);
+                if (!empty($serialized)) {
+                    $orders[] = $serialized;
+                }
+            }
+        } elseif (is_array($result)) {
+            foreach ($result as $order) {
+                $serialized = $this->serialize_woo_order($order);
+                if (!empty($serialized)) {
+                    $orders[] = $serialized;
+                }
+            }
+        }
+
+        $has_more = $total_pages > 0 ? $input['page'] < $total_pages : count($orders) === $input['page_size'];
+        return array('orders' => $orders, 'has_more' => $has_more, 'total_pages' => $total_pages);
+    }
+
+    /** @param mixed $order @return array<string,mixed> */
+    private function serialize_woo_order($order): array {
+        if (!is_object($order) || !method_exists($order, 'get_id')) {
+            return array();
+        }
+
+        return array(
+            'billing' => $this->serialize_woo_order_address($order, 'billing'),
+            'currency' => method_exists($order, 'get_currency') ? $this->text($order->get_currency()) : null,
+            'customer_note' => method_exists($order, 'get_customer_note') ? $this->text($order->get_customer_note()) : null,
+            'date_created_gmt' => $this->format_wc_datetime_utc(method_exists($order, 'get_date_created') ? $order->get_date_created() : null),
+            'date_modified_gmt' => $this->format_wc_datetime_utc(method_exists($order, 'get_date_modified') ? $order->get_date_modified() : null),
+            'id' => (int) $order->get_id(),
+            'line_items' => $this->serialize_woo_order_items($order, 'line_item'),
+            'meta_data' => $this->serialize_woo_meta_data(method_exists($order, 'get_meta_data') ? $order->get_meta_data() : array()),
+            'number' => method_exists($order, 'get_order_number') ? $this->text($order->get_order_number()) : (string) $order->get_id(),
+            'payment_method' => method_exists($order, 'get_payment_method') ? $this->text($order->get_payment_method()) : null,
+            'payment_method_title' => method_exists($order, 'get_payment_method_title') ? $this->text($order->get_payment_method_title()) : null,
+            'shipping' => $this->serialize_woo_order_address($order, 'shipping'),
+            'shipping_lines' => $this->serialize_woo_order_items($order, 'shipping'),
+            'status' => method_exists($order, 'get_status') ? $this->text($order->get_status()) : null,
+            'total' => method_exists($order, 'get_total') ? $this->text($order->get_total()) : null,
+        );
+    }
+
+    /** @param object $order @return array<string,string|null> */
+    private function serialize_woo_order_address(object $order, string $kind): array {
+        $prefix = $kind === 'shipping' ? 'get_shipping_' : 'get_billing_';
+        return array(
+            'address_1' => $this->call_text($order, $prefix . 'address_1'),
+            'address_2' => $this->call_text($order, $prefix . 'address_2'),
+            'city' => $this->call_text($order, $prefix . 'city'),
+            'company' => $this->call_text($order, $prefix . 'company'),
+            'country' => $this->call_text($order, $prefix . 'country'),
+            'email' => $kind === 'billing' ? $this->call_text($order, 'get_billing_email') : null,
+            'first_name' => $this->call_text($order, $prefix . 'first_name'),
+            'last_name' => $this->call_text($order, $prefix . 'last_name'),
+            'phone' => $kind === 'billing' ? $this->call_text($order, 'get_billing_phone') : $this->call_text($order, 'get_shipping_phone'),
+            'postcode' => $this->call_text($order, $prefix . 'postcode'),
+            'state' => $this->call_text($order, $prefix . 'state'),
+        );
+    }
+
+    /** @param object $order @return array<int,array<string,mixed>> */
+    private function serialize_woo_order_items(object $order, string $type): array {
+        if (!method_exists($order, 'get_items')) {
+            return array();
+        }
+        $items = array();
+        foreach ($order->get_items($type) as $item) {
+            if (!is_object($item)) {
+                continue;
+            }
+            if ($type === 'shipping') {
+                $items[] = array(
+                    'id' => method_exists($item, 'get_id') ? (int) $item->get_id() : null,
+                    'meta_data' => $this->serialize_woo_meta_data(method_exists($item, 'get_meta_data') ? $item->get_meta_data() : array()),
+                    'method_id' => method_exists($item, 'get_method_id') ? $this->text($item->get_method_id()) : null,
+                    'method_title' => method_exists($item, 'get_method_title') ? $this->text($item->get_method_title()) : null,
+                );
+                continue;
+            }
+            $items[] = array(
+                'id' => method_exists($item, 'get_id') ? (int) $item->get_id() : null,
+                'meta_data' => $this->serialize_woo_meta_data(method_exists($item, 'get_meta_data') ? $item->get_meta_data() : array()),
+                'name' => method_exists($item, 'get_name') ? $this->text($item->get_name()) : null,
+                'quantity' => method_exists($item, 'get_quantity') ? (int) $item->get_quantity() : null,
+                'sku' => method_exists($item, 'get_product') && is_object($item->get_product()) && method_exists($item->get_product(), 'get_sku') ? $this->text($item->get_product()->get_sku()) : null,
+            );
+        }
+        return $items;
+    }
+
+    /** @param array<int,mixed> $meta_data @return array<int,array{key:string,value:mixed}> */
+    private function serialize_woo_meta_data(array $meta_data): array {
+        $items = array();
+        foreach ($meta_data as $meta) {
+            if (count($items) >= self::RAW_SYNC_MAX_META_ITEMS) {
+                break;
+            }
+            $key = '';
+            $value = null;
+            if (is_object($meta) && method_exists($meta, 'get_data')) {
+                $data = $meta->get_data();
+                if (is_array($data)) {
+                    $key = $this->text($data['key'] ?? '');
+                    $value = $data['value'] ?? null;
+                }
+            } elseif (is_array($meta)) {
+                $key = $this->text($meta['key'] ?? '');
+                $value = $meta['value'] ?? null;
+            }
+            if ($key === '' || !$this->is_safe_order_meta_key($key)) {
+                continue;
+            }
+            $items[] = array('key' => $key, 'value' => $this->normalize_raw_sync_value($value));
+        }
+        return $items;
+    }
+
+    /** @param mixed $value @return mixed */
+    private function normalize_raw_sync_value($value) {
+        if (is_null($value) || is_bool($value) || is_int($value) || is_float($value)) {
+            return $value;
+        }
+        if (is_scalar($value)) {
+            return substr((string) $value, 0, 4000);
+        }
+        if (is_array($value)) {
+            $normalized = array();
+            $count = 0;
+            foreach ($value as $key => $item) {
+                if ($count >= 40) {
+                    break;
+                }
+                $normalized[$key] = $this->normalize_raw_sync_value($item);
+                $count += 1;
+            }
+            return $normalized;
+        }
+        if (is_object($value) && method_exists($value, '__toString')) {
+            return substr((string) $value, 0, 4000);
+        }
+        return null;
+    }
+
+    private function is_safe_order_meta_key(string $key): bool {
+        return preg_match('/(?:password|token|secret|cookie|session|auth)/i', $key) !== 1;
+    }
+
+    /** @param mixed $date */
+    private function format_wc_datetime_utc($date): ?string {
+        if (!is_object($date) || !method_exists($date, 'setTimezone')) {
+            return null;
+        }
+        $copy = clone $date;
+        $copy->setTimezone(new DateTimeZone('UTC'));
+        return $copy->format('Y-m-d\TH:i:s');
+    }
+
+    private function parse_utc_datetime(string $value): ?DateTimeImmutable {
+        try {
+            return new DateTimeImmutable($value, new DateTimeZone('UTC'));
+        } catch (Exception $error) {
+            return null;
+        }
+    }
+
+    private function call_text(object $object, string $method): ?string {
+        if (!method_exists($object, $method)) {
+            return null;
+        }
+        $value = $object->{$method}();
+        $text = $this->text($value);
+        return $text === '' ? null : $text;
     }
 
     /** @param array<string,mixed> $result */
@@ -538,6 +892,14 @@ final class Clever_Route_Admin {
             $details[__('Orders', 'clever-route-connector')] = $this->format_sync_counts($result);
             $details[__('Geocoding', 'clever-route-connector')] = $this->format_geocode_summary($result);
         }
+        $raw = is_array($sync_run['raw'] ?? null) ? $sync_run['raw'] : array();
+        if (!empty($raw)) {
+            $details[__('Raw sync', 'clever-route-connector')] = $this->format_raw_sync_summary($raw);
+            $failure_summary = $this->format_raw_sync_failures($raw);
+            if ($failure_summary !== '') {
+                $details[__('Raw failures', 'clever-route-connector')] = $failure_summary;
+            }
+        }
 
         $error_message = $this->text($sync_run['errorMessage'] ?? '');
         if ($error_message !== '') {
@@ -679,6 +1041,40 @@ final class Clever_Route_Admin {
             $this->text($geocode['failed'] ?? '0'),
             $this->text($geocode['notRequired'] ?? '0')
         );
+    }
+
+    /** @param array<string,mixed> $raw */
+    private function format_raw_sync_summary(array $raw): string {
+        return sprintf(
+            __('accepted %1$s; processed %2$s; skipped %3$s; failed %4$s; chunks %5$s/%6$s', 'clever-route-connector'),
+            $this->text($raw['accepted'] ?? '0'),
+            $this->text($raw['processed'] ?? '0'),
+            $this->text($raw['skipped'] ?? '0'),
+            $this->text($raw['failed'] ?? '0'),
+            $this->text($raw['chunksReceived'] ?? '0'),
+            $this->text($raw['expectedChunkCount'] ?? __('unknown', 'clever-route-connector'))
+        );
+    }
+
+    /** @param array<string,mixed> $raw */
+    private function format_raw_sync_failures(array $raw): string {
+        if (!is_array($raw['failures'] ?? null)) {
+            return '';
+        }
+        $items = array();
+        foreach ($raw['failures'] as $failure) {
+            if (!is_array($failure)) {
+                continue;
+            }
+            $source = $this->text($failure['sourceOrderNumber'] ?? $failure['sourceOrderId'] ?? '');
+            $code = $this->text($failure['failureCode'] ?? 'RAW_ORDER_PROCESSING_FAILED');
+            $message = $this->text($failure['message'] ?? __('Order could not be processed.', 'clever-route-connector'));
+            $items[] = trim(sprintf('#%1$s %2$s: %3$s', $source, $code, $message));
+            if (count($items) >= 10) {
+                break;
+            }
+        }
+        return implode(' | ', $items);
     }
 
     /** @param array<string,mixed> $result @return string[] */

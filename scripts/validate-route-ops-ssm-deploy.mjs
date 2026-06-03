@@ -180,6 +180,16 @@ assert(!imageDeploy.includes('docker system prune'), 'image deploy cleanup must 
 assert(!imageDeploy.includes('docker volume prune'), 'image deploy cleanup must not use docker volume prune');
 assert(!imageDeploy.includes('docker container prune'), 'image deploy cleanup must not use docker container prune');
 assert(imageDeploy.includes('prune_old_route_ops_images "post-promote"'), 'image deploy script must run retention cleanup after promotion');
+assert(imageDeploy.includes('ensure_route_ops_osrm .deploy/candidate-image.env'), 'image deploy script must activate and smoke OSRM before delivery-api activation when OSRM_BASE_URL is configured');
+assert(imageDeploy.includes('--profile osrm up -d --no-build osrm-ontario'), 'image deploy script must start OSRM through the explicit Route Ops compose project, not a manual sidecar');
+assert(imageDeploy.includes('ROUTE_OPS_OSRM_HOST_SMOKE_URL'), 'image deploy script must support host-loopback OSRM smoke');
+assert(imageDeploy.includes('ROUTE_OPS_OSRM_NETWORK_SMOKE_URL'), 'image deploy script must smoke OSRM from the delivery-api runtime network');
+assert(imageDeploy.indexOf('ensure_route_ops_osrm .deploy/candidate-image.env') > imageDeploy.indexOf('run --rm delivery-api-migrate'), 'image deploy script must run migrations before OSRM/runtime smoke');
+assert(imageDeploy.indexOf('ensure_route_ops_osrm .deploy/candidate-image.env') < imageDeploy.lastIndexOf('up -d --no-build --force-recreate --no-deps delivery-api'), 'image deploy script must ensure OSRM before restarting delivery-api');
+assert(imageDeploy.includes('stop_route_ops_osrm_if_disabled .deploy/candidate-image.env'), 'image deploy script must stop OSRM after delivery-api restart when OSRM_BASE_URL is disabled');
+assert(!imageDeploy.includes('stop osrm-ontario || true'), 'image deploy script must not swallow normal OSRM stop failures');
+assert(imageDeploy.lastIndexOf('stop_route_ops_osrm_if_disabled .deploy/candidate-image.env') > imageDeploy.lastIndexOf('up -d --no-build --force-recreate --no-deps delivery-api'), 'image deploy script must stop disabled OSRM only after delivery-api has restarted with the disabled env');
+assert(imageDeploy.includes('"osrmEnabled":%s'), 'image deploy history must record OSRM enablement state');
 
 assert(compose.includes('name: ${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}'), 'production compose file must declare defensive top-level project name');
 assert(compose.includes('route-ops-web-static:'), 'production compose must declare the Route Ops web static artifact service');
@@ -200,6 +210,16 @@ assert(imageRollback.includes('validate_loaded_static_artifact_contract .deploy/
 assert(imageRollback.includes('require_candidate_static_volume_isolated_from_rollback_from'), 'rollback script must reject candidate static volumes shared with pre-rollback current metadata');
 assert(imageRollback.includes('ROUTE_OPS_COMPOSE_PROJECT_NAME must be exactly clever-route'), 'rollback script must reject compose project overrides');
 assert(imageRollback.includes('enforce_no_legacy_route_ops_compose_project'), 'rollback script must fail closed when legacy implicit Route Ops compose containers are still running');
+assert(imageRollback.includes('ensure_route_ops_osrm .deploy/candidate-image.env'), 'rollback script must activate and smoke OSRM before delivery-api rollback activation when OSRM_BASE_URL is configured');
+assert(imageRollback.includes('--profile osrm up -d --no-build osrm-ontario'), 'rollback script must start OSRM through the explicit Route Ops compose project, not a manual sidecar');
+assert(imageRollback.includes('ROUTE_OPS_OSRM_HOST_SMOKE_URL'), 'rollback script must support host-loopback OSRM smoke');
+assert(imageRollback.includes('ROUTE_OPS_OSRM_NETWORK_SMOKE_URL'), 'rollback script must smoke OSRM from the delivery-api runtime network');
+assert(imageRollback.indexOf('ensure_route_ops_osrm .deploy/candidate-image.env') > imageRollback.indexOf('run --rm delivery-api-migrate'), 'rollback script must run migrations before OSRM/runtime smoke');
+assert(imageRollback.indexOf('ensure_route_ops_osrm .deploy/candidate-image.env') < imageRollback.lastIndexOf('up -d --no-build --force-recreate --no-deps delivery-api'), 'rollback script must ensure OSRM before restarting delivery-api');
+assert(imageRollback.includes('stop_route_ops_osrm_if_disabled .deploy/candidate-image.env'), 'rollback script must stop OSRM after delivery-api restart when OSRM_BASE_URL is disabled');
+assert(!imageRollback.includes('stop osrm-ontario || true'), 'rollback script must not swallow normal OSRM stop failures');
+assert(imageRollback.lastIndexOf('stop_route_ops_osrm_if_disabled .deploy/candidate-image.env') > imageRollback.lastIndexOf('up -d --no-build --force-recreate --no-deps delivery-api'), 'rollback script must stop disabled OSRM only after delivery-api has restarted with the disabled env');
+assert(imageRollback.includes('"osrmEnabled":%s'), 'rollback history must record OSRM enablement state');
 assert(smoke.includes('/admin/ui/app/api/drivers?shopDomain=${encodeURIComponent(shopDomain)}'), 'production smoke must include shopDomain when checking Drivers API');
 assertExplicitRouteOpsCompose(imageDeployPath, imageDeploy);
 assertExplicitRouteOpsCompose(imageRollbackPath, imageRollback);
@@ -207,6 +227,11 @@ assert(wrapper.includes('export ROUTE_OPS_COMPOSE_PROJECT_NAME'), 'wrapper must 
 assertExplicitRouteOpsCompose(deployWorkflowPath, deploy);
 assert(osrmHelper.includes('docker compose -p ${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route} -f infra/compose/docker-compose.prod.yml --profile osrm up -d osrm-ontario'), 'OSRM helper must suggest explicit Route Ops compose project for start command');
 assert(osrmDoc.includes('docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" -f infra/compose/docker-compose.prod.yml --profile osrm up -d osrm-ontario'), 'OSRM docs must start OSRM with explicit Route Ops compose project');
+assert(osrmDoc.includes('Normal image deploy/rollback is now the durable activation path'), 'OSRM docs must document deploy/rollback as the durable OSRM activation path');
+assert(osrmDoc.includes('Do not leave OSRM as a manually attached sidecar/container'), 'OSRM docs must reject manual OSRM sidecar/network attach as steady state');
+assert(osrmDoc.includes('smoke `http://osrm-ontario:5000` from a one-off `delivery-api` runtime container'), 'OSRM docs must require delivery-api-network OSRM smoke');
+assert(osrmDoc.includes('deploy history records `osrmEnabled`'), 'OSRM docs must document deploy-history OSRM state recording');
+assert(osrmDoc.includes('automatically stops `osrm-ontario` after the app restarts'), 'OSRM docs must document automatic OSRM stop when disabled');
 for (const [path, text] of [
   [deployWorkflowPath, deploy],
   [imageDeployPath, imageDeploy],

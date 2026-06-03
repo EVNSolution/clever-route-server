@@ -320,10 +320,10 @@ export const stateCopy = {
     },
     geometry: {
       noRouteSelected: 'No route selected',
-      roadGeometry: 'Road geometry',
-      noCoordinates: 'No coordinates',
-      routerNotConfigured: 'Router not configured',
-      roadGeometryUnavailable: 'Road geometry unavailable'
+      roadGeometry: 'Road path ready',
+      noCoordinates: 'Need coordinates for road path',
+      routerNotConfigured: 'Stops ready · router not configured',
+      roadGeometryUnavailable: 'Stops ready · road path not generated'
     },
     storeAddress: 'Store address',
     store: 'Store'
@@ -343,9 +343,9 @@ export const stateCopy = {
     geometry: {
       noRouteSelected: '선택된 경로 없음',
       roadGeometry: '도로 경로',
-      noCoordinates: '좌표 없음',
-      routerNotConfigured: '라우터 미설정',
-      roadGeometryUnavailable: '도로 경로 사용 불가'
+      noCoordinates: '경로 선에 필요한 좌표 부족',
+      routerNotConfigured: '정류장 표시됨 · 라우터 미설정',
+      roadGeometryUnavailable: '정류장 표시됨 · 경로 선 없음'
     },
     storeAddress: '매장 주소',
     store: '매장'

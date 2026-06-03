@@ -418,9 +418,22 @@ export function geometryLabel(detail: RoutePlanDetailDto | null, routerStatus: M
   const t = getStateCopy(locale).geometry;
   if (detail === null) return t.noRouteSelected;
   if (detail.routeGeometry !== null) return t.roadGeometry;
-  if (detail.stops.every((stop) => stop.coordinates.latitude === null || stop.coordinates.longitude === null)) return t.noCoordinates;
+  if (countRoutableRoutePoints(detail) < 2) return t.noCoordinates;
   if (routerStatus === 'not_configured') return t.routerNotConfigured;
   return t.roadGeometryUnavailable;
+}
+
+function countRoutableRoutePoints(detail: RoutePlanDetailDto): number {
+  const depot = detail.routePlan.depot;
+  const points = [
+    depot === null ? null : { latitude: depot.latitude, longitude: depot.longitude },
+    ...detail.stops.map((stop) => stop.coordinates)
+  ];
+  return points.filter((point): point is { latitude: number; longitude: number } =>
+    point !== null &&
+    Number.isFinite(point.latitude) &&
+    Number.isFinite(point.longitude)
+  ).length;
 }
 
 export function hideSetupActions(bootstrap: BootstrapPayload): boolean {

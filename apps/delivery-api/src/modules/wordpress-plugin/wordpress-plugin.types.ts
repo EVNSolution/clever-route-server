@@ -154,6 +154,12 @@ export type WordPressPluginSyncRequestInput = {
 export type WordPressPluginSyncRunStatus = 'FAILED' | 'QUEUED' | 'RUNNING' | 'SUCCEEDED';
 
 export type WordPressPluginSyncRunRequest = {
+  duplicateCount?: number;
+  finalizedAt?: string | null;
+  expectedChunkCount?: number | null;
+  expectedOrderCount?: number | null;
+  invalidCount?: number;
+  mode?: 'raw_push' | 'rest_backfill';
   modifiedAfter: string | null;
   pageSize: number;
   status: string | null;
@@ -161,7 +167,9 @@ export type WordPressPluginSyncRunRequest = {
 
 export type WordPressPluginSyncCounts = {
   created: number;
+  failed?: number;
   needsReview: number;
+  rawRefreshed?: number;
   readyToPlan: number;
   received: number;
   skipped: number;
@@ -176,11 +184,69 @@ export type WordPressPluginSyncGeocodeSummary = {
   resolved: number;
 };
 
+export type WordPressPluginRawSyncFailure = {
+  failureCode: string;
+  message: string;
+  retryable: boolean;
+  sourceOrderId: string;
+  sourceOrderNumber?: string | null;
+};
+
+export type WordPressPluginRawSyncStatus = {
+  accepted: number;
+  chunksReceived: number;
+  duplicate: number;
+  expectedChunkCount: number | null;
+  expectedOrderCount: number | null;
+  failed: number;
+  failures: WordPressPluginRawSyncFailure[];
+  finalizedAt: string | null;
+  invalid: number;
+  processed: number;
+  rawRefreshed: number;
+  skipped: number;
+  waitingForChunks: boolean;
+};
+
+export type WordPressPluginRawSyncRequestInput = WordPressPluginSyncRequestInput;
+
+export type WordPressPluginRawOrderInput = Record<string, unknown>;
+
+export type WordPressPluginRawSyncChunkInput = {
+  chunkCount?: number | null;
+  chunkId: string;
+  chunkIndex: number;
+  orders: WordPressPluginRawOrderInput[];
+  syncRunId: string;
+};
+
+export type WordPressPluginRawSyncFinalizeInput = {
+  expectedChunkCount?: number | null;
+  expectedOrderCount?: number | null;
+  syncRunId: string;
+};
+
+export type WordPressPluginRawSyncChunkResult = {
+  accepted: number;
+  duplicate: number;
+  invalid: number;
+  message: string;
+  startBackgroundProcessing: boolean;
+  syncRun: WordPressPluginSyncRun;
+};
+
+export type WordPressPluginRawSyncFinalizeResult = {
+  message: string;
+  startBackgroundProcessing: boolean;
+  syncRun: WordPressPluginSyncRun;
+};
+
 export type WordPressPluginSyncRun = {
   acceptedAt: string;
   completedAt: string | null;
   errorMessage: string | null;
   request: WordPressPluginSyncRunRequest;
+  raw?: WordPressPluginRawSyncStatus | null;
   result: {
     geocode: WordPressPluginSyncGeocodeSummary;
     pagesRead: number;

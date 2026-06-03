@@ -530,6 +530,46 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
+  test("reports configured OSRM router bootstrap state without exposing the private base URL", async () => {
+    await withRouteOpsRouterEnv(
+      {
+        OSRM_BASE_URL: "http://osrm-ontario:5000",
+        ROUTE_OPS_ROUTER_COVERAGE: "ontario",
+      },
+      async () => {
+        const { app } = await createUiHarness();
+
+        try {
+          const { cookie } = await loginAndReadCsrf(app);
+          const response = await app.inject({
+            headers: { cookie, accept: "application/json" },
+            method: "GET",
+            url: "/admin/ui/app/api/bootstrap?shopDomain=tenant-a.example.test",
+          });
+
+          expect(response.statusCode).toBe(200);
+          const bootstrapData = readApiData<{
+            routerConfig: {
+              coverage: string | null;
+              provider: string | null;
+              status: string;
+            };
+          }>(response);
+          expect(bootstrapData.routerConfig).toEqual({
+            coverage: "ontario",
+            provider: "osrm",
+            status: "configured",
+          });
+          expect(response.body).not.toContain("osrm-ontario");
+          expect(response.body).not.toContain("5000");
+          expect(response.body).not.toContain("OSRM_BASE_URL");
+        } finally {
+          await app.close();
+        }
+      },
+    );
+  });
+
   test("redirects legacy operation GET paths to SPA routes after auth", async () => {
     const { app } = await createUiHarness();
     const cases: Array<readonly [string, string]> = [
@@ -2712,11 +2752,32 @@ describe("Admin WooCommerce connection UI routes", () => {
   });
 
   test("returns route detail through the Route Ops API using neutral stop field names", async () => {
+    const detail = {
+      ...routePlanDetail(),
+      routeGeometry: {
+        coordinates: [
+          [-79.3832, 43.6532],
+          [-79.4, 43.7],
+        ] as [number, number][],
+        type: "LineString" as const,
+      },
+      routeStopPoints: [
+        {
+          deliveryStopId: "stop-1",
+          inputCoordinates: [-79.3832, 43.6532] as [number, number],
+          name: "Road snap",
+          sequence: 1,
+          shopifyOrderGid: "gid://woocommerce/Order/1001",
+          snapDistanceMeters: 5.5,
+          snappedCoordinates: [-79.3833, 43.6533] as [number, number],
+        },
+      ],
+    };
     const getRoutePlanDetail = vi.fn<
       NonNullable<
         AdminCommerceConnectionsUiDependencies["routePlanService"]
       >["getRoutePlanDetail"]
-    >(() => Promise.resolve(routePlanDetail()));
+    >(() => Promise.resolve(detail));
     const { app } = await createUiHarness({
       orderSyncService: {
         listCanonicalOrders: vi.fn(() => Promise.resolve([])),
@@ -2740,7 +2801,12 @@ describe("Admin WooCommerce connection UI routes", () => {
 
       expect(response.statusCode).toBe(200);
       const detailData = readApiData<{
+        routeGeometry: { coordinates: [number, number][]; type: string } | null;
         routePlan: { id: string; name: string };
+        routeStopPoints: Array<{
+          deliveryStopId: string;
+          sourceOrderId: string;
+        }>;
         stops: Array<{
           deliveryStopId: string;
           orderName: string;
@@ -2749,6 +2815,19 @@ describe("Admin WooCommerce connection UI routes", () => {
       }>(response);
       expect(detailData.routePlan).toEqual(
         expect.objectContaining({ id: "route-plan-id", name: "Route draft" }),
+      );
+      expect(detailData.routeGeometry).toEqual({
+        coordinates: [
+          [-79.3832, 43.6532],
+          [-79.4, 43.7],
+        ] as [number, number][],
+        type: "LineString",
+      });
+      expect(detailData.routeStopPoints[0]).toEqual(
+        expect.objectContaining({
+          deliveryStopId: "stop-1",
+          sourceOrderId: "gid://woocommerce/Order/1001",
+        }),
       );
       expect(detailData.stops[0]).toEqual(
         expect.objectContaining({
@@ -2759,6 +2838,77 @@ describe("Admin WooCommerce connection UI routes", () => {
       );
       expect(JSON.stringify(detailData.stops[0])).not.toContain(
         "shopifyOrderGid",
+      );
+      expect(JSON.stringify(detailData.routeStopPoints[0])).not.toContain(
+        "shopifyOrderGid",
+      );
+      expect(getRoutePlanDetail).toHaveBeenCalledWith({
+        routePlanId: "route-plan-id",
+        shopDomain: "tenant-a.example.test",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("returns route stops for published route details even when road geometry is null", async () => {
+    const getRoutePlanDetail = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["routePlanService"]
+      >["getRoutePlanDetail"]
+    >(() =>
+      Promise.resolve({
+        ...routePlanDetail(),
+        routeGeometry: null,
+        routePlan: {
+          ...routePlanSummary(),
+          driverId: "driver-id",
+          planDate: "2026-05-21",
+          status: "ASSIGNED",
+        },
+        routeStopPoints: [],
+      }),
+    );
+    const { app } = await createUiHarness({
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+      },
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan: vi.fn(),
+        getRoutePlanDetail,
+        listRoutePlans: vi.fn(() => Promise.resolve([routePlanSummary()])),
+        updateRoutePlanStops: vi.fn(),
+      },
+    });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        headers: { cookie, accept: "application/json" },
+        method: "GET",
+        url: "/admin/ui/app/api/routes/route-plan-id?shopDomain=tenant-a.example.test",
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      const detailData = readApiData<{
+        routeGeometry: null;
+        routePlan: { driverId: string; planDate: string; status: string };
+        routeStopPoints: unknown[];
+        stops: Array<{ deliveryStopId: string; orderName: string }>;
+      }>(response);
+      expect(detailData.routeGeometry).toBeNull();
+      expect(detailData.routeStopPoints).toEqual([]);
+      expect(detailData.stops).toEqual([
+        expect.objectContaining({ deliveryStopId: "stop-1", orderName: "#1001" }),
+        expect.objectContaining({ deliveryStopId: "stop-2", orderName: "#1002" }),
+      ]);
+      expect(detailData.routePlan).toEqual(
+        expect.objectContaining({
+          driverId: "driver-id",
+          planDate: "2026-05-21",
+          status: "ASSIGNED",
+        }),
       );
       expect(getRoutePlanDetail).toHaveBeenCalledWith({
         routePlanId: "route-plan-id",
@@ -3241,11 +3391,6 @@ describe("Admin WooCommerce connection UI routes", () => {
         AdminCommerceConnectionsUiDependencies["routePlanService"]
       >["assignRoutePlanDriver"]
     >(() => Promise.resolve(assignedDetail));
-    const getRoutePlanDetail = vi.fn<
-      NonNullable<
-        AdminCommerceConnectionsUiDependencies["routePlanService"]
-      >["getRoutePlanDetail"]
-    >(() => Promise.resolve(routePlanDetail()));
     const listDrivers = vi.fn<
       NonNullable<
         AdminCommerceConnectionsUiDependencies["driverService"]
@@ -3264,7 +3409,7 @@ describe("Admin WooCommerce connection UI routes", () => {
       routePlanService: {
         assignRoutePlanDriver,
         createRoutePlan: vi.fn(),
-        getRoutePlanDetail,
+        getRoutePlanDetail: vi.fn(),
         listRoutePlans: vi.fn(() => Promise.resolve([routePlanSummary()])),
         updateRoutePlanStops: vi.fn(),
       },
@@ -4462,6 +4607,25 @@ async function withRouteOpsMapEnv<T>(
     "ROUTE_OPS_MAP_PROVIDER_MODE",
     "ROUTE_OPS_MAP_STYLE_URL",
   ];
+  const previous = new Map(keys.map((key) => [key, process.env[key]]));
+  for (const key of keys) delete process.env[key];
+  for (const [key, value] of Object.entries(env)) process.env[key] = value;
+  try {
+    return await run();
+  } finally {
+    for (const key of keys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+async function withRouteOpsRouterEnv<T>(
+  env: Record<string, string>,
+  run: () => Promise<T>,
+): Promise<T> {
+  const keys = ["OSRM_BASE_URL", "ROUTE_OPS_ROUTER_COVERAGE"];
   const previous = new Map(keys.map((key) => [key, process.env[key]]));
   for (const key of keys) delete process.env[key];
   for (const [key, value] of Object.entries(env)) process.env[key] = value;

@@ -211,22 +211,29 @@ describe('WordPress plugin routes', () => {
 
   test('sync/request persists a run and returns quickly while server-side Woo REST backfill runs in the background', async () => {
     const { dependencies, processSyncRun, requestSync } = createDependencies();
+    let processResolved = false;
     let resolveProcess!: (value: WordPressPluginSyncRun) => void;
     processSyncRun.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
-          resolveProcess = resolve;
+          resolveProcess = (value) => {
+            processResolved = true;
+            resolve(value);
+          };
         })
     );
     const app = await buildApp({ wordPressPlugin: dependencies });
 
     try {
+      const startedAt = performance.now();
       const sync = await app.inject({
         headers: { authorization: 'Bearer valid-token' },
         method: 'POST',
         payload: { modifiedAfter: '2026-05-21T00:00:00.000Z', pageSize: 25, status: 'processing' },
         url: '/wordpress/plugin/sync/request'
       });
+      expect(performance.now() - startedAt).toBeLessThan(2000);
+      expect(processResolved).toBe(false);
       expect(sync.statusCode).toBe(202);
       expect(sync.json()).toEqual({
         data: syncRequestResponse(),
@@ -294,21 +301,199 @@ describe('WordPress plugin routes', () => {
     }
   });
 
+  test('raw sync request returns quickly and does not include raw order payload or token data', async () => {
+    const { dependencies, processRawSyncRun, requestRawSync } = createDependencies();
+    const app = await buildApp({ wordPressPlugin: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer valid-token' },
+        method: 'POST',
+        payload: { pageSize: 25, status: 'processing' },
+        url: '/wordpress/plugin/sync/raw/request'
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(response.json()).toEqual({
+        data: syncRequestResponse({
+          message: 'Raw sync accepted. WordPress will upload order chunks in the background.',
+          syncRun: syncRun({ request: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'QUEUED' })
+        }),
+        error: null
+      });
+      expect(requestRawSync).toHaveBeenCalledWith({
+        context: pluginContext(),
+        payload: { modifiedAfter: null, pageSize: 25, status: 'processing' }
+      });
+      expect(processRawSyncRun).not.toHaveBeenCalled();
+      const body = response.body;
+      expect(body).not.toContain('valid-token');
+      expect(body).not.toContain('100 King St');
+      expect(body).not.toContain('+1416');
+      expect(body).not.toContain('customer@example.test');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('raw chunk persists bounded orders before scheduling background processing', async () => {
+    const { acceptRawChunk, dependencies, processRawSyncRun } = createDependencies();
+    acceptRawChunk.mockResolvedValueOnce({
+      accepted: 1,
+      duplicate: 0,
+      invalid: 0,
+      message: 'Raw sync chunk accepted. CLEVER will process stored orders in the background.',
+      startBackgroundProcessing: true,
+      syncRun: syncRun({ request: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'RUNNING' })
+    });
+    const app = await buildApp({ wordPressPlugin: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer valid-token' },
+        method: 'POST',
+        payload: {
+          chunkId: 'chunk-1',
+          chunkIndex: 0,
+          orders: [{ id: 123, number: '123', shipping: { address_1: '100 King St' } }],
+          syncRunId: '11111111-1111-4111-8111-111111111111'
+        },
+        url: '/wordpress/plugin/sync/raw/chunk'
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(response.json()).toEqual({
+        data: {
+          accepted: 1,
+          duplicate: 0,
+          invalid: 0,
+          message: 'Raw sync chunk accepted. CLEVER will process stored orders in the background.',
+          syncRun: syncRun({ request: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'RUNNING' })
+        },
+        error: null
+      });
+      expect(acceptRawChunk).toHaveBeenCalledWith({
+        context: pluginContext(),
+        payload: {
+          chunkId: 'chunk-1',
+          chunkIndex: 0,
+          orders: [{ id: 123, number: '123', shipping: { address_1: '100 King St' } }],
+          syncRunId: '11111111-1111-4111-8111-111111111111'
+        }
+      });
+      expect(processRawSyncRun).toHaveBeenCalledWith({
+        context: pluginContext(),
+        syncRunId: '11111111-1111-4111-8111-111111111111'
+      });
+      expect(response.body).not.toContain('100 King St');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('raw finalize schedules processing and malformed raw payloads are rejected before persistence', async () => {
+    const { dependencies, finalizeRawSync, processRawSyncRun } = createDependencies();
+    const app = await buildApp({ wordPressPlugin: dependencies });
+
+    try {
+      const malformed = await app.inject({
+        headers: { authorization: 'Bearer valid-token' },
+        method: 'POST',
+        payload: { chunkId: 'bad', chunkIndex: 0, orders: 'not-array', syncRunId: '11111111-1111-4111-8111-111111111111' },
+        url: '/wordpress/plugin/sync/raw/chunk'
+      });
+      expect(malformed.statusCode).toBe(400);
+      expect(malformed.json()).toEqual({
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'Invalid raw sync chunk payload' }
+      });
+
+      const finalize = await app.inject({
+        headers: { authorization: 'Bearer valid-token' },
+        method: 'POST',
+        payload: {
+          expectedChunkCount: 1,
+          expectedOrderCount: 1,
+          syncRunId: '11111111-1111-4111-8111-111111111111'
+        },
+        url: '/wordpress/plugin/sync/raw/finalize'
+      });
+      expect(finalize.statusCode).toBe(202);
+      expect(finalizeRawSync).toHaveBeenCalledWith({
+        context: pluginContext(),
+        payload: {
+          expectedChunkCount: 1,
+          expectedOrderCount: 1,
+          syncRunId: '11111111-1111-4111-8111-111111111111'
+        }
+      });
+      expect(processRawSyncRun).toHaveBeenCalledWith({
+        context: pluginContext(),
+        syncRunId: '11111111-1111-4111-8111-111111111111'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('sync/latest and sync/requests expose durable sync-run state scoped by the plugin token', async () => {
-    const { dependencies, readLatestSyncRun, readSyncRun } = createDependencies();
-    readLatestSyncRun.mockResolvedValueOnce(syncRun({ status: 'RUNNING' }));
+    const { dependencies, processRawSyncRun, readLatestSyncRun, readSyncRun } = createDependencies();
+    readLatestSyncRun.mockResolvedValueOnce(
+      syncRun({
+        raw: {
+          accepted: 1,
+          chunksReceived: 1,
+          duplicate: 0,
+          expectedChunkCount: 1,
+          expectedOrderCount: 1,
+          failed: 0,
+          failures: [],
+          finalizedAt: '2026-05-25T03:02:00.000Z',
+          invalid: 0,
+          processed: 0,
+          rawRefreshed: 0,
+          skipped: 0,
+          waitingForChunks: false
+        },
+        request: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null },
+        status: 'RUNNING'
+      })
+    );
     readSyncRun.mockResolvedValueOnce(syncRun({ status: 'SUCCEEDED' }));
     const app = await buildApp({ wordPressPlugin: dependencies });
 
     try {
+      const rawRunningRun = syncRun({
+        raw: {
+          accepted: 1,
+          chunksReceived: 1,
+          duplicate: 0,
+          expectedChunkCount: 1,
+          expectedOrderCount: 1,
+          failed: 0,
+          failures: [],
+          finalizedAt: '2026-05-25T03:02:00.000Z',
+          invalid: 0,
+          processed: 0,
+          rawRefreshed: 0,
+          skipped: 0,
+          waitingForChunks: false
+        },
+        request: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null },
+        status: 'RUNNING'
+      });
       const latest = await app.inject({
         headers: { authorization: 'Bearer valid-token' },
         method: 'GET',
         url: '/wordpress/plugin/sync/latest'
       });
       expect(latest.statusCode).toBe(200);
-      expect(latest.json()).toEqual({ data: { syncRun: syncRun({ status: 'RUNNING' }) }, error: null });
+      expect(latest.json()).toEqual({ data: { syncRun: rawRunningRun }, error: null });
       expect(readLatestSyncRun).toHaveBeenCalledWith({ context: pluginContext() });
+      expect(processRawSyncRun).toHaveBeenCalledWith({
+        context: pluginContext(),
+        syncRunId: '11111111-1111-4111-8111-111111111111'
+      });
 
       const byId = await app.inject({
         headers: { authorization: 'Bearer valid-token' },
@@ -359,7 +544,41 @@ describe('WordPress plugin routes', () => {
     }
   });
 
-  test('issues a short-lived CLEVER admin launch URL for authenticated plugin access', async () => {
+  test('issues short-lived CLEVER admin launch URLs for each Route Ops section without starting sync work', async () => {
+    const { createAdminLaunch, dependencies, processSyncRun, requestSync } = createDependencies();
+    const app = await buildApp({ wordPressPlugin: dependencies });
+
+    try {
+      for (const section of ['orders', 'route-plans', 'drivers', 'settings'] as const) {
+        const response = await app.inject({
+          headers: { authorization: 'Bearer valid-token' },
+          method: 'POST',
+          payload: { section },
+          url: '/wordpress/plugin/admin-launch'
+        });
+
+        expect(response.statusCode).toBe(201);
+        expect(response.json()).toEqual({
+          data: {
+            expiresAt: '2026-05-26T06:10:00.000Z',
+            launchUrl: 'https://clever-route.cleversystem.ai/admin/ui/plugin-launch?token=launch-token'
+          },
+          error: null
+        });
+      }
+      expect(createAdminLaunch).toHaveBeenCalledTimes(4);
+      expect(createAdminLaunch).toHaveBeenNthCalledWith(1, { context: pluginContext(), section: 'orders' });
+      expect(createAdminLaunch).toHaveBeenNthCalledWith(2, { context: pluginContext(), section: 'route-plans' });
+      expect(createAdminLaunch).toHaveBeenNthCalledWith(3, { context: pluginContext(), section: 'drivers' });
+      expect(createAdminLaunch).toHaveBeenNthCalledWith(4, { context: pluginContext(), section: 'settings' });
+      expect(requestSync).not.toHaveBeenCalled();
+      expect(processSyncRun).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects invalid admin launch sections before creating a launch token', async () => {
     const { createAdminLaunch, dependencies } = createDependencies();
     const app = await buildApp({ wordPressPlugin: dependencies });
 
@@ -367,22 +586,58 @@ describe('WordPress plugin routes', () => {
       const response = await app.inject({
         headers: { authorization: 'Bearer valid-token' },
         method: 'POST',
-        payload: { section: 'orders' },
+        payload: { section: 'wp-admin/raw-route-editor' },
         url: '/wordpress/plugin/admin-launch'
       });
 
-      expect(response.statusCode).toBe(201);
+      expect(response.statusCode).toBe(400);
       expect(response.json()).toEqual({
-        data: {
-          expiresAt: '2026-05-26T06:10:00.000Z',
-          launchUrl: 'https://clever-route.cleversystem.ai/admin/ui/plugin-launch?token=launch-token'
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'Invalid admin launch payload' }
+      });
+      expect(createAdminLaunch).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('logs WordPress connector timing without token payload or customer fields', async () => {
+    const { dependencies } = createDependencies();
+    const logLines: string[] = [];
+    const app = await buildApp({
+      logger: {
+        level: 'info',
+        stream: { write: (line: string) => logLines.push(line) }
+      },
+      wordPressPlugin: dependencies
+    });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer super-secret-plugin-token' },
+        method: 'POST',
+        payload: {
+          modifiedAfter: '2026-05-21T00:00:00.000Z',
+          pageSize: 25,
+          status: 'processing'
         },
-        error: null
+        url: '/wordpress/plugin/sync/request'
       });
-      expect(createAdminLaunch).toHaveBeenCalledWith({
-        context: pluginContext(),
-        section: 'orders'
-      });
+
+      expect(response.statusCode).toBe(202);
+      const joinedLogs = logLines.join('\n');
+      expect(joinedLogs).toContain('wordpress plugin request authenticated');
+      expect(joinedLogs).toContain('wordpress plugin sync request accepted');
+      expect(joinedLogs).toContain('connection-id');
+      expect(joinedLogs).toContain('woo.example.test');
+      expect(joinedLogs).not.toContain('super-secret-plugin-token');
+      expect(joinedLogs).not.toContain('Authorization');
+      expect(joinedLogs).not.toContain('Bearer');
+      expect(joinedLogs).not.toContain('launch-token');
+      expect(joinedLogs).not.toContain('consumer_secret');
+      expect(joinedLogs).not.toContain('customer@example.test');
+      expect(joinedLogs).not.toContain('+1416');
+      expect(joinedLogs).not.toContain('100 King St');
     } finally {
       await app.close();
     }
@@ -457,9 +712,13 @@ function createDependencies(input: { validToken?: boolean } = {}): {
   listRoutePlans: ReturnType<typeof vi.fn<WordPressPluginDependencies['routeResultService']['listRoutePlans']>>;
   pairPlugin: ReturnType<typeof vi.fn<WordPressPluginDependencies['authService']['pairPlugin']>>;
   processSyncRun: ReturnType<typeof vi.fn<WordPressPluginDependencies['syncService']['processSyncRun']>>;
+  processRawSyncRun: ReturnType<typeof vi.fn<WordPressPluginDependencies['syncService']['processRawSyncRun']>>;
+  acceptRawChunk: ReturnType<typeof vi.fn<WordPressPluginDependencies['syncService']['acceptRawChunk']>>;
+  finalizeRawSync: ReturnType<typeof vi.fn<WordPressPluginDependencies['syncService']['finalizeRawSync']>>;
   readHealth: ReturnType<typeof vi.fn<WordPressPluginDependencies['routeResultService']['readHealth']>>;
   readLatestSyncRun: ReturnType<typeof vi.fn<WordPressPluginDependencies['syncService']['readLatestSyncRun']>>;
   readSyncRun: ReturnType<typeof vi.fn<WordPressPluginDependencies['syncService']['readSyncRun']>>;
+  requestRawSync: ReturnType<typeof vi.fn<WordPressPluginDependencies['syncService']['requestRawSync']>>;
   requestSync: ReturnType<typeof vi.fn<WordPressPluginDependencies['syncService']['requestSync']>>;
 } {
   const authenticateToken = vi.fn<WordPressPluginDependencies['authService']['authenticateToken']>(() =>
@@ -486,8 +745,37 @@ function createDependencies(input: { validToken?: boolean } = {}): {
   const requestSync = vi.fn<WordPressPluginDependencies['syncService']['requestSync']>(() =>
     Promise.resolve(syncRequestAccepted())
   );
+  const requestRawSync = vi.fn<WordPressPluginDependencies['syncService']['requestRawSync']>(() =>
+    Promise.resolve(
+      syncRequestAccepted({
+        message: 'Raw sync accepted. WordPress will upload order chunks in the background.',
+        startBackgroundProcessing: false,
+        syncRun: syncRun({ request: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'QUEUED' })
+      })
+    )
+  );
+  const acceptRawChunk = vi.fn<WordPressPluginDependencies['syncService']['acceptRawChunk']>(() =>
+    Promise.resolve({
+      accepted: 1,
+      duplicate: 0,
+      invalid: 0,
+      message: 'Raw sync chunk accepted. CLEVER will process stored orders in the background.',
+      startBackgroundProcessing: false,
+      syncRun: syncRun({ request: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'RUNNING' })
+    })
+  );
+  const finalizeRawSync = vi.fn<WordPressPluginDependencies['syncService']['finalizeRawSync']>(() =>
+    Promise.resolve({
+      message: 'Raw sync finalized. CLEVER will finish background processing for accepted orders.',
+      startBackgroundProcessing: true,
+      syncRun: syncRun({ request: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'RUNNING' })
+    })
+  );
   const processSyncRun = vi.fn<WordPressPluginDependencies['syncService']['processSyncRun']>(() =>
     Promise.resolve(syncRun({ status: 'SUCCEEDED' }))
+  );
+  const processRawSyncRun = vi.fn<WordPressPluginDependencies['syncService']['processRawSyncRun']>(() =>
+    Promise.resolve(syncRun({ request: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'RUNNING' }))
   );
   const readLatestSyncRun = vi.fn<WordPressPluginDependencies['syncService']['readLatestSyncRun']>(() =>
     Promise.resolve(syncRun({ status: 'RUNNING' }))
@@ -523,15 +811,19 @@ function createDependencies(input: { validToken?: boolean } = {}): {
         )
       },
       routeResultService: { findRoutePlanDetail, listRoutePlans, readHealth },
-      syncService: { processSyncRun, readLatestSyncRun, readSyncRun, requestSync }
+      syncService: { acceptRawChunk, finalizeRawSync, processRawSyncRun, processSyncRun, readLatestSyncRun, readSyncRun, requestRawSync, requestSync }
     },
+    acceptRawChunk,
     findRoutePlanDetail,
+    finalizeRawSync,
     listRoutePlans,
     pairPlugin,
+    processRawSyncRun,
     processSyncRun,
     readHealth,
     readLatestSyncRun,
     readSyncRun,
+    requestRawSync,
     requestSync
   };
 }

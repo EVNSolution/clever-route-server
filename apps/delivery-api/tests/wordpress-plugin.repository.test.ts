@@ -87,6 +87,288 @@ describe('PrismaWordPressPluginRepository sync-run lifecycle', () => {
     expect(commerceSyncRun.create).not.toHaveBeenCalled();
   });
 
+  test('creates raw-push sync runs and decorates status with raw ingest counts', async () => {
+    const commerceRawOrderIngest = {
+      findMany: vi.fn(() => Promise.resolve([]))
+    };
+    const commerceSyncRun = {
+      create: vi.fn((input: unknown) => {
+        void input;
+        return Promise.resolve(syncRunRecord({ requestPayload: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'QUEUED' }));
+      }),
+      findFirst: vi.fn(() => Promise.resolve(null)),
+      updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
+    };
+    const repository = new PrismaWordPressPluginRepository({ commerceRawOrderIngest, commerceSyncRun } as never);
+
+    const result = await repository.createRawSyncRunUnlessActive({
+      acceptedAt,
+      context: pluginContext(),
+      request: { modifiedAfter: null, pageSize: 100, status: null }
+    });
+
+    expect(result.alreadyRunning).toBe(false);
+    expect(result.startBackgroundProcessing).toBe(false);
+    expect(result.run.request.mode).toBe('raw_push');
+    expect(result.run.raw).toEqual({
+      accepted: 0,
+      chunksReceived: 0,
+      duplicate: 0,
+      expectedChunkCount: null,
+      expectedOrderCount: null,
+      failed: 0,
+      failures: [],
+      finalizedAt: null,
+      invalid: 0,
+      processed: 0,
+      rawRefreshed: 0,
+      skipped: 0,
+      waitingForChunks: true
+    });
+    const createdSyncRunInput = commerceSyncRun.create.mock.calls[0]?.[0] as
+      | { data?: { requestPayload?: unknown; trigger?: unknown } & Record<string, unknown> }
+      | undefined;
+    expect(createdSyncRunInput?.data).toMatchObject({
+      created: 0,
+      geocodeFailed: 0,
+      geocodeNotRequired: 0,
+      geocodePending: 0,
+      geocodeResolved: 0,
+      needsReview: 0,
+      pagesRead: 0,
+      readyToPlan: 0,
+      received: 0,
+      requestPayload: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null },
+      skipped: 0,
+      trigger: 'raw_push',
+      unchanged: 0,
+      updated: 0
+    });
+  });
+
+  test('records canonical processing counts on the raw sync run as each row completes', async () => {
+    const commerceRawOrderIngest = {
+      updateMany: vi.fn((input: unknown) => {
+        void input;
+        return Promise.resolve({ count: 1 });
+      })
+    };
+    const commerceSyncRun = {
+      updateMany: vi.fn((input: unknown) => {
+        void input;
+        return Promise.resolve({ count: 1 });
+      })
+    };
+    const repository = new PrismaWordPressPluginRepository({ commerceRawOrderIngest, commerceSyncRun } as never);
+
+    await repository.markRawIngestProcessed({
+      canonicalOrderId: 'canonical-order-id',
+      context: pluginContext(),
+      geocode: { failed: 1, notRequired: 0, pending: 0, resolved: 0 },
+      ingestId: 'raw-ingest-id',
+      now: acceptedAt,
+      sync: { created: 0, needsReview: 1, readyToPlan: 0, received: 1, skipped: 0, unchanged: 0, updated: 1 },
+      syncRunId: '11111111-1111-4111-8111-111111111111'
+    });
+
+    const rawUpdateInput = commerceRawOrderIngest.updateMany.mock.calls[0]?.[0] as
+      | { data?: Record<string, unknown> }
+      | undefined;
+    expect(rawUpdateInput?.data).toMatchObject({
+      canonicalOrderId: 'canonical-order-id',
+      status: 'PROCESSED'
+    });
+    expect(commerceSyncRun.updateMany).toHaveBeenCalledWith({
+      data: {
+        created: { increment: 0 },
+        geocodeFailed: { increment: 1 },
+        geocodeNotRequired: { increment: 0 },
+        geocodePending: { increment: 0 },
+        geocodeResolved: { increment: 0 },
+        needsReview: { increment: 1 },
+        readyToPlan: { increment: 0 },
+        unchanged: { increment: 0 },
+        updated: { increment: 1 },
+        updatedAt: acceptedAt
+      },
+      where: {
+        commerceConnectionId: 'connection-id',
+        id: '11111111-1111-4111-8111-111111111111',
+        shopId: 'shop-id',
+        status: { in: ['QUEUED', 'RUNNING'] }
+      }
+    });
+  });
+
+  test('keeps duplicate raw order accounting durable so finalize status does not wait forever', async () => {
+    const commerceRawOrderIngest = {
+      findMany: vi
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            failureCode: null,
+            failureMessage: null,
+            retryable: false,
+            sourceOrderId: '123',
+            sourceOrderNumber: '123',
+            status: 'PROCESSED'
+          }
+        ])
+        .mockResolvedValueOnce([{ chunkId: 'chunk-1' }])
+    };
+    const commerceSyncRun = {
+      findFirst: vi.fn(() =>
+        Promise.resolve(
+          syncRunRecord({
+            requestPayload: {
+              duplicateCount: 1,
+              expectedOrderCount: 2,
+              finalizedAt: '2026-05-25T03:05:00.000Z',
+              mode: 'raw_push',
+              modifiedAfter: null,
+              pageSize: 100,
+              status: null
+            },
+            status: 'RUNNING'
+          })
+        )
+      )
+    };
+    const repository = new PrismaWordPressPluginRepository({ commerceRawOrderIngest, commerceSyncRun } as never);
+
+    const run = await repository.findSyncRunById({
+      context: pluginContext(),
+      syncRunId: '11111111-1111-4111-8111-111111111111'
+    });
+
+    expect(run?.raw).toMatchObject({
+      accepted: 1,
+      duplicate: 1,
+      expectedOrderCount: 2,
+      invalid: 0,
+      processed: 1,
+      waitingForChunks: false
+    });
+  });
+
+  test('retryable raw processing failures are reset for bounded replay before becoming terminal failures', async () => {
+    const commerceRawOrderIngest = {
+      updateMany: vi.fn((input: unknown) => {
+        void input;
+        return Promise.resolve({ count: 1 });
+      })
+    };
+    const repository = new PrismaWordPressPluginRepository({ commerceRawOrderIngest } as never);
+
+    await repository.markRawIngestFailed({
+      context: pluginContext(),
+      failureCode: 'RAW_ORDER_PROCESSING_FAILED',
+      failureMessage: 'Transient provider timeout',
+      ingestId: 'raw-ingest-id',
+      now: acceptedAt,
+      retryable: true,
+      syncRunId: '11111111-1111-4111-8111-111111111111'
+    });
+
+    expect(commerceRawOrderIngest.updateMany).toHaveBeenCalledOnce();
+    const retryUpdateInput = commerceRawOrderIngest.updateMany.mock.calls[0]?.[0] as
+      | { data?: Record<string, unknown>; where?: Record<string, unknown> }
+      | undefined;
+    expect(retryUpdateInput?.data).toMatchObject({
+      failureCode: 'RAW_ORDER_PROCESSING_FAILED',
+      processingStartedAt: null,
+      retryable: true,
+      status: 'RECEIVED'
+    });
+    expect(retryUpdateInput?.where).toMatchObject({
+      attemptCount: { lt: 3 },
+      status: 'PROCESSING'
+    });
+  });
+
+  test('exhausted retryable raw processing failures become terminal non-retryable failures', async () => {
+    const commerceRawOrderIngest = {
+      updateMany: vi
+        .fn((input: unknown) => {
+          void input;
+          return Promise.resolve({ count: 0 });
+        })
+        .mockResolvedValueOnce({ count: 0 })
+        .mockResolvedValueOnce({ count: 1 })
+    };
+    const repository = new PrismaWordPressPluginRepository({ commerceRawOrderIngest } as never);
+
+    await repository.markRawIngestFailed({
+      context: pluginContext(),
+      failureCode: 'RAW_ORDER_PROCESSING_FAILED',
+      failureMessage: 'Transient provider timeout',
+      ingestId: 'raw-ingest-id',
+      now: acceptedAt,
+      retryable: true,
+      syncRunId: '11111111-1111-4111-8111-111111111111'
+    });
+
+    const terminalUpdateInput = commerceRawOrderIngest.updateMany.mock.calls[1]?.[0] as
+      | { data?: Record<string, unknown> }
+      | undefined;
+    expect(terminalUpdateInput?.data).toMatchObject({
+      failureCode: 'RAW_ORDER_RETRY_EXHAUSTED',
+      failureMessage: 'Order processing did not complete after multiple retry attempts.',
+      retryable: false,
+      status: 'FAILED'
+    });
+  });
+
+  test('accepts raw chunks durably and treats exact duplicate payloads as idempotent', async () => {
+    const commerceRawOrderIngest = {
+      create: vi
+        .fn((input: unknown): Promise<{ id: string }> => {
+          void input;
+          return Promise.resolve({ id: 'raw-1' });
+        })
+        .mockResolvedValueOnce({ id: 'raw-1' })
+        .mockRejectedValueOnce({ code: 'P2002' }),
+      findMany: vi.fn(() => Promise.resolve([]))
+    };
+    const commerceSyncRun = {
+      findFirst: vi
+        .fn()
+        .mockResolvedValueOnce(syncRunRecord({ requestPayload: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'RUNNING' }))
+        .mockResolvedValueOnce(syncRunRecord({ requestPayload: { expectedChunkCount: 1, mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'RUNNING' })),
+      updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
+    };
+    const repository = new PrismaWordPressPluginRepository({ commerceRawOrderIngest, commerceSyncRun } as never);
+
+    const result = await repository.acceptRawChunk({
+      context: pluginContext(),
+      now: acceptedAt,
+      payload: {
+        chunkCount: 1,
+        chunkId: 'chunk-1',
+        chunkIndex: 0,
+        orders: [
+          { id: 123, number: '123', date_modified_gmt: '2026-05-20T00:00:00' },
+          { id: 123, number: '123', date_modified_gmt: '2026-05-20T00:00:00' }
+        ],
+        syncRunId: '11111111-1111-4111-8111-111111111111'
+      }
+    });
+
+    expect(result.accepted).toBe(1);
+    expect(result.duplicate).toBe(1);
+    expect(result.invalid).toBe(0);
+    expect(result.startBackgroundProcessing).toBe(true);
+    const createdRawInput = commerceRawOrderIngest.create.mock.calls[0]?.[0] as
+      | { data?: { chunkId?: unknown; rawPayload?: unknown; sourceOrderId?: unknown; status?: unknown } }
+      | undefined;
+    expect(createdRawInput?.data).toMatchObject({
+      chunkId: 'chunk-1',
+      rawPayload: { id: 123, number: '123', date_modified_gmt: '2026-05-20T00:00:00' },
+      sourceOrderId: '123',
+      status: 'RECEIVED'
+    });
+  });
+
   test('health includes the latest sync run instead of duplicating freshness data', async () => {
     const commerceConnection = {
       findUnique: vi.fn(() => Promise.resolve({ lastRestSyncAt: null, lastWebhookAt: null }))
@@ -137,7 +419,13 @@ function pluginContext(): WordPressPluginConnectionContext {
   };
 }
 
-function syncRunRecord(input: { startedAt?: Date | null; status?: 'FAILED' | 'QUEUED' | 'RUNNING' | 'SUCCEEDED' } = {}) {
+function syncRunRecord(
+  input: {
+    requestPayload?: Record<string, unknown>;
+    startedAt?: Date | null;
+    status?: 'FAILED' | 'QUEUED' | 'RUNNING' | 'SUCCEEDED';
+  } = {}
+) {
   return {
     acceptedAt,
     completedAt: null,
@@ -152,7 +440,7 @@ function syncRunRecord(input: { startedAt?: Date | null; status?: 'FAILED' | 'QU
     pagesRead: null,
     readyToPlan: null,
     received: null,
-    requestPayload: { modifiedAfter: null, pageSize: 100, status: null },
+    requestPayload: input.requestPayload ?? { modifiedAfter: null, pageSize: 100, status: null },
     skipped: null,
     startedAt: input.startedAt ?? null,
     status: input.status ?? 'QUEUED',
