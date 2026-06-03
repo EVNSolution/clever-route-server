@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 const baseUrl = requiredEnv('ROUTE_OPS_SMOKE_BASE_URL', 'https://clever-route.cleversystem.ai').replace(/\/+$/, '');
-const shopDomain = requiredEnv('ROUTE_OPS_SMOKE_SHOP_DOMAIN', 'dev1.tomatonofood.com');
+const shopDomain = requiredEnv('ROUTE_OPS_SMOKE_SHOP_DOMAIN', 'tomatonofood.com');
 const loginSecret = requiredEnv('ROUTE_OPS_SMOKE_LOGIN_SECRET');
 const expectPublicOpenFreeMap = process.env.ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP === 'true';
 const expectedPublicHosts = (process.env.ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP_HOSTS ?? process.env.ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP_HOST ?? 'tiles.openfreemap.org')
