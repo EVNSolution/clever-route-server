@@ -183,6 +183,7 @@ if (allowGeocodeOsrmLane) {
 
 const commerceSyncAllowedExact = new Set([
   'apps/delivery-api/prisma/schema.prisma',
+  'apps/delivery-api/src/modules/commerce/admin-woocommerce-sync.service.ts',
   'apps/delivery-api/src/modules/security/diagnostic-redaction.ts',
   'apps/delivery-api/src/modules/shopify/order-sync.mapper.ts',
   'apps/delivery-api/src/modules/shopify/order-sync.repository.ts',
