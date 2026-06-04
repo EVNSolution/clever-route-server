@@ -1,9 +1,104 @@
 import { describe, expect, test, vi } from 'vitest';
 
+import {
+  DEFAULT_WORDPRESS_PLUGIN_PAIRING_CODE_TTL_MINUTES,
+  hashSecret
+} from '../src/modules/wordpress-plugin/wordpress-plugin-auth.service.js';
 import { PrismaWordPressPluginRepository } from '../src/modules/wordpress-plugin/wordpress-plugin.repository.js';
 import type { WordPressPluginConnectionContext } from '../src/modules/wordpress-plugin/wordpress-plugin.types.js';
 
 const acceptedAt = new Date('2026-05-25T03:00:00.000Z');
+
+describe('PrismaWordPressPluginRepository pairing-code lifecycle', () => {
+  test('stores only a hash for server-generated pairing codes and uses the shared TTL default', async () => {
+    const issuedAt = new Date('2026-06-04T01:00:00.000Z');
+    const expiresAt = new Date(
+      issuedAt.getTime() +
+        DEFAULT_WORDPRESS_PLUGIN_PAIRING_CODE_TTL_MINUTES * 60_000
+    );
+    const commerceConnection = {
+      findUnique: vi.fn(() =>
+        Promise.resolve({
+          id: 'connection-id',
+          shopId: 'shop-id',
+          siteUrl: 'https://woo.example.test'
+        })
+      )
+    };
+    const wordPressPluginPairingCode = {
+      create: vi.fn(() => Promise.resolve({ id: 'pairing-code-id' }))
+    };
+    const repository = new PrismaWordPressPluginRepository({
+      commerceConnection,
+      wordPressPluginPairingCode
+    } as never);
+
+    const result = await repository.createPairingCode({
+      commerceConnectionId: 'connection-id',
+      expiresAt,
+      issuedAt,
+      issuedBy: 'web-operator',
+      plaintextCode: 'crp-pair-plaintext',
+      siteUrl: 'https://woo.example.test/'
+    });
+
+    expect(DEFAULT_WORDPRESS_PLUGIN_PAIRING_CODE_TTL_MINUTES).toBe(15);
+    expect(result).toEqual({
+      code: 'crp-pair-plaintext',
+      expiresAt,
+      siteUrl: 'https://woo.example.test',
+      tokenPreview: null
+    });
+    expect(wordPressPluginPairingCode.create).toHaveBeenCalledWith({
+      data: {
+        codeHash: hashSecret('crp-pair-plaintext'),
+        commerceConnectionId: 'connection-id',
+        expiresAt,
+        issuedAt,
+        issuedBy: 'web-operator',
+        shopId: 'shop-id',
+        siteUrl: 'https://woo.example.test'
+      },
+      select: { id: true }
+    });
+    expect(JSON.stringify(wordPressPluginPairingCode.create.mock.calls)).not.toContain(
+      'crp-pair-plaintext'
+    );
+  });
+
+  test('rejects a pairing code site URL that differs from the connection site URL', async () => {
+    const commerceConnection = {
+      findUnique: vi.fn(() =>
+        Promise.resolve({
+          id: 'connection-id',
+          shopId: 'shop-id',
+          siteUrl: 'https://woo.example.test'
+        })
+      )
+    };
+    const wordPressPluginPairingCode = {
+      create: vi.fn()
+    };
+    const repository = new PrismaWordPressPluginRepository({
+      commerceConnection,
+      wordPressPluginPairingCode
+    } as never);
+
+    await expect(
+      repository.createPairingCode({
+        commerceConnectionId: 'connection-id',
+        expiresAt: new Date('2026-06-04T01:15:00.000Z'),
+        issuedAt: new Date('2026-06-04T01:00:00.000Z'),
+        issuedBy: 'web-operator',
+        plaintextCode: 'crp-pair-plaintext',
+        siteUrl: 'https://other.example.test'
+      })
+    ).rejects.toThrow(
+      'WordPress plugin pairing code site URL must match the WooCommerce connection site URL'
+    );
+    expect(wordPressPluginPairingCode.create).not.toHaveBeenCalled();
+  });
+});
 
 describe('PrismaWordPressPluginRepository sync-run lifecycle', () => {
   test('marks stale running sync runs failed before creating a new active run', async () => {

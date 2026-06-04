@@ -7,6 +7,8 @@ import type {
   WordPressPluginPairResult
 } from './wordpress-plugin.types.js';
 
+export const DEFAULT_WORDPRESS_PLUGIN_PAIRING_CODE_TTL_MINUTES = 15;
+
 type PairingCodeConnectionRecord = {
   id: string;
   label: string | null;

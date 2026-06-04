@@ -6,6 +6,7 @@ import { buildApp } from "../src/app.js";
 import type { AdminCommerceActor } from "../src/modules/commerce/admin-commerce-auth.js";
 import { loadAdminCommerceConnectionsUiDependencies } from "../src/modules/commerce/admin-commerce-connections.dependencies.js";
 import type { SafeWooCommerceConnection } from "../src/modules/commerce/commerce-connection.service.js";
+import { DEFAULT_WORDPRESS_PLUGIN_PAIRING_CODE_TTL_MINUTES } from "../src/modules/wordpress-plugin/wordpress-plugin-auth.service.js";
 import {
   RoutePlanBatchInvalidError,
   type RoutePlanService,
@@ -4568,6 +4569,14 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(response.body).toContain("Disabled");
       expect(response.body).toContain("Last webhook");
       expect(response.body).toContain("Last REST sync");
+      expect(response.body).toContain("Generate WordPress plugin pairing code");
+      expect(response.body).toContain(
+        'action="/admin/ui/commerce-connections/woocommerce/33333333-3333-4333-8333-333333333333/pairing-code"',
+      );
+      expect(response.body).toContain(
+        `Creates a ${DEFAULT_WORDPRESS_PLUGIN_PAIRING_CODE_TTL_MINUTES}-minute one-time code`,
+      );
+      expect(response.body).not.toContain("crp-pair-");
       expect(response.body).not.toContain("generated-whsec");
       expect(response.body).not.toContain("ck_SHOULD_NOT_RENDER");
       expect(response.body).not.toContain("cs_SHOULD_NOT_RENDER");
@@ -4631,6 +4640,183 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
+  test("generates a server-side WordPress plugin pairing code once without redisplay", async () => {
+    const issuedAt = new Date("2026-06-04T01:00:00.000Z");
+    const expiresAt = new Date(
+      issuedAt.getTime() +
+        DEFAULT_WORDPRESS_PLUGIN_PAIRING_CODE_TTL_MINUTES * 60_000,
+    );
+    const pairingCodeService = {
+      createPairingCode: vi.fn(() =>
+        Promise.resolve({
+          code: "crp-pair-test-code",
+          expiresAt,
+          siteUrl: "https://woo.example.test",
+        }),
+      ),
+    };
+    const { app } = await createUiHarness({
+      now: () => issuedAt,
+      pairingCodeService,
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/commerce-connections/woocommerce/11111111-1111-4111-8111-111111111111/pairing-code",
+        ...authenticatedMultipartRequest(cookie, {
+          csrfToken,
+          shopDomain: "tenant-a.example.test",
+        }),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain(
+        "WordPress plugin pairing code generated.",
+      );
+      expect(response.body).toContain("WordPress plugin pairing code");
+      expect(response.body).toContain("Copy the generated pairing code now");
+      expect(response.body).toContain("https://woo.example.test");
+      expect(response.body).toContain(expiresAt.toISOString());
+      expect(response.body).toContain("shown only in this response");
+      expect(countOccurrences(response.body, "crp-pair-test-code")).toBe(1);
+      expect(pairingCodeService.createPairingCode).toHaveBeenCalledWith({
+        commerceConnectionId: "11111111-1111-4111-8111-111111111111",
+        issuedAt,
+        issuedBy: "web-operator",
+        siteUrl: "https://woo.example.test",
+      });
+      expect(response.body).not.toContain("ck_SHOULD_NOT_RENDER");
+      expect(response.body).not.toContain("cs_SHOULD_NOT_RENDER");
+      expect(response.body).not.toContain(adminApiToken);
+      expect(response.body).not.toContain("codeHash");
+      expect(response.body).not.toContain("consumerSecret");
+      expect(response.body).not.toContain("tokenPrefix");
+
+      const refresh = await app.inject({
+        headers: { cookie },
+        method: "GET",
+        url: "/admin/ui/commerce-connections/woocommerce?shopDomain=tenant-a.example.test",
+      });
+      expect(refresh.statusCode).toBe(200);
+      expect(refresh.body).not.toContain("crp-pair-test-code");
+      expect(pairingCodeService.createPairingCode).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("requires CSRF and enabled service before generating a pairing code", async () => {
+    const pairingCodeService = {
+      createPairingCode: vi.fn(() =>
+        Promise.resolve({
+          code: "crp-pair-should-not-render",
+          expiresAt: new Date("2026-06-04T01:15:00.000Z"),
+          siteUrl: "https://woo.example.test",
+        }),
+      ),
+    };
+    const { app } = await createUiHarness({ pairingCodeService });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      const csrfResponse = await app.inject({
+        method: "POST",
+        url: "/admin/ui/commerce-connections/woocommerce/11111111-1111-4111-8111-111111111111/pairing-code",
+        ...authenticatedMultipartRequest(cookie, {
+          csrfToken: "tampered",
+          shopDomain: "tenant-a.example.test",
+        }),
+      });
+
+      expect(csrfResponse.statusCode).toBe(400);
+      expect(csrfResponse.body).toContain("Invalid admin UI CSRF token");
+      expect(csrfResponse.body).not.toContain("crp-pair-should-not-render");
+      expect(pairingCodeService.createPairingCode).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+
+    const missingService = await createUiHarness({ pairingCodeService: null });
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(missingService.app);
+      const response = await missingService.app.inject({
+        method: "POST",
+        url: "/admin/ui/commerce-connections/woocommerce/11111111-1111-4111-8111-111111111111/pairing-code",
+        ...authenticatedMultipartRequest(cookie, {
+          csrfToken,
+          shopDomain: "tenant-a.example.test",
+        }),
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.body).toContain(
+        "WordPress plugin pairing code generation is not enabled in this runtime.",
+      );
+      expect(response.body).not.toContain(
+        'action="/admin/ui/commerce-connections/woocommerce/11111111-1111-4111-8111-111111111111/pairing-code"',
+      );
+      expect(response.body).not.toContain("crp-pair-");
+      expect(response.body).not.toContain("Error:");
+      expect(response.body).not.toContain("requirePairingCodeService");
+      expect(response.body).not.toContain(adminApiToken);
+    } finally {
+      await missingService.app.close();
+    }
+  });
+
+  test("rejects WordPress-plugin sessions before pairing code generation", async () => {
+    const pairingCodeService = {
+      createPairingCode: vi.fn(() =>
+        Promise.resolve({
+          code: "crp-pair-should-not-render",
+          expiresAt: new Date("2026-06-04T01:15:00.000Z"),
+          siteUrl: "https://woo.example.test",
+        }),
+      ),
+    };
+    const { app } = await createUiHarness({ pairingCodeService });
+    const { token } = createAdminWebLaunchToken({
+      returnPath: "/admin/ui/app/orders?shopDomain=tenant-a.example.test",
+      sessionSecret: webSessionSecret,
+      shopDomain: "tenant-a.example.test",
+      subject: "wordpress-plugin:tenant-a.example.test",
+    });
+
+    try {
+      const launch = await app.inject({
+        method: "GET",
+        url: `/admin/ui/plugin-launch?token=${encodeURIComponent(token)}`,
+      });
+      expect(launch.statusCode).toBe(303);
+      const cookie = readSetCookie(launch);
+      const bootstrap = await app.inject({
+        headers: { cookie },
+        method: "GET",
+        url: "/admin/ui/app/orders?shopDomain=tenant-a.example.test",
+      });
+      expect(bootstrap.statusCode).toBe(200);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/commerce-connections/woocommerce/11111111-1111-4111-8111-111111111111/pairing-code",
+        ...authenticatedMultipartRequest(cookie, {
+          csrfToken: "plugin-session-has-no-admin-csrf",
+          shopDomain: "tenant-a.example.test",
+        }),
+      });
+
+      expect(response.statusCode).toBe(303);
+      expect(response.headers.location).toContain("/admin/ui/app/orders?");
+      expect(response.headers.location).toContain(
+        "Connection+setup+requires+CLEVER+admin+login",
+      );
+      expect(pairingCodeService.createPairingCode).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test("rejects tampered hidden shopDomain before connection-id mutations", async () => {
     const getConnection = vi.fn(() =>
       Promise.resolve(safeConnection({ shopDomain: "tenant-b.example.test" })),
@@ -4645,8 +4831,18 @@ describe("Admin WooCommerce connection UI routes", () => {
     const updateStatus = vi.fn(() =>
       Promise.resolve(safeConnection({ status: "DISABLED" })),
     );
+    const pairingCodeService = {
+      createPairingCode: vi.fn(() =>
+        Promise.resolve({
+          code: "crp-pair-should-not-render",
+          expiresAt: new Date("2026-06-04T01:15:00.000Z"),
+          siteUrl: "https://woo.example.test",
+        }),
+      ),
+    };
     const { app } = await createUiHarness({
       getConnection,
+      pairingCodeService,
       rotateCredentials,
       rotateWebhookSecret,
       updateStatus,
@@ -4682,17 +4878,30 @@ describe("Admin WooCommerce connection UI routes", () => {
           status: "DISABLED",
         }),
       });
+      const pairingResponse = await app.inject({
+        method: "POST",
+        url: "/admin/ui/commerce-connections/woocommerce/11111111-1111-4111-8111-111111111111/pairing-code",
+        ...authenticatedMultipartRequest(cookie, {
+          csrfToken,
+          shopDomain: "tenant-a.example.test",
+        }),
+      });
 
       expect(credentialResponse.statusCode).toBe(403);
       expect(webhookResponse.statusCode).toBe(403);
       expect(statusResponse.statusCode).toBe(403);
+      expect(pairingResponse.statusCode).toBe(403);
       expect(rotateCredentials).not.toHaveBeenCalled();
       expect(rotateWebhookSecret).not.toHaveBeenCalled();
       expect(updateStatus).not.toHaveBeenCalled();
+      expect(pairingCodeService.createPairingCode).not.toHaveBeenCalled();
       expect(
-        `${credentialResponse.body}${webhookResponse.body}${statusResponse.body}`,
+        `${credentialResponse.body}${webhookResponse.body}${statusResponse.body}${pairingResponse.body}`,
       ).not.toContain("ck_rotated_SHOULD_NOT_RENDER");
-      expect(getConnection).toHaveBeenCalledTimes(3);
+      expect(
+        `${credentialResponse.body}${webhookResponse.body}${statusResponse.body}${pairingResponse.body}`,
+      ).not.toContain("crp-pair-should-not-render");
+      expect(getConnection).toHaveBeenCalledTimes(4);
     } finally {
       await app.close();
     }
@@ -4747,6 +4956,9 @@ async function createUiHarness(
     getConnection: ReturnType<typeof vi.fn>;
     listConnections: ReturnType<typeof vi.fn>;
     orderSyncService: AdminCommerceConnectionsUiDependencies["orderSyncService"];
+    pairingCodeService:
+      | AdminCommerceConnectionsUiDependencies["pairingCodeService"]
+      | null;
     rotateCredentials: ReturnType<typeof vi.fn>;
     rotateWebhookSecret: ReturnType<typeof vi.fn>;
     routePlanService: AdminCommerceConnectionsUiDependencies["routePlanService"];
@@ -4795,6 +5007,18 @@ async function createUiHarness(
   const updateStatus =
     overrides.updateStatus ??
     vi.fn(() => Promise.resolve(safeConnection({ status: "DISABLED" })));
+  const pairingCodeService =
+    overrides.pairingCodeService === null
+      ? undefined
+      : (overrides.pairingCodeService ?? {
+          createPairingCode: vi.fn(() =>
+            Promise.resolve({
+              code: "crp-pair-default-test-code",
+              expiresAt: new Date("2026-06-04T01:15:00.000Z"),
+              siteUrl: "https://woo.example.test",
+            }),
+          ),
+        });
   const onboardingService: AdminCommerceConnectionsUiDependencies["onboardingService"] =
     {
       createConnection:
@@ -4822,6 +5046,7 @@ async function createUiHarness(
       ? {}
       : { geocodingService: overrides.geocodingService }),
     onboardingService,
+    ...(pairingCodeService === undefined ? {} : { pairingCodeService }),
     ...(overrides.driverService === undefined
       ? {}
       : { driverService: overrides.driverService }),

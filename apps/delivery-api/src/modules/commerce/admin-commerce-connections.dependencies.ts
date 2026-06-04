@@ -14,6 +14,7 @@ import { PrismaOrderSyncRepository } from '../shopify/order-sync.repository.js';
 import { ShopifyOrderSyncService } from '../shopify/order-sync.service.js';
 import { createWooCommerceOrderClientFromConnection } from '../woocommerce/woocommerce-order.client.js';
 import { WooCommerceOrderSyncService } from '../woocommerce/woocommerce-order-sync.service.js';
+import { DEFAULT_WORDPRESS_PLUGIN_PAIRING_CODE_TTL_MINUTES } from '../wordpress-plugin/wordpress-plugin-auth.service.js';
 import { PrismaWordPressPluginRepository } from '../wordpress-plugin/wordpress-plugin.repository.js';
 import { WordPressPluginSyncRequestService } from '../wordpress-plugin/wordpress-plugin-sync.service.js';
 import {
@@ -131,12 +132,46 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     geocodingService: loadGeocodingService({ env: input.env }),
     onboardingService: input.adminCommerceConnections.onboardingService,
     ...readAdminUiOrderSyncService(input),
+    ...readAdminUiPairingCodeService(input),
     ...readAdminUiWooSyncService(input),
     ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
     ...readAdminUiRoutePlanService(input),
     secureCookies: input.nodeEnv !== 'development' && input.nodeEnv !== 'test',
     sessionSecret,
     ...readAdminUiSettingsService(input)
+  };
+}
+
+function readAdminUiPairingCodeService(input: {
+  prisma?: PrismaClient | undefined;
+}): Pick<AdminCommerceConnectionsUiDependencies, 'pairingCodeService'> {
+  if (input.prisma === undefined) return {};
+  const wordpressRepository = new PrismaWordPressPluginRepository(input.prisma);
+  return {
+    pairingCodeService: {
+      async createPairingCode({
+        commerceConnectionId,
+        issuedAt,
+        issuedBy,
+        siteUrl
+      }) {
+        const result = await wordpressRepository.createPairingCode({
+          commerceConnectionId,
+          expiresAt: new Date(
+            issuedAt.getTime() +
+              DEFAULT_WORDPRESS_PLUGIN_PAIRING_CODE_TTL_MINUTES * 60_000
+          ),
+          issuedAt,
+          issuedBy,
+          siteUrl
+        });
+        return {
+          code: result.code,
+          expiresAt: result.expiresAt,
+          siteUrl: result.siteUrl
+        };
+      }
+    }
   };
 }
 

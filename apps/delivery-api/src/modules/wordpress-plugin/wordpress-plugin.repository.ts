@@ -147,7 +147,13 @@ export class PrismaWordPressPluginRepository implements WordPressPluginAuthRepos
     }
 
     const code = input.plaintextCode ?? createPairingCode();
+    const connectionSiteUrl = normalizeCommerceSiteUrl(connection.siteUrl);
     const siteUrl = normalizeCommerceSiteUrl(input.siteUrl ?? connection.siteUrl);
+    if (siteUrl !== connectionSiteUrl) {
+      throw new Error(
+        'WordPress plugin pairing code site URL must match the WooCommerce connection site URL'
+      );
+    }
     await this.prisma.wordPressPluginPairingCode.create({
       data: {
         codeHash: hashSecret(code),

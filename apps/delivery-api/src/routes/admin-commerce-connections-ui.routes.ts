@@ -34,6 +34,7 @@ import type {
   WordPressPluginSyncRequestInput,
   WordPressPluginSyncRun,
 } from "../modules/wordpress-plugin/wordpress-plugin.types.js";
+import { DEFAULT_WORDPRESS_PLUGIN_PAIRING_CODE_TTL_MINUTES } from "../modules/wordpress-plugin/wordpress-plugin-auth.service.js";
 import type {
   DeliveryBatchCandidate,
   ListCanonicalOrdersFilters,
@@ -342,6 +343,14 @@ export type AdminCommerceConnectionsUiDependencies = {
     | "testConnection"
     | "updateStatus"
   >;
+  pairingCodeService?: {
+    createPairingCode(input: {
+      commerceConnectionId: string;
+      issuedAt: Date;
+      issuedBy: string | null;
+      siteUrl: string;
+    }): Promise<{ code: string; expiresAt: Date; siteUrl: string }>;
+  };
   geocodingService?: Pick<GeocodingService, "geocode" | "status">;
   orderSyncService?: {
     listDeliveryBatchCandidates?(input: {
@@ -1038,6 +1047,59 @@ export function registerAdminCommerceConnectionsUiRoutes(
           currentShopDomain: result.connection.shopDomain,
           notice: "WooCommerce webhook secret rotated.",
           webhookSetup: toWebhookSetup(request, dependencies, result),
+        });
+      } catch (error) {
+        return sendUiError(
+          reply,
+          request,
+          dependencies,
+          session,
+          error,
+          shopDomain,
+        );
+      }
+    },
+  );
+
+  app.post<{ Params: { connectionId: string } }>(
+    `${ADMIN_UI_WOOCOMMERCE_PATH}/:connectionId/pairing-code`,
+    async (request, reply) => {
+      const session = readSession(request, dependencies);
+      if (session === null) return redirect(reply, ADMIN_UI_LOGIN_PATH);
+      if (isWpPluginSession(session)) {
+        return redirectWpPluginSessionToOperate(
+          reply,
+          session,
+          "Connection setup requires CLEVER admin login.",
+        );
+      }
+
+      let shopDomain: string | null = null;
+      try {
+        assertSameOriginMutation(request, dependencies);
+        const fields = await readAdminUiFormFields(request, {
+          allowedFields: ["csrfToken", "shopDomain"],
+          maxFields: 2,
+        });
+        assertValidCsrf(session, fields.csrfToken);
+        shopDomain = readRequiredField(fields, "shopDomain", "shopDomain");
+        const connection = await requireConnectionMatchesShop({
+          actor: dependencies.actor,
+          connectionId: request.params.connectionId,
+          dependencies,
+          shopDomain,
+        });
+        const pairingCodeService = requirePairingCodeService(dependencies);
+        const pairingCode = await pairingCodeService.createPairingCode({
+          commerceConnectionId: connection.id,
+          issuedAt: dependencies.now?.() ?? new Date(),
+          issuedBy: dependencies.actor.subject,
+          siteUrl: connection.siteUrl,
+        });
+        return renderHome(reply, request, dependencies, session, {
+          currentShopDomain: connection.shopDomain,
+          notice: "WordPress plugin pairing code generated.",
+          pairingCodeSetup: toPairingCodeSetup(pairingCode),
         });
       } catch (error) {
         return sendUiError(
@@ -2995,6 +3057,7 @@ async function renderHome(
     currentShopDomain?: string | null;
     error?: string;
     notice?: string;
+    pairingCodeSetup?: PairingCodeSetupView;
     statusCode?: number;
     webhookSetup?: WebhookSetupView;
   },
@@ -3037,8 +3100,12 @@ async function renderHome(
       connections,
       csrfToken: session.csrfToken,
       currentShopDomain,
+      canGeneratePairingCode: dependencies.pairingCodeService !== undefined,
       ...(error === undefined ? {} : { error }),
       ...(input.notice === undefined ? {} : { notice: input.notice }),
+      ...(input.pairingCodeSetup === undefined
+        ? {}
+        : { pairingCodeSetup: input.pairingCodeSetup }),
       ...(input.webhookSetup === undefined
         ? {}
         : { webhookSetup: input.webhookSetup }),
@@ -3356,6 +3423,19 @@ async function requireConnectionMatchesShop(input: {
   return connection;
 }
 
+function requirePairingCodeService(
+  dependencies: AdminCommerceConnectionsUiDependencies,
+): NonNullable<AdminCommerceConnectionsUiDependencies["pairingCodeService"]> {
+  if (dependencies.pairingCodeService === undefined) {
+    throw new WooCommerceOnboardingError(
+      "BAD_REQUEST",
+      "WordPress plugin pairing code generation is not enabled in this runtime.",
+      400,
+    );
+  }
+  return dependencies.pairingCodeService;
+}
+
 function readCredentialFields(fields: Record<string, string>): {
   consumerKey: string;
   consumerSecret: string;
@@ -3532,6 +3612,18 @@ function toWebhookSetup(
   };
 }
 
+function toPairingCodeSetup(input: {
+  code: string;
+  expiresAt: Date;
+  siteUrl: string;
+}): PairingCodeSetupView {
+  return {
+    code: input.code,
+    expiresAt: input.expiresAt.toISOString(),
+    siteUrl: input.siteUrl,
+  };
+}
+
 function resolveBaseUrl(
   request: FastifyRequest,
   dependencies: AdminCommerceConnectionsUiDependencies,
@@ -3599,6 +3691,12 @@ type WebhookSetupView = {
   deliveryPath: string;
   deliveryUrl: string;
   oneTimeSecret: string | null;
+};
+
+type PairingCodeSetupView = {
+  code: string;
+  expiresAt: string;
+  siteUrl: string;
 };
 
 type RouteUiServices = {
@@ -6193,8 +6291,10 @@ function renderHomePage(input: {
   connections: readonly SafeConnectionWithDelivery[];
   csrfToken: string;
   currentShopDomain: string | null;
+  canGeneratePairingCode: boolean;
   error?: string;
   notice?: string;
+  pairingCodeSetup?: PairingCodeSetupView;
   webhookSetup?: WebhookSetupView;
 }): string {
   const currentShopDomain = input.currentShopDomain ?? "";
@@ -6212,6 +6312,7 @@ function renderHomePage(input: {
       ${input.notice === undefined ? "" : `<p class="alert success">${escapeHtml(input.notice)}</p>`}
       ${input.error === undefined ? "" : `<p class="alert error">${escapeHtml(input.error)}</p>`}
       ${renderWebhookSetup(input.webhookSetup)}
+      ${renderPairingCodeSetup(input.pairingCodeSetup)}
       <section class="setup-layout">
         <div class="setup-main">
           ${renderWooSetupChecklist()}
@@ -6240,7 +6341,11 @@ function renderHomePage(input: {
       </section>
       <section class="card">
         <h2>Connections</h2>
-        ${input.currentShopDomain === null ? '<p class="muted">Enter a shop domain to load connections.</p>' : renderConnections(input.connections, input.csrfToken)}
+        ${input.currentShopDomain === null ? '<p class="muted">Enter a shop domain to load connections.</p>' : renderConnections({
+          canGeneratePairingCode: input.canGeneratePairingCode,
+          connections: input.connections,
+          csrfToken: input.csrfToken,
+        })}
       </section>
     </main>`,
     title: "CLEVER Route WooCommerce Admin",
@@ -6313,19 +6418,30 @@ function renderWooCredentialForm(input: {
   </form>`;
 }
 
-function renderConnections(
-  connections: readonly SafeConnectionWithDelivery[],
-  csrfToken: string,
-): string {
-  if (connections.length === 0)
+function renderConnections(input: {
+  canGeneratePairingCode: boolean;
+  connections: readonly SafeConnectionWithDelivery[];
+  csrfToken: string;
+}): string {
+  if (input.connections.length === 0)
     return '<p class="muted">No WooCommerce connections saved for this shop.</p>';
-  return `<div class="connections">${connections.map((connection) => renderConnection(connection, csrfToken)).join("")}</div>`;
+  return `<div class="connections">${input.connections
+    .map((connection) =>
+      renderConnection({
+        canGeneratePairingCode: input.canGeneratePairingCode,
+        connection,
+        csrfToken: input.csrfToken,
+      }),
+    )
+    .join("")}</div>`;
 }
 
-function renderConnection(
-  connection: SafeConnectionWithDelivery,
-  csrfToken: string,
-): string {
+function renderConnection(input: {
+  canGeneratePairingCode: boolean;
+  connection: SafeConnectionWithDelivery;
+  csrfToken: string;
+}): string {
+  const { connection, csrfToken } = input;
   assertSafeConnectionForRender(connection);
   const readiness = connectionReadiness(connection);
   return `<article class="connection">
@@ -6367,6 +6483,11 @@ function renderConnection(
         <button type="submit">Rotate webhook secret</button>
       </form>
     </details>
+    ${renderPairingCodeAction({
+      canGeneratePairingCode: input.canGeneratePairingCode,
+      connection,
+      csrfToken,
+    })}
     <form method="post" action="${ADMIN_UI_WOOCOMMERCE_PATH}/${escapeHtml(connection.id)}/status" enctype="multipart/form-data" class="inline-form">
       <input type="hidden" name="csrfToken" value="${escapeHtml(csrfToken)}" />
       <input type="hidden" name="shopDomain" value="${escapeHtml(connection.shopDomain)}" />
@@ -6374,6 +6495,29 @@ function renderConnection(
       <button type="submit" class="secondary">${connection.status === "ACTIVE" ? "Disable" : "Activate"}</button>
     </form>
   </article>`;
+}
+
+function renderPairingCodeAction(input: {
+  canGeneratePairingCode: boolean;
+  connection: SafeConnectionWithDelivery;
+  csrfToken: string;
+}): string {
+  if (!input.canGeneratePairingCode) {
+    return `<details>
+      <summary>Generate WordPress plugin pairing code</summary>
+      <p class="helper">WordPress plugin pairing code generation is not enabled in this runtime.</p>
+    </details>`;
+  }
+
+  return `<details>
+      <summary>Generate WordPress plugin pairing code</summary>
+      <form method="post" action="${ADMIN_UI_WOOCOMMERCE_PATH}/${escapeHtml(input.connection.id)}/pairing-code" enctype="multipart/form-data" class="stack compact">
+        <input type="hidden" name="csrfToken" value="${escapeHtml(input.csrfToken)}" />
+        <input type="hidden" name="shopDomain" value="${escapeHtml(input.connection.shopDomain)}" />
+        <p class="helper">Creates a ${DEFAULT_WORDPRESS_PLUGIN_PAIRING_CODE_TTL_MINUTES}-minute one-time code for this site URL. Paste it into WordPress → WooCommerce → CLEVER Route → Setup.</p>
+        <button type="submit">Generate pairing code</button>
+      </form>
+    </details>`;
 }
 
 function connectionReadiness(connection: SafeConnectionWithDelivery): {
@@ -6421,6 +6565,20 @@ function connectionReadiness(connection: SafeConnectionWithDelivery): {
       "REST credentials are verified and CLEVER has received a signed WooCommerce order webhook.",
     label: "Ready",
   };
+}
+
+function renderPairingCodeSetup(setup: PairingCodeSetupView | undefined): string {
+  if (setup === undefined) return "";
+  return `<section class="card setup">
+    <h2>WordPress plugin pairing code</h2>
+    <p class="muted">Copy the generated pairing code now, then paste it into WordPress → WooCommerce → CLEVER Route → Setup.</p>
+    <dl class="compact-list">
+      <dt>One-time pairing code</dt><dd><code>${escapeHtml(setup.code)}</code></dd>
+      <dt>Site URL</dt><dd>${escapeHtml(setup.siteUrl)}</dd>
+      <dt>Expires at</dt><dd>${escapeHtml(setup.expiresAt)}</dd>
+    </dl>
+    <p class="muted">This code is shown only in this response. Refreshing or loading the connection list later will not show the plaintext code again; generate a new code if this one is expired or lost.</p>
+  </section>`;
 }
 
 function renderWebhookSetup(setup: WebhookSetupView | undefined): string {
