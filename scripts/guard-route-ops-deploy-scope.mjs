@@ -173,10 +173,15 @@ if (allowComposeBootstrap) {
 }
 
 if (allowGeocodeOsrmLane) {
+  allowedExact.add('apps/delivery-api/src/modules/driver/driver-assigned-route.types.ts');
+  allowedExact.add('apps/delivery-api/src/modules/driver/driver.dependencies.ts');
   allowedExact.add('apps/delivery-api/src/modules/route-plans/osrm-route-geometry.client.ts');
   allowedExact.add('apps/delivery-api/src/modules/wordpress-plugin/wordpress-plugin.dependencies.ts');
+  allowedExact.add('apps/delivery-api/tests/driver-assigned-route.routes.test.ts');
+  allowedExact.add('apps/delivery-api/tests/driver.dependencies.test.ts');
   allowedExact.add('apps/delivery-api/tests/geocoding.service.test.ts');
   allowedExact.add('apps/delivery-api/tests/osrm-route-geometry.client.test.ts');
+  allowedExact.add('docs/driver-assigned-route-osrm-contract.md');
   allowedExact.add('docs/deployment/route-ops-map-geocoding.md');
   allowedExact.add('docs/deployment/route-ops-osrm-ontario.md');
   allowedExact.add('scripts/osrm-ontario.sh');
