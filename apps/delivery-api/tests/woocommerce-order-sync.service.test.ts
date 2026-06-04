@@ -38,6 +38,29 @@ describe('WooCommerceOrderSyncService', () => {
     expect(firstUpsert?.synced.order.sourceOrderId).toBe('1');
   });
 
+  test('fetches and syncs a single WooCommerce order through the shared mapper pipeline', async () => {
+    const wooOrder = order(11432);
+    const client = {
+      getOrder: vi.fn().mockResolvedValue(wooOrder)
+    };
+    const repository = createRepositoryHarness();
+    const service = new WooCommerceOrderSyncService({
+      client,
+      repository,
+      shopDomain: 'woo.example.test',
+      siteUrl: 'https://woo.example.test'
+    });
+
+    const result = await service.syncSingleOrder({ sourceOrderId: '11432' });
+
+    expect(client.getOrder).toHaveBeenCalledWith({ orderId: '11432' });
+    expect(repository.upsertOrderWithDeliveryStop).toHaveBeenCalledTimes(1);
+    const upsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
+    expect(upsert?.synced.order.sourceOrderId).toBe('11432');
+    expect(result.sync).toEqual({ created: 1, needsReview: 0, readyToPlan: 1, received: 1, skipped: 0, unchanged: 0, updated: 0 });
+    expect(result.orders[0]?.sourceOrderId).toBe('11432');
+  });
+
   test('loads connection-scoped mapping config and threads connection id into delivery facts', async () => {
     const repository = createRepositoryHarness();
     repository.readOrderMappingConfig.mockResolvedValueOnce({

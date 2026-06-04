@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 
+import type { WooCommerceSyncOrdersResult } from '../woocommerce/woocommerce-order-sync.service.js';
 import type {
   WordPressPluginConnectionContext,
   WordPressPluginSyncRequestInput,
@@ -24,6 +25,10 @@ export type AdminWooSyncServiceContract = {
     payload: WordPressPluginSyncRequestInput;
     shopDomain: string;
   }): Promise<AdminWooSyncRequestResult>;
+  syncSingleOrder(input: {
+    shopDomain: string;
+    sourceOrderId: number | string;
+  }): Promise<WooCommerceSyncOrdersResult>;
 };
 
 export class AdminWooSyncService implements AdminWooSyncServiceContract {
@@ -65,6 +70,17 @@ export class AdminWooSyncService implements AdminWooSyncServiceContract {
     return this.dependencies.syncService.readSyncRun({
       context,
       syncRunId: input.syncRunId
+    });
+  }
+
+  async syncSingleOrder(input: {
+    shopDomain: string;
+    sourceOrderId: number | string;
+  }): Promise<WooCommerceSyncOrdersResult> {
+    const context = await this.requireActiveWooContext(input.shopDomain);
+    return this.dependencies.syncService.syncSingleOrder({
+      context,
+      sourceOrderId: input.sourceOrderId
     });
   }
 

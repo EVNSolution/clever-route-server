@@ -61,6 +61,30 @@ describe('WooCommerceOrderClient', () => {
     await expect(client.listOrdersPage({ page: 1, perPage: 10 })).rejects.not.toThrow('ck_secret_value');
   });
 
+  test('requests a single order by WooCommerce id', async () => {
+    const fetchImpl = vi.fn((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): ReturnType<typeof fetch> => {
+      void input;
+      void init;
+      return Promise.resolve(new Response(JSON.stringify({ id: 11432, number: '11432' }), { status: 200 }));
+    });
+    const client = new WooCommerceOrderClient({
+      consumerKey: 'ck_test',
+      consumerSecret: 'cs_test',
+      fetchImpl,
+      siteUrl: 'https://example.test/'
+    });
+
+    const result = await client.getOrder({ orderId: '11432' });
+
+    expect(result).toEqual({ id: 11432, number: '11432' });
+    const [url, init] = fetchImpl.mock.calls[0] ?? [undefined, undefined];
+    expect(url).toBeInstanceOf(URL);
+    expect((url as URL).toString()).toBe('https://example.test/wp-json/wc/v3/orders/11432');
+    expect(init?.headers).toEqual(
+      expect.objectContaining({ Authorization: `Basic ${Buffer.from('ck_test:cs_test').toString('base64')}` })
+    );
+  });
+
   test('rejects perPage values outside WooCommerce limits before making a request', async () => {
     const fetchImpl = vi.fn((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): ReturnType<typeof fetch> => {
       void input;
@@ -76,6 +100,25 @@ describe('WooCommerceOrderClient', () => {
 
     await expect(client.listOrdersPage({ page: 1, perPage: 101 })).rejects.toThrow(
       'WooCommerce perPage must be 100 or less'
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test('rejects invalid single order ids before making a request', async () => {
+    const fetchImpl = vi.fn((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]): ReturnType<typeof fetch> => {
+      void input;
+      void init;
+      return Promise.resolve(new Response('{}', { status: 200 }));
+    });
+    const client = new WooCommerceOrderClient({
+      consumerKey: 'ck_test',
+      consumerSecret: 'cs_test',
+      fetchImpl,
+      siteUrl: 'https://example.test'
+    });
+
+    await expect(client.getOrder({ orderId: '../11432' })).rejects.toThrow(
+      'WooCommerce orderId must be a positive integer'
     );
     expect(fetchImpl).not.toHaveBeenCalled();
   });

@@ -18,7 +18,7 @@ export type WooCommerceOrderSyncSummary = {
 
 export type WooCommerceSyncOrdersInput = {
   orders: WooCommerceOrder[];
-  reason: 'manual_backfill' | 'raw_push' | 'scheduled_incremental' | 'webhook';
+  reason: 'manual_backfill' | 'manual_single_order_refresh' | 'raw_push' | 'scheduled_incremental' | 'webhook';
 };
 
 export type WooCommerceSyncOrdersResult = {
@@ -34,6 +34,10 @@ export type WooCommerceSyncUpdatedOrdersInput = {
 
 export type WooCommerceSyncUpdatedOrdersResult = WooCommerceSyncOrdersResult & {
   pagesRead: number;
+};
+
+export type WooCommerceSyncSingleOrderInput = {
+  sourceOrderId: number | string;
 };
 
 type Repository = {
@@ -53,10 +57,15 @@ type GeocodingServiceLike = {
   };
 };
 
+type WooCommerceOrderClientLike = {
+  getOrder?: WooCommerceOrderClient['getOrder'];
+  listOrdersPage?: WooCommerceOrderClient['listOrdersPage'];
+};
+
 export class WooCommerceOrderSyncService {
   constructor(
     private readonly options: {
-      client?: Pick<WooCommerceOrderClient, 'listOrdersPage'>;
+      client?: WooCommerceOrderClientLike;
       connectionId?: string | null;
       geocodingService?: GeocodingServiceLike;
       repository: Repository;
@@ -67,7 +76,7 @@ export class WooCommerceOrderSyncService {
   ) {}
 
   async syncUpdatedOrders(input: WooCommerceSyncUpdatedOrdersInput): Promise<WooCommerceSyncUpdatedOrdersResult> {
-    if (this.options.client === undefined) {
+    if (this.options.client?.listOrdersPage === undefined) {
       throw new Error('WooCommerce order client is not configured');
     }
 
@@ -90,6 +99,15 @@ export class WooCommerceOrderSyncService {
 
     const synced = await this.syncOrders({ orders: allOrders, reason: 'scheduled_incremental' });
     return { ...synced, pagesRead };
+  }
+
+  async syncSingleOrder(input: WooCommerceSyncSingleOrderInput): Promise<WooCommerceSyncOrdersResult> {
+    if (this.options.client?.getOrder === undefined) {
+      throw new Error('WooCommerce order client is not configured');
+    }
+
+    const order = await this.options.client.getOrder({ orderId: input.sourceOrderId });
+    return this.syncOrders({ orders: [order], reason: 'manual_single_order_refresh' });
   }
 
   async syncOrders(input: WooCommerceSyncOrdersInput): Promise<WooCommerceSyncOrdersResult> {

@@ -1283,6 +1283,33 @@ function registerRouteOpsAppRoutes(
       }),
   );
 
+  app.post<{ Params: { sourceOrderId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/orders/woo/:sourceOrderId/sync`,
+    async (request, reply) =>
+      withRouteOpsApi(request, reply, dependencies, async (session) => {
+        assertRouteOpsMutationCsrf(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session);
+        if (dependencies.wooSyncService === undefined) {
+          throw new WooCommerceOnboardingError(
+            "BAD_REQUEST",
+            "WooCommerce sync is not enabled in this runtime.",
+            400,
+          );
+        }
+        const result = await dependencies.wooSyncService.syncSingleOrder({
+          shopDomain,
+          sourceOrderId: readRouteOpsWooSourceOrderId(
+            request.params.sourceOrderId,
+          ),
+        });
+        const order = result.orders[0] ?? null;
+        return routeOpsData({
+          order: order === null ? null : toRouteOpsOrderDto(order),
+          sync: result.sync,
+        });
+      }),
+  );
+
   app.post(
     `${ADMIN_UI_APP_API_PATH}/orders/bulk-geocode`,
     async (request, reply) =>
@@ -2300,6 +2327,18 @@ function readRouteOpsWooSyncRequestBody(
     pageSize: rawPageSize,
     status: readRouteOpsSyncStatus(body.status),
   };
+}
+
+function readRouteOpsWooSourceOrderId(value: string): string {
+  const trimmed = value.trim();
+  if (!/^[1-9]\d*$/u.test(trimmed)) {
+    throw new WooCommerceOnboardingError(
+      "BAD_REQUEST",
+      "WooCommerce source order id must be a positive integer",
+      400,
+    );
+  }
+  return trimmed;
 }
 
 function readRouteOpsSyncModifiedAfter(value: unknown): Date | null {

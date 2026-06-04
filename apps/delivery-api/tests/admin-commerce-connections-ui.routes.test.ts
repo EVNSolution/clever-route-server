@@ -1642,12 +1642,27 @@ describe("Admin WooCommerce connection UI routes", () => {
     );
     const readLatestSyncRun = vi.fn(() => Promise.resolve(queuedSyncRun));
     const readSyncRun = vi.fn(() => Promise.resolve(queuedSyncRun));
+    const syncSingleOrder = vi.fn(() =>
+      Promise.resolve({
+        orders: [canonicalOrder({ name: "#11432", orderId: "order-11432", sourceOrderId: "11432", sourceOrderNumber: "11432" })],
+        sync: {
+          created: 0,
+          needsReview: 0,
+          readyToPlan: 1,
+          received: 1,
+          skipped: 0,
+          unchanged: 0,
+          updated: 1,
+        },
+      }),
+    );
     const { app } = await createUiHarness({
       wooSyncService: {
         processSyncRun,
         readLatestSyncRun,
         readSyncRun,
         requestSync,
+        syncSingleOrder,
       },
     });
 
@@ -1698,6 +1713,25 @@ describe("Admin WooCommerce connection UI routes", () => {
       });
       expect(readLatestSyncRun).toHaveBeenCalledWith({
         shopDomain: "tenant-a.example.test",
+      });
+
+      const singleOrderResponse = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/orders/woo/11432/sync?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {}, csrfToken),
+      });
+      expect(singleOrderResponse.statusCode).toBe(200);
+      const singleOrderData = readApiData<{
+        order: { orderId: string; sourceOrderId: string | null } | null;
+        sync: { received: number; updated: number };
+      }>(singleOrderResponse);
+      expect(singleOrderData.order?.orderId).toBe("order-11432");
+      expect(singleOrderData.order?.sourceOrderId).toBe("11432");
+      expect(singleOrderData.sync.received).toBe(1);
+      expect(singleOrderData.sync.updated).toBe(1);
+      expect(syncSingleOrder).toHaveBeenCalledWith({
+        shopDomain: "tenant-a.example.test",
+        sourceOrderId: "11432",
       });
     } finally {
       await app.close();

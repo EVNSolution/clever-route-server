@@ -1,5 +1,6 @@
 import type { CanonicalOrderRow } from '../shopify/order-sync.mapper.js';
 import type { WooCommerceOrder } from '../woocommerce/woocommerce-order.types.js';
+import type { WooCommerceSyncOrdersResult } from '../woocommerce/woocommerce-order-sync.service.js';
 import type { DecryptedWooCommerceConnection } from '../commerce/commerce-connection.service.js';
 import type {
   WordPressPluginConnectionContext,
@@ -300,6 +301,23 @@ export class WordPressPluginSyncRequestService {
     return this.dependencies.syncRunRepository.findLatestSyncRun(input);
   }
 
+  async syncSingleOrder(input: {
+    context: WordPressPluginConnectionContext;
+    sourceOrderId: number | string;
+  }): Promise<WooCommerceSyncOrdersResult> {
+    const connection = await this.dependencies.connectionService.readDecryptedWooCommerceConnection({
+      connectionId: input.context.connectionId
+    });
+    if (connection === null) {
+      throw new Error('WooCommerce connection not found for WordPress plugin sync');
+    }
+
+    await this.dependencies.validateConnectionSiteUrl?.({ connection });
+
+    const orderSyncService = this.dependencies.createOrderSyncService({ connection });
+    return orderSyncService.syncSingleOrder({ sourceOrderId: input.sourceOrderId });
+  }
+
   async processSyncRun(input: {
     context: WordPressPluginConnectionContext;
     syncRunId: string;
@@ -427,11 +445,14 @@ function sanitizeErrorMessage(error: unknown): string {
 export type WordPressPluginOrderSyncService = {
   syncOrders(input: {
     orders: WooCommerceOrder[];
-    reason: 'manual_backfill' | 'raw_push' | 'scheduled_incremental' | 'webhook';
+    reason: 'manual_backfill' | 'manual_single_order_refresh' | 'raw_push' | 'scheduled_incremental' | 'webhook';
   }): Promise<{
     orders: CanonicalOrderRow[];
     sync: WordPressPluginSyncCounts;
   }>;
+  syncSingleOrder(input: {
+    sourceOrderId: number | string;
+  }): Promise<WooCommerceSyncOrdersResult>;
   syncUpdatedOrders(input: {
     modifiedAfter?: Date | null;
     pageSize: number;

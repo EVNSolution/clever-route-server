@@ -16,6 +16,10 @@ export type WooCommerceOrdersPage = {
   totalPages: number | null;
 };
 
+export type WooCommerceOrderInput = {
+  orderId: number | string;
+};
+
 type FetchLike = typeof fetch;
 
 export class WooCommerceOrderClient {
@@ -81,6 +85,35 @@ export class WooCommerceOrderClient {
       totalPages: parseHeaderNumber(response.headers.get('x-wp-totalpages'))
     };
   }
+
+  async getOrder(input: WooCommerceOrderInput): Promise<WooCommerceOrder> {
+    const orderId = assertWooCommerceOrderId(input.orderId);
+    const url = new URL(`/wp-json/wc/v3/orders/${orderId}`, this.baseUrl);
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url, {
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Basic ${Buffer.from(`${this.options.consumerKey}:${this.options.consumerSecret}`).toString('base64')}`
+        },
+        method: 'GET'
+      });
+    } catch (error) {
+      throw new Error('WooCommerce order request failed before receiving a response', { cause: error });
+    }
+
+    if (!response.ok) {
+      throw new Error(`WooCommerce order request failed with HTTP ${response.status}`);
+    }
+
+    const payload = await response.json();
+    if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new Error('WooCommerce order response must be a JSON object');
+    }
+
+    return payload as WooCommerceOrder;
+  }
 }
 
 export function createWooCommerceOrderClientFromConnection(
@@ -108,6 +141,14 @@ function assertPerPage(value: number): number {
     throw new Error('WooCommerce perPage must be 100 or less');
   }
   return value;
+}
+
+function assertWooCommerceOrderId(value: number | string): string {
+  const raw = typeof value === 'number' ? String(value) : value.trim();
+  if (!/^[1-9]\d*$/u.test(raw)) {
+    throw new Error('WooCommerce orderId must be a positive integer');
+  }
+  return raw;
 }
 
 function parseHeaderNumber(value: string | null): number | null {

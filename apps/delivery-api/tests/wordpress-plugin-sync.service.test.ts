@@ -20,8 +20,9 @@ describe('WordPressPluginSyncRequestService', () => {
     });
     const syncOrders = vi.fn();
     const syncUpdatedOrders = vi.fn();
+    const syncSingleOrder = vi.fn();
     const readDecryptedWooCommerceConnection = vi.fn(() => Promise.resolve(wooConnection()));
-    const createOrderSyncService = vi.fn(() => ({ syncOrders, syncUpdatedOrders }));
+    const createOrderSyncService = vi.fn(() => ({ syncOrders, syncSingleOrder, syncUpdatedOrders }));
     const markRestSyncCompleted = vi.fn(() => Promise.resolve());
     const validateConnectionSiteUrl = vi.fn(() => Promise.resolve());
     const service = new WordPressPluginSyncRequestService({
@@ -53,6 +54,7 @@ describe('WordPressPluginSyncRequestService', () => {
     expect(validateConnectionSiteUrl).not.toHaveBeenCalled();
     expect(createOrderSyncService).not.toHaveBeenCalled();
     expect(syncOrders).not.toHaveBeenCalled();
+    expect(syncSingleOrder).not.toHaveBeenCalled();
     expect(syncUpdatedOrders).not.toHaveBeenCalled();
     expect(markRestSyncCompleted).not.toHaveBeenCalled();
   });
@@ -375,6 +377,34 @@ describe('WordPressPluginSyncRequestService', () => {
     });
   });
 
+  test('validates the Woo site and refreshes one source order on demand', async () => {
+    const syncRunRepository = syncRunRepositoryMock();
+    const syncSingleOrder = vi.fn<WordPressPluginOrderSyncService['syncSingleOrder']>(() =>
+      Promise.resolve({
+        orders: [],
+        sync: { created: 0, needsReview: 0, readyToPlan: 0, received: 1, skipped: 0, unchanged: 1, updated: 0 }
+      })
+    );
+    const validateConnectionSiteUrl = vi.fn(() => Promise.resolve());
+    const service = createService({
+      syncRunRepository,
+      syncSingleOrder,
+      validateConnectionSiteUrl
+    });
+
+    await expect(
+      service.syncSingleOrder({
+        context: pluginContext(),
+        sourceOrderId: '11432'
+      })
+    ).resolves.toEqual({
+      orders: [],
+      sync: { created: 0, needsReview: 0, readyToPlan: 0, received: 1, skipped: 0, unchanged: 1, updated: 0 }
+    });
+    expect(validateConnectionSiteUrl).toHaveBeenCalledWith({ connection: wooConnection() });
+    expect(syncSingleOrder).toHaveBeenCalledWith({ sourceOrderId: '11432' });
+  });
+
 });
 
 function createService(input: {
@@ -383,6 +413,7 @@ function createService(input: {
   now?: () => Date;
   syncRunRepository: ReturnType<typeof syncRunRepositoryMock>;
   syncOrders?: ReturnType<typeof vi.fn<WordPressPluginOrderSyncService['syncOrders']>>;
+  syncSingleOrder?: ReturnType<typeof vi.fn<WordPressPluginOrderSyncService['syncSingleOrder']>>;
   syncUpdatedOrders?: ReturnType<typeof vi.fn<WordPressPluginOrderSyncService['syncUpdatedOrders']>>;
   validateConnectionSiteUrl?: (input: { connection: DecryptedWooCommerceConnection }) => Promise<void>;
 }): WordPressPluginSyncRequestService {
@@ -401,9 +432,16 @@ function createService(input: {
         sync: { created: 0, needsReview: 0, readyToPlan: 0, received: 0, skipped: 0, unchanged: 0, updated: 0 }
       })
     );
+  const syncSingleOrder = input.syncSingleOrder ??
+    vi.fn<WordPressPluginOrderSyncService['syncSingleOrder']>(() =>
+      Promise.resolve({
+        orders: [],
+        sync: { created: 0, needsReview: 0, readyToPlan: 0, received: 0, skipped: 0, unchanged: 0, updated: 0 }
+      })
+    );
   return new WordPressPluginSyncRequestService({
     connectionService: { readDecryptedWooCommerceConnection: vi.fn(() => Promise.resolve(input.connection ?? wooConnection())) },
-    createOrderSyncService: vi.fn(() => ({ syncOrders, syncUpdatedOrders })),
+    createOrderSyncService: vi.fn(() => ({ syncOrders, syncSingleOrder, syncUpdatedOrders })),
     freshnessRepository: { markRestSyncCompleted: input.markRestSyncCompleted ?? vi.fn(() => Promise.resolve()) },
     now: input.now ?? (() => acceptedAt),
     syncRunRepository: input.syncRunRepository,
