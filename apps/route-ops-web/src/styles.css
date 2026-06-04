@@ -573,10 +573,13 @@ small,
   padding: 10px;
 }
 .driver-table {
-  min-width: 760px;
+  min-width: 980px;
 }
 .driver-table td {
   vertical-align: top;
+}
+.driver-table .driver-invite-action-column {
+  min-width: 360px;
 }
 .driver-table .badge,
 .driver-table .status-pill {
@@ -593,7 +596,7 @@ small,
   display: grid;
   gap: 12px;
   grid-template-columns: minmax(0, 1fr) max-content;
-  min-width: min(100%, 360px);
+  min-width: 360px;
 }
 .driver-invite-meta-stack {
   display: grid;
@@ -601,6 +604,7 @@ small,
 }
 .driver-invite-meta {
   min-width: 0;
+  white-space: nowrap;
 }
 .driver-invite-meta-stack .driver-invite-meta {
   margin-top: 0;
@@ -611,9 +615,12 @@ small,
   flex-wrap: nowrap;
   gap: 6px;
   justify-content: flex-end;
+  white-space: nowrap;
 }
 .driver-invite-controls button {
+  flex: 0 0 auto;
   padding: 7px 9px;
+  white-space: nowrap;
 }
 .invite-code {
   background: #111827;

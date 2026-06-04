@@ -358,7 +358,7 @@ export function DriverTable(input: {
             <th>{t.table.phone}</th>
             <th>{t.table.status}</th>
             <th>{t.table.appAccess}</th>
-            <th>{t.table.inviteAction}</th>
+            <th className="driver-invite-action-column">{t.table.inviteAction}</th>
           </tr>
         </thead>
         <tbody>
@@ -371,7 +371,7 @@ export function DriverTable(input: {
               <td>{driver.phone ?? '—'}</td>
               <td><Badge>{formatDriverStatus(driver, input.locale)}</Badge></td>
               <td><span className={driver.appLinked ? 'status-pill ok' : 'status-pill warn'}>{formatDriverAuthLabel(driver, input.locale)}</span></td>
-              <td>
+              <td className="driver-invite-action-column">
                 <DriverInviteActions
                   driver={driver}
                   deletingDriverId={input.deletingDriverId ?? null}

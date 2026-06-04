@@ -143,6 +143,27 @@ describe('route ops layout components', () => {
     expect(css).toContain('.orders-table-scroll');
   });
 
+  test('Drivers CSS keeps invite actions stable inside the horizontally scrolling table', () => {
+    const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+    const driverTableCss = extractCssRule(css, '.driver-table');
+    const driverInviteColumnCss = extractCssRule(css, '.driver-table .driver-invite-action-column');
+    const driverInviteActionsCss = extractCssRule(css, '.driver-invite-actions');
+    const driverInviteMetaCss = extractCssRule(css, '.driver-invite-meta');
+    const driverInviteControlsCss = extractCssRule(css, '.driver-invite-controls');
+    const driverInviteButtonCss = extractCssRule(css, '.driver-invite-controls button');
+
+    expect(css).toContain('overflow-x: auto;');
+    expect(driverTableCss).toContain('min-width: 980px;');
+    expect(driverInviteColumnCss).toContain('min-width: 360px;');
+    expect(driverInviteActionsCss).toContain('min-width: 360px;');
+    expect(driverInviteActionsCss).not.toContain('min(100%, 360px)');
+    expect(driverInviteMetaCss).toContain('white-space: nowrap;');
+    expect(driverInviteControlsCss).toContain('flex-wrap: nowrap;');
+    expect(driverInviteControlsCss).toContain('white-space: nowrap;');
+    expect(driverInviteButtonCss).toContain('flex: 0 0 auto;');
+    expect(driverInviteButtonCss).toContain('white-space: nowrap;');
+  });
+
   test('Settings page exposes only English and Korean locale options with geocode action', () => {
     const html = renderToStaticMarkup(<SettingsPage bootstrap={bootstrap()} setError={() => undefined} />);
     expect(html).toContain('data-settings-layout="category-sections"');
@@ -226,6 +247,14 @@ describe('route ops layout components', () => {
     );
   });
 });
+
+function extractCssRule(css: string, selector: string): string {
+  const start = css.indexOf(`${selector} {`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const end = css.indexOf('}', start);
+  expect(end).toBeGreaterThan(start);
+  return css.slice(start, end + 1);
+}
 
 function bootstrap(locale?: BootstrapPayload['locale']): BootstrapPayload {
   return {

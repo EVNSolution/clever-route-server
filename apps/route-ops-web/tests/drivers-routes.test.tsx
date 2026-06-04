@@ -32,13 +32,14 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
       <DriverTable drivers={[driverFixture(), linkedDriverFixture()]} />,
     );
     const tableHeaderHtml = extractFirstMatch(html, /<thead>([\s\S]*?)<\/thead>/);
-    const inviteCellHtml = extractFirstMatch(html, /<td><div class="driver-invite-actions">([\s\S]*?)<\/div><\/td>/);
+    const inviteCellHtml = extractFirstMatch(html, /<td class="driver-invite-action-column"><div class="driver-invite-actions">([\s\S]*?)<\/div><\/td>/);
 
     expect(tableHeaderHtml).toContain('Driver');
     expect(tableHeaderHtml).toContain('Phone');
     expect(tableHeaderHtml).toContain('Status');
     expect(tableHeaderHtml).toContain('App access');
     expect(tableHeaderHtml).toContain('Invite code / action');
+    expect(tableHeaderHtml).toContain('class="driver-invite-action-column"');
     expect(tableHeaderHtml).not.toContain('Last seen / joined');
     expect(tableHeaderHtml).not.toContain('Recent events');
     expect(html).toContain('A1B2C3');
