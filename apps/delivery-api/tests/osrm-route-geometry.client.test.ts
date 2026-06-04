@@ -23,6 +23,7 @@ const detail = {
     routeStop({ sequence: 2, latitude: 43.8561, longitude: -79.3370 })
   ],
   routeGeometry: null,
+  routeMetrics: null,
   routeStopPoints: []
 } satisfies RoutePlanDetail;
 
@@ -38,6 +39,7 @@ describe('OsrmRouteGeometryProvider', () => {
     const result = await provider.buildRoute({
       routePlan: detail.routePlan,
       routeGeometry: null,
+      routeMetrics: null,
       routeStopPoints: [],
       stops: detail.stops
     });
@@ -60,6 +62,7 @@ describe('OsrmRouteGeometryProvider', () => {
           [-79.337, 43.8561]
         ]
       },
+      routeMetrics: { distanceMeters: 18420.5, durationSeconds: 2310.25 },
       routeStopPoints: [
         {
           deliveryStopId: 'stop-1',
@@ -111,6 +114,7 @@ describe('OsrmRouteGeometryProvider', () => {
     const result = await provider.buildRoute({
       routePlan: detail.routePlan,
       routeGeometry: null,
+      routeMetrics: null,
       routeStopPoints: [],
       stops: [
         routeStop({ sequence: 2, latitude: 43.7764, longitude: -79.2571 }),
@@ -198,6 +202,7 @@ describe('OsrmRouteGeometryProvider', () => {
     const result = await provider.buildRoute({
       routePlan: detail.routePlan,
       routeGeometry: null,
+      routeMetrics: null,
       routeStopPoints: [],
       stops: detail.stops
     });
@@ -231,11 +236,12 @@ describe('OsrmRouteGeometryProvider', () => {
     const result = await provider.buildRoute({
       routePlan: detail.routePlan,
       routeGeometry: null,
+      routeMetrics: null,
       routeStopPoints: [],
       stops: detail.stops
     });
 
-    expect(result).toEqual({ routeGeometry: null, routeStopPoints: [] });
+    expect(result).toEqual({ routeGeometry: null, routeMetrics: null, routeStopPoints: [] });
   });
 
   test('returns null geometry and no stop points for invalid OSRM payloads', async () => {
@@ -250,7 +256,7 @@ describe('OsrmRouteGeometryProvider', () => {
       const fetch = vi.fn().mockResolvedValue(Response.json(payload));
       const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
 
-      await expect(provider.buildRoute(detail)).resolves.toEqual({ routeGeometry: null, routeStopPoints: [] });
+      await expect(provider.buildRoute(detail)).resolves.toEqual({ routeGeometry: null, routeMetrics: null, routeStopPoints: [] });
     }
   });
 
@@ -258,7 +264,7 @@ describe('OsrmRouteGeometryProvider', () => {
     const fetch = vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED'));
     const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
 
-    await expect(provider.buildRoute(detail)).resolves.toEqual({ routeGeometry: null, routeStopPoints: [] });
+    await expect(provider.buildRoute(detail)).resolves.toEqual({ routeGeometry: null, routeMetrics: null, routeStopPoints: [] });
   });
 
   test('aborts slow OSRM requests and returns null geometry', async () => {
@@ -274,7 +280,7 @@ describe('OsrmRouteGeometryProvider', () => {
     try {
       const resultPromise = provider.buildRoute(detail);
       await vi.advanceTimersByTimeAsync(1000);
-      await expect(resultPromise).resolves.toEqual({ routeGeometry: null, routeStopPoints: [] });
+      await expect(resultPromise).resolves.toEqual({ routeGeometry: null, routeMetrics: null, routeStopPoints: [] });
       expect(fetch.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
     } finally {
       vi.useRealTimers();
@@ -288,11 +294,12 @@ describe('OsrmRouteGeometryProvider', () => {
     const result = await provider.buildRoute({
       routePlan: { ...detail.routePlan, depot: { latitude: null, longitude: null } },
       routeGeometry: null,
+      routeMetrics: null,
       routeStopPoints: [],
       stops: [routeStop({ sequence: 1, latitude: 43.7764, longitude: -79.2571 })]
     });
 
-    expect(result).toEqual({ routeGeometry: null, routeStopPoints: [] });
+    expect(result).toEqual({ routeGeometry: null, routeMetrics: null, routeStopPoints: [] });
     expect(fetch).not.toHaveBeenCalled();
   });
 });
@@ -302,6 +309,8 @@ function routeOkPayload(): unknown {
     code: 'Ok',
     routes: [
       {
+        distance: 18420.5,
+        duration: 2310.25,
         geometry: {
           type: 'LineString',
           coordinates: [
@@ -346,6 +355,7 @@ describe('OsrmRouteGeometryProvider legacy compatibility', () => {
     const geometry = await provider.buildRouteGeometry({
       routePlan: detail.routePlan,
       routeGeometry: null,
+      routeMetrics: null,
       routeStopPoints: [],
       stops: detail.stops
     });

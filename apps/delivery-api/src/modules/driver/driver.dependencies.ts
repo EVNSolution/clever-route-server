@@ -15,6 +15,8 @@ import {
 import type { DriverProofMediaStorageBackend } from './driver-proof-media.repository.js';
 import type { DriverProofMediaScanMonitor, DriverProofMediaScanner } from './driver-proof-media.types.js';
 import type { DriverApiDependencies } from '../../routes/driver-events.routes.js';
+import { OsrmRouteGeometryProvider } from '../route-plans/osrm-route-geometry.client.js';
+import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
 
 export const DEFAULT_DRIVER_PROOF_MEDIA_RETENTION_DAYS = 180;
 export const DEFAULT_DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS = 5 * 60;
@@ -38,7 +40,10 @@ export type DriverApiRuntimeEnv = Partial<Record<
   | 'DRIVER_PROOF_MEDIA_SCANNER_URL'
   | 'DRIVER_PROOF_MEDIA_STORAGE_BACKEND'
   | 'DRIVER_PROOF_MEDIA_STORAGE_DIR'
-  | 'JWT_SECRET',
+  | 'DRIVER_ROUTE_OSRM_BASE_URL'
+  | 'DRIVER_ROUTE_OSRM_TIMEOUT_MS'
+  | 'JWT_SECRET'
+  | 'OSRM_BASE_URL',
   string
 >>;
 
@@ -76,7 +81,10 @@ export function loadDriverApiDependencies(
   const proofMediaSafetyOptions = loadDriverProofMediaRepositorySafetyOptions(input.env);
 
   return {
-    driverAssignedRouteService: new PrismaDriverAssignedRouteRepository(input.prisma),
+    driverAssignedRouteService: new PrismaDriverAssignedRouteRepository(
+      input.prisma,
+      loadDriverRouteGeometryProvider(input.env)
+    ),
     driverConsentService: new PrismaDriverConsentRepository(input.prisma),
     driverEventService: new PrismaDriverEventRepository(input.prisma),
     driverSelfService: new PrismaDriverSelfServiceRepository(input.prisma),
@@ -89,6 +97,22 @@ export function loadDriverApiDependencies(
     }),
     routeAccessService: new PrismaDriverRouteAccessRepository(input.prisma)
   };
+}
+
+export function loadDriverRouteGeometryProvider(env: DriverApiRuntimeEnv): RouteGeometryProvider | undefined {
+  const baseUrl = readOptional(env.DRIVER_ROUTE_OSRM_BASE_URL) ?? readOptional(env.OSRM_BASE_URL);
+  if (baseUrl === undefined) {
+    return undefined;
+  }
+
+  const timeoutMs = readOptionalPositiveInteger(
+    env.DRIVER_ROUTE_OSRM_TIMEOUT_MS,
+    'DRIVER_ROUTE_OSRM_TIMEOUT_MS'
+  );
+  return new OsrmRouteGeometryProvider({
+    baseUrl,
+    ...(timeoutMs === undefined ? {} : { timeoutMs })
+  });
 }
 
 function loadDriverProofMediaRepositoryStorageOptions(env: DriverApiRuntimeEnv): DriverProofMediaRepositoryStorageOptions {
@@ -231,4 +255,18 @@ function readOptional(value: string | undefined): string | undefined {
   }
 
   return value.trim();
+}
+
+function readOptionalPositiveInteger(value: string | undefined, name: string): number | undefined {
+  const normalized = readOptional(value);
+  if (normalized === undefined) {
+    return undefined;
+  }
+
+  const parsed = Number(normalized);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+
+  return parsed;
 }

@@ -3117,6 +3117,7 @@ describe("Admin WooCommerce connection UI routes", () => {
       Promise.resolve({
         ...routePlanDetail(),
         routeGeometry: null,
+        routeMetrics: null,
         routePlan: {
           ...routePlanSummary(),
           driverId: "driver-id",
@@ -5342,6 +5343,7 @@ function routePlanSummary() {
 function routePlanDetail() {
   return {
     routeGeometry: null,
+    routeMetrics: null,
     routePlan: routePlanSummary(),
     routeStopPoints: [],
     stops: [

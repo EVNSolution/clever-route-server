@@ -12,6 +12,9 @@ const assignedRoute = {
     deliveryDate: '2026-05-12',
     id: 'route-plan-id',
     name: 'Tuesday AM Route',
+    routeGeometry: null,
+    routeMetrics: null,
+    routeStopPoints: [],
     shopDomain: 'example.myshopify.com',
     stops: [
       {

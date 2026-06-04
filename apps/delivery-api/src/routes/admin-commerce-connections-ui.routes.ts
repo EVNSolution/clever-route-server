@@ -5093,6 +5093,7 @@ function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
 
 function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
   routeGeometry: RoutePlanDetail["routeGeometry"];
+  routeMetrics: RoutePlanDetail["routeMetrics"];
   routePlan: ReturnType<typeof toRouteOpsRoutePlanDto>;
   routeStopPoints: Array<{
     deliveryStopId: string;
@@ -5118,6 +5119,7 @@ function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
 } {
   return {
     routeGeometry: detail.routeGeometry,
+    routeMetrics: detail.routeMetrics,
     routePlan: toRouteOpsRoutePlanDto(detail.routePlan),
     routeStopPoints: detail.routeStopPoints.map((point) => ({
       deliveryStopId: point.deliveryStopId,

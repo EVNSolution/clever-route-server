@@ -125,12 +125,14 @@ export class RoutePlanAdminService implements RoutePlanService {
       return {
         ...detail,
         routeGeometry: routeResult.routeGeometry,
+        routeMetrics: routeResult.routeMetrics,
         routeStopPoints: routeResult.routeStopPoints
       };
     } catch {
       return {
         ...detail,
         routeGeometry: null,
+        routeMetrics: null,
         routeStopPoints: []
       };
     }

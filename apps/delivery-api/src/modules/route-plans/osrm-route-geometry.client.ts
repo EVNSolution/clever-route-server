@@ -2,6 +2,7 @@ import type {
   RoutePlanDetail,
   RoutePlanDetailStop,
   RoutePlanRouteGeometry,
+  RoutePlanRouteMetrics,
   RoutePlanRouteResult,
   RoutePlanRouteStopPoint,
   RoutePlanSummary
@@ -76,6 +77,7 @@ export class OsrmRouteGeometryProvider implements RouteGeometryProvider {
 
     return {
       routeGeometry,
+      routeMetrics: readOsrmRouteMetrics(payload),
       routeStopPoints: buildRouteStopPoints(sortedStops, routePoints, payload)
     };
   }
@@ -123,7 +125,7 @@ function buildRouteUrl(baseUrl: string, coordinates: Array<[number, number]>): s
 }
 
 function emptyRouteResult(): RoutePlanRouteResult {
-  return { routeGeometry: null, routeStopPoints: [] };
+  return { routeGeometry: null, routeMetrics: null, routeStopPoints: [] };
 }
 
 function sortStopsBySequence(stops: RoutePlanDetailStop[]): RoutePlanDetailStop[] {
@@ -193,6 +195,26 @@ function readOsrmWaypoints(payload: unknown): OsrmWaypoint[] {
   return object.waypoints.map((waypoint) => readOsrmWaypoint(waypoint));
 }
 
+function readOsrmRouteMetrics(payload: unknown): RoutePlanRouteMetrics | null {
+  const object = objectOrNull(payload);
+  if (object?.code !== 'Ok' || !Array.isArray(object.routes)) {
+    return null;
+  }
+
+  const route = objectOrNull(object.routes[0]);
+  if (route === null) {
+    return null;
+  }
+
+  const distanceMeters = readDistanceMeters(route.distance);
+  const durationSeconds = readDurationSeconds(route.duration);
+  if (distanceMeters === null && durationSeconds === null) {
+    return null;
+  }
+
+  return { distanceMeters, durationSeconds };
+}
+
 function readOsrmWaypoint(value: unknown): OsrmWaypoint {
   const object = objectOrNull(value);
   if (object === null) {
@@ -217,6 +239,10 @@ function readWaypointLocation(value: unknown): [number, number] | null {
 }
 
 function readDistanceMeters(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function readDurationSeconds(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 

@@ -1,3 +1,8 @@
+import type {
+  RoutePlanRouteGeometry,
+  RoutePlanRouteMetrics
+} from '../route-plans/route-plan.types.js';
+
 export type DriverAssignedRouteInput = {
   driverId: string;
   routeContext: string | null;
@@ -25,6 +30,15 @@ export type DriverAssignedRouteStop = {
   status: string;
 };
 
+export type DriverAssignedRouteStopPoint = {
+  deliveryStopId: string;
+  inputCoordinates: [number, number] | null;
+  name: string | null;
+  sequence: number;
+  snapDistanceMeters: number | null;
+  snappedCoordinates: [number, number] | null;
+};
+
 export type DriverAssignedRouteResult =
   | { status: 'NO_ASSIGNED_ROUTE' }
   | {
@@ -33,6 +47,9 @@ export type DriverAssignedRouteResult =
         deliveryDate: string;
         id: string;
         name: string;
+        routeGeometry: RoutePlanRouteGeometry | null;
+        routeMetrics: RoutePlanRouteMetrics | null;
+        routeStopPoints: DriverAssignedRouteStopPoint[];
         shopDomain: string;
         stops: DriverAssignedRouteStop[];
         timezone: string;

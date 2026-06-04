@@ -5,9 +5,11 @@ import {
   DEFAULT_DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS,
   DEFAULT_DRIVER_PROOF_MEDIA_RETENTION_DAYS,
   loadDriverApiDependencies,
+  loadDriverRouteGeometryProvider,
   loadDriverProofMediaReadAccessPolicy,
   loadDriverProofMediaRetentionPolicy
 } from '../src/modules/driver/driver.dependencies.js';
+import { OsrmRouteGeometryProvider } from '../src/modules/route-plans/osrm-route-geometry.client.js';
 
 describe('loadDriverApiDependencies', () => {
   test('leaves driver API disabled until JWT secret is configured', () => {
@@ -27,6 +29,42 @@ describe('loadDriverApiDependencies', () => {
 
     expect(dependencies?.proofMediaService).toBeDefined();
     expect(dependencies?.driverTokenAccessRepository).toBeDefined();
+  });
+
+  test('keeps assigned route OSRM enrichment disabled until an explicit base URL is configured', () => {
+    expect(loadDriverRouteGeometryProvider({})).toBeUndefined();
+  });
+
+  test('wires assigned route OSRM enrichment with driver-scoped runtime config', () => {
+    const dependencies = loadDriverApiDependencies({
+      env: {
+        DRIVER_ROUTE_OSRM_BASE_URL: ' https://osrm.internal.example/ ',
+        DRIVER_ROUTE_OSRM_TIMEOUT_MS: '2500',
+        JWT_SECRET: 'driver-secret',
+        OSRM_BASE_URL: 'https://admin-osrm.example'
+      },
+      prisma: {} as PrismaClient
+    });
+
+    const assignedRouteRepository = dependencies?.driverAssignedRouteService as
+      | { routeGeometryProvider?: unknown }
+      | undefined;
+    expect(assignedRouteRepository?.routeGeometryProvider).toBeInstanceOf(OsrmRouteGeometryProvider);
+  });
+
+  test('reuses the admin OSRM base URL for assigned route enrichment when no driver override is configured', () => {
+    expect(loadDriverRouteGeometryProvider({ OSRM_BASE_URL: 'https://osrm.internal.example' })).toBeInstanceOf(
+      OsrmRouteGeometryProvider
+    );
+  });
+
+  test('rejects invalid assigned route OSRM timeout config', () => {
+    expect(() =>
+      loadDriverRouteGeometryProvider({
+        DRIVER_ROUTE_OSRM_BASE_URL: 'https://osrm.internal.example',
+        DRIVER_ROUTE_OSRM_TIMEOUT_MS: '0'
+      })
+    ).toThrow('DRIVER_ROUTE_OSRM_TIMEOUT_MS must be a positive integer');
   });
 
   test('wires S3 proof media storage when explicitly configured', () => {

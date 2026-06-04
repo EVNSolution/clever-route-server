@@ -1,12 +1,17 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaDriverAssignedRouteRepository } from '../src/modules/driver/driver-assigned-route.repository.js';
+import type { RouteGeometryProvider } from '../src/modules/route-plans/route-plan.service.js';
 
 const routePlanRecord = {
+  createdAt: new Date('2026-05-12T06:00:00.000Z'),
   constraints: {
     timezone: 'America/Toronto'
   },
+  depotLatitude: '43.6532000',
+  depotLongitude: '-79.3832000',
   id: 'route-plan-id',
+  metrics: {},
   name: 'Tuesday AM Route',
   planDate: new Date('2026-05-12T00:00:00.000Z'),
   routeStops: [
@@ -20,6 +25,7 @@ const routePlanRecord = {
         latitude: '43.6487000',
         longitude: '-79.3817000',
         order: {
+          id: 'order-id',
           name: '#1001',
           shopifyOrderGid: 'gid://shopify/Order/1001'
         },
@@ -35,7 +41,8 @@ const routePlanRecord = {
   shop: {
     shopDomain: 'dev1.tomatonofood.com'
   },
-  status: 'ASSIGNED'
+  status: 'ASSIGNED',
+  updatedAt: new Date('2026-05-12T06:30:00.000Z')
 };
 
 describe('PrismaDriverAssignedRouteRepository', () => {
@@ -63,6 +70,9 @@ describe('PrismaDriverAssignedRouteRepository', () => {
         deliveryDate: '2026-05-12',
         id: 'route-plan-id',
         name: 'Tuesday AM Route',
+        routeGeometry: null,
+        routeMetrics: null,
+        routeStopPoints: [],
         shopDomain: 'dev1.tomatonofood.com',
         stops: [
           {
@@ -86,6 +96,75 @@ describe('PrismaDriverAssignedRouteRepository', () => {
         timezone: 'America/Toronto'
       }
     });
+  });
+
+  test('enriches the assigned route with OSRM geometry, metrics, and safe stop points when configured', async () => {
+    const { prisma } = createPrismaHarness();
+    const routeGeometryProvider = {
+      buildRoute: vi.fn<RouteGeometryProvider['buildRoute']>(() => Promise.resolve({
+        routeGeometry: {
+          type: 'LineString' as const,
+          coordinates: [
+            [-79.3832, 43.6532],
+            [-79.3817, 43.6487]
+          ] as [number, number][]
+        },
+        routeMetrics: { distanceMeters: 980.5, durationSeconds: 420.25 },
+        routeStopPoints: [
+          {
+            deliveryStopId: 'stop-id',
+            inputCoordinates: [-79.3817, 43.6487] as [number, number],
+            name: 'King Street West',
+            sequence: 1,
+            shopifyOrderGid: 'gid://shopify/Order/1001',
+            snapDistanceMeters: 3.5,
+            snappedCoordinates: [-79.3818, 43.6488] as [number, number]
+          }
+        ]
+      }))
+    };
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never, routeGeometryProvider);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com'
+    });
+
+    const providerInput = routeGeometryProvider.buildRoute.mock.calls[0]?.[0];
+    expect(providerInput?.routePlan.depot).toEqual({ latitude: 43.6532, longitude: -79.3832 });
+    expect(providerInput?.routePlan.routeEndMode).toBe('END_AT_LAST_STOP');
+    expect(providerInput?.stops[0]).toEqual(
+      expect.objectContaining({
+        deliveryStopId: 'stop-id',
+        orderId: 'order-id',
+        shopifyOrderGid: 'gid://shopify/Order/1001'
+      })
+    );
+    expect(result).toMatchObject({
+      status: 'ASSIGNED_ROUTE',
+      route: {
+        routeGeometry: {
+          type: 'LineString',
+          coordinates: [
+            [-79.3832, 43.6532],
+            [-79.3817, 43.6487]
+          ]
+        },
+        routeMetrics: { distanceMeters: 980.5, durationSeconds: 420.25 },
+        routeStopPoints: [
+          {
+            deliveryStopId: 'stop-id',
+            inputCoordinates: [-79.3817, 43.6487],
+            name: 'King Street West',
+            sequence: 1,
+            snapDistanceMeters: 3.5,
+            snappedCoordinates: [-79.3818, 43.6488]
+          }
+        ]
+      }
+    });
+    expect(JSON.stringify(result)).not.toContain('shopifyOrderGid');
   });
 
   test('does not leak a route for a token driver outside the token shop', async () => {

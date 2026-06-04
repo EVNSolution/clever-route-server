@@ -314,6 +314,7 @@ describe('Admin route plan routes', () => {
         data: {
           routePlan: routePlanSummary,
           routeGeometry: null,
+          routeMetrics: null,
           routeStopPoints: routePlanStopPoints(),
           stops: [
             expect.objectContaining({ orderName: '#1035', sequence: 1 }),
@@ -442,6 +443,7 @@ describe('Admin route plan routes', () => {
         data: {
           routePlan: routePlanSummary,
           routeGeometry: null,
+          routeMetrics: null,
           routeStopPoints: routePlanStopPoints(),
           stops: [
             routePlanStop({ orderName: '#1035', sequence: 1 }),
@@ -603,6 +605,7 @@ describe('Admin route plan routes', () => {
           driverId: 'driver-id'
         },
         routeGeometry: null,
+        routeMetrics: null,
         routeStopPoints: routePlanStopPoints(),
         stops: [
           routePlanStop({ orderName: '#1035', sequence: 1 }),
@@ -774,6 +777,7 @@ function createDependencyHarness(): {
     Promise.resolve({
       routePlan: routePlanSummary,
       routeGeometry: null,
+      routeMetrics: null,
       routeStopPoints: routePlanStopPoints(),
       stops: [
         routePlanStop({ orderName: '#1035', sequence: 1 }),
@@ -790,6 +794,7 @@ function createDependencyHarness(): {
     Promise.resolve({
       routePlan: routePlanSummary,
       routeGeometry: null,
+      routeMetrics: null,
       routeStopPoints: routePlanStopPoints(),
       stops: [
         routePlanStop({ orderName: '#1035', sequence: 1 }),
@@ -806,6 +811,7 @@ function createDependencyHarness(): {
     Promise.resolve({
       routePlan: { ...routePlanSummary, status: 'ASSIGNED' },
       routeGeometry: null,
+      routeMetrics: null,
       routeStopPoints: routePlanStopPoints(),
       stops: [
         routePlanStop({ orderName: '#1035', sequence: 1 }),
@@ -819,6 +825,7 @@ function createDependencyHarness(): {
     Promise.resolve({
       routePlan: routePlanSummary,
       routeGeometry: null,
+      routeMetrics: null,
       routeStopPoints: routePlanStopPoints(),
       stops: [
         routePlanStop({ orderName: '#1035', sequence: 1 }),
@@ -832,6 +839,7 @@ function createDependencyHarness(): {
     Promise.resolve({
       routePlan: { ...routePlanSummary, routeEndMode: 'RETURN_TO_DEPOT' },
       routeGeometry: null,
+      routeMetrics: null,
       routeStopPoints: routePlanStopPoints(),
       stops: [
         routePlanStop({ orderName: '#1035', sequence: 1 }),

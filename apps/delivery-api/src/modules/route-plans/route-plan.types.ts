@@ -158,8 +158,14 @@ export type RoutePlanRouteStopPoint = {
   snappedCoordinates: [number, number] | null;
 };
 
+export type RoutePlanRouteMetrics = {
+  distanceMeters: number | null;
+  durationSeconds: number | null;
+};
+
 export type RoutePlanRouteResult = {
   routeGeometry: RoutePlanRouteGeometry | null;
+  routeMetrics: RoutePlanRouteMetrics | null;
   routeStopPoints: RoutePlanRouteStopPoint[];
 };
 
@@ -205,6 +211,7 @@ export type PublishRoutePlanInput = {
 export type RoutePlanDetail = {
   routePlan: RoutePlanSummary;
   routeGeometry: RoutePlanRouteGeometry | null;
+  routeMetrics: RoutePlanRouteMetrics | null;
   routeStopPoints: RoutePlanRouteStopPoint[];
   stops: RoutePlanDetailStop[];
 };

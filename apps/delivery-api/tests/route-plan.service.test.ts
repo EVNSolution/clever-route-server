@@ -28,6 +28,7 @@ const routePlanDetail = {
     routeStop({ sequence: 2, latitude: 43.8561, longitude: -79.3370 })
   ],
   routeGeometry: null,
+  routeMetrics: null,
   routeStopPoints: []
 } satisfies RoutePlanDetail;
 
@@ -45,6 +46,7 @@ describe('RoutePlanAdminService route geometry', () => {
       routePlan: routePlanDetail.routePlan,
       stops: routePlanDetail.stops,
       routeGeometry: null,
+      routeMetrics: null,
       routeStopPoints: []
     });
     expect(detail?.routeGeometry).toEqual({
@@ -67,6 +69,7 @@ describe('RoutePlanAdminService route geometry', () => {
         snappedCoordinates: [-79.3372, 43.8562]
       })
     ]);
+    expect(detail?.routeMetrics).toEqual({ distanceMeters: 12345.6, durationSeconds: 1800.5 });
   });
 
   test('returns route detail without failing when route geometry generation fails', async () => {
@@ -81,6 +84,7 @@ describe('RoutePlanAdminService route geometry', () => {
 
     expect(detail?.routePlan.id).toBe('route-plan-id');
     expect(detail?.routeGeometry).toBeNull();
+    expect(detail?.routeMetrics).toBeNull();
     expect(detail?.routeStopPoints).toEqual([]);
   });
 
@@ -245,6 +249,7 @@ describe('RoutePlanAdminService route geometry', () => {
 
     expect(detail?.routePlan.id).toBe('route-plan-id');
     expect(detail?.routeGeometry).toBeNull();
+    expect(detail?.routeMetrics).toBeNull();
     expect(detail?.routeStopPoints).toEqual([]);
   });
 });
@@ -284,6 +289,7 @@ function createHarness(detail: RoutePlanDetail): {
           [-79.337, 43.8561]
         ]
       } satisfies RoutePlanRouteGeometry,
+      routeMetrics: { distanceMeters: 12345.6, durationSeconds: 1800.5 },
       routeStopPoints: [
         {
           deliveryStopId: 'stop-1',
