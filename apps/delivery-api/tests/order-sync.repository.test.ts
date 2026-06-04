@@ -118,6 +118,40 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     );
   });
 
+  test('reads source-created and source-updated store-local dates from raw payload', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+    const order = canonicalOrderRecord(0);
+    prisma.order.findMany.mockResolvedValueOnce([
+      {
+        ...order,
+        sourceUpdatedAt: new Date('2026-06-05T14:00:00.000Z'),
+        rawPayload: {
+          ...(order.rawPayload as Record<string, unknown>),
+          sourceCreatedDate: '2026-06-04',
+          sourceUpdatedDate: '2026-06-05'
+        }
+      }
+    ]);
+
+    const rows = await repository.listCanonicalOrders({
+      filters: {},
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(rows[0]).toEqual(
+      expect.objectContaining({
+        processedAt: '2026-05-07T12:00:00.000Z',
+        sourceCreatedAt: '2026-05-07T12:00:00.000Z',
+        sourceCreatedDate: '2026-06-04',
+        sourceUpdatedAt: '2026-06-05T14:00:00.000Z',
+        sourceUpdatedDate: '2026-06-05'
+      })
+    );
+  });
+
   test('keeps ambiguous or unparsed time-window metadata unresolved in canonical rows', async () => {
     const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
     const repository = new PrismaOrderSyncRepository(
@@ -1289,8 +1323,11 @@ function canonicalRow(overrides: Partial<CanonicalOrderRow> = {}): CanonicalOrde
     sourceOrderId: '123',
     sourceOrderNumber: '1035',
     sourcePlatform: 'SHOPIFY',
+    sourceCreatedAt: '2026-05-07T12:00:00.000Z',
+    sourceCreatedDate: '2026-05-07',
     sourceSiteUrl: null,
     sourceUpdatedAt: '2026-05-07T13:00:00.000Z',
+    sourceUpdatedDate: '2026-05-07',
     timeWindowEnd: '21:00',
     timeWindowStart: '17:00',
     totalPriceAmount: '95.00',

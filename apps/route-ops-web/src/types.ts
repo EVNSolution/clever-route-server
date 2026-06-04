@@ -109,7 +109,11 @@ export type CanonicalOrderDto = {
   };
   sourceOrderId: string | null;
   sourceOrderNumber: string | null;
+  sourceCreatedAt: string | null;
+  sourceCreatedDate: string | null;
   sourcePlatform: string | null;
+  sourceUpdatedAt: string | null;
+  sourceUpdatedDate: string | null;
   status: string | null;
   stopId: string | null;
   timeWindowEnd: string | null;

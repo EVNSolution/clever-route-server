@@ -2261,6 +2261,18 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     }) ?? null;
   const geocodeDiagnostics =
     buildGeocodeDiagnostics(fact?.mappingDiagnostics) ?? null;
+  const sourceCreatedAt = formatDateTime(order.processedAt);
+  const sourceUpdatedAt = formatDateTime(
+    order.sourceUpdatedAt ?? order.updatedAtShopify,
+  );
+  const sourceCreatedDate =
+    readYmd(raw?.sourceCreatedDate) ??
+    readYmd(raw?.orderDateLocal) ??
+    datePart(sourceCreatedAt);
+  const sourceUpdatedDate =
+    readYmd(raw?.sourceUpdatedDate) ??
+    datePart(sourceUpdatedAt) ??
+    sourceCreatedDate;
 
   return {
     cancelledAt: formatDateTime(order.cancelledAt),
@@ -2301,7 +2313,7 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     planningGroupKey:
       fact?.planningGroupKey ?? readString(raw?.planningGroupKey),
     planningStatus,
-    processedAt: formatDateTime(order.processedAt),
+    processedAt: sourceCreatedAt,
     readiness,
     recipientName: stop?.recipientName ?? readString(raw?.recipientName),
     reviewReasons,
@@ -2320,10 +2332,11 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     sourceOrderId: order.sourceOrderId ?? null,
     sourceOrderNumber: order.sourceOrderNumber ?? null,
     sourcePlatform: order.sourcePlatform ?? "SHOPIFY",
+    sourceCreatedAt,
+    sourceCreatedDate,
     sourceSiteUrl: order.sourceSiteUrl ?? null,
-    sourceUpdatedAt: formatDateTime(
-      order.sourceUpdatedAt ?? order.updatedAtShopify,
-    ),
+    sourceUpdatedAt,
+    sourceUpdatedDate,
     timeWindowEnd: readCanonicalTimeWindow({
       factTime: fact?.timeWindowEnd ?? stop?.timeWindowEnd ?? null,
       part: "end",
@@ -2524,6 +2537,17 @@ function readBoolean(value: unknown): boolean | null {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : null;
+}
+
+function readYmd(value: unknown): string | null {
+  const text = readString(value);
+  return text === null ? null : datePart(text);
+}
+
+function datePart(value: string | null): string | null {
+  if (value === null) return null;
+  const match = /^(\d{4}-\d{2}-\d{2})/u.exec(value);
+  return match?.[1] ?? null;
 }
 
 function readNumber(value: unknown): number | null {

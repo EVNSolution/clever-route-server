@@ -4962,10 +4962,14 @@ function toRouteOpsOrderDto(order: CanonicalOrderRow): {
   routePlanId: string | null;
   routePlanName: string | null;
   serviceType: string | null;
+  sourceCreatedAt: string | null;
+  sourceCreatedDate: string | null;
   sourceOrderId: string | null;
   sourceOrderNumber: string | null;
   shippingAddress: CanonicalOrderRow["shippingAddress"];
   sourcePlatform: string | null;
+  sourceUpdatedAt: string | null;
+  sourceUpdatedDate: string | null;
   status: string | null;
   stopId: string | null;
   timeWindowEnd: string | null;
@@ -5010,9 +5014,14 @@ function toRouteOpsOrderDto(order: CanonicalOrderRow): {
     routePlanName: order.routePlanName,
     serviceType: order.serviceType,
     shippingAddress: order.shippingAddress,
+    sourceCreatedAt: order.sourceCreatedAt ?? order.processedAt,
+    sourceCreatedDate: order.sourceCreatedDate ?? order.orderDateLocal,
     sourceOrderId: order.sourceOrderId ?? null,
     sourceOrderNumber: order.sourceOrderNumber ?? null,
     sourcePlatform: order.sourcePlatform ?? null,
+    sourceUpdatedAt: order.sourceUpdatedAt ?? order.updatedAtShopify,
+    sourceUpdatedDate:
+      order.sourceUpdatedDate ?? order.sourceCreatedDate ?? order.orderDateLocal,
     status: order.fulfillmentStatus,
     stopId: order.deliveryStopId,
     timeWindowEnd: order.timeWindowEnd,

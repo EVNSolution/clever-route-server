@@ -63,6 +63,9 @@ const NORMALIZED_TIME_WINDOW_KEYS = new Set(
     (key): key is string => key !== null,
   ),
 );
+const DEFAULT_WOO_SHOP_TIMEZONE = "America/Toronto";
+
+export type WooWeekdayFallbackPolicy = "ORDER_WEEK" | "DELIVERY_CYCLE";
 
 export type WooOrderMappingConfig = {
   areaPaths?: string[];
@@ -71,6 +74,9 @@ export type WooOrderMappingConfig = {
   grouping?: "date_session" | "date_session_area";
   instructionPaths?: string[];
   pickupPaths?: string[];
+  policies?: {
+    weekdayFallbackPolicy?: WooWeekdayFallbackPolicy;
+  };
   serviceMinutesDefault?: number;
   timeWindowPaths?: string[];
   version?: number;
@@ -139,6 +145,11 @@ type DeliveryDayArbitration = {
   weekdayAmbiguous: boolean;
 };
 
+type ResolvedWooWeekdayFallbackPolicy = {
+  policy: WooWeekdayFallbackPolicy;
+  source: "CONFIG" | "TOMATONO_BOOTSTRAP" | "DEFAULT";
+};
+
 export function mapWooCommerceOrderToDeliveryInputs(
   order: WooCommerceOrder,
   options: MapWooCommerceOrderOptions,
@@ -185,6 +196,15 @@ export function mapWooCommerceOrderToDeliveryInputs(
     readWooDate(order.date_modified_gmt, order.date_modified) ??
     createdAt ??
     new Date(0);
+  const shopTimezone = options.shopTimezone ?? DEFAULT_WOO_SHOP_TIMEZONE;
+  const sourceCreatedDate =
+    createdAt === null ? null : formatDateInTimezone(createdAt, shopTimezone);
+  const sourceUpdatedDate =
+    modifiedAt === null ? null : formatDateInTimezone(modifiedAt, shopTimezone);
+  const weekdayFallbackPolicy = resolveWooWeekdayFallbackPolicy({
+    mappingConfig: options.mappingConfig,
+    siteUrl,
+  });
   const scope = calculateDeliveryScope({
     createdAt: createdAt?.toISOString() ?? null,
     deliveryArea,
@@ -194,7 +214,7 @@ export function mapWooCommerceOrderToDeliveryInputs(
     lineItems,
     pickupDayRaw: null,
     processedAt: createdAt?.toISOString() ?? null,
-    weekdayFallbackPolicy: "ORDER_WEEK",
+    weekdayFallbackPolicy: weekdayFallbackPolicy.policy,
     ...(options.shopTimezone === undefined
       ? {}
       : { shopTimezone: options.shopTimezone }),
@@ -277,6 +297,9 @@ export function mapWooCommerceOrderToDeliveryInputs(
     reviewReasons,
     scope,
     shippingAddress,
+    sourceCreatedDate,
+    sourceUpdatedDate,
+    weekdayFallbackPolicy,
   });
 
   return {
@@ -393,6 +416,9 @@ function buildRawPayload(input: {
   reviewReasons: string[];
   scope: ReturnType<typeof calculateDeliveryScope>;
   shippingAddress: WooCommerceAddress | null;
+  sourceCreatedDate: string | null;
+  sourceUpdatedDate: string | null;
+  weekdayFallbackPolicy: ResolvedWooWeekdayFallbackPolicy;
 }): Record<string, unknown> {
   return {
     ...input.order,
@@ -427,9 +453,13 @@ function buildRawPayload(input: {
       input.shippingAddress === null
         ? null
         : toCanonicalShippingAddress(input.shippingAddress),
+    sourceCreatedDate: input.sourceCreatedDate,
     sourcePlatform: "WOOCOMMERCE",
+    sourceUpdatedDate: input.sourceUpdatedDate,
     timeWindowEnd: input.scope.timeWindowEnd,
     timeWindowStart: input.scope.timeWindowStart,
+    weekdayFallbackPolicy: input.weekdayFallbackPolicy.policy,
+    weekdayFallbackPolicySource: input.weekdayFallbackPolicy.source,
   };
 }
 
@@ -1055,6 +1085,44 @@ function readWooDate(
     : `${withZone}Z`;
   const parsed = new Date(normalized);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function resolveWooWeekdayFallbackPolicy(input: {
+  mappingConfig: WooOrderMappingConfig | null | undefined;
+  siteUrl: string;
+}): ResolvedWooWeekdayFallbackPolicy {
+  const configured = input.mappingConfig?.policies?.weekdayFallbackPolicy;
+  if (configured === "ORDER_WEEK" || configured === "DELIVERY_CYCLE") {
+    return { policy: configured, source: "CONFIG" };
+  }
+  return isTomatonoWooSite(input.siteUrl)
+    ? { policy: "DELIVERY_CYCLE", source: "TOMATONO_BOOTSTRAP" }
+    : { policy: "ORDER_WEEK", source: "DEFAULT" };
+}
+
+function isTomatonoWooSite(siteUrl: string): boolean {
+  try {
+    const host = new URL(siteUrl).hostname.toLowerCase();
+    return host === "tomatonofood.com" || host.endsWith(".tomatonofood.com");
+  } catch {
+    return false;
+  }
+}
+
+function formatDateInTimezone(value: Date, timezone: string): string {
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone: timezone,
+    year: "numeric",
+  });
+  const parts = formatter.formatToParts(value);
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+  return year !== undefined && month !== undefined && day !== undefined
+    ? `${year}-${month}-${day}`
+    : value.toISOString().slice(0, 10);
 }
 
 function normalizeSiteUrl(value: string): string {

@@ -231,6 +231,71 @@ describe("mapWooCommerceOrderToDeliveryInputs", () => {
     );
   });
 
+  test("bootstraps TOMATONO weekday-only Woo orders into the next delivery cycle", async () => {
+    const order = await readFixture("order-date-pending.json");
+    order.date_created_gmt = "2026-06-04T16:00:00";
+    order.date_modified_gmt = "2026-06-04T16:30:00";
+    order.meta_data = [{ key: "delivery_area", value: "Toronto" }];
+    order.shipping_lines = [
+      { method_title: "Friday 5pm to 9pm", meta_data: [] },
+    ];
+
+    const mapped = mapWooCommerceOrderToDeliveryInputs(order, {
+      siteUrl: "https://tomatonofood.com",
+    });
+
+    expect(mapped.order).toEqual(
+      expect.objectContaining({
+        deliveryDate: "2026-06-12",
+        deliveryDateSource: "ORDER_DATE_CYCLE_RULE",
+        deliverySession: "EVENING",
+        orderDateLocal: "2026-06-04",
+        readiness: "READY_TO_PLAN",
+        routeScopeKey: "2026-06-12|EVENING_DELIVERY|17:00|21:00",
+        serviceType: "EVENING_DELIVERY",
+      }),
+    );
+    expect(mapped.order.rawPayload).toEqual(
+      expect.objectContaining({
+        sourceCreatedDate: "2026-06-04",
+        sourceUpdatedDate: "2026-06-04",
+        weekdayFallbackPolicy: "DELIVERY_CYCLE",
+        weekdayFallbackPolicySource: "TOMATONO_BOOTSTRAP",
+      }),
+    );
+  });
+
+  test("lets stored ORDER_WEEK policy override TOMATONO bootstrap behavior", async () => {
+    const order = await readFixture("order-date-pending.json");
+    order.date_created_gmt = "2026-06-04T16:00:00";
+    order.date_modified_gmt = "2026-06-04T16:30:00";
+    order.meta_data = [{ key: "delivery_area", value: "Toronto" }];
+    order.shipping_lines = [
+      { method_title: "Delivery - Thursday", meta_data: [] },
+    ];
+
+    const mapped = mapWooCommerceOrderToDeliveryInputs(order, {
+      mappingConfig: {
+        policies: { weekdayFallbackPolicy: "ORDER_WEEK" },
+      },
+      siteUrl: "https://dev1.tomatonofood.com",
+    });
+
+    expect(mapped.order).toEqual(
+      expect.objectContaining({
+        deliveryDate: "2026-06-04",
+        deliveryDateSource: "ORDER_DATE_WEEK_RULE",
+        routeScopeKey: "2026-06-04|DELIVERY||",
+      }),
+    );
+    expect(mapped.order.rawPayload).toEqual(
+      expect.objectContaining({
+        weekdayFallbackPolicy: "ORDER_WEEK",
+        weekdayFallbackPolicySource: "CONFIG",
+      }),
+    );
+  });
+
   test("keeps conflicting Woo weekday candidates in review with redacted diagnostics", async () => {
     const order = await readFixture("order-date-pending.json");
     order.meta_data = [

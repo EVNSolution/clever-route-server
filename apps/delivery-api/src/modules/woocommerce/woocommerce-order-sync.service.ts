@@ -2,7 +2,7 @@ import type { CanonicalOrderRow } from '../shopify/order-sync.mapper.js';
 import type { GeocodingAddress, GeocodingResult } from '../geocoding/geocoding.types.js';
 import { summarizeGeocodeDiagnostic } from '../geocoding/geocoding.diagnostics.js';
 import type { DeliveryBatchCandidate, ListCanonicalOrdersFilters, ListDeliveryBatchCandidatesInput, UpsertOrderWithDeliveryStopInput, UpsertOrderWithDeliveryStopResult } from '../shopify/order-sync.repository.js';
-import { mapWooCommerceOrderToDeliveryInputs, type WooOrderMappingConfig } from './woocommerce-order.mapper.js';
+import { mapWooCommerceOrderToDeliveryInputs, type WooOrderMappingConfig, type WooWeekdayFallbackPolicy } from './woocommerce-order.mapper.js';
 import type { WooCommerceOrder } from './woocommerce-order.types.js';
 import type { WooCommerceOrderClient, WooCommerceOrdersPage } from './woocommerce-order.client.js';
 
@@ -307,6 +307,13 @@ function normalizeMappingConfig(value: Record<string, unknown>): WooOrderMapping
   if (instructionPaths !== undefined) config.instructionPaths = instructionPaths;
   const pickupPaths = readStringArray(value.pickupPaths);
   if (pickupPaths !== undefined) config.pickupPaths = pickupPaths;
+  const policies = readRecord(value.policies);
+  const weekdayFallbackPolicy = readWeekdayFallbackPolicy(
+    policies?.weekdayFallbackPolicy,
+  );
+  if (weekdayFallbackPolicy !== undefined) {
+    config.policies = { weekdayFallbackPolicy };
+  }
   if (typeof value.serviceMinutesDefault === 'number' && Number.isFinite(value.serviceMinutesDefault)) {
     config.serviceMinutesDefault = value.serviceMinutesDefault;
   }
@@ -318,4 +325,14 @@ function normalizeMappingConfig(value: Record<string, unknown>): WooOrderMapping
 
 function readStringArray(value: unknown): string[] | undefined {
   return Array.isArray(value) && value.every((item) => typeof item === 'string') ? value : undefined;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function readWeekdayFallbackPolicy(value: unknown): WooWeekdayFallbackPolicy | undefined {
+  return value === 'ORDER_WEEK' || value === 'DELIVERY_CYCLE' ? value : undefined;
 }

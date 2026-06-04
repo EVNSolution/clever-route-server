@@ -180,8 +180,11 @@ export type CanonicalOrderRow = {
   sourceOrderId?: string | null;
   sourceOrderNumber?: string | null;
   sourcePlatform?: CommerceSourcePlatform;
+  sourceCreatedAt?: string | null;
+  sourceCreatedDate?: string | null;
   sourceSiteUrl?: string | null;
   sourceUpdatedAt?: string | null;
+  sourceUpdatedDate?: string | null;
   timeWindowEnd: string | null;
   timeWindowStart: string | null;
   totalPriceAmount: string | null;

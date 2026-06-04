@@ -127,6 +127,76 @@ describe('WooCommerceOrderSyncService', () => {
     );
   });
 
+  test('threads stored delivery-cycle policy through Woo weekday-only sync', async () => {
+    const repository = createRepositoryHarness();
+    repository.readOrderMappingConfig.mockResolvedValueOnce({
+      policies: { weekdayFallbackPolicy: 'DELIVERY_CYCLE' },
+      version: 1
+    });
+    const wooOrder = order(21);
+    wooOrder.date_created_gmt = '2026-06-04T16:00:00';
+    wooOrder.date_modified_gmt = '2026-06-04T17:00:00';
+    wooOrder.meta_data = [{ key: 'delivery_area', value: 'Toronto' }];
+    wooOrder.shipping_lines = [{ method_title: 'Friday 5pm to 9pm', meta_data: [] }];
+    const service = new WooCommerceOrderSyncService({
+      connectionId: '8b57ab89-3fe7-4a62-b1f4-b6dbb26ef3ea',
+      repository,
+      shopDomain: 'tomatonofood.com',
+      siteUrl: 'https://tomatonofood.com'
+    });
+
+    await service.syncOrders({ orders: [wooOrder], reason: 'manual_backfill' });
+
+    const upsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
+    expect(upsert?.synced.order).toEqual(
+      expect.objectContaining({
+        deliveryDate: '2026-06-12',
+        routeScopeKey: '2026-06-12|EVENING_DELIVERY|17:00|21:00'
+      })
+    );
+    expect(upsert?.synced.order.rawPayload).toEqual(
+      expect.objectContaining({
+        weekdayFallbackPolicy: 'DELIVERY_CYCLE',
+        weekdayFallbackPolicySource: 'CONFIG'
+      })
+    );
+  });
+
+  test('ignores invalid stored weekday policies and falls back safely for non-TOMATONO stores', async () => {
+    const repository = createRepositoryHarness();
+    repository.readOrderMappingConfig.mockResolvedValueOnce({
+      policies: { weekdayFallbackPolicy: 'NEXT_AVAILABLE' },
+      version: 1
+    });
+    const wooOrder = order(22);
+    wooOrder.date_created_gmt = '2026-06-04T16:00:00';
+    wooOrder.date_modified_gmt = '2026-06-04T17:00:00';
+    wooOrder.meta_data = [{ key: 'delivery_area', value: 'Toronto' }];
+    wooOrder.shipping_lines = [{ method_title: 'Thursday Delivery', meta_data: [] }];
+    const service = new WooCommerceOrderSyncService({
+      connectionId: '8b57ab89-3fe7-4a62-b1f4-b6dbb26ef3ea',
+      repository,
+      shopDomain: 'woo.example.test',
+      siteUrl: 'https://woo.example.test'
+    });
+
+    await service.syncOrders({ orders: [wooOrder], reason: 'manual_backfill' });
+
+    const upsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
+    expect(upsert?.synced.order).toEqual(
+      expect.objectContaining({
+        deliveryDate: '2026-06-04',
+        routeScopeKey: '2026-06-04|DELIVERY||'
+      })
+    );
+    expect(upsert?.synced.order.rawPayload).toEqual(
+      expect.objectContaining({
+        weekdayFallbackPolicy: 'ORDER_WEEK',
+        weekdayFallbackPolicySource: 'DEFAULT'
+      })
+    );
+  });
+
   test('geocodes Woo shipping addresses before persisting route stops', async () => {
     const repository = createRepositoryHarness();
     const geocodingService = {
@@ -419,8 +489,11 @@ function createRepositoryHarness() {
         sourceOrderId: input.orderId,
         sourceOrderNumber: input.orderId,
         sourcePlatform: 'WOOCOMMERCE',
+        sourceCreatedAt: '2026-05-20T00:00:00.000Z',
+        sourceCreatedDate: '2026-05-20',
         sourceSiteUrl: 'https://woo.example.test',
         sourceUpdatedAt: '2026-05-20T00:00:00.000Z',
+        sourceUpdatedDate: '2026-05-20',
         timeWindowEnd: null,
         timeWindowStart: null,
         totalPriceAmount: '10.00',

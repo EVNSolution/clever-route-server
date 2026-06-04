@@ -1169,7 +1169,9 @@ function OrderTableRow(input: {
         </td>
         <td className="orders-order-cell">
           <strong className="order-primary">{order.orderName}</strong>
-          <small className="order-subtle">{formatOrderSource(order)}</small>
+          <small className="order-subtle">
+            {formatOrderReceivedLabel(order, input.locale)}
+          </small>
         </td>
         <td className="orders-customer-cell">
           <strong className="order-primary">
@@ -1421,14 +1423,20 @@ function statusMeaningForOrder(order: CanonicalOrderDto, locale: string | null |
   return t.metadataReview;
 }
 
-function formatOrderSource(order: CanonicalOrderDto): string {
-  const source = [
-    order.sourcePlatform,
-    order.sourceOrderNumber ?? order.sourceOrderId,
-  ]
-    .filter(isPresent)
-    .join(" · ");
-  return source || "—";
+export function formatOrderReceivedLabel(
+  order: CanonicalOrderDto,
+  locale: string | null | undefined = "en-CA",
+): string {
+  const created = formatSourceDateLabel(order.sourceCreatedDate, locale);
+  if (created === null) return "—";
+  const updated =
+    isPresent(order.sourceUpdatedDate) &&
+    order.sourceUpdatedDate !== order.sourceCreatedDate
+      ? formatSourceDateLabel(order.sourceUpdatedDate, locale)
+      : null;
+  if (updated === null) return created;
+  const marker = resolveLocale(locale) === "ko-KR" ? "수정" : "updated";
+  return `${created} · ${marker} ${updated}`;
 }
 
 function getOrderAccessibleLabel(order: CanonicalOrderDto): string {
@@ -1437,6 +1445,16 @@ function getOrderAccessibleLabel(order: CanonicalOrderDto): string {
       .filter(isPresent)
       .join(" ") || order.orderId
   );
+}
+
+function formatSourceDateLabel(
+  dateString: string | null | undefined,
+  locale: string | null | undefined,
+): string | null {
+  const normalized = normalizeYmd(dateString);
+  if (normalized === null) return null;
+  const weekday = weekdayCode(normalized, locale);
+  return weekday === null ? normalized : `${normalized} ${weekday}`;
 }
 
 function formatAreaLabel(order: CanonicalOrderDto): string {
@@ -1587,8 +1605,13 @@ function compactDayLabel(
   return `${weekday}${compactTime}`;
 }
 
-function weekdayCode(dateString: string): string | null {
-  const parts = dateString.split("-").map((part) => Number.parseInt(part, 10));
+function weekdayCode(
+  dateString: string,
+  locale: string | null | undefined = "en-CA",
+): string | null {
+  const normalized = normalizeYmd(dateString);
+  if (normalized === null) return null;
+  const parts = normalized.split("-").map((part) => Number.parseInt(part, 10));
   const [year, month, day] = parts;
   if (
     parts.length !== 3 ||
@@ -1603,9 +1626,19 @@ function weekdayCode(dateString: string): string | null {
   }
   const date = new Date(Date.UTC(year, month - 1, day));
   if (Number.isNaN(date.valueOf())) return null;
-  return (
-    ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"][date.getUTCDay()] ?? null
-  );
+  const labels =
+    resolveLocale(locale) === "ko-KR"
+      ? ["일요일", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일"]
+      : ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+  return labels[date.getUTCDay()] ?? null;
+}
+
+function normalizeYmd(value: string | null | undefined): string | null {
+  if (!isPresent(value)) return null;
+  const match = /^(\d{4}-\d{2}-\d{2})$/u.exec(value.trim());
+  if (match === null) return null;
+  const [, ymd] = match;
+  return ymd ?? null;
 }
 
 function formatTime(value: string): string {

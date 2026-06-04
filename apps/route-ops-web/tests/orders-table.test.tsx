@@ -11,6 +11,7 @@ import {
   formatDiagnosticPathLabel,
   formatBlockerReason,
   formatMethodLabel,
+  formatOrderReceivedLabel,
   formatOperationalStatus,
   getRouteRepairPrompt,
   ORDERS_TABLE_COLUMN_COUNT,
@@ -63,7 +64,7 @@ describe("Orders compact operations table", () => {
     const html = renderOrderTable([orderFixture()]);
 
     expect(html).toContain("#11453");
-    expect(html).toContain("WOO · 11453");
+    expect(html).toContain("2026-06-04 THU · updated 2026-06-05 FRI");
     expect(html).toContain("Tomato Buyer");
     expect(html).toContain("416-555-0100");
     expect(html).toContain("Evening Delivery");
@@ -76,6 +77,27 @@ describe("Orders compact operations table", () => {
     expect(html).toContain('aria-controls="order-detail-order-11453"');
     expect(html).not.toContain("Diagnostics");
     expect(html).not.toContain("Route eligible");
+  });
+
+  test("formats source-created order labels with localized update markers", () => {
+    expect(formatOrderReceivedLabel(orderFixture(), "en-CA")).toBe(
+      "2026-06-04 THU · updated 2026-06-05 FRI",
+    );
+    expect(formatOrderReceivedLabel(orderFixture(), "ko-KR")).toBe(
+      "2026-06-04 목요일 · 수정 2026-06-05 금요일",
+    );
+    expect(
+      formatOrderReceivedLabel(
+        orderFixture({ sourceUpdatedDate: "2026-06-04" }),
+        "en-CA",
+      ),
+    ).toBe("2026-06-04 THU");
+    expect(
+      formatOrderReceivedLabel(
+        orderFixture({ sourceCreatedDate: null, sourceUpdatedDate: null }),
+        "en-CA",
+      ),
+    ).toBe("—");
   });
 
   test("keeps the order table mounted during filter refreshes to avoid scroll jumps", () => {
@@ -999,7 +1021,11 @@ function orderFixture(
     },
     sourceOrderId: "gid://woo/11453",
     sourceOrderNumber: "11453",
+    sourceCreatedAt: "2026-06-04T16:00:00.000Z",
+    sourceCreatedDate: "2026-06-04",
     sourcePlatform: "WOO",
+    sourceUpdatedAt: "2026-06-05T14:00:00.000Z",
+    sourceUpdatedDate: "2026-06-05",
     status: "open",
     stopId: null,
     timeWindowEnd: "21:00",
