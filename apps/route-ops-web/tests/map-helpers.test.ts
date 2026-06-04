@@ -226,6 +226,7 @@ function routeDetail(): RoutePlanDetailDto {
       missingCoordinates: 0,
       name: 'Route 1',
       planDate: '2026-05-27',
+      routeEndMode: 'END_AT_LAST_STOP',
       status: 'DRAFT',
       stopsCount: 2,
       updatedAt: ''

@@ -8,6 +8,7 @@ import type {
   RoutePlanService,
   RoutePlanSummary,
   UpdateRoutePlanDriverInput,
+  UpdateRoutePlanOptionsInput,
   UpdateRoutePlanStopsInput
 } from './route-plan.types.js';
 
@@ -44,6 +45,7 @@ export type RoutePlanRepository = {
   }): Promise<{ routePlanId: string; deleted: boolean }>;
   listRoutePlans(input: ListRoutePlansInput): Promise<RoutePlanSummary[]>;
   publishRoutePlan(input: PublishRoutePlanInput): Promise<RoutePlanDetail | null>;
+  updateRoutePlanOptions(input: UpdateRoutePlanOptionsInput): Promise<RoutePlanDetail | null>;
   updateRoutePlanStops(input: UpdateRoutePlanStopsInput): Promise<RoutePlanDetail | null>;
 };
 
@@ -103,6 +105,10 @@ export class RoutePlanAdminService implements RoutePlanService {
 
   async publishRoutePlan(input: PublishRoutePlanInput): Promise<RoutePlanDetail | null> {
     return this.withRouteGeometry(await this.repository.publishRoutePlan(input));
+  }
+
+  async updateRoutePlanOptions(input: UpdateRoutePlanOptionsInput): Promise<RoutePlanDetail | null> {
+    return this.withRouteGeometry(await this.repository.updateRoutePlanOptions(input));
   }
 
   async updateRoutePlanStops(input: UpdateRoutePlanStopsInput): Promise<RoutePlanDetail | null> {

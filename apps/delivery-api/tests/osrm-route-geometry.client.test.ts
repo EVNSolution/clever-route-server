@@ -13,6 +13,7 @@ const detail = {
     missingCoordinates: 0,
     name: 'Friday route',
     planDate: '2026-05-15',
+    routeEndMode: 'END_AT_LAST_STOP',
     status: 'DRAFT',
     stopsCount: 2,
     updatedAt: '2026-05-07T12:30:00.000Z'
@@ -129,6 +130,44 @@ describe('OsrmRouteGeometryProvider', () => {
         snappedCoordinates: [-79.2572, 43.7765]
       })
     ]);
+    expect(result.routeStopPoints).not.toContainEqual(expect.objectContaining({ name: 'Depot Road' }));
+  });
+
+  test('appends the depot as the final waypoint when route end mode returns to depot', async () => {
+    const fetch = vi.fn().mockResolvedValue(Response.json({
+      code: 'Ok',
+      routes: [
+        {
+          geometry: {
+            type: 'LineString',
+            coordinates: [
+              [-79.3832, 43.6532],
+              [-79.2571, 43.7764],
+              [-79.337, 43.8561],
+              [-79.3832, 43.6532]
+            ]
+          }
+        }
+      ],
+      waypoints: [
+        { distance: 0, location: [-79.3831, 43.6531], name: 'Depot Road' },
+        { distance: 12, location: [-79.2572, 43.7765], name: 'McCowan Road' },
+        { distance: 54, location: [-79.3372, 43.8562], name: 'Yonge Street' },
+        { distance: 0, location: [-79.3831, 43.6531], name: 'Depot Road' }
+      ]
+    }));
+    const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
+
+    const result = await provider.buildRoute({
+      ...detail,
+      routePlan: { ...detail.routePlan, routeEndMode: 'RETURN_TO_DEPOT' }
+    });
+
+    expect(fetch).toHaveBeenCalledWith(
+      'https://osrm.example/route/v1/driving/-79.3832,43.6532;-79.2571,43.7764;-79.337,43.8561;-79.3832,43.6532?overview=full&geometries=geojson&steps=false',
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(result.routeStopPoints).toHaveLength(2);
     expect(result.routeStopPoints).not.toContainEqual(expect.objectContaining({ name: 'Depot Road' }));
   });
 

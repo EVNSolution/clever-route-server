@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ReactElement } from 'react';
 
-import { assignDriver, deleteRoute, getDrivers, getRouteDetail, getRoutes, publishRoute, saveStopSequence } from '../api';
+import { assignDriver, deleteRoute, getDrivers, getRouteDetail, getRoutes, publishRoute, saveRouteOptions, saveStopSequence } from '../api';
 import { Badge, Kpi } from '../components/primitives';
 import { TabLayout } from '../components/TabLayout';
 import { RouteOpsMap } from '../components/maps/RouteOpsMap';
@@ -146,16 +146,21 @@ export function RouteBuilder(input: {
   const [draftDriverId, setDraftDriverId] = useState(() => input.detail?.routePlan.driverId ?? '');
   const [draggingStopId, setDraggingStopId] = useState<string | null>(null);
   const [isSavingDriver, setIsSavingDriver] = useState(false);
+  const [isSavingOptions, setIsSavingOptions] = useState(false);
   const [isSavingSequence, setIsSavingSequence] = useState(false);
   const [isPublishingRoute, setIsPublishingRoute] = useState(false);
+  const [draftRouteEndMode, setDraftRouteEndMode] = useState<RoutePlanSummaryDto['routeEndMode']>(() => input.detail?.routePlan.routeEndMode ?? 'END_AT_LAST_STOP');
   const detail = input.detail;
   const locale = resolveLocale(input.locale);
   const t = getRoutesCopy(locale);
   useEffect(() => setDraftStops(detail?.stops ?? []), [detail]);
   useEffect(() => setDraftDriverId(detail?.routePlan.driverId ?? ''), [detail?.routePlan.driverId]);
+  useEffect(() => setDraftRouteEndMode(detail?.routePlan.routeEndMode ?? 'END_AT_LAST_STOP'), [detail?.routePlan.routeEndMode]);
   const stats = deriveRouteStats(detail);
   const hasSequenceChanges = hasStopSequenceChanged(detail?.stops, draftStops);
   const hasDriverChanges = detail !== null && draftDriverId !== (detail.routePlan.driverId ?? '');
+  const canEditRouteOptions = detail !== null && detail.routePlan.status === 'DRAFT';
+  const hasRouteOptionChanges = detail !== null && draftRouteEndMode !== detail.routePlan.routeEndMode;
   const publishNotice = getRoutePublishNotice(detail?.routePlan ?? null, input.drivers, locale);
   const canPublishRoute = detail !== null && detail.routePlan.status === 'DRAFT' && detail.routePlan.driverId !== null && detail.routePlan.stopsCount > 0;
 
@@ -186,6 +191,20 @@ export function RouteBuilder(input: {
     }
   };
 
+  const saveOptions = async (): Promise<void> => {
+    if (detail === null || !hasRouteOptionChanges || isSavingOptions || !canEditRouteOptions) return;
+    setIsSavingOptions(true);
+    try {
+      input.setDetail(await saveRouteOptions(detail.routePlan.id, input.bootstrap.csrfToken, draftRouteEndMode));
+      input.onRefreshRoutes();
+      input.setError(null);
+    } catch (error) {
+      input.setError(readErrorMessage(error));
+    } finally {
+      setIsSavingOptions(false);
+    }
+  };
+
   const publish = async (): Promise<void> => {
     if (detail === null || !canPublishRoute || isPublishingRoute) return;
     setIsPublishingRoute(true);
@@ -209,6 +228,7 @@ export function RouteBuilder(input: {
         {publishNotice === null ? null : <div className={`route-publish-notice ${publishNotice.tone}`}>{publishNotice.text}</div>}
         <label>{t.assignedDriver}<select value={draftDriverId} onChange={(event) => setDraftDriverId(event.target.value)}><option value="">{t.unassigned}</option>{input.drivers.map((driver) => <option key={driver.id} value={driver.id}>{getDriverOptionLabel(driver, locale)}</option>)}</select></label>
         <div className="button-row"><button aria-label={t.saveDriver} className="primary route-save-button" disabled={!hasDriverChanges || isSavingDriver} onClick={() => void assign()} type="button">{isSavingDriver ? t.savingDriver : t.saveDriver}</button><small className="muted">{getRouteDriverDisplay(detail?.routePlan ?? null, input.drivers, locale)}</small></div>
+        <div className="route-end-option"><span className="field-label">{t.routeEnd}</span><label className="route-scope-checkbox"><input checked={draftRouteEndMode === 'RETURN_TO_DEPOT'} disabled={!canEditRouteOptions || isSavingOptions} onChange={(event) => setDraftRouteEndMode(event.target.checked ? 'RETURN_TO_DEPOT' : 'END_AT_LAST_STOP')} type="checkbox" /><span>{t.returnToStore}</span></label><small className="muted">{draftRouteEndMode === 'RETURN_TO_DEPOT' ? t.returnToStoreHelp : t.endAtLastStopHelp}</small><div className="button-row"><button aria-label={t.saveRouteOptions} className="primary route-save-button" disabled={!hasRouteOptionChanges || isSavingOptions || !canEditRouteOptions} onClick={() => void saveOptions()} type="button">{isSavingOptions ? t.savingRouteOptions : t.saveRouteOptions}</button></div></div>
         <div className="button-row"><button aria-label={t.publishRoute} className="primary route-save-button" disabled={!canPublishRoute || isPublishingRoute} onClick={() => void publish()} type="button">{isPublishingRoute ? t.publishing : t.publishRoute}</button><small className="muted">{detail === null ? t.loadRouteBeforePublishing : isRouteVisibleToLinkedDriver(detail.routePlan, input.drivers) ? t.driverAppVisible : t.notVisibleToDriverApp}</small></div>
         <div className="button-row"><button aria-label={t.save} className="primary route-save-button" disabled={!hasSequenceChanges || isSavingSequence} onClick={() => void save()} type="button">{isSavingSequence ? t.saving : t.save}</button></div>
         <ol className="stop-list">{draftStops.map((stop, index) => <li className={draggingStopId === stop.deliveryStopId ? 'dragging' : ''} draggable key={stop.deliveryStopId} onDragEnd={() => setDraggingStopId(null)} onDragOver={(event) => event.preventDefault()} onDragStart={() => setDraggingStopId(stop.deliveryStopId)} onDrop={(event) => { event.preventDefault(); if (draggingStopId !== null) setDraftStops(moveStopBefore(draftStops, draggingStopId, stop.deliveryStopId)); setDraggingStopId(null); }}><span className="stop-number">{stop.sequence}</span><div><strong>{stop.orderName}</strong><small>{stop.recipientName ?? t.noRecipient} · {stop.addressLabel}</small></div><div className="stop-actions"><button aria-label={t.moveUp(stop.orderName)} disabled={index === 0} onClick={() => setDraftStops(moveStop(draftStops, stop.deliveryStopId, -1))} type="button">↑</button><button aria-label={t.moveDown(stop.orderName)} disabled={index === draftStops.length - 1} onClick={() => setDraftStops(moveStop(draftStops, stop.deliveryStopId, 1))} type="button">↓</button></div></li>)}</ol>

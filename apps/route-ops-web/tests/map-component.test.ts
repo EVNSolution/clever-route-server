@@ -244,6 +244,7 @@ function routeDetail(overrides: Partial<RoutePlanDetailDto> = {}): RoutePlanDeta
       missingCoordinates: 0,
       name: 'Route 1',
       planDate: '2026-05-27',
+      routeEndMode: 'END_AT_LAST_STOP',
       status: 'DRAFT',
       stopsCount: 0,
       updatedAt: ''

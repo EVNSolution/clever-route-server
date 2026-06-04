@@ -129,6 +129,7 @@ export type RoutePlanSummaryDto = {
   missingCoordinates: number;
   name: string;
   planDate: string;
+  routeEndMode: "END_AT_LAST_STOP" | "RETURN_TO_DEPOT";
   status: string;
   stopsCount: number;
   updatedAt: string;

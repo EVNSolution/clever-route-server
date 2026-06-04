@@ -54,6 +54,7 @@ import {
   RoutePlanBatchInvalidError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanDriverAssignInvalidError,
+  RoutePlanOptionsUpdateInvalidError,
   RoutePlanPublishInvalidError,
   RoutePlanStopUpdateInvalidError,
   type CreateRoutePlanPayload,
@@ -372,7 +373,7 @@ export type AdminCommerceConnectionsUiDependencies = {
     | "listRoutePlans"
     | "updateRoutePlanStops"
   > &
-    Partial<Pick<RoutePlanService, "deleteRoutePlan" | "publishRoutePlan">>;
+    Partial<Pick<RoutePlanService, "deleteRoutePlan" | "publishRoutePlan" | "updateRoutePlanOptions">>;
   secureCookies: boolean;
   sessionSecret: string;
   sessionTtlMs?: number;
@@ -1808,6 +1809,48 @@ function registerRouteOpsAppRoutes(
           );
         }
         return routeOpsData(toRouteOpsRoutePlanDetailDto(updated));
+      }),
+  );
+
+  app.patch<{ Params: { routePlanId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/options`,
+    async (request, reply) =>
+      withRouteOpsApi(request, reply, dependencies, async (session) => {
+        assertRouteOpsMutationCsrf(request, session);
+        const services = requireRouteUiServices(dependencies);
+        if (services.routePlanService.updateRoutePlanOptions === undefined) {
+          throw new WooCommerceOnboardingError(
+            "BAD_REQUEST",
+            "Route options are not enabled in this runtime.",
+            400,
+          );
+        }
+        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const body = readRouteOpsBodyObject(request.body);
+        try {
+          const updated = await services.routePlanService.updateRoutePlanOptions({
+            payload: { routeEndMode: readRouteEndMode(body.routeEndMode) },
+            routePlanId: request.params.routePlanId,
+            shopDomain,
+          });
+          if (updated === null) {
+            throw new WooCommerceOnboardingError(
+              "NOT_FOUND",
+              "Route plan not found",
+              404,
+            );
+          }
+          return routeOpsData(toRouteOpsRoutePlanDetailDto(updated));
+        } catch (error) {
+          if (error instanceof RoutePlanOptionsUpdateInvalidError) {
+            throw new WooCommerceOnboardingError(
+              error.code,
+              error.message,
+              400,
+            );
+          }
+          throw error;
+        }
       }),
   );
 
@@ -3777,6 +3820,17 @@ function readRequiredJsonString(
   return value.trim();
 }
 
+function readRouteEndMode(value: unknown): RoutePlanSummary["routeEndMode"] {
+  if (value !== "END_AT_LAST_STOP" && value !== "RETURN_TO_DEPOT") {
+    throw new WooCommerceOnboardingError(
+      "BAD_REQUEST",
+      "routeEndMode must be END_AT_LAST_STOP or RETURN_TO_DEPOT",
+      400,
+    );
+  }
+  return value;
+}
+
 function readNullableJsonString(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== "string") {
@@ -4869,6 +4923,7 @@ function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
   missingCoordinates: number;
   name: string;
   planDate: string;
+  routeEndMode: RoutePlanSummary["routeEndMode"];
   status: string;
   stopsCount: number;
   updatedAt: string;
@@ -4883,6 +4938,7 @@ function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
     missingCoordinates: routePlan.missingCoordinates,
     name: routePlan.name,
     planDate: routePlan.planDate,
+    routeEndMode: routePlan.routeEndMode,
     status: routePlan.status,
     stopsCount: routePlan.stopsCount,
     updatedAt: routePlan.updatedAt,

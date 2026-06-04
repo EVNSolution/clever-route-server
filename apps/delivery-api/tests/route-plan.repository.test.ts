@@ -178,6 +178,40 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
+  test('uses saved shop depot coordinates when selected-order route creation omits depot coordinates', async () => {
+    const { prisma } = createPrismaHarness({
+      shop: {
+        defaultDepotAddress: '4475 Chesswood Dr North York, ON M3J 2C3',
+        defaultDepotLatitude: '43.76393',
+        defaultDepotLongitude: '-79.476',
+        id: 'shop-id'
+      }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await repository.createRoutePlanDraftFromOrderIds({
+      createdBy: 'route-ops',
+      depot: { address: null, latitude: null, longitude: null },
+      name: 'Woo batch',
+      orderIds: ['order-1', 'order-2'],
+      planDate: '2026-05-08',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    const createArg = prisma.routePlan.create.mock.calls[0]?.[0] as
+      | { data: { constraints: { depot?: { address?: string; latitude?: number; longitude?: number } }; depotLatitude: string | null; depotLongitude: string | null } }
+      | undefined;
+    expect(createArg?.data.depotLatitude).toBe('43.76393');
+    expect(createArg?.data.depotLongitude).toBe('-79.476');
+    expect(createArg?.data.constraints.depot).toEqual({
+      address: '4475 Chesswood Dr North York, ON M3J 2C3',
+      latitude: 43.76393,
+      longitude: -79.476
+    });
+  });
+
   test('allows selected order id route creation with safe custom route-scope tokens after API preflight', async () => {
     const { prisma, routePlanStopCreateMany } = createPrismaHarness({
       deliveryFacts: [
@@ -630,6 +664,135 @@ describe('PrismaRoutePlanRepository', () => {
     expect(detail?.routePlan.driver?.recentEventsCount).toBe(3);
   });
 
+  test('repairs a draft route missing depot coordinates from store settings when detail is opened', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: {
+        createdAt: new Date('2026-05-07T12:30:00.000Z'),
+        constraints: { routeScope: null },
+        depotLatitude: null,
+        depotLongitude: null,
+        id: 'route-plan-id',
+        metrics: {
+          deliveryAreas: ['Toronto'],
+          deliveryDays: ['Thursday'],
+          missingCoordinates: 0,
+          stopsCount: 0
+        },
+        name: 'Missing depot draft',
+        planDate: new Date('2026-05-08T00:00:00.000Z'),
+        routeStops: [],
+        status: 'DRAFT',
+        updatedAt: new Date('2026-05-07T12:30:00.000Z')
+      },
+      shop: {
+        defaultDepotAddress: '4475 Chesswood Dr North York, ON M3J 2C3',
+        defaultDepotLatitude: '43.76393',
+        defaultDepotLongitude: '-79.476',
+        id: 'shop-id'
+      }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const detail = await repository.findRoutePlanDetail({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(detail?.routePlan.depot).toEqual({ latitude: 43.76393, longitude: -79.476 });
+    expect(prisma.routePlan.update).toHaveBeenCalledWith({
+      data: {
+        constraints: {
+          depot: {
+            address: '4475 Chesswood Dr North York, ON M3J 2C3',
+            latitude: 43.76393,
+            longitude: -79.476
+          },
+          optimizer: 'manual-sequence-mvp',
+          routeEndMode: 'END_AT_LAST_STOP',
+          routeScope: null,
+          sequenceSource: 'request-order'
+        },
+        depotLatitude: '43.76393',
+        depotLongitude: '-79.476'
+      },
+      where: { id: 'route-plan-id' }
+    });
+  });
+
+  test('saves return-to-depot route mode in draft route constraints', async () => {
+    const { prisma } = createPrismaHarness({
+      shop: {
+        defaultDepotAddress: '4475 Chesswood Dr North York, ON M3J 2C3',
+        defaultDepotLatitude: '43.76393',
+        defaultDepotLongitude: '-79.476',
+        id: 'shop-id'
+      }
+    });
+    prisma.routePlan.findFirst
+      .mockResolvedValueOnce({
+        constraints: {},
+        depotLatitude: null,
+        depotLongitude: null,
+        id: 'route-plan-id',
+        status: 'DRAFT'
+      })
+      .mockResolvedValueOnce({
+        createdAt: new Date('2026-05-07T12:30:00.000Z'),
+        constraints: {
+          depot: {
+            address: '4475 Chesswood Dr North York, ON M3J 2C3',
+            latitude: 43.76393,
+            longitude: -79.476
+          },
+          routeEndMode: 'RETURN_TO_DEPOT'
+        },
+        depotLatitude: '43.76393',
+        depotLongitude: '-79.476',
+        id: 'route-plan-id',
+        metrics: {
+          deliveryAreas: ['Toronto'],
+          deliveryDays: ['Thursday'],
+          missingCoordinates: 0,
+          stopsCount: 0
+        },
+        name: 'Return route',
+        planDate: new Date('2026-05-08T00:00:00.000Z'),
+        routeStops: [],
+        status: 'DRAFT',
+        updatedAt: new Date('2026-05-07T12:30:00.000Z')
+      });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const detail = await repository.updateRoutePlanOptions({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: { routeEndMode: 'RETURN_TO_DEPOT' }
+    });
+
+    expect(detail?.routePlan.routeEndMode).toBe('RETURN_TO_DEPOT');
+    expect(prisma.routePlan.update).toHaveBeenCalledWith({
+      data: {
+        constraints: {
+          depot: {
+            address: '4475 Chesswood Dr North York, ON M3J 2C3',
+            latitude: 43.76393,
+            longitude: -79.476
+          },
+          optimizer: 'manual-sequence-mvp',
+          routeEndMode: 'RETURN_TO_DEPOT',
+          sequenceSource: 'request-order'
+        },
+        depotLatitude: '43.76393',
+        depotLongitude: '-79.476'
+      },
+      where: { id: 'route-plan-id' }
+    });
+  });
+
   test('deletes route-plan stops first and then deletes the route plan within shop scope', async () => {
     const { prisma } = createPrismaHarness();
     const repository = new PrismaRoutePlanRepository(
@@ -691,7 +854,9 @@ function createPrismaHarness(input: {
   existingRoutePlanStops?: Array<{ deliveryStopId: string }>;
   orderDeliveryDate?: string;
   orders?: Array<Record<string, unknown>>;
+  routePlanFindFirst?: Record<string, unknown> | null;
   routePlanToDelete?: { id: string } | null;
+  shop?: Record<string, unknown> | null;
 } = {}): {
   prisma: {
     $transaction: ReturnType<typeof vi.fn>;
@@ -788,6 +953,9 @@ function createPrismaHarness(input: {
         })
       ),
       findFirst: vi.fn(() =>
+        input.routePlanFindFirst !== undefined
+          ? Promise.resolve(input.routePlanFindFirst)
+          :
         input.routePlanToDelete !== undefined
           ? input.routePlanToDelete === null
             ? Promise.resolve(null)
@@ -837,8 +1005,8 @@ function createPrismaHarness(input: {
       deleteMany: vi.fn(() => Promise.resolve({ count: 2 }))
     },
     shop: {
-      findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id' })),
-      upsert: vi.fn(() => Promise.resolve({ id: 'shop-id', shopDomain: 'example.myshopify.com' }))
+      findUnique: vi.fn(() => Promise.resolve(input.shop === undefined ? { id: 'shop-id' } : input.shop)),
+      upsert: vi.fn(() => Promise.resolve(input.shop === undefined ? { id: 'shop-id', shopDomain: 'example.myshopify.com' } : input.shop))
     }
   };
 

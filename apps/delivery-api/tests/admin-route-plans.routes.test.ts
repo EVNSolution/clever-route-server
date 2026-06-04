@@ -23,6 +23,7 @@ const routePlanSummary = {
   missingCoordinates: 0,
   name: 'CLEVER route draft',
   planDate: '2026-05-08',
+  routeEndMode: 'END_AT_LAST_STOP' as const,
   status: 'DRAFT',
   stopsCount: 1,
   updatedAt: '2026-05-07T12:30:00.000Z'
@@ -753,6 +754,9 @@ function createDependencyHarness(): {
   publishRoutePlan: ReturnType<
     typeof vi.fn<AdminRoutePlanDependencies['routePlanService']['publishRoutePlan']>
   >;
+  updateRoutePlanOptions: ReturnType<
+    typeof vi.fn<AdminRoutePlanDependencies['routePlanService']['updateRoutePlanOptions']>
+  >;
   updateRoutePlanStops: ReturnType<
     typeof vi.fn<AdminRoutePlanDependencies['routePlanService']['updateRoutePlanStops']>
   >;
@@ -822,6 +826,19 @@ function createDependencyHarness(): {
       ]
     })
   );
+  const updateRoutePlanOptions = vi.fn<
+    AdminRoutePlanDependencies['routePlanService']['updateRoutePlanOptions']
+  >(() =>
+    Promise.resolve({
+      routePlan: { ...routePlanSummary, routeEndMode: 'RETURN_TO_DEPOT' },
+      routeGeometry: null,
+      routeStopPoints: routePlanStopPoints(),
+      stops: [
+        routePlanStop({ orderName: '#1035', sequence: 1 }),
+        routePlanStop({ orderName: '#1036', sequence: 2 })
+      ]
+    })
+  );
 
   return {
     assignRoutePlanDriver,
@@ -834,6 +851,7 @@ function createDependencyHarness(): {
         getRoutePlanDetail,
         listRoutePlans,
         publishRoutePlan,
+        updateRoutePlanOptions,
         updateRoutePlanStops
       },
       sessionTokenVerifier: {
@@ -844,6 +862,7 @@ function createDependencyHarness(): {
     deleteRoutePlan,
     listRoutePlans,
     publishRoutePlan,
+    updateRoutePlanOptions,
     updateRoutePlanStops
   };
 }

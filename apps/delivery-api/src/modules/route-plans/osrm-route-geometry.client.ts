@@ -102,6 +102,10 @@ function getRoutableRoutePoints(
     }
   }
 
+  if (routePlan.routeEndMode === 'RETURN_TO_DEPOT' && depotCoordinate !== null && routePoints.some((point) => point.kind === 'stop')) {
+    routePoints.push({ coordinate: depotCoordinate, kind: 'depot' });
+  }
+
   return routePoints;
 }
 

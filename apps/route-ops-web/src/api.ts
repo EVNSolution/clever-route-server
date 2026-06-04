@@ -238,6 +238,19 @@ export async function saveStopSequence(
   );
 }
 
+export async function saveRouteOptions(
+  routePlanId: string,
+  csrfToken: string,
+  routeEndMode: RoutePlanDetailDto["routePlan"]["routeEndMode"],
+): Promise<RoutePlanDetailDto> {
+  return apiMutation<RoutePlanDetailDto>(
+    `/admin/ui/app/api/routes/${encodeURIComponent(routePlanId)}/options`,
+    "PATCH",
+    csrfToken,
+    { routeEndMode },
+  );
+}
+
 export async function optimizeRoute(
   routePlanId: string,
   csrfToken: string,

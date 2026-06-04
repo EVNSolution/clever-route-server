@@ -5073,6 +5073,7 @@ function routePlanSummary() {
     missingCoordinates: 0,
     name: "Route draft",
     planDate: "2026-05-26",
+    routeEndMode: "END_AT_LAST_STOP" as const,
     status: "DRAFT",
     stopsCount: 2,
     updatedAt: "2026-05-26T12:00:00.000Z",

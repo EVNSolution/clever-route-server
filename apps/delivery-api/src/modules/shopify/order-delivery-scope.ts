@@ -602,6 +602,12 @@ function parseExplicitDeliveryDate(
 }
 
 function calculateCycleRange(orderDateLocal: string): DateRange {
+  // Delivery-cycle fallback rule:
+  // Orders open on Tuesday in the shop-local timezone, remain open through the
+  // following Monday, then ship in the delivery week that starts with that
+  // cutoff Monday: Thursday/Friday/Saturday after the cutoff.
+  // Example: an order placed on Thu 2026-06-04 with raw day "Friday" resolves
+  // to Fri 2026-06-12, not Fri 2026-06-05.
   const orderDate = parseYmd(orderDateLocal);
   const day = orderDate.getUTCDay();
   const daysSinceTuesday = (day - 2 + 7) % 7;

@@ -9,6 +9,7 @@ import {
 import {
   RoutePlanDriverAssignInvalidError,
   RoutePlanOrderAlreadyPlannedError,
+  RoutePlanOptionsUpdateInvalidError,
   RoutePlanStopUpdateInvalidError
 } from '../modules/route-plans/route-plan.types.js';
 import type {
@@ -19,6 +20,7 @@ import type {
   RoutePlanService,
   RoutePlanShippingAddressInput,
   UpdateRoutePlanDriverPayload,
+  UpdateRoutePlanOptionsPayload,
   UpdateRoutePlanStopsPayload
 } from '../modules/route-plans/route-plan.types.js';
 
@@ -217,6 +219,47 @@ export function registerAdminRoutePlanRoutes(
     }
   );
 
+  app.patch<{ Body: unknown; Params: { routePlanId: string } }>(
+    '/admin/route-plans/:routePlanId/options',
+    async (request, reply) => {
+      const authenticated = authenticate(request.headers.authorization, dependencies, {
+        log: request.log,
+        surface: 'admin_route_plans'
+      });
+      if (authenticated.status === 'unauthorized') {
+        return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+      }
+
+      let payload: UpdateRoutePlanOptionsPayload;
+      try {
+        payload = readUpdateRoutePlanOptionsPayload(request.body);
+      } catch {
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid route options payload'));
+      }
+
+      try {
+        const detail = await dependencies.routePlanService.updateRoutePlanOptions({
+          payload,
+          routePlanId: request.params.routePlanId,
+          shopDomain: authenticated.shopDomain
+        });
+        if (detail === null) {
+          return reply.code(404).send(errorResponse('NOT_FOUND', 'Route plan not found'));
+        }
+
+        return reply.code(200).send({
+          data: detail,
+          error: null
+        });
+      } catch (error) {
+        if (error instanceof RoutePlanOptionsUpdateInvalidError) {
+          return reply.code(400).send(errorResponse(error.code, error.message));
+        }
+        throw error;
+      }
+    }
+  );
+
   app.delete<{ Params: { routePlanId: string } }>(
     '/admin/route-plans/:routePlanId',
     async (request, reply) => {
@@ -321,6 +364,15 @@ function readUpdateRoutePlanDriverPayload(value: unknown): UpdateRoutePlanDriver
   return {
     driverId: readNullableString(object.driverId)
   };
+}
+
+function readUpdateRoutePlanOptionsPayload(value: unknown): UpdateRoutePlanOptionsPayload {
+  const object = requireObject(value);
+  const routeEndMode = requireNonEmptyString(object.routeEndMode);
+  if (routeEndMode !== 'END_AT_LAST_STOP' && routeEndMode !== 'RETURN_TO_DEPOT') {
+    throw new Error('routeEndMode must be supported');
+  }
+  return { routeEndMode };
 }
 
 

@@ -4,6 +4,7 @@ import {
   RoutePlanBatchInvalidError,
   RoutePlanDriverAssignInvalidError,
   RoutePlanOrderAlreadyPlannedError,
+  RoutePlanOptionsUpdateInvalidError,
   RoutePlanPublishInvalidError,
   RoutePlanStopUpdateInvalidError
 } from './route-plan.types.js';
@@ -13,11 +14,13 @@ import type {
   RoutePlanDetail,
   RoutePlanDetailStop,
   RoutePlanDriverSummary,
+  RoutePlanEndMode,
   ListRoutePlansInput,
   RoutePlanOrderAttributeInput,
   RoutePlanOrderInput,
   PublishRoutePlanInput,
   UpdateRoutePlanDriverInput,
+  UpdateRoutePlanOptionsInput,
   UpdateRoutePlanStopsInput,
   RoutePlanShippingAddressInput,
   RoutePlanRouteScopeInput,
@@ -27,6 +30,7 @@ import type { RoutePlanRepository } from './route-plan.service.js';
 
 const DEFAULT_API_VERSION = '2026-04';
 const OPTIMIZER_VERSION = 'manual-sequence-mvp';
+const DEFAULT_ROUTE_END_MODE: RoutePlanEndMode = 'END_AT_LAST_STOP';
 
 type RoutePlanPrismaClient = Pick<
   PrismaClient,
@@ -136,6 +140,13 @@ type DeliveryFactStopRecord = {
   latitude: unknown;
   longitude: unknown;
   routePlanStops?: Array<{ id: string }>;
+};
+
+type RoutePlanShopRecord = {
+  defaultDepotAddress?: string | null;
+  defaultDepotLatitude?: unknown;
+  defaultDepotLongitude?: unknown;
+  id: string;
 };
 
 export class PrismaRoutePlanRepository implements RoutePlanRepository {
@@ -271,7 +282,6 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     const shopDomain = this.normalizeShopDomain(input.shopDomain);
     const planDate = parsePlanDate(input.planDate);
     const metrics = createMetrics(input.orders);
-    const constraints = createConstraints(input.depot, input.routeScope);
     assertNoDuplicateOrderInputs(input.orders);
 
     return this.prisma.$transaction(async (tx) => {
@@ -280,9 +290,12 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           apiVersion: DEFAULT_API_VERSION,
           shopDomain
         },
+        select: shopDepotSelect(),
         update: {},
         where: { shopDomain }
       });
+      const effectiveDepot = resolveEffectiveDepot(input.depot, shop);
+      const constraints = createConstraints(effectiveDepot, input.routeScope);
       const deliveryStopIds: string[] = [];
 
       for (const orderInput of input.orders) {
@@ -340,8 +353,8 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         data: {
           constraints,
           createdBy: input.createdBy,
-          depotLatitude: decimalString(input.depot.latitude),
-          depotLongitude: decimalString(input.depot.longitude),
+          depotLatitude: decimalString(effectiveDepot.latitude),
+          depotLongitude: decimalString(effectiveDepot.longitude),
           metrics,
           name: input.name,
           optimizerVersion: OPTIMIZER_VERSION,
@@ -377,7 +390,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
 
     return this.prisma.$transaction(async (tx) => {
       const shop = await tx.shop.findUnique({
-        select: { id: true },
+        select: shopDepotSelect(),
         where: { shopDomain }
       });
       if (shop === null) {
@@ -429,14 +442,15 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       };
       const deliveryStopIds = orderedFacts.map((fact) => fact.order.deliveryStops?.[0]?.id).filter((id): id is string => id !== undefined);
       const metrics = createMetricsFromFacts(orderedFacts);
-      const constraints = createConstraints(input.depot, routeScope);
+      const effectiveDepot = resolveEffectiveDepot(input.depot, shop);
+      const constraints = createConstraints(effectiveDepot, routeScope);
 
       const routePlan = await tx.routePlan.create({
         data: {
           constraints,
           createdBy: input.createdBy,
-          depotLatitude: decimalString(input.depot.latitude),
-          depotLongitude: decimalString(input.depot.longitude),
+          depotLatitude: decimalString(effectiveDepot.latitude),
+          depotLongitude: decimalString(effectiveDepot.longitude),
           metrics,
           name: input.name,
           optimizerVersion: OPTIMIZER_VERSION,
@@ -498,7 +512,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       return null;
     }
 
-    const record = routePlan as RoutePlanRecord;
+    const record = await this.repairDraftDepotIfMissing(routePlan, shop);
     return {
       routePlan: toRoutePlanSummary(record),
       routeGeometry: null,
@@ -540,6 +554,72 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     });
 
     return { routePlanId: input.routePlanId, deleted: true };
+  }
+
+  async updateRoutePlanOptions(input: UpdateRoutePlanOptionsInput): Promise<RoutePlanDetail | null> {
+    const shopDomain = this.normalizeShopDomain(input.shopDomain);
+    const routeEndMode = input.payload.routeEndMode;
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const shop = await tx.shop.findUnique({
+        select: shopDepotSelect(),
+        where: { shopDomain }
+      });
+      if (shop === null) {
+        return false;
+      }
+
+      const routePlan = (await tx.routePlan.findFirst({
+        select: {
+          constraints: true,
+          depotLatitude: true,
+          depotLongitude: true,
+          id: true,
+          status: true
+        },
+        where: {
+          id: input.routePlanId,
+          shopId: shop.id
+        }
+      })) as Pick<RoutePlanRecord, 'constraints' | 'depotLatitude' | 'depotLongitude' | 'id' | 'status'> | null;
+      if (routePlan === null) {
+        return false;
+      }
+      if (routePlan.status !== 'DRAFT') {
+        throw new RoutePlanOptionsUpdateInvalidError('Route options can be changed before publishing the route.');
+      }
+
+      const currentDepot = readDepotFromRoutePlan(routePlan);
+      const defaultDepot = readDepotFromShopDefaults(shop);
+      const effectiveDepot = currentDepot ?? defaultDepot;
+      if (routeEndMode === 'RETURN_TO_DEPOT' && effectiveDepot === null) {
+        throw new RoutePlanOptionsUpdateInvalidError('Return-to-store routing requires default depot coordinates.');
+      }
+
+      await tx.routePlan.update({
+        data: {
+          ...(currentDepot === null && defaultDepot !== null
+            ? {
+                depotLatitude: decimalString(defaultDepot.latitude),
+                depotLongitude: decimalString(defaultDepot.longitude)
+              }
+            : {}),
+          constraints: updateConstraintsRouteEndMode(routePlan.constraints, routeEndMode, effectiveDepot)
+        },
+        where: { id: routePlan.id }
+      });
+
+      return true;
+    });
+
+    if (!updated) {
+      return null;
+    }
+
+    return this.findRoutePlanDetail({
+      routePlanId: input.routePlanId,
+      shopDomain: input.shopDomain
+    });
   }
 
   async updateRoutePlanStops(input: UpdateRoutePlanStopsInput): Promise<RoutePlanDetail | null> {
@@ -681,11 +761,42 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     });
   }
 
-  private async findShop(shopDomain: string): Promise<{ id: string } | null> {
+  private async findShop(shopDomain: string): Promise<RoutePlanShopRecord | null> {
     return this.prisma.shop.findUnique({
-      select: { id: true },
+      select: shopDepotSelect(),
       where: { shopDomain: this.normalizeShopDomain(shopDomain) }
     });
+  }
+
+  private async repairDraftDepotIfMissing(
+    routePlan: RoutePlanRecord,
+    shop: RoutePlanShopRecord
+  ): Promise<RoutePlanRecord> {
+    if (routePlan.status !== 'DRAFT' || readDepotFromRoutePlan(routePlan) !== null) {
+      return routePlan;
+    }
+
+    const defaultDepot = readDepotFromShopDefaults(shop);
+    if (defaultDepot === null) {
+      return routePlan;
+    }
+
+    const constraints = mergeConstraintsDepot(routePlan.constraints, defaultDepot);
+    await this.prisma.routePlan.update({
+      data: {
+        constraints,
+        depotLatitude: decimalString(defaultDepot.latitude),
+        depotLongitude: decimalString(defaultDepot.longitude)
+      },
+      where: { id: routePlan.id }
+    });
+
+    return {
+      ...routePlan,
+      constraints,
+      depotLatitude: decimalString(defaultDepot.latitude),
+      depotLongitude: decimalString(defaultDepot.longitude)
+    };
   }
 
   private normalizeShopDomain(value: string): string {
@@ -986,6 +1097,15 @@ function routePlanInclude() {
   } satisfies Prisma.RoutePlanInclude;
 }
 
+function shopDepotSelect() {
+  return {
+    defaultDepotAddress: true,
+    defaultDepotLatitude: true,
+    defaultDepotLongitude: true,
+    id: true
+  } satisfies Prisma.ShopSelect;
+}
+
 function toOrderWrite(input: RoutePlanOrderInput): {
   currencyCode: string | null;
   email: string | null;
@@ -1086,6 +1206,7 @@ function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanO
     missingCoordinates: metrics.missingCoordinates,
     name: routePlan.name,
     planDate: formatDateOnly(routePlan.planDate),
+    routeEndMode: readRouteEndMode(routePlan.constraints),
     status: routePlan.status,
     stopsCount: metrics.stopsCount,
     updatedAt: routePlan.updatedAt.toISOString()
@@ -1152,7 +1273,8 @@ function createMetrics(orders: RoutePlanOrderInput[]): Prisma.InputJsonObject {
 
 function createConstraints(
   depot: RoutePlanDepotInput,
-  routeScope: RoutePlanRouteScopeInput | undefined
+  routeScope: RoutePlanRouteScopeInput | undefined,
+  routeEndMode: RoutePlanEndMode = DEFAULT_ROUTE_END_MODE
 ): Prisma.InputJsonObject {
   return {
     depot: {
@@ -1161,9 +1283,116 @@ function createConstraints(
       longitude: depot.longitude
     },
     optimizer: OPTIMIZER_VERSION,
+    routeEndMode,
     routeScope: routeScope ?? null,
     sequenceSource: 'request-order'
   };
+}
+
+function resolveEffectiveDepot(
+  requestedDepot: RoutePlanDepotInput,
+  shop: RoutePlanShopRecord
+): RoutePlanDepotInput {
+  if (hasValidDepotCoordinates(requestedDepot)) {
+    return {
+      address: readString(requestedDepot.address) ?? readString(shop.defaultDepotAddress) ?? null,
+      latitude: requestedDepot.latitude,
+      longitude: requestedDepot.longitude
+    };
+  }
+
+  return readDepotFromShopDefaults(shop) ?? requestedDepot;
+}
+
+function readDepotFromShopDefaults(shop: RoutePlanShopRecord): RoutePlanDepotInput | null {
+  const latitude = decimalNumber(shop.defaultDepotLatitude);
+  const longitude = decimalNumber(shop.defaultDepotLongitude);
+  if (!isValidLatitudeNumber(latitude) || !isValidLongitudeNumber(longitude)) {
+    return null;
+  }
+
+  return {
+    address: readString(shop.defaultDepotAddress) ?? null,
+    latitude,
+    longitude
+  };
+}
+
+function readDepotFromRoutePlan(
+  routePlan: Pick<RoutePlanRecord, 'constraints' | 'depotLatitude' | 'depotLongitude'>
+): RoutePlanDepotInput | null {
+  const latitude = decimalNumber(routePlan.depotLatitude);
+  const longitude = decimalNumber(routePlan.depotLongitude);
+  if (!isValidLatitudeNumber(latitude) || !isValidLongitudeNumber(longitude)) {
+    return null;
+  }
+
+  const constraints = objectOrNull(routePlan.constraints);
+  const depot = objectOrNull(constraints?.depot);
+  return {
+    address: readString(depot?.address) ?? null,
+    latitude,
+    longitude
+  };
+}
+
+function mergeConstraintsDepot(value: unknown, depot: RoutePlanDepotInput): Prisma.InputJsonObject {
+  const constraints = objectOrEmpty(value);
+  return toJson({
+    ...constraints,
+    depot: {
+      ...objectOrEmpty(constraints.depot),
+      address: depot.address,
+      latitude: depot.latitude,
+      longitude: depot.longitude
+    },
+    optimizer: readString(constraints.optimizer) ?? OPTIMIZER_VERSION,
+    routeEndMode: readRouteEndMode(value),
+    sequenceSource: readString(constraints.sequenceSource) ?? 'request-order'
+  }) as Prisma.InputJsonObject;
+}
+
+function updateConstraintsRouteEndMode(
+  value: unknown,
+  routeEndMode: RoutePlanEndMode,
+  depot: RoutePlanDepotInput | null
+): Prisma.InputJsonObject {
+  const constraints = objectOrEmpty(value);
+  const depotObject = depot === null
+    ? objectOrEmpty(constraints.depot)
+    : {
+        ...objectOrEmpty(constraints.depot),
+        address: depot.address,
+        latitude: depot.latitude,
+        longitude: depot.longitude
+      };
+  return toJson({
+    ...constraints,
+    depot: depotObject,
+    optimizer: readString(constraints.optimizer) ?? OPTIMIZER_VERSION,
+    routeEndMode,
+    sequenceSource: readString(constraints.sequenceSource) ?? 'request-order'
+  }) as Prisma.InputJsonObject;
+}
+
+function readRouteEndMode(value: unknown): RoutePlanEndMode {
+  const constraints = objectOrNull(value);
+  return constraints?.routeEndMode === 'RETURN_TO_DEPOT' ? 'RETURN_TO_DEPOT' : DEFAULT_ROUTE_END_MODE;
+}
+
+function hasValidDepotCoordinates(depot: RoutePlanDepotInput): depot is RoutePlanDepotInput & {
+  latitude: number;
+  longitude: number;
+} {
+  return isValidLatitudeNumber(depot.latitude) && isValidLongitudeNumber(depot.longitude);
+}
+
+function isValidLatitudeNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= -90 && value <= 90;
+}
+
+function isValidLongitudeNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= -180 && value <= 180;
 }
 
 function readMetrics(

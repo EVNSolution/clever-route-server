@@ -7,6 +7,8 @@ export type RoutePlanRouteScopeInput = {
   timeWindowStart: string | null;
 };
 
+export type RoutePlanEndMode = 'END_AT_LAST_STOP' | 'RETURN_TO_DEPOT';
+
 export type RoutePlanDepotInput = {
   address: string | null;
   latitude: number | null;
@@ -96,6 +98,7 @@ export type RoutePlanSummary = {
   missingCoordinates: number;
   name: string;
   planDate: string;
+  routeEndMode: RoutePlanEndMode;
   status: string;
   stopsCount: number;
   updatedAt: string;
@@ -184,6 +187,16 @@ export type UpdateRoutePlanDriverInput = {
   payload: UpdateRoutePlanDriverPayload;
 };
 
+export type UpdateRoutePlanOptionsPayload = {
+  routeEndMode: RoutePlanEndMode;
+};
+
+export type UpdateRoutePlanOptionsInput = {
+  routePlanId: string;
+  shopDomain: string;
+  payload: UpdateRoutePlanOptionsPayload;
+};
+
 export type PublishRoutePlanInput = {
   routePlanId: string;
   shopDomain: string;
@@ -210,6 +223,7 @@ export type RoutePlanService = {
   }): Promise<RoutePlanDetail | null>;
   listRoutePlans(input: ListRoutePlansInput): Promise<RoutePlanSummary[]>;
   publishRoutePlan(input: PublishRoutePlanInput): Promise<RoutePlanDetail | null>;
+  updateRoutePlanOptions(input: UpdateRoutePlanOptionsInput): Promise<RoutePlanDetail | null>;
   updateRoutePlanStops(input: UpdateRoutePlanStopsInput): Promise<RoutePlanDetail | null>;
 };
 
@@ -247,6 +261,15 @@ export class RoutePlanPublishInvalidError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'RoutePlanPublishInvalidError';
+  }
+}
+
+export class RoutePlanOptionsUpdateInvalidError extends Error {
+  readonly code = 'ROUTE_OPTIONS_UPDATE_INVALID';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'RoutePlanOptionsUpdateInvalidError';
   }
 }
 
