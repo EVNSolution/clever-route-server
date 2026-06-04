@@ -3,11 +3,18 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 
 export type DriverAuthPrismaClient = Pick<PrismaClient, 'driver' | 'driverSession'>;
 type DriverInviteRecord = Prisma.DriverGetPayload<{ include: { shop: { select: { shopDomain: true } } } }>;
+type DriverRefreshSessionRecord = Prisma.DriverSessionGetPayload<{
+  include: { driver: { include: { shop: { select: { shopDomain: true } } } } };
+}>;
 
 export type VerifyInviteInput = {
   displayName?: string | null;
   phone: string;
   inviteCode: string;
+};
+
+export type RefreshSessionInput = {
+  refreshToken: string;
 };
 
 export type DriverSessionInfo = {
@@ -20,6 +27,36 @@ export type DriverSessionInfo = {
 
 export class PrismaDriverAuthRepository {
   constructor(private readonly prisma: DriverAuthPrismaClient) {}
+
+  async refreshSession(input: RefreshSessionInput): Promise<DriverSessionInfo> {
+    const refreshToken = input.refreshToken.trim();
+    if (refreshToken.length === 0) {
+      throw new Error('Invalid refresh token');
+    }
+
+    const refreshTokenHash = createHash('sha256').update(refreshToken).digest('hex');
+    const session = await this.prisma.driverSession.findUnique({
+      where: { refreshTokenHash },
+      include: { driver: { include: { shop: { select: { shopDomain: true } } } } }
+    });
+
+    if (!isRefreshSessionUsable(session, new Date())) {
+      throw new Error('Invalid or expired refresh token');
+    }
+
+    await this.prisma.driverSession.update({
+      where: { id: session.id },
+      data: { lastUsedAt: new Date() }
+    });
+
+    return {
+      driverId: session.driver.id,
+      shopDomain: session.driver.shop.shopDomain,
+      refreshToken,
+      expiresAt: session.expiresAt,
+      tokenVersion: session.driver.tokenVersion
+    };
+  }
 
   async verifyInvite(input: VerifyInviteInput): Promise<DriverSessionInfo> {
     const now = new Date();
@@ -92,6 +129,15 @@ export class PrismaDriverAuthRepository {
 
     return candidates.find((candidate) => normalizeLegacyDriverPhone(candidate.phone) === canonicalInputPhone) ?? null;
   }
+}
+
+function isRefreshSessionUsable(session: DriverRefreshSessionRecord | null, now: Date): session is DriverRefreshSessionRecord {
+  return (
+    session !== null &&
+    session.revokedAt === null &&
+    session.expiresAt.getTime() > now.getTime() &&
+    session.driver.status === 'ACTIVE'
+  );
 }
 
 function normalizeDisplayName(displayName: string | null | undefined): string | null {

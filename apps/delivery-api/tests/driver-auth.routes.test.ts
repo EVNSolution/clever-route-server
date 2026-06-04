@@ -102,6 +102,121 @@ describe('Driver auth routes', () => {
     }
   });
 
+  test('refreshes driver auth sessions and returns a new access token', async () => {
+    const refreshSession = vi.fn<DriverAuthDependencies['driverAuthRepository']['refreshSession']>(() =>
+      Promise.resolve({
+        driverId: 'driver-id',
+        expiresAt: new Date('2026-06-15T00:00:00.000Z'),
+        refreshToken: 'stored-refresh-token',
+        shopDomain: 'tomatono.myshopify.com',
+        tokenVersion: 2
+      })
+    );
+    const app = await buildApp({
+      driverAuth: {
+        driverAuthRepository: { refreshSession } as never,
+        jwtSecret: 'test-secret'
+      }
+    });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        payload: { refreshToken: ' stored-refresh-token ' },
+        url: '/driver/auth/refresh'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(refreshSession).toHaveBeenCalledWith({ refreshToken: 'stored-refresh-token' });
+      const body: { data: { accessToken: string; refreshToken: string; refreshTokenExpiresAt: string }; error: null } = response.json();
+      expect(body).toMatchObject({
+        data: {
+          accessToken: anyStringMatcher,
+          refreshToken: 'stored-refresh-token',
+          refreshTokenExpiresAt: '2026-06-15T00:00:00.000Z'
+        },
+        error: null
+      });
+      expect(verifyDriverToken(body.data.accessToken, { secret: 'test-secret' })).toMatchObject({
+        driverId: 'driver-id',
+        shopDomain: 'tomatono.myshopify.com',
+        subject: 'driver:driver-id',
+        tokenVersion: 2
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects missing or invalid refresh tokens without creating access tokens', async () => {
+    const refreshSession = vi.fn<DriverAuthDependencies['driverAuthRepository']['refreshSession']>(() =>
+      Promise.reject(new Error('Invalid or expired refresh token'))
+    );
+    const app = await buildApp({
+      driverAuth: {
+        driverAuthRepository: { refreshSession } as never,
+        jwtSecret: 'test-secret'
+      }
+    });
+
+    try {
+      const noPayload = await app.inject({
+        method: 'POST',
+        url: '/driver/auth/refresh'
+      });
+      const missing = await app.inject({
+        method: 'POST',
+        payload: {},
+        url: '/driver/auth/refresh'
+      });
+      const invalid = await app.inject({
+        method: 'POST',
+        payload: { refreshToken: 'revoked-refresh-token' },
+        url: '/driver/auth/refresh'
+      });
+
+      expect(noPayload.statusCode).toBe(400);
+      expect(missing.statusCode).toBe(400);
+      expect(invalid.statusCode).toBe(401);
+      expect(invalid.json()).toMatchObject({
+        data: null,
+        error: { code: 'UNAUTHORIZED', message: 'Invalid or expired refresh token' }
+      });
+      expect(refreshSession).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+
+  test('does not expose unexpected refresh failures as invalid credentials', async () => {
+    const refreshSession = vi.fn<DriverAuthDependencies['driverAuthRepository']['refreshSession']>(() =>
+      Promise.reject(new Error('database connection failed'))
+    );
+    const app = await buildApp({
+      driverAuth: {
+        driverAuthRepository: { refreshSession } as never,
+        jwtSecret: 'test-secret'
+      }
+    });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        payload: { refreshToken: 'stored-refresh-token' },
+        url: '/driver/auth/refresh'
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toMatchObject({
+        data: null,
+        error: { code: 'INTERNAL_SERVER_ERROR', message: 'Driver session could not be refreshed' }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('logs sanitized verify-invite payload shape without raw invite secrets', async () => {
     const verifyInvite = vi.fn<DriverAuthDependencies['driverAuthRepository']['verifyInvite']>(() =>
       Promise.resolve({

@@ -51,6 +51,44 @@ describe('PrismaDriverAuthRepository', () => {
     });
   });
 
+  test('refreshes an active driver session without rotating the stored refresh token', async () => {
+    const { prisma } = createPrismaHarness();
+    const repository = new PrismaDriverAuthRepository(prisma as never);
+
+    const session = await repository.refreshSession({ refreshToken: 'stored-refresh-token' });
+
+    expect(prisma.driverSession.findUnique).toHaveBeenCalledWith({
+      include: { driver: { include: { shop: { select: { shopDomain: true } } } } },
+      where: { refreshTokenHash: anyStringMatcher }
+    });
+    expect(prisma.driverSession.update).toHaveBeenCalledWith({
+      data: { lastUsedAt: anyDateMatcher },
+      where: { id: 'session-id' }
+    });
+    expect(session).toEqual({
+      driverId: 'driver-id',
+      expiresAt: new Date('2026-06-15T00:00:00.000Z'),
+      refreshToken: 'stored-refresh-token',
+      shopDomain: 'example.myshopify.com',
+      tokenVersion: 2
+    });
+  });
+
+  test('rejects expired, revoked, missing, or inactive-driver refresh sessions', async () => {
+    for (const session of [
+      null,
+      createDriverSessionFixture({ expiresAt: new Date('2020-01-01T00:00:00.000Z') }),
+      createDriverSessionFixture({ revokedAt: new Date('2026-05-01T00:00:00.000Z') }),
+      createDriverSessionFixture({ driverStatus: 'INACTIVE' })
+    ]) {
+      const { prisma } = createPrismaHarness({ refreshSession: session });
+      const repository = new PrismaDriverAuthRepository(prisma as never);
+
+      await expect(repository.refreshSession({ refreshToken: 'stored-refresh-token' })).rejects.toThrow('Invalid or expired refresh token');
+      expect(prisma.driverSession.update).not.toHaveBeenCalled();
+    }
+  });
+
   test('matches legacy national phone rows against E.164 invite verification and repairs the stored phone', async () => {
     const { prisma } = createPrismaHarness({ exactDriver: null, legacyPhone: '010-8921-6198' });
     const repository = new PrismaDriverAuthRepository(prisma as never);
@@ -81,7 +119,7 @@ describe('PrismaDriverAuthRepository', () => {
   });
 });
 
-function createPrismaHarness(input: { exactDriver?: DriverFixture | null; legacyPhone?: string } = {}): {
+function createPrismaHarness(input: { exactDriver?: DriverFixture | null; legacyPhone?: string; refreshSession?: DriverSessionFixture | null } = {}): {
   prisma: {
     driver: {
       findFirst: ReturnType<typeof vi.fn>;
@@ -90,12 +128,15 @@ function createPrismaHarness(input: { exactDriver?: DriverFixture | null; legacy
     };
     driverSession: {
       create: ReturnType<typeof vi.fn>;
+      findUnique: ReturnType<typeof vi.fn>;
+      update: ReturnType<typeof vi.fn>;
     };
   };
 } {
   const driver = createDriverFixture({ phone: '+14165550123' });
   const exactDriver = input.exactDriver === undefined ? driver : input.exactDriver;
   const legacyDriver = createDriverFixture({ phone: input.legacyPhone ?? '01089216198' });
+  const refreshSession = input.refreshSession === undefined ? createDriverSessionFixture() : input.refreshSession;
 
   return {
     prisma: {
@@ -105,11 +146,20 @@ function createPrismaHarness(input: { exactDriver?: DriverFixture | null; legacy
         update: vi.fn(() => Promise.resolve({ ...driver, displayName: 'Minji Kim' }))
       },
       driverSession: {
-        create: vi.fn(() => Promise.resolve({ id: 'session-id' }))
+        create: vi.fn(() => Promise.resolve({ id: 'session-id' })),
+        findUnique: vi.fn(() => Promise.resolve(refreshSession)),
+        update: vi.fn(() => Promise.resolve({ id: 'session-id' }))
       }
     }
   };
 }
+
+type DriverSessionFixture = {
+  driver: DriverFixture;
+  expiresAt: Date;
+  id: string;
+  revokedAt: Date | null;
+};
 
 type DriverFixture = {
   authSubject: string | null;
@@ -117,8 +167,21 @@ type DriverFixture = {
   id: string;
   phone: string;
   shop: { shopDomain: string };
+  status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
   tokenVersion: number;
 };
+
+function createDriverSessionFixture(input: { driverStatus?: DriverFixture['status']; expiresAt?: Date; revokedAt?: Date | null } = {}): DriverSessionFixture {
+  return {
+    driver: {
+      ...createDriverFixture({ phone: '+14165550123' }),
+      status: input.driverStatus ?? 'ACTIVE'
+    },
+    expiresAt: input.expiresAt ?? new Date('2026-06-15T00:00:00.000Z'),
+    id: 'session-id',
+    revokedAt: input.revokedAt ?? null
+  };
+}
 
 function createDriverFixture(input: { phone: string }): DriverFixture {
   return {
@@ -127,6 +190,7 @@ function createDriverFixture(input: { phone: string }): DriverFixture {
     id: 'driver-id',
     phone: input.phone,
     shop: { shopDomain: 'example.myshopify.com' },
+    status: 'ACTIVE',
     tokenVersion: 2
   };
 }

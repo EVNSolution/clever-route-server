@@ -8,6 +8,51 @@ export type DriverAuthDependencies = {
 };
 
 export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: DriverAuthDependencies): void {
+  app.post<{ Body: unknown }>('/driver/auth/refresh', async (request, reply) => {
+    const body = request.body;
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+      return reply.code(400).send({ data: null, error: { code: 'BAD_REQUEST', message: 'refreshToken is required' } });
+    }
+
+    const { refreshToken } = body as { refreshToken?: unknown };
+    if (typeof refreshToken !== 'string' || refreshToken.trim().length === 0) {
+      return reply.code(400).send({ data: null, error: { code: 'BAD_REQUEST', message: 'refreshToken is required' } });
+    }
+
+    try {
+      const sessionInfo = await dependencies.driverAuthRepository.refreshSession({
+        refreshToken: refreshToken.trim()
+      });
+      const tokenResult = signDriverToken(
+        {
+          driverId: sessionInfo.driverId,
+          expiresInSeconds: 15 * 60,
+          shopDomain: sessionInfo.shopDomain,
+          subject: `driver:${sessionInfo.driverId}`,
+          tokenVersion: sessionInfo.tokenVersion
+        },
+        { secret: dependencies.jwtSecret }
+      );
+
+      return reply.code(200).send({
+        data: {
+          accessToken: tokenResult.token,
+          expiresAt: tokenResult.expiresAt,
+          refreshToken: sessionInfo.refreshToken,
+          refreshTokenExpiresAt: sessionInfo.expiresAt.toISOString()
+        },
+        error: null
+      });
+    } catch (error) {
+      if (isInvalidRefreshTokenError(error)) {
+        return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: 'Invalid or expired refresh token' } });
+      }
+
+      request.log.error({ err: error }, 'driver auth refresh failed');
+      return reply.code(500).send({ data: null, error: { code: 'INTERNAL_SERVER_ERROR', message: 'Driver session could not be refreshed' } });
+    }
+  });
+
   app.post<{ Body: { displayName?: unknown; phone: string; inviteCode: string } }>('/driver/auth/verify-invite', async (request, reply) => {
     const { displayName, phone, inviteCode } = request.body;
 
@@ -65,4 +110,8 @@ export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: Dri
       return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: (error as Error).message } });
     }
   });
+}
+
+function isInvalidRefreshTokenError(error: unknown): boolean {
+  return error instanceof Error && (error.message === 'Invalid refresh token' || error.message === 'Invalid or expired refresh token');
 }
