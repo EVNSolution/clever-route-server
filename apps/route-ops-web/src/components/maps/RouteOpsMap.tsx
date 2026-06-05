@@ -53,6 +53,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
   const [isMapReady, setIsMapReady] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [fitRequest, setFitRequest] = useState(0);
+  const [mapRefreshRequest, setMapRefreshRequest] = useState(0);
 
   const points = useMemo(() => (detail === null ? prependDepotPoint(depot, getOrderMapPoints(orders)) : getRouteMapPoints(detail)), [depot, detail, orders]);
   const dropoffPoints = useMemo(() => getRouteDropoffPoints(detail), [detail]);
@@ -152,7 +153,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
       setIsMapReady(false);
       if (map !== null) safeRemoveMap(map);
     };
-  }, [bootstrap.mapConfig.styleUrl, readiness]);
+  }, [bootstrap.mapConfig.styleUrl, mapRefreshRequest, readiness]);
 
   useEffect(() => {
     if (!isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return;
@@ -198,13 +199,24 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
     };
   }, [detail, isMapReady, onOrderSelect]);
 
+  const handleRefreshMap = (): void => {
+    setMapError(null);
+    setIsMapReady(false);
+    setMapRefreshRequest((value) => value + 1);
+  };
+
   return (
     <article className="map-panel panel" data-route-map>
       <div className="panel-heading">
         <div><h2>{title}</h2><p>{subtitle}</p></div>
       </div>
       <div className="route-ops-map-frame" data-map-provider-mode={bootstrap.mapConfig.providerMode ?? 'none'} data-map-provider-status={bootstrap.mapConfig.status}>
-        {readiness === 'interactive_map' ? <div className="map-toolbar"><button aria-label={detail === null ? t.centerOnStore : t.fitMap} onClick={() => setFitRequest((value) => value + 1)} title={detail === null ? t.centerOnStore : t.fitMap} type="button"><FitMapIcon /></button></div> : null}
+        {readiness === 'interactive_map' ? (
+          <div className="map-toolbar">
+            <button aria-label={detail === null ? t.centerOnStore : t.fitMap} onClick={() => setFitRequest((value) => value + 1)} title={detail === null ? t.centerOnStore : t.fitMap} type="button"><FitMapIcon /></button>
+            <button aria-label={t.refreshMap} onClick={handleRefreshMap} title={t.refreshMap} type="button"><RefreshMapIcon /></button>
+          </div>
+        ) : null}
         {readiness === 'interactive_map' ? <div className="route-ops-map-canvas" ref={containerRef} aria-label={t.interactiveMap} /> : <SequencePreview locale={locale} points={points} readiness={readiness} />}
       </div>
     </article>
@@ -627,6 +639,17 @@ function FitMapIcon(): ReactElement {
       <path d="M12 4.5h3.5V8" />
       <path d="M15.5 12v3.5H12" />
       <path d="M8 15.5H4.5V12" />
+    </svg>
+  );
+}
+
+function RefreshMapIcon(): ReactElement {
+  return (
+    <svg aria-hidden="true" className="map-toolbar-icon" fill="none" focusable="false" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 20 20">
+      <path d="M15.2 7.6A5.8 5.8 0 0 0 5 5.9" />
+      <path d="M5.1 3.5v2.6h2.6" />
+      <path d="M4.8 12.4A5.8 5.8 0 0 0 15 14.1" />
+      <path d="M14.9 16.5v-2.6h-2.6" />
     </svg>
   );
 }

@@ -147,6 +147,19 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(html).not.toContain('route-line');
   });
 
+  test('renders a map-only refresh control inside configured interactive maps', () => {
+    const html = renderToStaticMarkup(createElement(RouteOpsMap, {
+      bootstrap: bootstrapConfigured(),
+      orders: [order()],
+      subtitle: 'Orders',
+      title: 'Map'
+    }));
+
+    expect(html).toContain('aria-label="Center map on store"');
+    expect(html).toContain('aria-label="Refresh map"');
+    expect(html).toContain('data-map-provider-status="configured"');
+  });
+
 
   test('ignores MapLibre style teardown races during SPA tab navigation', () => {
     const map = createStyleTeardownMapStub();
@@ -308,5 +321,22 @@ function bootstrapNotConfigured(): BootstrapPayload {
     mode: 'internal-admin',
     routerConfig: { coverage: null, provider: null, status: 'not_configured' },
     shopDomain: 'tenant.example.test'
+  };
+}
+
+function bootstrapConfigured(): BootstrapPayload {
+  return {
+    ...bootstrapNotConfigured(),
+    mapConfig: {
+      allowedHosts: ['tiles.example.test'],
+      attribution: null,
+      providerMode: 'public_allowlisted',
+      status: 'configured',
+      styleAudit: {
+        endpoints: ['https://tiles.example.test/style.json'],
+        externalHosts: ['tiles.example.test']
+      },
+      styleUrl: 'https://tiles.example.test/style.json'
+    }
   };
 }
