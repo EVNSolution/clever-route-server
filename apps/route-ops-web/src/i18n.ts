@@ -334,6 +334,7 @@ export const mapCopy = {
     fitMap: 'Zoom map to fit',
     interactiveMap: 'Interactive CLEVER route map',
     markerPreview: 'Marker-only coordinate preview',
+    refreshMap: 'Refresh map',
     routePreview: 'Route coordinate preview',
     routeStart(label: string): string { return `Route start: ${label}`; },
     storeAddress(address: string): string { return `Store address: ${address}`; }
@@ -345,6 +346,7 @@ export const mapCopy = {
     fitMap: '지도 맞춤',
     interactiveMap: 'CLEVER 경로 지도',
     markerPreview: '좌표 마커 미리보기',
+    refreshMap: '지도 새로고침',
     routePreview: '경로 좌표 미리보기',
     routeStart(label: string): string { return `경로 시작점: ${label}`; },
     storeAddress(address: string): string { return `매장 주소: ${address}`; }
