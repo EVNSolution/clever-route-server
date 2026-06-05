@@ -128,10 +128,14 @@ describe("Orders compact operations table", () => {
       routeEligible: false,
     });
     const html = renderOrderTable([blocked]);
+    const customerCell =
+      html.match(/<td class="orders-customer-cell">([\s\S]*?)<\/td>/)?.[1] ??
+      "";
 
     expect(html).toContain('aria-label="Select order #1002 11453"');
     expect(html).toContain('disabled=""');
-    expect(html).toContain("Review");
+    expect(customerCell).not.toContain("Review");
+    expect(customerCell).not.toContain("order-pill");
     expect(html).toContain("Missing delivery date");
     expect(html).toContain("0 selectable");
     expect(html).toContain("1 unavailable");

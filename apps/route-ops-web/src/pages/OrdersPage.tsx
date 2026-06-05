@@ -1182,9 +1182,6 @@ function OrderTableRow(input: {
           {order.phone === null ? null : (
             <small className="order-subtle">{order.phone}</small>
           )}
-          {order.blockerReasons.length === 0 ? null : (
-            <span className="order-pill order-pill--review">{t.review}</span>
-          )}
         </td>
         <td className="orders-method-cell">
           <span
