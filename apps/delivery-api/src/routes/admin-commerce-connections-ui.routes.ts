@@ -4953,8 +4953,15 @@ function toRouteOpsOrderDto(order: CanonicalOrderRow): {
   geocodeStatus: CanonicalOrderRow["geocodeStatus"];
   geocodeDiagnostics: CanonicalOrderRow["geocodeDiagnostics"] | null;
   health: OrderHealth;
+  normalizedPaymentReason: string | null;
+  normalizedPaymentStatus: CanonicalOrderRow["normalizedPaymentStatus"] | null;
   orderId: string;
   orderName: string;
+  paidAt: string | null;
+  paymentMethodFamily: string | null;
+  paymentMethodId: string | null;
+  paymentMethodTitle: string | null;
+  paymentReviewReason: string | null;
   phone: string | null;
   planningStatus: string;
   recipientName: string | null;
@@ -4974,6 +4981,8 @@ function toRouteOpsOrderDto(order: CanonicalOrderRow): {
   stopId: string | null;
   timeWindowEnd: string | null;
   timeWindowStart: string | null;
+  transactionId: string | null;
+  wooOrderStatus: string | null;
 } {
   const blockerReasons = readOrderOperateBlockers(order);
   const metadataResolved =
@@ -5004,8 +5013,15 @@ function toRouteOpsOrderDto(order: CanonicalOrderRow): {
     geocodeDiagnostics: order.geocodeDiagnostics ?? null,
     health: deriveOrderHealth(order),
     metadataResolved,
+    normalizedPaymentReason: order.normalizedPaymentReason ?? null,
+    normalizedPaymentStatus: order.normalizedPaymentStatus ?? null,
     orderId: order.orderId,
     orderName: order.name,
+    paidAt: order.paidAt ?? null,
+    paymentMethodFamily: order.paymentMethodFamily ?? null,
+    paymentMethodId: order.paymentMethodId ?? null,
+    paymentMethodTitle: order.paymentMethodTitle ?? null,
+    paymentReviewReason: order.paymentReviewReason ?? null,
     phone: order.phone,
     planningStatus: order.planningStatus,
     recipientName: order.recipientName,
@@ -5026,6 +5042,8 @@ function toRouteOpsOrderDto(order: CanonicalOrderRow): {
     stopId: order.deliveryStopId,
     timeWindowEnd: order.timeWindowEnd,
     timeWindowStart: order.timeWindowStart,
+    transactionId: order.transactionId ?? null,
+    wooOrderStatus: order.wooOrderStatus ?? null,
   };
 }
 
@@ -5444,6 +5462,13 @@ function toRoutePlanOrderInput(order: CanonicalOrderRow): RoutePlanOrderInput {
       deliveryDate: order.deliveryDate,
       deliverySession: order.deliverySession,
       planningGroupKey: order.planningGroupKey,
+      normalizedPaymentReason: order.normalizedPaymentReason ?? null,
+      normalizedPaymentStatus: order.normalizedPaymentStatus ?? null,
+      paidAt: order.paidAt ?? null,
+      paymentMethodFamily: order.paymentMethodFamily ?? null,
+      paymentMethodId: order.paymentMethodId ?? null,
+      paymentMethodTitle: order.paymentMethodTitle ?? null,
+      paymentReviewReason: order.paymentReviewReason ?? null,
       routeScopeKey: order.routeScopeKey,
       serviceType: order.serviceType,
       sourceOrderId: order.sourceOrderId ?? null,
@@ -5452,6 +5477,8 @@ function toRoutePlanOrderInput(order: CanonicalOrderRow): RoutePlanOrderInput {
       sourceSiteUrl: order.sourceSiteUrl ?? null,
       timeWindowEnd: order.timeWindowEnd,
       timeWindowStart: order.timeWindowStart,
+      transactionId: order.transactionId ?? null,
+      wooOrderStatus: order.wooOrderStatus ?? null,
     },
     recipientName: order.recipientName,
     routeScopeKey: order.routeScopeKey,

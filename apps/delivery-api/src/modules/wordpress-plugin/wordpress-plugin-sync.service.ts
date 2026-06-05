@@ -21,6 +21,8 @@ export type WordPressPluginSyncRequestAccepted = WordPressPluginSyncRequestResul
   startBackgroundProcessing: boolean;
 };
 
+const DEFAULT_WOO_MODIFIED_AFTER_OVERLAP_MS = 10 * 60 * 1000;
+
 export type WordPressPluginSyncRunRepository = {
   createSyncRunUnlessActive(input: {
     acceptedAt: Date;
@@ -342,6 +344,7 @@ export class WordPressPluginSyncRequestService {
       const orderSyncService = this.dependencies.createOrderSyncService({ connection });
       const result = await orderSyncService.syncUpdatedOrders({
         modifiedAfter: parseOptionalDate(running.request.modifiedAfter),
+        overlapWindowMs: DEFAULT_WOO_MODIFIED_AFTER_OVERLAP_MS,
         pageSize: running.request.pageSize,
         status: running.request.status
       });
@@ -455,6 +458,7 @@ export type WordPressPluginOrderSyncService = {
   }): Promise<WooCommerceSyncOrdersResult>;
   syncUpdatedOrders(input: {
     modifiedAfter?: Date | null;
+    overlapWindowMs?: number;
     pageSize: number;
     status?: string | null;
   }): Promise<{

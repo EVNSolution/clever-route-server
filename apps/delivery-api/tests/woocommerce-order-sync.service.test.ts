@@ -4,7 +4,10 @@ import type { CanonicalOrderRow, SyncedOrderWithDeliveryStopInput } from '../src
 import type { UpsertOrderWithDeliveryStopResult } from '../src/modules/shopify/order-sync.repository.js';
 import { GeocodingService } from '../src/modules/geocoding/geocoding.service.js';
 import type { GeocodingQuery } from '../src/modules/geocoding/geocoding.types.js';
-import { WooCommerceOrderSyncService } from '../src/modules/woocommerce/woocommerce-order-sync.service.js';
+import {
+  classifyWooCommerceSyncTier,
+  WooCommerceOrderSyncService
+} from '../src/modules/woocommerce/woocommerce-order-sync.service.js';
 import type { WooCommerceOrder } from '../src/modules/woocommerce/woocommerce-order.types.js';
 
 describe('WooCommerceOrderSyncService', () => {
@@ -36,6 +39,57 @@ describe('WooCommerceOrderSyncService', () => {
     expect(firstUpsert?.shopDomain).toBe('woo.example.test');
     expect(firstUpsert?.synced.order.sourcePlatform).toBe('WOOCOMMERCE');
     expect(firstUpsert?.synced.order.sourceOrderId).toBe('1');
+  });
+
+  test('applies modified-after overlap to bounded fallback sync requests', async () => {
+    const client = {
+      listOrdersPage: vi.fn().mockResolvedValue({
+        orders: [],
+        page: 1,
+        perPage: 10,
+        total: 0,
+        totalPages: 1
+      })
+    };
+    const repository = createRepositoryHarness();
+    const service = new WooCommerceOrderSyncService({
+      client,
+      repository,
+      shopDomain: 'woo.example.test',
+      siteUrl: 'https://woo.example.test'
+    });
+
+    await service.syncUpdatedOrders({
+      modifiedAfter: new Date('2026-05-20T00:10:00.000Z'),
+      overlapWindowMs: 10 * 60 * 1000,
+      pageSize: 10,
+      status: 'processing'
+    });
+
+    expect(client.listOrdersPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modifiedAfter: new Date('2026-05-20T00:00:00.000Z')
+      })
+    );
+  });
+
+  test('classifies hot and cold fallback tiers from CLEVER normalized schedule dates', () => {
+    expect(classifyWooCommerceSyncTier({
+      deliveryDate: '2026-06-05',
+      today: '2026-06-05'
+    })).toEqual({ reason: 'today_or_future_delivery', review: false, tier: 'hot' });
+    expect(classifyWooCommerceSyncTier({
+      deliveryDate: '2026-06-06',
+      today: '2026-06-05'
+    })).toEqual({ reason: 'today_or_future_delivery', review: false, tier: 'hot' });
+    expect(classifyWooCommerceSyncTier({
+      deliveryDate: '2026-06-04',
+      today: '2026-06-05'
+    })).toEqual({ reason: 'past_delivery', review: false, tier: 'cold' });
+    expect(classifyWooCommerceSyncTier({
+      deliveryDate: null,
+      today: '2026-06-05'
+    })).toEqual({ reason: 'missing_delivery_date', review: true, tier: 'cold' });
   });
 
   test('fetches and syncs a single WooCommerce order through the shared mapper pipeline', async () => {

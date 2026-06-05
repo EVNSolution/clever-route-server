@@ -69,6 +69,14 @@ export type DeliveryMetadataDiagnosticsDto = {
   unsupportedValueCounts: Record<string, number>;
 };
 
+export type NormalizedPaymentStatus =
+  | "PAID_CONFIRMED"
+  | "CASH_COLLECT_REQUIRED"
+  | "TRANSFER_CHECK_PENDING"
+  | "ONLINE_PAYMENT_PENDING_OR_FAILED"
+  | "NOT_DELIVERABLE_OR_EXCEPTION"
+  | "UNKNOWN_REVIEW";
+
 export type CanonicalOrderDto = {
   blockerReasons: string[];
   coordinates: { latitude: number | null; longitude: number | null };
@@ -90,8 +98,15 @@ export type CanonicalOrderDto = {
   } | null;
   health: string;
   metadataResolved?: boolean;
+  normalizedPaymentReason?: string | null;
+  normalizedPaymentStatus?: NormalizedPaymentStatus | null;
   orderId: string;
   orderName: string;
+  paidAt?: string | null;
+  paymentMethodFamily?: string | null;
+  paymentMethodId?: string | null;
+  paymentMethodTitle?: string | null;
+  paymentReviewReason?: string | null;
   phone: string | null;
   planningStatus: string;
   recipientName: string | null;
@@ -118,6 +133,8 @@ export type CanonicalOrderDto = {
   stopId: string | null;
   timeWindowEnd: string | null;
   timeWindowStart: string | null;
+  transactionId?: string | null;
+  wooOrderStatus?: string | null;
 };
 
 export type RoutePlanSummaryDto = {

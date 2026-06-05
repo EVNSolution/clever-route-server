@@ -462,6 +462,14 @@ export const ordersCopy = {
     destination: 'Destination',
     coordinates: 'Coordinates',
     delivery: 'Delivery',
+    payment: 'Payment',
+    paymentEvidence: 'Woo evidence',
+    paymentMethod: 'Method',
+    paymentStatus: 'Status',
+    paymentReason: 'Reason',
+    paymentPaidAt: 'Paid at',
+    paymentTransaction: 'Transaction',
+    paymentUnavailable: 'Payment unavailable',
     date: 'Date',
     area: 'Area',
     service: 'Service',
@@ -538,6 +546,14 @@ export const ordersCopy = {
       routeEligible: 'Route eligible',
       needsMetadata: 'Needs metadata',
       needAddress: 'Need address'
+    },
+    paymentStatusLabels: {
+      PAID_CONFIRMED: 'Paid confirmed',
+      CASH_COLLECT_REQUIRED: 'Collect cash',
+      TRANSFER_CHECK_PENDING: 'Transfer pending',
+      ONLINE_PAYMENT_PENDING_OR_FAILED: 'Online pending/failed',
+      NOT_DELIVERABLE_OR_EXCEPTION: 'Payment exception',
+      UNKNOWN_REVIEW: 'Review payment'
     },
     statusDetails: {
       useBulkGeocode: 'use bulk geocode',
@@ -668,6 +684,14 @@ export const ordersCopy = {
     destination: '배송지',
     coordinates: '좌표',
     delivery: '배송',
+    payment: '결제',
+    paymentEvidence: 'Woo 증거',
+    paymentMethod: '방식',
+    paymentStatus: '상태',
+    paymentReason: '사유',
+    paymentPaidAt: '결제 확인',
+    paymentTransaction: '거래',
+    paymentUnavailable: '결제 정보 없음',
     date: '날짜',
     area: '지역',
     service: '서비스',
@@ -744,6 +768,14 @@ export const ordersCopy = {
       routeEligible: '경로 배정 가능',
       needsMetadata: '메타데이터 필요',
       needAddress: '주소 필요'
+    },
+    paymentStatusLabels: {
+      PAID_CONFIRMED: '결제 확인됨',
+      CASH_COLLECT_REQUIRED: '현금 수금 필요',
+      TRANSFER_CHECK_PENDING: '송금 확인 대기',
+      ONLINE_PAYMENT_PENDING_OR_FAILED: '온라인 결제 대기/실패',
+      NOT_DELIVERABLE_OR_EXCEPTION: '결제 예외',
+      UNKNOWN_REVIEW: '결제 확인 필요'
     },
     statusDetails: {
       useBulkGeocode: '일괄 좌표 변환 사용',

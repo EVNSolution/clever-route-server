@@ -1136,6 +1136,7 @@ function OrderTableRow(input: {
     unavailableReasons.length === 0 &&
     isOrderWorksetEligible(order, input.worksetContext);
   const day = formatDeliveryDayLabel(order, input.locale);
+  const payment = formatPaymentStatusLabel(order, input.locale);
   const status = formatOperationalStatus(order, input.locale);
   const orderLabel = getOrderAccessibleLabel(order);
   const planActionLabel = t.planOrderAction(
@@ -1188,6 +1189,12 @@ function OrderTableRow(input: {
           <span className="order-compact-value">
             {formatMethodLabel(order, input.locale)}
           </span>
+          <small className="order-subtle">
+            {getOrdersCopy(input.locale).payment}:{" "}
+            <span className={`order-pill ${payment.toneClass}`}>
+              {payment.label}
+            </span>
+          </small>
         </td>
         <td className="orders-day-cell">
           <span className={`order-pill ${day.toneClass}`}>{day.label}</span>
@@ -1288,6 +1295,59 @@ export function formatMethodLabel(order: CanonicalOrderDto, locale: string | nul
   if (isPresent(order.deliverySession))
     return humanizeToken(order.deliverySession, locale);
   return "—";
+}
+
+export function formatPaymentStatusLabel(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {
+  detail: string | null;
+  label: string;
+  toneClass: string;
+} {
+  const t = getOrdersCopy(locale);
+  const detail = formatPaymentMethodEvidence(order);
+  switch (order.normalizedPaymentStatus ?? null) {
+    case "PAID_CONFIRMED":
+      return {
+        detail,
+        label: t.paymentStatusLabels.PAID_CONFIRMED,
+        toneClass: "order-pill--ready",
+      };
+    case "CASH_COLLECT_REQUIRED":
+      return {
+        detail,
+        label: t.paymentStatusLabels.CASH_COLLECT_REQUIRED,
+        toneClass: "order-pill--review",
+      };
+    case "TRANSFER_CHECK_PENDING":
+      return {
+        detail,
+        label: t.paymentStatusLabels.TRANSFER_CHECK_PENDING,
+        toneClass: "order-pill--review",
+      };
+    case "ONLINE_PAYMENT_PENDING_OR_FAILED":
+      return {
+        detail,
+        label: t.paymentStatusLabels.ONLINE_PAYMENT_PENDING_OR_FAILED,
+        toneClass: "order-pill--review",
+      };
+    case "NOT_DELIVERABLE_OR_EXCEPTION":
+      return {
+        detail,
+        label: t.paymentStatusLabels.NOT_DELIVERABLE_OR_EXCEPTION,
+        toneClass: "order-pill--review",
+      };
+    case "UNKNOWN_REVIEW":
+      return {
+        detail,
+        label: t.paymentStatusLabels.UNKNOWN_REVIEW,
+        toneClass: "order-pill--review",
+      };
+    case null:
+      return {
+        detail,
+        label: t.paymentUnavailable,
+        toneClass: "order-pill--neutral",
+      };
+  }
 }
 
 export function formatDeliveryDayLabel(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {
@@ -1464,6 +1524,19 @@ function formatAreaLabel(order: CanonicalOrderDto): string {
     order.shippingAddress.province ??
     "—"
   );
+}
+
+function formatPaymentMethodEvidence(order: CanonicalOrderDto): string | null {
+  const methodTitle = order.paymentMethodTitle?.trim() ?? "";
+  const methodId = order.paymentMethodId?.trim() ?? "";
+  const family = order.paymentMethodFamily?.trim() ?? "";
+  const method =
+    methodTitle.length > 0 &&
+    methodId.length > 0 &&
+    methodTitle.toLowerCase() !== methodId.toLowerCase()
+      ? `${methodTitle} · ${methodId}`
+      : methodTitle || methodId || null;
+  return [method, family || null].filter(isPresent).join(" · ") || null;
 }
 
 function formatRouteLabel(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): string {
@@ -1804,6 +1877,7 @@ function OrderDetailPanel({
   const onSave = onSaveMetadata;
   const t = getOrdersCopy(locale);
   const status = formatOperationalStatus(order, locale);
+  const payment = formatPaymentStatusLabel(order, locale);
   const blockers = order.blockerReasons.map((reason) =>
     formatBlockerReason(reason, locale),
   );
@@ -1974,6 +2048,43 @@ function OrderDetailPanel({
             <div>
               <dt>{t.window}</dt>
               <dd>{formatTimeWindow(order, locale) ?? t.reviewIfRequired}</dd>
+            </div>
+          </dl>
+        </section>
+        <section className="order-detail-summary-card">
+          <h4>{t.payment}</h4>
+          <dl className="order-detail-mini-list">
+            <div>
+              <dt>{t.paymentStatus}</dt>
+              <dd>
+                <span className={`order-pill ${payment.toneClass}`}>
+                  {payment.label}
+                </span>
+              </dd>
+            </div>
+            <div>
+              <dt>{t.paymentMethod}</dt>
+              <dd>{formatPaymentMethodEvidence(order) ?? t.required}</dd>
+            </div>
+            <div>
+              <dt>Woo</dt>
+              <dd>{order.wooOrderStatus ?? t.required}</dd>
+            </div>
+            <div>
+              <dt>{t.paymentReason}</dt>
+              <dd>
+                {order.paymentReviewReason ??
+                  order.normalizedPaymentReason ??
+                  t.reviewIfRequired}
+              </dd>
+            </div>
+            <div>
+              <dt>{t.paymentPaidAt}</dt>
+              <dd>{order.paidAt ?? t.reviewIfRequired}</dd>
+            </div>
+            <div>
+              <dt>{t.paymentTransaction}</dt>
+              <dd>{order.transactionId ?? t.reviewIfRequired}</dd>
             </div>
           </dl>
         </section>

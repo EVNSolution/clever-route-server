@@ -3,6 +3,7 @@ import type {
   DeliverySession,
 } from "./order-delivery-scope.js";
 import { calculateDeliveryScope } from "./order-delivery-scope.js";
+import type { NormalizedPaymentStatus } from "../payments/normalized-payment-status.js";
 
 export type ShopifyOrderAttribute = {
   key: string;
@@ -152,7 +153,14 @@ export type CanonicalOrderRow = {
   orderCreatedAt: string | null;
   orderDateLocal: string | null;
   metadataResolved?: boolean;
+  normalizedPaymentReason?: string | null;
+  normalizedPaymentStatus?: NormalizedPaymentStatus | null;
   orderId: string;
+  paidAt?: string | null;
+  paymentMethodFamily?: string | null;
+  paymentMethodId?: string | null;
+  paymentMethodTitle?: string | null;
+  paymentReviewReason?: string | null;
   phone: string | null;
   pickup: boolean;
   planningGroupKey: string | null;
@@ -188,7 +196,9 @@ export type CanonicalOrderRow = {
   timeWindowEnd: string | null;
   timeWindowStart: string | null;
   totalPriceAmount: string | null;
+  transactionId?: string | null;
   updatedAtShopify: string | null;
+  wooOrderStatus?: string | null;
 };
 
 export type SyncedOrderInput = {

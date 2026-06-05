@@ -18,6 +18,7 @@ import {
   type OperateDeliveryStatus,
   type OrderHealth,
 } from "./order-operate-status.js";
+import { readNormalizedPaymentStatus } from "../payments/normalized-payment-status.js";
 
 export type UpsertOrderWithDeliveryStopInput = {
   shopDomain: string;
@@ -967,10 +968,19 @@ export class PrismaOrderSyncRepository {
     const correctedFields = readRouteOpsCorrectedFields(
       existingFact?.mappingDiagnostics,
     );
+    const downgradeGuard = buildWooScheduleDowngradeGuard({
+      existingFact,
+      incomingFact: input.synced.deliveryFact ?? null,
+      sourceUpdatedAt: input.synced.order.sourceUpdatedAt ?? input.synced.order.updatedAtShopify,
+    });
+    const protectedFields = new Set([
+      ...correctedFields,
+      ...downgradeGuard.fields,
+    ]);
 
     let stopId: string | null = null;
     if (input.synced.deliveryStop === null) {
-      if (!hasCorrectedStopFields(correctedFields)) {
+      if (!hasCorrectedStopFields(protectedFields)) {
         await input.tx.deliveryStop.updateMany({
           data: clearedDeliveryStopWrite(),
           where: { orderId: order.id, shopId: input.shopId },
@@ -980,7 +990,7 @@ export class PrismaOrderSyncRepository {
       const deliveryStopWrite = applyCorrectedStopFields(
         toDeliveryStopWrite(input.synced.deliveryStop),
         existingStop,
-        correctedFields,
+        protectedFields,
       );
       const stop = await input.tx.deliveryStop.upsert({
         create: {
@@ -1004,9 +1014,12 @@ export class PrismaOrderSyncRepository {
       input.synced.deliveryFact !== null
     ) {
       const factWrite = applyCorrectedFactFields(
-        toOrderDeliveryFactWrite(input.synced.deliveryFact),
+        withWooScheduleDowngradeGuardDiagnostics(
+          toOrderDeliveryFactWrite(input.synced.deliveryFact),
+          downgradeGuard,
+        ),
         existingFact,
-        correctedFields,
+        protectedFields,
       );
       await input.tx.orderDeliveryFact.upsert({
         create: {
@@ -1445,11 +1458,130 @@ type RouteOpsCorrectionMeta = {
   version?: number;
 };
 
+type WooScheduleDowngradeGuard = {
+  fields: Set<string>;
+  evidence: Record<string, unknown> | null;
+};
+
 function readRouteOpsCorrectedFields(value: unknown): Set<string> {
   const diagnostics = objectOrNull(value);
   const corrections = objectOrNull(diagnostics?.routeOpsCorrections);
   const fields = objectOrNull(corrections?.fields);
   return new Set(Object.keys(fields ?? {}));
+}
+
+function buildWooScheduleDowngradeGuard(input: {
+  existingFact: ExistingDeliveryFact | null;
+  incomingFact: SyncedOrderDeliveryFactInput | null;
+  sourceUpdatedAt: Date | null;
+}): WooScheduleDowngradeGuard {
+  if (input.incomingFact?.sourcePlatform !== "WOOCOMMERCE") {
+    return inactiveWooScheduleDowngradeGuard();
+  }
+  if (!isIncomingWooScheduleAbnormal(input.incomingFact)) {
+    return inactiveWooScheduleDowngradeGuard();
+  }
+  if (!hasValidExistingSchedule(input.existingFact)) {
+    return inactiveWooScheduleDowngradeGuard();
+  }
+
+  const preservedFields = [
+    "deliveryDate",
+    "deliverySession",
+    "serviceType",
+    "timeWindowStart",
+    "timeWindowEnd",
+    "routeScopeKey",
+    "planningGroupKey",
+    "batchEligible",
+    "readiness",
+    "reviewReasons",
+  ];
+  return {
+    fields: new Set(preservedFields),
+    evidence: {
+      incomingReviewReasons: input.incomingFact.reviewReasons,
+      incomingSchedule: {
+        deliveryDate: input.incomingFact.deliveryDate,
+        deliverySession: input.incomingFact.deliverySession,
+        planningGroupKey: input.incomingFact.planningGroupKey,
+        readiness: input.incomingFact.readiness,
+        routeScopeKey: input.incomingFact.routeScopeKey,
+        serviceType: input.incomingFact.serviceType,
+        timeWindowEnd: input.incomingFact.timeWindowEnd,
+        timeWindowStart: input.incomingFact.timeWindowStart,
+      },
+      preservedFields,
+      preservedSchedule: {
+        deliveryDate: formatDateOnlyNullable(input.existingFact.deliveryDate),
+        deliverySession: input.existingFact.deliverySession,
+        planningGroupKey: input.existingFact.planningGroupKey,
+        readiness: input.existingFact.readiness,
+        routeScopeKey: input.existingFact.routeScopeKey,
+        serviceType: input.existingFact.serviceType,
+        timeWindowEnd: formatTimeOnlyNullable(input.existingFact.timeWindowEnd),
+        timeWindowStart: formatTimeOnlyNullable(input.existingFact.timeWindowStart),
+      },
+      reason: "incoming_woo_schedule_abnormal",
+      sourceUpdatedAt: input.sourceUpdatedAt?.toISOString() ?? null,
+      version: 1,
+    },
+  };
+}
+
+function inactiveWooScheduleDowngradeGuard(): WooScheduleDowngradeGuard {
+  return { fields: new Set(), evidence: null };
+}
+
+function isIncomingWooScheduleAbnormal(
+  fact: SyncedOrderDeliveryFactInput,
+): boolean {
+  if (
+    fact.deliveryDate === null ||
+    fact.deliverySession === null ||
+    fact.routeScopeKey === null ||
+    fact.serviceType === null
+  ) {
+    return true;
+  }
+  const metadataBlockers = new Set([
+    "missing_delivery_area",
+    "missing_delivery_date",
+    "missing_route_scope",
+    "delivery_day_unparsed",
+    "delivery_time_window_unparsed",
+    "delivery_date_weekday_unverified",
+    "ambiguous_delivery_day",
+    "ambiguous_delivery_time_window",
+    "delivery_date_weekday_mismatch",
+    "missing_order_date",
+  ]);
+  return fact.reviewReasons.some((reason) => metadataBlockers.has(reason));
+}
+
+function hasValidExistingSchedule(
+  fact: ExistingDeliveryFact | null,
+): fact is ExistingDeliveryFact {
+  return (
+    fact !== null &&
+    fact.deliveryDate !== null &&
+    fact.deliverySession !== null &&
+    fact.routeScopeKey !== null &&
+    fact.serviceType !== null
+  );
+}
+
+function withWooScheduleDowngradeGuardDiagnostics<
+  T extends ReturnType<typeof toOrderDeliveryFactWrite>,
+>(write: T, guard: WooScheduleDowngradeGuard): T {
+  if (guard.evidence === null) return write;
+  return {
+    ...write,
+    mappingDiagnostics: toJson({
+      ...(objectOrNull(write.mappingDiagnostics) ?? {}),
+      wooScheduleDowngradeGuard: guard.evidence,
+    }),
+  };
 }
 
 function mergeRouteOpsCorrectionMetadata(
@@ -1628,6 +1760,26 @@ function applyCorrectedFactFields<
     ...(fields.has("routeScopeKey")
       ? {
           routeScopeKey: correctedScope.routeScopeKey ?? existing.routeScopeKey,
+        }
+      : {}),
+    ...(fields.has("batchEligible")
+      ? { batchEligible: existing.batchEligible ?? write.batchEligible }
+      : {}),
+    ...(fields.has("readiness")
+      ? {
+          readiness: readCanonicalOrderReadiness(
+            existing.readiness,
+            write.readiness,
+          ),
+        }
+      : {}),
+    ...(fields.has("reviewReasons")
+      ? {
+          reviewReasons: toJson(
+            readStringArray(existing.reviewReasons) ??
+              readStringArray(write.reviewReasons) ??
+              [],
+          ),
         }
       : {}),
     ...(fields.has("serviceType")
@@ -2273,6 +2425,9 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     readYmd(raw?.sourceUpdatedDate) ??
     datePart(sourceUpdatedAt) ??
     sourceCreatedDate;
+  const normalizedPaymentStatus = readNormalizedPaymentStatus(
+    raw?.normalizedPaymentStatus,
+  );
 
   return {
     cancelledAt: formatDateTime(order.cancelledAt),
@@ -2304,10 +2459,17 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     latitude,
     longitude,
     name: order.name,
+    normalizedPaymentReason: readString(raw?.normalizedPaymentReason),
+    normalizedPaymentStatus,
     orderCreatedAt: readString(raw?.orderCreatedAt),
     orderDateLocal: readString(raw?.orderDateLocal),
     metadataResolved,
     orderId: order.id,
+    paidAt: readString(raw?.paidAt),
+    paymentMethodFamily: readString(raw?.paymentMethodFamily),
+    paymentMethodId: readString(raw?.paymentMethodId),
+    paymentMethodTitle: readString(raw?.paymentMethodTitle),
+    paymentReviewReason: readString(raw?.paymentReviewReason),
     phone: order.phone,
     pickup: readBoolean(raw?.pickup) ?? false,
     planningGroupKey:
@@ -2350,7 +2512,9 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
       routeScopeKey,
     }),
     totalPriceAmount: decimalLikeString(order.totalPriceAmount),
+    transactionId: readString(raw?.transactionId),
     updatedAtShopify: formatDateTime(order.updatedAtShopify),
+    wooOrderStatus: readString(raw?.wooOrderStatus),
   };
 }
 
@@ -2370,6 +2534,17 @@ function readReadiness(
   return cancelledAt === null && reviewReasons.length === 0
     ? "READY_TO_PLAN"
     : "NEEDS_REVIEW";
+}
+
+function readCanonicalOrderReadiness(
+  value: unknown,
+  fallback: CanonicalOrderReadiness,
+): CanonicalOrderReadiness {
+  return value === "READY_TO_PLAN" ||
+    value === "NEEDS_REVIEW" ||
+    value === "SKIPPED"
+    ? value
+    : fallback;
 }
 
 function readShippingAddress(

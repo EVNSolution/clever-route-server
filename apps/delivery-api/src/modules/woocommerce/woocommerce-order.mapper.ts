@@ -23,6 +23,10 @@ import type {
   WooCommerceOrder,
   WooCommerceShippingLine,
 } from "./woocommerce-order.types.js";
+import {
+  normalizeWooCommercePaymentStatus,
+  type WooPaymentMethodMappingConfig,
+} from "./woocommerce-payment-normalization.js";
 
 const DELIVERY_DATE_KEYS = [
   "delivery date",
@@ -78,6 +82,7 @@ export type WooOrderMappingConfig = {
     weekdayFallbackPolicy?: WooWeekdayFallbackPolicy;
   };
   serviceMinutesDefault?: number;
+  paymentMethods?: WooPaymentMethodMappingConfig;
   timeWindowPaths?: string[];
   version?: number;
 };
@@ -272,6 +277,10 @@ export function mapWooCommerceOrderToDeliveryInputs(
     shippingAddress === null ? null : formatAddressName(shippingAddress);
   const orderNumber = normalizeString(order.number) ?? String(order.id);
   const syntheticGid = `woocommerce://${host}/orders/${order.id}`;
+  const payment = normalizeWooCommercePaymentStatus(
+    order,
+    options.mappingConfig?.paymentMethods ?? null,
+  );
   const rawPayload = buildRawPayload({
     deliveryArea,
     deliveryDateRaw,
@@ -293,6 +302,7 @@ export function mapWooCommerceOrderToDeliveryInputs(
     },
     metadataKeys: metadata.items.map((item) => item.key),
     order,
+    payment,
     readiness,
     reviewReasons,
     scope,
@@ -412,6 +422,7 @@ function buildRawPayload(input: {
   matchedMappingPaths: Record<string, string | null>;
   metadataKeys: string[];
   order: WooCommerceOrder;
+  payment: ReturnType<typeof normalizeWooCommercePaymentStatus>;
   readiness: "READY_TO_PLAN" | "NEEDS_REVIEW" | "SKIPPED";
   reviewReasons: string[];
   scope: ReturnType<typeof calculateDeliveryScope>;
@@ -441,8 +452,15 @@ function buildRawPayload(input: {
     mappingDiagnostics: input.mappingDiagnostics,
     matchedMappingPaths: input.matchedMappingPaths,
     metadataKeys: input.metadataKeys,
+    normalizedPaymentReason: input.payment.normalizedPaymentReason,
+    normalizedPaymentStatus: input.payment.normalizedPaymentStatus,
     orderCreatedAt: input.scope.orderCreatedAt,
     orderDateLocal: input.scope.orderDateLocal,
+    paidAt: input.payment.paidAt,
+    paymentMethodFamily: input.payment.paymentMethodFamily,
+    paymentMethodId: input.payment.paymentMethodId,
+    paymentMethodTitle: input.payment.paymentMethodTitle,
+    paymentReviewReason: input.payment.paymentReviewReason,
     pickup: false,
     planningGroupKey: input.scope.planningGroupKey,
     readiness: input.readiness,
@@ -458,6 +476,8 @@ function buildRawPayload(input: {
     sourceUpdatedDate: input.sourceUpdatedDate,
     timeWindowEnd: input.scope.timeWindowEnd,
     timeWindowStart: input.scope.timeWindowStart,
+    transactionId: input.payment.transactionId,
+    wooOrderStatus: input.payment.wooOrderStatus,
     weekdayFallbackPolicy: input.weekdayFallbackPolicy.policy,
     weekdayFallbackPolicySource: input.weekdayFallbackPolicy.source,
   };

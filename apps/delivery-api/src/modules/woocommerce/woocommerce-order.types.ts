@@ -39,6 +39,8 @@ export type WooCommerceOrder = {
   date_created_gmt?: string | null;
   date_modified?: string | null;
   date_modified_gmt?: string | null;
+  date_paid?: string | null;
+  date_paid_gmt?: string | null;
   id: number;
   line_items?: WooCommerceLineItem[] | null;
   meta_data?: WooCommerceMetaData[] | null;
@@ -49,6 +51,7 @@ export type WooCommerceOrder = {
   shipping_lines?: WooCommerceShippingLine[] | null;
   status?: string | null;
   total?: string | null;
+  transaction_id?: string | null;
 };
 
 export type WooCommerceOrderStatus =

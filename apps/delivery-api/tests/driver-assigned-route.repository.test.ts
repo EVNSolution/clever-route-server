@@ -25,8 +25,13 @@ const routePlanRecord = {
         latitude: '43.6487000',
         longitude: '-79.3817000',
         order: {
+          financialStatus: 'Cash',
+          fulfillmentStatus: 'PROCESSING',
           id: 'order-id',
           name: '#1001',
+          rawPayload: {
+            normalizedPaymentStatus: 'CASH_COLLECT_REQUIRED'
+          },
           shopifyOrderGid: 'gid://shopify/Order/1001'
         },
         phone: '+14165550123',
@@ -86,6 +91,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             },
             coordinates: { latitude: 43.6487, longitude: -79.3817 },
             deliveryStopId: 'stop-id',
+            normalizedPaymentStatus: 'CASH_COLLECT_REQUIRED',
             orderName: '#1001',
             phone: '+14165550123',
             recipientName: 'Recipient One',
