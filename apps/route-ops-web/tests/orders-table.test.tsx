@@ -11,6 +11,7 @@ import {
   formatDiagnosticPathLabel,
   formatBlockerReason,
   formatMethodLabel,
+  formatMethodStatusLabel,
   formatOrderReceivedLabel,
   formatOperationalStatus,
   formatPaymentStatusLabel,
@@ -69,7 +70,10 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("Tomato Buyer");
     expect(html).toContain("416-555-0100");
     expect(html).toContain("Evening Delivery");
-    expect(html).toContain("Payment:");
+    expect(html).toContain("order-pill-stack");
+    expect(html).toContain('aria-label="Method Evening Delivery; Payment Transfer pending"');
+    expect(html).toContain("order-pill--neutral");
+    expect(html).not.toContain("Payment:");
     expect(html).toContain("Transfer pending");
     expect(html).toContain("FRI5PM");
     expect(html).toContain("2026-05-29 · 5PM–9PM");
@@ -927,6 +931,10 @@ describe("Orders compact operations table", () => {
     });
 
     expect(formatMethodLabel(order)).toBe("Evening Delivery");
+    expect(formatMethodStatusLabel(order)).toEqual({
+      label: "Evening Delivery",
+      toneClass: "order-pill--neutral",
+    });
     expect(formatDeliveryDayLabel(order)).toEqual({
       detail: "2026-05-29 · 8:30AM–11AM",
       label: "FRI8:30AM",
@@ -965,6 +973,27 @@ describe("Orders compact operations table", () => {
         }),
       ),
     ).toBe("—");
+    expect(
+      formatMethodStatusLabel(
+        orderFixture({
+          deliveryArea: "Toronto West",
+          deliveryDate: "2026-05-29",
+          deliverySession: null,
+          serviceType: null,
+          shippingAddress: {
+            address1: "4475 Chesswood Dr",
+            address2: null,
+            city: "Toronto",
+            countryCode: "CA",
+            postalCode: "M3J 2C3",
+            province: "ON",
+          },
+        }),
+      ),
+    ).toEqual({
+      label: "—",
+      toneClass: "order-pill--review",
+    });
   });
 });
 

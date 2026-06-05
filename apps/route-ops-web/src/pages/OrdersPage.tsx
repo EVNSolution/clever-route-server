@@ -1136,6 +1136,7 @@ function OrderTableRow(input: {
     unavailableReasons.length === 0 &&
     isOrderWorksetEligible(order, input.worksetContext);
   const day = formatDeliveryDayLabel(order, input.locale);
+  const method = formatMethodStatusLabel(order, input.locale);
   const payment = formatPaymentStatusLabel(order, input.locale);
   const status = formatOperationalStatus(order, input.locale);
   const orderLabel = getOrderAccessibleLabel(order);
@@ -1185,16 +1186,18 @@ function OrderTableRow(input: {
             <span className="order-pill order-pill--review">{t.review}</span>
           )}
         </td>
-        <td>
-          <span className="order-compact-value">
-            {formatMethodLabel(order, input.locale)}
-          </span>
-          <small className="order-subtle">
-            {getOrdersCopy(input.locale).payment}:{" "}
+        <td className="orders-method-cell">
+          <span
+            aria-label={`${t.columns.method} ${method.label}; ${t.payment} ${payment.label}`}
+            className="order-pill-stack"
+          >
+            <span className={`order-pill ${method.toneClass}`}>
+              {method.label}
+            </span>
             <span className={`order-pill ${payment.toneClass}`}>
               {payment.label}
             </span>
-          </small>
+          </span>
         </td>
         <td className="orders-day-cell">
           <span className={`order-pill ${day.toneClass}`}>{day.label}</span>
@@ -1295,6 +1298,17 @@ export function formatMethodLabel(order: CanonicalOrderDto, locale: string | nul
   if (isPresent(order.deliverySession))
     return humanizeToken(order.deliverySession, locale);
   return "—";
+}
+
+export function formatMethodStatusLabel(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {
+  label: string;
+  toneClass: string;
+} {
+  const label = formatMethodLabel(order, locale);
+  return {
+    label,
+    toneClass: label === "—" ? "order-pill--review" : "order-pill--neutral",
+  };
 }
 
 export function formatPaymentStatusLabel(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {

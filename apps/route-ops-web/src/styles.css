@@ -803,8 +803,17 @@ small,
 .orders-compact-table .orders-day-cell {
   min-width: 112px;
 }
+.orders-compact-table .orders-method-cell {
+  min-width: 128px;
+}
 .orders-compact-table .orders-status-cell {
   overflow: visible;
+}
+.orders-compact-table .order-pill-stack {
+  align-items: flex-start;
+  display: inline-grid;
+  gap: 4px;
+  justify-items: flex-start;
 }
 .orders-compact-table .order-pill {
   align-items: center;
