@@ -2,8 +2,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
 
 import {
+  buildRouteDetailPath,
   buildEditableMetadataFields,
+  buildOrderMapMarkerStates,
   buildRouteDraftSelection,
+  filterOrdersByRoutePlan,
   getRouteDraftCreateBlocker,
   normalizeOrderMetadataPatchForFields,
   OrderDetailChoiceDropdown,
@@ -28,6 +31,7 @@ import {
   orderFieldLabels,
 } from "../src/i18n";
 import { defaultRouteScopeConfig } from "../src/routeScopeConfig";
+import { createDefaultOrderFilters } from "../src/state";
 import type {
   CanonicalOrderDto,
   DeliveryMetadataDiagnosticsDto,
@@ -945,6 +949,57 @@ describe("Orders compact operations table", () => {
       "first",
       "second",
     ]);
+  });
+
+  test("planned route helpers filter orders by route and build the route detail URL", () => {
+    const routeOrder = orderFixture({
+      orderId: "route-order",
+      orderName: "#11460",
+      planningStatus: "PLANNED",
+      routePlanId: "route/id",
+      routePlanName: "Route 1",
+    });
+    const otherOrder = orderFixture({
+      orderId: "other-order",
+      orderName: "#11461",
+    });
+
+    expect(
+      filterOrdersByRoutePlan([routeOrder, otherOrder], "route/id")?.map(
+        (order) => order.orderId,
+      ),
+    ).toEqual(["route-order"]);
+    expect(filterOrdersByRoutePlan([routeOrder, otherOrder], null)).toBeNull();
+    expect(buildRouteDetailPath("route/id")).toBe(
+      "/admin/ui/app/routes/route%2Fid",
+    );
+  });
+
+  test("planned route markers stay blue and unfaded even when subfilters differ", () => {
+    const planned = orderFixture({
+      deliverySession: "MORNING_DELIVERY",
+      orderId: "planned-order",
+      planningStatus: "PLANNED",
+      routePlanId: "route-1",
+      routePlanName: "Route 1",
+    });
+    const filters = {
+      ...createDefaultOrderFilters(),
+      deliverySession: "EVENING_DELIVERY",
+    };
+
+    const markers = buildOrderMapMarkerStates({
+      filters,
+      orders: [planned],
+      selectedOrderIds: new Set(),
+      worksetContext: { scope: "planning" },
+    });
+
+    expect(markers.get("planned-order")).toEqual({
+      markerOpacity: 1,
+      pinKind: "candidate",
+      sequence: null,
+    });
   });
 
   test("formatter precedence uses service type for Method and delivery date for Day", () => {

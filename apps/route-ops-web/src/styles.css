@@ -1238,6 +1238,29 @@ button.danger.subtle {
 .route-plan-actions .primary {
   width: 100%;
 }
+.route-detail-summary {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+.route-detail-summary div {
+  background: #f7f7f7;
+  border: 1px solid #e3e3e3;
+  border-radius: 10px;
+  padding: 10px;
+}
+.route-detail-summary dt {
+  color: #616161;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.route-detail-summary dd {
+  color: #303030;
+  font-size: 13px;
+  margin: 2px 0 0;
+}
 .route-plan-draft {
   align-content: start;
   display: grid;

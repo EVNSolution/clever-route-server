@@ -7,6 +7,7 @@ import {
   getBulkGeocodeJob,
   getOrderMetadataDiagnostics,
   getOrders,
+  getRouteDetail,
   getWooOrderSyncRun,
   getSettings,
   patchOrderMetadata,
@@ -28,6 +29,7 @@ import {
   buildOrderQuery,
   createDefaultOrderFilters,
   formatOrderWorksetUnavailableReasons,
+  geometryLabel,
   getOrderWorksetUnavailableReasons,
   isAddressReviewRequired,
   isDeliveryDateReviewRequired,
@@ -43,6 +45,7 @@ import type {
   BulkGeocodeJobDto,
   CanonicalOrderDto,
   DeliveryMetadataDiagnosticsDto,
+  RoutePlanDetailDto,
   StoreSettingsDto,
   WooSyncRunDto,
 } from "../types";
@@ -195,6 +198,9 @@ export function OrdersPage({
   const [bulkGeocoding, setBulkGeocoding] = useState(false);
   const [wooSyncStatus, setWooSyncStatus] = useState<string | null>(null);
   const [wooSyncing, setWooSyncing] = useState(false);
+  const [selectedRoutePlanId, setSelectedRoutePlanId] = useState<string | null>(null);
+  const [selectedRouteDetail, setSelectedRouteDetail] = useState<RoutePlanDetailDto | null>(null);
+  const [loadingRouteDetail, setLoadingRouteDetail] = useState(false);
   const locale = resolveLocale(settings?.locale ?? bootstrap.locale);
   const t = getOrdersCopy(locale);
   const pendingScrollRestoreRef = useRef<{
@@ -207,6 +213,10 @@ export function OrdersPage({
   const visibleOrders = useMemo(
     () => applyClientOrderFilters(orders, filters),
     [orders, filters],
+  );
+  const tableOrders = useMemo(
+    () => filterOrdersByRoutePlan(orders, selectedRoutePlanId) ?? visibleOrders,
+    [orders, selectedRoutePlanId, visibleOrders],
   );
   const routeDraft = useMemo(
     () => buildRouteDraftSelection(orders, selected, locale),
@@ -240,6 +250,7 @@ export function OrdersPage({
     () => buildRouteMapOrders(orders, visibleOrders, activeMapDeliveryDate),
     [activeMapDeliveryDate, orders, visibleOrders],
   );
+  const selectedMapRouteDetail = selectedRoutePlanId === null ? null : selectedRouteDetail;
   const orderMarkerStates = useMemo(
     () =>
       buildOrderMapMarkerStates({
@@ -292,6 +303,33 @@ export function OrdersPage({
       .catch((error: unknown) => setError(readErrorMessage(error)));
   }, [setError]);
 
+  useEffect(() => {
+    if (selectedRoutePlanId === null) {
+      setSelectedRouteDetail(null);
+      setLoadingRouteDetail(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setLoadingRouteDetail(true);
+    getRouteDetail(selectedRoutePlanId)
+      .then((payload) => {
+        if (cancelled) return;
+        setSelectedRouteDetail(payload);
+        setError(null);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setSelectedRouteDetail(null);
+        setError(readErrorMessage(error));
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingRouteDetail(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRoutePlanId, setError]);
+
   const create = async (): Promise<void> => {
     try {
       if (
@@ -319,7 +357,7 @@ export function OrdersPage({
         scope: filters.scope,
       });
       navigate(
-        `/admin/ui/app/routes/${encodeURIComponent(result.routePlan.id)}`,
+        buildRouteDetailPath(result.routePlan.id),
       );
     } catch (error) {
       setError(readErrorMessage(error));
@@ -505,12 +543,17 @@ export function OrdersPage({
     applyPlanSelection(next);
   };
 
-  const addOrderToPlan = (orderId: string): void => {
+  const handleMapOrderSelect = (orderId: string): void => {
     const order =
       mapOrders.find((candidate) => candidate.orderId === orderId) ??
       visibleOrders.find((candidate) => candidate.orderId === orderId) ??
       orders.find((candidate) => candidate.orderId === orderId);
     if (order === undefined) return;
+    if (order.routePlanId !== null) {
+      setSelectedRoutePlanId(order.routePlanId);
+      setError(null);
+      return;
+    }
     const reasons = formatOrderWorksetUnavailableReasons(
       getOrderWorksetUnavailableReasons(order, worksetContext),
       locale,
@@ -536,6 +579,12 @@ export function OrdersPage({
     applyPlanSelection(next);
   };
 
+  const clearSelectedRoutePlan = (): void => {
+    setSelectedRoutePlanId(null);
+    setSelectedRouteDetail(null);
+    setLoadingRouteDetail(false);
+  };
+
   const reorderPlanOrder = (draggedOrderId: string, targetOrderId: string): void => {
     const nextOrderIds = moveSelectedOrderBefore([...selected], draggedOrderId, targetOrderId);
     applyPlanSelection(new Set(nextOrderIds));
@@ -547,28 +596,48 @@ export function OrdersPage({
       primary={
         <RouteOpsMap
           bootstrap={bootstrap}
+          detail={selectedMapRouteDetail}
           depot={depotPoint}
-          onOrderSelect={addOrderToPlan}
+          onOrderSelect={selectedMapRouteDetail === null ? handleMapOrderSelect : undefined}
           orderMarkerStates={orderMarkerStates}
           orders={mapOrders}
-          subtitle={t.mapSubtitle}
-          title={t.mapTitle}
+          subtitle={
+            selectedMapRouteDetail === null
+              ? t.mapSubtitle
+              : geometryLabel(
+                  selectedMapRouteDetail,
+                  bootstrap.routerConfig.status,
+                  locale,
+                )
+          }
+          title={selectedMapRouteDetail?.routePlan.name ?? t.mapTitle}
         />
       }
       secondary={
+        selectedRoutePlanId === null ? (
           <RoutePlanPanel
-          invalidSelectionCount={selected.size - selectedRoutePlanOrders.length}
-          onClear={clearPlan}
-          onCreate={() => void create()}
-          onReorder={reorderPlanOrder}
-          routeDate={routeDate}
-          routeName={routeName}
-          selectedOrders={selectedRoutePlanOrders}
-          setRouteDate={setRouteDate}
-          setRouteName={setRouteName}
-          locale={locale}
-          totalSelected={selected.size}
-        />
+            invalidSelectionCount={selected.size - selectedRoutePlanOrders.length}
+            onClear={clearPlan}
+            onCreate={() => void create()}
+            onReorder={reorderPlanOrder}
+            routeDate={routeDate}
+            routeName={routeName}
+            selectedOrders={selectedRoutePlanOrders}
+            setRouteDate={setRouteDate}
+            setRouteName={setRouteName}
+            locale={locale}
+            totalSelected={selected.size}
+          />
+        ) : (
+          <RouteDetailPanel
+            detail={selectedRouteDetail}
+            isLoading={loadingRouteDetail}
+            locale={locale}
+            onEdit={() => navigate(buildRouteDetailPath(selectedRoutePlanId))}
+            onNewRoute={clearSelectedRoutePlan}
+            routePlanId={selectedRoutePlanId}
+          />
+        )
       }
       lower={
         <>
@@ -656,7 +725,7 @@ export function OrdersPage({
             onWooSync={() => void syncWooOrders()}
             onToggleDetail={toggleOrderDetail}
             onTogglePlanOrder={togglePlanOrder}
-            orders={visibleOrders}
+            orders={tableOrders}
             locale={locale}
             refreshing={refreshingOrders}
             selected={selected}
@@ -777,6 +846,82 @@ function readRoutePlanDragData(event: DragEvent<HTMLDivElement>): string | null 
     event.dataTransfer.getData("text/plain");
   const trimmed = orderId.trim();
   return trimmed.length === 0 ? null : trimmed;
+}
+
+function RouteDetailPanel(input: {
+  detail: RoutePlanDetailDto | null;
+  isLoading: boolean;
+  locale?: string | null;
+  onEdit(): void;
+  onNewRoute(): void;
+  routePlanId: string;
+}): ReactElement {
+  const t = getOrdersCopy(input.locale);
+  const routePlan = input.detail?.routePlan ?? null;
+  const sortedStops = [...(input.detail?.stops ?? [])].sort(
+    (left, right) => left.sequence - right.sequence,
+  );
+  return (
+    <div
+      className="panel side-panel route-detail-panel"
+      aria-label={t.routeDetailPanelLabel}
+    >
+      <div className="panel-heading compact-heading route-plan-header">
+        <div>
+          <span className="eyebrow">{t.planned}</span>
+          <h2>{routePlan?.name ?? t.loadingRoute}</h2>
+        </div>
+        <Badge>
+          {routePlan?.stopsCount ?? sortedStops.length} {t.orders}
+        </Badge>
+      </div>
+      <p className="muted">{t.routeDetailInstructions}</p>
+      <div className="button-row route-plan-actions">
+        <button className="primary" onClick={input.onEdit} type="button">
+          {t.editRoute}
+        </button>
+        <button onClick={input.onNewRoute} type="button">
+          {t.newRoute}
+        </button>
+      </div>
+      <dl className="route-detail-summary">
+        <div>
+          <dt>{t.routeDate}</dt>
+          <dd>
+            {routePlan?.deliveryDate ?? routePlan?.planDate ?? t.dateFallback}
+          </dd>
+        </div>
+        <div>
+          <dt>{t.routeStatus}</dt>
+          <dd>
+            {routePlan === null
+              ? input.isLoading
+                ? t.loadingRoute
+                : input.routePlanId
+              : humanizeToken(routePlan.status, input.locale)}
+          </dd>
+        </div>
+      </dl>
+      <div className="route-plan-draft" aria-label={t.routeStopsLabel}>
+        {input.detail === null ? (
+          <p className="route-plan-empty">
+            {input.isLoading ? t.loadingRoute : t.noRouteDetail}
+          </p>
+        ) : (
+          sortedStops.map((stop) => (
+            <div className="route-plan-item" key={stop.deliveryStopId}>
+              <strong>
+                {stop.sequence}. {stop.orderName}
+              </strong>
+              <small>
+                {stop.recipientName ?? t.recipientFallback} · {stop.addressLabel}
+              </small>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
 }
 
 function FilterBar({
@@ -2580,6 +2725,18 @@ function buildRouteMapOrders(
   return orders.filter((order) => order.deliveryDate === deliveryDate);
 }
 
+export function filterOrdersByRoutePlan(
+  orders: CanonicalOrderDto[],
+  routePlanId: string | null,
+): CanonicalOrderDto[] | null {
+  if (routePlanId === null) return null;
+  return orders.filter((order) => order.routePlanId === routePlanId);
+}
+
+export function buildRouteDetailPath(routePlanId: string): string {
+  return `/admin/ui/app/routes/${encodeURIComponent(routePlanId)}`;
+}
+
 function orderSelectedOrdersByDraft(
   selectedOrders: CanonicalOrderDto[],
   selectedOrderIds: ReadonlySet<string>,
@@ -2603,7 +2760,7 @@ export function moveSelectedOrderBefore(
   return next;
 }
 
-function buildOrderMapMarkerStates(input: {
+export function buildOrderMapMarkerStates(input: {
   filters: OrderFilterState;
   orders: CanonicalOrderDto[];
   selectedOrderIds: ReadonlySet<string>;
@@ -2615,18 +2772,29 @@ function buildOrderMapMarkerStates(input: {
   const markerStates = new Map<string, OrderMapMarkerState>();
   for (const order of input.orders) {
     const sequence = selectedSequenceByOrderId.get(order.orderId) ?? null;
+    const isPlanned = isRouteMapPlanned(order);
     const needsReview = isRouteMapReviewOrder(order);
     const isCandidate = sequence !== null || isRouteMapCandidate(order);
     const routeScopeBlocked =
       isOrderDifferentFromActiveRouteScope(order, input.worksetContext) ||
       isOrderBlockedByRouteSubfilters(order, input.filters);
     markerStates.set(order.orderId, {
-      markerOpacity: isCandidate && routeScopeBlocked ? 0.5 : 1,
-      pinKind: needsReview ? "review" : isCandidate ? "candidate" : "unplanned",
+      markerOpacity: !isPlanned && isCandidate && routeScopeBlocked ? 0.5 : 1,
+      pinKind: isPlanned
+        ? "candidate"
+        : needsReview
+          ? "review"
+          : isCandidate
+            ? "candidate"
+            : "unplanned",
       sequence,
     });
   }
   return markerStates;
+}
+
+function isRouteMapPlanned(order: CanonicalOrderDto): boolean {
+  return order.routePlanId !== null || order.planningStatus !== "UNPLANNED";
 }
 
 function isRouteMapCandidate(order: CanonicalOrderDto): boolean {
