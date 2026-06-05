@@ -595,7 +595,6 @@ export function OrdersPage({
                 setFilters({
                   ...filters,
                   deliveryStatus: "",
-                  health: "",
                   tab: "all",
                 })
               }
@@ -609,7 +608,6 @@ export function OrdersPage({
                 setFilters({
                   ...filters,
                   deliveryStatus: "",
-                  health: "",
                   tab: "unplanned",
                 })
               }
@@ -620,7 +618,7 @@ export function OrdersPage({
             <button
               className={filters.tab === "planned" ? "active" : ""}
               onClick={() =>
-                setFilters({ ...filters, health: "", tab: "planned" })
+                setFilters({ ...filters, tab: "planned" })
               }
               type="button"
             >
@@ -632,7 +630,6 @@ export function OrdersPage({
                 setFilters({
                   ...filters,
                   deliveryStatus: "",
-                  health: "",
                   tab: "needs_review",
                 })
               }
@@ -846,19 +843,6 @@ function FilterBar({
           <option value="ready">{t.ready}</option>
           <option value="needs_review">{t.needsReview}</option>
           <option value="completed">{t.completed}</option>
-        </select>
-      </label>
-      <label className="filter-field filter-field--health">
-        {t.orderHealth}
-        <select
-          value={filters.health}
-          onChange={(event) =>
-            onChange({ ...filters, health: event.target.value })
-          }
-        >
-          <option value="">{t.allOption}</option>
-          <option value="normal">{t.normal}</option>
-          <option value="needs_review">{t.needsReview}</option>
         </select>
       </label>
       <label className="filter-field filter-field--service">

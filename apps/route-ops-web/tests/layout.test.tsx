@@ -101,7 +101,7 @@ describe('route ops layout components', () => {
     expect(html).toContain('Delivery date');
     expect(html).toContain('Area / region');
     expect(html).toContain('Delivery status');
-    expect(html).toContain('Order health');
+    expect(html).not.toContain('Order health');
     expect(html).toContain('Service type');
     expect(html).toContain('Delivery session');
     expect(html).toContain('Evening Delivery');

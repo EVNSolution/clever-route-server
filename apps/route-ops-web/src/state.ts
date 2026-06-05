@@ -14,7 +14,6 @@ export type OrderFilters = {
   deliveryDate?: string;
   deliverySession?: string;
   deliveryStatus?: string;
-  health?: string;
   search?: string;
   scope?: OrderScopeFilter;
   serviceType?: string;
@@ -87,7 +86,6 @@ export function createDefaultOrderFilters(): OrderFilterState {
     deliveryDate: '',
     deliverySession: '',
     deliveryStatus: '',
-    health: '',
     scope: 'planning',
     search: '',
     serviceType: '',
@@ -101,7 +99,6 @@ export function buildOrderQuery(filters: OrderFilters): string {
   setParam(params, 'deliveryDate', filters.deliveryDate);
   setParam(params, 'deliveryArea', filters.deliveryArea);
   setParam(params, 'deliveryStatus', filters.deliveryStatus);
-  setParam(params, 'health', filters.health);
   setRequiredParam(params, 'scope', filters.scope);
   setRequiredParam(params, 'tab', filters.tab);
   if (filters.tab === undefined) setParam(params, 'status', filters.status);
@@ -147,10 +144,6 @@ export function applyClientOrderFilters(
     if (planningStatus === 'planned' && !isPlannedOrder(order)) return false;
     if (planningStatus === 'unplanned' && isPlannedOrder(order)) return false;
 
-    const health = normalizeFilterValue(filters.health);
-    if (health === 'normal' && isNeedsReviewOrder(order)) return false;
-    if (health === 'needs_review' && !isNeedsReviewOrder(order)) return false;
-
     const deliveryStatus = normalizeFilterValue(filters.deliveryStatus);
     if (deliveryStatus !== null && order.deliveryStatus !== deliveryStatus) {
       return false;
@@ -177,7 +170,6 @@ function hasActiveClientOrderFilter(filters: OrderFilters): boolean {
     normalizeFilterValue(filters.deliveryDate) !== null ||
     normalizeFilterValue(filters.deliverySession) !== null ||
     normalizeFilterValue(filters.deliveryStatus) !== null ||
-    normalizeFilterValue(filters.health) !== null ||
     normalizeFilterValue(filters.search) !== null ||
     normalizeFilterValue(filters.serviceType) !== null ||
     normalizeFilterValue(filters.status) !== null ||

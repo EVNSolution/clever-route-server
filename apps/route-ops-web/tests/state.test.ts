@@ -27,7 +27,7 @@ import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStop
 
 describe('route ops web state helpers', () => {
   test('serializes order filters without empty/all values', () => {
-    expect(buildOrderQuery({ deliveryArea: 'Toronto', deliveryDate: '2026-05-27', deliveryStatus: 'all', health: '', scope: 'planning', search: '#1001', serviceType: 'EVENING_DELIVERY', tab: 'planned' })).toBe('deliveryDate=2026-05-27&deliveryArea=Toronto&scope=planning&tab=planned&serviceType=EVENING_DELIVERY&search=%231001');
+    expect(buildOrderQuery({ deliveryArea: 'Toronto', deliveryDate: '2026-05-27', deliveryStatus: 'all', scope: 'planning', search: '#1001', serviceType: 'EVENING_DELIVERY', tab: 'planned' })).toBe('deliveryDate=2026-05-27&deliveryArea=Toronto&scope=planning&tab=planned&serviceType=EVENING_DELIVERY&search=%231001');
   });
 
   test('keeps route-map candidate dimensions as client-side filters to avoid refetching on draft changes', () => {
