@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { FormEvent, ReactElement } from "react";
+import type { DragEvent, FormEvent, ReactElement } from "react";
 
 import {
   bulkGeocodeOrders,
@@ -21,6 +21,7 @@ import {
 } from "../i18n";
 import { TabLayout } from "../components/TabLayout";
 import { RouteOpsMap } from "../components/maps/RouteOpsMap";
+import type { OrderMapMarkerState } from "../maps/geojson";
 import {
   applyClientOrderFilters,
   buildOrderFetchQuery,
@@ -207,27 +208,48 @@ export function OrdersPage({
     () => applyClientOrderFilters(orders, filters),
     [orders, filters],
   );
+  const routeDraft = useMemo(
+    () => buildRouteDraftSelection(orders, selected, locale),
+    [locale, orders, selected],
+  );
+  const activeMapDeliveryDate = useMemo(
+    () => resolveRouteMapDeliveryDate(filters.deliveryDate, routeDraft.deliveryDate),
+    [filters.deliveryDate, routeDraft.deliveryDate],
+  );
   const worksetContext = useMemo<OrderWorksetContext>(
-    () => ({ scope: filters.scope }),
-    [filters.scope],
+    () => ({
+      routeDate: activeMapDeliveryDate,
+      routeScopeKey: routeDraft.routeScopeKey,
+      scope: filters.scope,
+    }),
+    [activeMapDeliveryDate, filters.scope, routeDraft.routeScopeKey],
   );
   const selection = useMemo(
     () => summarizeSelection(orders, selected),
     [orders, selected],
   );
+  const selectedRoutePlanOrders = useMemo(
+    () => orderSelectedOrdersByDraft(selection.readySelected, selected),
+    [selected, selection.readySelected],
+  );
   const depotPoint = useMemo(
     () => storeSettingsToDepotPoint(settings, locale),
     [locale, settings],
   );
-  const plannedOrderIds = useMemo(() => {
-    const highlighted = new Set(selected);
-    for (const order of visibleOrders) {
-      if (order.routePlanId !== null || order.planningStatus !== "UNPLANNED") {
-        highlighted.add(order.orderId);
-      }
-    }
-    return highlighted;
-  }, [selected, visibleOrders]);
+  const mapOrders = useMemo(
+    () => buildRouteMapOrders(orders, visibleOrders, activeMapDeliveryDate),
+    [activeMapDeliveryDate, orders, visibleOrders],
+  );
+  const orderMarkerStates = useMemo(
+    () =>
+      buildOrderMapMarkerStates({
+        filters,
+        orders: mapOrders,
+        selectedOrderIds: selected,
+        worksetContext,
+      }),
+    [filters, mapOrders, selected, worksetContext],
+  );
 
   const refreshOrders = async (): Promise<void> => {
     if (ordersLoaded) {
@@ -281,7 +303,7 @@ export function OrdersPage({
         );
       }
       const routeDraftBlocker = getRouteDraftCreateBlocker(
-        selection.readySelected,
+        selectedRoutePlanOrders,
         routeDate || today(),
         locale,
       );
@@ -485,6 +507,7 @@ export function OrdersPage({
 
   const addOrderToPlan = (orderId: string): void => {
     const order =
+      mapOrders.find((candidate) => candidate.orderId === orderId) ??
       visibleOrders.find((candidate) => candidate.orderId === orderId) ??
       orders.find((candidate) => candidate.orderId === orderId);
     if (order === undefined) return;
@@ -492,10 +515,17 @@ export function OrdersPage({
       getOrderWorksetUnavailableReasons(order, worksetContext),
       locale,
     );
-    if (!isOrderWorksetEligible(order, worksetContext)) {
+    const isSubfilterBlocked = isOrderBlockedByRouteSubfilters(order, filters);
+    if (!isOrderWorksetEligible(order, worksetContext) || isSubfilterBlocked) {
+      const reasonLabels = isSubfilterBlocked
+        ? formatOrderWorksetUnavailableReasons(
+            [{ code: "different_route_scope", label: "" }],
+            locale,
+          ).map((reason) => reason.label)
+        : reasons.map((reason) => reason.label);
       setError(
         t.orderUnavailable(
-          reasons.map((reason) => reason.label).join(", ") ||
+          reasonLabels.join(", ") ||
             t.routeConstraintFallback,
         ),
       );
@@ -506,6 +536,11 @@ export function OrdersPage({
     applyPlanSelection(next);
   };
 
+  const reorderPlanOrder = (draggedOrderId: string, targetOrderId: string): void => {
+    const nextOrderIds = moveSelectedOrderBefore([...selected], draggedOrderId, targetOrderId);
+    applyPlanSelection(new Set(nextOrderIds));
+  };
+
   return (
     <TabLayout
       title={t.title}
@@ -514,20 +549,21 @@ export function OrdersPage({
           bootstrap={bootstrap}
           depot={depotPoint}
           onOrderSelect={addOrderToPlan}
-          orders={visibleOrders}
-          plannedOrderIds={plannedOrderIds}
+          orderMarkerStates={orderMarkerStates}
+          orders={mapOrders}
           subtitle={t.mapSubtitle}
           title={t.mapTitle}
         />
       }
       secondary={
-        <RoutePlanPanel
-          invalidSelectionCount={selected.size - selection.readySelected.length}
+          <RoutePlanPanel
+          invalidSelectionCount={selected.size - selectedRoutePlanOrders.length}
           onClear={clearPlan}
           onCreate={() => void create()}
+          onReorder={reorderPlanOrder}
           routeDate={routeDate}
           routeName={routeName}
-          selectedOrders={selection.readySelected}
+          selectedOrders={selectedRoutePlanOrders}
           setRouteDate={setRouteDate}
           setRouteName={setRouteName}
           locale={locale}
@@ -644,6 +680,7 @@ function RoutePlanPanel(input: {
   locale?: string | null;
   onClear(): void;
   onCreate(): void;
+  onReorder(draggedOrderId: string, targetOrderId: string): void;
   routeDate: string;
   routeName: string;
   selectedOrders: CanonicalOrderDto[];
@@ -704,7 +741,17 @@ function RoutePlanPanel(input: {
           <p className="route-plan-empty">{t.planEmpty}</p>
         ) : (
           input.selectedOrders.map((order, index) => (
-            <div className="route-plan-item" key={order.orderId}>
+            <div
+              className="route-plan-item route-plan-item--draggable"
+              draggable
+              key={order.orderId}
+              onDragOver={(event) => event.preventDefault()}
+              onDragStart={(event) => writeRoutePlanDragData(event, order.orderId)}
+              onDrop={(event) => {
+                const draggedOrderId = readRoutePlanDragData(event);
+                if (draggedOrderId !== null) input.onReorder(draggedOrderId, order.orderId);
+              }}
+            >
               <strong>
                 {index + 1}. {order.orderName}
               </strong>
@@ -718,6 +765,21 @@ function RoutePlanPanel(input: {
       </div>
     </div>
   );
+}
+
+function writeRoutePlanDragData(event: DragEvent<HTMLDivElement>, orderId: string): void {
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", orderId);
+  event.dataTransfer.setData("application/x-clever-route-order-id", orderId);
+}
+
+function readRoutePlanDragData(event: DragEvent<HTMLDivElement>): string | null {
+  event.preventDefault();
+  const orderId =
+    event.dataTransfer.getData("application/x-clever-route-order-id") ||
+    event.dataTransfer.getData("text/plain");
+  const trimmed = orderId.trim();
+  return trimmed.length === 0 ? null : trimmed;
 }
 
 function FilterBar({
@@ -2518,6 +2580,128 @@ function formatCoordinateSummary(order: CanonicalOrderDto, locale: string | null
 
 function sanitizeId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]+/gu, "-");
+}
+
+function resolveRouteMapDeliveryDate(filterDeliveryDate: string | null | undefined, draftDeliveryDate: string | null): string | null {
+  const normalizedFilterDate = normalizeRouteFilterValue(filterDeliveryDate);
+  return normalizedFilterDate ?? draftDeliveryDate;
+}
+
+function buildRouteMapOrders(
+  orders: CanonicalOrderDto[],
+  visibleOrders: CanonicalOrderDto[],
+  deliveryDate: string | null,
+): CanonicalOrderDto[] {
+  if (deliveryDate === null) return visibleOrders;
+  return orders.filter((order) => order.deliveryDate === deliveryDate);
+}
+
+function orderSelectedOrdersByDraft(
+  selectedOrders: CanonicalOrderDto[],
+  selectedOrderIds: ReadonlySet<string>,
+): CanonicalOrderDto[] {
+  const ordersById = new Map(selectedOrders.map((order) => [order.orderId, order]));
+  return [...selectedOrderIds]
+    .map((orderId) => ordersById.get(orderId))
+    .filter((order): order is CanonicalOrderDto => order !== undefined);
+}
+
+export function moveSelectedOrderBefore(
+  orderIds: string[],
+  draggedOrderId: string,
+  targetOrderId: string,
+): string[] {
+  if (draggedOrderId === targetOrderId) return orderIds;
+  const next = orderIds.filter((orderId) => orderId !== draggedOrderId);
+  const targetIndex = next.indexOf(targetOrderId);
+  if (targetIndex === -1 || !orderIds.includes(draggedOrderId)) return orderIds;
+  next.splice(targetIndex, 0, draggedOrderId);
+  return next;
+}
+
+function buildOrderMapMarkerStates(input: {
+  filters: OrderFilterState;
+  orders: CanonicalOrderDto[];
+  selectedOrderIds: ReadonlySet<string>;
+  worksetContext: OrderWorksetContext;
+}): ReadonlyMap<string, OrderMapMarkerState> {
+  const selectedSequenceByOrderId = new Map(
+    [...input.selectedOrderIds].map((orderId, index) => [orderId, index + 1]),
+  );
+  const markerStates = new Map<string, OrderMapMarkerState>();
+  for (const order of input.orders) {
+    const sequence = selectedSequenceByOrderId.get(order.orderId) ?? null;
+    const needsReview = isRouteMapReviewOrder(order);
+    const isCandidate = sequence !== null || isRouteMapCandidate(order);
+    const routeScopeBlocked =
+      isOrderDifferentFromActiveRouteScope(order, input.worksetContext) ||
+      isOrderBlockedByRouteSubfilters(order, input.filters);
+    markerStates.set(order.orderId, {
+      markerOpacity: isCandidate && routeScopeBlocked ? 0.5 : 1,
+      pinKind: needsReview ? "review" : isCandidate ? "candidate" : "unplanned",
+      sequence,
+    });
+  }
+  return markerStates;
+}
+
+function isRouteMapCandidate(order: CanonicalOrderDto): boolean {
+  return (
+    isRoutePlanEligible(order) &&
+    order.deliveryDate !== null &&
+    isPresent(order.serviceType) &&
+    isPresent(order.deliverySession) &&
+    hasResolvedCoordinates(order)
+  );
+}
+
+function isRouteMapReviewOrder(order: CanonicalOrderDto): boolean {
+  return (
+    order.health === "needs_review" ||
+    order.metadataResolved === false ||
+    order.routeEligible === false ||
+    order.blockerReasons.length > 0 ||
+    order.deliveryDate === null ||
+    !isPresent(order.serviceType) ||
+    !isPresent(order.deliverySession) ||
+    !hasResolvedCoordinates(order)
+  );
+}
+
+function isOrderDifferentFromActiveRouteScope(
+  order: CanonicalOrderDto,
+  context: OrderWorksetContext,
+): boolean {
+  if (
+    context.routeDate !== undefined &&
+    context.routeDate !== null &&
+    order.deliveryDate !== null &&
+    order.deliveryDate !== context.routeDate
+  ) {
+    return true;
+  }
+  if (context.routeScopeKey === undefined || context.routeScopeKey === null) {
+    return false;
+  }
+  const orderRouteScopeKey = getRouteDraftScopeKey(order);
+  return orderRouteScopeKey !== null && orderRouteScopeKey !== context.routeScopeKey;
+}
+
+function isOrderBlockedByRouteSubfilters(
+  order: CanonicalOrderDto,
+  filters: Pick<OrderFilterState, "deliverySession" | "serviceType">,
+): boolean {
+  const serviceType = normalizeRouteFilterValue(filters.serviceType);
+  if (serviceType !== null && order.serviceType !== serviceType) return true;
+  const deliverySession = normalizeRouteFilterValue(filters.deliverySession);
+  return deliverySession !== null && order.deliverySession !== deliverySession;
+}
+
+function normalizeRouteFilterValue(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const trimmed = value.trim();
+  if (trimmed === "" || trimmed === "all") return null;
+  return trimmed;
 }
 
 export function buildRouteDraftSelection(

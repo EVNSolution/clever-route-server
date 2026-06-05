@@ -1261,6 +1261,12 @@ button.danger.subtle {
   display: grid;
   gap: 4px;
 }
+.route-plan-item--draggable {
+  cursor: grab;
+}
+.route-plan-item--draggable:active {
+  cursor: grabbing;
+}
 .route-plan-item strong {
   font-size: 13px;
   line-height: 1.35;

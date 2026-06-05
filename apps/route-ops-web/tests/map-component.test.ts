@@ -27,16 +27,29 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(resolveMapHomePoint(null, null, [outOfAreaOrder])).toBe(outOfAreaOrder);
   });
 
-  test('renders Orders map pins without sequence labels', () => {
+  test('renders Orders map pins with candidate opacity and sequence label layers', () => {
     const { layers, map } = createMapStub();
-    const collection = buildOrdersMapFeatureCollection([order({ orderId: 'order-1', routePlanId: 'route-1' })], new Set());
+    const collection = buildOrdersMapFeatureCollection([order({ orderId: 'order-1' })], new Map([
+      ['order-1', { markerOpacity: 0.5, pinKind: 'candidate', sequence: 1 }]
+    ]));
 
     syncOrdersLayer(map, collection);
 
-    const orderLayer = layers.get('route-ops-order-pins') as { layout?: Record<string, unknown> } | undefined;
+    const orderLayer = layers.get('route-ops-order-pins') as { layout?: Record<string, unknown>; paint?: Record<string, unknown> } | undefined;
+    const labelLayer = layers.get('route-ops-order-labels') as { layout?: Record<string, unknown>; paint?: Record<string, unknown> } | undefined;
     expect(orderLayer).toBeDefined();
     expect(orderLayer?.layout ?? {}).not.toHaveProperty('text-field');
-    expect(orderLayer?.layout ?? {}).not.toHaveProperty('text-offset');
+    expect(orderLayer?.paint).toMatchObject({
+      'circle-color': ['match', ['get', 'pinKind'], 'candidate', '#006fbb', 'review', '#e11900', '#303030'],
+      'circle-opacity': ['get', 'markerOpacity']
+    });
+    expect(labelLayer?.layout).toMatchObject({
+      'text-field': ['get', 'label'],
+      'text-ignore-placement': true
+    });
+    expect(labelLayer?.paint).toMatchObject({
+      'text-opacity': ['get', 'markerOpacity']
+    });
   });
 
 

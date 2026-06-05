@@ -16,6 +16,7 @@ import {
   formatOperationalStatus,
   formatPaymentStatusLabel,
   getRouteRepairPrompt,
+  moveSelectedOrderBefore,
   ORDERS_TABLE_COLUMN_COUNT,
   OrderTable,
   type OrderMetadataPatch,
@@ -927,6 +928,23 @@ describe("Orders compact operations table", () => {
     expect(
       getRouteDraftCreateBlocker([first, otherSession], "2026-05-29"),
     ).toContain("same delivery date");
+  });
+
+  test("route draft order can be reordered by dragging before a target order", () => {
+    expect(moveSelectedOrderBefore(["first", "second", "third"], "third", "first")).toEqual([
+      "third",
+      "first",
+      "second",
+    ]);
+    expect(moveSelectedOrderBefore(["first", "second", "third"], "first", "third")).toEqual([
+      "second",
+      "first",
+      "third",
+    ]);
+    expect(moveSelectedOrderBefore(["first", "second"], "missing", "first")).toEqual([
+      "first",
+      "second",
+    ]);
   });
 
   test("formatter precedence uses service type for Method and delivery date for Day", () => {
