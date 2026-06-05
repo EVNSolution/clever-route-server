@@ -77,6 +77,26 @@ export type NormalizedPaymentStatus =
   | "NOT_DELIVERABLE_OR_EXCEPTION"
   | "UNKNOWN_REVIEW";
 
+export type AdminNotificationSeverity =
+  | "critical"
+  | "info"
+  | "success"
+  | "warning";
+
+export type AdminNotificationDto = {
+  body: string | null;
+  createdAt: string;
+  href: string | null;
+  id: string;
+  orderId: string | null;
+  payload: Record<string, unknown> | unknown[] | string | number | boolean | null;
+  readAt: string | null;
+  routePlanId: string | null;
+  severity: AdminNotificationSeverity;
+  title: string;
+  type: string;
+};
+
 export type CanonicalOrderDto = {
   blockerReasons: string[];
   coordinates: { latitude: number | null; longitude: number | null };
@@ -346,6 +366,15 @@ export type OrderMetadataDiagnosticsResponse = {
 export type OrdersResponse = {
   orders: CanonicalOrderDto[];
   reviewBlockers: CanonicalOrderDto[];
+};
+
+export type NotificationsResponse = {
+  notifications: AdminNotificationDto[];
+  unreadCount: number;
+};
+
+export type NotificationMutationResponse = {
+  notification: AdminNotificationDto;
 };
 
 export type RoutesResponse = {

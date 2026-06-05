@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { Prisma, type PrismaClient } from "@prisma/client";
 
 import { redactDiagnosticPath, redactDiagnosticValue } from "../security/diagnostic-redaction.js";
@@ -19,6 +21,7 @@ import {
   type OrderHealth,
 } from "./order-operate-status.js";
 import { readNormalizedPaymentStatus } from "../payments/normalized-payment-status.js";
+import { WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED_NOTIFICATION } from "../notifications/admin-notification.repository.js";
 
 export type UpsertOrderWithDeliveryStopInput = {
   shopDomain: string;
@@ -127,6 +130,7 @@ export type PatchCanonicalOrderGeocodeDiagnosticsInput = {
 type OrderSyncPrismaClient = Pick<
   PrismaClient,
   | "$transaction"
+  | "adminNotification"
   | "commerceConnectionOrderMapping"
   | "deliveryStop"
   | "order"
@@ -177,6 +181,13 @@ type ExistingDeliveryStop = {
   longitude: unknown;
   postalCode: string | null;
   province: string | null;
+  routePlanStops?: Array<{
+    routePlan: {
+      id: string;
+      name: string;
+      status: string;
+    };
+  }>;
   timeWindowEnd: Date | null;
   timeWindowStart: Date | null;
 };
@@ -338,7 +349,7 @@ export class PrismaOrderSyncRepository {
       return { orderId: existing.id, status: "unchanged", stopId: null };
     }
 
-    return this.prisma.$transaction((tx) =>
+    const write = await this.prisma.$transaction((tx) =>
       this.writeOrderWithDeliveryStop({
         existing,
         shopId: shop.id,
@@ -346,6 +357,11 @@ export class PrismaOrderSyncRepository {
         tx,
       }),
     );
+    await createAdminNotificationsBestEffort({
+      intents: write.notificationIntents,
+      prisma: this.prisma,
+    });
+    return write.result;
   }
 
   async readOrderMappingConfig(input: {
@@ -950,7 +966,7 @@ export class PrismaOrderSyncRepository {
     shopId: string;
     synced: SyncedOrderWithDeliveryStopInput;
     tx: OrderSyncWriteClient;
-  }): Promise<UpsertOrderWithDeliveryStopResult> {
+  }): Promise<OrderWriteWithNotificationIntents> {
     const orderWrite = toOrderWrite(input.synced.order);
     const order = await input.tx.order.upsert({
       create: { ...orderWrite, shopId: input.shopId },
@@ -965,6 +981,8 @@ export class PrismaOrderSyncRepository {
 
     const existingFact = input.existing?.deliveryFacts?.[0] ?? null;
     const existingStop = input.existing?.deliveryStops?.[0] ?? null;
+    const notificationIntents: AssignedRouteAddressChangeNotificationIntent[] =
+      [];
     const correctedFields = readRouteOpsCorrectedFields(
       existingFact?.mappingDiagnostics,
     );
@@ -987,8 +1005,11 @@ export class PrismaOrderSyncRepository {
         });
       }
     } else {
+      const incomingDeliveryStopWrite = toDeliveryStopWrite(
+        input.synced.deliveryStop,
+      );
       const deliveryStopWrite = applyCorrectedStopFields(
-        toDeliveryStopWrite(input.synced.deliveryStop),
+        incomingDeliveryStopWrite,
         existingStop,
         protectedFields,
       );
@@ -1007,6 +1028,17 @@ export class PrismaOrderSyncRepository {
         },
       });
       stopId = stop.id;
+      if (input.synced.order.sourcePlatform === "WOOCOMMERCE") {
+        notificationIntents.push(
+          ...createAssignedRouteAddressChangeNotificationIntents({
+            existingStop,
+            incomingStop: incomingDeliveryStopWrite,
+            orderId: order.id,
+            orderName: input.synced.order.name,
+            shopId: input.shopId,
+          }),
+        );
+      }
     }
 
     if (
@@ -1038,12 +1070,20 @@ export class PrismaOrderSyncRepository {
     }
 
     return {
-      orderId: order.id,
-      status: input.existing === null ? "created" : "updated",
-      stopId,
+      notificationIntents,
+      result: {
+        orderId: order.id,
+        status: input.existing === null ? "created" : "updated",
+        stopId,
+      },
     };
   }
 }
+
+type OrderWriteWithNotificationIntents = {
+  notificationIntents: AssignedRouteAddressChangeNotificationIntent[];
+  result: UpsertOrderWithDeliveryStopResult;
+};
 
 function isExistingNewerThanSnapshot(
   existing: ExistingOrder,
@@ -1431,7 +1471,7 @@ function existingDeliveryFactSelect(): Prisma.OrderDeliveryFactSelect {
   };
 }
 
-function existingDeliveryStopSelect(): Prisma.DeliveryStopSelect {
+function existingDeliveryStopSelect() {
   return {
     address1: true,
     address2: true,
@@ -1443,9 +1483,135 @@ function existingDeliveryStopSelect(): Prisma.DeliveryStopSelect {
     longitude: true,
     postalCode: true,
     province: true,
+    routePlanStops: {
+      select: {
+        routePlan: {
+          select: { id: true, name: true, status: true },
+        },
+      },
+    },
     timeWindowEnd: true,
     timeWindowStart: true,
+  } satisfies Prisma.DeliveryStopSelect;
+}
+
+type DeliveryStopAddressFields = {
+  address1: string | null;
+  address2: string | null;
+  city: string | null;
+  countryCode: string | null;
+  postalCode: string | null;
+  province: string | null;
+};
+
+type AssignedRouteAddressChangeNotificationIntent =
+  Prisma.AdminNotificationCreateManyInput & {
+    payload: Prisma.InputJsonObject;
+    severity: "critical";
   };
+
+function createAssignedRouteAddressChangeNotificationIntents(input: {
+  existingStop: ExistingDeliveryStop | null;
+  incomingStop: DeliveryStopAddressFields;
+  orderId: string;
+  orderName: string;
+  shopId: string;
+}): AssignedRouteAddressChangeNotificationIntent[] {
+  const existingStop = input.existingStop;
+  if (existingStop === null) return [];
+  const routePlanStops = existingStop.routePlanStops ?? [];
+  if (routePlanStops.length === 0) return [];
+
+  const beforeFingerprint = addressFingerprint(existingStop);
+  const afterFingerprint = addressFingerprint(input.incomingStop);
+  if (
+    beforeFingerprint === null ||
+    afterFingerprint === null ||
+    beforeFingerprint === afterFingerprint
+  ) {
+    return [];
+  }
+
+  const afterAddressHash = createHash("sha256")
+    .update(afterFingerprint)
+    .digest("hex")
+    .slice(0, 32);
+  const beforeAddress = addressFingerprintPayload(existingStop);
+  const afterAddress = addressFingerprintPayload(input.incomingStop);
+
+  return routePlanStops.map((routePlanStop) => {
+    const routePlan = routePlanStop.routePlan;
+    const dedupeKey = [
+      "woo_address_changed_route_assigned",
+      input.shopId,
+      input.orderId,
+      routePlan.id,
+      afterAddressHash,
+    ].join(":");
+    return {
+      body: `${input.orderName} address changed in WooCommerce after it was assigned to ${routePlan.name}. Review the route before dispatch.`,
+      dedupeKey,
+      href: `/admin/ui/app/routes/${routePlan.id}`,
+      orderId: input.orderId,
+      payload: {
+        afterAddress,
+        afterAddressHash,
+        beforeAddress,
+        orderName: input.orderName,
+        routePlanName: routePlan.name,
+        routePlanStatus: routePlan.status,
+        version: 1,
+      },
+      routePlanId: routePlan.id,
+      severity: "critical",
+      shopId: input.shopId,
+      title: "Route assigned order address changed",
+      type: WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED_NOTIFICATION,
+    };
+  });
+}
+
+async function createAdminNotificationsBestEffort(input: {
+  intents: AssignedRouteAddressChangeNotificationIntent[];
+  prisma: OrderSyncPrismaClient;
+}): Promise<void> {
+  if (input.intents.length === 0) return;
+  try {
+    await input.prisma.adminNotification.createMany({
+      data: input.intents,
+      skipDuplicates: true,
+    });
+  } catch {
+    // Route safety notifications are advisory guardrails. A notification write
+    // outage must not roll back the already-committed Woo order sync that
+    // preserves the latest source-of-truth order/address payload.
+    return;
+  }
+}
+
+function addressFingerprint(input: DeliveryStopAddressFields): string | null {
+  const payload = addressFingerprintPayload(input);
+  return Object.values(payload).some((value) => value !== null)
+    ? JSON.stringify(payload)
+    : null;
+}
+
+function addressFingerprintPayload(
+  input: DeliveryStopAddressFields,
+): Record<keyof DeliveryStopAddressFields, string | null> {
+  return {
+    address1: normalizeAddressFingerprintPart(input.address1),
+    address2: normalizeAddressFingerprintPart(input.address2),
+    city: normalizeAddressFingerprintPart(input.city),
+    countryCode: normalizeAddressFingerprintPart(input.countryCode),
+    postalCode: normalizeAddressFingerprintPart(input.postalCode),
+    province: normalizeAddressFingerprintPart(input.province),
+  };
+}
+
+function normalizeAddressFingerprintPart(value: string | null): string | null {
+  const normalized = value?.trim().replace(/\s+/gu, " ").toLowerCase() ?? "";
+  return normalized === "" ? null : normalized;
 }
 
 type RouteOpsCorrectionMeta = {

@@ -5,6 +5,8 @@ import type {
   DriversResponse,
   GeocodeOrderResponse,
   GeocodeSettingsResponse,
+  NotificationMutationResponse,
+  NotificationsResponse,
   OrderMetadataDiagnosticsResponse,
   OrderMutationResponse,
   OrdersResponse,
@@ -37,6 +39,28 @@ export async function getOrders(query: string): Promise<OrdersResponse> {
     query === ""
       ? "/admin/ui/app/api/orders"
       : `/admin/ui/app/api/orders?${query}`,
+  );
+}
+
+export async function getNotifications(
+  query = "",
+): Promise<NotificationsResponse> {
+  return apiGet<NotificationsResponse>(
+    query === ""
+      ? "/admin/ui/app/api/notifications"
+      : `/admin/ui/app/api/notifications?${query}`,
+  );
+}
+
+export async function markNotificationRead(input: {
+  csrfToken: string;
+  notificationId: string;
+}): Promise<NotificationMutationResponse> {
+  return apiMutation<NotificationMutationResponse>(
+    `/admin/ui/app/api/notifications/${encodeURIComponent(input.notificationId)}/read`,
+    "PATCH",
+    input.csrfToken,
+    {},
   );
 }
 

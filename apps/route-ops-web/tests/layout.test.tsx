@@ -4,7 +4,13 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, test } from 'vitest';
 
 import { TabLayout } from '../src/components/TabLayout';
+import { toTopbarNotificationItem } from '../src/App';
 import { AppShell } from '../src/components/AppShell';
+import {
+  TopbarNotifications,
+  countUnreadNotifications,
+  type TopbarNotificationItem
+} from '../src/components/TopbarNotifications';
 import { OrdersPage } from '../src/pages/OrdersPage';
 import {
   SettingsPage,
@@ -14,7 +20,11 @@ import {
   updateRouteScopeValue
 } from '../src/pages/SettingsPage';
 import { defaultRouteScopeConfig } from '../src/routeScopeConfig';
-import type { BootstrapPayload, StoreSettingsDto } from '../src/types';
+import type {
+  AdminNotificationDto,
+  BootstrapPayload,
+  StoreSettingsDto,
+} from '../src/types';
 
 describe('route ops layout components', () => {
   test('TabLayout renders primary secondary and lower regions', () => {
@@ -44,6 +54,117 @@ describe('route ops layout components', () => {
       </AppShell>
     );
     expect(html).toContain('ops-shell--settings');
+    expect(html).toContain('aria-label="Open notifications"');
+    expect(html).toContain('class="topbar-actions"');
+  });
+
+  test('TopbarNotifications renders an accessible empty dropdown shell', () => {
+    const html = renderToStaticMarkup(<TopbarNotifications initialOpen />);
+
+    expect(html).toContain('aria-haspopup="menu"');
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('class="notification-menu"');
+    expect(html).toContain('Notifications');
+    expect(html).toContain('No notifications yet.');
+    expect(html).toContain('All caught up');
+  });
+
+  test('TopbarNotifications renders unread badges and critical route-change items', () => {
+    const items: TopbarNotificationItem[] = [
+      {
+        body: 'Review route order and geometry.',
+        createdAt: '2026-06-05T06:00:00.000Z',
+        href: '/admin/ui/app/routes/route-1',
+        id: 'address-change',
+        read: false,
+        title: 'Address changed in Woo for #1234 after it was added to Route A.',
+        tone: 'critical'
+      },
+      {
+        id: 'read-info',
+        read: true,
+        title: 'Sync completed',
+        tone: 'success'
+      }
+    ];
+    const html = renderToStaticMarkup(<TopbarNotifications initialOpen items={items} />);
+
+    expect(countUnreadNotifications(items)).toBe(1);
+    expect(html).toContain('class="notification-badge"');
+    expect(html).toContain('1 unread');
+    expect(html).toContain('notification-item--critical');
+    expect(html).toContain('Address changed in Woo');
+    expect(html).toContain('Review route order and geometry.');
+    expect(html).toContain('dateTime="2026-06-05T06:00:00.000Z"');
+    expect(html).not.toContain('disabled=""');
+  });
+
+  test('TopbarNotifications uses backend unread count when it exceeds the visible page', () => {
+    const html = renderToStaticMarkup(
+      <TopbarNotifications
+        initialOpen
+        items={[{ id: 'visible-read', read: true, title: 'Visible read', tone: 'info' }]}
+        unreadCount={45}
+      />
+    );
+
+    expect(html).toContain('45 unread');
+    expect(html).toContain('class="notification-badge"');
+  });
+
+  test('TopbarNotifications surfaces notification load failures without claiming an empty inbox', () => {
+    const html = renderToStaticMarkup(
+      <TopbarNotifications
+        initialOpen
+        loadError="Notifications could not be loaded. Last known alerts are preserved. API unavailable"
+      />
+    );
+
+    expect(html).toContain('notification-load-error');
+    expect(html).toContain('Load failed');
+    expect(html).toContain('Last known alerts are preserved');
+    expect(html).not.toContain('No notifications yet.');
+  });
+
+  test('TopbarNotifications renders Korean copy', () => {
+    const html = renderToStaticMarkup(<TopbarNotifications initialOpen locale="ko-KR" />);
+
+    expect(html).toContain('aria-label="알림 열기"');
+    expect(html).toContain('알림');
+    expect(html).toContain('아직 알림이 없습니다.');
+    expect(html).not.toContain('No notifications yet.');
+  });
+
+  test('Woo route-address notifications map to localized topbar copy', () => {
+    const notification: AdminNotificationDto = {
+      body: 'backend fallback',
+      createdAt: '2026-06-05T07:00:00.000Z',
+      href: '/admin/ui/app/routes/route-plan-id',
+      id: 'notification-id',
+      orderId: 'order-id',
+      payload: { orderName: '#1035' },
+      readAt: null,
+      routePlanId: 'route-plan-id',
+      severity: 'critical',
+      title: 'backend title',
+      type: 'WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED'
+    };
+
+    expect(toTopbarNotificationItem(notification, 'en-CA')).toEqual(
+      expect.objectContaining({
+        body: '#1035 address changed in WooCommerce after route assignment. Review the route before dispatch.',
+        href: '/admin/ui/app/routes/route-plan-id',
+        read: false,
+        title: 'Assigned route order address changed',
+        tone: 'critical'
+      })
+    );
+    expect(toTopbarNotificationItem(notification, 'ko-KR')).toEqual(
+      expect.objectContaining({
+        body: '#1035 주소가 경로 배정 후 WooCommerce에서 변경되었습니다. 출발 전 경로를 확인하세요.',
+        title: '배정된 경로의 주문 주소 변경'
+      })
+    );
   });
 
   test('AppShell renders Korean navigation and store labels when locale is ko-KR', () => {
@@ -141,6 +262,16 @@ describe('route ops layout components', () => {
     expect(css).not.toContain('.filter-actions');
     expect(css).toContain('max-width: 100%;');
     expect(css).toContain('.orders-table-scroll');
+  });
+
+  test('Topbar notification CSS exposes the dropdown badge and tone classes', () => {
+    const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+
+    expect(css).toContain('.notification-button');
+    expect(css).toContain('.notification-badge');
+    expect(css).toContain('.notification-menu');
+    expect(css).toContain('.notification-item--critical');
+    expect(css).toContain('position: absolute;');
   });
 
   test('Drivers CSS keeps invite actions stable inside the horizontally scrolling table', () => {

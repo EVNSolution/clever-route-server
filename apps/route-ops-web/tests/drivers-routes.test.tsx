@@ -1,7 +1,13 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
-import { deleteDriver, publishRoute, regenerateDriverInviteCode } from '../src/api';
+import {
+  deleteDriver,
+  getNotifications,
+  markNotificationRead,
+  publishRoute,
+  regenerateDriverInviteCode,
+} from '../src/api';
 import {
   DriverTable,
   DriversPage,
@@ -277,6 +283,83 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         credentials: 'same-origin',
         headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-token' }),
         method: 'POST',
+      }),
+    );
+  });
+
+  test('getNotifications reads the Route Ops notification API with workspace query', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            data: { notifications: [], unreadCount: 0 },
+            error: null,
+          }),
+          {
+            headers: { 'Content-Type': 'application/json' },
+            status: 200,
+          },
+        ),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('window', { location: { search: '?shopDomain=tenant-a.example.test' } });
+
+    await getNotifications('limit=5');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/admin/ui/app/api/notifications?limit=5&shopDomain=tenant-a.example.test',
+      expect.objectContaining({
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      }),
+    );
+  });
+
+  test('markNotificationRead patches the protected notification API with CSRF', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            data: {
+              notification: {
+                body: null,
+                createdAt: '2026-06-05T07:00:00.000Z',
+                href: null,
+                id: 'notification-id',
+                orderId: null,
+                payload: null,
+                readAt: '2026-06-05T07:01:00.000Z',
+                routePlanId: null,
+                severity: 'info',
+                title: 'Read',
+                type: 'SYSTEM',
+              },
+            },
+            error: null,
+          }),
+          {
+            headers: { 'Content-Type': 'application/json' },
+            status: 200,
+          },
+        ),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('window', { location: { search: '?shopDomain=tenant-a.example.test' } });
+
+    await markNotificationRead({
+      csrfToken: 'csrf-token',
+      notificationId: 'notification/id',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/admin/ui/app/api/notifications/notification%2Fid/read?shopDomain=tenant-a.example.test',
+      expect.objectContaining({
+        body: '{}',
+        credentials: 'same-origin',
+        headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-token' }),
+        method: 'PATCH',
       }),
     );
   });

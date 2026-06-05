@@ -69,6 +69,7 @@ import { readAdminUiFormFields } from "./admin-ui-form.js";
 import type { GeocodingService } from "../modules/geocoding/geocoding.service.js";
 import type { GeocodingResult } from "../modules/geocoding/geocoding.types.js";
 import { summarizeGeocodeDiagnostic } from "../modules/geocoding/geocoding.diagnostics.js";
+import type { AdminNotificationServiceContract } from "../modules/notifications/admin-notification.service.js";
 import {
   clearAdminWebSessionCookie,
   clearBroadLegacyAdminWebSessionCookies,
@@ -343,6 +344,7 @@ export type AdminCommerceConnectionsUiDependencies = {
     | "testConnection"
     | "updateStatus"
   >;
+  notificationService?: AdminNotificationServiceContract;
   pairingCodeService?: {
     createPairingCode(input: {
       commerceConnectionId: string;
@@ -1214,6 +1216,57 @@ function registerRouteOpsAppRoutes(
         shopDomain,
       });
     }),
+  );
+
+  app.get(`${ADMIN_UI_APP_API_PATH}/notifications`, async (request, reply) =>
+    withRouteOpsApi(request, reply, dependencies, async (session) => {
+      const shopDomain = requireRouteOpsShopDomain(request, session);
+      if (dependencies.notificationService === undefined) {
+        throw new WooCommerceOnboardingError(
+          "BAD_REQUEST",
+          "Notification service is not enabled in this runtime.",
+          400,
+        );
+      }
+      const limit = readRouteOpsNotificationLimit(request.query);
+      return routeOpsData(
+        await dependencies.notificationService.listNotifications({
+          includeRead:
+            readQueryString(request.query, "unreadOnly") !== "true",
+          ...(limit === undefined ? {} : { limit }),
+          shopDomain,
+        }),
+      );
+    }),
+  );
+
+  app.patch<{ Params: { notificationId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/notifications/:notificationId/read`,
+    async (request, reply) =>
+      withRouteOpsApi(request, reply, dependencies, async (session) => {
+        assertRouteOpsMutationCsrf(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session);
+        if (dependencies.notificationService === undefined) {
+          throw new WooCommerceOnboardingError(
+            "BAD_REQUEST",
+            "Notification service is not enabled in this runtime.",
+            400,
+          );
+        }
+        const notification =
+          await dependencies.notificationService.markNotificationRead({
+            notificationId: request.params.notificationId,
+            shopDomain,
+          });
+        if (notification === null) {
+          throw new WooCommerceOnboardingError(
+            "NOT_FOUND",
+            "Notification not found.",
+            404,
+          );
+        }
+        return routeOpsData({ notification });
+      }),
   );
 
   app.get(`${ADMIN_UI_APP_API_PATH}/orders`, async (request, reply) =>
@@ -3517,6 +3570,20 @@ function readQueryString(query: unknown, field: string): string | null {
   if (Array.isArray(value))
     return typeof value[0] === "string" ? value[0] : null;
   return typeof value === "string" && value.trim() !== "" ? value : null;
+}
+
+function readRouteOpsNotificationLimit(query: unknown): number | undefined {
+  const raw = readQueryString(query, "limit");
+  if (raw === null) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
+    throw new WooCommerceOnboardingError(
+      "BAD_REQUEST",
+      "limit must be an integer from 1 to 100",
+      400,
+    );
+  }
+  return parsed;
 }
 
 function truncateUiMessage(value: string): string {

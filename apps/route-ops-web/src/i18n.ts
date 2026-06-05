@@ -14,6 +14,23 @@ export const appCopy = {
     selectShop: 'Select shop',
     wordpressSession: 'WordPress launch session',
     internalAdmin: 'CLEVER internal admin',
+    notifications: {
+      allCaughtUp: 'All caught up',
+      loadFailed(error: string): string {
+        return `Notifications could not be loaded. Last known alerts are preserved. ${error}`;
+      },
+      loadFailedShort: 'Load failed',
+      noNotifications: 'No notifications yet.',
+      notifications: 'Notifications',
+      openNotifications: 'Open notifications',
+      unreadCount(count: number): string {
+        return `${count} unread`;
+      },
+      wooAssignedRouteAddressChangedBody(orderName: string | null): string {
+        return `${orderName ?? 'A routed order'} address changed in WooCommerce after route assignment. Review the route before dispatch.`;
+      },
+      wooAssignedRouteAddressChangedTitle: 'Assigned route order address changed'
+    },
     nav: {
       dashboard: 'Dashboard',
       orders: 'Orders',
@@ -39,6 +56,23 @@ export const appCopy = {
     selectShop: '매장을 선택하세요',
     wordpressSession: 'WordPress 실행 세션',
     internalAdmin: 'CLEVER 내부 관리자',
+    notifications: {
+      allCaughtUp: '모두 확인됨',
+      loadFailed(error: string): string {
+        return `알림을 불러오지 못했습니다. 이전 알림은 유지됩니다. ${error}`;
+      },
+      loadFailedShort: '불러오기 실패',
+      noNotifications: '아직 알림이 없습니다.',
+      notifications: '알림',
+      openNotifications: '알림 열기',
+      unreadCount(count: number): string {
+        return `읽지 않은 알림 ${count}개`;
+      },
+      wooAssignedRouteAddressChangedBody(orderName: string | null): string {
+        return `${orderName ?? '경로에 배정된 주문'} 주소가 경로 배정 후 WooCommerce에서 변경되었습니다. 출발 전 경로를 확인하세요.`;
+      },
+      wooAssignedRouteAddressChangedTitle: '배정된 경로의 주문 주소 변경'
+    },
     nav: {
       dashboard: '대시보드',
       orders: '주문',
