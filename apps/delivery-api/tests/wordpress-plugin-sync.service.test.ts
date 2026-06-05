@@ -290,6 +290,7 @@ describe('WordPressPluginSyncRequestService', () => {
     expect(validateConnectionSiteUrl).toHaveBeenCalledWith({ connection });
     expect(syncUpdatedOrders).toHaveBeenCalledWith({
       modifiedAfter: new Date('2026-05-21T00:00:00.000Z'),
+      overlapWindowMs: 10 * 60 * 1000,
       pageSize: 25,
       status: 'processing'
     });

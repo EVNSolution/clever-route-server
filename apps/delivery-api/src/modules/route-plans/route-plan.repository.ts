@@ -27,6 +27,7 @@ import type {
   RoutePlanSummary
 } from './route-plan.types.js';
 import type { RoutePlanRepository } from './route-plan.service.js';
+import { readNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
 
 const DEFAULT_API_VERSION = '2026-04';
 const OPTIMIZER_VERSION = 'manual-sequence-mvp';
@@ -1253,6 +1254,7 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
     deliveryStopId: deliveryStop.id,
     financialStatus: order.financialStatus,
     fulfillmentStatus: order.fulfillmentStatus,
+    normalizedPaymentStatus: readNormalizedPaymentStatus(rawPayload?.normalizedPaymentStatus),
     orderId: order.id,
     orderName: order.name,
     paymentStatus: order.financialStatus,

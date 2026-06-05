@@ -62,6 +62,74 @@ describe("mapWooCommerceOrderToDeliveryInputs", () => {
     );
   });
 
+  test("stores normalized Woo payment status beside legacy financial method text", async () => {
+    const order = await readFixture("order-delivery-date-meta.json");
+    order.payment_method = "cod";
+    order.payment_method_title = "Cash";
+    order.status = "processing";
+
+    const mapped = mapWooCommerceOrderToDeliveryInputs(order, {
+      siteUrl: "https://woo.example.test",
+    });
+
+    expect(mapped.order.financialStatus).toBe("Cash");
+    expect(mapped.order.rawPayload).toEqual(
+      expect.objectContaining({
+        normalizedPaymentStatus: "CASH_COLLECT_REQUIRED",
+        paymentMethodFamily: "cash",
+        paymentMethodId: "cod",
+        paymentMethodTitle: "Cash",
+        wooOrderStatus: "processing",
+      }),
+    );
+  });
+
+  test("applies configured custom Woo payment methods before title heuristics", async () => {
+    const order = await readFixture("order-delivery-date-meta.json");
+    order.payment_method = "tomatono_email_transfer";
+    order.payment_method_title = "Custom checkout";
+    order.status = "on-hold";
+
+    const mapped = mapWooCommerceOrderToDeliveryInputs(order, {
+      mappingConfig: {
+        paymentMethods: {
+          transferMethodIds: ["tomatono_email_transfer"],
+        },
+      },
+      siteUrl: "https://woo.example.test",
+    });
+
+    expect(mapped.order.rawPayload).toEqual(
+      expect.objectContaining({
+        normalizedPaymentStatus: "TRANSFER_CHECK_PENDING",
+        paymentMethodFamily: "transfer",
+        paymentMethodId: "tomatono_email_transfer",
+      }),
+    );
+  });
+
+  test("uses Woo paid evidence when date_paid_gmt or transaction_id is present", async () => {
+    const order = await readFixture("order-delivery-date-meta.json");
+    order.payment_method = "stripe";
+    order.payment_method_title = "Credit Card";
+    order.status = "pending";
+    order.date_paid_gmt = "2026-05-21T10:30:00";
+    order.transaction_id = "txn_123";
+
+    const mapped = mapWooCommerceOrderToDeliveryInputs(order, {
+      siteUrl: "https://woo.example.test",
+    });
+
+    expect(mapped.order.rawPayload).toEqual(
+      expect.objectContaining({
+        normalizedPaymentStatus: "PAID_CONFIRMED",
+        normalizedPaymentReason: "woo_paid_evidence",
+        paidAt: "2026-05-21T10:30:00",
+        transactionId: "txn_123",
+      }),
+    );
+  });
+
   test("keeps missing delivery date explicit instead of silently treating an order as ready", async () => {
     const order = await readFixture("order-date-pending.json");
 

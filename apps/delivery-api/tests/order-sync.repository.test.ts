@@ -567,6 +567,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       existingOrder: {
         deliveryFacts: [
           {
+            batchEligible: true,
             deliveryArea: 'Operator Area',
             deliveryDate: new Date('2026-05-09T00:00:00.000Z'),
             deliveryDateWeekday: 'SATURDAY',
@@ -656,6 +657,139 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     if (orderCall === undefined) throw new Error('expected order upsert');
     const orderUpdate = (orderCall[0] as { update: Record<string, unknown> }).update;
     expect(orderUpdate.rawPayload).toEqual(expect.objectContaining({ deliveryDate: '2026-05-08' }));
+  });
+
+  test('guards valid CLEVER schedules from abnormal newer Woo schedule downgrades while payment updates', async () => {
+    const { prisma } = createPrismaHarness({
+      existingOrder: {
+        deliveryFacts: [
+          {
+            batchEligible: true,
+            deliveryArea: 'Operator Area',
+            deliveryDate: new Date('2026-05-09T00:00:00.000Z'),
+            deliveryDateWeekday: 'SATURDAY',
+            deliveryDateWeekdayMismatch: false,
+            deliveryDateWeekdayVerified: true,
+            deliverySession: 'DAY',
+            geocodeStatus: 'RESOLVED',
+            mappingDiagnostics: { deliveryMetadata: { status: 'RESOLVED' } },
+            planningGroupKey: '2026-05-09|DELIVERY|||Operator Area',
+            readiness: 'READY_TO_PLAN',
+            reviewReasons: [],
+            routeScopeKey: '2026-05-09|DELIVERY||',
+            serviceType: 'DELIVERY',
+            timeWindowEnd: null,
+            timeWindowStart: null
+          }
+        ],
+        deliveryStops: [
+          {
+            address1: 'Corrected Address',
+            address2: null,
+            city: 'Mississauga',
+            countryCode: 'CA',
+            deliveryDate: new Date('2026-05-09T00:00:00.000Z'),
+            geocodeStatus: 'RESOLVED',
+            latitude: '43.6000000',
+            longitude: '-79.6500000',
+            postalCode: 'L5B 3C1',
+            province: 'ON',
+            timeWindowEnd: null,
+            timeWindowStart: null
+          }
+        ],
+        id: 'order-id',
+        sourceUpdatedAt: new Date('2026-05-08T13:00:00.000Z'),
+        updatedAtShopify: new Date('2026-05-08T13:00:00.000Z')
+      },
+      routeStopCount: 0
+    });
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+    const abnormalFact = {
+      ...syncedDeliveryFact(),
+      batchEligible: false,
+      deliveryDate: null,
+      deliveryDateWeekday: null,
+      deliveryDateWeekdayVerified: false,
+      deliveryDayParseStatus: 'NOT_PROVIDED' as const,
+      deliveryDayUnparsedReason: null,
+      deliverySession: null,
+      deliveryWeekday: null,
+      planningGroupKey: null,
+      rawDeliveryDate: null,
+      rawDeliveryDay: null,
+      readiness: 'NEEDS_REVIEW' as const,
+      reviewReasons: ['missing_delivery_date', 'missing_route_scope'],
+      routeScopeKey: null,
+      serviceType: null,
+      sourceUpdatedAt: new Date('2026-05-09T13:00:00.000Z'),
+      timeWindowEnd: null,
+      timeWindowStart: null
+    };
+    const baseSynced = syncedOrder({
+      rawPayload: {
+        ...syncedOrder().order.rawPayload,
+        deliveryDate: null,
+        normalizedPaymentStatus: 'PAID_CONFIRMED',
+        paymentMethodId: 'stripe',
+        paymentMethodTitle: 'Credit Card',
+        wooOrderStatus: 'processing'
+      },
+      sourcePlatform: 'WOOCOMMERCE',
+      sourceUpdatedAt: new Date('2026-05-09T13:00:00.000Z'),
+      updatedAtShopify: new Date('2026-05-09T13:00:00.000Z')
+    });
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: {
+        ...baseSynced,
+        deliveryFact: abnormalFact,
+        deliveryStop: {
+          ...baseSynced.deliveryStop!,
+          deliveryDate: null,
+          timeWindowEnd: null,
+          timeWindowStart: null
+        }
+      }
+    });
+
+    const stopCall = prisma.deliveryStop.upsert.mock.calls[0];
+    if (stopCall === undefined) throw new Error('expected deliveryStop upsert');
+    const stopUpdate = (stopCall[0] as { update: Record<string, unknown> }).update;
+    expect(stopUpdate).toMatchObject({
+      deliveryDate: new Date('2026-05-09T00:00:00.000Z')
+    });
+
+    const factCall = prisma.orderDeliveryFact.upsert.mock.calls[0];
+    if (factCall === undefined) throw new Error('expected orderDeliveryFact upsert');
+    const factUpdate = (factCall[0] as { update: Record<string, unknown> }).update;
+    expect(factUpdate).toMatchObject({
+      batchEligible: true,
+      deliveryDate: new Date('2026-05-09T00:00:00.000Z'),
+      deliverySession: 'DAY',
+      planningGroupKey: '2026-05-09|DELIVERY|||Operator Area',
+      readiness: 'READY_TO_PLAN',
+      routeScopeKey: '2026-05-09|DELIVERY||',
+      serviceType: 'DELIVERY'
+    });
+    expect(factUpdate.reviewReasons).toEqual([]);
+    expect(factUpdate.mappingDiagnostics).toMatchObject({
+      wooScheduleDowngradeGuard: {
+        preservedFields: expect.arrayContaining(['deliveryDate', 'routeScopeKey']) as unknown,
+        reason: 'incoming_woo_schedule_abnormal',
+        version: 1
+      }
+    });
+
+    const orderCall = prisma.order.upsert.mock.calls[0];
+    if (orderCall === undefined) throw new Error('expected order upsert');
+    const orderUpdate = (orderCall[0] as { update: Record<string, unknown> }).update;
+    expect(orderUpdate.rawPayload).toEqual(expect.objectContaining({
+      normalizedPaymentStatus: 'PAID_CONFIRMED'
+    }));
   });
 
   test('keeps coordinate-only correction needing review when no delivery fact exists', async () => {

@@ -13,6 +13,7 @@ import {
   formatMethodLabel,
   formatOrderReceivedLabel,
   formatOperationalStatus,
+  formatPaymentStatusLabel,
   getRouteRepairPrompt,
   ORDERS_TABLE_COLUMN_COUNT,
   OrderTable,
@@ -68,6 +69,8 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("Tomato Buyer");
     expect(html).toContain("416-555-0100");
     expect(html).toContain("Evening Delivery");
+    expect(html).toContain("Payment:");
+    expect(html).toContain("Transfer pending");
     expect(html).toContain("FRI5PM");
     expect(html).toContain("2026-05-29 · 5PM–9PM");
     expect(html).toContain("Toronto West");
@@ -166,6 +169,30 @@ describe("Orders compact operations table", () => {
     expect(html).not.toMatch(
       /aria-label="Add order #11453 11453 to route plan"[^>]*disabled/u,
     );
+  });
+
+  test("renders normalized payment evidence in the expanded order detail", () => {
+    const html = renderOrderTable(
+      [
+        orderFixture({
+          normalizedPaymentReason: "unknown_payment_method_or_status",
+          normalizedPaymentStatus: "UNKNOWN_REVIEW",
+          paymentMethodFamily: null,
+          paymentMethodId: "custom_cash_gateway",
+          paymentMethodTitle: "Cash",
+          paymentReviewReason: "Payment method/status mapping is not configured",
+          wooOrderStatus: "processing",
+        }),
+      ],
+      { expandedOrderIds: new Set(["order-11453"]) },
+    );
+
+    expect(html).toContain("Payment");
+    expect(html).toContain("Review payment");
+    expect(html).toContain("Cash · custom_cash_gateway");
+    expect(html).toContain("processing");
+    expect(html).toContain("Payment method/status mapping is not configured");
+    expect(formatPaymentStatusLabel(orderFixture()).label).toBe("Transfer pending");
   });
 
   test("renders expanded history-scope order detail as editable when blockers need repair", () => {
@@ -1002,8 +1029,15 @@ function orderFixture(
     geocodeStatus: "RESOLVED",
     health: "normal",
     metadataResolved: true,
+    normalizedPaymentReason: "transfer_method_waiting_for_woo_confirmation",
+    normalizedPaymentStatus: "TRANSFER_CHECK_PENDING",
     orderId: "order-11453",
     orderName: "#11453",
+    paidAt: null,
+    paymentMethodFamily: "transfer",
+    paymentMethodId: "bacs",
+    paymentMethodTitle: "E-mail transfer",
+    paymentReviewReason: null,
     phone: "416-555-0100",
     planningStatus: "UNPLANNED",
     recipientName: "Tomato Buyer",
@@ -1030,6 +1064,8 @@ function orderFixture(
     stopId: null,
     timeWindowEnd: "21:00",
     timeWindowStart: "17:00",
+    transactionId: null,
+    wooOrderStatus: "on-hold",
     ...overrides,
   };
 }

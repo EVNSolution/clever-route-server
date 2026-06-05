@@ -1,3 +1,5 @@
+import type { NormalizedPaymentStatus } from "../payments/normalized-payment-status.js";
+
 export type RoutePlanRouteScopeInput = {
   deliveryDate: string;
   deliverySession: string;
@@ -134,6 +136,7 @@ export type RoutePlanDetailStop = {
   deliveryStopId: string;
   financialStatus: string | null;
   fulfillmentStatus: string | null;
+  normalizedPaymentStatus?: NormalizedPaymentStatus | null;
   orderId: string;
   orderName: string;
   paymentStatus: string | null;

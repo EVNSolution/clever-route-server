@@ -28,6 +28,7 @@ export type WooCommerceSyncOrdersResult = {
 
 export type WooCommerceSyncUpdatedOrdersInput = {
   modifiedAfter?: Date | null;
+  overlapWindowMs?: number;
   pageSize: number;
   status?: string | null;
 };
@@ -38,6 +39,14 @@ export type WooCommerceSyncUpdatedOrdersResult = WooCommerceSyncOrdersResult & {
 
 export type WooCommerceSyncSingleOrderInput = {
   sourceOrderId: number | string;
+};
+
+export type WooCommerceSyncTier = 'hot' | 'cold';
+
+export type WooCommerceSyncTierClassification = {
+  reason: 'today_or_future_delivery' | 'past_delivery' | 'missing_delivery_date';
+  review: boolean;
+  tier: WooCommerceSyncTier;
 };
 
 type Repository = {
@@ -83,9 +92,13 @@ export class WooCommerceOrderSyncService {
     let page = 1;
     let pagesRead = 0;
     const allOrders: WooCommerceOrder[] = [];
+    const modifiedAfter = applyWooModifiedAfterOverlap(
+      input.modifiedAfter ?? null,
+      input.overlapWindowMs ?? 0
+    );
     while (true) {
       const result: WooCommerceOrdersPage = await this.options.client.listOrdersPage({
-        modifiedAfter: input.modifiedAfter ?? null,
+        modifiedAfter,
         page,
         perPage: input.pageSize,
         status: input.status ?? null
@@ -227,6 +240,30 @@ export class WooCommerceOrderSyncService {
   }
 }
 
+export function applyWooModifiedAfterOverlap(
+  modifiedAfter: Date | null,
+  overlapWindowMs: number
+): Date | null {
+  if (modifiedAfter === null) return null;
+  if (!Number.isFinite(overlapWindowMs) || overlapWindowMs <= 0) {
+    return modifiedAfter;
+  }
+  return new Date(modifiedAfter.getTime() - Math.floor(overlapWindowMs));
+}
+
+export function classifyWooCommerceSyncTier(input: {
+  deliveryDate: string | null;
+  today: string;
+}): WooCommerceSyncTierClassification {
+  if (input.deliveryDate === null) {
+    return { reason: 'missing_delivery_date', review: true, tier: 'cold' };
+  }
+  if (input.deliveryDate >= input.today) {
+    return { reason: 'today_or_future_delivery', review: false, tier: 'hot' };
+  }
+  return { reason: 'past_delivery', review: false, tier: 'cold' };
+}
+
 function withUpdatedDeliveryFact(
   synced: UpsertOrderWithDeliveryStopInput['synced'],
   geocodeStatus: NonNullable<UpsertOrderWithDeliveryStopInput['synced']['deliveryFact']>['geocodeStatus'],
@@ -317,10 +354,25 @@ function normalizeMappingConfig(value: Record<string, unknown>): WooOrderMapping
   if (typeof value.serviceMinutesDefault === 'number' && Number.isFinite(value.serviceMinutesDefault)) {
     config.serviceMinutesDefault = value.serviceMinutesDefault;
   }
+  const paymentMethods = readPaymentMethodMappingConfig(value.paymentMethods);
+  if (paymentMethods !== undefined) config.paymentMethods = paymentMethods;
   const timeWindowPaths = readStringArray(value.timeWindowPaths);
   if (timeWindowPaths !== undefined) config.timeWindowPaths = timeWindowPaths;
   if (typeof value.version === 'number' && Number.isFinite(value.version)) config.version = value.version;
   return config;
+}
+
+function readPaymentMethodMappingConfig(value: unknown): WooOrderMappingConfig['paymentMethods'] | undefined {
+  const record = readRecord(value);
+  if (record === undefined) return undefined;
+  const paymentMethods: NonNullable<WooOrderMappingConfig['paymentMethods']> = {};
+  const cashMethodIds = readStringArray(record.cashMethodIds);
+  if (cashMethodIds !== undefined) paymentMethods.cashMethodIds = cashMethodIds;
+  const onlineMethodIds = readStringArray(record.onlineMethodIds);
+  if (onlineMethodIds !== undefined) paymentMethods.onlineMethodIds = onlineMethodIds;
+  const transferMethodIds = readStringArray(record.transferMethodIds);
+  if (transferMethodIds !== undefined) paymentMethods.transferMethodIds = transferMethodIds;
+  return Object.keys(paymentMethods).length === 0 ? undefined : paymentMethods;
 }
 
 function readStringArray(value: unknown): string[] | undefined {

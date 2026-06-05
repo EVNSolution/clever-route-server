@@ -16,6 +16,7 @@ import type {
   RoutePlanRouteStopPoint
 } from '../route-plans/route-plan.types.js';
 import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
+import { readNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
 
 type DriverAssignedRoutePrismaClient = Pick<PrismaClient, 'driver' | 'routePlan' | 'shop'>;
 
@@ -46,8 +47,11 @@ type AssignedRoutePlanStopRecord = {
     latitude: unknown;
     longitude: unknown;
     order: {
+      financialStatus: string | null;
+      fulfillmentStatus: string | null;
       id: string;
       name: string;
+      rawPayload: unknown;
       shopifyOrderGid: string;
     };
     phone: string | null;
@@ -182,6 +186,7 @@ function toRoutePlanDetailForRouting(routePlan: AssignedRoutePlanRecord): RouteP
 
 function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssignedRouteStop {
   const deliveryStop = routeStop.deliveryStop;
+  const rawPayload = objectOrNull(deliveryStop.order.rawPayload);
   return {
     address: {
       address1: deliveryStop.address1,
@@ -196,6 +201,7 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssi
       longitude: decimalNumber(deliveryStop.longitude)
     },
     deliveryStopId: deliveryStop.id,
+    normalizedPaymentStatus: readNormalizedPaymentStatus(rawPayload?.normalizedPaymentStatus),
     orderName: deliveryStop.order.name,
     phone: deliveryStop.phone,
     recipientName: deliveryStop.recipientName,
@@ -217,6 +223,7 @@ function toAssignedRouteStopPoint(routeStopPoint: RoutePlanRouteStopPoint): Driv
 
 function toRoutePlanDetailStop(routeStop: AssignedRoutePlanStopRecord): RoutePlanDetailStop {
   const deliveryStop = routeStop.deliveryStop;
+  const rawPayload = objectOrNull(deliveryStop.order.rawPayload);
   return {
     address: {
       address1: deliveryStop.address1,
@@ -234,11 +241,12 @@ function toRoutePlanDetailStop(routeStop: AssignedRoutePlanStopRecord): RoutePla
     deliveryArea: null,
     deliveryDay: null,
     deliveryStopId: deliveryStop.id,
-    financialStatus: null,
-    fulfillmentStatus: null,
+    financialStatus: deliveryStop.order.financialStatus,
+    fulfillmentStatus: deliveryStop.order.fulfillmentStatus,
+    normalizedPaymentStatus: readNormalizedPaymentStatus(rawPayload?.normalizedPaymentStatus),
     orderId: deliveryStop.order.id,
     orderName: deliveryStop.order.name,
-    paymentStatus: null,
+    paymentStatus: deliveryStop.order.financialStatus,
     recipientName: deliveryStop.recipientName,
     sequence: routeStop.sequence,
     shopifyOrderGid: deliveryStop.order.shopifyOrderGid,
