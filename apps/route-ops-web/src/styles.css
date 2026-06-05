@@ -422,6 +422,7 @@ small,
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 9.5rem), 1fr));
+  margin-top: 2px;
   max-width: 100%;
   min-width: 0;
   overflow: hidden;
@@ -450,6 +451,7 @@ small,
   font-size: 12px;
   gap: 7px;
   letter-spacing: 0.01em;
+  line-height: 1.2;
   min-width: 0;
 }
 .filter-panel input,
@@ -790,6 +792,16 @@ small,
 .orders-compact-table .orders-order-cell .order-subtle,
 .orders-compact-table .orders-customer-cell .order-primary,
 .orders-compact-table .orders-customer-cell .order-subtle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.orders-compact-table .orders-order-cell .order-received-label {
+  display: grid;
+  gap: 1px;
+  white-space: normal;
+}
+.orders-compact-table .orders-order-cell .order-received-label span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

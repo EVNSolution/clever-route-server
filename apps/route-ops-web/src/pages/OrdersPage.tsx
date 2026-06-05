@@ -1138,6 +1138,7 @@ function OrderTableRow(input: {
   const day = formatDeliveryDayLabel(order, input.locale);
   const method = formatMethodStatusLabel(order, input.locale);
   const payment = formatPaymentStatusLabel(order, input.locale);
+  const receivedLabel = formatOrderReceivedLabelParts(order, input.locale);
   const status = formatOperationalStatus(order, input.locale);
   const orderLabel = getOrderAccessibleLabel(order);
   const planActionLabel = t.planOrderAction(
@@ -1171,8 +1172,11 @@ function OrderTableRow(input: {
         </td>
         <td className="orders-order-cell">
           <strong className="order-primary">{order.orderName}</strong>
-          <small className="order-subtle">
-            {formatOrderReceivedLabel(order, input.locale)}
+          <small className="order-subtle order-received-label">
+            <span>{receivedLabel.created}</span>
+            {receivedLabel.updated === null ? null : (
+              <span>{receivedLabel.updated}</span>
+            )}
           </small>
         </td>
         <td className="orders-customer-cell">
@@ -1498,16 +1502,26 @@ export function formatOrderReceivedLabel(
   order: CanonicalOrderDto,
   locale: string | null | undefined = "en-CA",
 ): string {
+  const label = formatOrderReceivedLabelParts(order, locale);
+  return label.updated === null
+    ? label.created
+    : `${label.created}\n${label.updated}`;
+}
+
+export function formatOrderReceivedLabelParts(
+  order: CanonicalOrderDto,
+  locale: string | null | undefined = "en-CA",
+): { created: string; updated: string | null } {
   const created = formatSourceDateLabel(order.sourceCreatedDate, locale);
-  if (created === null) return "—";
+  if (created === null) return { created: "—", updated: null };
   const updated =
     isPresent(order.sourceUpdatedDate) &&
     order.sourceUpdatedDate !== order.sourceCreatedDate
       ? formatSourceDateLabel(order.sourceUpdatedDate, locale)
       : null;
-  if (updated === null) return created;
+  if (updated === null) return { created, updated: null };
   const marker = resolveLocale(locale) === "ko-KR" ? "수정" : "updated";
-  return `${created} · ${marker} ${updated}`;
+  return { created, updated: `${marker} ${updated}` };
 }
 
 function getOrderAccessibleLabel(order: CanonicalOrderDto): string {

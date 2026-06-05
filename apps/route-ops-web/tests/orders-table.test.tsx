@@ -66,7 +66,10 @@ describe("Orders compact operations table", () => {
     const html = renderOrderTable([orderFixture()]);
 
     expect(html).toContain("#11453");
-    expect(html).toContain("2026-06-04 THU · updated 2026-06-05 FRI");
+    expect(html).toContain("order-received-label");
+    expect(html).toContain("<span>2026-06-04 THU</span>");
+    expect(html).toContain("<span>updated 2026-06-05 FRI</span>");
+    expect(html).not.toContain("2026-06-04 THU · updated 2026-06-05 FRI");
     expect(html).toContain("Tomato Buyer");
     expect(html).toContain("416-555-0100");
     expect(html).toContain("Evening Delivery");
@@ -88,10 +91,10 @@ describe("Orders compact operations table", () => {
 
   test("formats source-created order labels with localized update markers", () => {
     expect(formatOrderReceivedLabel(orderFixture(), "en-CA")).toBe(
-      "2026-06-04 THU · updated 2026-06-05 FRI",
+      "2026-06-04 THU\nupdated 2026-06-05 FRI",
     );
     expect(formatOrderReceivedLabel(orderFixture(), "ko-KR")).toBe(
-      "2026-06-04 목요일 · 수정 2026-06-05 금요일",
+      "2026-06-04 목요일\n수정 2026-06-05 금요일",
     );
     expect(
       formatOrderReceivedLabel(
