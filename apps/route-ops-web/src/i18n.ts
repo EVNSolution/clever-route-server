@@ -14,6 +14,23 @@ export const appCopy = {
     selectShop: 'Select shop',
     wordpressSession: 'WordPress launch session',
     internalAdmin: 'CLEVER internal admin',
+    notifications: {
+      allCaughtUp: 'All caught up',
+      loadFailed(error: string): string {
+        return `Notifications could not be loaded. Last known alerts are preserved. ${error}`;
+      },
+      loadFailedShort: 'Load failed',
+      noNotifications: 'No notifications yet.',
+      notifications: 'Notifications',
+      openNotifications: 'Open notifications',
+      unreadCount(count: number): string {
+        return `${count} unread`;
+      },
+      wooAssignedRouteAddressChangedBody(orderName: string | null): string {
+        return `${orderName ?? 'A routed order'} address changed in WooCommerce after route assignment. Review the route before dispatch.`;
+      },
+      wooAssignedRouteAddressChangedTitle: 'Assigned route order address changed'
+    },
     nav: {
       dashboard: 'Dashboard',
       orders: 'Orders',
@@ -39,6 +56,23 @@ export const appCopy = {
     selectShop: '매장을 선택하세요',
     wordpressSession: 'WordPress 실행 세션',
     internalAdmin: 'CLEVER 내부 관리자',
+    notifications: {
+      allCaughtUp: '모두 확인됨',
+      loadFailed(error: string): string {
+        return `알림을 불러오지 못했습니다. 이전 알림은 유지됩니다. ${error}`;
+      },
+      loadFailedShort: '불러오기 실패',
+      noNotifications: '아직 알림이 없습니다.',
+      notifications: '알림',
+      openNotifications: '알림 열기',
+      unreadCount(count: number): string {
+        return `읽지 않은 알림 ${count}개`;
+      },
+      wooAssignedRouteAddressChangedBody(orderName: string | null): string {
+        return `${orderName ?? '경로에 배정된 주문'} 주소가 경로 배정 후 WooCommerce에서 변경되었습니다. 출발 전 경로를 확인하세요.`;
+      },
+      wooAssignedRouteAddressChangedTitle: '배정된 경로의 주문 주소 변경'
+    },
     nav: {
       dashboard: '대시보드',
       orders: '주문',
@@ -388,7 +422,6 @@ export const ordersCopy = {
     areaPlaceholder: 'Toronto',
     areaRegion: 'Area / region',
     deliveryStatus: 'Delivery status',
-    orderHealth: 'Order health',
     serviceType: 'Service type',
     deliverySession: 'Delivery session',
     search: 'Search',
@@ -400,8 +433,15 @@ export const ordersCopy = {
     newRoute: 'New route',
     addPlan: 'Add plan',
     addPlanPanelLabel: 'New route add plan',
+    routeDetailPanelLabel: 'Selected route detail',
     orders: 'orders',
     planInstructions: 'Use the map or order list to add ready unplanned orders, then create the route.',
+    routeDetailInstructions: 'Planned route selected from the map. Review the stop order here or open Route Builder to edit.',
+    editRoute: 'Edit route',
+    loadingRoute: 'Loading route…',
+    noRouteDetail: 'Route detail is unavailable.',
+    routeStatus: 'Route status',
+    routeStopsLabel: 'Route stops',
     routeDate: 'Route date',
     routeName: 'Route name',
     defaultRouteName(date: string): string { return `Route ${date}`; },
@@ -610,7 +650,6 @@ export const ordersCopy = {
     areaPlaceholder: '예: Toronto',
     areaRegion: '지역 / 구역',
     deliveryStatus: '배송 상태',
-    orderHealth: '주문 상태',
     serviceType: '서비스 타입',
     deliverySession: '배송 세션',
     search: '검색',
@@ -622,8 +661,15 @@ export const ordersCopy = {
     newRoute: '새 경로',
     addPlan: '계획 추가',
     addPlanPanelLabel: '새 경로 계획 추가',
+    routeDetailPanelLabel: '선택된 경로 상세',
     orders: '주문',
     planInstructions: '지도나 주문 목록에서 준비된 미배정 주문을 추가한 뒤 경로를 생성하세요.',
+    routeDetailInstructions: '지도에서 선택한 배정 완료 경로입니다. 여기서 하차 순서를 확인하거나 Route Builder에서 편집하세요.',
+    editRoute: '경로 편집',
+    loadingRoute: '경로를 불러오는 중…',
+    noRouteDetail: '경로 상세를 사용할 수 없습니다.',
+    routeStatus: '경로 상태',
+    routeStopsLabel: '경로 하차 순서',
     routeDate: '경로 날짜',
     routeName: '경로 이름',
     defaultRouteName(date: string): string { return `경로 ${date}`; },

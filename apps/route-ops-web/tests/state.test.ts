@@ -27,24 +27,28 @@ import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStop
 
 describe('route ops web state helpers', () => {
   test('serializes order filters without empty/all values', () => {
-    expect(buildOrderQuery({ deliveryArea: 'Toronto', deliveryDate: '2026-05-27', deliveryStatus: 'all', health: '', scope: 'planning', search: '#1001', serviceType: 'EVENING_DELIVERY', tab: 'planned' })).toBe('deliveryDate=2026-05-27&deliveryArea=Toronto&scope=planning&tab=planned&serviceType=EVENING_DELIVERY&search=%231001');
+    expect(buildOrderQuery({ deliveryArea: 'Toronto', deliveryDate: '2026-05-27', deliveryStatus: 'all', scope: 'planning', search: '#1001', serviceType: 'EVENING_DELIVERY', tab: 'planned' })).toBe('deliveryDate=2026-05-27&deliveryArea=Toronto&scope=planning&tab=planned&serviceType=EVENING_DELIVERY&search=%231001');
   });
 
-  test('keeps delivery date as a client-side filter to avoid refetching on date changes', () => {
+  test('keeps route-map candidate dimensions as client-side filters to avoid refetching on draft changes', () => {
     const filters = { ...createDefaultOrderFilters(), deliveryArea: 'Toronto', deliveryDate: '2026-05-27', search: '#1001', tab: 'planned' as const };
 
     expect(buildOrderQuery(filters)).toBe('deliveryDate=2026-05-27&deliveryArea=Toronto&scope=planning&tab=planned&search=%231001');
-    expect(buildOrderFetchQuery(filters)).toBe('deliveryArea=Toronto&scope=planning&tab=planned&search=%231001');
+    expect(buildOrderFetchQuery(filters)).toBe('deliveryArea=Toronto&scope=planning&search=%231001');
   });
 
-  test('applies the delivery date filter locally against prefetched orders', () => {
+  test('applies route-map candidate filters locally against prefetched orders', () => {
     const orders = [
       order({ deliveryDate: '2026-05-27', orderId: 'may-27' }),
       order({ deliveryDate: '2026-05-28', orderId: 'may-28' }),
       order({ deliveryDate: null, orderId: 'missing-date' }),
+      order({ deliveryDate: '2026-05-27', deliverySession: 'EVENING', orderId: 'evening' }),
+      order({ deliveryDate: '2026-05-27', orderId: 'review', routeEligible: false }),
     ];
 
-    expect(applyClientOrderFilters(orders, { deliveryDate: '2026-05-27' }).map((item) => item.orderId)).toEqual(['may-27']);
+    expect(applyClientOrderFilters(orders, { deliveryDate: '2026-05-27', tab: 'unplanned' }).map((item) => item.orderId)).toEqual(['may-27', 'evening']);
+    expect(applyClientOrderFilters(orders, { deliveryDate: '2026-05-27', deliverySession: 'DAY', tab: 'unplanned' }).map((item) => item.orderId)).toEqual(['may-27']);
+    expect(applyClientOrderFilters(orders, { deliveryDate: '2026-05-27', tab: 'needs_review' }).map((item) => item.orderId)).toEqual(['review']);
     expect(applyClientOrderFilters(orders, { deliveryDate: '' })).toBe(orders);
   });
 

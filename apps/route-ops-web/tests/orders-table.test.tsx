@@ -2,8 +2,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
 
 import {
+  buildRouteDetailPath,
   buildEditableMetadataFields,
+  buildOrderMapMarkerStates,
   buildRouteDraftSelection,
+  filterOrdersByRoutePlan,
   getRouteDraftCreateBlocker,
   normalizeOrderMetadataPatchForFields,
   OrderDetailChoiceDropdown,
@@ -11,10 +14,12 @@ import {
   formatDiagnosticPathLabel,
   formatBlockerReason,
   formatMethodLabel,
+  formatMethodStatusLabel,
   formatOrderReceivedLabel,
   formatOperationalStatus,
   formatPaymentStatusLabel,
   getRouteRepairPrompt,
+  moveSelectedOrderBefore,
   ORDERS_TABLE_COLUMN_COUNT,
   OrderTable,
   type OrderMetadataPatch,
@@ -26,6 +31,7 @@ import {
   orderFieldLabels,
 } from "../src/i18n";
 import { defaultRouteScopeConfig } from "../src/routeScopeConfig";
+import { createDefaultOrderFilters } from "../src/state";
 import type {
   CanonicalOrderDto,
   DeliveryMetadataDiagnosticsDto,
@@ -65,11 +71,17 @@ describe("Orders compact operations table", () => {
     const html = renderOrderTable([orderFixture()]);
 
     expect(html).toContain("#11453");
-    expect(html).toContain("2026-06-04 THU · updated 2026-06-05 FRI");
+    expect(html).toContain("order-received-label");
+    expect(html).toContain("<span>2026-06-04 THU</span>");
+    expect(html).toContain("<span>updated 2026-06-05 FRI</span>");
+    expect(html).not.toContain("2026-06-04 THU · updated 2026-06-05 FRI");
     expect(html).toContain("Tomato Buyer");
     expect(html).toContain("416-555-0100");
     expect(html).toContain("Evening Delivery");
-    expect(html).toContain("Payment:");
+    expect(html).toContain("order-pill-stack");
+    expect(html).toContain('aria-label="Method Evening Delivery; Payment Transfer pending"');
+    expect(html).toContain("order-pill--neutral");
+    expect(html).not.toContain("Payment:");
     expect(html).toContain("Transfer pending");
     expect(html).toContain("FRI5PM");
     expect(html).toContain("2026-05-29 · 5PM–9PM");
@@ -84,10 +96,10 @@ describe("Orders compact operations table", () => {
 
   test("formats source-created order labels with localized update markers", () => {
     expect(formatOrderReceivedLabel(orderFixture(), "en-CA")).toBe(
-      "2026-06-04 THU · updated 2026-06-05 FRI",
+      "2026-06-04 THU\nupdated 2026-06-05 FRI",
     );
     expect(formatOrderReceivedLabel(orderFixture(), "ko-KR")).toBe(
-      "2026-06-04 목요일 · 수정 2026-06-05 금요일",
+      "2026-06-04 목요일\n수정 2026-06-05 금요일",
     );
     expect(
       formatOrderReceivedLabel(
@@ -124,10 +136,14 @@ describe("Orders compact operations table", () => {
       routeEligible: false,
     });
     const html = renderOrderTable([blocked]);
+    const customerCell =
+      html.match(/<td class="orders-customer-cell">([\s\S]*?)<\/td>/)?.[1] ??
+      "";
 
     expect(html).toContain('aria-label="Select order #1002 11453"');
     expect(html).toContain('disabled=""');
-    expect(html).toContain("Review");
+    expect(customerCell).not.toContain("Review");
+    expect(customerCell).not.toContain("order-pill");
     expect(html).toContain("Missing delivery date");
     expect(html).toContain("0 selectable");
     expect(html).toContain("1 unavailable");
@@ -918,6 +934,74 @@ describe("Orders compact operations table", () => {
     ).toContain("same delivery date");
   });
 
+  test("route draft order can be reordered by dragging before a target order", () => {
+    expect(moveSelectedOrderBefore(["first", "second", "third"], "third", "first")).toEqual([
+      "third",
+      "first",
+      "second",
+    ]);
+    expect(moveSelectedOrderBefore(["first", "second", "third"], "first", "third")).toEqual([
+      "second",
+      "first",
+      "third",
+    ]);
+    expect(moveSelectedOrderBefore(["first", "second"], "missing", "first")).toEqual([
+      "first",
+      "second",
+    ]);
+  });
+
+  test("planned route helpers filter orders by route and build the route detail URL", () => {
+    const routeOrder = orderFixture({
+      orderId: "route-order",
+      orderName: "#11460",
+      planningStatus: "PLANNED",
+      routePlanId: "route/id",
+      routePlanName: "Route 1",
+    });
+    const otherOrder = orderFixture({
+      orderId: "other-order",
+      orderName: "#11461",
+    });
+
+    expect(
+      filterOrdersByRoutePlan([routeOrder, otherOrder], "route/id")?.map(
+        (order) => order.orderId,
+      ),
+    ).toEqual(["route-order"]);
+    expect(filterOrdersByRoutePlan([routeOrder, otherOrder], null)).toBeNull();
+    expect(buildRouteDetailPath("route/id")).toBe(
+      "/admin/ui/app/routes/route%2Fid",
+    );
+  });
+
+  test("planned route markers stay blue and unfaded even when subfilters differ", () => {
+    const planned = orderFixture({
+      deliverySession: "MORNING_DELIVERY",
+      orderId: "planned-order",
+      planningStatus: "PLANNED",
+      routePlanId: "route-1",
+      routePlanName: "Route 1",
+    });
+    const filters = {
+      ...createDefaultOrderFilters(),
+      deliverySession: "EVENING_DELIVERY",
+    };
+
+    const markers = buildOrderMapMarkerStates({
+      filters,
+      orders: [planned],
+      selectedOrderIds: new Set(),
+      worksetContext: { scope: "planning" },
+    });
+
+    expect(markers.get("planned-order")).toEqual({
+      markerOpacity: 1,
+      pinKind: "candidate",
+      sequence: null,
+    });
+  });
+
   test("formatter precedence uses service type for Method and delivery date for Day", () => {
     const order = orderFixture({
       deliverySession: "MORNING_DELIVERY",
@@ -927,6 +1011,10 @@ describe("Orders compact operations table", () => {
     });
 
     expect(formatMethodLabel(order)).toBe("Evening Delivery");
+    expect(formatMethodStatusLabel(order)).toEqual({
+      label: "Evening Delivery",
+      toneClass: "order-pill--neutral",
+    });
     expect(formatDeliveryDayLabel(order)).toEqual({
       detail: "2026-05-29 · 8:30AM–11AM",
       label: "FRI8:30AM",
@@ -965,6 +1053,27 @@ describe("Orders compact operations table", () => {
         }),
       ),
     ).toBe("—");
+    expect(
+      formatMethodStatusLabel(
+        orderFixture({
+          deliveryArea: "Toronto West",
+          deliveryDate: "2026-05-29",
+          deliverySession: null,
+          serviceType: null,
+          shippingAddress: {
+            address1: "4475 Chesswood Dr",
+            address2: null,
+            city: "Toronto",
+            countryCode: "CA",
+            postalCode: "M3J 2C3",
+            province: "ON",
+          },
+        }),
+      ),
+    ).toEqual({
+      label: "—",
+      toneClass: "order-pill--review",
+    });
   });
 });
 

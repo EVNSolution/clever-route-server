@@ -2,6 +2,10 @@ import type { ReactElement, ReactNode } from 'react';
 
 import { getAppCopy } from '../i18n';
 import type { BootstrapPayload } from '../types';
+import {
+  TopbarNotifications,
+  type TopbarNotificationItem,
+} from './TopbarNotifications';
 
 export type RouteOpsPage = 'dashboard' | 'drivers' | 'orders' | 'routes' | 'settings';
 
@@ -14,6 +18,10 @@ export function AppShell({
   error,
   navItems,
   navigate,
+  notificationLoadError,
+  notificationUnreadCount,
+  notifications = [],
+  onNotificationOpen,
   title
 }: {
   activePage: RouteOpsPage;
@@ -22,6 +30,10 @@ export function AppShell({
   error: string | null;
   navItems: NavItem[];
   navigate(path: string): void;
+  notificationLoadError?: string | null;
+  notificationUnreadCount?: number;
+  notifications?: TopbarNotificationItem[];
+  onNotificationOpen?(item: TopbarNotificationItem): void;
   title: string;
 }): ReactElement {
   const t = getAppCopy(bootstrap.locale);
@@ -52,6 +64,16 @@ export function AppShell({
           <div>
             <span className="eyebrow">{t.brandEyebrow}</span>
             <h1>{title}</h1>
+          </div>
+          <div className="topbar-actions">
+            <TopbarNotifications
+              items={notifications}
+              locale={bootstrap.locale}
+              loadError={notificationLoadError}
+              navigate={navigate}
+              onNotificationOpen={onNotificationOpen}
+              unreadCount={notificationUnreadCount}
+            />
           </div>
         </header>
         {error === null ? null : <div className="alert error">{error}</div>}

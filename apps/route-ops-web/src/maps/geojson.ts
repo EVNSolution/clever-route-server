@@ -27,13 +27,22 @@ type LineStringGeometry = { coordinates: LngLat[]; type: 'LineString' };
 
 export type OrderMapFeatureCollection = FeatureCollection<PointGeometry, {
   label: string;
+  markerOpacity: number;
   orderId: string;
   orderName: string;
-  pinKind: 'planned' | 'review' | 'unplanned';
+  pinKind: OrderMapPinKind;
   pinImage: string;
   planned: boolean;
   sortKey: number;
 }>;
+
+export type OrderMapPinKind = 'candidate' | 'review' | 'unplanned';
+
+export type OrderMapMarkerState = {
+  markerOpacity?: number;
+  pinKind?: OrderMapPinKind;
+  sequence?: number | null;
+};
 
 export type RouteLineFeature = Feature<LineStringGeometry, { kind: 'road_geometry' }>;
 export type RouteDropoffPointFeatureCollection = FeatureCollection<PointGeometry, {
@@ -60,23 +69,27 @@ export function isValidLongitude(value: number | null): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= -180 && value <= 180;
 }
 
-export function buildOrdersMapFeatureCollection(orders: CanonicalOrderDto[], plannedOrderIds: ReadonlySet<string>): OrderMapFeatureCollection {
+export function buildOrdersMapFeatureCollection(orders: CanonicalOrderDto[], markerState: ReadonlyMap<string, OrderMapMarkerState> | ReadonlySet<string>): OrderMapFeatureCollection {
   const features: OrderMapFeatureCollection['features'] = [];
   orders.forEach((order, index) => {
     const lngLat = toLngLat(order.coordinates);
     if (lngLat === null) return;
-    const planned = plannedOrderIds.has(order.orderId) || order.routePlanId !== null || order.planningStatus !== 'UNPLANNED';
-    const pinKind = order.blockerReasons.length > 0 ? 'review' : planned ? 'planned' : 'unplanned';
+    const state = readOrderMarkerState(order.orderId, markerState);
+    const planned = state.pinKind === 'candidate' || order.routePlanId !== null || order.planningStatus !== 'UNPLANNED';
+    const pinKind = state.pinKind ?? (order.blockerReasons.length > 0 ? 'review' : 'unplanned');
+    const markerOpacity = normalizeMarkerOpacity(state.markerOpacity);
+    const sequence = state.sequence ?? null;
     features.push({
       geometry: { coordinates: lngLat, type: 'Point' },
       properties: {
-        label: String(index + 1),
+        label: sequence === null ? '' : String(sequence),
+        markerOpacity,
         orderId: order.orderId,
         orderName: order.orderName,
         pinImage: pinImageForKind(pinKind),
         pinKind,
         planned,
-        sortKey: planned ? index + 1000 : index
+        sortKey: sequence === null ? planned ? index + 1000 : index : 2000 + sequence
       },
       type: 'Feature'
     });
@@ -84,8 +97,18 @@ export function buildOrdersMapFeatureCollection(orders: CanonicalOrderDto[], pla
   return { features, type: 'FeatureCollection' };
 }
 
-function pinImageForKind(kind: OrderMapFeatureCollection['features'][number]['properties']['pinKind']): string {
-  if (kind === 'planned') return 'orders-map-pin-planned';
+function readOrderMarkerState(orderId: string, markerState: ReadonlyMap<string, OrderMapMarkerState> | ReadonlySet<string>): OrderMapMarkerState {
+  if ('get' in markerState) return markerState.get(orderId) ?? {};
+  return markerState.has(orderId) ? { pinKind: 'candidate' } : {};
+}
+
+function normalizeMarkerOpacity(value: number | null | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 1;
+  return Math.min(1, Math.max(0, value));
+}
+
+function pinImageForKind(kind: OrderMapPinKind): string {
+  if (kind === 'candidate') return 'orders-map-pin-planned';
   if (kind === 'review') return 'orders-map-pin-review';
   return 'orders-map-pin';
 }

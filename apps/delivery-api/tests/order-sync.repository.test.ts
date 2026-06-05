@@ -1041,6 +1041,195 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       where: { orderId: 'order-id', shopId: 'shop-id' }
     });
   });
+
+  test.each(['DRAFT', 'IN_PROGRESS'])(
+    'creates a critical notification when Woo changes an address already assigned to a %s route',
+    async (routePlanStatus) => {
+      const { prisma } = createPrismaHarness({
+        existingOrder: routedExistingOrder(routePlanStatus),
+        routeStopCount: 0
+      });
+      const repository = new PrismaOrderSyncRepository(
+        prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+      );
+
+      await repository.upsertOrderWithDeliveryStop({
+        shopDomain: 'example.myshopify.com',
+        synced: syncedOrder({
+          sourcePlatform: 'WOOCOMMERCE',
+          sourceUpdatedAt: new Date('2026-05-08T13:00:00.000Z'),
+          updatedAtShopify: new Date('2026-05-08T13:00:00.000Z')
+        })
+      });
+
+      const notificationCreateDataMatcher: unknown = expect.objectContaining({
+        href: '/admin/ui/app/routes/route-plan-id',
+        orderId: 'order-id',
+        routePlanId: 'route-plan-id',
+        severity: 'critical',
+        shopId: 'shop-id',
+        title: 'Route assigned order address changed',
+        type: 'WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED'
+      });
+      expect(prisma.adminNotification.createMany).toHaveBeenCalledWith({
+        data: [notificationCreateDataMatcher],
+        skipDuplicates: true
+      });
+      const createInput = prisma.adminNotification.createMany.mock.calls[0]?.[0] as
+        | { data?: Array<{ dedupeKey?: string; payload?: Record<string, unknown> }> }
+        | undefined;
+      expect(createInput?.data?.[0]?.dedupeKey).toMatch(
+        /^woo_address_changed_route_assigned:shop-id:order-id:route-plan-id:/u
+      );
+      expect(createInput?.data?.[0]?.payload).toEqual(expect.objectContaining({
+        routePlanStatus
+      }));
+    }
+  );
+
+  test('does not notify when the changed Woo address is not assigned to a route', async () => {
+    const { prisma } = createPrismaHarness({
+      existingOrder: routedExistingOrder('DRAFT', { routePlanStops: [] }),
+      routeStopCount: 0
+    });
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: syncedOrder({
+        sourcePlatform: 'WOOCOMMERCE',
+        sourceUpdatedAt: new Date('2026-05-08T13:00:00.000Z'),
+        updatedAtShopify: new Date('2026-05-08T13:00:00.000Z')
+      })
+    });
+
+    expect(prisma.adminNotification.createMany).not.toHaveBeenCalled();
+  });
+
+  test('does not emit Woo address notifications for non-Woo order snapshots', async () => {
+    const { prisma } = createPrismaHarness({
+      existingOrder: routedExistingOrder('DRAFT'),
+      routeStopCount: 0
+    });
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: syncedOrder({
+        sourcePlatform: 'SHOPIFY',
+        sourceUpdatedAt: new Date('2026-05-08T13:00:00.000Z'),
+        updatedAtShopify: new Date('2026-05-08T13:00:00.000Z')
+      })
+    });
+
+    expect(prisma.adminNotification.createMany).not.toHaveBeenCalled();
+  });
+
+  test('writes routed-address notifications after the sync transaction with duplicate skipping', async () => {
+    const { prisma } = createPrismaHarness({
+      existingOrder: routedExistingOrder('DRAFT'),
+      routeStopCount: 0
+    });
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+
+    await expect(
+      repository.upsertOrderWithDeliveryStop({
+        shopDomain: 'example.myshopify.com',
+        synced: {
+          ...syncedOrder({
+          sourcePlatform: 'WOOCOMMERCE',
+          sourceUpdatedAt: new Date('2026-05-08T13:00:00.000Z'),
+          updatedAtShopify: new Date('2026-05-08T13:00:00.000Z')
+          }),
+          deliveryFact: syncedDeliveryFact()
+        }
+      })
+    ).resolves.toEqual(expect.objectContaining({ status: 'updated' }));
+    expect(prisma.orderDeliveryFact.upsert).toHaveBeenCalled();
+    expect(prisma.adminNotification.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skipDuplicates: true })
+    );
+  });
+
+  test('keeps Woo order sync committed when the post-commit advisory notification write fails', async () => {
+    const { prisma } = createPrismaHarness({
+      existingOrder: routedExistingOrder('DRAFT'),
+      routeStopCount: 0
+    });
+    prisma.adminNotification.createMany.mockRejectedValueOnce(
+      new Error('notification table unavailable')
+    );
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+
+    await expect(
+      repository.upsertOrderWithDeliveryStop({
+        shopDomain: 'example.myshopify.com',
+        synced: {
+          ...syncedOrder({
+          sourcePlatform: 'WOOCOMMERCE',
+          sourceUpdatedAt: new Date('2026-05-08T13:00:00.000Z'),
+          updatedAtShopify: new Date('2026-05-08T13:00:00.000Z')
+          }),
+          deliveryFact: syncedDeliveryFact()
+        }
+      })
+    ).resolves.toEqual(expect.objectContaining({ status: 'updated' }));
+    expect(prisma.orderDeliveryFact.upsert).toHaveBeenCalled();
+    const transactionOrder = prisma.$transaction.mock.invocationCallOrder[0] ?? 0;
+    const notificationOrder = prisma.adminNotification.createMany.mock.invocationCallOrder[0] ?? 0;
+    expect(transactionOrder).toBeLessThan(notificationOrder);
+  });
+
+  test('uses a new dedupe key when Woo changes the same routed order to a second distinct address', async () => {
+    const { prisma } = createPrismaHarness({
+      existingOrder: routedExistingOrder('DRAFT'),
+      routeStopCount: 0
+    });
+    const repository = new PrismaOrderSyncRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
+    );
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: syncedOrder({
+        sourcePlatform: 'WOOCOMMERCE',
+        sourceUpdatedAt: new Date('2026-05-08T13:00:00.000Z'),
+        updatedAtShopify: new Date('2026-05-08T13:00:00.000Z')
+      })
+    });
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: {
+        ...syncedOrder({
+          sourcePlatform: 'WOOCOMMERCE',
+          sourceUpdatedAt: new Date('2026-05-08T14:00:00.000Z'),
+          updatedAtShopify: new Date('2026-05-08T14:00:00.000Z')
+        }),
+        deliveryStop: {
+          ...(syncedOrder()
+            .deliveryStop as NonNullable<
+            SyncedOrderWithDeliveryStopInput['deliveryStop']
+          >),
+          address1: '400 Second Address Ave'
+        }
+      }
+    });
+
+    const dedupeKeys = prisma.adminNotification.createMany.mock.calls.map((call) =>
+      String((call[0] as { data: Array<{ dedupeKey: string }> }).data[0]?.dedupeKey)
+    );
+    expect(dedupeKeys).toHaveLength(2);
+    expect(new Set(dedupeKeys).size).toBe(2);
+  });
+
 });
 
 function createPrismaHarness(input: {
@@ -1049,6 +1238,7 @@ function createPrismaHarness(input: {
 }): {
   prisma: {
     $transaction: ReturnType<typeof vi.fn>;
+    adminNotification: { createMany: ReturnType<typeof vi.fn> };
     commerceConnectionOrderMapping: { findUnique: ReturnType<typeof vi.fn> };
     deliveryStop: { updateMany: ReturnType<typeof vi.fn>; upsert: ReturnType<typeof vi.fn> };
     order: {
@@ -1065,6 +1255,9 @@ function createPrismaHarness(input: {
   const orderRecord = canonicalOrderRecord(input.routeStopCount);
   const prisma = {
     $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(prisma)),
+    adminNotification: {
+      createMany: vi.fn(() => Promise.resolve({ count: 1 }))
+    },
     commerceConnectionOrderMapping: {
       findUnique: vi.fn(() => Promise.resolve(null))
     },
@@ -1087,6 +1280,44 @@ function createPrismaHarness(input: {
   };
   return {
     prisma
+  };
+}
+
+
+function routedExistingOrder(
+  routePlanStatus: string,
+  overrides: { routePlanStops?: Array<Record<string, unknown>> } = {}
+): ({ id: string; updatedAtShopify: Date; deliveryStops: Array<Record<string, unknown>> } & Record<string, unknown>) {
+  return {
+    ...canonicalOrderRecord(0),
+    deliveryStops: [
+      {
+        address1: '100 Old Route St',
+        address2: 'Unit 1',
+        city: 'Mississauga',
+        countryCode: 'CA',
+        deliveryDate: new Date('2026-05-08T00:00:00.000Z'),
+        geocodeStatus: 'RESOLVED',
+        latitude: '43.5000000',
+        longitude: '-79.6000000',
+        postalCode: 'L5A 1A1',
+        province: 'ON',
+        routePlanStops: overrides.routePlanStops ?? [
+          {
+            routePlan: {
+              id: 'route-plan-id',
+              name: 'Route draft',
+              status: routePlanStatus
+            }
+          }
+        ],
+        timeWindowEnd: new Date('2026-05-09T01:00:00.000Z'),
+        timeWindowStart: new Date('2026-05-08T21:00:00.000Z')
+      }
+    ],
+    id: 'order-id',
+    sourceUpdatedAt: new Date('2026-05-07T13:00:00.000Z'),
+    updatedAtShopify: new Date('2026-05-07T13:00:00.000Z')
   };
 }
 

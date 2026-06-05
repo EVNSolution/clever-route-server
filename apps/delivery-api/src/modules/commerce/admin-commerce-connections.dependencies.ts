@@ -11,6 +11,8 @@ import { PrismaRoutePlanRepository } from '../route-plans/route-plan.repository.
 import { RoutePlanAdminService } from '../route-plans/route-plan.service.js';
 import { OsrmRouteGeometryProvider } from '../route-plans/osrm-route-geometry.client.js';
 import { PrismaOrderSyncRepository } from '../shopify/order-sync.repository.js';
+import { PrismaAdminNotificationRepository } from '../notifications/admin-notification.repository.js';
+import { AdminNotificationService } from '../notifications/admin-notification.service.js';
 import { ShopifyOrderSyncService } from '../shopify/order-sync.service.js';
 import { createWooCommerceOrderClientFromConnection } from '../woocommerce/woocommerce-order.client.js';
 import { WooCommerceOrderSyncService } from '../woocommerce/woocommerce-order-sync.service.js';
@@ -131,6 +133,7 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     ...readAdminUiDriverService(input),
     geocodingService: loadGeocodingService({ env: input.env }),
     onboardingService: input.adminCommerceConnections.onboardingService,
+    ...readAdminUiNotificationService(input),
     ...readAdminUiOrderSyncService(input),
     ...readAdminUiPairingCodeService(input),
     ...readAdminUiWooSyncService(input),
@@ -223,6 +226,17 @@ function readAdminUiWooSyncService(input: {
       prisma: input.prisma,
       syncService
     })
+  };
+}
+
+function readAdminUiNotificationService(input: {
+  prisma?: PrismaClient | undefined;
+}): Pick<AdminCommerceConnectionsUiDependencies, 'notificationService'> {
+  if (input.prisma === undefined) return {};
+  return {
+    notificationService: new AdminNotificationService(
+      new PrismaAdminNotificationRepository(input.prisma)
+    )
   };
 }
 

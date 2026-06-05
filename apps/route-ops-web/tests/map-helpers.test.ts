@@ -8,17 +8,20 @@ import { installPmtilesProtocol } from '../src/maps/pmtiles';
 import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto } from '../src/types';
 
 describe('route ops map helpers', () => {
-  test('builds order GeoJSON with planned/review pin classification and filters invalid coordinates', () => {
+  test('builds order GeoJSON with candidate/review pin classification and filters invalid coordinates', () => {
     const collection = buildOrdersMapFeatureCollection([
       order({ orderId: 'ready', orderName: '#1001' }),
       order({ blockerReasons: ['missing_coordinates'], orderId: 'review', orderName: '#1002' }),
       order({ coordinates: { latitude: null, longitude: -79.4 }, orderId: 'bad' })
-    ], new Set(['ready']));
+    ], new Map([
+      ['ready', { pinKind: 'candidate', sequence: 1 }],
+      ['review', { markerOpacity: 0.5, pinKind: 'review' }]
+    ]));
 
     expect(collection.features).toHaveLength(2);
-    expect(collection.features.map((feature) => [feature.properties.orderId, feature.properties.pinKind])).toEqual([
-      ['ready', 'planned'],
-      ['review', 'review']
+    expect(collection.features.map((feature) => [feature.properties.orderId, feature.properties.pinKind, feature.properties.label, feature.properties.markerOpacity])).toEqual([
+      ['ready', 'candidate', '1', 1],
+      ['review', 'review', '', 0.5]
     ]);
     expect(collection.features.map((feature) => feature.properties.pinImage)).toEqual([
       'orders-map-pin-planned',

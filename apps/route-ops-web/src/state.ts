@@ -14,7 +14,6 @@ export type OrderFilters = {
   deliveryDate?: string;
   deliverySession?: string;
   deliveryStatus?: string;
-  health?: string;
   search?: string;
   scope?: OrderScopeFilter;
   serviceType?: string;
@@ -87,7 +86,6 @@ export function createDefaultOrderFilters(): OrderFilterState {
     deliveryDate: '',
     deliverySession: '',
     deliveryStatus: '',
-    health: '',
     scope: 'planning',
     search: '',
     serviceType: '',
@@ -101,7 +99,6 @@ export function buildOrderQuery(filters: OrderFilters): string {
   setParam(params, 'deliveryDate', filters.deliveryDate);
   setParam(params, 'deliveryArea', filters.deliveryArea);
   setParam(params, 'deliveryStatus', filters.deliveryStatus);
-  setParam(params, 'health', filters.health);
   setRequiredParam(params, 'scope', filters.scope);
   setRequiredParam(params, 'tab', filters.tab);
   if (filters.tab === undefined) setParam(params, 'status', filters.status);
@@ -112,7 +109,14 @@ export function buildOrderQuery(filters: OrderFilters): string {
 }
 
 export function buildOrderFetchQuery(filters: OrderFilters): string {
-  const { deliveryDate: _deliveryDate, ...serverFilters } = filters;
+  const {
+    deliveryDate: _deliveryDate,
+    deliverySession: _deliverySession,
+    serviceType: _serviceType,
+    status: _status,
+    tab: _tab,
+    ...serverFilters
+  } = filters;
   return buildOrderQuery(serverFilters);
 }
 
@@ -120,10 +124,87 @@ export function applyClientOrderFilters(
   orders: CanonicalOrderDto[],
   filters: OrderFilters
 ): CanonicalOrderDto[] {
-  const deliveryDate = filters.deliveryDate?.trim();
-  if (deliveryDate === undefined || deliveryDate === '' || deliveryDate === 'all')
-    return orders;
-  return orders.filter((order) => order.deliveryDate === deliveryDate);
+  if (!hasActiveClientOrderFilter(filters)) return orders;
+  return orders.filter((order) => {
+    const deliveryDate = normalizeFilterValue(filters.deliveryDate);
+    if (deliveryDate !== null && order.deliveryDate !== deliveryDate) return false;
+
+    const serviceType = normalizeFilterValue(filters.serviceType);
+    if (serviceType !== null && order.serviceType !== serviceType) return false;
+
+    const deliverySession = normalizeFilterValue(filters.deliverySession);
+    if (deliverySession !== null && order.deliverySession !== deliverySession) return false;
+
+    const tab = filters.tab;
+    if (tab !== undefined && tab !== 'all' && !matchesClientOrderTab(order, tab)) {
+      return false;
+    }
+
+    const planningStatus = normalizeFilterValue(filters.status);
+    if (planningStatus === 'planned' && !isPlannedOrder(order)) return false;
+    if (planningStatus === 'unplanned' && isPlannedOrder(order)) return false;
+
+    const deliveryStatus = normalizeFilterValue(filters.deliveryStatus);
+    if (deliveryStatus !== null && order.deliveryStatus !== deliveryStatus) {
+      return false;
+    }
+
+    const deliveryArea = normalizeFilterValue(filters.deliveryArea);
+    if (
+      deliveryArea !== null &&
+      order.deliveryArea?.toLowerCase() !== deliveryArea.toLowerCase()
+    ) {
+      return false;
+    }
+
+    const search = normalizeFilterValue(filters.search);
+    if (search !== null && !matchesOrderSearch(order, search)) return false;
+
+    return true;
+  });
+}
+
+function hasActiveClientOrderFilter(filters: OrderFilters): boolean {
+  return (
+    normalizeFilterValue(filters.deliveryArea) !== null ||
+    normalizeFilterValue(filters.deliveryDate) !== null ||
+    normalizeFilterValue(filters.deliverySession) !== null ||
+    normalizeFilterValue(filters.deliveryStatus) !== null ||
+    normalizeFilterValue(filters.search) !== null ||
+    normalizeFilterValue(filters.serviceType) !== null ||
+    normalizeFilterValue(filters.status) !== null ||
+    (filters.tab !== undefined && filters.tab !== 'all')
+  );
+}
+
+function normalizeFilterValue(value: string | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const trimmed = value.trim();
+  if (trimmed === '' || trimmed === 'all') return null;
+  return trimmed;
+}
+
+function matchesClientOrderTab(order: CanonicalOrderDto, tab: Exclude<OrderTabFilter, 'all'>): boolean {
+  if (tab === 'planned') return isPlannedOrder(order);
+  if (tab === 'needs_review') return isNeedsReviewOrder(order);
+  return !isPlannedOrder(order) && isRoutePlanEligibleForWorkset(order);
+}
+
+function matchesOrderSearch(order: CanonicalOrderDto, search: string): boolean {
+  const needle = search.toLowerCase();
+  return [
+    order.orderName,
+    order.sourceOrderNumber,
+    order.sourceOrderId,
+    order.recipientName,
+    order.phone,
+    order.deliveryArea,
+    order.shippingAddress.address1,
+    order.shippingAddress.address2,
+    order.shippingAddress.city,
+    order.shippingAddress.province,
+    order.shippingAddress.postalCode
+  ].some((value) => value?.toLowerCase().includes(needle) === true);
 }
 
 export function matchesPlanningScope(

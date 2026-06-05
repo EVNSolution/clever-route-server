@@ -4946,6 +4946,122 @@ describe("Admin WooCommerce connection UI routes", () => {
       await app.close();
     }
   });
+
+  test("lists Route Ops notifications through the browser app API with tenant scoping", async () => {
+    const notificationService = {
+      createNotificationOnce: vi.fn(),
+      listNotifications: vi.fn(() =>
+        Promise.resolve({
+          notifications: [
+            {
+              body: "Woo changed the destination after routing.",
+              createdAt: "2026-06-05T07:00:00.000Z",
+              href: "/admin/ui/app/routes/route-plan-id",
+              id: "notification-id",
+              orderId: "order-id",
+              payload: { afterAddressHash: "hash-after" },
+              readAt: null,
+              routePlanId: "route-plan-id",
+              severity: "critical" as const,
+              title: "Route assigned order address changed",
+              type: "WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED",
+            },
+          ],
+          unreadCount: 1,
+        }),
+      ),
+      markNotificationRead: vi.fn(),
+    };
+    const { app } = await createUiHarness({ notificationService });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        headers: { accept: "application/json", cookie },
+        method: "GET",
+        url: "/admin/ui/app/api/notifications?shopDomain=tenant-a.example.test&limit=10",
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(readApiData<{ unreadCount: number }>(response).unreadCount).toBe(
+        1,
+      );
+      expect(notificationService.listNotifications).toHaveBeenCalledWith({
+        includeRead: true,
+        limit: 10,
+        shopDomain: "tenant-a.example.test",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("does not hide missing Route Ops notification service as an empty notification list", async () => {
+    const { app } = await createUiHarness();
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        headers: { accept: "application/json", cookie },
+        method: "GET",
+        url: "/admin/ui/app/api/notifications?shopDomain=tenant-a.example.test",
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(readApiError(response)).toEqual(
+        expect.objectContaining({
+          code: "BAD_REQUEST",
+          message: "Notification service is not enabled in this runtime.",
+        }),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("marks Route Ops notifications read only through the authenticated shop context", async () => {
+    const notificationService = {
+      createNotificationOnce: vi.fn(),
+      listNotifications: vi.fn(),
+      markNotificationRead: vi.fn(() =>
+        Promise.resolve({
+          body: null,
+          createdAt: "2026-06-05T07:00:00.000Z",
+          href: null,
+          id: "notification-id",
+          orderId: null,
+          payload: null,
+          readAt: "2026-06-05T07:01:00.000Z",
+          routePlanId: null,
+          severity: "info" as const,
+          title: "Read notification",
+          type: "SYSTEM",
+        }),
+      ),
+    };
+    const { app } = await createUiHarness({ notificationService });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/admin/ui/app/api/notifications/notification-id/read?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {}, csrfToken),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(
+        readApiData<{ notification: { readAt: string | null } }>(response)
+          .notification.readAt,
+      ).toBe("2026-06-05T07:01:00.000Z");
+      expect(notificationService.markNotificationRead).toHaveBeenCalledWith({
+        notificationId: "notification-id",
+        shopDomain: "tenant-a.example.test",
+      });
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 async function createUiHarness(
@@ -4957,6 +5073,7 @@ async function createUiHarness(
     getConnection: ReturnType<typeof vi.fn>;
     listConnections: ReturnType<typeof vi.fn>;
     orderSyncService: AdminCommerceConnectionsUiDependencies["orderSyncService"];
+    notificationService: AdminCommerceConnectionsUiDependencies["notificationService"];
     pairingCodeService:
       | AdminCommerceConnectionsUiDependencies["pairingCodeService"]
       | null;
@@ -5054,6 +5171,9 @@ async function createUiHarness(
     ...(overrides.orderSyncService === undefined
       ? {}
       : { orderSyncService: overrides.orderSyncService }),
+    ...(overrides.notificationService === undefined
+      ? {}
+      : { notificationService: overrides.notificationService }),
     ...(overrides.now === undefined ? {} : { now: overrides.now }),
     publicBaseUrl: "https://clever-route.cleversystem.ai",
     ...(overrides.routePlanService === undefined

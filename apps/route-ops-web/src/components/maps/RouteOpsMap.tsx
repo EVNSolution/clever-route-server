@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
 
-import { buildOrdersMapFeatureCollection, buildRouteDropoffPointFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection, fitBoundsForPoints, getOrderMapPoints, getRouteDropoffPoints, getRouteMapPoints, type RouteDropoffPointFeatureCollection, type RouteLineFeature, type RouteOpsPoint, type RouteStopMarkerFeatureCollection } from '../../maps/geojson';
+import { buildOrdersMapFeatureCollection, buildRouteDropoffPointFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection, fitBoundsForPoints, getOrderMapPoints, getRouteDropoffPoints, getRouteMapPoints, type OrderMapMarkerState, type RouteDropoffPointFeatureCollection, type RouteLineFeature, type RouteOpsPoint, type RouteStopMarkerFeatureCollection } from '../../maps/geojson';
 import { installMissingMapImageFallback } from '../../maps/maplibre-missing-images';
 import { installPmtilesProtocol } from '../../maps/pmtiles';
 import { mapReadiness } from '../../maps/provider';
@@ -30,13 +30,14 @@ type RouteOpsMapProps = {
   depot?: RouteOpsPoint | null;
   onMapClickCoordinate?(coordinate: { latitude: number; longitude: number }): void;
   onOrderSelect?(orderId: string): void;
+  orderMarkerStates?: ReadonlyMap<string, OrderMapMarkerState>;
   orders?: CanonicalOrderDto[];
   plannedOrderIds?: ReadonlySet<string>;
   subtitle: string;
   title: string;
 };
 
-export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClickCoordinate, onOrderSelect, orders = [], plannedOrderIds = new Set<string>(), subtitle, title }: RouteOpsMapProps): ReactElement {
+export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClickCoordinate, onOrderSelect, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), subtitle, title }: RouteOpsMapProps): ReactElement {
   const locale = resolveLocale(bootstrap.locale);
   const t = getMapCopy(locale);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -60,7 +61,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
   const readiness = mapReadiness({ coordinatesCount: points.length, mapStatus: bootstrap.mapConfig.status });
   const routeGeometry = useMemo(() => buildRouteGeometryFeature(detail), [detail]);
   const lineFeature = detail === null ? null : routeGeometry;
-  const ordersGeojson = useMemo(() => buildOrdersMapFeatureCollection(orders, plannedOrderIds), [orders, plannedOrderIds]);
+  const ordersGeojson = useMemo(() => buildOrdersMapFeatureCollection(orders, orderMarkerStates ?? plannedOrderIds), [orderMarkerStates, orders, plannedOrderIds]);
   const routeDropoffGeojson = useMemo(() => (detail === null ? EMPTY_ROUTE_DROPOFF_COLLECTION : buildRouteDropoffPointFeatureCollection(dropoffPoints)), [detail, dropoffPoints]);
   const routeStopGeojson = useMemo(() => (detail === null ? EMPTY_ROUTE_STOP_COLLECTION : buildRouteStopMarkerFeatureCollection(points)), [detail, points]);
 
@@ -188,8 +189,12 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
       if (typeof orderId === 'string') onOrderSelectRef.current?.(orderId);
     };
     map.on('click', 'route-ops-order-pins', handleOrderPinClick);
+    if (safeGetLayer(map, 'route-ops-order-labels')) {
+      map.on('click', 'route-ops-order-labels', handleOrderPinClick);
+    }
     return () => {
       safeLayerOff(map, 'click', 'route-ops-order-pins', handleOrderPinClick);
+      safeLayerOff(map, 'click', 'route-ops-order-labels', handleOrderPinClick);
     };
   }, [detail, isMapReady, onOrderSelect]);
 
@@ -223,6 +228,7 @@ export function syncOrdersLayer(map: MapLibreMap, featureCollection: ReturnType<
 
   if (!ensureOrdersMapPinImages(map)) {
     syncFallbackCircleOrdersLayer(map);
+    syncOrderLabelsLayer(map);
     return;
   }
 
@@ -237,10 +243,14 @@ export function syncOrdersLayer(map: MapLibreMap, featureCollection: ReturnType<
         'icon-size': ORDER_PIN_ICON_SIZE,
         'symbol-sort-key': ['get', 'sortKey']
       },
+      paint: {
+        'icon-opacity': ['get', 'markerOpacity']
+      },
       source: 'route-ops-orders',
       type: 'symbol'
     });
   }
+  syncOrderLabelsLayer(map);
 }
 
 function syncFallbackCircleOrdersLayer(map: MapLibreMap): void {
@@ -248,13 +258,36 @@ function syncFallbackCircleOrdersLayer(map: MapLibreMap): void {
   safeAddLayer(map, {
     id: 'route-ops-order-pins',
     paint: {
-      'circle-color': ['match', ['get', 'pinKind'], 'planned', '#e11900', 'review', '#303030', '#006fbb'],
+      'circle-color': ['match', ['get', 'pinKind'], 'candidate', '#006fbb', 'review', '#e11900', '#303030'],
+      'circle-opacity': ['get', 'markerOpacity'],
       'circle-radius': 12,
       'circle-stroke-color': '#ffffff',
+      'circle-stroke-opacity': ['get', 'markerOpacity'],
       'circle-stroke-width': 3
     },
     source: 'route-ops-orders',
     type: 'circle'
+  });
+}
+
+function syncOrderLabelsLayer(map: MapLibreMap): void {
+  if (safeGetLayer(map, 'route-ops-order-labels')) return;
+  safeAddLayer(map, {
+    id: 'route-ops-order-labels',
+    layout: {
+      'symbol-sort-key': ['get', 'sortKey'],
+      'text-allow-overlap': true,
+      'text-field': ['get', 'label'],
+      'text-font': ['Noto Sans Bold'],
+      'text-ignore-placement': true,
+      'text-size': 10
+    },
+    paint: {
+      'text-color': '#ffffff',
+      'text-opacity': ['get', 'markerOpacity']
+    },
+    source: 'route-ops-orders',
+    type: 'symbol'
   });
 }
 
@@ -265,9 +298,9 @@ function ensureOrdersMapPinImages(map: MapLibreMap): boolean {
   };
   if (typeof imageApi.addImage !== 'function' || typeof imageApi.hasImage !== 'function') return false;
   const images = [
-    { color: '#006fbb', id: ORDER_PIN_IMAGE_ID, shadowColor: 'rgba(0, 111, 187, 0.36)' },
-    { color: '#e11900', id: ORDER_PIN_PLANNED_IMAGE_ID, shadowColor: 'rgba(225, 25, 0, 0.4)' },
-    { color: '#303030', id: ORDER_PIN_REVIEW_IMAGE_ID, shadowColor: 'rgba(48, 48, 48, 0.36)' }
+    { color: '#303030', id: ORDER_PIN_IMAGE_ID, shadowColor: 'rgba(48, 48, 48, 0.36)' },
+    { color: '#006fbb', id: ORDER_PIN_PLANNED_IMAGE_ID, shadowColor: 'rgba(0, 111, 187, 0.36)' },
+    { color: '#e11900', id: ORDER_PIN_REVIEW_IMAGE_ID, shadowColor: 'rgba(225, 25, 0, 0.4)' }
   ];
   for (const image of images) {
     if (safeHasImage(imageApi, image.id)) continue;

@@ -186,12 +186,36 @@ model Shop {
   commerceConnectionOrderMappings CommerceConnectionOrderMapping[]
   commerceSyncRuns                CommerceSyncRun[]
   commerceRawOrderIngests         CommerceRawOrderIngest[]
+  adminNotifications              AdminNotification[]
   orderDeliveryFacts              OrderDeliveryFact[]
   wordpressPluginPairingCodes     WordPressPluginPairingCode[]
 
   @@unique([shopDomain])
   @@unique([shopifyShopGid])
   @@map("shops")
+}
+
+model AdminNotification {
+  id          String    @id @default(uuid()) @db.Uuid
+  shopId      String    @db.Uuid
+  shop        Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  type        String    @db.Text
+  severity    String    @db.Text
+  dedupeKey   String    @db.Text
+  title       String    @db.Text
+  body        String?   @db.Text
+  href        String?   @db.Text
+  orderId     String?   @db.Uuid
+  routePlanId String?   @db.Uuid
+  payload     Json?
+  readAt      DateTime? @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, dedupeKey])
+  @@index([shopId, readAt, createdAt])
+  @@index([shopId, type, createdAt])
+  @@map("admin_notifications")
 }
 
 model CommerceConnection {

@@ -1,15 +1,20 @@
 import { useEffect, useState } from 'react';
 import type { ReactElement } from 'react';
 
-import { getBootstrap } from './api';
+import {
+  getBootstrap,
+  getNotifications,
+  markNotificationRead,
+} from './api';
 import { AppShell, type NavItem, type RouteOpsPage } from './components/AppShell';
+import type { TopbarNotificationItem } from './components/TopbarNotifications';
 import { DashboardPage } from './pages/DashboardPage';
 import { DriversPage } from './pages/DriversPage';
 import { OrdersPage } from './pages/OrdersPage';
 import { RoutesPage } from './pages/RoutesPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { getAppCopy, resolveLocale } from './i18n';
-import type { BootstrapPayload } from './types';
+import type { AdminNotificationDto, BootstrapPayload } from './types';
 import { readErrorMessage } from './utils/format';
 
 type Page = RouteOpsPage;
@@ -32,6 +37,9 @@ function buildNavItems(locale: string | null | undefined): NavItem[] {
 
 export function App(): ReactElement {
   const [bootstrap, setBootstrap] = useState<BootstrapPayload | null>(null);
+  const [notifications, setNotifications] = useState<TopbarNotificationItem[]>([]);
+  const [notificationLoadError, setNotificationLoadError] = useState<string | null>(null);
+  const [notificationUnreadCount, setNotificationUnreadCount] = useState(0);
   const [route, setRoute] = useState<AppRoute>(() => parseRoute(window.location.pathname));
   const [error, setError] = useState<string | null>(null);
 
@@ -50,18 +58,106 @@ export function App(): ReactElement {
       .catch((loadError: unknown) => setError(readErrorMessage(loadError)));
   }, []);
 
+  useEffect(() => {
+    if (bootstrap === null) return undefined;
+    if (bootstrap.shopDomain === null) {
+      setNotifications([]);
+      setNotificationLoadError(null);
+      setNotificationUnreadCount(0);
+      return undefined;
+    }
+    let cancelled = false;
+    const loadNotifications = async (): Promise<void> => {
+      try {
+        const payload = await getNotifications('limit=30');
+        if (!cancelled) {
+          setNotifications(
+            payload.notifications.map((item) =>
+              toTopbarNotificationItem(item, bootstrap.locale),
+            ),
+          );
+          setNotificationUnreadCount(payload.unreadCount);
+          setNotificationLoadError(null);
+        }
+      } catch (loadError: unknown) {
+        if (!cancelled) {
+          setNotificationLoadError(
+            getAppCopy(bootstrap.locale).notifications.loadFailed(
+              readErrorMessage(loadError),
+            ),
+          );
+        }
+      }
+    };
+    void loadNotifications();
+    const intervalId = window.setInterval(() => void loadNotifications(), 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [bootstrap]);
+
   const navigate = (path: string): void => {
     window.history.pushState({}, '', withExistingSearch(path));
     setRoute(parseRoute(path));
   };
 
+  const handleNotificationOpen = (item: TopbarNotificationItem): void => {
+    if (bootstrap === null || item.read === true) return;
+    void markNotificationRead({
+      csrfToken: bootstrap.csrfToken,
+      notificationId: item.id,
+    })
+      .then(() => {
+        setNotifications((current) =>
+          current.map((currentItem) =>
+            currentItem.id === item.id
+              ? { ...currentItem, read: true }
+            : currentItem,
+          ),
+        );
+        setNotificationUnreadCount((current) =>
+          item.read === true ? current : Math.max(0, current - 1),
+        );
+      })
+      .catch(() => undefined);
+  };
+
   if (bootstrap === null) return <BootFrame error={error} />;
 
   return (
-    <AppShell activePage={route.page} bootstrap={bootstrap} error={error} navItems={buildNavItems(bootstrap.locale)} navigate={navigate} title={pageTitle(route, bootstrap.locale)}>
+    <AppShell activePage={route.page} bootstrap={bootstrap} error={error} navItems={buildNavItems(bootstrap.locale)} navigate={navigate} notificationLoadError={notificationLoadError} notificationUnreadCount={notificationUnreadCount} notifications={notifications} onNotificationOpen={handleNotificationOpen} title={pageTitle(route, bootstrap.locale)}>
       <PageBody bootstrap={bootstrap} navigate={navigate} route={route} setError={setError} />
     </AppShell>
   );
+}
+
+export function toTopbarNotificationItem(
+  notification: AdminNotificationDto,
+  locale: string | null | undefined,
+): TopbarNotificationItem {
+  const t = getAppCopy(locale).notifications;
+  const orderName = readNotificationPayloadString(notification.payload, 'orderName');
+  if (notification.type === 'WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED') {
+    return {
+      body: t.wooAssignedRouteAddressChangedBody(orderName),
+      createdAt: notification.createdAt,
+      href: notification.href,
+      id: notification.id,
+      read: notification.readAt !== null,
+      title: t.wooAssignedRouteAddressChangedTitle,
+      tone: notification.severity,
+    };
+  }
+  return {
+    body: notification.body,
+    createdAt: notification.createdAt,
+    href: notification.href,
+    id: notification.id,
+    read: notification.readAt !== null,
+    title: notification.title,
+    tone: notification.severity,
+  };
 }
 
 function BootFrame({ error }: { error: string | null }): ReactElement {
@@ -113,6 +209,21 @@ function pageTitle(route: AppRoute, locale: string | null | undefined): string {
   if (route.page === 'drivers') return t.drivers;
   if (route.page === 'settings') return t.settings;
   return t.dashboard;
+}
+
+function readNotificationPayloadString(
+  payload: AdminNotificationDto['payload'],
+  field: string,
+): string | null {
+  if (
+    payload === null ||
+    typeof payload !== 'object' ||
+    Array.isArray(payload)
+  ) {
+    return null;
+  }
+  const value = payload[field];
+  return typeof value === 'string' && value.trim() !== '' ? value : null;
 }
 
 function withExistingSearch(path: string): string {
