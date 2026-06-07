@@ -20,6 +20,7 @@ const ORDER_PIN_HISTORY_IMAGE_ID = 'orders-map-pin-history';
 const ORDER_PIN_PIXEL_RATIO = 2;
 const ORDER_PIN_ICON_SIZE = 0.62;
 const ORDER_PIN_PATH = 'M20 50C20 50 4 31.5 4 18C4 9.16 11.16 2 20 2s16 7.16 16 16c0 13.5-16 32-16 32Z';
+const ORDER_PIN_LABEL_OFFSET: [number, number] = [0, -1.85];
 const EMPTY_ORDERS_COLLECTION = buildOrdersMapFeatureCollection([], new Set<string>());
 const EMPTY_ROUTE_DROPOFF_COLLECTION = buildRouteDropoffPointFeatureCollection([]);
 const EMPTY_ROUTE_LINE_COLLECTION = { features: [], type: 'FeatureCollection' } as const;
@@ -243,7 +244,7 @@ export function syncOrdersLayer(map: MapLibreMap, featureCollection: ReturnType<
 
   if (!ensureOrdersMapPinImages(map)) {
     syncFallbackCircleOrdersLayer(map);
-    syncOrderLabelsLayer(map);
+    syncOrderLabelsLayer(map, { alignToPinCenter: false });
     return;
   }
 
@@ -265,7 +266,7 @@ export function syncOrdersLayer(map: MapLibreMap, featureCollection: ReturnType<
       type: 'symbol'
     });
   }
-  syncOrderLabelsLayer(map);
+  syncOrderLabelsLayer(map, { alignToPinCenter: true });
 }
 
 function syncFallbackCircleOrdersLayer(map: MapLibreMap): void {
@@ -285,20 +286,25 @@ function syncFallbackCircleOrdersLayer(map: MapLibreMap): void {
   });
 }
 
-function syncOrderLabelsLayer(map: MapLibreMap): void {
+function syncOrderLabelsLayer(map: MapLibreMap, options: { alignToPinCenter: boolean }): void {
   if (safeGetLayer(map, 'route-ops-order-labels')) return;
   safeAddLayer(map, {
     id: 'route-ops-order-labels',
     layout: {
       'symbol-sort-key': ['get', 'sortKey'],
       'text-allow-overlap': true,
+      'text-anchor': 'center',
       'text-field': ['get', 'label'],
       'text-font': ['Noto Sans Bold'],
       'text-ignore-placement': true,
-      'text-size': 10
+      'text-justify': 'center',
+      'text-offset': options.alignToPinCenter ? ORDER_PIN_LABEL_OFFSET : [0, 0],
+      'text-size': 11
     },
     paint: {
       'text-color': '#ffffff',
+      'text-halo-color': 'rgba(0, 0, 0, 0.28)',
+      'text-halo-width': 0.7,
       'text-opacity': ['get', 'markerOpacity']
     },
     source: 'route-ops-orders',
