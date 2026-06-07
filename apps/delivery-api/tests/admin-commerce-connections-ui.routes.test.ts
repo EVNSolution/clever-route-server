@@ -9,6 +9,8 @@ import type { SafeWooCommerceConnection } from "../src/modules/commerce/commerce
 import { DEFAULT_WORDPRESS_PLUGIN_PAIRING_CODE_TTL_MINUTES } from "../src/modules/wordpress-plugin/wordpress-plugin-auth.service.js";
 import {
   RoutePlanBatchInvalidError,
+  RoutePlanConflictError,
+  RoutePlanOrderAlreadyPlannedError,
   type RoutePlanService,
 } from "../src/modules/route-plans/route-plan.types.js";
 import { defaultRouteScopeConfig } from "../src/modules/route-ops/route-scope-config.js";
@@ -3762,6 +3764,252 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(publishRoutePlan).toHaveBeenCalledWith({
         routePlanId: "route-plan-id",
         shopDomain: "tenant-a.example.test",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("saves route driver, options, and stop order through the aggregate Route Ops API", async () => {
+    const detail = routePlanDetail();
+    const savedDetail = {
+      ...detail,
+      routePlan: {
+        ...detail.routePlan,
+        driverId: "driver-id",
+        routeEndMode: "RETURN_TO_DEPOT" as const,
+        status: "ASSIGNED",
+      },
+    };
+    const getRoutePlanDetail = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["routePlanService"]
+      >["getRoutePlanDetail"]
+    >(() => Promise.resolve(detail));
+    const saveRoutePlan = vi.fn<
+      NonNullable<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["routePlanService"]
+        >["saveRoutePlan"]
+      >
+    >(() =>
+      Promise.resolve({
+        detail: savedDetail,
+        operations: [
+          { name: "options", reason: "route_end_mode_changed", status: "applied" },
+          { name: "stops", reason: "sequence_changed", status: "applied" },
+          { name: "driver", reason: "driver_changed", status: "applied" },
+          { name: "publish", reason: "draft_ready_for_driver", status: "applied" },
+        ],
+      }),
+    );
+    const { app } = await createUiHarness({
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+      },
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan: vi.fn(),
+        getRoutePlanDetail,
+        listRoutePlans: vi.fn(() => Promise.resolve([routePlanSummary()])),
+        saveRoutePlan,
+        updateRoutePlanStops: vi.fn(),
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/admin/ui/app/api/routes/route-plan-id?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(
+          cookie,
+          {
+            driverId: "driver-id",
+            expectedUpdatedAt: "2026-05-26T12:00:00.000Z",
+            routeEndMode: "RETURN_TO_DEPOT",
+            stops: [
+              {
+                deliveryStopId: "stop-2",
+                sourceOrderId: "gid://woocommerce/Order/1002",
+              },
+              {
+                deliveryStopId: "stop-1",
+                sourceOrderId: "gid://woocommerce/Order/1001",
+              },
+            ],
+          },
+          csrfToken,
+        ),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(saveRoutePlan).toHaveBeenCalledWith({
+        payload: {
+          driverId: "driver-id",
+          expectedUpdatedAt: "2026-05-26T12:00:00.000Z",
+          routeEndMode: "RETURN_TO_DEPOT",
+          stops: [
+            {
+              deliveryStopId: "stop-2",
+              sequence: 1,
+              shopifyOrderGid: "gid://woocommerce/Order/1002",
+            },
+            {
+              deliveryStopId: "stop-1",
+              sequence: 2,
+              shopifyOrderGid: "gid://woocommerce/Order/1001",
+            },
+          ],
+        },
+        routePlanId: "route-plan-id",
+        shopDomain: "tenant-a.example.test",
+      });
+      const data = readApiData<{
+        routePlan: { driverId: string; routeEndMode: string; status: string };
+        saveOperations: Array<{ name: string; status: string }>;
+      }>(response);
+      expect(data.routePlan).toEqual(
+        expect.objectContaining({
+          driverId: "driver-id",
+          routeEndMode: "RETURN_TO_DEPOT",
+          status: "ASSIGNED",
+        }),
+      );
+      expect(data.saveOperations.map((operation) => operation.name)).toEqual([
+        "options",
+        "stops",
+        "driver",
+        "publish",
+      ]);
+
+      const blocked = await app.inject({
+        method: "PATCH",
+        url: "/admin/ui/app/api/routes/route-plan-id?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, { driverId: "driver-id" }),
+      });
+      expect(blocked.statusCode).toBe(403);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("returns 409 when aggregate route save is based on a stale route version", async () => {
+    const detail = routePlanDetail();
+    const getRoutePlanDetail = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["routePlanService"]
+      >["getRoutePlanDetail"]
+    >(() => Promise.resolve(detail));
+    const saveRoutePlan = vi.fn<
+      NonNullable<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["routePlanService"]
+        >["saveRoutePlan"]
+      >
+    >(() => Promise.reject(new RoutePlanConflictError()));
+    const { app } = await createUiHarness({
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+      },
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan: vi.fn(),
+        getRoutePlanDetail,
+        listRoutePlans: vi.fn(() => Promise.resolve([routePlanSummary()])),
+        saveRoutePlan,
+        updateRoutePlanStops: vi.fn(),
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/admin/ui/app/api/routes/route-plan-id?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(
+          cookie,
+          {
+            driverId: "driver-id",
+            expectedUpdatedAt: "2026-05-26T11:59:59.000Z",
+          },
+          csrfToken,
+        ),
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(readApiError(response)).toMatchObject({
+        code: "ROUTE_PLAN_CONFLICT",
+      });
+      expect(saveRoutePlan).toHaveBeenCalledWith({
+        payload: {
+          driverId: "driver-id",
+          expectedUpdatedAt: "2026-05-26T11:59:59.000Z",
+        },
+        routePlanId: "route-plan-id",
+        shopDomain: "tenant-a.example.test",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("returns 409 when aggregate route save includes an already planned order", async () => {
+    const detail = routePlanDetail();
+    const getRoutePlanDetail = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["routePlanService"]
+      >["getRoutePlanDetail"]
+    >(() => Promise.resolve(detail));
+    const saveRoutePlan = vi.fn<
+      NonNullable<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["routePlanService"]
+        >["saveRoutePlan"]
+      >
+    >(() => Promise.reject(new RoutePlanOrderAlreadyPlannedError()));
+    const { app } = await createUiHarness({
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+      },
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan: vi.fn(),
+        getRoutePlanDetail,
+        listRoutePlans: vi.fn(() => Promise.resolve([routePlanSummary()])),
+        saveRoutePlan,
+        updateRoutePlanStops: vi.fn(),
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/admin/ui/app/api/routes/route-plan-id?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(
+          cookie,
+          {
+            expectedUpdatedAt: "2026-05-26T12:00:00.000Z",
+            stops: [
+              {
+                deliveryStopId: "stop-2",
+                sourceOrderId: "gid://woocommerce/Order/1002",
+              },
+              {
+                deliveryStopId: "stop-1",
+                sourceOrderId: "gid://woocommerce/Order/1001",
+              },
+            ],
+          },
+          csrfToken,
+        ),
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(readApiError(response)).toMatchObject({
+        code: "ROUTE_ORDER_ALREADY_PLANNED",
+        message: "Some selected orders are already assigned to a route. Refresh the page and try again.",
       });
     } finally {
       await app.close();

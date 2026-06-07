@@ -2,6 +2,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 
 import {
   RoutePlanBatchInvalidError,
+  RoutePlanConflictError,
   RoutePlanDriverAssignInvalidError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanOptionsUpdateInvalidError,
@@ -19,6 +20,9 @@ import type {
   RoutePlanOrderAttributeInput,
   RoutePlanOrderInput,
   PublishRoutePlanInput,
+  SaveRoutePlanInput,
+  SaveRoutePlanOperation,
+  SaveRoutePlanResult,
   UpdateRoutePlanDriverInput,
   UpdateRoutePlanOptionsInput,
   UpdateRoutePlanStopsInput,
@@ -271,6 +275,297 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     });
   }
 
+  async saveRoutePlan(input: SaveRoutePlanInput): Promise<SaveRoutePlanResult | null> {
+    const shopDomain = this.normalizeShopDomain(input.shopDomain);
+    const normalizedStops =
+      input.payload.stops === undefined ? undefined : normalizeStopUpdateInputs(input.payload.stops);
+    if (input.payload.stops !== undefined) {
+      assertNoDuplicateStopUpdateInputs(input.payload.stops);
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const shop = await tx.shop.findUnique({
+        select: shopDepotSelect(),
+        where: { shopDomain }
+      });
+      if (shop === null) {
+        return null;
+      }
+
+      let routePlan = (await tx.routePlan.findFirst({
+        include: routePlanInclude(),
+        where: {
+          id: input.routePlanId,
+          shopId: shop.id
+        }
+      })) as RoutePlanRecord | null;
+      if (routePlan === null) {
+        return null;
+      }
+
+      const initialDriverId = routePlan.driverId ?? routePlan.driver?.id ?? null;
+      const initialRouteStatus = routePlan.status;
+      const initialStopCount = routePlan.routeStops?.length ?? 0;
+      const willRepairDraftDepot =
+        initialRouteStatus === 'DRAFT' &&
+        readDepotFromRoutePlan(routePlan) === null &&
+        readDepotFromShopDefaults(shop) !== null;
+      const hasRouteEndModeChange =
+        input.payload.routeEndMode !== undefined &&
+        readRouteEndMode(routePlan.constraints) !== input.payload.routeEndMode;
+      const hasStopSequenceChange =
+        input.payload.stops !== undefined &&
+        normalizedStops !== undefined &&
+        !sameStopSequenceRecord(routePlan, input.payload.stops);
+      const hasDriverPayload = Object.hasOwn(input.payload, 'driverId');
+      const nextDriverId = hasDriverPayload ? input.payload.driverId ?? null : null;
+      const hasDriverChange = hasDriverPayload && initialDriverId !== nextDriverId;
+      const effectiveDriverId = hasDriverPayload ? nextDriverId : initialDriverId;
+      const effectiveStopCount = hasStopSequenceChange && normalizedStops !== undefined
+        ? normalizedStops.length
+        : initialStopCount;
+      const shouldPublishOnSave =
+        initialRouteStatus === 'DRAFT' && effectiveDriverId !== null && effectiveStopCount > 0;
+      const hasRouteMutation =
+        willRepairDraftDepot ||
+        hasRouteEndModeChange ||
+        hasStopSequenceChange ||
+        hasDriverChange ||
+        shouldPublishOnSave;
+
+      if (input.payload.expectedUpdatedAt !== undefined && hasRouteMutation) {
+        const claimed = await tx.routePlan.updateMany({
+          data: { updatedAt: new Date() },
+          where: {
+            id: routePlan.id,
+            shopId: shop.id,
+            updatedAt: parseExpectedRoutePlanUpdatedAt(input.payload.expectedUpdatedAt)
+          }
+        });
+        if (claimed.count !== 1) {
+          throw new RoutePlanConflictError();
+        }
+      }
+
+      routePlan = await repairDraftDepotIfMissingInTransaction(tx, routePlan, shop);
+
+      const operations: SaveRoutePlanOperation[] = [];
+      let driverId = routePlan.driverId ?? routePlan.driver?.id ?? null;
+      const routeStatus = routePlan.status;
+      let stopCount = routePlan.routeStops?.length ?? 0;
+
+      if (input.payload.routeEndMode !== undefined) {
+        if (!hasRouteEndModeChange) {
+          operations.push({ name: 'options', reason: 'unchanged', status: 'skipped' });
+        } else {
+          if (routeStatus !== 'DRAFT') {
+            throw new RoutePlanOptionsUpdateInvalidError('Route options can be changed before publishing the route.');
+          }
+
+          const currentDepot = readDepotFromRoutePlan(routePlan);
+          const defaultDepot = readDepotFromShopDefaults(shop);
+          const effectiveDepot = currentDepot ?? defaultDepot;
+          if (input.payload.routeEndMode === 'RETURN_TO_DEPOT' && effectiveDepot === null) {
+            throw new RoutePlanOptionsUpdateInvalidError('Return-to-store routing requires default depot coordinates.');
+          }
+
+          const constraints = updateConstraintsRouteEndMode(routePlan.constraints, input.payload.routeEndMode, effectiveDepot);
+          const depotPatch =
+            currentDepot === null && defaultDepot !== null
+              ? {
+                  depotLatitude: decimalString(defaultDepot.latitude),
+                  depotLongitude: decimalString(defaultDepot.longitude)
+                }
+              : {};
+          await tx.routePlan.update({
+            data: {
+              ...depotPatch,
+              constraints
+            },
+            where: { id: routePlan.id }
+          });
+          routePlan = {
+            ...routePlan,
+            ...depotPatch,
+            constraints
+          };
+          operations.push({ name: 'options', reason: 'route_end_mode_changed', status: 'applied' });
+        }
+      } else {
+        operations.push({ name: 'options', reason: 'not_provided', status: 'skipped' });
+      }
+
+      if (input.payload.stops !== undefined && normalizedStops !== undefined) {
+        if (!hasStopSequenceChange) {
+          operations.push({ name: 'stops', reason: 'unchanged', status: 'skipped' });
+        } else {
+          const routeDate = deriveRouteDate(routePlan);
+          const orderGids = normalizedStops.map((stop) => stop.shopifyOrderGid);
+          const orders = (await tx.order.findMany({
+            include: {
+              deliveryStops: {
+                take: 1
+              }
+            },
+            where: {
+              shopId: shop.id,
+              shopifyOrderGid: { in: orderGids }
+            }
+          })) as unknown as OrderRecord[];
+          const ordersByGid = new Map(orders.map((order) => [order.shopifyOrderGid, order]));
+          const missingOrderGids = orderGids.filter((gid) => !ordersByGid.has(gid));
+          if (missingOrderGids.length > 0) {
+            throw new RoutePlanStopUpdateInvalidError('Route stops can only include orders from the current shop.');
+          }
+
+          const wrongDateOrders = normalizedStops.filter((stop) => {
+            const order = ordersByGid.get(stop.shopifyOrderGid);
+            return order !== undefined && readOrderDeliveryDate(order) !== routeDate;
+          });
+          if (wrongDateOrders.length > 0) {
+            throw new RoutePlanStopUpdateInvalidError(
+              'Route stops must share the same delivery date as the route. Choose orders for the route delivery date before saving stops.'
+            );
+          }
+
+          const deliveryStopIds: string[] = [];
+          for (const stopInput of normalizedStops) {
+            const order = ordersByGid.get(stopInput.shopifyOrderGid);
+            if (order === undefined) {
+              throw new RoutePlanStopUpdateInvalidError('Route stops can only include orders from the current shop.');
+            }
+
+            if (stopInput.deliveryStopId !== null) {
+              const deliveryStop = await tx.deliveryStop.findFirst({
+                where: {
+                  id: stopInput.deliveryStopId,
+                  orderId: order.id,
+                  shopId: shop.id
+                }
+              });
+              if (deliveryStop === null) {
+                throw new RoutePlanStopUpdateInvalidError('Route stop does not belong to the selected order.');
+              }
+              deliveryStopIds.push(deliveryStop.id);
+              continue;
+            }
+
+            const deliveryStop = await tx.deliveryStop.upsert({
+              create: {
+                ...toDeliveryStopWriteFromOrder(order, routeDate),
+                orderId: order.id,
+                shopId: shop.id
+              },
+              update: toDeliveryStopWriteFromOrder(order, routeDate),
+              where: {
+                shopId_orderId: {
+                  orderId: order.id,
+                  shopId: shop.id
+                }
+              }
+            });
+            deliveryStopIds.push(deliveryStop.id);
+          }
+
+          const stopsAssignedElsewhere = await tx.routePlanStop.findMany({
+            select: { deliveryStopId: true },
+            where: {
+              deliveryStopId: { in: deliveryStopIds },
+              routePlanId: { not: input.routePlanId },
+              routePlan: { shopId: shop.id }
+            }
+          });
+          if (stopsAssignedElsewhere.length > 0) {
+            throw new RoutePlanOrderAlreadyPlannedError();
+          }
+
+          await tx.routePlanStop.deleteMany({
+            where: { routePlanId: input.routePlanId }
+          });
+
+          if (deliveryStopIds.length > 0) {
+            await tx.routePlanStop.createMany({
+              data: deliveryStopIds.map((deliveryStopId, index) => ({
+                deliveryStopId,
+                routePlanId: input.routePlanId,
+                sequence: index + 1
+              }))
+            });
+          }
+
+          await tx.routePlan.update({
+            data: {
+              metrics: createMetricsFromOrders(ordersByGid, orderGids, deliveryStopIds.length)
+            },
+            where: { id: input.routePlanId }
+          });
+          stopCount = deliveryStopIds.length;
+          operations.push({ name: 'stops', reason: 'sequence_changed', status: 'applied' });
+        }
+      } else {
+        operations.push({ name: 'stops', reason: 'not_provided', status: 'skipped' });
+      }
+
+      if (hasDriverPayload) {
+        if (!hasDriverChange) {
+          operations.push({ name: 'driver', reason: 'unchanged', status: 'skipped' });
+        } else {
+          if (nextDriverId !== null) {
+            const driver = await tx.driver.findFirst({
+              select: { id: true },
+              where: {
+                id: nextDriverId,
+                shopId: shop.id
+              }
+            });
+            if (driver === null) {
+              throw new RoutePlanDriverAssignInvalidError('Route driver must belong to the current shop.');
+            }
+          }
+
+          await tx.routePlan.update({
+            data: { driverId: nextDriverId },
+            where: { id: routePlan.id }
+          });
+          driverId = nextDriverId;
+          operations.push({ name: 'driver', reason: driverId === null ? 'driver_cleared' : 'driver_changed', status: 'applied' });
+        }
+      } else {
+        operations.push({ name: 'driver', reason: 'not_provided', status: 'skipped' });
+      }
+
+      if (routeStatus === 'DRAFT' && driverId !== null && stopCount > 0) {
+        await tx.routePlan.update({
+          data: { status: 'ASSIGNED' },
+          where: { id: routePlan.id }
+        });
+        operations.push({ name: 'publish', reason: 'draft_ready_for_driver', status: 'applied' });
+      } else {
+        operations.push({
+          name: 'publish',
+          reason: publishSkipReasonFromState(routeStatus, driverId, stopCount),
+          status: 'skipped'
+        });
+      }
+
+      const updatedRoutePlan = (await tx.routePlan.findFirst({
+        include: routePlanInclude(),
+        where: {
+          id: input.routePlanId,
+          shopId: shop.id
+        }
+      })) as RoutePlanRecord | null;
+      if (updatedRoutePlan === null) {
+        return null;
+      }
+
+      return {
+        detail: toRoutePlanDetail(updatedRoutePlan),
+        operations
+      };
+    });
+  }
+
   async createRoutePlanDraft(input: {
     createdBy: string;
     depot: RoutePlanDepotInput;
@@ -514,15 +809,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     }
 
     const record = await this.repairDraftDepotIfMissing(routePlan, shop);
-    return {
-      routePlan: toRoutePlanSummary(record),
-      routeGeometry: null,
-      routeMetrics: null,
-      routeStopPoints: [],
-      stops: [...(record.routeStops ?? [])]
-        .sort((left, right) => left.sequence - right.sequence)
-        .map((routeStop) => toRoutePlanDetailStop(routeStop))
-    };
+    return toRoutePlanDetail(record);
   }
 
   async deleteRoutePlan(input: {
@@ -793,6 +1080,16 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       where: { id: routePlan.id }
     });
 
+    const repaired = await this.prisma.routePlan.findFirst({
+      include: routePlanInclude(),
+      where: {
+        id: routePlan.id,
+        shopId: shop.id
+      }
+    });
+    if (repaired !== null && readDepotFromRoutePlan(repaired) !== null) {
+      return repaired;
+    }
     return {
       ...routePlan,
       constraints,
@@ -804,6 +1101,93 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
   private normalizeShopDomain(value: string): string {
     return normalizeShopDomain(value, { allowAnyDomain: this.options.allowAnyShopDomain === true });
   }
+}
+
+async function repairDraftDepotIfMissingInTransaction(
+  tx: Pick<RoutePlanPrismaClient, 'routePlan'>,
+  routePlan: RoutePlanRecord,
+  shop: RoutePlanShopRecord
+): Promise<RoutePlanRecord> {
+  if (routePlan.status !== 'DRAFT' || readDepotFromRoutePlan(routePlan) !== null) {
+    return routePlan;
+  }
+
+  const defaultDepot = readDepotFromShopDefaults(shop);
+  if (defaultDepot === null) {
+    return routePlan;
+  }
+
+  const constraints = mergeConstraintsDepot(routePlan.constraints, defaultDepot);
+  await tx.routePlan.update({
+    data: {
+      constraints,
+      depotLatitude: decimalString(defaultDepot.latitude),
+      depotLongitude: decimalString(defaultDepot.longitude)
+    },
+    where: { id: routePlan.id }
+  });
+
+  const repaired = await tx.routePlan.findFirst({
+    include: routePlanInclude(),
+    where: {
+      id: routePlan.id,
+      shopId: shop.id
+    }
+  });
+  if (repaired !== null && readDepotFromRoutePlan(repaired) !== null) {
+    return repaired;
+  }
+  return {
+    ...routePlan,
+    constraints,
+    depotLatitude: decimalString(defaultDepot.latitude),
+    depotLongitude: decimalString(defaultDepot.longitude)
+  };
+}
+
+function parseExpectedRoutePlanUpdatedAt(value: string): Date {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    throw new RoutePlanConflictError();
+  }
+  return parsed;
+}
+
+function toRoutePlanDetail(record: RoutePlanRecord): RoutePlanDetail {
+  return {
+    routePlan: toRoutePlanSummary(record),
+    routeGeometry: null,
+    routeMetrics: null,
+    routeStopPoints: [],
+    stops: [...(record.routeStops ?? [])]
+      .sort((left, right) => left.sequence - right.sequence)
+      .map((routeStop) => toRoutePlanDetailStop(routeStop))
+  };
+}
+
+function sameStopSequenceRecord(
+  routePlan: RoutePlanRecord,
+  stops: UpdateRoutePlanStopsInput['payload']['stops']
+): boolean {
+  const current = [...(routePlan.routeStops ?? [])].sort((left, right) => left.sequence - right.sequence);
+  if (current.length !== stops.length) return false;
+
+  const next = [...stops].sort((left, right) => left.sequence - right.sequence);
+  return current.every((routeStop, index) => {
+    const nextStop = next[index];
+    return (
+      nextStop !== undefined &&
+      routeStop.deliveryStop.order.shopifyOrderGid === nextStop.shopifyOrderGid &&
+      routeStop.deliveryStopId === (nextStop.deliveryStopId ?? routeStop.deliveryStopId)
+    );
+  });
+}
+
+function publishSkipReasonFromState(status: string, driverId: string | null, stopCount: number): string {
+  if (status !== 'DRAFT') return `status_${status.toLowerCase()}`;
+  if (driverId === null) return 'missing_driver';
+  if (stopCount === 0) return 'missing_stops';
+  return 'not_eligible';
 }
 
 function assertNoDuplicateOrderInputs(orders: RoutePlanOrderInput[]): void {

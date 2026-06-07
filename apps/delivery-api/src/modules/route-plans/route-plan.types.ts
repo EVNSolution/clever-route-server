@@ -206,6 +206,37 @@ export type UpdateRoutePlanOptionsInput = {
   payload: UpdateRoutePlanOptionsPayload;
 };
 
+export type SaveRoutePlanPayload = {
+  /**
+   * Aggregate Route Builder save payload.
+   *
+   * This is a command-style save, not a plain partial update: when the final
+   * effective route remains DRAFT and has both a driver and at least one stop,
+   * the server publishes it to ASSIGNED in the same save transaction.
+   */
+  driverId?: string | null | undefined;
+  expectedUpdatedAt?: string | undefined;
+  routeEndMode?: RoutePlanEndMode | undefined;
+  stops?: UpdateRoutePlanStopsPayload['stops'] | undefined;
+};
+
+export type SaveRoutePlanInput = {
+  routePlanId: string;
+  shopDomain: string;
+  payload: SaveRoutePlanPayload;
+};
+
+export type SaveRoutePlanOperation = {
+  name: 'driver' | 'options' | 'publish' | 'stops';
+  reason: string;
+  status: 'applied' | 'skipped';
+};
+
+export type SaveRoutePlanResult = {
+  detail: RoutePlanDetail;
+  operations: SaveRoutePlanOperation[];
+};
+
 export type PublishRoutePlanInput = {
   routePlanId: string;
   shopDomain: string;
@@ -233,11 +264,13 @@ export type RoutePlanService = {
   }): Promise<RoutePlanDetail | null>;
   listRoutePlans(input: ListRoutePlansInput): Promise<RoutePlanSummary[]>;
   publishRoutePlan(input: PublishRoutePlanInput): Promise<RoutePlanDetail | null>;
+  saveRoutePlan?(input: SaveRoutePlanInput): Promise<SaveRoutePlanResult | null>;
   updateRoutePlanOptions(input: UpdateRoutePlanOptionsInput): Promise<RoutePlanDetail | null>;
   updateRoutePlanStops(input: UpdateRoutePlanStopsInput): Promise<RoutePlanDetail | null>;
 };
 
 export class RoutePlanOrderAlreadyPlannedError extends Error {
+  readonly code = 'ROUTE_ORDER_ALREADY_PLANNED';
   readonly orderNames: string[];
 
   constructor(orderNames: string[] = []) {
@@ -253,6 +286,15 @@ export class RoutePlanStopUpdateInvalidError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'RoutePlanStopUpdateInvalidError';
+  }
+}
+
+export class RoutePlanConflictError extends Error {
+  readonly code = 'ROUTE_PLAN_CONFLICT';
+
+  constructor(message = 'Route was updated by another session. Reload the route before saving changes.') {
+    super(message);
+    this.name = 'RoutePlanConflictError';
   }
 }
 

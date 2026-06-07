@@ -207,6 +207,16 @@ export type RoutePlanDetailDto = {
   stops: RouteStopDto[];
 };
 
+export type RouteSaveOperationDto = {
+  name: "driver" | "options" | "publish" | "stops";
+  reason: string;
+  status: "applied" | "skipped";
+};
+
+export type RouteSaveResponse = RoutePlanDetailDto & {
+  saveOperations?: RouteSaveOperationDto[];
+};
+
 export type DriverDto = {
   appLinked: boolean;
   authStatus: string;

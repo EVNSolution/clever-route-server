@@ -123,8 +123,8 @@ describe('route ops map helpers', () => {
 
     expect(points).toEqual([
       { id: 'route-1:depot', kind: 'depot', label: 'D', latitude: 43.7, longitude: -79.5 },
-      { id: 'a', kind: 'stop', label: '1', latitude: 43.6, longitude: -79.3 },
-      { id: 'b', kind: 'stop', label: '2', latitude: 43.65, longitude: -79.4 }
+      { id: 'a', kind: 'stop', label: '1', latitude: 43.6, longitude: -79.3, preview: false, sequence: 1 },
+      { id: 'b', kind: 'stop', label: '2', latitude: 43.65, longitude: -79.4, preview: false, sequence: 2 }
     ]);
     expect(dropoffPoints).toEqual([
       { addressLabel: 'Road A', id: 'a:dropoff', kind: 'dropoff', label: '1', latitude: 43.61, longitude: -79.31 }
@@ -132,8 +132,8 @@ describe('route ops map helpers', () => {
     expect(fitBoundsForPoints([...points, ...dropoffPoints])).toEqual({ east: -79.3, north: 43.7, south: 43.6, west: -79.5 });
     expect(buildRouteStopMarkerFeatureCollection(points)).toEqual({
       features: [
-        { geometry: { coordinates: [-79.3, 43.6], type: 'Point' }, properties: { id: 'a', label: '1', sortKey: 0 }, type: 'Feature' },
-        { geometry: { coordinates: [-79.4, 43.65], type: 'Point' }, properties: { id: 'b', label: '2', sortKey: 1 }, type: 'Feature' }
+        { geometry: { coordinates: [-79.3, 43.6], type: 'Point' }, properties: { color: '#303030', id: 'a', label: '1', preview: false, sortKey: 1 }, type: 'Feature' },
+        { geometry: { coordinates: [-79.4, 43.65], type: 'Point' }, properties: { color: '#303030', id: 'b', label: '2', preview: false, sortKey: 2 }, type: 'Feature' }
       ],
       type: 'FeatureCollection'
     });
@@ -143,6 +143,26 @@ describe('route ops map helpers', () => {
       ],
       type: 'FeatureCollection'
     });
+  });
+
+  test('marks draft route order points as blue preview markers with topmost sort keys', () => {
+    const detail = routeDetail();
+    const draftStops = [
+      { ...detail.stops[1]!, sequence: 1 },
+      { ...detail.stops[0]!, sequence: 2 }
+    ];
+    const points = getRouteMapPoints(detail, draftStops);
+    const collection = buildRouteStopMarkerFeatureCollection(points);
+
+    expect(points.map((point) => `${point.kind}:${point.label}:${point.preview === true ? 'preview' : 'saved'}`)).toEqual([
+      'depot:D:saved',
+      'stop:1:preview',
+      'stop:2:preview'
+    ]);
+    expect(collection.features.map((feature) => [feature.properties.id, feature.properties.color, feature.properties.sortKey])).toEqual([
+      ['b', '#006fbb', 10001],
+      ['a', '#006fbb', 10002]
+    ]);
   });
 
   test('extracts style manifest endpoints and classifies public vs self-hosted hosts', () => {

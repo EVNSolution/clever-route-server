@@ -7,6 +7,7 @@ import {
   markNotificationRead,
   publishRoute,
   regenerateDriverInviteCode,
+  saveRoute,
 } from '../src/api';
 import {
   DriverTable,
@@ -196,9 +197,39 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('Road path ready');
     expect(html).toContain('Published route — visible to the linked driver after the app refreshes.');
     expect(html).toContain('Driver app visible');
-    expect(html).toMatch(/aria-label="save driver"[^>]*disabled=""/);
-    expect(html).toMatch(/aria-label="save"[^>]*disabled=""/);
+    expect(html).toMatch(/aria-label="Save route"[^>]*disabled=""/);
+    expect(html).not.toContain('save driver');
+    expect(html).not.toContain('Publish route');
+    expect(html).not.toContain('Route end');
     expect(html).not.toContain('Stops ready · road path not generated');
+  });
+
+  test('RouteBuilder renders one Save route action with a compact right panel and bottom stop table', () => {
+    const detail = routePlanDetailFixture();
+    const html = renderToStaticMarkup(
+      <RouteBuilder
+        bootstrap={bootstrap()}
+        deletingRouteId={null}
+        detail={detail}
+        drivers={[driverFixture()]}
+        navigate={() => undefined}
+        onDeleteRoute={() => undefined}
+        onRefreshRoutes={() => undefined}
+        setDetail={() => undefined}
+        setError={() => undefined}
+      />,
+    );
+
+    expect(html.match(/aria-label="Save route"/g)).toHaveLength(1);
+    expect(html).toContain('Route state');
+    expect(html).toContain('Stop order table');
+    expect(html).toContain('class="drag-handle"');
+    expect(html).toContain('::');
+    expect(html).not.toContain('save driver');
+    expect(html).not.toContain('save route options');
+    expect(html).not.toContain('Publish route');
+    expect(html).not.toContain('Route end');
+    expect(html).not.toContain('Return to store');
   });
 
   test('regenerateDriverInviteCode posts to the protected Route Ops API with CSRF', async () => {
@@ -283,6 +314,55 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         credentials: 'same-origin',
         headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-token' }),
         method: 'POST',
+      }),
+    );
+  });
+
+  test('saveRoute patches aggregate route state with CSRF', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            data: {
+              routeGeometry: null,
+              routePlan: routePlanFixture({ driverId: 'driver-id', status: 'ASSIGNED' }),
+              routeStopPoints: [],
+              saveOperations: [{ name: 'driver', reason: 'driver_changed', status: 'applied' }],
+              stops: [],
+            },
+            error: null,
+          }),
+          {
+            headers: { 'Content-Type': 'application/json' },
+            status: 200,
+          },
+        ),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('window', { location: { search: '?shopDomain=tenant-a.example.test' } });
+
+    await saveRoute({
+      csrfToken: 'csrf-token',
+      driverId: 'driver-id',
+      expectedUpdatedAt: '2026-05-26T12:00:00.000Z',
+      routeEndMode: 'END_AT_LAST_STOP',
+      routePlanId: 'route/id',
+      stops: [{ deliveryStopId: 'stop-1', sourceOrderId: 'source-1' }],
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/admin/ui/app/api/routes/route%2Fid?shopDomain=tenant-a.example.test',
+      expect.objectContaining({
+        body: JSON.stringify({
+          driverId: 'driver-id',
+          expectedUpdatedAt: '2026-05-26T12:00:00.000Z',
+          routeEndMode: 'END_AT_LAST_STOP',
+          stops: [{ deliveryStopId: 'stop-1', sourceOrderId: 'source-1' }],
+        }),
+        credentials: 'same-origin',
+        headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-token' }),
+        method: 'PATCH',
       }),
     );
   });

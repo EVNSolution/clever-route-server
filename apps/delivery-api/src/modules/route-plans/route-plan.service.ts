@@ -7,6 +7,8 @@ import type {
   RoutePlanRouteResult,
   RoutePlanService,
   RoutePlanSummary,
+  SaveRoutePlanInput,
+  SaveRoutePlanResult,
   UpdateRoutePlanDriverInput,
   UpdateRoutePlanOptionsInput,
   UpdateRoutePlanStopsInput
@@ -45,6 +47,7 @@ export type RoutePlanRepository = {
   }): Promise<{ routePlanId: string; deleted: boolean }>;
   listRoutePlans(input: ListRoutePlansInput): Promise<RoutePlanSummary[]>;
   publishRoutePlan(input: PublishRoutePlanInput): Promise<RoutePlanDetail | null>;
+  saveRoutePlan(input: SaveRoutePlanInput): Promise<SaveRoutePlanResult | null>;
   updateRoutePlanOptions(input: UpdateRoutePlanOptionsInput): Promise<RoutePlanDetail | null>;
   updateRoutePlanStops(input: UpdateRoutePlanStopsInput): Promise<RoutePlanDetail | null>;
 };
@@ -105,6 +108,16 @@ export class RoutePlanAdminService implements RoutePlanService {
 
   async publishRoutePlan(input: PublishRoutePlanInput): Promise<RoutePlanDetail | null> {
     return this.withRouteGeometry(await this.repository.publishRoutePlan(input));
+  }
+
+  async saveRoutePlan(input: SaveRoutePlanInput): Promise<SaveRoutePlanResult | null> {
+    const saved = await this.repository.saveRoutePlan(input);
+    if (saved === null) return null;
+    const enriched = await this.withRouteGeometry(saved.detail);
+    return {
+      detail: enriched ?? saved.detail,
+      operations: saved.operations
+    };
   }
 
   async updateRoutePlanOptions(input: UpdateRoutePlanOptionsInput): Promise<RoutePlanDetail | null> {

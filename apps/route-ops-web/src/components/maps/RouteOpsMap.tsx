@@ -6,7 +6,7 @@ import { installMissingMapImageFallback } from '../../maps/maplibre-missing-imag
 import { installPmtilesProtocol } from '../../maps/pmtiles';
 import { mapReadiness } from '../../maps/provider';
 import { getMapCopy, resolveLocale } from '../../i18n';
-import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto } from '../../types';
+import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStopDto } from '../../types';
 
 type MapLibreModule = typeof import('maplibre-gl');
 type MapLibreMap = InstanceType<MapLibreModule['Map']>;
@@ -30,6 +30,7 @@ type RouteOpsMapProps = {
   bootstrap: BootstrapPayload;
   detail?: RoutePlanDetailDto | null;
   depot?: RouteOpsPoint | null;
+  draftStops?: RouteStopDto[];
   onExitRouteMode?(): void;
   onMapClickCoordinate?(coordinate: { latitude: number; longitude: number }): void;
   onOrderSelect?(orderId: string): void;
@@ -40,7 +41,7 @@ type RouteOpsMapProps = {
   title: string;
 };
 
-export function RouteOpsMap({ bootstrap, depot = null, detail = null, onExitRouteMode, onMapClickCoordinate, onOrderSelect, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), subtitle, title }: RouteOpsMapProps): ReactElement {
+export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops, onExitRouteMode, onMapClickCoordinate, onOrderSelect, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), subtitle, title }: RouteOpsMapProps): ReactElement {
   const locale = resolveLocale(bootstrap.locale);
   const t = getMapCopy(locale);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -58,7 +59,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onExitRout
   const [fitRequest, setFitRequest] = useState(0);
   const [mapRefreshRequest, setMapRefreshRequest] = useState(0);
 
-  const points = useMemo(() => (detail === null ? prependDepotPoint(depot, getOrderMapPoints(orders)) : getRouteMapPoints(detail)), [depot, detail, orders]);
+  const points = useMemo(() => (detail === null ? prependDepotPoint(depot, getOrderMapPoints(orders)) : getRouteMapPoints(detail, draftStops)), [depot, detail, draftStops, orders]);
   const dropoffPoints = useMemo(() => getRouteDropoffPoints(detail), [detail]);
   const fitPoints = useMemo(() => (detail === null ? points : [...points, ...dropoffPoints]), [detail, dropoffPoints, points]);
   const homePoint = useMemo(() => resolveMapHomePoint(detail, depot, points), [depot, detail, points]);
@@ -413,8 +414,11 @@ export function syncRouteStopLayers(map: MapLibreMap, featureCollection: RouteSt
   if (!safeGetLayer(map, 'route-ops-route-stop-circles')) {
     safeAddLayer(map, {
       id: 'route-ops-route-stop-circles',
+      layout: {
+        'circle-sort-key': ['get', 'sortKey']
+      },
       paint: {
-        'circle-color': '#303030',
+        'circle-color': ['get', 'color'],
         'circle-radius': 10,
         'circle-stroke-color': '#ffffff',
         'circle-stroke-width': 2
@@ -422,6 +426,8 @@ export function syncRouteStopLayers(map: MapLibreMap, featureCollection: RouteSt
       source: 'route-ops-route-stops',
       type: 'circle'
     });
+  } else {
+    safeSetPaintProperty(map, 'route-ops-route-stop-circles', 'circle-color', ['get', 'color']);
   }
 
   if (!safeGetLayer(map, 'route-ops-route-stop-labels')) {
@@ -674,7 +680,19 @@ function SequencePreview({ locale, points, readiness }: { locale?: string | null
       <rect width="1000" height="560" fill="url(#map-bg)" rx="24" />
       <path d="M-20 120 C200 90 260 210 440 176 C650 135 700 56 1040 85" className="map-road" />
       <path d="M40 470 C190 300 320 390 475 260 C610 145 730 300 955 210" className="map-road secondary" />
-      {projected.map((point) => <g key={point.id} transform={`translate(${point.x} ${point.y})`}><circle r="18" className={point.kind === 'depot' ? 'pin depot' : 'pin'} /><text y="5" textAnchor="middle">{point.label}</text></g>)}
+      {projected.map((point) => (
+        <g key={point.id} transform={`translate(${point.x} ${point.y})`}>
+          <circle
+            r="18"
+            className={[
+              "pin",
+              point.kind === "depot" ? "depot" : "",
+              point.preview ? "preview" : "",
+            ].filter(Boolean).join(" ")}
+          />
+          <text y="5" textAnchor="middle">{point.label}</text>
+        </g>
+      ))}
     </svg>
   );
 }

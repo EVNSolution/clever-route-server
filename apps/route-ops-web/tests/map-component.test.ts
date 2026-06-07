@@ -120,11 +120,16 @@ describe('RouteOpsMap layer lifecycle', () => {
       'circle-stroke-color': '#ffffff',
       'circle-stroke-width': 1.6
     });
-    expect((layers.get('route-ops-route-stop-circles') as { paint?: Record<string, unknown> } | undefined)?.paint).toEqual({
-      'circle-color': '#303030',
+    expect((layers.get('route-ops-route-stop-circles') as { layout?: Record<string, unknown>; paint?: Record<string, unknown> } | undefined)).toMatchObject({
+      layout: {
+        'circle-sort-key': ['get', 'sortKey']
+      },
+      paint: {
+      'circle-color': ['get', 'color'],
       'circle-radius': 10,
       'circle-stroke-color': '#ffffff',
       'circle-stroke-width': 2
+      }
     });
     expect((layers.get('route-ops-route-stop-labels') as { layout?: Record<string, unknown>; paint?: Record<string, unknown> } | undefined)?.layout).toMatchObject({
       'text-allow-overlap': true,
@@ -163,15 +168,21 @@ describe('RouteOpsMap layer lifecycle', () => {
         routeStop('stop-2', 2, 43.7, -79.4)
       ]
     });
+    const draftStops = [
+      { ...detail.stops[1]!, sequence: 1 },
+      { ...detail.stops[0]!, sequence: 2 }
+    ];
 
     const html = renderToStaticMarkup(createElement(RouteOpsMap, {
       bootstrap: bootstrapNotConfigured(),
       detail,
+      draftStops,
       subtitle: 'Preview',
       title: 'Route'
     }));
 
     expect(html).toContain('Marker-only coordinate preview');
+    expect(html).toContain('class="pin preview"');
     expect(html).not.toContain('<polyline');
     expect(html).not.toContain('route-line');
   });
