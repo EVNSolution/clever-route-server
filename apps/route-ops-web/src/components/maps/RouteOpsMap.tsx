@@ -16,6 +16,7 @@ type MapLayerClickEvent = { features?: Array<{ properties?: { orderId?: string }
 const ORDER_PIN_IMAGE_ID = 'orders-map-pin';
 const ORDER_PIN_PLANNED_IMAGE_ID = 'orders-map-pin-planned';
 const ORDER_PIN_REVIEW_IMAGE_ID = 'orders-map-pin-review';
+const ORDER_PIN_HISTORY_IMAGE_ID = 'orders-map-pin-history';
 const ORDER_PIN_PIXEL_RATIO = 2;
 const ORDER_PIN_ICON_SIZE = 0.62;
 const ORDER_PIN_PATH = 'M20 50C20 50 4 31.5 4 18C4 9.16 11.16 2 20 2s16 7.16 16 16c0 13.5-16 32-16 32Z';
@@ -270,7 +271,7 @@ function syncFallbackCircleOrdersLayer(map: MapLibreMap): void {
   safeAddLayer(map, {
     id: 'route-ops-order-pins',
     paint: {
-      'circle-color': ['match', ['get', 'pinKind'], 'candidate', '#006fbb', 'review', '#e11900', '#303030'],
+      'circle-color': ['match', ['get', 'pinKind'], 'candidate', '#006fbb', 'history', '#8a8f98', 'review', '#e11900', '#303030'],
       'circle-opacity': ['get', 'markerOpacity'],
       'circle-radius': 12,
       'circle-stroke-color': '#ffffff',
@@ -312,6 +313,7 @@ function ensureOrdersMapPinImages(map: MapLibreMap): boolean {
   const images = [
     { color: '#303030', id: ORDER_PIN_IMAGE_ID, shadowColor: 'rgba(48, 48, 48, 0.36)' },
     { color: '#006fbb', id: ORDER_PIN_PLANNED_IMAGE_ID, shadowColor: 'rgba(0, 111, 187, 0.36)' },
+    { color: '#8a8f98', id: ORDER_PIN_HISTORY_IMAGE_ID, shadowColor: 'rgba(138, 143, 152, 0.36)' },
     { color: '#e11900', id: ORDER_PIN_REVIEW_IMAGE_ID, shadowColor: 'rgba(225, 25, 0, 0.4)' }
   ];
   for (const image of images) {

@@ -1002,6 +1002,65 @@ describe("Orders compact operations table", () => {
     });
   });
 
+  test("planning unplanned markers stay black until added to the plan", () => {
+    const ready = orderFixture({
+      orderId: "ready-unplanned",
+      routeEligible: true,
+    });
+    const filters = createDefaultOrderFilters();
+
+    const unselectedMarkers = buildOrderMapMarkerStates({
+      filters,
+      orders: [ready],
+      selectedOrderIds: new Set(),
+      worksetContext: { scope: "planning" },
+    });
+    const selectedMarkers = buildOrderMapMarkerStates({
+      filters,
+      orders: [ready],
+      selectedOrderIds: new Set(["ready-unplanned"]),
+      worksetContext: { scope: "planning" },
+    });
+
+    expect(unselectedMarkers.get("ready-unplanned")).toEqual({
+      markerOpacity: 1,
+      pinKind: "unplanned",
+      sequence: null,
+    });
+    expect(selectedMarkers.get("ready-unplanned")).toEqual({
+      markerOpacity: 1,
+      pinKind: "candidate",
+      sequence: 1,
+    });
+  });
+
+  test("history map markers render grey without tab color distinctions", () => {
+    const ready = orderFixture({ orderId: "history-ready" });
+    const planned = orderFixture({
+      orderId: "history-planned",
+      planningStatus: "PLANNED",
+      routePlanId: "route-1",
+    });
+    const review = orderFixture({
+      blockerReasons: ["missing_coordinates"],
+      orderId: "history-review",
+      routeEligible: false,
+    });
+
+    const markers = buildOrderMapMarkerStates({
+      filters: { ...createDefaultOrderFilters(), scope: "history", tab: "needs_review" },
+      orders: [ready, planned, review],
+      selectedOrderIds: new Set(["history-ready"]),
+      worksetContext: { scope: "history" },
+    });
+
+    expect([...markers.values()]).toEqual([
+      { markerOpacity: 1, pinKind: "history", sequence: null },
+      { markerOpacity: 1, pinKind: "history", sequence: null },
+      { markerOpacity: 1, pinKind: "history", sequence: null },
+    ]);
+  });
+
   test("formatter precedence uses service type for Method and delivery date for Day", () => {
     const order = orderFixture({
       deliverySession: "MORNING_DELIVERY",

@@ -2772,9 +2772,17 @@ export function buildOrderMapMarkerStates(input: {
   const markerStates = new Map<string, OrderMapMarkerState>();
   for (const order of input.orders) {
     const sequence = selectedSequenceByOrderId.get(order.orderId) ?? null;
+    if (input.filters.scope === "history" || input.worksetContext.scope === "history") {
+      markerStates.set(order.orderId, {
+        markerOpacity: 1,
+        pinKind: "history",
+        sequence: null,
+      });
+      continue;
+    }
     const isPlanned = isRouteMapPlanned(order);
     const needsReview = isRouteMapReviewOrder(order);
-    const isCandidate = sequence !== null || isRouteMapCandidate(order);
+    const isCandidate = isRouteMapCandidate(order);
     const routeScopeBlocked =
       isOrderDifferentFromActiveRouteScope(order, input.worksetContext) ||
       isOrderBlockedByRouteSubfilters(order, input.filters);
@@ -2784,7 +2792,7 @@ export function buildOrderMapMarkerStates(input: {
         ? "candidate"
         : needsReview
           ? "review"
-          : isCandidate
+          : sequence !== null
             ? "candidate"
             : "unplanned",
       sequence,
