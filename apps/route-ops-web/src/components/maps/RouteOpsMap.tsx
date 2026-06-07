@@ -215,7 +215,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onExitRout
       <div className="route-ops-map-frame" data-map-provider-mode={bootstrap.mapConfig.providerMode ?? 'none'} data-map-provider-status={bootstrap.mapConfig.status}>
         {readiness === 'interactive_map' || onExitRouteMode !== undefined ? (
           <div className="map-toolbar">
-            {onExitRouteMode !== undefined ? <button aria-label={t.exitRouteMode} onClick={onExitRouteMode} title={t.exitRouteMode} type="button"><BackMapIcon /></button> : null}
+            {onExitRouteMode !== undefined ? <button aria-label={t.exitRouteMode} onClick={onExitRouteMode} title={t.exitRouteMode} type="button"><span aria-hidden="true" className="map-toolbar-symbol">←</span></button> : null}
             {readiness === 'interactive_map' ? <button aria-label={detail === null ? t.centerOnStore : t.fitMap} onClick={() => setFitRequest((value) => value + 1)} title={detail === null ? t.centerOnStore : t.fitMap} type="button"><FitMapIcon /></button> : null}
             {readiness === 'interactive_map' ? <button aria-label={t.refreshMap} onClick={handleRefreshMap} title={t.refreshMap} type="button"><RefreshMapIcon /></button> : null}
           </div>
@@ -643,15 +643,6 @@ function FitMapIcon(): ReactElement {
       <path d="M12 4.5h3.5V8" />
       <path d="M15.5 12v3.5H12" />
       <path d="M8 15.5H4.5V12" />
-    </svg>
-  );
-}
-
-function BackMapIcon(): ReactElement {
-  return (
-    <svg aria-hidden="true" className="map-toolbar-icon" fill="none" focusable="false" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 20 20">
-      <path d="M12.5 5 7.5 10l5 5" />
-      <path d="M8 10h8" />
     </svg>
   );
 }

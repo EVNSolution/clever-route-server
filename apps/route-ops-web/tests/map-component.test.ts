@@ -170,6 +170,8 @@ describe('RouteOpsMap layer lifecycle', () => {
     }));
 
     expect(html).toContain('aria-label="Back to map orders"');
+    expect(html).toContain('>←</span>');
+    expect(html).not.toContain('<path d="M12.5 5 7.5 10l5 5"');
     expect(html).toContain('aria-label="Zoom map to fit"');
     expect(html).toContain('aria-label="Refresh map"');
   });
