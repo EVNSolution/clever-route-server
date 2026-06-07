@@ -1949,11 +1949,7 @@ function registerRouteOpsAppRoutes(
               },
               "route ops aggregate route save rejected",
             );
-            throw new WooCommerceOnboardingError(
-              code,
-              message,
-              httpStatus,
-            );
+            throw new RouteOpsHttpError(code, message, httpStatus);
           }
           throw error;
         }
@@ -2434,6 +2430,14 @@ async function withRouteOpsApi<T>(
     if (error instanceof RouteScopeConfigValidationError) {
       return sendRouteOpsApiError(reply, 400, error.code, error.message);
     }
+    if (error instanceof RouteOpsHttpError) {
+      return sendRouteOpsApiError(
+        reply,
+        error.httpStatus,
+        error.code,
+        error.message,
+      );
+    }
     const statusCode =
       error instanceof WooCommerceOnboardingError ? error.httpStatus : 500;
     const code =
@@ -2446,6 +2450,17 @@ async function withRouteOpsApi<T>(
       code,
       sanitizeRouteUiError(error),
     );
+  }
+}
+
+class RouteOpsHttpError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly httpStatus: 400 | 404 | 409,
+  ) {
+    super(message);
+    this.name = "RouteOpsHttpError";
   }
 }
 
