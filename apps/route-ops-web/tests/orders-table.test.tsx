@@ -21,6 +21,7 @@ import {
   getRouteRepairPrompt,
   moveSelectedOrderBefore,
   ORDERS_TABLE_COLUMN_COUNT,
+  RoutePlanPanel,
   OrderTable,
   type OrderMetadataPatch,
 } from "../src/pages/OrdersPage";
@@ -949,6 +950,73 @@ describe("Orders compact operations table", () => {
       "first",
       "second",
     ]);
+  });
+
+  test("route draft panel exposes a non-SVG grab handle for drag ordering", () => {
+    const html = renderToStaticMarkup(
+      <RoutePlanPanel
+        invalidSelectionCount={0}
+        onClear={() => undefined}
+        onCreate={() => undefined}
+        onReorder={() => undefined}
+        routeDate="2026-05-29"
+        routeName="Route 2026-05-29"
+        selectedOrders={[
+          orderFixture({ orderId: "first", orderName: "#11453" }),
+          orderFixture({ orderId: "second", orderName: "#11454" }),
+        ]}
+        setRouteDate={() => undefined}
+        setRouteName={() => undefined}
+        totalSelected={2}
+      />,
+    );
+
+    expect(html).toContain('class="route-plan-drag-handle"');
+    expect(html).toContain("::");
+    expect(html).toContain('aria-label="Drag to reorder #11453"');
+    expect(html).not.toContain("<svg");
+  });
+
+  test("route draft marker numbers follow add-plan click order and drag reorder", () => {
+    const first = orderFixture({ orderId: "first", orderName: "#11453" });
+    const second = orderFixture({ orderId: "second", orderName: "#11454" });
+    const third = orderFixture({ orderId: "third", orderName: "#11455" });
+    const filters = createDefaultOrderFilters();
+
+    const clickedDraft = buildRouteDraftSelection(
+      [first, second, third],
+      new Set(["third", "first", "second"]),
+    );
+
+    expect(clickedDraft.orderIds).toEqual(["third", "first", "second"]);
+
+    const clickedMarkers = buildOrderMapMarkerStates({
+      filters,
+      orders: [first, second, third],
+      selectedOrderIds: new Set(clickedDraft.orderIds),
+      worksetContext: { scope: "planning" },
+    });
+
+    expect(clickedMarkers.get("third")?.sequence).toBe(1);
+    expect(clickedMarkers.get("first")?.sequence).toBe(2);
+    expect(clickedMarkers.get("second")?.sequence).toBe(3);
+
+    const reorderedOrderIds = moveSelectedOrderBefore(
+      clickedDraft.orderIds,
+      "second",
+      "third",
+    );
+    const reorderedMarkers = buildOrderMapMarkerStates({
+      filters,
+      orders: [first, second, third],
+      selectedOrderIds: new Set(reorderedOrderIds),
+      worksetContext: { scope: "planning" },
+    });
+
+    expect(reorderedOrderIds).toEqual(["second", "third", "first"]);
+    expect(reorderedMarkers.get("second")?.sequence).toBe(1);
+    expect(reorderedMarkers.get("third")?.sequence).toBe(2);
+    expect(reorderedMarkers.get("first")?.sequence).toBe(3);
   });
 
   test("planned route helpers filter orders by route and build the route detail URL", () => {
