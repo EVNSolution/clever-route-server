@@ -598,6 +598,7 @@ export function OrdersPage({
           bootstrap={bootstrap}
           detail={selectedMapRouteDetail}
           depot={depotPoint}
+          onExitRouteMode={selectedRoutePlanId === null ? undefined : clearSelectedRoutePlan}
           onOrderSelect={selectedMapRouteDetail === null ? handleMapOrderSelect : undefined}
           orderMarkerStates={orderMarkerStates}
           orders={mapOrders}

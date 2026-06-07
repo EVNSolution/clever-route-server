@@ -160,6 +160,20 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(html).toContain('data-map-provider-status="configured"');
   });
 
+  test('renders a route-mode back control inside the map frame', () => {
+    const html = renderToStaticMarkup(createElement(RouteOpsMap, {
+      bootstrap: bootstrapConfigured(),
+      detail: routeDetail(),
+      onExitRouteMode: () => undefined,
+      subtitle: 'Route detail',
+      title: 'Route 1'
+    }));
+
+    expect(html).toContain('aria-label="Back to map orders"');
+    expect(html).toContain('aria-label="Zoom map to fit"');
+    expect(html).toContain('aria-label="Refresh map"');
+  });
+
 
   test('ignores MapLibre style teardown races during SPA tab navigation', () => {
     const map = createStyleTeardownMapStub();
