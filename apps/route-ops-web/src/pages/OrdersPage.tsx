@@ -742,7 +742,7 @@ export function OrdersPage({
   );
 }
 
-function RoutePlanPanel(input: {
+export function RoutePlanPanel(input: {
   invalidSelectionCount: number;
   locale?: string | null;
   onClear(): void;
@@ -819,13 +819,22 @@ function RoutePlanPanel(input: {
                 if (draggedOrderId !== null) input.onReorder(draggedOrderId, order.orderId);
               }}
             >
-              <strong>
-                {index + 1}. {order.orderName}
-              </strong>
-              <small>
-                {order.recipientName ?? t.recipientFallback} ·{" "}
-                {order.deliveryArea ?? t.areaFallback} · {order.deliveryDate ?? t.dateFallback}
-              </small>
+              <span
+                aria-label={t.dragPlanOrder(order.orderName)}
+                className="route-plan-drag-handle"
+                title={t.dragPlanOrder(order.orderName)}
+              >
+                ::
+              </span>
+              <span className="route-plan-item-content">
+                <strong>
+                  {index + 1}. {order.orderName}
+                </strong>
+                <small>
+                  {order.recipientName ?? t.recipientFallback} ·{" "}
+                  {order.deliveryArea ?? t.areaFallback} · {order.deliveryDate ?? t.dateFallback}
+                </small>
+              </span>
             </div>
           ))
         )}
