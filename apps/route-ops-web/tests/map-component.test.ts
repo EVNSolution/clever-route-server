@@ -52,6 +52,35 @@ describe('RouteOpsMap layer lifecycle', () => {
     });
   });
 
+  test('centers Add plan sequence labels over bottom-anchored order pin images', () => {
+    const { layers, map } = createMapStub({ hasPinImages: true });
+    const collection = buildOrdersMapFeatureCollection([order({ orderId: 'order-1' })], new Map([
+      ['order-1', { markerOpacity: 1, pinKind: 'candidate', sequence: 12 }]
+    ]));
+
+    syncOrdersLayer(map, collection);
+
+    const orderLayer = layers.get('route-ops-order-pins') as { layout?: Record<string, unknown>; type?: string } | undefined;
+    const labelLayer = layers.get('route-ops-order-labels') as { layout?: Record<string, unknown>; paint?: Record<string, unknown> } | undefined;
+    expect(orderLayer).toMatchObject({
+      layout: {
+        'icon-anchor': 'bottom',
+        'icon-image': ['get', 'pinImage']
+      },
+      type: 'symbol'
+    });
+    expect(labelLayer?.layout).toMatchObject({
+      'text-anchor': 'center',
+      'text-field': ['get', 'label'],
+      'text-offset': [0, -1.85],
+      'text-size': 11
+    });
+    expect(labelLayer?.paint).toMatchObject({
+      'text-halo-color': 'rgba(0, 0, 0, 0.28)',
+      'text-halo-width': 0.7
+    });
+  });
+
 
   test('uses the Shopify Route Builder red road-geometry line theme', () => {
     const { layers, map } = createMapStub();
@@ -188,7 +217,7 @@ describe('RouteOpsMap layer lifecycle', () => {
   });
 });
 
-function createMapStub(): {
+function createMapStub(options: { hasPinImages?: boolean } = {}): {
   layerOrder: string[];
   layers: Map<string, unknown>;
   map: Parameters<typeof syncOrdersLayer>[0] & Parameters<typeof syncRouteLayers>[0] & Parameters<typeof syncRouteDropoffLayers>[0] & Parameters<typeof syncRouteStopLayers>[0];
@@ -207,6 +236,8 @@ function createMapStub(): {
     },
     getLayer: (id: string) => layers.get(id),
     getSource: (id: string) => sources.get(id),
+    hasImage: options.hasPinImages === true ? () => true : undefined,
+    addImage: options.hasPinImages === true ? vi.fn() : undefined,
     moveLayer: (id: string, beforeId?: string) => {
       const currentIndex = layerOrder.indexOf(id);
       if (currentIndex === -1) return;
