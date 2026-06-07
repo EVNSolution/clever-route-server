@@ -29,6 +29,7 @@ type RouteOpsMapProps = {
   bootstrap: BootstrapPayload;
   detail?: RoutePlanDetailDto | null;
   depot?: RouteOpsPoint | null;
+  onExitRouteMode?(): void;
   onMapClickCoordinate?(coordinate: { latitude: number; longitude: number }): void;
   onOrderSelect?(orderId: string): void;
   orderMarkerStates?: ReadonlyMap<string, OrderMapMarkerState>;
@@ -38,7 +39,7 @@ type RouteOpsMapProps = {
   title: string;
 };
 
-export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClickCoordinate, onOrderSelect, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), subtitle, title }: RouteOpsMapProps): ReactElement {
+export function RouteOpsMap({ bootstrap, depot = null, detail = null, onExitRouteMode, onMapClickCoordinate, onOrderSelect, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), subtitle, title }: RouteOpsMapProps): ReactElement {
   const locale = resolveLocale(bootstrap.locale);
   const t = getMapCopy(locale);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -212,10 +213,11 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, onMapClick
         <div><h2>{title}</h2><p>{subtitle}</p></div>
       </div>
       <div className="route-ops-map-frame" data-map-provider-mode={bootstrap.mapConfig.providerMode ?? 'none'} data-map-provider-status={bootstrap.mapConfig.status}>
-        {readiness === 'interactive_map' ? (
+        {readiness === 'interactive_map' || onExitRouteMode !== undefined ? (
           <div className="map-toolbar">
-            <button aria-label={detail === null ? t.centerOnStore : t.fitMap} onClick={() => setFitRequest((value) => value + 1)} title={detail === null ? t.centerOnStore : t.fitMap} type="button"><FitMapIcon /></button>
-            <button aria-label={t.refreshMap} onClick={handleRefreshMap} title={t.refreshMap} type="button"><RefreshMapIcon /></button>
+            {onExitRouteMode !== undefined ? <button aria-label={t.exitRouteMode} onClick={onExitRouteMode} title={t.exitRouteMode} type="button"><BackMapIcon /></button> : null}
+            {readiness === 'interactive_map' ? <button aria-label={detail === null ? t.centerOnStore : t.fitMap} onClick={() => setFitRequest((value) => value + 1)} title={detail === null ? t.centerOnStore : t.fitMap} type="button"><FitMapIcon /></button> : null}
+            {readiness === 'interactive_map' ? <button aria-label={t.refreshMap} onClick={handleRefreshMap} title={t.refreshMap} type="button"><RefreshMapIcon /></button> : null}
           </div>
         ) : null}
         {readiness === 'interactive_map' ? <div className="route-ops-map-canvas" ref={containerRef} aria-label={t.interactiveMap} /> : <SequencePreview locale={locale} points={points} readiness={readiness} />}
@@ -641,6 +643,15 @@ function FitMapIcon(): ReactElement {
       <path d="M12 4.5h3.5V8" />
       <path d="M15.5 12v3.5H12" />
       <path d="M8 15.5H4.5V12" />
+    </svg>
+  );
+}
+
+function BackMapIcon(): ReactElement {
+  return (
+    <svg aria-hidden="true" className="map-toolbar-icon" fill="none" focusable="false" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 20 20">
+      <path d="M12.5 5 7.5 10l5 5" />
+      <path d="M8 10h8" />
     </svg>
   );
 }
