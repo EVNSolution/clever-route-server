@@ -36,7 +36,7 @@ export type OrderMapFeatureCollection = FeatureCollection<PointGeometry, {
   sortKey: number;
 }>;
 
-export type OrderMapPinKind = 'candidate' | 'review' | 'unplanned';
+export type OrderMapPinKind = 'candidate' | 'history' | 'review' | 'unplanned';
 
 export type OrderMapMarkerState = {
   markerOpacity?: number;
@@ -109,6 +109,7 @@ function normalizeMarkerOpacity(value: number | null | undefined): number {
 
 function pinImageForKind(kind: OrderMapPinKind): string {
   if (kind === 'candidate') return 'orders-map-pin-planned';
+  if (kind === 'history') return 'orders-map-pin-history';
   if (kind === 'review') return 'orders-map-pin-review';
   return 'orders-map-pin';
 }

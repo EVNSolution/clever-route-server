@@ -12,20 +12,24 @@ describe('route ops map helpers', () => {
     const collection = buildOrdersMapFeatureCollection([
       order({ orderId: 'ready', orderName: '#1001' }),
       order({ blockerReasons: ['missing_coordinates'], orderId: 'review', orderName: '#1002' }),
+      order({ orderId: 'history', orderName: '#1003' }),
       order({ coordinates: { latitude: null, longitude: -79.4 }, orderId: 'bad' })
     ], new Map([
       ['ready', { pinKind: 'candidate', sequence: 1 }],
-      ['review', { markerOpacity: 0.5, pinKind: 'review' }]
+      ['review', { markerOpacity: 0.5, pinKind: 'review' }],
+      ['history', { pinKind: 'history' }]
     ]));
 
-    expect(collection.features).toHaveLength(2);
+    expect(collection.features).toHaveLength(3);
     expect(collection.features.map((feature) => [feature.properties.orderId, feature.properties.pinKind, feature.properties.label, feature.properties.markerOpacity])).toEqual([
       ['ready', 'candidate', '1', 1],
-      ['review', 'review', '', 0.5]
+      ['review', 'review', '', 0.5],
+      ['history', 'history', '', 1]
     ]);
     expect(collection.features.map((feature) => feature.properties.pinImage)).toEqual([
       'orders-map-pin-planned',
-      'orders-map-pin-review'
+      'orders-map-pin-review',
+      'orders-map-pin-history'
     ]);
     expect(collection.features.some((feature) => 'plannedLabel' in feature.properties)).toBe(false);
   });
