@@ -9,6 +9,8 @@ export type RouteOpsPoint = {
   latitude: number;
   longitude: number;
   kind: 'depot' | 'dropoff' | 'order' | 'stop';
+  preview?: boolean;
+  sequence?: number;
 };
 
 type Feature<Geometry, Properties extends Record<string, unknown>> = {
@@ -50,8 +52,10 @@ export type RouteDropoffPointFeatureCollection = FeatureCollection<PointGeometry
   sortKey: number;
 }>;
 export type RouteStopMarkerFeatureCollection = FeatureCollection<PointGeometry, {
+  color: string;
   id: string;
   label: string;
+  preview: boolean;
   sortKey: number;
 }>;
 
@@ -132,15 +136,17 @@ export function getOrderMapPoints(orders: CanonicalOrderDto[]): RouteOpsPoint[] 
   });
 }
 
-export function getRouteMapPoints(detail: RoutePlanDetailDto | null): RouteOpsPoint[] {
+export function getRouteMapPoints(detail: RoutePlanDetailDto | null, draftStops?: RouteStopDto[]): RouteOpsPoint[] {
   if (detail === null) return [];
   const points: RouteOpsPoint[] = [];
   const depotLngLat = toLngLat(detail.routePlan.depot);
   if (depotLngLat !== null) {
     points.push({ id: `${detail.routePlan.id}:depot`, kind: 'depot', label: 'D', latitude: depotLngLat[1], longitude: depotLngLat[0] });
   }
-  for (const stop of [...detail.stops].sort((left, right) => left.sequence - right.sequence)) {
-    const stopPoint = routeStopToPoint(stop);
+  const savedSequenceByStopId = new Map(detail.stops.map((stop) => [stop.deliveryStopId, stop.sequence]));
+  const sourceStops = draftStops ?? detail.stops;
+  for (const stop of [...sourceStops].sort((left, right) => left.sequence - right.sequence)) {
+    const stopPoint = routeStopToPoint(stop, savedSequenceByStopId.get(stop.deliveryStopId) !== stop.sequence);
     if (stopPoint !== null) points.push(stopPoint);
   }
   return points;
@@ -186,9 +192,11 @@ export function buildRouteStopMarkerFeatureCollection(points: readonly RouteOpsP
     features: stopPoints.map((point, index) => ({
       geometry: { coordinates: [point.longitude, point.latitude], type: 'Point' },
       properties: {
+        color: point.preview === true ? '#006fbb' : '#303030',
         id: point.id,
         label: point.label,
-        sortKey: index
+        preview: point.preview === true,
+        sortKey: (point.preview === true ? 10000 : 0) + (point.sequence ?? index + 1)
       },
       type: 'Feature'
     })),
@@ -196,10 +204,10 @@ export function buildRouteStopMarkerFeatureCollection(points: readonly RouteOpsP
   };
 }
 
-export function routeStopToPoint(stop: RouteStopDto): RouteOpsPoint | null {
+export function routeStopToPoint(stop: RouteStopDto, preview = false): RouteOpsPoint | null {
   const lngLat = toLngLat(stop.coordinates);
   if (lngLat === null) return null;
-  return { id: stop.deliveryStopId, kind: 'stop', label: String(stop.sequence), latitude: lngLat[1], longitude: lngLat[0] };
+  return { id: stop.deliveryStopId, kind: 'stop', label: String(stop.sequence), latitude: lngLat[1], longitude: lngLat[0], preview, sequence: stop.sequence };
 }
 
 function isLngLat(value: LngLat | null | undefined): value is LngLat {

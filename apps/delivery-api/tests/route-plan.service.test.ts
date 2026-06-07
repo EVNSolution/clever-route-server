@@ -236,6 +236,108 @@ describe('RoutePlanAdminService route geometry', () => {
     });
   });
 
+  test('aggregate save skips unchanged fields and does not publish a driverless draft', async () => {
+    const { assignRoutePlanDriver, publishRoutePlan, repository, routeGeometryProvider, saveRoutePlan, updateRoutePlanOptions, updateRoutePlanStops } =
+      createHarness(routePlanDetail);
+    const service = new RoutePlanAdminService(repository, routeGeometryProvider);
+
+    saveRoutePlan.mockResolvedValueOnce({
+      detail: routePlanDetail,
+      operations: [
+        { name: 'options', reason: 'unchanged', status: 'skipped' },
+        { name: 'stops', reason: 'unchanged', status: 'skipped' },
+        { name: 'driver', reason: 'not_provided', status: 'skipped' },
+        { name: 'publish', reason: 'missing_driver', status: 'skipped' }
+      ]
+    });
+
+    const payload = {
+      routeEndMode: 'END_AT_LAST_STOP' as const,
+      stops: [
+        { deliveryStopId: 'stop-1', shopifyOrderGid: 'gid://shopify/Order/101', sequence: 1 },
+        { deliveryStopId: 'stop-2', shopifyOrderGid: 'gid://shopify/Order/102', sequence: 2 }
+      ]
+    };
+    const result = await service.saveRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload
+    });
+
+    expect(result?.operations).toEqual([
+      { name: 'options', reason: 'unchanged', status: 'skipped' },
+      { name: 'stops', reason: 'unchanged', status: 'skipped' },
+      { name: 'driver', reason: 'not_provided', status: 'skipped' },
+      { name: 'publish', reason: 'missing_driver', status: 'skipped' }
+    ]);
+    expect(saveRoutePlan).toHaveBeenCalledWith({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload
+    });
+    expect(updateRoutePlanOptions).not.toHaveBeenCalled();
+    expect(updateRoutePlanStops).not.toHaveBeenCalled();
+    expect(assignRoutePlanDriver).not.toHaveBeenCalled();
+    expect(publishRoutePlan).not.toHaveBeenCalled();
+    expect(routeGeometryProvider.buildRoute).toHaveBeenCalledTimes(1);
+  });
+
+  test('aggregate save applies sequence and driver changes before publishing an eligible draft', async () => {
+    const assignedDetail = {
+      ...routePlanDetail,
+      routePlan: { ...routePlanDetail.routePlan, driverId: 'driver-id' }
+    } satisfies RoutePlanDetail;
+    const publishedDetail = {
+      ...assignedDetail,
+      routePlan: { ...assignedDetail.routePlan, status: 'ASSIGNED' }
+    } satisfies RoutePlanDetail;
+    const { assignRoutePlanDriver, publishRoutePlan, repository, saveRoutePlan, updateRoutePlanStops } = createHarness(routePlanDetail);
+    saveRoutePlan.mockResolvedValueOnce({
+      detail: publishedDetail,
+      operations: [
+        { name: 'options', reason: 'not_provided', status: 'skipped' },
+        { name: 'stops', reason: 'sequence_changed', status: 'applied' },
+        { name: 'driver', reason: 'driver_changed', status: 'applied' },
+        { name: 'publish', reason: 'draft_ready_for_driver', status: 'applied' }
+      ]
+    });
+    const service = new RoutePlanAdminService(repository);
+
+    const result = await service.saveRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: {
+        driverId: 'driver-id',
+        stops: [
+          { deliveryStopId: 'stop-2', shopifyOrderGid: 'gid://shopify/Order/102', sequence: 1 },
+          { deliveryStopId: 'stop-1', shopifyOrderGid: 'gid://shopify/Order/101', sequence: 2 }
+        ]
+      }
+    });
+
+    expect(saveRoutePlan).toHaveBeenCalledWith({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: {
+        driverId: 'driver-id',
+        stops: [
+          { deliveryStopId: 'stop-2', shopifyOrderGid: 'gid://shopify/Order/102', sequence: 1 },
+          { deliveryStopId: 'stop-1', shopifyOrderGid: 'gid://shopify/Order/101', sequence: 2 }
+        ]
+      }
+    });
+    expect(updateRoutePlanStops).not.toHaveBeenCalled();
+    expect(assignRoutePlanDriver).not.toHaveBeenCalled();
+    expect(publishRoutePlan).not.toHaveBeenCalled();
+    expect(result?.detail.routePlan.status).toBe('ASSIGNED');
+    expect(result?.operations).toEqual([
+      { name: 'options', reason: 'not_provided', status: 'skipped' },
+      { name: 'stops', reason: 'sequence_changed', status: 'applied' },
+      { name: 'driver', reason: 'driver_changed', status: 'applied' },
+      { name: 'publish', reason: 'draft_ready_for_driver', status: 'applied' }
+    ]);
+  });
+
   test('returns updated route stops with null geometry and empty stop points when OSRM fails', async () => {
     const { repository, routeGeometryProvider } = createHarness(routePlanDetail);
     routeGeometryProvider.buildRoute.mockRejectedValueOnce(new Error('OSRM unavailable'));
@@ -261,11 +363,21 @@ function createHarness(detail: RoutePlanDetail): {
   routeGeometryProvider: {
     buildRoute: ReturnType<typeof vi.fn<RouteGeometryProvider['buildRoute']>>;
   };
+  saveRoutePlan: ReturnType<typeof vi.fn<RoutePlanRepository['saveRoutePlan']>>;
   updateRoutePlanOptions: ReturnType<typeof vi.fn<RoutePlanRepository['updateRoutePlanOptions']>>;
   updateRoutePlanStops: ReturnType<typeof vi.fn<RoutePlanRepository['updateRoutePlanStops']>>;
 } {
   const assignRoutePlanDriver = vi.fn<RoutePlanRepository['assignRoutePlanDriver']>().mockResolvedValue(detail);
   const publishRoutePlan = vi.fn<RoutePlanRepository['publishRoutePlan']>().mockResolvedValue(detail);
+  const saveRoutePlan = vi.fn<RoutePlanRepository['saveRoutePlan']>().mockResolvedValue({
+    detail,
+    operations: [
+      { name: 'options', reason: 'unchanged', status: 'skipped' },
+      { name: 'stops', reason: 'unchanged', status: 'skipped' },
+      { name: 'driver', reason: 'not_provided', status: 'skipped' },
+      { name: 'publish', reason: 'missing_driver', status: 'skipped' }
+    ]
+  });
   const updateRoutePlanOptions = vi.fn<RoutePlanRepository['updateRoutePlanOptions']>().mockResolvedValue(detail);
   const updateRoutePlanStops = vi.fn<RoutePlanRepository['updateRoutePlanStops']>().mockResolvedValue(detail);
   const repository = {
@@ -275,6 +387,7 @@ function createHarness(detail: RoutePlanDetail): {
     findRoutePlanDetail: vi.fn().mockResolvedValue(detail),
     listRoutePlans: vi.fn(),
     publishRoutePlan,
+    saveRoutePlan,
     updateRoutePlanOptions,
     updateRoutePlanStops
   } satisfies RoutePlanRepository;
@@ -313,7 +426,7 @@ function createHarness(detail: RoutePlanDetail): {
     } satisfies RoutePlanRouteResult))
   };
 
-  return { assignRoutePlanDriver, publishRoutePlan, repository, routeGeometryProvider, updateRoutePlanOptions, updateRoutePlanStops };
+  return { assignRoutePlanDriver, publishRoutePlan, repository, routeGeometryProvider, saveRoutePlan, updateRoutePlanOptions, updateRoutePlanStops };
 }
 
 function routeStop(input: { latitude: number; longitude: number; sequence: number }): RoutePlanDetail['stops'][number] {

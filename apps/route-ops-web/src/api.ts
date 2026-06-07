@@ -12,6 +12,7 @@ import type {
   OrdersResponse,
   RouteDeleteResponse,
   RoutePlanDetailDto,
+  RouteSaveResponse,
   RoutesResponse,
   SettingsResponse,
   StoreSettingsDto,
@@ -234,6 +235,27 @@ export async function deleteRoute(
     "DELETE",
     csrfToken,
     {},
+  );
+}
+
+export async function saveRoute(input: {
+  csrfToken: string;
+  driverId?: string | null;
+  expectedUpdatedAt?: string;
+  routeEndMode?: RoutePlanDetailDto["routePlan"]["routeEndMode"];
+  routePlanId: string;
+  stops?: Array<{ deliveryStopId: string; sourceOrderId: string }>;
+}): Promise<RouteSaveResponse> {
+  return apiMutation<RouteSaveResponse>(
+    `/admin/ui/app/api/routes/${encodeURIComponent(input.routePlanId)}`,
+    "PATCH",
+    input.csrfToken,
+    {
+      ...(Object.hasOwn(input, "driverId") ? { driverId: input.driverId ?? null } : {}),
+      ...(input.expectedUpdatedAt === undefined ? {} : { expectedUpdatedAt: input.expectedUpdatedAt }),
+      ...(input.routeEndMode === undefined ? {} : { routeEndMode: input.routeEndMode }),
+      ...(input.stops === undefined ? {} : { stops: input.stops }),
+    },
   );
 }
 

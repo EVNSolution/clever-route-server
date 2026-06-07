@@ -53,6 +53,7 @@ import {
 } from "../modules/shopify/order-operate-status.js";
 import {
   RoutePlanBatchInvalidError,
+  RoutePlanConflictError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanDriverAssignInvalidError,
   RoutePlanOptionsUpdateInvalidError,
@@ -62,6 +63,7 @@ import {
   type RoutePlanDetail,
   type RoutePlanOrderInput,
   type RoutePlanRouteScopeInput,
+  type SaveRoutePlanPayload,
   type RoutePlanService,
   type RoutePlanSummary,
 } from "../modules/route-plans/route-plan.types.js";
@@ -382,6 +384,7 @@ export type AdminCommerceConnectionsUiDependencies = {
     | "createRoutePlanFromOrderIds"
     | "getRoutePlanDetail"
     | "listRoutePlans"
+    | "saveRoutePlan"
     | "updateRoutePlanStops"
   > &
     Partial<Pick<RoutePlanService, "deleteRoutePlan" | "publishRoutePlan" | "updateRoutePlanOptions">>;
@@ -1857,6 +1860,103 @@ function registerRouteOpsAppRoutes(
           shopDomain,
         });
         return routeOpsData(result);
+      }),
+  );
+
+  app.patch<{ Params: { routePlanId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId`,
+    async (request, reply) =>
+      withRouteOpsApi(request, reply, dependencies, async (session) => {
+        assertRouteOpsMutationCsrf(request, session);
+        const services = requireRouteUiServices(dependencies);
+        if (services.routePlanService.saveRoutePlan === undefined) {
+          throw new WooCommerceOnboardingError(
+            "BAD_REQUEST",
+            "Aggregate route save is not enabled in this runtime.",
+            400,
+          );
+        }
+        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const body = readRouteOpsBodyObject(request.body);
+        const detail = await services.routePlanService.getRoutePlanDetail({
+          routePlanId: request.params.routePlanId,
+          shopDomain,
+        });
+        if (detail === null) {
+          throw new WooCommerceOnboardingError(
+            "NOT_FOUND",
+            "Route plan not found",
+            404,
+          );
+        }
+        try {
+          const saved = await services.routePlanService.saveRoutePlan({
+            payload: readRouteOpsSaveRoutePayload(body, detail),
+            routePlanId: request.params.routePlanId,
+            shopDomain,
+          });
+          if (saved === null) {
+            throw new WooCommerceOnboardingError(
+              "NOT_FOUND",
+              "Route plan not found",
+              404,
+            );
+          }
+          request.log.info(
+            {
+              operations: saved.operations.map((operation) => ({
+                name: operation.name,
+                reason: operation.reason,
+                status: operation.status,
+              })),
+              routePlanId: request.params.routePlanId,
+              shopDomain,
+            },
+            "route ops aggregate route save completed",
+          );
+          return routeOpsData({
+            ...toRouteOpsRoutePlanDetailDto(saved.detail),
+            saveOperations: saved.operations,
+          });
+        } catch (error) {
+          if (
+            error instanceof RoutePlanConflictError ||
+            error instanceof RoutePlanDriverAssignInvalidError ||
+            error instanceof RoutePlanOrderAlreadyPlannedError ||
+            error instanceof RoutePlanOptionsUpdateInvalidError ||
+            error instanceof RoutePlanPublishInvalidError ||
+            error instanceof RoutePlanStopUpdateInvalidError
+          ) {
+            const isAlreadyPlanned =
+              error instanceof RoutePlanOrderAlreadyPlannedError;
+            const httpStatus =
+              error instanceof RoutePlanConflictError || isAlreadyPlanned
+                ? 409
+                : 400;
+            const code = isAlreadyPlanned
+              ? "ROUTE_ORDER_ALREADY_PLANNED"
+              : error.code;
+            const message = isAlreadyPlanned
+              ? sanitizeRouteUiError(error)
+              : error.message;
+            request.log.warn(
+              {
+                code,
+                error: sanitizeRouteUiError(error),
+                routePlanId: request.params.routePlanId,
+                shopDomain,
+                statusCode: httpStatus,
+              },
+              "route ops aggregate route save rejected",
+            );
+            throw new WooCommerceOnboardingError(
+              code,
+              message,
+              httpStatus,
+            );
+          }
+          throw error;
+        }
       }),
   );
 
@@ -4783,6 +4883,27 @@ function readRouteOpsStopSequence(
       shopifyOrderGid: stop.shopifyOrderGid,
     };
   });
+}
+
+function readRouteOpsSaveRoutePayload(
+  body: Record<string, unknown>,
+  detail: RoutePlanDetail,
+): SaveRoutePlanPayload {
+  const payload: SaveRoutePlanPayload = {};
+  if (Object.hasOwn(body, "driverId")) {
+    payload.driverId = readNullableJsonString(body.driverId);
+  }
+  if (Object.hasOwn(body, "expectedUpdatedAt")) {
+    const expectedUpdatedAt = readNullableJsonString(body.expectedUpdatedAt);
+    if (expectedUpdatedAt !== null) payload.expectedUpdatedAt = expectedUpdatedAt;
+  }
+  if (Object.hasOwn(body, "routeEndMode")) {
+    payload.routeEndMode = readRouteEndMode(body.routeEndMode);
+  }
+  if (Object.hasOwn(body, "stops")) {
+    payload.stops = readRouteOpsStopSequence(body.stops, detail);
+  }
+  return payload;
 }
 
 function readRouteOpsMapConfig(): RouteOpsMapConfig {

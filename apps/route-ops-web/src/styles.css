@@ -578,6 +578,12 @@ small,
   stroke: #fff;
   stroke-width: 5;
 }
+.pin.preview {
+  fill: #006fbb;
+}
+.pin.depot {
+  fill: #0f8f71;
+}
 .map-canvas text {
   fill: #fff;
   font-size: 16px;
@@ -1115,6 +1121,22 @@ small,
   justify-content: center;
   width: 34px;
 }
+.stop-number.compact {
+  font-size: 13px;
+  height: 30px;
+  width: 30px;
+}
+.drag-handle {
+  color: #687080;
+  cursor: grab;
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 18px;
+  font-weight: 900;
+  letter-spacing: -0.2em;
+  line-height: 1;
+  padding: 4px 8px 4px 2px;
+}
 .stop-actions {
   display: flex;
   gap: 6px;
@@ -1152,6 +1174,60 @@ button.danger.subtle {
 }
 .tab-layout.primary-expanded {
   grid-template-columns: minmax(0, 1fr);
+}
+.route-builder-workspace {
+  display: grid;
+  gap: 18px;
+}
+.route-save-panel {
+  align-content: start;
+}
+.route-stops-panel {
+  max-height: min(680px, calc(100vh - 220px));
+  overflow: auto;
+}
+.route-stop-table {
+  min-width: 760px;
+}
+.route-stop-table tr.dragging {
+  background: #eef4ff;
+  outline: 2px solid rgb(47 111 237 / 28%);
+}
+.route-stop-table th:first-child,
+.route-stop-table td:first-child {
+  text-align: center;
+  width: 44px;
+}
+.route-stop-table td {
+  vertical-align: top;
+}
+.route-state-list {
+  border: 1px solid #e6eaf1;
+  border-radius: 16px;
+  display: grid;
+  gap: 0;
+  margin: 0;
+  overflow: hidden;
+}
+.route-state-list div {
+  align-items: center;
+  border-top: 1px solid #e6eaf1;
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 12px;
+}
+.route-state-list div:first-child {
+  border-top: 0;
+}
+.route-state-list dt {
+  color: #687080;
+  font-size: 12px;
+  font-weight: 800;
+}
+.route-state-list dd {
+  font-weight: 900;
+  margin: 0;
+  text-align: right;
 }
 .tab-primary,
 .tab-secondary,
