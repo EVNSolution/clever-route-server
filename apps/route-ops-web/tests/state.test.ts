@@ -20,6 +20,7 @@ import {
   moveStop,
   moveStopBefore,
   moveStopToDropPosition,
+  moveStopToSequence,
   storeSettingsToDepotPoint,
   summarizeOrderWorkset,
   summarizeSelection
@@ -227,6 +228,17 @@ describe('route ops web state helpers', () => {
     expect(moveStopToDropPosition(stops, 'b', 'd', 'after').map((item) => `${item.deliveryStopId}:${item.sequence}`)).toEqual(['a:1', 'c:2', 'd:3', 'b:4']);
     expect(moveStopToDropPosition(stops, 'd', 'b', 'after').map((item) => `${item.deliveryStopId}:${item.sequence}`)).toEqual(['a:1', 'b:2', 'd:3', 'c:4']);
     expect(moveStopToDropPosition(stops, 'b', 'b', 'after')).toBe(stops);
+  });
+
+  test('moves a route stop directly to a chosen sequence without swapping', () => {
+    const stops = [stop('a', 1), stop('b', 2), stop('c', 3), stop('d', 4)];
+
+    expect(moveStopToSequence(stops, 'd', 2).map((item) => `${item.deliveryStopId}:${item.sequence}`)).toEqual(['a:1', 'd:2', 'b:3', 'c:4']);
+    expect(moveStopToSequence(stops, 'a', 3).map((item) => `${item.deliveryStopId}:${item.sequence}`)).toEqual(['b:1', 'c:2', 'a:3', 'd:4']);
+    expect(moveStopToSequence(stops, 'b', 2)).toBe(stops);
+    expect(moveStopToSequence(stops, 'x', 2)).toBe(stops);
+    expect(moveStopToSequence(stops, 'b', 0)).toBe(stops);
+    expect(moveStopToSequence(stops, 'b', 5)).toBe(stops);
   });
 
   test('derives route stats and geometry labels honestly', () => {

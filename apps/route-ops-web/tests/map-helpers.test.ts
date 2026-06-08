@@ -132,8 +132,8 @@ describe('route ops map helpers', () => {
     expect(fitBoundsForPoints([...points, ...dropoffPoints])).toEqual({ east: -79.3, north: 43.7, south: 43.6, west: -79.5 });
     expect(buildRouteStopMarkerFeatureCollection(points)).toEqual({
       features: [
-        { geometry: { coordinates: [-79.3, 43.6], type: 'Point' }, properties: { color: '#303030', id: 'a', label: '1', preview: false, sortKey: 1 }, type: 'Feature' },
-        { geometry: { coordinates: [-79.4, 43.65], type: 'Point' }, properties: { color: '#303030', id: 'b', label: '2', preview: false, sortKey: 2 }, type: 'Feature' }
+        { geometry: { coordinates: [-79.3, 43.6], type: 'Point' }, properties: { color: '#303030', id: 'a', label: '1', preview: false, selected: false, sortKey: 1 }, type: 'Feature' },
+        { geometry: { coordinates: [-79.4, 43.65], type: 'Point' }, properties: { color: '#303030', id: 'b', label: '2', preview: false, selected: false, sortKey: 2 }, type: 'Feature' }
       ],
       type: 'FeatureCollection'
     });
@@ -162,6 +162,17 @@ describe('route ops map helpers', () => {
     expect(collection.features.map((feature) => [feature.properties.id, feature.properties.color, feature.properties.sortKey])).toEqual([
       ['b', '#006fbb', 10001],
       ['a', '#006fbb', 10002]
+    ]);
+  });
+
+  test('marks selected route stop marker data without changing marker shape', () => {
+    const detail = routeDetail();
+    const points = getRouteMapPoints(detail);
+    const collection = buildRouteStopMarkerFeatureCollection(points, 'b');
+
+    expect(collection.features.map((feature) => [feature.properties.id, feature.properties.selected, feature.properties.sortKey])).toEqual([
+      ['a', false, 1],
+      ['b', true, 20002]
     ]);
   });
 

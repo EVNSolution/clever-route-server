@@ -555,6 +555,22 @@ export function moveStopToDropPosition(
   return resequenceStops(next);
 }
 
+export function moveStopToSequence(
+  stops: RouteStopDto[],
+  deliveryStopId: string,
+  sequence: number,
+): RouteStopDto[] {
+  if (!Number.isInteger(sequence) || sequence < 1 || sequence > stops.length) return stops;
+  const currentIndex = stops.findIndex((stop) => stop.deliveryStopId === deliveryStopId);
+  const targetIndex = sequence - 1;
+  if (currentIndex < 0 || currentIndex === targetIndex) return stops;
+  const next = [...stops];
+  const [moved] = next.splice(currentIndex, 1);
+  if (moved === undefined) return stops;
+  next.splice(targetIndex, 0, moved);
+  return resequenceStops(next);
+}
+
 export function resequenceStops(stops: RouteStopDto[]): RouteStopDto[] {
   return stops.map((stop, index) => ({ ...stop, sequence: index + 1 }));
 }

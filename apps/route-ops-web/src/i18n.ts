@@ -380,6 +380,9 @@ export const mapCopy = {
     refreshMap: 'Refresh map',
     routePreview: 'Route coordinate preview',
     routeStart(label: string): string { return `Route start: ${label}`; },
+    closeRouteStopSequencePicker: 'Close sequence picker',
+    routeStopSequencePicker(orderName: string): string { return `Move stop ${orderName} to sequence`; },
+    routeStopSequenceChoice(orderName: string, sequence: number): string { return `Move stop ${orderName} to sequence ${sequence}`; },
     storeAddress(address: string): string { return `Store address: ${address}`; }
   },
   'ko-KR': {
@@ -393,6 +396,9 @@ export const mapCopy = {
     refreshMap: '지도 새로고침',
     routePreview: '경로 좌표 미리보기',
     routeStart(label: string): string { return `경로 시작점: ${label}`; },
+    closeRouteStopSequencePicker: '순서 선택 닫기',
+    routeStopSequencePicker(orderName: string): string { return `${orderName} 정류장 순서 이동`; },
+    routeStopSequenceChoice(orderName: string, sequence: number): string { return `${orderName} 정류장을 ${sequence}번으로 이동`; },
     storeAddress(address: string): string { return `매장 주소: ${address}`; }
   }
 } as const;

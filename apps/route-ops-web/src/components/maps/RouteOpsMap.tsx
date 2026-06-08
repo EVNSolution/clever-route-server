@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { PointerEvent, ReactElement } from 'react';
 
 import { buildOrdersMapFeatureCollection, buildRouteDropoffPointFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection, fitBoundsForPoints, getOrderMapPoints, getRouteDropoffPoints, getRouteMapPoints, type OrderMapMarkerState, type RouteDropoffPointFeatureCollection, type RouteLineFeature, type RouteOpsPoint, type RouteStopMarkerFeatureCollection } from '../../maps/geojson';
 import { installMissingMapImageFallback } from '../../maps/maplibre-missing-images';
@@ -11,7 +11,17 @@ import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStop
 type MapLibreModule = typeof import('maplibre-gl');
 type MapLibreMap = InstanceType<MapLibreModule['Map']>;
 type MapLibreMarker = InstanceType<MapLibreModule['Marker']>;
-type MapLayerClickEvent = { features?: Array<{ properties?: { orderId?: string } }> };
+type MapLayerClickEvent = { features?: Array<{ properties?: { id?: string; orderId?: string } }>; originalEvent?: { preventDefault?(): void; stopPropagation?(): void }; preventDefault?(): void; stopPropagation?(): void };
+type RouteStopPickerAnchor = { placement: 'bottom' | 'top'; x: number; y: number };
+type RouteStopSequencePickerProps = {
+  anchor: RouteStopPickerAnchor;
+  currentSequence: number;
+  locale?: string | null;
+  onClose(): void;
+  onPickSequence(sequence: number): void;
+  orderName: string;
+  sequenceCount: number;
+};
 
 const ORDER_PIN_IMAGE_ID = 'orders-map-pin';
 const ORDER_PIN_PLANNED_IMAGE_ID = 'orders-map-pin-planned';
@@ -25,6 +35,10 @@ const EMPTY_ORDERS_COLLECTION = buildOrdersMapFeatureCollection([], new Set<stri
 const EMPTY_ROUTE_DROPOFF_COLLECTION = buildRouteDropoffPointFeatureCollection([]);
 const EMPTY_ROUTE_LINE_COLLECTION = { features: [], type: 'FeatureCollection' } as const;
 const EMPTY_ROUTE_STOP_COLLECTION = buildRouteStopMarkerFeatureCollection([]);
+const ROUTE_STOP_PICKER_MAX_HEIGHT_PX = 280;
+const ROUTE_STOP_PICKER_MAX_WIDTH_PX = 360;
+const ROUTE_STOP_PICKER_MIN_WIDTH_PX = 188;
+const ROUTE_STOP_PICKER_MARGIN_PX = 16;
 
 type RouteOpsMapProps = {
   bootstrap: BootstrapPayload;
@@ -34,14 +48,18 @@ type RouteOpsMapProps = {
   onExitRouteMode?(): void;
   onMapClickCoordinate?(coordinate: { latitude: number; longitude: number }): void;
   onOrderSelect?(orderId: string): void;
+  onRouteStopPickerClose?(): void;
+  onRouteStopSelect?(deliveryStopId: string): void;
+  onRouteStopSequencePick?(deliveryStopId: string, sequence: number): void;
   orderMarkerStates?: ReadonlyMap<string, OrderMapMarkerState>;
   orders?: CanonicalOrderDto[];
   plannedOrderIds?: ReadonlySet<string>;
+  selectedRouteStopId?: string | null;
   subtitle: string;
   title: string;
 };
 
-export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops, onExitRouteMode, onMapClickCoordinate, onOrderSelect, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), subtitle, title }: RouteOpsMapProps): ReactElement {
+export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops, onExitRouteMode, onMapClickCoordinate, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
   const locale = resolveLocale(bootstrap.locale);
   const t = getMapCopy(locale);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -50,6 +68,10 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
   const markersRef = useRef<MapLibreMarker[]>([]);
   const onMapClickCoordinateRef = useRef(onMapClickCoordinate);
   const onOrderSelectRef = useRef(onOrderSelect);
+  const onRouteStopPickerCloseRef = useRef(onRouteStopPickerClose);
+  const onRouteStopSelectRef = useRef(onRouteStopSelect);
+  const onRouteStopSequencePickRef = useRef(onRouteStopSequencePick);
+  const detailRef = useRef(detail);
   const mapCopyRef = useRef(t);
   const homePointRef = useRef<RouteOpsPoint | null>(null);
   const pointsRef = useRef<RouteOpsPoint[]>([]);
@@ -58,8 +80,12 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
   const [mapError, setMapError] = useState<string | null>(null);
   const [fitRequest, setFitRequest] = useState(0);
   const [mapRefreshRequest, setMapRefreshRequest] = useState(0);
+  const [routeStopPickerAnchor, setRouteStopPickerAnchor] = useState<RouteStopPickerAnchor | null>(null);
 
   const points = useMemo(() => (detail === null ? prependDepotPoint(depot, getOrderMapPoints(orders)) : getRouteMapPoints(detail, draftStops)), [depot, detail, draftStops, orders]);
+  const routeStops = useMemo(() => (detail === null ? [] : draftStops ?? detail.stops), [detail, draftStops]);
+  const selectedRouteStopPoint = useMemo(() => selectedRouteStopId === null ? null : points.find((point) => point.kind === 'stop' && point.id === selectedRouteStopId) ?? null, [points, selectedRouteStopId]);
+  const selectedRouteStop = useMemo(() => selectedRouteStopId === null ? null : routeStops.find((stop) => stop.deliveryStopId === selectedRouteStopId) ?? null, [routeStops, selectedRouteStopId]);
   const dropoffPoints = useMemo(() => getRouteDropoffPoints(detail), [detail]);
   const fitPoints = useMemo(() => (detail === null ? points : [...points, ...dropoffPoints]), [detail, dropoffPoints, points]);
   const homePoint = useMemo(() => resolveMapHomePoint(detail, depot, points), [depot, detail, points]);
@@ -68,7 +94,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
   const lineFeature = detail === null ? null : routeGeometry;
   const ordersGeojson = useMemo(() => buildOrdersMapFeatureCollection(orders, orderMarkerStates ?? plannedOrderIds), [orderMarkerStates, orders, plannedOrderIds]);
   const routeDropoffGeojson = useMemo(() => (detail === null ? EMPTY_ROUTE_DROPOFF_COLLECTION : buildRouteDropoffPointFeatureCollection(dropoffPoints)), [detail, dropoffPoints]);
-  const routeStopGeojson = useMemo(() => (detail === null ? EMPTY_ROUTE_STOP_COLLECTION : buildRouteStopMarkerFeatureCollection(points)), [detail, points]);
+  const routeStopGeojson = useMemo(() => (detail === null ? EMPTY_ROUTE_STOP_COLLECTION : buildRouteStopMarkerFeatureCollection(points, selectedRouteStopId)), [detail, points, selectedRouteStopId]);
 
   useEffect(() => {
     onMapClickCoordinateRef.current = onMapClickCoordinate;
@@ -83,12 +109,39 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
   }, [onOrderSelect]);
 
   useEffect(() => {
+    detailRef.current = detail;
+  }, [detail]);
+
+  useEffect(() => {
+    onRouteStopPickerCloseRef.current = onRouteStopPickerClose;
+  }, [onRouteStopPickerClose]);
+
+  useEffect(() => {
+    onRouteStopSelectRef.current = onRouteStopSelect;
+  }, [onRouteStopSelect]);
+
+  useEffect(() => {
+    onRouteStopSequencePickRef.current = onRouteStopSequencePick;
+  }, [onRouteStopSequencePick]);
+
+  useEffect(() => {
     homePointRef.current = homePoint;
   }, [homePoint]);
 
   useEffect(() => {
     pointsRef.current = points;
   }, [points]);
+
+  const updateRouteStopPickerAnchor = useCallback((): void => {
+    const map = mapRef.current;
+    const container = containerRef.current;
+    if (!isMapReady || selectedRouteStopPoint === null || map === null || container === null || !isMapUsable(map)) {
+      setRouteStopPickerAnchor(null);
+      return;
+    }
+    const projected = map.project([selectedRouteStopPoint.longitude, selectedRouteStopPoint.latitude]);
+    setRouteStopPickerAnchor(anchorRouteStopPicker(projected, container, routeStops.length));
+  }, [isMapReady, routeStops.length, selectedRouteStopPoint]);
 
   useEffect(() => {
     if (readiness !== 'interactive_map' || bootstrap.mapConfig.styleUrl === null || containerRef.current === null || mapRef.current !== null) return undefined;
@@ -132,6 +185,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
           setMapError(null);
         });
         map.on('click', (event: { lngLat?: { lat: number; lng: number } }) => {
+          if (detailRef.current !== null) return;
           if (event.lngLat === undefined) return;
           onMapClickCoordinateRef.current?.({ latitude: event.lngLat.lat, longitude: event.lngLat.lng });
         });
@@ -203,10 +257,63 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
     };
   }, [detail, isMapReady, onOrderSelect]);
 
+  useEffect(() => {
+    if (!isMapReady || detail === null || mapRef.current === null || onRouteStopSelect === undefined) return undefined;
+    return installRouteStopClickHandlers(mapRef.current, (deliveryStopId) => onRouteStopSelectRef.current?.(deliveryStopId));
+  }, [detail, isMapReady, onRouteStopSelect]);
+
+  useEffect(() => {
+    updateRouteStopPickerAnchor();
+  }, [updateRouteStopPickerAnchor, routeStopGeojson]);
+
+  useEffect(() => {
+    if (!isMapReady || selectedRouteStopPoint === null || mapRef.current === null) return undefined;
+    const map = mapRef.current;
+    const updateAnchor = (): void => updateRouteStopPickerAnchor();
+    updateAnchor();
+    map.on('move', updateAnchor);
+    map.on('zoom', updateAnchor);
+    map.on('resize', updateAnchor);
+    return () => {
+      safeMapOff(map, 'move', updateAnchor);
+      safeMapOff(map, 'zoom', updateAnchor);
+      safeMapOff(map, 'resize', updateAnchor);
+    };
+  }, [isMapReady, selectedRouteStopPoint, updateRouteStopPickerAnchor]);
+
+  useEffect(() => {
+    if (selectedRouteStopId === null || detail !== null) return;
+    onRouteStopPickerCloseRef.current?.();
+  }, [detail, selectedRouteStopId]);
+
+  useEffect(() => {
+    if (selectedRouteStopId === null) return undefined;
+    const handleDocumentPointerDown = (event: globalThis.PointerEvent): void => {
+      if (event.target instanceof Element && event.target.closest('.route-stop-sequence-picker') !== null) return;
+      onRouteStopPickerCloseRef.current?.();
+    };
+    const handleKeyDown = (event: globalThis.KeyboardEvent): void => {
+      if (event.key === 'Escape') onRouteStopPickerCloseRef.current?.();
+    };
+    document.addEventListener('pointerdown', handleDocumentPointerDown, true);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handleDocumentPointerDown, true);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [selectedRouteStopId]);
+
   const handleRefreshMap = (): void => {
     setMapError(null);
     setIsMapReady(false);
+    onRouteStopPickerCloseRef.current?.();
     setMapRefreshRequest((value) => value + 1);
+  };
+
+  const handleMapFramePointerDown = (event: PointerEvent<HTMLDivElement>): void => {
+    if (selectedRouteStopId === null) return;
+    if ((event.target as Element).closest('.route-stop-sequence-picker') !== null) return;
+    onRouteStopPickerCloseRef.current?.();
   };
 
   return (
@@ -214,7 +321,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
       <div className="panel-heading">
         <div><h2>{title}</h2><p>{subtitle}</p></div>
       </div>
-      <div className="route-ops-map-frame" data-map-provider-mode={bootstrap.mapConfig.providerMode ?? 'none'} data-map-provider-status={bootstrap.mapConfig.status}>
+      <div className="route-ops-map-frame" data-map-provider-mode={bootstrap.mapConfig.providerMode ?? 'none'} data-map-provider-status={bootstrap.mapConfig.status} onPointerDown={handleMapFramePointerDown}>
         {readiness === 'interactive_map' || onExitRouteMode !== undefined ? (
           <div className="map-toolbar">
             {onExitRouteMode !== undefined ? <button aria-label={t.exitRouteMode} onClick={onExitRouteMode} title={t.exitRouteMode} type="button"><span aria-hidden="true" className="map-toolbar-symbol">←</span></button> : null}
@@ -223,6 +330,17 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
           </div>
         ) : null}
         {readiness === 'interactive_map' ? <div className="route-ops-map-canvas" ref={containerRef} aria-label={t.interactiveMap} /> : <SequencePreview locale={locale} points={points} readiness={readiness} />}
+        {selectedRouteStop !== null && routeStopPickerAnchor !== null ? (
+          <RouteStopSequencePicker
+            anchor={routeStopPickerAnchor}
+            currentSequence={selectedRouteStop.sequence}
+            locale={locale}
+            onClose={() => onRouteStopPickerCloseRef.current?.()}
+            onPickSequence={(sequence) => onRouteStopSequencePickRef.current?.(selectedRouteStop.deliveryStopId, sequence)}
+            orderName={selectedRouteStop.orderName}
+            sequenceCount={routeStops.length}
+          />
+        ) : null}
       </div>
     </article>
   );
@@ -419,15 +537,18 @@ export function syncRouteStopLayers(map: MapLibreMap, featureCollection: RouteSt
       },
       paint: {
         'circle-color': ['get', 'color'],
-        'circle-radius': 10,
-        'circle-stroke-color': '#ffffff',
-        'circle-stroke-width': 2
+        'circle-radius': ['case', ['get', 'selected'], 12, 10],
+        'circle-stroke-color': ['case', ['get', 'selected'], '#2f6fed', '#ffffff'],
+        'circle-stroke-width': ['case', ['get', 'selected'], 4, 2]
       },
       source: 'route-ops-route-stops',
       type: 'circle'
     });
   } else {
     safeSetPaintProperty(map, 'route-ops-route-stop-circles', 'circle-color', ['get', 'color']);
+    safeSetPaintProperty(map, 'route-ops-route-stop-circles', 'circle-radius', ['case', ['get', 'selected'], 12, 10]);
+    safeSetPaintProperty(map, 'route-ops-route-stop-circles', 'circle-stroke-color', ['case', ['get', 'selected'], '#2f6fed', '#ffffff']);
+    safeSetPaintProperty(map, 'route-ops-route-stop-circles', 'circle-stroke-width', ['case', ['get', 'selected'], 4, 2]);
   }
 
   if (!safeGetLayer(map, 'route-ops-route-stop-labels')) {
@@ -449,6 +570,26 @@ export function syncRouteStopLayers(map: MapLibreMap, featureCollection: RouteSt
     });
   }
   enforceRouteLayerOrder(map);
+}
+
+export function installRouteStopClickHandlers(map: MapLibreMap, onRouteStopSelect: (deliveryStopId: string) => void): (() => void) | undefined {
+  if (!safeGetLayer(map, 'route-ops-route-stop-circles')) return undefined;
+  const handleRouteStopClick = (event: MapLayerClickEvent): void => {
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    event.originalEvent?.preventDefault?.();
+    event.originalEvent?.stopPropagation?.();
+    const deliveryStopId = event.features?.[0]?.properties?.id;
+    if (typeof deliveryStopId === 'string' && deliveryStopId.trim() !== '') onRouteStopSelect(deliveryStopId);
+  };
+  map.on('click', 'route-ops-route-stop-circles', handleRouteStopClick);
+  if (safeGetLayer(map, 'route-ops-route-stop-labels')) {
+    map.on('click', 'route-ops-route-stop-labels', handleRouteStopClick);
+  }
+  return () => {
+    safeLayerOff(map, 'click', 'route-ops-route-stop-circles', handleRouteStopClick);
+    safeLayerOff(map, 'click', 'route-ops-route-stop-labels', handleRouteStopClick);
+  };
 }
 
 function enforceRouteLayerOrder(map: MapLibreMap): void {
@@ -537,6 +678,14 @@ function safeLayerOff(map: MapLibreMap, type: 'click', layerId: string, listener
   }
 }
 
+function safeMapOff(map: MapLibreMap, type: 'move' | 'resize' | 'zoom', listener: () => void): void {
+  try {
+    map.off(type, listener);
+  } catch {
+    // MapLibre can clear style before React runs map-listener cleanup.
+  }
+}
+
 function safeRemoveMap(map: MapLibreMap): void {
   try {
     map.remove();
@@ -568,6 +717,46 @@ function safeAddImage(imageApi: { addImage?(id: string, image: ImageData, option
   } catch {
     return false;
   }
+}
+
+export function anchorRouteStopPicker(projected: { x: number; y: number }, container: { clientHeight: number; clientWidth: number }, sequenceCount: number): RouteStopPickerAnchor {
+  const width = estimateRouteStopPickerWidth(container.clientWidth, sequenceCount);
+  const height = estimateRouteStopPickerHeight(sequenceCount, width);
+  const halfWidth = width / 2;
+  const minX = ROUTE_STOP_PICKER_MARGIN_PX + halfWidth;
+  const maxX = Math.max(minX, container.clientWidth - ROUTE_STOP_PICKER_MARGIN_PX - halfWidth);
+  const x = clampNumber(projected.x, minX, maxX);
+  const gap = ROUTE_STOP_PICKER_MARGIN_PX;
+  const hasTopRoom = projected.y - height - gap >= ROUTE_STOP_PICKER_MARGIN_PX;
+  const hasBottomRoom = projected.y + height + gap <= container.clientHeight - ROUTE_STOP_PICKER_MARGIN_PX;
+  const placement: RouteStopPickerAnchor['placement'] = hasTopRoom || !hasBottomRoom ? 'top' : 'bottom';
+  const minY = placement === 'top'
+    ? ROUTE_STOP_PICKER_MARGIN_PX + height + gap
+    : ROUTE_STOP_PICKER_MARGIN_PX;
+  const maxY = placement === 'top'
+    ? container.clientHeight - ROUTE_STOP_PICKER_MARGIN_PX
+    : Math.max(minY, container.clientHeight - ROUTE_STOP_PICKER_MARGIN_PX - height - gap);
+  return { placement, x, y: clampNumber(projected.y, minY, maxY) };
+}
+
+function estimateRouteStopPickerWidth(containerWidth: number, sequenceCount: number): number {
+  const availableWidth = Math.max(ROUTE_STOP_PICKER_MIN_WIDTH_PX, containerWidth - ROUTE_STOP_PICKER_MARGIN_PX * 2);
+  const contentWidth = Math.max(ROUTE_STOP_PICKER_MIN_WIDTH_PX, sequenceCount * 42);
+  return Math.min(ROUTE_STOP_PICKER_MAX_WIDTH_PX, availableWidth, contentWidth);
+}
+
+function estimateRouteStopPickerHeight(sequenceCount: number, pickerWidth: number): number {
+  const choicesWidth = Math.max(34, pickerWidth - 50);
+  const columns = Math.max(1, Math.floor((choicesWidth + 8) / 42));
+  const rows = Math.max(1, Math.ceil(sequenceCount / columns));
+  const choicesHeight = rows * 34 + Math.max(0, rows - 1) * 8;
+  return Math.min(ROUTE_STOP_PICKER_MAX_HEIGHT_PX, choicesHeight + 28);
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  const lower = Math.min(min, max);
+  const upper = Math.max(min, max);
+  return Math.min(Math.max(value, lower), upper);
 }
 
 function routeLinePaint(): { 'line-color': string; 'line-dasharray': [number, number]; 'line-opacity': number; 'line-width': number } {
@@ -656,6 +845,47 @@ function FitMapIcon(): ReactElement {
       <path d="M15.5 12v3.5H12" />
       <path d="M8 15.5H4.5V12" />
     </svg>
+  );
+}
+
+export function RouteStopSequencePicker({ anchor, currentSequence, locale, onClose, onPickSequence, orderName, sequenceCount }: RouteStopSequencePickerProps): ReactElement {
+  const t = getMapCopy(locale);
+  const choices = Array.from({ length: sequenceCount }, (_, index) => index + 1);
+  const focusTargetRef = useRef<HTMLButtonElement | null>(null);
+  const preferredFocusSequence = choices.find((sequence) => sequence !== currentSequence) ?? null;
+  useEffect(() => {
+    focusTargetRef.current?.focus();
+  }, [currentSequence, orderName, sequenceCount]);
+  return (
+    <div
+      aria-label={t.routeStopSequencePicker(orderName)}
+      className="route-stop-sequence-picker"
+      data-placement={anchor.placement}
+      onPointerDown={(event) => event.stopPropagation()}
+      role="dialog"
+      style={{ left: `${anchor.x}px`, top: `${anchor.y}px` }}
+    >
+      <button aria-label={t.closeRouteStopSequencePicker} className="route-stop-sequence-picker__close" onClick={onClose} ref={preferredFocusSequence === null ? focusTargetRef : undefined} type="button">×</button>
+      <div className="route-stop-sequence-picker__choices">
+        {choices.map((sequence) => {
+          const isCurrent = sequence === currentSequence;
+          return (
+            <button
+              aria-current={isCurrent ? 'true' : undefined}
+              aria-label={t.routeStopSequenceChoice(orderName, sequence)}
+              className={isCurrent ? 'current' : undefined}
+              disabled={isCurrent}
+              key={sequence}
+              onClick={() => onPickSequence(sequence)}
+              ref={sequence === preferredFocusSequence ? focusTargetRef : undefined}
+              type="button"
+            >
+              {sequence}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 

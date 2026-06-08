@@ -10,6 +10,7 @@ export type RouteOpsPoint = {
   longitude: number;
   kind: 'depot' | 'dropoff' | 'order' | 'stop';
   preview?: boolean;
+  selected?: boolean;
   sequence?: number;
 };
 
@@ -56,6 +57,7 @@ export type RouteStopMarkerFeatureCollection = FeatureCollection<PointGeometry, 
   id: string;
   label: string;
   preview: boolean;
+  selected: boolean;
   sortKey: number;
 }>;
 
@@ -186,20 +188,24 @@ export function buildRouteDropoffPointFeatureCollection(points: readonly RouteOp
   };
 }
 
-export function buildRouteStopMarkerFeatureCollection(points: readonly RouteOpsPoint[]): RouteStopMarkerFeatureCollection {
+export function buildRouteStopMarkerFeatureCollection(points: readonly RouteOpsPoint[], selectedRouteStopId: string | null = null): RouteStopMarkerFeatureCollection {
   const stopPoints = points.filter((point) => point.kind === 'stop');
   return {
-    features: stopPoints.map((point, index) => ({
-      geometry: { coordinates: [point.longitude, point.latitude], type: 'Point' },
-      properties: {
-        color: point.preview === true ? '#006fbb' : '#303030',
-        id: point.id,
-        label: point.label,
-        preview: point.preview === true,
-        sortKey: (point.preview === true ? 10000 : 0) + (point.sequence ?? index + 1)
-      },
-      type: 'Feature'
-    })),
+    features: stopPoints.map((point, index) => {
+      const selected = point.id === selectedRouteStopId || point.selected === true;
+      return {
+        geometry: { coordinates: [point.longitude, point.latitude], type: 'Point' },
+        properties: {
+          color: point.preview === true ? '#006fbb' : '#303030',
+          id: point.id,
+          label: point.label,
+          preview: point.preview === true,
+          selected,
+          sortKey: (selected ? 20000 : 0) + (point.preview === true ? 10000 : 0) + (point.sequence ?? index + 1)
+        },
+        type: 'Feature'
+      };
+    }),
     type: 'FeatureCollection'
   };
 }

@@ -18,6 +18,7 @@ import {
   hasStopSequenceChanged,
   moveStop,
   moveStopToDropPosition,
+  moveStopToSequence,
 } from "../state";
 import type { StopDropPosition } from "../state";
 import type {
@@ -366,6 +367,7 @@ export function RouteBuilder(input: {
   const [activeBuilderTab, setActiveBuilderTab] = useState<RouteBuilderTab>(
     () => input.initialBuilderTab ?? "driver-options",
   );
+  const [selectedRouteStopId, setSelectedRouteStopId] = useState<string | null>(null);
   const [draggingStopId, setDraggingStopId] = useState<string | null>(null);
   const [dropPreview, setDropPreview] = useState<StopDropPreview | null>(null);
   const [isSavingRoute, setIsSavingRoute] = useState(false);
@@ -373,7 +375,10 @@ export function RouteBuilder(input: {
   const locale = resolveLocale(input.locale);
   const t = getRoutesCopy(locale);
 
-  useEffect(() => setDraftStops(detail?.stops ?? []), [detail]);
+  useEffect(() => {
+    setDraftStops(detail?.stops ?? []);
+    setSelectedRouteStopId(null);
+  }, [detail]);
   useEffect(
     () => setDraftDriverId(detail?.routePlan.driverId ?? ""),
     [detail?.routePlan.driverId],
@@ -444,6 +449,7 @@ export function RouteBuilder(input: {
 
   const moveDraftStop = (deliveryStopId: string, direction: -1 | 1): void => {
     setDraftStops((current) => moveStop(current, deliveryStopId, direction));
+    setSelectedRouteStopId(null);
   };
 
   const clearStopDragPreview = (): void => {
@@ -457,6 +463,13 @@ export function RouteBuilder(input: {
         moveStopToDropPosition(current, draggingStopId, targetStopId, position),
       );
     }
+    setSelectedRouteStopId(null);
+    clearStopDragPreview();
+  };
+
+  const moveDraftStopToSequence = (deliveryStopId: string, sequence: number): void => {
+    setDraftStops((current) => moveStopToSequence(current, deliveryStopId, sequence));
+    setSelectedRouteStopId(null);
     clearStopDragPreview();
   };
 
@@ -468,8 +481,12 @@ export function RouteBuilder(input: {
   const stopOrderTabId = "route-builder-tab-stop-order";
   const driverPanelId = "route-builder-panel-driver-options";
   const stopOrderPanelId = "route-builder-panel-stop-order";
-  const focusBuilderTab = (tab: RouteBuilderTab): void => {
+  const selectBuilderTab = (tab: RouteBuilderTab): void => {
     setActiveBuilderTab(tab);
+    setSelectedRouteStopId(null);
+  };
+  const focusBuilderTab = (tab: RouteBuilderTab): void => {
+    selectBuilderTab(tab);
     if (typeof window === "undefined") return;
     window.requestAnimationFrame(() => {
       document.getElementById(tab === "driver-options" ? driverTabId : stopOrderTabId)?.focus();
@@ -517,6 +534,10 @@ export function RouteBuilder(input: {
             bootstrap={input.bootstrap}
             detail={detail}
             draftStops={hasSequenceChanges ? draftStops : undefined}
+            onRouteStopPickerClose={() => setSelectedRouteStopId(null)}
+            onRouteStopSelect={(deliveryStopId) => setSelectedRouteStopId(deliveryStopId)}
+            onRouteStopSequencePick={moveDraftStopToSequence}
+            selectedRouteStopId={selectedRouteStopId}
             subtitle={geometryLabel(
               detail,
               input.bootstrap.routerConfig.status,
@@ -567,7 +588,7 @@ export function RouteBuilder(input: {
               className={activeBuilderTab === "driver-options" ? "active" : ""}
               id={driverTabId}
               onKeyDown={handleBuilderTabKeyDown}
-              onClick={() => setActiveBuilderTab("driver-options")}
+              onClick={() => selectBuilderTab("driver-options")}
               role="tab"
               type="button"
             >
@@ -579,7 +600,7 @@ export function RouteBuilder(input: {
               className={activeBuilderTab === "stop-order" ? "active" : ""}
               id={stopOrderTabId}
               onKeyDown={handleBuilderTabKeyDown}
-              onClick={() => setActiveBuilderTab("stop-order")}
+              onClick={() => selectBuilderTab("stop-order")}
               role="tab"
               type="button"
             >

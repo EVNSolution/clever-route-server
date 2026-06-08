@@ -1,8 +1,9 @@
 import { describe, expect, test, vi } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { readFileSync } from 'node:fs';
 
-import { resolveMapHomePoint, RouteOpsMap, syncOrdersLayer, syncRouteDropoffLayers, syncRouteLayers, syncRouteStopLayers } from '../src/components/maps/RouteOpsMap';
+import { anchorRouteStopPicker, installRouteStopClickHandlers, resolveMapHomePoint, RouteOpsMap, RouteStopSequencePicker, syncOrdersLayer, syncRouteDropoffLayers, syncRouteLayers, syncRouteStopLayers } from '../src/components/maps/RouteOpsMap';
 import { buildOrdersMapFeatureCollection, buildRouteDropoffPointFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection } from '../src/maps/geojson';
 import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStopDto } from '../src/types';
 
@@ -126,9 +127,9 @@ describe('RouteOpsMap layer lifecycle', () => {
       },
       paint: {
       'circle-color': ['get', 'color'],
-      'circle-radius': 10,
-      'circle-stroke-color': '#ffffff',
-      'circle-stroke-width': 2
+      'circle-radius': ['case', ['get', 'selected'], 12, 10],
+      'circle-stroke-color': ['case', ['get', 'selected'], '#2f6fed', '#ffffff'],
+      'circle-stroke-width': ['case', ['get', 'selected'], 4, 2]
       }
     });
     expect((layers.get('route-ops-route-stop-labels') as { layout?: Record<string, unknown>; paint?: Record<string, unknown> } | undefined)?.layout).toMatchObject({
@@ -146,6 +147,91 @@ describe('RouteOpsMap layer lifecycle', () => {
     const empty = buildRouteStopMarkerFeatureCollection([]);
     syncRouteStopLayers(map, empty);
     expect(sources.get('route-ops-route-stops')?.setData).toHaveBeenCalledWith(empty);
+  });
+
+  test('registers route-stop layer clicks with event isolation for marker sequence selection', () => {
+    const { handlers, map } = createMapStub();
+    const stopCollection = buildRouteStopMarkerFeatureCollection([
+      { id: 'stop-1', kind: 'stop', label: '1', latitude: 43.6, longitude: -79.3 }
+    ]);
+    syncRouteStopLayers(map, stopCollection);
+    const selectStop = vi.fn();
+
+    const cleanup = installRouteStopClickHandlers(map, selectStop);
+    const layerPreventDefault = vi.fn();
+    const layerStopPropagation = vi.fn();
+    const preventDefault = vi.fn();
+    const stopPropagation = vi.fn();
+    handlers.get('click:route-ops-route-stop-circles')?.({
+      features: [{ properties: { id: 'stop-1' } }],
+      originalEvent: { preventDefault, stopPropagation },
+      preventDefault: layerPreventDefault,
+      stopPropagation: layerStopPropagation
+    });
+
+    expect(selectStop).toHaveBeenCalledWith('stop-1');
+    expect(layerPreventDefault).toHaveBeenCalledOnce();
+    expect(layerStopPropagation).toHaveBeenCalledOnce();
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(stopPropagation).toHaveBeenCalledOnce();
+    expect(handlers.has('click:route-ops-route-stop-labels')).toBe(true);
+    cleanup?.();
+    expect(handlers.has('click:route-ops-route-stop-circles')).toBe(false);
+    expect(handlers.has('click:route-ops-route-stop-labels')).toBe(false);
+  });
+
+  test('renders route stop sequence picker as DOM buttons instead of a MapLibre popup', () => {
+    const html = renderToStaticMarkup(createElement(RouteStopSequencePicker, {
+      anchor: { placement: 'top', x: 120, y: 140 },
+      currentSequence: 2,
+      locale: 'en-CA',
+      onClose: () => undefined,
+      onPickSequence: () => undefined,
+      orderName: '#12030',
+      sequenceCount: 4
+    }));
+
+    expect(html).toContain('class="route-stop-sequence-picker"');
+    expect(html).toContain('data-placement="top"');
+    expect(html).toContain('role="dialog"');
+    expect(html).toContain('aria-label="Move stop #12030 to sequence"');
+    expect(html).toContain('aria-label="Move stop #12030 to sequence 1"');
+    expect(html).toContain('aria-label="Move stop #12030 to sequence 4"');
+    expect(html).toMatch(/aria-label="Move stop #12030 to sequence 2"[^>]*disabled=""/);
+    expect(html).not.toContain('maplibregl-popup');
+  });
+
+  test('bounds and flips marker sequence picker anchors near map edges', () => {
+    const container = { clientHeight: 460, clientWidth: 620 };
+
+    expect(anchorRouteStopPicker({ x: 4, y: 24 }, container, 11)).toMatchObject({
+      placement: 'bottom',
+      x: 196
+    });
+    expect(anchorRouteStopPicker({ x: 616, y: 24 }, container, 11)).toMatchObject({
+      placement: 'bottom',
+      x: 424
+    });
+    expect(anchorRouteStopPicker({ x: 310, y: 440 }, container, 24).placement).toBe('top');
+    expect(anchorRouteStopPicker({ x: 310, y: 440 }, container, 24).y).toBeLessThanOrEqual(444);
+  });
+
+  test('keeps marker sequence picker CSS bounded and scrollable for many stops', () => {
+    const css = readFileSync('src/styles.css', 'utf8');
+    const mapSource = readFileSync('src/components/maps/RouteOpsMap.tsx', 'utf8');
+
+    expect(css).toContain('.route-stop-sequence-picker');
+    expect(css).toContain('background: #ffffff');
+    expect(css).toContain('box-shadow:');
+    expect(css).toContain('max-height: min(280px, 45vh)');
+    expect(css).toContain('max-width: min(360px, calc(100% - 24px))');
+    expect(css).toContain('overflow: auto');
+    expect(css).toContain('[data-placement="bottom"]');
+    expect(css).toContain('grid-template-columns: repeat(auto-fit, minmax(34px, 1fr))');
+    expect(css).toContain('border-radius: 999px');
+    expect(css).not.toContain('route-stop-sequence-picker svg');
+    expect(mapSource).toContain("document.addEventListener('pointerdown'");
+    expect(mapSource).toContain("document.removeEventListener('pointerdown'");
   });
 
   test('clears the route line source when route geometry becomes unavailable', () => {
@@ -233,6 +319,7 @@ describe('RouteOpsMap layer lifecycle', () => {
 });
 
 function createMapStub(options: { hasPinImages?: boolean } = {}): {
+  handlers: Map<string, (event: unknown) => void>;
   layerOrder: string[];
   layers: Map<string, unknown>;
   map: Parameters<typeof syncOrdersLayer>[0] & Parameters<typeof syncRouteLayers>[0] & Parameters<typeof syncRouteDropoffLayers>[0] & Parameters<typeof syncRouteStopLayers>[0];
@@ -240,6 +327,7 @@ function createMapStub(options: { hasPinImages?: boolean } = {}): {
 } {
   const sources = new Map<string, { data: unknown; setData: ReturnType<typeof vi.fn> }>();
   const layers = new Map<string, unknown>();
+  const handlers = new Map<string, (event: unknown) => void>();
   const layerOrder: string[] = [];
   const map = {
     addLayer: (layer: { id: string }) => {
@@ -268,9 +356,21 @@ function createMapStub(options: { hasPinImages?: boolean } = {}): {
       }
       layerOrder.splice(beforeIndex, 0, id);
     },
+    off: vi.fn((eventName: string, layerIdOrHandler: string | ((event: unknown) => void), maybeHandler?: (event: unknown) => void) => {
+      if (typeof layerIdOrHandler === 'string') handlers.delete(`${eventName}:${layerIdOrHandler}`);
+      else handlers.delete(`${eventName}:map`);
+      void maybeHandler;
+    }),
+    on: vi.fn((eventName: string, layerIdOrHandler: string | ((event: unknown) => void), maybeHandler?: (event: unknown) => void) => {
+      if (typeof layerIdOrHandler === 'string' && maybeHandler !== undefined) {
+        handlers.set(`${eventName}:${layerIdOrHandler}`, maybeHandler);
+        return;
+      }
+      if (typeof layerIdOrHandler === 'function') handlers.set(`${eventName}:map`, layerIdOrHandler);
+    }),
     setPaintProperty: vi.fn()
   } as unknown as Parameters<typeof syncOrdersLayer>[0];
-  return { layerOrder, layers, map, sources };
+  return { handlers, layerOrder, layers, map, sources };
 }
 
 
