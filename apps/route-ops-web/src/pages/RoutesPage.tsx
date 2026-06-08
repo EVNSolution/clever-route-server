@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { KeyboardEvent, ReactElement } from "react";
+import type { DragEvent, KeyboardEvent, ReactElement } from "react";
 
 import {
   deleteRoute,
@@ -17,8 +17,9 @@ import {
   geometryLabel,
   hasStopSequenceChanged,
   moveStop,
-  moveStopBefore,
+  moveStopToDropPosition,
 } from "../state";
+import type { StopDropPosition } from "../state";
 import type {
   BootstrapPayload,
   DriverDto,
@@ -31,6 +32,10 @@ import { readErrorMessage } from "../utils/format";
 type RouteBuilderTab = "driver-options" | "stop-order";
 type RouteEndMode = RoutePlanDetailDto["routePlan"]["routeEndMode"];
 type SaveRouteInput = Parameters<typeof saveRoute>[0];
+type StopDropPreview = {
+  position: StopDropPosition;
+  targetStopId: string;
+};
 
 export function getDriverOptionLabel(
   driver: DriverDto,
@@ -362,6 +367,7 @@ export function RouteBuilder(input: {
     () => input.initialBuilderTab ?? "driver-options",
   );
   const [draggingStopId, setDraggingStopId] = useState<string | null>(null);
+  const [dropPreview, setDropPreview] = useState<StopDropPreview | null>(null);
   const [isSavingRoute, setIsSavingRoute] = useState(false);
   const detail = input.detail;
   const locale = resolveLocale(input.locale);
@@ -415,13 +421,6 @@ export function RouteBuilder(input: {
     !isSavingRoute &&
     !isUnsafeRouteEndDraft &&
     (hasSequenceChanges || hasDriverChanges || hasRouteEndChanges || canPublishOnSave);
-  const routeVisibilityLabel =
-    detail === null
-      ? t.loadRouteBeforePublishing
-      : isRouteVisibleToLinkedDriver(detail.routePlan, input.drivers)
-        ? t.driverAppVisible
-        : t.notVisibleToDriverApp;
-
   const save = async (): Promise<void> => {
     if (detail === null || !canSaveRoute) return;
     setIsSavingRoute(true);
@@ -447,25 +446,20 @@ export function RouteBuilder(input: {
     setDraftStops((current) => moveStop(current, deliveryStopId, direction));
   };
 
-  const dropDraftStop = (targetStopId: string): void => {
-    if (draggingStopId !== null) {
-      setDraftStops((current) =>
-        moveStopBefore(current, draggingStopId, targetStopId),
-      );
-    }
+  const clearStopDragPreview = (): void => {
     setDraggingStopId(null);
+    setDropPreview(null);
   };
 
-  const saveHint =
-    detail === null
-      ? t.loadingRoute
-      : isUnsafeRouteEndDraft
-        ? t.returnToStoreDepotMissing
-      : hasSequenceChanges || hasDriverChanges || hasRouteEndChanges
-        ? t.routeSavePendingChanges
-        : canPublishOnSave
-          ? t.routeSavePublishesRoute
-          : t.noRouteChanges;
+  const dropDraftStop = (targetStopId: string, position: StopDropPosition): void => {
+    if (draggingStopId !== null) {
+      setDraftStops((current) =>
+        moveStopToDropPosition(current, draggingStopId, targetStopId, position),
+      );
+    }
+    clearStopDragPreview();
+  };
+
   const returnToDepotChecked = draftRouteEndMode === "RETURN_TO_DEPOT";
   const returnToDepotDisabled =
     detail === null || (!returnToDepotChecked && !canReturnToDepot);
@@ -511,9 +505,6 @@ export function RouteBuilder(input: {
       >
         {isSavingRoute ? t.savingRoute : t.saveRoute}
       </button>
-      <small className="muted">{saveHint}</small>
-      <small className="muted">{t.routeSaveFullDraft}</small>
-      <small className="muted">{routeVisibilityLabel}</small>
     </div>
   );
 
@@ -680,22 +671,19 @@ export function RouteBuilder(input: {
           ) : (
             <div aria-labelledby={stopOrderTabId} className="route-builder-tab-panel" id={stopOrderPanelId} role="tabpanel">
               <div className="route-builder-tab-body route-builder-tab-body--stop-order">
-                <div className="route-stop-compact-heading">
-                  <div>
-                    <span className="eyebrow">{t.routeStops}</span>
-                    <h3>{t.stopTableTitle}</h3>
-                    <p>{t.stopTableHelp}</p>
-                  </div>
+                <div className="route-stop-compact-toolbar">
                   <span className="badge route-stop-count-badge">
                     {draftStops.length} {t.stops.toLocaleLowerCase(locale)}
                   </span>
                 </div>
                 <RouteStopOrderCompactList
                   draggingStopId={draggingStopId}
+                  dropPreview={dropPreview}
                   locale={locale}
-                  onDragEnd={() => setDraggingStopId(null)}
+                  onDragEnd={clearStopDragPreview}
                   onDragStart={setDraggingStopId}
                   onDrop={dropDraftStop}
+                  onDropPreview={setDropPreview}
                   onMove={moveDraftStop}
                   stops={draftStops}
                 />
@@ -721,38 +709,103 @@ export function RouteBuilder(input: {
 
 export function RouteStopOrderCompactList({
   draggingStopId,
+  dropPreview,
   locale,
   onDragEnd,
   onDragStart,
   onDrop,
+  onDropPreview,
   onMove,
   stops,
 }: {
   draggingStopId: string | null;
+  dropPreview: StopDropPreview | null;
   locale?: string | null;
   onDragEnd(): void;
   onDragStart(deliveryStopId: string): void;
-  onDrop(targetStopId: string): void;
+  onDrop(targetStopId: string, position: StopDropPosition): void;
+  onDropPreview(preview: StopDropPreview | null): void;
   onMove(deliveryStopId: string, direction: -1 | 1): void;
   stops: RouteStopDto[];
 }): ReactElement {
   const t = getRoutesCopy(locale);
+
+  const scrollDragEdge = (event: DragEvent<HTMLElement>): void => {
+    const list = event.currentTarget.closest<HTMLElement>(".route-stop-compact-list");
+    if (list === null) return;
+    const rect = list.getBoundingClientRect();
+    const edge = Math.min(92, Math.max(44, rect.height / 5));
+    const topDistance = event.clientY - rect.top;
+    const bottomDistance = rect.bottom - event.clientY;
+    const topStrength = topDistance < edge ? (edge - topDistance) / edge : 0;
+    const bottomStrength = bottomDistance < edge ? (edge - bottomDistance) / edge : 0;
+    const delta = bottomStrength > 0
+      ? Math.ceil(8 + bottomStrength * 24)
+      : topStrength > 0
+        ? -Math.ceil(8 + topStrength * 24)
+        : 0;
+    if (delta !== 0) list.scrollBy({ behavior: "auto", top: delta });
+  };
+
+  const getDropPosition = (event: DragEvent<HTMLElement>): StopDropPosition => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return event.clientY > rect.top + rect.height / 2 ? "after" : "before";
+  };
+
+  const previewFor = (event: DragEvent<HTMLElement>, targetStopId: string): StopDropPreview | null => {
+    if (draggingStopId === null || draggingStopId === targetStopId) return null;
+    return { position: getDropPosition(event), targetStopId };
+  };
+
   return (
-    <div aria-label={t.stopTableTitle} className="route-stop-compact-list" role="list">
-      {stops.map((stop, index) => (
+    <div
+      aria-label={t.routeBuilderTabs.stopOrder}
+      className={[
+        "route-stop-compact-list",
+        draggingStopId === null ? "" : "drag-active",
+      ].filter(Boolean).join(" ")}
+      onDragOver={(event) => {
+        event.preventDefault();
+        scrollDragEdge(event);
+      }}
+      role="list"
+    >
+      {stops.map((stop, index) => {
+        const isDropTarget = dropPreview?.targetStopId === stop.deliveryStopId;
+        const dropPosition = isDropTarget ? dropPreview.position : null;
+        return (
         <div
           className={[
             "route-stop-compact-row",
             draggingStopId === stop.deliveryStopId ? "dragging" : "",
+            isDropTarget ? "drop-target" : "",
+            dropPosition === "before" ? "drop-before" : "",
+            dropPosition === "after" ? "drop-after" : "",
           ].filter(Boolean).join(" ")}
+          data-drop-preview={dropPosition ?? undefined}
           draggable
           key={stop.deliveryStopId}
           onDragEnd={onDragEnd}
-          onDragOver={(event) => event.preventDefault()}
-          onDragStart={() => onDragStart(stop.deliveryStopId)}
+          onDragEnter={(event) => {
+            onDropPreview(previewFor(event, stop.deliveryStopId));
+          }}
+          onDragOver={(event) => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            scrollDragEdge(event);
+            onDropPreview(previewFor(event, stop.deliveryStopId));
+          }}
+          onDragStart={(event) => {
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", stop.deliveryStopId);
+            onDragStart(stop.deliveryStopId);
+          }}
           onDrop={(event) => {
             event.preventDefault();
-            onDrop(stop.deliveryStopId);
+            const position = dropPreview?.targetStopId === stop.deliveryStopId
+              ? dropPreview.position
+              : getDropPosition(event);
+            onDrop(stop.deliveryStopId, position);
           }}
           role="listitem"
         >
@@ -792,7 +845,8 @@ export function RouteStopOrderCompactList({
             </button>
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

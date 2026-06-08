@@ -532,15 +532,26 @@ export function moveStop(stops: RouteStopDto[], deliveryStopId: string, directio
 
 
 export function moveStopBefore(stops: RouteStopDto[], draggedStopId: string, targetStopId: string): RouteStopDto[] {
+  return moveStopToDropPosition(stops, draggedStopId, targetStopId, 'before');
+}
+
+export type StopDropPosition = 'before' | 'after';
+
+export function moveStopToDropPosition(
+  stops: RouteStopDto[],
+  draggedStopId: string,
+  targetStopId: string,
+  position: StopDropPosition,
+): RouteStopDto[] {
   if (draggedStopId === targetStopId) return stops;
   const draggedIndex = stops.findIndex((stop) => stop.deliveryStopId === draggedStopId);
-  const targetIndex = stops.findIndex((stop) => stop.deliveryStopId === targetStopId);
-  if (draggedIndex < 0 || targetIndex < 0) return stops;
+  if (draggedIndex < 0) return stops;
   const next = [...stops];
   const [dragged] = next.splice(draggedIndex, 1);
   if (dragged === undefined) return stops;
-  const adjustedTargetIndex = draggedIndex < targetIndex ? targetIndex - 1 : targetIndex;
-  next.splice(adjustedTargetIndex, 0, dragged);
+  const targetIndex = next.findIndex((stop) => stop.deliveryStopId === targetStopId);
+  if (targetIndex < 0) return stops;
+  next.splice(position === 'after' ? targetIndex + 1 : targetIndex, 0, dragged);
   return resequenceStops(next);
 }
 
