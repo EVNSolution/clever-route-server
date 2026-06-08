@@ -1316,7 +1316,7 @@ button.danger.subtle {
 }
 .route-save-controls {
   display: grid;
-  gap: 8px;
+  gap: 0;
 }
 .route-end-toggle {
   align-items: start;
@@ -1353,21 +1353,13 @@ button.danger.subtle {
   font-weight: 800;
   padding: 9px 11px;
 }
-.route-stop-compact-heading {
-  align-items: start;
+.route-stop-compact-toolbar {
+  align-items: center;
   display: flex;
   flex: 0 0 auto;
-  gap: 12px;
-  justify-content: space-between;
+  justify-content: flex-end;
   min-width: 0;
-}
-.route-stop-compact-heading h3,
-.route-stop-compact-heading p {
-  margin: 0;
-}
-.route-stop-compact-heading p {
-  color: #687080;
-  font-size: 13px;
+  min-height: 0;
 }
 .route-stop-count-badge {
   flex: 0 0 auto;
@@ -1378,8 +1370,10 @@ button.danger.subtle {
   display: grid;
   gap: 10px;
   min-height: 0;
+  overscroll-behavior: contain;
   overflow: auto;
   padding-right: 2px;
+  scroll-behavior: auto;
 }
 .route-stop-compact-row {
   align-items: center;
@@ -1390,10 +1384,39 @@ button.danger.subtle {
   gap: 10px;
   grid-template-columns: auto auto minmax(0, 1fr) auto;
   padding: 10px;
+  position: relative;
 }
 .route-stop-compact-row.dragging {
   background: #eef4ff;
   outline: 2px solid rgb(47 111 237 / 28%);
+  opacity: 0.55;
+}
+.route-stop-compact-row.drop-target {
+  background: #eef4ff;
+  border-color: #2f6fed;
+  box-shadow: 0 0 0 2px rgb(47 111 237 / 15%);
+}
+.route-stop-compact-row.drop-before::before,
+.route-stop-compact-row.drop-after::after {
+  background: #2f6fed;
+  border-radius: 999px;
+  box-shadow: 0 0 0 3px rgb(47 111 237 / 16%);
+  content: "";
+  height: 4px;
+  left: 12px;
+  pointer-events: none;
+  position: absolute;
+  right: 12px;
+  z-index: 2;
+}
+.route-stop-compact-row.drop-before::before {
+  top: -7px;
+}
+.route-stop-compact-row.drop-after::after {
+  bottom: -7px;
+}
+.route-stop-compact-row.drop-target .stop-number {
+  background: #2f6fed;
 }
 .route-stop-compact-main {
   display: grid;

@@ -205,7 +205,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
 
     expect(html).toContain('Road path ready');
     expect(html).toContain('Published route — visible to the linked driver after the app refreshes.');
-    expect(html).toContain('Driver app visible');
+    expect(html).not.toContain('Driver app visible');
     expect(html).toMatch(/aria-label="Save route"[^>]*disabled=""/);
     expect(html).toContain('Driver &amp; options');
     expect(html).toContain('Return to store');
@@ -251,7 +251,9 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('class="route-end-toggle-checkbox"');
     expect(html).toContain('Return to store');
     expect(html).toContain('class="route-builder-card-footer"');
-    expect(html).toContain('Save route applies driver, return option, and stop order together.');
+    expect(html).not.toContain('Unsaved route changes are ready.');
+    expect(html).not.toContain('Save route applies driver, return option, and stop order together.');
+    expect(html).not.toContain('Not visible to driver app yet');
     expect(html).not.toContain('class="route-stop-compact-list"');
     expect(html).not.toContain('class="ops-table route-stop-table"');
     expect(html).not.toContain('save driver');
@@ -288,19 +290,21 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
       />,
     );
     const cardHeader = extractFirstMatch(html, /<div class="route-builder-card-header">([\s\S]*?)<div aria-label="Route Builder card tabs"/);
-    const stopHeading = extractFirstMatch(html, /<div class="route-stop-compact-heading">([\s\S]*?)<div aria-label="Stop order table"/);
+    const stopToolbar = extractFirstMatch(html, /<div class="route-stop-compact-toolbar">([\s\S]*?)<div aria-label="Stop order"/);
 
     expect(html.match(/aria-label="Save route"/g)).toHaveLength(1);
-    expect(html).toContain('Stop order table');
+    expect(html).not.toContain('Route stops');
+    expect(html).not.toContain('Stop order table');
+    expect(html).not.toContain('Drag or use the arrow controls to preview the route order before saving.');
     expect(html).toContain('class="route-builder-tab-body route-builder-tab-body--stop-order"');
     expect(html).toContain('class="route-stop-compact-list"');
     expect(html).toContain('class="drag-handle"');
     expect(html).toContain('::');
-    expect(stopHeading).toContain('class="badge route-stop-count-badge"');
-    expect(stopHeading).toContain('11 stops');
+    expect(stopToolbar).toContain('class="badge route-stop-count-badge"');
+    expect(stopToolbar).toContain('11 stops');
     expect(cardHeader).not.toContain('11 stops');
     expect(html.indexOf('class="route-builder-card-footer"')).toBeGreaterThan(html.indexOf('class="route-stop-compact-list"'));
-    expect(html).toContain('Save route applies driver, return option, and stop order together.');
+    expect(html).not.toContain('Save route applies driver, return option, and stop order together.');
     expect(html).not.toContain('class="ops-table route-stop-table"');
   });
 
@@ -386,9 +390,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     const html = renderToStaticMarkup(
       <RouteStopOrderCompactList
         draggingStopId={null}
+        dropPreview={null}
         onDragEnd={() => undefined}
         onDragStart={() => undefined}
         onDrop={() => undefined}
+        onDropPreview={() => undefined}
         onMove={() => undefined}
         stops={detail.stops}
       />,
@@ -401,6 +407,27 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('Toronto');
     expect(html).toContain('class="drag-handle"');
     expect(html).not.toContain('route-stop-table');
+  });
+
+  test('RouteStopOrderCompactList marks the dragged row and drop preview target', () => {
+    const detail = routePlanDetailFixture();
+    const html = renderToStaticMarkup(
+      <RouteStopOrderCompactList
+        draggingStopId="stop-1"
+        dropPreview={{ position: 'after', targetStopId: 'stop-2' }}
+        onDragEnd={() => undefined}
+        onDragStart={() => undefined}
+        onDrop={() => undefined}
+        onDropPreview={() => undefined}
+        onMove={() => undefined}
+        stops={detail.stops}
+      />,
+    );
+
+    expect(html).toContain('class="route-stop-compact-list drag-active"');
+    expect(html).toContain('class="route-stop-compact-row dragging"');
+    expect(html).toContain('class="route-stop-compact-row drop-target drop-after"');
+    expect(html).toContain('data-drop-preview="after"');
   });
 
   test('regenerateDriverInviteCode posts to the protected Route Ops API with CSRF', async () => {

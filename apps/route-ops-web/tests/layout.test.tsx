@@ -281,8 +281,13 @@ describe('route ops layout components', () => {
     expect(css).toContain('border-top: 1px solid #e6eaf1;');
     expect(css).toContain('.route-builder-tab-body--stop-order');
     expect(css).toContain('grid-template-rows: auto minmax(0, 1fr);');
+    expect(css).toContain('.route-stop-compact-toolbar');
     expect(css).toContain('.route-stop-count-badge');
     expect(css).toContain('white-space: nowrap;');
+    expect(css).toContain('overscroll-behavior: contain;');
+    expect(css).toContain('.route-stop-compact-row.drop-target');
+    expect(css).toContain('.route-stop-compact-row.drop-before::before');
+    expect(css).toContain('.route-stop-compact-row.drop-after::after');
     expect(css).toContain('@media (max-width: 980px)');
     expect(css).toContain(`.route-builder-workspace .route-ops-map-frame,
   .route-builder-workspace .route-ops-map-canvas,

@@ -19,6 +19,7 @@ import {
   matchesPlanningScope,
   moveStop,
   moveStopBefore,
+  moveStopToDropPosition,
   storeSettingsToDepotPoint,
   summarizeOrderWorkset,
   summarizeSelection
@@ -217,6 +218,15 @@ describe('route ops web state helpers', () => {
     expect(moveStopBefore(stops, 'd', 'b').map((item) => `${item.deliveryStopId}:${item.sequence}`)).toEqual(['a:1', 'd:2', 'b:3', 'c:4']);
     expect(moveStopBefore(stops, 'b', 'd').map((item) => `${item.deliveryStopId}:${item.sequence}`)).toEqual(['a:1', 'c:2', 'b:3', 'd:4']);
     expect(moveStopBefore(stops, 'x', 'd')).toBe(stops);
+  });
+
+  test('supports drag/drop stop insertion before or after a preview target', () => {
+    const stops = [stop('a', 1), stop('b', 2), stop('c', 3), stop('d', 4)];
+
+    expect(moveStopToDropPosition(stops, 'b', 'd', 'before').map((item) => `${item.deliveryStopId}:${item.sequence}`)).toEqual(['a:1', 'c:2', 'b:3', 'd:4']);
+    expect(moveStopToDropPosition(stops, 'b', 'd', 'after').map((item) => `${item.deliveryStopId}:${item.sequence}`)).toEqual(['a:1', 'c:2', 'd:3', 'b:4']);
+    expect(moveStopToDropPosition(stops, 'd', 'b', 'after').map((item) => `${item.deliveryStopId}:${item.sequence}`)).toEqual(['a:1', 'b:2', 'd:3', 'c:4']);
+    expect(moveStopToDropPosition(stops, 'b', 'b', 'after')).toBe(stops);
   });
 
   test('derives route stats and geometry labels honestly', () => {
