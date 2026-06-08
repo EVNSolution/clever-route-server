@@ -115,6 +115,40 @@ describe("Admin WooCommerce connection UI routes", () => {
     ).toBeDefined();
   });
 
+  test("enables route_engine optimization only with base URL and internal token", () => {
+    const base = createBaseAdminCommerceDependencies();
+
+    expect(() =>
+      loadAdminCommerceConnectionsUiDependencies({
+        adminCommerceConnections: base.dependencies,
+        env: {
+          CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
+          CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
+          DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
+          ROUTE_ENGINE_BASE_URL: "http://route-engine:8080",
+        },
+        nodeEnv: "production",
+      }),
+    ).toThrow("ROUTE_ENGINE_INTERNAL_TOKEN is required when ROUTE_ENGINE_BASE_URL is set");
+
+    const dependencies = loadAdminCommerceConnectionsUiDependencies({
+      adminCommerceConnections: base.dependencies,
+      env: {
+        CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
+        CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
+        DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
+        ROUTE_ENGINE_BASE_URL: "http://route-engine:8080",
+        ROUTE_ENGINE_INTERNAL_TOKEN: "internal-token",
+        ROUTE_ENGINE_MODE: "road_graph",
+        ROUTE_ENGINE_OBJECTIVE: "minimize_duration",
+        ROUTE_ENGINE_TIMEOUT_MS: "5000",
+      },
+      nodeEnv: "production",
+    });
+
+    expect(dependencies?.routeOptimizationService).toBeDefined();
+  });
+
   test("uses Woo-compatible Route Ops repositories even when legacy Shopify admin dependencies are configured", async () => {
     const base = createBaseAdminCommerceDependencies();
     const shopFindUnique = vi.fn(() => Promise.resolve({ id: "shop-id" }));
@@ -4468,6 +4502,97 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
+  test("saves route_engine optimized stop order via API when configured", async () => {
+    const baseDetail = routePlanDetail();
+    const detail = {
+      ...baseDetail,
+      routePlan: {
+        ...routePlanSummary(),
+        depot: { latitude: 43.6, longitude: -79.3 },
+      },
+    };
+    const getRoutePlanDetail = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["routePlanService"]
+      >["getRoutePlanDetail"]
+    >(() => Promise.resolve(detail));
+    const updateRoutePlanStops = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["routePlanService"]
+      >["updateRoutePlanStops"]
+    >(() => Promise.resolve(detail));
+    const optimizeStopOrder = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["routeOptimizationService"]
+      >["optimizeStopOrder"]
+    >(() =>
+      Promise.resolve({
+        missingCoordinateStops: 0,
+        source: "route_engine",
+        stops: [
+          {
+            deliveryStopId: "stop-2",
+            sequence: 1,
+            shopifyOrderGid: "gid://woocommerce/Order/1002",
+          },
+          {
+            deliveryStopId: "stop-1",
+            sequence: 2,
+            shopifyOrderGid: "gid://woocommerce/Order/1001",
+          },
+        ],
+      }),
+    );
+    const { app } = await createUiHarness({
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+      },
+      routeOptimizationService: { optimizeStopOrder },
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan: vi.fn(),
+        getRoutePlanDetail,
+        listRoutePlans: vi.fn(() => Promise.resolve([routePlanSummary()])),
+        updateRoutePlanStops,
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const optimized = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/routes/route-plan-id/optimize?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {}, csrfToken),
+      });
+
+      expect(optimized.statusCode).toBe(200);
+      expect(optimizeStopOrder).toHaveBeenCalledWith({
+        detail,
+        shopDomain: "tenant-a.example.test",
+      });
+      expect(updateRoutePlanStops).toHaveBeenCalledWith({
+        payload: {
+          stops: [
+            {
+              deliveryStopId: "stop-2",
+              sequence: 1,
+              shopifyOrderGid: "gid://woocommerce/Order/1002",
+            },
+            {
+              deliveryStopId: "stop-1",
+              sequence: 2,
+              shopifyOrderGid: "gid://woocommerce/Order/1001",
+            },
+          ],
+        },
+        routePlanId: "route-plan-id",
+        shopDomain: "tenant-a.example.test",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test("renders guided Woo onboarding copy with one credential entry form", async () => {
     const { app } = await createUiHarness();
 
@@ -5327,6 +5452,7 @@ async function createUiHarness(
       | null;
     rotateCredentials: ReturnType<typeof vi.fn>;
     rotateWebhookSecret: ReturnType<typeof vi.fn>;
+    routeOptimizationService: AdminCommerceConnectionsUiDependencies["routeOptimizationService"];
     routePlanService: AdminCommerceConnectionsUiDependencies["routePlanService"];
     settingsService: AdminCommerceConnectionsUiDependencies["settingsService"];
     testConnection: ReturnType<typeof vi.fn>;
@@ -5424,6 +5550,9 @@ async function createUiHarness(
       : { notificationService: overrides.notificationService }),
     ...(overrides.now === undefined ? {} : { now: overrides.now }),
     publicBaseUrl: "https://clever-route.cleversystem.ai",
+    ...(overrides.routeOptimizationService === undefined
+      ? {}
+      : { routeOptimizationService: overrides.routeOptimizationService }),
     ...(overrides.routePlanService === undefined
       ? {}
       : { routePlanService: overrides.routePlanService }),

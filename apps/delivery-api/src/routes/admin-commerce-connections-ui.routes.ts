@@ -67,6 +67,10 @@ import {
   type RoutePlanService,
   type RoutePlanSummary,
 } from "../modules/route-plans/route-plan.types.js";
+import type {
+  RouteOptimizationService,
+  RouteOptimizationStopSequence,
+} from "../modules/route-plans/route-engine-route-optimizer.client.js";
 import { readAdminUiFormFields } from "./admin-ui-form.js";
 import type { GeocodingService } from "../modules/geocoding/geocoding.service.js";
 import type { GeocodingResult } from "../modules/geocoding/geocoding.types.js";
@@ -377,6 +381,7 @@ export type AdminCommerceConnectionsUiDependencies = {
   };
   wooSyncService?: AdminWooSyncServiceContract;
   publicBaseUrl?: string;
+  routeOptimizationService?: RouteOptimizationService;
   routePlanService?: Pick<
     RoutePlanService,
     | "assignRoutePlanDriver"
@@ -2009,7 +2014,11 @@ function registerRouteOpsAppRoutes(
             404,
           );
         }
-        const optimized = buildOptimizedStopOrder(detail);
+        const optimized = await buildOptimizedStopOrder({
+          detail,
+          routeOptimizationService: services.routeOptimizationService,
+          shopDomain,
+        });
         const updated = await services.routePlanService.updateRoutePlanStops({
           payload: { stops: optimized.stops },
           routePlanId: request.params.routePlanId,
@@ -3093,7 +3102,11 @@ async function handleRouteOptimize(
         shopDomain,
       });
     }
-    const optimized = buildOptimizedStopOrder(detail);
+    const optimized = await buildOptimizedStopOrder({
+      detail,
+      routeOptimizationService: services.routeOptimizationService,
+      shopDomain,
+    });
     await services.routePlanService.updateRoutePlanStops({
       payload: { stops: optimized.stops },
       routePlanId,
@@ -3101,10 +3114,7 @@ async function handleRouteOptimize(
     });
     return redirectToRoutePlans(reply, {
       deliveryDate: detail.routePlan.deliveryDate ?? detail.routePlan.planDate,
-      notice:
-        optimized.missingCoordinateStops === 0
-          ? "CLEVER v1 optimized sequence saved."
-          : `CLEVER v1 optimized sequence saved; ${optimized.missingCoordinateStops} stop(s) without coordinates stayed at the end.`,
+      notice: buildRouteOptimizeNotice(optimized),
       routePlanId,
       shopDomain,
     });
@@ -3888,6 +3898,9 @@ type RouteUiServices = {
   orderSyncService: NonNullable<
     AdminCommerceConnectionsUiDependencies["orderSyncService"]
   >;
+  routeOptimizationService?: NonNullable<
+    AdminCommerceConnectionsUiDependencies["routeOptimizationService"]
+  >;
   routePlanService: NonNullable<
     AdminCommerceConnectionsUiDependencies["routePlanService"]
   >;
@@ -3907,6 +3920,9 @@ function readRouteUiServices(
       ? {}
       : { driverService: dependencies.driverService }),
     orderSyncService: dependencies.orderSyncService,
+    ...(dependencies.routeOptimizationService === undefined
+      ? {}
+      : { routeOptimizationService: dependencies.routeOptimizationService }),
     routePlanService: dependencies.routePlanService,
   };
 }
@@ -5786,14 +5802,35 @@ function readStopOrderLines(
   });
 }
 
-function buildOptimizedStopOrder(detail: RoutePlanDetail): {
+type OptimizedStopOrder = {
   missingCoordinateStops: number;
-  stops: Array<{
-    deliveryStopId: string;
-    sequence: number;
-    shopifyOrderGid: string;
-  }>;
-} {
+  source: "clever_v1" | "route_engine";
+  stops: RouteOptimizationStopSequence[];
+};
+
+async function buildOptimizedStopOrder(input: {
+  detail: RoutePlanDetail;
+  routeOptimizationService?: RouteOptimizationService | undefined;
+  shopDomain: string;
+}): Promise<OptimizedStopOrder> {
+  if (input.routeOptimizationService !== undefined) {
+    try {
+      const optimized = await input.routeOptimizationService.optimizeStopOrder({
+        detail: input.detail,
+        shopDomain: input.shopDomain,
+      });
+      if (optimized !== null) {
+        return optimized;
+      }
+    } catch {
+      // Keep the operator workflow available when the internal solver is degraded.
+    }
+  }
+
+  return buildCleverV1OptimizedStopOrder(input.detail);
+}
+
+function buildCleverV1OptimizedStopOrder(detail: RoutePlanDetail): OptimizedStopOrder {
   const sortableStops = detail.stops
     .map((stop) => ({ coordinates: readStopCoordinates(stop), stop }))
     .filter(
@@ -5857,7 +5894,18 @@ function buildOptimizedStopOrder(detail: RoutePlanDetail): {
     shopifyOrderGid: stop.shopifyOrderGid,
   }));
 
-  return { missingCoordinateStops: missingStops.length, stops };
+  return { missingCoordinateStops: missingStops.length, source: "clever_v1", stops };
+}
+
+function buildRouteOptimizeNotice(optimized: OptimizedStopOrder): string {
+  if (optimized.source === "route_engine") {
+    return optimized.missingCoordinateStops === 0
+      ? "Route Engine optimized sequence saved."
+      : `Route Engine optimized sequence saved; ${optimized.missingCoordinateStops} stop(s) without coordinates stayed at the end.`;
+  }
+  return optimized.missingCoordinateStops === 0
+    ? "CLEVER v1 optimized sequence saved."
+    : `CLEVER v1 optimized sequence saved; ${optimized.missingCoordinateStops} stop(s) without coordinates stayed at the end.`;
 }
 
 function readDepotCoordinates(
