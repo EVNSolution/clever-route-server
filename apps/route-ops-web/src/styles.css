@@ -1167,6 +1167,7 @@ button.danger.subtle {
 
 /* Shopify-inspired compact Route Ops workspace */
 .tab-layout {
+  --route-builder-detail-panel-height: clamp(620px, calc(100vh - 220px), 760px);
   align-items: start;
   display: grid;
   gap: 18px;
@@ -1179,8 +1180,36 @@ button.danger.subtle {
   display: grid;
   gap: 18px;
 }
+.route-builder-workspace .map-panel,
 .route-save-panel {
-  align-content: start;
+  height: var(--route-builder-detail-panel-height);
+}
+.route-builder-workspace .map-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.route-builder-workspace .map-panel .panel-heading {
+  flex: 0 0 auto;
+}
+.route-builder-workspace .route-ops-map-frame {
+  display: flex;
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+}
+.route-builder-workspace .route-ops-map-canvas {
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+}
+.route-builder-workspace .route-ops-map-frame svg {
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+}
+.route-save-panel {
+  align-content: stretch;
 }
 .route-stops-panel {
   max-height: min(680px, calc(100vh - 220px));
@@ -1229,34 +1258,91 @@ button.danger.subtle {
   margin: 0;
   text-align: right;
 }
-.route-builder-tabs {
+.route-builder-card-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.route-builder-card-header {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.route-builder-title-block {
+  min-width: 0;
+}
+.route-builder-route-title {
+  margin-bottom: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.route-builder-card-actions {
+  align-items: center;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
+}
+.route-builder-card-tabs {
+  flex: 0 0 auto;
   margin-top: 2px;
 }
-.route-builder-tab-panel,
-.route-save-controls {
+.route-builder-tab-panel {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.route-builder-tab-body {
   display: grid;
+  flex: 1 1 auto;
   gap: 12px;
+  min-height: 0;
+}
+.route-builder-tab-body--driver {
+  overflow: auto;
+  padding-right: 2px;
+}
+.route-builder-tab-body--stop-order {
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+.route-builder-card-footer {
+  border-top: 1px solid #e6eaf1;
+  flex: 0 0 auto;
+  margin-top: 12px;
+  padding-top: 12px;
 }
 .route-save-controls {
+  display: grid;
   gap: 8px;
 }
 .route-end-toggle {
   align-items: start;
-  border: 1px solid #e6eaf1;
+  background: #f8fafc;
+  border: 1px solid #dbe3ef;
   border-radius: 16px;
+  cursor: pointer;
   display: grid;
-  gap: 4px 10px;
+  gap: 5px 12px;
   grid-template-columns: auto minmax(0, 1fr);
-  padding: 12px;
+  padding: 14px;
 }
 .route-end-toggle input {
-  margin-top: 3px;
+  accent-color: #111827;
+  height: 20px;
+  margin-top: 1px;
+  width: 20px;
 }
 .route-end-toggle span {
   font-weight: 900;
+  line-height: 1.2;
 }
 .route-end-toggle small {
+  color: #687080;
   grid-column: 2;
+  line-height: 1.35;
 }
 .form-warning {
   background: #fff7ed;
@@ -1270,8 +1356,10 @@ button.danger.subtle {
 .route-stop-compact-heading {
   align-items: start;
   display: flex;
+  flex: 0 0 auto;
   gap: 12px;
   justify-content: space-between;
+  min-width: 0;
 }
 .route-stop-compact-heading h3,
 .route-stop-compact-heading p {
@@ -1281,10 +1369,15 @@ button.danger.subtle {
   color: #687080;
   font-size: 13px;
 }
+.route-stop-count-badge {
+  flex: 0 0 auto;
+  text-transform: none;
+  white-space: nowrap;
+}
 .route-stop-compact-list {
   display: grid;
   gap: 10px;
-  max-height: min(620px, calc(100vh - 360px));
+  min-height: 0;
   overflow: auto;
   padding-right: 2px;
 }
@@ -1469,6 +1562,25 @@ button.danger.subtle {
   }
   .side-panel {
     position: static;
+  }
+  .route-builder-workspace .map-panel,
+  .route-save-panel {
+    height: auto;
+  }
+  .route-builder-workspace .route-ops-map-frame,
+  .route-builder-workspace .route-ops-map-canvas,
+  .route-builder-workspace .route-ops-map-frame svg {
+    min-height: 460px;
+  }
+  .route-builder-card-shell {
+    overflow: visible;
+  }
+  .route-builder-tab-panel,
+  .route-builder-tab-body,
+  .route-builder-tab-body--stop-order,
+  .route-stop-compact-list {
+    min-height: 0;
+    overflow: visible;
   }
   .filter-panel {
     grid-template-columns: repeat(2, minmax(0, 1fr));

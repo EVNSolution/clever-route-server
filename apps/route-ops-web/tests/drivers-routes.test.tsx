@@ -215,7 +215,9 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
   });
 
   test('RouteBuilder defaults to Driver & options tab with one aggregate Save route action', () => {
-    const detail = routePlanDetailFixture();
+    const detail = routePlanDetailFixture({
+      routePlan: routePlanFixture({ name: 'Route 2026-06-05' }),
+    });
     const html = renderToStaticMarkup(
       <RouteBuilder
         bootstrap={bootstrap()}
@@ -229,16 +231,26 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         setError={() => undefined}
       />,
     );
+    const cardHeader = extractFirstMatch(html, /<div class="route-builder-card-header">([\s\S]*?)<div aria-label="Route Builder card tabs"/);
 
     expect(html.match(/aria-label="Save route"/g)).toHaveLength(1);
-    expect(html).toContain('Route state');
+    expect(html).toContain('class="panel side-panel route-save-panel route-builder-card-shell"');
+    expect(html).toContain('class="route-builder-route-title" title="Route 2026-06-05"');
+    expect(cardHeader).toContain('Route 2026-06-05');
+    expect(cardHeader).toContain('class="route-row-actions route-builder-card-actions"');
+    expect(cardHeader).toContain('All routes');
+    expect(cardHeader).toContain('Delete');
+    expect(cardHeader).not.toContain('route-stop-count-badge');
     expect(html).toContain('Driver &amp; options');
     expect(html).toContain('Stop order');
     expect(html).toContain('aria-controls="route-builder-panel-driver-options"');
     expect(html).toContain('aria-controls="route-builder-panel-stop-order"');
     expect(html).toContain('id="route-builder-panel-driver-options"');
     expect(html).toContain('aria-labelledby="route-builder-tab-driver-options"');
+    expect(html).toContain('class="route-builder-tab-body route-builder-tab-body--driver"');
+    expect(html).toContain('class="route-end-toggle-checkbox"');
     expect(html).toContain('Return to store');
+    expect(html).toContain('class="route-builder-card-footer"');
     expect(html).toContain('Save route applies driver, return option, and stop order together.');
     expect(html).not.toContain('class="route-stop-compact-list"');
     expect(html).not.toContain('class="ops-table route-stop-table"');
@@ -247,8 +259,20 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('Publish route');
   });
 
-  test('RouteBuilder stop-order tab renders compact right-card stop table with shared Save route action', () => {
-    const detail = routePlanDetailFixture();
+  test('RouteBuilder stop-order tab renders scroll-contained right-card stop table with shared Save route action', () => {
+    const baseDetail = routePlanDetailFixture();
+    const stops: RoutePlanDetailDto['stops'] = Array.from({ length: 11 }, (_, index) => ({
+      ...baseDetail.stops[index % baseDetail.stops.length]!,
+      deliveryStopId: `stop-${index + 1}`,
+      orderId: `order-${index + 1}`,
+      orderName: `#${11000 + index}`,
+      sequence: index + 1,
+      sourceOrderId: `gid://woocommerce/Order/${11000 + index}`,
+    }));
+    const detail = routePlanDetailFixture({
+      routePlan: routePlanFixture({ name: 'Route 2026-06-05', stopsCount: stops.length }),
+      stops,
+    });
     const html = renderToStaticMarkup(
       <RouteBuilder
         bootstrap={bootstrap()}
@@ -263,12 +287,19 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         setError={() => undefined}
       />,
     );
+    const cardHeader = extractFirstMatch(html, /<div class="route-builder-card-header">([\s\S]*?)<div aria-label="Route Builder card tabs"/);
+    const stopHeading = extractFirstMatch(html, /<div class="route-stop-compact-heading">([\s\S]*?)<div aria-label="Stop order table"/);
 
     expect(html.match(/aria-label="Save route"/g)).toHaveLength(1);
     expect(html).toContain('Stop order table');
+    expect(html).toContain('class="route-builder-tab-body route-builder-tab-body--stop-order"');
     expect(html).toContain('class="route-stop-compact-list"');
     expect(html).toContain('class="drag-handle"');
     expect(html).toContain('::');
+    expect(stopHeading).toContain('class="badge route-stop-count-badge"');
+    expect(stopHeading).toContain('11 stops');
+    expect(cardHeader).not.toContain('11 stops');
+    expect(html.indexOf('class="route-builder-card-footer"')).toBeGreaterThan(html.indexOf('class="route-stop-compact-list"'));
     expect(html).toContain('Save route applies driver, return option, and stop order together.');
     expect(html).not.toContain('class="ops-table route-stop-table"');
   });
