@@ -10,6 +10,11 @@ import { AdminDriverService } from '../driver/admin-driver.service.js';
 import { PrismaRoutePlanRepository } from '../route-plans/route-plan.repository.js';
 import { RoutePlanAdminService } from '../route-plans/route-plan.service.js';
 import { OsrmRouteGeometryProvider } from '../route-plans/osrm-route-geometry.client.js';
+import {
+  RouteEngineRouteOptimizationClient,
+  type RouteEngineMode,
+  type RouteEngineObjective
+} from '../route-plans/route-engine-route-optimizer.client.js';
 import { PrismaOrderSyncRepository } from '../shopify/order-sync.repository.js';
 import { PrismaAdminNotificationRepository } from '../notifications/admin-notification.repository.js';
 import { AdminNotificationService } from '../notifications/admin-notification.service.js';
@@ -57,6 +62,12 @@ export type AdminCommerceConnectionsRuntimeEnv = Partial<
     | 'GEOCODING_USER_AGENT'
     | 'OSRM_BASE_URL'
     | 'OSRM_TIMEOUT_MS'
+    | 'ROUTE_ENGINE_BASE_URL'
+    | 'ROUTE_ENGINE_INTERNAL_TOKEN'
+    | 'ROUTE_ENGINE_MODE'
+    | 'ROUTE_ENGINE_OBJECTIVE'
+    | 'ROUTE_ENGINE_SERVICE_REGION'
+    | 'ROUTE_ENGINE_TIMEOUT_MS'
     | 'ROUTE_OPS_ROUTER_COVERAGE'
     | 'WOOCOMMERCE_SHOP_TIMEZONE',
     string
@@ -136,6 +147,7 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     ...readAdminUiNotificationService(input),
     ...readAdminUiOrderSyncService(input),
     ...readAdminUiPairingCodeService(input),
+    ...readAdminUiRouteOptimizationService(input.env),
     ...readAdminUiWooSyncService(input),
     ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
     ...readAdminUiRoutePlanService(input),
@@ -271,6 +283,29 @@ function readAdminUiOrderSyncService(input: {
   };
 }
 
+function readAdminUiRouteOptimizationService(
+  env: AdminCommerceConnectionsRuntimeEnv
+): Pick<AdminCommerceConnectionsUiDependencies, 'routeOptimizationService'> {
+  const baseUrl = readOptional(env.ROUTE_ENGINE_BASE_URL);
+  if (baseUrl === undefined) return {};
+
+  const internalToken = readOptional(env.ROUTE_ENGINE_INTERNAL_TOKEN);
+  if (internalToken === undefined) {
+    throw new Error('ROUTE_ENGINE_INTERNAL_TOKEN is required when ROUTE_ENGINE_BASE_URL is set');
+  }
+
+  return {
+    routeOptimizationService: new RouteEngineRouteOptimizationClient({
+      baseUrl,
+      internalToken,
+      mode: readOptionalRouteEngineMode(env.ROUTE_ENGINE_MODE),
+      objective: readOptionalRouteEngineObjective(env.ROUTE_ENGINE_OBJECTIVE),
+      serviceRegion: readOptional(env.ROUTE_ENGINE_SERVICE_REGION) ?? readOptional(env.ROUTE_OPS_ROUTER_COVERAGE),
+      ...optionalTimeout(env.ROUTE_ENGINE_TIMEOUT_MS)
+    })
+  };
+}
+
 function readAdminUiRoutePlanService(input: {
   adminRoutePlans?: AdminRoutePlanDependencies | undefined;
   env: AdminCommerceConnectionsRuntimeEnv;
@@ -298,6 +333,21 @@ function readAdminUiSettingsService(input: {
 }): Pick<AdminCommerceConnectionsUiDependencies, 'settingsService'> {
   if (input.prisma === undefined) return {};
   return { settingsService: new PrismaAdminStoreSettingsService(input.prisma) };
+}
+
+
+function readOptionalRouteEngineMode(value: string | undefined): RouteEngineMode | undefined {
+  const normalized = readOptional(value);
+  if (normalized === undefined) return undefined;
+  if (normalized === 'road_graph' || normalized === 'fixture') return normalized;
+  throw new Error('ROUTE_ENGINE_MODE must be road_graph or fixture');
+}
+
+function readOptionalRouteEngineObjective(value: string | undefined): RouteEngineObjective | undefined {
+  const normalized = readOptional(value);
+  if (normalized === undefined) return undefined;
+  if (normalized === 'minimize_duration' || normalized === 'minimize_distance') return normalized;
+  throw new Error('ROUTE_ENGINE_OBJECTIVE must be minimize_duration or minimize_distance');
 }
 
 function readOptional(value: string | undefined): string | undefined {
