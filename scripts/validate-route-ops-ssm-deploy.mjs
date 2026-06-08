@@ -152,6 +152,8 @@ assert(wrapper.includes('CLEVER_ADMIN_WEB_LOGIN_SECRET'), 'wrapper must read hos
 assert(wrapper.includes('PUBLISH_EVIDENCE_URL'), 'wrapper must validate and record publish evidence URL when provided');
 assert(wrapper.includes('ROUTE_OPS_WEB_STATIC_IMAGE'), 'wrapper must derive and validate the frontend static image');
 assert(wrapper.includes('ROUTE_OPS_WEB_STATIC_VOLUME'), 'wrapper must derive and validate the SHA-scoped frontend static volume');
+assert(wrapper.includes('ROUTE_ENGINE_IMAGE'), 'wrapper must derive and validate the route_engine worker image');
+assert(wrapper.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'wrapper must expose the route_engine graph host directory');
 assert(!wrapper.includes('set -x'), 'wrapper must not enable shell xtrace');
 assert(/ROUTE_OPS_SMOKE_LOGIN_SECRET="\$value"/.test(wrapper), 'wrapper must export smoke secret from parsed local value');
 
@@ -171,11 +173,20 @@ assert(imageDeploy.includes('ROUTE_OPS_MIGRATE_IMAGE_REPO'), 'image deploy scrip
 assert(imageDeploy.includes('ROUTE_OPS_WEB_STATIC_IMAGE_REPO'), 'image deploy script must scope cleanup to the Route Ops web static image repository');
 assert(imageDeploy.includes('ROUTE_OPS_WEB_STATIC_IMAGE'), 'image deploy script must track the frontend static image in deploy metadata');
 assert(imageDeploy.includes('ROUTE_OPS_WEB_STATIC_VOLUME'), 'image deploy script must track the SHA-scoped frontend static volume in deploy metadata');
+assert(imageDeploy.includes('ROUTE_ENGINE_IMAGE_REPO'), 'image deploy script must scope cleanup to the route_engine worker image repository');
+assert(imageDeploy.includes('ROUTE_ENGINE_IMAGE'), 'image deploy script must track the route_engine worker image in deploy metadata');
+assert(imageDeploy.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'image deploy script must track the route_engine graph host directory in deploy metadata');
 assert(imageDeploy.includes('ROUTE_OPS_STATIC_ARTIFACT_STAGED'), 'image deploy script must track static artifact staging separately from backend mutation');
+assert(imageDeploy.includes('ensure_route_engine_host_env'), 'image deploy script must configure production host route_engine env before activation');
+assert(imageDeploy.includes('restore_route_engine_host_env_on_failure'), 'image deploy script must restore host route_engine env if activation fails');
+assert(imageDeploy.includes('validate_route_engine_graph_artifacts'), 'image deploy script must validate mounted route_engine graph artifacts before activation');
+assert(imageDeploy.includes('org.clever-route.graph-manifest-sha'), 'image deploy script must compare route_engine host graph artifacts with the worker image graph manifest label');
 assert(imageDeploy.includes('ensure_static_artifact_env_file .deploy/current-image.env'), 'image deploy script must normalize legacy current static artifact metadata before mutation');
 assert(imageDeploy.includes('validate_loaded_static_artifact_contract .deploy/candidate-image.env'), 'image deploy script must semantically validate candidate static image and volume before compose mutation');
 assert(imageDeploy.includes('require_candidate_static_volume_isolated_from_current'), 'image deploy script must reject candidate static volumes shared with current metadata');
-assert(imageDeploy.includes('pull route-ops-web-static delivery-api delivery-api-migrate'), 'image deploy script must pull frontend static, runtime, and migrate images together');
+assert(imageDeploy.includes('pull route-ops-web-static delivery-api delivery-api-migrate route-engine'), 'image deploy script must pull frontend static, runtime, migrate, and route_engine images together');
+assert(imageDeploy.includes('--profile route-engine up -d --no-build route-engine'), 'image deploy script must start route_engine through the explicit Route Ops compose project profile');
+assert(imageDeploy.includes('smoke_route_engine_from_runtime_network'), 'image deploy script must smoke route_engine from the delivery-api runtime network before backend activation');
 assert(imageDeploy.includes('up --no-build --force-recreate route-ops-web-static'), 'image deploy script must stage the frontend static artifact before backend activation');
 assert(imageDeploy.includes('ensure_route_ops_ingress'), 'image deploy script must force Route Ops ingress back to this repo before smoke');
 assert(imageDeploy.includes('docker image rm "$image"'), 'image deploy cleanup must remove explicit image refs only');
@@ -188,10 +199,15 @@ assert(imageDeploy.includes('--profile osrm up -d --no-build osrm-ontario'), 'im
 assert(imageDeploy.includes('ROUTE_OPS_OSRM_HOST_SMOKE_URL'), 'image deploy script must support host-loopback OSRM smoke');
 assert(imageDeploy.includes('ROUTE_OPS_OSRM_NETWORK_SMOKE_URL'), 'image deploy script must smoke OSRM from the delivery-api runtime network');
 assert(imageDeploy.indexOf('ensure_route_ops_osrm .deploy/candidate-image.env') > imageDeploy.indexOf('run --rm delivery-api-migrate'), 'image deploy script must run migrations before OSRM/runtime smoke');
+assert(imageDeploy.indexOf('ensure_route_engine .deploy/candidate-image.env') > imageDeploy.indexOf('run --rm delivery-api-migrate'), 'image deploy script must run migrations before route_engine runtime smoke');
+assert(imageDeploy.lastIndexOf('validate_route_engine_graph_artifacts "$route_engine_graph_manifest_sha"') < imageDeploy.indexOf('run --rm delivery-api-migrate'), 'image deploy script must validate route_engine graph artifacts before migration or service mutation');
 assert(imageDeploy.indexOf('ensure_route_ops_osrm .deploy/candidate-image.env') < imageDeploy.lastIndexOf('up -d --no-build --force-recreate --no-deps delivery-api'), 'image deploy script must ensure OSRM before restarting delivery-api');
+assert(imageDeploy.indexOf('ensure_route_engine .deploy/candidate-image.env') < imageDeploy.lastIndexOf('up -d --no-build --force-recreate --no-deps delivery-api'), 'image deploy script must ensure route_engine before restarting delivery-api');
+assert(imageDeploy.includes('stop_route_engine_if_disabled .deploy/candidate-image.env'), 'image deploy script must stop route_engine after delivery-api restart when ROUTE_ENGINE_BASE_URL is disabled');
 assert(imageDeploy.includes('stop_route_ops_osrm_if_disabled .deploy/candidate-image.env'), 'image deploy script must stop OSRM after delivery-api restart when OSRM_BASE_URL is disabled');
 assert(!imageDeploy.includes('stop osrm-ontario || true'), 'image deploy script must not swallow normal OSRM stop failures');
 assert(imageDeploy.lastIndexOf('stop_route_ops_osrm_if_disabled .deploy/candidate-image.env') > imageDeploy.lastIndexOf('up -d --no-build --force-recreate --no-deps delivery-api'), 'image deploy script must stop disabled OSRM only after delivery-api has restarted with the disabled env');
+assert(imageDeploy.includes('"routeEngineEnabled":%s'), 'image deploy history must record route_engine enablement state');
 assert(imageDeploy.includes('"osrmEnabled":%s'), 'image deploy history must record OSRM enablement state');
 
 assert(compose.includes('name: ${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}'), 'production compose file must declare defensive top-level project name');
@@ -200,6 +216,11 @@ assert(compose.includes('ROUTE_OPS_WEB_STATIC_IMAGE'), 'production compose must 
 assert(compose.includes('ROUTE_OPS_WEB_STATIC_VOLUME'), 'production compose must require a SHA-scoped frontend static volume variable');
 assert(compose.includes('$$staging'), 'production compose static handoff command must escape shell variables from compose interpolation');
 assert(compose.includes('route-ops-web-static:/app/external/route-ops-web:ro'), 'delivery-api must mount the frontend static artifact read-only');
+assert(compose.includes('route-engine:'), 'production compose must declare the internal route_engine service');
+assert(compose.includes('ROUTE_ENGINE_IMAGE'), 'production compose must accept a pinned route_engine worker image variable');
+assert(compose.includes('profiles:') && compose.includes('route-engine'), 'production route_engine service must be profile-gated for explicit activation');
+assert(compose.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'production compose must mount route_engine graph artifacts from an explicit host directory');
+assert(compose.includes('/app/routing_engine/v7_out/parquet:ro'), 'production route_engine graph mount must target the expected read-only parquet path');
 assert(ssmDocument.includes('DeployControlBundleBase64'), 'SSM deploy document must accept the deploy-control source bundle');
 assert(ssmDocument.includes('DeployControlBundleSha'), 'SSM deploy document must accept the deploy-control source bundle SHA');
 assert(ssmDocument.includes('Route Ops source sync bundle SHA mismatch'), 'SSM deploy document must verify deploy-control bundle SHA on the host');
@@ -214,14 +235,23 @@ assert(imageRollback.includes('require_candidate_static_volume_isolated_from_rol
 assert(imageRollback.includes('ROUTE_OPS_COMPOSE_PROJECT_NAME must be exactly clever-route'), 'rollback script must reject compose project overrides');
 assert(imageRollback.includes('enforce_no_legacy_route_ops_compose_project'), 'rollback script must fail closed when legacy implicit Route Ops compose containers are still running');
 assert(imageRollback.includes('ensure_route_ops_osrm .deploy/candidate-image.env'), 'rollback script must activate and smoke OSRM before delivery-api rollback activation when OSRM_BASE_URL is configured');
+assert(imageRollback.includes('ensure_route_engine .deploy/candidate-image.env'), 'rollback script must activate and smoke route_engine before delivery-api rollback activation when ROUTE_ENGINE_BASE_URL is configured');
+assert(imageRollback.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'rollback script must carry the route_engine graph host directory');
+assert(imageRollback.includes('validate_route_engine_graph_artifacts'), 'rollback script must validate route_engine graph artifacts before activation');
+assert(imageRollback.includes('org.clever-route.graph-manifest-sha'), 'rollback script must compare route_engine host graph artifacts with the worker image graph manifest label');
 assert(imageRollback.includes('--profile osrm up -d --no-build osrm-ontario'), 'rollback script must start OSRM through the explicit Route Ops compose project, not a manual sidecar');
 assert(imageRollback.includes('ROUTE_OPS_OSRM_HOST_SMOKE_URL'), 'rollback script must support host-loopback OSRM smoke');
 assert(imageRollback.includes('ROUTE_OPS_OSRM_NETWORK_SMOKE_URL'), 'rollback script must smoke OSRM from the delivery-api runtime network');
 assert(imageRollback.indexOf('ensure_route_ops_osrm .deploy/candidate-image.env') > imageRollback.indexOf('run --rm delivery-api-migrate'), 'rollback script must run migrations before OSRM/runtime smoke');
+assert(imageRollback.indexOf('ensure_route_engine .deploy/candidate-image.env') > imageRollback.indexOf('run --rm delivery-api-migrate'), 'rollback script must run migrations before route_engine runtime smoke');
+assert(imageRollback.lastIndexOf('validate_route_engine_graph_artifacts "$route_engine_graph_manifest_sha"') < imageRollback.indexOf('run --rm delivery-api-migrate'), 'rollback script must validate route_engine graph artifacts before migration or service mutation');
 assert(imageRollback.indexOf('ensure_route_ops_osrm .deploy/candidate-image.env') < imageRollback.lastIndexOf('up -d --no-build --force-recreate --no-deps delivery-api'), 'rollback script must ensure OSRM before restarting delivery-api');
+assert(imageRollback.indexOf('ensure_route_engine .deploy/candidate-image.env') < imageRollback.lastIndexOf('up -d --no-build --force-recreate --no-deps delivery-api'), 'rollback script must ensure route_engine before restarting delivery-api');
+assert(imageRollback.includes('stop_route_engine_if_disabled .deploy/candidate-image.env'), 'rollback script must stop route_engine after delivery-api restart when ROUTE_ENGINE_BASE_URL is disabled');
 assert(imageRollback.includes('stop_route_ops_osrm_if_disabled .deploy/candidate-image.env'), 'rollback script must stop OSRM after delivery-api restart when OSRM_BASE_URL is disabled');
 assert(!imageRollback.includes('stop osrm-ontario || true'), 'rollback script must not swallow normal OSRM stop failures');
 assert(imageRollback.lastIndexOf('stop_route_ops_osrm_if_disabled .deploy/candidate-image.env') > imageRollback.lastIndexOf('up -d --no-build --force-recreate --no-deps delivery-api'), 'rollback script must stop disabled OSRM only after delivery-api has restarted with the disabled env');
+assert(imageRollback.includes('"routeEngineEnabled":%s'), 'rollback history must record route_engine enablement state');
 assert(imageRollback.includes('"osrmEnabled":%s'), 'rollback history must record OSRM enablement state');
 assert(smoke.includes('/admin/ui/app/api/drivers?shopDomain=${encodeURIComponent(shopDomain)}'), 'production smoke must include shopDomain when checking Drivers API');
 assertExplicitRouteOpsCompose(imageDeployPath, imageDeploy);
@@ -249,6 +279,9 @@ for (const [path, text] of [
 assert(githubDoc.includes('route-ops-web-static'), 'GitHub deploy docs must include frontend static artifact identity');
 assert(githubDoc.includes('ROUTE_OPS_WEB_STATIC_IMAGE'), 'GitHub deploy docs must include frontend static deploy env');
 assert(githubDoc.includes('ROUTE_OPS_WEB_STATIC_VOLUME'), 'GitHub deploy docs must include frontend static volume deploy env');
+assert(githubDoc.includes('ROUTE_ENGINE_IMAGE'), 'GitHub deploy docs must include the route_engine worker image env');
+assert(githubDoc.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'GitHub deploy docs must include the route_engine graph host mount env');
+assert(githubDoc.includes('http://route-engine:8080'), 'GitHub deploy docs must document the internal route_engine base URL');
 
 for (const pattern of [
   'ImageTag.*allowedPattern',
@@ -259,6 +292,12 @@ for (const pattern of [
   'clever-route-server-route-ops-web-static:<sha>',
   'ROUTE_OPS_WEB_STATIC_IMAGE',
   'ROUTE_OPS_WEB_STATIC_VOLUME',
+  'ROUTE_ENGINE_IMAGE',
+  'ROUTE_ENGINE_GRAPH_HOST_DIR',
+  'org.clever-route.graph-manifest-sha',
+  '/app/routing_engine/v7_out/parquet:ro',
+  'route-engine:8080',
+  'non-customer.*POST /v1/solve',
   'SHA-scoped',
   'DocumentVersion',
   'SSM_ImageTag',

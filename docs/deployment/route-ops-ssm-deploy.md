@@ -28,6 +28,12 @@ Production execution is **not automatic**. The workflow exists so a maintainer c
   - `delivery_api_image`: `ghcr.io/evnsolution/clever-route-server-delivery-api:<sha>`.
   - `delivery_api_migrate_image`: `ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:<sha>`.
   - `publish_evidence_url`: successful Route Ops publish run URL.
+- `route_engine` is not built by this repository's publish workflow. The host
+  wrapper derives the pinned worker image
+  `ROUTE_ENGINE_IMAGE=ghcr.io/evnsolution/route-engine-worker:f65a1402ec24bef24b7975f0a7f0d320e5773bc0`
+  and the required graph mount
+  `ROUTE_ENGINE_GRAPH_HOST_DIR=/srv/clever-route-server/data/route-engine/parquet`
+  unless an operator deliberately overrides them from a host-local source.
 - The image tag must be reachable from `origin/main`.
 - The publish run URL is machine-verified through the GitHub Actions API: repository, workflow, event, conclusion, branch, and SHA must match.
 - The deploy target tag must resolve to exactly one managed node total, that node must be `Online`, and SSM Agent must be version `3.3.2746.0` or later for `ENV_VAR` interpolation support.
@@ -226,11 +232,18 @@ Pin the reviewed `DocumentVersion` in GitHub variable `SSM_ROUTE_OPS_DOCUMENT_VE
 `scripts/ssm-route-ops-deploy.sh` runs on the EC2 host. It:
 
 - validates image tag/schema/image coordinates again, including the `route-ops-web-static` frontend artifact image and SHA-scoped Docker volume derived from the immutable git SHA;
+- derives and validates the pinned `route_engine` worker image and an absolute
+  `ROUTE_ENGINE_GRAPH_HOST_DIR`;
 - exports `ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route` by default and all production compose calls use `docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME"`; the top-level compose `name:` is defense in depth, not the primary selector;
 - takes an exclusive `.deploy/route-ops-deploy.lock` lock before `.deploy/*` mutation;
 - reads `CLEVER_ADMIN_WEB_LOGIN_SECRET` locally from `infra/env/delivery-api.env` if `ROUTE_OPS_SMOKE_LOGIN_SECRET` is not already set by a host-local secure source;
 - never prints the secret;
-- calls `scripts/deploy-route-ops-image.sh`, which stages the `route-ops-web-static` artifact into a SHA-scoped named volume before recreating `delivery-api` to switch mounts;
+- calls `scripts/deploy-route-ops-image.sh`, which first backs up host-local
+  `infra/env/delivery-api.env`, enables the internal `route_engine` URL/token
+  if unset, stages the `route-ops-web-static` artifact into a SHA-scoped named
+  volume, validates the mounted `route_engine` graph parquet manifest against
+  the worker image label, smokes `route_engine` from a one-off `delivery-api`
+  runtime container, and only then recreates `delivery-api` to switch mounts;
 - records non-secret `PUBLISH_EVIDENCE_URL` to `.deploy/deploy-evidence.jsonl` after a successful deploy.
 
 `deploy-route-ops-image.sh` and `rollback-route-ops-image.sh` also acquire the same lock unless a wrapper already holds it. This keeps emergency Session Manager commands from racing the workflow path.
@@ -238,7 +251,7 @@ Pin the reviewed `DocumentVersion` in GitHub variable `SSM_ROUTE_OPS_DOCUMENT_VE
 The host deploy/rollback scripts now fail closed before any service mutation when:
 
 - `ROUTE_OPS_COMPOSE_PROJECT_NAME` is anything other than exactly `clever-route`;
-- a legacy implicit Route Ops container is still running under `com.docker.compose.project=compose` for `caddy`, `delivery-api`, `delivery-api-migrate`, `postgres`, or `osrm-ontario`.
+- a legacy implicit Route Ops container is still running under `com.docker.compose.project=compose` for `caddy`, `delivery-api`, `delivery-api-migrate`, `postgres`, `osrm-ontario`, or `route-engine`.
 
 This means normal image deploys must wait until the one-time compose-project migration/cutover has completed. Do not bypass this guard with environment overrides.
 
@@ -269,6 +282,7 @@ docker ps -a --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Lab
 docker inspect compose-caddy-1 compose-delivery-api-1 compose-postgres-1 clever-route-caddy-1 clever-route-delivery-api-1 clever-route-postgres-1 \
   --format '{{.Name}}|{{json .Config.Labels}}|{{json .Mounts}}' 2>/dev/null || true
 docker ps -a --filter name=osrm --format '{{.Names}}|{{.Label "com.docker.compose.project"}}|{{.Label "com.docker.compose.service"}}|{{.Status}}|{{.Ports}}'
+find /srv/clever-route-server/data/route-engine/parquet -maxdepth 1 -type f -name '*.parquet' -printf '%f\n' 2>/dev/null | sort
 curl -fsS https://clever-route.cleversystem.ai/healthz
 ```
 
@@ -279,6 +293,10 @@ Before any stop/start, prove:
 - the active Postgres data root is `/srv/clever-route-server/data/postgres`;
 - duplicate Postgres containers, if present, do not point at different data roots;
 - OSRM port `127.0.0.1:5000` is free or owned by the Route Ops OSRM container that will be cut over.
+- `route_engine` graph parquet artifacts are present under
+  `/srv/clever-route-server/data/route-engine/parquet`, are not Git LFS pointer
+  files, and match the `org.clever-route.graph-manifest-sha` label on the
+  pinned worker image before `route-engine` is started.
 
 Stop and escalate if the active Route Ops DB bind mount cannot be proven. Do not run project-wide `docker compose -p compose down`, `docker system prune -a`, `docker volume prune`, or `docker container prune`.
 
@@ -303,10 +321,13 @@ This cutover is a separate production action, not part of repo-side implementati
 export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
 docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml up -d --no-build postgres
 docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml run --rm delivery-api-migrate
+docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml --profile route-engine up -d --no-build route-engine
 docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml up -d --no-build delivery-api caddy
 ```
 
 If OSRM is enabled, include `--profile osrm up -d osrm-ontario` only after the old OSRM service has released port 5000. Otherwise keep OSRM disabled and verify the app fails closed for route geometry.
+If `route_engine` graph data cannot be proven, do not start `route-engine` and
+do not restart `delivery-api` with `ROUTE_ENGINE_BASE_URL` enabled.
 
 ### Caddy certificate volume handoff
 
@@ -347,6 +368,11 @@ Before cleanup, verify:
 - unauthenticated `/admin/ui/app/drivers?shopDomain=dev1.tomatonofood.com` redirects to `/admin/ui/login`;
 - authenticated smoke passes for `/admin/ui/app`, `/admin/ui/app/orders`, `/admin/ui/app/drivers`, `/admin/ui/app/api/bootstrap`, `/admin/ui/app/api/drivers`, vendor assets, CSP/map config;
 - OSRM road geometry works when enabled or returns null/empty geometry on failure; no fake straight line.
+- `route_engine` smoke from the `delivery-api` runtime network reaches
+  `http://route-engine:8080/readyz`, then posts a non-customer
+  `POST /v1/solve` request with two smoke stops and verifies `status=solved`,
+  `engine.name=route_engine`, `external_calls=false`, and positive
+  distance/duration.
 
 Cleanup after successful smoke is removal of already-stopped old Route Ops containers by exact name/label allowlist only. Do not remove volumes or bind-mounted data.
 
@@ -366,7 +392,7 @@ After cleanup has succeeded, rollback stays within the `clever-route` project us
 
 `deploy-route-ops-image.sh` owns the production Docker image retention guard so normal SSM deploys do not depend on manual host cleanup.
 
-Before `docker compose pull route-ops-web-static delivery-api delivery-api-migrate`, the script checks `/` and Docker's root directory from `docker info --format '{{.DockerRootDir}}'`. The defaults are:
+Before `docker compose --profile route-engine pull route-ops-web-static delivery-api delivery-api-migrate route-engine`, the script checks `/` and Docker's root directory from `docker info --format '{{.DockerRootDir}}'`. The defaults are:
 
 ```text
 ROUTE_OPS_DEPLOY_MIN_FREE_MB=4096
@@ -389,6 +415,7 @@ It may remove only old SHA-tagged images from:
 ghcr.io/evnsolution/clever-route-server-delivery-api:<sha>
 ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:<sha>
 ghcr.io/evnsolution/clever-route-server-route-ops-web-static:<sha>
+ghcr.io/evnsolution/route-engine-worker:<sha>
 ```
 
 The cleanup must not run `docker system prune`, `docker volume prune`, or `docker container prune`; it removes explicit stale Route Ops image refs only. Static artifacts use SHA-scoped named volumes (`ROUTE_OPS_WEB_STATIC_VOLUME`) so staging a candidate frontend does not mutate the volume currently mounted by the running backend. A post-promote cleanup runs after smoke succeeds so the host keeps the current image and one previous rollback image by default.
@@ -417,7 +444,10 @@ ROUTE_OPS_PRUNE_LEGACY_LOCAL_IMAGE=1
    - publish evidence URL;
    - custom SSM document name/version;
    - exactly one online managed target.
-5. The host deploy script verifies labels/schema, runs the candidate migrate image, and runs smoke before promotion.
+5. The host deploy script verifies labels/schema, verifies the mounted
+   `route_engine` graph manifest, runs the candidate migrate image, smokes
+   `route_engine` from the `delivery-api` runtime network, and runs Route Ops
+   smoke before promotion.
 6. If smoke fails, the deploy script restores current image metadata and the workflow fails.
 
 ## Rollback
@@ -430,7 +460,15 @@ export ROUTE_OPS_SMOKE_LOGIN_SECRET=<read locally; never paste into GitHub or SS
 scripts/rollback-route-ops-image.sh
 ```
 
-The rollback script uses `.deploy/previous-image.env`, checks schema compatibility, runs smoke before promotion, and restores pre-rollback current metadata on failure. During the first static-artifact cutover, rollback normalizes legacy `.deploy/current-image.env` or `.deploy/previous-image.env` files that lack `ROUTE_OPS_WEB_STATIC_IMAGE` or `ROUTE_OPS_WEB_STATIC_VOLUME` by deriving `ghcr.io/evnsolution/clever-route-server-route-ops-web-static:<IMAGE_TAG>` and `clever-route-route-ops-web-static-<IMAGE_TAG>` from the immutable 40-hex tag before backend service mutation. If that derivation cannot be proven, rollback fails closed.
+The rollback script uses `.deploy/previous-image.env`, checks schema
+compatibility, verifies any enabled `route_engine` graph mount before activation,
+runs smoke before promotion, and restores pre-rollback current metadata on
+failure. During the first static-artifact cutover, rollback normalizes legacy
+`.deploy/current-image.env` or `.deploy/previous-image.env` files that lack
+`ROUTE_OPS_WEB_STATIC_IMAGE`, `ROUTE_OPS_WEB_STATIC_VOLUME`,
+`ROUTE_ENGINE_IMAGE`, or `ROUTE_ENGINE_GRAPH_HOST_DIR` by deriving the
+SHA-scoped defaults before backend service mutation. If that derivation cannot
+be proven, rollback fails closed.
 
 ## Public SSH inbound policy
 
@@ -458,4 +496,49 @@ If GitHub Actions quota is exhausted, do not weaken guards. Use Session Manager 
 
 ## Frontend static artifact handoff
 
-The SSM path deploys three immutable images for the same git SHA: runtime, migrate, and `route-ops-web-static`. The host wrapper exports `ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static:<ImageTag>` and `ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-<ImageTag>` when the command does not pass them explicitly. The deploy script writes those values to `.deploy/candidate-image.env`, pulls `route-ops-web-static delivery-api delivery-api-migrate`, runs the one-shot `route-ops-web-static` compose service against the candidate SHA-scoped volume, and only then recreates `delivery-api` to mount that volume. This preserves the backend-authenticated `/admin/ui/app/*` shell while keeping the frontend static artifact separately identifiable and avoiding a candidate SPA/current backend mismatch during migration failure.
+The SSM path deploys three immutable images for the same clever-route-server git
+SHA: runtime, migrate, and `route-ops-web-static`. The host wrapper exports
+`ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static:<ImageTag>`
+and `ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-<ImageTag>`
+when the command does not pass them explicitly. It also exports the separately
+published `ROUTE_ENGINE_IMAGE` and `ROUTE_ENGINE_GRAPH_HOST_DIR`. The deploy
+script writes those values to `.deploy/candidate-image.env`, pulls
+`route-ops-web-static delivery-api delivery-api-migrate route-engine`, runs the
+one-shot `route-ops-web-static` compose service against the candidate
+SHA-scoped volume, starts `route-engine` only after graph manifest validation,
+and only then recreates `delivery-api` to mount the new static volume and load
+the internal `ROUTE_ENGINE_BASE_URL=http://route-engine:8080` contract. This
+preserves the backend-authenticated `/admin/ui/app/*` shell while keeping the
+frontend static artifact and the Python optimizer worker separately
+identifiable and avoiding a candidate SPA/current backend mismatch during
+migration failure.
+
+## Route Engine production graph contract
+
+`route_engine` intentionally keeps large graph/cache artifacts out of the worker
+image layer. Production readiness therefore requires a host-local read-only
+mount:
+
+```text
+ROUTE_ENGINE_GRAPH_HOST_DIR=/srv/clever-route-server/data/route-engine/parquet
+/app/routing_engine/v7_out/parquet:ro
+```
+
+The deploy and rollback scripts fail closed before `delivery-api` activation if:
+
+- the directory is missing;
+- no `*.parquet` files are present;
+- any parquet file is still a Git LFS pointer;
+- the normalized host manifest does not match the worker image label
+  `org.clever-route.graph-manifest-sha`.
+
+On the first production activation, `deploy-route-ops-image.sh` backs up
+`infra/env/delivery-api.env`, fills only missing `ROUTE_ENGINE_*` values, writes
+`ROUTE_ENGINE_GRAPH_MANIFEST_SHA` from the image label, starts the internal
+`route-engine` service through `--profile route-engine`, and smokes it from a
+one-off `delivery-api` container. If any graph or smoke check fails, it restores
+the pre-deploy env file and does not promote `.deploy/current-image.env`.
+
+The graph smoke is non-customer: it calls `/readyz` and `POST /v1/solve` with a
+fixed Toronto-area two-stop payload, expects `external_calls=false`, and verifies
+positive route distance/duration before the public Route Ops smoke runs.

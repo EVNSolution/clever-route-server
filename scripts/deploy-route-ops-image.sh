@@ -26,13 +26,19 @@ ROUTE_OPS_SERVICE_MUTATED="false"
 ROUTE_OPS_RUNTIME_IMAGE_REPO="${ROUTE_OPS_RUNTIME_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-delivery-api}"
 ROUTE_OPS_MIGRATE_IMAGE_REPO="${ROUTE_OPS_MIGRATE_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-delivery-api-migrate}"
 ROUTE_OPS_WEB_STATIC_IMAGE_REPO="${ROUTE_OPS_WEB_STATIC_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-route-ops-web-static}"
+ROUTE_ENGINE_IMAGE_REPO="${ROUTE_ENGINE_IMAGE_REPO:-ghcr.io/evnsolution/route-engine-worker}"
+ROUTE_ENGINE_IMAGE="${ROUTE_ENGINE_IMAGE:-${ROUTE_ENGINE_IMAGE_REPO}:f65a1402ec24bef24b7975f0a7f0d320e5773bc0}"
+ROUTE_ENGINE_GRAPH_HOST_DIR="${ROUTE_ENGINE_GRAPH_HOST_DIR:-/srv/clever-route-server/data/route-engine/parquet}"
 ROUTE_OPS_WEB_STATIC_IMAGE="${ROUTE_OPS_WEB_STATIC_IMAGE:-${ROUTE_OPS_WEB_STATIC_IMAGE_REPO}:${IMAGE_TAG}}"
 ROUTE_OPS_WEB_STATIC_VOLUME="${ROUTE_OPS_WEB_STATIC_VOLUME:-clever-route-route-ops-web-static-${IMAGE_TAG}}"
-export ROUTE_OPS_WEB_STATIC_IMAGE ROUTE_OPS_WEB_STATIC_VOLUME
+export ROUTE_ENGINE_GRAPH_HOST_DIR ROUTE_ENGINE_IMAGE ROUTE_OPS_WEB_STATIC_IMAGE ROUTE_OPS_WEB_STATIC_VOLUME
 ROUTE_OPS_DEPLOY_MIN_FREE_MB="${ROUTE_OPS_DEPLOY_MIN_FREE_MB:-4096}"
 ROUTE_OPS_DEPLOY_MIN_FREE_PERCENT="${ROUTE_OPS_DEPLOY_MIN_FREE_PERCENT:-20}"
 ROUTE_OPS_IMAGE_PRUNE_DRY_RUN="${ROUTE_OPS_IMAGE_PRUNE_DRY_RUN:-0}"
 ROUTE_OPS_PRUNE_LEGACY_LOCAL_IMAGE="${ROUTE_OPS_PRUNE_LEGACY_LOCAL_IMAGE:-0}"
+ROUTE_ENGINE_HOST_ENV_BACKUP_PATH=""
+ROUTE_ENGINE_HOST_ENV_EXISTED="false"
+ROUTE_ENGINE_SERVICE_MUTATED="false"
 
 release_deploy_lock() {
   if [ "$LOCK_ACQUIRED" = "mkdir" ] && [ -d "$LOCK_DIR" ]; then
@@ -107,7 +113,7 @@ validate_image_env_file() {
   while IFS= read -r line || [ -n "$line" ]; do
     [ -z "$line" ] && continue
     case "$line" in
-      IMAGE_TAG=*|DELIVERY_API_IMAGE=*|DELIVERY_API_MIGRATE_IMAGE=*|ROUTE_OPS_WEB_STATIC_IMAGE=*|ROUTE_OPS_WEB_STATIC_VOLUME=*|PRISMA_SCHEMA_SHA=*) ;;
+      IMAGE_TAG=*|DELIVERY_API_IMAGE=*|DELIVERY_API_MIGRATE_IMAGE=*|ROUTE_OPS_WEB_STATIC_IMAGE=*|ROUTE_OPS_WEB_STATIC_VOLUME=*|ROUTE_ENGINE_IMAGE=*|ROUTE_ENGINE_GRAPH_HOST_DIR=*|PRISMA_SCHEMA_SHA=*) ;;
       *) echo "Invalid image env key in $file: ${line%%=*}" >&2; return 1 ;;
     esac
     local value="${line#*=}"
@@ -132,6 +138,10 @@ load_image_env_file() {
     ROUTE_OPS_WEB_STATIC_VOLUME="clever-route-route-ops-web-static-${IMAGE_TAG}"
     export ROUTE_OPS_WEB_STATIC_VOLUME
   fi
+  if [ -z "${ROUTE_ENGINE_GRAPH_HOST_DIR:-}" ]; then
+    ROUTE_ENGINE_GRAPH_HOST_DIR="/srv/clever-route-server/data/route-engine/parquet"
+    export ROUTE_ENGINE_GRAPH_HOST_DIR
+  fi
   set +a
 }
 
@@ -149,6 +159,12 @@ ensure_static_artifact_env_file() {
   fi
   if ! grep -q '^ROUTE_OPS_WEB_STATIC_VOLUME=' "$file"; then
     printf 'ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-%s\n' "$image_tag" >> "$file"
+  fi
+  if ! grep -q '^ROUTE_ENGINE_IMAGE=' "$file"; then
+    printf 'ROUTE_ENGINE_IMAGE=%s\n' "$ROUTE_ENGINE_IMAGE" >> "$file"
+  fi
+  if ! grep -q '^ROUTE_ENGINE_GRAPH_HOST_DIR=' "$file"; then
+    printf 'ROUTE_ENGINE_GRAPH_HOST_DIR=%s\n' "$ROUTE_ENGINE_GRAPH_HOST_DIR" >> "$file"
   fi
 }
 expected_static_volume_for_tag() {
@@ -262,6 +278,8 @@ add_keep_images_from_env_file() {
   add_keep_image "$keep_file" "$image"
   image="$(grep -m1 '^ROUTE_OPS_WEB_STATIC_IMAGE=' "$file" | cut -d= -f2- || true)"
   add_keep_image "$keep_file" "$image"
+  image="$(grep -m1 '^ROUTE_ENGINE_IMAGE=' "$file" | cut -d= -f2- || true)"
+  add_keep_image "$keep_file" "$image"
 }
 
 build_keep_image_file() {
@@ -270,6 +288,7 @@ build_keep_image_file() {
   add_keep_image "$keep_file" "${DELIVERY_API_IMAGE:-}"
   add_keep_image "$keep_file" "${DELIVERY_API_MIGRATE_IMAGE:-}"
   add_keep_image "$keep_file" "${ROUTE_OPS_WEB_STATIC_IMAGE:-}"
+  add_keep_image "$keep_file" "${ROUTE_ENGINE_IMAGE:-}"
   add_keep_images_from_env_file "$keep_file" ".deploy/current-image.env"
   add_keep_images_from_env_file "$keep_file" ".deploy/previous-image.env"
   add_keep_images_from_env_file "$keep_file" ".deploy/candidate-image.env"
@@ -320,7 +339,7 @@ prune_old_route_ops_images() {
   local kept_count=0
   local skipped_count=0
   local repo image tag
-  for repo in "$ROUTE_OPS_RUNTIME_IMAGE_REPO" "$ROUTE_OPS_MIGRATE_IMAGE_REPO" "$ROUTE_OPS_WEB_STATIC_IMAGE_REPO"; do
+  for repo in "$ROUTE_OPS_RUNTIME_IMAGE_REPO" "$ROUTE_OPS_MIGRATE_IMAGE_REPO" "$ROUTE_OPS_WEB_STATIC_IMAGE_REPO" "$ROUTE_ENGINE_IMAGE_REPO"; do
     while IFS= read -r image || [ -n "$image" ]; do
       [ -n "$image" ] || continue
       tag="${image##*:}"
@@ -418,6 +437,104 @@ read_route_ops_host_env_value() {
   printf '%s' "$value" | tr -d '[:space:]' | sed -e "s/^['\"]//" -e "s/['\"]$//"
 }
 
+set_route_ops_host_env_value() {
+  local key value tmp_file
+  key="$1"
+  value="$2"
+  mkdir -p infra/env .deploy
+  touch infra/env/delivery-api.env
+  tmp_file="$(mktemp infra/env/delivery-api.env.XXXXXX)"
+  if grep -qE "^[[:space:]]*${key}=" infra/env/delivery-api.env; then
+    awk -v key="$key" -v value="$value" '
+      BEGIN { replaced = 0 }
+      $0 ~ "^[[:space:]]*" key "=" {
+        print key "=" value
+        replaced = 1
+        next
+      }
+      { print }
+      END {
+        if (!replaced) print key "=" value
+      }
+    ' infra/env/delivery-api.env > "$tmp_file"
+  else
+    cat infra/env/delivery-api.env > "$tmp_file"
+    printf '%s=%s\n' "$key" "$value" >> "$tmp_file"
+  fi
+  chmod --reference=infra/env/delivery-api.env "$tmp_file" 2>/dev/null || chmod 0600 "$tmp_file"
+  mv "$tmp_file" infra/env/delivery-api.env
+}
+
+generate_route_engine_token() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32
+    return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - <<'PYTHON'
+import secrets
+print(secrets.token_urlsafe(48))
+PYTHON
+    return 0
+  fi
+  echo "openssl or python3 is required to generate ROUTE_ENGINE_INTERNAL_TOKEN" >&2
+  return 1
+}
+
+ensure_route_engine_host_env() {
+  local backup_path base_url token
+  mkdir -p .deploy
+  if [ -f infra/env/delivery-api.env ]; then
+    backup_path=".deploy/delivery-api.env.route-engine-backup-$(date -u +%Y%m%dT%H%M%SZ)"
+    cp infra/env/delivery-api.env "$backup_path"
+    chmod 0600 "$backup_path" 2>/dev/null || true
+    ROUTE_ENGINE_HOST_ENV_BACKUP_PATH="$backup_path"
+    ROUTE_ENGINE_HOST_ENV_EXISTED="true"
+    echo "Route Engine host env backup created: ${backup_path}"
+  else
+    ROUTE_ENGINE_HOST_ENV_EXISTED="false"
+  fi
+
+  base_url="$(read_route_ops_host_env_value ROUTE_ENGINE_BASE_URL)"
+  if [ -z "$base_url" ]; then
+    set_route_ops_host_env_value ROUTE_ENGINE_BASE_URL "http://route-engine:8080"
+    echo "Route Engine internal base URL enabled in infra/env/delivery-api.env."
+  fi
+
+  token="$(read_route_ops_host_env_value ROUTE_ENGINE_INTERNAL_TOKEN)"
+  if [ -z "$token" ]; then
+    token="$(generate_route_engine_token)"
+    set_route_ops_host_env_value ROUTE_ENGINE_INTERNAL_TOKEN "$token"
+    echo "Route Engine internal token generated in infra/env/delivery-api.env."
+  fi
+
+  if [ -z "$(read_route_ops_host_env_value ROUTE_ENGINE_TIMEOUT_MS)" ]; then
+    set_route_ops_host_env_value ROUTE_ENGINE_TIMEOUT_MS "30000"
+  fi
+  if [ -z "$(read_route_ops_host_env_value ROUTE_ENGINE_MODE)" ]; then
+    set_route_ops_host_env_value ROUTE_ENGINE_MODE "road_graph"
+  fi
+  if [ -z "$(read_route_ops_host_env_value ROUTE_ENGINE_OBJECTIVE)" ]; then
+    set_route_ops_host_env_value ROUTE_ENGINE_OBJECTIVE "minimize_duration"
+  fi
+  if [ -z "$(read_route_ops_host_env_value ROUTE_ENGINE_SERVICE_REGION)" ]; then
+    set_route_ops_host_env_value ROUTE_ENGINE_SERVICE_REGION "ontario"
+  fi
+}
+
+restore_route_engine_host_env_on_failure() {
+  if [ -n "$ROUTE_ENGINE_HOST_ENV_BACKUP_PATH" ] && [ -f "$ROUTE_ENGINE_HOST_ENV_BACKUP_PATH" ]; then
+    cp "$ROUTE_ENGINE_HOST_ENV_BACKUP_PATH" infra/env/delivery-api.env
+    chmod 0600 infra/env/delivery-api.env 2>/dev/null || true
+    echo "Route Engine host env restored from pre-deploy backup." >&2
+    return 0
+  fi
+  if [ "$ROUTE_ENGINE_HOST_ENV_EXISTED" != "true" ] && [ -f infra/env/delivery-api.env ]; then
+    rm -f infra/env/delivery-api.env
+    echo "Route Engine host env file removed after failed deploy because it did not exist before deploy." >&2
+  fi
+}
+
 route_ops_osrm_configured() {
   local osrm_base_url
   osrm_base_url="$(read_route_ops_host_env_value OSRM_BASE_URL)"
@@ -430,6 +547,185 @@ route_ops_osrm_enabled_json() {
   else
     printf 'false'
   fi
+}
+
+route_engine_configured() {
+  local route_engine_base_url
+  route_engine_base_url="$(read_route_ops_host_env_value ROUTE_ENGINE_BASE_URL)"
+  [ -n "$route_engine_base_url" ]
+}
+
+route_engine_enabled_json() {
+  if route_engine_configured; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
+validate_route_engine_image() {
+  if ! [[ "${ROUTE_ENGINE_IMAGE:-}" =~ ^ghcr\.io/evnsolution/route-engine-worker:[0-9a-fA-F]{40}$ ]]; then
+    echo "ROUTE_ENGINE_IMAGE must be the approved route_engine worker GHCR image with SHA tag; got: ${ROUTE_ENGINE_IMAGE:-unset}" >&2
+    exit 65
+  fi
+}
+
+route_ops_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$@"
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$@"
+    return 0
+  fi
+  echo "sha256sum or shasum is required for Route Engine graph manifest validation." >&2
+  return 1
+}
+
+route_engine_image_graph_manifest_sha() {
+  docker image inspect --format '{{ index .Config.Labels "org.clever-route.graph-manifest-sha" }}' "$ROUTE_ENGINE_IMAGE"
+}
+
+route_engine_host_graph_manifest_sha() {
+  local graph_dir="$1"
+  local manifest_file
+  manifest_file="$(mktemp ".deploy/route-engine-graph-manifest.XXXXXX")"
+  find "$graph_dir" -maxdepth 1 -type f -name '*.parquet' -print | sort | while IFS= read -r graph_file; do
+    route_ops_sha256 "$graph_file" | awk -v name="$(basename "$graph_file")" '{ print $1 "  routing_engine/v7_out/parquet/" name }'
+  done > "$manifest_file"
+  route_ops_sha256 "$manifest_file" | awk '{ print $1 }'
+  rm -f "$manifest_file"
+}
+
+validate_route_engine_graph_artifacts() {
+  local expected_manifest_sha graph_dir graph_files actual_manifest_sha lfs_pointer_file
+  expected_manifest_sha="$1"
+  graph_dir="${ROUTE_ENGINE_GRAPH_HOST_DIR:-/srv/clever-route-server/data/route-engine/parquet}"
+  if ! [[ "$expected_manifest_sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    echo "ROUTE_ENGINE_IMAGE must carry org.clever-route.graph-manifest-sha; got: ${expected_manifest_sha:-unset}" >&2
+    exit 65
+  fi
+  if [ ! -d "$graph_dir" ]; then
+    echo "Route Engine graph directory is missing: ${graph_dir}" >&2
+    echo "Provision the route_engine Git LFS parquet artifacts there before production activation." >&2
+    exit 66
+  fi
+  graph_files="$(find "$graph_dir" -maxdepth 1 -type f -name '*.parquet' -print | sort)"
+  if [ -z "$graph_files" ]; then
+    echo "Route Engine graph directory has no parquet artifacts: ${graph_dir}" >&2
+    exit 66
+  fi
+  lfs_pointer_file="$(while IFS= read -r graph_file; do
+    if head -n 1 "$graph_file" 2>/dev/null | grep -q '^version https://git-lfs.github.com/spec/v1'; then
+      printf '%s\n' "$graph_file"
+      break
+    fi
+  done <<EOF_GRAPH_FILES
+$graph_files
+EOF_GRAPH_FILES
+)"
+  if [ -n "$lfs_pointer_file" ]; then
+    echo "Route Engine graph artifact is still a Git LFS pointer, not parquet data: ${lfs_pointer_file}" >&2
+    exit 66
+  fi
+  actual_manifest_sha="$(route_engine_host_graph_manifest_sha "$graph_dir")"
+  if [ "$actual_manifest_sha" != "$expected_manifest_sha" ]; then
+    echo "Route Engine graph manifest mismatch for ${graph_dir}: expected=${expected_manifest_sha} actual=${actual_manifest_sha}" >&2
+    exit 66
+  fi
+  set_route_ops_host_env_value ROUTE_ENGINE_GRAPH_MANIFEST_SHA "$expected_manifest_sha"
+  echo "Route Engine graph artifacts verified: dir=${graph_dir} manifest=${expected_manifest_sha}"
+}
+
+smoke_route_engine_from_runtime_network() {
+  local image_env_file
+  image_env_file="$1"
+  echo "Smoking route_engine from the delivery-api runtime network."
+  route_ops_compose "$image_env_file" run --rm --no-deps delivery-api node - <<'NODE'
+const baseUrl = (process.env.ROUTE_ENGINE_BASE_URL || 'http://route-engine:8080').replace(/\/+$/, '');
+const token = process.env.ROUTE_ENGINE_INTERNAL_TOKEN || '';
+if (!token) throw new Error('ROUTE_ENGINE_INTERNAL_TOKEN is missing in delivery-api runtime env');
+
+const readyResponse = await fetch(`${baseUrl}/readyz`, {
+  headers: { 'X-Request-Id': 'route-engine-prod-smoke-readyz' },
+});
+const ready = await readyResponse.json();
+if (!readyResponse.ok || ready.service !== 'route_engine' || ready.ready !== true || ready.external_calls !== false) {
+  throw new Error(`route_engine ready smoke failed: ${readyResponse.status} ${JSON.stringify(ready)}`);
+}
+
+const solveResponse = await fetch(`${baseUrl}/v1/solve`, {
+  method: 'POST',
+  headers: {
+    Authorization: `Bearer ${token}`,
+    'Content-Type': 'application/json',
+    'X-Request-Id': 'route-engine-prod-smoke-solve-20260608',
+    'X-Request-Timeout-Ms': '30000',
+  },
+  body: JSON.stringify({
+    request_id: 'route-engine-prod-smoke-solve-20260608',
+    tenant: { tenant_id: 'tenant-smoke', service_region: 'ontario' },
+    depot: { depot_id: 'smoke-depot', lat: 43.6532, lng: -79.3832 },
+    drivers: [{ driver_id: 'driver-smoke-1', capacity: 10 }],
+    stops: [
+      { stop_id: 'smoke-stop-1', lat: 43.6426, lng: -79.3871, demand: 1, service_seconds: 60 },
+      { stop_id: 'smoke-stop-2', lat: 43.5890, lng: -79.6441, demand: 1, service_seconds: 60 },
+    ],
+    options: { mode: 'road_graph', objective: 'minimize_duration', timeout_ms: 30000 },
+  }),
+});
+const solved = await solveResponse.json();
+if (!solveResponse.ok || solved.status !== 'solved' || solved.engine?.name !== 'route_engine' || solved.engine?.external_calls !== false) {
+  throw new Error(`route_engine solve smoke failed: ${solveResponse.status} ${JSON.stringify(solved)}`);
+}
+const route = solved.result?.routes?.[0];
+if (!route || route.summary?.total_stops !== 2 || !(route.summary?.total_distance_meters > 0) || !(route.summary?.total_duration_seconds > 0)) {
+  throw new Error(`route_engine solve smoke returned invalid route summary: ${JSON.stringify(solved.result)}`);
+}
+console.log(JSON.stringify({
+  service: ready.service,
+  ready: ready.ready,
+  graph: ready.graph?.status,
+  status: solved.status,
+  routeStops: route.summary.total_stops,
+  distanceMeters: Math.round(route.summary.total_distance_meters),
+  durationSeconds: Math.round(route.summary.total_duration_seconds),
+  externalCalls: solved.engine.external_calls,
+}));
+NODE
+}
+
+ensure_route_engine() {
+  local image_env_file route_engine_revision route_engine_role route_engine_graph_manifest_sha
+  image_env_file="$1"
+  if ! route_engine_configured; then
+    echo "route_engine disabled in infra/env/delivery-api.env; skipping route_engine service activation."
+    return 0
+  fi
+
+  validate_route_engine_image
+  route_engine_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ROUTE_ENGINE_IMAGE")"
+  route_engine_role="$(docker image inspect --format '{{ index .Config.Labels "org.clever-route.image-role" }}' "$ROUTE_ENGINE_IMAGE")"
+  route_engine_graph_manifest_sha="$(route_engine_image_graph_manifest_sha)"
+  test "$route_engine_revision" = "${ROUTE_ENGINE_IMAGE##*:}"
+  test "$route_engine_role" = "route-engine-worker"
+  validate_route_engine_graph_artifacts "$route_engine_graph_manifest_sha"
+  echo "Ensuring route_engine worker service is attached to the durable clever-route compose project."
+  route_ops_compose "$image_env_file" --profile route-engine up -d --no-build route-engine
+  ROUTE_ENGINE_SERVICE_MUTATED="true"
+  smoke_route_engine_from_runtime_network "$image_env_file"
+}
+
+stop_route_engine_if_disabled() {
+  local image_env_file
+  image_env_file="$1"
+  if route_engine_configured; then
+    return 0
+  fi
+
+  echo "Stopping route_engine because ROUTE_ENGINE_BASE_URL is disabled in infra/env/delivery-api.env."
+  route_ops_compose "$image_env_file" --profile route-engine stop route-engine
 }
 
 smoke_route_ops_osrm_url() {
@@ -535,6 +831,8 @@ DELIVERY_API_IMAGE=${DELIVERY_API_IMAGE}
 DELIVERY_API_MIGRATE_IMAGE=${DELIVERY_API_MIGRATE_IMAGE}
 ROUTE_OPS_WEB_STATIC_IMAGE=${ROUTE_OPS_WEB_STATIC_IMAGE}
 ROUTE_OPS_WEB_STATIC_VOLUME=${ROUTE_OPS_WEB_STATIC_VOLUME}
+ROUTE_ENGINE_IMAGE=${ROUTE_ENGINE_IMAGE}
+ROUTE_ENGINE_GRAPH_HOST_DIR=${ROUTE_ENGINE_GRAPH_HOST_DIR}
 PRISMA_SCHEMA_SHA=${PRISMA_SCHEMA_SHA}
 EOF_IMAGE
 
@@ -545,12 +843,19 @@ restore_current() {
   local status=$?
   if [ "$status" -ne 0 ] && [ -f .deploy/current-image.env ]; then
     echo "Deploy failed; restoring current image metadata." >&2
+    restore_route_engine_host_env_on_failure
     load_image_env_file .deploy/current-image.env
     if [ "$ROUTE_OPS_SERVICE_MUTATED" = "true" ]; then
+      ensure_route_engine .deploy/current-image.env || true
       ensure_route_ops_osrm .deploy/current-image.env || true
       route_ops_compose .deploy/current-image.env up -d --no-build --force-recreate --no-deps delivery-api || true
+      stop_route_engine_if_disabled .deploy/current-image.env || true
       stop_route_ops_osrm_if_disabled .deploy/current-image.env || true
       route_ops_compose .deploy/current-image.env up -d --no-build --force-recreate --no-deps caddy || true
+    fi
+    if [ "$ROUTE_ENGINE_SERVICE_MUTATED" = "true" ] && [ "$ROUTE_OPS_SERVICE_MUTATED" != "true" ]; then
+      echo "Deploy failed after route_engine service mutation but before Route Ops backend mutation; stopping route_engine." >&2
+      route_ops_compose .deploy/candidate-image.env --profile route-engine stop route-engine || true
     fi
     if [ "$ROUTE_OPS_SERVICE_MUTATED" != "true" ]; then
       if [ "$ROUTE_OPS_STATIC_ARTIFACT_STAGED" = "true" ]; then
@@ -566,13 +871,14 @@ restore_current() {
 }
 trap restore_current EXIT
 
+ensure_route_engine_host_env
 load_image_env_file .deploy/candidate-image.env
 validate_loaded_static_artifact_contract .deploy/candidate-image.env
 require_candidate_static_volume_isolated_from_current .deploy/current-image.env
 ensure_deploy_disk_headroom "pre-pull"
 prune_old_route_ops_images "pre-pull-retention"
 ensure_deploy_disk_headroom "pre-pull-after-retention"
-route_ops_compose .deploy/candidate-image.env pull route-ops-web-static delivery-api delivery-api-migrate
+route_ops_compose .deploy/candidate-image.env --profile route-engine pull route-ops-web-static delivery-api delivery-api-migrate route-engine
 ensure_deploy_disk_headroom "post-pull"
 
 runtime_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$DELIVERY_API_IMAGE")"
@@ -583,6 +889,9 @@ migrate_schema="$(docker image inspect --format '{{ index .Config.Labels "org.cl
 runtime_role="$(docker image inspect --format '{{ index .Config.Labels "org.clever-route.image-role" }}' "$DELIVERY_API_IMAGE")"
 migrate_role="$(docker image inspect --format '{{ index .Config.Labels "org.clever-route.image-role" }}' "$DELIVERY_API_MIGRATE_IMAGE")"
 static_role="$(docker image inspect --format '{{ index .Config.Labels "org.clever-route.image-role" }}' "$ROUTE_OPS_WEB_STATIC_IMAGE")"
+route_engine_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ROUTE_ENGINE_IMAGE")"
+route_engine_role="$(docker image inspect --format '{{ index .Config.Labels "org.clever-route.image-role" }}' "$ROUTE_ENGINE_IMAGE")"
+route_engine_graph_manifest_sha="$(route_engine_image_graph_manifest_sha)"
 test "$runtime_revision" = "$IMAGE_TAG"
 test "$migrate_revision" = "$IMAGE_TAG"
 test "$static_revision" = "$IMAGE_TAG"
@@ -591,6 +900,11 @@ test "$migrate_schema" = "$PRISMA_SCHEMA_SHA"
 test "$runtime_role" = "runtime"
 test "$migrate_role" = "migrate"
 test "$static_role" = "route-ops-web-static"
+test "$route_engine_revision" = "${ROUTE_ENGINE_IMAGE##*:}"
+test "$route_engine_role" = "route-engine-worker"
+if route_engine_configured; then
+  validate_route_engine_graph_artifacts "$route_engine_graph_manifest_sha"
+fi
 
 CURRENT_PRISMA_SCHEMA_SHA="$(grep '^PRISMA_SCHEMA_SHA=' .deploy/current-image.env | cut -d= -f2- || true)"
 test -n "$CURRENT_PRISMA_SCHEMA_SHA"
@@ -602,9 +916,11 @@ docker run --rm "$DELIVERY_API_MIGRATE_IMAGE" sh -lc 'test -f apps/delivery-api/
 ROUTE_OPS_STATIC_ARTIFACT_STAGED="true"
 route_ops_compose .deploy/candidate-image.env up --no-build --force-recreate route-ops-web-static
 route_ops_compose .deploy/candidate-image.env run --rm delivery-api-migrate
+ensure_route_engine .deploy/candidate-image.env
 ensure_route_ops_osrm .deploy/candidate-image.env
 ROUTE_OPS_SERVICE_MUTATED="true"
 route_ops_compose .deploy/candidate-image.env up -d --no-build --force-recreate --no-deps delivery-api
+stop_route_engine_if_disabled .deploy/candidate-image.env
 stop_route_ops_osrm_if_disabled .deploy/candidate-image.env
 ensure_route_ops_ingress
 route_ops_compose .deploy/candidate-image.env ps
@@ -613,8 +929,8 @@ run_production_smoke
 
 if [ -f .deploy/current-image.env ]; then cp .deploy/current-image.env .deploy/previous-image.env; fi
 mv .deploy/candidate-image.env .deploy/current-image.env
-printf '{"ts":"%s","imageTag":"%s","deliveryApiImage":"%s","migrateImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","prismaSchemaSha":"%s","osrmEnabled":%s}\n' \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$IMAGE_TAG" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$PRISMA_SCHEMA_SHA" "$(route_ops_osrm_enabled_json)" >> .deploy/deploy-history.jsonl
+printf '{"ts":"%s","imageTag":"%s","deliveryApiImage":"%s","migrateImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","routeEngineImage":"%s","prismaSchemaSha":"%s","routeEngineEnabled":%s,"osrmEnabled":%s}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$IMAGE_TAG" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$ROUTE_ENGINE_IMAGE" "$PRISMA_SCHEMA_SHA" "$(route_engine_enabled_json)" "$(route_ops_osrm_enabled_json)" >> .deploy/deploy-history.jsonl
 prune_old_route_ops_images "post-promote" || echo "Route Ops post-promote image cleanup failed; deploy promotion remains complete." >&2
 release_deploy_lock
 trap - EXIT
