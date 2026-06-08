@@ -4,6 +4,7 @@ import { describe, expect, test } from "vitest";
 import {
   buildRouteDetailPath,
   buildEditableMetadataFields,
+  buildNextPlanSelection,
   buildOrderMapMarkerStates,
   buildRouteDraftSelection,
   filterOrdersByRoutePlan,
@@ -1100,6 +1101,19 @@ describe("Orders compact operations table", () => {
       pinKind: "candidate",
       sequence: 1,
     });
+  });
+
+  test("map Add plan marker clicks toggle selection and allow blocked selected removal", () => {
+    const addResult = buildNextPlanSelection(new Set(), "ready-unplanned");
+    expect(addResult.action).toBe("add");
+    expect([...addResult.selected]).toEqual(["ready-unplanned"]);
+
+    const removeResult = buildNextPlanSelection(
+      new Set(["ready-unplanned"]),
+      "ready-unplanned",
+    );
+    expect(removeResult.action).toBe("remove");
+    expect([...removeResult.selected]).toEqual([]);
   });
 
   test("history map markers render grey without tab color distinctions", () => {

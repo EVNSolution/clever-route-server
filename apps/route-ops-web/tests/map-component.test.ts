@@ -197,6 +197,8 @@ describe('RouteOpsMap layer lifecycle', () => {
 
     expect(html).toContain('aria-label="Center map on store"');
     expect(html).toContain('aria-label="Refresh map"');
+    expect(html).toContain('class="map-toolbar-symbol">↻</span>');
+    expect(html).not.toContain('M15.2 7.6');
     expect(html).toContain('data-map-provider-status="configured"');
   });
 
@@ -214,6 +216,8 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(html).not.toContain('<path d="M12.5 5 7.5 10l5 5"');
     expect(html).toContain('aria-label="Zoom map to fit"');
     expect(html).toContain('aria-label="Refresh map"');
+    expect(html).toContain('class="map-toolbar-symbol">↻</span>');
+    expect(html).not.toContain('M15.2 7.6');
   });
 
 

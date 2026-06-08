@@ -19,13 +19,17 @@ import {
   matchCountrySearchInput,
 } from '../src/pages/DriversPage';
 import {
+  buildRouteSaveDraftInput,
   getDriverOptionLabel,
   getRouteDriverDisplay,
   getRoutePublishNotice,
   formatRoutePlanStatus,
+  hasDepotCoordinates,
   isRouteVisibleToLinkedDriver,
   RouteBuilder,
+  RouteStopOrderCompactList,
 } from '../src/pages/RoutesPage';
+import { getRoutesCopy } from '../src/i18n';
 import type { BootstrapPayload, DriverDto, RoutePlanDetailDto, RoutePlanSummaryDto } from '../src/types';
 
 describe('Route Ops driver invite and route assignment UI helpers', () => {
@@ -151,6 +155,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(formatRoutePlanStatus('ASSIGNED', 'ko-KR')).toBe('배정됨');
   });
 
+  test('localizes the exposed return-to-store Route Builder option', () => {
+    expect(getRoutesCopy('en-CA').returnToStore).toBe('Return to store');
+    expect(getRoutesCopy('ko-KR').returnToStore).toBe('매장으로 돌아오기');
+  });
+
   test('explains when draft and published routes are visible to drivers', () => {
     const pending = driverFixture();
     const linked = linkedDriverFixture();
@@ -198,13 +207,14 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('Published route — visible to the linked driver after the app refreshes.');
     expect(html).toContain('Driver app visible');
     expect(html).toMatch(/aria-label="Save route"[^>]*disabled=""/);
+    expect(html).toContain('Driver &amp; options');
+    expect(html).toContain('Return to store');
     expect(html).not.toContain('save driver');
     expect(html).not.toContain('Publish route');
-    expect(html).not.toContain('Route end');
     expect(html).not.toContain('Stops ready · road path not generated');
   });
 
-  test('RouteBuilder renders one Save route action with a compact right panel and bottom stop table', () => {
+  test('RouteBuilder defaults to Driver & options tab with one aggregate Save route action', () => {
     const detail = routePlanDetailFixture();
     const html = renderToStaticMarkup(
       <RouteBuilder
@@ -222,14 +232,144 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
 
     expect(html.match(/aria-label="Save route"/g)).toHaveLength(1);
     expect(html).toContain('Route state');
-    expect(html).toContain('Stop order table');
-    expect(html).toContain('class="drag-handle"');
-    expect(html).toContain('::');
+    expect(html).toContain('Driver &amp; options');
+    expect(html).toContain('Stop order');
+    expect(html).toContain('aria-controls="route-builder-panel-driver-options"');
+    expect(html).toContain('aria-controls="route-builder-panel-stop-order"');
+    expect(html).toContain('id="route-builder-panel-driver-options"');
+    expect(html).toContain('aria-labelledby="route-builder-tab-driver-options"');
+    expect(html).toContain('Return to store');
+    expect(html).toContain('Save route applies driver, return option, and stop order together.');
+    expect(html).not.toContain('class="route-stop-compact-list"');
+    expect(html).not.toContain('class="ops-table route-stop-table"');
     expect(html).not.toContain('save driver');
     expect(html).not.toContain('save route options');
     expect(html).not.toContain('Publish route');
-    expect(html).not.toContain('Route end');
-    expect(html).not.toContain('Return to store');
+  });
+
+  test('RouteBuilder stop-order tab renders compact right-card stop table with shared Save route action', () => {
+    const detail = routePlanDetailFixture();
+    const html = renderToStaticMarkup(
+      <RouteBuilder
+        bootstrap={bootstrap()}
+        deletingRouteId={null}
+        detail={detail}
+        drivers={[driverFixture()]}
+        initialBuilderTab="stop-order"
+        navigate={() => undefined}
+        onDeleteRoute={() => undefined}
+        onRefreshRoutes={() => undefined}
+        setDetail={() => undefined}
+        setError={() => undefined}
+      />,
+    );
+
+    expect(html.match(/aria-label="Save route"/g)).toHaveLength(1);
+    expect(html).toContain('Stop order table');
+    expect(html).toContain('class="route-stop-compact-list"');
+    expect(html).toContain('class="drag-handle"');
+    expect(html).toContain('::');
+    expect(html).toContain('Save route applies driver, return option, and stop order together.');
+    expect(html).not.toContain('class="ops-table route-stop-table"');
+  });
+
+  test('route end draft payload preserves one aggregate save command shape', () => {
+    const detail = routePlanDetailFixture();
+    const draftStops = [...detail.stops].reverse();
+
+    expect(hasDepotCoordinates(detail.routePlan)).toBe(true);
+    expect(buildRouteSaveDraftInput({
+      csrfToken: 'csrf-token',
+      detail,
+      driverId: 'driver-id',
+      draftStops,
+      routeEndMode: 'RETURN_TO_DEPOT',
+    })).toEqual({
+      csrfToken: 'csrf-token',
+      driverId: 'driver-id',
+      expectedUpdatedAt: '2026-05-26T12:00:00.000Z',
+      routeEndMode: 'RETURN_TO_DEPOT',
+      routePlanId: 'route-plan-id',
+      stops: [
+        { deliveryStopId: 'stop-2', sourceOrderId: 'gid://woocommerce/Order/1002' },
+        { deliveryStopId: 'stop-1', sourceOrderId: 'gid://woocommerce/Order/1001' },
+      ],
+    });
+  });
+
+  test('RouteBuilder blocks enabling return-to-store when depot coordinates are missing', () => {
+    const detail = routePlanDetailFixture({
+      routePlan: routePlanFixture({
+        depot: { latitude: null, longitude: null },
+        routeEndMode: 'END_AT_LAST_STOP',
+      }),
+    });
+    const html = renderToStaticMarkup(
+      <RouteBuilder
+        bootstrap={bootstrap()}
+        deletingRouteId={null}
+        detail={detail}
+        drivers={[driverFixture()]}
+        navigate={() => undefined}
+        onDeleteRoute={() => undefined}
+        onRefreshRoutes={() => undefined}
+        setDetail={() => undefined}
+        setError={() => undefined}
+      />,
+    );
+
+    expect(hasDepotCoordinates(detail.routePlan)).toBe(false);
+    expect(html).toContain('Return to store requires saved store coordinates.');
+    expect(html).toMatch(/<input[^>]*disabled=""[^>]*type="checkbox"/);
+  });
+
+  test('RouteBuilder blocks preserving an already-returning route when depot coordinates are invalid', () => {
+    const detail = routePlanDetailFixture({
+      routePlan: routePlanFixture({
+        depot: { latitude: Number.NaN, longitude: -79.3832 },
+        routeEndMode: 'RETURN_TO_DEPOT',
+      }),
+    });
+    const html = renderToStaticMarkup(
+      <RouteBuilder
+        bootstrap={bootstrap()}
+        deletingRouteId={null}
+        detail={detail}
+        drivers={[driverFixture()]}
+        navigate={() => undefined}
+        onDeleteRoute={() => undefined}
+        onRefreshRoutes={() => undefined}
+        setDetail={() => undefined}
+        setError={() => undefined}
+      />,
+    );
+
+    expect(hasDepotCoordinates(detail.routePlan)).toBe(false);
+    expect(html).toContain('Return to store requires saved store coordinates.');
+    expect(html).toMatch(/<input[^>]*type="checkbox"[^>]*checked=""/);
+    expect(html).toMatch(/aria-label="Save route"[^>]*disabled=""/);
+  });
+
+  test('RouteStopOrderCompactList keeps stop order data and controls within side-card markup', () => {
+    const detail = routePlanDetailFixture();
+    const html = renderToStaticMarkup(
+      <RouteStopOrderCompactList
+        draggingStopId={null}
+        onDragEnd={() => undefined}
+        onDragStart={() => undefined}
+        onDrop={() => undefined}
+        onMove={() => undefined}
+        stops={detail.stops}
+      />,
+    );
+
+    expect(html).toContain('role="list"');
+    expect(html).toContain('role="listitem"');
+    expect(html).toContain('#1001');
+    expect(html).toContain('Jane Customer · 100 King St W, Toronto, ON');
+    expect(html).toContain('Toronto');
+    expect(html).toContain('class="drag-handle"');
+    expect(html).not.toContain('route-stop-table');
   });
 
   test('regenerateDriverInviteCode posts to the protected Route Ops API with CSRF', async () => {

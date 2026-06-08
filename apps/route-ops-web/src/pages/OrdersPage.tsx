@@ -95,6 +95,19 @@ const EDITABLE_METADATA_FIELD_KEYS: Array<keyof OrderMetadataPatch> = [
   "timeWindowEnd",
 ];
 
+export function buildNextPlanSelection(
+  selected: ReadonlySet<string>,
+  orderId: string,
+): { action: "add" | "remove"; selected: Set<string> } {
+  const next = new Set(selected);
+  if (next.has(orderId)) {
+    next.delete(orderId);
+    return { action: "remove", selected: next };
+  }
+  next.add(orderId);
+  return { action: "add", selected: next };
+}
+
 export function buildEditableMetadataFields(
   settings: StoreSettingsDto | null | undefined,
   locale: string | null | undefined = settings?.locale,
@@ -537,10 +550,7 @@ export function OrdersPage({
   };
 
   const togglePlanOrder = (orderId: string): void => {
-    const next = new Set(selected);
-    if (next.has(orderId)) next.delete(orderId);
-    else next.add(orderId);
-    applyPlanSelection(next);
+    applyPlanSelection(buildNextPlanSelection(selected, orderId).selected);
   };
 
   const handleMapOrderSelect = (orderId: string): void => {
@@ -552,6 +562,11 @@ export function OrdersPage({
     if (order.routePlanId !== null) {
       setSelectedRoutePlanId(order.routePlanId);
       setError(null);
+      return;
+    }
+    const mapSelection = buildNextPlanSelection(selected, orderId);
+    if (mapSelection.action === "remove") {
+      applyPlanSelection(mapSelection.selected);
       return;
     }
     const reasons = formatOrderWorksetUnavailableReasons(
@@ -574,9 +589,7 @@ export function OrdersPage({
       );
       return;
     }
-    const next = new Set(selected);
-    next.add(orderId);
-    applyPlanSelection(next);
+    applyPlanSelection(mapSelection.selected);
   };
 
   const clearSelectedRoutePlan = (): void => {

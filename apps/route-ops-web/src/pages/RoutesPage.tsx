@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { ReactElement } from "react";
+import type { KeyboardEvent, ReactElement } from "react";
 
 import {
   deleteRoute,
@@ -27,6 +27,10 @@ import type {
   RouteStopDto,
 } from "../types";
 import { readErrorMessage } from "../utils/format";
+
+type RouteBuilderTab = "driver-options" | "stop-order";
+type RouteEndMode = RoutePlanDetailDto["routePlan"]["routeEndMode"];
+type SaveRouteInput = Parameters<typeof saveRoute>[0];
 
 export function getDriverOptionLabel(
   driver: DriverDto,
@@ -118,6 +122,50 @@ export function formatRoutePlanStatus(
       .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
       .join(" ")
   );
+}
+
+export function hasDepotCoordinates(
+  routePlan: Pick<RoutePlanSummaryDto, "depot"> | null,
+): boolean {
+  const latitude = routePlan?.depot.latitude;
+  const longitude = routePlan?.depot.longitude;
+  return (
+    routePlan !== null &&
+    typeof latitude === "number" &&
+    typeof longitude === "number" &&
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude) &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    longitude >= -180 &&
+    longitude <= 180
+  );
+}
+
+export function buildRouteSaveDraftInput({
+  csrfToken,
+  detail,
+  driverId,
+  draftStops,
+  routeEndMode,
+}: {
+  csrfToken: string;
+  detail: RoutePlanDetailDto;
+  driverId: string | null;
+  draftStops: RouteStopDto[];
+  routeEndMode: RouteEndMode;
+}): SaveRouteInput {
+  return {
+    csrfToken,
+    driverId,
+    expectedUpdatedAt: detail.routePlan.updatedAt,
+    routeEndMode,
+    routePlanId: detail.routePlan.id,
+    stops: draftStops.map((stop) => ({
+      deliveryStopId: stop.deliveryStopId,
+      sourceOrderId: stop.sourceOrderId,
+    })),
+  };
 }
 
 export function RoutesPage({
@@ -293,6 +341,7 @@ export function RouteBuilder(input: {
   deletingRouteId: string | null;
   detail: RoutePlanDetailDto | null;
   drivers: DriverDto[];
+  initialBuilderTab?: RouteBuilderTab;
   locale?: string | null;
   navigate(path: string): void;
   onDeleteRoute(routePlanId: string): void;
@@ -306,6 +355,12 @@ export function RouteBuilder(input: {
   const [draftDriverId, setDraftDriverId] = useState(
     () => input.detail?.routePlan.driverId ?? "",
   );
+  const [draftRouteEndMode, setDraftRouteEndMode] = useState<RouteEndMode>(
+    () => input.detail?.routePlan.routeEndMode ?? "END_AT_LAST_STOP",
+  );
+  const [activeBuilderTab, setActiveBuilderTab] = useState<RouteBuilderTab>(
+    () => input.initialBuilderTab ?? "driver-options",
+  );
   const [draggingStopId, setDraggingStopId] = useState<string | null>(null);
   const [isSavingRoute, setIsSavingRoute] = useState(false);
   const detail = input.detail;
@@ -317,6 +372,10 @@ export function RouteBuilder(input: {
     () => setDraftDriverId(detail?.routePlan.driverId ?? ""),
     [detail?.routePlan.driverId],
   );
+  useEffect(
+    () => setDraftRouteEndMode(detail?.routePlan.routeEndMode ?? "END_AT_LAST_STOP"),
+    [detail?.routePlan.id, detail?.routePlan.routeEndMode],
+  );
 
   const stats = deriveRouteStats(detail);
   const hasSequenceChanges = hasStopSequenceChanged(detail?.stops, draftStops);
@@ -324,12 +383,21 @@ export function RouteBuilder(input: {
   const hasDriverChanges =
     detail !== null &&
     effectiveDriverId !== (detail.routePlan.driverId ?? null);
+  const hasRouteEndChanges =
+    detail !== null && draftRouteEndMode !== detail.routePlan.routeEndMode;
+  const canReturnToDepot =
+    detail !== null && hasDepotCoordinates(detail.routePlan);
+  const isUnsafeRouteEndDraft =
+    detail !== null &&
+    draftRouteEndMode === "RETURN_TO_DEPOT" &&
+    !canReturnToDepot;
   const effectiveRoutePlan =
     detail === null
       ? null
       : {
           ...detail.routePlan,
           driverId: effectiveDriverId,
+          routeEndMode: draftRouteEndMode,
           stopsCount: draftStops.length,
         };
   const publishNotice = getRoutePublishNotice(
@@ -345,7 +413,8 @@ export function RouteBuilder(input: {
   const canSaveRoute =
     detail !== null &&
     !isSavingRoute &&
-    (hasSequenceChanges || hasDriverChanges || canPublishOnSave);
+    !isUnsafeRouteEndDraft &&
+    (hasSequenceChanges || hasDriverChanges || hasRouteEndChanges || canPublishOnSave);
   const routeVisibilityLabel =
     detail === null
       ? t.loadRouteBeforePublishing
@@ -357,17 +426,13 @@ export function RouteBuilder(input: {
     if (detail === null || !canSaveRoute) return;
     setIsSavingRoute(true);
     try {
-      const updated = await saveRoute({
+      const updated = await saveRoute(buildRouteSaveDraftInput({
         csrfToken: input.bootstrap.csrfToken,
+        detail,
         driverId: effectiveDriverId,
-        expectedUpdatedAt: detail.routePlan.updatedAt,
-        routeEndMode: detail.routePlan.routeEndMode,
-        routePlanId: detail.routePlan.id,
-        stops: draftStops.map((stop) => ({
-          deliveryStopId: stop.deliveryStopId,
-          sourceOrderId: stop.sourceOrderId,
-        })),
-      });
+        draftStops,
+        routeEndMode: draftRouteEndMode,
+      }));
       input.setDetail(updated);
       input.onRefreshRoutes();
       input.setError(null);
@@ -394,11 +459,63 @@ export function RouteBuilder(input: {
   const saveHint =
     detail === null
       ? t.loadingRoute
-      : hasSequenceChanges || hasDriverChanges
+      : isUnsafeRouteEndDraft
+        ? t.returnToStoreDepotMissing
+      : hasSequenceChanges || hasDriverChanges || hasRouteEndChanges
         ? t.routeSavePendingChanges
         : canPublishOnSave
           ? t.routeSavePublishesRoute
           : t.noRouteChanges;
+  const returnToDepotChecked = draftRouteEndMode === "RETURN_TO_DEPOT";
+  const returnToDepotDisabled =
+    detail === null || (!returnToDepotChecked && !canReturnToDepot);
+  const routeEndWarningId = "route-end-depot-warning";
+  const driverTabId = "route-builder-tab-driver-options";
+  const stopOrderTabId = "route-builder-tab-stop-order";
+  const driverPanelId = "route-builder-panel-driver-options";
+  const stopOrderPanelId = "route-builder-panel-stop-order";
+  const focusBuilderTab = (tab: RouteBuilderTab): void => {
+    setActiveBuilderTab(tab);
+    if (typeof window === "undefined") return;
+    window.requestAnimationFrame(() => {
+      document.getElementById(tab === "driver-options" ? driverTabId : stopOrderTabId)?.focus();
+    });
+  };
+  const handleBuilderTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>): void => {
+    const nextTab: RouteBuilderTab | null =
+      event.key === "ArrowRight" || event.key === "ArrowDown"
+        ? activeBuilderTab === "driver-options"
+          ? "stop-order"
+          : "driver-options"
+        : event.key === "ArrowLeft" || event.key === "ArrowUp"
+          ? activeBuilderTab === "driver-options"
+            ? "stop-order"
+            : "driver-options"
+          : event.key === "Home"
+            ? "driver-options"
+            : event.key === "End"
+              ? "stop-order"
+              : null;
+    if (nextTab === null) return;
+    event.preventDefault();
+    focusBuilderTab(nextTab);
+  };
+  const renderSaveControls = (): ReactElement => (
+    <div className="route-save-controls">
+      <button
+        aria-label={t.saveRoute}
+        className="primary route-save-button"
+        disabled={!canSaveRoute}
+        onClick={() => void save()}
+        type="button"
+      >
+        {isSavingRoute ? t.savingRoute : t.saveRoute}
+      </button>
+      <small className="muted">{saveHint}</small>
+      <small className="muted">{t.routeSaveFullDraft}</small>
+      <small className="muted">{routeVisibilityLabel}</small>
+    </div>
+  );
 
   return (
     <TabLayout
@@ -416,94 +533,6 @@ export function RouteBuilder(input: {
             )}
             title={detail?.routePlan.name ?? t.routeBuilder}
           />
-          <article className="panel route-stops-panel">
-            <div className="panel-heading">
-              <div>
-                <span className="eyebrow">{t.routeStops}</span>
-                <h2>{t.stopTableTitle}</h2>
-                <p>{t.stopTableHelp}</p>
-              </div>
-              <Badge>
-                {draftStops.length} {t.stops}
-              </Badge>
-            </div>
-            <table className="ops-table route-stop-table">
-              <thead>
-                <tr>
-                  <th>{t.stopTable.drag}</th>
-                  <th>{t.stopTable.sequence}</th>
-                  <th>{t.stopTable.order}</th>
-                  <th>{t.stopTable.customer}</th>
-                  <th>{t.stopTable.area}</th>
-                  <th>{t.stopTable.status}</th>
-                  <th>{t.stopTable.actions}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {draftStops.map((stop, index) => (
-                  <tr
-                    className={
-                      draggingStopId === stop.deliveryStopId ? "dragging" : ""
-                    }
-                    draggable
-                    key={stop.deliveryStopId}
-                    onDragEnd={() => setDraggingStopId(null)}
-                    onDragOver={(event) => event.preventDefault()}
-                    onDragStart={() => setDraggingStopId(stop.deliveryStopId)}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      dropDraftStop(stop.deliveryStopId);
-                    }}
-                  >
-                    <td>
-                      <span
-                        aria-label={t.dragPlanOrder(stop.orderName)}
-                        className="drag-handle"
-                        role="img"
-                      >
-                        ::
-                      </span>
-                    </td>
-                    <td>
-                      <span className="stop-number compact">{index + 1}</span>
-                    </td>
-                    <td>
-                      <strong>{stop.orderName}</strong>
-                      <small>{stop.orderId}</small>
-                    </td>
-                    <td>
-                      {stop.recipientName ?? t.noRecipient}
-                      <small>{stop.addressLabel}</small>
-                    </td>
-                    <td>{stop.deliveryArea ?? "—"}</td>
-                    <td>
-                      <Badge>{stop.status}</Badge>
-                    </td>
-                    <td>
-                      <div className="stop-actions">
-                        <button
-                          aria-label={t.moveUp(stop.orderName)}
-                          disabled={index === 0}
-                          onClick={() => moveDraftStop(stop.deliveryStopId, -1)}
-                          type="button"
-                        >
-                          ↑
-                        </button>
-                        <button
-                          aria-label={t.moveDown(stop.orderName)}
-                          disabled={index === draftStops.length - 1}
-                          onClick={() => moveDraftStop(stop.deliveryStopId, 1)}
-                          type="button"
-                        >
-                          ↓
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </article>
         </div>
       }
       secondary={
@@ -538,68 +567,136 @@ export function RouteBuilder(input: {
               </button>
             </div>
           </div>
-          {publishNotice === null ? null : (
-            <div className={`route-publish-notice ${publishNotice.tone}`}>
-              {publishNotice.text}
+          <div aria-label={t.routeBuilderTabs.label} className="route-tabs route-builder-tabs" role="tablist">
+            <button
+              aria-controls={driverPanelId}
+              aria-selected={activeBuilderTab === "driver-options"}
+              className={activeBuilderTab === "driver-options" ? "active" : ""}
+              id={driverTabId}
+              onKeyDown={handleBuilderTabKeyDown}
+              onClick={() => setActiveBuilderTab("driver-options")}
+              role="tab"
+              type="button"
+            >
+              {t.routeBuilderTabs.driverOptions}
+            </button>
+            <button
+              aria-controls={stopOrderPanelId}
+              aria-selected={activeBuilderTab === "stop-order"}
+              className={activeBuilderTab === "stop-order" ? "active" : ""}
+              id={stopOrderTabId}
+              onKeyDown={handleBuilderTabKeyDown}
+              onClick={() => setActiveBuilderTab("stop-order")}
+              role="tab"
+              type="button"
+            >
+              {t.routeBuilderTabs.stopOrder}
+            </button>
+          </div>
+          {activeBuilderTab === "driver-options" ? (
+            <div aria-labelledby={driverTabId} className="route-builder-tab-panel" id={driverPanelId} role="tabpanel">
+              {publishNotice === null ? null : (
+                <div className={`route-publish-notice ${publishNotice.tone}`}>
+                  {publishNotice.text}
+                </div>
+              )}
+              <dl className="route-state-list">
+                <div>
+                  <dt>{t.table.status}</dt>
+                  <dd>
+                    {detail === null
+                      ? "—"
+                      : formatRoutePlanStatus(detail.routePlan.status, locale)}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{t.table.date}</dt>
+                  <dd>
+                    {detail?.routePlan.deliveryDate ??
+                      detail?.routePlan.planDate ??
+                      "—"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>{t.table.stops}</dt>
+                  <dd>{draftStops.length}</dd>
+                </div>
+                <div>
+                  <dt>{t.table.driver}</dt>
+                  <dd>
+                    {getRouteDriverDisplay(
+                      effectiveRoutePlan,
+                      input.drivers,
+                      locale,
+                    )}
+                  </dd>
+                </div>
+              </dl>
+              <label>
+                {t.assignedDriver}
+                <select
+                  value={draftDriverId}
+                  onChange={(event) => setDraftDriverId(event.target.value)}
+                >
+                  <option value="">{t.unassigned}</option>
+                  {input.drivers.map((driver) => (
+                    <option key={driver.id} value={driver.id}>
+                      {getDriverOptionLabel(driver, locale)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="route-end-toggle">
+                <input
+                  aria-describedby={!canReturnToDepot ? routeEndWarningId : undefined}
+                  checked={returnToDepotChecked}
+                  disabled={returnToDepotDisabled}
+                  onChange={(event) => {
+                    if (event.target.checked && !canReturnToDepot) return;
+                    setDraftRouteEndMode(
+                      event.target.checked ? "RETURN_TO_DEPOT" : "END_AT_LAST_STOP",
+                    );
+                  }}
+                  type="checkbox"
+                />
+                <span>{t.returnToStore}</span>
+                <small>
+                  {returnToDepotChecked
+                    ? t.returnToStoreHelp
+                    : t.endAtLastStopHelp}
+                </small>
+              </label>
+              {!canReturnToDepot ? (
+                <small className="form-warning" id={routeEndWarningId}>
+                  {t.returnToStoreDepotMissing}
+                </small>
+              ) : null}
+              {renderSaveControls()}
+            </div>
+          ) : (
+            <div aria-labelledby={stopOrderTabId} className="route-builder-tab-panel" id={stopOrderPanelId} role="tabpanel">
+              <div className="route-stop-compact-heading">
+                <div>
+                  <span className="eyebrow">{t.routeStops}</span>
+                  <h3>{t.stopTableTitle}</h3>
+                  <p>{t.stopTableHelp}</p>
+                </div>
+                <Badge>
+                  {draftStops.length} {t.stops}
+                </Badge>
+              </div>
+              <RouteStopOrderCompactList
+                draggingStopId={draggingStopId}
+                locale={locale}
+                onDragEnd={() => setDraggingStopId(null)}
+                onDragStart={setDraggingStopId}
+                onDrop={dropDraftStop}
+                onMove={moveDraftStop}
+                stops={draftStops}
+              />
+              {renderSaveControls()}
             </div>
           )}
-          <dl className="route-state-list">
-            <div>
-              <dt>{t.table.status}</dt>
-              <dd>
-                {detail === null
-                  ? "—"
-                  : formatRoutePlanStatus(detail.routePlan.status, locale)}
-              </dd>
-            </div>
-            <div>
-              <dt>{t.table.date}</dt>
-              <dd>
-                {detail?.routePlan.deliveryDate ??
-                  detail?.routePlan.planDate ??
-                  "—"}
-              </dd>
-            </div>
-            <div>
-              <dt>{t.table.stops}</dt>
-              <dd>{draftStops.length}</dd>
-            </div>
-            <div>
-              <dt>{t.table.driver}</dt>
-              <dd>
-                {getRouteDriverDisplay(
-                  effectiveRoutePlan,
-                  input.drivers,
-                  locale,
-                )}
-              </dd>
-            </div>
-          </dl>
-          <label>
-            {t.assignedDriver}
-            <select
-              value={draftDriverId}
-              onChange={(event) => setDraftDriverId(event.target.value)}
-            >
-              <option value="">{t.unassigned}</option>
-              {input.drivers.map((driver) => (
-                <option key={driver.id} value={driver.id}>
-                  {getDriverOptionLabel(driver, locale)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            aria-label={t.saveRoute}
-            className="primary route-save-button"
-            disabled={!canSaveRoute}
-            onClick={() => void save()}
-            type="button"
-          >
-            {isSavingRoute ? t.savingRoute : t.saveRoute}
-          </button>
-          <small className="muted">{saveHint}</small>
-          <small className="muted">{routeVisibilityLabel}</small>
         </aside>
       }
       lower={
@@ -611,5 +708,83 @@ export function RouteBuilder(input: {
         </div>
       }
     />
+  );
+}
+
+export function RouteStopOrderCompactList({
+  draggingStopId,
+  locale,
+  onDragEnd,
+  onDragStart,
+  onDrop,
+  onMove,
+  stops,
+}: {
+  draggingStopId: string | null;
+  locale?: string | null;
+  onDragEnd(): void;
+  onDragStart(deliveryStopId: string): void;
+  onDrop(targetStopId: string): void;
+  onMove(deliveryStopId: string, direction: -1 | 1): void;
+  stops: RouteStopDto[];
+}): ReactElement {
+  const t = getRoutesCopy(locale);
+  return (
+    <div aria-label={t.stopTableTitle} className="route-stop-compact-list" role="list">
+      {stops.map((stop, index) => (
+        <div
+          className={[
+            "route-stop-compact-row",
+            draggingStopId === stop.deliveryStopId ? "dragging" : "",
+          ].filter(Boolean).join(" ")}
+          draggable
+          key={stop.deliveryStopId}
+          onDragEnd={onDragEnd}
+          onDragOver={(event) => event.preventDefault()}
+          onDragStart={() => onDragStart(stop.deliveryStopId)}
+          onDrop={(event) => {
+            event.preventDefault();
+            onDrop(stop.deliveryStopId);
+          }}
+          role="listitem"
+        >
+          <span
+            aria-label={t.dragPlanOrder(stop.orderName)}
+            className="drag-handle"
+            role="img"
+          >
+            ::
+          </span>
+          <span className="stop-number compact">{index + 1}</span>
+          <div className="route-stop-compact-main">
+            <strong>{stop.orderName}</strong>
+            <small>
+              {stop.recipientName ?? t.noRecipient} · {stop.addressLabel}
+            </small>
+            <small className="route-stop-compact-meta">
+              {stop.deliveryArea ?? "—"} · <Badge>{stop.status}</Badge>
+            </small>
+          </div>
+          <div className="stop-actions route-stop-compact-actions">
+            <button
+              aria-label={t.moveUp(stop.orderName)}
+              disabled={index === 0}
+              onClick={() => onMove(stop.deliveryStopId, -1)}
+              type="button"
+            >
+              ↑
+            </button>
+            <button
+              aria-label={t.moveDown(stop.orderName)}
+              disabled={index === stops.length - 1}
+              onClick={() => onMove(stop.deliveryStopId, 1)}
+              type="button"
+            >
+              ↓
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
