@@ -264,6 +264,31 @@ describe('route ops layout components', () => {
     expect(css).toContain('.orders-table-scroll');
   });
 
+  test('Route Builder detail CSS syncs map and card height while keeping stop order scroll-contained', () => {
+    const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+
+    expect(css).toContain('--route-builder-detail-panel-height: clamp(620px, calc(100vh - 220px), 760px);');
+    expect(css).toContain(`.route-builder-workspace .map-panel,
+.route-save-panel {
+  height: var(--route-builder-detail-panel-height);`);
+    expect(css).toContain('.route-builder-workspace .route-ops-map-frame');
+    expect(css).toContain('flex: 1 1 auto;');
+    expect(css).toContain('.route-builder-card-shell');
+    expect(css).toContain('overflow: hidden;');
+    expect(css).toContain('.route-builder-tab-panel');
+    expect(css).toContain('min-height: 0;');
+    expect(css).toContain('.route-builder-card-footer');
+    expect(css).toContain('border-top: 1px solid #e6eaf1;');
+    expect(css).toContain('.route-builder-tab-body--stop-order');
+    expect(css).toContain('grid-template-rows: auto minmax(0, 1fr);');
+    expect(css).toContain('.route-stop-count-badge');
+    expect(css).toContain('white-space: nowrap;');
+    expect(css).toContain('@media (max-width: 980px)');
+    expect(css).toContain(`.route-builder-workspace .route-ops-map-frame,
+  .route-builder-workspace .route-ops-map-canvas,
+  .route-builder-workspace .route-ops-map-frame svg`);
+  });
+
   test('Topbar notification CSS exposes the dropdown badge and tone classes', () => {
     const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
 

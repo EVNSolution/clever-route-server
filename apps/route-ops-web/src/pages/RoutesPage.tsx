@@ -536,13 +536,15 @@ export function RouteBuilder(input: {
         </div>
       }
       secondary={
-        <aside className="panel side-panel route-save-panel">
-          <div className="panel-heading">
-            <div>
+        <aside className="panel side-panel route-save-panel route-builder-card-shell">
+          <div className="route-builder-card-header">
+            <div className="route-builder-title-block">
               <span className="eyebrow">{t.routeState}</span>
-              <h2>{detail?.routePlan.name ?? t.loadingRoute}</h2>
+              <h2 className="route-builder-route-title" title={detail?.routePlan.name ?? t.loadingRoute}>
+                {detail?.routePlan.name ?? t.loadingRoute}
+              </h2>
             </div>
-            <div className="route-row-actions">
+            <div className="route-row-actions route-builder-card-actions">
               <button
                 onClick={() => input.navigate("/admin/ui/app/routes")}
                 type="button"
@@ -567,7 +569,7 @@ export function RouteBuilder(input: {
               </button>
             </div>
           </div>
-          <div aria-label={t.routeBuilderTabs.label} className="route-tabs route-builder-tabs" role="tablist">
+          <div aria-label={t.routeBuilderTabs.label} className="route-tabs route-builder-tabs route-builder-card-tabs" role="tablist">
             <button
               aria-controls={driverPanelId}
               aria-selected={activeBuilderTab === "driver-options"}
@@ -595,108 +597,114 @@ export function RouteBuilder(input: {
           </div>
           {activeBuilderTab === "driver-options" ? (
             <div aria-labelledby={driverTabId} className="route-builder-tab-panel" id={driverPanelId} role="tabpanel">
-              {publishNotice === null ? null : (
-                <div className={`route-publish-notice ${publishNotice.tone}`}>
-                  {publishNotice.text}
-                </div>
-              )}
-              <dl className="route-state-list">
-                <div>
-                  <dt>{t.table.status}</dt>
-                  <dd>
-                    {detail === null
-                      ? "—"
-                      : formatRoutePlanStatus(detail.routePlan.status, locale)}
-                  </dd>
-                </div>
-                <div>
-                  <dt>{t.table.date}</dt>
-                  <dd>
-                    {detail?.routePlan.deliveryDate ??
-                      detail?.routePlan.planDate ??
-                      "—"}
-                  </dd>
-                </div>
-                <div>
-                  <dt>{t.table.stops}</dt>
-                  <dd>{draftStops.length}</dd>
-                </div>
-                <div>
-                  <dt>{t.table.driver}</dt>
-                  <dd>
-                    {getRouteDriverDisplay(
-                      effectiveRoutePlan,
-                      input.drivers,
-                      locale,
-                    )}
-                  </dd>
-                </div>
-              </dl>
-              <label>
-                {t.assignedDriver}
-                <select
-                  value={draftDriverId}
-                  onChange={(event) => setDraftDriverId(event.target.value)}
-                >
-                  <option value="">{t.unassigned}</option>
-                  {input.drivers.map((driver) => (
-                    <option key={driver.id} value={driver.id}>
-                      {getDriverOptionLabel(driver, locale)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="route-end-toggle">
-                <input
-                  aria-describedby={!canReturnToDepot ? routeEndWarningId : undefined}
-                  checked={returnToDepotChecked}
-                  disabled={returnToDepotDisabled}
-                  onChange={(event) => {
-                    if (event.target.checked && !canReturnToDepot) return;
-                    setDraftRouteEndMode(
-                      event.target.checked ? "RETURN_TO_DEPOT" : "END_AT_LAST_STOP",
-                    );
-                  }}
-                  type="checkbox"
-                />
-                <span>{t.returnToStore}</span>
-                <small>
-                  {returnToDepotChecked
-                    ? t.returnToStoreHelp
-                    : t.endAtLastStopHelp}
-                </small>
-              </label>
-              {!canReturnToDepot ? (
-                <small className="form-warning" id={routeEndWarningId}>
-                  {t.returnToStoreDepotMissing}
-                </small>
-              ) : null}
-              {renderSaveControls()}
+              <div className="route-builder-tab-body route-builder-tab-body--driver">
+                {publishNotice === null ? null : (
+                  <div className={`route-publish-notice ${publishNotice.tone}`}>
+                    {publishNotice.text}
+                  </div>
+                )}
+                <dl className="route-state-list">
+                  <div>
+                    <dt>{t.table.status}</dt>
+                    <dd>
+                      {detail === null
+                        ? "—"
+                        : formatRoutePlanStatus(detail.routePlan.status, locale)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{t.table.date}</dt>
+                    <dd>
+                      {detail?.routePlan.deliveryDate ??
+                        detail?.routePlan.planDate ??
+                        "—"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{t.table.stops}</dt>
+                    <dd>{draftStops.length}</dd>
+                  </div>
+                  <div>
+                    <dt>{t.table.driver}</dt>
+                    <dd>
+                      {getRouteDriverDisplay(
+                        effectiveRoutePlan,
+                        input.drivers,
+                        locale,
+                      )}
+                    </dd>
+                  </div>
+                </dl>
+                <label>
+                  {t.assignedDriver}
+                  <select
+                    value={draftDriverId}
+                    onChange={(event) => setDraftDriverId(event.target.value)}
+                  >
+                    <option value="">{t.unassigned}</option>
+                    {input.drivers.map((driver) => (
+                      <option key={driver.id} value={driver.id}>
+                        {getDriverOptionLabel(driver, locale)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="route-end-toggle">
+                  <input
+                    aria-describedby={!canReturnToDepot ? routeEndWarningId : undefined}
+                    checked={returnToDepotChecked}
+                    className="route-end-toggle-checkbox"
+                    disabled={returnToDepotDisabled}
+                    onChange={(event) => {
+                      if (event.target.checked && !canReturnToDepot) return;
+                      setDraftRouteEndMode(
+                        event.target.checked ? "RETURN_TO_DEPOT" : "END_AT_LAST_STOP",
+                      );
+                    }}
+                    type="checkbox"
+                  />
+                  <span>{t.returnToStore}</span>
+                  <small>
+                    {returnToDepotChecked
+                      ? t.returnToStoreHelp
+                      : t.endAtLastStopHelp}
+                  </small>
+                </label>
+                {!canReturnToDepot ? (
+                  <small className="form-warning" id={routeEndWarningId}>
+                    {t.returnToStoreDepotMissing}
+                  </small>
+                ) : null}
+              </div>
             </div>
           ) : (
             <div aria-labelledby={stopOrderTabId} className="route-builder-tab-panel" id={stopOrderPanelId} role="tabpanel">
-              <div className="route-stop-compact-heading">
-                <div>
-                  <span className="eyebrow">{t.routeStops}</span>
-                  <h3>{t.stopTableTitle}</h3>
-                  <p>{t.stopTableHelp}</p>
+              <div className="route-builder-tab-body route-builder-tab-body--stop-order">
+                <div className="route-stop-compact-heading">
+                  <div>
+                    <span className="eyebrow">{t.routeStops}</span>
+                    <h3>{t.stopTableTitle}</h3>
+                    <p>{t.stopTableHelp}</p>
+                  </div>
+                  <span className="badge route-stop-count-badge">
+                    {draftStops.length} {t.stops.toLocaleLowerCase(locale)}
+                  </span>
                 </div>
-                <Badge>
-                  {draftStops.length} {t.stops}
-                </Badge>
+                <RouteStopOrderCompactList
+                  draggingStopId={draggingStopId}
+                  locale={locale}
+                  onDragEnd={() => setDraggingStopId(null)}
+                  onDragStart={setDraggingStopId}
+                  onDrop={dropDraftStop}
+                  onMove={moveDraftStop}
+                  stops={draftStops}
+                />
               </div>
-              <RouteStopOrderCompactList
-                draggingStopId={draggingStopId}
-                locale={locale}
-                onDragEnd={() => setDraggingStopId(null)}
-                onDragStart={setDraggingStopId}
-                onDrop={dropDraftStop}
-                onMove={moveDraftStop}
-                stops={draftStops}
-              />
-              {renderSaveControls()}
             </div>
           )}
+          <div className="route-builder-card-footer">
+            {renderSaveControls()}
+          </div>
         </aside>
       }
       lower={
