@@ -63,6 +63,19 @@ services:
     command: ["npm", "--prefix", "apps/delivery-api", "exec", "--", "prisma", "db", "push", "--schema", "apps/delivery-api/prisma/schema.prisma", "--skip-generate"]
     restart: "no"
 
+
+  route-engine:
+    image: ${ROUTE_ENGINE_IMAGE:-ghcr.io/evnsolution/route-engine-worker:disabled}
+    env_file:
+      - ../env/delivery-api.env
+    expose:
+      - "8080"
+    profiles:
+      - route-engine
+    restart: unless-stopped
+    volumes:
+      - ${ROUTE_ENGINE_GRAPH_HOST_DIR:-/srv/clever-route-server/data/route-engine/parquet}:/app/routing_engine/v7_out/parquet:ro
+
   postgres:
     image: postgres:17-bookworm
     env_file:

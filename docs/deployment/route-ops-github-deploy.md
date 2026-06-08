@@ -65,6 +65,8 @@ export DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api:$
 export DELIVERY_API_MIGRATE_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:${IMAGE_TAG}
 export ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static:${IMAGE_TAG}
 export ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-${IMAGE_TAG}
+export ROUTE_ENGINE_IMAGE=ghcr.io/evnsolution/route-engine-worker:f65a1402ec24bef24b7975f0a7f0d320e5773bc0
+export ROUTE_ENGINE_GRAPH_HOST_DIR=/srv/clever-route-server/data/route-engine/parquet
 export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
 export ROUTE_OPS_SMOKE_BASE_URL=https://clever-route.cleversystem.ai
 export ROUTE_OPS_SMOKE_SHOP_DOMAIN=dev1.tomatonofood.com
@@ -72,7 +74,7 @@ export ROUTE_OPS_SMOKE_LOGIN_SECRET=<read locally from host secret manager, neve
 scripts/deploy-route-ops-image.sh
 ```
 
-The deploy script prepares `.deploy/candidate-image.env`, prunes stale Route Ops images before pull, pulls the frontend static, runtime, and migrate images, stages the frontend artifact into a SHA-scoped `ROUTE_OPS_WEB_STATIC_VOLUME`, verifies labels and schema SHA, runs the existing migration command, recreates only `delivery-api` to switch to the candidate volume, runs authenticated smoke, and promotes metadata only after smoke succeeds. On failure before backend recreation, the running backend keeps its previous static volume.
+The deploy script prepares `.deploy/candidate-image.env`, prunes stale Route Ops images before pull, pulls the frontend static, runtime, migrate, and pinned `route_engine` worker images, stages the frontend artifact into a SHA-scoped `ROUTE_OPS_WEB_STATIC_VOLUME`, verifies labels and schema SHA, verifies the host-mounted `route_engine` graph parquet manifest, runs the existing migration command, smokes `route_engine` from the `delivery-api` runtime network, recreates only `delivery-api` to switch to the candidate volume and internal `ROUTE_ENGINE_BASE_URL`, runs authenticated Route Ops smoke, and promotes metadata only after smoke succeeds. On failure before backend recreation, the running backend keeps its previous static volume and the pre-deploy `delivery-api.env` is restored.
 
 ## Smoke coverage
 
@@ -87,6 +89,12 @@ The deploy script prepares `.deploy/candidate-image.env`, prunes stale Route Ops
 - `/admin/ui/app/vendor/maplibre-gl.css` and `/admin/ui/app/vendor/openfreemap-clever-lite.json`.
 
 By default it fails if public OpenFreeMap hosts appear in CSP. Set `ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP=true` only when explicitly allowlisted.
+
+The production deploy script also performs a non-customer `route_engine` smoke
+before `delivery-api` activation: `/readyz` plus `POST /v1/solve` against
+`http://route-engine:8080` from a one-off `delivery-api` runtime container. It
+expects `engine.name=route_engine`, `external_calls=false`, two smoke stops, and
+positive distance/duration.
 
 ## Rollback
 
@@ -103,6 +111,10 @@ Rollback uses `.deploy/previous-image.env`, verifies the schema fingerprint matc
 - No production SSH key, admin smoke secret, cookie, or runtime `.env` is stored in GitHub.
 - Use a host-local GHCR read token in Docker credential storage.
 - `ROUTE_OPS_WEB_STATIC_IMAGE` and `ROUTE_OPS_WEB_STATIC_VOLUME` are deploy metadata, not runtime secrets; both must use the same immutable git SHA tag as the backend images.
+- `ROUTE_ENGINE_IMAGE` is a separately published pinned optimizer worker image,
+  not a secret. `ROUTE_ENGINE_GRAPH_HOST_DIR` must point to host-local Git LFS
+  parquet artifacts; do not put those large artifacts in the
+  clever-route-server image layer.
 - Keep Actions manual, timeout-bounded, and artifact-light; redacted summaries only with one-day retention.
 - If Actions quota is exhausted, use a local maintainer build/push or the existing emergency deploy path after separate approval.
 
@@ -113,3 +125,23 @@ The next approved deployment model is documented in `docs/deployment/route-ops-s
 ## Frontend static artifact boundary
 
 Route Ops web is no longer primarily baked into the `delivery-api` runtime image. The frontend build is published as `ghcr.io/evnsolution/clever-route-server-route-ops-web-static:<git-sha>`. Compose runs the `route-ops-web-static` one-shot service to copy `/opt/route-ops-web/dist` and `/opt/route-ops-web/public` into the `route-ops-web-static` named volume. `delivery-api` mounts that volume read-only at `/app/external/route-ops-web` and serves the authenticated shell/assets from `ROUTE_OPS_WEB_DIST_PATH` and `ROUTE_OPS_WEB_PUBLIC_PATH`.
+
+## Route Engine worker boundary
+
+The Python optimizer worker remains a separate internal Compose service:
+
+```text
+route-engine:
+  image: ${ROUTE_ENGINE_IMAGE}
+  profile: route-engine
+  expose: 8080
+  graph mount: ${ROUTE_ENGINE_GRAPH_HOST_DIR}:/app/routing_engine/v7_out/parquet:ro
+```
+
+It has no public port. `delivery-api` talks to it by the internal Compose DNS
+name `http://route-engine:8080` and a shared host-local
+`ROUTE_ENGINE_INTERNAL_TOKEN`. The deploy script generates that token only if it
+is missing and never prints it. The graph mount is mandatory for production:
+deployment fails closed if the host parquet files are absent, still Git LFS
+pointers, or do not match the `org.clever-route.graph-manifest-sha` label on the
+pinned worker image.

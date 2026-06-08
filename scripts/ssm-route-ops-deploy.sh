@@ -14,9 +14,12 @@ GHCR_TOKEN_PARAM="${ROUTE_OPS_GHCR_TOKEN_PARAM:-/clever/deploy/github/read-token
 : "${PRISMA_SCHEMA_SHA:?PRISMA_SCHEMA_SHA is required}"
 : "${DELIVERY_API_IMAGE:?DELIVERY_API_IMAGE is required}"
 : "${DELIVERY_API_MIGRATE_IMAGE:?DELIVERY_API_MIGRATE_IMAGE is required}"
+ROUTE_ENGINE_IMAGE_REPO="${ROUTE_ENGINE_IMAGE_REPO:-ghcr.io/evnsolution/route-engine-worker}"
+ROUTE_ENGINE_IMAGE="${ROUTE_ENGINE_IMAGE:-${ROUTE_ENGINE_IMAGE_REPO}:f65a1402ec24bef24b7975f0a7f0d320e5773bc0}"
+ROUTE_ENGINE_GRAPH_HOST_DIR="${ROUTE_ENGINE_GRAPH_HOST_DIR:-/srv/clever-route-server/data/route-engine/parquet}"
 ROUTE_OPS_WEB_STATIC_IMAGE="${ROUTE_OPS_WEB_STATIC_IMAGE:-ghcr.io/evnsolution/clever-route-server-route-ops-web-static:${IMAGE_TAG}}"
 ROUTE_OPS_WEB_STATIC_VOLUME="${ROUTE_OPS_WEB_STATIC_VOLUME:-clever-route-route-ops-web-static-${IMAGE_TAG}}"
-export ROUTE_OPS_WEB_STATIC_IMAGE ROUTE_OPS_WEB_STATIC_VOLUME
+export ROUTE_ENGINE_GRAPH_HOST_DIR ROUTE_ENGINE_IMAGE ROUTE_OPS_WEB_STATIC_IMAGE ROUTE_OPS_WEB_STATIC_VOLUME
 
 fail() {
   echo "ssm-route-ops-deploy: $*" >&2
@@ -30,6 +33,8 @@ validate_inputs() {
   [[ "$DELIVERY_API_MIGRATE_IMAGE" =~ ^ghcr\.io/evnsolution/clever-route-server-delivery-api-migrate:[0-9a-fA-F]{40}$ ]] || fail "DELIVERY_API_MIGRATE_IMAGE must be the approved migrate GHCR image with SHA tag"
   [[ "$ROUTE_OPS_WEB_STATIC_IMAGE" =~ ^ghcr\.io/evnsolution/clever-route-server-route-ops-web-static:[0-9a-fA-F]{40}$ ]] || fail "ROUTE_OPS_WEB_STATIC_IMAGE must be the approved frontend static GHCR image with SHA tag"
   [[ "$ROUTE_OPS_WEB_STATIC_VOLUME" =~ ^clever-route-route-ops-web-static-[0-9a-fA-F]{40}$ ]] || fail "ROUTE_OPS_WEB_STATIC_VOLUME must be the approved SHA-scoped frontend static Docker volume"
+  [[ "$ROUTE_ENGINE_IMAGE" =~ ^ghcr\.io/evnsolution/route-engine-worker:[0-9a-fA-F]{40}$ ]] || fail "ROUTE_ENGINE_IMAGE must be the approved route_engine worker GHCR image with SHA tag"
+  [[ "$ROUTE_ENGINE_GRAPH_HOST_DIR" = /* ]] || fail "ROUTE_ENGINE_GRAPH_HOST_DIR must be an absolute host path"
   [[ "$DELIVERY_API_IMAGE" == *":$IMAGE_TAG" ]] || fail "runtime image tag must match IMAGE_TAG"
   [[ "$DELIVERY_API_MIGRATE_IMAGE" == *":$IMAGE_TAG" ]] || fail "migrate image tag must match IMAGE_TAG"
   [[ "$ROUTE_OPS_WEB_STATIC_IMAGE" == *":$IMAGE_TAG" ]] || fail "frontend static image tag must match IMAGE_TAG"
@@ -91,7 +96,7 @@ login_to_ghcr() {
   if [ "${ROUTE_OPS_SKIP_GHCR_LOGIN:-}" = "1" ]; then
     return 0
   fi
-  case "$DELIVERY_API_IMAGE $DELIVERY_API_MIGRATE_IMAGE $ROUTE_OPS_WEB_STATIC_IMAGE" in
+  case "$DELIVERY_API_IMAGE $DELIVERY_API_MIGRATE_IMAGE $ROUTE_OPS_WEB_STATIC_IMAGE $ROUTE_ENGINE_IMAGE" in
     *ghcr.io/evnsolution/clever-route-server-delivery-api*) ;;
     *) return 0 ;;
   esac
@@ -143,8 +148,8 @@ acquire_lock
 read_host_secret
 login_to_ghcr
 
-printf 'Route Ops SSM deploy wrapper starting: tag=%s schema=%s runtime=%s migrate=%s static=%s staticVolume=%s composeProject=%s\n' \
-  "$IMAGE_TAG" "$PRISMA_SCHEMA_SHA" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$ROUTE_OPS_COMPOSE_PROJECT_NAME"
+printf 'Route Ops SSM deploy wrapper starting: tag=%s schema=%s runtime=%s migrate=%s static=%s staticVolume=%s routeEngine=%s routeEngineGraphDir=%s composeProject=%s\n' \
+  "$IMAGE_TAG" "$PRISMA_SCHEMA_SHA" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$ROUTE_ENGINE_IMAGE" "$ROUTE_ENGINE_GRAPH_HOST_DIR" "$ROUTE_OPS_COMPOSE_PROJECT_NAME"
 
 scripts/deploy-route-ops-image.sh
 record_publish_evidence

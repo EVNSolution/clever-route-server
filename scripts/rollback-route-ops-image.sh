@@ -16,6 +16,10 @@ LOCK_PATH="${ROUTE_OPS_DEPLOY_LOCK_PATH:-.deploy/route-ops-deploy.lock}"
 LOCK_DIR="${LOCK_PATH}.d"
 LOCK_ACQUIRED="false"
 ROUTE_OPS_WEB_STATIC_IMAGE_REPO="${ROUTE_OPS_WEB_STATIC_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-route-ops-web-static}"
+ROUTE_ENGINE_IMAGE_REPO="${ROUTE_ENGINE_IMAGE_REPO:-ghcr.io/evnsolution/route-engine-worker}"
+ROUTE_ENGINE_IMAGE="${ROUTE_ENGINE_IMAGE:-${ROUTE_ENGINE_IMAGE_REPO}:f65a1402ec24bef24b7975f0a7f0d320e5773bc0}"
+ROUTE_ENGINE_GRAPH_HOST_DIR="${ROUTE_ENGINE_GRAPH_HOST_DIR:-/srv/clever-route-server/data/route-engine/parquet}"
+export ROUTE_ENGINE_GRAPH_HOST_DIR ROUTE_ENGINE_IMAGE
 ROUTE_OPS_ROLLBACK_STATIC_ARTIFACT_STAGED="false"
 ROUTE_OPS_ROLLBACK_SERVICE_MUTATED="false"
 
@@ -47,7 +51,7 @@ enforce_no_legacy_route_ops_compose_project() {
     [ -n "${name:-}" ] || continue
     if [ "$project" = "compose" ]; then
       case "$service" in
-        caddy|delivery-api|delivery-api-migrate|postgres|osrm-ontario)
+        caddy|delivery-api|delivery-api-migrate|postgres|osrm-ontario|route-engine)
           offenders="${offenders}${name} service=${service} ports=${ports:-none}"$'\n'
           ;;
       esac
@@ -92,7 +96,7 @@ validate_image_env_file() {
   while IFS= read -r line || [ -n "$line" ]; do
     [ -z "$line" ] && continue
     case "$line" in
-      IMAGE_TAG=*|DELIVERY_API_IMAGE=*|DELIVERY_API_MIGRATE_IMAGE=*|ROUTE_OPS_WEB_STATIC_IMAGE=*|ROUTE_OPS_WEB_STATIC_VOLUME=*|PRISMA_SCHEMA_SHA=*) ;;
+      IMAGE_TAG=*|DELIVERY_API_IMAGE=*|DELIVERY_API_MIGRATE_IMAGE=*|ROUTE_OPS_WEB_STATIC_IMAGE=*|ROUTE_OPS_WEB_STATIC_VOLUME=*|ROUTE_ENGINE_IMAGE=*|ROUTE_ENGINE_GRAPH_HOST_DIR=*|PRISMA_SCHEMA_SHA=*) ;;
       *) echo "Invalid image env key in $file: ${line%%=*}" >&2; return 1 ;;
     esac
     local value="${line#*=}"
@@ -117,6 +121,14 @@ load_image_env_file() {
     ROUTE_OPS_WEB_STATIC_VOLUME="clever-route-route-ops-web-static-${IMAGE_TAG}"
     export ROUTE_OPS_WEB_STATIC_VOLUME
   fi
+  if [ -z "${ROUTE_ENGINE_IMAGE:-}" ]; then
+    ROUTE_ENGINE_IMAGE="${ROUTE_ENGINE_IMAGE_REPO}:f65a1402ec24bef24b7975f0a7f0d320e5773bc0"
+    export ROUTE_ENGINE_IMAGE
+  fi
+  if [ -z "${ROUTE_ENGINE_GRAPH_HOST_DIR:-}" ]; then
+    ROUTE_ENGINE_GRAPH_HOST_DIR="/srv/clever-route-server/data/route-engine/parquet"
+    export ROUTE_ENGINE_GRAPH_HOST_DIR
+  fi
   set +a
 }
 
@@ -134,6 +146,12 @@ ensure_static_artifact_env_file() {
   fi
   if ! grep -q '^ROUTE_OPS_WEB_STATIC_VOLUME=' "$file"; then
     printf 'ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-%s\n' "$image_tag" >> "$file"
+  fi
+  if ! grep -q '^ROUTE_ENGINE_IMAGE=' "$file"; then
+    printf 'ROUTE_ENGINE_IMAGE=%s\n' "$ROUTE_ENGINE_IMAGE" >> "$file"
+  fi
+  if ! grep -q '^ROUTE_ENGINE_GRAPH_HOST_DIR=' "$file"; then
+    printf 'ROUTE_ENGINE_GRAPH_HOST_DIR=%s\n' "$ROUTE_ENGINE_GRAPH_HOST_DIR" >> "$file"
   fi
 }
 expected_static_volume_for_tag() {
@@ -207,6 +225,141 @@ route_ops_osrm_enabled_json() {
   else
     printf 'false'
   fi
+}
+
+route_engine_configured() {
+  local route_engine_base_url
+  route_engine_base_url="$(read_route_ops_host_env_value ROUTE_ENGINE_BASE_URL)"
+  [ -n "$route_engine_base_url" ]
+}
+
+route_engine_enabled_json() {
+  if route_engine_configured; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
+}
+
+validate_route_engine_image() {
+  if ! [[ "${ROUTE_ENGINE_IMAGE:-}" =~ ^ghcr\.io/evnsolution/route-engine-worker:[0-9a-fA-F]{40}$ ]]; then
+    echo "ROUTE_ENGINE_IMAGE must be the approved route_engine worker GHCR image with SHA tag; got: ${ROUTE_ENGINE_IMAGE:-unset}" >&2
+    exit 65
+  fi
+}
+
+route_ops_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$@"
+    return 0
+  fi
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$@"
+    return 0
+  fi
+  echo "sha256sum or shasum is required for Route Engine graph manifest validation." >&2
+  return 1
+}
+
+route_engine_image_graph_manifest_sha() {
+  docker image inspect --format '{{ index .Config.Labels "org.clever-route.graph-manifest-sha" }}' "$ROUTE_ENGINE_IMAGE"
+}
+
+route_engine_host_graph_manifest_sha() {
+  local graph_dir="$1"
+  local manifest_file
+  manifest_file="$(mktemp ".deploy/route-engine-graph-manifest.XXXXXX")"
+  find "$graph_dir" -maxdepth 1 -type f -name '*.parquet' -print | sort | while IFS= read -r graph_file; do
+    route_ops_sha256 "$graph_file" | awk -v name="$(basename "$graph_file")" '{ print $1 "  routing_engine/v7_out/parquet/" name }'
+  done > "$manifest_file"
+  route_ops_sha256 "$manifest_file" | awk '{ print $1 }'
+  rm -f "$manifest_file"
+}
+
+validate_route_engine_graph_artifacts() {
+  local expected_manifest_sha graph_dir graph_files actual_manifest_sha lfs_pointer_file
+  expected_manifest_sha="$1"
+  graph_dir="${ROUTE_ENGINE_GRAPH_HOST_DIR:-/srv/clever-route-server/data/route-engine/parquet}"
+  if ! [[ "$expected_manifest_sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    echo "ROUTE_ENGINE_IMAGE must carry org.clever-route.graph-manifest-sha; got: ${expected_manifest_sha:-unset}" >&2
+    exit 65
+  fi
+  if [ ! -d "$graph_dir" ]; then
+    echo "Route Engine graph directory is missing: ${graph_dir}" >&2
+    exit 66
+  fi
+  graph_files="$(find "$graph_dir" -maxdepth 1 -type f -name '*.parquet' -print | sort)"
+  if [ -z "$graph_files" ]; then
+    echo "Route Engine graph directory has no parquet artifacts: ${graph_dir}" >&2
+    exit 66
+  fi
+  lfs_pointer_file="$(while IFS= read -r graph_file; do
+    if head -n 1 "$graph_file" 2>/dev/null | grep -q '^version https://git-lfs.github.com/spec/v1'; then
+      printf '%s\n' "$graph_file"
+      break
+    fi
+  done <<EOF_GRAPH_FILES
+$graph_files
+EOF_GRAPH_FILES
+)"
+  if [ -n "$lfs_pointer_file" ]; then
+    echo "Route Engine graph artifact is still a Git LFS pointer, not parquet data: ${lfs_pointer_file}" >&2
+    exit 66
+  fi
+  actual_manifest_sha="$(route_engine_host_graph_manifest_sha "$graph_dir")"
+  if [ "$actual_manifest_sha" != "$expected_manifest_sha" ]; then
+    echo "Route Engine graph manifest mismatch for ${graph_dir}: expected=${expected_manifest_sha} actual=${actual_manifest_sha}" >&2
+    exit 66
+  fi
+  echo "Route Engine graph artifacts verified: dir=${graph_dir} manifest=${expected_manifest_sha}"
+}
+
+smoke_route_engine_from_runtime_network() {
+  local image_env_file
+  image_env_file="$1"
+  echo "Smoking route_engine from the delivery-api runtime network."
+  route_ops_compose "$image_env_file" run --rm --no-deps delivery-api node - <<'NODE'
+const baseUrl = (process.env.ROUTE_ENGINE_BASE_URL || 'http://route-engine:8080').replace(/\/+$/, '');
+const token = process.env.ROUTE_ENGINE_INTERNAL_TOKEN || '';
+if (!token) throw new Error('ROUTE_ENGINE_INTERNAL_TOKEN is missing in delivery-api runtime env');
+const response = await fetch(`${baseUrl}/readyz`, { headers: { 'X-Request-Id': 'route-engine-rollback-smoke-readyz' } });
+const payload = await response.json();
+if (!response.ok || payload.service !== 'route_engine' || payload.ready !== true || payload.external_calls !== false) {
+  throw new Error(`route_engine rollback ready smoke failed: ${response.status} ${JSON.stringify(payload)}`);
+}
+console.log(JSON.stringify({ service: payload.service, ready: payload.ready, graph: payload.graph?.status, externalCalls: payload.external_calls }));
+NODE
+}
+
+ensure_route_engine() {
+  local image_env_file route_engine_revision route_engine_role route_engine_graph_manifest_sha
+  image_env_file="$1"
+  if ! route_engine_configured; then
+    echo "route_engine disabled in infra/env/delivery-api.env; skipping route_engine service activation."
+    return 0
+  fi
+
+  validate_route_engine_image
+  echo "Ensuring route_engine worker service is attached to the durable clever-route compose project."
+  route_engine_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ROUTE_ENGINE_IMAGE")"
+  route_engine_role="$(docker image inspect --format '{{ index .Config.Labels "org.clever-route.image-role" }}' "$ROUTE_ENGINE_IMAGE")"
+  route_engine_graph_manifest_sha="$(route_engine_image_graph_manifest_sha)"
+  test "$route_engine_revision" = "${ROUTE_ENGINE_IMAGE##*:}"
+  test "$route_engine_role" = "route-engine-worker"
+  validate_route_engine_graph_artifacts "$route_engine_graph_manifest_sha"
+  route_ops_compose "$image_env_file" --profile route-engine up -d --no-build route-engine
+  smoke_route_engine_from_runtime_network "$image_env_file"
+}
+
+stop_route_engine_if_disabled() {
+  local image_env_file
+  image_env_file="$1"
+  if route_engine_configured; then
+    return 0
+  fi
+
+  echo "Stopping route_engine because ROUTE_ENGINE_BASE_URL is disabled in infra/env/delivery-api.env."
+  route_ops_compose "$image_env_file" --profile route-engine stop route-engine
 }
 
 smoke_route_ops_osrm_url() {
@@ -319,8 +472,10 @@ restore_current() {
     echo "Rollback failed; restoring pre-rollback current image metadata." >&2
     load_image_env_file .deploy/rollback-from-image.env
     if [ "$ROUTE_OPS_ROLLBACK_SERVICE_MUTATED" = "true" ]; then
+      ensure_route_engine .deploy/rollback-from-image.env || true
       ensure_route_ops_osrm .deploy/rollback-from-image.env || true
       route_ops_compose .deploy/rollback-from-image.env up -d --no-build --force-recreate --no-deps delivery-api || true
+      stop_route_engine_if_disabled .deploy/rollback-from-image.env || true
       stop_route_ops_osrm_if_disabled .deploy/rollback-from-image.env || true
       route_ops_compose .deploy/rollback-from-image.env up -d --no-build --force-recreate --no-deps caddy || true
     fi
@@ -345,20 +500,30 @@ CURRENT_PRISMA_SCHEMA_SHA="$(grep '^PRISMA_SCHEMA_SHA=' .deploy/rollback-from-im
 test -n "$CURRENT_PRISMA_SCHEMA_SHA"
 test "$CURRENT_PRISMA_SCHEMA_SHA" = "$PRISMA_SCHEMA_SHA"
 
-route_ops_compose .deploy/candidate-image.env pull route-ops-web-static delivery-api delivery-api-migrate
+route_ops_compose .deploy/candidate-image.env --profile route-engine pull route-ops-web-static delivery-api delivery-api-migrate route-engine
 runtime_role="$(docker image inspect --format '{{ index .Config.Labels "org.clever-route.image-role" }}' "$DELIVERY_API_IMAGE")"
 migrate_role="$(docker image inspect --format '{{ index .Config.Labels "org.clever-route.image-role" }}' "$DELIVERY_API_MIGRATE_IMAGE")"
 test "$runtime_role" = "runtime"
 test "$migrate_role" = "migrate"
 static_role="$(docker image inspect --format '{{ index .Config.Labels "org.clever-route.image-role" }}' "$ROUTE_OPS_WEB_STATIC_IMAGE")"
 test "$static_role" = "route-ops-web-static"
+route_engine_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ROUTE_ENGINE_IMAGE")"
+route_engine_role="$(docker image inspect --format '{{ index .Config.Labels "org.clever-route.image-role" }}' "$ROUTE_ENGINE_IMAGE")"
+route_engine_graph_manifest_sha="$(route_engine_image_graph_manifest_sha)"
+test "$route_engine_revision" = "${ROUTE_ENGINE_IMAGE##*:}"
+test "$route_engine_role" = "route-engine-worker"
+if route_engine_configured; then
+  validate_route_engine_graph_artifacts "$route_engine_graph_manifest_sha"
+fi
 docker run --rm "$DELIVERY_API_MIGRATE_IMAGE" sh -lc 'test -f apps/delivery-api/prisma/schema.prisma && npm --prefix apps/delivery-api exec -- prisma --version'
 ROUTE_OPS_ROLLBACK_STATIC_ARTIFACT_STAGED="true"
 route_ops_compose .deploy/candidate-image.env up --no-build --force-recreate route-ops-web-static
 route_ops_compose .deploy/candidate-image.env run --rm delivery-api-migrate
+ensure_route_engine .deploy/candidate-image.env
 ensure_route_ops_osrm .deploy/candidate-image.env
 ROUTE_OPS_ROLLBACK_SERVICE_MUTATED="true"
 route_ops_compose .deploy/candidate-image.env up -d --no-build --force-recreate --no-deps delivery-api
+stop_route_engine_if_disabled .deploy/candidate-image.env
 stop_route_ops_osrm_if_disabled .deploy/candidate-image.env
 ensure_route_ops_ingress
 
@@ -369,8 +534,8 @@ node scripts/smoke-route-ops-production.mjs
 
 mv .deploy/current-image.env .deploy/previous-image.env
 mv .deploy/candidate-image.env .deploy/current-image.env
-printf '{"ts":"%s","rollbackTo":"%s","deliveryApiImage":"%s","migrateImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","prismaSchemaSha":"%s","osrmEnabled":%s}\n' \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${IMAGE_TAG:-unknown}" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" "${ROUTE_OPS_WEB_STATIC_IMAGE:-}" "${ROUTE_OPS_WEB_STATIC_VOLUME:-}" "$PRISMA_SCHEMA_SHA" "$(route_ops_osrm_enabled_json)" >> .deploy/deploy-history.jsonl
+printf '{"ts":"%s","rollbackTo":"%s","deliveryApiImage":"%s","migrateImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","routeEngineImage":"%s","prismaSchemaSha":"%s","routeEngineEnabled":%s,"osrmEnabled":%s}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${IMAGE_TAG:-unknown}" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" "${ROUTE_OPS_WEB_STATIC_IMAGE:-}" "${ROUTE_OPS_WEB_STATIC_VOLUME:-}" "${ROUTE_ENGINE_IMAGE:-}" "$PRISMA_SCHEMA_SHA" "$(route_engine_enabled_json)" "$(route_ops_osrm_enabled_json)" >> .deploy/deploy-history.jsonl
 release_deploy_lock
 trap - EXIT
 echo "Route Ops image rollback promoted: ${IMAGE_TAG:-unknown}"
