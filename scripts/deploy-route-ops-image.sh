@@ -27,7 +27,7 @@ ROUTE_OPS_RUNTIME_IMAGE_REPO="${ROUTE_OPS_RUNTIME_IMAGE_REPO:-ghcr.io/evnsolutio
 ROUTE_OPS_MIGRATE_IMAGE_REPO="${ROUTE_OPS_MIGRATE_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-delivery-api-migrate}"
 ROUTE_OPS_WEB_STATIC_IMAGE_REPO="${ROUTE_OPS_WEB_STATIC_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-route-ops-web-static}"
 ROUTE_ENGINE_IMAGE_REPO="${ROUTE_ENGINE_IMAGE_REPO:-ghcr.io/evnsolution/route-engine-worker}"
-ROUTE_ENGINE_IMAGE="${ROUTE_ENGINE_IMAGE:-${ROUTE_ENGINE_IMAGE_REPO}:7372a4aea9483a58ec8fb5ccb582ee8f15a9df35}"
+ROUTE_ENGINE_IMAGE="${ROUTE_ENGINE_IMAGE:-${ROUTE_ENGINE_IMAGE_REPO}:c8221cdb4004a75fb3eca7cc14efbbc3b217f6e6}"
 ROUTE_ENGINE_GRAPH_HOST_DIR="${ROUTE_ENGINE_GRAPH_HOST_DIR:-/srv/clever-route-server/data/route-engine/parquet}"
 ROUTE_OPS_WEB_STATIC_IMAGE="${ROUTE_OPS_WEB_STATIC_IMAGE:-${ROUTE_OPS_WEB_STATIC_IMAGE_REPO}:${IMAGE_TAG}}"
 ROUTE_OPS_WEB_STATIC_VOLUME="${ROUTE_OPS_WEB_STATIC_VOLUME:-clever-route-route-ops-web-static-${IMAGE_TAG}}"
@@ -639,15 +639,18 @@ EOF_GRAPH_FILES
 }
 
 smoke_route_engine_from_runtime_network() {
-  local image_env_file ready_timeout_ms solve_timeout_ms
+  local image_env_file ready_timeout_ms warmup_timeout_ms solve_timeout_ms
   image_env_file="$1"
   ready_timeout_ms="${ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS:-5000}"
+  warmup_timeout_ms="${ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS:-180000}"
   solve_timeout_ms="${ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS:-120000}"
-  echo "Smoking route_engine from the delivery-api runtime network: readyTimeoutMs=${ready_timeout_ms} solveTimeoutMs=${solve_timeout_ms}."
+  echo "Smoking route_engine from the delivery-api runtime network: readyTimeoutMs=${ready_timeout_ms} warmupTimeoutMs=${warmup_timeout_ms} solveTimeoutMs=${solve_timeout_ms}."
   ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS="$ready_timeout_ms" \
+  ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS="$warmup_timeout_ms" \
   ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS="$solve_timeout_ms" \
     route_ops_compose "$image_env_file" run --rm --no-deps \
       -e ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS \
+      -e ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS \
       -e ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS \
       delivery-api node - <<'NODE'
 const baseUrl = (process.env.ROUTE_ENGINE_BASE_URL || 'http://route-engine:8080').replace(/\/+$/, '');
@@ -660,6 +663,7 @@ const positiveInteger = (name, fallback) => {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 };
 const readyTimeoutMs = positiveInteger('ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS', 5000);
+const warmupTimeoutMs = positiveInteger('ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS', 180000);
 const solveTimeoutMs = positiveInteger('ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS', 120000);
 const fetchWithTimeout = async (url, options, timeoutMs, label) => {
   const controller = new AbortController();
@@ -708,7 +712,28 @@ for (let attempt = 1; attempt <= 30; attempt += 1) {
 if (!readyResponse?.ok || ready?.service !== 'route_engine' || ready?.ready !== true || ready?.external_calls !== false) {
   throw new Error(`route_engine ready smoke failed after readiness wait: ${lastReadyError?.message || 'unknown error'}`);
 }
-console.log(JSON.stringify({ service: ready.service, ready: ready.ready, graph: ready.graph?.status, solveTimeoutMs }));
+console.log(JSON.stringify({ service: ready.service, ready: ready.ready, graph: ready.graph?.status, warmupTimeoutMs, solveTimeoutMs }));
+
+const warmupResponse = await fetchWithTimeout(`${baseUrl}/internal/warmup`, {
+  method: 'POST',
+  headers: {
+    Authorization: `Bearer ${token}`,
+    'X-Request-Id': 'route-engine-prod-smoke-warmup-20260609',
+  },
+}, warmupTimeoutMs, 'route_engine warmup smoke');
+const warmed = await warmupResponse.json();
+if (!warmupResponse.ok || warmed.status !== 'warmed' || warmed.engine?.name !== 'route_engine' || warmed.engine?.external_calls !== false) {
+  throw new Error(`route_engine warmup smoke failed: ${warmupResponse.status} ${JSON.stringify(warmed)}`);
+}
+console.log(JSON.stringify({
+  service: ready.service,
+  ready: ready.ready,
+  graph: ready.graph?.status,
+  warmupStatus: warmed.status,
+  warmupElapsedMs: Math.round(warmed.warmup?.elapsed_ms || 0),
+  cacheExists: warmed.warmup?.cache_exists === true,
+  externalCalls: warmed.engine.external_calls,
+}));
 
 const solveResponse = await fetchWithTimeout(`${baseUrl}/v1/solve`, {
   method: 'POST',

@@ -30,7 +30,7 @@ Production execution is **not automatic**. The workflow exists so a maintainer c
   - `publish_evidence_url`: successful Route Ops publish run URL.
 - `route_engine` is not built by this repository's publish workflow. The host
   wrapper derives the pinned worker image
-  `ROUTE_ENGINE_IMAGE=ghcr.io/evnsolution/route-engine-worker:7372a4aea9483a58ec8fb5ccb582ee8f15a9df35`
+  `ROUTE_ENGINE_IMAGE=ghcr.io/evnsolution/route-engine-worker:c8221cdb4004a75fb3eca7cc14efbbc3b217f6e6`
   and the required graph mount
   `ROUTE_ENGINE_GRAPH_HOST_DIR=/srv/clever-route-server/data/route-engine/parquet`
   unless an operator deliberately overrides them from a host-local source.
@@ -346,7 +346,8 @@ Pin the reviewed `DocumentVersion` in GitHub variable `SSM_ROUTE_OPS_DOCUMENT_VE
   if unset, stages the `route-ops-web-static` artifact into a SHA-scoped named
   volume, validates the mounted `route_engine` graph parquet manifest against
   the worker image label, smokes `route_engine` from a one-off `delivery-api`
-  runtime container with bounded client-side timeouts, and only then recreates
+  runtime container with bounded client-side timeouts, including authenticated
+  `/internal/warmup` before the solve smoke, and only then recreates
   `delivery-api` to switch mounts;
 - treats `EXIT`, `INT`, and `TERM` as cleanup paths: if the deploy is interrupted
   before `delivery-api` promotion, the wrapper restores the pre-deploy host env
@@ -476,12 +477,15 @@ Before cleanup, verify:
 - authenticated smoke passes for `/admin/ui/app`, `/admin/ui/app/orders`, `/admin/ui/app/drivers`, `/admin/ui/app/api/bootstrap`, `/admin/ui/app/api/drivers`, vendor assets, CSP/map config;
 - OSRM road geometry works when enabled or returns null/empty geometry on failure; no fake straight line.
 - `route_engine` smoke from the `delivery-api` runtime network reaches
-  `http://route-engine:8080/readyz`, then posts a non-customer
+  `http://route-engine:8080/readyz`, posts authenticated `POST /internal/warmup`
+  to build the road graph V8 router cache, then posts a non-customer
   `POST /v1/solve` request with two smoke stops and verifies `status=solved`,
   `engine.name=route_engine`, `external_calls=false`, and positive
   distance/duration. The readiness fetch timeout defaults to 5 seconds per
-  attempt, and the solve smoke timeout defaults to 120 seconds plus a 5-second
-  response guard. Override only with `ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS` or
+  attempt, the warmup timeout defaults to 180 seconds, and the solve smoke
+  timeout defaults to 120 seconds plus a 5-second response guard. Override only
+  with `ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS`,
+  `ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS`, or
   `ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS` when a reviewed production incident
   requires it.
 
@@ -658,9 +662,10 @@ On the first production activation, `deploy-route-ops-image.sh` backs up
 one-off `delivery-api` container. If any graph or smoke check fails, it restores
 the pre-deploy env file and does not promote `.deploy/current-image.env`.
 
-The graph smoke is non-customer: it calls `/readyz` and `POST /v1/solve` with a
-fixed Toronto-area two-stop payload, expects `external_calls=false`, and verifies
-positive route distance/duration before the public Route Ops smoke runs. A smoke
-timeout is a failed deploy, not a degraded success; do not retry production until
-the host env and `route-engine` service state have been checked against the
-currently promoted `.deploy/current-image.env`.
+The graph smoke is non-customer: it calls `/readyz`, authenticated
+`POST /internal/warmup`, and `POST /v1/solve` with a fixed Toronto-area two-stop
+payload, expects `external_calls=false`, and verifies positive route
+distance/duration before the public Route Ops smoke runs. A smoke timeout is a
+failed deploy, not a degraded success; do not retry production until the host env
+and `route-engine` service state have been checked against the currently
+promoted `.deploy/current-image.env`.

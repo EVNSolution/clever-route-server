@@ -170,7 +170,7 @@ case "${1:-}" in
     if [[ "$args" == *"run --rm delivery-api-migrate"* ]] && [ "${FAKE_MIGRATE_FAIL:-0}" = "1" ]; then
       exit 18
     fi
-    if [[ "$args" == *"run --rm --no-deps"* && "$args" == *"ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS"* && "$args" == *"delivery-api node"* ]] && [ "${FAKE_ROUTE_ENGINE_SMOKE_FAIL:-0}" = "1" ]; then
+    if [[ "$args" == *"run --rm --no-deps"* && "$args" == *"ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS"* && "$args" == *"ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS"* && "$args" == *"delivery-api node"* ]] && [ "${FAKE_ROUTE_ENGINE_SMOKE_FAIL:-0}" = "1" ]; then
       exit 19
     fi
     ;;
@@ -306,8 +306,8 @@ run_success_case() {
   grep -q "ROUTE_OPS_WEB_STATIC_VOLUME=${CURRENT_STATIC_VOLUME}" "$tmp/.deploy/previous-image.env"
   grep -q -- "-p clever-route" "$tmp/state/compose.log"
   grep -q -- "--profile route-engine pull route-ops-web-static delivery-api delivery-api-migrate route-engine" "$tmp/state/compose.log"
-  grep -q -- "-e ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS -e ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS delivery-api node" "$tmp/state/compose.log"
-  grep -q "Smoking route_engine from the delivery-api runtime network: readyTimeoutMs=5000 solveTimeoutMs=120000" "$tmp/output.log"
+  grep -q -- "-e ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS -e ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS -e ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS delivery-api node" "$tmp/state/compose.log"
+  grep -q "Smoking route_engine from the delivery-api runtime network: readyTimeoutMs=5000 warmupTimeoutMs=180000 solveTimeoutMs=120000" "$tmp/output.log"
   grep -q "up --no-build --force-recreate route-ops-web-static" "$tmp/state/compose.log"
   grep -q "up -d --no-build --force-recreate --no-deps caddy" "$tmp/state/compose.log"
   if grep -q "compose --env-file" "$tmp/state/docker.log"; then

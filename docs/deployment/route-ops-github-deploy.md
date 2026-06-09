@@ -65,7 +65,7 @@ export DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api:$
 export DELIVERY_API_MIGRATE_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:${IMAGE_TAG}
 export ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static:${IMAGE_TAG}
 export ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-${IMAGE_TAG}
-export ROUTE_ENGINE_IMAGE=ghcr.io/evnsolution/route-engine-worker:7372a4aea9483a58ec8fb5ccb582ee8f15a9df35
+export ROUTE_ENGINE_IMAGE=ghcr.io/evnsolution/route-engine-worker:c8221cdb4004a75fb3eca7cc14efbbc3b217f6e6
 export ROUTE_ENGINE_GRAPH_HOST_DIR=/srv/clever-route-server/data/route-engine/parquet
 export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
 export ROUTE_OPS_SMOKE_BASE_URL=https://clever-route.cleversystem.ai
@@ -91,10 +91,13 @@ The deploy script prepares `.deploy/candidate-image.env`, prunes stale Route Ops
 By default it fails if public OpenFreeMap hosts appear in CSP. Set `ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP=true` only when explicitly allowlisted.
 
 The production deploy script also performs a non-customer `route_engine` smoke
-before `delivery-api` activation: `/readyz` plus `POST /v1/solve` against
-`http://route-engine:8080` from a one-off `delivery-api` runtime container. It
-expects `engine.name=route_engine`, `external_calls=false`, two smoke stops, and
-positive distance/duration.
+before `delivery-api` activation: `/readyz`, authenticated `POST
+/internal/warmup`, then `POST /v1/solve` against `http://route-engine:8080` from
+a one-off `delivery-api` runtime container. The warmup call forces the road graph
+V8 router cache to be built before the solve smoke, avoiding production deploys
+that pass readiness but hang on the first cold solve. The smoke expects
+`engine.name=route_engine`, `external_calls=false`, two smoke stops, and positive
+distance/duration.
 
 ## Rollback
 
