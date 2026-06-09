@@ -68,6 +68,8 @@ services:
     image: ${ROUTE_ENGINE_IMAGE:-ghcr.io/evnsolution/route-engine-worker:disabled}
     env_file:
       - ../env/delivery-api.env
+    environment:
+      ROUTE_ENGINE_CACHE_DIR: /cache/route_engine
     expose:
       - "8080"
     profiles:
@@ -75,6 +77,7 @@ services:
     restart: unless-stopped
     volumes:
       - ${ROUTE_ENGINE_GRAPH_HOST_DIR:-/srv/clever-route-server/data/route-engine/parquet}:/app/routing_engine/v7_out/parquet:ro
+      - route-engine-cache:/cache/route_engine
 
   postgres:
     image: postgres:17-bookworm
@@ -116,3 +119,4 @@ volumes:
   caddy-config:
   route-ops-web-static:
     name: ${ROUTE_OPS_WEB_STATIC_VOLUME:?ROUTE_OPS_WEB_STATIC_VOLUME is required}
+  route-engine-cache:

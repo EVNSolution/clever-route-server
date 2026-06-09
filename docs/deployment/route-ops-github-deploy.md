@@ -65,7 +65,7 @@ export DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api:$
 export DELIVERY_API_MIGRATE_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:${IMAGE_TAG}
 export ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static:${IMAGE_TAG}
 export ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-${IMAGE_TAG}
-export ROUTE_ENGINE_IMAGE=ghcr.io/evnsolution/route-engine-worker:c8221cdb4004a75fb3eca7cc14efbbc3b217f6e6
+export ROUTE_ENGINE_IMAGE=ghcr.io/evnsolution/route-engine-worker:3aa41c5f068b457d6881a0d46922156c43b68f98
 export ROUTE_ENGINE_GRAPH_HOST_DIR=/srv/clever-route-server/data/route-engine/parquet
 export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
 export ROUTE_OPS_SMOKE_BASE_URL=https://clever-route.cleversystem.ai
@@ -74,7 +74,7 @@ export ROUTE_OPS_SMOKE_LOGIN_SECRET=<read locally from host secret manager, neve
 scripts/deploy-route-ops-image.sh
 ```
 
-The deploy script prepares `.deploy/candidate-image.env`, prunes stale Route Ops images before pull, pulls the frontend static, runtime, migrate, and pinned `route_engine` worker images, stages the frontend artifact into a SHA-scoped `ROUTE_OPS_WEB_STATIC_VOLUME`, verifies labels and schema SHA, verifies the host-mounted `route_engine` graph parquet manifest, runs the existing migration command, smokes `route_engine` from the `delivery-api` runtime network, recreates only `delivery-api` to switch to the candidate volume and internal `ROUTE_ENGINE_BASE_URL`, runs authenticated Route Ops smoke, and promotes metadata only after smoke succeeds. On failure before backend recreation, the running backend keeps its previous static volume and the pre-deploy `delivery-api.env` is restored.
+The deploy script prepares `.deploy/candidate-image.env`, prunes stale Route Ops images before pull, pulls the frontend static, runtime, migrate, and pinned `route_engine` worker images, stages the frontend artifact into a SHA-scoped `ROUTE_OPS_WEB_STATIC_VOLUME`, verifies labels and schema SHA, verifies the host-mounted `route_engine` graph parquet manifest, runs the existing migration command, smokes `route_engine` from the `delivery-api` runtime network, recreates only `delivery-api` to switch to the candidate volume and internal `ROUTE_ENGINE_BASE_URL`, runs authenticated Route Ops smoke, and promotes metadata only after smoke succeeds. The `route-engine-cache` Docker volume is mounted at `/cache/route_engine` so completed V8 cache builds survive service recreation. On failure before backend recreation, the running backend keeps its previous static volume and the pre-deploy `delivery-api.env` is restored.
 
 ## Smoke coverage
 
