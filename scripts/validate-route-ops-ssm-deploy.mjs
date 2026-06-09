@@ -19,6 +19,7 @@ const imageRollbackPath = 'scripts/rollback-route-ops-image.sh';
 const composePath = 'infra/compose/docker-compose.prod.yml';
 const ssmDocumentPath = 'infra/ssm/route-ops-deploy-document.json';
 const osrmHelperPath = 'scripts/osrm-ontario.sh';
+const deployControlBundlePath = 'scripts/route-ops-deploy-control-bundle.sh';
 const docPath = 'docs/deployment/route-ops-ssm-deploy.md';
 const githubDocPath = 'docs/deployment/route-ops-github-deploy.md';
 const osrmDocPath = 'docs/deployment/route-ops-osrm-ontario.md';
@@ -32,6 +33,7 @@ const imageRollback = read(imageRollbackPath);
 const compose = read(composePath);
 const ssmDocument = read(ssmDocumentPath);
 const osrmHelper = read(osrmHelperPath);
+const deployControlBundle = read(deployControlBundlePath);
 const smoke = read('scripts/smoke-route-ops-production.mjs');
 const doc = read(docPath);
 const githubDoc = read(githubDocPath);
@@ -50,6 +52,63 @@ function assertNoImplicitProdCompose(path, text) {
   for (const offender of offenders) {
     assert(false, `${path}:${offender.lineNumber} must not use implicit compose project for production compose file: ${offender.line}`);
   }
+}
+
+function quotedStringValues(block) {
+  return [...block.matchAll(/'([^']+)'/g)].map((match) => match[1]);
+}
+
+function assertEveryPythonListMatches(path, text, variableName, expectedValues) {
+  const pattern = new RegExp(`${variableName} = \\[([\\s\\S]*?)\\]`, 'g');
+  const blocks = [...text.matchAll(pattern)].map((match) => match[1]);
+  assert(blocks.length > 0, `${path} must declare ${variableName}`);
+  for (const [index, block] of blocks.entries()) {
+    const actualValues = quotedStringValues(block);
+    assert(
+      JSON.stringify(actualValues) === JSON.stringify(expectedValues),
+      `${path} ${variableName} block ${index + 1} must match the canonical deploy-control contract; got ${JSON.stringify(actualValues)}`,
+    );
+  }
+}
+
+function assertEveryPythonSetMatches(path, text, variableName, expectedValues) {
+  const pattern = new RegExp(`${variableName} = \\{([\\s\\S]*?)\\}`, 'g');
+  const blocks = [...text.matchAll(pattern)].map((match) => match[1]);
+  assert(blocks.length > 0, `${path} must declare ${variableName}`);
+  const expectedSorted = [...expectedValues].sort();
+  for (const [index, block] of blocks.entries()) {
+    const actualSorted = quotedStringValues(block).sort();
+    assert(
+      JSON.stringify(actualSorted) === JSON.stringify(expectedSorted),
+      `${path} ${variableName} block ${index + 1} must match the canonical deploy-control contract; got ${JSON.stringify(actualSorted)}`,
+    );
+  }
+}
+
+
+function stepBlock(text, stepName) {
+  const start = text.indexOf(`      - name: ${stepName}\n`);
+  if (start === -1) return '';
+  const rest = text.slice(start + 1);
+  const next = rest.search(/\n      - name: /);
+  return next === -1 ? text.slice(start) : text.slice(start, start + 1 + next);
+}
+
+function assertHeredocMatches(path, command, heredocPath, expectedValues) {
+  const pattern = new RegExp(`cat > "\\$tmp_dir/${heredocPath}" <<'FILES'\\n([\\s\\S]*?)\\nFILES`);
+  const match = command.match(pattern);
+  if (!match) {
+    assert(false, `${path} must define ${heredocPath} heredoc allowlist`);
+    return;
+  }
+  const actualValues = match[1]
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  assert(
+    JSON.stringify(actualValues) === JSON.stringify(expectedValues),
+    `${path} ${heredocPath} heredoc must match the canonical deploy-control contract; got ${JSON.stringify(actualValues)}`,
+  );
 }
 
 assert(/workflow_dispatch:\n/.test(deploy), 'deploy workflow must be workflow_dispatch');
@@ -72,9 +131,11 @@ assert(deploy.includes('/actions/runs/${publish_run_id}'), 'deploy workflow must
 assert(deploy.includes("run.get('conclusion') != 'success'"), 'deploy workflow must require successful publish run evidence');
 assert(deploy.includes("run.get('head_branch') != 'main'"), 'deploy workflow must require publish run on main');
 assert(deploy.includes("head_sha"), 'deploy workflow must require publish run SHA to match image tag');
+assert(deploy.includes('Checkout deploy-control source at image tag'), 'deploy workflow must check out deploy-control source at the image tag before bundling');
+assert(deploy.includes('git checkout --detach "$IMAGE_TAG"'), 'deploy workflow must pin bundled deploy-control files to the image tag commit');
 assert(deploy.includes('AWS-RunShellScript is not allowed'), 'deploy workflow must explicitly reject AWS-RunShellScript document configuration');
 assert(deploy.includes('Prepare deploy control files for custom SSM document'), 'deploy workflow must prepare reviewed deploy-control files before running the host deploy wrapper');
-assert(deploy.includes('deploy_control_files=('), 'deploy workflow must declare an explicit deploy-control file allowlist');
+assert(deploy.includes('scripts/route-ops-deploy-control-bundle.sh bundle-files'), 'deploy workflow must load the reviewed deploy-control file allowlist from the bundle helper');
 const expectedDeployControlFiles = [
   'infra/caddy/Caddyfile',
   'infra/compose/docker-compose.prod.yml',
@@ -82,11 +143,29 @@ const expectedDeployControlFiles = [
   'scripts/rollback-route-ops-image.sh',
   'scripts/ssm-route-ops-deploy.sh',
   'scripts/smoke-route-ops-production.mjs',
+  'scripts/route-ops-deploy-control-bundle.sh',
+];
+const expectedDeployControlTarEntries = ['deploy-control-manifest.json', ...expectedDeployControlFiles].sort();
+const expectedDeployControlManifestKeys = [
+  'schemaVersion',
+  'dryRun',
+  'runId',
+  'commitSha',
+  'imageTag',
+  'prismaSchemaSha',
+  'deliveryApiImage',
+  'deliveryApiMigrateImage',
+  'publishEvidenceUrl',
+  'artifactBucket',
+  'artifactPrefix',
+  'bundleFile',
+  's3Uri',
+  'deployControlFiles',
 ];
 for (const file of expectedDeployControlFiles) {
-  assert(deploy.includes(file), `deploy-control source sync must include ${file}`);
+  assert(deployControlBundle.includes(file), `deploy-control source sync helper must include ${file}`);
 }
-const deployControlListMatch = deploy.match(/deploy_control_files=\(\n(?<body>[\s\S]*?)\n\s*\)/);
+const deployControlListMatch = deployControlBundle.match(/bundle_files\(\) \{\n\s+cat <<'FILES'\n(?<body>[\s\S]*?)\nFILES\n\}/);
 if (deployControlListMatch?.groups?.body) {
   const actualDeployControlFiles = deployControlListMatch.groups.body
     .split('\n')
@@ -99,19 +178,43 @@ if (deployControlListMatch?.groups?.body) {
 } else {
   assert(false, 'deploy-control source sync allowlist block must be parseable');
 }
-assert(deploy.includes('deploy control bundle must not contain secret-like file'), 'deploy-control source sync must reject secret-like paths before bundling');
-assert(deploy.includes('Route Ops deploy control bundle is too large'), 'deploy-control source sync must enforce an inline bundle size ceiling');
-assert(deploy.includes('Route Ops deploy control base64 payload is too large'), 'deploy-control source sync must enforce a custom document parameter size ceiling');
-assert(deploy.includes('DeployControlBundleBase64'), 'deploy workflow must pass deploy-control bundle base64 to the custom SSM document');
-assert(deploy.includes('DeployControlBundleSha'), 'deploy workflow must pass deploy-control bundle SHA to the custom SSM document');
-assert(deploy.includes('GitHubRunId'), 'deploy workflow must pass GitHub run id to the custom SSM document');
+assertEveryPythonListMatches(deployControlBundlePath, deployControlBundle, 'allowed_files', expectedDeployControlFiles);
+assertEveryPythonSetMatches(deployControlBundlePath, deployControlBundle, 'allowed_keys', expectedDeployControlManifestKeys);
+const helperExpectedTarMatch = deployControlBundle.match(/expected = sorted\(\[([\s\S]*?)\]\)/);
+if (helperExpectedTarMatch) {
+  assert(
+    JSON.stringify(quotedStringValues(helperExpectedTarMatch[1]).sort()) === JSON.stringify(expectedDeployControlTarEntries),
+    'deploy-control helper tar entry allowlist must match the canonical deploy-control contract',
+  );
+} else {
+  assert(false, 'deploy-control helper must declare expected tar entries');
+}
+assert(deployControlBundle.includes('refusing secret-like deploy-control path'), 'deploy-control source sync helper must reject secret-like paths before bundling');
+assert(deploy.includes('ROUTE_OPS_DEPLOY_CONTROL_BUCKET: route-ops-artifacts-902837199612-ap-northeast-2'), 'deploy workflow must select the Route Ops specific artifact bucket');
+assert(deploy.includes('ROUTE_OPS_DEPLOY_CONTROL_PREFIX: artifacts/route-ops/prod/deploy-control'), 'deploy workflow must use the approved Route Ops deploy-control prefix');
+assert(deploy.includes('scripts/route-ops-deploy-control-bundle.sh validate-source-file "$file"'), 'deploy workflow must reject source symlinks/hardlinks/non-regular files before staging');
+assert(deploy.includes('aws s3 cp "$BUNDLE_PATH" "$S3_URI" --sse AES256 --no-progress'), 'deploy workflow must upload the deploy-control bundle to S3 with SSE-S3');
+assert(deploy.includes('DeployControlBundleS3Uri'), 'deploy workflow must pass deploy-control bundle S3 URI to the custom SSM document');
+assert(deploy.includes('DeployControlBundleSha256'), 'deploy workflow must pass deploy-control bundle SHA256 to the custom SSM document');
+assert(!deploy.includes('DeployControlBundleBase64'), 'deploy workflow must not pass deploy-control bundle base64 through SSM');
+assert(!deploy.includes('base64 -w0'), 'deploy workflow must not base64-encode the deploy-control bundle for SSM');
+assert(deploy.includes('dry_run'), 'deploy workflow must expose dry-run validation mode');
+assert(deploy.includes("'dryRun': dry_run == 'true'"), 'deploy workflow must write dry-run state into the deploy-control manifest');
+assert(deploy.includes('ssmParameterChars DeployControlBundleS3Uri'), 'deploy workflow must log SSM parameter sizes for the reduced parameters');
 assert(deploy.includes('/tmp/route-ops-deploy-parameters.json'), 'deploy workflow must prepare one parameter file for the custom SSM document');
 assert(deploy.includes('--parameters file:///tmp/route-ops-deploy-parameters.json'), 'custom deploy SendCommand must use the prepared parameter file');
-assert(deploy.indexOf('Prepare deploy control files for custom SSM document') > deploy.indexOf('Verify SSM target resolves to one online managed node'), 'deploy-control source prep must run after the exact online target is resolved');
-assert(deploy.indexOf('Prepare deploy control files for custom SSM document') < deploy.indexOf('Reconcile Route Ops Caddy ingress'), 'deploy-control source prep must run before Caddy reconcile');
+assert(deploy.includes('Upload deploy-control bundle artifact'), 'deploy workflow must upload the deploy-control bundle only after AWS credentials are configured');
+assert(deploy.indexOf('Prepare deploy control files for custom SSM document') < deploy.indexOf('Configure AWS credentials through OIDC'), 'deploy-control source prep must run before AWS credentials are configured');
+assert(deploy.indexOf('Upload deploy-control bundle artifact') > deploy.indexOf('Resolve deploy-control artifact bucket'), 'deploy-control bundle upload must run after the artifact bucket is resolved with AWS identity evidence');
+assert(deploy.indexOf('Upload deploy-control bundle artifact') < deploy.indexOf('Verify SSM target resolves to one online managed node'), 'deploy-control bundle upload must happen before SSM dry-run target validation');
+assert(deploy.indexOf('Upload deploy-control bundle artifact') < deploy.indexOf('Send custom SSM deploy command'), 'deploy-control bundle upload must run before the custom deploy document');
 assert(deploy.indexOf('Prepare deploy control files for custom SSM document') < deploy.indexOf('Send custom SSM deploy command'), 'deploy-control source prep must run before the custom deploy document');
+const uploadStep = stepBlock(deploy, 'Upload deploy-control bundle artifact');
+assert(!uploadStep.includes('scripts/route-ops-deploy-control-bundle.sh'), 'deploy-control upload step must not execute deploy-control source helper after AWS credentials are configured');
+assert(uploadStep.includes('aws s3 cp "$BUNDLE_PATH" "$S3_URI" --sse AES256 --no-progress'), 'deploy-control upload step must only upload the prebuilt bundle to S3 with SSE-S3');
 assert(deploy.includes('Reconcile Route Ops Caddy ingress'), 'deploy workflow must reconcile Route Ops Caddy ingress before deploy smoke');
 assert(deploy.includes("vars.ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT == 'true'"), 'AWS-RunShellScript ingress reconcile must be explicitly opt-in by repository variable');
+assert(deploy.includes("inputs.dry_run == 'false' && vars.ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT == 'true'"), 'AWS-RunShellScript ingress reconcile must be disabled during dry-run validation');
 assert(deploy.includes('--document-name "AWS-RunShellScript"'), 'deploy workflow must use a fixed AWS-RunShellScript command only for optional ingress reconcile');
 assert(/docker compose -p \\"?\$ROUTE_OPS_COMPOSE_PROJECT_NAME\\"? --env-file \.deploy\/current-image\.env -f infra\/compose\/docker-compose\.prod\.yml up -d --no-build --force-recreate --no-deps caddy/.test(deploy), 'ingress reconcile must force-recreate only the Route Ops Caddy service under explicit project');
 assert(deploy.indexOf('Reconcile Route Ops Caddy ingress') < deploy.indexOf('Send custom SSM deploy command'), 'ingress reconcile must run before the deploy wrapper smoke');
@@ -221,13 +324,44 @@ assert(compose.includes('ROUTE_ENGINE_IMAGE'), 'production compose must accept a
 assert(compose.includes('profiles:') && compose.includes('route-engine'), 'production route_engine service must be profile-gated for explicit activation');
 assert(compose.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'production compose must mount route_engine graph artifacts from an explicit host directory');
 assert(compose.includes('/app/routing_engine/v7_out/parquet:ro'), 'production route_engine graph mount must target the expected read-only parquet path');
-assert(ssmDocument.includes('DeployControlBundleBase64'), 'SSM deploy document must accept the deploy-control source bundle');
-assert(ssmDocument.includes('DeployControlBundleSha'), 'SSM deploy document must accept the deploy-control source bundle SHA');
-assert(ssmDocument.includes('Route Ops source sync bundle SHA mismatch'), 'SSM deploy document must verify deploy-control bundle SHA on the host');
-assert(ssmDocument.includes('Route Ops source sync bundle manifest mismatch'), 'SSM deploy document must verify an exact host manifest');
+const parsedSsmDocument = JSON.parse(ssmDocument);
+const ssmRunCommand = parsedSsmDocument.mainSteps?.[0]?.inputs?.runCommand ?? [];
+assertEveryPythonListMatches(ssmDocumentPath, ssmDocument, 'allowed_files', expectedDeployControlFiles);
+assertEveryPythonSetMatches(ssmDocumentPath, ssmDocument, 'allowed_keys', expectedDeployControlManifestKeys);
+const ssmExpectedTarMatch = ssmDocument.match(/expected = sorted\(\[([\s\S]*?)\]\)/);
+if (ssmExpectedTarMatch) {
+  assert(
+    JSON.stringify(quotedStringValues(ssmExpectedTarMatch[1]).sort()) === JSON.stringify(expectedDeployControlTarEntries),
+    'SSM document tar entry allowlist must match the canonical deploy-control contract',
+  );
+} else {
+  assert(false, 'SSM document must declare expected tar entries');
+}
+assert(
+  JSON.stringify(Object.keys(parsedSsmDocument.parameters).sort()) === JSON.stringify(['DeployControlBundleS3Uri', 'DeployControlBundleSha256'].sort()),
+  'SSM deploy document parameters must be reduced to DeployControlBundleS3Uri and DeployControlBundleSha256',
+);
+assert(ssmRunCommand.includes('aws s3 cp "$SSM_DeployControlBundleS3Uri" "$bundle_path" --no-progress'), 'SSM deploy document must download the deploy-control bundle from S3');
+assert(ssmDocument.includes('Route Ops deploy-control bundle SHA256 mismatch'), 'SSM deploy document must verify deploy-control bundle SHA256 on the host');
+assert(ssmDocument.includes('Route Ops deploy-control bundle manifest mismatch'), 'SSM deploy document must verify an exact host manifest');
+assert(ssmDocument.includes('manifest validation result=passed'), 'SSM deploy document must log manifest validation success');
+assert(ssmDocument.includes('dry-run complete') && ssmDocument.includes('no production files synced'), 'SSM deploy document must have a no-mutation dry-run exit');
 assert(ssmDocument.includes('.deploy/source-backups'), 'SSM deploy document must back up host files before replacement');
-assert(ssmDocument.includes('Refusing to sync secret-like deploy control path'), 'SSM deploy document must reject secret-like deploy-control paths on the host');
-assert(ssmDocument.includes('bash -n scripts/deploy-route-ops-image.sh scripts/rollback-route-ops-image.sh scripts/ssm-route-ops-deploy.sh'), 'SSM deploy document must syntax-check synced shell scripts before deploy');
+assert(ssmRunCommand.some((command) => command.includes('python3 - "$tmp_dir/deploy-control-manifest.json" "$SSM_DeployControlBundleS3Uri"')), 'SSM deploy document must inline manifest validation before executing synced files');
+assert(!ssmRunCommand.some((command) => command.includes('bash "$tmp_dir/scripts/route-ops-deploy-control-bundle.sh"')), 'SSM deploy document must not execute helper code from the downloaded bundle before source sync');
+assert(
+  ssmRunCommand.findIndex((command) => command.includes('dry-run complete')) < ssmRunCommand.findIndex((command) => command.includes('mkdir -p "$backup_dir"')),
+  'SSM deploy document dry-run exit must happen before persistent backup directory creation',
+);
+assert(deployControlBundle.includes('refusing secret-like deploy-control path'), 'deploy-control bundle helper must reject secret-like deploy-control paths');
+assert(deployControlBundle.includes('deploy-control source path must not be hardlinked'), 'deploy-control bundle helper must reject hardlinked source files before staging');
+assert(deployControlBundle.includes('deploy-control source path is not a regular file'), 'deploy-control bundle helper must reject source symlinks/non-regular files before staging');
+assert(deployControlBundle.includes('deployControlFiles must exactly match reviewed allowlist'), 'deploy-control bundle helper must validate the manifest allowlist fail-closed');
+assert(deployControlBundle.includes('SHA256 mismatch'), 'deploy-control bundle helper must fail closed on SHA256 mismatch');
+assert(ssmRunCommand.some((command) => command.includes('done < "$tmp_dir/allowed-files"')), 'SSM deploy document must sync only inline allowlisted files after SHA and manifest validation');
+const ssmAllowedFilesCommand = ssmRunCommand.find((command) => command.includes('cat > "$tmp_dir/allowed-files"')) || '';
+assertHeredocMatches(ssmDocumentPath, ssmAllowedFilesCommand, 'allowed-files', expectedDeployControlFiles);
+assert(ssmRunCommand.includes('bash -n scripts/deploy-route-ops-image.sh scripts/rollback-route-ops-image.sh scripts/ssm-route-ops-deploy.sh scripts/route-ops-deploy-control-bundle.sh'), 'SSM deploy document must syntax-check synced shell scripts before deploy');
 assert(ssmDocument.includes('scripts/ssm-route-ops-deploy.sh'), 'SSM deploy document must invoke the reviewed host deploy wrapper after source sync');
 assert(imageRollback.includes('ROUTE_OPS_ROLLBACK_STATIC_ARTIFACT_STAGED'), 'rollback script must track static artifact staging separately from backend mutation');
 assert(imageRollback.includes('validate_loaded_static_artifact_contract .deploy/candidate-image.env'), 'rollback script must semantically validate candidate static image and volume before compose mutation');
@@ -284,10 +418,13 @@ assert(githubDoc.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'GitHub deploy docs mu
 assert(githubDoc.includes('http://route-engine:8080'), 'GitHub deploy docs must document the internal route_engine base URL');
 
 for (const pattern of [
-  'ImageTag.*allowedPattern',
-  'PrismaSchemaSha.*allowedPattern',
-  'RuntimeImage.*allowedPattern',
-  'MigrateImage.*allowedPattern',
+  'DeployControlBundleS3Uri.*allowedPattern',
+  'DeployControlBundleSha256.*allowedPattern',
+  'deploy-control-manifest\\.json',
+  'dryRun',
+  's3:PutObject',
+  's3:GetObject',
+  'route-ops-artifacts-902837199612-ap-northeast-2',
   'route-ops-web-static',
   'clever-route-server-route-ops-web-static:<sha>',
   'ROUTE_OPS_WEB_STATIC_IMAGE',
@@ -300,14 +437,6 @@ for (const pattern of [
   'non-customer.*POST /v1/solve',
   'SHA-scoped',
   'DocumentVersion',
-  'SSM_ImageTag',
-  'SSM_PrismaSchemaSha',
-  'SSM_RuntimeImage',
-  'SSM_MigrateImage',
-  'SSM_PublishEvidence',
-  'DeployControlBundleBase64',
-  'DeployControlBundleSha',
-  'GitHubRunId',
   'AWS-RunShellScript',
   'repo:EVNSolution/clever-route-server:ref:refs/heads/main',
   'ROUTE_OPS_DEPLOY_MIN_FREE_MB',
@@ -329,4 +458,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checked: [deployWorkflowPath, wrapperPath, imageDeployPath, imageRollbackPath, composePath, ssmDocumentPath, osrmHelperPath, docPath, githubDocPath, osrmDocPath, publishWorkflowPath, ciWorkflowPath] }, null, 2));
+console.log(JSON.stringify({ ok: true, checked: [deployWorkflowPath, wrapperPath, deployControlBundlePath, imageDeployPath, imageRollbackPath, composePath, ssmDocumentPath, osrmHelperPath, docPath, githubDocPath, osrmDocPath, publishWorkflowPath, ciWorkflowPath] }, null, 2));

@@ -34,20 +34,30 @@ Production execution is **not automatic**. The workflow exists so a maintainer c
   and the required graph mount
   `ROUTE_ENGINE_GRAPH_HOST_DIR=/srv/clever-route-server/data/route-engine/parquet`
   unless an operator deliberately overrides them from a host-local source.
-- The image tag must be reachable from `origin/main`.
+- The image tag must be reachable from `origin/main`, and the workflow checks out that exact commit before creating the deploy-control bundle so `commitSha`, image tag, and bundled deploy-control files have one provenance.
 - The publish run URL is machine-verified through the GitHub Actions API: repository, workflow, event, conclusion, branch, and SHA must match.
 - The deploy target tag must resolve to exactly one managed node total, that node must be `Online`, and SSM Agent must be version `3.3.2746.0` or later for `ENV_VAR` interpolation support.
 - The workflow sends the command to the resolved instance ID, not back to a mutable tag selector.
 - SSM uses `max-concurrency=1` and `max-errors=0`, and the workflow asserts `Command.TargetCount == 1`.
-- Before the custom deploy document runs the image activation wrapper, the workflow prepares a small reviewed deploy-control bundle and passes it to the same custom SSM document. The host verifies and extracts that bundle inside the custom document before deploy. This keeps the host wrapper, compose file, smoke script, and Caddy config aligned with the image being activated without turning the host directory into a mutable Git checkout or granting `AWS-RunShellScript` as a general source-sync path.
-- If `ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT=true` is deliberately enabled and IAM allows it, the workflow reconciles the Route Ops Caddy ingress on the same resolved instance ID with a fixed no-secret command that force-recreates only the `caddy` service from `/srv/clever-route-server/infra/caddy/Caddyfile`.
+- Before the custom deploy document runs the image activation wrapper, the workflow prepares a reviewed deploy-control bundle, uploads it to S3 under the Route Ops artifact prefix, and passes only `DeployControlBundleS3Uri` plus `DeployControlBundleSha256` to SSM. The host downloads the bundle, verifies SHA-256, validates the exact manifest allowlist, and only then syncs deploy-control files or exits in dry-run mode. This keeps the host wrapper, compose file, smoke script, and Caddy config aligned with the image being activated without turning SSM parameters into file transport or granting `AWS-RunShellScript` as a general source-sync path.
+- If `ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT=true` is deliberately enabled, IAM allows it, and `dry_run=false`, the workflow reconciles the Route Ops Caddy ingress on the same resolved instance ID with a fixed no-secret command that force-recreates only the `caddy` service from `/srv/clever-route-server/infra/caddy/Caddyfile`. Dry validation never runs this production mutation.
 - Logs are redacted status summaries only; command parameters contain no production secrets.
 
-## Deploy-control source sync
+## Deploy-control S3 artifact handoff
 
-The production host currently keeps `/srv/clever-route-server` as a deploy directory, not a live Git checkout. The deploy workflow therefore prepares a narrow source bundle, and the custom SSM deploy document syncs that bundle before invoking the host wrapper so repo-reviewed deploy controls match the image being activated.
+The production host currently keeps `/srv/clever-route-server` as a deploy directory, not a live Git checkout. The deploy workflow therefore prepares a narrow deploy-control bundle, uploads it to S3, and passes only the S3 URI plus SHA-256 digest through the reviewed custom SSM document.
 
-This source sync does **not** add S3, a new EC2 instance, EBS expansion, GitHub secrets, runtime `.env`, Parameter Store payloads, database credentials, or broad `AWS-RunShellScript` permission. It uses the same GitHub OIDC → custom AWS SSM Run Command path and an inline, deterministic tarball containing only these allowlisted files:
+This intentionally avoids using SSM document parameters as file transport. The selected production artifact location is:
+
+```text
+bucket: route-ops-artifacts-902837199612-ap-northeast-2
+prefix: artifacts/route-ops/prod/deploy-control/<github-run-id>/<commit-sha>/
+bundle: route-ops-deploy-control.tar.gz
+```
+
+Rationale: read-only AWS inspection on 2026-06-08 confirmed account `902837199612`, region `ap-northeast-2`, and a Route Ops specific bucket named `route-ops-artifacts-902837199612-ap-northeast-2`. The bucket has public access blocked, default SSE-S3 (`AES256`), and a lifecycle rule for `artifacts/route-ops/prod/deploy-control/` that expires current objects after 90 days, noncurrent versions after 30 days, and aborts incomplete multipart uploads after 7 days. No unrelated existing bucket is reused.
+
+The bundle contains only these reviewed, non-secret deploy-control files plus a non-secret `deploy-control-manifest.json`:
 
 ```text
 infra/caddy/Caddyfile
@@ -56,20 +66,87 @@ scripts/deploy-route-ops-image.sh
 scripts/rollback-route-ops-image.sh
 scripts/ssm-route-ops-deploy.sh
 scripts/smoke-route-ops-production.mjs
+scripts/route-ops-deploy-control-bundle.sh
 ```
+
+The manifest records immutable deploy metadata (`imageTag`, `commitSha`, schema SHA, runtime/migrate image names, publish evidence URL, GitHub run id, S3 URI, dry-run flag) and the exact file allowlist. The workflow checks out `imageTag` before bundling, so `commitSha` and the deploy-control file contents are pinned to the same commit as the image being activated. It must not contain production secrets, runtime `.env` content, database credentials, cookies, GHCR tokens, SSM Parameter Store secret values, or admin smoke secrets.
 
 Guardrails:
 
-- secret-like paths are rejected before bundling and again on the host (`*.env`, `*.env.*`, `*secret*`, `*token*`, `*cookie*`, `*storageState*`);
-- the bundle is deterministic and SHA-256 verified on the host before extraction;
-- the host verifies the exact tar manifest before copying files;
-- the inline bundle is capped at 60KB and its base64 form is capped at 20KB for the custom document parameter;
-- existing host files are backed up under `.deploy/source-backups/<image-tag>-<github-run-id>-<timestamp>/` before replacement;
-- shell deploy scripts must pass `bash -n` after sync;
-- the command is sent only to the resolved instance ID, uses `max-concurrency=1`, `max-errors=0`, and asserts `TargetCount == 1`;
-- source prep runs before optional Caddy ingress reconcile, and the custom deploy document syncs the files before image activation.
+- secret-like paths, source symlinks, source hardlinks, and non-regular source files are rejected before bundling; secret-like paths are also rejected again on the host (`*.env`, `*.env.*`, `*secret*`, `*token*`, `*cookie*`, `*storageState*`);
+- GitHub uploads the deterministic bundle with `aws s3 cp ... --sse AES256`;
+- SSM parameters are reduced to `DeployControlBundleS3Uri` and `DeployControlBundleSha256` only;
+- the host downloads with `aws s3 cp`, computes SHA-256 locally, and fails closed on mismatch;
+- S3 ETag is never used for integrity;
+- the host verifies the exact tar manifest and rejects non-regular tar members such as symlinks or hardlinks before extraction;
+- the custom SSM document validates manifest keys, file allowlist, path safety, extracted regular-file types, S3 URI, dry-run flag, SHA/tag/image patterns, and publish evidence URL inline before executing any code from the downloaded bundle;
+- dry-run mode exits after S3 download, SHA-256 verification, and inline manifest validation, before persistent host writes, file sync, or deployment;
+- non-dry-run mode creates `.deploy/source-backups/<image-tag>-<github-run-id>-<timestamp>/`, syncs only the inline allowlisted files, syntax-checks shell scripts, then invokes `scripts/ssm-route-ops-deploy.sh`.
+- `scripts/validate-route-ops-ssm-deploy.mjs` statically checks that the helper allowlist, inline SSM allowlist, tar entry set, and manifest key set stay synchronized with the canonical deploy-control contract.
 
-This keeps the deploy role constrained to reviewed custom documents while allowing the host-local deploy wrapper, compose contract, and smoke test to evolve safely with the repository.
+### Bucket setup and lifecycle commands
+
+Do not run these as part of normal deploy. They are one-time setup/reconciliation commands for an approved operator if the bucket or lifecycle is missing:
+
+```bash
+aws sts get-caller-identity
+aws s3 ls
+aws s3api head-bucket --bucket route-ops-artifacts-902837199612-ap-northeast-2
+aws s3api create-bucket \
+  --bucket route-ops-artifacts-902837199612-ap-northeast-2 \
+  --region ap-northeast-2 \
+  --create-bucket-configuration LocationConstraint=ap-northeast-2
+aws s3api put-public-access-block \
+  --bucket route-ops-artifacts-902837199612-ap-northeast-2 \
+  --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+aws s3api put-bucket-encryption \
+  --bucket route-ops-artifacts-902837199612-ap-northeast-2 \
+  --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+cat > /tmp/route-ops-deploy-control-lifecycle.json <<'JSON'
+{
+  "Rules": [
+    {
+      "ID": "expire-route-ops-deploy-control-after-90-days",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "artifacts/route-ops/prod/deploy-control/" },
+      "Expiration": { "Days": 90 },
+      "NoncurrentVersionExpiration": { "NoncurrentDays": 30 },
+      "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 7 }
+    }
+  ]
+}
+JSON
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket route-ops-artifacts-902837199612-ap-northeast-2 \
+  --lifecycle-configuration file:///tmp/route-ops-deploy-control-lifecycle.json
+```
+
+### Dry validation command
+
+The first run after changing this flow must be a no-mutation dry validation:
+
+```bash
+gh workflow run route-ops-ssm-deploy.yml \
+  --ref main \
+  -f image_tag=<published-main-commit-sha> \
+  -f prisma_schema_sha=<schema-sha-from-publish> \
+  -f delivery_api_image=ghcr.io/evnsolution/clever-route-server-delivery-api:<published-main-commit-sha> \
+  -f delivery_api_migrate_image=ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:<published-main-commit-sha> \
+  -f publish_evidence_url=https://github.com/EVNSolution/clever-route-server/actions/runs/<publish-run-id> \
+  -f dry_run=true
+```
+
+Dry validation must show: selected bucket/key, bundle byte size, expected and actual SHA-256, reduced SSM parameter sizes, deploy-control source checkout pinned to the image tag, source regular-file validation before staging, successful S3 upload, successful host S3 download, inline manifest validation result, and `no production files synced and no deploy script executed`.
+
+### Production retry gate
+
+A production retry (`dry_run=false`) remains blocked until all of these are true:
+
+1. this PR is merged and the reviewed custom SSM document version is updated/pinned in `SSM_ROUTE_OPS_DOCUMENT_VERSION`;
+2. GitHub deploy role has only the prefix-scoped S3 write permissions documented below;
+3. the EC2/SSM execution role has only the prefix-scoped S3 read permissions documented below;
+4. dry validation succeeds with the same bucket/prefix/document path and without Caddy reconcile or any other production mutation;
+5. an operator explicitly approves the production mutation.
 
 ## GitHub variables
 
@@ -78,7 +155,7 @@ Use GitHub repository/org **variables**, not secrets, for non-secret identifiers
 ```text
 DEPLOY_ALLOWED_ACTORS=github-user-1,github-user-2
 AWS_ROUTE_OPS_DEPLOY_ROLE_ARN=arn:aws:iam::<account-id>:role/<role-name>
-AWS_REGION=ca-central-1
+AWS_REGION=ap-northeast-2
 SSM_ROUTE_OPS_TARGET_TAG_KEY=Service
 SSM_ROUTE_OPS_TARGET_TAG_VALUE=CleverRouteProduction
 SSM_ROUTE_OPS_DOCUMENT_NAME=CleverRoute-RouteOpsDeploy
@@ -127,9 +204,54 @@ Example trust policy skeleton, with account/provider values filled in AWS only:
 
 ## Deploy role policy shape
 
-The GitHub deploy role should primarily invoke the reviewed custom document against the production managed node target. Do not grant broad EC2/IAM/Secrets permissions. Deploy-control source sync is part of the reviewed custom document, not a generic `AWS-RunShellScript` send. `AWS-RunShellScript` use, if granted at all, is restricted to the optional fixed Caddy ingress reconcile when `ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT=true`. Do not use it for image deploy, rollback, source sync, secrets, database mutation outside the reviewed wrapper, or arbitrary operator shell.
+The GitHub deploy role should primarily invoke the reviewed custom document against the production managed node target and write the deploy-control artifact to only the approved Route Ops S3 prefix. Do not grant broad EC2/IAM/Secrets permissions. Deploy-control source sync is part of the reviewed custom document, not a generic `AWS-RunShellScript` send. `AWS-RunShellScript` use, if granted at all, is restricted to the optional fixed Caddy ingress reconcile when `ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT=true`. Do not use it for image deploy, rollback, source sync, secrets, database mutation outside the reviewed wrapper, or arbitrary operator shell.
 
-Example skeleton:
+GitHub deploy role minimum S3 permission:
+
+```json
+{
+  "Sid": "WriteRouteOpsDeployControlArtifacts",
+  "Effect": "Allow",
+  "Action": ["s3:PutObject"],
+  "Resource": "arn:aws:s3:::route-ops-artifacts-902837199612-ap-northeast-2/artifacts/route-ops/prod/deploy-control/*",
+  "Condition": {
+    "StringEquals": {
+      "s3:x-amz-server-side-encryption": "AES256"
+    }
+  }
+}
+```
+
+If the deploy role also performs explicit bucket metadata checks, add only the minimal required bucket metadata actions and constrain them to `arn:aws:s3:::route-ops-artifacts-902837199612-ap-northeast-2`. Do not grant whole-bucket write outside `artifacts/route-ops/prod/deploy-control/*`.
+
+SSM/EC2 execution role minimum S3 permission:
+
+```json
+{
+  "Sid": "ReadRouteOpsDeployControlArtifacts",
+  "Effect": "Allow",
+  "Action": ["s3:GetObject"],
+  "Resource": "arn:aws:s3:::route-ops-artifacts-902837199612-ap-northeast-2/artifacts/route-ops/prod/deploy-control/*"
+}
+```
+
+`ListBucket` is not needed for the current `aws s3 cp s3://bucket/key file` path. If future diagnostics require listing, constrain it to the prefix condition:
+
+```json
+{
+  "Sid": "ListOnlyRouteOpsDeployControlPrefix",
+  "Effect": "Allow",
+  "Action": "s3:ListBucket",
+  "Resource": "arn:aws:s3:::route-ops-artifacts-902837199612-ap-northeast-2",
+  "Condition": {
+    "StringLike": {
+      "s3:prefix": "artifacts/route-ops/prod/deploy-control/*"
+    }
+  }
+}
+```
+
+The existing SSM permissions still need the reviewed document and exact production instance target:
 
 ```json
 {
@@ -140,8 +262,8 @@ Example skeleton:
       "Effect": "Allow",
       "Action": "ssm:SendCommand",
       "Resource": [
-        "arn:aws:ssm:<region>:<account-id>:document/CleverRoute-RouteOpsDeploy",
-        "arn:aws:ec2:<region>:<account-id>:instance/<production-instance-id>"
+        "arn:aws:ssm:ap-northeast-2:902837199612:document/CleverRoute-RouteOpsDeploy",
+        "arn:aws:ec2:ap-northeast-2:902837199612:instance/<production-instance-id>"
       ],
       "Condition": {
         "StringEquals": {
@@ -164,55 +286,32 @@ Example skeleton:
 }
 ```
 
-Add `arn:aws:ssm:<region>:<account-id>:document/AWS-RunShellScript` only if the optional fixed Caddy ingress reconcile path is deliberately enabled and reviewed.
+Add `arn:aws:ssm:ap-northeast-2:902837199612:document/AWS-RunShellScript` only if the optional fixed Caddy ingress reconcile path is deliberately enabled and reviewed.
 
-AWS resource-level support differs by Systems Manager API and target style. If a specific condition/resource is not enforceable in your AWS account, document that residual risk and keep the compensating controls: custom document for deploy/source sync, optional fixed ingress reconcile command, exact target-count preflight, `max-concurrency=1`, `max-errors=0`, and branch/CODEOWNERS controls.
+AWS resource-level support differs by Systems Manager API and target style. If a specific condition/resource is not enforceable in your AWS account, document that residual risk and keep the compensating controls: custom document for deploy/source sync, optional fixed ingress reconcile command, exact target-count preflight, `max-concurrency=1`, `max-errors=0`, dry-run first, and branch/CODEOWNERS controls.
 
 ## Custom SSM document
 
 Production image deploy must use the reviewed custom SSM document stored in `infra/ssm/route-ops-deploy-document.json`. `AWS-RunShellScript` is not the image deploy or source-sync path; the only optional production workflow exception is the fixed Route Ops Caddy ingress reconcile command that force-recreates the already-reviewed `caddy` service from this repo before smoke.
 
-Use schema 2.2 and prefer `interpolationType: ENV_VAR` so parameters are exposed as environment variables. The host wrapper still validates every value before invoking the deploy script.
+Use schema 2.2 and `interpolationType: ENV_VAR`. The custom document accepts only the deploy-control bundle pointer and digest; image tag, schema SHA, runtime/migrate images, publish evidence, and dry-run state are validated from the non-secret manifest after S3 download and SHA-256 verification.
 
 Example document skeleton:
 
 ```yaml
 schemaVersion: '2.2'
-description: Clever Route Ops pinned image deploy
+description: Clever Route Ops pinned image deploy via S3 deploy-control bundle
 parameters:
-  ImageTag:
+  DeployControlBundleS3Uri:
     type: String
     interpolationType: ENV_VAR
-    allowedPattern: '^[0-9a-fA-F]{40}$'
-  PrismaSchemaSha:
-    type: String
-    interpolationType: ENV_VAR
-    allowedPattern: '^[0-9a-fA-F]{64}$'
-  RuntimeImage:
-    type: String
-    interpolationType: ENV_VAR
-    allowedPattern: '^ghcr\.io/evnsolution/clever-route-server-delivery-api:[0-9a-fA-F]{40}$'
-  MigrateImage:
-    type: String
-    interpolationType: ENV_VAR
-    allowedPattern: '^ghcr\.io/evnsolution/clever-route-server-delivery-api-migrate:[0-9a-fA-F]{40}$'
-  PublishEvidence:
-    type: String
-    interpolationType: ENV_VAR
-    allowedPattern: '^https://github\.com/EVNSolution/clever-route-server/actions/runs/[0-9]+/?$'
-  DeployControlBundleBase64:
-    type: String
-    interpolationType: ENV_VAR
-    allowedPattern: '^[A-Za-z0-9+/=]+$'
-    maxChars: 20000
-  DeployControlBundleSha:
+    allowedPattern: '^s3://route-ops-artifacts-902837199612-ap-northeast-2/artifacts/route-ops/prod/deploy-control/[0-9]+/[0-9a-fA-F]{40}/route-ops-deploy-control\.tar\.gz$'
+    maxChars: 256
+  DeployControlBundleSha256:
     type: String
     interpolationType: ENV_VAR
     allowedPattern: '^[0-9a-fA-F]{64}$'
-  GitHubRunId:
-    type: String
-    interpolationType: ENV_VAR
-    allowedPattern: '^[0-9]+$'
+    maxChars: 64
 mainSteps:
   - action: aws:runShellScript
     name: routeOpsDeploy
@@ -221,8 +320,12 @@ mainSteps:
       runCommand:
         - 'set -eu'
         - 'cd /srv/clever-route-server'
-        - '<verify SHA + exact manifest, back up files under .deploy/source-backups, sync allowlisted deploy controls, bash -n shell scripts>'
-        - 'IMAGE_TAG="$SSM_ImageTag" PRISMA_SCHEMA_SHA="$SSM_PrismaSchemaSha" DELIVERY_API_IMAGE="$SSM_RuntimeImage" DELIVERY_API_MIGRATE_IMAGE="$SSM_MigrateImage" PUBLISH_EVIDENCE_URL="$SSM_PublishEvidence" scripts/ssm-route-ops-deploy.sh'
+        - 'aws s3 cp "$SSM_DeployControlBundleS3Uri" "$bundle_path" --no-progress'
+        - '<compute local sha256 and compare to SSM_DeployControlBundleSha256; fail closed on mismatch>'
+        - '<verify exact tar manifest and reject non-regular tar members before extraction>'
+        - '<inline validate deploy-control-manifest.json allowlist and dryRun flag; do not execute bundled helper before validation>'
+        - '<if dryRun=true: log no-mutation success and exit>'
+        - '<sync allowlisted deploy-control files, syntax-check scripts, then run scripts/ssm-route-ops-deploy.sh with manifest-derived env>'
 ```
 
 Pin the reviewed `DocumentVersion` in GitHub variable `SSM_ROUTE_OPS_DOCUMENT_VERSION` and update it deliberately when the document changes.
@@ -436,19 +539,27 @@ ROUTE_OPS_PRUNE_LEGACY_LOCAL_IMAGE=1
    - schema SHA;
    - runtime/migrate image names;
    - successful workflow run URL.
-3. Run `Route Ops SSM deploy` with those exact values.
+3. Run `Route Ops SSM deploy` with those exact values and `dry_run=true` first.
 4. The workflow verifies:
    - actor allowlist;
    - branch;
    - image tag reachable from `origin/main`;
+   - deploy-control source checkout pinned to the image tag commit;
    - publish evidence URL;
+   - S3 artifact upload to the approved Route Ops deploy-control prefix;
+   - reduced SSM parameter sizes;
    - custom SSM document name/version;
    - exactly one online managed target.
-5. The host deploy script verifies labels/schema, verifies the mounted
+5. In dry-run mode the host downloads the S3 bundle, verifies SHA-256, validates
+   the manifest allowlist inline, and exits before persistent host writes, source
+   sync, or deployment.
+6. After dry validation passes and production mutation is separately approved,
+   rerun with `dry_run=false`.
+7. The host deploy script verifies labels/schema, verifies the mounted
    `route_engine` graph manifest, runs the candidate migrate image, smokes
    `route_engine` from the `delivery-api` runtime network, and runs Route Ops
    smoke before promotion.
-6. If smoke fails, the deploy script restores current image metadata and the workflow fails.
+8. If smoke fails, the deploy script restores current image metadata and the workflow fails.
 
 ## Rollback
 

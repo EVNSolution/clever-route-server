@@ -6,7 +6,8 @@ This repo keeps a small set of root-level scripts because deployment and Route O
 
 These are intentionally separate because they have different blast radius and rollback semantics.
 
-- `scripts/ssm-route-ops-deploy.sh` — host-side SSM wrapper. Validates SSM inputs, reads the host-local admin smoke secret, and calls the activation script. Do not place production SSH keys or runtime env in GitHub.
+- `scripts/ssm-route-ops-deploy.sh` — host-side SSM wrapper. Validates manifest-derived deploy inputs, reads the host-local admin smoke secret, and calls the activation script. Do not place production SSH keys or runtime env in GitHub.
+- `scripts/route-ops-deploy-control-bundle.sh` — deploy-control bundle helper used by GitHub Actions and the custom SSM document to enforce the reviewed file allowlist, SHA-256 verification, manifest validation, and host source sync.
 - `scripts/deploy-route-ops-image.sh` — activates a published Route Ops image, checks schema labels, runs migration/compose/smoke, and promotes or restores current image metadata.
 - `scripts/rollback-route-ops-image.sh` — explicit rollback path to a previous image tag.
 - `scripts/scan-secrets.sh` — local/CI secret hygiene utility for staged, worktree, and history scans.
@@ -36,6 +37,7 @@ These are not production commands. They are kept separate so each failure domain
 Tests should live under `tests/`, not beside operator commands.
 
 - `tests/deploy/ssm-route-ops-deploy.test.sh` — regression test for the SSM deploy wrapper lock, tag validation, evidence, and secret-redaction behavior.
+- `tests/deploy/route-ops-deploy-control-bundle.test.sh` — regression test for deploy-control bundle tar manifest validation, SHA-256 mismatch failure, manifest allowlist failure, and dry-run manifest env generation.
 
 ## Change rule
 
