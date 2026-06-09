@@ -120,7 +120,7 @@ Rollback uses `.deploy/previous-image.env`, verifies the schema fingerprint matc
 
 ## SSM deploy follow-up
 
-The next approved deployment model is documented in `docs/deployment/route-ops-ssm-deploy.md`: GitHub Actions `workflow_dispatch` uses OIDC to assume an AWS deploy role, invokes a custom constrained SSM document, and runs the host-local deploy wrapper. Production execution remains separately gated; do not store production secrets in GitHub or SSM command parameters.
+The next approved deployment model is documented in `docs/deployment/route-ops-ssm-deploy.md`: GitHub Actions `workflow_dispatch` uses OIDC to assume an AWS deploy role, uploads a non-secret deploy-control bundle to the Route Ops S3 artifact prefix, invokes a custom constrained SSM document with only the S3 URI and SHA-256 digest, and runs the host-local deploy wrapper after host-side verification. First run `dry_run=true`; production execution with `dry_run=false` remains separately gated. Do not store production secrets in GitHub, S3 deploy-control artifacts, or SSM command parameters.
 
 ## Frontend static artifact boundary
 

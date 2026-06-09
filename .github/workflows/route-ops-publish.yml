@@ -204,10 +204,12 @@ jobs:
             -f prisma_schema_sha=${{ steps.meta.outputs.schema_sha }} \
             -f delivery_api_image=${{ env.RUNTIME_IMAGE }}:${{ steps.meta.outputs.image_tag }} \
             -f delivery_api_migrate_image=${{ env.MIGRATE_IMAGE }}:${{ steps.meta.outputs.image_tag }} \
-            -f publish_evidence_url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            -f publish_evidence_url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} \
+            -f dry_run=true
 
           The SSM wrapper derives \`ROUTE_OPS_WEB_STATIC_IMAGE\` and \`ROUTE_OPS_WEB_STATIC_VOLUME\` from the immutable \`image_tag\`; verify they match:
           \`${{ env.FRONTEND_STATIC_IMAGE }}:${{ steps.meta.outputs.image_tag }}\` and \`clever-route-route-ops-web-static-${{ steps.meta.outputs.image_tag }}\`.
+          Use \`dry_run=false\` only after the S3/SSM deploy-control handoff dry validation succeeds and production mutation is explicitly approved.
           \`\`\`
 
           Emergency/manual host deploy command shape, run on the production host only after separate approval:
