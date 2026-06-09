@@ -121,6 +121,7 @@ assert(/contents:\s*read/.test(deploy), 'deploy workflow must request contents:r
 assert(/actions:\s*read/.test(deploy), 'deploy workflow must request actions:read for publish-run provenance verification');
 assert(/id-token:\s*write/.test(deploy), 'deploy workflow must request id-token:write for OIDC');
 assert(!deploy.includes('packages: write'), 'deploy workflow must not request packages:write');
+assert(/timeout-minutes:\s*120/.test(deploy), 'deploy workflow must allow enough time for traced cold route_engine activation');
 assert(deploy.includes("github.ref != 'refs/heads/main'"), 'deploy workflow must require refs/heads/main');
 assert(deploy.includes('DEPLOY_ALLOWED_ACTORS is required'), 'deploy actor allowlist must fail closed when empty');
 assert(deploy.includes('aws-actions/configure-aws-credentials@v4'), 'deploy workflow must use AWS OIDC credentials action');
@@ -224,6 +225,7 @@ assert(deploy.includes('--instance-ids "$INSTANCE_ID"'), 'deploy workflow must s
 assert(!deploy.includes('--targets "Key=tag:'), 'deploy workflow must not send production command by mutable tag selector');
 assert(deploy.includes('Command.[CommandId,TargetCount]'), 'deploy workflow must read SendCommand TargetCount');
 assert(deploy.includes('TargetCount must be 1'), 'deploy workflow must assert SendCommand TargetCount is 1');
+assert(deploy.includes('for _ in {1..720}; do'), 'deploy workflow must poll long enough to let the custom SSM document produce host trace evidence');
 assert(deploy.includes('--max-concurrency "1"'), 'deploy workflow must set max-concurrency=1');
 assert(deploy.includes('--max-errors "0"'), 'deploy workflow must set max-errors=0');
 assert(deploy.includes('SSM_ROUTE_OPS_DOCUMENT_VERSION'), 'deploy workflow must require explicit SSM document version');
@@ -257,6 +259,9 @@ assert(wrapper.includes('ROUTE_OPS_WEB_STATIC_IMAGE'), 'wrapper must derive and 
 assert(wrapper.includes('ROUTE_OPS_WEB_STATIC_VOLUME'), 'wrapper must derive and validate the SHA-scoped frontend static volume');
 assert(wrapper.includes('ROUTE_ENGINE_IMAGE'), 'wrapper must derive and validate the route_engine worker image');
 assert(wrapper.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'wrapper must expose the route_engine graph host directory');
+assert(wrapper.includes('ROUTE_OPS_DEPLOY_TRACE_DIR'), 'wrapper must establish a host-local deploy trace directory');
+assert(wrapper.includes('ssm-wrapper.log'), 'wrapper must persist deploy stdout/stderr to a host-local wrapper log');
+assert(wrapper.includes('PIPESTATUS[0]'), 'wrapper must preserve deploy script exit status through tee');
 assert(!wrapper.includes('set -x'), 'wrapper must not enable shell xtrace');
 assert(/ROUTE_OPS_SMOKE_LOGIN_SECRET="\$value"/.test(wrapper), 'wrapper must export smoke secret from parsed local value');
 
@@ -279,6 +284,10 @@ assert(imageDeploy.includes('ROUTE_OPS_WEB_STATIC_VOLUME'), 'image deploy script
 assert(imageDeploy.includes('ROUTE_ENGINE_IMAGE_REPO'), 'image deploy script must scope cleanup to the route_engine worker image repository');
 assert(imageDeploy.includes('ROUTE_ENGINE_IMAGE'), 'image deploy script must track the route_engine worker image in deploy metadata');
 assert(imageDeploy.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'image deploy script must track the route_engine graph host directory in deploy metadata');
+assert(imageDeploy.includes('route_ops_trace_event'), 'image deploy script must persist structured deploy trace events');
+assert(imageDeploy.includes('route_ops_trace_snapshot'), 'image deploy script must persist diagnostic snapshots on failure');
+assert(imageDeploy.includes('route_engine_trace_monitor_start'), 'image deploy script must monitor route_engine during warmup/solve smoke');
+assert(imageDeploy.includes('route_engine_smoke') && imageDeploy.includes('.monitor.log'), 'image deploy script must write a route_engine smoke monitor log');
 assert(imageDeploy.includes('ROUTE_OPS_STATIC_ARTIFACT_STAGED'), 'image deploy script must track static artifact staging separately from backend mutation');
 assert(imageDeploy.includes('ensure_route_engine_host_env'), 'image deploy script must configure production host route_engine env before activation');
 assert(imageDeploy.includes('restore_route_engine_host_env_on_failure'), 'image deploy script must restore host route_engine env if activation fails');
@@ -327,6 +336,7 @@ assert(compose.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'production compose must
 assert(compose.includes('/app/routing_engine/v7_out/parquet:ro'), 'production route_engine graph mount must target the expected read-only parquet path');
 const parsedSsmDocument = JSON.parse(ssmDocument);
 const ssmRunCommand = parsedSsmDocument.mainSteps?.[0]?.inputs?.runCommand ?? [];
+assert(parsedSsmDocument.mainSteps?.[0]?.inputs?.timeoutSeconds === '7200', 'SSM deploy document timeout must allow traced cold route_engine activation');
 assertEveryPythonListMatches(ssmDocumentPath, ssmDocument, 'allowed_files', expectedDeployControlFiles);
 assertEveryPythonSetMatches(ssmDocumentPath, ssmDocument, 'allowed_keys', expectedDeployControlManifestKeys);
 const ssmExpectedTarMatch = ssmDocument.match(/expected = sorted\(\[([\s\S]*?)\]\)/);

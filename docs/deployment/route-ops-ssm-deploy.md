@@ -316,7 +316,7 @@ mainSteps:
   - action: aws:runShellScript
     name: routeOpsDeploy
     inputs:
-      timeoutSeconds: '900'
+      timeoutSeconds: '7200'
       runCommand:
         - 'set -eu'
         - 'cd /srv/clever-route-server'
@@ -341,6 +341,13 @@ Pin the reviewed `DocumentVersion` in GitHub variable `SSM_ROUTE_OPS_DOCUMENT_VE
 - takes an exclusive `.deploy/route-ops-deploy.lock` lock before `.deploy/*` mutation;
 - reads `CLEVER_ADMIN_WEB_LOGIN_SECRET` locally from `infra/env/delivery-api.env` if `ROUTE_OPS_SMOKE_LOGIN_SECRET` is not already set by a host-local secure source;
 - never prints the secret;
+- writes non-secret deploy trace artifacts under
+  `.deploy/traces/<github-run-id-or-manual-id>-<image-tag>/` before service
+  mutation. The required files are `state.jsonl` for step start/end/fail events,
+  `deploy.log` for point-in-time snapshots, `ssm-wrapper.log` for host wrapper
+  stdout/stderr, and `route_engine_smoke.monitor.log` while route_engine warmup
+  or solve smoke is running. These files are intentionally host-local so they
+  survive SSM output truncation, GitHub job timeout, and partial deploy failure;
 - calls `scripts/deploy-route-ops-image.sh`, which first backs up host-local
   `infra/env/delivery-api.env`, enables the internal `route_engine` URL/token
   if unset, stages the `route-ops-web-static` artifact into a SHA-scoped named
@@ -491,6 +498,28 @@ Before cleanup, verify:
   `ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS` when a reviewed production incident
   requires it.
 
+If this smoke fails, do not rely on the final SSM summary alone. First inspect
+the latest host trace directory:
+
+```bash
+cd /srv/clever-route-server
+latest_trace="$(find .deploy/traces -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -n | tail -1 | cut -d' ' -f2-)"
+tail -n 80 "$latest_trace/state.jsonl"
+tail -n 200 "$latest_trace/route_engine_smoke.monitor.log"
+tail -n 200 "$latest_trace/deploy.log"
+```
+
+The trace must distinguish:
+
+- GitHub workflow timeout: no terminal SSM status before the Actions poll budget;
+- SSM document timeout: SSM command failed/timed out while host trace still shows
+  the last active step;
+- route_engine warmup timeout: `state.jsonl` shows `ensure_route_engine` and the
+  monitor log shows the route-engine container/cache/resource state during the
+  warmup interval;
+- app smoke failure after promotion candidate startup: `state.jsonl` advances
+  past `restart_delivery_api` and then fails in `production_smoke`.
+
 Cleanup after successful smoke is removal of already-stopped old Route Ops containers by exact name/label allowlist only. Do not remove volumes or bind-mounted data.
 
 ### Rollback during migration
@@ -613,7 +642,9 @@ The deploy workflow is cheap by design:
 - no Docker build;
 - no package push;
 - manual-only;
-- 15-minute timeout;
+- 120-minute workflow timeout with a 2-hour custom SSM document timeout, because
+  cold route_engine graph/cache activation can be much longer than a normal web
+  image swap and must fail with trace evidence rather than truncated SSM output;
 - no scheduled/nightly runs;
 - no large artifacts.
 
@@ -671,3 +702,10 @@ distance/duration before the public Route Ops smoke runs. A smoke timeout is a
 failed deploy, not a degraded success; do not retry production until the host env
 and `route-engine` service state have been checked against the currently
 promoted `.deploy/current-image.env`.
+
+During this smoke, `route_engine_smoke.monitor.log` records the route-engine
+container status, Docker stats, cache volume size/file listing, and recent
+route_engine logs at `ROUTE_ENGINE_TRACE_MONITOR_INTERVAL_SECONDS` intervals
+(default 30 seconds). If `/internal/warmup` blocks longer than expected, this log
+is the primary evidence for whether cache files are growing, CPU/memory are
+active, or the container stopped/OOM-killed.

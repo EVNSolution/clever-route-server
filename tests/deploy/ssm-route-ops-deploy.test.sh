@@ -65,7 +65,11 @@ scripts/ssm-route-ops-deploy.sh > "$output"
 test -f "$tmp/.deploy/fake-result.txt"
 test -f "$tmp/.deploy/deploy-evidence.jsonl"
 grep -q "actions/runs/123456789" "$tmp/.deploy/deploy-evidence.jsonl"
-if grep -q "$SECRET_VALUE" "$output" "$tmp/.deploy/fake-result.txt" "$tmp/.deploy/deploy-evidence.jsonl"; then
+trace_dir="$(find "$tmp/.deploy/traces" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+test -n "$trace_dir"
+test -f "$trace_dir/ssm-wrapper.log"
+grep -q "Route Ops deploy trace dir:" "$output"
+if grep -q "$SECRET_VALUE" "$output" "$tmp/.deploy/fake-result.txt" "$tmp/.deploy/deploy-evidence.jsonl" "$trace_dir/ssm-wrapper.log"; then
   echo "secret leaked to wrapper output or fake result" >&2
   exit 1
 fi

@@ -20,7 +20,7 @@
       "action": "aws:runShellScript",
       "name": "routeOpsDeploy",
       "inputs": {
-        "timeoutSeconds": "900",
+        "timeoutSeconds": "7200",
         "runCommand": [
           "set -eu",
           "cd /srv/clever-route-server",

@@ -308,6 +308,15 @@ run_success_case() {
   grep -q -- "--profile route-engine pull route-ops-web-static delivery-api delivery-api-migrate route-engine" "$tmp/state/compose.log"
   grep -q -- "-e ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS -e ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS -e ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS delivery-api node" "$tmp/state/compose.log"
   grep -q "Smoking route_engine from the delivery-api runtime network: readyTimeoutMs=5000 warmupTimeoutMs=600000 solveTimeoutMs=120000" "$tmp/output.log"
+  local trace_dir
+  trace_dir="$(find "$tmp/.deploy/traces" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+  test -n "$trace_dir"
+  test -s "$trace_dir/state.jsonl"
+  test -f "$trace_dir/deploy.log"
+  test -f "$trace_dir/route_engine_smoke.monitor.log"
+  grep -q '"event":"step_start".*"step":"ensure_route_engine"' "$trace_dir/state.jsonl"
+  grep -q '"event":"route_engine_smoke_end".*"status":"success"' "$trace_dir/state.jsonl"
+  grep -q 'route_engine monitor step=route_engine_smoke' "$trace_dir/route_engine_smoke.monitor.log"
   grep -q "up --no-build --force-recreate route-ops-web-static" "$tmp/state/compose.log"
   grep -q "up -d --no-build --force-recreate --no-deps caddy" "$tmp/state/compose.log"
   if grep -q "compose --env-file" "$tmp/state/docker.log"; then
@@ -632,6 +641,14 @@ EOF_ENV
   fi
 
   grep -q "Deploy failed after route_engine service mutation but before Route Ops backend mutation; stopping route_engine" "$tmp/output.log"
+  local trace_dir
+  trace_dir="$(find "$tmp/.deploy/traces" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+  test -n "$trace_dir"
+  test -s "$trace_dir/state.jsonl"
+  test -f "$trace_dir/route_engine_smoke.monitor.log"
+  test -f "$trace_dir/deploy.log"
+  grep -q '"event":"route_engine_smoke_end".*"status":"failed"' "$trace_dir/state.jsonl"
+  grep -q '"detail":"route_engine_smoke_failed".*"event":"snapshot"' "$trace_dir/state.jsonl"
   grep -q -- "--env-file .deploy/candidate-image.env .*--profile route-engine stop route-engine" "$tmp/state/compose.log"
   grep -q '^OSRM_BASE_URL=http://osrm-ontario:5000$' "$tmp/infra/env/delivery-api.env"
   grep -q '^OSRM_TIMEOUT_MS=10000$' "$tmp/infra/env/delivery-api.env"
