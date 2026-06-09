@@ -290,6 +290,7 @@ assert(imageDeploy.includes('require_candidate_static_volume_isolated_from_curre
 assert(imageDeploy.includes('pull route-ops-web-static delivery-api delivery-api-migrate route-engine'), 'image deploy script must pull frontend static, runtime, migrate, and route_engine images together');
 assert(imageDeploy.includes('--profile route-engine up -d --no-build route-engine'), 'image deploy script must start route_engine through the explicit Route Ops compose project profile');
 assert(imageDeploy.includes('smoke_route_engine_from_runtime_network'), 'image deploy script must smoke route_engine from the delivery-api runtime network before backend activation');
+assert(imageDeploy.includes('route_engine ready smoke failed after readiness wait'), 'image deploy script must wait for route_engine readiness before failing the smoke');
 assert(imageDeploy.includes('up --no-build --force-recreate route-ops-web-static'), 'image deploy script must stage the frontend static artifact before backend activation');
 assert(imageDeploy.includes('ensure_route_ops_ingress'), 'image deploy script must force Route Ops ingress back to this repo before smoke');
 assert(imageDeploy.includes('docker image rm "$image"'), 'image deploy cleanup must remove explicit image refs only');
@@ -370,6 +371,7 @@ assert(imageRollback.includes('ROUTE_OPS_COMPOSE_PROJECT_NAME must be exactly cl
 assert(imageRollback.includes('enforce_no_legacy_route_ops_compose_project'), 'rollback script must fail closed when legacy implicit Route Ops compose containers are still running');
 assert(imageRollback.includes('ensure_route_ops_osrm .deploy/candidate-image.env'), 'rollback script must activate and smoke OSRM before delivery-api rollback activation when OSRM_BASE_URL is configured');
 assert(imageRollback.includes('ensure_route_engine .deploy/candidate-image.env'), 'rollback script must activate and smoke route_engine before delivery-api rollback activation when ROUTE_ENGINE_BASE_URL is configured');
+assert(imageRollback.includes('route_engine rollback ready smoke failed after readiness wait'), 'rollback script must wait for route_engine readiness before failing the smoke');
 assert(imageRollback.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'rollback script must carry the route_engine graph host directory');
 assert(imageRollback.includes('validate_route_engine_graph_artifacts'), 'rollback script must validate route_engine graph artifacts before activation');
 assert(imageRollback.includes('org.clever-route.graph-manifest-sha'), 'rollback script must compare route_engine host graph artifacts with the worker image graph manifest label');
