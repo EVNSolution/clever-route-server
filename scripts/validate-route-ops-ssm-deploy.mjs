@@ -288,6 +288,9 @@ assert(imageDeploy.includes('route_ops_trace_event'), 'image deploy script must 
 assert(imageDeploy.includes('route_ops_trace_snapshot'), 'image deploy script must persist diagnostic snapshots on failure');
 assert(imageDeploy.includes('route_engine_trace_monitor_start'), 'image deploy script must monitor route_engine during warmup/solve smoke');
 assert(imageDeploy.includes('route_engine_smoke') && imageDeploy.includes('.monitor.log'), 'image deploy script must write a route_engine smoke monitor log');
+assert(imageDeploy.includes('restartCount={{.RestartCount}}'), 'image deploy route_engine trace must record container restarts');
+assert(imageDeploy.includes('host oom evidence'), 'image deploy failure snapshot must include host OOM evidence');
+assert(imageDeploy.includes('oom-kill') && imageDeploy.includes('killed process'), 'image deploy failure snapshot must grep kernel OOM-killer messages');
 assert(imageDeploy.includes('ROUTE_OPS_STATIC_ARTIFACT_STAGED'), 'image deploy script must track static artifact staging separately from backend mutation');
 assert(imageDeploy.includes('ensure_route_engine_host_env'), 'image deploy script must configure production host route_engine env before activation');
 assert(imageDeploy.includes('restore_route_engine_host_env_on_failure'), 'image deploy script must restore host route_engine env if activation fails');

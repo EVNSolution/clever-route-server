@@ -117,7 +117,7 @@ route_ops_trace_snapshot() {
     echo "--- docker ps route stack ---"
     docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}' 2>/dev/null | grep -E 'clever-route-(delivery-api|route-engine|route-ops-web-static|caddy|postgres|osrm)' || true
     echo "--- route_engine inspect ---"
-    docker inspect clever-route-route-engine-1 --format 'image={{.Config.Image}} status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} started={{.State.StartedAt}} finished={{.State.FinishedAt}}' 2>/dev/null || true
+    docker inspect clever-route-route-engine-1 --format 'image={{.Config.Image}} status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} error={{.State.Error}} oom={{.State.OOMKilled}} restartCount={{.RestartCount}} started={{.State.StartedAt}} finished={{.State.FinishedAt}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' 2>/dev/null || true
     echo "--- route_engine cache volume ---"
     local volume mountpoint
     volume="$(docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^clever-route_route-engine-cache$|route-engine-cache' | head -1 || true)"
@@ -131,6 +131,10 @@ route_ops_trace_snapshot() {
     fi
     echo "--- route_engine logs tail ---"
     docker logs --tail 120 clever-route-route-engine-1 2>&1 | sed -E 's/(Bearer )[A-Za-z0-9._~+\/-]+/\1<redacted>/g' || true
+    echo "--- route_engine docker events since deploy start ---"
+    timeout 5 docker events --since "@${DEPLOY_STARTED_EPOCH}" --until "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --filter container=clever-route-route-engine-1 2>/dev/null || true
+    echo "--- host oom evidence ---"
+    dmesg -T 2>/dev/null | grep -Ei 'oom|oom-kill|killed process|out of memory|memory cgroup' | tail -80 || true
     echo "--- top cpu ---"
     ps -eo pid,ppid,stat,etime,pcpu,pmem,comm,args --sort=-pcpu 2>/dev/null | head -30 || true
   } >> "$ROUTE_OPS_DEPLOY_TRACE_LOG" 2>&1 || true
@@ -147,7 +151,7 @@ route_engine_trace_monitor_start() {
   (
     while [ ! -f "$ROUTE_ENGINE_TRACE_MONITOR_STOP_FILE" ]; do
       echo "=== route_engine monitor step=${step} ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
-      docker inspect clever-route-route-engine-1 --format 'container image={{.Config.Image}} status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} started={{.State.StartedAt}}' 2>/dev/null || true
+      docker inspect clever-route-route-engine-1 --format 'container image={{.Config.Image}} status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} error={{.State.Error}} oom={{.State.OOMKilled}} restartCount={{.RestartCount}} started={{.State.StartedAt}} health={{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' 2>/dev/null || true
       docker stats --no-stream --format 'stats name={{.Name}} cpu={{.CPUPerc}} mem={{.MemUsage}} memPerc={{.MemPerc}} net={{.NetIO}} block={{.BlockIO}} pids={{.PIDs}}' clever-route-route-engine-1 2>/dev/null || true
       local volume mountpoint
       volume="$(docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^clever-route_route-engine-cache$|route-engine-cache' | head -1 || true)"
