@@ -71,13 +71,84 @@ const routeOpsActionPins = [
   },
 ];
 
-function assertRouteOpsActionPins() {
-  for (const pin of routeOpsActionPins) {
-    const pinnedRef = `${pin.action}@${pin.sha}`;
+const protectedActionPrefixes = ['docker/', 'aws-actions/'];
+const fullShaPattern = /^[0-9a-f]{40}$/;
+
+function parseUsesEntries(text) {
+  return [...text.matchAll(/^\s*uses:\s*([^\s#]+)\s*$/gm)].map((match) => {
+    const uses = match[1];
+    const at = uses.lastIndexOf('@');
+    return {
+      uses,
+      action: at === -1 ? uses : uses.slice(0, at),
+      ref: at === -1 ? '' : uses.slice(at + 1),
+      line: text.slice(0, match.index).split('\n').length,
+    };
+  });
+}
+
+
+function collectRouteOpsActionPinFailures(workflows, pins = routeOpsActionPins) {
+  const errors = [];
+  const pinsByAction = new Map(pins.map((pin) => [pin.action, pin]));
+  for (const pin of pins) {
     const releaseComment = `${pin.action} ${pin.release} (Node 24) pinned to full commit SHA.`;
-    assert(pin.text.includes(pinnedRef), `${pin.workflowName} must pin ${pin.action} to reviewed SHA ${pin.sha}`);
-    assert(pin.text.includes(releaseComment), `${pin.workflowName} must document ${pin.action} ${pin.release} for SHA ${pin.sha}`);
-    assert(!pin.text.includes(`${pin.action}@v`), `${pin.workflowName} must not use floating major tag for ${pin.action}`);
+    if (!pin.text.includes(releaseComment)) {
+      errors.push(`${pin.workflowName} must document ${pin.action} ${pin.release} for SHA ${pin.sha}`);
+    }
+  }
+
+  for (const workflow of workflows) {
+    const protectedUses = parseUsesEntries(workflow.text).filter((entry) => protectedActionPrefixes.some((prefix) => entry.action.startsWith(prefix)));
+    if (protectedUses.length === 0) {
+      errors.push(`${workflow.workflowName} must contain protected action uses for policy validation`);
+    }
+    for (const entry of protectedUses) {
+      const pin = pinsByAction.get(entry.action);
+      if (!pin) {
+        errors.push(`${workflow.workflowName}:${entry.line} protected action ${entry.action} must be listed in routeOpsActionPins`);
+        continue;
+      }
+      if (!fullShaPattern.test(entry.ref)) {
+        errors.push(`${workflow.workflowName}:${entry.line} protected action ${entry.action} must use a full 40-char SHA, got ${entry.ref || '<missing>'}`);
+        continue;
+      }
+      if (entry.ref !== pin.sha) {
+        errors.push(`${workflow.workflowName}:${entry.line} protected action ${entry.action} must use reviewed SHA ${pin.sha}, got ${entry.ref}`);
+      }
+    }
+  }
+  return errors;
+}
+
+function assertRouteOpsActionPinSelfTest() {
+  const badWorkflow = {
+    workflowName: 'Route Ops publish fixture',
+    text: `
+      - name: Known good action
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
+      - name: Floating action must fail
+        uses: docker/setup-buildx-action@v4
+      - name: Unexpected protected action must fail
+        uses: docker/metadata-action@v5
+      - name: Wrong full SHA must fail
+        uses: docker/build-push-action@0000000000000000000000000000000000000000
+`,
+  };
+  const errors = collectRouteOpsActionPinFailures([badWorkflow]);
+  assert(errors.some((message) => message.includes('docker/setup-buildx-action') && message.includes('full 40-char SHA')), 'pin policy self-test must reject floating major protected actions');
+  assert(errors.some((message) => message.includes('docker/metadata-action') && message.includes('routeOpsActionPins')), 'pin policy self-test must reject unregistered protected actions');
+  assert(errors.some((message) => message.includes('docker/build-push-action') && message.includes('reviewed SHA')), 'pin policy self-test must reject wrong protected action SHA');
+}
+
+function assertRouteOpsActionPins() {
+  assertRouteOpsActionPinSelfTest();
+  const errors = collectRouteOpsActionPinFailures([
+    { workflowName: 'Route Ops publish', text: publish },
+    { workflowName: 'Route Ops deploy', text: deploy },
+  ]);
+  for (const error of errors) {
+    assert(false, error);
   }
 }
 
