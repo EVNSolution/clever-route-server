@@ -39,11 +39,148 @@ ROUTE_OPS_PRUNE_LEGACY_LOCAL_IMAGE="${ROUTE_OPS_PRUNE_LEGACY_LOCAL_IMAGE:-0}"
 ROUTE_ENGINE_HOST_ENV_BACKUP_PATH=""
 ROUTE_ENGINE_HOST_ENV_EXISTED="false"
 ROUTE_ENGINE_SERVICE_MUTATED="false"
+DEPLOY_STARTED_EPOCH="$(date +%s)"
+ROUTE_OPS_DEPLOY_CURRENT_STEP="bootstrap"
+ROUTE_OPS_DEPLOY_RUN_ID="${ROUTE_OPS_DEPLOY_RUN_ID:-${GITHUB_RUN_ID:-manual-$(date -u +%Y%m%dT%H%M%SZ)-$$}}"
+ROUTE_OPS_DEPLOY_TRACE_ROOT="${ROUTE_OPS_DEPLOY_TRACE_ROOT:-.deploy/traces}"
+ROUTE_OPS_DEPLOY_TRACE_DIR="${ROUTE_OPS_DEPLOY_TRACE_DIR:-${ROUTE_OPS_DEPLOY_TRACE_ROOT}/${ROUTE_OPS_DEPLOY_RUN_ID}-${IMAGE_TAG}}"
+ROUTE_OPS_DEPLOY_TRACE_JSONL="${ROUTE_OPS_DEPLOY_TRACE_JSONL:-${ROUTE_OPS_DEPLOY_TRACE_DIR}/state.jsonl}"
+ROUTE_OPS_DEPLOY_TRACE_LOG="${ROUTE_OPS_DEPLOY_TRACE_LOG:-${ROUTE_OPS_DEPLOY_TRACE_DIR}/deploy.log}"
+ROUTE_ENGINE_TRACE_MONITOR_INTERVAL_SECONDS="${ROUTE_ENGINE_TRACE_MONITOR_INTERVAL_SECONDS:-30}"
+ROUTE_ENGINE_TRACE_MONITOR_PID=""
+ROUTE_ENGINE_TRACE_MONITOR_STOP_FILE=""
+mkdir -p "$ROUTE_OPS_DEPLOY_TRACE_DIR"
+chmod 0700 "$ROUTE_OPS_DEPLOY_TRACE_DIR" || true
+export ROUTE_OPS_DEPLOY_RUN_ID ROUTE_OPS_DEPLOY_TRACE_DIR ROUTE_OPS_DEPLOY_TRACE_JSONL ROUTE_OPS_DEPLOY_TRACE_LOG
 
 release_deploy_lock() {
   if [ "$LOCK_ACQUIRED" = "mkdir" ] && [ -d "$LOCK_DIR" ]; then
     rmdir "$LOCK_DIR" || true
   fi
+}
+
+route_ops_trace_event() {
+  local event="$1"
+  local step="${2:-$ROUTE_OPS_DEPLOY_CURRENT_STEP}"
+  local status="${3:-}"
+  local detail="${4:-}"
+  local ts epoch elapsed
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  epoch="$(date +%s)"
+  elapsed="$((epoch - DEPLOY_STARTED_EPOCH))"
+  python3 - "$ROUTE_OPS_DEPLOY_TRACE_JSONL" "$ts" "$epoch" "$elapsed" "$event" "$step" "$status" "$detail" "$IMAGE_TAG" "$ROUTE_ENGINE_IMAGE" "$ROUTE_OPS_COMPOSE_PROJECT_NAME" <<'PY'
+import json
+import sys
+
+path, ts, epoch, elapsed, event, step, status, detail, image_tag, route_engine_image, compose_project = sys.argv[1:]
+record = {
+    'ts': ts,
+    'epoch': int(epoch),
+    'elapsedSeconds': int(elapsed),
+    'event': event,
+    'step': step,
+    'status': status,
+    'detail': detail,
+    'imageTag': image_tag,
+    'routeEngineImage': route_engine_image,
+    'composeProject': compose_project,
+}
+with open(path, 'a', encoding='utf-8') as fh:
+    fh.write(json.dumps(record, sort_keys=True, separators=(',', ':')) + '\n')
+PY
+  printf 'Route Ops trace: event=%s step=%s status=%s elapsed=%ss trace=%s\n' \
+    "$event" "$step" "$status" "$elapsed" "$ROUTE_OPS_DEPLOY_TRACE_DIR"
+}
+
+route_ops_trace_step_start() {
+  ROUTE_OPS_DEPLOY_CURRENT_STEP="$1"
+  route_ops_trace_event "step_start" "$ROUTE_OPS_DEPLOY_CURRENT_STEP" "started" "${2:-}"
+}
+
+route_ops_trace_step_end() {
+  local status="${1:-success}"
+  local detail="${2:-}"
+  route_ops_trace_event "step_end" "$ROUTE_OPS_DEPLOY_CURRENT_STEP" "$status" "$detail"
+}
+
+route_ops_trace_snapshot() {
+  local reason="${1:-snapshot}"
+  {
+    echo "=== Route Ops deploy trace snapshot: ${reason} ==="
+    date -u +%Y-%m-%dT%H:%M:%SZ
+    echo "step=${ROUTE_OPS_DEPLOY_CURRENT_STEP}"
+    echo "trace_dir=${ROUTE_OPS_DEPLOY_TRACE_DIR}"
+    echo "--- disk ---"
+    df -h / /var/lib/docker 2>/dev/null || true
+    echo "--- memory ---"
+    free -h 2>/dev/null || true
+    echo "--- docker ps route stack ---"
+    docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}' 2>/dev/null | grep -E 'clever-route-(delivery-api|route-engine|route-ops-web-static|caddy|postgres|osrm)' || true
+    echo "--- route_engine inspect ---"
+    docker inspect clever-route-route-engine-1 --format 'image={{.Config.Image}} status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} started={{.State.StartedAt}} finished={{.State.FinishedAt}}' 2>/dev/null || true
+    echo "--- route_engine cache volume ---"
+    local volume mountpoint
+    volume="$(docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^clever-route_route-engine-cache$|route-engine-cache' | head -1 || true)"
+    if [ -n "$volume" ]; then
+      mountpoint="$(docker volume inspect "$volume" --format '{{.Mountpoint}}' 2>/dev/null || true)"
+      echo "volume=${volume} mount=${mountpoint}"
+      if [ -n "$mountpoint" ] && [ -d "$mountpoint" ]; then
+        du -sh "$mountpoint" 2>/dev/null || true
+        find "$mountpoint" -maxdepth 2 -type f -printf '%p %s bytes %TY-%Tm-%Td %TH:%TM\n' 2>/dev/null | tail -30 || true
+      fi
+    fi
+    echo "--- route_engine logs tail ---"
+    docker logs --tail 120 clever-route-route-engine-1 2>&1 | sed -E 's/(Bearer )[A-Za-z0-9._~+\/-]+/\1<redacted>/g' || true
+    echo "--- top cpu ---"
+    ps -eo pid,ppid,stat,etime,pcpu,pmem,comm,args --sort=-pcpu 2>/dev/null | head -30 || true
+  } >> "$ROUTE_OPS_DEPLOY_TRACE_LOG" 2>&1 || true
+  route_ops_trace_event "snapshot" "$ROUTE_OPS_DEPLOY_CURRENT_STEP" "recorded" "$reason"
+}
+
+route_engine_trace_monitor_start() {
+  local step="$1"
+  if [ -n "$ROUTE_ENGINE_TRACE_MONITOR_PID" ]; then
+    return 0
+  fi
+  ROUTE_ENGINE_TRACE_MONITOR_STOP_FILE="${ROUTE_OPS_DEPLOY_TRACE_DIR}/${step}.monitor.stop"
+  rm -f "$ROUTE_ENGINE_TRACE_MONITOR_STOP_FILE"
+  (
+    while [ ! -f "$ROUTE_ENGINE_TRACE_MONITOR_STOP_FILE" ]; do
+      echo "=== route_engine monitor step=${step} ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+      docker inspect clever-route-route-engine-1 --format 'container image={{.Config.Image}} status={{.State.Status}} running={{.State.Running}} exit={{.State.ExitCode}} oom={{.State.OOMKilled}} started={{.State.StartedAt}}' 2>/dev/null || true
+      docker stats --no-stream --format 'stats name={{.Name}} cpu={{.CPUPerc}} mem={{.MemUsage}} memPerc={{.MemPerc}} net={{.NetIO}} block={{.BlockIO}} pids={{.PIDs}}' clever-route-route-engine-1 2>/dev/null || true
+      local volume mountpoint
+      volume="$(docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^clever-route_route-engine-cache$|route-engine-cache' | head -1 || true)"
+      if [ -n "$volume" ]; then
+        mountpoint="$(docker volume inspect "$volume" --format '{{.Mountpoint}}' 2>/dev/null || true)"
+        if [ -n "$mountpoint" ] && [ -d "$mountpoint" ]; then
+          du -sh "$mountpoint" 2>/dev/null || true
+          find "$mountpoint" -maxdepth 2 -type f -printf '%p %s bytes %TY-%Tm-%Td %TH:%TM\n' 2>/dev/null | tail -10 || true
+        fi
+      fi
+      docker logs --tail 40 clever-route-route-engine-1 2>&1 | sed -E 's/(Bearer )[A-Za-z0-9._~+\/-]+/\1<redacted>/g' || true
+      local remaining="$ROUTE_ENGINE_TRACE_MONITOR_INTERVAL_SECONDS"
+      while [ "$remaining" -gt 0 ] && [ ! -f "$ROUTE_ENGINE_TRACE_MONITOR_STOP_FILE" ]; do
+        sleep 1
+        remaining="$((remaining - 1))"
+      done
+    done
+    echo "=== route_engine monitor step=${step} stopped ts=$(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+  ) >> "${ROUTE_OPS_DEPLOY_TRACE_DIR}/${step}.monitor.log" 2>&1 &
+  ROUTE_ENGINE_TRACE_MONITOR_PID="$!"
+  route_ops_trace_event "monitor_start" "$step" "started" "pid=${ROUTE_ENGINE_TRACE_MONITOR_PID} intervalSeconds=${ROUTE_ENGINE_TRACE_MONITOR_INTERVAL_SECONDS}"
+}
+
+route_engine_trace_monitor_stop() {
+  local step="$1"
+  if [ -z "$ROUTE_ENGINE_TRACE_MONITOR_PID" ]; then
+    return 0
+  fi
+  touch "$ROUTE_ENGINE_TRACE_MONITOR_STOP_FILE" || true
+  wait "$ROUTE_ENGINE_TRACE_MONITOR_PID" 2>/dev/null || true
+  route_ops_trace_event "monitor_stop" "$step" "stopped" "pid=${ROUTE_ENGINE_TRACE_MONITOR_PID}"
+  ROUTE_ENGINE_TRACE_MONITOR_PID=""
+  ROUTE_ENGINE_TRACE_MONITOR_STOP_FILE=""
 }
 
 route_ops_compose() {
@@ -645,6 +782,10 @@ smoke_route_engine_from_runtime_network() {
   warmup_timeout_ms="${ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS:-600000}"
   solve_timeout_ms="${ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS:-120000}"
   echo "Smoking route_engine from the delivery-api runtime network: readyTimeoutMs=${ready_timeout_ms} warmupTimeoutMs=${warmup_timeout_ms} solveTimeoutMs=${solve_timeout_ms}."
+  route_ops_trace_event "route_engine_smoke_start" "$ROUTE_OPS_DEPLOY_CURRENT_STEP" "started" "readyTimeoutMs=${ready_timeout_ms} warmupTimeoutMs=${warmup_timeout_ms} solveTimeoutMs=${solve_timeout_ms}"
+  route_engine_trace_monitor_start "route_engine_smoke"
+  local smoke_status
+  set +e
   ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS="$ready_timeout_ms" \
   ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS="$warmup_timeout_ms" \
   ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS="$solve_timeout_ms" \
@@ -665,6 +806,9 @@ const positiveInteger = (name, fallback) => {
 const readyTimeoutMs = positiveInteger('ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS', 5000);
 const warmupTimeoutMs = positiveInteger('ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS', 600000);
 const solveTimeoutMs = positiveInteger('ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS', 120000);
+const emit = (event, data = {}) => {
+  console.log(JSON.stringify({ event, ts: new Date().toISOString(), ...data }));
+};
 const fetchWithTimeout = async (url, options, timeoutMs, label) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -712,8 +856,9 @@ for (let attempt = 1; attempt <= 30; attempt += 1) {
 if (!readyResponse?.ok || ready?.service !== 'route_engine' || ready?.ready !== true || ready?.external_calls !== false) {
   throw new Error(`route_engine ready smoke failed after readiness wait: ${lastReadyError?.message || 'unknown error'}`);
 }
-console.log(JSON.stringify({ service: ready.service, ready: ready.ready, graph: ready.graph?.status, warmupTimeoutMs, solveTimeoutMs }));
+emit('route_engine_ready_ok', { service: ready.service, ready: ready.ready, graph: ready.graph?.status, warmupTimeoutMs, solveTimeoutMs });
 
+emit('route_engine_warmup_start', { timeoutMs: warmupTimeoutMs });
 const warmupResponse = await fetchWithTimeout(`${baseUrl}/internal/warmup`, {
   method: 'POST',
   headers: {
@@ -725,7 +870,7 @@ const warmed = await warmupResponse.json();
 if (!warmupResponse.ok || warmed.status !== 'warmed' || warmed.engine?.name !== 'route_engine' || warmed.engine?.external_calls !== false) {
   throw new Error(`route_engine warmup smoke failed: ${warmupResponse.status} ${JSON.stringify(warmed)}`);
 }
-console.log(JSON.stringify({
+emit('route_engine_warmup_ok', {
   service: ready.service,
   ready: ready.ready,
   graph: ready.graph?.status,
@@ -733,8 +878,9 @@ console.log(JSON.stringify({
   warmupElapsedMs: Math.round(warmed.warmup?.elapsed_ms || 0),
   cacheExists: warmed.warmup?.cache_exists === true,
   externalCalls: warmed.engine.external_calls,
-}));
+});
 
+emit('route_engine_solve_start', { timeoutMs: solveTimeoutMs });
 const solveResponse = await fetchWithTimeout(`${baseUrl}/v1/solve`, {
   method: 'POST',
   headers: {
@@ -763,7 +909,7 @@ const route = solved.result?.routes?.[0];
 if (!route || route.summary?.total_stops !== 2 || !(route.summary?.total_distance_meters > 0) || !(route.summary?.total_duration_seconds > 0)) {
   throw new Error(`route_engine solve smoke returned invalid route summary: ${JSON.stringify(solved.result)}`);
 }
-console.log(JSON.stringify({
+emit('route_engine_solve_ok', {
   service: ready.service,
   ready: ready.ready,
   graph: ready.graph?.status,
@@ -772,8 +918,17 @@ console.log(JSON.stringify({
   distanceMeters: Math.round(route.summary.total_distance_meters),
   durationSeconds: Math.round(route.summary.total_duration_seconds),
   externalCalls: solved.engine.external_calls,
-}));
+});
 NODE
+  smoke_status=$?
+  set -e
+  route_engine_trace_monitor_stop "route_engine_smoke"
+  if [ "$smoke_status" -ne 0 ]; then
+    route_ops_trace_event "route_engine_smoke_end" "$ROUTE_OPS_DEPLOY_CURRENT_STEP" "failed" "rc=${smoke_status}"
+    route_ops_trace_snapshot "route_engine_smoke_failed"
+    return "$smoke_status"
+  fi
+  route_ops_trace_event "route_engine_smoke_end" "$ROUTE_OPS_DEPLOY_CURRENT_STEP" "success" "rc=0"
 }
 
 ensure_route_engine() {
@@ -901,10 +1056,17 @@ stop_route_ops_osrm_if_disabled() {
   route_ops_compose "$image_env_file" --profile osrm stop osrm-ontario
 }
 
+route_ops_trace_event "deploy_start" "bootstrap" "started" "runId=${ROUTE_OPS_DEPLOY_RUN_ID}"
+route_ops_trace_snapshot "deploy_start"
+route_ops_trace_step_start "acquire_lock"
 acquire_deploy_lock
+route_ops_trace_step_end "success" "lock=${LOCK_ACQUIRED}"
 trap 'release_deploy_lock' EXIT
+route_ops_trace_step_start "legacy_compose_preflight"
 enforce_no_legacy_route_ops_compose_project
+route_ops_trace_step_end
 
+route_ops_trace_step_start "write_candidate_image_env"
 cat > .deploy/candidate-image.env <<EOF_IMAGE
 IMAGE_TAG=${IMAGE_TAG}
 DELIVERY_API_IMAGE=${DELIVERY_API_IMAGE}
@@ -915,14 +1077,19 @@ ROUTE_ENGINE_IMAGE=${ROUTE_ENGINE_IMAGE}
 ROUTE_ENGINE_GRAPH_HOST_DIR=${ROUTE_ENGINE_GRAPH_HOST_DIR}
 PRISMA_SCHEMA_SHA=${PRISMA_SCHEMA_SHA}
 EOF_IMAGE
+route_ops_trace_step_end "success" ".deploy/candidate-image.env"
 
+route_ops_trace_step_start "normalize_current_static_env"
 if [ -f .deploy/current-image.env ]; then ensure_static_artifact_env_file .deploy/current-image.env; fi
 if [ -f .deploy/previous-image.env ]; then ensure_static_artifact_env_file .deploy/previous-image.env; fi
+route_ops_trace_step_end
 
 restore_current() {
   local status="${1:-$?}"
   trap - EXIT INT TERM
+  route_ops_trace_event "deploy_exit" "$ROUTE_OPS_DEPLOY_CURRENT_STEP" "$status" "restore_current"
   if [ "$status" -ne 0 ] && [ -f .deploy/current-image.env ]; then
+    route_ops_trace_snapshot "deploy_failed_before_restore"
     echo "Deploy failed; restoring current image metadata." >&2
     restore_route_engine_host_env_on_failure
     load_image_env_file .deploy/current-image.env
@@ -946,6 +1113,7 @@ restore_current() {
       fi
     fi
     rm -f .deploy/candidate-image.env
+    route_ops_trace_snapshot "deploy_failed_after_restore"
   fi
   release_deploy_lock
   exit "$status"
@@ -954,16 +1122,37 @@ trap 'restore_current "$?"' EXIT
 trap 'restore_current 130' INT
 trap 'restore_current 143' TERM
 
+route_ops_trace_step_start "ensure_route_engine_host_env"
 ensure_route_engine_host_env
+route_ops_trace_step_end
+
+route_ops_trace_step_start "load_candidate_image_env"
 load_image_env_file .deploy/candidate-image.env
 validate_loaded_static_artifact_contract .deploy/candidate-image.env
 require_candidate_static_volume_isolated_from_current .deploy/current-image.env
-ensure_deploy_disk_headroom "pre-pull"
-prune_old_route_ops_images "pre-pull-retention"
-ensure_deploy_disk_headroom "pre-pull-after-retention"
-route_ops_compose .deploy/candidate-image.env --profile route-engine pull route-ops-web-static delivery-api delivery-api-migrate route-engine
-ensure_deploy_disk_headroom "post-pull"
+route_ops_trace_step_end
 
+route_ops_trace_step_start "disk_headroom_pre_pull"
+ensure_deploy_disk_headroom "pre-pull"
+route_ops_trace_step_end
+
+route_ops_trace_step_start "image_retention_pre_pull"
+prune_old_route_ops_images "pre-pull-retention"
+route_ops_trace_step_end
+
+route_ops_trace_step_start "disk_headroom_after_retention"
+ensure_deploy_disk_headroom "pre-pull-after-retention"
+route_ops_trace_step_end
+
+route_ops_trace_step_start "compose_pull_candidate_images"
+route_ops_compose .deploy/candidate-image.env --profile route-engine pull route-ops-web-static delivery-api delivery-api-migrate route-engine
+route_ops_trace_step_end
+
+route_ops_trace_step_start "disk_headroom_post_pull"
+ensure_deploy_disk_headroom "post-pull"
+route_ops_trace_step_end
+
+route_ops_trace_step_start "image_label_validation"
 runtime_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$DELIVERY_API_IMAGE")"
 migrate_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$DELIVERY_API_MIGRATE_IMAGE")"
 static_revision="$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$ROUTE_OPS_WEB_STATIC_IMAGE")"
@@ -988,33 +1177,63 @@ test "$route_engine_role" = "route-engine-worker"
 if route_engine_configured; then
   validate_route_engine_graph_artifacts "$route_engine_graph_manifest_sha"
 fi
+route_ops_trace_step_end
 
+route_ops_trace_step_start "schema_change_preflight"
 CURRENT_PRISMA_SCHEMA_SHA="$(grep '^PRISMA_SCHEMA_SHA=' .deploy/current-image.env | cut -d= -f2- || true)"
 test -n "$CURRENT_PRISMA_SCHEMA_SHA"
 if [ "$CURRENT_PRISMA_SCHEMA_SHA" != "$PRISMA_SCHEMA_SHA" ]; then
   echo "Route Ops deploy schema change detected: current=${CURRENT_PRISMA_SCHEMA_SHA} candidate=${PRISMA_SCHEMA_SHA}; running candidate migrate before promotion."
 fi
+route_ops_trace_step_end "success" "currentSchema=${CURRENT_PRISMA_SCHEMA_SHA}"
 
+route_ops_trace_step_start "migrate_image_prisma_version"
 docker run --rm "$DELIVERY_API_MIGRATE_IMAGE" sh -lc 'test -f apps/delivery-api/prisma/schema.prisma && npm --prefix apps/delivery-api exec -- prisma --version'
+route_ops_trace_step_end
 ROUTE_OPS_STATIC_ARTIFACT_STAGED="true"
+route_ops_trace_step_start "stage_static_artifact"
 route_ops_compose .deploy/candidate-image.env up --no-build --force-recreate route-ops-web-static
+route_ops_trace_step_end
+route_ops_trace_step_start "run_candidate_migration"
 route_ops_compose .deploy/candidate-image.env run --rm delivery-api-migrate
+route_ops_trace_step_end
+route_ops_trace_step_start "ensure_route_engine"
 ensure_route_engine .deploy/candidate-image.env
+route_ops_trace_step_end
+route_ops_trace_step_start "ensure_osrm"
 ensure_route_ops_osrm .deploy/candidate-image.env
+route_ops_trace_step_end
 ROUTE_OPS_SERVICE_MUTATED="true"
+route_ops_trace_step_start "restart_delivery_api"
 route_ops_compose .deploy/candidate-image.env up -d --no-build --force-recreate --no-deps delivery-api
+route_ops_trace_step_end
+route_ops_trace_step_start "stop_disabled_route_engine"
 stop_route_engine_if_disabled .deploy/candidate-image.env
+route_ops_trace_step_end
+route_ops_trace_step_start "stop_disabled_osrm"
 stop_route_ops_osrm_if_disabled .deploy/candidate-image.env
+route_ops_trace_step_end
+route_ops_trace_step_start "ensure_ingress"
 ensure_route_ops_ingress
+route_ops_trace_step_end
+route_ops_trace_step_start "compose_ps"
 route_ops_compose .deploy/candidate-image.env ps
+route_ops_trace_step_end
 
+route_ops_trace_step_start "production_smoke"
 run_production_smoke
+route_ops_trace_step_end
 
+route_ops_trace_step_start "promote_candidate_metadata"
 if [ -f .deploy/current-image.env ]; then cp .deploy/current-image.env .deploy/previous-image.env; fi
 mv .deploy/candidate-image.env .deploy/current-image.env
 printf '{"ts":"%s","imageTag":"%s","deliveryApiImage":"%s","migrateImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","routeEngineImage":"%s","prismaSchemaSha":"%s","routeEngineEnabled":%s,"osrmEnabled":%s}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$IMAGE_TAG" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$ROUTE_ENGINE_IMAGE" "$PRISMA_SCHEMA_SHA" "$(route_engine_enabled_json)" "$(route_ops_osrm_enabled_json)" >> .deploy/deploy-history.jsonl
+route_ops_trace_step_end "success" ".deploy/current-image.env"
+route_ops_trace_step_start "image_retention_post_promote"
 prune_old_route_ops_images "post-promote" || echo "Route Ops post-promote image cleanup failed; deploy promotion remains complete." >&2
+route_ops_trace_step_end
 release_deploy_lock
 trap - EXIT
+route_ops_trace_event "deploy_complete" "complete" "success" "promoted=${IMAGE_TAG}"
 echo "Route Ops image deploy promoted: ${IMAGE_TAG}"

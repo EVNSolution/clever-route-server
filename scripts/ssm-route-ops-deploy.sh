@@ -140,6 +140,12 @@ validate_publish_evidence
 cd "$APP_DIR"
 export ROUTE_OPS_COMPOSE_PROJECT_NAME
 export COMPOSE_PROJECT_NAME="$ROUTE_OPS_COMPOSE_PROJECT_NAME"
+ROUTE_OPS_DEPLOY_RUN_ID="${ROUTE_OPS_DEPLOY_RUN_ID:-${GITHUB_RUN_ID:-ssm-$(date -u +%Y%m%dT%H%M%SZ)-$$}}"
+ROUTE_OPS_DEPLOY_TRACE_ROOT="${ROUTE_OPS_DEPLOY_TRACE_ROOT:-.deploy/traces}"
+ROUTE_OPS_DEPLOY_TRACE_DIR="${ROUTE_OPS_DEPLOY_TRACE_DIR:-${ROUTE_OPS_DEPLOY_TRACE_ROOT}/${ROUTE_OPS_DEPLOY_RUN_ID}-${IMAGE_TAG}}"
+mkdir -p "$ROUTE_OPS_DEPLOY_TRACE_DIR"
+chmod 0700 "$ROUTE_OPS_DEPLOY_TRACE_DIR" || true
+export ROUTE_OPS_DEPLOY_RUN_ID ROUTE_OPS_DEPLOY_TRACE_ROOT ROUTE_OPS_DEPLOY_TRACE_DIR
 
 if [ "$ROUTE_OPS_COMPOSE_PROJECT_NAME" != "clever-route" ]; then
   fail "ROUTE_OPS_COMPOSE_PROJECT_NAME must be exactly clever-route; got: ${ROUTE_OPS_COMPOSE_PROJECT_NAME}"
@@ -150,6 +156,14 @@ login_to_ghcr
 
 printf 'Route Ops SSM deploy wrapper starting: tag=%s schema=%s runtime=%s migrate=%s static=%s staticVolume=%s routeEngine=%s routeEngineGraphDir=%s composeProject=%s\n' \
   "$IMAGE_TAG" "$PRISMA_SCHEMA_SHA" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$ROUTE_ENGINE_IMAGE" "$ROUTE_ENGINE_GRAPH_HOST_DIR" "$ROUTE_OPS_COMPOSE_PROJECT_NAME"
+printf 'Route Ops deploy trace dir: %s\n' "$ROUTE_OPS_DEPLOY_TRACE_DIR"
 
-scripts/deploy-route-ops-image.sh
+set +e
+scripts/deploy-route-ops-image.sh 2>&1 | tee -a "$ROUTE_OPS_DEPLOY_TRACE_DIR/ssm-wrapper.log"
+deploy_rc=${PIPESTATUS[0]}
+set -e
+printf 'Route Ops deploy script exited: rc=%s trace=%s\n' "$deploy_rc" "$ROUTE_OPS_DEPLOY_TRACE_DIR"
+if [ "$deploy_rc" -ne 0 ]; then
+  exit "$deploy_rc"
+fi
 record_publish_evidence
