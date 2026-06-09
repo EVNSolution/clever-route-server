@@ -39,6 +39,48 @@ const doc = read(docPath);
 const githubDoc = read(githubDocPath);
 const osrmDoc = read(osrmDocPath);
 
+
+const routeOpsActionPins = [
+  {
+    workflowName: 'Route Ops publish',
+    text: publish,
+    action: 'docker/login-action',
+    release: 'v4.2.0',
+    sha: '650006c6eb7dba73a995cc03b0b2d7f5ca915bee',
+  },
+  {
+    workflowName: 'Route Ops publish',
+    text: publish,
+    action: 'docker/setup-buildx-action',
+    release: 'v4.1.0',
+    sha: 'd7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5',
+  },
+  {
+    workflowName: 'Route Ops publish',
+    text: publish,
+    action: 'docker/build-push-action',
+    release: 'v7.2.0',
+    sha: 'f9f3042f7e2789586610d6e8b85c8f03e5195baf',
+  },
+  {
+    workflowName: 'Route Ops deploy',
+    text: deploy,
+    action: 'aws-actions/configure-aws-credentials',
+    release: 'v6.2.0',
+    sha: 'e7f100cf4c008499ea8adda475de1042d6975c7b',
+  },
+];
+
+function assertRouteOpsActionPins() {
+  for (const pin of routeOpsActionPins) {
+    const pinnedRef = `${pin.action}@${pin.sha}`;
+    const releaseComment = `${pin.action} ${pin.release} (Node 24) pinned to full commit SHA.`;
+    assert(pin.text.includes(pinnedRef), `${pin.workflowName} must pin ${pin.action} to reviewed SHA ${pin.sha}`);
+    assert(pin.text.includes(releaseComment), `${pin.workflowName} must document ${pin.action} ${pin.release} for SHA ${pin.sha}`);
+    assert(!pin.text.includes(`${pin.action}@v`), `${pin.workflowName} must not use floating major tag for ${pin.action}`);
+  }
+}
+
 function assertExplicitRouteOpsCompose(path, text) {
   assert(text.includes('ROUTE_OPS_COMPOSE_PROJECT_NAME'), `${path} must define/pass ROUTE_OPS_COMPOSE_PROJECT_NAME`);
   assert(/docker compose -p/.test(text) || /route_ops_compose\(\)/.test(text), `${path} must use explicit docker compose -p or validated route_ops_compose helper`);
@@ -124,7 +166,7 @@ assert(!deploy.includes('packages: write'), 'deploy workflow must not request pa
 assert(/timeout-minutes:\s*120/.test(deploy), 'deploy workflow must allow enough time for traced cold route_engine activation');
 assert(deploy.includes("github.ref != 'refs/heads/main'"), 'deploy workflow must require refs/heads/main');
 assert(deploy.includes('DEPLOY_ALLOWED_ACTORS is required'), 'deploy actor allowlist must fail closed when empty');
-assert(deploy.includes('aws-actions/configure-aws-credentials@v6'), 'deploy workflow must use the Node.js 24-compatible AWS OIDC credentials action');
+assertRouteOpsActionPins();
 assert(deploy.includes('AWS_ROUTE_OPS_DEPLOY_ROLE_ARN'), 'deploy workflow must use AWS deploy role variable');
 assert(deploy.includes('git merge-base --is-ancestor "$IMAGE_TAG" origin/main'), 'deploy workflow must verify image tag is reachable from origin/main');
 assert(deploy.includes('publish_evidence_url'), 'deploy workflow must require publish evidence URL');

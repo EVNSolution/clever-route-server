@@ -305,7 +305,8 @@ jobs:
           echo "Route Ops deploy-control dryRun=${DRY_RUN}"
 
       - name: Configure AWS credentials through OIDC
-        uses: aws-actions/configure-aws-credentials@v6
+        # aws-actions/configure-aws-credentials v6.2.0 (Node 24) pinned to full commit SHA.
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
         with:
           role-to-assume: ${{ vars.AWS_ROUTE_OPS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
