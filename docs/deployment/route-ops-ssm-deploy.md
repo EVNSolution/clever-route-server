@@ -346,7 +346,11 @@ Pin the reviewed `DocumentVersion` in GitHub variable `SSM_ROUTE_OPS_DOCUMENT_VE
   if unset, stages the `route-ops-web-static` artifact into a SHA-scoped named
   volume, validates the mounted `route_engine` graph parquet manifest against
   the worker image label, smokes `route_engine` from a one-off `delivery-api`
-  runtime container, and only then recreates `delivery-api` to switch mounts;
+  runtime container with bounded client-side timeouts, and only then recreates
+  `delivery-api` to switch mounts;
+- treats `EXIT`, `INT`, and `TERM` as cleanup paths: if the deploy is interrupted
+  before `delivery-api` promotion, the wrapper restores the pre-deploy host env
+  and stops a candidate `route-engine` service that was already started;
 - records non-secret `PUBLISH_EVIDENCE_URL` to `.deploy/deploy-evidence.jsonl` after a successful deploy.
 
 `deploy-route-ops-image.sh` and `rollback-route-ops-image.sh` also acquire the same lock unless a wrapper already holds it. This keeps emergency Session Manager commands from racing the workflow path.
@@ -475,7 +479,11 @@ Before cleanup, verify:
   `http://route-engine:8080/readyz`, then posts a non-customer
   `POST /v1/solve` request with two smoke stops and verifies `status=solved`,
   `engine.name=route_engine`, `external_calls=false`, and positive
-  distance/duration.
+  distance/duration. The readiness fetch timeout defaults to 5 seconds per
+  attempt, and the solve smoke timeout defaults to 120 seconds plus a 5-second
+  response guard. Override only with `ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS` or
+  `ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS` when a reviewed production incident
+  requires it.
 
 Cleanup after successful smoke is removal of already-stopped old Route Ops containers by exact name/label allowlist only. Do not remove volumes or bind-mounted data.
 
@@ -652,4 +660,7 @@ the pre-deploy env file and does not promote `.deploy/current-image.env`.
 
 The graph smoke is non-customer: it calls `/readyz` and `POST /v1/solve` with a
 fixed Toronto-area two-stop payload, expects `external_calls=false`, and verifies
-positive route distance/duration before the public Route Ops smoke runs.
+positive route distance/duration before the public Route Ops smoke runs. A smoke
+timeout is a failed deploy, not a degraded success; do not retry production until
+the host env and `route-engine` service state have been checked against the
+currently promoted `.deploy/current-image.env`.

@@ -170,6 +170,9 @@ case "${1:-}" in
     if [[ "$args" == *"run --rm delivery-api-migrate"* ]] && [ "${FAKE_MIGRATE_FAIL:-0}" = "1" ]; then
       exit 18
     fi
+    if [[ "$args" == *"run --rm --no-deps"* && "$args" == *"ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS"* && "$args" == *"delivery-api node"* ]] && [ "${FAKE_ROUTE_ENGINE_SMOKE_FAIL:-0}" = "1" ]; then
+      exit 19
+    fi
     ;;
   run)
     echo "run ${*:2}" >> "$state/docker-run.log"
@@ -303,6 +306,8 @@ run_success_case() {
   grep -q "ROUTE_OPS_WEB_STATIC_VOLUME=${CURRENT_STATIC_VOLUME}" "$tmp/.deploy/previous-image.env"
   grep -q -- "-p clever-route" "$tmp/state/compose.log"
   grep -q -- "--profile route-engine pull route-ops-web-static delivery-api delivery-api-migrate route-engine" "$tmp/state/compose.log"
+  grep -q -- "-e ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS -e ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS delivery-api node" "$tmp/state/compose.log"
+  grep -q "Smoking route_engine from the delivery-api runtime network: readyTimeoutMs=5000 solveTimeoutMs=120000" "$tmp/output.log"
   grep -q "up --no-build --force-recreate route-ops-web-static" "$tmp/state/compose.log"
   grep -q "up -d --no-build --force-recreate --no-deps caddy" "$tmp/state/compose.log"
   if grep -q "compose --env-file" "$tmp/state/docker.log"; then
@@ -594,6 +599,54 @@ run_deploy_migrate_failure_restores_current_static_case() {
   fi
 }
 
+run_deploy_route_engine_smoke_failure_restores_host_env_case() {
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-deploy-route-engine-fail.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  prepare_app_dir "$tmp"
+  make_fake_bin "$tmp"
+  mkdir -p "$tmp/state"
+  cat > "$tmp/infra/env/delivery-api.env" <<'EOF_ENV'
+OSRM_BASE_URL=http://osrm-ontario:5000
+OSRM_TIMEOUT_MS=10000
+EOF_ENV
+
+  if PATH="$tmp/bin:$PATH" \
+    FAKE_DOCKER_STATE="$tmp/state" \
+    FAKE_DOCKER_ROOT="$tmp/docker-root" \
+    FAKE_DF_MODE="recover" \
+    FAKE_ROUTE_ENGINE_SMOKE_FAIL=1 \
+    APP_DIR="$tmp" \
+    ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1 \
+    ROUTE_OPS_SMOKE_LOGIN_SECRET="unit-test-secret-not-real" \
+    IMAGE_TAG="$IMAGE_TAG" \
+    PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
+    DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
+    DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
+    ROUTE_ENGINE_IMAGE="$ROUTE_ENGINE_IMAGE" \
+    ROUTE_ENGINE_GRAPH_HOST_DIR="$tmp/data/route-engine/parquet" \
+    ROUTE_OPS_WEB_STATIC_IMAGE="$STATIC_IMAGE" \
+      scripts/deploy-route-ops-image.sh > "$tmp/output.log" 2>&1; then
+    echo "deploy route_engine smoke failure unexpectedly passed" >&2
+    exit 1
+  fi
+
+  grep -q "Deploy failed after route_engine service mutation but before Route Ops backend mutation; stopping route_engine" "$tmp/output.log"
+  grep -q -- "--env-file .deploy/candidate-image.env .*--profile route-engine stop route-engine" "$tmp/state/compose.log"
+  grep -q '^OSRM_BASE_URL=http://osrm-ontario:5000$' "$tmp/infra/env/delivery-api.env"
+  grep -q '^OSRM_TIMEOUT_MS=10000$' "$tmp/infra/env/delivery-api.env"
+  if grep -q '^ROUTE_ENGINE_' "$tmp/infra/env/delivery-api.env"; then
+    echo "route_engine env leaked after smoke failure" >&2
+    cat "$tmp/infra/env/delivery-api.env" >&2
+    exit 1
+  fi
+  if grep -q "up -d --no-build --force-recreate --no-deps delivery-api" "$tmp/state/compose.log"; then
+    echo "delivery-api was mutated after route_engine smoke failure" >&2
+    cat "$tmp/state/compose.log" >&2
+    exit 1
+  fi
+}
+
 run_rollback_static_failure_restores_current_static_case() {
   local tmp
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-rollback-static-fail.XXXXXX")"
@@ -725,6 +778,7 @@ run_deploy_rejects_mismatched_static_image_case
 run_rollback_rejects_shared_current_static_volume_case
 run_deploy_static_failure_restores_current_static_case
 run_deploy_migrate_failure_restores_current_static_case
+run_deploy_route_engine_smoke_failure_restores_host_env_case
 run_rollback_static_failure_restores_current_static_case
 run_rollback_migrate_failure_restores_current_static_case
 
