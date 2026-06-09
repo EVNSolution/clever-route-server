@@ -27,7 +27,7 @@ ROUTE_OPS_RUNTIME_IMAGE_REPO="${ROUTE_OPS_RUNTIME_IMAGE_REPO:-ghcr.io/evnsolutio
 ROUTE_OPS_MIGRATE_IMAGE_REPO="${ROUTE_OPS_MIGRATE_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-delivery-api-migrate}"
 ROUTE_OPS_WEB_STATIC_IMAGE_REPO="${ROUTE_OPS_WEB_STATIC_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-route-ops-web-static}"
 ROUTE_ENGINE_IMAGE_REPO="${ROUTE_ENGINE_IMAGE_REPO:-ghcr.io/evnsolution/route-engine-worker}"
-ROUTE_ENGINE_IMAGE="${ROUTE_ENGINE_IMAGE:-${ROUTE_ENGINE_IMAGE_REPO}:c8221cdb4004a75fb3eca7cc14efbbc3b217f6e6}"
+ROUTE_ENGINE_IMAGE="${ROUTE_ENGINE_IMAGE:-${ROUTE_ENGINE_IMAGE_REPO}:3aa41c5f068b457d6881a0d46922156c43b68f98}"
 ROUTE_ENGINE_GRAPH_HOST_DIR="${ROUTE_ENGINE_GRAPH_HOST_DIR:-/srv/clever-route-server/data/route-engine/parquet}"
 ROUTE_OPS_WEB_STATIC_IMAGE="${ROUTE_OPS_WEB_STATIC_IMAGE:-${ROUTE_OPS_WEB_STATIC_IMAGE_REPO}:${IMAGE_TAG}}"
 ROUTE_OPS_WEB_STATIC_VOLUME="${ROUTE_OPS_WEB_STATIC_VOLUME:-clever-route-route-ops-web-static-${IMAGE_TAG}}"
@@ -642,7 +642,7 @@ smoke_route_engine_from_runtime_network() {
   local image_env_file ready_timeout_ms warmup_timeout_ms solve_timeout_ms
   image_env_file="$1"
   ready_timeout_ms="${ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS:-5000}"
-  warmup_timeout_ms="${ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS:-180000}"
+  warmup_timeout_ms="${ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS:-600000}"
   solve_timeout_ms="${ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS:-120000}"
   echo "Smoking route_engine from the delivery-api runtime network: readyTimeoutMs=${ready_timeout_ms} warmupTimeoutMs=${warmup_timeout_ms} solveTimeoutMs=${solve_timeout_ms}."
   ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS="$ready_timeout_ms" \
@@ -663,7 +663,7 @@ const positiveInteger = (name, fallback) => {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 };
 const readyTimeoutMs = positiveInteger('ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS', 5000);
-const warmupTimeoutMs = positiveInteger('ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS', 180000);
+const warmupTimeoutMs = positiveInteger('ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS', 600000);
 const solveTimeoutMs = positiveInteger('ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS', 120000);
 const fetchWithTimeout = async (url, options, timeoutMs, label) => {
   const controller = new AbortController();

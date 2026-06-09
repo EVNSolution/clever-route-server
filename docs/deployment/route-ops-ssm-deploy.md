@@ -30,7 +30,7 @@ Production execution is **not automatic**. The workflow exists so a maintainer c
   - `publish_evidence_url`: successful Route Ops publish run URL.
 - `route_engine` is not built by this repository's publish workflow. The host
   wrapper derives the pinned worker image
-  `ROUTE_ENGINE_IMAGE=ghcr.io/evnsolution/route-engine-worker:c8221cdb4004a75fb3eca7cc14efbbc3b217f6e6`
+  `ROUTE_ENGINE_IMAGE=ghcr.io/evnsolution/route-engine-worker:3aa41c5f068b457d6881a0d46922156c43b68f98`
   and the required graph mount
   `ROUTE_ENGINE_GRAPH_HOST_DIR=/srv/clever-route-server/data/route-engine/parquet`
   unless an operator deliberately overrides them from a host-local source.
@@ -348,7 +348,9 @@ Pin the reviewed `DocumentVersion` in GitHub variable `SSM_ROUTE_OPS_DOCUMENT_VE
   the worker image label, smokes `route_engine` from a one-off `delivery-api`
   runtime container with bounded client-side timeouts, including authenticated
   `/internal/warmup` before the solve smoke, and only then recreates
-  `delivery-api` to switch mounts;
+  `delivery-api` to switch mounts; the `route-engine-cache` Docker volume is
+  mounted at `/cache/route_engine` so completed V8 cache builds survive service
+  recreation;
 - treats `EXIT`, `INT`, and `TERM` as cleanup paths: if the deploy is interrupted
   before `delivery-api` promotion, the wrapper restores the pre-deploy host env
   and stops a candidate `route-engine` service that was already started;
@@ -482,7 +484,7 @@ Before cleanup, verify:
   `POST /v1/solve` request with two smoke stops and verifies `status=solved`,
   `engine.name=route_engine`, `external_calls=false`, and positive
   distance/duration. The readiness fetch timeout defaults to 5 seconds per
-  attempt, the warmup timeout defaults to 180 seconds, and the solve smoke
+  attempt, the warmup timeout defaults to 600 seconds, and the solve smoke
   timeout defaults to 120 seconds plus a 5-second response guard. Override only
   with `ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS`,
   `ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS`, or
