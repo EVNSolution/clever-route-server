@@ -322,10 +322,39 @@ smoke_route_engine_from_runtime_network() {
 const baseUrl = (process.env.ROUTE_ENGINE_BASE_URL || 'http://route-engine:8080').replace(/\/+$/, '');
 const token = process.env.ROUTE_ENGINE_INTERNAL_TOKEN || '';
 if (!token) throw new Error('ROUTE_ENGINE_INTERNAL_TOKEN is missing in delivery-api runtime env');
-const response = await fetch(`${baseUrl}/readyz`, { headers: { 'X-Request-Id': 'route-engine-rollback-smoke-readyz' } });
-const payload = await response.json();
-if (!response.ok || payload.service !== 'route_engine' || payload.ready !== true || payload.external_calls !== false) {
-  throw new Error(`route_engine rollback ready smoke failed: ${response.status} ${JSON.stringify(payload)}`);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const fetchJson = async (url, options) => {
+  const response = await fetch(url, options);
+  let body = null;
+  try {
+    body = await response.json();
+  } catch (error) {
+    body = { parse_error: String(error) };
+  }
+  return { response, body };
+};
+
+let response = null;
+let payload = null;
+let lastReadyError = null;
+for (let attempt = 1; attempt <= 30; attempt += 1) {
+  try {
+    const result = await fetchJson(`${baseUrl}/readyz`, {
+      headers: { 'X-Request-Id': `route-engine-rollback-smoke-readyz-${attempt}` },
+    });
+    response = result.response;
+    payload = result.body;
+    if (response.ok && payload.service === 'route_engine' && payload.ready === true && payload.external_calls === false) {
+      break;
+    }
+    lastReadyError = new Error(`status=${response.status} body=${JSON.stringify(payload)}`);
+  } catch (error) {
+    lastReadyError = error;
+  }
+  if (attempt < 30) await sleep(1000);
+}
+if (!response?.ok || payload?.service !== 'route_engine' || payload?.ready !== true || payload?.external_calls !== false) {
+  throw new Error(`route_engine rollback ready smoke failed after readiness wait: ${lastReadyError?.message || 'unknown error'}`);
 }
 console.log(JSON.stringify({ service: payload.service, ready: payload.ready, graph: payload.graph?.status, externalCalls: payload.external_calls }));
 NODE

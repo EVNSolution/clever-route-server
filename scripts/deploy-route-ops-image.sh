@@ -647,12 +647,39 @@ const baseUrl = (process.env.ROUTE_ENGINE_BASE_URL || 'http://route-engine:8080'
 const token = process.env.ROUTE_ENGINE_INTERNAL_TOKEN || '';
 if (!token) throw new Error('ROUTE_ENGINE_INTERNAL_TOKEN is missing in delivery-api runtime env');
 
-const readyResponse = await fetch(`${baseUrl}/readyz`, {
-  headers: { 'X-Request-Id': 'route-engine-prod-smoke-readyz' },
-});
-const ready = await readyResponse.json();
-if (!readyResponse.ok || ready.service !== 'route_engine' || ready.ready !== true || ready.external_calls !== false) {
-  throw new Error(`route_engine ready smoke failed: ${readyResponse.status} ${JSON.stringify(ready)}`);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const fetchJson = async (url, options) => {
+  const response = await fetch(url, options);
+  let body = null;
+  try {
+    body = await response.json();
+  } catch (error) {
+    body = { parse_error: String(error) };
+  }
+  return { response, body };
+};
+
+let readyResponse = null;
+let ready = null;
+let lastReadyError = null;
+for (let attempt = 1; attempt <= 30; attempt += 1) {
+  try {
+    const result = await fetchJson(`${baseUrl}/readyz`, {
+      headers: { 'X-Request-Id': `route-engine-prod-smoke-readyz-${attempt}` },
+    });
+    readyResponse = result.response;
+    ready = result.body;
+    if (readyResponse.ok && ready.service === 'route_engine' && ready.ready === true && ready.external_calls === false) {
+      break;
+    }
+    lastReadyError = new Error(`status=${readyResponse.status} body=${JSON.stringify(ready)}`);
+  } catch (error) {
+    lastReadyError = error;
+  }
+  if (attempt < 30) await sleep(1000);
+}
+if (!readyResponse?.ok || ready?.service !== 'route_engine' || ready?.ready !== true || ready?.external_calls !== false) {
+  throw new Error(`route_engine ready smoke failed after readiness wait: ${lastReadyError?.message || 'unknown error'}`);
 }
 
 const solveResponse = await fetch(`${baseUrl}/v1/solve`, {
