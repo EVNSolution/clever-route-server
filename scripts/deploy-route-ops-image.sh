@@ -639,17 +639,44 @@ EOF_GRAPH_FILES
 }
 
 smoke_route_engine_from_runtime_network() {
-  local image_env_file
+  local image_env_file ready_timeout_ms solve_timeout_ms
   image_env_file="$1"
-  echo "Smoking route_engine from the delivery-api runtime network."
-  route_ops_compose "$image_env_file" run --rm --no-deps delivery-api node - <<'NODE'
+  ready_timeout_ms="${ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS:-5000}"
+  solve_timeout_ms="${ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS:-120000}"
+  echo "Smoking route_engine from the delivery-api runtime network: readyTimeoutMs=${ready_timeout_ms} solveTimeoutMs=${solve_timeout_ms}."
+  ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS="$ready_timeout_ms" \
+  ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS="$solve_timeout_ms" \
+    route_ops_compose "$image_env_file" run --rm --no-deps \
+      -e ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS \
+      -e ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS \
+      delivery-api node - <<'NODE'
 const baseUrl = (process.env.ROUTE_ENGINE_BASE_URL || 'http://route-engine:8080').replace(/\/+$/, '');
 const token = process.env.ROUTE_ENGINE_INTERNAL_TOKEN || '';
 if (!token) throw new Error('ROUTE_ENGINE_INTERNAL_TOKEN is missing in delivery-api runtime env');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const fetchJson = async (url, options) => {
-  const response = await fetch(url, options);
+const positiveInteger = (name, fallback) => {
+  const parsed = Number(process.env[name] || '');
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
+const readyTimeoutMs = positiveInteger('ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS', 5000);
+const solveTimeoutMs = positiveInteger('ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS', 120000);
+const fetchWithTimeout = async (url, options, timeoutMs, label) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`${label} timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+const fetchJson = async (url, options, timeoutMs, label) => {
+  const response = await fetchWithTimeout(url, options, timeoutMs, label);
   let body = null;
   try {
     body = await response.json();
@@ -666,7 +693,7 @@ for (let attempt = 1; attempt <= 30; attempt += 1) {
   try {
     const result = await fetchJson(`${baseUrl}/readyz`, {
       headers: { 'X-Request-Id': `route-engine-prod-smoke-readyz-${attempt}` },
-    });
+    }, readyTimeoutMs, `route_engine readyz attempt ${attempt}`);
     readyResponse = result.response;
     ready = result.body;
     if (readyResponse.ok && ready.service === 'route_engine' && ready.ready === true && ready.external_calls === false) {
@@ -681,14 +708,15 @@ for (let attempt = 1; attempt <= 30; attempt += 1) {
 if (!readyResponse?.ok || ready?.service !== 'route_engine' || ready?.ready !== true || ready?.external_calls !== false) {
   throw new Error(`route_engine ready smoke failed after readiness wait: ${lastReadyError?.message || 'unknown error'}`);
 }
+console.log(JSON.stringify({ service: ready.service, ready: ready.ready, graph: ready.graph?.status, solveTimeoutMs }));
 
-const solveResponse = await fetch(`${baseUrl}/v1/solve`, {
+const solveResponse = await fetchWithTimeout(`${baseUrl}/v1/solve`, {
   method: 'POST',
   headers: {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
     'X-Request-Id': 'route-engine-prod-smoke-solve-20260608',
-    'X-Request-Timeout-Ms': '30000',
+    'X-Request-Timeout-Ms': String(solveTimeoutMs),
   },
   body: JSON.stringify({
     request_id: 'route-engine-prod-smoke-solve-20260608',
@@ -699,9 +727,9 @@ const solveResponse = await fetch(`${baseUrl}/v1/solve`, {
       { stop_id: 'smoke-stop-1', lat: 43.6426, lng: -79.3871, demand: 1, service_seconds: 60 },
       { stop_id: 'smoke-stop-2', lat: 43.5890, lng: -79.6441, demand: 1, service_seconds: 60 },
     ],
-    options: { mode: 'road_graph', objective: 'minimize_duration', timeout_ms: 30000 },
+    options: { mode: 'road_graph', objective: 'minimize_duration', timeout_ms: solveTimeoutMs },
   }),
-});
+}, solveTimeoutMs + 5000, 'route_engine solve smoke');
 const solved = await solveResponse.json();
 if (!solveResponse.ok || solved.status !== 'solved' || solved.engine?.name !== 'route_engine' || solved.engine?.external_calls !== false) {
   throw new Error(`route_engine solve smoke failed: ${solveResponse.status} ${JSON.stringify(solved)}`);
@@ -867,7 +895,8 @@ if [ -f .deploy/current-image.env ]; then ensure_static_artifact_env_file .deplo
 if [ -f .deploy/previous-image.env ]; then ensure_static_artifact_env_file .deploy/previous-image.env; fi
 
 restore_current() {
-  local status=$?
+  local status="${1:-$?}"
+  trap - EXIT INT TERM
   if [ "$status" -ne 0 ] && [ -f .deploy/current-image.env ]; then
     echo "Deploy failed; restoring current image metadata." >&2
     restore_route_engine_host_env_on_failure
@@ -896,7 +925,9 @@ restore_current() {
   release_deploy_lock
   exit "$status"
 }
-trap restore_current EXIT
+trap 'restore_current "$?"' EXIT
+trap 'restore_current 130' INT
+trap 'restore_current 143' TERM
 
 ensure_route_engine_host_env
 load_image_env_file .deploy/candidate-image.env
