@@ -30,7 +30,7 @@ Production execution is **not automatic**. The workflow exists so a maintainer c
   - `publish_evidence_url`: successful Route Ops publish run URL.
 - `route_engine` is not built by this repository's publish workflow. The host
   wrapper derives the pinned worker image
-  `ROUTE_ENGINE_IMAGE=ghcr.io/evnsolution/route-engine-worker:f65a1402ec24bef24b7975f0a7f0d320e5773bc0`
+  `ROUTE_ENGINE_IMAGE=ghcr.io/evnsolution/route-engine-worker:7372a4aea9483a58ec8fb5ccb582ee8f15a9df35`
   and the required graph mount
   `ROUTE_ENGINE_GRAPH_HOST_DIR=/srv/clever-route-server/data/route-engine/parquet`
   unless an operator deliberately overrides them from a host-local source.
