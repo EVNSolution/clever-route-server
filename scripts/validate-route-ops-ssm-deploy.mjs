@@ -124,7 +124,7 @@ assert(!deploy.includes('packages: write'), 'deploy workflow must not request pa
 assert(/timeout-minutes:\s*120/.test(deploy), 'deploy workflow must allow enough time for traced cold route_engine activation');
 assert(deploy.includes("github.ref != 'refs/heads/main'"), 'deploy workflow must require refs/heads/main');
 assert(deploy.includes('DEPLOY_ALLOWED_ACTORS is required'), 'deploy actor allowlist must fail closed when empty');
-assert(deploy.includes('aws-actions/configure-aws-credentials@v4'), 'deploy workflow must use AWS OIDC credentials action');
+assert(deploy.includes('aws-actions/configure-aws-credentials@v6'), 'deploy workflow must use the Node.js 24-compatible AWS OIDC credentials action');
 assert(deploy.includes('AWS_ROUTE_OPS_DEPLOY_ROLE_ARN'), 'deploy workflow must use AWS deploy role variable');
 assert(deploy.includes('git merge-base --is-ancestor "$IMAGE_TAG" origin/main'), 'deploy workflow must verify image tag is reachable from origin/main');
 assert(deploy.includes('publish_evidence_url'), 'deploy workflow must require publish evidence URL');
