@@ -509,7 +509,7 @@ jobs:
             --parameters file:///tmp/route-ops-deploy-parameters.json \
             --max-concurrency "1" \
             --max-errors "0" \
-            --comment "Route Ops deploy ${IMAGE_TAG} dryRun=${DRY_RUN} from GitHub Actions run ${GITHUB_RUN_ID}" \
+            --comment "RouteOps ${IMAGE_TAG:0:12} dryRun=${DRY_RUN} run ${GITHUB_RUN_ID}" \
             --query "$send_query" \
             --output text)"
           if [ "$target_count" != "1" ]; then
