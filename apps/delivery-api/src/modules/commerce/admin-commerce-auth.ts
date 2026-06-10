@@ -20,7 +20,7 @@ export class StaticAdminCommerceTokenVerifier implements AdminCommerceTokenVerif
     }
     this.tokenBuffer = Buffer.from(token, 'utf8');
     this.actor = {
-      allowedShopDomains: options.allowedShopDomains ?? '*',
+      allowedShopDomains: options.allowedShopDomains ?? [],
       subject: normalizeActorSubject(options.actorSubject)
     };
   }
@@ -35,16 +35,20 @@ export class StaticAdminCommerceTokenVerifier implements AdminCommerceTokenVerif
 }
 
 export function parseAllowedShopDomains(value: string | undefined): readonly string[] | '*' {
-  if (value === undefined || value.trim() === '' || value.trim() === '*') {
+  const rawValue = value?.trim();
+  if (rawValue === undefined || rawValue === '') {
+    return [];
+  }
+  if (rawValue === '*') {
     return '*';
   }
 
-  const domains = value
+  const domains = rawValue
     .split(',')
     .map((domain) => normalizeShopDomainForAuth(domain))
     .filter((domain) => domain !== '');
 
-  if (domains.length === 0) return '*';
+  if (domains.length === 0) return [];
   return [...new Set(domains)];
 }
 

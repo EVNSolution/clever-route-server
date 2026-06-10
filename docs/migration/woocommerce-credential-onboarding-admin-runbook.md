@@ -26,7 +26,7 @@ Delivery API environment:
 
 - `CREDENTIAL_ENCRYPTION_KEY` set to the server-side encryption key.
 - `CLEVER_ADMIN_API_TOKEN` set for the internal admin API bearer guard.
-- `CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS` set to `*` or a comma-separated allowlist for the operator token.
+- `CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS` set to an explicit comma-separated allowlist for the operator token. Leave blank to fail closed; use `*` only for a deliberate, reviewed compatibility exception.
 - `DELIVERY_API_PUBLIC_URL=https://clever-route.cleversystem.ai` for deployed route-server responses; otherwise local responses derive a base URL from request headers.
 
 WooCommerce access:
