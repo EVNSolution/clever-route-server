@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { PointerEvent, ReactElement } from 'react';
+import type { PointerEvent, ReactElement, ReactNode } from 'react';
 
 import { buildOrdersMapFeatureCollection, buildRouteDropoffPointFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection, fitBoundsForPoints, getOrderMapPoints, getRouteDropoffPoints, getRouteMapPoints, type OrderMapMarkerState, type RouteDropoffPointFeatureCollection, type RouteLineFeature, type RouteOpsPoint, type RouteStopMarkerFeatureCollection } from '../../maps/geojson';
 import { installMissingMapImageFallback } from '../../maps/maplibre-missing-images';
@@ -45,6 +45,7 @@ type RouteOpsMapProps = {
   detail?: RoutePlanDetailDto | null;
   depot?: RouteOpsPoint | null;
   draftStops?: RouteStopDto[];
+  headerAction?: ReactNode;
   onExitRouteMode?(): void;
   onMapClickCoordinate?(coordinate: { latitude: number; longitude: number }): void;
   onOrderSelect?(orderId: string): void;
@@ -59,7 +60,7 @@ type RouteOpsMapProps = {
   title: string;
 };
 
-export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops, onExitRouteMode, onMapClickCoordinate, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
+export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops, headerAction, onExitRouteMode, onMapClickCoordinate, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
   const locale = resolveLocale(bootstrap.locale);
   const t = getMapCopy(locale);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -320,6 +321,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
     <article className="map-panel panel" data-route-map>
       <div className="panel-heading">
         <div><h2>{title}</h2><p>{subtitle}</p></div>
+        {headerAction === undefined ? null : <div className="map-panel-heading-action">{headerAction}</div>}
       </div>
       <div className="route-ops-map-frame" data-map-provider-mode={bootstrap.mapConfig.providerMode ?? 'none'} data-map-provider-status={bootstrap.mapConfig.status} onPointerDown={handleMapFramePointerDown}>
         {readiness === 'interactive_map' || onExitRouteMode !== undefined ? (

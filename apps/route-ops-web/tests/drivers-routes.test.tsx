@@ -467,8 +467,9 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('Rerun optimization');
     expect(html).toMatch(/class="primary route-optimize-button" disabled=""/);
     expect(html).toMatch(
-      /class="panel-heading route-builder-card-heading"[\s\S]*Rerun optimization[\s\S]*class="route-row-actions route-builder-card-actions"/,
+      /class="map-panel panel"[\s\S]*class="panel-heading"[\s\S]*Rerun optimization[\s\S]*class="route-ops-map-frame"/,
     );
+    expect(html).not.toContain('route-builder-card-heading');
     expect(html).not.toMatch(/class="route-stop-compact-toolbar"[\s\S]*route-optimize-button/);
   });
 
@@ -493,8 +494,9 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('Route Engine result applied. You can still edit stops manually, or rerun optimization explicitly.');
     expect(html).toContain('Rerun optimization');
     expect(html).toMatch(
-      /class="panel-heading route-builder-card-heading"[\s\S]*Rerun optimization[\s\S]*class="route-row-actions route-builder-card-actions"/,
+      /class="map-panel panel"[\s\S]*class="panel-heading"[\s\S]*Rerun optimization[\s\S]*class="route-ops-map-frame"/,
     );
+    expect(html).not.toContain('route-builder-card-heading');
     expect(html).not.toContain('route-stop-compact-list locked');
     expect(html).not.toMatch(/class="primary route-optimize-button" disabled=""/);
   });

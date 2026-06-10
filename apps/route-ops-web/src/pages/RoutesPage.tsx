@@ -645,6 +645,20 @@ export function RouteBuilder(input: {
             bootstrap={input.bootstrap}
             detail={detail}
             draftStops={hasSequenceChanges ? draftStops : undefined}
+            headerAction={activeBuilderTab === "stop-order" ? (
+              <button
+                className="primary route-optimize-button"
+                disabled={!canStartOptimizationJob}
+                onClick={() => void startOptimizationJob()}
+                type="button"
+              >
+                {isStartingOptimizationJob
+                  ? t.routeOptimization.starting
+                  : optimizationJob === null
+                    ? t.routeOptimization.start
+                    : t.routeOptimization.rerun}
+              </button>
+            ) : undefined}
             onRouteStopPickerClose={() => setSelectedRouteStopId(null)}
             onRouteStopSelect={(deliveryStopId) => setSelectedRouteStopId(deliveryStopId)}
             onRouteStopSequencePick={moveDraftStopToSequence}
@@ -661,27 +675,11 @@ export function RouteBuilder(input: {
       secondary={
         <aside className="panel side-panel route-save-panel route-builder-card-shell">
           <div className="route-builder-card-header">
-            <div className="panel-heading route-builder-card-heading">
-              <div className="route-builder-title-block">
-                <span className="eyebrow">{t.routeState}</span>
-                <h2 className="route-builder-route-title" title={detail?.routePlan.name ?? t.loadingRoute}>
-                  {detail?.routePlan.name ?? t.loadingRoute}
-                </h2>
-              </div>
-              {activeBuilderTab === "stop-order" ? (
-                <button
-                  className="primary route-optimize-button"
-                  disabled={!canStartOptimizationJob}
-                  onClick={() => void startOptimizationJob()}
-                  type="button"
-                >
-                  {isStartingOptimizationJob
-                    ? t.routeOptimization.starting
-                    : optimizationJob === null
-                      ? t.routeOptimization.start
-                      : t.routeOptimization.rerun}
-                </button>
-              ) : null}
+            <div className="route-builder-title-block">
+              <span className="eyebrow">{t.routeState}</span>
+              <h2 className="route-builder-route-title" title={detail?.routePlan.name ?? t.loadingRoute}>
+                {detail?.routePlan.name ?? t.loadingRoute}
+              </h2>
             </div>
             <div className="route-row-actions route-builder-card-actions">
               <button

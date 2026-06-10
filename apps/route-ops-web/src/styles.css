@@ -1192,6 +1192,12 @@ button.danger.subtle {
 .route-builder-workspace .map-panel .panel-heading {
   flex: 0 0 auto;
 }
+.map-panel-heading-action {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
 .route-builder-workspace .route-ops-map-frame {
   display: flex;
   flex: 1 1 auto;
@@ -1269,14 +1275,6 @@ button.danger.subtle {
   flex: 0 0 auto;
   gap: 12px;
   margin-bottom: 4px;
-}
-.route-builder-card-heading {
-  align-items: flex-start;
-  margin-bottom: 0;
-}
-.route-builder-card-heading .route-optimize-button {
-  flex: 0 0 auto;
-  margin-left: auto;
 }
 .route-builder-title-block {
   min-width: 0;
