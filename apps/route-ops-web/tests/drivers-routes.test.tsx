@@ -475,6 +475,8 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('15s');
     expect(html).toContain('30s');
     expect(html).toContain('route-opt:route-plan-id:test');
+    expect(html).toContain('class="route-optimization-summary"');
+    expect(html).toContain('class="route-optimization-log" open=""');
     expect(html).toContain('Rerun optimization');
     expect(html).toMatch(/class="primary route-optimize-button" disabled=""/);
     expect(html).toMatch(
@@ -483,6 +485,13 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('route-builder-card-heading');
     expect(html).not.toMatch(/class="route-stop-compact-toolbar"[\s\S]*route-optimize-button/);
     expect(html).not.toMatch(/class="route-builder-tab-body route-builder-tab-body--stop-order"[\s\S]*Route Engine job details[\s\S]*class="route-stop-compact-list/);
+
+    const liveElapsedRows = getRouteOptimizationJobDetailRows(routeOptimizationJobFixture({
+      elapsedMs: 15320,
+      startedAt: '2026-06-10T07:00:01.000Z',
+      status: 'RUNNING',
+    }), 'en-CA', Date.parse('2026-06-10T07:01:02.000Z'));
+    expect(liveElapsedRows[2]?.value).toBe('1m 01s');
   });
 
   test('RouteBuilder keeps route optimization controls visible outside the Stop order tab', () => {

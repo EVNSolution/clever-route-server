@@ -2462,6 +2462,7 @@ button.danger.subtle {
   color: inherit;
   font-weight: 800;
 }
+.route-optimization-summary,
 .route-optimization-details {
   border-top: 1px solid rgb(148 163 184 / 35%);
   display: grid;
@@ -2469,15 +2470,37 @@ button.danger.subtle {
   margin: 4px 0 0;
   padding-top: 8px;
 }
+.route-optimization-summary {
+  gap: 6px 14px;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
 .route-optimization-notice--map .route-optimization-details {
   gap: 6px 14px;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
+.route-optimization-log {
+  border-top: 1px solid rgb(148 163 184 / 35%);
+  margin-top: 4px;
+  padding-top: 6px;
+}
+.route-optimization-log summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  list-style-position: inside;
+  text-transform: uppercase;
+}
+.route-optimization-log .route-optimization-details {
+  border-top: 0;
+}
+.route-optimization-summary div,
 .route-optimization-details div {
   display: grid;
   gap: 8px;
   grid-template-columns: minmax(92px, max-content) minmax(0, 1fr);
 }
+.route-optimization-summary dt,
 .route-optimization-details dt {
   font-size: 11px;
   font-weight: 900;
@@ -2485,12 +2508,14 @@ button.danger.subtle {
   opacity: 0.78;
   text-transform: uppercase;
 }
+.route-optimization-summary dd,
 .route-optimization-details dd {
   font-weight: 800;
   margin: 0;
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.route-optimization-summary dd.monospace,
 .route-optimization-details dd.monospace {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 12px;

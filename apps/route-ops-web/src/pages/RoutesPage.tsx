@@ -38,6 +38,7 @@ type RouteBuilderTab = "driver-options" | "stop-order";
 type RouteEndMode = RoutePlanDetailDto["routePlan"]["routeEndMode"];
 type SaveRouteInput = Parameters<typeof saveRoute>[0];
 const ROUTE_OPTIMIZATION_POLL_MS = 2500;
+const ROUTE_OPTIMIZATION_ELAPSED_TICK_MS = 1000;
 type StopDropPreview = {
   position: StopDropPosition;
   targetStopId: string;
@@ -187,13 +188,14 @@ type RouteOptimizationDetailRow = {
 export function getRouteOptimizationJobDetailRows(
   job: RouteOptimizationJobDto | null,
   locale: string | null | undefined = "en-CA",
+  nowMs: number | null = null,
 ): RouteOptimizationDetailRow[] {
   if (job === null) return [];
   const copy = getRoutesCopy(locale).routeOptimization;
   const rows: RouteOptimizationDetailRow[] = [
     { label: copy.details.status, value: copy.statuses[job.status] },
     { label: copy.details.step, value: copy.steps[job.currentStep] },
-    { label: copy.details.elapsed, value: formatRouteOptimizationDuration(getRouteOptimizationElapsedMs(job), copy.details.notAvailable) },
+    { label: copy.details.elapsed, value: formatRouteOptimizationDuration(getRouteOptimizationElapsedMs(job, nowMs), copy.details.notAvailable) },
     { label: copy.details.timeoutBudget, value: formatRouteOptimizationDuration(job.timeoutBudgetMs, copy.details.notAvailable) },
     { label: copy.details.traceId, monospace: true, value: job.traceId },
   ];
@@ -204,7 +206,13 @@ export function getRouteOptimizationJobDetailRows(
   return rows;
 }
 
-function getRouteOptimizationElapsedMs(job: RouteOptimizationJobDto): number | null {
+function getRouteOptimizationElapsedMs(job: RouteOptimizationJobDto, nowMs: number | null = null): number | null {
+  if (nowMs !== null && isRouteOptimizationJobActive(job)) {
+    const startedAt = Date.parse(job.startedAt ?? job.createdAt);
+    if (!Number.isNaN(startedAt)) {
+      return Math.max(job.elapsedMs ?? 0, nowMs - startedAt);
+    }
+  }
   if (job.elapsedMs !== null) return job.elapsedMs;
   if (!isRouteOptimizationJobActive(job)) return null;
   const startedAt = Date.parse(job.startedAt ?? job.createdAt);
@@ -456,6 +464,7 @@ export function RouteBuilder(input: {
   const [optimizationJob, setOptimizationJob] = useState<RouteOptimizationJobDto | null>(
     () => input.initialOptimizationJob ?? null,
   );
+  const [optimizationElapsedNowMs, setOptimizationElapsedNowMs] = useState<number | null>(null);
   const detail = input.detail;
   const locale = resolveLocale(input.locale);
   const t = getRoutesCopy(locale);
@@ -490,6 +499,20 @@ export function RouteBuilder(input: {
       cancelled = true;
     };
   }, [detail?.routePlan.id, input.setError]);
+
+  useEffect(() => {
+    if (!isRouteOptimizationJobActive(optimizationJob)) {
+      setOptimizationElapsedNowMs(null);
+      return;
+    }
+    setOptimizationElapsedNowMs(Date.now());
+    const interval = window.setInterval(() => {
+      setOptimizationElapsedNowMs(Date.now());
+    }, ROUTE_OPTIMIZATION_ELAPSED_TICK_MS);
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [optimizationJob]);
 
   useEffect(() => {
     if (detail === null || !isRouteOptimizationJobActive(optimizationJob)) return;
@@ -699,18 +722,34 @@ export function RouteBuilder(input: {
           : t.routeOptimization.rerun}
     </button>
   );
+  const routeOptimizationRows = getRouteOptimizationJobDetailRows(optimizationJob, locale, optimizationElapsedNowMs);
+  const routeOptimizationSummaryRows = routeOptimizationRows.slice(0, 3);
+  const routeOptimizationLogRows = routeOptimizationRows.slice(3);
   const routeOptimizationStatus = optimizationNotice === null ? undefined : (
     <div className={`route-optimization-notice route-optimization-notice--map ${optimizationNotice.tone}`}>
       <strong>{t.routeOptimization.title}</strong>
       <span>{optimizationNotice.text}</span>
-      <dl className="route-optimization-details" aria-label={t.routeOptimization.details.title}>
-        {getRouteOptimizationJobDetailRows(optimizationJob, locale).map((row) => (
+      <dl className="route-optimization-summary" aria-label={t.routeOptimization.title}>
+        {routeOptimizationSummaryRows.map((row) => (
           <div key={row.label}>
             <dt>{row.label}</dt>
             <dd className={row.monospace === true ? "monospace" : undefined}>{row.value}</dd>
           </div>
         ))}
       </dl>
+      {routeOptimizationLogRows.length === 0 ? null : (
+        <details className="route-optimization-log" open={hasActiveOptimizationJob}>
+          <summary>{t.routeOptimization.details.title}</summary>
+          <dl className="route-optimization-details" aria-label={t.routeOptimization.details.title}>
+            {routeOptimizationLogRows.map((row) => (
+              <div key={row.label}>
+                <dt>{row.label}</dt>
+                <dd className={row.monospace === true ? "monospace" : undefined}>{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        </details>
+      )}
       {hasActiveOptimizationJob ? <small>{t.routeOptimization.editingLocked}</small> : null}
     </div>
   );
