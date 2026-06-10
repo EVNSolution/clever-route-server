@@ -2,8 +2,11 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import {
+  createRouteOptimizationJob,
   deleteDriver,
+  getLatestRouteOptimizationJob,
   getNotifications,
+  getRouteOptimizationJob,
   markNotificationRead,
   publishRoute,
   regenerateDriverInviteCode,
@@ -22,15 +25,23 @@ import {
   buildRouteSaveDraftInput,
   getDriverOptionLabel,
   getRouteDriverDisplay,
+  getRouteOptimizationJobNotice,
   getRoutePublishNotice,
   formatRoutePlanStatus,
   hasDepotCoordinates,
+  isRouteOptimizationJobActive,
   isRouteVisibleToLinkedDriver,
   RouteBuilder,
   RouteStopOrderCompactList,
 } from '../src/pages/RoutesPage';
 import { getRoutesCopy } from '../src/i18n';
-import type { BootstrapPayload, DriverDto, RoutePlanDetailDto, RoutePlanSummaryDto } from '../src/types';
+import type {
+  BootstrapPayload,
+  DriverDto,
+  RouteOptimizationJobDto,
+  RoutePlanDetailDto,
+  RoutePlanSummaryDto,
+} from '../src/types';
 
 describe('Route Ops driver invite and route assignment UI helpers', () => {
   afterEach(() => {
@@ -430,6 +441,104 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('data-drop-preview="after"');
   });
 
+  test('RouteBuilder shows optimization job status and locks stop order controls while active', () => {
+    const detail = routePlanDetailFixture();
+    const html = renderToStaticMarkup(
+      <RouteBuilder
+        bootstrap={bootstrap()}
+        deletingRouteId={null}
+        detail={detail}
+        drivers={[driverFixture()]}
+        initialBuilderTab="stop-order"
+        initialOptimizationJob={routeOptimizationJobFixture({ status: 'RUNNING' })}
+        navigate={() => undefined}
+        onDeleteRoute={() => undefined}
+        onRefreshRoutes={() => undefined}
+        setDetail={() => undefined}
+        setError={() => undefined}
+      />,
+    );
+
+    expect(isRouteOptimizationJobActive(routeOptimizationJobFixture({ status: 'RUNNING' }))).toBe(true);
+    expect(html).toContain('Route optimization');
+    expect(html).toContain('Route Engine is optimizing this route. This may take a while; it is not a failure.');
+    expect(html).toContain('Stop order edits are locked until this job reaches a terminal state.');
+    expect(html).toContain('class="route-stop-compact-list locked"');
+    expect(html).toContain('Rerun optimization');
+    expect(html).toMatch(/class="primary route-optimize-button" disabled=""/);
+  });
+
+  test('RouteBuilder allows explicit optimization rerun after a terminal job', () => {
+    const html = renderToStaticMarkup(
+      <RouteBuilder
+        bootstrap={bootstrap()}
+        deletingRouteId={null}
+        detail={routePlanDetailFixture()}
+        drivers={[driverFixture()]}
+        initialBuilderTab="stop-order"
+        initialOptimizationJob={routeOptimizationJobFixture({ status: 'APPLIED' })}
+        navigate={() => undefined}
+        onDeleteRoute={() => undefined}
+        onRefreshRoutes={() => undefined}
+        setDetail={() => undefined}
+        setError={() => undefined}
+      />,
+    );
+
+    expect(getRouteOptimizationJobNotice(routeOptimizationJobFixture({ status: 'APPLIED' }))?.tone).toBe('green');
+    expect(html).toContain('Route Engine result applied. You can still edit stops manually, or rerun optimization explicitly.');
+    expect(html).toContain('Rerun optimization');
+    expect(html).not.toContain('route-stop-compact-list locked');
+    expect(html).not.toMatch(/class="primary route-optimize-button" disabled=""/);
+  });
+
+  test('route optimization job API helpers use the protected Route Ops endpoints', async () => {
+    const fetchMock = vi.fn((url: string) =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ data: { job: routeOptimizationJobFixture({ id: url.includes('latest') ? 'latest-job-id' : 'job-id' }) }, error: null }),
+          {
+            headers: { 'Content-Type': 'application/json' },
+            status: 200,
+          },
+        ),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('window', { location: { search: '?shopDomain=tenant-a.example.test' } });
+
+    await createRouteOptimizationJob('route/id', 'csrf-token');
+    await getLatestRouteOptimizationJob('route/id');
+    await getRouteOptimizationJob('route/id', 'job/id');
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/admin/ui/app/api/routes/route%2Fid/optimize-jobs?shopDomain=tenant-a.example.test',
+      expect.objectContaining({
+        body: '{}',
+        credentials: 'same-origin',
+        headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-token' }),
+        method: 'POST',
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/admin/ui/app/api/routes/route%2Fid/optimize-jobs/latest?shopDomain=tenant-a.example.test',
+      expect.objectContaining({
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      '/admin/ui/app/api/routes/route%2Fid/optimize-jobs/job%2Fid?shopDomain=tenant-a.example.test',
+      expect.objectContaining({
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      }),
+    );
+  });
+
   test('regenerateDriverInviteCode posts to the protected Route Ops API with CSRF', async () => {
     const fetchMock = vi.fn(() =>
       Promise.resolve(
@@ -714,6 +823,30 @@ function bootstrap(overrides: Partial<BootstrapPayload> = {}): BootstrapPayload 
     mode: 'internal-admin',
     routerConfig: { provider: null, status: 'not_configured' },
     shopDomain: 'dev1.tomatonofood.com',
+    ...overrides,
+  };
+}
+
+function routeOptimizationJobFixture(overrides: Partial<RouteOptimizationJobDto> = {}): RouteOptimizationJobDto {
+  return {
+    appliedAt: null,
+    createdAt: '2026-06-10T07:00:00.000Z',
+    createdBy: 'web-operator',
+    currentStep: 'QUEUED',
+    elapsedMs: null,
+    engineResultSequence: null,
+    errorCode: null,
+    errorMessage: null,
+    finishedAt: null,
+    id: 'job-id',
+    invalidatedReason: null,
+    routePlanId: 'route-plan-id',
+    shopId: 'shop-id',
+    startedAt: null,
+    status: 'QUEUED',
+    timeoutBudgetMs: 30000,
+    traceId: 'route-opt:route-plan-id:test',
+    updatedAt: '2026-06-10T07:00:00.000Z',
     ...overrides,
   };
 }

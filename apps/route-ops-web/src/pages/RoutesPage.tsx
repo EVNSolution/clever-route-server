@@ -2,9 +2,12 @@ import { useCallback, useEffect, useState } from "react";
 import type { DragEvent, KeyboardEvent, ReactElement } from "react";
 
 import {
+  createRouteOptimizationJob,
   deleteRoute,
   getDrivers,
+  getLatestRouteOptimizationJob,
   getRouteDetail,
+  getRouteOptimizationJob,
   getRoutes,
   saveRoute,
 } from "../api";
@@ -24,6 +27,7 @@ import type { StopDropPosition } from "../state";
 import type {
   BootstrapPayload,
   DriverDto,
+  RouteOptimizationJobDto,
   RoutePlanDetailDto,
   RoutePlanSummaryDto,
   RouteStopDto,
@@ -33,6 +37,7 @@ import { readErrorMessage } from "../utils/format";
 type RouteBuilderTab = "driver-options" | "stop-order";
 type RouteEndMode = RoutePlanDetailDto["routePlan"]["routeEndMode"];
 type SaveRouteInput = Parameters<typeof saveRoute>[0];
+const ROUTE_OPTIMIZATION_POLL_MS = 2500;
 type StopDropPreview = {
   position: StopDropPosition;
   targetStopId: string;
@@ -146,6 +151,31 @@ export function hasDepotCoordinates(
     longitude >= -180 &&
     longitude <= 180
   );
+}
+
+export function isRouteOptimizationJobActive(
+  job: RouteOptimizationJobDto | null,
+): boolean {
+  return job?.status === "QUEUED" || job?.status === "RUNNING";
+}
+
+export function getRouteOptimizationJobNotice(
+  job: RouteOptimizationJobDto | null,
+  locale: string | null | undefined = "en-CA",
+): { tone: "green" | "orange" | "neutral"; text: string } | null {
+  if (job === null) return null;
+  const copy = getRoutesCopy(locale).routeOptimization;
+  if (job.status === "QUEUED") return { tone: "neutral", text: copy.queued };
+  if (job.status === "RUNNING") return { tone: "neutral", text: copy.running };
+  if (job.status === "APPLIED") return { tone: "green", text: copy.applied };
+  if (job.status === "TIMEOUT") return { tone: "orange", text: copy.timeout };
+  if (job.status === "FAILED") {
+    return {
+      tone: "orange",
+      text: job.errorMessage === null ? copy.failed : `${copy.failed}: ${job.errorMessage}`,
+    };
+  }
+  return { tone: "orange", text: copy.cancelled };
 }
 
 export function buildRouteSaveDraftInput({
@@ -348,6 +378,7 @@ export function RouteBuilder(input: {
   detail: RoutePlanDetailDto | null;
   drivers: DriverDto[];
   initialBuilderTab?: RouteBuilderTab;
+  initialOptimizationJob?: RouteOptimizationJobDto | null;
   locale?: string | null;
   navigate(path: string): void;
   onDeleteRoute(routePlanId: string): void;
@@ -371,6 +402,10 @@ export function RouteBuilder(input: {
   const [draggingStopId, setDraggingStopId] = useState<string | null>(null);
   const [dropPreview, setDropPreview] = useState<StopDropPreview | null>(null);
   const [isSavingRoute, setIsSavingRoute] = useState(false);
+  const [isStartingOptimizationJob, setIsStartingOptimizationJob] = useState(false);
+  const [optimizationJob, setOptimizationJob] = useState<RouteOptimizationJobDto | null>(
+    () => input.initialOptimizationJob ?? null,
+  );
   const detail = input.detail;
   const locale = resolveLocale(input.locale);
   const t = getRoutesCopy(locale);
@@ -387,6 +422,53 @@ export function RouteBuilder(input: {
     () => setDraftRouteEndMode(detail?.routePlan.routeEndMode ?? "END_AT_LAST_STOP"),
     [detail?.routePlan.id, detail?.routePlan.routeEndMode],
   );
+
+  useEffect(() => {
+    if (detail === null) {
+      setOptimizationJob(null);
+      return;
+    }
+    let cancelled = false;
+    getLatestRouteOptimizationJob(detail.routePlan.id)
+      .then((payload) => {
+        if (!cancelled) setOptimizationJob(payload.job);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) input.setError(readErrorMessage(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detail?.routePlan.id, input.setError]);
+
+  useEffect(() => {
+    if (detail === null || !isRouteOptimizationJobActive(optimizationJob)) return;
+    let cancelled = false;
+    const poll = async (): Promise<void> => {
+      if (optimizationJob === null) return;
+      try {
+        const payload = await getRouteOptimizationJob(detail.routePlan.id, optimizationJob.id);
+        if (cancelled) return;
+        setOptimizationJob(payload.job);
+        if (payload.job?.status === "APPLIED") {
+          const updated = await getRouteDetail(detail.routePlan.id);
+          if (!cancelled) {
+            input.setDetail(updated);
+            input.onRefreshRoutes();
+          }
+        }
+      } catch (error) {
+        if (!cancelled) input.setError(readErrorMessage(error));
+      }
+    };
+    const interval = window.setInterval(() => {
+      void poll();
+    }, ROUTE_OPTIMIZATION_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [detail, input.onRefreshRoutes, input.setDetail, input.setError, optimizationJob]);
 
   const stats = deriveRouteStats(detail);
   const hasSequenceChanges = hasStopSequenceChanged(detail?.stops, draftStops);
@@ -421,11 +503,37 @@ export function RouteBuilder(input: {
     effectiveRoutePlan.status === "DRAFT" &&
     effectiveRoutePlan.driverId !== null &&
     effectiveRoutePlan.stopsCount > 0;
+  const hasActiveOptimizationJob = isRouteOptimizationJobActive(optimizationJob);
+  const optimizationNotice = getRouteOptimizationJobNotice(optimizationJob, locale);
+  const hasUnsavedRouteChanges = hasSequenceChanges || hasDriverChanges || hasRouteEndChanges;
+  const canStartOptimizationJob =
+    detail !== null &&
+    !isStartingOptimizationJob &&
+    !hasActiveOptimizationJob &&
+    !hasUnsavedRouteChanges;
   const canSaveRoute =
     detail !== null &&
     !isSavingRoute &&
+    !hasActiveOptimizationJob &&
     !isUnsafeRouteEndDraft &&
     (hasSequenceChanges || hasDriverChanges || hasRouteEndChanges || canPublishOnSave);
+  const startOptimizationJob = async (): Promise<void> => {
+    if (detail === null || !canStartOptimizationJob) return;
+    setIsStartingOptimizationJob(true);
+    try {
+      const payload = await createRouteOptimizationJob(
+        detail.routePlan.id,
+        input.bootstrap.csrfToken,
+      );
+      setOptimizationJob(payload.job);
+      input.setError(null);
+    } catch (error) {
+      input.setError(readErrorMessage(error));
+    } finally {
+      setIsStartingOptimizationJob(false);
+    }
+  };
+
   const save = async (): Promise<void> => {
     if (detail === null || !canSaveRoute) return;
     setIsSavingRoute(true);
@@ -448,6 +556,7 @@ export function RouteBuilder(input: {
   };
 
   const moveDraftStop = (deliveryStopId: string, direction: -1 | 1): void => {
+    if (hasActiveOptimizationJob) return;
     setDraftStops((current) => moveStop(current, deliveryStopId, direction));
     setSelectedRouteStopId(null);
   };
@@ -458,6 +567,7 @@ export function RouteBuilder(input: {
   };
 
   const dropDraftStop = (targetStopId: string, position: StopDropPosition): void => {
+    if (hasActiveOptimizationJob) return;
     if (draggingStopId !== null) {
       setDraftStops((current) =>
         moveStopToDropPosition(current, draggingStopId, targetStopId, position),
@@ -468,6 +578,7 @@ export function RouteBuilder(input: {
   };
 
   const moveDraftStopToSequence = (deliveryStopId: string, sequence: number): void => {
+    if (hasActiveOptimizationJob) return;
     setDraftStops((current) => moveStopToSequence(current, deliveryStopId, sequence));
     setSelectedRouteStopId(null);
     clearStopDragPreview();
@@ -696,8 +807,28 @@ export function RouteBuilder(input: {
                   <span className="badge route-stop-count-badge">
                     {draftStops.length} {t.stops.toLocaleLowerCase(locale)}
                   </span>
+                  <button
+                    className="primary route-optimize-button"
+                    disabled={!canStartOptimizationJob}
+                    onClick={() => void startOptimizationJob()}
+                    type="button"
+                  >
+                    {isStartingOptimizationJob
+                      ? t.routeOptimization.starting
+                      : optimizationJob === null
+                        ? t.routeOptimization.start
+                        : t.routeOptimization.rerun}
+                  </button>
                 </div>
+                {optimizationNotice === null ? null : (
+                  <div className={`route-optimization-notice ${optimizationNotice.tone}`}>
+                    <strong>{t.routeOptimization.title}</strong>
+                    <span>{optimizationNotice.text}</span>
+                    {hasActiveOptimizationJob ? <small>{t.routeOptimization.editingLocked}</small> : null}
+                  </div>
+                )}
                 <RouteStopOrderCompactList
+                  disabled={hasActiveOptimizationJob}
                   draggingStopId={draggingStopId}
                   dropPreview={dropPreview}
                   locale={locale}
@@ -729,6 +860,7 @@ export function RouteBuilder(input: {
 }
 
 export function RouteStopOrderCompactList({
+  disabled = false,
   draggingStopId,
   dropPreview,
   locale,
@@ -739,6 +871,7 @@ export function RouteStopOrderCompactList({
   onMove,
   stops,
 }: {
+  disabled?: boolean;
   draggingStopId: string | null;
   dropPreview: StopDropPreview | null;
   locale?: string | null;
@@ -784,6 +917,7 @@ export function RouteStopOrderCompactList({
       className={[
         "route-stop-compact-list",
         draggingStopId === null ? "" : "drag-active",
+        disabled ? "locked" : "",
       ].filter(Boolean).join(" ")}
       onDragOver={(event) => {
         event.preventDefault();
@@ -804,24 +938,31 @@ export function RouteStopOrderCompactList({
             dropPosition === "after" ? "drop-after" : "",
           ].filter(Boolean).join(" ")}
           data-drop-preview={dropPosition ?? undefined}
-          draggable
+          draggable={!disabled}
           key={stop.deliveryStopId}
           onDragEnd={onDragEnd}
           onDragEnter={(event) => {
+            if (disabled) return;
             onDropPreview(previewFor(event, stop.deliveryStopId));
           }}
           onDragOver={(event) => {
+            if (disabled) return;
             event.preventDefault();
             event.dataTransfer.dropEffect = "move";
             scrollDragEdge(event);
             onDropPreview(previewFor(event, stop.deliveryStopId));
           }}
           onDragStart={(event) => {
+            if (disabled) {
+              event.preventDefault();
+              return;
+            }
             event.dataTransfer.effectAllowed = "move";
             event.dataTransfer.setData("text/plain", stop.deliveryStopId);
             onDragStart(stop.deliveryStopId);
           }}
           onDrop={(event) => {
+            if (disabled) return;
             event.preventDefault();
             const position = dropPreview?.targetStopId === stop.deliveryStopId
               ? dropPreview.position
@@ -850,7 +991,7 @@ export function RouteStopOrderCompactList({
           <div className="stop-actions route-stop-compact-actions">
             <button
               aria-label={t.moveUp(stop.orderName)}
-              disabled={index === 0}
+              disabled={disabled || index === 0}
               onClick={() => onMove(stop.deliveryStopId, -1)}
               type="button"
             >
@@ -858,7 +999,7 @@ export function RouteStopOrderCompactList({
             </button>
             <button
               aria-label={t.moveDown(stop.orderName)}
-              disabled={index === stops.length - 1}
+              disabled={disabled || index === stops.length - 1}
               onClick={() => onMove(stop.deliveryStopId, 1)}
               type="button"
             >

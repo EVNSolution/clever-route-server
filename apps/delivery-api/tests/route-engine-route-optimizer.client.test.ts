@@ -154,6 +154,38 @@ describe('RouteEngineRouteOptimizationClient', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+
+
+  test('returns typed graph-not-ready diagnostics for job-backed optimization', async () => {
+    const fetch = vi.fn<TestFetchLike>().mockResolvedValue(
+      Response.json({ detail: 'GRAPH_NOT_READY' }, { status: 503 })
+    );
+    const client = new RouteEngineRouteOptimizationClient({ baseUrl: 'http://route-engine', fetch, internalToken: 'token' });
+
+    const outcome = await client.optimizeStopOrderWithDiagnostics({ detail, shopDomain: 'tenant-a.example.test' });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error('Expected route_engine graph-not-ready failure.');
+    expect(outcome.failure.code).toBe('graph_not_ready');
+    expect(outcome.failure.httpStatus).toBe(503);
+    await expect(client.optimizeStopOrder({ detail, shopDomain: 'tenant-a.example.test' })).resolves.toBeNull();
+  });
+
+  test('returns typed invalid-input diagnostics when route cannot be sent to route_engine', async () => {
+    const fetch = vi.fn<TestFetchLike>();
+    const client = new RouteEngineRouteOptimizationClient({ baseUrl: 'http://route-engine', fetch, internalToken: 'token' });
+
+    const outcome = await client.optimizeStopOrderWithDiagnostics({
+      detail: { ...detail, routePlan: { ...detail.routePlan, depot: { latitude: null, longitude: null } } },
+      shopDomain: 'tenant-a.example.test'
+    });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error('Expected route_engine invalid-input failure.');
+    expect(outcome.failure.code).toBe('invalid_input');
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   test('returns null for route_engine HTTP or payload failures', async () => {
     const failingResponses = [new Response(null, { status: 503 }), Response.json({ status: 'solved', result: { routes: 'bad' } })];
 

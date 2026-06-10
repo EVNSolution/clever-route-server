@@ -85,6 +85,9 @@ const expectedRouteRegistrations: RouteRegistration[] = [
   { line: 1849, method: "DELETE", pathExpression: "`${ADMIN_UI_APP_API_PATH}/routes/:routePlanId`" },
   { line: 1871, method: "PATCH", pathExpression: "`${ADMIN_UI_APP_API_PATH}/routes/:routePlanId`" },
   { line: 1964, method: "PATCH", pathExpression: "`${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/stops`" },
+  { line: 1999, method: "POST", pathExpression: "`${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/optimize-jobs`" },
+  { line: 2000, method: "GET", pathExpression: "`${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/optimize-jobs/latest`" },
+  { line: 2001, method: "GET", pathExpression: "`${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/optimize-jobs/:jobId`" },
   { line: 1999, method: "POST", pathExpression: "`${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/optimize`" },
   { line: 2038, method: "PATCH", pathExpression: "`${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/driver`" },
   { line: 2062, method: "PATCH", pathExpression: "`${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/options`" },
@@ -203,8 +206,11 @@ describe("admin UI route inventory", () => {
     expect(registrations).toContain("PATCH `${ADMIN_UI_APP_API_PATH}/orders/:orderId/metadata`");
     expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/routes`");
     expect(registrations).toContain("PATCH `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/stops`");
+    expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/optimize-jobs`");
+    expect(registrations).toContain("GET `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/optimize-jobs/latest`");
+    expect(registrations).toContain("GET `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/optimize-jobs/:jobId`");
     expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/publish`");
     expect(registrations).toContain("PATCH `${ADMIN_UI_APP_API_PATH}/settings`");
-    expect(expectedRouteRegistrations).toHaveLength(87);
+    expect(expectedRouteRegistrations).toHaveLength(90);
   });
 });

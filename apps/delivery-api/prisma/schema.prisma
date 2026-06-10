@@ -95,6 +95,22 @@ enum RoutePlanStatus {
   CANCELLED
 }
 
+enum RouteOptimizationJobStatus {
+  QUEUED
+  RUNNING
+  APPLIED
+  TIMEOUT
+  FAILED
+  CANCELLED
+}
+
+enum RouteOptimizationJobStep {
+  QUEUED
+  CALLING_ENGINE
+  APPLYING_RESULT
+  COMPLETED
+}
+
 enum DriverStatus {
   ACTIVE
   INACTIVE
@@ -189,6 +205,7 @@ model Shop {
   adminNotifications              AdminNotification[]
   orderDeliveryFacts              OrderDeliveryFact[]
   wordpressPluginPairingCodes     WordPressPluginPairingCode[]
+  routeOptimizationJobs           RouteOptimizationJob[]
 
   @@unique([shopDomain])
   @@unique([shopifyShopGid])
@@ -555,25 +572,26 @@ model OrderDeliveryFact {
 }
 
 model RoutePlan {
-  id                  String                @id @default(uuid()) @db.Uuid
-  shopId              String                @db.Uuid
-  shop                Shop                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  name                String                @db.Text
-  planDate            DateTime              @db.Date
-  status              RoutePlanStatus       @default(DRAFT)
-  driverId            String?               @db.Uuid
-  driver              Driver?               @relation(fields: [driverId], references: [id], onDelete: SetNull)
-  vehicleId           String?               @db.Uuid
-  vehicle             Vehicle?              @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
-  depotLatitude       Decimal?              @db.Decimal(10, 7)
-  depotLongitude      Decimal?              @db.Decimal(10, 7)
-  optimizerVersion    String                @db.Text
+  id                  String                 @id @default(uuid()) @db.Uuid
+  shopId              String                 @db.Uuid
+  shop                Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  name                String                 @db.Text
+  planDate            DateTime               @db.Date
+  status              RoutePlanStatus        @default(DRAFT)
+  driverId            String?                @db.Uuid
+  driver              Driver?                @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  vehicleId           String?                @db.Uuid
+  vehicle             Vehicle?               @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  depotLatitude       Decimal?               @db.Decimal(10, 7)
+  depotLongitude      Decimal?               @db.Decimal(10, 7)
+  optimizerVersion    String                 @db.Text
   constraints         Json
   metrics             Json
-  createdBy           String?               @db.Text
-  createdAt           DateTime              @default(now()) @db.Timestamptz(6)
-  updatedAt           DateTime              @updatedAt @db.Timestamptz(6)
+  createdBy           String?                @db.Text
+  createdAt           DateTime               @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime               @updatedAt @db.Timestamptz(6)
   routeStops          RoutePlanStop[]
+  optimizationJobs    RouteOptimizationJob[]
   driverEvents        DriverEvent[]
   driverProofMedia    DriverProofMedia[]
   driverRouteFeedback DriverRouteFeedback[]
@@ -581,6 +599,34 @@ model RoutePlan {
   @@index([shopId, planDate, status])
   @@index([shopId, driverId, status])
   @@map("route_plans")
+}
+
+model RouteOptimizationJob {
+  id                   String                     @id @default(uuid()) @db.Uuid
+  shopId               String                     @db.Uuid
+  shop                 Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  routePlanId          String                     @db.Uuid
+  routePlan            RoutePlan                  @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
+  status               RouteOptimizationJobStatus @default(QUEUED)
+  currentStep          RouteOptimizationJobStep   @default(QUEUED)
+  timeoutBudgetMs      Int
+  elapsedMs            Int?
+  engineResultSequence Json?
+  appliedAt            DateTime?                  @db.Timestamptz(6)
+  invalidatedReason    String?                    @db.Text
+  errorCode            String?                    @db.Text
+  errorMessage         String?                    @db.Text
+  traceId              String                     @db.Text
+  createdBy            String?                    @db.Text
+  startedAt            DateTime?                  @db.Timestamptz(6)
+  finishedAt           DateTime?                  @db.Timestamptz(6)
+  createdAt            DateTime                   @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime                   @updatedAt @db.Timestamptz(6)
+
+  @@index([routePlanId, createdAt])
+  @@index([shopId, status, createdAt])
+  @@index([traceId])
+  @@map("route_optimization_jobs")
 }
 
 model RoutePlanStop {

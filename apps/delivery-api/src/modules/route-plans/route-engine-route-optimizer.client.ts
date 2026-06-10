@@ -25,6 +25,26 @@ export type RouteOptimizationResult = {
   stops: RouteOptimizationStopSequence[];
 };
 
+export type RouteOptimizationFailureCode =
+  | 'fallback_not_applied'
+  | 'graph_not_ready'
+  | 'invalid_engine_payload'
+  | 'invalid_input'
+  | 'network_error'
+  | 'route_engine_unavailable'
+  | 'solver_timeout';
+
+export type RouteOptimizationFailure = {
+  code: RouteOptimizationFailureCode;
+  elapsedMs: number;
+  httpStatus?: number | undefined;
+  message: string;
+};
+
+export type RouteOptimizationOutcome =
+  | { failure: RouteOptimizationFailure; ok: false }
+  | { ok: true; result: RouteOptimizationResult };
+
 export type RouteOptimizationInput = {
   detail: RoutePlanDetail;
   shopDomain: string;
@@ -32,6 +52,7 @@ export type RouteOptimizationInput = {
 
 export type RouteOptimizationService = {
   optimizeStopOrder(input: RouteOptimizationInput): Promise<RouteOptimizationResult | null>;
+  optimizeStopOrderWithDiagnostics?(input: RouteOptimizationInput): Promise<RouteOptimizationOutcome>;
 };
 
 type RouteEngineRouteOptimizationClientOptions = {
@@ -116,6 +137,12 @@ export class RouteEngineRouteOptimizationClient implements RouteOptimizationServ
   }
 
   async optimizeStopOrder(input: RouteOptimizationInput): Promise<RouteOptimizationResult | null> {
+    const outcome = await this.optimizeStopOrderWithDiagnostics(input);
+    return outcome.ok ? outcome.result : null;
+  }
+
+  async optimizeStopOrderWithDiagnostics(input: RouteOptimizationInput): Promise<RouteOptimizationOutcome> {
+    const startedAt = Date.now();
     const request = buildSolveRequest({
       detail: input.detail,
       mode: this.mode,
@@ -125,7 +152,11 @@ export class RouteEngineRouteOptimizationClient implements RouteOptimizationServ
       timeoutMs: this.timeoutMs
     });
     if (request === null) {
-      return null;
+      return failureOutcome({
+        code: 'invalid_input',
+        elapsedMs: elapsedSince(startedAt),
+        message: 'Route cannot be optimized because depot/stops are missing valid coordinates or exceed supported limits.'
+      });
     }
 
     const controller = new AbortController();
@@ -144,22 +175,44 @@ export class RouteEngineRouteOptimizationClient implements RouteOptimizationServ
         method: 'POST',
         signal: controller.signal
       });
-    } catch {
-      return null;
+    } catch (error) {
+      return failureOutcome({
+        code: isAbortError(error) ? 'solver_timeout' : 'network_error',
+        elapsedMs: elapsedSince(startedAt),
+        message: isAbortError(error) ? 'route_engine request timed out.' : 'route_engine request failed before a response was received.'
+      });
     } finally {
       clearTimeout(timeout);
     }
 
-    if (!response.ok) {
-      return null;
-    }
-
     const payload = await response.json().catch(() => null);
-    if (!isRouteEngineSolveResponse(payload)) {
-      return null;
+    if (!response.ok) {
+      return failureOutcome({
+        code: classifyHttpFailure(response.status, payload),
+        elapsedMs: elapsedSince(startedAt),
+        httpStatus: response.status,
+        message: `route_engine responded with HTTP ${response.status}.`
+      });
     }
 
-    return buildOptimizationResult(input.detail, request.routableStops, payload);
+    if (!isRouteEngineSolveResponse(payload)) {
+      return failureOutcome({
+        code: 'invalid_engine_payload',
+        elapsedMs: elapsedSince(startedAt),
+        message: 'route_engine returned an invalid solve payload.'
+      });
+    }
+
+    const result = buildOptimizationResult(input.detail, request.routableStops, payload);
+    if (result === null) {
+      return failureOutcome({
+        code: 'invalid_engine_payload',
+        elapsedMs: elapsedSince(startedAt),
+        message: 'route_engine solve payload did not produce an applicable stop sequence.'
+      });
+    }
+
+    return { ok: true, result };
   }
 }
 
@@ -391,4 +444,39 @@ function isRouteEngineRouteStop(value: unknown): value is RouteEngineSolveRespon
 
 function objectOrNull(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function failureOutcome(failure: RouteOptimizationFailure): RouteOptimizationOutcome {
+  return { failure, ok: false };
+}
+
+function elapsedSince(startedAt: number): number {
+  return Math.max(0, Date.now() - startedAt);
+}
+
+function isAbortError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError';
+}
+
+function classifyHttpFailure(status: number, payload: unknown): RouteOptimizationFailureCode {
+  if (status === 408 || status === 504) {
+    return 'solver_timeout';
+  }
+  if (status === 503 && payloadText(payload).toLowerCase().includes('graph')) {
+    return 'graph_not_ready';
+  }
+  if (status === 503) {
+    return 'route_engine_unavailable';
+  }
+  return 'route_engine_unavailable';
+}
+
+function payloadText(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value !== 'object' || value === null) return '';
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return '';
+  }
 }

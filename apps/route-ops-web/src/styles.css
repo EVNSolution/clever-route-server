@@ -2431,3 +2431,43 @@ button.danger.subtle {
   grid-template-columns: minmax(100px, max-content) 1fr;
   gap: 6px;
 }
+.route-optimize-button {
+  white-space: nowrap;
+}
+.route-optimization-notice {
+  border: 1px solid #d9e1ee;
+  border-radius: 14px;
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 1.35;
+  padding: 10px 12px;
+}
+.route-optimization-notice strong {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.route-optimization-notice small {
+  color: inherit;
+  font-weight: 800;
+}
+.route-optimization-notice.green {
+  background: #ecfdf5;
+  border-color: #bbf7d0;
+  color: #166534;
+}
+.route-optimization-notice.orange {
+  background: #fff7ed;
+  border-color: #fed7aa;
+  color: #9a3412;
+}
+.route-optimization-notice.neutral {
+  background: #f8fafc;
+  border-color: #d9e1ee;
+  color: #475569;
+}
+.route-stop-compact-list.locked .route-stop-compact-row {
+  cursor: not-allowed;
+  opacity: 0.72;
+}

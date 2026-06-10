@@ -8,6 +8,8 @@ import type { AdminRoutePlanDependencies } from '../../routes/admin-route-plans.
 import { PrismaAdminDriverRepository } from '../driver/admin-driver.repository.js';
 import { AdminDriverService } from '../driver/admin-driver.service.js';
 import { PrismaRoutePlanRepository } from '../route-plans/route-plan.repository.js';
+import { PrismaRouteOptimizationJobRepository } from '../route-plans/route-optimization-job.repository.js';
+import { RouteOptimizationJobService } from '../route-plans/route-optimization-job.service.js';
 import { RoutePlanAdminService } from '../route-plans/route-plan.service.js';
 import { OsrmRouteGeometryProvider } from '../route-plans/osrm-route-geometry.client.js';
 import {
@@ -310,12 +312,16 @@ function readAdminUiRoutePlanService(input: {
   adminRoutePlans?: AdminRoutePlanDependencies | undefined;
   env: AdminCommerceConnectionsRuntimeEnv;
   prisma?: PrismaClient | undefined;
-}): Pick<AdminCommerceConnectionsUiDependencies, 'routePlanService'> {
+}): Pick<AdminCommerceConnectionsUiDependencies, 'routeOptimizationJobService' | 'routePlanService'> {
   if (input.prisma === undefined) {
     return input.adminRoutePlans === undefined ? {} : { routePlanService: input.adminRoutePlans.routePlanService };
   }
   const osrmBaseUrl = readOptional(input.env.OSRM_BASE_URL);
+  const routeOptimizationJobService = new RouteOptimizationJobService(
+    new PrismaRouteOptimizationJobRepository(input.prisma),
+  );
   return {
+    routeOptimizationJobService,
     routePlanService: new RoutePlanAdminService(
       new PrismaRoutePlanRepository(input.prisma, { allowAnyShopDomain: true }),
       osrmBaseUrl === undefined
@@ -323,7 +329,8 @@ function readAdminUiRoutePlanService(input: {
         : new OsrmRouteGeometryProvider({
             baseUrl: osrmBaseUrl,
             ...optionalTimeout(input.env.OSRM_TIMEOUT_MS),
-          })
+          }),
+      routeOptimizationJobService,
     )
   };
 }

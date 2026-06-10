@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 
+import { RouteOptimizationJobActiveError } from '../src/modules/route-plans/route-optimization-job.types.js';
 import { RoutePlanAdminService } from '../src/modules/route-plans/route-plan.service.js';
 import type { RouteGeometryProvider, RoutePlanRepository } from '../src/modules/route-plans/route-plan.service.js';
 import type {
@@ -336,6 +337,63 @@ describe('RoutePlanAdminService route geometry', () => {
       { name: 'driver', reason: 'driver_changed', status: 'applied' },
       { name: 'publish', reason: 'draft_ready_for_driver', status: 'applied' }
     ]);
+  });
+
+  test('blocks user route stop mutation while an optimization job is active', async () => {
+    const { repository, updateRoutePlanStops } = createHarness(routePlanDetail);
+    const routeOptimizationJobGuard = {
+      findLatestJob: vi.fn().mockResolvedValue({ status: 'RUNNING' }),
+      reconcileStaleActiveJobs: vi.fn().mockResolvedValue([])
+    };
+    const service = new RoutePlanAdminService(repository, undefined, routeOptimizationJobGuard);
+
+    await expect(service.updateRoutePlanStops({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: { stops: [] }
+    })).rejects.toBeInstanceOf(RouteOptimizationJobActiveError);
+
+    expect(routeOptimizationJobGuard.reconcileStaleActiveJobs).toHaveBeenCalledWith({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+    expect(updateRoutePlanStops).not.toHaveBeenCalled();
+  });
+
+  test('allows job-owned route stop apply while an optimization job is active', async () => {
+    const { repository, updateRoutePlanStops } = createHarness(routePlanDetail);
+    const routeOptimizationJobGuard = {
+      findLatestJob: vi.fn().mockResolvedValue({ status: 'RUNNING' }),
+      reconcileStaleActiveJobs: vi.fn().mockResolvedValue([])
+    };
+    const service = new RoutePlanAdminService(repository, undefined, routeOptimizationJobGuard);
+
+    await service.updateRoutePlanStops({
+      mutationContext: { jobId: 'job-id', source: 'route_optimization_job' },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: { stops: [] }
+    });
+
+    expect(routeOptimizationJobGuard.findLatestJob).not.toHaveBeenCalled();
+    expect(updateRoutePlanStops).toHaveBeenCalled();
+  });
+
+  test('blocks aggregate route save with stops while an optimization job is queued', async () => {
+    const { repository, saveRoutePlan } = createHarness(routePlanDetail);
+    const routeOptimizationJobGuard = {
+      findLatestJob: vi.fn().mockResolvedValue({ status: 'QUEUED' }),
+      reconcileStaleActiveJobs: vi.fn().mockResolvedValue([])
+    };
+    const service = new RoutePlanAdminService(repository, undefined, routeOptimizationJobGuard);
+
+    await expect(service.saveRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: { stops: [] }
+    })).rejects.toBeInstanceOf(RouteOptimizationJobActiveError);
+
+    expect(saveRoutePlan).not.toHaveBeenCalled();
   });
 
   test('returns updated route stops with null geometry and empty stop points when OSRM fails', async () => {

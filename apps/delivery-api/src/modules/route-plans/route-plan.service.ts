@@ -1,3 +1,5 @@
+import { RouteOptimizationJobActiveError } from './route-optimization-job.types.js';
+import type { RouteOptimizationJobDto } from './route-optimization-job.types.js';
 import type {
   CreateRoutePlanInput,
   CreateRoutePlanFromOrderIdsInput,
@@ -16,6 +18,11 @@ import type {
 
 export type RouteGeometryProvider = {
   buildRoute(input: RoutePlanDetail): Promise<RoutePlanRouteResult>;
+};
+
+export type RouteOptimizationJobGuard = {
+  findLatestJob(input: { routePlanId: string; shopDomain: string }): Promise<RouteOptimizationJobDto | null>;
+  reconcileStaleActiveJobs?(input: { routePlanId: string; shopDomain: string }): Promise<RouteOptimizationJobDto[]>;
 };
 
 export type RoutePlanRepository = {
@@ -55,7 +62,8 @@ export type RoutePlanRepository = {
 export class RoutePlanAdminService implements RoutePlanService {
   constructor(
     private readonly repository: RoutePlanRepository,
-    private readonly routeGeometryProvider?: RouteGeometryProvider
+    private readonly routeGeometryProvider?: RouteGeometryProvider,
+    private readonly routeOptimizationJobGuard?: RouteOptimizationJobGuard
   ) {}
 
   createRoutePlan(input: CreateRoutePlanInput): Promise<RoutePlanSummary> {
@@ -111,6 +119,9 @@ export class RoutePlanAdminService implements RoutePlanService {
   }
 
   async saveRoutePlan(input: SaveRoutePlanInput): Promise<SaveRoutePlanResult | null> {
+    if (input.payload.stops !== undefined) {
+      await this.assertNoActiveUserOptimizationJob(input);
+    }
     const saved = await this.repository.saveRoutePlan(input);
     if (saved === null) return null;
     const enriched = await this.withRouteGeometry(saved.detail);
@@ -125,7 +136,24 @@ export class RoutePlanAdminService implements RoutePlanService {
   }
 
   async updateRoutePlanStops(input: UpdateRoutePlanStopsInput): Promise<RoutePlanDetail | null> {
+    await this.assertNoActiveUserOptimizationJob(input);
     return this.withRouteGeometry(await this.repository.updateRoutePlanStops(input));
+  }
+
+  private async assertNoActiveUserOptimizationJob(input: UpdateRoutePlanStopsInput | SaveRoutePlanInput): Promise<void> {
+    if (input.mutationContext?.source === 'route_optimization_job') return;
+    if (this.routeOptimizationJobGuard === undefined) return;
+    await this.routeOptimizationJobGuard.reconcileStaleActiveJobs?.({
+      routePlanId: input.routePlanId,
+      shopDomain: input.shopDomain
+    });
+    const latestJob = await this.routeOptimizationJobGuard.findLatestJob({
+      routePlanId: input.routePlanId,
+      shopDomain: input.shopDomain
+    });
+    if (latestJob !== null && (latestJob.status === 'QUEUED' || latestJob.status === 'RUNNING')) {
+      throw new RouteOptimizationJobActiveError();
+    }
   }
 
   private async withRouteGeometry(detail: RoutePlanDetail | null): Promise<RoutePlanDetail | null> {

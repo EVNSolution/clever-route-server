@@ -180,10 +180,15 @@ export type UpdateRoutePlanStopsPayload = {
   }>;
 };
 
+export type RoutePlanMutationContext =
+  | { source: 'route_optimization_job'; jobId: string }
+  | { source: 'user' };
+
 export type UpdateRoutePlanStopsInput = {
   routePlanId: string;
   shopDomain: string;
   payload: UpdateRoutePlanStopsPayload;
+  mutationContext?: RoutePlanMutationContext | undefined;
 };
 
 export type UpdateRoutePlanDriverPayload = {
@@ -224,6 +229,7 @@ export type SaveRoutePlanInput = {
   routePlanId: string;
   shopDomain: string;
   payload: SaveRoutePlanPayload;
+  mutationContext?: RoutePlanMutationContext | undefined;
 };
 
 export type SaveRoutePlanOperation = {

@@ -15,6 +15,7 @@ import {
 } from "../src/modules/route-plans/route-plan.types.js";
 import { defaultRouteScopeConfig } from "../src/modules/route-ops/route-scope-config.js";
 import type { AdminCommerceConnectionsDependencies } from "../src/routes/admin-commerce-connections.routes.js";
+import type { RouteOptimizationJobDto } from "../src/modules/route-plans/route-optimization-job.types.js";
 import type { AdminCommerceConnectionsUiDependencies } from "../src/routes/admin-commerce-connections-ui.routes.js";
 import {
   createAdminWebLaunchToken,
@@ -43,6 +44,59 @@ function readApiError(response: TestResponseLike): ApiErrorBody {
   const payload = JSON.parse(response.body) as unknown as ApiErrorEnvelope;
   expect(payload.data).toBeNull();
   return payload.error;
+}
+
+function routeOptimizationJob(
+  overrides: Partial<RouteOptimizationJobDto> = {},
+): RouteOptimizationJobDto {
+  return {
+    appliedAt: null,
+    createdAt: "2026-06-10T07:00:00.000Z",
+    createdBy: "web-operator",
+    currentStep: "QUEUED",
+    elapsedMs: null,
+    engineResultSequence: null,
+    errorCode: null,
+    errorMessage: null,
+    finishedAt: null,
+    id: "job-id",
+    invalidatedReason: null,
+    routePlanId: "route-plan-id",
+    shopId: "shop-id",
+    startedAt: null,
+    status: "QUEUED",
+    timeoutBudgetMs: 30000,
+    traceId: "route-opt:route-plan-id:test",
+    updatedAt: "2026-06-10T07:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function routeOptimizationJobServiceMock(overrides: Partial<NonNullable<AdminCommerceConnectionsUiDependencies["routeOptimizationJobService"]>> = {}): NonNullable<AdminCommerceConnectionsUiDependencies["routeOptimizationJobService"]> {
+  return {
+    createJob: vi.fn(() => Promise.resolve(routeOptimizationJob())),
+    findJob: vi.fn(() => Promise.resolve(routeOptimizationJob({ status: "RUNNING" }))),
+    findLatestJob: vi.fn(() => Promise.resolve(routeOptimizationJob({ status: "RUNNING" }))),
+    markApplyingResult: vi.fn(() => Promise.resolve(routeOptimizationJob({ currentStep: "APPLYING_RESULT", status: "RUNNING" }))),
+    markRunning: vi.fn(() => Promise.resolve(routeOptimizationJob({ currentStep: "CALLING_ENGINE", status: "RUNNING" }))),
+    reconcileStaleActiveJobs: vi.fn(() => Promise.resolve([])),
+    recordEngineOutcome: vi.fn(() => Promise.resolve(routeOptimizationJob({ status: "APPLIED" }))),
+    ...overrides,
+  };
+}
+
+async function waitForExpectation(assertion: () => void): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      assertion();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  }
+  throw lastError;
 }
 
 describe("Admin WooCommerce connection UI routes", () => {
@@ -4433,6 +4487,14 @@ describe("Admin WooCommerce connection UI routes", () => {
         AdminCommerceConnectionsUiDependencies["routePlanService"]
       >["updateRoutePlanStops"]
     >(() => Promise.resolve(detail));
+    const recordEngineOutcome = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["routeOptimizationJobService"]
+      >["recordEngineOutcome"]
+    >(() => Promise.resolve(routeOptimizationJob({ status: "FAILED" })));
+    const routeOptimizationJobService = routeOptimizationJobServiceMock({
+      recordEngineOutcome,
+    });
     const { app } = await createUiHarness({
       driverService: {
         createPendingDriver: vi.fn(),
@@ -4443,6 +4505,7 @@ describe("Admin WooCommerce connection UI routes", () => {
       orderSyncService: {
         listCanonicalOrders: vi.fn(() => Promise.resolve([])),
       },
+      routeOptimizationJobService,
       routePlanService: {
         assignRoutePlanDriver: vi.fn(),
         createRoutePlan: vi.fn(),
@@ -4478,25 +4541,20 @@ describe("Admin WooCommerce connection UI routes", () => {
         ...authenticatedJsonRequest(cookie, {}, csrfToken),
       });
 
-      expect(optimized.statusCode).toBe(200);
-      expect(updateRoutePlanStops).toHaveBeenCalledWith({
-        payload: {
-          stops: [
-            {
-              deliveryStopId: "stop-2",
-              sequence: 1,
-              shopifyOrderGid: "gid://woocommerce/Order/1002",
-            },
-            {
-              deliveryStopId: "stop-1",
-              sequence: 2,
-              shopifyOrderGid: "gid://woocommerce/Order/1001",
-            },
-          ],
-        },
-        routePlanId: "route-plan-id",
-        shopDomain: "tenant-a.example.test",
+      expect(optimized.statusCode).toBe(202);
+      expect(readApiData<{ job: RouteOptimizationJobDto }>(optimized).job.id).toBe(
+        "job-id",
+      );
+      await waitForExpectation(() => {
+        expect(recordEngineOutcome).toHaveBeenCalled();
+        const call = recordEngineOutcome.mock.calls[0]?.[0];
+        expect(call?.jobId).toBe("job-id");
+        expect(call?.outcome.ok).toBe(false);
+        if (call?.outcome.ok === false) {
+          expect(call.outcome.failure.code).toBe("route_engine_unavailable");
+        }
       });
+      expect(updateRoutePlanStops).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -4543,10 +4601,19 @@ describe("Admin WooCommerce connection UI routes", () => {
         ],
       }),
     );
+    const recordEngineOutcome = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["routeOptimizationJobService"]
+      >["recordEngineOutcome"]
+    >(() => Promise.resolve(routeOptimizationJob({ status: "APPLIED" })));
+    const routeOptimizationJobService = routeOptimizationJobServiceMock({
+      recordEngineOutcome,
+    });
     const { app } = await createUiHarness({
       orderSyncService: {
         listCanonicalOrders: vi.fn(() => Promise.resolve([])),
       },
+      routeOptimizationJobService,
       routeOptimizationService: { optimizeStopOrder },
       routePlanService: {
         assignRoutePlanDriver: vi.fn(),
@@ -4565,12 +4632,21 @@ describe("Admin WooCommerce connection UI routes", () => {
         ...authenticatedJsonRequest(cookie, {}, csrfToken),
       });
 
-      expect(optimized.statusCode).toBe(200);
-      expect(optimizeStopOrder).toHaveBeenCalledWith({
-        detail,
-        shopDomain: "tenant-a.example.test",
-      });
+      expect(optimized.statusCode).toBe(202);
+      expect(readApiData<{ job: RouteOptimizationJobDto }>(optimized).job.id).toBe(
+        "job-id",
+      );
+      await waitForExpectation(() =>
+        expect(optimizeStopOrder).toHaveBeenCalledWith({
+          detail,
+          shopDomain: "tenant-a.example.test",
+        }),
+      );
       expect(updateRoutePlanStops).toHaveBeenCalledWith({
+        mutationContext: {
+          jobId: "job-id",
+          source: "route_optimization_job",
+        },
         payload: {
           stops: [
             {
@@ -4588,6 +4664,175 @@ describe("Admin WooCommerce connection UI routes", () => {
         routePlanId: "route-plan-id",
         shopDomain: "tenant-a.example.test",
       });
+      const recordCall = recordEngineOutcome.mock.calls.at(-1)?.[0];
+      expect(recordCall?.jobId).toBe("job-id");
+      expect(recordCall?.outcome.ok).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("records thrown route_engine optimizer errors as failed jobs", async () => {
+    const detail = routePlanDetail();
+    const getRoutePlanDetail = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["routePlanService"]
+      >["getRoutePlanDetail"]
+    >(() => Promise.resolve(detail));
+    const updateRoutePlanStops = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["routePlanService"]
+      >["updateRoutePlanStops"]
+    >(() => Promise.resolve(detail));
+    const recordEngineOutcome = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["routeOptimizationJobService"]
+      >["recordEngineOutcome"]
+    >(() => Promise.resolve(routeOptimizationJob({ status: "FAILED" })));
+    const routeOptimizationJobService = routeOptimizationJobServiceMock({
+      recordEngineOutcome,
+    });
+    const optimizeStopOrderWithDiagnostics = vi.fn(() =>
+      Promise.reject(new Error("route engine boom")),
+    );
+    const { app } = await createUiHarness({
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+      },
+      routeOptimizationJobService,
+      routeOptimizationService: {
+        optimizeStopOrder: vi.fn(() => Promise.resolve(null)),
+        optimizeStopOrderWithDiagnostics,
+      },
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan: vi.fn(),
+        getRoutePlanDetail,
+        listRoutePlans: vi.fn(() => Promise.resolve([routePlanSummary()])),
+        updateRoutePlanStops,
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/routes/route-plan-id/optimize-jobs?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {}, csrfToken),
+      });
+
+      expect(response.statusCode).toBe(202);
+      await waitForExpectation(() => {
+        const call = recordEngineOutcome.mock.calls[0]?.[0];
+        expect(call?.jobId).toBe("job-id");
+        expect(call?.outcome.ok).toBe(false);
+        if (call?.outcome.ok === false) {
+          expect(call.outcome.failure.code).toBe("route_engine_unavailable");
+          expect(call.outcome.failure.message).toContain(
+            "Route Engine optimization failed unexpectedly",
+          );
+        }
+      });
+      expect(updateRoutePlanStops).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("reads route optimization jobs via Route Ops API", async () => {
+    const routeOptimizationJobService = routeOptimizationJobServiceMock({
+      findJob: vi.fn(() => Promise.resolve(routeOptimizationJob({ id: "job-id" }))),
+      findLatestJob: vi.fn(() =>
+        Promise.resolve(routeOptimizationJob({ id: "latest-job-id" })),
+      ),
+    });
+    const { app } = await createUiHarness({
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+      },
+      routeOptimizationJobService,
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan: vi.fn(),
+        getRoutePlanDetail: vi.fn(() => Promise.resolve(routePlanDetail())),
+        listRoutePlans: vi.fn(() => Promise.resolve([routePlanSummary()])),
+        updateRoutePlanStops: vi.fn(),
+      },
+    });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      const latest = await app.inject({
+        headers: { cookie },
+        method: "GET",
+        url: "/admin/ui/app/api/routes/route-plan-id/optimize-jobs/latest?shopDomain=tenant-a.example.test",
+      });
+      const byId = await app.inject({
+        headers: { cookie },
+        method: "GET",
+        url: "/admin/ui/app/api/routes/route-plan-id/optimize-jobs/job-id?shopDomain=tenant-a.example.test",
+      });
+
+      expect(latest.statusCode).toBe(200);
+      expect(readApiData<{ job: RouteOptimizationJobDto }>(latest).job.id).toBe(
+        "latest-job-id",
+      );
+      expect(byId.statusCode).toBe(200);
+      expect(readApiData<{ job: RouteOptimizationJobDto }>(byId).job.id).toBe(
+        "job-id",
+      );
+      expect(routeOptimizationJobService.findLatestJob).toHaveBeenCalledWith({
+        routePlanId: "route-plan-id",
+        shopDomain: "tenant-a.example.test",
+      });
+      expect(routeOptimizationJobService.findJob).toHaveBeenCalledWith({
+        jobId: "job-id",
+        routePlanId: "route-plan-id",
+        shopDomain: "tenant-a.example.test",
+      });
+      expect(routeOptimizationJobService.reconcileStaleActiveJobs).toHaveBeenCalledTimes(2);
+      expect(routeOptimizationJobService.reconcileStaleActiveJobs).toHaveBeenCalledWith({
+        routePlanId: "route-plan-id",
+        shopDomain: "tenant-a.example.test",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("returns not found when reading latest route optimization job for a missing route", async () => {
+    const routeOptimizationJobService = routeOptimizationJobServiceMock({
+      findLatestJob: vi.fn(() => Promise.resolve(null)),
+    });
+    const getRoutePlanDetail = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["routePlanService"]
+      >["getRoutePlanDetail"]
+    >(() => Promise.resolve(null));
+    const { app } = await createUiHarness({
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+      },
+      routeOptimizationJobService,
+      routePlanService: {
+        assignRoutePlanDriver: vi.fn(),
+        createRoutePlan: vi.fn(),
+        getRoutePlanDetail,
+        listRoutePlans: vi.fn(() => Promise.resolve([])),
+        updateRoutePlanStops: vi.fn(),
+      },
+    });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      const latest = await app.inject({
+        headers: { cookie },
+        method: "GET",
+        url: "/admin/ui/app/api/routes/missing-route-id/optimize-jobs/latest?shopDomain=tenant-a.example.test",
+      });
+
+      expect(latest.statusCode).toBe(404);
+      expect(routeOptimizationJobService.findLatestJob).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -5452,6 +5697,7 @@ async function createUiHarness(
       | null;
     rotateCredentials: ReturnType<typeof vi.fn>;
     rotateWebhookSecret: ReturnType<typeof vi.fn>;
+    routeOptimizationJobService: AdminCommerceConnectionsUiDependencies["routeOptimizationJobService"];
     routeOptimizationService: AdminCommerceConnectionsUiDependencies["routeOptimizationService"];
     routePlanService: AdminCommerceConnectionsUiDependencies["routePlanService"];
     settingsService: AdminCommerceConnectionsUiDependencies["settingsService"];
@@ -5550,6 +5796,9 @@ async function createUiHarness(
       : { notificationService: overrides.notificationService }),
     ...(overrides.now === undefined ? {} : { now: overrides.now }),
     publicBaseUrl: "https://clever-route.cleversystem.ai",
+    ...(overrides.routeOptimizationJobService === undefined
+      ? {}
+      : { routeOptimizationJobService: overrides.routeOptimizationJobService }),
     ...(overrides.routeOptimizationService === undefined
       ? {}
       : { routeOptimizationService: overrides.routeOptimizationService }),

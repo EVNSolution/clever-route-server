@@ -11,6 +11,7 @@ import type {
   OrderMutationResponse,
   OrdersResponse,
   RouteDeleteResponse,
+  RouteOptimizationJobResponse,
   RoutePlanDetailDto,
   RouteSaveResponse,
   RoutesResponse,
@@ -297,16 +298,40 @@ export async function saveRouteOptions(
   );
 }
 
-export async function optimizeRoute(
+export async function createRouteOptimizationJob(
   routePlanId: string,
   csrfToken: string,
-): Promise<RoutePlanDetailDto> {
-  return apiMutation<RoutePlanDetailDto>(
-    `/admin/ui/app/api/routes/${encodeURIComponent(routePlanId)}/optimize`,
+): Promise<RouteOptimizationJobResponse> {
+  return apiMutation<RouteOptimizationJobResponse>(
+    `/admin/ui/app/api/routes/${encodeURIComponent(routePlanId)}/optimize-jobs`,
     "POST",
     csrfToken,
     {},
   );
+}
+
+export async function getLatestRouteOptimizationJob(
+  routePlanId: string,
+): Promise<RouteOptimizationJobResponse> {
+  return apiGet<RouteOptimizationJobResponse>(
+    `/admin/ui/app/api/routes/${encodeURIComponent(routePlanId)}/optimize-jobs/latest`,
+  );
+}
+
+export async function getRouteOptimizationJob(
+  routePlanId: string,
+  jobId: string,
+): Promise<RouteOptimizationJobResponse> {
+  return apiGet<RouteOptimizationJobResponse>(
+    `/admin/ui/app/api/routes/${encodeURIComponent(routePlanId)}/optimize-jobs/${encodeURIComponent(jobId)}`,
+  );
+}
+
+export async function optimizeRoute(
+  routePlanId: string,
+  csrfToken: string,
+): Promise<RouteOptimizationJobResponse> {
+  return createRouteOptimizationJob(routePlanId, csrfToken);
 }
 
 export async function assignDriver(

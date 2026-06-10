@@ -288,6 +288,19 @@ export const routesCopy = {
       publishedLinked: 'Published route — visible to the linked driver after the app refreshes.',
       publishedPending: 'Published route — the assigned driver can see it after app authentication.'
     },
+    routeOptimization: {
+      applied: 'Route Engine result applied. You can still edit stops manually, or rerun optimization explicitly.',
+      cancelled: 'Optimization was cancelled.',
+      editingLocked: 'Stop order edits are locked until this job reaches a terminal state.',
+      failed: 'Optimization failed',
+      queued: 'Optimization queued. Waiting for Route Engine to start.',
+      rerun: 'Rerun optimization',
+      running: 'Route Engine is optimizing this route. This may take a while; it is not a failure.',
+      start: 'Optimize with Route Engine',
+      starting: 'Starting optimization…',
+      timeout: 'Optimization timed out. Review logs, then rerun when ready.',
+      title: 'Route optimization'
+    },
     moveUp(orderName: string): string { return `Move ${orderName} up`; },
     moveDown(orderName: string): string { return `Move ${orderName} down`; }
   },
@@ -362,6 +375,19 @@ export const routesCopy = {
       draftNotVisible: '초안 경로 — 아직 표시되지 않습니다. 저장하면 배송원 앱에 표시됩니다.',
       publishedLinked: '게시된 경로 — 앱 새로고침 후 연결된 배송원에게 표시됩니다.',
       publishedPending: '게시된 경로 — 배정된 배송원이 앱 인증 후 볼 수 있습니다.'
+    },
+    routeOptimization: {
+      applied: 'Route Engine 결과가 적용되었습니다. 이후 하차 순서는 직접 수정할 수 있고, 명시적으로 다시 최적화할 수 있습니다.',
+      cancelled: '최적화가 취소되었습니다.',
+      editingLocked: '작업이 완료 상태가 될 때까지 하차 순서 편집을 잠급니다.',
+      failed: '최적화 실패',
+      queued: '최적화가 대기 중입니다. Route Engine 시작을 기다립니다.',
+      rerun: '최적화 다시 실행',
+      running: 'Route Engine이 이 경로를 최적화 중입니다. 시간이 걸려도 실패는 아닙니다.',
+      start: 'Route Engine 최적화',
+      starting: '최적화 시작 중…',
+      timeout: '최적화 시간이 초과되었습니다. 로그를 확인한 뒤 필요하면 다시 실행하세요.',
+      title: '경로 최적화'
     },
     moveUp(orderName: string): string { return `${orderName} 위로 이동`; },
     moveDown(orderName: string): string { return `${orderName} 아래로 이동`; }
