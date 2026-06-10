@@ -49,6 +49,15 @@ services:
       NODE_ENV: production
       PORT: 3000
     restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          node -e "const http=require('node:http');const req=http.get({host:'127.0.0.1',port:Number(process.env.PORT || 3000),path:'/healthz',timeout:2000},res=>{process.exit(res.statusCode===200?0:1);});req.on('timeout',()=>req.destroy(new Error('timeout')));req.on('error',()=>process.exit(1));"
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
     volumes:
       - route-ops-web-static:/app/external/route-ops-web:ro
       - /srv/clever-route-server/data/driver-proof-media:/app/var/driver-proof-media
