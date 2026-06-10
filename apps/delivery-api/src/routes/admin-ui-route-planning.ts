@@ -1,9 +1,9 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, normalize } from "node:path";
-import { fileURLToPath } from "node:url";
 
 import type { FastifyReply } from "fastify";
 
+import type { AdminCommerceActor } from "../modules/commerce/admin-commerce-auth.js";
 import type { AdminDriverRow } from "../modules/driver/admin-driver.types.js";
 import { WooCommerceOnboardingError } from "../modules/commerce/woocommerce-connection-onboarding.service.js";
 import {
@@ -35,6 +35,7 @@ import {
   type RoutePlanDetail,
   type RoutePlanOrderInput,
   type RoutePlanRouteScopeInput,
+  type RoutePlanService,
   type RoutePlanSummary,
   type SaveRoutePlanPayload,
 } from "../modules/route-plans/route-plan.types.js";
@@ -42,49 +43,39 @@ import type {
   RouteOptimizationService,
   RouteOptimizationStopSequence,
 } from "../modules/route-plans/route-engine-route-optimizer.client.js";
-import type { AdminCommerceConnectionsUiDependencies } from "./admin-commerce-connections-ui.routes.js";
-
 const ADMIN_UI_APP_ROUTE_PLANS_PATH = "/admin/ui/app/routes";
-const ADMIN_UI_APP_VENDOR_PATH = "/admin/ui/app/vendor";
-const ROUTE_OPS_WEB_PUBLIC_PATH = resolveRouteOpsWebPublicPath();
+
+type RoutePlanningDependencies = {
+  actor: AdminCommerceActor;
+  now?: () => Date;
+  onboardingService: {
+    listConnections(input: {
+      actor: AdminCommerceActor;
+    }): Promise<Array<{ shopDomain: string; timezone: string | null }>>;
+  };
+  settingsService?: {
+    getSettings(input: { shopDomain: string }): Promise<{
+      routeScopeConfig: RouteScopeConfigDto;
+    } | null>;
+  };
+};
 
 type RouteUiServices = {
-  driverService?: NonNullable<
-    AdminCommerceConnectionsUiDependencies["driverService"]
-  >;
-  orderSyncService: NonNullable<
-    AdminCommerceConnectionsUiDependencies["orderSyncService"]
-  >;
-  routeOptimizationService?: NonNullable<
-    AdminCommerceConnectionsUiDependencies["routeOptimizationService"]
-  >;
-  routePlanService: NonNullable<
-    AdminCommerceConnectionsUiDependencies["routePlanService"]
+  orderSyncService: {
+    listCanonicalOrders(input: {
+      shopDomain: string;
+    }): Promise<CanonicalOrderRow[]>;
+  };
+  routePlanService: Pick<
+    RoutePlanService,
+    "createRoutePlan" | "createRoutePlanFromOrderIds"
   >;
 };
 
-function resolveRouteOpsWebPublicPath(): string {
-  const explicit = process.env.ROUTE_OPS_WEB_PUBLIC_PATH?.trim();
-  if (explicit !== undefined && explicit !== "") return explicit;
-
-  const externalArtifactCandidate = join(
-    process.cwd(),
-    "external/route-ops-web/public",
-  );
-  if (process.env.NODE_ENV === "production") return externalArtifactCandidate;
-
-  const localDevCandidate = join(process.cwd(), "../route-ops-web/public");
-  const candidates = [
-    externalArtifactCandidate,
-    localDevCandidate,
-    join(process.cwd(), "apps/route-ops-web/public"),
-    join(process.cwd(), "route-ops-web/public"),
-    fileURLToPath(new URL("../../../route-ops-web/public/", import.meta.url)),
-  ];
-  return (
-    candidates.find((candidate) => existsSync(candidate)) ?? localDevCandidate
-  );
-}
+type RouteOpsMapAssetPaths = {
+  appVendorPath: string;
+  webPublicPath: string;
+};
 
 function redirect(reply: FastifyReply, location: string): unknown {
   return reply.code(303).header("Location", location).send("");
@@ -124,7 +115,7 @@ function readQueryString(query: unknown, field: string): string | null {
 }
 
 export async function readRouteOpsOrderFilters(input: {
-  dependencies: AdminCommerceConnectionsUiDependencies;
+  dependencies: RoutePlanningDependencies;
   query: unknown;
   shopDomain: string;
 }): Promise<ListCanonicalOrdersFilters> {
@@ -222,7 +213,7 @@ export async function readRouteOpsOrderFilters(input: {
 }
 
 export async function resolveShopToday(
-  dependencies: AdminCommerceConnectionsUiDependencies,
+  dependencies: RoutePlanningDependencies,
   shopDomain: string,
 ): Promise<string> {
   const timezone = await resolveShopTimezone(dependencies, shopDomain);
@@ -230,7 +221,7 @@ export async function resolveShopToday(
 }
 
 export async function resolveShopTimezone(
-  dependencies: AdminCommerceConnectionsUiDependencies,
+  dependencies: RoutePlanningDependencies,
   shopDomain: string,
 ): Promise<string> {
   try {
@@ -384,7 +375,7 @@ export function findRouteOpsOrderByNeutralId(
 }
 
 export async function readRouteOpsRouteScopeConfig(
-  dependencies: AdminCommerceConnectionsUiDependencies,
+  dependencies: RoutePlanningDependencies,
   shopDomain: string,
 ): Promise<RouteScopeConfigDto> {
   if (dependencies.settingsService === undefined) {
@@ -669,12 +660,14 @@ export function readRouteOpsSaveRoutePayload(
   return payload;
 }
 
-export function readRouteOpsMapConfig(): RouteOpsMapConfig {
+export function readRouteOpsMapConfig(
+  assetPaths: RouteOpsMapAssetPaths,
+): RouteOpsMapConfig {
   const styleUrl = process.env.ROUTE_OPS_MAP_STYLE_URL?.trim() ?? "";
   if (styleUrl === "") return notConfiguredMapConfig();
 
   const allowedHosts = readRouteOpsMapAllowedHosts();
-  const styleAudit = auditRouteOpsMapStyle(styleUrl);
+  const styleAudit = auditRouteOpsMapStyle(styleUrl, assetPaths);
   if (styleAudit === null) {
     return notConfiguredMapConfig("style_manifest_unavailable");
   }
@@ -748,8 +741,9 @@ export function readRouteOpsMapAttribution(defaultAttribution: string): string {
 
 function auditRouteOpsMapStyle(
   styleUrl: string,
+  assetPaths: RouteOpsMapAssetPaths,
 ): RouteOpsMapConfig["styleAudit"] {
-  const manifestEndpoints = readStyleManifestEndpoints(styleUrl);
+  const manifestEndpoints = readStyleManifestEndpoints(styleUrl, assetPaths);
   if (manifestEndpoints === null) {
     if (hostForRouteOpsEndpoint(styleUrl) === null) return null;
     const externalHosts = [hostForRouteOpsEndpoint(styleUrl)]
@@ -768,15 +762,18 @@ function auditRouteOpsMapStyle(
   return { endpoints, externalHosts };
 }
 
-export function readStyleManifestEndpoints(styleUrl: string): string[] | null {
-  if (!styleUrl.startsWith(`${ADMIN_UI_APP_VENDOR_PATH}/`)) {
+export function readStyleManifestEndpoints(
+  styleUrl: string,
+  assetPaths: RouteOpsMapAssetPaths,
+): string[] | null {
+  if (!styleUrl.startsWith(`${assetPaths.appVendorPath}/`)) {
     return null;
   }
   const relativePath = normalize(
-    styleUrl.slice(`${ADMIN_UI_APP_VENDOR_PATH}/`.length),
+    styleUrl.slice(`${assetPaths.appVendorPath}/`.length),
   ).replace(/^(\.\.(?:\/|\\|$))+/u, "");
   if (relativePath === "" || relativePath.includes("..")) return null;
-  const absolute = join(ROUTE_OPS_WEB_PUBLIC_PATH, "vendor", relativePath);
+  const absolute = join(assetPaths.webPublicPath, "vendor", relativePath);
   if (!existsSync(absolute) || !statSync(absolute).isFile()) return null;
   try {
     const manifest = JSON.parse(readFileSync(absolute, "utf8")) as unknown;

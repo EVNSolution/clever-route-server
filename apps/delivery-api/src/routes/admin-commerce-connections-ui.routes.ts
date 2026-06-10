@@ -199,11 +199,18 @@ const {
   renderWpPluginSessionLandingPage,
 } = adminUiShellRenderer;
 const routeOpsApiResponder = createRouteOpsApiResponder({
-  buildCsp: () => buildRouteOpsCsp(readRouteOpsMapConfig()),
+  buildCsp: () => buildRouteOpsCsp(readCurrentRouteOpsMapConfig()),
   countRoutePlanBatchBlockers,
   sanitizeError: sanitizeRouteUiError,
 });
 const { routeOpsData, withRouteOpsApi } = routeOpsApiResponder;
+
+function readCurrentRouteOpsMapConfig() {
+  return readRouteOpsMapConfig({
+    appVendorPath: ADMIN_UI_APP_VENDOR_PATH,
+    webPublicPath: ROUTE_OPS_WEB_PUBLIC_PATH,
+  });
+}
 
 function resolveRouteOpsWebDistPath(): string {
   const explicit = process.env.ROUTE_OPS_WEB_DIST_PATH?.trim();
@@ -1221,7 +1228,7 @@ function registerRouteOpsAppRoutes(
           },
           csrfToken: session.csrfToken,
           locale: settings?.locale === "ko-KR" ? "ko-KR" : "en-CA",
-          mapConfig: readRouteOpsMapConfig(),
+          mapConfig: readCurrentRouteOpsMapConfig(),
           mode: isWpPluginSession(session) ? "plugin" : "internal-admin",
           routerConfig: readRouteOpsRouterConfig(),
           shopDomain,
@@ -3269,7 +3276,7 @@ function sendRouteOpsHtml(
     .header("Cache-Control", "no-store")
     .header(
       "Content-Security-Policy",
-      buildRouteOpsCsp(readRouteOpsMapConfig()),
+      buildRouteOpsCsp(readCurrentRouteOpsMapConfig()),
     )
     .send(body);
 }
