@@ -11,6 +11,7 @@ RUN npm --prefix apps/delivery-api ci
 FROM deps AS build
 COPY apps/delivery-api/prisma ./apps/delivery-api/prisma
 COPY apps/delivery-api/tsconfig.json apps/delivery-api/tsconfig.build.json apps/delivery-api/vitest.config.ts apps/delivery-api/eslint.config.mjs ./apps/delivery-api/
+COPY apps/delivery-api/scripts ./apps/delivery-api/scripts
 COPY apps/delivery-api/src ./apps/delivery-api/src
 COPY apps/delivery-api/tests ./apps/delivery-api/tests
 RUN npm --prefix apps/delivery-api run prisma:generate \
@@ -18,7 +19,7 @@ RUN npm --prefix apps/delivery-api run prisma:generate \
 
 FROM build AS migrate
 WORKDIR /app
-CMD ["npm", "--prefix", "apps/delivery-api", "exec", "--", "prisma", "db", "push", "--schema", "apps/delivery-api/prisma/schema.prisma", "--skip-generate"]
+CMD ["sh", "apps/delivery-api/scripts/guard-prisma-db-push.sh"]
 
 FROM build AS pruned
 RUN npm --prefix apps/delivery-api prune --omit=dev

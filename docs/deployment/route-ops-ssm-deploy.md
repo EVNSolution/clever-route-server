@@ -599,9 +599,13 @@ ROUTE_OPS_PRUNE_LEGACY_LOCAL_IMAGE=1
 6. After dry validation passes and production mutation is separately approved,
    rerun with `dry_run=false`.
 7. The host deploy script verifies labels/schema, verifies the mounted
-   `route_engine` graph manifest, runs the candidate migrate image, smokes
-   `route_engine` from the `delivery-api` runtime network, and runs Route Ops
-   smoke before promotion.
+   `route_engine` graph manifest, then runs the candidate migrate image through
+   `apps/delivery-api/scripts/guard-prisma-db-push.sh`. The guard recomputes
+   `apps/delivery-api/prisma/schema.prisma`, requires it to match the manifest
+   `PRISMA_SCHEMA_SHA`, and does not pass `--accept-data-loss`; a missing or
+   mismatched schema SHA fails before Prisma can run `db push`. After that it
+   smokes `route_engine` from the `delivery-api` runtime network and runs Route
+   Ops smoke before promotion.
 8. If smoke fails, the deploy script restores current image metadata and the workflow fails.
 
 ## Rollback
