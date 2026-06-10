@@ -196,8 +196,8 @@ The repository checks all of the following before writing bytes or metadata:
 - Missing local files are treated idempotently and still result in `deletedAt` metadata so repeated cleanup can converge.
 - The cleanup monitor hook records cleanup run counts and cutoffs in `RetentionJobRun` without media ids, storage keys, coordinates, customer data, or proof bytes.
 - Storage keys are resolved under the configured storage root before deletion; keys that escape the root are rejected before metadata is updated.
-- `src/scripts/cleanup-driver-proof-media.ts` is the operational entry point for manual or scheduled cleanup. The default runtime backend is local filesystem storage; production can select the S3-compatible backend with runtime env.
-- Production bucket/IAM ownership approval, signed URL credential custody/evidence, production HTTP scanner endpoint deployment evidence, production scanner monitoring/alerting endpoint evidence, deployed cleanup scheduler evidence, and private evidence storage remain follow-up hardening items.
+- `src/scripts/cleanup-driver-proof-media.ts` is the operational entry point for manual or scheduled cleanup. The app runtime defaults are explicit: storage backend `local`, scanner backend `none`, and scan-monitor backend `none`. Route Ops production currently selects the same S3-less EC2/EBS local-storage policy in `infra/env/delivery-api.env.example` and bind-mounts `/srv/clever-route-server/data/driver-proof-media`; this is a deliberate bounded production target, not accidental object-storage proof.
+- Production bucket/IAM ownership approval, signed URL credential custody/evidence, production HTTP scanner endpoint deployment evidence, production scanner monitoring/alerting endpoint evidence, deployed cleanup scheduler evidence, and private evidence storage remain follow-up hardening items. Do not switch scanner or monitor backends to `http` until the private endpoint, auth, and alert evidence rows are approved.
 
 ## Adjacent APIs
 

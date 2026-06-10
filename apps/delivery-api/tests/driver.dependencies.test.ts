@@ -4,6 +4,9 @@ import { describe, expect, test } from 'vitest';
 import {
   DEFAULT_DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS,
   DEFAULT_DRIVER_PROOF_MEDIA_RETENTION_DAYS,
+  DEFAULT_DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND,
+  DEFAULT_DRIVER_PROOF_MEDIA_SCANNER_BACKEND,
+  DEFAULT_DRIVER_PROOF_MEDIA_STORAGE_BACKEND,
   loadDriverApiDependencies,
   loadDriverRouteGeometryProvider,
   loadDriverProofMediaReadAccessPolicy,
@@ -65,6 +68,28 @@ describe('loadDriverApiDependencies', () => {
         DRIVER_ROUTE_OSRM_TIMEOUT_MS: '0'
       })
     ).toThrow('DRIVER_ROUTE_OSRM_TIMEOUT_MS must be a positive integer');
+  });
+
+
+  test('keeps proof media storage/scanner defaults explicit and scanner hooks disabled', () => {
+    expect(DEFAULT_DRIVER_PROOF_MEDIA_STORAGE_BACKEND).toBe('local');
+    expect(DEFAULT_DRIVER_PROOF_MEDIA_SCANNER_BACKEND).toBe('none');
+    expect(DEFAULT_DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND).toBe('none');
+
+    const dependencies = loadDriverApiDependencies({
+      env: {
+        DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND: ' ',
+        DRIVER_PROOF_MEDIA_SCANNER_BACKEND: ' ',
+        JWT_SECRET: 'driver-secret'
+      },
+      prisma: {} as PrismaClient
+    });
+    const proofMediaService = dependencies?.proofMediaService as
+      | { scanMonitor?: unknown; scanner?: unknown }
+      | undefined;
+
+    expect(proofMediaService?.scanner).toBeUndefined();
+    expect(proofMediaService?.scanMonitor).toBeUndefined();
   });
 
   test('wires S3 proof media storage when explicitly configured', () => {
