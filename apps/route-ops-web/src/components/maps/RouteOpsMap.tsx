@@ -46,6 +46,7 @@ type RouteOpsMapProps = {
   depot?: RouteOpsPoint | null;
   draftStops?: RouteStopDto[];
   headerAction?: ReactNode;
+  statusContent?: ReactNode;
   onExitRouteMode?(): void;
   onMapClickCoordinate?(coordinate: { latitude: number; longitude: number }): void;
   onOrderSelect?(orderId: string): void;
@@ -60,7 +61,7 @@ type RouteOpsMapProps = {
   title: string;
 };
 
-export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops, headerAction, onExitRouteMode, onMapClickCoordinate, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
+export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops, headerAction, statusContent, onExitRouteMode, onMapClickCoordinate, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
   const locale = resolveLocale(bootstrap.locale);
   const t = getMapCopy(locale);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -323,6 +324,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
         <div><h2>{title}</h2><p>{subtitle}</p></div>
         {headerAction === undefined ? null : <div className="map-panel-heading-action">{headerAction}</div>}
       </div>
+      {statusContent === undefined ? null : <div className="map-panel-status">{statusContent}</div>}
       <div className="route-ops-map-frame" data-map-provider-mode={bootstrap.mapConfig.providerMode ?? 'none'} data-map-provider-status={bootstrap.mapConfig.status} onPointerDown={handleMapFramePointerDown}>
         {readiness === 'interactive_map' || onExitRouteMode !== undefined ? (
           <div className="map-toolbar">

@@ -478,10 +478,40 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('Rerun optimization');
     expect(html).toMatch(/class="primary route-optimize-button" disabled=""/);
     expect(html).toMatch(
-      /class="map-panel panel"[\s\S]*class="panel-heading"[\s\S]*Rerun optimization[\s\S]*class="route-ops-map-frame"/,
+      /class="map-panel panel"[\s\S]*class="panel-heading"[\s\S]*Rerun optimization[\s\S]*Route Engine job details[\s\S]*class="route-ops-map-frame"/,
     );
     expect(html).not.toContain('route-builder-card-heading');
     expect(html).not.toMatch(/class="route-stop-compact-toolbar"[\s\S]*route-optimize-button/);
+    expect(html).not.toMatch(/class="route-builder-tab-body route-builder-tab-body--stop-order"[\s\S]*Route Engine job details[\s\S]*class="route-stop-compact-list/);
+  });
+
+  test('RouteBuilder keeps route optimization controls visible outside the Stop order tab', () => {
+    const html = renderToStaticMarkup(
+      <RouteBuilder
+        bootstrap={bootstrap()}
+        deletingRouteId={null}
+        detail={routePlanDetailFixture()}
+        drivers={[driverFixture()]}
+        initialBuilderTab="driver-options"
+        initialOptimizationJob={routeOptimizationJobFixture({
+          currentStep: 'CALLING_ENGINE',
+          elapsedMs: 15320,
+          status: 'RUNNING',
+        })}
+        navigate={() => undefined}
+        onDeleteRoute={() => undefined}
+        onRefreshRoutes={() => undefined}
+        setDetail={() => undefined}
+        setError={() => undefined}
+      />,
+    );
+
+    expect(html).toContain('Rerun optimization');
+    expect(html).toContain('Route Engine job details');
+    expect(html).toMatch(
+      /class="map-panel panel"[\s\S]*class="panel-heading"[\s\S]*Rerun optimization[\s\S]*Route Engine job details[\s\S]*class="route-ops-map-frame"/,
+    );
+    expect(html).not.toContain('class="route-builder-tab-body route-builder-tab-body--stop-order"');
   });
 
   test('RouteBuilder allows explicit optimization rerun after a terminal job', () => {
@@ -506,7 +536,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('Route Engine result applied. You can still edit stops manually, or rerun optimization explicitly.');
     expect(html).toContain('Rerun optimization');
     expect(html).toMatch(
-      /class="map-panel panel"[\s\S]*class="panel-heading"[\s\S]*Rerun optimization[\s\S]*class="route-ops-map-frame"/,
+      /class="map-panel panel"[\s\S]*class="panel-heading"[\s\S]*Rerun optimization[\s\S]*Route Engine job details[\s\S]*class="route-ops-map-frame"/,
     );
     expect(html).not.toContain('route-builder-card-heading');
     expect(html).not.toContain('route-stop-compact-list locked');

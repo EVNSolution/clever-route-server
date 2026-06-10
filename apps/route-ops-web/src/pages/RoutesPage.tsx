@@ -685,6 +685,35 @@ export function RouteBuilder(input: {
       </button>
     </div>
   );
+  const routeOptimizationAction = (
+    <button
+      className="primary route-optimize-button"
+      disabled={!canStartOptimizationJob}
+      onClick={() => void startOptimizationJob()}
+      type="button"
+    >
+      {isStartingOptimizationJob
+        ? t.routeOptimization.starting
+        : optimizationJob === null
+          ? t.routeOptimization.start
+          : t.routeOptimization.rerun}
+    </button>
+  );
+  const routeOptimizationStatus = optimizationNotice === null ? undefined : (
+    <div className={`route-optimization-notice route-optimization-notice--map ${optimizationNotice.tone}`}>
+      <strong>{t.routeOptimization.title}</strong>
+      <span>{optimizationNotice.text}</span>
+      <dl className="route-optimization-details" aria-label={t.routeOptimization.details.title}>
+        {getRouteOptimizationJobDetailRows(optimizationJob, locale).map((row) => (
+          <div key={row.label}>
+            <dt>{row.label}</dt>
+            <dd className={row.monospace === true ? "monospace" : undefined}>{row.value}</dd>
+          </div>
+        ))}
+      </dl>
+      {hasActiveOptimizationJob ? <small>{t.routeOptimization.editingLocked}</small> : null}
+    </div>
+  );
 
   return (
     <TabLayout
@@ -695,20 +724,8 @@ export function RouteBuilder(input: {
             bootstrap={input.bootstrap}
             detail={detail}
             draftStops={hasSequenceChanges ? draftStops : undefined}
-            headerAction={activeBuilderTab === "stop-order" ? (
-              <button
-                className="primary route-optimize-button"
-                disabled={!canStartOptimizationJob}
-                onClick={() => void startOptimizationJob()}
-                type="button"
-              >
-                {isStartingOptimizationJob
-                  ? t.routeOptimization.starting
-                  : optimizationJob === null
-                    ? t.routeOptimization.start
-                    : t.routeOptimization.rerun}
-              </button>
-            ) : undefined}
+            headerAction={routeOptimizationAction}
+            statusContent={routeOptimizationStatus}
             onRouteStopPickerClose={() => setSelectedRouteStopId(null)}
             onRouteStopSelect={(deliveryStopId) => setSelectedRouteStopId(deliveryStopId)}
             onRouteStopSequencePick={moveDraftStopToSequence}
@@ -872,21 +889,6 @@ export function RouteBuilder(input: {
                     {draftStops.length} {t.stops.toLocaleLowerCase(locale)}
                   </span>
                 </div>
-                {optimizationNotice === null ? null : (
-                  <div className={`route-optimization-notice ${optimizationNotice.tone}`}>
-                    <strong>{t.routeOptimization.title}</strong>
-                    <span>{optimizationNotice.text}</span>
-                    <dl className="route-optimization-details" aria-label={t.routeOptimization.details.title}>
-                      {getRouteOptimizationJobDetailRows(optimizationJob, locale).map((row) => (
-                        <div key={row.label}>
-                          <dt>{row.label}</dt>
-                          <dd className={row.monospace === true ? "monospace" : undefined}>{row.value}</dd>
-                        </div>
-                      ))}
-                    </dl>
-                    {hasActiveOptimizationJob ? <small>{t.routeOptimization.editingLocked}</small> : null}
-                  </div>
-                )}
                 <RouteStopOrderCompactList
                   disabled={hasActiveOptimizationJob}
                   draggingStopId={draggingStopId}
