@@ -19,6 +19,10 @@ const imageRollbackPath = 'scripts/rollback-route-ops-image.sh';
 const composePath = 'infra/compose/docker-compose.prod.yml';
 const deliveryApiDockerfilePath = 'apps/delivery-api/Dockerfile';
 const prismaDbPushGuardPath = 'apps/delivery-api/scripts/guard-prisma-db-push.sh';
+const deliveryApiDepsPath = 'apps/delivery-api/src/modules/driver/driver.dependencies.ts';
+const deliveryApiEnvExamplePath = 'infra/env/delivery-api.env.example';
+const deliveryApiLocalEnvExamplePath = 'apps/delivery-api/.env.example';
+const proofMediaDocPath = 'apps/delivery-api/docs/api/driver-proof-media.md';
 const ssmDocumentPath = 'infra/ssm/route-ops-deploy-document.json';
 const osrmHelperPath = 'scripts/osrm-ontario.sh';
 const deployControlBundlePath = 'scripts/route-ops-deploy-control-bundle.sh';
@@ -35,6 +39,10 @@ const imageRollback = read(imageRollbackPath);
 const compose = read(composePath);
 const deliveryApiDockerfile = read(deliveryApiDockerfilePath);
 const prismaDbPushGuard = read(prismaDbPushGuardPath);
+const deliveryApiDeps = read(deliveryApiDepsPath);
+const deliveryApiEnvExample = read(deliveryApiEnvExamplePath);
+const deliveryApiLocalEnvExample = read(deliveryApiLocalEnvExamplePath);
+const proofMediaDoc = read(proofMediaDocPath);
 const ssmDocument = read(ssmDocumentPath);
 const osrmHelper = read(osrmHelperPath);
 const deployControlBundle = read(deployControlBundlePath);
@@ -476,6 +484,17 @@ assert(compose.includes('ROUTE_ENGINE_IMAGE'), 'production compose must accept a
 assert(compose.includes('profiles:') && compose.includes('route-engine'), 'production route_engine service must be profile-gated for explicit activation');
 assert(compose.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'production compose must mount route_engine graph artifacts from an explicit host directory');
 assert(compose.includes('/app/routing_engine/v7_out/parquet:ro'), 'production route_engine graph mount must target the expected read-only parquet path');
+assert(compose.includes('/srv/clever-route-server/data/driver-proof-media:/app/var/driver-proof-media'), 'production compose must bind-mount the approved local proof-media host directory');
+assert(deliveryApiEnvExample.includes('DRIVER_PROOF_MEDIA_STORAGE_BACKEND=local'), 'production env example must explicitly select local proof-media storage');
+assert(deliveryApiEnvExample.includes('DRIVER_PROOF_MEDIA_STORAGE_DIR=/app/var/driver-proof-media'), 'production env example must align proof-media storage dir with the compose mount');
+assert(deliveryApiEnvExample.includes('DRIVER_PROOF_MEDIA_SCANNER_BACKEND=none'), 'production env example must keep proof-media scanner disabled by default');
+assert(deliveryApiEnvExample.includes('DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND=none'), 'production env example must keep proof-media scan monitor disabled by default');
+assert(deliveryApiDeps.includes("DEFAULT_DRIVER_PROOF_MEDIA_STORAGE_BACKEND = 'local'"), 'driver dependencies must expose the local proof-media storage default as a named constant');
+assert(deliveryApiDeps.includes("DEFAULT_DRIVER_PROOF_MEDIA_SCANNER_BACKEND = 'none'"), 'driver dependencies must expose the disabled scanner default as a named constant');
+assert(deliveryApiDeps.includes("DEFAULT_DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND = 'none'"), 'driver dependencies must expose the disabled scan-monitor default as a named constant');
+assert(deliveryApiLocalEnvExample.includes('Use s3 only after private bucket/IAM'), 'app env example must not imply object storage is production-ready without private evidence');
+assert(proofMediaDoc.includes('storage backend `local`, scanner backend `none`, and scan-monitor backend `none`'), 'proof-media docs must state the explicit storage/scanner defaults');
+assert(proofMediaDoc.includes('Do not switch scanner or monitor backends to `http` until'), 'proof-media docs must gate scanner/monitor activation on private evidence');
 const parsedSsmDocument = JSON.parse(ssmDocument);
 const ssmRunCommand = parsedSsmDocument.mainSteps?.[0]?.inputs?.runCommand ?? [];
 assert(parsedSsmDocument.mainSteps?.[0]?.inputs?.timeoutSeconds === '7200', 'SSM deploy document timeout must allow traced cold route_engine activation');
@@ -612,4 +631,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checked: [deployWorkflowPath, wrapperPath, deployControlBundlePath, imageDeployPath, imageRollbackPath, composePath, deliveryApiDockerfilePath, prismaDbPushGuardPath, ssmDocumentPath, osrmHelperPath, docPath, githubDocPath, osrmDocPath, publishWorkflowPath, ciWorkflowPath] }, null, 2));
+console.log(JSON.stringify({ ok: true, checked: [deployWorkflowPath, wrapperPath, deployControlBundlePath, imageDeployPath, imageRollbackPath, composePath, deliveryApiDockerfilePath, prismaDbPushGuardPath, deliveryApiDepsPath, deliveryApiEnvExamplePath, deliveryApiLocalEnvExamplePath, proofMediaDocPath, ssmDocumentPath, osrmHelperPath, docPath, githubDocPath, osrmDocPath, publishWorkflowPath, ciWorkflowPath] }, null, 2));

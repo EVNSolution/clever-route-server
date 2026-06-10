@@ -20,7 +20,10 @@ import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js
 
 export const DEFAULT_DRIVER_PROOF_MEDIA_RETENTION_DAYS = 180;
 export const DEFAULT_DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS = 5 * 60;
+export const DEFAULT_DRIVER_PROOF_MEDIA_STORAGE_BACKEND = 'local';
 export const DEFAULT_DRIVER_PROOF_MEDIA_STORAGE_DIR = 'var/driver-proof-media';
+export const DEFAULT_DRIVER_PROOF_MEDIA_SCANNER_BACKEND = 'none';
+export const DEFAULT_DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND = 'none';
 
 export type DriverApiRuntimeEnv = Partial<Record<
   | 'DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS'
@@ -116,7 +119,7 @@ export function loadDriverRouteGeometryProvider(env: DriverApiRuntimeEnv): Route
 }
 
 function loadDriverProofMediaRepositoryStorageOptions(env: DriverApiRuntimeEnv): DriverProofMediaRepositoryStorageOptions {
-  const backend = readOptional(env.DRIVER_PROOF_MEDIA_STORAGE_BACKEND)?.toLowerCase() ?? 'local';
+  const backend = readOptional(env.DRIVER_PROOF_MEDIA_STORAGE_BACKEND)?.toLowerCase() ?? DEFAULT_DRIVER_PROOF_MEDIA_STORAGE_BACKEND;
   if (backend === 'local') {
     return { storageRoot: loadDriverProofMediaStorageRoot(env) };
   }
@@ -145,7 +148,7 @@ function loadDriverProofMediaRepositorySafetyOptions(env: DriverApiRuntimeEnv): 
 }
 
 function loadDriverProofMediaScannerOption(env: DriverApiRuntimeEnv): Pick<DriverProofMediaRepositorySafetyOptions, 'scanner'> {
-  const backend = readOptional(env.DRIVER_PROOF_MEDIA_SCANNER_BACKEND)?.toLowerCase() ?? 'none';
+  const backend = readOptional(env.DRIVER_PROOF_MEDIA_SCANNER_BACKEND)?.toLowerCase() ?? DEFAULT_DRIVER_PROOF_MEDIA_SCANNER_BACKEND;
   if (backend === 'none') {
     return {};
   }
@@ -162,7 +165,7 @@ function loadDriverProofMediaScannerOption(env: DriverApiRuntimeEnv): Pick<Drive
 }
 
 function loadDriverProofMediaScanMonitorOption(env: DriverApiRuntimeEnv): Pick<DriverProofMediaRepositorySafetyOptions, 'scanMonitor'> {
-  const backend = readOptional(env.DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND)?.toLowerCase() ?? 'none';
+  const backend = readOptional(env.DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND)?.toLowerCase() ?? DEFAULT_DRIVER_PROOF_MEDIA_SCAN_MONITOR_BACKEND;
   if (backend === 'none') {
     return {};
   }
