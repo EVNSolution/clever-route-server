@@ -69,7 +69,9 @@ services:
         condition: service_healthy
     env_file:
       - ../env/delivery-api.env
-    command: ["npm", "--prefix", "apps/delivery-api", "exec", "--", "prisma", "db", "push", "--schema", "apps/delivery-api/prisma/schema.prisma", "--skip-generate"]
+    environment:
+      PRISMA_SCHEMA_SHA: ${PRISMA_SCHEMA_SHA:?PRISMA_SCHEMA_SHA is required}
+    command: ["sh", "apps/delivery-api/scripts/guard-prisma-db-push.sh"]
     restart: "no"
 
 

@@ -17,6 +17,8 @@ const wrapperPath = 'scripts/ssm-route-ops-deploy.sh';
 const imageDeployPath = 'scripts/deploy-route-ops-image.sh';
 const imageRollbackPath = 'scripts/rollback-route-ops-image.sh';
 const composePath = 'infra/compose/docker-compose.prod.yml';
+const deliveryApiDockerfilePath = 'apps/delivery-api/Dockerfile';
+const prismaDbPushGuardPath = 'apps/delivery-api/scripts/guard-prisma-db-push.sh';
 const ssmDocumentPath = 'infra/ssm/route-ops-deploy-document.json';
 const osrmHelperPath = 'scripts/osrm-ontario.sh';
 const deployControlBundlePath = 'scripts/route-ops-deploy-control-bundle.sh';
@@ -31,6 +33,8 @@ const wrapper = read(wrapperPath);
 const imageDeploy = read(imageDeployPath);
 const imageRollback = read(imageRollbackPath);
 const compose = read(composePath);
+const deliveryApiDockerfile = read(deliveryApiDockerfilePath);
+const prismaDbPushGuard = read(prismaDbPushGuardPath);
 const ssmDocument = read(ssmDocumentPath);
 const osrmHelper = read(osrmHelperPath);
 const deployControlBundle = read(deployControlBundlePath);
@@ -458,6 +462,16 @@ assert(deliveryApiComposeService.includes('healthcheck:'), 'delivery-api compose
 assert(deliveryApiComposeService.includes("host:'127.0.0.1'"), 'delivery-api healthcheck must probe loopback inside the container');
 assert(deliveryApiComposeService.includes("path:'/healthz'"), 'delivery-api healthcheck must probe /healthz');
 assert(deliveryApiComposeService.includes('process.exit(res.statusCode===200?0:1)'), 'delivery-api healthcheck must fail on non-200 /healthz responses');
+assert(compose.includes('command: ["sh", "apps/delivery-api/scripts/guard-prisma-db-push.sh"]'), 'delivery-api-migrate compose service must run the guarded Prisma db push entrypoint');
+assert(compose.includes('PRISMA_SCHEMA_SHA: ${PRISMA_SCHEMA_SHA:?PRISMA_SCHEMA_SHA is required}'), 'delivery-api-migrate compose service must inject PRISMA_SCHEMA_SHA into the guarded db push container');
+assert(deliveryApiDockerfile.includes('COPY apps/delivery-api/scripts ./apps/delivery-api/scripts'), 'delivery-api Dockerfile must copy the guarded Prisma db push entrypoint into the migrate image');
+assert(deliveryApiDockerfile.includes('CMD ["sh", "apps/delivery-api/scripts/guard-prisma-db-push.sh"]'), 'delivery-api migrate image default command must run the guarded Prisma db push entrypoint');
+assert(prismaDbPushGuard.includes('PRISMA_SCHEMA_SHA is required before prisma db push'), 'Prisma db push guard must fail closed when PRISMA_SCHEMA_SHA is missing');
+assert(prismaDbPushGuard.includes('PRISMA_SCHEMA_SHA must be a 64-hex SHA256'), 'Prisma db push guard must validate PRISMA_SCHEMA_SHA shape before db push');
+assert(prismaDbPushGuard.includes('sha256sum "$schema_path"'), 'Prisma db push guard must hash the schema file used by prisma db push');
+assert(prismaDbPushGuard.includes('refusing prisma db push because schema SHA mismatch'), 'Prisma db push guard must fail closed on schema SHA mismatch');
+assert(prismaDbPushGuard.includes('exec npm --prefix apps/delivery-api exec -- prisma db push --schema "$schema_path" --skip-generate'), 'Prisma db push guard must be the only path to prisma db push');
+assert(!prismaDbPushGuard.includes('--accept-data-loss'), 'Prisma db push guard must not enable Prisma destructive data loss acceptance');
 assert(compose.includes('ROUTE_ENGINE_IMAGE'), 'production compose must accept a pinned route_engine worker image variable');
 assert(compose.includes('profiles:') && compose.includes('route-engine'), 'production route_engine service must be profile-gated for explicit activation');
 assert(compose.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'production compose must mount route_engine graph artifacts from an explicit host directory');
@@ -598,4 +612,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checked: [deployWorkflowPath, wrapperPath, deployControlBundlePath, imageDeployPath, imageRollbackPath, composePath, ssmDocumentPath, osrmHelperPath, docPath, githubDocPath, osrmDocPath, publishWorkflowPath, ciWorkflowPath] }, null, 2));
+console.log(JSON.stringify({ ok: true, checked: [deployWorkflowPath, wrapperPath, deployControlBundlePath, imageDeployPath, imageRollbackPath, composePath, deliveryApiDockerfilePath, prismaDbPushGuardPath, ssmDocumentPath, osrmHelperPath, docPath, githubDocPath, osrmDocPath, publishWorkflowPath, ciWorkflowPath] }, null, 2));
