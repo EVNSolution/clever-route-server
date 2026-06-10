@@ -467,12 +467,13 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
 
     expect(isRouteOptimizationJobActive(routeOptimizationJobFixture({ status: 'RUNNING' }))).toBe(true);
     expect(html).toContain('Route optimization');
-    expect(html).toContain('Route Engine is optimizing this route. This may take a while; it is not a failure.');
+    expect(html).toContain('Route Engine is optimizing this route. If it exceeds the engine timeout, this job will be marked timed out.');
     expect(html).toContain('Stop order edits are locked until this job reaches a terminal state.');
     expect(html).toContain('class="route-stop-compact-list locked"');
     expect(html).toContain('Route Engine job details');
     expect(html).toContain('Calling engine');
     expect(html).toContain('15s');
+    expect(html).toContain('Engine timeout');
     expect(html).toContain('30s');
     expect(html).toContain('route-opt:route-plan-id:test');
     expect(html).toContain('route-optimization-disclosure');

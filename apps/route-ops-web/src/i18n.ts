@@ -300,7 +300,7 @@ export const routesCopy = {
         notAvailable: '—',
         status: 'Status',
         step: 'Step',
-        timeoutBudget: 'Timeout budget',
+        timeoutBudget: 'Engine timeout',
         title: 'Route Engine job details',
         traceId: 'Trace ID'
       },
@@ -308,7 +308,7 @@ export const routesCopy = {
       failed: 'Optimization failed',
       queued: 'Optimization queued. Waiting for Route Engine to start.',
       rerun: 'Rerun optimization',
-      running: 'Route Engine is optimizing this route. This may take a while; it is not a failure.',
+      running: 'Route Engine is optimizing this route. If it exceeds the engine timeout, this job will be marked timed out.',
       start: 'Optimize with Route Engine',
       starting: 'Starting optimization…',
       statuses: {
@@ -415,7 +415,7 @@ export const routesCopy = {
         notAvailable: '—',
         status: '상태',
         step: '단계',
-        timeoutBudget: '타임아웃 예산',
+        timeoutBudget: '엔진 제한 시간',
         title: 'Route Engine 작업 상세',
         traceId: 'Trace ID'
       },
@@ -423,7 +423,7 @@ export const routesCopy = {
       failed: '최적화 실패',
       queued: '최적화가 대기 중입니다. Route Engine 시작을 기다립니다.',
       rerun: '최적화 다시 실행',
-      running: 'Route Engine이 이 경로를 최적화 중입니다. 시간이 걸려도 실패는 아닙니다.',
+      running: 'Route Engine이 이 경로를 최적화 중입니다. 엔진 제한 시간을 넘기면 이 작업은 시간 초과로 표시됩니다.',
       start: 'Route Engine 최적화',
       starting: '최적화 시작 중…',
       statuses: {
