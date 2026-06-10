@@ -361,6 +361,8 @@ assert(publish.includes('DEPLOY_ALLOWED_ACTORS is required and must fail closed 
 assert(!publish.includes('Optional actor allowlist'), 'publish workflow actor allowlist must not be optional');
 assert(!publish.includes("if: vars.DEPLOY_ALLOWED_ACTORS != ''"), 'publish actor allowlist must not be skipped when the allowlist is empty');
 assert(publish.indexOf('Require actor allowlist') < publish.indexOf('actions/checkout'), 'publish actor allowlist must run before checkout/build/package work');
+assert(ci.includes('apps/delivery-api/src/routes/admin-ui-[^/]+\\.ts'), 'CI Route Ops filters must include extracted admin-ui route helper files');
+assert(ci.includes('apps/delivery-api/tests/admin-ui-[^/]+\\.test\\.ts'), 'CI Route Ops filters must include extracted admin-ui helper test files');
 assert(!/actions:\s*read/.test(publish), 'publish workflow must not request actions:read for deploy provenance checks');
 assert(publish.includes('FRONTEND_STATIC_IMAGE'), 'publish workflow must define a frontend static image repo');
 assert(publish.includes('apps/route-ops-web/Dockerfile'), 'publish workflow must build the Route Ops web static Dockerfile');
