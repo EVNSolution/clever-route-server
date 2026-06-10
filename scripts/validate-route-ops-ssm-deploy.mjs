@@ -356,6 +356,11 @@ for (const [path, text] of otherWorkflows) {
 }
 assert(!/id-token:\s*write/.test(publish), 'publish workflow must not request id-token:write for deploy role');
 assert(!/id-token:\s*write/.test(ci), 'ci workflow must not request id-token:write for deploy role');
+assert(publish.includes('Require actor allowlist'), 'publish workflow must require a fail-closed actor allowlist');
+assert(publish.includes('DEPLOY_ALLOWED_ACTORS is required and must fail closed before publishing Route Ops images.'), 'publish actor allowlist must fail closed when empty');
+assert(!publish.includes('Optional actor allowlist'), 'publish workflow actor allowlist must not be optional');
+assert(!publish.includes("if: vars.DEPLOY_ALLOWED_ACTORS != ''"), 'publish actor allowlist must not be skipped when the allowlist is empty');
+assert(publish.indexOf('Require actor allowlist') < publish.indexOf('actions/checkout'), 'publish actor allowlist must run before checkout/build/package work');
 assert(!/actions:\s*read/.test(publish), 'publish workflow must not request actions:read for deploy provenance checks');
 assert(publish.includes('FRONTEND_STATIC_IMAGE'), 'publish workflow must define a frontend static image repo');
 assert(publish.includes('apps/route-ops-web/Dockerfile'), 'publish workflow must build the Route Ops web static Dockerfile');
