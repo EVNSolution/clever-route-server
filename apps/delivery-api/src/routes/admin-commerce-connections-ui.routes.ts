@@ -208,7 +208,15 @@ const routeOpsApiResponder = createRouteOpsApiResponder({
   sanitizeError: sanitizeRouteUiError,
 });
 const { routeOpsData, withRouteOpsApi } = routeOpsApiResponder;
-const ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS = 30000;
+const DEFAULT_ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS = 360000;
+
+function readRouteOptimizationJobTimeoutBudgetMs(): number {
+  const raw = process.env.ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS?.trim();
+  if (raw === undefined || raw === '') return DEFAULT_ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS;
+  return parsed;
+}
 
 function readCurrentRouteOpsMapConfig() {
   return readRouteOpsMapConfig({
@@ -3901,7 +3909,7 @@ async function createRouteOptimizationJobForRequest(
       createdBy: input.session.subject,
       routePlanId: input.routePlanId,
       shopDomain,
-      timeoutBudgetMs: ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS,
+      timeoutBudgetMs: readRouteOptimizationJobTimeoutBudgetMs(),
       traceId: `route-opt:${input.routePlanId}:${Date.now().toString(36)}`,
     });
   } catch (error) {

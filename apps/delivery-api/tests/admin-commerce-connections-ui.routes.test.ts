@@ -4636,6 +4636,9 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(readApiData<{ job: RouteOptimizationJobDto }>(optimized).job.id).toBe(
         "job-id",
       );
+      expect(routeOptimizationJobService.createJob).toHaveBeenCalledWith(
+        expect.objectContaining({ timeoutBudgetMs: 360000 }),
+      );
       await waitForExpectation(() =>
         expect(optimizeStopOrder).toHaveBeenCalledWith({
           detail,

@@ -649,9 +649,18 @@ ensure_route_engine_host_env() {
     echo "Route Engine internal token generated in infra/env/delivery-api.env."
   fi
 
-  if [ -z "$(read_route_ops_host_env_value ROUTE_ENGINE_TIMEOUT_MS)" ]; then
-    set_route_ops_host_env_value ROUTE_ENGINE_TIMEOUT_MS "30000"
+  local route_engine_timeout_ms
+  route_engine_timeout_ms="$(read_route_ops_host_env_value ROUTE_ENGINE_TIMEOUT_MS)"
+  if [ -z "$route_engine_timeout_ms" ] || [ "$route_engine_timeout_ms" = "30000" ]; then
+    set_route_ops_host_env_value ROUTE_ENGINE_TIMEOUT_MS "300000"
   fi
+
+  local route_optimization_job_timeout_budget_ms
+  route_optimization_job_timeout_budget_ms="$(read_route_ops_host_env_value ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS)"
+  if [ -z "$route_optimization_job_timeout_budget_ms" ] || [ "$route_optimization_job_timeout_budget_ms" = "30000" ]; then
+    set_route_ops_host_env_value ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS "360000"
+  fi
+
   if [ -z "$(read_route_ops_host_env_value ROUTE_ENGINE_MODE)" ]; then
     set_route_ops_host_env_value ROUTE_ENGINE_MODE "road_graph"
   fi

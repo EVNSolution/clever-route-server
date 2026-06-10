@@ -11,8 +11,8 @@ import {
 } from './route-optimization-job.types.js';
 
 const DEFAULT_QUEUE_START_BUDGET_MS = 10000;
-const DEFAULT_TIMEOUT_BUDGET_MS = 30000;
-const MAX_TIMEOUT_BUDGET_MS = 120000;
+const DEFAULT_TIMEOUT_BUDGET_MS = 360000;
+const MAX_TIMEOUT_BUDGET_MS = 3600000;
 const MIN_TIMEOUT_BUDGET_MS = 100;
 const ACTIVE_JOB_STATUSES = ['QUEUED', 'RUNNING'] as const;
 
@@ -135,7 +135,7 @@ export class PrismaRouteOptimizationJobRepository implements RouteOptimizationJo
             currentStep: 'COMPLETED',
             elapsedMs: elapsedMs(current.startedAt ?? current.createdAt, now),
             errorCode: 'solver_timeout',
-            errorMessage: 'Route optimization exceeded its timeout budget before result application.',
+            errorMessage: 'Route optimization exceeded its result wait limit before result application.',
             finishedAt: now,
             status: 'TIMEOUT'
           },
@@ -269,7 +269,7 @@ async function reconcileStaleActiveJobsInTransaction(
     const status = record.status === 'RUNNING' ? 'TIMEOUT' : 'FAILED';
     const errorCode = record.status === 'RUNNING' ? 'solver_timeout' : 'queue_start_timeout';
     const errorMessage = record.status === 'RUNNING'
-      ? 'Route optimization exceeded its timeout budget.'
+      ? 'Route optimization exceeded its result wait limit.'
       : 'Route optimization job did not start before the queue start budget.';
     const stale = await tx.routeOptimizationJob.update({
       data: {
