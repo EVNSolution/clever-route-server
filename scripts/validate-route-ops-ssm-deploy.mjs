@@ -453,6 +453,11 @@ assert(compose.includes('ROUTE_OPS_WEB_STATIC_VOLUME'), 'production compose must
 assert(compose.includes('$$staging'), 'production compose static handoff command must escape shell variables from compose interpolation');
 assert(compose.includes('route-ops-web-static:/app/external/route-ops-web:ro'), 'delivery-api must mount the frontend static artifact read-only');
 assert(compose.includes('route-engine:'), 'production compose must declare the internal route_engine service');
+const deliveryApiComposeService = compose.match(/\n  delivery-api:\n([\s\S]*?)\n  delivery-api-migrate:/)?.[1] ?? '';
+assert(deliveryApiComposeService.includes('healthcheck:'), 'delivery-api compose service must declare a healthcheck');
+assert(deliveryApiComposeService.includes("host:'127.0.0.1'"), 'delivery-api healthcheck must probe loopback inside the container');
+assert(deliveryApiComposeService.includes("path:'/healthz'"), 'delivery-api healthcheck must probe /healthz');
+assert(deliveryApiComposeService.includes('process.exit(res.statusCode===200?0:1)'), 'delivery-api healthcheck must fail on non-200 /healthz responses');
 assert(compose.includes('ROUTE_ENGINE_IMAGE'), 'production compose must accept a pinned route_engine worker image variable');
 assert(compose.includes('profiles:') && compose.includes('route-engine'), 'production route_engine service must be profile-gated for explicit activation');
 assert(compose.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'production compose must mount route_engine graph artifacts from an explicit host directory');
