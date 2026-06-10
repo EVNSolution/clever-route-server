@@ -472,6 +472,7 @@ assert(deliveryApiComposeService.includes("path:'/healthz'"), 'delivery-api heal
 assert(deliveryApiComposeService.includes('process.exit(res.statusCode===200?0:1)'), 'delivery-api healthcheck must fail on non-200 /healthz responses');
 assert(compose.includes('command: ["sh", "apps/delivery-api/scripts/guard-prisma-db-push.sh"]'), 'delivery-api-migrate compose service must run the guarded Prisma db push entrypoint');
 assert(compose.includes('PRISMA_SCHEMA_SHA: ${PRISMA_SCHEMA_SHA:?PRISMA_SCHEMA_SHA is required}'), 'delivery-api-migrate compose service must inject PRISMA_SCHEMA_SHA into the guarded db push container');
+assert(ci.includes('PRISMA_SCHEMA_SHA=abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd'), 'CI compose placeholder validation must pass PRISMA_SCHEMA_SHA for the guarded migrate service');
 assert(deliveryApiDockerfile.includes('COPY apps/delivery-api/scripts ./apps/delivery-api/scripts'), 'delivery-api Dockerfile must copy the guarded Prisma db push entrypoint into the migrate image');
 assert(deliveryApiDockerfile.includes('CMD ["sh", "apps/delivery-api/scripts/guard-prisma-db-push.sh"]'), 'delivery-api migrate image default command must run the guarded Prisma db push entrypoint');
 assert(prismaDbPushGuard.includes('PRISMA_SCHEMA_SHA is required before prisma db push'), 'Prisma db push guard must fail closed when PRISMA_SCHEMA_SHA is missing');

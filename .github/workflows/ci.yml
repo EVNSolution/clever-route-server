@@ -218,5 +218,6 @@ jobs:
           DELIVERY_API_MIGRATE_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:ci \
           ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static:ci \
           ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-ci \
+          PRISMA_SCHEMA_SHA=abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd \
           docker compose -p clever-route -f infra/compose/docker-compose.prod.yml config --quiet
           rm -f infra/env/delivery-api.env
