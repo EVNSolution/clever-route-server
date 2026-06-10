@@ -10,15 +10,31 @@ export type RouteOpsApiResponse<T> = {
   statusCode: number;
 };
 
-export class RouteOpsHttpError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-    readonly httpStatus: 400 | 404 | 409,
-  ) {
-    super(message);
-    this.name = "RouteOpsHttpError";
-  }
+export type RouteOpsHttpError = Error & {
+  code: string;
+  httpStatus: 400 | 404 | 409;
+  name: "RouteOpsHttpError";
+};
+
+export function createRouteOpsHttpError(
+  code: string,
+  message: string,
+  httpStatus: 400 | 404 | 409,
+): RouteOpsHttpError {
+  return Object.assign(new Error(message), {
+    code,
+    httpStatus,
+    name: "RouteOpsHttpError" as const,
+  });
+}
+
+function isRouteOpsHttpError(error: unknown): error is RouteOpsHttpError {
+  return (
+    error instanceof Error &&
+    error.name === "RouteOpsHttpError" &&
+    "code" in error &&
+    "httpStatus" in error
+  );
 }
 
 export function createRouteOpsApiResponder(input: {
@@ -114,7 +130,7 @@ export function createRouteOpsApiResponder(input: {
       if (error instanceof RouteScopeConfigValidationError) {
         return sendRouteOpsApiError(reply, 400, error.code, error.message);
       }
-      if (error instanceof RouteOpsHttpError) {
+      if (isRouteOpsHttpError(error)) {
         return sendRouteOpsApiError(
           reply,
           error.httpStatus,

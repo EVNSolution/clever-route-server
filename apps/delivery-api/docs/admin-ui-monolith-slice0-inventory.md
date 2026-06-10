@@ -1,15 +1,15 @@
 # Admin UI Monolith Slice 0 Inventory
 
-This inventory locks the current public route/action surface before refactoring `src/routes/admin-commerce-connections-ui.routes.ts` into a facade plus cohesive domain modules. It intentionally rejects the old 131-file micro-helper split shape.
+This inventory locks the current public route/action surface before refactoring `src/routes/admin-commerce-connections-ui.routes.ts` into a facade plus cohesive domain modules. It intentionally rejects the old 131-file micro-module split shape.
 
 ## Baseline
 
 - Source file: `apps/delivery-api/src/routes/admin-commerce-connections-ui.routes.ts`
 - Baseline line count: 7028
 - Baseline route registrations: 87
-- Current main helper files: `admin-ui-form.ts`, `admin-ui-session.ts`
+- Current main support modules: `admin-ui-form.ts`, `admin-ui-session.ts`
 - Refactor target: facade route registration/orchestration only, <=2500 lines after full integration
-- Domain module target: 6-10 cohesive modules, no standalone tiny helper proliferation
+- Domain module target: 6-10 cohesive modules, no standalone tiny module proliferation
 
 ## Route inventory
 
@@ -134,14 +134,14 @@ Allowed uses:
 
 - Compare old-branch tests against current behavior.
 - Harvest logic only when it fits one of the cohesive domain modules above.
-- Keep tiny helpers as private functions inside domain modules if extraction is still useful.
+- Keep tiny reusable routines as private functions inside domain modules if extraction is still useful.
 
 Rejected by default:
 
-- 131 `admin-ui-*.ts` helper-file shape.
-- One-file-per-function helpers such as message/html-escape/alert/nav-link/text/module-card.
+- 131 `admin-ui-*.ts` micro-file shape.
+- One-file-per-function modules such as message/html-escape/alert/nav-link/text/module-card.
 - `.github`, env, infra, deploy, or config changes.
-- Blind cherry-pick of old helper commits.
+- Blind cherry-pick of old micro-split commits.
 
 ## Characterization test lock
 

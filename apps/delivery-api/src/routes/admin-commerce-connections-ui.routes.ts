@@ -96,7 +96,7 @@ import {
 } from "./admin-ui-route-planning.js";
 import {
   createRouteOpsApiResponder,
-  RouteOpsHttpError,
+  createRouteOpsHttpError,
 } from "./admin-ui-route-ops-api-response.js";
 import {
   isRouteOpsUuid,
@@ -2091,7 +2091,7 @@ function registerRouteOpsAppRoutes(
                 },
                 "route ops aggregate route save rejected",
               );
-              throw new RouteOpsHttpError(code, message, httpStatus);
+              throw createRouteOpsHttpError(code, message, httpStatus);
             }
             throw error;
           }

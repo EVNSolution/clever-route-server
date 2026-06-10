@@ -517,7 +517,7 @@ function renderWooCredentialForm(input: {
     <label>Webhook secret (optional; leave blank to generate)
       <input type="password" name="webhookSecret" autocomplete="off" />
     </label>
-    <p class="helper">Test credentials only validates the entered REST API key without saving and keeps the values on this page. Save connection validates, stores encrypted credentials, and prepares webhook setup.</p>
+    <p class="field-note">Test credentials only validates the entered REST API key without saving and keeps the values on this page. Save connection validates, stores encrypted credentials, and prepares webhook setup.</p>
     <p class="alert" data-test-credential-result hidden></p>
     <div class="actions">
       <button type="submit" class="secondary" formaction="${paths.woocommercePath}/test" data-test-credentials-button>Test credentials only</button>
@@ -613,7 +613,7 @@ function renderPairingCodeAction(input: {
   if (!input.canGeneratePairingCode) {
     return `<details>
       <summary>Generate WordPress plugin pairing code</summary>
-      <p class="helper">WordPress plugin pairing code generation is not enabled in this runtime.</p>
+      <p class="field-note">WordPress plugin pairing code generation is not enabled in this runtime.</p>
     </details>`;
   }
 
@@ -622,7 +622,7 @@ function renderPairingCodeAction(input: {
       <form method="post" action="${paths.woocommercePath}/${escapeHtml(input.connection.id)}/pairing-code" enctype="multipart/form-data" class="stack compact">
         <input type="hidden" name="csrfToken" value="${escapeHtml(input.csrfToken)}" />
         <input type="hidden" name="shopDomain" value="${escapeHtml(input.connection.shopDomain)}" />
-        <p class="helper">Creates a ${DEFAULT_WORDPRESS_PLUGIN_PAIRING_CODE_TTL_MINUTES}-minute one-time code for this site URL. Paste it into WordPress → WooCommerce → CLEVER Route → Setup.</p>
+        <p class="field-note">Creates a ${DEFAULT_WORDPRESS_PLUGIN_PAIRING_CODE_TTL_MINUTES}-minute one-time code for this site URL. Paste it into WordPress → WooCommerce → CLEVER Route → Setup.</p>
         <button type="submit">Generate pairing code</button>
       </form>
     </details>`;
@@ -786,7 +786,7 @@ function renderDocument(input: { body: string; title: string }): string {
 	    .checklist { display: grid; gap: 12px; margin: 0 0 14px; padding-left: 22px; }
 	    .checklist li { padding-left: 4px; }
 	    .checklist span { font-weight: 700; }
-	    .helper, .field-help { color: var(--muted); font-size: 14px; margin: 0; }
+	    .field-note, .field-help { color: var(--muted); font-size: 14px; margin: 0; }
 	    .field-help { font-weight: 400; }
 	    .readonly-field { background: #f5f5f7; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); font-weight: 650; padding: 10px 12px; }
 	    .actions { display: flex; flex-wrap: wrap; gap: 10px; }
