@@ -1270,6 +1270,14 @@ button.danger.subtle {
   gap: 12px;
   margin-bottom: 4px;
 }
+.route-builder-card-heading {
+  align-items: flex-start;
+  margin-bottom: 0;
+}
+.route-builder-card-heading .route-optimize-button {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
 .route-builder-title-block {
   min-width: 0;
 }

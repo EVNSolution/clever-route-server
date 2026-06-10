@@ -466,6 +466,10 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('class="route-stop-compact-list locked"');
     expect(html).toContain('Rerun optimization');
     expect(html).toMatch(/class="primary route-optimize-button" disabled=""/);
+    expect(html).toMatch(
+      /class="panel-heading route-builder-card-heading"[\s\S]*Rerun optimization[\s\S]*class="route-row-actions route-builder-card-actions"/,
+    );
+    expect(html).not.toMatch(/class="route-stop-compact-toolbar"[\s\S]*route-optimize-button/);
   });
 
   test('RouteBuilder allows explicit optimization rerun after a terminal job', () => {
@@ -488,6 +492,9 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(getRouteOptimizationJobNotice(routeOptimizationJobFixture({ status: 'APPLIED' }))?.tone).toBe('green');
     expect(html).toContain('Route Engine result applied. You can still edit stops manually, or rerun optimization explicitly.');
     expect(html).toContain('Rerun optimization');
+    expect(html).toMatch(
+      /class="panel-heading route-builder-card-heading"[\s\S]*Rerun optimization[\s\S]*class="route-row-actions route-builder-card-actions"/,
+    );
     expect(html).not.toContain('route-stop-compact-list locked');
     expect(html).not.toMatch(/class="primary route-optimize-button" disabled=""/);
   });
