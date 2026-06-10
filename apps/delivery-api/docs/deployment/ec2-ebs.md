@@ -22,7 +22,7 @@ runtime template. Minimum values:
 ```env
 DELIVERY_API_PUBLIC_URL=https://clever-route.cleversystem.ai
 PRIVACY_CONTACT_EMAIL=chase@evnsolution.com
-CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS=*
+CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS=<comma-separated-shop-domains>
 DATABASE_URL=postgresql://clever:<password>@postgres:5432/clever_route
 POSTGRES_DB=clever_route
 POSTGRES_USER=clever
@@ -36,9 +36,10 @@ DRIVER_PROOF_MEDIA_STORAGE_BACKEND=local
 DRIVER_PROOF_MEDIA_STORAGE_DIR=/app/var/driver-proof-media
 ```
 
-`CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS=*` is acceptable for an early controlled
-test only. Replace it with customer-owned WooCommerce hostnames before broad
-production onboarding.
+Use explicit customer-owned WooCommerce hostnames in
+`CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS` before enabling admin onboarding. Leaving it
+blank fails closed. A wildcard (`*`) is acceptable only for a deliberate,
+reviewed compatibility exception during a controlled test.
 
 Optional legacy Shopify compatibility values (`SHOPIFY_API_KEY`,
 `SHOPIFY_API_SECRET`, `SHOPIFY_TOKEN_ENCRYPTION_KEY`, etc.) should remain unset
