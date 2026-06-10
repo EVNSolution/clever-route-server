@@ -25,6 +25,7 @@ import {
   buildRouteSaveDraftInput,
   getDriverOptionLabel,
   getRouteDriverDisplay,
+  getRouteOptimizationJobDetailRows,
   getRouteOptimizationJobNotice,
   getRoutePublishNotice,
   formatRoutePlanStatus,
@@ -450,7 +451,12 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         detail={detail}
         drivers={[driverFixture()]}
         initialBuilderTab="stop-order"
-        initialOptimizationJob={routeOptimizationJobFixture({ status: 'RUNNING' })}
+        initialOptimizationJob={routeOptimizationJobFixture({
+          currentStep: 'CALLING_ENGINE',
+          elapsedMs: 15320,
+          startedAt: '2026-06-10T07:00:01.000Z',
+          status: 'RUNNING',
+        })}
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
         onRefreshRoutes={() => undefined}
@@ -464,6 +470,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('Route Engine is optimizing this route. This may take a while; it is not a failure.');
     expect(html).toContain('Stop order edits are locked until this job reaches a terminal state.');
     expect(html).toContain('class="route-stop-compact-list locked"');
+    expect(html).toContain('Route Engine job details');
+    expect(html).toContain('Calling engine');
+    expect(html).toContain('15s');
+    expect(html).toContain('30s');
+    expect(html).toContain('route-opt:route-plan-id:test');
     expect(html).toContain('Rerun optimization');
     expect(html).toMatch(/class="primary route-optimize-button" disabled=""/);
     expect(html).toMatch(
@@ -491,6 +502,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     );
 
     expect(getRouteOptimizationJobNotice(routeOptimizationJobFixture({ status: 'APPLIED' }))?.tone).toBe('green');
+    expect(getRouteOptimizationJobDetailRows(routeOptimizationJobFixture({ currentStep: 'APPLYING_RESULT', elapsedMs: 4200, status: 'RUNNING' }))[1]?.value).toBe('Applying result');
     expect(html).toContain('Route Engine result applied. You can still edit stops manually, or rerun optimization explicitly.');
     expect(html).toContain('Rerun optimization');
     expect(html).toMatch(

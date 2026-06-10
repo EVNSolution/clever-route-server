@@ -291,6 +291,19 @@ export const routesCopy = {
     routeOptimization: {
       applied: 'Route Engine result applied. You can still edit stops manually, or rerun optimization explicitly.',
       cancelled: 'Optimization was cancelled.',
+      details: {
+        appliedAt: 'Applied at',
+        elapsed: 'Elapsed',
+        errorCode: 'Error code',
+        finishedAt: 'Finished at',
+        invalidatedReason: 'Invalidated',
+        notAvailable: '—',
+        status: 'Status',
+        step: 'Step',
+        timeoutBudget: 'Timeout budget',
+        title: 'Route Engine job details',
+        traceId: 'Trace ID'
+      },
       editingLocked: 'Stop order edits are locked until this job reaches a terminal state.',
       failed: 'Optimization failed',
       queued: 'Optimization queued. Waiting for Route Engine to start.',
@@ -298,6 +311,20 @@ export const routesCopy = {
       running: 'Route Engine is optimizing this route. This may take a while; it is not a failure.',
       start: 'Optimize with Route Engine',
       starting: 'Starting optimization…',
+      statuses: {
+        APPLIED: 'Applied',
+        CANCELLED: 'Cancelled',
+        FAILED: 'Failed',
+        QUEUED: 'Queued',
+        RUNNING: 'Running',
+        TIMEOUT: 'Timed out'
+      },
+      steps: {
+        APPLYING_RESULT: 'Applying result',
+        CALLING_ENGINE: 'Calling engine',
+        COMPLETED: 'Completed',
+        QUEUED: 'Queued'
+      },
       timeout: 'Optimization timed out. Review logs, then rerun when ready.',
       title: 'Route optimization'
     },
@@ -379,6 +406,19 @@ export const routesCopy = {
     routeOptimization: {
       applied: 'Route Engine 결과가 적용되었습니다. 이후 하차 순서는 직접 수정할 수 있고, 명시적으로 다시 최적화할 수 있습니다.',
       cancelled: '최적화가 취소되었습니다.',
+      details: {
+        appliedAt: '적용 시각',
+        elapsed: '경과 시간',
+        errorCode: '에러 코드',
+        finishedAt: '종료 시각',
+        invalidatedReason: '무효화 사유',
+        notAvailable: '—',
+        status: '상태',
+        step: '단계',
+        timeoutBudget: '타임아웃 예산',
+        title: 'Route Engine 작업 상세',
+        traceId: 'Trace ID'
+      },
       editingLocked: '작업이 완료 상태가 될 때까지 하차 순서 편집을 잠급니다.',
       failed: '최적화 실패',
       queued: '최적화가 대기 중입니다. Route Engine 시작을 기다립니다.',
@@ -386,6 +426,20 @@ export const routesCopy = {
       running: 'Route Engine이 이 경로를 최적화 중입니다. 시간이 걸려도 실패는 아닙니다.',
       start: 'Route Engine 최적화',
       starting: '최적화 시작 중…',
+      statuses: {
+        APPLIED: '적용됨',
+        CANCELLED: '취소됨',
+        FAILED: '실패',
+        QUEUED: '대기 중',
+        RUNNING: '실행 중',
+        TIMEOUT: '시간 초과'
+      },
+      steps: {
+        APPLYING_RESULT: '결과 적용 중',
+        CALLING_ENGINE: '엔진 호출 중',
+        COMPLETED: '완료',
+        QUEUED: '대기 중'
+      },
       timeout: '최적화 시간이 초과되었습니다. 로그를 확인한 뒤 필요하면 다시 실행하세요.',
       title: '경로 최적화'
     },

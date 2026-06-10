@@ -178,6 +178,56 @@ export function getRouteOptimizationJobNotice(
   return { tone: "orange", text: copy.cancelled };
 }
 
+type RouteOptimizationDetailRow = {
+  label: string;
+  monospace?: boolean;
+  value: string;
+};
+
+export function getRouteOptimizationJobDetailRows(
+  job: RouteOptimizationJobDto | null,
+  locale: string | null | undefined = "en-CA",
+): RouteOptimizationDetailRow[] {
+  if (job === null) return [];
+  const copy = getRoutesCopy(locale).routeOptimization;
+  const rows: RouteOptimizationDetailRow[] = [
+    { label: copy.details.status, value: copy.statuses[job.status] },
+    { label: copy.details.step, value: copy.steps[job.currentStep] },
+    { label: copy.details.elapsed, value: formatRouteOptimizationDuration(getRouteOptimizationElapsedMs(job), copy.details.notAvailable) },
+    { label: copy.details.timeoutBudget, value: formatRouteOptimizationDuration(job.timeoutBudgetMs, copy.details.notAvailable) },
+    { label: copy.details.traceId, monospace: true, value: job.traceId },
+  ];
+  if (job.errorCode !== null) rows.push({ label: copy.details.errorCode, monospace: true, value: job.errorCode });
+  if (job.invalidatedReason !== null) rows.push({ label: copy.details.invalidatedReason, value: job.invalidatedReason });
+  if (job.appliedAt !== null) rows.push({ label: copy.details.appliedAt, value: formatRouteOptimizationTimestamp(job.appliedAt, copy.details.notAvailable) });
+  if (job.finishedAt !== null) rows.push({ label: copy.details.finishedAt, value: formatRouteOptimizationTimestamp(job.finishedAt, copy.details.notAvailable) });
+  return rows;
+}
+
+function getRouteOptimizationElapsedMs(job: RouteOptimizationJobDto): number | null {
+  if (job.elapsedMs !== null) return job.elapsedMs;
+  if (!isRouteOptimizationJobActive(job)) return null;
+  const startedAt = Date.parse(job.startedAt ?? job.createdAt);
+  if (Number.isNaN(startedAt)) return null;
+  return Math.max(0, Date.now() - startedAt);
+}
+
+function formatRouteOptimizationDuration(valueMs: number | null, fallback: string): string {
+  if (valueMs === null) return fallback;
+  if (valueMs < 1000) return `${valueMs}ms`;
+  const totalSeconds = Math.round(valueMs / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+}
+
+function formatRouteOptimizationTimestamp(value: string, fallback: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return fallback;
+  return date.toLocaleString();
+}
+
 export function buildRouteSaveDraftInput({
   csrfToken,
   detail,
@@ -826,6 +876,14 @@ export function RouteBuilder(input: {
                   <div className={`route-optimization-notice ${optimizationNotice.tone}`}>
                     <strong>{t.routeOptimization.title}</strong>
                     <span>{optimizationNotice.text}</span>
+                    <dl className="route-optimization-details" aria-label={t.routeOptimization.details.title}>
+                      {getRouteOptimizationJobDetailRows(optimizationJob, locale).map((row) => (
+                        <div key={row.label}>
+                          <dt>{row.label}</dt>
+                          <dd className={row.monospace === true ? "monospace" : undefined}>{row.value}</dd>
+                        </div>
+                      ))}
+                    </dl>
                     {hasActiveOptimizationJob ? <small>{t.routeOptimization.editingLocked}</small> : null}
                   </div>
                 )}
