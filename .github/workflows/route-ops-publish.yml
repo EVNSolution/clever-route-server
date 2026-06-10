@@ -47,19 +47,25 @@ jobs:
           echo "Route Ops publish is manual-only and must run from refs/heads/main." >&2
           exit 1
 
-      - name: Optional actor allowlist
-        if: vars.DEPLOY_ALLOWED_ACTORS != ''
+      - name: Require actor allowlist
         shell: bash
+        env:
+          DEPLOY_ALLOWED_ACTORS: ${{ vars.DEPLOY_ALLOWED_ACTORS }}
+          GITHUB_ACTOR_NAME: ${{ github.actor }}
         run: |
           set -euo pipefail
-          IFS=',' read -ra actors <<< "${{ vars.DEPLOY_ALLOWED_ACTORS }}"
+          if [ -z "${DEPLOY_ALLOWED_ACTORS//[[:space:],]/}" ]; then
+            echo "DEPLOY_ALLOWED_ACTORS is required and must fail closed before publishing Route Ops images." >&2
+            exit 1
+          fi
+          IFS=',' read -ra actors <<< "$DEPLOY_ALLOWED_ACTORS"
           allowed=false
           for actor in "${actors[@]}"; do
             actor="$(echo "$actor" | xargs)"
-            if [ "$actor" = "${{ github.actor }}" ]; then allowed=true; fi
+            if [ "$actor" = "$GITHUB_ACTOR_NAME" ]; then allowed=true; fi
           done
           if [ "$allowed" != true ]; then
-            echo "${{ github.actor }} is not allowed to publish Route Ops images." >&2
+            echo "$GITHUB_ACTOR_NAME is not allowed to publish Route Ops images." >&2
             exit 1
           fi
 
