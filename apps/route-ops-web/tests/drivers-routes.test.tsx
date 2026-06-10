@@ -475,8 +475,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('15s');
     expect(html).toContain('30s');
     expect(html).toContain('route-opt:route-plan-id:test');
-    expect(html).toContain('class="route-optimization-summary"');
-    expect(html).toContain('class="route-optimization-log" open=""');
+    expect(html).toContain('route-optimization-disclosure');
+    expect(html).toContain('class="route-optimization-summary-line"');
+    expect(html).toContain('class="route-optimization-details"');
+    expect(html).not.toContain('class="route-optimization-log" open=""');
+    expect(html).not.toContain('route-optimization-disclosure neutral" open=""');
     expect(html).toContain('Rerun optimization');
     expect(html).toMatch(/class="primary route-optimize-button" disabled=""/);
     expect(html).toMatch(

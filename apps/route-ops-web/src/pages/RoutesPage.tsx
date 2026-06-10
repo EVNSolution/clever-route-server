@@ -724,34 +724,30 @@ export function RouteBuilder(input: {
   );
   const routeOptimizationRows = getRouteOptimizationJobDetailRows(optimizationJob, locale, optimizationElapsedNowMs);
   const routeOptimizationSummaryRows = routeOptimizationRows.slice(0, 3);
-  const routeOptimizationLogRows = routeOptimizationRows.slice(3);
   const routeOptimizationStatus = optimizationNotice === null ? undefined : (
-    <div className={`route-optimization-notice route-optimization-notice--map ${optimizationNotice.tone}`}>
-      <strong>{t.routeOptimization.title}</strong>
-      <span>{optimizationNotice.text}</span>
-      <dl className="route-optimization-summary" aria-label={t.routeOptimization.title}>
-        {routeOptimizationSummaryRows.map((row) => (
+    <details className={`route-optimization-notice route-optimization-notice--map route-optimization-disclosure ${optimizationNotice.tone}`}>
+      <summary className="route-optimization-disclosure-summary">
+        <strong>{t.routeOptimization.title}</strong>
+        <span className="route-optimization-summary-line">
+          {routeOptimizationSummaryRows.map((row) => (
+            <span className="route-optimization-summary-chip" key={row.label}>
+              <span>{row.label}</span>
+              <b className={row.monospace === true ? "monospace" : undefined}>{row.value}</b>
+            </span>
+          ))}
+        </span>
+      </summary>
+      <span className="route-optimization-message">{optimizationNotice.text}</span>
+      <dl className="route-optimization-details" aria-label={t.routeOptimization.details.title}>
+        {routeOptimizationRows.map((row) => (
           <div key={row.label}>
             <dt>{row.label}</dt>
             <dd className={row.monospace === true ? "monospace" : undefined}>{row.value}</dd>
           </div>
         ))}
       </dl>
-      {routeOptimizationLogRows.length === 0 ? null : (
-        <details className="route-optimization-log" open={hasActiveOptimizationJob}>
-          <summary>{t.routeOptimization.details.title}</summary>
-          <dl className="route-optimization-details" aria-label={t.routeOptimization.details.title}>
-            {routeOptimizationLogRows.map((row) => (
-              <div key={row.label}>
-                <dt>{row.label}</dt>
-                <dd className={row.monospace === true ? "monospace" : undefined}>{row.value}</dd>
-              </div>
-            ))}
-          </dl>
-        </details>
-      )}
       {hasActiveOptimizationJob ? <small>{t.routeOptimization.editingLocked}</small> : null}
-    </div>
+    </details>
   );
 
   return (

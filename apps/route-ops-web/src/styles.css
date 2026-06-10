@@ -2453,54 +2453,72 @@ button.danger.subtle {
   line-height: 1.35;
   padding: 10px 12px;
 }
+.route-optimization-disclosure {
+  padding: 0;
+}
+.route-optimization-disclosure-summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 12px;
+  list-style-position: inside;
+  min-width: 0;
+  padding: 10px 12px;
+}
 .route-optimization-notice strong {
+  flex: 0 0 auto;
   font-size: 12px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+.route-optimization-summary-line {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  min-width: 0;
+}
+.route-optimization-summary-chip {
+  align-items: baseline;
+  display: inline-flex;
+  gap: 4px;
+  min-width: 0;
+}
+.route-optimization-summary-chip span {
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  opacity: 0.72;
+  text-transform: uppercase;
+}
+.route-optimization-summary-chip b {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.route-optimization-message {
+  display: block;
+  padding: 0 12px;
 }
 .route-optimization-notice small {
   color: inherit;
+  display: block;
   font-weight: 800;
+  padding: 0 12px 10px;
 }
-.route-optimization-summary,
 .route-optimization-details {
   border-top: 1px solid rgb(148 163 184 / 35%);
   display: grid;
-  gap: 4px;
-  margin: 4px 0 0;
-  padding-top: 8px;
-}
-.route-optimization-summary {
-  gap: 6px 14px;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-}
-.route-optimization-notice--map .route-optimization-details {
   gap: 6px 14px;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin: 8px 12px 8px;
+  padding-top: 8px;
 }
-.route-optimization-log {
-  border-top: 1px solid rgb(148 163 184 / 35%);
-  margin-top: 4px;
-  padding-top: 6px;
-}
-.route-optimization-log summary {
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 900;
-  letter-spacing: 0.08em;
-  list-style-position: inside;
-  text-transform: uppercase;
-}
-.route-optimization-log .route-optimization-details {
-  border-top: 0;
-}
-.route-optimization-summary div,
 .route-optimization-details div {
   display: grid;
   gap: 8px;
   grid-template-columns: minmax(92px, max-content) minmax(0, 1fr);
 }
-.route-optimization-summary dt,
 .route-optimization-details dt {
   font-size: 11px;
   font-weight: 900;
@@ -2508,14 +2526,13 @@ button.danger.subtle {
   opacity: 0.78;
   text-transform: uppercase;
 }
-.route-optimization-summary dd,
 .route-optimization-details dd {
   font-weight: 800;
   margin: 0;
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.route-optimization-summary dd.monospace,
+.route-optimization-summary-chip b.monospace,
 .route-optimization-details dd.monospace {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 12px;
