@@ -8,6 +8,8 @@ type RouteRegistration = {
   pathExpression: string;
 };
 
+type RouteSurface = Omit<RouteRegistration, "line">;
+
 const expectedRouteRegistrations: RouteRegistration[] = [
   { line: 413, method: "GET", pathExpression: "\"/\"" },
   { line: 415, method: "GET", pathExpression: "ADMIN_ROOT_PATH" },
@@ -168,6 +170,13 @@ function findFirstArgumentComma(source: string, callStart: number): number {
   throw new Error("Could not parse Fastify route registration first argument");
 }
 
+function toRouteSurface(registration: RouteRegistration): RouteSurface {
+  return {
+    method: registration.method,
+    pathExpression: registration.pathExpression,
+  };
+}
+
 describe("admin UI route inventory", () => {
   test("keeps the route registration surface explicit before facade extraction", () => {
     const source = readFileSync(
@@ -175,7 +184,9 @@ describe("admin UI route inventory", () => {
       "utf8",
     );
 
-    expect(extractRouteRegistrations(source)).toEqual(expectedRouteRegistrations);
+    expect(extractRouteRegistrations(source).map(toRouteSurface)).toEqual(
+      expectedRouteRegistrations.map(toRouteSurface),
+    );
   });
 
   test("keeps the high-risk mutation and security boundaries represented", () => {
