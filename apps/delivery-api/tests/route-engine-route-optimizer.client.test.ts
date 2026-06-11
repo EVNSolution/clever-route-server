@@ -121,7 +121,7 @@ describe('RouteEngineRouteOptimizationClient', () => {
     });
   });
 
-  test('defaults route_engine solve timeout to five minutes', async () => {
+  test('defaults route_engine solve timeout to the route_engine contract maximum', async () => {
     const fetch = vi.fn<TestFetchLike>().mockResolvedValue(
       Response.json({
         request_id: 'route-plan:route-plan-id:optimize',
@@ -135,8 +135,8 @@ describe('RouteEngineRouteOptimizationClient', () => {
     await client.optimizeStopOrder({ detail, shopDomain: 'tenant-a.example.test' });
 
     const init = fetch.mock.calls[0]?.[1];
-    expect(init?.headers['X-Request-Timeout-Ms']).toBe('300000');
-    expect(JSON.parse(init?.body ?? '{}')).toMatchObject({ options: { timeout_ms: 300000 } });
+    expect(init?.headers['X-Request-Timeout-Ms']).toBe('120000');
+    expect(JSON.parse(init?.body ?? '{}')).toMatchObject({ options: { timeout_ms: 120000 } });
   });
 
   test('appends unassigned and omitted routable stops after assigned route_engine stops', async () => {

@@ -208,7 +208,7 @@ const routeOpsApiResponder = createRouteOpsApiResponder({
   sanitizeError: sanitizeRouteUiError,
 });
 const { routeOpsData, withRouteOpsApi } = routeOpsApiResponder;
-const DEFAULT_ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS = 360000;
+const DEFAULT_ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS = 180000;
 
 function readRouteOptimizationJobTimeoutBudgetMs(): number {
   const raw = process.env.ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS?.trim();

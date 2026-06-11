@@ -113,7 +113,7 @@ type RouteEngineSolveResponse = {
   status: 'solved';
 };
 
-const DEFAULT_TIMEOUT_MS = 300000;
+const DEFAULT_TIMEOUT_MS = 120000;
 const MAX_SOLVER_STOPS = 1000;
 const ROUTE_ENGINE_CONTRACT_ID_MAX_LENGTH = 128;
 
@@ -366,7 +366,7 @@ function normalizeTimeoutMs(value: number | undefined): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return DEFAULT_TIMEOUT_MS;
   }
-  return Math.min(3600000, Math.max(100, Math.floor(value)));
+  return Math.min(120000, Math.max(100, Math.floor(value)));
 }
 
 function normalizeOptionalContractValue(value: string | undefined): string | undefined {

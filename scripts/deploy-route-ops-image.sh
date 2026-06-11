@@ -651,14 +651,14 @@ ensure_route_engine_host_env() {
 
   local route_engine_timeout_ms
   route_engine_timeout_ms="$(read_route_ops_host_env_value ROUTE_ENGINE_TIMEOUT_MS)"
-  if [ -z "$route_engine_timeout_ms" ] || [ "$route_engine_timeout_ms" = "30000" ]; then
-    set_route_ops_host_env_value ROUTE_ENGINE_TIMEOUT_MS "300000"
+  if [ -z "$route_engine_timeout_ms" ] || [ "$route_engine_timeout_ms" = "30000" ] || [ "$route_engine_timeout_ms" = "300000" ]; then
+    set_route_ops_host_env_value ROUTE_ENGINE_TIMEOUT_MS "120000"
   fi
 
   local route_optimization_job_timeout_budget_ms
   route_optimization_job_timeout_budget_ms="$(read_route_ops_host_env_value ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS)"
-  if [ -z "$route_optimization_job_timeout_budget_ms" ] || [ "$route_optimization_job_timeout_budget_ms" = "30000" ]; then
-    set_route_ops_host_env_value ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS "360000"
+  if [ -z "$route_optimization_job_timeout_budget_ms" ] || [ "$route_optimization_job_timeout_budget_ms" = "30000" ] || [ "$route_optimization_job_timeout_budget_ms" = "360000" ]; then
+    set_route_ops_host_env_value ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS "180000"
   fi
 
   if [ -z "$(read_route_ops_host_env_value ROUTE_ENGINE_MODE)" ]; then

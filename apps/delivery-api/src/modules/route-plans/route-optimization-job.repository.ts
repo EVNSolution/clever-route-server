@@ -11,7 +11,7 @@ import {
 } from './route-optimization-job.types.js';
 
 const DEFAULT_QUEUE_START_BUDGET_MS = 10000;
-const DEFAULT_TIMEOUT_BUDGET_MS = 360000;
+const DEFAULT_TIMEOUT_BUDGET_MS = 180000;
 const MAX_TIMEOUT_BUDGET_MS = 3600000;
 const MIN_TIMEOUT_BUDGET_MS = 100;
 const ACTIVE_JOB_STATUSES = ['QUEUED', 'RUNNING'] as const;

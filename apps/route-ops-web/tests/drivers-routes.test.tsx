@@ -467,14 +467,14 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
 
     expect(isRouteOptimizationJobActive(routeOptimizationJobFixture({ status: 'RUNNING' }))).toBe(true);
     expect(html).toContain('Route optimization');
-    expect(html).toContain('Route Engine is optimizing this route. It can take several minutes; elapsed time alone is not a failure. The job times out only if the engine exceeds the configured result wait limit.');
+    expect(html).toContain('Route Engine is optimizing this route. It can take up to a couple of minutes; elapsed time alone is not a failure. The job times out only if the engine exceeds the configured result wait limit.');
     expect(html).toContain('Stop order edits are locked until this job reaches a terminal state.');
     expect(html).toContain('class="route-stop-compact-list locked"');
     expect(html).toContain('Route Engine job details');
     expect(html).toContain('Calling engine');
     expect(html).toContain('15s');
     expect(html).toContain('Result wait limit');
-    expect(html).toContain('6m 00s');
+    expect(html).toContain('3m 00s');
     expect(html).toContain('route-opt:route-plan-id:test');
     expect(html).toContain('route-optimization-disclosure');
     expect(html).toContain('class="route-optimization-summary-line"');
@@ -908,7 +908,7 @@ function routeOptimizationJobFixture(overrides: Partial<RouteOptimizationJobDto>
     shopId: 'shop-id',
     startedAt: null,
     status: 'QUEUED',
-    timeoutBudgetMs: 360000,
+    timeoutBudgetMs: 180000,
     traceId: 'route-opt:route-plan-id:test',
     updatedAt: '2026-06-10T07:00:00.000Z',
     ...overrides,
