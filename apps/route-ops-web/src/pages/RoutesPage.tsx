@@ -197,7 +197,6 @@ export function getRouteOptimizationJobDetailRows(
     { label: copy.details.step, value: copy.steps[job.currentStep] },
     { label: copy.details.elapsed, value: formatRouteOptimizationDuration(getRouteOptimizationElapsedMs(job, nowMs), copy.details.notAvailable) },
     { label: copy.details.timeoutBudget, value: formatRouteOptimizationDuration(job.timeoutBudgetMs, copy.details.notAvailable) },
-    { label: copy.details.traceId, monospace: true, value: job.traceId },
   ];
   if (job.errorCode !== null) rows.push({ label: copy.details.errorCode, monospace: true, value: job.errorCode });
   if (job.invalidatedReason !== null) rows.push({ label: copy.details.invalidatedReason, value: job.invalidatedReason });

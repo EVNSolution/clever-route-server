@@ -2509,15 +2509,16 @@ button.danger.subtle {
 .route-optimization-details {
   border-top: 1px solid rgb(148 163 184 / 35%);
   display: grid;
-  gap: 6px 14px;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px 14px;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
   margin: 8px 12px 8px;
   padding-top: 8px;
 }
 .route-optimization-details div {
   display: grid;
-  gap: 8px;
-  grid-template-columns: minmax(92px, max-content) minmax(0, 1fr);
+  gap: 2px;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
 }
 .route-optimization-details dt {
   font-size: 11px;

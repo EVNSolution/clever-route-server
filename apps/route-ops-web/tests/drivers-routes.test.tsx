@@ -475,7 +475,8 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('15s');
     expect(html).toContain('Result wait limit');
     expect(html).toContain('3m 00s');
-    expect(html).toContain('route-opt:route-plan-id:test');
+    expect(html).not.toContain('route-opt:route-plan-id:test');
+    expect(html).not.toContain('Trace ID');
     expect(html).toContain('route-optimization-disclosure');
     expect(html).toContain('class="route-optimization-summary-line"');
     expect(html).toContain('class="route-optimization-details"');
@@ -535,7 +536,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         detail={routePlanDetailFixture()}
         drivers={[driverFixture()]}
         initialBuilderTab="stop-order"
-        initialOptimizationJob={routeOptimizationJobFixture({ status: 'APPLIED' })}
+        initialOptimizationJob={routeOptimizationJobFixture({
+          appliedAt: '2026-06-11T01:27:31.000Z',
+          finishedAt: '2026-06-11T01:27:31.000Z',
+          status: 'APPLIED',
+        })}
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
         onRefreshRoutes={() => undefined}
@@ -547,6 +552,8 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(getRouteOptimizationJobNotice(routeOptimizationJobFixture({ status: 'APPLIED' }))?.tone).toBe('green');
     expect(getRouteOptimizationJobDetailRows(routeOptimizationJobFixture({ currentStep: 'APPLYING_RESULT', elapsedMs: 4200, status: 'RUNNING' }))[1]?.value).toBe('Applying result');
     expect(html).toContain('Route Engine result applied. You can still edit stops manually, or rerun optimization explicitly.');
+    expect(html).toContain('Applied at');
+    expect(html).toContain('Finished at');
     expect(html).toContain('Rerun optimization');
     expect(html).toMatch(
       /class="map-panel panel"[\s\S]*class="panel-heading"[\s\S]*Rerun optimization[\s\S]*Route Engine job details[\s\S]*class="route-ops-map-frame"/,
