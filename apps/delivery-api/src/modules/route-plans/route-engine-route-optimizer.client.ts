@@ -95,6 +95,7 @@ type RouteEngineSolveRequest = {
   options: {
     mode: RouteEngineMode;
     objective: RouteEngineObjective;
+    return_to_depot?: boolean;
     timeout_ms: number;
   };
 };
@@ -276,6 +277,7 @@ function buildSolveRequest(input: {
       options: {
         mode: input.mode,
         objective: input.objective,
+        ...(input.detail.routePlan.routeEndMode === 'RETURN_TO_DEPOT' ? { return_to_depot: true } : {}),
         timeout_ms: input.timeoutMs
       }
     },

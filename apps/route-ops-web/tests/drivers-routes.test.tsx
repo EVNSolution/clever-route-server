@@ -25,6 +25,7 @@ import {
   buildRouteSaveDraftInput,
   getDriverOptionLabel,
   getRouteDriverDisplay,
+  getRouteOptimizationActionLabel,
   getRouteOptimizationJobDetailRows,
   getRouteOptimizationJobNotice,
   getRoutePublishNotice,
@@ -522,6 +523,8 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
 
     expect(html).toContain('Rerun optimization');
     expect(html).toContain('Route Engine job details');
+    expect(html).toMatch(/<select disabled="">/);
+    expect(html).toMatch(/class="route-end-toggle-checkbox" disabled=""/);
     expect(html).toMatch(
       /class="map-panel panel"[\s\S]*class="panel-heading"[\s\S]*Rerun optimization[\s\S]*Route Engine job details[\s\S]*class="route-ops-map-frame"/,
     );
@@ -561,6 +564,29 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('route-builder-card-heading');
     expect(html).not.toContain('route-stop-compact-list locked');
     expect(html).not.toMatch(/class="primary route-optimize-button" disabled=""/);
+  });
+
+  test('Route optimization action copy makes unsaved-save sequencing explicit', () => {
+    const copy = getRoutesCopy('en-CA').routeOptimization;
+
+    expect(getRouteOptimizationActionLabel({
+      copy,
+      hasUnsavedRouteChanges: true,
+      isStartingOptimizationJob: false,
+      optimizationJob: routeOptimizationJobFixture({ status: 'APPLIED' }),
+    })).toBe('Save & rerun optimization');
+    expect(getRouteOptimizationActionLabel({
+      copy,
+      hasUnsavedRouteChanges: false,
+      isStartingOptimizationJob: false,
+      optimizationJob: routeOptimizationJobFixture({ status: 'APPLIED' }),
+    })).toBe('Rerun optimization');
+    expect(getRouteOptimizationActionLabel({
+      copy,
+      hasUnsavedRouteChanges: false,
+      isStartingOptimizationJob: true,
+      optimizationJob: null,
+    })).toBe('Starting optimization…');
   });
 
   test('route optimization job API helpers use the protected Route Ops endpoints', async () => {

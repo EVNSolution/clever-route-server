@@ -160,6 +160,17 @@ export function isRouteOptimizationJobActive(
   return job?.status === "QUEUED" || job?.status === "RUNNING";
 }
 
+export function getRouteOptimizationActionLabel(input: {
+  copy: ReturnType<typeof getRoutesCopy>["routeOptimization"];
+  hasUnsavedRouteChanges: boolean;
+  isStartingOptimizationJob: boolean;
+  optimizationJob: RouteOptimizationJobDto | null;
+}): string {
+  if (input.isStartingOptimizationJob) return input.copy.starting;
+  if (input.hasUnsavedRouteChanges) return input.copy.saveAndRerun;
+  return input.optimizationJob === null ? input.copy.start : input.copy.rerun;
+}
+
 export function getRouteOptimizationJobNotice(
   job: RouteOptimizationJobDto | null,
   locale: string | null | undefined = "en-CA",
@@ -578,23 +589,50 @@ export function RouteBuilder(input: {
   const hasActiveOptimizationJob = isRouteOptimizationJobActive(optimizationJob);
   const optimizationNotice = getRouteOptimizationJobNotice(optimizationJob, locale);
   const hasUnsavedRouteChanges = hasSequenceChanges || hasDriverChanges || hasRouteEndChanges;
+  const canSaveBeforeOptimization =
+    detail !== null &&
+    !isSavingRoute &&
+    !isStartingOptimizationJob &&
+    !hasActiveOptimizationJob &&
+    !isUnsafeRouteEndDraft &&
+    hasUnsavedRouteChanges;
   const canStartOptimizationJob =
     detail !== null &&
     !isStartingOptimizationJob &&
+    !isSavingRoute &&
     !hasActiveOptimizationJob &&
-    !hasUnsavedRouteChanges;
+    !isUnsafeRouteEndDraft &&
+    (!hasUnsavedRouteChanges || canSaveBeforeOptimization);
   const canSaveRoute =
     detail !== null &&
     !isSavingRoute &&
     !hasActiveOptimizationJob &&
     !isUnsafeRouteEndDraft &&
     (hasSequenceChanges || hasDriverChanges || hasRouteEndChanges || canPublishOnSave);
+  const saveRouteDraft = async (): Promise<RoutePlanDetailDto> => {
+    if (detail === null) {
+      throw new Error("Route detail is not loaded.");
+    }
+    const updated = await saveRoute(buildRouteSaveDraftInput({
+      csrfToken: input.bootstrap.csrfToken,
+      detail,
+      driverId: effectiveDriverId,
+      draftStops,
+      routeEndMode: draftRouteEndMode,
+    }));
+    input.setDetail(updated);
+    input.onRefreshRoutes();
+    return updated;
+  };
+
   const startOptimizationJob = async (): Promise<void> => {
     if (detail === null || !canStartOptimizationJob) return;
     setIsStartingOptimizationJob(true);
+    if (hasUnsavedRouteChanges) setIsSavingRoute(true);
     try {
+      const routeDetailForJob = hasUnsavedRouteChanges ? await saveRouteDraft() : detail;
       const payload = await createRouteOptimizationJob(
-        detail.routePlan.id,
+        routeDetailForJob.routePlan.id,
         input.bootstrap.csrfToken,
       );
       setOptimizationJob(payload.job);
@@ -602,6 +640,7 @@ export function RouteBuilder(input: {
     } catch (error) {
       input.setError(readErrorMessage(error));
     } finally {
+      setIsSavingRoute(false);
       setIsStartingOptimizationJob(false);
     }
   };
@@ -610,15 +649,7 @@ export function RouteBuilder(input: {
     if (detail === null || !canSaveRoute) return;
     setIsSavingRoute(true);
     try {
-      const updated = await saveRoute(buildRouteSaveDraftInput({
-        csrfToken: input.bootstrap.csrfToken,
-        detail,
-        driverId: effectiveDriverId,
-        draftStops,
-        routeEndMode: draftRouteEndMode,
-      }));
-      input.setDetail(updated);
-      input.onRefreshRoutes();
+      await saveRouteDraft();
       input.setError(null);
     } catch (error) {
       input.setError(readErrorMessage(error));
@@ -658,7 +689,7 @@ export function RouteBuilder(input: {
 
   const returnToDepotChecked = draftRouteEndMode === "RETURN_TO_DEPOT";
   const returnToDepotDisabled =
-    detail === null || (!returnToDepotChecked && !canReturnToDepot);
+    detail === null || hasActiveOptimizationJob || (!returnToDepotChecked && !canReturnToDepot);
   const routeEndWarningId = "route-end-depot-warning";
   const driverTabId = "route-builder-tab-driver-options";
   const stopOrderTabId = "route-builder-tab-stop-order";
@@ -714,11 +745,12 @@ export function RouteBuilder(input: {
       onClick={() => void startOptimizationJob()}
       type="button"
     >
-      {isStartingOptimizationJob
-        ? t.routeOptimization.starting
-        : optimizationJob === null
-          ? t.routeOptimization.start
-          : t.routeOptimization.rerun}
+      {getRouteOptimizationActionLabel({
+        copy: t.routeOptimization,
+        hasUnsavedRouteChanges,
+        isStartingOptimizationJob,
+        optimizationJob,
+      })}
     </button>
   );
   const routeOptimizationRows = getRouteOptimizationJobDetailRows(optimizationJob, locale, optimizationElapsedNowMs);
@@ -876,6 +908,7 @@ export function RouteBuilder(input: {
                 <label>
                   {t.assignedDriver}
                   <select
+                    disabled={hasActiveOptimizationJob}
                     value={draftDriverId}
                     onChange={(event) => setDraftDriverId(event.target.value)}
                   >

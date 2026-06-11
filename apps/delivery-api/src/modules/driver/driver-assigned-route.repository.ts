@@ -143,6 +143,7 @@ function toAssignedRouteResult(
       id: routePlan.id,
       name: routePlan.name,
       routeGeometry: routeResult.routeGeometry,
+      routeMapPreview: null,
       routeMetrics: routeResult.routeMetrics,
       routeStopPoints: routeResult.routeStopPoints.map(toAssignedRouteStopPoint),
       shopDomain: normalizeDriverCommerceDomain(routePlan.shop.shopDomain),

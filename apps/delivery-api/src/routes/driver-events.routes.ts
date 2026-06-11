@@ -7,7 +7,12 @@ import {
   type VerifiedDriverToken
 } from '../modules/driver/driver-token-verifier.js';
 import type { DriverTokenAccessRepositoryContract } from '../modules/driver/driver-token-access.repository.js';
-import type { DriverAssignedRouteServiceContract } from '../modules/driver/driver-assigned-route.types.js';
+import type {
+  DriverAssignedRoute,
+  DriverAssignedRouteServiceContract,
+  DriverRouteMapPreview
+} from '../modules/driver/driver-assigned-route.types.js';
+import type { DriverRouteMapPreviewServiceContract } from '../modules/driver/driver-route-map-preview.service.js';
 import type {
   DriverConsentRecordInput,
   DriverConsentServiceContract,
@@ -58,6 +63,8 @@ export type DriverApiDependencies = {
     }): Promise<{ duplicate: boolean; eventId: string }>;
   };
   driverSelfService?: DriverSelfServiceContract;
+  driverRouteMapPreviewBaseUrl?: string;
+  driverRouteMapPreviewService?: DriverRouteMapPreviewServiceContract;
   driverTokenAccessRepository?: DriverTokenAccessRepositoryContract;
   jwtSecret: string;
   proofMediaService?: DriverProofMediaServiceContract;
@@ -72,6 +79,15 @@ type DriverRouteAccessRequestBody = {
 
 type DriverAssignedRouteQuery = {
   routeContext?: unknown;
+};
+
+type DriverRouteMapPreviewParams = {
+  previewId?: unknown;
+};
+
+type DriverRouteMapPreviewQuery = {
+  expires?: unknown;
+  signature?: unknown;
 };
 
 type DriverRoutesHistoryQuery = {
@@ -181,6 +197,7 @@ export function registerDriverEventRoutes(
           .code(401)
           .send(errorResponse('UNAUTHORIZED', driverAuthenticationMessage(authentication.status)));
       }
+      reply.header('Cache-Control', 'private, no-store');
       const driverContext = authentication.context;
 
       let routeContext: string | null;
@@ -196,11 +213,65 @@ export function registerDriverEventRoutes(
         shopDomain: driverContext.shopDomain
       });
 
+      if (result.status === 'ASSIGNED_ROUTE') {
+        return reply.code(200).send({
+          data: {
+            ...result,
+            route: {
+              ...result.route,
+              routeMapPreview: createDriverRouteMapPreview(dependencies, {
+                driverId: driverContext.driverId,
+                route: result.route,
+                shopDomain: driverContext.shopDomain
+              }) ?? result.route.routeMapPreview
+            }
+          },
+          error: null
+        });
+      }
+
       return reply.code(200).send({
         data: result,
         error: null
       });
     });
+  }
+
+  const driverRouteMapPreviewService = dependencies.driverRouteMapPreviewService;
+  if (driverRouteMapPreviewService !== undefined) {
+    app.get<{ Params: DriverRouteMapPreviewParams; Querystring: DriverRouteMapPreviewQuery }>(
+      '/driver/route-map-preview/:previewId',
+      async (request, reply) => {
+        let previewId: string | null;
+        let expires: string | null;
+        let signature: string | null;
+        try {
+          previewId = readOptionalString(request.params.previewId);
+          expires = readOptionalString(request.query.expires);
+          signature = readOptionalString(request.query.signature);
+        } catch {
+          return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid route map preview request'));
+        }
+
+        if (previewId === null || expires === null || signature === null) {
+          return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid route map preview request'));
+        }
+
+        const image = await driverRouteMapPreviewService.readRouteMapPreviewImage({
+          expires,
+          previewId,
+          signature
+        });
+        if (image === null) {
+          return reply.code(404).send(errorResponse('NOT_FOUND', 'Route map preview unavailable'));
+        }
+
+        return reply
+          .header('Cache-Control', 'private, no-store')
+          .type('image/png')
+          .send(image);
+      }
+    );
   }
 
   const driverSelfService = dependencies.driverSelfService;
@@ -608,6 +679,25 @@ async function authenticateDriverRequest(
 
 function driverAuthenticationMessage(status: DriverAuthenticationResult['status']): string {
   return status === 'missing' ? 'Missing driver bearer token' : 'Invalid driver bearer token';
+}
+
+function createDriverRouteMapPreview(
+  dependencies: DriverApiDependencies,
+  input: {
+    driverId: string;
+    route: DriverAssignedRoute;
+    shopDomain: string;
+  }
+): DriverRouteMapPreview | null {
+  if (dependencies.driverRouteMapPreviewService === undefined || dependencies.driverRouteMapPreviewBaseUrl === undefined) {
+    return null;
+  }
+  return dependencies.driverRouteMapPreviewService.createRouteMapPreview({
+    baseUrl: dependencies.driverRouteMapPreviewBaseUrl,
+    driverId: input.driverId,
+    route: input.route,
+    shopDomain: input.shopDomain
+  });
 }
 
 function buildDriverRouteAccessResponse(

@@ -41,21 +41,36 @@ export type DriverAssignedRouteStopPoint = {
   snappedCoordinates: [number, number] | null;
 };
 
+export type DriverRouteMapPreview = {
+  altText: string;
+  contentType: 'image/png';
+  expiresAt: string;
+  generatedAt: string;
+  height: number;
+  imageUrl: string;
+  kind: 'static_route_map';
+  routeSequenceChecksum: string;
+  width: number;
+};
+
+export type DriverAssignedRoute = {
+  deliveryDate: string;
+  id: string;
+  name: string;
+  routeGeometry: RoutePlanRouteGeometry | null;
+  routeMapPreview: DriverRouteMapPreview | null;
+  routeMetrics: RoutePlanRouteMetrics | null;
+  routeStopPoints: DriverAssignedRouteStopPoint[];
+  shopDomain: string;
+  stops: DriverAssignedRouteStop[];
+  timezone: string;
+};
+
 export type DriverAssignedRouteResult =
   | { status: 'NO_ASSIGNED_ROUTE' }
   | {
       status: 'ASSIGNED_ROUTE';
-      route: {
-        deliveryDate: string;
-        id: string;
-        name: string;
-        routeGeometry: RoutePlanRouteGeometry | null;
-        routeMetrics: RoutePlanRouteMetrics | null;
-        routeStopPoints: DriverAssignedRouteStopPoint[];
-        shopDomain: string;
-        stops: DriverAssignedRouteStop[];
-        timezone: string;
-      };
+      route: DriverAssignedRoute;
     };
 
 export type DriverAssignedRouteServiceContract = {

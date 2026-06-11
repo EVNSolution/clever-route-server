@@ -76,6 +76,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
         id: 'route-plan-id',
         name: 'Tuesday AM Route',
         routeGeometry: null,
+        routeMapPreview: null,
         routeMetrics: null,
         routeStopPoints: [],
         shopDomain: 'dev1.tomatonofood.com',
@@ -157,6 +158,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             [-79.3817, 43.6487]
           ]
         },
+        routeMapPreview: null,
         routeMetrics: { distanceMeters: 980.5, durationSeconds: 420.25 },
         routeStopPoints: [
           {

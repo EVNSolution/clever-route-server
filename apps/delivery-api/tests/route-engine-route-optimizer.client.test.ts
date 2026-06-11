@@ -105,6 +105,7 @@ describe('RouteEngineRouteOptimizationClient', () => {
       drivers: [{ capacity: 2, driver_id: 'driver-1' }],
       options: { mode: 'road_graph', objective: 'minimize_duration', timeout_ms: 2500 }
     });
+    expect((requestBody.options as Record<string, unknown>).return_to_depot).toBeUndefined();
     expect(requestBody).not.toHaveProperty('address_hint');
     expect(requestBody.stops).toEqual([
       { demand: 1, lat: 43.7764, lng: -79.2571, service_seconds: 0, stop_id: 'route-stop-1' },
@@ -119,6 +120,41 @@ describe('RouteEngineRouteOptimizationClient', () => {
         { deliveryStopId: 'stop-3', sequence: 3, shopifyOrderGid: 'gid://woocommerce/Order/1003' }
       ]
     });
+  });
+
+  test('maps return-to-depot route end mode to route_engine without adding a delivery stop', async () => {
+    const fetch = vi.fn<TestFetchLike>().mockResolvedValue(
+      Response.json({
+        request_id: 'route-plan:route-plan-id:optimize',
+        status: 'solved',
+        result: {
+          routes: [
+            {
+              driver_id: 'driver-1',
+              stop_sequence: [
+                { stop_id: 'route-stop-1', sequence: 1 },
+                { stop_id: 'route-stop-2', sequence: 2 }
+              ],
+              summary: { total_stops: 2, total_distance_meters: 5000, total_duration_seconds: 1500 }
+            }
+          ],
+          unassigned_stop_ids: [],
+          summary: { total_stops: 2, total_distance_meters: 5000, total_duration_seconds: 1500 }
+        },
+        engine: { name: 'route_engine', version: '0.1.0', graph_status: 'ready', external_calls: false }
+      })
+    );
+    const client = new RouteEngineRouteOptimizationClient({ baseUrl: 'http://route-engine', fetch, internalToken: 'token' });
+
+    const result = await client.optimizeStopOrder({
+      detail: { ...detail, routePlan: { ...detail.routePlan, routeEndMode: 'RETURN_TO_DEPOT' } },
+      shopDomain: 'tenant-a.example.test'
+    });
+
+    const requestBody = JSON.parse(fetch.mock.calls[0]?.[1].body ?? '{}') as Record<string, { return_to_depot?: boolean }>;
+    expect(requestBody.options?.return_to_depot).toBe(true);
+    expect(result?.stops).toHaveLength(3);
+    expect(result?.stops.map((stop) => stop.deliveryStopId)).toEqual(['stop-1', 'stop-2', 'stop-3']);
   });
 
   test('defaults route_engine solve timeout to the route_engine contract maximum', async () => {

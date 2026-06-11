@@ -55,6 +55,45 @@ describe('loadDriverApiDependencies', () => {
     expect(assignedRouteRepository?.routeGeometryProvider).toBeInstanceOf(OsrmRouteGeometryProvider);
   });
 
+  test('wires route map preview only with an explicit public delivery API origin', () => {
+    const dependencies = loadDriverApiDependencies({
+      env: {
+        DELIVERY_API_PUBLIC_URL: 'https://delivery.example.com/',
+        DRIVER_ROUTE_MAP_PREVIEW_ENABLED: 'true',
+        DRIVER_ROUTE_MAP_PREVIEW_SECRET: 'preview-secret',
+        DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS: '120',
+        JWT_SECRET: 'driver-secret'
+      },
+      prisma: {} as PrismaClient
+    });
+
+    expect(dependencies?.driverRouteMapPreviewService).toBeDefined();
+    expect(dependencies?.driverRouteMapPreviewBaseUrl).toBe('https://delivery.example.com');
+  });
+
+  test('rejects route map preview when public origin config is missing or not an origin', () => {
+    expect(() =>
+      loadDriverApiDependencies({
+        env: {
+          DRIVER_ROUTE_MAP_PREVIEW_ENABLED: 'true',
+          JWT_SECRET: 'driver-secret'
+        },
+        prisma: {} as PrismaClient
+      })
+    ).toThrow('DELIVERY_API_PUBLIC_URL is required when DRIVER_ROUTE_MAP_PREVIEW_ENABLED=true');
+
+    expect(() =>
+      loadDriverApiDependencies({
+        env: {
+          DELIVERY_API_PUBLIC_URL: 'https://delivery.example.com/api',
+          DRIVER_ROUTE_MAP_PREVIEW_ENABLED: 'true',
+          JWT_SECRET: 'driver-secret'
+        },
+        prisma: {} as PrismaClient
+      })
+    ).toThrow('DELIVERY_API_PUBLIC_URL must be an http(s) origin when DRIVER_ROUTE_MAP_PREVIEW_ENABLED=true');
+  });
+
   test('reuses the admin OSRM base URL for assigned route enrichment when no driver override is configured', () => {
     expect(loadDriverRouteGeometryProvider({ OSRM_BASE_URL: 'https://osrm.internal.example' })).toBeInstanceOf(
       OsrmRouteGeometryProvider

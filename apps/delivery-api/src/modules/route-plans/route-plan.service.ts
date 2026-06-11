@@ -119,7 +119,7 @@ export class RoutePlanAdminService implements RoutePlanService {
   }
 
   async saveRoutePlan(input: SaveRoutePlanInput): Promise<SaveRoutePlanResult | null> {
-    if (input.payload.stops !== undefined) {
+    if (hasRouteMutationPayload(input)) {
       await this.assertNoActiveUserOptimizationJob(input);
     }
     const saved = await this.repository.saveRoutePlan(input);
@@ -132,6 +132,7 @@ export class RoutePlanAdminService implements RoutePlanService {
   }
 
   async updateRoutePlanOptions(input: UpdateRoutePlanOptionsInput): Promise<RoutePlanDetail | null> {
+    await this.assertNoActiveUserOptimizationJob(input);
     return this.withRouteGeometry(await this.repository.updateRoutePlanOptions(input));
   }
 
@@ -140,8 +141,10 @@ export class RoutePlanAdminService implements RoutePlanService {
     return this.withRouteGeometry(await this.repository.updateRoutePlanStops(input));
   }
 
-  private async assertNoActiveUserOptimizationJob(input: UpdateRoutePlanStopsInput | SaveRoutePlanInput): Promise<void> {
-    if (input.mutationContext?.source === 'route_optimization_job') return;
+  private async assertNoActiveUserOptimizationJob(
+    input: SaveRoutePlanInput | UpdateRoutePlanOptionsInput | UpdateRoutePlanStopsInput
+  ): Promise<void> {
+    if ('mutationContext' in input && input.mutationContext?.source === 'route_optimization_job') return;
     if (this.routeOptimizationJobGuard === undefined) return;
     await this.routeOptimizationJobGuard.reconcileStaleActiveJobs?.({
       routePlanId: input.routePlanId,
@@ -178,4 +181,8 @@ export class RoutePlanAdminService implements RoutePlanService {
       };
     }
   }
+}
+
+function hasRouteMutationPayload(input: SaveRoutePlanInput): boolean {
+  return input.payload.driverId !== undefined || input.payload.routeEndMode !== undefined || input.payload.stops !== undefined;
 }

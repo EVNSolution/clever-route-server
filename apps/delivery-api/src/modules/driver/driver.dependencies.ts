@@ -17,6 +17,10 @@ import type { DriverProofMediaScanMonitor, DriverProofMediaScanner } from './dri
 import type { DriverApiDependencies } from '../../routes/driver-events.routes.js';
 import { OsrmRouteGeometryProvider } from '../route-plans/osrm-route-geometry.client.js';
 import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
+import {
+  DEFAULT_DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS,
+  DriverRouteMapPreviewService
+} from './driver-route-map-preview.service.js';
 
 export const DEFAULT_DRIVER_PROOF_MEDIA_RETENTION_DAYS = 180;
 export const DEFAULT_DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS = 5 * 60;
@@ -44,7 +48,11 @@ export type DriverApiRuntimeEnv = Partial<Record<
   | 'DRIVER_PROOF_MEDIA_STORAGE_BACKEND'
   | 'DRIVER_PROOF_MEDIA_STORAGE_DIR'
   | 'DRIVER_ROUTE_OSRM_BASE_URL'
+  | 'DRIVER_ROUTE_MAP_PREVIEW_ENABLED'
+  | 'DRIVER_ROUTE_MAP_PREVIEW_SECRET'
+  | 'DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS'
   | 'DRIVER_ROUTE_OSRM_TIMEOUT_MS'
+  | 'DELIVERY_API_PUBLIC_URL'
   | 'JWT_SECRET'
   | 'OSRM_BASE_URL',
   string
@@ -83,13 +91,26 @@ export function loadDriverApiDependencies(
   const proofMediaStorageOptions = loadDriverProofMediaRepositoryStorageOptions(input.env);
   const proofMediaSafetyOptions = loadDriverProofMediaRepositorySafetyOptions(input.env);
 
+  const driverAssignedRouteService = new PrismaDriverAssignedRouteRepository(
+    input.prisma,
+    loadDriverRouteGeometryProvider(input.env)
+  );
+  const driverRouteMapPreview = loadDriverRouteMapPreviewService({
+    assignedRouteService: driverAssignedRouteService,
+    env: input.env,
+    jwtSecret
+  });
+
   return {
-    driverAssignedRouteService: new PrismaDriverAssignedRouteRepository(
-      input.prisma,
-      loadDriverRouteGeometryProvider(input.env)
-    ),
+    driverAssignedRouteService,
     driverConsentService: new PrismaDriverConsentRepository(input.prisma),
     driverEventService: new PrismaDriverEventRepository(input.prisma),
+    ...(driverRouteMapPreview === undefined
+      ? {}
+      : {
+          driverRouteMapPreviewBaseUrl: driverRouteMapPreview.publicBaseUrl,
+          driverRouteMapPreviewService: driverRouteMapPreview.service
+        }),
     driverSelfService: new PrismaDriverSelfServiceRepository(input.prisma),
     driverTokenAccessRepository: new PrismaDriverTokenAccessRepository(input.prisma),
     jwtSecret,
@@ -116,6 +137,55 @@ export function loadDriverRouteGeometryProvider(env: DriverApiRuntimeEnv): Route
     baseUrl,
     ...(timeoutMs === undefined ? {} : { timeoutMs })
   });
+}
+
+function loadDriverRouteMapPreviewService(input: {
+  assignedRouteService: PrismaDriverAssignedRouteRepository;
+  env: DriverApiRuntimeEnv;
+  jwtSecret: string;
+}): { publicBaseUrl: string; service: DriverRouteMapPreviewService } | undefined {
+  if (readOptionalBoolean(input.env.DRIVER_ROUTE_MAP_PREVIEW_ENABLED, 'DRIVER_ROUTE_MAP_PREVIEW_ENABLED') !== true) {
+    return undefined;
+  }
+  const publicBaseUrl = readRequiredDriverRouteMapPreviewPublicBaseUrl(input.env);
+  const ttlSeconds = readOptionalPositiveInteger(
+    input.env.DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS,
+    'DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS'
+  ) ?? DEFAULT_DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS;
+  return {
+    publicBaseUrl,
+    service: new DriverRouteMapPreviewService({
+      assignedRouteService: input.assignedRouteService,
+      jwtSecret: readOptional(input.env.DRIVER_ROUTE_MAP_PREVIEW_SECRET) ?? input.jwtSecret,
+      ttlSeconds
+    })
+  };
+}
+
+function readRequiredDriverRouteMapPreviewPublicBaseUrl(env: DriverApiRuntimeEnv): string {
+  const rawPublicUrl = readOptional(env.DELIVERY_API_PUBLIC_URL);
+  if (rawPublicUrl === undefined) {
+    throw new Error('DELIVERY_API_PUBLIC_URL is required when DRIVER_ROUTE_MAP_PREVIEW_ENABLED=true');
+  }
+
+  try {
+    const publicUrl = new URL(rawPublicUrl);
+    if (publicUrl.protocol !== 'https:' && publicUrl.protocol !== 'http:') {
+      throw new Error('invalid protocol');
+    }
+    if (
+      publicUrl.username !== '' ||
+      publicUrl.password !== '' ||
+      publicUrl.pathname !== '/' ||
+      publicUrl.search !== '' ||
+      publicUrl.hash !== ''
+    ) {
+      throw new Error('not an origin');
+    }
+    return publicUrl.origin;
+  } catch {
+    throw new Error('DELIVERY_API_PUBLIC_URL must be an http(s) origin when DRIVER_ROUTE_MAP_PREVIEW_ENABLED=true');
+  }
 }
 
 function loadDriverProofMediaRepositoryStorageOptions(env: DriverApiRuntimeEnv): DriverProofMediaRepositoryStorageOptions {

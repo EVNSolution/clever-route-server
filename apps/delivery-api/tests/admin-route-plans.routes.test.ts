@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
+import { RouteOptimizationJobActiveError } from '../src/modules/route-plans/route-optimization-job.types.js';
 import {
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanStopUpdateInvalidError
@@ -577,6 +578,64 @@ describe('Admin route plan routes', () => {
         error: {
           code: 'ROUTE_STOP_UPDATE_INVALID',
           message: 'Route stops must share the same delivery date as the route. Choose orders for the route delivery date before saving stops.'
+        }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('updates route options for the token shop', async () => {
+    const { dependencies, updateRoutePlanOptions } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { routeEndMode: 'RETURN_TO_DEPOT' },
+        url: '/admin/route-plans/route-plan-id/options'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        data: {
+          routePlan: {
+            id: 'route-plan-id',
+            routeEndMode: 'RETURN_TO_DEPOT'
+          }
+        },
+        error: null
+      });
+      expect(updateRoutePlanOptions).toHaveBeenCalledWith({
+        payload: { routeEndMode: 'RETURN_TO_DEPOT' },
+        routePlanId: 'route-plan-id',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns conflict when route options are changed during an active optimization job', async () => {
+    const { dependencies, updateRoutePlanOptions } = createDependencyHarness();
+    updateRoutePlanOptions.mockRejectedValueOnce(new RouteOptimizationJobActiveError());
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { routeEndMode: 'RETURN_TO_DEPOT' },
+        url: '/admin/route-plans/route-plan-id/options'
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'ROUTE_OPTIMIZATION_JOB_ACTIVE',
+          message: 'A route optimization job is already active for this route.'
         }
       });
     } finally {

@@ -38,7 +38,7 @@ import {
   type WordPressPluginDependencies
 } from './routes/wordpress-plugin.routes.js';
 
-type BuildAppOptions = {
+export type BuildAppOptions = {
   adminCommerceConnections?: AdminCommerceConnectionsDependencies;
   adminCommerceConnectionsUi?: AdminCommerceConnectionsUiDependencies;
   adminDrivers?: AdminDriversDependencies;
@@ -151,7 +151,21 @@ function serializeRequestForLog(request: FastifyRequest): {
   };
 }
 
-function redactSensitiveUrl(value: string): string {
+export function redactSensitiveUrl(value: string): string {
+  if (value.startsWith('/driver/route-map-preview/')) {
+    try {
+      const url = new URL(value, 'https://clever-route.local');
+      if (url.searchParams.has('signature')) {
+        url.searchParams.set('signature', '[redacted]');
+      }
+      if (url.searchParams.has('expires')) {
+        url.searchParams.set('expires', '[redacted]');
+      }
+      return `/driver/route-map-preview/[redacted]${url.search}`;
+    } catch {
+      return '/driver/route-map-preview/[redacted]';
+    }
+  }
   if (!value.startsWith('/admin/ui/plugin-launch')) return value;
   try {
     const url = new URL(value, 'https://clever-route.local');

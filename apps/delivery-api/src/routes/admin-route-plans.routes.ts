@@ -259,6 +259,9 @@ export function registerAdminRoutePlanRoutes(
         if (error instanceof RoutePlanOptionsUpdateInvalidError) {
           return reply.code(400).send(errorResponse(error.code, error.message));
         }
+        if (error instanceof RouteOptimizationJobActiveError) {
+          return reply.code(409).send(errorResponse(error.code, error.message));
+        }
         throw error;
       }
     }

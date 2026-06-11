@@ -360,6 +360,27 @@ describe('RoutePlanAdminService route geometry', () => {
     expect(updateRoutePlanStops).not.toHaveBeenCalled();
   });
 
+  test('blocks route option changes while an optimization job is active', async () => {
+    const { repository, updateRoutePlanOptions } = createHarness(routePlanDetail);
+    const routeOptimizationJobGuard = {
+      findLatestJob: vi.fn().mockResolvedValue({ status: 'RUNNING' }),
+      reconcileStaleActiveJobs: vi.fn().mockResolvedValue([])
+    };
+    const service = new RoutePlanAdminService(repository, undefined, routeOptimizationJobGuard);
+
+    await expect(service.updateRoutePlanOptions({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: { routeEndMode: 'RETURN_TO_DEPOT' }
+    })).rejects.toBeInstanceOf(RouteOptimizationJobActiveError);
+
+    expect(routeOptimizationJobGuard.reconcileStaleActiveJobs).toHaveBeenCalledWith({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+    expect(updateRoutePlanOptions).not.toHaveBeenCalled();
+  });
+
   test('allows job-owned route stop apply while an optimization job is active', async () => {
     const { repository, updateRoutePlanStops } = createHarness(routePlanDetail);
     const routeOptimizationJobGuard = {
@@ -391,6 +412,40 @@ describe('RoutePlanAdminService route geometry', () => {
       routePlanId: 'route-plan-id',
       shopDomain: 'example.myshopify.com',
       payload: { stops: [] }
+    })).rejects.toBeInstanceOf(RouteOptimizationJobActiveError);
+
+    expect(saveRoutePlan).not.toHaveBeenCalled();
+  });
+
+  test('blocks aggregate route save with route options while an optimization job is queued', async () => {
+    const { repository, saveRoutePlan } = createHarness(routePlanDetail);
+    const routeOptimizationJobGuard = {
+      findLatestJob: vi.fn().mockResolvedValue({ status: 'QUEUED' }),
+      reconcileStaleActiveJobs: vi.fn().mockResolvedValue([])
+    };
+    const service = new RoutePlanAdminService(repository, undefined, routeOptimizationJobGuard);
+
+    await expect(service.saveRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: { routeEndMode: 'RETURN_TO_DEPOT' }
+    })).rejects.toBeInstanceOf(RouteOptimizationJobActiveError);
+
+    expect(saveRoutePlan).not.toHaveBeenCalled();
+  });
+
+  test('blocks aggregate route save with driver changes while an optimization job is queued', async () => {
+    const { repository, saveRoutePlan } = createHarness(routePlanDetail);
+    const routeOptimizationJobGuard = {
+      findLatestJob: vi.fn().mockResolvedValue({ status: 'QUEUED' }),
+      reconcileStaleActiveJobs: vi.fn().mockResolvedValue([])
+    };
+    const service = new RoutePlanAdminService(repository, undefined, routeOptimizationJobGuard);
+
+    await expect(service.saveRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: { driverId: 'driver-id' }
     })).rejects.toBeInstanceOf(RouteOptimizationJobActiveError);
 
     expect(saveRoutePlan).not.toHaveBeenCalled();
