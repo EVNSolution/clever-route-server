@@ -358,10 +358,6 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         if (!hasRouteEndModeChange) {
           operations.push({ name: 'options', reason: 'unchanged', status: 'skipped' });
         } else {
-          if (routeStatus !== 'DRAFT') {
-            throw new RoutePlanOptionsUpdateInvalidError('Route options can be changed before publishing the route.');
-          }
-
           const currentDepot = readDepotFromRoutePlan(routePlan);
           const defaultDepot = readDepotFromShopDefaults(shop);
           const effectiveDepot = currentDepot ?? defaultDepot;
@@ -874,10 +870,6 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       if (routePlan === null) {
         return false;
       }
-      if (routePlan.status !== 'DRAFT') {
-        throw new RoutePlanOptionsUpdateInvalidError('Route options can be changed before publishing the route.');
-      }
-
       const currentDepot = readDepotFromRoutePlan(routePlan);
       const defaultDepot = readDepotFromShopDefaults(shop);
       const effectiveDepot = currentDepot ?? defaultDepot;

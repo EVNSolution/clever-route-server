@@ -835,6 +835,70 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
+  test('saves return-to-depot route mode after route publishing', async () => {
+    const { prisma } = createPrismaHarness({
+      shop: {
+        defaultDepotAddress: '4475 Chesswood Dr North York, ON M3J 2C3',
+        defaultDepotLatitude: '43.76393',
+        defaultDepotLongitude: '-79.476',
+        id: 'shop-id'
+      }
+    });
+    prisma.routePlan.findFirst
+      .mockResolvedValueOnce({
+        constraints: { routeEndMode: 'END_AT_LAST_STOP' },
+        depotLatitude: '43.6532',
+        depotLongitude: '-79.3832',
+        id: 'route-plan-id',
+        status: 'ASSIGNED'
+      })
+      .mockResolvedValueOnce({
+        createdAt: new Date('2026-05-07T12:30:00.000Z'),
+        constraints: { routeEndMode: 'RETURN_TO_DEPOT' },
+        depotLatitude: '43.6532',
+        depotLongitude: '-79.3832',
+        id: 'route-plan-id',
+        metrics: {
+          deliveryAreas: ['Toronto'],
+          deliveryDays: ['Thursday'],
+          missingCoordinates: 0,
+          stopsCount: 0
+        },
+        name: 'Published return route',
+        planDate: new Date('2026-05-08T00:00:00.000Z'),
+        routeStops: [],
+        status: 'ASSIGNED',
+        updatedAt: new Date('2026-05-07T12:30:00.000Z')
+      });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const detail = await repository.updateRoutePlanOptions({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: { routeEndMode: 'RETURN_TO_DEPOT' }
+    });
+
+    expect(detail?.routePlan.routeEndMode).toBe('RETURN_TO_DEPOT');
+    expect(detail?.routePlan.status).toBe('ASSIGNED');
+    expect(prisma.routePlan.update).toHaveBeenCalledWith({
+      data: {
+        constraints: {
+          depot: {
+            address: null,
+            latitude: 43.6532,
+            longitude: -79.3832
+          },
+          optimizer: 'manual-sequence-mvp',
+          routeEndMode: 'RETURN_TO_DEPOT',
+          sequenceSource: 'request-order'
+        }
+      },
+      where: { id: 'route-plan-id' }
+    });
+  });
+
   test('aggregate save applies changed fields and draft publish inside one repository transaction', async () => {
     const { prisma, routePlanStopCreateMany } = createPrismaHarness();
     const initialRoute = routePlanRecord({
@@ -901,6 +965,63 @@ describe('PrismaRoutePlanRepository', () => {
       data: { status: 'ASSIGNED' },
       where: { id: 'route-plan-id' }
     }));
+  });
+
+  test('aggregate save applies route options after publishing without republishing', async () => {
+    const { prisma, routePlanStopCreateMany } = createPrismaHarness();
+    const assignedRoute = routePlanRecord({
+      constraints: { routeEndMode: 'END_AT_LAST_STOP' },
+      driverId: 'driver-id',
+      status: 'ASSIGNED',
+      updatedAt: new Date('2026-05-07T12:30:00.000Z')
+    });
+    const savedRoute = routePlanRecord({
+      constraints: { routeEndMode: 'RETURN_TO_DEPOT' },
+      driverId: 'driver-id',
+      status: 'ASSIGNED',
+      updatedAt: new Date('2026-05-07T12:31:00.000Z')
+    });
+    prisma.routePlan.findFirst
+      .mockResolvedValueOnce(assignedRoute)
+      .mockResolvedValueOnce(savedRoute);
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.saveRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: {
+        expectedUpdatedAt: '2026-05-07T12:30:00.000Z',
+        routeEndMode: 'RETURN_TO_DEPOT'
+      }
+    });
+
+    expectRoutePlanVersionClaim(prisma, '2026-05-07T12:30:00.000Z');
+    expect(result?.detail.routePlan.routeEndMode).toBe('RETURN_TO_DEPOT');
+    expect(result?.detail.routePlan.status).toBe('ASSIGNED');
+    expect(result?.operations).toEqual([
+      { name: 'options', reason: 'route_end_mode_changed', status: 'applied' },
+      { name: 'stops', reason: 'not_provided', status: 'skipped' },
+      { name: 'driver', reason: 'not_provided', status: 'skipped' },
+      { name: 'publish', reason: 'status_assigned', status: 'skipped' }
+    ]);
+    expect(routePlanStopCreateMany).not.toHaveBeenCalled();
+    expect(prisma.routePlan.update).toHaveBeenCalledWith({
+      data: {
+        constraints: {
+          depot: {
+            address: null,
+            latitude: 43.6532,
+            longitude: -79.3832
+          },
+          optimizer: 'manual-sequence-mvp',
+          routeEndMode: 'RETURN_TO_DEPOT',
+          sequenceSource: 'request-order'
+        }
+      },
+      where: { id: 'route-plan-id' }
+    });
   });
 
   test('aggregate save rejects stale route details before mutating route state', async () => {
