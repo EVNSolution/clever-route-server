@@ -172,10 +172,24 @@ export function createRouteSequenceChecksum(route: DriverAssignedRoute): string 
   digest.update('\0');
   digest.update(DRIVER_ROUTE_MAP_PREVIEW_RENDERER_VERSION);
   digest.update('\0');
-  digest.update(JSON.stringify(route.routeGeometry));
-  digest.update('\0');
-  digest.update(JSON.stringify([...route.routeStopPoints].sort((left, right) => left.sequence - right.sequence)));
+  digest.update(JSON.stringify(readStableRouteSequence(route)));
   return digest.digest('base64url');
+}
+
+function readStableRouteSequence(route: DriverAssignedRoute): Array<{
+  deliveryStopId: string;
+  latitude: number | null;
+  longitude: number | null;
+  sequence: number;
+}> {
+  return route.stops
+    .map((stop) => ({
+      deliveryStopId: stop.deliveryStopId,
+      latitude: stop.coordinates.latitude,
+      longitude: stop.coordinates.longitude,
+      sequence: stop.sequence
+    }))
+    .sort((left, right) => left.sequence - right.sequence || left.deliveryStopId.localeCompare(right.deliveryStopId));
 }
 
 function createPurposeKey(secret: string, purpose: string): Buffer {

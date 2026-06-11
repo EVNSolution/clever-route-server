@@ -194,12 +194,49 @@ describe('Driver route map preview service', () => {
     })).toBeNull();
   });
 
-  test('changes the checksum when stop order changes', () => {
-    const changedRoute = {
+  test('keeps preview URLs valid when route geometry is recalculated for the same stop sequence', async () => {
+    const recalculatedRoute: DriverAssignedRoute = {
       ...route,
+      routeGeometry: {
+        coordinates: [
+          [-79.3832, 43.6532],
+          [-79.382, 43.649],
+          [-79.3909, 43.6509]
+        ],
+        type: 'LineString'
+      },
       routeStopPoints: route.routeStopPoints.map((stopPoint) => ({
         ...stopPoint,
-        sequence: stopPoint.sequence === 1 ? 2 : 1
+        snapDistanceMeters: (stopPoint.snapDistanceMeters ?? 0) + 0.25,
+        snappedCoordinates: stopPoint.snappedCoordinates === null
+          ? null
+          : [stopPoint.snappedCoordinates[0] + 0.00001, stopPoint.snappedCoordinates[1] + 0.00001]
+      }))
+    };
+    const getAssignedRoute = vi.fn(() => Promise.resolve({ status: 'ASSIGNED_ROUTE' as const, route: recalculatedRoute }));
+    const service = createService({ getAssignedRoute });
+    const preview = service.createRouteMapPreview({
+      baseUrl: 'https://delivery.example.com',
+      driverId: 'driver-id',
+      route,
+      shopDomain: 'example.myshopify.com'
+    });
+    const url = new URL(preview?.imageUrl ?? '');
+
+    expect(createRouteSequenceChecksum(recalculatedRoute)).toBe(createRouteSequenceChecksum(route));
+    await expect(service.readRouteMapPreviewImage({
+      expires: url.searchParams.get('expires') ?? '',
+      previewId: url.pathname.split('/').pop() ?? '',
+      signature: url.searchParams.get('signature') ?? ''
+    })).resolves.not.toBeNull();
+  });
+
+  test('changes the checksum when stop order changes', () => {
+    const changedRoute: DriverAssignedRoute = {
+      ...route,
+      stops: route.stops.map((stop) => ({
+        ...stop,
+        sequence: stop.sequence === 1 ? 2 : 1
       }))
     };
 
