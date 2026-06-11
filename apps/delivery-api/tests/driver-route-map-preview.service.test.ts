@@ -104,7 +104,7 @@ describe('Driver route map preview service', () => {
     expect(preview?.expiresAt).toBe('2026-05-12T06:50:00.000Z');
     expect(preview?.routeSequenceChecksum).toBe(createRouteSequenceChecksum(route));
     expect(preview?.altText).toBe('Static route preview for 2 stops.');
-    expect(preview?.imageUrl).toMatch(/^https:\/\/delivery\.example\.com\/driver\/route-map-preview\/[^?]+\?expires=\d+&signature=[A-Za-z0-9_-]+$/u);
+    expect(preview?.imageUrl).toMatch(/^https:\/\/delivery\.example\.com\/driver\/route-map-preview\/static\?previewId=[A-Za-z0-9_-]+&expires=\d+&signature=[A-Za-z0-9_-]+$/u);
     expect(preview?.imageUrl).not.toContain('route-plan-id');
     expect(preview?.imageUrl).not.toContain('Recipient');
     expect(preview?.imageUrl).not.toContain('King');
@@ -125,7 +125,7 @@ describe('Driver route map preview service', () => {
 
     const image = await service.readRouteMapPreviewImage({
       expires: url.searchParams.get('expires') ?? '',
-      previewId: url.pathname.split('/').pop() ?? '',
+      previewId: url.searchParams.get('previewId') ?? '',
       signature: url.searchParams.get('signature') ?? ''
     });
 
@@ -138,14 +138,14 @@ describe('Driver route map preview service', () => {
 
     const expired = await service.readRouteMapPreviewImage({
       expires: String(now.getTime() - 1),
-      previewId: url.pathname.split('/').pop() ?? '',
+      previewId: url.searchParams.get('previewId') ?? '',
       signature: url.searchParams.get('signature') ?? ''
     });
     expect(expired).toBeNull();
 
     const tampered = await service.readRouteMapPreviewImage({
       expires: url.searchParams.get('expires') ?? '',
-      previewId: url.pathname.split('/').pop() ?? '',
+      previewId: url.searchParams.get('previewId') ?? '',
       signature: 'tampered-signature'
     });
     expect(tampered).toBeNull();
@@ -166,7 +166,7 @@ describe('Driver route map preview service', () => {
 
     await expect(service.readRouteMapPreviewImage({
       expires: url.searchParams.get('expires') ?? '',
-      previewId: url.pathname.split('/').pop() ?? '',
+      previewId: url.searchParams.get('previewId') ?? '',
       signature: url.searchParams.get('signature') ?? ''
     })).rejects.toThrow(backendFailure);
   });
@@ -226,7 +226,7 @@ describe('Driver route map preview service', () => {
     expect(createRouteSequenceChecksum(recalculatedRoute)).toBe(createRouteSequenceChecksum(route));
     await expect(service.readRouteMapPreviewImage({
       expires: url.searchParams.get('expires') ?? '',
-      previewId: url.pathname.split('/').pop() ?? '',
+      previewId: url.searchParams.get('previewId') ?? '',
       signature: url.searchParams.get('signature') ?? ''
     })).resolves.not.toBeNull();
   });

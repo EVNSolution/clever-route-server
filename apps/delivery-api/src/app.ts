@@ -158,6 +158,9 @@ export function redactSensitiveUrl(value: string): string {
       if (url.searchParams.has('signature')) {
         url.searchParams.set('signature', '[redacted]');
       }
+      if (url.searchParams.has('previewId')) {
+        url.searchParams.set('previewId', '[redacted]');
+      }
       if (url.searchParams.has('expires')) {
         url.searchParams.set('expires', '[redacted]');
       }

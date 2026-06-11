@@ -129,7 +129,7 @@ describe('Driver assigned route route', () => {
       expiresAt: '2026-05-12T06:50:00.000Z',
       generatedAt: '2026-05-12T06:40:00.000Z',
       height: 430,
-      imageUrl: 'https://delivery.example.com/driver/route-map-preview/opaque?expires=1&signature=redacted',
+      imageUrl: 'https://delivery.example.com/driver/route-map-preview/static?previewId=opaque&expires=1&signature=redacted',
       kind: 'static_route_map' as const,
       routeSequenceChecksum: 'checksum',
       width: 720
@@ -183,7 +183,7 @@ describe('Driver assigned route route', () => {
     try {
       const response = await app.inject({
         method: 'GET',
-        url: '/driver/route-map-preview/opaque-preview-id?expires=1781140000000&signature=sig'
+        url: '/driver/route-map-preview/static?previewId=opaque-preview-id&expires=1781140000000&signature=sig'
       });
 
       expect(response.statusCode).toBe(200);
@@ -211,13 +211,13 @@ describe('Driver assigned route route', () => {
     try {
       const missingQuery = await app.inject({
         method: 'GET',
-        url: '/driver/route-map-preview/opaque-preview-id?expires=1781140000000'
+        url: '/driver/route-map-preview/static?previewId=opaque-preview-id&expires=1781140000000'
       });
       expect(missingQuery.statusCode).toBe(400);
 
       const unavailable = await app.inject({
         method: 'GET',
-        url: '/driver/route-map-preview/opaque-preview-id?expires=1781140000000&signature=sig'
+        url: '/driver/route-map-preview/static?previewId=opaque-preview-id&expires=1781140000000&signature=sig'
       });
       expect(unavailable.statusCode).toBe(404);
       expect(unavailable.json()).toEqual({

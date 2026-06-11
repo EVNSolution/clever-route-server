@@ -87,6 +87,7 @@ type DriverRouteMapPreviewParams = {
 
 type DriverRouteMapPreviewQuery = {
   expires?: unknown;
+  previewId?: unknown;
   signature?: unknown;
 };
 
@@ -246,7 +247,10 @@ export function registerDriverEventRoutes(
         let expires: string | null;
         let signature: string | null;
         try {
-          previewId = readOptionalString(request.params.previewId);
+          const routePreviewId = readOptionalString(request.params.previewId);
+          previewId = routePreviewId === 'static'
+            ? readOptionalString(request.query.previewId)
+            : routePreviewId;
           expires = readOptionalString(request.query.expires);
           signature = readOptionalString(request.query.signature);
         } catch {

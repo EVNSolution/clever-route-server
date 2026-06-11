@@ -80,7 +80,8 @@ export class DriverRouteMapPreviewService implements DriverRouteMapPreviewServic
     const expires = String(expiresAt.getTime());
     const previewId = this.encryptPayload(payload);
     const signature = this.signPreviewUrl(previewId, expires);
-    const imageUrl = `${input.baseUrl.replace(/\/$/u, '')}/driver/route-map-preview/${previewId}?expires=${expires}&signature=${signature}`;
+    const query = new URLSearchParams({ previewId, expires, signature });
+    const imageUrl = `${input.baseUrl.replace(/\/$/u, '')}/driver/route-map-preview/static?${query.toString()}`;
 
     return {
       altText: `Static route preview for ${input.route.stops.length} stops.`,
