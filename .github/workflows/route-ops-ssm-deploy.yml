@@ -183,14 +183,6 @@ jobs:
               workflow_path_suffix='route-ops-publish.yml',
               label='Route Ops',
           )
-          verify_run(
-              load('/tmp/route-engine-publish-run.json'),
-              repo_name='EVNSolution/route_engine',
-              head_sha=route_engine_tag,
-              workflow_name='Route Engine worker image publish',
-              workflow_path_suffix='route-engine-worker-publish.yml',
-              label='route_engine',
-          )
           PY
           echo "Route Ops deploy input validation passed for ${IMAGE_TAG} with route_engine ${route_engine_tag}."
 

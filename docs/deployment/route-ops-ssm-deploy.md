@@ -36,7 +36,7 @@ Production execution is **not automatic**. The workflow exists so a maintainer c
   `ROUTE_ENGINE_GRAPH_HOST_DIR=/srv/clever-route-server/data/route-engine/graphs/current/parquet`
   and validates the mounted graph manifest against the worker image label before activation.
 - The image tag must be reachable from `origin/main`, and the workflow checks out that exact commit before creating the deploy-control bundle so `commitSha`, image tag, and bundled deploy-control files have one provenance.
-- The publish run URL is machine-verified through the GitHub Actions API: repository, workflow, event, conclusion, branch, and SHA must match.
+- The Route Ops publish run URL is machine-verified through the GitHub Actions API: repository, workflow, event, conclusion, branch, and SHA must match. The separate `route_engine_publish_evidence_url` is format-checked and carried in the deploy-control manifest for audit because this repository's default `GITHUB_TOKEN` cannot read private Actions metadata from `EVNSolution/route_engine` without introducing a cross-repo secret.
 - The deploy target tag must resolve to exactly one managed node total, that node must be `Online`, and SSM Agent must be version `3.3.2746.0` or later for `ENV_VAR` interpolation support.
 - The workflow sends the command to the resolved instance ID, not back to a mutable tag selector.
 - SSM uses `max-concurrency=1` and `max-errors=0`, and the workflow asserts `Command.TargetCount == 1`.

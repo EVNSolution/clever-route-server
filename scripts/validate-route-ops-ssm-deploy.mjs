@@ -256,10 +256,9 @@ assert(deploy.includes('AWS_ROUTE_OPS_DEPLOY_ROLE_ARN'), 'deploy workflow must u
 assert(deploy.includes('git merge-base --is-ancestor "$IMAGE_TAG" origin/main'), 'deploy workflow must verify image tag is reachable from origin/main');
 assert(deploy.includes('publish_evidence_url'), 'deploy workflow must require publish evidence URL');
 assert(deploy.includes('route_engine_image'), 'deploy workflow must require an explicit route_engine worker image');
-assert(deploy.includes('route_engine_publish_evidence_url'), 'deploy workflow must require route_engine publish evidence URL');
+assert(deploy.includes('route_engine_publish_evidence_url'), 'deploy workflow must require route_engine publish evidence URL for the deploy-control audit trail');
 assert(deploy.includes('ROUTE_ENGINE_IMAGE_REPO: ghcr.io/evnsolution/route-engine-worker'), 'deploy workflow must pin the route_engine image repository allowlist');
 assert(deploy.includes('/actions/runs/${publish_run_id}'), 'deploy workflow must query GitHub Actions run metadata for publish evidence');
-assert(deploy.includes('/repos/EVNSolution/route_engine/actions/runs/${route_engine_publish_run_id}'), 'deploy workflow must query route_engine Actions run metadata for image provenance');
 assert(deploy.includes("run.get('conclusion') != 'success'"), 'deploy workflow must require successful publish run evidence');
 assert(deploy.includes("run.get('head_branch') != 'main'"), 'deploy workflow must require publish run on main');
 assert(deploy.includes("head_sha"), 'deploy workflow must require publish run SHA to match image tag');
