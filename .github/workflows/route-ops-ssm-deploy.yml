@@ -15,6 +15,12 @@ on:
       delivery_api_migrate_image:
         description: "Migrate image ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:<sha>"
         required: true
+      route_engine_image:
+        description: "Route engine worker image ghcr.io/evnsolution/route-engine-worker:<sha>"
+        required: true
+      route_engine_publish_evidence_url:
+        description: "Successful route_engine worker image publish workflow run URL for route_engine_image"
+        required: true
       publish_evidence_url:
         description: "Successful route-ops-publish workflow run URL for this image tag"
         required: true
@@ -43,6 +49,7 @@ jobs:
     env:
       RUNTIME_IMAGE_REPO: ghcr.io/evnsolution/clever-route-server-delivery-api
       MIGRATE_IMAGE_REPO: ghcr.io/evnsolution/clever-route-server-delivery-api-migrate
+      ROUTE_ENGINE_IMAGE_REPO: ghcr.io/evnsolution/route-engine-worker
       ROUTE_OPS_DEPLOY_CONTROL_BUCKET: route-ops-artifacts-902837199612-ap-northeast-2
       ROUTE_OPS_DEPLOY_CONTROL_PREFIX: artifacts/route-ops/prod/deploy-control
       ROUTE_OPS_EXPECTED_AWS_ACCOUNT_ID: "902837199612"
@@ -87,6 +94,8 @@ jobs:
           PRISMA_SCHEMA_SHA: ${{ inputs.prisma_schema_sha }}
           DELIVERY_API_IMAGE: ${{ inputs.delivery_api_image }}
           DELIVERY_API_MIGRATE_IMAGE: ${{ inputs.delivery_api_migrate_image }}
+          ROUTE_ENGINE_IMAGE: ${{ inputs.route_engine_image }}
+          ROUTE_ENGINE_PUBLISH_EVIDENCE_URL: ${{ inputs.route_engine_publish_evidence_url }}
           PUBLISH_EVIDENCE_URL: ${{ inputs.publish_evidence_url }}
           DRY_RUN: ${{ inputs.dry_run }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -100,6 +109,15 @@ jobs:
           expected_migrate="${MIGRATE_IMAGE_REPO}:${IMAGE_TAG}"
           if [ "$DELIVERY_API_IMAGE" != "$expected_runtime" ]; then echo "delivery_api_image must be $expected_runtime" >&2; exit 1; fi
           if [ "$DELIVERY_API_MIGRATE_IMAGE" != "$expected_migrate" ]; then echo "delivery_api_migrate_image must be $expected_migrate" >&2; exit 1; fi
+          if ! [[ "$ROUTE_ENGINE_IMAGE" =~ ^${ROUTE_ENGINE_IMAGE_REPO}:[0-9a-fA-F]{40}$ ]]; then
+            echo "route_engine_image must be ${ROUTE_ENGINE_IMAGE_REPO}:<40-hex-sha>" >&2
+            exit 1
+          fi
+          route_engine_tag="${ROUTE_ENGINE_IMAGE##*:}"
+          if ! [[ "$ROUTE_ENGINE_PUBLISH_EVIDENCE_URL" =~ ^https://github\.com/EVNSolution/route_engine/actions/runs/[0-9]+/?$ ]]; then
+            echo "route_engine_publish_evidence_url must be the successful route_engine worker image publish run URL." >&2
+            exit 1
+          fi
           if ! [[ "$PUBLISH_EVIDENCE_URL" =~ ^https://github\.com/EVNSolution/clever-route-server/actions/runs/[0-9]+/?$ ]]; then
             echo "publish_evidence_url must be the successful route-ops-publish run URL." >&2
             exit 1
@@ -118,35 +136,63 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runs/${publish_run_id}" \
             -o /tmp/route-ops-publish-run.json
-          python3 - "$IMAGE_TAG" <<'PY'
+          route_engine_publish_run_id="${ROUTE_ENGINE_PUBLISH_EVIDENCE_URL%/}"
+          route_engine_publish_run_id="${route_engine_publish_run_id##*/}"
+          curl -fsSL \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/EVNSolution/route_engine/actions/runs/${route_engine_publish_run_id}" \
+            -o /tmp/route-engine-publish-run.json
+          python3 - "$IMAGE_TAG" "$route_engine_tag" <<'PY'
           import json
           import sys
 
           image_tag = sys.argv[1].lower()
-          with open('/tmp/route-ops-publish-run.json', encoding='utf-8') as fh:
-              run = json.load(fh)
+          route_engine_tag = sys.argv[2].lower()
+
+          def load(path: str) -> dict:
+              with open(path, encoding='utf-8') as fh:
+                  return json.load(fh)
 
           def fail(message: str) -> None:
               print(message, file=sys.stderr)
               sys.exit(1)
 
-          repo = (run.get('repository') or {}).get('full_name')
-          if repo != 'EVNSolution/clever-route-server':
-              fail(f'publish evidence run repository mismatch: {repo}')
-          if run.get('event') != 'workflow_dispatch':
-              fail(f'publish evidence run event must be workflow_dispatch: {run.get("event")}')
-          if run.get('conclusion') != 'success':
-              fail(f'publish evidence run conclusion must be success: {run.get("conclusion")}')
-          if run.get('head_branch') != 'main':
-              fail(f'publish evidence run branch must be main: {run.get("head_branch")}')
-          if str(run.get('head_sha', '')).lower() != image_tag:
-              fail('publish evidence run head_sha must match image_tag')
-          name = run.get('name') or ''
-          path = run.get('path') or ''
-          if name != 'Route Ops image publish' and not path.endswith('route-ops-publish.yml'):
-              fail(f'publish evidence run must be Route Ops image publish: name={name!r} path={path!r}')
+          def verify_run(run: dict, *, repo_name: str, head_sha: str, workflow_name: str, workflow_path_suffix: str, label: str) -> None:
+              repo = (run.get('repository') or {}).get('full_name')
+              if repo != repo_name:
+                  fail(f'{label} publish evidence run repository mismatch: {repo}')
+              if run.get('event') != 'workflow_dispatch':
+                  fail(f'{label} publish evidence run event must be workflow_dispatch: {run.get("event")}')
+              if run.get('conclusion') != 'success':
+                  fail(f'{label} publish evidence run conclusion must be success: {run.get("conclusion")}')
+              if run.get('head_branch') != 'main':
+                  fail(f'{label} publish evidence run branch must be main: {run.get("head_branch")}')
+              if str(run.get('head_sha', '')).lower() != head_sha:
+                  fail(f'{label} publish evidence run head_sha must match requested image tag')
+              name = run.get('name') or ''
+              path = run.get('path') or ''
+              if name != workflow_name and not path.endswith(workflow_path_suffix):
+                  fail(f'{label} publish evidence run must be {workflow_name}: name={name!r} path={path!r}')
+
+          verify_run(
+              load('/tmp/route-ops-publish-run.json'),
+              repo_name='EVNSolution/clever-route-server',
+              head_sha=image_tag,
+              workflow_name='Route Ops image publish',
+              workflow_path_suffix='route-ops-publish.yml',
+              label='Route Ops',
+          )
+          verify_run(
+              load('/tmp/route-engine-publish-run.json'),
+              repo_name='EVNSolution/route_engine',
+              head_sha=route_engine_tag,
+              workflow_name='Route Engine worker image publish',
+              workflow_path_suffix='route-engine-worker-publish.yml',
+              label='route_engine',
+          )
           PY
-          echo "Route Ops deploy input validation passed for ${IMAGE_TAG}."
+          echo "Route Ops deploy input validation passed for ${IMAGE_TAG} with route_engine ${route_engine_tag}."
 
       - name: Checkout deploy-control source at image tag
         shell: bash
@@ -198,6 +244,8 @@ jobs:
           PRISMA_SCHEMA_SHA: ${{ inputs.prisma_schema_sha }}
           DELIVERY_API_IMAGE: ${{ inputs.delivery_api_image }}
           DELIVERY_API_MIGRATE_IMAGE: ${{ inputs.delivery_api_migrate_image }}
+          ROUTE_ENGINE_IMAGE: ${{ inputs.route_engine_image }}
+          ROUTE_ENGINE_PUBLISH_EVIDENCE_URL: ${{ inputs.route_engine_publish_evidence_url }}
           PUBLISH_EVIDENCE_URL: ${{ inputs.publish_evidence_url }}
           DRY_RUN: ${{ inputs.dry_run }}
           DEPLOY_CONTROL_BUCKET: ${{ env.ROUTE_OPS_DEPLOY_CONTROL_BUCKET }}
@@ -226,6 +274,8 @@ jobs:
             "$PRISMA_SCHEMA_SHA" \
             "$DELIVERY_API_IMAGE" \
             "$DELIVERY_API_MIGRATE_IMAGE" \
+            "$ROUTE_ENGINE_IMAGE" \
+            "$ROUTE_ENGINE_PUBLISH_EVIDENCE_URL" \
             "$PUBLISH_EVIDENCE_URL" \
             "$DRY_RUN" \
             "$GITHUB_RUN_ID" \
@@ -242,6 +292,8 @@ jobs:
               schema_sha,
               runtime_image,
               migrate_image,
+              route_engine_image,
+              route_engine_publish_evidence_url,
               publish_evidence_url,
               dry_run,
               github_run_id,
@@ -260,6 +312,8 @@ jobs:
               'prismaSchemaSha': schema_sha,
               'deliveryApiImage': runtime_image,
               'deliveryApiMigrateImage': migrate_image,
+              'routeEngineImage': route_engine_image,
+              'routeEnginePublishEvidenceUrl': route_engine_publish_evidence_url,
               'publishEvidenceUrl': publish_evidence_url,
               'artifactBucket': artifact_bucket,
               'artifactPrefix': artifact_prefix,

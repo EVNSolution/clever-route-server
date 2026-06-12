@@ -27,13 +27,14 @@ Production execution is **not automatic**. The workflow exists so a maintainer c
   - `prisma_schema_sha`: 64-hex schema SHA.
   - `delivery_api_image`: `ghcr.io/evnsolution/clever-route-server-delivery-api:<sha>`.
   - `delivery_api_migrate_image`: `ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:<sha>`.
+  - `route_engine_image`: `ghcr.io/evnsolution/route-engine-worker:<sha>`.
+  - `route_engine_publish_evidence_url` / manifest `routeEnginePublishEvidenceUrl`: successful `route_engine` worker publish run URL.
   - `publish_evidence_url`: successful Route Ops publish run URL.
-- `route_engine` is not built by this repository's publish workflow. The host
-  wrapper derives the pinned worker image
-  `ROUTE_ENGINE_IMAGE=ghcr.io/evnsolution/route-engine-worker:19baa45ee4fde9d2c21cfd3985c00d3bed07b8a4`
-  and the required graph mount
-  `ROUTE_ENGINE_GRAPH_HOST_DIR=/srv/clever-route-server/data/route-engine/parquet`
-  unless an operator deliberately overrides them from a host-local source.
+- `route_engine` is built by the separate `EVNSolution/route_engine` workflow, then passed explicitly as
+  `ROUTE_ENGINE_IMAGE=ghcr.io/evnsolution/route-engine-worker:<sha>` through the deploy-control manifest. The host
+  wrapper derives only the required graph mount
+  `ROUTE_ENGINE_GRAPH_HOST_DIR=/srv/clever-route-server/data/route-engine/graphs/current/parquet`
+  and validates the mounted graph manifest against the worker image label before activation.
 - The image tag must be reachable from `origin/main`, and the workflow checks out that exact commit before creating the deploy-control bundle so `commitSha`, image tag, and bundled deploy-control files have one provenance.
 - The publish run URL is machine-verified through the GitHub Actions API: repository, workflow, event, conclusion, branch, and SHA must match.
 - The deploy target tag must resolve to exactly one managed node total, that node must be `Online`, and SSM Agent must be version `3.3.2746.0` or later for `ENV_VAR` interpolation support.
@@ -132,6 +133,8 @@ gh workflow run route-ops-ssm-deploy.yml \
   -f prisma_schema_sha=<schema-sha-from-publish> \
   -f delivery_api_image=ghcr.io/evnsolution/clever-route-server-delivery-api:<published-main-commit-sha> \
   -f delivery_api_migrate_image=ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:<published-main-commit-sha> \
+  -f route_engine_image=ghcr.io/evnsolution/route-engine-worker:<published-route-engine-sha> \
+  -f route_engine_publish_evidence_url=https://github.com/EVNSolution/route_engine/actions/runs/<route-engine-publish-run-id> \
   -f publish_evidence_url=https://github.com/EVNSolution/clever-route-server/actions/runs/<publish-run-id> \
   -f dry_run=true
 ```

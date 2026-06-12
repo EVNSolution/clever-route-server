@@ -14,6 +14,8 @@ S3_URI="s3://${BUCKET}/${PREFIX}/${RUN_ID}/${IMAGE_TAG}/${BUNDLE_NAME}"
 RUNTIME_IMAGE="ghcr.io/evnsolution/clever-route-server-delivery-api:${IMAGE_TAG}"
 MIGRATE_IMAGE="ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:${IMAGE_TAG}"
 PUBLISH_EVIDENCE_URL="https://github.com/EVNSolution/clever-route-server/actions/runs/${RUN_ID}"
+ROUTE_ENGINE_IMAGE="ghcr.io/evnsolution/route-engine-worker:5555555555555555555555555555555555555555"
+ROUTE_ENGINE_PUBLISH_EVIDENCE_URL="https://github.com/EVNSolution/route_engine/actions/runs/987654321"
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-deploy-control-test.XXXXXX")"
 cleanup() { rm -rf "$tmp"; }
@@ -36,6 +38,8 @@ make_staging() {
     "$SCHEMA_SHA" \
     "$RUNTIME_IMAGE" \
     "$MIGRATE_IMAGE" \
+    "$ROUTE_ENGINE_IMAGE" \
+    "$ROUTE_ENGINE_PUBLISH_EVIDENCE_URL" \
     "$PUBLISH_EVIDENCE_URL" \
     "$RUN_ID" \
     "$BUCKET" \
@@ -50,6 +54,8 @@ import sys
     schema_sha,
     runtime_image,
     migrate_image,
+    route_engine_image,
+    route_engine_publish_evidence_url,
     publish_evidence_url,
     run_id,
     bucket,
@@ -67,6 +73,8 @@ print(json.dumps({
     'prismaSchemaSha': schema_sha,
     'deliveryApiImage': runtime_image,
     'deliveryApiMigrateImage': migrate_image,
+    'routeEngineImage': route_engine_image,
+    'routeEnginePublishEvidenceUrl': route_engine_publish_evidence_url,
     'publishEvidenceUrl': publish_evidence_url,
     'artifactBucket': bucket,
     'artifactPrefix': prefix,
@@ -123,6 +131,7 @@ grep -q 'manifest validation passed' "$tmp/manifest.stderr"
 test "$DRY_RUN" = "true"
 test "$IMAGE_TAG" = "0123456789abcdef0123456789abcdef01234567"
 test "$DEPLOY_CONTROL_BUNDLE_S3_URI" = "$S3_URI"
+test "$ROUTE_ENGINE_IMAGE" = "ghcr.io/evnsolution/route-engine-worker:5555555555555555555555555555555555555555"
 
 bad_staging="$tmp/bad-staging"
 make_staging "$bad_staging"

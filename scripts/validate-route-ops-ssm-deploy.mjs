@@ -255,7 +255,11 @@ assertRouteOpsActionPins();
 assert(deploy.includes('AWS_ROUTE_OPS_DEPLOY_ROLE_ARN'), 'deploy workflow must use AWS deploy role variable');
 assert(deploy.includes('git merge-base --is-ancestor "$IMAGE_TAG" origin/main'), 'deploy workflow must verify image tag is reachable from origin/main');
 assert(deploy.includes('publish_evidence_url'), 'deploy workflow must require publish evidence URL');
+assert(deploy.includes('route_engine_image'), 'deploy workflow must require an explicit route_engine worker image');
+assert(deploy.includes('route_engine_publish_evidence_url'), 'deploy workflow must require route_engine publish evidence URL');
+assert(deploy.includes('ROUTE_ENGINE_IMAGE_REPO: ghcr.io/evnsolution/route-engine-worker'), 'deploy workflow must pin the route_engine image repository allowlist');
 assert(deploy.includes('/actions/runs/${publish_run_id}'), 'deploy workflow must query GitHub Actions run metadata for publish evidence');
+assert(deploy.includes('/repos/EVNSolution/route_engine/actions/runs/${route_engine_publish_run_id}'), 'deploy workflow must query route_engine Actions run metadata for image provenance');
 assert(deploy.includes("run.get('conclusion') != 'success'"), 'deploy workflow must require successful publish run evidence');
 assert(deploy.includes("run.get('head_branch') != 'main'"), 'deploy workflow must require publish run on main');
 assert(deploy.includes("head_sha"), 'deploy workflow must require publish run SHA to match image tag');
@@ -284,6 +288,8 @@ const expectedDeployControlManifestKeys = [
   'prismaSchemaSha',
   'deliveryApiImage',
   'deliveryApiMigrateImage',
+  'routeEngineImage',
+  'routeEnginePublishEvidenceUrl',
   'publishEvidenceUrl',
   'artifactBucket',
   'artifactPrefix',
@@ -329,6 +335,8 @@ assert(!deploy.includes('DeployControlBundleBase64'), 'deploy workflow must not 
 assert(!deploy.includes('base64 -w0'), 'deploy workflow must not base64-encode the deploy-control bundle for SSM');
 assert(deploy.includes('dry_run'), 'deploy workflow must expose dry-run validation mode');
 assert(deploy.includes("'dryRun': dry_run == 'true'"), 'deploy workflow must write dry-run state into the deploy-control manifest');
+assert(deploy.includes("'routeEngineImage': route_engine_image"), 'deploy workflow must write route_engine image into the deploy-control manifest');
+assert(deploy.includes("'routeEnginePublishEvidenceUrl': route_engine_publish_evidence_url"), 'deploy workflow must write route_engine publish evidence into the deploy-control manifest');
 assert(deploy.includes('ssmParameterChars DeployControlBundleS3Uri'), 'deploy workflow must log SSM parameter sizes for the reduced parameters');
 assert(deploy.includes('/tmp/route-ops-deploy-parameters.json'), 'deploy workflow must prepare one parameter file for the custom SSM document');
 assert(deploy.includes('--parameters file:///tmp/route-ops-deploy-parameters.json'), 'custom deploy SendCommand must use the prepared parameter file');
@@ -610,6 +618,7 @@ for (const pattern of [
   'ROUTE_OPS_WEB_STATIC_IMAGE',
   'ROUTE_OPS_WEB_STATIC_VOLUME',
   'ROUTE_ENGINE_IMAGE',
+  'routeEnginePublishEvidenceUrl',
   'ROUTE_ENGINE_GRAPH_HOST_DIR',
   'org.clever-route.graph-manifest-sha',
   '/app/routing_engine/v7_out/parquet:ro',
