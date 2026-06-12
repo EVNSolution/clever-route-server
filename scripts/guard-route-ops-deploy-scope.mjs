@@ -174,6 +174,7 @@ const allowedExact = new Set([
   'scripts/smoke-route-ops-production.mjs',
   'scripts/ssm-route-ops-deploy.sh',
   'scripts/route-ops-deploy-control-bundle.sh',
+  'scripts/provision-route-engine-graph-from-s3.sh',
   'tests/deploy/deploy-route-ops-image-disk-guard.test.sh',
   'tests/deploy/route-ops-prisma-db-push-guard.test.sh',
   'tests/deploy/ssm-route-ops-deploy.test.sh',
