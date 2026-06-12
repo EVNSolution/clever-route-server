@@ -115,9 +115,9 @@ Rollback uses `.deploy/previous-image.env`, verifies the schema fingerprint matc
 - Use a host-local GHCR read token in Docker credential storage.
 - `ROUTE_OPS_WEB_STATIC_IMAGE` and `ROUTE_OPS_WEB_STATIC_VOLUME` are deploy metadata, not runtime secrets; both must use the same immutable git SHA tag as the backend images.
 - `ROUTE_ENGINE_IMAGE` is a separately published pinned optimizer worker image,
-  not a secret. `ROUTE_ENGINE_GRAPH_HOST_DIR` must point to host-local Git LFS
-  parquet artifacts; do not put those large artifacts in the
-  clever-route-server image layer.
+  not a secret. `ROUTE_ENGINE_GRAPH_HOST_DIR` must point to host-local parquet
+  artifacts provisioned from the private S3 graph artifact pointer; do not put
+  those large artifacts in the clever-route-server image layer.
 - Keep Actions manual, timeout-bounded, and artifact-light; redacted summaries only with one-day retention.
 - If Actions quota is exhausted, use a local maintainer build/push or the existing emergency deploy path after separate approval.
 
@@ -145,6 +145,7 @@ It has no public port. `delivery-api` talks to it by the internal Compose DNS
 name `http://route-engine:8080` and a shared host-local
 `ROUTE_ENGINE_INTERNAL_TOKEN`. The deploy script generates that token only if it
 is missing and never prints it. The graph mount is mandatory for production:
-deployment fails closed if the host parquet files are absent, still Git LFS
-pointers, or do not match the `org.clever-route.graph-manifest-sha` label on the
-pinned worker image.
+deployment provisions the approved private S3 graph artifact when needed, then
+fails closed if the host parquet files are absent, still Git LFS pointers, or do
+not match the `org.clever-route.graph-manifest-sha` label on the pinned worker
+image.

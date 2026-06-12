@@ -268,6 +268,7 @@ const expectedDeployControlFiles = [
   'scripts/deploy-route-ops-image.sh',
   'scripts/rollback-route-ops-image.sh',
   'scripts/ssm-route-ops-deploy.sh',
+  'scripts/provision-route-engine-graph-from-s3.sh',
   'scripts/smoke-route-ops-production.mjs',
   'scripts/route-ops-deploy-control-bundle.sh',
 ];
@@ -391,6 +392,8 @@ assert(wrapper.includes('ROUTE_OPS_WEB_STATIC_IMAGE'), 'wrapper must derive and 
 assert(wrapper.includes('ROUTE_OPS_WEB_STATIC_VOLUME'), 'wrapper must derive and validate the SHA-scoped frontend static volume');
 assert(wrapper.includes('ROUTE_ENGINE_IMAGE'), 'wrapper must derive and validate the route_engine worker image');
 assert(wrapper.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'wrapper must expose the route_engine graph host directory');
+assert(deployControlBundle.includes('scripts/provision-route-engine-graph-from-s3.sh'), 'deploy-control bundle must include the route_engine S3 graph provision helper');
+assert(ssmDocument.includes('scripts/provision-route-engine-graph-from-s3.sh'), 'SSM deploy document must sync the route_engine S3 graph provision helper');
 assert(wrapper.includes('ROUTE_OPS_DEPLOY_TRACE_DIR'), 'wrapper must establish a host-local deploy trace directory');
 assert(wrapper.includes('ssm-wrapper.log'), 'wrapper must persist deploy stdout/stderr to a host-local wrapper log');
 assert(wrapper.includes('PIPESTATUS[0]'), 'wrapper must preserve deploy script exit status through tee');
@@ -534,7 +537,7 @@ assert(deployControlBundle.includes('SHA256 mismatch'), 'deploy-control bundle h
 assert(ssmRunCommand.some((command) => command.includes('done < "$tmp_dir/allowed-files"')), 'SSM deploy document must sync only inline allowlisted files after SHA and manifest validation');
 const ssmAllowedFilesCommand = ssmRunCommand.find((command) => command.includes('cat > "$tmp_dir/allowed-files"')) || '';
 assertHeredocMatches(ssmDocumentPath, ssmAllowedFilesCommand, 'allowed-files', expectedDeployControlFiles);
-assert(ssmRunCommand.includes('bash -n scripts/deploy-route-ops-image.sh scripts/rollback-route-ops-image.sh scripts/ssm-route-ops-deploy.sh scripts/route-ops-deploy-control-bundle.sh'), 'SSM deploy document must syntax-check synced shell scripts before deploy');
+assert(ssmRunCommand.includes('bash -n scripts/deploy-route-ops-image.sh scripts/rollback-route-ops-image.sh scripts/ssm-route-ops-deploy.sh scripts/provision-route-engine-graph-from-s3.sh scripts/route-ops-deploy-control-bundle.sh'), 'SSM deploy document must syntax-check synced shell scripts before deploy');
 assert(ssmDocument.includes('scripts/ssm-route-ops-deploy.sh'), 'SSM deploy document must invoke the reviewed host deploy wrapper after source sync');
 assert(imageRollback.includes('ROUTE_OPS_ROLLBACK_STATIC_ARTIFACT_STAGED'), 'rollback script must track static artifact staging separately from backend mutation');
 assert(imageRollback.includes('validate_loaded_static_artifact_contract .deploy/candidate-image.env'), 'rollback script must semantically validate candidate static image and volume before compose mutation');

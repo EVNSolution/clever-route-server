@@ -10,8 +10,6 @@ RUNTIME_IMAGE="ghcr.io/evnsolution/clever-route-server-delivery-api:${IMAGE_TAG}
 MIGRATE_IMAGE="ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:${IMAGE_TAG}"
 STATIC_IMAGE="ghcr.io/evnsolution/clever-route-server-route-ops-web-static:${IMAGE_TAG}"
 ROUTE_ENGINE_IMAGE="ghcr.io/evnsolution/route-engine-worker:5555555555555555555555555555555555555555"
-ROUTE_ENGINE_GRAPH_HOST_DIR="/srv/clever-route-server/data/route-engine/parquet"
-STATIC_VOLUME="clever-route-route-ops-web-static-${IMAGE_TAG}"
 SECRET_VALUE="unit-test-secret-not-real"
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-ssm-test.XXXXXX")"
@@ -34,12 +32,16 @@ set -euo pipefail
 : "${ROUTE_OPS_WEB_STATIC_IMAGE:?frontend static image required}"
 : "${ROUTE_OPS_WEB_STATIC_VOLUME:?frontend static volume required}"
 : "${ROUTE_ENGINE_IMAGE:?route_engine image required}"
+: "${ROUTE_ENGINE_GRAPH_DEST_ROOT:?route_engine graph dest root required}"
 : "${ROUTE_ENGINE_GRAPH_HOST_DIR:?route_engine graph host dir required}"
+: "${ROUTE_ENGINE_GRAPH_S3_CURRENT_URI:?route_engine graph s3 current uri required}"
 : "${ROUTE_OPS_COMPOSE_PROJECT_NAME:?compose project required}"
 test "$ROUTE_OPS_COMPOSE_PROJECT_NAME" = "clever-route"
 test "$ROUTE_OPS_WEB_STATIC_VOLUME" = "clever-route-route-ops-web-static-${IMAGE_TAG}"
 test "$ROUTE_ENGINE_IMAGE" = "ghcr.io/evnsolution/route-engine-worker:5555555555555555555555555555555555555555"
-test "$ROUTE_ENGINE_GRAPH_HOST_DIR" = "/srv/clever-route-server/data/route-engine/parquet"
+test "$ROUTE_ENGINE_GRAPH_DEST_ROOT" = "/srv/clever-route-server/data/route-engine/graphs"
+test "$ROUTE_ENGINE_GRAPH_HOST_DIR" = "/srv/clever-route-server/data/route-engine/graphs/current/parquet"
+test "$ROUTE_ENGINE_GRAPH_S3_CURRENT_URI" = "s3://clever-route-prod-artifacts-902837199612-ap-northeast-2/route-engine/graphs/v7/current.json"
 if [ "$ROUTE_OPS_SMOKE_LOGIN_SECRET" = "unit-test-secret-not-real" ]; then
   echo "deploy-called tag=${IMAGE_TAG}" > .deploy/fake-result.txt
 else

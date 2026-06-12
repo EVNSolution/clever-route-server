@@ -661,8 +661,9 @@ SHA: runtime, migrate, and `route-ops-web-static`. The host wrapper exports
 `ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static:<ImageTag>`
 and `ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-<ImageTag>`
 when the command does not pass them explicitly. It also exports the separately
-published `ROUTE_ENGINE_IMAGE` and `ROUTE_ENGINE_GRAPH_HOST_DIR`. The deploy
-script writes those values to `.deploy/candidate-image.env`, pulls
+published `ROUTE_ENGINE_IMAGE`, `ROUTE_ENGINE_GRAPH_HOST_DIR`, and the approved
+private S3 graph pointer. The deploy script writes those values to
+`.deploy/candidate-image.env`, pulls
 `route-ops-web-static delivery-api delivery-api-migrate route-engine`, runs the
 one-shot `route-ops-web-static` compose service against the candidate
 SHA-scoped volume, starts `route-engine` only after graph manifest validation,
@@ -680,11 +681,14 @@ image layer. Production readiness therefore requires a host-local read-only
 mount:
 
 ```text
-ROUTE_ENGINE_GRAPH_HOST_DIR=/srv/clever-route-server/data/route-engine/parquet
+ROUTE_ENGINE_GRAPH_HOST_DIR=/srv/clever-route-server/data/route-engine/graphs/current/parquet
 /app/routing_engine/v7_out/parquet:ro
 ```
 
-The deploy and rollback scripts fail closed before `delivery-api` activation if:
+The deploy and rollback scripts first call
+`scripts/provision-route-engine-graph-from-s3.sh` when the expected graph
+manifest is absent or mismatched locally. They then fail closed before
+`delivery-api` activation if:
 
 - the directory is missing;
 - no `*.parquet` files are present;

@@ -18,8 +18,10 @@ LOCK_ACQUIRED="false"
 ROUTE_OPS_WEB_STATIC_IMAGE_REPO="${ROUTE_OPS_WEB_STATIC_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-route-ops-web-static}"
 ROUTE_ENGINE_IMAGE_REPO="${ROUTE_ENGINE_IMAGE_REPO:-ghcr.io/evnsolution/route-engine-worker}"
 ROUTE_ENGINE_IMAGE="${ROUTE_ENGINE_IMAGE:-${ROUTE_ENGINE_IMAGE_REPO}:19baa45ee4fde9d2c21cfd3985c00d3bed07b8a4}"
-ROUTE_ENGINE_GRAPH_HOST_DIR="${ROUTE_ENGINE_GRAPH_HOST_DIR:-/srv/clever-route-server/data/route-engine/parquet}"
-export ROUTE_ENGINE_GRAPH_HOST_DIR ROUTE_ENGINE_IMAGE
+ROUTE_ENGINE_GRAPH_DEST_ROOT="${ROUTE_ENGINE_GRAPH_DEST_ROOT:-/srv/clever-route-server/data/route-engine/graphs}"
+ROUTE_ENGINE_GRAPH_HOST_DIR="${ROUTE_ENGINE_GRAPH_HOST_DIR:-${ROUTE_ENGINE_GRAPH_DEST_ROOT}/current/parquet}"
+ROUTE_ENGINE_GRAPH_S3_CURRENT_URI="${ROUTE_ENGINE_GRAPH_S3_CURRENT_URI:-s3://clever-route-prod-artifacts-902837199612-ap-northeast-2/route-engine/graphs/v7/current.json}"
+export ROUTE_ENGINE_GRAPH_DEST_ROOT ROUTE_ENGINE_GRAPH_HOST_DIR ROUTE_ENGINE_GRAPH_S3_CURRENT_URI ROUTE_ENGINE_IMAGE
 ROUTE_OPS_ROLLBACK_STATIC_ARTIFACT_STAGED="false"
 ROUTE_OPS_ROLLBACK_SERVICE_MUTATED="false"
 
@@ -96,7 +98,7 @@ validate_image_env_file() {
   while IFS= read -r line || [ -n "$line" ]; do
     [ -z "$line" ] && continue
     case "$line" in
-      IMAGE_TAG=*|DELIVERY_API_IMAGE=*|DELIVERY_API_MIGRATE_IMAGE=*|ROUTE_OPS_WEB_STATIC_IMAGE=*|ROUTE_OPS_WEB_STATIC_VOLUME=*|ROUTE_ENGINE_IMAGE=*|ROUTE_ENGINE_GRAPH_HOST_DIR=*|PRISMA_SCHEMA_SHA=*) ;;
+      IMAGE_TAG=*|DELIVERY_API_IMAGE=*|DELIVERY_API_MIGRATE_IMAGE=*|ROUTE_OPS_WEB_STATIC_IMAGE=*|ROUTE_OPS_WEB_STATIC_VOLUME=*|ROUTE_ENGINE_IMAGE=*|ROUTE_ENGINE_GRAPH_HOST_DIR=*|ROUTE_ENGINE_GRAPH_DEST_ROOT=*|ROUTE_ENGINE_GRAPH_S3_CURRENT_URI=*|PRISMA_SCHEMA_SHA=*) ;;
       *) echo "Invalid image env key in $file: ${line%%=*}" >&2; return 1 ;;
     esac
     local value="${line#*=}"
@@ -126,7 +128,8 @@ load_image_env_file() {
     export ROUTE_ENGINE_IMAGE
   fi
   if [ -z "${ROUTE_ENGINE_GRAPH_HOST_DIR:-}" ]; then
-    ROUTE_ENGINE_GRAPH_HOST_DIR="/srv/clever-route-server/data/route-engine/parquet"
+    ROUTE_ENGINE_GRAPH_DEST_ROOT="/srv/clever-route-server/data/route-engine/graphs"
+    ROUTE_ENGINE_GRAPH_HOST_DIR="${ROUTE_ENGINE_GRAPH_DEST_ROOT}/current/parquet"
     export ROUTE_ENGINE_GRAPH_HOST_DIR
   fi
   set +a
@@ -152,6 +155,12 @@ ensure_static_artifact_env_file() {
   fi
   if ! grep -q '^ROUTE_ENGINE_GRAPH_HOST_DIR=' "$file"; then
     printf 'ROUTE_ENGINE_GRAPH_HOST_DIR=%s\n' "$ROUTE_ENGINE_GRAPH_HOST_DIR" >> "$file"
+  fi
+  if ! grep -q '^ROUTE_ENGINE_GRAPH_DEST_ROOT=' "$file"; then
+    printf 'ROUTE_ENGINE_GRAPH_DEST_ROOT=%s\n' "$ROUTE_ENGINE_GRAPH_DEST_ROOT" >> "$file"
+  fi
+  if ! grep -q '^ROUTE_ENGINE_GRAPH_S3_CURRENT_URI=' "$file"; then
+    printf 'ROUTE_ENGINE_GRAPH_S3_CURRENT_URI=%s\n' "$ROUTE_ENGINE_GRAPH_S3_CURRENT_URI" >> "$file"
   fi
 }
 expected_static_volume_for_tag() {
@@ -276,14 +285,39 @@ route_engine_host_graph_manifest_sha() {
   rm -f "$manifest_file"
 }
 
+provision_route_engine_graph_from_s3_if_needed() {
+  local expected_manifest_sha graph_dir actual_manifest_sha
+  expected_manifest_sha="$1"
+  graph_dir="${ROUTE_ENGINE_GRAPH_HOST_DIR:-${ROUTE_ENGINE_GRAPH_DEST_ROOT:-/srv/clever-route-server/data/route-engine/graphs}/current/parquet}"
+  if [ -z "${ROUTE_ENGINE_GRAPH_S3_CURRENT_URI:-}" ]; then
+    return 0
+  fi
+  if [ ! -x scripts/provision-route-engine-graph-from-s3.sh ]; then
+    return 0
+  fi
+  actual_manifest_sha=""
+  if [ -d "$graph_dir" ]; then
+    actual_manifest_sha="$(route_engine_host_graph_manifest_sha "$graph_dir" 2>/dev/null || true)"
+  fi
+  if [ "$actual_manifest_sha" = "$expected_manifest_sha" ]; then
+    return 0
+  fi
+  echo "Route Engine graph artifacts need S3 provisioning: dir=${graph_dir} expected=${expected_manifest_sha} actual=${actual_manifest_sha:-missing}"
+  scripts/provision-route-engine-graph-from-s3.sh \
+    --current-s3-uri "$ROUTE_ENGINE_GRAPH_S3_CURRENT_URI" \
+    --dest-root "${ROUTE_ENGINE_GRAPH_DEST_ROOT:-/srv/clever-route-server/data/route-engine/graphs}" \
+    --expected-manifest-sha "$expected_manifest_sha"
+}
+
 validate_route_engine_graph_artifacts() {
   local expected_manifest_sha graph_dir graph_files actual_manifest_sha lfs_pointer_file
   expected_manifest_sha="$1"
-  graph_dir="${ROUTE_ENGINE_GRAPH_HOST_DIR:-/srv/clever-route-server/data/route-engine/parquet}"
+  graph_dir="${ROUTE_ENGINE_GRAPH_HOST_DIR:-${ROUTE_ENGINE_GRAPH_DEST_ROOT:-/srv/clever-route-server/data/route-engine/graphs}/current/parquet}"
   if ! [[ "$expected_manifest_sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
     echo "ROUTE_ENGINE_IMAGE must carry org.clever-route.graph-manifest-sha; got: ${expected_manifest_sha:-unset}" >&2
     exit 65
   fi
+  provision_route_engine_graph_from_s3_if_needed "$expected_manifest_sha"
   if [ ! -d "$graph_dir" ]; then
     echo "Route Engine graph directory is missing: ${graph_dir}" >&2
     exit 66

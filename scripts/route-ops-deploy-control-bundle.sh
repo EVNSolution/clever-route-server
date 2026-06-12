@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Exported metadata for callers that source the helper contract.
+# shellcheck disable=SC2034
 ROUTE_OPS_DEPLOY_CONTROL_BUCKET="route-ops-artifacts-902837199612-ap-northeast-2"
+# shellcheck disable=SC2034
 ROUTE_OPS_DEPLOY_CONTROL_PREFIX="artifacts/route-ops/prod/deploy-control"
+# shellcheck disable=SC2034
 ROUTE_OPS_DEPLOY_CONTROL_BUNDLE_FILE="route-ops-deploy-control.tar.gz"
 
 fail() {
@@ -17,6 +21,7 @@ infra/compose/docker-compose.prod.yml
 scripts/deploy-route-ops-image.sh
 scripts/rollback-route-ops-image.sh
 scripts/ssm-route-ops-deploy.sh
+scripts/provision-route-engine-graph-from-s3.sh
 scripts/smoke-route-ops-production.mjs
 scripts/route-ops-deploy-control-bundle.sh
 FILES
@@ -94,6 +99,7 @@ expected = sorted([
     'scripts/deploy-route-ops-image.sh',
     'scripts/rollback-route-ops-image.sh',
     'scripts/ssm-route-ops-deploy.sh',
+    'scripts/provision-route-engine-graph-from-s3.sh',
     'scripts/smoke-route-ops-production.mjs',
     'scripts/route-ops-deploy-control-bundle.sh',
 ])
@@ -141,6 +147,7 @@ allowed_files = [
     'scripts/deploy-route-ops-image.sh',
     'scripts/rollback-route-ops-image.sh',
     'scripts/ssm-route-ops-deploy.sh',
+    'scripts/provision-route-engine-graph-from-s3.sh',
     'scripts/smoke-route-ops-production.mjs',
     'scripts/route-ops-deploy-control-bundle.sh',
 ]
@@ -255,11 +262,13 @@ sync_extracted() {
     scripts/deploy-route-ops-image.sh \
     scripts/rollback-route-ops-image.sh \
     scripts/ssm-route-ops-deploy.sh \
+    scripts/provision-route-engine-graph-from-s3.sh \
     scripts/route-ops-deploy-control-bundle.sh
   bash -n \
     scripts/deploy-route-ops-image.sh \
     scripts/rollback-route-ops-image.sh \
     scripts/ssm-route-ops-deploy.sh \
+    scripts/provision-route-engine-graph-from-s3.sh \
     scripts/route-ops-deploy-control-bundle.sh
 }
 
