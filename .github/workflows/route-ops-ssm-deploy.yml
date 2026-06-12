@@ -136,19 +136,11 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runs/${publish_run_id}" \
             -o /tmp/route-ops-publish-run.json
-          route_engine_publish_run_id="${ROUTE_ENGINE_PUBLISH_EVIDENCE_URL%/}"
-          route_engine_publish_run_id="${route_engine_publish_run_id##*/}"
-          curl -fsSL \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "${GITHUB_API_URL}/repos/EVNSolution/route_engine/actions/runs/${route_engine_publish_run_id}" \
-            -o /tmp/route-engine-publish-run.json
-          python3 - "$IMAGE_TAG" "$route_engine_tag" <<'PY'
+          python3 - "$IMAGE_TAG" <<'PY'
           import json
           import sys
 
           image_tag = sys.argv[1].lower()
-          route_engine_tag = sys.argv[2].lower()
 
           def load(path: str) -> dict:
               with open(path, encoding='utf-8') as fh:
