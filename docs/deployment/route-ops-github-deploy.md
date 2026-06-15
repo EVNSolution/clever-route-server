@@ -27,6 +27,9 @@ gh workflow run route-ops-release.yml \
   -f route_engine_publish_evidence_url=https://github.com/EVNSolution/route_engine/actions/runs/<route-engine-publish-run-id>
 ```
 
+For consolidated release prepare/promote, the runner must be able to pull the private `route_engine` GHCR package before SSM dry-run and before production promote. Configure repository secret `ROUTE_ENGINE_GHCR_READ_TOKEN` with `read:packages` scope and repository variable `ROUTE_ENGINE_GHCR_READ_USERNAME` with the token owner. If absent, the workflow falls back to `GITHUB_TOKEN`, which only works when package permissions allow this repository to read the image.
+
+
 After the prepare run succeeds, inspect the redacted summary and the `route-ops-release-manifest` artifact. Promote only the same digest:
 
 ```bash

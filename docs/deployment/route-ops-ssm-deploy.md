@@ -56,6 +56,9 @@ Fallback `.github/workflows/route-ops-ssm-deploy.yml` is intentionally narrow:
 - If `ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT=true` is deliberately enabled, IAM allows it, and `dry_run=false`, the workflow reconciles the Route Ops Caddy ingress on the same resolved instance ID with a fixed no-secret command that force-recreates only the `caddy` service from `/srv/clever-route-server/infra/caddy/Caddyfile`. Dry validation never runs this production mutation.
 - Logs are redacted status summaries only; command parameters contain no production secrets except the masked `DriverAppDownloadUrl` handoff.
 
+For consolidated release prepare/promote, the runner must be able to pull the private `route_engine` GHCR package before SSM dry-run and before production promote. Configure repository secret `ROUTE_ENGINE_GHCR_READ_TOKEN` with `read:packages` scope and repository variable `ROUTE_ENGINE_GHCR_READ_USERNAME` with the token owner. If absent, the workflow falls back to `GITHUB_TOKEN`, which only works when package permissions allow this repository to read the image.
+
+
 ## Deploy-control S3 artifact handoff
 
 The production host currently keeps `/srv/clever-route-server` as a deploy directory, not a live Git checkout. The deploy workflow therefore prepares a narrow non-secret deploy-control bundle, uploads it to S3, and passes the S3 URI, SHA-256 digest, plus the masked driver APK URL handoff through the reviewed custom SSM document. The APK URL must not be written into the bundle or echoed in logs.

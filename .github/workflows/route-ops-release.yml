@@ -323,8 +323,8 @@ jobs:
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # docker/login-action v4.2.0 (Node 24) pinned to full commit SHA.
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ vars.ROUTE_ENGINE_GHCR_READ_USERNAME || github.actor }}
+          password: ${{ secrets.ROUTE_ENGINE_GHCR_READ_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Verify route_engine worker image revision label
         id: route_engine_image
@@ -847,8 +847,8 @@ jobs:
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # docker/login-action v4.2.0 (Node 24) pinned to full commit SHA.
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ vars.ROUTE_ENGINE_GHCR_READ_USERNAME || github.actor }}
+          password: ${{ secrets.ROUTE_ENGINE_GHCR_READ_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Verify route_engine worker image revision label
         shell: bash

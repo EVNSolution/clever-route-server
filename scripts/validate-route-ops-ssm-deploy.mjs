@@ -371,6 +371,8 @@ assert(release.includes('ROUTE_ENGINE_IMAGE_DIGEST: ${{ inputs.route_engine_imag
 assert(release.includes('expected_digest_prefix="${ROUTE_ENGINE_IMAGE_REPO}@sha256:"'), 'release prepare must exact-match route_engine digest repository before any pull');
 assert(release.includes('RepoDigests'), 'release workflow must inspect route_engine RepoDigests for immutable digest verification');
 assert(release.includes('route_engine image digest mismatch'), 'release workflow must fail closed on route_engine digest mismatch');
+assert(release.includes('vars.ROUTE_ENGINE_GHCR_READ_USERNAME || github.actor'), 'release workflow must use a cross-repo GHCR read username var before falling back to actor');
+assert(release.includes('secrets.ROUTE_ENGINE_GHCR_READ_TOKEN || secrets.GITHUB_TOKEN'), 'release workflow must use a cross-repo GHCR read token secret before falling back to GITHUB_TOKEN');
 assert(release.includes('read -r total_count instance_id ping_status agent_version'), 'release SSM target preflight must capture agent_version with the variable used by validation');
 assert(!release.includes('_agent_version'), 'release SSM target preflight must not capture an unused _agent_version');
 assert((release.match(/python3 - "\$agent_version" <<'PY'/g) || []).length >= 2, 'release prepare and promote must both validate SSM AgentVersion');
