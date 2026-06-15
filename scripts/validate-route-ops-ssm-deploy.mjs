@@ -12,6 +12,7 @@ function assert(condition, message) {
 const failures = [];
 const deployWorkflowPath = '.github/workflows/route-ops-ssm-deploy.yml';
 const publishWorkflowPath = '.github/workflows/route-ops-publish.yml';
+const releaseWorkflowPath = '.github/workflows/route-ops-release.yml';
 const ciWorkflowPath = '.github/workflows/ci.yml';
 const wrapperPath = 'scripts/ssm-route-ops-deploy.sh';
 const imageDeployPath = 'scripts/deploy-route-ops-image.sh';
@@ -30,10 +31,13 @@ const deployScopeGuardPath = 'scripts/guard-route-ops-deploy-scope.mjs';
 const docPath = 'docs/deployment/route-ops-ssm-deploy.md';
 const githubDocPath = 'docs/deployment/route-ops-github-deploy.md';
 const osrmDocPath = 'docs/deployment/route-ops-osrm-ontario.md';
+const releaseManifestPath = 'scripts/route-ops-release-manifest.mjs';
+const releaseManifestTestPath = 'scripts/test-route-ops-release-manifest.mjs';
 
 const deploy = read(deployWorkflowPath);
 const publish = read(publishWorkflowPath);
 const ci = read(ciWorkflowPath);
+const release = read(releaseWorkflowPath);
 const wrapper = read(wrapperPath);
 const imageDeploy = read(imageDeployPath);
 const imageRollback = read(imageRollbackPath);
@@ -52,6 +56,8 @@ const smoke = read('scripts/smoke-route-ops-production.mjs');
 const doc = read(docPath);
 const githubDoc = read(githubDocPath);
 const osrmDoc = read(osrmDocPath);
+const releaseManifest = read(releaseManifestPath);
+const releaseManifestTest = read(releaseManifestTestPath);
 
 
 const routeOpsActionPins = [
@@ -75,6 +81,34 @@ const routeOpsActionPins = [
     action: 'docker/build-push-action',
     release: 'v7.2.0',
     sha: 'f9f3042f7e2789586610d6e8b85c8f03e5195baf',
+  },
+  {
+    workflowName: 'Route Ops release',
+    text: release,
+    action: 'docker/login-action',
+    release: 'v4.2.0',
+    sha: '650006c6eb7dba73a995cc03b0b2d7f5ca915bee',
+  },
+  {
+    workflowName: 'Route Ops release',
+    text: release,
+    action: 'docker/setup-buildx-action',
+    release: 'v4.1.0',
+    sha: 'd7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5',
+  },
+  {
+    workflowName: 'Route Ops release',
+    text: release,
+    action: 'docker/build-push-action',
+    release: 'v7.2.0',
+    sha: 'f9f3042f7e2789586610d6e8b85c8f03e5195baf',
+  },
+  {
+    workflowName: 'Route Ops release',
+    text: release,
+    action: 'aws-actions/configure-aws-credentials',
+    release: 'v6.2.0',
+    sha: 'e7f100cf4c008499ea8adda475de1042d6975c7b',
   },
   {
     workflowName: 'Route Ops deploy',
@@ -160,6 +194,7 @@ function assertRouteOpsActionPins() {
   const errors = collectRouteOpsActionPinFailures([
     { workflowName: 'Route Ops publish', text: publish },
     { workflowName: 'Route Ops deploy', text: deploy },
+    { workflowName: 'Route Ops release', text: release },
   ]);
   for (const error of errors) {
     assert(false, error);
@@ -213,12 +248,54 @@ function assertEveryPythonSetMatches(path, text, variableName, expectedValues) {
 }
 
 
+
+function workflowJobBlock(text, jobName) {
+  const start = text.indexOf(`  ${jobName}:\n`);
+  if (start === -1) return '';
+  const rest = text.slice(start + 1);
+  const next = rest.search(/\n  [a-zA-Z0-9_-]+:\n/);
+  return next === -1 ? text.slice(start) : text.slice(start, start + 1 + next);
+}
+
+function assertJobPermission(path, text, jobName, permission, expected) {
+  const block = workflowJobBlock(text, jobName);
+  assert(block, `${path} must define job ${jobName}`);
+  assert(new RegExp(`${permission}:\\s*${expected}`).test(block), `${path} job ${jobName} must set ${permission}:${expected}`);
+}
+
+function assertJobLacksWritePermission(path, text, jobName, permission) {
+  const block = workflowJobBlock(text, jobName);
+  assert(block, `${path} must define job ${jobName}`);
+  assert(!new RegExp(`${permission}:\\s*write`).test(block), `${path} job ${jobName} must not request ${permission}:write`);
+}
+
 function stepBlock(text, stepName) {
   const start = text.indexOf(`      - name: ${stepName}\n`);
   if (start === -1) return '';
   const rest = text.slice(start + 1);
   const next = rest.search(/\n      - name: /);
   return next === -1 ? text.slice(start) : text.slice(start, start + 1 + next);
+}
+
+function assertNoInputsInterpolationInRunBlocks(path, text) {
+  const lines = text.split('\n');
+  let inRunBlock = false;
+  let runIndent = 0;
+  for (const [index, line] of lines.entries()) {
+    const runMatch = line.match(/^(\s*)run:\s*\|/);
+    if (runMatch) {
+      inRunBlock = true;
+      runIndent = runMatch[1].length;
+      continue;
+    }
+    if (inRunBlock) {
+      const indent = line.match(/^(\s*)/)?.[1].length ?? 0;
+      if (line.trim() && indent <= runIndent) inRunBlock = false;
+    }
+    if (inRunBlock && line.includes('${{ inputs.')) {
+      assert(false, `${path}:${index + 1} must pass workflow_dispatch inputs through env before shell use`);
+    }
+  }
 }
 
 function assertHeredocMatches(path, command, heredocPath, expectedValues) {
@@ -252,6 +329,68 @@ assert(/timeout-minutes:\s*120/.test(deploy), 'deploy workflow must allow enough
 assert(deploy.includes("github.ref != 'refs/heads/main'"), 'deploy workflow must require refs/heads/main');
 assert(deploy.includes('DEPLOY_ALLOWED_ACTORS is required'), 'deploy actor allowlist must fail closed when empty');
 assertRouteOpsActionPins();
+
+assert(/workflow_dispatch:\n/.test(release), 'release workflow must be workflow_dispatch');
+for (const forbidden of ['pull_request:', 'schedule:', 'workflow_run:', 'repository_dispatch:']) {
+  assert(!release.includes(forbidden), `release workflow must not include ${forbidden}`);
+}
+assert(!/^  push:/m.test(release), 'release workflow must not include push trigger');
+assert(release.includes("github.ref != 'refs/heads/main'"), 'release workflow must require refs/heads/main');
+assert(release.includes('DEPLOY_ALLOWED_ACTORS is required and must fail closed before preparing Route Ops release.'), 'release prepare actor allowlist must fail closed when empty');
+assert(release.includes('DEPLOY_ALLOWED_ACTORS is required and must fail closed before promoting Route Ops release.'), 'release promote actor allowlist must fail closed when empty');
+assert(release.indexOf('Require actor allowlist') < release.indexOf('Configure AWS credentials through OIDC'), 'release actor allowlist must run before AWS credentials are requested');
+assertNoInputsInterpolationInRunBlocks(releaseWorkflowPath, release);
+assertJobPermission(releaseWorkflowPath, release, 'prepare_publish', 'packages', 'write');
+assertJobLacksWritePermission(releaseWorkflowPath, release, 'prepare_publish', 'id-token');
+assertJobPermission(releaseWorkflowPath, release, 'prepare_dry_run', 'id-token', 'write');
+assertJobPermission(releaseWorkflowPath, release, 'prepare_dry_run', 'packages', 'read');
+assertJobLacksWritePermission(releaseWorkflowPath, release, 'prepare_dry_run', 'packages');
+assertJobPermission(releaseWorkflowPath, release, 'promote_deploy', 'id-token', 'write');
+assertJobPermission(releaseWorkflowPath, release, 'promote_deploy', 'packages', 'read');
+assertJobLacksWritePermission(releaseWorkflowPath, release, 'promote_deploy', 'packages');
+assert(release.includes('DRY_RUN: "true"'), 'release prepare must generate a dryRun=true deploy-control bundle');
+assert(release.includes('DRY_RUN: "false"'), 'release promote must generate a dryRun=false deploy-control bundle');
+assert((release.match(/Validate AWS\/SSM variable configuration/g) || []).length >= 2, 'release prepare and promote must validate AWS/SSM variables before OIDC');
+assert(release.includes('AWS_ROUTE_OPS_DEPLOY_ROLE_ARN AWS_REGION SSM_ROUTE_OPS_TARGET_TAG_KEY SSM_ROUTE_OPS_TARGET_TAG_VALUE SSM_ROUTE_OPS_DOCUMENT_NAME SSM_ROUTE_OPS_DOCUMENT_VERSION'), 'release AWS/SSM validation must require deploy role, region, target, document, and document version vars');
+assert(release.includes('AWS-RunShellScript is not allowed for Route Ops release deploy.'), 'release workflow must reject AWS-RunShellScript as deploy document');
+assert(release.includes('SSM_ROUTE_OPS_DOCUMENT_VERSION must be a pinned numeric reviewed version.'), 'release workflow must require a pinned numeric SSM document version');
+assert(release.indexOf('Validate AWS/SSM variable configuration') < release.indexOf('Configure AWS credentials through OIDC'), 'release prepare must validate SSM variables before OIDC credentials');
+assert(release.lastIndexOf('Validate AWS/SSM variable configuration') < release.lastIndexOf('Configure AWS credentials through OIDC'), 'release promote must validate SSM variables before OIDC credentials');
+assert(release.includes('mode=promote -f release_run_id=${GITHUB_RUN_ID} -f release_manifest_sha256=${manifest_sha}'), 'release prepare summary must hand off only run id and manifest sha to promote');
+assert(!release.includes('-f image_tag=') && !release.includes('-f delivery_api_image='), 'release promote handoff must not accept mutable image coordinates');
+assert(release.includes('scripts/route-ops-release-manifest.mjs validate "$manifest_path" --expect-sha "$EXPECTED_MANIFEST_SHA"'), 'release promote must validate the manifest digest before exporting fields');
+assert(release.includes('git checkout --detach "$COMMIT_SHA"'), 'release promote must check out the exact manifest commit');
+assert(release.includes('[ "${ROUTE_ENGINE_IMAGE%:*}" != "$ROUTE_ENGINE_IMAGE_REPO" ]'), 'release prepare must exact-match route_engine image repository before any pull');
+assert(release.includes('route_engine_tag="${ROUTE_ENGINE_IMAGE##*:}"'), 'release prepare must validate route_engine tag separately from exact repository');
+assert(!release.includes('^${ROUTE_ENGINE_IMAGE_REPO}:'), 'release prepare must not interpolate the route_engine repository string into a regex');
+assert(release.includes('Route Ops SSM dry-run output is missing no-mutation proof.'), 'release prepare must assert dry-run no-mutation SSM output before manifest creation');
+assert(release.includes('Route Ops SSM dry-run output is missing manifest validation proof.'), 'release prepare must assert dry-run manifest validation output before manifest creation');
+assert(release.includes('StandardOutputContent:StandardOutputContent'), 'release prepare must read SSM standard output to validate dry-run evidence');
+assert(release.includes('route_engine_image_digest'), 'release prepare must require a route_engine image digest input');
+assert(release.includes('ROUTE_ENGINE_IMAGE_DIGEST: ${{ inputs.route_engine_image_digest }}'), 'release prepare must pass route_engine image digest through env before shell use');
+assert(release.includes('expected_digest_prefix="${ROUTE_ENGINE_IMAGE_REPO}@sha256:"'), 'release prepare must exact-match route_engine digest repository before any pull');
+assert(release.includes('RepoDigests'), 'release workflow must inspect route_engine RepoDigests for immutable digest verification');
+assert(release.includes('route_engine image digest mismatch'), 'release workflow must fail closed on route_engine digest mismatch');
+assert(release.includes('read -r total_count instance_id ping_status agent_version'), 'release SSM target preflight must capture agent_version with the variable used by validation');
+assert(!release.includes('_agent_version'), 'release SSM target preflight must not capture an unused _agent_version');
+assert((release.match(/python3 - "\$agent_version" <<'PY'/g) || []).length >= 2, 'release prepare and promote must both validate SSM AgentVersion');
+assert(release.includes('Route Ops SSM target instance id is missing.'), 'release SSM target preflight must fail closed on missing instance id');
+assert((release.match(/Verify route_engine worker image revision label/g) || []).length >= 2, 'release prepare and promote must verify route_engine image revision label');
+assert(release.includes('docker pull "$ROUTE_ENGINE_IMAGE"'), 'release workflow must pull the pinned route_engine image before deploy manifest/deploy');
+assert(release.includes('org.opencontainers.image.revision'), 'release workflow must verify route_engine image revision label');
+assert(release.includes('routeEngineImageRevision: process.env.ROUTE_ENGINE_IMAGE_REVISION'), 'release manifest must record machine-verified route_engine image revision');
+assert(release.includes('routeEngineImageDigest: process.env.ROUTE_ENGINE_IMAGE_DIGEST'), 'release manifest must record machine-verified route_engine image digest');
+assert(release.includes('--instance-ids "$INSTANCE_ID"'), 'release workflow must send SSM commands to the resolved exact instance id');
+assert(!release.includes('--targets "Key=tag:'), 'release workflow must not send production commands by mutable tag selector');
+assert(releaseManifest.includes('CONTROL_CHARS') && releaseManifest.includes('control characters are not allowed'), 'release manifest validator must reject control characters before GITHUB_OUTPUT export');
+assert(releaseManifest.includes('release manifest contains unknown field'), 'release manifest validator must reject unknown top-level fields');
+assert(releaseManifest.includes('tag must match imageTag'), 'release manifest validator must bind image outputs to imageTag');
+assert(releaseManifest.includes('routeEngineImageRevision must match routeEngineImage tag'), 'release manifest validator must bind route_engine image revision to route_engine image tag');
+assert(releaseManifest.includes('routeEngineImageDigest must be ghcr.io/evnsolution/route-engine-worker@sha256:<64-hex-digest>'), 'release manifest validator must require route_engine immutable digest evidence');
+assert(releaseManifest.includes('image-revision-label-digest-and-audit-url'), 'release manifest validator must require the machine-verified route_engine evidence contract');
+assert(releaseManifestTest.includes('extra_output=pwned'), 'release manifest tests must cover GITHUB_OUTPUT newline injection');
+assert(releaseManifestTest.includes('wrongRouteEngineRevision'), 'release manifest tests must cover route_engine revision/tag mismatch');
+assert(releaseManifestTest.includes('wrongRouteEngineDigest'), 'release manifest tests must cover route_engine digest mismatch');
 assert(deploy.includes('AWS_ROUTE_OPS_DEPLOY_ROLE_ARN'), 'deploy workflow must use AWS deploy role variable');
 assert(deploy.includes('git merge-base --is-ancestor "$IMAGE_TAG" origin/main'), 'deploy workflow must verify image tag is reachable from origin/main');
 assert(deploy.includes('publish_evidence_url'), 'deploy workflow must require publish evidence URL');
@@ -648,4 +787,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checked: [deployWorkflowPath, wrapperPath, deployControlBundlePath, imageDeployPath, imageRollbackPath, composePath, deliveryApiDockerfilePath, prismaDbPushGuardPath, deliveryApiDepsPath, deliveryApiEnvExamplePath, deliveryApiLocalEnvExamplePath, proofMediaDocPath, ssmDocumentPath, osrmHelperPath, docPath, githubDocPath, osrmDocPath, publishWorkflowPath, ciWorkflowPath] }, null, 2));
+console.log(JSON.stringify({ ok: true, checked: [deployWorkflowPath, wrapperPath, deployControlBundlePath, imageDeployPath, imageRollbackPath, composePath, deliveryApiDockerfilePath, prismaDbPushGuardPath, deliveryApiDepsPath, deliveryApiEnvExamplePath, deliveryApiLocalEnvExamplePath, proofMediaDocPath, ssmDocumentPath, osrmHelperPath, docPath, githubDocPath, osrmDocPath, publishWorkflowPath, releaseWorkflowPath, ciWorkflowPath, releaseManifestPath, releaseManifestTestPath] }, null, 2));

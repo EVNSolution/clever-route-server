@@ -1,6 +1,8 @@
 # Route Ops GitHub OIDC + AWS SSM deploy
 
-This is the approved next step after the publish-only GHCR model. It keeps normal deployment out of operator laptops:
+The primary Route Ops release path is now `.github/workflows/route-ops-release.yml`, which consolidates image publish, no-mutation SSM dry validation, immutable release manifest creation, and later manifest-only promotion. The older `.github/workflows/route-ops-ssm-deploy.yml` remains a fallback/manual compatibility path for reviewed incidents while the consolidated lane is proven.
+
+This is the approved OIDC + SSM deployment shape after the publish-only GHCR model. It keeps normal deployment out of operator laptops:
 
 ```text
 GitHub Actions workflow_dispatch
@@ -11,11 +13,20 @@ GitHub Actions workflow_dispatch
 → existing deploy script smoke-before-promote
 ```
 
-Production execution is **not automatic**. The workflow exists so a maintainer can intentionally run a deploy after reviewing the image publish. The implementation must not store PEM keys, long-lived AWS keys, admin smoke secrets, runtime `.env`, database credentials, cookies, or production secrets in GitHub.
+Production execution is **not automatic**. The release workflow exists so a maintainer can intentionally run `mode=prepare`, review the no-mutation dry-run summary and release manifest digest, then run `mode=promote` for that exact manifest. The fallback deploy workflow exists so a maintainer can intentionally run a deploy after reviewing the image publish. The implementation must not store PEM keys, long-lived AWS keys, admin smoke secrets, runtime `.env`, database credentials, cookies, or production secrets in GitHub.
 
 ## Workflow controls
 
-`.github/workflows/route-ops-ssm-deploy.yml` is intentionally narrow:
+`.github/workflows/route-ops-release.yml` is the primary workflow and is intentionally split by job permission boundary:
+
+- `workflow_dispatch` only; no `push`, PR, schedule, or workflow_run production deploy.
+- `refs/heads/main` only.
+- `mode=prepare` requires `deployed_base_ref`, validates the actor allowlist before AWS credentials are requested, builds/pushes images in a `packages: write` job, runs `dryRun=true` SSM validation in a separate `id-token: write` job, and emits the immutable `route-ops-release-manifest` artifact.
+- `mode=promote` accepts only `release_run_id` and `release_manifest_sha256`, verifies the prepare artifact, validates the manifest digest/provenance, checks out the exact commit recorded by the manifest, regenerates the bundle with `dryRun=false`, and deploys through the same custom SSM document.
+- The manifest may record `driverAppDownloadUrlPresent: true/false`, but must not contain the raw driver APK URL.
+- No job should have both `packages: write` and `id-token: write`.
+
+Fallback `.github/workflows/route-ops-ssm-deploy.yml` is intentionally narrow:
 
 - `workflow_dispatch` only; no `push`, PR, schedule, or workflow_run production deploy.
 - `refs/heads/main` only.
@@ -28,6 +39,7 @@ Production execution is **not automatic**. The workflow exists so a maintainer c
   - `delivery_api_image`: `ghcr.io/evnsolution/clever-route-server-delivery-api:<sha>`.
   - `delivery_api_migrate_image`: `ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:<sha>`.
   - `route_engine_image`: `ghcr.io/evnsolution/route-engine-worker:<sha>`.
+  - `route_engine_image_digest`: `ghcr.io/evnsolution/route-engine-worker@sha256:<digest>` for the primary release workflow.
   - `route_engine_publish_evidence_url` / manifest `routeEnginePublishEvidenceUrl`: successful `route_engine` worker publish run URL.
   - `publish_evidence_url`: successful Route Ops publish run URL.
 - `route_engine` is built by the separate `EVNSolution/route_engine` workflow, then passed explicitly as
@@ -36,13 +48,13 @@ Production execution is **not automatic**. The workflow exists so a maintainer c
   `ROUTE_ENGINE_GRAPH_HOST_DIR=/srv/clever-route-server/data/route-engine/graphs/current/parquet`
   and validates the mounted graph manifest against the worker image label before activation.
 - The image tag must be reachable from `origin/main`, and the workflow checks out that exact commit before creating the deploy-control bundle so `commitSha`, image tag, and bundled deploy-control files have one provenance.
-- The Route Ops publish run URL is machine-verified through the GitHub Actions API: repository, workflow, event, conclusion, branch, and SHA must match. The separate `route_engine_publish_evidence_url` is format-checked and carried in the deploy-control manifest for audit because this repository's default `GITHUB_TOKEN` cannot read private Actions metadata from `EVNSolution/route_engine` without introducing a cross-repo secret.
+- The Route Ops publish run URL is machine-verified through the GitHub Actions API: repository, workflow, event, conclusion, branch, and SHA must match. The separate `route_engine_publish_evidence_url` is format-checked and carried for audit because this repository's default `GITHUB_TOKEN` cannot read private Actions metadata from `EVNSolution/route_engine` without introducing a cross-repo secret. The consolidated release workflow machine-verifies the deployable `route_engine` image by pulling the pinned GHCR tag, requiring its `org.opencontainers.image.revision` label to match the 40-hex image tag, and requiring the pulled image `RepoDigests` to contain the operator-provided immutable `route_engine_image_digest` before manifest creation and again before promote deploy.
 - The deploy target tag must resolve to exactly one managed node total, that node must be `Online`, and SSM Agent must be version `3.3.2746.0` or later for `ENV_VAR` interpolation support.
 - The workflow sends the command to the resolved instance ID, not back to a mutable tag selector.
 - SSM uses `max-concurrency=1` and `max-errors=0`, and the workflow asserts `Command.TargetCount == 1`.
-- Before the custom deploy document runs the image activation wrapper, the workflow prepares a reviewed deploy-control bundle, uploads it to S3 under the Route Ops artifact prefix, and passes only `DeployControlBundleS3Uri` plus `DeployControlBundleSha256` to SSM. The host downloads the bundle, verifies SHA-256, validates the exact manifest allowlist, and only then syncs deploy-control files or exits in dry-run mode. This keeps the host wrapper, compose file, smoke script, and Caddy config aligned with the image being activated without turning SSM parameters into file transport or granting `AWS-RunShellScript` as a general source-sync path.
+- Before the custom deploy document runs the image activation wrapper, the workflow prepares a reviewed deploy-control bundle, uploads it to S3 under the Route Ops artifact prefix, and passes exactly `DeployControlBundleS3Uri`, `DeployControlBundleSha256`, plus the sole masked secret exception `DriverAppDownloadUrl` to SSM. The host downloads the bundle, verifies SHA-256, validates the exact manifest allowlist, and only then syncs deploy-control files or exits in dry-run mode. This keeps the host wrapper, compose file, smoke script, and Caddy config aligned with the image being activated without turning SSM parameters into file transport or granting `AWS-RunShellScript` as a general source-sync path.
 - If `ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT=true` is deliberately enabled, IAM allows it, and `dry_run=false`, the workflow reconciles the Route Ops Caddy ingress on the same resolved instance ID with a fixed no-secret command that force-recreates only the `caddy` service from `/srv/clever-route-server/infra/caddy/Caddyfile`. Dry validation never runs this production mutation.
-- Logs are redacted status summaries only; command parameters contain no production secrets.
+- Logs are redacted status summaries only; command parameters contain no production secrets except the masked `DriverAppDownloadUrl` handoff.
 
 ## Deploy-control S3 artifact handoff
 
@@ -66,6 +78,7 @@ infra/compose/docker-compose.prod.yml
 scripts/deploy-route-ops-image.sh
 scripts/rollback-route-ops-image.sh
 scripts/ssm-route-ops-deploy.sh
+scripts/provision-route-engine-graph-from-s3.sh
 scripts/smoke-route-ops-production.mjs
 scripts/route-ops-deploy-control-bundle.sh
 ```
@@ -76,7 +89,7 @@ Guardrails:
 
 - secret-like paths, source symlinks, source hardlinks, and non-regular source files are rejected before bundling; secret-like paths are also rejected again on the host (`*.env`, `*.env.*`, `*secret*`, `*token*`, `*cookie*`, `*storageState*`);
 - GitHub uploads the deterministic bundle with `aws s3 cp ... --sse AES256`;
-- SSM parameters are reduced to `DeployControlBundleS3Uri` and `DeployControlBundleSha256` only;
+- SSM parameters are reduced to `DeployControlBundleS3Uri`, `DeployControlBundleSha256`, and the masked `DriverAppDownloadUrl` exception only;
 - the host downloads with `aws s3 cp`, computes SHA-256 locally, and fails closed on mismatch;
 - S3 ETag is never used for integrity;
 - the host verifies the exact tar manifest and rejects non-regular tar members such as symlinks or hardlinks before extraction;
@@ -124,7 +137,19 @@ aws s3api put-bucket-lifecycle-configuration \
 
 ### Dry validation command
 
-The first run after changing this flow must be a no-mutation dry validation:
+The first run after changing this flow must be a no-mutation dry validation. Prefer the consolidated release workflow prepare mode:
+
+```bash
+gh workflow run route-ops-release.yml \
+  --ref main \
+  -f mode=prepare \
+  -f deployed_base_ref=<current-production-git-sha> \
+  -f route_engine_image=ghcr.io/evnsolution/route-engine-worker:<published-route-engine-sha> \
+  -f route_engine_image_digest=ghcr.io/evnsolution/route-engine-worker@sha256:<published-route-engine-digest> \
+  -f route_engine_publish_evidence_url=https://github.com/EVNSolution/route_engine/actions/runs/<route-engine-publish-run-id>
+```
+
+The fallback split workflow still supports direct dry validation when the consolidated lane is intentionally bypassed:
 
 ```bash
 gh workflow run route-ops-ssm-deploy.yml \
@@ -139,17 +164,18 @@ gh workflow run route-ops-ssm-deploy.yml \
   -f dry_run=true
 ```
 
-Dry validation must show: selected bucket/key, bundle byte size, expected and actual SHA-256, reduced SSM parameter sizes, deploy-control source checkout pinned to the image tag, source regular-file validation before staging, successful S3 upload, successful host S3 download, inline manifest validation result, and `no production files synced and no deploy script executed`.
+Dry validation must show: selected bucket/key, bundle byte size, expected and actual SHA-256, reduced SSM parameter sizes, deploy-control source checkout pinned to the image tag, source regular-file validation before staging, successful S3 upload, successful host S3 download, inline manifest validation result, and `no production files synced and no deploy script executed`. In the consolidated lane, the prepare run must also publish a `route-ops-release-manifest` artifact whose `manifestSha256` is the only promote handoff.
 
 ### Production retry gate
 
-A production retry (`dry_run=false`) remains blocked until all of these are true:
+A production retry (`dry_run=false`) or release `mode=promote` remains blocked until all of these are true:
 
 1. this PR is merged and the reviewed custom SSM document version is updated/pinned in `SSM_ROUTE_OPS_DOCUMENT_VERSION`;
 2. GitHub deploy role has only the prefix-scoped S3 write permissions documented below;
 3. the EC2/SSM execution role has only the prefix-scoped S3 read permissions documented below;
-4. dry validation succeeds with the same bucket/prefix/document path and without Caddy reconcile or any other production mutation;
-5. an operator explicitly approves the production mutation.
+4. release `mode=prepare` or fallback dry validation succeeds with the same bucket/prefix/document path and without Caddy reconcile or any other production mutation;
+5. an operator explicitly approves the production mutation;
+6. for the consolidated release workflow, the operator supplies only `release_run_id` and `release_manifest_sha256` to promote the previously reviewed prepare manifest.
 
 ## GitHub variables
 
@@ -177,8 +203,8 @@ repo:EVNSolution/clever-route-server:ref:refs/heads/main
 
 Do not claim workflow-path pinning unless a customized `sub` claim is configured and tested. Compensating controls are required:
 
-- only `.github/workflows/route-ops-ssm-deploy.yml` may reference `AWS_ROUTE_OPS_DEPLOY_ROLE_ARN`;
-- CI/publish workflows must not request `id-token: write` for this deploy role;
+- only `.github/workflows/route-ops-release.yml` and fallback `.github/workflows/route-ops-ssm-deploy.yml` may reference `AWS_ROUTE_OPS_DEPLOY_ROLE_ARN`;
+- CI/publish workflows must not request `id-token: write` for this deploy role, and release workflow image-publish jobs must stay separate from OIDC deploy jobs;
 - branch protection/CODEOWNERS must cover workflow, deploy scripts, SSM docs, and deployment docs;
 - deploy actor allowlist must fail closed before `aws-actions/configure-aws-credentials`.
 
@@ -578,6 +604,17 @@ ROUTE_OPS_PRUNE_LEGACY_LOCAL_IMAGE=1
 ```
 
 ## Operator flow
+
+Primary release lane:
+
+1. Run `Route Ops release` on `main` with `mode=prepare`.
+2. Confirm the redacted prepare summary, no-mutation SSM dry validation, and `route-ops-release-manifest` artifact.
+   The manifest artifact is retained for 14 days; after expiry, run a fresh prepare instead of promoting stale coordinates.
+3. Run `Route Ops release` on `main` with `mode=promote`, passing only `release_run_id` and `release_manifest_sha256`.
+4. The promote workflow verifies the prepare run/artifact/digest, checks out the exact manifest commit, regenerates the bundle with `dryRun=false`, and invokes the same constrained SSM document.
+5. If smoke fails, the deploy script restores current image metadata and the workflow fails.
+
+Fallback split lane:
 
 1. Run `Route Ops image publish` on `main`.
 2. Confirm the redacted publish summary:

@@ -1,10 +1,47 @@
-# Route Ops GitHub image publish and manual EC2 deploy
+# Route Ops GitHub release prepare/promote and fallback publish/deploy
 
-Phase 1 is intentionally **publish-only** from GitHub Actions because this repo is private under the EVNSolution Free org. Do not use GitHub Environments, environment secrets, required reviewers, or GitHub-native secret scanning as required controls for this phase.
+The primary Route Ops deployment lane is now `.github/workflows/route-ops-release.yml`: a single manual prepare/promote workflow that builds the Route Ops images, performs the no-mutation SSM dry validation, emits an immutable release manifest, and later promotes only that verified manifest. The older split `route-ops-publish.yml` plus `route-ops-ssm-deploy.yml` path remains documented as a fallback while the new release lane is proven; do not delete it without a separate rollback plan.
 
-## What GitHub Actions does
+This repo is private under the EVNSolution Free org. Do not use GitHub Environments, environment secrets, required reviewers, or GitHub-native secret scanning as required controls for this phase.
 
-`.github/workflows/route-ops-publish.yml` runs only by `workflow_dispatch` on `main`. The operator must provide `deployed_base_ref`, the immutable git SHA/ref currently represented by production's `.deploy/current-image.env`; the deploy-scope guard compares `deployed_base_ref...HEAD` so unrelated Woo/Prisma/infra changes already on `main` cannot be silently included in a Route Ops image publish.
+## Primary release workflow
+
+`route-ops-release.yml` runs only by `workflow_dispatch` on `main` and has two explicit modes:
+
+- `mode=prepare` runs actor allowlist, ignore hygiene, pinned gitleaks scans, Route Ops deploy-scope guard, image build/push, deploy-control bundle creation, S3 upload, and `dryRun=true` SSM validation. It emits a `route-ops-release-manifest` artifact with the exact git SHA, image coordinates, publish evidence URL, route_engine evidence URL plus image revision label and immutable image digest, dry-run bundle URI, and `manifestSha256`. The manifest records only whether the driver APK URL handoff is present; it must not expose the raw URL.
+- `mode=promote` accepts only `release_run_id` and `release_manifest_sha256`, downloads the prepare artifact, validates the digest/provenance, checks out the exact manifest commit, regenerates the deploy-control bundle with `dryRun=false`, and runs the same constrained SSM deploy path. Promotion must not rebuild images or accept mutable image coordinates.
+
+Job permissions stay separated: image publishing jobs may use `packages: write`; SSM jobs may use `id-token: write`; no job should need both. The workflow also preserves the Route Ops safety gates in CI and `scripts/validate-route-ops-ssm-deploy.mjs`.
+
+### Primary operator flow
+
+Prepare first; this is the required no-mutation validation after changing the deploy lane:
+
+```bash
+gh workflow run route-ops-release.yml \
+  --ref main \
+  -f mode=prepare \
+  -f deployed_base_ref=<current-production-git-sha> \
+  -f route_engine_image=ghcr.io/evnsolution/route-engine-worker:<published-route-engine-sha> \
+  -f route_engine_image_digest=ghcr.io/evnsolution/route-engine-worker@sha256:<published-route-engine-digest> \
+  -f route_engine_publish_evidence_url=https://github.com/EVNSolution/route_engine/actions/runs/<route-engine-publish-run-id>
+```
+
+After the prepare run succeeds, inspect the redacted summary and the `route-ops-release-manifest` artifact. Promote only the same digest:
+
+```bash
+gh workflow run route-ops-release.yml \
+  --ref main \
+  -f mode=promote \
+  -f release_run_id=<successful-prepare-run-id> \
+  -f release_manifest_sha256=<manifest-sha256-from-prepare>
+```
+
+If prepare or promote fails, use the run summary, the manifest, and host-local trace artifacts before retrying. Manifest artifacts are retained for 14 days; if that window expires, rerun `mode=prepare` and promote the new manifest digest. Do not switch to the fallback split lane unless an operator intentionally accepts the older two-workflow handoff.
+
+## Fallback split publish workflow
+
+Fallback `.github/workflows/route-ops-publish.yml` runs only by `workflow_dispatch` on `main`. The operator must provide `deployed_base_ref`, the immutable git SHA/ref currently represented by production's `.deploy/current-image.env`; the deploy-scope guard compares `deployed_base_ref...HEAD` so unrelated Woo/Prisma/infra changes already on `main` cannot be silently included in a Route Ops image publish.
 
 It:
 - runs ignore hygiene, a pinned gitleaks full-history scan plus worktree scan, and Route Ops deploy-scope guard;
@@ -118,12 +155,14 @@ Rollback uses `.deploy/previous-image.env`, verifies the schema fingerprint matc
   not a secret. `ROUTE_ENGINE_GRAPH_HOST_DIR` must point to host-local parquet
   artifacts provisioned from the private S3 graph artifact pointer; do not put
   those large artifacts in the clever-route-server image layer.
-- Keep Actions manual, timeout-bounded, and artifact-light; redacted summaries only with one-day retention.
+- Keep Actions manual, timeout-bounded, and artifact-light. Legacy fallback publish summaries stay short-lived; the consolidated release manifest and prepare/promote summaries are retained for 14 days so promote can verify the reviewed manifest digest, then operators must rerun prepare after expiry.
 - If Actions quota is exhausted, use a local maintainer build/push or the existing emergency deploy path after separate approval.
 
 ## SSM deploy follow-up
 
-The next approved deployment model is documented in `docs/deployment/route-ops-ssm-deploy.md`: GitHub Actions `workflow_dispatch` uses OIDC to assume an AWS deploy role, uploads a non-secret deploy-control bundle to the Route Ops S3 artifact prefix, invokes a custom constrained SSM document with the S3 URI, SHA-256 digest, and masked driver APK URL handoff, and runs the host-local deploy wrapper after host-side verification. First run `dry_run=true`; production execution with `dry_run=false` remains separately gated. Do not store production secrets in S3 deploy-control artifacts; the only GitHub/SSM command-parameter secret exception is the masked `DRIVER_APP_DOWNLOAD_URL` handoff.
+The current primary deployment model is documented in `docs/deployment/route-ops-ssm-deploy.md` and implemented by `route-ops-release.yml`: GitHub Actions `workflow_dispatch` uses OIDC to assume an AWS deploy role, uploads a non-secret deploy-control bundle to the Route Ops S3 artifact prefix, invokes a custom constrained SSM document with the S3 URI, SHA-256 digest, and masked driver APK URL handoff, and runs the host-local deploy wrapper after host-side verification. First run the release workflow in `mode=prepare`, which keeps SSM in `dryRun=true`; production execution happens only through `mode=promote` after the release manifest digest is reviewed. Do not store production secrets in S3 deploy-control artifacts; the only GitHub/SSM command-parameter secret exception is the masked `DRIVER_APP_DOWNLOAD_URL` handoff.
+
+The older manual `route-ops-ssm-deploy.yml` workflow remains a fallback for a reviewed incident or rollback of the consolidated lane. When using that fallback, run it with `dry_run=true` first and keep production execution with `dry_run=false` separately gated.
 
 ## Frontend static artifact boundary
 
