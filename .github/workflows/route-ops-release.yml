@@ -754,6 +754,7 @@ jobs:
           node-version: 22
 
       - name: Download prepare manifest artifact
+        id: prepare_manifest
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

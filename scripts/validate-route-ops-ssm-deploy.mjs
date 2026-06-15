@@ -361,6 +361,7 @@ assert(!release.includes('-f image_tag=') && !release.includes('-f delivery_api_
 assert(release.includes('scripts/route-ops-release-manifest.mjs validate "$manifest_path" --expect-sha "$EXPECTED_MANIFEST_SHA"'), 'release promote must validate the manifest digest before exporting fields');
 assert(release.includes('find "$manifest_dir" -name release-manifest.json -type f'), 'release promote must locate downloaded manifest artifacts even when gh creates an artifact subdirectory');
 assert(release.includes('steps.prepare_manifest.outputs.manifest_path'), 'release promote must pass the discovered manifest path to validation');
+assert(release.includes('id: prepare_manifest'), 'release promote download step must define the prepare_manifest id used by validation');
 assert(!release.includes('      - name: Checkout exact release commit\n      - name: Checkout exact release commit'), 'release promote must not contain duplicate no-op checkout step');
 assert(release.includes('git checkout --detach "$COMMIT_SHA"'), 'release promote must check out the exact manifest commit');
 assert(release.includes('[ "${ROUTE_ENGINE_IMAGE%:*}" != "$ROUTE_ENGINE_IMAGE_REPO" ]'), 'release prepare must exact-match route_engine image repository before any pull');
