@@ -336,7 +336,7 @@ assert(deploy.includes('dry_run'), 'deploy workflow must expose dry-run validati
 assert(deploy.includes("'dryRun': dry_run == 'true'"), 'deploy workflow must write dry-run state into the deploy-control manifest');
 assert(deploy.includes("'routeEngineImage': route_engine_image"), 'deploy workflow must write route_engine image into the deploy-control manifest');
 assert(deploy.includes("'routeEnginePublishEvidenceUrl': route_engine_publish_evidence_url"), 'deploy workflow must write route_engine publish evidence into the deploy-control manifest');
-assert(deploy.includes('DRIVER_APP_DOWNLOAD_URL') && deploy.includes('aws ssm put-parameter'), 'deploy workflow must store the driver app download URL in SecureString parameter form');
+assert(deploy.includes('DRIVER_APP_DOWNLOAD_URL') && deploy.includes('DriverAppDownloadUrl'), 'deploy workflow must pass the driver app download URL only through the custom SSM command parameter file');
 assert(deploy.includes('ssmParameterChars DeployControlBundleS3Uri'), 'deploy workflow must log SSM parameter sizes for the reduced parameters');
 assert(deploy.includes('/tmp/route-ops-deploy-parameters.json'), 'deploy workflow must prepare one parameter file for the custom SSM document');
 assert(deploy.includes('--parameters file:///tmp/route-ops-deploy-parameters.json'), 'custom deploy SendCommand must use the prepared parameter file');
@@ -525,8 +525,8 @@ if (ssmExpectedTarMatch) {
   assert(false, 'SSM document must declare expected tar entries');
 }
 assert(
-  JSON.stringify(Object.keys(parsedSsmDocument.parameters).sort()) === JSON.stringify(['DeployControlBundleS3Uri', 'DeployControlBundleSha256'].sort()),
-  'SSM deploy document parameters must be reduced to DeployControlBundleS3Uri and DeployControlBundleSha256',
+  JSON.stringify(Object.keys(parsedSsmDocument.parameters).sort()) === JSON.stringify(['DeployControlBundleS3Uri', 'DeployControlBundleSha256', 'DriverAppDownloadUrl'].sort()),
+  'SSM deploy document parameters must be reduced to DeployControlBundleS3Uri, DeployControlBundleSha256, and DriverAppDownloadUrl',
 );
 assert(ssmRunCommand.includes('aws s3 cp "$SSM_DeployControlBundleS3Uri" "$bundle_path" --no-progress'), 'SSM deploy document must download the deploy-control bundle from S3');
 assert(ssmDocument.includes('Route Ops deploy-control bundle SHA256 mismatch'), 'SSM deploy document must verify deploy-control bundle SHA256 on the host');
@@ -543,7 +543,7 @@ assert(
 assert(deployControlBundle.includes('refusing secret-like deploy-control path'), 'deploy-control bundle helper must reject secret-like deploy-control paths');
 assert(deployControlBundle.includes('deploy-control source path must not be hardlinked'), 'deploy-control bundle helper must reject hardlinked source files before staging');
 assert(deployControlBundle.includes('deploy-control source path is not a regular file'), 'deploy-control bundle helper must reject source symlinks/non-regular files before staging');
-assert(imageDeploy.includes('ensure_driver_app_download_host_env'), 'deploy script must inject the driver app download URL into the host env before delivery-api restart');
+assert(ssmDocument.includes('ROUTE_OPS_DRIVER_APP_DOWNLOAD_URL') && imageDeploy.includes('ensure_driver_app_download_host_env'), 'deploy script must inject the driver app download URL into the host env before delivery-api restart');
 assert(deployControlBundle.includes('deployControlFiles must exactly match reviewed allowlist'), 'deploy-control bundle helper must validate the manifest allowlist fail-closed');
 assert(deployControlBundle.includes('SHA256 mismatch'), 'deploy-control bundle helper must fail closed on SHA256 mismatch');
 assert(ssmRunCommand.some((command) => command.includes('done < "$tmp_dir/allowed-files"')), 'SSM deploy document must sync only inline allowlisted files after SHA and manifest validation');
