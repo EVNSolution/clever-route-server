@@ -282,6 +282,10 @@ describe('route ops layout components', () => {
     expect(css).toContain('overflow: hidden;');
     expect(css).toContain('.route-builder-tab-panel');
     expect(css).toContain('min-height: 0;');
+    expect(css).toContain('.route-builder-tab-body--driver');
+    expect(css).toContain('flex-direction: column;');
+    expect(css).toContain('.route-builder-tab-body--driver .route-end-toggle');
+    expect(css).toContain('margin-top: auto;');
     expect(css).toContain('.route-builder-card-footer');
     expect(css).toContain('border-top: 1px solid #e6eaf1;');
     expect(css).toContain('.route-builder-tab-body--stop-order');
