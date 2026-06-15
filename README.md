@@ -53,10 +53,14 @@ npm run build
 ## Compose preview
 
 The delivery-only compose stack is under `infra/compose/docker-compose.prod.yml`.
-Use the example env file for config validation only; do not commit real env files.
+Use the example runtime env file and example deploy image metadata for config
+validation only; do not commit real env files.
 
 ```bash
 cp infra/env/delivery-api.env.example infra/env/delivery-api.env
+set -a
+. infra/env/deploy-image.env.example
+set +a
 docker compose -f infra/compose/docker-compose.prod.yml config --quiet
 rm -f infra/env/delivery-api.env
 ```
