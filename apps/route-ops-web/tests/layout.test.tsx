@@ -199,6 +199,7 @@ describe('route ops layout components', () => {
     expect(html).toContain('aria-label="New route add plan"');
     expect(html).toContain('Add plan');
     expect(html).toContain('Plan is empty.');
+    expect(html).not.toContain('Use the map or order list');
     expect(html).not.toContain('Blocker editor');
     expect(html).not.toContain('Delivery metadata blockers');
   });
@@ -218,7 +219,9 @@ describe('route ops layout components', () => {
     expect(html).not.toContain('PLANNED');
     expect(html).not.toContain('Planning orders');
     expect(html).not.toContain('History / all orders');
-    expect(html).toContain('Order filters');
+    expect(html).not.toContain('Orders map');
+    expect(html).not.toContain('Imported WooCommerce stops by current filters');
+    expect(html).not.toContain('Order filters');
     expect(html).toContain('Delivery date');
     expect(html).toContain('Area / region');
     expect(html).toContain('Delivery status');
@@ -235,7 +238,7 @@ describe('route ops layout components', () => {
     const html = renderToStaticMarkup(<OrdersPage bootstrap={bootstrap('ko-KR')} navigate={() => undefined} setError={() => undefined} />);
 
     expect(html).toContain('aria-label="주문"');
-    expect(html).toContain('주문 지도');
+    expect(html).not.toContain('주문 지도');
     expect(html).toContain('aria-label="주문 모드"');
     expect(html).toContain('>계획</button>');
     expect(html).toContain('>기록</button>');
@@ -244,7 +247,7 @@ describe('route ops layout components', () => {
     expect(html).toContain('>미배정</button>');
     expect(html).toContain('>배정됨</button>');
     expect(html).toContain('>리뷰 필요</button>');
-    expect(html).toContain('주문 필터');
+    expect(html).not.toContain('주문 필터');
     expect(html).toContain('배송 날짜');
     expect(html).toContain('지역 / 구역');
     expect(html).toContain('배송 상태');
@@ -258,8 +261,10 @@ describe('route ops layout components', () => {
   test('Orders CSS keeps the filter card responsive and prevents search overflow', () => {
     const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
     expect(css).toContain('grid-template-columns: repeat(auto-fit, minmax(min(100%, 9.5rem), 1fr));');
-    expect(css).toContain('.filter-panel-header');
+    expect(css).toContain('.filter-clear-button');
+    expect(css).toContain('grid-column: 1;');
     expect(css).not.toContain('.filter-actions');
+    expect(css).not.toContain('.filter-panel-header');
     expect(css).toContain('max-width: 100%;');
     expect(css).toContain('.orders-table-scroll');
   });

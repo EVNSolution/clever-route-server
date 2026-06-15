@@ -187,12 +187,16 @@ export function OrdersPage({
   navigate(path: string): void;
   setError(error: string | null): void;
 }): ReactElement {
+  const initialRouteDate = useMemo(() => today(), []);
   const [orders, setOrders] = useState<CanonicalOrderDto[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [filters, setFilters] = useState(createDefaultOrderFilters);
+  const [filters, setFilters] = useState<OrderFilterState>(() => ({
+    ...createDefaultOrderFilters(),
+    deliveryDate: initialRouteDate,
+  }));
   const initialCopy = getOrdersCopy(bootstrap.locale);
-  const [routeDate, setRouteDate] = useState(today());
-  const [routeName, setRouteName] = useState(() => initialCopy.defaultRouteName(today()));
+  const [routeDate, setRouteDate] = useState(initialRouteDate);
+  const [routeName, setRouteName] = useState(() => initialCopy.defaultRouteName(initialRouteDate));
   const [autoAppliedDeliveryDateFilter, setAutoAppliedDeliveryDateFilter] =
     useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -520,12 +524,40 @@ export function OrdersPage({
     );
   };
 
+  const syncRouteDate = (deliveryDate: string): void => {
+    setRouteDate(deliveryDate);
+    setAutoAppliedDeliveryDateFilter(null);
+    if (deliveryDate.trim().length === 0) return;
+    setRouteName((current) =>
+      current.trim() === "" || /^(Route|경로) \d{4}-\d{2}-\d{2}$/u.test(current)
+        ? t.defaultRouteName(deliveryDate)
+        : current,
+    );
+  };
+
+  const updateRouteDateFilter = (deliveryDate: string): void => {
+    syncRouteDate(deliveryDate);
+    setFilters((current) =>
+      current.deliveryDate === deliveryDate
+        ? current
+        : { ...current, deliveryDate },
+    );
+  };
+
+  const updateFilters = (nextFilters: OrderFilterState): void => {
+    if (nextFilters.deliveryDate !== filters.deliveryDate) {
+      syncRouteDate(nextFilters.deliveryDate);
+    }
+    setFilters(nextFilters);
+  };
+
   const clearPlan = (): void => {
     setSelected(new Set());
     setError(null);
     const autoDate = autoAppliedDeliveryDateFilter;
     setAutoAppliedDeliveryDateFilter(null);
     if (autoDate !== null) {
+      setRouteDate("");
       setFilters((current) =>
         current.deliveryDate === autoDate
           ? { ...current, deliveryDate: "" }
@@ -617,14 +649,14 @@ export function OrdersPage({
           orders={mapOrders}
           subtitle={
             selectedMapRouteDetail === null
-              ? t.mapSubtitle
+              ? undefined
               : geometryLabel(
                   selectedMapRouteDetail,
                   bootstrap.routerConfig.status,
                   locale,
                 )
           }
-          title={selectedMapRouteDetail?.routePlan.name ?? t.mapTitle}
+          title={selectedMapRouteDetail?.routePlan.name}
         />
       }
       secondary={
@@ -637,7 +669,7 @@ export function OrdersPage({
             routeDate={routeDate}
             routeName={routeName}
             selectedOrders={selectedRoutePlanOrders}
-            setRouteDate={setRouteDate}
+            setRouteDate={updateRouteDateFilter}
             setRouteName={setRouteName}
             locale={locale}
             totalSelected={selected.size}
@@ -724,7 +756,7 @@ export function OrdersPage({
           <FilterBar
             filters={filters}
             locale={locale}
-            onChange={setFilters}
+            onChange={updateFilters}
             settings={settings}
           />
           <OrderTable
@@ -783,7 +815,6 @@ export function RoutePlanPanel(input: {
         </div>
         <Badge>{input.selectedOrders.length} {t.orders}</Badge>
       </div>
-      <p className="muted">{t.planInstructions}</p>
       <label>
         {t.routeDate}
         <input
@@ -970,15 +1001,6 @@ function FilterBar({
     });
   return (
     <article className="panel filter-panel">
-      <div className="filter-panel-header">
-        <div>
-          <span className="eyebrow">{t.filtersEyebrow}</span>
-          <h3>{t.filtersTitle}</h3>
-        </div>
-        <button onClick={resetFilters} type="button">
-          {t.clearFilters}
-        </button>
-      </div>
       <label className="filter-field filter-field--date">
         {t.deliveryDate}
         <input
@@ -1055,6 +1077,13 @@ function FilterBar({
           }
         />
       </label>
+      <button
+        className="filter-field filter-clear-button"
+        onClick={resetFilters}
+        type="button"
+      >
+        {t.clearFilters}
+      </button>
     </article>
   );
 }

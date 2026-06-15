@@ -229,8 +229,6 @@ export const routesCopy = {
     deleteConfirm(name: string): string { return `Delete ${name}? Orders will return to the unplanned list.`; },
     routeBuilder: 'Route Builder',
     loadingRoute: 'Loading route…',
-    allRoutes: 'All routes',
-    assignedDriver: 'Assigned driver',
     unassigned: 'Unassigned',
     saveDriver: 'save driver',
     savingDriver: 'saving driver…',
@@ -240,8 +238,6 @@ export const routesCopy = {
     driverAppVisible: 'Driver app visible',
     routeEnd: 'Route end',
     returnToStore: 'Return to store',
-    returnToStoreHelp: 'Checked: routing returns to the store after the final stop.',
-    endAtLastStopHelp: 'Unchecked: routing ends at the final order stop.',
     saveRouteOptions: 'save route options',
     savingRouteOptions: 'saving route options…',
     routeState: 'Route state',
@@ -281,12 +277,9 @@ export const routesCopy = {
       IN_PROGRESS: 'In progress',
       OPTIMIZED: 'Optimized'
     },
-    publishNotice: {
-      draftAssignDriver: 'Draft route — assign a driver, then Save to make it visible in the driver app.',
-      draftAddStops: 'Draft route — add stops before saving to drivers.',
-      draftNotVisible: 'Draft route — not visible yet; Save makes it visible in the driver app.',
-      publishedLinked: 'Published route — visible to the linked driver after the app refreshes.',
-      publishedPending: 'Published route — the assigned driver can see it after app authentication.'
+    publishState: {
+      draft: 'Draft',
+      published: 'Published'
     },
     routeOptimization: {
       applied: 'Route Engine result applied. You can still edit stops manually, or rerun optimization explicitly.',
@@ -345,8 +338,6 @@ export const routesCopy = {
     deleteConfirm(name: string): string { return `${name} 경로를 삭제할까요? 주문은 미배정 목록으로 돌아갑니다.`; },
     routeBuilder: '경로 편집',
     loadingRoute: '경로를 불러오는 중…',
-    allRoutes: '전체 경로',
-    assignedDriver: '배정 배송원',
     unassigned: '미배정',
     saveDriver: '배송원 저장',
     savingDriver: '배송원 저장 중…',
@@ -356,8 +347,6 @@ export const routesCopy = {
     driverAppVisible: '배송원 앱에 표시됨',
     routeEnd: '경로 종료 방식',
     returnToStore: '매장으로 돌아오기',
-    returnToStoreHelp: '체크: 마지막 하차지 이후 매장으로 돌아오는 경로를 표시합니다.',
-    endAtLastStopHelp: '미체크: 마지막 주문지에서 경로 안내를 끝냅니다.',
     saveRouteOptions: '경로 옵션 저장',
     savingRouteOptions: '경로 옵션 저장 중…',
     routeState: '경로 상태',
@@ -397,12 +386,9 @@ export const routesCopy = {
       IN_PROGRESS: '진행 중',
       OPTIMIZED: '최적화됨'
     },
-    publishNotice: {
-      draftAssignDriver: '초안 경로 — 배송원을 배정한 뒤 저장하면 배송원 앱에 표시됩니다.',
-      draftAddStops: '초안 경로 — 배송원에게 저장하기 전에 하차지를 추가하세요.',
-      draftNotVisible: '초안 경로 — 아직 표시되지 않습니다. 저장하면 배송원 앱에 표시됩니다.',
-      publishedLinked: '게시된 경로 — 앱 새로고침 후 연결된 배송원에게 표시됩니다.',
-      publishedPending: '게시된 경로 — 배정된 배송원이 앱 인증 후 볼 수 있습니다.'
+    publishState: {
+      draft: '초안',
+      published: '게시됨'
     },
     routeOptimization: {
       applied: 'Route Engine 결과가 적용되었습니다. 이후 하차 순서는 직접 수정할 수 있고, 명시적으로 다시 최적화할 수 있습니다.',

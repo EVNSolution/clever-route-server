@@ -83,41 +83,19 @@ export function isRouteVisibleToLinkedDriver(
   );
 }
 
-export function getRoutePublishNotice(
+export function getRoutePublishBadge(
   routePlan: Pick<
     RoutePlanSummaryDto,
-    "driverId" | "status" | "stopsCount"
+    "status"
   > | null,
-  drivers: DriverDto[],
   locale: string | null | undefined = "en-CA",
-): { tone: "green" | "orange" | "neutral"; text: string } | null {
+): { tone: "green" | "orange"; text: string } | null {
   const t = getRoutesCopy(locale);
   if (routePlan === null) return null;
-  const driver =
-    routePlan.driverId === null
-      ? null
-      : (drivers.find((item) => item.id === routePlan.driverId) ?? null);
-  const isPublished = ["ASSIGNED", "IN_PROGRESS", "OPTIMIZED"].includes(
-    routePlan.status,
-  );
   if (routePlan.status === "DRAFT") {
-    if (routePlan.driverId === null)
-      return { tone: "orange", text: t.publishNotice.draftAssignDriver };
-    if (routePlan.stopsCount === 0)
-      return { tone: "orange", text: t.publishNotice.draftAddStops };
-    return { tone: "orange", text: t.publishNotice.draftNotVisible };
+    return { tone: "orange", text: t.publishState.draft };
   }
-  if (
-    isPublished &&
-    driver !== null &&
-    (driver.appLinked || driver.authStatus === "APP_LINKED")
-  ) {
-    return { tone: "green", text: t.publishNotice.publishedLinked };
-  }
-  if (isPublished && routePlan.driverId !== null) {
-    return { tone: "neutral", text: t.publishNotice.publishedPending };
-  }
-  return null;
+  return { tone: "green", text: t.publishState.published };
 }
 
 export function formatRoutePlanStatus(
@@ -576,9 +554,8 @@ export function RouteBuilder(input: {
           routeEndMode: draftRouteEndMode,
           stopsCount: draftStops.length,
         };
-  const publishNotice = getRoutePublishNotice(
+  const publishBadge = getRoutePublishBadge(
     effectiveRoutePlan,
-    input.drivers,
     locale,
   );
   const canPublishOnSave =
@@ -753,6 +730,16 @@ export function RouteBuilder(input: {
       })}
     </button>
   );
+  const routeMapHeaderAction = (
+    <div className="route-map-header-actions">
+      {publishBadge === null ? null : (
+        <span className={`route-publish-badge ${publishBadge.tone}`}>
+          {publishBadge.text}
+        </span>
+      )}
+      {routeOptimizationAction}
+    </div>
+  );
   const routeOptimizationRows = getRouteOptimizationJobDetailRows(optimizationJob, locale, optimizationElapsedNowMs);
   const routeOptimizationSummaryRows = routeOptimizationRows.slice(0, 3);
   const routeOptimizationStatus = optimizationNotice === null ? undefined : (
@@ -790,7 +777,7 @@ export function RouteBuilder(input: {
             bootstrap={input.bootstrap}
             detail={detail}
             draftStops={hasSequenceChanges ? draftStops : undefined}
-            headerAction={routeOptimizationAction}
+            headerAction={routeMapHeaderAction}
             statusContent={routeOptimizationStatus}
             onRouteStopPickerClose={() => setSelectedRouteStopId(null)}
             onRouteStopSelect={(deliveryStopId) => setSelectedRouteStopId(deliveryStopId)}
@@ -808,19 +795,8 @@ export function RouteBuilder(input: {
       secondary={
         <aside className="panel side-panel route-save-panel route-builder-card-shell">
           <div className="route-builder-card-header">
-            <div className="route-builder-title-block">
-              <span className="eyebrow">{t.routeState}</span>
-              <h2 className="route-builder-route-title" title={detail?.routePlan.name ?? t.loadingRoute}>
-                {detail?.routePlan.name ?? t.loadingRoute}
-              </h2>
-            </div>
+            <span className="eyebrow">{t.routeState}</span>
             <div className="route-row-actions route-builder-card-actions">
-              <button
-                onClick={() => input.navigate("/admin/ui/app/routes")}
-                type="button"
-              >
-                {t.allRoutes}
-              </button>
               <button
                 className="danger subtle"
                 disabled={
@@ -868,20 +844,7 @@ export function RouteBuilder(input: {
           {activeBuilderTab === "driver-options" ? (
             <div aria-labelledby={driverTabId} className="route-builder-tab-panel" id={driverPanelId} role="tabpanel">
               <div className="route-builder-tab-body route-builder-tab-body--driver">
-                {publishNotice === null ? null : (
-                  <div className={`route-publish-notice ${publishNotice.tone}`}>
-                    {publishNotice.text}
-                  </div>
-                )}
                 <dl className="route-state-list">
-                  <div>
-                    <dt>{t.table.status}</dt>
-                    <dd>
-                      {detail === null
-                        ? "—"
-                        : formatRoutePlanStatus(detail.routePlan.status, locale)}
-                    </dd>
-                  </div>
                   <div>
                     <dt>{t.table.date}</dt>
                     <dd>
@@ -906,7 +869,7 @@ export function RouteBuilder(input: {
                   </div>
                 </dl>
                 <label>
-                  {t.assignedDriver}
+                  {t.table.driver}
                   <select
                     disabled={hasActiveOptimizationJob}
                     value={draftDriverId}
@@ -935,11 +898,6 @@ export function RouteBuilder(input: {
                     type="checkbox"
                   />
                   <span>{t.returnToStore}</span>
-                  <small>
-                    {returnToDepotChecked
-                      ? t.returnToStoreHelp
-                      : t.endAtLastStopHelp}
-                  </small>
                 </label>
                 {!canReturnToDepot ? (
                   <small className="form-warning" id={routeEndWarningId}>
