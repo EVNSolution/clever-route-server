@@ -41,6 +41,10 @@ import {
   type DriverSelfServiceContract
 } from '../modules/driver/driver-self-service.types.js';
 import {
+  DriverRouteSessionScopeError,
+  type DriverRouteSessionRestoreServiceContract
+} from '../modules/driver/driver-route-session.types.js';
+import {
   DriverEventContextError,
   DriverEventScopeError
 } from '../modules/driver/driver-event.repository.js';
@@ -63,6 +67,7 @@ export type DriverApiDependencies = {
     }): Promise<{ duplicate: boolean; eventId: string }>;
   };
   driverSelfService?: DriverSelfServiceContract;
+  driverRouteSessionRestoreService?: DriverRouteSessionRestoreServiceContract;
   driverRouteMapPreviewBaseUrl?: string;
   driverRouteMapPreviewService?: DriverRouteMapPreviewServiceContract;
   driverTokenAccessRepository?: DriverTokenAccessRepositoryContract;
@@ -235,6 +240,51 @@ export function registerDriverEventRoutes(
         data: result,
         error: null
       });
+    });
+  }
+
+  const driverRouteSessionRestoreService = dependencies.driverRouteSessionRestoreService;
+  if (driverRouteSessionRestoreService !== undefined) {
+    app.get('/driver/route-session/active', async (request, reply) => {
+      const authentication = await authenticateDriverRequest(request, dependencies);
+      if (authentication.status !== 'authenticated') {
+        return reply
+          .code(401)
+          .send(errorResponse('UNAUTHORIZED', driverAuthenticationMessage(authentication.status)));
+      }
+      reply.header('Cache-Control', 'private, no-store');
+      const driverContext = authentication.context;
+
+      try {
+        const result = await driverRouteSessionRestoreService.getActiveRouteSession({
+          driverId: driverContext.driverId,
+          shopDomain: driverContext.shopDomain
+        });
+        if (result.status !== 'ACTIVE_SESSION') {
+          return reply.code(200).send({ data: result, error: null });
+        }
+
+        return reply.code(200).send({
+          data: {
+            ...result,
+            route: {
+              ...result.route,
+              routeMapPreview: createDriverRouteMapPreview(dependencies, {
+                driverId: driverContext.driverId,
+                route: result.route,
+                shopDomain: driverContext.shopDomain
+              }) ?? result.route.routeMapPreview
+            }
+          },
+          error: null
+        });
+      } catch (error) {
+        if (error instanceof DriverRouteSessionScopeError) {
+          return reply.code(403).send(errorResponse('FORBIDDEN', 'Driver route session scope rejected'));
+        }
+
+        throw error;
+      }
     });
   }
 
