@@ -615,6 +615,44 @@ set_route_ops_host_env_value() {
   mv "$tmp_file" infra/env/delivery-api.env
 }
 
+read_secure_ssm_parameter() {
+  local name
+  name="$1"
+  command -v aws >/dev/null 2>&1 || { echo "aws CLI is required to read ${name}" >&2; return 1; }
+  AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-${ROUTE_OPS_AWS_REGION:-ap-northeast-2}}}" \
+    aws ssm get-parameter --name "$name" --with-decryption --query 'Parameter.Value' --output text
+}
+
+validate_driver_app_download_url() {
+  local value
+  value="$1"
+  python3 - "$value" <<'PYTHON'
+import sys
+from urllib.parse import urlparse
+
+value = sys.argv[1]
+parsed = urlparse(value)
+if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+    print('DRIVER_APP_DOWNLOAD_URL must be an http(s) URL', file=sys.stderr)
+    sys.exit(1)
+PYTHON
+}
+
+ensure_driver_app_download_host_env() {
+  local value
+  value="${ROUTE_OPS_DRIVER_APP_DOWNLOAD_URL:-}"
+  if [ -z "$value" ] && [ -n "${ROUTE_OPS_DRIVER_APP_DOWNLOAD_URL_PARAMETER_NAME:-}" ]; then
+    value="$(read_secure_ssm_parameter "$ROUTE_OPS_DRIVER_APP_DOWNLOAD_URL_PARAMETER_NAME")"
+  fi
+  if [ -z "$value" ] || [ "$value" = "None" ]; then
+    echo "Driver app download URL was not provided; leaving DRIVER_APP_DOWNLOAD_URL unchanged."
+    return 0
+  fi
+  validate_driver_app_download_url "$value"
+  set_route_ops_host_env_value DRIVER_APP_DOWNLOAD_URL "$value"
+  echo "Driver app download URL configured in infra/env/delivery-api.env (value redacted)."
+}
+
 generate_route_engine_token() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex 32
@@ -1249,6 +1287,9 @@ ensure_route_engine .deploy/candidate-image.env
 route_ops_trace_step_end
 route_ops_trace_step_start "ensure_osrm"
 ensure_route_ops_osrm .deploy/candidate-image.env
+route_ops_trace_step_end
+route_ops_trace_step_start "ensure_driver_app_download_host_env"
+ensure_driver_app_download_host_env
 route_ops_trace_step_end
 ROUTE_OPS_SERVICE_MUTATED="true"
 route_ops_trace_step_start "restart_delivery_api"
