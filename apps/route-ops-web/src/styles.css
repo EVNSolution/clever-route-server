@@ -1301,8 +1301,13 @@ button.danger.subtle {
   min-height: 0;
 }
 .route-builder-tab-body--driver {
+  display: flex;
+  flex-direction: column;
   overflow: auto;
   padding-right: 2px;
+}
+.route-builder-tab-body--driver .route-end-toggle {
+  margin-top: auto;
 }
 .route-builder-tab-body--stop-order {
   grid-template-rows: auto minmax(0, 1fr);
