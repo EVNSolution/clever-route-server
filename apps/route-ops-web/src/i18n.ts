@@ -160,6 +160,7 @@ export const driversCopy = {
     deleteBusy: 'delete…',
     appLinked: 'App linked',
     authenticationCode: 'Authentication code',
+    installDriverApp: 'Install CLEVER Driver',
     inviteMessageLink: 'Driver app download link: ask CLEVER admin',
     statusLabel: { pending: 'Pending', active: 'Active' }
   },
@@ -206,6 +207,7 @@ export const driversCopy = {
     deleteBusy: '삭제 중…',
     appLinked: '앱 연결됨',
     authenticationCode: '인증 코드',
+    installDriverApp: 'CLEVER Driver 앱 설치',
     inviteMessageLink: '배송원 앱 다운로드 링크: CLEVER 관리자에게 문의',
     statusLabel: { pending: '대기', active: '활성' }
   }

@@ -15,6 +15,9 @@ export type BootstrapPayload = {
     settings: string;
   };
   csrfToken: string;
+  driverApp: {
+    installUrl: string | null;
+  };
   mapConfig: {
     allowedHosts: string[];
     attribution: string | null;

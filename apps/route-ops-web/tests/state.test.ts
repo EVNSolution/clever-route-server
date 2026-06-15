@@ -392,6 +392,7 @@ function bootstrap(mode: BootstrapPayload['mode']): BootstrapPayload {
   return {
     appUrls: { dashboard: '', drivers: '', orders: '', routes: '', settings: '' },
     csrfToken: 'csrf',
+    driverApp: { installUrl: 'https://clever-route.cleversystem.ai/driver-app' },
     mapConfig: { allowedHosts: [], attribution: null, providerMode: null, status: 'not_configured', styleAudit: null, styleUrl: null },
     mode,
     routerConfig: { status: 'not_configured' },

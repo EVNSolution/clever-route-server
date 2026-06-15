@@ -156,6 +156,7 @@ const ADMIN_UI_APP_SETTINGS_PATH = `${ADMIN_UI_APP_PATH}/settings`;
 const ADMIN_UI_APP_API_PATH = `${ADMIN_UI_APP_PATH}/api`;
 const ADMIN_UI_APP_ASSETS_PATH = `${ADMIN_UI_APP_PATH}/assets`;
 const ADMIN_UI_APP_VENDOR_PATH = `${ADMIN_UI_APP_PATH}/vendor`;
+const DRIVER_APP_INSTALL_PATH = "/driver-app";
 const ADMIN_UI_ORDERS_PATH = `${ADMIN_UI_ROOT_PATH}/orders`;
 const ADMIN_UI_ROUTE_PLANS_PATH = `${ADMIN_UI_ROOT_PATH}/route-plans`;
 const ADMIN_UI_DRIVERS_PATH = `${ADMIN_UI_ROOT_PATH}/drivers`;
@@ -394,6 +395,7 @@ export type AdminCommerceConnectionsUiDependencies = {
     ): Promise<CanonicalOrderRow | null>;
   };
   wooSyncService?: AdminWooSyncServiceContract;
+  driverAppDownloadUrl?: string;
   publicBaseUrl?: string;
   routeOptimizationJobService?: Pick<
     RouteOptimizationJobService,
@@ -444,6 +446,17 @@ export function registerAdminCommerceConnectionsUiRoutes(
   app.get(ADMIN_ROOT_PATH, async (_request, reply) =>
     redirect(reply, ADMIN_UI_ROOT_PATH),
   );
+
+  app.get(DRIVER_APP_INSTALL_PATH, async (_request, reply) => {
+    const downloadUrl = dependencies.driverAppDownloadUrl;
+    if (downloadUrl === undefined) {
+      return sendJson(reply, 404, {
+        ok: false,
+        message: "Driver app download is not configured.",
+      });
+    }
+    return reply.code(302).header("Location", downloadUrl).send("");
+  });
 
   app.get(ADMIN_UI_WOOCOMMERCE_TEST_SCRIPT_PATH, async (_request, reply) =>
     reply
@@ -1250,6 +1263,12 @@ function registerRouteOpsAppRoutes(
             settings: ADMIN_UI_APP_SETTINGS_PATH,
           },
           csrfToken: session.csrfToken,
+          driverApp: {
+            installUrl:
+              dependencies.driverAppDownloadUrl === undefined
+                ? null
+                : `${resolveBaseUrl(request, dependencies)}${DRIVER_APP_INSTALL_PATH}`,
+          },
           locale: settings?.locale === "ko-KR" ? "ko-KR" : "en-CA",
           mapConfig: readCurrentRouteOpsMapConfig(),
           mode: isWpPluginSession(session) ? "plugin" : "internal-admin",
