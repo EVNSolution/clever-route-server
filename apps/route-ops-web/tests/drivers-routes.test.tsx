@@ -113,6 +113,8 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('value="United States (US +1)"');
     expect(html).not.toContain('<select');
     expect(html).not.toContain('placeholder=');
+    expect(html).not.toContain('Enter a valid number in national format to preview E.164.');
+    expect(html).not.toContain('Pending drivers can be assigned in Route Builder now.');
   });
 
   test('country phone input helpers support searchable country names codes and calling prefixes', () => {

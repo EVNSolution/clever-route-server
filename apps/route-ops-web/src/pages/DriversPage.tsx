@@ -321,16 +321,11 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
               />
             </label>
           </div>
-          <small>
-            {canonicalPhone === ''
-              ? t.invalidPhonePreview
-              : t.e164Preview(canonicalPhone)}
-          </small>
+          {canonicalPhone === '' ? null : <small>{t.e164Preview(canonicalPhone)}</small>}
         </label>
         <button className="primary full" disabled={!canSubmitDriver} onClick={() => void submit()} type="button">
           {savingDriver ? t.creating : t.createInvite}
         </button>
-        <p className="muted">{t.pendingHelp}</p>
       </aside>
     </section>
   );
