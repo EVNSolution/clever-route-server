@@ -399,17 +399,7 @@ jobs:
             echo "DRIVER_APP_DOWNLOAD_URL repository secret is required for Route Ops deploy." >&2
             exit 1
           fi
-          python3 - <<'PY'
-import os
-import sys
-from urllib.parse import urlparse
-
-value = os.environ['DRIVER_APP_DOWNLOAD_URL']
-parsed = urlparse(value)
-if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
-    print('DRIVER_APP_DOWNLOAD_URL must be an http(s) URL', file=sys.stderr)
-    sys.exit(1)
-PY
+          python3 -c 'import os, sys; from urllib.parse import urlparse; value = os.environ["DRIVER_APP_DOWNLOAD_URL"]; parsed = urlparse(value); sys.exit(0 if parsed.scheme in {"http", "https"} and parsed.netloc else "DRIVER_APP_DOWNLOAD_URL must be an http(s) URL")'
           aws ssm put-parameter \
             --name "$DRIVER_APP_DOWNLOAD_URL_PARAMETER_NAME" \
             --type SecureString \
