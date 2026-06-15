@@ -5,6 +5,7 @@ import { PrismaDriverConsentRepository } from './driver-consent.repository.js';
 import { PrismaDriverEventRepository } from './driver-event.repository.js';
 import { PrismaDriverProofMediaRepository } from './driver-proof-media.repository.js';
 import { PrismaDriverRouteAccessRepository } from './driver-route-access.repository.js';
+import { PrismaDriverRouteSessionRepository } from './driver-route-session.repository.js';
 import { PrismaDriverSelfServiceRepository } from './driver-self-service.repository.js';
 import { PrismaDriverTokenAccessRepository } from './driver-token-access.repository.js';
 import { createS3DriverProofMediaStorage } from './driver-proof-media-s3-storage.js';
@@ -112,6 +113,7 @@ export function loadDriverApiDependencies(
           driverRouteMapPreviewService: driverRouteMapPreview.service
         }),
     driverSelfService: new PrismaDriverSelfServiceRepository(input.prisma),
+    driverRouteSessionRestoreService: new PrismaDriverRouteSessionRepository(input.prisma, driverAssignedRouteService),
     driverTokenAccessRepository: new PrismaDriverTokenAccessRepository(input.prisma),
     jwtSecret,
     proofMediaService: new PrismaDriverProofMediaRepository(input.prisma, {

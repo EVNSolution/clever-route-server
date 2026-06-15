@@ -117,7 +117,7 @@ async function validateDriverEventStateContext(
     return;
   }
 
-  if (input.eventType === 'ROUTE_COMPLETED') {
+  if (input.eventType === 'ROUTE_STARTED' || input.eventType === 'ROUTE_COMPLETED') {
     const routePlanId = requireRoutePlanId(input);
     await requireOwnedRoutePlan(prisma, {
       driverId: input.driverId,
@@ -157,6 +157,19 @@ async function applyDriverEventStateTransition(
       driverId: input.driverId,
       routePlanId,
       shopId
+    });
+    return;
+  }
+
+  if (input.eventType === 'ROUTE_STARTED') {
+    await prisma.routePlan.updateMany({
+      data: { status: 'IN_PROGRESS' },
+      where: {
+        driverId: input.driverId,
+        id: requireRoutePlanId(input),
+        shopId,
+        status: { in: ['ASSIGNED', 'OPTIMIZED'] }
+      }
     });
     return;
   }

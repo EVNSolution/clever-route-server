@@ -134,6 +134,41 @@ describe('PrismaDriverEventRepository', () => {
     expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
   });
 
+  test('promotes an assigned route to in progress when ROUTE_STARTED is recorded', async () => {
+    const { prisma } = createPrismaHarness();
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await repository.recordDriverEvent(baseInput({
+      deliveryStopId: null,
+      eventType: 'ROUTE_STARTED',
+      routePlanId: 'route-plan-id'
+    }));
+
+    expect(prisma.routePlan.updateMany).toHaveBeenCalledWith({
+      data: { status: 'IN_PROGRESS' },
+      where: {
+        driverId: 'driver-id',
+        id: 'route-plan-id',
+        shopId: 'shop-id',
+        status: { in: ['ASSIGNED', 'OPTIMIZED'] }
+      }
+    });
+  });
+
+  test('rejects route start events outside the authenticated route scope before writing', async () => {
+    const { prisma } = createPrismaHarness({ routePlan: null });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      deliveryStopId: null,
+      eventType: 'ROUTE_STARTED',
+      routePlanId: 'foreign-route-plan-id'
+    }))).rejects.toBeInstanceOf(DriverEventScopeError);
+
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+    expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
+  });
+
   test('marks a route completed when ROUTE_COMPLETED is recorded after all stops are terminal', async () => {
     const { prisma } = createPrismaHarness({
       routeStops: [
