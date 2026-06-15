@@ -46,7 +46,7 @@ Production execution is **not automatic**. The workflow exists so a maintainer c
 
 ## Deploy-control S3 artifact handoff
 
-The production host currently keeps `/srv/clever-route-server` as a deploy directory, not a live Git checkout. The deploy workflow therefore prepares a narrow deploy-control bundle, uploads it to S3, and passes only the S3 URI plus SHA-256 digest through the reviewed custom SSM document.
+The production host currently keeps `/srv/clever-route-server` as a deploy directory, not a live Git checkout. The deploy workflow therefore prepares a narrow non-secret deploy-control bundle, uploads it to S3, and passes the S3 URI, SHA-256 digest, plus the masked driver APK URL handoff through the reviewed custom SSM document. The APK URL must not be written into the bundle or echoed in logs.
 
 This intentionally avoids using SSM document parameters as file transport. The selected production artifact location is:
 
