@@ -165,7 +165,7 @@ SSM_ROUTE_OPS_DOCUMENT_NAME=CleverRoute-RouteOpsDeploy
 SSM_ROUTE_OPS_DOCUMENT_VERSION=<pinned-reviewed-version>
 ```
 
-Do not add production secrets to GitHub. The smoke login secret is read on the host by `scripts/ssm-route-ops-deploy.sh` from `infra/env/delivery-api.env` or, in a future hardening step, by the instance role from AWS secure storage.
+Do not add production secrets to GitHub except the masked `DRIVER_APP_DOWNLOAD_URL` repository secret used to hand the driver APK location into the reviewed SSM document parameter file. The workflow must never echo that value; the custom SSM document exports it as `ROUTE_OPS_DRIVER_APP_DOWNLOAD_URL`, and `scripts/deploy-route-ops-image.sh` writes it to host env with redacted logs before restarting the delivery API. The smoke login secret is read on the host by `scripts/ssm-route-ops-deploy.sh` from `infra/env/delivery-api.env` or, in a future hardening step, by the instance role from AWS secure storage.
 
 ## OIDC trust boundary
 
