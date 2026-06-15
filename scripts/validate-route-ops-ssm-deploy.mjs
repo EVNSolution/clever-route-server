@@ -359,6 +359,9 @@ assert(release.lastIndexOf('Validate AWS/SSM variable configuration') < release.
 assert(release.includes('mode=promote -f release_run_id=${GITHUB_RUN_ID} -f release_manifest_sha256=${manifest_sha}'), 'release prepare summary must hand off only run id and manifest sha to promote');
 assert(!release.includes('-f image_tag=') && !release.includes('-f delivery_api_image='), 'release promote handoff must not accept mutable image coordinates');
 assert(release.includes('scripts/route-ops-release-manifest.mjs validate "$manifest_path" --expect-sha "$EXPECTED_MANIFEST_SHA"'), 'release promote must validate the manifest digest before exporting fields');
+assert(release.includes('find "$manifest_dir" -name release-manifest.json -type f'), 'release promote must locate downloaded manifest artifacts even when gh creates an artifact subdirectory');
+assert(release.includes('steps.prepare_manifest.outputs.manifest_path'), 'release promote must pass the discovered manifest path to validation');
+assert(!release.includes('      - name: Checkout exact release commit\n      - name: Checkout exact release commit'), 'release promote must not contain duplicate no-op checkout step');
 assert(release.includes('git checkout --detach "$COMMIT_SHA"'), 'release promote must check out the exact manifest commit');
 assert(release.includes('[ "${ROUTE_ENGINE_IMAGE%:*}" != "$ROUTE_ENGINE_IMAGE_REPO" ]'), 'release prepare must exact-match route_engine image repository before any pull');
 assert(release.includes('route_engine_tag="${ROUTE_ENGINE_IMAGE##*:}"'), 'release prepare must validate route_engine tag separately from exact repository');

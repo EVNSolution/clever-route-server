@@ -761,9 +761,16 @@ jobs:
         run: |
           set -euo pipefail
           if ! [[ "$RELEASE_RUN_ID" =~ ^[0-9]+$ ]]; then echo "release_run_id must be numeric." >&2; exit 1; fi
-          mkdir -p "$RUNNER_TEMP/release-manifest"
-          gh run download "$RELEASE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$RELEASE_MANIFEST_ARTIFACT" --dir "$RUNNER_TEMP/release-manifest"
-          test -f "$RUNNER_TEMP/release-manifest/release-manifest.json"
+          manifest_dir="$RUNNER_TEMP/release-manifest"
+          mkdir -p "$manifest_dir"
+          gh run download "$RELEASE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name "$RELEASE_MANIFEST_ARTIFACT" --dir "$manifest_dir"
+          manifest_path="$(find "$manifest_dir" -name release-manifest.json -type f | sort | head -1)"
+          if [ -z "$manifest_path" ]; then
+            echo "release manifest artifact did not contain release-manifest.json" >&2
+            find "$manifest_dir" -maxdepth 3 -type f -print >&2 || true
+            exit 1
+          fi
+          echo "manifest_path=$manifest_path" >> "$GITHUB_OUTPUT"
 
       - name: Validate prepare manifest and provenance
         id: validate_manifest
@@ -775,7 +782,8 @@ jobs:
         run: |
           set -euo pipefail
           if ! [[ "$EXPECTED_MANIFEST_SHA" =~ ^[0-9a-fA-F]{64}$ ]]; then echo "release_manifest_sha256 must be 64 hex chars." >&2; exit 1; fi
-          manifest_path="$RUNNER_TEMP/release-manifest/release-manifest.json"
+          manifest_path="${{ steps.prepare_manifest.outputs.manifest_path }}"
+          if [ -z "$manifest_path" ] || [ ! -f "$manifest_path" ]; then echo "validated manifest path is missing." >&2; exit 1; fi
           scripts/route-ops-release-manifest.mjs validate "$manifest_path" --expect-sha "$EXPECTED_MANIFEST_SHA"
           run_json="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID}")"
           RUN_JSON="$run_json" MANIFEST_PATH="$manifest_path" EXPECTED_MANIFEST_SHA="$EXPECTED_MANIFEST_SHA" node - <<'NODE'
