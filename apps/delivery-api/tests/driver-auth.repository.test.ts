@@ -4,6 +4,7 @@ import { PrismaDriverAuthRepository } from '../src/modules/driver/driver-auth.re
 
 const anyDateMatcher: unknown = expect.any(Date);
 const anyStringMatcher: unknown = expect.any(String);
+const activeSessionExpiresAt = new Date('2100-01-01T00:00:00.000Z');
 
 describe('PrismaDriverAuthRepository', () => {
   test('stores the registration display name when an invite is verified', async () => {
@@ -67,7 +68,7 @@ describe('PrismaDriverAuthRepository', () => {
     });
     expect(session).toEqual({
       driverId: 'driver-id',
-      expiresAt: new Date('2026-06-15T00:00:00.000Z'),
+      expiresAt: activeSessionExpiresAt,
       refreshToken: 'stored-refresh-token',
       shopDomain: 'example.myshopify.com',
       tokenVersion: 2
@@ -177,7 +178,7 @@ function createDriverSessionFixture(input: { driverStatus?: DriverFixture['statu
       ...createDriverFixture({ phone: '+14165550123' }),
       status: input.driverStatus ?? 'ACTIVE'
     },
-    expiresAt: input.expiresAt ?? new Date('2026-06-15T00:00:00.000Z'),
+    expiresAt: input.expiresAt ?? activeSessionExpiresAt,
     id: 'session-id',
     revokedAt: input.revokedAt ?? null
   };
