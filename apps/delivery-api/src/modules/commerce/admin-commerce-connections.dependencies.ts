@@ -55,6 +55,7 @@ export type AdminCommerceConnectionsRuntimeEnv = Partial<
     | 'CLEVER_ADMIN_WEB_SESSION_SECRET'
     | 'CREDENTIAL_ENCRYPTION_KEY'
     | 'DELIVERY_API_PUBLIC_URL'
+    | 'DRIVER_APP_DOWNLOAD_URL'
     | 'GEOCODING_CACHE_TTL_DAYS'
     | 'GEOCODING_PROVIDER_MODE'
     | 'GEOCODING_PUBLIC_BULK_MAX_ATTEMPTS'
@@ -132,6 +133,10 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
   const actorSubject = readOptional(input.env.CLEVER_ADMIN_API_ACTOR) ?? 'internal-web-operator';
   const cookieName = readOptional(input.env.CLEVER_ADMIN_WEB_COOKIE_NAME) ?? DEFAULT_ADMIN_UI_COOKIE_NAME;
   const publicBaseUrl = readOptional(input.env.DELIVERY_API_PUBLIC_URL);
+  const driverAppDownloadUrl = readOptionalHttpUrl(
+    input.env.DRIVER_APP_DOWNLOAD_URL,
+    'DRIVER_APP_DOWNLOAD_URL'
+  );
   if (input.nodeEnv === 'production' && publicBaseUrl === undefined) {
     return undefined;
   }
@@ -151,6 +156,7 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     ...readAdminUiPairingCodeService(input),
     ...readAdminUiRouteOptimizationService(input.env),
     ...readAdminUiWooSyncService(input),
+    ...(driverAppDownloadUrl === undefined ? {} : { driverAppDownloadUrl }),
     ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
     ...readAdminUiRoutePlanService(input),
     secureCookies: input.nodeEnv !== 'development' && input.nodeEnv !== 'test',
@@ -360,6 +366,18 @@ function readOptionalRouteEngineObjective(value: string | undefined): RouteEngin
 function readOptional(value: string | undefined): string | undefined {
   if (value === undefined || value.trim() === '') return undefined;
   return value.trim();
+}
+
+function readOptionalHttpUrl(value: string | undefined, name: string): string | undefined {
+  const normalized = readOptional(value);
+  if (normalized === undefined) return undefined;
+  try {
+    const url = new URL(normalized);
+    if (url.protocol === 'http:' || url.protocol === 'https:') return url.href;
+  } catch {
+    // Fall through to the explicit configuration error below.
+  }
+  throw new Error(`${name} must be an http(s) URL`);
 }
 
 function readOptionalNumber(value: string | undefined): number | undefined {

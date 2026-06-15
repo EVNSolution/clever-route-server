@@ -132,15 +132,24 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(matchCountrySearchInput(options, 'US')?.countryCode).toBe('US');
   });
 
-  test('builds copyable invite text from the current code only', () => {
-    expect(buildDriverInviteMessage(driverFixture())).toContain(
-      'Authentication code: A1B2C3',
-    );
+  test('builds copyable invite text from the app install link and current code', () => {
+    expect(
+      buildDriverInviteMessage(
+        driverFixture(),
+        'en-CA',
+        'https://clever-route.cleversystem.ai/driver-app',
+      ),
+    ).toBe('Install CLEVER Driver:\nhttps://clever-route.cleversystem.ai/driver-app\n\nAuthentication code: A1B2C3');
+    expect(buildDriverInviteMessage(driverFixture())).toBe('Authentication code: A1B2C3');
     expect(formatDriverAuthLabel(driverFixture())).toBe('Invite pending');
     expect(formatDriverAuthLabel(linkedDriverFixture())).toBe('Linked');
-    expect(buildDriverInviteMessage(driverFixture(), 'ko-KR')).toContain(
-      '인증 코드: A1B2C3',
-    );
+    expect(
+      buildDriverInviteMessage(
+        driverFixture(),
+        'ko-KR',
+        'https://clever-route.cleversystem.ai/driver-app',
+      ),
+    ).toBe('CLEVER Driver 앱 설치:\nhttps://clever-route.cleversystem.ai/driver-app\n\n인증 코드: A1B2C3');
     expect(formatDriverAuthLabel(driverFixture(), 'ko-KR')).toBe('초대 대기');
     expect(formatDriverAuthLabel(linkedDriverFixture(), 'ko-KR')).toBe('연결됨');
   });
@@ -920,6 +929,7 @@ function bootstrap(overrides: Partial<BootstrapPayload> = {}): BootstrapPayload 
       settings: '/admin/ui/app/settings',
     },
     csrfToken: 'csrf-token',
+    driverApp: { installUrl: 'https://clever-route.cleversystem.ai/driver-app' },
     mapConfig: {
       allowedHosts: [],
       attribution: null,

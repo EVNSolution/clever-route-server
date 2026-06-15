@@ -169,6 +169,37 @@ describe("Admin WooCommerce connection UI routes", () => {
     ).toBeDefined();
   });
 
+  test("loads the driver app download URL without exposing it as the install URL", () => {
+    const base = createBaseAdminCommerceDependencies();
+
+    const dependencies = loadAdminCommerceConnectionsUiDependencies({
+      adminCommerceConnections: base.dependencies,
+      env: {
+        CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
+        CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
+        DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
+        DRIVER_APP_DOWNLOAD_URL: "https://drive.example.test/uc?id=apk&export=download",
+      },
+      nodeEnv: "production",
+    });
+
+    expect(dependencies?.driverAppDownloadUrl).toBe(
+      "https://drive.example.test/uc?id=apk&export=download",
+    );
+    expect(() =>
+      loadAdminCommerceConnectionsUiDependencies({
+        adminCommerceConnections: base.dependencies,
+        env: {
+          CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
+          CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
+          DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
+          DRIVER_APP_DOWNLOAD_URL: "file:///tmp/driver.apk",
+        },
+        nodeEnv: "production",
+      }),
+    ).toThrow("DRIVER_APP_DOWNLOAD_URL must be an http(s) URL");
+  });
+
   test("enables route_engine optimization only with base URL and internal token", () => {
     const base = createBaseAdminCommerceDependencies();
 
@@ -729,6 +760,55 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(bootstrapData.routerConfig).toEqual(
         expect.objectContaining({ status: "not_configured" }),
       );
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("exposes a stable driver app install link and redirects it to the configured download", async () => {
+    const rawDownloadUrl = "https://drive.example.test/uc?id=driver-apk&export=download";
+    const { app } = await createUiHarness({ driverAppDownloadUrl: rawDownloadUrl });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      const bootstrap = await app.inject({
+        headers: { cookie, accept: "application/json" },
+        method: "GET",
+        url: "/admin/ui/app/api/bootstrap?shopDomain=tenant-a.example.test",
+      });
+      expect(bootstrap.statusCode).toBe(200);
+      expect(readApiData<{ driverApp: { installUrl: string | null } }>(bootstrap).driverApp).toEqual({
+        installUrl: "https://clever-route.cleversystem.ai/driver-app",
+      });
+      expect(bootstrap.body).not.toContain("drive.example.test");
+      expect(bootstrap.body).not.toContain("driver-apk");
+
+      const redirect = await app.inject({ method: "GET", url: "/driver-app" });
+      expect(redirect.statusCode).toBe(302);
+      expect(redirect.headers.location).toBe(rawDownloadUrl);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("keeps the driver app install link disabled until a download URL is configured", async () => {
+    const { app } = await createUiHarness({ driverAppDownloadUrl: null });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      const bootstrap = await app.inject({
+        headers: { cookie, accept: "application/json" },
+        method: "GET",
+        url: "/admin/ui/app/api/bootstrap?shopDomain=tenant-a.example.test",
+      });
+      expect(bootstrap.statusCode).toBe(200);
+      expect(readApiData<{ driverApp: { installUrl: string | null } }>(bootstrap).driverApp).toEqual({
+        installUrl: null,
+      });
+
+      const redirect = await app.inject({ method: "GET", url: "/driver-app" });
+      expect(redirect.statusCode).toBe(404);
+      expect(redirect.body).toContain("Driver app download is not configured.");
     } finally {
       await app.close();
     }
@@ -5689,6 +5769,7 @@ async function createUiHarness(
   overrides: Partial<{
     actor: AdminCommerceActor;
     createConnection: ReturnType<typeof vi.fn>;
+    driverAppDownloadUrl: string | null;
     driverService: AdminCommerceConnectionsUiDependencies["driverService"];
     geocodingService: AdminCommerceConnectionsUiDependencies["geocodingService"];
     getConnection: ReturnType<typeof vi.fn>;
@@ -5783,6 +5864,9 @@ async function createUiHarness(
       subject: "web-operator",
     },
     loginSecret: webLoginSecret,
+    ...(overrides.driverAppDownloadUrl === null || overrides.driverAppDownloadUrl === undefined
+      ? {}
+      : { driverAppDownloadUrl: overrides.driverAppDownloadUrl }),
     ...(overrides.geocodingService === undefined
       ? {}
       : { geocodingService: overrides.geocodingService }),
