@@ -52,6 +52,7 @@ jobs:
       ROUTE_ENGINE_IMAGE_REPO: ghcr.io/evnsolution/route-engine-worker
       ROUTE_OPS_DEPLOY_CONTROL_BUCKET: route-ops-artifacts-902837199612-ap-northeast-2
       ROUTE_OPS_DEPLOY_CONTROL_PREFIX: artifacts/route-ops/prod/deploy-control
+      ROUTE_OPS_DRIVER_APP_DOWNLOAD_URL_PARAMETER_NAME: /clever-route/prod/driver-app-download-url
       ROUTE_OPS_EXPECTED_AWS_ACCOUNT_ID: "902837199612"
       ROUTE_OPS_EXPECTED_AWS_REGION: ap-northeast-2
     steps:
@@ -384,6 +385,8 @@ jobs:
         env:
           DEPLOY_CONTROL_BUCKET: ${{ steps.artifact_bucket.outputs.bucket }}
           DEPLOY_CONTROL_PREFIX: ${{ steps.artifact_bucket.outputs.prefix }}
+          DRIVER_APP_DOWNLOAD_URL: ${{ secrets.DRIVER_APP_DOWNLOAD_URL }}
+          DRIVER_APP_DOWNLOAD_URL_PARAMETER_NAME: ${{ env.ROUTE_OPS_DRIVER_APP_DOWNLOAD_URL_PARAMETER_NAME }}
           BUNDLE_PATH: ${{ steps.source_sync.outputs.bundle_path }}
           BUNDLE_SHA: ${{ steps.source_sync.outputs.bundle_sha }}
           BUNDLE_SIZE: ${{ steps.source_sync.outputs.bundle_size }}
@@ -392,6 +395,29 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
+          if [ -z "$DRIVER_APP_DOWNLOAD_URL" ]; then
+            echo "DRIVER_APP_DOWNLOAD_URL repository secret is required for Route Ops deploy." >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+import os
+import sys
+from urllib.parse import urlparse
+
+value = os.environ['DRIVER_APP_DOWNLOAD_URL']
+parsed = urlparse(value)
+if parsed.scheme not in {'http', 'https'} or not parsed.netloc:
+    print('DRIVER_APP_DOWNLOAD_URL must be an http(s) URL', file=sys.stderr)
+    sys.exit(1)
+PY
+          aws ssm put-parameter \
+            --name "$DRIVER_APP_DOWNLOAD_URL_PARAMETER_NAME" \
+            --type SecureString \
+            --value "$DRIVER_APP_DOWNLOAD_URL" \
+            --overwrite \
+            --output text \
+            --query Version >/dev/null
+          echo "Driver app download URL parameter updated: ${DRIVER_APP_DOWNLOAD_URL_PARAMETER_NAME} (value redacted)"
           if [ ! -f "$BUNDLE_PATH" ]; then
             echo "Route Ops deploy-control bundle is missing before S3 upload: $BUNDLE_PATH" >&2
             exit 1
