@@ -28,7 +28,7 @@ import {
   getRouteOptimizationActionLabel,
   getRouteOptimizationJobDetailRows,
   getRouteOptimizationJobNotice,
-  getRoutePublishNotice,
+  getRoutePublishBadge,
   formatRoutePlanStatus,
   hasDepotCoordinates,
   isRouteOptimizationJobActive,
@@ -173,7 +173,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(getRoutesCopy('ko-KR').returnToStore).toBe('매장으로 돌아오기');
   });
 
-  test('explains when draft and published routes are visible to drivers', () => {
+  test('summarizes draft and published route state for the map badge', () => {
     const pending = driverFixture();
     const linked = linkedDriverFixture();
     const draftAssigned = routePlanFixture({ driverId: linked.id, status: 'DRAFT' });
@@ -181,11 +181,12 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     const publishedPending = routePlanFixture({ driverId: pending.id, status: 'ASSIGNED' });
 
     expect(isRouteVisibleToLinkedDriver(draftAssigned, [linked])).toBe(false);
-    expect(getRoutePublishNotice(draftAssigned, [linked])?.text).toContain('not visible');
+    expect(getRoutePublishBadge(draftAssigned)?.text).toBe('Draft');
     expect(isRouteVisibleToLinkedDriver(publishedLinked, [linked])).toBe(true);
-    expect(getRoutePublishNotice(publishedLinked, [linked])?.text).toContain('visible');
+    expect(getRoutePublishBadge(publishedLinked)?.text).toBe('Published');
     expect(isRouteVisibleToLinkedDriver(publishedPending, [pending])).toBe(false);
-    expect(getRoutePublishNotice(publishedPending, [pending])?.text).toContain('after app authentication');
+    expect(getRoutePublishBadge(publishedPending)?.text).toBe('Published');
+    expect(getRoutePublishBadge(publishedLinked, 'ko-KR')?.text).toBe('게시됨');
   });
 
   test('renders assigned past route geometry while unchanged edit controls stay disabled', () => {
@@ -217,7 +218,8 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     );
 
     expect(html).toContain('Road path ready');
-    expect(html).toContain('Published route — visible to the linked driver after the app refreshes.');
+    expect(html).toContain('class="route-publish-badge green">Published</span>');
+    expect(html).not.toContain('Published route — visible to the linked driver after the app refreshes.');
     expect(html).not.toContain('Driver app visible');
     expect(html).toMatch(/aria-label="Save route"[^>]*disabled=""/);
     expect(html).toContain('Driver &amp; options');
@@ -245,15 +247,19 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
       />,
     );
     const cardHeader = extractFirstMatch(html, /<div class="route-builder-card-header">([\s\S]*?)<div aria-label="Route Builder card tabs"/);
+    const routeStateList = extractFirstMatch(html, /<dl class="route-state-list">([\s\S]*?)<\/dl>/);
 
     expect(html.match(/aria-label="Save route"/g)).toHaveLength(1);
     expect(html).toContain('class="panel side-panel route-save-panel route-builder-card-shell"');
-    expect(html).toContain('class="route-builder-route-title" title="Route 2026-06-05"');
-    expect(cardHeader).toContain('Route 2026-06-05');
+    expect(html).not.toContain('class="route-builder-route-title"');
+    expect(cardHeader).toContain('Route state');
+    expect(cardHeader).not.toContain('Route 2026-06-05');
     expect(cardHeader).toContain('class="route-row-actions route-builder-card-actions"');
-    expect(cardHeader).toContain('All routes');
+    expect(cardHeader).not.toContain('All routes');
     expect(cardHeader).toContain('Delete');
     expect(cardHeader).not.toContain('route-stop-count-badge');
+    expect(routeStateList).not.toContain('<dt>Status</dt>');
+    expect(routeStateList).toContain('<dt>Driver</dt>');
     expect(html).toContain('Driver &amp; options');
     expect(html).toContain('Stop order');
     expect(html).toContain('aria-controls="route-builder-panel-driver-options"');
@@ -263,6 +269,9 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('class="route-builder-tab-body route-builder-tab-body--driver"');
     expect(html).toContain('class="route-end-toggle-checkbox"');
     expect(html).toContain('Return to store');
+    expect(html).not.toContain('Assigned driver');
+    expect(html).not.toContain('routing returns to the store after the final stop');
+    expect(html).not.toContain('routing ends at the final order stop');
     expect(html).toContain('class="route-builder-card-footer"');
     expect(html).not.toContain('Unsaved route changes are ready.');
     expect(html).not.toContain('Save route applies driver, return option, and stop order together.');

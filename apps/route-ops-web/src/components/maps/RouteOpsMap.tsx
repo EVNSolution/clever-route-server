@@ -57,8 +57,8 @@ type RouteOpsMapProps = {
   orders?: CanonicalOrderDto[];
   plannedOrderIds?: ReadonlySet<string>;
   selectedRouteStopId?: string | null;
-  subtitle: string;
-  title: string;
+  subtitle?: string;
+  title?: string;
 };
 
 export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops, headerAction, statusContent, onExitRouteMode, onMapClickCoordinate, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
@@ -317,13 +317,21 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
     if ((event.target as Element).closest('.route-stop-sequence-picker') !== null) return;
     onRouteStopPickerCloseRef.current?.();
   };
+  const hasHeading = title !== undefined || subtitle !== undefined || headerAction !== undefined;
 
   return (
     <article className="map-panel panel" data-route-map>
-      <div className="panel-heading">
-        <div><h2>{title}</h2><p>{subtitle}</p></div>
-        {headerAction === undefined ? null : <div className="map-panel-heading-action">{headerAction}</div>}
-      </div>
+      {hasHeading ? (
+        <div className="panel-heading">
+          {title === undefined && subtitle === undefined ? null : (
+            <div>
+              {title === undefined ? null : <h2>{title}</h2>}
+              {subtitle === undefined ? null : <p>{subtitle}</p>}
+            </div>
+          )}
+          {headerAction === undefined ? null : <div className="map-panel-heading-action">{headerAction}</div>}
+        </div>
+      ) : null}
       {statusContent === undefined ? null : <div className="map-panel-status">{statusContent}</div>}
       <div className="route-ops-map-frame" data-map-provider-mode={bootstrap.mapConfig.providerMode ?? 'none'} data-map-provider-status={bootstrap.mapConfig.status} onPointerDown={handleMapFramePointerDown}>
         {readiness === 'interactive_map' || onExitRouteMode !== undefined ? (
