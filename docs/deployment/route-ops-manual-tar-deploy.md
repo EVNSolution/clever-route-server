@@ -176,11 +176,15 @@ printf '%s  source.tar.gz\n' "$SOURCE_SHA" | sha256sum -c -
 docker load -i images.tar.gz
 
 cd "$APP_DIR"
-if [ -f .deploy/current-image.env ]; then
-  # shellcheck disable=SC1091
-  . .deploy/current-image.env
+current_env=.deploy/current-image.env
+test -f "$current_env"
+current_route_engine_image="$(grep -m1 '^ROUTE_ENGINE_IMAGE=' "$current_env" | cut -d= -f2- || true)"
+: "${current_route_engine_image:?missing current ROUTE_ENGINE_IMAGE in $current_env}"
+export ROUTE_ENGINE_IMAGE="$current_route_engine_image"
+current_route_engine_graph_host_dir="$(grep -m1 '^ROUTE_ENGINE_GRAPH_HOST_DIR=' "$current_env" | cut -d= -f2- || true)"
+if [ -n "$current_route_engine_graph_host_dir" ]; then
+  export ROUTE_ENGINE_GRAPH_HOST_DIR="$current_route_engine_graph_host_dir"
 fi
-: "${ROUTE_ENGINE_IMAGE:?missing current ROUTE_ENGINE_IMAGE}"
 
 if [ -z "${ROUTE_OPS_DRIVER_APP_DOWNLOAD_URL:-}" ]; then
   ROUTE_OPS_DRIVER_APP_DOWNLOAD_URL="$(grep -m1 '^DRIVER_APP_DOWNLOAD_URL=' infra/env/delivery-api.env | cut -d= -f2-)"
@@ -240,20 +244,20 @@ test "$PING_STATUS" = "Online" || { echo "SSM target ${INSTANCE_ID} is not Onlin
 test "$INSTANCE_ID" != "None" && test -n "$INSTANCE_ID"
 
 python3 - <<'PY' > /tmp/route-ops-manual-ssm.json
-import json, os
-cmd = f'''set -euo pipefail
-export AWS_REGION={os.environ.get('AWS_REGION', 'ap-northeast-2')!r}
-export IMAGE_TAG={os.environ['IMAGE_TAG']!r}
-export IMAGES_S3_URI={os.environ['IMAGES_S3_URI']!r}
-export SOURCE_S3_URI={os.environ['SOURCE_S3_URI']!r}
-export IMAGES_SHA={os.environ['IMAGES_SHA']!r}
-export SOURCE_SHA={os.environ['SOURCE_SHA']!r}
-export PRISMA_SCHEMA_SHA={os.environ['PRISMA_SCHEMA_SHA']!r}
-aws s3 cp {os.environ['HOST_SCRIPT_S3_URI']!r} /tmp/route-ops-manual-host.sh
+import json, os, shlex
+inner = f'''set -euo pipefail
+export AWS_REGION={shlex.quote(os.environ.get('AWS_REGION', 'ap-northeast-2'))}
+export IMAGE_TAG={shlex.quote(os.environ['IMAGE_TAG'])}
+export IMAGES_S3_URI={shlex.quote(os.environ['IMAGES_S3_URI'])}
+export SOURCE_S3_URI={shlex.quote(os.environ['SOURCE_S3_URI'])}
+export IMAGES_SHA={shlex.quote(os.environ['IMAGES_SHA'])}
+export SOURCE_SHA={shlex.quote(os.environ['SOURCE_SHA'])}
+export PRISMA_SCHEMA_SHA={shlex.quote(os.environ['PRISMA_SCHEMA_SHA'])}
+aws s3 cp {shlex.quote(os.environ['HOST_SCRIPT_S3_URI'])} /tmp/route-ops-manual-host.sh
 chmod +x /tmp/route-ops-manual-host.sh
 /tmp/route-ops-manual-host.sh
 '''
-print(json.dumps({"commands": [cmd]}))
+print(json.dumps({"commands": ["bash -lc " + shlex.quote(inner)]}))
 PY
 
 COMMAND_ID="$(aws ssm send-command \
@@ -280,16 +284,34 @@ aws ssm get-command-invocation \
 ```
 
 A successful 2026-06-16 run used SSM command
-`3364a14d-2b7f-4a1b-83e2-60d16916c53d`.
+`5dfee14e-0a03-484d-b79d-151b3ed277b6` for git SHA
+`57448233f27e0cf310fdcc90e7e95f2ad2e2ae3d`.
 
 ## 4. Required post-deploy checks
 
 Run a read-only SSM check after the deploy command succeeds:
 
 ```bash
-cat > /tmp/route-ops-postdeploy-check.json <<'JSON'
-{"commands":["set -euo pipefail\ncd /srv/clever-route-server\nprintf 'current image env:\n'\nsed -n '1,120p' .deploy/current-image.env\nprintf '\ncontainers:\n'\ndocker compose -p clever-route --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml ps delivery-api route-engine\nprintf '\nproof media host dir:\n'\nstat -c '%u:%g %a %n' /srv/clever-route-server/data/driver-proof-media\nprintf '\nproof media container dir:\n'\ndocker compose -p clever-route --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml exec -T delivery-api sh -lc 'stat -c \"%u:%g %a %n\" /app/var/driver-proof-media && test -w /app/var/driver-proof-media && echo writable:yes'\nprintf '\nhealth:\n'\ncurl -fsS https://clever-route.cleversystem.ai/healthz\nprintf '\nproof-media unauth route check:\n'\ncurl -sS -o /tmp/proof.out -w '%{http_code}\\n' -X POST https://clever-route.cleversystem.ai/driver/proof-media\ncat /tmp/proof.out\n"]}
-JSON
+python3 - <<'PY' > /tmp/route-ops-postdeploy-check.json
+import json, shlex
+inner = r'''set -euo pipefail
+cd /srv/clever-route-server
+printf 'current image env:\n'
+sed -n '1,120p' .deploy/current-image.env
+printf '\ncontainers:\n'
+docker compose -p clever-route --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml ps delivery-api route-engine
+printf '\nproof media host dir:\n'
+stat -c '%u:%g %a %n' /srv/clever-route-server/data/driver-proof-media
+printf '\nproof media container dir:\n'
+docker compose -p clever-route --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml exec -T delivery-api sh -lc 'stat -c "%u:%g %a %n" /app/var/driver-proof-media && test -w /app/var/driver-proof-media && echo writable:yes'
+printf '\nhealth:\n'
+curl -fsS https://clever-route.cleversystem.ai/healthz
+printf '\nproof-media unauth route check:\n'
+curl -sS -o /tmp/proof.out -w '%{http_code}\n' -X POST https://clever-route.cleversystem.ai/driver/proof-media
+cat /tmp/proof.out
+'''
+print(json.dumps({"commands": ["bash -lc " + shlex.quote(inner)]}))
+PY
 
 CHECK_ID="$(aws ssm send-command \
   --region "$AWS_REGION" \
