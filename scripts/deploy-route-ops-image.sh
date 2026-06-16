@@ -698,8 +698,8 @@ ensure_route_engine_host_env() {
 
   local route_engine_timeout_ms
   route_engine_timeout_ms="$(read_route_ops_host_env_value ROUTE_ENGINE_TIMEOUT_MS)"
-  if [ -z "$route_engine_timeout_ms" ] || [ "$route_engine_timeout_ms" = "30000" ] || [ "$route_engine_timeout_ms" = "300000" ]; then
-    set_route_ops_host_env_value ROUTE_ENGINE_TIMEOUT_MS "120000"
+  if [ -z "$route_engine_timeout_ms" ] || [ "$route_engine_timeout_ms" = "30000" ] || [ "$route_engine_timeout_ms" = "120000" ] || [ "$route_engine_timeout_ms" = "300000" ]; then
+    set_route_ops_host_env_value ROUTE_ENGINE_TIMEOUT_MS "180000"
   fi
 
   local route_optimization_job_timeout_budget_ms
@@ -865,7 +865,7 @@ smoke_route_engine_from_runtime_network() {
   image_env_file="$1"
   ready_timeout_ms="${ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS:-5000}"
   warmup_timeout_ms="${ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS:-600000}"
-  solve_timeout_ms="${ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS:-120000}"
+  solve_timeout_ms="${ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS:-180000}"
   echo "Smoking route_engine from the delivery-api runtime network: readyTimeoutMs=${ready_timeout_ms} warmupTimeoutMs=${warmup_timeout_ms} solveTimeoutMs=${solve_timeout_ms}."
   route_ops_trace_event "route_engine_smoke_start" "$ROUTE_OPS_DEPLOY_CURRENT_STEP" "started" "readyTimeoutMs=${ready_timeout_ms} warmupTimeoutMs=${warmup_timeout_ms} solveTimeoutMs=${solve_timeout_ms}"
   route_engine_trace_monitor_start "route_engine_smoke"
@@ -890,7 +890,7 @@ const positiveInteger = (name, fallback) => {
 };
 const readyTimeoutMs = positiveInteger('ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS', 5000);
 const warmupTimeoutMs = positiveInteger('ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS', 600000);
-const solveTimeoutMs = positiveInteger('ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS', 120000);
+const solveTimeoutMs = positiveInteger('ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS', 180000);
 const emit = (event, data = {}) => {
   console.log(JSON.stringify({ event, ts: new Date().toISOString(), ...data }));
 };
