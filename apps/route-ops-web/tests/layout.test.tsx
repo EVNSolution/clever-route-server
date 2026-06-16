@@ -234,6 +234,12 @@ describe('route ops layout components', () => {
     expect(html).toContain('Search');
   });
 
+  test('Orders page does not prefill the delivery date filter', () => {
+    const html = renderToStaticMarkup(<OrdersPage bootstrap={bootstrap()} navigate={() => undefined} setError={() => undefined} />);
+
+    expect(html).toContain('filter-field filter-field--date">Delivery date<input type="date" value=""/>');
+  });
+
   test('Orders page renders Korean tabs filters and add-plan copy from locale', () => {
     const html = renderToStaticMarkup(<OrdersPage bootstrap={bootstrap('ko-KR')} navigate={() => undefined} setError={() => undefined} />);
 
