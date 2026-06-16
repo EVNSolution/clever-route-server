@@ -190,10 +190,9 @@ export function OrdersPage({
   const initialRouteDate = useMemo(() => today(), []);
   const [orders, setOrders] = useState<CanonicalOrderDto[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [filters, setFilters] = useState<OrderFilterState>(() => ({
-    ...createDefaultOrderFilters(),
-    deliveryDate: initialRouteDate,
-  }));
+  const [filters, setFilters] = useState<OrderFilterState>(() =>
+    createDefaultOrderFilters(),
+  );
   const initialCopy = getOrdersCopy(bootstrap.locale);
   const [routeDate, setRouteDate] = useState(initialRouteDate);
   const [routeName, setRouteName] = useState(() => initialCopy.defaultRouteName(initialRouteDate));
