@@ -901,6 +901,7 @@ export function toRouteOpsOrderDto(order: CanonicalOrderRow): {
   geocodeStatus: CanonicalOrderRow["geocodeStatus"];
   geocodeDiagnostics: CanonicalOrderRow["geocodeDiagnostics"] | null;
   health: OrderHealth;
+  items: CanonicalOrderRow["items"];
   normalizedPaymentReason: string | null;
   normalizedPaymentStatus: CanonicalOrderRow["normalizedPaymentStatus"] | null;
   orderId: string;
@@ -960,6 +961,7 @@ export function toRouteOpsOrderDto(order: CanonicalOrderRow): {
     geocodeStatus: order.geocodeStatus,
     geocodeDiagnostics: order.geocodeDiagnostics ?? null,
     health: deriveOrderHealth(order),
+    items: order.items ?? [],
     metadataResolved,
     normalizedPaymentReason: order.normalizedPaymentReason ?? null,
     normalizedPaymentStatus: order.normalizedPaymentStatus ?? null,
@@ -1034,6 +1036,7 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
     longitude: number | null;
   };
   id: string;
+  itemSummary: RoutePlanSummary["itemSummary"];
   missingCoordinates: number;
   name: string;
   planDate: string;
@@ -1049,6 +1052,7 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
     driverId: routePlan.driverId ?? null,
     depot: routePlan.depot,
     id: routePlan.id,
+    itemSummary: routePlan.itemSummary ?? emptyRouteItemSummary(),
     missingCoordinates: routePlan.missingCoordinates,
     name: routePlan.name,
     planDate: routePlan.planDate,
@@ -1065,6 +1069,7 @@ export function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
   routePlan: ReturnType<typeof toRouteOpsRoutePlanDto>;
   routeStopPoints: Array<{
     deliveryStopId: string;
+    items: RoutePlanDetail["stops"][number]["items"];
     inputCoordinates: [number, number] | null;
     name: string | null;
     sequence: number;
@@ -1078,6 +1083,7 @@ export function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
     deliveryArea: string | null;
     deliveryStopId: string;
     orderId: string;
+    items: RoutePlanDetail["stops"][number]["items"];
     orderName: string;
     recipientName: string | null;
     sequence: number;
@@ -1091,6 +1097,8 @@ export function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
     routePlan: toRouteOpsRoutePlanDto(detail.routePlan),
     routeStopPoints: detail.routeStopPoints.map((point) => ({
       deliveryStopId: point.deliveryStopId,
+      items:
+        detail.stops.find((stop) => stop.deliveryStopId === point.deliveryStopId)?.items ?? [],
       inputCoordinates: point.inputCoordinates,
       name: point.name,
       sequence: point.sequence,
@@ -1103,6 +1111,7 @@ export function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
       coordinates: stop.coordinates,
       deliveryArea: stop.deliveryArea,
       deliveryStopId: stop.deliveryStopId,
+      items: stop.items ?? [],
       orderId: stop.orderId,
       orderName: stop.orderName,
       recipientName: stop.recipientName,
@@ -1140,6 +1149,16 @@ export function toRouteOpsDriverDto(driver: AdminDriverRow): {
     recentEventsCount: driver.recentEventsCount,
     status: driver.status,
     updatedAt: driver.updatedAt,
+  };
+}
+
+function emptyRouteItemSummary(): NonNullable<RoutePlanSummary["itemSummary"]> {
+  return {
+    changedSincePublish: false,
+    fingerprint: "",
+    itemTypes: 0,
+    items: [],
+    totalQuantity: 0,
   };
 }
 

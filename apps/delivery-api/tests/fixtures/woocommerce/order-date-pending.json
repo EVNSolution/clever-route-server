@@ -27,9 +27,20 @@
     "country": "CA"
   },
   "meta_data": [
-    { "key": "delivery_area", "value": "North York" }
+    {
+      "key": "delivery_area",
+      "value": "North York"
+    }
   ],
   "line_items": [
-    { "id": 2, "name": "Synthetic soup", "quantity": 2, "sku": "SYN-SOUP", "meta_data": [] }
+    {
+      "id": 2,
+      "name": "Synthetic soup",
+      "quantity": 2,
+      "sku": "SYN-SOUP",
+      "meta_data": [],
+      "product_id": 1000,
+      "variation_id": 0
+    }
   ]
 }

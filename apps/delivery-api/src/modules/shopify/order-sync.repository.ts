@@ -20,6 +20,7 @@ import {
   type OperateDeliveryStatus,
   type OrderHealth,
 } from "./order-operate-status.js";
+import { toOrderItemDto, type OrderItemRecordLike } from "../order-items/order-items.js";
 import { readNormalizedPaymentStatus } from "../payments/normalized-payment-status.js";
 import { WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED_NOTIFICATION } from "../notifications/admin-notification.repository.js";
 
@@ -134,13 +135,14 @@ type OrderSyncPrismaClient = Pick<
   | "commerceConnectionOrderMapping"
   | "deliveryStop"
   | "order"
+  | "orderItem"
   | "orderDeliveryFact"
   | "shop"
 >;
 
 type OrderSyncWriteClient = Pick<
   PrismaClient,
-  "deliveryStop" | "order" | "orderDeliveryFact"
+  "deliveryStop" | "order" | "orderItem" | "orderDeliveryFact"
 >;
 
 type ExistingOrder = {
@@ -202,6 +204,7 @@ type CanonicalOrderRecord = {
   fulfillmentStatus: string | null;
   id: string;
   name: string;
+  orderItems?: OrderItemRecordLike[];
   phone: string | null;
   processedAt: Date | null;
   rawPayload: unknown;
@@ -978,6 +981,26 @@ export class PrismaOrderSyncRepository {
         },
       },
     });
+    if (input.synced.orderItems !== undefined) {
+      await input.tx.orderItem.deleteMany({
+        where: { orderId: order.id, shopId: input.shopId },
+      });
+      if (input.synced.orderItems.length > 0) {
+        await input.tx.orderItem.createMany({
+          data: input.synced.orderItems.map((item, index) => ({
+            lineIndex: index,
+            name: item.name,
+            options: toJson(item.options),
+            orderId: order.id,
+            productId: item.productId,
+            quantity: item.quantity,
+            shopId: input.shopId,
+            sku: item.sku,
+            variationId: item.variationId,
+          })),
+        });
+      }
+    }
 
     const existingFact = input.existing?.deliveryFacts?.[0] ?? null;
     const existingStop = input.existing?.deliveryStops?.[0] ?? null;
@@ -1113,6 +1136,9 @@ function canonicalOrderInclude(): Prisma.OrderInclude {
         },
       },
       take: 1,
+    },
+    orderItems: {
+      orderBy: { lineIndex: "asc" },
     },
   };
 }
@@ -2622,6 +2648,7 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
       stop?.geocodeStatus ?? fact?.geocodeStatus,
     ),
     hasCoordinates,
+    items: (order.orderItems ?? []).map((item) => toOrderItemDto(item)),
     latitude,
     longitude,
     name: order.name,

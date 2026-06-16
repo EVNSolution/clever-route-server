@@ -4,6 +4,7 @@ import type {
 } from "./order-delivery-scope.js";
 import { calculateDeliveryScope } from "./order-delivery-scope.js";
 import type { NormalizedPaymentStatus } from "../payments/normalized-payment-status.js";
+import type { OrderItemDto } from "../order-items/order-items.js";
 
 export type ShopifyOrderAttribute = {
   key: string;
@@ -147,6 +148,7 @@ export type CanonicalOrderRow = {
   geocodeStatus: "PENDING" | "RESOLVED" | "FAILED" | "NOT_REQUIRED";
   geocodeDiagnostics?: GeocodeDiagnostics | null;
   hasCoordinates: boolean;
+  items?: OrderItemDto[];
   latitude: number | null;
   longitude: number | null;
   name: string;
@@ -296,6 +298,7 @@ export type SyncedOrderDeliveryFactInput = {
 export type SyncedOrderWithDeliveryStopInput = {
   deliveryFact?: SyncedOrderDeliveryFactInput | null;
   deliveryStop: SyncedDeliveryStopInput | null;
+  orderItems?: OrderItemDto[] | undefined;
   order: SyncedOrderInput;
 };
 

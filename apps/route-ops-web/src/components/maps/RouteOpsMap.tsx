@@ -6,7 +6,8 @@ import { installMissingMapImageFallback } from '../../maps/maplibre-missing-imag
 import { installPmtilesProtocol } from '../../maps/pmtiles';
 import { mapReadiness } from '../../maps/provider';
 import { getMapCopy, resolveLocale } from '../../i18n';
-import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStopDto } from '../../types';
+import { formatOrderItemLine, getOrderItems } from '../../orderItems';
+import type { BootstrapPayload, CanonicalOrderDto, OrderItemDto, RoutePlanDetailDto, RouteStopDto } from '../../types';
 
 type MapLibreModule = typeof import('maplibre-gl');
 type MapLibreMap = InstanceType<MapLibreModule['Map']>;
@@ -21,6 +22,7 @@ type RouteStopSequencePickerProps = {
   onPickSequence(sequence: number): void;
   orderName: string;
   sequenceCount: number;
+  items?: OrderItemDto[];
 };
 
 const ORDER_PIN_IMAGE_ID = 'orders-map-pin';
@@ -351,6 +353,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
             onPickSequence={(sequence) => onRouteStopSequencePickRef.current?.(selectedRouteStop.deliveryStopId, sequence)}
             orderName={selectedRouteStop.orderName}
             sequenceCount={routeStops.length}
+            items={selectedRouteStop.items}
           />
         ) : null}
       </div>
@@ -860,9 +863,10 @@ function FitMapIcon(): ReactElement {
   );
 }
 
-export function RouteStopSequencePicker({ anchor, currentSequence, locale, onClose, onPickSequence, orderName, sequenceCount }: RouteStopSequencePickerProps): ReactElement {
+export function RouteStopSequencePicker({ anchor, currentSequence, items, locale, onClose, onPickSequence, orderName, sequenceCount }: RouteStopSequencePickerProps): ReactElement {
   const t = getMapCopy(locale);
   const choices = Array.from({ length: sequenceCount }, (_, index) => index + 1);
+  const orderItems = getOrderItems(items);
   const focusTargetRef = useRef<HTMLButtonElement | null>(null);
   const preferredFocusSequence = choices.find((sequence) => sequence !== currentSequence) ?? null;
   useEffect(() => {
@@ -878,6 +882,16 @@ export function RouteStopSequencePicker({ anchor, currentSequence, locale, onClo
       style={{ left: `${anchor.x}px`, top: `${anchor.y}px` }}
     >
       <button aria-label={t.closeRouteStopSequencePicker} className="route-stop-sequence-picker__close" onClick={onClose} ref={preferredFocusSequence === null ? focusTargetRef : undefined} type="button">×</button>
+      {orderItems.length === 0 ? null : (
+        <div className="route-stop-sequence-picker__items" aria-label={t.stopItems}>
+          <strong>{orderName}</strong>
+          <ul>
+            {orderItems.map((item, itemIndex) => (
+              <li key={`${item.productId}:${item.variationId}:${item.name}:${itemIndex}`}>{formatOrderItemLine(item)}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="route-stop-sequence-picker__choices">
         {choices.map((sequence) => {
           const isCurrent = sequence === currentSequence;

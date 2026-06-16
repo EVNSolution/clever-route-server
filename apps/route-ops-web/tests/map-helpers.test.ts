@@ -114,8 +114,8 @@ describe('route ops map helpers', () => {
     const detail: RoutePlanDetailDto = {
       ...routeDetail(),
       routeStopPoints: [
-        { deliveryStopId: 'a', inputCoordinates: [-79.3, 43.6], name: 'Road A', sequence: 1, snapDistanceMeters: 12.3, snappedCoordinates: [-79.31, 43.61], sourceOrderId: 'source-a' },
-        { deliveryStopId: 'b', inputCoordinates: [-79.4, 43.65], name: null, sequence: 2, snapDistanceMeters: null, snappedCoordinates: null, sourceOrderId: 'source-b' }
+        { deliveryStopId: 'a', inputCoordinates: [-79.3, 43.6], items: [], name: 'Road A', sequence: 1, snapDistanceMeters: 12.3, snappedCoordinates: [-79.31, 43.61], sourceOrderId: 'source-a' },
+        { deliveryStopId: 'b', inputCoordinates: [-79.4, 43.65], items: [], name: null, sequence: 2, snapDistanceMeters: null, snappedCoordinates: null, sourceOrderId: 'source-b' }
       ]
     };
     const points = getRouteMapPoints(detail);
@@ -275,8 +275,8 @@ function routeDetail(): RoutePlanDetailDto {
     },
     routeStopPoints: [],
     stops: [
-      { addressLabel: 'A', coordinates: { latitude: 43.6, longitude: -79.3 }, deliveryArea: 'Toronto', deliveryStopId: 'a', orderId: 'order-a', orderName: '#1', recipientName: 'A', sequence: 1, sourceOrderId: 'source-a', status: 'PENDING' },
-      { addressLabel: 'B', coordinates: { latitude: 43.65, longitude: -79.4 }, deliveryArea: 'Toronto', deliveryStopId: 'b', orderId: 'order-b', orderName: '#2', recipientName: 'B', sequence: 2, sourceOrderId: 'source-b', status: 'PENDING' }
+      { addressLabel: 'A', coordinates: { latitude: 43.6, longitude: -79.3 }, deliveryArea: 'Toronto', deliveryStopId: 'a', items: [], orderId: 'order-a', orderName: '#1', recipientName: 'A', sequence: 1, sourceOrderId: 'source-a', status: 'PENDING' },
+      { addressLabel: 'B', coordinates: { latitude: 43.65, longitude: -79.4 }, deliveryArea: 'Toronto', deliveryStopId: 'b', items: [], orderId: 'order-b', orderName: '#2', recipientName: 'B', sequence: 2, sourceOrderId: 'source-b', status: 'PENDING' }
     ]
   };
 }

@@ -17,6 +17,11 @@ import type {
 } from '../route-plans/route-plan.types.js';
 import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
 import { readNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
+import {
+  aggregateOrderItems,
+  toOrderItemDto,
+  type OrderItemRecordLike
+} from '../order-items/order-items.js';
 
 type DriverAssignedRoutePrismaClient = Pick<PrismaClient, 'driver' | 'routePlan' | 'shop'>;
 
@@ -51,6 +56,7 @@ type AssignedRoutePlanStopRecord = {
       fulfillmentStatus: string | null;
       id: string;
       name: string;
+      orderItems?: OrderItemRecordLike[];
       rawPayload: unknown;
       shopifyOrderGid: string;
     };
@@ -68,7 +74,13 @@ const assignedRouteInclude = {
     include: {
       deliveryStop: {
         include: {
-          order: true
+          order: {
+            include: {
+              orderItems: {
+                orderBy: { lineIndex: 'asc' }
+              }
+            }
+          }
         }
       }
     },
@@ -157,6 +169,7 @@ function toAssignedRouteResult(
 
 function toRoutePlanDetailForRouting(routePlan: AssignedRoutePlanRecord): RoutePlanDetail {
   const sortedStops = [...routePlan.routeStops].sort((left, right) => left.sequence - right.sequence);
+  const itemSummary = aggregateOrderItems(routeItemDtosFromStops(sortedStops));
   return {
     routePlan: {
       createdAt: routePlan.createdAt.toISOString(),
@@ -167,6 +180,7 @@ function toRoutePlanDetailForRouting(routePlan: AssignedRoutePlanRecord): RouteP
         longitude: decimalNumber(routePlan.depotLongitude)
       },
       id: routePlan.id,
+      itemSummary,
       missingCoordinates: sortedStops.filter((routeStop) => {
         const stop = routeStop.deliveryStop;
         return decimalNumber(stop.latitude) === null || decimalNumber(stop.longitude) === null;
@@ -202,6 +216,7 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssi
       longitude: decimalNumber(deliveryStop.longitude)
     },
     deliveryStopId: deliveryStop.id,
+    items: (deliveryStop.order.orderItems ?? []).map((item) => toOrderItemDto(item)),
     normalizedPaymentStatus: readNormalizedPaymentStatus(rawPayload?.normalizedPaymentStatus),
     orderName: deliveryStop.order.name,
     phone: deliveryStop.phone,
@@ -244,6 +259,7 @@ function toRoutePlanDetailStop(routeStop: AssignedRoutePlanStopRecord): RoutePla
     deliveryStopId: deliveryStop.id,
     financialStatus: deliveryStop.order.financialStatus,
     fulfillmentStatus: deliveryStop.order.fulfillmentStatus,
+    items: (deliveryStop.order.orderItems ?? []).map((item) => toOrderItemDto(item)),
     normalizedPaymentStatus: readNormalizedPaymentStatus(rawPayload?.normalizedPaymentStatus),
     orderId: deliveryStop.order.id,
     orderName: deliveryStop.order.name,
@@ -253,6 +269,12 @@ function toRoutePlanDetailStop(routeStop: AssignedRoutePlanStopRecord): RoutePla
     shopifyOrderGid: deliveryStop.order.shopifyOrderGid,
     status: deliveryStop.status
   };
+}
+
+function routeItemDtosFromStops(stops: AssignedRoutePlanStopRecord[]) {
+  return stops.flatMap((routeStop) =>
+    (routeStop.deliveryStop.order.orderItems ?? []).map((item) => toOrderItemDto(item))
+  );
 }
 
 function readRouteEndMode(value: unknown): RoutePlanEndMode {

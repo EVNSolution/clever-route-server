@@ -60,6 +60,16 @@ describe("mapWooCommerceOrderToDeliveryInputs", () => {
     expect(mapped.order.rawPayload.metadataKeys).toEqual(
       expect.arrayContaining(["delivery_date", "delivery_area"]),
     );
+    expect(mapped.orderItems).toEqual([
+      {
+        productId: 1000,
+        variationId: 0,
+        name: "Synthetic meal box",
+        sku: "SYN-BOX",
+        options: [],
+        quantity: 1,
+      },
+    ]);
   });
 
   test("stores normalized Woo payment status beside legacy financial method text", async () => {
@@ -159,6 +169,31 @@ describe("mapWooCommerceOrderToDeliveryInputs", () => {
     expect(mapped.order.reviewReasons).toContain(
       "non_deliverable_status:cancelled",
     );
+  });
+
+  test("marks Woo orders with invalid item data as needs review", async () => {
+    const order = await readFixture("order-delivery-date-meta.json");
+    order.line_items = [
+      {
+        name: "",
+        product_id: null,
+        quantity: 0,
+      },
+    ];
+
+    const mapped = mapWooCommerceOrderToDeliveryInputs(order, {
+      siteUrl: "https://woo.example.test/",
+    });
+
+    expect(mapped.order.readiness).toBe("NEEDS_REVIEW");
+    expect(mapped.order.reviewReasons).toEqual(
+      expect.arrayContaining([
+        "missing_item_product_id",
+        "missing_item_quantity",
+        "missing_item_name",
+      ]),
+    );
+    expect(mapped.orderItems).toEqual([]);
   });
 
   test("flags Woo delivery date and delivery day mismatches for metadata review", async () => {

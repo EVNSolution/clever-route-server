@@ -1,4 +1,5 @@
 import type { NormalizedPaymentStatus } from "../payments/normalized-payment-status.js";
+import type { OrderItemDto, RouteItemSummary } from "../order-items/order-items.js";
 
 export type RoutePlanRouteScopeInput = {
   deliveryDate: string;
@@ -41,6 +42,7 @@ export type RoutePlanOrderInput = {
   email: string | null;
   financialStatus: string | null;
   fulfillmentStatus: string | null;
+  items?: OrderItemDto[] | undefined;
   latitude: number | null;
   longitude: number | null;
   name: string;
@@ -97,6 +99,7 @@ export type RoutePlanSummary = {
   driver?: RoutePlanDriverSummary | null;
   driverId?: string | null;
   id: string;
+  itemSummary?: RouteItemSummary;
   missingCoordinates: number;
   name: string;
   planDate: string;
@@ -138,6 +141,7 @@ export type RoutePlanDetailStop = {
   fulfillmentStatus: string | null;
   normalizedPaymentStatus?: NormalizedPaymentStatus | null;
   orderId: string;
+  items?: OrderItemDto[];
   orderName: string;
   paymentStatus: string | null;
   recipientName: string | null;

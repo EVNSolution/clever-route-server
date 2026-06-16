@@ -523,6 +523,74 @@ small,
 .compact-kpis {
   grid-template-columns: repeat(4, 1fr);
 }
+.route-summary-lower {
+  display: grid;
+  gap: 12px;
+}
+.route-summary-kpis {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+.route-item-summary-card,
+.order-detail-items-card {
+  background: #fff;
+  border: 1px solid #dcdfe7;
+  border-radius: 18px;
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px 16px;
+}
+.route-item-summary-heading {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+.route-item-summary-heading h3,
+.order-detail-items-card h4 {
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  margin: 0;
+  text-transform: uppercase;
+}
+.route-item-empty,
+.order-detail-items-empty {
+  color: #64748b;
+  font-weight: 800;
+  margin: 0;
+}
+.route-item-table-scroll,
+.order-detail-items-table-scroll {
+  min-width: 0;
+  overflow: auto;
+}
+.route-item-table,
+.order-detail-items-table {
+  border-collapse: collapse;
+  min-width: 560px;
+  width: 100%;
+}
+.route-item-table th,
+.route-item-table td,
+.order-detail-items-table th,
+.order-detail-items-table td {
+  border-top: 1px solid #eef2f7;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.route-item-table th,
+.order-detail-items-table th {
+  color: #64748b;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.route-item-table td:last-child,
+.order-detail-items-table td:last-child {
+  font-weight: 900;
+  text-align: right;
+}
 .kpi {
   background: #fff;
   border: 1px solid #dcdfe7;
@@ -1430,6 +1498,24 @@ button.danger.subtle {
   display: inline-flex;
   gap: 5px;
 }
+.route-stop-item-lines,
+.route-stop-sequence-picker__items ul {
+  color: #334155;
+  display: grid;
+  font-size: 12px;
+  font-weight: 800;
+  gap: 2px;
+  list-style: none;
+  margin: 2px 0 0;
+  min-width: 0;
+  padding: 0;
+}
+.route-stop-item-lines li,
+.route-stop-sequence-picker__items li {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .route-stop-compact-actions {
   flex-direction: column;
 }
@@ -1547,6 +1633,20 @@ button.danger.subtle {
   border-top: 1px solid #e2e8f0;
   bottom: auto;
   top: -8px;
+}
+.route-stop-sequence-picker__items {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 10px;
+  min-width: 0;
+}
+.route-stop-sequence-picker__items strong {
+  display: block;
+  font-size: 13px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .route-stop-sequence-picker__choices {
   display: grid;

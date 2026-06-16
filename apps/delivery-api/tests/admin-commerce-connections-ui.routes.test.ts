@@ -2417,12 +2417,12 @@ describe("Admin WooCommerce connection UI routes", () => {
       );
       expect(completed?.summary).toEqual(
         expect.objectContaining({
-          alreadyHasCoordinates: 1,
+          alreadyHasCoordinates: 0,
           attempted: 1,
           failed: 0,
           noAddress: 0,
           resolved: 1,
-          skipped: 1,
+          skipped: 0,
         }),
       );
       expect(listCanonicalOrders).toHaveBeenCalledWith({

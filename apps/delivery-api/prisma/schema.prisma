@@ -188,6 +188,7 @@ model Shop {
   updatedAt                       DateTime                         @updatedAt @db.Timestamptz(6)
   webhookEvents                   ShopifyWebhookEvent[]
   orders                          Order[]
+  orderItems                      OrderItem[]
   deliveryStops                   DeliveryStop[]
   routePlans                      RoutePlan[]
   drivers                         Driver[]
@@ -473,6 +474,7 @@ model Order {
   deliveryStatus       DeliveryOrderStatus    @default(PENDING)
   createdAt            DateTime               @default(now()) @db.Timestamptz(6)
   updatedAt            DateTime               @updatedAt @db.Timestamptz(6)
+  orderItems           OrderItem[]
   deliveryStops        DeliveryStop[]
   deliveryFacts        OrderDeliveryFact[]
 
@@ -483,6 +485,28 @@ model Order {
   @@index([shopId, sourcePlatform, sourceUpdatedAt])
   @@index([shopId, deliveryStatus, processedAt])
   @@map("orders")
+}
+
+model OrderItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  shopId      String   @db.Uuid
+  shop        Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  orderId     String   @db.Uuid
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId   Int
+  variationId Int      @default(0)
+  lineIndex   Int
+  name        String   @db.Text
+  sku         String?  @db.Text
+  options     Json
+  quantity    Int
+  createdAt   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([orderId, lineIndex])
+  @@index([shopId, orderId])
+  @@index([shopId, productId, variationId])
+  @@map("order_items")
 }
 
 model DeliveryStop {

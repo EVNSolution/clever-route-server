@@ -192,6 +192,7 @@ export async function runBulkGeocodeJob(input: {
       shopDomain: input.job.shopDomain,
     });
     input.job.counts.matched = orders.length;
+    const ordersToGeocode = orders.filter((order) => !hasRouteOpsCoordinates(order));
     const publicAttemptLimit =
       input.services.geocodingService.status.providerPolicy ===
       "public_nominatim"
@@ -205,13 +206,7 @@ export async function runBulkGeocodeJob(input: {
     };
     touchBulkGeocodeJob(input.job);
 
-    for (const order of orders) {
-      if (hasRouteOpsCoordinates(order)) {
-        input.job.counts.skippedAlreadyGeocoded += 1;
-        touchBulkGeocodeJob(input.job);
-        continue;
-      }
-
+    for (const order of ordersToGeocode) {
       if (
         publicAttemptLimit !== null &&
         input.job.counts.attempted >= publicAttemptLimit
@@ -366,9 +361,7 @@ export function toBulkGeocodeOrderResponse(job: BulkGeocodeJob): {
       resolved: job.counts.succeeded,
       skippedByPolicy: job.counts.skippedByPolicy,
       skipped:
-        job.counts.skippedAlreadyGeocoded +
-        job.counts.noAddress +
-        job.counts.skippedByPolicy,
+        job.counts.skippedAlreadyGeocoded + job.counts.skippedByPolicy,
     },
   };
 }

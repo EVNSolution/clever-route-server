@@ -267,11 +267,22 @@ export function buildGeocodingQueries(address: GeocodingAddress): GeocodingQuery
       : null;
 
   const withoutPostalAddress: GeocodingAddress = { ...address, postalCode: null };
+  const postalOnlyAddress: GeocodingAddress = {
+    ...address,
+    address1: null,
+    address2: null,
+    city: null,
+    province: null,
+  };
   const withoutUnitAndPostalAddress: GeocodingAddress = {
     ...address,
     address2: null,
     postalCode: null,
   };
+  const postalOnly = normalizeAddress(postalOnlyAddress);
+  const structuredPostalOnly = hasPostalCode
+    ? buildStructuredQuery(postalOnlyAddress, 'structured_postal_only')
+    : null;
   const withoutUnitAndPostal = normalizeAddress(withoutUnitAndPostalAddress);
   const fullWithoutPostal = normalizeAddress(withoutPostalAddress);
   const structuredWithoutUnitNoPostal = hasPostalCode
@@ -320,6 +331,10 @@ export function buildGeocodingQueries(address: GeocodingAddress): GeocodingQuery
     hasCity && fullWithoutCity !== null
       ? buildFreeformQuery(fullWithoutCity, 'freeform_no_city')
       : null,
+    hasPostalCode && postalOnly !== null
+      ? buildFreeformQuery(postalOnly, 'freeform_postal_only')
+      : null,
+    structuredPostalOnly,
     structuredWithoutUnitNoPostal,
     structuredFullNoPostal,
     hasPostalCode && withoutUnitAndPostal !== null
@@ -347,6 +362,7 @@ function buildStructuredQuery(
     | 'structured_no_city'
     | 'structured_no_city_no_postal'
     | 'structured_no_postal'
+    | 'structured_postal_only'
     | 'structured_without_unit'
     | 'structured_without_unit_no_city'
     | 'structured_without_unit_no_city_no_postal'
@@ -359,7 +375,7 @@ function buildStructuredQuery(
   ]);
   const city = clean(address.city);
   const state = clean(address.province);
-  const postalcode = clean(address.postalCode);
+  const postalcode = cleanPostalCode(address.postalCode);
   const country = countryName(address.countryCode);
   const countrycodes = countryCodeFilter(address.countryCode);
   if (street === null && city === null && state === null && postalcode === null && country === null) return null;
@@ -390,6 +406,7 @@ function buildFreeformQuery(
     | 'freeform_no_city'
     | 'freeform_no_city_no_postal'
     | 'freeform_no_postal'
+    | 'freeform_postal_only'
     | 'freeform_without_unit'
     | 'freeform_without_unit_no_city'
     | 'freeform_without_unit_no_city_no_postal'
@@ -414,7 +431,7 @@ function keepsUnitInStructuredShape(shape: GeocodingQuery['shape']): boolean {
 }
 
 function addressParts(address: GeocodingAddress): Array<string | null> {
-  return [address.address1, address.address2, address.city, address.province, address.postalCode, address.countryCode];
+  return [cleanPostalCode(address.postalCode), address.address1, address.address2, address.city, address.province, address.countryCode];
 }
 
 function normalizeAddressParts(parts: Array<string | null>): string | null {
@@ -438,6 +455,15 @@ function clean(value: string | null): string | null {
   if (value === null) return null;
   const trimmed = value.trim();
   return trimmed === '' ? null : trimmed;
+}
+
+function cleanPostalCode(value: string | null): string | null {
+  const trimmed = clean(value);
+  if (trimmed === null) return null;
+  const compact = trimmed.replace(/\s+/gu, '').toUpperCase();
+  return /^[A-Z][0-9][A-Z][0-9][A-Z][0-9]$/u.test(compact)
+    ? `${compact.slice(0, 3)} ${compact.slice(3)}`
+    : trimmed;
 }
 
 function countryName(value: string | null): string | null {

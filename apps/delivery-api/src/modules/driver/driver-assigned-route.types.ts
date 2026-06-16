@@ -2,6 +2,7 @@ import type {
   RoutePlanRouteGeometry,
   RoutePlanRouteMetrics
 } from '../route-plans/route-plan.types.js';
+import type { OrderItemDto } from '../order-items/order-items.js';
 import type { NormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
 
 export type DriverAssignedRouteInput = {
@@ -24,6 +25,7 @@ export type DriverAssignedRouteStop = {
     longitude: number | null;
   };
   deliveryStopId: string;
+  items: OrderItemDto[];
   normalizedPaymentStatus: NormalizedPaymentStatus | null;
   orderName: string;
   phone: string | null;

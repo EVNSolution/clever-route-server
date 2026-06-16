@@ -21,8 +21,10 @@ export type WooCommerceLineItem = {
   id?: number | null;
   meta_data?: WooCommerceMetaData[] | null;
   name?: string | null;
+  product_id?: number | null;
   quantity?: number | null;
   sku?: string | null;
+  variation_id?: number | null;
 };
 
 export type WooCommerceShippingLine = {

@@ -184,6 +184,14 @@ describe('RouteOpsMap layer lifecycle', () => {
     const html = renderToStaticMarkup(createElement(RouteStopSequencePicker, {
       anchor: { placement: 'top', x: 120, y: 140 },
       currentSequence: 2,
+      items: [{
+        name: 'Tomato box',
+        options: [{ key: 'Size', value: 'Large' }],
+        productId: 101,
+        quantity: 2,
+        sku: 'TOM-L',
+        variationId: 7
+      }],
       locale: 'en-CA',
       onClose: () => undefined,
       onPickSequence: () => undefined,
@@ -198,6 +206,7 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(html).toContain('aria-label="Move stop #12030 to sequence 1"');
     expect(html).toContain('aria-label="Move stop #12030 to sequence 4"');
     expect(html).toMatch(/aria-label="Move stop #12030 to sequence 2"[^>]*disabled=""/);
+    expect(html).toContain('Tomato box (Size: Large) × 2');
     expect(html).not.toContain('maplibregl-popup');
   });
 
@@ -453,6 +462,7 @@ function routeStop(id: string, sequence: number, latitude: number, longitude: nu
     coordinates: { latitude, longitude },
     deliveryArea: 'Toronto',
     deliveryStopId: id,
+    items: [],
     orderId: `order-${sequence}`,
     orderName: `#10${sequence}`,
     recipientName: `Customer ${sequence}`,

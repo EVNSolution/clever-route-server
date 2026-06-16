@@ -120,6 +120,7 @@ export type CanonicalOrderDto = {
     updatedAt: string | null;
   } | null;
   health: string;
+  items?: OrderItemDto[];
   metadataResolved?: boolean;
   normalizedPaymentReason?: string | null;
   normalizedPaymentStatus?: NormalizedPaymentStatus | null;
@@ -160,6 +161,28 @@ export type CanonicalOrderDto = {
   wooOrderStatus?: string | null;
 };
 
+export type OrderItemOptionDto = {
+  key: string;
+  value: string;
+};
+
+export type OrderItemDto = {
+  name: string;
+  options: OrderItemOptionDto[];
+  productId: number;
+  quantity: number;
+  sku: string | null;
+  variationId: number;
+};
+
+export type RouteItemSummaryDto = {
+  changedSincePublish: boolean;
+  fingerprint: string;
+  itemTypes: number;
+  items: OrderItemDto[];
+  totalQuantity: number;
+};
+
 export type RoutePlanSummaryDto = {
   createdAt: string;
   deliveryAreas: string[];
@@ -170,6 +193,7 @@ export type RoutePlanSummaryDto = {
   };
   driverId: string | null;
   id: string;
+  itemSummary?: RouteItemSummaryDto;
   missingCoordinates: number;
   name: string;
   planDate: string;
@@ -184,6 +208,7 @@ export type RouteStopDto = {
   coordinates: { latitude: number | null; longitude: number | null };
   deliveryArea: string | null;
   deliveryStopId: string;
+  items: OrderItemDto[];
   orderId: string;
   orderName: string;
   recipientName: string | null;
@@ -200,6 +225,7 @@ export type RoutePlanDetailDto = {
   routePlan: RoutePlanSummaryDto;
   routeStopPoints: Array<{
     deliveryStopId: string;
+    items: OrderItemDto[];
     inputCoordinates: [number, number] | null;
     name: string | null;
     sequence: number;

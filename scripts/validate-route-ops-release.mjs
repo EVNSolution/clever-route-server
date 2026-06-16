@@ -569,6 +569,10 @@ assert(imageDeploy.includes('/srv/clever-route-server/data/driver-proof-media'),
 assert(imageDeploy.includes('chown -R 100:101 "$DRIVER_PROOF_MEDIA_HOST_DIR"'), 'Route Ops deploy must correct proof-media host directory ownership for the delivery-api runtime uid/gid');
 assert(imageDeploy.includes('chmod 750 "$DRIVER_PROOF_MEDIA_HOST_DIR"'), 'Route Ops deploy must correct proof-media host directory mode before compose up');
 assert(imageDeploy.indexOf('route_ops_trace_step_start "ensure_driver_proof_media_host_dir"') < imageDeploy.indexOf('up --no-build --force-recreate route-ops-web-static'), 'Route Ops deploy must prepare proof-media storage before the first candidate compose up');
+assert(imageDeploy.includes('route_ops_trace_step_start "backfill_woocommerce_order_items"'), 'Route Ops deploy must run WooCommerce order item backfill during candidate promotion');
+assert(imageDeploy.includes('woocommerce:order-items:backfill -- --apply'), 'Route Ops deploy must apply WooCommerce order item backfill from the candidate migrate image');
+assert(imageDeploy.indexOf('route_ops_trace_step_start "run_candidate_migration"') < imageDeploy.indexOf('route_ops_trace_step_start "backfill_woocommerce_order_items"'), 'WooCommerce order item backfill must run after candidate schema migration');
+assert(imageDeploy.indexOf('route_ops_trace_step_start "backfill_woocommerce_order_items"') < imageDeploy.indexOf('route_ops_trace_step_start "restart_delivery_api"'), 'WooCommerce order item backfill must run before delivery-api activation');
 assert(deliveryApiEnvExample.includes('DRIVER_PROOF_MEDIA_STORAGE_BACKEND=local'), 'production env example must explicitly select local proof-media storage');
 assert(deliveryApiEnvExample.includes('DRIVER_PROOF_MEDIA_STORAGE_DIR=/app/var/driver-proof-media'), 'production env example must align proof-media storage dir with the compose mount');
 assert(deliveryApiEnvExample.includes('DRIVER_PROOF_MEDIA_SCANNER_BACKEND=none'), 'production env example must keep proof-media scanner disabled by default');

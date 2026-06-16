@@ -29,6 +29,16 @@ const routePlanRecord = {
           fulfillmentStatus: 'PROCESSING',
           id: 'order-id',
           name: '#1001',
+          orderItems: [
+            {
+              name: 'Tomato Box',
+              options: [{ key: 'Size', value: 'Large' }],
+              productId: 1000,
+              quantity: 2,
+              sku: 'TB-1',
+              variationId: 0
+            }
+          ],
           rawPayload: {
             normalizedPaymentStatus: 'CASH_COLLECT_REQUIRED'
           },
@@ -92,6 +102,16 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             },
             coordinates: { latitude: 43.6487, longitude: -79.3817 },
             deliveryStopId: 'stop-id',
+            items: [
+              {
+                name: 'Tomato Box',
+                options: [{ key: 'Size', value: 'Large' }],
+                productId: 1000,
+                quantity: 2,
+                sku: 'TB-1',
+                variationId: 0
+              }
+            ],
             normalizedPaymentStatus: 'CASH_COLLECT_REQUIRED',
             orderName: '#1001',
             phone: '+14165550123',

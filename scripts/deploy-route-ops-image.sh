@@ -869,6 +869,12 @@ EOF_GRAPH_FILES
   echo "Route Engine graph artifacts verified: dir=${graph_dir} manifest=${expected_manifest_sha}"
 }
 
+run_woocommerce_order_items_backfill() {
+  route_ops_compose .deploy/candidate-image.env run \
+    --rm delivery-api-migrate \
+    sh -lc 'npm --prefix apps/delivery-api run woocommerce:order-items:backfill -- --apply'
+}
+
 smoke_route_engine_from_runtime_network() {
   local image_env_file ready_timeout_ms warmup_timeout_ms solve_timeout_ms skip_solve_smoke
   image_env_file="$1"
@@ -1355,6 +1361,9 @@ route_ops_compose .deploy/candidate-image.env up --no-build --force-recreate rou
 route_ops_trace_step_end
 route_ops_trace_step_start "run_candidate_migration"
 route_ops_compose .deploy/candidate-image.env run --rm delivery-api-migrate
+route_ops_trace_step_end
+route_ops_trace_step_start "backfill_woocommerce_order_items"
+run_woocommerce_order_items_backfill
 route_ops_trace_step_end
 route_ops_trace_step_start "ensure_route_engine"
 ensure_route_engine .deploy/candidate-image.env

@@ -27,8 +27,14 @@
     "country": "CA"
   },
   "meta_data": [
-    { "key": "delivery_date", "value": "2026-05-23" },
-    { "key": "delivery_area", "value": "Downtown" }
+    {
+      "key": "delivery_date",
+      "value": "2026-05-23"
+    },
+    {
+      "key": "delivery_area",
+      "value": "Downtown"
+    }
   ],
   "line_items": []
 }

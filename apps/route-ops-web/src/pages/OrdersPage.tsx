@@ -23,6 +23,7 @@ import {
 import { TabLayout } from "../components/TabLayout";
 import { RouteOpsMap } from "../components/maps/RouteOpsMap";
 import type { OrderMapMarkerState } from "../maps/geojson";
+import { formatOrderItemOptions, getOrderItems } from "../orderItems";
 import {
   applyClientOrderFilters,
   buildOrderFetchQuery,
@@ -2157,6 +2158,7 @@ function OrderDetailPanel({
   const repairTitle = formatRepairCardTitle(repairFields, order, locale);
   const addressSummary = formatAddressSummary(order, locale);
   const coordinateSummary = formatCoordinateSummary(order, locale);
+  const orderItems = getOrderItems(order.items);
 
   const setDraftField = (
     key: keyof OrderMetadataPatch,
@@ -2356,6 +2358,36 @@ function OrderDetailPanel({
           </dl>
         </section>
       </div>
+
+      <section className="order-detail-items-card" aria-label={t.itemsTitle}>
+        <h4>{t.itemsTitle}</h4>
+        {orderItems.length === 0 ? (
+          <p className="order-detail-items-empty">{t.noItems}</p>
+        ) : (
+          <div className="order-detail-items-table-scroll">
+            <table className="order-detail-items-table">
+              <thead>
+                <tr>
+                  <th>{t.item}</th>
+                  <th>{t.itemOptions}</th>
+                  <th>{t.sku}</th>
+                  <th>{t.quantity}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {orderItems.map((item, itemIndex) => (
+                  <tr key={`${item.productId}:${item.variationId}:${item.name}:${itemIndex}`}>
+                    <td>{item.name}</td>
+                    <td>{formatOrderItemOptions(item) || "—"}</td>
+                    <td>{item.sku ?? "—"}</td>
+                    <td>{item.quantity}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
 
       {editMode ? (
         <form className="order-detail-edit" onSubmit={submitDraft}>

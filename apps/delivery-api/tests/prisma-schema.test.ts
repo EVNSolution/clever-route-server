@@ -30,6 +30,10 @@ const routeScopeConfigMigrationPath = new URL(
   '../prisma/migrations/20260530004000_add_shop_route_scope_config/migration.sql',
   import.meta.url
 );
+const orderItemsMigrationPath = new URL(
+  '../prisma/migrations/20260616093000_add_order_items/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
@@ -69,6 +73,7 @@ describe('Prisma schema', () => {
       'WordPressPluginToken',
       'WordPressPluginPairingCode',
       'Order',
+      'OrderItem',
       'DeliveryStop',
       'RoutePlan',
       'RoutePlanStop',
@@ -110,6 +115,8 @@ describe('Prisma schema', () => {
     expect(schema).toContain('sourceUpdatedAt');
     expect(schema).toMatch(/@@unique\(\[shopId, shopifyOrderGid\]/);
     expect(schema).toMatch(/@@unique\(\[shopId, sourcePlatform, sourceSiteUrl, sourceOrderId\]/);
+    expect(schema).toMatch(/@@unique\(\[orderId, lineIndex\]/);
+    expect(schema).toMatch(/@@index\(\[shopId, productId, variationId\]/);
     expect(schema).toMatch(/@@index\(\[shopId, sourcePlatform, sourceSiteUrl, sourceOrderNumber\]/);
     expect(schema).toMatch(/@@unique\(\[routePlanId, sequence\]/);
     expect(schema).toMatch(/@@unique\(\[routePlanId, deliveryStopId\]/);
@@ -222,5 +229,15 @@ describe('Prisma schema', () => {
     expect(migration).toContain('"commerce_raw_order_ingests_run_chunk_order_hash_key"');
     expect(migration).toContain('"commerce_raw_order_ingests_syncRunId_status_receivedAt_idx"');
     expect(migration).toContain('"commerce_raw_order_ingests_connection_order_receivedAt_idx"');
+  });
+
+  test('ships a migration for normalized WooCommerce order items', async () => {
+    const migration = await readFile(orderItemsMigrationPath, 'utf8');
+
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "order_items"');
+    expect(migration).toContain('"productId" INTEGER NOT NULL');
+    expect(migration).toContain('"variationId" INTEGER NOT NULL DEFAULT 0');
+    expect(migration).toContain('"options" JSONB NOT NULL');
+    expect(migration).toContain('"order_items_shopId_productId_variationId_idx"');
   });
 });

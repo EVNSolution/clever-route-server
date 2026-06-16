@@ -32,10 +32,24 @@
   },
   "customer_note": "Synthetic note",
   "meta_data": [
-    { "key": "delivery_date", "value": "2026-05-21" },
-    { "key": "delivery_area", "value": "Markham" }
+    {
+      "key": "delivery_date",
+      "value": "2026-05-21"
+    },
+    {
+      "key": "delivery_area",
+      "value": "Markham"
+    }
   ],
   "line_items": [
-    { "id": 1, "name": "Synthetic meal box", "quantity": 1, "sku": "SYN-BOX", "meta_data": [] }
+    {
+      "id": 1,
+      "name": "Synthetic meal box",
+      "quantity": 1,
+      "sku": "SYN-BOX",
+      "meta_data": [],
+      "product_id": 1000,
+      "variation_id": 0
+    }
   ]
 }

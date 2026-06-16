@@ -1,4 +1,11 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
+import {
+  ITEM_REVIEW_REASONS,
+  aggregateOrderItems,
+  toOrderItemDto,
+  type OrderItemDto,
+  type OrderItemRecordLike
+} from '../order-items/order-items.js';
 
 import {
   RoutePlanBatchInvalidError,
@@ -104,6 +111,7 @@ type OrderRecord = {
   fulfillmentStatus: string | null;
   id: string;
   name: string;
+  orderItems?: OrderItemRecordLike[];
   phone?: string | null;
   rawPayload: unknown;
   shippingAddress: unknown;
@@ -123,6 +131,7 @@ type OrderDeliveryFactRecord = {
   order: {
     deliveryStops?: DeliveryFactStopRecord[];
     name: string;
+    orderItems?: OrderItemRecordLike[];
   };
   orderId: string;
   planningGroupKey: string | null;
@@ -227,18 +236,13 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         return false;
       }
 
-      const routePlan = await tx.routePlan.findFirst({
-        select: {
-          driverId: true,
-          id: true,
-          status: true,
-          _count: { select: { routeStops: true } }
-        },
+      const routePlan = (await tx.routePlan.findFirst({
+        include: routePlanInclude(),
         where: {
           id: input.routePlanId,
           shopId: shop.id
         }
-      });
+      })) as RoutePlanRecord | null;
       if (routePlan === null) {
         return false;
       }
@@ -251,13 +255,27 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         throw new RoutePlanPublishInvalidError('Assign a driver before publishing this route.');
       }
 
-      if (routePlan._count.routeStops === 0) {
+      if (routePlanStopCount(routePlan) === 0) {
         throw new RoutePlanPublishInvalidError('Add at least one stop before publishing this route.');
+      }
+
+      const currentItemSummary = aggregateOrderItems(
+        routeItemDtosFromRouteStops(routePlan.routeStops ?? []),
+        readString(objectOrNull(routePlan.metrics)?.itemFingerprint)
+      );
+      if (routePlan.status !== 'DRAFT' && currentItemSummary.changedSincePublish) {
+        throw new RoutePlanPublishInvalidError('Route items changed after publish. Review the route before publishing again.');
       }
 
       if (routePlan.status === 'DRAFT') {
         await tx.routePlan.update({
-          data: { status: 'ASSIGNED' },
+          data: {
+            metrics: toJson({
+              ...objectOrEmpty(routePlan.metrics),
+              itemFingerprint: currentItemSummary.fingerprint
+            }),
+            status: 'ASSIGNED'
+          },
           where: { id: routePlan.id }
         });
       }
@@ -353,6 +371,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       let driverId = routePlan.driverId ?? routePlan.driver?.id ?? null;
       const routeStatus = routePlan.status;
       let stopCount = routePlan.routeStops?.length ?? 0;
+      let latestMetrics: Prisma.InputJsonValue = toJson(routePlan.metrics);
 
       if (input.payload.routeEndMode !== undefined) {
         if (!hasRouteEndModeChange) {
@@ -401,6 +420,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             include: {
               deliveryStops: {
                 take: 1
+              },
+              orderItems: {
+                orderBy: { lineIndex: 'asc' }
               }
             },
             where: {
@@ -489,9 +511,14 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             });
           }
 
+          latestMetrics = routeMetricsForStatus({
+            existingMetrics: routePlan.metrics,
+            nextMetrics: createMetricsFromOrders(ordersByGid, orderGids, deliveryStopIds.length),
+            status: routeStatus
+          });
           await tx.routePlan.update({
             data: {
-              metrics: createMetricsFromOrders(ordersByGid, orderGids, deliveryStopIds.length)
+              metrics: latestMetrics
             },
             where: { id: input.routePlanId }
           });
@@ -531,8 +558,17 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       }
 
       if (routeStatus === 'DRAFT' && driverId !== null && stopCount > 0) {
+        const currentItemFingerprint =
+          readString(objectOrNull(latestMetrics)?.itemFingerprint) ??
+          aggregateOrderItems(routeItemDtosFromRouteStops(routePlan.routeStops ?? [])).fingerprint;
         await tx.routePlan.update({
-          data: { status: 'ASSIGNED' },
+          data: {
+            metrics: toJson({
+              ...objectOrEmpty(latestMetrics),
+              itemFingerprint: currentItemFingerprint
+            }),
+            status: 'ASSIGNED'
+          },
           where: { id: routePlan.id }
         });
         operations.push({ name: 'publish', reason: 'draft_ready_for_driver', status: 'applied' });
@@ -604,6 +640,24 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             }
           }
         });
+        if (orderInput.items !== undefined) {
+          await tx.orderItem.deleteMany({ where: { orderId: order.id, shopId: shop.id } });
+          if (orderInput.items.length > 0) {
+            await tx.orderItem.createMany({
+              data: orderInput.items.map((item, index) => ({
+                lineIndex: index,
+                name: item.name,
+                options: toJson(item.options),
+                orderId: order.id,
+                productId: item.productId,
+                quantity: item.quantity,
+                shopId: shop.id,
+                sku: item.sku,
+                variationId: item.variationId
+              }))
+            });
+          }
+        }
         const deliveryStop = await tx.deliveryStop.upsert({
           create: {
             ...toDeliveryStopWrite(orderInput, planDate, input.routeScope),
@@ -700,6 +754,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
                   }
                 },
                 take: 1
+              },
+              orderItems: {
+                orderBy: { lineIndex: 'asc' }
               }
             }
           }
@@ -760,7 +817,12 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         }))
       });
 
-      return toRoutePlanSummary(routePlan);
+      return {
+        ...toRoutePlanSummary(routePlan),
+        itemSummary: aggregateOrderItems(orderedFacts.flatMap((fact) =>
+          (fact.order.orderItems ?? []).map((item) => toOrderItemDto(item))
+        ))
+      };
     });
   }
 
@@ -934,6 +996,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         include: {
           deliveryStops: {
             take: 1
+          },
+          orderItems: {
+            orderBy: { lineIndex: 'asc' }
           }
         },
         where: {
@@ -1022,9 +1087,14 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         });
       }
 
+      const nextMetrics = routeMetricsForStatus({
+        existingMetrics: routePlan.metrics,
+        nextMetrics: createMetricsFromOrders(ordersByGid, orderGids, deliveryStopIds.length),
+        status: routePlan.status
+      });
       await tx.routePlan.update({
         data: {
-          metrics: createMetricsFromOrders(ordersByGid, orderGids, deliveryStopIds.length)
+          metrics: nextMetrics
         },
         where: { id: input.routePlanId }
       });
@@ -1182,6 +1252,11 @@ function publishSkipReasonFromState(status: string, driverId: string | null, sto
   return 'not_eligible';
 }
 
+function routePlanStopCount(routePlan: RoutePlanRecord): number {
+  const count = (routePlan as RoutePlanRecord & { _count?: { routeStops?: number } })._count?.routeStops;
+  return typeof count === 'number' ? count : routePlan.routeStops?.length ?? 0;
+}
+
 function assertNoDuplicateOrderInputs(orders: RoutePlanOrderInput[]): void {
   const seenOrderGids = new Set<string>();
   const duplicateOrderNames: string[] = [];
@@ -1285,7 +1360,9 @@ function discountLiveOperationalReviewReasons(
   reviewReasons: string[],
   input: { alreadyPlanned: boolean; hasCoordinates: boolean }
 ): string[] {
+  const itemReviewReasons = new Set<string>(ITEM_REVIEW_REASONS);
   return reviewReasons.filter((reason) => {
+    if (itemReviewReasons.has(reason)) return false;
     if (reason === 'missing_coordinates' && input.hasCoordinates) return false;
     if (reason === 'already_planned' && !input.alreadyPlanned) return false;
     return true;
@@ -1429,6 +1506,7 @@ function createMetricsFromOrders(
         return readString(rawPayload?.deliveryDayRaw) ?? readString(rawPayload?.deliveryDay);
       })
     ),
+    itemFingerprint: aggregateOrderItems(orders.flatMap((order) => (order.orderItems ?? []).map((item) => toOrderItemDto(item)))).fingerprint,
     missingCoordinates: orders.filter((order) => {
       const stop = order.deliveryStops?.[0] ?? null;
       return decimalNumber(stop?.latitude) === null || decimalNumber(stop?.longitude) === null;
@@ -1438,15 +1516,38 @@ function createMetricsFromOrders(
 }
 
 function createMetricsFromFacts(facts: OrderDeliveryFactRecord[]): Prisma.InputJsonObject {
+  const items = facts.flatMap((fact) => (fact.order.orderItems ?? []).map((item) => toOrderItemDto(item)));
   return {
     deliveryAreas: uniqueStrings(facts.map((fact) => fact.deliveryArea)),
     deliveryDays: uniqueStrings(facts.map((fact) => fact.rawDeliveryDay ?? fact.deliveryWeekday)),
+    itemFingerprint: aggregateOrderItems(items).fingerprint,
     missingCoordinates: facts.filter((fact) => {
       const stop = fact.order.deliveryStops?.[0] ?? null;
       return decimalNumber(stop?.latitude) === null || decimalNumber(stop?.longitude) === null;
     }).length,
     stopsCount: facts.length
   };
+}
+
+function routeMetricsForStatus(input: {
+  existingMetrics: unknown;
+  nextMetrics: Prisma.InputJsonObject;
+  status: string;
+}): Prisma.InputJsonObject {
+  const publishedItemFingerprint = input.status === 'DRAFT'
+    ? null
+    : readString(objectOrNull(input.existingMetrics)?.itemFingerprint);
+  if (publishedItemFingerprint === null) return input.nextMetrics;
+  return {
+    ...input.nextMetrics,
+    itemFingerprint: publishedItemFingerprint
+  };
+}
+
+function routeItemDtosFromRouteStops(routeStops: RoutePlanStopRecord[]): OrderItemDto[] {
+  return routeStops.flatMap((routeStop) =>
+    (routeStop.deliveryStop.order.orderItems ?? []).map((item) => toOrderItemDto(item))
+  );
 }
 
 function routePlanInclude() {
@@ -1464,7 +1565,13 @@ function routePlanInclude() {
       include: {
         deliveryStop: {
           include: {
-            order: true
+            order: {
+              include: {
+                orderItems: {
+                  orderBy: { lineIndex: 'asc' }
+                }
+              }
+            }
           }
         }
       },
@@ -1569,6 +1676,12 @@ function toDeliveryStopWrite(
 
 function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanOrderInput[]): RoutePlanSummary {
   const metrics = readMetrics(routePlan.metrics, inputOrders, routePlan.routeStops ?? []);
+  const itemSummary = aggregateOrderItems(
+    inputOrders === undefined
+      ? routeItemDtosFromRouteStops(routePlan.routeStops ?? [])
+      : inputOrders.flatMap((order) => order.items ?? []),
+    routePlan.status === 'DRAFT' ? null : readString(objectOrNull(routePlan.metrics)?.itemFingerprint)
+  );
   return {
     createdAt: routePlan.createdAt.toISOString(),
     deliveryDate: deriveRouteDate(routePlan),
@@ -1581,6 +1694,7 @@ function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanO
     driver: toRoutePlanDriverSummary(routePlan.driver ?? null),
     driverId: routePlan.driverId ?? routePlan.driver?.id ?? null,
     id: routePlan.id,
+    itemSummary,
     missingCoordinates: metrics.missingCoordinates,
     name: routePlan.name,
     planDate: formatDateOnly(routePlan.planDate),
@@ -1630,6 +1744,7 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
     deliveryStopId: deliveryStop.id,
     financialStatus: order.financialStatus,
     fulfillmentStatus: order.fulfillmentStatus,
+    items: (order.orderItems ?? []).map((item) => toOrderItemDto(item)),
     normalizedPaymentStatus: readNormalizedPaymentStatus(rawPayload?.normalizedPaymentStatus),
     orderId: order.id,
     orderName: order.name,
@@ -1642,9 +1757,11 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
 }
 
 function createMetrics(orders: RoutePlanOrderInput[]): Prisma.InputJsonObject {
+  const itemSummary = aggregateOrderItems(orders.flatMap((order) => order.items ?? []));
   return {
     deliveryAreas: uniqueStrings(orders.map((order) => order.deliveryArea)),
     deliveryDays: uniqueStrings(orders.map((order) => order.deliveryDay)),
+    itemFingerprint: itemSummary.fingerprint,
     missingCoordinates: orders.filter((order) => order.latitude === null || order.longitude === null).length,
     stopsCount: orders.length
   };

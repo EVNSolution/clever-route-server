@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { loadGeocodingService } from '../src/modules/geocoding/geocoding.dependencies.js';
-import { GeocodingService, SerializedGeocodingRateLimiter } from '../src/modules/geocoding/geocoding.service.js';
+import { buildGeocodingQueries, GeocodingService, SerializedGeocodingRateLimiter } from '../src/modules/geocoding/geocoding.service.js';
 import { NominatimGeocodingClient } from '../src/modules/geocoding/nominatim-geocoding.client.js';
 import { GeocodingProviderError, type GeocodingQuery } from '../src/modules/geocoding/geocoding.types.js';
 
@@ -15,6 +15,14 @@ const address = {
 };
 
 describe('Route Ops geocoding', () => {
+  test('puts postal code first in freeform queries', () => {
+    const freeform = buildGeocodingQueries({ ...address, postalCode: 'l5b3c1' }).find((query) => query.kind === 'freeform');
+    expect(freeform).toEqual(expect.objectContaining({
+      kind: 'freeform',
+      q: 'L5B 3C1, 300 City Centre Dr, Mississauga, ON, CA'
+    }));
+  });
+
   test('fails closed when disabled and does not call a provider', async () => {
     const provider = { geocodeAddress: vi.fn(), providerName: 'mock' };
     const service = new GeocodingService({ mode: 'disabled', provider });
@@ -125,7 +133,7 @@ describe('Route Ops geocoding', () => {
     expect(provider.geocodeAddress).toHaveBeenNthCalledWith(3, expect.objectContaining({ shape: 'freeform_without_unit' }));
   });
 
-  test('falls back without postal code when street and postal data conflict', async () => {
+  test('tries postal-only before dropping postal code when street and postal data conflict', async () => {
     const provider = {
       geocodeAddress: vi.fn((query: GeocodingQuery) => {
         if (query.shape !== 'structured_without_unit_no_postal') return Promise.resolve(null);
@@ -165,15 +173,52 @@ describe('Route Ops geocoding', () => {
         'structured_no_city',
         'freeform_without_unit_no_city',
         'freeform_no_city',
+        'freeform_postal_only',
+        'structured_postal_only',
         'structured_without_unit_no_postal'
       ]
     }));
-    const ninthCall = provider.geocodeAddress.mock.calls[8]?.[0];
-    expect(ninthCall).toEqual(expect.objectContaining({ shape: 'structured_without_unit_no_postal' }));
-    if (ninthCall === undefined || ninthCall.kind !== 'structured') {
-      throw new Error('expected the ninth geocoding attempt to be structured');
+    const eleventhCall = provider.geocodeAddress.mock.calls[10]?.[0];
+    expect(eleventhCall).toEqual(expect.objectContaining({ shape: 'structured_without_unit_no_postal' }));
+    if (eleventhCall === undefined || eleventhCall.kind !== 'structured') {
+      throw new Error('expected the eleventh geocoding attempt to be structured');
     }
-    expect(ninthCall.params.postalcode).toBeUndefined();
+    expect(eleventhCall.params.postalcode).toBeUndefined();
+  });
+
+  test('uses postal-only fallback before no-postal fallback', async () => {
+    const provider = {
+      geocodeAddress: vi.fn((query: GeocodingQuery) => {
+        if (query.shape !== 'freeform_postal_only') return Promise.resolve(null);
+        return Promise.resolve({
+          addressLabel: query.shape,
+          latitude: 43.6532,
+          longitude: -79.3832,
+          provider: 'mock',
+          providerPlaceId: 'postal-L5B3C1',
+          rawLabel: 'L5B 3C1, Mississauga, Ontario, Canada'
+        });
+      }),
+      providerName: 'mock'
+    };
+    const service = new GeocodingService({ minIntervalMs: 0, mode: 'nominatim_compatible', provider });
+
+    const result = await service.geocode({
+      address: { ...address, address1: 'bad street' },
+      shopDomain: 'tomatonofood.com'
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected geocode success');
+    expect(result.queryShapes).toContain('freeform_postal_only');
+    const postalCall = provider.geocodeAddress.mock.calls
+      .map((call): GeocodingQuery => call[0])
+      .find((query) => query.shape === 'freeform_postal_only');
+    expect(postalCall).toEqual(expect.objectContaining({
+      kind: 'freeform',
+      q: 'L5B 3C1, CA',
+      shape: 'freeform_postal_only'
+    }));
   });
 
   test('falls back without city when source city is localized or not the provider municipality', async () => {

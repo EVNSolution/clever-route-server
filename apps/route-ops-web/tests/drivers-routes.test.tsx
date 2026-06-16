@@ -442,6 +442,57 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('route-stop-table');
   });
 
+  test('RouteBuilder renders route item totals, aggregate table, and stop item lines', () => {
+    const item = {
+      name: 'Tomato box',
+      options: [{ key: 'Size', value: 'Large' }],
+      productId: 101,
+      quantity: 3,
+      sku: 'TOM-L',
+      variationId: 7,
+    };
+    const detail = routePlanDetailFixture({
+      routePlan: routePlanFixture({
+        itemSummary: {
+          changedSincePublish: false,
+          fingerprint: 'fingerprint',
+          itemTypes: 1,
+          items: [item],
+          totalQuantity: 3,
+        },
+      }),
+      stops: [
+        {
+          ...routePlanDetailFixture().stops[0]!,
+          items: [item],
+        },
+      ],
+    });
+
+    const html = renderToStaticMarkup(
+      <RouteBuilder
+        bootstrap={bootstrap()}
+        deletingRouteId={null}
+        detail={detail}
+        drivers={[driverFixture()]}
+        initialBuilderTab="stop-order"
+        navigate={() => undefined}
+        onDeleteRoute={() => undefined}
+        onRefreshRoutes={() => undefined}
+        setDetail={() => undefined}
+        setError={() => undefined}
+      />,
+    );
+
+    expect(html).toContain('<span>Items total</span><strong>3</strong>');
+    expect(html).toContain('<span>Item types</span><strong>1</strong>');
+    expect(html).toContain('Route items');
+    expect(html).toContain('Tomato box');
+    expect(html).toContain('Size: Large');
+    expect(html).toContain('TOM-L');
+    expect(html).toContain('Tomato box (Size: Large) × 3');
+  });
+
   test('RouteStopOrderCompactList marks the dragged row and drop preview target', () => {
     const detail = routePlanDetailFixture();
     const html = renderToStaticMarkup(
@@ -980,6 +1031,7 @@ function routePlanDetailFixture(overrides: Partial<RoutePlanDetailDto> = {}): Ro
         coordinates: { latitude: 43.6532, longitude: -79.3832 },
         deliveryArea: 'Toronto',
         deliveryStopId: 'stop-1',
+        items: [],
         orderId: 'order-1',
         orderName: '#1001',
         recipientName: 'Jane Customer',
@@ -992,6 +1044,7 @@ function routePlanDetailFixture(overrides: Partial<RoutePlanDetailDto> = {}): Ro
         coordinates: { latitude: 43.65, longitude: -79.4 },
         deliveryArea: 'Toronto',
         deliveryStopId: 'stop-2',
+        items: [],
         orderId: 'order-2',
         orderName: '#1002',
         recipientName: 'John Customer',

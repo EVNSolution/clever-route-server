@@ -15,6 +15,7 @@ import { Badge, Kpi } from "../components/primitives";
 import { TabLayout } from "../components/TabLayout";
 import { RouteOpsMap } from "../components/maps/RouteOpsMap";
 import { getRoutesCopy, resolveLocale } from "../i18n";
+import { formatOrderItemLine, formatOrderItemOptions, getOrderItems, getRouteItemSummary } from "../orderItems";
 import {
   deriveRouteStats,
   geometryLabel,
@@ -522,6 +523,8 @@ export function RouteBuilder(input: {
   }, [detail, input.onRefreshRoutes, input.setDetail, input.setError, optimizationJob]);
 
   const stats = deriveRouteStats(detail);
+  const itemSummary = getRouteItemSummary(detail?.routePlan.itemSummary);
+  const routeItems = getOrderItems(itemSummary.items);
   const hasSequenceChanges = hasStopSequenceChanged(detail?.stops, draftStops);
   const effectiveDriverId = draftDriverId === "" ? null : draftDriverId;
   const hasDriverChanges =
@@ -924,11 +927,47 @@ export function RouteBuilder(input: {
         </aside>
       }
       lower={
-        <div className="summary-strip compact-kpis">
-          <Kpi label={t.stops} value={stats.stops} />
-          <Kpi label={t.completed} value={stats.completed} />
-          <Kpi label={t.attempted} value={stats.attempted} />
-          <Kpi label={t.missingCoords} value={stats.missingCoordinates} />
+        <div className="route-summary-lower">
+          <div className="summary-strip compact-kpis route-summary-kpis">
+            <Kpi label={t.stops} value={stats.stops} />
+            <Kpi label={t.completed} value={stats.completed} />
+            <Kpi label={t.attempted} value={stats.attempted} />
+            <Kpi label={t.missingCoords} value={stats.missingCoordinates} />
+            <Kpi label={t.itemsTotal} value={itemSummary.totalQuantity} />
+            <Kpi label={t.itemTypes} value={itemSummary.itemTypes} />
+          </div>
+          <section className="route-item-summary-card" aria-label={t.routeItems}>
+            <div className="route-item-summary-heading">
+              <h3>{t.routeItems}</h3>
+              {itemSummary.changedSincePublish ? <Badge>{t.itemsChanged}</Badge> : null}
+            </div>
+            {routeItems.length === 0 ? (
+              <p className="route-item-empty">{t.noItems}</p>
+            ) : (
+              <div className="route-item-table-scroll">
+                <table className="route-item-table">
+                  <thead>
+                    <tr>
+                      <th>{t.item}</th>
+                      <th>{t.itemOptions}</th>
+                      <th>{t.sku}</th>
+                      <th>{t.quantity}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {routeItems.map((item) => (
+                      <tr key={`${item.productId}:${item.variationId}:${item.name}`}>
+                        <td>{item.name}</td>
+                        <td>{formatOrderItemOptions(item) || "—"}</td>
+                        <td>{item.sku ?? "—"}</td>
+                        <td>{item.quantity}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
         </div>
       }
     />
@@ -1004,6 +1043,7 @@ export function RouteStopOrderCompactList({
       {stops.map((stop, index) => {
         const isDropTarget = dropPreview?.targetStopId === stop.deliveryStopId;
         const dropPosition = isDropTarget ? dropPreview.position : null;
+        const stopItems = getOrderItems(stop.items);
         return (
         <div
           className={[
@@ -1063,6 +1103,15 @@ export function RouteStopOrderCompactList({
             <small className="route-stop-compact-meta">
               {stop.deliveryArea ?? "—"} · <Badge>{stop.status}</Badge>
             </small>
+            {stopItems.length === 0 ? null : (
+              <ul className="route-stop-item-lines" aria-label={t.stopItems}>
+                {stopItems.map((item, itemIndex) => (
+                  <li key={`${item.productId}:${item.variationId}:${item.name}:${itemIndex}`}>
+                    {formatOrderItemLine(item)}
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
           <div className="stop-actions route-stop-compact-actions">
             <button

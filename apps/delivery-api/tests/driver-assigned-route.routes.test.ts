@@ -29,6 +29,7 @@ const assignedRoute = {
         },
         coordinates: { latitude: 43.6487, longitude: -79.3817 },
         deliveryStopId: 'stop-id',
+        items: [],
         normalizedPaymentStatus: 'TRANSFER_CHECK_PENDING' as const,
         orderName: '#1001',
         phone: '+14165550123',

@@ -213,6 +213,32 @@ describe("Orders compact operations table", () => {
     expect(formatPaymentStatusLabel(orderFixture()).label).toBe("Transfer pending");
   });
 
+  test("renders synced Woo order items as read-only order detail data", () => {
+    const html = renderOrderTable(
+      [
+        orderFixture({
+          items: [
+            {
+              name: "Tomato box",
+              options: [{ key: "Size", value: "Large" }],
+              productId: 101,
+              quantity: 2,
+              sku: "TOM-L",
+              variationId: 7,
+            },
+          ],
+        }),
+      ],
+      { expandedOrderIds: new Set(["order-11453"]) },
+    );
+
+    expect(html).toContain("Ordered items");
+    expect(html).toContain("Tomato box");
+    expect(html).toContain("Size: Large");
+    expect(html).toContain("TOM-L");
+    expect(html).toContain(">2</td>");
+  });
+
   test("renders expanded history-scope order detail as editable when blockers need repair", () => {
     const html = renderOrderTable(
       [

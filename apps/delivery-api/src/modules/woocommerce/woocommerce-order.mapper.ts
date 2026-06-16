@@ -12,6 +12,7 @@ import {
   parseDeliveryTimeWindow,
   verifyDeliveryDayRaw,
 } from "../shopify/order-delivery-scope.js";
+import { parseWooCommerceOrderItems } from "../order-items/order-items.js";
 import { redactDiagnosticValue } from "../security/diagnostic-redaction.js";
 import type {
   DeliveryTimeWindowParseResult,
@@ -196,6 +197,7 @@ export function mapWooCommerceOrderToDeliveryInputs(
     normalizeString(order.shipping?.city) ??
     normalizeString(order.billing?.city);
   const lineItems = normalizeLineItems(order.line_items ?? []);
+  const orderItems = parseWooCommerceOrderItems(order.line_items ?? null);
   const createdAt = readWooDate(order.date_created_gmt, order.date_created);
   const modifiedAt =
     readWooDate(order.date_modified_gmt, order.date_modified) ??
@@ -247,22 +249,25 @@ export function mapWooCommerceOrderToDeliveryInputs(
   );
   const hasAddressValue =
     shippingAddress !== null && hasAddress(shippingAddress);
-  const reviewReasons = buildReviewReasons({
-    deliveryArea,
-    deliveryDate: scope.deliveryDate,
-    deliveryDateSource: scope.deliveryDateSource,
-    deliveryDayAmbiguous:
-      dayArbitration.weekdayAmbiguous || dayVerification.weekdayAmbiguous,
-    deliveryDayParseStatus,
-    deliveryDateWeekdayMismatch: scope.deliveryDateWeekdayMismatch,
-    deliveryTimeWindowAmbiguous: dayArbitration.timeWindowAmbiguous,
-    deliveryTimeWindowUnparsed: dayArbitration.timeWindowUnparsed,
-    hasAddress: hasAddressValue,
-    orderCreatedAt: scope.orderCreatedAt,
-    routeScopeKey: scope.routeScopeKey,
-    status: normalizeString(order.status),
-    serviceType: scope.serviceType,
-  });
+  const reviewReasons = uniqueStrings([
+    ...buildReviewReasons({
+      deliveryArea,
+      deliveryDate: scope.deliveryDate,
+      deliveryDateSource: scope.deliveryDateSource,
+      deliveryDayAmbiguous:
+        dayArbitration.weekdayAmbiguous || dayVerification.weekdayAmbiguous,
+      deliveryDayParseStatus,
+      deliveryDateWeekdayMismatch: scope.deliveryDateWeekdayMismatch,
+      deliveryTimeWindowAmbiguous: dayArbitration.timeWindowAmbiguous,
+      deliveryTimeWindowUnparsed: dayArbitration.timeWindowUnparsed,
+      hasAddress: hasAddressValue,
+      orderCreatedAt: scope.orderCreatedAt,
+      routeScopeKey: scope.routeScopeKey,
+      status: normalizeString(order.status),
+      serviceType: scope.serviceType,
+    }),
+    ...orderItems.reviewReasons,
+  ]);
   const readiness =
     scope.deliveryDate === null ||
     scope.routeScopeKey === null ||
@@ -406,6 +411,7 @@ export function mapWooCommerceOrderToDeliveryInputs(
       totalPriceAmount: normalizeString(order.total),
       updatedAtShopify: modifiedAt,
     },
+    orderItems: orderItems.items,
   } satisfies SyncedOrderWithDeliveryStopInput;
 }
 
@@ -1161,4 +1167,8 @@ function normalizeString(value: string | null | undefined): string | null {
   if (value === null || value === undefined) return null;
   const trimmed = value.trim();
   return trimmed === "" ? null : trimmed;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }

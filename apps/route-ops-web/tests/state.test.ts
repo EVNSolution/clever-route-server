@@ -379,6 +379,7 @@ function stop(deliveryStopId: string, sequence: number, status = 'PENDING', lati
     coordinates: { latitude, longitude },
     deliveryArea: 'Toronto',
     deliveryStopId,
+    items: [],
     orderId: `order-${deliveryStopId}`,
     orderName: `#100${sequence}`,
     recipientName: 'Customer',

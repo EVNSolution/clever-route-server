@@ -170,6 +170,9 @@ case "${1:-}" in
     if [[ "$args" == *"run --rm delivery-api-migrate"* ]] && [ "${FAKE_MIGRATE_FAIL:-0}" = "1" ]; then
       exit 18
     fi
+    if [[ "$args" == *"woocommerce:order-items:backfill -- --apply"* ]] && [ "${FAKE_BACKFILL_FAIL:-0}" = "1" ]; then
+      exit 20
+    fi
     if [[ "$args" == *"run --rm --no-deps"* && "$args" == *"ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS"* && "$args" == *"ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS"* && "$args" == *"delivery-api node"* ]] && [ "${FAKE_ROUTE_ENGINE_SMOKE_FAIL:-0}" = "1" ]; then
       exit 19
     fi
@@ -322,6 +325,7 @@ run_success_case() {
   grep -q "ROUTE_OPS_WEB_STATIC_VOLUME=${CURRENT_STATIC_VOLUME}" "$tmp/.deploy/previous-image.env"
   grep -q -- "-p clever-route" "$tmp/state/compose.log"
   grep -q -- "--profile route-engine pull route-ops-web-static delivery-api delivery-api-migrate route-engine" "$tmp/state/compose.log"
+  grep -q -- "woocommerce:order-items:backfill -- --apply" "$tmp/state/compose.log"
   grep -q -- "-e ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS -e ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS -e ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS -e ROUTE_ENGINE_SKIP_SOLVE_SMOKE delivery-api node" "$tmp/state/compose.log"
   grep -q "Smoking route_engine from the delivery-api runtime network: readyTimeoutMs=5000 warmupTimeoutMs=600000 solveTimeoutMs=180000 skipSolve=0" "$tmp/output.log"
   local trace_dir
@@ -331,6 +335,7 @@ run_success_case() {
   test -f "$trace_dir/deploy.log"
   test -f "$trace_dir/route_engine_smoke.monitor.log"
   grep -q '"event":"step_start".*"step":"ensure_driver_proof_media_host_dir"' "$trace_dir/state.jsonl"
+  grep -q '"event":"step_start".*"step":"backfill_woocommerce_order_items"' "$trace_dir/state.jsonl"
   grep -q '"event":"step_start".*"step":"ensure_route_engine"' "$trace_dir/state.jsonl"
   grep -q '"event":"route_engine_smoke_end".*"status":"success"' "$trace_dir/state.jsonl"
   grep -q 'route_engine monitor step=route_engine_smoke' "$trace_dir/route_engine_smoke.monitor.log"
@@ -625,6 +630,29 @@ run_deploy_migrate_failure_restores_current_static_case() {
   fi
 }
 
+run_deploy_backfill_failure_restores_current_static_case() {
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-deploy-backfill-fail.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  prepare_app_dir "$tmp"
+  make_fake_bin "$tmp"
+  mkdir -p "$tmp/state"
+
+  if PATH="$tmp/bin:$PATH"     FAKE_DOCKER_STATE="$tmp/state"     FAKE_DOCKER_ROOT="$tmp/docker-root"     FAKE_DF_MODE="recover"     FAKE_BACKFILL_FAIL=1     APP_DIR="$tmp"     ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1     ROUTE_OPS_SMOKE_LOGIN_SECRET="unit-test-secret-not-real"     IMAGE_TAG="$IMAGE_TAG"     PRISMA_SCHEMA_SHA="$SCHEMA_SHA"     DELIVERY_API_IMAGE="$RUNTIME_IMAGE"     DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE"     ROUTE_ENGINE_IMAGE="$ROUTE_ENGINE_IMAGE"     ROUTE_ENGINE_GRAPH_HOST_DIR="$tmp/data/route-engine/parquet"     ROUTE_OPS_WEB_STATIC_IMAGE="$STATIC_IMAGE"       scripts/deploy-route-ops-image.sh > "$tmp/output.log" 2>&1; then
+    echo "deploy backfill failure unexpectedly passed" >&2
+    exit 1
+  fi
+
+  grep -q -- "--env-file .deploy/candidate-image.env .*run --rm delivery-api-migrate" "$tmp/state/compose.log"
+  grep -q -- "woocommerce:order-items:backfill -- --apply" "$tmp/state/compose.log"
+  grep -q "ROUTE_OPS_WEB_STATIC_VOLUME=${CURRENT_STATIC_VOLUME}" "$tmp/.deploy/current-image.env"
+  if grep -q "up -d --no-build --force-recreate --no-deps delivery-api" "$tmp/state/compose.log"; then
+    echo "delivery-api was recreated after WooCommerce item backfill failure" >&2
+    cat "$tmp/state/compose.log" >&2
+    exit 1
+  fi
+}
+
 run_deploy_route_engine_smoke_failure_restores_host_env_case() {
   local tmp
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-deploy-route-engine-fail.XXXXXX")"
@@ -864,6 +892,7 @@ run_deploy_rejects_mismatched_static_image_case
 run_rollback_rejects_shared_current_static_volume_case
 run_deploy_static_failure_restores_current_static_case
 run_deploy_migrate_failure_restores_current_static_case
+run_deploy_backfill_failure_restores_current_static_case
 run_deploy_route_engine_smoke_failure_restores_host_env_case
 run_deploy_route_engine_smoke_failure_restores_current_route_engine_case
 run_rollback_static_failure_restores_current_static_case

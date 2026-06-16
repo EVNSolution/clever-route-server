@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
+import { aggregateOrderItems, type OrderItemDto } from '../src/modules/order-items/order-items.js';
 import {
   RoutePlanBatchInvalidError,
   RoutePlanConflictError,
@@ -347,6 +348,39 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
+  test('allows selected WooCommerce order id route creation when only normalized order items are missing', async () => {
+    const { prisma, routePlanStopCreateMany } = createPrismaHarness({
+      deliveryFacts: [
+        orderDeliveryFact({
+          orderId: 'order-1',
+          orderItems: [],
+          readiness: 'NEEDS_REVIEW',
+          reviewReasons: ['missing_order_items'],
+          sourceOrderNumber: '#1035',
+          stopId: 'stop-1'
+        })
+      ]
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(
+      repository.createRoutePlanDraftFromOrderIds({
+        createdBy: 'route-ops',
+        depot: { address: 'Depot', latitude: 43.65, longitude: -79.38 },
+        name: 'Woo batch',
+        orderIds: ['order-1'],
+        planDate: '2026-05-08',
+        shopDomain: 'example.myshopify.com'
+      })
+    ).resolves.toEqual(expect.objectContaining({ id: 'route-plan-id' }));
+
+    expect(routePlanStopCreateMany).toHaveBeenCalledWith({
+      data: [{ deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1 }]
+    });
+  });
+
 
   test('reorders, removes omitted stops, and adds same-date stops in normalized sequence', async () => {
     const { prisma, routePlanStopCreateMany } = createPrismaHarness();
@@ -367,7 +401,10 @@ describe('PrismaRoutePlanRepository', () => {
 
     expect(result?.routePlan.id).toBe('route-plan-id');
     expect(prisma.order.findMany).toHaveBeenCalledWith({
-      include: { deliveryStops: { take: 1 } },
+      include: {
+        deliveryStops: { take: 1 },
+        orderItems: { orderBy: { lineIndex: 'asc' } }
+      },
       where: {
         shopId: 'shop-id',
         shopifyOrderGid: { in: ['gid://shopify/Order/123', 'gid://shopify/Order/124'] }
@@ -398,6 +435,38 @@ describe('PrismaRoutePlanRepository', () => {
       | undefined;
     expect(updateArg?.where).toEqual({ id: 'route-plan-id' });
     expect(updateArg?.data.metrics.stopsCount).toBe(2);
+  });
+
+  test('preserves published item fingerprint when reordering assigned route stops', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord({
+        metrics: {
+          deliveryAreas: ['Mississauga'],
+          deliveryDays: ['Friday'],
+          itemFingerprint: 'published-item-fingerprint',
+          missingCoordinates: 0,
+          stopsCount: 2
+        },
+        status: 'ASSIGNED'
+      })
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await repository.updateRoutePlanStops({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: {
+        stops: [
+          { deliveryStopId: 'stop-2', shopifyOrderGid: 'gid://shopify/Order/124', sequence: 1 },
+          { deliveryStopId: 'stop-1', shopifyOrderGid: 'gid://shopify/Order/123', sequence: 2 }
+        ]
+      }
+    });
+
+    const metricsUpdate = findRoutePlanMetricsUpdate(prisma);
+    expect(metricsUpdate?.data.metrics.itemFingerprint).toBe('published-item-fingerprint');
   });
 
   test('assigns a route driver within the current shop scope', async () => {
@@ -463,10 +532,7 @@ describe('PrismaRoutePlanRepository', () => {
     });
 
     expect(result?.routePlan.status).toBe('ASSIGNED');
-    expect(prisma.routePlan.update).toHaveBeenCalledWith({
-      data: { status: 'ASSIGNED' },
-      where: { id: 'route-plan-id' }
-    });
+    expect(hasRouteStatusUpdate(prisma.routePlan.update.mock.calls, 'route-plan-id', 'ASSIGNED')).toBe(true);
   });
 
   test('rejects publishing a route before a driver is assigned', async () => {
@@ -900,7 +966,26 @@ describe('PrismaRoutePlanRepository', () => {
   });
 
   test('aggregate save applies changed fields and draft publish inside one repository transaction', async () => {
-    const { prisma, routePlanStopCreateMany } = createPrismaHarness();
+    const firstDuplicateItem = orderItemRecord({ quantity: 1 });
+    const secondDuplicateItem = orderItemRecord({ quantity: 2 });
+    const duplicateItems = [firstDuplicateItem, secondDuplicateItem];
+    const duplicateItemOrders = [
+      orderRecord({
+        deliveryDate: '2026-05-08',
+        gid: 'gid://shopify/Order/123',
+        id: 'order-1',
+        orderItems: [firstDuplicateItem],
+        stopId: 'stop-1'
+      }),
+      orderRecord({
+        deliveryDate: '2026-05-08',
+        gid: 'gid://shopify/Order/124',
+        id: 'order-2',
+        orderItems: [secondDuplicateItem],
+        stopId: 'stop-2'
+      })
+    ];
+    const { prisma, routePlanStopCreateMany } = createPrismaHarness({ orders: duplicateItemOrders });
     const initialRoute = routePlanRecord({
       constraints: { routeEndMode: 'END_AT_LAST_STOP' },
       driverId: null,
@@ -961,10 +1046,10 @@ describe('PrismaRoutePlanRepository', () => {
       data: { driverId: 'driver-id' },
       where: { id: 'route-plan-id' }
     }));
-    expect(prisma.routePlan.update).toHaveBeenCalledWith(expect.objectContaining({
-      data: { status: 'ASSIGNED' },
-      where: { id: 'route-plan-id' }
-    }));
+    expect(hasRouteStatusUpdate(prisma.routePlan.update.mock.calls, 'route-plan-id', 'ASSIGNED')).toBe(true);
+    expect(findRouteStatusUpdate(prisma, 'ASSIGNED')?.data.metrics.itemFingerprint).toBe(
+      aggregateOrderItems(duplicateItems).fingerprint
+    );
   });
 
   test('aggregate save applies route options after publishing without republishing', async () => {
@@ -1022,6 +1107,43 @@ describe('PrismaRoutePlanRepository', () => {
       },
       where: { id: 'route-plan-id' }
     });
+  });
+
+  test('aggregate save preserves published item fingerprint when assigned route stops are saved', async () => {
+    const { prisma } = createPrismaHarness();
+    const assignedRoute = routePlanRecord({
+      driverId: 'driver-id',
+      metrics: {
+        deliveryAreas: ['Mississauga'],
+        deliveryDays: ['Friday'],
+        itemFingerprint: 'published-item-fingerprint',
+        missingCoordinates: 0,
+        stopsCount: 2
+      },
+      status: 'ASSIGNED',
+      updatedAt: new Date('2026-05-07T12:30:00.000Z')
+    });
+    prisma.routePlan.findFirst
+      .mockResolvedValueOnce(assignedRoute)
+      .mockResolvedValueOnce(assignedRoute);
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await repository.saveRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: {
+        expectedUpdatedAt: '2026-05-07T12:30:00.000Z',
+        stops: [
+          { deliveryStopId: 'stop-2', shopifyOrderGid: 'gid://shopify/Order/124', sequence: 1 },
+          { deliveryStopId: 'stop-1', shopifyOrderGid: 'gid://shopify/Order/123', sequence: 2 }
+        ]
+      }
+    });
+
+    const metricsUpdate = findRoutePlanMetricsUpdate(prisma);
+    expect(metricsUpdate?.data.metrics.itemFingerprint).toBe('published-item-fingerprint');
   });
 
   test('aggregate save rejects stale route details before mutating route state', async () => {
@@ -1136,6 +1258,26 @@ describe('PrismaRoutePlanRepository', () => {
     expect(prisma.routePlan.delete).not.toHaveBeenCalled();
   });
 });
+
+function hasRouteStatusUpdate(
+  calls: unknown[][],
+  routePlanId: string,
+  status: string
+): boolean {
+  return calls.some(([call]) => {
+    const update = call as { data?: { status?: unknown }; where?: { id?: unknown } } | undefined;
+    return update?.where?.id === routePlanId && update.data?.status === status;
+  });
+}
+
+function findRouteStatusUpdate(
+  prisma: ReturnType<typeof createPrismaHarness>['prisma'],
+  status: string
+): { data: { metrics: Record<string, unknown>; status: string } } | undefined {
+  return prisma.routePlan.update.mock.calls
+    .map(([call]) => call as { data?: { metrics?: Record<string, unknown>; status?: string } } | undefined)
+    .find((call): call is { data: { metrics: Record<string, unknown>; status: string } } => call?.data?.status === status);
+}
 
 function createPrismaHarness(input: {
   deliveryStopForId?: { id: string } | null;
@@ -1321,6 +1463,14 @@ function expectRoutePlanVersionClaim(
   });
 }
 
+function findRoutePlanMetricsUpdate(
+  prisma: ReturnType<typeof createPrismaHarness>['prisma']
+): { data: { metrics: Record<string, unknown> } } | undefined {
+  return prisma.routePlan.update.mock.calls
+    .map(([call]) => call as { data?: { metrics?: Record<string, unknown> } } | undefined)
+    .find((call): call is { data: { metrics: Record<string, unknown> } } => call?.data?.metrics !== undefined);
+}
+
 function routePlanRecord(input: {
   constraints?: Record<string, unknown>;
   driverId?: string | null;
@@ -1350,7 +1500,13 @@ function routePlanRecord(input: {
   };
 }
 
-function orderRecord(input: { deliveryDate: string; gid: string; id: string; stopId: string }): Record<string, unknown> {
+function orderRecord(input: {
+  deliveryDate: string;
+  gid: string;
+  id: string;
+  orderItems?: OrderItemDto[];
+  stopId: string;
+}): Record<string, unknown> {
   return {
     deliveryStops: [
       {
@@ -1374,6 +1530,7 @@ function orderRecord(input: { deliveryDate: string; gid: string; id: string; sto
     fulfillmentStatus: 'UNFULFILLED',
     id: input.id,
     name: input.gid.endsWith('/123') ? '#1035' : '#1036',
+    orderItems: input.orderItems ?? [orderItemRecord()],
     phone: '+14165550000',
     rawPayload: {
       deliveryArea: 'Mississauga',
@@ -1398,6 +1555,7 @@ function orderRecord(input: { deliveryDate: string; gid: string; id: string; sto
 function orderDeliveryFact(input: {
   deliverySession?: string;
   orderId: string;
+  orderItems?: OrderItemDto[];
   readiness?: string;
   reviewReasons?: string[];
   routeScopeKey?: string;
@@ -1424,7 +1582,8 @@ function orderDeliveryFact(input: {
           routePlanStops: []
         }
       ],
-      name: input.sourceOrderNumber ?? '#1035'
+      name: input.sourceOrderNumber ?? '#1035',
+      orderItems: input.orderItems ?? [orderItemRecord()]
     },
     orderId: input.orderId,
     planningGroupKey: `${input.routeScopeKey ?? '2026-05-08|DELIVERY||'}|Mississauga`,
@@ -1440,6 +1599,24 @@ function orderDeliveryFact(input: {
     sourceSiteUrl: 'https://woo.example.test',
     timeWindowEnd: null,
     timeWindowStart: null
+  };
+}
+
+function orderItemRecord(input: {
+  name?: string;
+  options?: Array<{ key: string; value: string }>;
+  productId?: number;
+  quantity?: number;
+  sku?: string | null;
+  variationId?: number;
+} = {}): OrderItemDto {
+  return {
+    name: input.name ?? 'Tomato box',
+    options: input.options ?? [{ key: 'Size', value: 'Large' }],
+    productId: input.productId ?? 101,
+    quantity: input.quantity ?? 2,
+    sku: input.sku ?? 'TOMATO-L',
+    variationId: input.variationId ?? 0
   };
 }
 
