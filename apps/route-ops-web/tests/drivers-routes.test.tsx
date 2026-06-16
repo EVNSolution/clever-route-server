@@ -488,7 +488,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
 
     expect(isRouteOptimizationJobActive(routeOptimizationJobFixture({ status: 'RUNNING' }))).toBe(true);
     expect(html).toContain('Route optimization');
-    expect(html).toContain('Route Engine is optimizing this route. It can take up to a couple of minutes; elapsed time alone is not a failure. The job times out only if the engine exceeds the configured result wait limit.');
+    expect(html).not.toContain('Route Engine is optimizing this route.');
     expect(html).toContain('Stop order edits are locked until this job reaches a terminal state.');
     expect(html).toContain('class="route-stop-compact-list locked"');
     expect(html).toContain('Route Engine job details');
@@ -574,7 +574,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
 
     expect(getRouteOptimizationJobNotice(routeOptimizationJobFixture({ status: 'APPLIED' }))?.tone).toBe('green');
     expect(getRouteOptimizationJobDetailRows(routeOptimizationJobFixture({ currentStep: 'APPLYING_RESULT', elapsedMs: 4200, status: 'RUNNING' }))[1]?.value).toBe('Applying result');
-    expect(html).toContain('Route Engine result applied. You can still edit stops manually, or rerun optimization explicitly.');
+    expect(html).not.toContain('Route Engine result applied.');
     expect(html).toContain('Applied at');
     expect(html).toContain('Finished at');
     expect(html).toContain('Rerun optimization');

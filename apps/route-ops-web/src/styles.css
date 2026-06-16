@@ -2449,11 +2449,13 @@ button.danger.subtle {
   gap: 12px;
   list-style-position: inside;
   min-width: 0;
+  line-height: 1;
   padding: 10px 12px;
 }
 .route-optimization-notice strong {
   flex: 0 0 auto;
   font-size: 12px;
+  line-height: 1;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -2466,7 +2468,7 @@ button.danger.subtle {
   min-width: 0;
 }
 .route-optimization-summary-chip {
-  align-items: baseline;
+  align-items: center;
   display: inline-flex;
   gap: 4px;
   min-width: 0;
@@ -2475,16 +2477,14 @@ button.danger.subtle {
   font-size: 10px;
   font-weight: 900;
   letter-spacing: 0.06em;
+  line-height: 1;
   opacity: 0.72;
   text-transform: uppercase;
 }
 .route-optimization-summary-chip b {
   font-size: 12px;
+  line-height: 1;
   overflow-wrap: anywhere;
-}
-.route-optimization-message {
-  display: block;
-  padding: 0 12px;
 }
 .route-optimization-notice small {
   color: inherit;
@@ -2497,7 +2497,7 @@ button.danger.subtle {
   display: grid;
   gap: 8px 14px;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  margin: 8px 12px 8px;
+  margin: 0 12px 8px;
   padding-top: 8px;
 }
 .route-optimization-details div {

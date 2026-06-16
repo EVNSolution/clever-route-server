@@ -645,6 +645,11 @@ export function registerDriverEventRoutes(
             .code(422)
             .send(errorResponse('PROOF_MEDIA_REJECTED', 'Proof media rejected by safety scan'));
         }
+        if (isProofMediaStorageUnavailableError(error)) {
+          return reply
+            .code(503)
+            .send(errorResponse('PROOF_MEDIA_STORAGE_UNAVAILABLE', 'Proof media storage is temporarily unavailable'));
+        }
 
         throw error;
       }
@@ -1075,6 +1080,14 @@ function isProofMediaScanRejectedError(error: unknown): boolean {
 
 function isProofMediaAccessUnavailableError(error: unknown): boolean {
   return error instanceof DriverProofMediaAccessUnavailableError;
+}
+
+function isProofMediaStorageUnavailableError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null || !('code' in error)) {
+    return false;
+  }
+
+  return ['EACCES', 'ENOENT', 'ENOTDIR', 'EROFS'].includes(String((error as { code?: unknown }).code));
 }
 
 function extractBearerToken(authorization: string | undefined): string | null {

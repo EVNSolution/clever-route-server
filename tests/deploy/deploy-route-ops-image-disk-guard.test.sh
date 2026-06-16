@@ -224,6 +224,19 @@ for file in "$@"; do
 done
 EOF_SHA256SUM
   chmod +x "$tmp/bin/sha256sum"
+
+  cat > "$tmp/bin/chown" <<'EOF_CHOWN'
+#!/usr/bin/env bash
+set -euo pipefail
+state="${FAKE_DOCKER_STATE:?FAKE_DOCKER_STATE is required}"
+mkdir -p "$state"
+printf 'chown %s\n' "$*" >> "$state/chown.log"
+EOF_CHOWN
+  chmod +x "$tmp/bin/chown"
+}
+
+file_mode() {
+  stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1"
 }
 
 prepare_app_dir() {
@@ -301,6 +314,9 @@ run_success_case() {
   grep -q "ROUTE_OPS_WEB_STATIC_IMAGE=${STATIC_IMAGE}" "$tmp/.deploy/current-image.env"
   grep -q "ROUTE_OPS_WEB_STATIC_VOLUME=${STATIC_VOLUME}" "$tmp/.deploy/current-image.env"
   grep -q "ROUTE_ENGINE_IMAGE=${ROUTE_ENGINE_IMAGE}" "$tmp/.deploy/current-image.env"
+  test -d "$tmp/data/driver-proof-media"
+  grep -q -- "-R 100:101 $tmp/data/driver-proof-media" "$tmp/state/chown.log"
+  test "$(file_mode "$tmp/data/driver-proof-media")" = "750"
   grep -q "DELIVERY_API_IMAGE=${RUNTIME_REPO}:${CURRENT_TAG}" "$tmp/.deploy/previous-image.env"
   grep -q "DELIVERY_API_MIGRATE_IMAGE=${MIGRATE_REPO}:${CURRENT_TAG}" "$tmp/.deploy/previous-image.env"
   grep -q "ROUTE_OPS_WEB_STATIC_VOLUME=${CURRENT_STATIC_VOLUME}" "$tmp/.deploy/previous-image.env"
@@ -314,6 +330,7 @@ run_success_case() {
   test -s "$trace_dir/state.jsonl"
   test -f "$trace_dir/deploy.log"
   test -f "$trace_dir/route_engine_smoke.monitor.log"
+  grep -q '"event":"step_start".*"step":"ensure_driver_proof_media_host_dir"' "$trace_dir/state.jsonl"
   grep -q '"event":"step_start".*"step":"ensure_route_engine"' "$trace_dir/state.jsonl"
   grep -q '"event":"route_engine_smoke_end".*"status":"success"' "$trace_dir/state.jsonl"
   grep -q 'route_engine monitor step=route_engine_smoke' "$trace_dir/route_engine_smoke.monitor.log"

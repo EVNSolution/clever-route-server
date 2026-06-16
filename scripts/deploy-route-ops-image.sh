@@ -31,9 +31,11 @@ ROUTE_ENGINE_IMAGE="${ROUTE_ENGINE_IMAGE:-${ROUTE_ENGINE_IMAGE_REPO}:19baa45ee4f
 ROUTE_ENGINE_GRAPH_DEST_ROOT="${ROUTE_ENGINE_GRAPH_DEST_ROOT:-/srv/clever-route-server/data/route-engine/graphs}"
 ROUTE_ENGINE_GRAPH_HOST_DIR="${ROUTE_ENGINE_GRAPH_HOST_DIR:-${ROUTE_ENGINE_GRAPH_DEST_ROOT}/current/parquet}"
 ROUTE_ENGINE_GRAPH_S3_CURRENT_URI="${ROUTE_ENGINE_GRAPH_S3_CURRENT_URI:-s3://clever-route-prod-artifacts-902837199612-ap-northeast-2/route-engine/graphs/v7/current.json}"
+DRIVER_PROOF_MEDIA_DEFAULT_HOST_DIR="/srv/clever-route-server/data/driver-proof-media"
+DRIVER_PROOF_MEDIA_HOST_DIR="${DRIVER_PROOF_MEDIA_HOST_DIR:-${APP_DIR}/data/driver-proof-media}"
 ROUTE_OPS_WEB_STATIC_IMAGE="${ROUTE_OPS_WEB_STATIC_IMAGE:-${ROUTE_OPS_WEB_STATIC_IMAGE_REPO}:${IMAGE_TAG}}"
 ROUTE_OPS_WEB_STATIC_VOLUME="${ROUTE_OPS_WEB_STATIC_VOLUME:-clever-route-route-ops-web-static-${IMAGE_TAG}}"
-export ROUTE_ENGINE_GRAPH_DEST_ROOT ROUTE_ENGINE_GRAPH_HOST_DIR ROUTE_ENGINE_GRAPH_S3_CURRENT_URI ROUTE_ENGINE_IMAGE ROUTE_OPS_WEB_STATIC_IMAGE ROUTE_OPS_WEB_STATIC_VOLUME
+export ROUTE_ENGINE_GRAPH_DEST_ROOT ROUTE_ENGINE_GRAPH_HOST_DIR ROUTE_ENGINE_GRAPH_S3_CURRENT_URI ROUTE_ENGINE_IMAGE DRIVER_PROOF_MEDIA_DEFAULT_HOST_DIR DRIVER_PROOF_MEDIA_HOST_DIR ROUTE_OPS_WEB_STATIC_IMAGE ROUTE_OPS_WEB_STATIC_VOLUME
 ROUTE_OPS_DEPLOY_MIN_FREE_MB="${ROUTE_OPS_DEPLOY_MIN_FREE_MB:-4096}"
 ROUTE_OPS_DEPLOY_MIN_FREE_PERCENT="${ROUTE_OPS_DEPLOY_MIN_FREE_PERCENT:-20}"
 ROUTE_OPS_IMAGE_PRUNE_DRY_RUN="${ROUTE_OPS_IMAGE_PRUNE_DRY_RUN:-0}"
@@ -651,6 +653,13 @@ ensure_driver_app_download_host_env() {
   validate_driver_app_download_url "$value"
   set_route_ops_host_env_value DRIVER_APP_DOWNLOAD_URL "$value"
   echo "Driver app download URL configured in infra/env/delivery-api.env (value redacted)."
+}
+
+ensure_driver_proof_media_host_dir() {
+  mkdir -p "$DRIVER_PROOF_MEDIA_HOST_DIR"
+  chown -R 100:101 "$DRIVER_PROOF_MEDIA_HOST_DIR"
+  chmod 750 "$DRIVER_PROOF_MEDIA_HOST_DIR"
+  echo "Driver proof-media host dir ready: ${DRIVER_PROOF_MEDIA_HOST_DIR} owner=100:101 mode=750"
 }
 
 generate_route_engine_token() {
@@ -1278,7 +1287,11 @@ ensure_deploy_disk_headroom "pre-pull-after-retention"
 route_ops_trace_step_end
 
 route_ops_trace_step_start "compose_pull_candidate_images"
-route_ops_compose .deploy/candidate-image.env --profile route-engine pull route-ops-web-static delivery-api delivery-api-migrate route-engine
+if [ "${ROUTE_OPS_SKIP_CANDIDATE_IMAGE_PULL:-0}" = "1" ]; then
+  echo "Skipping candidate image pull; using images already loaded on the host."
+else
+  route_ops_compose .deploy/candidate-image.env --profile route-engine pull route-ops-web-static delivery-api delivery-api-migrate route-engine
+fi
 route_ops_trace_step_end
 
 route_ops_trace_step_start "disk_headroom_post_pull"
@@ -1322,6 +1335,9 @@ route_ops_trace_step_end "success" "currentSchema=${CURRENT_PRISMA_SCHEMA_SHA}"
 
 route_ops_trace_step_start "migrate_image_prisma_version"
 docker run --rm "$DELIVERY_API_MIGRATE_IMAGE" sh -lc 'test -f apps/delivery-api/prisma/schema.prisma && npm --prefix apps/delivery-api exec -- prisma --version'
+route_ops_trace_step_end
+route_ops_trace_step_start "ensure_driver_proof_media_host_dir"
+ensure_driver_proof_media_host_dir
 route_ops_trace_step_end
 ROUTE_OPS_STATIC_ARTIFACT_STAGED="true"
 route_ops_trace_step_start "stage_static_artifact"

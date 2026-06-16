@@ -151,21 +151,11 @@ export function getRouteOptimizationActionLabel(input: {
 
 export function getRouteOptimizationJobNotice(
   job: RouteOptimizationJobDto | null,
-  locale: string | null | undefined = "en-CA",
-): { tone: "green" | "orange" | "neutral"; text: string } | null {
+): { tone: "green" | "orange" | "neutral" } | null {
   if (job === null) return null;
-  const copy = getRoutesCopy(locale).routeOptimization;
-  if (job.status === "QUEUED") return { tone: "neutral", text: copy.queued };
-  if (job.status === "RUNNING") return { tone: "neutral", text: copy.running };
-  if (job.status === "APPLIED") return { tone: "green", text: copy.applied };
-  if (job.status === "TIMEOUT") return { tone: "orange", text: copy.timeout };
-  if (job.status === "FAILED") {
-    return {
-      tone: "orange",
-      text: job.errorMessage === null ? copy.failed : `${copy.failed}: ${job.errorMessage}`,
-    };
-  }
-  return { tone: "orange", text: copy.cancelled };
+  if (job.status === "QUEUED" || job.status === "RUNNING") return { tone: "neutral" };
+  if (job.status === "APPLIED") return { tone: "green" };
+  return { tone: "orange" };
 }
 
 type RouteOptimizationDetailRow = {
@@ -564,7 +554,7 @@ export function RouteBuilder(input: {
     effectiveRoutePlan.driverId !== null &&
     effectiveRoutePlan.stopsCount > 0;
   const hasActiveOptimizationJob = isRouteOptimizationJobActive(optimizationJob);
-  const optimizationNotice = getRouteOptimizationJobNotice(optimizationJob, locale);
+  const optimizationNotice = getRouteOptimizationJobNotice(optimizationJob);
   const hasUnsavedRouteChanges = hasSequenceChanges || hasDriverChanges || hasRouteEndChanges;
   const canSaveBeforeOptimization =
     detail !== null &&
@@ -755,7 +745,6 @@ export function RouteBuilder(input: {
           ))}
         </span>
       </summary>
-      <span className="route-optimization-message">{optimizationNotice.text}</span>
       <dl className="route-optimization-details" aria-label={t.routeOptimization.details.title}>
         {routeOptimizationRows.map((row) => (
           <div key={row.label}>

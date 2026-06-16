@@ -138,7 +138,7 @@ Rollback uses `.deploy/previous-image.env`, verifies the schema fingerprint matc
   artifacts provisioned from the private S3 graph artifact pointer; do not put
   those large artifacts in the clever-route-server image layer.
 - Keep Actions manual, timeout-bounded, and artifact-light. The consolidated release manifest and prepare/promote summaries are retained for 14 days so promote can verify the reviewed manifest digest, then operators must rerun prepare after expiry.
-- If Actions quota is exhausted, use a local maintainer build/push or the existing emergency deploy path after separate approval.
+- If Actions quota is exhausted, use a local maintainer build/push or the existing emergency deploy path after separate approval. For the verified no-Actions/no-GHCR-write tar fallback, follow `docs/deployment/route-ops-manual-tar-deploy.md`.
 
 ## SSM deploy follow-up
 
