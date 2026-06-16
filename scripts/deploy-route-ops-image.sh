@@ -901,9 +901,14 @@ const emit = (event, data = {}) => {
 const requestWithTimeout = async (url, options = {}, timeoutMs, label) => new Promise((resolve, reject) => {
   const target = new URL(url);
   const client = target.protocol === 'https:' ? https : http;
+  const body = options.body || '';
+  const headers = { ...(options.headers || {}) };
+  if (body && !Object.keys(headers).some((key) => key.toLowerCase() === 'content-length')) {
+    headers['Content-Length'] = String(Buffer.byteLength(body));
+  }
   const req = client.request(target, {
     method: options.method || 'GET',
-    headers: options.headers || {},
+    headers,
     timeout: timeoutMs,
   }, (res) => {
     const chunks = [];
@@ -919,7 +924,7 @@ const requestWithTimeout = async (url, options = {}, timeoutMs, label) => new Pr
   });
   req.on('timeout', () => req.destroy(new Error(`${label} timed out after ${timeoutMs}ms`)));
   req.on('error', reject);
-  if (options.body) req.write(options.body);
+  if (body) req.write(body);
   req.end();
 });
 const fetchJson = async (url, options, timeoutMs, label) => {
