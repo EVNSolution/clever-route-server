@@ -879,6 +879,9 @@ smoke_route_engine_from_runtime_network() {
       -e ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS \
       -e ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS \
       delivery-api node - <<'NODE'
+const http = require('node:http');
+const https = require('node:https');
+
 const baseUrl = (process.env.ROUTE_ENGINE_BASE_URL || 'http://route-engine:8080').replace(/\/+$/, '');
 const token = process.env.ROUTE_ENGINE_INTERNAL_TOKEN || '';
 if (!token) throw new Error('ROUTE_ENGINE_INTERNAL_TOKEN is missing in delivery-api runtime env');
@@ -894,22 +897,32 @@ const solveTimeoutMs = positiveInteger('ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS', 18
 const emit = (event, data = {}) => {
   console.log(JSON.stringify({ event, ts: new Date().toISOString(), ...data }));
 };
-const fetchWithTimeout = async (url, options, timeoutMs, label) => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } catch (error) {
-    if (error?.name === 'AbortError') {
-      throw new Error(`${label} timed out after ${timeoutMs}ms`);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
-};
+const requestWithTimeout = async (url, options = {}, timeoutMs, label) => new Promise((resolve, reject) => {
+  const target = new URL(url);
+  const client = target.protocol === 'https:' ? https : http;
+  const req = client.request(target, {
+    method: options.method || 'GET',
+    headers: options.headers || {},
+    timeout: timeoutMs,
+  }, (res) => {
+    const chunks = [];
+    res.on('data', (chunk) => chunks.push(chunk));
+    res.on('end', () => {
+      const body = Buffer.concat(chunks).toString('utf8');
+      resolve({
+        ok: res.statusCode >= 200 && res.statusCode < 300,
+        status: res.statusCode,
+        json: async () => JSON.parse(body),
+      });
+    });
+  });
+  req.on('timeout', () => req.destroy(new Error(`${label} timed out after ${timeoutMs}ms`)));
+  req.on('error', reject);
+  if (options.body) req.write(options.body);
+  req.end();
+});
 const fetchJson = async (url, options, timeoutMs, label) => {
-  const response = await fetchWithTimeout(url, options, timeoutMs, label);
+  const response = await requestWithTimeout(url, options, timeoutMs, label);
   let body = null;
   try {
     body = await response.json();
@@ -917,6 +930,51 @@ const fetchJson = async (url, options, timeoutMs, label) => {
     body = { parse_error: String(error) };
   }
   return { response, body };
+};
+
+const warmupResult = async () => {
+  const response = await requestWithTimeout(`${baseUrl}/internal/warmup`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'X-Request-Id': 'route-engine-prod-smoke-warmup-20260609',
+    },
+  }, warmupTimeoutMs, 'route_engine warmup smoke');
+  return { response, body: await response.json() };
+};
+const solveResult = async () => {
+  const response = await requestWithTimeout(`${baseUrl}/v1/solve`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'X-Request-Id': 'route-engine-prod-smoke-solve-20260608',
+      'X-Request-Timeout-Ms': String(solveTimeoutMs),
+    },
+    body: JSON.stringify({
+      request_id: 'route-engine-prod-smoke-solve-20260608',
+      tenant: { tenant_id: 'tenant-smoke', service_region: 'ontario' },
+      depot: { depot_id: 'smoke-depot', lat: 43.6532, lng: -79.3832 },
+      drivers: [{ driver_id: 'driver-smoke-1', capacity: 10 }],
+      stops: [
+        { stop_id: 'smoke-stop-1', lat: 43.6426, lng: -79.3871, demand: 1, service_seconds: 60 },
+        { stop_id: 'smoke-stop-2', lat: 43.5890, lng: -79.6441, demand: 1, service_seconds: 60 },
+      ],
+      options: { mode: 'road_graph', objective: 'minimize_duration', timeout_ms: solveTimeoutMs },
+    }),
+  }, solveTimeoutMs + 5000, 'route_engine solve smoke');
+  return { response, body: await response.json() };
+};
+
+const parseOrThrow = async (operation, label) => {
+  try {
+    return await operation();
+  } catch (error) {
+    if (String(error?.message || error).includes('timed out after')) {
+      throw error;
+    }
+    throw new Error(`${label} failed: ${String(error?.message || error)}`);
+  }
 };
 
 let readyResponse = null;
@@ -944,14 +1002,7 @@ if (!readyResponse?.ok || ready?.service !== 'route_engine' || ready?.ready !== 
 emit('route_engine_ready_ok', { service: ready.service, ready: ready.ready, graph: ready.graph?.status, warmupTimeoutMs, solveTimeoutMs });
 
 emit('route_engine_warmup_start', { timeoutMs: warmupTimeoutMs });
-const warmupResponse = await fetchWithTimeout(`${baseUrl}/internal/warmup`, {
-  method: 'POST',
-  headers: {
-    Authorization: `Bearer ${token}`,
-    'X-Request-Id': 'route-engine-prod-smoke-warmup-20260609',
-  },
-}, warmupTimeoutMs, 'route_engine warmup smoke');
-const warmed = await warmupResponse.json();
+const { response: warmupResponse, body: warmed } = await parseOrThrow(warmupResult, 'route_engine warmup smoke');
 if (!warmupResponse.ok || warmed.status !== 'warmed' || warmed.engine?.name !== 'route_engine' || warmed.engine?.external_calls !== false) {
   throw new Error(`route_engine warmup smoke failed: ${warmupResponse.status} ${JSON.stringify(warmed)}`);
 }
@@ -966,27 +1017,7 @@ emit('route_engine_warmup_ok', {
 });
 
 emit('route_engine_solve_start', { timeoutMs: solveTimeoutMs });
-const solveResponse = await fetchWithTimeout(`${baseUrl}/v1/solve`, {
-  method: 'POST',
-  headers: {
-    Authorization: `Bearer ${token}`,
-    'Content-Type': 'application/json',
-    'X-Request-Id': 'route-engine-prod-smoke-solve-20260608',
-    'X-Request-Timeout-Ms': String(solveTimeoutMs),
-  },
-  body: JSON.stringify({
-    request_id: 'route-engine-prod-smoke-solve-20260608',
-    tenant: { tenant_id: 'tenant-smoke', service_region: 'ontario' },
-    depot: { depot_id: 'smoke-depot', lat: 43.6532, lng: -79.3832 },
-    drivers: [{ driver_id: 'driver-smoke-1', capacity: 10 }],
-    stops: [
-      { stop_id: 'smoke-stop-1', lat: 43.6426, lng: -79.3871, demand: 1, service_seconds: 60 },
-      { stop_id: 'smoke-stop-2', lat: 43.5890, lng: -79.6441, demand: 1, service_seconds: 60 },
-    ],
-    options: { mode: 'road_graph', objective: 'minimize_duration', timeout_ms: solveTimeoutMs },
-  }),
-}, solveTimeoutMs + 5000, 'route_engine solve smoke');
-const solved = await solveResponse.json();
+const { response: solveResponse, body: solved } = await parseOrThrow(solveResult, 'route_engine solve smoke');
 if (!solveResponse.ok || solved.status !== 'solved' || solved.engine?.name !== 'route_engine' || solved.engine?.external_calls !== false) {
   throw new Error(`route_engine solve smoke failed: ${solveResponse.status} ${JSON.stringify(solved)}`);
 }
