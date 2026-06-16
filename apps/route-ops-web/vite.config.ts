@@ -8,8 +8,7 @@ export default defineConfig({
     // unexpected application bundle growth rather than the known map runtime.
     chunkSizeWarningLimit: 1100,
     manifest: true,
-    outDir: 'dist',
-    sourcemap: true
+    outDir: 'dist'
   },
   plugins: [react()]
 });
