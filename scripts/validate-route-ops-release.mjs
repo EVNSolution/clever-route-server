@@ -498,6 +498,8 @@ assert(imageDeploy.includes('oom-kill') && imageDeploy.includes('killed process'
 assert(imageDeploy.includes('ROUTE_OPS_STATIC_ARTIFACT_STAGED'), 'image deploy script must track static artifact staging separately from backend mutation');
 assert(imageDeploy.includes('ensure_route_engine_host_env'), 'image deploy script must configure production host route_engine env before activation');
 assert(imageDeploy.includes('restore_route_engine_host_env_on_failure'), 'image deploy script must restore host route_engine env if activation fails');
+assert(imageDeploy.includes('restoring current route_engine'), 'image deploy script must restore the previous route_engine service when candidate route_engine activation fails before backend mutation');
+assert(imageDeploy.includes('route_ops_compose .deploy/current-image.env --profile route-engine up -d --no-build route-engine'), 'image deploy route_engine restore must use current image metadata, not the failed candidate metadata');
 assert(imageDeploy.includes('validate_route_engine_graph_artifacts'), 'image deploy script must validate mounted route_engine graph artifacts before activation');
 assert(imageDeploy.includes('org.clever-route.graph-manifest-sha'), 'image deploy script must compare route_engine host graph artifacts with the worker image graph manifest label');
 assert(imageDeploy.includes('ensure_static_artifact_env_file .deploy/current-image.env'), 'image deploy script must normalize legacy current static artifact metadata before mutation');

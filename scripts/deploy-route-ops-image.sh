@@ -1187,8 +1187,13 @@ restore_current() {
       route_ops_compose .deploy/current-image.env up -d --no-build --force-recreate --no-deps caddy || true
     fi
     if [ "$ROUTE_ENGINE_SERVICE_MUTATED" = "true" ] && [ "$ROUTE_OPS_SERVICE_MUTATED" != "true" ]; then
-      echo "Deploy failed after route_engine service mutation but before Route Ops backend mutation; stopping route_engine." >&2
-      route_ops_compose .deploy/candidate-image.env --profile route-engine stop route-engine || true
+      if route_engine_configured; then
+        echo "Deploy failed after route_engine service mutation but before Route Ops backend mutation; restoring current route_engine." >&2
+        route_ops_compose .deploy/current-image.env --profile route-engine up -d --no-build route-engine || true
+      else
+        echo "Deploy failed after route_engine service mutation but before Route Ops backend mutation; stopping route_engine." >&2
+        route_ops_compose .deploy/candidate-image.env --profile route-engine stop route-engine || true
+      fi
     fi
     if [ "$ROUTE_OPS_SERVICE_MUTATED" != "true" ]; then
       if [ "$ROUTE_OPS_STATIC_ARTIFACT_STAGED" = "true" ]; then
