@@ -171,8 +171,8 @@ describe('RouteEngineRouteOptimizationClient', () => {
     await client.optimizeStopOrder({ detail, shopDomain: 'tenant-a.example.test' });
 
     const init = fetch.mock.calls[0]?.[1];
-    expect(init?.headers['X-Request-Timeout-Ms']).toBe('120000');
-    expect(JSON.parse(init?.body ?? '{}')).toMatchObject({ options: { timeout_ms: 120000 } });
+    expect(init?.headers['X-Request-Timeout-Ms']).toBe('180000');
+    expect(JSON.parse(init?.body ?? '{}')).toMatchObject({ options: { timeout_ms: 180000 } });
   });
 
   test('appends unassigned and omitted routable stops after assigned route_engine stops', async () => {
@@ -223,6 +223,30 @@ describe('RouteEngineRouteOptimizationClient', () => {
     expect(outcome.failure.code).toBe('graph_not_ready');
     expect(outcome.failure.httpStatus).toBe(503);
     await expect(client.optimizeStopOrder({ detail, shopDomain: 'tenant-a.example.test' })).resolves.toBeNull();
+  });
+
+  test('returns invalid-input diagnostics with route_engine validation details', async () => {
+    const fetch = vi.fn<TestFetchLike>().mockResolvedValue(
+      Response.json(
+        {
+          error: {
+            code: 'VALIDATION_FAILED',
+            message: 'Request does not satisfy the route_engine solve contract.',
+            details: { fields: ['options.return_to_depot is not allowed'] }
+          }
+        },
+        { status: 422 }
+      )
+    );
+    const client = new RouteEngineRouteOptimizationClient({ baseUrl: 'http://route-engine', fetch, internalToken: 'token' });
+
+    const outcome = await client.optimizeStopOrderWithDiagnostics({ detail, shopDomain: 'tenant-a.example.test' });
+
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error('Expected route_engine invalid-input failure.');
+    expect(outcome.failure.code).toBe('invalid_input');
+    expect(outcome.failure.httpStatus).toBe(422);
+    expect(outcome.failure.message).toContain('options.return_to_depot is not allowed');
   });
 
   test('returns typed invalid-input diagnostics when route cannot be sent to route_engine', async () => {

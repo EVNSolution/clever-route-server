@@ -114,7 +114,7 @@ type RouteEngineSolveResponse = {
   status: 'solved';
 };
 
-const DEFAULT_TIMEOUT_MS = 120000;
+const DEFAULT_TIMEOUT_MS = 180000;
 const MAX_SOLVER_STOPS = 1000;
 const ROUTE_ENGINE_CONTRACT_ID_MAX_LENGTH = 128;
 
@@ -192,7 +192,7 @@ export class RouteEngineRouteOptimizationClient implements RouteOptimizationServ
         code: classifyHttpFailure(response.status, payload),
         elapsedMs: elapsedSince(startedAt),
         httpStatus: response.status,
-        message: `route_engine responded with HTTP ${response.status}.`
+        message: describeHttpFailure(response.status, payload)
       });
     }
 
@@ -368,7 +368,7 @@ function normalizeTimeoutMs(value: number | undefined): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return DEFAULT_TIMEOUT_MS;
   }
-  return Math.min(120000, Math.max(100, Math.floor(value)));
+  return Math.min(DEFAULT_TIMEOUT_MS, Math.max(100, Math.floor(value)));
 }
 
 function normalizeOptionalContractValue(value: string | undefined): string | undefined {
@@ -461,6 +461,9 @@ function isAbortError(error: unknown): boolean {
 }
 
 function classifyHttpFailure(status: number, payload: unknown): RouteOptimizationFailureCode {
+  if (status === 422 && routeEngineErrorCode(payload) === 'VALIDATION_FAILED') {
+    return 'invalid_input';
+  }
   if (status === 408 || status === 504) {
     return 'solver_timeout';
   }
@@ -471,6 +474,22 @@ function classifyHttpFailure(status: number, payload: unknown): RouteOptimizatio
     return 'route_engine_unavailable';
   }
   return 'route_engine_unavailable';
+}
+
+function describeHttpFailure(status: number, payload: unknown): string {
+  const error = objectOrNull(objectOrNull(payload)?.error);
+  const message = typeof error?.message === 'string' ? error.message.trim() : '';
+  const details = objectOrNull(error?.details);
+  const fields = Array.isArray(details?.fields)
+    ? details.fields.filter((field): field is string => typeof field === 'string' && field.trim() !== '').slice(0, 5)
+    : [];
+  const detail = [message, fields.length > 0 ? `Fields: ${fields.join('; ')}` : ''].filter(Boolean).join(' ');
+  return detail === '' ? `route_engine responded with HTTP ${status}.` : `route_engine responded with HTTP ${status}: ${detail}`;
+}
+
+function routeEngineErrorCode(payload: unknown): string | null {
+  const error = objectOrNull(objectOrNull(payload)?.error);
+  return typeof error?.code === 'string' ? error.code : null;
 }
 
 function payloadText(value: unknown): string {

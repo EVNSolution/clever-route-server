@@ -15,7 +15,7 @@ internal bearer token.
 ```env
 ROUTE_ENGINE_BASE_URL=http://route-engine.internal:8080
 ROUTE_ENGINE_INTERNAL_TOKEN=<secret shared with route_engine>
-ROUTE_ENGINE_TIMEOUT_MS=30000
+ROUTE_ENGINE_TIMEOUT_MS=180000
 ROUTE_ENGINE_MODE=road_graph
 ROUTE_ENGINE_OBJECTIVE=minimize_duration
 ROUTE_ENGINE_SERVICE_REGION=ontario

@@ -480,7 +480,7 @@ Before cleanup, verify:
   `engine.name=route_engine`, `external_calls=false`, and positive
   distance/duration. The readiness fetch timeout defaults to 5 seconds per
   attempt, the warmup timeout defaults to 600 seconds, and the solve smoke
-  timeout defaults to 120 seconds plus a 5-second response guard. Override only
+  timeout defaults to 180 seconds plus a 5-second response guard. Override only
   with `ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS`,
   `ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS`, or
   `ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS` when a reviewed production incident
