@@ -11,6 +11,7 @@ These are intentionally separate because they have different blast radius and ro
 - `scripts/deploy-route-ops-image.sh` — activates a published Route Ops image, checks schema labels, runs migration/compose/smoke, and promotes or restores current image metadata.
 - `scripts/rollback-route-ops-image.sh` — explicit rollback path to a previous image tag.
 - `scripts/scan-secrets.sh` — local/CI secret hygiene utility for staged, worktree, and history scans.
+- `scripts/monitor-route-ops-production.sh` — read-only SSM monitor wrapper for production health, container status, redacted recent logs, and authenticated smoke through the deployed runtime image.
 - `scripts/package-wordpress-plugin.sh` — explicit packaging helper for the WordPress plugin artifact.
 
 ## CI validators and deploy-safety checks
@@ -19,7 +20,7 @@ These are not production commands. They are kept separate so each failure domain
 
 - `scripts/check-ignore-hygiene.mjs` — verifies generated/private artifacts stay ignored.
 - `scripts/guard-route-ops-deploy-scope.mjs` — fails closed when a Route Ops deploy lane includes unrelated Woo, Prisma, Caddy, infra, or output artifacts.
-- `scripts/validate-route-ops-ssm-deploy.mjs` — statically validates the GitHub Actions → OIDC → SSM deployment topology and secret boundaries.
+- `scripts/validate-route-ops-release.mjs` — statically validates the GitHub Actions → OIDC → SSM deployment topology and secret boundaries.
 
 ## Smoke tests
 
@@ -38,6 +39,7 @@ Tests should live under `tests/`, not beside operator commands.
 
 - `tests/deploy/ssm-route-ops-deploy.test.sh` — regression test for the SSM deploy wrapper lock, tag validation, evidence, and secret-redaction behavior.
 - `tests/deploy/route-ops-deploy-control-bundle.test.sh` — regression test for deploy-control bundle tar manifest validation, SHA-256 mismatch failure, manifest allowlist failure, and dry-run manifest env generation.
+- `tests/deploy/monitor-route-ops-production.test.sh` — regression test for monitor wrapper host-script rendering, production expectation defaults, runtime-image smoke fallback, and redaction hooks.
 
 ## Change rule
 

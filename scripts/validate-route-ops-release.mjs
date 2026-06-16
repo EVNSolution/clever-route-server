@@ -10,8 +10,6 @@ function assert(condition, message) {
 }
 
 const failures = [];
-const deployWorkflowPath = '.github/workflows/route-ops-ssm-deploy.yml';
-const publishWorkflowPath = '.github/workflows/route-ops-publish.yml';
 const releaseWorkflowPath = '.github/workflows/route-ops-release.yml';
 const ciWorkflowPath = '.github/workflows/ci.yml';
 const wrapperPath = 'scripts/ssm-route-ops-deploy.sh';
@@ -27,6 +25,7 @@ const proofMediaDocPath = 'apps/delivery-api/docs/api/driver-proof-media.md';
 const ssmDocumentPath = 'infra/ssm/route-ops-deploy-document.json';
 const osrmHelperPath = 'scripts/osrm-ontario.sh';
 const deployControlBundlePath = 'scripts/route-ops-deploy-control-bundle.sh';
+const monitorPath = 'scripts/monitor-route-ops-production.sh';
 const deployScopeGuardPath = 'scripts/guard-route-ops-deploy-scope.mjs';
 const docPath = 'docs/deployment/route-ops-ssm-deploy.md';
 const githubDocPath = 'docs/deployment/route-ops-github-deploy.md';
@@ -34,8 +33,6 @@ const osrmDocPath = 'docs/deployment/route-ops-osrm-ontario.md';
 const releaseManifestPath = 'scripts/route-ops-release-manifest.mjs';
 const releaseManifestTestPath = 'scripts/test-route-ops-release-manifest.mjs';
 
-const deploy = read(deployWorkflowPath);
-const publish = read(publishWorkflowPath);
 const ci = read(ciWorkflowPath);
 const release = read(releaseWorkflowPath);
 const wrapper = read(wrapperPath);
@@ -51,6 +48,7 @@ const proofMediaDoc = read(proofMediaDocPath);
 const ssmDocument = read(ssmDocumentPath);
 const osrmHelper = read(osrmHelperPath);
 const deployControlBundle = read(deployControlBundlePath);
+const monitor = read(monitorPath);
 const deployScopeGuard = read(deployScopeGuardPath);
 const smoke = read('scripts/smoke-route-ops-production.mjs');
 const doc = read(docPath);
@@ -62,27 +60,6 @@ const releaseManifestTest = read(releaseManifestTestPath);
 
 const routeOpsActionPins = [
   {
-    workflowName: 'Route Ops publish',
-    text: publish,
-    action: 'docker/login-action',
-    release: 'v4.2.0',
-    sha: '650006c6eb7dba73a995cc03b0b2d7f5ca915bee',
-  },
-  {
-    workflowName: 'Route Ops publish',
-    text: publish,
-    action: 'docker/setup-buildx-action',
-    release: 'v4.1.0',
-    sha: 'd7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5',
-  },
-  {
-    workflowName: 'Route Ops publish',
-    text: publish,
-    action: 'docker/build-push-action',
-    release: 'v7.2.0',
-    sha: 'f9f3042f7e2789586610d6e8b85c8f03e5195baf',
-  },
-  {
     workflowName: 'Route Ops release',
     text: release,
     action: 'docker/login-action',
@@ -106,13 +83,6 @@ const routeOpsActionPins = [
   {
     workflowName: 'Route Ops release',
     text: release,
-    action: 'aws-actions/configure-aws-credentials',
-    release: 'v6.2.0',
-    sha: 'e7f100cf4c008499ea8adda475de1042d6975c7b',
-  },
-  {
-    workflowName: 'Route Ops deploy',
-    text: deploy,
     action: 'aws-actions/configure-aws-credentials',
     release: 'v6.2.0',
     sha: 'e7f100cf4c008499ea8adda475de1042d6975c7b',
@@ -171,7 +141,7 @@ function collectRouteOpsActionPinFailures(workflows, pins = routeOpsActionPins) 
 
 function assertRouteOpsActionPinSelfTest() {
   const badWorkflow = {
-    workflowName: 'Route Ops publish fixture',
+    workflowName: 'Route Ops release fixture',
     text: `
       - name: Known good action
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
@@ -192,8 +162,6 @@ function assertRouteOpsActionPinSelfTest() {
 function assertRouteOpsActionPins() {
   assertRouteOpsActionPinSelfTest();
   const errors = collectRouteOpsActionPinFailures([
-    { workflowName: 'Route Ops publish', text: publish },
-    { workflowName: 'Route Ops deploy', text: deploy },
     { workflowName: 'Route Ops release', text: release },
   ]);
   for (const error of errors) {
@@ -315,19 +283,6 @@ function assertHeredocMatches(path, command, heredocPath, expectedValues) {
   );
 }
 
-assert(/workflow_dispatch:\n/.test(deploy), 'deploy workflow must be workflow_dispatch');
-for (const forbidden of ['pull_request:', 'schedule:', 'workflow_run:', 'repository_dispatch:']) {
-  assert(!deploy.includes(forbidden), `deploy workflow must not include ${forbidden}`);
-}
-assert(!/^\s*push:/m.test(deploy), 'deploy workflow must not include push trigger');
-assert(/permissions:/m.test(deploy), 'deploy workflow must declare permissions');
-assert(/contents:\s*read/.test(deploy), 'deploy workflow must request contents:read');
-assert(/actions:\s*read/.test(deploy), 'deploy workflow must request actions:read for publish-run provenance verification');
-assert(/id-token:\s*write/.test(deploy), 'deploy workflow must request id-token:write for OIDC');
-assert(!deploy.includes('packages: write'), 'deploy workflow must not request packages:write');
-assert(/timeout-minutes:\s*120/.test(deploy), 'deploy workflow must allow enough time for traced cold route_engine activation');
-assert(deploy.includes("github.ref != 'refs/heads/main'"), 'deploy workflow must require refs/heads/main');
-assert(deploy.includes('DEPLOY_ALLOWED_ACTORS is required'), 'deploy actor allowlist must fail closed when empty');
 assertRouteOpsActionPins();
 
 assert(/workflow_dispatch:\n/.test(release), 'release workflow must be workflow_dispatch');
@@ -397,21 +352,47 @@ assert(releaseManifest.includes('image-revision-label-digest-and-audit-url'), 'r
 assert(releaseManifestTest.includes('extra_output=pwned'), 'release manifest tests must cover GITHUB_OUTPUT newline injection');
 assert(releaseManifestTest.includes('wrongRouteEngineRevision'), 'release manifest tests must cover route_engine revision/tag mismatch');
 assert(releaseManifestTest.includes('wrongRouteEngineDigest'), 'release manifest tests must cover route_engine digest mismatch');
-assert(deploy.includes('AWS_ROUTE_OPS_DEPLOY_ROLE_ARN'), 'deploy workflow must use AWS deploy role variable');
-assert(deploy.includes('git merge-base --is-ancestor "$IMAGE_TAG" origin/main'), 'deploy workflow must verify image tag is reachable from origin/main');
-assert(deploy.includes('publish_evidence_url'), 'deploy workflow must require publish evidence URL');
-assert(deploy.includes('route_engine_image'), 'deploy workflow must require an explicit route_engine worker image');
-assert(deploy.includes('route_engine_publish_evidence_url'), 'deploy workflow must require route_engine publish evidence URL for the deploy-control audit trail');
-assert(deploy.includes('ROUTE_ENGINE_IMAGE_REPO: ghcr.io/evnsolution/route-engine-worker'), 'deploy workflow must pin the route_engine image repository allowlist');
-assert(deploy.includes('/actions/runs/${publish_run_id}'), 'deploy workflow must query GitHub Actions run metadata for publish evidence');
-assert(deploy.includes("run.get('conclusion') != 'success'"), 'deploy workflow must require successful publish run evidence');
-assert(deploy.includes("run.get('head_branch') != 'main'"), 'deploy workflow must require publish run on main');
-assert(deploy.includes("head_sha"), 'deploy workflow must require publish run SHA to match image tag');
-assert(deploy.includes('Checkout deploy-control source at image tag'), 'deploy workflow must check out deploy-control source at the image tag before bundling');
-assert(deploy.includes('git checkout --detach "$IMAGE_TAG"'), 'deploy workflow must pin bundled deploy-control files to the image tag commit');
-assert(deploy.includes('AWS-RunShellScript is not allowed'), 'deploy workflow must explicitly reject AWS-RunShellScript document configuration');
-assert(deploy.includes('Prepare deploy control files for custom SSM document'), 'deploy workflow must prepare reviewed deploy-control files before running the host deploy wrapper');
-assert(deploy.includes('scripts/route-ops-deploy-control-bundle.sh bundle-files'), 'deploy workflow must load the reviewed deploy-control file allowlist from the bundle helper');
+assert(release.includes('AWS_ROUTE_OPS_DEPLOY_ROLE_ARN'), 'release workflow must use AWS deploy role variable');
+assert(release.includes('scripts/route-ops-deploy-control-bundle.sh bundle-files'), 'release workflow must load the reviewed deploy-control file allowlist from the bundle helper');
+assert(release.includes('scripts/route-ops-deploy-control-bundle.sh validate-source-file "$file"'), 'release workflow must reject source symlinks/hardlinks/non-regular files before staging');
+assert(release.includes('ROUTE_OPS_DEPLOY_CONTROL_BUCKET: route-ops-artifacts-902837199612-ap-northeast-2'), 'release workflow must select the Route Ops specific artifact bucket');
+assert(release.includes('ROUTE_OPS_DEPLOY_CONTROL_PREFIX: artifacts/route-ops/prod/deploy-control'), 'release workflow must use the approved Route Ops deploy-control prefix');
+assert(release.includes('aws s3 cp "$BUNDLE_PATH" "$S3_URI" --sse AES256 --no-progress'), 'release workflow must upload deploy-control bundles to S3 with SSE-S3');
+assert(release.includes('DeployControlBundleS3Uri'), 'release workflow must pass deploy-control bundle S3 URI to the custom SSM document');
+assert(release.includes('DeployControlBundleSha256'), 'release workflow must pass deploy-control bundle SHA256 to the custom SSM document');
+assert(!release.includes('DeployControlBundleBase64'), 'release workflow must not pass deploy-control bundle base64 through SSM');
+assert(!release.includes('base64 -w0'), 'release workflow must not base64-encode the deploy-control bundle for SSM');
+assert(release.includes('DRIVER_APP_DOWNLOAD_URL') && release.includes('DriverAppDownloadUrl'), 'release workflow must pass the driver app download URL only through the custom SSM command parameter file');
+assert(release.includes('/tmp/route-ops-deploy-parameters.json'), 'release workflow must prepare one parameter file for the custom SSM document');
+assert(release.includes('--parameters file:///tmp/route-ops-deploy-parameters.json'), 'release SendCommand must use the prepared parameter file');
+assert(release.includes('Upload dry-run deploy-control bundle artifact') && release.includes('Upload promote deploy-control bundle artifact'), 'release workflow must upload dry-run and promote deploy-control bundles');
+assert(release.indexOf('Prepare dry-run deploy-control files') < release.indexOf('Configure AWS credentials through OIDC'), 'release dry-run source prep must run before AWS credentials are configured');
+assert(release.lastIndexOf('Prepare promote deploy-control files') < release.lastIndexOf('Configure AWS credentials through OIDC'), 'release promote source prep must run before AWS credentials are configured');
+assert(release.includes('target_query="[length(InstanceInformationList), InstanceInformationList[0].InstanceId, InstanceInformationList[0].PingStatus, InstanceInformationList[0].AgentVersion]"'), 'release workflow must resolve target count, instance id, online status, and agent version from one describe-instance-information call');
+assert(release.includes('3.3.2746.0'), 'release workflow must require SSM AgentVersion >= 3.3.2746.0 for ENV_VAR interpolation');
+assert(release.includes('Command.[CommandId,TargetCount]'), 'release workflow must read SendCommand TargetCount');
+assert(release.includes('TargetCount must be 1'), 'release workflow must assert SendCommand TargetCount is 1');
+assert(release.includes('for _ in {1..720}; do'), 'release workflow must poll long enough to let the custom SSM document produce host trace evidence');
+assert(release.includes('--max-concurrency "1"'), 'release workflow must set max-concurrency=1');
+assert(release.includes('--max-errors "0"'), 'release workflow must set max-errors=0');
+assert(!/\$\{\{\s*secrets\.(?!DRIVER_APP_DOWNLOAD_URL\b|ROUTE_ENGINE_GHCR_READ_TOKEN\b|GITHUB_TOKEN\b)/.test(release), 'release workflow must not reference GitHub secrets except approved handoffs');
+for (const secretName of ['PROD_SSH_PRIVATE_KEY', 'ROUTE_OPS_SMOKE_LOGIN_SECRET', 'CLEVER_ADMIN_WEB_LOGIN_SECRET', 'DATABASE_URL', 'POSTGRES_PASSWORD']) {
+  assert(!release.includes(secretName), `release workflow must not reference ${secretName}`);
+}
+assert(!ci.includes('AWS_ROUTE_OPS_DEPLOY_ROLE_ARN'), 'ci workflow must not reference the deploy role ARN variable');
+assert(!/id-token:\s*write/.test(ci), 'ci workflow must not request id-token:write for deploy role');
+assert(/apps\/delivery-api\/src\/routes\/admin-ui-\[\^\/\]\+\\\.ts/.test(ci), 'CI Route Ops filters must include extracted admin-ui route helper files');
+assert(/apps\/delivery-api\/tests\/admin-ui-\[\^\/\]\+\\\.test\\\.ts/.test(ci), 'CI Route Ops filters must include extracted admin-ui helper test files');
+assert(ci.includes('scripts/monitor-route-ops-production'), 'CI Route Ops static checks must include the production monitor wrapper');
+assert(ci.includes('tests/deploy/monitor-route-ops-production.test.sh'), 'CI Route Ops static checks must run the production monitor wrapper test');
+assert(monitor.includes('TARGET_TAG_VALUE="${SSM_ROUTE_OPS_TARGET_TAG_VALUE:-clever-delivery-server}"'), 'monitor wrapper must default to the current production Service tag');
+assert(doc.includes('SSM_ROUTE_OPS_TARGET_TAG_VALUE=clever-delivery-server'), 'SSM deploy doc must document the current production target Service tag');
+assert(doc.includes('\"ssm:resourceTag/Service\": \"clever-delivery-server\"'), 'SSM deploy doc IAM condition must match the current production Service tag');
+assert(monitor.includes('EXPECT_PUBLIC_OPENFREEMAP="${ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP:-true}"'), 'monitor wrapper must default to the current production public OpenFreeMap expectation');
+assert(monitor.includes('EXPECT_GEOCODER_CONFIGURED="${ROUTE_OPS_EXPECT_GEOCODER_CONFIGURED:-true}"'), 'monitor wrapper must default to the current production geocoder-configured expectation');
+assert(monitor.includes("'docker', 'run', '--rm'"), 'monitor wrapper must run smoke through the deployed runtime image instead of host node');
+assert(monitor.includes('--render-host-script'), 'monitor wrapper must expose a render mode for local regression tests without AWS');
+assert(monitor.includes('clever_admin_ui=<redacted>'), 'monitor wrapper must redact admin session cookies in output');
 const expectedDeployControlFiles = [
   'infra/caddy/Caddyfile',
   'infra/compose/docker-compose.prod.yml',
@@ -469,74 +450,6 @@ if (helperExpectedTarMatch) {
   assert(false, 'deploy-control helper must declare expected tar entries');
 }
 assert(deployControlBundle.includes('refusing secret-like deploy-control path'), 'deploy-control source sync helper must reject secret-like paths before bundling');
-assert(deploy.includes('ROUTE_OPS_DEPLOY_CONTROL_BUCKET: route-ops-artifacts-902837199612-ap-northeast-2'), 'deploy workflow must select the Route Ops specific artifact bucket');
-assert(deploy.includes('ROUTE_OPS_DEPLOY_CONTROL_PREFIX: artifacts/route-ops/prod/deploy-control'), 'deploy workflow must use the approved Route Ops deploy-control prefix');
-assert(deploy.includes('scripts/route-ops-deploy-control-bundle.sh validate-source-file "$file"'), 'deploy workflow must reject source symlinks/hardlinks/non-regular files before staging');
-assert(deploy.includes('aws s3 cp "$BUNDLE_PATH" "$S3_URI" --sse AES256 --no-progress'), 'deploy workflow must upload the deploy-control bundle to S3 with SSE-S3');
-assert(deploy.includes('DeployControlBundleS3Uri'), 'deploy workflow must pass deploy-control bundle S3 URI to the custom SSM document');
-assert(deploy.includes('DeployControlBundleSha256'), 'deploy workflow must pass deploy-control bundle SHA256 to the custom SSM document');
-assert(!deploy.includes('DeployControlBundleBase64'), 'deploy workflow must not pass deploy-control bundle base64 through SSM');
-assert(!deploy.includes('base64 -w0'), 'deploy workflow must not base64-encode the deploy-control bundle for SSM');
-assert(deploy.includes('dry_run'), 'deploy workflow must expose dry-run validation mode');
-assert(deploy.includes("'dryRun': dry_run == 'true'"), 'deploy workflow must write dry-run state into the deploy-control manifest');
-assert(deploy.includes("'routeEngineImage': route_engine_image"), 'deploy workflow must write route_engine image into the deploy-control manifest');
-assert(deploy.includes("'routeEnginePublishEvidenceUrl': route_engine_publish_evidence_url"), 'deploy workflow must write route_engine publish evidence into the deploy-control manifest');
-assert(deploy.includes('DRIVER_APP_DOWNLOAD_URL') && deploy.includes('DriverAppDownloadUrl'), 'deploy workflow must pass the driver app download URL only through the custom SSM command parameter file');
-assert(deploy.includes('ssmParameterChars DeployControlBundleS3Uri'), 'deploy workflow must log SSM parameter sizes for the reduced parameters');
-assert(deploy.includes('/tmp/route-ops-deploy-parameters.json'), 'deploy workflow must prepare one parameter file for the custom SSM document');
-assert(deploy.includes('--parameters file:///tmp/route-ops-deploy-parameters.json'), 'custom deploy SendCommand must use the prepared parameter file');
-assert(deploy.includes('Upload deploy-control bundle artifact'), 'deploy workflow must upload the deploy-control bundle only after AWS credentials are configured');
-assert(deploy.indexOf('Prepare deploy control files for custom SSM document') < deploy.indexOf('Configure AWS credentials through OIDC'), 'deploy-control source prep must run before AWS credentials are configured');
-assert(deploy.indexOf('Upload deploy-control bundle artifact') > deploy.indexOf('Resolve deploy-control artifact bucket'), 'deploy-control bundle upload must run after the artifact bucket is resolved with AWS identity evidence');
-assert(deploy.indexOf('Upload deploy-control bundle artifact') < deploy.indexOf('Verify SSM target resolves to one online managed node'), 'deploy-control bundle upload must happen before SSM dry-run target validation');
-assert(deploy.indexOf('Upload deploy-control bundle artifact') < deploy.indexOf('Send custom SSM deploy command'), 'deploy-control bundle upload must run before the custom deploy document');
-assert(deploy.indexOf('Prepare deploy control files for custom SSM document') < deploy.indexOf('Send custom SSM deploy command'), 'deploy-control source prep must run before the custom deploy document');
-const uploadStep = stepBlock(deploy, 'Upload deploy-control bundle artifact');
-assert(!uploadStep.includes('scripts/route-ops-deploy-control-bundle.sh'), 'deploy-control upload step must not execute deploy-control source helper after AWS credentials are configured');
-assert(uploadStep.includes('aws s3 cp "$BUNDLE_PATH" "$S3_URI" --sse AES256 --no-progress'), 'deploy-control upload step must only upload the prebuilt bundle to S3 with SSE-S3');
-assert(deploy.includes('Reconcile Route Ops Caddy ingress'), 'deploy workflow must reconcile Route Ops Caddy ingress before deploy smoke');
-assert(deploy.includes("vars.ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT == 'true'"), 'AWS-RunShellScript ingress reconcile must be explicitly opt-in by repository variable');
-assert(deploy.includes("inputs.dry_run == 'false' && vars.ROUTE_OPS_RECONCILE_INGRESS_WITH_AWS_RUNSHELLSCRIPT == 'true'"), 'AWS-RunShellScript ingress reconcile must be disabled during dry-run validation');
-assert(deploy.includes('--document-name "AWS-RunShellScript"'), 'deploy workflow must use a fixed AWS-RunShellScript command only for optional ingress reconcile');
-assert(/docker compose -p \\"?\$ROUTE_OPS_COMPOSE_PROJECT_NAME\\"? --env-file \.deploy\/current-image\.env -f infra\/compose\/docker-compose\.prod\.yml up -d --no-build --force-recreate --no-deps caddy/.test(deploy), 'ingress reconcile must force-recreate only the Route Ops Caddy service under explicit project');
-assert(deploy.indexOf('Reconcile Route Ops Caddy ingress') < deploy.indexOf('Send custom SSM deploy command'), 'ingress reconcile must run before the deploy wrapper smoke');
-assert(deploy.includes('target_query="[length(InstanceInformationList), InstanceInformationList[0].InstanceId, InstanceInformationList[0].PingStatus, InstanceInformationList[0].AgentVersion]"'), 'deploy workflow must resolve target count, instance id, online status, and agent version from one describe-instance-information call');
-assert(deploy.includes('3.3.2746.0'), 'deploy workflow must require SSM AgentVersion >= 3.3.2746.0 for ENV_VAR interpolation');
-assert(deploy.includes('--instance-ids "$INSTANCE_ID"'), 'deploy workflow must send command to the resolved exact instance id');
-assert(!deploy.includes('--targets "Key=tag:'), 'deploy workflow must not send production command by mutable tag selector');
-assert(deploy.includes('Command.[CommandId,TargetCount]'), 'deploy workflow must read SendCommand TargetCount');
-assert(deploy.includes('TargetCount must be 1'), 'deploy workflow must assert SendCommand TargetCount is 1');
-assert(deploy.includes('for _ in {1..720}; do'), 'deploy workflow must poll long enough to let the custom SSM document produce host trace evidence');
-assert(deploy.includes('--max-concurrency "1"'), 'deploy workflow must set max-concurrency=1');
-assert(deploy.includes('--max-errors "0"'), 'deploy workflow must set max-errors=0');
-assert(deploy.includes('SSM_ROUTE_OPS_DOCUMENT_VERSION'), 'deploy workflow must require explicit SSM document version');
-assert(!/secrets\.(?!DRIVER_APP_DOWNLOAD_URL\b)/.test(deploy), 'deploy workflow must not reference GitHub secrets except the driver app download URL handoff');
-for (const secretName of ['PROD_SSH_PRIVATE_KEY', 'ROUTE_OPS_SMOKE_LOGIN_SECRET', 'CLEVER_ADMIN_WEB_LOGIN_SECRET', 'DATABASE_URL', 'POSTGRES_PASSWORD']) {
-  assert(!deploy.includes(secretName), `deploy workflow must not reference ${secretName}`);
-}
-
-const otherWorkflows = [
-  [publishWorkflowPath, publish],
-  [ciWorkflowPath, ci],
-];
-for (const [path, text] of otherWorkflows) {
-  assert(!text.includes('AWS_ROUTE_OPS_DEPLOY_ROLE_ARN'), `${path} must not reference the deploy role ARN variable`);
-}
-assert(!/id-token:\s*write/.test(publish), 'publish workflow must not request id-token:write for deploy role');
-assert(!/id-token:\s*write/.test(ci), 'ci workflow must not request id-token:write for deploy role');
-assert(publish.includes('Require actor allowlist'), 'publish workflow must require a fail-closed actor allowlist');
-assert(publish.includes('DEPLOY_ALLOWED_ACTORS is required and must fail closed before publishing Route Ops images.'), 'publish actor allowlist must fail closed when empty');
-assert(!publish.includes('Optional actor allowlist'), 'publish workflow actor allowlist must not be optional');
-assert(!publish.includes("if: vars.DEPLOY_ALLOWED_ACTORS != ''"), 'publish actor allowlist must not be skipped when the allowlist is empty');
-assert(publish.indexOf('Require actor allowlist') < publish.indexOf('actions/checkout'), 'publish actor allowlist must run before checkout/build/package work');
-assert(ci.includes('apps/delivery-api/src/routes/admin-ui-[^/]+\\.ts'), 'CI Route Ops filters must include extracted admin-ui route helper files');
-assert(ci.includes('apps/delivery-api/tests/admin-ui-[^/]+\\.test\\.ts'), 'CI Route Ops filters must include extracted admin-ui helper test files');
-assert(!/actions:\s*read/.test(publish), 'publish workflow must not request actions:read for deploy provenance checks');
-assert(publish.includes('FRONTEND_STATIC_IMAGE'), 'publish workflow must define a frontend static image repo');
-assert(publish.includes('apps/route-ops-web/Dockerfile'), 'publish workflow must build the Route Ops web static Dockerfile');
-assert(publish.includes('org.clever-route.route-ops-web-static-sha'), 'publish workflow must label the frontend static artifact SHA');
-assert(publish.includes('org.clever-route.image-role=route-ops-web-static'), 'publish workflow must label the frontend static image role');
-
 assert(wrapper.includes('ROUTE_OPS_DEPLOY_LOCK_HELD=1'), 'wrapper must export lock-held marker');
 assert(wrapper.includes('ROUTE_OPS_COMPOSE_PROJECT_NAME="${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}"'), 'wrapper must default Route Ops compose project name to clever-route');
 assert(wrapper.includes('ROUTE_OPS_COMPOSE_PROJECT_NAME must be exactly clever-route'), 'wrapper must reject compose project overrides');
@@ -725,7 +638,6 @@ assert(smoke.includes('/admin/ui/app/api/drivers?shopDomain=${encodeURIComponent
 assertExplicitRouteOpsCompose(imageDeployPath, imageDeploy);
 assertExplicitRouteOpsCompose(imageRollbackPath, imageRollback);
 assert(wrapper.includes('export ROUTE_OPS_COMPOSE_PROJECT_NAME'), 'wrapper must export explicit compose project for child deploy script');
-assertExplicitRouteOpsCompose(deployWorkflowPath, deploy);
 assert(osrmHelper.includes('docker compose -p ${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route} -f infra/compose/docker-compose.prod.yml --profile osrm up -d osrm-ontario'), 'OSRM helper must suggest explicit Route Ops compose project for start command');
 assert(osrmDoc.includes('docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" -f infra/compose/docker-compose.prod.yml --profile osrm up -d osrm-ontario'), 'OSRM docs must start OSRM with explicit Route Ops compose project');
 assert(osrmDoc.includes('Normal image deploy/rollback is now the durable activation path'), 'OSRM docs must document deploy/rollback as the durable OSRM activation path');
@@ -734,7 +646,6 @@ assert(osrmDoc.includes('smoke `http://osrm-ontario:5000` from a one-off `delive
 assert(osrmDoc.includes('deploy history records `osrmEnabled`'), 'OSRM docs must document deploy-history OSRM state recording');
 assert(osrmDoc.includes('automatically stops `osrm-ontario` after the app restarts'), 'OSRM docs must document automatic OSRM stop when disabled');
 for (const [path, text] of [
-  [deployWorkflowPath, deploy],
   [imageDeployPath, imageDeploy],
   [imageRollbackPath, imageRollback],
   [osrmHelperPath, osrmHelper],
@@ -788,9 +699,9 @@ for (const pattern of [
 }
 
 if (failures.length) {
-  console.error('Route Ops SSM deploy validation failed:');
+  console.error('Route Ops release validation failed:');
   for (const failure of failures) console.error(`- ${failure}`);
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checked: [deployWorkflowPath, wrapperPath, deployControlBundlePath, imageDeployPath, imageRollbackPath, composePath, deliveryApiDockerfilePath, prismaDbPushGuardPath, deliveryApiDepsPath, deliveryApiEnvExamplePath, deliveryApiLocalEnvExamplePath, proofMediaDocPath, ssmDocumentPath, osrmHelperPath, docPath, githubDocPath, osrmDocPath, publishWorkflowPath, releaseWorkflowPath, ciWorkflowPath, releaseManifestPath, releaseManifestTestPath] }, null, 2));
+console.log(JSON.stringify({ ok: true, checked: [releaseWorkflowPath, wrapperPath, deployControlBundlePath, monitorPath, imageDeployPath, imageRollbackPath, composePath, deliveryApiDockerfilePath, prismaDbPushGuardPath, deliveryApiDepsPath, deliveryApiEnvExamplePath, deliveryApiLocalEnvExamplePath, proofMediaDocPath, ssmDocumentPath, osrmHelperPath, docPath, githubDocPath, osrmDocPath, ciWorkflowPath, releaseManifestPath, releaseManifestTestPath] }, null, 2));

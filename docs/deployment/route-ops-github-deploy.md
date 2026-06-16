@@ -1,6 +1,6 @@
-# Route Ops GitHub release prepare/promote and fallback publish/deploy
+# Route Ops GitHub release prepare/promote
 
-The primary Route Ops deployment lane is now `.github/workflows/route-ops-release.yml`: a single manual prepare/promote workflow that builds the Route Ops images, performs the no-mutation SSM dry validation, emits an immutable release manifest, and later promotes only that verified manifest. The older split `route-ops-publish.yml` plus `route-ops-ssm-deploy.yml` path remains documented as a fallback while the new release lane is proven; do not delete it without a separate rollback plan.
+The Route Ops deployment lane is `.github/workflows/route-ops-release.yml`: a single manual prepare/promote workflow that builds the Route Ops images, performs the no-mutation SSM dry validation, emits an immutable release manifest, and later promotes only that verified manifest. The retired split publish/deploy workflows were removed after the consolidated lane completed a successful production run.
 
 This repo is private under the EVNSolution Free org. Do not use GitHub Environments, environment secrets, required reviewers, or GitHub-native secret scanning as required controls for this phase.
 
@@ -11,7 +11,7 @@ This repo is private under the EVNSolution Free org. Do not use GitHub Environme
 - `mode=prepare` runs actor allowlist, ignore hygiene, pinned gitleaks scans, Route Ops deploy-scope guard, image build/push, deploy-control bundle creation, S3 upload, and `dryRun=true` SSM validation. It emits a `route-ops-release-manifest` artifact with the exact git SHA, image coordinates, publish evidence URL, route_engine evidence URL plus image revision label and immutable image digest, dry-run bundle URI, and `manifestSha256`. The manifest records only whether the driver APK URL handoff is present; it must not expose the raw URL.
 - `mode=promote` accepts only `release_run_id` and `release_manifest_sha256`, downloads the prepare artifact, validates the digest/provenance, checks out the exact manifest commit, regenerates the deploy-control bundle with `dryRun=false`, and runs the same constrained SSM deploy path. Promotion must not rebuild images or accept mutable image coordinates.
 
-Job permissions stay separated: image publishing jobs may use `packages: write`; SSM jobs may use `id-token: write`; no job should need both. The workflow also preserves the Route Ops safety gates in CI and `scripts/validate-route-ops-ssm-deploy.mjs`.
+Job permissions stay separated: image publishing jobs may use `packages: write`; SSM jobs may use `id-token: write`; no job should need both. The workflow also preserves the Route Ops safety gates in CI and `scripts/validate-route-ops-release.mjs`.
 
 ### Primary operator flow
 
@@ -40,28 +40,7 @@ gh workflow run route-ops-release.yml \
   -f release_manifest_sha256=<manifest-sha256-from-prepare>
 ```
 
-If prepare or promote fails, use the run summary, the manifest, and host-local trace artifacts before retrying. Manifest artifacts are retained for 14 days; if that window expires, rerun `mode=prepare` and promote the new manifest digest. Do not switch to the fallback split lane unless an operator intentionally accepts the older two-workflow handoff.
-
-## Fallback split publish workflow
-
-Fallback `.github/workflows/route-ops-publish.yml` runs only by `workflow_dispatch` on `main`. The operator must provide `deployed_base_ref`, the immutable git SHA/ref currently represented by production's `.deploy/current-image.env`; the deploy-scope guard compares `deployed_base_ref...HEAD` so unrelated Woo/Prisma/infra changes already on `main` cannot be silently included in a Route Ops image publish.
-
-It:
-- runs ignore hygiene, a pinned gitleaks full-history scan plus worktree scan, and Route Ops deploy-scope guard;
-- builds the `route-ops-web-static` target from `apps/route-ops-web/Dockerfile` as a separately identifiable frontend static artifact;
-- builds `runtime` and `migrate` targets from `apps/delivery-api/Dockerfile`;
-- pushes immutable git SHA tags to GHCR;
-- labels backend images with `org.opencontainers.image.revision`, `org.clever-route.prisma-schema-sha`, and `org.clever-route.image-role`;
-- labels the frontend static image with `org.opencontainers.image.revision`, `org.clever-route.route-ops-web-static-sha`, and `org.clever-route.image-role=route-ops-web-static`;
-- prints a redacted EC2 command block.
-
-It does **not** SSH to production and does not receive production SSH/admin smoke secrets.
-
-### First merge caveat
-
-GitHub cannot dispatch `route-ops-publish.yml` until this workflow file exists on the repository default branch. The first PR must therefore be a clean CI/runbook/workflow bootstrap PR only: validate it with CI, `actionlint`, local Docker/compose checks, and secret hygiene, then merge it to `main` without running publish. After it is on `main`, run the manual publish workflow with `deployed_base_ref=<current production git SHA>`.
-
-Do not test this by pushing the mixed Woo/Prisma/delivery-facts worktree: the deploy-scope guard is designed to fail that lane.
+If prepare or promote fails, use the run summary, the manifest, and host-local trace artifacts before retrying. Manifest artifacts are retained for 14 days; if that window expires, rerun `mode=prepare` and promote the new manifest digest.
 
 ## One-time host bootstrap
 
@@ -93,14 +72,14 @@ docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" --env-file .deploy/current-i
 
 If the host cannot compute the real schema fingerprint, stop and use the DB/infra lane.
 
-## Manual deploy after publish
+## Emergency host deploy
 
 On the production host, with the GHCR read token already configured in Docker credential storage:
 
 ```bash
 cd /srv/clever-route-server
-export IMAGE_TAG=<immutable-git-sha-from-publish>
-export PRISMA_SCHEMA_SHA=<schema-sha-from-publish>
+export IMAGE_TAG=<immutable-git-sha-from-reviewed-release>
+export PRISMA_SCHEMA_SHA=<schema-sha-from-reviewed-release>
 export DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api:${IMAGE_TAG}
 export DELIVERY_API_MIGRATE_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:${IMAGE_TAG}
 export ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static:${IMAGE_TAG}
@@ -128,7 +107,7 @@ The deploy script prepares `.deploy/candidate-image.env`, prunes stale Route Ops
 - `/admin/ui/app/api/orders?status=unplanned`;
 - `/admin/ui/app/vendor/maplibre-gl.css` and `/admin/ui/app/vendor/openfreemap-clever-lite.json`.
 
-By default it fails if public OpenFreeMap hosts appear in CSP. Set `ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP=true` only when explicitly allowlisted.
+By default the standalone smoke script fails if public OpenFreeMap hosts appear in CSP. Production monitoring wraps it with the currently approved settings: `ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP=true`, `ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP_HOSTS=tiles.openfreemap.org`, and `ROUTE_OPS_EXPECT_GEOCODER_CONFIGURED=true`.
 
 The production deploy script also performs a non-customer `route_engine` smoke
 before `delivery-api` activation: `/readyz`, authenticated `POST
@@ -158,14 +137,22 @@ Rollback uses `.deploy/previous-image.env`, verifies the schema fingerprint matc
   not a secret. `ROUTE_ENGINE_GRAPH_HOST_DIR` must point to host-local parquet
   artifacts provisioned from the private S3 graph artifact pointer; do not put
   those large artifacts in the clever-route-server image layer.
-- Keep Actions manual, timeout-bounded, and artifact-light. Legacy fallback publish summaries stay short-lived; the consolidated release manifest and prepare/promote summaries are retained for 14 days so promote can verify the reviewed manifest digest, then operators must rerun prepare after expiry.
+- Keep Actions manual, timeout-bounded, and artifact-light. The consolidated release manifest and prepare/promote summaries are retained for 14 days so promote can verify the reviewed manifest digest, then operators must rerun prepare after expiry.
 - If Actions quota is exhausted, use a local maintainer build/push or the existing emergency deploy path after separate approval.
 
 ## SSM deploy follow-up
 
 The current primary deployment model is documented in `docs/deployment/route-ops-ssm-deploy.md` and implemented by `route-ops-release.yml`: GitHub Actions `workflow_dispatch` uses OIDC to assume an AWS deploy role, uploads a non-secret deploy-control bundle to the Route Ops S3 artifact prefix, invokes a custom constrained SSM document with the S3 URI, SHA-256 digest, and masked driver APK URL handoff, and runs the host-local deploy wrapper after host-side verification. First run the release workflow in `mode=prepare`, which keeps SSM in `dryRun=true`; production execution happens only through `mode=promote` after the release manifest digest is reviewed. Do not store production secrets in S3 deploy-control artifacts; the only GitHub/SSM command-parameter secret exception is the masked `DRIVER_APP_DOWNLOAD_URL` handoff.
 
-The older manual `route-ops-ssm-deploy.yml` workflow remains a fallback for a reviewed incident or rollback of the consolidated lane. When using that fallback, run it with `dry_run=true` first and keep production execution with `dry_run=false` separately gated.
+## Production monitoring
+
+Use the read-only monitor wrapper after promote or when checking production health:
+
+```bash
+AWS_REGION=ap-northeast-2 scripts/monitor-route-ops-production.sh
+```
+
+The wrapper resolves the single SSM-managed production node by `SSM_ROUTE_OPS_TARGET_TAG_KEY/VALUE` (or `ROUTE_OPS_MONITOR_INSTANCE_ID`), checks disk/Docker/container health, scans recent logs with cookie/token redaction, and runs the authenticated Route Ops smoke through the deployed `delivery-api` runtime image. This avoids ad-hoc SSM quoting failures and does not depend on Node being installed on the host. Use `--status-only` for no authenticated smoke and `--render-host-script` for local regression review without AWS.
 
 ## Frontend static artifact boundary
 

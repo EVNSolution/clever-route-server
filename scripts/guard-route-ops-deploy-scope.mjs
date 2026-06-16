@@ -93,8 +93,6 @@ const allowedExact = new Set([
   '.dockerignore',
   '.gitleaks.toml',
   '.github/workflows/ci.yml',
-  '.github/workflows/route-ops-publish.yml',
-  '.github/workflows/route-ops-ssm-deploy.yml',
   '.github/workflows/route-ops-release.yml',
   'apps/delivery-api/Dockerfile',
   'apps/delivery-api/.env.example',
@@ -177,12 +175,14 @@ const allowedExact = new Set([
   'scripts/route-ops-deploy-control-bundle.sh',
   'scripts/route-ops-release-manifest.mjs',
   'scripts/test-route-ops-release-manifest.mjs',
+  'scripts/monitor-route-ops-production.sh',
   'scripts/provision-route-engine-graph-from-s3.sh',
   'tests/deploy/deploy-route-ops-image-disk-guard.test.sh',
   'tests/deploy/route-ops-prisma-db-push-guard.test.sh',
   'tests/deploy/ssm-route-ops-deploy.test.sh',
   'tests/deploy/route-ops-deploy-control-bundle.test.sh',
-  'scripts/validate-route-ops-ssm-deploy.mjs',
+  'tests/deploy/monitor-route-ops-production.test.sh',
+  'scripts/validate-route-ops-release.mjs',
   'infra/env/delivery-api.env.example',
   'infra/env/deploy-image.env.example',
   'infra/ssm/route-ops-deploy-document.json',
@@ -202,6 +202,9 @@ const allowedPrefixes = [
 
 const allowedRemovedExact = new Set([
   'scripts/test-ssm-route-ops-deploy.sh',
+  '.github/workflows/route-ops-publish.yml',
+  '.github/workflows/route-ops-ssm-deploy.yml',
+  'scripts/validate-route-ops-ssm-deploy.mjs',
 ]);
 
 const geocodeOsrmRemovedExact = new Set([
@@ -341,7 +344,7 @@ for (const entry of entries) {
     blocked.push({ file: entry.file, reason });
     continue;
   }
-  if (!allowed(entry.file)) outside.push({ file: entry.file, reason: 'not in Route Ops publish/deploy allowlist' });
+  if (!allowed(entry.file)) outside.push({ file: entry.file, reason: 'not in Route Ops release allowlist' });
 }
 
 const report = {
