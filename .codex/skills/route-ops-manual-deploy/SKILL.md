@@ -24,6 +24,8 @@ Hard rules:
 7. Use `ROUTE_OPS_SKIP_CANDIDATE_IMAGE_PULL=1` only after `docker load` has loaded the exact candidate image tags on the host.
 8. Resolve exactly one Online SSM target; never use the first item from an ambiguous target list.
 9. Always run the post-deploy checks from the runbook and report evidence.
+10. Use `ROUTE_ENGINE_SKIP_SOLVE_SMOKE=1` only when `ROUTE_ENGINE_IMAGE` is
+    unchanged and a fresh host check shows route_engine is healthy.
 
 Minimum success evidence:
 

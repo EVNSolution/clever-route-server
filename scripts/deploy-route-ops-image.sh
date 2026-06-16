@@ -870,23 +870,26 @@ EOF_GRAPH_FILES
 }
 
 smoke_route_engine_from_runtime_network() {
-  local image_env_file ready_timeout_ms warmup_timeout_ms solve_timeout_ms
+  local image_env_file ready_timeout_ms warmup_timeout_ms solve_timeout_ms skip_solve_smoke
   image_env_file="$1"
   ready_timeout_ms="${ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS:-5000}"
   warmup_timeout_ms="${ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS:-600000}"
   solve_timeout_ms="${ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS:-180000}"
-  echo "Smoking route_engine from the delivery-api runtime network: readyTimeoutMs=${ready_timeout_ms} warmupTimeoutMs=${warmup_timeout_ms} solveTimeoutMs=${solve_timeout_ms}."
-  route_ops_trace_event "route_engine_smoke_start" "$ROUTE_OPS_DEPLOY_CURRENT_STEP" "started" "readyTimeoutMs=${ready_timeout_ms} warmupTimeoutMs=${warmup_timeout_ms} solveTimeoutMs=${solve_timeout_ms}"
+  skip_solve_smoke="${ROUTE_ENGINE_SKIP_SOLVE_SMOKE:-0}"
+  echo "Smoking route_engine from the delivery-api runtime network: readyTimeoutMs=${ready_timeout_ms} warmupTimeoutMs=${warmup_timeout_ms} solveTimeoutMs=${solve_timeout_ms} skipSolve=${skip_solve_smoke}."
+  route_ops_trace_event "route_engine_smoke_start" "$ROUTE_OPS_DEPLOY_CURRENT_STEP" "started" "readyTimeoutMs=${ready_timeout_ms} warmupTimeoutMs=${warmup_timeout_ms} solveTimeoutMs=${solve_timeout_ms} skipSolve=${skip_solve_smoke}"
   route_engine_trace_monitor_start "route_engine_smoke"
   local smoke_status
   set +e
   ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS="$ready_timeout_ms" \
   ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS="$warmup_timeout_ms" \
   ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS="$solve_timeout_ms" \
+  ROUTE_ENGINE_SKIP_SOLVE_SMOKE="$skip_solve_smoke" \
     route_ops_compose "$image_env_file" run --rm --no-deps \
       -e ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS \
       -e ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS \
       -e ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS \
+      -e ROUTE_ENGINE_SKIP_SOLVE_SMOKE \
       delivery-api node - <<'NODE'
 const http = require('node:http');
 const https = require('node:https');
@@ -904,6 +907,7 @@ const positiveInteger = (name, fallback) => {
 const readyTimeoutMs = positiveInteger('ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS', 5000);
 const warmupTimeoutMs = positiveInteger('ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS', 600000);
 const solveTimeoutMs = positiveInteger('ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS', 180000);
+const skipSolveSmoke = process.env.ROUTE_ENGINE_SKIP_SOLVE_SMOKE === '1';
 const emit = (event, data = {}) => {
   console.log(JSON.stringify({ event, ts: new Date().toISOString(), ...data }));
 };
@@ -1030,6 +1034,12 @@ emit('route_engine_warmup_ok', {
   cacheExists: warmed.warmup?.cache_exists === true,
   externalCalls: warmed.engine.external_calls,
 });
+
+if (skipSolveSmoke) {
+  // ponytail: explicit manual-deploy escape hatch; remove when route_engine smoke solves fit the production max timeout again.
+  emit('route_engine_solve_skipped', { reason: 'ROUTE_ENGINE_SKIP_SOLVE_SMOKE=1' });
+  return;
+}
 
 emit('route_engine_solve_start', { timeoutMs: solveTimeoutMs });
 const { response: solveResponse, body: solved } = await parseOrThrow(solveResult, 'route_engine solve smoke');

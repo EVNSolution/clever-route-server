@@ -23,6 +23,11 @@ them on the production host, and then running `scripts/deploy-route-ops-image.sh
   `ROUTE_OPS_DRIVER_APP_DOWNLOAD_URL` value instead.
 - Do **not** set `ROUTE_OPS_SKIP_CANDIDATE_IMAGE_PULL=1` unless the images have
   already been loaded on the host with the exact tags in `.deploy/candidate-image.env`.
+- Do **not** skip the route_engine solve smoke by default. Use
+  `ROUTE_ENGINE_SKIP_SOLVE_SMOKE=1` only for a frontend/server deploy where the
+  `ROUTE_ENGINE_IMAGE` is unchanged and a fresh host check shows route_engine is
+  healthy; this avoids blocking unrelated deploys on the production solve smoke's
+  180s contract limit.
 
 ## Preconditions
 
