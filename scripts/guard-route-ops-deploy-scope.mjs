@@ -95,6 +95,7 @@ const allowedExact = new Set([
   '.github/workflows/ci.yml',
   '.github/workflows/route-ops-release.yml',
   'apps/delivery-api/Dockerfile',
+  'apps/delivery-api/tsconfig.build.json',
   'apps/delivery-api/.env.example',
   'apps/delivery-api/AGENTS.md',
   'apps/delivery-api/src/app.ts',
@@ -199,6 +200,13 @@ const allowedExact = new Set([
 const allowedPrefixes = [
   'apps/route-ops-web/',
 ];
+
+const allowedRemovedExact = new Set([
+  // ponytail: keep until the first production release based after the split-workflow cleanup.
+  '.github/workflows/route-ops-publish.yml',
+  '.github/workflows/route-ops-ssm-deploy.yml',
+  'scripts/validate-route-ops-ssm-deploy.mjs',
+]);
 
 const geocodeOsrmRemovedExact = new Set([
   'scripts/prepare-osrm-ontario.sh',
@@ -305,7 +313,7 @@ function allowed(file) {
 }
 
 function allowedRemoval(file) {
-  return allowGeocodeOsrmLane && geocodeOsrmRemovedExact.has(file);
+  return allowedRemovedExact.has(file) || (allowGeocodeOsrmLane && geocodeOsrmRemovedExact.has(file));
 }
 
 function removalProblem(file) {
