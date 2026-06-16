@@ -511,6 +511,8 @@ assert(imageDeploy.includes('smoke_route_engine_from_runtime_network'), 'image d
 assert(imageDeploy.includes('route_engine ready smoke failed after readiness wait'), 'image deploy script must wait for route_engine readiness before failing the smoke');
 assert(imageDeploy.includes("require('node:http')"), 'image deploy route_engine smoke must use node:http so long warmups are not capped by global fetch HeadersTimeout');
 assert(!imageDeploy.includes('fetchWithTimeout'), 'image deploy route_engine smoke must not regress to global fetch timeout handling');
+assert(imageDeploy.includes('async function main()'), 'image deploy route_engine smoke must wrap awaits in an async CommonJS function');
+assert(imageDeploy.includes('main().catch((error)'), 'image deploy route_engine smoke must report async CommonJS wrapper errors');
 assert(imageDeploy.includes('up --no-build --force-recreate route-ops-web-static'), 'image deploy script must stage the frontend static artifact before backend activation');
 assert(imageDeploy.includes('ensure_route_ops_ingress'), 'image deploy script must force Route Ops ingress back to this repo before smoke');
 assert(imageDeploy.includes('docker image rm "$image"'), 'image deploy cleanup must remove explicit image refs only');

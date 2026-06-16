@@ -882,6 +882,7 @@ smoke_route_engine_from_runtime_network() {
 const http = require('node:http');
 const https = require('node:https');
 
+async function main() {
 const baseUrl = (process.env.ROUTE_ENGINE_BASE_URL || 'http://route-engine:8080').replace(/\/+$/, '');
 const token = process.env.ROUTE_ENGINE_INTERNAL_TOKEN || '';
 if (!token) throw new Error('ROUTE_ENGINE_INTERNAL_TOKEN is missing in delivery-api runtime env');
@@ -1034,6 +1035,12 @@ emit('route_engine_solve_ok', {
   distanceMeters: Math.round(route.summary.total_distance_meters),
   durationSeconds: Math.round(route.summary.total_duration_seconds),
   externalCalls: solved.engine.external_calls,
+});
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
 });
 NODE
   smoke_status=$?
