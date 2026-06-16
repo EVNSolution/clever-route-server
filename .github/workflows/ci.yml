@@ -47,7 +47,7 @@ jobs:
       - name: Route Ops deploy scope guard (opt-in PR only)
         if: github.event_name == 'pull_request' && steps.route_ops_changes.outputs.changed == 'true' && contains(github.event.pull_request.labels.*.name, 'route-ops-deploy-scope')
         run: scripts/guard-route-ops-deploy-scope.mjs --base "${{ github.event.pull_request.base.sha }}" --head "$GITHUB_SHA" --json --allow-compose-bootstrap
-      - name: Route Ops SSM deploy static checks
+      - name: Route Ops release static checks
         if: steps.route_ops_changes.outputs.changed == 'true'
         run: |
           node --check scripts/route-ops-release-manifest.mjs

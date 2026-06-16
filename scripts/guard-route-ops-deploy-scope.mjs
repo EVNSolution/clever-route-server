@@ -200,13 +200,6 @@ const allowedPrefixes = [
   'apps/route-ops-web/',
 ];
 
-const allowedRemovedExact = new Set([
-  'scripts/test-ssm-route-ops-deploy.sh',
-  '.github/workflows/route-ops-publish.yml',
-  '.github/workflows/route-ops-ssm-deploy.yml',
-  'scripts/validate-route-ops-ssm-deploy.mjs',
-]);
-
 const geocodeOsrmRemovedExact = new Set([
   'scripts/prepare-osrm-ontario.sh',
   'scripts/smoke-osrm-ontario.sh',
@@ -312,7 +305,7 @@ function allowed(file) {
 }
 
 function allowedRemoval(file) {
-  return allowedRemovedExact.has(file) || (allowGeocodeOsrmLane && geocodeOsrmRemovedExact.has(file));
+  return allowGeocodeOsrmLane && geocodeOsrmRemovedExact.has(file);
 }
 
 function removalProblem(file) {
