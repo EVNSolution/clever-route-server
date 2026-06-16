@@ -232,6 +232,34 @@ describe('Driver proof media route', () => {
     }
   });
 
+  test('maps local proof media storage permission failures to service unavailable', async () => {
+    const { app, storeProofMedia } = await createAppHarness({ rejectStorageUnavailable: true });
+
+    try {
+      const response = await app.inject({
+        ...multipartUploadRequest(),
+        headers: {
+          ...multipartUploadRequest().headers,
+          authorization: `Bearer ${driverToken()}`
+        },
+        method: 'POST',
+        url: '/driver/proof-media'
+      });
+
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'PROOF_MEDIA_STORAGE_UNAVAILABLE',
+          message: 'Proof media storage is temporarily unavailable'
+        }
+      });
+      expect(storeProofMedia).toHaveBeenCalledOnce();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects unsupported proof media sources before storage', async () => {
     const { app, storeProofMedia } = await createAppHarness();
 
@@ -302,6 +330,7 @@ async function createAppHarness(input: {
   rejectAccessUnavailable?: boolean;
   rejectScan?: boolean;
   rejectStorage?: boolean;
+  rejectStorageUnavailable?: boolean;
 } = {}): Promise<{
   app: Awaited<ReturnType<typeof buildApp>>;
   createProofMediaReadAccess: ReturnType<typeof vi.fn<CreateProofMediaReadAccess>>;
@@ -329,6 +358,11 @@ async function createAppHarness(input: {
     }
     if (input.rejectScan === true) {
       return Promise.reject(new DriverProofMediaScanRejectedError('eicar-test-signature'));
+    }
+    if (input.rejectStorageUnavailable === true) {
+      const error = new Error('EACCES: permission denied, mkdir /app/var/driver-proof-media/driver-proof');
+      (error as NodeJS.ErrnoException).code = 'EACCES';
+      return Promise.reject(error);
     }
 
     return Promise.resolve({

@@ -280,8 +280,6 @@ export const routesCopy = {
       published: 'Published'
     },
     routeOptimization: {
-      applied: 'Route Engine result applied. You can still edit stops manually, or rerun optimization explicitly.',
-      cancelled: 'Optimization was cancelled.',
       details: {
         appliedAt: 'Applied at',
         elapsed: 'Elapsed',
@@ -296,11 +294,8 @@ export const routesCopy = {
         traceId: 'Trace ID'
       },
       editingLocked: 'Stop order edits are locked until this job reaches a terminal state.',
-      failed: 'Optimization failed',
-      queued: 'Optimization queued. Waiting for Route Engine to start.',
       rerun: 'Rerun optimization',
       saveAndRerun: 'Save & rerun optimization',
-      running: 'Route Engine is optimizing this route. It can take up to a couple of minutes; elapsed time alone is not a failure. The job times out only if the engine exceeds the configured result wait limit.',
       start: 'Optimize with Route Engine',
       starting: 'Starting optimization…',
       statuses: {
@@ -317,7 +312,6 @@ export const routesCopy = {
         COMPLETED: 'Completed',
         QUEUED: 'Queued'
       },
-      timeout: 'Optimization timed out. Review logs, then rerun when ready.',
       title: 'Route optimization'
     },
     moveUp(orderName: string): string { return `Move ${orderName} up`; },
@@ -389,8 +383,6 @@ export const routesCopy = {
       published: '게시됨'
     },
     routeOptimization: {
-      applied: 'Route Engine 결과가 적용되었습니다. 이후 하차 순서는 직접 수정할 수 있고, 명시적으로 다시 최적화할 수 있습니다.',
-      cancelled: '최적화가 취소되었습니다.',
       details: {
         appliedAt: '적용 시각',
         elapsed: '경과 시간',
@@ -405,11 +397,8 @@ export const routesCopy = {
         traceId: 'Trace ID'
       },
       editingLocked: '작업이 완료 상태가 될 때까지 하차 순서 편집을 잠급니다.',
-      failed: '최적화 실패',
-      queued: '최적화가 대기 중입니다. Route Engine 시작을 기다립니다.',
       rerun: '최적화 다시 실행',
       saveAndRerun: '저장 후 최적화 다시 실행',
-      running: 'Route Engine이 이 경로를 최적화 중입니다. 최대 2분 정도 걸릴 수 있으며, 시간이 지났다는 이유만으로 실패는 아닙니다. 엔진이 설정된 결과 대기 한도를 넘길 때만 시간 초과로 표시됩니다.',
       start: 'Route Engine 최적화',
       starting: '최적화 시작 중…',
       statuses: {
@@ -426,7 +415,6 @@ export const routesCopy = {
         COMPLETED: '완료',
         QUEUED: '대기 중'
       },
-      timeout: '최적화 시간이 초과되었습니다. 로그를 확인한 뒤 필요하면 다시 실행하세요.',
       title: '경로 최적화'
     },
     moveUp(orderName: string): string { return `${orderName} 위로 이동`; },

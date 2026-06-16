@@ -565,6 +565,10 @@ assert(compose.includes('profiles:') && compose.includes('route-engine'), 'produ
 assert(compose.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'production compose must mount route_engine graph artifacts from an explicit host directory');
 assert(compose.includes('/app/routing_engine/v7_out/parquet:ro'), 'production route_engine graph mount must target the expected read-only parquet path');
 assert(compose.includes('/srv/clever-route-server/data/driver-proof-media:/app/var/driver-proof-media'), 'production compose must bind-mount the approved local proof-media host directory');
+assert(imageDeploy.includes('/srv/clever-route-server/data/driver-proof-media'), 'Route Ops deploy must bootstrap the approved local proof-media host directory');
+assert(imageDeploy.includes('chown -R 100:101 "$DRIVER_PROOF_MEDIA_HOST_DIR"'), 'Route Ops deploy must correct proof-media host directory ownership for the delivery-api runtime uid/gid');
+assert(imageDeploy.includes('chmod 750 "$DRIVER_PROOF_MEDIA_HOST_DIR"'), 'Route Ops deploy must correct proof-media host directory mode before compose up');
+assert(imageDeploy.indexOf('route_ops_trace_step_start "ensure_driver_proof_media_host_dir"') < imageDeploy.indexOf('up --no-build --force-recreate route-ops-web-static'), 'Route Ops deploy must prepare proof-media storage before the first candidate compose up');
 assert(deliveryApiEnvExample.includes('DRIVER_PROOF_MEDIA_STORAGE_BACKEND=local'), 'production env example must explicitly select local proof-media storage');
 assert(deliveryApiEnvExample.includes('DRIVER_PROOF_MEDIA_STORAGE_DIR=/app/var/driver-proof-media'), 'production env example must align proof-media storage dir with the compose mount');
 assert(deliveryApiEnvExample.includes('DRIVER_PROOF_MEDIA_SCANNER_BACKEND=none'), 'production env example must keep proof-media scanner disabled by default');

@@ -2482,10 +2482,6 @@ button.danger.subtle {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
-.route-optimization-message {
-  display: block;
-  padding: 0 12px;
-}
 .route-optimization-notice small {
   color: inherit;
   display: block;
@@ -2497,7 +2493,7 @@ button.danger.subtle {
   display: grid;
   gap: 8px 14px;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-  margin: 8px 12px 8px;
+  margin: 0 12px 8px;
   padding-top: 8px;
 }
 .route-optimization-details div {
