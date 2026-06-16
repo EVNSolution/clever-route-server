@@ -664,6 +664,58 @@ EOF_ENV
   fi
 }
 
+run_deploy_route_engine_smoke_failure_restores_current_route_engine_case() {
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-deploy-route-engine-current-fail.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  prepare_app_dir "$tmp"
+  make_fake_bin "$tmp"
+  mkdir -p "$tmp/state"
+  cat > "$tmp/infra/env/delivery-api.env" <<'EOF_ENV'
+OSRM_BASE_URL=http://osrm-ontario:5000
+OSRM_TIMEOUT_MS=10000
+ROUTE_ENGINE_BASE_URL=http://route-engine:8080
+ROUTE_ENGINE_TIMEOUT_MS=120000
+ROUTE_ENGINE_GRAPH_MANIFEST_SHA=pre-deploy-manifest
+EOF_ENV
+
+  if PATH="$tmp/bin:$PATH" \
+    FAKE_DOCKER_STATE="$tmp/state" \
+    FAKE_DOCKER_ROOT="$tmp/docker-root" \
+    FAKE_DF_MODE="recover" \
+    FAKE_ROUTE_ENGINE_SMOKE_FAIL=1 \
+    APP_DIR="$tmp" \
+    ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1 \
+    ROUTE_OPS_SMOKE_LOGIN_SECRET="unit-test-secret-not-real" \
+    IMAGE_TAG="$IMAGE_TAG" \
+    PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
+    DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
+    DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
+    ROUTE_ENGINE_IMAGE="$ROUTE_ENGINE_IMAGE" \
+    ROUTE_ENGINE_GRAPH_HOST_DIR="$tmp/data/route-engine/parquet" \
+    ROUTE_OPS_WEB_STATIC_IMAGE="$STATIC_IMAGE" \
+      scripts/deploy-route-ops-image.sh > "$tmp/output.log" 2>&1; then
+    echo "deploy route_engine smoke failure unexpectedly passed" >&2
+    exit 1
+  fi
+
+  grep -q "Deploy failed after route_engine service mutation but before Route Ops backend mutation; restoring current route_engine" "$tmp/output.log"
+  grep -q -- "--env-file .deploy/current-image.env .*--profile route-engine up -d --no-build route-engine" "$tmp/state/compose.log"
+  if grep -q -- "--env-file .deploy/candidate-image.env .*--profile route-engine stop route-engine" "$tmp/state/compose.log"; then
+    echo "candidate route_engine was stopped instead of restoring current route_engine" >&2
+    cat "$tmp/state/compose.log" >&2
+    exit 1
+  fi
+  grep -q '^ROUTE_ENGINE_BASE_URL=http://route-engine:8080$' "$tmp/infra/env/delivery-api.env"
+  grep -q '^ROUTE_ENGINE_TIMEOUT_MS=120000$' "$tmp/infra/env/delivery-api.env"
+  grep -q '^ROUTE_ENGINE_GRAPH_MANIFEST_SHA=pre-deploy-manifest$' "$tmp/infra/env/delivery-api.env"
+  if grep -q "up -d --no-build --force-recreate --no-deps delivery-api" "$tmp/state/compose.log"; then
+    echo "delivery-api was mutated after route_engine smoke failure" >&2
+    cat "$tmp/state/compose.log" >&2
+    exit 1
+  fi
+}
+
 run_rollback_static_failure_restores_current_static_case() {
   local tmp
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-rollback-static-fail.XXXXXX")"
@@ -796,6 +848,7 @@ run_rollback_rejects_shared_current_static_volume_case
 run_deploy_static_failure_restores_current_static_case
 run_deploy_migrate_failure_restores_current_static_case
 run_deploy_route_engine_smoke_failure_restores_host_env_case
+run_deploy_route_engine_smoke_failure_restores_current_route_engine_case
 run_rollback_static_failure_restores_current_static_case
 run_rollback_migrate_failure_restores_current_static_case
 
