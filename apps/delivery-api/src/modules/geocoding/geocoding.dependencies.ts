@@ -8,7 +8,6 @@ export type GeocodingRuntimeEnv = Partial<
     | 'GEOCODING_USER_AGENT'
     | 'GEOCODING_RATE_LIMIT_PER_SECOND'
     | 'GEOCODING_CACHE_TTL_DAYS'
-    | 'GEOCODING_PUBLIC_BULK_MAX_ATTEMPTS'
     | 'GEOCODING_TIMEOUT_MS',
     string
   >
@@ -31,7 +30,6 @@ export function loadGeocodingService(input: { env: GeocodingRuntimeEnv }): Geoco
     return new GeocodingService({
       minIntervalMs: Math.ceil(1000 / rateLimit),
       mode: 'nominatim_compatible',
-      bulkAttemptLimit: readBulkAttemptLimit(input.env.GEOCODING_PUBLIC_BULK_MAX_ATTEMPTS, 25),
       persistentCacheEnabled,
       providerPolicy: 'public_nominatim',
       rateLimiter: readSharedPublicProviderLimiter(searchUrl),
@@ -51,7 +49,6 @@ export function loadGeocodingService(input: { env: GeocodingRuntimeEnv }): Geoco
   return new GeocodingService({
     minIntervalMs: Math.ceil(1000 / rateLimit),
     mode,
-    bulkAttemptLimit: readBulkAttemptLimit(input.env.GEOCODING_PUBLIC_BULK_MAX_ATTEMPTS, null),
     persistentCacheEnabled,
     provider: new NominatimGeocodingClient({
       searchUrl,
@@ -91,13 +88,6 @@ function readOptional(value: string | undefined): string | undefined {
 function readPersistentCacheSignal(value: string | undefined): boolean {
   const parsed = Number(value ?? '');
   return Number.isFinite(parsed) && parsed > 0;
-}
-
-function readBulkAttemptLimit(value: string | undefined, fallback: number | null): number | null {
-  if (value === undefined || value.trim() === '') return fallback;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed < 0) return fallback;
-  return Math.floor(parsed);
 }
 
 function readTimeoutMs(value: string | undefined): number | undefined {

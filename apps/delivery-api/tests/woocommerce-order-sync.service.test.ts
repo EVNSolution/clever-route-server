@@ -325,7 +325,7 @@ describe('WooCommerceOrderSyncService', () => {
     );
   });
 
-  test('skips pre-persist geocoding for public-provider paginated sync', async () => {
+  test('geocodes new paginated sync orders before persisting', async () => {
     const client = {
       listOrdersPage: vi.fn().mockResolvedValue({
         orders: [order(33)],
@@ -337,7 +337,18 @@ describe('WooCommerceOrderSyncService', () => {
     };
     const repository = createRepositoryHarness();
     const geocodingService = {
-      geocode: vi.fn(),
+      geocode: vi.fn().mockResolvedValue({
+        cached: false,
+        ok: true,
+        result: {
+          addressLabel: '100 Test St, Markham, ON L3R 0A1, CA',
+          latitude: 43.8561,
+          longitude: -79.337,
+          provider: 'test-geocoder',
+          providerPlaceId: 'place-100',
+          rawLabel: '100 Test Street'
+        }
+      }),
       status: {
         mode: 'nominatim_compatible' as const,
         persistentCacheEnabled: true,
@@ -354,18 +365,18 @@ describe('WooCommerceOrderSyncService', () => {
 
     await service.syncUpdatedOrders({ pageSize: 10, status: 'processing' });
 
-    expect(geocodingService.geocode).not.toHaveBeenCalled();
+    expect(geocodingService.geocode).toHaveBeenCalledTimes(1);
     const upsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
     expect(upsert?.synced.deliveryStop).toEqual(
       expect.objectContaining({
-        geocodeStatus: 'PENDING',
-        latitude: null,
-        longitude: null
+        geocodeStatus: 'RESOLVED',
+        latitude: '43.8561000',
+        longitude: '-79.3370000'
       })
     );
   });
 
-  test('skips pre-persist geocoding for private-provider paginated sync', async () => {
+  test('does not geocode unchanged paginated sync orders repeatedly', async () => {
     const client = {
       listOrdersPage: vi.fn().mockResolvedValue({
         orders: [order(34)],
@@ -376,6 +387,22 @@ describe('WooCommerceOrderSyncService', () => {
       })
     };
     const repository = createRepositoryHarness();
+    repository.listCanonicalOrdersBySourceIdentity.mockResolvedValueOnce([
+      canonicalOrderRow('34', {
+        geocodeStatus: 'PENDING',
+        hasCoordinates: false,
+        latitude: null,
+        longitude: null,
+        shippingAddress: {
+          address1: '100 Test St',
+          address2: null,
+          city: 'Markham',
+          countryCode: 'CA',
+          postalCode: 'L3R 0A1',
+          province: 'ON'
+        }
+      })
+    ]);
     const geocodingService = {
       geocode: vi.fn(),
       status: {
@@ -403,6 +430,116 @@ describe('WooCommerceOrderSyncService', () => {
         longitude: null
       })
     );
+  });
+
+  test('geocodes paginated sync orders when the Woo address changed', async () => {
+    const client = {
+      listOrdersPage: vi.fn().mockResolvedValue({
+        orders: [order(35)],
+        page: 1,
+        perPage: 10,
+        total: 1,
+        totalPages: 1
+      })
+    };
+    const repository = createRepositoryHarness();
+    repository.listCanonicalOrdersBySourceIdentity.mockResolvedValueOnce([
+      canonicalOrderRow('35', {
+        geocodeStatus: 'PENDING',
+        hasCoordinates: false,
+        latitude: null,
+        longitude: null,
+        shippingAddress: {
+          address1: '99 Old St',
+          address2: null,
+          city: 'Markham',
+          countryCode: 'CA',
+          postalCode: 'L3R 0A1',
+          province: 'ON'
+        }
+      })
+    ]);
+    const geocodingService = {
+      geocode: vi.fn().mockResolvedValue({
+        cached: false,
+        ok: true,
+        result: {
+          addressLabel: '100 Test St, Markham, ON L3R 0A1, CA',
+          latitude: 43.8561,
+          longitude: -79.337,
+          provider: 'test-geocoder',
+          providerPlaceId: 'place-100',
+          rawLabel: '100 Test Street'
+        }
+      }),
+      status: {
+        mode: 'nominatim_compatible' as const,
+        persistentCacheEnabled: true,
+        providerPolicy: 'private_nominatim_compatible' as const
+      }
+    };
+    const service = new WooCommerceOrderSyncService({
+      client,
+      geocodingService,
+      repository,
+      shopDomain: 'woo.example.test',
+      siteUrl: 'https://woo.example.test'
+    });
+
+    await service.syncUpdatedOrders({ pageSize: 10, status: 'processing' });
+
+    expect(geocodingService.geocode).toHaveBeenCalledTimes(1);
+    const upsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
+    expect(upsert?.synced.deliveryStop).toEqual(
+      expect.objectContaining({
+        geocodeStatus: 'RESOLVED',
+        latitude: '43.8561000',
+        longitude: '-79.3370000'
+      })
+    );
+  });
+
+  test('does not geocode unchanged manual single-order refreshes repeatedly', async () => {
+    const client = {
+      getOrder: vi.fn().mockResolvedValue(order(36))
+    };
+    const repository = createRepositoryHarness();
+    repository.listCanonicalOrdersBySourceIdentity.mockResolvedValueOnce([
+      canonicalOrderRow('36', {
+        geocodeStatus: 'PENDING',
+        hasCoordinates: false,
+        latitude: null,
+        longitude: null,
+        shippingAddress: {
+          address1: '100 Test St',
+          address2: null,
+          city: 'Markham',
+          countryCode: 'CA',
+          postalCode: 'L3R 0A1',
+          province: 'ON'
+        }
+      })
+    ]);
+    const geocodingService = {
+      geocode: vi.fn(),
+      status: {
+        mode: 'nominatim_compatible' as const,
+        persistentCacheEnabled: true,
+        providerPolicy: 'private_nominatim_compatible' as const
+      }
+    };
+    const service = new WooCommerceOrderSyncService({
+      client,
+      geocodingService,
+      repository,
+      shopDomain: 'woo.example.test',
+      siteUrl: 'https://woo.example.test'
+    });
+
+    await service.syncSingleOrder({ sourceOrderId: '36' });
+
+    expect(geocodingService.geocode).not.toHaveBeenCalled();
+    expect(repository.upsertOrderWithDeliveryStop).toHaveBeenCalledTimes(1);
   });
 
 
@@ -498,64 +635,73 @@ describe('WooCommerceOrderSyncService', () => {
   });
 });
 
+function canonicalOrderRow(
+  orderId: string,
+  overrides: Partial<CanonicalOrderRow> = {}
+): CanonicalOrderRow {
+  return {
+    cancelledAt: null,
+    currencyCode: 'CAD',
+    deliveryArea: 'Markham',
+    deliveryBatchEndDate: null,
+    deliveryBatchStartDate: null,
+    deliveryDate: '2026-05-21',
+    deliveryDateSource: 'EXPLICIT_ATTRIBUTE',
+    deliveryDayRaw: null,
+    deliverySession: 'DAY',
+    deliveryStopId: `stop-${orderId}`,
+    deliveryStopStatus: 'PENDING',
+    deliveryWeekday: 'THURSDAY',
+    email: null,
+    financialStatus: null,
+    fulfillmentStatus: 'PROCESSING',
+    geocodeStatus: 'RESOLVED',
+    hasCoordinates: true,
+    latitude: 43,
+    longitude: -79,
+    name: `#${orderId}`,
+    orderCreatedAt: '2026-05-20T00:00:00.000Z',
+    orderDateLocal: '2026-05-20',
+    orderId,
+    phone: null,
+    pickup: false,
+    planningGroupKey: '2026-05-21|DELIVERY|||Markham',
+    planningStatus: 'UNPLANNED',
+    processedAt: '2026-05-20T00:00:00.000Z',
+    readiness: 'READY_TO_PLAN',
+    recipientName: null,
+    reviewReasons: [],
+    routePlanId: null,
+    routePlanName: null,
+    routePlanStatus: null,
+    routeScopeKey: '2026-05-21|DELIVERY||',
+    serviceType: 'DELIVERY',
+    shippingAddress: { address1: null, address2: null, city: null, countryCode: null, postalCode: null, province: null },
+    shopifyOrderGid: `woocommerce://woo.example.test/orders/${orderId}`,
+    shopifyOrderLegacyId: null,
+    sourceOrderId: orderId,
+    sourceOrderNumber: orderId,
+    sourcePlatform: 'WOOCOMMERCE',
+    sourceCreatedAt: '2026-05-20T00:00:00.000Z',
+    sourceCreatedDate: '2026-05-20',
+    sourceSiteUrl: 'https://woo.example.test',
+    sourceUpdatedAt: '2026-05-20T00:00:00.000Z',
+    sourceUpdatedDate: '2026-05-20',
+    timeWindowEnd: null,
+    timeWindowStart: null,
+    totalPriceAmount: '10.00',
+    updatedAtShopify: '2026-05-20T00:00:00.000Z',
+    ...overrides
+  };
+}
+
 function createRepositoryHarness() {
   return {
     findCanonicalOrderById: vi.fn((input: { orderId: string; shopDomain: string }) =>
-      Promise.resolve<CanonicalOrderRow>({
-        cancelledAt: null,
-        currencyCode: 'CAD',
-        deliveryArea: 'Markham',
-        deliveryBatchEndDate: null,
-        deliveryBatchStartDate: null,
-        deliveryDate: '2026-05-21',
-        deliveryDateSource: 'EXPLICIT_ATTRIBUTE',
-        deliveryDayRaw: null,
-        deliverySession: 'DAY',
-        deliveryStopId: `stop-${input.orderId}`,
-        deliveryStopStatus: 'PENDING',
-        deliveryWeekday: 'THURSDAY',
-        email: null,
-        financialStatus: null,
-        fulfillmentStatus: 'PROCESSING',
-        geocodeStatus: 'RESOLVED',
-        hasCoordinates: true,
-        latitude: 43,
-        longitude: -79,
-        name: `#${input.orderId}`,
-        orderCreatedAt: '2026-05-20T00:00:00.000Z',
-        orderDateLocal: '2026-05-20',
-        orderId: input.orderId,
-        phone: null,
-        pickup: false,
-        planningGroupKey: '2026-05-21|DELIVERY|||Markham',
-        planningStatus: 'UNPLANNED',
-        processedAt: '2026-05-20T00:00:00.000Z',
-        readiness: 'READY_TO_PLAN',
-        recipientName: null,
-        reviewReasons: [],
-        routePlanId: null,
-        routePlanName: null,
-        routePlanStatus: null,
-        routeScopeKey: '2026-05-21|DELIVERY||',
-        serviceType: 'DELIVERY',
-        shippingAddress: { address1: null, address2: null, city: null, countryCode: null, postalCode: null, province: null },
-        shopifyOrderGid: `woocommerce://woo.example.test/orders/${input.orderId}`,
-        shopifyOrderLegacyId: null,
-        sourceOrderId: input.orderId,
-        sourceOrderNumber: input.orderId,
-        sourcePlatform: 'WOOCOMMERCE',
-        sourceCreatedAt: '2026-05-20T00:00:00.000Z',
-        sourceCreatedDate: '2026-05-20',
-        sourceSiteUrl: 'https://woo.example.test',
-        sourceUpdatedAt: '2026-05-20T00:00:00.000Z',
-        sourceUpdatedDate: '2026-05-20',
-        timeWindowEnd: null,
-        timeWindowStart: null,
-        totalPriceAmount: '10.00',
-        updatedAtShopify: '2026-05-20T00:00:00.000Z'
-      })
+      Promise.resolve(canonicalOrderRow(input.orderId))
     ),
-    listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+    listCanonicalOrdersBySourceIdentity: vi.fn(() => Promise.resolve<CanonicalOrderRow[]>([])),
+    listCanonicalOrders: vi.fn(() => Promise.resolve<CanonicalOrderRow[]>([])),
     readOrderMappingConfig: vi.fn(() => Promise.resolve<Record<string, unknown> | null>(null)),
     upsertOrderWithDeliveryStop: vi.fn(
       (input: { shopDomain: string; synced: SyncedOrderWithDeliveryStopInput }): Promise<UpsertOrderWithDeliveryStopResult> =>

@@ -764,21 +764,16 @@ function formatBulkGeocodeStatus(job: BulkGeocodeJobDto, locale: string | null |
     [t.resolved, counts.succeeded],
     [t.failed, counts.failed],
     [t.noAddress, counts.noAddress],
-    [t.skippedByPolicy, counts.skippedByPolicy],
-    [t.alreadyHadCoordinates, counts.skippedAlreadyGeocoded],
+    [t.alreadyHadCoordinates, counts.alreadyHasCoordinates],
   ];
   const parts = countEntries
     .filter((entry): entry is [string, number] => typeof entry[1] === "number")
     .map(([label, value]) => `${value} ${label}`);
   const suffix = parts.length === 0 ? "" : `: ${parts.join(", ")}`;
-  const policy =
-    job.policyLimit?.reached === true
-      ? t.policyReached(job.policyLimit.attemptedLimit ?? "configured")
-      : "";
   const statusLabel = resolveLocale(locale) === "ko-KR"
     ? ({ accepted: "접수됨", completed: "완료됨", failed: "실패", running: "진행 중" } as const)[status]
     : humanizeToken(status);
-  return `${getOrdersCopy(locale).bulkGeocode} ${statusLabel}${suffix}.${policy}`;
+  return `${getOrdersCopy(locale).bulkGeocode} ${statusLabel}${suffix}.`;
 }
 
 function isBulkGeocodeTerminal(job: BulkGeocodeJobDto): boolean {

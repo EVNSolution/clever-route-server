@@ -686,9 +686,7 @@ export const ordersCopy = {
       resolved: 'resolved',
       failed: 'failed',
       noAddress: 'no address',
-      skippedByPolicy: 'skipped by policy',
       alreadyHadCoordinates: 'already had coordinates',
-      policyReached(limit: number | string): string { return ` Public geocoder cap reached (${limit} attempts).`; }
     },
     wooSyncStatus: {
       queued: 'queued',
@@ -920,9 +918,7 @@ export const ordersCopy = {
       resolved: '해결',
       failed: '실패',
       noAddress: '주소 없음',
-      skippedByPolicy: '정책으로 건너뜀',
       alreadyHadCoordinates: '기존 좌표 있음',
-      policyReached(limit: number | string): string { return ` 공개 지오코더 한도에 도달했습니다(${limit}회 시도).`; }
     },
     wooSyncStatus: {
       queued: '대기 중',

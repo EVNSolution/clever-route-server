@@ -34,7 +34,7 @@ export type BulkGeocodeResult =
       message: string;
       orderId: string;
       orderName: string;
-      status: "failed" | "no_address" | "skipped_policy";
+      status: "failed" | "no_address";
     };
 
 type BulkGeocodeServiceInput = {
@@ -67,23 +67,17 @@ export type BulkGeocodeServices = {
 export type BulkGeocodeJob = {
   completedAt: string | null;
   counts: {
+    alreadyHasCoordinates: number;
     attempted: number;
     failed: number;
     matched: number;
     noAddress: number;
-    skippedByPolicy: number;
-    skippedAlreadyGeocoded: number;
     succeeded: number;
   };
   createdAt: string;
   error: string | null;
   filters: ListCanonicalOrdersFilters;
   jobId: string;
-  policyLimit: {
-    active: boolean;
-    attemptedLimit: number | null;
-    reached: boolean;
-  };
   results: BulkGeocodeResult[];
   shopDomain: string;
   status: BulkGeocodeJobStatus;
@@ -153,23 +147,17 @@ export function createBulkGeocodeJob(input: {
   const job: BulkGeocodeJob = {
     completedAt: null,
     counts: {
+      alreadyHasCoordinates: 0,
       attempted: 0,
       failed: 0,
       matched: 0,
       noAddress: 0,
-      skippedByPolicy: 0,
-      skippedAlreadyGeocoded: 0,
       succeeded: 0,
     },
     createdAt: now,
     error: null,
     filters: input.filters,
     jobId: randomUUID(),
-    policyLimit: {
-      active: false,
-      attemptedLimit: null,
-      reached: false,
-    },
     results: [],
     shopDomain: input.shopDomain,
     status: "accepted",
@@ -192,39 +180,14 @@ export async function runBulkGeocodeJob(input: {
       shopDomain: input.job.shopDomain,
     });
     input.job.counts.matched = orders.length;
-    const ordersToGeocode = orders.filter((order) => !hasRouteOpsCoordinates(order));
-    const publicAttemptLimit =
-      input.services.geocodingService.status.providerPolicy ===
-      "public_nominatim"
-        ? (input.services.geocodingService.status.publicBulkAttemptLimit ??
-          null)
-        : null;
-    input.job.policyLimit = {
-      active: publicAttemptLimit !== null,
-      attemptedLimit: publicAttemptLimit,
-      reached: false,
-    };
+    const ordersToGeocode = orders.filter(
+      (order) => !hasRouteOpsCoordinates(order),
+    );
+    input.job.counts.alreadyHasCoordinates =
+      orders.length - ordersToGeocode.length;
     touchBulkGeocodeJob(input.job);
 
     for (const order of ordersToGeocode) {
-      if (
-        publicAttemptLimit !== null &&
-        input.job.counts.attempted >= publicAttemptLimit
-      ) {
-        input.job.policyLimit.reached = true;
-        input.job.counts.skippedByPolicy += 1;
-        input.job.results.push({
-          code: "GEOCODER_PUBLIC_BULK_LIMIT",
-          message:
-            "Public geocoder limit reached for this job. Run again later or configure a private provider.",
-          orderId: order.orderId,
-          orderName: order.name,
-          status: "skipped_policy",
-        });
-        touchBulkGeocodeJob(input.job);
-        continue;
-      }
-
       const geocode = await input.services.geocodingService.geocode({
         address: readRouteOpsAddress(undefined, order.shippingAddress),
         shopDomain: input.job.shopDomain,
@@ -342,26 +305,21 @@ export function toBulkGeocodeOrderResponse(job: BulkGeocodeJob): {
     alreadyHasCoordinates: number;
     attempted: number;
     failed: number;
+    matched: number;
     noAddress: number;
     resolved: number;
-    skippedByPolicy: number;
-    skipped: number;
   };
-  policyLimit: BulkGeocodeJob["policyLimit"];
 } {
   return {
     jobId: job.jobId,
-    policyLimit: job.policyLimit,
     status: job.status,
     summary: {
-      alreadyHasCoordinates: job.counts.skippedAlreadyGeocoded,
+      alreadyHasCoordinates: job.counts.alreadyHasCoordinates,
       attempted: job.counts.attempted,
       failed: job.counts.failed,
+      matched: job.counts.matched,
       noAddress: job.counts.noAddress,
       resolved: job.counts.succeeded,
-      skippedByPolicy: job.counts.skippedByPolicy,
-      skipped:
-        job.counts.skippedAlreadyGeocoded + job.counts.skippedByPolicy,
     },
   };
 }
@@ -372,7 +330,6 @@ export function toBulkGeocodeJobDto(job: BulkGeocodeJob): {
   createdAt: string;
   error: string | null;
   jobId: string;
-  policyLimit: BulkGeocodeJob["policyLimit"];
   results: BulkGeocodeResult[];
   status: BulkGeocodeJobStatus;
   updatedAt: string;
@@ -383,7 +340,6 @@ export function toBulkGeocodeJobDto(job: BulkGeocodeJob): {
     createdAt: job.createdAt,
     error: job.error,
     jobId: job.jobId,
-    policyLimit: job.policyLimit,
     results: job.results,
     status: job.status,
     updatedAt: job.updatedAt,

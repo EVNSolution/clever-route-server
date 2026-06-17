@@ -1,7 +1,15 @@
 import type { CanonicalOrderRow } from '../shopify/order-sync.mapper.js';
 import type { GeocodingAddress, GeocodingResult } from '../geocoding/geocoding.types.js';
 import { summarizeGeocodeDiagnostic } from '../geocoding/geocoding.diagnostics.js';
-import type { DeliveryBatchCandidate, ListCanonicalOrdersFilters, ListDeliveryBatchCandidatesInput, UpsertOrderWithDeliveryStopInput, UpsertOrderWithDeliveryStopResult } from '../shopify/order-sync.repository.js';
+import {
+  type DeliveryBatchCandidate,
+  type ListCanonicalOrdersFilters,
+  type ListCanonicalOrdersBySourceIdentityInput,
+  type ListDeliveryBatchCandidatesInput,
+  type UpsertOrderWithDeliveryStopInput,
+  type UpsertOrderWithDeliveryStopResult
+} from '../shopify/order-sync.repository.js';
+import { addressFingerprint } from '../shopify/order-address-fingerprint.js';
 import { mapWooCommerceOrderToDeliveryInputs, type WooOrderMappingConfig, type WooWeekdayFallbackPolicy } from './woocommerce-order.mapper.js';
 import type { WooCommerceOrder } from './woocommerce-order.types.js';
 import type { WooCommerceOrderClient, WooCommerceOrdersPage } from './woocommerce-order.client.js';
@@ -51,6 +59,7 @@ export type WooCommerceSyncTierClassification = {
 
 type Repository = {
   findCanonicalOrderById?(input: { orderId: string; shopDomain: string }): Promise<CanonicalOrderRow | null>;
+  listCanonicalOrdersBySourceIdentity(input: ListCanonicalOrdersBySourceIdentityInput): Promise<CanonicalOrderRow[]>;
   listCanonicalOrders(input: { filters?: ListCanonicalOrdersFilters; shopDomain: string }): Promise<CanonicalOrderRow[]>;
   listDeliveryBatchCandidates?(input: ListDeliveryBatchCandidatesInput): Promise<DeliveryBatchCandidate[]>;
   readOrderMappingConfig?(input: { commerceConnectionId: string }): Promise<Record<string, unknown> | null>;
@@ -135,16 +144,21 @@ export class WooCommerceOrderSyncService {
     };
     const orders: CanonicalOrderRow[] = [];
     const mappingConfig = await this.readOrderMappingConfig();
+    const mappedOrders = input.orders.map((order) =>
+      mapWooCommerceOrderToDeliveryInputs(order, {
+        connectionId: this.options.connectionId ?? null,
+        mappingConfig,
+        ...(this.options.shopTimezone === undefined ? {} : { shopTimezone: this.options.shopTimezone }),
+        siteUrl: this.options.siteUrl
+      })
+    );
+    const existingOrdersBySource = await this.readExistingOrdersBySourceIfNeeded(input.reason, mappedOrders);
 
-    for (const order of input.orders) {
+    for (const mapped of mappedOrders) {
       const synced = await this.geocodeBeforePersisting(
-        mapWooCommerceOrderToDeliveryInputs(order, {
-          connectionId: this.options.connectionId ?? null,
-          mappingConfig,
-          ...(this.options.shopTimezone === undefined ? {} : { shopTimezone: this.options.shopTimezone }),
-          siteUrl: this.options.siteUrl
-        }),
+        mapped,
         input.reason,
+        existingOrdersBySource,
       );
       const result = await this.options.repository.upsertOrderWithDeliveryStop({
         shopDomain: this.options.shopDomain,
@@ -192,14 +206,44 @@ export class WooCommerceOrderSyncService {
     return config === null ? null : normalizeMappingConfig(config);
   }
 
+  private async readExistingOrdersBySourceIfNeeded(
+    reason: WooCommerceSyncOrdersInput['reason'],
+    syncedOrders: Array<UpsertOrderWithDeliveryStopInput['synced']>
+  ): Promise<Map<string, CanonicalOrderRow> | null> {
+    if (reason === 'webhook' || reason === 'raw_push') return null;
+    const rows = await this.options.repository.listCanonicalOrdersBySourceIdentity({
+      identities: syncedOrders.map((synced) => ({
+        shopifyOrderGid: synced.order.shopifyOrderGid,
+        sourceOrderId: synced.order.sourceOrderId ?? synced.order.shopifyOrderGid,
+        sourcePlatform: synced.order.sourcePlatform ?? 'SHOPIFY',
+        sourceSiteUrl: synced.order.sourceSiteUrl ?? null
+      })),
+      shopDomain: this.options.shopDomain
+    });
+    const bySource = new Map<string, CanonicalOrderRow>();
+    for (const row of rows) {
+      const sourceKey = canonicalOrderSourceKey(row);
+      if (sourceKey !== null) bySource.set(sourceKey, row);
+      bySource.set(row.shopifyOrderGid, row);
+    }
+    return bySource;
+  }
+
   private async geocodeBeforePersisting(
     synced: UpsertOrderWithDeliveryStopInput['synced'],
-    reason: WooCommerceSyncOrdersInput['reason']
+    reason: WooCommerceSyncOrdersInput['reason'],
+    existingOrdersBySource: Map<string, CanonicalOrderRow> | null
   ): Promise<UpsertOrderWithDeliveryStopInput['synced']> {
     const geocodingService = this.options.geocodingService;
     if (geocodingService === undefined || geocodingService.status?.mode === 'disabled') return synced;
     if (synced.deliveryStop === null || synced.deliveryStop.geocodeStatus === 'RESOLVED') return synced;
-    if (reason !== 'webhook' && reason !== 'raw_push') return synced;
+    if (
+      reason !== 'webhook' &&
+      reason !== 'raw_push' &&
+      !shouldGeocodeChangedWooSnapshot(synced, existingOrdersBySource)
+    ) {
+      return synced;
+    }
 
     const address = toGeocodingAddress(synced.deliveryStop);
     if (!hasGeocodableAddress(address)) return synced;
@@ -238,6 +282,62 @@ export class WooCommerceOrderSyncService {
       }
     }, 'RESOLVED', geocode);
   }
+}
+
+function shouldGeocodeChangedWooSnapshot(
+  synced: UpsertOrderWithDeliveryStopInput['synced'],
+  existingOrdersBySource: Map<string, CanonicalOrderRow> | null
+): boolean {
+  if (existingOrdersBySource === null || synced.deliveryStop === null) return false;
+  const existing = existingOrdersBySource.get(synced.order.shopifyOrderGid) ??
+    existingOrdersBySource.get(syncedOrderSourceKey(synced));
+  if (existing === undefined) return true;
+  if (
+    isExistingWooOrderNewerThanSnapshot(
+      existing,
+      synced.order.sourceUpdatedAt ?? null
+    )
+  ) {
+    return false;
+  }
+  return (
+    addressFingerprint(existing.shippingAddress) !==
+    addressFingerprint(synced.deliveryStop)
+  );
+}
+
+function syncedOrderSourceKey(synced: UpsertOrderWithDeliveryStopInput['synced']): string {
+  return [
+    synced.order.sourcePlatform ?? 'SHOPIFY',
+    synced.order.sourceSiteUrl ?? '',
+    synced.order.sourceOrderId ?? synced.order.shopifyOrderGid
+  ].join('|');
+}
+
+function canonicalOrderSourceKey(row: CanonicalOrderRow): string | null {
+  if (row.sourceOrderId === null || row.sourceOrderId === undefined) return null;
+  return [
+    row.sourcePlatform ?? 'SHOPIFY',
+    row.sourceSiteUrl ?? '',
+    row.sourceOrderId
+  ].join('|');
+}
+
+function isExistingWooOrderNewerThanSnapshot(
+  existing: CanonicalOrderRow,
+  incomingSourceUpdatedAt: Date | null
+): boolean {
+  if (
+    existing.sourceUpdatedAt === null ||
+    existing.sourceUpdatedAt === undefined ||
+    incomingSourceUpdatedAt === null
+  ) {
+    return false;
+  }
+  const existingTime = Date.parse(existing.sourceUpdatedAt);
+  const incomingTime = incomingSourceUpdatedAt.getTime();
+  if (!Number.isFinite(existingTime) || !Number.isFinite(incomingTime)) return false;
+  return existingTime > incomingTime;
 }
 
 export function applyWooModifiedAfterOverlap(

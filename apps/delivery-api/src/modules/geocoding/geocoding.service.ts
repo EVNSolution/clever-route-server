@@ -12,7 +12,6 @@ import {
 export type GeocodingProviderPolicy = 'disabled' | 'private_nominatim_compatible' | 'public_nominatim';
 
 export type GeocodingServiceOptions = {
-  bulkAttemptLimit?: number | null;
   maxRetries?: number;
   minIntervalMs?: number;
   mode: 'disabled' | 'nominatim_compatible';
@@ -37,7 +36,6 @@ export type GeocodingServiceStatus = {
   mode: GeocodingServiceOptions['mode'];
   persistentCacheEnabled: boolean;
   providerPolicy?: GeocodingProviderPolicy;
-  publicBulkAttemptLimit?: number | null;
 };
 
 export type GeocodingRateLimiter = {
@@ -61,7 +59,6 @@ export class SerializedGeocodingRateLimiter implements GeocodingRateLimiter {
 }
 
 export class GeocodingService {
-  private readonly bulkAttemptLimit: number | null;
   private readonly cache = new Map<string, CachedGeocode>();
   private readonly maxRetries: number;
   private readonly minIntervalMs: number;
@@ -74,10 +71,6 @@ export class GeocodingService {
   private queue: Promise<void> = Promise.resolve();
 
   constructor(options: GeocodingServiceOptions) {
-    this.bulkAttemptLimit =
-      typeof options.bulkAttemptLimit === 'number' && Number.isFinite(options.bulkAttemptLimit)
-        ? Math.max(0, Math.floor(options.bulkAttemptLimit))
-        : null;
     this.maxRetries =
       typeof options.maxRetries === 'number' && Number.isFinite(options.maxRetries)
         ? Math.max(0, Math.floor(options.maxRetries))
@@ -98,8 +91,6 @@ export class GeocodingService {
       mode: this.mode,
       persistentCacheEnabled: this.persistentCacheEnabled,
       providerPolicy: this.providerPolicy,
-      publicBulkAttemptLimit:
-        this.providerPolicy === 'public_nominatim' ? this.bulkAttemptLimit : null,
     };
   }
 

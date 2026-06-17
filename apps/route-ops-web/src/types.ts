@@ -348,22 +348,16 @@ export type GeocodeOrderResponse = {
 export type BulkGeocodeJobDto = {
   completedAt: string | null;
   counts: {
+    alreadyHasCoordinates: number;
     attempted: number;
     failed: number;
     matched: number;
     noAddress: number;
-    skippedAlreadyGeocoded: number;
-    skippedByPolicy: number;
     succeeded: number;
   };
   createdAt: string;
   error: string | null;
   jobId: string;
-  policyLimit?: {
-    active: boolean;
-    attemptedLimit: number | null;
-    reached: boolean;
-  };
   results: Array<Record<string, unknown>>;
   status: "accepted" | "completed" | "failed" | "running";
   updatedAt: string;

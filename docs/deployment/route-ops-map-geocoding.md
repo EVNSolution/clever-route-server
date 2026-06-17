@@ -35,13 +35,15 @@ Nominatim-compatible mode disabled by default and must enforce:
 - redacted per-order diagnostics only: stable code, query shape, attempt count,
   provider id/place id; never provider raw labels, full raw Woo payloads, or
   full address query text;
-- public Nominatim-compatible bulk jobs capped by
-  `GEOCODING_PUBLIC_BULK_MAX_ATTEMPTS` (default 25 attempted orders);
+- public Nominatim-compatible jobs stay serialized and rate-limited by
+  `GEOCODING_RATE_LIMIT_PER_SECOND`; bulk repair attempts every eligible
+  missing-coordinate order instead of returning skipped policy rows;
 - public Nominatim-compatible mode is approved only for the current single
   delivery-api runtime. If delivery-api is horizontally scaled, switch to a
   private Nominatim-compatible provider or disable public geocoding before
   adding replicas;
-- no autocomplete or unbounded bulk geocoding by default.
+- no autocomplete; bulk geocoding is restricted to explicit operator repair
+  and order-ingest flows.
 
 Operator corrections must persist in CLEVER canonical delivery facts/stops and
 must not mutate Woo raw payloads.

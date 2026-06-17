@@ -3,15 +3,16 @@ import { describe, expect, test } from 'vitest';
 import { createBulkGeocodeJob, toBulkGeocodeOrderResponse } from '../src/routes/admin-ui-bulk-geocoding.js';
 
 describe('Route Ops bulk geocode summary', () => {
-  test('does not double-count no-address rows as skipped', () => {
+  test('reports no-address rows without skipped state', () => {
     const job = createBulkGeocodeJob({ filters: {}, shopDomain: 'tenant-a.example.test' });
     job.counts.noAddress = 2;
-    job.counts.skippedByPolicy = 1;
 
-    expect(toBulkGeocodeOrderResponse(job).summary).toEqual(expect.objectContaining({
+    const response = toBulkGeocodeOrderResponse(job);
+    expect(response.summary).toEqual(expect.objectContaining({
       noAddress: 2,
-      skipped: 1,
-      skippedByPolicy: 1,
     }));
+    expect(response.summary).not.toHaveProperty('skipped');
+    expect(response.summary).not.toHaveProperty('skippedByPolicy');
+    expect(response).not.toHaveProperty('policyLimit');
   });
 });

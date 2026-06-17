@@ -2422,9 +2422,9 @@ describe("Admin WooCommerce connection UI routes", () => {
           alreadyHasCoordinates: number;
           attempted: number;
           failed: number;
+          matched: number;
           noAddress: number;
           resolved: number;
-          skipped: number;
         };
       };
       let completed: BulkGeocodeStatus | null = null;
@@ -2449,12 +2449,12 @@ describe("Admin WooCommerce connection UI routes", () => {
       );
       expect(completed?.summary).toEqual(
         expect.objectContaining({
-          alreadyHasCoordinates: 0,
+          alreadyHasCoordinates: 1,
           attempted: 1,
           failed: 0,
+          matched: 2,
           noAddress: 0,
           resolved: 1,
-          skipped: 0,
         }),
       );
       expect(listCanonicalOrders).toHaveBeenCalledWith({
@@ -2630,7 +2630,7 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
-  test("public bulk geocode caps attempted missing-coordinate orders", async () => {
+  test("public bulk geocode attempts every missing-coordinate order", async () => {
     const listCanonicalOrders = vi.fn<
       NonNullable<
         AdminCommerceConnectionsUiDependencies["orderSyncService"]
@@ -2679,7 +2679,6 @@ describe("Admin WooCommerce connection UI routes", () => {
           mode: "nominatim_compatible",
           persistentCacheEnabled: true,
           providerPolicy: "public_nominatim",
-          publicBulkAttemptLimit: 1,
         },
       },
       orderSyncService: {
@@ -2697,8 +2696,12 @@ describe("Admin WooCommerce connection UI routes", () => {
       });
       const accepted = readApiData<{ jobId: string }>(response);
       type BulkGeocodeJobBody = {
-        counts: { skippedByPolicy: number };
-        policyLimit: { reached: boolean };
+        counts: {
+          attempted: number;
+          failed: number;
+          matched: number;
+          succeeded: number;
+        };
         status: string;
       };
       let completed: BulkGeocodeJobBody | null = null;
@@ -2718,9 +2721,16 @@ describe("Admin WooCommerce connection UI routes", () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
 
-      expect(geocode).toHaveBeenCalledTimes(1);
-      expect(completed?.policyLimit.reached).toBe(true);
-      expect(completed?.counts.skippedByPolicy).toBe(1);
+      expect(geocode).toHaveBeenCalledTimes(2);
+      expect(completed?.counts).toEqual(
+        expect.objectContaining({
+          attempted: 2,
+          failed: 0,
+          matched: 2,
+          succeeded: 2,
+        }),
+      );
+      expect(completed).not.toHaveProperty("policyLimit");
     } finally {
       await app.close();
     }

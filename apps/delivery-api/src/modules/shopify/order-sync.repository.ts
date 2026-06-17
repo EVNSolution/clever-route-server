@@ -3,6 +3,11 @@ import { createHash } from "node:crypto";
 import { Prisma, type PrismaClient } from "@prisma/client";
 
 import { redactDiagnosticPath, redactDiagnosticValue } from "../security/diagnostic-redaction.js";
+import {
+  addressFingerprint,
+  addressFingerprintPayload,
+  type DeliveryStopAddressFields,
+} from "./order-address-fingerprint.js";
 
 import type {
   CanonicalOrderReadiness,
@@ -59,6 +64,16 @@ export type ListCanonicalOrdersFilters = {
 
 export type ListCanonicalOrdersInput = {
   filters?: ListCanonicalOrdersFilters;
+  shopDomain: string;
+};
+
+export type ListCanonicalOrdersBySourceIdentityInput = {
+  identities: Array<{
+    shopifyOrderGid: string;
+    sourceOrderId: string | null;
+    sourcePlatform: CommerceSourcePlatform;
+    sourceSiteUrl: string | null;
+  }>;
   shopDomain: string;
 };
 
@@ -413,6 +428,38 @@ export class PrismaOrderSyncRepository {
     return orders
       .map((order) => toCanonicalOrderRow(order))
       .filter((row) => matchesDerivedFilters(row, input.filters ?? {}));
+  }
+
+  async listCanonicalOrdersBySourceIdentity(
+    input: ListCanonicalOrdersBySourceIdentityInput,
+  ): Promise<CanonicalOrderRow[]> {
+    const shop = await this.findShop(input.shopDomain);
+    if (shop === null || input.identities.length === 0) {
+      return [];
+    }
+
+    const OR: Prisma.OrderWhereInput[] = input.identities.flatMap(
+      (identity) => [
+        { shopifyOrderGid: identity.shopifyOrderGid },
+        ...(identity.sourceOrderId === null
+          ? []
+          : [
+              {
+                sourceOrderId: identity.sourceOrderId,
+                sourcePlatform: identity.sourcePlatform,
+                sourceSiteUrl: identity.sourceSiteUrl,
+              },
+            ]),
+      ],
+    );
+
+    const orders = (await this.prisma.order.findMany({
+      include: canonicalOrderInclude(),
+      orderBy: { updatedAtShopify: "desc" },
+      where: { shopId: shop.id, OR },
+    })) as CanonicalOrderRecord[];
+
+    return orders.map((order) => toCanonicalOrderRow(order));
   }
 
   async listDeliveryBatchCandidates(
@@ -1521,15 +1568,6 @@ function existingDeliveryStopSelect() {
   } satisfies Prisma.DeliveryStopSelect;
 }
 
-type DeliveryStopAddressFields = {
-  address1: string | null;
-  address2: string | null;
-  city: string | null;
-  countryCode: string | null;
-  postalCode: string | null;
-  province: string | null;
-};
-
 type AssignedRouteAddressChangeNotificationIntent =
   Prisma.AdminNotificationCreateManyInput & {
     payload: Prisma.InputJsonObject;
@@ -1615,32 +1653,7 @@ async function createAdminNotificationsBestEffort(input: {
   }
 }
 
-function addressFingerprint(input: DeliveryStopAddressFields): string | null {
-  const payload = addressFingerprintPayload(input);
-  return Object.values(payload).some((value) => value !== null)
-    ? JSON.stringify(payload)
-    : null;
-}
-
-function addressFingerprintPayload(
-  input: DeliveryStopAddressFields,
-): Record<keyof DeliveryStopAddressFields, string | null> {
-  return {
-    address1: normalizeAddressFingerprintPart(input.address1),
-    address2: normalizeAddressFingerprintPart(input.address2),
-    city: normalizeAddressFingerprintPart(input.city),
-    countryCode: normalizeAddressFingerprintPart(input.countryCode),
-    postalCode: normalizeAddressFingerprintPart(input.postalCode),
-    province: normalizeAddressFingerprintPart(input.province),
-  };
-}
-
-function normalizeAddressFingerprintPart(value: string | null): string | null {
-  const normalized = value?.trim().replace(/\s+/gu, " ").toLowerCase() ?? "";
-  return normalized === "" ? null : normalized;
-}
-
-type RouteOpsCorrectionMeta = {
+export type RouteOpsCorrectionMeta = {
   fields?: Record<
     string,
     { actor?: string; correctedAt?: string; source?: string }
