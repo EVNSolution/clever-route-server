@@ -22,6 +22,7 @@ server-side GitHub credentials and a real checkout are deliberately provisioned.
 - Script: `scripts/ssm-simple-route-ops-deploy.sh`
 - GitHub workflow: `.github/workflows/route-ops-simple-deploy.yml`
 - Compose: `infra/compose/docker-compose.prod.yml`
+- Caddy: `infra/caddy/Caddyfile`
 - Runtime env: `infra/env/delivery-api.env`
 
 ## Expected fast path
@@ -44,20 +45,21 @@ server-side GitHub credentials and a real checkout are deliberately provisioned.
 The EC2 host does not build. A real deploy does this in order:
 
 1. Takes `.deploy/route-ops-simple-deploy.lock.d`.
-2. Writes the reviewed `infra/compose/docker-compose.prod.yml` from the workflow checkout onto the host, so compose/script-only changes can deploy through SSM without image builds.
+2. Writes the reviewed `infra/compose/docker-compose.prod.yml` and `infra/caddy/Caddyfile` from the workflow checkout onto the host, so compose/Caddy/script-only changes can deploy through SSM without image builds.
 3. Writes `.deploy/simple-candidate-image.env` with digest-addressable image refs.
 4. Copies existing `.deploy/current-image.env` to `.deploy/simple-rollback-image.env`.
 5. Validates compose config with `--profile osrm --profile vroom`.
 6. Rewrites optimizer env to VROOM/OSRM and blanks `ROUTE_ENGINE_BASE_URL`.
 7. Bootstraps proof-media directory owner/mode.
-8. Logs into GHCR using SSM parameters only on the host.
-9. Runs `docker compose --profile osrm --profile vroom pull delivery-api route-ops-web-static vroom`.
-10. Runs `docker compose run --rm delivery-api-migrate` before touching the live static volume.
-11. Stages the static volume via `route-ops-web-static`.
-12. Recreates `delivery-api` only with `up -d --no-build --no-deps --force-recreate`.
-13. Stops legacy `route-engine` profile if present.
-14. Verifies public `/healthz`.
-15. Backs up `.deploy/current-image.env`, promotes the candidate env, and appends deploy history.
+8. Reloads Caddy in place so the retry policy is active before `delivery-api` is recreated.
+9. Logs into GHCR using SSM parameters only on the host.
+10. Runs `docker compose --profile osrm --profile vroom pull delivery-api route-ops-web-static vroom`.
+11. Runs `docker compose run --rm delivery-api-migrate` before touching the live static volume.
+12. Stages the static volume via `route-ops-web-static`.
+13. Recreates `delivery-api` only with `up -d --no-build --no-deps --force-recreate`.
+14. Stops legacy `route-engine` profile if present.
+15. Verifies public `/healthz`.
+16. Backs up `.deploy/current-image.env`, promotes the candidate env, and appends deploy history.
 
 ## Commands
 
@@ -125,8 +127,10 @@ The runtime image includes the guard script and Prisma schema, so this removes t
 ## Availability expectation
 
 Build/push happens in GitHub Actions and does not stop production. The SSM phase only pulls,
-runs migration, stages static assets, and recreates `delivery-api`; only that final recreate
-can cause a short API blip. `caddy` is not recreated by this lane.
+runs migration, stages static assets, and recreates `delivery-api`. Caddy is not recreated;
+it is reloaded in place and uses `lb_try_duration 30s` / `lb_try_interval 500ms` so brief
+connection failures during the single-container `delivery-api` swap are retried instead of
+returned immediately as transient 502 responses.
 
 ## Storage cleanup evidence
 
