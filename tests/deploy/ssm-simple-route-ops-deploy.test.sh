@@ -23,6 +23,7 @@ checks = {
     'channel_rendered': 'CHANNEL_TAG=prod-test' in command,
     'digest_runtime_rendered': 'DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:1111111111111111111111111111111111111111111111111111111111111111' in command,
     'digest_static_rendered': 'ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static@sha256:2222222222222222222222222222222222222222222222222222222222222222' in command,
+    'compose_synced_to_host': 'COMPOSE_FILE_B64=' in command and 'base64 -d > "$COMPOSE_FILE"' in command,
     'compose_preflight': 'docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env' in command,
     'dry_run_exits_before_pull': command.index('if [ "$DRY_RUN" = "1" ]') < command.index('--profile vroom pull delivery-api route-ops-web-static vroom'),
     'vroom_env': 'VROOM_BASE_URL' in command and 'http://vroom:3000' in command and 'ROUTE_ENGINE_BASE_URL' in command,
