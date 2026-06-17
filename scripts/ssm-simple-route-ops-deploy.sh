@@ -165,7 +165,7 @@ if [ "$DRY_RUN" = "1" ]; then
 fi
 rollback_delivery_api() {
   echo 'simple deploy health failed; rolling delivery-api back to previous image env' >&2
-  docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" --profile vroom pull delivery-api route-ops-web-static vroom
+  docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom pull delivery-api route-ops-web-static vroom
   docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up --no-build --force-recreate route-ops-web-static
   docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up -d --no-build --no-deps --force-recreate delivery-api
   for rollback_attempt in $(seq 1 30); do
@@ -213,7 +213,7 @@ username="$(aws ssm get-parameter --name "$GHCR_USERNAME_PARAM" --query 'Paramet
 token="$(aws ssm get-parameter --name "$GHCR_TOKEN_PARAM" --with-decryption --query 'Parameter.Value' --output text)"
 printf '%s' "$token" | docker login ghcr.io -u "$username" --password-stdin >/dev/null
 token=''
-docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile vroom pull delivery-api route-ops-web-static vroom
+docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom pull delivery-api route-ops-web-static vroom
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" run --rm delivery-api-migrate
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up --no-build --force-recreate route-ops-web-static
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --no-deps --force-recreate delivery-api
