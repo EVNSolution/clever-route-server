@@ -7,6 +7,15 @@ on:
         description: "Mutable GHCR channel tag to publish and deploy"
         required: true
         default: prod
+      source_ref:
+        description: "Git ref to check out for the deploy script and COMMIT_SHA metadata"
+        required: true
+        default: main
+      publish_images:
+        description: "Build/push channel images before sending the SSM deploy"
+        required: true
+        type: boolean
+        default: true
       dry_run:
         description: "Run host preflight without image pull or restart mutation"
         required: true
@@ -58,6 +67,12 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ inputs.source_ref }}
+
+      - name: Require deploy source on main history
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD origin/main
 
       - uses: actions/setup-node@v6
         with:
@@ -71,6 +86,7 @@ jobs:
           tests/deploy/ssm-simple-route-ops-deploy.test.sh
 
       - name: Install Route Ops web dependencies
+        if: inputs.publish_images == true
         run: npm --prefix apps/route-ops-web ci
 
       - name: Login to GHCR
@@ -94,10 +110,14 @@ jobs:
           ROUTE_OPS_SKIP_GHCR_WRITE_SCOPE_CHECK: "1"
           ROUTE_OPS_SIMPLE_CHANNEL_TAG: ${{ inputs.channel_tag }}
           AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+          PUBLISH_IMAGES: ${{ inputs.publish_images }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
-          args=(--publish)
+          args=()
+          if [ "$PUBLISH_IMAGES" = "true" ]; then
+            args+=(--publish)
+          fi
           if [ "$DRY_RUN" = "true" ]; then
             args+=(--dry-run)
           fi

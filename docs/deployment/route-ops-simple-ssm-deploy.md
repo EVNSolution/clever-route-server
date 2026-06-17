@@ -95,7 +95,16 @@ Run from CLI after `main` is up to date:
 
 ```bash
 gh workflow run "Route Ops simple deploy" --repo EVNSolution/clever-route-server --ref main \
-  -f channel_tag=prod -f dry_run=false
+  -f channel_tag=prod -f source_ref=main -f publish_images=true -f dry_run=false
+```
+
+
+If images were already published but SSM dispatch failed, keep `${channel}-prev` intact and
+rerun only the SSM phase against the already-published source ref:
+
+```bash
+gh workflow run "Route Ops simple deploy" --repo EVNSolution/clever-route-server --ref main \
+  -f channel_tag=prod -f source_ref=<published-sha> -f publish_images=false -f dry_run=false
 ```
 
 ## Rollback
