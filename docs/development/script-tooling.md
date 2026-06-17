@@ -4,8 +4,7 @@ This repo keeps a small set of root-level scripts because deployment and Route O
 
 ## Production/operator entrypoints
 
-- `scripts/ssm-simple-route-ops-deploy.sh` — current production deploy lane: local build/push to GHCR `:prod`, then SSM pulls and restarts Compose.
-These are intentionally separate because they have different blast radius and rollback semantics.
+- `scripts/ssm-simple-route-ops-deploy.sh` — current production deploy lane: GitHub Actions publishes digest-addressable changed images, then SSM pulls, runs the same-image migration service, stages static assets, recreates only `delivery-api`, and rolls back from the previous `.deploy/current-image.env` if health fails. The local `--publish` flag is a manual fallback, not the normal CI path.
 
 - `scripts/scan-secrets.sh` — local/CI secret hygiene utility for staged, worktree, and history scans.
 - `scripts/monitor-route-ops-production.sh` — read-only SSM monitor wrapper for production health, container status, redacted recent logs, and authenticated smoke through the deployed runtime image.
@@ -34,7 +33,7 @@ These are not production commands. They are kept separate so each failure domain
 Tests should live under `tests/`, not beside operator commands.
 
 - `tests/deploy/ssm-simple-route-ops-deploy.test.sh` — regression test for simple SSM render guards and VROOM/proof-media deploy checks.
-- `tests/deploy/route-ops-prisma-db-push-guard.test.sh` — regression test for the Prisma schema SHA guard used by the migrate image.
+- `tests/deploy/route-ops-prisma-db-push-guard.test.sh` — regression test for the Prisma schema SHA guard used by the same-image `delivery-api-migrate` compose service.
 - `tests/deploy/monitor-route-ops-production.test.sh` — regression test for monitor wrapper host-script rendering, production expectation defaults, runtime-image smoke fallback, and redaction hooks.
 
 ## Change rule

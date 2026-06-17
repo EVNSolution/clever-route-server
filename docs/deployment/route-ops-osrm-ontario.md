@@ -86,14 +86,13 @@ bash scripts/osrm-ontario.sh --help
 
 ## Start and smoke OSRM
 
-The simple SSM deploy lane keeps `osrm-ontario` live through the compose `osrm` profile and smokes VROOM/OSRM before recreating `delivery-api`. If `OSRM_BASE_URL` is blank, the API can run without OSRM, but production route optimization currently expects OSRM behind VROOM.
+The simple SSM deploy lane keeps `osrm-ontario` live through the compose `osrm` profile. If `OSRM_BASE_URL` is blank, the API can run without OSRM, but production route optimization currently expects OSRM behind VROOM.
 
 Manual start is for preflight/diagnostics only, not the steady-state deployment model:
 
 ```sh
 export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
 DELIVERY_API_IMAGE="$CURRENT_DELIVERY_API_IMAGE" \
-DELIVERY_API_MIGRATE_IMAGE="$CURRENT_DELIVERY_API_MIGRATE_IMAGE" \
 docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" -f infra/compose/docker-compose.prod.yml --profile osrm up -d osrm-ontario
 
 OSRM_BASE_URL=http://127.0.0.1:5000 bash scripts/osrm-ontario.sh smoke
@@ -118,12 +117,11 @@ OSRM_TIMEOUT_MS=10000
 ROUTE_OPS_ROUTER_COVERAGE=ontario
 ```
 
-Then run the normal reviewed image deploy/rollback path. It will keep OSRM in the same `clever-route` compose project and smoke it before the app restart. For emergency host-only activation, restart only the app after manually starting/smoking OSRM:
+Then run the normal reviewed image deploy/rollback path. It will keep OSRM in the same `clever-route` compose project. For emergency host-only activation, restart only the app after manually starting/smoking OSRM:
 
 ```sh
 export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
 DELIVERY_API_IMAGE="$CURRENT_DELIVERY_API_IMAGE" \
-DELIVERY_API_MIGRATE_IMAGE="$CURRENT_DELIVERY_API_MIGRATE_IMAGE" \
 docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" -f infra/compose/docker-compose.prod.yml --profile osrm up -d delivery-api
 ```
 
@@ -140,7 +138,6 @@ Smoke:
 # remove/blank OSRM_BASE_URL in infra/env/delivery-api.env
 export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
 DELIVERY_API_IMAGE="$CURRENT_DELIVERY_API_IMAGE" \
-DELIVERY_API_MIGRATE_IMAGE="$CURRENT_DELIVERY_API_MIGRATE_IMAGE" \
 docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" -f infra/compose/docker-compose.prod.yml up -d delivery-api
 docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" -f infra/compose/docker-compose.prod.yml --profile osrm stop osrm-ontario
 ```

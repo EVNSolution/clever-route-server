@@ -12,7 +12,7 @@ on:
         required: true
         default: main
       publish_images:
-        description: "Build/push channel images before sending the SSM deploy"
+        description: "Build/push changed images before sending the SSM deploy"
         required: true
         type: boolean
         default: true
@@ -31,10 +31,15 @@ concurrency:
   group: route-ops-simple-deploy-${{ inputs.channel_tag }}
   cancel-in-progress: false
 
+env:
+  REGISTRY: ghcr.io
+  DELIVERY_API_IMAGE_REPO: ghcr.io/evnsolution/clever-route-server-delivery-api
+  ROUTE_OPS_WEB_STATIC_IMAGE_REPO: ghcr.io/evnsolution/clever-route-server-route-ops-web-static
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 35
     steps:
       - name: Require main branch
         if: github.ref != 'refs/heads/main'
@@ -69,6 +74,10 @@ jobs:
           fetch-depth: 0
           ref: ${{ inputs.source_ref }}
 
+      - name: Capture source SHA
+        id: source
+        run: echo "sha=$(git rev-parse --short=40 HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Require deploy source on main history
         run: |
           git fetch --no-tags origin main
@@ -77,17 +86,98 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: apps/route-ops-web/package-lock.json
 
       - name: Validate simple deploy wrapper
         run: |
           bash -n scripts/ssm-simple-route-ops-deploy.sh tests/deploy/ssm-simple-route-ops-deploy.test.sh
           tests/deploy/ssm-simple-route-ops-deploy.test.sh
 
-      - name: Install Route Ops web dependencies
-        if: inputs.publish_images == true
-        run: npm --prefix apps/route-ops-web ci
+      - name: Configure AWS credentials through OIDC
+        # aws-actions/configure-aws-credentials v6.2.0 (Node 24) pinned to full commit SHA.
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
+        with:
+          role-to-assume: ${{ vars.AWS_ROUTE_OPS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+
+      - name: Read current production image env
+        id: current
+        shell: bash
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+          SSM_TAG_KEY: ${{ vars.SSM_ROUTE_OPS_TARGET_TAG_KEY || 'Service' }}
+          SSM_TAG_VALUE: ${{ vars.SSM_ROUTE_OPS_TARGET_TAG_VALUE || 'clever-delivery-server' }}
+        run: |
+          set -euo pipefail
+          ssm_target="$(aws ssm describe-instance-information \
+            --region "$AWS_REGION" \
+            --filters "Key=tag:${SSM_TAG_KEY},Values=${SSM_TAG_VALUE}" \
+            --query '[length(InstanceInformationList), InstanceInformationList[0].InstanceId, InstanceInformationList[0].PingStatus]' \
+            --output text)"
+          read -r count instance_id ping_status <<< "$ssm_target"
+          test "$count" = "1"
+          test "$ping_status" = "Online"
+          command_id="$(aws ssm send-command \
+            --region "$AWS_REGION" \
+            --instance-ids "$instance_id" \
+            --document-name AWS-RunShellScript \
+            --comment "Route Ops read current image env" \
+            --parameters commands='["cd /srv/clever-route-server && cat .deploy/current-image.env 2>/dev/null || true"]' \
+            --query Command.CommandId \
+            --output text)"
+          aws ssm wait command-executed --region "$AWS_REGION" --command-id "$command_id" --instance-id "$instance_id"
+          aws ssm get-command-invocation \
+            --region "$AWS_REGION" \
+            --command-id "$command_id" \
+            --instance-id "$instance_id" \
+            --query StandardOutputContent \
+            --output text > current-image.env
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          from pathlib import Path
+          values = {}
+          for line in Path('current-image.env').read_text().splitlines():
+              if '=' in line and not line.lstrip().startswith('#'):
+                  key, value = line.split('=', 1)
+                  values[key] = value
+          print(f"deployed_commit={values.get('COMMIT_SHA', '')}")
+          print(f"delivery_api_image={values.get('DELIVERY_API_IMAGE', '')}")
+          print(f"route_ops_web_static_image={values.get('ROUTE_OPS_WEB_STATIC_IMAGE', '')}")
+          PY
+
+      - name: Detect image build scope
+        id: changes
+        shell: bash
+        env:
+          DEPLOYED_COMMIT: ${{ steps.current.outputs.deployed_commit }}
+          CURRENT_DELIVERY_API_IMAGE: ${{ steps.current.outputs.delivery_api_image }}
+          CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE: ${{ steps.current.outputs.route_ops_web_static_image }}
+          PUBLISH_IMAGES: ${{ inputs.publish_images }}
+        run: |
+          set -euo pipefail
+          files=""
+          if [ -n "$DEPLOYED_COMMIT" ] && git cat-file -e "${DEPLOYED_COMMIT}^{commit}" 2>/dev/null && git merge-base --is-ancestor "$DEPLOYED_COMMIT" HEAD; then
+            files="$(git diff --name-only "$DEPLOYED_COMMIT" HEAD)"
+          else
+            files="$(git ls-files)"
+          fi
+          printf '%s\n' "$files" > changed-files.txt
+          build_api=false
+          build_web=false
+          if [ "$PUBLISH_IMAGES" = "true" ]; then
+            if [ -z "$CURRENT_DELIVERY_API_IMAGE" ] || printf '%s\n' "$files" | grep -Eq '^(apps/delivery-api/|\.dockerignore$)'; then
+              build_api=true
+            fi
+            if [ -z "$CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE" ] || printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/|\.dockerignore$)'; then
+              build_web=true
+            fi
+          fi
+          {
+            echo "build_api=$build_api"
+            echo "build_web=$build_web"
+            echo "changed_files<<EOF_CHANGED"
+            cat changed-files.txt
+            echo "EOF_CHANGED"
+          } >> "$GITHUB_OUTPUT"
+          printf 'build_api=%s build_web=%s\n' "$build_api" "$build_web"
 
       - name: Login to GHCR
         # docker/login-action v4.2.0 (Node 24) pinned to full commit SHA.
@@ -97,27 +187,129 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure AWS credentials through OIDC
-        # aws-actions/configure-aws-credentials v6.2.0 (Node 24) pinned to full commit SHA.
-        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
-        with:
-          role-to-assume: ${{ vars.AWS_ROUTE_OPS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Publish and deploy via simple SSM lane
+      - name: Build and push Route Ops web static image
+        id: build_web
+        if: steps.changes.outputs.build_web == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/route-ops-web/Dockerfile
+          target: static
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          tags: |
+            ${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}:${{ github.sha }}
+            ${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}:${{ inputs.channel_tag }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
+            org.clever-route.prisma-schema-sha=${{ hashFiles('apps/delivery-api/prisma/schema.prisma') }}
+            org.clever-route.image-role=route-ops-web-static
+          cache-from: type=registry,ref=${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}:buildcache
+          cache-to: type=registry,ref=${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}:buildcache,mode=max
+
+      - name: Build and push delivery API image
+        id: build_api
+        if: steps.changes.outputs.build_api == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/delivery-api/Dockerfile
+          target: runtime
+          push: true
+          platforms: linux/amd64
+          provenance: false
+          tags: |
+            ${{ env.DELIVERY_API_IMAGE_REPO }}:${{ github.sha }}
+            ${{ env.DELIVERY_API_IMAGE_REPO }}:${{ inputs.channel_tag }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
+            org.clever-route.prisma-schema-sha=${{ hashFiles('apps/delivery-api/prisma/schema.prisma') }}
+            org.clever-route.image-role=runtime
+          cache-from: type=registry,ref=${{ env.DELIVERY_API_IMAGE_REPO }}:buildcache
+          cache-to: type=registry,ref=${{ env.DELIVERY_API_IMAGE_REPO }}:buildcache,mode=max
+
+      - name: Resolve deploy image refs
+        id: images
         shell: bash
         env:
-          ROUTE_OPS_SKIP_GHCR_WRITE_SCOPE_CHECK: "1"
+          CHANNEL_TAG: ${{ inputs.channel_tag }}
+          PUBLISH_IMAGES: ${{ inputs.publish_images }}
+          BUILD_API: ${{ steps.changes.outputs.build_api }}
+          BUILD_WEB: ${{ steps.changes.outputs.build_web }}
+          API_DIGEST: ${{ steps.build_api.outputs.digest }}
+          WEB_DIGEST: ${{ steps.build_web.outputs.digest }}
+          CURRENT_DELIVERY_API_IMAGE: ${{ steps.current.outputs.delivery_api_image }}
+          CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE: ${{ steps.current.outputs.route_ops_web_static_image }}
+          DELIVERY_API_IMAGE_REPO: ${{ env.DELIVERY_API_IMAGE_REPO }}
+          ROUTE_OPS_WEB_STATIC_IMAGE_REPO: ${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}
+        run: |
+          set -euo pipefail
+          resolve_digest_ref() {
+            local image="$1"
+            local repo digest
+            if [[ "$image" == *@sha256:* ]]; then
+              printf '%s\n' "$image"
+              return 0
+            fi
+            repo="${image%:*}"
+            digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest.Digest}}' | tr -d '"')"
+            test -n "$digest"
+            printf '%s@%s\n' "$repo" "$digest"
+          }
+          if [ "$BUILD_API" = "true" ]; then
+            delivery_api_image="${DELIVERY_API_IMAGE_REPO}@${API_DIGEST}"
+          elif [ "$PUBLISH_IMAGES" = "false" ]; then
+            delivery_api_image="$(resolve_digest_ref "${DELIVERY_API_IMAGE_REPO}:${CHANNEL_TAG}")"
+          else
+            delivery_api_image="$(resolve_digest_ref "$CURRENT_DELIVERY_API_IMAGE")"
+          fi
+          if [ "$BUILD_WEB" = "true" ]; then
+            route_ops_web_static_image="${ROUTE_OPS_WEB_STATIC_IMAGE_REPO}@${WEB_DIGEST}"
+          elif [ "$PUBLISH_IMAGES" = "false" ]; then
+            route_ops_web_static_image="$(resolve_digest_ref "${ROUTE_OPS_WEB_STATIC_IMAGE_REPO}:${CHANNEL_TAG}")"
+          else
+            route_ops_web_static_image="$(resolve_digest_ref "$CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE")"
+          fi
+          echo "delivery_api_image=$delivery_api_image" >> "$GITHUB_OUTPUT"
+          echo "route_ops_web_static_image=$route_ops_web_static_image" >> "$GITHUB_OUTPUT"
+          mkdir -p deploy-selection
+          cat > deploy-selection/route-ops-simple-image-selection.json <<JSON
+          {
+            "commitSha": "${{ steps.source.outputs.sha }}",
+            "channelTag": "$CHANNEL_TAG",
+            "buildApi": $BUILD_API,
+            "buildWeb": $BUILD_WEB,
+            "deliveryApiImage": "$delivery_api_image",
+            "routeOpsWebStaticImage": "$route_ops_web_static_image",
+            "previousDeliveryApiImage": "$CURRENT_DELIVERY_API_IMAGE",
+            "previousRouteOpsWebStaticImage": "$CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE"
+          }
+          JSON
+          cat deploy-selection/route-ops-simple-image-selection.json
+
+      - name: Upload deploy image selection
+        uses: actions/upload-artifact@v7
+        with:
+          name: route-ops-simple-image-selection
+          path: deploy-selection/route-ops-simple-image-selection.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Deploy via simple SSM lane
+        shell: bash
+        env:
+          ROUTE_OPS_RUNTIME_IMAGE: ${{ steps.images.outputs.delivery_api_image }}
+          ROUTE_OPS_WEB_STATIC_IMAGE: ${{ steps.images.outputs.route_ops_web_static_image }}
           ROUTE_OPS_SIMPLE_CHANNEL_TAG: ${{ inputs.channel_tag }}
           AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
-          PUBLISH_IMAGES: ${{ inputs.publish_images }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           args=()
-          if [ "$PUBLISH_IMAGES" = "true" ]; then
-            args+=(--publish)
-          fi
           if [ "$DRY_RUN" = "true" ]; then
             args+=(--dry-run)
           fi

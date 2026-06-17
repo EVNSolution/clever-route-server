@@ -219,7 +219,6 @@ jobs:
           cp infra/env/delivery-api.env.example infra/env/delivery-api.env
           ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route \
           DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api:ci \
-          DELIVERY_API_MIGRATE_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:ci \
           ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static:ci \
           ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-ci \
           PRISMA_SCHEMA_SHA=abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd \
