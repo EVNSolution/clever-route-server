@@ -32,18 +32,19 @@ restarts. It may write `.deploy/simple-candidate-image.env` on the host as prefl
 
 A real deploy does the following in order:
 
-1. Takes a deploy lock under `.deploy/route-ops-simple-deploy.lock.d`.
-2. Writes `.deploy/simple-candidate-image.env` with the selected channel images.
-3. Validates compose config with `--profile osrm --profile vroom`.
-4. Rewrites optimizer env to VROOM/OSRM and blanks `ROUTE_ENGINE_BASE_URL`.
-5. Bootstraps proof-media directory owner/mode.
-6. Logs into GHCR using SSM parameters only on the host.
-7. Pulls runtime, migrate, static, and pinned VROOM images.
-8. Stages the static volume, runs Prisma migration, ensures OSRM/VROOM are up.
-9. Runs a VROOM solve smoke from inside the delivery-api container.
-10. Recreates `delivery-api` only; `caddy` stays up unless its config changed in a separate infra lane.
-11. Verifies public `/healthz`.
-12. Backs up `.deploy/current-image.env`, promotes the candidate env, and appends deploy history.
+1. Before publishing, retags the current GHCR channel images as `${channel}-prev`.
+2. Takes a deploy lock under `.deploy/route-ops-simple-deploy.lock.d`.
+3. Writes `.deploy/simple-candidate-image.env` and `.deploy/simple-rollback-image.env`.
+4. Validates compose config with `--profile osrm --profile vroom`.
+5. Rewrites optimizer env to VROOM/OSRM and blanks `ROUTE_ENGINE_BASE_URL`.
+6. Bootstraps proof-media directory owner/mode.
+7. Logs into GHCR using SSM parameters only on the host.
+8. Pulls previous images, candidate images, and pinned VROOM image.
+9. Stages the static volume, runs Prisma migration, ensures OSRM/VROOM are up.
+10. Runs a VROOM solve smoke from inside the delivery-api container.
+11. Recreates `delivery-api` only; `caddy` stays up unless its config changed in a separate infra lane.
+12. Verifies public `/healthz`; if this fails, recreates `delivery-api` from `${channel}-prev` and exits failed.
+13. Backs up `.deploy/current-image.env`, promotes the candidate env, and appends deploy history.
 
 ## Commands
 
@@ -72,13 +73,23 @@ Optional channel override for a non-production rehearsal:
 ROUTE_OPS_SIMPLE_CHANNEL_TAG=prod-candidate scripts/ssm-simple-route-ops-deploy.sh --dry-run
 ```
 
+## Availability expectation
+
+The build/push/pull/migrate/smoke phases do not stop the current domain path. Only the final
+`delivery-api` container recreate can cause a short API blip. `caddy` is not recreated by this
+lane.
+
 ## Rollback
 
 The script backs up the previous `.deploy/current-image.env` before promoting the simple
-candidate. For rollback, restore the latest `.deploy/current-image.env.before-simple-*`, then
-run compose with that env file and recreate `route-ops-web-static` plus `delivery-api`; leave `caddy` running unless the rollback is specifically an ingress change.
-If the `prod` channel image itself is bad, retag/push the previous known-good image to `prod`
-from a trusted machine, then rerun the SSM deploy or manually pull/recreate on the host.
+candidate and also keeps `${channel}-prev` GHCR image tags. If the new `delivery-api`
+recreate fails public `/healthz`, the script stages the previous static image, recreates
+`delivery-api` from `${channel}-prev`, leaves `caddy` running, and exits failed so the
+operator sees that the attempted deploy did not promote.
+
+For manual rollback, restore the latest `.deploy/current-image.env.before-simple-*`, or use
+`.deploy/simple-rollback-image.env`, then recreate `route-ops-web-static` plus `delivery-api`;
+leave `caddy` running unless the rollback is specifically an ingress change.
 
 ## Storage cleanup evidence
 

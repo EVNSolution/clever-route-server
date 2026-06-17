@@ -72,7 +72,29 @@ if [ "$BUILD_AND_PUSH" = "1" ]; then
 fi
 
 
+previous_image_ref() {
+  local image="$1"
+  printf '%s:%s-prev' "${image%:*}" "$CHANNEL_TAG"
+}
+
+backup_channel_images() {
+  local image previous
+  for image in "$STATIC_IMAGE" "$RUNTIME_IMAGE" "$MIGRATE_IMAGE"; do
+    previous="$(previous_image_ref "$image")"
+    if docker pull --platform linux/amd64 "$image" >/dev/null 2>&1; then
+      docker tag "$image" "$previous"
+      docker push "$previous"
+      printf 'Backed up %s as %s\n' "$image" "$previous"
+    elif [ "$CHANNEL_TAG" = "prod" ]; then
+      fail "cannot back up existing production image before publish: $image"
+    else
+      printf 'No existing %s to back up; continuing for non-production channel.\n' "$image"
+    fi
+  done
+}
+
 build_and_push() {
+  backup_channel_images
   npm --prefix apps/route-ops-web run build
   local static_context
   static_context="$(mktemp -d)"
@@ -142,6 +164,10 @@ DELIVERY_API_IMAGE=__RUNTIME_IMAGE__
 DELIVERY_API_MIGRATE_IMAGE=__MIGRATE_IMAGE__
 ROUTE_OPS_WEB_STATIC_IMAGE=__STATIC_IMAGE__
 ROUTE_OPS_WEB_STATIC_VOLUME=__STATIC_VOLUME__
+PREV_DELIVERY_API_IMAGE="${DELIVERY_API_IMAGE%:*}:${CHANNEL_TAG}-prev"
+PREV_DELIVERY_API_MIGRATE_IMAGE="${DELIVERY_API_MIGRATE_IMAGE%:*}:${CHANNEL_TAG}-prev"
+PREV_ROUTE_OPS_WEB_STATIC_IMAGE="${ROUTE_OPS_WEB_STATIC_IMAGE%:*}:${CHANNEL_TAG}-prev"
+PREV_ROUTE_OPS_WEB_STATIC_VOLUME="${ROUTE_OPS_WEB_STATIC_VOLUME}-prev"
 VROOM_IMAGE=__VROOM_IMAGE__
 BASE_URL=__BASE_URL__
 DRY_RUN=__DRY_RUN__
@@ -173,6 +199,32 @@ if [ "$DRY_RUN" = "1" ]; then
   printf 'simple deploy dry-run complete; no host env, image pull, or restart mutation performed.\n'
   exit 0
 fi
+cat > .deploy/simple-rollback-image.env <<EOF_ROLLBACK_ENV
+IMAGE_TAG=${CHANNEL_TAG}-prev
+COMMIT_SHA=rollback-${COMMIT_SHA}
+DELIVERY_API_IMAGE=$PREV_DELIVERY_API_IMAGE
+DELIVERY_API_MIGRATE_IMAGE=$PREV_DELIVERY_API_MIGRATE_IMAGE
+ROUTE_OPS_WEB_STATIC_IMAGE=$PREV_ROUTE_OPS_WEB_STATIC_IMAGE
+ROUTE_OPS_WEB_STATIC_VOLUME=$PREV_ROUTE_OPS_WEB_STATIC_VOLUME
+VROOM_IMAGE=$VROOM_IMAGE
+PRISMA_SCHEMA_SHA=$PRISMA_SCHEMA_SHA
+EOF_ROLLBACK_ENV
+rollback_delivery_api() {
+  echo 'simple deploy health failed; rolling delivery-api back to previous channel image' >&2
+  docker pull "$PREV_DELIVERY_API_IMAGE" >/dev/null
+  docker pull "$PREV_ROUTE_OPS_WEB_STATIC_IMAGE" >/dev/null
+  docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up --no-build --force-recreate route-ops-web-static
+  docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate delivery-api
+  for rollback_attempt in $(seq 1 30); do
+    if curl -fsS "$BASE_URL/healthz"; then
+      echo 'simple deploy rollback completed; previous delivery-api is healthy' >&2
+      return 0
+    fi
+    sleep 2
+  done
+  echo 'simple deploy rollback failed health check; manual intervention required' >&2
+  return 1
+}
 python3 - <<'ENVUP'
 from pathlib import Path
 path = Path('infra/env/delivery-api.env')
@@ -208,6 +260,8 @@ username="$(aws ssm get-parameter --name "$GHCR_USERNAME_PARAM" --query 'Paramet
 token="$(aws ssm get-parameter --name "$GHCR_TOKEN_PARAM" --with-decryption --query 'Parameter.Value' --output text)"
 printf '%s' "$token" | docker login ghcr.io -u "$username" --password-stdin >/dev/null
 token=''
+docker pull "$PREV_DELIVERY_API_IMAGE"
+docker pull "$PREV_ROUTE_OPS_WEB_STATIC_IMAGE"
 docker pull "$DELIVERY_API_IMAGE"
 docker pull "$DELIVERY_API_MIGRATE_IMAGE"
 docker pull "$ROUTE_OPS_WEB_STATIC_IMAGE"
@@ -249,7 +303,7 @@ docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.e
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile route-engine stop route-engine || true
 for attempt in $(seq 1 30); do
   if curl -fsS "$BASE_URL/healthz"; then break; fi
-  if [ "$attempt" = "30" ]; then echo 'health smoke failed' >&2; exit 1; fi
+  if [ "$attempt" = "30" ]; then rollback_delivery_api || true; exit 1; fi
   sleep 2
 done
 cp .deploy/current-image.env ".deploy/current-image.env.before-simple-$(date -u +%Y%m%dT%H%M%SZ)" 2>/dev/null || true
