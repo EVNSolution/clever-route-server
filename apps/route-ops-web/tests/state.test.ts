@@ -45,18 +45,21 @@ describe('route ops web state helpers', () => {
       order({ deliveryDate: '2026-05-28', orderId: 'may-28' }),
       order({ deliveryDate: null, orderId: 'missing-date' }),
       order({ deliveryDate: '2026-05-27', deliverySession: 'EVENING', orderId: 'evening' }),
+      order({ deliveryDate: '2026-05-29', deliverySession: 'PICKUP', orderId: 'pickup', serviceType: 'PICKUP' }),
       order({ deliveryDate: '2026-05-27', orderId: 'review', routeEligible: false }),
     ];
 
     expect(applyClientOrderFilters(orders, { deliveryDate: '2026-05-27', tab: 'unplanned' }).map((item) => item.orderId)).toEqual(['may-27', 'evening']);
     expect(applyClientOrderFilters(orders, { deliveryDate: '2026-05-27', deliverySession: 'DAY', tab: 'unplanned' }).map((item) => item.orderId)).toEqual(['may-27']);
+    expect(applyClientOrderFilters(orders, { routeType: 'pickup' }).map((item) => item.orderId)).toEqual(['pickup']);
+    expect(applyClientOrderFilters(orders, { weekday: 'wed' }).map((item) => item.orderId)).toEqual(['may-27', 'evening', 'review']);
     expect(applyClientOrderFilters(orders, { deliveryDate: '2026-05-27', tab: 'needs_review' }).map((item) => item.orderId)).toEqual(['review']);
     expect(applyClientOrderFilters(orders, { deliveryDate: '' })).toBe(orders);
   });
 
-  test('defaults to the planning unplanned workset and serializes All/History explicitly', () => {
-    expect(createDefaultOrderFilters()).toEqual(expect.objectContaining({ scope: 'planning', tab: 'unplanned' }));
-    expect(buildOrderQuery(createDefaultOrderFilters())).toBe('scope=planning&tab=unplanned');
+  test('defaults to the planning all workset and serializes All/History explicitly', () => {
+    expect(createDefaultOrderFilters()).toEqual(expect.objectContaining({ scope: 'planning', tab: 'all' }));
+    expect(buildOrderQuery(createDefaultOrderFilters())).toBe('scope=planning&tab=all');
     expect(buildOrderQuery({ ...createDefaultOrderFilters(), tab: 'all' })).toBe('scope=planning&tab=all');
     expect(buildOrderQuery({ ...createDefaultOrderFilters(), scope: 'history', tab: 'all' })).toBe('scope=history&tab=all');
     expect(buildOrderQuery({ ...createDefaultOrderFilters(), tab: 'needs_review' })).toBe('scope=planning&tab=needs_review');
@@ -64,7 +67,7 @@ describe('route ops web state helpers', () => {
 
   test('serializes service type and delivery session filters while preserving enum values', () => {
     expect(buildOrderQuery({ ...createDefaultOrderFilters(), deliverySession: 'EVENING', serviceType: 'EVENING_DELIVERY' })).toBe(
-      'scope=planning&tab=unplanned&serviceType=EVENING_DELIVERY&deliverySession=EVENING'
+      'scope=planning&tab=all&serviceType=EVENING_DELIVERY&deliverySession=EVENING'
     );
   });
 

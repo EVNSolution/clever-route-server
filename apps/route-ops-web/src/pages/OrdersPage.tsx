@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { DragEvent, FormEvent, ReactElement } from "react";
+import type { FormEvent, ReactElement } from "react";
 
 import {
   bulkGeocodeOrders,
@@ -7,7 +7,6 @@ import {
   getBulkGeocodeJob,
   getOrderMetadataDiagnostics,
   getOrders,
-  getRouteDetail,
   getWooOrderSyncRun,
   getSettings,
   patchOrderMetadata,
@@ -23,22 +22,18 @@ import {
 import { TabLayout } from "../components/TabLayout";
 import { RouteOpsMap } from "../components/maps/RouteOpsMap";
 import type { OrderMapMarkerState } from "../maps/geojson";
-import { formatOrderItemOptions, getOrderItems } from "../orderItems";
+import { formatOrderItemLine, formatOrderItemOptions, getOrderItems } from "../orderItems";
 import {
   applyClientOrderFilters,
   buildOrderFetchQuery,
   buildOrderQuery,
   createDefaultOrderFilters,
-  formatOrderWorksetUnavailableReasons,
-  geometryLabel,
-  getOrderWorksetUnavailableReasons,
+  getOrderRouteType,
   isAddressReviewRequired,
   isDeliveryDateReviewRequired,
-  isOrderWorksetEligible,
   storeSettingsToDepotPoint,
-  summarizeOrderWorkset,
-  summarizeSelection,
   type OrderFilterState,
+  type OrderRouteTypeFilter,
   type OrderWorksetContext,
 } from "../state";
 import type {
@@ -46,7 +41,6 @@ import type {
   BulkGeocodeJobDto,
   CanonicalOrderDto,
   DeliveryMetadataDiagnosticsDto,
-  RoutePlanDetailDto,
   StoreSettingsDto,
   WooSyncRunDto,
 } from "../types";
@@ -197,8 +191,7 @@ export function OrdersPage({
   const initialCopy = getOrdersCopy(bootstrap.locale);
   const [routeDate, setRouteDate] = useState(initialRouteDate);
   const [routeName, setRouteName] = useState(() => initialCopy.defaultRouteName(initialRouteDate));
-  const [autoAppliedDeliveryDateFilter, setAutoAppliedDeliveryDateFilter] =
-    useState<string | null>(null);
+  const [plannedOrderIds, setPlannedOrderIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [ordersLoaded, setOrdersLoaded] = useState(false);
   const [refreshingOrders, setRefreshingOrders] = useState(false);
@@ -215,9 +208,6 @@ export function OrdersPage({
   const [bulkGeocoding, setBulkGeocoding] = useState(false);
   const [wooSyncStatus, setWooSyncStatus] = useState<string | null>(null);
   const [wooSyncing, setWooSyncing] = useState(false);
-  const [selectedRoutePlanId, setSelectedRoutePlanId] = useState<string | null>(null);
-  const [selectedRouteDetail, setSelectedRouteDetail] = useState<RoutePlanDetailDto | null>(null);
-  const [loadingRouteDetail, setLoadingRouteDetail] = useState(false);
   const locale = resolveLocale(settings?.locale ?? bootstrap.locale);
   const t = getOrdersCopy(locale);
   const pendingScrollRestoreRef = useRef<{
@@ -232,51 +222,40 @@ export function OrdersPage({
     [orders, filters],
   );
   const tableOrders = useMemo(
-    () => filterOrdersByRoutePlan(orders, selectedRoutePlanId) ?? visibleOrders,
-    [orders, selectedRoutePlanId, visibleOrders],
-  );
-  const routeDraft = useMemo(
-    () => buildRouteDraftSelection(orders, selected, locale),
-    [locale, orders, selected],
-  );
-  const activeMapDeliveryDate = useMemo(
-    () => resolveRouteMapDeliveryDate(filters.deliveryDate, routeDraft.deliveryDate),
-    [filters.deliveryDate, routeDraft.deliveryDate],
+    () => visibleOrders,
+    [visibleOrders],
   );
   const worksetContext = useMemo<OrderWorksetContext>(
     () => ({
-      routeDate: activeMapDeliveryDate,
-      routeScopeKey: routeDraft.routeScopeKey,
       scope: filters.scope,
     }),
-    [activeMapDeliveryDate, filters.scope, routeDraft.routeScopeKey],
+    [filters.scope],
   );
-  const selection = useMemo(
-    () => summarizeSelection(orders, selected),
-    [orders, selected],
+  const plannedOrders = useMemo(
+    () => orderSelectedOrdersByDraft(orders, plannedOrderIds),
+    [orders, plannedOrderIds],
   );
-  const selectedRoutePlanOrders = useMemo(
-    () => orderSelectedOrdersByDraft(selection.readySelected, selected),
-    [selected, selection.readySelected],
+  const routeCreateReasons = useMemo(
+    () => getRouteDraftCreateReasons(plannedOrders, locale),
+    [locale, plannedOrders],
   );
   const depotPoint = useMemo(
     () => storeSettingsToDepotPoint(settings, locale),
     [locale, settings],
   );
   const mapOrders = useMemo(
-    () => buildRouteMapOrders(orders, visibleOrders, activeMapDeliveryDate),
-    [activeMapDeliveryDate, orders, visibleOrders],
+    () => plannedOrders,
+    [plannedOrders],
   );
-  const selectedMapRouteDetail = selectedRoutePlanId === null ? null : selectedRouteDetail;
   const orderMarkerStates = useMemo(
     () =>
       buildOrderMapMarkerStates({
         filters,
         orders: mapOrders,
-        selectedOrderIds: selected,
+        selectedOrderIds: plannedOrderIds,
         worksetContext,
       }),
-    [filters, mapOrders, selected, worksetContext],
+    [filters, mapOrders, plannedOrderIds, worksetContext],
   );
 
   const refreshOrders = async (): Promise<void> => {
@@ -320,56 +299,19 @@ export function OrdersPage({
       .catch((error: unknown) => setError(readErrorMessage(error)));
   }, [setError]);
 
-  useEffect(() => {
-    if (selectedRoutePlanId === null) {
-      setSelectedRouteDetail(null);
-      setLoadingRouteDetail(false);
-      return undefined;
-    }
-    let cancelled = false;
-    setLoadingRouteDetail(true);
-    getRouteDetail(selectedRoutePlanId)
-      .then((payload) => {
-        if (cancelled) return;
-        setSelectedRouteDetail(payload);
-        setError(null);
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return;
-        setSelectedRouteDetail(null);
-        setError(readErrorMessage(error));
-      })
-      .finally(() => {
-        if (!cancelled) setLoadingRouteDetail(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedRoutePlanId, setError]);
-
   const create = async (): Promise<void> => {
     try {
-      if (
-        selection.blockers.length > 0 ||
-        selection.readySelected.length !== selected.size
-      ) {
-        throw new Error(
-          t.createRouteReadyOnly,
-        );
-      }
-      const routeDraftBlocker = getRouteDraftCreateBlocker(
-        selectedRoutePlanOrders,
-        routeDate || today(),
-        locale,
-      );
-      if (routeDraftBlocker !== null) throw new Error(routeDraftBlocker);
+      const routeDraftBlockers = getRouteDraftCreateReasons(plannedOrders, locale);
+      if (routeDraftBlockers.length > 0) throw new Error(routeDraftBlockers.join(" "));
+      const createOrderIds = plannedOrders.map((order) => order.orderId);
+      const planDate = getRouteDraftSingleDeliveryDate(plannedOrders) ?? (routeDate || today());
       const result = await createRoute({
         csrfToken: bootstrap.csrfToken,
         depotAddress: settings?.defaultDepotAddress ?? null,
         depotLatitude: settings?.defaultDepotLatitude ?? null,
         depotLongitude: settings?.defaultDepotLongitude ?? null,
-        orderIds: [...selected],
-        planDate: routeDate || today(),
+        orderIds: createOrderIds,
+        planDate,
         routeName,
         scope: filters.scope,
       });
@@ -509,130 +451,37 @@ export function OrdersPage({
     }
   };
 
-  const applyPlanDateLock = (deliveryDate: string): void => {
-    setRouteDate(deliveryDate);
-    setRouteName((current) =>
-      current.trim() === "" || /^(Route|경로) \d{4}-\d{2}-\d{2}$/u.test(current)
-        ? t.defaultRouteName(deliveryDate)
-        : current,
-    );
-    setAutoAppliedDeliveryDateFilter(deliveryDate);
-    setFilters((current) =>
-      current.deliveryDate === deliveryDate
-        ? current
-        : { ...current, deliveryDate },
-    );
-  };
-
-  const syncRouteDate = (deliveryDate: string): void => {
-    setRouteDate(deliveryDate);
-    setAutoAppliedDeliveryDateFilter(null);
-    if (deliveryDate.trim().length === 0) return;
-    setRouteName((current) =>
-      current.trim() === "" || /^(Route|경로) \d{4}-\d{2}-\d{2}$/u.test(current)
-        ? t.defaultRouteName(deliveryDate)
-        : current,
-    );
-  };
-
-  const updateRouteDateFilter = (deliveryDate: string): void => {
-    syncRouteDate(deliveryDate);
-    setFilters((current) =>
-      current.deliveryDate === deliveryDate
-        ? current
-        : { ...current, deliveryDate },
-    );
-  };
-
   const updateFilters = (nextFilters: OrderFilterState): void => {
-    if (nextFilters.deliveryDate !== filters.deliveryDate) {
-      syncRouteDate(nextFilters.deliveryDate);
-    }
     setFilters(nextFilters);
   };
 
   const clearPlan = (): void => {
-    setSelected(new Set());
+    setPlannedOrderIds(new Set());
     setError(null);
-    const autoDate = autoAppliedDeliveryDateFilter;
-    setAutoAppliedDeliveryDateFilter(null);
-    if (autoDate !== null) {
-      setRouteDate("");
-      setFilters((current) =>
-        current.deliveryDate === autoDate
-          ? { ...current, deliveryDate: "" }
-          : current,
-      );
-    }
   };
 
-  const applyPlanSelection = (requestedSelected: Set<string>): void => {
-    const draft = buildRouteDraftSelection(orders, requestedSelected, locale);
-    setSelected(new Set(draft.orderIds));
-    if (draft.deliveryDate === null) {
-      if (requestedSelected.size === 0) clearPlan();
-      else
-        setError(
-          draft.warning ?? t.selectRouteReady,
-        );
-      return;
-    }
-    applyPlanDateLock(draft.deliveryDate);
-    setError(draft.warning);
+  const setTableSelection = (nextSelected: Set<string>): void => {
+    setSelected(nextSelected);
   };
 
   const togglePlanOrder = (orderId: string): void => {
-    applyPlanSelection(buildNextPlanSelection(selected, orderId).selected);
+    setTableSelection(buildNextPlanSelection(selected, orderId).selected);
   };
 
-  const handleMapOrderSelect = (orderId: string): void => {
-    const order =
-      mapOrders.find((candidate) => candidate.orderId === orderId) ??
-      visibleOrders.find((candidate) => candidate.orderId === orderId) ??
-      orders.find((candidate) => candidate.orderId === orderId);
-    if (order === undefined) return;
-    if (order.routePlanId !== null) {
-      setSelectedRoutePlanId(order.routePlanId);
-      setError(null);
-      return;
-    }
-    const mapSelection = buildNextPlanSelection(selected, orderId);
-    if (mapSelection.action === "remove") {
-      applyPlanSelection(mapSelection.selected);
-      return;
-    }
-    const reasons = formatOrderWorksetUnavailableReasons(
-      getOrderWorksetUnavailableReasons(order, worksetContext),
-      locale,
-    );
-    const isSubfilterBlocked = isOrderBlockedByRouteSubfilters(order, filters);
-    if (!isOrderWorksetEligible(order, worksetContext) || isSubfilterBlocked) {
-      const reasonLabels = isSubfilterBlocked
-        ? formatOrderWorksetUnavailableReasons(
-            [{ code: "different_route_scope", label: "" }],
-            locale,
-          ).map((reason) => reason.label)
-        : reasons.map((reason) => reason.label);
-      setError(
-        t.orderUnavailable(
-          reasonLabels.join(", ") ||
-            t.routeConstraintFallback,
-        ),
+  const addSelectionToPlan = (): void => {
+    const nextPlanIds = new Set(selected);
+    setPlannedOrderIds(nextPlanIds);
+    const nextPlannedOrders = orderSelectedOrdersByDraft(orders, nextPlanIds);
+    const singleDate = getRouteDraftSingleDeliveryDate(nextPlannedOrders);
+    if (singleDate !== null) {
+      setRouteDate(singleDate);
+      setRouteName((current) =>
+        current.trim() === "" || /^(Route|경로) \d{4}-\d{2}-\d{2}$/u.test(current)
+          ? t.defaultRouteName(singleDate)
+          : current,
       );
-      return;
     }
-    applyPlanSelection(mapSelection.selected);
-  };
-
-  const clearSelectedRoutePlan = (): void => {
-    setSelectedRoutePlanId(null);
-    setSelectedRouteDetail(null);
-    setLoadingRouteDetail(false);
-  };
-
-  const reorderPlanOrder = (draggedOrderId: string, targetOrderId: string): void => {
-    const nextOrderIds = moveSelectedOrderBefore([...selected], draggedOrderId, targetOrderId);
-    applyPlanSelection(new Set(nextOrderIds));
+    setError(null);
   };
 
   return (
@@ -641,123 +490,32 @@ export function OrdersPage({
       primary={
         <RouteOpsMap
           bootstrap={bootstrap}
-          detail={selectedMapRouteDetail}
           depot={depotPoint}
-          onExitRouteMode={selectedRoutePlanId === null ? undefined : clearSelectedRoutePlan}
-          onOrderSelect={selectedMapRouteDetail === null ? handleMapOrderSelect : undefined}
           orderMarkerStates={orderMarkerStates}
           orders={mapOrders}
-          subtitle={
-            selectedMapRouteDetail === null
-              ? undefined
-              : geometryLabel(
-                  selectedMapRouteDetail,
-                  bootstrap.routerConfig.status,
-                  locale,
-                )
-          }
-          title={selectedMapRouteDetail?.routePlan.name}
         />
       }
       secondary={
-        selectedRoutePlanId === null ? (
-          <RoutePlanPanel
-            invalidSelectionCount={selected.size - selectedRoutePlanOrders.length}
-            onClear={clearPlan}
-            onCreate={() => void create()}
-            onReorder={reorderPlanOrder}
-            routeDate={routeDate}
-            routeName={routeName}
-            selectedOrders={selectedRoutePlanOrders}
-            setRouteDate={updateRouteDateFilter}
-            setRouteName={setRouteName}
-            locale={locale}
-            totalSelected={selected.size}
-          />
-        ) : (
-          <RouteDetailPanel
-            detail={selectedRouteDetail}
-            isLoading={loadingRouteDetail}
-            locale={locale}
-            onEdit={() => navigate(buildRouteDetailPath(selectedRoutePlanId))}
-            onNewRoute={clearSelectedRoutePlan}
-            routePlanId={selectedRoutePlanId}
-          />
-        )
+        <RoutePlanPanel
+          createReasons={routeCreateReasons}
+          onAddPlan={addSelectionToPlan}
+          onClear={clearPlan}
+          onCreate={() => void create()}
+          planDateLabel={formatRouteDraftDateLabel(plannedOrders, locale)}
+          planTypeLabel={formatRouteDraftTypeLabel(plannedOrders, locale)}
+          routeName={routeName}
+          selectedOrders={plannedOrders}
+          selectedTableCount={selected.size}
+          setRouteName={setRouteName}
+          locale={locale}
+        />
       }
       lower={
         <>
-          <div className="order-mode-tabs" aria-label={t.modeLabel}>
-            <button
-              className={filters.scope === "planning" ? "active" : ""}
-              onClick={() => setFilters({ ...filters, scope: "planning" })}
-              type="button"
-            >
-              {t.planning}
-            </button>
-            <button
-              className={filters.scope === "history" ? "active" : ""}
-              onClick={() => setFilters({ ...filters, scope: "history" })}
-              type="button"
-            >
-              {t.history}
-            </button>
-          </div>
-          <div className="route-tabs" aria-label={t.statusTabsLabel}>
-            <button
-              className={filters.tab === "all" ? "active" : ""}
-              onClick={() =>
-                setFilters({
-                  ...filters,
-                  deliveryStatus: "",
-                  tab: "all",
-                })
-              }
-              type="button"
-            >
-              {t.all}
-            </button>
-            <button
-              className={filters.tab === "unplanned" ? "active" : ""}
-              onClick={() =>
-                setFilters({
-                  ...filters,
-                  deliveryStatus: "",
-                  tab: "unplanned",
-                })
-              }
-              type="button"
-            >
-              {t.unplanned}
-            </button>
-            <button
-              className={filters.tab === "planned" ? "active" : ""}
-              onClick={() =>
-                setFilters({ ...filters, tab: "planned" })
-              }
-              type="button"
-            >
-              {t.planned}
-            </button>
-            <button
-              className={filters.tab === "needs_review" ? "active" : ""}
-              onClick={() =>
-                setFilters({
-                  ...filters,
-                  deliveryStatus: "",
-                  tab: "needs_review",
-                })
-              }
-              type="button"
-            >
-              {t.needsReview}
-            </button>
-          </div>
           <FilterBar
             filters={filters}
             locale={locale}
             onChange={updateFilters}
-            settings={settings}
           />
           <OrderTable
             bulkGeocodeStatus={bulkGeocodeStatus}
@@ -775,7 +533,7 @@ export function OrdersPage({
             locale={locale}
             refreshing={refreshingOrders}
             selected={selected}
-            setSelected={applyPlanSelection}
+            setSelected={setTableSelection}
             settings={settings}
             worksetContext={worksetContext}
             wooSyncing={wooSyncing}
@@ -788,21 +546,20 @@ export function OrdersPage({
 }
 
 export function RoutePlanPanel(input: {
-  invalidSelectionCount: number;
+  createReasons: string[];
   locale?: string | null;
+  onAddPlan(): void;
   onClear(): void;
   onCreate(): void;
-  onReorder(draggedOrderId: string, targetOrderId: string): void;
-  routeDate: string;
+  planDateLabel: string;
+  planTypeLabel: string;
   routeName: string;
   selectedOrders: CanonicalOrderDto[];
-  setRouteDate(value: string): void;
+  selectedTableCount: number;
   setRouteName(value: string): void;
-  totalSelected: number;
 }): ReactElement {
   const t = getOrdersCopy(input.locale);
-  const canCreate =
-    input.selectedOrders.length > 0 && input.invalidSelectionCount === 0;
+  const canCreate = input.selectedOrders.length > 0;
   return (
     <div
       className="panel side-panel route-plan-panel"
@@ -816,20 +573,34 @@ export function RoutePlanPanel(input: {
         <Badge>{input.selectedOrders.length} {t.orders}</Badge>
       </div>
       <label>
-        {t.routeDate}
-        <input
-          type="date"
-          value={input.routeDate}
-          onChange={(event) => input.setRouteDate(event.target.value)}
-        />
-      </label>
-      <label>
         {t.routeName}
         <input
           value={input.routeName}
           onChange={(event) => input.setRouteName(event.target.value)}
         />
       </label>
+      <dl className="route-plan-summary">
+        <div>
+          <dt>{t.routeDate}</dt>
+          <dd>{input.planDateLabel}</dd>
+        </div>
+        <div>
+          <dt>{t.type}</dt>
+          <dd>{input.planTypeLabel}</dd>
+        </div>
+        <div>
+          <dt>{t.totalOrders}</dt>
+          <dd>{input.selectedOrders.length}</dd>
+        </div>
+      </dl>
+      <button
+        className="route-plan-add-button"
+        disabled={input.selectedTableCount === 0}
+        onClick={input.onAddPlan}
+        type="button"
+      >
+        {t.addPlan}
+      </button>
       <div className="button-row route-plan-actions">
         <button
           className="primary"
@@ -840,140 +611,23 @@ export function RoutePlanPanel(input: {
           {t.createRoute}
         </button>
         <button
-          disabled={input.totalSelected === 0}
+          disabled={input.selectedOrders.length === 0}
           onClick={input.onClear}
           type="button"
         >
           {t.clearPlan}
         </button>
       </div>
-      <div className="route-plan-draft" aria-label={t.addPlanOrdersLabel}>
-        {input.selectedOrders.length === 0 ? (
-          <p className="route-plan-empty">{t.planEmpty}</p>
-        ) : (
-          input.selectedOrders.map((order, index) => (
-            <div
-              className="route-plan-item route-plan-item--draggable"
-              draggable
-              key={order.orderId}
-              onDragOver={(event) => event.preventDefault()}
-              onDragStart={(event) => writeRoutePlanDragData(event, order.orderId)}
-              onDrop={(event) => {
-                const draggedOrderId = readRoutePlanDragData(event);
-                if (draggedOrderId !== null) input.onReorder(draggedOrderId, order.orderId);
-              }}
-            >
-              <span
-                aria-label={t.dragPlanOrder(order.orderName)}
-                className="route-plan-drag-handle"
-                title={t.dragPlanOrder(order.orderName)}
-              >
-                ::
-              </span>
-              <span className="route-plan-item-content">
-                <strong>
-                  {index + 1}. {order.orderName}
-                </strong>
-                <small>
-                  {order.recipientName ?? t.recipientFallback} ·{" "}
-                  {order.deliveryArea ?? t.areaFallback} · {order.deliveryDate ?? t.dateFallback}
-                </small>
-              </span>
-            </div>
-          ))
-        )}
-      </div>
-    </div>
-  );
-}
-
-function writeRoutePlanDragData(event: DragEvent<HTMLDivElement>, orderId: string): void {
-  event.dataTransfer.effectAllowed = "move";
-  event.dataTransfer.setData("text/plain", orderId);
-  event.dataTransfer.setData("application/x-clever-route-order-id", orderId);
-}
-
-function readRoutePlanDragData(event: DragEvent<HTMLDivElement>): string | null {
-  event.preventDefault();
-  const orderId =
-    event.dataTransfer.getData("application/x-clever-route-order-id") ||
-    event.dataTransfer.getData("text/plain");
-  const trimmed = orderId.trim();
-  return trimmed.length === 0 ? null : trimmed;
-}
-
-function RouteDetailPanel(input: {
-  detail: RoutePlanDetailDto | null;
-  isLoading: boolean;
-  locale?: string | null;
-  onEdit(): void;
-  onNewRoute(): void;
-  routePlanId: string;
-}): ReactElement {
-  const t = getOrdersCopy(input.locale);
-  const routePlan = input.detail?.routePlan ?? null;
-  const sortedStops = [...(input.detail?.stops ?? [])].sort(
-    (left, right) => left.sequence - right.sequence,
-  );
-  return (
-    <div
-      className="panel side-panel route-detail-panel"
-      aria-label={t.routeDetailPanelLabel}
-    >
-      <div className="panel-heading compact-heading route-plan-header">
-        <div>
-          <span className="eyebrow">{t.planned}</span>
-          <h2>{routePlan?.name ?? t.loadingRoute}</h2>
-        </div>
-        <Badge>
-          {routePlan?.stopsCount ?? sortedStops.length} {t.orders}
-        </Badge>
-      </div>
-      <p className="muted">{t.routeDetailInstructions}</p>
-      <div className="button-row route-plan-actions">
-        <button className="primary" onClick={input.onEdit} type="button">
-          {t.editRoute}
-        </button>
-        <button onClick={input.onNewRoute} type="button">
-          {t.newRoute}
-        </button>
-      </div>
-      <dl className="route-detail-summary">
-        <div>
-          <dt>{t.routeDate}</dt>
-          <dd>
-            {routePlan?.deliveryDate ?? routePlan?.planDate ?? t.dateFallback}
-          </dd>
-        </div>
-        <div>
-          <dt>{t.routeStatus}</dt>
-          <dd>
-            {routePlan === null
-              ? input.isLoading
-                ? t.loadingRoute
-                : input.routePlanId
-              : humanizeToken(routePlan.status, input.locale)}
-          </dd>
-        </div>
-      </dl>
-      <div className="route-plan-draft" aria-label={t.routeStopsLabel}>
-        {input.detail === null ? (
-          <p className="route-plan-empty">
-            {input.isLoading ? t.loadingRoute : t.noRouteDetail}
-          </p>
-        ) : (
-          sortedStops.map((stop) => (
-            <div className="route-plan-item" key={stop.deliveryStopId}>
-              <strong>
-                {stop.sequence}. {stop.orderName}
-              </strong>
-              <small>
-                {stop.recipientName ?? t.recipientFallback} · {stop.addressLabel}
-              </small>
-            </div>
-          ))
-        )}
-      </div>
+      {input.createReasons.length === 0 ? null : (
+        <ul className="route-plan-validation" aria-label={t.routeValidationReasons}>
+          {input.createReasons.map((reason) => (
+            <li key={reason}>{reason}</li>
+          ))}
+        </ul>
+      )}
+      {input.selectedOrders.length === 0 ? (
+        <p className="route-plan-empty">{t.planEmpty}</p>
+      ) : null}
     </div>
   );
 }
@@ -982,109 +636,100 @@ function FilterBar({
   filters,
   locale,
   onChange,
-  settings,
 }: {
   filters: OrderFilterState;
   locale?: string | null;
   onChange(filters: OrderFilterState): void;
-  settings?: StoreSettingsDto | null;
 }): ReactElement {
   const t = getOrdersCopy(locale);
-  const config = normalizeRouteScopeConfig(settings?.routeScopeConfig);
-  const serviceTypes = activeRouteScopeValues(config.serviceTypes);
-  const deliverySessions = activeRouteScopeValues(config.deliverySessions);
-  const resetFilters = (): void =>
-    onChange({
-      ...createDefaultOrderFilters(),
-      scope: filters.scope,
-      tab: filters.tab,
-    });
+  const weekdays = getWeekdayFilterOptions(locale);
+  const routeTypes = getRouteTypeFilterOptions(locale);
   return (
     <article className="panel filter-panel">
       <label className="filter-field filter-field--date">
         {t.deliveryDate}
-        <input
-          type="date"
-          value={filters.deliveryDate}
-          onChange={(event) =>
-            onChange({ ...filters, deliveryDate: event.target.value })
-          }
-        />
-      </label>
-      <label className="filter-field filter-field--area">
-        {t.areaRegion}
-        <input
-          placeholder={t.areaPlaceholder}
-          value={filters.deliveryArea}
-          onChange={(event) =>
-            onChange({ ...filters, deliveryArea: event.target.value })
-          }
-        />
-      </label>
-      <label className="filter-field filter-field--status">
-        {t.deliveryStatus}
-        <select
-          value={filters.deliveryStatus}
-          onChange={(event) =>
-            onChange({ ...filters, deliveryStatus: event.target.value })
-          }
+        <FilterValueControl
+          active={filters.deliveryDate !== ""}
+          clearLabel={t.clearFilter(t.deliveryDate)}
+          onClear={() => onChange({ ...filters, deliveryDate: "" })}
         >
-          <option value="">{t.allOption}</option>
-          <option value="ready">{t.ready}</option>
-          <option value="needs_review">{t.needsReview}</option>
-          <option value="completed">{t.completed}</option>
-        </select>
+          <input
+            type="date"
+            value={filters.deliveryDate}
+            onChange={(event) =>
+              onChange({ ...filters, deliveryDate: event.target.value })
+            }
+          />
+        </FilterValueControl>
       </label>
-      <label className="filter-field filter-field--service">
-        {t.serviceType}
-        <select
-          value={filters.serviceType}
-          onChange={(event) =>
-            onChange({ ...filters, serviceType: event.target.value })
-          }
+      <label className="filter-field filter-field--weekday">
+        {t.weekday}
+        <FilterValueControl
+          active={filters.weekday !== ""}
+          clearLabel={t.clearFilter(t.weekday)}
+          onClear={() => onChange({ ...filters, weekday: "" })}
         >
-          <option value="">{t.allOption}</option>
-          {serviceTypes.map((option) => (
-            <option key={option.value} value={option.value}>
-              {formatFilterOptionLabel(option.label, locale)}
-            </option>
-          ))}
-        </select>
+          <select
+            value={filters.weekday}
+            onChange={(event) =>
+              onChange({ ...filters, weekday: event.target.value as OrderFilterState["weekday"] })
+            }
+          >
+            <option value="">{t.allOption}</option>
+            {weekdays.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </FilterValueControl>
       </label>
-      <label className="filter-field filter-field--session">
-        {t.deliverySession}
-        <select
-          value={filters.deliverySession}
-          onChange={(event) =>
-            onChange({ ...filters, deliverySession: event.target.value })
-          }
+      <label className="filter-field filter-field--type">
+        {t.type}
+        <FilterValueControl
+          active={filters.routeType !== ""}
+          clearLabel={t.clearFilter(t.type)}
+          onClear={() => onChange({ ...filters, routeType: "" })}
         >
-          <option value="">{t.allOption}</option>
-          {deliverySessions.map((option) => (
-            <option key={option.value} value={option.value}>
-              {formatFilterOptionLabel(option.label, locale)}
-            </option>
-          ))}
-        </select>
+          <select
+            value={filters.routeType}
+            onChange={(event) =>
+              onChange({ ...filters, routeType: event.target.value as OrderFilterState["routeType"] })
+            }
+          >
+            <option value="">{t.allOption}</option>
+            {routeTypes.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </FilterValueControl>
       </label>
-      <label className="filter-field filter-field--search">
-        {t.search}
-        <input
-          placeholder={t.searchPlaceholder}
-          value={filters.search}
-          onChange={(event) =>
-            onChange({ ...filters, search: event.target.value })
-          }
-        />
-      </label>
-      <button
-        className="filter-field filter-clear-button"
-        onClick={resetFilters}
-        type="button"
-      >
-        {t.clearFilters}
-      </button>
     </article>
+  );
+}
+
+function FilterValueControl(input: {
+  active: boolean;
+  children: ReactElement;
+  clearLabel: string;
+  onClear(): void;
+}): ReactElement {
+  return (
+    <span className="filter-control">
+      {input.children}
+      {input.active ? (
+        <button
+          aria-label={input.clearLabel}
+          className="filter-clear-x"
+          onClick={input.onClear}
+          type="button"
+        >
+          ×
+        </button>
+      ) : null}
+    </span>
   );
 }
 
@@ -1202,25 +847,18 @@ export function OrderTable(input: {
 }): ReactElement {
   const t = getOrdersCopy(input.locale);
   const worksetContext = input.worksetContext ?? {};
-  const worksetSummary = summarizeOrderWorkset(
-    input.orders,
-    input.selected,
-    worksetContext,
-    input.locale,
-  );
-  const selectableOrderIds = worksetSummary.selectableOrderIds;
   const visibleOrderIds = input.orders.map((order) => order.orderId);
-  const selectedFilteredCount = selectableOrderIds.filter((orderId) =>
+  const selectedFilteredCount = visibleOrderIds.filter((orderId) =>
     input.selected.has(orderId),
   ).length;
   const visibleSelectedCount = visibleOrderIds.filter((orderId) =>
     input.selected.has(orderId),
   ).length;
   const allFilteredSelected =
-    selectableOrderIds.length > 0 &&
-    selectedFilteredCount === selectableOrderIds.length;
+    visibleOrderIds.length > 0 &&
+    selectedFilteredCount === visibleOrderIds.length;
   const selectFilteredOrders = (): void => {
-    input.setSelected(new Set([...input.selected, ...selectableOrderIds]));
+    input.setSelected(new Set([...input.selected, ...visibleOrderIds]));
   };
   const clearFilteredOrders = (): void => {
     const next = new Set(input.selected);
@@ -1248,7 +886,7 @@ export function OrderTable(input: {
         <div className="orders-heading-actions">
           <Badge>{input.orders.length} {t.orders}</Badge>
           <span className="orders-selection-summary">
-            {t.selectedSummary(visibleSelectedCount, worksetSummary.selectableCount, worksetSummary.unavailableCount)}
+            {t.selectedSummary(visibleSelectedCount, input.orders.length, 0)}
           </span>
           {input.loading || input.refreshing === true ? (
             <span className="orders-refresh-status" role="status">
@@ -1271,11 +909,6 @@ export function OrderTable(input: {
           </button>
         </div>
       </div>
-      {worksetSummary.reasonLabels.length === 0 ? null : (
-        <p className="orders-workset-note">
-          {t.unavailablePrefix} {worksetSummary.reasonLabels.join(" · ")}
-        </p>
-      )}
       {input.bulkGeocodeStatus === undefined ||
       input.bulkGeocodeStatus === null ? null : (
         <p className="orders-bulk-status" role="status">
@@ -1296,9 +929,9 @@ export function OrderTable(input: {
             <tr>
               <th className="orders-select-col" scope="col">
                 <input
-                aria-label={t.selectAllEligible}
+                  aria-label={t.selectAllEligible}
                   checked={allFilteredSelected}
-                  disabled={selectableOrderIds.length === 0}
+                  disabled={visibleOrderIds.length === 0}
                   onChange={(event) =>
                     toggleFilteredSelection(event.target.checked)
                   }
@@ -1368,16 +1001,6 @@ function OrderTableRow(input: {
   const { order } = input;
   const t = getOrdersCopy(input.locale);
   const selected = input.selectedOrders.has(order.orderId);
-  const unavailableReasons = formatOrderWorksetUnavailableReasons(
-    getOrderWorksetUnavailableReasons(
-      order,
-      input.worksetContext,
-    ),
-    input.locale,
-  );
-  const canPlan =
-    unavailableReasons.length === 0 &&
-    isOrderWorksetEligible(order, input.worksetContext);
   const day = formatDeliveryDayLabel(order, input.locale);
   const method = formatMethodStatusLabel(order, input.locale);
   const payment = formatPaymentStatusLabel(order, input.locale);
@@ -1399,7 +1022,6 @@ function OrderTableRow(input: {
         className={[
           "orders-row",
           order.blockerReasons.length > 0 ? "orders-row--needs-review" : "",
-          !canPlan && !selected ? "orders-row--not-eligible" : "",
         ]
           .filter(Boolean)
           .join(" ")}
@@ -1408,7 +1030,6 @@ function OrderTableRow(input: {
           <input
             aria-label={t.selectOrder(orderLabel)}
             checked={selected}
-            disabled={!canPlan && !selected}
             onChange={() => input.onTogglePlanOrder(order.orderId)}
             type="checkbox"
           />
@@ -1489,14 +1110,8 @@ function OrderTableRow(input: {
             <button
               aria-label={planActionLabel}
               className={selected ? "active" : ""}
-              disabled={!canPlan && !selected}
               onClick={() => input.onTogglePlanOrder(order.orderId)}
               type="button"
-              title={
-                canPlan || selected
-                  ? undefined
-                  : unavailableReasons.map((reason) => reason.label).join(", ")
-              }
             >
               {selected ? t.remove : t.add}
             </button>
@@ -2144,8 +1759,8 @@ function OrderDetailPanel({
   const [saving, setSaving] = useState(false);
   const onSave = onSaveMetadata;
   const t = getOrdersCopy(locale);
+  const fieldLabels = getOrderFieldLabels(locale);
   const status = formatOperationalStatus(order, locale);
-  const payment = formatPaymentStatusLabel(order, locale);
   const blockers = order.blockerReasons.map((reason) =>
     formatBlockerReason(reason, locale),
   );
@@ -2155,10 +1770,11 @@ function OrderDetailPanel({
   );
   const repairFields = getOrderRepairFields(order, editableFields);
   const hasActionableRepair = repairFields.length > 0;
+  const showRepairCard = hasActionableRepair || blockers.length > 0;
   const repairTitle = formatRepairCardTitle(repairFields, order, locale);
   const addressSummary = formatAddressSummary(order, locale);
-  const coordinateSummary = formatCoordinateSummary(order, locale);
   const orderItems = getOrderItems(order.items);
+  const orderedItemLabels = orderItems.map(formatOrderItemLine);
 
   const setDraftField = (
     key: keyof OrderMetadataPatch,
@@ -2217,18 +1833,19 @@ function OrderDetailPanel({
         </div>
       </div>
 
-      <section
-        aria-label={hasActionableRepair ? t.fieldsToFix : t.orderReadiness}
-        className={[
-          "order-detail-repair-card",
-          hasActionableRepair ? "order-detail-repair-card--attention" : "",
-        ]
-          .filter(Boolean)
-          .join(" ")}
-      >
+      {showRepairCard ? (
+        <section
+          aria-label={hasActionableRepair ? t.fieldsToFix : t.orderReadiness}
+          className={[
+            "order-detail-repair-card",
+            hasActionableRepair ? "order-detail-repair-card--attention" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+        >
         <div className="order-detail-repair-copy">
           <span className="eyebrow">
-            {hasActionableRepair ? t.needsReview : t.orderSummary}
+              {hasActionableRepair ? t.needsReview : t.orderReadiness}
           </span>
           <h4>{hasActionableRepair ? repairTitle : status.label}</h4>
           <p>
@@ -2276,86 +1893,29 @@ function OrderDetailPanel({
             </div>
           </form>
         ) : null}
-      </section>
+        </section>
+      ) : null}
 
       <div className="order-detail-summary-grid">
+        <section className="order-detail-summary-card order-detail-summary-card--primary">
+          <h4>{fieldLabels["line_items[0].name"]}</h4>
+          {orderedItemLabels.length === 0 ? (
+            <p>{order.orderName}</p>
+          ) : (
+            <ul className="order-detail-item-list">
+              {orderedItemLabels.map((label, labelIndex) => (
+                <li key={`${label}:${labelIndex}`}>{label}</li>
+              ))}
+            </ul>
+          )}
+          <small>{order.sourceOrderNumber ?? order.sourceOrderId ?? t.reviewIfRequired}</small>
+        </section>
         <section className="order-detail-summary-card">
           <h4>{t.destination}</h4>
           <p>{addressSummary.primary}</p>
           {addressSummary.secondary === null ? null : (
             <small>{addressSummary.secondary}</small>
           )}
-        </section>
-        <section className="order-detail-summary-card">
-          <h4>{t.coordinates}</h4>
-          <p>{coordinateSummary.primary}</p>
-          {coordinateSummary.secondary === null ? null : (
-            <small>{coordinateSummary.secondary}</small>
-          )}
-        </section>
-        <section className="order-detail-summary-card">
-          <h4>{t.delivery}</h4>
-          <dl className="order-detail-mini-list">
-            <div>
-              <dt>{t.date}</dt>
-              <dd>{order.deliveryDate ?? t.required}</dd>
-            </div>
-            <div>
-              <dt>{t.area}</dt>
-              <dd>{order.deliveryArea ?? t.required}</dd>
-            </div>
-            <div>
-              <dt>{t.service}</dt>
-              <dd>
-                {isPresent(order.serviceType)
-                  ? humanizeToken(order.serviceType, locale)
-                  : isPresent(order.deliverySession)
-                    ? humanizeToken(order.deliverySession, locale)
-                    : t.required}
-              </dd>
-            </div>
-            <div>
-              <dt>{t.window}</dt>
-              <dd>{formatTimeWindow(order, locale) ?? t.reviewIfRequired}</dd>
-            </div>
-          </dl>
-        </section>
-        <section className="order-detail-summary-card">
-          <h4>{t.payment}</h4>
-          <dl className="order-detail-mini-list">
-            <div>
-              <dt>{t.paymentStatus}</dt>
-              <dd>
-                <span className={`order-pill ${payment.toneClass}`}>
-                  {payment.label}
-                </span>
-              </dd>
-            </div>
-            <div>
-              <dt>{t.paymentMethod}</dt>
-              <dd>{formatPaymentMethodEvidence(order) ?? t.required}</dd>
-            </div>
-            <div>
-              <dt>Woo</dt>
-              <dd>{order.wooOrderStatus ?? t.required}</dd>
-            </div>
-            <div>
-              <dt>{t.paymentReason}</dt>
-              <dd>
-                {order.paymentReviewReason ??
-                  order.normalizedPaymentReason ??
-                  t.reviewIfRequired}
-              </dd>
-            </div>
-            <div>
-              <dt>{t.paymentPaidAt}</dt>
-              <dd>{order.paidAt ?? t.reviewIfRequired}</dd>
-            </div>
-            <div>
-              <dt>{t.paymentTransaction}</dt>
-              <dd>{order.transactionId ?? t.reviewIfRequired}</dd>
-            </div>
-          </dl>
         </section>
       </div>
 
@@ -2736,6 +2296,7 @@ function formatRepairCardTitle(
   return t.fallback;
 }
 
+
 function formatAddressSummary(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {
   primary: string;
   secondary: string | null;
@@ -2794,20 +2355,6 @@ function sanitizeId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]+/gu, "-");
 }
 
-function resolveRouteMapDeliveryDate(filterDeliveryDate: string | null | undefined, draftDeliveryDate: string | null): string | null {
-  const normalizedFilterDate = normalizeRouteFilterValue(filterDeliveryDate);
-  return normalizedFilterDate ?? draftDeliveryDate;
-}
-
-function buildRouteMapOrders(
-  orders: CanonicalOrderDto[],
-  visibleOrders: CanonicalOrderDto[],
-  deliveryDate: string | null,
-): CanonicalOrderDto[] {
-  if (deliveryDate === null) return visibleOrders;
-  return orders.filter((order) => order.deliveryDate === deliveryDate);
-}
-
 export function filterOrdersByRoutePlan(
   orders: CanonicalOrderDto[],
   routePlanId: string | null,
@@ -2828,19 +2375,6 @@ function orderSelectedOrdersByDraft(
   return [...selectedOrderIds]
     .map((orderId) => ordersById.get(orderId))
     .filter((order): order is CanonicalOrderDto => order !== undefined);
-}
-
-export function moveSelectedOrderBefore(
-  orderIds: string[],
-  draggedOrderId: string,
-  targetOrderId: string,
-): string[] {
-  if (draggedOrderId === targetOrderId) return orderIds;
-  const next = orderIds.filter((orderId) => orderId !== draggedOrderId);
-  const targetIndex = next.indexOf(targetOrderId);
-  if (targetIndex === -1 || !orderIds.includes(draggedOrderId)) return orderIds;
-  next.splice(targetIndex, 0, draggedOrderId);
-  return next;
 }
 
 export function buildOrderMapMarkerStates(input: {
@@ -2865,12 +2399,8 @@ export function buildOrderMapMarkerStates(input: {
     }
     const isPlanned = isRouteMapPlanned(order);
     const needsReview = isRouteMapReviewOrder(order);
-    const isCandidate = isRouteMapCandidate(order);
-    const routeScopeBlocked =
-      isOrderDifferentFromActiveRouteScope(order, input.worksetContext) ||
-      isOrderBlockedByRouteSubfilters(order, input.filters);
     markerStates.set(order.orderId, {
-      markerOpacity: !isPlanned && isCandidate && routeScopeBlocked ? 0.5 : 1,
+      markerOpacity: 1,
       pinKind: isPlanned
         ? "candidate"
         : needsReview
@@ -2888,16 +2418,6 @@ function isRouteMapPlanned(order: CanonicalOrderDto): boolean {
   return order.routePlanId !== null || order.planningStatus !== "UNPLANNED";
 }
 
-function isRouteMapCandidate(order: CanonicalOrderDto): boolean {
-  return (
-    isRoutePlanEligible(order) &&
-    order.deliveryDate !== null &&
-    isPresent(order.serviceType) &&
-    isPresent(order.deliverySession) &&
-    hasResolvedCoordinates(order)
-  );
-}
-
 function isRouteMapReviewOrder(order: CanonicalOrderDto): boolean {
   return (
     order.health === "needs_review" ||
@@ -2911,40 +2431,69 @@ function isRouteMapReviewOrder(order: CanonicalOrderDto): boolean {
   );
 }
 
-function isOrderDifferentFromActiveRouteScope(
-  order: CanonicalOrderDto,
-  context: OrderWorksetContext,
-): boolean {
-  if (
-    context.routeDate !== undefined &&
-    context.routeDate !== null &&
-    order.deliveryDate !== null &&
-    order.deliveryDate !== context.routeDate
-  ) {
-    return true;
-  }
-  if (context.routeScopeKey === undefined || context.routeScopeKey === null) {
-    return false;
-  }
-  const orderRouteScopeKey = getRouteDraftScopeKey(order);
-  return orderRouteScopeKey !== null && orderRouteScopeKey !== context.routeScopeKey;
-}
-
-function isOrderBlockedByRouteSubfilters(
-  order: CanonicalOrderDto,
-  filters: Pick<OrderFilterState, "deliverySession" | "serviceType">,
-): boolean {
-  const serviceType = normalizeRouteFilterValue(filters.serviceType);
-  if (serviceType !== null && order.serviceType !== serviceType) return true;
-  const deliverySession = normalizeRouteFilterValue(filters.deliverySession);
-  return deliverySession !== null && order.deliverySession !== deliverySession;
-}
-
 function normalizeRouteFilterValue(value: string | null | undefined): string | null {
   if (value === null || value === undefined) return null;
   const trimmed = value.trim();
   if (trimmed === "" || trimmed === "all") return null;
   return trimmed;
+}
+
+function getWeekdayFilterOptions(locale: string | null | undefined): Array<{ label: string; value: NonNullable<OrderFilterState["weekday"]> }> {
+  return resolveLocale(locale) === "ko-KR"
+    ? [
+        { label: "일", value: "sun" },
+        { label: "월", value: "mon" },
+        { label: "화", value: "tue" },
+        { label: "수", value: "wed" },
+        { label: "목", value: "thu" },
+        { label: "금", value: "fri" },
+        { label: "토", value: "sat" },
+      ]
+    : [
+        { label: "Sunday", value: "sun" },
+        { label: "Monday", value: "mon" },
+        { label: "Tuesday", value: "tue" },
+        { label: "Wednesday", value: "wed" },
+        { label: "Thursday", value: "thu" },
+        { label: "Friday", value: "fri" },
+        { label: "Saturday", value: "sat" },
+      ];
+}
+
+function getRouteTypeFilterOptions(locale: string | null | undefined): Array<{ label: string; value: NonNullable<OrderFilterState["routeType"]> }> {
+  return resolveLocale(locale) === "ko-KR"
+    ? [
+        { label: "배송", value: "delivery" },
+        { label: "저녁 배송", value: "evening_delivery" },
+        { label: "픽업", value: "pickup" },
+      ]
+    : [
+        { label: "Delivery", value: "delivery" },
+        { label: "Evening Delivery", value: "evening_delivery" },
+        { label: "Pickup", value: "pickup" },
+      ];
+}
+
+function formatRouteDraftDateLabel(
+  selectedOrders: CanonicalOrderDto[],
+  locale: string | null | undefined,
+): string {
+  const t = getOrdersCopy(locale);
+  if (selectedOrders.length === 0) return t.dateFallback;
+  const date = getRouteDraftSingleDeliveryDate(selectedOrders);
+  if (date !== null) return date;
+  return hasMissingRouteDate(selectedOrders) ? t.routeDraft.missingRequiredShort : t.mixed;
+}
+
+function formatRouteDraftTypeLabel(
+  selectedOrders: CanonicalOrderDto[],
+  locale: string | null | undefined,
+): string {
+  const t = getOrdersCopy(locale);
+  if (selectedOrders.length === 0) return t.typeFallback;
+  const type = getRouteDraftSingleType(selectedOrders);
+  if (type !== null) return formatRoutePlanningType(type, locale);
+  return hasMissingRouteType(selectedOrders) ? t.routeDraft.missingRequiredShort : t.mixed;
 }
 
 export function buildRouteDraftSelection(
@@ -2954,84 +2503,83 @@ export function buildRouteDraftSelection(
 ): {
   deliveryDate: string | null;
   orderIds: string[];
-  routeScopeKey: string | null;
+  routeType: OrderRouteTypeFilter | null;
   warning: string | null;
 } {
-  const t = getOrdersCopy(locale).routeDraft;
   const ordersById = new Map(orders.map((order) => [order.orderId, order]));
   const requestedOrders = [...requestedSelectedOrderIds]
     .map((orderId) => ordersById.get(orderId))
     .filter((order): order is CanonicalOrderDto => order !== undefined);
-  const routeReadyOrders = requestedOrders.filter(isRoutePlanEligible);
-  const anchor = routeReadyOrders.find(
-    (order) => getRouteDraftScopeKey(order) !== null,
-  );
-
-  if (anchor === undefined || anchor.deliveryDate === null) {
-    return {
-      deliveryDate: null,
-      orderIds: [],
-      routeScopeKey: null,
-      warning:
-        requestedSelectedOrderIds.size === 0
-          ? null
-          : t.selectReady,
-    };
-  }
-
-  const anchorScopeKey = getRouteDraftScopeKey(anchor);
-  const selectedOrders = routeReadyOrders.filter(
-    (order) =>
-      order.deliveryDate === anchor.deliveryDate &&
-      getRouteDraftScopeKey(order) === anchorScopeKey,
-  );
-  const warning =
-    selectedOrders.length === requestedOrders.length
-      ? null
-      : t.onlySameScope;
 
   return {
-    deliveryDate: anchor.deliveryDate,
-    orderIds: selectedOrders.map((order) => order.orderId),
-    routeScopeKey: anchorScopeKey,
-    warning,
+    deliveryDate: getRouteDraftSingleDeliveryDate(requestedOrders),
+    orderIds: requestedOrders.map((order) => order.orderId),
+    routeType: getRouteDraftSingleType(requestedOrders),
+    warning: null,
   };
 }
 
-export function getRouteDraftCreateBlocker(
+export function getRouteDraftCreateReasons(
   selectedOrders: CanonicalOrderDto[],
-  routeDate: string,
   locale: string | null | undefined = 'en-CA',
-): string | null {
+): string[] {
+  if (selectedOrders.length === 0) return [];
   const t = getOrdersCopy(locale).routeDraft;
-  if (selectedOrders.length === 0) return null;
-  if (selectedOrders.some((order) => order.deliveryDate !== routeDate)) {
-    return t.dateMustMatch;
-  }
-  const scopeKeys = new Set(
-    selectedOrders.map((order) => getRouteDraftScopeKey(order)),
+  const reasons: string[] = [];
+  const hasMissingRequired = selectedOrders.some(
+    (order) =>
+      normalizeRouteFilterValue(order.deliveryDate) === null ||
+      getOrderRouteType(order) === null,
   );
-  if (scopeKeys.size !== 1 || scopeKeys.has(null)) {
-    return t.selectedMustShareScope;
+  if (hasMissingRequired) reasons.push(t.missingRequired);
+  if (countUniquePresent(selectedOrders.map((order) => order.deliveryDate)) > 1) {
+    reasons.push(t.dateMustMatch);
   }
-  return null;
+  if (countUniquePresent(selectedOrders.map(getOrderRouteType)) > 1) {
+    reasons.push(t.selectedMustShareType);
+  }
+  return reasons;
 }
 
-export function getRouteDraftScopeKey(order: CanonicalOrderDto): string | null {
-  if (
-    !isPresent(order.deliveryDate) ||
-    !isPresent(order.serviceType) ||
-    !isPresent(order.deliverySession)
-  ) {
-    return null;
-  }
-  return [
-    order.deliveryDate,
-    order.serviceType,
-    order.deliverySession,
-    order.timeWindowStart ?? "",
-    order.timeWindowEnd ?? "",
-  ].join("|");
+export function getRouteDraftFirstCreateReason(
+  selectedOrders: CanonicalOrderDto[],
+  locale: string | null | undefined = 'en-CA',
+): string | null {
+  return getRouteDraftCreateReasons(selectedOrders, locale)[0] ?? null;
+}
+
+function getRouteDraftSingleDeliveryDate(orders: CanonicalOrderDto[]): string | null {
+  const dates = uniquePresentValues(orders.map((order) => order.deliveryDate));
+  return dates.length === 1 ? dates[0] ?? null : null;
+}
+
+function getRouteDraftSingleType(orders: CanonicalOrderDto[]): OrderRouteTypeFilter | null {
+  const types = [...new Set(orders.map(getOrderRouteType).filter((value): value is OrderRouteTypeFilter => value !== null))];
+  return types.length === 1 ? types[0] ?? null : null;
+}
+
+function countUniquePresent(values: Array<string | null | undefined>): number {
+  return uniquePresentValues(values).length;
+}
+
+function uniquePresentValues(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.map(normalizeRouteFilterValue).filter((value): value is string => value !== null))];
+}
+
+function hasMissingRouteDate(orders: CanonicalOrderDto[]): boolean {
+  return orders.some((order) => normalizeRouteFilterValue(order.deliveryDate) === null);
+}
+
+function hasMissingRouteType(orders: CanonicalOrderDto[]): boolean {
+  return orders.some((order) => getOrderRouteType(order) === null);
+}
+
+function formatRoutePlanningType(
+  value: OrderRouteTypeFilter,
+  locale: string | null | undefined,
+): string {
+  const option = getRouteTypeFilterOptions(locale).find((candidate) => candidate.value === value);
+  return option?.label ?? humanizeToken(value, locale);
 }
 
 function isRoutePlanEligible(order: CanonicalOrderDto): boolean {

@@ -204,16 +204,16 @@ describe('route ops layout components', () => {
     expect(html).not.toContain('Delivery metadata blockers');
   });
 
-  test('Orders page keeps route tabs and filter controls before the table region', () => {
+  test('Orders page removes route tabs and keeps only compact independent filters', () => {
     const html = renderToStaticMarkup(<OrdersPage bootstrap={bootstrap()} navigate={() => undefined} setError={() => undefined} />);
-    expect(html).toContain('aria-label="Orders mode"');
-    expect(html).toContain('>Planning</button>');
-    expect(html).toContain('>History</button>');
-    expect(html).toContain('aria-label="Order status tabs"');
-    expect(html).toContain('All');
-    expect(html).toContain('Unplanned');
-    expect(html).toContain('Planned');
-    expect(html).toContain('Needs Review');
+    expect(html).not.toContain('aria-label="Orders mode"');
+    expect(html).not.toContain('>Planning</button>');
+    expect(html).not.toContain('>History</button>');
+    expect(html).not.toContain('aria-label="Order status tabs"');
+    expect(html).not.toContain('>All</button>');
+    expect(html).not.toContain('>Unplanned</button>');
+    expect(html).not.toContain('>Planned</button>');
+    expect(html).not.toContain('>Needs Review</button>');
     expect(html).not.toContain('ALL');
     expect(html).not.toContain('UNPLANNED');
     expect(html).not.toContain('PLANNED');
@@ -223,21 +223,23 @@ describe('route ops layout components', () => {
     expect(html).not.toContain('Imported WooCommerce stops by current filters');
     expect(html).not.toContain('Order filters');
     expect(html).toContain('Delivery date');
-    expect(html).toContain('Area / region');
-    expect(html).toContain('Delivery status');
+    expect(html).toContain('Weekday');
+    expect(html).toContain('Type');
+    expect(html).not.toContain('Area / region');
+    expect(html).not.toContain('Delivery status');
     expect(html).not.toContain('Order health');
-    expect(html).toContain('Service type');
-    expect(html).toContain('Delivery session');
+    expect(html).not.toContain('Service type');
+    expect(html).not.toContain('Delivery session');
     expect(html).toContain('Evening Delivery');
-    expect(html).toContain('Clear filters');
+    expect(html).not.toContain('Clear filters');
     expect(html).toContain('Clear plan');
-    expect(html).toContain('Search');
+    expect(html).not.toContain('Search');
   });
 
   test('Orders page does not prefill the delivery date filter', () => {
     const html = renderToStaticMarkup(<OrdersPage bootstrap={bootstrap()} navigate={() => undefined} setError={() => undefined} />);
 
-    expect(html).toContain('filter-field filter-field--date">Delivery date<input type="date" value=""/>');
+    expect(html).toContain('filter-field filter-field--date">Delivery date<span class="filter-control"><input type="date" value=""/></span>');
   });
 
   test('Orders page renders Korean tabs filters and add-plan copy from locale', () => {
@@ -245,19 +247,21 @@ describe('route ops layout components', () => {
 
     expect(html).toContain('aria-label="주문"');
     expect(html).not.toContain('주문 지도');
-    expect(html).toContain('aria-label="주문 모드"');
-    expect(html).toContain('>계획</button>');
-    expect(html).toContain('>기록</button>');
-    expect(html).toContain('aria-label="주문 상태 탭"');
-    expect(html).toContain('>전체</button>');
-    expect(html).toContain('>미배정</button>');
-    expect(html).toContain('>배정됨</button>');
-    expect(html).toContain('>리뷰 필요</button>');
+    expect(html).not.toContain('aria-label="주문 모드"');
+    expect(html).not.toContain('>계획</button>');
+    expect(html).not.toContain('>기록</button>');
+    expect(html).not.toContain('aria-label="주문 상태 탭"');
+    expect(html).not.toContain('>전체</button>');
+    expect(html).not.toContain('>미배정</button>');
+    expect(html).not.toContain('>배정됨</button>');
+    expect(html).not.toContain('>리뷰 필요</button>');
     expect(html).not.toContain('주문 필터');
     expect(html).toContain('배송 날짜');
-    expect(html).toContain('지역 / 구역');
-    expect(html).toContain('배송 상태');
-    expect(html).toContain('필터 초기화');
+    expect(html).toContain('요일');
+    expect(html).toContain('타입');
+    expect(html).not.toContain('지역 / 구역');
+    expect(html).not.toContain('배송 상태');
+    expect(html).not.toContain('필터 초기화');
     expect(html).toContain('계획이 비어 있습니다.');
     expect(html).not.toContain('Orders mode');
     expect(html).not.toContain('Order filters');
@@ -266,9 +270,9 @@ describe('route ops layout components', () => {
 
   test('Orders CSS keeps the filter card responsive and prevents search overflow', () => {
     const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
-    expect(css).toContain('grid-template-columns: repeat(auto-fit, minmax(min(100%, 9.5rem), 1fr));');
-    expect(css).toContain('.filter-clear-button');
-    expect(css).toContain('grid-column: 1;');
+    expect(css).toContain('grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr));');
+    expect(css).toContain('.filter-clear-x');
+    expect(css).not.toContain('.filter-clear-button');
     expect(css).not.toContain('.filter-actions');
     expect(css).not.toContain('.filter-panel-header');
     expect(css).toContain('max-width: 100%;');

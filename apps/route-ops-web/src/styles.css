@@ -657,8 +657,8 @@ small,
 .filter-panel {
   align-items: end;
   display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 9.5rem), 1fr));
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr));
   margin-top: 2px;
   max-width: 100%;
   min-width: 0;
@@ -674,23 +674,33 @@ small,
 }
 .filter-panel input,
 .filter-panel select {
-  border-radius: 12px;
-  height: 44px;
+  border-radius: 10px;
+  height: 36px;
   line-height: 1.2;
   max-width: 100%;
   min-width: 0;
-  padding: 0 12px;
+  padding: 0 30px 0 10px;
   width: 100%;
 }
-.filter-field--area input {
-  padding-inline: 10px;
+
+.filter-control {
+  display: block;
+  position: relative;
 }
-.filter-clear-button {
-  align-self: end;
-  justify-self: start;
-  min-height: 44px;
-  padding: 0 14px;
-  white-space: nowrap;
+
+.filter-clear-x {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: #64748b;
+  display: inline-flex;
+  height: 24px;
+  justify-content: center;
+  padding: 0;
+  position: absolute;
+  right: 4px;
+  top: 6px;
+  width: 24px;
 }
 .ops-table {
   border-collapse: collapse;
@@ -1800,23 +1810,10 @@ button.danger.subtle {
   .filter-panel {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .filter-field--search {
-    grid-column: 1 / -1;
-  }
-  .filter-clear-button {
-    grid-column: 1;
-    justify-self: stretch;
-  }
 }
 @media (max-width: 620px) {
   .filter-panel {
     grid-template-columns: 1fr;
-  }
-  .filter-field--search {
-    grid-column: auto;
-  }
-  .filter-clear-button {
-    grid-column: auto;
   }
 }
 .map-toolbar {
@@ -1906,87 +1903,43 @@ button.danger.subtle {
 .route-plan-actions .primary {
   width: 100%;
 }
-.route-detail-summary {
+.route-plan-summary {
   display: grid;
   gap: 8px;
   margin: 0;
 }
-.route-detail-summary div {
+.route-plan-summary div,
+.route-plan-validation,
+.route-plan-empty {
   background: #f7f7f7;
   border: 1px solid #e3e3e3;
   border-radius: 10px;
   padding: 10px;
 }
-.route-detail-summary dt {
+.route-plan-summary dt {
   color: #616161;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
-.route-detail-summary dd {
+.route-plan-summary dd {
   color: #303030;
   font-size: 13px;
+  font-weight: 700;
   margin: 2px 0 0;
 }
-.route-plan-draft {
-  align-content: start;
-  display: grid;
-  gap: 8px;
-  max-height: 240px;
-  overflow-y: auto;
-  padding-right: 2px;
+.route-plan-add-button {
+  width: 100%;
 }
-.route-plan-empty,
-.route-plan-item {
-  background: #f7f7f7;
-  border: 1px solid #e3e3e3;
-  border-radius: 10px;
-  color: #616161;
+.route-plan-validation {
+  color: #9a3412;
+  display: grid;
   font-size: 13px;
+  gap: 4px;
   margin: 0;
-  padding: 10px;
+  padding-left: 28px;
 }
-.route-plan-item {
-  align-items: start;
-  column-gap: 10px;
-  color: #303030;
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 4px;
-}
-.route-plan-item--draggable {
-  cursor: grab;
-}
-.route-plan-item--draggable:active {
-  cursor: grabbing;
-}
-.route-plan-drag-handle {
-  align-items: center;
-  align-self: stretch;
-  color: #7a8190;
-  cursor: grab;
-  display: inline-flex;
-  font-weight: 700;
-  letter-spacing: -1px;
-  line-height: 1;
-  min-width: 14px;
-  user-select: none;
-}
-.route-plan-item-content {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-.route-plan-item strong {
-  font-size: 13px;
-  line-height: 1.35;
-}
-.route-plan-item small {
-  font-size: 12px;
-  line-height: 1.35;
-}
-
 .order-detail-row td {
   background: #f8fafc;
 }
@@ -2429,7 +2382,7 @@ button.danger.subtle {
 .order-detail-summary-grid {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
 }
 
 .order-detail-summary-card {
@@ -2449,10 +2402,21 @@ button.danger.subtle {
   text-transform: uppercase;
 }
 
-.order-detail-summary-card p {
+.order-detail-summary-card p,
+.order-detail-item-list {
   color: #1f2937;
   font-weight: 800;
   overflow-wrap: anywhere;
+}
+
+.order-detail-item-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.order-detail-summary-card--primary {
+  background: #fff7ed;
+  border-color: #fed7aa;
 }
 
 .order-detail-summary-card small {
