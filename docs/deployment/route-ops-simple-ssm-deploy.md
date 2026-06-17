@@ -51,7 +51,7 @@ The EC2 host does not build. A real deploy does this in order:
 6. Rewrites optimizer env to VROOM/OSRM and blanks `ROUTE_ENGINE_BASE_URL`.
 7. Bootstraps proof-media directory owner/mode.
 8. Logs into GHCR using SSM parameters only on the host.
-9. Runs `docker compose pull delivery-api route-ops-web-static vroom`.
+9. Runs `docker compose --profile osrm --profile vroom pull delivery-api route-ops-web-static vroom`.
 10. Runs `docker compose run --rm delivery-api-migrate` before touching the live static volume.
 11. Stages the static volume via `route-ops-web-static`.
 12. Recreates `delivery-api` only with `up -d --no-build --no-deps --force-recreate`.
