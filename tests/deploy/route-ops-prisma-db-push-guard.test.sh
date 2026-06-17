@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
 GUARD="apps/delivery-api/scripts/guard-prisma-db-push.sh"
 
 fail() {
@@ -66,16 +68,37 @@ EOF_NPM
   fi
 }
 
+run_runtime_layout_case() {
+  local tmp sha
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-prisma-guard-runtime.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  mkdir -p "$tmp/bin" "$tmp/prisma"
+  cat > "$tmp/bin/npm" <<'EOF_NPM'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" > "$FAKE_NPM_ARGS_FILE"
+EOF_NPM
+  chmod +x "$tmp/bin/npm"
+  printf '{"scripts":{}}\n' > "$tmp/package.json"
+  printf 'model Example { id String @id }\n' > "$tmp/prisma/schema.prisma"
+  sha="$(sha256sum "$tmp/prisma/schema.prisma" | awk '{print $1}')"
+  (cd "$tmp" && PATH="$tmp/bin:$PATH" FAKE_NPM_ARGS_FILE="$tmp/npm.args" PRISMA_SCHEMA_SHA="$sha" sh "$ROOT/$GUARD" > "$tmp/stdout" 2> "$tmp/stderr")
+  grep -q 'schema SHA verified for prisma/schema.prisma' "$tmp/stdout"
+  grep -q -- '--prefix . exec -- prisma db push --schema prisma/schema.prisma --skip-generate' "$tmp/npm.args"
+}
+
 run_static_contract_case() {
-  grep -Fq 'command: ["sh", "apps/delivery-api/scripts/guard-prisma-db-push.sh"]' infra/compose/docker-compose.prod.yml
+  grep -Fq 'delivery-api-migrate:' infra/compose/docker-compose.prod.yml
+  grep -Fq 'image: ${DELIVERY_API_IMAGE:?DELIVERY_API_IMAGE is required}' infra/compose/docker-compose.prod.yml
+  grep -Fq 'command: ["sh", "scripts/guard-prisma-db-push.sh"]' infra/compose/docker-compose.prod.yml
   grep -Fq 'PRISMA_SCHEMA_SHA: ${PRISMA_SCHEMA_SHA:?PRISMA_SCHEMA_SHA is required}' infra/compose/docker-compose.prod.yml
-  grep -Fq 'COPY apps/delivery-api/scripts ./apps/delivery-api/scripts' apps/delivery-api/Dockerfile
-  grep -Fq 'CMD ["sh", "apps/delivery-api/scripts/guard-prisma-db-push.sh"]' apps/delivery-api/Dockerfile
+  grep -Fq 'COPY apps/delivery-api/scripts/guard-prisma-db-push.sh ./scripts/guard-prisma-db-push.sh' apps/delivery-api/Dockerfile
 }
 
 run_missing_sha_case
 run_bad_shape_case
 run_mismatch_case
 run_match_executes_prisma_case
+run_runtime_layout_case
 run_static_contract_case
 printf '{"ok":true,"guard":"%s"}\n' "$GUARD"

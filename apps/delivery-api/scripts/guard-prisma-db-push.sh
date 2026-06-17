@@ -1,7 +1,21 @@
 #!/bin/sh
 set -eu
 
-schema_path="${PRISMA_SCHEMA_PATH:-apps/delivery-api/prisma/schema.prisma}"
+if [ -n "${PRISMA_SCHEMA_PATH:-}" ]; then
+  schema_path="$PRISMA_SCHEMA_PATH"
+elif [ -f apps/delivery-api/prisma/schema.prisma ]; then
+  schema_path="apps/delivery-api/prisma/schema.prisma"
+else
+  schema_path="prisma/schema.prisma"
+fi
+
+if [ -n "${PRISMA_NPM_PREFIX:-}" ]; then
+  npm_prefix="$PRISMA_NPM_PREFIX"
+elif [ -f apps/delivery-api/package.json ]; then
+  npm_prefix="apps/delivery-api"
+else
+  npm_prefix="."
+fi
 
 fail() {
   echo "guard-prisma-db-push: $*" >&2
@@ -31,4 +45,4 @@ if [ "$actual_schema_sha" != "$PRISMA_SCHEMA_SHA" ]; then
 fi
 
 printf 'guard-prisma-db-push: schema SHA verified for %s\n' "$schema_path"
-exec npm --prefix apps/delivery-api exec -- prisma db push --schema "$schema_path" --skip-generate
+exec npm --prefix "$npm_prefix" exec -- prisma db push --schema "$schema_path" --skip-generate

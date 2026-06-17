@@ -1,10 +1,12 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:22-bookworm-slim AS deps
+FROM node:22-bookworm-slim AS base
 RUN apt-get update \
   && apt-get install -y --no-install-recommends openssl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
+
+FROM base AS deps
 COPY apps/delivery-api/package.json apps/delivery-api/package-lock.json ./apps/delivery-api/
 RUN npm --prefix apps/delivery-api ci
 
@@ -17,26 +19,19 @@ COPY apps/delivery-api/tests ./apps/delivery-api/tests
 RUN npm --prefix apps/delivery-api run prisma:generate \
   && npm --prefix apps/delivery-api run build
 
-FROM build AS migrate
-WORKDIR /app
-CMD ["sh", "apps/delivery-api/scripts/guard-prisma-db-push.sh"]
-
 FROM build AS pruned
 RUN npm --prefix apps/delivery-api prune --omit=dev
 
-FROM node:22-bookworm-slim AS runtime
+FROM base AS runtime
 ENV NODE_ENV=production
 ENV ROUTE_OPS_WEB_DIST_PATH=/app/external/route-ops-web/dist
 ENV ROUTE_OPS_WEB_PUBLIC_PATH=/app/external/route-ops-web/public
-WORKDIR /app
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends openssl ca-certificates \
-  && rm -rf /var/lib/apt/lists/* \
-  && addgroup --system clever && adduser --system --ingroup clever clever
+RUN addgroup --system clever && adduser --system --ingroup clever clever
 COPY --from=build /app/apps/delivery-api/package.json ./package.json
 COPY --from=pruned /app/apps/delivery-api/node_modules ./node_modules
 COPY --from=build /app/apps/delivery-api/prisma ./prisma
 COPY --from=build /app/apps/delivery-api/dist ./dist
+COPY apps/delivery-api/scripts/guard-prisma-db-push.sh ./scripts/guard-prisma-db-push.sh
 COPY apps/delivery-api/docs/api ./docs/api
 USER clever
 EXPOSE 3000

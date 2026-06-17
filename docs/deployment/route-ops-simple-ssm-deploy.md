@@ -1,16 +1,15 @@
 # Route Ops simple SSM deploy lane
 
 This is the reduced production deploy lane for Route Ops after the VROOM/OSRM cutover.
-It intentionally avoids the old S3 deploy-control bundle and the route-engine image/data
-handoff. The operator builds and pushes stable GHCR channel images locally, then SSM tells
-the managed instance to pull those images and restart Docker Compose.
+It intentionally avoids the old S3 deploy-control bundle, route-engine image/data handoff,
+EC2 image builds, separate migrate images, and `prod-prev` retag/push backups.
 
 ## Current production constraints verified on 2026-06-17
 
 - SSM target: one online instance tagged `Service=clever-delivery-server`.
 - Host app path: `/srv/clever-route-server`.
 - The host is **not** a git checkout and cannot fetch the private GitHub repo directly.
-- The host has `docker`, `aws`, `python3`, and `rsync`; it does not need host `node` or `npm`.
+- The host has `docker`, `aws`, and `python3`; it does not need host `node` or `npm`.
 - Optimizer lane is `delivery-api -> vroom -> osrm-ontario`; `route-engine` remains stopped.
 - Local proof media storage must be bootstrapped before compose restart:
   `/srv/clever-route-server/data/driver-proof-media`, owner `100:101`, mode `750`.
@@ -21,30 +20,43 @@ server-side GitHub credentials and a real checkout are deliberately provisioned.
 ## Files
 
 - Script: `scripts/ssm-simple-route-ops-deploy.sh`
+- GitHub workflow: `.github/workflows/route-ops-simple-deploy.yml`
 - Compose: `infra/compose/docker-compose.prod.yml`
 - Runtime env: `infra/env/delivery-api.env`
 
-## Safety model
+## Expected fast path
 
-`--dry-run` sends an SSM command that validates the target, compose file, env-file shape,
-and candidate image env. It exits before image pulls, migrations, env rewrites, or container
-restarts. It may write `.deploy/simple-candidate-image.env` on the host as preflight evidence.
+1. GitHub Actions reads `.deploy/current-image.env` from EC2 through SSM.
+2. It diffs the deployed `COMMIT_SHA` against the selected source ref.
+3. It builds only changed images:
+   - `apps/route-ops-web/**` or `.dockerignore` -> `route-ops-web-static`
+   - `apps/delivery-api/**` or `.dockerignore` -> `delivery-api`
+   - compose/script/docs-only changes -> no image build
+4. `docker/build-push-action@v6` publishes changed images to GHCR with both
+   `${{ github.sha }}` and `${channel}` tags, using GHCR registry cache.
+5. The workflow resolves the deploy image refs to `repo@sha256:<digest>` and uploads
+   `route-ops-simple-image-selection` as a 7-day artifact.
+6. The SSM command receives digest refs through `ROUTE_OPS_RUNTIME_IMAGE` and
+   `ROUTE_OPS_WEB_STATIC_IMAGE`.
 
-A real deploy does the following in order:
+## SSM host work
 
-1. Before publishing, retags the current GHCR channel images as `${channel}-prev`.
-2. Takes a deploy lock under `.deploy/route-ops-simple-deploy.lock.d`.
-3. Writes `.deploy/simple-candidate-image.env` and `.deploy/simple-rollback-image.env`.
+The EC2 host does not build. A real deploy does this in order:
+
+1. Takes `.deploy/route-ops-simple-deploy.lock.d`.
+2. Writes `.deploy/simple-candidate-image.env` with digest-addressable image refs.
+3. Copies existing `.deploy/current-image.env` to `.deploy/simple-rollback-image.env`.
 4. Validates compose config with `--profile osrm --profile vroom`.
 5. Rewrites optimizer env to VROOM/OSRM and blanks `ROUTE_ENGINE_BASE_URL`.
 6. Bootstraps proof-media directory owner/mode.
 7. Logs into GHCR using SSM parameters only on the host.
-8. Pulls previous images, candidate images, and pinned VROOM image.
-9. Stages the static volume, runs Prisma migration, ensures OSRM/VROOM are up.
-10. Runs a VROOM solve smoke from inside the delivery-api container.
-11. Recreates `delivery-api` only; `caddy` stays up unless its config changed in a separate infra lane.
-12. Verifies public `/healthz`; if this fails, recreates `delivery-api` from `${channel}-prev` and exits failed.
-13. Backs up `.deploy/current-image.env`, promotes the candidate env, and appends deploy history.
+8. Runs `docker compose pull delivery-api route-ops-web-static vroom`.
+9. Runs `docker compose run --rm delivery-api-migrate` before touching the live static volume.
+10. Stages the static volume via `route-ops-web-static`.
+11. Recreates `delivery-api` only with `up -d --no-build --no-deps --force-recreate`.
+12. Stops legacy `route-engine` profile if present.
+13. Verifies public `/healthz`.
+14. Backs up `.deploy/current-image.env`, promotes the candidate env, and appends deploy history.
 
 ## Commands
 
@@ -61,46 +73,15 @@ Safe host dry-run:
 scripts/ssm-simple-route-ops-deploy.sh --dry-run
 ```
 
-Publish and deploy the production channel:
-
-```bash
-scripts/ssm-simple-route-ops-deploy.sh --publish
-```
-
-Optional channel override for a non-production rehearsal:
-
-```bash
-ROUTE_OPS_SIMPLE_CHANNEL_TAG=prod-candidate scripts/ssm-simple-route-ops-deploy.sh --dry-run
-```
-
-## Availability expectation
-
-The build/push/pull/migrate/smoke phases do not stop the current domain path. Only the final
-`delivery-api` container recreate can cause a short API blip. `caddy` is not recreated by this
-lane.
-
-
-## GitHub Actions deploy
-
-Use the manual `Route Ops simple deploy` workflow when the deploy should run from GitHub
-Actions instead of a local shell. It is `workflow_dispatch` only; pushes to `main` run CI but
-do not deploy automatically. The workflow checks the actor allowlist, logs into GHCR with
-`GITHUB_TOKEN`, assumes `AWS_ROUTE_OPS_DEPLOY_ROLE_ARN` through OIDC, then runs:
-
-```bash
-scripts/ssm-simple-route-ops-deploy.sh --publish
-```
-
-Run from CLI after `main` is up to date:
+GitHub Actions production deploy:
 
 ```bash
 gh workflow run "Route Ops simple deploy" --repo EVNSolution/clever-route-server --ref main \
   -f channel_tag=prod -f source_ref=main -f publish_images=true -f dry_run=false
 ```
 
-
-If images were already published but SSM dispatch failed, keep `${channel}-prev` intact and
-rerun only the SSM phase against the already-published source ref:
+If images were already published but SSM dispatch failed, preserve the previous rollback env
+and rerun only the SSM phase against the already-published channel digest refs:
 
 ```bash
 gh workflow run "Route Ops simple deploy" --repo EVNSolution/clever-route-server --ref main \
@@ -109,15 +90,42 @@ gh workflow run "Route Ops simple deploy" --repo EVNSolution/clever-route-server
 
 ## Rollback
 
-The script backs up the previous `.deploy/current-image.env` before promoting the simple
-candidate and also keeps `${channel}-prev` GHCR image tags. If the new `delivery-api`
-recreate fails public `/healthz`, the script stages the previous static image, recreates
-`delivery-api` from `${channel}-prev`, leaves `caddy` running, and exits failed so the
-operator sees that the attempted deploy did not promote.
+The workflow no longer pushes `${channel}-prev`. Rollback state is file-based:
 
-For manual rollback, restore the latest `.deploy/current-image.env.before-simple-*`, or use
-`.deploy/simple-rollback-image.env`, then recreate `route-ops-web-static` plus `delivery-api`;
-leave `caddy` running unless the rollback is specifically an ingress change.
+- `.deploy/simple-rollback-image.env` is copied from the previously promoted
+  `.deploy/current-image.env` before any container restart.
+- `.deploy/current-image.env.before-simple-*` is kept before promotion.
+- GitHub Actions also uploads `route-ops-simple-image-selection`, which records previous
+  and candidate image refs for the run.
+
+If the new `delivery-api` fails public `/healthz`, the script uses
+`.deploy/simple-rollback-image.env`, stages the previous static image, recreates only
+`delivery-api`, leaves `caddy` running, and exits failed so the attempted deploy is not
+promoted.
+
+Manual rollback is the same operation: restore or point compose at the previous env file,
+stage `route-ops-web-static`, then recreate `delivery-api` with `--no-deps`. Do not touch
+`caddy` unless the rollback is specifically an ingress change.
+
+## Migrate image model
+
+`delivery-api-migrate` remains a compose service, but it now uses the same
+`DELIVERY_API_IMAGE` as the runtime service and overrides only `command`:
+
+```yaml
+delivery-api-migrate:
+  image: ${DELIVERY_API_IMAGE}
+  command: ["sh", "scripts/guard-prisma-db-push.sh"]
+```
+
+The runtime image includes the guard script and Prisma schema, so this removes the second
+`delivery-api-migrate` image build/push from the deploy path.
+
+## Availability expectation
+
+Build/push happens in GitHub Actions and does not stop production. The SSM phase only pulls,
+runs migration, stages static assets, and recreates `delivery-api`; only that final recreate
+can cause a short API blip. `caddy` is not recreated by this lane.
 
 ## Storage cleanup evidence
 
@@ -133,32 +141,3 @@ On 2026-06-17 the old route-engine artifacts were removed from production:
 Root disk usage improved from about `20G used / 35%` to `14G used / 24%`.
 The simple SSM lane has completed a production deploy. Remaining old GHCR SHA images
 can be pruned after a separate image-retention pass confirms no container references them.
-
-## Instance rebuild plan after this lane is proven
-
-Rebuild only after a successful simple SSM production deploy and at least one monitoring pass.
-Minimum cutover checklist:
-
-1. Snapshot/backup Postgres, proof-media, `.deploy`, `infra/env`, Caddy config, and OSRM data.
-2. Launch a smaller clean SSM-managed instance with Docker Compose and GHCR pull access.
-3. Restore env/data and run compose with VROOM/OSRM profiles only; do not provision route-engine.
-4. Run `/healthz`, admin smoke, VROOM solve smoke, proof-media write check, and route optimize smoke.
-5. Move DNS/Caddy traffic or elastic IP.
-6. Keep the old instance stopped-but-restorable for 24-48 hours, then terminate.
-
-## Troubleshooting
-
-### `docker push` fails with GHCR `403 Forbidden`
-
-The publish phase needs package write permission. On 2026-06-17 the local active
-GitHub CLI token only had `repo`/`workflow` scopes and the deploy bot token only had
-`read:packages`, so image build succeeded but push stopped before any SSM deploy or
-production restart. Fix by refreshing/logging into GHCR with a token that has
-`write:packages`, then rerun `scripts/ssm-simple-route-ops-deploy.sh --publish`.
-
-The script now checks GitHub CLI scopes before building. If a separate Docker credential
-already has GHCR write access, bypass the CLI-scope guard explicitly:
-
-```bash
-ROUTE_OPS_SKIP_GHCR_WRITE_SCOPE_CHECK=1 scripts/ssm-simple-route-ops-deploy.sh --publish
-```

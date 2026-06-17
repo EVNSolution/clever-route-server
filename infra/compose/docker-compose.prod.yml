@@ -63,7 +63,7 @@ services:
       - /srv/clever-route-server/data/driver-proof-media:/app/var/driver-proof-media
 
   delivery-api-migrate:
-    image: ${DELIVERY_API_MIGRATE_IMAGE:?DELIVERY_API_MIGRATE_IMAGE is required}
+    image: ${DELIVERY_API_IMAGE:?DELIVERY_API_IMAGE is required}
     depends_on:
       postgres:
         condition: service_healthy
@@ -71,7 +71,7 @@ services:
       - ../env/delivery-api.env
     environment:
       PRISMA_SCHEMA_SHA: ${PRISMA_SCHEMA_SHA:?PRISMA_SCHEMA_SHA is required}
-    command: ["sh", "apps/delivery-api/scripts/guard-prisma-db-push.sh"]
+    command: ["sh", "scripts/guard-prisma-db-push.sh"]
     restart: "no"
 
 

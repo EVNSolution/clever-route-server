@@ -10,9 +10,10 @@ SERVICE_TAG_VALUE="${ROUTE_OPS_SSM_TAG_VALUE:-clever-delivery-server}"
 CHANNEL_TAG="${ROUTE_OPS_SIMPLE_CHANNEL_TAG:-prod}"
 COMMIT_SHA="$(git rev-parse --short=40 HEAD)"
 PRISMA_SCHEMA_SHA="$(shasum -a 256 apps/delivery-api/prisma/schema.prisma | awk '{print $1}')"
-RUNTIME_IMAGE="${ROUTE_OPS_RUNTIME_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-delivery-api}:${CHANNEL_TAG}"
-MIGRATE_IMAGE="${ROUTE_OPS_MIGRATE_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-delivery-api-migrate}:${CHANNEL_TAG}"
-STATIC_IMAGE="${ROUTE_OPS_WEB_STATIC_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-route-ops-web-static}:${CHANNEL_TAG}"
+RUNTIME_IMAGE_REPO="${ROUTE_OPS_RUNTIME_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-delivery-api}"
+STATIC_IMAGE_REPO="${ROUTE_OPS_WEB_STATIC_IMAGE_REPO:-ghcr.io/evnsolution/clever-route-server-route-ops-web-static}"
+RUNTIME_IMAGE="${ROUTE_OPS_RUNTIME_IMAGE:-${RUNTIME_IMAGE_REPO}:${CHANNEL_TAG}}"
+STATIC_IMAGE="${ROUTE_OPS_WEB_STATIC_IMAGE:-${STATIC_IMAGE_REPO}:${CHANNEL_TAG}}"
 STATIC_VOLUME="${ROUTE_OPS_WEB_STATIC_VOLUME:-clever-route-route-ops-web-static-${CHANNEL_TAG}}"
 VROOM_IMAGE="${VROOM_IMAGE:-ghcr.io/vroom-project/vroom-docker@sha256:247d5683d6745c755d718a156d16b16aac80baccc276a003a68b986c13883b08}"
 BASE_URL="${ROUTE_OPS_SMOKE_BASE_URL:-https://clever-route.cleversystem.ai}"
@@ -24,13 +25,16 @@ usage() {
   cat <<USAGE
 Usage: $0 [--dry-run] [--publish] [--no-send]
 
-Simple Route Ops SSM deploy lane: no S3 deploy-control bundle and no immutable
-image tag handoff. --publish builds and pushes mutable channel images locally;
-the SSM command pulls the channel images and restarts production through Docker
-Compose on the managed instance.
+Simple Route Ops SSM deploy lane: no S3 deploy-control bundle, no EC2 build,
+no separate migrate image, and no prod-prev image retagging. GitHub Actions
+should publish digest-addressable images first, then pass ROUTE_OPS_RUNTIME_IMAGE
+and ROUTE_OPS_WEB_STATIC_IMAGE as repo@sha256 refs. The SSM command only pulls,
+runs migration, stages static assets, recreates delivery-api, and healthchecks.
 
 Env:
   ROUTE_OPS_SIMPLE_CHANNEL_TAG   default: prod
+  ROUTE_OPS_RUNTIME_IMAGE        optional full runtime image ref, preferably repo@sha256
+  ROUTE_OPS_WEB_STATIC_IMAGE     optional full static image ref, preferably repo@sha256
   AWS_REGION                     default: ap-northeast-2
   ROUTE_OPS_SSM_TAG_KEY          default: Service
   ROUTE_OPS_SSM_TAG_VALUE        default: clever-delivery-server
@@ -49,7 +53,6 @@ while [ "$#" -gt 0 ]; do
 done
 
 fail() { echo "ssm-simple-route-ops-deploy: $*" >&2; exit 65; }
-
 
 require_publish_auth() {
   if [ "${ROUTE_OPS_SKIP_GHCR_WRITE_SCOPE_CHECK:-0}" = "1" ]; then
@@ -71,65 +74,24 @@ if [ "$BUILD_AND_PUSH" = "1" ]; then
   require_publish_auth
 fi
 
-
-previous_image_ref() {
-  local image="$1"
-  printf '%s:%s-prev' "${image%:*}" "$CHANNEL_TAG"
-}
-
-backup_channel_images() {
-  local image previous
-  for image in "$STATIC_IMAGE" "$RUNTIME_IMAGE" "$MIGRATE_IMAGE"; do
-    previous="$(previous_image_ref "$image")"
-    if docker pull --platform linux/amd64 "$image" >/dev/null 2>&1; then
-      docker tag "$image" "$previous"
-      docker push "$previous"
-      printf 'Backed up %s as %s\n' "$image" "$previous"
-    elif [ "$CHANNEL_TAG" = "prod" ]; then
-      fail "cannot back up existing production image before publish: $image"
-    else
-      printf 'No existing %s to back up; continuing for non-production channel.\n' "$image"
-    fi
-  done
-}
-
 build_and_push() {
-  backup_channel_images
-  npm --prefix apps/route-ops-web run build
-  local static_context
-  static_context="$(mktemp -d)"
-  cp -R apps/route-ops-web/dist "$static_context/dist"
-  cp -R apps/route-ops-web/public "$static_context/public"
-  cat > "$static_context/Dockerfile" <<'DOCKERFILE'
-FROM alpine:3.20
-ARG COMMIT_SHA
-ARG PRISMA_SCHEMA_SHA
-LABEL org.opencontainers.image.revision=$COMMIT_SHA
-LABEL org.clever-route.image-role=route-ops-web-static
-LABEL org.clever-route.prisma-schema-sha=$PRISMA_SCHEMA_SHA
-WORKDIR /opt/route-ops-web
-COPY dist ./dist
-COPY public ./public
-DOCKERFILE
   docker build --platform linux/amd64 \
+    -f apps/route-ops-web/Dockerfile \
+    --target static \
     --build-arg COMMIT_SHA="$COMMIT_SHA" \
     --build-arg PRISMA_SCHEMA_SHA="$PRISMA_SCHEMA_SHA" \
-    -t "$STATIC_IMAGE" "$static_context"
+    --label "org.opencontainers.image.revision=$COMMIT_SHA" \
+    --label "org.clever-route.prisma-schema-sha=$PRISMA_SCHEMA_SHA" \
+    --label "org.clever-route.image-role=route-ops-web-static" \
+    -t "${STATIC_IMAGE_REPO}:${CHANNEL_TAG}" .
   docker build --platform linux/amd64 \
     -f apps/delivery-api/Dockerfile \
     --target runtime \
     --label "org.opencontainers.image.revision=$COMMIT_SHA" \
     --label "org.clever-route.prisma-schema-sha=$PRISMA_SCHEMA_SHA" \
     --label "org.clever-route.image-role=runtime" \
-    -t "$RUNTIME_IMAGE" .
-  docker build --platform linux/amd64 \
-    -f apps/delivery-api/Dockerfile \
-    --target migrate \
-    --label "org.opencontainers.image.revision=$COMMIT_SHA" \
-    --label "org.clever-route.prisma-schema-sha=$PRISMA_SCHEMA_SHA" \
-    --label "org.clever-route.image-role=migrate" \
-    -t "$MIGRATE_IMAGE" .
-  for image in "$STATIC_IMAGE" "$RUNTIME_IMAGE" "$MIGRATE_IMAGE"; do
+    -t "${RUNTIME_IMAGE_REPO}:${CHANNEL_TAG}" .
+  for image in "${STATIC_IMAGE_REPO}:${CHANNEL_TAG}" "${RUNTIME_IMAGE_REPO}:${CHANNEL_TAG}"; do
     docker image inspect "$image" --format '{{.Architecture}} {{index .Config.Labels "org.opencontainers.image.revision"}} {{index .Config.Labels "org.clever-route.image-role"}} {{index .Config.Labels "org.clever-route.prisma-schema-sha"}}'
     docker push "$image"
   done
@@ -161,13 +123,8 @@ COMMIT_SHA=__COMMIT_SHA__
 CHANNEL_TAG=__CHANNEL_TAG__
 PRISMA_SCHEMA_SHA=__PRISMA_SCHEMA_SHA__
 DELIVERY_API_IMAGE=__RUNTIME_IMAGE__
-DELIVERY_API_MIGRATE_IMAGE=__MIGRATE_IMAGE__
 ROUTE_OPS_WEB_STATIC_IMAGE=__STATIC_IMAGE__
 ROUTE_OPS_WEB_STATIC_VOLUME=__STATIC_VOLUME__
-PREV_DELIVERY_API_IMAGE="${DELIVERY_API_IMAGE%:*}:${CHANNEL_TAG}-prev"
-PREV_DELIVERY_API_MIGRATE_IMAGE="${DELIVERY_API_MIGRATE_IMAGE%:*}:${CHANNEL_TAG}-prev"
-PREV_ROUTE_OPS_WEB_STATIC_IMAGE="${ROUTE_OPS_WEB_STATIC_IMAGE%:*}:${CHANNEL_TAG}-prev"
-PREV_ROUTE_OPS_WEB_STATIC_VOLUME="${ROUTE_OPS_WEB_STATIC_VOLUME}-prev"
 VROOM_IMAGE=__VROOM_IMAGE__
 BASE_URL=__BASE_URL__
 DRY_RUN=__DRY_RUN__
@@ -178,7 +135,7 @@ mkdir -p .deploy
 lock_dir=.deploy/route-ops-simple-deploy.lock.d
 if ! mkdir "$lock_dir" 2>/dev/null; then echo 'another simple deploy is running' >&2; exit 65; fi
 trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
-printf 'simple deploy preflight: commit=%s channel=%s runtime=%s migrate=%s static=%s volume=%s dryRun=%s\n' "$COMMIT_SHA" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$DRY_RUN"
+printf 'simple deploy preflight: commit=%s channel=%s runtime=%s static=%s volume=%s dryRun=%s\n' "$COMMIT_SHA" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$DRY_RUN"
 command -v docker >/dev/null
 command -v aws >/dev/null
 command -v python3 >/dev/null
@@ -188,33 +145,26 @@ cat > .deploy/simple-candidate-image.env <<EOF_ENV
 IMAGE_TAG=$CHANNEL_TAG
 COMMIT_SHA=$COMMIT_SHA
 DELIVERY_API_IMAGE=$DELIVERY_API_IMAGE
-DELIVERY_API_MIGRATE_IMAGE=$DELIVERY_API_MIGRATE_IMAGE
 ROUTE_OPS_WEB_STATIC_IMAGE=$ROUTE_OPS_WEB_STATIC_IMAGE
 ROUTE_OPS_WEB_STATIC_VOLUME=$ROUTE_OPS_WEB_STATIC_VOLUME
 VROOM_IMAGE=$VROOM_IMAGE
 PRISMA_SCHEMA_SHA=$PRISMA_SCHEMA_SHA
 EOF_ENV
+if [ -f .deploy/current-image.env ]; then
+  cp .deploy/current-image.env .deploy/simple-rollback-image.env
+else
+  cp .deploy/simple-candidate-image.env .deploy/simple-rollback-image.env
+fi
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom config --quiet
 if [ "$DRY_RUN" = "1" ]; then
-  printf 'simple deploy dry-run complete; no host env, image pull, or restart mutation performed.\n'
+  printf 'simple deploy dry-run complete; no host image pull, migration, or restart mutation performed.\n'
   exit 0
 fi
-cat > .deploy/simple-rollback-image.env <<EOF_ROLLBACK_ENV
-IMAGE_TAG=${CHANNEL_TAG}-prev
-COMMIT_SHA=rollback-${COMMIT_SHA}
-DELIVERY_API_IMAGE=$PREV_DELIVERY_API_IMAGE
-DELIVERY_API_MIGRATE_IMAGE=$PREV_DELIVERY_API_MIGRATE_IMAGE
-ROUTE_OPS_WEB_STATIC_IMAGE=$PREV_ROUTE_OPS_WEB_STATIC_IMAGE
-ROUTE_OPS_WEB_STATIC_VOLUME=$PREV_ROUTE_OPS_WEB_STATIC_VOLUME
-VROOM_IMAGE=$VROOM_IMAGE
-PRISMA_SCHEMA_SHA=$PRISMA_SCHEMA_SHA
-EOF_ROLLBACK_ENV
 rollback_delivery_api() {
-  echo 'simple deploy health failed; rolling delivery-api back to previous channel image' >&2
-  docker pull "$PREV_DELIVERY_API_IMAGE" >/dev/null
-  docker pull "$PREV_ROUTE_OPS_WEB_STATIC_IMAGE" >/dev/null
+  echo 'simple deploy health failed; rolling delivery-api back to previous image env' >&2
+  docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" --profile vroom pull delivery-api route-ops-web-static vroom
   docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up --no-build --force-recreate route-ops-web-static
-  docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate delivery-api
+  docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up -d --no-build --no-deps --force-recreate delivery-api
   for rollback_attempt in $(seq 1 30); do
     if curl -fsS "$BASE_URL/healthz"; then
       echo 'simple deploy rollback completed; previous delivery-api is healthy' >&2
@@ -260,46 +210,10 @@ username="$(aws ssm get-parameter --name "$GHCR_USERNAME_PARAM" --query 'Paramet
 token="$(aws ssm get-parameter --name "$GHCR_TOKEN_PARAM" --with-decryption --query 'Parameter.Value' --output text)"
 printf '%s' "$token" | docker login ghcr.io -u "$username" --password-stdin >/dev/null
 token=''
-docker pull "$PREV_DELIVERY_API_IMAGE"
-docker pull "$PREV_ROUTE_OPS_WEB_STATIC_IMAGE"
-docker pull "$DELIVERY_API_IMAGE"
-docker pull "$DELIVERY_API_MIGRATE_IMAGE"
-docker pull "$ROUTE_OPS_WEB_STATIC_IMAGE"
-docker pull "$VROOM_IMAGE"
-docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up --no-build --force-recreate route-ops-web-static
+docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile vroom pull delivery-api route-ops-web-static vroom
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" run --rm delivery-api-migrate
-docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom up -d --no-build osrm-ontario vroom
-docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" run --rm --no-deps delivery-api node - <<'NODE'
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-let lastError;
-for (let attempt = 1; attempt <= 30; attempt += 1) {
-  try {
-    const health = await fetch('http://vroom:3000/health');
-    if (!health.ok) throw new Error(`health ${health.status}`);
-    const response = await fetch('http://vroom:3000/', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        vehicles: [{ id: 1, profile: 'car', start: [-79.3832, 43.6532], end: [-79.3832, 43.6532], capacity: [2] }],
-        jobs: [
-          { id: 1, location: [-79.3871, 43.6426], delivery: [1] },
-          { id: 2, location: [-79.6441, 43.5890], delivery: [1] }
-        ]
-      })
-    });
-    if (!response.ok) throw new Error(`solve ${response.status}: ${await response.text()}`);
-    const payload = await response.json();
-    if (payload.code !== 0 || (payload.unassigned?.length ?? 0) !== 0) throw new Error(JSON.stringify(payload));
-    console.log(JSON.stringify({ code: payload.code, routes: payload.routes?.length ?? 0, unassigned: payload.unassigned?.length ?? 0 }));
-    process.exit(0);
-  } catch (error) {
-    lastError = error;
-    if (attempt < 30) await sleep(2000);
-  }
-}
-throw lastError;
-NODE
-docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate delivery-api
+docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up --no-build --force-recreate route-ops-web-static
+docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --no-deps --force-recreate delivery-api
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile route-engine stop route-engine || true
 for attempt in $(seq 1 30); do
   if curl -fsS "$BASE_URL/healthz"; then break; fi
@@ -308,7 +222,7 @@ for attempt in $(seq 1 30); do
 done
 cp .deploy/current-image.env ".deploy/current-image.env.before-simple-$(date -u +%Y%m%dT%H%M%SZ)" 2>/dev/null || true
 cp .deploy/simple-candidate-image.env .deploy/current-image.env
-printf '{"ts":"%s","commitSha":"%s","channelTag":"%s","deliveryApiImage":"%s","migrateImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","vroomImage":"%s","prismaSchemaSha":"%s","lane":"simple-ssm"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$COMMIT_SHA" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$VROOM_IMAGE" "$PRISMA_SCHEMA_SHA" >> .deploy/deploy-history.jsonl
+printf '{"ts":"%s","commitSha":"%s","channelTag":"%s","deliveryApiImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","vroomImage":"%s","prismaSchemaSha":"%s","lane":"simple-ssm"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$COMMIT_SHA" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$VROOM_IMAGE" "$PRISMA_SCHEMA_SHA" >> .deploy/deploy-history.jsonl
 printf 'simple deploy completed: commit=%s channel=%s\n' "$COMMIT_SHA" "$CHANNEL_TAG"
 HOST_SCRIPT
   python3 - "$path" "$inner_path" <<'PY'
@@ -328,7 +242,6 @@ replacements = {
     '__CHANNEL_TAG__': shlex.quote(os.environ['CHANNEL_TAG']),
     '__PRISMA_SCHEMA_SHA__': shlex.quote(os.environ['PRISMA_SCHEMA_SHA']),
     '__RUNTIME_IMAGE__': shlex.quote(os.environ['RUNTIME_IMAGE']),
-    '__MIGRATE_IMAGE__': shlex.quote(os.environ['MIGRATE_IMAGE']),
     '__STATIC_IMAGE__': shlex.quote(os.environ['STATIC_IMAGE']),
     '__STATIC_VOLUME__': shlex.quote(os.environ['STATIC_VOLUME']),
     '__VROOM_IMAGE__': shlex.quote(os.environ['VROOM_IMAGE']),
@@ -347,7 +260,7 @@ if [ "$BUILD_AND_PUSH" = "1" ]; then
   build_and_push
 fi
 
-export APP_DIR COMPOSE_FILE COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE MIGRATE_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL DRY_RUN
+export APP_DIR COMPOSE_FILE COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL DRY_RUN
 parameters_path="$(mktemp /tmp/route-ops-simple-ssm.XXXXXX)"
 write_parameters "$parameters_path"
 if [ "$SEND_COMMAND" = "0" ]; then

@@ -7,7 +7,7 @@ CLEVER Route keeps one source repo but separates deployable identity.
 | Deployable | Source | Artifact identity | Responsibility |
 | --- | --- | --- | --- |
 | Backend runtime | `apps/delivery-api` | `ghcr.io/evnsolution/clever-route-server-delivery-api:<git-sha>` | API, admin/session shell, static asset proxy from mounted web artifact |
-| DB migration runner | `apps/delivery-api` | `ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:<git-sha>` | Prisma `db push` lane with schema SHA gate |
+| DB migration runner | `apps/delivery-api` | same `ghcr.io/evnsolution/clever-route-server-delivery-api:<digest>` as runtime | Compose service overriding command to run the Prisma schema SHA guard |
 | Route Ops web static | `apps/route-ops-web` | `ghcr.io/evnsolution/clever-route-server-route-ops-web-static:<git-sha>` | Built SPA `dist/`, Vite manifest, assets, and `public/vendor` files |
 
 ## First-pass serving contract
@@ -15,7 +15,7 @@ CLEVER Route keeps one source repo but separates deployable identity.
 `delivery-api` remains the authenticated shell owner for `/admin/ui/app/*`. The frontend SPA files are supplied separately and mounted read-only into the backend container:
 
 ```text
-route-ops-web-static image -> SHA-scoped ROUTE_OPS_WEB_STATIC_VOLUME -> /app/external/route-ops-web:ro in delivery-api
+route-ops-web-static image -> channel-scoped ROUTE_OPS_WEB_STATIC_VOLUME -> /app/external/route-ops-web:ro in delivery-api
 ```
 
 Production `delivery-api` images default to:
@@ -25,7 +25,7 @@ ROUTE_OPS_WEB_DIST_PATH=/app/external/route-ops-web/dist
 ROUTE_OPS_WEB_PUBLIC_PATH=/app/external/route-ops-web/public
 ```
 
-The backend uses these paths only to read the externally supplied Vite manifest, hashed assets, and vendor map files. It must not bake `apps/route-ops-web/dist` into its runtime image as the production payload. Deploy and rollback stage candidate frontend assets into a SHA-scoped Docker volume first, then recreate `delivery-api` to switch mounts; this prevents the current backend from serving a candidate SPA during migration failure.
+The backend uses these paths only to read the externally supplied Vite manifest, hashed assets, and vendor map files. It must not bake `apps/route-ops-web/dist` into its runtime image as the production payload. Deploy and rollback stage candidate frontend assets into a channel-scoped Docker volume first, then recreate `delivery-api` to switch mounts. The promoted `.deploy/current-image.env` records digest-addressable runtime and static image refs; rollback restores the previous env file and recreates only `delivery-api`.
 
 ## Same-origin route ownership
 
