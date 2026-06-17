@@ -1,4 +1,10 @@
 clever-route.cleversystem.ai {
-  encode zstd gzip
-  reverse_proxy delivery-api:3000
+	encode zstd gzip
+	reverse_proxy delivery-api:3000 {
+		# During SSM deploys the single delivery-api container is recreated.
+		# Retry connection failures briefly so clients wait for the new healthy
+		# container instead of receiving an immediate transient 502.
+		lb_try_duration 30s
+		lb_try_interval 500ms
+	}
 }

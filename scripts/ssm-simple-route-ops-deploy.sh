@@ -4,6 +4,7 @@ set -euo pipefail
 AWS_REGION="${AWS_REGION:-ap-northeast-2}"
 APP_DIR="${APP_DIR:-/srv/clever-route-server}"
 COMPOSE_FILE="${COMPOSE_FILE:-infra/compose/docker-compose.prod.yml}"
+CADDYFILE="${CADDYFILE:-infra/caddy/Caddyfile}"
 COMPOSE_PROJECT="${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}"
 SERVICE_TAG_KEY="${ROUTE_OPS_SSM_TAG_KEY:-Service}"
 SERVICE_TAG_VALUE="${ROUTE_OPS_SSM_TAG_VALUE:-clever-delivery-server}"
@@ -118,6 +119,7 @@ write_parameters() {
 set -euo pipefail
 APP_DIR=__APP_DIR__
 COMPOSE_FILE=__COMPOSE_FILE__
+CADDYFILE=__CADDYFILE__
 COMPOSE_PROJECT=__COMPOSE_PROJECT__
 COMMIT_SHA=__COMMIT_SHA__
 CHANNEL_TAG=__CHANNEL_TAG__
@@ -129,6 +131,7 @@ VROOM_IMAGE=__VROOM_IMAGE__
 BASE_URL=__BASE_URL__
 DRY_RUN=__DRY_RUN__
 COMPOSE_FILE_B64=__COMPOSE_FILE_B64__
+CADDYFILE_B64=__CADDYFILE_B64__
 GHCR_USERNAME_PARAM="${ROUTE_OPS_GHCR_USERNAME_PARAM:-/clever/deploy/github/username}"
 GHCR_TOKEN_PARAM="${ROUTE_OPS_GHCR_TOKEN_PARAM:-/clever/deploy/github/read-token}"
 cd "$APP_DIR"
@@ -141,8 +144,9 @@ command -v docker >/dev/null
 command -v aws >/dev/null
 command -v python3 >/dev/null
 command -v base64 >/dev/null
-mkdir -p "$(dirname "$COMPOSE_FILE")"
+mkdir -p "$(dirname "$COMPOSE_FILE")" "$(dirname "$CADDYFILE")"
 printf '%s' "$COMPOSE_FILE_B64" | base64 -d > "$COMPOSE_FILE"
+printf '%s' "$CADDYFILE_B64" | base64 -d > "$CADDYFILE"
 [ -f infra/env/delivery-api.env ]
 cat > .deploy/simple-candidate-image.env <<EOF_ENV
 IMAGE_TAG=$CHANNEL_TAG
@@ -163,6 +167,7 @@ if [ "$DRY_RUN" = "1" ]; then
   printf 'simple deploy dry-run complete; no host image pull, migration, or restart mutation performed.\n'
   exit 0
 fi
+docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" exec -T caddy caddy reload --config /etc/caddy/Caddyfile
 rollback_delivery_api() {
   echo 'simple deploy health failed; rolling delivery-api back to previous image env' >&2
   docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom pull delivery-api route-ops-web-static vroom
@@ -240,6 +245,7 @@ with open(inner_path, 'r', encoding='utf-8') as handle:
 replacements = {
     '__APP_DIR__': shlex.quote(os.environ['APP_DIR']),
     '__COMPOSE_FILE__': shlex.quote(os.environ['COMPOSE_FILE']),
+    '__CADDYFILE__': shlex.quote(os.environ['CADDYFILE']),
     '__COMPOSE_PROJECT__': shlex.quote(os.environ['COMPOSE_PROJECT']),
     '__COMMIT_SHA__': shlex.quote(os.environ['COMMIT_SHA']),
     '__CHANNEL_TAG__': shlex.quote(os.environ['CHANNEL_TAG']),
@@ -251,6 +257,7 @@ replacements = {
     '__BASE_URL__': shlex.quote(os.environ['BASE_URL']),
     '__DRY_RUN__': shlex.quote(os.environ['DRY_RUN']),
     '__COMPOSE_FILE_B64__': shlex.quote(os.environ['COMPOSE_FILE_B64']),
+    '__CADDYFILE_B64__': shlex.quote(os.environ['CADDYFILE_B64']),
 }
 for key, value in replacements.items():
     script = script.replace(key, value)
@@ -265,7 +272,8 @@ if [ "$BUILD_AND_PUSH" = "1" ]; then
 fi
 
 COMPOSE_FILE_B64="$(base64 < "$COMPOSE_FILE" | tr -d '\n')"
-export APP_DIR COMPOSE_FILE COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL DRY_RUN COMPOSE_FILE_B64
+CADDYFILE_B64="$(base64 < "$CADDYFILE" | tr -d '\n')"
+export APP_DIR COMPOSE_FILE CADDYFILE COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL DRY_RUN COMPOSE_FILE_B64 CADDYFILE_B64
 parameters_path="$(mktemp /tmp/route-ops-simple-ssm.XXXXXX)"
 write_parameters "$parameters_path"
 if [ "$SEND_COMMAND" = "0" ]; then
