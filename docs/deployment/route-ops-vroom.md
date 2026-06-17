@@ -108,21 +108,17 @@ OSRM_TIMEOUT_MS=10000
 Keep `ROUTE_ENGINE_IMAGE` out of the normal deploy environment. It is required
 only if the host env deliberately re-enables `ROUTE_ENGINE_BASE_URL`.
 
-### 3. Deploy with reviewed server images
+### 3. Deploy with the simple SSM lane
 
-Run the normal reviewed deploy path for the server image set. The deploy script
-will:
+Run the current reviewed deploy path:
 
-1. validate that VROOM and legacy route_engine are not both enabled;
-2. pull only the base server images plus configured optimizer support images;
-3. start/smoke OSRM first;
-4. start/smoke VROOM from a one-off `delivery-api` runtime container;
-5. recreate `delivery-api` only after the optimizer smoke succeeds;
-6. stop legacy route_engine when `ROUTE_ENGINE_BASE_URL` is blank.
+```bash
+scripts/ssm-simple-route-ops-deploy.sh --publish
+```
 
-For a manual reviewed deploy, use the existing emergency host deploy block in
-`docs/deployment/route-ops-github-deploy.md` and keep the VROOM env above in
-`infra/env/delivery-api.env`.
+It builds/pushes the `:prod` server images, pulls them on the EC2 host, runs the
+Prisma guard, smokes VROOM from a one-off `delivery-api` container, recreates
+`delivery-api`/`caddy`, and keeps legacy route_engine stopped.
 
 ### 4. Post-cutover verification
 
@@ -141,20 +137,9 @@ Then verify one real Route Ops optimization from the admin UI:
 
 ### 5. Rollback
 
-Fast rollback to the previous optimizer setting:
-
-```bash
-cd /srv/clever-route-server
-cp ".deploy/delivery-api.env.before-vroom-${ts}" infra/env/delivery-api.env
-export ROUTE_OPS_SMOKE_LOGIN_SECRET=<read locally, never commit>
-scripts/rollback-route-ops-image.sh
-```
-
-If rolling back optimizer only while keeping the same reviewed server image,
-restore the saved env, export the current image metadata from
-`.deploy/current-image.env`, and run `scripts/deploy-route-ops-image.sh` so the
-same smoke and stop-unused-optimizer steps run. Do not use ad-hoc `docker compose
-up` as the primary rollback unless the deploy script is unavailable.
+Current minimal rollback is to retag the last known-good GHCR images back to
+`:prod`, then rerun `scripts/ssm-simple-route-ops-deploy.sh --publish` or the
+host pull/recreate block from `docs/deployment/route-ops-simple-ssm-deploy.md`.
 
 Legacy route_engine rollback is compatibility-only:
 

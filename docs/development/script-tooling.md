@@ -4,12 +4,9 @@ This repo keeps a small set of root-level scripts because deployment and Route O
 
 ## Production/operator entrypoints
 
+- `scripts/ssm-simple-route-ops-deploy.sh` — current production deploy lane: local build/push to GHCR `:prod`, then SSM pulls and restarts Compose.
 These are intentionally separate because they have different blast radius and rollback semantics.
 
-- `scripts/ssm-route-ops-deploy.sh` — host-side SSM wrapper. Validates manifest-derived deploy inputs, reads the host-local admin smoke secret, and calls the activation script. Do not place production SSH keys or runtime env in GitHub.
-- `scripts/route-ops-deploy-control-bundle.sh` — deploy-control bundle helper used by GitHub Actions and the custom SSM document to enforce the reviewed file allowlist, SHA-256 verification, manifest validation, and host source sync.
-- `scripts/deploy-route-ops-image.sh` — activates a published Route Ops image, checks schema labels, runs migration/compose/smoke, and promotes or restores current image metadata.
-- `scripts/rollback-route-ops-image.sh` — explicit rollback path to a previous image tag.
 - `scripts/scan-secrets.sh` — local/CI secret hygiene utility for staged, worktree, and history scans.
 - `scripts/monitor-route-ops-production.sh` — read-only SSM monitor wrapper for production health, container status, redacted recent logs, and authenticated smoke through the deployed runtime image.
 - `scripts/package-wordpress-plugin.sh` — explicit packaging helper for the WordPress plugin artifact.
@@ -20,7 +17,6 @@ These are not production commands. They are kept separate so each failure domain
 
 - `scripts/check-ignore-hygiene.mjs` — verifies generated/private artifacts stay ignored.
 - `scripts/guard-route-ops-deploy-scope.mjs` — fails closed when a Route Ops deploy lane includes unrelated Woo, Prisma, Caddy, infra, or output artifacts.
-- `scripts/validate-route-ops-release.mjs` — statically validates the GitHub Actions → OIDC → SSM deployment topology and secret boundaries.
 
 ## Smoke tests
 
@@ -37,10 +33,10 @@ These are not production commands. They are kept separate so each failure domain
 
 Tests should live under `tests/`, not beside operator commands.
 
-- `tests/deploy/ssm-route-ops-deploy.test.sh` — regression test for the SSM deploy wrapper lock, tag validation, evidence, and secret-redaction behavior.
-- `tests/deploy/route-ops-deploy-control-bundle.test.sh` — regression test for deploy-control bundle tar manifest validation, SHA-256 mismatch failure, manifest allowlist failure, and dry-run manifest env generation.
+- `tests/deploy/ssm-simple-route-ops-deploy.test.sh` — regression test for simple SSM render guards and VROOM/proof-media deploy checks.
+- `tests/deploy/route-ops-prisma-db-push-guard.test.sh` — regression test for the Prisma schema SHA guard used by the migrate image.
 - `tests/deploy/monitor-route-ops-production.test.sh` — regression test for monitor wrapper host-script rendering, production expectation defaults, runtime-image smoke fallback, and redaction hooks.
 
 ## Change rule
 
-For normal app/UI/backend features, do not edit `.github/workflows/*`, `scripts/deploy-*`, `scripts/rollback-*`, `scripts/ssm-*`, or deploy-safety validators. Touch them only when the requested change is explicitly about deployment, CI, secrets, platform preparation, or a verified path/reference update.
+For normal app/UI/backend features, do not edit `.github/workflows/*`, `scripts/ssm-*`, or deploy-safety validators. Touch them only when the requested change is explicitly about deployment, CI, secrets, platform preparation, or a verified path/reference update.

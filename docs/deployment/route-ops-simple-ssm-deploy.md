@@ -23,8 +23,6 @@ server-side GitHub credentials and a real checkout are deliberately provisioned.
 - Script: `scripts/ssm-simple-route-ops-deploy.sh`
 - Compose: `infra/compose/docker-compose.prod.yml`
 - Runtime env: `infra/env/delivery-api.env`
-- Previous S3/immutable lane retained for fallback/reference:
-  `scripts/ssm-route-ops-deploy.sh` and `scripts/deploy-route-ops-image.sh`
 
 ## Safety model
 
@@ -94,8 +92,8 @@ On 2026-06-17 the old route-engine artifacts were removed from production:
 - stopped containers and dangling images
 
 Root disk usage improved from about `20G used / 35%` to `14G used / 24%`.
-Do not remove the remaining old GHCR SHA images or legacy shopify images until this simple
-SSM lane has completed at least one real production deploy and rollback path is known.
+The simple SSM lane has completed a production deploy. Remaining old GHCR SHA images
+can be pruned after a separate image-retention pass confirms no container references them.
 
 ## Instance rebuild plan after this lane is proven
 

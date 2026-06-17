@@ -86,15 +86,7 @@ bash scripts/osrm-ontario.sh --help
 
 ## Start and smoke OSRM
 
-Normal image deploy/rollback is now the durable activation path. If `infra/env/delivery-api.env` contains a non-empty `OSRM_BASE_URL`, `scripts/deploy-route-ops-image.sh` and `scripts/rollback-route-ops-image.sh` automatically:
-
-1. start `osrm-ontario` with `docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" --profile osrm up -d --no-build osrm-ontario`;
-2. smoke `http://127.0.0.1:5000` from the host loopback;
-3. smoke `http://osrm-ontario:5000` from a one-off `delivery-api` runtime container on the compose network;
-4. only then restart `delivery-api`;
-5. append `osrmEnabled` to `.deploy/deploy-history.jsonl` so the promotion record shows whether OSRM was expected to be live.
-
-If `OSRM_BASE_URL` is blank, deploy/rollback restarts `delivery-api` without OSRM and automatically stops `osrm-ontario` after the app restarts.
+The simple SSM deploy lane keeps `osrm-ontario` live through the compose `osrm` profile and smokes VROOM/OSRM before recreating `delivery-api`. If `OSRM_BASE_URL` is blank, the API can run without OSRM, but production route optimization currently expects OSRM behind VROOM.
 
 Manual start is for preflight/diagnostics only, not the steady-state deployment model:
 
