@@ -1194,30 +1194,55 @@ smoke_vroom_from_runtime_network() {
   image_env_file="$1"
   network_url="${ROUTE_OPS_VROOM_NETWORK_SMOKE_URL:-http://vroom:3000}"
   echo "Smoking VROOM from the delivery-api runtime network."
-  route_ops_compose "$image_env_file" run --rm --no-deps -e ROUTE_OPS_VROOM_SMOKE_URL="$network_url" delivery-api node - <<'NODE'
+  route_ops_compose "$image_env_file" run --rm --no-deps \
+    -e ROUTE_OPS_VROOM_SMOKE_URL="$network_url" \
+    -e ROUTE_OPS_VROOM_SMOKE_ATTEMPTS="${ROUTE_OPS_VROOM_SMOKE_ATTEMPTS:-30}" \
+    -e ROUTE_OPS_VROOM_SMOKE_DELAY_MS="${ROUTE_OPS_VROOM_SMOKE_DELAY_MS:-2000}" \
+    delivery-api node - <<'NODE'
 const baseUrl = process.env.ROUTE_OPS_VROOM_SMOKE_URL.replace(/\/+$/, '');
-const health = await fetch(`${baseUrl}/health`);
-if (!health.ok) throw new Error(`VROOM health HTTP ${health.status}`);
-const response = await fetch(`${baseUrl}/`, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    vehicles: [{ id: 1, profile: 'car', start: [-79.3832, 43.6532], end: [-79.3832, 43.6532], capacity: [2] }],
-    jobs: [
-      { id: 1, location: [-79.3871, 43.6426], delivery: [1], service: 0 },
-      { id: 2, location: [-79.6441, 43.5890], delivery: [1], service: 0 },
-    ],
-  }),
-});
-if (!response.ok) throw new Error(`VROOM solve HTTP ${response.status}: ${await response.text()}`);
-const payload = await response.json();
-const route = Array.isArray(payload.routes) ? payload.routes[0] : null;
-const steps = Array.isArray(route?.steps) ? route.steps : [];
-const jobIds = steps.filter((step) => step?.type === 'job').map((step) => step.job ?? step.id).sort();
-if (payload.code !== 0 || (payload.unassigned?.length ?? 0) !== 0 || jobIds.join(',') !== '1,2') {
-  throw new Error(`VROOM solve smoke returned invalid payload: ${JSON.stringify(payload)}`);
+const attempts = Number.parseInt(process.env.ROUTE_OPS_VROOM_SMOKE_ATTEMPTS || '30', 10);
+const delayMs = Number.parseInt(process.env.ROUTE_OPS_VROOM_SMOKE_DELAY_MS || '2000', 10);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function runSmoke() {
+  const health = await fetch(`${baseUrl}/health`);
+  if (!health.ok) throw new Error(`VROOM health HTTP ${health.status}`);
+  const response = await fetch(`${baseUrl}/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      vehicles: [{ id: 1, profile: 'car', start: [-79.3832, 43.6532], end: [-79.3832, 43.6532], capacity: [2] }],
+      jobs: [
+        { id: 1, location: [-79.3871, 43.6426], delivery: [1], service: 0 },
+        { id: 2, location: [-79.6441, 43.5890], delivery: [1], service: 0 },
+      ],
+    }),
+  });
+  if (!response.ok) throw new Error(`VROOM solve HTTP ${response.status}: ${await response.text()}`);
+  const payload = await response.json();
+  const route = Array.isArray(payload.routes) ? payload.routes[0] : null;
+  const steps = Array.isArray(route?.steps) ? route.steps : [];
+  const jobIds = steps.filter((step) => step?.type === 'job').map((step) => step.job ?? step.id).sort();
+  if (payload.code !== 0 || (payload.unassigned?.length ?? 0) !== 0 || jobIds.join(',') !== '1,2') {
+    throw new Error(`VROOM solve smoke returned invalid payload: ${JSON.stringify(payload)}`);
+  }
+  console.log(JSON.stringify({ code: payload.code, jobs: jobIds, unassigned: payload.unassigned.length }));
 }
-console.log(JSON.stringify({ code: payload.code, jobs: jobIds, unassigned: payload.unassigned.length }));
+
+let lastError;
+for (let attempt = 1; attempt <= attempts; attempt += 1) {
+  try {
+    await runSmoke();
+    process.exit(0);
+  } catch (error) {
+    lastError = error;
+    if (attempt < attempts) {
+      console.error(`VROOM smoke attempt ${attempt}/${attempts} failed: ${error.message}; retrying in ${delayMs}ms`);
+      await sleep(delayMs);
+    }
+  }
+}
+throw lastError;
 NODE
 }
 
