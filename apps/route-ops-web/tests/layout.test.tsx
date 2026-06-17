@@ -194,10 +194,12 @@ describe('route ops layout components', () => {
     expect(html).toContain('<h1>주문</h1>');
   });
 
-  test('Orders page secondary region is only a compact add plan panel', () => {
+  test('Orders page secondary region is only a compact new route panel', () => {
     const html = renderToStaticMarkup(<OrdersPage bootstrap={bootstrap()} navigate={() => undefined} setError={() => undefined} />);
-    expect(html).toContain('aria-label="New route add plan"');
-    expect(html).toContain('Add plan');
+    expect(html).toContain('aria-label="New Route"');
+    expect(html).toContain('<h2>New Route</h2>');
+    expect(html).not.toContain('New route add plan');
+    expect(html).not.toContain('route-plan-add-button');
     expect(html).toContain('Plan is empty.');
     expect(html).not.toContain('Use the map or order list');
     expect(html).not.toContain('Blocker editor');
@@ -225,7 +227,7 @@ describe('route ops layout components', () => {
     expect(html).toContain('Delivery date');
     expect(html).toContain('Weekday');
     expect(html).toContain('Type');
-    expect(html).not.toContain('Area / region');
+    expect(html).toContain('Area / region');
     expect(html).not.toContain('Delivery status');
     expect(html).not.toContain('Order health');
     expect(html).not.toContain('Service type');
@@ -259,7 +261,7 @@ describe('route ops layout components', () => {
     expect(html).toContain('배송 날짜');
     expect(html).toContain('요일');
     expect(html).toContain('타입');
-    expect(html).not.toContain('지역 / 구역');
+    expect(html).toContain('지역 / 구역');
     expect(html).not.toContain('배송 상태');
     expect(html).not.toContain('필터 초기화');
     expect(html).toContain('계획이 비어 있습니다.');
@@ -275,6 +277,7 @@ describe('route ops layout components', () => {
     expect(css).not.toContain('.filter-clear-button');
     expect(css).not.toContain('.filter-actions');
     expect(css).not.toContain('.filter-panel-header');
+    expect(css).not.toContain('.route-plan-add-button');
     expect(css).toContain('max-width: 100%;');
     expect(css).toContain('.orders-table-scroll');
   });

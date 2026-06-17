@@ -123,6 +123,7 @@ export function buildOrderQuery(filters: OrderFilters): string {
 
 export function buildOrderFetchQuery(filters: OrderFilters): string {
   const {
+    deliveryArea: _deliveryArea,
     deliveryDate: _deliveryDate,
     deliverySession: _deliverySession,
     serviceType: _serviceType,
@@ -133,6 +134,20 @@ export function buildOrderFetchQuery(filters: OrderFilters): string {
     ...serverFilters
   } = filters;
   return buildOrderQuery(serverFilters);
+}
+
+export function buildAreaOptionSourceFilters(filters: OrderFilters): OrderFilters {
+  return { ...filters, deliveryArea: '' };
+}
+
+export function deriveAreaFilterOptions(orders: CanonicalOrderDto[]): string[] {
+  return Array.from(
+    new Set(
+      orders
+        .map((order) => order.deliveryArea?.trim() ?? '')
+        .filter((area) => area !== '')
+    )
+  ).sort((first, second) => first.localeCompare(second));
 }
 
 export function applyClientOrderFilters(

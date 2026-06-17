@@ -2,9 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
 
 import {
-  bulkGeocodeOrders,
   createRoute,
-  getBulkGeocodeJob,
   getOrderMetadataDiagnostics,
   getOrders,
   getWooOrderSyncRun,
@@ -25,9 +23,10 @@ import type { OrderMapMarkerState } from "../maps/geojson";
 import { formatOrderItemLine, formatOrderItemOptions, getOrderItems } from "../orderItems";
 import {
   applyClientOrderFilters,
+  buildAreaOptionSourceFilters,
   buildOrderFetchQuery,
-  buildOrderQuery,
   createDefaultOrderFilters,
+  deriveAreaFilterOptions,
   getOrderRouteType,
   isAddressReviewRequired,
   isDeliveryDateReviewRequired,
@@ -38,7 +37,6 @@ import {
 } from "../state";
 import type {
   BootstrapPayload,
-  BulkGeocodeJobDto,
   CanonicalOrderDto,
   DeliveryMetadataDiagnosticsDto,
   StoreSettingsDto,
@@ -202,10 +200,6 @@ export function OrdersPage({
   const [expandedOrderIds, setExpandedOrderIds] = useState<Set<string>>(
     new Set(),
   );
-  const [bulkGeocodeStatus, setBulkGeocodeStatus] = useState<string | null>(
-    null,
-  );
-  const [bulkGeocoding, setBulkGeocoding] = useState(false);
   const [wooSyncStatus, setWooSyncStatus] = useState<string | null>(null);
   const [wooSyncing, setWooSyncing] = useState(false);
   const locale = resolveLocale(settings?.locale ?? bootstrap.locale);
@@ -215,11 +209,18 @@ export function OrdersPage({
     y: number;
   } | null>(null);
 
-  const query = useMemo(() => buildOrderQuery(filters), [filters]);
   const fetchQuery = useMemo(() => buildOrderFetchQuery(filters), [filters]);
   const visibleOrders = useMemo(
     () => applyClientOrderFilters(orders, filters),
     [orders, filters],
+  );
+  const areaOptionOrders = useMemo(
+    () => applyClientOrderFilters(orders, buildAreaOptionSourceFilters(filters)),
+    [orders, filters],
+  );
+  const areaOptions = useMemo(
+    () => deriveAreaFilterOptions(areaOptionOrders),
+    [areaOptionOrders],
   );
   const tableOrders = useMemo(
     () => visibleOrders,
@@ -393,34 +394,6 @@ export function OrdersPage({
     }
   };
 
-  const bulkGeocodeCurrentView = async (): Promise<void> => {
-    setBulkGeocoding(true);
-    setBulkGeocodeStatus(null);
-    try {
-      const payload = await bulkGeocodeOrders({
-        csrfToken: bootstrap.csrfToken,
-        query,
-      });
-      let job = payload.geocode;
-      setBulkGeocodeStatus(formatBulkGeocodeStatus(job, locale));
-      for (
-        let attempt = 0;
-        attempt < 60 && !isBulkGeocodeTerminal(job);
-        attempt += 1
-      ) {
-        await sleep(1_000);
-        job = (await getBulkGeocodeJob(job.jobId)).geocode;
-        setBulkGeocodeStatus(formatBulkGeocodeStatus(job, locale));
-      }
-      await refreshOrders();
-      setError(null);
-    } catch (error) {
-      setError(readErrorMessage(error));
-    } finally {
-      setBulkGeocoding(false);
-    }
-  };
-
   const syncWooOrders = async (): Promise<void> => {
     setWooSyncing(true);
     setWooSyncStatus(null);
@@ -498,14 +471,12 @@ export function OrdersPage({
       secondary={
         <RoutePlanPanel
           createReasons={routeCreateReasons}
-          onAddPlan={addSelectionToPlan}
           onClear={clearPlan}
           onCreate={() => void create()}
           planDateLabel={formatRouteDraftDateLabel(plannedOrders, locale)}
           planTypeLabel={formatRouteDraftTypeLabel(plannedOrders, locale)}
           routeName={routeName}
           selectedOrders={plannedOrders}
-          selectedTableCount={selected.size}
           setRouteName={setRouteName}
           locale={locale}
         />
@@ -513,17 +484,17 @@ export function OrdersPage({
       lower={
         <>
           <FilterBar
+            areaOptions={areaOptions}
             filters={filters}
             locale={locale}
             onChange={updateFilters}
           />
           <OrderTable
-            bulkGeocodeStatus={bulkGeocodeStatus}
-            bulkGeocoding={bulkGeocoding}
+            addPlanDisabled={selected.size === 0}
             diagnosticsByOrder={diagnosticsByOrder}
             expandedOrderIds={expandedOrderIds}
             loading={loading}
-            onBulkGeocode={() => void bulkGeocodeCurrentView()}
+            onAddPlan={addSelectionToPlan}
             onCloseDetail={closeOrderDetail}
             onSaveMetadata={saveOrderMetadata}
             onWooSync={() => void syncWooOrders()}
@@ -548,14 +519,12 @@ export function OrdersPage({
 export function RoutePlanPanel(input: {
   createReasons: string[];
   locale?: string | null;
-  onAddPlan(): void;
   onClear(): void;
   onCreate(): void;
   planDateLabel: string;
   planTypeLabel: string;
   routeName: string;
   selectedOrders: CanonicalOrderDto[];
-  selectedTableCount: number;
   setRouteName(value: string): void;
 }): ReactElement {
   const t = getOrdersCopy(input.locale);
@@ -563,12 +532,11 @@ export function RoutePlanPanel(input: {
   return (
     <div
       className="panel side-panel route-plan-panel"
-      aria-label={t.addPlanPanelLabel}
+      aria-label={t.routeDraftPanelLabel}
     >
       <div className="panel-heading compact-heading route-plan-header">
         <div>
-          <span className="eyebrow">{t.newRoute}</span>
-          <h2>{t.addPlan}</h2>
+          <h2>{t.routeDraftTitle}</h2>
         </div>
         <Badge>{input.selectedOrders.length} {t.orders}</Badge>
       </div>
@@ -593,14 +561,6 @@ export function RoutePlanPanel(input: {
           <dd>{input.selectedOrders.length}</dd>
         </div>
       </dl>
-      <button
-        className="route-plan-add-button"
-        disabled={input.selectedTableCount === 0}
-        onClick={input.onAddPlan}
-        type="button"
-      >
-        {t.addPlan}
-      </button>
       <div className="button-row route-plan-actions">
         <button
           className="primary"
@@ -633,10 +593,12 @@ export function RoutePlanPanel(input: {
 }
 
 function FilterBar({
+  areaOptions,
   filters,
   locale,
   onChange,
 }: {
+  areaOptions: string[];
   filters: OrderFilterState;
   locale?: string | null;
   onChange(filters: OrderFilterState): void;
@@ -644,6 +606,10 @@ function FilterBar({
   const t = getOrdersCopy(locale);
   const weekdays = getWeekdayFilterOptions(locale);
   const routeTypes = getRouteTypeFilterOptions(locale);
+  const areaOptionsWithSelected =
+    filters.deliveryArea !== "" && !areaOptions.includes(filters.deliveryArea)
+      ? [filters.deliveryArea, ...areaOptions]
+      : areaOptions;
   return (
     <article className="panel filter-panel">
       <label className="filter-field filter-field--date">
@@ -706,6 +672,28 @@ function FilterBar({
           </select>
         </FilterValueControl>
       </label>
+      <label className="filter-field filter-field--area">
+        {t.areaRegion}
+        <FilterValueControl
+          active={filters.deliveryArea !== ""}
+          clearLabel={t.clearFilter(t.areaRegion)}
+          onClear={() => onChange({ ...filters, deliveryArea: "" })}
+        >
+          <select
+            value={filters.deliveryArea}
+            onChange={(event) =>
+              onChange({ ...filters, deliveryArea: event.target.value })
+            }
+          >
+            <option value="">{t.allOption}</option>
+            {areaOptionsWithSelected.map((area) => (
+              <option key={area} value={area}>
+                {area}
+              </option>
+            ))}
+          </select>
+        </FilterValueControl>
+      </label>
     </article>
   );
 }
@@ -754,32 +742,6 @@ function formatFilterOptionLabel(value: string, locale: string | null | undefine
   return builtInLabel ?? normalized;
 }
 
-function formatBulkGeocodeStatus(job: BulkGeocodeJobDto, locale: string | null | undefined = 'en-CA'): string {
-  const t = getOrdersCopy(locale).bulkStatus;
-  const status = job.status;
-  const counts = job.counts;
-  const countEntries: Array<[string, number | undefined]> = [
-    [t.matched, counts.matched],
-    [t.attempted, counts.attempted],
-    [t.resolved, counts.succeeded],
-    [t.failed, counts.failed],
-    [t.noAddress, counts.noAddress],
-    [t.alreadyHadCoordinates, counts.alreadyHasCoordinates],
-  ];
-  const parts = countEntries
-    .filter((entry): entry is [string, number] => typeof entry[1] === "number")
-    .map(([label, value]) => `${value} ${label}`);
-  const suffix = parts.length === 0 ? "" : `: ${parts.join(", ")}`;
-  const statusLabel = resolveLocale(locale) === "ko-KR"
-    ? ({ accepted: "접수됨", completed: "완료됨", failed: "실패", running: "진행 중" } as const)[status]
-    : humanizeToken(status);
-  return `${getOrdersCopy(locale).bulkGeocode} ${statusLabel}${suffix}.`;
-}
-
-function isBulkGeocodeTerminal(job: BulkGeocodeJobDto): boolean {
-  return job.status === "completed" || job.status === "failed";
-}
-
 function formatWooSyncStatus(run: WooSyncRunDto, locale: string | null | undefined = 'en-CA'): string {
   const t = getOrdersCopy(locale).wooSyncStatus;
   const statusLabel =
@@ -818,14 +780,13 @@ function captureWindowScroll(): { x: number; y: number } {
 }
 
 export function OrderTable(input: {
-  bulkGeocodeStatus?: string | null;
-  bulkGeocoding?: boolean;
+  addPlanDisabled?: boolean;
   detailModes?: Record<string, "review" | "edit">;
   diagnosticsByOrder: Record<string, DeliveryMetadataDiagnosticsDto | null>;
   expandedOrderIds?: ReadonlySet<string>;
   loading: boolean;
   locale?: string | null;
-  onBulkGeocode?(): void;
+  onAddPlan?(): void;
   onCloseDetail?(orderId: string): void;
   onSaveMetadata?(orderId: string, patch: OrderMetadataPatch): Promise<void>;
   onToggleDetail?(orderId: string): void;
@@ -896,20 +857,14 @@ export function OrderTable(input: {
             {input.wooSyncing === true ? t.wooSyncing : t.wooSync}
           </button>
           <button
-            disabled={input.bulkGeocoding === true}
-            onClick={() => input.onBulkGeocode?.()}
+            disabled={input.addPlanDisabled === true}
+            onClick={() => input.onAddPlan?.()}
             type="button"
           >
-            {input.bulkGeocoding === true ? t.bulkGeocoding : t.bulkGeocode}
+            {t.addPlanAction}
           </button>
         </div>
       </div>
-      {input.bulkGeocodeStatus === undefined ||
-      input.bulkGeocodeStatus === null ? null : (
-        <p className="orders-bulk-status" role="status">
-          {input.bulkGeocodeStatus}
-        </p>
-      )}
       {input.wooSyncStatus === undefined || input.wooSyncStatus === null ? null : (
         <p className="orders-bulk-status" role="status">
           {input.wooSyncStatus}

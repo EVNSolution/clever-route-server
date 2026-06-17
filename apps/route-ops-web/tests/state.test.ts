@@ -4,9 +4,11 @@ import { withWorkspaceQuery } from '../src/api';
 import { defaultRouteScopeConfig } from '../src/routeScopeConfig';
 import {
   applyClientOrderFilters,
+  buildAreaOptionSourceFilters,
   buildOrderFetchQuery,
   buildOrderQuery,
   createDefaultOrderFilters,
+  deriveAreaFilterOptions,
   deriveRouteStats,
   geometryLabel,
   getOrderWorksetUnavailableReasons,
@@ -36,25 +38,50 @@ describe('route ops web state helpers', () => {
     const filters = { ...createDefaultOrderFilters(), deliveryArea: 'Toronto', deliveryDate: '2026-05-27', search: '#1001', tab: 'planned' as const };
 
     expect(buildOrderQuery(filters)).toBe('deliveryDate=2026-05-27&deliveryArea=Toronto&scope=planning&tab=planned&search=%231001');
-    expect(buildOrderFetchQuery(filters)).toBe('deliveryArea=Toronto&scope=planning&search=%231001');
+    expect(buildOrderFetchQuery(filters)).toBe('scope=planning&search=%231001');
   });
 
   test('applies route-map candidate filters locally against prefetched orders', () => {
     const orders = [
-      order({ deliveryDate: '2026-05-27', orderId: 'may-27' }),
-      order({ deliveryDate: '2026-05-28', orderId: 'may-28' }),
-      order({ deliveryDate: null, orderId: 'missing-date' }),
-      order({ deliveryDate: '2026-05-27', deliverySession: 'EVENING', orderId: 'evening' }),
-      order({ deliveryDate: '2026-05-29', deliverySession: 'PICKUP', orderId: 'pickup', serviceType: 'PICKUP' }),
-      order({ deliveryDate: '2026-05-27', orderId: 'review', routeEligible: false }),
+      order({ deliveryArea: 'Toronto', deliveryDate: '2026-05-27', orderId: 'may-27' }),
+      order({ deliveryArea: 'Toronto East', deliveryDate: '2026-05-28', orderId: 'may-28' }),
+      order({ deliveryArea: 'Toronto', deliveryDate: null, orderId: 'missing-date' }),
+      order({ deliveryArea: 'Toronto', deliveryDate: '2026-05-27', deliverySession: 'EVENING', orderId: 'evening' }),
+      order({ deliveryArea: 'Toronto', deliveryDate: '2026-05-29', deliverySession: 'PICKUP', orderId: 'pickup', serviceType: 'PICKUP' }),
+      order({ deliveryArea: 'Toronto', deliveryDate: '2026-05-27', orderId: 'review', routeEligible: false }),
     ];
 
     expect(applyClientOrderFilters(orders, { deliveryDate: '2026-05-27', tab: 'unplanned' }).map((item) => item.orderId)).toEqual(['may-27', 'evening']);
+    expect(applyClientOrderFilters(orders, { deliveryArea: 'Toronto' }).map((item) => item.orderId)).toEqual(['may-27', 'missing-date', 'evening', 'pickup', 'review']);
+    expect(applyClientOrderFilters(orders, { deliveryArea: 'Toronto East' }).map((item) => item.orderId)).toEqual(['may-28']);
     expect(applyClientOrderFilters(orders, { deliveryDate: '2026-05-27', deliverySession: 'DAY', tab: 'unplanned' }).map((item) => item.orderId)).toEqual(['may-27']);
     expect(applyClientOrderFilters(orders, { routeType: 'pickup' }).map((item) => item.orderId)).toEqual(['pickup']);
     expect(applyClientOrderFilters(orders, { weekday: 'wed' }).map((item) => item.orderId)).toEqual(['may-27', 'evening', 'review']);
     expect(applyClientOrderFilters(orders, { deliveryDate: '2026-05-27', tab: 'needs_review' }).map((item) => item.orderId)).toEqual(['review']);
     expect(applyClientOrderFilters(orders, { deliveryDate: '' })).toBe(orders);
+  });
+
+
+  test('derives Area filter options from non-Area filtered orders', () => {
+    const filters = {
+      ...createDefaultOrderFilters(),
+      deliveryArea: 'Toronto West',
+      deliveryDate: '2026-05-27'
+    };
+    const sourceFilters = buildAreaOptionSourceFilters(filters);
+    const orders = [
+      order({ deliveryArea: 'Toronto West', deliveryDate: '2026-05-27', orderId: 'west' }),
+      order({ deliveryArea: 'Toronto East', deliveryDate: '2026-05-27', orderId: 'east' }),
+      order({ deliveryArea: 'Toronto West', deliveryDate: '2026-05-28', orderId: 'other-date' }),
+      order({ deliveryArea: ' ', deliveryDate: '2026-05-27', orderId: 'blank' }),
+      order({ deliveryArea: null, deliveryDate: '2026-05-27', orderId: 'missing-area' }),
+    ];
+
+    expect(sourceFilters).toEqual(expect.objectContaining({ deliveryArea: '', deliveryDate: '2026-05-27' }));
+    const sourceOrders = applyClientOrderFilters(orders, sourceFilters);
+
+    expect(sourceOrders.map((item) => item.orderId)).toEqual(['west', 'east', 'blank', 'missing-area']);
+    expect(deriveAreaFilterOptions(sourceOrders)).toEqual(['Toronto East', 'Toronto West']);
   });
 
   test('defaults to the planning all workset and serializes All/History explicitly', () => {

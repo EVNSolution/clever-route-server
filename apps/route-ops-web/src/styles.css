@@ -1929,9 +1929,6 @@ button.danger.subtle {
   font-weight: 700;
   margin: 2px 0 0;
 }
-.route-plan-add-button {
-  width: 100%;
-}
 .route-plan-validation {
   color: #9a3412;
   display: grid;

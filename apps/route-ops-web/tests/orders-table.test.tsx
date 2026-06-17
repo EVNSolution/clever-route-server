@@ -65,8 +65,10 @@ describe("Orders compact operations table", () => {
     expect(html).not.toContain("Items");
     expect(html).not.toContain("Total");
     expect(html).not.toContain("EasyRoutes");
-    expect(html).toContain("Sync Woo");
-    expect(html).toContain("Bulk geocode");
+    expect(html).toContain("Sync Order");
+    expect(html).toContain("Add Plan");
+    expect(html.indexOf("Sync Order")).toBeLessThan(html.indexOf("Add Plan"));
+    expect(html).not.toContain("Bulk geocode");
   });
 
   test("renders operational order data from current CanonicalOrderDto fields", () => {
@@ -143,7 +145,7 @@ describe("Orders compact operations table", () => {
       "";
 
     expect(html).toContain('aria-label="Select order #1002 11453"');
-    expect(html).not.toContain('disabled=""');
+    expect(html).toContain('aria-label="Add order #1002 11453 to route plan" class="" type="button">Add</button>');
     expect(customerCell).not.toContain("Review");
     expect(customerCell).not.toContain("order-pill");
     expect(html).toContain("Missing delivery date");
@@ -869,16 +871,27 @@ describe("Orders compact operations table", () => {
     expect(html).toContain(`colSpan="${ORDERS_TABLE_COLUMN_COUNT}"`);
   });
 
-  test("renders one bulk geocode control near the order count badge", () => {
+  test("renders order list actions without exposing bulk geocode", () => {
     const html = renderOrderTable([orderFixture()], {
-      bulkGeocodeStatus:
-        "Bulk geocode Completed: 2 attempted, 1 resolved, 1 failed.",
+      selected: new Set(["order-11453"]),
     });
 
     expect(html).toContain("1 orders");
-    expect(html).toContain("Bulk geocode");
-    expect(html).toContain("Bulk geocode Completed");
+    expect(html).toContain("Sync Order");
+    expect(html).toContain("Add Plan");
+    expect(html.indexOf("Sync Order")).toBeLessThan(html.indexOf("Add Plan"));
+    expect(html).not.toContain("Bulk geocode");
     expect(html).not.toContain("Geocode &amp; add");
+  });
+
+  test("disables the Order List Add Plan action until an order is selected", () => {
+    const emptySelection = renderOrderTable([orderFixture()]);
+    const selected = renderOrderTable([orderFixture()], {
+      selected: new Set(["order-11453"]),
+    });
+
+    expect(emptySelection).toContain('<button disabled="" type="button">Add Plan</button>');
+    expect(selected).toContain('<button type="button">Add Plan</button>');
   });
 
   test("renders current-filter group selection controls for route-ready orders only", () => {
@@ -940,7 +953,10 @@ describe("Orders compact operations table", () => {
     for (const header of ["주문", "고객", "방식", "요일", "지역", "경로", "상태", "작업"]) {
       expect(html).toContain(`>${header}</th>`);
     }
-    expect(html).toContain("가져온 주문 목록");
+    expect(html).toContain("주문 목록");
+    expect(html).toContain("주문 동기화");
+    expect(html).toContain("계획 추가");
+    expect(html).not.toContain("일괄 좌표 변환");
     expect(html).toContain("1 주문");
     expect(html).toContain("0개 선택 · 1개 선택 가능 · 0개 불가");
     expect(html).toContain("리뷰");
@@ -951,7 +967,6 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("수정 저장");
     expect(html).toContain("상세");
     expect(html).toContain("배송지");
-    expect(html).toContain("좌표");
     expect(html).toContain("기술 진단");
     expect(html).not.toContain("Order details for");
     expect(html).not.toContain("Missing delivery date");
@@ -1001,7 +1016,6 @@ describe("Orders compact operations table", () => {
     const html = renderToStaticMarkup(
       <RoutePlanPanel
         createReasons={["Selected orders must share one delivery date."]}
-        onAddPlan={() => undefined}
         onClear={() => undefined}
         onCreate={() => undefined}
         planDateLabel="2026-05-29"
@@ -1011,16 +1025,19 @@ describe("Orders compact operations table", () => {
           orderFixture({ orderId: "first", orderName: "#11453" }),
           orderFixture({ orderId: "second", orderName: "#11454" }),
         ]}
-        selectedTableCount={2}
         setRouteName={() => undefined}
       />,
     );
 
+    expect(html).toContain('aria-label="New Route"');
     expect(html).toContain("Route name");
     expect(html).toContain("2026-05-29");
     expect(html).toContain("Delivery");
     expect(html).toContain("Total orders");
     expect(html).toContain("Selected orders must share one delivery date.");
+    expect(html).not.toContain("route-plan-add-button");
+    expect(html).not.toContain("New route add plan");
+    expect(html).not.toContain(">Add plan</button>");
     expect(html).not.toContain("route-plan-drag-handle");
     expect(html).not.toContain("Drag to reorder");
   });
@@ -1253,7 +1270,6 @@ describe("Orders compact operations table", () => {
 function renderOrderTable(
   orders: CanonicalOrderDto[],
   options: {
-    bulkGeocodeStatus?: string;
     detailModes?: Record<string, "review" | "edit">;
     diagnosticsByOrder?: Record<string, DeliveryMetadataDiagnosticsDto | null>;
     expandedOrderIds?: Set<string>;
@@ -1267,18 +1283,18 @@ function renderOrderTable(
 ): string {
   return renderToStaticMarkup(
     <OrderTable
-      bulkGeocodeStatus={options.bulkGeocodeStatus}
       detailModes={options.detailModes}
       diagnosticsByOrder={options.diagnosticsByOrder ?? {}}
       expandedOrderIds={options.expandedOrderIds}
       loading={options.loading ?? false}
       locale={options.locale}
-      onBulkGeocode={() => undefined}
+      onAddPlan={() => undefined}
       onToggleDetail={() => undefined}
       onTogglePlanOrder={() => undefined}
       orders={orders}
       refreshing={options.refreshing}
       selected={options.selected ?? new Set()}
+      addPlanDisabled={(options.selected?.size ?? 0) === 0}
       setSelected={() => undefined}
       settings={options.settings}
       worksetContext={options.worksetContext}
