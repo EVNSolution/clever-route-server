@@ -41,7 +41,7 @@ A real deploy does the following in order:
 7. Pulls runtime, migrate, static, and pinned VROOM images.
 8. Stages the static volume, runs Prisma migration, ensures OSRM/VROOM are up.
 9. Runs a VROOM solve smoke from inside the delivery-api container.
-10. Recreates `delivery-api` and `caddy`, then stops the old `route-engine` profile.
+10. Recreates `delivery-api` only; `caddy` stays up unless its config changed in a separate infra lane.
 11. Verifies public `/healthz`.
 12. Backs up `.deploy/current-image.env`, promotes the candidate env, and appends deploy history.
 
@@ -76,7 +76,7 @@ ROUTE_OPS_SIMPLE_CHANNEL_TAG=prod-candidate scripts/ssm-simple-route-ops-deploy.
 
 The script backs up the previous `.deploy/current-image.env` before promoting the simple
 candidate. For rollback, restore the latest `.deploy/current-image.env.before-simple-*`, then
-run compose with that env file and recreate `delivery-api`, `caddy`, and `route-ops-web-static`.
+run compose with that env file and recreate `route-ops-web-static` plus `delivery-api`; leave `caddy` running unless the rollback is specifically an ingress change.
 If the `prod` channel image itself is bad, retag/push the previous known-good image to `prod`
 from a trusted machine, then rerun the SSM deploy or manually pull/recreate on the host.
 

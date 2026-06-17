@@ -245,7 +245,7 @@ for (let attempt = 1; attempt <= 30; attempt += 1) {
 }
 throw lastError;
 NODE
-docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate delivery-api caddy
+docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --force-recreate delivery-api
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile route-engine stop route-engine || true
 for attempt in $(seq 1 30); do
   if curl -fsS "$BASE_URL/healthz"; then break; fi

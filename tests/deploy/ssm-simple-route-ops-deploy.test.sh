@@ -25,6 +25,7 @@ checks = {
     'proof_media_bootstrap': 'chown -R 100:101 /srv/clever-route-server/data/driver-proof-media' in command and 'chmod 750 /srv/clever-route-server/data/driver-proof-media' in command,
     'vroom_smoke': 'http://vroom:3000/health' in command and 'http://vroom:3000/' in command and 'payload.code !== 0' in command,
     'route_engine_stop': '--profile route-engine stop route-engine' in command,
+    'does_not_recreate_caddy': '--force-recreate delivery-api caddy' not in command,
     'history_append': '"lane":"simple-ssm"' in command,
 }
 missing = [name for name, ok in checks.items() if not ok]
