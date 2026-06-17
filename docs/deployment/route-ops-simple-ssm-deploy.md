@@ -79,6 +79,25 @@ The build/push/pull/migrate/smoke phases do not stop the current domain path. On
 `delivery-api` container recreate can cause a short API blip. `caddy` is not recreated by this
 lane.
 
+
+## GitHub Actions deploy
+
+Use the manual `Route Ops simple deploy` workflow when the deploy should run from GitHub
+Actions instead of a local shell. It is `workflow_dispatch` only; pushes to `main` run CI but
+do not deploy automatically. The workflow checks the actor allowlist, logs into GHCR with
+`GITHUB_TOKEN`, assumes `AWS_ROUTE_OPS_DEPLOY_ROLE_ARN` through OIDC, then runs:
+
+```bash
+scripts/ssm-simple-route-ops-deploy.sh --publish
+```
+
+Run from CLI after `main` is up to date:
+
+```bash
+gh workflow run "Route Ops simple deploy" --repo EVNSolution/clever-route-server --ref main \
+  -f channel_tag=prod -f dry_run=false
+```
+
 ## Rollback
 
 The script backs up the previous `.deploy/current-image.env` before promoting the simple

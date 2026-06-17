@@ -94,6 +94,7 @@ const allowedExact = new Set([
   '.dockerignore',
   '.gitleaks.toml',
   '.github/workflows/ci.yml',
+  '.github/workflows/route-ops-simple-deploy.yml',
   'apps/delivery-api/Dockerfile',
   'apps/delivery-api/tsconfig.build.json',
   'apps/delivery-api/.env.example',

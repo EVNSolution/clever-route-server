@@ -1,0 +1,104 @@
+name: Route Ops simple deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel_tag:
+        description: "Mutable GHCR channel tag to publish and deploy"
+        required: true
+        default: prod
+      dry_run:
+        description: "Run host preflight without image pull or restart mutation"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+concurrency:
+  group: route-ops-simple-deploy-${{ inputs.channel_tag }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Require main branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "Route Ops simple deploy must run from refs/heads/main." >&2
+          exit 1
+
+      - name: Require actor allowlist
+        shell: bash
+        env:
+          DEPLOY_ALLOWED_ACTORS: ${{ vars.DEPLOY_ALLOWED_ACTORS }}
+          GITHUB_ACTOR_NAME: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_ALLOWED_ACTORS//[[:space:],]/}" ]; then
+            echo "DEPLOY_ALLOWED_ACTORS is required and must fail closed before Route Ops deploy." >&2
+            exit 1
+          fi
+          IFS=',' read -ra actors <<< "$DEPLOY_ALLOWED_ACTORS"
+          allowed=false
+          for actor in "${actors[@]}"; do
+            actor="$(echo "$actor" | xargs)"
+            if [ "$actor" = "$GITHUB_ACTOR_NAME" ]; then allowed=true; fi
+          done
+          if [ "$allowed" != true ]; then
+            echo "$GITHUB_ACTOR_NAME is not allowed to run Route Ops deploy." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/route-ops-web/package-lock.json
+
+      - name: Validate simple deploy wrapper
+        run: |
+          bash -n scripts/ssm-simple-route-ops-deploy.sh tests/deploy/ssm-simple-route-ops-deploy.test.sh
+          tests/deploy/ssm-simple-route-ops-deploy.test.sh
+
+      - name: Install Route Ops web dependencies
+        run: npm --prefix apps/route-ops-web ci
+
+      - name: Login to GHCR
+        # docker/login-action v4.2.0 (Node 24) pinned to full commit SHA.
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure AWS credentials through OIDC
+        # aws-actions/configure-aws-credentials v6.2.0 (Node 24) pinned to full commit SHA.
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
+        with:
+          role-to-assume: ${{ vars.AWS_ROUTE_OPS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+
+      - name: Publish and deploy via simple SSM lane
+        shell: bash
+        env:
+          ROUTE_OPS_SKIP_GHCR_WRITE_SCOPE_CHECK: "1"
+          ROUTE_OPS_SIMPLE_CHANNEL_TAG: ${{ inputs.channel_tag }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=(--publish)
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          scripts/ssm-simple-route-ops-deploy.sh "${args[@]}"
