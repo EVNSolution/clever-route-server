@@ -181,6 +181,7 @@ const allowedExact = new Set([
   'scripts/rollback-route-ops-image.sh',
   'scripts/smoke-route-ops-production.mjs',
   'scripts/ssm-route-ops-deploy.sh',
+  'scripts/ssm-simple-route-ops-deploy.sh',
   'scripts/route-ops-deploy-control-bundle.sh',
   'scripts/route-ops-release-manifest.mjs',
   'scripts/test-route-ops-release-manifest.mjs',
@@ -189,6 +190,7 @@ const allowedExact = new Set([
   'tests/deploy/deploy-route-ops-image-disk-guard.test.sh',
   'tests/deploy/route-ops-prisma-db-push-guard.test.sh',
   'tests/deploy/ssm-route-ops-deploy.test.sh',
+  'tests/deploy/ssm-simple-route-ops-deploy.test.sh',
   'tests/deploy/route-ops-deploy-control-bundle.test.sh',
   'tests/deploy/monitor-route-ops-production.test.sh',
   'scripts/validate-route-ops-release.mjs',
@@ -202,6 +204,7 @@ const allowedExact = new Set([
   'docs/migration/woocommerce-credential-onboarding-admin-runbook.md',
   'docs/deployment/route-ops-github-deploy.md',
   'docs/deployment/route-ops-ssm-deploy.md',
+  'docs/deployment/route-ops-simple-ssm-deploy.md',
   'docs/development/script-tooling.md',
 ]);
 

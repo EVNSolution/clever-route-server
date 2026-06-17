@@ -369,6 +369,9 @@ assert(!/id-token:\s*write/.test(ci), 'ci workflow must not request id-token:wri
 assert(/apps\/delivery-api\/src\/routes\/admin-ui-\[\^\/\]\+\\\.ts/.test(ci), 'CI Route Ops filters must include extracted admin-ui route helper files');
 assert(/apps\/delivery-api\/tests\/admin-ui-\[\^\/\]\+\\\.test\\\.ts/.test(ci), 'CI Route Ops filters must include extracted admin-ui helper test files');
 assert(ci.includes('scripts/monitor-route-ops-production'), 'CI Route Ops static checks must include the production monitor wrapper');
+assert(ci.includes('scripts/ssm-simple-route-ops-deploy.sh'), 'CI Route Ops static checks must syntax-check the simple SSM deploy wrapper');
+assert(ci.includes('tests/deploy/ssm-simple-route-ops-deploy.test.sh'), 'CI Route Ops static checks must run the simple SSM deploy wrapper test');
+assert(ci.includes('route-ops-simple-ssm-deploy'), 'CI Route Ops filters must include the simple SSM deploy runbook');
 assert(ci.includes('tests/deploy/monitor-route-ops-production.test.sh'), 'CI Route Ops static checks must run the production monitor wrapper test');
 assert(monitor.includes('TARGET_TAG_VALUE="${SSM_ROUTE_OPS_TARGET_TAG_VALUE:-clever-delivery-server}"'), 'monitor wrapper must default to the current production Service tag');
 assert(doc.includes('SSM_ROUTE_OPS_TARGET_TAG_VALUE=clever-delivery-server'), 'SSM deploy doc must document the current production target Service tag');
