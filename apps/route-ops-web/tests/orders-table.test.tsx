@@ -8,7 +8,8 @@ import {
   buildOrderMapMarkerStates,
   buildRouteDraftSelection,
   filterOrdersByRoutePlan,
-  getRouteDraftCreateBlocker,
+  getRouteDraftFirstCreateReason,
+  getRouteDraftCreateReasons,
   normalizeOrderMetadataPatchForFields,
   OrderDetailChoiceDropdown,
   formatDeliveryDayLabel,
@@ -20,7 +21,6 @@ import {
   formatOperationalStatus,
   formatPaymentStatusLabel,
   getRouteRepairPrompt,
-  moveSelectedOrderBefore,
   ORDERS_TABLE_COLUMN_COUNT,
   RoutePlanPanel,
   OrderTable,
@@ -128,7 +128,7 @@ describe("Orders compact operations table", () => {
     expect(html).not.toContain("Loading imported WooCommerce orders…");
   });
 
-  test("keeps selection accessibility and disabled eligibility semantics", () => {
+  test("keeps selection accessibility and allows adding orders that still need review", () => {
     const blocked = orderFixture({
       blockerReasons: ["missing_delivery_date"],
       deliveryDate: null,
@@ -143,12 +143,13 @@ describe("Orders compact operations table", () => {
       "";
 
     expect(html).toContain('aria-label="Select order #1002 11453"');
-    expect(html).toContain('disabled=""');
+    expect(html).not.toContain('disabled=""');
     expect(customerCell).not.toContain("Review");
     expect(customerCell).not.toContain("order-pill");
     expect(html).toContain("Missing delivery date");
-    expect(html).toContain("0 selectable");
-    expect(html).toContain("1 unavailable");
+    expect(html).toContain("0 selected");
+    expect(html).toContain("1 selectable");
+    expect(html).toContain("0 unavailable");
   });
 
   test("allows already-selected non-eligible orders to be removed and spans detail across all columns", () => {
@@ -189,6 +190,38 @@ describe("Orders compact operations table", () => {
     );
   });
 
+  test("renders ordered items from the frontend order items DTO", () => {
+    const html = renderOrderTable(
+      [
+        orderFixture({
+          items: [
+            {
+              name: "Roma Tomatoes",
+              options: [{ key: "size", value: "large" }],
+              productId: 101,
+              quantity: 2,
+              sku: "roma",
+              variationId: 201,
+            },
+            {
+              name: "Basil",
+              options: [],
+              productId: 102,
+              quantity: 1,
+              sku: null,
+              variationId: 0,
+            },
+          ],
+        }),
+      ],
+      { expandedOrderIds: new Set(["order-11453"]) },
+    );
+
+    expect(html).toContain("Ordered items");
+    expect(html).toContain("Roma Tomatoes (size: large) × 2");
+    expect(html).toContain("Basil × 1");
+  });
+
   test("renders normalized payment evidence in the expanded order detail", () => {
     const html = renderOrderTable(
       [
@@ -205,11 +238,11 @@ describe("Orders compact operations table", () => {
       { expandedOrderIds: new Set(["order-11453"]) },
     );
 
-    expect(html).toContain("Payment");
+    expect(html).not.toContain("<h4>Payment</h4>");
     expect(html).toContain("Review payment");
-    expect(html).toContain("Cash · custom_cash_gateway");
-    expect(html).toContain("processing");
-    expect(html).toContain("Payment method/status mapping is not configured");
+    expect(html).not.toContain("Cash · custom_cash_gateway");
+    expect(html).not.toContain("processing");
+    expect(html).not.toContain("Payment method/status mapping is not configured");
     expect(formatPaymentStatusLabel(orderFixture()).label).toBe("Transfer pending");
   });
 
@@ -504,8 +537,9 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("Toronto");
     expect(html).toContain("ON");
     expect(html).toContain("M3J 2C3");
-    expect(html).toContain("43.653200, -79.383200");
-    expect(html).toContain("Ready for the map");
+    expect(html).not.toContain("43.653200, -79.383200");
+    expect(html).not.toContain("Ready for the map");
+    expect(html).toContain("Ordered items");
     expect(html).toContain("Edit");
     expect(html).not.toContain('name="address1"');
     expect(html).not.toContain("meta_data._tomatono_delivery_day");
@@ -872,7 +906,7 @@ describe("Orders compact operations table", () => {
       },
     );
 
-    expect(html).toContain("1 selected · 1 selectable · 2 unavailable");
+    expect(html).toContain("1 selected · 3 selectable · 0 unavailable");
     expect(html).not.toContain("Select filtered");
     expect(html).not.toContain("Clear filtered");
     expect(html).not.toContain("Clear selection");
@@ -908,7 +942,7 @@ describe("Orders compact operations table", () => {
     }
     expect(html).toContain("가져온 주문 목록");
     expect(html).toContain("1 주문");
-    expect(html).toContain("0개 선택 · 0개 선택 가능 · 1개 불가");
+    expect(html).toContain("0개 선택 · 1개 선택 가능 · 0개 불가");
     expect(html).toContain("리뷰");
     expect(html).toContain("배송 날짜 누락");
     expect(html).toContain("경로 범위 누락");
@@ -923,7 +957,7 @@ describe("Orders compact operations table", () => {
     expect(html).not.toContain("Missing delivery date");
   });
 
-  test("route draft selection locks to one delivery date and session", () => {
+  test("route draft selection keeps every selected order and validates create separately", () => {
     const first = orderFixture({ orderId: "first" });
     const sameScope = orderFixture({
       orderId: "same-scope",
@@ -948,63 +982,50 @@ describe("Orders compact operations table", () => {
       new Set(["first", "same-scope", "other-date", "other-session"]),
     );
 
-    expect(draft.deliveryDate).toBe("2026-05-29");
-    expect(draft.orderIds).toEqual(["first", "same-scope"]);
-    expect(draft.warning).toContain("same delivery date and delivery session");
+    expect(draft.deliveryDate).toBeNull();
+    expect(draft.orderIds).toEqual(["first", "same-scope", "other-date", "other-session"]);
+    expect(draft.warning).toBeNull();
     expect(
-      getRouteDraftCreateBlocker([first, sameScope], "2026-05-29"),
+      getRouteDraftFirstCreateReason([first, sameScope]),
     ).toBeNull();
-    expect(getRouteDraftCreateBlocker([first], "2026-05-30")).toContain(
-      "Route date must match",
-    );
+    expect(getRouteDraftFirstCreateReason([first])).toBeNull();
     expect(
-      getRouteDraftCreateBlocker([first, otherSession], "2026-05-29"),
-    ).toContain("same delivery date");
-  });
-
-  test("route draft order can be reordered by dragging before a target order", () => {
-    expect(moveSelectedOrderBefore(["first", "second", "third"], "third", "first")).toEqual([
-      "third",
-      "first",
-      "second",
-    ]);
-    expect(moveSelectedOrderBefore(["first", "second", "third"], "first", "third")).toEqual([
-      "second",
-      "first",
-      "third",
-    ]);
-    expect(moveSelectedOrderBefore(["first", "second"], "missing", "first")).toEqual([
-      "first",
-      "second",
+      getRouteDraftCreateReasons([first, otherDate, otherSession]),
+    ).toEqual([
+      "Selected orders must share one delivery date.",
+      "Selected orders must share one type.",
     ]);
   });
 
-  test("route draft panel exposes a non-SVG grab handle for drag ordering", () => {
+  test("route draft panel shows only compact summary actions and validation reasons", () => {
     const html = renderToStaticMarkup(
       <RoutePlanPanel
-        invalidSelectionCount={0}
+        createReasons={["Selected orders must share one delivery date."]}
+        onAddPlan={() => undefined}
         onClear={() => undefined}
         onCreate={() => undefined}
-        onReorder={() => undefined}
-        routeDate="2026-05-29"
+        planDateLabel="2026-05-29"
+        planTypeLabel="Delivery"
         routeName="Route 2026-05-29"
         selectedOrders={[
           orderFixture({ orderId: "first", orderName: "#11453" }),
           orderFixture({ orderId: "second", orderName: "#11454" }),
         ]}
-        setRouteDate={() => undefined}
+        selectedTableCount={2}
         setRouteName={() => undefined}
-        totalSelected={2}
       />,
     );
 
-    expect(html).toContain('class="route-plan-drag-handle"');
-    expect(html).toContain("::");
-    expect(html).toContain('aria-label="Drag to reorder #11453"');
-    expect(html).not.toContain("<svg");
+    expect(html).toContain("Route name");
+    expect(html).toContain("2026-05-29");
+    expect(html).toContain("Delivery");
+    expect(html).toContain("Total orders");
+    expect(html).toContain("Selected orders must share one delivery date.");
+    expect(html).not.toContain("route-plan-drag-handle");
+    expect(html).not.toContain("Drag to reorder");
   });
 
-  test("route draft marker numbers follow add-plan click order and drag reorder", () => {
+  test("route draft marker numbers follow add-plan order without drag reorder", () => {
     const first = orderFixture({ orderId: "first", orderName: "#11453" });
     const second = orderFixture({ orderId: "second", orderName: "#11454" });
     const third = orderFixture({ orderId: "third", orderName: "#11455" });
@@ -1028,22 +1049,7 @@ describe("Orders compact operations table", () => {
     expect(clickedMarkers.get("first")?.sequence).toBe(2);
     expect(clickedMarkers.get("second")?.sequence).toBe(3);
 
-    const reorderedOrderIds = moveSelectedOrderBefore(
-      clickedDraft.orderIds,
-      "second",
-      "third",
-    );
-    const reorderedMarkers = buildOrderMapMarkerStates({
-      filters,
-      orders: [first, second, third],
-      selectedOrderIds: new Set(reorderedOrderIds),
-      worksetContext: { scope: "planning" },
-    });
-
-    expect(reorderedOrderIds).toEqual(["second", "third", "first"]);
-    expect(reorderedMarkers.get("second")?.sequence).toBe(1);
-    expect(reorderedMarkers.get("third")?.sequence).toBe(2);
-    expect(reorderedMarkers.get("first")?.sequence).toBe(3);
+    expect(clickedMarkers.get("second")?.sequence).toBe(3);
   });
 
   test("planned route helpers filter orders by route and build the route detail URL", () => {

@@ -14,16 +14,27 @@ export type OrderFilters = {
   deliveryDate?: string;
   deliverySession?: string;
   deliveryStatus?: string;
+  routeType?: OrderRouteTypeFilter | '';
   search?: string;
   scope?: OrderScopeFilter;
   serviceType?: string;
   status?: OrderPlanningStatusFilter;
   tab?: OrderTabFilter;
+  weekday?: OrderWeekdayFilter | '';
 };
 
 export type OrderScopeFilter = 'planning' | 'history';
 export type OrderTabFilter = 'all' | 'unplanned' | 'planned' | 'needs_review';
 export type OrderPlanningStatusFilter = '' | 'planned' | 'unplanned';
+export type OrderRouteTypeFilter = 'delivery' | 'evening_delivery' | 'pickup';
+export type OrderWeekdayFilter =
+  | 'sun'
+  | 'mon'
+  | 'tue'
+  | 'wed'
+  | 'thu'
+  | 'fri'
+  | 'sat';
 
 export type OrderFilterState = Required<Omit<OrderFilters, 'status'>> & {
   status: OrderPlanningStatusFilter;
@@ -86,11 +97,13 @@ export function createDefaultOrderFilters(): OrderFilterState {
     deliveryDate: '',
     deliverySession: '',
     deliveryStatus: '',
+    routeType: '',
     scope: 'planning',
     search: '',
     serviceType: '',
     status: '',
-    tab: 'unplanned'
+    tab: 'all',
+    weekday: ''
   };
 }
 
@@ -113,8 +126,10 @@ export function buildOrderFetchQuery(filters: OrderFilters): string {
     deliveryDate: _deliveryDate,
     deliverySession: _deliverySession,
     serviceType: _serviceType,
+    routeType: _routeType,
     status: _status,
     tab: _tab,
+    weekday: _weekday,
     ...serverFilters
   } = filters;
   return buildOrderQuery(serverFilters);
@@ -128,6 +143,12 @@ export function applyClientOrderFilters(
   return orders.filter((order) => {
     const deliveryDate = normalizeFilterValue(filters.deliveryDate);
     if (deliveryDate !== null && order.deliveryDate !== deliveryDate) return false;
+
+    const weekday = normalizeFilterValue(filters.weekday);
+    if (weekday !== null && getOrderDeliveryWeekday(order) !== weekday) return false;
+
+    const routeType = normalizeFilterValue(filters.routeType);
+    if (routeType !== null && getOrderRouteType(order) !== routeType) return false;
 
     const serviceType = normalizeFilterValue(filters.serviceType);
     if (serviceType !== null && order.serviceType !== serviceType) return false;
@@ -170,11 +191,43 @@ function hasActiveClientOrderFilter(filters: OrderFilters): boolean {
     normalizeFilterValue(filters.deliveryDate) !== null ||
     normalizeFilterValue(filters.deliverySession) !== null ||
     normalizeFilterValue(filters.deliveryStatus) !== null ||
+    normalizeFilterValue(filters.routeType) !== null ||
     normalizeFilterValue(filters.search) !== null ||
     normalizeFilterValue(filters.serviceType) !== null ||
     normalizeFilterValue(filters.status) !== null ||
+    normalizeFilterValue(filters.weekday) !== null ||
     (filters.tab !== undefined && filters.tab !== 'all')
   );
+}
+
+const WEEKDAY_FILTERS: OrderWeekdayFilter[] = [
+  'sun',
+  'mon',
+  'tue',
+  'wed',
+  'thu',
+  'fri',
+  'sat'
+];
+
+function getOrderDeliveryWeekday(order: CanonicalOrderDto): OrderWeekdayFilter | null {
+  if (order.deliveryDate === null) return null;
+  const date = new Date(`${order.deliveryDate}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return null;
+  return WEEKDAY_FILTERS[date.getUTCDay()] ?? null;
+}
+
+export function getOrderRouteType(order: CanonicalOrderDto): OrderRouteTypeFilter | null {
+  const serviceType = normalizeFilterValue(order.serviceType)?.toUpperCase();
+  if (serviceType === 'PICKUP') return 'pickup';
+  if (serviceType === 'EVENING_DELIVERY') return 'evening_delivery';
+  if (serviceType === 'DELIVERY') return 'delivery';
+
+  const deliverySession = normalizeFilterValue(order.deliverySession)?.toUpperCase();
+  if (deliverySession === 'PICKUP') return 'pickup';
+  if (deliverySession === 'EVENING') return 'evening_delivery';
+  if (deliverySession === 'DAY') return 'delivery';
+  return null;
 }
 
 function normalizeFilterValue(value: string | null | undefined): string | null {
