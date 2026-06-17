@@ -18,6 +18,7 @@ bundle_files() {
   cat <<'FILES'
 infra/caddy/Caddyfile
 infra/compose/docker-compose.prod.yml
+infra/vroom/config.yml
 scripts/deploy-route-ops-image.sh
 scripts/rollback-route-ops-image.sh
 scripts/ssm-route-ops-deploy.sh
@@ -96,6 +97,7 @@ expected = sorted([
     'deploy-control-manifest.json',
     'infra/caddy/Caddyfile',
     'infra/compose/docker-compose.prod.yml',
+    'infra/vroom/config.yml',
     'scripts/deploy-route-ops-image.sh',
     'scripts/rollback-route-ops-image.sh',
     'scripts/ssm-route-ops-deploy.sh',
@@ -144,6 +146,7 @@ manifest_path, expected_s3_uri = sys.argv[1:3]
 allowed_files = [
     'infra/caddy/Caddyfile',
     'infra/compose/docker-compose.prod.yml',
+    'infra/vroom/config.yml',
     'scripts/deploy-route-ops-image.sh',
     'scripts/rollback-route-ops-image.sh',
     'scripts/ssm-route-ops-deploy.sh',
@@ -160,8 +163,6 @@ allowed_keys = {
     'prismaSchemaSha',
     'deliveryApiImage',
     'deliveryApiMigrateImage',
-    'routeEngineImage',
-    'routeEnginePublishEvidenceUrl',
     'publishEvidenceUrl',
     'artifactBucket',
     'artifactPrefix',
@@ -176,8 +177,6 @@ patterns = {
     'prismaSchemaSha': re.compile(r'^[0-9a-fA-F]{64}$'),
     'deliveryApiImage': re.compile(r'^ghcr\.io/evnsolution/clever-route-server-delivery-api:[0-9a-fA-F]{40}$'),
     'deliveryApiMigrateImage': re.compile(r'^ghcr\.io/evnsolution/clever-route-server-delivery-api-migrate:[0-9a-fA-F]{40}$'),
-    'routeEngineImage': re.compile(r'^ghcr\.io/evnsolution/route-engine-worker:[0-9a-fA-F]{40}$'),
-    'routeEnginePublishEvidenceUrl': re.compile(r'^https://github\.com/EVNSolution/route_engine/actions/runs/[0-9]+/?$'),
     'publishEvidenceUrl': re.compile(r'^https://github\.com/EVNSolution/clever-route-server/actions/runs/[0-9]+/?$'),
     'artifactBucket': re.compile(r'^route-ops-artifacts-902837199612-ap-northeast-2$'),
     'artifactPrefix': re.compile(r'^artifacts/route-ops/prod/deploy-control$'),
@@ -234,7 +233,6 @@ exports = {
     'DELIVERY_API_IMAGE': manifest['deliveryApiImage'],
     'DELIVERY_API_MIGRATE_IMAGE': manifest['deliveryApiMigrateImage'],
     'PUBLISH_EVIDENCE_URL': manifest['publishEvidenceUrl'],
-    'ROUTE_ENGINE_IMAGE': manifest['routeEngineImage'],
     'GITHUB_RUN_ID': manifest['runId'],
     'DEPLOY_CONTROL_BUNDLE_S3_URI': manifest['s3Uri'],
 }

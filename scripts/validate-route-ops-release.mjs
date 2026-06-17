@@ -32,6 +32,7 @@ const githubDocPath = 'docs/deployment/route-ops-github-deploy.md';
 const osrmDocPath = 'docs/deployment/route-ops-osrm-ontario.md';
 const releaseManifestPath = 'scripts/route-ops-release-manifest.mjs';
 const releaseManifestTestPath = 'scripts/test-route-ops-release-manifest.mjs';
+const vroomConfigPath = 'infra/vroom/config.yml';
 
 const ci = read(ciWorkflowPath);
 const release = read(releaseWorkflowPath);
@@ -56,6 +57,7 @@ const githubDoc = read(githubDocPath);
 const osrmDoc = read(osrmDocPath);
 const releaseManifest = read(releaseManifestPath);
 const releaseManifestTest = read(releaseManifestTestPath);
+const vroomConfig = read(vroomConfigPath);
 
 
 const routeOpsActionPins = [
@@ -319,39 +321,22 @@ assert(release.includes('steps.prepare_manifest.outputs.manifest_path'), 'releas
 assert(release.includes('id: prepare_manifest'), 'release promote download step must define the prepare_manifest id used by validation');
 assert(!release.includes('      - name: Checkout exact release commit\n      - name: Checkout exact release commit'), 'release promote must not contain duplicate no-op checkout step');
 assert(release.includes('git checkout --detach "$COMMIT_SHA"'), 'release promote must check out the exact manifest commit');
-assert(release.includes('[ "${ROUTE_ENGINE_IMAGE%:*}" != "$ROUTE_ENGINE_IMAGE_REPO" ]'), 'release prepare must exact-match route_engine image repository before any pull');
-assert(release.includes('route_engine_tag="${ROUTE_ENGINE_IMAGE##*:}"'), 'release prepare must validate route_engine tag separately from exact repository');
-assert(!release.includes('^${ROUTE_ENGINE_IMAGE_REPO}:'), 'release prepare must not interpolate the route_engine repository string into a regex');
 assert(release.includes('Route Ops SSM dry-run output is missing no-mutation proof.'), 'release prepare must assert dry-run no-mutation SSM output before manifest creation');
 assert(release.includes('Route Ops SSM dry-run output is missing manifest validation proof.'), 'release prepare must assert dry-run manifest validation output before manifest creation');
 assert(release.includes('StandardOutputContent:StandardOutputContent'), 'release prepare must read SSM standard output to validate dry-run evidence');
-assert(release.includes('route_engine_image_digest'), 'release prepare must require a route_engine image digest input');
-assert(release.includes('ROUTE_ENGINE_IMAGE_DIGEST: ${{ inputs.route_engine_image_digest }}'), 'release prepare must pass route_engine image digest through env before shell use');
-assert(release.includes('expected_digest_prefix="${ROUTE_ENGINE_IMAGE_REPO}@sha256:"'), 'release prepare must exact-match route_engine digest repository before any pull');
-assert(release.includes('RepoDigests'), 'release workflow must inspect route_engine RepoDigests for immutable digest verification');
-assert(release.includes('route_engine image digest mismatch'), 'release workflow must fail closed on route_engine digest mismatch');
-assert(release.includes('vars.ROUTE_ENGINE_GHCR_READ_USERNAME || github.actor'), 'release workflow must use a cross-repo GHCR read username var before falling back to actor');
-assert(release.includes('secrets.ROUTE_ENGINE_GHCR_READ_TOKEN || secrets.GITHUB_TOKEN'), 'release workflow must use a cross-repo GHCR read token secret before falling back to GITHUB_TOKEN');
+assert(!release.includes('route_engine_image_digest'), 'release prepare must not require route_engine image digest input');
+assert(!release.includes('routeEngineImageRevision'), 'release manifest must not record route_engine image revision in the Route Ops release contract');
+assert(!release.includes('ROUTE_ENGINE_GHCR_READ_TOKEN'), 'release workflow must not require cross-repo route_engine GHCR credentials');
 assert(release.includes('read -r total_count instance_id ping_status agent_version'), 'release SSM target preflight must capture agent_version with the variable used by validation');
 assert(!release.includes('_agent_version'), 'release SSM target preflight must not capture an unused _agent_version');
 assert((release.match(/python3 - "\$agent_version" <<'PY'/g) || []).length >= 2, 'release prepare and promote must both validate SSM AgentVersion');
 assert(release.includes('Route Ops SSM target instance id is missing.'), 'release SSM target preflight must fail closed on missing instance id');
-assert((release.match(/Verify route_engine worker image revision label/g) || []).length >= 2, 'release prepare and promote must verify route_engine image revision label');
-assert(release.includes('docker pull "$ROUTE_ENGINE_IMAGE"'), 'release workflow must pull the pinned route_engine image before deploy manifest/deploy');
-assert(release.includes('org.opencontainers.image.revision'), 'release workflow must verify route_engine image revision label');
-assert(release.includes('routeEngineImageRevision: process.env.ROUTE_ENGINE_IMAGE_REVISION'), 'release manifest must record machine-verified route_engine image revision');
-assert(release.includes('routeEngineImageDigest: process.env.ROUTE_ENGINE_IMAGE_DIGEST'), 'release manifest must record machine-verified route_engine image digest');
 assert(release.includes('--instance-ids "$INSTANCE_ID"'), 'release workflow must send SSM commands to the resolved exact instance id');
 assert(!release.includes('--targets "Key=tag:'), 'release workflow must not send production commands by mutable tag selector');
 assert(releaseManifest.includes('CONTROL_CHARS') && releaseManifest.includes('control characters are not allowed'), 'release manifest validator must reject control characters before GITHUB_OUTPUT export');
 assert(releaseManifest.includes('release manifest contains unknown field'), 'release manifest validator must reject unknown top-level fields');
 assert(releaseManifest.includes('tag must match imageTag'), 'release manifest validator must bind image outputs to imageTag');
-assert(releaseManifest.includes('routeEngineImageRevision must match routeEngineImage tag'), 'release manifest validator must bind route_engine image revision to route_engine image tag');
-assert(releaseManifest.includes('routeEngineImageDigest must be ghcr.io/evnsolution/route-engine-worker@sha256:<64-hex-digest>'), 'release manifest validator must require route_engine immutable digest evidence');
-assert(releaseManifest.includes('image-revision-label-digest-and-audit-url'), 'release manifest validator must require the machine-verified route_engine evidence contract');
 assert(releaseManifestTest.includes('extra_output=pwned'), 'release manifest tests must cover GITHUB_OUTPUT newline injection');
-assert(releaseManifestTest.includes('wrongRouteEngineRevision'), 'release manifest tests must cover route_engine revision/tag mismatch');
-assert(releaseManifestTest.includes('wrongRouteEngineDigest'), 'release manifest tests must cover route_engine digest mismatch');
 assert(release.includes('AWS_ROUTE_OPS_DEPLOY_ROLE_ARN'), 'release workflow must use AWS deploy role variable');
 assert(release.includes('scripts/route-ops-deploy-control-bundle.sh bundle-files'), 'release workflow must load the reviewed deploy-control file allowlist from the bundle helper');
 assert(release.includes('scripts/route-ops-deploy-control-bundle.sh validate-source-file "$file"'), 'release workflow must reject source symlinks/hardlinks/non-regular files before staging');
@@ -375,7 +360,7 @@ assert(release.includes('TargetCount must be 1'), 'release workflow must assert 
 assert(release.includes('for _ in {1..720}; do'), 'release workflow must poll long enough to let the custom SSM document produce host trace evidence');
 assert(release.includes('--max-concurrency "1"'), 'release workflow must set max-concurrency=1');
 assert(release.includes('--max-errors "0"'), 'release workflow must set max-errors=0');
-assert(!/\$\{\{\s*secrets\.(?!DRIVER_APP_DOWNLOAD_URL\b|ROUTE_ENGINE_GHCR_READ_TOKEN\b|GITHUB_TOKEN\b)/.test(release), 'release workflow must not reference GitHub secrets except approved handoffs');
+assert(!/\$\{\{\s*secrets\.(?!DRIVER_APP_DOWNLOAD_URL\b|GITHUB_TOKEN\b)/.test(release), 'release workflow must not reference GitHub secrets except approved handoffs');
 for (const secretName of ['PROD_SSH_PRIVATE_KEY', 'ROUTE_OPS_SMOKE_LOGIN_SECRET', 'CLEVER_ADMIN_WEB_LOGIN_SECRET', 'DATABASE_URL', 'POSTGRES_PASSWORD']) {
   assert(!release.includes(secretName), `release workflow must not reference ${secretName}`);
 }
@@ -396,6 +381,7 @@ assert(monitor.includes('clever_admin_ui=<redacted>'), 'monitor wrapper must red
 const expectedDeployControlFiles = [
   'infra/caddy/Caddyfile',
   'infra/compose/docker-compose.prod.yml',
+  'infra/vroom/config.yml',
   'scripts/deploy-route-ops-image.sh',
   'scripts/rollback-route-ops-image.sh',
   'scripts/ssm-route-ops-deploy.sh',
@@ -413,8 +399,6 @@ const expectedDeployControlManifestKeys = [
   'prismaSchemaSha',
   'deliveryApiImage',
   'deliveryApiMigrateImage',
-  'routeEngineImage',
-  'routeEnginePublishEvidenceUrl',
   'publishEvidenceUrl',
   'artifactBucket',
   'artifactPrefix',
@@ -458,7 +442,7 @@ assert(wrapper.includes('CLEVER_ADMIN_WEB_LOGIN_SECRET'), 'wrapper must read hos
 assert(wrapper.includes('PUBLISH_EVIDENCE_URL'), 'wrapper must validate and record publish evidence URL when provided');
 assert(wrapper.includes('ROUTE_OPS_WEB_STATIC_IMAGE'), 'wrapper must derive and validate the frontend static image');
 assert(wrapper.includes('ROUTE_OPS_WEB_STATIC_VOLUME'), 'wrapper must derive and validate the SHA-scoped frontend static volume');
-assert(wrapper.includes('ROUTE_ENGINE_IMAGE'), 'wrapper must derive and validate the route_engine worker image');
+assert(wrapper.includes('ROUTE_ENGINE_IMAGE') && wrapper.includes('when set'), 'wrapper must keep legacy route_engine image optional');
 assert(wrapper.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'wrapper must expose the route_engine graph host directory');
 assert(deployControlBundle.includes('scripts/provision-route-engine-graph-from-s3.sh'), 'deploy-control bundle must include the route_engine S3 graph provision helper');
 assert(deployScopeGuard.includes('scripts/provision-route-engine-graph-from-s3.sh'), 'Route Ops deploy scope guard must allow the route_engine S3 graph provision helper');
@@ -470,9 +454,9 @@ assert(!wrapper.includes('set -x'), 'wrapper must not enable shell xtrace');
 assert(/ROUTE_OPS_SMOKE_LOGIN_SECRET="\$value"/.test(wrapper), 'wrapper must export smoke secret from parsed local value');
 
 assert(imageDeploy.includes('ensure_deploy_disk_headroom "pre-pull"'), 'image deploy script must check disk headroom before pulling images');
-assert(imageDeploy.indexOf('ensure_deploy_disk_headroom "pre-pull"') < imageDeploy.indexOf('pull route-ops-web-static delivery-api delivery-api-migrate'), 'disk headroom check must run before docker compose pull');
+assert(imageDeploy.indexOf('ensure_deploy_disk_headroom "pre-pull"') < imageDeploy.indexOf('pull_services=(route-ops-web-static delivery-api delivery-api-migrate)'), 'disk headroom check must run before docker compose pull service selection');
 assert(imageDeploy.includes('prune_old_route_ops_images "pre-pull-retention"'), 'image deploy script must prune stale Route Ops images before docker compose pull');
-assert(imageDeploy.indexOf('prune_old_route_ops_images "pre-pull-retention"') < imageDeploy.indexOf('pull route-ops-web-static delivery-api delivery-api-migrate'), 'pre-pull stale image cleanup must run before docker compose pull');
+assert(imageDeploy.indexOf('prune_old_route_ops_images "pre-pull-retention"') < imageDeploy.indexOf('pull_services=(route-ops-web-static delivery-api delivery-api-migrate)'), 'pre-pull stale image cleanup must run before docker compose pull service selection');
 assert(imageDeploy.includes('ensure_deploy_disk_headroom "post-pull"'), 'image deploy script must re-check disk headroom after pulling images');
 assert(imageDeploy.includes('docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME"'), 'image deploy script must invoke compose with explicit project name');
 assert(imageDeploy.includes('ROUTE_OPS_COMPOSE_PROJECT_NAME="${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}"'), 'image deploy script must default compose project name to clever-route');
@@ -486,7 +470,7 @@ assert(imageDeploy.includes('ROUTE_OPS_WEB_STATIC_IMAGE_REPO'), 'image deploy sc
 assert(imageDeploy.includes('ROUTE_OPS_WEB_STATIC_IMAGE'), 'image deploy script must track the frontend static image in deploy metadata');
 assert(imageDeploy.includes('ROUTE_OPS_WEB_STATIC_VOLUME'), 'image deploy script must track the SHA-scoped frontend static volume in deploy metadata');
 assert(imageDeploy.includes('ROUTE_ENGINE_IMAGE_REPO'), 'image deploy script must scope cleanup to the route_engine worker image repository');
-assert(imageDeploy.includes('ROUTE_ENGINE_IMAGE'), 'image deploy script must track the route_engine worker image in deploy metadata');
+assert(imageDeploy.includes('ROUTE_ENGINE_IMAGE') && imageDeploy.includes('required only when ROUTE_ENGINE_BASE_URL'), 'image deploy script must require route_engine image only when legacy route_engine is enabled');
 assert(imageDeploy.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'image deploy script must track the route_engine graph host directory in deploy metadata');
 assert(imageDeploy.includes('route_ops_trace_event'), 'image deploy script must persist structured deploy trace events');
 assert(imageDeploy.includes('route_ops_trace_snapshot'), 'image deploy script must persist diagnostic snapshots on failure');
@@ -496,8 +480,8 @@ assert(imageDeploy.includes('restartCount={{.RestartCount}}'), 'image deploy rou
 assert(imageDeploy.includes('host oom evidence'), 'image deploy failure snapshot must include host OOM evidence');
 assert(imageDeploy.includes('oom-kill') && imageDeploy.includes('killed process'), 'image deploy failure snapshot must grep kernel OOM-killer messages');
 assert(imageDeploy.includes('ROUTE_OPS_STATIC_ARTIFACT_STAGED'), 'image deploy script must track static artifact staging separately from backend mutation');
-assert(imageDeploy.includes('ensure_route_engine_host_env'), 'image deploy script must configure production host route_engine env before activation');
-assert(imageDeploy.includes('restore_route_engine_host_env_on_failure'), 'image deploy script must restore host route_engine env if activation fails');
+assert(imageDeploy.includes('ensure_optimizer_host_env'), 'image deploy script must validate optimizer env without auto-enabling route_engine');
+assert(imageDeploy.includes('restore_route_engine_host_env_on_failure'), 'image deploy script must retain compatibility no-op restore hook');
 assert(imageDeploy.includes('restoring current route_engine'), 'image deploy script must restore the previous route_engine service when candidate route_engine activation fails before backend mutation');
 assert(imageDeploy.includes('route_ops_compose .deploy/current-image.env --profile route-engine up -d --no-build route-engine'), 'image deploy route_engine restore must use current image metadata, not the failed candidate metadata');
 assert(imageDeploy.includes('validate_route_engine_graph_artifacts'), 'image deploy script must validate mounted route_engine graph artifacts before activation');
@@ -505,8 +489,12 @@ assert(imageDeploy.includes('org.clever-route.graph-manifest-sha'), 'image deplo
 assert(imageDeploy.includes('ensure_static_artifact_env_file .deploy/current-image.env'), 'image deploy script must normalize legacy current static artifact metadata before mutation');
 assert(imageDeploy.includes('validate_loaded_static_artifact_contract .deploy/candidate-image.env'), 'image deploy script must semantically validate candidate static image and volume before compose mutation');
 assert(imageDeploy.includes('require_candidate_static_volume_isolated_from_current'), 'image deploy script must reject candidate static volumes shared with current metadata');
-assert(imageDeploy.includes('pull route-ops-web-static delivery-api delivery-api-migrate route-engine'), 'image deploy script must pull frontend static, runtime, migrate, and route_engine images together');
-assert(imageDeploy.includes('--profile route-engine up -d --no-build route-engine'), 'image deploy script must start route_engine through the explicit Route Ops compose project profile');
+assert(imageDeploy.includes('pull_services=(route-ops-web-static delivery-api delivery-api-migrate)') && imageDeploy.includes('pull_services+=(route-engine)'), 'image deploy script must pull route_engine only when legacy route_engine is configured');
+assert(imageDeploy.includes('--profile route-engine up -d --no-build route-engine'), 'image deploy script must start legacy route_engine through the explicit Route Ops compose project profile only when configured');
+assert(imageDeploy.includes('ensure_vroom .deploy/candidate-image.env'), 'image deploy script must activate VROOM before delivery-api when VROOM_BASE_URL is configured');
+assert(imageDeploy.includes('VROOM_BASE_URL is set but OSRM_BASE_URL is blank'), 'image deploy script must require OSRM before VROOM');
+assert(imageDeploy.includes('validate_vroom_image') && imageDeploy.includes('vroom-project/vroom-docker@sha256'), 'image deploy script must fail closed on non-digest VROOM_IMAGE overrides');
+assert(imageDeploy.indexOf('validate_vroom_image') < imageDeploy.indexOf('route_ops_trace_step_start "compose_pull_candidate_images"'), 'image deploy script must validate VROOM_IMAGE before compose pull');
 assert(imageDeploy.includes('smoke_route_engine_from_runtime_network'), 'image deploy script must smoke route_engine from the delivery-api runtime network before backend activation');
 assert(imageDeploy.includes('route_engine ready smoke failed after readiness wait'), 'image deploy script must wait for route_engine readiness before failing the smoke');
 assert(imageDeploy.includes("require('node:http')"), 'image deploy route_engine smoke must use node:http so long warmups are not capped by global fetch HeadersTimeout');
@@ -631,6 +619,10 @@ assert(imageRollback.includes('ROUTE_OPS_COMPOSE_PROJECT_NAME must be exactly cl
 assert(imageRollback.includes('enforce_no_legacy_route_ops_compose_project'), 'rollback script must fail closed when legacy implicit Route Ops compose containers are still running');
 assert(imageRollback.includes('ensure_route_ops_osrm .deploy/candidate-image.env'), 'rollback script must activate and smoke OSRM before delivery-api rollback activation when OSRM_BASE_URL is configured');
 assert(imageRollback.includes('ensure_route_engine .deploy/candidate-image.env'), 'rollback script must activate and smoke route_engine before delivery-api rollback activation when ROUTE_ENGINE_BASE_URL is configured');
+assert(imageRollback.includes('ensure_vroom .deploy/candidate-image.env'), 'rollback script must activate VROOM before delivery-api rollback activation when VROOM_BASE_URL is configured');
+assert(imageRollback.includes('VROOM_BASE_URL is set but OSRM_BASE_URL is blank'), 'rollback script must require OSRM before VROOM');
+assert(imageRollback.includes('validate_vroom_image') && imageRollback.includes('vroom-project/vroom-docker@sha256'), 'rollback script must fail closed on non-digest VROOM_IMAGE overrides');
+assert(imageRollback.indexOf('validate_vroom_image') < imageRollback.indexOf('route_ops_compose .deploy/candidate-image.env "${pull_profiles[@]}" pull'), 'rollback script must validate VROOM_IMAGE before compose pull');
 assert(imageRollback.includes('route_engine rollback ready smoke failed after readiness wait'), 'rollback script must wait for route_engine readiness before failing the smoke');
 assert(imageRollback.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'rollback script must carry the route_engine graph host directory');
 assert(imageRollback.includes('validate_route_engine_graph_artifacts'), 'rollback script must validate route_engine graph artifacts before activation');
@@ -673,9 +665,30 @@ for (const [path, text] of [
 assert(githubDoc.includes('route-ops-web-static'), 'GitHub deploy docs must include frontend static artifact identity');
 assert(githubDoc.includes('ROUTE_OPS_WEB_STATIC_IMAGE'), 'GitHub deploy docs must include frontend static deploy env');
 assert(githubDoc.includes('ROUTE_OPS_WEB_STATIC_VOLUME'), 'GitHub deploy docs must include frontend static volume deploy env');
-assert(githubDoc.includes('ROUTE_ENGINE_IMAGE'), 'GitHub deploy docs must include the route_engine worker image env');
-assert(githubDoc.includes('ROUTE_ENGINE_GRAPH_HOST_DIR'), 'GitHub deploy docs must include the route_engine graph host mount env');
-assert(githubDoc.includes('http://route-engine:8080'), 'GitHub deploy docs must document the internal route_engine base URL');
+assert(githubDoc.includes('VROOM_BASE_URL') && githubDoc.includes('http://vroom:3000'), 'GitHub deploy docs must document the internal VROOM optimizer path');
+assert(githubDoc.includes('ROUTE_ENGINE_IMAGE') && githubDoc.includes('compatibility'), 'GitHub deploy docs must keep legacy route_engine as compatibility-only');
+
+for (const key of [
+  'geometry',
+  'planmode',
+  'threads',
+  'explore',
+  'limit',
+  'logdir',
+  'logsize',
+  'maxlocations',
+  'maxvehicles',
+  'override',
+  'path',
+  'port',
+  'router',
+  'timeout',
+  'baseurl',
+]) {
+  assert(vroomConfig.includes(`${key}:`), `VROOM config must include vroom-express cliArgs.${key}`);
+}
+assert(vroomConfig.includes("host: 'osrm-ontario'"), 'VROOM config must route car profile to osrm-ontario');
+assert(vroomConfig.includes("port: '5000'"), 'VROOM config must route car profile to OSRM port 5000');
 
 for (const pattern of [
   'DeployControlBundleS3Uri.*allowedPattern',
@@ -687,15 +700,10 @@ for (const pattern of [
   'route-ops-artifacts-902837199612-ap-northeast-2',
   'route-ops-web-static',
   'clever-route-server-route-ops-web-static:<sha>',
+  'VROOM_BASE_URL',
+  'http://vroom:3000',
   'ROUTE_OPS_WEB_STATIC_IMAGE',
   'ROUTE_OPS_WEB_STATIC_VOLUME',
-  'ROUTE_ENGINE_IMAGE',
-  'routeEnginePublishEvidenceUrl',
-  'ROUTE_ENGINE_GRAPH_HOST_DIR',
-  'org.clever-route.graph-manifest-sha',
-  '/app/routing_engine/v7_out/parquet:ro',
-  'route-engine:8080',
-  'non-customer.*POST /v1/solve',
   'SHA-scoped',
   'DocumentVersion',
   'AWS-RunShellScript',
@@ -719,4 +727,4 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(JSON.stringify({ ok: true, checked: [releaseWorkflowPath, wrapperPath, deployControlBundlePath, monitorPath, imageDeployPath, imageRollbackPath, composePath, deliveryApiDockerfilePath, prismaDbPushGuardPath, deliveryApiDepsPath, deliveryApiEnvExamplePath, deliveryApiLocalEnvExamplePath, proofMediaDocPath, ssmDocumentPath, osrmHelperPath, docPath, githubDocPath, osrmDocPath, ciWorkflowPath, releaseManifestPath, releaseManifestTestPath] }, null, 2));
+console.log(JSON.stringify({ ok: true, checked: [releaseWorkflowPath, wrapperPath, deployControlBundlePath, monitorPath, imageDeployPath, imageRollbackPath, composePath, vroomConfigPath, deliveryApiDockerfilePath, prismaDbPushGuardPath, deliveryApiDepsPath, deliveryApiEnvExamplePath, deliveryApiLocalEnvExamplePath, proofMediaDocPath, ssmDocumentPath, osrmHelperPath, docPath, githubDocPath, osrmDocPath, ciWorkflowPath, releaseManifestPath, releaseManifestTestPath] }, null, 2));

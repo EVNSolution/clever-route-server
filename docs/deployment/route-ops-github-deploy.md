@@ -8,7 +8,7 @@ This repo is private under the EVNSolution Free org. Do not use GitHub Environme
 
 `route-ops-release.yml` runs only by `workflow_dispatch` on `main` and has two explicit modes:
 
-- `mode=prepare` runs actor allowlist, ignore hygiene, pinned gitleaks scans, Route Ops deploy-scope guard, image build/push, deploy-control bundle creation, S3 upload, and `dryRun=true` SSM validation. It emits a `route-ops-release-manifest` artifact with the exact git SHA, image coordinates, publish evidence URL, route_engine evidence URL plus image revision label and immutable image digest, dry-run bundle URI, and `manifestSha256`. The manifest records only whether the driver APK URL handoff is present; it must not expose the raw URL.
+- `mode=prepare` runs actor allowlist, ignore hygiene, pinned gitleaks scans, Route Ops deploy-scope guard, image build/push, deploy-control bundle creation, S3 upload, and `dryRun=true` SSM validation. It emits a `route-ops-release-manifest` artifact with the exact git SHA, image coordinates, publish evidence URL, dry-run bundle URI, and `manifestSha256`. The manifest records only whether the driver APK URL handoff is present; it must not expose the raw URL.
 - `mode=promote` accepts only `release_run_id` and `release_manifest_sha256`, downloads the prepare artifact, validates the digest/provenance, checks out the exact manifest commit, regenerates the deploy-control bundle with `dryRun=false`, and runs the same constrained SSM deploy path. Promotion must not rebuild images or accept mutable image coordinates.
 
 Job permissions stay separated: image publishing jobs may use `packages: write`; SSM jobs may use `id-token: write`; no job should need both. The workflow also preserves the Route Ops safety gates in CI and `scripts/validate-route-ops-release.mjs`.
@@ -21,13 +21,10 @@ Prepare first; this is the required no-mutation validation after changing the de
 gh workflow run route-ops-release.yml \
   --ref main \
   -f mode=prepare \
-  -f deployed_base_ref=<current-production-git-sha> \
-  -f route_engine_image=ghcr.io/evnsolution/route-engine-worker:<published-route-engine-sha> \
-  -f route_engine_image_digest=ghcr.io/evnsolution/route-engine-worker@sha256:<published-route-engine-digest> \
-  -f route_engine_publish_evidence_url=https://github.com/EVNSolution/route_engine/actions/runs/<route-engine-publish-run-id>
+  -f deployed_base_ref=<current-production-git-sha>
 ```
 
-For consolidated release prepare/promote, the runner must be able to pull the private `route_engine` GHCR package before SSM dry-run and before production promote. Configure repository secret `ROUTE_ENGINE_GHCR_READ_TOKEN` with `read:packages` scope and repository variable `ROUTE_ENGINE_GHCR_READ_USERNAME` with the token owner. If absent, the workflow falls back to `GITHUB_TOKEN`, which only works when package permissions allow this repository to read the image.
+The release contract no longer accepts a route_engine image, digest, or publish-evidence handoff. Optimizer runtime is host-env driven: `VROOM_BASE_URL` is preferred, and legacy `ROUTE_ENGINE_BASE_URL` is rollback/compatibility only.
 
 
 After the prepare run succeeds, inspect the redacted summary and the `route-ops-release-manifest` artifact. Promote only the same digest:
@@ -84,8 +81,7 @@ export DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api:$
 export DELIVERY_API_MIGRATE_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:${IMAGE_TAG}
 export ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static:${IMAGE_TAG}
 export ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-${IMAGE_TAG}
-export ROUTE_ENGINE_IMAGE=ghcr.io/evnsolution/route-engine-worker:19baa45ee4fde9d2c21cfd3985c00d3bed07b8a4
-export ROUTE_ENGINE_GRAPH_HOST_DIR=/srv/clever-route-server/data/route-engine/parquet
+# Optional legacy route_engine rollback only: export ROUTE_ENGINE_IMAGE=ghcr.io/evnsolution/route-engine-worker:<sha>
 export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
 export ROUTE_OPS_SMOKE_BASE_URL=https://clever-route.cleversystem.ai
 export ROUTE_OPS_SMOKE_SHOP_DOMAIN=dev1.tomatonofood.com
@@ -93,7 +89,7 @@ export ROUTE_OPS_SMOKE_LOGIN_SECRET=<read locally from host secret manager, neve
 scripts/deploy-route-ops-image.sh
 ```
 
-The deploy script prepares `.deploy/candidate-image.env`, prunes stale Route Ops images before pull, pulls the frontend static, runtime, migrate, and pinned `route_engine` worker images, stages the frontend artifact into a SHA-scoped `ROUTE_OPS_WEB_STATIC_VOLUME`, verifies labels and schema SHA, verifies the host-mounted `route_engine` graph parquet manifest, runs the guarded Prisma `db push` entrypoint from the candidate migrate image, smokes `route_engine` from the `delivery-api` runtime network, recreates only `delivery-api` to switch to the candidate volume and internal `ROUTE_ENGINE_BASE_URL`, runs authenticated Route Ops smoke, and promotes metadata only after smoke succeeds. The guard recomputes `apps/delivery-api/prisma/schema.prisma`, requires it to match `PRISMA_SCHEMA_SHA`, and never opts into `--accept-data-loss`; missing or mismatched schema metadata stops before Prisma touches the database. The `route-engine-cache` Docker volume is mounted at `/cache/route_engine` so completed V8 cache builds survive service recreation. On failure before backend recreation, the running backend keeps its previous static volume and the pre-deploy `delivery-api.env` is restored.
+The deploy script prepares `.deploy/candidate-image.env`, prunes stale Route Ops images before pull, pulls the frontend static/runtime/migrate images plus only configured optimizer support images, stages the frontend artifact into a SHA-scoped `ROUTE_OPS_WEB_STATIC_VOLUME`, verifies labels and schema SHA, runs the guarded Prisma `db push` entrypoint from the candidate migrate image, activates/smokes OSRM and VROOM when `VROOM_BASE_URL` is configured, activates/smokes legacy route_engine only when `ROUTE_ENGINE_BASE_URL` is configured with an explicit `ROUTE_ENGINE_IMAGE`, recreates only `delivery-api`, runs authenticated Route Ops smoke, and promotes metadata only after smoke succeeds. The guard recomputes `apps/delivery-api/prisma/schema.prisma`, requires it to match `PRISMA_SCHEMA_SHA`, and never opts into `--accept-data-loss`; missing or mismatched schema metadata stops before Prisma touches the database. On failure before backend recreation, the running backend keeps its previous static volume.
 
 ## Smoke coverage
 
@@ -109,14 +105,12 @@ The deploy script prepares `.deploy/candidate-image.env`, prunes stale Route Ops
 
 By default the standalone smoke script fails if public OpenFreeMap hosts appear in CSP. Production monitoring wraps it with the currently approved settings: `ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP=true`, `ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP_HOSTS=tiles.openfreemap.org`, and `ROUTE_OPS_EXPECT_GEOCODER_CONFIGURED=true`.
 
-The production deploy script also performs a non-customer `route_engine` smoke
-before `delivery-api` activation: `/readyz`, authenticated `POST
-/internal/warmup`, then `POST /v1/solve` against `http://route-engine:8080` from
-a one-off `delivery-api` runtime container. The warmup call forces the road graph
-V8 router cache to be built before the solve smoke, avoiding production deploys
-that pass readiness but hang on the first cold solve. The smoke expects
-`engine.name=route_engine`, `external_calls=false`, two smoke stops, and positive
-distance/duration.
+When `VROOM_BASE_URL` is configured, the production deploy script starts OSRM first,
+then VROOM, and performs a non-customer VROOM smoke from a one-off `delivery-api`
+runtime container: `GET /health` and `POST /` with a fixed two-stop payload. It
+expects `code=0`, no unassigned jobs, and both smoke jobs returned. Legacy
+route_engine smoke remains compatibility-only and runs only when
+`ROUTE_ENGINE_BASE_URL` is configured.
 
 ## Rollback
 
@@ -133,10 +127,9 @@ Rollback uses `.deploy/previous-image.env`, verifies the schema fingerprint matc
 - No production SSH key, admin smoke secret, cookie, or runtime `.env` is stored in GitHub.
 - Use a host-local GHCR read token in Docker credential storage.
 - `ROUTE_OPS_WEB_STATIC_IMAGE` and `ROUTE_OPS_WEB_STATIC_VOLUME` are deploy metadata, not runtime secrets; both must use the same immutable git SHA tag as the backend images.
-- `ROUTE_ENGINE_IMAGE` is a separately published pinned optimizer worker image,
-  not a secret. `ROUTE_ENGINE_GRAPH_HOST_DIR` must point to host-local parquet
-  artifacts provisioned from the private S3 graph artifact pointer; do not put
-  those large artifacts in the clever-route-server image layer.
+- `VROOM_IMAGE` is pinned deploy metadata, not a secret. Legacy `ROUTE_ENGINE_IMAGE`
+  is optional rollback/compatibility metadata only and is required only if host env
+  enables `ROUTE_ENGINE_BASE_URL`.
 - Keep Actions manual, timeout-bounded, and artifact-light. The consolidated release manifest and prepare/promote summaries are retained for 14 days so promote can verify the reviewed manifest digest, then operators must rerun prepare after expiry.
 - If Actions quota is exhausted, use a local maintainer build/push or the existing emergency deploy path after separate approval. For the verified no-Actions/no-GHCR-write tar fallback, follow `docs/deployment/route-ops-manual-tar-deploy.md`.
 
@@ -158,9 +151,10 @@ The wrapper resolves the single SSM-managed production node by `SSM_ROUTE_OPS_TA
 
 Route Ops web is no longer primarily baked into the `delivery-api` runtime image. The frontend build is published as `ghcr.io/evnsolution/clever-route-server-route-ops-web-static:<git-sha>`. Compose runs the `route-ops-web-static` one-shot service to copy `/opt/route-ops-web/dist` and `/opt/route-ops-web/public` into the `route-ops-web-static` named volume. `delivery-api` mounts that volume read-only at `/app/external/route-ops-web` and serves the authenticated shell/assets from `ROUTE_OPS_WEB_DIST_PATH` and `ROUTE_OPS_WEB_PUBLIC_PATH`.
 
-## Route Engine worker boundary
+## Optimizer worker boundary
 
-The Python optimizer worker remains a separate internal Compose service:
+VROOM is the preferred internal optimizer Compose service. The old Python
+route_engine service remains profile-gated compatibility only:
 
 ```text
 route-engine:
@@ -170,11 +164,7 @@ route-engine:
   graph mount: ${ROUTE_ENGINE_GRAPH_HOST_DIR}:/app/routing_engine/v7_out/parquet:ro
 ```
 
-It has no public port. `delivery-api` talks to it by the internal Compose DNS
-name `http://route-engine:8080` and a shared host-local
-`ROUTE_ENGINE_INTERNAL_TOKEN`. The deploy script generates that token only if it
-is missing and never prints it. The graph mount is mandatory for production:
-deployment provisions the approved private S3 graph artifact when needed, then
-fails closed if the host parquet files are absent, still Git LFS pointers, or do
-not match the `org.clever-route.graph-manifest-sha` label on the pinned worker
-image.
+VROOM has no public port. `delivery-api` talks to it by internal Compose DNS
+`http://vroom:3000` when `VROOM_BASE_URL` is set. Legacy route_engine has no
+public port either and is activated only when `ROUTE_ENGINE_BASE_URL` is set with
+an explicit `ROUTE_ENGINE_IMAGE`; no deploy path auto-enables it.

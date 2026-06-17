@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import {
-  ROUTE_ENGINE_EVIDENCE_CONTRACT,
   PUBLISH_EVIDENCE_CONTRACT,
   canonicalJson,
   releaseManifestDigest,
@@ -41,11 +40,6 @@ function validManifest(overrides = {}) {
     prepareRunUrl: 'https://github.com/EVNSolution/clever-route-server/actions/runs/123456789',
     publishEvidenceUrl: 'https://github.com/EVNSolution/clever-route-server/actions/runs/123456789',
     publishEvidenceContract: PUBLISH_EVIDENCE_CONTRACT,
-    routeEngineImage: `ghcr.io/evnsolution/route-engine-worker:${sha2}`,
-    routeEngineImageDigest: `ghcr.io/evnsolution/route-engine-worker@sha256:${hex64}`,
-    routeEngineImageRevision: sha2,
-    routeEnginePublishEvidenceUrl: 'https://github.com/EVNSolution/route_engine/actions/runs/987654321',
-    routeEngineEvidenceContract: ROUTE_ENGINE_EVIDENCE_CONTRACT,
     dryRunDeployControlBundleS3Uri: `s3://route-ops-artifacts-902837199612-ap-northeast-2/artifacts/route-ops/prod/deploy-control/123/${sha}/route-ops-deploy-control.tar.gz`,
     dryRunDeployControlBundleSha256: 'c'.repeat(64),
     dryRunSsmCommandId: 'cmd-123',
@@ -74,8 +68,6 @@ assert.match(validateReleasePrepareManifest(wrongEvidence).issues.join('\n'), /p
 const nonPrepare = validManifest({ mode: 'promote' });
 assert.match(validateReleasePrepareManifest(nonPrepare).issues.join('\n'), /mode must be prepare/);
 
-const badRouteEngineUrl = validManifest({ routeEnginePublishEvidenceUrl: 'https://github.com/EVNSolution/clever-route-server/actions/runs/123' });
-assert.match(validateReleasePrepareManifest(badRouteEngineUrl).issues.join('\n'), /routeEnginePublishEvidenceUrl/);
 
 const rawAppUrl = validManifest({ dryRunEvidenceSummary: { leaked: 'https://drive.google.com/file/d/example/view?usp=sharing' } });
 assert.match(validateReleasePrepareManifest(rawAppUrl).issues.join('\n'), /secret-like or raw app-download value/);
@@ -100,10 +92,4 @@ const unknownField = validManifest({ unexpected: 'nope' });
 assert.match(validateReleasePrepareManifest(unknownField).issues.join('\n'), /unknown field: unexpected/);
 
 
-const wrongRouteEngineRevision = validManifest({ routeEngineImageRevision: sha });
-assert.match(validateReleasePrepareManifest(wrongRouteEngineRevision).issues.join('\n'), /routeEngineImageRevision must match routeEngineImage tag/);
-
-const wrongRouteEngineDigest = validManifest({ routeEngineImageDigest: `ghcr.io/evnsolution/route-engine-worker:${sha2}` });
-assert.match(validateReleasePrepareManifest(wrongRouteEngineDigest).issues.join('\n'), /routeEngineImageDigest/);
-
-console.log(JSON.stringify({ ok: true, tests: 15 }));
+console.log(JSON.stringify({ ok: true, tests: 12 }));

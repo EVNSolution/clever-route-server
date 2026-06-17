@@ -21,7 +21,7 @@ export type RouteOptimizationStopSequence = {
 
 export type RouteOptimizationResult = {
   missingCoordinateStops: number;
-  source: 'route_engine';
+  source: 'route_engine' | 'vroom';
   stops: RouteOptimizationStopSequence[];
 };
 

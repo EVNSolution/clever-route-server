@@ -75,7 +75,7 @@ export async function runRouteOptimizationJob(
     outcome = routeOptimizationFailureOutcome({
       code: 'route_engine_unavailable',
       elapsedMs: elapsedSince(startedAt),
-      message: `Route Engine optimization failed unexpectedly: ${sanitizeError(error)}`,
+      message: `Route optimization failed unexpectedly: ${sanitizeError(error)}`,
     });
   }
 
@@ -165,9 +165,10 @@ export async function runRouteOptimizationJob(
       jobId: input.job.id,
       routePlanId: input.job.routePlanId,
       shopDomain: input.shopDomain,
+      source: outcome.result.source,
       stopsCount: outcome.result.stops.length,
     },
-    'route optimization job applied route_engine result',
+    'route optimization job applied optimizer result',
   );
 }
 
@@ -181,7 +182,7 @@ async function runRouteOptimizationEngine(input: {
     return routeOptimizationFailureOutcome({
       code: 'route_engine_unavailable',
       elapsedMs: elapsedSince(input.startedAt),
-      message: 'Route Engine optimization service is not configured.',
+      message: 'Route optimization service is not configured.',
     });
   }
 
@@ -196,15 +197,16 @@ async function runRouteOptimizationEngine(input: {
     detail: input.detail,
     shopDomain: input.shopDomain,
   });
-  if (result === null || result.source !== 'route_engine') {
+  if (result === null) {
     return routeOptimizationFailureOutcome({
       code: 'fallback_not_applied',
       elapsedMs: elapsedSince(input.startedAt),
-      message: 'Legacy route optimization service did not return a route_engine result; no fallback was applied.',
+      message: 'Legacy route optimization service did not return an optimizer result; no fallback was applied.',
     });
   }
   return { ok: true, result };
 }
+
 
 function routeOptimizationFailureOutcome(input: {
   code: RouteOptimizationFailureCode;
@@ -227,6 +229,6 @@ function elapsedSince(startedAt: number): number {
 
 function defaultSanitizeRouteOptimizationError(error: unknown): string {
   return error instanceof Error && error.name === 'AbortError'
-    ? 'Route Engine request aborted'
-    : 'Route Engine optimization failed';
+    ? 'Route optimization request aborted'
+    : 'Route optimization failed';
 }

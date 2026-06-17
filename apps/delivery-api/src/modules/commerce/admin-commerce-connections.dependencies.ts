@@ -17,6 +17,7 @@ import {
   type RouteEngineMode,
   type RouteEngineObjective
 } from '../route-plans/route-engine-route-optimizer.client.js';
+import { VroomRouteOptimizationClient } from '../route-plans/vroom-route-optimizer.client.js';
 import { PrismaOrderSyncRepository } from '../shopify/order-sync.repository.js';
 import { PrismaAdminNotificationRepository } from '../notifications/admin-notification.repository.js';
 import { AdminNotificationService } from '../notifications/admin-notification.service.js';
@@ -72,6 +73,8 @@ export type AdminCommerceConnectionsRuntimeEnv = Partial<
     | 'ROUTE_ENGINE_SERVICE_REGION'
     | 'ROUTE_ENGINE_TIMEOUT_MS'
     | 'ROUTE_OPS_ROUTER_COVERAGE'
+    | 'VROOM_BASE_URL'
+    | 'VROOM_TIMEOUT_MS'
     | 'WOOCOMMERCE_SHOP_TIMEZONE',
     string
   >
@@ -294,8 +297,20 @@ function readAdminUiOrderSyncService(input: {
 function readAdminUiRouteOptimizationService(
   env: AdminCommerceConnectionsRuntimeEnv
 ): Pick<AdminCommerceConnectionsUiDependencies, 'routeOptimizationService'> {
-  const baseUrl = readOptional(env.ROUTE_ENGINE_BASE_URL);
-  if (baseUrl === undefined) return {};
+  const vroomBaseUrl = readOptional(env.VROOM_BASE_URL);
+  const routeEngineBaseUrl = readOptional(env.ROUTE_ENGINE_BASE_URL);
+  if (vroomBaseUrl !== undefined && routeEngineBaseUrl !== undefined) {
+    throw new Error('VROOM_BASE_URL and ROUTE_ENGINE_BASE_URL cannot both be set for one Route Ops runtime');
+  }
+  if (vroomBaseUrl !== undefined) {
+    return {
+      routeOptimizationService: new VroomRouteOptimizationClient({
+        baseUrl: vroomBaseUrl,
+        ...optionalTimeout(env.VROOM_TIMEOUT_MS)
+      })
+    };
+  }
+  if (routeEngineBaseUrl === undefined) return {};
 
   const internalToken = readOptional(env.ROUTE_ENGINE_INTERNAL_TOKEN);
   if (internalToken === undefined) {
@@ -304,7 +319,7 @@ function readAdminUiRouteOptimizationService(
 
   return {
     routeOptimizationService: new RouteEngineRouteOptimizationClient({
-      baseUrl,
+      baseUrl: routeEngineBaseUrl,
       internalToken,
       mode: readOptionalRouteEngineMode(env.ROUTE_ENGINE_MODE),
       objective: readOptionalRouteEngineObjective(env.ROUTE_ENGINE_OBJECTIVE),

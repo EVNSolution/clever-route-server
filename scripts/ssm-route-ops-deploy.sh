@@ -15,7 +15,7 @@ GHCR_TOKEN_PARAM="${ROUTE_OPS_GHCR_TOKEN_PARAM:-/clever/deploy/github/read-token
 : "${DELIVERY_API_IMAGE:?DELIVERY_API_IMAGE is required}"
 : "${DELIVERY_API_MIGRATE_IMAGE:?DELIVERY_API_MIGRATE_IMAGE is required}"
 ROUTE_ENGINE_IMAGE_REPO="${ROUTE_ENGINE_IMAGE_REPO:-ghcr.io/evnsolution/route-engine-worker}"
-ROUTE_ENGINE_IMAGE="${ROUTE_ENGINE_IMAGE:-${ROUTE_ENGINE_IMAGE_REPO}:19baa45ee4fde9d2c21cfd3985c00d3bed07b8a4}"
+ROUTE_ENGINE_IMAGE="${ROUTE_ENGINE_IMAGE:-}"
 ROUTE_ENGINE_GRAPH_DEST_ROOT="${ROUTE_ENGINE_GRAPH_DEST_ROOT:-/srv/clever-route-server/data/route-engine/graphs}"
 ROUTE_ENGINE_GRAPH_HOST_DIR="${ROUTE_ENGINE_GRAPH_HOST_DIR:-${ROUTE_ENGINE_GRAPH_DEST_ROOT}/current/parquet}"
 ROUTE_ENGINE_GRAPH_S3_CURRENT_URI="${ROUTE_ENGINE_GRAPH_S3_CURRENT_URI:-s3://clever-route-prod-artifacts-902837199612-ap-northeast-2/route-engine/graphs/v7/current.json}"
@@ -36,7 +36,9 @@ validate_inputs() {
   [[ "$DELIVERY_API_MIGRATE_IMAGE" =~ ^ghcr\.io/evnsolution/clever-route-server-delivery-api-migrate:[0-9a-fA-F]{40}$ ]] || fail "DELIVERY_API_MIGRATE_IMAGE must be the approved migrate GHCR image with SHA tag"
   [[ "$ROUTE_OPS_WEB_STATIC_IMAGE" =~ ^ghcr\.io/evnsolution/clever-route-server-route-ops-web-static:[0-9a-fA-F]{40}$ ]] || fail "ROUTE_OPS_WEB_STATIC_IMAGE must be the approved frontend static GHCR image with SHA tag"
   [[ "$ROUTE_OPS_WEB_STATIC_VOLUME" =~ ^clever-route-route-ops-web-static-[0-9a-fA-F]{40}$ ]] || fail "ROUTE_OPS_WEB_STATIC_VOLUME must be the approved SHA-scoped frontend static Docker volume"
-  [[ "$ROUTE_ENGINE_IMAGE" =~ ^ghcr\.io/evnsolution/route-engine-worker:[0-9a-fA-F]{40}$ ]] || fail "ROUTE_ENGINE_IMAGE must be the approved route_engine worker GHCR image with SHA tag"
+  if [ -n "$ROUTE_ENGINE_IMAGE" ]; then
+    [[ "$ROUTE_ENGINE_IMAGE" =~ ^ghcr\.io/evnsolution/route-engine-worker:[0-9a-fA-F]{40}$ ]] || fail "ROUTE_ENGINE_IMAGE must be the approved route_engine worker GHCR image with SHA tag when set"
+  fi
   [[ "$ROUTE_ENGINE_GRAPH_DEST_ROOT" = /* ]] || fail "ROUTE_ENGINE_GRAPH_DEST_ROOT must be an absolute host path"
   [[ "$ROUTE_ENGINE_GRAPH_HOST_DIR" = /* ]] || fail "ROUTE_ENGINE_GRAPH_HOST_DIR must be an absolute host path"
   [[ "$ROUTE_ENGINE_GRAPH_S3_CURRENT_URI" =~ ^s3://clever-route-prod-artifacts-902837199612-ap-northeast-2/route-engine/graphs/v7/current\.json$ ]] || fail "ROUTE_ENGINE_GRAPH_S3_CURRENT_URI must point to the approved production graph current.json"
@@ -101,7 +103,7 @@ login_to_ghcr() {
   if [ "${ROUTE_OPS_SKIP_GHCR_LOGIN:-}" = "1" ]; then
     return 0
   fi
-  case "$DELIVERY_API_IMAGE $DELIVERY_API_MIGRATE_IMAGE $ROUTE_OPS_WEB_STATIC_IMAGE $ROUTE_ENGINE_IMAGE" in
+  case "$DELIVERY_API_IMAGE $DELIVERY_API_MIGRATE_IMAGE $ROUTE_OPS_WEB_STATIC_IMAGE" in
     *ghcr.io/evnsolution/clever-route-server-delivery-api*) ;;
     *) return 0 ;;
   esac

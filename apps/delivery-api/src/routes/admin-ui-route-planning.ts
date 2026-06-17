@@ -1530,7 +1530,7 @@ export function readStopOrderLines(
 
 export type OptimizedStopOrder = {
   missingCoordinateStops: number;
-  source: "clever_v1" | "route_engine";
+  source: "clever_v1" | "route_engine" | "vroom";
   stops: RouteOptimizationStopSequence[];
 };
 
@@ -1632,14 +1632,15 @@ export function buildCleverV1OptimizedStopOrder(
 export function buildRouteOptimizeNotice(
   optimized: OptimizedStopOrder,
 ): string {
-  if (optimized.source === "route_engine") {
-    return optimized.missingCoordinateStops === 0
-      ? "Route Engine optimized sequence saved."
-      : `Route Engine optimized sequence saved; ${optimized.missingCoordinateStops} stop(s) without coordinates stayed at the end.`;
-  }
+  const sourceLabel =
+    optimized.source === "route_engine"
+      ? "Route Engine"
+      : optimized.source === "vroom"
+        ? "VROOM"
+        : "CLEVER v1";
   return optimized.missingCoordinateStops === 0
-    ? "CLEVER v1 optimized sequence saved."
-    : `CLEVER v1 optimized sequence saved; ${optimized.missingCoordinateStops} stop(s) without coordinates stayed at the end.`;
+    ? `${sourceLabel} optimized sequence saved.`
+    : `${sourceLabel} optimized sequence saved; ${optimized.missingCoordinateStops} stop(s) without coordinates stayed at the end.`;
 }
 
 export function readDepotCoordinates(

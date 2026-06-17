@@ -24,10 +24,8 @@ Production execution is **not automatic**. The release workflow exists so a main
 - `mode=prepare` requires `deployed_base_ref`, validates the actor allowlist before AWS credentials are requested, builds/pushes images in a `packages: write` job, runs `dryRun=true` SSM validation in a separate `id-token: write` job, and emits the immutable `route-ops-release-manifest` artifact.
 - `mode=promote` accepts only `release_run_id` and `release_manifest_sha256`, verifies the prepare artifact, validates the manifest digest/provenance, checks out the exact commit recorded by the manifest, regenerates the bundle with `dryRun=false`, and deploys through the same custom SSM document.
 - The manifest may record `driverAppDownloadUrlPresent: true/false`, but must not contain the raw driver APK URL.
-- The manifest records `routeEnginePublishEvidenceUrl`, the machine-verified route_engine image revision, and the immutable route_engine digest so promote can re-verify the optimizer image before production mutation.
+- The manifest no longer carries route_engine image/digest/evidence; promote verifies the Route Ops release manifest only. Optimizer activation is host-env driven (`VROOM_BASE_URL` preferred with internal DNS `http://vroom:3000`; legacy `ROUTE_ENGINE_BASE_URL` compatibility only).
 - No job should have both `packages: write` and `id-token: write`.
-
-For consolidated release prepare/promote, the runner must be able to pull the private `route_engine` GHCR package before SSM dry-run and before production promote. Configure repository secret `ROUTE_ENGINE_GHCR_READ_TOKEN` with `read:packages` scope and repository variable `ROUTE_ENGINE_GHCR_READ_USERNAME` with the token owner. If absent, the workflow falls back to `GITHUB_TOKEN`, which only works when package permissions allow this repository to read the image.
 
 
 ## Deploy-control S3 artifact handoff
@@ -49,6 +47,7 @@ The bundle contains only these reviewed, non-secret deploy-control files plus a 
 ```text
 infra/caddy/Caddyfile
 infra/compose/docker-compose.prod.yml
+infra/vroom/config.yml
 scripts/deploy-route-ops-image.sh
 scripts/rollback-route-ops-image.sh
 scripts/ssm-route-ops-deploy.sh
@@ -117,10 +116,7 @@ The first run after changing this flow must be a no-mutation dry validation. Pre
 gh workflow run route-ops-release.yml \
   --ref main \
   -f mode=prepare \
-  -f deployed_base_ref=<current-production-git-sha> \
-  -f route_engine_image=ghcr.io/evnsolution/route-engine-worker:<published-route-engine-sha> \
-  -f route_engine_image_digest=ghcr.io/evnsolution/route-engine-worker@sha256:<published-route-engine-digest> \
-  -f route_engine_publish_evidence_url=https://github.com/EVNSolution/route_engine/actions/runs/<route-engine-publish-run-id>
+  -f deployed_base_ref=<current-production-git-sha>
 ```
 
 Dry validation must show: selected bucket/key, bundle byte size, expected and actual SHA-256, reduced SSM parameter sizes, deploy-control source checkout pinned to the image tag, source regular-file validation before staging, successful S3 upload, successful host S3 download, inline manifest validation result, and `no production files synced and no deploy script executed`. In the consolidated lane, the prepare run must also publish a `route-ops-release-manifest` artifact whose `manifestSha256` is the only promote handoff.
@@ -323,8 +319,8 @@ Pin the reviewed `DocumentVersion` in GitHub variable `SSM_ROUTE_OPS_DOCUMENT_VE
 `scripts/ssm-route-ops-deploy.sh` runs on the EC2 host. It:
 
 - validates image tag/schema/image coordinates again, including the `route-ops-web-static` frontend artifact image and SHA-scoped Docker volume derived from the immutable git SHA;
-- derives and validates the pinned `route_engine` worker image and an absolute
-  `ROUTE_ENGINE_GRAPH_HOST_DIR`;
+- derives frontend static artifact metadata and validates optional legacy
+  `ROUTE_ENGINE_IMAGE` only when provided;
 - exports `ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route` by default and all production compose calls use `docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME"`; the top-level compose `name:` is defense in depth, not the primary selector;
 - takes an exclusive `.deploy/route-ops-deploy.lock` lock before `.deploy/*` mutation;
 - reads `CLEVER_ADMIN_WEB_LOGIN_SECRET` locally from `infra/env/delivery-api.env` if `ROUTE_OPS_SMOKE_LOGIN_SECRET` is not already set by a host-local secure source;
@@ -336,16 +332,11 @@ Pin the reviewed `DocumentVersion` in GitHub variable `SSM_ROUTE_OPS_DOCUMENT_VE
   stdout/stderr, and `route_engine_smoke.monitor.log` while route_engine warmup
   or solve smoke is running. These files are intentionally host-local so they
   survive SSM output truncation, GitHub job timeout, and partial deploy failure;
-- calls `scripts/deploy-route-ops-image.sh`, which first backs up host-local
-  `infra/env/delivery-api.env`, enables the internal `route_engine` URL/token
-  if unset, stages the `route-ops-web-static` artifact into a SHA-scoped named
-  volume, validates the mounted `route_engine` graph parquet manifest against
-  the worker image label, smokes `route_engine` from a one-off `delivery-api`
-  runtime container with bounded client-side timeouts, including authenticated
-  `/internal/warmup` before the solve smoke, and only then recreates
-  `delivery-api` to switch mounts; the `route-engine-cache` Docker volume is
-  mounted at `/cache/route_engine` so completed V8 cache builds survive service
-  recreation;
+- calls `scripts/deploy-route-ops-image.sh`, which stages the
+  `route-ops-web-static` artifact, runs guarded migration/backfill, activates
+  OSRM and VROOM only when `VROOM_BASE_URL` is configured, activates legacy
+  route_engine only when `ROUTE_ENGINE_BASE_URL` is configured, and only then
+  recreates `delivery-api` to switch mounts;
 - treats `EXIT`, `INT`, and `TERM` as cleanup paths: if the deploy is interrupted
   before `delivery-api` promotion, the wrapper restores the pre-deploy host env
   and stops a candidate `route-engine` service that was already started;
@@ -598,13 +589,13 @@ Fallback split lane:
 6. After dry validation passes and production mutation is separately approved,
    rerun with `dry_run=false`.
 7. The host deploy script verifies labels/schema, verifies the mounted
-   `route_engine` graph manifest, then runs the candidate migrate image through
+   optimizer service state only when enabled, then runs the candidate migrate image through
    `apps/delivery-api/scripts/guard-prisma-db-push.sh`. The guard recomputes
    `apps/delivery-api/prisma/schema.prisma`, requires it to match the manifest
    `PRISMA_SCHEMA_SHA`, and does not pass `--accept-data-loss`; a missing or
    mismatched schema SHA fails before Prisma can run `db push`. After that it
-   smokes `route_engine` from the `delivery-api` runtime network and runs Route
-   Ops smoke before promotion.
+   smokes VROOM/legacy route_engine only when configured and runs Route Ops smoke
+   before promotion.
 8. If smoke fails, the deploy script restores current image metadata and the workflow fails.
 
 ## Rollback
@@ -618,14 +609,13 @@ scripts/rollback-route-ops-image.sh
 ```
 
 The rollback script uses `.deploy/previous-image.env`, checks schema
-compatibility, verifies any enabled `route_engine` graph mount before activation,
-runs smoke before promotion, and restores pre-rollback current metadata on
-failure. During the first static-artifact cutover, rollback normalizes legacy
+compatibility, verifies any enabled optimizer before activation, runs smoke
+before promotion, and restores pre-rollback current metadata on failure. During
+the first static-artifact cutover, rollback normalizes legacy
 `.deploy/current-image.env` or `.deploy/previous-image.env` files that lack
-`ROUTE_OPS_WEB_STATIC_IMAGE`, `ROUTE_OPS_WEB_STATIC_VOLUME`,
-`ROUTE_ENGINE_IMAGE`, or `ROUTE_ENGINE_GRAPH_HOST_DIR` by deriving the
-SHA-scoped defaults before backend service mutation. If that derivation cannot
-be proven, rollback fails closed.
+`ROUTE_OPS_WEB_STATIC_IMAGE` or `ROUTE_OPS_WEB_STATIC_VOLUME` by deriving the
+SHA-scoped defaults before backend service mutation. If that derivation cannot be
+proven, rollback fails closed.
 
 ## Public SSH inbound policy
 
@@ -646,8 +636,8 @@ The deploy workflow is cheap by design:
 - no package push;
 - manual-only;
 - 120-minute workflow timeout with a 2-hour custom SSM document timeout, because
-  cold route_engine graph/cache activation can be much longer than a normal web
-  image swap and must fail with trace evidence rather than truncated SSM output;
+  optimizer and map-service startup can be much longer than a normal web image
+  swap and must fail with trace evidence rather than truncated SSM output;
 - no scheduled/nightly runs;
 - no large artifacts.
 
@@ -659,19 +649,15 @@ The SSM path deploys three immutable images for the same clever-route-server git
 SHA: runtime, migrate, and `route-ops-web-static`. The host wrapper exports
 `ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static:<ImageTag>`
 and `ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-<ImageTag>`
-when the command does not pass them explicitly. It also exports the separately
-published `ROUTE_ENGINE_IMAGE`, `ROUTE_ENGINE_GRAPH_HOST_DIR`, and the approved
-private S3 graph pointer. The deploy script writes those values to
-`.deploy/candidate-image.env`, pulls
-`route-ops-web-static delivery-api delivery-api-migrate route-engine`, runs the
-one-shot `route-ops-web-static` compose service against the candidate
-SHA-scoped volume, starts `route-engine` only after graph manifest validation,
-and only then recreates `delivery-api` to mount the new static volume and load
-the internal `ROUTE_ENGINE_BASE_URL=http://route-engine:8080` contract. This
-preserves the backend-authenticated `/admin/ui/app/*` shell while keeping the
-frontend static artifact and the Python optimizer worker separately
-identifiable and avoiding a candidate SPA/current backend mismatch during
-migration failure.
+when the command does not pass them explicitly. The deploy script writes those
+values to `.deploy/candidate-image.env`, pulls the core images plus only
+configured optimizer support images, runs the one-shot `route-ops-web-static`
+compose service against the candidate SHA-scoped volume, starts OSRM/VROOM only
+when `VROOM_BASE_URL` is configured, starts legacy route_engine only when
+`ROUTE_ENGINE_BASE_URL` is configured, and only then recreates `delivery-api` to
+mount the new static volume. This preserves the backend-authenticated
+`/admin/ui/app/*` shell while keeping frontend static artifact and optimizer
+runtime separately identifiable.
 
 ## Route Engine production graph contract
 
@@ -695,12 +681,11 @@ manifest is absent or mismatched locally. They then fail closed before
 - the normalized host manifest does not match the worker image label
   `org.clever-route.graph-manifest-sha`.
 
-On the first production activation, `deploy-route-ops-image.sh` backs up
-`infra/env/delivery-api.env`, fills only missing `ROUTE_ENGINE_*` values, writes
-`ROUTE_ENGINE_GRAPH_MANIFEST_SHA` from the image label, starts the internal
-`route-engine` service through `--profile route-engine`, and smokes it from a
-one-off `delivery-api` container. If any graph or smoke check fails, it restores
-the pre-deploy env file and does not promote `.deploy/current-image.env`.
+On compatibility activation, `deploy-route-ops-image.sh` starts the internal
+`route-engine` service through `--profile route-engine` only when
+`ROUTE_ENGINE_BASE_URL` is already configured and `ROUTE_ENGINE_IMAGE` is
+explicit. It no longer fills missing `ROUTE_ENGINE_*` values or auto-enables
+route_engine.
 
 The graph smoke is non-customer: it calls `/readyz`, authenticated
 `POST /internal/warmup`, and `POST /v1/solve` with a fixed Toronto-area two-stop

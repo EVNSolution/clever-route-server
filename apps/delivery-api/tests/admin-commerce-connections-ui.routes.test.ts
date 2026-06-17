@@ -234,6 +234,38 @@ describe("Admin WooCommerce connection UI routes", () => {
     expect(dependencies?.routeOptimizationService).toBeDefined();
   });
 
+  test("enables VROOM optimization with base URL and rejects mixed optimizer configuration", () => {
+    const base = createBaseAdminCommerceDependencies();
+
+    const dependencies = loadAdminCommerceConnectionsUiDependencies({
+      adminCommerceConnections: base.dependencies,
+      env: {
+        CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
+        CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
+        DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
+        VROOM_BASE_URL: "http://vroom:3000",
+        VROOM_TIMEOUT_MS: "3000",
+      },
+      nodeEnv: "production",
+    });
+
+    expect(dependencies?.routeOptimizationService).toBeDefined();
+    expect(() =>
+      loadAdminCommerceConnectionsUiDependencies({
+        adminCommerceConnections: base.dependencies,
+        env: {
+          CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
+          CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
+          DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
+          ROUTE_ENGINE_BASE_URL: "http://route-engine:8080",
+          ROUTE_ENGINE_INTERNAL_TOKEN: "internal-token",
+          VROOM_BASE_URL: "http://vroom:3000",
+        },
+        nodeEnv: "production",
+      }),
+    ).toThrow("VROOM_BASE_URL and ROUTE_ENGINE_BASE_URL cannot both be set");
+  });
+
   test("uses Woo-compatible Route Ops repositories even when legacy Shopify admin dependencies are configured", async () => {
     const base = createBaseAdminCommerceDependencies();
     const shopFindUnique = vi.fn(() => Promise.resolve({ id: "shop-id" }));
@@ -4640,7 +4672,7 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
-  test("saves route_engine optimized stop order via API when configured", async () => {
+  test("saves external optimizer stop order via API when configured", async () => {
     const baseDetail = routePlanDetail();
     const detail = {
       ...baseDetail,
@@ -4666,7 +4698,7 @@ describe("Admin WooCommerce connection UI routes", () => {
     >(() =>
       Promise.resolve({
         missingCoordinateStops: 0,
-        source: "route_engine",
+        source: "vroom",
         stops: [
           {
             deliveryStopId: "stop-2",
@@ -4812,7 +4844,7 @@ describe("Admin WooCommerce connection UI routes", () => {
         if (call?.outcome.ok === false) {
           expect(call.outcome.failure.code).toBe("route_engine_unavailable");
           expect(call.outcome.failure.message).toContain(
-            "Route Engine optimization failed unexpectedly",
+            "Route optimization failed unexpectedly",
           );
         }
       });

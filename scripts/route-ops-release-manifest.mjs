@@ -5,18 +5,14 @@ import { fileURLToPath } from 'node:url';
 
 export const ROUTE_OPS_RELEASE_WORKFLOW_PATH = '.github/workflows/route-ops-release.yml';
 export const ROUTE_OPS_RELEASE_SCHEMA_VERSION = 1;
-export const ROUTE_ENGINE_EVIDENCE_CONTRACT = 'image-revision-label-digest-and-audit-url';
 export const PUBLISH_EVIDENCE_CONTRACT = 'self-prepare-run-builds-route-ops-images';
 
 const HEX40 = /^[0-9a-f]{40}$/i;
 const HEX64 = /^[0-9a-f]{64}$/i;
 const GITHUB_RUN_URL = /^https:\/\/github\.com\/EVNSolution\/clever-route-server\/actions\/runs\/\d+\/?$/;
-const ROUTE_ENGINE_RUN_URL = /^https:\/\/github\.com\/EVNSolution\/route_engine\/actions\/runs\/\d+\/?$/;
 const RUNTIME_IMAGE_REPO = 'ghcr.io/evnsolution/clever-route-server-delivery-api';
 const MIGRATE_IMAGE_REPO = 'ghcr.io/evnsolution/clever-route-server-delivery-api-migrate';
 const FRONTEND_STATIC_IMAGE_REPO = 'ghcr.io/evnsolution/clever-route-server-route-ops-web-static';
-const ROUTE_ENGINE_IMAGE = /^ghcr\.io\/evnsolution\/route-engine-worker:[0-9a-f]{40}$/i;
-const ROUTE_ENGINE_IMAGE_DIGEST = /^ghcr\.io\/evnsolution\/route-engine-worker@sha256:[0-9a-f]{64}$/i;
 const DEPLOY_CONTROL_BUNDLE_S3_URI = /^s3:\/\/route-ops-artifacts-902837199612-ap-northeast-2\/artifacts\/route-ops\/prod\/deploy-control\/\d+\/[0-9a-f]{40}\/route-ops-deploy-control\.tar\.gz$/i;
 const CONTROL_CHARS = /[\x00-\x1F\x7F]/;
 
@@ -47,11 +43,6 @@ const REQUIRED_PREPARE_FIELDS = [
   'prepareRunUrl',
   'publishEvidenceUrl',
   'publishEvidenceContract',
-  'routeEngineImage',
-  'routeEngineImageDigest',
-  'routeEngineImageRevision',
-  'routeEnginePublishEvidenceUrl',
-  'routeEngineEvidenceContract',
   'dryRunDeployControlBundleS3Uri',
   'dryRunDeployControlBundleSha256',
   'dryRunSsmCommandId',
@@ -74,7 +65,6 @@ const SECRET_VALUE_PATTERNS = [
 const ALLOWED_URL_KEYS = new Set([
   'prepareRunUrl',
   'publishEvidenceUrl',
-  'routeEnginePublishEvidenceUrl',
   'dryRunDeployControlBundleS3Uri',
 ]);
 const ALLOWED_SECRETISH_KEYS = new Set([
@@ -157,12 +147,6 @@ function collectManifestIssues(manifest) {
   if (!GITHUB_RUN_URL.test(manifest.prepareRunUrl ?? '')) issues.push('prepareRunUrl must be a clever-route-server Actions run URL');
   if (!GITHUB_RUN_URL.test(manifest.publishEvidenceUrl ?? '')) issues.push('publishEvidenceUrl must be a clever-route-server Actions run URL');
   if (manifest.publishEvidenceContract !== PUBLISH_EVIDENCE_CONTRACT) issues.push(`publishEvidenceContract must be ${PUBLISH_EVIDENCE_CONTRACT}`);
-  if (!ROUTE_ENGINE_IMAGE.test(manifest.routeEngineImage ?? '')) issues.push('routeEngineImage must be ghcr.io/evnsolution/route-engine-worker:<40-hex-sha>');
-  if (!ROUTE_ENGINE_IMAGE_DIGEST.test(manifest.routeEngineImageDigest ?? '')) issues.push('routeEngineImageDigest must be ghcr.io/evnsolution/route-engine-worker@sha256:<64-hex-digest>');
-  if (!HEX40.test(manifest.routeEngineImageRevision ?? '')) issues.push('routeEngineImageRevision must be a 40-hex commit SHA');
-  if (typeof manifest.routeEngineImage === 'string' && typeof manifest.routeEngineImageRevision === 'string' && manifest.routeEngineImage.split(':').pop().toLowerCase() !== manifest.routeEngineImageRevision.toLowerCase()) issues.push('routeEngineImageRevision must match routeEngineImage tag');
-  if (!ROUTE_ENGINE_RUN_URL.test(manifest.routeEnginePublishEvidenceUrl ?? '')) issues.push('routeEnginePublishEvidenceUrl must be a route_engine Actions run URL');
-  if (manifest.routeEngineEvidenceContract !== ROUTE_ENGINE_EVIDENCE_CONTRACT) issues.push(`routeEngineEvidenceContract must be ${ROUTE_ENGINE_EVIDENCE_CONTRACT}`);
   if (manifest.driverAppDownloadUrlPresent !== true && manifest.driverAppDownloadUrlPresent !== false) issues.push('driverAppDownloadUrlPresent must be a boolean');
   if (!HEX64.test(manifest.manifestSha256 ?? '')) issues.push('manifestSha256 must be a SHA256 hex digest');
   const expectedDigest = releaseManifestDigest(manifest);

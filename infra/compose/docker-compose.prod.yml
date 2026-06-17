@@ -76,7 +76,11 @@ services:
 
 
   route-engine:
-    image: ${ROUTE_ENGINE_IMAGE:-ghcr.io/evnsolution/route-engine-worker:disabled}
+    # Legacy compatibility profile only. Deploy/rollback scripts require an
+    # explicit ROUTE_ENGINE_IMAGE before ROUTE_ENGINE_BASE_URL can enable this.
+    # The fallback keeps `docker compose config` usable when the profile is off;
+    # it is not a route_engine image and must not be used for activation.
+    image: ${ROUTE_ENGINE_IMAGE:-alpine:3.20}
     env_file:
       - ../env/delivery-api.env
     environment:
@@ -89,6 +93,20 @@ services:
     volumes:
       - ${ROUTE_ENGINE_GRAPH_HOST_DIR:-/srv/clever-route-server/data/route-engine/parquet}:/app/routing_engine/v7_out/parquet:ro
       - route-engine-cache:/cache/route_engine
+
+
+  vroom:
+    image: ${VROOM_IMAGE:-ghcr.io/vroom-project/vroom-docker@sha256:247d5683d6745c755d718a156d16b16aac80baccc276a003a68b986c13883b08}
+    depends_on:
+      osrm-ontario:
+        condition: service_started
+    expose:
+      - "3000"
+    profiles:
+      - vroom
+    restart: unless-stopped
+    volumes:
+      - ../vroom/config.yml:/conf/config.yml:ro
 
   postgres:
     image: postgres:17-bookworm

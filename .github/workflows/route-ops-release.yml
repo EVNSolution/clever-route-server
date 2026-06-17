@@ -28,15 +28,6 @@ on:
         required: false
         type: boolean
         default: false
-      route_engine_image:
-        description: "Prepare only: ghcr.io/evnsolution/route-engine-worker:<40-hex-sha>"
-        required: false
-      route_engine_image_digest:
-        description: "Prepare only: ghcr.io/evnsolution/route-engine-worker@sha256:<64-hex-digest>"
-        required: false
-      route_engine_publish_evidence_url:
-        description: "Prepare only: successful route_engine worker image publish workflow run URL; image revision label and digest are machine-verified"
-        required: false
       release_run_id:
         description: "Promote only: successful Route Ops release prepare run id"
         required: false
@@ -56,7 +47,6 @@ env:
   RUNTIME_IMAGE: ghcr.io/evnsolution/clever-route-server-delivery-api
   MIGRATE_IMAGE: ghcr.io/evnsolution/clever-route-server-delivery-api-migrate
   FRONTEND_STATIC_IMAGE: ghcr.io/evnsolution/clever-route-server-route-ops-web-static
-  ROUTE_ENGINE_IMAGE_REPO: ghcr.io/evnsolution/route-engine-worker
   ROUTE_OPS_DEPLOY_CONTROL_BUCKET: route-ops-artifacts-902837199612-ap-northeast-2
   ROUTE_OPS_DEPLOY_CONTROL_PREFIX: artifacts/route-ops/prod/deploy-control
   ROUTE_OPS_EXPECTED_AWS_ACCOUNT_ID: "902837199612"
@@ -71,7 +61,6 @@ jobs:
     permissions:
       contents: read
     outputs:
-      route_engine_tag: ${{ steps.validate_inputs.outputs.route_engine_tag }}
       prepare_run_url: ${{ steps.validate_inputs.outputs.prepare_run_url }}
     steps:
       - name: Require main branch
@@ -115,36 +104,9 @@ jobs:
         shell: bash
         env:
           DEPLOYED_BASE_REF: ${{ inputs.deployed_base_ref }}
-          ROUTE_ENGINE_IMAGE: ${{ inputs.route_engine_image }}
-          ROUTE_ENGINE_IMAGE_DIGEST: ${{ inputs.route_engine_image_digest }}
-          ROUTE_ENGINE_PUBLISH_EVIDENCE_URL: ${{ inputs.route_engine_publish_evidence_url }}
         run: |
           set -euo pipefail
           if [ -z "$DEPLOYED_BASE_REF" ]; then echo "deployed_base_ref is required for prepare." >&2; exit 1; fi
-          if [ "${ROUTE_ENGINE_IMAGE%:*}" != "$ROUTE_ENGINE_IMAGE_REPO" ]; then
-            echo "route_engine_image must use exact repository ${ROUTE_ENGINE_IMAGE_REPO}" >&2
-            exit 1
-          fi
-          route_engine_tag="${ROUTE_ENGINE_IMAGE##*:}"
-          if ! [[ "$route_engine_tag" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            echo "route_engine_image must be ${ROUTE_ENGINE_IMAGE_REPO}:<40-hex-sha>" >&2
-            exit 1
-          fi
-          expected_digest_prefix="${ROUTE_ENGINE_IMAGE_REPO}@sha256:"
-          if [[ "$ROUTE_ENGINE_IMAGE_DIGEST" != "${expected_digest_prefix}"* ]]; then
-            echo "route_engine_image_digest must use exact repository ${ROUTE_ENGINE_IMAGE_REPO}@sha256:<64-hex-digest>" >&2
-            exit 1
-          fi
-          route_engine_digest_sha="${ROUTE_ENGINE_IMAGE_DIGEST:${#expected_digest_prefix}}"
-          if ! [[ "$route_engine_digest_sha" =~ ^[0-9a-fA-F]{64}$ ]]; then
-            echo "route_engine_image_digest must be ${ROUTE_ENGINE_IMAGE_REPO}@sha256:<64-hex-digest>" >&2
-            exit 1
-          fi
-          if ! [[ "$ROUTE_ENGINE_PUBLISH_EVIDENCE_URL" =~ ^https://github\.com/EVNSolution/route_engine/actions/runs/[0-9]+/?$ ]]; then
-            echo "route_engine_publish_evidence_url must be the route_engine worker image publish run URL." >&2
-            exit 1
-          fi
-          echo "route_engine_tag=$route_engine_tag" >> "$GITHUB_OUTPUT"
           echo "prepare_run_url=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" >> "$GITHUB_OUTPUT"
 
       - name: Guard ignore hygiene
@@ -319,42 +281,6 @@ jobs:
           git merge-base --is-ancestor "$IMAGE_TAG" origin/main
           git checkout --detach "$IMAGE_TAG"
 
-      - name: Log in to GHCR for route_engine image verification
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # docker/login-action v4.2.0 (Node 24) pinned to full commit SHA.
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ vars.ROUTE_ENGINE_GHCR_READ_USERNAME || github.actor }}
-          password: ${{ secrets.ROUTE_ENGINE_GHCR_READ_TOKEN || secrets.GITHUB_TOKEN }}
-
-      - name: Verify route_engine worker image revision label
-        id: route_engine_image
-        shell: bash
-        env:
-          ROUTE_ENGINE_IMAGE: ${{ inputs.route_engine_image }}
-          ROUTE_ENGINE_IMAGE_DIGEST: ${{ inputs.route_engine_image_digest }}
-        run: |
-          set -euo pipefail
-          route_engine_tag="${ROUTE_ENGINE_IMAGE##*:}"
-          docker pull "$ROUTE_ENGINE_IMAGE"
-          revision="$(docker image inspect "$ROUTE_ENGINE_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
-          if [ -z "$revision" ]; then echo "route_engine image must include org.opencontainers.image.revision label." >&2; exit 1; fi
-          if [ "$revision" != "$route_engine_tag" ]; then echo "route_engine image revision label must match tag; revision=$revision tag=$route_engine_tag" >&2; exit 1; fi
-          repo_digests="$(docker image inspect "$ROUTE_ENGINE_IMAGE" --format '{{ json .RepoDigests }}')"
-          if ! python3 - "$ROUTE_ENGINE_IMAGE_DIGEST" "$repo_digests" <<'PY'
-          import json
-          import sys
-          expected, raw = sys.argv[1:3]
-          digests = json.loads(raw)
-          if expected not in digests:
-              print(f'route_engine image digest mismatch; expected {expected}; got {digests}', file=sys.stderr)
-              sys.exit(1)
-          PY
-          then
-            exit 1
-          fi
-          echo "route_engine_image_revision=$revision" >> "$GITHUB_OUTPUT"
-          echo "route_engine_image_digest=$ROUTE_ENGINE_IMAGE_DIGEST" >> "$GITHUB_OUTPUT"
-
       - name: Prepare dry-run deploy-control files
         id: source_sync
         shell: bash
@@ -363,8 +289,6 @@ jobs:
           PRISMA_SCHEMA_SHA: ${{ needs.prepare_publish.outputs.prisma_schema_sha }}
           DELIVERY_API_IMAGE: ${{ needs.prepare_publish.outputs.delivery_api_image }}
           DELIVERY_API_MIGRATE_IMAGE: ${{ needs.prepare_publish.outputs.delivery_api_migrate_image }}
-          ROUTE_ENGINE_IMAGE: ${{ inputs.route_engine_image }}
-          ROUTE_ENGINE_PUBLISH_EVIDENCE_URL: ${{ inputs.route_engine_publish_evidence_url }}
           PUBLISH_EVIDENCE_URL: ${{ needs.prepare_validate.outputs.prepare_run_url }}
           DRY_RUN: "true"
           DEPLOY_CONTROL_BUCKET: ${{ env.ROUTE_OPS_DEPLOY_CONTROL_BUCKET }}
@@ -387,15 +311,14 @@ jobs:
           done
           python3 - \
             "$IMAGE_TAG" "$PRISMA_SCHEMA_SHA" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" \
-            "$ROUTE_ENGINE_IMAGE" "$ROUTE_ENGINE_PUBLISH_EVIDENCE_URL" "$PUBLISH_EVIDENCE_URL" "$DRY_RUN" \
-            "$GITHUB_RUN_ID" "$DEPLOY_CONTROL_BUCKET" "$DEPLOY_CONTROL_PREFIX" "$bundle_name" "$s3_uri" \
+            "$PUBLISH_EVIDENCE_URL" "$DRY_RUN" "$GITHUB_RUN_ID" \
+            "$DEPLOY_CONTROL_BUCKET" "$DEPLOY_CONTROL_PREFIX" "$bundle_name" "$s3_uri" \
             "${deploy_control_files[@]}" <<'PY' > "$staging_dir/deploy-control-manifest.json"
           import json
           import sys
           (
-              image_tag, schema_sha, runtime_image, migrate_image, route_engine_image,
-              route_engine_publish_evidence_url, publish_evidence_url, dry_run, github_run_id,
-              artifact_bucket, artifact_prefix, bundle_file, s3_uri, *deploy_control_files,
+              image_tag, schema_sha, runtime_image, migrate_image, publish_evidence_url, dry_run,
+              github_run_id, artifact_bucket, artifact_prefix, bundle_file, s3_uri, *deploy_control_files,
           ) = sys.argv[1:]
           print(json.dumps({
               'schemaVersion': 1,
@@ -406,8 +329,6 @@ jobs:
               'prismaSchemaSha': schema_sha,
               'deliveryApiImage': runtime_image,
               'deliveryApiMigrateImage': migrate_image,
-              'routeEngineImage': route_engine_image,
-              'routeEnginePublishEvidenceUrl': route_engine_publish_evidence_url,
               'publishEvidenceUrl': publish_evidence_url,
               'artifactBucket': artifact_bucket,
               'artifactPrefix': artifact_prefix,
@@ -606,10 +527,6 @@ jobs:
           DELIVERY_API_MIGRATE_IMAGE: ${{ needs.prepare_publish.outputs.delivery_api_migrate_image }}
           ROUTE_OPS_WEB_STATIC_IMAGE: ${{ needs.prepare_publish.outputs.route_ops_web_static_image }}
           PREPARE_RUN_URL: ${{ needs.prepare_validate.outputs.prepare_run_url }}
-          ROUTE_ENGINE_IMAGE: ${{ inputs.route_engine_image }}
-          ROUTE_ENGINE_IMAGE_DIGEST: ${{ steps.route_engine_image.outputs.route_engine_image_digest }}
-          ROUTE_ENGINE_IMAGE_REVISION: ${{ steps.route_engine_image.outputs.route_engine_image_revision }}
-          ROUTE_ENGINE_PUBLISH_EVIDENCE_URL: ${{ inputs.route_engine_publish_evidence_url }}
           BUNDLE_S3_URI: ${{ steps.source_sync.outputs.s3_uri }}
           BUNDLE_SHA: ${{ steps.source_sync.outputs.bundle_sha }}
           DRY_RUN_COMMAND_ID: ${{ steps.command.outputs.command_id }}
@@ -650,11 +567,6 @@ jobs:
             prepareRunUrl: process.env.PREPARE_RUN_URL,
             publishEvidenceUrl: process.env.PREPARE_RUN_URL,
             publishEvidenceContract: 'self-prepare-run-builds-route-ops-images',
-            routeEngineImage: process.env.ROUTE_ENGINE_IMAGE,
-            routeEngineImageDigest: process.env.ROUTE_ENGINE_IMAGE_DIGEST,
-            routeEngineImageRevision: process.env.ROUTE_ENGINE_IMAGE_REVISION,
-            routeEnginePublishEvidenceUrl: process.env.ROUTE_ENGINE_PUBLISH_EVIDENCE_URL,
-            routeEngineEvidenceContract: 'image-revision-label-digest-and-audit-url',
             dryRunDeployControlBundleS3Uri: process.env.BUNDLE_S3_URI,
             dryRunDeployControlBundleSha256: process.env.BUNDLE_SHA,
             dryRunSsmCommandId: process.env.DRY_RUN_COMMAND_ID,
@@ -716,10 +628,6 @@ jobs:
       prisma_schema_sha: ${{ steps.validate_manifest.outputs.prisma_schema_sha }}
       delivery_api_image: ${{ steps.validate_manifest.outputs.delivery_api_image }}
       delivery_api_migrate_image: ${{ steps.validate_manifest.outputs.delivery_api_migrate_image }}
-      route_engine_image: ${{ steps.validate_manifest.outputs.route_engine_image }}
-      route_engine_image_digest: ${{ steps.validate_manifest.outputs.route_engine_image_digest }}
-      route_engine_image_revision: ${{ steps.validate_manifest.outputs.route_engine_image_revision }}
-      route_engine_publish_evidence_url: ${{ steps.validate_manifest.outputs.route_engine_publish_evidence_url }}
       publish_evidence_url: ${{ steps.validate_manifest.outputs.publish_evidence_url }}
       commit_sha: ${{ steps.validate_manifest.outputs.commit_sha }}
     steps:
@@ -813,10 +721,6 @@ jobs:
             echo "prisma_schema_sha=$(node -e "const m=require(process.argv[1]); console.log(m.prismaSchemaSha)" "$manifest_path")"
             echo "delivery_api_image=$(node -e "const m=require(process.argv[1]); console.log(m.deliveryApiImage)" "$manifest_path")"
             echo "delivery_api_migrate_image=$(node -e "const m=require(process.argv[1]); console.log(m.deliveryApiMigrateImage)" "$manifest_path")"
-            echo "route_engine_image=$(node -e "const m=require(process.argv[1]); console.log(m.routeEngineImage)" "$manifest_path")"
-            echo "route_engine_image_digest=$(node -e "const m=require(process.argv[1]); console.log(m.routeEngineImageDigest)" "$manifest_path")"
-            echo "route_engine_image_revision=$(node -e "const m=require(process.argv[1]); console.log(m.routeEngineImageRevision)" "$manifest_path")"
-            echo "route_engine_publish_evidence_url=$(node -e "const m=require(process.argv[1]); console.log(m.routeEnginePublishEvidenceUrl)" "$manifest_path")"
             echo "publish_evidence_url=$(node -e "const m=require(process.argv[1]); console.log(m.publishEvidenceUrl)" "$manifest_path")"
           } >> "$GITHUB_OUTPUT"
 
@@ -852,40 +756,6 @@ jobs:
           git merge-base --is-ancestor "$COMMIT_SHA" origin/main
           git checkout --detach "$COMMIT_SHA"
 
-      - name: Log in to GHCR for route_engine image verification
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # docker/login-action v4.2.0 (Node 24) pinned to full commit SHA.
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ vars.ROUTE_ENGINE_GHCR_READ_USERNAME || github.actor }}
-          password: ${{ secrets.ROUTE_ENGINE_GHCR_READ_TOKEN || secrets.GITHUB_TOKEN }}
-
-      - name: Verify route_engine worker image revision label
-        shell: bash
-        env:
-          ROUTE_ENGINE_IMAGE: ${{ needs.promote_validate.outputs.route_engine_image }}
-          ROUTE_ENGINE_IMAGE_DIGEST: ${{ needs.promote_validate.outputs.route_engine_image_digest }}
-          ROUTE_ENGINE_IMAGE_REVISION: ${{ needs.promote_validate.outputs.route_engine_image_revision }}
-        run: |
-          set -euo pipefail
-          route_engine_tag="${ROUTE_ENGINE_IMAGE##*:}"
-          docker pull "$ROUTE_ENGINE_IMAGE"
-          revision="$(docker image inspect "$ROUTE_ENGINE_IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
-          if [ -z "$revision" ]; then echo "route_engine image must include org.opencontainers.image.revision label." >&2; exit 1; fi
-          if [ "$revision" != "$route_engine_tag" ] || [ "$revision" != "$ROUTE_ENGINE_IMAGE_REVISION" ]; then echo "route_engine image revision label must match manifest and tag; revision=$revision manifest=$ROUTE_ENGINE_IMAGE_REVISION tag=$route_engine_tag" >&2; exit 1; fi
-          repo_digests="$(docker image inspect "$ROUTE_ENGINE_IMAGE" --format '{{ json .RepoDigests }}')"
-          if ! python3 - "$ROUTE_ENGINE_IMAGE_DIGEST" "$repo_digests" <<'PY'
-          import json
-          import sys
-          expected, raw = sys.argv[1:3]
-          digests = json.loads(raw)
-          if expected not in digests:
-              print(f'route_engine image digest mismatch; expected {expected}; got {digests}', file=sys.stderr)
-              sys.exit(1)
-          PY
-          then
-            exit 1
-          fi
-
       - name: Prepare promote deploy-control files
         id: source_sync
         shell: bash
@@ -894,8 +764,6 @@ jobs:
           PRISMA_SCHEMA_SHA: ${{ needs.promote_validate.outputs.prisma_schema_sha }}
           DELIVERY_API_IMAGE: ${{ needs.promote_validate.outputs.delivery_api_image }}
           DELIVERY_API_MIGRATE_IMAGE: ${{ needs.promote_validate.outputs.delivery_api_migrate_image }}
-          ROUTE_ENGINE_IMAGE: ${{ needs.promote_validate.outputs.route_engine_image }}
-          ROUTE_ENGINE_PUBLISH_EVIDENCE_URL: ${{ needs.promote_validate.outputs.route_engine_publish_evidence_url }}
           PUBLISH_EVIDENCE_URL: ${{ needs.promote_validate.outputs.publish_evidence_url }}
           DRY_RUN: "false"
           DEPLOY_CONTROL_BUCKET: ${{ env.ROUTE_OPS_DEPLOY_CONTROL_BUCKET }}
@@ -915,15 +783,14 @@ jobs:
           for file in "${deploy_control_files[@]}"; do mkdir -p "$staging_dir/$(dirname "$file")"; cp -p "$file" "$staging_dir/$file"; done
           python3 - \
             "$IMAGE_TAG" "$PRISMA_SCHEMA_SHA" "$DELIVERY_API_IMAGE" "$DELIVERY_API_MIGRATE_IMAGE" \
-            "$ROUTE_ENGINE_IMAGE" "$ROUTE_ENGINE_PUBLISH_EVIDENCE_URL" "$PUBLISH_EVIDENCE_URL" "$DRY_RUN" \
-            "$GITHUB_RUN_ID" "$DEPLOY_CONTROL_BUCKET" "$DEPLOY_CONTROL_PREFIX" "$bundle_name" "$s3_uri" \
+            "$PUBLISH_EVIDENCE_URL" "$DRY_RUN" "$GITHUB_RUN_ID" \
+            "$DEPLOY_CONTROL_BUCKET" "$DEPLOY_CONTROL_PREFIX" "$bundle_name" "$s3_uri" \
             "${deploy_control_files[@]}" <<'PY' > "$staging_dir/deploy-control-manifest.json"
           import json
           import sys
           (
-              image_tag, schema_sha, runtime_image, migrate_image, route_engine_image,
-              route_engine_publish_evidence_url, publish_evidence_url, dry_run, github_run_id,
-              artifact_bucket, artifact_prefix, bundle_file, s3_uri, *deploy_control_files,
+              image_tag, schema_sha, runtime_image, migrate_image, publish_evidence_url, dry_run,
+              github_run_id, artifact_bucket, artifact_prefix, bundle_file, s3_uri, *deploy_control_files,
           ) = sys.argv[1:]
           print(json.dumps({
               'schemaVersion': 1,
@@ -934,8 +801,6 @@ jobs:
               'prismaSchemaSha': schema_sha,
               'deliveryApiImage': runtime_image,
               'deliveryApiMigrateImage': migrate_image,
-              'routeEngineImage': route_engine_image,
-              'routeEnginePublishEvidenceUrl': route_engine_publish_evidence_url,
               'publishEvidenceUrl': publish_evidence_url,
               'artifactBucket': artifact_bucket,
               'artifactPrefix': artifact_prefix,

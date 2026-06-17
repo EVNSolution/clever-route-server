@@ -184,8 +184,9 @@ cd "$APP_DIR"
 current_env=.deploy/current-image.env
 test -f "$current_env"
 current_route_engine_image="$(grep -m1 '^ROUTE_ENGINE_IMAGE=' "$current_env" | cut -d= -f2- || true)"
-: "${current_route_engine_image:?missing current ROUTE_ENGINE_IMAGE in $current_env}"
-export ROUTE_ENGINE_IMAGE="$current_route_engine_image"
+if [ -n "$current_route_engine_image" ]; then
+  export ROUTE_ENGINE_IMAGE="$current_route_engine_image"
+fi
 current_route_engine_graph_host_dir="$(grep -m1 '^ROUTE_ENGINE_GRAPH_HOST_DIR=' "$current_env" | cut -d= -f2- || true)"
 if [ -n "$current_route_engine_graph_host_dir" ]; then
   export ROUTE_ENGINE_GRAPH_HOST_DIR="$current_route_engine_graph_host_dir"

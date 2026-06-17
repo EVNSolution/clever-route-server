@@ -242,6 +242,31 @@ file_mode() {
   stat -f %Lp "$1" 2>/dev/null || stat -c %a "$1"
 }
 
+assert_default_optimizer_pull_only() {
+  local compose_log="$1"
+  grep -q -- "pull route-ops-web-static delivery-api delivery-api-migrate" "$compose_log"
+  if grep -Eq -- "--profile (route-engine|vroom).* pull| pull .* route-engine| pull .* vroom" "$compose_log"; then
+    echo "optimizer services were pulled despite no optimizer host env" >&2
+    cat "$compose_log" >&2
+    exit 1
+  fi
+}
+
+assert_route_engine_not_smoked_when_disabled() {
+  local compose_log="$1"
+  local output_log="$2"
+  if grep -q -- "ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS" "$compose_log"; then
+    echo "route_engine smoke ran despite no ROUTE_ENGINE_BASE_URL host env" >&2
+    cat "$compose_log" >&2
+    exit 1
+  fi
+  if grep -q "Smoking route_engine" "$output_log"; then
+    echo "route_engine smoke output appeared despite no ROUTE_ENGINE_BASE_URL host env" >&2
+    cat "$output_log" >&2
+    exit 1
+  fi
+}
+
 prepare_app_dir() {
   local tmp="$1"
   mkdir -p "$tmp/.deploy" "$tmp/infra/compose" "$tmp/scripts" "$tmp/data/route-engine/parquet"
@@ -292,8 +317,6 @@ run_success_case() {
   PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
   DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
   DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
-  ROUTE_ENGINE_IMAGE="$ROUTE_ENGINE_IMAGE" \
-  ROUTE_ENGINE_GRAPH_HOST_DIR="$tmp/data/route-engine/parquet" \
     scripts/deploy-route-ops-image.sh > "$tmp/output.log"
 
   grep -q "${RUNTIME_REPO}:${STALE_TAG}" "$tmp/state/removed.log"
@@ -305,7 +328,6 @@ run_success_case() {
     "${RUNTIME_IMAGE}" \
     "${MIGRATE_IMAGE}" \
     "${STATIC_IMAGE}" \
-    "${ROUTE_ENGINE_IMAGE}" \
     "${RUNTIME_REPO}:${ACTIVE_TAG}"; do
     if grep -q "$protected" "$tmp/state/removed.log"; then
       echo "protected image was removed: $protected" >&2
@@ -316,7 +338,6 @@ run_success_case() {
   grep -q "DELIVERY_API_MIGRATE_IMAGE=${MIGRATE_IMAGE}" "$tmp/.deploy/current-image.env"
   grep -q "ROUTE_OPS_WEB_STATIC_IMAGE=${STATIC_IMAGE}" "$tmp/.deploy/current-image.env"
   grep -q "ROUTE_OPS_WEB_STATIC_VOLUME=${STATIC_VOLUME}" "$tmp/.deploy/current-image.env"
-  grep -q "ROUTE_ENGINE_IMAGE=${ROUTE_ENGINE_IMAGE}" "$tmp/.deploy/current-image.env"
   test -d "$tmp/data/driver-proof-media"
   grep -q -- "-R 100:101 $tmp/data/driver-proof-media" "$tmp/state/chown.log"
   test "$(file_mode "$tmp/data/driver-proof-media")" = "750"
@@ -324,21 +345,18 @@ run_success_case() {
   grep -q "DELIVERY_API_MIGRATE_IMAGE=${MIGRATE_REPO}:${CURRENT_TAG}" "$tmp/.deploy/previous-image.env"
   grep -q "ROUTE_OPS_WEB_STATIC_VOLUME=${CURRENT_STATIC_VOLUME}" "$tmp/.deploy/previous-image.env"
   grep -q -- "-p clever-route" "$tmp/state/compose.log"
-  grep -q -- "--profile route-engine pull route-ops-web-static delivery-api delivery-api-migrate route-engine" "$tmp/state/compose.log"
+  assert_default_optimizer_pull_only "$tmp/state/compose.log"
   grep -q -- "woocommerce:order-items:backfill -- --apply" "$tmp/state/compose.log"
-  grep -q -- "-e ROUTE_ENGINE_READY_SMOKE_TIMEOUT_MS -e ROUTE_ENGINE_WARMUP_SMOKE_TIMEOUT_MS -e ROUTE_ENGINE_SOLVE_SMOKE_TIMEOUT_MS -e ROUTE_ENGINE_SKIP_SOLVE_SMOKE delivery-api node" "$tmp/state/compose.log"
-  grep -q "Smoking route_engine from the delivery-api runtime network: readyTimeoutMs=5000 warmupTimeoutMs=600000 solveTimeoutMs=180000 skipSolve=0" "$tmp/output.log"
+  assert_route_engine_not_smoked_when_disabled "$tmp/state/compose.log" "$tmp/output.log"
   local trace_dir
   trace_dir="$(find "$tmp/.deploy/traces" -mindepth 1 -maxdepth 1 -type d | head -n1)"
   test -n "$trace_dir"
   test -s "$trace_dir/state.jsonl"
   test -f "$trace_dir/deploy.log"
-  test -f "$trace_dir/route_engine_smoke.monitor.log"
   grep -q '"event":"step_start".*"step":"ensure_driver_proof_media_host_dir"' "$trace_dir/state.jsonl"
   grep -q '"event":"step_start".*"step":"backfill_woocommerce_order_items"' "$trace_dir/state.jsonl"
   grep -q '"event":"step_start".*"step":"ensure_route_engine"' "$trace_dir/state.jsonl"
-  grep -q '"event":"route_engine_smoke_end".*"status":"success"' "$trace_dir/state.jsonl"
-  grep -q 'route_engine monitor step=route_engine_smoke' "$trace_dir/route_engine_smoke.monitor.log"
+  grep -q "route_engine disabled in infra/env/delivery-api.env; skipping route_engine service activation." "$tmp/output.log"
   grep -q "up --no-build --force-recreate route-ops-web-static" "$tmp/state/compose.log"
   grep -q "up -d --no-build --force-recreate --no-deps caddy" "$tmp/state/compose.log"
   if grep -q "compose --env-file" "$tmp/state/docker.log"; then
@@ -374,8 +392,6 @@ run_headroom_ok_still_prunes_before_pull_case() {
   PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
   DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
   DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
-  ROUTE_ENGINE_IMAGE="$ROUTE_ENGINE_IMAGE" \
-  ROUTE_ENGINE_GRAPH_HOST_DIR="$tmp/data/route-engine/parquet" \
     scripts/deploy-route-ops-image.sh > "$tmp/output.log"
 
   grep -q "${RUNTIME_REPO}:${STALE_TAG}" "$tmp/state/removed.log"
@@ -384,7 +400,7 @@ run_headroom_ok_still_prunes_before_pull_case() {
   grep -q "Route Ops image retention cleanup finished" "$tmp/output.log"
 
   local pull_line
-  pull_line="$(grep -n "docker compose .* --profile route-engine pull route-ops-web-static delivery-api delivery-api-migrate route-engine" "$tmp/state/docker.log" | head -n1 | cut -d: -f1)"
+  pull_line="$(grep -n "docker compose .* pull route-ops-web-static delivery-api delivery-api-migrate" "$tmp/state/docker.log" | head -n1 | cut -d: -f1)"
   if [ -z "$pull_line" ]; then
     echo "docker compose pull was not recorded" >&2
     cat "$tmp/state/docker.log" >&2
@@ -415,7 +431,6 @@ run_headroom_ok_still_prunes_before_pull_case() {
     "${RUNTIME_IMAGE}" \
     "${MIGRATE_IMAGE}" \
     "${STATIC_IMAGE}" \
-    "${ROUTE_ENGINE_IMAGE}" \
     "${RUNTIME_REPO}:${ACTIVE_TAG}"; do
     if grep -q "$protected" "$tmp/state/removed.log"; then
       echo "protected image was removed: $protected" >&2
@@ -562,7 +577,7 @@ run_legacy_rollback_metadata_case() {
   grep -q "ROUTE_OPS_WEB_STATIC_IMAGE=${STATIC_REPO}:${PREVIOUS_TAG}" "$tmp/.deploy/current-image.env"
   grep -q "ROUTE_OPS_WEB_STATIC_VOLUME=${PREVIOUS_STATIC_VOLUME}" "$tmp/.deploy/current-image.env"
   grep -q "ROUTE_ENGINE_IMAGE=${ROUTE_ENGINE_IMAGE}" "$tmp/.deploy/current-image.env"
-  grep -q -- "--profile route-engine pull route-ops-web-static delivery-api delivery-api-migrate route-engine" "$tmp/state/compose.log"
+  assert_default_optimizer_pull_only "$tmp/state/compose.log"
   grep -q "up --no-build --force-recreate route-ops-web-static" "$tmp/state/compose.log"
   grep -q '"routeOpsWebStaticImage":"'"${STATIC_REPO}:${PREVIOUS_TAG}"'"' "$tmp/.deploy/deploy-history.jsonl"
   grep -q '"routeOpsWebStaticVolume":"'"${PREVIOUS_STATIC_VOLUME}"'"' "$tmp/.deploy/deploy-history.jsonl"
@@ -653,9 +668,9 @@ run_deploy_backfill_failure_restores_current_static_case() {
   fi
 }
 
-run_deploy_route_engine_smoke_failure_restores_host_env_case() {
+run_deploy_route_engine_disabled_smoke_failure_flag_is_ignored_case() {
   local tmp
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-deploy-route-engine-fail.XXXXXX")"
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-deploy-route-engine-disabled.XXXXXX")"
   trap 'rm -rf "$tmp"' RETURN
   prepare_app_dir "$tmp"
   make_fake_bin "$tmp"
@@ -665,36 +680,30 @@ OSRM_BASE_URL=http://osrm-ontario:5000
 OSRM_TIMEOUT_MS=10000
 EOF_ENV
 
-  if PATH="$tmp/bin:$PATH" \
-    FAKE_DOCKER_STATE="$tmp/state" \
-    FAKE_DOCKER_ROOT="$tmp/docker-root" \
-    FAKE_DF_MODE="recover" \
-    FAKE_ROUTE_ENGINE_SMOKE_FAIL=1 \
-    APP_DIR="$tmp" \
-    ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1 \
-    ROUTE_OPS_SMOKE_LOGIN_SECRET="unit-test-secret-not-real" \
-    IMAGE_TAG="$IMAGE_TAG" \
-    PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
-    DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
-    DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
-    ROUTE_ENGINE_IMAGE="$ROUTE_ENGINE_IMAGE" \
-    ROUTE_ENGINE_GRAPH_HOST_DIR="$tmp/data/route-engine/parquet" \
-    ROUTE_OPS_WEB_STATIC_IMAGE="$STATIC_IMAGE" \
-      scripts/deploy-route-ops-image.sh > "$tmp/output.log" 2>&1; then
-    echo "deploy route_engine smoke failure unexpectedly passed" >&2
-    exit 1
-  fi
+  PATH="$tmp/bin:$PATH" \
+  FAKE_DOCKER_STATE="$tmp/state" \
+  FAKE_DOCKER_ROOT="$tmp/docker-root" \
+  FAKE_DF_MODE="recover" \
+  FAKE_ROUTE_ENGINE_SMOKE_FAIL=1 \
+  APP_DIR="$tmp" \
+  ROUTE_OPS_DEPLOY_LOCK_FORCE_MKDIR=1 \
+  ROUTE_OPS_SMOKE_LOGIN_SECRET="unit-test-secret-not-real" \
+  IMAGE_TAG="$IMAGE_TAG" \
+  PRISMA_SCHEMA_SHA="$SCHEMA_SHA" \
+  DELIVERY_API_IMAGE="$RUNTIME_IMAGE" \
+  DELIVERY_API_MIGRATE_IMAGE="$MIGRATE_IMAGE" \
+  ROUTE_ENGINE_IMAGE="$ROUTE_ENGINE_IMAGE" \
+  ROUTE_ENGINE_GRAPH_HOST_DIR="$tmp/data/route-engine/parquet" \
+  ROUTE_OPS_WEB_STATIC_IMAGE="$STATIC_IMAGE" \
+    scripts/deploy-route-ops-image.sh > "$tmp/output.log" 2>&1
 
-  grep -q "Deploy failed after route_engine service mutation but before Route Ops backend mutation; stopping route_engine" "$tmp/output.log"
   local trace_dir
   trace_dir="$(find "$tmp/.deploy/traces" -mindepth 1 -maxdepth 1 -type d | head -n1)"
   test -n "$trace_dir"
   test -s "$trace_dir/state.jsonl"
-  test -f "$trace_dir/route_engine_smoke.monitor.log"
   test -f "$trace_dir/deploy.log"
-  grep -q '"event":"route_engine_smoke_end".*"status":"failed"' "$trace_dir/state.jsonl"
-  grep -q '"detail":"route_engine_smoke_failed".*"event":"snapshot"' "$trace_dir/state.jsonl"
-  grep -q -- "--env-file .deploy/candidate-image.env .*--profile route-engine stop route-engine" "$tmp/state/compose.log"
+  assert_route_engine_not_smoked_when_disabled "$tmp/state/compose.log" "$tmp/output.log"
+  grep -q "route_engine disabled in infra/env/delivery-api.env; skipping route_engine service activation." "$tmp/output.log"
   grep -q '^OSRM_BASE_URL=http://osrm-ontario:5000$' "$tmp/infra/env/delivery-api.env"
   grep -q '^OSRM_TIMEOUT_MS=10000$' "$tmp/infra/env/delivery-api.env"
   if grep -q '^ROUTE_ENGINE_' "$tmp/infra/env/delivery-api.env"; then
@@ -702,11 +711,7 @@ EOF_ENV
     cat "$tmp/infra/env/delivery-api.env" >&2
     exit 1
   fi
-  if grep -q "up -d --no-build --force-recreate --no-deps delivery-api" "$tmp/state/compose.log"; then
-    echo "delivery-api was mutated after route_engine smoke failure" >&2
-    cat "$tmp/state/compose.log" >&2
-    exit 1
-  fi
+  grep -q "up -d --no-build --force-recreate --no-deps delivery-api" "$tmp/state/compose.log"
 }
 
 run_deploy_route_engine_smoke_failure_restores_current_route_engine_case() {
@@ -753,7 +758,7 @@ EOF_ENV
   fi
   grep -q '^ROUTE_ENGINE_BASE_URL=http://route-engine:8080$' "$tmp/infra/env/delivery-api.env"
   grep -q '^ROUTE_ENGINE_TIMEOUT_MS=120000$' "$tmp/infra/env/delivery-api.env"
-  grep -q '^ROUTE_ENGINE_GRAPH_MANIFEST_SHA=pre-deploy-manifest$' "$tmp/infra/env/delivery-api.env"
+  grep -q "^ROUTE_ENGINE_GRAPH_MANIFEST_SHA=${ROUTE_ENGINE_GRAPH_MANIFEST_SHA}$" "$tmp/infra/env/delivery-api.env"
   if grep -q "up -d --no-build --force-recreate --no-deps delivery-api" "$tmp/state/compose.log"; then
     echo "delivery-api was mutated after route_engine smoke failure" >&2
     cat "$tmp/state/compose.log" >&2
@@ -893,7 +898,7 @@ run_rollback_rejects_shared_current_static_volume_case
 run_deploy_static_failure_restores_current_static_case
 run_deploy_migrate_failure_restores_current_static_case
 run_deploy_backfill_failure_restores_current_static_case
-run_deploy_route_engine_smoke_failure_restores_host_env_case
+run_deploy_route_engine_disabled_smoke_failure_flag_is_ignored_case
 run_deploy_route_engine_smoke_failure_restores_current_route_engine_case
 run_rollback_static_failure_restores_current_static_case
 run_rollback_migrate_failure_restores_current_static_case
