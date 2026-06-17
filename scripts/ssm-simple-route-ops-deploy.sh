@@ -128,6 +128,7 @@ ROUTE_OPS_WEB_STATIC_VOLUME=__STATIC_VOLUME__
 VROOM_IMAGE=__VROOM_IMAGE__
 BASE_URL=__BASE_URL__
 DRY_RUN=__DRY_RUN__
+COMPOSE_FILE_B64=__COMPOSE_FILE_B64__
 GHCR_USERNAME_PARAM="${ROUTE_OPS_GHCR_USERNAME_PARAM:-/clever/deploy/github/username}"
 GHCR_TOKEN_PARAM="${ROUTE_OPS_GHCR_TOKEN_PARAM:-/clever/deploy/github/read-token}"
 cd "$APP_DIR"
@@ -139,7 +140,9 @@ printf 'simple deploy preflight: commit=%s channel=%s runtime=%s static=%s volum
 command -v docker >/dev/null
 command -v aws >/dev/null
 command -v python3 >/dev/null
-[ -f "$COMPOSE_FILE" ]
+command -v base64 >/dev/null
+mkdir -p "$(dirname "$COMPOSE_FILE")"
+printf '%s' "$COMPOSE_FILE_B64" | base64 -d > "$COMPOSE_FILE"
 [ -f infra/env/delivery-api.env ]
 cat > .deploy/simple-candidate-image.env <<EOF_ENV
 IMAGE_TAG=$CHANNEL_TAG
@@ -247,6 +250,7 @@ replacements = {
     '__VROOM_IMAGE__': shlex.quote(os.environ['VROOM_IMAGE']),
     '__BASE_URL__': shlex.quote(os.environ['BASE_URL']),
     '__DRY_RUN__': shlex.quote(os.environ['DRY_RUN']),
+    '__COMPOSE_FILE_B64__': shlex.quote(os.environ['COMPOSE_FILE_B64']),
 }
 for key, value in replacements.items():
     script = script.replace(key, value)
@@ -260,7 +264,8 @@ if [ "$BUILD_AND_PUSH" = "1" ]; then
   build_and_push
 fi
 
-export APP_DIR COMPOSE_FILE COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL DRY_RUN
+COMPOSE_FILE_B64="$(base64 < "$COMPOSE_FILE" | tr -d '\n')"
+export APP_DIR COMPOSE_FILE COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL DRY_RUN COMPOSE_FILE_B64
 parameters_path="$(mktemp /tmp/route-ops-simple-ssm.XXXXXX)"
 write_parameters "$parameters_path"
 if [ "$SEND_COMMAND" = "0" ]; then
@@ -278,10 +283,14 @@ COMMAND_ID="$(aws ssm send-command \
   --query Command.CommandId \
   --output text)"
 printf 'SSM_SIMPLE_COMMAND_ID=%s\nSSM_SIMPLE_INSTANCE_ID=%s\n' "$COMMAND_ID" "$INSTANCE_ID"
+set +e
 aws ssm wait command-executed --region "$AWS_REGION" --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID"
+wait_status=$?
+set -e
 aws ssm get-command-invocation \
   --region "$AWS_REGION" \
   --command-id "$COMMAND_ID" \
   --instance-id "$INSTANCE_ID" \
   --query '{Status:Status,ResponseCode:ResponseCode,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' \
   --output json
+exit "$wait_status"
