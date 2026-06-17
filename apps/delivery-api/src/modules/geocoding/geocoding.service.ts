@@ -319,6 +319,10 @@ export function buildGeocodingQueries(address: GeocodingAddress): GeocodingQuery
       : null;
 
   return uniqueGeocodingQueries([
+    hasPostalCode && postalOnly !== null
+      ? buildFreeformQuery(postalOnly, 'freeform_postal_only')
+      : null,
+    structuredPostalOnly,
     structuredWithoutUnit,
     structuredFull,
     withoutUnit === null ? null : buildFreeformQuery(withoutUnit, 'freeform_without_unit'),
@@ -331,10 +335,6 @@ export function buildGeocodingQueries(address: GeocodingAddress): GeocodingQuery
     hasCity && fullWithoutCity !== null
       ? buildFreeformQuery(fullWithoutCity, 'freeform_no_city')
       : null,
-    hasPostalCode && postalOnly !== null
-      ? buildFreeformQuery(postalOnly, 'freeform_postal_only')
-      : null,
-    structuredPostalOnly,
     structuredWithoutUnitNoPostal,
     structuredFullNoPostal,
     hasPostalCode && withoutUnitAndPostal !== null

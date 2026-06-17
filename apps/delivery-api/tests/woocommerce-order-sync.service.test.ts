@@ -406,7 +406,7 @@ describe('WooCommerceOrderSyncService', () => {
   });
 
 
-  test('pre-persist geocoding resolves Woo unit addresses using fallback street queries', async () => {
+  test('pre-persist geocoding tries postal code before fallback street queries', async () => {
     const repository = createRepositoryHarness();
     const provider = {
       geocodeAddress: vi.fn((query: GeocodingQuery) => {
@@ -443,8 +443,9 @@ describe('WooCommerceOrderSyncService', () => {
 
     await service.syncOrders({ orders: [wooOrder], reason: 'webhook' });
 
-    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(1, expect.objectContaining({ shape: 'structured_without_unit' }));
-    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(3, expect.objectContaining({ shape: 'freeform_without_unit' }));
+    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(1, expect.objectContaining({ shape: 'freeform_postal_only' }));
+    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(2, expect.objectContaining({ shape: 'structured_postal_only' }));
+    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(5, expect.objectContaining({ shape: 'freeform_without_unit' }));
     const upsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
     expect(upsert?.synced.deliveryStop).toEqual(
       expect.objectContaining({
