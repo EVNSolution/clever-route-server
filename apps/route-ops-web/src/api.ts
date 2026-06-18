@@ -172,9 +172,7 @@ export async function getWooOrderSyncRun(
 }
 
 export async function getLatestWooOrderSync(): Promise<WooSyncStatusResponse> {
-  return apiGet<WooSyncStatusResponse>(
-    "/admin/ui/app/api/orders/sync/latest",
-  );
+  return apiGet<WooSyncStatusResponse>("/admin/ui/app/api/orders/sync/latest");
 }
 
 export async function geocodeSettings(input: {
@@ -252,9 +250,15 @@ export async function saveRoute(input: {
     "PATCH",
     input.csrfToken,
     {
-      ...(Object.hasOwn(input, "driverId") ? { driverId: input.driverId ?? null } : {}),
-      ...(input.expectedUpdatedAt === undefined ? {} : { expectedUpdatedAt: input.expectedUpdatedAt }),
-      ...(input.routeEndMode === undefined ? {} : { routeEndMode: input.routeEndMode }),
+      ...(Object.hasOwn(input, "driverId")
+        ? { driverId: input.driverId ?? null }
+        : {}),
+      ...(input.expectedUpdatedAt === undefined
+        ? {}
+        : { expectedUpdatedAt: input.expectedUpdatedAt }),
+      ...(input.routeEndMode === undefined
+        ? {}
+        : { routeEndMode: input.routeEndMode }),
       ...(input.stops === undefined ? {} : { stops: input.stops }),
     },
   );
@@ -398,6 +402,7 @@ export async function saveSettings(input: {
   defaultDepotLatitude: number | null;
   defaultDepotLongitude: number | null;
   locale: string;
+  routeOpsUiSettings: StoreSettingsDto["routeOpsUiSettings"];
   routeScopeConfig?: StoreSettingsDto["routeScopeConfig"];
 }): Promise<SettingsResponse> {
   return apiMutation<SettingsResponse>(

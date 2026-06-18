@@ -3,6 +3,13 @@ import { describe, expect, test } from 'vitest';
 import { withWorkspaceQuery } from '../src/api';
 import { defaultRouteScopeConfig } from '../src/routeScopeConfig';
 import {
+  createReminderPlan,
+  defaultRouteOpsUiSettings,
+  hasReminderDuplicate,
+  insertTemplateToken,
+  listUnknownTemplateTokens
+} from '../src/settingsUi';
+import {
   applyClientOrderFilters,
   buildAreaOptionSourceFilters,
   buildOrderFetchQuery,
@@ -33,6 +40,17 @@ import {
 import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStopDto } from '../src/types';
 
 describe('route ops web state helpers', () => {
+  test('manages route ops UI reminder and template helpers without rendering real order values', () => {
+    const existing = [{ daysBefore: 1, id: 'existing', timeOfDay: '09:00' }];
+    const next = createReminderPlan(existing);
+
+    expect(next).toEqual(expect.objectContaining({ daysBefore: 2, timeOfDay: '09:00' }));
+    expect(hasReminderDuplicate([...existing, next])).toBe(false);
+    expect(hasReminderDuplicate([...existing, { daysBefore: 1, id: 'dupe', timeOfDay: '09:00' }])).toBe(true);
+    expect(insertTemplateToken('Delivery date:', 'deliveryDate')).toBe('Delivery date: {{deliveryDate}}');
+    expect(listUnknownTemplateTokens('Hi {{customerName}} {{badToken}}')).toEqual(['badToken']);
+  });
+
   test('serializes order filters without empty/all values', () => {
     expect(buildOrderQuery({ deliveryArea: 'Toronto', deliveryDate: '2026-05-27', deliveryStatus: 'all', scope: 'planning', search: '#1001', serviceType: 'EVENING_DELIVERY', tab: 'planned' })).toBe('deliveryDate=2026-05-27&deliveryArea=Toronto&scope=planning&tab=planned&serviceType=EVENING_DELIVERY&search=%231001');
   });
@@ -368,6 +386,7 @@ describe('route ops web state helpers', () => {
       defaultDepotLatitude: 43.6532,
       defaultDepotLongitude: -79.3832,
       locale: 'en-CA',
+      routeOpsUiSettings: defaultRouteOpsUiSettings(),
       routeScopeConfig: defaultRouteScopeConfig(),
       shopDomain: 'tenant.example.test'
     })).toEqual({
@@ -383,6 +402,7 @@ describe('route ops web state helpers', () => {
       defaultDepotLatitude: null,
       defaultDepotLongitude: null,
       locale: 'en-CA',
+      routeOpsUiSettings: defaultRouteOpsUiSettings(),
       routeScopeConfig: defaultRouteScopeConfig(),
       shopDomain: 'tenant.example.test'
     })).toBeNull();
@@ -391,6 +411,7 @@ describe('route ops web state helpers', () => {
       defaultDepotLatitude: 43.6532,
       defaultDepotLongitude: -79.3832,
       locale: 'ko-KR',
+      routeOpsUiSettings: defaultRouteOpsUiSettings(),
       routeScopeConfig: defaultRouteScopeConfig(),
       shopDomain: 'tenant.example.test'
     })?.label).toBe('매장');

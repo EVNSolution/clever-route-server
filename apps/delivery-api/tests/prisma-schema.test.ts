@@ -34,6 +34,10 @@ const orderItemsMigrationPath = new URL(
   '../prisma/migrations/20260616093000_add_order_items/migration.sql',
   import.meta.url
 );
+const routeOpsUiSettingsMigrationPath = new URL(
+  '../prisma/migrations/20260618022500_add_route_ops_ui_settings/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
@@ -58,6 +62,7 @@ describe('Prisma schema', () => {
     expect(schema).toContain('defaultDepotLongitude');
     expect(schema).toContain('locale');
     expect(schema).toContain('routeScopeConfig');
+    expect(schema).toContain('routeOpsUiSettings');
     expect(schema).toMatch(/@@unique\(\[shopDomain\]\)/);
   });
 
@@ -241,3 +246,13 @@ describe('Prisma schema', () => {
     expect(migration).toContain('"order_items_shopId_productId_variationId_idx"');
   });
 });
+
+  test('adds route ops UI settings without dropping route scope config', async () => {
+    const schema = await readSchema();
+    const migration = await readFile(routeOpsUiSettingsMigrationPath, 'utf8');
+
+    expect(schema).toContain('routeOpsUiSettings              Json?');
+    expect(schema).toContain('routeScopeConfig                Json?');
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "routeOpsUiSettings" JSONB');
+    expect(migration).not.toContain('DROP COLUMN "routeScopeConfig"');
+  });
