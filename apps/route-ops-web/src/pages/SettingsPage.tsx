@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import type { ReactElement } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { KeyboardEvent, ReactElement } from "react";
 
 import { geocodeSettings, getSettings, saveSettings } from "../api";
 import { RouteOpsMap } from "../components/maps/RouteOpsMap";
@@ -36,6 +36,9 @@ export function SettingsPage({
   const [geocoding, setGeocoding] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [templateModalOpen, setTemplateModalOpen] = useState(false);
+  const templateModalPanelRef = useRef<HTMLDivElement | null>(null);
+  const templateModalOpenerRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     getSettings()
@@ -61,6 +64,13 @@ export function SettingsPage({
     ),
   ].filter((value, index, values) => values.indexOf(value) === index);
   const canSave = !reminderDuplicate && unknownTokens.length === 0;
+
+  useEffect(() => {
+    if (!templateModalOpen) return;
+    const modal = templateModalPanelRef.current;
+    const firstFocusable = getFocusableModalElements(modal)[0];
+    firstFocusable?.focus();
+  }, [templateModalOpen]);
 
   const updateDraft = (patch: Partial<StoreSettingsDto>): void => {
     setSettingsState((current) => {
@@ -174,6 +184,34 @@ export function SettingsPage({
     }
   };
 
+  const closeTemplateModal = (): void => {
+    setTemplateModalOpen(false);
+    window.requestAnimationFrame(() => templateModalOpenerRef.current?.focus());
+  };
+
+  const onTemplateModalKeyDown = (
+    event: KeyboardEvent<HTMLDivElement>,
+  ): void => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeTemplateModal();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = getFocusableModalElements(templateModalPanelRef.current);
+    if (focusable.length === 0) return;
+    const activeIndex = focusable.indexOf(document.activeElement as HTMLElement);
+    const nextFocusIndex = getNextTemplateModalFocusIndex({
+      currentIndex: activeIndex,
+      focusableCount: focusable.length,
+      shiftKey: event.shiftKey,
+    });
+    if (nextFocusIndex !== null) {
+      event.preventDefault();
+      focusable[nextFocusIndex]?.focus();
+    }
+  };
+
   const depotOrders = depotAsOrders(draft, t.depot, t.defaultDepot);
   return (
     <section
@@ -230,11 +268,7 @@ export function SettingsPage({
             </div>
           </SettingsCategorySection>
 
-          <details className="settings-category settings-disclosure" open>
-            <summary>
-              <span className="eyebrow">{t.languageEyebrow}</span>
-              <strong>{t.languageTitle}</strong>
-            </summary>
+          <section className="settings-category settings-language-card">
             <label className="settings-field settings-field--wide">
               {t.language}
               <select
@@ -247,7 +281,7 @@ export function SettingsPage({
                 <option value="ko-KR">{t.korean}</option>
               </select>
             </label>
-          </details>
+          </section>
 
           <SettingsCategorySection
             description={t.deliveryDefaultsDescription}
@@ -368,56 +402,34 @@ export function SettingsPage({
                   <p className="error-text">{t.duplicateReminder}</p>
                 ) : null}
               </div>
-              <div className="settings-subsection">
-                <h3>{t.emailTemplate}</h3>
-                <label className="settings-field settings-field--wide">
-                  {t.templateSubject}
-                  <input
-                    value={
-                      normalizedUiSettings.emailNotifications.template.subject
-                    }
-                    onChange={(event) =>
-                      updateTemplate({ subject: event.target.value })
-                    }
-                  />
-                </label>
-                <label className="settings-field settings-field--wide">
-                  {t.templateBody}
-                  <textarea
-                    rows={5}
-                    value={
-                      normalizedUiSettings.emailNotifications.template.body
-                    }
-                    onChange={(event) =>
-                      updateTemplate({ body: event.target.value })
-                    }
-                  />
-                </label>
-                <div
-                  className="settings-token-picker"
-                  aria-label={t.variablePicker}
-                >
-                  {TEMPLATE_VARIABLES.map((variable) => (
-                    <button
-                      key={variable.key}
-                      title={variable.example}
-                      type="button"
-                      onClick={() =>
-                        updateTemplate({
-                          body: insertTemplateToken(
-                            normalizedUiSettings.emailNotifications.template
-                              .body,
-                            variable.key as TemplateVariableKey,
-                          ),
-                        })
-                      }
-                    >
-                      {"{{"}
-                      {variable.key}
-                      {"}}"}
-                    </button>
-                  ))}
+              <div className="settings-subsection settings-template-summary-card">
+                <div className="settings-template-summary-copy">
+                  <h3>{t.emailTemplate}</h3>
+                  <p className="muted">{t.templateSummary}</p>
                 </div>
+                <dl className="settings-template-summary-list">
+                  <div>
+                    <dt>{t.templateSubjectPreview}</dt>
+                    <dd>
+                      {normalizedUiSettings.emailNotifications.template.subject}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{t.templateBodyPreview}</dt>
+                    <dd>
+                      {truncateTemplatePreview(
+                        normalizedUiSettings.emailNotifications.template.body,
+                      )}
+                    </dd>
+                  </div>
+                </dl>
+                <button
+                  ref={templateModalOpenerRef}
+                  type="button"
+                  onClick={() => setTemplateModalOpen(true)}
+                >
+                  {t.editEmailTemplate}
+                </button>
                 {unknownTokens.length === 0 ? null : (
                   <p className="error-text">
                     {t.unknownTemplateTokens(unknownTokens)}
@@ -475,6 +487,83 @@ export function SettingsPage({
           <p className="muted">{t.noProviderSecrets}</p>
         </article>
       </aside>
+      {templateModalOpen ? (
+        <div
+          aria-describedby="settings-template-modal-description"
+          aria-labelledby="settings-template-modal-title"
+          aria-modal="true"
+          className="settings-modal-backdrop"
+          onKeyDown={onTemplateModalKeyDown}
+          role="dialog"
+        >
+          <div className="settings-modal-panel" ref={templateModalPanelRef}>
+            <div className="settings-modal-header">
+              <div>
+                <span className="eyebrow">{t.emailTemplate}</span>
+                <h2 id="settings-template-modal-title">
+                  {t.templateModalTitle}
+                </h2>
+                <p
+                  className="muted"
+                  id="settings-template-modal-description"
+                >
+                  {t.templateModalDescription}
+                </p>
+              </div>
+              <button
+                aria-label={t.templateDone}
+                type="button"
+                onClick={closeTemplateModal}
+              >
+                {t.templateDone}
+              </button>
+            </div>
+            <label className="settings-field settings-field--wide">
+              {t.templateSubject}
+              <input
+                value={normalizedUiSettings.emailNotifications.template.subject}
+                onChange={(event) =>
+                  updateTemplate({ subject: event.target.value })
+                }
+              />
+            </label>
+            <label className="settings-field settings-field--wide">
+              {t.templateBody}
+              <textarea
+                rows={8}
+                value={normalizedUiSettings.emailNotifications.template.body}
+                onChange={(event) => updateTemplate({ body: event.target.value })}
+              />
+            </label>
+            <div className="settings-token-picker" aria-label={t.variablePicker}>
+              {TEMPLATE_VARIABLES.map((variable) => (
+                <button
+                  key={variable.key}
+                  title={variable.example}
+                  type="button"
+                  onClick={() =>
+                    updateTemplate({
+                      body: insertTemplateToken(
+                        normalizedUiSettings.emailNotifications.template.body,
+                        variable.key as TemplateVariableKey,
+                      ),
+                    })
+                  }
+                >
+                  {"{{"}
+                  {variable.key}
+                  {"}}"}
+                </button>
+              ))}
+            </div>
+            {unknownTokens.length === 0 ? null : (
+              <p className="error-text">
+                {t.unknownTemplateTokens(unknownTokens)}
+              </p>
+            )}
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -519,6 +608,42 @@ function SettingsCategorySection({
       {children}
     </section>
   );
+}
+
+function getFocusableModalElements(
+  root: HTMLElement | null,
+): HTMLElement[] {
+  if (root === null) return [];
+  return Array.from(
+    root.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    ),
+  ).filter(
+    (element) =>
+      !element.hasAttribute("disabled") &&
+      element.getAttribute("aria-hidden") !== "true",
+  );
+}
+
+export function getNextTemplateModalFocusIndex(input: {
+  currentIndex: number;
+  focusableCount: number;
+  shiftKey: boolean;
+}): number | null {
+  if (input.focusableCount <= 0 || input.currentIndex < 0) return null;
+  if (input.shiftKey && input.currentIndex === 0) {
+    return input.focusableCount - 1;
+  }
+  if (!input.shiftKey && input.currentIndex === input.focusableCount - 1) {
+    return 0;
+  }
+  return null;
+}
+
+function truncateTemplatePreview(value: string): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= 120) return compact;
+  return `${compact.slice(0, 117)}…`;
 }
 
 function depotAsOrders(

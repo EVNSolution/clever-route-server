@@ -1023,6 +1023,9 @@ small,
 .orders-compact-table .orders-customer-cell {
   max-width: 210px;
 }
+.orders-compact-table .orders-order-cell {
+  min-width: 150px;
+}
 .orders-compact-table .orders-order-cell .order-primary,
 .orders-compact-table .orders-order-cell .order-subtle,
 .orders-compact-table .orders-customer-cell .order-primary,
@@ -1053,7 +1056,17 @@ small,
 .orders-compact-table .orders-method-cell {
   min-width: 128px;
 }
+.orders-compact-table .orders-area-cell .order-compact-value {
+  max-width: 118px;
+}
+.orders-compact-table .orders-route-cell {
+  width: 82px;
+}
+.orders-compact-table .orders-route-cell .order-compact-value {
+  max-width: 74px;
+}
 .orders-compact-table .orders-status-cell {
+  width: 86px;
   overflow: visible;
 }
 .orders-compact-table .order-pill-stack {
@@ -1088,39 +1101,6 @@ small,
 .orders-compact-table .order-pill--review {
   background: #fff7ed;
   color: #9a3412;
-}
-.orders-compact-table .order-status-tooltip-wrap {
-  display: inline-flex;
-  position: relative;
-}
-.orders-compact-table .order-status-tooltip {
-  background: #111827;
-  border-radius: 10px;
-  bottom: calc(100% + 9px);
-  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.22);
-  color: #fff;
-  font-size: 12px;
-  font-weight: 800;
-  left: 50%;
-  line-height: 1.35;
-  max-width: min(340px, 75vw);
-  opacity: 0;
-  padding: 10px 12px;
-  pointer-events: none;
-  position: absolute;
-  transform: translateX(-50%) translateY(4px);
-  transition:
-    opacity 120ms ease,
-    transform 120ms ease;
-  visibility: hidden;
-  width: max-content;
-  z-index: 25;
-}
-.orders-compact-table .order-status-tooltip-wrap:hover .order-status-tooltip,
-.orders-compact-table .order-pill:focus + .order-status-tooltip {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
-  visibility: visible;
 }
 .orders-compact-table .orders-actions {
   align-items: center;
@@ -2711,20 +2691,6 @@ button.danger.subtle {
   color: var(--muted-text, #64748b);
 }
 
-.settings-disclosure summary {
-  align-items: center;
-  cursor: pointer;
-  display: flex;
-  gap: 10px;
-  justify-content: space-between;
-  min-width: 0;
-}
-
-.settings-disclosure summary strong {
-  color: #111827;
-  font-size: 16px;
-}
-
 .settings-inline-check {
   align-items: center;
   display: inline-flex;
@@ -2736,6 +2702,10 @@ button.danger.subtle {
   display: grid;
   gap: 10px;
   min-width: 0;
+}
+
+.settings-language-card {
+  padding-top: 16px;
 }
 
 .settings-subsection h3,
@@ -2775,6 +2745,83 @@ button.danger.subtle {
   gap: 8px;
 }
 
+.settings-template-summary-card {
+  align-items: start;
+  border: 1px solid #e6eaf1;
+  border-radius: 14px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 12px;
+}
+
+.settings-template-summary-copy,
+.settings-template-summary-list {
+  min-width: 0;
+}
+
+.settings-template-summary-list {
+  display: grid;
+  gap: 8px;
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.settings-template-summary-list div {
+  min-width: 0;
+}
+
+.settings-template-summary-list dt {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-template-summary-list dd {
+  color: #111827;
+  margin: 2px 0 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-modal-backdrop {
+  align-items: center;
+  background: rgba(15, 23, 42, 0.42);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 24px;
+  position: fixed;
+  z-index: 80;
+}
+
+.settings-modal-panel {
+  background: #fff;
+  border: 1px solid #d8dee9;
+  border-radius: 22px;
+  box-shadow: 0 28px 72px rgba(15, 23, 42, 0.28);
+  display: grid;
+  gap: 14px;
+  max-height: min(760px, calc(100vh - 48px));
+  max-width: 720px;
+  overflow: auto;
+  padding: 18px;
+  width: min(100%, 720px);
+}
+
+.settings-modal-header {
+  align-items: start;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.settings-modal-header h2,
+.settings-modal-header p {
+  margin: 0;
+}
+
 .error-text {
   color: #b91c1c;
   font-size: 12px;
@@ -2783,7 +2830,12 @@ button.danger.subtle {
 }
 
 @media (max-width: 720px) {
+  .settings-template-summary-card,
   .settings-reminder-row {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-modal-header {
     grid-template-columns: 1fr;
   }
 }

@@ -1207,7 +1207,6 @@ export function OrderTable(input: {
     <article className="panel orders-table-panel">
       <div className="panel-heading">
         <div>
-          <span className="eyebrow">{t.tableEyebrow}</span>
           <h2>{t.tableTitle}</h2>
         </div>
         <div className="orders-heading-actions">
@@ -1337,7 +1336,7 @@ function OrderTableRow(input: {
   const method = formatMethodStatusLabel(order, input.locale);
   const payment = formatPaymentStatusLabel(order, input.locale);
   const receivedLabel = formatOrderReceivedLabelParts(order, input.locale);
-  const status = formatOperationalStatus(order, input.locale);
+  const tableStatus = formatTableReadinessStatus(order, input.locale);
   const orderLabel = getOrderAccessibleLabel(order);
   const planActionLabel = t.planOrderAction(
     selected ? "Remove" : "Add",
@@ -1345,10 +1344,6 @@ function OrderTableRow(input: {
   );
   const detailPanelId = `order-detail-${sanitizeId(order.orderId)}`;
   const detailLabel = t.detailToggle(input.expanded, orderLabel);
-  const statusTooltipId =
-    status.meaning === null
-      ? undefined
-      : `order-status-${sanitizeId(order.orderId)}-help`;
   return (
     <>
       <tr
@@ -1403,42 +1398,21 @@ function OrderTableRow(input: {
             <small className="order-subtle">{day.detail}</small>
           )}
         </td>
-        <td>
+        <td className="orders-area-cell">
           <span className="order-compact-value">{formatAreaLabel(order)}</span>
         </td>
-        <td>
+        <td className="orders-route-cell">
           <span className="order-compact-value">
             {formatRouteLabel(order, input.locale)}
           </span>
         </td>
         <td className="orders-status-cell">
-          <span className="order-status-tooltip-wrap">
-            <span
-              aria-describedby={statusTooltipId}
-              aria-label={
-                status.meaning === null
-                  ? status.label
-                  : `${status.label}. ${status.meaning}`
-              }
-              className={`order-pill ${status.toneClass}`}
-              tabIndex={status.meaning === null ? undefined : 0}
-              title={status.meaning ?? undefined}
-            >
-              {status.label}
-            </span>
-            {status.meaning === null ? null : (
-              <span
-                className="order-status-tooltip"
-                id={statusTooltipId}
-                role="tooltip"
-              >
-                {status.meaning}
-              </span>
-            )}
+          <span
+            aria-label={tableStatus.label}
+            className={`order-pill ${tableStatus.toneClass}`}
+          >
+            {tableStatus.label}
           </span>
-          {status.detail === null ? null : (
-            <small className="order-subtle">{status.detail}</small>
-          )}
         </td>
         <td>
           <div className="orders-actions">
@@ -1693,6 +1667,33 @@ export function formatOperationalStatus(
     meaning: t.statusMeanings.notRouteEligible,
     toneClass: "order-pill--neutral",
   };
+}
+
+export function formatTableReadinessStatus(
+  order: CanonicalOrderDto,
+  locale: string | null | undefined = "en-CA",
+): { label: string; toneClass: string } {
+  const t = getOrdersCopy(locale);
+  const isReady = isTableReadyOrder(order);
+  return isReady
+    ? { label: t.statusLabels.ready, toneClass: "order-pill--ready" }
+    : { label: t.statusLabels.notReady, toneClass: "order-pill--review" };
+}
+
+function isTableReadyOrder(order: CanonicalOrderDto): boolean {
+  if (order.routePlanId !== null || order.planningStatus !== "UNPLANNED") {
+    return false;
+  }
+  if (isAddressReviewRequired(order) || isDeliveryDateReviewRequired(order)) {
+    return false;
+  }
+  return (
+    order.blockerReasons.length === 0 &&
+    order.deliveryDate !== null &&
+    hasResolvedCoordinates(order) &&
+    order.metadataResolved === true &&
+    order.routeEligible === true
+  );
 }
 
 function statusMeaningForOrder(

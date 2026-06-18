@@ -12,7 +12,11 @@ import {
   type TopbarNotificationItem
 } from '../src/components/TopbarNotifications';
 import { OrdersPage } from '../src/pages/OrdersPage';
-import { SettingsPage, buildSettingsSaveInput } from '../src/pages/SettingsPage';
+import {
+  SettingsPage,
+  buildSettingsSaveInput,
+  getNextTemplateModalFocusIndex
+} from '../src/pages/SettingsPage';
 import { defaultRouteOpsUiSettings } from '../src/settingsUi';
 import type {
   AdminNotificationDto,
@@ -350,11 +354,12 @@ describe('route ops layout components', () => {
     expect(html).toContain('data-settings-layout="category-sections"');
     expect(html).not.toContain('Geocode &amp; save coordinates');
     expect(html).toContain('Store settings');
-    expect(html).toContain('Language selection');
-    expect(html).toContain('Destination dwell minutes');
+    expect(html).not.toContain('Language selection');
+    expect(html).toContain('Stop dwell minutes');
     expect(html).toContain('Customer email notification settings');
     expect(html).toContain('Add reminder');
-    expect(html).toContain('{{deliveryDate}}');
+    expect(html).toContain('Edit template');
+    expect(html).not.toContain('{{deliveryDate}}');
     expect(html).toContain('English');
     expect(html).toContain('한국어');
     expect(html).not.toContain('Service and session values');
@@ -372,8 +377,8 @@ describe('route ops layout components', () => {
     expect(html).toContain('매장 설정');
     expect(html).toContain('매장 주소');
     expect(html).not.toContain('주소로 좌표 저장');
-    expect(html).toContain('언어 선택');
-    expect(html).toContain('도착지 체류 시간');
+    expect(html).not.toContain('언어 선택');
+    expect(html).toContain('배송지 체류 시간');
     expect(html).toContain('고객 이메일 알림 설정');
     expect(html).not.toContain('서비스/세션 값');
     expect(html).not.toContain('서비스 타입');
@@ -391,7 +396,40 @@ describe('route ops layout components', () => {
     expect(css).toContain('.ops-shell--orders');
     expect(css).toContain('grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));');
     expect(css).toContain('@media (max-width: 720px)');
+    expect(css).toContain('.settings-modal-backdrop');
+    expect(css).toContain('.settings-template-summary-card');
     expect(css).not.toContain('minmax(120px, 0.9fr) minmax(120px, 1fr) minmax(140px, 1.2fr) minmax(140px, 1.2fr) minmax(90px, 0.5fr) auto');
+  });
+
+  test('Settings template modal focus wrap stays inside the modal controls', () => {
+    expect(
+      getNextTemplateModalFocusIndex({
+        currentIndex: 0,
+        focusableCount: 5,
+        shiftKey: true
+      })
+    ).toBe(4);
+    expect(
+      getNextTemplateModalFocusIndex({
+        currentIndex: 4,
+        focusableCount: 5,
+        shiftKey: false
+      })
+    ).toBe(0);
+    expect(
+      getNextTemplateModalFocusIndex({
+        currentIndex: 2,
+        focusableCount: 5,
+        shiftKey: false
+      })
+    ).toBeNull();
+    expect(
+      getNextTemplateModalFocusIndex({
+        currentIndex: -1,
+        focusableCount: 5,
+        shiftKey: false
+      })
+    ).toBeNull();
   });
 
   test('Settings save payload omits route-scope config management state', () => {

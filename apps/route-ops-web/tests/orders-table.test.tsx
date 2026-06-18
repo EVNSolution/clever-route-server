@@ -19,6 +19,7 @@ import {
   formatMethodStatusLabel,
   formatOrderReceivedLabel,
   formatOperationalStatus,
+  formatTableReadinessStatus,
   formatPaymentStatusLabel,
   getRouteRepairPrompt,
   ORDERS_TABLE_COLUMN_COUNT,
@@ -152,7 +153,8 @@ describe("Orders compact operations table", () => {
     );
     expect(customerCell).not.toContain("Review");
     expect(customerCell).not.toContain("order-pill");
-    expect(html).toContain("Missing delivery date");
+    expect(html).toContain("Not ready");
+    expect(html).not.toContain("Missing delivery date");
     expect(html).toContain("0 selected");
     expect(html).toContain("1 selectable");
     expect(html).toContain("0 unavailable");
@@ -355,8 +357,10 @@ describe("Orders compact operations table", () => {
     });
     const html = renderOrderTable([missingCoordinates]);
 
-    expect(html).toContain("Need coordinates");
-    expect(html).toContain("use bulk geocode");
+    expect(html).toContain("Not ready");
+    expect(html).not.toContain("Need coordinates");
+    expect(html).not.toContain("Use Bulk geocode");
+    expect(html).not.toContain("Warning meaning");
     expect(html).not.toContain("Geocode &amp; add");
     expect(html).not.toContain("Geocode and add order");
     expect(html).not.toContain("Use bulk geocode");
@@ -393,8 +397,8 @@ describe("Orders compact operations table", () => {
       expandedOrderIds: new Set(["address-review"]),
     });
 
-    expect(html).toContain("Address Review");
-    expect(html).toContain("Verify address");
+    expect(formatOperationalStatus(addressReview).label).toBe("Address Review");
+    expect(html).not.toContain("Address Review");
     expect(html).toContain("Verify destination address");
     expect(html).toContain('name="address1"');
     expect(html).not.toContain("use bulk geocode");
@@ -415,7 +419,7 @@ describe("Orders compact operations table", () => {
     expect(formatOperationalStatus(addressReview).meaning).toContain(
       "Warning meaning: Bulk geocode already tried",
     );
-    expect(html).toContain('role="tooltip"');
+    expect(html).not.toContain("Warning meaning: Bulk geocode already tried");
   });
 
   test("separates missing delivery date from delivery date review and explains both on hover", () => {
@@ -461,10 +465,10 @@ describe("Orders compact operations table", () => {
       statusDetail: "Verify delivery date",
       statusLabel: "Delivery date review",
     });
-    expect(html).toContain("Delivery date review");
+    expect(html).not.toContain("Delivery date review");
     expect(html).toContain("Verify delivery date");
-    expect(html).toContain("Warning meaning: A delivery date hint exists");
-    expect(html).toContain("Warning meaning: No delivery date value was found");
+    expect(html).not.toContain("Warning meaning: A delivery date hint exists");
+    expect(html).not.toContain("Warning meaning: No delivery date value was found");
   });
 
   test("maps operational status blockers with deterministic user-facing labels", () => {
@@ -892,6 +896,8 @@ describe("Orders compact operations table", () => {
     });
 
     expect(html).toContain("1 orders");
+    expect(html).toContain("Order List");
+    expect(html).not.toContain(">Orders</span>");
     expect(html).toContain("Sync Order");
     expect(html).toContain("Add Plan");
     expect(html.indexOf("Sync Order")).toBeLessThan(html.indexOf("Add Plan"));
@@ -986,6 +992,7 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("1 주문");
     expect(html).toContain("0개 선택 · 1개 선택 가능 · 0개 불가");
     expect(html).toContain("리뷰");
+    expect(html).toContain("준비 안 됨");
     expect(html).toContain("배송 날짜 누락");
     expect(html).toContain("경로 범위 누락");
     expect(html).toContain("필수 주문 정보 수정");
@@ -1244,6 +1251,39 @@ describe("Orders compact operations table", () => {
       toneClass: "order-pill--day",
     });
     expect(formatOperationalStatus(order).label).toBe("Ready");
+    expect(formatTableReadinessStatus(order)).toEqual({
+      label: "Ready",
+      toneClass: "order-pill--ready",
+    });
+    expect(
+      formatTableReadinessStatus(
+        orderFixture({
+          blockerReasons: ["missing_delivery_date"],
+          deliveryDate: null,
+          metadataResolved: false,
+          routeEligible: false,
+        }),
+      ),
+    ).toEqual({ label: "Not ready", toneClass: "order-pill--review" });
+    expect(
+      formatTableReadinessStatus(
+        orderFixture({
+          blockerReasons: ["missing_coordinates"],
+          coordinates: { latitude: null, longitude: null },
+          planningStatus: "PLANNED",
+          routeEligible: false,
+          routePlanId: "route-planned-review",
+        }),
+      ),
+    ).toEqual({ label: "Not ready", toneClass: "order-pill--review" });
+    expect(
+      formatTableReadinessStatus(
+        orderFixture({
+          planningStatus: "PLANNED",
+          routePlanId: "route-planned-ready",
+        }),
+      ),
+    ).toEqual({ label: "Not ready", toneClass: "order-pill--review" });
     expect(
       formatDeliveryDayLabel(orderFixture({ deliveryDate: null })).label,
     ).toBe("Review");
