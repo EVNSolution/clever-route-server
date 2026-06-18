@@ -167,47 +167,49 @@ enum DriverAccountDeletionRequestStatus {
 }
 
 model Shop {
-  id                              String                           @id @default(uuid()) @db.Uuid
-  shopDomain                      String                           @db.Text
-  shopifyShopGid                  String?                          @db.Text
-  apiVersion                      String                           @default("2026-04") @db.Text
-  adminAccessTokenCiphertext      String?                          @db.Text
-  adminAccessTokenExpiresAt       DateTime?                        @db.Timestamptz(6)
-  adminRefreshTokenCiphertext     String?                          @db.Text
-  adminRefreshTokenExpiresAt      DateTime?                        @db.Timestamptz(6)
-  tokenScopes                     String[]                         @default([])
-  tokenIssuedAt                   DateTime?                        @db.Timestamptz(6)
-  installedAt                     DateTime                         @default(now()) @db.Timestamptz(6)
-  uninstalledAt                   DateTime?                        @db.Timestamptz(6)
-  defaultDepotAddress             String?                          @db.Text
-  defaultDepotLatitude            Decimal?                         @db.Decimal(10, 7)
-  defaultDepotLongitude           Decimal?                         @db.Decimal(10, 7)
-  locale                          String?                          @db.Text
-  routeScopeConfig                Json?
-  routeOpsUiSettings              Json?
-  createdAt                       DateTime                         @default(now()) @db.Timestamptz(6)
-  updatedAt                       DateTime                         @updatedAt @db.Timestamptz(6)
-  webhookEvents                   ShopifyWebhookEvent[]
-  orders                          Order[]
-  orderItems                      OrderItem[]
-  deliveryStops                   DeliveryStop[]
-  routePlans                      RoutePlan[]
-  drivers                         Driver[]
-  vehicles                        Vehicle[]
-  driverEvents                    DriverEvent[]
-  driverConsentRecords            DriverConsentRecord[]
-  driverProofMedia                DriverProofMedia[]
-  driverRouteFeedback             DriverRouteFeedback[]
-  driverAccountDeletionRequests   DriverAccountDeletionRequest[]
-  commerceConnections             CommerceConnection[]
-  commerceConnectionAuditLogs     CommerceConnectionAuditLog[]
-  commerceConnectionOrderMappings CommerceConnectionOrderMapping[]
-  commerceSyncRuns                CommerceSyncRun[]
-  commerceRawOrderIngests         CommerceRawOrderIngest[]
-  adminNotifications              AdminNotification[]
-  orderDeliveryFacts              OrderDeliveryFact[]
-  wordpressPluginPairingCodes     WordPressPluginPairingCode[]
-  routeOptimizationJobs           RouteOptimizationJob[]
+  id                                String                             @id @default(uuid()) @db.Uuid
+  shopDomain                        String                             @db.Text
+  shopifyShopGid                    String?                            @db.Text
+  apiVersion                        String                             @default("2026-04") @db.Text
+  adminAccessTokenCiphertext        String?                            @db.Text
+  adminAccessTokenExpiresAt         DateTime?                          @db.Timestamptz(6)
+  adminRefreshTokenCiphertext       String?                            @db.Text
+  adminRefreshTokenExpiresAt        DateTime?                          @db.Timestamptz(6)
+  tokenScopes                       String[]                           @default([])
+  tokenIssuedAt                     DateTime?                          @db.Timestamptz(6)
+  installedAt                       DateTime                           @default(now()) @db.Timestamptz(6)
+  uninstalledAt                     DateTime?                          @db.Timestamptz(6)
+  defaultDepotAddress               String?                            @db.Text
+  defaultDepotLatitude              Decimal?                           @db.Decimal(10, 7)
+  defaultDepotLongitude             Decimal?                           @db.Decimal(10, 7)
+  locale                            String?                            @db.Text
+  routeScopeConfig                  Json?
+  routeOpsUiSettings                Json?
+  createdAt                         DateTime                           @default(now()) @db.Timestamptz(6)
+  updatedAt                         DateTime                           @updatedAt @db.Timestamptz(6)
+  webhookEvents                     ShopifyWebhookEvent[]
+  orders                            Order[]
+  orderItems                        OrderItem[]
+  deliveryStops                     DeliveryStop[]
+  routePlans                        RoutePlan[]
+  drivers                           Driver[]
+  vehicles                          Vehicle[]
+  driverEvents                      DriverEvent[]
+  driverConsentRecords              DriverConsentRecord[]
+  driverProofMedia                  DriverProofMedia[]
+  driverRouteFeedback               DriverRouteFeedback[]
+  driverAccountDeletionRequests     DriverAccountDeletionRequest[]
+  commerceConnections               CommerceConnection[]
+  commerceConnectionAuditLogs       CommerceConnectionAuditLog[]
+  commerceConnectionOrderMappings   CommerceConnectionOrderMapping[]
+  commerceSyncRuns                  CommerceSyncRun[]
+  commerceRawOrderIngests           CommerceRawOrderIngest[]
+  adminNotifications                AdminNotification[]
+  orderDeliveryFacts                OrderDeliveryFact[]
+  wordpressPluginPairingCodes       WordPressPluginPairingCode[]
+  routeOptimizationJobs             RouteOptimizationJob[]
+  deliveryCustomerProfiles          DeliveryCustomerProfile[]
+  deliveryCustomerProfileOrderLinks DeliveryCustomerProfileOrderLink[]
 
   @@unique([shopDomain])
   @@unique([shopifyShopGid])
@@ -450,34 +452,35 @@ model ShopifyWebhookEvent {
 }
 
 model Order {
-  id                   String                 @id @default(uuid()) @db.Uuid
-  shopId               String                 @db.Uuid
-  shop                 Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  shopifyOrderGid      String                 @db.Text
-  shopifyOrderLegacyId BigInt?
-  sourcePlatform       CommerceSourcePlatform @default(SHOPIFY)
-  sourceSiteUrl        String?                @db.Text
-  sourceOrderId        String?                @db.Text
-  sourceOrderNumber    String?                @db.Text
-  sourceUpdatedAt      DateTime?              @db.Timestamptz(6)
-  name                 String                 @db.Text
-  email                String?                @db.Text
-  phone                String?                @db.Text
-  financialStatus      String?                @db.Text
-  fulfillmentStatus    String?                @db.Text
-  cancelledAt          DateTime?              @db.Timestamptz(6)
-  processedAt          DateTime?              @db.Timestamptz(6)
-  updatedAtShopify     DateTime?              @db.Timestamptz(6)
-  totalPriceAmount     Decimal?               @db.Decimal(12, 2)
-  currencyCode         String?                @db.Text
-  shippingAddress      Json?
-  rawPayload           Json
-  deliveryStatus       DeliveryOrderStatus    @default(PENDING)
-  createdAt            DateTime               @default(now()) @db.Timestamptz(6)
-  updatedAt            DateTime               @updatedAt @db.Timestamptz(6)
-  orderItems           OrderItem[]
-  deliveryStops        DeliveryStop[]
-  deliveryFacts        OrderDeliveryFact[]
+  id                           String                             @id @default(uuid()) @db.Uuid
+  shopId                       String                             @db.Uuid
+  shop                         Shop                               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shopifyOrderGid              String                             @db.Text
+  shopifyOrderLegacyId         BigInt?
+  sourcePlatform               CommerceSourcePlatform             @default(SHOPIFY)
+  sourceSiteUrl                String?                            @db.Text
+  sourceOrderId                String?                            @db.Text
+  sourceOrderNumber            String?                            @db.Text
+  sourceUpdatedAt              DateTime?                          @db.Timestamptz(6)
+  name                         String                             @db.Text
+  email                        String?                            @db.Text
+  phone                        String?                            @db.Text
+  financialStatus              String?                            @db.Text
+  fulfillmentStatus            String?                            @db.Text
+  cancelledAt                  DateTime?                          @db.Timestamptz(6)
+  processedAt                  DateTime?                          @db.Timestamptz(6)
+  updatedAtShopify             DateTime?                          @db.Timestamptz(6)
+  totalPriceAmount             Decimal?                           @db.Decimal(12, 2)
+  currencyCode                 String?                            @db.Text
+  shippingAddress              Json?
+  rawPayload                   Json
+  deliveryStatus               DeliveryOrderStatus                @default(PENDING)
+  createdAt                    DateTime                           @default(now()) @db.Timestamptz(6)
+  updatedAt                    DateTime                           @updatedAt @db.Timestamptz(6)
+  orderItems                   OrderItem[]
+  deliveryStops                DeliveryStop[]
+  deliveryFacts                OrderDeliveryFact[]
+  deliveryCustomerProfileLinks DeliveryCustomerProfileOrderLink[]
 
   @@unique([shopId, shopifyOrderGid])
   @@unique([shopId, sourcePlatform, sourceSiteUrl, sourceOrderId])
@@ -543,6 +546,50 @@ model DeliveryStop {
   @@unique([shopId, orderId])
   @@index([shopId, deliveryDate, status])
   @@map("delivery_stops")
+}
+
+model DeliveryCustomerProfile {
+  id                  String                             @id @default(uuid()) @db.Uuid
+  shopId              String                             @db.Uuid
+  shop                Shop                               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  canonicalName       String?                            @db.Text
+  canonicalPhone      String?                            @db.Text
+  canonicalEmail      String?                            @db.Text
+  addressFingerprint  String                             @db.Text
+  normalizedAddress   Json
+  normalizedNameKey   String?                            @db.Text
+  adminMemo           String?                            @db.Text
+  mergedIntoProfileId String?                            @db.Uuid
+  mergedIntoProfile   DeliveryCustomerProfile?           @relation("DeliveryCustomerProfileMerge", fields: [mergedIntoProfileId], references: [id], onDelete: SetNull)
+  mergedProfiles      DeliveryCustomerProfile[]          @relation("DeliveryCustomerProfileMerge")
+  orderLinks          DeliveryCustomerProfileOrderLink[]
+  createdAt           DateTime                           @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime                           @updatedAt @db.Timestamptz(6)
+
+  @@index([shopId, addressFingerprint])
+  @@index([shopId, canonicalPhone])
+  @@index([shopId, canonicalEmail])
+  @@index([shopId, mergedIntoProfileId])
+  @@map("delivery_customer_profiles")
+}
+
+model DeliveryCustomerProfileOrderLink {
+  id           String                  @id @default(uuid()) @db.Uuid
+  shopId       String                  @db.Uuid
+  shop         Shop                    @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  profileId    String                  @db.Uuid
+  profile      DeliveryCustomerProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  orderId      String                  @db.Uuid
+  order        Order                   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  matchStatus  String                  @db.Text
+  matchScore   Decimal?                @db.Decimal(5, 4)
+  matchReasons Json
+  createdAt    DateTime                @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime                @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, orderId])
+  @@index([shopId, profileId])
+  @@map("delivery_customer_profile_order_links")
 }
 
 model OrderDeliveryFact {

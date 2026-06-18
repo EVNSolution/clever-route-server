@@ -38,6 +38,10 @@ const routeOpsUiSettingsMigrationPath = new URL(
   '../prisma/migrations/20260618022500_add_route_ops_ui_settings/migration.sql',
   import.meta.url
 );
+const deliveryCustomerProfilesMigrationPath = new URL(
+  '../prisma/migrations/20260618093000_add_delivery_customer_profiles/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
@@ -236,6 +240,23 @@ describe('Prisma schema', () => {
     expect(migration).toContain('"commerce_raw_order_ingests_connection_order_receivedAt_idx"');
   });
 
+
+
+  test('ships tenant-scoped delivery customer profile storage for admin memos', async () => {
+    const schema = await readSchema();
+    const migration = await readFile(deliveryCustomerProfilesMigrationPath, 'utf8');
+
+    expect(schema).toContain('model DeliveryCustomerProfile');
+    expect(schema).toContain('adminMemo');
+    expect(schema).toContain('addressFingerprint');
+    expect(schema).toMatch(/@@unique\(\[shopId, orderId\]\)/);
+    expect(schema).toMatch(/@@index\(\[shopId, addressFingerprint\]\)/);
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "delivery_customer_profiles"');
+    expect(migration).toContain('"adminMemo" TEXT');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "delivery_customer_profile_order_links"');
+    expect(migration).toContain('"delivery_customer_profile_order_links_shopId_orderId_key"');
+  });
+
   test('ships a migration for normalized WooCommerce order items', async () => {
     const migration = await readFile(orderItemsMigrationPath, 'utf8');
 
@@ -251,8 +272,8 @@ describe('Prisma schema', () => {
     const schema = await readSchema();
     const migration = await readFile(routeOpsUiSettingsMigrationPath, 'utf8');
 
-    expect(schema).toContain('routeOpsUiSettings              Json?');
-    expect(schema).toContain('routeScopeConfig                Json?');
+    expect(schema).toMatch(/routeOpsUiSettings\s+Json\?/);
+    expect(schema).toMatch(/routeScopeConfig\s+Json\?/);
     expect(migration).toContain('ADD COLUMN IF NOT EXISTS "routeOpsUiSettings" JSONB');
     expect(migration).not.toContain('DROP COLUMN "routeScopeConfig"');
   });

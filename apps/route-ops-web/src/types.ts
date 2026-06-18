@@ -109,6 +109,7 @@ export type AdminNotificationDto = {
 export type CanonicalOrderDto = {
   blockerReasons: string[];
   coordinates: { latitude: number | null; longitude: number | null };
+  customerNote?: string | null;
   deliveryArea: string | null;
   deliveryDate: string | null;
   deliverySession: string | null;
@@ -450,6 +451,27 @@ export type GeocodeSettingsResponse = {
     };
   };
   settings: StoreSettingsDto;
+};
+
+
+export type OrderCustomerNoteContextDto = {
+  customerNote: string | null;
+  deliveryCustomer: {
+    adminMemo: string | null;
+    matchReasons: string[];
+    matchStatus: "AUTO_MATCHED" | "CREATED_NEW";
+    profileId: string;
+  } | null;
+  orderId: string;
+};
+
+export type OrderCustomerNoteContextResponse = OrderCustomerNoteContextDto;
+
+export type DeliveryCustomerAdminMemoResponse = {
+  deliveryCustomer: {
+    adminMemo: string | null;
+    profileId: string;
+  };
 };
 
 export type OrderMutationResponse = {

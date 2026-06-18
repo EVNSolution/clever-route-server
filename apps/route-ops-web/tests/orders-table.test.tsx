@@ -36,6 +36,7 @@ import { createDefaultOrderFilters } from "../src/state";
 import type {
   CanonicalOrderDto,
   DeliveryMetadataDiagnosticsDto,
+  OrderCustomerNoteContextDto,
 } from "../src/types";
 
 describe("Orders compact operations table", () => {
@@ -225,6 +226,36 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("Ordered items");
     expect(html).toContain("Roma Tomatoes (size: large) × 2");
     expect(html).toContain("Basil × 1");
+  });
+
+
+  test("renders customer source notes read-only and admin memo as the only mutable customer field", () => {
+    const html = renderOrderTable(
+      [orderFixture({ customerNote: "Ring the side door." })],
+      {
+        customerNoteContextByOrder: {
+          "order-11453": {
+            customerNote: "Ring the side door.",
+            deliveryCustomer: {
+              adminMemo: "Prefers quiet handoff",
+              matchReasons: ["same_address_phone_exact"],
+              matchStatus: "AUTO_MATCHED",
+              profileId: "00000000-0000-0000-0000-000000000201",
+            },
+            orderId: "order-11453",
+          },
+        },
+        expandedOrderIds: new Set(["order-11453"]),
+      },
+    );
+
+    expect(html).toContain("Customer note");
+    expect(html).toContain("Ring the side door.");
+    expect(html).toContain("Admin memo");
+    expect(html).toContain("Prefers quiet handoff");
+    expect(html).toContain("Save memo");
+    expect(html).not.toContain("Merge customer");
+    expect(html).not.toContain("Customer history");
   });
 
   test("renders normalized payment evidence in the expanded order detail", () => {
@@ -1272,6 +1303,7 @@ describe("Orders compact operations table", () => {
 function renderOrderTable(
   orders: CanonicalOrderDto[],
   options: {
+    customerNoteContextByOrder?: Record<string, OrderCustomerNoteContextDto | null>;
     detailModes?: Record<string, "review" | "edit">;
     diagnosticsByOrder?: Record<string, DeliveryMetadataDiagnosticsDto | null>;
     expandedOrderIds?: Set<string>;
@@ -1288,6 +1320,7 @@ function renderOrderTable(
 ): string {
   return renderToStaticMarkup(
     <OrderTable
+      customerNoteContextByOrder={options.customerNoteContextByOrder}
       detailModes={options.detailModes}
       diagnosticsByOrder={options.diagnosticsByOrder ?? {}}
       expandedOrderIds={options.expandedOrderIds}

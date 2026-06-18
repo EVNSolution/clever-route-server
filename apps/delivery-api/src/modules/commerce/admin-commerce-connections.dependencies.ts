@@ -45,6 +45,7 @@ import {
   WooCommerceConnectionVerifier
 } from './woocommerce-connection-verifier.js';
 import { loadGeocodingService } from '../geocoding/geocoding.dependencies.js';
+import { PrismaDeliveryCustomerProfileService } from '../delivery-customer/delivery-customer-profile.service.js';
 
 export type AdminCommerceConnectionsRuntimeEnv = Partial<
   Record<
@@ -150,6 +151,7 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     },
     cookieName,
     loginSecret,
+    ...readAdminUiDeliveryCustomerService(input),
     ...readAdminUiDriverService(input),
     geocodingService: loadGeocodingService({ env: input.env }),
     onboardingService: input.adminCommerceConnections.onboardingService,
@@ -259,6 +261,16 @@ function readAdminUiNotificationService(input: {
     notificationService: new AdminNotificationService(
       new PrismaAdminNotificationRepository(input.prisma)
     )
+  };
+}
+
+
+function readAdminUiDeliveryCustomerService(input: {
+  prisma?: PrismaClient | undefined;
+}): Pick<AdminCommerceConnectionsUiDependencies, 'deliveryCustomerService'> {
+  if (input.prisma === undefined) return {};
+  return {
+    deliveryCustomerService: new PrismaDeliveryCustomerProfileService(input.prisma)
   };
 }
 

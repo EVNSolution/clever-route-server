@@ -128,6 +128,7 @@ import { summarizeGeocodeDiagnostic } from "../modules/geocoding/geocoding.diagn
 import type { GeocodingService } from "../modules/geocoding/geocoding.service.js";
 import type { GeocodingResult } from "../modules/geocoding/geocoding.types.js";
 import type { AdminNotificationServiceContract } from "../modules/notifications/admin-notification.service.js";
+import type { DeliveryCustomerProfileServiceContract } from "../modules/delivery-customer/delivery-customer-profile.service.js";
 import {
   createAdminWebSession,
   verifyAdminWebCsrfToken,
@@ -211,6 +212,34 @@ const routeOpsApiResponder = createRouteOpsApiResponder({
 });
 const { routeOpsData, withRouteOpsApi } = routeOpsApiResponder;
 const DEFAULT_ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS = 180000;
+
+
+function readRouteOpsAdminMemo(body: unknown): string | null {
+  const payload = readRouteOpsBodyObject(body);
+  const value = payload.adminMemo;
+  if (value === null) return null;
+  if (typeof value !== "string") {
+    throw new WooCommerceOnboardingError(
+      "BAD_REQUEST",
+      "adminMemo must be a string or null.",
+      400,
+    );
+  }
+  return value;
+}
+
+function readRouteOpsTargetProfileId(body: unknown): string {
+  const payload = readRouteOpsBodyObject(body);
+  const value = payload.targetProfileId;
+  if (typeof value !== "string" || !isRouteOpsUuid(value)) {
+    throw new WooCommerceOnboardingError(
+      "BAD_REQUEST",
+      "targetProfileId must be a UUID.",
+      400,
+    );
+  }
+  return value;
+}
 
 function readRouteOpsUiSettingsPayload(value: unknown) {
   try {
@@ -363,6 +392,7 @@ const ADMIN_UI_ROUTE_APP_SCRIPT = `
 export type AdminCommerceConnectionsUiDependencies = {
   actor: AdminCommerceActor;
   cookieName?: string;
+  deliveryCustomerService?: DeliveryCustomerProfileServiceContract;
   driverService?: Pick<
     AdminDriverServiceContract,
     | "createPendingDriver"
@@ -1669,6 +1699,130 @@ function registerRouteOpsAppRoutes(
               404,
             );
           return routeOpsData({ order: toRouteOpsOrderDto(order) });
+        },
+      ),
+  );
+
+  app.post<{ Params: { orderId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/orders/:orderId/customer-note-context`,
+    async (request, reply) =>
+      withRouteOpsApi(
+        request,
+        reply,
+        readSession(request, dependencies),
+        async (session) => {
+          assertRouteOpsMutationCsrf(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session);
+          if (dependencies.deliveryCustomerService === undefined) {
+            throw new WooCommerceOnboardingError(
+              "BAD_REQUEST",
+              "Delivery customer note context is not enabled in this runtime.",
+              400,
+            );
+          }
+          if (!isRouteOpsUuid(request.params.orderId)) {
+            throw new WooCommerceOnboardingError(
+              "BAD_REQUEST",
+              "Order id must be a UUID",
+              400,
+            );
+          }
+          const context =
+            await dependencies.deliveryCustomerService.getOrderCustomerNoteContext({
+              orderId: request.params.orderId,
+              shopDomain,
+            });
+          if (context === null) {
+            throw new WooCommerceOnboardingError(
+              "NOT_FOUND",
+              "Order not found",
+              404,
+            );
+          }
+          return routeOpsData(context);
+        },
+      ),
+  );
+
+  app.patch<{ Params: { profileId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/delivery-customers/:profileId/admin-memo`,
+    async (request, reply) =>
+      withRouteOpsApi(
+        request,
+        reply,
+        readSession(request, dependencies),
+        async (session) => {
+          assertRouteOpsMutationCsrf(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session);
+          if (dependencies.deliveryCustomerService === undefined) {
+            throw new WooCommerceOnboardingError(
+              "BAD_REQUEST",
+              "Delivery customer memo editing is not enabled in this runtime.",
+              400,
+            );
+          }
+          if (!isRouteOpsUuid(request.params.profileId)) {
+            throw new WooCommerceOnboardingError(
+              "BAD_REQUEST",
+              "Delivery customer profile id must be a UUID",
+              400,
+            );
+          }
+          const result = await dependencies.deliveryCustomerService.updateAdminMemo({
+            adminMemo: readRouteOpsAdminMemo(request.body),
+            profileId: request.params.profileId,
+            shopDomain,
+          });
+          if (result === null) {
+            throw new WooCommerceOnboardingError(
+              "NOT_FOUND",
+              "Delivery customer profile not found",
+              404,
+            );
+          }
+          return routeOpsData(result);
+        },
+      ),
+  );
+
+  app.post<{ Params: { sourceProfileId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/delivery-customers/:sourceProfileId/merge`,
+    async (request, reply) =>
+      withRouteOpsApi(
+        request,
+        reply,
+        readSession(request, dependencies),
+        async (session) => {
+          assertRouteOpsMutationCsrf(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session);
+          if (dependencies.deliveryCustomerService === undefined) {
+            throw new WooCommerceOnboardingError(
+              "BAD_REQUEST",
+              "Delivery customer merge is not enabled in this runtime.",
+              400,
+            );
+          }
+          if (!isRouteOpsUuid(request.params.sourceProfileId)) {
+            throw new WooCommerceOnboardingError(
+              "BAD_REQUEST",
+              "Source delivery customer profile id must be a UUID",
+              400,
+            );
+          }
+          const targetProfileId = readRouteOpsTargetProfileId(request.body);
+          const result = await dependencies.deliveryCustomerService.mergeProfiles({
+            sourceProfileId: request.params.sourceProfileId,
+            targetProfileId,
+            shopDomain,
+          });
+          if (result === null) {
+            throw new WooCommerceOnboardingError(
+              "NOT_FOUND",
+              "Delivery customer profiles not found",
+              404,
+            );
+          }
+          return routeOpsData(result);
         },
       ),
   );

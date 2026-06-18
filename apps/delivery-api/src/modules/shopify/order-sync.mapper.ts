@@ -131,6 +131,7 @@ export type GeocodeDiagnostics = {
 export type CanonicalOrderRow = {
   cancelledAt: string | null;
   currencyCode: string | null;
+  customerNote?: string | null;
   deliveryArea: string | null;
   deliveryBatchEndDate: string | null;
   deliveryBatchStartDate: string | null;

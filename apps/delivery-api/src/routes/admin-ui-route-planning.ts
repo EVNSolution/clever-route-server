@@ -893,6 +893,7 @@ export function readRouteOpsRouterConfig(): {
 export function toRouteOpsOrderDto(order: CanonicalOrderRow): {
   blockerReasons: string[];
   coordinates: { latitude: number | null; longitude: number | null };
+  customerNote: string | null;
   deliveryArea: string | null;
   deliveryDate: string | null;
   deliverySession: string | null;
@@ -954,6 +955,7 @@ export function toRouteOpsOrderDto(order: CanonicalOrderRow): {
   return {
     blockerReasons,
     coordinates: { latitude: order.latitude, longitude: order.longitude },
+    customerNote: order.customerNote ?? null,
     deliveryArea: order.deliveryArea,
     deliveryDate: order.deliveryDate,
     deliverySession: order.deliverySession ?? null,

@@ -7,6 +7,8 @@ import type {
   GeocodeSettingsResponse,
   NotificationMutationResponse,
   NotificationsResponse,
+  DeliveryCustomerAdminMemoResponse,
+  OrderCustomerNoteContextResponse,
   OrderMetadataDiagnosticsResponse,
   OrderMutationResponse,
   OrdersResponse,
@@ -63,6 +65,32 @@ export async function markNotificationRead(input: {
     "PATCH",
     input.csrfToken,
     {},
+  );
+}
+
+
+export async function getOrderCustomerNoteContext(input: {
+  csrfToken: string;
+  orderId: string;
+}): Promise<OrderCustomerNoteContextResponse> {
+  return apiMutation<OrderCustomerNoteContextResponse>(
+    `/admin/ui/app/api/orders/${encodeURIComponent(input.orderId)}/customer-note-context`,
+    "POST",
+    input.csrfToken,
+    {},
+  );
+}
+
+export async function patchDeliveryCustomerAdminMemo(input: {
+  adminMemo: string | null;
+  csrfToken: string;
+  profileId: string;
+}): Promise<DeliveryCustomerAdminMemoResponse> {
+  return apiMutation<DeliveryCustomerAdminMemoResponse>(
+    `/admin/ui/app/api/delivery-customers/${encodeURIComponent(input.profileId)}/admin-memo`,
+    "PATCH",
+    input.csrfToken,
+    { adminMemo: input.adminMemo },
   );
 }
 

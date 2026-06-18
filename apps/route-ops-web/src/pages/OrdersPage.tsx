@@ -3,10 +3,12 @@ import type { FormEvent, ReactElement } from "react";
 
 import {
   createRoute,
+  getOrderCustomerNoteContext,
   getOrderMetadataDiagnostics,
   getOrders,
   getWooOrderSyncRun,
   getSettings,
+  patchDeliveryCustomerAdminMemo,
   patchOrderMetadata,
   requestWooOrderSync,
 } from "../api";
@@ -48,6 +50,7 @@ import type {
   BootstrapPayload,
   CanonicalOrderDto,
   DeliveryMetadataDiagnosticsDto,
+  OrderCustomerNoteContextDto,
   StoreSettingsDto,
   WooSyncRunDto,
 } from "../types";
@@ -250,6 +253,9 @@ export function OrdersPage({
   const [diagnosticsByOrder, setDiagnosticsByOrder] = useState<
     Record<string, DeliveryMetadataDiagnosticsDto | null>
   >({});
+  const [customerNoteContextByOrder, setCustomerNoteContextByOrder] = useState<
+    Record<string, OrderCustomerNoteContextDto | null>
+  >({});
   const [expandedOrderIds, setExpandedOrderIds] = useState<Set<string>>(
     new Set(),
   );
@@ -421,19 +427,43 @@ export function OrdersPage({
     }
   };
 
+  const loadCustomerNoteContext = async (orderId: string): Promise<void> => {
+    try {
+      const payload = await getOrderCustomerNoteContext({
+        csrfToken: bootstrap.csrfToken,
+        orderId,
+      });
+      setCustomerNoteContextByOrder((current) => ({
+        ...current,
+        [orderId]: payload,
+      }));
+      setError(null);
+    } catch (error) {
+      setError(readErrorMessage(error));
+      setCustomerNoteContextByOrder((current) => ({
+        ...current,
+        [orderId]: null,
+      }));
+    }
+  };
+
   const toggleOrderDetail = (orderId: string): void => {
-    let shouldLoad = false;
+    let shouldLoadDiagnostics = false;
+    let shouldLoadCustomerNoteContext = false;
     setExpandedOrderIds((current) => {
       const next = new Set(current);
       if (next.has(orderId)) {
         next.delete(orderId);
       } else {
         next.add(orderId);
-        shouldLoad = diagnosticsByOrder[orderId] === undefined;
+        shouldLoadDiagnostics = diagnosticsByOrder[orderId] === undefined;
+        shouldLoadCustomerNoteContext =
+          customerNoteContextByOrder[orderId] === undefined;
       }
       return next;
     });
-    if (shouldLoad) void loadDiagnostics(orderId);
+    if (shouldLoadDiagnostics) void loadDiagnostics(orderId);
+    if (shouldLoadCustomerNoteContext) void loadCustomerNoteContext(orderId);
   };
 
   const closeOrderDetail = (orderId: string): void => {
@@ -466,6 +496,42 @@ export function OrdersPage({
         return next;
       });
       await loadDiagnostics(orderId);
+      setError(null);
+    } catch (error) {
+      setError(readErrorMessage(error));
+      throw error;
+    }
+  };
+
+  const saveDeliveryCustomerAdminMemo = async (
+    orderId: string,
+    profileId: string,
+    adminMemo: string | null,
+  ): Promise<void> => {
+    try {
+      const payload = await patchDeliveryCustomerAdminMemo({
+        adminMemo,
+        csrfToken: bootstrap.csrfToken,
+        profileId,
+      });
+      setCustomerNoteContextByOrder((current) => {
+        const context = current[orderId];
+        if (context === undefined || context === null) return current;
+        return {
+          ...current,
+          [orderId]: {
+            ...context,
+            deliveryCustomer:
+              context.deliveryCustomer === null
+                ? context.deliveryCustomer
+                : {
+                    ...context.deliveryCustomer,
+                    adminMemo: payload.deliveryCustomer.adminMemo,
+                    profileId: payload.deliveryCustomer.profileId,
+                  },
+          },
+        };
+      });
       setError(null);
     } catch (error) {
       setError(readErrorMessage(error));
@@ -567,11 +633,13 @@ export function OrdersPage({
           />
           <OrderTable
             addPlanDisabled={selected.size === 0}
+            customerNoteContextByOrder={customerNoteContextByOrder}
             diagnosticsByOrder={diagnosticsByOrder}
             expandedOrderIds={expandedOrderIds}
             loading={loading}
             onAddPlan={addSelectionToPlan}
             onCloseDetail={closeOrderDetail}
+            onSaveCustomerAdminMemo={saveDeliveryCustomerAdminMemo}
             onSaveMetadata={saveOrderMetadata}
             onWooSync={() => void syncWooOrders()}
             onToggleDetail={toggleOrderDetail}
@@ -1078,6 +1146,7 @@ function captureWindowScroll(): { x: number; y: number } {
 
 export function OrderTable(input: {
   addPlanDisabled?: boolean;
+  customerNoteContextByOrder?: Record<string, OrderCustomerNoteContextDto | null>;
   detailModes?: Record<string, "review" | "edit">;
   diagnosticsByOrder: Record<string, DeliveryMetadataDiagnosticsDto | null>;
   expandedOrderIds?: ReadonlySet<string>;
@@ -1085,6 +1154,11 @@ export function OrderTable(input: {
   locale?: string | null;
   onAddPlan?(): void;
   onCloseDetail?(orderId: string): void;
+  onSaveCustomerAdminMemo?(
+    orderId: string,
+    profileId: string,
+    adminMemo: string | null,
+  ): Promise<void>;
   onSaveMetadata?(orderId: string, patch: OrderMetadataPatch): Promise<void>;
   onToggleDetail?(orderId: string): void;
   onTogglePlanOrder(orderId: string): void;
@@ -1207,12 +1281,16 @@ export function OrderTable(input: {
             ) : (
               input.orders.map((order) => (
                 <OrderTableRow
+                  customerNoteContext={
+                    input.customerNoteContextByOrder?.[order.orderId]
+                  }
                   detailMode={input.detailModes?.[order.orderId] ?? "review"}
                   diagnostics={input.diagnosticsByOrder[order.orderId]}
                   expanded={input.expandedOrderIds?.has(order.orderId) ?? false}
                   key={order.orderId}
                   locale={input.locale}
                   onCloseDetail={input.onCloseDetail}
+                  onSaveCustomerAdminMemo={input.onSaveCustomerAdminMemo}
                   onSaveMetadata={input.onSaveMetadata}
                   onToggleDetail={input.onToggleDetail}
                   onTogglePlanOrder={input.onTogglePlanOrder}
@@ -1232,11 +1310,17 @@ export function OrderTable(input: {
 }
 
 function OrderTableRow(input: {
+  customerNoteContext?: OrderCustomerNoteContextDto | null;
   detailMode: "review" | "edit";
   diagnostics: DeliveryMetadataDiagnosticsDto | null | undefined;
   expanded: boolean;
   locale?: string | null;
   onCloseDetail?(orderId: string): void;
+  onSaveCustomerAdminMemo?(
+    orderId: string,
+    profileId: string,
+    adminMemo: string | null,
+  ): Promise<void>;
   onSaveMetadata?(orderId: string, patch: OrderMetadataPatch): Promise<void>;
   onToggleDetail?(orderId: string): void;
   onTogglePlanOrder(orderId: string): void;
@@ -1382,10 +1466,21 @@ function OrderTableRow(input: {
         <tr className="order-detail-row">
           <td colSpan={ORDERS_TABLE_COLUMN_COUNT}>
             <OrderDetailPanel
+              customerNoteContext={input.customerNoteContext}
               diagnostics={input.diagnostics}
               id={detailPanelId}
               initialEditMode={input.detailMode === "edit"}
               onClose={() => input.onCloseDetail?.(order.orderId)}
+              onSaveCustomerAdminMemo={
+                input.onSaveCustomerAdminMemo === undefined
+                  ? undefined
+                  : (profileId: string, adminMemo: string | null) =>
+                      input.onSaveCustomerAdminMemo!(
+                        order.orderId,
+                        profileId,
+                        adminMemo,
+                      )
+              }
               onSaveMetadata={
                 input.onSaveMetadata === undefined
                   ? undefined
@@ -2046,20 +2141,27 @@ function compactMetadataPatch(
 }
 
 function OrderDetailPanel({
+  customerNoteContext,
   diagnostics,
   id: panelId,
   initialEditMode,
   onClose,
+  onSaveCustomerAdminMemo,
   onSaveMetadata,
   order,
   locale,
   sourceOptions,
 }: {
+  customerNoteContext: OrderCustomerNoteContextDto | null | undefined;
   diagnostics: DeliveryMetadataDiagnosticsDto | null | undefined;
   id: string;
   initialEditMode?: boolean;
   locale?: string | null;
   onClose(): void;
+  onSaveCustomerAdminMemo?(
+    profileId: string,
+    adminMemo: string | null,
+  ): Promise<void>;
   onSaveMetadata?(patch: OrderMetadataPatch): Promise<void>;
   order: CanonicalOrderDto;
   sourceOptions?: OrderSourceValueOptions | null;
@@ -2071,6 +2173,19 @@ function OrderDetailPanel({
   );
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const deliveryCustomer = customerNoteContext?.deliveryCustomer ?? null;
+  const customerNote = customerNoteContext?.customerNote ?? order.customerNote ?? null;
+  const [adminMemoDraft, setAdminMemoDraft] = useState(
+    () => deliveryCustomer?.adminMemo ?? "",
+  );
+  const [memoSaveError, setMemoSaveError] = useState<string | null>(null);
+  const [memoSaveStatus, setMemoSaveStatus] = useState<string | null>(null);
+  const [memoSaving, setMemoSaving] = useState(false);
+  useEffect(() => {
+    setAdminMemoDraft(deliveryCustomer?.adminMemo ?? "");
+    setMemoSaveError(null);
+    setMemoSaveStatus(null);
+  }, [deliveryCustomer?.adminMemo, deliveryCustomer?.profileId]);
   const onSave = onSaveMetadata;
   const t = getOrdersCopy(locale);
   const fieldLabels = getOrderFieldLabels(locale);
@@ -2118,6 +2233,31 @@ function OrderDetailPanel({
   const submitDraft = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
     saveDraft();
+  };
+  const saveAdminMemo = (event: FormEvent<HTMLFormElement>): void => {
+    event.preventDefault();
+    if (
+      deliveryCustomer === null ||
+      onSaveCustomerAdminMemo === undefined ||
+      memoSaving
+    )
+      return;
+    setMemoSaving(true);
+    setMemoSaveError(null);
+    setMemoSaveStatus(null);
+    void onSaveCustomerAdminMemo(
+      deliveryCustomer.profileId,
+      adminMemoDraft.trim().length === 0 ? null : adminMemoDraft,
+    )
+      .then(() => {
+        setMemoSaveStatus(t.memoSaved);
+      })
+      .catch((error: unknown) => {
+        setMemoSaveError(readErrorMessage(error));
+      })
+      .finally(() => {
+        setMemoSaving(false);
+      });
   };
   const repairSaveDisabled =
     !canPersistMetadata ||
@@ -2236,6 +2376,58 @@ function OrderDetailPanel({
           )}
         </section>
       </div>
+
+      <section className="order-detail-notes-grid" aria-label={t.customerOrderNote}>
+        <article className="order-detail-note-card">
+          <h4>{t.customerOrderNote}</h4>
+          {customerNote === null ? (
+            <p className="order-detail-muted">{t.customerOrderNoteEmpty}</p>
+          ) : (
+            <p className="order-detail-note-text">{customerNote}</p>
+          )}
+        </article>
+        <form className="order-detail-note-card" onSubmit={saveAdminMemo}>
+          <h4>{t.customerAdminMemo}</h4>
+          <p className="order-detail-muted">{t.customerAdminMemoHint}</p>
+          {customerNoteContext === undefined ? (
+            <p>{t.loadingDetail}</p>
+          ) : deliveryCustomer === null ? (
+            <p className="order-detail-muted">
+              {t.customerAdminMemoUnavailable}
+            </p>
+          ) : (
+            <>
+              <textarea
+                aria-label={t.customerAdminMemo}
+                onChange={(event) => setAdminMemoDraft(event.target.value)}
+                placeholder={t.customerAdminMemoPlaceholder}
+                rows={4}
+                value={adminMemoDraft}
+              />
+              {memoSaveError === null ? null : (
+                <p className="order-detail-error" role="alert">
+                  {memoSaveError}
+                </p>
+              )}
+              {memoSaveStatus === null ? null : (
+                <p className="order-detail-success" role="status">
+                  {memoSaveStatus}
+                </p>
+              )}
+              <div className="orders-actions">
+                <button
+                  disabled={
+                    onSaveCustomerAdminMemo === undefined || memoSaving
+                  }
+                  type="submit"
+                >
+                  {memoSaving ? t.saving : t.saveMemo}
+                </button>
+              </div>
+            </>
+          )}
+        </form>
+      </section>
 
       <section className="order-detail-items-card" aria-label={t.itemsTitle}>
         <h4>{t.itemsTitle}</h4>

@@ -5987,6 +5987,135 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
+
+  test("reads order customer note context through the authenticated shop context", async () => {
+    const deliveryCustomerService = {
+      getOrderCustomerNoteContext: vi.fn(() =>
+        Promise.resolve({
+          customerNote: "Please ring once.",
+          deliveryCustomer: {
+            adminMemo: "Prefers evening drop-off",
+            matchReasons: ["same_address_phone_exact"],
+            matchStatus: "AUTO_MATCHED" as const,
+            profileId: "11111111-1111-4111-8111-111111111201",
+          },
+          orderId: "11111111-1111-4111-8111-111111111101",
+        }),
+      ),
+      mergeProfiles: vi.fn(),
+      updateAdminMemo: vi.fn(),
+    };
+    const { app } = await createUiHarness({ deliveryCustomerService });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/orders/11111111-1111-4111-8111-111111111101/customer-note-context?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(cookie, {}, csrfToken),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(readApiData<{ customerNote: string | null }>(response).customerNote).toBe(
+        "Please ring once.",
+      );
+      expect(
+        deliveryCustomerService.getOrderCustomerNoteContext,
+      ).toHaveBeenCalledWith({
+        orderId: "11111111-1111-4111-8111-111111111101",
+        shopDomain: "tenant-a.example.test",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("updates delivery customer admin memo without mutating the source order note", async () => {
+    const updateAdminMemo = vi.fn(() =>
+      Promise.resolve({
+        deliveryCustomer: {
+          adminMemo: "Gate code 1234",
+          profileId: "11111111-1111-4111-8111-111111111201",
+        },
+      }),
+    );
+    const deliveryCustomerService = {
+      getOrderCustomerNoteContext: vi.fn(),
+      mergeProfiles: vi.fn(),
+      updateAdminMemo,
+    };
+    const { app } = await createUiHarness({ deliveryCustomerService });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/admin/ui/app/api/delivery-customers/11111111-1111-4111-8111-111111111201/admin-memo?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(
+          cookie,
+          { adminMemo: "Gate code 1234" },
+          csrfToken,
+        ),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(
+        readApiData<{ deliveryCustomer: { adminMemo: string | null } }>(response)
+          .deliveryCustomer.adminMemo,
+      ).toBe("Gate code 1234");
+      expect(updateAdminMemo).toHaveBeenCalledWith({
+        adminMemo: "Gate code 1234",
+        profileId: "11111111-1111-4111-8111-111111111201",
+        shopDomain: "tenant-a.example.test",
+      });
+      expect(
+        deliveryCustomerService.getOrderCustomerNoteContext,
+      ).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("keeps delivery customer merge backend-only behind CSRF", async () => {
+    const mergeProfiles = vi.fn(() =>
+      Promise.resolve({
+        deliveryCustomer: {
+          adminMemo: null,
+          profileId: "11111111-1111-4111-8111-111111111202",
+        },
+        mergedProfileId: "11111111-1111-4111-8111-111111111201",
+      }),
+    );
+    const deliveryCustomerService = {
+      getOrderCustomerNoteContext: vi.fn(),
+      mergeProfiles,
+      updateAdminMemo: vi.fn(),
+    };
+    const { app } = await createUiHarness({ deliveryCustomerService });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/delivery-customers/11111111-1111-4111-8111-111111111201/merge?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(
+          cookie,
+          { targetProfileId: "11111111-1111-4111-8111-111111111202" },
+          csrfToken,
+        ),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(mergeProfiles).toHaveBeenCalledWith({
+        sourceProfileId: "11111111-1111-4111-8111-111111111201",
+        targetProfileId: "11111111-1111-4111-8111-111111111202",
+        shopDomain: "tenant-a.example.test",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test("marks Route Ops notifications read only through the authenticated shop context", async () => {
     const notificationService = {
       createNotificationOnce: vi.fn(),
@@ -6037,6 +6166,7 @@ async function createUiHarness(
     actor: AdminCommerceActor;
     createConnection: ReturnType<typeof vi.fn>;
     driverAppDownloadUrl: string | null;
+    deliveryCustomerService: AdminCommerceConnectionsUiDependencies["deliveryCustomerService"];
     driverService: AdminCommerceConnectionsUiDependencies["driverService"];
     geocodingService: AdminCommerceConnectionsUiDependencies["geocodingService"];
     getConnection: ReturnType<typeof vi.fn>;
@@ -6140,6 +6270,9 @@ async function createUiHarness(
       : { geocodingService: overrides.geocodingService }),
     onboardingService,
     ...(pairingCodeService === undefined ? {} : { pairingCodeService }),
+    ...(overrides.deliveryCustomerService === undefined
+      ? {}
+      : { deliveryCustomerService: overrides.deliveryCustomerService }),
     ...(overrides.driverService === undefined
       ? {}
       : { driverService: overrides.driverService }),

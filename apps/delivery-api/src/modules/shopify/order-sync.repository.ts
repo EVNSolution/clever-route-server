@@ -268,6 +268,7 @@ type DeliveryStopRecord = {
   countryCode: string | null;
   geocodeStatus: string;
   id: string;
+  instructions: string | null;
   latitude: unknown;
   longitude: unknown;
   phone: string | null;
@@ -2637,6 +2638,7 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
   return {
     cancelledAt: formatDateTime(order.cancelledAt),
     currencyCode: order.currencyCode,
+    customerNote: stop?.instructions ?? readString(raw?.customer_note) ?? readString(raw?.customerNote),
     deliveryArea: fact?.deliveryArea ?? readString(raw?.deliveryArea),
     deliveryBatchEndDate: readString(raw?.deliveryBatchEndDate),
     deliveryBatchStartDate: readString(raw?.deliveryBatchStartDate),

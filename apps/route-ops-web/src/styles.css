@@ -2787,3 +2787,65 @@ button.danger.subtle {
     grid-template-columns: 1fr;
   }
 }
+
+.order-detail-notes-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.order-detail-note-card {
+  background: #f8fafc;
+  border: 1px solid #e6eaf1;
+  border-radius: 12px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.order-detail-note-card h4 {
+  color: #64748b;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.order-detail-note-card textarea {
+  border: 1px solid #d7dee9;
+  border-radius: 10px;
+  color: #111827;
+  font: inherit;
+  min-height: 96px;
+  padding: 10px;
+  resize: vertical;
+  width: 100%;
+}
+
+.order-detail-note-text {
+  color: #1f2937;
+  font-weight: 700;
+  line-height: 1.45;
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.order-detail-muted,
+.order-detail-success {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.order-detail-success {
+  color: #047857;
+  font-weight: 700;
+}
+
+@media (max-width: 900px) {
+  .order-detail-notes-grid {
+    grid-template-columns: 1fr;
+  }
+}
