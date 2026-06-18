@@ -32,12 +32,10 @@ import {
   orderBlockerLabels,
   orderFieldLabels,
 } from "../src/i18n";
-import { defaultRouteScopeConfig } from "../src/routeScopeConfig";
 import { createDefaultOrderFilters } from "../src/state";
 import type {
   CanonicalOrderDto,
   DeliveryMetadataDiagnosticsDto,
-  StoreSettingsDto,
 } from "../src/types";
 
 describe("Orders compact operations table", () => {
@@ -83,7 +81,9 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("416-555-0100");
     expect(html).toContain("Evening Delivery");
     expect(html).toContain("order-pill-stack");
-    expect(html).toContain('aria-label="Method Evening Delivery; Payment Transfer pending"');
+    expect(html).toContain(
+      'aria-label="Method Evening Delivery; Payment Transfer pending"',
+    );
     expect(html).toContain("order-pill--neutral");
     expect(html).not.toContain("Payment:");
     expect(html).toContain("Transfer pending");
@@ -145,7 +145,9 @@ describe("Orders compact operations table", () => {
       "";
 
     expect(html).toContain('aria-label="Select order #1002 11453"');
-    expect(html).toContain('aria-label="Add order #1002 11453 to route plan" class="" type="button">Add</button>');
+    expect(html).toContain(
+      'aria-label="Add order #1002 11453 to route plan" class="" type="button">Add</button>',
+    );
     expect(customerCell).not.toContain("Review");
     expect(customerCell).not.toContain("order-pill");
     expect(html).toContain("Missing delivery date");
@@ -233,7 +235,8 @@ describe("Orders compact operations table", () => {
           paymentMethodFamily: null,
           paymentMethodId: "custom_cash_gateway",
           paymentMethodTitle: "Cash",
-          paymentReviewReason: "Payment method/status mapping is not configured",
+          paymentReviewReason:
+            "Payment method/status mapping is not configured",
           wooOrderStatus: "processing",
         }),
       ],
@@ -244,8 +247,12 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("Review payment");
     expect(html).not.toContain("Cash · custom_cash_gateway");
     expect(html).not.toContain("processing");
-    expect(html).not.toContain("Payment method/status mapping is not configured");
-    expect(formatPaymentStatusLabel(orderFixture()).label).toBe("Transfer pending");
+    expect(html).not.toContain(
+      "Payment method/status mapping is not configured",
+    );
+    expect(formatPaymentStatusLabel(orderFixture()).label).toBe(
+      "Transfer pending",
+    );
   });
 
   test("renders synced Woo order items as read-only order detail data", () => {
@@ -288,6 +295,10 @@ describe("Orders compact operations table", () => {
       ],
       {
         expandedOrderIds: new Set(["order-11453"]),
+        sourceOptions: {
+          deliverySessions: ["DAY", "EVENING"],
+          serviceTypes: ["DELIVERY", "EVENING_DELIVERY"],
+        },
         worksetContext: { scope: "history" },
       },
     );
@@ -584,6 +595,10 @@ describe("Orders compact operations table", () => {
       ],
       {
         expandedOrderIds: new Set(["order-11453"]),
+        sourceOptions: {
+          deliverySessions: ["DAY", "EVENING", "PICKUP"],
+          serviceTypes: ["DELIVERY", "EVENING_DELIVERY", "PICKUP"],
+        },
       },
     );
 
@@ -602,7 +617,7 @@ describe("Orders compact operations table", () => {
     expect(html).toContain('data-choice-value="EVENING_DELIVERY"');
     expect(html).toContain("Select service type");
     expect(html).toContain(
-      "Allowed values: DELIVERY, EVENING_DELIVERY, PICKUP",
+      "Service type choices come from values that actually exist in imported orders.",
     );
     expect(html).toMatch(
       /<select(?=[^>]*name="deliverySession")(?=[^>]*data-choice-field="deliverySession")[^>]*>/,
@@ -613,7 +628,9 @@ describe("Orders compact operations table", () => {
     expect(html).not.toMatch(/<button[^>]*data-choice-field="deliverySession"/);
     expect(html).toContain('data-choice-value="EVENING"');
     expect(html).toContain("Select delivery session");
-    expect(html).toContain("Allowed values: DAY, EVENING, PICKUP");
+    expect(html).toContain(
+      "Delivery session choices come from values that actually exist in imported orders.",
+    );
     expect(html).toContain('aria-label="Service type help"');
     expect(html).toContain('class="order-detail-field-tooltip"');
     expect(html).not.toContain("order-detail-field-hint");
@@ -622,8 +639,7 @@ describe("Orders compact operations table", () => {
     expect(html).not.toContain("Coordinates available: 43.653200, -79.383200");
   });
 
-  test("renders configured custom route-scope help in detail tooltips", () => {
-    const routeScopeConfig = defaultRouteScopeConfig();
+  test("renders actual order-derived service and session choices in detail tooltips", () => {
     const html = renderOrderTable(
       [
         orderFixture({
@@ -636,53 +652,9 @@ describe("Orders compact operations table", () => {
       ],
       {
         expandedOrderIds: new Set(["order-11453"]),
-        settings: {
-          defaultDepotAddress: null,
-          defaultDepotLatitude: null,
-          defaultDepotLongitude: null,
-          locale: "en-CA",
-          routeScopeConfig: {
-            ...routeScopeConfig,
-            deliverySessions: [
-              ...routeScopeConfig.deliverySessions,
-              {
-                builtIn: false,
-                description: "Morning",
-                enabled: true,
-                example: "MORNING",
-                label: "Morning",
-                value: "MORNING",
-              },
-              {
-                builtIn: false,
-                description: "Disabled late session",
-                enabled: false,
-                example: "LATE",
-                label: "Late",
-                value: "LATE",
-              },
-            ],
-            serviceTypes: [
-              ...routeScopeConfig.serviceTypes,
-              {
-                builtIn: false,
-                description: "Morning delivery",
-                enabled: true,
-                example: "MORNING_DELIVERY",
-                label: "Morning delivery",
-                value: "MORNING_DELIVERY",
-              },
-              {
-                builtIn: false,
-                description: "Disabled late delivery",
-                enabled: false,
-                example: "LATE_DELIVERY",
-                label: "Late delivery",
-                value: "LATE_DELIVERY",
-              },
-            ],
-          },
-          shopDomain: "tenant.example.test",
+        sourceOptions: {
+          deliverySessions: ["DAY", "MORNING"],
+          serviceTypes: ["DELIVERY", "MORNING_DELIVERY"],
         },
       },
     );
@@ -692,38 +664,38 @@ describe("Orders compact operations table", () => {
     expect(html).not.toContain('data-choice-value="LATE_DELIVERY"');
     expect(html).not.toContain('data-choice-value="LATE"');
     expect(html).toContain('role="tooltip"');
+    expect(html).toContain(
+      "Service type choices come from values that actually exist in imported orders.",
+    );
     expect(html).not.toContain("order-detail-field-hint");
   });
 
-  test("does not resubmit unsupported route-scope values without an active choice", () => {
-    const html = renderOrderTable(
-      [
-        orderFixture({
-          blockerReasons: ["missing_route_scope"],
-          deliverySession: "LEGACY_SESSION",
-          metadataResolved: false,
-          routeEligible: false,
-          serviceType: "LEGACY_SERVICE",
-        }),
-      ],
-      {
-        expandedOrderIds: new Set(["order-11453"]),
-      },
-    );
+  test("preserves unsupported route-scope values with read-only fallback", () => {
+    const order = orderFixture({
+      blockerReasons: ["missing_route_scope"],
+      deliverySession: "LEGACY_SESSION",
+      metadataResolved: false,
+      routeEligible: false,
+      serviceType: "LEGACY_SERVICE",
+    });
+    const html = renderOrderTable([order], {
+      expandedOrderIds: new Set(["order-11453"]),
+      sourceOptions: { deliverySessions: [], serviceTypes: [] },
+    });
 
-    expect(html).toMatch(
+    expect(html).toContain('data-readonly-field="serviceType"');
+    expect(html).toContain('data-readonly-field="deliverySession"');
+    expect(html).not.toMatch(
       /<select(?=[^>]*name="serviceType")(?=[^>]*data-choice-field="serviceType")[^>]*>/,
     );
-    expect(html).not.toContain('value="LEGACY_SERVICE"');
-    expect(html).toMatch(
+    expect(html).not.toMatch(
       /<select(?=[^>]*name="deliverySession")(?=[^>]*data-choice-field="deliverySession")[^>]*>/,
     );
-    expect(html).not.toContain('value="LEGACY_SESSION"');
-    expect(html).toMatch(
-      /<button disabled="" type="submit">Save fixes<\/button>/,
+    const fields = buildEditableMetadataFields(
+      { deliverySessions: [], serviceTypes: [] },
+      "en-CA",
+      order,
     );
-
-    const fields = buildEditableMetadataFields(undefined);
     const normalized = normalizeOrderMetadataPatchForFields(
       {
         address1: null,
@@ -741,12 +713,15 @@ describe("Orders compact operations table", () => {
       },
       fields,
     );
-    expect(normalized.serviceType).toBeNull();
-    expect(normalized.deliverySession).toBeNull();
+    expect(normalized.serviceType).toBe("LEGACY_SERVICE");
+    expect(normalized.deliverySession).toBe("LEGACY_SESSION");
   });
 
   test("choice dropdown change path emits existing route-scope patch keys", () => {
-    const fields = buildEditableMetadataFields(undefined);
+    const fields = buildEditableMetadataFields({
+      deliverySessions: ["DAY", "EVENING"],
+      serviceTypes: ["DELIVERY", "EVENING_DELIVERY"],
+    });
     const serviceField = fields.find((field) => field.key === "serviceType");
     const sessionField = fields.find(
       (field) => field.key === "deliverySession",
@@ -822,6 +797,10 @@ describe("Orders compact operations table", () => {
     const html = renderOrderTable([orderFixture()], {
       detailModes: { "order-11453": "edit" },
       expandedOrderIds: new Set(["order-11453"]),
+      sourceOptions: {
+        deliverySessions: ["DAY", "EVENING"],
+          serviceTypes: ["DELIVERY", "EVENING_DELIVERY"],
+      },
     });
 
     for (const field of [
@@ -859,9 +838,13 @@ describe("Orders compact operations table", () => {
     );
     expect(orderBlockerLabels.missing_coordinates).toBe("Need coordinates");
     expect(getOrderFieldLabels("ko-KR").address1).toBe("도로명 주소");
-    expect(getOrderBlockerLabels("ko-KR").missing_coordinates).toBe("좌표 필요");
+    expect(getOrderBlockerLabels("ko-KR").missing_coordinates).toBe(
+      "좌표 필요",
+    );
     expect(formatDiagnosticPathLabel("unknown.path")).toBe("Order metadata");
-    expect(formatDiagnosticPathLabel("unknown.path", "ko-KR")).toBe("주문 메타데이터");
+    expect(formatDiagnosticPathLabel("unknown.path", "ko-KR")).toBe(
+      "주문 메타데이터",
+    );
   });
 
   test("empty state remains inside the compact table vocabulary", () => {
@@ -890,7 +873,9 @@ describe("Orders compact operations table", () => {
       selected: new Set(["order-11453"]),
     });
 
-    expect(emptySelection).toContain('<button disabled="" type="button">Add Plan</button>');
+    expect(emptySelection).toContain(
+      '<button disabled="" type="button">Add Plan</button>',
+    );
     expect(selected).toContain('<button type="button">Add Plan</button>');
   });
 
@@ -950,7 +935,16 @@ describe("Orders compact operations table", () => {
     );
 
     expect(html).toContain("<span>선택</span>");
-    for (const header of ["주문", "고객", "방식", "요일", "지역", "경로", "상태", "작업"]) {
+    for (const header of [
+      "주문",
+      "고객",
+      "방식",
+      "요일",
+      "지역",
+      "경로",
+      "상태",
+      "작업",
+    ]) {
       expect(html).toContain(`>${header}</th>`);
     }
     expect(html).toContain("주문 목록");
@@ -998,11 +992,14 @@ describe("Orders compact operations table", () => {
     );
 
     expect(draft.deliveryDate).toBeNull();
-    expect(draft.orderIds).toEqual(["first", "same-scope", "other-date", "other-session"]);
+    expect(draft.orderIds).toEqual([
+      "first",
+      "same-scope",
+      "other-date",
+      "other-session",
+    ]);
     expect(draft.warning).toBeNull();
-    expect(
-      getRouteDraftFirstCreateReason([first, sameScope]),
-    ).toBeNull();
+    expect(getRouteDraftFirstCreateReason([first, sameScope])).toBeNull();
     expect(getRouteDraftFirstCreateReason([first])).toBeNull();
     expect(
       getRouteDraftCreateReasons([first, otherDate, otherSession]),
@@ -1179,7 +1176,11 @@ describe("Orders compact operations table", () => {
     });
 
     const markers = buildOrderMapMarkerStates({
-      filters: { ...createDefaultOrderFilters(), scope: "history", tab: "needs_review" },
+      filters: {
+        ...createDefaultOrderFilters(),
+        scope: "history",
+        tab: "needs_review",
+      },
       orders: [ready, planned, review],
       selectedOrderIds: new Set(["history-ready"]),
       worksetContext: { scope: "history" },
@@ -1276,7 +1277,10 @@ function renderOrderTable(
     loading?: boolean;
     refreshing?: boolean;
     selected?: Set<string>;
-    settings?: StoreSettingsDto;
+    sourceOptions?: {
+      deliverySessions: string[];
+      serviceTypes: string[];
+    } | null;
     locale?: string;
     worksetContext?: { scope: "history" | "planning" };
   } = {},
@@ -1296,7 +1300,7 @@ function renderOrderTable(
       selected={options.selected ?? new Set()}
       addPlanDisabled={(options.selected?.size ?? 0) === 0}
       setSelected={() => undefined}
-      settings={options.settings}
+      sourceOptions={options.sourceOptions}
       worksetContext={options.worksetContext}
     />,
   );
@@ -1368,7 +1372,9 @@ function orderFixture(
   };
 }
 
-function exhaustedBulkNoResultDiagnostic(): NonNullable<CanonicalOrderDto["geocodeDiagnostics"]> {
+function exhaustedBulkNoResultDiagnostic(): NonNullable<
+  CanonicalOrderDto["geocodeDiagnostics"]
+> {
   return {
     attemptCount: 8,
     code: "GEOCODER_NO_RESULT",

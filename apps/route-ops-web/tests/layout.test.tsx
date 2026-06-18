@@ -12,14 +12,7 @@ import {
   type TopbarNotificationItem
 } from '../src/components/TopbarNotifications';
 import { OrdersPage } from '../src/pages/OrdersPage';
-import {
-  SettingsPage,
-  addRouteScopeValue,
-  buildSettingsSaveInput,
-  removeRouteScopeValue,
-  updateRouteScopeValue
-} from '../src/pages/SettingsPage';
-import { defaultRouteScopeConfig } from '../src/routeScopeConfig';
+import { SettingsPage, buildSettingsSaveInput } from '../src/pages/SettingsPage';
 import type {
   AdminNotificationDto,
   BootstrapPayload,
@@ -232,7 +225,6 @@ describe('route ops layout components', () => {
     expect(html).not.toContain('Order health');
     expect(html).not.toContain('Service type');
     expect(html).not.toContain('Delivery session');
-    expect(html).toContain('Evening Delivery');
     expect(html).not.toContain('Clear filters');
     expect(html).toContain('Clear plan');
     expect(html).not.toContain('Search');
@@ -241,7 +233,7 @@ describe('route ops layout components', () => {
   test('Orders page does not prefill the delivery date filter', () => {
     const html = renderToStaticMarkup(<OrdersPage bootstrap={bootstrap()} navigate={() => undefined} setError={() => undefined} />);
 
-    expect(html).toContain('filter-field filter-field--date">Delivery date<span class="filter-control"><input type="date" value=""/></span>');
+    expect(html).toContain('filter-field filter-field--date">Delivery date<span class="filter-control"><span class="order-date-picker"><button aria-expanded="false" class="order-date-picker-toggle" type="button">Date</button></span></span>');
   });
 
   test('Orders page renders Korean tabs filters and add-plan copy from locale', () => {
@@ -353,10 +345,10 @@ describe('route ops layout components', () => {
     expect(html).toContain('Geocode &amp; save coordinates');
     expect(html).toContain('English');
     expect(html).toContain('한국어');
-    expect(html).toContain('Service and session values');
-    expect(html).toContain('route-scope-config-block');
-    expect(html).toContain('EVENING_DELIVERY');
-    expect(html).toContain('EVENING');
+    expect(html).not.toContain('Service and session values');
+    expect(html).not.toContain('route-scope-config-block');
+    expect(html).not.toContain('EVENING_DELIVERY');
+    expect(html).not.toContain('EVENING');
     expect(html).not.toContain('17:00');
     expect(html).not.toContain('Time window');
     expect(html).not.toContain('Français');
@@ -368,66 +360,50 @@ describe('route ops layout components', () => {
     expect(html).toContain('매장 설정');
     expect(html).toContain('매장 주소');
     expect(html).toContain('주소로 좌표 저장');
-    expect(html).toContain('서비스/세션 값');
-    expect(html).toContain('서비스 타입');
-    expect(html).toContain('배송 세션');
+    expect(html).not.toContain('서비스/세션 값');
+    expect(html).not.toContain('서비스 타입');
+    expect(html).not.toContain('배송 세션');
     expect(html).toContain('지도/경로 상태');
     expect(html).toContain('설정 안 됨');
     expect(html).not.toContain('Store settings');
     expect(html).not.toContain('Geocode &amp; save coordinates');
   });
 
-  test('Settings CSS uses responsive route value rows instead of the old fixed six-column grid', () => {
+  test('Settings CSS keeps responsive settings workspace rules', () => {
     const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
     expect(css).toContain('.settings-workspace');
     expect(css).toContain('.ops-shell--settings');
     expect(css).toContain('.ops-shell--orders');
     expect(css).toContain('grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));');
-    expect(css).toContain('font-size: 12px;');
     expect(css).toContain('@media (max-width: 720px)');
     expect(css).not.toContain('minmax(120px, 0.9fr) minmax(120px, 1fr) minmax(140px, 1.2fr) minmax(140px, 1.2fr) minmax(90px, 0.5fr) auto');
   });
 
-  test('Settings route-scope helpers add edit remove values and build the save payload', () => {
-    const baseConfig = defaultRouteScopeConfig();
-    const withCustomService = addRouteScopeValue(baseConfig, 'serviceTypes');
-    expect(withCustomService.serviceTypes.at(-1)).toEqual(expect.objectContaining({
-      builtIn: false,
-      enabled: true,
-      value: 'CUSTOM_SERVICE_1'
-    }));
-
-    const edited = updateRouteScopeValue(
-      withCustomService,
-      'serviceTypes',
-      withCustomService.serviceTypes.length - 1,
-      { description: 'Morning routes', enabled: false, label: 'Morning', value: 'MORNING_DELIVERY' }
-    );
-    expect(edited.serviceTypes.at(-1)).toEqual(expect.objectContaining({
-      description: 'Morning routes',
-      enabled: false,
-      label: 'Morning',
-      value: 'MORNING_DELIVERY'
-    }));
-
-    const removed = removeRouteScopeValue(edited, 'serviceTypes', edited.serviceTypes.length - 1);
-    expect(removed.serviceTypes).toHaveLength(baseConfig.serviceTypes.length);
-
+  test('Settings save payload omits route-scope config management state', () => {
     const draft: StoreSettingsDto = {
       defaultDepotAddress: '123 Depot St',
       defaultDepotLatitude: 43.6532,
       defaultDepotLongitude: -79.3832,
       locale: 'ko-KR',
-      routeScopeConfig: edited,
+      routeScopeConfig: {
+        deliverySessions: [],
+        serviceTypes: [],
+        timeWindow: {
+          endExample: '21:00',
+          helpText: 'Use HH:MM',
+          startExample: '17:00'
+        },
+        version: 1
+      },
       shopDomain: 'tenant.example.test'
     };
-    expect(buildSettingsSaveInput({ csrfToken: 'csrf', draft, routeScopeConfig: edited })).toEqual(
+    expect(buildSettingsSaveInput({ csrfToken: 'csrf', draft })).toEqual(
       expect.objectContaining({
         csrfToken: 'csrf',
-        locale: 'ko-KR',
-        routeScopeConfig: edited
+        locale: 'ko-KR'
       })
     );
+    expect(buildSettingsSaveInput({ csrfToken: 'csrf', draft })).not.toHaveProperty('routeScopeConfig');
   });
 });
 

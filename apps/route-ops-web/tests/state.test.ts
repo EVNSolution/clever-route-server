@@ -9,6 +9,7 @@ import {
   buildOrderQuery,
   createDefaultOrderFilters,
   deriveAreaFilterOptions,
+  deriveOrderFilterOptions,
   deriveRouteStats,
   geometryLabel,
   getOrderWorksetUnavailableReasons,
@@ -23,6 +24,8 @@ import {
   moveStopBefore,
   moveStopToDropPosition,
   moveStopToSequence,
+  pruneOrderFilters,
+  reconcileOrderFilters,
   storeSettingsToDepotPoint,
   summarizeOrderWorkset,
   summarizeSelection
@@ -55,10 +58,58 @@ describe('route ops web state helpers', () => {
     expect(applyClientOrderFilters(orders, { deliveryArea: 'Toronto' }).map((item) => item.orderId)).toEqual(['may-27', 'missing-date', 'evening', 'pickup', 'review']);
     expect(applyClientOrderFilters(orders, { deliveryArea: 'Toronto East' }).map((item) => item.orderId)).toEqual(['may-28']);
     expect(applyClientOrderFilters(orders, { deliveryDate: '2026-05-27', deliverySession: 'DAY', tab: 'unplanned' }).map((item) => item.orderId)).toEqual(['may-27']);
-    expect(applyClientOrderFilters(orders, { routeType: 'pickup' }).map((item) => item.orderId)).toEqual(['pickup']);
+    expect(applyClientOrderFilters(orders, { routeType: 'PICKUP' }).map((item) => item.orderId)).toEqual(['pickup']);
     expect(applyClientOrderFilters(orders, { weekday: 'wed' }).map((item) => item.orderId)).toEqual(['may-27', 'evening', 'review']);
     expect(applyClientOrderFilters(orders, { deliveryDate: '2026-05-27', tab: 'needs_review' }).map((item) => item.orderId)).toEqual(['review']);
     expect(applyClientOrderFilters(orders, { deliveryDate: '' })).toBe(orders);
+  });
+
+  test('reconciles Date and Weekday with latest user action authority', () => {
+    const orders = [
+      order({ deliveryDate: '2026-05-27', orderId: 'wed' }),
+      order({ deliveryDate: '2026-05-28', orderId: 'thu' }),
+      order({ deliveryDate: '2026-05-29', orderId: 'fri' })
+    ];
+    const afterDate = reconcileOrderFilters({
+      changedField: 'deliveryDate',
+      filters: { ...createDefaultOrderFilters(), deliveryDate: '2026-05-27' },
+      orders,
+      previousOrder: []
+    });
+
+    expect(afterDate.filters).toEqual(expect.objectContaining({
+      deliveryDate: '2026-05-27',
+      weekday: 'wed'
+    }));
+    expect(afterDate.order).toEqual(['deliveryDate']);
+    const afterDateOptions = deriveOrderFilterOptions(orders, afterDate.filters, afterDate.order);
+    expect(afterDateOptions.deliveryDates).toEqual([
+      '2026-05-27',
+      '2026-05-28',
+      '2026-05-29'
+    ]);
+    expect(afterDateOptions.weekdays).toEqual(['wed', 'thu', 'fri']);
+
+    const afterWeekday = reconcileOrderFilters({
+      changedField: 'weekday',
+      filters: { ...afterDate.filters, weekday: 'thu' },
+      orders,
+      previousOrder: afterDate.order
+    });
+
+    expect(afterWeekday.filters).toEqual(expect.objectContaining({
+      deliveryDate: '',
+      weekday: 'thu'
+    }));
+    expect(afterWeekday.order).toEqual(['weekday']);
+    expect(deriveOrderFilterOptions(orders, afterWeekday.filters, afterWeekday.order).deliveryDates).toEqual(['2026-05-28']);
+
+    const pruned = pruneOrderFilters({
+      filters: { ...createDefaultOrderFilters(), deliveryDate: '2026-06-01', weekday: 'mon' },
+      orders,
+      order: ['deliveryDate']
+    });
+    expect(pruned.filters).toEqual(expect.objectContaining({ deliveryDate: '', weekday: '' }));
   });
 
 
