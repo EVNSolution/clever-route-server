@@ -33,7 +33,7 @@ server-side GitHub credentials and a real checkout are deliberately provisioned.
    - `apps/route-ops-web/**` or `.dockerignore` -> `route-ops-web-static`
    - `apps/delivery-api/**` or `.dockerignore` -> `delivery-api`
    - compose/script/docs-only changes -> no image build
-4. `docker/build-push-action@v6` publishes changed images to GHCR with both
+4. `docker/build-push-action@v7` publishes changed images to GHCR with both
    `${{ github.sha }}` and `${channel}` tags, using GHCR registry cache.
 5. The workflow resolves the deploy image refs to `repo@sha256:<digest>` and uploads
    `route-ops-simple-image-selection` as a 7-day artifact.
