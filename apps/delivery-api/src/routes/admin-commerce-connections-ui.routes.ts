@@ -13,6 +13,7 @@ import type {
 } from "../modules/commerce/admin-store-settings.service.js";
 import type { AdminWooSyncServiceContract } from "../modules/commerce/admin-woocommerce-sync.service.js";
 import { validateRouteScopeConfigPayload } from "../modules/route-ops/route-scope-config.js";
+import { validateRouteOpsUiSettingsPayload } from "../modules/route-ops/route-ops-ui-settings.js";
 import {
   WooCommerceOnboardingError,
   type WooCommerceConnectionOnboardingService,
@@ -211,11 +212,27 @@ const routeOpsApiResponder = createRouteOpsApiResponder({
 const { routeOpsData, withRouteOpsApi } = routeOpsApiResponder;
 const DEFAULT_ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS = 180000;
 
+function readRouteOpsUiSettingsPayload(value: unknown) {
+  try {
+    return validateRouteOpsUiSettingsPayload(value);
+  } catch (error) {
+    throw new WooCommerceOnboardingError(
+      "BAD_REQUEST",
+      error instanceof Error
+        ? error.message
+        : "Route Ops UI settings are invalid.",
+      400,
+    );
+  }
+}
+
 function readRouteOptimizationJobTimeoutBudgetMs(): number {
   const raw = process.env.ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS?.trim();
-  if (raw === undefined || raw === '') return DEFAULT_ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS;
+  if (raw === undefined || raw === "")
+    return DEFAULT_ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS;
   const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed)) return DEFAULT_ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS;
+  if (!Number.isFinite(parsed))
+    return DEFAULT_ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS;
   return parsed;
 }
 
@@ -2168,11 +2185,14 @@ function registerRouteOpsAppRoutes(
             );
           }
           try {
-            const updated = await services.routePlanService.updateRoutePlanStops({
-              payload: { stops: readRouteOpsStopSequence(body.stops, detail) },
-              routePlanId: request.params.routePlanId,
-              shopDomain,
-            });
+            const updated =
+              await services.routePlanService.updateRoutePlanStops({
+                payload: {
+                  stops: readRouteOpsStopSequence(body.stops, detail),
+                },
+                routePlanId: request.params.routePlanId,
+                shopDomain,
+              });
             if (updated === null) {
               throw new WooCommerceOnboardingError(
                 "NOT_FOUND",
@@ -2605,6 +2625,13 @@ function registerRouteOpsAppRoutes(
             body.defaultDepotLongitude,
           ),
           locale: readRouteOpsLocale(body.locale),
+          ...(Object.hasOwn(body, "routeOpsUiSettings")
+            ? {
+                routeOpsUiSettings: readRouteOpsUiSettingsPayload(
+                  body.routeOpsUiSettings,
+                ),
+              }
+            : {}),
           ...(Object.hasOwn(body, "routeScopeConfig")
             ? {
                 routeScopeConfig: validateRouteScopeConfigPayload(
@@ -2681,18 +2708,11 @@ function registerRouteOpsAppRoutes(
               400,
             );
           }
-          const settings = await dependencies.settingsService.saveSettings({
-            defaultDepotAddress,
-            defaultDepotLatitude: geocode.result.latitude,
-            defaultDepotLongitude: geocode.result.longitude,
-            locale: readRouteOpsLocale(
-              body.locale ?? currentSettings?.locale ?? "en-CA",
-            ),
-            shopDomain,
-          });
+          const draftResponseSettings =
+            currentSettings ?? defaultRouteOpsSettings(shopDomain);
           return routeOpsData({
             geocode: toSafeRouteOpsGeocodeResponse(geocode),
-            settings: toRouteOpsSettingsDto(settings),
+            settings: toRouteOpsSettingsDto(draftResponseSettings),
           });
         },
       ),
@@ -3873,7 +3893,9 @@ function readRouteUiServices(
     orderSyncService: dependencies.orderSyncService,
     ...(dependencies.routeOptimizationJobService === undefined
       ? {}
-      : { routeOptimizationJobService: dependencies.routeOptimizationJobService }),
+      : {
+          routeOptimizationJobService: dependencies.routeOptimizationJobService,
+        }),
     ...(dependencies.routeOptimizationService === undefined
       ? {}
       : { routeOptimizationService: dependencies.routeOptimizationService }),
@@ -3921,7 +3943,8 @@ async function createRouteOptimizationJobForRequest(
 ): Promise<RouteOptimizationJobDto> {
   const jobService = requireRouteOptimizationJobService(input.services);
   const shopDomain =
-    input.shopDomainOverride ?? requireRouteOpsShopDomain(input.request, input.session);
+    input.shopDomainOverride ??
+    requireRouteOpsShopDomain(input.request, input.session);
   let job: RouteOptimizationJobDto | null;
   try {
     job = await jobService.createJob({
@@ -3992,7 +4015,6 @@ async function assertRoutePlanExistsForOptimizationRead(input: {
     );
   }
 }
-
 
 function readRouteOpsShopDomain(
   request: FastifyRequest,

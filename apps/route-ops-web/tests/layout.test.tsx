@@ -13,6 +13,7 @@ import {
 } from '../src/components/TopbarNotifications';
 import { OrdersPage } from '../src/pages/OrdersPage';
 import { SettingsPage, buildSettingsSaveInput } from '../src/pages/SettingsPage';
+import { defaultRouteOpsUiSettings } from '../src/settingsUi';
 import type {
   AdminNotificationDto,
   BootstrapPayload,
@@ -264,6 +265,8 @@ describe('route ops layout components', () => {
 
   test('Orders CSS keeps the filter card responsive and prevents search overflow', () => {
     const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+    const filterPanelCss = extractCssRule(css, '.filter-panel');
+    const orderDatePickerToggleCss = extractCssRule(css, '.order-date-picker-toggle');
     expect(css).toContain('grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr));');
     expect(css).toContain('.filter-clear-x');
     expect(css).not.toContain('.filter-clear-button');
@@ -271,6 +274,9 @@ describe('route ops layout components', () => {
     expect(css).not.toContain('.filter-panel-header');
     expect(css).not.toContain('.route-plan-add-button');
     expect(css).toContain('max-width: 100%;');
+    expect(filterPanelCss).toContain('overflow: visible;');
+    expect(orderDatePickerToggleCss).toContain('height: 36px;');
+    expect(orderDatePickerToggleCss).toContain('border: 1px solid #d9dee7;');
     expect(css).toContain('.orders-table-scroll');
   });
 
@@ -339,10 +345,16 @@ describe('route ops layout components', () => {
     expect(driverInviteButtonCss).toContain('white-space: nowrap;');
   });
 
-  test('Settings page exposes only English and Korean locale options with geocode action', () => {
+  test('Settings page separates store and language settings without a geocode save action', () => {
     const html = renderToStaticMarkup(<SettingsPage bootstrap={bootstrap()} setError={() => undefined} />);
     expect(html).toContain('data-settings-layout="category-sections"');
-    expect(html).toContain('Geocode &amp; save coordinates');
+    expect(html).not.toContain('Geocode &amp; save coordinates');
+    expect(html).toContain('Store settings');
+    expect(html).toContain('Language selection');
+    expect(html).toContain('Destination dwell minutes');
+    expect(html).toContain('Customer email notification settings');
+    expect(html).toContain('Add reminder');
+    expect(html).toContain('{{deliveryDate}}');
     expect(html).toContain('English');
     expect(html).toContain('한국어');
     expect(html).not.toContain('Service and session values');
@@ -359,7 +371,10 @@ describe('route ops layout components', () => {
 
     expect(html).toContain('매장 설정');
     expect(html).toContain('매장 주소');
-    expect(html).toContain('주소로 좌표 저장');
+    expect(html).not.toContain('주소로 좌표 저장');
+    expect(html).toContain('언어 선택');
+    expect(html).toContain('도착지 체류 시간');
+    expect(html).toContain('고객 이메일 알림 설정');
     expect(html).not.toContain('서비스/세션 값');
     expect(html).not.toContain('서비스 타입');
     expect(html).not.toContain('배송 세션');
@@ -385,6 +400,14 @@ describe('route ops layout components', () => {
       defaultDepotLatitude: 43.6532,
       defaultDepotLongitude: -79.3832,
       locale: 'ko-KR',
+      routeOpsUiSettings: {
+        ...defaultRouteOpsUiSettings(),
+        destinationDwellMinutes: 12,
+        emailNotifications: {
+          ...defaultRouteOpsUiSettings().emailNotifications,
+          template: { body: 'Delivery on {{deliveryDate}}', subject: 'Order {{orderNumber}}' }
+        }
+      },
       routeScopeConfig: {
         deliverySessions: [],
         serviceTypes: [],
@@ -400,7 +423,8 @@ describe('route ops layout components', () => {
     expect(buildSettingsSaveInput({ csrfToken: 'csrf', draft })).toEqual(
       expect.objectContaining({
         csrfToken: 'csrf',
-        locale: 'ko-KR'
+        locale: 'ko-KR',
+        routeOpsUiSettings: expect.objectContaining({ destinationDwellMinutes: 12 })
       })
     );
     expect(buildSettingsSaveInput({ csrfToken: 'csrf', draft })).not.toHaveProperty('routeScopeConfig');

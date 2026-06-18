@@ -14,6 +14,7 @@ import {
   type RoutePlanService,
 } from "../src/modules/route-plans/route-plan.types.js";
 import { defaultRouteScopeConfig } from "../src/modules/route-ops/route-scope-config.js";
+import { defaultRouteOpsUiSettings } from "../src/modules/route-ops/route-ops-ui-settings.js";
 import type { AdminCommerceConnectionsDependencies } from "../src/routes/admin-commerce-connections.routes.js";
 import type { RouteOptimizationJobDto } from "../src/modules/route-plans/route-optimization-job.types.js";
 import type { AdminCommerceConnectionsUiDependencies } from "../src/routes/admin-commerce-connections-ui.routes.js";
@@ -72,15 +73,43 @@ function routeOptimizationJob(
   };
 }
 
-function routeOptimizationJobServiceMock(overrides: Partial<NonNullable<AdminCommerceConnectionsUiDependencies["routeOptimizationJobService"]>> = {}): NonNullable<AdminCommerceConnectionsUiDependencies["routeOptimizationJobService"]> {
+function routeOptimizationJobServiceMock(
+  overrides: Partial<
+    NonNullable<
+      AdminCommerceConnectionsUiDependencies["routeOptimizationJobService"]
+    >
+  > = {},
+): NonNullable<
+  AdminCommerceConnectionsUiDependencies["routeOptimizationJobService"]
+> {
   return {
     createJob: vi.fn(() => Promise.resolve(routeOptimizationJob())),
-    findJob: vi.fn(() => Promise.resolve(routeOptimizationJob({ status: "RUNNING" }))),
-    findLatestJob: vi.fn(() => Promise.resolve(routeOptimizationJob({ status: "RUNNING" }))),
-    markApplyingResult: vi.fn(() => Promise.resolve(routeOptimizationJob({ currentStep: "APPLYING_RESULT", status: "RUNNING" }))),
-    markRunning: vi.fn(() => Promise.resolve(routeOptimizationJob({ currentStep: "CALLING_ENGINE", status: "RUNNING" }))),
+    findJob: vi.fn(() =>
+      Promise.resolve(routeOptimizationJob({ status: "RUNNING" })),
+    ),
+    findLatestJob: vi.fn(() =>
+      Promise.resolve(routeOptimizationJob({ status: "RUNNING" })),
+    ),
+    markApplyingResult: vi.fn(() =>
+      Promise.resolve(
+        routeOptimizationJob({
+          currentStep: "APPLYING_RESULT",
+          status: "RUNNING",
+        }),
+      ),
+    ),
+    markRunning: vi.fn(() =>
+      Promise.resolve(
+        routeOptimizationJob({
+          currentStep: "CALLING_ENGINE",
+          status: "RUNNING",
+        }),
+      ),
+    ),
     reconcileStaleActiveJobs: vi.fn(() => Promise.resolve([])),
-    recordEngineOutcome: vi.fn(() => Promise.resolve(routeOptimizationJob({ status: "APPLIED" }))),
+    recordEngineOutcome: vi.fn(() =>
+      Promise.resolve(routeOptimizationJob({ status: "APPLIED" })),
+    ),
     ...overrides,
   };
 }
@@ -178,7 +207,8 @@ describe("Admin WooCommerce connection UI routes", () => {
         CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
         CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
         DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
-        DRIVER_APP_DOWNLOAD_URL: "https://drive.example.test/uc?id=apk&export=download",
+        DRIVER_APP_DOWNLOAD_URL:
+          "https://drive.example.test/uc?id=apk&export=download",
       },
       nodeEnv: "production",
     });
@@ -214,7 +244,9 @@ describe("Admin WooCommerce connection UI routes", () => {
         },
         nodeEnv: "production",
       }),
-    ).toThrow("ROUTE_ENGINE_INTERNAL_TOKEN is required when ROUTE_ENGINE_BASE_URL is set");
+    ).toThrow(
+      "ROUTE_ENGINE_INTERNAL_TOKEN is required when ROUTE_ENGINE_BASE_URL is set",
+    );
 
     const dependencies = loadAdminCommerceConnectionsUiDependencies({
       adminCommerceConnections: base.dependencies,
@@ -528,9 +560,7 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(routeOpsRedirect.statusCode).toBe(401);
       expect(routeOpsRedirect.headers.location).toBeUndefined();
       expect(routeOpsRedirect.body).toContain("Store session entry required");
-      expect(routeOpsRedirect.body).not.toContain(
-        'name="loginSecret"',
-      );
+      expect(routeOpsRedirect.body).not.toContain('name="loginSecret"');
 
       const unauthenticatedBootstrap = await app.inject({
         method: "GET",
@@ -580,9 +610,7 @@ describe("Admin WooCommerce connection UI routes", () => {
         }),
       });
       expect(deepLinkLogin.statusCode).toBe(303);
-      expect(deepLinkLogin.headers.location).toBe(
-        "/admin/ui/store-sessions",
-      );
+      expect(deepLinkLogin.headers.location).toBe("/admin/ui/store-sessions");
 
       const externalReturnLogin = await app.inject({
         method: "POST",
@@ -665,7 +693,9 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(storeSessions.statusCode).toBe(200);
       expect(storeSessions.body).toContain("Store sessions");
       expect(storeSessions.body).toContain("Choose store domain");
-      expect(storeSessions.body).not.toContain("/admin/ui/app/orders?shopDomain=");
+      expect(storeSessions.body).not.toContain(
+        "/admin/ui/app/orders?shopDomain=",
+      );
 
       const storeSessionForShop = await app.inject({
         headers: { cookie },
@@ -798,8 +828,11 @@ describe("Admin WooCommerce connection UI routes", () => {
   });
 
   test("exposes a stable driver app install link and redirects it to the configured download", async () => {
-    const rawDownloadUrl = "https://drive.example.test/uc?id=driver-apk&export=download";
-    const { app } = await createUiHarness({ driverAppDownloadUrl: rawDownloadUrl });
+    const rawDownloadUrl =
+      "https://drive.example.test/uc?id=driver-apk&export=download";
+    const { app } = await createUiHarness({
+      driverAppDownloadUrl: rawDownloadUrl,
+    });
 
     try {
       const { cookie } = await loginAndReadCsrf(app);
@@ -809,7 +842,10 @@ describe("Admin WooCommerce connection UI routes", () => {
         url: "/admin/ui/app/api/bootstrap?shopDomain=tenant-a.example.test",
       });
       expect(bootstrap.statusCode).toBe(200);
-      expect(readApiData<{ driverApp: { installUrl: string | null } }>(bootstrap).driverApp).toEqual({
+      expect(
+        readApiData<{ driverApp: { installUrl: string | null } }>(bootstrap)
+          .driverApp,
+      ).toEqual({
         installUrl: "https://clever-route.cleversystem.ai/driver-app",
       });
       expect(bootstrap.body).not.toContain("drive.example.test");
@@ -834,7 +870,10 @@ describe("Admin WooCommerce connection UI routes", () => {
         url: "/admin/ui/app/api/bootstrap?shopDomain=tenant-a.example.test",
       });
       expect(bootstrap.statusCode).toBe(200);
-      expect(readApiData<{ driverApp: { installUrl: string | null } }>(bootstrap).driverApp).toEqual({
+      expect(
+        readApiData<{ driverApp: { installUrl: string | null } }>(bootstrap)
+          .driverApp,
+      ).toEqual({
         installUrl: null,
       });
 
@@ -1837,7 +1876,9 @@ describe("Admin WooCommerce connection UI routes", () => {
             unchanged: 0,
             updated: 0,
           },
-          warnings: ["1 synced orders need delivery metadata review before routing."],
+          warnings: [
+            "1 synced orders need delivery metadata review before routing.",
+          ],
         },
         startedAt: "2026-05-24T00:00:01.000Z",
         status: "SUCCEEDED" as const,
@@ -1847,7 +1888,14 @@ describe("Admin WooCommerce connection UI routes", () => {
     const readSyncRun = vi.fn(() => Promise.resolve(queuedSyncRun));
     const syncSingleOrder = vi.fn(() =>
       Promise.resolve({
-        orders: [canonicalOrder({ name: "#11432", orderId: "order-11432", sourceOrderId: "11432", sourceOrderNumber: "11432" })],
+        orders: [
+          canonicalOrder({
+            name: "#11432",
+            orderId: "order-11432",
+            sourceOrderId: "11432",
+            sourceOrderNumber: "11432",
+          }),
+        ],
         sync: {
           created: 0,
           needsReview: 0,
@@ -2014,6 +2062,170 @@ describe("Admin WooCommerce connection UI routes", () => {
       );
       const savedInput = saveSettings.mock.calls[0]?.[0];
       expect(savedInput?.routeScopeConfig?.version).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("persists valid phase-one Route Ops UI settings", async () => {
+    const saveSettings = vi.fn<
+      NonNullable<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["settingsService"]
+        >["saveSettings"]
+      >
+    >((input) => Promise.resolve(storeSettings(input)));
+    const { app } = await createUiHarness({
+      settingsService: {
+        getSettings: vi.fn(() => Promise.resolve(storeSettings())),
+        saveSettings,
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/admin/ui/app/api/settings?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(
+          cookie,
+          {
+            defaultDepotAddress: "123 Depot St, Toronto, ON",
+            defaultDepotLatitude: 43.6532,
+            defaultDepotLongitude: -79.3832,
+            locale: "en-CA",
+            routeOpsUiSettings: {
+              destinationDwellMinutes: 12,
+              emailNotifications: {
+                enabled: true,
+                reminderPlans: [
+                  { daysBefore: 1, id: "plan-1", timeOfDay: "09:30" },
+                ],
+                template: {
+                  body: "Hi {{customerName}}, delivery is {{deliveryDate}}.",
+                  subject: "Order {{orderNumber}} delivery",
+                },
+              },
+              version: 1,
+            },
+          },
+          csrfToken,
+        ),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const payload = readApiData<{
+        settings: { routeOpsUiSettings: { destinationDwellMinutes: number } };
+      }>(response);
+      expect(payload.settings.routeOpsUiSettings.destinationDwellMinutes).toBe(
+        12,
+      );
+      expect(saveSettings.mock.calls[0]?.[0].routeOpsUiSettings).toEqual(
+        expect.objectContaining({ destinationDwellMinutes: 12 }),
+      );
+      expect(saveSettings.mock.calls[0]?.[0]).not.toHaveProperty(
+        "customerEmailProvider",
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("rejects invalid phase-one Route Ops UI settings before persistence", async () => {
+    const saveSettings = vi.fn();
+    const { app } = await createUiHarness({
+      settingsService: {
+        getSettings: vi.fn(() => Promise.resolve(storeSettings())),
+        saveSettings,
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      for (const routeOpsUiSettings of [
+        {
+          ...defaultRouteOpsUiSettings(),
+          destinationDwellMinutes: 241,
+        },
+        {
+          ...defaultRouteOpsUiSettings(),
+          emailNotifications: {
+            ...defaultRouteOpsUiSettings().emailNotifications,
+            reminderPlans: [
+              { daysBefore: 1, id: "a", timeOfDay: "09:00" },
+              { daysBefore: 1, id: "b", timeOfDay: "09:00" },
+            ],
+          },
+        },
+        {
+          ...defaultRouteOpsUiSettings(),
+          emailNotifications: {
+            ...defaultRouteOpsUiSettings().emailNotifications,
+            template: { body: "Bad {{unknownToken}}", subject: "Subject" },
+          },
+        },
+      ]) {
+        const response = await app.inject({
+          method: "PATCH",
+          url: "/admin/ui/app/api/settings?shopDomain=tenant-a.example.test",
+          ...authenticatedJsonRequest(
+            cookie,
+            {
+              defaultDepotAddress: "123 Depot St, Toronto, ON",
+              defaultDepotLatitude: 43.6532,
+              defaultDepotLongitude: -79.3832,
+              locale: "en-CA",
+              routeOpsUiSettings,
+            },
+            csrfToken,
+          ),
+        });
+
+        expect(response.statusCode).toBe(400);
+      }
+      expect(saveSettings).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("omits routeScopeConfig from Settings saves when the frontend does not send it", async () => {
+    const saveSettings = vi.fn<
+      NonNullable<
+        NonNullable<
+          AdminCommerceConnectionsUiDependencies["settingsService"]
+        >["saveSettings"]
+      >
+    >((input) => Promise.resolve(storeSettings(input)));
+    const { app } = await createUiHarness({
+      settingsService: {
+        getSettings: vi.fn(() => Promise.resolve(storeSettings())),
+        saveSettings,
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "PATCH",
+        url: "/admin/ui/app/api/settings?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(
+          cookie,
+          {
+            defaultDepotAddress: "123 Depot St, Toronto, ON",
+            defaultDepotLatitude: 43.6532,
+            defaultDepotLongitude: -79.3832,
+            locale: "en-CA",
+            routeOpsUiSettings: defaultRouteOpsUiSettings(),
+          },
+          csrfToken,
+        ),
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(saveSettings.mock.calls[0]?.[0]).not.toHaveProperty(
+        "routeScopeConfig",
+      );
     } finally {
       await app.close();
     }
@@ -3078,7 +3290,7 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
-  test("geocodes and remembers Route Ops settings depot coordinates", async () => {
+  test("geocodes Route Ops settings depot coordinates as draft without saving", async () => {
     const geocode = vi.fn(() =>
       Promise.resolve({
         cached: false,
@@ -3149,22 +3361,14 @@ describe("Admin WooCommerce connection UI routes", () => {
       );
       expect(payload.settings).toEqual(
         expect.objectContaining({
-          defaultDepotLatitude: 43.589045,
-          locale: "ko-KR",
+          defaultDepotLatitude: 43.6532,
+          locale: "en-CA",
         }),
       );
       expect(geocode).toHaveBeenCalledWith(
         expect.objectContaining({ shopDomain: "tenant-a.example.test" }),
       );
-      expect(saveSettings).toHaveBeenCalledWith(
-        expect.objectContaining({
-          defaultDepotAddress: "300 City Centre Dr, Mississauga, ON",
-          defaultDepotLatitude: 43.589045,
-          defaultDepotLongitude: -79.644119,
-          locale: "ko-KR",
-          shopDomain: "tenant-a.example.test",
-        }),
-      );
+      expect(saveSettings).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -3370,8 +3574,14 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(detailData.routeGeometry).toBeNull();
       expect(detailData.routeStopPoints).toEqual([]);
       expect(detailData.stops).toEqual([
-        expect.objectContaining({ deliveryStopId: "stop-1", orderName: "#1001" }),
-        expect.objectContaining({ deliveryStopId: "stop-2", orderName: "#1002" }),
+        expect.objectContaining({
+          deliveryStopId: "stop-1",
+          orderName: "#1001",
+        }),
+        expect.objectContaining({
+          deliveryStopId: "stop-2",
+          orderName: "#1002",
+        }),
       ]);
       expect(detailData.routePlan).toEqual(
         expect.objectContaining({
@@ -4006,10 +4216,18 @@ describe("Admin WooCommerce connection UI routes", () => {
       Promise.resolve({
         detail: savedDetail,
         operations: [
-          { name: "options", reason: "route_end_mode_changed", status: "applied" },
+          {
+            name: "options",
+            reason: "route_end_mode_changed",
+            status: "applied",
+          },
           { name: "stops", reason: "sequence_changed", status: "applied" },
           { name: "driver", reason: "driver_changed", status: "applied" },
-          { name: "publish", reason: "draft_ready_for_driver", status: "applied" },
+          {
+            name: "publish",
+            reason: "draft_ready_for_driver",
+            status: "applied",
+          },
         ],
       }),
     );
@@ -4219,7 +4437,8 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(response.statusCode).toBe(409);
       expect(readApiError(response)).toMatchObject({
         code: "ROUTE_ORDER_ALREADY_PLANNED",
-        message: "Some selected orders are already assigned to a route. Refresh the page and try again.",
+        message:
+          "Some selected orders are already assigned to a route. Refresh the page and try again.",
       });
     } finally {
       await app.close();
@@ -4664,9 +4883,9 @@ describe("Admin WooCommerce connection UI routes", () => {
       });
 
       expect(optimized.statusCode).toBe(202);
-      expect(readApiData<{ job: RouteOptimizationJobDto }>(optimized).job.id).toBe(
-        "job-id",
-      );
+      expect(
+        readApiData<{ job: RouteOptimizationJobDto }>(optimized).job.id,
+      ).toBe("job-id");
       await waitForExpectation(() => {
         expect(recordEngineOutcome).toHaveBeenCalled();
         const call = recordEngineOutcome.mock.calls[0]?.[0];
@@ -4755,9 +4974,9 @@ describe("Admin WooCommerce connection UI routes", () => {
       });
 
       expect(optimized.statusCode).toBe(202);
-      expect(readApiData<{ job: RouteOptimizationJobDto }>(optimized).job.id).toBe(
-        "job-id",
-      );
+      expect(
+        readApiData<{ job: RouteOptimizationJobDto }>(optimized).job.id,
+      ).toBe("job-id");
       expect(routeOptimizationJobService.createJob).toHaveBeenCalledWith(
         expect.objectContaining({ timeoutBudgetMs: 180000 }),
       );
@@ -4866,7 +5085,9 @@ describe("Admin WooCommerce connection UI routes", () => {
 
   test("reads route optimization jobs via Route Ops API", async () => {
     const routeOptimizationJobService = routeOptimizationJobServiceMock({
-      findJob: vi.fn(() => Promise.resolve(routeOptimizationJob({ id: "job-id" }))),
+      findJob: vi.fn(() =>
+        Promise.resolve(routeOptimizationJob({ id: "job-id" })),
+      ),
       findLatestJob: vi.fn(() =>
         Promise.resolve(routeOptimizationJob({ id: "latest-job-id" })),
       ),
@@ -4915,8 +5136,12 @@ describe("Admin WooCommerce connection UI routes", () => {
         routePlanId: "route-plan-id",
         shopDomain: "tenant-a.example.test",
       });
-      expect(routeOptimizationJobService.reconcileStaleActiveJobs).toHaveBeenCalledTimes(2);
-      expect(routeOptimizationJobService.reconcileStaleActiveJobs).toHaveBeenCalledWith({
+      expect(
+        routeOptimizationJobService.reconcileStaleActiveJobs,
+      ).toHaveBeenCalledTimes(2);
+      expect(
+        routeOptimizationJobService.reconcileStaleActiveJobs,
+      ).toHaveBeenCalledWith({
         routePlanId: "route-plan-id",
         shopDomain: "tenant-a.example.test",
       });
@@ -5906,7 +6131,8 @@ async function createUiHarness(
       subject: "web-operator",
     },
     loginSecret: webLoginSecret,
-    ...(overrides.driverAppDownloadUrl === null || overrides.driverAppDownloadUrl === undefined
+    ...(overrides.driverAppDownloadUrl === null ||
+    overrides.driverAppDownloadUrl === undefined
       ? {}
       : { driverAppDownloadUrl: overrides.driverAppDownloadUrl }),
     ...(overrides.geocodingService === undefined
@@ -6295,6 +6521,7 @@ function storeSettings(
     defaultDepotLatitude: 43.6532,
     defaultDepotLongitude: -79.3832,
     locale: "en-CA",
+    routeOpsUiSettings: defaultRouteOpsUiSettings(),
     routeScopeConfig: defaultRouteScopeConfig(),
     shopDomain: "tenant-a.example.test",
     ...overrides,

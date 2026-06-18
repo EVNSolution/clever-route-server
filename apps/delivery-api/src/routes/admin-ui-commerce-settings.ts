@@ -1,5 +1,6 @@
 import type { AdminStoreSettings } from "../modules/commerce/admin-store-settings.service.js";
 import { defaultRouteScopeConfig } from "../modules/route-ops/route-scope-config.js";
+import { defaultRouteOpsUiSettings } from "../modules/route-ops/route-ops-ui-settings.js";
 import type { GeocodingResult } from "../modules/geocoding/geocoding.types.js";
 
 export function defaultRouteOpsSettings(
@@ -10,6 +11,7 @@ export function defaultRouteOpsSettings(
     defaultDepotLatitude: null,
     defaultDepotLongitude: null,
     locale: "en-CA",
+    routeOpsUiSettings: defaultRouteOpsUiSettings(),
     routeScopeConfig: defaultRouteScopeConfig(),
     shopDomain,
   };
@@ -23,6 +25,7 @@ export function toRouteOpsSettingsDto(
     defaultDepotLatitude: settings.defaultDepotLatitude,
     defaultDepotLongitude: settings.defaultDepotLongitude,
     locale: settings.locale === "ko-KR" ? "ko-KR" : "en-CA",
+    routeOpsUiSettings: settings.routeOpsUiSettings,
     routeScopeConfig: settings.routeScopeConfig,
     shopDomain: settings.shopDomain,
   };

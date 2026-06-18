@@ -92,7 +92,13 @@ export type AdminNotificationDto = {
   href: string | null;
   id: string;
   orderId: string | null;
-  payload: Record<string, unknown> | unknown[] | string | number | boolean | null;
+  payload:
+    | Record<string, unknown>
+    | unknown[]
+    | string
+    | number
+    | boolean
+    | null;
   readAt: string | null;
   routePlanId: string | null;
   severity: AdminNotificationSeverity;
@@ -300,11 +306,31 @@ export type DriverDto = {
   updatedAt: string;
 };
 
+export type RouteOpsUiReminderPlanDto = {
+  daysBefore: number;
+  id: string;
+  timeOfDay: string;
+};
+
+export type RouteOpsUiSettingsDto = {
+  destinationDwellMinutes: number | null;
+  emailNotifications: {
+    enabled: boolean;
+    reminderPlans: RouteOpsUiReminderPlanDto[];
+    template: {
+      body: string;
+      subject: string;
+    };
+  };
+  version: 1;
+};
+
 export type StoreSettingsDto = {
   defaultDepotAddress: string | null;
   defaultDepotLatitude: number | null;
   defaultDepotLongitude: number | null;
   locale: AppLocale;
+  routeOpsUiSettings: RouteOpsUiSettingsDto;
   routeScopeConfig: RouteScopeConfigDto;
   shopDomain: string;
 };

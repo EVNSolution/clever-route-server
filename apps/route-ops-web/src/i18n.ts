@@ -999,9 +999,12 @@ export const settingsCopy = {
   'en-CA': {
     settingsEyebrow: 'Settings',
     settingsTitle: 'Store settings',
+    storeSettingsDescription: 'Address and depot coordinates. Address lookup updates the draft only; Save persists it.',
     storeAddress: 'Store address',
     latitude: 'Latitude',
     longitude: 'Longitude',
+    languageEyebrow: 'Locale',
+    languageTitle: 'Language selection',
     language: 'Language',
     english: 'English',
     korean: '한국어',
@@ -1012,8 +1015,29 @@ export const settingsCopy = {
     blankAddress: 'Enter a store address before geocoding.',
     saved: 'Settings saved.',
     remembered: 'Saved coordinates were reused from store settings.',
-    geocodeSaved(latitude: number, longitude: number): string {
-      return `Coordinates saved: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+    geocodeDraftUpdated(latitude: number, longitude: number): string {
+      return `Draft coordinates updated: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+    },
+    deliveryDefaultsEyebrow: 'Delivery defaults',
+    deliveryDefaultsTitle: 'Destination timing',
+    deliveryDefaultsDescription: 'Phase 1 saves the average dwell time only; ETA calculation is not changed yet.',
+    destinationDwellMinutes: 'Destination dwell minutes',
+    emailEyebrow: 'Email',
+    emailTitle: 'Customer email notification settings',
+    emailDescription: 'Phase 1 stores settings and templates only. No email is sent or scheduled.',
+    emailEnabled: 'Enable customer email reminders',
+    reminderPlans: 'Reminder plans',
+    addReminder: 'Add reminder',
+    noReminderPlans: 'No reminders configured.',
+    daysBefore: 'Days before delivery',
+    timeOfDay: 'Time of day',
+    duplicateReminder: 'Reminder plans cannot use the same days-before and time pair.',
+    emailTemplate: 'Email template',
+    templateSubject: 'Subject',
+    templateBody: 'Body',
+    variablePicker: 'Template variables',
+    unknownTemplateTokens(tokens: string[]): string {
+      return `Unsupported template variables: ${tokens.join(', ')}`;
     },
     depotMapTitle: 'Depot map',
     depotMapSubtitle: 'Click the configured map to update the depot draft; manual fields remain authoritative.',
@@ -1052,9 +1076,12 @@ export const settingsCopy = {
   'ko-KR': {
     settingsEyebrow: '설정',
     settingsTitle: '매장 설정',
+    storeSettingsDescription: '주소와 출발지 좌표입니다. 주소 조회는 초안 좌표만 바꾸고 저장은 Save에서만 합니다.',
     storeAddress: '매장 주소',
     latitude: '위도',
     longitude: '경도',
+    languageEyebrow: '언어',
+    languageTitle: '언어 선택',
     language: '언어',
     english: 'English',
     korean: '한국어',
@@ -1065,8 +1092,29 @@ export const settingsCopy = {
     blankAddress: '좌표 변환 전에 매장 주소를 입력하세요.',
     saved: '설정을 저장했습니다.',
     remembered: '매장 설정에 저장된 좌표를 다시 사용했습니다.',
-    geocodeSaved(latitude: number, longitude: number): string {
-      return `좌표 저장 완료: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+    geocodeDraftUpdated(latitude: number, longitude: number): string {
+      return `초안 좌표 업데이트: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+    },
+    deliveryDefaultsEyebrow: '배송 기본값',
+    deliveryDefaultsTitle: '도착지 체류 시간',
+    deliveryDefaultsDescription: '1차에서는 평균 체류 시간만 저장합니다. ETA 계산은 아직 바꾸지 않습니다.',
+    destinationDwellMinutes: '도착지 체류 시간(분)',
+    emailEyebrow: '이메일',
+    emailTitle: '고객 이메일 알림 설정',
+    emailDescription: '1차에서는 설정과 템플릿만 저장합니다. 이메일 발송/예약은 하지 않습니다.',
+    emailEnabled: '고객 이메일 리마인더 사용',
+    reminderPlans: '리마인더 계획',
+    addReminder: '리마인더 추가',
+    noReminderPlans: '설정된 리마인더가 없습니다.',
+    daysBefore: '배송 며칠 전',
+    timeOfDay: '시간',
+    duplicateReminder: '같은 며칠 전/시간 조합의 리마인더를 중복 사용할 수 없습니다.',
+    emailTemplate: '이메일 템플릿',
+    templateSubject: '제목',
+    templateBody: '본문',
+    variablePicker: '템플릿 변수',
+    unknownTemplateTokens(tokens: string[]): string {
+      return `지원하지 않는 템플릿 변수: ${tokens.join(', ')}`;
     },
     depotMapTitle: '출발지 지도',
     depotMapSubtitle: '지도를 클릭하면 출발지 초안 좌표가 바뀝니다. 직접 입력한 필드가 최종 기준입니다.',
