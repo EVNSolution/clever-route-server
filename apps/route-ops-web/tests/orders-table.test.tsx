@@ -87,8 +87,9 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("order-pill--neutral");
     expect(html).not.toContain("Payment:");
     expect(html).toContain("Transfer pending");
-    expect(html).toContain("FRI5PM");
-    expect(html).toContain("2026-05-29 · 5PM–9PM");
+    expect(html).toContain("2026-05-29");
+    expect(html).toContain("FRI, Evening");
+    expect(html).not.toContain("FRI5PM");
     expect(html).toContain("Toronto West");
     expect(html).toContain("Ready");
     expect(html).toContain("Detail");
@@ -1207,8 +1208,8 @@ describe("Orders compact operations table", () => {
       toneClass: "order-pill--neutral",
     });
     expect(formatDeliveryDayLabel(order)).toEqual({
-      detail: "2026-05-29 · 8:30AM–11AM",
-      label: "FRI8:30AM",
+      detail: "FRI, Morning",
+      label: "2026-05-29",
       toneClass: "order-pill--day",
     });
     expect(formatOperationalStatus(order).label).toBe("Ready");

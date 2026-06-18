@@ -1501,11 +1501,11 @@ export function formatDeliveryDayLabel(
     };
   }
   const weekday = weekdayCode(order.deliveryDate) ?? order.deliveryDate;
-  const timeWindow = formatTimeWindow(order, locale);
+  const sessionBucket = formatDeliverySessionBucket(order.deliverySession, locale);
+  const timeWindow = sessionBucket ?? formatTimeWindow(order, locale);
   return {
-    detail:
-      [order.deliveryDate, timeWindow].filter(isPresent).join(" · ") || null,
-    label: compactDayLabel(weekday, order.timeWindowStart),
+    detail: [weekday, timeWindow].filter(isPresent).join(", ") || null,
+    label: order.deliveryDate,
     toneClass: "order-pill--day",
   };
 }
@@ -1850,13 +1850,13 @@ function formatTimeWindow(
   return null;
 }
 
-function compactDayLabel(
-  weekday: string,
-  timeWindowStart: string | null,
-): string {
-  if (!isPresent(timeWindowStart)) return weekday;
-  const compactTime = formatTime(timeWindowStart).replace(/\s/g, "");
-  return `${weekday}${compactTime}`;
+function formatDeliverySessionBucket(
+  deliverySession: string | null,
+  locale: string | null | undefined = "en-CA",
+): string | null {
+  if (!isPresent(deliverySession)) return null;
+  const bucket = deliverySession.replace(/[_-]?delivery$/iu, "");
+  return humanizeToken(bucket, locale);
 }
 
 function weekdayCode(
