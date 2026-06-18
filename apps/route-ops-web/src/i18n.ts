@@ -756,9 +756,9 @@ export const ordersCopy = {
     },
     editableHelp: {
       deliveryDate: 'Enter the route date as YYYY-MM-DD, for example 2026-05-29.',
-      serviceType(values: string, example: string): string { return `Allowed values: ${values}. Example: ${example}`; },
-      deliverySession(values: string, example: string): string { return `Allowed values: ${values}. Example: ${example}`; },
-      timeWindow(help: string, example: string): string { return `${help} Example: ${example}.`; }
+      serviceType: 'Service type choices come from values that actually exist in imported orders.',
+      deliverySession: 'Delivery session choices come from values that actually exist in imported orders.',
+      timeWindow: 'Use 24-hour HH:MM time, for example 17:00.'
     }
   },
   'ko-KR': {
@@ -988,9 +988,9 @@ export const ordersCopy = {
     },
     editableHelp: {
       deliveryDate: '경로 날짜를 YYYY-MM-DD 형식으로 입력하세요. 예: 2026-05-29.',
-      serviceType(values: string, example: string): string { return `허용 값: ${values}. 예: ${example}`; },
-      deliverySession(values: string, example: string): string { return `허용 값: ${values}. 예: ${example}`; },
-      timeWindow(help: string, example: string): string { return `${help} 예: ${example}.`; }
+      serviceType: '서비스 유형 선택지는 실제 가져온 주문에 존재하는 값에서 가져옵니다.',
+      deliverySession: '배송 세션 선택지는 실제 가져온 주문에 존재하는 값에서 가져옵니다.',
+      timeWindow: '24시간 HH:MM 형식으로 입력하세요. 예: 17:00.'
     }
   }
 } as const;

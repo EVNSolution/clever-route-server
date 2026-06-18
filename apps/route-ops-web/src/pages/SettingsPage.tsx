@@ -4,12 +4,9 @@ import type { ReactElement } from 'react';
 import { geocodeSettings, getSettings, saveSettings } from '../api';
 import { RouteOpsMap } from '../components/maps/RouteOpsMap';
 import { resolveLocale, settingsCopy } from '../i18n';
-import { normalizeRouteScopeConfig } from '../routeScopeConfig';
 import type {
   BootstrapPayload,
   CanonicalOrderDto,
-  RouteScopeConfigDto,
-  RouteScopeValueDto,
   StoreSettingsDto
 } from '../types';
 import { emptySettings, readErrorMessage, toNullableNumber } from '../utils/format';
@@ -25,7 +22,6 @@ export function SettingsPage({ bootstrap, setError }: { bootstrap: BootstrapPayl
   }, [setError]);
 
   const draft = settings ?? emptySettings(bootstrap);
-  const routeScopeConfig = normalizeRouteScopeConfig(draft.routeScopeConfig);
   const locale = resolveLocale(draft.locale);
   const t = settingsCopy[locale];
 
@@ -34,17 +30,13 @@ export function SettingsPage({ bootstrap, setError }: { bootstrap: BootstrapPayl
     setNotice(null);
   };
 
-  const updateRouteScopeConfig = (next: RouteScopeConfigDto): void => {
-    updateDraft({ routeScopeConfig: next });
-  };
 
   const save = async (): Promise<void> => {
     setSaving(true);
     try {
       const payload = await saveSettings(buildSettingsSaveInput({
         csrfToken: bootstrap.csrfToken,
-        draft,
-        routeScopeConfig
+        draft
       }));
       setSettingsState(payload.settings);
       setNotice(t.saved);
@@ -117,11 +109,6 @@ export function SettingsPage({ bootstrap, setError }: { bootstrap: BootstrapPayl
             </div>
           </SettingsCategorySection>
 
-          <RouteScopeSettingsEditor
-            config={routeScopeConfig}
-            labels={t}
-            onChange={updateRouteScopeConfig}
-          />
 
           <div className="settings-save-row">
             <button className="primary" disabled={saving} onClick={() => void save()} type="button">{saving ? t.saving : t.saveSettings}</button>
@@ -165,55 +152,15 @@ export function SettingsPage({ bootstrap, setError }: { bootstrap: BootstrapPayl
 
 type SettingsLabels = (typeof settingsCopy)[keyof typeof settingsCopy];
 
-export type RouteScopeKind = 'serviceTypes' | 'deliverySessions';
-
 export function buildSettingsSaveInput(input: {
   csrfToken: string;
   draft: StoreSettingsDto;
-  routeScopeConfig: RouteScopeConfigDto;
 }): Parameters<typeof saveSettings>[0] {
+  const { routeScopeConfig: _routeScopeConfig, ...settingsWithoutRouteScopeConfig } = input.draft;
   return {
-    ...input.draft,
+    ...settingsWithoutRouteScopeConfig,
     csrfToken: input.csrfToken,
-    locale: resolveLocale(input.draft.locale),
-    routeScopeConfig: input.routeScopeConfig
-  };
-}
-
-export function addRouteScopeValue(config: RouteScopeConfigDto, kind: RouteScopeKind, label = 'Custom value'): RouteScopeConfigDto {
-  const suffix = config[kind].filter((value) => !value.builtIn).length + 1;
-  return {
-    ...config,
-    [kind]: [
-      ...config[kind],
-      {
-        builtIn: false,
-        description: null,
-        enabled: true,
-        example: null,
-        label,
-        value: kind === 'serviceTypes' ? `CUSTOM_SERVICE_${suffix}` : `CUSTOM_SESSION_${suffix}`
-      }
-    ]
-  };
-}
-
-export function updateRouteScopeValue(
-  config: RouteScopeConfigDto,
-  kind: RouteScopeKind,
-  index: number,
-  patch: Partial<RouteScopeValueDto>
-): RouteScopeConfigDto {
-  return {
-    ...config,
-    [kind]: config[kind].map((value, valueIndex) => (valueIndex === index ? { ...value, ...patch } : value))
-  };
-}
-
-export function removeRouteScopeValue(config: RouteScopeConfigDto, kind: RouteScopeKind, index: number): RouteScopeConfigDto {
-  return {
-    ...config,
-    [kind]: config[kind].filter((_, valueIndex) => valueIndex !== index)
+    locale: resolveLocale(input.draft.locale)
   };
 }
 
@@ -236,115 +183,6 @@ function SettingsCategorySection({
         {description === undefined ? null : <p className="muted">{description}</p>}
       </div>
       {children}
-    </section>
-  );
-}
-
-function RouteScopeSettingsEditor({
-  config,
-  labels,
-  onChange
-}: {
-  config: RouteScopeConfigDto;
-  labels: SettingsLabels;
-  onChange(config: RouteScopeConfigDto): void;
-}): ReactElement {
-  const addValue = (kind: RouteScopeKind): void => {
-    onChange(addRouteScopeValue(config, kind, labels.customValue));
-  };
-  const updateValue = (kind: RouteScopeKind, index: number, patch: Partial<RouteScopeValueDto>): void => {
-    onChange(updateRouteScopeValue(config, kind, index, patch));
-  };
-  const removeValue = (kind: RouteScopeKind, index: number): void => {
-    onChange(removeRouteScopeValue(config, kind, index));
-  };
-
-  return (
-    <SettingsCategorySection
-      description={labels.routeScopeDescription}
-      eyebrow={labels.routeScopeEyebrow}
-      title={labels.routeScopeTitle}
-    >
-      <div className="route-scope-settings" aria-label={labels.routeScopeTitle}>
-        <RouteScopeValueList
-          addLabel={labels.addServiceType}
-          kind="serviceTypes"
-          labels={labels}
-          onAdd={() => addValue('serviceTypes')}
-          onRemove={(index) => removeValue('serviceTypes', index)}
-          onUpdate={(index, patch) => updateValue('serviceTypes', index, patch)}
-          title={labels.serviceTypes}
-          values={config.serviceTypes}
-        />
-        <RouteScopeValueList
-          addLabel={labels.addDeliverySession}
-          kind="deliverySessions"
-          labels={labels}
-          onAdd={() => addValue('deliverySessions')}
-          onRemove={(index) => removeValue('deliverySessions', index)}
-          onUpdate={(index, patch) => updateValue('deliverySessions', index, patch)}
-          title={labels.deliverySessions}
-          values={config.deliverySessions}
-        />
-      </div>
-    </SettingsCategorySection>
-  );
-}
-
-function RouteScopeValueList({
-  addLabel,
-  kind,
-  labels,
-  onAdd,
-  onRemove,
-  onUpdate,
-  title,
-  values
-}: {
-  addLabel: string;
-  kind: RouteScopeKind;
-  labels: SettingsLabels;
-  onAdd(): void;
-  onRemove(index: number): void;
-  onUpdate(index: number, patch: Partial<RouteScopeValueDto>): void;
-  title: string;
-  values: RouteScopeValueDto[];
-}): ReactElement {
-  return (
-    <section className="route-scope-config-block" aria-label={title}>
-      <div className="route-scope-block-heading">
-        <h4>{title}</h4>
-        <button onClick={onAdd} type="button">{addLabel}</button>
-      </div>
-      <div className="route-scope-rows">
-        {values.map((value, index) => (
-          <div className="route-scope-row" key={`${kind}-${value.value}-${index}`}>
-            <label className="settings-field route-scope-field route-scope-field--value">
-              {labels.routeScopeValue}
-              <input disabled={value.builtIn} value={value.value} onChange={(event) => onUpdate(index, { value: event.target.value.toUpperCase() })} />
-            </label>
-            <label className="settings-field route-scope-field">
-              {labels.routeScopeLabel}
-              <input value={value.label} onChange={(event) => onUpdate(index, { label: event.target.value })} />
-            </label>
-            <label className="settings-field route-scope-field route-scope-field--text">
-              {labels.routeScopeDescriptionField}
-              <input value={value.description ?? ''} onChange={(event) => onUpdate(index, { description: event.target.value })} />
-            </label>
-            <label className="settings-field route-scope-field route-scope-field--text">
-              {labels.routeScopeExample}
-              <input value={value.example ?? ''} onChange={(event) => onUpdate(index, { example: event.target.value })} />
-            </label>
-            <div className="route-scope-row-actions">
-              <label className="route-scope-checkbox">
-                <input checked={value.enabled} disabled={value.builtIn} onChange={(event) => onUpdate(index, { enabled: event.target.checked })} type="checkbox" />
-                {value.builtIn ? labels.builtIn : labels.routeScopeEnabled}
-              </label>
-              {value.builtIn ? null : <button onClick={() => onRemove(index)} type="button">{labels.remove}</button>}
-            </div>
-          </div>
-        ))}
-      </div>
     </section>
   );
 }

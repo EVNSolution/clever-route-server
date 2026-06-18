@@ -20,19 +20,28 @@ import {
 import { TabLayout } from "../components/TabLayout";
 import { RouteOpsMap } from "../components/maps/RouteOpsMap";
 import type { OrderMapMarkerState } from "../maps/geojson";
-import { formatOrderItemLine, formatOrderItemOptions, getOrderItems } from "../orderItems";
+import {
+  formatOrderItemLine,
+  formatOrderItemOptions,
+  getOrderItems,
+} from "../orderItems";
 import {
   applyClientOrderFilters,
-  buildAreaOptionSourceFilters,
   buildOrderFetchQuery,
   createDefaultOrderFilters,
-  deriveAreaFilterOptions,
+  deriveOrderFilterOptions,
+  deriveOrderSourceValueOptions,
   getOrderRouteType,
   isAddressReviewRequired,
   isDeliveryDateReviewRequired,
   storeSettingsToDepotPoint,
+  reconcileOrderFilters,
+  pruneOrderFilters,
+  type OrderFacetedFilterKey,
+  type OrderFilterOptionSets,
   type OrderFilterState,
   type OrderRouteTypeFilter,
+  type OrderSourceValueOptions,
   type OrderWorksetContext,
 } from "../state";
 import type {
@@ -42,11 +51,6 @@ import type {
   StoreSettingsDto,
   WooSyncRunDto,
 } from "../types";
-import {
-  activeRouteScopeValues,
-  normalizeRouteScopeConfig,
-  routeScopeValueSummary,
-} from "../routeScopeConfig";
 import { readErrorMessage, today } from "../utils/format";
 
 export const ORDERS_TABLE_COLUMN_COUNT = 9;
@@ -65,12 +69,20 @@ export type OrderMetadataPatch = {
   timeWindowStart: string | null;
 };
 
+export type MetadataChoice = {
+  description?: string | null;
+  example?: string | null;
+  label: string;
+  value: string;
+};
+
 export type EditableMetadataField = {
-  choices?: StoreSettingsDto["routeScopeConfig"]["serviceTypes"];
+  choices?: MetadataChoice[];
   helpText?: string;
   key: keyof OrderMetadataPatch;
   label: string;
   placeholder?: string;
+  readOnly?: boolean;
 };
 
 const EDITABLE_METADATA_FIELD_KEYS: Array<keyof OrderMetadataPatch> = [
@@ -102,22 +114,30 @@ export function buildNextPlanSelection(
 }
 
 export function buildEditableMetadataFields(
-  settings: StoreSettingsDto | null | undefined,
-  locale: string | null | undefined = settings?.locale,
+  sourceValues: OrderSourceValueOptions | null | undefined,
+  locale?: string | null,
+  order?: CanonicalOrderDto | null,
 ): EditableMetadataField[] {
   const t = getOrdersCopy(locale);
   const orderFieldLabels = getOrderFieldLabels(locale);
-  const config = normalizeRouteScopeConfig(settings?.routeScopeConfig);
-  const serviceTypeChoices = activeRouteScopeValues(config.serviceTypes);
-  const deliverySessionChoices = activeRouteScopeValues(
-    config.deliverySessions,
+  const serviceTypeChoices = buildMetadataChoices(
+    sourceValues?.serviceTypes ?? [],
+    order?.serviceType,
+    locale,
   );
-  const eveningService =
-    serviceTypeChoices.find((value) => value.value === "EVENING_DELIVERY") ??
-    serviceTypeChoices[0];
-  const eveningSession =
-    deliverySessionChoices.find((value) => value.value === "EVENING") ??
-    deliverySessionChoices[0];
+  const deliverySessionChoices = buildMetadataChoices(
+    sourceValues?.deliverySessions ?? [],
+    order?.deliverySession,
+    locale,
+  );
+  const serviceTypeEditable = shouldUseOrderChoiceInput(
+    serviceTypeChoices,
+    order?.serviceType,
+  );
+  const deliverySessionEditable = shouldUseOrderChoiceInput(
+    deliverySessionChoices,
+    order?.deliverySession,
+  );
   return [
     { key: "address1", label: orderFieldLabels.address1 },
     { key: "address2", label: orderFieldLabels.address2 },
@@ -132,32 +152,60 @@ export function buildEditableMetadataFields(
       label: orderFieldLabels.deliveryDate,
     },
     {
-      choices: serviceTypeChoices,
-      helpText: t.editableHelp.serviceType(routeScopeValueSummary(config.serviceTypes), eveningService?.example ?? "EVENING_DELIVERY for a 5PM-9PM delivery route."),
+      choices: serviceTypeEditable ? serviceTypeChoices : undefined,
+      helpText: t.editableHelp.serviceType,
       key: "serviceType",
       label: orderFieldLabels.serviceType,
-      placeholder: eveningService?.value ?? "EVENING_DELIVERY",
+      placeholder: serviceTypeChoices[0]?.value ?? "",
+      readOnly: !serviceTypeEditable,
     },
     {
-      choices: deliverySessionChoices,
-      helpText: t.editableHelp.deliverySession(routeScopeValueSummary(config.deliverySessions), eveningSession?.example ?? "EVENING for a 5PM-9PM route."),
+      choices: deliverySessionEditable ? deliverySessionChoices : undefined,
+      helpText: t.editableHelp.deliverySession,
       key: "deliverySession",
       label: orderFieldLabels.deliverySession,
-      placeholder: eveningSession?.value ?? "EVENING",
+      placeholder: deliverySessionChoices[0]?.value ?? "",
+      readOnly: !deliverySessionEditable,
     },
     {
-      helpText: t.editableHelp.timeWindow(config.timeWindow.helpText, config.timeWindow.startExample),
+      helpText: t.editableHelp.timeWindow,
       key: "timeWindowStart",
       label: orderFieldLabels.timeWindowStart,
-      placeholder: config.timeWindow.startExample,
     },
     {
-      helpText: t.editableHelp.timeWindow(config.timeWindow.helpText, config.timeWindow.endExample),
+      helpText: t.editableHelp.timeWindow,
       key: "timeWindowEnd",
       label: orderFieldLabels.timeWindowEnd,
-      placeholder: config.timeWindow.endExample,
     },
   ];
+}
+
+function buildMetadataChoices(
+  sourceValues: string[],
+  currentValue: string | null | undefined,
+  locale: string | null | undefined,
+): MetadataChoice[] {
+  const values = Array.from(
+    new Set(
+      [...sourceValues, currentValue]
+        .map((value) => value?.trim() ?? "")
+        .filter((value) => value !== ""),
+    ),
+  ).sort((first, second) => first.localeCompare(second));
+  return values.map((value) => ({
+    example: value,
+    label: humanizeToken(value, locale),
+    value,
+  }));
+}
+
+function shouldUseOrderChoiceInput(
+  choices: MetadataChoice[],
+  currentValue: string | null | undefined,
+): boolean {
+  const normalizedCurrent = currentValue?.trim() ?? "";
+  if (choices.length > 1) return true;
+  return normalizedCurrent === "" && choices.length === 1;
 }
 
 function editableMetadataField(
@@ -186,10 +234,15 @@ export function OrdersPage({
   const [filters, setFilters] = useState<OrderFilterState>(() =>
     createDefaultOrderFilters(),
   );
+  const [filterOrder, setFilterOrder] = useState<OrderFacetedFilterKey[]>([]);
   const initialCopy = getOrdersCopy(bootstrap.locale);
   const [routeDate, setRouteDate] = useState(initialRouteDate);
-  const [routeName, setRouteName] = useState(() => initialCopy.defaultRouteName(initialRouteDate));
-  const [plannedOrderIds, setPlannedOrderIds] = useState<Set<string>>(new Set());
+  const [routeName, setRouteName] = useState(() =>
+    initialCopy.defaultRouteName(initialRouteDate),
+  );
+  const [plannedOrderIds, setPlannedOrderIds] = useState<Set<string>>(
+    new Set(),
+  );
   const [loading, setLoading] = useState(true);
   const [ordersLoaded, setOrdersLoaded] = useState(false);
   const [refreshingOrders, setRefreshingOrders] = useState(false);
@@ -214,18 +267,43 @@ export function OrdersPage({
     () => applyClientOrderFilters(orders, filters),
     [orders, filters],
   );
-  const areaOptionOrders = useMemo(
-    () => applyClientOrderFilters(orders, buildAreaOptionSourceFilters(filters)),
-    [orders, filters],
+  const filterOptions = useMemo(
+    () => deriveOrderFilterOptions(orders, filters, filterOrder),
+    [orders, filters, filterOrder],
   );
-  const areaOptions = useMemo(
-    () => deriveAreaFilterOptions(areaOptionOrders),
-    [areaOptionOrders],
+  const orderSourceOptions = useMemo(
+    () => deriveOrderSourceValueOptions(orders),
+    [orders],
   );
-  const tableOrders = useMemo(
-    () => visibleOrders,
-    [visibleOrders],
-  );
+  useEffect(() => {
+    const reconciled = pruneOrderFilters({
+      filters,
+      order: filterOrder,
+      orders,
+    });
+    if (reconciled.order.join("|") !== filterOrder.join("|")) {
+      setFilterOrder(reconciled.order);
+    }
+    if (!areOrderFiltersEqual(filters, reconciled.filters)) {
+      setFilters(reconciled.filters);
+    }
+  }, [filterOrder, filters, orders]);
+
+  const changeFilters = (
+    changedField: OrderFacetedFilterKey,
+    nextFilters: OrderFilterState,
+  ): void => {
+    const reconciled = reconcileOrderFilters({
+      changedField,
+      filters: nextFilters,
+      orders,
+      previousOrder: filterOrder,
+    });
+    setFilterOrder(reconciled.order);
+    setFilters(reconciled.filters);
+  };
+
+  const tableOrders = useMemo(() => visibleOrders, [visibleOrders]);
   const worksetContext = useMemo<OrderWorksetContext>(
     () => ({
       scope: filters.scope,
@@ -244,10 +322,7 @@ export function OrdersPage({
     () => storeSettingsToDepotPoint(settings, locale),
     [locale, settings],
   );
-  const mapOrders = useMemo(
-    () => plannedOrders,
-    [plannedOrders],
-  );
+  const mapOrders = useMemo(() => plannedOrders, [plannedOrders]);
   const orderMarkerStates = useMemo(
     () =>
       buildOrderMapMarkerStates({
@@ -302,10 +377,16 @@ export function OrdersPage({
 
   const create = async (): Promise<void> => {
     try {
-      const routeDraftBlockers = getRouteDraftCreateReasons(plannedOrders, locale);
-      if (routeDraftBlockers.length > 0) throw new Error(routeDraftBlockers.join(" "));
+      const routeDraftBlockers = getRouteDraftCreateReasons(
+        plannedOrders,
+        locale,
+      );
+      if (routeDraftBlockers.length > 0)
+        throw new Error(routeDraftBlockers.join(" "));
       const createOrderIds = plannedOrders.map((order) => order.orderId);
-      const planDate = getRouteDraftSingleDeliveryDate(plannedOrders) ?? (routeDate || today());
+      const planDate =
+        getRouteDraftSingleDeliveryDate(plannedOrders) ??
+        (routeDate || today());
       const result = await createRoute({
         csrfToken: bootstrap.csrfToken,
         depotAddress: settings?.defaultDepotAddress ?? null,
@@ -316,9 +397,7 @@ export function OrdersPage({
         routeName,
         scope: filters.scope,
       });
-      navigate(
-        buildRouteDetailPath(result.routePlan.id),
-      );
+      navigate(buildRouteDetailPath(result.routePlan.id));
     } catch (error) {
       setError(readErrorMessage(error));
     }
@@ -424,10 +503,6 @@ export function OrdersPage({
     }
   };
 
-  const updateFilters = (nextFilters: OrderFilterState): void => {
-    setFilters(nextFilters);
-  };
-
   const clearPlan = (): void => {
     setPlannedOrderIds(new Set());
     setError(null);
@@ -449,7 +524,8 @@ export function OrdersPage({
     if (singleDate !== null) {
       setRouteDate(singleDate);
       setRouteName((current) =>
-        current.trim() === "" || /^(Route|경로) \d{4}-\d{2}-\d{2}$/u.test(current)
+        current.trim() === "" ||
+        /^(Route|경로) \d{4}-\d{2}-\d{2}$/u.test(current)
           ? t.defaultRouteName(singleDate)
           : current,
       );
@@ -484,10 +560,10 @@ export function OrdersPage({
       lower={
         <>
           <FilterBar
-            areaOptions={areaOptions}
+            filterOptions={filterOptions}
             filters={filters}
             locale={locale}
-            onChange={updateFilters}
+            onChange={changeFilters}
           />
           <OrderTable
             addPlanDisabled={selected.size === 0}
@@ -505,7 +581,7 @@ export function OrdersPage({
             refreshing={refreshingOrders}
             selected={selected}
             setSelected={setTableSelection}
-            settings={settings}
+            sourceOptions={orderSourceOptions}
             worksetContext={worksetContext}
             wooSyncing={wooSyncing}
             wooSyncStatus={wooSyncStatus}
@@ -538,7 +614,9 @@ export function RoutePlanPanel(input: {
         <div>
           <h2>{t.routeDraftTitle}</h2>
         </div>
-        <Badge>{input.selectedOrders.length} {t.orders}</Badge>
+        <Badge>
+          {input.selectedOrders.length} {t.orders}
+        </Badge>
       </div>
       <label>
         {t.routeName}
@@ -579,7 +657,10 @@ export function RoutePlanPanel(input: {
         </button>
       </div>
       {input.createReasons.length === 0 ? null : (
-        <ul className="route-plan-validation" aria-label={t.routeValidationReasons}>
+        <ul
+          className="route-plan-validation"
+          aria-label={t.routeValidationReasons}
+        >
           {input.createReasons.map((reason) => (
             <li key={reason}>{reason}</li>
           ))}
@@ -593,23 +674,55 @@ export function RoutePlanPanel(input: {
 }
 
 function FilterBar({
-  areaOptions,
+  filterOptions,
   filters,
   locale,
   onChange,
 }: {
-  areaOptions: string[];
+  filterOptions: OrderFilterOptionSets;
   filters: OrderFilterState;
   locale?: string | null;
-  onChange(filters: OrderFilterState): void;
+  onChange(field: OrderFacetedFilterKey, filters: OrderFilterState): void;
 }): ReactElement {
   const t = getOrdersCopy(locale);
-  const weekdays = getWeekdayFilterOptions(locale);
-  const routeTypes = getRouteTypeFilterOptions(locale);
+  const weekdays = getWeekdayFilterOptions(locale).filter(
+    (
+      option,
+    ): option is {
+      label: string;
+      value: NonNullable<OrderFilterState["weekday"]>;
+    } => option.value !== "" && filterOptions.weekdays.includes(option.value),
+  );
+  const routeTypes = buildActualTypeFilterOptions(
+    filterOptions.routeTypes,
+    locale,
+  );
   const areaOptionsWithSelected =
-    filters.deliveryArea !== "" && !areaOptions.includes(filters.deliveryArea)
-      ? [filters.deliveryArea, ...areaOptions]
-      : areaOptions;
+    filters.deliveryArea !== "" &&
+    !filterOptions.deliveryAreas.includes(filters.deliveryArea)
+      ? [filters.deliveryArea, ...filterOptions.deliveryAreas]
+      : filterOptions.deliveryAreas;
+  const routeTypesWithSelected =
+    filters.routeType !== "" &&
+    !routeTypes.some((option) => option.value === filters.routeType)
+      ? [
+          {
+            label: humanizeToken(filters.routeType, locale),
+            value: filters.routeType,
+          },
+          ...routeTypes,
+        ]
+      : routeTypes;
+  const weekdaysWithSelected =
+    filters.weekday !== "" &&
+    !weekdays.some((option) => option.value === filters.weekday)
+      ? [
+          getWeekdayFilterOptions(locale).find(
+            (option) => option.value === filters.weekday,
+          ) ?? { label: filters.weekday, value: filters.weekday },
+          ...weekdays,
+        ]
+      : weekdays;
   return (
     <article className="panel filter-panel">
       <label className="filter-field filter-field--date">
@@ -617,14 +730,17 @@ function FilterBar({
         <FilterValueControl
           active={filters.deliveryDate !== ""}
           clearLabel={t.clearFilter(t.deliveryDate)}
-          onClear={() => onChange({ ...filters, deliveryDate: "" })}
+          onClear={() =>
+            onChange("deliveryDate", { ...filters, deliveryDate: "" })
+          }
         >
-          <input
-            type="date"
-            value={filters.deliveryDate}
-            onChange={(event) =>
-              onChange({ ...filters, deliveryDate: event.target.value })
+          <OrderDatePicker
+            enabledDates={filterOptions.deliveryDates}
+            locale={locale}
+            onSelect={(deliveryDate) =>
+              onChange("deliveryDate", { ...filters, deliveryDate })
             }
+            selectedDate={filters.deliveryDate}
           />
         </FilterValueControl>
       </label>
@@ -633,16 +749,19 @@ function FilterBar({
         <FilterValueControl
           active={filters.weekday !== ""}
           clearLabel={t.clearFilter(t.weekday)}
-          onClear={() => onChange({ ...filters, weekday: "" })}
+          onClear={() => onChange("weekday", { ...filters, weekday: "" })}
         >
           <select
             value={filters.weekday}
             onChange={(event) =>
-              onChange({ ...filters, weekday: event.target.value as OrderFilterState["weekday"] })
+              onChange("weekday", {
+                ...filters,
+                weekday: event.target.value as OrderFilterState["weekday"],
+              })
             }
           >
             <option value="">{t.allOption}</option>
-            {weekdays.map((option) => (
+            {weekdaysWithSelected.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>
@@ -655,16 +774,19 @@ function FilterBar({
         <FilterValueControl
           active={filters.routeType !== ""}
           clearLabel={t.clearFilter(t.type)}
-          onClear={() => onChange({ ...filters, routeType: "" })}
+          onClear={() => onChange("routeType", { ...filters, routeType: "" })}
         >
           <select
             value={filters.routeType}
             onChange={(event) =>
-              onChange({ ...filters, routeType: event.target.value as OrderFilterState["routeType"] })
+              onChange("routeType", {
+                ...filters,
+                routeType: event.target.value,
+              })
             }
           >
             <option value="">{t.allOption}</option>
-            {routeTypes.map((option) => (
+            {routeTypesWithSelected.map((option) => (
               <option key={option.value} value={option.value}>
                 {option.label}
               </option>
@@ -677,12 +799,17 @@ function FilterBar({
         <FilterValueControl
           active={filters.deliveryArea !== ""}
           clearLabel={t.clearFilter(t.areaRegion)}
-          onClear={() => onChange({ ...filters, deliveryArea: "" })}
+          onClear={() =>
+            onChange("deliveryArea", { ...filters, deliveryArea: "" })
+          }
         >
           <select
             value={filters.deliveryArea}
             onChange={(event) =>
-              onChange({ ...filters, deliveryArea: event.target.value })
+              onChange("deliveryArea", {
+                ...filters,
+                deliveryArea: event.target.value,
+              })
             }
           >
             <option value="">{t.allOption}</option>
@@ -696,6 +823,169 @@ function FilterBar({
       </label>
     </article>
   );
+}
+
+function areOrderFiltersEqual(
+  first: OrderFilterState,
+  second: OrderFilterState,
+): boolean {
+  return (
+    first.deliveryArea === second.deliveryArea &&
+    first.deliveryDate === second.deliveryDate &&
+    first.deliverySession === second.deliverySession &&
+    first.deliveryStatus === second.deliveryStatus &&
+    first.routeType === second.routeType &&
+    first.scope === second.scope &&
+    first.search === second.search &&
+    first.serviceType === second.serviceType &&
+    first.status === second.status &&
+    first.tab === second.tab &&
+    first.weekday === second.weekday
+  );
+}
+
+function OrderDatePicker({
+  enabledDates,
+  locale,
+  onSelect,
+  selectedDate,
+}: {
+  enabledDates: string[];
+  locale?: string | null;
+  onSelect(date: string): void;
+  selectedDate: string;
+}): ReactElement {
+  const t = getOrdersCopy(locale);
+  const initialMonth = selectedDate || enabledDates[0] || today();
+  const [open, setOpen] = useState(false);
+  const [visibleMonth, setVisibleMonth] = useState(() =>
+    monthKey(initialMonth),
+  );
+  const enabled = useMemo(() => new Set(enabledDates), [enabledDates]);
+  useEffect(() => {
+    if (selectedDate !== "") {
+      setVisibleMonth(monthKey(selectedDate));
+    }
+  }, [selectedDate]);
+  const days = useMemo(() => buildCalendarDays(visibleMonth), [visibleMonth]);
+  const selectedLabel = selectedDate === "" ? t.dateFallback : selectedDate;
+  return (
+    <span className="order-date-picker">
+      <button
+        aria-expanded={open}
+        className="order-date-picker-toggle"
+        onClick={() => setOpen((current) => !current)}
+        type="button"
+      >
+        {selectedLabel}
+      </button>
+      {open ? (
+        <span className="order-date-calendar" role="dialog">
+          <span className="order-date-calendar-header">
+            <button
+              aria-label="Previous month"
+              onClick={() => setVisibleMonth(shiftMonth(visibleMonth, -1))}
+              type="button"
+            >
+              ‹
+            </button>
+            <strong>{formatMonthLabel(visibleMonth, locale)}</strong>
+            <button
+              aria-label="Next month"
+              onClick={() => setVisibleMonth(shiftMonth(visibleMonth, 1))}
+              type="button"
+            >
+              ›
+            </button>
+          </span>
+          <span className="order-date-calendar-weekdays">
+            {getWeekdayFilterOptions(locale).map((weekday) => (
+              <span key={weekday.value}>{weekday.label.slice(0, 3)}</span>
+            ))}
+          </span>
+          <span className="order-date-calendar-grid">
+            {days.map((day) => {
+              const disabled = day.date === null || !enabled.has(day.date);
+              const selected = day.date !== null && day.date === selectedDate;
+              return (
+                <button
+                  aria-pressed={selected}
+                  className={[
+                    "order-date-calendar-day",
+                    day.inMonth ? "" : "is-outside-month",
+                    disabled ? "is-disabled" : "",
+                    selected ? "is-selected" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
+                  disabled={disabled}
+                  key={`${day.date ?? "blank"}-${day.index}`}
+                  onClick={() => {
+                    if (day.date === null) return;
+                    onSelect(day.date);
+                    setOpen(false);
+                  }}
+                  type="button"
+                >
+                  {day.label}
+                </button>
+              );
+            })}
+          </span>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+type CalendarDay = {
+  date: string | null;
+  inMonth: boolean;
+  index: number;
+  label: string;
+};
+
+function monthKey(dateValue: string): string {
+  return dateValue.slice(0, 7);
+}
+
+function shiftMonth(month: string, offset: number): string {
+  const [year = 1970, monthNumber = 1] = month.split("-").map(Number);
+  const date = new Date(Date.UTC(year, monthNumber - 1 + offset, 1));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatMonthLabel(
+  month: string,
+  locale: string | null | undefined,
+): string {
+  const [year = 1970, monthNumber = 1] = month.split("-").map(Number);
+  return new Intl.DateTimeFormat(resolveLocale(locale), {
+    month: "long",
+    timeZone: "UTC",
+    year: "numeric",
+  }).format(new Date(Date.UTC(year, monthNumber - 1, 1)));
+}
+
+function buildCalendarDays(month: string): CalendarDay[] {
+  const [year = 1970, monthNumber = 1] = month.split("-").map(Number);
+  const first = new Date(Date.UTC(year, monthNumber - 1, 1));
+  const daysInMonth = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
+  const leading = first.getUTCDay();
+  const days: CalendarDay[] = [];
+  for (let index = 0; index < leading; index += 1) {
+    days.push({ date: null, inMonth: false, index, label: "" });
+  }
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const date = `${year}-${String(monthNumber).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    days.push({
+      date,
+      inMonth: true,
+      index: leading + day,
+      label: String(day),
+    });
+  }
+  return days;
 }
 
 function FilterValueControl(input: {
@@ -721,28 +1011,35 @@ function FilterValueControl(input: {
   );
 }
 
-function formatFilterOptionLabel(value: string, locale: string | null | undefined = 'en-CA'): string {
+function formatFilterOptionLabel(
+  value: string,
+  locale: string | null | undefined = "en-CA",
+): string {
   const normalized = value.trim();
-  const labels = resolveLocale(locale) === "ko-KR"
-    ? new Map<string, string>([
-        ["day", "주간"],
-        ["delivery", "배송"],
-        ["evening", "저녁"],
-        ["evening delivery", "저녁 배송"],
-        ["pickup", "픽업"],
-      ])
-    : new Map<string, string>([
-        ["day", "Day"],
-        ["delivery", "Delivery"],
-        ["evening", "Evening"],
-        ["evening delivery", "Evening Delivery"],
-        ["pickup", "Pickup"],
-      ]);
+  const labels =
+    resolveLocale(locale) === "ko-KR"
+      ? new Map<string, string>([
+          ["day", "주간"],
+          ["delivery", "배송"],
+          ["evening", "저녁"],
+          ["evening delivery", "저녁 배송"],
+          ["pickup", "픽업"],
+        ])
+      : new Map<string, string>([
+          ["day", "Day"],
+          ["delivery", "Delivery"],
+          ["evening", "Evening"],
+          ["evening delivery", "Evening Delivery"],
+          ["pickup", "Pickup"],
+        ]);
   const builtInLabel = labels.get(normalized.toLowerCase());
   return builtInLabel ?? normalized;
 }
 
-function formatWooSyncStatus(run: WooSyncRunDto, locale: string | null | undefined = 'en-CA'): string {
+function formatWooSyncStatus(
+  run: WooSyncRunDto,
+  locale: string | null | undefined = "en-CA",
+): string {
   const t = getOrdersCopy(locale).wooSyncStatus;
   const statusLabel =
     run.status === "QUEUED"
@@ -796,7 +1093,7 @@ export function OrderTable(input: {
   refreshing?: boolean;
   selected: Set<string>;
   setSelected(selected: Set<string>): void;
-  settings?: StoreSettingsDto | null;
+  sourceOptions?: OrderSourceValueOptions | null;
   worksetContext?: OrderWorksetContext;
   wooSyncing?: boolean;
   wooSyncStatus?: string | null;
@@ -840,7 +1137,9 @@ export function OrderTable(input: {
           <h2>{t.tableTitle}</h2>
         </div>
         <div className="orders-heading-actions">
-          <Badge>{input.orders.length} {t.orders}</Badge>
+          <Badge>
+            {input.orders.length} {t.orders}
+          </Badge>
           <span className="orders-selection-summary">
             {t.selectedSummary(visibleSelectedCount, input.orders.length, 0)}
           </span>
@@ -865,7 +1164,8 @@ export function OrderTable(input: {
           </button>
         </div>
       </div>
-      {input.wooSyncStatus === undefined || input.wooSyncStatus === null ? null : (
+      {input.wooSyncStatus === undefined ||
+      input.wooSyncStatus === null ? null : (
         <p className="orders-bulk-status" role="status">
           {input.wooSyncStatus}
         </p>
@@ -902,9 +1202,7 @@ export function OrderTable(input: {
           <tbody>
             {input.orders.length === 0 ? (
               <tr className="orders-empty-row">
-                <td colSpan={ORDERS_TABLE_COLUMN_COUNT}>
-                  {t.noOrders}
-                </td>
+                <td colSpan={ORDERS_TABLE_COLUMN_COUNT}>{t.noOrders}</td>
               </tr>
             ) : (
               input.orders.map((order) => (
@@ -921,7 +1219,7 @@ export function OrderTable(input: {
                   order={order}
                   selectedOrders={input.selected}
                   setSelected={input.setSelected}
-                  settings={input.settings}
+                  sourceOptions={input.sourceOptions}
                   worksetContext={worksetContext}
                 />
               ))
@@ -945,7 +1243,7 @@ function OrderTableRow(input: {
   order: CanonicalOrderDto;
   selectedOrders: Set<string>;
   setSelected(selected: Set<string>): void;
-  settings?: StoreSettingsDto | null;
+  sourceOptions?: OrderSourceValueOptions | null;
   worksetContext?: OrderWorksetContext;
 }): ReactElement {
   const { order } = input;
@@ -963,9 +1261,10 @@ function OrderTableRow(input: {
   );
   const detailPanelId = `order-detail-${sanitizeId(order.orderId)}`;
   const detailLabel = t.detailToggle(input.expanded, orderLabel);
-  const statusTooltipId = status.meaning === null
-    ? undefined
-    : `order-status-${sanitizeId(order.orderId)}-help`;
+  const statusTooltipId =
+    status.meaning === null
+      ? undefined
+      : `order-status-${sanitizeId(order.orderId)}-help`;
   return (
     <>
       <tr
@@ -1024,7 +1323,9 @@ function OrderTableRow(input: {
           <span className="order-compact-value">{formatAreaLabel(order)}</span>
         </td>
         <td>
-          <span className="order-compact-value">{formatRouteLabel(order, input.locale)}</span>
+          <span className="order-compact-value">
+            {formatRouteLabel(order, input.locale)}
+          </span>
         </td>
         <td className="orders-status-cell">
           <span className="order-status-tooltip-wrap">
@@ -1093,7 +1394,7 @@ function OrderTableRow(input: {
               }
               order={order}
               locale={input.locale}
-              settings={input.settings}
+              sourceOptions={input.sourceOptions}
             />
           </td>
         </tr>
@@ -1102,14 +1403,21 @@ function OrderTableRow(input: {
   );
 }
 
-export function formatMethodLabel(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): string {
-  if (isPresent(order.serviceType)) return humanizeToken(order.serviceType, locale);
+export function formatMethodLabel(
+  order: CanonicalOrderDto,
+  locale: string | null | undefined = "en-CA",
+): string {
+  if (isPresent(order.serviceType))
+    return humanizeToken(order.serviceType, locale);
   if (isPresent(order.deliverySession))
     return humanizeToken(order.deliverySession, locale);
   return "—";
 }
 
-export function formatMethodStatusLabel(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {
+export function formatMethodStatusLabel(
+  order: CanonicalOrderDto,
+  locale: string | null | undefined = "en-CA",
+): {
   label: string;
   toneClass: string;
 } {
@@ -1120,7 +1428,10 @@ export function formatMethodStatusLabel(order: CanonicalOrderDto, locale: string
   };
 }
 
-export function formatPaymentStatusLabel(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {
+export function formatPaymentStatusLabel(
+  order: CanonicalOrderDto,
+  locale: string | null | undefined = "en-CA",
+): {
   detail: string | null;
   label: string;
   toneClass: string;
@@ -1173,7 +1484,10 @@ export function formatPaymentStatusLabel(order: CanonicalOrderDto, locale: strin
   }
 }
 
-export function formatDeliveryDayLabel(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {
+export function formatDeliveryDayLabel(
+  order: CanonicalOrderDto,
+  locale: string | null | undefined = "en-CA",
+): {
   detail: string | null;
   label: string;
   toneClass: string;
@@ -1196,7 +1510,10 @@ export function formatDeliveryDayLabel(order: CanonicalOrderDto, locale: string 
   };
 }
 
-export function formatOperationalStatus(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {
+export function formatOperationalStatus(
+  order: CanonicalOrderDto,
+  locale: string | null | undefined = "en-CA",
+): {
   detail: string | null;
   label: string;
   meaning: string | null;
@@ -1205,7 +1522,8 @@ export function formatOperationalStatus(order: CanonicalOrderDto, locale: string
   const t = getOrdersCopy(locale);
   if (order.routePlanId !== null || order.planningStatus !== "UNPLANNED") {
     return {
-      detail: order.routePlanName ?? humanizeToken(order.planningStatus, locale),
+      detail:
+        order.routePlanName ?? humanizeToken(order.planningStatus, locale),
       label: t.statusLabels.planned,
       meaning: null,
       toneClass: "order-pill--neutral",
@@ -1247,8 +1565,12 @@ export function formatOperationalStatus(order: CanonicalOrderDto, locale: string
   if (!hasResolvedCoordinates(order)) {
     const canGeocode = hasGeocodableAddress(order);
     return {
-      detail: canGeocode ? t.statusDetails.useBulkGeocode : t.statusDetails.enterAddressOrCoordinates,
-      label: canGeocode ? t.statusLabels.needCoordinates : t.statusLabels.missingAddress,
+      detail: canGeocode
+        ? t.statusDetails.useBulkGeocode
+        : t.statusDetails.enterAddressOrCoordinates,
+      label: canGeocode
+        ? t.statusLabels.needCoordinates
+        : t.statusLabels.missingAddress,
       meaning: canGeocode
         ? t.statusMeanings.missingCoordinates
         : t.statusMeanings.missingAddress,
@@ -1278,7 +1600,10 @@ export function formatOperationalStatus(order: CanonicalOrderDto, locale: string
   };
 }
 
-function statusMeaningForOrder(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): string | null {
+function statusMeaningForOrder(
+  order: CanonicalOrderDto,
+  locale: string | null | undefined = "en-CA",
+): string | null {
   const t = getOrdersCopy(locale).statusMeanings;
   const blockers = new Set(order.blockerReasons);
   if (blockers.has("missing_delivery_date") || order.deliveryDate === null)
@@ -1302,7 +1627,9 @@ function statusMeaningForOrder(order: CanonicalOrderDto, locale: string | null |
   )
     return t.deliveryTimeUnclear;
   if (blockers.has("missing_coordinates"))
-    return hasGeocodableAddress(order) ? t.missingCoordinates : t.missingAddress;
+    return hasGeocodableAddress(order)
+      ? t.missingCoordinates
+      : t.missingAddress;
   return t.metadataReview;
 }
 
@@ -1372,13 +1699,20 @@ function formatPaymentMethodEvidence(order: CanonicalOrderDto): string | null {
   return [method, family || null].filter(isPresent).join(" · ") || null;
 }
 
-function formatRouteLabel(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): string {
+function formatRouteLabel(
+  order: CanonicalOrderDto,
+  locale: string | null | undefined = "en-CA",
+): string {
   if (order.routePlanName !== null) return order.routePlanName;
-  if (order.planningStatus === "UNPLANNED") return getOrdersCopy(locale).unplanned;
+  if (order.planningStatus === "UNPLANNED")
+    return getOrdersCopy(locale).unplanned;
   return humanizeToken(order.planningStatus, locale);
 }
 
-export function getRouteRepairPrompt(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {
+export function getRouteRepairPrompt(
+  order: CanonicalOrderDto,
+  locale: string | null | undefined = "en-CA",
+): {
   canGeocode: boolean;
   routeDetail: string;
   statusDetail: string | null;
@@ -1389,7 +1723,8 @@ export function getRouteRepairPrompt(order: CanonicalOrderDto, locale: string | 
     return {
       canGeocode: false,
       routeDetail: t.statusLabels.alreadyPlanned,
-      statusDetail: order.routePlanName ?? humanizeToken(order.planningStatus, locale),
+      statusDetail:
+        order.routePlanName ?? humanizeToken(order.planningStatus, locale),
       statusLabel: t.statusLabels.planned,
     };
   }
@@ -1437,11 +1772,15 @@ export function getRouteRepairPrompt(order: CanonicalOrderDto, locale: string | 
     const canGeocode = hasGeocodableAddress(order);
     return {
       canGeocode,
-      routeDetail: canGeocode ? t.statusLabels.needCoordinates : t.statusLabels.needAddress,
+      routeDetail: canGeocode
+        ? t.statusLabels.needCoordinates
+        : t.statusLabels.needAddress,
       statusDetail: canGeocode
         ? t.statusDetails.useBulkGeocode
         : t.statusDetails.enterAddressOrCoordinates,
-      statusLabel: canGeocode ? t.statusLabels.needCoordinates : t.statusLabels.missingAddress,
+      statusLabel: canGeocode
+        ? t.statusLabels.needCoordinates
+        : t.statusLabels.missingAddress,
     };
   }
   return {
@@ -1452,7 +1791,10 @@ export function getRouteRepairPrompt(order: CanonicalOrderDto, locale: string | 
   };
 }
 
-function geocodeDetail(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): string | null {
+function geocodeDetail(
+  order: CanonicalOrderDto,
+  locale: string | null | undefined = "en-CA",
+): string | null {
   if (
     order.geocodeStatus === "RESOLVED" ||
     order.geocodeStatus === "NOT_REQUIRED"
@@ -1469,7 +1811,10 @@ function geocodeDetail(order: CanonicalOrderDto, locale: string | null | undefin
   return getOrderDetailLabels(locale).geocodeStatus[order.geocodeStatus];
 }
 
-function geocodeMessageForCode(code: string, locale: string | null | undefined = 'en-CA'): string {
+function geocodeMessageForCode(
+  code: string,
+  locale: string | null | undefined = "en-CA",
+): string {
   const t = getOrdersCopy(locale).geocodeMessages;
   switch (code) {
     case "BLANK_ADDRESS":
@@ -1493,7 +1838,10 @@ function geocodeMessageForCode(code: string, locale: string | null | undefined =
   }
 }
 
-function formatTimeWindow(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): string | null {
+function formatTimeWindow(
+  order: CanonicalOrderDto,
+  locale: string | null | undefined = "en-CA",
+): string | null {
   if (isPresent(order.timeWindowStart) && isPresent(order.timeWindowEnd)) {
     return `${formatTime(order.timeWindowStart)}–${formatTime(order.timeWindowEnd)}`;
   }
@@ -1559,7 +1907,10 @@ function formatTime(value: string): string {
     : `${hour12}:${String(minute).padStart(2, "0")}${period}`;
 }
 
-function humanizeToken(value: string, locale: string | null | undefined = 'en-CA'): string {
+function humanizeToken(
+  value: string,
+  locale: string | null | undefined = "en-CA",
+): string {
   const normalized = value.trim().toLowerCase().replace(/[_-]+/gu, " ");
   const builtInLabel = new Map<string, string>(
     resolveLocale(locale) === "ko-KR"
@@ -1608,15 +1959,21 @@ function hasGeocodableAddress(order: CanonicalOrderDto): boolean {
   ].some(isPresent);
 }
 
-function mostSpecificBlockerLabel(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): string | null {
+function mostSpecificBlockerLabel(
+  order: CanonicalOrderDto,
+  locale: string | null | undefined = "en-CA",
+): string | null {
   const t = getOrdersCopy(locale);
   const blockers = new Set(order.blockerReasons);
   if (isAddressReviewRequired(order)) return t.statusLabels.addressReview;
-  if (isDeliveryDateReviewRequired(order)) return t.statusLabels.deliveryDateReview;
+  if (isDeliveryDateReviewRequired(order))
+    return t.statusLabels.deliveryDateReview;
   if (blockers.has("missing_delivery_date") || order.deliveryDate === null)
     return t.statusLabels.missingDeliveryDate;
-  if (blockers.has("missing_delivery_area")) return t.statusLabels.missingDeliveryArea;
-  if (blockers.has("missing_route_scope")) return t.statusLabels.missingRouteScope;
+  if (blockers.has("missing_delivery_area"))
+    return t.statusLabels.missingDeliveryArea;
+  if (blockers.has("missing_route_scope"))
+    return t.statusLabels.missingRouteScope;
   if (
     [
       "delivery_day_unparsed",
@@ -1626,7 +1983,8 @@ function mostSpecificBlockerLabel(order: CanonicalOrderDto, locale: string | nul
     ].some((reason) => blockers.has(reason))
   )
     return t.statusLabels.deliveryDayUnclear;
-  if (blockers.has("missing_time_window")) return t.statusLabels.missingTimeWindow;
+  if (blockers.has("missing_time_window"))
+    return t.statusLabels.missingTimeWindow;
   if (
     ["delivery_time_window_unparsed", "ambiguous_delivery_time_window"].some(
       (reason) => blockers.has(reason),
@@ -1634,25 +1992,31 @@ function mostSpecificBlockerLabel(order: CanonicalOrderDto, locale: string | nul
   )
     return t.statusLabels.deliveryTimeUnclear;
   if (blockers.has("missing_coordinates"))
-    return hasGeocodableAddress(order) ? t.statusLabels.needCoordinates : t.statusLabels.missingAddress;
+    return hasGeocodableAddress(order)
+      ? t.statusLabels.needCoordinates
+      : t.statusLabels.missingAddress;
   return null;
 }
 
-export function formatBlockerReason(reason: string, locale: string | null | undefined = 'en-CA'): string {
+export function formatBlockerReason(
+  reason: string,
+  locale: string | null | undefined = "en-CA",
+): string {
   const labels = getOrderDetailLabels(locale).blockerReasons;
   return (
-    labels[
-      reason as keyof typeof labels
-    ] ?? getOrdersCopy(locale).routeConstraintFallback
+    labels[reason as keyof typeof labels] ??
+    getOrdersCopy(locale).routeConstraintFallback
   );
 }
 
-export function formatDiagnosticPathLabel(path: string, locale: string | null | undefined = 'en-CA'): string {
+export function formatDiagnosticPathLabel(
+  path: string,
+  locale: string | null | undefined = "en-CA",
+): string {
   const labels = getOrderDetailLabels(locale).diagnosticPaths;
   return (
-    labels[
-      path as keyof typeof labels
-    ] ?? getOrdersCopy(locale).diagnosticMetadata
+    labels[path as keyof typeof labels] ??
+    getOrdersCopy(locale).diagnosticMetadata
   );
 }
 
@@ -1689,7 +2053,7 @@ function OrderDetailPanel({
   onSaveMetadata,
   order,
   locale,
-  settings,
+  sourceOptions,
 }: {
   diagnostics: DeliveryMetadataDiagnosticsDto | null | undefined;
   id: string;
@@ -1698,7 +2062,7 @@ function OrderDetailPanel({
   onClose(): void;
   onSaveMetadata?(patch: OrderMetadataPatch): Promise<void>;
   order: CanonicalOrderDto;
-  settings?: StoreSettingsDto | null;
+  sourceOptions?: OrderSourceValueOptions | null;
 }): ReactElement {
   const canPersistMetadata = onSaveMetadata !== undefined;
   const [editMode, setEditMode] = useState(initialEditMode ?? false);
@@ -1715,8 +2079,8 @@ function OrderDetailPanel({
     formatBlockerReason(reason, locale),
   );
   const editableFields = useMemo(
-    () => buildEditableMetadataFields(settings, locale),
-    [locale, settings],
+    () => buildEditableMetadataFields(sourceOptions, locale, order),
+    [locale, order, sourceOptions],
   );
   const repairFields = getOrderRepairFields(order, editableFields);
   const hasActionableRepair = repairFields.length > 0;
@@ -1793,56 +2157,56 @@ function OrderDetailPanel({
             .filter(Boolean)
             .join(" ")}
         >
-        <div className="order-detail-repair-copy">
-          <span className="eyebrow">
+          <div className="order-detail-repair-copy">
+            <span className="eyebrow">
               {hasActionableRepair ? t.needsReview : t.orderReadiness}
-          </span>
-          <h4>{hasActionableRepair ? repairTitle : status.label}</h4>
-          <p>
-            {hasActionableRepair
-              ? t.repairInstruction
-              : (status.detail ?? t.noFixes)}
-          </p>
-          {blockers.length === 0 ? null : (
-            <div
-              className="order-detail-repair-pills"
-              aria-label={t.currentBlockers}
-            >
-              {blockers.map((blocker) => (
-                <span className="order-pill order-pill--review" key={blocker}>
-                  {blocker}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-        {hasActionableRepair ? (
-          <form className="order-detail-repair-form" onSubmit={submitDraft}>
-            <div className="order-detail-repair-fields">
-              {repairFields.map((field) => (
-                <OrderDetailFieldInput
-                  field={field}
-                  idPrefix={panelId}
-                  instance="repair"
-                  key={field.key}
-                  locale={locale}
-                  onChange={setDraftField}
-                  value={draft[field.key]}
-                />
-              ))}
-            </div>
-            {saveError === null ? null : (
-              <p className="order-detail-error" role="alert">
-                {saveError}
-              </p>
+            </span>
+            <h4>{hasActionableRepair ? repairTitle : status.label}</h4>
+            <p>
+              {hasActionableRepair
+                ? t.repairInstruction
+                : (status.detail ?? t.noFixes)}
+            </p>
+            {blockers.length === 0 ? null : (
+              <div
+                className="order-detail-repair-pills"
+                aria-label={t.currentBlockers}
+              >
+                {blockers.map((blocker) => (
+                  <span className="order-pill order-pill--review" key={blocker}>
+                    {blocker}
+                  </span>
+                ))}
+              </div>
             )}
-            <div className="orders-actions">
-              <button disabled={repairSaveDisabled} type="submit">
-                {saving ? t.saving : t.saveFixes}
-              </button>
-            </div>
-          </form>
-        ) : null}
+          </div>
+          {hasActionableRepair ? (
+            <form className="order-detail-repair-form" onSubmit={submitDraft}>
+              <div className="order-detail-repair-fields">
+                {repairFields.map((field) => (
+                  <OrderDetailFieldInput
+                    field={field}
+                    idPrefix={panelId}
+                    instance="repair"
+                    key={field.key}
+                    locale={locale}
+                    onChange={setDraftField}
+                    value={draft[field.key]}
+                  />
+                ))}
+              </div>
+              {saveError === null ? null : (
+                <p className="order-detail-error" role="alert">
+                  {saveError}
+                </p>
+              )}
+              <div className="orders-actions">
+                <button disabled={repairSaveDisabled} type="submit">
+                  {saving ? t.saving : t.saveFixes}
+                </button>
+              </div>
+            </form>
+          ) : null}
         </section>
       ) : null}
 
@@ -1858,7 +2222,11 @@ function OrderDetailPanel({
               ))}
             </ul>
           )}
-          <small>{order.sourceOrderNumber ?? order.sourceOrderId ?? t.reviewIfRequired}</small>
+          <small>
+            {order.sourceOrderNumber ??
+              order.sourceOrderId ??
+              t.reviewIfRequired}
+          </small>
         </section>
         <section className="order-detail-summary-card">
           <h4>{t.destination}</h4>
@@ -1886,7 +2254,9 @@ function OrderDetailPanel({
               </thead>
               <tbody>
                 {orderItems.map((item, itemIndex) => (
-                  <tr key={`${item.productId}:${item.variationId}:${item.name}:${itemIndex}`}>
+                  <tr
+                    key={`${item.productId}:${item.variationId}:${item.name}:${itemIndex}`}
+                  >
                     <td>{item.name}</td>
                     <td>{formatOrderItemOptions(item) || "—"}</td>
                     <td>{item.sku ?? "—"}</td>
@@ -1938,7 +2308,9 @@ function OrderDetailPanel({
           <p>{t.noDiagnostics}</p>
         ) : (
           <>
-            <p>{t.diagnosticsStatus}: {humanizeToken(diagnostics.status, locale)}</p>
+            <p>
+              {t.diagnosticsStatus}: {humanizeToken(diagnostics.status, locale)}
+            </p>
             {diagnostics.current.reviewReasons.length === 0 ? null : (
               <div className="order-technical-diagnostics-block">
                 <strong>{t.currentBlockers}</strong>
@@ -1972,7 +2344,10 @@ function OrderDetailPanel({
                 <li key={`${candidate.path}-${candidate.valuePreview}`}>
                   {formatDiagnosticPathLabel(candidate.path, locale)}:{" "}
                   {candidate.valuePreview}
-                  <small> · {humanizeToken(candidate.parseStatus, locale)}</small>
+                  <small>
+                    {" "}
+                    · {humanizeToken(candidate.parseStatus, locale)}
+                  </small>
                 </li>
               ))}
             </ul>
@@ -2037,7 +2412,18 @@ function OrderDetailFieldInput({
           </span>
         )}
       </span>
-      {field.choices === undefined ? (
+      {field.readOnly === true ? (
+        <span
+          aria-label={field.label}
+          className="order-detail-readonly-value"
+          data-readonly-field={field.key}
+          id={inputId}
+        >
+          {value === null || value.trim() === ""
+            ? "—"
+            : humanizeToken(value, locale)}
+        </span>
+      ) : field.choices === undefined ? (
         <input
           aria-label={field.label}
           id={inputId}
@@ -2105,9 +2491,7 @@ export function OrderDetailChoiceDropdown({
   );
 }
 
-function formatChoiceOptionLabel(
-  choice: StoreSettingsDto["routeScopeConfig"]["serviceTypes"][number],
-): string {
+function formatChoiceOptionLabel(choice: MetadataChoice): string {
   if (choice.label === choice.value) return choice.label;
   return `${choice.label} · ${choice.value}`;
 }
@@ -2118,7 +2502,7 @@ export function normalizeOrderMetadataPatchForFields(
 ): OrderMetadataPatch {
   const normalized = { ...patch };
   for (const field of fields) {
-    if (field.choices === undefined) continue;
+    if (field.readOnly === true || field.choices === undefined) continue;
     if (!isActiveChoiceValue(field, normalized[field.key])) {
       normalized[field.key] = null;
     }
@@ -2132,6 +2516,7 @@ function hasUnselectedRequiredChoiceField(
 ): boolean {
   return fields.some(
     (field) =>
+      field.readOnly !== true &&
       field.choices !== undefined &&
       !isActiveChoiceValue(field, draft[field.key]),
   );
@@ -2141,6 +2526,7 @@ function getSelectedChoiceValue(
   field: EditableMetadataField,
   value: string | null,
 ): string | null {
+  if (field.readOnly === true) return value;
   return isActiveChoiceValue(field, value) ? value : null;
 }
 
@@ -2148,7 +2534,8 @@ function isActiveChoiceValue(
   field: EditableMetadataField,
   value: string | null,
 ): value is string {
-  if (field.choices === undefined || value === null) return false;
+  if (field.readOnly === true || field.choices === undefined || value === null)
+    return false;
   return field.choices.some((choice) => choice.value === value);
 }
 
@@ -2205,7 +2592,7 @@ function getOrderRepairFields(
 function formatRepairCardTitle(
   fields: EditableMetadataField[],
   order: CanonicalOrderDto,
-  locale: string | null | undefined = 'en-CA',
+  locale: string | null | undefined = "en-CA",
 ): string {
   const t = getOrdersCopy(locale).repairTitles;
   const keys = new Set(fields.map((field) => field.key));
@@ -2246,8 +2633,10 @@ function formatRepairCardTitle(
   return t.fallback;
 }
 
-
-function formatAddressSummary(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {
+function formatAddressSummary(
+  order: CanonicalOrderDto,
+  locale: string | null | undefined = "en-CA",
+): {
   primary: string;
   secondary: string | null;
 } {
@@ -2272,7 +2661,10 @@ function formatAddressSummary(order: CanonicalOrderDto, locale: string | null | 
   };
 }
 
-function formatCoordinateSummary(order: CanonicalOrderDto, locale: string | null | undefined = 'en-CA'): {
+function formatCoordinateSummary(
+  order: CanonicalOrderDto,
+  locale: string | null | undefined = "en-CA",
+): {
   primary: string;
   secondary: string | null;
 } {
@@ -2321,7 +2713,9 @@ function orderSelectedOrdersByDraft(
   selectedOrders: CanonicalOrderDto[],
   selectedOrderIds: ReadonlySet<string>,
 ): CanonicalOrderDto[] {
-  const ordersById = new Map(selectedOrders.map((order) => [order.orderId, order]));
+  const ordersById = new Map(
+    selectedOrders.map((order) => [order.orderId, order]),
+  );
   return [...selectedOrderIds]
     .map((orderId) => ordersById.get(orderId))
     .filter((order): order is CanonicalOrderDto => order !== undefined);
@@ -2339,7 +2733,10 @@ export function buildOrderMapMarkerStates(input: {
   const markerStates = new Map<string, OrderMapMarkerState>();
   for (const order of input.orders) {
     const sequence = selectedSequenceByOrderId.get(order.orderId) ?? null;
-    if (input.filters.scope === "history" || input.worksetContext.scope === "history") {
+    if (
+      input.filters.scope === "history" ||
+      input.worksetContext.scope === "history"
+    ) {
       markerStates.set(order.orderId, {
         markerOpacity: 1,
         pinKind: "history",
@@ -2381,14 +2778,18 @@ function isRouteMapReviewOrder(order: CanonicalOrderDto): boolean {
   );
 }
 
-function normalizeRouteFilterValue(value: string | null | undefined): string | null {
+function normalizeRouteFilterValue(
+  value: string | null | undefined,
+): string | null {
   if (value === null || value === undefined) return null;
   const trimmed = value.trim();
   if (trimmed === "" || trimmed === "all") return null;
   return trimmed;
 }
 
-function getWeekdayFilterOptions(locale: string | null | undefined): Array<{ label: string; value: NonNullable<OrderFilterState["weekday"]> }> {
+function getWeekdayFilterOptions(
+  locale: string | null | undefined,
+): Array<{ label: string; value: NonNullable<OrderFilterState["weekday"]> }> {
   return resolveLocale(locale) === "ko-KR"
     ? [
         { label: "일", value: "sun" },
@@ -2410,18 +2811,14 @@ function getWeekdayFilterOptions(locale: string | null | undefined): Array<{ lab
       ];
 }
 
-function getRouteTypeFilterOptions(locale: string | null | undefined): Array<{ label: string; value: NonNullable<OrderFilterState["routeType"]> }> {
-  return resolveLocale(locale) === "ko-KR"
-    ? [
-        { label: "배송", value: "delivery" },
-        { label: "저녁 배송", value: "evening_delivery" },
-        { label: "픽업", value: "pickup" },
-      ]
-    : [
-        { label: "Delivery", value: "delivery" },
-        { label: "Evening Delivery", value: "evening_delivery" },
-        { label: "Pickup", value: "pickup" },
-      ];
+function buildActualTypeFilterOptions(
+  values: string[],
+  locale: string | null | undefined,
+): Array<{ label: string; value: string }> {
+  return values.map((value) => ({
+    label: humanizeToken(value, locale),
+    value,
+  }));
 }
 
 function formatRouteDraftDateLabel(
@@ -2432,7 +2829,9 @@ function formatRouteDraftDateLabel(
   if (selectedOrders.length === 0) return t.dateFallback;
   const date = getRouteDraftSingleDeliveryDate(selectedOrders);
   if (date !== null) return date;
-  return hasMissingRouteDate(selectedOrders) ? t.routeDraft.missingRequiredShort : t.mixed;
+  return hasMissingRouteDate(selectedOrders)
+    ? t.routeDraft.missingRequiredShort
+    : t.mixed;
 }
 
 function formatRouteDraftTypeLabel(
@@ -2443,13 +2842,15 @@ function formatRouteDraftTypeLabel(
   if (selectedOrders.length === 0) return t.typeFallback;
   const type = getRouteDraftSingleType(selectedOrders);
   if (type !== null) return formatRoutePlanningType(type, locale);
-  return hasMissingRouteType(selectedOrders) ? t.routeDraft.missingRequiredShort : t.mixed;
+  return hasMissingRouteType(selectedOrders)
+    ? t.routeDraft.missingRequiredShort
+    : t.mixed;
 }
 
 export function buildRouteDraftSelection(
   orders: CanonicalOrderDto[],
   requestedSelectedOrderIds: ReadonlySet<string>,
-  locale: string | null | undefined = 'en-CA',
+  locale: string | null | undefined = "en-CA",
 ): {
   deliveryDate: string | null;
   orderIds: string[];
@@ -2471,7 +2872,7 @@ export function buildRouteDraftSelection(
 
 export function getRouteDraftCreateReasons(
   selectedOrders: CanonicalOrderDto[],
-  locale: string | null | undefined = 'en-CA',
+  locale: string | null | undefined = "en-CA",
 ): string[] {
   if (selectedOrders.length === 0) return [];
   const t = getOrdersCopy(locale).routeDraft;
@@ -2482,7 +2883,9 @@ export function getRouteDraftCreateReasons(
       getOrderRouteType(order) === null,
   );
   if (hasMissingRequired) reasons.push(t.missingRequired);
-  if (countUniquePresent(selectedOrders.map((order) => order.deliveryDate)) > 1) {
+  if (
+    countUniquePresent(selectedOrders.map((order) => order.deliveryDate)) > 1
+  ) {
     reasons.push(t.dateMustMatch);
   }
   if (countUniquePresent(selectedOrders.map(getOrderRouteType)) > 1) {
@@ -2493,31 +2896,51 @@ export function getRouteDraftCreateReasons(
 
 export function getRouteDraftFirstCreateReason(
   selectedOrders: CanonicalOrderDto[],
-  locale: string | null | undefined = 'en-CA',
+  locale: string | null | undefined = "en-CA",
 ): string | null {
   return getRouteDraftCreateReasons(selectedOrders, locale)[0] ?? null;
 }
 
-function getRouteDraftSingleDeliveryDate(orders: CanonicalOrderDto[]): string | null {
+function getRouteDraftSingleDeliveryDate(
+  orders: CanonicalOrderDto[],
+): string | null {
   const dates = uniquePresentValues(orders.map((order) => order.deliveryDate));
-  return dates.length === 1 ? dates[0] ?? null : null;
+  return dates.length === 1 ? (dates[0] ?? null) : null;
 }
 
-function getRouteDraftSingleType(orders: CanonicalOrderDto[]): OrderRouteTypeFilter | null {
-  const types = [...new Set(orders.map(getOrderRouteType).filter((value): value is OrderRouteTypeFilter => value !== null))];
-  return types.length === 1 ? types[0] ?? null : null;
+function getRouteDraftSingleType(
+  orders: CanonicalOrderDto[],
+): OrderRouteTypeFilter | null {
+  const types = [
+    ...new Set(
+      orders
+        .map(getOrderRouteType)
+        .filter((value): value is OrderRouteTypeFilter => value !== null),
+    ),
+  ];
+  return types.length === 1 ? (types[0] ?? null) : null;
 }
 
 function countUniquePresent(values: Array<string | null | undefined>): number {
   return uniquePresentValues(values).length;
 }
 
-function uniquePresentValues(values: Array<string | null | undefined>): string[] {
-  return [...new Set(values.map(normalizeRouteFilterValue).filter((value): value is string => value !== null))];
+function uniquePresentValues(
+  values: Array<string | null | undefined>,
+): string[] {
+  return [
+    ...new Set(
+      values
+        .map(normalizeRouteFilterValue)
+        .filter((value): value is string => value !== null),
+    ),
+  ];
 }
 
 function hasMissingRouteDate(orders: CanonicalOrderDto[]): boolean {
-  return orders.some((order) => normalizeRouteFilterValue(order.deliveryDate) === null);
+  return orders.some(
+    (order) => normalizeRouteFilterValue(order.deliveryDate) === null,
+  );
 }
 
 function hasMissingRouteType(orders: CanonicalOrderDto[]): boolean {
@@ -2528,8 +2951,7 @@ function formatRoutePlanningType(
   value: OrderRouteTypeFilter,
   locale: string | null | undefined,
 ): string {
-  const option = getRouteTypeFilterOptions(locale).find((candidate) => candidate.value === value);
-  return option?.label ?? humanizeToken(value, locale);
+  return humanizeToken(value, locale);
 }
 
 function isRoutePlanEligible(order: CanonicalOrderDto): boolean {

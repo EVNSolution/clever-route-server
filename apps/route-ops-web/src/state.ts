@@ -26,7 +26,7 @@ export type OrderFilters = {
 export type OrderScopeFilter = 'planning' | 'history';
 export type OrderTabFilter = 'all' | 'unplanned' | 'planned' | 'needs_review';
 export type OrderPlanningStatusFilter = '' | 'planned' | 'unplanned';
-export type OrderRouteTypeFilter = 'delivery' | 'evening_delivery' | 'pickup';
+export type OrderRouteTypeFilter = string;
 export type OrderWeekdayFilter =
   | 'sun'
   | 'mon'
@@ -150,6 +150,208 @@ export function deriveAreaFilterOptions(orders: CanonicalOrderDto[]): string[] {
   ).sort((first, second) => first.localeCompare(second));
 }
 
+export type OrderFacetedFilterKey =
+  | 'deliveryArea'
+  | 'deliveryDate'
+  | 'weekday'
+  | 'routeType';
+
+export type OrderFilterOptionSets = {
+  deliveryAreas: string[];
+  deliveryDates: string[];
+  routeTypes: string[];
+  weekdays: OrderWeekdayFilter[];
+};
+
+export type OrderSourceValueOptions = {
+  deliverySessions: string[];
+  serviceTypes: string[];
+};
+
+export function applyClientOrderFiltersExcept(
+  orders: CanonicalOrderDto[],
+  filters: OrderFilters,
+  excludedField: OrderFacetedFilterKey
+): CanonicalOrderDto[] {
+  return applyClientOrderFilters(orders, { ...filters, [excludedField]: '' });
+}
+
+export function deriveOrderFilterOptions(
+  orders: CanonicalOrderDto[],
+  filters: OrderFilters,
+  filterOrder: OrderFacetedFilterKey[] = []
+): OrderFilterOptionSets {
+  const dateOptionFilters = isAutoFilledWeekday(filters, filterOrder)
+    ? { ...filters, weekday: '' as const }
+    : filters;
+  const areaOrders = applyClientOrderFiltersExcept(
+    orders,
+    filters,
+    'deliveryArea'
+  );
+  const dateOrders = applyClientOrderFiltersExcept(
+    orders,
+    dateOptionFilters,
+    'deliveryDate'
+  );
+  const weekdayOrders = applyClientOrderFilters(orders, {
+    ...filters,
+    deliveryDate: '',
+    weekday: ''
+  });
+  const typeOrders = applyClientOrderFiltersExcept(
+    orders,
+    filters,
+    'routeType'
+  );
+  return {
+    deliveryAreas: deriveAreaFilterOptions(areaOrders),
+    deliveryDates: uniqueSortedValues(
+      dateOrders.map((order) => order.deliveryDate)
+    ),
+    routeTypes: uniqueSortedValues(typeOrders.map(getOrderSourceType)),
+    weekdays: uniqueSortedWeekdays(weekdayOrders.map(getOrderDeliveryWeekday))
+  };
+}
+
+export function deriveOrderSourceValueOptions(
+  orders: CanonicalOrderDto[],
+  selectedOrder?: CanonicalOrderDto | null
+): OrderSourceValueOptions {
+  const withSelected =
+    selectedOrder === null || selectedOrder === undefined
+      ? orders
+      : [...orders, selectedOrder];
+  return {
+    deliverySessions: uniqueSortedValues(
+      withSelected.map((order) => order.deliverySession)
+    ),
+    serviceTypes: uniqueSortedValues(
+      withSelected.map((order) => order.serviceType)
+    )
+  };
+}
+
+export function weekdayForDeliveryDate(
+  value: string | null | undefined
+): OrderWeekdayFilter | null {
+  const normalized = normalizeFilterValue(value);
+  if (normalized === null) return null;
+  const date = new Date(`${normalized}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return null;
+  return WEEKDAY_FILTERS[date.getUTCDay()] ?? null;
+}
+
+export function reconcileOrderFilters(input: {
+  changedField: OrderFacetedFilterKey;
+  filters: OrderFilterState;
+  orders: CanonicalOrderDto[];
+  previousOrder: OrderFacetedFilterKey[];
+}): { filters: OrderFilterState; order: OrderFacetedFilterKey[] } {
+  let next = { ...input.filters };
+  let order = [
+    ...input.previousOrder.filter((field) => field !== input.changedField),
+    input.changedField
+  ];
+
+  if (input.changedField === 'deliveryDate') {
+    const weekday = weekdayForDeliveryDate(next.deliveryDate);
+    next.weekday = weekday ?? '';
+    if (weekday !== null) {
+      order = order.filter((field) => field !== 'weekday');
+    }
+  }
+
+  if (input.changedField === 'weekday' && next.weekday !== '') {
+    const deliveryDateWeekday = weekdayForDeliveryDate(next.deliveryDate);
+    if (deliveryDateWeekday !== null && deliveryDateWeekday !== next.weekday) {
+      next.deliveryDate = '';
+      order = order.filter((field) => field !== 'deliveryDate');
+    }
+  }
+
+  return pruneOrderFilters({ filters: next, orders: input.orders, order });
+}
+
+export function pruneOrderFilters(input: {
+  filters: OrderFilterState;
+  orders: CanonicalOrderDto[];
+  order: OrderFacetedFilterKey[];
+}): { filters: OrderFilterState; order: OrderFacetedFilterKey[] } {
+  let next = { ...input.filters };
+  const authoredWeekday = input.order.includes('weekday');
+  if (!authoredWeekday && normalizeFilterValue(next.deliveryDate) === null) {
+    next.weekday = '';
+  }
+  const remainingOrder: OrderFacetedFilterKey[] = [];
+  for (const field of input.order) {
+    const value = normalizeFilterValue(next[field]);
+    if (value === null) continue;
+    if (isFilterValueAvailable(input.orders, next, field, value)) {
+      remainingOrder.push(field);
+      continue;
+    }
+    next = { ...next, [field]: '' };
+  }
+  const syncedWeekday = weekdayForDeliveryDate(next.deliveryDate);
+  if (syncedWeekday !== null && next.weekday !== syncedWeekday) {
+    next.weekday = syncedWeekday;
+  }
+  if (syncedWeekday === null && !authoredWeekday) {
+    next.weekday = '';
+  }
+  return { filters: next, order: remainingOrder };
+}
+
+function isAutoFilledWeekday(
+  filters: OrderFilters,
+  filterOrder: OrderFacetedFilterKey[]
+): boolean {
+  return (
+    normalizeFilterValue(filters.deliveryDate) !== null &&
+    normalizeFilterValue(filters.weekday) !== null &&
+    !filterOrder.includes('weekday')
+  );
+}
+
+function isFilterValueAvailable(
+  orders: CanonicalOrderDto[],
+  filters: OrderFilters,
+  field: OrderFacetedFilterKey,
+  value: string
+): boolean {
+  const options = deriveOrderFilterOptions(orders, filters);
+  if (field === 'deliveryArea')
+    return options.deliveryAreas.some(
+      (area) => area.toLowerCase() === value.toLowerCase()
+    );
+  if (field === 'deliveryDate') return options.deliveryDates.includes(value);
+  if (field === 'routeType') return options.routeTypes.includes(value);
+  return options.weekdays.includes(value as OrderWeekdayFilter);
+}
+
+function uniqueSortedValues(values: Array<string | null | undefined>): string[] {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => normalizeFilterValue(value))
+        .filter((value): value is string => value !== null)
+    )
+  ).sort((first, second) => first.localeCompare(second));
+}
+
+function uniqueSortedWeekdays(
+  values: Array<OrderWeekdayFilter | null | undefined>
+): OrderWeekdayFilter[] {
+  const present = new Set(
+    values.filter(
+      (value): value is OrderWeekdayFilter =>
+        value !== null && value !== undefined
+    )
+  );
+  return WEEKDAY_FILTERS.filter((weekday) => present.has(weekday));
+}
+
 export function applyClientOrderFilters(
   orders: CanonicalOrderDto[],
   filters: OrderFilters
@@ -163,7 +365,7 @@ export function applyClientOrderFilters(
     if (weekday !== null && getOrderDeliveryWeekday(order) !== weekday) return false;
 
     const routeType = normalizeFilterValue(filters.routeType);
-    if (routeType !== null && getOrderRouteType(order) !== routeType) return false;
+    if (routeType !== null && getOrderSourceType(order) !== routeType) return false;
 
     const serviceType = normalizeFilterValue(filters.serviceType);
     if (serviceType !== null && order.serviceType !== serviceType) return false;
@@ -215,7 +417,7 @@ function hasActiveClientOrderFilter(filters: OrderFilters): boolean {
   );
 }
 
-const WEEKDAY_FILTERS: OrderWeekdayFilter[] = [
+export const WEEKDAY_FILTERS: OrderWeekdayFilter[] = [
   'sun',
   'mon',
   'tue',
@@ -225,11 +427,18 @@ const WEEKDAY_FILTERS: OrderWeekdayFilter[] = [
   'sat'
 ];
 
-function getOrderDeliveryWeekday(order: CanonicalOrderDto): OrderWeekdayFilter | null {
+export function getOrderDeliveryWeekday(order: CanonicalOrderDto): OrderWeekdayFilter | null {
   if (order.deliveryDate === null) return null;
   const date = new Date(`${order.deliveryDate}T00:00:00Z`);
   if (Number.isNaN(date.getTime())) return null;
   return WEEKDAY_FILTERS[date.getUTCDay()] ?? null;
+}
+
+export function getOrderSourceType(order: CanonicalOrderDto): string | null {
+  return (
+    normalizeFilterValue(order.serviceType) ??
+    normalizeFilterValue(order.deliverySession)
+  );
 }
 
 export function getOrderRouteType(order: CanonicalOrderDto): OrderRouteTypeFilter | null {
