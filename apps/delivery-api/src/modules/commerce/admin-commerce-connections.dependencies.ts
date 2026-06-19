@@ -48,7 +48,7 @@ import {
 import { loadGeocodingService } from '../geocoding/geocoding.dependencies.js';
 import { PrismaDeliveryCustomerProfileService } from '../delivery-customer/delivery-customer-profile.service.js';
 import { loadDriverPushProvider } from '../route-grouping/driver-push.provider.js';
-import { PrismaRouteGroupingService } from '../route-grouping/route-grouping.service.js';
+import { DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS, PrismaRouteGroupingService } from '../route-grouping/route-grouping.service.js';
 
 export type AdminCommerceConnectionsRuntimeEnv = Partial<
   Record<
@@ -77,6 +77,7 @@ export type AdminCommerceConnectionsRuntimeEnv = Partial<
     | 'ROUTE_ENGINE_OBJECTIVE'
     | 'ROUTE_ENGINE_SERVICE_REGION'
     | 'ROUTE_ENGINE_TIMEOUT_MS'
+    | 'ROUTE_GROUPING_MAX_STOP_DISTANCE_METERS'
     | 'ROUTE_OPS_ROUTER_COVERAGE'
     | 'VROOM_BASE_URL'
     | 'VROOM_TIMEOUT_MS'
@@ -417,8 +418,22 @@ function readAdminUiRouteGroupingService(
       routeGeometryRefresher,
       routeOptimizationService,
       routeGeometryProvider,
+      { maxChildRouteStopDistanceFromDepotMeters: readRouteGroupingMaxStopDistanceMeters(input.env) }
     ),
   };
+}
+
+function readRouteGroupingMaxStopDistanceMeters(env: AdminCommerceConnectionsRuntimeEnv): number {
+  return readOptionalNumber(env.ROUTE_GROUPING_MAX_STOP_DISTANCE_METERS)
+    ?? routeGroupingMaxStopDistanceByCoverage(env.ROUTE_OPS_ROUTER_COVERAGE)
+    ?? DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS;
+}
+
+function routeGroupingMaxStopDistanceByCoverage(value: string | undefined): number | undefined {
+  const normalized = readOptional(value)?.toLowerCase();
+  if (normalized === undefined) return undefined;
+  if (normalized === 'ontario') return DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS;
+  return undefined;
 }
 
 function readAdminUiSettingsService(input: {

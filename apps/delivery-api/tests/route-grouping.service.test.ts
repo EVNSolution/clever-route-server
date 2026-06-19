@@ -30,7 +30,8 @@ describe('route grouping contracts', () => {
     expect(serviceSource).toContain('prepareOptimizedChildRouteCandidates(initial, input.shopDomain)');
     expect(serviceSource).toContain('createCurrentGroupingVersion(tx, loaded');
     expect(serviceSource).toContain("changeReason: 'generate_child_routes', status: 'CURRENT'");
-    expect(serviceSource).toContain('validateChildRouteStopsNearDepot(assignments, depot)');
+    expect(serviceSource).toContain('validateChildRouteStopsNearDepot(assignments, depot, this.maxChildRouteStopDistanceFromDepotMeters())');
+    expect(serviceSource).toContain('routeGeometryCacheCreateData');
     expect(serviceSource).toContain('child route contains stops outside depot coverage');
     expect(serviceSource).toContain('routeOptimizationService.optimizeStopOrderWithDiagnostics');
     expect(serviceSource).toContain('resolveChildRouteOptimization(this.routeOptimizationService, sourceDetail, shopDomain)');

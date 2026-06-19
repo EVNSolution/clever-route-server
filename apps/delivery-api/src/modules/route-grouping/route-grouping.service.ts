@@ -1,4 +1,4 @@
-import { Prisma, type PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient } from '@prisma/client';
 import { classifyCoordinateInPolygons, coordinatesFromGeoJsonPolygon } from './route-grouping.geometry.js';
 import type { DriverPushProvider } from './driver-push.provider.js';
 import type {
@@ -6,7 +6,7 @@ import type {
   RouteOptimizationService,
   RouteOptimizationStopSequence
 } from '../route-plans/route-engine-route-optimizer.client.js';
-import { computeRouteShapeSignature } from '../route-plans/route-plan-geometry-cache.js';
+import { computeRouteShapeSignature, routeGeometryCacheCreateData } from '../route-plans/route-plan-geometry-cache.js';
 import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanRouteResult } from '../route-plans/route-plan.types.js';
 import {
@@ -33,7 +33,7 @@ import { hashPushToken } from './driver-push-token.service.js';
 
 const OPTIMIZER_VERSION = 'route-grouping-projection-v1';
 const ROUTE_GROUPING_GEOMETRY_REFRESH_CONCURRENCY = 2;
-const MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS = 500_000;
+export const DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS = 500_000;
 
 type RouteGroupingPrismaClient = Pick<
   PrismaClient,
@@ -97,13 +97,18 @@ type OptimizedChildRouteCandidate = {
   shapeSignature: string;
 };
 
+type RouteGroupingServiceOptions = {
+  maxChildRouteStopDistanceFromDepotMeters?: number;
+};
+
 export class PrismaRouteGroupingService implements RouteGroupingService {
   constructor(
     private readonly prisma: RouteGroupingPrismaClient,
     private readonly pushProvider: DriverPushProvider,
     private readonly routeGeometryRefresher?: RouteGroupingRouteGeometryRefresher,
     private readonly routeOptimizationService?: RouteOptimizationService,
-    private readonly routeGeometryProvider?: RouteGeometryProvider
+    private readonly routeGeometryProvider?: RouteGeometryProvider,
+    private readonly options: RouteGroupingServiceOptions = {}
   ) {}
 
   async createGrouping(input: CreateRouteGroupingInput): Promise<RouteGroupingDetailDto> {
@@ -419,7 +424,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     const candidates: OptimizedChildRouteCandidate[] = [];
     const byDriver = groupAssignmentsByDriver(group.orders);
     for (const [driverId, assignments] of byDriver) {
-      validateChildRouteStopsNearDepot(assignments, depot);
+      validateChildRouteStopsNearDepot(assignments, depot, this.maxChildRouteStopDistanceFromDepotMeters());
       const name = childRouteName(group, driverId, group.currentVersion);
       const sourceDetail = buildChildRouteDetail({ assignments, depot, driverId, group, name });
       const outcome = await resolveChildRouteOptimization(this.routeOptimizationService, sourceDetail, shopDomain);
@@ -445,6 +450,10 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       });
     }
     return candidates;
+  }
+
+  private maxChildRouteStopDistanceFromDepotMeters(): number {
+    return this.options.maxChildRouteStopDistanceFromDepotMeters ?? DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS;
   }
 }
 
@@ -689,14 +698,14 @@ function orderAssignmentsByOptimizationResult(
   return ordered;
 }
 
-function validateChildRouteStopsNearDepot(assignments: LoadedAssignment[], depot: DepotCoordinates): void {
+function validateChildRouteStopsNearDepot(assignments: LoadedAssignment[], depot: DepotCoordinates, maxDistanceMeters: number): void {
   const outsideCoverage = assignments
     .map((assignment) => {
       const latitude = decimalNumber(assignment.deliveryStop.latitude);
       const longitude = decimalNumber(assignment.deliveryStop.longitude);
       if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) return null;
       const distanceMeters = distanceBetweenCoordinatesMeters(depot, { latitude, longitude });
-      if (distanceMeters <= MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS) return null;
+      if (distanceMeters <= maxDistanceMeters) return null;
       return assignment.order.name ?? assignment.order.shopifyOrderGid ?? assignment.orderId;
     })
     .filter((orderName): orderName is string => orderName !== null);
@@ -822,18 +831,17 @@ async function createChildRouteGeometryCache(
   candidate: OptimizedChildRouteCandidate
 ): Promise<void> {
   await tx.routePlanGeometryCache.create({
-    data: {
+    data: routeGeometryCacheCreateData({
       generatedAt: new Date(),
-      geometry: candidate.routeResult.routeGeometry === null ? Prisma.JsonNull : toJson(candidate.routeResult.routeGeometry),
-      metrics: candidate.routeResult.routeMetrics === null ? Prisma.JsonNull : toJson(candidate.routeResult.routeMetrics),
-      overview: 'simplified',
+      geometry: candidate.routeResult.routeGeometry,
+      metrics: candidate.routeResult.routeMetrics,
       provider: 'osrm',
       providerVersion: null,
       routePlanId,
       shapeSignature: candidate.shapeSignature,
       source: 'SNAPSHOT',
-      stopPoints: toJson(candidate.routeResult.routeStopPoints)
-    }
+      stopPoints: candidate.routeResult.routeStopPoints
+    })
   });
 }
 
@@ -1044,10 +1052,6 @@ function describeError(error: unknown): string {
   if (error instanceof Error && error.message.trim() !== '') return error.message;
   if (typeof error === 'string' && error.trim() !== '') return error;
   return 'unknown error';
-}
-
-function toJson(value: unknown): Prisma.InputJsonValue {
-  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }
 
 function readDepotFromShop(group: LoadedGrouping): DepotCoordinates | null {

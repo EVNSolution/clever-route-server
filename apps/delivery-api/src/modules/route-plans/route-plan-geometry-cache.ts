@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { Prisma } from '@prisma/client';
 
 import type {
   RoutePlanDetail,
@@ -37,6 +38,35 @@ export type RouteGeometryCacheWrite = {
   source: RouteGeometryCacheSource;
   stopPoints: RoutePlanRouteStopPoint[];
 };
+
+export function routeGeometryCacheCreateData(input: RouteGeometryCacheWrite): Prisma.RoutePlanGeometryCacheUncheckedCreateInput {
+  return {
+    generatedAt: input.generatedAt ?? new Date(),
+    geometry: input.geometry === null ? Prisma.JsonNull : toJson(input.geometry),
+    metrics: input.metrics === null ? Prisma.JsonNull : toJson(input.metrics),
+    overview: 'simplified',
+    provider: input.provider,
+    providerVersion: input.providerVersion ?? null,
+    routePlanId: input.routePlanId,
+    shapeSignature: input.shapeSignature,
+    source: input.source,
+    stopPoints: toJson(input.stopPoints)
+  };
+}
+
+export function routeGeometryCacheUpsertArgs(input: RouteGeometryCacheWrite): Prisma.RoutePlanGeometryCacheUpsertArgs {
+  const data = routeGeometryCacheCreateData(input);
+  return {
+    create: data,
+    update: data,
+    where: {
+      routePlanId_shapeSignature: {
+        routePlanId: input.routePlanId,
+        shapeSignature: input.shapeSignature
+      }
+    }
+  };
+}
 
 export function computeRouteShapeSignature(detail: RoutePlanDetail): string {
   const routePlan = detail.routePlan;
@@ -120,6 +150,10 @@ export function withRouteGeometryResult(
 
 function stableHash(value: unknown): string {
   return createHash('sha256').update(stableStringify(value)).digest('hex');
+}
+
+function toJson(value: unknown): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }
 
 function stableStringify(value: unknown): string {

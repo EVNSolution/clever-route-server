@@ -1,4 +1,4 @@
-import { Prisma, type PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient } from '@prisma/client';
 import {
   ITEM_REVIEW_REASONS,
   aggregateOrderItems,
@@ -37,7 +37,7 @@ import type {
   RoutePlanRouteScopeInput,
   RoutePlanSummary
 } from './route-plan.types.js';
-import { applyCachedRouteGeometry, computeRouteShapeSignature } from './route-plan-geometry-cache.js';
+import { applyCachedRouteGeometry, computeRouteShapeSignature, routeGeometryCacheUpsertArgs } from './route-plan-geometry-cache.js';
 import type { RouteGeometryCacheRead, RouteGeometryCacheWrite } from './route-plan-geometry-cache.js';
 import type { RoutePlanRepository } from './route-plan.service.js';
 import { readNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
@@ -908,37 +908,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
   }
 
   async upsertRouteGeometryCache(input: RouteGeometryCacheWrite): Promise<void> {
-    await this.prisma.routePlanGeometryCache.upsert({
-      create: {
-        generatedAt: input.generatedAt ?? new Date(),
-        geometry: input.geometry === null ? Prisma.JsonNull : toJson(input.geometry),
-        metrics: input.metrics === null ? Prisma.JsonNull : toJson(input.metrics),
-        overview: 'simplified',
-        provider: input.provider,
-        providerVersion: input.providerVersion ?? null,
-        routePlanId: input.routePlanId,
-        shapeSignature: input.shapeSignature,
-        source: input.source,
-        stopPoints: toJson(input.stopPoints)
-      },
-      update: {
-        generatedAt: input.generatedAt ?? new Date(),
-        geometry: input.geometry === null ? Prisma.JsonNull : toJson(input.geometry),
-        metrics: input.metrics === null ? Prisma.JsonNull : toJson(input.metrics),
-        overview: 'simplified',
-        provider: input.provider,
-        providerVersion: input.providerVersion ?? null,
-        shapeSignature: input.shapeSignature,
-        source: input.source,
-        stopPoints: toJson(input.stopPoints)
-      },
-      where: {
-        routePlanId_shapeSignature: {
-          routePlanId: input.routePlanId,
-          shapeSignature: input.shapeSignature
-        }
-      }
-    });
+    await this.prisma.routePlanGeometryCache.upsert(routeGeometryCacheUpsertArgs(input));
   }
 
   private applyRouteGeometryCache(detail: RoutePlanDetail): Promise<RoutePlanDetail> {
