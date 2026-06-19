@@ -81,6 +81,11 @@ The local `--publish` path treats a missing `write:packages` line in `gh auth st
 as a warning only, because Docker/GHCR push is the authoritative publish check. A real
 `docker push` or login failure remains fatal. `ROUTE_OPS_SKIP_GHCR_WRITE_SCOPE_CHECK=1`
 only skips the GitHub CLI scope warning; it does not bypass Docker push failures.
+The same path requires the Docker buildx CLI plugin and publishes linux/amd64 images
+with `docker buildx build --push`, `--provenance=false`, and the same GHCR registry
+cache refs used by GitHub Actions. Do not fall back to legacy `docker build --platform`
+on Apple Silicon; that path can fail inside amd64/esbuild emulation before anything is
+published.
 
 Safe host dry-run:
 

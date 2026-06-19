@@ -80,25 +80,33 @@ if [ "$BUILD_AND_PUSH" = "1" ]; then
 fi
 
 build_and_push() {
-  docker build --platform linux/amd64 \
+  docker buildx version >/dev/null 2>&1 || fail "docker buildx is required for --publish; install the docker-buildx CLI plugin or use GitHub Actions publish_images=true"
+  docker buildx build --platform linux/amd64 \
     -f apps/route-ops-web/Dockerfile \
     --target static \
+    --push \
+    --provenance=false \
     --build-arg COMMIT_SHA="$COMMIT_SHA" \
     --build-arg PRISMA_SCHEMA_SHA="$PRISMA_SCHEMA_SHA" \
     --label "org.opencontainers.image.revision=$COMMIT_SHA" \
     --label "org.clever-route.prisma-schema-sha=$PRISMA_SCHEMA_SHA" \
     --label "org.clever-route.image-role=route-ops-web-static" \
+    --cache-from "type=registry,ref=${STATIC_IMAGE_REPO}:buildcache" \
+    --cache-to "type=registry,ref=${STATIC_IMAGE_REPO}:buildcache,mode=max" \
     -t "${STATIC_IMAGE_REPO}:${CHANNEL_TAG}" .
-  docker build --platform linux/amd64 \
+  docker buildx build --platform linux/amd64 \
     -f apps/delivery-api/Dockerfile \
     --target runtime \
+    --push \
+    --provenance=false \
     --label "org.opencontainers.image.revision=$COMMIT_SHA" \
     --label "org.clever-route.prisma-schema-sha=$PRISMA_SCHEMA_SHA" \
     --label "org.clever-route.image-role=runtime" \
+    --cache-from "type=registry,ref=${RUNTIME_IMAGE_REPO}:buildcache" \
+    --cache-to "type=registry,ref=${RUNTIME_IMAGE_REPO}:buildcache,mode=max" \
     -t "${RUNTIME_IMAGE_REPO}:${CHANNEL_TAG}" .
   for image in "${STATIC_IMAGE_REPO}:${CHANNEL_TAG}" "${RUNTIME_IMAGE_REPO}:${CHANNEL_TAG}"; do
-    docker image inspect "$image" --format '{{.Architecture}} {{index .Config.Labels "org.opencontainers.image.revision"}} {{index .Config.Labels "org.clever-route.image-role"}} {{index .Config.Labels "org.clever-route.prisma-schema-sha"}}'
-    docker push "$image"
+    docker buildx imagetools inspect "$image" --format '{{json .Manifest.Digest}}'
   done
 }
 
