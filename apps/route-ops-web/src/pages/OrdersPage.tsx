@@ -321,6 +321,10 @@ export function OrdersPage({
     () => orderSelectedOrdersByDraft(orders, plannedOrderIds),
     [orders, plannedOrderIds],
   );
+  const selectedVisibleOrderIds = useMemo(
+    () => buildVisibleSelectedOrderIds(tableOrders, selected),
+    [selected, tableOrders],
+  );
   const routeCreateReasons = useMemo(
     () => getRouteDraftCreateReasons(plannedOrders, locale),
     [locale, plannedOrders],
@@ -593,6 +597,7 @@ export function OrdersPage({
 
   const clearPlan = (): void => {
     setPlannedOrderIds(new Set());
+    setSelected(new Set());
     setError(null);
   };
 
@@ -605,7 +610,7 @@ export function OrdersPage({
   };
 
   const addSelectionToPlan = (): void => {
-    const nextPlanIds = new Set(selected);
+    const nextPlanIds = new Set(selectedVisibleOrderIds);
     setPlannedOrderIds(nextPlanIds);
     const nextPlannedOrders = orderSelectedOrdersByDraft(orders, nextPlanIds);
     const singleDate = getRouteDraftSingleDeliveryDate(nextPlannedOrders);
@@ -655,7 +660,7 @@ export function OrdersPage({
             onChange={changeFilters}
           />
           <OrderTable
-            addPlanDisabled={selected.size === 0}
+            addPlanDisabled={selectedVisibleOrderIds.length === 0}
             customerNoteContextByOrder={customerNoteContextByOrder}
             diagnosticsByOrder={diagnosticsByOrder}
             expandedOrderIds={expandedOrderIds}
@@ -1292,7 +1297,6 @@ export function OrderTable(input: {
                   }
                   type="checkbox"
                 />
-                <span>{t.columns.select}</span>
               </th>
               <th scope="col">{t.columns.order}</th>
               <th scope="col">{t.columns.customer}</th>
@@ -3070,6 +3074,15 @@ function formatRouteDraftTypeLabel(
   return hasMissingRouteType(selectedOrders)
     ? t.routeDraft.missingRequiredShort
     : t.mixed;
+}
+
+export function buildVisibleSelectedOrderIds(
+  visibleOrders: CanonicalOrderDto[],
+  selectedOrderIds: ReadonlySet<string>,
+): string[] {
+  return visibleOrders
+    .filter((order) => selectedOrderIds.has(order.orderId))
+    .map((order) => order.orderId);
 }
 
 export function buildRouteDraftSelection(

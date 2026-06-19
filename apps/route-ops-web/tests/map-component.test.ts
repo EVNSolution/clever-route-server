@@ -28,7 +28,7 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(resolveMapHomePoint(null, null, [outOfAreaOrder])).toBe(outOfAreaOrder);
   });
 
-  test('renders Orders map pins with candidate opacity and sequence label layers', () => {
+  test('renders Orders map pins with candidate opacity without numeric marker text', () => {
     const { layers, map } = createMapStub();
     const collection = buildOrdersMapFeatureCollection([order({ orderId: 'order-1' })], new Map([
       ['order-1', { markerOpacity: 0.5, pinKind: 'candidate', sequence: 1 }]
@@ -53,7 +53,7 @@ describe('RouteOpsMap layer lifecycle', () => {
     });
   });
 
-  test('centers Add plan sequence labels over bottom-anchored order pin images', () => {
+  test('keeps Orders map label layer empty over bottom-anchored order pin images', () => {
     const { layers, map } = createMapStub({ hasPinImages: true });
     const collection = buildOrdersMapFeatureCollection([order({ orderId: 'order-1' })], new Map([
       ['order-1', { markerOpacity: 1, pinKind: 'candidate', sequence: 12 }]

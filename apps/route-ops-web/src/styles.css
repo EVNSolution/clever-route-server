@@ -971,20 +971,15 @@ small,
 }
 .orders-compact-table .orders-select-col,
 .orders-compact-table .orders-select-cell {
-  width: 44px;
+  text-align: center;
+  width: 40px;
 }
-.orders-compact-table .orders-select-col {
-  white-space: nowrap;
-}
-.orders-compact-table .orders-select-col input {
-  height: 14px;
-  margin: 0 6px 0 0;
-  vertical-align: -2px;
-  width: 14px;
-}
+.orders-compact-table .orders-select-col input,
 .orders-compact-table .orders-select-cell input {
   cursor: pointer;
+  display: block;
   height: 16px;
+  margin: 0 auto;
   width: 16px;
 }
 .orders-compact-table .orders-select-cell input:disabled {

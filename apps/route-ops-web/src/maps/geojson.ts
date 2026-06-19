@@ -88,7 +88,7 @@ export function buildOrdersMapFeatureCollection(orders: CanonicalOrderDto[], mar
     features.push({
       geometry: { coordinates: lngLat, type: 'Point' },
       properties: {
-        label: sequence === null ? '' : String(sequence),
+        label: '',
         markerOpacity,
         orderId: order.orderId,
         orderName: order.orderName,

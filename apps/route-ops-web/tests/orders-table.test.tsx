@@ -7,6 +7,7 @@ import {
   buildNextPlanSelection,
   buildOrderMapMarkerStates,
   buildRouteDraftSelection,
+  buildVisibleSelectedOrderIds,
   filterOrdersByRoutePlan,
   getRouteDraftFirstCreateReason,
   getRouteDraftCreateReasons,
@@ -49,7 +50,7 @@ describe("Orders compact operations table", () => {
     expect(html).toContain(
       'aria-label="Select all eligible orders in current workset"',
     );
-    expect(html).toContain("<span>Select</span>");
+    expect(html).not.toContain("<span>Select</span>");
     for (const header of [
       "Order",
       "Customer",
@@ -972,7 +973,7 @@ describe("Orders compact operations table", () => {
       },
     );
 
-    expect(html).toContain("<span>선택</span>");
+    expect(html).not.toContain("<span>선택</span>");
     for (const header of [
       "주문",
       "고객",
@@ -1078,7 +1079,7 @@ describe("Orders compact operations table", () => {
     expect(html).not.toContain("Drag to reorder");
   });
 
-  test("route draft marker numbers follow add-plan order without drag reorder", () => {
+  test("route draft markers keep add-plan order without visible marker numbers", () => {
     const first = orderFixture({ orderId: "first", orderName: "#11453" });
     const second = orderFixture({ orderId: "second", orderName: "#11454" });
     const third = orderFixture({ orderId: "third", orderName: "#11455" });
@@ -1101,8 +1102,27 @@ describe("Orders compact operations table", () => {
     expect(clickedMarkers.get("third")?.sequence).toBe(1);
     expect(clickedMarkers.get("first")?.sequence).toBe(2);
     expect(clickedMarkers.get("second")?.sequence).toBe(3);
+  });
 
-    expect(clickedMarkers.get("second")?.sequence).toBe(3);
+  test("Add Plan only promotes selected orders still visible under the active filters", () => {
+    const delivery = orderFixture({ orderId: "delivery", serviceType: "DELIVERY" });
+    const pickup = orderFixture({ orderId: "pickup", serviceType: "PICKUP" });
+
+    expect(
+      buildVisibleSelectedOrderIds(
+        [delivery],
+        new Set(["delivery", "pickup"]),
+      ),
+    ).toEqual(["delivery"]);
+    expect(
+      buildRouteDraftSelection(
+        [delivery, pickup],
+        new Set(buildVisibleSelectedOrderIds([delivery], new Set(["delivery", "pickup"]))),
+      ),
+    ).toMatchObject({
+      orderIds: ["delivery"],
+      routeType: "delivery",
+    });
   });
 
   test("planned route helpers filter orders by route and build the route detail URL", () => {

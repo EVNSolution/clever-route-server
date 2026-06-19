@@ -22,7 +22,7 @@ describe('route ops map helpers', () => {
 
     expect(collection.features).toHaveLength(3);
     expect(collection.features.map((feature) => [feature.properties.orderId, feature.properties.pinKind, feature.properties.label, feature.properties.markerOpacity])).toEqual([
-      ['ready', 'candidate', '1', 1],
+      ['ready', 'candidate', '', 1],
       ['review', 'review', '', 0.5],
       ['history', 'history', '', 1]
     ]);
