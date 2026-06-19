@@ -282,6 +282,13 @@ describe('route ops layout components', () => {
     expect(orderDatePickerToggleCss).toContain('height: 36px;');
     expect(orderDatePickerToggleCss).toContain('border: 1px solid #d9dee7;');
     expect(css).toContain('.orders-table-scroll');
+    expect(css).toContain('.orders-compact-table th.orders-select-col');
+    expect(css).toContain('.orders-compact-table td.orders-select-cell');
+    expect(css).toContain('.orders-compact-table .orders-select-col input');
+    expect(css).toContain('.orders-compact-table .orders-select-cell input');
+    expect(css).toContain('text-align: center;');
+    expect(css).toContain('height: 16px;');
+    expect(css).toContain('margin: 0 auto;');
   });
 
   test('Route Builder detail CSS syncs map and card height while keeping stop order scroll-contained', () => {
@@ -391,6 +398,10 @@ describe('route ops layout components', () => {
 
   test('Settings CSS keeps responsive settings workspace rules', () => {
     const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+    const inlineCheckCss = extractCssRule(css, '.settings-inline-check');
+    const inlineCheckSpanCss = extractCssRule(css, '.settings-inline-check span');
+    const settingsSelectCss = extractCssRule(css, '.settings-field select');
+
     expect(css).toContain('.settings-workspace');
     expect(css).toContain('.ops-shell--settings');
     expect(css).toContain('.ops-shell--orders');
@@ -398,6 +409,16 @@ describe('route ops layout components', () => {
     expect(css).toContain('@media (max-width: 720px)');
     expect(css).toContain('.settings-modal-backdrop');
     expect(css).toContain('.settings-template-summary-card');
+    expect(inlineCheckCss).toContain('display: grid;');
+    expect(inlineCheckCss).toContain('grid-template-columns: auto minmax(0, 1fr);');
+    expect(inlineCheckCss).toContain('width: 100%;');
+    expect(inlineCheckCss).not.toContain('inline-flex');
+    expect(inlineCheckSpanCss).toContain('overflow-wrap: anywhere;');
+    expect(css).toContain('min-height: 42px;');
+    expect(css).toContain('font-size: 14px;');
+    expect(css).toContain('font-weight: 800;');
+    expect(settingsSelectCss).toContain('appearance: none;');
+    expect(settingsSelectCss).toContain('padding-right: 36px;');
     expect(css).not.toContain('minmax(120px, 0.9fr) minmax(120px, 1fr) minmax(140px, 1.2fr) minmax(140px, 1.2fr) minmax(90px, 0.5fr) auto');
   });
 

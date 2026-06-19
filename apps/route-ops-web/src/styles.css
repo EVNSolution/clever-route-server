@@ -971,16 +971,23 @@ small,
 }
 .orders-compact-table .orders-select-col,
 .orders-compact-table .orders-select-cell {
+  width: 44px;
+}
+.orders-compact-table th.orders-select-col,
+.orders-compact-table td.orders-select-cell {
+  padding-left: 6px;
+  padding-right: 6px;
   text-align: center;
-  width: 40px;
 }
 .orders-compact-table .orders-select-col input,
 .orders-compact-table .orders-select-cell input {
-  cursor: pointer;
   display: block;
   height: 16px;
   margin: 0 auto;
   width: 16px;
+}
+.orders-compact-table .orders-select-cell input {
+  cursor: pointer;
 }
 .orders-compact-table .orders-select-cell input:disabled {
   cursor: not-allowed;
@@ -2164,10 +2171,43 @@ button.danger.subtle {
 
 .settings-field input,
 .settings-field select,
+.settings-field textarea,
 .route-scope-field input {
-  font-size: 12px;
+  background-color: #fff;
+  border: 1px solid #d9dee7;
+  border-radius: 12px;
+  color: #111827;
+  font-size: 14px;
+  font-weight: 800;
   line-height: 1.25;
+  min-height: 42px;
   min-width: 0;
+  padding: 10px 12px;
+  width: 100%;
+}
+
+.settings-field select {
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #64748b 50%),
+    linear-gradient(135deg, #64748b 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) 50%,
+    calc(100% - 13px) 50%;
+  background-repeat: no-repeat;
+  background-size:
+    5px 5px,
+    5px 5px;
+  cursor: pointer;
+  padding-right: 36px;
+}
+
+.settings-field input:focus,
+.settings-field select:focus,
+.settings-field textarea:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+  outline: none;
 }
 
 .settings-field--full,
@@ -2687,10 +2727,24 @@ button.danger.subtle {
 }
 
 .settings-inline-check {
-  align-items: center;
-  display: inline-flex;
+  align-items: start;
+  display: grid;
   gap: 8px;
+  grid-template-columns: auto minmax(0, 1fr);
   font-weight: 700;
+  line-height: 1.35;
+  max-width: 100%;
+  min-width: 0;
+  width: 100%;
+}
+
+.settings-inline-check input {
+  margin-top: 2px;
+}
+
+.settings-inline-check span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .settings-subsection {
