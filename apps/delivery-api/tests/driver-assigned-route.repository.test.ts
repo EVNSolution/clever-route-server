@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaDriverAssignedRouteRepository } from '../src/modules/driver/driver-assigned-route.repository.js';
-import type { RouteGeometryProvider } from '../src/modules/route-plans/route-plan.service.js';
+import { computeRouteShapeSignature } from '../src/modules/route-plans/route-plan-geometry-cache.js';
 
 const routePlanRecord = {
   createdAt: new Date('2026-05-12T06:00:00.000Z'),
@@ -125,32 +125,10 @@ describe('PrismaDriverAssignedRouteRepository', () => {
     });
   });
 
-  test('enriches the assigned route with OSRM geometry, metrics, and safe stop points when configured', async () => {
-    const { prisma } = createPrismaHarness();
-    const routeGeometryProvider = {
-      buildRoute: vi.fn<RouteGeometryProvider['buildRoute']>(() => Promise.resolve({
-        routeGeometry: {
-          type: 'LineString' as const,
-          coordinates: [
-            [-79.3832, 43.6532],
-            [-79.3817, 43.6487]
-          ] as [number, number][]
-        },
-        routeMetrics: { distanceMeters: 980.5, durationSeconds: 420.25 },
-        routeStopPoints: [
-          {
-            deliveryStopId: 'stop-id',
-            inputCoordinates: [-79.3817, 43.6487] as [number, number],
-            name: 'King Street West',
-            sequence: 1,
-            shopifyOrderGid: 'gid://shopify/Order/1001',
-            snapDistanceMeters: 3.5,
-            snappedCoordinates: [-79.3818, 43.6488] as [number, number]
-          }
-        ]
-      }))
-    };
-    const repository = new PrismaDriverAssignedRouteRepository(prisma as never, routeGeometryProvider);
+  test('returns cached route geometry without calling OSRM on assigned-route reads', async () => {
+    const routeGeometryProvider = { buildRoute: vi.fn() };
+    const { prisma } = createPrismaHarness({ routeGeometryCacheFindUnique: cachedGeometryRecord(routePlanRecord) });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
 
     const result = await repository.getAssignedRoute({
       driverId: 'driver-id',
@@ -158,16 +136,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
       shopDomain: 'dev1.tomatonofood.com'
     });
 
-    const providerInput = routeGeometryProvider.buildRoute.mock.calls[0]?.[0];
-    expect(providerInput?.routePlan.depot).toEqual({ latitude: 43.6532, longitude: -79.3832 });
-    expect(providerInput?.routePlan.routeEndMode).toBe('END_AT_LAST_STOP');
-    expect(providerInput?.stops[0]).toEqual(
-      expect.objectContaining({
-        deliveryStopId: 'stop-id',
-        orderId: 'order-id',
-        shopifyOrderGid: 'gid://shopify/Order/1001'
-      })
-    );
+    expect(routeGeometryProvider.buildRoute).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       status: 'ASSIGNED_ROUTE',
       route: {
@@ -193,6 +162,45 @@ describe('PrismaDriverAssignedRouteRepository', () => {
       }
     });
     expect(JSON.stringify(result)).not.toContain('shopifyOrderGid');
+    const routePlanFindArgs = prisma.routePlan.findFirst.mock.calls[0]?.[0] as { include?: Record<string, unknown> } | undefined;
+    expect(routePlanFindArgs?.include).not.toHaveProperty('routeGeometryCaches');
+    const cacheFindArgs = prisma.routePlanGeometryCache.findUnique.mock.calls[0]?.[0] as
+      | { where?: { routePlanId_shapeSignature?: { routePlanId?: unknown; shapeSignature?: unknown } } }
+      | undefined;
+    expect(cacheFindArgs?.where?.routePlanId_shapeSignature?.routePlanId).toBe('route-plan-id');
+    expect(typeof cacheFindArgs?.where?.routePlanId_shapeSignature?.shapeSignature).toBe('string');
+  });
+
+  test('falls back to latest geometry metadata without returning stale line data on assigned-route reads', async () => {
+    const { prisma } = createPrismaHarness({
+      routeGeometryCacheFindFirst: {
+        generatedAt: new Date('2026-05-12T06:31:00.000Z'),
+        provider: 'osrm',
+        providerVersion: null,
+        shapeSignature: 'previous-shape-signature',
+        source: 'CREATE_ROUTE'
+      }
+    });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com'
+    });
+
+    expect(result).toMatchObject({
+      status: 'ASSIGNED_ROUTE',
+      route: {
+        routeGeometry: null,
+        routeMetrics: null,
+        routeStopPoints: []
+      }
+    });
+    expect(prisma.routePlanGeometryCache.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      orderBy: { generatedAt: 'desc' },
+      where: { routePlanId: 'route-plan-id' }
+    }));
   });
 
   test('does not leak a route for a token driver outside the token shop', async () => {
@@ -243,7 +251,89 @@ describe('PrismaDriverAssignedRouteRepository', () => {
   });
 });
 
-function createPrismaHarness(input: { driverShopId?: string; routePlan?: typeof routePlanRecord | null } = {}) {
+
+function cachedGeometryRecord(record: typeof routePlanRecord): Record<string, unknown> {
+  return {
+        generatedAt: new Date('2026-05-12T06:31:00.000Z'),
+        geometry: {
+          type: 'LineString',
+          coordinates: [
+            [-79.3832, 43.6532],
+            [-79.3817, 43.6487]
+          ]
+        },
+        metrics: { distanceMeters: 980.5, durationSeconds: 420.25 },
+        provider: 'osrm',
+        providerVersion: null,
+        shapeSignature: computeRouteShapeSignature({
+          routeGeometry: null,
+          routeMetrics: null,
+          routePlan: {
+            createdAt: record.createdAt.toISOString(),
+            deliveryAreas: [],
+            deliveryDays: [],
+            depot: { latitude: 43.6532, longitude: -79.3832 },
+            id: record.id,
+            itemSummary: { changedSincePublish: false, fingerprint: '', itemTypes: 0, items: [], totalQuantity: 0 },
+            missingCoordinates: 0,
+            name: record.name,
+            planDate: '2026-05-12',
+            routeEndMode: 'END_AT_LAST_STOP',
+            status: record.status,
+            stopsCount: 1,
+            updatedAt: record.updatedAt.toISOString()
+          },
+          routeStopPoints: [],
+          stops: [
+            {
+              address: {
+                address1: '100 King St W',
+                address2: null,
+                city: 'Toronto',
+                countryCode: 'CA',
+                postalCode: 'M5X 1A9',
+                province: 'ON'
+              },
+              attributes: [],
+              coordinates: { latitude: 43.6487, longitude: -79.3817 },
+              deliveryArea: null,
+              deliveryDay: null,
+              deliveryStopId: 'stop-id',
+              financialStatus: 'Cash',
+              fulfillmentStatus: 'PROCESSING',
+              items: [],
+              normalizedPaymentStatus: 'CASH_COLLECT_REQUIRED',
+              orderId: 'order-id',
+              orderName: '#1001',
+              paymentStatus: 'Cash',
+              recipientName: 'Recipient One',
+              sequence: 1,
+              shopifyOrderGid: 'gid://shopify/Order/1001',
+              status: 'ASSIGNED'
+            }
+          ]
+        }),
+        source: 'CREATE_ROUTE',
+        stopPoints: [
+          {
+            deliveryStopId: 'stop-id',
+            inputCoordinates: [-79.3817, 43.6487],
+            name: 'King Street West',
+            sequence: 1,
+            shopifyOrderGid: 'gid://shopify/Order/1001',
+            snapDistanceMeters: 3.5,
+            snappedCoordinates: [-79.3818, 43.6488]
+          }
+        ]
+  };
+}
+
+function createPrismaHarness(input: {
+  driverShopId?: string;
+  routeGeometryCacheFindFirst?: Record<string, unknown> | null;
+  routeGeometryCacheFindUnique?: Record<string, unknown> | null;
+  routePlan?: typeof routePlanRecord | null;
+} = {}) {
   return {
     prisma: {
       driver: {
@@ -253,6 +343,10 @@ function createPrismaHarness(input: { driverShopId?: string; routePlan?: typeof 
         findFirst: vi.fn((args: { where: { id?: string; status?: { in: string[] } } }) =>
           Promise.resolve(args.where.id === 'wrong-route' ? null : input.routePlan === undefined ? routePlanRecord : input.routePlan)
         )
+      },
+      routePlanGeometryCache: {
+        findFirst: vi.fn((args: unknown) => { void args; return Promise.resolve(input.routeGeometryCacheFindFirst ?? null); }),
+        findUnique: vi.fn((args: unknown) => { void args; return Promise.resolve(input.routeGeometryCacheFindUnique ?? null); })
       },
       shop: {
         findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id' }))

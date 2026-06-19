@@ -5229,6 +5229,8 @@ describe("Admin WooCommerce connection UI routes", () => {
         Promise.resolve(routeOptimizationJob({ id: "latest-job-id" })),
       ),
     });
+    const getRoutePlanDetail = vi.fn(() => Promise.resolve(routePlanDetail()));
+    const routePlanExists = vi.fn(() => Promise.resolve(true));
     const { app } = await createUiHarness({
       orderSyncService: {
         listCanonicalOrders: vi.fn(() => Promise.resolve([])),
@@ -5237,7 +5239,8 @@ describe("Admin WooCommerce connection UI routes", () => {
       routePlanService: {
         assignRoutePlanDriver: vi.fn(),
         createRoutePlan: vi.fn(),
-        getRoutePlanDetail: vi.fn(() => Promise.resolve(routePlanDetail())),
+        getRoutePlanDetail,
+        routePlanExists,
         listRoutePlans: vi.fn(() => Promise.resolve([routePlanSummary()])),
         updateRoutePlanStops: vi.fn(),
       },
@@ -5264,6 +5267,12 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(readApiData<{ job: RouteOptimizationJobDto }>(byId).job.id).toBe(
         "job-id",
       );
+      expect(routePlanExists).toHaveBeenCalledTimes(2);
+      expect(routePlanExists).toHaveBeenCalledWith({
+        routePlanId: "route-plan-id",
+        shopDomain: "tenant-a.example.test",
+      });
+      expect(getRoutePlanDetail).not.toHaveBeenCalled();
       expect(routeOptimizationJobService.findLatestJob).toHaveBeenCalledWith({
         routePlanId: "route-plan-id",
         shopDomain: "tenant-a.example.test",
@@ -5275,13 +5284,7 @@ describe("Admin WooCommerce connection UI routes", () => {
       });
       expect(
         routeOptimizationJobService.reconcileStaleActiveJobs,
-      ).toHaveBeenCalledTimes(2);
-      expect(
-        routeOptimizationJobService.reconcileStaleActiveJobs,
-      ).toHaveBeenCalledWith({
-        routePlanId: "route-plan-id",
-        shopDomain: "tenant-a.example.test",
-      });
+      ).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -5295,7 +5298,8 @@ describe("Admin WooCommerce connection UI routes", () => {
       NonNullable<
         AdminCommerceConnectionsUiDependencies["routePlanService"]
       >["getRoutePlanDetail"]
-    >(() => Promise.resolve(null));
+    >(() => Promise.resolve(routePlanDetail()));
+    const routePlanExists = vi.fn(() => Promise.resolve(false));
     const { app } = await createUiHarness({
       orderSyncService: {
         listCanonicalOrders: vi.fn(() => Promise.resolve([])),
@@ -5305,6 +5309,7 @@ describe("Admin WooCommerce connection UI routes", () => {
         assignRoutePlanDriver: vi.fn(),
         createRoutePlan: vi.fn(),
         getRoutePlanDetail,
+        routePlanExists,
         listRoutePlans: vi.fn(() => Promise.resolve([])),
         updateRoutePlanStops: vi.fn(),
       },
@@ -5319,6 +5324,11 @@ describe("Admin WooCommerce connection UI routes", () => {
       });
 
       expect(latest.statusCode).toBe(404);
+      expect(routePlanExists).toHaveBeenCalledWith({
+        routePlanId: "missing-route-id",
+        shopDomain: "tenant-a.example.test",
+      });
+      expect(getRoutePlanDetail).not.toHaveBeenCalled();
       expect(routeOptimizationJobService.findLatestJob).not.toHaveBeenCalled();
     } finally {
       await app.close();

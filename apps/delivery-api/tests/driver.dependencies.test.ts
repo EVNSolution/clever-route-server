@@ -8,11 +8,9 @@ import {
   DEFAULT_DRIVER_PROOF_MEDIA_SCANNER_BACKEND,
   DEFAULT_DRIVER_PROOF_MEDIA_STORAGE_BACKEND,
   loadDriverApiDependencies,
-  loadDriverRouteGeometryProvider,
   loadDriverProofMediaReadAccessPolicy,
   loadDriverProofMediaRetentionPolicy
 } from '../src/modules/driver/driver.dependencies.js';
-import { OsrmRouteGeometryProvider } from '../src/modules/route-plans/osrm-route-geometry.client.js';
 
 describe('loadDriverApiDependencies', () => {
   test('leaves driver API disabled until JWT secret is configured', () => {
@@ -34,17 +32,10 @@ describe('loadDriverApiDependencies', () => {
     expect(dependencies?.driverTokenAccessRepository).toBeDefined();
   });
 
-  test('keeps assigned route OSRM enrichment disabled until an explicit base URL is configured', () => {
-    expect(loadDriverRouteGeometryProvider({})).toBeUndefined();
-  });
-
-  test('wires assigned route OSRM enrichment with driver-scoped runtime config', () => {
+  test('keeps assigned route reads independent from driver OSRM runtime config', () => {
     const dependencies = loadDriverApiDependencies({
       env: {
-        DRIVER_ROUTE_OSRM_BASE_URL: ' https://osrm.internal.example/ ',
-        DRIVER_ROUTE_OSRM_TIMEOUT_MS: '2500',
-        JWT_SECRET: 'driver-secret',
-        OSRM_BASE_URL: 'https://admin-osrm.example'
+        JWT_SECRET: 'driver-secret'
       },
       prisma: {} as PrismaClient
     });
@@ -52,7 +43,7 @@ describe('loadDriverApiDependencies', () => {
     const assignedRouteRepository = dependencies?.driverAssignedRouteService as
       | { routeGeometryProvider?: unknown }
       | undefined;
-    expect(assignedRouteRepository?.routeGeometryProvider).toBeInstanceOf(OsrmRouteGeometryProvider);
+    expect(assignedRouteRepository?.routeGeometryProvider).toBeUndefined();
   });
 
   test('wires route map preview only with an explicit public delivery API origin', () => {
@@ -93,22 +84,6 @@ describe('loadDriverApiDependencies', () => {
       })
     ).toThrow('DELIVERY_API_PUBLIC_URL must be an http(s) origin when DRIVER_ROUTE_MAP_PREVIEW_ENABLED=true');
   });
-
-  test('reuses the admin OSRM base URL for assigned route enrichment when no driver override is configured', () => {
-    expect(loadDriverRouteGeometryProvider({ OSRM_BASE_URL: 'https://osrm.internal.example' })).toBeInstanceOf(
-      OsrmRouteGeometryProvider
-    );
-  });
-
-  test('rejects invalid assigned route OSRM timeout config', () => {
-    expect(() =>
-      loadDriverRouteGeometryProvider({
-        DRIVER_ROUTE_OSRM_BASE_URL: 'https://osrm.internal.example',
-        DRIVER_ROUTE_OSRM_TIMEOUT_MS: '0'
-      })
-    ).toThrow('DRIVER_ROUTE_OSRM_TIMEOUT_MS must be a positive integer');
-  });
-
 
   test('keeps proof media storage/scanner defaults explicit and scanner hooks disabled', () => {
     expect(DEFAULT_DRIVER_PROOF_MEDIA_STORAGE_BACKEND).toBe('local');

@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import {
   ITEM_REVIEW_REASONS,
   aggregateOrderItems,
@@ -37,6 +37,8 @@ import type {
   RoutePlanRouteScopeInput,
   RoutePlanSummary
 } from './route-plan.types.js';
+import { applyCachedRouteGeometry, computeRouteShapeSignature } from './route-plan-geometry-cache.js';
+import type { RouteGeometryCacheRead, RouteGeometryCacheWrite } from './route-plan-geometry-cache.js';
 import type { RoutePlanRepository } from './route-plan.service.js';
 import { readNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
 
@@ -46,8 +48,21 @@ const DEFAULT_ROUTE_END_MODE: RoutePlanEndMode = 'END_AT_LAST_STOP';
 
 type RoutePlanPrismaClient = Pick<
   PrismaClient,
-  '$transaction' | 'deliveryStop' | 'driver' | 'order' | 'orderDeliveryFact' | 'routePlan' | 'routePlanStop' | 'shop'
+  '$transaction' | 'deliveryStop' | 'driver' | 'order' | 'orderDeliveryFact' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'shop'
 >;
+
+type RoutePlanGeometryCacheRecord = {
+  generatedAt: Date;
+  geometry: unknown;
+  metrics: unknown;
+  provider: string;
+  providerVersion: string | null;
+  shapeSignature: string;
+  source: string;
+  stopPoints: unknown;
+};
+
+type RoutePlanGeometryCacheMetadataRecord = Omit<RoutePlanGeometryCacheRecord, 'geometry' | 'metrics' | 'stopPoints'>;
 
 type RoutePlanRecord = {
   createdAt: Date;
@@ -325,7 +340,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       const initialDriverId = routePlan.driverId ?? routePlan.driver?.id ?? null;
       const initialRouteStatus = routePlan.status;
       const initialStopCount = routePlan.routeStops?.length ?? 0;
+      const hasShapePayload = input.payload.routeEndMode !== undefined || input.payload.stops !== undefined;
       const willRepairDraftDepot =
+        hasShapePayload &&
         initialRouteStatus === 'DRAFT' &&
         readDepotFromRoutePlan(routePlan) === null &&
         readDepotFromShopDefaults(shop) !== null;
@@ -366,7 +383,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         }
       }
 
-      routePlan = await repairDraftDepotIfMissingInTransaction(tx, routePlan, shop);
+      if (willRepairDraftDepot) {
+        routePlan = await repairDraftDepotIfMissingInTransaction(tx, routePlan, shop);
+      }
 
       const operations: SaveRoutePlanOperation[] = [];
       let driverId = routePlan.driverId ?? routePlan.driver?.id ?? null;
@@ -593,7 +612,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       }
 
       return {
-        detail: toRoutePlanDetail(updatedRoutePlan),
+        detail: await applyRouteGeometryCache(tx, toRoutePlanDetail(updatedRoutePlan)),
         operations
       };
     });
@@ -838,7 +857,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       ...(input.deliveryDate === undefined ? {} : { planDate: parsePlanDate(input.deliveryDate) })
     };
     const routePlans = await this.prisma.routePlan.findMany({
-      include: routePlanInclude(),
+      include: routePlanSummaryInclude(),
       orderBy: { createdAt: 'desc' },
       where
     });
@@ -867,8 +886,63 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       return null;
     }
 
-    const record = await this.repairDraftDepotIfMissing(routePlan, shop);
-    return toRoutePlanDetail(record);
+    return this.applyRouteGeometryCache(toRoutePlanDetail(routePlan));
+  }
+
+  async routePlanExists(input: {
+    routePlanId: string;
+    shopDomain: string;
+  }): Promise<boolean> {
+    const shop = await this.findShop(input.shopDomain);
+    if (shop === null) {
+      return false;
+    }
+    const routePlan = await this.prisma.routePlan.findFirst({
+      select: { id: true },
+      where: {
+        id: input.routePlanId,
+        shopId: shop.id
+      }
+    });
+    return routePlan !== null;
+  }
+
+  async upsertRouteGeometryCache(input: RouteGeometryCacheWrite): Promise<void> {
+    await this.prisma.routePlanGeometryCache.upsert({
+      create: {
+        generatedAt: input.generatedAt ?? new Date(),
+        geometry: input.geometry === null ? Prisma.JsonNull : toJson(input.geometry),
+        metrics: input.metrics === null ? Prisma.JsonNull : toJson(input.metrics),
+        overview: 'simplified',
+        provider: input.provider,
+        providerVersion: input.providerVersion ?? null,
+        routePlanId: input.routePlanId,
+        shapeSignature: input.shapeSignature,
+        source: input.source,
+        stopPoints: toJson(input.stopPoints)
+      },
+      update: {
+        generatedAt: input.generatedAt ?? new Date(),
+        geometry: input.geometry === null ? Prisma.JsonNull : toJson(input.geometry),
+        metrics: input.metrics === null ? Prisma.JsonNull : toJson(input.metrics),
+        overview: 'simplified',
+        provider: input.provider,
+        providerVersion: input.providerVersion ?? null,
+        shapeSignature: input.shapeSignature,
+        source: input.source,
+        stopPoints: toJson(input.stopPoints)
+      },
+      where: {
+        routePlanId_shapeSignature: {
+          routePlanId: input.routePlanId,
+          shapeSignature: input.shapeSignature
+        }
+      }
+    });
+  }
+
+  private applyRouteGeometryCache(detail: RoutePlanDetail): Promise<RoutePlanDetail> {
+    return applyRouteGeometryCache(this.prisma, detail);
   }
 
   async deleteRoutePlan(input: {
@@ -1225,6 +1299,68 @@ function toRoutePlanDetail(record: RoutePlanRecord): RoutePlanDetail {
     stops: [...(record.routeStops ?? [])]
       .sort((left, right) => left.sequence - right.sequence)
       .map((routeStop) => toRoutePlanDetailStop(routeStop))
+  } satisfies RoutePlanDetail;
+}
+
+type RouteGeometryCacheLookupClient = Pick<RoutePlanPrismaClient, 'routePlanGeometryCache'>;
+
+async function applyRouteGeometryCache(
+  client: RouteGeometryCacheLookupClient,
+  detail: RoutePlanDetail
+): Promise<RoutePlanDetail> {
+  const shapeSignature = computeRouteShapeSignature(detail);
+  const matching = await client.routePlanGeometryCache.findUnique({
+    select: routeGeometryCacheSelect(),
+    where: {
+      routePlanId_shapeSignature: {
+        routePlanId: detail.routePlan.id,
+        shapeSignature
+      }
+    }
+  }) as RoutePlanGeometryCacheRecord | null;
+  if (matching !== null) return applyCachedRouteGeometry(detail, matching);
+
+  const latest = await client.routePlanGeometryCache.findFirst({
+    orderBy: { generatedAt: 'desc' },
+    select: routeGeometryCacheMetadataSelect(),
+    where: { routePlanId: detail.routePlan.id }
+  });
+  return applyCachedRouteGeometry(detail, toStaleRouteGeometryCacheRead(latest));
+}
+
+function routeGeometryCacheSelect() {
+  return {
+    generatedAt: true,
+    geometry: true,
+    metrics: true,
+    provider: true,
+    providerVersion: true,
+    shapeSignature: true,
+    source: true,
+    stopPoints: true
+  } as const;
+}
+
+function routeGeometryCacheMetadataSelect() {
+  return {
+    generatedAt: true,
+    geometry: false,
+    metrics: false,
+    provider: true,
+    providerVersion: true,
+    shapeSignature: true,
+    source: true,
+    stopPoints: false
+  } as const;
+}
+
+function toStaleRouteGeometryCacheRead(record: RoutePlanGeometryCacheMetadataRecord | null): RouteGeometryCacheRead | null {
+  if (record === null) return null;
+  return {
+    ...record,
+    geometry: null,
+    metrics: null,
+    stopPoints: []
   };
 }
 
@@ -1566,6 +1702,40 @@ function routeItemDtosFromRouteStops(routeStops: RoutePlanStopRecord[]): OrderIt
   return routeStops.flatMap((routeStop) =>
     (routeStop.deliveryStop.order.orderItems ?? []).map((item) => toOrderItemDto(item))
   );
+}
+
+function routePlanSummaryInclude() {
+  return {
+    driver: {
+      include: {
+        _count: {
+          select: {
+            driverEvents: true
+          }
+        }
+      }
+    },
+    routeStops: {
+      include: {
+        deliveryStop: {
+          include: {
+            order: {
+              include: {
+                orderItems: {
+                  orderBy: { lineIndex: 'asc' as const }
+                },
+                deliveryCustomerProfileLinks: {
+                  include: { profile: true },
+                  take: 1
+                }
+              }
+            }
+          }
+        }
+      },
+      orderBy: { sequence: 'asc' as const }
+    }
+  };
 }
 
 function routePlanInclude() {

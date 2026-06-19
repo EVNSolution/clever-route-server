@@ -1067,7 +1067,11 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
 
 export function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
   routeGeometry: RoutePlanDetail["routeGeometry"];
+  routeGeometryGeneratedAt: RoutePlanDetail["routeGeometryGeneratedAt"];
+  routeGeometrySource: RoutePlanDetail["routeGeometrySource"];
+  routeGeometryStatus: RoutePlanDetail["routeGeometryStatus"];
   routeMetrics: RoutePlanDetail["routeMetrics"];
+  routeShapeSignature: RoutePlanDetail["routeShapeSignature"];
   routePlan: ReturnType<typeof toRouteOpsRoutePlanDto>;
   routeStopPoints: Array<{
     deliveryStopId: string;
@@ -1096,7 +1100,11 @@ export function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
 } {
   return {
     routeGeometry: detail.routeGeometry,
+    routeGeometryGeneratedAt: detail.routeGeometryGeneratedAt ?? null,
+    routeGeometrySource: detail.routeGeometrySource ?? null,
+    routeGeometryStatus: detail.routeGeometryStatus ?? "missing",
     routeMetrics: detail.routeMetrics,
+    routeShapeSignature: detail.routeShapeSignature,
     routePlan: toRouteOpsRoutePlanDto(detail.routePlan),
     routeStopPoints: detail.routeStopPoints.map((point) => ({
       deliveryStopId: point.deliveryStopId,

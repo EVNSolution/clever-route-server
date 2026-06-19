@@ -22,6 +22,21 @@ describe('route grouping contracts', () => {
     expect(classifyCoordinateInPolygons({ latitude: 0, longitude: 5 }, [first])).toEqual({ status: 'ASSIGNED', polygonIds: ['a'] });
   });
 
+
+  test('refreshes generated child route projections through the explicit snapshot geometry hook', () => {
+    const serviceSource = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const dependencySource = readFileSync(join(process.cwd(), 'src/modules/commerce/admin-commerce-connections.dependencies.ts'), 'utf8');
+
+    expect(serviceSource).toContain('refreshRouteGeometryForRoutePlan');
+    expect(serviceSource).toContain("source: 'SNAPSHOT'");
+    expect(serviceSource).toContain('ROUTE_GROUPING_GEOMETRY_REFRESH_CONCURRENCY');
+    expect(serviceSource).toContain('Promise.allSettled');
+    expect(serviceSource).toContain('logRouteGeometryRefreshFailure');
+    expect(serviceSource).toContain('await this.refreshChildRouteGeometry(projection.childRoutePlanIds, input.shopDomain);');
+    expect(dependencySource).toContain('refreshRouteGeometryForRoutePlan.bind(routePlanDeps.routePlanService)');
+    expect(dependencySource).toContain('readAdminUiRouteGroupingService(input, routeGeometryRefresher)');
+  });
+
   test('fake FCM provider records string-safe route payload fields', async () => {
     const provider = new FakeDriverPushProvider();
     const result = await provider.sendRouteNotification({

@@ -1,5 +1,10 @@
 import { RouteOptimizationJobActiveError } from './route-optimization-job.types.js';
 import type { RouteOptimizationJobDto } from './route-optimization-job.types.js';
+import {
+  computeRouteShapeSignature,
+  withRouteGeometryResult
+} from './route-plan-geometry-cache.js';
+import type { RouteGeometryCacheSource, RouteGeometryCacheWrite } from './route-plan-geometry-cache.js';
 import type {
   CreateRoutePlanInput,
   CreateRoutePlanFromOrderIdsInput,
@@ -48,6 +53,11 @@ export type RoutePlanRepository = {
     routePlanId: string;
     shopDomain: string;
   }): Promise<RoutePlanDetail | null>;
+  routePlanExists?(input: {
+    routePlanId: string;
+    shopDomain: string;
+  }): Promise<boolean>;
+  upsertRouteGeometryCache?(input: RouteGeometryCacheWrite): Promise<void>;
   deleteRoutePlan(input: {
     routePlanId: string;
     shopDomain: string;
@@ -66,8 +76,8 @@ export class RoutePlanAdminService implements RoutePlanService {
     private readonly routeOptimizationJobGuard?: RouteOptimizationJobGuard
   ) {}
 
-  createRoutePlan(input: CreateRoutePlanInput): Promise<RoutePlanSummary> {
-    return this.repository.createRoutePlanDraft({
+  async createRoutePlan(input: CreateRoutePlanInput): Promise<RoutePlanSummary> {
+    const summary = await this.repository.createRoutePlanDraft({
       createdBy: input.createdBy,
       depot: input.payload.depot,
       name: input.payload.name,
@@ -76,13 +86,19 @@ export class RoutePlanAdminService implements RoutePlanService {
       routeScope: input.payload.routeScope,
       shopDomain: input.shopDomain
     });
+    await this.refreshRouteGeometryById({
+      routePlanId: summary.id,
+      shopDomain: input.shopDomain,
+      source: 'CREATE_ROUTE'
+    });
+    return summary;
   }
 
-  createRoutePlanFromOrderIds(input: CreateRoutePlanFromOrderIdsInput): Promise<RoutePlanSummary> {
+  async createRoutePlanFromOrderIds(input: CreateRoutePlanFromOrderIdsInput): Promise<RoutePlanSummary> {
     if (this.repository.createRoutePlanDraftFromOrderIds === undefined) {
       throw new Error('Route creation from selected order ids is not supported by this repository');
     }
-    return this.repository.createRoutePlanDraftFromOrderIds({
+    const summary = await this.repository.createRoutePlanDraftFromOrderIds({
       createdBy: input.createdBy,
       depot: input.payload.depot,
       name: input.payload.name,
@@ -90,17 +106,42 @@ export class RoutePlanAdminService implements RoutePlanService {
       planDate: input.payload.planDate,
       shopDomain: input.shopDomain
     });
+    await this.refreshRouteGeometryById({
+      routePlanId: summary.id,
+      shopDomain: input.shopDomain,
+      source: 'CREATE_ROUTE'
+    });
+    return summary;
   }
 
-  async assignRoutePlanDriver(input: UpdateRoutePlanDriverInput): Promise<RoutePlanDetail | null> {
-    return this.withRouteGeometry(await this.repository.assignRoutePlanDriver(input));
+  assignRoutePlanDriver(input: UpdateRoutePlanDriverInput): Promise<RoutePlanDetail | null> {
+    return this.repository.assignRoutePlanDriver(input);
   }
 
-  async getRoutePlanDetail(input: {
+  getRoutePlanDetail(input: {
     routePlanId: string;
     shopDomain: string;
   }): Promise<RoutePlanDetail | null> {
-    return this.withRouteGeometry(await this.repository.findRoutePlanDetail(input));
+    return this.repository.findRoutePlanDetail(input);
+  }
+
+  async refreshRouteGeometryForRoutePlan(input: {
+    routePlanId: string;
+    shopDomain: string;
+    source?: RouteGeometryCacheSource;
+  }): Promise<RoutePlanDetail | null> {
+    return this.refreshRouteGeometryById({
+      routePlanId: input.routePlanId,
+      shopDomain: input.shopDomain,
+      source: input.source ?? 'EXPLICIT_REFRESH'
+    });
+  }
+
+  routePlanExists(input: { routePlanId: string; shopDomain: string }): Promise<boolean> {
+    if (this.repository.routePlanExists !== undefined) {
+      return this.repository.routePlanExists(input);
+    }
+    return this.repository.findRoutePlanDetail(input).then((detail) => detail !== null);
   }
 
   deleteRoutePlan(input: { routePlanId: string; shopDomain: string }): Promise<{
@@ -114,31 +155,53 @@ export class RoutePlanAdminService implements RoutePlanService {
     return this.repository.listRoutePlans(input);
   }
 
-  async publishRoutePlan(input: PublishRoutePlanInput): Promise<RoutePlanDetail | null> {
-    return this.withRouteGeometry(await this.repository.publishRoutePlan(input));
+  publishRoutePlan(input: PublishRoutePlanInput): Promise<RoutePlanDetail | null> {
+    return this.repository.publishRoutePlan(input);
   }
 
   async saveRoutePlan(input: SaveRoutePlanInput): Promise<SaveRoutePlanResult | null> {
     if (hasRouteMutationPayload(input)) {
       await this.assertNoActiveUserOptimizationJob(input);
     }
+    const shouldCheckShape = hasRouteShapePayload(input);
+    const before = shouldCheckShape ? await this.repository.findRoutePlanDetail(input) : null;
     const saved = await this.repository.saveRoutePlan(input);
     if (saved === null) return null;
-    const enriched = await this.withRouteGeometry(saved.detail);
+    const detail = shouldCheckShape
+      ? await this.refreshRouteGeometryIfShapeChanged({
+          before,
+          after: saved.detail,
+          source: 'SHAPE_MUTATION'
+        })
+      : saved.detail;
     return {
-      detail: enriched ?? saved.detail,
+      detail,
       operations: saved.operations
     };
   }
 
   async updateRoutePlanOptions(input: UpdateRoutePlanOptionsInput): Promise<RoutePlanDetail | null> {
     await this.assertNoActiveUserOptimizationJob(input);
-    return this.withRouteGeometry(await this.repository.updateRoutePlanOptions(input));
+    const before = await this.repository.findRoutePlanDetail(input);
+    const updated = await this.repository.updateRoutePlanOptions(input);
+    if (updated === null) return null;
+    return this.refreshRouteGeometryIfShapeChanged({
+      before,
+      after: updated,
+      source: 'SHAPE_MUTATION'
+    });
   }
 
   async updateRoutePlanStops(input: UpdateRoutePlanStopsInput): Promise<RoutePlanDetail | null> {
     await this.assertNoActiveUserOptimizationJob(input);
-    return this.withRouteGeometry(await this.repository.updateRoutePlanStops(input));
+    const before = await this.repository.findRoutePlanDetail(input);
+    const updated = await this.repository.updateRoutePlanStops(input);
+    if (updated === null) return null;
+    return this.refreshRouteGeometryIfShapeChanged({
+      before,
+      after: updated,
+      source: input.mutationContext?.source === 'route_optimization_job' ? 'OPTIMIZATION_APPLY' : 'SHAPE_MUTATION'
+    });
   }
 
   private async assertNoActiveUserOptimizationJob(
@@ -159,30 +222,73 @@ export class RoutePlanAdminService implements RoutePlanService {
     }
   }
 
-  private async withRouteGeometry(detail: RoutePlanDetail | null): Promise<RoutePlanDetail | null> {
-    if (detail === null || this.routeGeometryProvider === undefined) {
+  private async refreshRouteGeometryById(input: {
+    routePlanId: string;
+    shopDomain: string;
+    source: RouteGeometryCacheSource;
+  }): Promise<RoutePlanDetail | null> {
+    const detail = await this.repository.findRoutePlanDetail({
+      routePlanId: input.routePlanId,
+      shopDomain: input.shopDomain
+    });
+    if (detail === null) return null;
+    return this.refreshRouteGeometry(detail, input.source);
+  }
+
+  private async refreshRouteGeometryIfShapeChanged(input: {
+    before: RoutePlanDetail | null;
+    after: RoutePlanDetail;
+    source: RouteGeometryCacheSource;
+  }): Promise<RoutePlanDetail> {
+    if (input.before !== null && computeRouteShapeSignature(input.before) === computeRouteShapeSignature(input.after)) {
+      return input.after;
+    }
+    return await this.refreshRouteGeometry(input.after, input.source);
+  }
+
+  private async refreshRouteGeometry(detail: RoutePlanDetail, source: RouteGeometryCacheSource): Promise<RoutePlanDetail> {
+    if (this.routeGeometryProvider === undefined) {
       return detail;
     }
 
+    const generatedAt = new Date();
+    const routeResult = await this.buildRouteSafely(detail);
+    if (routeResult === null) {
+      return withRouteGeometryResult(detail, emptyRouteResult(), { generatedAt, source });
+    }
+
+    const shapeSignature = computeRouteShapeSignature(detail);
+    await this.repository.upsertRouteGeometryCache?.({
+      generatedAt,
+      geometry: routeResult.routeGeometry,
+      metrics: routeResult.routeMetrics,
+      provider: 'osrm',
+      providerVersion: null,
+      routePlanId: detail.routePlan.id,
+      shapeSignature,
+      source,
+      stopPoints: routeResult.routeStopPoints
+    });
+    return withRouteGeometryResult(detail, routeResult, { generatedAt, source });
+  }
+
+  private async buildRouteSafely(detail: RoutePlanDetail): Promise<RoutePlanRouteResult | null> {
     try {
-      const routeResult = await this.routeGeometryProvider.buildRoute(detail);
-      return {
-        ...detail,
-        routeGeometry: routeResult.routeGeometry,
-        routeMetrics: routeResult.routeMetrics,
-        routeStopPoints: routeResult.routeStopPoints
-      };
+      return await this.routeGeometryProvider?.buildRoute(detail) ?? emptyRouteResult();
     } catch {
-      return {
-        ...detail,
-        routeGeometry: null,
-        routeMetrics: null,
-        routeStopPoints: []
-      };
+      return null;
     }
   }
 }
 
+function emptyRouteResult(): RoutePlanRouteResult {
+  return { routeGeometry: null, routeMetrics: null, routeStopPoints: [] };
+}
+
 function hasRouteMutationPayload(input: SaveRoutePlanInput): boolean {
   return input.payload.driverId !== undefined || input.payload.routeEndMode !== undefined || input.payload.stops !== undefined;
+}
+
+function hasRouteShapePayload(input: SaveRoutePlanInput): boolean {
+  return input.payload.routeEndMode !== undefined || input.payload.stops !== undefined;
 }

@@ -15,7 +15,8 @@ import type {
   RoutePlanRouteResult,
   RoutePlanRouteStopPoint
 } from '../route-plans/route-plan.types.js';
-import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
+import { applyCachedRouteGeometry, computeRouteShapeSignature } from '../route-plans/route-plan-geometry-cache.js';
+import type { RouteGeometryCacheRead } from '../route-plans/route-plan-geometry-cache.js';
 import { readNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
 import {
   aggregateOrderItems,
@@ -23,7 +24,7 @@ import {
   type OrderItemRecordLike
 } from '../order-items/order-items.js';
 
-type DriverAssignedRoutePrismaClient = Pick<PrismaClient, 'driver' | 'routePlan' | 'shop'>;
+type DriverAssignedRoutePrismaClient = Pick<PrismaClient, 'driver' | 'routePlan' | 'routePlanGeometryCache' | 'shop'>;
 
 type AssignedRoutePlanRecord = {
   createdAt: Date;
@@ -41,6 +42,20 @@ type AssignedRoutePlanRecord = {
   status: string;
   updatedAt: Date;
 };
+
+
+type RoutePlanGeometryCacheRecord = {
+  generatedAt: Date;
+  geometry: unknown;
+  metrics: unknown;
+  provider: string;
+  providerVersion: string | null;
+  shapeSignature: string;
+  source: string;
+  stopPoints: unknown;
+};
+
+type RoutePlanGeometryCacheMetadataRecord = Omit<RoutePlanGeometryCacheRecord, 'geometry' | 'metrics' | 'stopPoints'>;
 
 type AssignedRoutePlanStopRecord = {
   deliveryStop: {
@@ -96,10 +111,7 @@ const assignedRouteInclude = {
 } as const;
 
 export class PrismaDriverAssignedRouteRepository {
-  constructor(
-    private readonly prisma: DriverAssignedRoutePrismaClient,
-    private readonly routeGeometryProvider?: RouteGeometryProvider
-  ) {}
+  constructor(private readonly prisma: DriverAssignedRoutePrismaClient) {}
 
   async getAssignedRoute(input: DriverAssignedRouteInput): Promise<DriverAssignedRouteResult> {
     const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
@@ -128,20 +140,88 @@ export class PrismaDriverAssignedRouteRepository {
       return { status: 'NO_ASSIGNED_ROUTE' };
     }
 
-    return toAssignedRouteResult(routePlan, await this.buildRouteResult(routePlan));
+    return toAssignedRouteResult(routePlan, await this.readCachedRouteResult(routePlan));
   }
 
-  private async buildRouteResult(routePlan: AssignedRoutePlanRecord): Promise<RoutePlanRouteResult> {
-    if (this.routeGeometryProvider === undefined) {
-      return emptyRouteResult();
-    }
-
-    try {
-      return await this.routeGeometryProvider.buildRoute(toRoutePlanDetailForRouting(routePlan));
-    } catch {
-      return emptyRouteResult();
-    }
+  private readCachedRouteResult(routePlan: AssignedRoutePlanRecord): Promise<RoutePlanRouteResult> {
+    return readCachedRouteResult(this.prisma, routePlan);
   }
+}
+
+async function readCachedRouteResult(
+  client: Pick<DriverAssignedRoutePrismaClient, 'routePlanGeometryCache'>,
+  routePlan: AssignedRoutePlanRecord
+): Promise<RoutePlanRouteResult> {
+  const detail = toRoutePlanDetailForCache(routePlan);
+  const cachedDetail = applyCachedRouteGeometry(
+    detail,
+    await readMatchingRouteGeometryCache(client, detail)
+  );
+  return {
+    routeGeometry: cachedDetail.routeGeometry,
+    routeMetrics: cachedDetail.routeMetrics,
+    routeStopPoints: cachedDetail.routeStopPoints
+  };
+}
+
+async function readMatchingRouteGeometryCache(
+  client: Pick<DriverAssignedRoutePrismaClient, 'routePlanGeometryCache'>,
+  detail: RoutePlanDetail
+): Promise<RouteGeometryCacheRead | null> {
+  const shapeSignature = computeRouteShapeSignature(detail);
+  const matching = await client.routePlanGeometryCache.findUnique({
+    select: routeGeometryCacheSelect(),
+    where: {
+      routePlanId_shapeSignature: {
+        routePlanId: detail.routePlan.id,
+        shapeSignature
+      }
+    }
+  }) as RoutePlanGeometryCacheRecord | null;
+  if (matching !== null) return matching;
+
+  const latest = await client.routePlanGeometryCache.findFirst({
+    orderBy: { generatedAt: 'desc' },
+    select: routeGeometryCacheMetadataSelect(),
+    where: { routePlanId: detail.routePlan.id }
+  });
+  return toStaleRouteGeometryCacheRead(latest);
+}
+
+function routeGeometryCacheSelect() {
+  return {
+    generatedAt: true,
+    geometry: true,
+    metrics: true,
+    provider: true,
+    providerVersion: true,
+    shapeSignature: true,
+    source: true,
+    stopPoints: true
+  } as const;
+}
+
+function routeGeometryCacheMetadataSelect() {
+  return {
+    generatedAt: true,
+    geometry: false,
+    metrics: false,
+    provider: true,
+    providerVersion: true,
+    shapeSignature: true,
+    source: true,
+    stopPoints: false
+  } as const;
+}
+
+function toStaleRouteGeometryCacheRead(record: RoutePlanGeometryCacheMetadataRecord | null): RouteGeometryCacheRead | null {
+  if (record === null) return null;
+  return {
+    ...record,
+    geometry: null,
+    metrics: null,
+    stopPoints: []
+  };
 }
 
 function toAssignedRouteResult(
@@ -167,7 +247,7 @@ function toAssignedRouteResult(
   };
 }
 
-function toRoutePlanDetailForRouting(routePlan: AssignedRoutePlanRecord): RoutePlanDetail {
+function toRoutePlanDetailForCache(routePlan: AssignedRoutePlanRecord): RoutePlanDetail {
   const sortedStops = [...routePlan.routeStops].sort((left, right) => left.sequence - right.sequence);
   const itemSummary = aggregateOrderItems(routeItemDtosFromStops(sortedStops));
   return {

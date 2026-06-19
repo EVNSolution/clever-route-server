@@ -149,6 +149,14 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     return undefined;
   }
 
+  const routePlanDeps = readAdminUiRoutePlanService(input);
+  const routeGeometryRefresher = routePlanDeps.routePlanService?.refreshRouteGeometryForRoutePlan === undefined
+    ? undefined
+    : {
+        refreshRouteGeometryForRoutePlan:
+          routePlanDeps.routePlanService.refreshRouteGeometryForRoutePlan.bind(routePlanDeps.routePlanService)
+      };
+
   return {
     actor: {
       allowedShopDomains: parseAllowedShopDomains(input.env.CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS),
@@ -168,8 +176,8 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     ...readAdminUiWooSyncService(input),
     ...(driverAppDownloadUrl === undefined ? {} : { driverAppDownloadUrl }),
     ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
-    ...readAdminUiRoutePlanService(input),
-    ...readAdminUiRouteGroupingService(input),
+    ...routePlanDeps,
+    ...readAdminUiRouteGroupingService(input, routeGeometryRefresher),
     secureCookies: input.nodeEnv !== 'development' && input.nodeEnv !== 'test',
     sessionSecret,
     ...readAdminUiSettingsService(input)
@@ -384,15 +392,19 @@ function readAdminUiRoutePlanService(input: {
 }
 
 
-function readAdminUiRouteGroupingService(input: {
-  env: AdminCommerceConnectionsRuntimeEnv;
-  prisma?: PrismaClient | undefined;
-}): Pick<AdminCommerceConnectionsUiDependencies, 'routeGroupingService'> {
+function readAdminUiRouteGroupingService(
+  input: {
+    env: AdminCommerceConnectionsRuntimeEnv;
+    prisma?: PrismaClient | undefined;
+  },
+  routeGeometryRefresher?: ConstructorParameters<typeof PrismaRouteGroupingService>[2]
+): Pick<AdminCommerceConnectionsUiDependencies, 'routeGroupingService'> {
   if (input.prisma === undefined) return {};
   return {
     routeGroupingService: new PrismaRouteGroupingService(
       input.prisma,
       loadDriverPushProvider(input.env),
+      routeGeometryRefresher,
     ),
   };
 }

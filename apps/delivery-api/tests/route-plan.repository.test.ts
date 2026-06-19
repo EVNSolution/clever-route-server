@@ -90,31 +90,25 @@ describe('PrismaRoutePlanRepository', () => {
         }
       })
     );
+    const routePlanFindArgs = prisma.routePlan.findFirst.mock.calls[0]?.[0] as { include?: Record<string, unknown> } | undefined;
+    expect(routePlanFindArgs?.include).not.toHaveProperty('routeGeometryCaches');
+    const cacheFindArgs = prisma.routePlanGeometryCache.findUnique.mock.calls[0]?.[0] as
+      | { where?: { routePlanId_shapeSignature?: { routePlanId?: unknown; shapeSignature?: unknown } } }
+      | undefined;
+    expect(cacheFindArgs?.where?.routePlanId_shapeSignature?.routePlanId).toBe('route-plan-id');
+    expect(typeof cacheFindArgs?.where?.routePlanId_shapeSignature?.shapeSignature).toBe('string');
   });
 
-  test('returns a fresh route version token after draft depot auto-repair', async () => {
-    const staleRoute = {
-      ...routePlanRecord({ updatedAt: new Date('2026-05-07T12:30:00.000Z') }),
-      depotLatitude: null,
-      depotLongitude: null
-    };
-    const repairedRoute = {
-      ...staleRoute,
-      depotLatitude: '43.6532',
-      depotLongitude: '-79.3832',
-      updatedAt: new Date('2026-05-07T12:31:00.000Z')
-    };
+  test('marks route geometry stale from metadata without overfetching cached geometry rows', async () => {
     const { prisma } = createPrismaHarness({
-      shop: {
-        defaultDepotAddress: 'Store depot',
-        defaultDepotLatitude: '43.6532',
-        defaultDepotLongitude: '-79.3832',
-        id: 'shop-id'
+      routeGeometryCacheFindFirst: {
+        generatedAt: new Date('2026-05-07T13:00:00.000Z'),
+        provider: 'osrm',
+        providerVersion: null,
+        shapeSignature: 'previous-shape-signature',
+        source: 'CREATE_ROUTE'
       }
     });
-    prisma.routePlan.findFirst
-      .mockResolvedValueOnce(staleRoute)
-      .mockResolvedValueOnce(repairedRoute);
     const repository = new PrismaRoutePlanRepository(
       prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
     );
@@ -124,13 +118,43 @@ describe('PrismaRoutePlanRepository', () => {
       shopDomain: 'example.myshopify.com'
     });
 
-    expect(prisma.routePlan.update).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: 'route-plan-id' }
+    expect(result?.routeGeometryStatus).toBe('stale');
+    expect(result?.routeGeometryGeneratedAt).toBe('2026-05-07T13:00:00.000Z');
+    expect(result?.routeGeometry).toBeNull();
+    expect(prisma.routePlanGeometryCache.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      orderBy: { generatedAt: 'desc' },
+      where: { routePlanId: 'route-plan-id' }
     }));
-    expect(prisma.routePlan.findFirst).toHaveBeenLastCalledWith(expect.objectContaining({
-      where: { id: 'route-plan-id', shopId: 'shop-id' }
-    }));
-    expect(result?.routePlan.updatedAt).toBe('2026-05-07T12:31:00.000Z');
+  });
+
+  test('does not repair a draft depot while reading route detail', async () => {
+    const staleRoute = {
+      ...routePlanRecord({ updatedAt: new Date('2026-05-07T12:30:00.000Z') }),
+      depotLatitude: null,
+      depotLongitude: null
+    };
+    const { prisma } = createPrismaHarness({
+      shop: {
+        defaultDepotAddress: 'Store depot',
+        defaultDepotLatitude: '43.6532',
+        defaultDepotLongitude: '-79.3832',
+        id: 'shop-id'
+      }
+    });
+    prisma.routePlan.findFirst.mockResolvedValueOnce(staleRoute);
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.findRoutePlanDetail({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(prisma.routePlan.update).not.toHaveBeenCalled();
+    expect(prisma.routePlan.findFirst).toHaveBeenCalledTimes(1);
+    expect(result?.routePlan.updatedAt).toBe('2026-05-07T12:30:00.000Z');
+    expect(result?.routePlan.depot).toEqual({ latitude: null, longitude: null });
   });
 
   test('filters listed route plans by the selected delivery date at the database boundary', async () => {
@@ -772,7 +796,7 @@ describe('PrismaRoutePlanRepository', () => {
     expect(detail?.routePlan.driver?.recentEventsCount).toBe(3);
   });
 
-  test('repairs a draft route missing depot coordinates from store settings when detail is opened', async () => {
+  test('leaves a draft route missing depot coordinates unchanged when detail is opened', async () => {
     const { prisma } = createPrismaHarness({
       routePlanFindFirst: {
         createdAt: new Date('2026-05-07T12:30:00.000Z'),
@@ -808,25 +832,8 @@ describe('PrismaRoutePlanRepository', () => {
       shopDomain: 'example.myshopify.com'
     });
 
-    expect(detail?.routePlan.depot).toEqual({ latitude: 43.76393, longitude: -79.476 });
-    expect(prisma.routePlan.update).toHaveBeenCalledWith({
-      data: {
-        constraints: {
-          depot: {
-            address: '4475 Chesswood Dr North York, ON M3J 2C3',
-            latitude: 43.76393,
-            longitude: -79.476
-          },
-          optimizer: 'manual-sequence-mvp',
-          routeEndMode: 'END_AT_LAST_STOP',
-          routeScope: null,
-          sequenceSource: 'request-order'
-        },
-        depotLatitude: '43.76393',
-        depotLongitude: '-79.476'
-      },
-      where: { id: 'route-plan-id' }
-    });
+    expect(detail?.routePlan.depot).toEqual({ latitude: null, longitude: null });
+    expect(prisma.routePlan.update).not.toHaveBeenCalled();
   });
 
   test('saves return-to-depot route mode in draft route constraints', async () => {
@@ -1286,6 +1293,8 @@ function createPrismaHarness(input: {
   existingRoutePlanStops?: Array<{ deliveryStopId: string }>;
   orderDeliveryDate?: string;
   orders?: Array<Record<string, unknown>>;
+  routeGeometryCacheFindFirst?: Record<string, unknown> | null;
+  routeGeometryCacheFindUnique?: Record<string, unknown> | null;
   routePlanFindFirst?: Record<string, unknown> | null;
   routePlanToDelete?: { id: string } | null;
   shop?: Record<string, unknown> | null;
@@ -1313,6 +1322,11 @@ function createPrismaHarness(input: {
       delete: ReturnType<typeof vi.fn>;
       update: ReturnType<typeof vi.fn>;
       updateMany: ReturnType<typeof vi.fn>;
+    };
+    routePlanGeometryCache: {
+      findFirst: ReturnType<typeof vi.fn>;
+      findUnique: ReturnType<typeof vi.fn>;
+      upsert: ReturnType<typeof vi.fn>;
     };
     routePlanStop: {
       createMany: ReturnType<typeof vi.fn>;
@@ -1432,6 +1446,11 @@ function createPrismaHarness(input: {
           updatedAt: new Date('2026-05-07T12:30:00.000Z')
         })
       )
+    },
+    routePlanGeometryCache: {
+      findFirst: vi.fn((args: unknown) => { void args; return Promise.resolve(input.routeGeometryCacheFindFirst ?? null); }),
+      findUnique: vi.fn((args: unknown) => { void args; return Promise.resolve(input.routeGeometryCacheFindUnique ?? null); }),
+      upsert: vi.fn((args: unknown) => { void args; return Promise.resolve({ id: 'route-geometry-cache-id' }); })
     },
     routePlanStop: {
       createMany: routePlanStopCreateMany,

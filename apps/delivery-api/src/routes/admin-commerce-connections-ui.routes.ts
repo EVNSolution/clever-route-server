@@ -470,6 +470,7 @@ export type AdminCommerceConnectionsUiDependencies = {
     | "createRoutePlan"
     | "createRoutePlanFromOrderIds"
     | "getRoutePlanDetail"
+    | "routePlanExists"
     | "listRoutePlans"
     | "saveRoutePlan"
     | "updateRoutePlanStops"
@@ -477,7 +478,7 @@ export type AdminCommerceConnectionsUiDependencies = {
     Partial<
       Pick<
         RoutePlanService,
-        "deleteRoutePlan" | "publishRoutePlan" | "updateRoutePlanOptions"
+        "deleteRoutePlan" | "publishRoutePlan" | "refreshRouteGeometryForRoutePlan" | "updateRoutePlanOptions"
       >
     >;
   secureCookies: boolean;
@@ -2620,10 +2621,6 @@ function registerRouteOpsAppRoutes(
             services,
             shopDomain,
           });
-          await jobService.reconcileStaleActiveJobs({
-            routePlanId: request.params.routePlanId,
-            shopDomain,
-          });
           const job = await jobService.findLatestJob({
             routePlanId: request.params.routePlanId,
             shopDomain,
@@ -2647,10 +2644,6 @@ function registerRouteOpsAppRoutes(
           await assertRoutePlanExistsForOptimizationRead({
             routePlanId: request.params.routePlanId,
             services,
-            shopDomain,
-          });
-          await jobService.reconcileStaleActiveJobs({
-            routePlanId: request.params.routePlanId,
             shopDomain,
           });
           const job = await jobService.findJob({
@@ -4462,11 +4455,16 @@ async function assertRoutePlanExistsForOptimizationRead(input: {
   services: RouteUiServices;
   shopDomain: string;
 }): Promise<void> {
-  const detail = await input.services.routePlanService.getRoutePlanDetail({
-    routePlanId: input.routePlanId,
-    shopDomain: input.shopDomain,
-  });
-  if (detail === null) {
+  const exists = input.services.routePlanService.routePlanExists === undefined
+    ? await input.services.routePlanService.getRoutePlanDetail({
+        routePlanId: input.routePlanId,
+        shopDomain: input.shopDomain,
+      }).then((detail) => detail !== null)
+    : await input.services.routePlanService.routePlanExists({
+        routePlanId: input.routePlanId,
+        shopDomain: input.shopDomain,
+      });
+  if (!exists) {
     throw new WooCommerceOnboardingError(
       "NOT_FOUND",
       "Route plan not found",

@@ -32,7 +32,7 @@ describe('OsrmRouteGeometryProvider', () => {
     expect(() => new OsrmRouteGeometryProvider({ baseUrl: '' })).toThrow('OSRM base URL must be configured explicitly.');
   });
 
-  test('requests a full GeoJSON route through depot and ordered stops', async () => {
+  test('requests a simplified GeoJSON route through depot and ordered stops', async () => {
     const fetch = vi.fn().mockResolvedValue(Response.json(routeOkPayload()));
     const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
 
@@ -45,7 +45,7 @@ describe('OsrmRouteGeometryProvider', () => {
     });
 
     expect(fetch).toHaveBeenCalledWith(
-      'https://osrm.example/route/v1/driving/-79.3832,43.6532;-79.2571,43.7764;-79.337,43.8561?overview=full&geometries=geojson&steps=false',
+      'https://osrm.example/route/v1/driving/-79.3832,43.6532;-79.2571,43.7764;-79.337,43.8561?overview=simplified&geometries=geojson&steps=false',
       expect.objectContaining({ method: 'GET' })
     );
     const requestedUrl = String(fetch.mock.calls[0]?.[0] ?? '');
@@ -168,7 +168,7 @@ describe('OsrmRouteGeometryProvider', () => {
     });
 
     expect(fetch).toHaveBeenCalledWith(
-      'https://osrm.example/route/v1/driving/-79.3832,43.6532;-79.2571,43.7764;-79.337,43.8561;-79.3832,43.6532?overview=full&geometries=geojson&steps=false',
+      'https://osrm.example/route/v1/driving/-79.3832,43.6532;-79.2571,43.7764;-79.337,43.8561;-79.3832,43.6532?overview=simplified&geometries=geojson&steps=false',
       expect.objectContaining({ method: 'GET' })
     );
     expect(result.routeStopPoints).toHaveLength(2);
@@ -229,22 +229,20 @@ describe('OsrmRouteGeometryProvider', () => {
     ]);
   });
 
-  test('returns null geometry and no stop points when OSRM fails', async () => {
+  test('rejects when OSRM fails', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 502 }));
     const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
 
-    const result = await provider.buildRoute({
+    await expect(provider.buildRoute({
       routePlan: detail.routePlan,
       routeGeometry: null,
       routeMetrics: null,
       routeStopPoints: [],
       stops: detail.stops
-    });
-
-    expect(result).toEqual({ routeGeometry: null, routeMetrics: null, routeStopPoints: [] });
+    })).rejects.toThrow('OSRM route request failed with HTTP 502');
   });
 
-  test('returns null geometry and no stop points for invalid OSRM payloads', async () => {
+  test('rejects for invalid OSRM payloads', async () => {
     const invalidPayloads = [
       { code: 'Ok', routes: [] },
       { code: 'Ok', routes: [{ geometry: { type: 'Point', coordinates: [-79.3, 43.6] } }] },
@@ -256,18 +254,18 @@ describe('OsrmRouteGeometryProvider', () => {
       const fetch = vi.fn().mockResolvedValue(Response.json(payload));
       const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
 
-      await expect(provider.buildRoute(detail)).resolves.toEqual({ routeGeometry: null, routeMetrics: null, routeStopPoints: [] });
+      await expect(provider.buildRoute(detail)).rejects.toThrow(/OSRM route response/u);
     }
   });
 
-  test('returns null geometry and no stop points when the OSRM provider rejects', async () => {
+  test('rejects when the OSRM provider rejects', async () => {
     const fetch = vi.fn().mockRejectedValue(new Error('connect ECONNREFUSED'));
     const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
 
-    await expect(provider.buildRoute(detail)).resolves.toEqual({ routeGeometry: null, routeMetrics: null, routeStopPoints: [] });
+    await expect(provider.buildRoute(detail)).rejects.toThrow('connect ECONNREFUSED');
   });
 
-  test('aborts slow OSRM requests and returns null geometry', async () => {
+  test('aborts slow OSRM requests and rejects', async () => {
     vi.useFakeTimers();
     const fetch = vi.fn(
       (_url: string, init: { method: 'GET'; signal?: AbortSignal }) =>
@@ -279,8 +277,9 @@ describe('OsrmRouteGeometryProvider', () => {
 
     try {
       const resultPromise = provider.buildRoute(detail);
+      const assertion = expect(resultPromise).rejects.toThrow('aborted');
       await vi.advanceTimersByTimeAsync(1000);
-      await expect(resultPromise).resolves.toEqual({ routeGeometry: null, routeMetrics: null, routeStopPoints: [] });
+      await assertion;
       expect(fetch.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
     } finally {
       vi.useRealTimers();

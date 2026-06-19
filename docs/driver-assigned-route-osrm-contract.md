@@ -1,18 +1,22 @@
-# Driver Assigned Route OSRM Contract
+# Driver Assigned Route Geometry Contract
 
-Date: 2026-06-04  
+Date: 2026-06-19
 Scope: `GET /driver/assigned-route` additive route guidance fields for the driver app.
 
 ## Runtime configuration
 
-- `DRIVER_ROUTE_OSRM_BASE_URL`: preferred driver-assigned-route OSRM base URL.
-- `OSRM_BASE_URL`: fallback shared OSRM base URL when the driver-specific value is absent.
-- `DRIVER_ROUTE_OSRM_TIMEOUT_MS`: optional positive integer timeout in milliseconds.
-- No public router fallback is allowed. If no explicit base URL is configured, route guidance fields remain safe fallbacks.
+Driver assigned-route reads do **not** call OSRM/VROOM. The response may include route guidance fields only from the persisted route geometry cache produced by explicit route work:
+
+- route creation
+- shape-changing route mutation
+- optimization/snapshot apply
+- explicit or scheduled geometry refresh
+
+`DRIVER_ROUTE_OSRM_BASE_URL` and `DRIVER_ROUTE_OSRM_TIMEOUT_MS` are no longer used by assigned-route reads. `OSRM_BASE_URL` belongs to explicit admin/route geometry generation only.
 
 ## Response shape
 
-When `status` is `ASSIGNED_ROUTE`, the `route` object includes these additive fields:
+When `status` is `ASSIGNED_ROUTE`, the `route` object includes these additive fields when a fresh cache entry exists:
 
 ```json
 {
@@ -31,7 +35,7 @@ When `status` is `ASSIGNED_ROUTE`, the `route` object includes these additive fi
 }
 ```
 
-Fallback behavior:
+Fallback behavior for missing/stale/unavailable cache:
 
 ```json
 {
@@ -43,16 +47,17 @@ Fallback behavior:
 
 ## Units and provenance
 
-- `routeGeometry`: OSRM route GeoJSON `LineString` coordinates in `[longitude, latitude]` order.
-- `routeMetrics.distanceMeters`: OSRM `routes[0].distance`, in meters.
-- `routeMetrics.durationSeconds`: OSRM `routes[0].duration`, in seconds.
-- `routeStopPoints[].snapDistanceMeters`: OSRM waypoint snap distance, in meters.
+- `routeGeometry`: cached route GeoJSON `LineString` coordinates in `[longitude, latitude]` order.
+- `routeMetrics.distanceMeters`: route distance in meters.
+- `routeMetrics.durationSeconds`: route duration in seconds.
+- `routeStopPoints[].snapDistanceMeters`: waypoint snap distance in meters.
 
 ## Safety constraints
 
 - The driver route response must stay scoped to the authenticated driver and route context.
 - `routeStopPoints` intentionally omits `shopifyOrderGid` from the driver-facing contract.
-- OSRM errors, invalid payloads, missing coordinates, or timeouts must not fail the assigned-route read.
+- Missing/stale/unavailable geometry must not fail the assigned-route read.
+- Assigned-route reads must not generate geometry, mutate route/depot state, or call public routers.
 - Do not add admin backdoors, auth bypasses, sample token loaders, payment/order creation, or automatic deployment behavior as part of this contract.
 
 ## Verification anchors
@@ -60,4 +65,5 @@ Fallback behavior:
 - OSRM parser/unit tests: `tests/osrm-route-geometry.client.test.ts`
 - Driver assigned-route repository tests: `tests/driver-assigned-route.repository.test.ts`
 - Driver runtime config tests: `tests/driver.dependencies.test.ts`
+- Route geometry policy docs: `docs/deployment/route-ops-osrm-geometry-policy.md`
 - App contract/legacy parser tests: `src/domain/route/assignedRoute.test.ts` in `clever-driver-app`

@@ -16,8 +16,6 @@ import {
 import type { DriverProofMediaStorageBackend } from './driver-proof-media.repository.js';
 import type { DriverProofMediaScanMonitor, DriverProofMediaScanner } from './driver-proof-media.types.js';
 import type { DriverApiDependencies } from '../../routes/driver-events.routes.js';
-import { OsrmRouteGeometryProvider } from '../route-plans/osrm-route-geometry.client.js';
-import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
 import {
   DEFAULT_DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS,
   DriverRouteMapPreviewService
@@ -48,14 +46,11 @@ export type DriverApiRuntimeEnv = Partial<Record<
   | 'DRIVER_PROOF_MEDIA_SCANNER_URL'
   | 'DRIVER_PROOF_MEDIA_STORAGE_BACKEND'
   | 'DRIVER_PROOF_MEDIA_STORAGE_DIR'
-  | 'DRIVER_ROUTE_OSRM_BASE_URL'
   | 'DRIVER_ROUTE_MAP_PREVIEW_ENABLED'
   | 'DRIVER_ROUTE_MAP_PREVIEW_SECRET'
   | 'DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS'
-  | 'DRIVER_ROUTE_OSRM_TIMEOUT_MS'
   | 'DELIVERY_API_PUBLIC_URL'
-  | 'JWT_SECRET'
-  | 'OSRM_BASE_URL',
+  | 'JWT_SECRET',
   string
 >>;
 
@@ -92,10 +87,7 @@ export function loadDriverApiDependencies(
   const proofMediaStorageOptions = loadDriverProofMediaRepositoryStorageOptions(input.env);
   const proofMediaSafetyOptions = loadDriverProofMediaRepositorySafetyOptions(input.env);
 
-  const driverAssignedRouteService = new PrismaDriverAssignedRouteRepository(
-    input.prisma,
-    loadDriverRouteGeometryProvider(input.env)
-  );
+  const driverAssignedRouteService = new PrismaDriverAssignedRouteRepository(input.prisma);
   const driverRouteMapPreview = loadDriverRouteMapPreviewService({
     assignedRouteService: driverAssignedRouteService,
     env: input.env,
@@ -123,22 +115,6 @@ export function loadDriverApiDependencies(
     }),
     routeAccessService: new PrismaDriverRouteAccessRepository(input.prisma)
   };
-}
-
-export function loadDriverRouteGeometryProvider(env: DriverApiRuntimeEnv): RouteGeometryProvider | undefined {
-  const baseUrl = readOptional(env.DRIVER_ROUTE_OSRM_BASE_URL) ?? readOptional(env.OSRM_BASE_URL);
-  if (baseUrl === undefined) {
-    return undefined;
-  }
-
-  const timeoutMs = readOptionalPositiveInteger(
-    env.DRIVER_ROUTE_OSRM_TIMEOUT_MS,
-    'DRIVER_ROUTE_OSRM_TIMEOUT_MS'
-  );
-  return new OsrmRouteGeometryProvider({
-    baseUrl,
-    ...(timeoutMs === undefined ? {} : { timeoutMs })
-  });
 }
 
 function loadDriverRouteMapPreviewService(input: {

@@ -765,10 +765,33 @@ model RoutePlan {
   driverRouteFeedback             DriverRouteFeedback[]
   routeGroupingChildVersions      RouteGroupingChildVersion[]
   driverRouteNotificationAttempts DriverRouteNotificationAttempt[]
+  routeGeometryCaches             RoutePlanGeometryCache[]
 
   @@index([shopId, planDate, status])
   @@index([shopId, driverId, status])
   @@map("route_plans")
+}
+
+
+model RoutePlanGeometryCache {
+  id              String    @id @default(uuid()) @db.Uuid
+  routePlanId     String    @db.Uuid
+  routePlan       RoutePlan @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
+  shapeSignature  String    @db.Text
+  geometry        Json?
+  metrics         Json?
+  stopPoints      Json
+  provider        String    @db.Text
+  providerVersion String?   @db.Text
+  overview        String    @default("simplified") @db.Text
+  source          String    @db.Text
+  generatedAt     DateTime  @default(now()) @db.Timestamptz(6)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+
+  @@unique([routePlanId, shapeSignature])
+  @@index([shapeSignature])
+  @@map("route_plan_geometry_caches")
 }
 
 model RouteOptimizationJob {

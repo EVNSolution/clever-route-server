@@ -236,6 +236,10 @@ export type RoutePlanDetailDto = {
     coordinates: Array<[number, number]>;
     type: "LineString";
   } | null;
+  routeGeometryGeneratedAt?: string | null;
+  routeGeometrySource?: string | null;
+  routeGeometryStatus?: "fresh" | "missing" | "stale" | "unavailable";
+  routeShapeSignature?: string;
   routePlan: RoutePlanSummaryDto;
   routeStopPoints: Array<{
     deliveryStopId: string;

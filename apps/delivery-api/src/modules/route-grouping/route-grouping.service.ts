@@ -24,6 +24,7 @@ import {
 import { hashPushToken } from './driver-push-token.service.js';
 
 const OPTIMIZER_VERSION = 'route-grouping-projection-v1';
+const ROUTE_GROUPING_GEOMETRY_REFRESH_CONCURRENCY = 2;
 
 type RouteGroupingPrismaClient = Pick<
   PrismaClient,
@@ -58,10 +59,24 @@ type ChildSnapshot = {
   stops: Array<{ deliveryStopId: string; orderId: string; sequence: number; sourceOrderId: string }>;
 };
 
+type RouteGroupingRouteGeometryRefresher = {
+  refreshRouteGeometryForRoutePlan(input: {
+    routePlanId: string;
+    shopDomain: string;
+    source: 'SNAPSHOT';
+  }): Promise<unknown>;
+};
+
+type ChildRouteProjectionResult = {
+  childRoutePlanIds: string[];
+  groupingId: string;
+};
+
 export class PrismaRouteGroupingService implements RouteGroupingService {
   constructor(
     private readonly prisma: RouteGroupingPrismaClient,
-    private readonly pushProvider: DriverPushProvider
+    private readonly pushProvider: DriverPushProvider,
+    private readonly routeGeometryRefresher?: RouteGroupingRouteGeometryRefresher
   ) {}
 
   async createGrouping(input: CreateRouteGroupingInput): Promise<RouteGroupingDetailDto> {
@@ -181,7 +196,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
   }
 
   async generateChildRoutes(input: GenerateChildRoutesInput): Promise<RouteGroupingDetailDto | null> {
-    const groupingId = await this.prisma.$transaction(async (tx) => {
+    const projection = await this.prisma.$transaction(async (tx): Promise<ChildRouteProjectionResult | null> => {
       const group = await findGroupingForUpdate(tx, input.shopDomain, input.groupingId);
       if (group === null) return null;
       const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
@@ -200,9 +215,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const version = await tx.routeGroupingVersion.create({
         data: { actor: input.actor, changeReason: hasCurrent ? 'regenerate_child_routes' : 'generate_child_routes', groupingId: loaded.id, shopId: loaded.shopId, status: 'CURRENT', version: nextVersion }
       });
+      const childRoutePlanIds: string[] = [];
       const byDriver = groupAssignmentsByDriver(loaded.orders);
       for (const [driverId, assignments] of byDriver) {
         const routePlan = await createChildRoutePlan(tx, loaded, assignments, driverId, nextVersion, input.actor);
+        childRoutePlanIds.push(routePlan.id);
         await tx.routeGroupingChildVersion.create({
           data: {
             driverId,
@@ -218,14 +235,15 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         });
       }
       await tx.routeGrouping.update({ data: { currentVersion: nextVersion, status: 'READY' }, where: { id: loaded.id } });
-      return loaded.id;
+      return { childRoutePlanIds, groupingId: loaded.id };
     });
-    if (groupingId === null) return null;
-    return this.getGrouping({ groupingId, shopDomain: input.shopDomain });
+    if (projection === null) return null;
+    await this.refreshChildRouteGeometry(projection.childRoutePlanIds, input.shopDomain);
+    return this.getGrouping({ groupingId: projection.groupingId, shopDomain: input.shopDomain });
   }
 
   async rollback(input: RollbackRouteGroupingInput): Promise<RouteGroupingDetailDto | null> {
-    const groupingId = await this.prisma.$transaction(async (tx) => {
+    const projection = await this.prisma.$transaction(async (tx): Promise<ChildRouteProjectionResult | null> => {
       const group = await findGroupingForUpdate(tx, input.shopDomain, input.groupingId);
       if (group === null) return null;
       const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
@@ -237,10 +255,12 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const version = await tx.routeGroupingVersion.create({
         data: { actor: input.actor, changeReason: `rollback:${input.version}`, groupingId: loaded.id, shopId: loaded.shopId, status: 'CURRENT', version: nextVersion }
       });
+      const childRoutePlanIds: string[] = [];
       for (const child of snapshots) {
         const snapshot = readChildSnapshot(child.snapshot);
         const assignments = snapshot.stops.map((stop) => ({ deliveryStopId: stop.deliveryStopId, orderId: stop.orderId, sourceSequence: stop.sequence }));
         const routePlan = await createChildRoutePlanFromSnapshot(tx, loaded, snapshot, nextVersion, input.actor);
+        childRoutePlanIds.push(routePlan.id);
         await tx.routeGroupingChildVersion.create({
           data: {
             driverId: snapshot.driverId,
@@ -256,10 +276,34 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         });
       }
       await tx.routeGrouping.update({ data: { currentVersion: nextVersion, status: 'READY' }, where: { id: loaded.id } });
-      return loaded.id;
+      return { childRoutePlanIds, groupingId: loaded.id };
     });
-    if (groupingId === null) return null;
-    return this.getGrouping({ groupingId, shopDomain: input.shopDomain });
+    if (projection === null) return null;
+    await this.refreshChildRouteGeometry(projection.childRoutePlanIds, input.shopDomain);
+    return this.getGrouping({ groupingId: projection.groupingId, shopDomain: input.shopDomain });
+  }
+
+  private async refreshChildRouteGeometry(routePlanIds: string[], shopDomain: string): Promise<void> {
+    const routeGeometryRefresher = this.routeGeometryRefresher;
+    if (routeGeometryRefresher === undefined) return;
+    const uniqueRoutePlanIds = [...new Set(routePlanIds)];
+    for (let index = 0; index < uniqueRoutePlanIds.length; index += ROUTE_GROUPING_GEOMETRY_REFRESH_CONCURRENCY) {
+      const batch = uniqueRoutePlanIds.slice(index, index + ROUTE_GROUPING_GEOMETRY_REFRESH_CONCURRENCY);
+      const results = await Promise.allSettled(
+        batch.map((routePlanId) =>
+          routeGeometryRefresher.refreshRouteGeometryForRoutePlan({
+            routePlanId,
+            shopDomain,
+            source: 'SNAPSHOT'
+          })
+        )
+      );
+      results.forEach((result, resultIndex) => {
+        if (result.status === 'rejected') {
+          logRouteGeometryRefreshFailure(batch[resultIndex] ?? 'unknown-route-plan-id', result.reason);
+        }
+      });
+    }
   }
 
   async recordChildRoutePublished(input: { routePlanId: string; shopDomain: string }): Promise<void> {
@@ -330,6 +374,13 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     if (shop === null) return null;
     return this.prisma.routeGrouping.findFirst({ include: groupingInclude(), where: { id: input.groupingId, shopId: shop.id } });
   }
+}
+
+function logRouteGeometryRefreshFailure(routePlanId: string, reason: unknown): void {
+  console.warn('[route-grouping] child route geometry refresh failed after projection commit', {
+    errorMessage: reason instanceof Error ? reason.message : String(reason),
+    routePlanId
+  });
 }
 
 function groupingInclude() {

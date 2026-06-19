@@ -57,22 +57,22 @@ export class OsrmRouteGeometryProvider implements RouteGeometryProvider {
         signal: controller.signal,
       });
       if (!response.ok) {
-        return emptyRouteResult();
+        throw new Error(`OSRM route request failed with HTTP ${response.status}`);
       }
-    } catch {
-      return emptyRouteResult();
+    } catch (error) {
+      throw error instanceof Error ? error : new Error('OSRM route request failed');
     } finally {
       clearTimeout(timeout);
     }
 
     const payload = await response.json().catch(() => null);
     if (!isOkOsrmPayload(payload)) {
-      return emptyRouteResult();
+      throw new Error('OSRM route response was invalid.');
     }
 
     const routeGeometry = readOsrmRouteGeometry(payload);
     if (routeGeometry === null) {
-      return emptyRouteResult();
+      throw new Error('OSRM route response did not include usable geometry.');
     }
 
     return {
@@ -121,7 +121,7 @@ function toLngLat(latitude: number | null, longitude: number | null): [number, n
 
 function buildRouteUrl(baseUrl: string, coordinates: Array<[number, number]>): string {
   const coordinatePath = coordinates.map(([longitude, latitude]) => `${longitude},${latitude}`).join(';');
-  return `${baseUrl}/route/v1/driving/${coordinatePath}?overview=full&geometries=geojson&steps=false`;
+  return `${baseUrl}/route/v1/driving/${coordinatePath}?overview=simplified&geometries=geojson&steps=false`;
 }
 
 function emptyRouteResult(): RoutePlanRouteResult {

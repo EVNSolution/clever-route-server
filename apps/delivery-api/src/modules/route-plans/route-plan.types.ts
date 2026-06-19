@@ -177,6 +177,8 @@ export type RoutePlanRouteMetrics = {
   durationSeconds: number | null;
 };
 
+export type RoutePlanGeometryStatus = 'fresh' | 'missing' | 'stale' | 'unavailable';
+
 export type RoutePlanRouteResult = {
   routeGeometry: RoutePlanRouteGeometry | null;
   routeMetrics: RoutePlanRouteMetrics | null;
@@ -262,7 +264,11 @@ export type PublishRoutePlanInput = {
 export type RoutePlanDetail = {
   routePlan: RoutePlanSummary;
   routeGeometry: RoutePlanRouteGeometry | null;
+  routeGeometryGeneratedAt?: string | null;
+  routeGeometrySource?: string | null;
+  routeGeometryStatus?: RoutePlanGeometryStatus;
   routeMetrics: RoutePlanRouteMetrics | null;
+  routeShapeSignature?: string;
   routeStopPoints: RoutePlanRouteStopPoint[];
   stops: RoutePlanDetailStop[];
 };
@@ -279,6 +285,15 @@ export type RoutePlanService = {
     routePlanId: string;
     shopDomain: string;
   }): Promise<RoutePlanDetail | null>;
+  refreshRouteGeometryForRoutePlan?(input: {
+    routePlanId: string;
+    shopDomain: string;
+    source?: 'CREATE_ROUTE' | 'SHAPE_MUTATION' | 'SNAPSHOT' | 'OPTIMIZATION_APPLY' | 'EXPLICIT_REFRESH' | 'PERIODIC_SYNC';
+  }): Promise<RoutePlanDetail | null>;
+  routePlanExists?(input: {
+    routePlanId: string;
+    shopDomain: string;
+  }): Promise<boolean>;
   listRoutePlans(input: ListRoutePlansInput): Promise<RoutePlanSummary[]>;
   publishRoutePlan(input: PublishRoutePlanInput): Promise<RoutePlanDetail | null>;
   saveRoutePlan?(input: SaveRoutePlanInput): Promise<SaveRoutePlanResult | null>;
