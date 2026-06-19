@@ -100,6 +100,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
   const selectedRouteStop = useMemo(() => selectedRouteStopId === null ? null : routeStops.find((stop) => stop.deliveryStopId === selectedRouteStopId) ?? null, [routeStops, selectedRouteStopId]);
   const dropoffPoints = useMemo(() => getRouteDropoffPoints(detail), [detail]);
   const fitPoints = useMemo(() => getRouteFitPoints(detail, points, dropoffPoints), [detail, dropoffPoints, points]);
+  const fitPointsKey = useMemo(() => fitPoints.map((point) => `${point.kind}:${point.id}:${point.latitude}:${point.longitude}`).join('|'), [fitPoints]);
   const homePoint = useMemo(() => resolveMapHomePoint(detail, depot, points), [depot, detail, points]);
   const readiness = mapReadiness({ coordinatesCount: points.length, mapStatus: bootstrap.mapConfig.status });
   const routeGeometry = useMemo(() => buildRouteGeometryFeature(detail), [detail]);
@@ -261,6 +262,25 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
     }
     applyOrdersHomeViewport(map, homePoint, ordersHomeAppliedRef);
   }, [detail, fitPoints, homePoint, isMapReady, lineFeature, locale, ordersGeojson, points, polygonGeojson, routeDropoffGeojson, routeStopGeojson, selectedRouteStopId]);
+
+  useEffect(() => {
+    if (detail === null || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return undefined;
+    let animationFrame: number | null = null;
+    const timeouts: number[] = [];
+    const applyFit = (): void => {
+      const map = mapRef.current;
+      if (map === null || !isMapUsable(map)) return;
+      fitMap(map, maplibreRef.current, fitPoints);
+    };
+    applyFit();
+    animationFrame = window.requestAnimationFrame(applyFit);
+    timeouts.push(window.setTimeout(applyFit, 120));
+    timeouts.push(window.setTimeout(applyFit, 600));
+    return () => {
+      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
+      timeouts.forEach((timeout) => window.clearTimeout(timeout));
+    };
+  }, [detail, fitPoints, fitPointsKey, isMapReady]);
 
   useEffect(() => {
     if (fitRequest === 0 || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return;
@@ -941,14 +961,15 @@ function mapHomePointKey(point: RouteOpsPoint): string {
 }
 
 function fitMap(map: MapLibreMap, maplibregl: MapLibreModule | null, points: RouteOpsPoint[]): void {
+  void maplibregl;
   safeResizeMap(map);
   const bounds = fitBoundsForPoints(points);
-  if (bounds === null || maplibregl === null) return;
+  if (bounds === null) return;
   if (points.length === 1) {
     map.easeTo({ center: [points[0]?.longitude ?? 0, points[0]?.latitude ?? 0], duration: 0, zoom: 12 });
     return;
   }
-  map.fitBounds(new maplibregl.LngLatBounds([bounds.west, bounds.south], [bounds.east, bounds.north]), { duration: 0, maxZoom: 14, padding: 56 });
+  map.fitBounds([[bounds.west, bounds.south], [bounds.east, bounds.north]], { duration: 0, maxZoom: 14, padding: 56 });
 }
 
 
