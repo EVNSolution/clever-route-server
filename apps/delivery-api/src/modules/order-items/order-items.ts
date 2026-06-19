@@ -56,7 +56,7 @@ export function parseWooCommerceOrderItems(items: WooCommerceLineItem[] | null |
   for (const item of items) {
     const productId = readPositiveInteger(item.product_id);
     const quantity = readPositiveInteger(item.quantity);
-    const name = normalizeString(item.name);
+    const name = normalizeItemText(item.name);
     if (productId === null) reviewReasons.push('missing_item_product_id');
     if (quantity === null) reviewReasons.push('missing_item_quantity');
     if (name === null) reviewReasons.push('missing_item_name');
@@ -83,8 +83,8 @@ export function toOrderItemDto(item: OrderItemRecordLike): OrderItemDto {
   return {
     productId: item.productId,
     variationId: item.variationId,
-    name: item.name,
-    sku: item.sku,
+    name: normalizeItemText(item.name) ?? item.name,
+    sku: normalizeString(item.sku),
     options: readOrderItemOptions(item.options),
     quantity: item.quantity
   };
@@ -96,13 +96,14 @@ export function aggregateOrderItems(
 ): RouteItemSummary {
   const groups = new Map<string, OrderItemDto>();
   for (const item of items) {
-    const key = `${item.productId}:${item.variationId}`;
+    const normalized = normalizeOrderItemDto(item);
+    const key = getOrderItemSemanticKey(normalized);
     const existing = groups.get(key);
     if (existing === undefined) {
-      groups.set(key, { ...item, options: [...item.options] });
+      groups.set(key, normalized);
       continue;
     }
-    existing.quantity += item.quantity;
+    existing.quantity += normalized.quantity;
   }
 
   const summaryItems = [...groups.values()].sort(compareOrderItems);
@@ -117,14 +118,15 @@ export function aggregateOrderItems(
 }
 
 export function fingerprintOrderItems(items: OrderItemDto[]): string {
-  const stable = [...items].sort(compareOrderItems).map((item) => ({
-    name: item.name,
-    options: [...item.options].sort((left, right) => left.key.localeCompare(right.key) || left.value.localeCompare(right.value)),
-    productId: item.productId,
-    quantity: item.quantity,
-    sku: item.sku,
-    variationId: item.variationId
-  }));
+  const stable = [...items]
+    .map(normalizeOrderItemDto)
+    .sort(compareOrderItems)
+    .map((item) => ({
+      options: getCanonicalOptions(item.options),
+      productId: item.productId,
+      quantity: item.quantity,
+      variationId: item.variationId
+    }));
   return createHash('sha256').update(JSON.stringify(stable)).digest('hex');
 }
 
@@ -140,7 +142,7 @@ export function hasItemReviewReason(reasons: string[]): boolean {
 function normalizeWooItemOptions(metaData: WooCommerceMetaData[]): OrderItemOptionDto[] {
   const options: OrderItemOptionDto[] = [];
   for (const item of metaData) {
-    const key = normalizeString(item.key);
+    const key = normalizeItemText(item.key);
     if (key === null || key.startsWith('_')) continue;
     const value = normalizeMetaValue(item.value);
     if (value === null) continue;
@@ -154,18 +156,18 @@ function readOrderItemOptions(value: unknown): OrderItemOptionDto[] {
   return value.flatMap((item) => {
     if (item === null || typeof item !== 'object') return [];
     const record = item as Record<string, unknown>;
-    const key = normalizeString(record.key);
-    const optionValue = normalizeString(record.value);
+    const key = normalizeItemText(record.key);
+    const optionValue = normalizeItemText(record.value);
     return key === null || optionValue === null ? [] : [{ key, value: optionValue }];
   });
 }
 
 function normalizeMetaValue(value: unknown): string | null {
-  if (typeof value === 'string') return normalizeString(value);
+  if (typeof value === 'string') return normalizeItemText(value);
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   if (value !== null && typeof value === 'object') {
     const record = value as Record<string, unknown>;
-    return normalizeString(record.display_value) ?? normalizeString(record.value) ?? null;
+    return normalizeItemText(record.display_value) ?? normalizeItemText(record.value) ?? null;
   }
   return null;
 }
@@ -186,10 +188,67 @@ function normalizeString(value: unknown): string | null {
   return trimmed === '' ? null : trimmed;
 }
 
+function normalizeItemText(value: unknown): string | null {
+  const raw = normalizeString(value);
+  if (raw === null) return null;
+  const decoded = decodeCommonHtmlEntities(raw);
+  const cleaned = decoded
+    .replace(/<\s*br\s*\/?\s*>/giu, ' ')
+    .replace(/<\s*\/\s*(p|div|li|tr|td|th)\s*>/giu, ' ')
+    .replace(/<[^>]*>/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+  return cleaned === '' ? null : cleaned;
+}
+
+function decodeCommonHtmlEntities(value: string): string {
+  return value
+    .replace(/&nbsp;|&#160;/giu, ' ')
+    .replace(/&amp;/giu, '&')
+    .replace(/&lt;/giu, '<')
+    .replace(/&gt;/giu, '>')
+    .replace(/&quot;/giu, '"')
+    .replace(/&#39;|&apos;/giu, "'");
+}
+
+function normalizeOrderItemDto(item: OrderItemDto): OrderItemDto {
+  return {
+    productId: item.productId,
+    variationId: item.variationId,
+    name: normalizeItemText(item.name) ?? item.name,
+    sku: normalizeString(item.sku),
+    options: getCanonicalOptions(item.options),
+    quantity: item.quantity
+  };
+}
+
+function getOrderItemSemanticKey(item: OrderItemDto): string {
+  return JSON.stringify({
+    options: getCanonicalOptions(item.options),
+    productId: item.productId,
+    variationId: item.variationId
+  });
+}
+
+function getCanonicalOptions(options: OrderItemOptionDto[]): OrderItemOptionDto[] {
+  return options
+    .flatMap((option) => {
+      const key = normalizeItemText(option.key);
+      const value = normalizeItemText(option.value);
+      return key === null || value === null ? [] : [{ key, value }];
+    })
+    .sort((left, right) => left.key.localeCompare(right.key) || left.value.localeCompare(right.value));
+}
+
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values)];
 }
 
 function compareOrderItems(left: OrderItemDto, right: OrderItemDto): number {
-  return left.productId - right.productId || left.variationId - right.variationId || left.name.localeCompare(right.name);
+  return (
+    left.productId - right.productId ||
+    left.variationId - right.variationId ||
+    JSON.stringify(getCanonicalOptions(left.options)).localeCompare(JSON.stringify(getCanonicalOptions(right.options))) ||
+    left.name.localeCompare(right.name)
+  );
 }

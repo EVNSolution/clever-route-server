@@ -205,8 +205,8 @@ describe("Orders compact operations table", () => {
         orderFixture({
           items: [
             {
-              name: "Roma Tomatoes",
-              options: [{ key: "size", value: "large" }],
+              name: "Roma <span>Tomatoes</span>",
+              options: [{ key: "size", value: "large &amp; red" }],
               productId: 101,
               quantity: 2,
               sku: "roma",
@@ -227,8 +227,9 @@ describe("Orders compact operations table", () => {
     );
 
     expect(html).toContain("Ordered items");
-    expect(html).toContain("Roma Tomatoes (size: large) × 2");
+    expect(html).toContain("Roma Tomatoes (size: large &amp; red) × 2");
     expect(html).toContain("Basil × 1");
+    expect(html).not.toContain("&lt;span");
   });
 
 
@@ -296,8 +297,8 @@ describe("Orders compact operations table", () => {
         orderFixture({
           items: [
             {
-              name: "Tomato box",
-              options: [{ key: "Size", value: "Large" }],
+              name: "Tomato <span>box</span>",
+              options: [{ key: "Size", value: "Large &amp; Red" }],
               productId: 101,
               quantity: 2,
               sku: "TOM-L",
@@ -311,7 +312,8 @@ describe("Orders compact operations table", () => {
 
     expect(html).toContain("Ordered items");
     expect(html).toContain("Tomato box");
-    expect(html).toContain("Size: Large");
+    expect(html).toContain("Size: Large &amp; Red");
+    expect(html).not.toContain("&lt;span");
     expect(html).toContain("TOM-L");
     expect(html).toContain(">2</td>");
   });

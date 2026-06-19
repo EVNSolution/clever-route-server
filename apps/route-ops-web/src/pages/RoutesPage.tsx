@@ -15,7 +15,7 @@ import { Badge, Kpi } from "../components/primitives";
 import { TabLayout } from "../components/TabLayout";
 import { RouteOpsMap } from "../components/maps/RouteOpsMap";
 import { getRoutesCopy, resolveLocale } from "../i18n";
-import { formatOrderItemLine, formatOrderItemOptions, getOrderItems, getRouteItemSummary } from "../orderItems";
+import { formatOrderItemLine, formatOrderItemName, formatOrderItemOptions, getOrderItemDisplayKey, getOrderItemSemanticDisplayKey, getOrderItems, getRouteItemSummary } from "../orderItems";
 import {
   deriveRouteStats,
   geometryLabel,
@@ -984,16 +984,14 @@ export function RouteBuilder(input: {
                     <tr>
                       <th>{t.item}</th>
                       <th>{t.itemOptions}</th>
-                      <th>{t.sku}</th>
                       <th>{t.quantity}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {routeItems.map((item) => (
-                      <tr key={`${item.productId}:${item.variationId}:${item.name}`}>
-                        <td>{item.name}</td>
+                      <tr key={getOrderItemSemanticDisplayKey(item)}>
+                        <td>{formatOrderItemName(item)}</td>
                         <td>{formatOrderItemOptions(item) || "—"}</td>
-                        <td>{item.sku ?? "—"}</td>
                         <td>{item.quantity}</td>
                       </tr>
                     ))}
@@ -1001,29 +999,6 @@ export function RouteBuilder(input: {
                 </table>
               </div>
             )}
-          </section>
-          <section className="route-item-summary-card" aria-label="Stop notes and items">
-            <div className="route-item-summary-heading">
-              <h3>Stop notes and items</h3>
-            </div>
-            <div className="route-item-table-scroll">
-              <table className="route-item-table">
-                <thead>
-                  <tr><th>#</th><th>Order</th><th>Customer note</th><th>Admin memo</th><th>Items</th></tr>
-                </thead>
-                <tbody>
-                  {draftStops.map((stop) => (
-                    <tr key={`${stop.deliveryStopId}:notes`}>
-                      <td>{stop.sequence}</td>
-                      <td>{stop.orderName}</td>
-                      <td>{stop.customerNoteContext?.customerNote ?? "—"}</td>
-                      <td>{stop.customerNoteContext?.adminMemo ?? "—"}</td>
-                      <td>{getOrderItems(stop.items).map((item) => formatOrderItemLine(item)).join(" / ") || "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
           </section>
         </div>
       }
@@ -1163,7 +1138,7 @@ export function RouteStopOrderCompactList({
             {stopItems.length === 0 ? null : (
               <ul className="route-stop-item-lines" aria-label={t.stopItems}>
                 {stopItems.map((item, itemIndex) => (
-                  <li key={`${item.productId}:${item.variationId}:${item.name}:${itemIndex}`}>
+                  <li key={getOrderItemDisplayKey(item, itemIndex)}>
                     {formatOrderItemLine(item)}
                   </li>
                 ))}

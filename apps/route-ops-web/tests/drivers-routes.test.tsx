@@ -442,10 +442,10 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('route-stop-table');
   });
 
-  test('RouteBuilder renders route item totals, aggregate table, and stop item lines', () => {
+  test('RouteBuilder renders clean route item totals and removes the stop item dump', () => {
     const item = {
-      name: 'Tomato box',
-      options: [{ key: 'Size', value: 'Large' }],
+      name: '토마토 <span class="divider">/</span> Tomato&nbsp;box',
+      options: [{ key: 'Size', value: 'Large &amp; Red' }],
       productId: 101,
       quantity: 3,
       sku: 'TOM-L',
@@ -461,12 +461,6 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
           totalQuantity: 3,
         },
       }),
-      stops: [
-        {
-          ...routePlanDetailFixture().stops[0]!,
-          items: [item],
-        },
-      ],
     });
 
     const html = renderToStaticMarkup(
@@ -487,10 +481,13 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('<span>Items total</span><strong>3</strong>');
     expect(html).toContain('<span>Item types</span><strong>1</strong>');
     expect(html).toContain('Route items');
-    expect(html).toContain('Tomato box');
-    expect(html).toContain('Size: Large');
-    expect(html).toContain('TOM-L');
-    expect(html).toContain('Tomato box (Size: Large) × 3');
+    expect(html).toContain('토마토 / Tomato box');
+    expect(html).toContain('Size: Large &amp; Red');
+    expect(html).toContain('<th>Item</th><th>Options</th><th>Qty</th>');
+    expect(html).not.toContain('Stop notes and items');
+    expect(html).not.toContain('<th>SKU</th>');
+    expect(html).not.toContain('TOM-L');
+    expect(html).not.toContain('&lt;span');
   });
 
   test('RouteStopOrderCompactList marks the dragged row and drop preview target', () => {

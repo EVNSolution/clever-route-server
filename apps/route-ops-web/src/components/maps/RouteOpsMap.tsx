@@ -6,7 +6,7 @@ import { installMissingMapImageFallback } from '../../maps/maplibre-missing-imag
 import { installPmtilesProtocol } from '../../maps/pmtiles';
 import { mapReadiness } from '../../maps/provider';
 import { getMapCopy, resolveLocale } from '../../i18n';
-import { formatOrderItemLine, getOrderItems } from '../../orderItems';
+import { formatOrderItemLine, getOrderItemDisplayKey, getOrderItems } from '../../orderItems';
 import type { BootstrapPayload, CanonicalOrderDto, OrderItemDto, RouteGroupingPolygonDto, RoutePlanDetailDto, RouteStopDto } from '../../types';
 
 type MapLibreModule = typeof import('maplibre-gl');
@@ -957,7 +957,7 @@ export function RouteStopSequencePicker({ anchor, currentSequence, items, locale
           <strong>{orderName}</strong>
           <ul>
             {orderItems.map((item, itemIndex) => (
-              <li key={`${item.productId}:${item.variationId}:${item.name}:${itemIndex}`}>{formatOrderItemLine(item)}</li>
+              <li key={getOrderItemDisplayKey(item, itemIndex)}>{formatOrderItemLine(item)}</li>
             ))}
           </ul>
         </div>

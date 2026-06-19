@@ -185,8 +185,8 @@ describe('RouteOpsMap layer lifecycle', () => {
       anchor: { placement: 'top', x: 120, y: 140 },
       currentSequence: 2,
       items: [{
-        name: 'Tomato box',
-        options: [{ key: 'Size', value: 'Large' }],
+        name: 'Tomato <span>box</span>',
+        options: [{ key: 'Size', value: 'Large &amp; Red' }],
         productId: 101,
         quantity: 2,
         sku: 'TOM-L',
@@ -206,7 +206,8 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(html).toContain('aria-label="Move stop #12030 to sequence 1"');
     expect(html).toContain('aria-label="Move stop #12030 to sequence 4"');
     expect(html).toMatch(/aria-label="Move stop #12030 to sequence 2"[^>]*disabled=""/);
-    expect(html).toContain('Tomato box (Size: Large) × 2');
+    expect(html).toContain('Tomato box (Size: Large &amp; Red) × 2');
+    expect(html).not.toContain('&lt;span');
     expect(html).not.toContain('maplibregl-popup');
   });
 

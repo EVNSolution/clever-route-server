@@ -25,7 +25,9 @@ import { RouteOpsMap } from "../components/maps/RouteOpsMap";
 import type { OrderMapMarkerState } from "../maps/geojson";
 import {
   formatOrderItemLine,
+  formatOrderItemName,
   formatOrderItemOptions,
+  getOrderItemDisplayKey,
   getOrderItems,
 } from "../orderItems";
 import {
@@ -2484,9 +2486,9 @@ function OrderDetailPanel({
               <tbody>
                 {orderItems.map((item, itemIndex) => (
                   <tr
-                    key={`${item.productId}:${item.variationId}:${item.name}:${itemIndex}`}
+                    key={getOrderItemDisplayKey(item, itemIndex)}
                   >
-                    <td>{item.name}</td>
+                    <td>{formatOrderItemName(item)}</td>
                     <td>{formatOrderItemOptions(item) || "—"}</td>
                     <td>{item.sku ?? "—"}</td>
                     <td>{item.quantity}</td>
