@@ -28,6 +28,8 @@ type FeatureCollection<Geometry, Properties extends Record<string, unknown>> = {
 type PointGeometry = { coordinates: LngLat; type: 'Point' };
 type LineStringGeometry = { coordinates: LngLat[]; type: 'LineString' };
 
+const ROUTE_FIT_MAX_DEPOT_DISTANCE_KM = 500;
+
 export type OrderMapFeatureCollection = FeatureCollection<PointGeometry, {
   label: string;
   markerOpacity: number;
@@ -177,8 +179,11 @@ export function getRouteDropoffPoints(detail: RoutePlanDetailDto | null): RouteO
 
 export function getRouteFitPoints(detail: RoutePlanDetailDto | null, routePoints: RouteOpsPoint[], dropoffPoints: RouteOpsPoint[]): RouteOpsPoint[] {
   if (detail === null) return routePoints;
+  const depotPoint = routePoints.find((point) => point.kind === 'depot') ?? null;
   const stopPoints = routePoints.filter((point) => point.kind === 'stop');
   const fitPoints = [...stopPoints, ...dropoffPoints];
+  const plausibleFitPoints = depotPoint === null ? fitPoints : fitPoints.filter((point) => distanceKilometers(depotPoint, point) <= ROUTE_FIT_MAX_DEPOT_DISTANCE_KM);
+  if (plausibleFitPoints.length > 0) return plausibleFitPoints;
   return fitPoints.length > 0 ? fitPoints : routePoints;
 }
 
@@ -223,6 +228,20 @@ export function routeStopToPoint(stop: RouteStopDto, preview = false): RouteOpsP
   const lngLat = toLngLat(stop.coordinates);
   if (lngLat === null) return null;
   return { id: stop.deliveryStopId, kind: 'stop', label: String(stop.sequence), latitude: lngLat[1], longitude: lngLat[0], preview, sequence: stop.sequence };
+}
+
+function distanceKilometers(left: Pick<RouteOpsPoint, 'latitude' | 'longitude'>, right: Pick<RouteOpsPoint, 'latitude' | 'longitude'>): number {
+  const earthRadiusKm = 6371;
+  const leftLat = toRadians(left.latitude);
+  const rightLat = toRadians(right.latitude);
+  const deltaLat = toRadians(right.latitude - left.latitude);
+  const deltaLng = toRadians(right.longitude - left.longitude);
+  const a = Math.sin(deltaLat / 2) ** 2 + Math.cos(leftLat) * Math.cos(rightLat) * Math.sin(deltaLng / 2) ** 2;
+  return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function toRadians(value: number): number {
+  return value * Math.PI / 180;
 }
 
 function isLngLat(value: LngLat | null | undefined): value is LngLat {

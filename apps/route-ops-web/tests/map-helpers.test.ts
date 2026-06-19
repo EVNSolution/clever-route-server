@@ -181,6 +181,24 @@ describe('route ops map helpers', () => {
     expect(fitBoundsForPoints(fitPoints)).toEqual({ east: -79.3, north: 43.65, south: 43.6, west: -79.4 });
   });
 
+  test('excludes impossible geocode outliers from route detail fit bounds', () => {
+    const detail: RoutePlanDetailDto = {
+      ...routeDetail(),
+      routeGeometry: null,
+      routeStopPoints: [],
+      stops: [
+        ...routeDetail().stops,
+        { ...routeDetail().stops[0]!, coordinates: { latitude: 35.6624721, longitude: 139.6962707 }, deliveryStopId: 'tokyo', orderId: 'order-tokyo', orderName: '#tokyo', sequence: 3, sourceOrderId: 'source-tokyo' }
+      ]
+    };
+    const routePoints = getRouteMapPoints(detail);
+    const fitPoints = getRouteFitPoints(detail, routePoints, []);
+
+    expect(routePoints.map((point) => `${point.kind}:${point.label}`)).toEqual(['depot:D', 'stop:1', 'stop:2', 'stop:3']);
+    expect(fitPoints.map((point) => `${point.kind}:${point.label}`)).toEqual(['stop:1', 'stop:2']);
+    expect(fitBoundsForPoints(fitPoints)).toEqual({ east: -79.3, north: 43.65, south: 43.6, west: -79.4 });
+  });
+
   test('keeps published route stops neutral while still fitting to stops before depot', () => {
     const detail: RoutePlanDetailDto = {
       ...routeDetail(),
