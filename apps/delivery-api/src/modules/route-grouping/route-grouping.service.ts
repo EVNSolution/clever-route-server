@@ -33,6 +33,7 @@ import { hashPushToken } from './driver-push-token.service.js';
 
 const OPTIMIZER_VERSION = 'route-grouping-projection-v1';
 const ROUTE_GROUPING_GEOMETRY_REFRESH_CONCURRENCY = 2;
+const MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS = 500_000;
 
 type RouteGroupingPrismaClient = Pick<
   PrismaClient,
@@ -422,11 +423,10 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     const candidates: OptimizedChildRouteCandidate[] = [];
     const byDriver = groupAssignmentsByDriver(group.orders);
     for (const [driverId, assignments] of byDriver) {
+      validateChildRouteStopsNearDepot(assignments, depot);
       const name = childRouteName(group, driverId, group.currentVersion);
       const sourceDetail = buildChildRouteDetail({ assignments, depot, driverId, group, name });
-      const outcome = this.routeOptimizationService.optimizeStopOrderWithDiagnostics === undefined
-        ? await optimizeWithLegacyResult(this.routeOptimizationService, sourceDetail, shopDomain)
-        : await this.routeOptimizationService.optimizeStopOrderWithDiagnostics({ detail: sourceDetail, shopDomain });
+      const outcome = await resolveChildRouteOptimization(this.routeOptimizationService, sourceDetail, shopDomain);
       if (!outcome.ok) {
         throw new RouteGroupingValidationError([`child route optimization failed: ${outcome.failure.message}`]);
       }
@@ -435,7 +435,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       }
       const orderedAssignments = orderAssignmentsByOptimizationResult(assignments, outcome.result.stops);
       const optimizedDetail = buildChildRouteDetail({ assignments: orderedAssignments, depot, driverId, group, name });
-      const routeResult = await this.routeGeometryProvider.buildRoute(optimizedDetail);
+      const routeResult = await buildChildRouteGeometry(this.routeGeometryProvider, optimizedDetail);
       if (routeResult.routeGeometry === null) {
         throw new RouteGroupingValidationError(['child route geometry could not be generated']);
       }
@@ -609,6 +609,31 @@ async function optimizeWithLegacyResult(
   return { ok: true, result };
 }
 
+async function resolveChildRouteOptimization(
+  routeOptimizationService: RouteOptimizationService,
+  detail: RoutePlanDetail,
+  shopDomain: string
+): Promise<RouteOptimizationOutcome> {
+  try {
+    return routeOptimizationService.optimizeStopOrderWithDiagnostics === undefined
+      ? await optimizeWithLegacyResult(routeOptimizationService, detail, shopDomain)
+      : await routeOptimizationService.optimizeStopOrderWithDiagnostics({ detail, shopDomain });
+  } catch (error) {
+    throw new RouteGroupingValidationError([`child route optimization failed: ${describeError(error)}`]);
+  }
+}
+
+async function buildChildRouteGeometry(
+  routeGeometryProvider: RouteGeometryProvider,
+  detail: RoutePlanDetail
+): Promise<RoutePlanRouteResult> {
+  try {
+    return await routeGeometryProvider.buildRoute(detail);
+  } catch (error) {
+    throw new RouteGroupingValidationError([`child route geometry failed: ${describeError(error)}`]);
+  }
+}
+
 function orderAssignmentsByOptimizationResult(
   assignments: LoadedAssignment[],
   stops: RouteOptimizationStopSequence[]
@@ -626,6 +651,24 @@ function orderAssignmentsByOptimizationResult(
     throw new RouteGroupingValidationError(['child route optimizer omitted one or more stops']);
   }
   return ordered;
+}
+
+function validateChildRouteStopsNearDepot(assignments: LoadedAssignment[], depot: DepotCoordinates): void {
+  const outsideCoverage = assignments
+    .map((assignment) => {
+      const latitude = decimalNumber(assignment.deliveryStop.latitude);
+      const longitude = decimalNumber(assignment.deliveryStop.longitude);
+      if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) return null;
+      const distanceMeters = distanceBetweenCoordinatesMeters(depot, { latitude, longitude });
+      if (distanceMeters <= MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS) return null;
+      return assignment.order.name ?? assignment.order.shopifyOrderGid ?? assignment.orderId;
+    })
+    .filter((orderName): orderName is string => orderName !== null);
+  if (outsideCoverage.length > 0) {
+    throw new RouteGroupingValidationError([
+      `child route contains stops outside depot coverage: ${outsideCoverage.slice(0, 5).join(', ')}`
+    ]);
+  }
 }
 
 function buildChildRouteDetail(input: {
@@ -942,6 +985,29 @@ function decimalNumber(value: unknown): number | null {
 
 function decimalString(value: number): string {
   return value.toFixed(7);
+}
+
+function distanceBetweenCoordinatesMeters(
+  left: { latitude: number; longitude: number },
+  right: { latitude: number; longitude: number }
+): number {
+  const earthRadiusMeters = 6_371_000;
+  const leftLat = toRadians(left.latitude);
+  const rightLat = toRadians(right.latitude);
+  const deltaLat = toRadians(right.latitude - left.latitude);
+  const deltaLng = toRadians(right.longitude - left.longitude);
+  const haversine = Math.sin(deltaLat / 2) ** 2 + Math.cos(leftLat) * Math.cos(rightLat) * Math.sin(deltaLng / 2) ** 2;
+  return 2 * earthRadiusMeters * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+}
+
+function toRadians(value: number): number {
+  return value * Math.PI / 180;
+}
+
+function describeError(error: unknown): string {
+  if (error instanceof Error && error.message.trim() !== '') return error.message;
+  if (typeof error === 'string' && error.trim() !== '') return error;
+  return 'unknown error';
 }
 
 function readDepotFromShop(group: LoadedGrouping): DepotCoordinates | null {

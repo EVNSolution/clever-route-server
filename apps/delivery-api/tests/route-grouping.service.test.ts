@@ -28,8 +28,12 @@ describe('route grouping contracts', () => {
     const dependencySource = readFileSync(join(process.cwd(), 'src/modules/commerce/admin-commerce-connections.dependencies.ts'), 'utf8');
 
     expect(serviceSource).toContain('prepareOptimizedChildRouteCandidates(initial, input.shopDomain)');
+    expect(serviceSource).toContain('validateChildRouteStopsNearDepot(assignments, depot)');
+    expect(serviceSource).toContain('child route contains stops outside depot coverage');
     expect(serviceSource).toContain('routeOptimizationService.optimizeStopOrderWithDiagnostics');
-    expect(serviceSource).toContain('routeGeometryProvider.buildRoute(optimizedDetail)');
+    expect(serviceSource).toContain('resolveChildRouteOptimization(this.routeOptimizationService, sourceDetail, shopDomain)');
+    expect(serviceSource).toContain('buildChildRouteGeometry(this.routeGeometryProvider, optimizedDetail)');
+    expect(serviceSource).toContain('child route geometry failed');
     expect(serviceSource).toContain('createChildRouteGeometryCache(tx, routePlan.id, candidate)');
     expect(serviceSource).toContain("source: 'SNAPSHOT'");
     expect(serviceSource).toContain('await this.refreshChildRouteGeometry(projection.childRoutePlanIds, input.shopDomain);');
