@@ -144,6 +144,9 @@ export function createRouteOpsApiResponder(input: {
         error instanceof WooCommerceOnboardingError
           ? error.code
           : "ADMIN_UI_REQUEST_FAILED";
+      if (!(error instanceof WooCommerceOnboardingError)) {
+        request.log.error({ err: error }, "route ops API request failed");
+      }
       return sendRouteOpsApiError(
         reply,
         statusCode,

@@ -471,7 +471,7 @@ function groupingInclude() {
     },
     orders: {
       include: {
-        deliveryStop: { include: { order: true } },
+        deliveryStop: { include: { order: true, routePlanStops: { select: { routePlanId: true } } } },
         assignedDriver: true,
         assignedPolygon: true,
         order: { include: { customerRouteNotifications: true } }
@@ -562,6 +562,13 @@ function groupAssignmentsByDriver(assignments: LoadedAssignment[]): Map<string, 
 function validateReadyForChildGeneration(group: LoadedGrouping, confirmRisk?: boolean): void {
   const unresolved = group.orders.filter((order) => order.assignmentStatus !== 'ASSIGNED' || order.assignedDriverId === null);
   if (unresolved.length > 0) throw new RouteGroupingUnresolvedAssignmentsError(unresolved.length);
+  const currentChildRoutePlanIds = new Set(group.childVersions.filter((child) => child.status === 'CURRENT' && child.routePlanId !== null).map((child) => child.routePlanId));
+  const externallyOwnedStops = group.orders.filter((order) => order.deliveryStop.routePlanStops.some((stop) => !currentChildRoutePlanIds.has(stop.routePlanId)));
+  if (externallyOwnedStops.length > 0) {
+    throw new RouteGroupingValidationError([
+      `selected orders already have active route ownership: ${externallyOwnedStops.map((order) => order.order.name).slice(0, 5).join(', ')}`
+    ]);
+  }
   const warnings = toGroupingSummaryDto(group).warningState;
   const hasCurrent = group.childVersions.some((child) => child.status === 'CURRENT');
   if (hasCurrent && warnings.length > 0 && confirmRisk !== true) {
@@ -788,15 +795,15 @@ async function createChildRouteGeometryCache(
   await tx.routePlanGeometryCache.create({
     data: {
       generatedAt: new Date(),
-      geometry: candidate.routeResult.routeGeometry as unknown as Prisma.InputJsonValue,
-      metrics: candidate.routeResult.routeMetrics === null ? Prisma.JsonNull : candidate.routeResult.routeMetrics as unknown as Prisma.InputJsonValue,
+      geometry: candidate.routeResult.routeGeometry === null ? Prisma.JsonNull : toJson(candidate.routeResult.routeGeometry),
+      metrics: candidate.routeResult.routeMetrics === null ? Prisma.JsonNull : toJson(candidate.routeResult.routeMetrics),
       overview: 'simplified',
       provider: 'osrm',
       providerVersion: null,
       routePlanId,
       shapeSignature: candidate.shapeSignature,
       source: 'SNAPSHOT',
-      stopPoints: candidate.routeResult.routeStopPoints as unknown as Prisma.InputJsonValue
+      stopPoints: toJson(candidate.routeResult.routeStopPoints)
     }
   });
 }
@@ -1008,6 +1015,10 @@ function describeError(error: unknown): string {
   if (error instanceof Error && error.message.trim() !== '') return error.message;
   if (typeof error === 'string' && error.trim() !== '') return error;
   return 'unknown error';
+}
+
+function toJson(value: unknown): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }
 
 function readDepotFromShop(group: LoadedGrouping): DepotCoordinates | null {
