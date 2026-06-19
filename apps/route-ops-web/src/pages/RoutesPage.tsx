@@ -2,12 +2,9 @@ import { Fragment, useCallback, useEffect, useState } from "react";
 import type { DragEvent, KeyboardEvent, ReactElement } from "react";
 
 import {
-  createRouteOptimizationJob,
   deleteRoute,
   getDrivers,
-  getLatestRouteOptimizationJob,
   getRouteDetail,
-  getRouteOptimizationJob,
   getRoutes,
   saveRoute,
 } from "../api";
@@ -28,7 +25,6 @@ import type { StopDropPosition } from "../state";
 import type {
   BootstrapPayload,
   DriverDto,
-  RouteOptimizationJobDto,
   RouteGroupingSummaryDto,
   RoutePlanDetailDto,
   RoutePlanSummaryDto,
@@ -39,8 +35,6 @@ import { readErrorMessage } from "../utils/format";
 type RouteBuilderTab = "driver-options" | "stop-order";
 type RouteEndMode = RoutePlanDetailDto["routePlan"]["routeEndMode"];
 type SaveRouteInput = Parameters<typeof saveRoute>[0];
-const ROUTE_OPTIMIZATION_POLL_MS = 2500;
-const ROUTE_OPTIMIZATION_ELAPSED_TICK_MS = 1000;
 type StopDropPreview = {
   position: StopDropPosition;
   targetStopId: string;
@@ -132,88 +126,6 @@ export function hasDepotCoordinates(
     longitude >= -180 &&
     longitude <= 180
   );
-}
-
-export function isRouteOptimizationJobActive(
-  job: RouteOptimizationJobDto | null,
-): boolean {
-  return job?.status === "QUEUED" || job?.status === "RUNNING";
-}
-
-export function getRouteOptimizationActionLabel(input: {
-  copy: ReturnType<typeof getRoutesCopy>["routeOptimization"];
-  hasUnsavedRouteChanges: boolean;
-  isStartingOptimizationJob: boolean;
-  optimizationJob: RouteOptimizationJobDto | null;
-}): string {
-  if (input.isStartingOptimizationJob) return input.copy.starting;
-  if (input.hasUnsavedRouteChanges) return input.copy.saveAndRerun;
-  return input.optimizationJob === null ? input.copy.start : input.copy.rerun;
-}
-
-export function getRouteOptimizationJobNotice(
-  job: RouteOptimizationJobDto | null,
-): { tone: "green" | "orange" | "neutral" } | null {
-  if (job === null) return null;
-  if (job.status === "QUEUED" || job.status === "RUNNING") return { tone: "neutral" };
-  if (job.status === "APPLIED") return { tone: "green" };
-  return { tone: "orange" };
-}
-
-type RouteOptimizationDetailRow = {
-  label: string;
-  monospace?: boolean;
-  value: string;
-};
-
-export function getRouteOptimizationJobDetailRows(
-  job: RouteOptimizationJobDto | null,
-  locale: string | null | undefined = "en-CA",
-  nowMs: number | null = null,
-): RouteOptimizationDetailRow[] {
-  if (job === null) return [];
-  const copy = getRoutesCopy(locale).routeOptimization;
-  const rows: RouteOptimizationDetailRow[] = [
-    { label: copy.details.status, value: copy.statuses[job.status] },
-    { label: copy.details.step, value: copy.steps[job.currentStep] },
-    { label: copy.details.elapsed, value: formatRouteOptimizationDuration(getRouteOptimizationElapsedMs(job, nowMs), copy.details.notAvailable) },
-    { label: copy.details.timeoutBudget, value: formatRouteOptimizationDuration(job.timeoutBudgetMs, copy.details.notAvailable) },
-  ];
-  if (job.errorCode !== null) rows.push({ label: copy.details.errorCode, monospace: true, value: job.errorCode });
-  if (job.invalidatedReason !== null) rows.push({ label: copy.details.invalidatedReason, value: job.invalidatedReason });
-  if (job.appliedAt !== null) rows.push({ label: copy.details.appliedAt, value: formatRouteOptimizationTimestamp(job.appliedAt, copy.details.notAvailable) });
-  if (job.finishedAt !== null) rows.push({ label: copy.details.finishedAt, value: formatRouteOptimizationTimestamp(job.finishedAt, copy.details.notAvailable) });
-  return rows;
-}
-
-function getRouteOptimizationElapsedMs(job: RouteOptimizationJobDto, nowMs: number | null = null): number | null {
-  if (nowMs !== null && isRouteOptimizationJobActive(job)) {
-    const startedAt = Date.parse(job.startedAt ?? job.createdAt);
-    if (!Number.isNaN(startedAt)) {
-      return Math.max(job.elapsedMs ?? 0, nowMs - startedAt);
-    }
-  }
-  if (job.elapsedMs !== null) return job.elapsedMs;
-  if (!isRouteOptimizationJobActive(job)) return null;
-  const startedAt = Date.parse(job.startedAt ?? job.createdAt);
-  if (Number.isNaN(startedAt)) return null;
-  return Math.max(0, Date.now() - startedAt);
-}
-
-function formatRouteOptimizationDuration(valueMs: number | null, fallback: string): string {
-  if (valueMs === null) return fallback;
-  if (valueMs < 1000) return `${valueMs}ms`;
-  const totalSeconds = Math.round(valueMs / 1000);
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
-}
-
-function formatRouteOptimizationTimestamp(value: string, fallback: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return fallback;
-  return date.toLocaleString();
 }
 
 export function buildRouteSaveDraftInput({
@@ -449,7 +361,6 @@ export function RouteBuilder(input: {
   detail: RoutePlanDetailDto | null;
   drivers: DriverDto[];
   initialBuilderTab?: RouteBuilderTab;
-  initialOptimizationJob?: RouteOptimizationJobDto | null;
   locale?: string | null;
   navigate(path: string): void;
   onDeleteRoute(routePlanId: string): void;
@@ -473,11 +384,6 @@ export function RouteBuilder(input: {
   const [draggingStopId, setDraggingStopId] = useState<string | null>(null);
   const [dropPreview, setDropPreview] = useState<StopDropPreview | null>(null);
   const [isSavingRoute, setIsSavingRoute] = useState(false);
-  const [isStartingOptimizationJob, setIsStartingOptimizationJob] = useState(false);
-  const [optimizationJob, setOptimizationJob] = useState<RouteOptimizationJobDto | null>(
-    () => input.initialOptimizationJob ?? null,
-  );
-  const [optimizationElapsedNowMs, setOptimizationElapsedNowMs] = useState<number | null>(null);
   const detail = input.detail;
   const locale = resolveLocale(input.locale);
   const t = getRoutesCopy(locale);
@@ -494,77 +400,6 @@ export function RouteBuilder(input: {
     () => setDraftRouteEndMode(detail?.routePlan.routeEndMode ?? "END_AT_LAST_STOP"),
     [detail?.routePlan.id, detail?.routePlan.routeEndMode],
   );
-
-  useEffect(() => {
-    if (detail === null) {
-      setOptimizationJob(null);
-      return;
-    }
-    let cancelled = false;
-    getLatestRouteOptimizationJob(detail.routePlan.id)
-      .then(async (payload) => {
-        if (cancelled) return;
-        setOptimizationJob(payload.job);
-        if (payload.job?.status === "APPLIED") {
-          const updated = await getRouteDetail(detail.routePlan.id);
-          if (!cancelled) {
-            input.setDetail(updated);
-            input.onRefreshRoutes();
-          }
-        }
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) input.setError(readErrorMessage(error));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [detail?.routePlan.id, input.onRefreshRoutes, input.setDetail, input.setError]);
-
-  useEffect(() => {
-    if (!isRouteOptimizationJobActive(optimizationJob)) {
-      setOptimizationElapsedNowMs(null);
-      return;
-    }
-    setOptimizationElapsedNowMs(Date.now());
-    const interval = window.setInterval(() => {
-      setOptimizationElapsedNowMs(Date.now());
-    }, ROUTE_OPTIMIZATION_ELAPSED_TICK_MS);
-    return () => {
-      window.clearInterval(interval);
-    };
-  }, [optimizationJob]);
-
-  useEffect(() => {
-    if (detail === null || !isRouteOptimizationJobActive(optimizationJob)) return;
-    let cancelled = false;
-    const poll = async (): Promise<void> => {
-      if (optimizationJob === null) return;
-      try {
-        const payload = await getRouteOptimizationJob(detail.routePlan.id, optimizationJob.id);
-        if (cancelled) return;
-        if (payload.job?.status === "APPLIED") {
-          const updated = await getRouteDetail(detail.routePlan.id);
-          if (!cancelled) {
-            input.setDetail(updated);
-            input.onRefreshRoutes();
-            setOptimizationJob(payload.job);
-          }
-          return;
-        }
-        setOptimizationJob(payload.job);
-      } catch (error) {
-        if (!cancelled) input.setError(readErrorMessage(error));
-      }
-    };
-    const interval = window.setInterval(() => {
-      void poll();
-    }, ROUTE_OPTIMIZATION_POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [detail, input.onRefreshRoutes, input.setDetail, input.setError, optimizationJob]);
 
   const stats = deriveRouteStats(detail);
   const itemSummary = getRouteItemSummary(detail?.routePlan.itemSummary);
@@ -600,27 +435,10 @@ export function RouteBuilder(input: {
     effectiveRoutePlan.status === "DRAFT" &&
     effectiveRoutePlan.driverId !== null &&
     effectiveRoutePlan.stopsCount > 0;
-  const hasActiveOptimizationJob = isRouteOptimizationJobActive(optimizationJob);
-  const optimizationNotice = getRouteOptimizationJobNotice(optimizationJob);
   const hasUnsavedRouteChanges = hasSequenceChanges || hasDriverChanges || hasRouteEndChanges;
-  const canSaveBeforeOptimization =
-    detail !== null &&
-    !isSavingRoute &&
-    !isStartingOptimizationJob &&
-    !hasActiveOptimizationJob &&
-    !isUnsafeRouteEndDraft &&
-    hasUnsavedRouteChanges;
-  const canStartOptimizationJob =
-    detail !== null &&
-    !isStartingOptimizationJob &&
-    !isSavingRoute &&
-    !hasActiveOptimizationJob &&
-    !isUnsafeRouteEndDraft &&
-    (!hasUnsavedRouteChanges || canSaveBeforeOptimization);
   const canSaveRoute =
     detail !== null &&
     !isSavingRoute &&
-    !hasActiveOptimizationJob &&
     !isUnsafeRouteEndDraft &&
     (hasSequenceChanges || hasDriverChanges || hasRouteEndChanges || canPublishOnSave);
   const saveRouteDraft = async (): Promise<RoutePlanDetailDto> => {
@@ -639,26 +457,6 @@ export function RouteBuilder(input: {
     return updated;
   };
 
-  const startOptimizationJob = async (): Promise<void> => {
-    if (detail === null || !canStartOptimizationJob) return;
-    setIsStartingOptimizationJob(true);
-    if (hasUnsavedRouteChanges) setIsSavingRoute(true);
-    try {
-      const routeDetailForJob = hasUnsavedRouteChanges ? await saveRouteDraft() : detail;
-      const payload = await createRouteOptimizationJob(
-        routeDetailForJob.routePlan.id,
-        input.bootstrap.csrfToken,
-      );
-      setOptimizationJob(payload.job);
-      input.setError(null);
-    } catch (error) {
-      input.setError(readErrorMessage(error));
-    } finally {
-      setIsSavingRoute(false);
-      setIsStartingOptimizationJob(false);
-    }
-  };
-
   const save = async (): Promise<void> => {
     if (detail === null || !canSaveRoute) return;
     setIsSavingRoute(true);
@@ -673,7 +471,6 @@ export function RouteBuilder(input: {
   };
 
   const moveDraftStop = (deliveryStopId: string, direction: -1 | 1): void => {
-    if (hasActiveOptimizationJob) return;
     setDraftStops((current) => moveStop(current, deliveryStopId, direction));
     setSelectedRouteStopId(null);
   };
@@ -684,7 +481,6 @@ export function RouteBuilder(input: {
   };
 
   const dropDraftStop = (targetStopId: string, position: StopDropPosition): void => {
-    if (hasActiveOptimizationJob) return;
     if (draggingStopId !== null) {
       setDraftStops((current) =>
         moveStopToDropPosition(current, draggingStopId, targetStopId, position),
@@ -695,7 +491,6 @@ export function RouteBuilder(input: {
   };
 
   const moveDraftStopToSequence = (deliveryStopId: string, sequence: number): void => {
-    if (hasActiveOptimizationJob) return;
     setDraftStops((current) => moveStopToSequence(current, deliveryStopId, sequence));
     setSelectedRouteStopId(null);
     clearStopDragPreview();
@@ -703,7 +498,7 @@ export function RouteBuilder(input: {
 
   const returnToDepotChecked = draftRouteEndMode === "RETURN_TO_DEPOT";
   const returnToDepotDisabled =
-    detail === null || hasActiveOptimizationJob || (!returnToDepotChecked && !canReturnToDepot);
+    detail === null || (!returnToDepotChecked && !canReturnToDepot);
   const routeEndWarningId = "route-end-depot-warning";
   const driverTabId = "route-builder-tab-driver-options";
   const stopOrderTabId = "route-builder-tab-stop-order";
@@ -752,21 +547,6 @@ export function RouteBuilder(input: {
       </button>
     </div>
   );
-  const routeOptimizationAction = (
-    <button
-      className="primary route-optimize-button"
-      disabled={!canStartOptimizationJob}
-      onClick={() => void startOptimizationJob()}
-      type="button"
-    >
-      {getRouteOptimizationActionLabel({
-        copy: t.routeOptimization,
-        hasUnsavedRouteChanges,
-        isStartingOptimizationJob,
-        optimizationJob,
-      })}
-    </button>
-  );
   const routeMapHeaderAction = (
     <div className="route-map-header-actions">
       {publishBadge === null ? null : (
@@ -774,34 +554,7 @@ export function RouteBuilder(input: {
           {publishBadge.text}
         </span>
       )}
-      {routeOptimizationAction}
     </div>
-  );
-  const routeOptimizationRows = getRouteOptimizationJobDetailRows(optimizationJob, locale, optimizationElapsedNowMs);
-  const routeOptimizationSummaryRows = routeOptimizationRows.slice(0, 3);
-  const routeOptimizationStatus = optimizationNotice === null ? undefined : (
-    <details className={`route-optimization-notice route-optimization-notice--map route-optimization-disclosure ${optimizationNotice.tone}`}>
-      <summary className="route-optimization-disclosure-summary">
-        <strong>{t.routeOptimization.title}</strong>
-        <span className="route-optimization-summary-line">
-          {routeOptimizationSummaryRows.map((row) => (
-            <span className="route-optimization-summary-chip" key={row.label}>
-              <span>{row.label}</span>
-              <b className={row.monospace === true ? "monospace" : undefined}>{row.value}</b>
-            </span>
-          ))}
-        </span>
-      </summary>
-      <dl className="route-optimization-details" aria-label={t.routeOptimization.details.title}>
-        {routeOptimizationRows.map((row) => (
-          <div key={row.label}>
-            <dt>{row.label}</dt>
-            <dd className={row.monospace === true ? "monospace" : undefined}>{row.value}</dd>
-          </div>
-        ))}
-      </dl>
-      {hasActiveOptimizationJob ? <small>{t.routeOptimization.editingLocked}</small> : null}
-    </details>
   );
 
   return (
@@ -814,7 +567,6 @@ export function RouteBuilder(input: {
             detail={detail}
             draftStops={hasSequenceChanges ? draftStops : undefined}
             headerAction={routeMapHeaderAction}
-            statusContent={routeOptimizationStatus}
             onRouteStopPickerClose={() => setSelectedRouteStopId(null)}
             onRouteStopSelect={(deliveryStopId) => setSelectedRouteStopId(deliveryStopId)}
             onRouteStopSequencePick={moveDraftStopToSequence}
@@ -907,7 +659,6 @@ export function RouteBuilder(input: {
                 <label>
                   {t.table.driver}
                   <select
-                    disabled={hasActiveOptimizationJob}
                     value={draftDriverId}
                     onChange={(event) => setDraftDriverId(event.target.value)}
                   >
@@ -951,7 +702,7 @@ export function RouteBuilder(input: {
                   </span>
                 </div>
                 <RouteStopOrderCompactList
-                  disabled={hasActiveOptimizationJob}
+                  disabled={false}
                   draggingStopId={draggingStopId}
                   dropPreview={dropPreview}
                   locale={locale}

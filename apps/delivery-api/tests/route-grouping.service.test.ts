@@ -23,18 +23,20 @@ describe('route grouping contracts', () => {
   });
 
 
-  test('refreshes generated child route projections through the explicit snapshot geometry hook', () => {
+  test('precomputes optimized child route projections before committing current children', () => {
     const serviceSource = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     const dependencySource = readFileSync(join(process.cwd(), 'src/modules/commerce/admin-commerce-connections.dependencies.ts'), 'utf8');
 
-    expect(serviceSource).toContain('refreshRouteGeometryForRoutePlan');
+    expect(serviceSource).toContain('prepareOptimizedChildRouteCandidates(initial, input.shopDomain)');
+    expect(serviceSource).toContain('routeOptimizationService.optimizeStopOrderWithDiagnostics');
+    expect(serviceSource).toContain('routeGeometryProvider.buildRoute(optimizedDetail)');
+    expect(serviceSource).toContain('createChildRouteGeometryCache(tx, routePlan.id, candidate)');
     expect(serviceSource).toContain("source: 'SNAPSHOT'");
-    expect(serviceSource).toContain('ROUTE_GROUPING_GEOMETRY_REFRESH_CONCURRENCY');
-    expect(serviceSource).toContain('Promise.allSettled');
-    expect(serviceSource).toContain('logRouteGeometryRefreshFailure');
     expect(serviceSource).toContain('await this.refreshChildRouteGeometry(projection.childRoutePlanIds, input.shopDomain);');
+    expect(serviceSource).not.toContain('await this.refreshChildRouteGeometry(projection.childRoutePlanIds, input.shopDomain);\\n    return this.getGrouping({ groupingId: projection.groupingId, shopDomain: input.shopDomain });\\n  }\\n\\n  async rollback');
     expect(dependencySource).toContain('refreshRouteGeometryForRoutePlan.bind(routePlanDeps.routePlanService)');
-    expect(dependencySource).toContain('readAdminUiRouteGroupingService(input, routeGeometryRefresher)');
+    expect(dependencySource).toContain('routeOptimizationDeps.routeOptimizationService');
+    expect(dependencySource).toContain('routeGeometryProvider');
   });
 
   test('fake FCM provider records string-safe route payload fields', async () => {

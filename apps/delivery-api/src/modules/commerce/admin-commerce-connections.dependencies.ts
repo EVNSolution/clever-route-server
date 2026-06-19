@@ -10,7 +10,7 @@ import { AdminDriverService } from '../driver/admin-driver.service.js';
 import { PrismaRoutePlanRepository } from '../route-plans/route-plan.repository.js';
 import { PrismaRouteOptimizationJobRepository } from '../route-plans/route-optimization-job.repository.js';
 import { RouteOptimizationJobService } from '../route-plans/route-optimization-job.service.js';
-import { RoutePlanAdminService } from '../route-plans/route-plan.service.js';
+import { RoutePlanAdminService, type RouteGeometryProvider } from '../route-plans/route-plan.service.js';
 import { OsrmRouteGeometryProvider } from '../route-plans/osrm-route-geometry.client.js';
 import {
   RouteEngineRouteOptimizationClient,
@@ -149,7 +149,9 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     return undefined;
   }
 
-  const routePlanDeps = readAdminUiRoutePlanService(input);
+  const routeOptimizationDeps = readAdminUiRouteOptimizationService(input.env);
+  const routeGeometryProvider = readAdminUiRouteGeometryProvider(input.env);
+  const routePlanDeps = readAdminUiRoutePlanService(input, routeGeometryProvider);
   const routeGeometryRefresher = routePlanDeps.routePlanService?.refreshRouteGeometryForRoutePlan === undefined
     ? undefined
     : {
@@ -172,12 +174,12 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     ...readAdminUiOrderIngestAuditService(input),
     ...readAdminUiOrderSyncService(input),
     ...readAdminUiPairingCodeService(input),
-    ...readAdminUiRouteOptimizationService(input.env),
+    ...routeOptimizationDeps,
     ...readAdminUiWooSyncService(input),
     ...(driverAppDownloadUrl === undefined ? {} : { driverAppDownloadUrl }),
     ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
     ...routePlanDeps,
-    ...readAdminUiRouteGroupingService(input, routeGeometryRefresher),
+    ...readAdminUiRouteGroupingService(input, routeGeometryRefresher, routeOptimizationDeps.routeOptimizationService, routeGeometryProvider),
     secureCookies: input.nodeEnv !== 'development' && input.nodeEnv !== 'test',
     sessionSecret,
     ...readAdminUiSettingsService(input)
@@ -364,15 +366,26 @@ function readAdminUiRouteOptimizationService(
   };
 }
 
+function readAdminUiRouteGeometryProvider(
+  env: AdminCommerceConnectionsRuntimeEnv
+): RouteGeometryProvider | undefined {
+  const osrmBaseUrl = readOptional(env.OSRM_BASE_URL);
+  return osrmBaseUrl === undefined
+    ? undefined
+    : new OsrmRouteGeometryProvider({
+        baseUrl: osrmBaseUrl,
+        ...optionalTimeout(env.OSRM_TIMEOUT_MS),
+      });
+}
+
 function readAdminUiRoutePlanService(input: {
   adminRoutePlans?: AdminRoutePlanDependencies | undefined;
   env: AdminCommerceConnectionsRuntimeEnv;
   prisma?: PrismaClient | undefined;
-}): Pick<AdminCommerceConnectionsUiDependencies, 'routeOptimizationJobService' | 'routePlanService'> {
+}, routeGeometryProvider?: RouteGeometryProvider): Pick<AdminCommerceConnectionsUiDependencies, 'routeOptimizationJobService' | 'routePlanService'> {
   if (input.prisma === undefined) {
     return input.adminRoutePlans === undefined ? {} : { routePlanService: input.adminRoutePlans.routePlanService };
   }
-  const osrmBaseUrl = readOptional(input.env.OSRM_BASE_URL);
   const routeOptimizationJobService = new RouteOptimizationJobService(
     new PrismaRouteOptimizationJobRepository(input.prisma),
   );
@@ -380,12 +393,7 @@ function readAdminUiRoutePlanService(input: {
     routeOptimizationJobService,
     routePlanService: new RoutePlanAdminService(
       new PrismaRoutePlanRepository(input.prisma, { allowAnyShopDomain: true }),
-      osrmBaseUrl === undefined
-        ? undefined
-        : new OsrmRouteGeometryProvider({
-            baseUrl: osrmBaseUrl,
-            ...optionalTimeout(input.env.OSRM_TIMEOUT_MS),
-          }),
+      routeGeometryProvider,
       routeOptimizationJobService,
     )
   };
@@ -397,7 +405,9 @@ function readAdminUiRouteGroupingService(
     env: AdminCommerceConnectionsRuntimeEnv;
     prisma?: PrismaClient | undefined;
   },
-  routeGeometryRefresher?: ConstructorParameters<typeof PrismaRouteGroupingService>[2]
+  routeGeometryRefresher?: ConstructorParameters<typeof PrismaRouteGroupingService>[2],
+  routeOptimizationService?: ConstructorParameters<typeof PrismaRouteGroupingService>[3],
+  routeGeometryProvider?: ConstructorParameters<typeof PrismaRouteGroupingService>[4]
 ): Pick<AdminCommerceConnectionsUiDependencies, 'routeGroupingService'> {
   if (input.prisma === undefined) return {};
   return {
@@ -405,6 +415,8 @@ function readAdminUiRouteGroupingService(
       input.prisma,
       loadDriverPushProvider(input.env),
       routeGeometryRefresher,
+      routeOptimizationService,
+      routeGeometryProvider,
     ),
   };
 }

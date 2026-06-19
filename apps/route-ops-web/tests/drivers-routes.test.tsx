@@ -25,13 +25,9 @@ import {
   buildRouteSaveDraftInput,
   getDriverOptionLabel,
   getRouteDriverDisplay,
-  getRouteOptimizationActionLabel,
-  getRouteOptimizationJobDetailRows,
-  getRouteOptimizationJobNotice,
   getRoutePublishBadge,
   formatRoutePlanStatus,
   hasDepotCoordinates,
-  isRouteOptimizationJobActive,
   isRouteVisibleToLinkedDriver,
   RouteBuilder,
   RouteStopOrderCompactList,
@@ -511,7 +507,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('data-drop-preview="after"');
   });
 
-  test('RouteBuilder shows optimization job status and locks stop order controls while active', () => {
+  test('RouteBuilder does not expose route optimization job status or lock controls', () => {
     const detail = routePlanDetailFixture();
     const html = renderToStaticMarkup(
       <RouteBuilder
@@ -520,12 +516,6 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         detail={detail}
         drivers={[driverFixture()]}
         initialBuilderTab="stop-order"
-        initialOptimizationJob={routeOptimizationJobFixture({
-          currentStep: 'CALLING_ENGINE',
-          elapsedMs: 15320,
-          startedAt: '2026-06-10T07:00:01.000Z',
-          status: 'RUNNING',
-        })}
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
         onRefreshRoutes={() => undefined}
@@ -534,41 +524,19 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
       />,
     );
 
-    expect(isRouteOptimizationJobActive(routeOptimizationJobFixture({ status: 'RUNNING' }))).toBe(true);
-    expect(html).toContain('Route optimization');
-    expect(html).not.toContain('Route Engine is optimizing this route.');
-    expect(html).toContain('Stop order edits are locked until this job reaches a terminal state.');
-    expect(html).toContain('class="route-stop-compact-list locked"');
-    expect(html).toContain('Route Engine job details');
-    expect(html).toContain('Calling engine');
-    expect(html).toContain('15s');
-    expect(html).toContain('Result wait limit');
-    expect(html).toContain('3m 00s');
+    expect(html).not.toContain('Route optimization');
+    expect(html).not.toContain('Stop order edits are locked until this job reaches a terminal state.');
+    expect(html).not.toContain('class="route-stop-compact-list locked"');
+    expect(html).not.toContain('Route Engine job details');
     expect(html).not.toContain('route-opt:route-plan-id:test');
     expect(html).not.toContain('Trace ID');
-    expect(html).toContain('route-optimization-disclosure');
-    expect(html).toContain('class="route-optimization-summary-line"');
-    expect(html).toContain('class="route-optimization-details"');
-    expect(html).not.toContain('class="route-optimization-log" open=""');
-    expect(html).not.toContain('route-optimization-disclosure neutral" open=""');
-    expect(html).toContain('Rerun optimization');
-    expect(html).toMatch(/class="primary route-optimize-button" disabled=""/);
-    expect(html).toMatch(
-      /class="map-panel panel"[\s\S]*class="panel-heading"[\s\S]*Rerun optimization[\s\S]*Route Engine job details[\s\S]*class="route-ops-map-frame"/,
-    );
+    expect(html).not.toContain('route-optimization-disclosure');
+    expect(html).not.toContain('Rerun optimization');
+    expect(html).not.toContain('route-optimize-button');
     expect(html).not.toContain('route-builder-card-heading');
-    expect(html).not.toMatch(/class="route-stop-compact-toolbar"[\s\S]*route-optimize-button/);
-    expect(html).not.toMatch(/class="route-builder-tab-body route-builder-tab-body--stop-order"[\s\S]*Route Engine job details[\s\S]*class="route-stop-compact-list/);
-
-    const liveElapsedRows = getRouteOptimizationJobDetailRows(routeOptimizationJobFixture({
-      elapsedMs: 15320,
-      startedAt: '2026-06-10T07:00:01.000Z',
-      status: 'RUNNING',
-    }), 'en-CA', Date.parse('2026-06-10T07:01:02.000Z'));
-    expect(liveElapsedRows[2]?.value).toBe('1m 01s');
   });
 
-  test('RouteBuilder keeps route optimization controls visible outside the Stop order tab', () => {
+  test('RouteBuilder keeps driver and return controls editable without optimization lock', () => {
     const html = renderToStaticMarkup(
       <RouteBuilder
         bootstrap={bootstrap()}
@@ -576,11 +544,6 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         detail={routePlanDetailFixture()}
         drivers={[driverFixture()]}
         initialBuilderTab="driver-options"
-        initialOptimizationJob={routeOptimizationJobFixture({
-          currentStep: 'CALLING_ENGINE',
-          elapsedMs: 15320,
-          status: 'RUNNING',
-        })}
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
         onRefreshRoutes={() => undefined}
@@ -589,17 +552,14 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
       />,
     );
 
-    expect(html).toContain('Rerun optimization');
-    expect(html).toContain('Route Engine job details');
-    expect(html).toMatch(/<select disabled="">/);
-    expect(html).toMatch(/class="route-end-toggle-checkbox" disabled=""/);
-    expect(html).toMatch(
-      /class="map-panel panel"[\s\S]*class="panel-heading"[\s\S]*Rerun optimization[\s\S]*Route Engine job details[\s\S]*class="route-ops-map-frame"/,
-    );
+    expect(html).not.toContain('Rerun optimization');
+    expect(html).not.toContain('Route Engine job details');
+    expect(html).not.toMatch(/<select disabled="">/);
+    expect(html).not.toMatch(/class="route-end-toggle-checkbox" disabled=""/);
     expect(html).not.toContain('class="route-builder-tab-body route-builder-tab-body--stop-order"');
   });
 
-  test('RouteBuilder allows explicit optimization rerun after a terminal job', () => {
+  test('RouteBuilder omits terminal optimization job copy from normal route detail', () => {
     const html = renderToStaticMarkup(
       <RouteBuilder
         bootstrap={bootstrap()}
@@ -607,11 +567,6 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         detail={routePlanDetailFixture()}
         drivers={[driverFixture()]}
         initialBuilderTab="stop-order"
-        initialOptimizationJob={routeOptimizationJobFixture({
-          appliedAt: '2026-06-11T01:27:31.000Z',
-          finishedAt: '2026-06-11T01:27:31.000Z',
-          status: 'APPLIED',
-        })}
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
         onRefreshRoutes={() => undefined}
@@ -620,41 +575,13 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
       />,
     );
 
-    expect(getRouteOptimizationJobNotice(routeOptimizationJobFixture({ status: 'APPLIED' }))?.tone).toBe('green');
-    expect(getRouteOptimizationJobDetailRows(routeOptimizationJobFixture({ currentStep: 'APPLYING_RESULT', elapsedMs: 4200, status: 'RUNNING' }))[1]?.value).toBe('Applying result');
     expect(html).not.toContain('Route Engine result applied.');
-    expect(html).toContain('Applied at');
-    expect(html).toContain('Finished at');
-    expect(html).toContain('Rerun optimization');
-    expect(html).toMatch(
-      /class="map-panel panel"[\s\S]*class="panel-heading"[\s\S]*Rerun optimization[\s\S]*Route Engine job details[\s\S]*class="route-ops-map-frame"/,
-    );
+    expect(html).not.toContain('Applied at');
+    expect(html).not.toContain('Finished at');
+    expect(html).not.toContain('Rerun optimization');
     expect(html).not.toContain('route-builder-card-heading');
     expect(html).not.toContain('route-stop-compact-list locked');
-    expect(html).not.toMatch(/class="primary route-optimize-button" disabled=""/);
-  });
-
-  test('Route optimization action copy makes unsaved-save sequencing explicit', () => {
-    const copy = getRoutesCopy('en-CA').routeOptimization;
-
-    expect(getRouteOptimizationActionLabel({
-      copy,
-      hasUnsavedRouteChanges: true,
-      isStartingOptimizationJob: false,
-      optimizationJob: routeOptimizationJobFixture({ status: 'APPLIED' }),
-    })).toBe('Save & rerun optimization');
-    expect(getRouteOptimizationActionLabel({
-      copy,
-      hasUnsavedRouteChanges: false,
-      isStartingOptimizationJob: false,
-      optimizationJob: routeOptimizationJobFixture({ status: 'APPLIED' }),
-    })).toBe('Rerun optimization');
-    expect(getRouteOptimizationActionLabel({
-      copy,
-      hasUnsavedRouteChanges: false,
-      isStartingOptimizationJob: true,
-      optimizationJob: null,
-    })).toBe('Starting optimization…');
+    expect(html).not.toContain('route-optimize-button');
   });
 
   test('route optimization job API helpers use the protected Route Ops endpoints', async () => {
