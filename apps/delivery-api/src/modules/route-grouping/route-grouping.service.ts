@@ -241,11 +241,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const hasCurrent = loaded.childVersions.some((child) => child.status === 'CURRENT');
       if (hasCurrent) await archiveCurrentChildren(tx, loaded, input.actor);
       const nextVersion = hasCurrent ? loaded.currentVersion + 1 : loaded.currentVersion;
-      await tx.routeGroupingVersion.updateMany({ data: { status: 'ARCHIVED' }, where: { groupingId: loaded.id, status: 'CURRENT' } });
-      await tx.routeGroupingVersion.updateMany({ data: { status: 'ARCHIVED' }, where: { groupingId: loaded.id, status: 'DRAFT' } });
-      const version = await tx.routeGroupingVersion.create({
-        data: { actor: input.actor, changeReason: hasCurrent ? 'regenerate_child_routes' : 'generate_child_routes', groupingId: loaded.id, shopId: loaded.shopId, status: 'CURRENT', version: nextVersion }
-      });
+      const version = await createCurrentGroupingVersion(tx, loaded, { actor: input.actor, hasCurrent, nextVersion });
       const childRoutePlanIds: string[] = [];
       for (const candidate of candidates) {
         const routePlan = await createChildRoutePlan(tx, loaded, candidate, nextVersion, input.actor);
@@ -545,6 +541,39 @@ async function archiveCurrentChildren(tx: Tx, group: LoadedGrouping, actor: stri
   }
   await tx.routeGroupingVersion.updateMany({ data: { status: 'ARCHIVED' }, where: { groupingId: group.id, status: 'CURRENT' } });
   void actor;
+}
+
+async function createCurrentGroupingVersion(
+  tx: Tx,
+  group: LoadedGrouping,
+  input: { actor: string; hasCurrent: boolean; nextVersion: number }
+): Promise<{ id: string }> {
+  if (!input.hasCurrent) {
+    const draft = group.versions.find((version) => version.status === 'DRAFT' && version.version === input.nextVersion);
+    if (draft !== undefined) {
+      await tx.routeGroupingVersion.updateMany({
+        data: { status: 'ARCHIVED' },
+        where: { groupingId: group.id, id: { not: draft.id }, status: 'DRAFT' }
+      });
+      return tx.routeGroupingVersion.update({
+        data: { actor: input.actor, changeReason: 'generate_child_routes', status: 'CURRENT' },
+        select: { id: true },
+        where: { id: draft.id }
+      });
+    }
+  }
+  await tx.routeGroupingVersion.updateMany({ data: { status: 'ARCHIVED' }, where: { groupingId: group.id, status: 'DRAFT' } });
+  return tx.routeGroupingVersion.create({
+    data: {
+      actor: input.actor,
+      changeReason: input.hasCurrent ? 'regenerate_child_routes' : 'generate_child_routes',
+      groupingId: group.id,
+      shopId: group.shopId,
+      status: 'CURRENT',
+      version: input.nextVersion
+    },
+    select: { id: true }
+  });
 }
 
 function groupAssignmentsByDriver(assignments: LoadedAssignment[]): Map<string, LoadedAssignment[]> {

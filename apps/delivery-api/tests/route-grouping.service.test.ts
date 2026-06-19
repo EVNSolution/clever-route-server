@@ -28,6 +28,8 @@ describe('route grouping contracts', () => {
     const dependencySource = readFileSync(join(process.cwd(), 'src/modules/commerce/admin-commerce-connections.dependencies.ts'), 'utf8');
 
     expect(serviceSource).toContain('prepareOptimizedChildRouteCandidates(initial, input.shopDomain)');
+    expect(serviceSource).toContain('createCurrentGroupingVersion(tx, loaded');
+    expect(serviceSource).toContain("changeReason: 'generate_child_routes', status: 'CURRENT'");
     expect(serviceSource).toContain('validateChildRouteStopsNearDepot(assignments, depot)');
     expect(serviceSource).toContain('child route contains stops outside depot coverage');
     expect(serviceSource).toContain('routeOptimizationService.optimizeStopOrderWithDiagnostics');
