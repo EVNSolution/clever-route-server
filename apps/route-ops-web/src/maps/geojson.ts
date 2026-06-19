@@ -147,15 +147,41 @@ export function getRouteMapPoints(detail: RoutePlanDetailDto | null, draftStops?
   if (depotLngLat !== null) {
     points.push({ id: `${detail.routePlan.id}:depot`, kind: 'depot', label: 'D', latitude: depotLngLat[1], longitude: depotLngLat[0] });
   }
+  const isDraftRoute = detail.routePlan.status === 'DRAFT';
+  if (draftStops === undefined && detail.routeStopPoints.length > 0) {
+    for (const stopPoint of getRouteStopPointsFromOptimization(detail, isDraftRoute)) {
+      points.push(stopPoint);
+    }
+    return points;
+  }
+
   const savedSequenceByStopId = new Map(detail.stops.map((stop) => [stop.deliveryStopId, stop.sequence]));
   const sourceStops = draftStops ?? detail.stops;
-  const isDraftRoute = detail.routePlan.status === 'DRAFT';
   for (const stop of [...sourceStops].sort((left, right) => left.sequence - right.sequence)) {
     const hasSequencePreview = savedSequenceByStopId.get(stop.deliveryStopId) !== stop.sequence;
     const stopPoint = routeStopToPoint(stop, isDraftRoute || hasSequencePreview);
     if (stopPoint !== null) points.push(stopPoint);
   }
   return points;
+}
+
+function getRouteStopPointsFromOptimization(detail: RoutePlanDetailDto, preview: boolean): RouteOpsPoint[] {
+  return [...detail.routeStopPoints]
+    .sort((left, right) => left.sequence - right.sequence)
+    .flatMap((point) => {
+      const coordinates = isLngLat(point.snappedCoordinates) ? point.snappedCoordinates : point.inputCoordinates;
+      if (!isLngLat(coordinates)) return [];
+      return [{
+        addressLabel: point.name ?? undefined,
+        id: point.deliveryStopId,
+        kind: 'stop' as const,
+        label: String(point.sequence),
+        latitude: coordinates[1],
+        longitude: coordinates[0],
+        preview,
+        sequence: point.sequence
+      }];
+    });
 }
 
 export function getRouteDropoffPoints(detail: RoutePlanDetailDto | null): RouteOpsPoint[] {

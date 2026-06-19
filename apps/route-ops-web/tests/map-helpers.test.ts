@@ -110,7 +110,7 @@ describe('route ops map helpers', () => {
     expect(getRouteMapPoints(detail).map((point) => `${point.kind}:${point.label}`)).toEqual(['depot:D', 'stop:1', 'stop:2']);
   });
 
-  test('splits numbered order markers from OSRM snapped dropoff points', () => {
+  test('uses OSRM snapped route stop points for numbered markers after optimization', () => {
     const detail: RoutePlanDetailDto = {
       ...routeDetail(),
       routeStopPoints: [
@@ -123,17 +123,17 @@ describe('route ops map helpers', () => {
 
     expect(points).toEqual([
       { id: 'route-1:depot', kind: 'depot', label: 'D', latitude: 43.7, longitude: -79.5 },
-      { id: 'a', kind: 'stop', label: '1', latitude: 43.6, longitude: -79.3, preview: true, sequence: 1 },
-      { id: 'b', kind: 'stop', label: '2', latitude: 43.65, longitude: -79.4, preview: true, sequence: 2 }
+      { addressLabel: 'Road A', id: 'a', kind: 'stop', label: '1', latitude: 43.61, longitude: -79.31, preview: true, sequence: 1 },
+      { addressLabel: undefined, id: 'b', kind: 'stop', label: '2', latitude: 43.65, longitude: -79.4, preview: true, sequence: 2 }
     ]);
     expect(dropoffPoints).toEqual([
       { addressLabel: 'Road A', id: 'a:dropoff', kind: 'dropoff', label: '1', latitude: 43.61, longitude: -79.31 }
     ]);
-    expect(fitBoundsForPoints([...points, ...dropoffPoints])).toEqual({ east: -79.3, north: 43.7, south: 43.6, west: -79.5 });
-    expect(fitBoundsForPoints(getRouteFitPoints(detail, points, dropoffPoints))).toEqual({ east: -79.3, north: 43.65, south: 43.6, west: -79.4 });
+    expect(fitBoundsForPoints([...points, ...dropoffPoints])).toEqual({ east: -79.31, north: 43.7, south: 43.61, west: -79.5 });
+    expect(fitBoundsForPoints(getRouteFitPoints(detail, points, dropoffPoints))).toEqual({ east: -79.31, north: 43.65, south: 43.61, west: -79.4 });
     expect(buildRouteStopMarkerFeatureCollection(points)).toEqual({
       features: [
-        { geometry: { coordinates: [-79.3, 43.6], type: 'Point' }, properties: { color: '#006fbb', id: 'a', label: '1', preview: true, selected: false, sortKey: 10001 }, type: 'Feature' },
+        { geometry: { coordinates: [-79.31, 43.61], type: 'Point' }, properties: { color: '#006fbb', id: 'a', label: '1', preview: true, selected: false, sortKey: 10001 }, type: 'Feature' },
         { geometry: { coordinates: [-79.4, 43.65], type: 'Point' }, properties: { color: '#006fbb', id: 'b', label: '2', preview: true, selected: false, sortKey: 10002 }, type: 'Feature' }
       ],
       type: 'FeatureCollection'

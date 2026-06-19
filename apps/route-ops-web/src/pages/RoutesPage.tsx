@@ -502,8 +502,16 @@ export function RouteBuilder(input: {
     }
     let cancelled = false;
     getLatestRouteOptimizationJob(detail.routePlan.id)
-      .then((payload) => {
-        if (!cancelled) setOptimizationJob(payload.job);
+      .then(async (payload) => {
+        if (cancelled) return;
+        setOptimizationJob(payload.job);
+        if (payload.job?.status === "APPLIED") {
+          const updated = await getRouteDetail(detail.routePlan.id);
+          if (!cancelled) {
+            input.setDetail(updated);
+            input.onRefreshRoutes();
+          }
+        }
       })
       .catch((error: unknown) => {
         if (!cancelled) input.setError(readErrorMessage(error));
@@ -511,7 +519,7 @@ export function RouteBuilder(input: {
     return () => {
       cancelled = true;
     };
-  }, [detail?.routePlan.id, input.setError]);
+  }, [detail?.routePlan.id, input.onRefreshRoutes, input.setDetail, input.setError]);
 
   useEffect(() => {
     if (!isRouteOptimizationJobActive(optimizationJob)) {
@@ -535,14 +543,16 @@ export function RouteBuilder(input: {
       try {
         const payload = await getRouteOptimizationJob(detail.routePlan.id, optimizationJob.id);
         if (cancelled) return;
-        setOptimizationJob(payload.job);
         if (payload.job?.status === "APPLIED") {
           const updated = await getRouteDetail(detail.routePlan.id);
           if (!cancelled) {
             input.setDetail(updated);
             input.onRefreshRoutes();
+            setOptimizationJob(payload.job);
           }
+          return;
         }
+        setOptimizationJob(payload.job);
       } catch (error) {
         if (!cancelled) input.setError(readErrorMessage(error));
       }
