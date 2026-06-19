@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM node:22-bookworm-slim AS build
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS build
 WORKDIR /app
 COPY apps/route-ops-web/package.json apps/route-ops-web/package-lock.json ./apps/route-ops-web/
 RUN npm --prefix apps/route-ops-web ci
@@ -10,7 +10,7 @@ RUN npm --prefix apps/route-ops-web run build \
   && test -d apps/route-ops-web/dist/assets \
   && test -d apps/route-ops-web/public/vendor
 
-FROM busybox:1.37.0 AS static
+FROM --platform=$TARGETPLATFORM busybox:1.37.0 AS static
 WORKDIR /opt/route-ops-web
 LABEL org.clever-route.image-role=route-ops-web-static
 COPY --from=build /app/apps/route-ops-web/dist ./dist

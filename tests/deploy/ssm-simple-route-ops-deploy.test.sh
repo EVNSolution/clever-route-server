@@ -19,6 +19,7 @@ command = payload['commands'][0]
 wrapper = pathlib.Path('scripts/ssm-simple-route-ops-deploy.sh').read_text()
 workflow = pathlib.Path('.github/workflows/route-ops-simple-deploy.yml').read_text()
 caddyfile = pathlib.Path('infra/caddy/Caddyfile').read_text()
+web_dockerfile = pathlib.Path('apps/route-ops-web/Dockerfile').read_text()
 dry_run_idx = command.index('if [ "$DRY_RUN" = "1" ]')
 forward_mutation_snippets = [
     '--profile osrm --profile vroom pull delivery-api vroom',
@@ -63,6 +64,7 @@ checks = {
     'manual_publish_uses_registry_cache': f'--cache-from "type=registry,ref=${{STATIC_IMAGE_REPO}}:buildcache"' in wrapper and f'--cache-to "type=registry,ref=${{RUNTIME_IMAGE_REPO}}:buildcache,mode=max"' in wrapper,
     'manual_publish_requires_buildx': 'docker buildx version >/dev/null 2>&1 || fail "docker buildx is required for --publish' in wrapper,
     'manual_publish_does_not_use_legacy_builder': 'docker build --platform linux/amd64' not in wrapper and 'docker push "$image"' not in wrapper,
+    'web_static_build_stage_uses_build_platform': 'FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS build' in web_dockerfile and 'FROM --platform=$TARGETPLATFORM busybox:1.37.0 AS static' in web_dockerfile,
 }
 missing = [name for name, ok in checks.items() if not ok]
 if missing:

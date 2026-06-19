@@ -85,7 +85,8 @@ The same path requires the Docker buildx CLI plugin and publishes linux/amd64 im
 with `docker buildx build --push`, `--provenance=false`, and the same GHCR registry
 cache refs used by GitHub Actions. Do not fall back to legacy `docker build --platform`
 on Apple Silicon; that path can fail inside amd64/esbuild emulation before anything is
-published.
+published. The web static Dockerfile therefore runs its Node/Vite build stage on
+`$BUILDPLATFORM` and only emits the final static image on `$TARGETPLATFORM`.
 
 Safe host dry-run:
 
