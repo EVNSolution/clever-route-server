@@ -142,6 +142,13 @@ export type RoutePlanDetailStop = {
   normalizedPaymentStatus?: NormalizedPaymentStatus | null;
   orderId: string;
   items?: OrderItemDto[];
+  customerNoteContext?: {
+    adminMemo: string | null;
+    customerNote: string | null;
+    deliveryCustomerProfileId: string | null;
+    matchReasons: unknown;
+    matchStatus: string | null;
+  };
   orderName: string;
   paymentStatus: string | null;
   recipientName: string | null;

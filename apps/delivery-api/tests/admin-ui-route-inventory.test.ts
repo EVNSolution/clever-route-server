@@ -86,6 +86,12 @@ const expectedRouteRegistrations: RouteRegistration[] = [
   { line: 1903, method: "GET", pathExpression: "`${ADMIN_UI_APP_API_PATH}/order-batches`" },
   { line: 1931, method: "GET", pathExpression: "`${ADMIN_UI_APP_API_PATH}/routes`" },
   { line: 1955, method: "POST", pathExpression: "`${ADMIN_UI_APP_API_PATH}/routes`" },
+  { line: 1956, method: "POST", pathExpression: "`${ADMIN_UI_APP_API_PATH}/route-groups`" },
+  { line: 1957, method: "GET", pathExpression: "`${ADMIN_UI_APP_API_PATH}/route-groups/:routeGroupId`" },
+  { line: 1958, method: "PATCH", pathExpression: "`${ADMIN_UI_APP_API_PATH}/route-groups/:routeGroupId/polygons`" },
+  { line: 1959, method: "PATCH", pathExpression: "`${ADMIN_UI_APP_API_PATH}/route-groups/:routeGroupId/assignments`" },
+  { line: 1960, method: "POST", pathExpression: "`${ADMIN_UI_APP_API_PATH}/route-groups/:routeGroupId/generate-child-routes`" },
+  { line: 1961, method: "POST", pathExpression: "`${ADMIN_UI_APP_API_PATH}/route-groups/:routeGroupId/rollback`" },
   { line: 1993, method: "GET", pathExpression: "`${ADMIN_UI_APP_API_PATH}/routes/:routePlanId`" },
   { line: 2019, method: "DELETE", pathExpression: "`${ADMIN_UI_APP_API_PATH}/routes/:routePlanId`" },
   { line: 2046, method: "PATCH", pathExpression: "`${ADMIN_UI_APP_API_PATH}/routes/:routePlanId`" },
@@ -214,12 +220,15 @@ describe("admin UI route inventory", () => {
     expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/delivery-customers/:sourceProfileId/merge`");
     expect(registrations).toContain("PATCH `${ADMIN_UI_APP_API_PATH}/orders/:orderId/metadata`");
     expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/routes`");
+    expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/route-groups`");
+    expect(registrations).toContain("PATCH `${ADMIN_UI_APP_API_PATH}/route-groups/:routeGroupId/polygons`");
+    expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/route-groups/:routeGroupId/generate-child-routes`");
     expect(registrations).toContain("PATCH `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/stops`");
     expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/optimize-jobs`");
     expect(registrations).toContain("GET `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/optimize-jobs/latest`");
     expect(registrations).toContain("GET `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/optimize-jobs/:jobId`");
     expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/publish`");
     expect(registrations).toContain("PATCH `${ADMIN_UI_APP_API_PATH}/settings`");
-    expect(expectedRouteRegistrations).toHaveLength(95);
+    expect(expectedRouteRegistrations).toHaveLength(101);
   });
 });

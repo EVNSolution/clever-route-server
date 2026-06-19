@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import type { DragEvent, KeyboardEvent, ReactElement } from "react";
 
 import {
@@ -29,6 +29,7 @@ import type {
   BootstrapPayload,
   DriverDto,
   RouteOptimizationJobDto,
+  RouteGroupingSummaryDto,
   RoutePlanDetailDto,
   RoutePlanSummaryDto,
   RouteStopDto,
@@ -255,6 +256,7 @@ export function RoutesPage({
   const locale = resolveLocale(bootstrap.locale);
   const t = getRoutesCopy(locale);
   const [routes, setRoutes] = useState<RoutePlanSummaryDto[]>([]);
+  const [routeGroups, setRouteGroups] = useState<RouteGroupingSummaryDto[]>([]);
   const [detail, setDetail] = useState<RoutePlanDetailDto | null>(null);
   const [drivers, setDrivers] = useState<DriverDto[]>([]);
   const [deletingRouteId, setDeletingRouteId] = useState<string | null>(null);
@@ -262,7 +264,8 @@ export function RoutesPage({
   const refreshRoutes = useCallback(async (): Promise<void> => {
     try {
       const payload = await getRoutes("");
-      setRoutes(payload.routePlans);
+      setRoutes(payload.standaloneRoutes ?? payload.routePlans);
+      setRouteGroups(payload.routeGroups ?? []);
       setError(null);
     } catch (error) {
       setError(readErrorMessage(error));
@@ -331,10 +334,10 @@ export function RoutesPage({
   return (
     <section className="workspace-stack">
       <div className="summary-strip">
-        <Kpi label={t.routes} value={routes.length} />
+        <Kpi label={t.routes} value={routes.length + routeGroups.length} />
         <Kpi
           label={t.stops}
-          value={routes.reduce((sum, item) => sum + item.stopsCount, 0)}
+          value={routes.reduce((sum, item) => sum + item.stopsCount, 0) + routeGroups.reduce((sum, group) => sum + group.totalOrders, 0)}
         />
         <Kpi
           label={t.missingCoordinates}
@@ -367,6 +370,37 @@ export function RoutesPage({
             </tr>
           </thead>
           <tbody>
+            {routeGroups.map((group) => (
+              <Fragment key={group.id}>
+                <tr key={group.id} className="route-group-row">
+                  <td>
+                    <strong>{group.name}</strong>
+                    <div className="muted">Driver split · v{group.currentVersion}</div>
+                  </td>
+                  <td><Badge>{group.displayStatus}</Badge></td>
+                  <td>{group.totalOrders}</td>
+                  <td>{group.planDate}</td>
+                  <td>{group.unresolvedOrders === 0 ? "Resolved" : `${group.unresolvedOrders} unresolved`}</td>
+                  <td>
+                    <button onClick={() => navigate(`/admin/ui/app/route-groups/${encodeURIComponent(group.id)}`)} type="button">Open</button>
+                  </td>
+                </tr>
+                {group.children.map((child) => (
+                  <tr key={`${group.id}:${child.routePlanId ?? child.driverId}:${child.childVersion}`} className="route-group-child-row">
+                    <td>↳ {child.driverName ?? "Unassigned driver"}</td>
+                    <td><Badge>{child.displayStatus}</Badge></td>
+                    <td>{child.stopsCount}</td>
+                    <td>{group.planDate}</td>
+                    <td>{child.notificationStatus}</td>
+                    <td>
+                      {child.routePlanId === null ? null : (
+                        <button onClick={() => navigate(`/admin/ui/app/routes/${encodeURIComponent(child.routePlanId ?? "")}`)} type="button">{t.open}</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </Fragment>
+            ))}
             {routes.map((item) => (
               <tr key={item.id}>
                 <td>
@@ -967,6 +1001,29 @@ export function RouteBuilder(input: {
                 </table>
               </div>
             )}
+          </section>
+          <section className="route-item-summary-card" aria-label="Stop notes and items">
+            <div className="route-item-summary-heading">
+              <h3>Stop notes and items</h3>
+            </div>
+            <div className="route-item-table-scroll">
+              <table className="route-item-table">
+                <thead>
+                  <tr><th>#</th><th>Order</th><th>Customer note</th><th>Admin memo</th><th>Items</th></tr>
+                </thead>
+                <tbody>
+                  {draftStops.map((stop) => (
+                    <tr key={`${stop.deliveryStopId}:notes`}>
+                      <td>{stop.sequence}</td>
+                      <td>{stop.orderName}</td>
+                      <td>{stop.customerNoteContext?.customerNote ?? "—"}</td>
+                      <td>{stop.customerNoteContext?.adminMemo ?? "—"}</td>
+                      <td>{getOrderItems(stop.items).map((item) => formatOrderItemLine(item)).join(" / ") || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </section>
         </div>
       }

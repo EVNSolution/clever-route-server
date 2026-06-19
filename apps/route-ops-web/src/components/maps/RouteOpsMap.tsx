@@ -7,7 +7,7 @@ import { installPmtilesProtocol } from '../../maps/pmtiles';
 import { mapReadiness } from '../../maps/provider';
 import { getMapCopy, resolveLocale } from '../../i18n';
 import { formatOrderItemLine, getOrderItems } from '../../orderItems';
-import type { BootstrapPayload, CanonicalOrderDto, OrderItemDto, RoutePlanDetailDto, RouteStopDto } from '../../types';
+import type { BootstrapPayload, CanonicalOrderDto, OrderItemDto, RouteGroupingPolygonDto, RoutePlanDetailDto, RouteStopDto } from '../../types';
 
 type MapLibreModule = typeof import('maplibre-gl');
 type MapLibreMap = InstanceType<MapLibreModule['Map']>;
@@ -51,19 +51,24 @@ type RouteOpsMapProps = {
   statusContent?: ReactNode;
   onExitRouteMode?(): void;
   onMapClickCoordinate?(coordinate: { latitude: number; longitude: number }): void;
+  onPolygonFinish?(): void;
+  onPolygonVertex?(coordinate: { latitude: number; longitude: number }): void;
   onOrderSelect?(orderId: string): void;
   onRouteStopPickerClose?(): void;
   onRouteStopSelect?(deliveryStopId: string): void;
   onRouteStopSequencePick?(deliveryStopId: string, sequence: number): void;
   orderMarkerStates?: ReadonlyMap<string, OrderMapMarkerState>;
   orders?: CanonicalOrderDto[];
+  polygonDraft?: { closed: boolean; vertices: Array<{ latitude: number; longitude: number }> };
+  polygonMode?: boolean;
+  polygons?: RouteGroupingPolygonDto[];
   plannedOrderIds?: ReadonlySet<string>;
   selectedRouteStopId?: string | null;
   subtitle?: string;
   title?: string;
 };
 
-export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops, headerAction, statusContent, onExitRouteMode, onMapClickCoordinate, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
+export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops, headerAction, statusContent, onExitRouteMode, onMapClickCoordinate, onPolygonFinish, onPolygonVertex, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), polygonDraft, polygonMode = false, polygons = [], selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
   const locale = resolveLocale(bootstrap.locale);
   const t = getMapCopy(locale);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -71,6 +76,9 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
   const maplibreRef = useRef<MapLibreModule | null>(null);
   const markersRef = useRef<MapLibreMarker[]>([]);
   const onMapClickCoordinateRef = useRef(onMapClickCoordinate);
+  const onPolygonFinishRef = useRef(onPolygonFinish);
+  const onPolygonVertexRef = useRef(onPolygonVertex);
+  const polygonModeRef = useRef(polygonMode);
   const onOrderSelectRef = useRef(onOrderSelect);
   const onRouteStopPickerCloseRef = useRef(onRouteStopPickerClose);
   const onRouteStopSelectRef = useRef(onRouteStopSelect);
@@ -99,10 +107,23 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
   const ordersGeojson = useMemo(() => buildOrdersMapFeatureCollection(orders, orderMarkerStates ?? plannedOrderIds), [orderMarkerStates, orders, plannedOrderIds]);
   const routeDropoffGeojson = useMemo(() => (detail === null ? EMPTY_ROUTE_DROPOFF_COLLECTION : buildRouteDropoffPointFeatureCollection(dropoffPoints)), [detail, dropoffPoints]);
   const routeStopGeojson = useMemo(() => (detail === null ? EMPTY_ROUTE_STOP_COLLECTION : buildRouteStopMarkerFeatureCollection(points, selectedRouteStopId)), [detail, points, selectedRouteStopId]);
+  const polygonGeojson = useMemo(() => buildPolygonFeatureCollection(polygons, polygonDraft), [polygonDraft, polygons]);
 
   useEffect(() => {
     onMapClickCoordinateRef.current = onMapClickCoordinate;
   }, [onMapClickCoordinate]);
+
+  useEffect(() => {
+    onPolygonFinishRef.current = onPolygonFinish;
+  }, [onPolygonFinish]);
+
+  useEffect(() => {
+    onPolygonVertexRef.current = onPolygonVertex;
+  }, [onPolygonVertex]);
+
+  useEffect(() => {
+    polygonModeRef.current = polygonMode;
+  }, [polygonMode]);
 
   useEffect(() => {
     mapCopyRef.current = t;
@@ -191,7 +212,15 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
         map.on('click', (event: { lngLat?: { lat: number; lng: number } }) => {
           if (detailRef.current !== null) return;
           if (event.lngLat === undefined) return;
-          onMapClickCoordinateRef.current?.({ latitude: event.lngLat.lat, longitude: event.lngLat.lng });
+          const coordinate = { latitude: event.lngLat.lat, longitude: event.lngLat.lng };
+          if (polygonModeRef.current) {
+            onPolygonVertexRef.current?.(coordinate);
+            return;
+          }
+          onMapClickCoordinateRef.current?.(coordinate);
+        });
+        map.on('dblclick', () => {
+          if (polygonModeRef.current) onPolygonFinishRef.current?.();
         });
         map.on('error', (event: { error?: { message?: string } }) => {
           if (!mounted) return;
@@ -224,13 +253,14 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
     syncRouteLayers(map, lineFeature);
     syncRouteDropoffLayers(map, routeDropoffGeojson);
     syncRouteStopLayers(map, routeStopGeojson);
+    syncPolygonLayers(map, polygonGeojson);
     syncRouteMarkers(map, maplibreRef.current, points.filter((point) => point.kind === 'depot'), markersRef.current, locale);
     if (detail !== null) {
       fitMap(map, maplibreRef.current, fitPoints);
       return;
     }
     applyOrdersHomeViewport(map, homePoint, ordersHomeAppliedRef);
-  }, [detail, fitPoints, homePoint, isMapReady, lineFeature, locale, ordersGeojson, points, routeDropoffGeojson, routeStopGeojson]);
+  }, [detail, fitPoints, homePoint, isMapReady, lineFeature, locale, ordersGeojson, points, polygonGeojson, routeDropoffGeojson, routeStopGeojson]);
 
   useEffect(() => {
     if (fitRequest === 0 || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return;
@@ -369,6 +399,46 @@ function prependDepotPoint(depot: RouteOpsPoint | null, points: RouteOpsPoint[])
 export function resolveMapHomePoint(detail: RoutePlanDetailDto | null, depot: RouteOpsPoint | null, points: RouteOpsPoint[]): RouteOpsPoint | null {
   if (detail === null) return depot ?? points[0] ?? null;
   return points.find((point) => point.kind === 'depot') ?? points[0] ?? null;
+}
+
+function buildPolygonFeatureCollection(polygons: RouteGroupingPolygonDto[], draft: { closed: boolean; vertices: Array<{ latitude: number; longitude: number }> } | undefined): GeoJSON.FeatureCollection {
+  const features = polygons.map((polygon) => ({
+    geometry: polygon.geometry,
+    properties: { color: polygon.color ?? '#2563eb', id: polygon.id, label: polygon.label },
+    type: 'Feature'
+  }));
+  if (draft !== undefined && draft.vertices.length > 0) {
+    const coordinates = draft.vertices.map((vertex) => [vertex.longitude, vertex.latitude]);
+    const first = coordinates[0];
+    if (draft.closed && first !== undefined) coordinates.push(first);
+    features.push({
+      geometry: { coordinates: draft.closed ? [coordinates] : coordinates, type: draft.closed ? 'Polygon' : 'LineString' },
+      properties: { color: '#111827', id: 'draft', label: 'Draft' },
+      type: 'Feature'
+    });
+  }
+  return { features, type: 'FeatureCollection' } as GeoJSON.FeatureCollection;
+}
+
+function syncPolygonLayers(map: MapLibreMap, featureCollection: GeoJSON.FeatureCollection): void {
+  const existing = safeGetSource(map, 'route-ops-polygons') as { setData?(data: unknown): void } | undefined;
+  if (existing?.setData) {
+    safeSetSourceData(existing, featureCollection);
+    return;
+  }
+  map.addSource('route-ops-polygons', { data: featureCollection, type: 'geojson' });
+  map.addLayer({
+    id: 'route-ops-polygons-fill',
+    paint: { 'fill-color': ['coalesce', ['get', 'color'], '#2563eb'], 'fill-opacity': 0.16 },
+    source: 'route-ops-polygons',
+    type: 'fill'
+  });
+  map.addLayer({
+    id: 'route-ops-polygons-line',
+    paint: { 'line-color': ['coalesce', ['get', 'color'], '#2563eb'], 'line-width': 2 },
+    source: 'route-ops-polygons',
+    type: 'line'
+  });
 }
 
 export function syncOrdersLayer(map: MapLibreMap, featureCollection: ReturnType<typeof buildOrdersMapFeatureCollection>): void {

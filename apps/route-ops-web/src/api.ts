@@ -14,6 +14,7 @@ import type {
   OrdersResponse,
   RouteDeleteResponse,
   RouteOptimizationJobResponse,
+  RouteGroupingDetailDto,
   RoutePlanDetailDto,
   RouteSaveResponse,
   RoutesResponse,
@@ -226,6 +227,75 @@ export async function getRoutes(query = ""): Promise<RoutesResponse> {
       : `/admin/ui/app/api/routes?${query}`,
   );
 }
+
+
+export async function createRouteGrouping(input: {
+  csrfToken: string;
+  groupingName: string;
+  orderIds: string[];
+  planDate: string;
+}): Promise<{ routeGroup: RouteGroupingDetailDto }> {
+  return apiMutation<{ routeGroup: RouteGroupingDetailDto }>(
+    "/admin/ui/app/api/route-groups",
+    "POST",
+    input.csrfToken,
+    input,
+  );
+}
+
+export async function getRouteGrouping(
+  routeGroupId: string,
+): Promise<{ routeGroup: RouteGroupingDetailDto }> {
+  return apiGet<{ routeGroup: RouteGroupingDetailDto }>(
+    `/admin/ui/app/api/route-groups/${encodeURIComponent(routeGroupId)}`,
+  );
+}
+
+export async function saveRouteGroupingPolygons(input: {
+  csrfToken: string;
+  polygons: Array<{
+    closed: boolean;
+    color?: string | null;
+    driverId?: string | null;
+    geometry: unknown;
+    label: string;
+  }>;
+  routeGroupId: string;
+}): Promise<{ routeGroup: RouteGroupingDetailDto }> {
+  return apiMutation<{ routeGroup: RouteGroupingDetailDto }>(
+    `/admin/ui/app/api/route-groups/${encodeURIComponent(input.routeGroupId)}/polygons`,
+    "PATCH",
+    input.csrfToken,
+    { polygons: input.polygons },
+  );
+}
+
+export async function resolveRouteGroupingAssignments(input: {
+  assignments: Array<{ assignedDriverId: string; orderId: string }>;
+  csrfToken: string;
+  routeGroupId: string;
+}): Promise<{ routeGroup: RouteGroupingDetailDto }> {
+  return apiMutation<{ routeGroup: RouteGroupingDetailDto }>(
+    `/admin/ui/app/api/route-groups/${encodeURIComponent(input.routeGroupId)}/assignments`,
+    "PATCH",
+    input.csrfToken,
+    { assignments: input.assignments },
+  );
+}
+
+export async function generateRouteGroupingChildRoutes(input: {
+  confirmRisk?: boolean;
+  csrfToken: string;
+  routeGroupId: string;
+}): Promise<{ routeGroup: RouteGroupingDetailDto }> {
+  return apiMutation<{ routeGroup: RouteGroupingDetailDto }>(
+    `/admin/ui/app/api/route-groups/${encodeURIComponent(input.routeGroupId)}/generate-child-routes`,
+    "POST",
+    input.csrfToken,
+    { confirmRisk: input.confirmRisk === true },
+  );
+}
+
 
 export async function getRouteDetail(
   routePlanId: string,

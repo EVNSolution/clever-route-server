@@ -1091,6 +1091,7 @@ export function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
     sequence: number;
     sourceOrderId: string;
     status: string;
+    customerNoteContext: RoutePlanDetail["stops"][number]["customerNoteContext"];
   }>;
 } {
   return {
@@ -1120,6 +1121,7 @@ export function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
       sequence: stop.sequence,
       sourceOrderId: stop.shopifyOrderGid,
       status: stop.status,
+      customerNoteContext: stop.customerNoteContext,
     })),
   };
 }

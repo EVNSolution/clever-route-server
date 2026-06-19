@@ -3,6 +3,7 @@ import type { FormEvent, ReactElement } from "react";
 
 import {
   createRoute,
+  createRouteGrouping,
   getOrderCustomerNoteContext,
   getOrderMetadataDiagnostics,
   getOrders,
@@ -381,6 +382,27 @@ export function OrdersPage({
       .catch((error: unknown) => setError(readErrorMessage(error)));
   }, [setError]);
 
+  const createGrouping = async (): Promise<void> => {
+    try {
+      const routeDraftBlockers = getRouteDraftCreateReasons(plannedOrders, locale);
+      if (routeDraftBlockers.length > 0)
+        throw new Error(routeDraftBlockers.join(" "));
+      const createOrderIds = plannedOrders.map((order) => order.orderId);
+      const planDate =
+        getRouteDraftSingleDeliveryDate(plannedOrders) ??
+        (routeDate || today());
+      const result = await createRouteGrouping({
+        csrfToken: bootstrap.csrfToken,
+        groupingName: routeName,
+        orderIds: createOrderIds,
+        planDate,
+      });
+      navigate(`/admin/ui/app/route-groups/${encodeURIComponent(result.routeGroup.id)}`);
+    } catch (error) {
+      setError(readErrorMessage(error));
+    }
+  };
+
   const create = async (): Promise<void> => {
     try {
       const routeDraftBlockers = getRouteDraftCreateReasons(
@@ -615,6 +637,7 @@ export function OrdersPage({
           createReasons={routeCreateReasons}
           onClear={clearPlan}
           onCreate={() => void create()}
+          onCreateGrouping={() => void createGrouping()}
           planDateLabel={formatRouteDraftDateLabel(plannedOrders, locale)}
           planTypeLabel={formatRouteDraftTypeLabel(plannedOrders, locale)}
           routeName={routeName}
@@ -665,6 +688,7 @@ export function RoutePlanPanel(input: {
   locale?: string | null;
   onClear(): void;
   onCreate(): void;
+  onCreateGrouping?(): void;
   planDateLabel: string;
   planTypeLabel: string;
   routeName: string;
@@ -715,6 +739,14 @@ export function RoutePlanPanel(input: {
           type="button"
         >
           {t.createRoute}
+        </button>
+        <button
+          className="secondary"
+          disabled={!canCreate}
+          onClick={input.onCreateGrouping ?? input.onCreate}
+          type="button"
+        >
+          Split by driver
         </button>
         <button
           disabled={input.selectedOrders.length === 0}

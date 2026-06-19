@@ -12,6 +12,7 @@ import { DashboardPage } from './pages/DashboardPage';
 import { DriversPage } from './pages/DriversPage';
 import { OrdersPage } from './pages/OrdersPage';
 import { RoutesPage } from './pages/RoutesPage';
+import { RouteGroupingPage } from './pages/RouteGroupingPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { getAppCopy, resolveLocale } from './i18n';
 import type { AdminNotificationDto, BootstrapPayload } from './types';
@@ -21,6 +22,7 @@ type Page = RouteOpsPage;
 
 type AppRoute = {
   page: Page;
+  routeGroupId: string | null;
   routePlanId: string | null;
 };
 
@@ -185,6 +187,7 @@ function PageBody(input: {
   setError(error: string | null): void;
 }): ReactElement {
   if (input.route.page === 'orders') return <OrdersPage bootstrap={input.bootstrap} navigate={input.navigate} setError={input.setError} />;
+  if (input.route.page === 'routes' && input.route.routeGroupId !== null) return <RouteGroupingPage bootstrap={input.bootstrap} navigate={input.navigate} routeGroupId={input.route.routeGroupId} setError={input.setError} />;
   if (input.route.page === 'routes') return <RoutesPage bootstrap={input.bootstrap} navigate={input.navigate} routePlanId={input.route.routePlanId} setError={input.setError} />;
   if (input.route.page === 'drivers') return <DriversPage bootstrap={input.bootstrap} setError={input.setError} />;
   if (input.route.page === 'settings') return <SettingsPage bootstrap={input.bootstrap} setError={input.setError} />;
@@ -192,13 +195,15 @@ function PageBody(input: {
 }
 
 function parseRoute(pathname: string): AppRoute {
+  const groupMatch = /^\/admin\/ui\/app\/route-groups\/([^/]+)/u.exec(pathname);
+  if (groupMatch?.[1] !== undefined) return { page: 'routes', routeGroupId: decodeURIComponent(groupMatch[1]), routePlanId: null };
   const match = /^\/admin\/ui\/app\/routes\/([^/]+)/u.exec(pathname);
-  if (match?.[1] !== undefined) return { page: 'routes', routePlanId: decodeURIComponent(match[1]) };
-  if (pathname.includes('/drivers')) return { page: 'drivers', routePlanId: null };
-  if (pathname.includes('/orders')) return { page: 'orders', routePlanId: null };
-  if (pathname.includes('/routes')) return { page: 'routes', routePlanId: null };
-  if (pathname.includes('/settings')) return { page: 'settings', routePlanId: null };
-  return { page: 'dashboard', routePlanId: null };
+  if (match?.[1] !== undefined) return { page: 'routes', routeGroupId: null, routePlanId: decodeURIComponent(match[1]) };
+  if (pathname.includes('/drivers')) return { page: 'drivers', routeGroupId: null, routePlanId: null };
+  if (pathname.includes('/orders')) return { page: 'orders', routeGroupId: null, routePlanId: null };
+  if (pathname.includes('/routes')) return { page: 'routes', routeGroupId: null, routePlanId: null };
+  if (pathname.includes('/settings')) return { page: 'settings', routeGroupId: null, routePlanId: null };
+  return { page: 'dashboard', routeGroupId: null, routePlanId: null };
 }
 
 function pageTitle(route: AppRoute, locale: string | null | undefined): string {

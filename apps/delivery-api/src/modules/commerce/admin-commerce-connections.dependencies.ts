@@ -47,6 +47,8 @@ import {
 } from './woocommerce-connection-verifier.js';
 import { loadGeocodingService } from '../geocoding/geocoding.dependencies.js';
 import { PrismaDeliveryCustomerProfileService } from '../delivery-customer/delivery-customer-profile.service.js';
+import { loadDriverPushProvider } from '../route-grouping/driver-push.provider.js';
+import { PrismaRouteGroupingService } from '../route-grouping/route-grouping.service.js';
 
 export type AdminCommerceConnectionsRuntimeEnv = Partial<
   Record<
@@ -65,6 +67,8 @@ export type AdminCommerceConnectionsRuntimeEnv = Partial<
     | 'GEOCODING_SEARCH_URL'
     | 'GEOCODING_TIMEOUT_MS'
     | 'GEOCODING_USER_AGENT'
+    | 'FIREBASE_PROJECT_ID'
+    | 'GOOGLE_APPLICATION_CREDENTIALS'
     | 'OSRM_BASE_URL'
     | 'OSRM_TIMEOUT_MS'
     | 'ROUTE_ENGINE_BASE_URL'
@@ -165,6 +169,7 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     ...(driverAppDownloadUrl === undefined ? {} : { driverAppDownloadUrl }),
     ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
     ...readAdminUiRoutePlanService(input),
+    ...readAdminUiRouteGroupingService(input),
     secureCookies: input.nodeEnv !== 'development' && input.nodeEnv !== 'test',
     sessionSecret,
     ...readAdminUiSettingsService(input)
@@ -375,6 +380,20 @@ function readAdminUiRoutePlanService(input: {
           }),
       routeOptimizationJobService,
     )
+  };
+}
+
+
+function readAdminUiRouteGroupingService(input: {
+  env: AdminCommerceConnectionsRuntimeEnv;
+  prisma?: PrismaClient | undefined;
+}): Pick<AdminCommerceConnectionsUiDependencies, 'routeGroupingService'> {
+  if (input.prisma === undefined) return {};
+  return {
+    routeGroupingService: new PrismaRouteGroupingService(
+      input.prisma,
+      loadDriverPushProvider(input.env),
+    ),
   };
 }
 

@@ -43,6 +43,12 @@ import {
   type RouteOptimizationJobDto,
 } from "../modules/route-plans/route-optimization-job.types.js";
 import type { RouteOptimizationJobService } from "../modules/route-plans/route-optimization-job.service.js";
+import {
+  RouteGroupingRiskConfirmationRequiredError,
+  RouteGroupingUnresolvedAssignmentsError,
+  RouteGroupingValidationError,
+  type RouteGroupingService,
+} from "../modules/route-grouping/route-grouping.types.js";
 import { runRouteOptimizationJob } from "../modules/route-plans/route-optimization-job-runner.js";
 import {
   createBulkGeocodeJob,
@@ -457,6 +463,7 @@ export type AdminCommerceConnectionsUiDependencies = {
     | "recordEngineOutcome"
   >;
   routeOptimizationService?: RouteOptimizationService;
+  routeGroupingService?: RouteGroupingService;
   routePlanService?: Pick<
     RoutePlanService,
     | "assignRoutePlanDriver"
@@ -2148,10 +2155,28 @@ function registerRouteOpsAppRoutes(
           ...(deliveryDate === null ? {} : { deliveryDate }),
           shopDomain,
         });
-        return routeOpsData({
-          routePlans: filterRoutePlansByDate(routePlans, deliveryDate).map(
-            toRouteOpsRoutePlanDto,
+        const routeGroups =
+          services.routeGroupingService === undefined
+            ? []
+            : await services.routeGroupingService.listGroupings({
+                ...(deliveryDate === null ? {} : { deliveryDate }),
+                shopDomain,
+              });
+        const childRoutePlanIds = new Set(
+          routeGroups.flatMap((group) =>
+            group.children
+              .map((child) => child.routePlanId)
+              .filter((routePlanId): routePlanId is string => routePlanId !== null),
           ),
+        );
+        const standaloneRoutes = filterRoutePlansByDate(
+          routePlans.filter((routePlan) => !childRoutePlanIds.has(routePlan.id)),
+          deliveryDate,
+        ).map(toRouteOpsRoutePlanDto);
+        return routeOpsData({
+          routeGroups,
+          routePlans: standaloneRoutes,
+          standaloneRoutes,
         });
       },
     ),
@@ -2193,6 +2218,165 @@ function registerRouteOpsAppRoutes(
         );
       },
     ),
+  );
+
+  app.post(`${ADMIN_UI_APP_API_PATH}/route-groups`, async (request, reply) =>
+    withRouteOpsApi(
+      request,
+      reply,
+      readSession(request, dependencies),
+      async (session) => {
+        assertRouteOpsMutationCsrf(request, session);
+        const services = requireRouteUiServices(dependencies);
+        const routeGroupingService = requireRouteGroupingService(services);
+        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const body = readRouteOpsBodyObject(request.body);
+        try {
+          const grouping = await routeGroupingService.createGrouping({
+            createdBy: dependencies.actor.subject,
+            name: readRequiredJsonString(body, "groupingName"),
+            orderIds: readSelectedNeutralOrderIds(body.orderIds),
+            planDate: normalizeRequiredDate(readRequiredJsonString(body, "planDate")),
+            shopDomain,
+          });
+          return routeOpsData({ routeGroup: grouping }, 201);
+        } catch (error) {
+          throw toRouteGroupingHttpError(error);
+        }
+      },
+    ),
+  );
+
+  app.get<{ Params: { routeGroupId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/route-groups/:routeGroupId`,
+    async (request, reply) =>
+      withRouteOpsApi(
+        request,
+        reply,
+        readSession(request, dependencies),
+        async (session) => {
+          const routeGroupingService = requireRouteGroupingService(requireRouteUiServices(dependencies));
+          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const grouping = await routeGroupingService.getGrouping({
+            groupingId: request.params.routeGroupId,
+            shopDomain,
+          });
+          if (grouping === null) {
+            throw new WooCommerceOnboardingError("NOT_FOUND", "Route grouping not found", 404);
+          }
+          return routeOpsData({ routeGroup: grouping });
+        },
+      ),
+  );
+
+  app.patch<{ Params: { routeGroupId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/route-groups/:routeGroupId/polygons`,
+    async (request, reply) =>
+      withRouteOpsApi(
+        request,
+        reply,
+        readSession(request, dependencies),
+        async (session) => {
+          assertRouteOpsMutationCsrf(request, session);
+          const routeGroupingService = requireRouteGroupingService(requireRouteUiServices(dependencies));
+          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const body = readRouteOpsBodyObject(request.body);
+          try {
+            const grouping = await routeGroupingService.savePolygons({
+              groupingId: request.params.routeGroupId,
+              polygons: readRouteGroupPolygons(body.polygons),
+              shopDomain,
+            });
+            if (grouping === null) throw new WooCommerceOnboardingError("NOT_FOUND", "Route grouping not found", 404);
+            return routeOpsData({ routeGroup: grouping });
+          } catch (error) {
+            throw toRouteGroupingHttpError(error);
+          }
+        },
+      ),
+  );
+
+  app.patch<{ Params: { routeGroupId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/route-groups/:routeGroupId/assignments`,
+    async (request, reply) =>
+      withRouteOpsApi(
+        request,
+        reply,
+        readSession(request, dependencies),
+        async (session) => {
+          assertRouteOpsMutationCsrf(request, session);
+          const routeGroupingService = requireRouteGroupingService(requireRouteUiServices(dependencies));
+          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const body = readRouteOpsBodyObject(request.body);
+          try {
+            const grouping = await routeGroupingService.resolveAssignments({
+              assignments: readRouteGroupAssignments(body.assignments),
+              groupingId: request.params.routeGroupId,
+              shopDomain,
+            });
+            if (grouping === null) throw new WooCommerceOnboardingError("NOT_FOUND", "Route grouping not found", 404);
+            return routeOpsData({ routeGroup: grouping });
+          } catch (error) {
+            throw toRouteGroupingHttpError(error);
+          }
+        },
+      ),
+  );
+
+  app.post<{ Params: { routeGroupId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/route-groups/:routeGroupId/generate-child-routes`,
+    async (request, reply) =>
+      withRouteOpsApi(
+        request,
+        reply,
+        readSession(request, dependencies),
+        async (session) => {
+          assertRouteOpsMutationCsrf(request, session);
+          const routeGroupingService = requireRouteGroupingService(requireRouteUiServices(dependencies));
+          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const body = readRouteOpsBodyObject(request.body);
+          try {
+            const grouping = await routeGroupingService.generateChildRoutes({
+              actor: dependencies.actor.subject,
+              confirmRisk: body.confirmRisk === true,
+              groupingId: request.params.routeGroupId,
+              shopDomain,
+            });
+            if (grouping === null) throw new WooCommerceOnboardingError("NOT_FOUND", "Route grouping not found", 404);
+            return routeOpsData({ routeGroup: grouping });
+          } catch (error) {
+            throw toRouteGroupingHttpError(error);
+          }
+        },
+      ),
+  );
+
+  app.post<{ Params: { routeGroupId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/route-groups/:routeGroupId/rollback`,
+    async (request, reply) =>
+      withRouteOpsApi(
+        request,
+        reply,
+        readSession(request, dependencies),
+        async (session) => {
+          assertRouteOpsMutationCsrf(request, session);
+          const routeGroupingService = requireRouteGroupingService(requireRouteUiServices(dependencies));
+          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const body = readRouteOpsBodyObject(request.body);
+          try {
+            const grouping = await routeGroupingService.rollback({
+              actor: dependencies.actor.subject,
+              groupingId: request.params.routeGroupId,
+              shopDomain,
+              version: readRequiredJsonNumber(body, "version"),
+            });
+            if (grouping === null) throw new WooCommerceOnboardingError("NOT_FOUND", "Route grouping not found", 404);
+            return routeOpsData({ routeGroup: grouping });
+          } catch (error) {
+            throw toRouteGroupingHttpError(error);
+          }
+        },
+      ),
   );
 
   app.get<{ Params: { routePlanId: string } }>(
@@ -2616,6 +2800,10 @@ function registerRouteOpsAppRoutes(
                 404,
               );
             }
+            await services.routeGroupingService?.recordChildRoutePublished({
+              routePlanId: request.params.routePlanId,
+              shopDomain,
+            });
             return routeOpsData(toRouteOpsRoutePlanDetailDto(updated));
           } catch (error) {
             if (error instanceof RoutePlanPublishInvalidError) {
@@ -4060,6 +4248,9 @@ type RouteUiServices = {
   routeOptimizationService?: NonNullable<
     AdminCommerceConnectionsUiDependencies["routeOptimizationService"]
   >;
+  routeGroupingService?: NonNullable<
+    AdminCommerceConnectionsUiDependencies["routeGroupingService"]
+  >;
   routePlanService: NonNullable<
     AdminCommerceConnectionsUiDependencies["routePlanService"]
   >;
@@ -4087,6 +4278,9 @@ function readRouteUiServices(
     ...(dependencies.routeOptimizationService === undefined
       ? {}
       : { routeOptimizationService: dependencies.routeOptimizationService }),
+    ...(dependencies.routeGroupingService === undefined
+      ? {}
+      : { routeGroupingService: dependencies.routeGroupingService }),
     routePlanService: dependencies.routePlanService,
   };
 }
@@ -4103,6 +4297,83 @@ function requireRouteUiServices(
     );
   }
   return services;
+}
+
+function requireRouteGroupingService(
+  services: RouteUiServices,
+): NonNullable<RouteUiServices["routeGroupingService"]> {
+  if (services.routeGroupingService === undefined) {
+    throw new WooCommerceOnboardingError(
+      "BAD_REQUEST",
+      "Route grouping services are not enabled in this runtime.",
+      400,
+    );
+  }
+  return services.routeGroupingService;
+}
+
+function toRouteGroupingHttpError(error: unknown): Error {
+  if (error instanceof RouteGroupingValidationError) {
+    return createRouteOpsHttpError(error.code, error.message, 400);
+  }
+  if (error instanceof RouteGroupingUnresolvedAssignmentsError) {
+    return createRouteOpsHttpError(error.code, error.message, 409);
+  }
+  if (error instanceof RouteGroupingRiskConfirmationRequiredError) {
+    return createRouteOpsHttpError(error.code, `${error.message} ${JSON.stringify({ warnings: error.warnings })}`, 409);
+  }
+  if (error instanceof WooCommerceOnboardingError) return error;
+  return error instanceof Error ? error : new Error("Route grouping request failed");
+}
+
+function readRequiredJsonNumber(body: Record<string, unknown>, field: string): number {
+  const value = body[field];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new WooCommerceOnboardingError("BAD_REQUEST", `${field} must be a number`, 400);
+  }
+  return Math.floor(value);
+}
+
+function readRouteGroupPolygons(value: unknown): Array<{
+  closed: boolean;
+  color?: string | null;
+  driverId?: string | null;
+  geometry: unknown;
+  label: string;
+}> {
+  if (!Array.isArray(value)) {
+    throw new WooCommerceOnboardingError("BAD_REQUEST", "polygons must be an array", 400);
+  }
+  return value.map((entry, index) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new WooCommerceOnboardingError("BAD_REQUEST", "polygon must be an object", 400);
+    }
+    const row = entry as Record<string, unknown>;
+    const label = typeof row.label === "string" && row.label.trim() !== "" ? row.label.trim() : `Polygon ${index + 1}`;
+    return {
+      closed: row.closed === true,
+      color: typeof row.color === "string" ? row.color : null,
+      driverId: typeof row.driverId === "string" && row.driverId.trim() !== "" ? row.driverId.trim() : null,
+      geometry: row.geometry,
+      label,
+    };
+  });
+}
+
+function readRouteGroupAssignments(value: unknown): Array<{ assignedDriverId: string; orderId: string }> {
+  if (!Array.isArray(value)) {
+    throw new WooCommerceOnboardingError("BAD_REQUEST", "assignments must be an array", 400);
+  }
+  return value.map((entry) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new WooCommerceOnboardingError("BAD_REQUEST", "assignment must be an object", 400);
+    }
+    const row = entry as Record<string, unknown>;
+    if (typeof row.orderId !== "string" || typeof row.assignedDriverId !== "string") {
+      throw new WooCommerceOnboardingError("BAD_REQUEST", "assignment orderId and assignedDriverId are required", 400);
+    }
+    return { assignedDriverId: row.assignedDriverId.trim(), orderId: row.orderId.trim() };
+  });
 }
 
 function requireRouteOptimizationJobService(

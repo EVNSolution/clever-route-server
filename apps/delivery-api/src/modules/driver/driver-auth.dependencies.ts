@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 import { PrismaDriverAuthRepository } from './driver-auth.repository.js';
+import { PrismaDriverPushTokenService } from '../route-grouping/driver-push-token.service.js';
 import type { DriverAuthDependencies } from '../../routes/driver-auth.routes.js';
 
 type LoadDriverAuthDependenciesInput = {
@@ -17,6 +18,7 @@ export function loadDriverAuthDependencies(
 
   return {
     driverAuthRepository: new PrismaDriverAuthRepository(input.prisma),
+    pushTokenService: new PrismaDriverPushTokenService(input.prisma),
     jwtSecret
   };
 }

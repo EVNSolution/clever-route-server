@@ -112,6 +112,7 @@ type OrderRecord = {
   id: string;
   name: string;
   orderItems?: OrderItemRecordLike[];
+  deliveryCustomerProfileLinks?: Array<{ matchReasons: unknown; matchStatus: string; profile: { adminMemo: string | null; id: string } }>;
   phone?: string | null;
   rawPayload: unknown;
   shippingAddress: unknown;
@@ -1489,6 +1490,21 @@ function emptyDeliveryStopFallback(order: OrderRecord): DeliveryStopRecord {
   };
 }
 
+
+function readCustomerNote(rawPayload: Record<string, unknown> | null): string | null {
+  if (rawPayload === null) return null;
+  for (const key of ['customer_note', 'customerNote', 'note']) {
+    const value = rawPayload[key];
+    if (typeof value === 'string' && value.trim() !== '') return value.trim();
+  }
+  const customer = rawPayload.customer;
+  if (customer !== null && typeof customer === 'object' && !Array.isArray(customer)) {
+    const value = (customer as Record<string, unknown>).note;
+    if (typeof value === 'string' && value.trim() !== '') return value.trim();
+  }
+  return null;
+}
+
 function createMetricsFromOrders(
   ordersByGid: Map<string, OrderRecord>,
   orderGids: string[],
@@ -1514,6 +1530,8 @@ function createMetricsFromOrders(
     stopsCount
   };
 }
+
+
 
 function createMetricsFromFacts(facts: OrderDeliveryFactRecord[]): Prisma.InputJsonObject {
   const items = facts.flatMap((fact) => (fact.order.orderItems ?? []).map((item) => toOrderItemDto(item)));
@@ -1569,6 +1587,10 @@ function routePlanInclude() {
               include: {
                 orderItems: {
                   orderBy: { lineIndex: 'asc' }
+                },
+                deliveryCustomerProfileLinks: {
+                  include: { profile: true },
+                  take: 1
                 }
               }
             }
@@ -1745,6 +1767,13 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
     financialStatus: order.financialStatus,
     fulfillmentStatus: order.fulfillmentStatus,
     items: (order.orderItems ?? []).map((item) => toOrderItemDto(item)),
+    customerNoteContext: {
+      adminMemo: order.deliveryCustomerProfileLinks?.[0]?.profile.adminMemo ?? null,
+      customerNote: readCustomerNote(rawPayload),
+      deliveryCustomerProfileId: order.deliveryCustomerProfileLinks?.[0]?.profile.id ?? null,
+      matchReasons: order.deliveryCustomerProfileLinks?.[0]?.matchReasons ?? [],
+      matchStatus: order.deliveryCustomerProfileLinks?.[0]?.matchStatus ?? null
+    },
     normalizedPaymentStatus: readNormalizedPaymentStatus(rawPayload?.normalizedPaymentStatus),
     orderId: order.id,
     orderName: order.name,
@@ -1755,6 +1784,8 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
     status: deliveryStop.status
   };
 }
+
+
 
 function createMetrics(orders: RoutePlanOrderInput[]): Prisma.InputJsonObject {
   const itemSummary = aggregateOrderItems(orders.flatMap((order) => order.items ?? []));

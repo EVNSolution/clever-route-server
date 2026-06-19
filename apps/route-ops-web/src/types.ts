@@ -212,6 +212,13 @@ export type RoutePlanSummaryDto = {
 
 export type RouteStopDto = {
   addressLabel: string;
+  customerNoteContext?: {
+    adminMemo: string | null;
+    customerNote: string | null;
+    deliveryCustomerProfileId: string | null;
+    matchReasons: unknown;
+    matchStatus: string | null;
+  };
   coordinates: { latitude: number | null; longitude: number | null };
   deliveryArea: string | null;
   deliveryStopId: string;
@@ -241,6 +248,65 @@ export type RoutePlanDetailDto = {
     sourceOrderId: string;
   }>;
   stops: RouteStopDto[];
+};
+
+
+export type RouteGroupingChildDto = {
+  childVersion: number;
+  displayStatus: "DRAFT" | "PUBLISHED" | "NEEDS_REPUBLISH" | "SUPERSEDED";
+  driverId: string | null;
+  driverName: string | null;
+  notificationStatus: "NOT_REQUIRED" | "PENDING" | "SENT" | "FAILED";
+  routePlan: RoutePlanSummaryDto | null;
+  routePlanId: string | null;
+  stopsCount: number;
+};
+
+export type RouteGroupingAssignmentDto = {
+  assignedDriverId: string | null;
+  assignedPolygonId: string | null;
+  assignmentStatus: "UNASSIGNED" | "ASSIGNED" | "OVERLAP" | "EXCLUDED";
+  coordinates: { latitude: number | null; longitude: number | null };
+  deliveryStopId: string;
+  orderId: string;
+  orderName: string;
+  sourceOrderId: string;
+  sourceSequence: number;
+};
+
+export type RouteGroupingPolygonDto = {
+  closed: boolean;
+  color: string | null;
+  drawOrder: number;
+  driverId: string | null;
+  geometry: unknown;
+  id: string;
+  label: string;
+};
+
+export type RouteGroupingWarningDto = {
+  code: "DRIVER_ASSIGNED" | "DRIVER_NOTIFICATION_SENT" | "CUSTOMER_NOTIFICATION_SENT_OR_QUEUED";
+  message: string;
+  orderIds?: string[];
+  routePlanIds?: string[];
+};
+
+export type RouteGroupingSummaryDto = {
+  children: RouteGroupingChildDto[];
+  currentVersion: number;
+  displayStatus: "DRAFT" | "NEEDS_ASSIGNMENT" | "READY" | "PUBLISHED" | "CHANGED" | "CANCELLED";
+  id: string;
+  name: string;
+  planDate: string;
+  status: string;
+  totalOrders: number;
+  unresolvedOrders: number;
+  warningState: RouteGroupingWarningDto[];
+};
+
+export type RouteGroupingDetailDto = RouteGroupingSummaryDto & {
+  assignments: RouteGroupingAssignmentDto[];
+  polygons: RouteGroupingPolygonDto[];
 };
 
 export type RouteSaveOperationDto = {
@@ -498,7 +564,9 @@ export type NotificationMutationResponse = {
 };
 
 export type RoutesResponse = {
+  routeGroups?: RouteGroupingSummaryDto[];
   routePlans: RoutePlanSummaryDto[];
+  standaloneRoutes?: RoutePlanSummaryDto[];
 };
 
 export type RouteDeleteResponse = {
