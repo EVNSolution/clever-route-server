@@ -254,13 +254,13 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
     syncRouteDropoffLayers(map, routeDropoffGeojson);
     syncRouteStopLayers(map, routeStopGeojson);
     syncPolygonLayers(map, polygonGeojson);
-    syncRouteMarkers(map, maplibreRef.current, points.filter((point) => point.kind === 'depot'), markersRef.current, locale);
+    syncRouteMarkers(map, maplibreRef.current, points.filter((point) => point.kind === 'depot' || point.kind === 'stop'), markersRef.current, locale, selectedRouteStopId, (deliveryStopId) => onRouteStopSelectRef.current?.(deliveryStopId));
     if (detail !== null) {
       fitMap(map, maplibreRef.current, fitPoints);
       return;
     }
     applyOrdersHomeViewport(map, homePoint, ordersHomeAppliedRef);
-  }, [detail, fitPoints, homePoint, isMapReady, lineFeature, locale, ordersGeojson, points, polygonGeojson, routeDropoffGeojson, routeStopGeojson]);
+  }, [detail, fitPoints, homePoint, isMapReady, lineFeature, locale, ordersGeojson, points, polygonGeojson, routeDropoffGeojson, routeStopGeojson, selectedRouteStopId]);
 
   useEffect(() => {
     if (fitRequest === 0 || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return;
@@ -763,6 +763,14 @@ function safeLayerOff(map: MapLibreMap, type: 'click', layerId: string, listener
   }
 }
 
+function safeResizeMap(map: MapLibreMap): void {
+  try {
+    map.resize();
+  } catch {
+    // Resizing is best-effort before fitBounds; stale map instances can be tearing down.
+  }
+}
+
 function safeMapOff(map: MapLibreMap, type: 'move' | 'resize' | 'zoom', listener: () => void): void {
   try {
     map.off(type, listener);
@@ -857,14 +865,20 @@ function styleRequiresPmtiles(endpoints: readonly string[]): boolean {
   return endpoints.some((endpoint) => endpoint.startsWith('pmtiles://'));
 }
 
-function syncRouteMarkers(map: MapLibreMap, maplibregl: MapLibreModule | null, points: RouteOpsPoint[], markers: MapLibreMarker[], locale: string | null | undefined = 'en-CA'): void {
+function syncRouteMarkers(map: MapLibreMap, maplibregl: MapLibreModule | null, points: RouteOpsPoint[], markers: MapLibreMarker[], locale: string | null | undefined = 'en-CA', selectedRouteStopId: string | null = null, onRouteStopSelect?: (deliveryStopId: string) => void): void {
   if (maplibregl === null) return;
   markers.forEach((marker) => safeRemoveMarker(marker));
   markers.length = 0;
   for (const point of points) {
-    if (point.kind !== 'depot') continue;
-    const element = createRouteStartMarkerElement(point, locale);
-    markers.push(new maplibregl.Marker({ element, anchor: 'bottom' }).setLngLat([point.longitude, point.latitude]).addTo(map));
+    if (point.kind === 'depot') {
+      const element = createRouteStartMarkerElement(point, locale);
+      markers.push(new maplibregl.Marker({ element, anchor: 'bottom' }).setLngLat([point.longitude, point.latitude]).addTo(map));
+      continue;
+    }
+    if (point.kind === 'stop') {
+      const element = createRouteStopMarkerElement(point, point.id === selectedRouteStopId, onRouteStopSelect);
+      markers.push(new maplibregl.Marker({ element, anchor: 'center' }).setLngLat([point.longitude, point.latitude]).addTo(map));
+    }
   }
 }
 
@@ -879,6 +893,21 @@ function createRouteStartMarkerElement(point: RouteOpsPoint, locale: string | nu
   markerPinElement.className = 'departure-map-marker__pin';
   markerPinElement.append(createDepartureMarkerIconElement());
   markerElement.append(markerPinElement);
+  return markerElement;
+}
+
+function createRouteStopMarkerElement(point: RouteOpsPoint, selected: boolean, onRouteStopSelect?: (deliveryStopId: string) => void): HTMLElement {
+  const markerElement = document.createElement('button');
+  markerElement.type = 'button';
+  markerElement.className = ['route-stop-map-marker', point.preview === true ? 'preview' : '', selected ? 'selected' : ''].filter(Boolean).join(' ');
+  markerElement.style.zIndex = selected ? '3200' : point.preview === true ? '3100' : '3000';
+  markerElement.textContent = point.label;
+  markerElement.setAttribute('aria-label', `Route stop ${point.label}`);
+  markerElement.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onRouteStopSelect?.(point.id);
+  });
   return markerElement;
 }
 
@@ -912,6 +941,7 @@ function mapHomePointKey(point: RouteOpsPoint): string {
 }
 
 function fitMap(map: MapLibreMap, maplibregl: MapLibreModule | null, points: RouteOpsPoint[]): void {
+  safeResizeMap(map);
   const bounds = fitBoundsForPoints(points);
   if (bounds === null || maplibregl === null) return;
   if (points.length === 1) {
