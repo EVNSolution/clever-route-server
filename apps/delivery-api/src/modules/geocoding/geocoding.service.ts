@@ -126,7 +126,7 @@ export class GeocodingService {
       let sawInvalidResult = false;
       for (const lookupQuery of queries) {
         state.queryShapes.push(lookupQuery.shape);
-        const lookup = await this.geocodeQuery(provider, lookupQuery, state);
+        const lookup = await this.geocodeQuery(provider, lookupQuery, state, input.address);
         if (lookup.kind === 'provider_error') {
           return buildFailureFromProviderError(lookup.error, state);
         }
@@ -171,6 +171,7 @@ export class GeocodingService {
     provider: GeocodingProvider,
     query: GeocodingQuery,
     state: ProviderCallState,
+    address: GeocodingAddress,
   ): Promise<
     | { kind: 'found'; result: GeocodingLookupResult }
     | { kind: 'invalid_result' }
@@ -185,7 +186,11 @@ export class GeocodingService {
         await this.waitForProviderRateLimit();
         const lookup = await provider.geocodeAddress(query);
         if (lookup === null) return { kind: 'no_result' };
-        if (!isValidCoordinate(lookup.latitude, 'latitude') || !isValidCoordinate(lookup.longitude, 'longitude')) {
+        if (
+          !isValidCoordinate(lookup.latitude, 'latitude') ||
+          !isValidCoordinate(lookup.longitude, 'longitude') ||
+          !isPlausibleCoordinateForAddress(address, lookup.latitude, lookup.longitude)
+        ) {
           return { kind: 'invalid_result' };
         }
         return { kind: 'found', result: lookup };
@@ -309,38 +314,40 @@ export function buildGeocodingQueries(address: GeocodingAddress): GeocodingQuery
       ? buildStructuredQuery(withoutCityAndPostalAddress, 'structured_no_city_no_postal')
       : null;
 
+  const freeformCountrycodes = countryCodeFilter(address.countryCode);
+
   return uniqueGeocodingQueries([
-    hasPostalCode && postalOnly !== null
-      ? buildFreeformQuery(postalOnly, 'freeform_postal_only')
-      : null,
     structuredPostalOnly,
+    hasPostalCode && postalOnly !== null
+      ? buildFreeformQuery(postalOnly, 'freeform_postal_only', freeformCountrycodes)
+      : null,
     structuredWithoutUnit,
     structuredFull,
-    withoutUnit === null ? null : buildFreeformQuery(withoutUnit, 'freeform_without_unit'),
-    full === null ? null : buildFreeformQuery(full, 'freeform'),
+    withoutUnit === null ? null : buildFreeformQuery(withoutUnit, 'freeform_without_unit', freeformCountrycodes),
+    full === null ? null : buildFreeformQuery(full, 'freeform', freeformCountrycodes),
     structuredWithoutUnitNoCity,
     structuredFullNoCity,
     hasCity && withoutUnitAndCity !== null
-      ? buildFreeformQuery(withoutUnitAndCity, 'freeform_without_unit_no_city')
+      ? buildFreeformQuery(withoutUnitAndCity, 'freeform_without_unit_no_city', freeformCountrycodes)
       : null,
     hasCity && fullWithoutCity !== null
-      ? buildFreeformQuery(fullWithoutCity, 'freeform_no_city')
+      ? buildFreeformQuery(fullWithoutCity, 'freeform_no_city', freeformCountrycodes)
       : null,
     structuredWithoutUnitNoPostal,
     structuredFullNoPostal,
     hasPostalCode && withoutUnitAndPostal !== null
-      ? buildFreeformQuery(withoutUnitAndPostal, 'freeform_without_unit_no_postal')
+      ? buildFreeformQuery(withoutUnitAndPostal, 'freeform_without_unit_no_postal', freeformCountrycodes)
       : null,
     hasPostalCode && fullWithoutPostal !== null
-      ? buildFreeformQuery(fullWithoutPostal, 'freeform_no_postal')
+      ? buildFreeformQuery(fullWithoutPostal, 'freeform_no_postal', freeformCountrycodes)
       : null,
     structuredWithoutUnitNoCityNoPostal,
     structuredFullNoCityNoPostal,
     shouldTryNoCityNoPostal && withoutUnitCityAndPostal !== null
-      ? buildFreeformQuery(withoutUnitCityAndPostal, 'freeform_without_unit_no_city_no_postal')
+      ? buildFreeformQuery(withoutUnitCityAndPostal, 'freeform_without_unit_no_city_no_postal', freeformCountrycodes)
       : null,
     shouldTryNoCityNoPostal && fullWithoutCityAndPostal !== null
-      ? buildFreeformQuery(fullWithoutCityAndPostal, 'freeform_no_city_no_postal')
+      ? buildFreeformQuery(fullWithoutCityAndPostal, 'freeform_no_city_no_postal', freeformCountrycodes)
       : null,
   ]);
 }
@@ -403,9 +410,12 @@ function buildFreeformQuery(
     | 'freeform_without_unit_no_city_no_postal'
     | 'freeform_without_unit_no_postal'
   >,
+  countrycodes?: string | null,
 ): GeocodingQuery {
+  const normalizedCountrycodes = countrycodes === undefined || countrycodes === null ? null : clean(countrycodes);
   return {
-    cacheKey: `freeform:${q.toLowerCase()}`,
+    cacheKey: `freeform:${q.toLowerCase()}${normalizedCountrycodes === null ? '' : `|countrycodes=${normalizedCountrycodes}`}`,
+    ...(normalizedCountrycodes === null ? {} : { countrycodes: normalizedCountrycodes }),
     kind: 'freeform',
     q,
     shape,
@@ -525,6 +535,58 @@ export function isValidCoordinate(value: number, kind: 'latitude' | 'longitude')
   const min = kind === 'latitude' ? -90 : -180;
   const max = kind === 'latitude' ? 90 : 180;
   return Number.isFinite(value) && value >= min && value <= max;
+}
+
+function isPlausibleCoordinateForAddress(
+  address: GeocodingAddress,
+  latitude: number,
+  longitude: number,
+): boolean {
+  const countryCode = clean(address.countryCode)?.toUpperCase() ?? null;
+  const province = clean(address.province)?.toUpperCase() ?? null;
+  const postalCode = cleanPostalCode(address.postalCode)?.toUpperCase() ?? null;
+  const looksCanadian =
+    countryCode === 'CA' ||
+    countryCode === 'CAN' ||
+    /^[A-Z][0-9][A-Z] [0-9][A-Z][0-9]$/u.test(postalCode ?? '');
+
+  if (!looksCanadian) return true;
+
+  if (!isWithinBounds(latitude, longitude, CANADA_BOUNDS)) return false;
+  if (province === 'ON' || province === 'ONTARIO') {
+    return isWithinBounds(latitude, longitude, ONTARIO_BOUNDS);
+  }
+  return true;
+}
+
+type CoordinateBounds = {
+  maxLat: number;
+  maxLng: number;
+  minLat: number;
+  minLng: number;
+};
+
+const CANADA_BOUNDS: CoordinateBounds = {
+  maxLat: 84,
+  maxLng: -52,
+  minLat: 41,
+  minLng: -142,
+};
+
+const ONTARIO_BOUNDS: CoordinateBounds = {
+  maxLat: 57,
+  maxLng: -74,
+  minLat: 41,
+  minLng: -96,
+};
+
+function isWithinBounds(latitude: number, longitude: number, bounds: CoordinateBounds): boolean {
+  return (
+    latitude >= bounds.minLat &&
+    latitude <= bounds.maxLat &&
+    longitude >= bounds.minLng &&
+    longitude <= bounds.maxLng
+  );
 }
 
 function sleep(ms: number): Promise<void> {

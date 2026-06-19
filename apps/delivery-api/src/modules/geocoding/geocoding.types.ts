@@ -61,6 +61,7 @@ export type StructuredGeocodingQuery = {
 
 export type FreeformGeocodingQuery = {
   cacheKey: string;
+  countrycodes?: string;
   kind: 'freeform';
   q: string;
   shape: Extract<

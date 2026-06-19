@@ -103,6 +103,9 @@ export class NominatimGeocodingClient implements GeocodingProvider {
 function applyQueryParams(url: URL, query: GeocodingQuery): void {
   if (query.kind === 'freeform') {
     url.searchParams.set('q', query.q);
+    if (query.countrycodes !== undefined && query.countrycodes.trim() !== '') {
+      url.searchParams.set('countrycodes', query.countrycodes.trim());
+    }
     return;
   }
   for (const [key, value] of Object.entries(query.params)) {

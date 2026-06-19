@@ -15,26 +15,27 @@ const address = {
 };
 
 describe('Route Ops geocoding', () => {
-  test('prioritizes postal-only queries before street-level candidates', () => {
+  test('prioritizes country-bounded postal queries before street-level candidates', () => {
     const queries = buildGeocodingQueries({ ...address, postalCode: 'l5b3c1' });
 
-    const [postalFreeform, postalStructured] = queries;
-    expect(postalFreeform).toEqual(expect.objectContaining({
-      kind: 'freeform',
-      q: 'L5B 3C1, CA',
-      shape: 'freeform_postal_only'
-    }));
+    const [postalStructured, postalFreeform] = queries;
     expect(postalStructured).toEqual(expect.objectContaining({
       kind: 'structured',
       shape: 'structured_postal_only'
     }));
     if (postalStructured === undefined || postalStructured.kind !== 'structured') {
-      throw new Error('expected the second geocoding query to be structured');
+      throw new Error('expected the first geocoding query to be structured');
     }
     expect(postalStructured.params).toEqual(expect.objectContaining({
       country: 'Canada',
       countrycodes: 'ca',
       postalcode: 'L5B 3C1'
+    }));
+    expect(postalFreeform).toEqual(expect.objectContaining({
+      countrycodes: 'ca',
+      kind: 'freeform',
+      q: 'L5B 3C1, CA',
+      shape: 'freeform_postal_only'
     }));
   });
 
@@ -143,8 +144,8 @@ describe('Route Ops geocoding', () => {
     });
 
     expect(result).toEqual(expect.objectContaining({ ok: true }));
-    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(1, expect.objectContaining({ shape: 'freeform_postal_only' }));
-    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(2, expect.objectContaining({ shape: 'structured_postal_only' }));
+    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(1, expect.objectContaining({ shape: 'structured_postal_only' }));
+    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(2, expect.objectContaining({ shape: 'freeform_postal_only' }));
     expect(provider.geocodeAddress).toHaveBeenNthCalledWith(3, expect.objectContaining({ shape: 'structured_without_unit' }));
     expect(provider.geocodeAddress).toHaveBeenNthCalledWith(4, expect.objectContaining({ shape: 'structured' }));
     expect(provider.geocodeAddress).toHaveBeenNthCalledWith(5, expect.objectContaining({ shape: 'freeform_without_unit' }));
@@ -182,8 +183,8 @@ describe('Route Ops geocoding', () => {
     expect(result).toEqual(expect.objectContaining({
       ok: true,
       queryShapes: [
-        'freeform_postal_only',
         'structured_postal_only',
+        'freeform_postal_only',
         'structured_without_unit',
         'structured',
         'freeform_without_unit',
@@ -201,6 +202,61 @@ describe('Route Ops geocoding', () => {
       throw new Error('expected the eleventh geocoding attempt to be structured');
     }
     expect(eleventhCall.params.postalcode).toBeUndefined();
+  });
+
+  test('rejects provider coordinates outside the source country/province and tries the next candidate', async () => {
+    const provider = {
+      geocodeAddress: vi.fn((query: GeocodingQuery) => {
+        if (query.shape === 'structured_postal_only') {
+          return Promise.resolve({
+            addressLabel: query.shape,
+            latitude: 37.2045719,
+            longitude: -99.8133765,
+            provider: 'mock',
+            providerPlaceId: 'bad-kansas',
+            rawLabel: 'L4C 0Y6, California, United States'
+          });
+        }
+        if (query.shape === 'structured_without_unit') {
+          return Promise.resolve({
+            addressLabel: query.shape,
+            latitude: 43.8561,
+            longitude: -79.4378,
+            provider: 'mock',
+            providerPlaceId: 'richmond-hill',
+            rawLabel: '9088 Yonge Street, Richmond Hill, Ontario, Canada'
+          });
+        }
+        return Promise.resolve(null);
+      }),
+      providerName: 'mock'
+    };
+    const service = new GeocodingService({ minIntervalMs: 0, mode: 'nominatim_compatible', provider });
+
+    const result = await service.geocode({
+      address: {
+        address1: '901A-9088 Yonge st.',
+        address2: null,
+        city: 'Richmond Hill',
+        countryCode: 'CA',
+        postalCode: 'L4C 0Y6',
+        province: 'ON'
+      },
+      shopDomain: 'tomatonofood.com'
+    });
+
+    expect(result).toEqual(expect.objectContaining({ ok: true }));
+    if (!result.ok) throw new Error('expected geocode success');
+    expect(result.result).toEqual(expect.objectContaining({
+      latitude: 43.8561,
+      longitude: -79.4378,
+      providerPlaceId: 'richmond-hill'
+    }));
+    expect(result.queryShapes).toEqual([
+      'structured_postal_only',
+      'freeform_postal_only',
+      'structured_without_unit'
+    ]);
   });
 
   test('uses postal-only fallback before no-postal fallback', async () => {
@@ -227,9 +283,14 @@ describe('Route Ops geocoding', () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('expected geocode success');
-    expect(result.queryShapes).toEqual(['freeform_postal_only']);
-    expect(provider.geocodeAddress).toHaveBeenCalledOnce();
+    expect(result.queryShapes).toEqual(['structured_postal_only', 'freeform_postal_only']);
+    expect(provider.geocodeAddress).toHaveBeenCalledTimes(2);
     expect(provider.geocodeAddress).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      kind: 'structured',
+      shape: 'structured_postal_only'
+    }));
+    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      countrycodes: 'ca',
       kind: 'freeform',
       q: 'L5B 3C1, CA',
       shape: 'freeform_postal_only'
@@ -268,8 +329,8 @@ describe('Route Ops geocoding', () => {
     expect(result).toEqual(expect.objectContaining({
       ok: true,
       queryShapes: [
-        'freeform_postal_only',
         'structured_postal_only',
+        'freeform_postal_only',
         'structured_without_unit',
         'freeform',
         'structured_without_unit_no_city'
@@ -343,7 +404,7 @@ describe('Route Ops geocoding', () => {
     const provider = {
       geocodeAddress: vi.fn((query: GeocodingQuery) => {
         calls.push(Date.now());
-        if (query.shape === 'freeform_postal_only') return Promise.resolve(null);
+        if (query.shape === 'structured_postal_only' || query.shape === 'freeform_postal_only') return Promise.resolve(null);
         return Promise.resolve({
           addressLabel: query.shape,
           latitude: 43.589045,
@@ -364,10 +425,11 @@ describe('Route Ops geocoding', () => {
 
     await service.geocode({ address, shopDomain: 'example.test' });
 
-    expect(calls).toHaveLength(2);
-    const [firstCall, secondCall] = calls;
-    if (firstCall === undefined || secondCall === undefined) throw new Error('expected two provider calls');
+    expect(calls).toHaveLength(3);
+    const [firstCall, secondCall, thirdCall] = calls;
+    if (firstCall === undefined || secondCall === undefined || thirdCall === undefined) throw new Error('expected three provider calls');
     expect(secondCall - firstCall).toBeGreaterThanOrEqual(15);
+    expect(thirdCall - secondCall).toBeGreaterThanOrEqual(15);
   });
 
   test('can share the public provider limiter across service instances', async () => {
@@ -457,7 +519,7 @@ describe('Route Ops geocoding', () => {
     expect(result).toEqual(expect.objectContaining({
       attemptCount: 2,
       ok: true,
-      queryShapes: ['freeform_postal_only']
+      queryShapes: ['structured_postal_only']
     }));
     expect(JSON.stringify(result)).not.toContain('300 City Centre Dr');
   });
