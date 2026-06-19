@@ -147,8 +147,10 @@ export function getRouteMapPoints(detail: RoutePlanDetailDto | null, draftStops?
   }
   const savedSequenceByStopId = new Map(detail.stops.map((stop) => [stop.deliveryStopId, stop.sequence]));
   const sourceStops = draftStops ?? detail.stops;
+  const isDraftRoute = detail.routePlan.status === 'DRAFT';
   for (const stop of [...sourceStops].sort((left, right) => left.sequence - right.sequence)) {
-    const stopPoint = routeStopToPoint(stop, savedSequenceByStopId.get(stop.deliveryStopId) !== stop.sequence);
+    const hasSequencePreview = savedSequenceByStopId.get(stop.deliveryStopId) !== stop.sequence;
+    const stopPoint = routeStopToPoint(stop, isDraftRoute || hasSequencePreview);
     if (stopPoint !== null) points.push(stopPoint);
   }
   return points;
@@ -171,6 +173,13 @@ export function getRouteDropoffPoints(detail: RoutePlanDetailDto | null): RouteO
         longitude
       }];
     });
+}
+
+export function getRouteFitPoints(detail: RoutePlanDetailDto | null, routePoints: RouteOpsPoint[], dropoffPoints: RouteOpsPoint[]): RouteOpsPoint[] {
+  if (detail === null) return routePoints;
+  const stopPoints = routePoints.filter((point) => point.kind === 'stop');
+  const fitPoints = [...stopPoints, ...dropoffPoints];
+  return fitPoints.length > 0 ? fitPoints : routePoints;
 }
 
 export function buildRouteDropoffPointFeatureCollection(points: readonly RouteOpsPoint[]): RouteDropoffPointFeatureCollection {

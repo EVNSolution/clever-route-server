@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PointerEvent, ReactElement, ReactNode } from 'react';
 
-import { buildOrdersMapFeatureCollection, buildRouteDropoffPointFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection, fitBoundsForPoints, getOrderMapPoints, getRouteDropoffPoints, getRouteMapPoints, type OrderMapMarkerState, type RouteDropoffPointFeatureCollection, type RouteLineFeature, type RouteOpsPoint, type RouteStopMarkerFeatureCollection } from '../../maps/geojson';
+import { buildOrdersMapFeatureCollection, buildRouteDropoffPointFeatureCollection, getRouteFitPoints, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection, fitBoundsForPoints, getOrderMapPoints, getRouteDropoffPoints, getRouteMapPoints, type OrderMapMarkerState, type RouteDropoffPointFeatureCollection, type RouteLineFeature, type RouteOpsPoint, type RouteStopMarkerFeatureCollection } from '../../maps/geojson';
 import { installMissingMapImageFallback } from '../../maps/maplibre-missing-images';
 import { installPmtilesProtocol } from '../../maps/pmtiles';
 import { mapReadiness } from '../../maps/provider';
@@ -99,7 +99,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
   const selectedRouteStopPoint = useMemo(() => selectedRouteStopId === null ? null : points.find((point) => point.kind === 'stop' && point.id === selectedRouteStopId) ?? null, [points, selectedRouteStopId]);
   const selectedRouteStop = useMemo(() => selectedRouteStopId === null ? null : routeStops.find((stop) => stop.deliveryStopId === selectedRouteStopId) ?? null, [routeStops, selectedRouteStopId]);
   const dropoffPoints = useMemo(() => getRouteDropoffPoints(detail), [detail]);
-  const fitPoints = useMemo(() => (detail === null ? points : [...points, ...dropoffPoints]), [detail, dropoffPoints, points]);
+  const fitPoints = useMemo(() => getRouteFitPoints(detail, points, dropoffPoints), [detail, dropoffPoints, points]);
   const homePoint = useMemo(() => resolveMapHomePoint(detail, depot, points), [depot, detail, points]);
   const readiness = mapReadiness({ coordinatesCount: points.length, mapStatus: bootstrap.mapConfig.status });
   const routeGeometry = useMemo(() => buildRouteGeometryFeature(detail), [detail]);

@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { buildOrdersMapFeatureCollection, buildRouteDropoffPointFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection, fitBoundsForPoints, getRouteDropoffPoints, getRouteMapPoints } from '../src/maps/geojson';
+import { buildOrdersMapFeatureCollection, buildRouteDropoffPointFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection, fitBoundsForPoints, getRouteDropoffPoints, getRouteFitPoints, getRouteMapPoints } from '../src/maps/geojson';
 import { auditStyleEndpoints, extractStyleEndpointUrls, mapReadiness, providerStatusLabel } from '../src/maps/provider';
 import { installPmtilesProtocol } from '../src/maps/pmtiles';
 import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto } from '../src/types';
@@ -123,17 +123,18 @@ describe('route ops map helpers', () => {
 
     expect(points).toEqual([
       { id: 'route-1:depot', kind: 'depot', label: 'D', latitude: 43.7, longitude: -79.5 },
-      { id: 'a', kind: 'stop', label: '1', latitude: 43.6, longitude: -79.3, preview: false, sequence: 1 },
-      { id: 'b', kind: 'stop', label: '2', latitude: 43.65, longitude: -79.4, preview: false, sequence: 2 }
+      { id: 'a', kind: 'stop', label: '1', latitude: 43.6, longitude: -79.3, preview: true, sequence: 1 },
+      { id: 'b', kind: 'stop', label: '2', latitude: 43.65, longitude: -79.4, preview: true, sequence: 2 }
     ]);
     expect(dropoffPoints).toEqual([
       { addressLabel: 'Road A', id: 'a:dropoff', kind: 'dropoff', label: '1', latitude: 43.61, longitude: -79.31 }
     ]);
     expect(fitBoundsForPoints([...points, ...dropoffPoints])).toEqual({ east: -79.3, north: 43.7, south: 43.6, west: -79.5 });
+    expect(fitBoundsForPoints(getRouteFitPoints(detail, points, dropoffPoints))).toEqual({ east: -79.3, north: 43.65, south: 43.6, west: -79.4 });
     expect(buildRouteStopMarkerFeatureCollection(points)).toEqual({
       features: [
-        { geometry: { coordinates: [-79.3, 43.6], type: 'Point' }, properties: { color: '#303030', id: 'a', label: '1', preview: false, selected: false, sortKey: 1 }, type: 'Feature' },
-        { geometry: { coordinates: [-79.4, 43.65], type: 'Point' }, properties: { color: '#303030', id: 'b', label: '2', preview: false, selected: false, sortKey: 2 }, type: 'Feature' }
+        { geometry: { coordinates: [-79.3, 43.6], type: 'Point' }, properties: { color: '#006fbb', id: 'a', label: '1', preview: true, selected: false, sortKey: 10001 }, type: 'Feature' },
+        { geometry: { coordinates: [-79.4, 43.65], type: 'Point' }, properties: { color: '#006fbb', id: 'b', label: '2', preview: true, selected: false, sortKey: 10002 }, type: 'Feature' }
       ],
       type: 'FeatureCollection'
     });
@@ -165,14 +166,46 @@ describe('route ops map helpers', () => {
     ]);
   });
 
+
+  test('fits draft route maps to stop coordinates before depot when geometry cache is missing', () => {
+    const detail = { ...routeDetail(), routeGeometry: null, routeStopPoints: [] };
+    const routePoints = getRouteMapPoints(detail);
+    const fitPoints = getRouteFitPoints(detail, routePoints, getRouteDropoffPoints(detail));
+
+    expect(routePoints.map((point) => `${point.kind}:${point.label}:${point.preview === true ? 'draft' : 'saved'}`)).toEqual([
+      'depot:D:saved',
+      'stop:1:draft',
+      'stop:2:draft'
+    ]);
+    expect(fitPoints.map((point) => `${point.kind}:${point.label}`)).toEqual(['stop:1', 'stop:2']);
+    expect(fitBoundsForPoints(fitPoints)).toEqual({ east: -79.3, north: 43.65, south: 43.6, west: -79.4 });
+  });
+
+  test('keeps published route stops neutral while still fitting to stops before depot', () => {
+    const detail: RoutePlanDetailDto = {
+      ...routeDetail(),
+      routePlan: { ...routeDetail().routePlan, status: 'ASSIGNED' },
+      routeGeometry: null,
+      routeStopPoints: []
+    };
+    const routePoints = getRouteMapPoints(detail);
+    const collection = buildRouteStopMarkerFeatureCollection(routePoints);
+
+    expect(collection.features.map((feature) => [feature.properties.id, feature.properties.color, feature.properties.preview])).toEqual([
+      ['a', '#303030', false],
+      ['b', '#303030', false]
+    ]);
+    expect(getRouteFitPoints(detail, routePoints, []).map((point) => `${point.kind}:${point.label}`)).toEqual(['stop:1', 'stop:2']);
+  });
+
   test('marks selected route stop marker data without changing marker shape', () => {
     const detail = routeDetail();
     const points = getRouteMapPoints(detail);
     const collection = buildRouteStopMarkerFeatureCollection(points, 'b');
 
     expect(collection.features.map((feature) => [feature.properties.id, feature.properties.selected, feature.properties.sortKey])).toEqual([
-      ['a', false, 1],
-      ['b', true, 20002]
+      ['a', false, 10001],
+      ['b', true, 30002]
     ]);
   });
 
