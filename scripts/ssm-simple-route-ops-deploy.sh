@@ -21,6 +21,7 @@ BASE_URL="${ROUTE_OPS_SMOKE_BASE_URL:-https://clever-route.cleversystem.ai}"
 DRY_RUN=0
 BUILD_AND_PUSH=0
 SEND_COMMAND=1
+FORCE_STATIC_RESTAGE="${ROUTE_OPS_FORCE_STATIC_RESTAGE:-0}"
 
 usage() {
   cat <<USAGE
@@ -36,6 +37,7 @@ Env:
   ROUTE_OPS_SIMPLE_CHANNEL_TAG   default: prod
   ROUTE_OPS_RUNTIME_IMAGE        optional full runtime image ref, preferably repo@sha256
   ROUTE_OPS_WEB_STATIC_IMAGE     optional full static image ref, preferably repo@sha256
+  ROUTE_OPS_FORCE_STATIC_RESTAGE  set to 1 to stage static even when digest matches current
   AWS_REGION                     default: ap-northeast-2
   ROUTE_OPS_SSM_TAG_KEY          default: Service
   ROUTE_OPS_SSM_TAG_VALUE        default: clever-delivery-server
@@ -57,13 +59,15 @@ fail() { echo "ssm-simple-route-ops-deploy: $*" >&2; exit 65; }
 
 require_publish_auth() {
   if [ "${ROUTE_OPS_SKIP_GHCR_WRITE_SCOPE_CHECK:-0}" = "1" ]; then
+    echo "warning: skipping GitHub CLI package-scope precheck; Docker/GHCR push failures remain fatal" >&2
     return 0
   fi
   if command -v gh >/dev/null 2>&1; then
     local auth_status
     auth_status="$(gh auth status -h github.com 2>&1 || true)"
     if ! printf '%s\n' "$auth_status" | grep -q 'write:packages'; then
-      fail "GHCR publish requires a GitHub/GHCR token with write:packages; refresh login or set ROUTE_OPS_SKIP_GHCR_WRITE_SCOPE_CHECK=1 after docker login with a write-capable token"
+      echo "warning: GitHub CLI auth status does not show write:packages; continuing because docker push is the authoritative GHCR publish check" >&2
+      echo "warning: if publish fails, refresh GHCR Docker login with a write-capable token" >&2
     fi
   fi
 }
@@ -130,6 +134,7 @@ ROUTE_OPS_WEB_STATIC_VOLUME=__STATIC_VOLUME__
 VROOM_IMAGE=__VROOM_IMAGE__
 BASE_URL=__BASE_URL__
 DRY_RUN=__DRY_RUN__
+FORCE_STATIC_RESTAGE=__FORCE_STATIC_RESTAGE__
 COMPOSE_FILE_B64=__COMPOSE_FILE_B64__
 CADDYFILE_B64=__CADDYFILE_B64__
 GHCR_USERNAME_PARAM="${ROUTE_OPS_GHCR_USERNAME_PARAM:-/clever/deploy/github/username}"
@@ -139,7 +144,7 @@ mkdir -p .deploy
 lock_dir=.deploy/route-ops-simple-deploy.lock.d
 if ! mkdir "$lock_dir" 2>/dev/null; then echo 'another simple deploy is running' >&2; exit 65; fi
 trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
-printf 'simple deploy preflight: commit=%s channel=%s runtime=%s static=%s volume=%s dryRun=%s\n' "$COMMIT_SHA" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$DRY_RUN"
+printf 'simple deploy preflight: commit=%s channel=%s runtime=%s static=%s volume=%s dryRun=%s forceStaticRestage=%s\n' "$COMMIT_SHA" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$DRY_RUN" "$FORCE_STATIC_RESTAGE"
 command -v docker >/dev/null
 command -v aws >/dev/null
 command -v python3 >/dev/null
@@ -157,11 +162,44 @@ ROUTE_OPS_WEB_STATIC_VOLUME=$ROUTE_OPS_WEB_STATIC_VOLUME
 VROOM_IMAGE=$VROOM_IMAGE
 PRISMA_SCHEMA_SHA=$PRISMA_SCHEMA_SHA
 EOF_ENV
+HAD_CURRENT_IMAGE_ENV=0
 if [ -f .deploy/current-image.env ]; then
+  HAD_CURRENT_IMAGE_ENV=1
   cp .deploy/current-image.env .deploy/simple-rollback-image.env
 else
   cp .deploy/simple-candidate-image.env .deploy/simple-rollback-image.env
 fi
+if [ "$HAD_CURRENT_IMAGE_ENV" = "1" ]; then
+  CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE="$(awk -F= '$1 == "ROUTE_OPS_WEB_STATIC_IMAGE" {print substr($0, index($0, "=") + 1)}' .deploy/simple-rollback-image.env | tail -n 1)"
+else
+  CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE=''
+fi
+is_digest_ref() {
+  case "$1" in
+    *@sha256:*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+should_stage_static() {
+  if [ "$FORCE_STATIC_RESTAGE" = "1" ]; then
+    echo 'force'
+    return 0
+  fi
+  if [ -z "$CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE" ]; then
+    echo 'missing-current'
+    return 0
+  fi
+  if ! is_digest_ref "$CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE" || ! is_digest_ref "$ROUTE_OPS_WEB_STATIC_IMAGE"; then
+    echo 'non-digest-ref'
+    return 0
+  fi
+  if [ "$CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE" != "$ROUTE_OPS_WEB_STATIC_IMAGE" ]; then
+    echo 'digest-changed'
+    return 0
+  fi
+  echo 'unchanged'
+  return 0
+}
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom config --quiet
 if [ "$DRY_RUN" = "1" ]; then
   printf 'simple deploy dry-run complete; no host image pull, migration, or restart mutation performed.\n'
@@ -218,9 +256,18 @@ username="$(aws ssm get-parameter --name "$GHCR_USERNAME_PARAM" --query 'Paramet
 token="$(aws ssm get-parameter --name "$GHCR_TOKEN_PARAM" --with-decryption --query 'Parameter.Value' --output text)"
 printf '%s' "$token" | docker login ghcr.io -u "$username" --password-stdin >/dev/null
 token=''
-docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom pull delivery-api route-ops-web-static vroom
+static_stage_reason="$(should_stage_static)"
+docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom pull delivery-api vroom
+if [ "$static_stage_reason" != "unchanged" ]; then
+  docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom pull route-ops-web-static
+fi
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" run --rm delivery-api-migrate
-docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up --no-build --force-recreate route-ops-web-static
+if [ "$static_stage_reason" = "unchanged" ]; then
+  printf 'simple deploy static stage skipped: candidate static digest matches current (%s)\n' "$ROUTE_OPS_WEB_STATIC_IMAGE"
+else
+  printf 'simple deploy static stage required: reason=%s current=%s candidate=%s\n' "$static_stage_reason" "$CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE"
+  docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up --no-build --force-recreate route-ops-web-static
+fi
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --no-deps --force-recreate delivery-api
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile route-engine stop route-engine || true
 for attempt in $(seq 1 30); do
@@ -230,7 +277,7 @@ for attempt in $(seq 1 30); do
 done
 cp .deploy/current-image.env ".deploy/current-image.env.before-simple-$(date -u +%Y%m%dT%H%M%SZ)" 2>/dev/null || true
 cp .deploy/simple-candidate-image.env .deploy/current-image.env
-printf '{"ts":"%s","commitSha":"%s","channelTag":"%s","deliveryApiImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","vroomImage":"%s","prismaSchemaSha":"%s","lane":"simple-ssm"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$COMMIT_SHA" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$VROOM_IMAGE" "$PRISMA_SCHEMA_SHA" >> .deploy/deploy-history.jsonl
+printf '{"ts":"%s","commitSha":"%s","channelTag":"%s","deliveryApiImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","vroomImage":"%s","prismaSchemaSha":"%s","staticStage":"%s","lane":"simple-ssm"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$COMMIT_SHA" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$VROOM_IMAGE" "$PRISMA_SCHEMA_SHA" "$static_stage_reason" >> .deploy/deploy-history.jsonl
 printf 'simple deploy completed: commit=%s channel=%s\n' "$COMMIT_SHA" "$CHANNEL_TAG"
 HOST_SCRIPT
   python3 - "$path" "$inner_path" <<'PY'
@@ -256,6 +303,7 @@ replacements = {
     '__VROOM_IMAGE__': shlex.quote(os.environ['VROOM_IMAGE']),
     '__BASE_URL__': shlex.quote(os.environ['BASE_URL']),
     '__DRY_RUN__': shlex.quote(os.environ['DRY_RUN']),
+    '__FORCE_STATIC_RESTAGE__': shlex.quote(os.environ['FORCE_STATIC_RESTAGE']),
     '__COMPOSE_FILE_B64__': shlex.quote(os.environ['COMPOSE_FILE_B64']),
     '__CADDYFILE_B64__': shlex.quote(os.environ['CADDYFILE_B64']),
 }
@@ -273,7 +321,7 @@ fi
 
 COMPOSE_FILE_B64="$(base64 < "$COMPOSE_FILE" | tr -d '\n')"
 CADDYFILE_B64="$(base64 < "$CADDYFILE" | tr -d '\n')"
-export APP_DIR COMPOSE_FILE CADDYFILE COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL DRY_RUN COMPOSE_FILE_B64 CADDYFILE_B64
+export APP_DIR COMPOSE_FILE CADDYFILE COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL DRY_RUN FORCE_STATIC_RESTAGE COMPOSE_FILE_B64 CADDYFILE_B64
 parameters_path="$(mktemp /tmp/route-ops-simple-ssm.XXXXXX)"
 write_parameters "$parameters_path"
 if [ "$SEND_COMMAND" = "0" ]; then

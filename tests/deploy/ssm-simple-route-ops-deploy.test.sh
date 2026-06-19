@@ -19,6 +19,14 @@ command = payload['commands'][0]
 wrapper = pathlib.Path('scripts/ssm-simple-route-ops-deploy.sh').read_text()
 workflow = pathlib.Path('.github/workflows/route-ops-simple-deploy.yml').read_text()
 caddyfile = pathlib.Path('infra/caddy/Caddyfile').read_text()
+dry_run_idx = command.index('if [ "$DRY_RUN" = "1" ]')
+forward_mutation_snippets = [
+    '--profile osrm --profile vroom pull delivery-api vroom',
+    '--profile osrm --profile vroom pull route-ops-web-static',
+    'run --rm delivery-api-migrate',
+    'up --no-build --force-recreate route-ops-web-static',
+    'up -d --no-build --no-deps --force-recreate delivery-api',
+]
 checks = {
     'uses_run_shell_command': command.startswith('bash -lc '),
     'channel_rendered': 'CHANNEL_TAG=prod-test' in command,
@@ -28,18 +36,23 @@ checks = {
     'caddyfile_synced_and_reloaded': 'CADDYFILE_B64=' in command and 'base64 -d > "$CADDYFILE"' in command and 'caddy reload --config /etc/caddy/Caddyfile' in command,
     'caddyfile_retries_api_swap': 'lb_try_duration 30s' in caddyfile and 'lb_try_interval 500ms' in caddyfile,
     'compose_preflight': 'docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env' in command,
-    'dry_run_exits_before_pull': command.index('if [ "$DRY_RUN" = "1" ]') < command.index('--profile osrm --profile vroom pull delivery-api route-ops-web-static vroom'),
+    'dry_run_exits_before_forward_mutations': all(dry_run_idx < command.index(snippet) for snippet in forward_mutation_snippets),
     'vroom_env': 'VROOM_BASE_URL' in command and 'http://vroom:3000' in command and 'ROUTE_ENGINE_BASE_URL' in command,
     'proof_media_bootstrap': 'chown -R 100:101 /srv/clever-route-server/data/driver-proof-media' in command and 'chmod 750 /srv/clever-route-server/data/driver-proof-media' in command,
-    'compose_pull_only_on_host': '--profile osrm --profile vroom pull delivery-api route-ops-web-static vroom' in command and 'docker pull "$DELIVERY_API_IMAGE"' not in command,
+    'compose_pull_only_on_host': '--profile osrm --profile vroom pull delivery-api vroom' in command and 'pull route-ops-web-static' in command and 'docker pull "$DELIVERY_API_IMAGE"' not in command,
     'migrate_uses_compose_service': 'run --rm delivery-api-migrate' in command,
-    'migrate_before_static_stage': command.index('run --rm delivery-api-migrate') < command.index('up --no-build --force-recreate route-ops-web-static', command.index('run --rm delivery-api-migrate')),
+    'migrate_before_static_stage': command.index('run --rm delivery-api-migrate') < command.index('simple deploy static stage required', command.index('run --rm delivery-api-migrate')),
     'api_up_no_deps': 'up -d --no-build --no-deps --force-recreate delivery-api' in command,
     'route_engine_stop': '--profile route-engine stop route-engine' in command,
     'does_not_recreate_caddy': '--force-recreate delivery-api caddy' not in command,
     'does_not_push_prod_prev': 'backup_channel_images' not in wrapper and 'previous_image_ref' not in wrapper and 'docker tag' not in wrapper,
     'rollback_uses_previous_env': 'cp .deploy/current-image.env .deploy/simple-rollback-image.env' in command and 'rolling delivery-api back to previous image env' in command,
-    'history_append': '"lane":"simple-ssm"' in command,
+    'static_missing_current_guard': 'HAD_CURRENT_IMAGE_ENV=0' in wrapper and "CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE=''" in wrapper and "echo 'missing-current'" in wrapper,
+    'static_non_digest_is_conservative': 'is_digest_ref()' in wrapper and "echo 'non-digest-ref'" in wrapper,
+    'static_skip_logic': 'should_stage_static()' in command and 'simple deploy static stage skipped' in command and 'ROUTE_OPS_FORCE_STATIC_RESTAGE' in wrapper and "echo 'unchanged'" in wrapper and "echo 'unchanged'\n  return 1" not in wrapper,
+    'static_force_logic': 'FORCE_STATIC_RESTAGE' in command and 'forceStaticRestage' in command and 'static_stage_reason="$(should_stage_static)"' in command,
+    'history_append': '"lane":"simple-ssm"' in command and '"staticStage":"%s"' in command,
+    'gh_write_packages_warning_only': 'does not show write:packages; continuing because docker push is the authoritative GHCR publish check' in wrapper and 'GHCR publish requires a GitHub/GHCR token with write:packages' not in wrapper,
     'workflow_uses_node24_docker_build_actions': 'uses: docker/setup-buildx-action@v4' in workflow and 'uses: docker/build-push-action@v7' in workflow,
     'workflow_uses_registry_cache': 'cache-from: type=registry,ref=${{ env.DELIVERY_API_IMAGE_REPO }}:buildcache' in workflow and 'cache-to: type=registry,ref=${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}:buildcache,mode=max' in workflow,
     'workflow_publishes_sha_and_channel_tags': '${{ env.DELIVERY_API_IMAGE_REPO }}:${{ github.sha }}' in workflow and '${{ env.DELIVERY_API_IMAGE_REPO }}:${{ inputs.channel_tag }}' in workflow and '${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}:${{ github.sha }}' in workflow and '${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}:${{ inputs.channel_tag }}' in workflow,

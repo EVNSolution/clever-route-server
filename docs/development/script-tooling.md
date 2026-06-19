@@ -4,7 +4,7 @@ This repo keeps a small set of root-level scripts because deployment and Route O
 
 ## Production/operator entrypoints
 
-- `scripts/ssm-simple-route-ops-deploy.sh` — current production deploy lane: GitHub Actions publishes digest-addressable changed images, then SSM pulls, runs the same-image migration service, stages static assets, recreates only `delivery-api`, and rolls back from the previous `.deploy/current-image.env` if health fails. The local `--publish` flag is a manual fallback, not the normal CI path.
+- `scripts/ssm-simple-route-ops-deploy.sh` — current production deploy lane: GitHub Actions publishes digest-addressable changed images, then SSM pulls, runs the same-image migration service, stages static assets only when needed, recreates only `delivery-api`, and rolls back from the previous `.deploy/current-image.env` if health fails. The local `--publish` flag is a manual fallback, not the normal CI path; missing `write:packages` in `gh auth status` is warning-only while Docker/GHCR push failures remain fatal.
 
 - `scripts/scan-secrets.sh` — local/CI secret hygiene utility for staged, worktree, and history scans.
 - `scripts/monitor-route-ops-production.sh` — read-only SSM monitor wrapper for production health, container status, redacted recent logs, and authenticated smoke through the deployed runtime image.

@@ -116,9 +116,11 @@ Run the current reviewed deploy path:
 scripts/ssm-simple-route-ops-deploy.sh --publish
 ```
 
-It builds/pushes the `:prod` server images, pulls them on the EC2 host, runs the
-Prisma guard, smokes VROOM from a one-off `delivery-api` container, recreates
-`delivery-api`/`caddy`, and keeps legacy route_engine stopped.
+When `--publish` is used as a manual fallback, it builds/pushes the channel images,
+then the SSM phase pulls them on the EC2 host, runs the Prisma guard, stages static
+assets conservatively for mutable tag refs, recreates `delivery-api` only, reloads Caddy
+in place, and keeps legacy route_engine stopped. The normal GitHub Actions lane passes
+digest-addressable refs; only equal digest refs are eligible for static staging skip.
 
 ### 4. Post-cutover verification
 
@@ -137,9 +139,10 @@ Then verify one real Route Ops optimization from the admin UI:
 
 ### 5. Rollback
 
-Current minimal rollback is to retag the last known-good GHCR images back to
-`:prod`, then rerun `scripts/ssm-simple-route-ops-deploy.sh --publish` or the
-host pull/recreate block from `docs/deployment/route-ops-simple-ssm-deploy.md`.
+Current rollback is file/digest based. Restore or point compose at the previous
+`.deploy/current-image.env` / `.deploy/simple-rollback-image.env`, stage the previous
+static image, and recreate `delivery-api` with `--no-deps` as described in
+`docs/deployment/route-ops-simple-ssm-deploy.md`. Do not retag `:prod` as rollback state.
 
 Legacy route_engine rollback is compatibility-only:
 

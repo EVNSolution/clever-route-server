@@ -200,27 +200,9 @@ const allowedPrefixes = [
 ];
 
 const allowedRemovedExact = new Set([
-  '.github/workflows/route-ops-release.yml',
-  'scripts/deploy-route-ops-image.sh',
-  'scripts/rollback-route-ops-image.sh',
-  'scripts/ssm-route-ops-deploy.sh',
-  'scripts/route-ops-deploy-control-bundle.sh',
-  'scripts/route-ops-release-manifest.mjs',
-  'scripts/test-route-ops-release-manifest.mjs',
   'scripts/provision-route-engine-graph-from-s3.sh',
-  'tests/deploy/deploy-route-ops-image-disk-guard.test.sh',
-  'tests/deploy/ssm-route-ops-deploy.test.sh',
-  'tests/deploy/route-ops-deploy-control-bundle.test.sh',
-  'scripts/validate-route-ops-release.mjs',
   'infra/env/deploy-image.env.example',
   'infra/ssm/route-ops-deploy-document.json',
-  'docs/deployment/route-ops-github-deploy.md',
-  'docs/deployment/route-ops-ssm-deploy.md',
-  'docs/deployment/route-ops-manual-tar-deploy.md',
-  // ponytail: keep until the first production release based after the split-workflow cleanup.
-  '.github/workflows/route-ops-publish.yml',
-  '.github/workflows/route-ops-ssm-deploy.yml',
-  'scripts/validate-route-ops-ssm-deploy.mjs',
 ]);
 
 const geocodeOsrmRemovedExact = new Set([

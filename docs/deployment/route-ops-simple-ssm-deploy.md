@@ -53,13 +53,14 @@ The EC2 host does not build. A real deploy does this in order:
 7. Bootstraps proof-media directory owner/mode.
 8. Reloads Caddy in place so the retry policy is active before `delivery-api` is recreated.
 9. Logs into GHCR using SSM parameters only on the host.
-10. Runs `docker compose --profile osrm --profile vroom pull delivery-api route-ops-web-static vroom`.
+10. Runs `docker compose --profile osrm --profile vroom pull delivery-api vroom`; pulls `route-ops-web-static` only when static staging is required.
 11. Runs `docker compose run --rm delivery-api-migrate` before touching the live static volume.
-12. Stages the static volume via `route-ops-web-static`.
-13. Recreates `delivery-api` only with `up -d --no-build --no-deps --force-recreate`.
-14. Stops legacy `route-engine` profile if present.
-15. Verifies public `/healthz`.
-16. Backs up `.deploy/current-image.env`, promotes the candidate env, and appends deploy history.
+12. Compares candidate and current `ROUTE_OPS_WEB_STATIC_IMAGE` digest refs.
+13. Stages the static volume via `route-ops-web-static` when the static digest changed, the current ref is missing, either ref is a mutable tag/non-digest ref, or `ROUTE_OPS_FORCE_STATIC_RESTAGE=1` is set.
+14. Recreates `delivery-api` only with `up -d --no-build --no-deps --force-recreate`.
+15. Stops legacy `route-engine` profile if present.
+16. Verifies public `/healthz`.
+17. Backs up `.deploy/current-image.env`, promotes the candidate env, and appends deploy history including `staticStage`.
 
 ## Commands
 
@@ -69,6 +70,17 @@ Local preflight only:
 bash -n scripts/ssm-simple-route-ops-deploy.sh
 scripts/ssm-simple-route-ops-deploy.sh --dry-run --no-send
 ```
+
+Manual fallback publish:
+
+```bash
+scripts/ssm-simple-route-ops-deploy.sh --publish --dry-run --no-send
+```
+
+The local `--publish` path treats a missing `write:packages` line in `gh auth status`
+as a warning only, because Docker/GHCR push is the authoritative publish check. A real
+`docker push` or login failure remains fatal. `ROUTE_OPS_SKIP_GHCR_WRITE_SCOPE_CHECK=1`
+only skips the GitHub CLI scope warning; it does not bypass Docker push failures.
 
 Safe host dry-run:
 
@@ -107,8 +119,20 @@ If the new `delivery-api` fails public `/healthz`, the script uses
 promoted.
 
 Manual rollback is the same operation: restore or point compose at the previous env file,
-stage `route-ops-web-static`, then recreate `delivery-api` with `--no-deps`. Do not touch
-`caddy` unless the rollback is specifically an ingress change.
+stage `route-ops-web-static`, then recreate `delivery-api` with `--no-deps`. Rollback
+always stages the previous static image, even if normal forward deploy would skip unchanged
+static, because recovery integrity is more important than speed. Do not touch `caddy` unless
+the rollback is specifically an ingress change.
+
+## DB/schema risk boundary
+
+Image rollback is not database rollback. A deploy is `db-risk: true` when it
+changes Prisma schema/migrations, the DB guard script, the production migration
+service/command, deploy workflow/script migration behavior, or image schema
+metadata such as `PRISMA_SCHEMA_SHA`. For those deploys, record schema guard/diff
+evidence and state whether the previous runtime image is backward-compatible. If
+not trivially reversible, prepare a backup/restore or forward-fix plan before
+production mutation.
 
 ## Migrate image model
 
@@ -132,6 +156,19 @@ it is reloaded in place and uses `lb_try_duration 30s` / `lb_try_interval 500ms`
 connection failures during the single-container `delivery-api` swap are retried instead of
 returned immediately as transient 502 responses.
 
+## Static staging skip
+
+Backend-only deploys can avoid restaging unchanged web assets. The script compares the
+candidate `ROUTE_OPS_WEB_STATIC_IMAGE` ref with the previous value from
+`.deploy/current-image.env` / `.deploy/simple-rollback-image.env`. It skips only when both values are digest-addressable `repo@sha256:...` refs and equal:
+
+- same digest -> skip `route-ops-web-static` staging and record `staticStage=unchanged`;
+- changed digest, missing current ref, or mutable tag/non-digest ref -> pull/stage `route-ops-web-static`;
+- `ROUTE_OPS_FORCE_STATIC_RESTAGE=1` -> stage static even when the digest matches.
+
+Use the force flag when debugging volume state, repairing a suspected stale static volume,
+or deliberately rehydrating the static artifact without changing the image digest. Local manual `--publish` fallbacks may still render mutable channel tags; those refs are intentionally staged conservatively instead of using the unchanged skip.
+
 ## Storage cleanup evidence
 
 On 2026-06-17 the old route-engine artifacts were removed from production:
@@ -146,3 +183,27 @@ On 2026-06-17 the old route-engine artifacts were removed from production:
 Root disk usage improved from about `20G used / 35%` to `14G used / 24%`.
 The simple SSM lane has completed a production deploy. Remaining old GHCR SHA images
 can be pruned after a separate image-retention pass confirms no container references them.
+
+## Legacy deploy-control cloud cleanup evidence
+
+On 2026-06-19, after the GHCR + AWS-managed `AWS-RunShellScript` lane was accepted as the
+production standard, the first approval-gated cleanup pass removed only the legacy resources
+that were no longer referenced by the current deploy lane:
+
+- deleted GitHub variables `SSM_ROUTE_OPS_DOCUMENT_NAME` and `SSM_ROUTE_OPS_DOCUMENT_VERSION`;
+- trimmed `arn:aws:ssm:ap-northeast-2:902837199612:document/CleverRoute-RouteOpsDeploy`
+  from the `GitHubActions-CleverRoute-RouteOpsDeploy` / `CleverRouteOpsSsmDeploy` inline
+  policy while keeping `AWS-RunShellScript` and command polling permissions;
+- exported and deleted the obsolete `RouteOpsDeployControlArtifactWrite` inline policy;
+- exported and deleted the obsolete custom SSM document `CleverRoute-RouteOpsDeploy`.
+
+Held back intentionally:
+
+- route-engine GHCR variable/secret cleanup, until legacy route-engine rollback is explicitly
+  retired as an operational fallback;
+- historical S3 deploy-control objects, until a retention/lifecycle decision is made.
+
+Restore sources are the timestamped local exports under the OMX cleanup artifact directory
+for this run. Recreate the GitHub variables from the values documented in the cleanup report,
+re-put exported IAM policies with `aws iam put-role-policy`, and recreate the SSM document
+from the exported `get-document` payload if a legacy rollback lane must be restored.
