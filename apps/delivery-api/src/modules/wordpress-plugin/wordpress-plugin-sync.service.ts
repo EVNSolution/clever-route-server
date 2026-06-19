@@ -1,4 +1,7 @@
+import type { Prisma } from '@prisma/client';
 import type { CanonicalOrderRow } from '../shopify/order-sync.mapper.js';
+import { decideRawOrderIntake, RAW_INTAKE_CODES, RAW_INTAKE_DECISIONS, RAW_INTAKE_STAGES, type RawIntakeDecision } from './raw-order-intake-guard.js';
+import type { RawOrderIngestEventRecordInput } from './wordpress-plugin.repository.js';
 import type { WooCommerceOrder } from '../woocommerce/woocommerce-order.types.js';
 import type { WooCommerceSyncOrdersResult } from '../woocommerce/woocommerce-order-sync.service.js';
 import type { DecryptedWooCommerceConnection } from '../commerce/commerce-connection.service.js';
@@ -51,7 +54,15 @@ export type WordPressPluginSyncRunRepository = {
     limit: number;
     now: Date;
     syncRunId: string;
-  }): Promise<Array<{ id: string; rawPayload: unknown; sourceOrderId: string; sourceOrderNumber: string | null }>>;
+  }): Promise<
+    Array<{
+      id: string;
+      rawPayload: unknown;
+      rawPayloadSha256: string;
+      sourceOrderId: string;
+      sourceOrderNumber: string | null;
+    }>
+  >;
   markRawIngestProcessing(input: {
     context: WordPressPluginConnectionContext;
     ingestId: string;
@@ -67,8 +78,27 @@ export type WordPressPluginSyncRunRepository = {
     sync: WordPressPluginSyncCounts;
     syncRunId: string;
   }): Promise<void>;
+  markRawIngestProcessedWithEvent(input: {
+    canonicalOrderId: string | null;
+    context: WordPressPluginConnectionContext;
+    event: RawOrderIngestEventRecordInput;
+    geocode: WordPressPluginSyncGeocodeSummary;
+    ingestId: string;
+    now: Date;
+    sync: WordPressPluginSyncCounts;
+    syncRunId: string;
+  }): Promise<void>;
   markRawIngestSkipped(input: {
     context: WordPressPluginConnectionContext;
+    failureCode: string;
+    failureMessage: string;
+    ingestId: string;
+    now: Date;
+    syncRunId: string;
+  }): Promise<void>;
+  markRawIngestSkippedWithEvent(input: {
+    context: WordPressPluginConnectionContext;
+    event: RawOrderIngestEventRecordInput;
     failureCode: string;
     failureMessage: string;
     ingestId: string;
@@ -232,40 +262,74 @@ export class WordPressPluginSyncRequestService {
         });
         if (!processing) continue;
         try {
+          const processedAt = this.now();
+          const intakeDecision = decideRawOrderIntake({
+            context: { connectionPlatform: 'WOOCOMMERCE', routeSource: 'wordpress_plugin_raw_push' },
+            rawPayload: row.rawPayload
+          });
+          if (
+            intakeDecision.decision === RAW_INTAKE_DECISIONS.SKIP_RAW ||
+            intakeDecision.decision === RAW_INTAKE_DECISIONS.REJECT_PRE_INGEST
+          ) {
+            await this.dependencies.syncRunRepository.markRawIngestSkippedWithEvent({
+              context: input.context,
+              event: toRawIngestEvent({ context: input.context, decision: intakeDecision, row, syncRunId: input.syncRunId, now: processedAt }),
+              failureCode: intakeDecision.code,
+              failureMessage: intakeDecision.message,
+              ingestId: row.id,
+              now: processedAt,
+              syncRunId: input.syncRunId
+            });
+            continue;
+          }
+
           const synced = await orderSyncService.syncOrders({
             orders: [row.rawPayload as WooCommerceOrder],
             reason: 'raw_push'
           });
           const canonicalOrderId = synced.orders[0]?.orderId ?? null;
           if (isStaleRawSyncResult(synced.sync)) {
-            await this.dependencies.syncRunRepository.markRawIngestSkipped({
+            const staleDecision = rawProcessingDecision({
+              code: RAW_INTAKE_CODES.PROCESSING_STALE_SOURCE_SNAPSHOT,
+              message: 'Order was skipped because CLEVER already has a newer WooCommerce snapshot.',
+              row
+            });
+            await this.dependencies.syncRunRepository.markRawIngestSkippedWithEvent({
               context: input.context,
-              failureCode: 'RAW_ORDER_STALE_SOURCE_SNAPSHOT',
-              failureMessage: 'Order was skipped because CLEVER already has a newer WooCommerce snapshot.',
+              event: toRawIngestEvent({ context: input.context, decision: staleDecision, row, syncRunId: input.syncRunId, now: processedAt }),
+              failureCode: staleDecision.code,
+              failureMessage: staleDecision.message,
               ingestId: row.id,
-              now: this.now(),
+              now: processedAt,
               syncRunId: input.syncRunId
             });
             continue;
           }
           const status = synced.sync.created > 0 || synced.sync.updated > 0 || synced.sync.unchanged > 0 ? 'processed' : 'skipped';
           if (status === 'processed') {
-            await this.dependencies.syncRunRepository.markRawIngestProcessed({
+            await this.dependencies.syncRunRepository.markRawIngestProcessedWithEvent({
               canonicalOrderId,
               context: input.context,
+              event: toRawIngestEvent({ context: input.context, decision: intakeDecision, row, syncRunId: input.syncRunId, now: processedAt }),
               geocode: summarizeGeocode(synced.orders),
               ingestId: row.id,
-              now: this.now(),
+              now: processedAt,
               sync: synced.sync,
               syncRunId: input.syncRunId
             });
           } else {
-            await this.dependencies.syncRunRepository.markRawIngestSkipped({
+            const skippedDecision = rawProcessingDecision({
+              code: RAW_INTAKE_CODES.PROCESSING_CANONICAL_SKIPPED,
+              message: 'Order was skipped by canonical freshness rules.',
+              row
+            });
+            await this.dependencies.syncRunRepository.markRawIngestSkippedWithEvent({
               context: input.context,
-              failureCode: 'RAW_ORDER_SKIPPED',
-              failureMessage: 'Order was skipped by canonical freshness rules.',
+              event: toRawIngestEvent({ context: input.context, decision: skippedDecision, row, syncRunId: input.syncRunId, now: processedAt }),
+              failureCode: skippedDecision.code,
+              failureMessage: skippedDecision.message,
               ingestId: row.id,
-              now: this.now(),
+              now: processedAt,
               syncRunId: input.syncRunId
             });
           }
@@ -381,6 +445,61 @@ export class WordPressPluginSyncRequestService {
   private now(): Date {
     return this.dependencies.now?.() ?? new Date();
   }
+}
+
+
+type RawProcessingRow = {
+  id: string;
+  rawPayload: unknown;
+  rawPayloadSha256: string;
+  sourceOrderId: string;
+  sourceOrderNumber: string | null;
+};
+
+function toRawIngestEvent(input: {
+  context: WordPressPluginConnectionContext;
+  decision: RawIntakeDecision;
+  now: Date;
+  row: RawProcessingRow;
+  syncRunId: string;
+}): RawOrderIngestEventRecordInput {
+  return {
+    code: input.decision.code,
+    commerceConnectionId: input.context.connectionId,
+    createdAt: input.now,
+    decision: input.decision.decision,
+    message: input.decision.message,
+    metadata: toEventMetadata(input.decision.metadata),
+    rawOrderIngestId: input.row.id,
+    rawPayloadSha256: input.row.rawPayloadSha256,
+    severity: input.decision.severity,
+    shopId: input.context.shopId,
+    sourceLine: input.decision.sourceLine,
+    sourceOrderId: input.row.sourceOrderId,
+    sourceOrderNumber: input.row.sourceOrderNumber,
+    stage: input.decision.stage,
+    syncRunId: input.syncRunId
+  };
+}
+
+function toEventMetadata(value: Record<string, unknown>): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
+function rawProcessingDecision(input: {
+  code: typeof RAW_INTAKE_CODES.PROCESSING_CANONICAL_SKIPPED | typeof RAW_INTAKE_CODES.PROCESSING_STALE_SOURCE_SNAPSHOT;
+  message: string;
+  row: RawProcessingRow;
+}): RawIntakeDecision {
+  return {
+    code: input.code,
+    decision: RAW_INTAKE_DECISIONS.SKIP_RAW,
+    message: input.message,
+    metadata: { sourceOrderId: input.row.sourceOrderId, sourceOrderNumber: input.row.sourceOrderNumber },
+    severity: 'info',
+    sourceLine: 'WOOCOMMERCE',
+    stage: RAW_INTAKE_STAGES.PROCESSING
+  };
 }
 
 function toSyncRunRequest(payload: WordPressPluginSyncRequestInput): WordPressPluginSyncRunRequest {

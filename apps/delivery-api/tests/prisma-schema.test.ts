@@ -42,6 +42,10 @@ const deliveryCustomerProfilesMigrationPath = new URL(
   '../prisma/migrations/20260618093000_add_delivery_customer_profiles/migration.sql',
   import.meta.url
 );
+const rawOrderIngestEventsMigrationPath = new URL(
+  '../prisma/migrations/20260619030000_add_commerce_raw_order_ingest_events/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
@@ -79,6 +83,7 @@ describe('Prisma schema', () => {
       'CommerceConnectionAuditLog',
       'CommerceSyncRun',
       'CommerceRawOrderIngest',
+      'CommerceRawOrderIngestEvent',
       'WordPressPluginToken',
       'WordPressPluginPairingCode',
       'Order',
@@ -105,6 +110,7 @@ describe('Prisma schema', () => {
     expect(schema).toContain('commerceConnections');
     expect(schema).toContain('commerceSyncRuns');
     expect(schema).toContain('commerceRawOrderIngests');
+    expect(schema).toContain('commerceRawOrderIngestEvents');
     expect(schema).toContain('consumerKeyCiphertext');
     expect(schema).toContain('consumerSecretCiphertext');
     expect(schema).toContain('webhookSecretCiphertext');
@@ -148,6 +154,10 @@ describe('Prisma schema', () => {
     expect(schema).toMatch(/@@unique\(\[syncRunId, chunkId, sourceOrderId, rawPayloadSha256\]/);
     expect(schema).toMatch(/@@index\(\[syncRunId, status, receivedAt\]/);
     expect(schema).toMatch(/@@index\(\[commerceConnectionId, sourceOrderId, receivedAt\]/);
+    expect(schema).toContain('sourceLine');
+    expect(schema).toContain('rawOrderIngestId');
+    expect(schema).toContain('raw_ingest_events_shop_order_number_createdAt_idx');
+    expect(schema).toContain('raw_ingest_events_raw_ingest_createdAt_idx');
     expect(schema).toContain('requestPayload');
     expect(schema).toContain('geocodeResolved');
     expect(schema).toContain('geocodeFailed');
@@ -240,7 +250,17 @@ describe('Prisma schema', () => {
     expect(migration).toContain('"commerce_raw_order_ingests_connection_order_receivedAt_idx"');
   });
 
+  test('ships a migration for source-aware raw ingest audit events', async () => {
+    const migration = await readFile(rawOrderIngestEventsMigrationPath, 'utf8');
 
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "commerce_raw_order_ingest_events"');
+    expect(migration).toContain('"sourceLine" TEXT NOT NULL');
+    expect(migration).toContain('"rawOrderIngestId" UUID');
+    expect(migration).toContain('ON DELETE SET NULL ON UPDATE CASCADE');
+    expect(migration).toContain('"raw_ingest_events_shop_order_number_createdAt_idx"');
+    expect(migration).toContain('"raw_ingest_events_raw_ingest_createdAt_idx"');
+    expect(migration).toContain('"raw_ingest_events_shop_code_createdAt_idx"');
+  });
 
   test('ships tenant-scoped delivery customer profile storage for admin memos', async () => {
     const schema = await readSchema();

@@ -126,7 +126,7 @@ describe('WordPressPluginSyncRequestService', () => {
   test('processes durable raw rows through Woo canonical sync and records terminal row status', async () => {
     const syncRunRepository = syncRunRepositoryMock();
     syncRunRepository.listRawIngestsForProcessing.mockResolvedValueOnce([
-      { id: 'raw-ingest-id', rawPayload: { id: 123, number: '123' }, sourceOrderId: '123', sourceOrderNumber: '123' }
+      { id: 'raw-ingest-id', rawPayload: { id: 123, line_items: [{ id: 1, name: 'Tomato box' }], number: '123' }, rawPayloadSha256: 'raw-hash', sourceOrderId: '123', sourceOrderNumber: '123' }
     ]);
     syncRunRepository.markRawIngestProcessing.mockResolvedValueOnce(true);
     syncRunRepository.refreshRawSyncRunStatus.mockResolvedValueOnce(
@@ -143,10 +143,21 @@ describe('WordPressPluginSyncRequestService', () => {
     await expect(
       service.processRawSyncRun({ context: pluginContext(), syncRunId: '11111111-1111-4111-8111-111111111111' })
     ).resolves.toEqual(syncRun({ request: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'RUNNING' }));
-    expect(syncOrders).toHaveBeenCalledWith({ orders: [{ id: 123, number: '123' }], reason: 'raw_push' });
-    expect(syncRunRepository.markRawIngestProcessed).toHaveBeenCalledWith({
+    expect(syncOrders).toHaveBeenCalledWith({
+      orders: [{ id: 123, line_items: [{ id: 1, name: 'Tomato box' }], number: '123' }],
+      reason: 'raw_push'
+    });
+    const processedInput = syncRunRepository.markRawIngestProcessedWithEvent.mock.calls[0]?.[0];
+    expect(processedInput).toMatchObject({
       canonicalOrderId: 'canonical-order-id',
       context: pluginContext(),
+      event: {
+        code: 'WOO_METADATA_MISSING_DELIVERY_SCOPE',
+        rawOrderIngestId: 'raw-ingest-id',
+        rawPayloadSha256: 'raw-hash',
+        sourceOrderId: '123',
+        sourceOrderNumber: '123'
+      },
       geocode: { failed: 0, notRequired: 0, pending: 1, resolved: 0 },
       ingestId: 'raw-ingest-id',
       now: acceptedAt,
@@ -155,10 +166,37 @@ describe('WordPressPluginSyncRequestService', () => {
     });
   });
 
+  test('hard-skips clear Woo non-orders before canonical sync and records event-backed skip', async () => {
+    const syncRunRepository = syncRunRepositoryMock();
+    syncRunRepository.listRawIngestsForProcessing.mockResolvedValueOnce([
+      {
+        id: 'raw-ingest-id',
+        rawPayload: { id: 123, line_items: [{ id: 1, name: 'Tomato box' }], number: '123', status: 'cancelled' },
+        rawPayloadSha256: 'raw-hash',
+        sourceOrderId: '123',
+        sourceOrderNumber: '123'
+      }
+    ]);
+    syncRunRepository.markRawIngestProcessing.mockResolvedValueOnce(true);
+    syncRunRepository.refreshRawSyncRunStatus.mockResolvedValueOnce(syncRun({ status: 'RUNNING' }));
+    const syncOrders = vi.fn<WordPressPluginOrderSyncService['syncOrders']>();
+    const service = createService({ syncOrders, syncRunRepository });
+
+    await service.processRawSyncRun({ context: pluginContext(), syncRunId: '11111111-1111-4111-8111-111111111111' });
+
+    expect(syncOrders).not.toHaveBeenCalled();
+    const skippedInput = syncRunRepository.markRawIngestSkippedWithEvent.mock.calls[0]?.[0];
+    expect(skippedInput).toMatchObject({
+      event: { code: 'WOO_STATUS_CANCELLED', rawOrderIngestId: 'raw-ingest-id' },
+      failureCode: 'WOO_STATUS_CANCELLED',
+      ingestId: 'raw-ingest-id'
+    });
+  });
+
   test('marks older raw snapshots as skipped instead of processed when canonical freshness rejects them', async () => {
     const syncRunRepository = syncRunRepositoryMock();
     syncRunRepository.listRawIngestsForProcessing.mockResolvedValueOnce([
-      { id: 'raw-ingest-id', rawPayload: { id: 123, number: '123' }, sourceOrderId: '123', sourceOrderNumber: '123' }
+      { id: 'raw-ingest-id', rawPayload: { id: 123, line_items: [{ id: 1, name: 'Tomato box' }], number: '123' }, rawPayloadSha256: 'raw-hash', sourceOrderId: '123', sourceOrderNumber: '123' }
     ]);
     syncRunRepository.markRawIngestProcessing.mockResolvedValueOnce(true);
     syncRunRepository.refreshRawSyncRunStatus.mockResolvedValueOnce(syncRun({ status: 'RUNNING' }));
@@ -172,10 +210,15 @@ describe('WordPressPluginSyncRequestService', () => {
 
     await service.processRawSyncRun({ context: pluginContext(), syncRunId: '11111111-1111-4111-8111-111111111111' });
 
-    expect(syncRunRepository.markRawIngestProcessed).not.toHaveBeenCalled();
-    expect(syncRunRepository.markRawIngestSkipped).toHaveBeenCalledWith({
+    expect(syncRunRepository.markRawIngestProcessedWithEvent).not.toHaveBeenCalled();
+    const skippedInput = syncRunRepository.markRawIngestSkippedWithEvent.mock.calls[0]?.[0];
+    expect(skippedInput).toMatchObject({
       context: pluginContext(),
-      failureCode: 'RAW_ORDER_STALE_SOURCE_SNAPSHOT',
+      event: {
+        code: 'PROCESSING_STALE_SOURCE_SNAPSHOT',
+        rawOrderIngestId: 'raw-ingest-id'
+      },
+      failureCode: 'PROCESSING_STALE_SOURCE_SNAPSHOT',
       failureMessage: 'Order was skipped because CLEVER already has a newer WooCommerce snapshot.',
       ingestId: 'raw-ingest-id',
       now: acceptedAt,
@@ -186,7 +229,7 @@ describe('WordPressPluginSyncRequestService', () => {
   test('redacts raw row processing failures before persisting failure summaries', async () => {
     const syncRunRepository = syncRunRepositoryMock();
     syncRunRepository.listRawIngestsForProcessing.mockResolvedValueOnce([
-      { id: 'raw-ingest-id', rawPayload: { id: 123, billing: { email: 'jane@example.test' } }, sourceOrderId: '123', sourceOrderNumber: '123' }
+      { id: 'raw-ingest-id', rawPayload: { id: 123, billing: { email: 'jane@example.test' }, line_items: [{ id: 1, name: 'Tomato box' }] }, rawPayloadSha256: 'raw-hash', sourceOrderId: '123', sourceOrderNumber: '123' }
     ]);
     syncRunRepository.markRawIngestProcessing.mockResolvedValueOnce(true);
     syncRunRepository.refreshRawSyncRunStatus.mockResolvedValueOnce(syncRun({ status: 'RUNNING' }));
@@ -460,8 +503,10 @@ function syncRunRepositoryMock(): WordPressPluginSyncRunRepository & {
   listRawIngestsForProcessing: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['listRawIngestsForProcessing']>>;
   markRawIngestFailed: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['markRawIngestFailed']>>;
   markRawIngestProcessed: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['markRawIngestProcessed']>>;
+  markRawIngestProcessedWithEvent: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['markRawIngestProcessedWithEvent']>>;
   markRawIngestProcessing: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['markRawIngestProcessing']>>;
   markRawIngestSkipped: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['markRawIngestSkipped']>>;
+  markRawIngestSkippedWithEvent: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['markRawIngestSkippedWithEvent']>>;
   markSyncRunFailed: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['markSyncRunFailed']>>;
   markSyncRunRunning: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['markSyncRunRunning']>>;
   markSyncRunSucceeded: ReturnType<typeof vi.fn<WordPressPluginSyncRunRepository['markSyncRunSucceeded']>>;
@@ -477,8 +522,10 @@ function syncRunRepositoryMock(): WordPressPluginSyncRunRepository & {
     listRawIngestsForProcessing: vi.fn(() => Promise.resolve([])),
     markRawIngestFailed: vi.fn(),
     markRawIngestProcessed: vi.fn(),
+    markRawIngestProcessedWithEvent: vi.fn(),
     markRawIngestProcessing: vi.fn(),
     markRawIngestSkipped: vi.fn(),
+    markRawIngestSkippedWithEvent: vi.fn(),
     markSyncRunFailed: vi.fn(),
     markSyncRunRunning: vi.fn(),
     markSyncRunSucceeded: vi.fn(),

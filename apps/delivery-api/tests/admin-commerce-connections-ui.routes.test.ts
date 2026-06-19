@@ -1455,6 +1455,143 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
+  test("serves scoped order ingest audit lookup without raw payload fields", async () => {
+    const lookup = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["orderIngestAuditService"]
+      >["lookup"]
+    >(() =>
+      Promise.resolve({
+        canonicalOrder: { id: "order-1", name: "#11815", sourceOrderId: "11815", sourceOrderNumber: "11815", sourcePlatform: "WOOCOMMERCE", sourceSiteUrl: "https://woo.example.test" },
+        evidenceKinds: ["raw_ingest", "event", "canonical_order"],
+        events: [
+          {
+            code: "WOO_STATUS_CANCELLED",
+            commerceConnectionId: "connection-id",
+            createdAt: "2026-06-19T03:00:02.000Z",
+            decision: "SKIP_RAW",
+            id: "event-1",
+            message: "Cancelled Woo order skipped.",
+            metadata: { reason: "cancelled" },
+            rawPayloadSha256: "sha256:raw",
+            severity: "info",
+            sourceLine: "WOOCOMMERCE",
+            sourceOrderId: "11815",
+            sourceOrderNumber: "11815",
+            sourceSiteUrl: "https://woo.example.test",
+            stage: "woo_status",
+          },
+        ],
+        found: true,
+        latestDecision: {
+          code: "WOO_STATUS_CANCELLED",
+          commerceConnectionId: "connection-id",
+          createdAt: "2026-06-19T03:00:02.000Z",
+          decision: "SKIP_RAW",
+          id: "event-1",
+          message: "Cancelled Woo order skipped.",
+          metadata: { reason: "cancelled" },
+          rawPayloadSha256: "sha256:raw",
+          severity: "info",
+          sourceLine: "WOOCOMMERCE",
+          sourceOrderId: "11815",
+          sourceOrderNumber: "11815",
+          sourceSiteUrl: "https://woo.example.test",
+          stage: "woo_status",
+        },
+        orderNumber: "11815",
+        rawIngest: {
+          canonicalOrderId: "order-1",
+          commerceConnectionId: "connection-id",
+          failureCode: null,
+          failureMessage: null,
+          id: "raw-1",
+          platform: "WOOCOMMERCE",
+          processedAt: "2026-06-19T03:00:01.000Z",
+          rawPayloadSha256: "sha256:raw",
+          receivedAt: "2026-06-19T02:59:59.000Z",
+          sourceOrderId: "11815",
+          sourceOrderNumber: "11815",
+          sourceSiteUrl: "https://woo.example.test",
+          status: "SKIPPED",
+          syncRun: { completedAt: "2026-06-19T03:00:00.000Z", id: "sync-run-1", status: "COMPLETED" },
+        },
+        shopDomain: "tenant-a.example.test",
+        status: "raw_ingest",
+        syncRun: { completedAt: "2026-06-19T03:00:00.000Z", id: "sync-run-1", status: "COMPLETED" },
+      }),
+    );
+    const { app } = await createUiHarness({
+      orderIngestAuditService: { lookup },
+    });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        headers: { cookie, accept: "application/json" },
+        method: "GET",
+        url: "/admin/ui/app/api/order-ingest-audit?shopDomain=tenant-a.example.test&orderNumber=11815",
+      });
+
+      expect(response.statusCode).toBe(200);
+      const data = readApiData<{
+        audit: {
+          found: boolean;
+          latestDecision: { code: string };
+          rawIngest: { status: string };
+        };
+      }>(response);
+      expect(data.audit.found).toBe(true);
+      expect(data.audit.latestDecision.code).toBe("WOO_STATUS_CANCELLED");
+      expect(data.audit.rawIngest.status).toBe("SKIPPED");
+      expect(JSON.stringify(data)).not.toContain("\"rawPayload\":");
+      expect(lookup).toHaveBeenCalledWith({
+        orderNumber: "11815",
+        shopDomain: "tenant-a.example.test",
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("rejects cross-shop WP sessions before order ingest audit lookup", async () => {
+    const lookup = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["orderIngestAuditService"]
+      >["lookup"]
+    >();
+    const { app } = await createUiHarness({
+      orderIngestAuditService: { lookup },
+    });
+    const { token } = createAdminWebLaunchToken({
+      returnPath: "/admin/ui/app/orders?shopDomain=tenant-a.example.test",
+      sessionSecret: webSessionSecret,
+      shopDomain: "tenant-a.example.test",
+      subject: "wordpress-plugin:tenant-a.example.test",
+    });
+
+    try {
+      const launch = await app.inject({
+        method: "GET",
+        url: `/admin/ui/plugin-launch?token=${encodeURIComponent(token)}`,
+      });
+      const cookie = readSetCookie(launch);
+      const response = await app.inject({
+        headers: { cookie, accept: "application/json" },
+        method: "GET",
+        url: "/admin/ui/app/api/order-ingest-audit?shopDomain=tenant-b.example.test&orderNumber=11815",
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(readApiError(response).message).toContain(
+        "WordPress-launched admin session is limited to its connected shopDomain.",
+      );
+      expect(lookup).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test("serves the Route Ops SPA shell and WP-session JSON APIs for orders, routes, drivers, and settings", async () => {
     const listCanonicalOrders = vi.fn<
       NonNullable<
@@ -3279,7 +3416,7 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(response.body).not.toContain('"rawDeliveryDay":');
       expect(response.body).not.toContain('"rawDeliveryDate":');
       expect(response.body).not.toContain('"rawDeliveryTimeWindow":');
-      expect(response.body).not.toContain("rawPayload");
+      expect(response.body).not.toContain("\"rawPayload\":");
       expect(response.body).not.toContain("customer@example.test");
       expect(response.body).not.toContain("consumer_secret");
       expect(listCanonicalOrders).toHaveBeenCalledWith({
@@ -6171,6 +6308,7 @@ async function createUiHarness(
     geocodingService: AdminCommerceConnectionsUiDependencies["geocodingService"];
     getConnection: ReturnType<typeof vi.fn>;
     listConnections: ReturnType<typeof vi.fn>;
+    orderIngestAuditService: AdminCommerceConnectionsUiDependencies["orderIngestAuditService"];
     orderSyncService: AdminCommerceConnectionsUiDependencies["orderSyncService"];
     notificationService: AdminCommerceConnectionsUiDependencies["notificationService"];
     pairingCodeService:
@@ -6276,6 +6414,9 @@ async function createUiHarness(
     ...(overrides.driverService === undefined
       ? {}
       : { driverService: overrides.driverService }),
+    ...(overrides.orderIngestAuditService === undefined
+      ? {}
+      : { orderIngestAuditService: overrides.orderIngestAuditService }),
     ...(overrides.orderSyncService === undefined
       ? {}
       : { orderSyncService: overrides.orderSyncService }),

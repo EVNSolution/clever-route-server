@@ -12,6 +12,7 @@ import type {
   SaveAdminStoreSettingsInput,
 } from "../modules/commerce/admin-store-settings.service.js";
 import type { AdminWooSyncServiceContract } from "../modules/commerce/admin-woocommerce-sync.service.js";
+import type { OrderIngestAuditServiceContract } from "../modules/wordpress-plugin/order-ingest-audit.service.js";
 import { validateRouteScopeConfigPayload } from "../modules/route-ops/route-scope-config.js";
 import { validateRouteOpsUiSettingsPayload } from "../modules/route-ops/route-ops-ui-settings.js";
 import {
@@ -422,6 +423,7 @@ export type AdminCommerceConnectionsUiDependencies = {
     }): Promise<{ code: string; expiresAt: Date; siteUrl: string }>;
   };
   geocodingService?: Pick<GeocodingService, "geocode" | "status">;
+  orderIngestAuditService?: OrderIngestAuditServiceContract;
   orderSyncService?: {
     listDeliveryBatchCandidates?(input: {
       deliveryDate?: string;
@@ -1385,6 +1387,38 @@ function registerRouteOpsAppRoutes(
           return routeOpsData({ notification });
         },
       ),
+  );
+
+  app.get(`${ADMIN_UI_APP_API_PATH}/order-ingest-audit`, async (request, reply) =>
+    withRouteOpsApi(
+      request,
+      reply,
+      readSession(request, dependencies),
+      async (session) => {
+        const shopDomain = requireRouteOpsShopDomain(request, session);
+        if (dependencies.orderIngestAuditService === undefined) {
+          throw new WooCommerceOnboardingError(
+            "BAD_REQUEST",
+            "Order ingest audit service is not enabled in this runtime.",
+            400,
+          );
+        }
+        const orderNumber = readQueryString(request.query, "orderNumber");
+        if (orderNumber === null) {
+          throw new WooCommerceOnboardingError(
+            "BAD_REQUEST",
+            "orderNumber is required.",
+            400,
+          );
+        }
+        return routeOpsData({
+          audit: await dependencies.orderIngestAuditService.lookup({
+            orderNumber,
+            shopDomain,
+          }),
+        });
+      },
+    ),
   );
 
   app.get(`${ADMIN_UI_APP_API_PATH}/orders`, async (request, reply) =>

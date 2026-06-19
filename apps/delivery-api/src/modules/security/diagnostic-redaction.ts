@@ -12,7 +12,11 @@ export function redactDiagnosticValue(
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, '[redacted-email]')
     .replace(/\+?\d[\d\s().-]{7,}\d/gu, '[redacted-phone]')
     .replace(
-      /\b(?:consumer_secret|consumer_key|webhook_secret|token|cookie|password)\s*[:=]\s*\S+/giu,
+      /\bauthorization\s*[:=]\s*(?:[A-Za-z]+\s+)?[^\s,;]+/giu,
+      '[redacted-secret]',
+    )
+    .replace(
+      /\b(?:access[_-]?token|api[_-]?key|api[_-]?token|auth[_-]?token|consumer[_-]?secret|consumer[_-]?key|cookie|password|private[_-]?key|refresh[_-]?token|secret|token|webhook[_-]?secret)\s*[:=]\s*\S+/giu,
       '[redacted-secret]',
     );
   return redacted.length > 96 ? `${redacted.slice(0, 93)}...` : redacted;
@@ -26,7 +30,7 @@ export function isSensitiveDiagnosticPath(
   value: string | null | undefined,
 ): boolean {
   const normalized = value?.trim().toLowerCase() ?? '';
-  return /(?:consumer[_-]?secret|consumer[_-]?key|webhook[_-]?secret|access[_-]?token|refresh[_-]?token|api[_-]?key|private[_-]?key|secret|password|cookie|authorization|auth[_-]?token)/u.test(
+  return /(?:consumer[_-]?secret|consumer[_-]?key|webhook[_-]?secret|access[_-]?token|refresh[_-]?token|api[_-]?key|api[_-]?token|private[_-]?key|secret|password|cookie|authorization|auth[_-]?token)/u.test(
     normalized,
   );
 }

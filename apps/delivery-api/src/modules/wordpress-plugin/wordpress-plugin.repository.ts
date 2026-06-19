@@ -1,9 +1,11 @@
-import type { CommerceRawOrderIngestStatus, CommerceSyncRunStatus, Prisma, PrismaClient, RoutePlanStatus } from '@prisma/client';
+import { Prisma, type CommerceRawOrderIngestStatus, type CommerceSyncRunStatus, type PrismaClient, type RoutePlanStatus } from '@prisma/client';
 import { createHash } from 'node:crypto';
 
 import { normalizeCommerceSiteUrl } from '../commerce/commerce-connection.repository.js';
+import { redactDiagnosticValue } from '../security/diagnostic-redaction.js';
 import type { WordPressPluginAuthRepository } from './wordpress-plugin-auth.service.js';
 import { hashSecret, createPairingCode } from './wordpress-plugin-auth.service.js';
+import { decideRawOrderIntake, RAW_INTAKE_DECISIONS, type RawIntakeDecision } from './raw-order-intake-guard.js';
 import { toInternalRoutePlanStatus, toWordPressRoutePlanStatus, toWordPressStopStatus } from './wordpress-plugin-status.js';
 import type {
   WordPressPluginConnectionContext,
@@ -31,9 +33,11 @@ import type {
 
 type WordPressPluginPrismaClient = Pick<
   PrismaClient,
+  | '$transaction'
   | 'commerceConnection'
   | 'commerceConnectionOrderMapping'
   | 'commerceRawOrderIngest'
+  | 'commerceRawOrderIngestEvent'
   | 'commerceSyncRun'
   | 'orderDeliveryFact'
   | 'routePlan'
@@ -41,12 +45,31 @@ type WordPressPluginPrismaClient = Pick<
   | 'wordPressPluginToken'
 >;
 
+export type RawOrderIngestEventRecordInput = {
+  code: string;
+  commerceConnectionId?: string | null;
+  createdAt?: Date;
+  decision: string;
+  message: string;
+  metadata?: Prisma.InputJsonValue | null;
+  rawOrderIngestId?: string | null;
+  rawPayloadSha256?: string | null;
+  severity: string;
+  shopId: string;
+  sourceLine: string;
+  sourceOrderId?: string | null;
+  sourceOrderNumber?: string | null;
+  stage: string;
+  syncRunId?: string | null;
+};
+
 type RawIngestRecord = {
   attemptCount: number;
   failureCode: string | null;
   failureMessage: string | null;
   id: string;
   rawPayload: unknown;
+  rawPayloadSha256: string;
   retryable: boolean;
   sourceOrderId: string;
   sourceOrderNumber: string | null;
@@ -129,6 +152,97 @@ type RoutePlanStopRecord = {
 
 export class PrismaWordPressPluginRepository implements WordPressPluginAuthRepository {
   constructor(private readonly prisma: WordPressPluginPrismaClient) {}
+
+  async recordRawOrderIngestEvent(input: RawOrderIngestEventRecordInput): Promise<void> {
+    await this.prisma.commerceRawOrderIngestEvent.create({
+      data: toRawOrderIngestEventCreateData(input),
+      select: { id: true }
+    });
+  }
+
+  async markRawIngestSkippedWithEvent(input: {
+    context: WordPressPluginConnectionContext;
+    event: RawOrderIngestEventRecordInput;
+    failureCode: string;
+    failureMessage: string;
+    ingestId: string;
+    now: Date;
+    syncRunId: string;
+  }): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.commerceRawOrderIngest.updateMany({
+        data: {
+          failureCode: input.failureCode,
+          failureMessage: capSafeFailureMessage(input.failureMessage),
+          processedAt: input.now,
+          retryable: false,
+          status: 'SKIPPED',
+          updatedAt: input.now
+        },
+        where: {
+          ...toRawIngestScopedWhere(input.context, input.syncRunId, input.ingestId),
+          status: 'PROCESSING'
+        }
+      });
+      if (updated.count !== 1) return;
+      await tx.commerceRawOrderIngestEvent.create({
+        data: toRawOrderIngestEventCreateData(input.event),
+        select: { id: true }
+      });
+    });
+  }
+
+  async markRawIngestProcessedWithEvent(input: {
+    canonicalOrderId: string | null;
+    context: WordPressPluginConnectionContext;
+    event: RawOrderIngestEventRecordInput;
+    geocode: WordPressPluginSyncGeocodeSummary;
+    ingestId: string;
+    now: Date;
+    sync: WordPressPluginSyncCounts;
+    syncRunId: string;
+  }): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.commerceRawOrderIngest.updateMany({
+        data: {
+          canonicalOrderId: input.canonicalOrderId,
+          failureCode: null,
+          failureMessage: null,
+          processedAt: input.now,
+          retryable: false,
+          status: 'PROCESSED',
+          updatedAt: input.now
+        },
+        where: {
+          ...toRawIngestScopedWhere(input.context, input.syncRunId, input.ingestId),
+          status: 'PROCESSING'
+        }
+      });
+      if (updated.count !== 1) return;
+      await tx.commerceRawOrderIngestEvent.create({
+        data: toRawOrderIngestEventCreateData(input.event),
+        select: { id: true }
+      });
+      await tx.commerceSyncRun.updateMany({
+        data: {
+          created: { increment: input.sync.created },
+          geocodeFailed: { increment: input.geocode.failed },
+          geocodeNotRequired: { increment: input.geocode.notRequired },
+          geocodePending: { increment: input.geocode.pending },
+          geocodeResolved: { increment: input.geocode.resolved },
+          needsReview: { increment: input.sync.needsReview },
+          readyToPlan: { increment: input.sync.readyToPlan },
+          unchanged: { increment: input.sync.unchanged },
+          updated: { increment: input.sync.updated },
+          updatedAt: input.now
+        },
+        where: {
+          ...toScopedSyncRunWhere(input.context, input.syncRunId),
+          status: { in: ['QUEUED', 'RUNNING'] }
+        }
+      });
+    });
+  }
 
   async createPairingCode(input: {
     commerceConnectionId: string;
@@ -406,6 +520,10 @@ export class PrismaWordPressPluginRepository implements WordPressPluginAuthRepos
     let duplicate = 0;
     let invalid = 0;
     for (const order of input.payload.orders) {
+      const intakeDecision = decideRawOrderIntake({
+        context: { connectionPlatform: 'WOOCOMMERCE', routeSource: 'wordpress_plugin_raw_push' },
+        rawPayload: order
+      });
       const prepared = prepareRawOrderIngest({
         chunkId: input.payload.chunkId,
         chunkIndex: input.payload.chunkIndex,
@@ -414,6 +532,17 @@ export class PrismaWordPressPluginRepository implements WordPressPluginAuthRepos
       });
       if (prepared === null) {
         invalid += 1;
+        if (intakeDecision.decision === RAW_INTAKE_DECISIONS.REJECT_PRE_INGEST) {
+          await this.recordRawOrderIngestEvent(
+            toRawOrderIngestEventInput({
+              context: input.context,
+              decision: intakeDecision,
+              now: input.now,
+              order,
+              syncRunId: input.payload.syncRunId
+            })
+          );
+        }
         continue;
       }
       try {
@@ -1303,6 +1432,7 @@ function rawIngestSelect(): {
   failureMessage: true;
   id: true;
   rawPayload: true;
+  rawPayloadSha256: true;
   retryable: true;
   sourceOrderId: true;
   sourceOrderNumber: true;
@@ -1314,11 +1444,66 @@ function rawIngestSelect(): {
     failureMessage: true,
     id: true,
     rawPayload: true,
+    rawPayloadSha256: true,
     retryable: true,
     sourceOrderId: true,
     sourceOrderNumber: true,
     status: true
   };
+}
+
+
+function toRawOrderIngestEventInput(input: {
+  context: WordPressPluginConnectionContext;
+  decision: RawIntakeDecision;
+  now: Date;
+  order?: WordPressPluginRawOrderInput;
+  rawOrderIngestId?: string | null;
+  rawPayloadSha256?: string | null;
+  sourceOrderId?: string | null;
+  sourceOrderNumber?: string | null;
+  syncRunId: string;
+}): RawOrderIngestEventRecordInput {
+  return {
+    code: input.decision.code,
+    commerceConnectionId: input.context.connectionId,
+    createdAt: input.now,
+    decision: input.decision.decision,
+    message: input.decision.message,
+    metadata: toJson(input.decision.metadata) ?? {},
+    rawOrderIngestId: input.rawOrderIngestId ?? null,
+    rawPayloadSha256: input.rawPayloadSha256 ?? null,
+    severity: input.decision.severity,
+    shopId: input.context.shopId,
+    sourceLine: input.decision.sourceLine,
+    sourceOrderId: input.sourceOrderId ?? (input.order === undefined ? null : readRawOrderId(input.order)),
+    sourceOrderNumber: input.sourceOrderNumber ?? (input.order === undefined ? null : readRawOrderNumber(input.order)),
+    stage: input.decision.stage,
+    syncRunId: input.syncRunId
+  };
+}
+
+function toRawOrderIngestEventCreateData(
+  input: RawOrderIngestEventRecordInput
+): Prisma.CommerceRawOrderIngestEventUncheckedCreateInput {
+  const data: Prisma.CommerceRawOrderIngestEventUncheckedCreateInput = {
+    code: input.code,
+    commerceConnectionId: input.commerceConnectionId ?? null,
+    decision: input.decision,
+    message: capSafeFailureMessage(input.message),
+    rawOrderIngestId: input.rawOrderIngestId ?? null,
+    rawPayloadSha256: input.rawPayloadSha256 ?? null,
+    severity: input.severity,
+    shopId: input.shopId,
+    sourceLine: input.sourceLine,
+    sourceOrderId: input.sourceOrderId ?? null,
+    sourceOrderNumber: input.sourceOrderNumber ?? null,
+    stage: input.stage,
+    syncRunId: input.syncRunId ?? null
+  };
+  if (input.createdAt !== undefined) data.createdAt = input.createdAt;
+  if (input.metadata !== undefined) data.metadata = input.metadata === null ? Prisma.JsonNull : input.metadata;
+  return data;
 }
 
 function prepareRawOrderIngest(input: {
@@ -1416,9 +1601,7 @@ function toRawIngestScopedWhere(
 }
 
 function capSafeFailureMessage(value: string): string {
-  const redacted = value
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, '[redacted-email]')
-    .replace(/\+?\d[\d\s().-]{7,}\d/gu, '[redacted-phone]')
+  const redacted = (redactDiagnosticValue(value, null) ?? '')
     .replace(/\b(?:ck|cs|crp)_[A-Za-z0-9_-]+\b/gu, '[redacted-secret]')
     .replace(/\b\d{1,5}\s+[A-Za-z][A-Za-z0-9 .'-]{2,}\b/gu, '[redacted-address]');
   return redacted.slice(0, 240);

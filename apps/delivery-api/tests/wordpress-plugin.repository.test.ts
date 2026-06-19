@@ -100,6 +100,56 @@ describe('PrismaWordPressPluginRepository pairing-code lifecycle', () => {
   });
 });
 
+describe('PrismaWordPressPluginRepository raw ingest audit events', () => {
+  test('records source-aware raw ingest events without requiring a raw ingest row', async () => {
+    const commerceRawOrderIngestEvent = {
+      create: vi.fn((input: unknown) => {
+        void input;
+        return Promise.resolve({ id: 'event-id' });
+      })
+    };
+    const repository = new PrismaWordPressPluginRepository({ commerceRawOrderIngestEvent } as never);
+
+    await repository.recordRawOrderIngestEvent({
+      code: 'WOO_ORDER_MISSING_DELIVERY_METADATA',
+      commerceConnectionId: 'connection-id',
+      createdAt: acceptedAt,
+      decision: 'REVIEW',
+      message: 'Order is active but missing delivery metadata.',
+      metadata: { status: 'processing' },
+      rawPayloadSha256: 'raw-hash',
+      severity: 'warning',
+      shopId: 'shop-id',
+      sourceLine: 'WOOCOMMERCE',
+      sourceOrderId: '11815',
+      sourceOrderNumber: '11815',
+      stage: 'raw_intake',
+      syncRunId: '11111111-1111-4111-8111-111111111111'
+    });
+
+    expect(commerceRawOrderIngestEvent.create).toHaveBeenCalledWith({
+      data: {
+        code: 'WOO_ORDER_MISSING_DELIVERY_METADATA',
+        commerceConnectionId: 'connection-id',
+        createdAt: acceptedAt,
+        decision: 'REVIEW',
+        message: 'Order is active but missing delivery metadata.',
+        metadata: { status: 'processing' },
+        rawOrderIngestId: null,
+        rawPayloadSha256: 'raw-hash',
+        severity: 'warning',
+        shopId: 'shop-id',
+        sourceLine: 'WOOCOMMERCE',
+        sourceOrderId: '11815',
+        sourceOrderNumber: '11815',
+        stage: 'raw_intake',
+        syncRunId: '11111111-1111-4111-8111-111111111111'
+      },
+      select: { id: true }
+    });
+  });
+});
+
 describe('PrismaWordPressPluginRepository sync-run lifecycle', () => {
   test('marks stale running sync runs failed before creating a new active run', async () => {
     const commerceSyncRun = {
@@ -295,6 +345,60 @@ describe('PrismaWordPressPluginRepository sync-run lifecycle', () => {
     });
   });
 
+  test('does not count stale event-backed processed updates after raw ingest leaves PROCESSING', async () => {
+    const commerceRawOrderIngest = {
+      updateMany: vi.fn((input: unknown) => {
+        void input;
+        return Promise.resolve({ count: 0 });
+      })
+    };
+    const commerceRawOrderIngestEvent = {
+      create: vi.fn()
+    };
+    const commerceSyncRun = {
+      updateMany: vi.fn()
+    };
+    const prisma = {
+      $transaction: vi.fn(async (callback: (tx: unknown) => Promise<void>) =>
+        callback({ commerceRawOrderIngest, commerceRawOrderIngestEvent, commerceSyncRun })
+      )
+    };
+    const repository = new PrismaWordPressPluginRepository(prisma as never);
+
+    await repository.markRawIngestProcessedWithEvent({
+      canonicalOrderId: 'canonical-order-id',
+      context: pluginContext(),
+      event: {
+        code: 'CANONICAL_DECISION_PROCESS',
+        commerceConnectionId: 'connection-id',
+        decision: 'PROCESS_CANONICAL',
+        message: 'Processed.',
+        severity: 'info',
+        shopId: 'shop-id',
+        sourceLine: 'WOOCOMMERCE',
+        sourceOrderId: '123',
+        sourceOrderNumber: '123',
+        stage: 'processing',
+        syncRunId: '11111111-1111-4111-8111-111111111111'
+      },
+      geocode: { failed: 0, notRequired: 1, pending: 0, resolved: 0 },
+      ingestId: 'raw-ingest-id',
+      now: acceptedAt,
+      sync: { created: 1, needsReview: 0, readyToPlan: 1, received: 1, skipped: 0, unchanged: 0, updated: 0 },
+      syncRunId: '11111111-1111-4111-8111-111111111111'
+    });
+
+    const rawUpdateInput = commerceRawOrderIngest.updateMany.mock.calls[0]?.[0] as
+      | { where?: Record<string, unknown> }
+      | undefined;
+    expect(rawUpdateInput?.where).toMatchObject({
+      id: 'raw-ingest-id',
+      status: 'PROCESSING'
+    });
+    expect(commerceRawOrderIngestEvent.create).not.toHaveBeenCalled();
+    expect(commerceSyncRun.updateMany).not.toHaveBeenCalled();
+  });
+
   test('keeps duplicate raw order accounting durable so finalize status does not wait forever', async () => {
     const commerceRawOrderIngest = {
       findMany: vi
@@ -462,6 +566,52 @@ describe('PrismaWordPressPluginRepository sync-run lifecycle', () => {
       sourceOrderId: '123',
       status: 'RECEIVED'
     });
+  });
+
+  test('records a pre-ingest audit event for raw chunks with missing order id', async () => {
+    const commerceRawOrderIngest = {
+      create: vi.fn(),
+      findMany: vi.fn(() => Promise.resolve([]))
+    };
+    const commerceRawOrderIngestEvent = {
+      create: vi.fn((input: unknown) => {
+        void input;
+        return Promise.resolve({ id: 'event-id' });
+      })
+    };
+    const commerceSyncRun = {
+      findFirst: vi
+        .fn()
+        .mockResolvedValueOnce(syncRunRecord({ requestPayload: { mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'RUNNING' }))
+        .mockResolvedValueOnce(syncRunRecord({ requestPayload: { expectedChunkCount: 1, mode: 'raw_push', modifiedAfter: null, pageSize: 100, status: null }, status: 'RUNNING' })),
+      updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
+    };
+    const repository = new PrismaWordPressPluginRepository({ commerceRawOrderIngest, commerceRawOrderIngestEvent, commerceSyncRun } as never);
+
+    const result = await repository.acceptRawChunk({
+      context: pluginContext(),
+      now: acceptedAt,
+      payload: {
+        chunkCount: 1,
+        chunkId: 'chunk-1',
+        chunkIndex: 0,
+        orders: [{ id: null, line_items: [{ id: 1, name: 'Tomato box' }], number: 'draft-1' }],
+        syncRunId: '11111111-1111-4111-8111-111111111111'
+      }
+    });
+
+    expect(result.invalid).toBe(1);
+    expect(result.accepted).toBe(0);
+    expect(commerceRawOrderIngest.create).not.toHaveBeenCalled();
+    const eventCreateInput = commerceRawOrderIngestEvent.create.mock.calls[0]?.[0] as
+      | { data?: Record<string, unknown>; select?: unknown }
+      | undefined;
+    expect(eventCreateInput?.data).toMatchObject({
+      code: 'RAW_SHAPE_MISSING_ORDER_ID',
+      rawOrderIngestId: null,
+      sourceOrderNumber: 'draft-1'
+    });
+    expect(eventCreateInput?.select).toEqual({ id: true });
   });
 
   test('health includes the latest sync run instead of duplicating freshness data', async () => {

@@ -25,6 +25,7 @@ import { ShopifyOrderSyncService } from '../shopify/order-sync.service.js';
 import { createWooCommerceOrderClientFromConnection } from '../woocommerce/woocommerce-order.client.js';
 import { WooCommerceOrderSyncService } from '../woocommerce/woocommerce-order-sync.service.js';
 import { DEFAULT_WORDPRESS_PLUGIN_PAIRING_CODE_TTL_MINUTES } from '../wordpress-plugin/wordpress-plugin-auth.service.js';
+import { PrismaOrderIngestAuditService } from '../wordpress-plugin/order-ingest-audit.service.js';
 import { PrismaWordPressPluginRepository } from '../wordpress-plugin/wordpress-plugin.repository.js';
 import { WordPressPluginSyncRequestService } from '../wordpress-plugin/wordpress-plugin-sync.service.js';
 import {
@@ -156,6 +157,7 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     geocodingService: loadGeocodingService({ env: input.env }),
     onboardingService: input.adminCommerceConnections.onboardingService,
     ...readAdminUiNotificationService(input),
+    ...readAdminUiOrderIngestAuditService(input),
     ...readAdminUiOrderSyncService(input),
     ...readAdminUiPairingCodeService(input),
     ...readAdminUiRouteOptimizationService(input.env),
@@ -283,6 +285,15 @@ function readAdminUiDriverService(input: {
   }
   if (input.prisma === undefined) return {};
   return { driverService: new AdminDriverService(new PrismaAdminDriverRepository(input.prisma)) };
+}
+
+function readAdminUiOrderIngestAuditService(input: {
+  prisma?: PrismaClient | undefined;
+}): Pick<AdminCommerceConnectionsUiDependencies, 'orderIngestAuditService'> {
+  if (input.prisma === undefined) return {};
+  return {
+    orderIngestAuditService: new PrismaOrderIngestAuditService(input.prisma)
+  };
 }
 
 function readAdminUiOrderSyncService(input: {
