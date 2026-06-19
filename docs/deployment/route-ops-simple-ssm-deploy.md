@@ -197,13 +197,20 @@ that were no longer referenced by the current deploy lane:
 - exported and deleted the obsolete `RouteOpsDeployControlArtifactWrite` inline policy;
 - exported and deleted the obsolete custom SSM document `CleverRoute-RouteOpsDeploy`.
 
-Held back intentionally:
+A second explicit approval-gated cleanup pass completed the remaining legacy deploy-control
+resource removal on 2026-06-19:
 
-- route-engine GHCR variable/secret cleanup, until legacy route-engine rollback is explicitly
-  retired as an operational fallback;
-- historical S3 deploy-control objects, until a retention/lifecycle decision is made.
+- deleted GitHub variable `ROUTE_ENGINE_GHCR_READ_USERNAME`;
+- deleted GitHub secret `ROUTE_ENGINE_GHCR_READ_TOKEN`;
+- backed up and deleted `s3://route-ops-artifacts-902837199612-ap-northeast-2/artifacts/route-ops/prod/deploy-control/`.
 
-Restore sources are the timestamped local exports under the OMX cleanup artifact directory
-for this run. Recreate the GitHub variables from the values documented in the cleanup report,
-re-put exported IAM policies with `aws iam put-role-policy`, and recreate the SSM document
-from the exported `get-document` payload if a legacy rollback lane must be restored.
+Post-verify evidence for the second pass showed no matching GitHub variable/secret, an empty
+S3 prefix, and a local backup containing `104` files / `2.8G` at
+`.omx/artifacts/ghcr-deploy-standardization/cloud-mutation-bf-20260619T054413Z/route-ops-deploy-control-backup`.
+
+No legacy deploy-control cloud resources are intentionally retained. Restore sources are the
+timestamped local exports under the OMX cleanup artifact directories for these runs. Recreate
+the GitHub variables/secrets only from an approved secret source, re-put exported IAM policies
+with `aws iam put-role-policy`, recreate the SSM document from the exported `get-document`
+payload, and restore the S3 deploy-control prefix from the local backup only if the legacy
+rollback lane is deliberately reintroduced.
