@@ -98,7 +98,30 @@ export function RouteGroupingPage({
     }
   }
 
-
+  async function assignPolygonDriver(polygonId: string, driverId: string): Promise<void> {
+    if (grouping === null || driverId === "") return;
+    const driverName = driverLabel(driverId, drivers);
+    setBusy(true);
+    try {
+      const payload = await saveRouteGroupingPolygons({
+        csrfToken: bootstrap.csrfToken,
+        polygons: grouping.polygons.map((polygon) => ({
+          closed: polygon.closed,
+          color: polygon.color,
+          driverId: polygon.id === polygonId ? driverId : polygon.driverId,
+          geometry: polygon.geometry,
+          label: polygon.id === polygonId ? driverName : polygon.label,
+        })),
+        routeGroupId,
+      });
+      setGrouping(payload.routeGroup);
+      setError(null);
+    } catch (error) {
+      setError(readErrorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   function startEdit(): void {
     setDraft({ closed: false, vertices: [] });
@@ -161,7 +184,9 @@ export function RouteGroupingPage({
           {grouping !== null && grouping.polygons.length > 0 ? (
             <RouteGroupingAreasCard
               assignments={grouping.assignments}
+              busy={busy}
               drivers={drivers}
+              onAssignDriver={(polygonId, driverId) => void assignPolygonDriver(polygonId, driverId)}
               polygons={grouping.polygons}
             />
           ) : null}
@@ -174,11 +199,15 @@ export function RouteGroupingPage({
 
 function RouteGroupingAreasCard({
   assignments,
+  busy,
   drivers,
+  onAssignDriver,
   polygons,
 }: {
   assignments: RouteGroupingAssignmentDto[];
+  busy: boolean;
   drivers: DriverDto[];
+  onAssignDriver(polygonId: string, driverId: string): void;
   polygons: RouteGroupingPolygonDto[];
 }): ReactElement {
   const assignmentsByPolygonId = new Map<string, RouteGroupingAssignmentDto[]>();
@@ -196,14 +225,36 @@ function RouteGroupingAreasCard({
         {polygons.map((polygon) => {
           const color = polygon.color ?? "#2563eb";
           const polygonAssignments = assignmentsByPolygonId.get(polygon.id) ?? [];
+          const label = driverLabel(polygon.driverId ?? "", drivers);
+          const canAssignDriver = polygon.driverId === null;
           return (
             <div className="route-group-area-row" key={polygon.id}>
-              <span className="route-group-area-driver">
-                <span className="route-group-area-swatch" style={{ background: color }} />
-                <strong>{driverLabel(polygon.driverId ?? "", drivers)}</strong>
-              </span>
+              {canAssignDriver ? (
+                <label className="route-group-area-driver route-group-area-driver--assignable">
+                  <span className="route-group-area-swatch" style={{ background: color }} />
+                  <select
+                    aria-label={`Assign driver to ${label} group`}
+                    className="route-group-area-driver-select"
+                    disabled={busy || drivers.length === 0}
+                    onChange={(event) => {
+                      if (event.target.value !== "") onAssignDriver(polygon.id, event.target.value);
+                    }}
+                    value=""
+                  >
+                    <option value="">{drivers.length === 0 ? "No drivers" : label}</option>
+                    {drivers.map((driver) => (
+                      <option key={driver.id} value={driver.id}>{driver.displayName}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : (
+                <span className="route-group-area-driver">
+                  <span className="route-group-area-swatch" style={{ background: color }} />
+                  <strong>{label}</strong>
+                </span>
+              )}
               <span className="route-group-area-track" style={{ "--route-group-area-color": color } as CSSProperties}>
-                <span className="route-group-area-orders" aria-label={`${driverLabel(polygon.driverId ?? "", drivers)} orders`}>
+                <span className="route-group-area-orders" aria-label={`${label} orders`}>
                   {polygonAssignments.map((assignment, index) => (
                     <span className="route-group-area-order-node" key={assignment.orderId}>
                       <button className="route-group-area-order-token" style={{ background: color, borderColor: color }} title={assignment.orderName} type="button">

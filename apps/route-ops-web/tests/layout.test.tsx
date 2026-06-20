@@ -336,6 +336,9 @@ describe('route ops layout components', () => {
     expect(css).toContain('aspect-ratio: 1 / 1');
     expect(css).toContain('width: 24px');
     expect(css).toContain('.route-group-area-finish');
+    expect(css).toContain('.route-group-area-driver--assignable');
+    expect(css).toContain('.route-group-area-driver-select');
+    expect(css).toContain('appearance: none');
   });
 
   test('Topbar notification CSS exposes the dropdown badge and tone classes', () => {

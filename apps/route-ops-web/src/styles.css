@@ -839,6 +839,25 @@ small,
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.route-group-area-driver--assignable {
+  cursor: pointer;
+}
+.route-group-area-driver-select {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: #111827;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 900;
+  min-height: 0;
+  padding: 0 18px 0 0;
+  width: 100%;
+}
+.route-group-area-driver-select:disabled {
+  color: #64748b;
+  cursor: default;
+}
 .route-group-area-swatch {
   border: 2px solid #fff;
   border-radius: 999px;
