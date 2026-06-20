@@ -330,9 +330,11 @@ describe('route ops layout components', () => {
 
     expect(css).toContain('.route-group-map-panel .route-ops-map-frame');
     expect(css).toContain('min-height: 560px');
-    expect(css).toContain('grid-template-columns: repeat(var(--route-group-area-columns, 1), 32px)');
+    expect(css).toContain('grid-template-columns: repeat(var(--route-group-area-columns, 1), minmax(24px, 1fr))');
+    expect(css).toContain('.route-group-area-order-node:not(:first-child)::before');
     expect(css).toContain('aspect-ratio: 1 / 1');
-    expect(css).toContain('width: 32px');
+    expect(css).toContain('width: 24px');
+    expect(css).toContain('.route-group-area-finish');
   });
 
   test('Topbar notification CSS exposes the dropdown badge and tone classes', () => {

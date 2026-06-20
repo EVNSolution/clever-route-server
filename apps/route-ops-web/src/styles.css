@@ -851,10 +851,30 @@ small,
 .route-group-area-orders {
   align-items: center;
   display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(var(--route-group-area-columns, 1), 32px);
-  justify-content: start;
+  gap: 0;
+  grid-template-columns: repeat(var(--route-group-area-columns, 1), minmax(24px, 1fr));
+  justify-content: stretch;
   min-width: 0;
+}
+.route-group-area-order-node {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+  position: relative;
+}
+.route-group-area-order-node:not(:first-child)::before {
+  background: var(--route-group-area-color, #2563eb);
+  border-radius: 999px;
+  content: "";
+  height: 3px;
+  left: calc(-50% + 11px);
+  opacity: 0.82;
+  position: absolute;
+  right: calc(50% + 11px);
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 0;
 }
 .route-group-area-order-token {
   align-items: center;
@@ -864,21 +884,29 @@ small,
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.18);
   color: #ffffff;
   display: inline-flex;
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 900;
-  height: 32px;
+  height: 24px;
   justify-content: center;
   line-height: 1;
   min-width: 0;
   padding: 0;
-  width: 32px;
+  position: relative;
+  width: 24px;
+  z-index: 1;
 }
-.route-group-area-count {
-  color: #111827;
-  font-size: 18px;
+.route-group-area-finish {
+  align-items: center;
+  border: 1.5px solid currentColor;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 12px;
   font-weight: 900;
-  min-width: 24px;
-  text-align: right;
+  justify-content: center;
+  min-height: 28px;
+  min-width: 64px;
+  padding: 0 14px;
+  text-transform: uppercase;
 }
 .route-group-order-items-table td:first-child,
 .route-group-order-items-table th:first-child {
@@ -2064,9 +2092,10 @@ button.danger.subtle {
     grid-template-columns: 1fr;
   }
   .route-group-area-orders {
-    grid-template-columns: repeat(var(--route-group-area-columns, 1), 32px);
+    grid-template-columns: repeat(var(--route-group-area-columns, 1), minmax(24px, 1fr));
   }
-  .route-group-area-count {
+  .route-group-area-finish {
+    justify-self: start;
     text-align: left;
   }
   .map-edit-overlay {
