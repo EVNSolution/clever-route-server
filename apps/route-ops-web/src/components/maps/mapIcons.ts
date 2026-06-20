@@ -1,0 +1,1 @@
+export const ROUTE_START_ICON_PATH = 'M10 3.2 3.5 8.4v8.1h4v-5h5v5h4V8.4L10 3.2Z';

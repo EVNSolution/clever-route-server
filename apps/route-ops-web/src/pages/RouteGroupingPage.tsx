@@ -9,6 +9,7 @@ import {
 } from "../api";
 import { TabLayout } from "../components/TabLayout";
 import { RouteOpsMap } from "../components/maps/RouteOpsMap";
+import { ROUTE_START_ICON_PATH } from "../components/maps/mapIcons";
 import { appendPolygonVertex, closePolygonDraft, polygonDraftToGeoJson, removeLastPolygonVertex } from "../routeGrouping";
 import { storeSettingsToDepotPoint } from "../state";
 import type { BootstrapPayload, CanonicalOrderDto, DriverDto, RouteGroupingAssignmentDto, RouteGroupingDetailDto, RouteGroupingPolygonDto, StoreSettingsDto } from "../types";
@@ -258,7 +259,9 @@ function RouteGroupingAreasCard({
               )}
               <span className="route-group-area-track" style={{ "--route-group-area-color": color } as CSSProperties}>
                 <span className="route-group-area-store-node" aria-label="Store start" title="Store start">
-                  <span aria-hidden="true">⌂</span>
+                  <svg className="route-group-area-store-icon" viewBox="0 0 20 20" aria-hidden="true">
+                    <path d={ROUTE_START_ICON_PATH} />
+                  </svg>
                 </span>
                 <span className="route-group-area-orders" aria-label={`${label} orders`}>
                   {polygonAssignments.map((assignment, index) => (

@@ -905,8 +905,11 @@ small,
   width: 28px;
   z-index: 1;
 }
-.route-group-area-store-node span {
-  transform: translateY(-1px);
+.route-group-area-store-icon {
+  display: block;
+  fill: currentColor;
+  height: 16px;
+  width: 16px;
 }
 .route-group-area-orders {
   align-items: center;
@@ -2143,27 +2146,7 @@ button.danger.subtle {
   .route-group-area-row {
     grid-template-columns: 1fr;
   }
-  .route-group-area-store-node {
-  align-items: center;
-  background: #008060;
-  border: 2px solid #ffffff;
-  border-radius: 999px;
-  box-shadow: 0 2px 8px rgba(0, 128, 96, 0.28);
-  color: #ffffff;
-  display: inline-flex;
-  font-size: 16px;
-  font-weight: 900;
-  height: 28px;
-  justify-content: center;
-  line-height: 1;
-  position: relative;
-  width: 28px;
-  z-index: 1;
-}
-.route-group-area-store-node span {
-  transform: translateY(-1px);
-}
-.route-group-area-orders {
+  .route-group-area-orders {
     grid-template-columns: repeat(var(--route-group-area-columns, 1), minmax(24px, 1fr));
   }
   .route-group-area-finish {

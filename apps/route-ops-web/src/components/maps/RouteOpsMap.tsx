@@ -6,6 +6,7 @@ import { installMissingMapImageFallback } from '../../maps/maplibre-missing-imag
 import { installPmtilesProtocol } from '../../maps/pmtiles';
 import { mapReadiness } from '../../maps/provider';
 import { getMapCopy, resolveLocale } from '../../i18n';
+import { ROUTE_START_ICON_PATH } from './mapIcons';
 import { formatOrderItemLine, getOrderItemDisplayKey, getOrderItems } from '../../orderItems';
 import type { BootstrapPayload, CanonicalOrderDto, OrderItemDto, RouteGroupingPolygonDto, RoutePlanDetailDto, RouteStopDto } from '../../types';
 
@@ -1050,7 +1051,7 @@ function createDepartureMarkerIconElement(): SVGSVGElement {
   iconElement.classList.add('departure-map-marker__icon');
   iconElement.setAttribute('viewBox', '0 0 20 20');
   iconElement.setAttribute('aria-hidden', 'true');
-  iconPathElement.setAttribute('d', 'M10 3.2 3.5 8.4v8.1h4v-5h5v5h4V8.4L10 3.2Z');
+  iconPathElement.setAttribute('d', ROUTE_START_ICON_PATH);
   iconElement.append(iconPathElement);
   return iconElement;
 }
