@@ -48,6 +48,7 @@ type RouteOpsMapProps = {
   depot?: RouteOpsPoint | null;
   draftStops?: RouteStopDto[];
   headerAction?: ReactNode;
+  fitOrdersToBounds?: boolean;
   statusContent?: ReactNode;
   onExitRouteMode?(): void;
   onMapClickCoordinate?(coordinate: { latitude: number; longitude: number }): void;
@@ -68,7 +69,7 @@ type RouteOpsMapProps = {
   title?: string;
 };
 
-export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops, headerAction, statusContent, onExitRouteMode, onMapClickCoordinate, onPolygonFinish, onPolygonVertex, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), polygonDraft, polygonMode = false, polygons = [], selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
+export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops, headerAction, fitOrdersToBounds = false, statusContent, onExitRouteMode, onMapClickCoordinate, onPolygonFinish, onPolygonVertex, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), polygonDraft, polygonMode = false, polygons = [], selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
   const locale = resolveLocale(bootstrap.locale);
   const t = getMapCopy(locale);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -256,12 +257,12 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
     syncRouteStopLayers(map, routeStopGeojson);
     syncPolygonLayers(map, polygonGeojson);
     syncRouteMarkers(map, maplibreRef.current, points.filter((point) => point.kind === 'depot' || point.kind === 'stop'), markersRef.current, locale, selectedRouteStopId, (deliveryStopId) => onRouteStopSelectRef.current?.(deliveryStopId));
-    if (detail !== null) {
+    if (detail !== null || fitOrdersToBounds) {
       fitMap(map, maplibreRef.current, fitPoints);
       return;
     }
     applyOrdersHomeViewport(map, homePoint, ordersHomeAppliedRef);
-  }, [detail, fitPoints, homePoint, isMapReady, lineFeature, locale, ordersGeojson, points, polygonGeojson, routeDropoffGeojson, routeStopGeojson, selectedRouteStopId]);
+  }, [detail, fitOrdersToBounds, fitPoints, homePoint, isMapReady, lineFeature, locale, ordersGeojson, points, polygonGeojson, routeDropoffGeojson, routeStopGeojson, selectedRouteStopId]);
 
   useEffect(() => {
     if (detail === null || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return undefined;

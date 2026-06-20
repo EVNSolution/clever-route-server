@@ -129,6 +129,7 @@ export function RouteGroupingPage({
       primary={
         <RouteOpsMap
           bootstrap={bootstrap}
+          fitOrdersToBounds
           orders={mapOrders}
           polygonDraft={draft}
           polygonMode
