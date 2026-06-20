@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
 import {
+  ApiError,
   createRouteOptimizationJob,
   deleteDriver,
   getLatestRouteOptimizationJob,
@@ -33,6 +34,7 @@ import {
   RouteBuilder,
   RouteListTable,
   RouteStopOrderCompactList,
+  shouldTryRouteGroupFallback,
 } from '../src/pages/RoutesPage';
 import { getRoutesCopy } from '../src/i18n';
 import type {
@@ -176,6 +178,13 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     );
     expect(formatRoutePlanStatus('DRAFT', 'ko-KR')).toBe('초안');
     expect(formatRoutePlanStatus('ASSIGNED', 'ko-KR')).toBe('배정됨');
+  });
+
+
+  test('falls back from a missing legacy route plan only for 404 route-plan misses', () => {
+    expect(shouldTryRouteGroupFallback(new ApiError('Route plan not found', 404, 'NOT_FOUND'))).toBe(true);
+    expect(shouldTryRouteGroupFallback(new ApiError('Forbidden', 403, 'FORBIDDEN'))).toBe(false);
+    expect(shouldTryRouteGroupFallback(new Error('network failed'))).toBe(false);
   });
 
   test('routes list renders driver split groups as parent rows with nested child routes', () => {

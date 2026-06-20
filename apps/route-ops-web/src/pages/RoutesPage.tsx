@@ -2,9 +2,11 @@ import { Fragment, useCallback, useEffect, useState } from "react";
 import type { DragEvent, KeyboardEvent, ReactElement } from "react";
 
 import {
+  ApiError,
   deleteRoute,
   getDrivers,
   getRouteDetail,
+  getRouteGrouping,
   getRoutes,
   saveRoute,
 } from "../api";
@@ -69,6 +71,10 @@ export function formatRouteChildDriverName(
   child: Pick<RouteGroupingSummaryDto["children"][number], "driverName" | "routePlan">,
 ): string {
   return child.driverName ?? "Unassigned";
+}
+
+export function shouldTryRouteGroupFallback(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.code === "NOT_FOUND";
 }
 
 export function isRouteVisibleToLinkedDriver(
@@ -205,13 +211,37 @@ export function RoutesPage({
       setDetail(null);
       return;
     }
+
+    let active = true;
     getRouteDetail(routePlanId)
       .then((payload) => {
+        if (!active) return;
         setDetail(payload);
         setError(null);
       })
-      .catch((error: unknown) => setError(readErrorMessage(error)));
-  }, [routePlanId, setError]);
+      .catch((error: unknown) => {
+        if (!shouldTryRouteGroupFallback(error)) {
+          setError(readErrorMessage(error));
+          return;
+        }
+
+        getRouteGrouping(routePlanId)
+          .then((payload) => {
+            if (!active) return;
+            setDetail(null);
+            setError(null);
+            navigate(`/admin/ui/app/route-groups/${encodeURIComponent(payload.routeGroup.id)}`);
+          })
+          .catch(() => {
+            if (!active) return;
+            setError(readErrorMessage(error));
+          });
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [navigate, routePlanId, setError]);
 
   if (routePlanId !== null) {
     return (
