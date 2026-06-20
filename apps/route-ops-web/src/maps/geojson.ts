@@ -88,7 +88,8 @@ export function buildOrdersMapFeatureCollection(orders: CanonicalOrderDto[], mar
     const planned = state.pinKind === 'candidate' || order.routePlanId !== null || order.planningStatus !== 'UNPLANNED';
     const pinKind = state.pinKind ?? (order.blockerReasons.length > 0 ? 'review' : 'unplanned');
     const markerOpacity = normalizeMarkerOpacity(state.markerOpacity);
-    const markerColor = normalizeMarkerColor(state.markerColor) ?? markerColorForKind(pinKind);
+    const stateMarkerColor = normalizeMarkerColor(state.markerColor);
+    const markerColor = stateMarkerColor ?? markerColorForKind(pinKind);
     const sequence = state.sequence ?? null;
     features.push({
       geometry: { coordinates: lngLat, type: 'Point' },
@@ -98,7 +99,7 @@ export function buildOrdersMapFeatureCollection(orders: CanonicalOrderDto[], mar
         markerOpacity,
         orderId: order.orderId,
         orderName: order.orderName,
-        pinImage: pinImageForKind(pinKind),
+        pinImage: stateMarkerColor === null ? pinImageForKind(pinKind) : customPinImageForColor(markerColor),
         pinKind,
         planned,
         sortKey: sequence === null ? planned ? index + 1000 : index : 2000 + sequence
@@ -131,6 +132,10 @@ function markerColorForKind(kind: OrderMapPinKind): string {
   if (kind === 'history') return '#8a8f98';
   if (kind === 'review') return '#e11900';
   return '#303030';
+}
+
+function customPinImageForColor(color: string): string {
+  return `orders-map-pin-color-${color.slice(1).toLowerCase()}`;
 }
 
 function pinImageForKind(kind: OrderMapPinKind): string {

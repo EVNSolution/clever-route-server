@@ -325,6 +325,16 @@ describe('route ops layout components', () => {
   .route-builder-workspace .route-ops-map-frame svg`);
   });
 
+  test('Route grouping CSS keeps assignment tokens circular and the split map tall', () => {
+    const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+
+    expect(css).toContain('.route-group-map-panel .route-ops-map-frame');
+    expect(css).toContain('min-height: 560px');
+    expect(css).toContain('grid-template-columns: repeat(var(--route-group-area-columns, 1), 32px)');
+    expect(css).toContain('aspect-ratio: 1 / 1');
+    expect(css).toContain('width: 32px');
+  });
+
   test('Topbar notification CSS exposes the dropdown badge and tone classes', () => {
     const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
 

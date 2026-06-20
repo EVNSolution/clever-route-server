@@ -44,13 +44,13 @@ const ROUTE_STOP_PICKER_MARGIN_PX = 16;
 
 type RouteOpsMapProps = {
   bootstrap: BootstrapPayload;
+  className?: string;
   detail?: RoutePlanDetailDto | null;
   depot?: RouteOpsPoint | null;
   draftStops?: RouteStopDto[];
   headerAction?: ReactNode;
   mapOverlayAction?: ReactNode;
   fitOrdersToBounds?: boolean;
-  forceCircleOrderMarkers?: boolean;
   statusContent?: ReactNode;
   onExitRouteMode?(): void;
   onMapClickCoordinate?(coordinate: { latitude: number; longitude: number }): void;
@@ -72,7 +72,7 @@ type RouteOpsMapProps = {
   title?: string;
 };
 
-export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops, forceCircleOrderMarkers = false, headerAction, mapOverlayAction, fitOrdersToBounds = false, statusContent, onExitRouteMode, onMapClickCoordinate, onPolygonFinish, onPolygonVertex, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), polygonDraft, polygonDraftColor = "#111827", polygonMode = false, polygons = [], selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
+export function RouteOpsMap({ bootstrap, className, depot = null, detail = null, draftStops, headerAction, mapOverlayAction, fitOrdersToBounds = false, statusContent, onExitRouteMode, onMapClickCoordinate, onPolygonFinish, onPolygonVertex, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), polygonDraft, polygonDraftColor = "#111827", polygonMode = false, polygons = [], selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
   const locale = resolveLocale(bootstrap.locale);
   const t = getMapCopy(locale);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -255,7 +255,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
   useEffect(() => {
     if (!isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return;
     const map = mapRef.current;
-    syncOrdersLayer(map, detail === null ? ordersGeojson : EMPTY_ORDERS_COLLECTION, { forceCircleMarkers: forceCircleOrderMarkers });
+    syncOrdersLayer(map, detail === null ? ordersGeojson : EMPTY_ORDERS_COLLECTION);
     syncRouteLayers(map, lineFeature);
     syncRouteDropoffLayers(map, routeDropoffGeojson);
     syncRouteStopLayers(map, routeStopGeojson);
@@ -267,7 +267,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
       return;
     }
     applyOrdersHomeViewport(map, homePoint, ordersHomeAppliedRef);
-  }, [detail, fitOrdersToBounds, fitPoints, forceCircleOrderMarkers, homePoint, isMapReady, lineFeature, locale, ordersGeojson, points, polygonGeojson, polygonVertexGeojson, routeDropoffGeojson, routeStopGeojson, selectedRouteStopId]);
+  }, [detail, fitOrdersToBounds, fitPoints, homePoint, isMapReady, lineFeature, locale, ordersGeojson, points, polygonGeojson, polygonVertexGeojson, routeDropoffGeojson, routeStopGeojson, selectedRouteStopId]);
 
   useEffect(() => {
     if (detail === null || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return undefined;
@@ -287,6 +287,25 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
       timeouts.forEach((timeout) => window.clearTimeout(timeout));
     };
   }, [detail, fitPoints, fitPointsKey, isMapReady]);
+
+  useEffect(() => {
+    if (!fitOrdersToBounds || detail !== null || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return undefined;
+    let animationFrame: number | null = null;
+    const timeouts: number[] = [];
+    const applyFit = (): void => {
+      const map = mapRef.current;
+      if (map === null || !isMapUsable(map)) return;
+      fitMap(map, maplibreRef.current, fitPoints);
+    };
+    applyFit();
+    animationFrame = window.requestAnimationFrame(applyFit);
+    timeouts.push(window.setTimeout(applyFit, 120));
+    timeouts.push(window.setTimeout(applyFit, 600));
+    return () => {
+      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
+      timeouts.forEach((timeout) => window.clearTimeout(timeout));
+    };
+  }, [detail, fitOrdersToBounds, fitPoints, fitPointsKey, isMapReady]);
 
   useEffect(() => {
     if (fitRequest === 0 || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return;
@@ -378,7 +397,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
   const hasHeading = title !== undefined || subtitle !== undefined || headerAction !== undefined;
 
   return (
-    <article className="map-panel panel" data-route-map>
+    <article className={className === undefined ? "map-panel panel" : `map-panel panel ${className}`} data-route-map>
       {hasHeading ? (
         <div className="panel-heading">
           {title === undefined && subtitle === undefined ? null : (
@@ -532,12 +551,12 @@ function syncPolygonVertexLayers(map: MapLibreMap, featureCollection: GeoJSON.Fe
   });
 }
 
-export function syncOrdersLayer(map: MapLibreMap, featureCollection: ReturnType<typeof buildOrdersMapFeatureCollection>, options: { forceCircleMarkers?: boolean } = {}): void {
+export function syncOrdersLayer(map: MapLibreMap, featureCollection: ReturnType<typeof buildOrdersMapFeatureCollection>): void {
   const existing = safeGetSource(map, 'route-ops-orders') as { setData?(data: unknown): void } | undefined;
   if (existing?.setData) safeSetSourceData(existing, featureCollection);
   else if (!safeAddSource(map, 'route-ops-orders', { data: featureCollection, type: 'geojson' })) return;
 
-  if (options.forceCircleMarkers === true || !ensureOrdersMapPinImages(map)) {
+  if (!ensureOrdersMapPinImages(map, featureCollection)) {
     syncFallbackCircleOrdersLayer(map);
     syncOrderLabelsLayer(map, { alignToPinCenter: false });
     return;
@@ -607,7 +626,7 @@ function syncOrderLabelsLayer(map: MapLibreMap, options: { alignToPinCenter: boo
   });
 }
 
-function ensureOrdersMapPinImages(map: MapLibreMap): boolean {
+function ensureOrdersMapPinImages(map: MapLibreMap, featureCollection: ReturnType<typeof buildOrdersMapFeatureCollection>): boolean {
   const imageApi = map as unknown as {
     addImage?(id: string, image: ImageData, options?: { pixelRatio?: number }): void;
     hasImage?(id: string): boolean;
@@ -617,7 +636,8 @@ function ensureOrdersMapPinImages(map: MapLibreMap): boolean {
     { color: '#303030', id: ORDER_PIN_IMAGE_ID, shadowColor: 'rgba(48, 48, 48, 0.36)' },
     { color: '#006fbb', id: ORDER_PIN_PLANNED_IMAGE_ID, shadowColor: 'rgba(0, 111, 187, 0.36)' },
     { color: '#8a8f98', id: ORDER_PIN_HISTORY_IMAGE_ID, shadowColor: 'rgba(138, 143, 152, 0.36)' },
-    { color: '#e11900', id: ORDER_PIN_REVIEW_IMAGE_ID, shadowColor: 'rgba(225, 25, 0, 0.4)' }
+    { color: '#e11900', id: ORDER_PIN_REVIEW_IMAGE_ID, shadowColor: 'rgba(225, 25, 0, 0.4)' },
+    ...customOrderPinImages(featureCollection)
   ];
   for (const image of images) {
     if (safeHasImage(imageApi, image.id)) continue;
@@ -626,6 +646,18 @@ function ensureOrdersMapPinImages(map: MapLibreMap): boolean {
     if (!safeAddImage(imageApi, image.id, imageData)) return false;
   }
   return true;
+}
+
+function customOrderPinImages(featureCollection: ReturnType<typeof buildOrdersMapFeatureCollection>): Array<{ color: string; id: string; shadowColor: string }> {
+  const standardIds = new Set([ORDER_PIN_IMAGE_ID, ORDER_PIN_PLANNED_IMAGE_ID, ORDER_PIN_REVIEW_IMAGE_ID, ORDER_PIN_HISTORY_IMAGE_ID]);
+  const imagesById = new Map<string, { color: string; id: string; shadowColor: string }>();
+  for (const feature of featureCollection.features) {
+    const { markerColor, pinImage } = feature.properties;
+    if (standardIds.has(pinImage)) continue;
+    if (!/^#[0-9a-f]{6}$/iu.test(markerColor)) continue;
+    imagesById.set(pinImage, { color: markerColor, id: pinImage, shadowColor: `${markerColor}5c` });
+  }
+  return [...imagesById.values()];
 }
 
 function createOrderPinImageData(color: string, options: { borderWidth?: number; shadowBlur?: number; shadowColor?: string; shadowOffsetY?: number } = {}): ImageData | null {

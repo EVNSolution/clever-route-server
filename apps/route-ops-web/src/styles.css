@@ -852,11 +852,13 @@ small,
   align-items: center;
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(var(--route-group-area-columns, 1), minmax(30px, 1fr));
+  grid-template-columns: repeat(var(--route-group-area-columns, 1), 32px);
+  justify-content: start;
   min-width: 0;
 }
 .route-group-area-order-token {
   align-items: center;
+  aspect-ratio: 1 / 1;
   border: 2px solid currentColor;
   border-radius: 999px;
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.18);
@@ -864,11 +866,12 @@ small,
   display: inline-flex;
   font-size: 13px;
   font-weight: 900;
-  height: 30px;
+  height: 32px;
   justify-content: center;
   line-height: 1;
-  min-width: 30px;
-  padding: 0 8px;
+  min-width: 0;
+  padding: 0;
+  width: 32px;
 }
 .route-group-area-count {
   color: #111827;
@@ -1813,6 +1816,15 @@ button.danger.subtle {
   min-height: 460px;
   width: 100%;
 }
+
+.route-group-map-panel .route-ops-map-frame {
+  min-height: 560px;
+}
+.route-group-map-panel .route-ops-map-canvas,
+.route-group-map-panel .route-ops-map-frame svg {
+  height: 560px;
+  min-height: 560px;
+}
 .route-stop-sequence-picker {
   background: #ffffff;
   border: 1px solid #e2e8f0;
@@ -2052,7 +2064,7 @@ button.danger.subtle {
     grid-template-columns: 1fr;
   }
   .route-group-area-orders {
-    grid-template-columns: repeat(auto-fit, minmax(30px, 1fr));
+    grid-template-columns: repeat(var(--route-group-area-columns, 1), 32px);
   }
   .route-group-area-count {
     text-align: left;

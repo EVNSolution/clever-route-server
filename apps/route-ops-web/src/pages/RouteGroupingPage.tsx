@@ -141,8 +141,8 @@ export function RouteGroupingPage({
         <RouteOpsMap
           bootstrap={bootstrap}
           depot={depotPoint}
+          className="route-group-map-panel"
           fitOrdersToBounds
-          forceCircleOrderMarkers
           headerAction={mapHeaderAction}
           mapOverlayAction={mapEditOverlay}
           orderMarkerStates={groupedOrderMarkerStates}

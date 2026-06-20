@@ -34,6 +34,22 @@ describe('route ops map helpers', () => {
     expect(collection.features.some((feature) => 'plannedLabel' in feature.properties)).toBe(false);
   });
 
+  test('keeps the order pin shape while applying split group marker colors', () => {
+    const collection = buildOrdersMapFeatureCollection([
+      order({ orderId: 'assigned', orderName: '#1004' })
+    ], new Map([
+      ['assigned', { markerColor: '#2563eb', pinKind: 'candidate' }]
+    ]));
+
+    expect(collection.features).toHaveLength(1);
+    expect(collection.features[0]?.properties).toMatchObject({
+      markerColor: '#2563eb',
+      pinImage: 'orders-map-pin-color-2563eb',
+      pinKind: 'candidate'
+    });
+  });
+
+
   test('uses the Shopify CLEVER lite map style instead of the temporary five-layer fallback', () => {
     const style = JSON.parse(readFileSync(join(process.cwd(), 'public/vendor/openfreemap-clever-lite.json'), 'utf8')) as {
       glyphs?: string;

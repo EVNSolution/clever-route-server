@@ -82,6 +82,28 @@ describe('RouteOpsMap layer lifecycle', () => {
     });
   });
 
+  test('renders split-group colored orders as the original pin symbol, not forced circles', () => {
+    const { layers, map } = createMapStub({ hasPinImages: true });
+    const collection = buildOrdersMapFeatureCollection([order({ orderId: 'order-1' })], new Map([
+      ['order-1', { markerColor: '#2563eb', markerOpacity: 1, pinKind: 'candidate' }]
+    ]));
+
+    syncOrdersLayer(map, collection);
+
+    const orderLayer = layers.get('route-ops-order-pins') as { layout?: Record<string, unknown>; paint?: Record<string, unknown>; type?: string } | undefined;
+    expect(collection.features[0]?.properties.pinImage).toBe('orders-map-pin-color-2563eb');
+    expect(orderLayer).toMatchObject({
+      layout: {
+        'icon-anchor': 'bottom',
+        'icon-image': ['get', 'pinImage']
+      },
+      type: 'symbol'
+    });
+    expect(orderLayer?.paint).toEqual({
+      'icon-opacity': ['get', 'markerOpacity']
+    });
+  });
+
 
   test('uses the Shopify Route Builder red road-geometry line theme', () => {
     const { layers, map } = createMapStub();
