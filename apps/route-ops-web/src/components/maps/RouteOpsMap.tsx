@@ -192,7 +192,7 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
         const firstPoint = homePointRef.current ?? pointsRef.current[0];
         const map = new maplibregl.Map({
           attributionControl: { compact: true },
-          cancelPendingTileRequestsWhileZooming: true,
+          cancelPendingTileRequestsWhileZooming: false,
           center: firstPoint === undefined ? [-79.3832, 43.6532] : [firstPoint.longitude, firstPoint.latitude],
           container: containerRef.current,
           dragRotate: false,
@@ -212,9 +212,11 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
         map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
         map.on('load', () => {
           if (!mounted) return;
+          stabilizeMapCanvas(map);
           setIsMapReady(true);
           setMapError(null);
         });
+        map.once('idle', () => stabilizeMapCanvas(map));
         map.on('click', (event: { lngLat?: { lat: number; lng: number } }) => {
           if (detailRef.current !== null) return;
           if (event.lngLat === undefined) return;
@@ -892,6 +894,14 @@ function safeResizeMap(map: MapLibreMap): void {
   } catch {
     // Resizing is best-effort before fitBounds; stale map instances can be tearing down.
   }
+}
+
+function stabilizeMapCanvas(map: MapLibreMap): void {
+  safeResizeMap(map);
+  if (typeof window === 'undefined') return;
+  window.requestAnimationFrame(() => safeResizeMap(map));
+  window.setTimeout(() => safeResizeMap(map), 120);
+  window.setTimeout(() => safeResizeMap(map), 600);
 }
 
 function safeMapOff(map: MapLibreMap, type: 'move' | 'resize' | 'zoom', listener: () => void): void {

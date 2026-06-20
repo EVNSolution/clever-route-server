@@ -202,16 +202,18 @@ function RouteGroupingAreasCard({
                 <span className="route-group-area-swatch" style={{ background: color }} />
                 <strong>{driverLabel(polygon.driverId ?? "", drivers)}</strong>
               </span>
-              <span className="route-group-area-orders" aria-label={`${driverLabel(polygon.driverId ?? "", drivers)} orders`} style={{ "--route-group-area-color": color } as CSSProperties}>
-                {polygonAssignments.map((assignment, index) => (
-                  <span className="route-group-area-order-node" key={assignment.orderId}>
-                    <button className="route-group-area-order-token" style={{ background: color, borderColor: color }} title={assignment.orderName} type="button">
-                      {index + 1}
-                    </button>
-                  </span>
-                ))}
+              <span className="route-group-area-track" style={{ "--route-group-area-color": color } as CSSProperties}>
+                <span className="route-group-area-orders" aria-label={`${driverLabel(polygon.driverId ?? "", drivers)} orders`}>
+                  {polygonAssignments.map((assignment, index) => (
+                    <span className="route-group-area-order-node" key={assignment.orderId}>
+                      <button className="route-group-area-order-token" style={{ background: color, borderColor: color }} title={assignment.orderName} type="button">
+                        {index + 1}
+                      </button>
+                    </span>
+                  ))}
+                </span>
+                <span className="route-group-area-finish" style={{ borderColor: color, color }}>Finish</span>
               </span>
-              <span className="route-group-area-finish" style={{ borderColor: color, color }}>Finish</span>
             </div>
           );
         })}
