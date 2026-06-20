@@ -307,36 +307,61 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
     const map = mapRef.current;
     if (!safeGetLayer(map, 'route-ops-polygon-vertices')) return undefined;
     let draggingVertexIndex: number | null = null;
+    let pendingDragCoordinate: { latitude: number; longitude: number } | null = null;
+    let dragAnimationFrame: number | null = null;
 
+    const flushDragMove = (): void => {
+      dragAnimationFrame = null;
+      if (draggingVertexIndex === null || pendingDragCoordinate === null) return;
+      onPolygonVertexMoveRef.current?.(draggingVertexIndex, pendingDragCoordinate);
+    };
     const resetDrag = (): void => {
+      if (dragAnimationFrame !== null) window.cancelAnimationFrame(dragAnimationFrame);
+      dragAnimationFrame = null;
+      pendingDragCoordinate = null;
       if (draggingVertexIndex === null) return;
       draggingVertexIndex = null;
       try {
         map.dragPan.enable();
+        map.doubleClickZoom.enable();
         map.getCanvas().style.cursor = '';
       } catch {
         // Map may be tearing down during route tab changes.
       }
     };
-    const handleMouseDown = (event: MapLayerClickEvent): void => {
-      const featureId = event.features?.[0]?.properties?.id;
-      if (typeof featureId !== 'string' || !featureId.startsWith('draft:')) return;
-      const index = Number(featureId.slice('draft:'.length));
-      if (!Number.isInteger(index)) return;
+    const beginVertexDrag = (event: MapLayerClickEvent, index: number): void => {
       event.preventDefault?.();
+      event.stopPropagation?.();
       event.originalEvent?.preventDefault?.();
+      event.originalEvent?.stopPropagation?.();
       draggingVertexIndex = index;
       try {
         map.dragPan.disable();
+        map.doubleClickZoom.disable();
         map.getCanvas().style.cursor = 'grabbing';
       } catch {
         // Drag-pan state is best-effort.
       }
     };
+    const handleVertexMouseDown = (event: MapLayerClickEvent): void => {
+      const featureId = event.features?.[0]?.properties?.id;
+      if (typeof featureId !== 'string' || !featureId.startsWith('draft:')) return;
+      const index = Number(featureId.slice('draft:'.length));
+      if (Number.isInteger(index)) beginVertexDrag(event, index);
+    };
+    const handleMapMouseDown = (event: MapLayerClickEvent): void => {
+      if (!polygonModeRef.current || event.lngLat === undefined) return;
+      const draft = polygonDraftRef.current;
+      if (draft === undefined || draft.vertices.length === 0) return;
+      const index = findNearestPolygonVertexIndex(map, draft.vertices, { latitude: event.lngLat.lat, longitude: event.lngLat.lng });
+      if (index !== null) beginVertexDrag(event, index);
+    };
     const handleMouseMove = (event: MapLayerClickEvent): void => {
       if (draggingVertexIndex === null || event.lngLat === undefined) return;
       event.preventDefault?.();
-      onPolygonVertexMoveRef.current?.(draggingVertexIndex, { latitude: event.lngLat.lat, longitude: event.lngLat.lng });
+      event.stopPropagation?.();
+      pendingDragCoordinate = { latitude: event.lngLat.lat, longitude: event.lngLat.lng };
+      if (dragAnimationFrame === null) dragAnimationFrame = window.requestAnimationFrame(flushDragMove);
     };
     const handleMouseEnter = (): void => {
       try {
@@ -354,7 +379,8 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
       }
     };
 
-    map.on('mousedown', 'route-ops-polygon-vertices', handleMouseDown);
+    map.on('mousedown', 'route-ops-polygon-vertices', handleVertexMouseDown);
+    map.on('mousedown', handleMapMouseDown);
     map.on('mousemove', handleMouseMove);
     map.on('mouseup', resetDrag);
     map.on('mouseleave', resetDrag);
@@ -362,7 +388,8 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
     map.on('mouseleave', 'route-ops-polygon-vertices', handleMouseLeave);
     return () => {
       resetDrag();
-      safeLayerOff(map, 'mousedown', 'route-ops-polygon-vertices', handleMouseDown);
+      safeLayerOff(map, 'mousedown', 'route-ops-polygon-vertices', handleVertexMouseDown);
+      safeMapPointerOff(map, 'mousedown', handleMapMouseDown);
       safeMapPointerOff(map, 'mousemove', handleMouseMove);
       safeMapPointerOff(map, 'mouseup', resetDrag);
       safeMapPointerOff(map, 'mouseleave', resetDrag);
@@ -642,6 +669,26 @@ function distanceToSegment(px: number, py: number, ax: number, ay: number, bx: n
   if (dx === 0 && dy === 0) return Math.hypot(px - ax, py - ay);
   const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
   return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
+function findNearestPolygonVertexIndex(
+  map: MapLibreMap,
+  vertices: Array<{ latitude: number; longitude: number }>,
+  coordinate: { latitude: number; longitude: number },
+): number | null {
+  if (vertices.length === 0) return null;
+  const target = map.project([coordinate.longitude, coordinate.latitude]);
+  let bestDistance = Number.POSITIVE_INFINITY;
+  let bestIndex = -1;
+  vertices.forEach((vertex, index) => {
+    const point = map.project([vertex.longitude, vertex.latitude]);
+    const distance = Math.hypot(target.x - point.x, target.y - point.y);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  });
+  return bestIndex >= 0 && bestDistance <= 26 ? bestIndex : null;
 }
 
 function syncPolygonLayers(map: MapLibreMap, featureCollection: GeoJSON.FeatureCollection): void {
@@ -1020,7 +1067,7 @@ function safeLayerOff(map: MapLibreMap, type: 'click' | 'mousedown' | 'mouseente
   }
 }
 
-function safeMapPointerOff(map: MapLibreMap, type: 'mouseleave' | 'mousemove' | 'mouseup', listener: ((event: MapLayerClickEvent) => void) | (() => void)): void {
+function safeMapPointerOff(map: MapLibreMap, type: 'mouseleave' | 'mousedown' | 'mousemove' | 'mouseup', listener: ((event: MapLayerClickEvent) => void) | (() => void)): void {
   try {
     map.off(type, listener);
   } catch {

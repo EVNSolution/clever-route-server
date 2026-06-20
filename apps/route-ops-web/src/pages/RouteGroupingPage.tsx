@@ -247,15 +247,34 @@ export function RouteGroupingPage({
           </select>
         </label>
         <div className="route-group-map-icon-tools">
-          <button aria-label="Undo last point" disabled={draft.vertices.length === 0 || busy} onClick={() => setDraft((current) => removeLastPolygonVertex(current))} title="Undo last point" type="button">↶</button>
-          <button aria-label="Close polygon" disabled={draft.vertices.length < 3 || draft.closed || busy} onClick={() => setDraft((current) => closePolygonDraft(current))} title="Close polygon" type="button">◇</button>
-          <button aria-label="Save polygon" disabled={!draftReady || busy} onClick={() => void saveDraftPolygon()} title="Save polygon" type="button">✓</button>
-          <button aria-label="Cancel polygon edit" disabled={busy} onClick={resetDraft} title="Cancel" type="button">×</button>
+          {editingPolygonId === null ? (
+            <>
+              <button aria-label="Undo last point" className="route-group-map-tool-button" disabled={draft.vertices.length === 0 || busy} onClick={() => setDraft((current) => removeLastPolygonVertex(current))} title="Undo last point" type="button">
+                <span aria-hidden="true">↶</span>
+                <span>Undo</span>
+              </button>
+              <button aria-label="Finish polygon" className="route-group-map-tool-button" disabled={draft.vertices.length < 3 || draft.closed || busy} onClick={() => setDraft((current) => closePolygonDraft(current))} title="Finish polygon" type="button">
+                <span aria-hidden="true">□</span>
+                <span>Finish</span>
+              </button>
+            </>
+          ) : null}
+          <button aria-label="Save polygon" className="route-group-map-tool-button route-group-map-tool-button--primary" disabled={!draftReady || busy} onClick={() => void saveDraftPolygon()} title="Save polygon" type="button">
+            <span aria-hidden="true">✓</span>
+            <span>Save</span>
+          </button>
+          <button aria-label="Cancel polygon edit" className="route-group-map-tool-button" disabled={busy} onClick={resetDraft} title="Cancel" type="button">
+            <span aria-hidden="true">×</span>
+            <span>Cancel</span>
+          </button>
+          {editingPolygonId === null ? null : (
+            <button aria-label="Delete polygon" className="route-group-map-tool-button route-group-map-tool-button--danger" disabled={busy} onClick={() => void deleteEditingPolygon()} title="Delete polygon" type="button">
+              <span aria-hidden="true">⌫</span>
+              <span>Delete</span>
+            </button>
+          )}
         </div>
-        {editingPolygonId === null ? null : (
-          <button aria-label="Delete polygon" disabled={busy} onClick={() => void deleteEditingPolygon()} title="Delete polygon" type="button">🗑</button>
-        )}
-        <span className="route-group-map-edit-help">{editingPolygonId === null ? "Click points · double-click to finish" : "Drag points · double-click line to add"}</span>
+        <span className="route-group-map-edit-help">{editingPolygonId === null ? "Click points · double-click to finish" : "Drag corner points · double-click a line to add a point"}</span>
       </div>
     );
   }
