@@ -26,6 +26,7 @@ const expectedRouteRegistrations: RouteRegistration[] = [
   { line: 594, method: "GET", pathExpression: "ADMIN_UI_APP_ROUTE_PLANS_PATH" },
   { line: 600, method: "GET", pathExpression: "`${ADMIN_UI_APP_ROUTE_PLANS_PATH}/new`" },
   { line: 606, method: "GET", pathExpression: "`${ADMIN_UI_APP_ROUTE_PLANS_PATH}/:routePlanId`" },
+  { line: 615, method: "GET", pathExpression: "`${ADMIN_UI_APP_ROUTE_GROUPS_PATH}/:routeGroupId`" },
   { line: 615, method: "POST", pathExpression: "`${ADMIN_UI_APP_ROUTE_PLANS_PATH}/create`" },
   { line: 624, method: "POST", pathExpression: "`${ADMIN_UI_APP_ROUTE_PLANS_PATH}/:routePlanId/stops`" },
   { line: 639, method: "POST", pathExpression: "`${ADMIN_UI_APP_ROUTE_PLANS_PATH}/:routePlanId/driver`" },
@@ -229,6 +230,6 @@ describe("admin UI route inventory", () => {
     expect(registrations).toContain("GET `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/optimize-jobs/:jobId`");
     expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/publish`");
     expect(registrations).toContain("PATCH `${ADMIN_UI_APP_API_PATH}/settings`");
-    expect(expectedRouteRegistrations).toHaveLength(101);
+    expect(expectedRouteRegistrations).toHaveLength(102);
   });
 });

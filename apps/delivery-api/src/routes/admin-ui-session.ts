@@ -374,7 +374,10 @@ function isAllowedAdminUiReturnPath(pathname: string): boolean {
   ) {
     return true;
   }
-  return /^\/admin\/ui\/app\/routes(?:\/(?:new|[^/?#]+))?$/u.test(pathname);
+  return (
+    /^\/admin\/ui\/app\/routes(?:\/(?:new|[^/?#]+))?$/u.test(pathname) ||
+    /^\/admin\/ui\/app\/route-groups\/[^/?#]+$/u.test(pathname)
+  );
 }
 
 function createCsrfToken(payload: SessionPayload): string {

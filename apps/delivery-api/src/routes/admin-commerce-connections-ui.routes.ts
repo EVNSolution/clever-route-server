@@ -160,6 +160,7 @@ const ADMIN_UI_APP_PATH = `${ADMIN_UI_ROOT_PATH}/app`;
 const ADMIN_UI_APP_DASHBOARD_PATH = `${ADMIN_UI_APP_PATH}/dashboard`;
 const ADMIN_UI_APP_ORDERS_PATH = `${ADMIN_UI_APP_PATH}/orders`;
 const ADMIN_UI_APP_ROUTE_PLANS_PATH = `${ADMIN_UI_APP_PATH}/routes`;
+const ADMIN_UI_APP_ROUTE_GROUPS_PATH = `${ADMIN_UI_APP_PATH}/route-groups`;
 const ADMIN_UI_APP_DRIVERS_PATH = `${ADMIN_UI_APP_PATH}/drivers`;
 const ADMIN_UI_APP_SETTINGS_PATH = `${ADMIN_UI_APP_PATH}/settings`;
 const ADMIN_UI_APP_API_PATH = `${ADMIN_UI_APP_PATH}/api`;
@@ -662,6 +663,15 @@ export function registerAdminCommerceConnectionsUiRoutes(
 
   app.get<{ Params: { routePlanId: string } }>(
     `${ADMIN_UI_APP_ROUTE_PLANS_PATH}/:routePlanId`,
+    async (request, reply) => {
+      const session = readSession(request, dependencies);
+      if (session === null) return rejectDirectRouteOpsWorkspaceLink(reply);
+      return renderRouteOpsSpaShell(reply, request, dependencies, session);
+    },
+  );
+
+  app.get<{ Params: { routeGroupId: string } }>(
+    `${ADMIN_UI_APP_ROUTE_GROUPS_PATH}/:routeGroupId`,
     async (request, reply) => {
       const session = readSession(request, dependencies);
       if (session === null) return rejectDirectRouteOpsWorkspaceLink(reply);
