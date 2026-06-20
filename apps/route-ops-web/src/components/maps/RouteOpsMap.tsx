@@ -48,7 +48,9 @@ type RouteOpsMapProps = {
   depot?: RouteOpsPoint | null;
   draftStops?: RouteStopDto[];
   headerAction?: ReactNode;
+  mapOverlayAction?: ReactNode;
   fitOrdersToBounds?: boolean;
+  forceCircleOrderMarkers?: boolean;
   statusContent?: ReactNode;
   onExitRouteMode?(): void;
   onMapClickCoordinate?(coordinate: { latitude: number; longitude: number }): void;
@@ -70,7 +72,7 @@ type RouteOpsMapProps = {
   title?: string;
 };
 
-export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops, headerAction, fitOrdersToBounds = false, statusContent, onExitRouteMode, onMapClickCoordinate, onPolygonFinish, onPolygonVertex, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), polygonDraft, polygonDraftColor = "#111827", polygonMode = false, polygons = [], selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
+export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops, forceCircleOrderMarkers = false, headerAction, mapOverlayAction, fitOrdersToBounds = false, statusContent, onExitRouteMode, onMapClickCoordinate, onPolygonFinish, onPolygonVertex, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), polygonDraft, polygonDraftColor = "#111827", polygonMode = false, polygons = [], selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
   const locale = resolveLocale(bootstrap.locale);
   const t = getMapCopy(locale);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -111,6 +113,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
   const routeDropoffGeojson = useMemo(() => (detail === null ? EMPTY_ROUTE_DROPOFF_COLLECTION : buildRouteDropoffPointFeatureCollection(dropoffPoints)), [detail, dropoffPoints]);
   const routeStopGeojson = useMemo(() => (detail === null ? EMPTY_ROUTE_STOP_COLLECTION : buildRouteStopMarkerFeatureCollection(points, selectedRouteStopId)), [detail, points, selectedRouteStopId]);
   const polygonGeojson = useMemo(() => buildPolygonFeatureCollection(polygons, polygonDraft, polygonDraftColor), [polygonDraft, polygonDraftColor, polygons]);
+  const polygonVertexGeojson = useMemo(() => buildPolygonVertexFeatureCollection(polygons, polygonDraft, polygonDraftColor), [polygonDraft, polygonDraftColor, polygons]);
 
   useEffect(() => {
     onMapClickCoordinateRef.current = onMapClickCoordinate;
@@ -252,18 +255,19 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
   useEffect(() => {
     if (!isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return;
     const map = mapRef.current;
-    syncOrdersLayer(map, detail === null ? ordersGeojson : EMPTY_ORDERS_COLLECTION);
+    syncOrdersLayer(map, detail === null ? ordersGeojson : EMPTY_ORDERS_COLLECTION, { forceCircleMarkers: forceCircleOrderMarkers });
     syncRouteLayers(map, lineFeature);
     syncRouteDropoffLayers(map, routeDropoffGeojson);
     syncRouteStopLayers(map, routeStopGeojson);
     syncPolygonLayers(map, polygonGeojson);
+    syncPolygonVertexLayers(map, polygonVertexGeojson);
     syncRouteMarkers(map, maplibreRef.current, points.filter((point) => point.kind === 'depot' || point.kind === 'stop'), markersRef.current, locale, selectedRouteStopId, (deliveryStopId) => onRouteStopSelectRef.current?.(deliveryStopId));
     if (detail !== null || fitOrdersToBounds) {
       fitMap(map, maplibreRef.current, fitPoints);
       return;
     }
     applyOrdersHomeViewport(map, homePoint, ordersHomeAppliedRef);
-  }, [detail, fitOrdersToBounds, fitPoints, homePoint, isMapReady, lineFeature, locale, ordersGeojson, points, polygonGeojson, routeDropoffGeojson, routeStopGeojson, selectedRouteStopId]);
+  }, [detail, fitOrdersToBounds, fitPoints, forceCircleOrderMarkers, homePoint, isMapReady, lineFeature, locale, ordersGeojson, points, polygonGeojson, polygonVertexGeojson, routeDropoffGeojson, routeStopGeojson, selectedRouteStopId]);
 
   useEffect(() => {
     if (detail === null || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return undefined;
@@ -387,7 +391,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
         </div>
       ) : null}
       {statusContent === undefined ? null : <div className="map-panel-status">{statusContent}</div>}
-      <div className="route-ops-map-frame" data-map-provider-mode={bootstrap.mapConfig.providerMode ?? 'none'} data-map-provider-status={bootstrap.mapConfig.status} onPointerDown={handleMapFramePointerDown}>
+      <div className="route-ops-map-frame" data-map-provider-mode={bootstrap.mapConfig.providerMode ?? 'none'} data-map-provider-status={bootstrap.mapConfig.status} data-polygon-mode={polygonMode ? 'true' : 'false'} onPointerDown={handleMapFramePointerDown}>
         {readiness === 'interactive_map' || onExitRouteMode !== undefined ? (
           <div className="map-toolbar">
             {onExitRouteMode !== undefined ? <button aria-label={t.exitRouteMode} onClick={onExitRouteMode} title={t.exitRouteMode} type="button"><span aria-hidden="true" className="map-toolbar-symbol">←</span></button> : null}
@@ -395,6 +399,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
             {readiness === 'interactive_map' ? <button aria-label={t.refreshMap} onClick={handleRefreshMap} title={t.refreshMap} type="button"><span aria-hidden="true" className="map-toolbar-symbol">↻</span></button> : null}
           </div>
         ) : null}
+        {mapOverlayAction === undefined ? null : <div className="map-edit-overlay">{mapOverlayAction}</div>}
         {readiness === 'interactive_map' ? <div className="route-ops-map-canvas" ref={containerRef} aria-label={t.interactiveMap} /> : <SequencePreview locale={locale} points={points} readiness={readiness} />}
         {selectedRouteStop !== null && routeStopPickerAnchor !== null ? (
           <RouteStopSequencePicker
@@ -442,6 +447,50 @@ function buildPolygonFeatureCollection(polygons: RouteGroupingPolygonDto[], draf
   return { features, type: 'FeatureCollection' } as GeoJSON.FeatureCollection;
 }
 
+function buildPolygonVertexFeatureCollection(polygons: RouteGroupingPolygonDto[], draft: { closed: boolean; vertices: Array<{ latitude: number; longitude: number }> } | undefined, draftColor: string): GeoJSON.FeatureCollection {
+  const features: GeoJSON.Feature[] = [];
+  for (const polygon of polygons) {
+    const color = polygon.color ?? '#2563eb';
+    const ring = readPolygonRing(polygon.geometry);
+    ring.forEach((coordinate, index) => {
+      if (index === ring.length - 1) {
+        const first = ring[0];
+        if (first !== undefined && first[0] === coordinate[0] && first[1] === coordinate[1]) return;
+      }
+      features.push({
+        geometry: { coordinates: [coordinate[0], coordinate[1]], type: 'Point' },
+        properties: { color, id: `${polygon.id}:${index}` },
+        type: 'Feature'
+      });
+    });
+  }
+  if (draft !== undefined) {
+    draft.vertices.forEach((vertex, index) => {
+      features.push({
+        geometry: { coordinates: [vertex.longitude, vertex.latitude], type: 'Point' },
+        properties: { color: draftColor, id: `draft:${index}` },
+        type: 'Feature'
+      });
+    });
+  }
+  return { features, type: 'FeatureCollection' } as GeoJSON.FeatureCollection;
+}
+
+function readPolygonRing(geometry: unknown): Array<[number, number]> {
+  if (typeof geometry !== 'object' || geometry === null) return [];
+  const coordinates = (geometry as { coordinates?: unknown }).coordinates;
+  if (!Array.isArray(coordinates)) return [];
+  const ring = coordinates[0];
+  if (!Array.isArray(ring)) return [];
+  return ring.flatMap((coordinate): Array<[number, number]> => {
+    if (!Array.isArray(coordinate) || coordinate.length < 2) return [];
+    const [longitude, latitude] = coordinate;
+    if (typeof longitude !== 'number' || typeof latitude !== 'number') return [];
+    if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) return [];
+    return [[longitude, latitude]];
+  });
+}
+
 function syncPolygonLayers(map: MapLibreMap, featureCollection: GeoJSON.FeatureCollection): void {
   const existing = safeGetSource(map, 'route-ops-polygons') as { setData?(data: unknown): void } | undefined;
   if (existing?.setData) {
@@ -463,12 +512,32 @@ function syncPolygonLayers(map: MapLibreMap, featureCollection: GeoJSON.FeatureC
   });
 }
 
-export function syncOrdersLayer(map: MapLibreMap, featureCollection: ReturnType<typeof buildOrdersMapFeatureCollection>): void {
+function syncPolygonVertexLayers(map: MapLibreMap, featureCollection: GeoJSON.FeatureCollection): void {
+  const existing = safeGetSource(map, 'route-ops-polygon-vertices') as { setData?(data: unknown): void } | undefined;
+  if (existing?.setData) {
+    safeSetSourceData(existing, featureCollection);
+    return;
+  }
+  if (!safeAddSource(map, 'route-ops-polygon-vertices', { data: featureCollection, type: 'geojson' })) return;
+  safeAddLayer(map, {
+    id: 'route-ops-polygon-vertices',
+    paint: {
+      'circle-color': '#ffffff',
+      'circle-radius': 4,
+      'circle-stroke-color': ['coalesce', ['get', 'color'], '#2563eb'],
+      'circle-stroke-width': 2
+    },
+    source: 'route-ops-polygon-vertices',
+    type: 'circle'
+  });
+}
+
+export function syncOrdersLayer(map: MapLibreMap, featureCollection: ReturnType<typeof buildOrdersMapFeatureCollection>, options: { forceCircleMarkers?: boolean } = {}): void {
   const existing = safeGetSource(map, 'route-ops-orders') as { setData?(data: unknown): void } | undefined;
   if (existing?.setData) safeSetSourceData(existing, featureCollection);
   else if (!safeAddSource(map, 'route-ops-orders', { data: featureCollection, type: 'geojson' })) return;
 
-  if (!ensureOrdersMapPinImages(map)) {
+  if (options.forceCircleMarkers === true || !ensureOrdersMapPinImages(map)) {
     syncFallbackCircleOrdersLayer(map);
     syncOrderLabelsLayer(map, { alignToPinCenter: false });
     return;
@@ -500,7 +569,7 @@ function syncFallbackCircleOrdersLayer(map: MapLibreMap): void {
   safeAddLayer(map, {
     id: 'route-ops-order-pins',
     paint: {
-      'circle-color': ['match', ['get', 'pinKind'], 'candidate', '#006fbb', 'history', '#8a8f98', 'review', '#e11900', '#303030'],
+      'circle-color': ['coalesce', ['get', 'markerColor'], '#303030'],
       'circle-opacity': ['get', 'markerOpacity'],
       'circle-radius': 12,
       'circle-stroke-color': '#ffffff',

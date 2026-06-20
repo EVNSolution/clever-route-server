@@ -748,32 +748,82 @@ small,
   display: grid;
   gap: 14px;
 }
-.route-group-map-edit-actions {
+.route-group-map-edit-overlay {
   align-items: center;
+  backdrop-filter: blur(10px);
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid #cfd8e6;
+  border-radius: 16px;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.18);
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  justify-content: flex-end;
+  max-width: min(720px, calc(100% - 88px));
+  padding: 8px;
 }
-.route-group-map-edit-actions select {
-  min-height: 38px;
-  min-width: 180px;
+.route-group-map-driver-select,
+.route-group-map-icon-tools {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+.route-group-map-driver-select span,
+.route-group-map-edit-help {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 900;
+}
+.route-group-map-driver-select select {
+  background: #ffffff;
+  border: 1px solid #d7deea;
+  border-radius: 10px;
+  color: #111827;
+  font-weight: 900;
+  min-height: 34px;
+  min-width: 160px;
+  padding: 0 10px;
+}
+.route-group-map-icon-tools button {
+  align-items: center;
+  background: #111827;
+  border: 1px solid #111827;
+  border-radius: 10px;
+  color: #ffffff;
+  display: inline-flex;
+  font-size: 18px;
+  font-weight: 900;
+  height: 34px;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+  width: 34px;
+}
+.route-group-map-icon-tools button:disabled {
+  background: #e5e9f0;
+  border-color: #cfd8e6;
+  color: #94a3b8;
+  cursor: default;
+}
+.route-group-map-edit-help {
+  white-space: nowrap;
 }
 .route-group-areas-card {
-  align-items: center;
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
-  padding-bottom: 14px;
-  padding-top: 14px;
+  padding-bottom: 12px;
+  padding-top: 12px;
 }
 .route-group-area-list {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
   gap: 10px;
+  width: 100%;
 }
 .route-group-area-row {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(160px, 220px) minmax(0, 1fr) auto;
+  width: 100%;
+}
+.route-group-area-driver {
   align-items: center;
   background: #f8fafc;
   border: 1px solid #e5ebf4;
@@ -781,25 +831,51 @@ small,
   display: inline-flex;
   gap: 8px;
   min-height: 38px;
+  min-width: 0;
   padding: 7px 10px;
+}
+.route-group-area-driver strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .route-group-area-swatch {
   border: 2px solid #fff;
   border-radius: 999px;
   box-shadow: 0 0 0 1px #d7deea;
   display: inline-block;
+  flex: 0 0 auto;
   height: 18px;
   width: 18px;
 }
-.route-group-area-dots {
-  color: #2563eb;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  letter-spacing: -0.08em;
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.route-group-area-orders {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(var(--route-group-area-columns, 1), minmax(30px, 1fr));
+  min-width: 0;
+}
+.route-group-area-order-token {
+  align-items: center;
+  border: 2px solid currentColor;
+  border-radius: 999px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.18);
+  color: #ffffff;
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 900;
+  height: 30px;
+  justify-content: center;
+  line-height: 1;
+  min-width: 30px;
+  padding: 0 8px;
+}
+.route-group-area-count {
+  color: #111827;
+  font-size: 18px;
+  font-weight: 900;
+  min-width: 24px;
+  text-align: right;
 }
 .route-group-order-items-table td:first-child,
 .route-group-order-items-table th:first-child {
@@ -1722,6 +1798,10 @@ button.danger.subtle {
   overflow: hidden;
   position: relative;
 }
+.route-ops-map-frame[data-polygon-mode="true"] {
+  border-color: #2563eb;
+  box-shadow: inset 0 0 0 2px rgba(37, 99, 235, 0.18);
+}
 .route-ops-map-canvas {
   height: 460px;
   min-height: 460px;
@@ -1968,6 +2048,22 @@ button.danger.subtle {
   .filter-panel {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+  .route-group-area-row {
+    grid-template-columns: 1fr;
+  }
+  .route-group-area-orders {
+    grid-template-columns: repeat(auto-fit, minmax(30px, 1fr));
+  }
+  .route-group-area-count {
+    text-align: left;
+  }
+  .map-edit-overlay {
+    left: 12px;
+    top: 56px;
+  }
+  .route-group-map-edit-overlay {
+    max-width: calc(100% - 24px);
+  }
 }
 @media (max-width: 620px) {
   .filter-panel {
@@ -1982,6 +2078,13 @@ button.danger.subtle {
   position: absolute;
   top: 12px;
   z-index: 2;
+}
+.map-edit-overlay {
+  left: 64px;
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  z-index: 3;
 }
 .map-toolbar button {
   align-items: center;

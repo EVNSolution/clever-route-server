@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ReactElement, ReactNode } from "react";
+import type { CSSProperties, ReactElement, ReactNode } from "react";
 
 import {
-  generateRouteGroupingChildRoutes,
   getDrivers,
   getRouteGrouping,
   getSettings,
@@ -60,7 +59,9 @@ export function RouteGroupingPage({
     [bootstrap.locale, settings],
   );
   const draftReady = draft.closed && draft.vertices.length >= 3;
-  const mapHeaderAction = renderMapHeaderAction();
+  const mapHeaderAction = !isEditing ? <button onClick={startEdit} type="button">Edit</button> : undefined;
+  const mapEditOverlay = isEditing ? renderMapEditOverlay() : undefined;
+  const groupedOrderMarkerStates = useMemo(() => buildGroupedOrderMarkerStates(grouping), [grouping]);
 
   async function saveDraftPolygon(): Promise<void> {
     const geometry = polygonDraftToGeoJson(draft);
@@ -97,23 +98,7 @@ export function RouteGroupingPage({
     }
   }
 
-  async function generateChildren(confirmRisk = false): Promise<void> {
-    setBusy(true);
-    try {
-      const payload = await generateRouteGroupingChildRoutes({ confirmRisk, csrfToken: bootstrap.csrfToken, routeGroupId });
-      setGrouping(payload.routeGroup);
-      setError(null);
-    } catch (error) {
-      if (!confirmRisk && window.confirm(`Route grouping has warnings. Continue?\n${readErrorMessage(error)}`)) {
-        setBusy(false);
-        await generateChildren(true);
-        return;
-      }
-      setError(readErrorMessage(error));
-    } finally {
-      setBusy(false);
-    }
-  }
+
 
   function startEdit(): void {
     setDraft({ closed: false, vertices: [] });
@@ -125,20 +110,25 @@ export function RouteGroupingPage({
     setIsEditing(false);
   }
 
-  function renderMapHeaderAction(): ReactNode {
-    if (!isEditing) return <button onClick={startEdit} type="button">Edit</button>;
+  function renderMapEditOverlay(): ReactNode {
     return (
-      <div className="route-group-map-edit-actions">
-        <select value={activeDriverId} onChange={(event) => setActiveDriverId(event.target.value)} aria-label="Driver">
-          <option value="">Unassigned</option>
-          {drivers.map((driver) => (
-            <option key={driver.id} value={driver.id}>{driver.displayName}</option>
-          ))}
-        </select>
-        <button disabled={draft.vertices.length === 0 || busy} onClick={() => setDraft((current) => removeLastPolygonVertex(current))} type="button">Undo</button>
-        <button disabled={draft.vertices.length < 3 || draft.closed || busy} onClick={() => setDraft((current) => closePolygonDraft(current))} type="button">Close</button>
-        <button disabled={!draftReady || busy} onClick={() => void saveDraftPolygon()} type="button">Save</button>
-        <button disabled={busy} onClick={resetDraft} type="button">Cancel</button>
+      <div className="route-group-map-edit-overlay" role="group" aria-label="Polygon edit tools">
+        <label className="route-group-map-driver-select">
+          <span>Driver</span>
+          <select value={activeDriverId} onChange={(event) => setActiveDriverId(event.target.value)} aria-label="Driver">
+            <option value="">Unassigned</option>
+            {drivers.map((driver) => (
+              <option key={driver.id} value={driver.id}>{driver.displayName}</option>
+            ))}
+          </select>
+        </label>
+        <div className="route-group-map-icon-tools">
+          <button aria-label="Undo last point" disabled={draft.vertices.length === 0 || busy} onClick={() => setDraft((current) => removeLastPolygonVertex(current))} title="Undo last point" type="button">↶</button>
+          <button aria-label="Close polygon" disabled={draft.vertices.length < 3 || draft.closed || busy} onClick={() => setDraft((current) => closePolygonDraft(current))} title="Close polygon" type="button">◇</button>
+          <button aria-label="Save polygon" disabled={!draftReady || busy} onClick={() => void saveDraftPolygon()} title="Save polygon" type="button">✓</button>
+          <button aria-label="Cancel polygon edit" disabled={busy} onClick={resetDraft} title="Cancel" type="button">×</button>
+        </div>
+        <span className="route-group-map-edit-help">Click points · double-click to finish</span>
       </div>
     );
   }
@@ -152,11 +142,14 @@ export function RouteGroupingPage({
           bootstrap={bootstrap}
           depot={depotPoint}
           fitOrdersToBounds
+          forceCircleOrderMarkers
           headerAction={mapHeaderAction}
+          mapOverlayAction={mapEditOverlay}
+          orderMarkerStates={groupedOrderMarkerStates}
           orders={mapOrders}
           polygonDraft={isEditing ? draft : undefined}
           polygonMode={isEditing}
-          polygons={grouping?.polygons ?? []}
+          polygons={isEditing ? grouping?.polygons ?? [] : []}
           onPolygonFinish={() => setDraft((current) => closePolygonDraft(current))}
           onPolygonVertex={(coordinate) => setDraft((current) => appendPolygonVertex(current, coordinate))}
           title={grouping?.name ?? "Driver split"}
@@ -168,11 +161,8 @@ export function RouteGroupingPage({
           {grouping !== null && grouping.polygons.length > 0 ? (
             <RouteGroupingAreasCard
               assignments={grouping.assignments}
-              busy={busy}
               drivers={drivers}
-              onGenerate={() => void generateChildren()}
               polygons={grouping.polygons}
-              unresolvedOrders={grouping.unresolvedOrders}
             />
           ) : null}
           <RouteGroupingOrderItemsCard assignments={grouping?.assignments ?? []} />
@@ -184,35 +174,46 @@ export function RouteGroupingPage({
 
 function RouteGroupingAreasCard({
   assignments,
-  busy,
   drivers,
-  onGenerate,
   polygons,
-  unresolvedOrders,
 }: {
   assignments: RouteGroupingAssignmentDto[];
-  busy: boolean;
   drivers: DriverDto[];
-  onGenerate(): void;
   polygons: RouteGroupingPolygonDto[];
-  unresolvedOrders: number;
 }): ReactElement {
+  const assignmentsByPolygonId = new Map<string, RouteGroupingAssignmentDto[]>();
+  for (const assignment of assignments) {
+    if (assignment.assignedPolygonId === null) continue;
+    const current = assignmentsByPolygonId.get(assignment.assignedPolygonId) ?? [];
+    current.push(assignment);
+    assignmentsByPolygonId.set(assignment.assignedPolygonId, current);
+  }
+  const maxAssignedCount = Math.max(1, ...polygons.map((polygon) => assignmentsByPolygonId.get(polygon.id)?.length ?? 0));
+
   return (
-    <article className="panel route-group-areas-card">
+    <article className="panel route-group-areas-card" style={{ "--route-group-area-columns": String(maxAssignedCount) } as CSSProperties}>
       <div className="route-group-area-list">
         {polygons.map((polygon) => {
-          const assignedCount = assignments.filter((assignment) => assignment.assignedPolygonId === polygon.id).length;
+          const color = polygon.color ?? "#2563eb";
+          const polygonAssignments = assignmentsByPolygonId.get(polygon.id) ?? [];
           return (
             <div className="route-group-area-row" key={polygon.id}>
-              <span className="route-group-area-swatch" style={{ background: polygon.color ?? "#2563eb" }} />
-              <strong>{driverLabel(polygon.driverId ?? "", drivers)}</strong>
-              <span className="route-group-area-dots" aria-hidden="true">{areaDots(assignedCount)}</span>
-              <span>{assignedCount}</span>
+              <span className="route-group-area-driver">
+                <span className="route-group-area-swatch" style={{ background: color }} />
+                <strong>{driverLabel(polygon.driverId ?? "", drivers)}</strong>
+              </span>
+              <span className="route-group-area-orders" aria-label={`${driverLabel(polygon.driverId ?? "", drivers)} orders`}>
+                {polygonAssignments.map((assignment, index) => (
+                  <button className="route-group-area-order-token" key={assignment.orderId} style={{ background: color, borderColor: color }} title={assignment.orderName} type="button">
+                    {index + 1}
+                  </button>
+                ))}
+              </span>
+              <span className="route-group-area-count">{polygonAssignments.length}</span>
             </div>
           );
         })}
       </div>
-      <button className="primary" disabled={unresolvedOrders > 0 || busy} onClick={onGenerate} type="button">Generate</button>
     </article>
   );
 }
@@ -246,10 +247,17 @@ function RouteGroupingOrderItemsCard({ assignments }: { assignments: RouteGroupi
   );
 }
 
-function areaDots(count: number): string {
-  if (count <= 0) return "—";
-  const visible = Math.min(count, 12);
-  return Array.from({ length: visible }, () => "○").join("-") + (count > visible ? "+" : "");
+function buildGroupedOrderMarkerStates(grouping: RouteGroupingDetailDto | null): ReadonlyMap<string, { markerColor?: string; markerOpacity?: number; pinKind?: "candidate" }> {
+  if (grouping === null) return new Map();
+  const polygonColorById = new Map(grouping.polygons.map((polygon) => [polygon.id, polygon.color ?? "#2563eb"]));
+  return new Map(
+    grouping.assignments.flatMap((assignment) => {
+      if (assignment.assignedPolygonId === null) return [];
+      const color = polygonColorById.get(assignment.assignedPolygonId);
+      if (color === undefined) return [];
+      return [[assignment.orderId, { markerColor: color, markerOpacity: 1, pinKind: "candidate" as const }]];
+    }),
+  );
 }
 
 function assignmentToOrder(assignment: RouteGroupingDetailDto["assignments"][number]): CanonicalOrderDto {

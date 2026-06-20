@@ -41,7 +41,7 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(orderLayer).toBeDefined();
     expect(orderLayer?.layout ?? {}).not.toHaveProperty('text-field');
     expect(orderLayer?.paint).toMatchObject({
-      'circle-color': ['match', ['get', 'pinKind'], 'candidate', '#006fbb', 'history', '#8a8f98', 'review', '#e11900', '#303030'],
+      'circle-color': ['coalesce', ['get', 'markerColor'], '#303030'],
       'circle-opacity': ['get', 'markerOpacity']
     });
     expect(labelLayer?.layout).toMatchObject({

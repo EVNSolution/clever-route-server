@@ -32,6 +32,7 @@ const ROUTE_FIT_MAX_DEPOT_DISTANCE_KM = 500;
 
 export type OrderMapFeatureCollection = FeatureCollection<PointGeometry, {
   label: string;
+  markerColor: string;
   markerOpacity: number;
   orderId: string;
   orderName: string;
@@ -44,6 +45,7 @@ export type OrderMapFeatureCollection = FeatureCollection<PointGeometry, {
 export type OrderMapPinKind = 'candidate' | 'history' | 'review' | 'unplanned';
 
 export type OrderMapMarkerState = {
+  markerColor?: string | null;
   markerOpacity?: number;
   pinKind?: OrderMapPinKind;
   sequence?: number | null;
@@ -86,11 +88,13 @@ export function buildOrdersMapFeatureCollection(orders: CanonicalOrderDto[], mar
     const planned = state.pinKind === 'candidate' || order.routePlanId !== null || order.planningStatus !== 'UNPLANNED';
     const pinKind = state.pinKind ?? (order.blockerReasons.length > 0 ? 'review' : 'unplanned');
     const markerOpacity = normalizeMarkerOpacity(state.markerOpacity);
+    const markerColor = normalizeMarkerColor(state.markerColor) ?? markerColorForKind(pinKind);
     const sequence = state.sequence ?? null;
     features.push({
       geometry: { coordinates: lngLat, type: 'Point' },
       properties: {
         label: '',
+        markerColor,
         markerOpacity,
         orderId: order.orderId,
         orderName: order.orderName,
@@ -113,6 +117,20 @@ function readOrderMarkerState(orderId: string, markerState: ReadonlyMap<string, 
 function normalizeMarkerOpacity(value: number | null | undefined): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return 1;
   return Math.min(1, Math.max(0, value));
+}
+
+function normalizeMarkerColor(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!/^#[0-9a-f]{6}$/iu.test(trimmed)) return null;
+  return trimmed;
+}
+
+function markerColorForKind(kind: OrderMapPinKind): string {
+  if (kind === 'candidate') return '#006fbb';
+  if (kind === 'history') return '#8a8f98';
+  if (kind === 'review') return '#e11900';
+  return '#303030';
 }
 
 function pinImageForKind(kind: OrderMapPinKind): string {
