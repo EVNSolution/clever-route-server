@@ -218,6 +218,7 @@ function RouteGroupingAreasCard({
     assignmentsByPolygonId.set(assignment.assignedPolygonId, current);
   }
   const maxAssignedCount = Math.max(1, ...polygons.map((polygon) => assignmentsByPolygonId.get(polygon.id)?.length ?? 0));
+  const duplicateDriverPolygonIds = getRouteGroupingDuplicateDriverPolygonIds(polygons);
 
   return (
     <article className="panel route-group-areas-card" style={{ "--route-group-area-columns": String(maxAssignedCount) } as CSSProperties}>
@@ -225,8 +226,9 @@ function RouteGroupingAreasCard({
         {polygons.map((polygon) => {
           const color = polygon.color ?? "#2563eb";
           const polygonAssignments = assignmentsByPolygonId.get(polygon.id) ?? [];
-          const label = driverLabel(polygon.driverId ?? "", drivers);
-          const canAssignDriver = polygon.driverId === null;
+          const effectiveDriverId = duplicateDriverPolygonIds.has(polygon.id) ? null : polygon.driverId;
+          const label = driverLabel(effectiveDriverId ?? "", drivers);
+          const canAssignDriver = effectiveDriverId === null;
           const assignableDrivers = getRouteGroupingAssignableDrivers(polygon, polygons, drivers);
           return (
             <div className="route-group-area-row" key={polygon.id}>
@@ -279,16 +281,33 @@ function RouteGroupingAreasCard({
 
 
 export function getRouteGroupingAssignableDrivers(
-  polygon: Pick<RouteGroupingPolygonDto, "driverId">,
-  polygons: Array<Pick<RouteGroupingPolygonDto, "driverId">>,
+  polygon: Pick<RouteGroupingPolygonDto, "driverId" | "id">,
+  polygons: Array<Pick<RouteGroupingPolygonDto, "driverId" | "id">>,
   drivers: DriverDto[],
 ): DriverDto[] {
   const usedDriverIds = new Set(
     polygons
+      .filter((current) => current.id !== polygon.id)
       .map((current) => current.driverId)
-      .filter((driverId): driverId is string => driverId !== null && driverId !== undefined && driverId !== polygon.driverId),
+      .filter((driverId): driverId is string => driverId !== null && driverId !== undefined),
   );
   return drivers.filter((driver) => !usedDriverIds.has(driver.id));
+}
+
+export function getRouteGroupingDuplicateDriverPolygonIds(
+  polygons: Array<Pick<RouteGroupingPolygonDto, "driverId" | "id">>,
+): ReadonlySet<string> {
+  const seenDriverIds = new Set<string>();
+  const duplicatePolygonIds = new Set<string>();
+  for (const polygon of polygons) {
+    if (polygon.driverId === null) continue;
+    if (seenDriverIds.has(polygon.driverId)) {
+      duplicatePolygonIds.add(polygon.id);
+      continue;
+    }
+    seenDriverIds.add(polygon.driverId);
+  }
+  return duplicatePolygonIds;
 }
 
 function RouteGroupingOrderItemsCard({ assignments }: { assignments: RouteGroupingAssignmentDto[] }): ReactElement {

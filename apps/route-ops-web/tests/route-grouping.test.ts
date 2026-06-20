@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { appendPolygonVertex, closePolygonDraft, polygonDraftToGeoJson, readPolygonVertices, removeLastPolygonVertex } from '../src/routeGrouping';
-import { getRouteGroupingAssignableDrivers } from '../src/pages/RouteGroupingPage';
+import { getRouteGroupingAssignableDrivers, getRouteGroupingDuplicateDriverPolygonIds } from '../src/pages/RouteGroupingPage';
 import type { DriverDto } from '../src/types';
 
 describe('route grouping polygon draft helpers', () => {
@@ -50,16 +50,26 @@ describe('route grouping polygon draft helpers', () => {
       { id: 'driver-2', displayName: 'Minji Driver' },
       { id: 'driver-3', displayName: 'Sam Driver' },
     ] as DriverDto[];
-    const assignedPolygon = { driverId: 'driver-1' };
-    const unassignedPolygon = { driverId: null };
+    const assignedPolygon = { id: 'polygon-1', driverId: 'driver-1' };
+    const unassignedPolygon = { id: 'polygon-2', driverId: null };
     const polygons = [
       assignedPolygon,
       unassignedPolygon,
-      { driverId: 'driver-3' },
+      { id: 'polygon-3', driverId: 'driver-3' },
     ];
 
     expect(getRouteGroupingAssignableDrivers(unassignedPolygon, polygons, drivers).map((driver) => driver.id)).toEqual(['driver-2']);
     expect(getRouteGroupingAssignableDrivers(assignedPolygon, polygons, drivers).map((driver) => driver.id)).toEqual(['driver-1', 'driver-2']);
+  });
+
+  test('marks repeated driver polygons as duplicates after the first occurrence', () => {
+    expect(
+      Array.from(getRouteGroupingDuplicateDriverPolygonIds([
+        { id: 'polygon-1', driverId: 'driver-1' },
+        { id: 'polygon-2', driverId: 'driver-2' },
+        { id: 'polygon-3', driverId: 'driver-1' },
+      ])),
+    ).toEqual(['polygon-3']);
   });
 
 });
