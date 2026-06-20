@@ -65,6 +65,12 @@ export function getRouteDriverDisplay(
     : getDriverOptionLabel(driver, locale);
 }
 
+export function formatRouteChildDriverName(
+  child: Pick<RouteGroupingSummaryDto["children"][number], "driverName" | "routePlan">,
+): string {
+  return child.driverName ?? "Unassigned";
+}
+
 export function isRouteVisibleToLinkedDriver(
   routePlan: Pick<RoutePlanSummaryDto, "driverId" | "status">,
   drivers: DriverDto[],
@@ -172,6 +178,9 @@ export function RoutesPage({
   const [detail, setDetail] = useState<RoutePlanDetailDto | null>(null);
   const [drivers, setDrivers] = useState<DriverDto[]>([]);
   const [deletingRouteId, setDeletingRouteId] = useState<string | null>(null);
+  const [collapsedRouteGroupIds, setCollapsedRouteGroupIds] = useState<Set<string>>(
+    () => new Set(),
+  );
 
   const refreshRoutes = useCallback(async (): Promise<void> => {
     try {
@@ -270,88 +279,163 @@ export function RoutesPage({
             {t.createRoute}
           </button>
         </div>
-        <table className="ops-table">
-          <thead>
-            <tr>
-              <th>{t.table.name}</th>
-              <th>{t.table.status}</th>
-              <th>{t.table.stops}</th>
-              <th>{t.table.date}</th>
-              <th>{t.table.driver}</th>
-              <th />
+        <RouteListTable
+          deletingRouteId={deletingRouteId}
+          drivers={drivers}
+          locale={locale}
+          navigate={navigate}
+          onDeleteRoute={(routeId) => void deleteRoutePlan(routeId)}
+          onToggleRouteGroup={(routeGroupId) =>
+            setCollapsedRouteGroupIds((current) => {
+              const next = new Set(current);
+              if (next.has(routeGroupId)) next.delete(routeGroupId);
+              else next.add(routeGroupId);
+              return next;
+            })
+          }
+          collapsedRouteGroupIds={collapsedRouteGroupIds}
+          routeGroups={routeGroups}
+          routes={routes}
+        />
+      </article>
+    </section>
+  );
+}
+
+export function RouteListTable({
+  deletingRouteId,
+  drivers,
+  locale,
+  navigate,
+  onDeleteRoute,
+  onToggleRouteGroup,
+  collapsedRouteGroupIds,
+  routeGroups,
+  routes,
+}: {
+  collapsedRouteGroupIds?: ReadonlySet<string>;
+  deletingRouteId: string | null;
+  drivers: DriverDto[];
+  locale?: string | null;
+  navigate(path: string): void;
+  onDeleteRoute(routeId: string): void;
+  onToggleRouteGroup?(routeGroupId: string): void;
+  routeGroups: RouteGroupingSummaryDto[];
+  routes: RoutePlanSummaryDto[];
+}): ReactElement {
+  const t = getRoutesCopy(locale);
+  return (
+    <table className="ops-table">
+      <thead>
+        <tr>
+          <th>{t.table.name}</th>
+          <th>{t.table.status}</th>
+          <th>{t.table.stops}</th>
+          <th>{t.table.date}</th>
+          <th>Split</th>
+          <th />
+        </tr>
+      </thead>
+      <tbody>
+        {routeGroups.map((group) => (
+          <Fragment key={group.id}>
+            <tr className="route-group-row route-group-parent-row">
+              <td>
+                <div className="route-tree-parent">
+                  <button
+                    aria-expanded={!collapsedRouteGroupIds?.has(group.id)}
+                    aria-label="Toggle child routes"
+                    className="route-tree-toggle"
+                    disabled={group.children.length === 0}
+                    onClick={() => onToggleRouteGroup?.(group.id)}
+                    type="button"
+                  >
+                    {collapsedRouteGroupIds?.has(group.id) ? "▸" : "▾"}
+                  </button>
+                  <div>
+                    <span className="route-tree-title">{group.name}</span>
+                  </div>
+                </div>
+              </td>
+              <td><Badge>{group.displayStatus}</Badge></td>
+              <td>{group.totalOrders}</td>
+              <td>{group.planDate}</td>
+              <td>{group.unresolvedOrders === 0 ? "Resolved" : `${group.unresolvedOrders} unresolved`}</td>
+              <td>
+                <button onClick={() => navigate(`/admin/ui/app/route-groups/${encodeURIComponent(group.id)}`)} type="button">Open</button>
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {routeGroups.map((group) => (
-              <Fragment key={group.id}>
-                <tr key={group.id} className="route-group-row">
-                  <td>
-                    <strong>{group.name}</strong>
-                    <div className="muted">Driver split · v{group.currentVersion}</div>
-                  </td>
-                  <td><Badge>{group.displayStatus}</Badge></td>
-                  <td>{group.totalOrders}</td>
-                  <td>{group.planDate}</td>
-                  <td>{group.unresolvedOrders === 0 ? "Resolved" : `${group.unresolvedOrders} unresolved`}</td>
-                  <td>
-                    <button onClick={() => navigate(`/admin/ui/app/route-groups/${encodeURIComponent(group.id)}`)} type="button">Open</button>
-                  </td>
-                </tr>
-                {group.children.map((child) => (
-                  <tr key={`${group.id}:${child.routePlanId ?? child.driverId}:${child.childVersion}`} className="route-group-child-row">
-                    <td>↳ {child.driverName ?? "Unassigned driver"}</td>
-                    <td><Badge>{child.displayStatus}</Badge></td>
-                    <td>{child.stopsCount}</td>
-                    <td>{group.planDate}</td>
-                    <td>{child.notificationStatus}</td>
-                    <td>
-                      {child.routePlanId === null ? null : (
-                        <button onClick={() => navigate(`/admin/ui/app/routes/${encodeURIComponent(child.routePlanId ?? "")}`)} type="button">{t.open}</button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </Fragment>
-            ))}
-            {routes.map((item) => (
-              <tr key={item.id}>
-                <td>
-                  <strong>{item.name}</strong>
-                </td>
-                <td>
-                  <Badge>{formatRoutePlanStatus(item.status, locale)}</Badge>
-                </td>
-                <td>{item.stopsCount}</td>
-                <td>{item.deliveryDate ?? item.planDate}</td>
-                <td>{getRouteDriverDisplay(item, drivers, locale)}</td>
-                <td>
-                  <div className="route-row-actions">
-                    <button
-                      onClick={() =>
-                        navigate(
-                          `/admin/ui/app/routes/${encodeURIComponent(item.id)}`,
-                        )
-                      }
-                      type="button"
-                    >
-                      {t.open}
-                    </button>
-                    <button
-                      className="danger subtle"
-                      disabled={deletingRouteId === item.id}
-                      onClick={() => void deleteRoutePlan(item.id)}
-                      type="button"
-                    >
-                      {deletingRouteId === item.id ? t.deleting : t.delete}
-                    </button>
+            {collapsedRouteGroupIds?.has(group.id) ? null : group.children.length === 0 ? (
+              <tr className="route-group-child-row route-group-child-empty">
+                <td colSpan={6}>
+                  <div className="route-tree-child">
+                    <span className="route-tree-branch" aria-hidden="true">└</span>
+                    <span className="muted">No child routes generated yet</span>
                   </div>
                 </td>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </article>
-    </section>
+            ) : (
+              group.children.map((child) => (
+                <tr key={`${group.id}:${child.routePlanId ?? child.driverId}:${child.childVersion}`} className="route-group-child-row">
+                  <td>
+                    <div className="route-tree-child">
+                      <span className="route-tree-branch" aria-hidden="true">└</span>
+                      <div>
+                        <span className="route-tree-title">{formatRouteChildDriverName(child)}</span>
+                      </div>
+                    </div>
+                  </td>
+                  <td><Badge>{child.displayStatus}</Badge></td>
+                  <td>{child.stopsCount}</td>
+                  <td>{group.planDate}</td>
+                  <td />
+                  <td>
+                    {child.routePlanId === null ? null : (
+                      <button onClick={() => navigate(`/admin/ui/app/routes/${encodeURIComponent(child.routePlanId ?? "")}`)} type="button">{t.open}</button>
+                    )}
+                  </td>
+                </tr>
+              ))
+            )}
+          </Fragment>
+        ))}
+        {routes.map((item) => (
+          <tr key={item.id}>
+            <td>
+              <strong>{item.name}</strong>
+            </td>
+            <td>
+              <Badge>{formatRoutePlanStatus(item.status, locale)}</Badge>
+            </td>
+            <td>{item.stopsCount}</td>
+            <td>{item.deliveryDate ?? item.planDate}</td>
+            <td>{getRouteDriverDisplay(item, drivers, locale)}</td>
+            <td>
+              <div className="route-row-actions">
+                <button
+                  onClick={() =>
+                    navigate(
+                      `/admin/ui/app/routes/${encodeURIComponent(item.id)}`,
+                    )
+                  }
+                  type="button"
+                >
+                  {t.open}
+                </button>
+                <button
+                  className="danger subtle"
+                  disabled={deletingRouteId === item.id}
+                  onClick={() => onDeleteRoute(item.id)}
+                  type="button"
+                >
+                  {deletingRouteId === item.id ? t.deleting : t.delete}
+                </button>
+              </div>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

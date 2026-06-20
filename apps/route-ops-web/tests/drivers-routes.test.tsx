@@ -26,16 +26,19 @@ import {
   getDriverOptionLabel,
   getRouteDriverDisplay,
   getRoutePublishBadge,
+  formatRouteChildDriverName,
   formatRoutePlanStatus,
   hasDepotCoordinates,
   isRouteVisibleToLinkedDriver,
   RouteBuilder,
+  RouteListTable,
   RouteStopOrderCompactList,
 } from '../src/pages/RoutesPage';
 import { getRoutesCopy } from '../src/i18n';
 import type {
   BootstrapPayload,
   DriverDto,
+  RouteGroupingSummaryDto,
   RouteOptimizationJobDto,
   RoutePlanDetailDto,
   RoutePlanSummaryDto,
@@ -173,6 +176,108 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     );
     expect(formatRoutePlanStatus('DRAFT', 'ko-KR')).toBe('초안');
     expect(formatRoutePlanStatus('ASSIGNED', 'ko-KR')).toBe('배정됨');
+  });
+
+  test('routes list renders driver split groups as parent rows with nested child routes', () => {
+    const childRoute = routePlanFixture({
+      id: 'child-route-id',
+      name: 'Route 2026-06-19 — Alex Driver v1',
+      stopsCount: 5,
+    });
+    const routeGroups: RouteGroupingSummaryDto[] = [
+      routeGroupingFixture({
+        children: [
+          {
+            childVersion: 1,
+            displayStatus: 'DRAFT',
+            driverId: 'driver-pending',
+            driverName: 'Alex Driver',
+            notificationStatus: 'NOT_REQUIRED',
+            routePlan: childRoute,
+            routePlanId: childRoute.id,
+            stopsCount: 5,
+          },
+        ],
+      }),
+    ];
+    const html = renderToStaticMarkup(
+      <RouteListTable
+        deletingRouteId={null}
+        drivers={[driverFixture()]}
+        navigate={() => undefined}
+        onDeleteRoute={() => undefined}
+        routeGroups={routeGroups}
+        routes={[]}
+      />,
+    );
+
+    expect(html).toContain('class="route-group-row route-group-parent-row"');
+    expect(html).toContain('Route 2026-06-19');
+    expect(html).toContain('<th>Split</th>');
+    expect(html).not.toContain('<th>Driver</th>');
+    expect(html).toContain('aria-label="Toggle child routes"');
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('class="route-group-child-row"');
+    expect(html).toContain('<span class="route-tree-title">Alex Driver</span>');
+    expect(html).not.toContain('<td>Alex Driver</td>');
+    expect(html.match(/<button type="button">Open<\/button>/g)).toHaveLength(2);
+    expect(html).not.toContain('Parent workbench');
+    expect(html).not.toContain('Child 1');
+    expect(html).not.toContain('Route 2026-06-19 - Alex');
+    expect(html).not.toContain('Route 2026-06-19 — Alex Driver v1');
+    expect(html).not.toContain('NOT_REQUIRED');
+    expect(html).not.toContain('Stop order');
+  });
+
+  test('routes list can collapse a driver split parent without rendering child rows', () => {
+    const childRoute = routePlanFixture({
+      id: 'child-route-id',
+      name: 'Route 2026-06-19 — Alex Driver v1',
+      stopsCount: 5,
+    });
+    const html = renderToStaticMarkup(
+      <RouteListTable
+        collapsedRouteGroupIds={new Set(['group-id'])}
+        deletingRouteId={null}
+        drivers={[driverFixture()]}
+        navigate={() => undefined}
+        onDeleteRoute={() => undefined}
+        routeGroups={[
+          routeGroupingFixture({
+            children: [
+              {
+                childVersion: 1,
+                displayStatus: 'DRAFT',
+                driverId: 'driver-pending',
+                driverName: 'Alex Driver',
+                notificationStatus: 'NOT_REQUIRED',
+                routePlan: childRoute,
+                routePlanId: childRoute.id,
+                stopsCount: 5,
+              },
+            ],
+          }),
+        ]}
+        routes={[]}
+      />,
+    );
+
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('Route 2026-06-19');
+    expect(html).not.toContain('<span class="route-tree-title">Alex Driver</span>');
+    expect(html).not.toContain('class="route-group-child-row"');
+  });
+
+  test('formats child route rows with the full driver name only', () => {
+    expect(
+      formatRouteChildDriverName({
+        driverName: 'Alex Driver',
+        routePlan: routePlanFixture({ name: 'Route 2026-06-21 — Alex Driver v1' }),
+      }),
+    ).toBe('Alex Driver');
+    expect(
+      formatRouteChildDriverName({ driverName: 'Minji Lee', routePlan: null }),
+    ).toBe('Minji Lee');
   });
 
   test('localizes the exposed return-to-store Route Builder option', () => {
@@ -890,6 +995,22 @@ function routePlanFixture(overrides: Partial<RoutePlanSummaryDto> = {}): RoutePl
     status: 'DRAFT',
     stopsCount: 2,
     updatedAt: '2026-05-26T12:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function routeGroupingFixture(overrides: Partial<RouteGroupingSummaryDto> = {}): RouteGroupingSummaryDto {
+  return {
+    children: [],
+    currentVersion: 1,
+    displayStatus: 'READY',
+    id: 'group-id',
+    name: 'Route 2026-06-19',
+    planDate: '2026-06-19',
+    status: 'CURRENT',
+    totalOrders: 5,
+    unresolvedOrders: 0,
+    warningState: [],
     ...overrides,
   };
 }

@@ -1077,6 +1077,7 @@ describe("Orders compact operations table", () => {
     expect(html).not.toContain("route-plan-add-button");
     expect(html).not.toContain("New route add plan");
     expect(html).not.toContain(">Add plan</button>");
+    expect(html).not.toContain("Split by driver");
     expect(html).not.toContain("route-plan-drag-handle");
     expect(html).not.toContain("Drag to reorder");
   });

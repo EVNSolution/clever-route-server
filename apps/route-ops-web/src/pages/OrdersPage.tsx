@@ -2,7 +2,6 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactElement } from "react";
 
 import {
-  createRoute,
   createRouteGrouping,
   getOrderCustomerNoteContext,
   getOrderMetadataDiagnostics,
@@ -409,34 +408,6 @@ export function OrdersPage({
     }
   };
 
-  const create = async (): Promise<void> => {
-    try {
-      const routeDraftBlockers = getRouteDraftCreateReasons(
-        plannedOrders,
-        locale,
-      );
-      if (routeDraftBlockers.length > 0)
-        throw new Error(routeDraftBlockers.join(" "));
-      const createOrderIds = plannedOrders.map((order) => order.orderId);
-      const planDate =
-        getRouteDraftSingleDeliveryDate(plannedOrders) ??
-        (routeDate || today());
-      const result = await createRoute({
-        csrfToken: bootstrap.csrfToken,
-        depotAddress: settings?.defaultDepotAddress ?? null,
-        depotLatitude: settings?.defaultDepotLatitude ?? null,
-        depotLongitude: settings?.defaultDepotLongitude ?? null,
-        orderIds: createOrderIds,
-        planDate,
-        routeName,
-        scope: filters.scope,
-      });
-      navigate(buildRouteDetailPath(result.routePlan.id));
-    } catch (error) {
-      setError(readErrorMessage(error));
-    }
-  };
-
   const loadDiagnostics = async (orderId: string): Promise<void> => {
     try {
       const payload = await getOrderMetadataDiagnostics(orderId);
@@ -643,8 +614,7 @@ export function OrdersPage({
         <RoutePlanPanel
           createReasons={routeCreateReasons}
           onClear={clearPlan}
-          onCreate={() => void create()}
-          onCreateGrouping={() => void createGrouping()}
+          onCreate={() => void createGrouping()}
           planDateLabel={formatRouteDraftDateLabel(plannedOrders, locale)}
           planTypeLabel={formatRouteDraftTypeLabel(plannedOrders, locale)}
           routeName={routeName}
@@ -695,7 +665,6 @@ export function RoutePlanPanel(input: {
   locale?: string | null;
   onClear(): void;
   onCreate(): void;
-  onCreateGrouping?(): void;
   planDateLabel: string;
   planTypeLabel: string;
   routeName: string;
@@ -746,14 +715,6 @@ export function RoutePlanPanel(input: {
           type="button"
         >
           {t.createRoute}
-        </button>
-        <button
-          className="secondary"
-          disabled={!canCreate}
-          onClick={input.onCreateGrouping ?? input.onCreate}
-          type="button"
-        >
-          Split by driver
         </button>
         <button
           disabled={input.selectedOrders.length === 0}
