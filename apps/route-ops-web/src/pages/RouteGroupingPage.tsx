@@ -5,6 +5,7 @@ import {
   generateRouteGroupingChildRoutes,
   getDrivers,
   getRouteGrouping,
+  getSettings,
   resolveRouteGroupingAssignments,
   saveRouteGroupingPolygons,
 } from "../api";
@@ -12,7 +13,8 @@ import { Badge } from "../components/primitives";
 import { TabLayout } from "../components/TabLayout";
 import { RouteOpsMap } from "../components/maps/RouteOpsMap";
 import { appendPolygonVertex, closePolygonDraft, polygonDraftToGeoJson } from "../routeGrouping";
-import type { BootstrapPayload, CanonicalOrderDto, DriverDto, RouteGroupingDetailDto } from "../types";
+import { storeSettingsToDepotPoint } from "../state";
+import type { BootstrapPayload, CanonicalOrderDto, DriverDto, RouteGroupingDetailDto, StoreSettingsDto } from "../types";
 import { readErrorMessage } from "../utils/format";
 
 type PolygonDraft = { closed: boolean; vertices: Array<{ latitude: number; longitude: number }> };
@@ -30,6 +32,7 @@ export function RouteGroupingPage({
 }): ReactElement {
   const [grouping, setGrouping] = useState<RouteGroupingDetailDto | null>(null);
   const [drivers, setDrivers] = useState<DriverDto[]>([]);
+  const [settings, setSettings] = useState<StoreSettingsDto | null>(null);
   const [activeDriverId, setActiveDriverId] = useState("");
   const [draft, setDraft] = useState<PolygonDraft>({ closed: false, vertices: [] });
   const [busy, setBusy] = useState(false);
@@ -44,11 +47,18 @@ export function RouteGroupingPage({
     getDrivers()
       .then((payload) => setDrivers(payload.drivers))
       .catch((error: unknown) => setError(readErrorMessage(error)));
+    getSettings()
+      .then((payload) => setSettings(payload.settings))
+      .catch((error: unknown) => setError(readErrorMessage(error)));
   }, [routeGroupId, setError]);
 
   const mapOrders = useMemo(
     () => grouping?.assignments.map(assignmentToOrder) ?? [],
     [grouping?.assignments],
+  );
+  const depotPoint = useMemo(
+    () => storeSettingsToDepotPoint(settings, bootstrap.locale),
+    [bootstrap.locale, settings],
   );
   const unresolved = grouping?.assignments.filter((assignment) => assignment.assignmentStatus !== "ASSIGNED") ?? [];
 
@@ -129,6 +139,7 @@ export function RouteGroupingPage({
       primary={
         <RouteOpsMap
           bootstrap={bootstrap}
+          depot={depotPoint}
           fitOrdersToBounds
           orders={mapOrders}
           polygonDraft={draft}
