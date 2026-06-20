@@ -615,6 +615,7 @@ function groupAssignmentsByDriver(assignments: LoadedAssignment[]): Map<string, 
 }
 
 function validateReadyForChildGeneration(group: LoadedGrouping, confirmRisk?: boolean): void {
+  assertUniquePolygonDrivers(group.polygons);
   const unresolved = group.orders.filter((order) => order.assignmentStatus !== 'ASSIGNED' || order.assignedDriverId === null);
   if (unresolved.length > 0) throw new RouteGroupingUnresolvedAssignmentsError(unresolved.length);
   const currentChildRoutePlanIds = new Set(group.childVersions.filter((child) => child.status === 'CURRENT' && child.routePlanId !== null).map((child) => child.routePlanId));
@@ -1020,7 +1021,7 @@ function deriveWarnings(group: LoadedGrouping): RouteGroupingWarningDto[] {
   return warnings;
 }
 
-function assertUniquePolygonDrivers(polygons: SaveRouteGroupingPolygonsInput['polygons']): void {
+function assertUniquePolygonDrivers(polygons: Array<{ driverId?: string | null }>): void {
   const seenDriverIds = new Set<string>();
   for (const polygon of polygons) {
     const driverId = polygon.driverId?.trim();
