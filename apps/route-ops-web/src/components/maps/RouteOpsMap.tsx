@@ -61,6 +61,7 @@ type RouteOpsMapProps = {
   orderMarkerStates?: ReadonlyMap<string, OrderMapMarkerState>;
   orders?: CanonicalOrderDto[];
   polygonDraft?: { closed: boolean; vertices: Array<{ latitude: number; longitude: number }> };
+  polygonDraftColor?: string;
   polygonMode?: boolean;
   polygons?: RouteGroupingPolygonDto[];
   plannedOrderIds?: ReadonlySet<string>;
@@ -69,7 +70,7 @@ type RouteOpsMapProps = {
   title?: string;
 };
 
-export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops, headerAction, fitOrdersToBounds = false, statusContent, onExitRouteMode, onMapClickCoordinate, onPolygonFinish, onPolygonVertex, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), polygonDraft, polygonMode = false, polygons = [], selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
+export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops, headerAction, fitOrdersToBounds = false, statusContent, onExitRouteMode, onMapClickCoordinate, onPolygonFinish, onPolygonVertex, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), polygonDraft, polygonDraftColor = "#111827", polygonMode = false, polygons = [], selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
   const locale = resolveLocale(bootstrap.locale);
   const t = getMapCopy(locale);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -109,7 +110,7 @@ export function RouteOpsMap({ bootstrap, depot = null, detail = null, draftStops
   const ordersGeojson = useMemo(() => buildOrdersMapFeatureCollection(orders, orderMarkerStates ?? plannedOrderIds), [orderMarkerStates, orders, plannedOrderIds]);
   const routeDropoffGeojson = useMemo(() => (detail === null ? EMPTY_ROUTE_DROPOFF_COLLECTION : buildRouteDropoffPointFeatureCollection(dropoffPoints)), [detail, dropoffPoints]);
   const routeStopGeojson = useMemo(() => (detail === null ? EMPTY_ROUTE_STOP_COLLECTION : buildRouteStopMarkerFeatureCollection(points, selectedRouteStopId)), [detail, points, selectedRouteStopId]);
-  const polygonGeojson = useMemo(() => buildPolygonFeatureCollection(polygons, polygonDraft), [polygonDraft, polygons]);
+  const polygonGeojson = useMemo(() => buildPolygonFeatureCollection(polygons, polygonDraft, polygonDraftColor), [polygonDraft, polygonDraftColor, polygons]);
 
   useEffect(() => {
     onMapClickCoordinateRef.current = onMapClickCoordinate;
@@ -422,7 +423,7 @@ export function resolveMapHomePoint(detail: RoutePlanDetailDto | null, depot: Ro
   return points.find((point) => point.kind === 'depot') ?? points[0] ?? null;
 }
 
-function buildPolygonFeatureCollection(polygons: RouteGroupingPolygonDto[], draft: { closed: boolean; vertices: Array<{ latitude: number; longitude: number }> } | undefined): GeoJSON.FeatureCollection {
+function buildPolygonFeatureCollection(polygons: RouteGroupingPolygonDto[], draft: { closed: boolean; vertices: Array<{ latitude: number; longitude: number }> } | undefined, draftColor: string): GeoJSON.FeatureCollection {
   const features = polygons.map((polygon) => ({
     geometry: polygon.geometry,
     properties: { color: polygon.color ?? '#2563eb', id: polygon.id, label: polygon.label },
@@ -434,7 +435,7 @@ function buildPolygonFeatureCollection(polygons: RouteGroupingPolygonDto[], draf
     if (draft.closed && first !== undefined) coordinates.push(first);
     features.push({
       geometry: { coordinates: draft.closed ? [coordinates] : coordinates, type: draft.closed ? 'Polygon' : 'LineString' },
-      properties: { color: '#111827', id: 'draft', label: 'Draft' },
+      properties: { color: draftColor, id: 'draft', label: 'Draft' },
       type: 'Feature'
     });
   }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { ReactElement } from "react";
+import type { CSSProperties, ReactElement } from "react";
 
 import {
   generateRouteGroupingChildRoutes,
@@ -12,7 +12,7 @@ import {
 import { Badge } from "../components/primitives";
 import { TabLayout } from "../components/TabLayout";
 import { RouteOpsMap } from "../components/maps/RouteOpsMap";
-import { appendPolygonVertex, closePolygonDraft, polygonDraftToGeoJson } from "../routeGrouping";
+import { ROUTE_GROUPING_POLYGON_COLORS, appendPolygonVertex, closePolygonDraft, polygonDraftToGeoJson, removeLastPolygonVertex, routeGroupingPolygonColor } from "../routeGrouping";
 import { storeSettingsToDepotPoint } from "../state";
 import type { BootstrapPayload, CanonicalOrderDto, DriverDto, RouteGroupingDetailDto, StoreSettingsDto } from "../types";
 import { readErrorMessage } from "../utils/format";
@@ -35,6 +35,7 @@ export function RouteGroupingPage({
   const [settings, setSettings] = useState<StoreSettingsDto | null>(null);
   const [activeDriverId, setActiveDriverId] = useState("");
   const [draft, setDraft] = useState<PolygonDraft>({ closed: false, vertices: [] });
+  const [draftColor, setDraftColor] = useState(routeGroupingPolygonColor(0));
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -61,6 +62,12 @@ export function RouteGroupingPage({
     [bootstrap.locale, settings],
   );
   const unresolved = grouping?.assignments.filter((assignment) => assignment.assignmentStatus !== "ASSIGNED") ?? [];
+  const draftReady = draft.closed && draft.vertices.length >= 3;
+
+  useEffect(() => {
+    if (grouping === null || draft.vertices.length > 0) return;
+    setDraftColor(routeGroupingPolygonColor(grouping.polygons.length));
+  }, [draft.vertices.length, grouping]);
 
   async function saveDraftPolygon(): Promise<void> {
     const geometry = polygonDraftToGeoJson(draft);
@@ -79,7 +86,7 @@ export function RouteGroupingPage({
           })),
           {
             closed: true,
-            color: polygonColor(grouping.polygons.length),
+            color: draftColor,
             driverId: activeDriverId === "" ? null : activeDriverId,
             geometry,
             label: driverLabel(activeDriverId, drivers),
@@ -89,6 +96,7 @@ export function RouteGroupingPage({
       });
       setGrouping(payload.routeGroup);
       setDraft({ closed: false, vertices: [] });
+      setDraftColor(routeGroupingPolygonColor(payload.routeGroup.polygons.length));
       setError(null);
     } catch (error) {
       setError(readErrorMessage(error));
@@ -136,6 +144,7 @@ export function RouteGroupingPage({
   return (
     <TabLayout
       title={grouping?.name ?? "Driver split"}
+      primaryExpanded
       primary={
         <RouteOpsMap
           bootstrap={bootstrap}
@@ -143,44 +152,69 @@ export function RouteGroupingPage({
           fitOrdersToBounds
           orders={mapOrders}
           polygonDraft={draft}
+          polygonDraftColor={draftColor}
           polygonMode
           polygons={grouping?.polygons ?? []}
           onPolygonFinish={() => setDraft((current) => closePolygonDraft(current))}
           onPolygonVertex={(coordinate) => setDraft((current) => appendPolygonVertex(current, coordinate))}
-          subtitle="Click to add vertices. Double-click to close the polygon."
+          subtitle="Draw driver areas directly on the map. Click to add points, double-click or Close polygon to finish."
           title={grouping?.name ?? "Driver split"}
         />
       }
-      secondary={
-        <aside className="panel side-panel">
-          <div className="panel-heading compact-heading">
-            <div>
-              <span className="eyebrow">ROUTE GROUP</span>
-              <h2>{grouping?.displayStatus ?? "Loading"}</h2>
-            </div>
-            <Badge>{grouping?.currentVersion ?? 1}</Badge>
-          </div>
-          <label>
-            Driver polygon
-            <select value={activeDriverId} onChange={(event) => setActiveDriverId(event.target.value)}>
-              <option value="">Unassigned</option>
-              {drivers.map((driver) => (
-                <option key={driver.id} value={driver.id}>{driver.displayName}</option>
-              ))}
-            </select>
-          </label>
-          <div className="button-row">
-            <button disabled={!draft.closed || busy} onClick={() => void saveDraftPolygon()} type="button">Save polygon</button>
-            <button disabled={draft.vertices.length === 0 || busy} onClick={() => setDraft({ closed: false, vertices: [] })} type="button">Clear draft</button>
-          </div>
-          <div className="button-row">
-            <button className="primary" disabled={(grouping?.unresolvedOrders ?? 1) > 0 || busy} onClick={() => void generateChildren()} type="button">Generate child routes</button>
-          </div>
-          <p>{grouping?.totalOrders ?? 0} orders · {grouping?.unresolvedOrders ?? 0} unresolved</p>
-        </aside>
-      }
+      secondary={null}
       lower={
-        <article className="panel">
+        <div className="route-group-lower-stack">
+          <article className="panel route-group-split-editor">
+            <div className="panel-heading">
+              <div>
+                <span className="eyebrow">SPLIT EDIT</span>
+                <h2>Driver areas</h2>
+                <p>{grouping?.totalOrders ?? 0} orders · {grouping?.unresolvedOrders ?? 0} unresolved</p>
+              </div>
+              <Badge>{grouping?.displayStatus ?? "Loading"}</Badge>
+            </div>
+            <div className="route-group-editor-grid">
+              <label>
+                Driver
+                <select value={activeDriverId} onChange={(event) => setActiveDriverId(event.target.value)}>
+                  <option value="">Unassigned</option>
+                  {drivers.map((driver) => (
+                    <option key={driver.id} value={driver.id}>{driver.displayName}</option>
+                  ))}
+                </select>
+              </label>
+              <fieldset className="route-group-color-fieldset">
+                <legend>Area color</legend>
+                <div className="route-group-color-palette" role="radiogroup" aria-label="Area color">
+                  {ROUTE_GROUPING_POLYGON_COLORS.map((color) => (
+                    <button
+                      aria-checked={draftColor === color}
+                      aria-label={`Use color ${color}`}
+                      className={draftColor === color ? "route-group-color-chip selected" : "route-group-color-chip"}
+                      key={color}
+                      onClick={() => setDraftColor(color)}
+                      role="radio"
+                      style={{ "--route-group-color": color } as CSSProperties}
+                      type="button"
+                    />
+                  ))}
+                </div>
+              </fieldset>
+              <div className="route-group-draft-status">
+                <span>Points</span>
+                <strong>{draft.vertices.length}</strong>
+                <span>{draft.closed ? "Closed" : draft.vertices.length >= 3 ? "Ready to close" : "Add 3+ points"}</span>
+              </div>
+            </div>
+            <div className="button-row route-group-editor-actions">
+              <button disabled={draft.vertices.length === 0 || busy} onClick={() => setDraft((current) => removeLastPolygonVertex(current))} type="button">Undo point</button>
+              <button disabled={draft.vertices.length < 3 || draft.closed || busy} onClick={() => setDraft((current) => closePolygonDraft(current))} type="button">Close polygon</button>
+              <button disabled={!draftReady || busy} onClick={() => void saveDraftPolygon()} type="button">Save polygon</button>
+              <button disabled={draft.vertices.length === 0 || busy} onClick={() => setDraft({ closed: false, vertices: [] })} type="button">Clear draft</button>
+              <button className="primary" disabled={(grouping?.unresolvedOrders ?? 1) > 0 || busy} onClick={() => void generateChildren()} type="button">Generate child routes</button>
+            </div>
+          </article>
+          <article className="panel">
           <div className="panel-heading">
             <div><span className="eyebrow">ASSIGNMENTS</span><h2>Manual resolution</h2></div>
             <select value="" onChange={(event) => void resolveAllToDriver(event.target.value)} disabled={unresolved.length === 0 || busy}>
@@ -208,7 +242,8 @@ export function RouteGroupingPage({
               ))}
             </tbody>
           </table>
-        </article>
+          </article>
+        </div>
       }
     />
   );
@@ -250,8 +285,4 @@ function assignmentToOrder(assignment: RouteGroupingDetailDto["assignments"][num
 function driverLabel(driverId: string, drivers: DriverDto[]): string {
   if (driverId === "") return "Unassigned";
   return drivers.find((driver) => driver.id === driverId)?.displayName ?? driverId;
-}
-
-function polygonColor(index: number): string {
-  return ["#2563eb", "#16a34a", "#ea580c", "#9333ea"][index % 4] ?? "#2563eb";
 }

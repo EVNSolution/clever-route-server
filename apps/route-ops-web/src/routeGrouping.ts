@@ -1,6 +1,21 @@
 export type Coordinate = { latitude: number; longitude: number };
 export type PolygonDraft = { closed: boolean; vertices: Coordinate[] };
 
+export const ROUTE_GROUPING_POLYGON_COLORS = [
+  "#2563eb",
+  "#16a34a",
+  "#ea580c",
+  "#9333ea",
+  "#dc2626",
+  "#0891b2",
+  "#ca8a04",
+  "#be185d",
+] as const;
+
+export function routeGroupingPolygonColor(index: number): string {
+  return ROUTE_GROUPING_POLYGON_COLORS[index % ROUTE_GROUPING_POLYGON_COLORS.length] ?? ROUTE_GROUPING_POLYGON_COLORS[0];
+}
+
 export function appendPolygonVertex(draft: PolygonDraft, vertex: Coordinate): PolygonDraft {
   if (draft.closed) return draft;
   return { ...draft, vertices: [...draft.vertices, vertex] };
@@ -8,6 +23,11 @@ export function appendPolygonVertex(draft: PolygonDraft, vertex: Coordinate): Po
 
 export function closePolygonDraft(draft: PolygonDraft): PolygonDraft {
   return { ...draft, closed: draft.vertices.length >= 3 };
+}
+
+export function removeLastPolygonVertex(draft: PolygonDraft): PolygonDraft {
+  if (draft.vertices.length === 0) return draft;
+  return { closed: false, vertices: draft.vertices.slice(0, -1) };
 }
 
 export function polygonDraftToGeoJson(draft: PolygonDraft): { type: "Polygon"; coordinates: number[][][] } | null {
