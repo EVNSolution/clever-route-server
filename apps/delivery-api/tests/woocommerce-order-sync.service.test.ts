@@ -580,8 +580,8 @@ describe('WooCommerceOrderSyncService', () => {
 
     await service.syncOrders({ orders: [wooOrder], reason: 'webhook' });
 
-    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(1, expect.objectContaining({ shape: 'freeform_postal_only' }));
-    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(2, expect.objectContaining({ shape: 'structured_postal_only' }));
+    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(1, expect.objectContaining({ shape: 'structured_postal_only' }));
+    expect(provider.geocodeAddress).toHaveBeenNthCalledWith(2, expect.objectContaining({ shape: 'freeform_postal_only' }));
     expect(provider.geocodeAddress).toHaveBeenNthCalledWith(5, expect.objectContaining({ shape: 'freeform_without_unit' }));
     const upsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
     expect(upsert?.synced.deliveryStop).toEqual(
