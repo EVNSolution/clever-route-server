@@ -1,3 +1,4 @@
+import type { OrderItemDto } from '../order-items/order-items.js';
 import type { RoutePlanSummary } from '../route-plans/route-plan.types.js';
 
 export type RouteGroupingDisplayStatus = 'DRAFT' | 'NEEDS_ASSIGNMENT' | 'READY' | 'PUBLISHED' | 'CHANGED' | 'CANCELLED';
@@ -12,6 +13,7 @@ export type RouteGroupingAssignmentDto = {
   deliveryStopId: string;
   orderId: string;
   orderName: string;
+  items: OrderItemDto[];
   sourceOrderId: string;
   sourceSequence: number;
 };

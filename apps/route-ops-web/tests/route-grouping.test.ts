@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { ROUTE_GROUPING_POLYGON_COLORS, appendPolygonVertex, closePolygonDraft, polygonDraftToGeoJson, readPolygonVertices, removeLastPolygonVertex, routeGroupingPolygonColor } from '../src/routeGrouping';
+import { appendPolygonVertex, closePolygonDraft, polygonDraftToGeoJson, readPolygonVertices, removeLastPolygonVertex } from '../src/routeGrouping';
 
 describe('route grouping polygon draft helpers', () => {
   test('click appends vertices and double-click closes only valid polygons', () => {
@@ -40,11 +40,5 @@ describe('route grouping polygon draft helpers', () => {
         { latitude: 44, longitude: -79 },
       ],
     });
-  });
-
-  test('uses a stable route-group color palette for generated polygon splits', () => {
-    expect(ROUTE_GROUPING_POLYGON_COLORS).toHaveLength(8);
-    expect(routeGroupingPolygonColor(0)).toBe(ROUTE_GROUPING_POLYGON_COLORS[0]);
-    expect(routeGroupingPolygonColor(ROUTE_GROUPING_POLYGON_COLORS.length)).toBe(ROUTE_GROUPING_POLYGON_COLORS[0]);
   });
 });

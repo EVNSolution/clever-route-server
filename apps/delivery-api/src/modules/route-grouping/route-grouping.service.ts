@@ -30,10 +30,26 @@ import {
   type SaveRouteGroupingPolygonsInput
 } from './route-grouping.types.js';
 import { hashPushToken } from './driver-push-token.service.js';
+import { toOrderItemDto } from '../order-items/order-items.js';
 
 const OPTIMIZER_VERSION = 'route-grouping-projection-v1';
 const ROUTE_GROUPING_GEOMETRY_REFRESH_CONCURRENCY = 2;
 export const DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS = 500_000;
+
+const ROUTE_GROUPING_POLYGON_COLORS = [
+  '#2563eb',
+  '#16a34a',
+  '#ea580c',
+  '#9333ea',
+  '#dc2626',
+  '#0891b2',
+  '#ca8a04',
+  '#be185d'
+] as const;
+
+function routeGroupingPolygonColor(index: number): string {
+  return ROUTE_GROUPING_POLYGON_COLORS[index % ROUTE_GROUPING_POLYGON_COLORS.length] ?? ROUTE_GROUPING_POLYGON_COLORS[0];
+}
 
 type RouteGroupingPrismaClient = Pick<
   PrismaClient,
@@ -191,7 +207,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       await tx.routeGroupingPolygon.createMany({
         data: input.polygons.map((polygon, index) => ({
           closed: polygon.closed,
-          color: polygon.color ?? null,
+          color: polygon.color ?? routeGroupingPolygonColor(index),
           drawOrder: index + 1,
           driverId: polygon.driverId ?? null,
           geometryJson: polygon.geometry as Prisma.InputJsonValue,
@@ -479,7 +495,7 @@ function groupingInclude() {
         deliveryStop: { include: { order: true, routePlanStops: { select: { routePlanId: true } } } },
         assignedDriver: true,
         assignedPolygon: true,
-        order: { include: { customerRouteNotifications: true } }
+        order: { include: { customerRouteNotifications: true, orderItems: { orderBy: { lineIndex: 'asc' as const } } } }
       },
       orderBy: { sourceSequence: 'asc' as const }
     },
@@ -926,6 +942,7 @@ function toAssignmentDto(order: LoadedAssignment): RouteGroupingAssignmentDto {
     deliveryStopId: order.deliveryStopId,
     orderId: order.orderId,
     orderName: order.order.name,
+    items: order.order.orderItems.map((item) => toOrderItemDto(item)),
     sourceOrderId: order.order.shopifyOrderGid,
     sourceSequence: order.sourceSequence
   };

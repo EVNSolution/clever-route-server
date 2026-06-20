@@ -274,6 +274,7 @@ export type RouteGroupingAssignmentDto = {
   deliveryStopId: string;
   orderId: string;
   orderName: string;
+  items: OrderItemDto[];
   sourceOrderId: string;
   sourceSequence: number;
 };
