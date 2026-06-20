@@ -1,3 +1,4 @@
+import { Undo2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactElement, ReactNode } from "react";
 
@@ -73,7 +74,8 @@ export function RouteGroupingPage({
   const draftColor = editingPolygon?.color ?? "#2563eb";
   const mapHeaderAction = !isEditing ? <button onClick={startEdit} type="button">Edit</button> : undefined;
   const mapEditOverlay = isEditing ? renderMapEditOverlay() : undefined;
-  const groupedOrderMarkerStates = useMemo(() => buildGroupedOrderMarkerStates(grouping), [grouping]);
+  const visiblePolygons = useMemo(() => buildVisiblePolygons(grouping, isEditing ? editingPolygonId : undefined), [editingPolygonId, grouping, isEditing]);
+  const groupedOrderMarkerStates = useMemo(() => buildGroupedOrderMarkerStates(grouping, isEditing ? editingPolygonId : undefined), [editingPolygonId, grouping, isEditing]);
 
   async function saveDraftPolygon(): Promise<void> {
     const geometry = polygonDraftToGeoJson(draft);
@@ -86,10 +88,15 @@ export function RouteGroupingPage({
       id: editingPolygonId,
       label: driverLabel(activeDriverId, drivers),
     };
+    const basePolygons = releaseDriverFromOtherRouteGroupingPolygons(
+      grouping.polygons.map(toRouteGroupingPolygonPayload),
+      editingPolygonId,
+      nextPolygon.driverId,
+    );
     const polygons =
       editingPolygonId === null
-        ? [...grouping.polygons.map(toRouteGroupingPolygonPayload), nextPolygon]
-        : grouping.polygons.map((polygon) => polygon.id === editingPolygonId ? nextPolygon : toRouteGroupingPolygonPayload(polygon));
+        ? [...basePolygons, nextPolygon]
+        : basePolygons.map((polygon) => polygon.id === editingPolygonId ? nextPolygon : polygon);
     setBusy(true);
     try {
       const payload = await saveRouteGroupingPolygons({
@@ -248,16 +255,9 @@ export function RouteGroupingPage({
         </label>
         <div className="route-group-map-icon-tools">
           {editingPolygonId === null ? (
-            <>
-              <button aria-label="Undo last point" className="route-group-map-tool-button" disabled={draft.vertices.length === 0 || busy} onClick={() => setDraft((current) => removeLastPolygonVertex(current))} title="Undo last point" type="button">
-                <span aria-hidden="true">↶</span>
-                <span>Undo</span>
-              </button>
-              <button aria-label="Finish polygon" className="route-group-map-tool-button" disabled={draft.vertices.length < 3 || draft.closed || busy} onClick={() => setDraft((current) => closePolygonDraft(current))} title="Finish polygon" type="button">
-                <span aria-hidden="true">□</span>
-                <span>Finish</span>
-              </button>
-            </>
+            <button aria-label="Undo last point" className="route-group-map-tool-button route-group-map-tool-button--icon" disabled={draft.vertices.length === 0 || busy} onClick={() => setDraft((current) => removeLastPolygonVertex(current))} title="Undo last point" type="button">
+              <Undo2 aria-hidden="true" className="route-group-tool-icon" strokeWidth={2.4} />
+            </button>
           ) : null}
           <button aria-label="Save polygon" className="route-group-map-tool-button route-group-map-tool-button--primary" disabled={!draftReady || busy} onClick={() => void saveDraftPolygon()} title="Save polygon" type="button">
             <span aria-hidden="true">✓</span>
@@ -274,7 +274,7 @@ export function RouteGroupingPage({
             </button>
           )}
         </div>
-        <span className="route-group-map-edit-help">{editingPolygonId === null ? "Click points · double-click to finish" : "Drag corner points · double-click a line to add a point"}</span>
+        <span className="route-group-map-edit-help">{editingPolygonId === null ? "Double-click to finish" : "Drag points · double-click line"}</span>
       </div>
     );
   }
@@ -295,8 +295,9 @@ export function RouteGroupingPage({
           orders={mapOrders}
           polygonDraft={isEditing ? draft : undefined}
           polygonDraftColor={draftColor}
+          polygonFocusKey={isEditing ? editingPolygonId ?? "new" : null}
           polygonMode={isEditing}
-          polygons={isEditing ? grouping?.polygons.filter((polygon) => polygon.id !== editingPolygonId) ?? [] : []}
+          polygons={visiblePolygons}
           onPolygonFinish={() => setDraft((current) => closePolygonDraft(current))}
           onPolygonVertex={(coordinate) => setDraft((current) => appendPolygonVertex(current, coordinate))}
           onPolygonVertexInsert={(index, coordinate) => setDraft((current) => insertPolygonVertex(current, index, coordinate))}
@@ -409,7 +410,7 @@ function RouteGroupingAreasCard({
                   title="Edit polygon"
                   type="button"
                 >
-                  🛠
+                  <span aria-hidden="true" className="route-group-area-edit-glyph" />
                 </button>
               </span>
             </div>
@@ -419,6 +420,7 @@ function RouteGroupingAreasCard({
     </article>
   );
 }
+
 
 function toRouteGroupingPolygonPayload(polygon: RouteGroupingPolygonDto): {
   closed: boolean;
@@ -438,6 +440,19 @@ function toRouteGroupingPolygonPayload(polygon: RouteGroupingPolygonDto): {
   };
 }
 
+
+
+export function releaseDriverFromOtherRouteGroupingPolygons<T extends { driverId: string | null; id: string; label: string }>(
+  polygons: T[],
+  targetPolygonId: string | null,
+  driverId: string | null,
+): T[] {
+  if (driverId === null) return polygons;
+  return polygons.map((polygon) => {
+    if (polygon.id === targetPolygonId || polygon.driverId !== driverId) return polygon;
+    return { ...polygon, driverId: null, label: "Unassigned" };
+  });
+}
 
 export function getRouteGroupingAssignableDrivers(
   polygon: Pick<RouteGroupingPolygonDto, "driverId" | "id">,
@@ -498,7 +513,15 @@ function RouteGroupingOrderItemsCard({ assignments }: { assignments: RouteGroupi
   );
 }
 
-function buildGroupedOrderMarkerStates(grouping: RouteGroupingDetailDto | null): ReadonlyMap<string, { markerColor?: string; markerOpacity?: number; pinKind?: "candidate" }> {
+function buildVisiblePolygons(grouping: RouteGroupingDetailDto | null, editingPolygonId: string | null | undefined): RouteGroupingPolygonDto[] {
+  if (grouping === null) return [];
+  if (editingPolygonId === undefined) return [];
+  return grouping.polygons
+    .filter((polygon) => polygon.id !== editingPolygonId)
+    .map((polygon) => ({ ...polygon, color: "#94a3b8" }));
+}
+
+function buildGroupedOrderMarkerStates(grouping: RouteGroupingDetailDto | null, editingPolygonId?: string | null): ReadonlyMap<string, { markerColor?: string; markerOpacity?: number; pinKind?: "candidate" }> {
   if (grouping === null) return new Map();
   const polygonColorById = new Map(grouping.polygons.map((polygon) => [polygon.id, polygon.color ?? "#2563eb"]));
   return new Map(
@@ -506,7 +529,10 @@ function buildGroupedOrderMarkerStates(grouping: RouteGroupingDetailDto | null):
       if (assignment.assignedPolygonId === null) return [];
       const color = polygonColorById.get(assignment.assignedPolygonId);
       if (color === undefined) return [];
-      return [[assignment.orderId, { markerColor: color, markerOpacity: 1, pinKind: "candidate" as const }]];
+      const markerColor = editingPolygonId === undefined
+        ? color
+        : assignment.assignedPolygonId === editingPolygonId ? color : "#94a3b8";
+      return [[assignment.orderId, { markerColor, markerOpacity: 1, pinKind: "candidate" as const }]];
     }),
   );
 }

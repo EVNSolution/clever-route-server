@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { appendPolygonVertex, closePolygonDraft, insertPolygonVertex, movePolygonVertex, polygonDraftToGeoJson, readEditablePolygonVertices, readPolygonVertices, removeLastPolygonVertex } from '../src/routeGrouping';
-import { getRouteGroupingAssignableDrivers, getRouteGroupingDuplicateDriverPolygonIds } from '../src/pages/RouteGroupingPage';
+import { getRouteGroupingAssignableDrivers, getRouteGroupingDuplicateDriverPolygonIds, releaseDriverFromOtherRouteGroupingPolygons } from '../src/pages/RouteGroupingPage';
 import type { DriverDto } from '../src/types';
 
 describe('route grouping polygon draft helpers', () => {
@@ -90,6 +90,21 @@ describe('route grouping polygon draft helpers', () => {
         { id: 'polygon-3', driverId: 'driver-1' },
       ])),
     ).toEqual(['polygon-3']);
+  });
+
+
+  test('moves a selected driver away from other polygons before saving an edited polygon', () => {
+    const polygons = [
+      { closed: true, color: '#2563eb', driverId: 'driver-1', geometry: {}, id: 'polygon-1', label: 'Alex' },
+      { closed: true, color: '#16a34a', driverId: 'driver-1', geometry: {}, id: 'polygon-2', label: 'Alex' },
+      { closed: true, color: '#f97316', driverId: 'driver-2', geometry: {}, id: 'polygon-3', label: 'Minji' },
+    ];
+
+    expect(releaseDriverFromOtherRouteGroupingPolygons(polygons, 'polygon-2', 'driver-1')).toEqual([
+      { closed: true, color: '#2563eb', driverId: null, geometry: {}, id: 'polygon-1', label: 'Unassigned' },
+      { closed: true, color: '#16a34a', driverId: 'driver-1', geometry: {}, id: 'polygon-2', label: 'Alex' },
+      { closed: true, color: '#f97316', driverId: 'driver-2', geometry: {}, id: 'polygon-3', label: 'Minji' },
+    ]);
   });
 
 });

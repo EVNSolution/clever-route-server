@@ -13,6 +13,7 @@
   "dependencies": {
     "@vitejs/plugin-react": "^5.1.2",
     "libphonenumber-js": "1.13.1",
+    "lucide-react": "^1.21.0",
     "maplibre-gl": "^5.24.0",
     "pmtiles": "^4.4.1",
     "react": "^19.2.1",

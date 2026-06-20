@@ -309,24 +309,26 @@ export function RoutesPage({
             {t.createRoute}
           </button>
         </div>
-        <RouteListTable
-          deletingRouteId={deletingRouteId}
-          drivers={drivers}
-          locale={locale}
-          navigate={navigate}
-          onDeleteRoute={(routeId) => void deleteRoutePlan(routeId)}
-          onToggleRouteGroup={(routeGroupId) =>
-            setCollapsedRouteGroupIds((current) => {
-              const next = new Set(current);
-              if (next.has(routeGroupId)) next.delete(routeGroupId);
-              else next.add(routeGroupId);
-              return next;
-            })
-          }
-          collapsedRouteGroupIds={collapsedRouteGroupIds}
-          routeGroups={routeGroups}
-          routes={routes}
-        />
+        <div className="table-scroll route-list-table-scroll">
+          <RouteListTable
+            deletingRouteId={deletingRouteId}
+            drivers={drivers}
+            locale={locale}
+            navigate={navigate}
+            onDeleteRoute={(routeId) => void deleteRoutePlan(routeId)}
+            onToggleRouteGroup={(routeGroupId) =>
+              setCollapsedRouteGroupIds((current) => {
+                const next = new Set(current);
+                if (next.has(routeGroupId)) next.delete(routeGroupId);
+                else next.add(routeGroupId);
+                return next;
+              })
+            }
+            collapsedRouteGroupIds={collapsedRouteGroupIds}
+            routeGroups={routeGroups}
+            routes={routes}
+          />
+        </div>
       </article>
     </section>
   );

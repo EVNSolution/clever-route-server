@@ -68,6 +68,7 @@ type RouteOpsMapProps = {
   polygonDraft?: { closed: boolean; vertices: Array<{ latitude: number; longitude: number }> };
   polygonDraftColor?: string;
   polygonMode?: boolean;
+  polygonFocusKey?: string | null;
   polygons?: RouteGroupingPolygonDto[];
   plannedOrderIds?: ReadonlySet<string>;
   selectedRouteStopId?: string | null;
@@ -75,13 +76,14 @@ type RouteOpsMapProps = {
   title?: string;
 };
 
-export function RouteOpsMap({ bootstrap, className, depot = null, detail = null, draftStops, headerAction, mapOverlayAction, fitOrdersToBounds = false, statusContent, onExitRouteMode, onMapClickCoordinate, onPolygonFinish, onPolygonVertex, onPolygonVertexInsert, onPolygonVertexMove, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), polygonDraft, polygonDraftColor = "#111827", polygonMode = false, polygons = [], selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
+export function RouteOpsMap({ bootstrap, className, depot = null, detail = null, draftStops, headerAction, mapOverlayAction, fitOrdersToBounds = false, statusContent, onExitRouteMode, onMapClickCoordinate, onPolygonFinish, onPolygonVertex, onPolygonVertexInsert, onPolygonVertexMove, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), polygonDraft, polygonDraftColor = "#111827", polygonFocusKey = null, polygonMode = false, polygons = [], selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
   const locale = resolveLocale(bootstrap.locale);
   const t = getMapCopy(locale);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const maplibreRef = useRef<MapLibreModule | null>(null);
   const markersRef = useRef<MapLibreMarker[]>([]);
+  const polygonVertexMarkersRef = useRef<MapLibreMarker[]>([]);
   const onMapClickCoordinateRef = useRef(onMapClickCoordinate);
   const onPolygonFinishRef = useRef(onPolygonFinish);
   const onPolygonVertexInsertRef = useRef(onPolygonVertexInsert);
@@ -119,7 +121,8 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
   const routeDropoffGeojson = useMemo(() => (detail === null ? EMPTY_ROUTE_DROPOFF_COLLECTION : buildRouteDropoffPointFeatureCollection(dropoffPoints)), [detail, dropoffPoints]);
   const routeStopGeojson = useMemo(() => (detail === null ? EMPTY_ROUTE_STOP_COLLECTION : buildRouteStopMarkerFeatureCollection(points, selectedRouteStopId)), [detail, points, selectedRouteStopId]);
   const polygonGeojson = useMemo(() => buildPolygonFeatureCollection(polygons, polygonDraft, polygonDraftColor), [polygonDraft, polygonDraftColor, polygons]);
-  const polygonVertexGeojson = useMemo(() => buildPolygonVertexFeatureCollection(polygons, polygonDraft, polygonDraftColor), [polygonDraft, polygonDraftColor, polygons]);
+  const polygonVertexGeojson = useMemo(() => buildPolygonVertexFeatureCollection(polygons), [polygons]);
+  const canMovePolygonVertex = onPolygonVertexMove !== undefined;
 
   useEffect(() => {
     onMapClickCoordinateRef.current = onMapClickCoordinate;
@@ -276,6 +279,8 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
       mounted = false;
       markersRef.current.forEach((marker) => safeRemoveMarker(marker));
       markersRef.current = [];
+      polygonVertexMarkersRef.current.forEach((marker) => safeRemoveMarker(marker));
+      polygonVertexMarkersRef.current = [];
       const map = mapRef.current;
       mapRef.current = null;
       maplibreRef.current = null;
@@ -295,6 +300,7 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
     syncPolygonLayers(map, polygonGeojson);
     syncPolygonVertexLayers(map, polygonVertexGeojson);
     syncRouteMarkers(map, maplibreRef.current, points.filter((point) => point.kind === 'depot' || point.kind === 'stop'), markersRef.current, locale, selectedRouteStopId, (deliveryStopId) => onRouteStopSelectRef.current?.(deliveryStopId));
+    if (polygonMode && polygonDraft !== undefined && polygonDraft.vertices.length > 0) return;
     if (detail !== null || fitOrdersToBounds) {
       fitMap(map, maplibreRef.current, fitPoints);
       return;
@@ -303,100 +309,80 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
   }, [detail, fitOrdersToBounds, fitPoints, homePoint, isMapReady, lineFeature, locale, ordersGeojson, points, polygonGeojson, polygonVertexGeojson, routeDropoffGeojson, routeStopGeojson, selectedRouteStopId]);
 
   useEffect(() => {
-    if (!isMapReady || mapRef.current === null || onPolygonVertexMove === undefined) return undefined;
     const map = mapRef.current;
-    if (!safeGetLayer(map, 'route-ops-polygon-vertices')) return undefined;
-    let draggingVertexIndex: number | null = null;
-    let pendingDragCoordinate: { latitude: number; longitude: number } | null = null;
-    let dragAnimationFrame: number | null = null;
+    const maplibre = maplibreRef.current;
+    polygonVertexMarkersRef.current.forEach((marker) => safeRemoveMarker(marker));
+    polygonVertexMarkersRef.current = [];
+    if (!isMapReady || map === null || maplibre === null || !polygonMode || !canMovePolygonVertex) return undefined;
+    const draft = polygonDraftRef.current;
+    if (draft === undefined || draft.vertices.length === 0) return undefined;
 
-    const flushDragMove = (): void => {
-      dragAnimationFrame = null;
-      if (draggingVertexIndex === null || pendingDragCoordinate === null) return;
-      onPolygonVertexMoveRef.current?.(draggingVertexIndex, pendingDragCoordinate);
-    };
-    const resetDrag = (): void => {
-      if (dragAnimationFrame !== null) window.cancelAnimationFrame(dragAnimationFrame);
-      dragAnimationFrame = null;
-      pendingDragCoordinate = null;
-      if (draggingVertexIndex === null) return;
-      draggingVertexIndex = null;
+    for (const [index, vertex] of draft.vertices.entries()) {
+      const element = createPolygonVertexMarkerElement(polygonDraftColor);
+      const marker = new maplibre.Marker({ anchor: 'center', draggable: true, element })
+        .setLngLat([vertex.longitude, vertex.latitude])
+        .addTo(map);
+
+      marker.on('dragstart', () => {
+        try {
+          map.dragPan.disable();
+          map.doubleClickZoom.disable();
+        } catch {
+          // Map controls are best-effort during marker drag.
+        }
+      });
+      marker.on('drag', () => {
+        const lngLat = marker.getLngLat();
+        onPolygonVertexMoveRef.current?.(index, { latitude: lngLat.lat, longitude: lngLat.lng });
+      });
+      marker.on('dragend', () => {
+        const lngLat = marker.getLngLat();
+        onPolygonVertexMoveRef.current?.(index, { latitude: lngLat.lat, longitude: lngLat.lng });
+        try {
+          map.dragPan.enable();
+          map.doubleClickZoom.enable();
+        } catch {
+          // Map may be tearing down during route tab changes.
+        }
+      });
+      polygonVertexMarkersRef.current.push(marker);
+    }
+
+    return () => {
+      polygonVertexMarkersRef.current.forEach((marker) => safeRemoveMarker(marker));
+      polygonVertexMarkersRef.current = [];
       try {
         map.dragPan.enable();
         map.doubleClickZoom.enable();
-        map.getCanvas().style.cursor = '';
       } catch {
         // Map may be tearing down during route tab changes.
       }
     };
-    const beginVertexDrag = (event: MapLayerClickEvent, index: number): void => {
-      event.preventDefault?.();
-      event.stopPropagation?.();
-      event.originalEvent?.preventDefault?.();
-      event.originalEvent?.stopPropagation?.();
-      draggingVertexIndex = index;
-      try {
-        map.dragPan.disable();
-        map.doubleClickZoom.disable();
-        map.getCanvas().style.cursor = 'grabbing';
-      } catch {
-        // Drag-pan state is best-effort.
-      }
-    };
-    const handleVertexMouseDown = (event: MapLayerClickEvent): void => {
-      const featureId = event.features?.[0]?.properties?.id;
-      if (typeof featureId !== 'string' || !featureId.startsWith('draft:')) return;
-      const index = Number(featureId.slice('draft:'.length));
-      if (Number.isInteger(index)) beginVertexDrag(event, index);
-    };
-    const handleMapMouseDown = (event: MapLayerClickEvent): void => {
-      if (!polygonModeRef.current || event.lngLat === undefined) return;
-      const draft = polygonDraftRef.current;
-      if (draft === undefined || draft.vertices.length === 0) return;
-      const index = findNearestPolygonVertexIndex(map, draft.vertices, { latitude: event.lngLat.lat, longitude: event.lngLat.lng });
-      if (index !== null) beginVertexDrag(event, index);
-    };
-    const handleMouseMove = (event: MapLayerClickEvent): void => {
-      if (draggingVertexIndex === null || event.lngLat === undefined) return;
-      event.preventDefault?.();
-      event.stopPropagation?.();
-      pendingDragCoordinate = { latitude: event.lngLat.lat, longitude: event.lngLat.lng };
-      if (dragAnimationFrame === null) dragAnimationFrame = window.requestAnimationFrame(flushDragMove);
-    };
-    const handleMouseEnter = (): void => {
-      try {
-        map.getCanvas().style.cursor = 'grab';
-      } catch {
-        // Cursor styling is best-effort.
-      }
-    };
-    const handleMouseLeave = (): void => {
-      if (draggingVertexIndex !== null) return;
-      try {
-        map.getCanvas().style.cursor = '';
-      } catch {
-        // Cursor styling is best-effort.
-      }
-    };
+  }, [canMovePolygonVertex, isMapReady, polygonDraft?.vertices.length, polygonDraftColor, polygonFocusKey, polygonMode]);
 
-    map.on('mousedown', 'route-ops-polygon-vertices', handleVertexMouseDown);
-    map.on('mousedown', handleMapMouseDown);
-    map.on('mousemove', handleMouseMove);
-    map.on('mouseup', resetDrag);
-    map.on('mouseleave', resetDrag);
-    map.on('mouseenter', 'route-ops-polygon-vertices', handleMouseEnter);
-    map.on('mouseleave', 'route-ops-polygon-vertices', handleMouseLeave);
-    return () => {
-      resetDrag();
-      safeLayerOff(map, 'mousedown', 'route-ops-polygon-vertices', handleVertexMouseDown);
-      safeMapPointerOff(map, 'mousedown', handleMapMouseDown);
-      safeMapPointerOff(map, 'mousemove', handleMouseMove);
-      safeMapPointerOff(map, 'mouseup', resetDrag);
-      safeMapPointerOff(map, 'mouseleave', resetDrag);
-      safeLayerOff(map, 'mouseenter', 'route-ops-polygon-vertices', handleMouseEnter);
-      safeLayerOff(map, 'mouseleave', 'route-ops-polygon-vertices', handleMouseLeave);
+  useEffect(() => {
+    if (!isMapReady || !polygonMode || polygonFocusKey === null || mapRef.current === null || !isMapUsable(mapRef.current)) return undefined;
+    const map = mapRef.current;
+    const draft = polygonDraftRef.current;
+    if (draft === undefined || draft.vertices.length === 0) return undefined;
+    let animationFrame: number | null = null;
+    const timeouts: number[] = [];
+    const applyFit = (): void => {
+      const currentMap = mapRef.current;
+      const currentDraft = polygonDraftRef.current;
+      if (currentMap === null || currentDraft === undefined || currentDraft.vertices.length === 0 || !isMapUsable(currentMap)) return;
+      fitMapToCoordinates(currentMap, currentDraft.vertices);
     };
-  }, [isMapReady, onPolygonVertexMove]);
+    applyFit();
+    animationFrame = window.requestAnimationFrame(applyFit);
+    timeouts.push(window.setTimeout(applyFit, 120));
+    timeouts.push(window.setTimeout(applyFit, 420));
+    return () => {
+      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
+      timeouts.forEach((timeout) => window.clearTimeout(timeout));
+    };
+  }, [isMapReady, polygonFocusKey, polygonMode]);
+
 
   useEffect(() => {
     if (detail === null || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return undefined;
@@ -595,7 +581,7 @@ function buildPolygonFeatureCollection(polygons: RouteGroupingPolygonDto[], draf
   return { features, type: 'FeatureCollection' } as GeoJSON.FeatureCollection;
 }
 
-function buildPolygonVertexFeatureCollection(polygons: RouteGroupingPolygonDto[], draft: { closed: boolean; vertices: Array<{ latitude: number; longitude: number }> } | undefined, draftColor: string): GeoJSON.FeatureCollection {
+function buildPolygonVertexFeatureCollection(polygons: RouteGroupingPolygonDto[]): GeoJSON.FeatureCollection {
   const features: GeoJSON.Feature[] = [];
   for (const polygon of polygons) {
     const color = polygon.color ?? '#2563eb';
@@ -608,15 +594,6 @@ function buildPolygonVertexFeatureCollection(polygons: RouteGroupingPolygonDto[]
       features.push({
         geometry: { coordinates: [coordinate[0], coordinate[1]], type: 'Point' },
         properties: { color, id: `${polygon.id}:${index}` },
-        type: 'Feature'
-      });
-    });
-  }
-  if (draft !== undefined) {
-    draft.vertices.forEach((vertex, index) => {
-      features.push({
-        geometry: { coordinates: [vertex.longitude, vertex.latitude], type: 'Point' },
-        properties: { color: draftColor, id: `draft:${index}` },
         type: 'Feature'
       });
     });
@@ -671,25 +648,6 @@ function distanceToSegment(px: number, py: number, ax: number, ay: number, bx: n
   return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
 }
 
-function findNearestPolygonVertexIndex(
-  map: MapLibreMap,
-  vertices: Array<{ latitude: number; longitude: number }>,
-  coordinate: { latitude: number; longitude: number },
-): number | null {
-  if (vertices.length === 0) return null;
-  const target = map.project([coordinate.longitude, coordinate.latitude]);
-  let bestDistance = Number.POSITIVE_INFINITY;
-  let bestIndex = -1;
-  vertices.forEach((vertex, index) => {
-    const point = map.project([vertex.longitude, vertex.latitude]);
-    const distance = Math.hypot(target.x - point.x, target.y - point.y);
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      bestIndex = index;
-    }
-  });
-  return bestIndex >= 0 && bestDistance <= 26 ? bestIndex : null;
-}
 
 function syncPolygonLayers(map: MapLibreMap, featureCollection: GeoJSON.FeatureCollection): void {
   const existing = safeGetSource(map, 'route-ops-polygons') as { setData?(data: unknown): void } | undefined;
@@ -1131,6 +1089,42 @@ function safeAddImage(imageApi: { addImage?(id: string, image: ImageData, option
     return false;
   }
 }
+
+function createPolygonVertexMarkerElement(color: string): HTMLButtonElement {
+  const element = document.createElement('button');
+  element.type = 'button';
+  element.className = 'route-group-draft-vertex-marker';
+  element.style.setProperty('--route-group-draft-vertex-color', color);
+  element.setAttribute('aria-label', 'Drag polygon corner');
+  element.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  element.addEventListener('dblclick', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+  });
+  element.addEventListener('pointerdown', (event) => {
+    event.stopPropagation();
+  });
+  return element;
+}
+
+function fitMapToCoordinates(map: MapLibreMap, coordinates: Array<{ latitude: number; longitude: number }>): void {
+  safeResizeMap(map);
+  if (coordinates.length === 0) return;
+  if (coordinates.length === 1) {
+    const point = coordinates[0];
+    if (point !== undefined) map.easeTo({ center: [point.longitude, point.latitude], duration: 0, zoom: 7 });
+    return;
+  }
+  const west = Math.min(...coordinates.map((coordinate) => coordinate.longitude));
+  const east = Math.max(...coordinates.map((coordinate) => coordinate.longitude));
+  const south = Math.min(...coordinates.map((coordinate) => coordinate.latitude));
+  const north = Math.max(...coordinates.map((coordinate) => coordinate.latitude));
+  map.fitBounds([[west, south], [east, north]], { duration: 0, maxZoom: 8, padding: 84 });
+}
+
 
 export function anchorRouteStopPicker(projected: { x: number; y: number }, container: { clientHeight: number; clientWidth: number }, sequenceCount: number): RouteStopPickerAnchor {
   const width = estimateRouteStopPickerWidth(container.clientWidth, sequenceCount);
