@@ -306,6 +306,7 @@ export type RouteGroupingSummaryDto = {
   status: string;
   totalOrders: number;
   unresolvedOrders: number;
+  updatedAt: string;
   warningState: RouteGroupingWarningDto[];
 };
 

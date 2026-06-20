@@ -13,7 +13,7 @@ import type { BootstrapPayload, CanonicalOrderDto, OrderItemDto, RouteGroupingPo
 type MapLibreModule = typeof import('maplibre-gl');
 type MapLibreMap = InstanceType<MapLibreModule['Map']>;
 type MapLibreMarker = InstanceType<MapLibreModule['Marker']>;
-type MapLayerClickEvent = { features?: Array<{ properties?: { id?: string; orderId?: string } }>; originalEvent?: { preventDefault?(): void; stopPropagation?(): void }; preventDefault?(): void; stopPropagation?(): void };
+type MapLayerClickEvent = { features?: Array<{ properties?: { id?: string; orderId?: string } }>; lngLat?: { lat: number; lng: number }; originalEvent?: { preventDefault?(): void; stopPropagation?(): void }; preventDefault?(): void; stopPropagation?(): void };
 type RouteStopPickerAnchor = { placement: 'bottom' | 'top'; x: number; y: number };
 type RouteStopSequencePickerProps = {
   anchor: RouteStopPickerAnchor;
@@ -57,6 +57,8 @@ type RouteOpsMapProps = {
   onMapClickCoordinate?(coordinate: { latitude: number; longitude: number }): void;
   onPolygonFinish?(): void;
   onPolygonVertex?(coordinate: { latitude: number; longitude: number }): void;
+  onPolygonVertexInsert?(index: number, coordinate: { latitude: number; longitude: number }): void;
+  onPolygonVertexMove?(index: number, coordinate: { latitude: number; longitude: number }): void;
   onOrderSelect?(orderId: string): void;
   onRouteStopPickerClose?(): void;
   onRouteStopSelect?(deliveryStopId: string): void;
@@ -73,7 +75,7 @@ type RouteOpsMapProps = {
   title?: string;
 };
 
-export function RouteOpsMap({ bootstrap, className, depot = null, detail = null, draftStops, headerAction, mapOverlayAction, fitOrdersToBounds = false, statusContent, onExitRouteMode, onMapClickCoordinate, onPolygonFinish, onPolygonVertex, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), polygonDraft, polygonDraftColor = "#111827", polygonMode = false, polygons = [], selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
+export function RouteOpsMap({ bootstrap, className, depot = null, detail = null, draftStops, headerAction, mapOverlayAction, fitOrdersToBounds = false, statusContent, onExitRouteMode, onMapClickCoordinate, onPolygonFinish, onPolygonVertex, onPolygonVertexInsert, onPolygonVertexMove, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), polygonDraft, polygonDraftColor = "#111827", polygonMode = false, polygons = [], selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
   const locale = resolveLocale(bootstrap.locale);
   const t = getMapCopy(locale);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -82,7 +84,10 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
   const markersRef = useRef<MapLibreMarker[]>([]);
   const onMapClickCoordinateRef = useRef(onMapClickCoordinate);
   const onPolygonFinishRef = useRef(onPolygonFinish);
+  const onPolygonVertexInsertRef = useRef(onPolygonVertexInsert);
+  const onPolygonVertexMoveRef = useRef(onPolygonVertexMove);
   const onPolygonVertexRef = useRef(onPolygonVertex);
+  const polygonDraftRef = useRef(polygonDraft);
   const polygonModeRef = useRef(polygonMode);
   const onOrderSelectRef = useRef(onOrderSelect);
   const onRouteStopPickerCloseRef = useRef(onRouteStopPickerClose);
@@ -127,6 +132,18 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
   useEffect(() => {
     onPolygonVertexRef.current = onPolygonVertex;
   }, [onPolygonVertex]);
+
+  useEffect(() => {
+    onPolygonVertexInsertRef.current = onPolygonVertexInsert;
+  }, [onPolygonVertexInsert]);
+
+  useEffect(() => {
+    onPolygonVertexMoveRef.current = onPolygonVertexMove;
+  }, [onPolygonVertexMove]);
+
+  useEffect(() => {
+    polygonDraftRef.current = polygonDraft;
+  }, [polygonDraft]);
 
   useEffect(() => {
     polygonModeRef.current = polygonMode;
@@ -223,13 +240,26 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
           if (event.lngLat === undefined) return;
           const coordinate = { latitude: event.lngLat.lat, longitude: event.lngLat.lng };
           if (polygonModeRef.current) {
+            if (polygonDraftRef.current?.closed === true) return;
             onPolygonVertexRef.current?.(coordinate);
             return;
           }
           onMapClickCoordinateRef.current?.(coordinate);
         });
-        map.on('dblclick', () => {
-          if (polygonModeRef.current) onPolygonFinishRef.current?.();
+        map.on('dblclick', (event: MapLayerClickEvent) => {
+          if (!polygonModeRef.current) return;
+          event.preventDefault?.();
+          event.originalEvent?.preventDefault?.();
+          const draft = polygonDraftRef.current;
+          if (draft?.closed === true && event.lngLat !== undefined) {
+            const coordinate = { latitude: event.lngLat.lat, longitude: event.lngLat.lng };
+            const insertIndex = findNearestPolygonSegmentInsertIndex(map, draft.vertices, coordinate);
+            if (insertIndex !== null) {
+              onPolygonVertexInsertRef.current?.(insertIndex, coordinate);
+              return;
+            }
+          }
+          onPolygonFinishRef.current?.();
         });
         map.on('error', (event: { error?: { message?: string } }) => {
           if (!mounted) return;
@@ -271,6 +301,75 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
     }
     applyOrdersHomeViewport(map, homePoint, ordersHomeAppliedRef);
   }, [detail, fitOrdersToBounds, fitPoints, homePoint, isMapReady, lineFeature, locale, ordersGeojson, points, polygonGeojson, polygonVertexGeojson, routeDropoffGeojson, routeStopGeojson, selectedRouteStopId]);
+
+  useEffect(() => {
+    if (!isMapReady || mapRef.current === null || onPolygonVertexMove === undefined) return undefined;
+    const map = mapRef.current;
+    if (!safeGetLayer(map, 'route-ops-polygon-vertices')) return undefined;
+    let draggingVertexIndex: number | null = null;
+
+    const resetDrag = (): void => {
+      if (draggingVertexIndex === null) return;
+      draggingVertexIndex = null;
+      try {
+        map.dragPan.enable();
+        map.getCanvas().style.cursor = '';
+      } catch {
+        // Map may be tearing down during route tab changes.
+      }
+    };
+    const handleMouseDown = (event: MapLayerClickEvent): void => {
+      const featureId = event.features?.[0]?.properties?.id;
+      if (typeof featureId !== 'string' || !featureId.startsWith('draft:')) return;
+      const index = Number(featureId.slice('draft:'.length));
+      if (!Number.isInteger(index)) return;
+      event.preventDefault?.();
+      event.originalEvent?.preventDefault?.();
+      draggingVertexIndex = index;
+      try {
+        map.dragPan.disable();
+        map.getCanvas().style.cursor = 'grabbing';
+      } catch {
+        // Drag-pan state is best-effort.
+      }
+    };
+    const handleMouseMove = (event: MapLayerClickEvent): void => {
+      if (draggingVertexIndex === null || event.lngLat === undefined) return;
+      event.preventDefault?.();
+      onPolygonVertexMoveRef.current?.(draggingVertexIndex, { latitude: event.lngLat.lat, longitude: event.lngLat.lng });
+    };
+    const handleMouseEnter = (): void => {
+      try {
+        map.getCanvas().style.cursor = 'grab';
+      } catch {
+        // Cursor styling is best-effort.
+      }
+    };
+    const handleMouseLeave = (): void => {
+      if (draggingVertexIndex !== null) return;
+      try {
+        map.getCanvas().style.cursor = '';
+      } catch {
+        // Cursor styling is best-effort.
+      }
+    };
+
+    map.on('mousedown', 'route-ops-polygon-vertices', handleMouseDown);
+    map.on('mousemove', handleMouseMove);
+    map.on('mouseup', resetDrag);
+    map.on('mouseleave', resetDrag);
+    map.on('mouseenter', 'route-ops-polygon-vertices', handleMouseEnter);
+    map.on('mouseleave', 'route-ops-polygon-vertices', handleMouseLeave);
+    return () => {
+      resetDrag();
+      safeLayerOff(map, 'mousedown', 'route-ops-polygon-vertices', handleMouseDown);
+      safeMapPointerOff(map, 'mousemove', handleMouseMove);
+      safeMapPointerOff(map, 'mouseup', resetDrag);
+      safeMapPointerOff(map, 'mouseleave', resetDrag);
+      safeLayerOff(map, 'mouseenter', 'route-ops-polygon-vertices', handleMouseEnter);
+      safeLayerOff(map, 'mouseleave', 'route-ops-polygon-vertices', handleMouseLeave);
+    };
+  }, [isMapReady, onPolygonVertexMove]);
 
   useEffect(() => {
     if (detail === null || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return undefined;
@@ -513,6 +612,38 @@ function readPolygonRing(geometry: unknown): Array<[number, number]> {
   });
 }
 
+function findNearestPolygonSegmentInsertIndex(
+  map: MapLibreMap,
+  vertices: Array<{ latitude: number; longitude: number }>,
+  coordinate: { latitude: number; longitude: number },
+): number | null {
+  if (vertices.length < 3) return null;
+  const target = map.project([coordinate.longitude, coordinate.latitude]);
+  let bestDistance = Number.POSITIVE_INFINITY;
+  let bestIndex = -1;
+  vertices.forEach((start, index) => {
+    const end = vertices[(index + 1) % vertices.length];
+    if (end === undefined) return;
+    const startPoint = map.project([start.longitude, start.latitude]);
+    const endPoint = map.project([end.longitude, end.latitude]);
+    const distance = distanceToSegment(target.x, target.y, startPoint.x, startPoint.y, endPoint.x, endPoint.y);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index + 1;
+    }
+  });
+  if (bestIndex < 0 || bestDistance > 28) return null;
+  return bestIndex >= vertices.length ? vertices.length : bestIndex;
+}
+
+function distanceToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  if (dx === 0 && dy === 0) return Math.hypot(px - ax, py - ay);
+  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)));
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+
 function syncPolygonLayers(map: MapLibreMap, featureCollection: GeoJSON.FeatureCollection): void {
   const existing = safeGetSource(map, 'route-ops-polygons') as { setData?(data: unknown): void } | undefined;
   if (existing?.setData) {
@@ -545,9 +676,9 @@ function syncPolygonVertexLayers(map: MapLibreMap, featureCollection: GeoJSON.Fe
     id: 'route-ops-polygon-vertices',
     paint: {
       'circle-color': '#ffffff',
-      'circle-radius': 4,
+      'circle-radius': 5,
       'circle-stroke-color': ['coalesce', ['get', 'color'], '#2563eb'],
-      'circle-stroke-width': 2
+      'circle-stroke-width': 2.5
     },
     source: 'route-ops-polygon-vertices',
     type: 'circle'
@@ -881,11 +1012,19 @@ function safeSetPaintProperty(map: MapLibreMap, layerId: string, property: strin
   }
 }
 
-function safeLayerOff(map: MapLibreMap, type: 'click', layerId: string, listener: (event: MapLayerClickEvent) => void): void {
+function safeLayerOff(map: MapLibreMap, type: 'click' | 'mousedown' | 'mouseenter' | 'mouseleave', layerId: string, listener: ((event: MapLayerClickEvent) => void) | (() => void)): void {
   try {
     if (safeGetLayer(map, layerId)) map.off(type, layerId, listener);
   } catch {
     // MapLibre can clear style before React runs layer-listener cleanup.
+  }
+}
+
+function safeMapPointerOff(map: MapLibreMap, type: 'mouseleave' | 'mousemove' | 'mouseup', listener: ((event: MapLayerClickEvent) => void) | (() => void)): void {
+  try {
+    map.off(type, listener);
+  } catch {
+    // MapLibre can clear style before React runs pointer-listener cleanup.
   }
 }
 

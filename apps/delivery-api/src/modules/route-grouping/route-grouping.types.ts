@@ -56,6 +56,7 @@ export type RouteGroupingSummaryDto = {
   status: string;
   totalOrders: number;
   unresolvedOrders: number;
+  updatedAt: string;
   warningState: RouteGroupingWarningDto[];
 };
 
@@ -74,11 +75,14 @@ export type CreateRouteGroupingInput = {
 
 export type SaveRouteGroupingPolygonsInput = {
   groupingId: string;
+  deletePolygonIds?: string[];
+  expectedUpdatedAt: string;
   polygons: Array<{
     closed: boolean;
     color?: string | null;
     driverId?: string | null;
     geometry: unknown;
+    id?: string | null;
     label: string;
   }>;
   shopDomain: string;
@@ -114,6 +118,14 @@ export type RouteGroupingService = {
   rollback(input: RollbackRouteGroupingInput): Promise<RouteGroupingDetailDto | null>;
   recordChildRoutePublished(input: { routePlanId: string; shopDomain: string }): Promise<void>;
 };
+
+export class RouteGroupingConflictError extends Error {
+  readonly code = 'ROUTE_GROUPING_STALE_WRITE';
+  constructor(message = 'Route grouping was changed by another save. Refresh and try again.') {
+    super(message);
+    this.name = 'RouteGroupingConflictError';
+  }
+}
 
 export class RouteGroupingValidationError extends Error {
   readonly code = 'ROUTE_GROUPING_INVALID';

@@ -10,6 +10,7 @@ import { computeRouteShapeSignature, routeGeometryCacheCreateData } from '../rou
 import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanRouteResult } from '../route-plans/route-plan.types.js';
 import {
+  RouteGroupingConflictError,
   RouteGroupingRiskConfirmationRequiredError,
   RouteGroupingUnresolvedAssignmentsError,
   RouteGroupingValidationError,
@@ -204,21 +205,61 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     const groupingId = await this.prisma.$transaction(async (tx) => {
       const group = await findGroupingForUpdate(tx, input.shopDomain, input.groupingId);
       if (group === null) return null;
-      await tx.routeGroupingPolygon.deleteMany({ where: { groupingId: group.id } });
-      await tx.routeGroupingPolygon.createMany({
-        data: input.polygons.map((polygon, index) => ({
+      const expectedUpdatedAt = parseExpectedUpdatedAt(input.expectedUpdatedAt);
+      const guarded = await tx.routeGrouping.updateMany({
+        data: { status: 'CHANGED' },
+        where: { id: group.id, shopId: group.shopId, updatedAt: expectedUpdatedAt }
+      });
+      if (guarded.count !== 1) throw new RouteGroupingConflictError();
+
+      const existingPolygons = await tx.routeGroupingPolygon.findMany({ orderBy: { drawOrder: 'asc' }, where: { groupingId: group.id } });
+      const existingIds = new Set(existingPolygons.map((polygon) => polygon.id));
+      const deleteIds = normalizeIds(input.deletePolygonIds ?? []);
+      const deleteIdSet = new Set(deleteIds);
+      const incomingIds = input.polygons.map((polygon) => polygon.id?.trim()).filter((id): id is string => id !== undefined && id !== null && id !== '');
+      const incomingIdSet = new Set(incomingIds);
+
+      if (incomingIdSet.size !== incomingIds.length) throw new RouteGroupingValidationError(['polygon ids must be unique']);
+      for (const polygonId of deleteIds) {
+        if (!existingIds.has(polygonId)) throw new RouteGroupingValidationError(['delete polygon ids must belong to the current route grouping']);
+        if (incomingIdSet.has(polygonId)) throw new RouteGroupingValidationError(['deleted polygon ids cannot also be saved']);
+      }
+      for (const polygonId of incomingIds) {
+        if (!existingIds.has(polygonId)) throw new RouteGroupingValidationError(['polygon ids must belong to the current route grouping']);
+      }
+      if (existingIds.size > 0) {
+        const omittedIds = [...existingIds].filter((polygonId) => !incomingIdSet.has(polygonId) && !deleteIdSet.has(polygonId));
+        if (omittedIds.length > 0) throw new RouteGroupingValidationError(['existing polygons cannot be omitted without explicit deletion']);
+      }
+
+      if (deleteIds.length > 0) await tx.routeGroupingPolygon.deleteMany({ where: { id: { in: deleteIds }, groupingId: group.id } });
+
+      for (let index = 0; index < input.polygons.length; index += 1) {
+        const polygon = input.polygons[index];
+        if (polygon === undefined) continue;
+        const polygonId = polygon.id?.trim();
+        const data = {
           closed: polygon.closed,
           color: polygon.color ?? routeGroupingPolygonColor(index),
           drawOrder: index + 1,
           driverId: polygon.driverId ?? null,
           geometryJson: polygon.geometry as Prisma.InputJsonValue,
-          groupingId: group.id,
-          label: polygon.label,
-          shopId: group.shopId
-        }))
-      });
+          label: polygon.label
+        };
+        if (polygonId !== undefined && polygonId !== '') {
+          await tx.routeGroupingPolygon.update({ data, where: { id: polygonId } });
+          continue;
+        }
+        await tx.routeGroupingPolygon.create({
+          data: {
+            ...data,
+            groupingId: group.id,
+            shopId: group.shopId
+          }
+        });
+      }
+
       await recomputeAssignments(tx, group.id);
-      await tx.routeGrouping.update({ data: { status: 'CHANGED' }, where: { id: group.id } });
       return group.id;
     });
     if (groupingId === null) return null;
@@ -506,10 +547,10 @@ function groupingInclude() {
   } satisfies Prisma.RouteGroupingInclude;
 }
 
-async function findGroupingForUpdate(tx: Tx, shopDomain: string, groupingId: string): Promise<{ id: string; shopId: string } | null> {
+async function findGroupingForUpdate(tx: Tx, shopDomain: string, groupingId: string): Promise<{ id: string; shopId: string; updatedAt: Date } | null> {
   const shop = await tx.shop.findUnique({ select: { id: true }, where: { shopDomain: normalizeShopDomain(shopDomain) } });
   if (shop === null) return null;
-  return tx.routeGrouping.findFirst({ select: { id: true, shopId: true }, where: { id: groupingId, shopId: shop.id } });
+  return tx.routeGrouping.findFirst({ select: { id: true, shopId: true, updatedAt: true }, where: { id: groupingId, shopId: shop.id } });
 }
 
 function validateCreateFacts(input: { facts: Array<{ deliveryDate: Date | null; routeScopeKey: string | null; deliverySession: string | null; serviceType: string | null; orderId: string; order: { deliveryStops: Array<{ latitude: unknown; longitude: unknown; routePlanStops: Array<{ id: string }> }> } }>; orderIds: string[]; planDate: string }): string[] {
@@ -922,7 +963,7 @@ function toGroupingSummaryDto(group: LoadedGrouping): RouteGroupingSummaryDto {
   const unresolvedOrders = group.orders.filter((order) => order.assignmentStatus !== 'ASSIGNED').length;
   const currentChildren = group.childVersions.filter((child) => child.status === 'CURRENT');
   return {
-    children: currentChildren.map(toChildDto),
+    children: currentChildren.map((child) => toChildDto(child, group.status)),
     currentVersion: group.currentVersion,
     displayStatus: deriveGroupingDisplayStatus(group, unresolvedOrders, currentChildren),
     id: group.id,
@@ -931,6 +972,7 @@ function toGroupingSummaryDto(group: LoadedGrouping): RouteGroupingSummaryDto {
     status: group.status,
     totalOrders: group.orders.length,
     unresolvedOrders,
+    updatedAt: group.updatedAt.toISOString(),
     warningState: deriveWarnings(group)
   };
 }
@@ -954,10 +996,10 @@ function toPolygonDto(polygon: LoadedGrouping['polygons'][number]): RouteGroupin
   return { closed: polygon.closed, color: polygon.color, drawOrder: polygon.drawOrder, driverId: polygon.driverId, geometry: polygon.geometryJson, id: polygon.id, label: polygon.label };
 }
 
-function toChildDto(child: LoadedChild): RouteGroupingChildDto {
+function toChildDto(child: LoadedChild, groupingStatus: string): RouteGroupingChildDto {
   return {
     childVersion: child.version,
-    displayStatus: deriveChildDisplayStatus(child),
+    displayStatus: deriveChildDisplayStatus(child, groupingStatus),
     driverId: child.driverId,
     driverName: child.driver?.displayName ?? child.routePlan?.driver?.displayName ?? null,
     notificationStatus: normalizeNotificationStatus(child.notificationStatus),
@@ -990,13 +1032,15 @@ function deriveGroupingDisplayStatus(group: LoadedGrouping, unresolvedOrders: nu
   if (group.status === 'CANCELLED') return 'CANCELLED';
   if (unresolvedOrders > 0) return 'NEEDS_ASSIGNMENT';
   if (currentChildren.length === 0) return 'DRAFT';
-  if (currentChildren.some((child) => deriveChildDisplayStatus(child) === 'NEEDS_REPUBLISH')) return 'CHANGED';
+  if (group.status === 'CHANGED') return 'CHANGED';
+  if (currentChildren.some((child) => deriveChildDisplayStatus(child, group.status) === 'NEEDS_REPUBLISH')) return 'CHANGED';
   if (currentChildren.every((child) => deriveChildDisplayStatus(child) === 'PUBLISHED')) return 'PUBLISHED';
   return 'READY';
 }
 
-function deriveChildDisplayStatus(child: LoadedChild): RouteGroupingChildDisplayStatus {
+function deriveChildDisplayStatus(child: LoadedChild, groupingStatus = ''): RouteGroupingChildDisplayStatus {
   if (child.status !== 'CURRENT') return 'SUPERSEDED';
+  if (groupingStatus === 'CHANGED' && child.routePlan !== null) return 'NEEDS_REPUBLISH';
   if (child.routePlan?.status === 'ASSIGNED' && child.notificationStatus === 'SENT') return 'PUBLISHED';
   if (child.routePlan?.status === 'ASSIGNED' && child.notificationStatus !== 'SENT') return 'NEEDS_REPUBLISH';
   return 'DRAFT';
@@ -1039,6 +1083,13 @@ function normalizeIds(values: string[]): string[] {
 
 function normalizeShopDomain(value: string): string {
   return value.trim().toLowerCase();
+}
+
+
+function parseExpectedUpdatedAt(value: string): Date {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) throw new RouteGroupingValidationError(['expectedUpdatedAt must be a valid ISO timestamp']);
+  return date;
 }
 
 function parsePlanDate(value: string): Date {

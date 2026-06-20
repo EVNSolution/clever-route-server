@@ -6,6 +6,17 @@ export function appendPolygonVertex(draft: PolygonDraft, vertex: Coordinate): Po
   return { ...draft, vertices: [...draft.vertices, vertex] };
 }
 
+export function insertPolygonVertex(draft: PolygonDraft, index: number, vertex: Coordinate): PolygonDraft {
+  if (!draft.closed || draft.vertices.length < 3) return draft;
+  const nextIndex = Math.max(0, Math.min(index, draft.vertices.length));
+  return { ...draft, vertices: [...draft.vertices.slice(0, nextIndex), vertex, ...draft.vertices.slice(nextIndex)] };
+}
+
+export function movePolygonVertex(draft: PolygonDraft, index: number, vertex: Coordinate): PolygonDraft {
+  if (index < 0 || index >= draft.vertices.length) return draft;
+  return { ...draft, vertices: draft.vertices.map((current, currentIndex) => currentIndex === index ? vertex : current) };
+}
+
 export function closePolygonDraft(draft: PolygonDraft): PolygonDraft {
   return { ...draft, closed: draft.vertices.length >= 3 };
 }
@@ -40,4 +51,14 @@ export function readPolygonVertices(geometry: unknown): Coordinate[] {
       return Number.isFinite(latitude) && Number.isFinite(longitude) ? { latitude, longitude } : null;
     })
     .filter((entry): entry is Coordinate => entry !== null);
+}
+
+export function readEditablePolygonVertices(geometry: unknown): Coordinate[] {
+  const vertices = readPolygonVertices(geometry);
+  const first = vertices[0];
+  const last = vertices[vertices.length - 1];
+  if (first !== undefined && last !== undefined && first.latitude === last.latitude && first.longitude === last.longitude) {
+    return vertices.slice(0, -1);
+  }
+  return vertices;
 }

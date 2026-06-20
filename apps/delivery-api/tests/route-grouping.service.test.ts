@@ -46,6 +46,26 @@ describe('route grouping contracts', () => {
     expect(dependencySource).toContain('routeGeometryProvider');
   });
 
+  test('polygon saves are stale-write guarded and require explicit deletion', () => {
+    const serviceSource = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const routeSource = readFileSync(join(process.cwd(), 'src/routes/admin-commerce-connections-ui.routes.ts'), 'utf8');
+    const typesSource = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.types.ts'), 'utf8');
+
+    expect(typesSource).toContain('expectedUpdatedAt: string');
+    expect(typesSource).toContain('deletePolygonIds?: string[]');
+    expect(typesSource).toContain('RouteGroupingConflictError');
+    expect(serviceSource).toContain('updatedAt: expectedUpdatedAt');
+    expect(serviceSource).toContain('throw new RouteGroupingConflictError()');
+    expect(serviceSource).toContain('existing polygons cannot be omitted without explicit deletion');
+    expect(serviceSource).toContain('await tx.routeGroupingPolygon.deleteMany');
+    expect(serviceSource).toContain('await tx.routeGroupingPolygon.update({ data, where: { id: polygonId } })');
+    expect(routeSource).toContain('const deletePolygonIds = readOptionalJsonStringArray(body, "deletePolygonIds")');
+    expect(routeSource).toContain('...(deletePolygonIds === undefined ? {} : { deletePolygonIds })');
+    expect(routeSource).toContain('expectedUpdatedAt: readRequiredJsonString(body, "expectedUpdatedAt")');
+    expect(routeSource).toContain('id: typeof row.id === "string"');
+    expect(routeSource).toContain('RouteGroupingConflictError');
+  });
+
   test('fake FCM provider records string-safe route payload fields', async () => {
     const provider = new FakeDriverPushProvider();
     const result = await provider.sendRouteNotification({

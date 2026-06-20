@@ -44,6 +44,7 @@ import {
 } from "../modules/route-plans/route-optimization-job.types.js";
 import type { RouteOptimizationJobService } from "../modules/route-plans/route-optimization-job.service.js";
 import {
+  RouteGroupingConflictError,
   RouteGroupingRiskConfirmationRequiredError,
   RouteGroupingUnresolvedAssignmentsError,
   RouteGroupingValidationError,
@@ -2293,7 +2294,10 @@ function registerRouteOpsAppRoutes(
           const shopDomain = requireRouteOpsShopDomain(request, session);
           const body = readRouteOpsBodyObject(request.body);
           try {
+            const deletePolygonIds = readOptionalJsonStringArray(body, "deletePolygonIds");
             const grouping = await routeGroupingService.savePolygons({
+              ...(deletePolygonIds === undefined ? {} : { deletePolygonIds }),
+              expectedUpdatedAt: readRequiredJsonString(body, "expectedUpdatedAt"),
               groupingId: request.params.routeGroupId,
               polygons: readRouteGroupPolygons(body.polygons),
               shopDomain,
@@ -4316,6 +4320,9 @@ function requireRouteGroupingService(
 }
 
 function toRouteGroupingHttpError(error: unknown): Error {
+  if (error instanceof RouteGroupingConflictError) {
+    return createRouteOpsHttpError(error.code, error.message, 409);
+  }
   if (error instanceof RouteGroupingValidationError) {
     return createRouteOpsHttpError(error.code, error.message, 400);
   }
@@ -4337,11 +4344,26 @@ function readRequiredJsonNumber(body: Record<string, unknown>, field: string): n
   return Math.floor(value);
 }
 
+function readOptionalJsonStringArray(body: Record<string, unknown>, field: string): string[] | undefined {
+  const value = body[field];
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new WooCommerceOnboardingError("BAD_REQUEST", `${field} must be an array`, 400);
+  }
+  return value.map((entry) => {
+    if (typeof entry !== "string" || entry.trim() === "") {
+      throw new WooCommerceOnboardingError("BAD_REQUEST", `${field} entries must be strings`, 400);
+    }
+    return entry.trim();
+  });
+}
+
 function readRouteGroupPolygons(value: unknown): Array<{
   closed: boolean;
   color?: string | null;
   driverId?: string | null;
   geometry: unknown;
+  id?: string | null;
   label: string;
 }> {
   if (!Array.isArray(value)) {
@@ -4358,6 +4380,7 @@ function readRouteGroupPolygons(value: unknown): Array<{
       color: typeof row.color === "string" ? row.color : null,
       driverId: typeof row.driverId === "string" && row.driverId.trim() !== "" ? row.driverId.trim() : null,
       geometry: row.geometry,
+      id: typeof row.id === "string" && row.id.trim() !== "" ? row.id.trim() : null,
       label,
     };
   });

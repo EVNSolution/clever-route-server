@@ -1019,6 +1019,7 @@ function routeGroupingFixture(overrides: Partial<RouteGroupingSummaryDto> = {}):
     status: 'CURRENT',
     totalOrders: 5,
     unresolvedOrders: 0,
+    updatedAt: '2026-06-19T12:00:00.000Z',
     warningState: [],
     ...overrides,
   };

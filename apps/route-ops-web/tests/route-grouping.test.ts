@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { appendPolygonVertex, closePolygonDraft, polygonDraftToGeoJson, readPolygonVertices, removeLastPolygonVertex } from '../src/routeGrouping';
+import { appendPolygonVertex, closePolygonDraft, insertPolygonVertex, movePolygonVertex, polygonDraftToGeoJson, readEditablePolygonVertices, readPolygonVertices, removeLastPolygonVertex } from '../src/routeGrouping';
 import { getRouteGroupingAssignableDrivers, getRouteGroupingDuplicateDriverPolygonIds } from '../src/pages/RouteGroupingPage';
 import type { DriverDto } from '../src/types';
 
@@ -22,6 +22,26 @@ describe('route grouping polygon draft helpers', () => {
       { latitude: 43, longitude: -78 },
       { latitude: 44, longitude: -78 },
       { latitude: 43, longitude: -79 },
+    ]);
+  });
+
+  test('edits existing polygon vertices without preserving the closing duplicate', () => {
+    const geometry = { type: 'Polygon', coordinates: [[[-79, 43], [-78, 43], [-78, 44], [-79, 43]]] };
+    let draft = { closed: true, vertices: readEditablePolygonVertices(geometry) };
+    expect(draft.vertices).toEqual([
+      { latitude: 43, longitude: -79 },
+      { latitude: 43, longitude: -78 },
+      { latitude: 44, longitude: -78 },
+    ]);
+
+    draft = movePolygonVertex(draft, 1, { latitude: 43.5, longitude: -78.5 });
+    draft = insertPolygonVertex(draft, 2, { latitude: 43.7, longitude: -78.2 });
+    expect(polygonDraftToGeoJson(draft)?.coordinates[0]).toEqual([
+      [-79, 43],
+      [-78.5, 43.5],
+      [-78.2, 43.7],
+      [-78, 44],
+      [-79, 43],
     ]);
   });
 

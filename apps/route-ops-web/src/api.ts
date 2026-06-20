@@ -253,11 +253,14 @@ export async function getRouteGrouping(
 
 export async function saveRouteGroupingPolygons(input: {
   csrfToken: string;
+  deletePolygonIds?: string[];
+  expectedUpdatedAt: string;
   polygons: Array<{
     closed: boolean;
     color?: string | null;
     driverId?: string | null;
     geometry: unknown;
+    id?: string | null;
     label: string;
   }>;
   routeGroupId: string;
@@ -266,7 +269,11 @@ export async function saveRouteGroupingPolygons(input: {
     `/admin/ui/app/api/route-groups/${encodeURIComponent(input.routeGroupId)}/polygons`,
     "PATCH",
     input.csrfToken,
-    { polygons: input.polygons },
+    {
+      ...(input.deletePolygonIds === undefined ? {} : { deletePolygonIds: input.deletePolygonIds }),
+      expectedUpdatedAt: input.expectedUpdatedAt,
+      polygons: input.polygons,
+    },
   );
 }
 
