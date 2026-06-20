@@ -200,6 +200,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
   }
 
   async savePolygons(input: SaveRouteGroupingPolygonsInput): Promise<RouteGroupingDetailDto | null> {
+    assertUniquePolygonDrivers(input.polygons);
     const groupingId = await this.prisma.$transaction(async (tx) => {
       const group = await findGroupingForUpdate(tx, input.shopDomain, input.groupingId);
       if (group === null) return null;
@@ -1017,6 +1018,18 @@ function deriveWarnings(group: LoadedGrouping): RouteGroupingWarningDto[] {
   if (notifiedRoutePlanIds.length > 0) warnings.push({ code: 'DRIVER_NOTIFICATION_SENT', message: 'A driver route notification has already been sent.', routePlanIds: [...new Set(notifiedRoutePlanIds)] });
   if (customerOrderIds.length > 0) warnings.push({ code: 'CUSTOMER_NOTIFICATION_SENT_OR_QUEUED', message: 'A persisted customer notification or reminder exists for affected orders.', orderIds: [...new Set(customerOrderIds)] });
   return warnings;
+}
+
+function assertUniquePolygonDrivers(polygons: SaveRouteGroupingPolygonsInput['polygons']): void {
+  const seenDriverIds = new Set<string>();
+  for (const polygon of polygons) {
+    const driverId = polygon.driverId?.trim();
+    if (driverId === undefined || driverId === '') continue;
+    if (seenDriverIds.has(driverId)) {
+      throw new RouteGroupingValidationError(['driver can only be assigned to one split polygon in a route grouping']);
+    }
+    seenDriverIds.add(driverId);
+  }
 }
 
 function normalizeIds(values: string[]): string[] {

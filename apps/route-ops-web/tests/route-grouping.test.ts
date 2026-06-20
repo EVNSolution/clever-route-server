@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { appendPolygonVertex, closePolygonDraft, polygonDraftToGeoJson, readPolygonVertices, removeLastPolygonVertex } from '../src/routeGrouping';
+import { getRouteGroupingAssignableDrivers } from '../src/pages/RouteGroupingPage';
+import type { DriverDto } from '../src/types';
 
 describe('route grouping polygon draft helpers', () => {
   test('click appends vertices and double-click closes only valid polygons', () => {
@@ -41,4 +43,23 @@ describe('route grouping polygon draft helpers', () => {
       ],
     });
   });
+
+  test('excludes drivers already used by another split polygon', () => {
+    const drivers = [
+      { id: 'driver-1', displayName: 'Alex Driver' },
+      { id: 'driver-2', displayName: 'Minji Driver' },
+      { id: 'driver-3', displayName: 'Sam Driver' },
+    ] as DriverDto[];
+    const assignedPolygon = { driverId: 'driver-1' };
+    const unassignedPolygon = { driverId: null };
+    const polygons = [
+      assignedPolygon,
+      unassignedPolygon,
+      { driverId: 'driver-3' },
+    ];
+
+    expect(getRouteGroupingAssignableDrivers(unassignedPolygon, polygons, drivers).map((driver) => driver.id)).toEqual(['driver-2']);
+    expect(getRouteGroupingAssignableDrivers(assignedPolygon, polygons, drivers).map((driver) => driver.id)).toEqual(['driver-1', 'driver-2']);
+  });
+
 });

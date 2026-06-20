@@ -871,7 +871,7 @@ small,
   align-items: center;
   display: grid;
   gap: 12px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   min-width: 0;
   position: relative;
 }
@@ -887,6 +887,26 @@ small,
   top: 50%;
   transform: translateY(-50%);
   z-index: 0;
+}
+.route-group-area-store-node {
+  align-items: center;
+  background: #008060;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  box-shadow: 0 2px 8px rgba(0, 128, 96, 0.28);
+  color: #ffffff;
+  display: inline-flex;
+  font-size: 16px;
+  font-weight: 900;
+  height: 28px;
+  justify-content: center;
+  line-height: 1;
+  position: relative;
+  width: 28px;
+  z-index: 1;
+}
+.route-group-area-store-node span {
+  transform: translateY(-1px);
 }
 .route-group-area-orders {
   align-items: center;
@@ -2123,7 +2143,27 @@ button.danger.subtle {
   .route-group-area-row {
     grid-template-columns: 1fr;
   }
-  .route-group-area-orders {
+  .route-group-area-store-node {
+  align-items: center;
+  background: #008060;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  box-shadow: 0 2px 8px rgba(0, 128, 96, 0.28);
+  color: #ffffff;
+  display: inline-flex;
+  font-size: 16px;
+  font-weight: 900;
+  height: 28px;
+  justify-content: center;
+  line-height: 1;
+  position: relative;
+  width: 28px;
+  z-index: 1;
+}
+.route-group-area-store-node span {
+  transform: translateY(-1px);
+}
+.route-group-area-orders {
     grid-template-columns: repeat(var(--route-group-area-columns, 1), minmax(24px, 1fr));
   }
   .route-group-area-finish {
@@ -2232,7 +2272,7 @@ button.danger.subtle {
 }
 .route-plan-actions {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
 }
 .route-plan-actions .primary {
   width: 100%;
@@ -3148,7 +3188,7 @@ button.danger.subtle {
   align-items: start;
   border: 1px solid #e6eaf1;
   border-radius: 14px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   padding: 12px;
 }
 
@@ -3213,7 +3253,7 @@ button.danger.subtle {
   align-items: start;
   display: grid;
   gap: 12px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
 }
 
 .settings-modal-header h2,

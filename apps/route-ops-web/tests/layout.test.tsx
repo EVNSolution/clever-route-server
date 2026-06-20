@@ -335,6 +335,8 @@ describe('route ops layout components', () => {
     expect(css).toContain('right: 36px;');
     expect(css).toContain('aspect-ratio: 1 / 1');
     expect(css).toContain('width: 24px');
+    expect(css).toContain('.route-group-area-store-node');
+    expect(css).toContain('grid-template-columns: auto minmax(0, 1fr) auto');
     expect(css).toContain('.route-group-area-finish');
     expect(css).toContain('.route-group-area-driver--assignable');
     expect(css).toContain('.route-group-area-driver-select');

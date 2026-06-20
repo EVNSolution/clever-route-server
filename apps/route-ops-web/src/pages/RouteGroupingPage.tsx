@@ -227,6 +227,7 @@ function RouteGroupingAreasCard({
           const polygonAssignments = assignmentsByPolygonId.get(polygon.id) ?? [];
           const label = driverLabel(polygon.driverId ?? "", drivers);
           const canAssignDriver = polygon.driverId === null;
+          const assignableDrivers = getRouteGroupingAssignableDrivers(polygon, polygons, drivers);
           return (
             <div className="route-group-area-row" key={polygon.id}>
               {canAssignDriver ? (
@@ -235,14 +236,14 @@ function RouteGroupingAreasCard({
                   <select
                     aria-label={`Assign driver to ${label} group`}
                     className="route-group-area-driver-select"
-                    disabled={busy || drivers.length === 0}
+                    disabled={busy || assignableDrivers.length === 0}
                     onChange={(event) => {
                       if (event.target.value !== "") onAssignDriver(polygon.id, event.target.value);
                     }}
                     value=""
                   >
-                    <option value="">{drivers.length === 0 ? "No drivers" : label}</option>
-                    {drivers.map((driver) => (
+                    <option value="">{assignableDrivers.length === 0 ? "All drivers used" : label}</option>
+                    {assignableDrivers.map((driver) => (
                       <option key={driver.id} value={driver.id}>{driver.displayName}</option>
                     ))}
                   </select>
@@ -254,6 +255,9 @@ function RouteGroupingAreasCard({
                 </span>
               )}
               <span className="route-group-area-track" style={{ "--route-group-area-color": color } as CSSProperties}>
+                <span className="route-group-area-store-node" aria-label="Store start" title="Store start">
+                  <span aria-hidden="true">⌂</span>
+                </span>
                 <span className="route-group-area-orders" aria-label={`${label} orders`}>
                   {polygonAssignments.map((assignment, index) => (
                     <span className="route-group-area-order-node" key={assignment.orderId}>
@@ -271,6 +275,20 @@ function RouteGroupingAreasCard({
       </div>
     </article>
   );
+}
+
+
+export function getRouteGroupingAssignableDrivers(
+  polygon: Pick<RouteGroupingPolygonDto, "driverId">,
+  polygons: Array<Pick<RouteGroupingPolygonDto, "driverId">>,
+  drivers: DriverDto[],
+): DriverDto[] {
+  const usedDriverIds = new Set(
+    polygons
+      .map((current) => current.driverId)
+      .filter((driverId): driverId is string => driverId !== null && driverId !== undefined && driverId !== polygon.driverId),
+  );
+  return drivers.filter((driver) => !usedDriverIds.has(driver.id));
 }
 
 function RouteGroupingOrderItemsCard({ assignments }: { assignments: RouteGroupingAssignmentDto[] }): ReactElement {
