@@ -56,20 +56,6 @@ export function getDriverOptionLabel(
   return driver.displayName;
 }
 
-export function formatRouteStopRecipientLabel(
-  recipientName: string | null,
-  fallback: string,
-): string {
-  const normalized = recipientName?.trim() ?? "";
-  if (normalized === "") return fallback;
-  if (normalized.length <= 4) return normalized;
-  const firstPart = normalized.split(/\s+/u)[0]?.trim();
-  if (firstPart !== undefined && firstPart !== "") {
-    return firstPart.length > 8 ? `${firstPart.slice(0, 8)}…` : firstPart;
-  }
-  return normalized.length > 8 ? `${normalized.slice(0, 8)}…` : normalized;
-}
-
 export function getRouteDriverDisplay(
   routePlan: Pick<RoutePlanSummaryDto, "driverId"> | null,
   drivers: DriverDto[],
@@ -1096,14 +1082,6 @@ function ChildRouteSequenceCard({
                 const isDropTarget =
                   dropPreview?.targetStopId === stop.deliveryStopId;
                 const dropPosition = isDropTarget ? dropPreview.position : null;
-                const recipientLabel = formatRouteStopRecipientLabel(
-                  stop.recipientName,
-                  t.noRecipient,
-                );
-                const recipientTitle =
-                  stop.recipientName?.trim() === ""
-                    ? t.noRecipient
-                    : (stop.recipientName ?? t.noRecipient);
                 return (
                   <span
                     className={[
@@ -1152,12 +1130,6 @@ function ChildRouteSequenceCard({
                       onDrop(stop.deliveryStopId, position);
                     }}
                   >
-                    <span
-                      className="route-child-sequence-customer"
-                      title={recipientTitle}
-                    >
-                      {recipientLabel}
-                    </span>
                     <span
                       aria-label={t.dragPlanOrder(stop.orderName)}
                       className="route-group-area-order-token route-child-sequence-token"

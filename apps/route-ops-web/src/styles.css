@@ -2084,7 +2084,6 @@ button.danger.subtle {
 }
 .route-child-sequence-track::before {
   right: 42px;
-  top: calc(50% + 7px);
 }
 .route-child-sequence-node {
   align-items: center;
@@ -2127,20 +2126,6 @@ button.danger.subtle {
 }
 .route-child-sequence-token:active {
   cursor: grabbing;
-}
-.route-child-sequence-customer {
-  color: #334155;
-  display: block;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: -0.01em;
-  line-height: 1.05;
-  max-width: 58px;
-  min-height: 11px;
-  overflow: hidden;
-  text-align: center;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .route-child-sequence-footer {
   align-items: center;

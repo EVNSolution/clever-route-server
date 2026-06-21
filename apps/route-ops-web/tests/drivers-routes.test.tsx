@@ -31,7 +31,6 @@ import {
   formatRouteChildDriverName,
   formatRouteChildStopTitle,
   formatRoutePlanNameForDisplay,
-  formatRouteStopRecipientLabel,
   formatRoutePlanStatus,
   hasDepotCoordinates,
   isRouteVisibleToLinkedDriver,
@@ -291,13 +290,6 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     ).toBe('Minji Lee');
   });
 
-  test('formats route stop recipient labels for compact child stop nodes', () => {
-    expect(formatRouteStopRecipientLabel('Jane Customer', 'No recipient')).toBe('Jane');
-    expect(formatRouteStopRecipientLabel('Christopher Longname', 'No recipient')).toBe('Christop…');
-    expect(formatRouteStopRecipientLabel('임지인', 'No recipient')).toBe('임지인');
-    expect(formatRouteStopRecipientLabel(null, 'No recipient')).toBe('No recipient');
-  });
-
   test('hides generated child route version suffixes in route detail titles', () => {
     expect(formatRoutePlanNameForDisplay('Route 2026-06-19 — Jamie Test v1')).toBe('Route 2026-06-19 — Jamie Test');
     expect(formatRoutePlanNameForDisplay('Route 2026-06-19 — Jamie Test')).toBe('Route 2026-06-19 — Jamie Test');
@@ -405,8 +397,8 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('App linked');
     expect(html).not.toContain('Invite pending');
     expect(html).toContain('aria-label="Store start"');
-    expect(html).toContain('class="route-child-sequence-customer"');
-    expect(html).toContain('title="Jane Customer">Jane</span>');
+    expect(html).not.toContain('class="route-child-sequence-customer"');
+    expect(html).not.toContain('title="Jane Customer">Jane</span>');
     expect(html).toContain('aria-label="Drag to reorder #1001"');
     expect(html).not.toContain('route-child-sequence-node-actions');
     expect(html).not.toContain('aria-label="Move #1001 down"');
