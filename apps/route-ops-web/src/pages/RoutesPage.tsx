@@ -51,14 +51,9 @@ type StopDropPreview = {
 
 export function getDriverOptionLabel(
   driver: DriverDto,
-  locale: string | null | undefined = "en-CA",
+  _locale: string | null | undefined = "en-CA",
 ): string {
-  const t = getRoutesCopy(locale);
-  const appAccess =
-    driver.appLinked || driver.authStatus === "APP_LINKED"
-      ? t.appLinked
-      : t.invitePending;
-  return `${driver.displayName} · ${appAccess}`;
+  return driver.displayName;
 }
 
 export function getRouteDriverDisplay(
@@ -645,9 +640,10 @@ export function RouteBuilder(input: {
         routeEndMode: draftRouteEndMode,
       }),
     );
-    input.setDetail(updated);
+    const refreshed = await getRouteDetail(updated.routePlan.id);
+    input.setDetail(refreshed);
     input.onRefreshRoutes();
-    return updated;
+    return refreshed;
   };
 
   const save = async (): Promise<void> => {
@@ -1031,15 +1027,6 @@ function ChildRouteSequenceCard({
           <span className="eyebrow">{t.routeStops}</span>
           <h3>{routeName}</h3>
         </div>
-        <button
-          aria-label={t.saveRoute}
-          className="primary route-save-button"
-          disabled={!canSaveRoute}
-          onClick={onSave}
-          type="button"
-        >
-          {isSavingRoute ? t.savingRoute : t.saveRoute}
-        </button>
       </div>
       <div className="route-group-area-list route-child-sequence-list">
         <div className="route-group-area-row route-child-sequence-row">
@@ -1166,22 +1153,33 @@ function ChildRouteSequenceCard({
         </div>
       </div>
       <div className="route-child-sequence-footer">
-        <label className="route-end-toggle">
-          <input
-            aria-describedby={!canReturnToDepot ? routeEndWarningId : undefined}
-            checked={returnToDepotChecked}
-            className="route-end-toggle-checkbox"
-            disabled={returnToDepotDisabled}
-            onChange={(event) => onReturnToDepotChange(event.target.checked)}
-            type="checkbox"
-          />
-          <span>{t.returnToStore}</span>
-        </label>
-        {!canReturnToDepot ? (
-          <small className="form-warning" id={routeEndWarningId}>
-            {t.returnToStoreDepotMissing}
-          </small>
-        ) : null}
+        <div className="route-child-sequence-return">
+          <label className="route-end-toggle">
+            <input
+              aria-describedby={!canReturnToDepot ? routeEndWarningId : undefined}
+              checked={returnToDepotChecked}
+              className="route-end-toggle-checkbox"
+              disabled={returnToDepotDisabled}
+              onChange={(event) => onReturnToDepotChange(event.target.checked)}
+              type="checkbox"
+            />
+            <span>{t.returnToStore}</span>
+          </label>
+          {!canReturnToDepot ? (
+            <small className="form-warning" id={routeEndWarningId}>
+              {t.returnToStoreDepotMissing}
+            </small>
+          ) : null}
+        </div>
+        <button
+          aria-label={t.saveRoute}
+          className="primary route-save-button"
+          disabled={!canSaveRoute}
+          onClick={onSave}
+          type="button"
+        >
+          {isSavingRoute ? t.savingRoute : t.saveRoute}
+        </button>
       </div>
     </article>
   );

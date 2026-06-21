@@ -157,24 +157,22 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(formatDriverAuthLabel(linkedDriverFixture(), 'ko-KR')).toBe('연결됨');
   });
 
-  test('labels pending drivers in route assignment and route lists', () => {
+  test('labels route assignment drivers by name only', () => {
     const pending = driverFixture();
     const linked = linkedDriverFixture();
     const route = routePlanFixture({ driverId: pending.id });
 
-    expect(getDriverOptionLabel(pending)).toBe('Alex Driver · Invite pending');
-    expect(getDriverOptionLabel(linked)).toBe('Minji Driver · App linked');
-    expect(getRouteDriverDisplay(route, [pending, linked])).toBe(
-      'Alex Driver · Invite pending',
-    );
+    expect(getDriverOptionLabel(pending)).toBe('Alex Driver');
+    expect(getDriverOptionLabel(linked)).toBe('Minji Driver');
+    expect(getRouteDriverDisplay(route, [pending, linked])).toBe('Alex Driver');
     expect(getRouteDriverDisplay(routePlanFixture({ driverId: null }), [pending])).toBe(
       'Unassigned',
     );
     expect(getRouteDriverDisplay(routePlanFixture({ driverId: 'unknown-driver' }), [pending])).toBe(
       'unknown-driver',
     );
-    expect(getDriverOptionLabel(pending, 'ko-KR')).toBe('Alex Driver · 초대 대기');
-    expect(getDriverOptionLabel(linked, 'ko-KR')).toBe('Minji Driver · 앱 연결됨');
+    expect(getDriverOptionLabel(pending, 'ko-KR')).toBe('Alex Driver');
+    expect(getDriverOptionLabel(linked, 'ko-KR')).toBe('Minji Driver');
     expect(getRouteDriverDisplay(routePlanFixture({ driverId: null }), [pending], 'ko-KR')).toBe(
       '미배정',
     );
@@ -382,15 +380,19 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('class="panel route-group-areas-card route-child-sequence-card"');
     expect(html).toContain('<span class="eyebrow">Route stops</span>');
     expect(html).toContain('<h3>Route 2026-06-05</h3>');
+    expect(extractFirstMatch(html, /<div class="route-child-sequence-header">([\s\S]*?)<\/div><div class="route-group-area-list/)).not.toContain('Save route');
     expect(html).toContain('class="route-map-header-actions"');
     expect(html).toContain('class="danger subtle route-map-delete-button"');
     expect(html).toContain('class="route-group-area-driver route-group-area-driver--assignable route-child-sequence-driver"');
     expect(html).toContain('<option value="" selected="">Unassigned</option>');
-    expect(html).toContain('Alex Driver · Invite pending');
+    expect(html).toContain('Alex Driver');
+    expect(html).not.toContain('App linked');
+    expect(html).not.toContain('Invite pending');
     expect(html).toContain('aria-label="Store start"');
     expect(html).toContain('aria-label="Drag to reorder #1001"');
     expect(html).toContain('>Finish</span>');
-    expect(html).toContain('Return to store');
+    expect(html).toContain('class="route-child-sequence-footer"');
+    expect(html).toMatch(/class="route-child-sequence-footer"[\s\S]*Return to store[\s\S]*Save route/);
     expect(html).toContain('<span>Items total</span>');
     expect(html).toContain('class="tab-secondary" data-tab-region="secondary" hidden=""');
     expect(html).not.toContain('class="panel side-panel route-save-panel route-builder-card-shell"');

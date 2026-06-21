@@ -2090,13 +2090,23 @@ button.danger.subtle {
   align-items: center;
   border-top: 1px solid #e6eaf1;
   display: flex;
-  flex-wrap: wrap;
   gap: 10px 14px;
   justify-content: space-between;
   padding-top: 12px;
 }
+.route-child-sequence-return {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-width: 0;
+}
 .route-child-sequence-footer .form-warning {
   flex: 1 1 260px;
+}
+.route-child-sequence-footer .route-save-button {
+  margin-left: auto;
 }
 .route-map-delete-button {
   min-height: 32px;
@@ -2110,6 +2120,13 @@ button.danger.subtle {
   .route-child-sequence-footer {
     align-items: stretch;
     flex-direction: column;
+  }
+  .route-child-sequence-return {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .route-child-sequence-footer .route-save-button {
+    margin-left: 0;
   }
 }
 .tab-primary,
