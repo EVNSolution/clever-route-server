@@ -29,7 +29,9 @@ import {
   getRouteDriverDisplay,
   getRoutePublishBadge,
   formatRouteChildDriverName,
+  formatRouteChildStopTitle,
   formatRoutePlanNameForDisplay,
+  formatRouteStopRecipientLabel,
   formatRoutePlanStatus,
   hasDepotCoordinates,
   isRouteVisibleToLinkedDriver,
@@ -289,9 +291,22 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     ).toBe('Minji Lee');
   });
 
+  test('formats route stop recipient labels for compact child stop nodes', () => {
+    expect(formatRouteStopRecipientLabel('Jane Customer', 'No recipient')).toBe('Jane');
+    expect(formatRouteStopRecipientLabel('Christopher Longname', 'No recipient')).toBe('Christop…');
+    expect(formatRouteStopRecipientLabel('임지인', 'No recipient')).toBe('임지인');
+    expect(formatRouteStopRecipientLabel(null, 'No recipient')).toBe('No recipient');
+  });
+
   test('hides generated child route version suffixes in route detail titles', () => {
     expect(formatRoutePlanNameForDisplay('Route 2026-06-19 — Jamie Test v1')).toBe('Route 2026-06-19 — Jamie Test');
     expect(formatRoutePlanNameForDisplay('Route 2026-06-19 — Jamie Test')).toBe('Route 2026-06-19 — Jamie Test');
+  });
+
+  test('hides child driver suffixes in child route stop titles', () => {
+    expect(formatRouteChildStopTitle('Route 2026-06-19 — 임 지인 v1')).toBe('Route 2026-06-19');
+    expect(formatRouteChildStopTitle('Route 2026-06-19 — Jamie Test')).toBe('Route 2026-06-19');
+    expect(formatRouteChildStopTitle('Route 2026-06-19')).toBe('Route 2026-06-19');
   });
 
   test('localizes the exposed return-to-store Route Builder option', () => {
@@ -380,6 +395,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('class="panel route-group-areas-card route-child-sequence-card"');
     expect(html).toContain('<span class="eyebrow">Route stops</span>');
     expect(html).toContain('<h3>Route 2026-06-05</h3>');
+    expect(html).not.toContain('<h3>Route 2026-06-05 — Alex Driver</h3>');
     expect(extractFirstMatch(html, /<div class="route-child-sequence-header">([\s\S]*?)<\/div><div class="route-group-area-list/)).not.toContain('Save route');
     expect(html).toContain('class="route-map-header-actions"');
     expect(html).toContain('class="danger subtle route-map-delete-button"');
@@ -390,10 +406,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('Invite pending');
     expect(html).toContain('aria-label="Store start"');
     expect(html).toContain('class="route-child-sequence-customer"');
-    expect(html).toContain('Jane Customer');
+    expect(html).toContain('title="Jane Customer">Jane</span>');
     expect(html).toContain('aria-label="Drag to reorder #1001"');
-    expect(html).toContain('aria-label="Move #1001 down"');
-    expect(html).toContain('aria-label="Move #1002 up"');
+    expect(html).not.toContain('route-child-sequence-node-actions');
+    expect(html).not.toContain('aria-label="Move #1001 down"');
+    expect(html).not.toContain('aria-label="Move #1002 up"');
     expect(html).toContain('>Finish</span>');
     expect(html).toContain('class="route-child-sequence-footer"');
     expect(html).toMatch(/class="route-child-sequence-footer"[\s\S]*Return to store[\s\S]*Save route/);
@@ -490,7 +507,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('aria-label="Drag to reorder #11000"');
     expect(html).toContain('aria-label="Drag to reorder #11010"');
     expect(html).toContain('>11</span>');
-    expect(html).toContain('class="route-child-sequence-node-actions"');
+    expect(html).not.toContain('class="route-child-sequence-node-actions"');
     expect(html).not.toContain('class="route-builder-tab-body route-builder-tab-body--stop-order"');
     expect(html).not.toContain('class="route-stop-compact-list"');
     expect(html).not.toContain('class="route-stop-count-badge"');

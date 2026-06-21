@@ -56,6 +56,20 @@ export function getDriverOptionLabel(
   return driver.displayName;
 }
 
+export function formatRouteStopRecipientLabel(
+  recipientName: string | null,
+  fallback: string,
+): string {
+  const normalized = recipientName?.trim() ?? "";
+  if (normalized === "") return fallback;
+  if (normalized.length <= 4) return normalized;
+  const firstPart = normalized.split(/\s+/u)[0]?.trim();
+  if (firstPart !== undefined && firstPart !== "") {
+    return firstPart.length > 8 ? `${firstPart.slice(0, 8)}…` : firstPart;
+  }
+  return normalized.length > 8 ? `${normalized.slice(0, 8)}…` : normalized;
+}
+
 export function getRouteDriverDisplay(
   routePlan: Pick<RoutePlanSummaryDto, "driverId"> | null,
   drivers: DriverDto[],
@@ -80,6 +94,10 @@ export function formatRouteChildDriverName(
 
 export function formatRoutePlanNameForDisplay(name: string): string {
   return name.replace(/\s+v\d+$/u, "");
+}
+
+export function formatRouteChildStopTitle(name: string): string {
+  return formatRoutePlanNameForDisplay(name).replace(/\s+—\s+.+$/u, "");
 }
 
 export function shouldTryRouteGroupFallback(error: unknown): boolean {
@@ -740,7 +758,6 @@ export function RouteBuilder(input: {
           onDriverChange={setDraftDriverId}
           onDrop={dropDraftStop}
           onDropPreview={setDropPreview}
-          onMove={moveDraftStop}
           onReturnToDepotChange={(checked) => {
             if (checked && !canReturnToDepot) return;
             setDraftRouteEndMode(
@@ -754,7 +771,7 @@ export function RouteBuilder(input: {
           routeName={
             detail === null
               ? t.routeBuilder
-              : formatRoutePlanNameForDisplay(detail.routePlan.name)
+              : formatRouteChildStopTitle(detail.routePlan.name)
           }
           stops={draftStops}
         />
@@ -961,7 +978,6 @@ function ChildRouteSequenceCard({
   onDriverChange,
   onDrop,
   onDropPreview,
-  onMove,
   onReturnToDepotChange,
   onSave,
   returnToDepotChecked,
@@ -984,7 +1000,6 @@ function ChildRouteSequenceCard({
   onDriverChange(driverId: string): void;
   onDrop(targetStopId: string, position: StopDropPosition): void;
   onDropPreview(preview: StopDropPreview | null): void;
-  onMove(deliveryStopId: string, direction: -1 | 1): void;
   onReturnToDepotChange(checked: boolean): void;
   onSave(): void;
   returnToDepotChecked: boolean;
@@ -1081,10 +1096,14 @@ function ChildRouteSequenceCard({
                 const isDropTarget =
                   dropPreview?.targetStopId === stop.deliveryStopId;
                 const dropPosition = isDropTarget ? dropPreview.position : null;
-                const recipientLabel =
+                const recipientLabel = formatRouteStopRecipientLabel(
+                  stop.recipientName,
+                  t.noRecipient,
+                );
+                const recipientTitle =
                   stop.recipientName?.trim() === ""
-                    ? null
-                    : stop.recipientName;
+                    ? t.noRecipient
+                    : (stop.recipientName ?? t.noRecipient);
                 return (
                   <span
                     className={[
@@ -1135,9 +1154,9 @@ function ChildRouteSequenceCard({
                   >
                     <span
                       className="route-child-sequence-customer"
-                      title={recipientLabel ?? t.noRecipient}
+                      title={recipientTitle}
                     >
-                      {recipientLabel ?? t.noRecipient}
+                      {recipientLabel}
                     </span>
                     <span
                       aria-label={t.dragPlanOrder(stop.orderName)}
@@ -1146,24 +1165,6 @@ function ChildRouteSequenceCard({
                       title={stop.orderName}
                     >
                       {index + 1}
-                    </span>
-                    <span className="route-child-sequence-node-actions">
-                      <button
-                        aria-label={t.moveUp(stop.orderName)}
-                        disabled={disabled || index === 0}
-                        onClick={() => onMove(stop.deliveryStopId, -1)}
-                        type="button"
-                      >
-                        ‹
-                      </button>
-                      <button
-                        aria-label={t.moveDown(stop.orderName)}
-                        disabled={disabled || index === stops.length - 1}
-                        onClick={() => onMove(stop.deliveryStopId, 1)}
-                        type="button"
-                      >
-                        ›
-                      </button>
                     </span>
                   </span>
                 );
