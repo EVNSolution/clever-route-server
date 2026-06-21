@@ -331,6 +331,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
 
     const html = renderToStaticMarkup(
       <RouteBuilder
+        isChildRouteDetail
         bootstrap={bootstrap({
           routerConfig: { coverage: 'ontario', provider: 'osrm', status: 'configured' },
         })}
@@ -350,16 +351,80 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('Published route — visible to the linked driver after the app refreshes.');
     expect(html).not.toContain('Driver app visible');
     expect(html).toMatch(/aria-label="Save route"[^>]*disabled=""/);
-    expect(html).toContain('Driver &amp; options');
+    expect(html).toContain('class="panel route-group-areas-card route-child-sequence-card"');
     expect(html).toContain('Return to store');
     expect(html).not.toContain('save driver');
     expect(html).not.toContain('Publish route');
     expect(html).not.toContain('Stops ready · road path not generated');
   });
 
-  test('RouteBuilder defaults to Driver & options tab with one aggregate Save route action', () => {
+  test('RouteBuilder renders a full-width child sequence card with one aggregate Save route action', () => {
     const detail = routePlanDetailFixture({
       routePlan: routePlanFixture({ name: 'Route 2026-06-05' }),
+    });
+    const html = renderToStaticMarkup(
+      <RouteBuilder
+        isChildRouteDetail
+        bootstrap={bootstrap()}
+        deletingRouteId={null}
+        detail={detail}
+        drivers={[driverFixture()]}
+        navigate={() => undefined}
+        onDeleteRoute={() => undefined}
+        onRefreshRoutes={() => undefined}
+        setDetail={() => undefined}
+        setError={() => undefined}
+      />,
+    );
+
+    expect(html.match(/aria-label="Save route"/g)).toHaveLength(1);
+    expect(html).toContain('class="tab-layout primary-expanded"');
+    expect(html).toContain('class="panel route-group-areas-card route-child-sequence-card"');
+    expect(html).toContain('<span class="eyebrow">Route stops</span>');
+    expect(html).toContain('<h3>Route 2026-06-05</h3>');
+    expect(html).toContain('class="route-map-header-actions"');
+    expect(html).toContain('class="danger subtle route-map-delete-button"');
+    expect(html).toContain('class="route-group-area-driver route-group-area-driver--assignable route-child-sequence-driver"');
+    expect(html).toContain('<option value="" selected="">Unassigned</option>');
+    expect(html).toContain('Alex Driver · Invite pending');
+    expect(html).toContain('aria-label="Store start"');
+    expect(html).toContain('aria-label="Drag to reorder #1001"');
+    expect(html).toContain('>Finish</span>');
+    expect(html).toContain('Return to store');
+    expect(html).toContain('<span>Items total</span>');
+    expect(html).toContain('class="tab-secondary" data-tab-region="secondary" hidden=""');
+    expect(html).not.toContain('class="panel side-panel route-save-panel route-builder-card-shell"');
+    expect(html).not.toContain('Driver &amp; options');
+    expect(html).not.toContain('aria-controls="route-builder-panel-driver-options"');
+    expect(html).not.toContain('aria-controls="route-builder-panel-stop-order"');
+    expect(html).not.toContain('class="route-builder-card-footer"');
+    expect(html).not.toContain('Unsaved route changes are ready.');
+    expect(html).not.toContain('Save route applies driver, return option, and stop order together.');
+    expect(html).not.toContain('Not visible to driver app yet');
+    expect(html).not.toContain('class="route-stop-compact-list"');
+    expect(html).not.toContain('class="ops-table route-stop-table"');
+    expect(html).not.toContain('save driver');
+    expect(html).not.toContain('save route options');
+    expect(html).not.toContain('Publish route');
+  });
+
+  test('RouteBuilder keeps standalone routes on the side-control layout', () => {
+    const baseDetail = routePlanDetailFixture();
+    const detail = routePlanDetailFixture({
+      stops: [
+        {
+          ...baseDetail.stops[0]!,
+          items: [{
+            name: 'Tomato box',
+            options: [{ key: 'Size', value: 'Large' }],
+            productId: 101,
+            quantity: 2,
+            sku: 'TOM-L',
+            variationId: 7,
+          }],
+        },
+        baseDetail.stops[1]!,
+      ],
     });
     const html = renderToStaticMarkup(
       <RouteBuilder
@@ -374,44 +439,16 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         setError={() => undefined}
       />,
     );
-    const cardHeader = extractFirstMatch(html, /<div class="route-builder-card-header">([\s\S]*?)<div aria-label="Route Builder card tabs"/);
-    const routeStateList = extractFirstMatch(html, /<dl class="route-state-list">([\s\S]*?)<\/dl>/);
 
-    expect(html.match(/aria-label="Save route"/g)).toHaveLength(1);
+    expect(html).not.toContain('class="tab-layout primary-expanded"');
     expect(html).toContain('class="panel side-panel route-save-panel route-builder-card-shell"');
-    expect(html).not.toContain('class="route-builder-route-title"');
-    expect(cardHeader).toContain('Route state');
-    expect(cardHeader).not.toContain('Route 2026-06-05');
-    expect(cardHeader).toContain('class="route-row-actions route-builder-card-actions"');
-    expect(cardHeader).not.toContain('All routes');
-    expect(cardHeader).toContain('Delete');
-    expect(cardHeader).not.toContain('route-stop-count-badge');
-    expect(routeStateList).not.toContain('<dt>Status</dt>');
-    expect(routeStateList).toContain('<dt>Driver</dt>');
-    expect(html).toContain('Driver &amp; options');
-    expect(html).toContain('Stop order');
-    expect(html).toContain('aria-controls="route-builder-panel-driver-options"');
-    expect(html).toContain('aria-controls="route-builder-panel-stop-order"');
-    expect(html).toContain('id="route-builder-panel-driver-options"');
-    expect(html).toContain('aria-labelledby="route-builder-tab-driver-options"');
-    expect(html).toContain('class="route-builder-tab-body route-builder-tab-body--driver"');
-    expect(html).toContain('class="route-end-toggle-checkbox"');
-    expect(html).toContain('Return to store');
-    expect(html).not.toContain('Assigned driver');
-    expect(html).not.toContain('routing returns to the store after the final stop');
-    expect(html).not.toContain('routing ends at the final order stop');
-    expect(html).toContain('class="route-builder-card-footer"');
-    expect(html).not.toContain('Unsaved route changes are ready.');
-    expect(html).not.toContain('Save route applies driver, return option, and stop order together.');
-    expect(html).not.toContain('Not visible to driver app yet');
-    expect(html).not.toContain('class="route-stop-compact-list"');
-    expect(html).not.toContain('class="ops-table route-stop-table"');
-    expect(html).not.toContain('save driver');
-    expect(html).not.toContain('save route options');
-    expect(html).not.toContain('Publish route');
+    expect(html).toContain('class="route-state-list"');
+    expect(html).toContain('class="route-stop-item-lines"');
+    expect(html).toContain('Tomato box (Size: Large) × 2');
+    expect(html).not.toContain('class="panel route-group-areas-card route-child-sequence-card"');
   });
 
-  test('RouteBuilder stop-order tab renders scroll-contained right-card stop table with shared Save route action', () => {
+  test('RouteBuilder renders child route stop order as a map-below sequence track', () => {
     const baseDetail = routePlanDetailFixture();
     const stops: RoutePlanDetailDto['stops'] = Array.from({ length: 11 }, (_, index) => ({
       ...baseDetail.stops[index % baseDetail.stops.length]!,
@@ -427,11 +464,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     });
     const html = renderToStaticMarkup(
       <RouteBuilder
+        isChildRouteDetail
         bootstrap={bootstrap()}
         deletingRouteId={null}
         detail={detail}
         drivers={[driverFixture()]}
-        initialBuilderTab="stop-order"
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
         onRefreshRoutes={() => undefined}
@@ -439,22 +476,19 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         setError={() => undefined}
       />,
     );
-    const cardHeader = extractFirstMatch(html, /<div class="route-builder-card-header">([\s\S]*?)<div aria-label="Route Builder card tabs"/);
-    const stopToolbar = extractFirstMatch(html, /<div class="route-stop-compact-toolbar">([\s\S]*?)<div aria-label="Stop order"/);
 
     expect(html.match(/aria-label="Save route"/g)).toHaveLength(1);
-    expect(html).not.toContain('Route stops');
-    expect(html).not.toContain('Stop order table');
-    expect(html).not.toContain('Drag or use the arrow controls to preview the route order before saving.');
-    expect(html).toContain('class="route-builder-tab-body route-builder-tab-body--stop-order"');
-    expect(html).toContain('class="route-stop-compact-list"');
+    expect(html).toContain('class="tab-layout primary-expanded"');
+    expect(html).toContain('class="panel route-group-areas-card route-child-sequence-card"');
+    expect(html).toContain('style="--route-group-area-columns:11"');
+    expect(html).toContain('aria-label="Drag to reorder #11000"');
+    expect(html).toContain('aria-label="Drag to reorder #11010"');
+    expect(html).toContain('11</button>');
+    expect(html).not.toContain('class="route-builder-tab-body route-builder-tab-body--stop-order"');
+    expect(html).not.toContain('class="route-stop-compact-list"');
+    expect(html).not.toContain('class="route-stop-count-badge"');
     expect(html).not.toContain('class="drag-handle"');
     expect(html).not.toContain('::');
-    expect(stopToolbar).toContain('class="badge route-stop-count-badge"');
-    expect(stopToolbar).toContain('11 stops');
-    expect(cardHeader).not.toContain('11 stops');
-    expect(html.indexOf('class="route-builder-card-footer"')).toBeGreaterThan(html.indexOf('class="route-stop-compact-list"'));
-    expect(html).not.toContain('Save route applies driver, return option, and stop order together.');
     expect(html).not.toContain('class="ops-table route-stop-table"');
   });
 
@@ -491,6 +525,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     });
     const html = renderToStaticMarkup(
       <RouteBuilder
+        isChildRouteDetail
         bootstrap={bootstrap()}
         deletingRouteId={null}
         detail={detail}
@@ -517,6 +552,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     });
     const html = renderToStaticMarkup(
       <RouteBuilder
+        isChildRouteDetail
         bootstrap={bootstrap()}
         deletingRouteId={null}
         detail={detail}
@@ -535,10 +571,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toMatch(/aria-label="Save route"[^>]*disabled=""/);
   });
 
-  test('RouteStopOrderCompactList keeps stop order data and controls within side-card markup', () => {
+  test('RouteStopOrderCompactList keeps stop order data without item-line dumps', () => {
     const detail = routePlanDetailFixture();
     const html = renderToStaticMarkup(
       <RouteStopOrderCompactList
+        showItems={false}
         draggingStopId={null}
         dropPreview={null}
         onDragEnd={() => undefined}
@@ -558,6 +595,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('class="drag-handle"');
     expect(html).not.toContain('::');
     expect(html).not.toContain('route-stop-table');
+    expect(html).not.toContain('route-stop-item-lines');
   });
 
   test('RouteBuilder renders clean route item totals and removes the stop item dump', () => {
@@ -583,11 +621,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
 
     const html = renderToStaticMarkup(
       <RouteBuilder
+        isChildRouteDetail
         bootstrap={bootstrap()}
         deletingRouteId={null}
         detail={detail}
         drivers={[driverFixture()]}
-        initialBuilderTab="stop-order"
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
         onRefreshRoutes={() => undefined}
@@ -633,11 +671,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     const detail = routePlanDetailFixture();
     const html = renderToStaticMarkup(
       <RouteBuilder
+        isChildRouteDetail
         bootstrap={bootstrap()}
         deletingRouteId={null}
         detail={detail}
         drivers={[driverFixture()]}
-        initialBuilderTab="stop-order"
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
         onRefreshRoutes={() => undefined}
@@ -661,11 +699,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
   test('RouteBuilder keeps driver and return controls editable without optimization lock', () => {
     const html = renderToStaticMarkup(
       <RouteBuilder
+        isChildRouteDetail
         bootstrap={bootstrap()}
         deletingRouteId={null}
         detail={routePlanDetailFixture()}
         drivers={[driverFixture()]}
-        initialBuilderTab="driver-options"
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
         onRefreshRoutes={() => undefined}
@@ -684,11 +722,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
   test('RouteBuilder omits terminal optimization job copy from normal route detail', () => {
     const html = renderToStaticMarkup(
       <RouteBuilder
+        isChildRouteDetail
         bootstrap={bootstrap()}
         deletingRouteId={null}
         detail={routePlanDetailFixture()}
         drivers={[driverFixture()]}
-        initialBuilderTab="stop-order"
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
         onRefreshRoutes={() => undefined}
@@ -1046,6 +1084,7 @@ function routePlanFixture(overrides: Partial<RoutePlanSummaryDto> = {}): RoutePl
     name: 'Route draft',
     planDate: '2026-05-26',
     routeEndMode: 'END_AT_LAST_STOP',
+    routeGroupingChild: null,
     status: 'DRAFT',
     stopsCount: 2,
     updatedAt: '2026-05-26T12:00:00.000Z',

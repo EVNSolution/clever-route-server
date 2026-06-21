@@ -239,6 +239,8 @@ export const routesCopy = {
     savingRouteOptions: 'saving route options…',
     routeState: 'Route state',
     routeStops: 'Route stops',
+    storeStart: 'Store start',
+    finish: 'Finish',
     routeBuilderTabs: {
       driverOptions: 'Driver & options',
       label: 'Route Builder card tabs',
@@ -351,6 +353,8 @@ export const routesCopy = {
     savingRouteOptions: '경로 옵션 저장 중…',
     routeState: '경로 상태',
     routeStops: '하차 순서',
+    storeStart: '매장 출발',
+    finish: '완료',
     routeBuilderTabs: {
       driverOptions: '배송원 및 옵션',
       label: '경로 편집 카드 탭',

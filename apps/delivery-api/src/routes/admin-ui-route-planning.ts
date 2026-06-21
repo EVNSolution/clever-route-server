@@ -1043,6 +1043,7 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
   name: string;
   planDate: string;
   routeEndMode: RoutePlanSummary["routeEndMode"];
+  routeGroupingChild: NonNullable<RoutePlanSummary["routeGroupingChild"]> | null;
   status: string;
   stopsCount: number;
   updatedAt: string;
@@ -1059,6 +1060,7 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
     name: routePlan.name,
     planDate: routePlan.planDate,
     routeEndMode: routePlan.routeEndMode,
+    routeGroupingChild: routePlan.routeGroupingChild ?? null,
     status: routePlan.status,
     stopsCount: routePlan.stopsCount,
     updatedAt: routePlan.updatedAt,

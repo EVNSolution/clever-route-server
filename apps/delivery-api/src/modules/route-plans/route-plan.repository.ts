@@ -76,9 +76,16 @@ type RoutePlanRecord = {
   metrics: unknown;
   name: string;
   planDate: Date;
+  routeGroupingChildVersions?: RouteGroupingChildVersionRecord[];
   routeStops?: RoutePlanStopRecord[];
   status: string;
   updatedAt: Date;
+};
+
+type RouteGroupingChildVersionRecord = {
+  groupingId: string;
+  status: string;
+  version: number;
 };
 
 type RoutePlanDriverRecord = {
@@ -1685,6 +1692,15 @@ function routePlanSummaryInclude() {
         }
       }
     },
+    routeGroupingChildVersions: {
+      orderBy: { createdAt: 'desc' as const },
+      select: {
+        groupingId: true,
+        status: true,
+        version: true
+      },
+      take: 1
+    },
     routeStops: {
       include: {
         deliveryStop: {
@@ -1718,6 +1734,15 @@ function routePlanInclude() {
           }
         }
       }
+    },
+    routeGroupingChildVersions: {
+      orderBy: { createdAt: 'desc' },
+      select: {
+        groupingId: true,
+        status: true,
+        version: true
+      },
+      take: 1
     },
     routeStops: {
       include: {
@@ -1861,9 +1886,20 @@ function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanO
     name: routePlan.name,
     planDate: formatDateOnly(routePlan.planDate),
     routeEndMode: readRouteEndMode(routePlan.constraints),
+    routeGroupingChild: toRouteGroupingChildSummary(routePlan.routeGroupingChildVersions),
     status: routePlan.status,
     stopsCount: metrics.stopsCount,
     updatedAt: routePlan.updatedAt.toISOString()
+  };
+}
+
+function toRouteGroupingChildSummary(childVersions: RouteGroupingChildVersionRecord[] | undefined): NonNullable<RoutePlanSummary['routeGroupingChild']> | null {
+  const child = childVersions?.[0];
+  if (child === undefined) return null;
+  return {
+    groupingId: child.groupingId,
+    status: child.status,
+    version: child.version
   };
 }
 

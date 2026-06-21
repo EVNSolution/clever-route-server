@@ -1859,10 +1859,6 @@ button.danger.subtle {
   min-height: 30px;
   padding: 8px 10px;
 }
-.route-builder-card-tabs {
-  flex: 0 0 auto;
-  margin-top: 2px;
-}
 .route-builder-tab-panel {
   display: flex;
   flex: 1 1 auto;
@@ -2024,6 +2020,97 @@ button.danger.subtle {
 }
 .route-stop-compact-actions {
   flex-direction: column;
+}
+
+.route-child-sequence-card {
+  display: grid;
+  gap: 12px;
+}
+.route-child-sequence-header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  min-width: 0;
+}
+.route-child-sequence-header h3 {
+  font-size: 20px;
+  line-height: 1.15;
+  margin: 2px 0 0;
+}
+.route-child-sequence-list {
+  gap: 8px;
+}
+.route-child-sequence-row {
+  grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);
+}
+.route-child-sequence-driver {
+  width: 100%;
+}
+.route-child-sequence-track {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+.route-child-sequence-track::before {
+  right: 42px;
+}
+.route-child-sequence-node.dragging {
+  opacity: 0.5;
+}
+.route-child-sequence-node.drop-target .route-child-sequence-token,
+.route-child-sequence-node.selected .route-child-sequence-token {
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.2), 0 2px 8px rgba(15, 23, 42, 0.18);
+  transform: translateY(-1px);
+}
+.route-child-sequence-node.drop-before::before,
+.route-child-sequence-node.drop-after::after {
+  background: #0f172a;
+  border-radius: 999px;
+  content: "";
+  height: 28px;
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  z-index: 3;
+}
+.route-child-sequence-node.drop-before::before {
+  left: calc(50% - 18px);
+}
+.route-child-sequence-node.drop-after::after {
+  right: calc(50% - 18px);
+}
+.route-child-sequence-token {
+  cursor: grab;
+}
+.route-child-sequence-token:active {
+  cursor: grabbing;
+}
+.route-child-sequence-footer {
+  align-items: center;
+  border-top: 1px solid #e6eaf1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  justify-content: space-between;
+  padding-top: 12px;
+}
+.route-child-sequence-footer .form-warning {
+  flex: 1 1 260px;
+}
+.route-map-delete-button {
+  min-height: 32px;
+  padding: 7px 12px;
+}
+@media (max-width: 860px) {
+  .route-child-sequence-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .route-child-sequence-header,
+  .route-child-sequence-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 .tab-primary,
 .tab-secondary,

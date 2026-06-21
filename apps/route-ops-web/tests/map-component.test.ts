@@ -233,6 +233,32 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(html).not.toContain('maplibregl-popup');
   });
 
+  test('can suppress route stop sequence picker item lists for child route order editing', () => {
+    const html = renderToStaticMarkup(createElement(RouteStopSequencePicker, {
+      anchor: { placement: 'top', x: 120, y: 140 },
+      currentSequence: 1,
+      items: [{
+        name: 'Tomato box',
+        options: [{ key: 'Size', value: 'Large' }],
+        productId: 101,
+        quantity: 2,
+        sku: 'TOM-L',
+        variationId: 7
+      }],
+      locale: 'en-CA',
+      onClose: () => undefined,
+      onPickSequence: () => undefined,
+      orderName: '#12030',
+      sequenceCount: 3,
+      showItems: false
+    }));
+
+    expect(html).toContain('class="route-stop-sequence-picker"');
+    expect(html).toContain('aria-label="Move stop #12030 to sequence 3"');
+    expect(html).not.toContain('route-stop-sequence-picker__items');
+    expect(html).not.toContain('Tomato box');
+  });
+
   test('bounds and flips marker sequence picker anchors near map edges', () => {
     const container = { clientHeight: 460, clientWidth: 620 };
 

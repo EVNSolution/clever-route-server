@@ -24,6 +24,7 @@ type RouteStopSequencePickerProps = {
   orderName: string;
   sequenceCount: number;
   items?: OrderItemDto[];
+  showItems?: boolean;
 };
 
 const ORDER_PIN_IMAGE_ID = 'orders-map-pin';
@@ -73,11 +74,12 @@ type RouteOpsMapProps = {
   polygons?: RouteGroupingPolygonDto[];
   plannedOrderIds?: ReadonlySet<string>;
   selectedRouteStopId?: string | null;
+  showRouteStopPickerItems?: boolean;
   subtitle?: string;
   title?: string;
 };
 
-export function RouteOpsMap({ bootstrap, className, depot = null, detail = null, draftStops, headerAction, mapOverlayAction, fitOrdersToBounds = false, statusContent, onExitRouteMode, onMapClickCoordinate, onPolygonFinish, onPolygonVertex, onPolygonVertexInsert, onPolygonVertexMove, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), polygonDraft, polygonDraftColor = "#111827", polygonFocusKey = null, polygonMode = false, polygons = [], selectedRouteStopId = null, subtitle, title }: RouteOpsMapProps): ReactElement {
+export function RouteOpsMap({ bootstrap, className, depot = null, detail = null, draftStops, headerAction, mapOverlayAction, fitOrdersToBounds = false, statusContent, onExitRouteMode, onMapClickCoordinate, onPolygonFinish, onPolygonVertex, onPolygonVertexInsert, onPolygonVertexMove, onOrderSelect, onRouteStopPickerClose, onRouteStopSelect, onRouteStopSequencePick, orderMarkerStates, orders = [], plannedOrderIds = new Set<string>(), polygonDraft, polygonDraftColor = "#111827", polygonFocusKey = null, polygonMode = false, polygons = [], selectedRouteStopId = null, showRouteStopPickerItems = true, subtitle, title }: RouteOpsMapProps): ReactElement {
   const locale = resolveLocale(bootstrap.locale);
   const t = getMapCopy(locale);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -580,6 +582,7 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
             orderName={selectedRouteStop.orderName}
             sequenceCount={routeStops.length}
             items={selectedRouteStop.items}
+            showItems={showRouteStopPickerItems}
           />
         ) : null}
       </div>
@@ -1357,7 +1360,7 @@ function FitMapIcon(): ReactElement {
   );
 }
 
-export function RouteStopSequencePicker({ anchor, currentSequence, items, locale, onClose, onPickSequence, orderName, sequenceCount }: RouteStopSequencePickerProps): ReactElement {
+export function RouteStopSequencePicker({ anchor, currentSequence, items, locale, onClose, onPickSequence, orderName, sequenceCount, showItems = true }: RouteStopSequencePickerProps): ReactElement {
   const t = getMapCopy(locale);
   const choices = Array.from({ length: sequenceCount }, (_, index) => index + 1);
   const orderItems = getOrderItems(items);
@@ -1376,7 +1379,7 @@ export function RouteStopSequencePicker({ anchor, currentSequence, items, locale
       style={{ left: `${anchor.x}px`, top: `${anchor.y}px` }}
     >
       <button aria-label={t.closeRouteStopSequencePicker} className="route-stop-sequence-picker__close" onClick={onClose} ref={preferredFocusSequence === null ? focusTargetRef : undefined} type="button">×</button>
-      {orderItems.length === 0 ? null : (
+      {!showItems || orderItems.length === 0 ? null : (
         <div className="route-stop-sequence-picker__items" aria-label={t.stopItems}>
           <strong>{orderName}</strong>
           <ul>

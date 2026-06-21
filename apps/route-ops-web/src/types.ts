@@ -205,6 +205,11 @@ export type RoutePlanSummaryDto = {
   name: string;
   planDate: string;
   routeEndMode: "END_AT_LAST_STOP" | "RETURN_TO_DEPOT";
+  routeGroupingChild?: {
+    groupingId: string;
+    status: string;
+    version: number;
+  } | null;
   status: string;
   stopsCount: number;
   updatedAt: string;

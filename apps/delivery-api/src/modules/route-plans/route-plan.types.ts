@@ -104,6 +104,11 @@ export type RoutePlanSummary = {
   name: string;
   planDate: string;
   routeEndMode: RoutePlanEndMode;
+  routeGroupingChild?: {
+    groupingId: string;
+    status: string;
+    version: number;
+  } | null;
   status: string;
   stopsCount: number;
   updatedAt: string;
