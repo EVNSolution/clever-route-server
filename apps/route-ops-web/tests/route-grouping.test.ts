@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { appendPolygonVertex, closePolygonDraft, insertPolygonVertex, movePolygonVertex, polygonDraftToGeoJson, readEditablePolygonVertices, readPolygonVertices, removeLastPolygonVertex } from '../src/routeGrouping';
-import { buildRouteGroupingAssignmentResults, getRouteGroupingAssignableDrivers, getRouteGroupingDuplicateDriverPolygonIds, releaseDriverFromOtherRouteGroupingPolygons } from '../src/pages/RouteGroupingPage';
+import { buildRouteGroupingAssignmentResults, getRouteGroupingAssignableDrivers, getRouteGroupingDuplicateDriverPolygonIds, releaseDriverFromOtherRouteGroupingPolygons, sortRouteGroupingAssignments } from '../src/pages/RouteGroupingPage';
 import type { DriverDto, RouteGroupingAssignmentDto, RouteGroupingPolygonDto } from '../src/types';
 
 describe('route grouping polygon draft helpers', () => {
@@ -123,12 +123,19 @@ describe('route grouping polygon draft helpers', () => {
       { assignedDriverId: null, assignedPolygonId: null, assignmentStatus: 'OVERLAP', coordinates: { latitude: 46, longitude: -79 }, deliveryStopId: 'stop-4', items: [], orderId: 'order-4', orderName: '#1004', sourceOrderId: 'source-4', sourceSequence: 4 },
     ] as RouteGroupingAssignmentDto[];
 
-    expect(Object.fromEntries(buildRouteGroupingAssignmentResults(assignments, polygons, drivers, 'ko-KR'))).toEqual({
-      'order-1': { driverLabel: '임 지인', sequenceLabel: '1' },
-      'order-2': { driverLabel: '임 지인', sequenceLabel: '2' },
-      'order-3': { driverLabel: '미배정', sequenceLabel: null },
-      'order-4': { driverLabel: '중복', sequenceLabel: null },
+    const results = buildRouteGroupingAssignmentResults(assignments, polygons, drivers, 'ko-KR');
+    expect(Object.fromEntries(results)).toEqual({
+      'order-1': { driverLabel: '임 지인', groupSortOrder: 1, sequenceLabel: '1', sequenceNumber: 1 },
+      'order-2': { driverLabel: '임 지인', groupSortOrder: 1, sequenceLabel: '2', sequenceNumber: 2 },
+      'order-3': { driverLabel: '미배정', groupSortOrder: Number.MAX_SAFE_INTEGER, sequenceLabel: null, sequenceNumber: null },
+      'order-4': { driverLabel: '중복', groupSortOrder: Number.MAX_SAFE_INTEGER - 2, sequenceLabel: null, sequenceNumber: null },
     });
+    expect(sortRouteGroupingAssignments([assignments[2]!, assignments[1]!, assignments[3]!, assignments[0]!], results).map((assignment) => assignment.orderId)).toEqual([
+      'order-1',
+      'order-2',
+      'order-4',
+      'order-3',
+    ]);
   });
 
 });

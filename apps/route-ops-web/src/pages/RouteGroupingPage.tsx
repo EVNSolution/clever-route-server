@@ -1,4 +1,4 @@
-import { Undo2 } from "lucide-react";
+import { Pencil, Undo2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactElement, ReactNode } from "react";
 
@@ -411,7 +411,7 @@ function RouteGroupingAreasCard({
                   title="Edit polygon"
                   type="button"
                 >
-                  <span aria-hidden="true" className="route-group-area-edit-glyph" />
+                  <Pencil aria-hidden="true" className="route-group-area-edit-icon" strokeWidth={2.6} />
                 </button>
               </span>
             </div>
@@ -498,12 +498,13 @@ function RouteGroupingOrderItemsCard({
 }): ReactElement {
   const t = routeGroupingCopy[resolveLocale(locale)];
   const assignmentResults = buildRouteGroupingAssignmentResults(assignments, polygons, drivers, locale);
+  const sortedAssignments = sortRouteGroupingAssignments(assignments, assignmentResults);
   return (
     <article className="panel route-group-order-items-card">
       <table className="ops-table route-group-order-items-table">
         <thead><tr><th>{t.order}</th><th>{t.driver}</th><th>{t.sequence}</th><th>{t.items}</th></tr></thead>
         <tbody>
-          {assignments.map((assignment) => {
+          {sortedAssignments.map((assignment) => {
             const items = getOrderItems(assignment.items);
             return (
               <tr key={assignment.orderId}>
@@ -528,7 +529,7 @@ function RouteGroupingOrderItemsCard({
   );
 }
 
-type RouteGroupingAssignmentResult = { driverLabel: string; sequenceLabel: string | null };
+type RouteGroupingAssignmentResult = { driverLabel: string; groupSortOrder: number; sequenceLabel: string | null; sequenceNumber: number | null };
 
 const routeGroupingCopy = {
   "en-CA": {
@@ -564,15 +565,15 @@ export function buildRouteGroupingAssignmentResults(
   const assignedCountsByPolygonId = new Map<string, number>();
   for (const assignment of assignments) {
     if (assignment.assignmentStatus === "OVERLAP") {
-      results.set(assignment.orderId, { driverLabel: t.overlap, sequenceLabel: null });
+      results.set(assignment.orderId, { driverLabel: t.overlap, groupSortOrder: Number.MAX_SAFE_INTEGER - 2, sequenceLabel: null, sequenceNumber: null });
       continue;
     }
     if (assignment.assignmentStatus === "EXCLUDED") {
-      results.set(assignment.orderId, { driverLabel: t.excluded, sequenceLabel: null });
+      results.set(assignment.orderId, { driverLabel: t.excluded, groupSortOrder: Number.MAX_SAFE_INTEGER - 1, sequenceLabel: null, sequenceNumber: null });
       continue;
     }
     if (assignment.assignedPolygonId === null) {
-      results.set(assignment.orderId, { driverLabel: t.unassigned, sequenceLabel: null });
+      results.set(assignment.orderId, { driverLabel: t.unassigned, groupSortOrder: Number.MAX_SAFE_INTEGER, sequenceLabel: null, sequenceNumber: null });
       continue;
     }
     const sequence = (assignedCountsByPolygonId.get(assignment.assignedPolygonId) ?? 0) + 1;
@@ -580,9 +581,30 @@ export function buildRouteGroupingAssignmentResults(
     const polygon = polygonsById.get(assignment.assignedPolygonId);
     const driverName = assignment.assignedDriverId === null ? null : driverNamesById.get(assignment.assignedDriverId);
     const driverLabel = driverName ?? polygon?.label ?? t.unassigned;
-    results.set(assignment.orderId, { driverLabel, sequenceLabel: String(sequence) });
+    results.set(assignment.orderId, {
+      driverLabel,
+      groupSortOrder: polygon?.drawOrder ?? Number.MAX_SAFE_INTEGER - 3,
+      sequenceLabel: String(sequence),
+      sequenceNumber: sequence,
+    });
   }
   return results;
+}
+
+
+export function sortRouteGroupingAssignments(
+  assignments: RouteGroupingAssignmentDto[],
+  assignmentResults: ReadonlyMap<string, RouteGroupingAssignmentResult>,
+): RouteGroupingAssignmentDto[] {
+  return [...assignments].sort((left, right) => {
+    const leftResult = assignmentResults.get(left.orderId);
+    const rightResult = assignmentResults.get(right.orderId);
+    const groupDelta = (leftResult?.groupSortOrder ?? Number.MAX_SAFE_INTEGER) - (rightResult?.groupSortOrder ?? Number.MAX_SAFE_INTEGER);
+    if (groupDelta !== 0) return groupDelta;
+    const sequenceDelta = (leftResult?.sequenceNumber ?? Number.MAX_SAFE_INTEGER) - (rightResult?.sequenceNumber ?? Number.MAX_SAFE_INTEGER);
+    if (sequenceDelta !== 0) return sequenceDelta;
+    return left.sourceSequence - right.sourceSequence;
+  });
 }
 
 function buildVisiblePolygons(grouping: RouteGroupingDetailDto | null, editingPolygonId: string | null | undefined): RouteGroupingPolygonDto[] {
