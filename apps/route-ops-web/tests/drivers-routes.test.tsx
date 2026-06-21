@@ -29,6 +29,7 @@ import {
   getRouteDriverDisplay,
   getRoutePublishBadge,
   formatRouteChildDriverName,
+  formatRoutePlanNameForDisplay,
   formatRoutePlanStatus,
   hasDepotCoordinates,
   isRouteVisibleToLinkedDriver,
@@ -288,6 +289,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(
       formatRouteChildDriverName({ driverName: 'Minji Lee', routePlan: null }),
     ).toBe('Minji Lee');
+  });
+
+  test('hides generated child route version suffixes in route detail titles', () => {
+    expect(formatRoutePlanNameForDisplay('Route 2026-06-19 — Jamie Test v1')).toBe('Route 2026-06-19 — Jamie Test');
+    expect(formatRoutePlanNameForDisplay('Route 2026-06-19 — Jamie Test')).toBe('Route 2026-06-19 — Jamie Test');
   });
 
   test('localizes the exposed return-to-store Route Builder option', () => {

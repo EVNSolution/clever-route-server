@@ -455,7 +455,7 @@ function RouteGroupingAreasCard({
                       onClick={() => onOpenChildRoute(childRoutePlanId)}
                       type="button"
                     >
-                      Route
+                      Open
                     </button>
                   )}
                 </span>

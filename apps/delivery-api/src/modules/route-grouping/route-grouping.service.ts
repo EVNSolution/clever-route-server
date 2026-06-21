@@ -307,7 +307,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const version = await createCurrentGroupingVersion(tx, loaded, { actor: input.actor, hasCurrent, nextVersion });
       const childRoutePlanIds: string[] = [];
       for (const candidate of candidates) {
-        const routePlan = await createChildRoutePlan(tx, loaded, candidate, nextVersion, input.actor);
+        const routePlan = await createChildRoutePlan(tx, loaded, candidate, input.actor);
         childRoutePlanIds.push(routePlan.id);
         await createChildRouteGeometryCache(tx, routePlan.id, candidate);
         await tx.routeGroupingChildVersion.create({
@@ -348,7 +348,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       for (const child of snapshots) {
         const snapshot = readChildSnapshot(child.snapshot);
         const assignments = snapshot.stops.map((stop) => ({ deliveryStopId: stop.deliveryStopId, orderId: stop.orderId, sourceSequence: stop.sequence }));
-        const routePlan = await createChildRoutePlanFromSnapshot(tx, loaded, snapshot, nextVersion, input.actor);
+        const routePlan = await createChildRoutePlanFromSnapshot(tx, loaded, snapshot, input.actor);
         childRoutePlanIds.push(routePlan.id);
         await tx.routeGroupingChildVersion.create({
           data: {
@@ -483,7 +483,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     const byDriver = groupAssignmentsByDriver(group.orders);
     for (const [driverId, assignments] of byDriver) {
       validateChildRouteStopsNearDepot(assignments, depot, this.maxChildRouteStopDistanceFromDepotMeters());
-      const name = childRouteName(group, driverId, group.currentVersion);
+      const name = childRouteName(group, driverId);
       const sourceDetail = buildChildRouteDetail({ assignments, depot, driverId, group, name });
       const outcome = await resolveChildRouteOptimization(this.routeOptimizationService, sourceDetail, shopDomain);
       if (!outcome.ok) {
@@ -835,13 +835,17 @@ function childAssignmentToRouteStop(assignment: LoadedAssignment, sequence: numb
   };
 }
 
-function childRouteName(group: LoadedGrouping, driverId: string, version: number): string {
+function childRouteName(group: LoadedGrouping, driverId: string): string {
   const driverName = group.orders.find((assignment) => assignment.assignedDriverId === driverId)?.assignedDriver?.displayName ?? 'Driver';
-  return `${group.name} — ${driverName} v${version}`;
+  return `${group.name} — ${driverName}`;
 }
 
-async function createChildRoutePlan(tx: Tx, group: LoadedGrouping, candidate: OptimizedChildRouteCandidate, version: number, actor: string): Promise<{ id: string; name: string }> {
-  const name = childRouteName(group, candidate.driverId, version);
+function stripGeneratedChildRouteVersion(name: string): string {
+  return name.replace(/\s+v\d+$/u, '');
+}
+
+async function createChildRoutePlan(tx: Tx, group: LoadedGrouping, candidate: OptimizedChildRouteCandidate, actor: string): Promise<{ id: string; name: string }> {
+  const name = childRouteName(group, candidate.driverId);
   const routePlan = await tx.routePlan.create({
     data: {
       constraints: routeConstraints(group, candidate.depot),
@@ -862,9 +866,9 @@ async function createChildRoutePlan(tx: Tx, group: LoadedGrouping, candidate: Op
   return routePlan;
 }
 
-async function createChildRoutePlanFromSnapshot(tx: Tx, group: LoadedGrouping, snapshot: ChildSnapshot, version: number, actor: string): Promise<{ id: string; name: string }> {
+async function createChildRoutePlanFromSnapshot(tx: Tx, group: LoadedGrouping, snapshot: ChildSnapshot, actor: string): Promise<{ id: string; name: string }> {
   const depot = readDepotFromShop(group);
-  const name = `${snapshot.name.replace(/ v\d+$/u, '')} v${version}`;
+  const name = stripGeneratedChildRouteVersion(snapshot.name);
   const routePlan = await tx.routePlan.create({
     data: {
       constraints: routeConstraints(group, depot),

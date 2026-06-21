@@ -73,6 +73,10 @@ export function formatRouteChildDriverName(
   return child.driverName ?? "Unassigned";
 }
 
+export function formatRoutePlanNameForDisplay(name: string): string {
+  return name.replace(/\s+v\d+$/u, "");
+}
+
 export function shouldTryRouteGroupFallback(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404 && error.code === "NOT_FOUND";
 }
@@ -692,7 +696,7 @@ export function RouteBuilder(input: {
               input.bootstrap.routerConfig.status,
               locale,
             )}
-            title={detail?.routePlan.name ?? t.routeBuilder}
+            title={detail === null ? t.routeBuilder : formatRoutePlanNameForDisplay(detail.routePlan.name)}
           />
         </div>
       }

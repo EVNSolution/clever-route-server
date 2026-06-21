@@ -38,6 +38,9 @@ describe('route grouping contracts', () => {
     expect(serviceSource).toContain('buildChildRouteGeometry(this.routeGeometryProvider, optimizedDetail)');
     expect(serviceSource).toContain('child route geometry failed');
     expect(serviceSource).toContain('createChildRouteGeometryCache(tx, routePlan.id, candidate)');
+    expect(serviceSource).toContain('return `${group.name} — ${driverName}`;');
+    expect(serviceSource).not.toContain('return `${group.name} — ${driverName} v${version}`;');
+    expect(serviceSource).toContain('stripGeneratedChildRouteVersion(snapshot.name)');
     expect(serviceSource).toContain("source: 'SNAPSHOT'");
     expect(serviceSource).toContain('await this.refreshChildRouteGeometry(projection.childRoutePlanIds, input.shopDomain);');
     expect(serviceSource).not.toContain('await this.refreshChildRouteGeometry(projection.childRoutePlanIds, input.shopDomain);\\n    return this.getGrouping({ groupingId: projection.groupingId, shopDomain: input.shopDomain });\\n  }\\n\\n  async rollback');
