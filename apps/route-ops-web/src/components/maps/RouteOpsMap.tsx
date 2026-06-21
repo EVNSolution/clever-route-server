@@ -688,6 +688,7 @@ function syncPolygonLayers(map: MapLibreMap, featureCollection: GeoJSON.FeatureC
   const existing = safeGetSource(map, 'route-ops-polygons') as { setData?(data: unknown): void } | undefined;
   if (existing?.setData) {
     safeSetSourceData(existing, featureCollection);
+    keepOrderPinsAbovePolygonFill(map);
     return;
   }
   map.addSource('route-ops-polygons', { data: featureCollection, type: 'geojson' });
@@ -703,6 +704,12 @@ function syncPolygonLayers(map: MapLibreMap, featureCollection: GeoJSON.FeatureC
     source: 'route-ops-polygons',
     type: 'line'
   });
+  keepOrderPinsAbovePolygonFill(map);
+}
+
+function keepOrderPinsAbovePolygonFill(map: MapLibreMap): void {
+  safeMoveLayer(map, 'route-ops-polygons-fill', 'route-ops-order-pins');
+  safeMoveLayer(map, 'route-ops-polygons-line', 'route-ops-order-pins');
 }
 
 function syncPolygonVertexLayers(map: MapLibreMap, featureCollection: GeoJSON.FeatureCollection): void {

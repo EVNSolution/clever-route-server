@@ -645,7 +645,7 @@ function buildGroupedOrderMarkerStates(
       if (!coordinateInPolygon({ latitude, longitude }, draft.vertices)) continue;
       states.set(assignment.orderId, {
         markerColor: draftColor,
-        markerHighlightColor: "#b6ff00",
+        markerHighlightColor: "#ffdf00",
         markerOpacity: 1,
         pinKind: "candidate",
       });

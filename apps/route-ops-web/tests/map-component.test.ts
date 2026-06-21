@@ -333,6 +333,8 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(source).toContain('safeTriggerMapRepaint(map);');
     expect(source).toContain('window.requestAnimationFrame(() => safeResizeMap(map));');
     expect(source).not.toContain('route-ops-order-highlight-halo');
+    expect(source).toContain('function keepOrderPinsAbovePolygonFill(map: MapLibreMap): void');
+    expect(source).toContain("safeMoveLayer(map, 'route-ops-polygons-fill', 'route-ops-order-pins');");
   });
 
   test('renders a route-mode back control inside the map frame', () => {
