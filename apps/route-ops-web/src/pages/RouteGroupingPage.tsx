@@ -15,6 +15,7 @@ import { appendPolygonVertex, closePolygonDraft, insertPolygonVertex, movePolygo
 import { storeSettingsToDepotPoint } from "../state";
 import type { BootstrapPayload, CanonicalOrderDto, DriverDto, RouteGroupingAssignmentDto, RouteGroupingDetailDto, RouteGroupingPolygonDto, StoreSettingsDto } from "../types";
 import { formatOrderItemLine, getOrderItemDisplayKey, getOrderItems } from "../orderItems";
+import { resolveLocale } from "../i18n";
 import { readErrorMessage } from "../utils/format";
 
 type PolygonDraft = { closed: boolean; vertices: Array<{ latitude: number; longitude: number }> };
@@ -318,7 +319,7 @@ export function RouteGroupingPage({
               polygons={grouping.polygons}
             />
           ) : null}
-          <RouteGroupingOrderItemsCard assignments={grouping?.assignments ?? []} drivers={drivers} polygons={grouping?.polygons ?? []} />
+          <RouteGroupingOrderItemsCard assignments={grouping?.assignments ?? []} drivers={drivers} locale={bootstrap.locale} polygons={grouping?.polygons ?? []} />
         </div>
       }
     />
@@ -487,24 +488,28 @@ export function getRouteGroupingDuplicateDriverPolygonIds(
 function RouteGroupingOrderItemsCard({
   assignments,
   drivers,
+  locale,
   polygons,
 }: {
   assignments: RouteGroupingAssignmentDto[];
   drivers: DriverDto[];
+  locale: string | null | undefined;
   polygons: RouteGroupingPolygonDto[];
 }): ReactElement {
-  const assignmentLabels = buildRouteGroupingAssignmentLabels(assignments, polygons, drivers);
+  const t = routeGroupingCopy[resolveLocale(locale)];
+  const assignmentResults = buildRouteGroupingAssignmentResults(assignments, polygons, drivers, locale);
   return (
     <article className="panel route-group-order-items-card">
       <table className="ops-table route-group-order-items-table">
-        <thead><tr><th>Order</th><th>Assignment</th><th>Items</th></tr></thead>
+        <thead><tr><th>{t.order}</th><th>{t.driver}</th><th>{t.sequence}</th><th>{t.items}</th></tr></thead>
         <tbody>
           {assignments.map((assignment) => {
             const items = getOrderItems(assignment.items);
             return (
               <tr key={assignment.orderId}>
                 <td><strong>{assignment.orderName}</strong></td>
-                <td><span className="route-group-assignment-pill">{assignmentLabels.get(assignment.orderId) ?? "Unassigned"}</span></td>
+                <td><span className="route-group-assignment-pill">{assignmentResults.get(assignment.orderId)?.driverLabel ?? t.unassigned}</span></td>
+                <td className="route-group-assignment-sequence">{assignmentResults.get(assignment.orderId)?.sequenceLabel ?? "—"}</td>
                 <td>
                   {items.length === 0 ? "—" : (
                     <ul className="route-group-order-items-list">
@@ -523,36 +528,61 @@ function RouteGroupingOrderItemsCard({
   );
 }
 
-export function buildRouteGroupingAssignmentLabels(
+type RouteGroupingAssignmentResult = { driverLabel: string; sequenceLabel: string | null };
+
+const routeGroupingCopy = {
+  "en-CA": {
+    driver: "Driver",
+    excluded: "Excluded",
+    items: "Items",
+    order: "Order",
+    overlap: "Overlap",
+    sequence: "Seq",
+    unassigned: "Unassigned",
+  },
+  "ko-KR": {
+    driver: "배송원",
+    excluded: "제외",
+    items: "품목",
+    order: "주문",
+    overlap: "중복",
+    sequence: "순서",
+    unassigned: "미배정",
+  },
+} as const;
+
+export function buildRouteGroupingAssignmentResults(
   assignments: RouteGroupingAssignmentDto[],
   polygons: RouteGroupingPolygonDto[],
   drivers: DriverDto[],
-): ReadonlyMap<string, string> {
-  const labels = new Map<string, string>();
+  locale: string | null | undefined = "en-CA",
+): ReadonlyMap<string, RouteGroupingAssignmentResult> {
+  const t = routeGroupingCopy[resolveLocale(locale)];
+  const results = new Map<string, RouteGroupingAssignmentResult>();
   const polygonsById = new Map(polygons.map((polygon) => [polygon.id, polygon]));
   const driverNamesById = new Map(drivers.map((driver) => [driver.id, driver.displayName]));
   const assignedCountsByPolygonId = new Map<string, number>();
   for (const assignment of assignments) {
     if (assignment.assignmentStatus === "OVERLAP") {
-      labels.set(assignment.orderId, "Overlap");
+      results.set(assignment.orderId, { driverLabel: t.overlap, sequenceLabel: null });
       continue;
     }
     if (assignment.assignmentStatus === "EXCLUDED") {
-      labels.set(assignment.orderId, "Excluded");
+      results.set(assignment.orderId, { driverLabel: t.excluded, sequenceLabel: null });
       continue;
     }
     if (assignment.assignedPolygonId === null) {
-      labels.set(assignment.orderId, "Unassigned");
+      results.set(assignment.orderId, { driverLabel: t.unassigned, sequenceLabel: null });
       continue;
     }
     const sequence = (assignedCountsByPolygonId.get(assignment.assignedPolygonId) ?? 0) + 1;
     assignedCountsByPolygonId.set(assignment.assignedPolygonId, sequence);
     const polygon = polygonsById.get(assignment.assignedPolygonId);
     const driverName = assignment.assignedDriverId === null ? null : driverNamesById.get(assignment.assignedDriverId);
-    const label = driverName ?? polygon?.label ?? "Unassigned";
-    labels.set(assignment.orderId, `${label} ${sequence}번째`);
+    const driverLabel = driverName ?? polygon?.label ?? t.unassigned;
+    results.set(assignment.orderId, { driverLabel, sequenceLabel: String(sequence) });
   }
-  return labels;
+  return results;
 }
 
 function buildVisiblePolygons(grouping: RouteGroupingDetailDto | null, editingPolygonId: string | null | undefined): RouteGroupingPolygonDto[] {

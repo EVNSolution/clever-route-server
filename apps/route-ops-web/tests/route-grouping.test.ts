@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { appendPolygonVertex, closePolygonDraft, insertPolygonVertex, movePolygonVertex, polygonDraftToGeoJson, readEditablePolygonVertices, readPolygonVertices, removeLastPolygonVertex } from '../src/routeGrouping';
-import { buildRouteGroupingAssignmentLabels, getRouteGroupingAssignableDrivers, getRouteGroupingDuplicateDriverPolygonIds, releaseDriverFromOtherRouteGroupingPolygons } from '../src/pages/RouteGroupingPage';
+import { buildRouteGroupingAssignmentResults, getRouteGroupingAssignableDrivers, getRouteGroupingDuplicateDriverPolygonIds, releaseDriverFromOtherRouteGroupingPolygons } from '../src/pages/RouteGroupingPage';
 import type { DriverDto, RouteGroupingAssignmentDto, RouteGroupingPolygonDto } from '../src/types';
 
 describe('route grouping polygon draft helpers', () => {
@@ -123,11 +123,11 @@ describe('route grouping polygon draft helpers', () => {
       { assignedDriverId: null, assignedPolygonId: null, assignmentStatus: 'OVERLAP', coordinates: { latitude: 46, longitude: -79 }, deliveryStopId: 'stop-4', items: [], orderId: 'order-4', orderName: '#1004', sourceOrderId: 'source-4', sourceSequence: 4 },
     ] as RouteGroupingAssignmentDto[];
 
-    expect(Object.fromEntries(buildRouteGroupingAssignmentLabels(assignments, polygons, drivers))).toEqual({
-      'order-1': '임 지인 1번째',
-      'order-2': '임 지인 2번째',
-      'order-3': 'Unassigned',
-      'order-4': 'Overlap',
+    expect(Object.fromEntries(buildRouteGroupingAssignmentResults(assignments, polygons, drivers, 'ko-KR'))).toEqual({
+      'order-1': { driverLabel: '임 지인', sequenceLabel: '1' },
+      'order-2': { driverLabel: '임 지인', sequenceLabel: '2' },
+      'order-3': { driverLabel: '미배정', sequenceLabel: null },
+      'order-4': { driverLabel: '중복', sequenceLabel: null },
     });
   });
 
