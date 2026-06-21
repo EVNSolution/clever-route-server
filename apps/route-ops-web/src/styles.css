@@ -2084,6 +2084,7 @@ button.danger.subtle {
 }
 .route-child-sequence-track::before {
   right: 42px;
+  top: calc(50% + 7px);
 }
 .route-child-sequence-node {
   align-items: center;
