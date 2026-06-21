@@ -320,12 +320,17 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(html).toContain('data-map-provider-status="configured"');
   });
 
-  test('keeps public map tiles stable during initial fit and resize', () => {
+  test('keeps public map tiles stable during initial fit resize and tile verification', () => {
     const source = readFileSync('src/components/maps/RouteOpsMap.tsx', 'utf8');
 
     expect(source).toContain('cancelPendingTileRequestsWhileZooming: false');
     expect(source).toContain("map.once('idle', () => stabilizeMapCanvas(map));");
+    expect(source).toContain("map.once('render', () => scheduleInitialMapTileVerification(map));");
+    expect(source).toContain('const INITIAL_TILE_VERIFY_DELAY_MS = 8;');
     expect(source).toContain('function stabilizeMapCanvas(map: MapLibreMap): void');
+    expect(source).toContain('function verifyInitialMapTiles(map: MapLibreMap): void');
+    expect(source).toContain('tileMap.areTilesLoaded');
+    expect(source).toContain('safeTriggerMapRepaint(map);');
     expect(source).toContain('window.requestAnimationFrame(() => safeResizeMap(map));');
   });
 

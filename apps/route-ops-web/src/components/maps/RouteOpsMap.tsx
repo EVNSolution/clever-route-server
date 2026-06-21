@@ -42,6 +42,7 @@ const ROUTE_STOP_PICKER_MAX_HEIGHT_PX = 280;
 const ROUTE_STOP_PICKER_MAX_WIDTH_PX = 360;
 const ROUTE_STOP_PICKER_MIN_WIDTH_PX = 188;
 const ROUTE_STOP_PICKER_MARGIN_PX = 16;
+const INITIAL_TILE_VERIFY_DELAY_MS = 8;
 
 type RouteOpsMapProps = {
   bootstrap: BootstrapPayload;
@@ -256,6 +257,7 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
           setMapError(null);
         });
         map.once('idle', () => stabilizeMapCanvas(map));
+        map.once('render', () => scheduleInitialMapTileVerification(map));
         map.on('click', (event: { lngLat?: { lat: number; lng: number }; originalEvent?: { detail?: number } }) => {
           if (detailRef.current !== null) return;
           if (event.lngLat === undefined) return;
@@ -1106,6 +1108,37 @@ function stabilizeMapCanvas(map: MapLibreMap): void {
   window.requestAnimationFrame(() => safeResizeMap(map));
   window.setTimeout(() => safeResizeMap(map), 120);
   window.setTimeout(() => safeResizeMap(map), 600);
+}
+
+function scheduleInitialMapTileVerification(map: MapLibreMap): void {
+  if (typeof window === 'undefined') return;
+  window.setTimeout(() => verifyInitialMapTiles(map), INITIAL_TILE_VERIFY_DELAY_MS);
+}
+
+function verifyInitialMapTiles(map: MapLibreMap): void {
+  const status = readInitialMapTileStatus(map);
+  if (status !== 'loading') return;
+  safeResizeMap(map);
+  safeTriggerMapRepaint(map);
+}
+
+function readInitialMapTileStatus(map: MapLibreMap): 'loading' | 'ready' | 'unknown' {
+  const tileMap = map as MapLibreMap & { areTilesLoaded?(): boolean; isStyleLoaded?(): boolean; loaded?(): boolean; triggerRepaint?(): void };
+  try {
+    const styleReady = typeof tileMap.isStyleLoaded === 'function' ? tileMap.isStyleLoaded() : true;
+    const tilesReady = typeof tileMap.areTilesLoaded === 'function' ? tileMap.areTilesLoaded() : typeof tileMap.loaded === 'function' ? tileMap.loaded() : true;
+    return styleReady && tilesReady ? 'ready' : 'loading';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function safeTriggerMapRepaint(map: MapLibreMap): void {
+  try {
+    (map as MapLibreMap & { triggerRepaint?(): void }).triggerRepaint?.();
+  } catch {
+    // Repaint is a best-effort recovery nudge for first-render tile races.
+  }
 }
 
 function safeMapOff(map: MapLibreMap, type: 'move' | 'resize' | 'zoom', listener: () => void): void {
