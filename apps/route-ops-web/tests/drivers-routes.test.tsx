@@ -448,8 +448,8 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('Drag or use the arrow controls to preview the route order before saving.');
     expect(html).toContain('class="route-builder-tab-body route-builder-tab-body--stop-order"');
     expect(html).toContain('class="route-stop-compact-list"');
-    expect(html).toContain('class="drag-handle"');
-    expect(html).toContain('::');
+    expect(html).not.toContain('class="drag-handle"');
+    expect(html).not.toContain('::');
     expect(stopToolbar).toContain('class="badge route-stop-count-badge"');
     expect(stopToolbar).toContain('11 stops');
     expect(cardHeader).not.toContain('11 stops');
@@ -555,7 +555,8 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('#1001');
     expect(html).toContain('Jane Customer · 100 King St W, Toronto, ON');
     expect(html).toContain('Toronto');
-    expect(html).toContain('class="drag-handle"');
+    expect(html).not.toContain('class="drag-handle"');
+    expect(html).not.toContain('::');
     expect(html).not.toContain('route-stop-table');
   });
 

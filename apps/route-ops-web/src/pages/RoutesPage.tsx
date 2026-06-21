@@ -1000,13 +1000,6 @@ export function RouteStopOrderCompactList({
           }}
           role="listitem"
         >
-          <span
-            aria-label={t.dragPlanOrder(stop.orderName)}
-            className="drag-handle"
-            role="img"
-          >
-            ::
-          </span>
           <span className="stop-number compact">{index + 1}</span>
           <div className="route-stop-compact-main">
             <strong>{stop.orderName}</strong>

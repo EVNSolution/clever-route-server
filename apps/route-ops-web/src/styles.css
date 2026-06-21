@@ -1952,7 +1952,7 @@ button.danger.subtle {
   border-radius: 16px;
   display: grid;
   gap: 10px;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   padding: 10px;
   position: relative;
 }
