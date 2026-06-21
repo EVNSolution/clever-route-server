@@ -389,7 +389,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('App linked');
     expect(html).not.toContain('Invite pending');
     expect(html).toContain('aria-label="Store start"');
+    expect(html).toContain('class="route-child-sequence-customer"');
+    expect(html).toContain('Jane Customer');
     expect(html).toContain('aria-label="Drag to reorder #1001"');
+    expect(html).toContain('aria-label="Move #1001 down"');
+    expect(html).toContain('aria-label="Move #1002 up"');
     expect(html).toContain('>Finish</span>');
     expect(html).toContain('class="route-child-sequence-footer"');
     expect(html).toMatch(/class="route-child-sequence-footer"[\s\S]*Return to store[\s\S]*Save route/);
@@ -485,7 +489,8 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('style="--route-group-area-columns:11"');
     expect(html).toContain('aria-label="Drag to reorder #11000"');
     expect(html).toContain('aria-label="Drag to reorder #11010"');
-    expect(html).toContain('11</button>');
+    expect(html).toContain('>11</span>');
+    expect(html).toContain('class="route-child-sequence-node-actions"');
     expect(html).not.toContain('class="route-builder-tab-body route-builder-tab-body--stop-order"');
     expect(html).not.toContain('class="route-stop-compact-list"');
     expect(html).not.toContain('class="route-stop-count-badge"');
