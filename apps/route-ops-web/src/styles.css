@@ -1133,6 +1133,22 @@ small,
 .route-group-order-items-table th:first-child {
   width: 180px;
 }
+.route-group-order-items-table td:nth-child(2),
+.route-group-order-items-table th:nth-child(2) {
+  width: 180px;
+}
+.route-group-assignment-pill {
+  background: #f1f5ff;
+  border: 1px solid #dbe7ff;
+  border-radius: 999px;
+  color: #1d4ed8;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  padding: 7px 9px;
+  white-space: nowrap;
+}
 .route-group-order-items-list {
   display: grid;
   gap: 4px;

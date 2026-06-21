@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { appendPolygonVertex, closePolygonDraft, insertPolygonVertex, movePolygonVertex, polygonDraftToGeoJson, readEditablePolygonVertices, readPolygonVertices, removeLastPolygonVertex } from '../src/routeGrouping';
-import { getRouteGroupingAssignableDrivers, getRouteGroupingDuplicateDriverPolygonIds, releaseDriverFromOtherRouteGroupingPolygons } from '../src/pages/RouteGroupingPage';
-import type { DriverDto } from '../src/types';
+import { buildRouteGroupingAssignmentLabels, getRouteGroupingAssignableDrivers, getRouteGroupingDuplicateDriverPolygonIds, releaseDriverFromOtherRouteGroupingPolygons } from '../src/pages/RouteGroupingPage';
+import type { DriverDto, RouteGroupingAssignmentDto, RouteGroupingPolygonDto } from '../src/types';
 
 describe('route grouping polygon draft helpers', () => {
   test('click appends vertices and double-click closes only valid polygons', () => {
@@ -105,6 +105,30 @@ describe('route grouping polygon draft helpers', () => {
       { closed: true, color: '#16a34a', driverId: 'driver-1', geometry: {}, id: 'polygon-2', label: 'Alex' },
       { closed: true, color: '#f97316', driverId: 'driver-2', geometry: {}, id: 'polygon-3', label: 'Minji' },
     ]);
+  });
+
+  test('labels route grouping order assignments by driver and split sequence', () => {
+    const drivers = [
+      { id: 'driver-1', displayName: '임 지인' },
+      { id: 'driver-2', displayName: 'Alex Driver' },
+    ] as DriverDto[];
+    const polygons = [
+      { closed: true, color: '#2563eb', drawOrder: 1, driverId: 'driver-1', geometry: {}, id: 'polygon-1', label: '임 지인' },
+      { closed: true, color: '#16a34a', drawOrder: 2, driverId: null, geometry: {}, id: 'polygon-2', label: 'Unassigned' },
+    ] as RouteGroupingPolygonDto[];
+    const assignments = [
+      { assignedDriverId: 'driver-1', assignedPolygonId: 'polygon-1', assignmentStatus: 'ASSIGNED', coordinates: { latitude: 43, longitude: -79 }, deliveryStopId: 'stop-1', items: [], orderId: 'order-1', orderName: '#1001', sourceOrderId: 'source-1', sourceSequence: 1 },
+      { assignedDriverId: 'driver-1', assignedPolygonId: 'polygon-1', assignmentStatus: 'ASSIGNED', coordinates: { latitude: 44, longitude: -79 }, deliveryStopId: 'stop-2', items: [], orderId: 'order-2', orderName: '#1002', sourceOrderId: 'source-2', sourceSequence: 2 },
+      { assignedDriverId: null, assignedPolygonId: null, assignmentStatus: 'UNASSIGNED', coordinates: { latitude: 45, longitude: -79 }, deliveryStopId: 'stop-3', items: [], orderId: 'order-3', orderName: '#1003', sourceOrderId: 'source-3', sourceSequence: 3 },
+      { assignedDriverId: null, assignedPolygonId: null, assignmentStatus: 'OVERLAP', coordinates: { latitude: 46, longitude: -79 }, deliveryStopId: 'stop-4', items: [], orderId: 'order-4', orderName: '#1004', sourceOrderId: 'source-4', sourceSequence: 4 },
+    ] as RouteGroupingAssignmentDto[];
+
+    expect(Object.fromEntries(buildRouteGroupingAssignmentLabels(assignments, polygons, drivers))).toEqual({
+      'order-1': '임 지인 1번째',
+      'order-2': '임 지인 2번째',
+      'order-3': 'Unassigned',
+      'order-4': 'Overlap',
+    });
   });
 
 });
