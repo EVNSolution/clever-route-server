@@ -1011,6 +1011,9 @@ function ChildRouteSequenceCard({
     if (draggingStopId === null || draggingStopId === targetStopId) return null;
     return { position: getDropPosition(event), targetStopId };
   };
+  const selectedDriverLabel =
+    drivers.find((driver) => driver.id === draftDriverId)?.displayName ??
+    t.unassigned;
 
   return (
     <article
@@ -1035,9 +1038,15 @@ function ChildRouteSequenceCard({
               className="route-group-area-swatch"
               style={{ background: color }}
             />
+            <span className="route-child-sequence-driver-name">
+              {selectedDriverLabel}
+            </span>
+            <span aria-hidden="true" className="route-child-sequence-driver-chevron">
+              ▾
+            </span>
             <select
               aria-label={t.table.driver}
-              className="route-group-area-driver-select"
+              className="route-group-area-driver-select route-child-sequence-driver-select"
               disabled={disabled}
               onChange={(event) => onDriverChange(event.target.value)}
               value={draftDriverId}
