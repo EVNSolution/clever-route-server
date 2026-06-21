@@ -351,12 +351,15 @@ describe('RouteOpsMap layer lifecycle', () => {
 
     expect(source).toContain('cancelPendingTileRequestsWhileZooming: false');
     expect(source).toContain("map.once('idle', () => stabilizeMapCanvas(map));");
-    expect(source).toContain("map.once('render', () => scheduleInitialMapTileVerification(map));");
-    expect(source).toContain('const INITIAL_TILE_VERIFY_DELAY_MS = 8;');
+    expect(source).toContain("map.once('render', () => scheduleInitialMapTileVerification(map, () => {");
+    expect(source).toContain('const INITIAL_TILE_VERIFY_DELAY_MS = 3;');
+    expect(source).toContain('initialTileRefreshAttemptRef.current += 1;');
+    expect(source).toContain('setMapRefreshRequest((value) => value + 1);');
     expect(source).toContain('function stabilizeMapCanvas(map: MapLibreMap): void');
-    expect(source).toContain('function verifyInitialMapTiles(map: MapLibreMap): void');
+    expect(source).toContain('function verifyInitialMapTiles(map: MapLibreMap, onRefreshMap: () => void): void');
     expect(source).toContain('tileMap.areTilesLoaded');
     expect(source).toContain('safeTriggerMapRepaint(map);');
+    expect(source).toContain('onRefreshMap();');
     expect(source).toContain('window.requestAnimationFrame(() => safeResizeMap(map));');
     expect(source).not.toContain('route-ops-order-highlight-halo');
     expect(source).toContain('function keepOrderPinsAbovePolygonFill(map: MapLibreMap): void');

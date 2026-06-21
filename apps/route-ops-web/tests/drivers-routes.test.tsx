@@ -32,6 +32,7 @@ import {
   formatRouteChildStopTitle,
   formatRoutePlanNameForDisplay,
   formatRoutePlanStatus,
+  getRouteStopSequenceDisplay,
   hasDepotCoordinates,
   isRouteVisibleToLinkedDriver,
   RouteBuilder,
@@ -299,6 +300,18 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(formatRouteChildStopTitle('Route 2026-06-19 — 임 지인 v1')).toBe('Route 2026-06-19');
     expect(formatRouteChildStopTitle('Route 2026-06-19 — Jamie Test')).toBe('Route 2026-06-19');
     expect(formatRouteChildStopTitle('Route 2026-06-19')).toBe('Route 2026-06-19');
+  });
+
+  test('keeps child route sequence strip labels tied to the saved stop order while draft order changes', () => {
+    const savedLabels = new Map([
+      ['stop-1', 1],
+      ['stop-2', 2],
+      ['stop-3', 3],
+    ]);
+
+    expect(getRouteStopSequenceDisplay({ deliveryStopId: 'stop-2', sequence: 1 }, savedLabels)).toBe(2);
+    expect(getRouteStopSequenceDisplay({ deliveryStopId: 'stop-1', sequence: 2 }, savedLabels)).toBe(1);
+    expect(getRouteStopSequenceDisplay({ deliveryStopId: 'stop-4', sequence: 4 }, savedLabels)).toBe(4);
   });
 
   test('localizes the exposed return-to-store Route Builder option', () => {

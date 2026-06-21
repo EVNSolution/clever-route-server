@@ -43,7 +43,7 @@ const ROUTE_STOP_PICKER_MAX_HEIGHT_PX = 280;
 const ROUTE_STOP_PICKER_MAX_WIDTH_PX = 360;
 const ROUTE_STOP_PICKER_MIN_WIDTH_PX = 188;
 const ROUTE_STOP_PICKER_MARGIN_PX = 16;
-const INITIAL_TILE_VERIFY_DELAY_MS = 8;
+const INITIAL_TILE_VERIFY_DELAY_MS = 3;
 
 type RouteOpsMapProps = {
   bootstrap: BootstrapPayload;
@@ -101,6 +101,7 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
   const detailRef = useRef(detail);
   const mapCopyRef = useRef(t);
   const homePointRef = useRef<RouteOpsPoint | null>(null);
+  const initialTileRefreshAttemptRef = useRef(0);
   const pointsRef = useRef<RouteOpsPoint[]>([]);
   const ordersHomeAppliedRef = useRef<string | null>(null);
   const [isMapReady, setIsMapReady] = useState(false);
@@ -259,7 +260,13 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
           setMapError(null);
         });
         map.once('idle', () => stabilizeMapCanvas(map));
-        map.once('render', () => scheduleInitialMapTileVerification(map));
+        map.once('render', () => scheduleInitialMapTileVerification(map, () => {
+          if (!mounted || initialTileRefreshAttemptRef.current > 0) return;
+          initialTileRefreshAttemptRef.current += 1;
+          setMapError(null);
+          setIsMapReady(false);
+          setMapRefreshRequest((value) => value + 1);
+        }));
         map.on('click', (event: { lngLat?: { lat: number; lng: number }; originalEvent?: { detail?: number } }) => {
           if (detailRef.current !== null) return;
           if (event.lngLat === undefined) return;
@@ -525,6 +532,7 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
   }, [selectedRouteStopId]);
 
   const handleRefreshMap = (): void => {
+    initialTileRefreshAttemptRef.current = 0;
     setMapError(null);
     setIsMapReady(false);
     onRouteStopPickerCloseRef.current?.();
@@ -1100,16 +1108,17 @@ function stabilizeMapCanvas(map: MapLibreMap): void {
   window.setTimeout(() => safeResizeMap(map), 600);
 }
 
-function scheduleInitialMapTileVerification(map: MapLibreMap): void {
+function scheduleInitialMapTileVerification(map: MapLibreMap, onRefreshMap: () => void): void {
   if (typeof window === 'undefined') return;
-  window.setTimeout(() => verifyInitialMapTiles(map), INITIAL_TILE_VERIFY_DELAY_MS);
+  window.setTimeout(() => verifyInitialMapTiles(map, onRefreshMap), INITIAL_TILE_VERIFY_DELAY_MS);
 }
 
-function verifyInitialMapTiles(map: MapLibreMap): void {
+function verifyInitialMapTiles(map: MapLibreMap, onRefreshMap: () => void): void {
   const status = readInitialMapTileStatus(map);
   if (status !== 'loading') return;
   safeResizeMap(map);
   safeTriggerMapRepaint(map);
+  onRefreshMap();
 }
 
 function readInitialMapTileStatus(map: MapLibreMap): 'loading' | 'ready' | 'unknown' {

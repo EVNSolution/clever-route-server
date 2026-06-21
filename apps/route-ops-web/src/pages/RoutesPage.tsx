@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import type { CSSProperties, DragEvent, ReactElement } from "react";
 
 import {
@@ -84,6 +84,13 @@ export function formatRoutePlanNameForDisplay(name: string): string {
 
 export function formatRouteChildStopTitle(name: string): string {
   return formatRoutePlanNameForDisplay(name).replace(/\s+—\s+.+$/u, "");
+}
+
+export function getRouteStopSequenceDisplay(
+  stop: Pick<RouteStopDto, "deliveryStopId" | "sequence">,
+  savedSequenceLabels: ReadonlyMap<string, number>,
+): number {
+  return savedSequenceLabels.get(stop.deliveryStopId) ?? stop.sequence;
 }
 
 export function shouldTryRouteGroupFallback(error: unknown): boolean {
@@ -631,6 +638,13 @@ export function RouteBuilder(input: {
       hasRouteEndChanges ||
       canPublishOnSave);
   const isChildRouteDetail = input.isChildRouteDetail === true;
+  const savedStopSequenceLabels = useMemo(
+    () =>
+      new Map(
+        (detail?.stops ?? []).map((stop) => [stop.deliveryStopId, stop.sequence]),
+      ),
+    [detail?.stops],
+  );
   const saveRouteDraft = async (): Promise<RoutePlanDetailDto> => {
     if (detail === null) {
       throw new Error("Route detail is not loaded.");
@@ -759,6 +773,7 @@ export function RouteBuilder(input: {
               ? t.routeBuilder
               : formatRouteChildStopTitle(detail.routePlan.name)
           }
+          savedStopSequenceLabels={savedStopSequenceLabels}
           stops={draftStops}
         />
       ) : null}
@@ -970,6 +985,7 @@ function ChildRouteSequenceCard({
   returnToDepotDisabled,
   routeEndWarningId,
   routeName,
+  savedStopSequenceLabels,
   stops,
 }: {
   canReturnToDepot: boolean;
@@ -992,6 +1008,7 @@ function ChildRouteSequenceCard({
   returnToDepotDisabled: boolean;
   routeEndWarningId: string;
   routeName: string;
+  savedStopSequenceLabels: ReadonlyMap<string, number>;
   stops: RouteStopDto[];
 }): ReactElement {
   const t = getRoutesCopy(locale);
@@ -1078,7 +1095,7 @@ function ChildRouteSequenceCard({
               className="route-group-area-orders"
               aria-label={t.routeBuilderTabs.stopOrder}
             >
-              {stops.map((stop, index) => {
+              {stops.map((stop) => {
                 const isDropTarget =
                   dropPreview?.targetStopId === stop.deliveryStopId;
                 const dropPosition = isDropTarget ? dropPreview.position : null;
@@ -1136,7 +1153,7 @@ function ChildRouteSequenceCard({
                       style={{ background: color, borderColor: color }}
                       title={stop.orderName}
                     >
-                      {index + 1}
+                      {getRouteStopSequenceDisplay(stop, savedStopSequenceLabels)}
                     </span>
                   </span>
                 );
