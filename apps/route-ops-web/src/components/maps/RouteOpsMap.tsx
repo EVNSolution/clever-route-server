@@ -735,26 +735,6 @@ export function syncOrdersLayer(map: MapLibreMap, featureCollection: ReturnType<
     syncOrderLabelsLayer(map, { alignToPinCenter: false });
     return;
   }
-
-  if (!safeGetLayer(map, 'route-ops-order-highlight-halo')) {
-    safeAddLayer(map, {
-      filter: ['!=', ['get', 'markerHighlightColor'], null],
-      id: 'route-ops-order-highlight-halo',
-      paint: {
-        'circle-blur': 0.18,
-        'circle-color': ['coalesce', ['get', 'markerHighlightColor'], '#facc15'],
-        'circle-opacity': ['*', ['get', 'markerOpacity'], 0.92],
-        'circle-radius': 18,
-        'circle-stroke-color': '#ffffff',
-        'circle-stroke-opacity': ['get', 'markerOpacity'],
-        'circle-stroke-width': 2.5,
-        'circle-translate': [0, -18]
-      },
-      source: 'route-ops-orders',
-      type: 'circle'
-    });
-  }
-
   if (!safeGetLayer(map, 'route-ops-order-pins')) {
     safeAddLayer(map, {
       id: 'route-ops-order-pins',
@@ -850,11 +830,11 @@ function customOrderPinImages(featureCollection: ReturnType<typeof buildOrdersMa
     if (!/^#[0-9a-f]{6}$/iu.test(markerColor)) continue;
     imagesById.set(pinImage, {
       borderColor: markerHighlightColor ?? undefined,
-      borderWidth: markerHighlightColor === null ? undefined : 5.4,
+      borderWidth: markerHighlightColor === null ? undefined : 4.4,
       color: markerColor,
       id: pinImage,
-      shadowBlur: markerHighlightColor === null ? undefined : 8,
-      shadowColor: markerHighlightColor ?? `${markerColor}5c`
+      shadowBlur: undefined,
+      shadowColor: `${markerColor}5c`
     });
   }
   return [...imagesById.values()];

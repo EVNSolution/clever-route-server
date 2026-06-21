@@ -332,6 +332,7 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(source).toContain('tileMap.areTilesLoaded');
     expect(source).toContain('safeTriggerMapRepaint(map);');
     expect(source).toContain('window.requestAnimationFrame(() => safeResizeMap(map));');
+    expect(source).not.toContain('route-ops-order-highlight-halo');
   });
 
   test('renders a route-mode back control inside the map frame', () => {

@@ -55,13 +55,13 @@ describe('route ops map helpers', () => {
     const collection = buildOrdersMapFeatureCollection([
       order({ orderId: 'candidate', orderName: '#1005' })
     ], new Map([
-      ['candidate', { markerColor: '#16a34a', markerHighlightColor: '#facc15', pinKind: 'candidate' }]
+      ['candidate', { markerColor: '#16a34a', markerHighlightColor: '#b6ff00', pinKind: 'candidate' }]
     ]));
 
     expect(collection.features[0]?.properties).toMatchObject({
       markerColor: '#16a34a',
-      markerHighlightColor: '#facc15',
-      pinImage: 'orders-map-pin-color-16a34a-highlight-facc15',
+      markerHighlightColor: '#b6ff00',
+      pinImage: 'orders-map-pin-color-16a34a-highlight-b6ff00',
       pinKind: 'candidate'
     });
   });
