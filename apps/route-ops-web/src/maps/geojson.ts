@@ -33,6 +33,7 @@ const ROUTE_FIT_MAX_DEPOT_DISTANCE_KM = 500;
 export type OrderMapFeatureCollection = FeatureCollection<PointGeometry, {
   label: string;
   markerColor: string;
+  markerHighlightColor: string | null;
   markerOpacity: number;
   orderId: string;
   orderName: string;
@@ -46,6 +47,7 @@ export type OrderMapPinKind = 'candidate' | 'history' | 'review' | 'unplanned';
 
 export type OrderMapMarkerState = {
   markerColor?: string | null;
+  markerHighlightColor?: string | null;
   markerOpacity?: number;
   pinKind?: OrderMapPinKind;
   sequence?: number | null;
@@ -90,16 +92,18 @@ export function buildOrdersMapFeatureCollection(orders: CanonicalOrderDto[], mar
     const markerOpacity = normalizeMarkerOpacity(state.markerOpacity);
     const stateMarkerColor = normalizeMarkerColor(state.markerColor);
     const markerColor = stateMarkerColor ?? markerColorForKind(pinKind);
+    const markerHighlightColor = normalizeMarkerColor(state.markerHighlightColor);
     const sequence = state.sequence ?? null;
     features.push({
       geometry: { coordinates: lngLat, type: 'Point' },
       properties: {
         label: '',
         markerColor,
+        markerHighlightColor,
         markerOpacity,
         orderId: order.orderId,
         orderName: order.orderName,
-        pinImage: stateMarkerColor === null ? pinImageForKind(pinKind) : customPinImageForColor(markerColor),
+        pinImage: stateMarkerColor === null && markerHighlightColor === null ? pinImageForKind(pinKind) : customPinImageForColor(markerColor, markerHighlightColor),
         pinKind,
         planned,
         sortKey: sequence === null ? planned ? index + 1000 : index : 2000 + sequence
@@ -134,8 +138,9 @@ function markerColorForKind(kind: OrderMapPinKind): string {
   return '#303030';
 }
 
-function customPinImageForColor(color: string): string {
-  return `orders-map-pin-color-${color.slice(1).toLowerCase()}`;
+function customPinImageForColor(color: string, highlightColor: string | null = null): string {
+  const base = `orders-map-pin-color-${color.slice(1).toLowerCase()}`;
+  return highlightColor === null ? base : `${base}-highlight-${highlightColor.slice(1).toLowerCase()}`;
 }
 
 function pinImageForKind(kind: OrderMapPinKind): string {

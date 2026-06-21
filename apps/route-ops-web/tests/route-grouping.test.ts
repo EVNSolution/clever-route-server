@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { appendPolygonVertex, closePolygonDraft, insertPolygonVertex, movePolygonVertex, polygonDraftToGeoJson, readEditablePolygonVertices, readPolygonVertices, removeLastPolygonVertex } from '../src/routeGrouping';
+import { appendPolygonVertex, closePolygonDraft, coordinateInPolygon, insertPolygonVertex, movePolygonVertex, polygonDraftToGeoJson, readEditablePolygonVertices, readPolygonVertices, removeLastPolygonVertex } from '../src/routeGrouping';
 import { buildRouteGroupingAssignmentResults, getRouteGroupingAssignableDrivers, getRouteGroupingDuplicateDriverPolygonIds, releaseDriverFromOtherRouteGroupingPolygons, sortRouteGroupingAssignments } from '../src/pages/RouteGroupingPage';
 import type { DriverDto, RouteGroupingAssignmentDto, RouteGroupingPolygonDto } from '../src/types';
 
@@ -14,6 +14,19 @@ describe('route grouping polygon draft helpers', () => {
     draft = closePolygonDraft(draft);
     expect(draft.closed).toBe(true);
     expect(polygonDraftToGeoJson(draft)?.coordinates[0]).toHaveLength(4);
+  });
+
+
+  test('detects orders inside the active split polygon draft', () => {
+    const polygon = [
+      { latitude: 43, longitude: -80 },
+      { latitude: 44, longitude: -80 },
+      { latitude: 44, longitude: -79 },
+      { latitude: 43, longitude: -79 },
+    ];
+
+    expect(coordinateInPolygon({ latitude: 43.5, longitude: -79.5 }, polygon)).toBe(true);
+    expect(coordinateInPolygon({ latitude: 44.5, longitude: -79.5 }, polygon)).toBe(false);
   });
 
   test('reads persisted polygon geometry for UI rendering', () => {

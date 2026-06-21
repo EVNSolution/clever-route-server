@@ -11,7 +11,7 @@ import {
 import { TabLayout } from "../components/TabLayout";
 import { RouteOpsMap } from "../components/maps/RouteOpsMap";
 import { ROUTE_START_ICON_PATH } from "../components/maps/mapIcons";
-import { appendPolygonVertex, closePolygonDraft, insertPolygonVertex, movePolygonVertex, polygonDraftToGeoJson, readEditablePolygonVertices, removeLastPolygonVertex } from "../routeGrouping";
+import { appendPolygonVertex, closePolygonDraft, coordinateInPolygon, insertPolygonVertex, movePolygonVertex, polygonDraftToGeoJson, readEditablePolygonVertices, removeLastPolygonVertex } from "../routeGrouping";
 import { storeSettingsToDepotPoint } from "../state";
 import type { BootstrapPayload, CanonicalOrderDto, DriverDto, RouteGroupingAssignmentDto, RouteGroupingDetailDto, RouteGroupingPolygonDto, StoreSettingsDto } from "../types";
 import { formatOrderItemLine, getOrderItemDisplayKey, getOrderItems } from "../orderItems";
@@ -76,7 +76,10 @@ export function RouteGroupingPage({
   const mapHeaderAction = !isEditing ? <button onClick={startEdit} type="button">Edit</button> : undefined;
   const mapEditOverlay = isEditing ? renderMapEditOverlay() : undefined;
   const visiblePolygons = useMemo(() => buildVisiblePolygons(grouping, isEditing ? editingPolygonId : undefined), [editingPolygonId, grouping, isEditing]);
-  const groupedOrderMarkerStates = useMemo(() => buildGroupedOrderMarkerStates(grouping, isEditing ? editingPolygonId : undefined), [editingPolygonId, grouping, isEditing]);
+  const groupedOrderMarkerStates = useMemo(
+    () => buildGroupedOrderMarkerStates(grouping, isEditing ? editingPolygonId : undefined, isEditing ? draft : undefined, draftColor),
+    [draft, draftColor, editingPolygonId, grouping, isEditing],
+  );
 
   async function saveDraftPolygon(): Promise<void> {
     const geometry = polygonDraftToGeoJson(draft);
@@ -615,20 +618,40 @@ function buildVisiblePolygons(grouping: RouteGroupingDetailDto | null, editingPo
     .map((polygon) => ({ ...polygon, color: "#94a3b8" }));
 }
 
-function buildGroupedOrderMarkerStates(grouping: RouteGroupingDetailDto | null, editingPolygonId?: string | null): ReadonlyMap<string, { markerColor?: string; markerOpacity?: number; pinKind?: "candidate" }> {
+function buildGroupedOrderMarkerStates(
+  grouping: RouteGroupingDetailDto | null,
+  editingPolygonId?: string | null,
+  draft?: PolygonDraft,
+  draftColor = "#2563eb",
+): ReadonlyMap<string, { markerColor?: string; markerHighlightColor?: string; markerOpacity?: number; pinKind?: "candidate" }> {
   if (grouping === null) return new Map();
   const polygonColorById = new Map(grouping.polygons.map((polygon) => [polygon.id, polygon.color ?? "#2563eb"]));
-  return new Map(
-    grouping.assignments.flatMap((assignment) => {
-      if (assignment.assignedPolygonId === null) return [];
-      const color = polygonColorById.get(assignment.assignedPolygonId);
-      if (color === undefined) return [];
-      const markerColor = editingPolygonId === undefined
-        ? color
-        : assignment.assignedPolygonId === editingPolygonId ? color : "#94a3b8";
-      return [[assignment.orderId, { markerColor, markerOpacity: 1, pinKind: "candidate" as const }]];
-    }),
-  );
+  const states = new Map<string, { markerColor?: string; markerHighlightColor?: string; markerOpacity?: number; pinKind?: "candidate" }>();
+  for (const assignment of grouping.assignments) {
+    if (assignment.assignedPolygonId === null) continue;
+    const color = polygonColorById.get(assignment.assignedPolygonId);
+    if (color === undefined) continue;
+    const markerColor = editingPolygonId === undefined
+      ? color
+      : assignment.assignedPolygonId === editingPolygonId ? color : "#94a3b8";
+    states.set(assignment.orderId, { markerColor, markerOpacity: 1, pinKind: "candidate" });
+  }
+  if (editingPolygonId !== undefined && draft !== undefined && draft.vertices.length >= 3) {
+    for (const assignment of grouping.assignments) {
+      const belongsToOtherPolygon = assignment.assignedPolygonId !== null && assignment.assignedPolygonId !== editingPolygonId;
+      if (belongsToOtherPolygon) continue;
+      const { latitude, longitude } = assignment.coordinates;
+      if (latitude === null || longitude === null) continue;
+      if (!coordinateInPolygon({ latitude, longitude }, draft.vertices)) continue;
+      states.set(assignment.orderId, {
+        markerColor: draftColor,
+        markerHighlightColor: "#facc15",
+        markerOpacity: 1,
+        pinKind: "candidate",
+      });
+    }
+  }
+  return states;
 }
 
 function assignmentToOrder(assignment: RouteGroupingDetailDto["assignments"][number]): CanonicalOrderDto {

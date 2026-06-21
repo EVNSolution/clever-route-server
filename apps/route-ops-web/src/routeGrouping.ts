@@ -62,3 +62,18 @@ export function readEditablePolygonVertices(geometry: unknown): Coordinate[] {
   }
   return vertices;
 }
+
+export function coordinateInPolygon(point: Coordinate, polygonVertices: Coordinate[]): boolean {
+  if (polygonVertices.length < 3) return false;
+  let inside = false;
+  for (let currentIndex = 0, previousIndex = polygonVertices.length - 1; currentIndex < polygonVertices.length; previousIndex = currentIndex++) {
+    const current = polygonVertices[currentIndex];
+    const previous = polygonVertices[previousIndex];
+    if (current === undefined || previous === undefined) continue;
+    const crossesLatitude = current.latitude > point.latitude !== previous.latitude > point.latitude;
+    if (!crossesLatitude) continue;
+    const longitudeAtLatitude = ((previous.longitude - current.longitude) * (point.latitude - current.latitude)) / (previous.latitude - current.latitude) + current.longitude;
+    if (point.longitude < longitudeAtLatitude) inside = !inside;
+  }
+  return inside;
+}

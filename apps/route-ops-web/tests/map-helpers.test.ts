@@ -50,6 +50,22 @@ describe('route ops map helpers', () => {
   });
 
 
+
+  test('marks active split draft candidates with a highlighted pin image', () => {
+    const collection = buildOrdersMapFeatureCollection([
+      order({ orderId: 'candidate', orderName: '#1005' })
+    ], new Map([
+      ['candidate', { markerColor: '#16a34a', markerHighlightColor: '#facc15', pinKind: 'candidate' }]
+    ]));
+
+    expect(collection.features[0]?.properties).toMatchObject({
+      markerColor: '#16a34a',
+      markerHighlightColor: '#facc15',
+      pinImage: 'orders-map-pin-color-16a34a-highlight-facc15',
+      pinKind: 'candidate'
+    });
+  });
+
   test('uses the Shopify CLEVER lite map style instead of the temporary five-layer fallback', () => {
     const style = JSON.parse(readFileSync(join(process.cwd(), 'public/vendor/openfreemap-clever-lite.json'), 'utf8')) as {
       glyphs?: string;

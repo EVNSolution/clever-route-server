@@ -13,7 +13,7 @@ import type { BootstrapPayload, CanonicalOrderDto, OrderItemDto, RouteGroupingPo
 type MapLibreModule = typeof import('maplibre-gl');
 type MapLibreMap = InstanceType<MapLibreModule['Map']>;
 type MapLibreMarker = InstanceType<MapLibreModule['Marker']>;
-type MapLayerClickEvent = { features?: Array<{ properties?: { id?: string; orderId?: string } }>; lngLat?: { lat: number; lng: number }; originalEvent?: { preventDefault?(): void; stopPropagation?(): void }; preventDefault?(): void; stopPropagation?(): void };
+type MapLayerClickEvent = { features?: Array<{ properties?: { id?: string; orderId?: string } }>; lngLat?: { lat: number; lng: number }; originalEvent?: { detail?: number; preventDefault?(): void; stopPropagation?(): void }; preventDefault?(): void; stopPropagation?(): void };
 type RouteStopPickerAnchor = { placement: 'bottom' | 'top'; x: number; y: number };
 type RouteStopSequencePickerProps = {
   anchor: RouteStopPickerAnchor;
@@ -153,6 +153,24 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
   }, [polygonMode]);
 
   useEffect(() => {
+    const map = mapRef.current;
+    if (!isMapReady || map === null || !isMapUsable(map)) return undefined;
+    try {
+      if (polygonMode) map.doubleClickZoom.disable();
+      else map.doubleClickZoom.enable();
+    } catch {
+      // Double-click zoom control is best-effort during map teardown.
+    }
+    return () => {
+      try {
+        map.doubleClickZoom.enable();
+      } catch {
+        // Ignore stale map instances.
+      }
+    };
+  }, [isMapReady, polygonMode]);
+
+  useEffect(() => {
     mapCopyRef.current = t;
   }, [t]);
 
@@ -238,12 +256,17 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
           setMapError(null);
         });
         map.once('idle', () => stabilizeMapCanvas(map));
-        map.on('click', (event: { lngLat?: { lat: number; lng: number } }) => {
+        map.on('click', (event: { lngLat?: { lat: number; lng: number }; originalEvent?: { detail?: number } }) => {
           if (detailRef.current !== null) return;
           if (event.lngLat === undefined) return;
           const coordinate = { latitude: event.lngLat.lat, longitude: event.lngLat.lng };
           if (polygonModeRef.current) {
-            if (polygonDraftRef.current?.closed === true) return;
+            const draft = polygonDraftRef.current;
+            if ((event.originalEvent?.detail ?? 1) > 1) {
+              if (draft?.closed !== true) onPolygonFinishRef.current?.();
+              return;
+            }
+            if (draft?.closed === true) return;
             onPolygonVertexRef.current?.(coordinate);
             return;
           }
@@ -509,6 +532,16 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
     if ((event.target as Element).closest('.route-stop-sequence-picker') !== null) return;
     onRouteStopPickerCloseRef.current?.();
   };
+
+  const handleMapFrameDoubleClickCapture = (event: React.MouseEvent<HTMLDivElement>): void => {
+    if (!polygonModeRef.current) return;
+    if ((event.target as Element).closest('.map-edit-overlay') !== null) return;
+    const draft = polygonDraftRef.current;
+    if (draft?.closed === true) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onPolygonFinishRef.current?.();
+  };
   const hasHeading = title !== undefined || subtitle !== undefined || headerAction !== undefined;
 
   return (
@@ -525,7 +558,7 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
         </div>
       ) : null}
       {statusContent === undefined ? null : <div className="map-panel-status">{statusContent}</div>}
-      <div className="route-ops-map-frame" data-map-provider-mode={bootstrap.mapConfig.providerMode ?? 'none'} data-map-provider-status={bootstrap.mapConfig.status} data-polygon-mode={polygonMode ? 'true' : 'false'} onPointerDown={handleMapFramePointerDown}>
+      <div className="route-ops-map-frame" data-map-provider-mode={bootstrap.mapConfig.providerMode ?? 'none'} data-map-provider-status={bootstrap.mapConfig.status} data-polygon-mode={polygonMode ? 'true' : 'false'} onDoubleClickCapture={handleMapFrameDoubleClickCapture} onPointerDown={handleMapFramePointerDown}>
         {readiness === 'interactive_map' || onExitRouteMode !== undefined ? (
           <div className="map-toolbar">
             {onExitRouteMode !== undefined ? <button aria-label={t.exitRouteMode} onClick={onExitRouteMode} title={t.exitRouteMode} type="button"><span aria-hidden="true" className="map-toolbar-symbol">←</span></button> : null}
@@ -701,6 +734,25 @@ export function syncOrdersLayer(map: MapLibreMap, featureCollection: ReturnType<
     return;
   }
 
+  if (!safeGetLayer(map, 'route-ops-order-highlight-halo')) {
+    safeAddLayer(map, {
+      filter: ['!=', ['get', 'markerHighlightColor'], null],
+      id: 'route-ops-order-highlight-halo',
+      paint: {
+        'circle-blur': 0.18,
+        'circle-color': ['coalesce', ['get', 'markerHighlightColor'], '#facc15'],
+        'circle-opacity': ['*', ['get', 'markerOpacity'], 0.92],
+        'circle-radius': 18,
+        'circle-stroke-color': '#ffffff',
+        'circle-stroke-opacity': ['get', 'markerOpacity'],
+        'circle-stroke-width': 2.5,
+        'circle-translate': [0, -18]
+      },
+      source: 'route-ops-orders',
+      type: 'circle'
+    });
+  }
+
   if (!safeGetLayer(map, 'route-ops-order-pins')) {
     safeAddLayer(map, {
       id: 'route-ops-order-pins',
@@ -780,26 +832,33 @@ function ensureOrdersMapPinImages(map: MapLibreMap, featureCollection: ReturnTyp
   ];
   for (const image of images) {
     if (safeHasImage(imageApi, image.id)) continue;
-    const imageData = createOrderPinImageData(image.color, { shadowColor: image.shadowColor });
+    const imageData = createOrderPinImageData(image.color, { borderColor: image.borderColor, borderWidth: image.borderWidth, shadowBlur: image.shadowBlur, shadowColor: image.shadowColor });
     if (imageData === null) return false;
     if (!safeAddImage(imageApi, image.id, imageData)) return false;
   }
   return true;
 }
 
-function customOrderPinImages(featureCollection: ReturnType<typeof buildOrdersMapFeatureCollection>): Array<{ color: string; id: string; shadowColor: string }> {
+function customOrderPinImages(featureCollection: ReturnType<typeof buildOrdersMapFeatureCollection>): Array<{ borderColor?: string; borderWidth?: number; color: string; id: string; shadowBlur?: number; shadowColor: string }> {
   const standardIds = new Set([ORDER_PIN_IMAGE_ID, ORDER_PIN_PLANNED_IMAGE_ID, ORDER_PIN_REVIEW_IMAGE_ID, ORDER_PIN_HISTORY_IMAGE_ID]);
-  const imagesById = new Map<string, { color: string; id: string; shadowColor: string }>();
+  const imagesById = new Map<string, { borderColor?: string; borderWidth?: number; color: string; id: string; shadowBlur?: number; shadowColor: string }>();
   for (const feature of featureCollection.features) {
-    const { markerColor, pinImage } = feature.properties;
+    const { markerColor, markerHighlightColor, pinImage } = feature.properties;
     if (standardIds.has(pinImage)) continue;
     if (!/^#[0-9a-f]{6}$/iu.test(markerColor)) continue;
-    imagesById.set(pinImage, { color: markerColor, id: pinImage, shadowColor: `${markerColor}5c` });
+    imagesById.set(pinImage, {
+      borderColor: markerHighlightColor ?? undefined,
+      borderWidth: markerHighlightColor === null ? undefined : 5.4,
+      color: markerColor,
+      id: pinImage,
+      shadowBlur: markerHighlightColor === null ? undefined : 8,
+      shadowColor: markerHighlightColor ?? `${markerColor}5c`
+    });
   }
   return [...imagesById.values()];
 }
 
-function createOrderPinImageData(color: string, options: { borderWidth?: number; shadowBlur?: number; shadowColor?: string; shadowOffsetY?: number } = {}): ImageData | null {
+function createOrderPinImageData(color: string, options: { borderColor?: string; borderWidth?: number; shadowBlur?: number; shadowColor?: string; shadowOffsetY?: number } = {}): ImageData | null {
   if (typeof document === 'undefined' || typeof Path2D === 'undefined') return null;
   const width = 40 * ORDER_PIN_PIXEL_RATIO;
   const height = 52 * ORDER_PIN_PIXEL_RATIO;
@@ -811,7 +870,7 @@ function createOrderPinImageData(color: string, options: { borderWidth?: number;
   context.scale(ORDER_PIN_PIXEL_RATIO, ORDER_PIN_PIXEL_RATIO);
   const pinPath = new Path2D(ORDER_PIN_PATH);
   context.fillStyle = color;
-  context.strokeStyle = '#ffffff';
+  context.strokeStyle = options.borderColor ?? '#ffffff';
   context.lineJoin = 'round';
   context.lineWidth = options.borderWidth ?? 3.2;
   context.shadowBlur = options.shadowBlur ?? 4;
