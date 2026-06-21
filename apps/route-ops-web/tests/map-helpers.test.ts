@@ -162,7 +162,7 @@ describe('route ops map helpers', () => {
       { addressLabel: 'Road A', id: 'a:dropoff', kind: 'dropoff', label: '1', latitude: 43.61, longitude: -79.31 }
     ]);
     expect(fitBoundsForPoints([...points, ...dropoffPoints])).toEqual({ east: -79.31, north: 43.7, south: 43.61, west: -79.5 });
-    expect(fitBoundsForPoints(getRouteFitPoints(detail, points, dropoffPoints))).toEqual({ east: -79.31, north: 43.65, south: 43.61, west: -79.4 });
+    expect(fitBoundsForPoints(getRouteFitPoints(detail, points, dropoffPoints))).toEqual({ east: -79.31, north: 43.7, south: 43.61, west: -79.5 });
     expect(buildRouteStopMarkerFeatureCollection(points)).toEqual({
       features: [
         { geometry: { coordinates: [-79.31, 43.61], type: 'Point' }, properties: { color: '#006fbb', id: 'a', label: '1', preview: true, selected: false, sortKey: 10001 }, type: 'Feature' },
@@ -199,7 +199,7 @@ describe('route ops map helpers', () => {
   });
 
 
-  test('fits draft route maps to stop coordinates before depot when geometry cache is missing', () => {
+  test('fits draft route maps to stop coordinates and depot when geometry cache is missing', () => {
     const detail = { ...routeDetail(), routeGeometry: null, routeStopPoints: [] };
     const routePoints = getRouteMapPoints(detail);
     const fitPoints = getRouteFitPoints(detail, routePoints, getRouteDropoffPoints(detail));
@@ -209,8 +209,8 @@ describe('route ops map helpers', () => {
       'stop:1:draft',
       'stop:2:draft'
     ]);
-    expect(fitPoints.map((point) => `${point.kind}:${point.label}`)).toEqual(['stop:1', 'stop:2']);
-    expect(fitBoundsForPoints(fitPoints)).toEqual({ east: -79.3, north: 43.65, south: 43.6, west: -79.4 });
+    expect(fitPoints.map((point) => `${point.kind}:${point.label}`)).toEqual(['depot:D', 'stop:1', 'stop:2']);
+    expect(fitBoundsForPoints(fitPoints)).toEqual({ east: -79.3, north: 43.7, south: 43.6, west: -79.5 });
   });
 
   test('excludes impossible geocode outliers from route detail fit bounds', () => {
@@ -227,11 +227,11 @@ describe('route ops map helpers', () => {
     const fitPoints = getRouteFitPoints(detail, routePoints, []);
 
     expect(routePoints.map((point) => `${point.kind}:${point.label}`)).toEqual(['depot:D', 'stop:1', 'stop:2', 'stop:3']);
-    expect(fitPoints.map((point) => `${point.kind}:${point.label}`)).toEqual(['stop:1', 'stop:2']);
-    expect(fitBoundsForPoints(fitPoints)).toEqual({ east: -79.3, north: 43.65, south: 43.6, west: -79.4 });
+    expect(fitPoints.map((point) => `${point.kind}:${point.label}`)).toEqual(['depot:D', 'stop:1', 'stop:2']);
+    expect(fitBoundsForPoints(fitPoints)).toEqual({ east: -79.3, north: 43.7, south: 43.6, west: -79.5 });
   });
 
-  test('keeps published route stops neutral while still fitting to stops before depot', () => {
+  test('keeps published route stops neutral while still fitting to stops and depot', () => {
     const detail: RoutePlanDetailDto = {
       ...routeDetail(),
       routePlan: { ...routeDetail().routePlan, status: 'ASSIGNED' },
@@ -245,7 +245,7 @@ describe('route ops map helpers', () => {
       ['a', '#303030', false],
       ['b', '#303030', false]
     ]);
-    expect(getRouteFitPoints(detail, routePoints, []).map((point) => `${point.kind}:${point.label}`)).toEqual(['stop:1', 'stop:2']);
+    expect(getRouteFitPoints(detail, routePoints, []).map((point) => `${point.kind}:${point.label}`)).toEqual(['depot:D', 'stop:1', 'stop:2']);
   });
 
   test('marks selected route stop marker data without changing marker shape', () => {

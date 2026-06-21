@@ -947,9 +947,27 @@ small,
   padding: 7px 10px;
 }
 .route-group-area-driver strong {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.route-group-area-route-button {
+  background: #ffffff;
+  border: 1px solid #d7deea;
+  border-radius: 999px;
+  color: #2563eb;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 900;
+  min-height: 24px;
+  padding: 2px 9px;
+}
+.route-group-area-route-button:is(:hover, :focus-visible) {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+  outline: none;
 }
 .route-group-area-driver--assignable {
   cursor: pointer;

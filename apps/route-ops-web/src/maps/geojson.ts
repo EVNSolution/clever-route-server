@@ -237,7 +237,7 @@ export function getRouteFitPoints(detail: RoutePlanDetailDto | null, routePoints
   const stopPoints = routePoints.filter((point) => point.kind === 'stop');
   const fitPoints = [...stopPoints, ...dropoffPoints];
   const plausibleFitPoints = depotPoint === null ? fitPoints : fitPoints.filter((point) => distanceKilometers(depotPoint, point) <= ROUTE_FIT_MAX_DEPOT_DISTANCE_KM);
-  if (plausibleFitPoints.length > 0) return plausibleFitPoints;
+  if (plausibleFitPoints.length > 0) return depotPoint === null ? plausibleFitPoints : [depotPoint, ...plausibleFitPoints];
   return fitPoints.length > 0 ? fitPoints : routePoints;
 }
 

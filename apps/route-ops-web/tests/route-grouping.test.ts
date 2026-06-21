@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { appendPolygonVertex, closePolygonDraft, coordinateInPolygon, insertPolygonVertex, movePolygonVertex, polygonDraftToGeoJson, readEditablePolygonVertices, readPolygonVertices, removeLastPolygonVertex } from '../src/routeGrouping';
-import { buildRouteGroupingAssignmentResults, canGenerateRouteGroupingChildRoutes, getRouteGroupingAssignableDrivers, getRouteGroupingDuplicateDriverPolygonIds, releaseDriverFromOtherRouteGroupingPolygons, sortRouteGroupingAssignments } from '../src/pages/RouteGroupingPage';
+import { buildRouteGroupingAssignmentResults, canGenerateRouteGroupingChildRoutes, getRouteGroupingAssignableDrivers, getRouteGroupingChildRouteForPolygon, getRouteGroupingDuplicateDriverPolygonIds, releaseDriverFromOtherRouteGroupingPolygons, sortRouteGroupingAssignments } from '../src/pages/RouteGroupingPage';
 import type { DriverDto, RouteGroupingAssignmentDto, RouteGroupingDetailDto, RouteGroupingPolygonDto } from '../src/types';
 
 describe('route grouping polygon draft helpers', () => {
@@ -103,6 +103,16 @@ describe('route grouping polygon draft helpers', () => {
         { id: 'polygon-3', driverId: 'driver-1' },
       ])),
     ).toEqual(['polygon-3']);
+  });
+
+  test('matches optimized child route links to split polygon drivers', () => {
+    const childRoutes = [
+      { childVersion: 1, displayStatus: 'DRAFT', driverId: 'driver-1', driverName: 'Alex Driver', notificationStatus: 'NOT_REQUIRED', routePlan: null, routePlanId: 'route-1', stopsCount: 3 },
+      { childVersion: 1, displayStatus: 'DRAFT', driverId: 'driver-2', driverName: 'Minji Driver', notificationStatus: 'NOT_REQUIRED', routePlan: null, routePlanId: 'route-2', stopsCount: 4 },
+    ] as RouteGroupingDetailDto['children'];
+
+    expect(getRouteGroupingChildRouteForPolygon({ driverId: 'driver-2', label: 'Minji Driver' }, childRoutes)?.routePlanId).toBe('route-2');
+    expect(getRouteGroupingChildRouteForPolygon({ driverId: null, label: 'Unassigned' }, childRoutes)).toBeNull();
   });
 
   test('allows child route generation only after every order is uniquely grouped', () => {

@@ -30,6 +30,7 @@ const EDIT_OVERLAY_MAX_Y = 420;
 
 export function RouteGroupingPage({
   bootstrap,
+  navigate,
   routeGroupId,
   setError,
 }: {
@@ -368,9 +369,11 @@ export function RouteGroupingPage({
             <RouteGroupingAreasCard
               assignments={grouping.assignments}
               busy={busy}
+              childRoutes={grouping.children}
               drivers={drivers}
               onAssignDriver={(polygonId, driverId) => void assignPolygonDriver(polygonId, driverId)}
               onEditPolygon={startEditPolygon}
+              onOpenChildRoute={(routePlanId) => navigate(`/admin/ui/app/routes/${encodeURIComponent(routePlanId)}`)}
               polygons={grouping.polygons}
             />
           ) : null}
@@ -384,16 +387,20 @@ export function RouteGroupingPage({
 function RouteGroupingAreasCard({
   assignments,
   busy,
+  childRoutes,
   drivers,
   onAssignDriver,
   onEditPolygon,
+  onOpenChildRoute,
   polygons,
 }: {
   assignments: RouteGroupingAssignmentDto[];
   busy: boolean;
+  childRoutes: RouteGroupingDetailDto["children"];
   drivers: DriverDto[];
   onAssignDriver(polygonId: string, driverId: string): void;
   onEditPolygon(polygon: RouteGroupingPolygonDto): void;
+  onOpenChildRoute(routePlanId: string): void;
   polygons: RouteGroupingPolygonDto[];
 }): ReactElement {
   const assignmentsByPolygonId = new Map<string, RouteGroupingAssignmentDto[]>();
@@ -415,6 +422,8 @@ function RouteGroupingAreasCard({
           const effectiveDriverId = duplicateDriverPolygonIds.has(polygon.id) ? null : polygon.driverId;
           const label = driverLabel(effectiveDriverId ?? "", drivers);
           const canAssignDriver = effectiveDriverId === null;
+          const childRoute = getRouteGroupingChildRouteForPolygon(polygon, childRoutes);
+          const childRoutePlanId = childRoute?.routePlanId ?? null;
           const assignableDrivers = getRouteGroupingAssignableDrivers(polygon, polygons, drivers);
           return (
             <div className="route-group-area-row" key={polygon.id}>
@@ -440,6 +449,15 @@ function RouteGroupingAreasCard({
                 <span className="route-group-area-driver">
                   <span className="route-group-area-swatch" style={{ background: color }} />
                   <strong>{label}</strong>
+                  {childRoutePlanId === null ? null : (
+                    <button
+                      className="route-group-area-route-button"
+                      onClick={() => onOpenChildRoute(childRoutePlanId)}
+                      type="button"
+                    >
+                      Route
+                    </button>
+                  )}
                 </span>
               )}
               <span className="route-group-area-track" style={{ "--route-group-area-color": color } as CSSProperties}>
@@ -538,6 +556,17 @@ export function getRouteGroupingDuplicateDriverPolygonIds(
     seenDriverIds.add(polygon.driverId);
   }
   return duplicatePolygonIds;
+}
+
+
+export function getRouteGroupingChildRouteForPolygon(
+  polygon: Pick<RouteGroupingPolygonDto, "driverId" | "label">,
+  childRoutes: RouteGroupingDetailDto["children"],
+): RouteGroupingDetailDto["children"][number] | null {
+  if (polygon.driverId !== null) {
+    return childRoutes.find((child) => child.driverId === polygon.driverId) ?? null;
+  }
+  return childRoutes.find((child) => child.driverId === null && child.driverName === polygon.label) ?? null;
 }
 
 export function canGenerateRouteGroupingChildRoutes(grouping: RouteGroupingDetailDto | null): boolean {
