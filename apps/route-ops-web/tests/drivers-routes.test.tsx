@@ -5,6 +5,7 @@ import {
   ApiError,
   createRouteOptimizationJob,
   deleteDriver,
+  generateRouteGroupingChildRoutes,
   getLatestRouteOptimizationJob,
   getNotifications,
   getRouteOptimizationJob,
@@ -741,6 +742,43 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
       expect.objectContaining({
         credentials: 'same-origin',
         headers: { Accept: 'application/json' },
+      }),
+    );
+  });
+
+  test('route grouping child generation posts to the protected Route Ops API with CSRF', async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ data: { routeGroup: routeGroupingFixture() }, error: null }), {
+          headers: { 'Content-Type': 'application/json' },
+          status: 200,
+        }),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('window', { location: { search: '?shopDomain=tenant-a.example.test' } });
+
+    await generateRouteGroupingChildRoutes({ csrfToken: 'csrf-token', routeGroupId: 'group/id' });
+    await generateRouteGroupingChildRoutes({ confirmRisk: true, csrfToken: 'csrf-token', routeGroupId: 'group/id' });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/admin/ui/app/api/route-groups/group%2Fid/generate-child-routes?shopDomain=tenant-a.example.test',
+      expect.objectContaining({
+        body: '{"confirmRisk":false}',
+        credentials: 'same-origin',
+        headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-token' }),
+        method: 'POST',
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/admin/ui/app/api/route-groups/group%2Fid/generate-child-routes?shopDomain=tenant-a.example.test',
+      expect.objectContaining({
+        body: '{"confirmRisk":true}',
+        credentials: 'same-origin',
+        headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-token' }),
+        method: 'POST',
       }),
     );
   });

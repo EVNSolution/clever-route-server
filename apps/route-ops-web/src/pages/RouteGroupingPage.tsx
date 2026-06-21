@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactElement, ReactNode } from "react";
 
 import {
+  ApiError,
+  generateRouteGroupingChildRoutes,
   getDrivers,
   getRouteGrouping,
   getSettings,
@@ -73,7 +75,21 @@ export function RouteGroupingPage({
   const draftReady = draft.closed && draft.vertices.length >= 3;
   const editingPolygon = editingPolygonId === null ? null : grouping?.polygons.find((polygon) => polygon.id === editingPolygonId) ?? null;
   const draftColor = editingPolygon?.color ?? "#2563eb";
-  const mapHeaderAction = !isEditing ? <button onClick={startEdit} type="button">Edit</button> : undefined;
+  const childRoutesReady = canGenerateRouteGroupingChildRoutes(grouping);
+  const mapHeaderAction = !isEditing ? (
+    <div className="route-group-header-actions">
+      <button onClick={startEdit} type="button">Edit</button>
+      <button
+        className="primary route-group-generate-button"
+        disabled={!childRoutesReady || busy}
+        onClick={() => void generateChildRoutes()}
+        title={childRoutesReady ? "Optimize driver routes" : "Assign every order before optimizing"}
+        type="button"
+      >
+        Optimize
+      </button>
+    </div>
+  ) : undefined;
   const mapEditOverlay = isEditing ? renderMapEditOverlay() : undefined;
   const visiblePolygons = useMemo(() => buildVisiblePolygons(grouping, isEditing ? editingPolygonId : undefined), [editingPolygonId, grouping, isEditing]);
   const groupedOrderMarkerStates = useMemo(
@@ -167,6 +183,42 @@ export function RouteGroupingPage({
     } finally {
       setBusy(false);
     }
+  }
+
+  async function generateChildRoutes(): Promise<void> {
+    if (grouping === null || !childRoutesReady) return;
+    setBusy(true);
+    try {
+      await generateChildRoutesWithRiskConfirmation(false);
+      setError(null);
+    } catch (error) {
+      setError(readErrorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function generateChildRoutesWithRiskConfirmation(confirmRisk: boolean): Promise<void> {
+    const payload = await generateRouteGroupingChildRoutes({
+      confirmRisk,
+      csrfToken: bootstrap.csrfToken,
+      routeGroupId,
+    }).catch(async (error: unknown) => {
+      if (
+        error instanceof ApiError &&
+        error.code === "ROUTE_GROUPING_RISK_CONFIRMATION_REQUIRED" &&
+        confirmRisk === false &&
+        window.confirm("Existing driver routes or notifications may be replaced. Continue?")
+      ) {
+        return generateRouteGroupingChildRoutes({
+          confirmRisk: true,
+          csrfToken: bootstrap.csrfToken,
+          routeGroupId,
+        });
+      }
+      throw error;
+    });
+    setGrouping(payload.routeGroup);
   }
 
   function startEdit(): void {
@@ -486,6 +538,13 @@ export function getRouteGroupingDuplicateDriverPolygonIds(
     seenDriverIds.add(polygon.driverId);
   }
   return duplicatePolygonIds;
+}
+
+export function canGenerateRouteGroupingChildRoutes(grouping: RouteGroupingDetailDto | null): boolean {
+  if (grouping === null) return false;
+  if (grouping.polygons.length === 0) return false;
+  if (grouping.unresolvedOrders !== 0) return false;
+  return getRouteGroupingDuplicateDriverPolygonIds(grouping.polygons).size === 0;
 }
 
 function RouteGroupingOrderItemsCard({

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { appendPolygonVertex, closePolygonDraft, coordinateInPolygon, insertPolygonVertex, movePolygonVertex, polygonDraftToGeoJson, readEditablePolygonVertices, readPolygonVertices, removeLastPolygonVertex } from '../src/routeGrouping';
-import { buildRouteGroupingAssignmentResults, getRouteGroupingAssignableDrivers, getRouteGroupingDuplicateDriverPolygonIds, releaseDriverFromOtherRouteGroupingPolygons, sortRouteGroupingAssignments } from '../src/pages/RouteGroupingPage';
-import type { DriverDto, RouteGroupingAssignmentDto, RouteGroupingPolygonDto } from '../src/types';
+import { buildRouteGroupingAssignmentResults, canGenerateRouteGroupingChildRoutes, getRouteGroupingAssignableDrivers, getRouteGroupingDuplicateDriverPolygonIds, releaseDriverFromOtherRouteGroupingPolygons, sortRouteGroupingAssignments } from '../src/pages/RouteGroupingPage';
+import type { DriverDto, RouteGroupingAssignmentDto, RouteGroupingDetailDto, RouteGroupingPolygonDto } from '../src/types';
 
 describe('route grouping polygon draft helpers', () => {
   test('click appends vertices and double-click closes only valid polygons', () => {
@@ -105,6 +105,31 @@ describe('route grouping polygon draft helpers', () => {
     ).toEqual(['polygon-3']);
   });
 
+  test('allows child route generation only after every order is uniquely grouped', () => {
+    const ready = routeGroupingDetailFixture({
+      polygons: [
+        { closed: true, color: '#2563eb', drawOrder: 1, driverId: 'driver-1', geometry: {}, id: 'polygon-1', label: 'Alex' },
+        { closed: true, color: '#16a34a', drawOrder: 2, driverId: 'driver-2', geometry: {}, id: 'polygon-2', label: 'Minji' },
+      ],
+      unresolvedOrders: 0,
+    });
+
+    expect(canGenerateRouteGroupingChildRoutes(ready)).toBe(true);
+    expect(canGenerateRouteGroupingChildRoutes(routeGroupingDetailFixture({ polygons: [], unresolvedOrders: 0 }))).toBe(false);
+    expect(canGenerateRouteGroupingChildRoutes(routeGroupingDetailFixture({ polygons: ready.polygons, unresolvedOrders: 1 }))).toBe(false);
+    expect(
+      canGenerateRouteGroupingChildRoutes(
+        routeGroupingDetailFixture({
+          polygons: [
+            { closed: true, color: '#2563eb', drawOrder: 1, driverId: 'driver-1', geometry: {}, id: 'polygon-1', label: 'Alex' },
+            { closed: true, color: '#16a34a', drawOrder: 2, driverId: 'driver-1', geometry: {}, id: 'polygon-2', label: 'Alex' },
+          ],
+          unresolvedOrders: 0,
+        }),
+      ),
+    ).toBe(false);
+  });
+
 
   test('moves a selected driver away from other polygons before saving an edited polygon', () => {
     const polygons = [
@@ -152,3 +177,22 @@ describe('route grouping polygon draft helpers', () => {
   });
 
 });
+
+function routeGroupingDetailFixture(overrides: Partial<RouteGroupingDetailDto> = {}): RouteGroupingDetailDto {
+  return {
+    assignments: [],
+    children: [],
+    currentVersion: 1,
+    displayStatus: 'DRAFT',
+    id: 'group-1',
+    name: 'Route 2026-06-21',
+    planDate: '2026-06-21',
+    polygons: [],
+    status: 'DRAFT',
+    totalOrders: 0,
+    unresolvedOrders: 0,
+    updatedAt: '2026-06-21T00:00:00.000Z',
+    warningState: [],
+    ...overrides,
+  };
+}

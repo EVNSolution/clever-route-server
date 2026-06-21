@@ -1738,6 +1738,14 @@ button.danger.subtle {
   gap: 8px;
   justify-content: flex-end;
 }
+.route-group-header-actions {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+.route-group-generate-button {
+  white-space: nowrap;
+}
 .map-panel-status {
   flex: 0 0 auto;
   margin: -4px 0 12px;
