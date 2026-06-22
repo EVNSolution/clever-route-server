@@ -51,6 +51,11 @@ function all(files, patterns) {
   return files.length > 0 && files.every((file) => patterns.some((pattern) => pattern.test(file)));
 }
 
+const DEPLOY_WORKFLOW_RE = /^\.github\/workflows\/(ci|route-ops-simple-deploy)\.yml$/;
+const DEPLOY_SCRIPT_RE = /^scripts\/(guard-route-ops-deploy-scope|check-ignore-hygiene|scan-secrets|smoke-route-ops-production|ssm-simple-route-ops-deploy|osrm-ontario|monitor-route-ops-production)\.(mjs|sh)$/;
+const DEPLOY_TEST_RE = /^tests\/deploy\/(ssm-simple-route-ops-deploy|route-ops-prisma-db-push-guard|monitor-route-ops-production)\.test\.sh$/;
+const LIVE_DEPLOY_SCRIPT_RE = /^scripts\/(ssm-simple-route-ops-deploy|osrm-ontario|monitor-route-ops-production)\.sh$/;
+
 export function classifyRouteOpsChanges(files, options = {}) {
   const force = options.forceFullVerify === true;
 
@@ -59,15 +64,15 @@ export function classifyRouteOpsChanges(files, options = {}) {
   ]);
 
   const workflowChanged = any(files, [
-    /^\.github\/workflows\/(ci|route-ops-simple-deploy)\.yml$/,
+    DEPLOY_WORKFLOW_RE,
   ]);
 
   const deployChanged = any(files, [
     /^infra\/compose\/docker-compose\.prod\.yml$/,
     /^infra\/vroom\/config\.yml$/,
     /^infra\/env\/delivery-api\.env\.example$/,
-    /^scripts\/(guard-route-ops-deploy-scope|check-ignore-hygiene|scan-secrets|smoke-route-ops-production|ssm-simple-route-ops-deploy|osrm-ontario|monitor-route-ops-production)\.(mjs|sh)$/,
-    /^tests\/deploy\/(ssm-simple-route-ops-deploy|route-ops-prisma-db-push-guard|monitor-route-ops-production)\.test\.sh$/,
+    DEPLOY_SCRIPT_RE,
+    DEPLOY_TEST_RE,
     /^docs\/deployment\/(route-ops-simple-ssm-deploy|route-ops-osrm-ontario|route-ops-vroom)\.md$/,
   ]);
 
@@ -100,10 +105,10 @@ export function classifyRouteOpsChanges(files, options = {}) {
     /^infra\/vroom\/config\.yml$/,
     /^infra\/env\/delivery-api\.env\.example$/,
     /^scripts\/ci\/route-ops-change-classifier\.mjs$/,
-    /^scripts\/(guard-route-ops-deploy-scope|check-ignore-hygiene|scan-secrets|smoke-route-ops-production|ssm-simple-route-ops-deploy|osrm-ontario|monitor-route-ops-production)\.(mjs|sh)$/,
+    DEPLOY_SCRIPT_RE,
     /^tests\/(deploy|ci)\//,
     /^docs\/(architecture|migration|deployment|development)\//,
-    /^\.github\/workflows\/(ci|route-ops-simple-deploy)\.yml$/,
+    DEPLOY_WORKFLOW_RE,
     /^\.gitignore$/,
     /^\.dockerignore$/,
     /^\.gitleaks\.toml$/,
@@ -130,9 +135,9 @@ export function classifyRouteOpsChanges(files, options = {}) {
     /^tests\/ci\/route-ops-change-classifier\.test\.mjs$/,
     /^infra\/compose\/docker-compose\.prod\.yml$/,
     /^infra\/vroom\/config\.yml$/,
-    /^scripts\/(ssm-simple-route-ops-deploy|osrm-ontario|monitor-route-ops-production)\.sh$/,
+    LIVE_DEPLOY_SCRIPT_RE,
     /^tests\/deploy\//,
-    /^\.github\/workflows\/(ci|route-ops-simple-deploy)\.yml$/,
+    DEPLOY_WORKFLOW_RE,
   ]);
 
   const classifierChanged = any(files, [
@@ -146,7 +151,7 @@ export function classifyRouteOpsChanges(files, options = {}) {
     /^package(-lock)?\.json$/,
     /^apps\/delivery-api\/package(-lock)?\.json$/,
     /^apps\/route-ops-web\/package(-lock)?\.json$/,
-    /^\.github\/workflows\/(ci|route-ops-simple-deploy)\.yml$/,
+    DEPLOY_WORKFLOW_RE,
   ]);
 
   return {

@@ -66,8 +66,6 @@ check('admin UI API test needs web artifact', ['apps/delivery-api/tests/admin-ro
   api_test_profile: 'route_ops',
 });
 
-
-
 check('deploy script only stays deploy-critical without API artifact', ['scripts/ssm-simple-route-ops-deploy.sh'], {
   api_changed: false,
   deploy_changed: true,
@@ -75,7 +73,6 @@ check('deploy script only stays deploy-critical without API artifact', ['scripts
   full_required: false,
   web_artifact_required: false,
 });
-
 
 check('route geometry refresh script uses light API profile without web artifact', ['apps/delivery-api/src/scripts/refresh-route-geometry-cache.ts'], {
   api_changed: true,
