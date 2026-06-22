@@ -36,6 +36,7 @@ env:
   DELIVERY_API_IMAGE_REPO: ghcr.io/evnsolution/clever-route-server-delivery-api
   ROUTE_OPS_WEB_STATIC_IMAGE_REPO: ghcr.io/evnsolution/clever-route-server-route-ops-web-static
 
+# This workflow is the lean rollout/runtime lane. Do not add broad CI-grade lint/typecheck/test suites here; use CI workflow_dispatch full_verify for that.
 jobs:
   deploy:
     runs-on: ubuntu-latest

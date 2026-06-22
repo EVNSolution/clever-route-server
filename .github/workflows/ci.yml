@@ -5,38 +5,84 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      full_verify:
+        description: "Run the full Route Ops verification lane manually"
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  route-ops-hygiene:
+  route-ops-changes:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 3
+    outputs:
+      changed_files_count: ${{ steps.classify.outputs.changed_files_count }}
+      route_ops_changed: ${{ steps.classify.outputs.route_ops_changed }}
+      web_changed: ${{ steps.classify.outputs.web_changed }}
+      api_changed: ${{ steps.classify.outputs.api_changed }}
+      deploy_changed: ${{ steps.classify.outputs.deploy_changed }}
+      workflow_changed: ${{ steps.classify.outputs.workflow_changed }}
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+      critical_changed: ${{ steps.classify.outputs.critical_changed }}
+      full_required: ${{ steps.classify.outputs.full_required }}
+      web_artifact_required: ${{ steps.classify.outputs.web_artifact_required }}
     steps:
       - uses: actions/checkout@v6
-      - name: Detect Route Ops deploy-lane changes
-        id: route_ops_changes
+        with:
+          fetch-depth: 2
+      - name: Detect Route Ops changed files
+        id: files
         shell: bash
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}"
-            files=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "$GITHUB_SHA")
-          else
+            git diff --name-only "${{ github.event.pull_request.base.sha }}" "$GITHUB_SHA" > changed-files.txt
+          elif [ "${{ github.event_name }}" = "push" ]; then
             before="${{ github.event.before }}"
             if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ]; then
-              git fetch --no-tags --depth=1 origin "$before" || true
-              files=$(git diff --name-only "$before" "$GITHUB_SHA" 2>/dev/null || git diff --name-only HEAD^ HEAD 2>/dev/null || true)
+              if git fetch --no-tags --depth=1 origin "$before" && git diff --name-only "$before" "$GITHUB_SHA" > changed-files.txt; then
+                :
+              else
+                echo "Could not determine exact push diff; classifying all tracked files fail-closed." >&2
+                git ls-files > changed-files.txt
+              fi
             else
-              files=$(git ls-files)
+              git ls-files > changed-files.txt
             fi
-          fi
-          if printf '%s\n' "$files" | grep -Eq '^(AGENTS\.md|apps/route-ops-web/.*|apps/delivery-api/AGENTS\.md|apps/delivery-api/Dockerfile|apps/delivery-api/scripts/guard-prisma-db-push\.sh|apps/delivery-api/src/routes/admin-commerce-connections-ui\.routes\.ts|apps/delivery-api/src/routes/admin-ui-[^/]+\.ts|apps/delivery-api/tests/admin-commerce-connections-ui\.routes\.test\.ts|apps/delivery-api/tests/admin-ui-[^/]+\.test\.ts|infra/compose/docker-compose\.prod\.yml|infra/vroom/config\.yml|infra/env/delivery-api\.env\.example|scripts/(guard-route-ops-deploy-scope|check-ignore-hygiene|scan-secrets|smoke-route-ops-production|ssm-simple-route-ops-deploy|osrm-ontario|monitor-route-ops-production)\.(mjs|sh)|tests/deploy/(ssm-simple-route-ops-deploy|route-ops-prisma-db-push-guard|monitor-route-ops-production)\.test\.sh|docs/(architecture/.*|migration/(local-development-runbook|source-inventory)\.md|deployment/(route-ops-simple-ssm-deploy|route-ops-osrm-ontario|route-ops-vroom)\.md|development/script-tooling\.md)|\.github/workflows/(ci|route-ops-simple-deploy)\.yml|\.gitignore|\.dockerignore|\.gitleaks\.toml)$'; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
           else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
+            git ls-files > changed-files.txt
           fi
+          cat changed-files.txt
+      - name: Classify Route Ops changes
+        id: classify
+        shell: bash
+        env:
+          FULL_VERIFY: ${{ github.event_name == 'workflow_dispatch' && inputs.full_verify == true }}
+        run: |
+          set -euo pipefail
+          args=(--github-output "$GITHUB_OUTPUT")
+          if [ "$FULL_VERIFY" = "true" ]; then
+            args+=(--full-verify)
+          fi
+          node scripts/ci/route-ops-change-classifier.mjs "${args[@]}" < changed-files.txt
+          cat "$GITHUB_OUTPUT"
+
+  route-ops-hygiene:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    needs: route-ops-changes
+    steps:
+      - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -44,11 +90,14 @@ jobs:
         run: node scripts/check-ignore-hygiene.mjs
       - name: Secret scan staged/worktree
         run: scripts/scan-secrets.sh --worktree
+      - name: Route Ops classifier tests
+        if: needs.route-ops-changes.outputs.workflow_changed == 'true' || needs.route-ops-changes.outputs.full_required == 'true'
+        run: node tests/ci/route-ops-change-classifier.test.mjs
       - name: Route Ops deploy scope guard (opt-in PR only)
-        if: github.event_name == 'pull_request' && steps.route_ops_changes.outputs.changed == 'true' && contains(github.event.pull_request.labels.*.name, 'route-ops-deploy-scope')
+        if: github.event_name == 'pull_request' && needs.route-ops-changes.outputs.route_ops_changed == 'true' && contains(github.event.pull_request.labels.*.name, 'route-ops-deploy-scope')
         run: scripts/guard-route-ops-deploy-scope.mjs --base "${{ github.event.pull_request.base.sha }}" --head "$GITHUB_SHA" --json --allow-compose-bootstrap
       - name: Route Ops release static checks
-        if: steps.route_ops_changes.outputs.changed == 'true'
+        if: needs.route-ops-changes.outputs.deploy_changed == 'true' || needs.route-ops-changes.outputs.workflow_changed == 'true' || needs.route-ops-changes.outputs.full_required == 'true'
         run: |
           for script in scripts/ssm-simple-route-ops-deploy.sh scripts/osrm-ontario.sh scripts/monitor-route-ops-production.sh apps/delivery-api/scripts/guard-prisma-db-push.sh tests/deploy/ssm-simple-route-ops-deploy.test.sh tests/deploy/route-ops-prisma-db-push-guard.test.sh tests/deploy/monitor-route-ops-production.test.sh; do
             bash -n "$script"
@@ -63,59 +112,40 @@ jobs:
   route-ops-web:
     runs-on: ubuntu-latest
     timeout-minutes: 8
-    needs: route-ops-hygiene
+    needs:
+      - route-ops-changes
+      - route-ops-hygiene
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+        (needs.route-ops-changes.outputs.web_changed == 'true' ||
+         needs.route-ops-changes.outputs.web_artifact_required == 'true' ||
+         needs.route-ops-changes.outputs.full_required == 'true')) ||
+      (github.event_name == 'push' &&
+        ((needs.route-ops-changes.outputs.critical_changed == 'true' &&
+          needs.route-ops-changes.outputs.web_artifact_required == 'true') ||
+         needs.route-ops-changes.outputs.full_required == 'true'))
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 2
-      - name: Detect Route Ops web dist dependency changes
-        id: changes
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}"
-            files=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "$GITHUB_SHA")
-          else
-            before="${{ github.event.before }}"
-            if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ]; then
-              git fetch --no-tags --depth=1 origin "$before" || true
-              files=$(git diff --name-only "$before" "$GITHUB_SHA" 2>/dev/null || git diff --name-only HEAD^ HEAD 2>/dev/null || true)
-            else
-              files=$(git ls-files)
-            fi
-          fi
-          # The delivery-api Route Ops job always downloads route-ops-web-dist before
-          # running admin/route tests. Build and upload that artifact whenever either
-          # the web app changed or the delivery Route Ops lane changed.
-          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/.*|apps/delivery-api/Dockerfile|apps/delivery-api/scripts/guard-prisma-db-push\.sh|apps/delivery-api/prisma/.*|apps/delivery-api/src/routes/(admin-commerce-connections-ui|admin-route-plans|driver-auth|driver-events)\.routes\.ts|apps/delivery-api/src/routes/admin-ui-[^/]+\.ts|apps/delivery-api/src/modules/(commerce|driver|geocoding|route-plans|route-ops|shopify|woocommerce|wordpress-plugin)/.*|apps/delivery-api/tests/(admin-commerce-auth|admin-commerce-connections-ui\.routes|admin-route-plans\.routes|driver-auth\.(repository|routes)|driver\.dependencies|driver-route-access\.routes|geocoding\.service|osrm-route-geometry\.client|vroom-route-optimizer\.client|woocommerce-order-sync\.service|route-plan\.(repository|service)|route-scope-config|prisma-schema)\.test\.ts|apps/delivery-api/tests/admin-ui-[^/]+\.test\.ts|infra/compose/docker-compose\.prod\.yml|infra/vroom/config\.yml|infra/env/delivery-api\.env\.example|\.github/workflows/(ci|route-ops-simple-deploy)\.yml)$'; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
       - uses: actions/setup-node@v6
-        if: steps.changes.outputs.changed == 'true'
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: apps/route-ops-web/package-lock.json
       - name: Install Route Ops web dependencies
-        if: steps.changes.outputs.changed == 'true'
         run: npm --prefix apps/route-ops-web ci
       - name: Lint Route Ops web
-        if: steps.changes.outputs.changed == 'true'
+        if: needs.route-ops-changes.outputs.web_changed == 'true' || needs.route-ops-changes.outputs.full_required == 'true' || github.event_name == 'workflow_dispatch'
         run: npm --prefix apps/route-ops-web run lint
       - name: Typecheck Route Ops web
-        if: steps.changes.outputs.changed == 'true'
+        if: needs.route-ops-changes.outputs.web_changed == 'true' || needs.route-ops-changes.outputs.full_required == 'true' || github.event_name == 'workflow_dispatch'
         run: npm --prefix apps/route-ops-web run typecheck
       - name: Test Route Ops web
-        if: steps.changes.outputs.changed == 'true'
+        if: needs.route-ops-changes.outputs.web_changed == 'true' || needs.route-ops-changes.outputs.full_required == 'true' || github.event_name == 'workflow_dispatch'
         run: npm --prefix apps/route-ops-web run test
       - name: Build Route Ops web
-        if: steps.changes.outputs.changed == 'true'
         run: npm --prefix apps/route-ops-web run build
       - name: Upload Route Ops web dist
-        if: steps.changes.outputs.changed == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: route-ops-web-dist
@@ -128,60 +158,42 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs:
+      - route-ops-changes
       - route-ops-hygiene
       - route-ops-web
+    if: >-
+      always() &&
+      needs.route-ops-hygiene.result == 'success' &&
+      (needs.route-ops-web.result == 'success' || needs.route-ops-web.result == 'skipped') &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request' &&
+         (needs.route-ops-changes.outputs.api_changed == 'true' ||
+          needs.route-ops-changes.outputs.full_required == 'true')) ||
+       (github.event_name == 'push' &&
+         ((needs.route-ops-changes.outputs.api_changed == 'true' &&
+           needs.route-ops-changes.outputs.critical_changed == 'true') ||
+          needs.route-ops-changes.outputs.full_required == 'true')))
     steps:
       - uses: actions/checkout@v6
-        with:
-          fetch-depth: 2
-      - name: Detect delivery API Route Ops changes
-        id: changes
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}"
-            files=$(git diff --name-only "${{ github.event.pull_request.base.sha }}" "$GITHUB_SHA")
-          else
-            before="${{ github.event.before }}"
-            if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ]; then
-              git fetch --no-tags --depth=1 origin "$before" || true
-              files=$(git diff --name-only "$before" "$GITHUB_SHA" 2>/dev/null || git diff --name-only HEAD^ HEAD 2>/dev/null || true)
-            else
-              files=$(git ls-files)
-            fi
-          fi
-          if printf '%s\n' "$files" | grep -Eq '^(apps/route-ops-web/.*|apps/delivery-api/Dockerfile|apps/delivery-api/scripts/guard-prisma-db-push\.sh|apps/delivery-api/prisma/.*|apps/delivery-api/src/routes/(admin-commerce-connections-ui|admin-route-plans|driver-auth|driver-events)\.routes\.ts|apps/delivery-api/src/routes/admin-ui-[^/]+\.ts|apps/delivery-api/src/modules/(commerce|driver|geocoding|route-plans|route-ops|shopify|woocommerce|wordpress-plugin)/.*|apps/delivery-api/tests/(admin-commerce-auth|admin-commerce-connections-ui\.routes|admin-route-plans\.routes|driver-auth\.(repository|routes)|driver\.dependencies|driver-route-access\.routes|geocoding\.service|osrm-route-geometry\.client|vroom-route-optimizer\.client|woocommerce-order-sync\.service|route-plan\.(repository|service)|route-scope-config|prisma-schema)\.test\.ts|apps/delivery-api/tests/admin-ui-[^/]+\.test\.ts|infra/compose/docker-compose\.prod\.yml|infra/vroom/config\.yml|infra/env/delivery-api\.env\.example|\.github/workflows/(ci|route-ops-simple-deploy)\.yml)$'; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
       - uses: actions/setup-node@v6
-        if: steps.changes.outputs.changed == 'true'
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: apps/delivery-api/package-lock.json
       - name: Install delivery API dependencies
-        if: steps.changes.outputs.changed == 'true'
         run: npm --prefix apps/delivery-api ci
       - name: Prisma generate
-        if: steps.changes.outputs.changed == 'true'
         run: npm --prefix apps/delivery-api run prisma:generate
       - name: Lint delivery API
-        if: steps.changes.outputs.changed == 'true'
         run: npm --prefix apps/delivery-api run lint
       - name: Typecheck delivery API
-        if: steps.changes.outputs.changed == 'true'
         run: npm --prefix apps/delivery-api run typecheck
       - name: Download Route Ops web dist
-        if: steps.changes.outputs.changed == 'true'
         uses: actions/download-artifact@v8
         with:
           name: route-ops-web-dist
           path: apps/route-ops-web/dist
       - name: Route Ops targeted tests
-        if: steps.changes.outputs.changed == 'true'
         run: >
           npm --prefix apps/delivery-api run test --
           tests/admin-commerce-auth.test.ts
@@ -211,10 +223,8 @@ jobs:
           tests/route-scope-config.test.ts
           tests/prisma-schema.test.ts
       - name: Build delivery API
-        if: steps.changes.outputs.changed == 'true'
         run: npm --prefix apps/delivery-api run build
       - name: Compose config validation with image placeholders
-        if: steps.changes.outputs.changed == 'true'
         run: |
           cp infra/env/delivery-api.env.example infra/env/delivery-api.env
           ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route \
