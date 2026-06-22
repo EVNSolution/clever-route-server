@@ -6,7 +6,7 @@ import { CommerceConnectionCredentialService } from '../commerce/commerce-connec
 import { loadCredentialEncryptionKey } from '../commerce/commerce-credential-encryption.js';
 import { loadGeocodingService } from '../geocoding/geocoding.dependencies.js';
 import { PrismaOrderSyncRepository } from '../shopify/order-sync.repository.js';
-import type { AdminNotificationServiceContract } from '../notifications/admin-notification.service.js';
+import type { AdminNotificationServiceApi } from '../notifications/admin-notification.service.js';
 import { createWooCommerceOrderClientFromConnection } from '../woocommerce/woocommerce-order.client.js';
 import { WooCommerceOrderSyncService } from '../woocommerce/woocommerce-order-sync.service.js';
 import type { WordPressPluginDependencies } from '../../routes/wordpress-plugin.routes.js';
@@ -32,7 +32,7 @@ export type WordPressPluginRuntimeEnv = Partial<
 >;
 
 export function loadWordPressPluginDependencies(input: {
-  adminNotificationService?: AdminNotificationServiceContract | undefined;
+  adminNotificationService?: AdminNotificationServiceApi | undefined;
   env: WordPressPluginRuntimeEnv;
   prisma: PrismaClient;
 }): WordPressPluginDependencies | undefined {

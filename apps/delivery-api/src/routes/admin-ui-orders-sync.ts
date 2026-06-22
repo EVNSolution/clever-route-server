@@ -1,6 +1,6 @@
 import type { FastifyRequest } from "fastify";
 
-import type { AdminWooSyncServiceContract } from "../modules/commerce/admin-woocommerce-sync.service.js";
+import type { AdminWooSyncServiceApi } from "../modules/commerce/admin-woocommerce-sync.service.js";
 import { WooCommerceOnboardingError } from "../modules/commerce/woocommerce-connection-onboarding.service.js";
 import type {
   WordPressPluginSyncRequestInput,
@@ -8,7 +8,7 @@ import type {
 } from "../modules/wordpress-plugin/wordpress-plugin.types.js";
 
 export type RouteOpsWooSyncAccepted = Awaited<
-  ReturnType<AdminWooSyncServiceContract["requestSync"]>
+  ReturnType<AdminWooSyncServiceApi["requestSync"]>
 >;
 
 export function toRouteOpsWooSyncResponse(accepted: RouteOpsWooSyncAccepted): {
@@ -27,7 +27,7 @@ export function scheduleRouteOpsWooSyncProcessing(input: {
   accepted: RouteOpsWooSyncAccepted;
   request: Pick<FastifyRequest, "log">;
   sanitizeError: (error: unknown) => string;
-  service?: Pick<AdminWooSyncServiceContract, "processSyncRun">;
+  service?: Pick<AdminWooSyncServiceApi, "processSyncRun">;
   shopDomain: string;
 }): void {
   if (input.accepted.startBackgroundProcessing !== true) return;

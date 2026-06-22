@@ -4,13 +4,13 @@ import { describe, expect, test, vi } from 'vitest';
 import { loadAdminOrdersDependencies } from '../src/modules/shopify/order-sync.dependencies.js';
 import { loadWooCommerceWebhookDependencies } from '../src/modules/woocommerce/woocommerce.dependencies.js';
 import { loadWordPressPluginDependencies } from '../src/modules/wordpress-plugin/wordpress-plugin.dependencies.js';
-import type { AdminNotificationServiceContract } from '../src/modules/notifications/admin-notification.service.js';
+import type { AdminNotificationServiceApi } from '../src/modules/notifications/admin-notification.service.js';
 import type { DecryptedWooCommerceConnection } from '../src/modules/commerce/commerce-connection.service.js';
 
 const CREDENTIAL_KEY = `base64:${Buffer.alloc(32, 7).toString('base64')}`;
 
-function notificationService(): AdminNotificationServiceContract {
-  const service: AdminNotificationServiceContract = {
+function notificationService(): AdminNotificationServiceApi {
+  const service: AdminNotificationServiceApi = {
     createAdminNotification: vi.fn(),
     listNotifications: vi.fn(),
     markNotificationRead: vi.fn(),
@@ -46,7 +46,7 @@ type RepositoryCarrier = {
   options: {
     repository: {
       options?: {
-        notificationService?: AdminNotificationServiceContract;
+        notificationService?: AdminNotificationServiceApi;
       };
     };
   };

@@ -15,20 +15,6 @@ import {
 
 export const DEFAULT_DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS = 10 * 60;
 
-export type DriverRouteMapPreviewServiceContract = {
-  createRouteMapPreview(input: {
-    baseUrl: string;
-    driverId: string;
-    route: DriverAssignedRoute;
-    shopDomain: string;
-  }): DriverRouteMapPreview | null;
-  readRouteMapPreviewImage(input: {
-    expires: string;
-    previewId: string;
-    signature: string;
-  }): Promise<Buffer | null>;
-};
-
 type DriverRouteMapPreviewServiceOptions = {
   assignedRouteService: DriverAssignedRouteServiceContract;
   jwtSecret: string;
@@ -44,7 +30,7 @@ type PreviewPayload = {
   version: 1;
 };
 
-export class DriverRouteMapPreviewService implements DriverRouteMapPreviewServiceContract {
+export class DriverRouteMapPreviewService {
   private readonly now: () => Date;
   private readonly ttlSeconds: number;
   private readonly encryptionKey: Buffer;
@@ -219,3 +205,8 @@ function readPreviewPayload(value: unknown): PreviewPayload | null {
     version: 1
   };
 }
+
+export type DriverRouteMapPreviewServiceApi = Pick<
+  DriverRouteMapPreviewService,
+  'createRouteMapPreview' | 'readRouteMapPreviewImage'
+>;

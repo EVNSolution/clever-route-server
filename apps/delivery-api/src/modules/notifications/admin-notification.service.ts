@@ -12,26 +12,6 @@ import {
   type AdminNotificationStreamHub,
 } from './admin-notification.stream.js';
 
-export type AdminNotificationServiceContract = {
-  createAdminNotification(
-    event: AdminWebNotificationEvent,
-  ): Promise<AdminNotificationBatchResult>;
-  listNotifications(input: {
-    includeRead?: boolean;
-    limit?: number;
-    shopDomain: string;
-  }): Promise<AdminNotificationList>;
-  markNotificationRead(input: {
-    notificationId: string;
-    readAt?: Date;
-    shopDomain: string;
-  }): Promise<AdminNotificationDto | null>;
-  subscribeToNotificationChanges(input: {
-    listener: (event: AdminNotificationStreamEvent) => void;
-    shopDomain: string;
-  }): Promise<(() => void) | null>;
-};
-
 export type AdminNotificationBatchResult = {
   createdCount: number;
   dedupedCount: number;
@@ -46,9 +26,7 @@ export type AdminNotificationChangePublisher = {
   }): Promise<void> | void;
 };
 
-export class AdminNotificationService
-  implements AdminNotificationServiceContract
-{
+export class AdminNotificationService {
   constructor(
     private readonly repository: PrismaAdminNotificationRepository,
     private readonly streamHub: AdminNotificationStreamHub,
@@ -105,3 +83,8 @@ export class AdminNotificationService
     return this.streamHub.subscribeToShop(shopId, input.listener);
   }
 }
+
+export type AdminNotificationServiceApi = Pick<
+  AdminNotificationService,
+  'createAdminNotification' | 'listNotifications' | 'markNotificationRead' | 'subscribeToNotificationChanges'
+>;

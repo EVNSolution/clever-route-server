@@ -6,13 +6,13 @@ import {
   verifyDriverToken,
   type VerifiedDriverToken
 } from '../modules/driver/driver-token-verifier.js';
-import type { DriverTokenAccessRepositoryContract } from '../modules/driver/driver-token-access.repository.js';
+import type { DriverTokenAccessRepositoryApi } from '../modules/driver/driver-token-access.repository.js';
 import type {
   DriverAssignedRoute,
   DriverAssignedRouteServiceContract,
   DriverRouteMapPreview
 } from '../modules/driver/driver-assigned-route.types.js';
-import type { DriverRouteMapPreviewServiceContract } from '../modules/driver/driver-route-map-preview.service.js';
+import type { DriverRouteMapPreviewServiceApi } from '../modules/driver/driver-route-map-preview.service.js';
 import type {
   DriverConsentRecordInput,
   DriverConsentServiceContract,
@@ -69,8 +69,8 @@ export type DriverApiDependencies = {
   driverSelfService?: DriverSelfServiceContract;
   driverRouteSessionRestoreService?: DriverRouteSessionRestoreServiceContract;
   driverRouteMapPreviewBaseUrl?: string;
-  driverRouteMapPreviewService?: DriverRouteMapPreviewServiceContract;
-  driverTokenAccessRepository?: DriverTokenAccessRepositoryContract;
+  driverRouteMapPreviewService?: DriverRouteMapPreviewServiceApi;
+  driverTokenAccessRepository?: DriverTokenAccessRepositoryApi;
   jwtSecret: string;
   proofMediaService?: DriverProofMediaServiceContract;
   now?: () => Date;

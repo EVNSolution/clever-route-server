@@ -9,11 +9,7 @@ export type DriverTokenAccessCheckInput = {
   tokenVersion: number;
 };
 
-export type DriverTokenAccessRepositoryContract = {
-  isDriverAccessTokenActive(input: DriverTokenAccessCheckInput): Promise<boolean>;
-};
-
-export class PrismaDriverTokenAccessRepository implements DriverTokenAccessRepositoryContract {
+export class PrismaDriverTokenAccessRepository {
   constructor(private readonly prisma: DriverTokenAccessPrismaClient) {}
 
   async isDriverAccessTokenActive(input: DriverTokenAccessCheckInput): Promise<boolean> {
@@ -30,3 +26,5 @@ export class PrismaDriverTokenAccessRepository implements DriverTokenAccessRepos
     return driver !== null && driver.tokenVersion === input.tokenVersion;
   }
 }
+
+export type DriverTokenAccessRepositoryApi = Pick<PrismaDriverTokenAccessRepository, 'isDriverAccessTokenActive'>;

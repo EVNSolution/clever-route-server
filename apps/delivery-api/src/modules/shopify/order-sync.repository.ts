@@ -19,7 +19,7 @@ import {
 } from "./order-operate-status.js";
 import { toOrderItemDto, type OrderItemRecordLike } from "../order-items/order-items.js";
 import { readNormalizedPaymentStatus } from "../payments/normalized-payment-status.js";
-import type { AdminNotificationServiceContract } from "../notifications/admin-notification.service.js";
+import type { AdminNotificationServiceApi } from "../notifications/admin-notification.service.js";
 import type { AdminWebNotificationEvent } from "../notifications/admin-web-notification-events.js";
 
 export type UpsertOrderWithDeliveryStopInput = {
@@ -311,7 +311,7 @@ type DeliveryFactCandidateRecord = {
 
 export class PrismaOrderSyncRepository {
   private readonly notificationLogger: OrderSyncNotificationLogger;
-  private readonly notificationService: AdminNotificationServiceContract | undefined;
+  private readonly notificationService: AdminNotificationServiceApi | undefined;
 
   constructor(
     private readonly prisma: OrderSyncPrismaClient,
@@ -319,7 +319,7 @@ export class PrismaOrderSyncRepository {
       allowAnyShopDomain?: boolean;
       createMissingShop?: boolean;
       notificationLogger?: OrderSyncNotificationLogger;
-      notificationService?: AdminNotificationServiceContract;
+      notificationService?: AdminNotificationServiceApi;
     } = {},
   ) {
     this.notificationLogger = options.notificationLogger ?? console;
@@ -1578,7 +1578,7 @@ function existingDeliveryStopSelect() {
 async function createAdminNotificationsBestEffort(input: {
   events: AdminWebNotificationEvent[];
   notificationLogger: OrderSyncNotificationLogger;
-  notificationService: AdminNotificationServiceContract;
+  notificationService: AdminNotificationServiceApi;
 }): Promise<void> {
   for (const event of input.events) {
     try {

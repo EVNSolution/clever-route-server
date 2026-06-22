@@ -5,7 +5,7 @@ import { PrismaCommerceConnectionRepository } from '../commerce/commerce-connect
 import { CommerceConnectionCredentialService } from '../commerce/commerce-connection.service.js';
 import { loadGeocodingService } from '../geocoding/geocoding.dependencies.js';
 import { PrismaOrderSyncRepository } from '../shopify/order-sync.repository.js';
-import type { AdminNotificationServiceContract } from '../notifications/admin-notification.service.js';
+import type { AdminNotificationServiceApi } from '../notifications/admin-notification.service.js';
 import type { WooCommerceWebhookDependencies } from '../../routes/woocommerce-webhook.routes.js';
 import { createWooCommerceOrderClientFromConnection } from './woocommerce-order.client.js';
 import { WooCommerceOrderSyncService } from './woocommerce-order-sync.service.js';
@@ -25,7 +25,7 @@ export type WooCommerceRuntimeEnv = Partial<
 >;
 
 export function loadWooCommerceWebhookDependencies(input: {
-  adminNotificationService?: AdminNotificationServiceContract | undefined;
+  adminNotificationService?: AdminNotificationServiceApi | undefined;
   env: WooCommerceRuntimeEnv;
   prisma: PrismaClient;
 }): WooCommerceWebhookDependencies | undefined {

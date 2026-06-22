@@ -14,7 +14,7 @@ import { RoutePlanAdminService, type RouteGeometryProvider } from '../route-plan
 import { OsrmRouteGeometryProvider } from '../route-plans/osrm-route-geometry.client.js';
 import { VroomRouteOptimizationClient } from '../route-plans/vroom-route-optimizer.client.js';
 import { PrismaOrderSyncRepository } from '../shopify/order-sync.repository.js';
-import type { AdminNotificationServiceContract } from '../notifications/admin-notification.service.js';
+import type { AdminNotificationServiceApi } from '../notifications/admin-notification.service.js';
 import { ShopifyOrderSyncService } from '../shopify/order-sync.service.js';
 import { createWooCommerceOrderClientFromConnection } from '../woocommerce/woocommerce-order.client.js';
 import { WooCommerceOrderSyncService } from '../woocommerce/woocommerce-order-sync.service.js';
@@ -115,7 +115,7 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
   adminDrivers?: AdminDriversDependencies | undefined;
   adminOrders?: AdminOrdersDependencies | undefined;
   adminRoutePlans?: AdminRoutePlanDependencies | undefined;
-  adminNotificationService?: AdminNotificationServiceContract | undefined;
+  adminNotificationService?: AdminNotificationServiceApi | undefined;
   env: AdminCommerceConnectionsRuntimeEnv;
   nodeEnv: string;
   prisma?: PrismaClient | undefined;
@@ -266,7 +266,7 @@ function readAdminUiWooSyncService(
 }
 
 function readAdminUiNotificationService(input: {
-  adminNotificationService?: AdminNotificationServiceContract | undefined;
+  adminNotificationService?: AdminNotificationServiceApi | undefined;
 }): AdminCommerceConnectionsUiDependencies['notificationService'] {
   return input.adminNotificationService;
 }

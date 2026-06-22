@@ -11,8 +11,8 @@ import type {
   AdminStoreSettings,
   SaveAdminStoreSettingsInput,
 } from "../modules/commerce/admin-store-settings.service.js";
-import type { AdminWooSyncServiceContract } from "../modules/commerce/admin-woocommerce-sync.service.js";
-import type { OrderIngestAuditServiceContract } from "../modules/wordpress-plugin/order-ingest-audit.service.js";
+import type { AdminWooSyncServiceApi } from "../modules/commerce/admin-woocommerce-sync.service.js";
+import type { OrderIngestAuditServiceApi } from "../modules/wordpress-plugin/order-ingest-audit.service.js";
 import { validateRouteScopeConfigPayload } from "../modules/route-ops/route-scope-config.js";
 import { validateRouteOpsUiSettingsPayload } from "../modules/route-ops/route-ops-ui-settings.js";
 import {
@@ -135,7 +135,7 @@ import {
 import { summarizeGeocodeDiagnostic } from "../modules/geocoding/geocoding.diagnostics.js";
 import type { GeocodingService } from "../modules/geocoding/geocoding.service.js";
 import type { GeocodingResult } from "../modules/geocoding/geocoding.types.js";
-import type { AdminNotificationServiceContract } from "../modules/notifications/admin-notification.service.js";
+import type { AdminNotificationServiceApi } from "../modules/notifications/admin-notification.service.js";
 import type { PrismaDeliveryCustomerProfileService } from "../modules/delivery-customer/delivery-customer-profile.service.js";
 import {
   createAdminWebSession,
@@ -425,7 +425,7 @@ export type AdminCommerceConnectionsUiDependencies = {
     | "testConnection"
     | "updateStatus"
   >;
-  notificationService?: AdminNotificationServiceContract;
+  notificationService?: AdminNotificationServiceApi;
   pairingCodeService?: {
     createPairingCode(input: {
       commerceConnectionId: string;
@@ -435,7 +435,7 @@ export type AdminCommerceConnectionsUiDependencies = {
     }): Promise<{ code: string; expiresAt: Date; siteUrl: string }>;
   };
   geocodingService?: Pick<GeocodingService, "geocode" | "status">;
-  orderIngestAuditService?: OrderIngestAuditServiceContract;
+  orderIngestAuditService?: OrderIngestAuditServiceApi;
   orderSyncService?: {
     listDeliveryBatchCandidates?(input: {
       deliveryDate?: string;
@@ -455,7 +455,7 @@ export type AdminCommerceConnectionsUiDependencies = {
       input: PatchCanonicalOrderGeocodeDiagnosticsInput,
     ): Promise<CanonicalOrderRow | null>;
   };
-  wooSyncService?: AdminWooSyncServiceContract;
+  wooSyncService?: AdminWooSyncServiceApi;
   driverAppDownloadUrl?: string;
   publicBaseUrl?: string;
   routeOptimizationJobService?: Pick<

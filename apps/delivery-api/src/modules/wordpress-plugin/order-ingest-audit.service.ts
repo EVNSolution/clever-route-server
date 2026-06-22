@@ -75,14 +75,10 @@ export type OrderIngestAuditResult = {
 
 export type OrderIngestAuditEvidenceKind = 'canonical_order' | 'event' | 'raw_ingest';
 
-export type OrderIngestAuditServiceContract = {
-  lookup(input: { orderNumber: string; shopDomain: string }): Promise<OrderIngestAuditResult>;
-};
-
 const MAX_ORDER_NUMBER_LENGTH = 96;
 const MAX_EVENTS = 20;
 
-export class PrismaOrderIngestAuditService implements OrderIngestAuditServiceContract {
+export class PrismaOrderIngestAuditService {
   constructor(private readonly prisma: OrderIngestAuditPrismaClient) {}
 
   async lookup(input: { orderNumber: string; shopDomain: string }): Promise<OrderIngestAuditResult> {
@@ -375,3 +371,5 @@ function readEvidenceKinds(input: {
   if (input.canonicalOrder !== null) kinds.push('canonical_order');
   return kinds;
 }
+
+export type OrderIngestAuditServiceApi = Pick<PrismaOrderIngestAuditService, 'lookup'>;

@@ -17,21 +17,7 @@ export type AdminWooSyncRequestResult = WordPressPluginSyncRequestResult & {
   startBackgroundProcessing: boolean;
 };
 
-export type AdminWooSyncServiceContract = {
-  processSyncRun(input: { shopDomain: string; syncRunId: string }): Promise<WordPressPluginSyncRun | null>;
-  readLatestSyncRun(input: { shopDomain: string }): Promise<WordPressPluginSyncRun | null>;
-  readSyncRun(input: { shopDomain: string; syncRunId: string }): Promise<WordPressPluginSyncRun | null>;
-  requestSync(input: {
-    payload: WordPressPluginSyncRequestInput;
-    shopDomain: string;
-  }): Promise<AdminWooSyncRequestResult>;
-  syncSingleOrder(input: {
-    shopDomain: string;
-    sourceOrderId: number | string;
-  }): Promise<WooCommerceSyncOrdersResult>;
-};
-
-export class AdminWooSyncService implements AdminWooSyncServiceContract {
+export class AdminWooSyncService {
   constructor(
     private readonly dependencies: {
       prisma: AdminWooSyncPrismaClient;
@@ -121,3 +107,8 @@ export class AdminWooSyncService implements AdminWooSyncServiceContract {
     };
   }
 }
+
+export type AdminWooSyncServiceApi = Pick<
+  AdminWooSyncService,
+  'processSyncRun' | 'readLatestSyncRun' | 'readSyncRun' | 'requestSync' | 'syncSingleOrder'
+>;
