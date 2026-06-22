@@ -196,15 +196,6 @@ const allowedPrefixes = [
   'apps/route-ops-web/',
 ];
 
-const allowedRemovedExact = new Set([
-  'infra/env/deploy-image.env.example',
-  'infra/ssm/route-ops-deploy-document.json',
-]);
-
-const geocodeOsrmRemovedExact = new Set([
-  'scripts/prepare-osrm-ontario.sh',
-  'scripts/smoke-osrm-ontario.sh',
-]);
 
 if (allowComposeBootstrap) {
   allowedExact.add('infra/compose/docker-compose.prod.yml');
@@ -305,15 +296,10 @@ function allowed(file) {
   return allowedExact.has(file) || allowedPrefixes.some((prefix) => file.startsWith(prefix));
 }
 
-function allowedRemoval(file) {
-  return allowedRemovedExact.has(file) || (allowGeocodeOsrmLane && geocodeOsrmRemovedExact.has(file));
-}
-
 function removalProblem(file) {
   const reason = blockedReason(file);
   if (reason) return { file, reason, type: 'blocked' };
-  if (!allowedRemoval(file)) return { file, reason: 'removed or renamed-from path is not in Route Ops cleanup removal allowlist', type: 'outside' };
-  return null;
+  return { file, reason: 'removed or renamed-from path is not in Route Ops cleanup removal allowlist', type: 'outside' };
 }
 
 const entries = changedEntries();
