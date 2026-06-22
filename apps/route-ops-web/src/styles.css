@@ -759,6 +759,42 @@ small,
 .filter-control:has(select) .filter-clear-x {
   right: 28px;
 }
+
+.weekday-toggle-group {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #d9dee7;
+  border-radius: 10px;
+  display: flex;
+  gap: 4px;
+  height: 36px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 3px 30px 3px 4px;
+  width: 100%;
+}
+
+.weekday-toggle-group button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: #475569;
+  display: inline-flex;
+  flex: 1 1 0;
+  font-size: 12px;
+  font-weight: 800;
+  height: 28px;
+  justify-content: center;
+  min-width: 0;
+  padding: 0 4px;
+}
+
+.weekday-toggle-group button.is-active {
+  background: #111827;
+  color: #fff;
+}
+
 .ops-table {
   border-collapse: collapse;
   width: 100%;
@@ -1437,6 +1473,85 @@ small,
   margin: 12px 0 0;
   padding: 14px;
 }
+
+.orders-inventory-panel {
+  margin-top: 14px;
+}
+
+.orders-inventory-heading {
+  align-items: center;
+}
+
+.orders-inventory-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.orders-inventory-table-scroll {
+  overflow-x: auto;
+}
+
+.orders-inventory-table {
+  border-collapse: collapse;
+  font-size: 13px;
+  width: 100%;
+}
+
+.orders-inventory-table th,
+.orders-inventory-table td {
+  border-bottom: 1px solid #e5e7eb;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.orders-inventory-table th {
+  background: #f3f4f6;
+  color: #111827;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.orders-inventory-table td:first-child,
+.orders-inventory-table th:first-child {
+  width: 88px;
+}
+
+.orders-inventory-table td:last-child,
+.orders-inventory-table th:last-child {
+  width: 34%;
+}
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+
+  .orders-inventory-panel,
+  .orders-inventory-panel * {
+    visibility: visible;
+  }
+
+  .orders-inventory-panel {
+    border: 0;
+    box-shadow: none;
+    left: 0;
+    margin: 0;
+    padding: 0;
+    position: absolute;
+    top: 0;
+    width: 100%;
+  }
+
+  .orders-inventory-actions {
+    display: none;
+  }
+}
+
 .orders-table-panel {
   max-width: 100%;
   min-width: 0;
@@ -2703,6 +2818,7 @@ button.danger.subtle {
 .route-plan-panel {
   align-content: start;
   gap: 12px;
+  min-height: 460px;
 }
 .route-plan-panel h2 {
   font-size: 24px;

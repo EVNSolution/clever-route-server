@@ -109,6 +109,7 @@ export type AdminNotificationDto = {
 export type CanonicalOrderDto = {
   blockerReasons: string[];
   coordinates: { latitude: number | null; longitude: number | null };
+  currencyCode?: string | null;
   customerNote?: string | null;
   deliveryArea: string | null;
   deliveryDate: string | null;
@@ -164,6 +165,7 @@ export type CanonicalOrderDto = {
   stopId: string | null;
   timeWindowEnd: string | null;
   timeWindowStart: string | null;
+  totalPriceAmount?: string | null;
   transactionId?: string | null;
   wooOrderStatus?: string | null;
 };

@@ -27,24 +27,33 @@ import {
   formatOrderItemName,
   formatOrderItemOptions,
   getOrderItemDisplayKey,
+  getOrderItemSemanticDisplayKey,
   getOrderItems,
 } from "../orderItems";
 import {
   applyClientOrderFilters,
   buildOrderFetchQuery,
+  buildOrderQuery,
   createDefaultOrderFilters,
   deriveOrderFilterOptions,
   deriveOrderSourceValueOptions,
   getOrderRouteType,
   isAddressReviewRequired,
   isDeliveryDateReviewRequired,
-  storeSettingsToDepotPoint,
-  reconcileOrderFilters,
+  mergeOrderListsById,
+  parseDeliveryDateSet,
   pruneOrderFilters,
+  reconcileOrderFilters,
+  selectOrdersForClientFilters,
+  serializeDeliveryDateSet,
+  storeSettingsToDepotPoint,
+  toggleWeekdayDeliveryDates,
+  weekdayForDeliveryDate,
   type OrderFacetedFilterKey,
   type OrderFilterOptionSets,
   type OrderFilterState,
   type OrderRouteTypeFilter,
+  type OrderWeekdayFilter,
   type OrderSourceValueOptions,
   type OrderWorksetContext,
 } from "../state";
@@ -235,6 +244,7 @@ export function OrdersPage({
 }): ReactElement {
   const initialRouteDate = useMemo(() => today(), []);
   const [orders, setOrders] = useState<CanonicalOrderDto[]>([]);
+  const [historyOrders, setHistoryOrders] = useState<CanonicalOrderDto[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [filters, setFilters] = useState<OrderFilterState>(() =>
     createDefaultOrderFilters(),
@@ -271,23 +281,39 @@ export function OrdersPage({
   } | null>(null);
 
   const fetchQuery = useMemo(() => buildOrderFetchQuery(filters), [filters]);
+  const historyFetchQuery = useMemo(
+    () =>
+      buildOrderQuery({
+        scope: "history",
+        tab: "all",
+      }),
+    [],
+  );
+  const orderFilterPool = useMemo(
+    () => selectOrdersForClientFilters(orders, historyOrders, filters),
+    [filters, historyOrders, orders],
+  );
+  const orderOptionPool = useMemo(
+    () => mergeOrderListsById(orders, historyOrders),
+    [historyOrders, orders],
+  );
   const visibleOrders = useMemo(
-    () => applyClientOrderFilters(orders, filters),
-    [orders, filters],
+    () => applyClientOrderFilters(orderFilterPool, filters),
+    [filters, orderFilterPool],
   );
   const filterOptions = useMemo(
-    () => deriveOrderFilterOptions(orders, filters, filterOrder),
-    [orders, filters, filterOrder],
+    () => deriveOrderFilterOptions(orderOptionPool, filters, filterOrder),
+    [filterOrder, filters, orderOptionPool],
   );
   const orderSourceOptions = useMemo(
-    () => deriveOrderSourceValueOptions(orders),
-    [orders],
+    () => deriveOrderSourceValueOptions(orderOptionPool),
+    [orderOptionPool],
   );
   useEffect(() => {
     const reconciled = pruneOrderFilters({
       filters,
       order: filterOrder,
-      orders,
+      orders: orderOptionPool,
     });
     if (reconciled.order.join("|") !== filterOrder.join("|")) {
       setFilterOrder(reconciled.order);
@@ -295,7 +321,7 @@ export function OrdersPage({
     if (!areOrderFiltersEqual(filters, reconciled.filters)) {
       setFilters(reconciled.filters);
     }
-  }, [filterOrder, filters, orders]);
+  }, [filterOrder, filters, orderOptionPool]);
 
   const changeFilters = (
     changedField: OrderFacetedFilterKey,
@@ -304,7 +330,7 @@ export function OrdersPage({
     const reconciled = reconcileOrderFilters({
       changedField,
       filters: nextFilters,
-      orders,
+      orders: orderOptionPool,
       previousOrder: filterOrder,
     });
     setFilterOrder(reconciled.order);
@@ -319,8 +345,8 @@ export function OrdersPage({
     [filters.scope],
   );
   const plannedOrders = useMemo(
-    () => orderSelectedOrdersByDraft(orders, plannedOrderIds),
-    [orders, plannedOrderIds],
+    () => orderSelectedOrdersByDraft(orderFilterPool, plannedOrderIds),
+    [orderFilterPool, plannedOrderIds],
   );
   const selectedVisibleOrderIds = useMemo(
     () => buildVisibleSelectedOrderIds(tableOrders, selected),
@@ -354,8 +380,14 @@ export function OrdersPage({
       setLoading(true);
     }
     try {
-      const payload = await getOrders(fetchQuery);
+      const [payload, historyPayload] = await Promise.all([
+        getOrders(fetchQuery),
+        filters.scope === "planning"
+          ? getOrders(historyFetchQuery)
+          : Promise.resolve({ orders: [] }),
+      ]);
       setOrders(payload.orders);
+      setHistoryOrders(historyPayload.orders);
       setError(null);
     } catch (error) {
       setError(readErrorMessage(error));
@@ -631,6 +663,10 @@ export function OrdersPage({
             locale={locale}
             onChange={changeFilters}
           />
+          <OrderInventorySummary
+            locale={locale}
+            orders={visibleOrders}
+          />
           <OrderTable
             addPlanDisabled={selectedVisibleOrderIds.length === 0}
             customerNoteContextByOrder={customerNoteContextByOrder}
@@ -741,6 +777,117 @@ export function RoutePlanPanel(input: {
   );
 }
 
+export type OrderInventoryRow = {
+  orderRefs: string[];
+  product: string;
+  quantity: number;
+};
+
+export function buildOrderInventoryRows(
+  orders: CanonicalOrderDto[],
+): OrderInventoryRow[] {
+  const rows = new Map<
+    string,
+    { orderQuantities: Map<string, number>; product: string; quantity: number }
+  >();
+  for (const order of orders) {
+    const orderRef = formatInventoryOrderRef(order);
+    for (const item of getOrderItems(order.items)) {
+      const key = getOrderItemSemanticDisplayKey(item);
+      const options = formatOrderItemOptions(item);
+      const product =
+        options.length === 0
+          ? formatOrderItemName(item)
+          : `${formatOrderItemName(item)} (${options})`;
+      const row = rows.get(key) ?? {
+        orderQuantities: new Map<string, number>(),
+        product,
+        quantity: 0,
+      };
+      row.quantity += item.quantity;
+      row.orderQuantities.set(
+        orderRef,
+        (row.orderQuantities.get(orderRef) ?? 0) + item.quantity,
+      );
+      rows.set(key, row);
+    }
+  }
+  return [...rows.values()]
+    .map((row) => ({
+      orderRefs: [...row.orderQuantities.entries()]
+        .sort(([first], [second]) =>
+          first.localeCompare(second, undefined, { numeric: true }),
+        )
+        .map(([orderRef, quantity]) => `${quantity}x ${orderRef}`),
+      product: row.product,
+      quantity: row.quantity,
+    }))
+    .sort((first, second) => first.product.localeCompare(second.product));
+}
+
+function OrderInventorySummary({
+  locale,
+  orders,
+}: {
+  locale?: string | null;
+  orders: CanonicalOrderDto[];
+}): ReactElement {
+  const t = getOrdersCopy(locale);
+  const rows = useMemo(() => buildOrderInventoryRows(orders), [orders]);
+  const printInventory = (): void => {
+    if (typeof window !== "undefined") window.print();
+  };
+  return (
+    <article
+      className="panel orders-inventory-panel"
+      aria-label={t.inventoryTitle}
+    >
+      <div className="panel-heading compact-heading orders-inventory-heading">
+        <div>
+          <h2>{t.inventoryTitle}</h2>
+        </div>
+        <div className="orders-inventory-actions">
+          <Badge>
+            {rows.length} {t.item}
+          </Badge>
+          <button type="button" onClick={printInventory}>
+            {t.inventoryPrint}
+          </button>
+        </div>
+      </div>
+      {rows.length === 0 ? (
+        <p className="order-detail-items-empty">{t.inventoryEmpty}</p>
+      ) : (
+        <div className="orders-inventory-table-scroll">
+          <table className="orders-inventory-table">
+            <thead>
+              <tr>
+                <th>{t.quantity}</th>
+                <th>{t.item}</th>
+                <th>{t.inventoryOrders}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => (
+                <tr key={`${row.product}:${row.orderRefs.join("|")}`}>
+                  <td>{row.quantity}</td>
+                  <td>{row.product}</td>
+                  <td>{row.orderRefs.join(" ")}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </article>
+  );
+}
+
+function formatInventoryOrderRef(order: CanonicalOrderDto): string {
+  const source = order.sourceOrderNumber ?? order.orderName;
+  return source.startsWith('#') ? source : `#${source}`;
+}
+
 function FilterBar({
   filterOptions,
   filters,
@@ -758,7 +905,7 @@ function FilterBar({
       option,
     ): option is {
       label: string;
-      value: NonNullable<OrderFilterState["weekday"]>;
+      value: OrderWeekdayFilter;
     } => option.value !== "" && filterOptions.weekdays.includes(option.value),
   );
   const routeTypes = buildActualTypeFilterOptions(
@@ -781,60 +928,85 @@ function FilterBar({
           ...routeTypes,
         ]
       : routeTypes;
-  const weekdaysWithSelected =
-    filters.weekday !== "" &&
-    !weekdays.some((option) => option.value === filters.weekday)
-      ? [
-          getWeekdayFilterOptions(locale).find(
-            (option) => option.value === filters.weekday,
-          ) ?? { label: filters.weekday, value: filters.weekday },
-          ...weekdays,
-        ]
-      : weekdays;
+  const selectedWeekdays = new Set(readSelectedWeekdays(filters));
+  const toggleWeekday = (weekday: OrderWeekdayFilter): void => {
+    onChange("deliveryDates", {
+      ...filters,
+      deliveryDate: "",
+      deliveryDates: toggleWeekdayDeliveryDates({
+        availableDates: filterOptions.deliveryDates,
+        currentDeliveryDates: serializeDeliveryDateSet(
+          readSelectedDeliveryDates(filters),
+        ),
+        weekday,
+      }),
+      weekday: "",
+    });
+  };
   return (
     <article className="panel filter-panel">
       <label className="filter-field filter-field--date">
         {t.deliveryDate}
         <FilterValueControl
-          active={filters.deliveryDate !== ""}
+          active={filters.deliveryDate !== "" || filters.deliveryDates !== ""}
           clearLabel={t.clearFilter(t.deliveryDate)}
           onClear={() =>
-            onChange("deliveryDate", { ...filters, deliveryDate: "" })
+            onChange("deliveryDates", {
+              ...filters,
+              deliveryDate: "",
+              deliveryDates: "",
+              weekday: "",
+            })
           }
         >
           <OrderDatePicker
             enabledDates={filterOptions.deliveryDates}
             locale={locale}
-            onSelect={(deliveryDate) =>
-              onChange("deliveryDate", { ...filters, deliveryDate })
+            onToggle={(deliveryDate) =>
+              onChange("deliveryDates", {
+                ...filters,
+                deliveryDate: "",
+                deliveryDates: toggleDeliveryDate(
+                  filters.deliveryDates,
+                  deliveryDate,
+                ),
+              })
             }
-            selectedDate={filters.deliveryDate}
+            selectedDates={readSelectedDeliveryDates(filters)}
           />
         </FilterValueControl>
       </label>
       <label className="filter-field filter-field--weekday">
         {t.weekday}
         <FilterValueControl
-          active={filters.weekday !== ""}
+          active={selectedWeekdays.size > 0}
           clearLabel={t.clearFilter(t.weekday)}
-          onClear={() => onChange("weekday", { ...filters, weekday: "" })}
+          onClear={() =>
+            onChange("deliveryDates", {
+              ...filters,
+              deliveryDate: "",
+              deliveryDates: "",
+              weekday: "",
+            })
+          }
         >
-          <select
-            value={filters.weekday}
-            onChange={(event) =>
-              onChange("weekday", {
-                ...filters,
-                weekday: event.target.value as OrderFilterState["weekday"],
-              })
-            }
+          <span
+            aria-label={t.weekday}
+            className="weekday-toggle-group"
+            role="group"
           >
-            <option value="">{t.allOption}</option>
-            {weekdaysWithSelected.map((option) => (
-              <option key={option.value} value={option.value}>
+            {weekdays.map((option) => (
+              <button
+                aria-pressed={selectedWeekdays.has(option.value)}
+                className={selectedWeekdays.has(option.value) ? "is-active" : ""}
+                key={option.value}
+                onClick={() => toggleWeekday(option.value)}
+                type="button"
+              >
                 {option.label}
-              </option>
+              </button>
             ))}
-          </select>
+          </span>
         </FilterValueControl>
       </label>
       <label className="filter-field filter-field--type">
@@ -900,6 +1072,7 @@ function areOrderFiltersEqual(
   return (
     first.deliveryArea === second.deliveryArea &&
     first.deliveryDate === second.deliveryDate &&
+    first.deliveryDates === second.deliveryDates &&
     first.deliverySession === second.deliverySession &&
     first.deliveryStatus === second.deliveryStatus &&
     first.routeType === second.routeType &&
@@ -915,28 +1088,33 @@ function areOrderFiltersEqual(
 function OrderDatePicker({
   enabledDates,
   locale,
-  onSelect,
-  selectedDate,
+  onToggle,
+  selectedDates,
 }: {
   enabledDates: string[];
   locale?: string | null;
-  onSelect(date: string): void;
-  selectedDate: string;
+  onToggle(date: string): void;
+  selectedDates: string[];
 }): ReactElement {
   const t = getOrdersCopy(locale);
-  const initialMonth = selectedDate || enabledDates[0] || today();
+  const initialMonth = selectedDates[0] || enabledDates[0] || today();
   const [open, setOpen] = useState(false);
   const [visibleMonth, setVisibleMonth] = useState(() =>
     monthKey(initialMonth),
   );
   const enabled = useMemo(() => new Set(enabledDates), [enabledDates]);
+  const selected = useMemo(() => new Set(selectedDates), [selectedDates]);
   useEffect(() => {
-    if (selectedDate !== "") {
-      setVisibleMonth(monthKey(selectedDate));
+    if (selectedDates[0] !== undefined) {
+      setVisibleMonth(monthKey(selectedDates[0]));
     }
-  }, [selectedDate]);
+  }, [selectedDates]);
   const days = useMemo(() => buildCalendarDays(visibleMonth), [visibleMonth]);
-  const selectedLabel = selectedDate === "" ? t.dateFallback : selectedDate;
+  const selectedLabel = formatSelectedDateSetLabel(
+    selectedDates,
+    locale,
+    t.dateFallback,
+  );
   return (
     <span className="order-date-picker">
       <button
@@ -974,15 +1152,15 @@ function OrderDatePicker({
           <span className="order-date-calendar-grid">
             {days.map((day) => {
               const disabled = day.date === null || !enabled.has(day.date);
-              const selected = day.date !== null && day.date === selectedDate;
+              const isSelected = day.date !== null && selected.has(day.date);
               return (
                 <button
-                  aria-pressed={selected}
+                  aria-pressed={isSelected}
                   className={[
                     "order-date-calendar-day",
                     day.inMonth ? "" : "is-outside-month",
                     disabled ? "is-disabled" : "",
-                    selected ? "is-selected" : "",
+                    isSelected ? "is-selected" : "",
                   ]
                     .filter(Boolean)
                     .join(" ")}
@@ -990,8 +1168,7 @@ function OrderDatePicker({
                   key={`${day.date ?? "blank"}-${day.index}`}
                   onClick={() => {
                     if (day.date === null) return;
-                    onSelect(day.date);
-                    setOpen(false);
+                    onToggle(day.date);
                   }}
                   type="button"
                 >
@@ -1004,6 +1181,59 @@ function OrderDatePicker({
       ) : null}
     </span>
   );
+}
+
+function readSelectedDeliveryDates(filters: OrderFilterState): string[] {
+  const selected = parseDeliveryDateSet(filters.deliveryDates);
+  if (selected.length > 0) return selected;
+  return filters.deliveryDate === "" ? [] : [filters.deliveryDate];
+}
+
+function readSelectedWeekdays(filters: OrderFilterState): OrderWeekdayFilter[] {
+  const weekdays = new Set<OrderWeekdayFilter>();
+  for (const deliveryDate of readSelectedDeliveryDates(filters)) {
+    const weekday = weekdayForDeliveryDate(deliveryDate);
+    if (weekday !== null) weekdays.add(weekday);
+  }
+  if (weekdays.size === 0 && filters.weekday !== "") {
+    weekdays.add(filters.weekday);
+  }
+  return [...weekdays];
+}
+
+function toggleDeliveryDate(current: string, date: string): string {
+  const selected = new Set(parseDeliveryDateSet(current));
+  if (selected.has(date)) selected.delete(date);
+  else selected.add(date);
+  return serializeDeliveryDateSet([...selected]);
+}
+
+function formatSelectedDateSetLabel(
+  selectedDates: string[],
+  locale: string | null | undefined,
+  fallback: string,
+): string {
+  if (selectedDates.length === 0) return fallback;
+  if (selectedDates.length === 1) return selectedDates[0] ?? fallback;
+  const sorted = [...selectedDates].sort();
+  if (isContiguousDateSet(sorted)) {
+    return `${sorted[0]} – ${sorted[sorted.length - 1]}`;
+  }
+  const suffix =
+    resolveLocale(locale) === "ko-KR"
+      ? ` 외 ${sorted.length - 1}개`
+      : ` +${sorted.length - 1}`;
+  return `${sorted[0]}${suffix}`;
+}
+
+function isContiguousDateSet(sortedDates: string[]): boolean {
+  for (let index = 1; index < sortedDates.length; index += 1) {
+    const previous = Date.parse(`${sortedDates[index - 1]}T00:00:00Z`);
+    const current = Date.parse(`${sortedDates[index]}T00:00:00Z`);
+    if (!Number.isFinite(previous) || !Number.isFinite(current)) return false;
+    if (current - previous !== 86_400_000) return false;
+  }
+  return true;
 }
 
 type CalendarDay = {
@@ -1781,6 +2011,27 @@ function formatAreaLabel(order: CanonicalOrderDto): string {
   );
 }
 
+function formatOrderTotal(
+  order: CanonicalOrderDto,
+  locale: string | null | undefined,
+): string {
+  const amountText = order.totalPriceAmount?.trim() ?? "";
+  if (amountText.length === 0) return "—";
+  const amount = Number(amountText);
+  const currencyCode = order.currencyCode?.trim() || null;
+  if (currencyCode !== null && Number.isFinite(amount)) {
+    try {
+      return new Intl.NumberFormat(resolveLocale(locale), {
+        currency: currencyCode,
+        style: "currency",
+      }).format(amount);
+    } catch {
+      return `${currencyCode} ${amountText}`;
+    }
+  }
+  return currencyCode === null ? amountText : `${currencyCode} ${amountText}`;
+}
+
 function formatPaymentMethodEvidence(order: CanonicalOrderDto): string | null {
   const methodTitle = order.paymentMethodTitle?.trim() ?? "";
   const methodId = order.paymentMethodId?.trim() ?? "";
@@ -2374,6 +2625,10 @@ function OrderDetailPanel({
           {addressSummary.secondary === null ? null : (
             <small>{addressSummary.secondary}</small>
           )}
+        </section>
+        <section className="order-detail-summary-card">
+          <h4>{t.totalPrice}</h4>
+          <p>{formatOrderTotal(order, locale)}</p>
         </section>
       </div>
 

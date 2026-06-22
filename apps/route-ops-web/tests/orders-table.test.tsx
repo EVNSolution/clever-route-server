@@ -5,6 +5,7 @@ import {
   buildRouteDetailPath,
   buildEditableMetadataFields,
   buildNextPlanSelection,
+  buildOrderInventoryRows,
   buildOrderMapMarkerStates,
   buildRouteDraftSelection,
   buildVisibleSelectedOrderIds,
@@ -67,8 +68,8 @@ describe("Orders compact operations table", () => {
     expect(html).not.toContain("Total");
     expect(html).not.toContain("EasyRoutes");
     expect(html).toContain("Sync Order");
-    expect(html).toContain("Add Plan");
-    expect(html.indexOf("Sync Order")).toBeLessThan(html.indexOf("Add Plan"));
+    expect(html).toContain("Add to Map");
+    expect(html.indexOf("Sync Order")).toBeLessThan(html.indexOf("Add to Map"));
     expect(html).not.toContain("Bulk geocode");
   });
 
@@ -150,7 +151,7 @@ describe("Orders compact operations table", () => {
 
     expect(html).toContain('aria-label="Select order #1002 11453"');
     expect(html).toContain(
-      'aria-label="Add order #1002 11453 to route plan" class="" type="button">Add</button>',
+      'aria-label="Add order #1002 11453 to map" class="" type="button">Add</button>',
     );
     expect(customerCell).not.toContain("Review");
     expect(customerCell).not.toContain("order-pill");
@@ -175,13 +176,13 @@ describe("Orders compact operations table", () => {
 
     expect(html).toContain('checked=""');
     expect(html).toMatch(
-      /<button aria-label="Remove order #11453 11453 from route plan" class="active" type="button">Remove<\/button>/,
+      /<button aria-label="Remove order #11453 11453 from map" class="active" type="button">Remove<\/button>/,
     );
     expect(html).toContain(`colSpan="${ORDERS_TABLE_COLUMN_COUNT}"`);
     expect(html).toContain("Order details for #11453");
     expect(html).toContain("No saved detail diagnostics yet.");
     expect(html).toContain(
-      'aria-label="Remove order #11453 11453 from route plan"',
+      'aria-label="Remove order #11453 11453 from map"',
     );
   });
 
@@ -193,10 +194,52 @@ describe("Orders compact operations table", () => {
     expect(html).not.toContain("Clear selection");
     expect(html).not.toMatch(/>Clear<\/button>/u);
     expect(html).not.toContain("History scope is read-only");
-    expect(html).toContain('aria-label="Add order #11453 11453 to route plan"');
+    expect(html).toContain('aria-label="Add order #11453 11453 to map"');
     expect(html).not.toMatch(
-      /aria-label="Add order #11453 11453 to route plan"[^>]*disabled/u,
+      /aria-label="Add order #11453 11453 to map"[^>]*disabled/u,
     );
+  });
+
+
+  test("builds a compact printable inventory table from filtered order items", () => {
+    const rows = buildOrderInventoryRows([
+      orderFixture({
+        orderName: "#1001",
+        sourceOrderNumber: "1001",
+        items: [
+          { name: "<b>Soup</b>", options: [], productId: 1, quantity: 1, sku: null, variationId: 0 },
+          { name: "Kimchi", options: [{ key: "size", value: "Large" }], productId: 2, quantity: 2, sku: "K", variationId: 0 },
+        ],
+      }),
+      orderFixture({
+        orderName: "#1002",
+        sourceOrderNumber: "1002",
+        items: [
+          { name: "Soup", options: [], productId: 1, quantity: 3, sku: null, variationId: 0 },
+        ],
+      }),
+    ]);
+
+    expect(rows).toContainEqual({
+      orderRefs: ["1x #1001", "3x #1002"],
+      product: "Soup",
+      quantity: 4,
+    });
+    expect(rows).toContainEqual({
+      orderRefs: ["2x #1001"],
+      product: "Kimchi (size: Large)",
+      quantity: 2,
+    });
+  });
+
+  test("renders reliable order total in order detail only", () => {
+    const html = renderOrderTable(
+      [orderFixture({ currencyCode: "CAD", totalPriceAmount: "42.50" })],
+      { expandedOrderIds: new Set(["order-11453"]) },
+    );
+
+    expect(html).toContain("Order total");
+    expect(html).toContain("$42.50");
   });
 
   test("renders ordered items from the frontend order items DTO", () => {
@@ -902,22 +945,22 @@ describe("Orders compact operations table", () => {
     expect(html).toContain("Order List");
     expect(html).not.toContain(">Orders</span>");
     expect(html).toContain("Sync Order");
-    expect(html).toContain("Add Plan");
-    expect(html.indexOf("Sync Order")).toBeLessThan(html.indexOf("Add Plan"));
+    expect(html).toContain("Add to Map");
+    expect(html.indexOf("Sync Order")).toBeLessThan(html.indexOf("Add to Map"));
     expect(html).not.toContain("Bulk geocode");
     expect(html).not.toContain("Geocode &amp; add");
   });
 
-  test("disables the Order List Add Plan action until an order is selected", () => {
+  test("disables the Order List Add to Map action until an order is selected", () => {
     const emptySelection = renderOrderTable([orderFixture()]);
     const selected = renderOrderTable([orderFixture()], {
       selected: new Set(["order-11453"]),
     });
 
     expect(emptySelection).toContain(
-      '<button disabled="" type="button">Add Plan</button>',
+      '<button disabled="" type="button">Add to Map</button>',
     );
-    expect(selected).toContain('<button type="button">Add Plan</button>');
+    expect(selected).toContain('<button type="button">Add to Map</button>');
   });
 
   test("renders current-filter group selection controls for route-ready orders only", () => {
@@ -990,7 +1033,7 @@ describe("Orders compact operations table", () => {
     }
     expect(html).toContain("주문 목록");
     expect(html).toContain("주문 동기화");
-    expect(html).toContain("계획 추가");
+    expect(html).toContain("지도에 추가");
     expect(html).not.toContain("일괄 좌표 변환");
     expect(html).toContain("1 주문");
     expect(html).toContain("0개 선택 · 1개 선택 가능 · 0개 불가");
@@ -1107,7 +1150,7 @@ describe("Orders compact operations table", () => {
     expect(clickedMarkers.get("second")?.sequence).toBe(3);
   });
 
-  test("Add Plan only promotes selected orders still visible under the active filters", () => {
+  test("Add to Map only promotes selected orders still visible under the active filters", () => {
     const delivery = orderFixture({ orderId: "delivery", serviceType: "DELIVERY" });
     const pickup = orderFixture({ orderId: "pickup", serviceType: "PICKUP" });
 

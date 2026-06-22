@@ -26,15 +26,18 @@ import {
   isDeliveryDateReviewRequired,
   matchesOrderTab,
   matchesPlanningScope,
+  mergeOrderListsById,
   moveStop,
   moveStopBefore,
   moveStopToDropPosition,
   moveStopToSequence,
   pruneOrderFilters,
   reconcileOrderFilters,
+  selectOrdersForClientFilters,
   storeSettingsToDepotPoint,
   summarizeOrderWorkset,
-  summarizeSelection
+  summarizeSelection,
+  toggleWeekdayDeliveryDates
 } from '../src/state';
 import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStopDto } from '../src/types';
 
@@ -81,6 +84,70 @@ describe('route ops web state helpers', () => {
     expect(applyClientOrderFilters(orders, { deliveryDate: '' })).toBe(orders);
   });
 
+
+  test('applies explicit delivery date sets without requiring route-compatible dates', () => {
+    const orders = [
+      order({ deliveryDate: '2026-05-27', orderId: 'wed' }),
+      order({ deliveryDate: '2026-05-28', orderId: 'thu' }),
+      order({ deliveryDate: '2026-05-29', orderId: 'fri' })
+    ];
+
+    expect(
+      applyClientOrderFilters(orders, { deliveryDates: '2026-05-27,2026-05-29' }).map((item) => item.orderId)
+    ).toEqual(['wed', 'fri']);
+    expect(buildOrderQuery({ ...createDefaultOrderFilters(), deliveryDates: '2026-05-27,2026-05-29' })).toBe(
+      'deliveryDates=2026-05-27%2C2026-05-29&scope=planning&tab=all'
+    );
+    expect(buildOrderFetchQuery({ ...createDefaultOrderFilters(), deliveryDates: '2026-05-27,2026-05-29' })).toBe(
+      'scope=planning'
+    );
+  });
+
+  test('uses history orders only when explicit dates need past inventory rows', () => {
+    const current = [order({ deliveryDate: '2026-06-26', orderId: 'future' })];
+    const history = [order({ deliveryDate: '2026-06-20', orderId: 'past' })];
+
+    expect(
+      selectOrdersForClientFilters(current, history, createDefaultOrderFilters()).map(
+        (item) => item.orderId
+      )
+    ).toEqual(['future']);
+    expect(
+      selectOrdersForClientFilters(current, history, {
+        ...createDefaultOrderFilters(),
+        deliveryDates: '2026-06-20'
+      }).map((item) => item.orderId)
+    ).toEqual(['past', 'future']);
+    expect(mergeOrderListsById(current, history).map((item) => item.orderId)).toEqual([
+      'past',
+      'future'
+    ]);
+  });
+
+  test('toggles weekday delivery dates instead of replacing the selected date set', () => {
+    const availableDates = [
+      '2026-06-18',
+      '2026-06-19',
+      '2026-06-20',
+      '2026-06-25'
+    ];
+
+    const withThursday = toggleWeekdayDeliveryDates({
+      availableDates,
+      currentDeliveryDates: '2026-06-19',
+      weekday: 'thu'
+    });
+    expect(withThursday).toBe('2026-06-18,2026-06-19,2026-06-25');
+
+    expect(
+      toggleWeekdayDeliveryDates({
+        availableDates,
+        currentDeliveryDates: withThursday,
+        weekday: 'thu'
+      })
+    ).toBe('2026-06-19');
+  });
+
   test('reconciles Date and Weekday with latest user action authority', () => {
     const orders = [
       order({ deliveryDate: '2026-05-27', orderId: 'wed' }),
@@ -116,9 +183,10 @@ describe('route ops web state helpers', () => {
 
     expect(afterWeekday.filters).toEqual(expect.objectContaining({
       deliveryDate: '',
+      deliveryDates: '2026-05-28',
       weekday: 'thu'
     }));
-    expect(afterWeekday.order).toEqual(['weekday']);
+    expect(afterWeekday.order).toEqual(['weekday', 'deliveryDates']);
     expect(deriveOrderFilterOptions(orders, afterWeekday.filters, afterWeekday.order).deliveryDates).toEqual(['2026-05-28']);
 
     const pruned = pruneOrderFilters({

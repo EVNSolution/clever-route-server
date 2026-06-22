@@ -893,6 +893,7 @@ export function readRouteOpsRouterConfig(): {
 export function toRouteOpsOrderDto(order: CanonicalOrderRow): {
   blockerReasons: string[];
   coordinates: { latitude: number | null; longitude: number | null };
+  currencyCode: string | null;
   customerNote: string | null;
   deliveryArea: string | null;
   deliveryDate: string | null;
@@ -931,6 +932,7 @@ export function toRouteOpsOrderDto(order: CanonicalOrderRow): {
   stopId: string | null;
   timeWindowEnd: string | null;
   timeWindowStart: string | null;
+  totalPriceAmount: string | null;
   transactionId: string | null;
   wooOrderStatus: string | null;
 } {
@@ -955,6 +957,7 @@ export function toRouteOpsOrderDto(order: CanonicalOrderRow): {
   return {
     blockerReasons,
     coordinates: { latitude: order.latitude, longitude: order.longitude },
+    currencyCode: order.currencyCode ?? null,
     customerNote: order.customerNote ?? null,
     deliveryArea: order.deliveryArea,
     deliveryDate: order.deliveryDate,
@@ -996,6 +999,7 @@ export function toRouteOpsOrderDto(order: CanonicalOrderRow): {
     stopId: order.deliveryStopId,
     timeWindowEnd: order.timeWindowEnd,
     timeWindowStart: order.timeWindowStart,
+    totalPriceAmount: order.totalPriceAmount ?? null,
     transactionId: order.transactionId ?? null,
     wooOrderStatus: order.wooOrderStatus ?? null,
   };
