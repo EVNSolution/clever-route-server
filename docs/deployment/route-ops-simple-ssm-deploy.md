@@ -1,8 +1,7 @@
 # Route Ops simple SSM deploy lane
 
 This is the reduced production deploy lane for Route Ops after the VROOM/OSRM cutover.
-It intentionally avoids the old S3 deploy-control bundle, route-engine image/data handoff,
-EC2 image builds, separate migrate images, and `prod-prev` retag/push backups.
+It intentionally avoids the old S3 deploy-control bundle, EC2 image builds, separate migrate images, and `prod-prev` retag/push backups.
 
 ## Current production constraints verified on 2026-06-17
 
@@ -10,7 +9,7 @@ EC2 image builds, separate migrate images, and `prod-prev` retag/push backups.
 - Host app path: `/srv/clever-route-server`.
 - The host is **not** a git checkout and cannot fetch the private GitHub repo directly.
 - The host has `docker`, `aws`, and `python3`; it does not need host `node` or `npm`.
-- Optimizer lane is `delivery-api -> vroom -> osrm-ontario`; no route-engine profile is deployed.
+- Optimizer lane is `delivery-api -> vroom -> osrm-ontario`.
 - Local proof media storage must be bootstrapped before compose restart:
   `/srv/clever-route-server/data/driver-proof-media`, owner `100:101`, mode `750`.
 
@@ -174,21 +173,6 @@ candidate `ROUTE_OPS_WEB_STATIC_IMAGE` ref with the previous value from
 Use the force flag when debugging volume state, repairing a suspected stale static volume,
 or deliberately rehydrating the static artifact without changing the image digest. Local manual `--publish` fallbacks may still render mutable channel tags; those refs are intentionally staged conservatively instead of using the unchanged skip.
 
-## Storage cleanup evidence
-
-On 2026-06-17 the old route-engine artifacts were removed from production:
-
-- stopped route-engine container
-- route-engine image
-- `clever-route_route-engine-cache` Docker volume
-- `/srv/clever-route-server/data/route-engine`
-- stale `/tmp/route-ops-manual-*` and `/tmp/clever-route-manual-*`
-- stopped containers and dangling images
-
-Root disk usage improved from about `20G used / 35%` to `14G used / 24%`.
-The simple SSM lane has completed a production deploy. Remaining old GHCR SHA images
-can be pruned after a separate image-retention pass confirms no container references them.
-
 ## Legacy deploy-control cloud cleanup evidence
 
 On 2026-06-19, after the GHCR + AWS-managed `AWS-RunShellScript` lane was accepted as the
@@ -205,8 +189,6 @@ that were no longer referenced by the current deploy lane:
 A second explicit approval-gated cleanup pass completed the remaining legacy deploy-control
 resource removal on 2026-06-19:
 
-- deleted GitHub variable `ROUTE_ENGINE_GHCR_READ_USERNAME`;
-- deleted GitHub secret `ROUTE_ENGINE_GHCR_READ_TOKEN`;
 - backed up and deleted `s3://route-ops-artifacts-902837199612-ap-northeast-2/artifacts/route-ops/prod/deploy-control/`.
 
 Post-verify evidence for the second pass showed no matching GitHub variable/secret, an empty
