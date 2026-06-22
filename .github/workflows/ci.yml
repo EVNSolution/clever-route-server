@@ -214,6 +214,12 @@ jobs:
           tests/admin-ui-route-planning.optimize.test.ts
           tests/vroom-route-optimizer.client.test.ts
           tests/admin-route-plans.routes.test.ts
+          tests/admin-notification.dependencies.test.ts
+          tests/admin-notification.repository.test.ts
+          tests/admin-notification.service.test.ts
+          tests/admin-notification.stream.test.ts
+          tests/admin-notification.postgres-stream.test.ts
+          tests/order-sync.repository.test.ts
           tests/driver-auth.repository.test.ts
           tests/driver-auth.routes.test.ts
           tests/driver.dependencies.test.ts

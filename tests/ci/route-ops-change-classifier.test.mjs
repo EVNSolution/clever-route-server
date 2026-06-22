@@ -108,6 +108,26 @@ check('route geometry plus UI route falls back to normal API profile with web ar
   api_test_profile: 'route_ops',
 });
 
+check('admin notification postgres stream changes are critical API changes', [
+  'apps/delivery-api/src/modules/notifications/admin-notification.postgres-stream.ts',
+  'apps/delivery-api/tests/admin-notification.postgres-stream.test.ts',
+], {
+  api_changed: true,
+  critical_changed: true,
+  web_artifact_required: true,
+  api_test_profile: 'route_ops',
+});
+
+check('order sync notification producer changes are critical API changes', [
+  'apps/delivery-api/src/modules/shopify/order-sync.repository.ts',
+  'apps/delivery-api/tests/order-sync.repository.test.ts',
+], {
+  api_changed: true,
+  critical_changed: true,
+  web_artifact_required: true,
+  api_test_profile: 'route_ops',
+});
+
 check('ci validation doc stays docs-only light', ['docs/deployment/route-ops-ci-deploy-validation.md'], {
   docs_only: true,
   deploy_changed: false,

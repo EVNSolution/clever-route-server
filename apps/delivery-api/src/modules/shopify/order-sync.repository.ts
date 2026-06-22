@@ -1,14 +1,6 @@
-import { createHash } from "node:crypto";
-
 import { Prisma, type PrismaClient } from "@prisma/client";
 
 import { redactDiagnosticPath, redactDiagnosticValue } from "../security/diagnostic-redaction.js";
-import {
-  addressFingerprint,
-  addressFingerprintPayload,
-  type DeliveryStopAddressFields,
-} from "./order-address-fingerprint.js";
-
 import type {
   CanonicalOrderReadiness,
   CanonicalOrderRow,
@@ -27,7 +19,8 @@ import {
 } from "./order-operate-status.js";
 import { toOrderItemDto, type OrderItemRecordLike } from "../order-items/order-items.js";
 import { readNormalizedPaymentStatus } from "../payments/normalized-payment-status.js";
-import { WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED_NOTIFICATION } from "../notifications/admin-notification.repository.js";
+import type { AdminNotificationServiceContract } from "../notifications/admin-notification.service.js";
+import type { AdminWebNotificationEvent } from "../notifications/admin-web-notification-events.js";
 
 export type UpsertOrderWithDeliveryStopInput = {
   shopDomain: string;
@@ -159,6 +152,10 @@ type OrderSyncWriteClient = Pick<
   PrismaClient,
   "deliveryStop" | "order" | "orderItem" | "orderDeliveryFact"
 >;
+
+export type OrderSyncNotificationLogger = {
+  warn(bindings: Record<string, unknown>, message: string): void;
+};
 
 type ExistingOrder = {
   deliveryFacts?: ExistingDeliveryFact[];
@@ -313,13 +310,21 @@ type DeliveryFactCandidateRecord = {
 };
 
 export class PrismaOrderSyncRepository {
+  private readonly notificationLogger: OrderSyncNotificationLogger;
+  private readonly notificationService: AdminNotificationServiceContract | undefined;
+
   constructor(
     private readonly prisma: OrderSyncPrismaClient,
     private readonly options: {
       allowAnyShopDomain?: boolean;
       createMissingShop?: boolean;
+      notificationLogger?: OrderSyncNotificationLogger;
+      notificationService?: AdminNotificationServiceContract;
     } = {},
-  ) {}
+  ) {
+    this.notificationLogger = options.notificationLogger ?? console;
+    this.notificationService = options.notificationService;
+  }
 
   async upsertOrderWithDeliveryStop(
     input: UpsertOrderWithDeliveryStopInput,
@@ -376,10 +381,13 @@ export class PrismaOrderSyncRepository {
         tx,
       }),
     );
-    await createAdminNotificationsBestEffort({
-      intents: write.notificationIntents,
-      prisma: this.prisma,
-    });
+    if (this.notificationService !== undefined) {
+      await createAdminNotificationsBestEffort({
+        events: write.notificationEvents,
+        notificationLogger: this.notificationLogger,
+        notificationService: this.notificationService,
+      });
+    }
     return write.result;
   }
 
@@ -1052,8 +1060,7 @@ export class PrismaOrderSyncRepository {
 
     const existingFact = input.existing?.deliveryFacts?.[0] ?? null;
     const existingStop = input.existing?.deliveryStops?.[0] ?? null;
-    const notificationIntents: AssignedRouteAddressChangeNotificationIntent[] =
-      [];
+    const notificationEvents: AdminWebNotificationEvent[] = [];
     const correctedFields = readRouteOpsCorrectedFields(
       existingFact?.mappingDiagnostics,
     );
@@ -1100,15 +1107,14 @@ export class PrismaOrderSyncRepository {
       });
       stopId = stop.id;
       if (input.synced.order.sourcePlatform === "WOOCOMMERCE") {
-        notificationIntents.push(
-          ...createAssignedRouteAddressChangeNotificationIntents({
-            existingStop,
-            incomingStop: incomingDeliveryStopWrite,
-            orderId: order.id,
-            orderName: input.synced.order.name,
-            shopId: input.shopId,
-          }),
-        );
+        notificationEvents.push({
+          existingStop,
+          incomingStop: incomingDeliveryStopWrite,
+          orderId: order.id,
+          orderName: input.synced.order.name,
+          shopId: input.shopId,
+          type: "woo.assigned_route_address_changed",
+        });
       }
     }
 
@@ -1141,7 +1147,7 @@ export class PrismaOrderSyncRepository {
     }
 
     return {
-      notificationIntents,
+      notificationEvents,
       result: {
         orderId: order.id,
         status: input.existing === null ? "created" : "updated",
@@ -1152,7 +1158,7 @@ export class PrismaOrderSyncRepository {
 }
 
 type OrderWriteWithNotificationIntents = {
-  notificationIntents: AssignedRouteAddressChangeNotificationIntent[];
+  notificationEvents: AdminWebNotificationEvent[];
   result: UpsertOrderWithDeliveryStopResult;
 };
 
@@ -1569,88 +1575,28 @@ function existingDeliveryStopSelect() {
   } satisfies Prisma.DeliveryStopSelect;
 }
 
-type AssignedRouteAddressChangeNotificationIntent =
-  Prisma.AdminNotificationCreateManyInput & {
-    payload: Prisma.InputJsonObject;
-    severity: "critical";
-  };
-
-function createAssignedRouteAddressChangeNotificationIntents(input: {
-  existingStop: ExistingDeliveryStop | null;
-  incomingStop: DeliveryStopAddressFields;
-  orderId: string;
-  orderName: string;
-  shopId: string;
-}): AssignedRouteAddressChangeNotificationIntent[] {
-  const existingStop = input.existingStop;
-  if (existingStop === null) return [];
-  const routePlanStops = existingStop.routePlanStops ?? [];
-  if (routePlanStops.length === 0) return [];
-
-  const beforeFingerprint = addressFingerprint(existingStop);
-  const afterFingerprint = addressFingerprint(input.incomingStop);
-  if (
-    beforeFingerprint === null ||
-    afterFingerprint === null ||
-    beforeFingerprint === afterFingerprint
-  ) {
-    return [];
-  }
-
-  const afterAddressHash = createHash("sha256")
-    .update(afterFingerprint)
-    .digest("hex")
-    .slice(0, 32);
-  const beforeAddress = addressFingerprintPayload(existingStop);
-  const afterAddress = addressFingerprintPayload(input.incomingStop);
-
-  return routePlanStops.map((routePlanStop) => {
-    const routePlan = routePlanStop.routePlan;
-    const dedupeKey = [
-      "woo_address_changed_route_assigned",
-      input.shopId,
-      input.orderId,
-      routePlan.id,
-      afterAddressHash,
-    ].join(":");
-    return {
-      body: `${input.orderName} address changed in WooCommerce after it was assigned to ${routePlan.name}. Review the route before dispatch.`,
-      dedupeKey,
-      href: `/admin/ui/app/routes/${routePlan.id}`,
-      orderId: input.orderId,
-      payload: {
-        afterAddress,
-        afterAddressHash,
-        beforeAddress,
-        orderName: input.orderName,
-        routePlanName: routePlan.name,
-        routePlanStatus: routePlan.status,
-        version: 1,
-      },
-      routePlanId: routePlan.id,
-      severity: "critical",
-      shopId: input.shopId,
-      title: "Route assigned order address changed",
-      type: WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED_NOTIFICATION,
-    };
-  });
-}
-
 async function createAdminNotificationsBestEffort(input: {
-  intents: AssignedRouteAddressChangeNotificationIntent[];
-  prisma: OrderSyncPrismaClient;
+  events: AdminWebNotificationEvent[];
+  notificationLogger: OrderSyncNotificationLogger;
+  notificationService: AdminNotificationServiceContract;
 }): Promise<void> {
-  if (input.intents.length === 0) return;
-  try {
-    await input.prisma.adminNotification.createMany({
-      data: input.intents,
-      skipDuplicates: true,
-    });
-  } catch {
-    // Route safety notifications are advisory guardrails. A notification write
-    // outage must not roll back the already-committed Woo order sync that
-    // preserves the latest source-of-truth order/address payload.
-    return;
+  for (const event of input.events) {
+    try {
+      await input.notificationService.createAdminNotification(event);
+    } catch (error) {
+      // Route safety notifications are advisory guardrails. A notification write
+      // outage must not roll back the already-committed Woo order sync that
+      // preserves the latest source-of-truth order/address payload.
+      input.notificationLogger.warn(
+        {
+          err: error,
+          eventType: event.type,
+          orderId: event.orderId,
+          shopId: event.shopId,
+        },
+        "admin web notification write failed after order sync commit",
+      );
+    }
   }
 }
 

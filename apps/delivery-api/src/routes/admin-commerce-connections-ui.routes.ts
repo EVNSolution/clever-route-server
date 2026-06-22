@@ -219,8 +219,9 @@ const routeOpsApiResponder = createRouteOpsApiResponder({
   countRoutePlanBatchBlockers,
   sanitizeError: sanitizeRouteUiError,
 });
-const { routeOpsData, withRouteOpsApi } = routeOpsApiResponder;
+const { routeOpsData, sendRouteOpsApiError, withRouteOpsApi } = routeOpsApiResponder;
 const DEFAULT_ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS = 180000;
+const ADMIN_NOTIFICATION_STREAM_HEARTBEAT_MS = 25000;
 
 
 function readRouteOpsAdminMemo(body: unknown): string | null {
@@ -1372,6 +1373,12 @@ function registerRouteOpsAppRoutes(
         );
       },
     ),
+  );
+
+  app.get(
+    `${ADMIN_UI_APP_API_PATH}/notifications/stream`,
+    async (request, reply) =>
+      openAdminNotificationStream(request, reply, dependencies),
   );
 
   app.patch<{ Params: { notificationId: string } }>(
@@ -3109,6 +3116,137 @@ function registerRouteOpsAppRoutes(
     `${ADMIN_UI_APP_API_PATH}/*`,
     async (_request, reply) => reply.callNotFound(),
   );
+}
+
+async function openAdminNotificationStream(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  dependencies: AdminCommerceConnectionsUiDependencies,
+): Promise<unknown> {
+  const session = readSession(request, dependencies);
+  if (session === null) {
+    return sendRouteOpsApiError(
+      reply,
+      401,
+      "UNAUTHORIZED",
+      "Admin UI login required",
+    );
+  }
+  let cleanup: (() => void) | null = null;
+  try {
+    const shopDomain = requireRouteOpsShopDomain(request, session);
+    if (dependencies.notificationService === undefined) {
+      throw new WooCommerceOnboardingError(
+        "BAD_REQUEST",
+        "Notification service is not enabled in this runtime.",
+        400,
+      );
+    }
+
+    let closed = request.raw.destroyed;
+    let heartbeat: ReturnType<typeof setInterval> | null = null;
+    let pendingInvalidation = false;
+    let streamOpen = false;
+    let unsubscribe: (() => void) | null = null;
+    cleanup = (): void => {
+      if (closed) return;
+      closed = true;
+      if (heartbeat !== null) {
+        clearInterval(heartbeat);
+        heartbeat = null;
+      }
+      if (unsubscribe !== null) {
+        unsubscribe();
+        unsubscribe = null;
+      }
+    };
+    request.raw.once("close", cleanup);
+
+    const subscribedUnsubscribe =
+      await dependencies.notificationService.subscribeToNotificationChanges({
+        listener: (event) => {
+          if (event.type !== "notifications_changed") return;
+          if (streamOpen) {
+            writeAdminNotificationStreamEvent(reply);
+            return;
+          }
+          pendingInvalidation = true;
+        },
+        shopDomain,
+      });
+    if (subscribedUnsubscribe === null) {
+      request.raw.removeListener("close", cleanup);
+      cleanup = null;
+      throw new WooCommerceOnboardingError(
+        "NOT_FOUND",
+        "Notification stream shop not found.",
+        404,
+      );
+    }
+    if (closed) {
+      subscribedUnsubscribe();
+      request.raw.removeListener("close", cleanup);
+      cleanup = null;
+      return reply;
+    }
+    unsubscribe = subscribedUnsubscribe;
+    if (request.raw.destroyed) {
+      cleanup();
+      return reply;
+    }
+
+    reply.hijack();
+    reply.raw.writeHead(200, {
+      "Cache-Control": "no-store, no-transform",
+      Connection: "keep-alive",
+      "Content-Security-Policy": buildRouteOpsCsp(readCurrentRouteOpsMapConfig()),
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "X-Accel-Buffering": "no",
+    });
+    streamOpen = true;
+    writeAdminNotificationStreamHeartbeat(reply);
+    if (pendingInvalidation) {
+      pendingInvalidation = false;
+      writeAdminNotificationStreamEvent(reply);
+    }
+
+    heartbeat = setInterval(
+      () => writeAdminNotificationStreamHeartbeat(reply),
+      ADMIN_NOTIFICATION_STREAM_HEARTBEAT_MS,
+    );
+    return reply;
+  } catch (error) {
+    if (cleanup !== null) {
+      request.raw.removeListener("close", cleanup);
+      cleanup();
+    }
+    const statusCode =
+      error instanceof WooCommerceOnboardingError ? error.httpStatus : 500;
+    const code =
+      error instanceof WooCommerceOnboardingError
+        ? error.code
+        : "ADMIN_UI_REQUEST_FAILED";
+    if (!(error instanceof WooCommerceOnboardingError)) {
+      request.log.error({ err: error }, "notification stream request failed");
+    }
+    return sendRouteOpsApiError(
+      reply,
+      statusCode,
+      code,
+      sanitizeRouteUiError(error),
+    );
+  }
+}
+
+function writeAdminNotificationStreamHeartbeat(reply: FastifyReply): void {
+  if (reply.raw.destroyed) return;
+  reply.raw.write(": heartbeat\n\n");
+}
+
+function writeAdminNotificationStreamEvent(reply: FastifyReply): void {
+  if (reply.raw.destroyed) return;
+  reply.raw.write('event: notifications_changed\n');
+  reply.raw.write('data: {"type":"notifications_changed"}\n\n');
 }
 
 function renderRouteOpsSpaShell(

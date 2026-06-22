@@ -14,6 +14,7 @@ import { loadAdminOrdersDependencies } from './modules/shopify/order-sync.depend
 import { loadShopifyAuthDependencies } from './modules/shopify/auth.dependencies.js';
 import { loadShopifyWebhookDependencies } from './modules/shopify/webhook.dependencies.js';
 import { loadWooCommerceWebhookDependencies } from './modules/woocommerce/woocommerce.dependencies.js';
+import { createAdminNotificationRuntime } from './modules/notifications/admin-notification.dependencies.js';
 import { loadWordPressPluginDependencies } from './modules/wordpress-plugin/wordpress-plugin.dependencies.js';
 import type { AdminRoutePlanDependencies } from './routes/admin-route-plans.routes.js';
 import type { AdminDriversDependencies } from './routes/admin-drivers.routes.js';
@@ -31,13 +32,25 @@ const env = loadEnv();
 const prisma = new PrismaClient();
 const adminCommerceConnections = loadAdminCommerceConnectionsDependencies({ env: process.env, prisma });
 const adminDrivers = loadAdminDriverDependencies({ env: process.env, prisma });
-const adminOrders = loadAdminOrdersDependencies({ env: process.env, prisma });
 const adminRoutePlans = loadAdminRoutePlanDependencies({ env: process.env, prisma });
+const adminNotificationRuntime = createAdminNotificationRuntime({
+  ...(process.env.DATABASE_URL === undefined
+    ? {}
+    : { databaseUrl: process.env.DATABASE_URL }),
+  prisma
+});
+const adminNotificationService = adminNotificationRuntime.service;
+const adminOrders = loadAdminOrdersDependencies({
+  adminNotificationService,
+  env: process.env,
+  prisma
+});
 const adminCommerceConnectionsUi = loadAdminCommerceConnectionsUiDependencies({
   adminCommerceConnections,
   adminDrivers,
   adminOrders,
   adminRoutePlans,
+  adminNotificationService,
   env: process.env,
   nodeEnv: env.nodeEnv,
   prisma
@@ -46,8 +59,16 @@ const driverApi = loadDriverApiDependencies({ env: process.env, prisma });
 const driverAuth = loadDriverAuthDependencies({ env: process.env, prisma });
 const shopifyAuth = loadShopifyAuthDependencies({ env: process.env, prisma });
 const shopifyWebhook = loadShopifyWebhookDependencies({ env: process.env, prisma });
-const wooCommerceWebhook = loadWooCommerceWebhookDependencies({ env: process.env, prisma });
-const wordPressPlugin = loadWordPressPluginDependencies({ env: process.env, prisma });
+const wooCommerceWebhook = loadWooCommerceWebhookDependencies({
+  adminNotificationService,
+  env: process.env,
+  prisma
+});
+const wordPressPlugin = loadWordPressPluginDependencies({
+  adminNotificationService,
+  env: process.env,
+  prisma
+});
 const logger = env.nodeEnv === 'test' ? false : { level: env.logLevel };
 const app = await buildApp(
   createBuildAppOptions({
@@ -68,6 +89,7 @@ const app = await buildApp(
 );
 
 try {
+  await adminNotificationRuntime.start();
   await app.listen({ host: '0.0.0.0', port: env.port });
   app.log.info({ port: env.port }, 'clever-route-server listening');
 } catch (error) {
@@ -78,8 +100,10 @@ try {
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
     void app.close().finally(() => {
-      void prisma.$disconnect().finally(() => {
+      void adminNotificationRuntime.close().finally(() => {
+        void prisma.$disconnect().finally(() => {
         process.kill(process.pid, signal);
+        });
       });
     });
   });

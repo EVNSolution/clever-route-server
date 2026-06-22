@@ -3,6 +3,7 @@ import type { PrismaClient } from '@prisma/client';
 import { PrismaOrderSyncRepository } from './order-sync.repository.js';
 import { ShopifyOrderSyncService } from './order-sync.service.js';
 import { ShopifySessionTokenVerifier } from './session-token-verifier.js';
+import type { AdminNotificationServiceContract } from '../notifications/admin-notification.service.js';
 import type { AdminOrdersDependencies } from '../../routes/admin-orders.routes.js';
 
 const DEFAULT_SHOPIFY_API_VERSION = '2026-04';
@@ -12,6 +13,7 @@ export type AdminOrdersRuntimeEnv = Partial<
 >;
 
 export function loadAdminOrdersDependencies(input: {
+  adminNotificationService?: AdminNotificationServiceContract | undefined;
   env: AdminOrdersRuntimeEnv;
   prisma: PrismaClient;
 }): AdminOrdersDependencies | undefined {
@@ -23,7 +25,12 @@ export function loadAdminOrdersDependencies(input: {
 
   const apiVersion = readOptional(input.env.SHOPIFY_API_VERSION) ?? DEFAULT_SHOPIFY_API_VERSION;
   void apiVersion;
-  const repository = new PrismaOrderSyncRepository(input.prisma);
+  const repository = new PrismaOrderSyncRepository(
+    input.prisma,
+    input.adminNotificationService === undefined
+      ? {}
+      : { notificationService: input.adminNotificationService },
+  );
   return {
     orderSyncService: new ShopifyOrderSyncService({
       graphqlClient: {

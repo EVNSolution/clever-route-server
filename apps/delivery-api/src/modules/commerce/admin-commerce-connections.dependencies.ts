@@ -19,8 +19,7 @@ import {
 } from '../route-plans/route-engine-route-optimizer.client.js';
 import { VroomRouteOptimizationClient } from '../route-plans/vroom-route-optimizer.client.js';
 import { PrismaOrderSyncRepository } from '../shopify/order-sync.repository.js';
-import { PrismaAdminNotificationRepository } from '../notifications/admin-notification.repository.js';
-import { AdminNotificationService } from '../notifications/admin-notification.service.js';
+import type { AdminNotificationServiceContract } from '../notifications/admin-notification.service.js';
 import { ShopifyOrderSyncService } from '../shopify/order-sync.service.js';
 import { createWooCommerceOrderClientFromConnection } from '../woocommerce/woocommerce-order.client.js';
 import { WooCommerceOrderSyncService } from '../woocommerce/woocommerce-order-sync.service.js';
@@ -127,6 +126,7 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
   adminDrivers?: AdminDriversDependencies | undefined;
   adminOrders?: AdminOrdersDependencies | undefined;
   adminRoutePlans?: AdminRoutePlanDependencies | undefined;
+  adminNotificationService?: AdminNotificationServiceContract | undefined;
   env: AdminCommerceConnectionsRuntimeEnv;
   nodeEnv: string;
   prisma?: PrismaClient | undefined;
@@ -159,6 +159,7 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
         refreshRouteGeometryForRoutePlan:
           routePlanDeps.routePlanService.refreshRouteGeometryForRoutePlan.bind(routePlanDeps.routePlanService)
       };
+  const notificationService = readAdminUiNotificationService(input);
 
   return {
     actor: {
@@ -171,12 +172,12 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     ...readAdminUiDriverService(input),
     geocodingService: loadGeocodingService({ env: input.env }),
     onboardingService: input.adminCommerceConnections.onboardingService,
-    ...readAdminUiNotificationService(input),
+    ...(notificationService === undefined ? {} : { notificationService }),
     ...readAdminUiOrderIngestAuditService(input),
-    ...readAdminUiOrderSyncService(input),
+    ...readAdminUiOrderSyncService(input, notificationService),
     ...readAdminUiPairingCodeService(input),
     ...routeOptimizationDeps,
-    ...readAdminUiWooSyncService(input),
+    ...readAdminUiWooSyncService(input, notificationService),
     ...(driverAppDownloadUrl === undefined ? {} : { driverAppDownloadUrl }),
     ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
     ...routePlanDeps,
@@ -220,10 +221,13 @@ function readAdminUiPairingCodeService(input: {
   };
 }
 
-function readAdminUiWooSyncService(input: {
-  env: AdminCommerceConnectionsRuntimeEnv;
-  prisma?: PrismaClient | undefined;
-}): Pick<AdminCommerceConnectionsUiDependencies, 'wooSyncService'> {
+function readAdminUiWooSyncService(
+  input: {
+    env: AdminCommerceConnectionsRuntimeEnv;
+    prisma?: PrismaClient | undefined;
+  },
+  notificationService: AdminCommerceConnectionsUiDependencies['notificationService'],
+): Pick<AdminCommerceConnectionsUiDependencies, 'wooSyncService'> {
   const rawCredentialKey = readOptional(input.env.CREDENTIAL_ENCRYPTION_KEY);
   if (input.prisma === undefined || rawCredentialKey === undefined) return {};
 
@@ -236,7 +240,8 @@ function readAdminUiWooSyncService(input: {
   });
   const orderRepository = new PrismaOrderSyncRepository(input.prisma, {
     allowAnyShopDomain: true,
-    createMissingShop: true
+    createMissingShop: true,
+    ...(notificationService === undefined ? {} : { notificationService })
   });
   const wordpressRepository = new PrismaWordPressPluginRepository(input.prisma);
   const geocodingService = loadGeocodingService({ env: input.env });
@@ -272,14 +277,9 @@ function readAdminUiWooSyncService(input: {
 }
 
 function readAdminUiNotificationService(input: {
-  prisma?: PrismaClient | undefined;
-}): Pick<AdminCommerceConnectionsUiDependencies, 'notificationService'> {
-  if (input.prisma === undefined) return {};
-  return {
-    notificationService: new AdminNotificationService(
-      new PrismaAdminNotificationRepository(input.prisma)
-    )
-  };
+  adminNotificationService?: AdminNotificationServiceContract | undefined;
+}): AdminCommerceConnectionsUiDependencies['notificationService'] {
+  return input.adminNotificationService;
 }
 
 
@@ -312,10 +312,13 @@ function readAdminUiOrderIngestAuditService(input: {
   };
 }
 
-function readAdminUiOrderSyncService(input: {
-  adminOrders?: AdminOrdersDependencies | undefined;
-  prisma?: PrismaClient | undefined;
-}): Pick<AdminCommerceConnectionsUiDependencies, 'orderSyncService'> {
+function readAdminUiOrderSyncService(
+  input: {
+    adminOrders?: AdminOrdersDependencies | undefined;
+    prisma?: PrismaClient | undefined;
+  },
+  notificationService: AdminCommerceConnectionsUiDependencies['notificationService'],
+): Pick<AdminCommerceConnectionsUiDependencies, 'orderSyncService'> {
   if (input.prisma === undefined) {
     return input.adminOrders === undefined ? {} : { orderSyncService: input.adminOrders.orderSyncService };
   }
@@ -326,7 +329,8 @@ function readAdminUiOrderSyncService(input: {
       },
       repository: new PrismaOrderSyncRepository(input.prisma, {
         allowAnyShopDomain: true,
-        createMissingShop: true
+        createMissingShop: true,
+        ...(notificationService === undefined ? {} : { notificationService })
       })
     })
   };

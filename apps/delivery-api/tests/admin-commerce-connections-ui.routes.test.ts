@@ -1,4 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
+import type { AddressInfo } from "node:net";
 
 import { describe, expect, test, vi } from "vitest";
 
@@ -18,6 +20,7 @@ import { defaultRouteOpsUiSettings } from "../src/modules/route-ops/route-ops-ui
 import type { AdminCommerceConnectionsDependencies } from "../src/routes/admin-commerce-connections.routes.js";
 import type { RouteOptimizationJobDto } from "../src/modules/route-plans/route-optimization-job.types.js";
 import type { AdminCommerceConnectionsUiDependencies } from "../src/routes/admin-commerce-connections-ui.routes.js";
+import type { AdminNotificationStreamEvent } from "../src/modules/notifications/admin-notification.stream.js";
 import {
   createAdminWebLaunchToken,
   MIN_ADMIN_WEB_LOGIN_SECRET_BYTES,
@@ -6064,7 +6067,7 @@ describe("Admin WooCommerce connection UI routes", () => {
 
   test("lists Route Ops notifications through the browser app API with tenant scoping", async () => {
     const notificationService = {
-      createNotificationOnce: vi.fn(),
+      createAdminNotification: vi.fn(),
       listNotifications: vi.fn(() =>
         Promise.resolve({
           notifications: [
@@ -6086,6 +6089,7 @@ describe("Admin WooCommerce connection UI routes", () => {
         }),
       ),
       markNotificationRead: vi.fn(),
+      subscribeToNotificationChanges: vi.fn(),
     };
     const { app } = await createUiHarness({ notificationService });
 
@@ -6130,6 +6134,201 @@ describe("Admin WooCommerce connection UI routes", () => {
         }),
       );
     } finally {
+      await app.close();
+    }
+  });
+
+
+  test("rejects unauthenticated Route Ops notification streams before opening SSE", async () => {
+    const subscribeToNotificationChanges = vi.fn();
+    const notificationService = createNotificationServiceHarness({
+      subscribeToNotificationChanges,
+    });
+    const { app } = await createUiHarness({ notificationService });
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/admin/ui/app/api/notifications/stream?shopDomain=tenant-a.example.test",
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(response.headers["content-type"]).toContain("application/json");
+      expect(response.headers["content-type"]).not.toContain(
+        "text/event-stream",
+      );
+      expect(subscribeToNotificationChanges).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("does not hide a missing notification service as an empty SSE stream", async () => {
+    const { app } = await createUiHarness();
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        headers: { cookie },
+        method: "GET",
+        url: "/admin/ui/app/api/notifications/stream?shopDomain=tenant-a.example.test",
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(readApiError(response)).toEqual(
+        expect.objectContaining({
+          code: "BAD_REQUEST",
+          message: "Notification service is not enabled in this runtime.",
+        }),
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("cleans notification stream subscriptions when the client closes during async subscribe", async () => {
+    let resolveSubscribe: (() => void) | undefined;
+    const unsubscribe = vi.fn();
+    const subscribeToNotificationChanges = vi.fn(
+      () =>
+        new Promise<() => void>((resolve) => {
+          resolveSubscribe = () => resolve(unsubscribe);
+        }),
+    );
+    const notificationService = createNotificationServiceHarness({
+      subscribeToNotificationChanges,
+    });
+    const { app } = await createUiHarness({ notificationService });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      await app.listen({ host: "127.0.0.1", port: 0 });
+      const address = app.server.address() as AddressInfo | null;
+      if (address === null || typeof address === "string") {
+        throw new Error("SSE test server is not listening on a TCP port.");
+      }
+      const clientRequest = httpRequest({
+        headers: { accept: "text/event-stream", cookie },
+        host: "127.0.0.1",
+        method: "GET",
+        path: "/admin/ui/app/api/notifications/stream?shopDomain=tenant-a.example.test",
+        port: address.port,
+      });
+      clientRequest.on("error", () => undefined);
+      clientRequest.end();
+
+      await waitForMockCall(subscribeToNotificationChanges);
+      clientRequest.destroy();
+      resolveSubscribe?.();
+
+      await waitForMockCall(unsubscribe);
+      expect(unsubscribe).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("flushes notification invalidations observed during SSE setup", async () => {
+    const unsubscribe = vi.fn();
+    const subscribeToNotificationChanges = vi.fn(
+      (input: {
+        listener: (event: AdminNotificationStreamEvent) => void;
+        shopDomain: string;
+      }) => {
+        input.listener({
+          notificationId: "notification-id",
+          occurredAt: "2026-06-05T07:00:00.000Z",
+          type: "notifications_changed",
+        });
+        return Promise.resolve(unsubscribe);
+      },
+    );
+    const notificationService = createNotificationServiceHarness({
+      subscribeToNotificationChanges,
+    });
+    const { app } = await createUiHarness({ notificationService });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      await app.listen({ host: "127.0.0.1", port: 0 });
+
+      const response = await readSseUntil({
+        app,
+        cookie,
+        onOpen: () => undefined,
+        path: "/admin/ui/app/api/notifications/stream?shopDomain=tenant-a.example.test",
+        until: 'data: {"type":"notifications_changed"}',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain(
+        'data: {"type":"notifications_changed"}\n\n',
+      );
+      expect(response.body).not.toContain("notification-id");
+      await waitForMockCall(unsubscribe);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("streams Route Ops notification invalidations over SSE without notification payloads", async () => {
+    let streamListener:
+      | ((event: AdminNotificationStreamEvent) => void)
+      | undefined;
+    const unsubscribe = vi.fn();
+    const subscribeToNotificationChanges = vi.fn(
+      (input: {
+        listener: (event: AdminNotificationStreamEvent) => void;
+        shopDomain: string;
+      }) => {
+        streamListener = input.listener;
+        return Promise.resolve(unsubscribe);
+      },
+    );
+    const notificationService = createNotificationServiceHarness({
+      subscribeToNotificationChanges,
+    });
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+    const { app } = await createUiHarness({ notificationService });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      await app.listen({ host: "127.0.0.1", port: 0 });
+
+      const response = await readSseUntil({
+        app,
+        cookie,
+        onOpen: () => {
+          streamListener?.({
+            notificationId: "notification-id",
+            occurredAt: "2026-06-05T07:00:00.000Z",
+            type: "notifications_changed",
+          });
+        },
+        path: "/admin/ui/app/api/notifications/stream?shopDomain=tenant-a.example.test",
+        until: 'data: {"type":"notifications_changed"}',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["content-type"]).toContain("text/event-stream");
+      expect(response.body).toContain(": heartbeat\n\n");
+      expect(response.body).toContain("event: notifications_changed");
+      expect(response.body).toContain(
+        'data: {"type":"notifications_changed"}\n\n',
+      );
+      expect(response.body).not.toContain("notification-id");
+      const functionMatcher: unknown = expect.any(Function);
+      expect(subscribeToNotificationChanges).toHaveBeenCalledWith({
+        listener: functionMatcher,
+        shopDomain: "tenant-a.example.test",
+      });
+      expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 25000);
+      await waitForMockCall(unsubscribe);
+      expect(clearIntervalSpy).toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+      clearIntervalSpy.mockRestore();
       await app.close();
     }
   });
@@ -6265,7 +6464,7 @@ describe("Admin WooCommerce connection UI routes", () => {
 
   test("marks Route Ops notifications read only through the authenticated shop context", async () => {
     const notificationService = {
-      createNotificationOnce: vi.fn(),
+      createAdminNotification: vi.fn(),
       listNotifications: vi.fn(),
       markNotificationRead: vi.fn(() =>
         Promise.resolve({
@@ -6282,6 +6481,7 @@ describe("Admin WooCommerce connection UI routes", () => {
           type: "SYSTEM",
         }),
       ),
+      subscribeToNotificationChanges: vi.fn(),
     };
     const { app } = await createUiHarness({ notificationService });
 
@@ -6550,6 +6750,103 @@ function createBaseAdminCommerceDependencies() {
     publicBaseUrl: "https://clever-route.cleversystem.ai",
   };
   return { adminTokenVerifier, dependencies, testConnection };
+}
+
+function createNotificationServiceHarness(
+  overrides: Partial<
+    NonNullable<AdminCommerceConnectionsUiDependencies["notificationService"]>
+  > = {},
+): NonNullable<AdminCommerceConnectionsUiDependencies["notificationService"]> {
+  return {
+    createAdminNotification: vi.fn(),
+    listNotifications: vi.fn(),
+    markNotificationRead: vi.fn(),
+    subscribeToNotificationChanges: vi.fn(),
+    ...overrides,
+  };
+}
+
+async function readSseUntil(input: {
+  app: Awaited<ReturnType<typeof createUiHarness>>["app"];
+  cookie: string;
+  onOpen: () => void;
+  path: string;
+  until: string;
+}): Promise<{
+  body: string;
+  headers: Record<string, string | string[] | undefined>;
+  statusCode: number;
+}> {
+  const address = input.app.server.address() as AddressInfo | null;
+  if (address === null || typeof address === "string") {
+    throw new Error("SSE test server is not listening on a TCP port.");
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const chunks: string[] = [];
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      clientRequest.destroy();
+      reject(new Error(`Timed out waiting for SSE chunk: ${input.until}`));
+    }, 1000);
+    const clientRequest = httpRequest(
+      {
+        headers: {
+          accept: "text/event-stream",
+          cookie: input.cookie,
+        },
+        host: "127.0.0.1",
+        method: "GET",
+        path: input.path,
+        port: address.port,
+      },
+      (response) => {
+        response.setEncoding("utf8");
+        input.onOpen();
+        response.on("data", (chunk: string) => {
+          chunks.push(chunk);
+          const body = chunks.join("");
+          if (!body.includes(input.until) || settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          response.destroy();
+          clientRequest.destroy();
+          resolve({
+            body,
+            headers: response.headers,
+            statusCode: response.statusCode ?? 0,
+          });
+        });
+        response.on("error", (error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          reject(error);
+        });
+      },
+    );
+    clientRequest.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      reject(error);
+    });
+    clientRequest.end();
+  });
+}
+
+async function waitForMockCall(mock: ReturnType<typeof vi.fn>): Promise<void> {
+  const deadline = Date.now() + 1000;
+  while (mock.mock.calls.length === 0) {
+    if (Date.now() > deadline) {
+      throw new Error("Timed out waiting for mock call.");
+    }
+    await new Promise((resolve) => {
+      setTimeout(resolve, 5);
+    });
+  }
 }
 
 async function loginAndReadCsrf(

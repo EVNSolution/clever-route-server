@@ -1,10 +1,10 @@
 import { readFileSync } from 'node:fs';
 
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 
 import { TabLayout } from '../src/components/TabLayout';
-import { toTopbarNotificationItem } from '../src/App';
+import { startNotificationRefresh, toTopbarNotificationItem } from '../src/App';
 import { AppShell } from '../src/components/AppShell';
 import {
   TopbarNotifications,
@@ -131,6 +131,47 @@ describe('route ops layout components', () => {
     expect(html).toContain('알림');
     expect(html).toContain('아직 알림이 없습니다.');
     expect(html).not.toContain('No notifications yet.');
+  });
+
+  test('startNotificationRefresh opens the stream, coalesces invalidation bursts, and closes cleanup', async () => {
+    let onNotificationsChanged: (() => void) | undefined;
+    const close = vi.fn();
+    const openStream = vi.fn(
+      (input: { onNotificationsChanged: () => void }) => {
+        onNotificationsChanged = input.onNotificationsChanged;
+        return { close };
+      },
+    );
+    const resolvers: Array<() => void> = [];
+    const loadNotifications = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvers.push(resolve);
+        }),
+    );
+
+    const controller = startNotificationRefresh({
+      loadNotifications,
+      openStream,
+    });
+
+    expect(openStream).toHaveBeenCalledWith({
+      onNotificationsChanged: expect.any(Function),
+    });
+    expect(loadNotifications).toHaveBeenCalledTimes(1);
+    onNotificationsChanged?.();
+    onNotificationsChanged?.();
+    expect(loadNotifications).toHaveBeenCalledTimes(1);
+    resolvers.shift()?.();
+    await Promise.resolve();
+    expect(loadNotifications).toHaveBeenCalledTimes(2);
+
+    controller.close();
+    onNotificationsChanged?.();
+    resolvers.shift()?.();
+    await Promise.resolve();
+    expect(loadNotifications).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   test('Woo route-address notifications map to localized topbar copy', () => {

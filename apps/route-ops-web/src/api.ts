@@ -70,6 +70,47 @@ export async function markNotificationRead(input: {
 }
 
 
+export type NotificationChangeStreamSubscription = {
+  close(): void;
+};
+
+type NotificationChangeEventSource = Pick<
+  EventSource,
+  'addEventListener' | 'close' | 'removeEventListener'
+> & {
+  onerror: ((this: EventSource, event: Event) => unknown) | null;
+};
+
+type NotificationChangeEventSourceConstructor = new (
+  url: string,
+) => NotificationChangeEventSource;
+
+export function openNotificationChangeStream(input: {
+  onNotificationsChanged: () => void;
+}): NotificationChangeStreamSubscription | null {
+  const EventSourceConstructor = globalThis.EventSource as
+    | NotificationChangeEventSourceConstructor
+    | undefined;
+  if (EventSourceConstructor === undefined) return null;
+
+  const eventSource = new EventSourceConstructor(
+    withWorkspaceQuery('/admin/ui/app/api/notifications/stream'),
+  );
+  const onNotificationsChanged = (): void => input.onNotificationsChanged();
+  eventSource.addEventListener('notifications_changed', onNotificationsChanged);
+  eventSource.onerror = () => undefined;
+
+  return {
+    close() {
+      eventSource.removeEventListener(
+        'notifications_changed',
+        onNotificationsChanged,
+      );
+      eventSource.close();
+    },
+  };
+}
+
 export async function getOrderCustomerNoteContext(input: {
   csrfToken: string;
   orderId: string;

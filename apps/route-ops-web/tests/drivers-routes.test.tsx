@@ -9,6 +9,7 @@ import {
   getLatestRouteOptimizationJob,
   getNotifications,
   getRouteOptimizationJob,
+  openNotificationChangeStream,
   markNotificationRead,
   publishRoute,
   regenerateDriverInviteCode,
@@ -1028,6 +1029,62 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         headers: { Accept: 'application/json' },
       }),
     );
+  });
+
+  test('openNotificationChangeStream listens only for notification invalidations and closes cleanly', () => {
+    const instances: FakeEventSource[] = [];
+    class FakeEventSource {
+      readonly close = vi.fn();
+      readonly listeners = new Map<string, Set<() => void>>();
+      onerror: ((this: EventSource, event: Event) => unknown) | null = null;
+
+      constructor(readonly url: string) {
+        instances.push(this);
+      }
+
+      addEventListener(type: string, listener: () => void): void {
+        const listeners = this.listeners.get(type) ?? new Set<() => void>();
+        listeners.add(listener);
+        this.listeners.set(type, listeners);
+      }
+
+      removeEventListener(type: string, listener: () => void): void {
+        this.listeners.get(type)?.delete(listener);
+      }
+
+      emit(type: string): void {
+        for (const listener of this.listeners.get(type) ?? []) {
+          listener();
+        }
+      }
+    }
+    const EventSourceStub = FakeEventSource as unknown as typeof EventSource;
+    const onNotificationsChanged = vi.fn();
+    vi.stubGlobal('EventSource', EventSourceStub);
+    vi.stubGlobal('window', { location: { search: '?shopDomain=tenant-a.example.test' } });
+
+    const subscription = openNotificationChangeStream({
+      onNotificationsChanged,
+    });
+    const source = instances[0];
+
+    expect(source?.url).toBe(
+      '/admin/ui/app/api/notifications/stream?shopDomain=tenant-a.example.test',
+    );
+    source?.emit('message');
+    expect(onNotificationsChanged).not.toHaveBeenCalled();
+    source?.emit('open');
+    expect(onNotificationsChanged).not.toHaveBeenCalled();
+    source?.emit('notifications_changed');
+    expect(onNotificationsChanged).toHaveBeenCalledTimes(1);
+    source?.onerror?.call(source as unknown as EventSource, new Event('error'));
+    expect(onNotificationsChanged).toHaveBeenCalledTimes(1);
+
+    subscription?.close();
+    source?.emit('open');
+    source?.emit('notifications_changed');
+    expect(onNotificationsChanged).toHaveBeenCalledTimes(1);
+    expect(source?.close).toHaveBeenCalledTimes(1);
   });
 
   test('markNotificationRead patches the protected notification API with CSRF', async () => {

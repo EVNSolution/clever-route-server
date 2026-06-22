@@ -67,7 +67,7 @@ describe('PrismaAdminNotificationRepository', () => {
     );
     const repository = new PrismaAdminNotificationRepository(prisma as never);
 
-    const result = await repository.createForShopOnce({
+    const result = await repository.createForShopOnceWithStatus({
       body: notificationRow.body,
       dedupeKey: 'woo_address_changed_route_assigned:shop-id:order-id:route-plan-id:hash-after',
       href: notificationRow.href,
@@ -89,7 +89,58 @@ describe('PrismaAdminNotificationRepository', () => {
         }
       }
     });
-    expect(result.id).toBe('notification-id');
+    expect(result.created).toBe(false);
+    expect(result.notification.id).toBe('notification-id');
+  });
+
+  test('reports whether createForShopOnceWithStatus created or deduped a notification', async () => {
+    const { prisma } = createPrismaHarness();
+    const repository = new PrismaAdminNotificationRepository(prisma as never);
+
+    const created = await repository.createForShopOnceWithStatus({
+      body: notificationRow.body,
+      dedupeKey: 'created-key',
+      href: notificationRow.href,
+      orderId: notificationRow.orderId,
+      payload: notificationRow.payload,
+      routePlanId: notificationRow.routePlanId,
+      severity: 'critical',
+      shopId: 'shop-id',
+      title: notificationRow.title,
+      type: notificationRow.type
+    });
+
+    prisma.adminNotification.create.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        clientVersion: 'test',
+        code: 'P2002',
+        meta: { target: ['shopId', 'dedupeKey'] }
+      })
+    );
+    const deduped = await repository.createForShopOnceWithStatus({
+      dedupeKey: 'deduped-key',
+      severity: 'critical',
+      shopId: 'shop-id',
+      title: notificationRow.title,
+      type: notificationRow.type
+    });
+
+    expect(created.created).toBe(true);
+    expect(created.notification.id).toBe('notification-id');
+    expect(deduped.created).toBe(false);
+    expect(deduped.notification.id).toBe('notification-id');
+  });
+
+  test('finds a shop id by normalized domain for stream subscriptions', async () => {
+    const { prisma } = createPrismaHarness();
+    const repository = new PrismaAdminNotificationRepository(prisma as never);
+
+    await expect(repository.findShopIdByDomain('https://Tenant-A.Example.Test/wp-admin/')).resolves.toBe('shop-id');
+
+    expect(prisma.shop.findUnique).toHaveBeenCalledWith({
+      select: { id: true },
+      where: { shopDomain: 'tenant-a.example.test' }
+    });
   });
 
   test('marks only the requested shop notification as read', async () => {

@@ -65,6 +65,7 @@ const expectedRouteRegistrations: RouteRegistration[] = [
   { line: 1240, method: "GET", pathExpression: "`${ADMIN_UI_APP_VENDOR_PATH}/*`" },
   { line: 1246, method: "GET", pathExpression: "`${ADMIN_UI_APP_API_PATH}/bootstrap`" },
   { line: 1282, method: "GET", pathExpression: "`${ADMIN_UI_APP_API_PATH}/notifications`" },
+  { line: 1309, method: "GET", pathExpression: "`${ADMIN_UI_APP_API_PATH}/notifications/stream`" },
   { line: 1309, method: "PATCH", pathExpression: "`${ADMIN_UI_APP_API_PATH}/notifications/:notificationId/read`" },
   { line: 1343, method: "GET", pathExpression: "`${ADMIN_UI_APP_API_PATH}/order-ingest-audit`" },
   { line: 1343, method: "GET", pathExpression: "`${ADMIN_UI_APP_API_PATH}/orders`" },
@@ -214,6 +215,7 @@ describe("admin UI route inventory", () => {
     expect(registrations).toContain("POST `${ADMIN_UI_WOOCOMMERCE_PATH}/test`");
     expect(registrations).toContain("POST `${ADMIN_UI_WOOCOMMERCE_PATH}/:connectionId/credentials`");
     expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/orders/sync`");
+    expect(registrations).toContain("GET `${ADMIN_UI_APP_API_PATH}/notifications/stream`");
     expect(registrations).toContain("GET `${ADMIN_UI_APP_API_PATH}/order-ingest-audit`");
     expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/orders/bulk-geocode`");
     expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/orders/:orderId/customer-note-context`");
@@ -230,6 +232,6 @@ describe("admin UI route inventory", () => {
     expect(registrations).toContain("GET `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/optimize-jobs/:jobId`");
     expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/publish`");
     expect(registrations).toContain("PATCH `${ADMIN_UI_APP_API_PATH}/settings`");
-    expect(expectedRouteRegistrations).toHaveLength(102);
+    expect(expectedRouteRegistrations).toHaveLength(103);
   });
 });

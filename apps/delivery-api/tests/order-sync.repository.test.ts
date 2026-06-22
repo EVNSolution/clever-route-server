@@ -1,15 +1,16 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { deriveOperateDeliveryStatus, deriveOrderHealth } from '../src/modules/shopify/order-operate-status.js';
-import { PrismaOrderSyncRepository } from '../src/modules/shopify/order-sync.repository.js';
+import { PrismaAdminNotificationRepository } from '../src/modules/notifications/admin-notification.repository.js';
+import { AdminNotificationService } from '../src/modules/notifications/admin-notification.service.js';
+import { AdminNotificationStreamHub } from '../src/modules/notifications/admin-notification.stream.js';
+import { PrismaOrderSyncRepository, type OrderSyncNotificationLogger } from '../src/modules/shopify/order-sync.repository.js';
 import type { CanonicalOrderRow, SyncedOrderWithDeliveryStopInput } from '../src/modules/shopify/order-sync.mapper.js';
 
 describe('PrismaOrderSyncRepository canonical orders', () => {
   test('creates new orders and lists canonical rows with planned status derived from route stops', async () => {
     const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 1 });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
 
     const result = await repository.upsertOrderWithDeliveryStop({
       shopDomain: 'Example.myshopify.com',
@@ -52,9 +53,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
 
   test('reads canonical time windows from route scope without UTC-shifting stored Toronto times', async () => {
     const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
     const order = canonicalOrderRecord(0);
     prisma.order.findMany.mockResolvedValueOnce([
       {
@@ -92,9 +91,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
 
   test('preserves order-week delivery date source when reading canonical rows', async () => {
     const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
     const order = canonicalOrderRecord(0);
     prisma.order.findMany.mockResolvedValueOnce([
       {
@@ -120,9 +117,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
 
   test('reads source-created and source-updated store-local dates from raw payload', async () => {
     const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
     const order = canonicalOrderRecord(0);
     prisma.order.findMany.mockResolvedValueOnce([
       {
@@ -154,9 +149,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
 
   test('keeps ambiguous or unparsed time-window metadata unresolved in canonical rows', async () => {
     const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
     const order = canonicalOrderRecord(0);
     prisma.order.findMany.mockResolvedValueOnce([
       {
@@ -265,9 +258,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
 
   test('filters Route Ops planning scope and tabs without leaking completed history', async () => {
     const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
     const ready = canonicalOrderRecord(0);
     const completed = {
       ...canonicalOrderRecord(0),
@@ -374,9 +365,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       existingOrder: { id: 'order-id', updatedAtShopify: new Date('2026-05-08T00:00:00.000Z') },
       routeStopCount: 0
     });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
 
     const result = await repository.upsertOrderWithDeliveryStop({
       shopDomain: 'example.myshopify.com',
@@ -394,9 +383,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       existingOrder: { id: 'order-id', updatedAtShopify: new Date('2026-05-07T13:00:00.000Z') },
       routeStopCount: 0
     });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
 
     const result = await repository.upsertOrderWithDeliveryStop({
       shopDomain: 'example.myshopify.com',
@@ -410,9 +397,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
 
   test('upserts delivery facts atomically with order and delivery stop snapshots', async () => {
     const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
 
     await repository.upsertOrderWithDeliveryStop({
       shopDomain: 'example.myshopify.com',
@@ -446,9 +431,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       deliveryFactCandidate({ orderId: 'order-2', planned: true, stopId: 'stop-2' }),
       deliveryFactCandidate({ latitude: null, orderId: 'order-3', stopId: 'stop-3' })
     ]);
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
 
     const candidates = await repository.listDeliveryBatchCandidates({
       deliveryDate: '2026-05-08',
@@ -481,9 +464,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
         stopId: 'stop-1'
       })
     ]);
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
 
     const candidates = await repository.listDeliveryBatchCandidates({
       deliveryDate: '2026-05-08',
@@ -620,9 +601,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       },
       routeStopCount: 0
     });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
 
     await repository.upsertOrderWithDeliveryStop({
       shopDomain: 'example.myshopify.com',
@@ -704,9 +683,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       },
       routeStopCount: 0
     });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
     const abnormalFact = {
       ...syncedDeliveryFact(),
       batchEligible: false,
@@ -810,9 +787,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       },
       routeStopCount: 0
     });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
 
     await repository.patchCanonicalOrderCoordinates({
       actor: 'dispatcher',
@@ -863,9 +838,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       existingOrder,
       routeStopCount: 0
     });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
 
     await repository.patchCanonicalOrder({
       actor: 'dispatcher',
@@ -890,9 +863,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       existingOrder: timeBlockedExistingOrder(),
       routeStopCount: 0
     });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
 
     await repository.patchCanonicalOrder({
       actor: 'dispatcher',
@@ -923,9 +894,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       existingOrder: timeBlockedExistingOrder(),
       routeStopCount: 0
     });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
 
     await repository.patchCanonicalOrder({
       actor: 'dispatcher',
@@ -972,9 +941,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       },
       routeStopCount: 0
     });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
 
     await repository.patchCanonicalOrderCoordinates({
       actor: 'dispatcher',
@@ -1000,9 +967,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       existingOrder: { id: 'order-id', updatedAtShopify: new Date('2026-05-07T12:00:00.000Z') },
       routeStopCount: 0
     });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
 
     const result = await repository.upsertOrderWithDeliveryStop({
       shopDomain: 'example.myshopify.com',
@@ -1049,9 +1014,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
         existingOrder: routedExistingOrder(routePlanStatus),
         routeStopCount: 0
       });
-      const repository = new PrismaOrderSyncRepository(
-        prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-      );
+      const repository = createOrderSyncRepository(prisma);
 
       await repository.upsertOrderWithDeliveryStop({
         shopDomain: 'example.myshopify.com',
@@ -1062,6 +1025,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
         })
       });
 
+      const anyObjectMatcher: unknown = expect.any(Object);
       const notificationCreateDataMatcher: unknown = expect.objectContaining({
         href: '/admin/ui/app/routes/route-plan-id',
         orderId: 'order-id',
@@ -1071,17 +1035,17 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
         title: 'Route assigned order address changed',
         type: 'WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED'
       });
-      expect(prisma.adminNotification.createMany).toHaveBeenCalledWith({
-        data: [notificationCreateDataMatcher],
-        skipDuplicates: true
+      expect(prisma.adminNotification.create).toHaveBeenCalledWith({
+        data: notificationCreateDataMatcher,
+        select: anyObjectMatcher
       });
-      const createInput = prisma.adminNotification.createMany.mock.calls[0]?.[0] as
-        | { data?: Array<{ dedupeKey?: string; payload?: Record<string, unknown> }> }
+      const createInput = prisma.adminNotification.create.mock.calls[0]?.[0] as
+        | { data?: { dedupeKey?: string; payload?: Record<string, unknown> } }
         | undefined;
-      expect(createInput?.data?.[0]?.dedupeKey).toMatch(
+      expect(createInput?.data?.dedupeKey).toMatch(
         /^woo_address_changed_route_assigned:shop-id:order-id:route-plan-id:/u
       );
-      expect(createInput?.data?.[0]?.payload).toEqual(expect.objectContaining({
+      expect(createInput?.data?.payload).toEqual(expect.objectContaining({
         routePlanStatus
       }));
     }
@@ -1092,9 +1056,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       existingOrder: routedExistingOrder('DRAFT', { routePlanStops: [] }),
       routeStopCount: 0
     });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
 
     await repository.upsertOrderWithDeliveryStop({
       shopDomain: 'example.myshopify.com',
@@ -1105,7 +1067,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       })
     });
 
-    expect(prisma.adminNotification.createMany).not.toHaveBeenCalled();
+    expect(prisma.adminNotification.create).not.toHaveBeenCalled();
   });
 
   test('does not emit Woo address notifications for non-Woo order snapshots', async () => {
@@ -1113,9 +1075,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       existingOrder: routedExistingOrder('DRAFT'),
       routeStopCount: 0
     });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
 
     await repository.upsertOrderWithDeliveryStop({
       shopDomain: 'example.myshopify.com',
@@ -1126,7 +1086,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       })
     });
 
-    expect(prisma.adminNotification.createMany).not.toHaveBeenCalled();
+    expect(prisma.adminNotification.create).not.toHaveBeenCalled();
   });
 
   test('writes routed-address notifications after the sync transaction with duplicate skipping', async () => {
@@ -1134,9 +1094,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       existingOrder: routedExistingOrder('DRAFT'),
       routeStopCount: 0
     });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
 
     await expect(
       repository.upsertOrderWithDeliveryStop({
@@ -1151,9 +1109,18 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
         }
       })
     ).resolves.toEqual(expect.objectContaining({ status: 'updated' }));
+    const notificationDedupeMatcher: unknown = expect.stringMatching(
+      /^woo_address_changed_route_assigned:shop-id:order-id:route-plan-id:/u
+    );
+    const notificationCreateDataMatcher: unknown = expect.objectContaining({
+      dedupeKey: notificationDedupeMatcher
+    });
+    const notificationCreateMatcher: unknown = expect.objectContaining({
+      data: notificationCreateDataMatcher
+    });
     expect(prisma.orderDeliveryFact.upsert).toHaveBeenCalled();
-    expect(prisma.adminNotification.createMany).toHaveBeenCalledWith(
-      expect.objectContaining({ skipDuplicates: true })
+    expect(prisma.adminNotification.create).toHaveBeenCalledWith(
+      notificationCreateMatcher
     );
   });
 
@@ -1162,12 +1129,12 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       existingOrder: routedExistingOrder('DRAFT'),
       routeStopCount: 0
     });
-    prisma.adminNotification.createMany.mockRejectedValueOnce(
+    prisma.adminNotification.create.mockRejectedValueOnce(
       new Error('notification table unavailable')
     );
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const notificationWarn = vi.fn<(bindings: Record<string, unknown>, message: string) => void>();
+    const notificationLogger: OrderSyncNotificationLogger = { warn: notificationWarn };
+    const repository = createOrderSyncRepository(prisma, { notificationLogger });
 
     await expect(
       repository.upsertOrderWithDeliveryStop({
@@ -1184,8 +1151,18 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     ).resolves.toEqual(expect.objectContaining({ status: 'updated' }));
     expect(prisma.orderDeliveryFact.upsert).toHaveBeenCalled();
     const transactionOrder = prisma.$transaction.mock.invocationCallOrder[0] ?? 0;
-    const notificationOrder = prisma.adminNotification.createMany.mock.invocationCallOrder[0] ?? 0;
+    const notificationOrder = prisma.adminNotification.create.mock.invocationCallOrder[0] ?? 0;
     expect(transactionOrder).toBeLessThan(notificationOrder);
+    const notificationWarningMatcher: unknown = expect.objectContaining({
+      err: expect.any(Error) as unknown,
+      eventType: 'woo.assigned_route_address_changed',
+      orderId: 'order-id',
+      shopId: 'shop-id'
+    });
+    expect(notificationWarn).toHaveBeenCalledWith(
+      notificationWarningMatcher,
+      'admin web notification write failed after order sync commit'
+    );
   });
 
   test('uses a new dedupe key when Woo changes the same routed order to a second distinct address', async () => {
@@ -1193,9 +1170,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       existingOrder: routedExistingOrder('DRAFT'),
       routeStopCount: 0
     });
-    const repository = new PrismaOrderSyncRepository(
-      prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0]
-    );
+    const repository = createOrderSyncRepository(prisma);
 
     await repository.upsertOrderWithDeliveryStop({
       shopDomain: 'example.myshopify.com',
@@ -1223,8 +1198,8 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       }
     });
 
-    const dedupeKeys = prisma.adminNotification.createMany.mock.calls.map((call) =>
-      String((call[0] as { data: Array<{ dedupeKey: string }> }).data[0]?.dedupeKey)
+    const dedupeKeys = prisma.adminNotification.create.mock.calls.map((call) =>
+      String((call[0] as { data: { dedupeKey: string } }).data.dedupeKey)
     );
     expect(dedupeKeys).toHaveLength(2);
     expect(new Set(dedupeKeys).size).toBe(2);
@@ -1232,13 +1207,34 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
 
 });
 
+
+function createOrderSyncRepository(
+  prisma: ReturnType<typeof createPrismaHarness>['prisma'],
+  options: { notificationLogger?: OrderSyncNotificationLogger } = {},
+): PrismaOrderSyncRepository {
+  const streamHub = new AdminNotificationStreamHub();
+  const notificationService = new AdminNotificationService(
+    new PrismaAdminNotificationRepository(prisma as never),
+    streamHub,
+  );
+  return new PrismaOrderSyncRepository(
+    prisma as unknown as ConstructorParameters<typeof PrismaOrderSyncRepository>[0],
+    {
+      notificationService,
+      ...(options.notificationLogger === undefined
+        ? {}
+        : { notificationLogger: options.notificationLogger }),
+    },
+  );
+}
+
 function createPrismaHarness(input: {
   existingOrder: ({ id: string; sourceUpdatedAt?: Date | null; updatedAtShopify: Date | null; deliveryFacts?: Array<Record<string, unknown>>; deliveryStops?: Array<Record<string, unknown>> } & Record<string, unknown>) | null;
   routeStopCount: number;
 }): {
   prisma: {
     $transaction: ReturnType<typeof vi.fn>;
-    adminNotification: { createMany: ReturnType<typeof vi.fn> };
+    adminNotification: { create: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn> };
     commerceConnectionOrderMapping: { findUnique: ReturnType<typeof vi.fn> };
     deliveryStop: { updateMany: ReturnType<typeof vi.fn>; upsert: ReturnType<typeof vi.fn> };
     order: {
@@ -1256,7 +1252,22 @@ function createPrismaHarness(input: {
   const prisma = {
     $transaction: vi.fn((callback: (tx: unknown) => unknown) => callback(prisma)),
     adminNotification: {
-      createMany: vi.fn(() => Promise.resolve({ count: 1 }))
+      create: vi.fn((createInput: { data: Record<string, unknown> }) =>
+        Promise.resolve({
+          body: (createInput.data.body ?? null) as string | null,
+          createdAt: new Date('2026-05-08T13:01:00.000Z'),
+          href: (createInput.data.href ?? null) as string | null,
+          id: `notification-${prisma.adminNotification.create.mock.calls.length}`,
+          orderId: (createInput.data.orderId ?? null) as string | null,
+          payload: (createInput.data.payload ?? null) as Record<string, unknown> | null,
+          readAt: null as Date | null,
+          routePlanId: (createInput.data.routePlanId ?? null) as string | null,
+          severity: createInput.data.severity as string,
+          title: createInput.data.title as string,
+          type: createInput.data.type as string
+        })
+      ),
+      findUnique: vi.fn(() => Promise.resolve(null))
     },
     commerceConnectionOrderMapping: {
       findUnique: vi.fn(() => Promise.resolve(null))

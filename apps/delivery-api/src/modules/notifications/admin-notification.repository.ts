@@ -30,6 +30,11 @@ export type AdminNotificationList = {
   unreadCount: number;
 };
 
+export type AdminNotificationCreateResult = {
+  created: boolean;
+  notification: AdminNotificationDto;
+};
+
 export type CreateAdminNotificationInput = {
   body?: string | null;
   createdAt?: Date;
@@ -82,9 +87,9 @@ type AdminNotificationRow = Prisma.AdminNotificationGetPayload<{
 export class PrismaAdminNotificationRepository {
   constructor(private readonly prisma: AdminNotificationPrismaClient) {}
 
-  async createForShopOnce(
+  async createForShopOnceWithStatus(
     input: CreateAdminNotificationInput,
-  ): Promise<AdminNotificationDto> {
+  ): Promise<AdminNotificationCreateResult> {
     try {
       const created = await this.prisma.adminNotification.create({
         data: {
@@ -108,7 +113,7 @@ export class PrismaAdminNotificationRepository {
         },
         select: adminNotificationSelect,
       });
-      return toAdminNotificationDto(created);
+      return { created: true, notification: toAdminNotificationDto(created) };
     } catch (error) {
       if (!isPrismaUniqueConstraintError(error)) throw error;
       const existing = await this.prisma.adminNotification.findUnique({
@@ -121,7 +126,7 @@ export class PrismaAdminNotificationRepository {
         },
       });
       if (existing === null) throw error;
-      return toAdminNotificationDto(existing);
+      return { created: false, notification: toAdminNotificationDto(existing) };
     }
   }
 
@@ -178,6 +183,10 @@ export class PrismaAdminNotificationRepository {
       },
     });
     return notification === null ? null : toAdminNotificationDto(notification);
+  }
+
+  async findShopIdByDomain(shopDomain: string): Promise<string | null> {
+    return (await this.findShop(shopDomain))?.id ?? null;
   }
 
   private async findShop(shopDomain: string): Promise<{ id: string } | null> {

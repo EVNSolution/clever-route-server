@@ -6,6 +6,7 @@ import { CommerceConnectionCredentialService } from '../commerce/commerce-connec
 import { loadCredentialEncryptionKey } from '../commerce/commerce-credential-encryption.js';
 import { loadGeocodingService } from '../geocoding/geocoding.dependencies.js';
 import { PrismaOrderSyncRepository } from '../shopify/order-sync.repository.js';
+import type { AdminNotificationServiceContract } from '../notifications/admin-notification.service.js';
 import { createWooCommerceOrderClientFromConnection } from '../woocommerce/woocommerce-order.client.js';
 import { WooCommerceOrderSyncService } from '../woocommerce/woocommerce-order-sync.service.js';
 import type { WordPressPluginDependencies } from '../../routes/wordpress-plugin.routes.js';
@@ -31,6 +32,7 @@ export type WordPressPluginRuntimeEnv = Partial<
 >;
 
 export function loadWordPressPluginDependencies(input: {
+  adminNotificationService?: AdminNotificationServiceContract | undefined;
   env: WordPressPluginRuntimeEnv;
   prisma: PrismaClient;
 }): WordPressPluginDependencies | undefined {
@@ -50,7 +52,10 @@ export function loadWordPressPluginDependencies(input: {
   });
   const orderRepository = new PrismaOrderSyncRepository(input.prisma, {
     allowAnyShopDomain: true,
-    createMissingShop: true
+    createMissingShop: true,
+    ...(input.adminNotificationService === undefined
+      ? {}
+      : { notificationService: input.adminNotificationService })
   });
   const wordpressRepository = new PrismaWordPressPluginRepository(input.prisma);
   const authService = new WordPressPluginAuthService({ repository: wordpressRepository });

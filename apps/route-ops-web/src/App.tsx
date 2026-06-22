@@ -5,6 +5,8 @@ import {
   getBootstrap,
   getNotifications,
   markNotificationRead,
+  openNotificationChangeStream,
+  type NotificationChangeStreamSubscription,
 } from './api';
 import { AppShell, type NavItem, type RouteOpsPage } from './components/AppShell';
 import type { TopbarNotificationItem } from './components/TopbarNotifications';
@@ -91,9 +93,10 @@ export function App(): ReactElement {
         }
       }
     };
-    void loadNotifications();
+    const notificationRefresh = startNotificationRefresh({ loadNotifications });
     return () => {
       cancelled = true;
+      notificationRefresh.close();
     };
   }, [bootstrap]);
 
@@ -130,6 +133,54 @@ export function App(): ReactElement {
       <PageBody bootstrap={bootstrap} navigate={navigate} route={route} setError={setError} />
     </AppShell>
   );
+}
+
+
+export type NotificationRefreshController = {
+  close(): void;
+};
+
+export function startNotificationRefresh(input: {
+  loadNotifications: () => Promise<void>;
+  openStream?: typeof openNotificationChangeStream;
+}): NotificationRefreshController {
+  let closed = false;
+  let inFlight = false;
+  let queued = false;
+
+  const run = (): void => {
+    if (closed) return;
+    if (inFlight) {
+      queued = true;
+      return;
+    }
+    inFlight = true;
+    void (async () => {
+      try {
+        do {
+          queued = false;
+          await input.loadNotifications();
+        } while (queued && !closed);
+      } finally {
+        inFlight = false;
+        if (queued && !closed) run();
+      }
+    })();
+  };
+
+  const openStream = input.openStream ?? openNotificationChangeStream;
+  const notificationStream: NotificationChangeStreamSubscription | null =
+    openStream({
+      onNotificationsChanged: run,
+    });
+  run();
+
+  return {
+    close() {
+      closed = true;
+      notificationStream?.close();
+    },
+  };
 }
 
 export function toTopbarNotificationItem(
