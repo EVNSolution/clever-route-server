@@ -25,7 +25,6 @@ import {
   getRouteItemSummary,
 } from "../orderItems";
 import {
-  deriveRouteStats,
   hasStopSequenceChanged,
   moveStop,
   moveStopToDropPosition,
@@ -601,7 +600,6 @@ export function RouteBuilder(input: {
     [detail?.routePlan.id, detail?.routePlan.routeEndMode],
   );
 
-  const stats = deriveRouteStats(detail);
   const itemSummary = getRouteItemSummary(detail?.routePlan.itemSummary);
   const routeItems = getOrderItems(itemSummary.items);
   const hasSequenceChanges = hasStopSequenceChanged(detail?.stops, draftStops);
@@ -813,20 +811,22 @@ export function RouteBuilder(input: {
           stops={draftStops}
         />
       ) : null}
-      <div className="summary-strip compact-kpis route-summary-kpis">
-        <Kpi label={t.stops} value={stats.stops} />
-        <Kpi label={t.completed} value={stats.completed} />
-        <Kpi label={t.attempted} value={stats.attempted} />
-        <Kpi label={t.missingCoords} value={stats.missingCoordinates} />
-        <Kpi label={t.itemsTotal} value={itemSummary.totalQuantity} />
-        <Kpi label={t.itemTypes} value={itemSummary.itemTypes} />
-      </div>
       <section className="route-item-summary-card" aria-label={t.routeItems}>
         <div className="route-item-summary-heading">
           <h3>{t.routeItems}</h3>
-          {itemSummary.changedSincePublish ? (
-            <Badge>{t.itemsChanged}</Badge>
-          ) : null}
+          <div className="route-item-summary-heading-actions">
+            <span className="route-item-summary-metric">
+              {t.routeItemTotal}
+              <strong>{itemSummary.totalQuantity}</strong>
+            </span>
+            <span className="route-item-summary-metric">
+              {t.routeItemTypes}
+              <strong>{itemSummary.itemTypes}</strong>
+            </span>
+            {itemSummary.changedSincePublish ? (
+              <Badge>{t.itemsChanged}</Badge>
+            ) : null}
+          </div>
         </div>
         {routeItems.length === 0 ? (
           <p className="route-item-empty">{t.noItems}</p>

@@ -260,13 +260,11 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
           setMapError(null);
         });
         map.once('idle', () => stabilizeMapCanvas(map));
-        map.once('render', () => scheduleInitialMapTileVerification(map, () => {
+        map.once('render', () => {
           if (!mounted || initialTileRefreshAttemptRef.current > 0) return;
           initialTileRefreshAttemptRef.current += 1;
-          setMapError(null);
-          setIsMapReady(false);
-          setMapRefreshRequest((value) => value + 1);
-        }));
+          scheduleInitialMapTileVerification(map);
+        });
         map.on('click', (event: { lngLat?: { lat: number; lng: number }; originalEvent?: { detail?: number } }) => {
           if (detailRef.current !== null) return;
           if (event.lngLat === undefined) return;
@@ -1108,17 +1106,16 @@ function stabilizeMapCanvas(map: MapLibreMap): void {
   window.setTimeout(() => safeResizeMap(map), 600);
 }
 
-function scheduleInitialMapTileVerification(map: MapLibreMap, onRefreshMap: () => void): void {
+function scheduleInitialMapTileVerification(map: MapLibreMap): void {
   if (typeof window === 'undefined') return;
-  window.setTimeout(() => verifyInitialMapTiles(map, onRefreshMap), INITIAL_TILE_VERIFY_DELAY_MS);
+  window.setTimeout(() => verifyInitialMapTiles(map), INITIAL_TILE_VERIFY_DELAY_MS);
 }
 
-function verifyInitialMapTiles(map: MapLibreMap, onRefreshMap: () => void): void {
+function verifyInitialMapTiles(map: MapLibreMap): void {
   const status = readInitialMapTileStatus(map);
   if (status !== 'loading') return;
   safeResizeMap(map);
   safeTriggerMapRepaint(map);
-  onRefreshMap();
 }
 
 function readInitialMapTileStatus(map: MapLibreMap): 'loading' | 'ready' | 'unknown' {

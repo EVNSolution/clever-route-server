@@ -540,9 +540,6 @@ small,
   display: grid;
   gap: 12px;
 }
-.route-summary-kpis {
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-}
 .route-item-summary-card,
 .order-detail-items-card {
   background: #fff;
@@ -558,6 +555,33 @@ small,
   display: flex;
   gap: 10px;
   justify-content: space-between;
+}
+.route-item-summary-heading-actions {
+  align-items: center;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.route-item-summary-metric {
+  align-items: baseline;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  color: #64748b;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 900;
+  gap: 5px;
+  letter-spacing: 0.05em;
+  line-height: 1;
+  padding: 7px 9px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.route-item-summary-metric strong {
+  color: #111827;
+  font-size: 12px;
 }
 .route-item-summary-heading h3,
 .order-detail-items-card h4 {

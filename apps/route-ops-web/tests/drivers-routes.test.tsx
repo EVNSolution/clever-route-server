@@ -427,7 +427,8 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('>Finish</span>');
     expect(html).toContain('class="route-child-sequence-footer"');
     expect(html).toMatch(/class="route-child-sequence-footer"[\s\S]*Return to store[\s\S]*Save route/);
-    expect(html).toContain('<span>Items total</span>');
+    expect(html).not.toContain('class="summary-strip compact-kpis route-summary-kpis"');
+    expect(html).toContain('class="route-item-summary-heading-actions"');
     expect(html).toContain('class="tab-secondary" data-tab-region="secondary" hidden=""');
     expect(html).not.toContain('class="panel side-panel route-save-panel route-builder-card-shell"');
     expect(html).not.toContain('Driver &amp; options');
@@ -671,8 +672,8 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
       />,
     );
 
-    expect(html).toContain('<span>Items total</span><strong>3</strong>');
-    expect(html).toContain('<span>Item types</span><strong>1</strong>');
+    expect(html).toContain('<span class="route-item-summary-metric">Total<strong>3</strong></span>');
+    expect(html).toContain('<span class="route-item-summary-metric">Types<strong>1</strong></span>');
     expect(html).toContain('Route items');
     expect(html).toContain('토마토 / Tomato box');
     expect(html).toContain('Size: Large &amp; Red');
