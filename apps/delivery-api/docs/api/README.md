@@ -19,7 +19,7 @@ when needed.
 
 Future main route server target:
 
-- Swagger UI: `https://clever-route.cleversystem.ai/docs`
+- API docs landing page: `https://clever-route.cleversystem.ai/docs`
 - Raw OpenAPI YAML: `https://clever-route.cleversystem.ai/docs/openapi.yaml`
 
 Do not treat raw EIP or `sslip.io` hostnames as the normal integration contract.

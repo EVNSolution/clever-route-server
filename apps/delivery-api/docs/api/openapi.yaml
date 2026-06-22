@@ -24,7 +24,7 @@ servers:
 security: []
 tags:
   - name: API Documentation
-    description: Browser-accessible Swagger UI and raw OpenAPI document
+    description: Browser-accessible API docs landing page and raw OpenAPI document
   - name: Health
     description: Operational readiness and liveness probes
   - name: Route Ops Admin UI
@@ -39,65 +39,17 @@ paths:
   /docs:
     get:
       tags: [API Documentation]
-      summary: Browser Swagger UI for this service contract
+      summary: Browser API docs landing page for this service contract
       operationId: getApiDocsUi
       x-source-file: src/routes/api-docs.routes.ts
       responses:
         '200':
-          description: Swagger UI HTML that loads same-origin Swagger UI assets and `/docs/openapi.yaml`.
+          description: Minimal HTML page that links to `/docs/openapi.yaml`.
           content:
             text/html:
               schema:
                 type: string
-  /docs/swagger-ui/swagger-ui.css:
-    get:
-      tags: [API Documentation]
-      summary: Same-origin Swagger UI stylesheet asset
-      operationId: getSwaggerUiStylesheet
-      x-source-file: src/routes/api-docs.routes.ts
-      responses:
-        '200':
-          description: Swagger UI stylesheet served by the API server so `/docs` does not depend on a public CDN.
-          headers:
-            Cache-Control:
-              schema:
-                type: string
-              description: Public immutable cache directive for versioned container assets.
-          content:
-            text/css:
-              schema:
-                type: string
-  /docs/swagger-ui/swagger-ui-bundle.js:
-    get:
-      tags: [API Documentation]
-      summary: Same-origin Swagger UI JavaScript bundle asset
-      operationId: getSwaggerUiBundle
-      x-source-file: src/routes/api-docs.routes.ts
-      responses:
-        '200':
-          description: Swagger UI JavaScript bundle served by the API server so `/docs` does not depend on a public CDN.
-          headers:
-            Cache-Control:
-              schema:
-                type: string
-              description: Public immutable cache directive for versioned container assets.
-          content:
-            application/javascript:
-              schema:
-                type: string
-  /docs/swagger-ui/init.js:
-    get:
-      tags: [API Documentation]
-      summary: Same-origin Swagger UI initialization script
-      operationId: getSwaggerUiInitScript
-      x-source-file: src/routes/api-docs.routes.ts
-      responses:
-        '200':
-          description: Small initialization script for the interactive Swagger UI. Served externally so the `/docs` CSP does not require inline scripts.
-          content:
-            application/javascript:
-              schema:
-                type: string
+
   /docs/openapi.yaml:
     get:
       tags: [API Documentation]
