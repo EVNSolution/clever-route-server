@@ -54,6 +54,7 @@ checks = {
     'history_append': '"lane":"simple-ssm"' in command and '"staticStage":"%s"' in command,
     'gh_write_packages_warning_only': 'does not show write:packages; continuing because docker push is the authoritative GHCR publish check' in wrapper and 'GHCR publish requires a GitHub/GHCR token with write:packages' not in wrapper,
     'workflow_uses_node24_docker_build_actions': 'uses: docker/setup-buildx-action@v4' in workflow and 'uses: docker/build-push-action@v7' in workflow,
+    'workflow_skips_docker_login_setup_when_reusing_current_digest_refs': "if: steps.changes.outputs.build_api == 'true' || steps.changes.outputs.build_web == 'true' || inputs.publish_images == false" in workflow,
     'workflow_uses_registry_cache': 'cache-from: type=registry,ref=${{ env.DELIVERY_API_IMAGE_REPO }}:buildcache' in workflow and 'cache-to: type=registry,ref=${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}:buildcache,mode=max' in workflow,
     'workflow_publishes_sha_and_channel_tags': '${{ env.DELIVERY_API_IMAGE_REPO }}:${{ github.sha }}' in workflow and '${{ env.DELIVERY_API_IMAGE_REPO }}:${{ inputs.channel_tag }}' in workflow and '${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}:${{ github.sha }}' in workflow and '${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}:${{ inputs.channel_tag }}' in workflow,
     'workflow_uses_digest_output': 'API_DIGEST: ${{ steps.build_api.outputs.digest }}' in workflow and 'WEB_DIGEST: ${{ steps.build_web.outputs.digest }}' in workflow,
