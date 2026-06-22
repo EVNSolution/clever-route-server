@@ -51,7 +51,3 @@ export type DriverRouteAccessLookupResult =
       resolutionHint: string;
     }
   | { status: 'BLOCKED' | 'DISABLED' | 'NOT_FOUND' };
-
-export type DriverRouteAccessServiceContract = {
-  lookupRouteAccess(input: DriverRouteAccessLookupInput): Promise<DriverRouteAccessLookupResult>;
-};

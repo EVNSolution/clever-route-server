@@ -5,7 +5,6 @@ import {
   DriverRouteSessionScopeError,
   type DriverRouteSessionRestoreInput,
   type DriverRouteSessionRestoreResult,
-  type DriverRouteSessionRestoreServiceContract,
   type DriverRouteSessionRestoreSession
 } from './driver-route-session.types.js';
 
@@ -70,7 +69,7 @@ const activeRoutePlanInclude = (driverId: string) => ({
   }
 });
 
-export class PrismaDriverRouteSessionRepository implements DriverRouteSessionRestoreServiceContract {
+export class PrismaDriverRouteSessionRepository {
   constructor(
     private readonly prisma: DriverRouteSessionPrismaClient,
     private readonly assignedRouteService: DriverAssignedRouteServiceContract
@@ -265,3 +264,5 @@ function toBestEffortSession(routePlan: ActiveRoutePlanRecord): DriverRouteSessi
     status: 'ACTIVE'
   };
 }
+
+export type DriverRouteSessionRestoreServiceApi = Pick<PrismaDriverRouteSessionRepository, 'getActiveRouteSession'>;

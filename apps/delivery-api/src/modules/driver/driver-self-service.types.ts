@@ -85,15 +85,6 @@ export type DriverEarningsResult = {
   };
 };
 
-export type DriverSelfServiceContract = {
-  getDriverEarnings(input: GetDriverEarningsInput): Promise<DriverEarningsResult>;
-  getDriverProfile(input: DriverSelfServiceScopeInput): Promise<{ driver: DriverSelfProfile }>;
-  listDriverRoutes(input: ListDriverRoutesInput): Promise<ListDriverRoutesResult>;
-  requestAccountDeletion(input: DriverAccountDeletionRequestInput): Promise<DriverAccountDeletionRequestResult>;
-  submitRouteFeedback(input: SubmitDriverRouteFeedbackInput): Promise<SubmitDriverRouteFeedbackResult>;
-  updateDriverProfile(input: UpdateDriverProfileInput): Promise<{ driver: DriverSelfProfile }>;
-};
-
 export class DriverRouteHistoryCursorError extends Error {}
 
 export class DriverSelfServiceScopeError extends Error {}

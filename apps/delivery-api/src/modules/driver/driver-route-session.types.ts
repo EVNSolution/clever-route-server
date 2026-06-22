@@ -26,8 +26,4 @@ export type DriverRouteSessionRestoreSession = {
   status: 'ACTIVE';
 };
 
-export type DriverRouteSessionRestoreServiceContract = {
-  getActiveRouteSession(input: DriverRouteSessionRestoreInput): Promise<DriverRouteSessionRestoreResult>;
-};
-
 export class DriverRouteSessionScopeError extends Error {}

@@ -6,8 +6,7 @@ import type {
   DriverRouteAccessCompanyGuidance,
   DriverRouteAccessInvitedRoute,
   DriverRouteAccessLookupInput,
-  DriverRouteAccessLookupResult,
-  DriverRouteAccessServiceContract
+  DriverRouteAccessLookupResult
 } from './driver-route-access.types.js';
 
 type DriverRouteAccessPrismaClient = Pick<PrismaClient, 'driver' | 'routePlan'>;
@@ -40,7 +39,7 @@ const routePlanSelect = {
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
-export class PrismaDriverRouteAccessRepository implements DriverRouteAccessServiceContract {
+export class PrismaDriverRouteAccessRepository {
   constructor(private readonly prisma: DriverRouteAccessPrismaClient) {}
 
   async lookupRouteAccess(input: DriverRouteAccessLookupInput): Promise<DriverRouteAccessLookupResult> {
@@ -248,3 +247,5 @@ function readStringArray(value: unknown): string[] {
 function displayNameFromShopDomain(shopDomain: string): string {
   return shopDomain.replace(/\.myshopify\.com$/u, '');
 }
+
+export type DriverRouteAccessServiceApi = Pick<PrismaDriverRouteAccessRepository, 'lookupRouteAccess'>;

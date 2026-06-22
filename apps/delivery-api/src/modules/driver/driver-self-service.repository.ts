@@ -11,7 +11,6 @@ import {
   type DriverRouteHistoryItem,
   type DriverRouteHistoryStatus,
   type DriverSelfProfile,
-  type DriverSelfServiceContract,
   type DriverSelfServiceScopeInput,
   type GetDriverEarningsInput,
   type ListDriverRoutesInput,
@@ -55,7 +54,7 @@ const SUPPORTED_ROUTE_STATUSES: RoutePlanStatus[] = [
   RoutePlanStatus.COMPLETED
 ];
 
-export class PrismaDriverSelfServiceRepository implements DriverSelfServiceContract {
+export class PrismaDriverSelfServiceRepository {
   constructor(private readonly prisma: DriverSelfServicePrismaClient) {}
 
   async listDriverRoutes(input: ListDriverRoutesInput): Promise<ListDriverRoutesResult> {
@@ -413,3 +412,13 @@ function readString(value: unknown): string | null {
 function displayNameFromShopDomain(shopDomain: string): string {
   return normalizeDriverCommerceDomain(shopDomain).replace(/\.myshopify\.com$/u, '');
 }
+
+export type DriverSelfServiceApi = Pick<
+  PrismaDriverSelfServiceRepository,
+  | 'getDriverEarnings'
+  | 'getDriverProfile'
+  | 'listDriverRoutes'
+  | 'requestAccountDeletion'
+  | 'submitRouteFeedback'
+  | 'updateDriverProfile'
+>;

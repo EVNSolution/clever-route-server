@@ -21,9 +21,9 @@ import type {
 import type {
   DriverRouteAccessInvitedRoute,
   DriverRouteAccessLookupInput,
-  DriverRouteAccessLookupResult,
-  DriverRouteAccessServiceContract
+  DriverRouteAccessLookupResult
 } from '../modules/driver/driver-route-access.types.js';
+import type { DriverRouteAccessServiceApi } from '../modules/driver/driver-route-access.repository.js';
 import {
   DriverProofMediaAccessUnavailableError,
   DriverProofMediaScanRejectedError,
@@ -37,13 +37,13 @@ import type {
 import {
   DriverRouteHistoryCursorError,
   DriverSelfServiceScopeError,
-  type DriverRouteHistoryStatus,
-  type DriverSelfServiceContract
+  type DriverRouteHistoryStatus
 } from '../modules/driver/driver-self-service.types.js';
+import type { DriverSelfServiceApi } from '../modules/driver/driver-self-service.repository.js';
 import {
-  DriverRouteSessionScopeError,
-  type DriverRouteSessionRestoreServiceContract
+  DriverRouteSessionScopeError
 } from '../modules/driver/driver-route-session.types.js';
+import type { DriverRouteSessionRestoreServiceApi } from '../modules/driver/driver-route-session.repository.js';
 import {
   DriverEventContextError,
   DriverEventScopeError
@@ -66,15 +66,15 @@ export type DriverApiDependencies = {
       shopDomain: string;
     }): Promise<{ duplicate: boolean; eventId: string }>;
   };
-  driverSelfService?: DriverSelfServiceContract;
-  driverRouteSessionRestoreService?: DriverRouteSessionRestoreServiceContract;
+  driverSelfService?: DriverSelfServiceApi;
+  driverRouteSessionRestoreService?: DriverRouteSessionRestoreServiceApi;
   driverRouteMapPreviewBaseUrl?: string;
   driverRouteMapPreviewService?: DriverRouteMapPreviewServiceApi;
   driverTokenAccessRepository?: DriverTokenAccessRepositoryApi;
   jwtSecret: string;
   proofMediaService?: DriverProofMediaServiceContract;
   now?: () => Date;
-  routeAccessService?: DriverRouteAccessServiceContract;
+  routeAccessService?: DriverRouteAccessServiceApi;
 };
 
 type DriverRouteAccessRequestBody = {
