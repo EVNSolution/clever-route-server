@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { classifyRouteOpsChanges } from '../../scripts/ci/route-ops-change-classifier.mjs';
 
 function check(name, files, expected) {
@@ -160,5 +161,13 @@ check('shopify auth/session verifier is critical', ['apps/delivery-api/src/modul
 const forced = classifyRouteOpsChanges(['docs/note.md'], { forceFullVerify: true });
 assert.equal(forced.full_required, true, 'force full verify sets full_required');
 assert.equal(forced.web_artifact_required, true, 'force full verify preserves web artifact build');
+
+
+const cli = spawnSync(process.execPath, ['scripts/ci/route-ops-change-classifier.mjs', '--json'], {
+  input: 'scripts/ci/route-ops-change-classifier.mjs\n',
+  encoding: 'utf8',
+});
+assert.equal(cli.status, 0, `classifier CLI failed: ${cli.stderr}`);
+assert.equal(JSON.parse(cli.stdout).full_required, true, 'classifier CLI emits JSON outputs');
 
 console.log('route-ops-change-classifier tests passed');

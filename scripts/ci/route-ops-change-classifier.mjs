@@ -2,6 +2,11 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import process from 'node:process';
 
+const DEPLOY_WORKFLOW_RE = /^\.github\/workflows\/(ci|route-ops-simple-deploy)\.yml$/;
+const DEPLOY_SCRIPT_RE = /^scripts\/(guard-route-ops-deploy-scope|check-ignore-hygiene|scan-secrets|smoke-route-ops-production|ssm-simple-route-ops-deploy|osrm-ontario|monitor-route-ops-production)\.(mjs|sh)$/;
+const DEPLOY_TEST_RE = /^tests\/deploy\/(ssm-simple-route-ops-deploy|route-ops-prisma-db-push-guard|monitor-route-ops-production)\.test\.sh$/;
+const LIVE_DEPLOY_SCRIPT_RE = /^scripts\/(ssm-simple-route-ops-deploy|osrm-ontario|monitor-route-ops-production)\.sh$/;
+
 if (isCliEntryPoint()) {
   const args = new Set(process.argv.slice(2));
   const githubOutputPath = getArgValue('--github-output');
@@ -50,11 +55,6 @@ function any(files, patterns) {
 function all(files, patterns) {
   return files.length > 0 && files.every((file) => patterns.some((pattern) => pattern.test(file)));
 }
-
-const DEPLOY_WORKFLOW_RE = /^\.github\/workflows\/(ci|route-ops-simple-deploy)\.yml$/;
-const DEPLOY_SCRIPT_RE = /^scripts\/(guard-route-ops-deploy-scope|check-ignore-hygiene|scan-secrets|smoke-route-ops-production|ssm-simple-route-ops-deploy|osrm-ontario|monitor-route-ops-production)\.(mjs|sh)$/;
-const DEPLOY_TEST_RE = /^tests\/deploy\/(ssm-simple-route-ops-deploy|route-ops-prisma-db-push-guard|monitor-route-ops-production)\.test\.sh$/;
-const LIVE_DEPLOY_SCRIPT_RE = /^scripts\/(ssm-simple-route-ops-deploy|osrm-ontario|monitor-route-ops-production)\.sh$/;
 
 export function classifyRouteOpsChanges(files, options = {}) {
   const force = options.forceFullVerify === true;
