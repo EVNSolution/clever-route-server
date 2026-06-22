@@ -93,6 +93,10 @@ export function getRouteStopSequenceDisplay(
   return savedSequenceLabels.get(stop.deliveryStopId) ?? stop.sequence;
 }
 
+export function getChildRouteSequenceColor(isEditing: boolean): string {
+  return isEditing ? "#2563eb" : "#111827";
+}
+
 export function shouldTryRouteGroupFallback(error: unknown): boolean {
   return (
     error instanceof ApiError &&
@@ -751,6 +755,7 @@ export function RouteBuilder(input: {
           drivers={input.drivers}
           draftDriverId={draftDriverId}
           dropPreview={dropPreview}
+          isEditing={hasUnsavedRouteChanges}
           isSavingRoute={isSavingRoute}
           locale={locale}
           onDragEnd={clearStopDragPreview}
@@ -972,6 +977,7 @@ function ChildRouteSequenceCard({
   drivers,
   draftDriverId,
   dropPreview,
+  isEditing,
   isSavingRoute,
   locale,
   onDragEnd,
@@ -995,6 +1001,7 @@ function ChildRouteSequenceCard({
   drivers: DriverDto[];
   draftDriverId: string;
   dropPreview: StopDropPreview | null;
+  isEditing: boolean;
   isSavingRoute: boolean;
   locale?: string | null;
   onDragEnd(): void;
@@ -1012,7 +1019,7 @@ function ChildRouteSequenceCard({
   stops: RouteStopDto[];
 }): ReactElement {
   const t = getRoutesCopy(locale);
-  const color = "#2563eb";
+  const color = getChildRouteSequenceColor(isEditing);
 
   const getDropPosition = (event: DragEvent<HTMLElement>): StopDropPosition => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -1049,10 +1056,6 @@ function ChildRouteSequenceCard({
       <div className="route-group-area-list route-child-sequence-list">
         <div className="route-group-area-row route-child-sequence-row">
           <label className="route-group-area-driver route-group-area-driver--assignable route-child-sequence-driver">
-            <span
-              className="route-group-area-swatch"
-              style={{ background: color }}
-            />
             <span className="route-child-sequence-driver-name">
               {selectedDriverLabel}
             </span>

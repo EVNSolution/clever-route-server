@@ -25,6 +25,7 @@ import {
 } from '../src/pages/DriversPage';
 import {
   buildRouteSaveDraftInput,
+  getChildRouteSequenceColor,
   getDriverOptionLabel,
   getRouteDriverDisplay,
   getRoutePublishBadge,
@@ -314,6 +315,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(getRouteStopSequenceDisplay({ deliveryStopId: 'stop-4', sequence: 4 }, savedLabels)).toBe(4);
   });
 
+  test('uses black child sequence rails until the child route is being edited', () => {
+    expect(getChildRouteSequenceColor(false)).toBe('#111827');
+    expect(getChildRouteSequenceColor(true)).toBe('#2563eb');
+  });
+
   test('localizes the exposed return-to-store Route Builder option', () => {
     expect(getRoutesCopy('en-CA').returnToStore).toBe('Return to store');
     expect(getRoutesCopy('ko-KR').returnToStore).toBe('매장으로 돌아오기');
@@ -405,6 +411,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('class="route-map-header-actions"');
     expect(html).toContain('class="danger subtle route-map-delete-button"');
     expect(html).toContain('class="route-group-area-driver route-group-area-driver--assignable route-child-sequence-driver"');
+    expect(html).not.toContain('class="route-group-area-swatch"');
     expect(html).toContain('<option value="" selected="">Unassigned</option>');
     expect(html).toContain('Alex Driver');
     expect(html).not.toContain('App linked');
