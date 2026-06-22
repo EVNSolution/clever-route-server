@@ -625,7 +625,15 @@ small,
 }
 .route-item-table td:last-child,
 .order-detail-items-table td:last-child {
-  font-weight: 900;
+  font-weight: 800;
+  text-align: right;
+}
+.order-detail-items-table tfoot th,
+.order-detail-items-table tfoot td {
+  border-top: 2px solid #dbe3ee;
+}
+.order-detail-total-row th {
+  color: #1f2937;
   text-align: right;
 }
 .kpi {
@@ -3250,21 +3258,10 @@ button.danger.subtle {
   text-transform: uppercase;
 }
 
-.order-detail-summary-card p,
-.order-detail-item-list {
+.order-detail-summary-card p {
   color: #1f2937;
-  font-weight: 800;
+  font-weight: 700;
   overflow-wrap: anywhere;
-}
-
-.order-detail-item-list {
-  margin: 0;
-  padding-left: 18px;
-}
-
-.order-detail-summary-card--primary {
-  background: #fff7ed;
-  border-color: #fed7aa;
 }
 
 .order-detail-summary-card small {

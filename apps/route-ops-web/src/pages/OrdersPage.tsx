@@ -23,7 +23,6 @@ import { TabLayout } from "../components/TabLayout";
 import { RouteOpsMap } from "../components/maps/RouteOpsMap";
 import type { OrderMapMarkerState } from "../maps/geojson";
 import {
-  formatOrderItemLine,
   formatOrderItemName,
   formatOrderItemOptions,
   getOrderItemDisplayKey,
@@ -2320,7 +2319,6 @@ function OrderDetailPanel({
   }, [deliveryCustomer?.adminMemo, deliveryCustomer?.profileId]);
   const onSave = onSaveMetadata;
   const t = getOrdersCopy(locale);
-  const fieldLabels = getOrderFieldLabels(locale);
   const status = formatOperationalStatus(order, locale);
   const blockers = order.blockerReasons.map((reason) =>
     formatBlockerReason(reason, locale),
@@ -2335,7 +2333,6 @@ function OrderDetailPanel({
   const repairTitle = formatRepairCardTitle(repairFields, order, locale);
   const addressSummary = formatAddressSummary(order, locale);
   const orderItems = getOrderItems(order.items);
-  const orderedItemLabels = orderItems.map(formatOrderItemLine);
 
   const setDraftField = (
     key: keyof OrderMetadataPatch,
@@ -2483,33 +2480,12 @@ function OrderDetailPanel({
       ) : null}
 
       <div className="order-detail-summary-grid">
-        <section className="order-detail-summary-card order-detail-summary-card--primary">
-          <h4>{fieldLabels["line_items[0].name"]}</h4>
-          {orderedItemLabels.length === 0 ? (
-            <p>{order.orderName}</p>
-          ) : (
-            <ul className="order-detail-item-list">
-              {orderedItemLabels.map((label, labelIndex) => (
-                <li key={`${label}:${labelIndex}`}>{label}</li>
-              ))}
-            </ul>
-          )}
-          <small>
-            {order.sourceOrderNumber ??
-              order.sourceOrderId ??
-              t.reviewIfRequired}
-          </small>
-        </section>
         <section className="order-detail-summary-card">
           <h4>{t.destination}</h4>
           <p>{addressSummary.primary}</p>
           {addressSummary.secondary === null ? null : (
             <small>{addressSummary.secondary}</small>
           )}
-        </section>
-        <section className="order-detail-summary-card">
-          <h4>{t.totalPrice}</h4>
-          <p>{formatOrderTotal(order, locale)}</p>
         </section>
       </div>
 
@@ -2567,34 +2543,42 @@ function OrderDetailPanel({
 
       <section className="order-detail-items-card" aria-label={t.itemsTitle}>
         <h4>{t.itemsTitle}</h4>
-        {orderItems.length === 0 ? (
-          <p className="order-detail-items-empty">{t.noItems}</p>
-        ) : (
-          <div className="order-detail-items-table-scroll">
-            <table className="order-detail-items-table">
-              <thead>
+        <div className="order-detail-items-table-scroll">
+          <table className="order-detail-items-table">
+            <thead>
+              <tr>
+                <th>{t.item}</th>
+                <th>{t.itemOptions}</th>
+                <th>{t.sku}</th>
+                <th>{t.quantity}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orderItems.length === 0 ? (
                 <tr>
-                  <th>{t.item}</th>
-                  <th>{t.itemOptions}</th>
-                  <th>{t.sku}</th>
-                  <th>{t.quantity}</th>
+                  <td className="order-detail-items-empty" colSpan={4}>
+                    {t.noItems}
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {orderItems.map((item, itemIndex) => (
-                  <tr
-                    key={getOrderItemDisplayKey(item, itemIndex)}
-                  >
+              ) : (
+                orderItems.map((item, itemIndex) => (
+                  <tr key={getOrderItemDisplayKey(item, itemIndex)}>
                     <td>{formatOrderItemName(item)}</td>
                     <td>{formatOrderItemOptions(item) || "—"}</td>
                     <td>{item.sku ?? "—"}</td>
                     <td>{item.quantity}</td>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+                ))
+              )}
+            </tbody>
+            <tfoot>
+              <tr className="order-detail-total-row">
+                <th colSpan={3}>{t.totalPrice}</th>
+                <td>{formatOrderTotal(order, locale)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
       </section>
 
       {editMode ? (

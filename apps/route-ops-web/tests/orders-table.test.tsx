@@ -238,8 +238,10 @@ describe("Orders compact operations table", () => {
       { expandedOrderIds: new Set(["order-11453"]) },
     );
 
+    expect(html).toContain("order-detail-total-row");
     expect(html).toContain("Order total");
     expect(html).toContain("$42.50");
+    expect(html).not.toContain("order-detail-summary-card--primary");
   });
 
   test("renders ordered items from the frontend order items DTO", () => {
@@ -270,8 +272,9 @@ describe("Orders compact operations table", () => {
     );
 
     expect(html).toContain("Ordered items");
-    expect(html).toContain("Roma Tomatoes (size: large &amp; red) × 2");
-    expect(html).toContain("Basil × 1");
+    expect(html).toContain("Roma Tomatoes");
+    expect(html).toContain("size: large &amp; red");
+    expect(html).toContain("Basil");
     expect(html).not.toContain("&lt;span");
   });
 
