@@ -360,7 +360,8 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(source).toContain('tileMap.areTilesLoaded');
     expect(source).toContain('safeTriggerMapRepaint(map);');
     expect(source).not.toContain('onRefreshMap();');
-    expect(source).toContain('window.requestAnimationFrame(() => safeResizeMap(map));');
+    expect(source).toContain('scheduleMapSettling(() => safeResizeMap(map));');
+    expect(source).toContain('const animationFrame = window.requestAnimationFrame(callback);');
     expect(source).not.toContain('route-ops-order-highlight-halo');
     expect(source).toContain('function keepOrderPinsAbovePolygonFill(map: MapLibreMap): void');
     expect(source).toContain("safeMoveLayer(map, 'route-ops-polygons-fill', 'route-ops-order-pins');");
