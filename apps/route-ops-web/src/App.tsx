@@ -92,10 +92,8 @@ export function App(): ReactElement {
       }
     };
     void loadNotifications();
-    const intervalId = window.setInterval(() => void loadNotifications(), 60_000);
     return () => {
       cancelled = true;
-      window.clearInterval(intervalId);
     };
   }, [bootstrap]);
 
