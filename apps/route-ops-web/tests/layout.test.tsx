@@ -294,7 +294,7 @@ describe('route ops layout components', () => {
   test('Route Builder detail CSS syncs map and card height while keeping stop order scroll-contained', () => {
     const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
 
-    expect(css).toContain('--route-builder-detail-panel-height: clamp(620px, calc(100vh - 220px), 760px);');
+    expect(css).toContain('--route-builder-detail-panel-height: clamp(500px, calc(100vh - 340px), 640px);');
     expect(css).toContain(`.route-builder-workspace .map-panel,
 .route-save-panel {
   height: var(--route-builder-detail-panel-height);`);
