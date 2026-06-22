@@ -44,6 +44,8 @@ const ROUTE_STOP_PICKER_MAX_WIDTH_PX = 360;
 const ROUTE_STOP_PICKER_MIN_WIDTH_PX = 188;
 const ROUTE_STOP_PICKER_MARGIN_PX = 16;
 const INITIAL_TILE_VERIFY_DELAY_MS = 3;
+const MAP_SETTLE_DELAYS_MS = [120, 600] as const;
+const POLYGON_FOCUS_SETTLE_DELAYS_MS = [120, 420] as const;
 
 type RouteOpsMapProps = {
   bootstrap: BootstrapPayload;
@@ -397,61 +399,34 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
     const map = mapRef.current;
     const draft = polygonDraftRef.current;
     if (draft === undefined || draft.vertices.length === 0) return undefined;
-    let animationFrame: number | null = null;
-    const timeouts: number[] = [];
     const applyFit = (): void => {
       const currentMap = mapRef.current;
       const currentDraft = polygonDraftRef.current;
       if (currentMap === null || currentDraft === undefined || currentDraft.vertices.length === 0 || !isMapUsable(currentMap)) return;
       fitMapToCoordinates(currentMap, currentDraft.vertices);
     };
-    applyFit();
-    animationFrame = window.requestAnimationFrame(applyFit);
-    timeouts.push(window.setTimeout(applyFit, 120));
-    timeouts.push(window.setTimeout(applyFit, 420));
-    return () => {
-      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
-      timeouts.forEach((timeout) => window.clearTimeout(timeout));
-    };
+    return scheduleMapSettling(applyFit, POLYGON_FOCUS_SETTLE_DELAYS_MS);
   }, [isMapReady, polygonFocusKey, polygonMode]);
 
 
   useEffect(() => {
     if (detail === null || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return undefined;
-    let animationFrame: number | null = null;
-    const timeouts: number[] = [];
     const applyFit = (): void => {
       const map = mapRef.current;
       if (map === null || !isMapUsable(map)) return;
       fitMap(map, maplibreRef.current, fitPoints);
     };
-    applyFit();
-    animationFrame = window.requestAnimationFrame(applyFit);
-    timeouts.push(window.setTimeout(applyFit, 120));
-    timeouts.push(window.setTimeout(applyFit, 600));
-    return () => {
-      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
-      timeouts.forEach((timeout) => window.clearTimeout(timeout));
-    };
+    return scheduleMapSettling(applyFit);
   }, [detail, fitPoints, fitPointsKey, isMapReady]);
 
   useEffect(() => {
     if (!fitOrdersToBounds || detail !== null || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return undefined;
-    let animationFrame: number | null = null;
-    const timeouts: number[] = [];
     const applyFit = (): void => {
       const map = mapRef.current;
       if (map === null || !isMapUsable(map)) return;
       fitMap(map, maplibreRef.current, fitPoints);
     };
-    applyFit();
-    animationFrame = window.requestAnimationFrame(applyFit);
-    timeouts.push(window.setTimeout(applyFit, 120));
-    timeouts.push(window.setTimeout(applyFit, 600));
-    return () => {
-      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
-      timeouts.forEach((timeout) => window.clearTimeout(timeout));
-    };
+    return scheduleMapSettling(applyFit);
   }, [detail, fitOrdersToBounds, fitPoints, fitPointsKey, isMapReady]);
 
   useEffect(() => {
@@ -1099,11 +1074,18 @@ function safeResizeMap(map: MapLibreMap): void {
 }
 
 function stabilizeMapCanvas(map: MapLibreMap): void {
-  safeResizeMap(map);
-  if (typeof window === 'undefined') return;
-  window.requestAnimationFrame(() => safeResizeMap(map));
-  window.setTimeout(() => safeResizeMap(map), 120);
-  window.setTimeout(() => safeResizeMap(map), 600);
+  scheduleMapSettling(() => safeResizeMap(map));
+}
+
+function scheduleMapSettling(callback: () => void, delays: readonly number[] = MAP_SETTLE_DELAYS_MS): () => void {
+  callback();
+  if (typeof window === 'undefined') return () => {};
+  const animationFrame = window.requestAnimationFrame(callback);
+  const timeouts = delays.map((delay) => window.setTimeout(callback, delay));
+  return () => {
+    window.cancelAnimationFrame(animationFrame);
+    timeouts.forEach((timeout) => window.clearTimeout(timeout));
+  };
 }
 
 function scheduleInitialMapTileVerification(map: MapLibreMap): void {
