@@ -1,7 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
-import { aggregateOrderItems, type OrderItemDto } from '../src/modules/order-items/order-items.js';
 import {
   RoutePlanBatchInvalidError,
   RoutePlanConflictError,
@@ -10,6 +9,7 @@ import {
   RoutePlanPublishInvalidError,
   RoutePlanStopUpdateInvalidError
 } from '../src/modules/route-plans/route-plan.types.js';
+import type { OrderItemDto } from '../src/modules/order-items/order-items.js';
 import type { RoutePlanOrderInput } from '../src/modules/route-plans/route-plan.types.js';
 
 describe('PrismaRoutePlanRepository', () => {
@@ -975,7 +975,6 @@ describe('PrismaRoutePlanRepository', () => {
   test('aggregate save applies changed fields but keeps draft routes unpublished', async () => {
     const firstDuplicateItem = orderItemRecord({ quantity: 1 });
     const secondDuplicateItem = orderItemRecord({ quantity: 2 });
-    const duplicateItems = [firstDuplicateItem, secondDuplicateItem];
     const duplicateItemOrders = [
       orderRecord({
         deliveryDate: '2026-05-08',
@@ -1272,15 +1271,6 @@ function hasRouteStatusUpdate(
     const update = call as { data?: { status?: unknown }; where?: { id?: unknown } } | undefined;
     return update?.where?.id === routePlanId && update.data?.status === status;
   });
-}
-
-function findRouteStatusUpdate(
-  prisma: ReturnType<typeof createPrismaHarness>['prisma'],
-  status: string
-): { data: { metrics: Record<string, unknown>; status: string } } | undefined {
-  return prisma.routePlan.update.mock.calls
-    .map(([call]) => call as { data?: { metrics?: Record<string, unknown>; status?: string } } | undefined)
-    .find((call): call is { data: { metrics: Record<string, unknown>; status: string } } => call?.data?.status === status);
 }
 
 function createPrismaHarness(input: {

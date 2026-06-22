@@ -346,7 +346,6 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
 
       const initialDriverId = routePlan.driverId ?? routePlan.driver?.id ?? null;
       const initialRouteStatus = routePlan.status;
-      const initialStopCount = routePlan.routeStops?.length ?? 0;
       const hasShapePayload = input.payload.routeEndMode !== undefined || input.payload.stops !== undefined;
       const willRepairDraftDepot =
         hasShapePayload &&
@@ -391,7 +390,6 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       let driverId = routePlan.driverId ?? routePlan.driver?.id ?? null;
       const routeStatus = routePlan.status;
       let stopCount = routePlan.routeStops?.length ?? 0;
-      let latestMetrics: Prisma.InputJsonValue = toJson(routePlan.metrics);
 
       if (input.payload.routeEndMode !== undefined) {
         if (!hasRouteEndModeChange) {
@@ -531,7 +529,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             });
           }
 
-          latestMetrics = routeMetricsForStatus({
+          const latestMetrics = routeMetricsForStatus({
             existingMetrics: routePlan.metrics,
             nextMetrics: createMetricsFromOrders(ordersByGid, orderGids, deliveryStopIds.length),
             status: routeStatus
