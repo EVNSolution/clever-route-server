@@ -118,7 +118,7 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
   const fitPoints = useMemo(() => getRouteFitPoints(detail, points, dropoffPoints), [detail, dropoffPoints, points]);
   const fitPointsKey = useMemo(() => fitPoints.map((point) => `${point.kind}:${point.id}:${point.latitude}:${point.longitude}`).join('|'), [fitPoints]);
   const homePoint = useMemo(() => resolveMapHomePoint(detail, depot, points), [depot, detail, points]);
-  const readiness = mapReadiness({ coordinatesCount: points.length, mapStatus: bootstrap.mapConfig.status });
+  const readiness = mapReadiness({ mapStatus: bootstrap.mapConfig.status });
   const routeGeometry = useMemo(() => buildRouteGeometryFeature(detail), [detail]);
   const lineFeature = detail === null ? null : routeGeometry;
   const ordersGeojson = useMemo(() => buildOrdersMapFeatureCollection(orders, orderMarkerStates ?? plannedOrderIds), [orderMarkerStates, orders, plannedOrderIds]);

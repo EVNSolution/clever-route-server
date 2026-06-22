@@ -1,10 +1,9 @@
 import type { BootstrapPayload, MapProviderMode, MapProviderStatus } from '../types';
 import { settingsCopy, resolveLocale } from '../i18n';
 
-export type MapReadiness = 'interactive_map' | 'no_coordinates' | 'provider_not_configured';
+export type MapReadiness = 'interactive_map' | 'provider_not_configured';
 
-export function mapReadiness(input: { coordinatesCount: number; mapStatus: MapProviderStatus }): MapReadiness {
-  void input.coordinatesCount;
+export function mapReadiness(input: { mapStatus: MapProviderStatus }): MapReadiness {
   if (input.mapStatus === 'not_configured') return 'provider_not_configured';
   return 'interactive_map';
 }

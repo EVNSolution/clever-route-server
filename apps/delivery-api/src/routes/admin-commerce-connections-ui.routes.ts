@@ -136,7 +136,7 @@ import { summarizeGeocodeDiagnostic } from "../modules/geocoding/geocoding.diagn
 import type { GeocodingService } from "../modules/geocoding/geocoding.service.js";
 import type { GeocodingResult } from "../modules/geocoding/geocoding.types.js";
 import type { AdminNotificationServiceContract } from "../modules/notifications/admin-notification.service.js";
-import type { DeliveryCustomerProfileServiceContract } from "../modules/delivery-customer/delivery-customer-profile.service.js";
+import type { PrismaDeliveryCustomerProfileService } from "../modules/delivery-customer/delivery-customer-profile.service.js";
 import {
   createAdminWebSession,
   verifyAdminWebCsrfToken,
@@ -402,7 +402,10 @@ const ADMIN_UI_ROUTE_APP_SCRIPT = `
 export type AdminCommerceConnectionsUiDependencies = {
   actor: AdminCommerceActor;
   cookieName?: string;
-  deliveryCustomerService?: DeliveryCustomerProfileServiceContract;
+  deliveryCustomerService?: Pick<
+    PrismaDeliveryCustomerProfileService,
+    "getOrderCustomerNoteContext" | "mergeProfiles" | "updateAdminMemo"
+  >;
   driverService?: Pick<
     AdminDriverServiceContract,
     | "createPendingDriver"

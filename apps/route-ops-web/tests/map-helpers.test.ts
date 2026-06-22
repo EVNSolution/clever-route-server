@@ -298,9 +298,9 @@ describe('route ops map helpers', () => {
   });
 
   test('keeps configured providers interactive before markers exist', () => {
-    expect(mapReadiness({ coordinatesCount: 0, mapStatus: 'not_configured' })).toBe('provider_not_configured');
-    expect(mapReadiness({ coordinatesCount: 0, mapStatus: 'configured' })).toBe('interactive_map');
-    expect(mapReadiness({ coordinatesCount: 2, mapStatus: 'configured' })).toBe('interactive_map');
+    expect(mapReadiness({ mapStatus: 'not_configured' })).toBe('provider_not_configured');
+    expect(mapReadiness({ mapStatus: 'configured' })).toBe('interactive_map');
+    expect(mapReadiness({ mapStatus: 'configured' })).toBe('interactive_map');
   });
 });
 

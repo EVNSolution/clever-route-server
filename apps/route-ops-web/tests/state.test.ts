@@ -24,7 +24,6 @@ import {
   hideSetupActions,
   isAddressReviewRequired,
   isDeliveryDateReviewRequired,
-  mapReadiness,
   matchesOrderTab,
   matchesPlanningScope,
   moveStop,
@@ -373,9 +372,6 @@ describe('route ops web state helpers', () => {
   });
 
   test('keeps map/provider states explicit and plugin mode hides setup actions', () => {
-    expect(mapReadiness({ coordinatesCount: 0, mapStatus: 'configured' })).toBe('interactive_map');
-    expect(mapReadiness({ coordinatesCount: 3, mapStatus: 'not_configured' })).toBe('provider_not_configured');
-    expect(mapReadiness({ coordinatesCount: 3, mapStatus: 'configured' })).toBe('interactive_map');
     expect(hideSetupActions(bootstrap('plugin'))).toBe(true);
     expect(hideSetupActions(bootstrap('internal-admin'))).toBe(false);
   });

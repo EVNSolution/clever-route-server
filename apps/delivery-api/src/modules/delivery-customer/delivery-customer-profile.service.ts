@@ -35,23 +35,6 @@ export type DeliveryCustomerMergeResult = {
   mergedProfileId: string;
 };
 
-export interface DeliveryCustomerProfileServiceContract {
-  getOrderCustomerNoteContext(input: {
-    orderId: string;
-    shopDomain: string;
-  }): Promise<DeliveryCustomerContext | null>;
-  updateAdminMemo(input: {
-    adminMemo: string | null;
-    profileId: string;
-    shopDomain: string;
-  }): Promise<DeliveryCustomerAdminMemoResult | null>;
-  mergeProfiles(input: {
-    sourceProfileId: string;
-    targetProfileId: string;
-    shopDomain: string;
-  }): Promise<DeliveryCustomerMergeResult | null>;
-}
-
 type OrderWithStopAndLink = Order & {
   deliveryCustomerProfileLinks: Array<
     DeliveryCustomerProfileOrderLink & { profile: DeliveryCustomerProfile }
@@ -84,9 +67,7 @@ type CandidateDecision = {
   profile: DeliveryCustomerProfile;
 } | null;
 
-export class PrismaDeliveryCustomerProfileService
-  implements DeliveryCustomerProfileServiceContract
-{
+export class PrismaDeliveryCustomerProfileService {
   constructor(private readonly prisma: PrismaClient) {}
 
   async getOrderCustomerNoteContext(input: {

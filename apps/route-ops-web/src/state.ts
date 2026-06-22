@@ -870,15 +870,6 @@ export function deriveRouteStats(detail: RoutePlanDetailDto | null): {
   );
 }
 
-export function mapReadiness(input: {
-  coordinatesCount: number;
-  mapStatus: MapProviderStatus;
-}): 'interactive_map' | 'no_coordinates' | 'provider_not_configured' {
-  void input.coordinatesCount;
-  if (input.mapStatus === 'not_configured') return 'provider_not_configured';
-  return 'interactive_map';
-}
-
 export function geometryLabel(detail: RoutePlanDetailDto | null, routerStatus: MapProviderStatus, locale: string | null | undefined = 'en-CA'): string {
   const t = getStateCopy(locale).geometry;
   if (detail === null) return t.noRouteSelected;
