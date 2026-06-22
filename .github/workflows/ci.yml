@@ -35,6 +35,7 @@ jobs:
       critical_changed: ${{ steps.classify.outputs.critical_changed }}
       full_required: ${{ steps.classify.outputs.full_required }}
       web_artifact_required: ${{ steps.classify.outputs.web_artifact_required }}
+      api_test_profile: ${{ steps.classify.outputs.api_test_profile }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -189,11 +190,22 @@ jobs:
       - name: Typecheck delivery API
         run: npm --prefix apps/delivery-api run typecheck
       - name: Download Route Ops web dist
+        if: needs.route-ops-changes.outputs.web_artifact_required == 'true' || needs.route-ops-changes.outputs.full_required == 'true' || github.event_name == 'workflow_dispatch'
         uses: actions/download-artifact@v8
         with:
           name: route-ops-web-dist
           path: apps/route-ops-web/dist
+      - name: Route geometry targeted tests
+        if: needs.route-ops-changes.outputs.api_test_profile == 'route_geometry' && needs.route-ops-changes.outputs.full_required != 'true' && github.event_name != 'workflow_dispatch'
+        run: >
+          npm --prefix apps/delivery-api run test --
+          tests/osrm-route-geometry.client.test.ts
+          tests/route-plan-geometry-cache.test.ts
+          tests/refresh-route-geometry-cache.script.test.ts
+          tests/route-plan.service.test.ts
+          tests/route-plan.repository.test.ts
       - name: Route Ops targeted tests
+        if: needs.route-ops-changes.outputs.api_test_profile != 'route_geometry' || needs.route-ops-changes.outputs.full_required == 'true' || github.event_name == 'workflow_dispatch'
         run: >
           npm --prefix apps/delivery-api run test --
           tests/admin-commerce-auth.test.ts

@@ -75,6 +75,17 @@ export function classifyRouteOpsChanges(files, options = {}) {
     /^apps\/delivery-api\//,
   ]);
 
+  const routeGeometryOnlyApiChanged = apiChanged && all(files, [
+    /^apps\/delivery-api\/src\/modules\/route-plans\/(osrm-route-geometry\.client|route-plan-geometry-cache)\.ts$/,
+    /^apps\/delivery-api\/src\/scripts\/refresh-route-geometry-cache\.ts$/,
+    /^apps\/delivery-api\/tests\/(osrm-route-geometry\.client|route-plan-geometry-cache|refresh-route-geometry-cache\.script|route-plan\.service|route-plan\.repository)\.test\.ts$/,
+  ]);
+
+  const routeOpsUiApiChanged = any(files, [
+    /^apps\/delivery-api\/src\/routes\/(admin-commerce-connections-ui\.routes|admin-ui-[^/]+)\.ts$/,
+    /^apps\/delivery-api\/tests\/(admin-commerce-connections-ui\.routes|admin-ui-[^/]+|admin-route-plans\.routes)\.test\.ts$/,
+  ]);
+
   const docsOnly = all(files, [
     /^docs\//,
     /^README\.md$/,
@@ -99,7 +110,7 @@ export function classifyRouteOpsChanges(files, options = {}) {
     /^package(-lock)?\.json$/,
   ]);
 
-  const webArtifactRequired = apiChanged || force;
+  const webArtifactRequired = force || routeOpsUiApiChanged || (apiChanged && !routeGeometryOnlyApiChanged);
 
   const criticalChanged = any(files, [
     /^package(-lock)?\.json$/,
@@ -112,7 +123,7 @@ export function classifyRouteOpsChanges(files, options = {}) {
     /^apps\/delivery-api\/src\/modules\/(commerce|driver|route-plans|route-ops|geocoding)\//,
     /^apps\/delivery-api\/src\/modules\/shopify\/(auth\.dependencies|session-token-verifier)\.ts$/,
     /^apps\/delivery-api\/src\/modules\/wordpress-plugin\/wordpress-plugin-auth\.service\.ts$/,
-    /^apps\/delivery-api\/src\/scripts\/.*proof-media.*\.ts$/,
+    /^apps\/delivery-api\/src\/scripts\/(.*proof-media.*|refresh-route-geometry-cache)\.ts$/,
     /^apps\/delivery-api\/tests\/(admin-commerce-auth|admin-session-auth|admin-commerce-connections-ui\.routes|admin-route-plans\.routes|driver-auth\.(repository|routes)|driver\.dependencies|driver-route-access\.routes|driver-proof-media.*|driver-route-session\.(repository|routes)|geocoding\.service|osrm-route-geometry\.client|vroom-route-optimizer\.client|route-plan\.(repository|service)|route-scope-config|prisma-schema|shopify-auth\.(dependencies|routes)|shopify-session-token-verifier|wordpress-plugin-auth\.service)\.test\.ts$/,
     /^scripts\/ci\/route-ops-change-classifier\.mjs$/,
     /^tests\/ci\/route-ops-change-classifier\.test\.mjs$/,
@@ -127,6 +138,8 @@ export function classifyRouteOpsChanges(files, options = {}) {
     /^scripts\/ci\/route-ops-change-classifier\.mjs$/,
     /^tests\/ci\/route-ops-change-classifier\.test\.mjs$/,
   ]);
+
+  const api_test_profile = routeGeometryOnlyApiChanged ? 'route_geometry' : 'route_ops';
 
   const fullRequired = force || classifierChanged || any(files, [
     /^package(-lock)?\.json$/,
@@ -146,6 +159,7 @@ export function classifyRouteOpsChanges(files, options = {}) {
     critical_changed: criticalChanged,
     full_required: fullRequired,
     web_artifact_required: webArtifactRequired,
+    api_test_profile,
   };
 }
 
