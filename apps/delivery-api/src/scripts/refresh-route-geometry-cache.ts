@@ -57,7 +57,7 @@ async function main(): Promise<void> {
   const prisma = new PrismaClient();
 
   try {
-    const repository = new PrismaRoutePlanRepository(prisma);
+    const repository = new PrismaRoutePlanRepository(prisma, { allowAnyShopDomain: true });
     const before = await repository.findRoutePlanDetail({
       routePlanId: args.routePlanId,
       shopDomain: args.shopDomain
