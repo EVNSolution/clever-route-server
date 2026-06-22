@@ -264,7 +264,7 @@ describe('route ops layout components', () => {
     expect(html).not.toContain('Imported WooCommerce stops by current filters');
     expect(html).not.toContain('Order filters');
     expect(html).toContain('Delivery date');
-    expect(html).toContain('Weekday');
+    expect(html).not.toContain('Weekday');
     expect(html).toContain('Type');
     expect(html).toContain('Area / region');
     expect(html).not.toContain('Delivery status');
@@ -274,6 +274,7 @@ describe('route ops layout components', () => {
     expect(html).not.toContain('Clear filters');
     expect(html).toContain('Clear plan');
     expect(html).not.toContain('Search');
+    expect(html).not.toContain('Inventory summary');
   });
 
   test('Orders page does not prefill the delivery date filter', () => {
@@ -297,7 +298,7 @@ describe('route ops layout components', () => {
     expect(html).not.toContain('>리뷰 필요</button>');
     expect(html).not.toContain('주문 필터');
     expect(html).toContain('배송 날짜');
-    expect(html).toContain('요일');
+    expect(html).not.toContain('요일');
     expect(html).toContain('타입');
     expect(html).toContain('지역 / 구역');
     expect(html).not.toContain('배송 상태');
@@ -306,6 +307,7 @@ describe('route ops layout components', () => {
     expect(html).not.toContain('Orders mode');
     expect(html).not.toContain('Order filters');
     expect(html).not.toContain('Clear filters');
+    expect(html).not.toContain('품목 요약');
   });
 
   test('Orders CSS keeps the filter card responsive and prevents search overflow', () => {

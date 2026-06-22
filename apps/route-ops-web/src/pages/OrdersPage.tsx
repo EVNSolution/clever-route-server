@@ -47,13 +47,10 @@ import {
   selectOrdersForClientFilters,
   serializeDeliveryDateSet,
   storeSettingsToDepotPoint,
-  toggleWeekdayDeliveryDates,
-  weekdayForDeliveryDate,
   type OrderFacetedFilterKey,
   type OrderFilterOptionSets,
   type OrderFilterState,
   type OrderRouteTypeFilter,
-  type OrderWeekdayFilter,
   type OrderSourceValueOptions,
   type OrderWorksetContext,
 } from "../state";
@@ -663,10 +660,6 @@ export function OrdersPage({
             locale={locale}
             onChange={changeFilters}
           />
-          <OrderInventorySummary
-            locale={locale}
-            orders={visibleOrders}
-          />
           <OrderTable
             addPlanDisabled={selectedVisibleOrderIds.length === 0}
             customerNoteContextByOrder={customerNoteContextByOrder}
@@ -825,64 +818,6 @@ export function buildOrderInventoryRows(
     .sort((first, second) => first.product.localeCompare(second.product));
 }
 
-function OrderInventorySummary({
-  locale,
-  orders,
-}: {
-  locale?: string | null;
-  orders: CanonicalOrderDto[];
-}): ReactElement {
-  const t = getOrdersCopy(locale);
-  const rows = useMemo(() => buildOrderInventoryRows(orders), [orders]);
-  const printInventory = (): void => {
-    if (typeof window !== "undefined") window.print();
-  };
-  return (
-    <article
-      className="panel orders-inventory-panel"
-      aria-label={t.inventoryTitle}
-    >
-      <div className="panel-heading compact-heading orders-inventory-heading">
-        <div>
-          <h2>{t.inventoryTitle}</h2>
-        </div>
-        <div className="orders-inventory-actions">
-          <Badge>
-            {rows.length} {t.item}
-          </Badge>
-          <button type="button" onClick={printInventory}>
-            {t.inventoryPrint}
-          </button>
-        </div>
-      </div>
-      {rows.length === 0 ? (
-        <p className="order-detail-items-empty">{t.inventoryEmpty}</p>
-      ) : (
-        <div className="orders-inventory-table-scroll">
-          <table className="orders-inventory-table">
-            <thead>
-              <tr>
-                <th>{t.quantity}</th>
-                <th>{t.item}</th>
-                <th>{t.inventoryOrders}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={`${row.product}:${row.orderRefs.join("|")}`}>
-                  <td>{row.quantity}</td>
-                  <td>{row.product}</td>
-                  <td>{row.orderRefs.join(" ")}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </article>
-  );
-}
-
 function formatInventoryOrderRef(order: CanonicalOrderDto): string {
   const source = order.sourceOrderNumber ?? order.orderName;
   return source.startsWith('#') ? source : `#${source}`;
@@ -900,14 +835,6 @@ function FilterBar({
   onChange(field: OrderFacetedFilterKey, filters: OrderFilterState): void;
 }): ReactElement {
   const t = getOrdersCopy(locale);
-  const weekdays = getWeekdayFilterOptions(locale).filter(
-    (
-      option,
-    ): option is {
-      label: string;
-      value: OrderWeekdayFilter;
-    } => option.value !== "" && filterOptions.weekdays.includes(option.value),
-  );
   const routeTypes = buildActualTypeFilterOptions(
     filterOptions.routeTypes,
     locale,
@@ -928,21 +855,6 @@ function FilterBar({
           ...routeTypes,
         ]
       : routeTypes;
-  const selectedWeekdays = new Set(readSelectedWeekdays(filters));
-  const toggleWeekday = (weekday: OrderWeekdayFilter): void => {
-    onChange("deliveryDates", {
-      ...filters,
-      deliveryDate: "",
-      deliveryDates: toggleWeekdayDeliveryDates({
-        availableDates: filterOptions.deliveryDates,
-        currentDeliveryDates: serializeDeliveryDateSet(
-          readSelectedDeliveryDates(filters),
-        ),
-        weekday,
-      }),
-      weekday: "",
-    });
-  };
   return (
     <article className="panel filter-panel">
       <label className="filter-field filter-field--date">
@@ -962,51 +874,16 @@ function FilterBar({
           <OrderDatePicker
             enabledDates={filterOptions.deliveryDates}
             locale={locale}
-            onToggle={(deliveryDate) =>
+            onSelectDates={(deliveryDates) =>
               onChange("deliveryDates", {
                 ...filters,
                 deliveryDate: "",
-                deliveryDates: toggleDeliveryDate(
-                  filters.deliveryDates,
-                  deliveryDate,
-                ),
+                deliveryDates: serializeDeliveryDateSet(deliveryDates),
+                weekday: "",
               })
             }
             selectedDates={readSelectedDeliveryDates(filters)}
           />
-        </FilterValueControl>
-      </label>
-      <label className="filter-field filter-field--weekday">
-        {t.weekday}
-        <FilterValueControl
-          active={selectedWeekdays.size > 0}
-          clearLabel={t.clearFilter(t.weekday)}
-          onClear={() =>
-            onChange("deliveryDates", {
-              ...filters,
-              deliveryDate: "",
-              deliveryDates: "",
-              weekday: "",
-            })
-          }
-        >
-          <span
-            aria-label={t.weekday}
-            className="weekday-toggle-group"
-            role="group"
-          >
-            {weekdays.map((option) => (
-              <button
-                aria-pressed={selectedWeekdays.has(option.value)}
-                className={selectedWeekdays.has(option.value) ? "is-active" : ""}
-                key={option.value}
-                onClick={() => toggleWeekday(option.value)}
-                type="button"
-              >
-                {option.label}
-              </button>
-            ))}
-          </span>
         </FilterValueControl>
       </label>
       <label className="filter-field filter-field--type">
@@ -1088,12 +965,12 @@ function areOrderFiltersEqual(
 function OrderDatePicker({
   enabledDates,
   locale,
-  onToggle,
+  onSelectDates,
   selectedDates,
 }: {
   enabledDates: string[];
   locale?: string | null;
-  onToggle(date: string): void;
+  onSelectDates(dates: string[]): void;
   selectedDates: string[];
 }): ReactElement {
   const t = getOrdersCopy(locale);
@@ -1102,6 +979,7 @@ function OrderDatePicker({
   const [visibleMonth, setVisibleMonth] = useState(() =>
     monthKey(initialMonth),
   );
+  const [rangeStart, setRangeStart] = useState<string | null>(null);
   const enabled = useMemo(() => new Set(enabledDates), [enabledDates]);
   const selected = useMemo(() => new Set(selectedDates), [selectedDates]);
   useEffect(() => {
@@ -1109,6 +987,9 @@ function OrderDatePicker({
       setVisibleMonth(monthKey(selectedDates[0]));
     }
   }, [selectedDates]);
+  useEffect(() => {
+    if (!open) setRangeStart(null);
+  }, [open]);
   const days = useMemo(() => buildCalendarDays(visibleMonth), [visibleMonth]);
   const selectedLabel = formatSelectedDateSetLabel(
     selectedDates,
@@ -1168,7 +1049,13 @@ function OrderDatePicker({
                   key={`${day.date ?? "blank"}-${day.index}`}
                   onClick={() => {
                     if (day.date === null) return;
-                    onToggle(day.date);
+                    if (rangeStart === null) {
+                      setRangeStart(day.date);
+                      onSelectDates([day.date]);
+                      return;
+                    }
+                    onSelectDates(buildDateRange(rangeStart, day.date));
+                    setRangeStart(null);
                   }}
                   type="button"
                 >
@@ -1189,23 +1076,17 @@ function readSelectedDeliveryDates(filters: OrderFilterState): string[] {
   return filters.deliveryDate === "" ? [] : [filters.deliveryDate];
 }
 
-function readSelectedWeekdays(filters: OrderFilterState): OrderWeekdayFilter[] {
-  const weekdays = new Set<OrderWeekdayFilter>();
-  for (const deliveryDate of readSelectedDeliveryDates(filters)) {
-    const weekday = weekdayForDeliveryDate(deliveryDate);
-    if (weekday !== null) weekdays.add(weekday);
+function buildDateRange(start: string, end: string): string[] {
+  const startTime = Date.parse(`${start}T00:00:00Z`);
+  const endTime = Date.parse(`${end}T00:00:00Z`);
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime)) return [end];
+  const first = Math.min(startTime, endTime);
+  const last = Math.max(startTime, endTime);
+  const dates: string[] = [];
+  for (let time = first; time <= last; time += 86_400_000) {
+    dates.push(new Date(time).toISOString().slice(0, 10));
   }
-  if (weekdays.size === 0 && filters.weekday !== "") {
-    weekdays.add(filters.weekday);
-  }
-  return [...weekdays];
-}
-
-function toggleDeliveryDate(current: string, date: string): string {
-  const selected = new Set(parseDeliveryDateSet(current));
-  if (selected.has(date)) selected.delete(date);
-  else selected.add(date);
-  return serializeDeliveryDateSet([...selected]);
+  return dates;
 }
 
 function formatSelectedDateSetLabel(
