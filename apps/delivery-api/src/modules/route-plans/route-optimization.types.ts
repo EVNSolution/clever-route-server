@@ -18,7 +18,7 @@ export type RouteOptimizationFailureCode =
   | 'invalid_engine_payload'
   | 'invalid_input'
   | 'network_error'
-  | 'route_engine_unavailable'
+  | 'optimizer_unavailable'
   | 'solver_timeout';
 
 export type RouteOptimizationFailure = {

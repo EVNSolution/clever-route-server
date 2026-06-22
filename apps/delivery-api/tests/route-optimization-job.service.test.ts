@@ -57,7 +57,7 @@ describe('RouteOptimizationJobService', () => {
         failure: {
           code: 'solver_timeout',
           elapsedMs: 30001,
-          message: 'route_engine request timed out.'
+          message: 'VROOM request timed out.'
         },
         ok: false
       }
@@ -66,7 +66,7 @@ describe('RouteOptimizationJobService', () => {
     expect(markTimedOut).toHaveBeenCalledWith({
       elapsedMs: 30001,
       errorCode: 'solver_timeout',
-      errorMessage: 'route_engine request timed out.',
+      errorMessage: 'VROOM request timed out.',
       jobId: 'job-id'
     });
     expect(markFailed).not.toHaveBeenCalled();
@@ -83,7 +83,7 @@ describe('RouteOptimizationJobService', () => {
           code: 'graph_not_ready',
           elapsedMs: 12,
           httpStatus: 503,
-          message: 'route_engine responded with HTTP 503.'
+          message: 'VROOM responded with HTTP 503.'
         },
         ok: false
       }
@@ -92,7 +92,7 @@ describe('RouteOptimizationJobService', () => {
     expect(markFailed).toHaveBeenCalledWith({
       elapsedMs: 12,
       errorCode: 'graph_not_ready',
-      errorMessage: 'route_engine responded with HTTP 503.',
+      errorMessage: 'VROOM responded with HTTP 503.',
       jobId: 'job-id'
     });
   });

@@ -4982,7 +4982,7 @@ describe("Admin WooCommerce connection UI routes", () => {
         expect(call?.jobId).toBe("job-id");
         expect(call?.outcome.ok).toBe(false);
         if (call?.outcome.ok === false) {
-          expect(call.outcome.failure.code).toBe("route_engine_unavailable");
+          expect(call.outcome.failure.code).toBe("optimizer_unavailable");
         }
       });
       expect(updateRoutePlanStops).not.toHaveBeenCalled();
@@ -5161,7 +5161,7 @@ describe("Admin WooCommerce connection UI routes", () => {
         expect(call?.jobId).toBe("job-id");
         expect(call?.outcome.ok).toBe(false);
         if (call?.outcome.ok === false) {
-          expect(call.outcome.failure.code).toBe("route_engine_unavailable");
+          expect(call.outcome.failure.code).toBe("optimizer_unavailable");
           expect(call.outcome.failure.message).toContain(
             "Route optimization failed unexpectedly",
           );

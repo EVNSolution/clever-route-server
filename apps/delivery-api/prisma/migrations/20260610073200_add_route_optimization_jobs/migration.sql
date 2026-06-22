@@ -1,4 +1,4 @@
--- Persist server-owned route optimization jobs for Route Ops route_engine UX.
+-- Persist server-owned route optimization jobs for Route Ops optimization UX.
 
 DO $$
 BEGIN

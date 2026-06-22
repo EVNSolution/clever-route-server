@@ -313,7 +313,7 @@ function isAbortError(error: unknown): boolean {
 function classifyHttpFailure(status: number): RouteOptimizationFailureCode {
   if (status === 400 || status === 422) return 'invalid_input';
   if (status === 408 || status === 504) return 'solver_timeout';
-  return 'route_engine_unavailable';
+  return 'optimizer_unavailable';
 }
 
 function describeHttpFailure(status: number, payload: unknown): string {

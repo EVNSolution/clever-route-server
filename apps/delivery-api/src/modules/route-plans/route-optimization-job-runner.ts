@@ -73,7 +73,7 @@ export async function runRouteOptimizationJob(
     });
   } catch (error) {
     outcome = routeOptimizationFailureOutcome({
-      code: 'route_engine_unavailable',
+      code: 'optimizer_unavailable',
       elapsedMs: elapsedSince(startedAt),
       message: `Route optimization failed unexpectedly: ${sanitizeError(error)}`,
     });
@@ -180,7 +180,7 @@ async function runRouteOptimizationEngine(input: {
 }): Promise<RouteOptimizationOutcome> {
   if (input.routeOptimizationService === undefined) {
     return routeOptimizationFailureOutcome({
-      code: 'route_engine_unavailable',
+      code: 'optimizer_unavailable',
       elapsedMs: elapsedSince(input.startedAt),
       message: 'Route optimization service is not configured.',
     });
