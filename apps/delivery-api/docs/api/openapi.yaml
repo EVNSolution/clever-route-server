@@ -385,12 +385,10 @@ paths:
       operationId: optimizeRouteOpsRoutePlan
       x-source-file: src/routes/admin-commerce-connections-ui.routes.ts
       description: >-
-        Uses route_engine `/v1/solve` first when ROUTE_ENGINE_BASE_URL and
-        ROUTE_ENGINE_INTERNAL_TOKEN are configured. If route_engine is disabled,
+        Uses self-hosted VROOM when VROOM_BASE_URL is configured. If VROOM is disabled,
         unavailable, rejects the request, or cannot accept the current route
         shape, delivery-api falls back to the existing CLEVER v1 nearest-neighbor
         heuristic and still saves a sequence through the route plan service.
-        delivery-api never calls route_engine when ROUTE_ENGINE_BASE_URL is blank.
       responses:
         '200':
           description: Optimized route plan detail after the stop sequence has been saved.

@@ -104,7 +104,6 @@ const allowedExact = new Set([
   'apps/delivery-api/src/app.ts',
   'apps/delivery-api/docs/admin-ui-monolith-slice0-inventory.md',
   'apps/delivery-api/docs/api/driver-proof-media.md',
-  'apps/delivery-api/docs/api/route-engine-integration.md',
   'apps/delivery-api/docs/deployment/ec2-ebs.md',
   'apps/delivery-api/scripts/guard-prisma-db-push.sh',
   'apps/delivery-api/src/modules/commerce/admin-commerce-auth.ts',
@@ -128,7 +127,6 @@ const allowedExact = new Set([
   'apps/delivery-api/src/modules/route-plans/route-plan.repository.ts',
   'apps/delivery-api/src/modules/route-plans/route-plan.service.ts',
   'apps/delivery-api/src/modules/route-plans/route-plan.types.ts',
-  'apps/delivery-api/src/modules/route-plans/route-engine-route-optimizer.client.ts',
   'apps/delivery-api/src/modules/route-plans/route-optimization-job-runner.ts',
   'apps/delivery-api/src/modules/route-plans/route-optimization-job.repository.ts',
   'apps/delivery-api/src/modules/route-plans/route-optimization-job.service.ts',
@@ -171,7 +169,6 @@ const allowedExact = new Set([
   'apps/delivery-api/tests/driver-token-verifier.test.ts',
   'apps/delivery-api/tests/route-plan.repository.test.ts',
   'apps/delivery-api/tests/route-plan.service.test.ts',
-  'apps/delivery-api/tests/route-engine-route-optimizer.client.test.ts',
   'apps/delivery-api/tests/route-optimization-job.repository.test.ts',
   'apps/delivery-api/tests/route-optimization-job.service.test.ts',
   'scripts/guard-route-ops-deploy-scope.mjs',
@@ -200,7 +197,6 @@ const allowedPrefixes = [
 ];
 
 const allowedRemovedExact = new Set([
-  'scripts/provision-route-engine-graph-from-s3.sh',
   'infra/env/deploy-image.env.example',
   'infra/ssm/route-ops-deploy-document.json',
 ]);

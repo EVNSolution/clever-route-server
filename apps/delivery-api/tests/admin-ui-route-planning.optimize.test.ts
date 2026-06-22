@@ -3,7 +3,7 @@ import { describe, expect, test } from 'vitest';
 import { buildRouteOptimizeNotice } from '../src/routes/admin-ui-route-planning.js';
 
 describe('buildRouteOptimizeNotice', () => {
-  test('labels VROOM optimizer results distinctly from legacy route_engine and clever fallback', () => {
+  test('labels VROOM optimizer results distinctly from clever fallback', () => {
     expect(
       buildRouteOptimizeNotice({
         missingCoordinateStops: 0,

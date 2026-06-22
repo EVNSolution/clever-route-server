@@ -42,7 +42,7 @@ import {
 import type {
   RouteOptimizationService,
   RouteOptimizationStopSequence,
-} from "../modules/route-plans/route-engine-route-optimizer.client.js";
+} from "../modules/route-plans/route-optimization.types.js";
 const ADMIN_UI_APP_ROUTE_PLANS_PATH = "/admin/ui/app/routes";
 
 type RoutePlanningDependencies = {
@@ -1544,7 +1544,7 @@ export function readStopOrderLines(
 
 export type OptimizedStopOrder = {
   missingCoordinateStops: number;
-  source: "clever_v1" | "route_engine" | "vroom";
+  source: "clever_v1" | "vroom";
   stops: RouteOptimizationStopSequence[];
 };
 
@@ -1646,12 +1646,7 @@ export function buildCleverV1OptimizedStopOrder(
 export function buildRouteOptimizeNotice(
   optimized: OptimizedStopOrder,
 ): string {
-  const sourceLabel =
-    optimized.source === "route_engine"
-      ? "Route Engine"
-      : optimized.source === "vroom"
-        ? "VROOM"
-        : "CLEVER v1";
+  const sourceLabel = optimized.source === "vroom" ? "VROOM" : "CLEVER v1";
   return optimized.missingCoordinateStops === 0
     ? `${sourceLabel} optimized sequence saved.`
     : `${sourceLabel} optimized sequence saved; ${optimized.missingCoordinateStops} stop(s) without coordinates stayed at the end.`;

@@ -5,7 +5,7 @@ import type {
   RouteOptimizationOutcome,
   RouteOptimizationService,
   RouteOptimizationStopSequence
-} from '../route-plans/route-engine-route-optimizer.client.js';
+} from '../route-plans/route-optimization.types.js';
 import { computeRouteShapeSignature, routeGeometryCacheCreateData } from '../route-plans/route-plan-geometry-cache.js';
 import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanRouteResult } from '../route-plans/route-plan.types.js';

@@ -236,7 +236,6 @@ updates = {
     'VROOM_BASE_URL': 'http://vroom:3000',
     'VROOM_TIMEOUT_MS': '180000',
     'ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS': '180000',
-    'ROUTE_ENGINE_BASE_URL': '',
     'OSRM_BASE_URL': 'http://osrm-ontario:5000',
     'OSRM_TIMEOUT_MS': '10000',
 }
@@ -277,7 +276,6 @@ else
   docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up --no-build --force-recreate route-ops-web-static
 fi
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --no-deps --force-recreate delivery-api
-docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile route-engine stop route-engine || true
 for attempt in $(seq 1 30); do
   if curl -fsS "$BASE_URL/healthz"; then break; fi
   if [ "$attempt" = "30" ]; then rollback_delivery_api || true; exit 1; fi

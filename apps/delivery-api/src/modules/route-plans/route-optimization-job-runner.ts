@@ -2,7 +2,7 @@ import type {
   RouteOptimizationOutcome,
   RouteOptimizationFailureCode,
   RouteOptimizationService,
-} from './route-engine-route-optimizer.client.js';
+} from './route-optimization.types.js';
 import type { RouteOptimizationJobService } from './route-optimization-job.service.js';
 import type { RouteOptimizationJobDto } from './route-optimization-job.types.js';
 import type { RoutePlanDetail, RoutePlanService } from './route-plan.types.js';

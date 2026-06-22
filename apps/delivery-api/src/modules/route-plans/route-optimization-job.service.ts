@@ -1,4 +1,4 @@
-import type { RouteOptimizationOutcome } from './route-engine-route-optimizer.client.js';
+import type { RouteOptimizationOutcome } from './route-optimization.types.js';
 import type {
   CreateRouteOptimizationJobInput,
   FindLatestRouteOptimizationJobInput,

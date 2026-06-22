@@ -10,7 +10,7 @@ EC2 image builds, separate migrate images, and `prod-prev` retag/push backups.
 - Host app path: `/srv/clever-route-server`.
 - The host is **not** a git checkout and cannot fetch the private GitHub repo directly.
 - The host has `docker`, `aws`, and `python3`; it does not need host `node` or `npm`.
-- Optimizer lane is `delivery-api -> vroom -> osrm-ontario`; `route-engine` remains stopped.
+- Optimizer lane is `delivery-api -> vroom -> osrm-ontario`; no route-engine profile is deployed.
 - Local proof media storage must be bootstrapped before compose restart:
   `/srv/clever-route-server/data/driver-proof-media`, owner `100:101`, mode `750`.
 
@@ -49,7 +49,7 @@ The EC2 host does not build. A real deploy does this in order:
 3. Writes `.deploy/simple-candidate-image.env` with digest-addressable image refs.
 4. Copies existing `.deploy/current-image.env` to `.deploy/simple-rollback-image.env`.
 5. Validates compose config with `--profile osrm --profile vroom`.
-6. Rewrites optimizer env to VROOM/OSRM and blanks `ROUTE_ENGINE_BASE_URL`.
+6. Rewrites optimizer env to VROOM/OSRM.
 7. Bootstraps proof-media directory owner/mode.
 8. Reloads Caddy in place so the retry policy is active before `delivery-api` is recreated.
 9. Logs into GHCR using SSM parameters only on the host.
@@ -58,9 +58,8 @@ The EC2 host does not build. A real deploy does this in order:
 12. Compares candidate and current `ROUTE_OPS_WEB_STATIC_IMAGE` digest refs.
 13. Stages the static volume via `route-ops-web-static` when the static digest changed, the current ref is missing, either ref is a mutable tag/non-digest ref, or `ROUTE_OPS_FORCE_STATIC_RESTAGE=1` is set.
 14. Recreates `delivery-api` only with `up -d --no-build --no-deps --force-recreate`.
-15. Stops legacy `route-engine` profile if present.
-16. Verifies public `/healthz`.
-17. Backs up `.deploy/current-image.env`, promotes the candidate env, and appends deploy history including `staticStage`.
+15. Verifies public `/healthz`.
+16. Backs up `.deploy/current-image.env`, promotes the candidate env, and appends deploy history including `staticStage`.
 
 ## Commands
 

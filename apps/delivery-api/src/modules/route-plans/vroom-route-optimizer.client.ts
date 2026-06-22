@@ -6,7 +6,7 @@ import type {
   RouteOptimizationOutcome,
   RouteOptimizationResult,
   RouteOptimizationService,
-} from './route-engine-route-optimizer.client.js';
+} from './route-optimization.types.js';
 
 type FetchLike = (
   url: string,

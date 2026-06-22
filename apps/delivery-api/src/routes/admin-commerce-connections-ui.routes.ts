@@ -37,7 +37,7 @@ import {
   RoutePlanStopUpdateInvalidError,
   type RoutePlanService,
 } from "../modules/route-plans/route-plan.types.js";
-import type { RouteOptimizationService } from "../modules/route-plans/route-engine-route-optimizer.client.js";
+import type { RouteOptimizationService } from "../modules/route-plans/route-optimization.types.js";
 import {
   RouteOptimizationJobActiveError,
   type RouteOptimizationJobDto,

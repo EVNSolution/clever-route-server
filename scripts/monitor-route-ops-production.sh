@@ -96,7 +96,7 @@ echo "SECTION=local_delivery_health"
 docker exec clever-route-delivery-api-1 node -e "fetch('http://127.0.0.1:3000/healthz').then(async r=>{console.log(r.status, await r.text())}).catch(e=>{console.error(e.message); process.exit(1)})"
 
 echo "SECTION=recent_error_signals"
-for c in clever-route-delivery-api-1 clever-route-caddy-1 clever-route-route-engine-1 clever-route-postgres-1 clever-route-osrm-ontario-1; do
+for c in clever-route-delivery-api-1 clever-route-caddy-1 clever-route-postgres-1 clever-route-osrm-ontario-1; do
   if docker inspect "$c" >/dev/null 2>&1; then
     echo "--- $c"
     docker logs --since "${ROUTE_OPS_MONITOR_LOG_SINCE}" --tail 250 "$c" 2>&1 \

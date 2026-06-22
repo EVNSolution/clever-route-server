@@ -1,5 +1,5 @@
 import type { Prisma } from '@prisma/client';
-import type { RouteOptimizationResult } from './route-engine-route-optimizer.client.js';
+import type { RouteOptimizationResult } from './route-optimization.types.js';
 
 export type RouteOptimizationJobStatus = 'QUEUED' | 'RUNNING' | 'APPLIED' | 'TIMEOUT' | 'FAILED' | 'CANCELLED';
 

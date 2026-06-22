@@ -1,8 +1,6 @@
 # Route Ops VROOM runbook
 
-Purpose: replace the custom `route_engine` optimization lane with a standard
-self-hosted VROOM service while keeping OSRM as the internal road-network
-routing/matrix provider.
+Purpose: document the current self-hosted VROOM service with OSRM as the internal road-network routing/matrix provider.
 
 ## Safety boundaries
 
@@ -10,8 +8,6 @@ routing/matrix provider.
   groups.
 - OSRM remains the routing provider. VROOM is the VRP solver.
 - Normal server deploys must not require VROOM unless `VROOM_BASE_URL` is set.
-- Do not remove the legacy `route_engine` fallback until VROOM has passed local
-  PoC, deploy smoke, and an approved production cutover.
 - Do not run GitHub Actions or mutate production unless explicitly requested.
 
 ## Selected runtime contract
@@ -78,15 +74,12 @@ On the production host, capture the current optimizer env before changing it:
 cd /srv/clever-route-server
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
 cp infra/env/delivery-api.env ".deploy/delivery-api.env.before-vroom-${ts}"
-grep -E '^(VROOM_BASE_URL|VROOM_TIMEOUT_MS|ROUTE_ENGINE_BASE_URL|ROUTE_ENGINE_TIMEOUT_MS|ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS|OSRM_BASE_URL|OSRM_TIMEOUT_MS)=' infra/env/delivery-api.env || true
+grep -E '^(VROOM_BASE_URL|VROOM_TIMEOUT_MS|ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS|OSRM_BASE_URL|OSRM_TIMEOUT_MS)=' infra/env/delivery-api.env || true
 ```
 
 Required preflight state:
 
-- `VROOM_BASE_URL` and `ROUTE_ENGINE_BASE_URL` must not both be set.
 - VROOM requires `OSRM_BASE_URL=http://osrm-ontario:5000`.
-- If `ROUTE_ENGINE_BASE_URL` is still set, stop and decide whether this is a
-  deliberate legacy rollback lane. The VROOM cutover must clear it.
 - `docker compose -p clever-route --env-file .deploy/current-image.env -f infra/compose/docker-compose.prod.yml --profile osrm --profile vroom config --quiet`
   must pass before deploy.
 - Production VROOM must remain internal-only: no Caddy route, no host port, no
@@ -100,13 +93,9 @@ Update only these optimizer keys in `infra/env/delivery-api.env`:
 VROOM_BASE_URL=http://vroom:3000
 VROOM_TIMEOUT_MS=180000
 ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS=180000
-ROUTE_ENGINE_BASE_URL=
 OSRM_BASE_URL=http://osrm-ontario:5000
 OSRM_TIMEOUT_MS=10000
 ```
-
-Keep `ROUTE_ENGINE_IMAGE` out of the normal deploy environment. It is required
-only if the host env deliberately re-enables `ROUTE_ENGINE_BASE_URL`.
 
 ### 3. Deploy with the simple SSM lane
 
@@ -119,7 +108,7 @@ scripts/ssm-simple-route-ops-deploy.sh --publish
 When `--publish` is used as a manual fallback, it builds/pushes the channel images,
 then the SSM phase pulls them on the EC2 host, runs the Prisma guard, stages static
 assets conservatively for mutable tag refs, recreates `delivery-api` only, reloads Caddy
-in place, and keeps legacy route_engine stopped. The normal GitHub Actions lane passes
+in place. The normal GitHub Actions lane passes
 digest-addressable refs; only equal digest refs are eligible for static staging skip.
 
 ### 4. Post-cutover verification
@@ -134,8 +123,7 @@ Then verify one real Route Ops optimization from the admin UI:
 
 - route optimization reaches `Completed`, not timeout or `HTTP 422`;
 - the route receives ordered stops;
-- deploy trace contains VROOM smoke success and no route_engine smoke unless
-  `ROUTE_ENGINE_BASE_URL` was intentionally set.
+- deploy trace contains VROOM smoke success.
 
 ### 5. Rollback
 
@@ -144,17 +132,6 @@ Current rollback is file/digest based. Restore or point compose at the previous
 static image, and recreate `delivery-api` with `--no-deps` as described in
 `docs/deployment/route-ops-simple-ssm-deploy.md`. Do not retag `:prod` as rollback state.
 
-Legacy route_engine rollback is compatibility-only:
-
-```env
-VROOM_BASE_URL=
-ROUTE_ENGINE_BASE_URL=http://route-engine:8080
-```
-
-and requires an explicit reviewed
-`ROUTE_ENGINE_IMAGE=ghcr.io/evnsolution/route-engine-worker:<40-hex-sha>` export.
-The deploy path no longer supplies a default route_engine image or auto-enables
-route_engine.
 
 ## Local PoC evidence
 

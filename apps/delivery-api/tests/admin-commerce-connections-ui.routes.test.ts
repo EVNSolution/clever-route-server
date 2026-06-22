@@ -233,43 +233,7 @@ describe("Admin WooCommerce connection UI routes", () => {
     ).toThrow("DRIVER_APP_DOWNLOAD_URL must be an http(s) URL");
   });
 
-  test("enables route_engine optimization only with base URL and internal token", () => {
-    const base = createBaseAdminCommerceDependencies();
-
-    expect(() =>
-      loadAdminCommerceConnectionsUiDependencies({
-        adminCommerceConnections: base.dependencies,
-        env: {
-          CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
-          CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
-          DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
-          ROUTE_ENGINE_BASE_URL: "http://route-engine:8080",
-        },
-        nodeEnv: "production",
-      }),
-    ).toThrow(
-      "ROUTE_ENGINE_INTERNAL_TOKEN is required when ROUTE_ENGINE_BASE_URL is set",
-    );
-
-    const dependencies = loadAdminCommerceConnectionsUiDependencies({
-      adminCommerceConnections: base.dependencies,
-      env: {
-        CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
-        CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
-        DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
-        ROUTE_ENGINE_BASE_URL: "http://route-engine:8080",
-        ROUTE_ENGINE_INTERNAL_TOKEN: "internal-token",
-        ROUTE_ENGINE_MODE: "road_graph",
-        ROUTE_ENGINE_OBJECTIVE: "minimize_duration",
-        ROUTE_ENGINE_TIMEOUT_MS: "5000",
-      },
-      nodeEnv: "production",
-    });
-
-    expect(dependencies?.routeOptimizationService).toBeDefined();
-  });
-
-  test("enables VROOM optimization with base URL and rejects mixed optimizer configuration", () => {
+  test("enables VROOM optimization with base URL", () => {
     const base = createBaseAdminCommerceDependencies();
 
     const dependencies = loadAdminCommerceConnectionsUiDependencies({
@@ -285,20 +249,6 @@ describe("Admin WooCommerce connection UI routes", () => {
     });
 
     expect(dependencies?.routeOptimizationService).toBeDefined();
-    expect(() =>
-      loadAdminCommerceConnectionsUiDependencies({
-        adminCommerceConnections: base.dependencies,
-        env: {
-          CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
-          CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
-          DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
-          ROUTE_ENGINE_BASE_URL: "http://route-engine:8080",
-          ROUTE_ENGINE_INTERNAL_TOKEN: "internal-token",
-          VROOM_BASE_URL: "http://vroom:3000",
-        },
-        nodeEnv: "production",
-      }),
-    ).toThrow("VROOM_BASE_URL and ROUTE_ENGINE_BASE_URL cannot both be set");
   });
 
   test("uses Woo-compatible Route Ops repositories even when legacy Shopify admin dependencies are configured", async () => {
@@ -5156,7 +5106,7 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
-  test("records thrown route_engine optimizer errors as failed jobs", async () => {
+  test("records thrown optimizer errors as failed jobs", async () => {
     const detail = routePlanDetail();
     const getRoutePlanDetail = vi.fn<
       NonNullable<

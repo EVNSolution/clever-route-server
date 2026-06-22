@@ -35,7 +35,7 @@ describe('RouteOptimizationJobService', () => {
         ok: true,
         result: {
           missingCoordinateStops: 0,
-          source: 'route_engine',
+          source: 'vroom',
           stops: [{ deliveryStopId: 'stop-2', sequence: 1, shopifyOrderGid: 'gid://woocommerce/Order/2' }]
         }
       }
