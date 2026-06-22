@@ -363,18 +363,11 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       const hasDriverPayload = Object.hasOwn(input.payload, 'driverId');
       const nextDriverId = hasDriverPayload ? input.payload.driverId ?? null : null;
       const hasDriverChange = hasDriverPayload && initialDriverId !== nextDriverId;
-      const effectiveDriverId = hasDriverPayload ? nextDriverId : initialDriverId;
-      const effectiveStopCount = hasStopSequenceChange && normalizedStops !== undefined
-        ? normalizedStops.length
-        : initialStopCount;
-      const shouldPublishOnSave =
-        initialRouteStatus === 'DRAFT' && effectiveDriverId !== null && effectiveStopCount > 0;
       const hasRouteMutation =
         willRepairDraftDepot ||
         hasRouteEndModeChange ||
         hasStopSequenceChange ||
-        hasDriverChange ||
-        shouldPublishOnSave;
+        hasDriverChange;
 
       if (input.payload.expectedUpdatedAt !== undefined && hasRouteMutation) {
         const claimed = await tx.routePlan.updateMany({
@@ -584,28 +577,11 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         operations.push({ name: 'driver', reason: 'not_provided', status: 'skipped' });
       }
 
-      if (routeStatus === 'DRAFT' && driverId !== null && stopCount > 0) {
-        const currentItemFingerprint =
-          readString(objectOrNull(latestMetrics)?.itemFingerprint) ??
-          aggregateOrderItems(routeItemDtosFromRouteStops(routePlan.routeStops ?? [])).fingerprint;
-        await tx.routePlan.update({
-          data: {
-            metrics: toJson({
-              ...objectOrEmpty(latestMetrics),
-              itemFingerprint: currentItemFingerprint
-            }),
-            status: 'ASSIGNED'
-          },
-          where: { id: routePlan.id }
-        });
-        operations.push({ name: 'publish', reason: 'draft_ready_for_driver', status: 'applied' });
-      } else {
-        operations.push({
-          name: 'publish',
-          reason: publishSkipReasonFromState(routeStatus, driverId, stopCount),
-          status: 'skipped'
-        });
-      }
+      operations.push({
+        name: 'publish',
+        reason: publishSkipReasonFromState(routeStatus, driverId, stopCount),
+        status: 'skipped'
+      });
 
       const updatedRoutePlan = (await tx.routePlan.findFirst({
         include: routePlanInclude(),
@@ -1363,7 +1339,7 @@ function publishSkipReasonFromState(status: string, driverId: string | null, sto
   if (status !== 'DRAFT') return `status_${status.toLowerCase()}`;
   if (driverId === null) return 'missing_driver';
   if (stopCount === 0) return 'missing_stops';
-  return 'not_eligible';
+  return 'explicit_publish_required';
 }
 
 function routePlanStopCount(routePlan: RoutePlanRecord): number {

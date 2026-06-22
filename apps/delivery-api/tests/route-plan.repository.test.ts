@@ -972,7 +972,7 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
-  test('aggregate save applies changed fields and draft publish inside one repository transaction', async () => {
+  test('aggregate save applies changed fields but keeps draft routes unpublished', async () => {
     const firstDuplicateItem = orderItemRecord({ quantity: 1 });
     const secondDuplicateItem = orderItemRecord({ quantity: 2 });
     const duplicateItems = [firstDuplicateItem, secondDuplicateItem];
@@ -1010,7 +1010,7 @@ describe('PrismaRoutePlanRepository', () => {
         stopsCount: 2
       },
       routeStops: [],
-      status: 'ASSIGNED',
+      status: 'DRAFT',
       updatedAt: new Date('2026-05-07T12:31:00.000Z')
     });
     prisma.routePlan.findFirst
@@ -1036,12 +1036,12 @@ describe('PrismaRoutePlanRepository', () => {
 
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expectRoutePlanVersionClaim(prisma, '2026-05-07T12:30:00.000Z');
-    expect(result?.detail.routePlan.status).toBe('ASSIGNED');
+    expect(result?.detail.routePlan.status).toBe('DRAFT');
     expect(result?.operations).toEqual([
       { name: 'options', reason: 'route_end_mode_changed', status: 'applied' },
       { name: 'stops', reason: 'sequence_changed', status: 'applied' },
       { name: 'driver', reason: 'driver_changed', status: 'applied' },
-      { name: 'publish', reason: 'draft_ready_for_driver', status: 'applied' }
+      { name: 'publish', reason: 'explicit_publish_required', status: 'skipped' }
     ]);
     expect(routePlanStopCreateMany).toHaveBeenCalledWith({
       data: [
@@ -1053,10 +1053,7 @@ describe('PrismaRoutePlanRepository', () => {
       data: { driverId: 'driver-id' },
       where: { id: 'route-plan-id' }
     }));
-    expect(hasRouteStatusUpdate(prisma.routePlan.update.mock.calls, 'route-plan-id', 'ASSIGNED')).toBe(true);
-    expect(findRouteStatusUpdate(prisma, 'ASSIGNED')?.data.metrics.itemFingerprint).toBe(
-      aggregateOrderItems(duplicateItems).fingerprint
-    );
+    expect(hasRouteStatusUpdate(prisma.routePlan.update.mock.calls, 'route-plan-id', 'ASSIGNED')).toBe(false);
   });
 
   test('aggregate save applies route options after publishing without republishing', async () => {

@@ -629,21 +629,13 @@ export function RouteBuilder(input: {
   const publishBadge = getRoutePublishBadge(effectiveRoutePlan, locale);
   const isDriverVisible =
     effectiveRoutePlan !== null && effectiveRoutePlan.status !== "DRAFT";
-  const canPublishOnSave =
-    effectiveRoutePlan !== null &&
-    effectiveRoutePlan.status === "DRAFT" &&
-    effectiveRoutePlan.driverId !== null &&
-    effectiveRoutePlan.stopsCount > 0;
   const hasUnsavedRouteChanges =
     hasSequenceChanges || hasDriverChanges || hasRouteEndChanges;
   const canSaveRoute =
     detail !== null &&
     !isSavingRoute &&
     !isUnsafeRouteEndDraft &&
-    (hasSequenceChanges ||
-      hasDriverChanges ||
-      hasRouteEndChanges ||
-      canPublishOnSave);
+    hasUnsavedRouteChanges;
   const isChildRouteDetail = input.isChildRouteDetail === true;
   const savedStopSequenceLabels = useMemo(
     () =>

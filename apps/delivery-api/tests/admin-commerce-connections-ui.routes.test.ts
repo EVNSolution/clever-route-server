@@ -4362,8 +4362,8 @@ describe("Admin WooCommerce connection UI routes", () => {
           { name: "driver", reason: "driver_changed", status: "applied" },
           {
             name: "publish",
-            reason: "draft_ready_for_driver",
-            status: "applied",
+            reason: "explicit_publish_required",
+            status: "skipped",
           },
         ],
       }),
