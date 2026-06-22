@@ -121,7 +121,7 @@ function toLngLat(latitude: number | null, longitude: number | null): [number, n
 
 function buildRouteUrl(baseUrl: string, coordinates: Array<[number, number]>): string {
   const coordinatePath = coordinates.map(([longitude, latitude]) => `${longitude},${latitude}`).join(';');
-  return `${baseUrl}/route/v1/driving/${coordinatePath}?overview=simplified&geometries=geojson&steps=false`;
+  return `${baseUrl}/route/v1/driving/${coordinatePath}?overview=full&geometries=geojson&steps=false`;
 }
 
 function emptyRouteResult(): RoutePlanRouteResult {

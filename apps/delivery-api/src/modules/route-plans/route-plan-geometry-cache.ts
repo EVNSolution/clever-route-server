@@ -44,7 +44,9 @@ export function routeGeometryCacheCreateData(input: RouteGeometryCacheWrite): Pr
     generatedAt: input.generatedAt ?? new Date(),
     geometry: input.geometry === null ? Prisma.JsonNull : toJson(input.geometry),
     metrics: input.metrics === null ? Prisma.JsonNull : toJson(input.metrics),
-    overview: 'simplified',
+    // The database default remains legacy for backward compatibility; every application write must
+    // stamp the actual OSRM overview used for new route geometry generation.
+    overview: 'full',
     provider: input.provider,
     providerVersion: input.providerVersion ?? null,
     routePlanId: input.routePlanId,

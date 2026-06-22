@@ -32,7 +32,7 @@ describe('OsrmRouteGeometryProvider', () => {
     expect(() => new OsrmRouteGeometryProvider({ baseUrl: '' })).toThrow('OSRM base URL must be configured explicitly.');
   });
 
-  test('requests a simplified GeoJSON route through depot and ordered stops', async () => {
+  test('requests a full GeoJSON route through depot and ordered stops', async () => {
     const fetch = vi.fn().mockResolvedValue(Response.json(routeOkPayload()));
     const provider = new OsrmRouteGeometryProvider({ baseUrl: 'https://osrm.example', fetch });
 
@@ -45,7 +45,7 @@ describe('OsrmRouteGeometryProvider', () => {
     });
 
     expect(fetch).toHaveBeenCalledWith(
-      'https://osrm.example/route/v1/driving/-79.3832,43.6532;-79.2571,43.7764;-79.337,43.8561?overview=simplified&geometries=geojson&steps=false',
+      'https://osrm.example/route/v1/driving/-79.3832,43.6532;-79.2571,43.7764;-79.337,43.8561?overview=full&geometries=geojson&steps=false',
       expect.objectContaining({ method: 'GET' })
     );
     const requestedUrl = String(fetch.mock.calls[0]?.[0] ?? '');
@@ -168,7 +168,7 @@ describe('OsrmRouteGeometryProvider', () => {
     });
 
     expect(fetch).toHaveBeenCalledWith(
-      'https://osrm.example/route/v1/driving/-79.3832,43.6532;-79.2571,43.7764;-79.337,43.8561;-79.3832,43.6532?overview=simplified&geometries=geojson&steps=false',
+      'https://osrm.example/route/v1/driving/-79.3832,43.6532;-79.2571,43.7764;-79.337,43.8561;-79.3832,43.6532?overview=full&geometries=geojson&steps=false',
       expect.objectContaining({ method: 'GET' })
     );
     expect(result.routeStopPoints).toHaveLength(2);
