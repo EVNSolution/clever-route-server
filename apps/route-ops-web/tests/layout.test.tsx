@@ -311,9 +311,14 @@ describe('route ops layout components', () => {
   test('Orders CSS keeps the filter card responsive and prevents search overflow', () => {
     const css = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
     const filterPanelCss = extractCssRule(css, '.filter-panel');
+    const filterSelectCss = extractCssRule(css, '.filter-control > select');
+    const filterSelectClearCss = extractCssRule(css, '.filter-control:has(select) .filter-clear-x');
     const orderDatePickerToggleCss = extractCssRule(css, '.order-date-picker-toggle');
     expect(css).toContain('grid-template-columns: repeat(auto-fit, minmax(min(100%, 8rem), 1fr));');
     expect(css).toContain('.filter-clear-x');
+    expect(filterSelectCss).toContain('appearance: none;');
+    expect(filterSelectCss).toContain('padding-right: 56px;');
+    expect(filterSelectClearCss).toContain('right: 28px;');
     expect(css).not.toContain('.filter-clear-button');
     expect(css).not.toContain('.filter-actions');
     expect(css).not.toContain('.filter-panel-header');
