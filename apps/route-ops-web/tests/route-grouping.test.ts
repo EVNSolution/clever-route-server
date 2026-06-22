@@ -165,10 +165,10 @@ describe('route grouping polygon draft helpers', () => {
       { closed: true, color: '#16a34a', drawOrder: 2, driverId: null, geometry: {}, id: 'polygon-2', label: 'Unassigned' },
     ] as RouteGroupingPolygonDto[];
     const assignments = [
-      { assignedDriverId: 'driver-1', assignedPolygonId: 'polygon-1', assignmentStatus: 'ASSIGNED', coordinates: { latitude: 43, longitude: -79 }, deliveryStopId: 'stop-1', items: [], orderId: 'order-1', orderName: '#1001', sourceOrderId: 'source-1', sourceSequence: 1 },
-      { assignedDriverId: 'driver-1', assignedPolygonId: 'polygon-1', assignmentStatus: 'ASSIGNED', coordinates: { latitude: 44, longitude: -79 }, deliveryStopId: 'stop-2', items: [], orderId: 'order-2', orderName: '#1002', sourceOrderId: 'source-2', sourceSequence: 2 },
-      { assignedDriverId: null, assignedPolygonId: null, assignmentStatus: 'UNASSIGNED', coordinates: { latitude: 45, longitude: -79 }, deliveryStopId: 'stop-3', items: [], orderId: 'order-3', orderName: '#1003', sourceOrderId: 'source-3', sourceSequence: 3 },
-      { assignedDriverId: null, assignedPolygonId: null, assignmentStatus: 'OVERLAP', coordinates: { latitude: 46, longitude: -79 }, deliveryStopId: 'stop-4', items: [], orderId: 'order-4', orderName: '#1004', sourceOrderId: 'source-4', sourceSequence: 4 },
+      { assignedDriverId: 'driver-1', assignedPolygonId: 'polygon-1', assignmentStatus: 'ASSIGNED', coordinates: { latitude: 43, longitude: -79 }, deliveryStopId: 'stop-1', addressLabel: 'Address 1', email: null, orderId: 'order-1', orderName: '#1001', phone: null, recipientName: 'Customer 1', sourceOrderId: 'source-1', sourceSequence: 1 },
+      { assignedDriverId: 'driver-1', assignedPolygonId: 'polygon-1', assignmentStatus: 'ASSIGNED', coordinates: { latitude: 44, longitude: -79 }, deliveryStopId: 'stop-2', addressLabel: 'Address 2', email: null, orderId: 'order-2', orderName: '#1002', phone: null, recipientName: 'Customer 2', sourceOrderId: 'source-2', sourceSequence: 2 },
+      { assignedDriverId: null, assignedPolygonId: null, assignmentStatus: 'UNASSIGNED', coordinates: { latitude: 45, longitude: -79 }, deliveryStopId: 'stop-3', addressLabel: 'Address 3', email: null, orderId: 'order-3', orderName: '#1003', phone: null, recipientName: 'Customer 3', sourceOrderId: 'source-3', sourceSequence: 3 },
+      { assignedDriverId: null, assignedPolygonId: null, assignmentStatus: 'OVERLAP', coordinates: { latitude: 46, longitude: -79 }, deliveryStopId: 'stop-4', addressLabel: 'Address 4', email: null, orderId: 'order-4', orderName: '#1004', phone: null, recipientName: 'Customer 4', sourceOrderId: 'source-4', sourceSequence: 4 },
     ] as RouteGroupingAssignmentDto[];
 
     const results = buildRouteGroupingAssignmentResults(assignments, polygons, drivers, 'ko-KR');

@@ -30,6 +30,7 @@ import type {
 } from "../modules/shopify/order-sync.repository.js";
 import {
   RoutePlanConflictError,
+  RoutePlanDeleteBlockedError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanDriverAssignInvalidError,
   RoutePlanOptionsUpdateInvalidError,
@@ -45,6 +46,7 @@ import {
 import type { RouteOptimizationJobService } from "../modules/route-plans/route-optimization-job.service.js";
 import {
   RouteGroupingConflictError,
+  RouteGroupingDeleteBlockedError,
   RouteGroupingRiskConfirmationRequiredError,
   RouteGroupingUnresolvedAssignmentsError,
   RouteGroupingValidationError,
@@ -2269,6 +2271,31 @@ function registerRouteOpsAppRoutes(
     ),
   );
 
+  app.delete<{ Params: { routeGroupId: string } }>(
+    `${ADMIN_UI_APP_API_PATH}/route-groups/:routeGroupId`,
+    async (request, reply) =>
+      withRouteOpsApi(
+        request,
+        reply,
+        readSession(request, dependencies),
+        async (session) => {
+          assertRouteOpsMutationCsrf(request, session);
+          const routeGroupingService = requireRouteGroupingService(requireRouteUiServices(dependencies));
+          const shopDomain = requireRouteOpsShopDomain(request, session);
+          try {
+            const result = await routeGroupingService.deleteGrouping({
+              groupingId: request.params.routeGroupId,
+              shopDomain,
+            });
+            if (!result.deleted) throw new WooCommerceOnboardingError("NOT_FOUND", "Route grouping not found", 404);
+            return routeOpsData(result);
+          } catch (error) {
+            throw toRouteGroupingHttpError(error);
+          }
+        },
+      ),
+  );
+
   app.get<{ Params: { routeGroupId: string } }>(
     `${ADMIN_UI_APP_API_PATH}/route-groups/:routeGroupId`,
     async (request, reply) =>
@@ -2438,21 +2465,28 @@ function registerRouteOpsAppRoutes(
         reply,
         readSession(request, dependencies),
         async (session) => {
-          assertRouteOpsMutationCsrf(request, session);
-          const services = requireRouteUiServices(dependencies);
-          if (services.routePlanService.deleteRoutePlan === undefined) {
-            throw new WooCommerceOnboardingError(
-              "BAD_REQUEST",
-              "Route deletion is not enabled in this runtime.",
-              400,
-            );
+          try {
+            assertRouteOpsMutationCsrf(request, session);
+            const services = requireRouteUiServices(dependencies);
+            if (services.routePlanService.deleteRoutePlan === undefined) {
+              throw new WooCommerceOnboardingError(
+                "BAD_REQUEST",
+                "Route deletion is not enabled in this runtime.",
+                400,
+              );
+            }
+            const shopDomain = requireRouteOpsShopDomain(request, session);
+            const result = await services.routePlanService.deleteRoutePlan({
+              routePlanId: request.params.routePlanId,
+              shopDomain,
+            });
+            return routeOpsData(result);
+          } catch (error) {
+            if (error instanceof RoutePlanDeleteBlockedError) {
+              throw createRouteOpsHttpError(error.code, error.message, 409);
+            }
+            throw error;
           }
-          const shopDomain = requireRouteOpsShopDomain(request, session);
-          const result = await services.routePlanService.deleteRoutePlan({
-            routePlanId: request.params.routePlanId,
-            shopDomain,
-          });
-          return routeOpsData(result);
         },
       ),
   );
@@ -4462,6 +4496,9 @@ function requireRouteGroupingService(
 
 function toRouteGroupingHttpError(error: unknown): Error {
   if (error instanceof RouteGroupingConflictError) {
+    return createRouteOpsHttpError(error.code, error.message, 409);
+  }
+  if (error instanceof RouteGroupingDeleteBlockedError) {
     return createRouteOpsHttpError(error.code, error.message, 409);
   }
   if (error instanceof RouteGroupingValidationError) {

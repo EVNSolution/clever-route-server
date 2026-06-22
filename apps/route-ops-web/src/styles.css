@@ -814,47 +814,6 @@ small,
   display: grid;
   gap: 14px;
 }
-.route-group-map-edit-overlay {
-  align-items: stretch;
-  backdrop-filter: blur(10px);
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid #d7deea;
-  border-radius: 16px;
-  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.14);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0;
-  inline-size: fit-content;
-  max-inline-size: 100%;
-  overflow: visible;
-  padding: 0;
-  pointer-events: auto;
-  transform: translate(var(--route-group-edit-x, 0), var(--route-group-edit-y, 0));
-}
-.route-group-map-edit-grab {
-  align-items: center;
-  align-self: stretch;
-  appearance: none;
-  background: #f8fafc;
-  border: 0;
-  border-right: 1px solid #d7deea;
-  border-radius: 0;
-  color: #64748b;
-  cursor: grab;
-  display: inline-flex;
-  flex: 0 0 38px;
-  font-size: 18px;
-  font-weight: 700;
-  justify-content: center;
-  letter-spacing: 0;
-  margin: 0;
-  min-height: 54px;
-  padding: 0;
-  touch-action: none;
-}
-.route-group-map-edit-grab:active {
-  cursor: grabbing;
-}
 .route-group-draft-vertex-marker {
   appearance: none;
   background: #ffffff;
@@ -873,11 +832,6 @@ small,
 .route-group-draft-vertex-marker:focus-visible {
   outline: 3px solid rgba(37, 99, 235, 0.25);
   outline-offset: 2px;
-}
-.route-group-map-edit-grab:is(:hover, :focus-visible) {
-  background: #eef4ff;
-  color: #111827;
-  outline: none;
 }
 .route-group-map-driver-select,
 .route-group-map-icon-tools,
@@ -942,6 +896,18 @@ small,
   display: block;
   height: 19px;
   width: 19px;
+}
+.route-group-assign-tools {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #d7deea;
+  border-radius: 16px;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.1);
+  display: inline-flex;
+  gap: 0;
+  max-inline-size: 100%;
+  overflow: auto;
+  padding: 0 8px;
 }
 .route-group-map-tool-button--primary {
   background: #111827;
@@ -1186,19 +1152,6 @@ small,
   opacity: 0.55;
 }
 
-.route-group-order-items-table td:first-child,
-.route-group-order-items-table th:first-child {
-  width: 92px;
-}
-.route-group-order-items-table td:nth-child(2),
-.route-group-order-items-table th:nth-child(2) {
-  width: 136px;
-}
-.route-group-order-items-table td:nth-child(3),
-.route-group-order-items-table th:nth-child(3) {
-  text-align: center;
-  width: 64px;
-}
 .route-group-assignment-pill {
   background: #f8fafc;
   border: 1px solid #dbe3ef;
@@ -1218,15 +1171,53 @@ small,
   color: #111827;
   font-weight: 900;
 }
-.route-group-order-items-list {
+.route-child-manifest-card {
+  overflow: hidden;
+}
+.route-child-manifest-table td {
+  vertical-align: top;
+}
+.route-child-manifest-table td:first-child,
+.route-child-manifest-table th:first-child {
+  width: 52px;
+}
+.route-child-manifest-table td:nth-child(2),
+.route-child-manifest-table th:nth-child(2) {
+  width: 96px;
+}
+.route-child-manifest-table td:nth-child(6),
+.route-child-manifest-table th:nth-child(6),
+.route-child-manifest-table td:nth-child(7),
+.route-child-manifest-table th:nth-child(7) {
+  width: 132px;
+}
+.route-child-manifest-table small {
+  color: #64748b;
+  display: block;
+  font-weight: 700;
+  margin-top: 3px;
+}
+.route-child-manifest-items {
   display: grid;
-  gap: 4px;
+  gap: 3px;
   list-style: none;
   margin: 0;
   padding: 0;
 }
-.route-group-order-items-list li {
-  color: #374151;
+.route-child-payment-pill {
+  background: #f1f5f9;
+  border: 1px solid #dbe3ef;
+  border-radius: 999px;
+  color: #334155;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 5px 8px;
+}
+.route-child-payment-pill--attention {
+  background: #fff7ed;
+  border-color: #fed7aa;
+  color: #9a3412;
 }
 @media (max-width: 980px) {
   .route-group-areas-card {
@@ -2577,9 +2568,6 @@ button.danger.subtle {
     right: 12px;
     top: 64px;
   }
-  .route-group-map-edit-overlay {
-    max-inline-size: calc(100vw - 48px);
-  }
   .route-group-map-edit-help {
     display: none;
   }
@@ -3238,7 +3226,7 @@ button.danger.subtle {
 .order-detail-summary-grid {
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  grid-template-columns: 1fr;
 }
 
 .order-detail-summary-card {
@@ -3721,12 +3709,14 @@ button.danger.subtle {
 }
 
 .order-detail-notes-grid {
+  align-items: start;
   display: grid;
   gap: 10px;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
 }
 
 .order-detail-note-card {
+  align-content: start;
   background: #f8fafc;
   border: 1px solid #e6eaf1;
   border-radius: 12px;

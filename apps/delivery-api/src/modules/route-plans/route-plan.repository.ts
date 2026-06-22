@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import {
   ITEM_REVIEW_REASONS,
   aggregateOrderItems,
@@ -10,6 +10,7 @@ import {
 import {
   RoutePlanBatchInvalidError,
   RoutePlanConflictError,
+  RoutePlanDeleteBlockedError,
   RoutePlanDriverAssignInvalidError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanOptionsUpdateInvalidError,
@@ -48,7 +49,7 @@ const DEFAULT_ROUTE_END_MODE: RoutePlanEndMode = 'END_AT_LAST_STOP';
 
 type RoutePlanPrismaClient = Pick<
   PrismaClient,
-  '$transaction' | 'deliveryStop' | 'driver' | 'order' | 'orderDeliveryFact' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'shop'
+  '$transaction' | 'deliveryStop' | 'driver' | 'order' | 'orderDeliveryFact' | 'routeGroupingChildVersion' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'shop'
 >;
 
 type RoutePlanGeometryCacheRecord = {
@@ -103,6 +104,9 @@ type RoutePlanDriverRecord = {
 type RoutePlanStopRecord = {
   deliveryStop: DeliveryStopRecord;
   deliveryStopId: string;
+  distanceFromPreviousMeters: number | null;
+  durationFromPreviousSeconds: number | null;
+  estimatedArrivalAt: Date | null;
   sequence: number;
 };
 
@@ -139,6 +143,7 @@ type OrderRecord = {
   rawPayload: unknown;
   shippingAddress: unknown;
   shopifyOrderGid: string;
+  totalPriceAmount?: unknown;
 };
 
 type OrderDeliveryFactRecord = {
@@ -916,6 +921,12 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     if (routePlan === null) {
       return { routePlanId: input.routePlanId, deleted: false };
     }
+    const childRouteLinks = await this.prisma.routeGroupingChildVersion.count({
+      where: { routePlanId: input.routePlanId, shopId: shop.id }
+    });
+    if (childRouteLinks > 0) {
+      throw new RoutePlanDeleteBlockedError('Child driver routes must be deleted through the parent route grouping.');
+    }
 
     await this.prisma.$transaction(async (tx) => {
       await tx.routePlanStop.deleteMany({
@@ -1578,6 +1589,14 @@ function emptyDeliveryStopFallback(order: OrderRecord): DeliveryStopRecord {
 }
 
 
+function readPaymentMethodTitle(rawPayload: Record<string, unknown> | null): string | null {
+  if (rawPayload === null) return null;
+  return readString(rawPayload.payment_method_title)
+    ?? readString(rawPayload.paymentMethodTitle)
+    ?? readString(rawPayload.payment_method)
+    ?? readString(rawPayload.paymentMethod);
+}
+
 function readCustomerNote(rawPayload: Record<string, unknown> | null): string | null {
   if (rawPayload === null) return null;
   for (const key of ['customer_note', 'customerNote', 'note']) {
@@ -1925,6 +1944,14 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
       matchStatus: order.deliveryCustomerProfileLinks?.[0]?.matchStatus ?? null
     },
     normalizedPaymentStatus: readNormalizedPaymentStatus(rawPayload?.normalizedPaymentStatus),
+    currencyCode: order.currencyCode ?? null,
+    distanceFromPreviousMeters: routeStop.distanceFromPreviousMeters,
+    durationFromPreviousSeconds: routeStop.durationFromPreviousSeconds,
+    email: order.email ?? null,
+    estimatedArrivalAt: routeStop.estimatedArrivalAt?.toISOString() ?? null,
+    paymentMethodTitle: readPaymentMethodTitle(rawPayload),
+    phone: deliveryStop.phone ?? order.phone ?? null,
+    totalPriceAmount: stringOrNull(order.totalPriceAmount),
     orderId: order.id,
     orderName: order.name,
     paymentStatus: order.financialStatus,
@@ -2156,6 +2183,14 @@ function readAttribute(attributes: RoutePlanOrderAttributeInput[], key: string):
 
 function readString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
+function stringOrNull(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (value instanceof Prisma.Decimal) return value.toString();
+  return null;
 }
 
 function readStringArray(value: unknown): string[] | null {

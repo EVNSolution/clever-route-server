@@ -233,6 +233,16 @@ export type RouteStopDto = {
   orderId: string;
   orderName: string;
   recipientName: string | null;
+  currencyCode?: string | null;
+  distanceFromPreviousMeters?: number | null;
+  durationFromPreviousSeconds?: number | null;
+  email?: string | null;
+  estimatedArrivalAt?: string | null;
+  financialStatus?: string | null;
+  normalizedPaymentStatus?: NormalizedPaymentStatus | null;
+  paymentMethodTitle?: string | null;
+  phone?: string | null;
+  totalPriceAmount?: string | null;
   sequence: number;
   sourceOrderId: string;
   status: string;
@@ -281,7 +291,10 @@ export type RouteGroupingAssignmentDto = {
   deliveryStopId: string;
   orderId: string;
   orderName: string;
-  items: OrderItemDto[];
+  recipientName: string | null;
+  addressLabel: string;
+  phone: string | null;
+  email: string | null;
   sourceOrderId: string;
   sourceSequence: number;
 };

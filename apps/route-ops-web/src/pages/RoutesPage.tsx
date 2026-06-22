@@ -4,6 +4,7 @@ import type { CSSProperties, DragEvent, ReactElement } from "react";
 import {
   ApiError,
   deleteRoute,
+  deleteRouteGrouping,
   getDrivers,
   getRouteDetail,
   getRouteGrouping,
@@ -208,9 +209,11 @@ export function RoutesPage({
   const [detail, setDetail] = useState<RoutePlanDetailDto | null>(null);
   const [drivers, setDrivers] = useState<DriverDto[]>([]);
   const [deletingRouteId, setDeletingRouteId] = useState<string | null>(null);
+  const [deletingRouteGroupId, setDeletingRouteGroupId] = useState<string | null>(null);
   const [collapsedRouteGroupIds, setCollapsedRouteGroupIds] = useState<
     Set<string>
   >(() => new Set());
+  const [collapsedRouteGroupsInitialized, setCollapsedRouteGroupsInitialized] = useState(false);
 
   const refreshRoutes = useCallback(async (): Promise<void> => {
     try {
@@ -222,6 +225,12 @@ export function RoutesPage({
       setError(readErrorMessage(error));
     }
   }, [setError]);
+
+  useEffect(() => {
+    if (collapsedRouteGroupsInitialized || routeGroups.length === 0) return;
+    setCollapsedRouteGroupIds(new Set(routeGroups.map((group) => group.id)));
+    setCollapsedRouteGroupsInitialized(true);
+  }, [collapsedRouteGroupsInitialized, routeGroups]);
 
   useEffect(() => {
     void refreshRoutes();
@@ -301,6 +310,22 @@ export function RoutesPage({
     );
   }
 
+  async function deleteRouteGroup(routeGroupId: string): Promise<void> {
+    const group = routeGroups.find((item) => item.id === routeGroupId);
+    const groupName = group?.name ?? t.routes;
+    if (!window.confirm(`Delete ${groupName}? Generated child routes will also be deleted.`)) return;
+    setDeletingRouteGroupId(routeGroupId);
+    try {
+      await deleteRouteGrouping(routeGroupId, bootstrap.csrfToken);
+      await refreshRoutes();
+      setError(null);
+    } catch (error) {
+      setError(readErrorMessage(error));
+    } finally {
+      setDeletingRouteGroupId(null);
+    }
+  }
+
   async function deleteRoutePlan(routeId: string): Promise<void> {
     const route =
       routes.find((item) => item.id === routeId) ?? detail?.routePlan ?? null;
@@ -355,11 +380,13 @@ export function RoutesPage({
         </div>
         <div className="table-scroll route-list-table-scroll">
           <RouteListTable
+            deletingRouteGroupId={deletingRouteGroupId}
             deletingRouteId={deletingRouteId}
             drivers={drivers}
             locale={locale}
             navigate={navigate}
             onDeleteRoute={(routeId) => void deleteRoutePlan(routeId)}
+            onDeleteRouteGroup={(routeGroupId) => void deleteRouteGroup(routeGroupId)}
             onToggleRouteGroup={(routeGroupId) =>
               setCollapsedRouteGroupIds((current) => {
                 const next = new Set(current);
@@ -379,22 +406,26 @@ export function RoutesPage({
 }
 
 export function RouteListTable({
+  deletingRouteGroupId,
   deletingRouteId,
   drivers,
   locale,
   navigate,
   onDeleteRoute,
+  onDeleteRouteGroup,
   onToggleRouteGroup,
   collapsedRouteGroupIds,
   routeGroups,
   routes,
 }: {
   collapsedRouteGroupIds?: ReadonlySet<string>;
+  deletingRouteGroupId?: string | null;
   deletingRouteId: string | null;
   drivers: DriverDto[];
   locale?: string | null;
   navigate(path: string): void;
   onDeleteRoute(routeId: string): void;
+  onDeleteRouteGroup?(routeGroupId: string): void;
   onToggleRouteGroup?(routeGroupId: string): void;
   routeGroups: RouteGroupingSummaryDto[];
   routes: RoutePlanSummaryDto[];
@@ -444,16 +475,26 @@ export function RouteListTable({
                   : `${group.unresolvedOrders} unresolved`}
               </td>
               <td>
-                <button
-                  onClick={() =>
-                    navigate(
-                      `/admin/ui/app/route-groups/${encodeURIComponent(group.id)}`,
-                    )
-                  }
-                  type="button"
-                >
-                  Open
-                </button>
+                <div className="route-row-actions">
+                  <button
+                    onClick={() =>
+                      navigate(
+                        `/admin/ui/app/route-groups/${encodeURIComponent(group.id)}`,
+                      )
+                    }
+                    type="button"
+                  >
+                    Open
+                  </button>
+                  <button
+                    className="danger subtle"
+                    disabled={deletingRouteGroupId === group.id}
+                    onClick={() => onDeleteRouteGroup?.(group.id)}
+                    type="button"
+                  >
+                    {deletingRouteGroupId === group.id ? t.deleting : t.delete}
+                  </button>
+                </div>
               </td>
             </tr>
             {collapsedRouteGroupIds?.has(group.id) ? null : group.children
@@ -755,61 +796,48 @@ export function RouteBuilder(input: {
               : t.sendToDriver}
         </button>
       )}
-      {isChildRouteDetail ? (
-        <button
-          className="danger subtle route-map-delete-button"
-          disabled={
-            detail === null || input.deletingRouteId === detail.routePlan.id
-          }
-          onClick={() => {
-            if (detail !== null) input.onDeleteRoute(detail.routePlan.id);
-          }}
-          type="button"
-        >
-          {detail !== null && input.deletingRouteId === detail.routePlan.id
-            ? t.deleting
-            : t.delete}
-        </button>
-      ) : null}
     </div>
   );
   const routeSummaryLower = (
     <div className="route-summary-lower">
       {isChildRouteDetail ? (
-        <ChildRouteSequenceCard
-          canReturnToDepot={canReturnToDepot}
-          canSaveRoute={canSaveRoute}
-          disabled={detail === null}
-          draggingStopId={draggingStopId}
-          drivers={input.drivers}
-          draftDriverId={draftDriverId}
-          dropPreview={dropPreview}
-          isEditing={hasUnsavedRouteChanges}
-          isSavingRoute={isSavingRoute}
-          locale={locale}
-          onDragEnd={clearStopDragPreview}
-          onDragStart={setDraggingStopId}
-          onDriverChange={setDraftDriverId}
-          onDrop={dropDraftStop}
-          onDropPreview={setDropPreview}
-          onReturnToDepotChange={(checked) => {
-            if (checked && !canReturnToDepot) return;
-            setDraftRouteEndMode(
-              checked ? "RETURN_TO_DEPOT" : "END_AT_LAST_STOP",
-            );
-          }}
-          onSave={() => void save()}
-          returnToDepotChecked={returnToDepotChecked}
-          returnToDepotDisabled={returnToDepotDisabled}
-          routeEndWarningId={routeEndWarningId}
-          routeName={
-            detail === null
-              ? t.routeBuilder
-              : formatRouteChildStopTitle(detail.routePlan.name)
-          }
-          savedStopSequenceLabels={savedStopSequenceLabels}
-          stops={draftStops}
-        />
+        <>
+          <ChildRouteSequenceCard
+            canReturnToDepot={canReturnToDepot}
+            canSaveRoute={canSaveRoute}
+            disabled={detail === null}
+            draggingStopId={draggingStopId}
+            drivers={input.drivers}
+            draftDriverId={draftDriverId}
+            dropPreview={dropPreview}
+            isEditing={hasUnsavedRouteChanges}
+            isSavingRoute={isSavingRoute}
+            locale={locale}
+            onDragEnd={clearStopDragPreview}
+            onDragStart={setDraggingStopId}
+            onDriverChange={setDraftDriverId}
+            onDrop={dropDraftStop}
+            onDropPreview={setDropPreview}
+            onReturnToDepotChange={(checked) => {
+              if (checked && !canReturnToDepot) return;
+              setDraftRouteEndMode(
+                checked ? "RETURN_TO_DEPOT" : "END_AT_LAST_STOP",
+              );
+            }}
+            onSave={() => void save()}
+            returnToDepotChecked={returnToDepotChecked}
+            returnToDepotDisabled={returnToDepotDisabled}
+            routeEndWarningId={routeEndWarningId}
+            routeName={
+              detail === null
+                ? t.routeBuilder
+                : formatRouteChildStopTitle(detail.routePlan.name)
+            }
+            savedStopSequenceLabels={savedStopSequenceLabels}
+            stops={draftStops}
+          />
+          <ChildRouteManifestCard locale={locale} stops={draftStops} />
+        </>
       ) : null}
       <section className="route-item-summary-card" aria-label={t.routeItems}>
         <div className="route-item-summary-heading">
@@ -1228,6 +1256,143 @@ function ChildRouteSequenceCard({
       </div>
     </article>
   );
+}
+
+function ChildRouteManifestCard({
+  locale,
+  stops,
+}: {
+  locale?: string | null;
+  stops: RouteStopDto[];
+}): ReactElement {
+  const t = getRoutesCopy(locale);
+  const copy = childManifestCopy[resolveLocale(locale)];
+  return (
+    <article className="panel route-child-manifest-card">
+      <div className="route-item-summary-heading">
+        <h3>{copy.title}</h3>
+      </div>
+      <div className="table-scroll">
+        <table className="ops-table route-child-manifest-table">
+          <thead>
+            <tr>
+              <th>{t.stopTable.sequence}</th>
+              <th>{t.stopTable.order}</th>
+              <th>{t.stopTable.customer}</th>
+              <th>{copy.contact}</th>
+              <th>{copy.items}</th>
+              <th>{copy.payment}</th>
+              <th>{copy.eta}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {stops.map((stop, index) => (
+              <tr key={stop.deliveryStopId}>
+                <td>{index + 1}</td>
+                <td>{stop.orderName}</td>
+                <td>
+                  <div>{stop.recipientName ?? t.noRecipient}</div>
+                  <small>{stop.addressLabel}</small>
+                </td>
+                <td>{[stop.phone, stop.email].filter(Boolean).join(" · ") || "—"}</td>
+                <td>
+                  <ul className="route-child-manifest-items">
+                    {getOrderItems(stop.items).map((item, itemIndex) => (
+                      <li key={`${getOrderItemSemanticDisplayKey(item)}:${itemIndex}`}>
+                        {formatOrderItemLine(item)}
+                      </li>
+                    ))}
+                  </ul>
+                </td>
+                <td>
+                  <span className={paymentClassName(stop.normalizedPaymentStatus)}>
+                    {formatManifestPayment(stop, copy)}
+                  </span>
+                  <small>{formatManifestAmount(stop)}</small>
+                </td>
+                <td>
+                  <div>{formatManifestEta(stop.estimatedArrivalAt, locale)}</div>
+                  <small>{formatManifestLeg(stop, copy)}</small>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </article>
+  );
+}
+
+const childManifestCopy = {
+  "en-CA": {
+    contact: "Contact",
+    collectCash: "Collect cash",
+    eta: "ETA",
+    items: "Items",
+    leg(value: string): string { return value; },
+    paid: "Paid",
+    payment: "Payment",
+    paymentReview: "Review",
+    title: "Driver manifest",
+  },
+  "ko-KR": {
+    contact: "연락처",
+    collectCash: "현금 수금",
+    eta: "도착 예정",
+    items: "품목",
+    leg(value: string): string { return value; },
+    paid: "결제 완료",
+    payment: "결제",
+    paymentReview: "확인 필요",
+    title: "배송 목록",
+  },
+} as const;
+
+function paymentClassName(status: RouteStopDto["normalizedPaymentStatus"]): string {
+  return [
+    "route-child-payment-pill",
+    status === "CASH_COLLECT_REQUIRED" || status === "TRANSFER_CHECK_PENDING" || status === "ONLINE_PAYMENT_PENDING_OR_FAILED"
+      ? "route-child-payment-pill--attention"
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function formatManifestPayment(
+  stop: RouteStopDto,
+  copy: typeof childManifestCopy[keyof typeof childManifestCopy],
+): string {
+  if (stop.normalizedPaymentStatus === "CASH_COLLECT_REQUIRED") return copy.collectCash;
+  if (stop.normalizedPaymentStatus === "PAID_CONFIRMED") return copy.paid;
+  return copy.paymentReview;
+}
+
+function formatManifestAmount(stop: RouteStopDto): string {
+  if (stop.totalPriceAmount === null || stop.totalPriceAmount === undefined || stop.totalPriceAmount === "") return "—";
+  const amount = Number(stop.totalPriceAmount);
+  if (!Number.isFinite(amount)) return stop.totalPriceAmount;
+  return new Intl.NumberFormat("en-CA", {
+    currency: stop.currencyCode ?? "CAD",
+    style: "currency",
+  }).format(amount);
+}
+
+function formatManifestEta(value: string | null | undefined, locale?: string | null): string {
+  if (value === null || value === undefined) return "—";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "—";
+  return new Intl.DateTimeFormat(resolveLocale(locale), { hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
+function formatManifestLeg(
+  stop: RouteStopDto,
+  copy: typeof childManifestCopy[keyof typeof childManifestCopy],
+): string {
+  const parts: string[] = [];
+  if (typeof stop.durationFromPreviousSeconds === "number") parts.push(`${Math.round(stop.durationFromPreviousSeconds / 60)} min`);
+  if (typeof stop.distanceFromPreviousMeters === "number") parts.push(`${(stop.distanceFromPreviousMeters / 1000).toFixed(1)} km`);
+  return parts.length === 0 ? "—" : copy.leg(parts.join(" · "));
 }
 
 export function RouteStopOrderCompactList({

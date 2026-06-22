@@ -411,7 +411,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(extractFirstMatch(html, /<div class="route-child-sequence-header">([\s\S]*?)<\/div><div class="route-group-area-list/)).not.toContain('Save route');
     expect(html).toContain('class="route-map-header-actions"');
     expect(html).toContain('class="route-visibility-button orange" disabled="" type="button">Send to driver</button>');
-    expect(html).toContain('class="danger subtle route-map-delete-button"');
+    expect(html).not.toContain('class="danger subtle route-map-delete-button"');
     expect(html).toContain('class="route-group-area-driver route-group-area-driver--assignable route-child-sequence-driver"');
     expect(html).not.toContain('class="route-group-area-swatch"');
     expect(html).toContain('<option value="" selected="">Unassigned</option>');

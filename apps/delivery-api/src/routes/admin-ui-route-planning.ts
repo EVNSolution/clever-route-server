@@ -1099,6 +1099,16 @@ export function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
     orderName: string;
     recipientName: string | null;
     sequence: number;
+    currencyCode: string | null;
+    distanceFromPreviousMeters: number | null;
+    durationFromPreviousSeconds: number | null;
+    email: string | null;
+    estimatedArrivalAt: string | null;
+    financialStatus: string | null;
+    normalizedPaymentStatus: RoutePlanDetail["stops"][number]["normalizedPaymentStatus"];
+    paymentMethodTitle: string | null;
+    phone: string | null;
+    totalPriceAmount: string | null;
     sourceOrderId: string;
     status: string;
     customerNoteContext: RoutePlanDetail["stops"][number]["customerNoteContext"];
@@ -1133,6 +1143,16 @@ export function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
       orderName: stop.orderName,
       recipientName: stop.recipientName,
       sequence: stop.sequence,
+      currencyCode: stop.currencyCode ?? null,
+      distanceFromPreviousMeters: stop.distanceFromPreviousMeters ?? null,
+      durationFromPreviousSeconds: stop.durationFromPreviousSeconds ?? null,
+      email: stop.email ?? null,
+      estimatedArrivalAt: stop.estimatedArrivalAt ?? null,
+      financialStatus: stop.financialStatus,
+      normalizedPaymentStatus: stop.normalizedPaymentStatus ?? null,
+      paymentMethodTitle: stop.paymentMethodTitle ?? null,
+      phone: stop.phone ?? null,
+      totalPriceAmount: stop.totalPriceAmount ?? null,
       sourceOrderId: stop.shopifyOrderGid,
       status: stop.status,
       customerNoteContext: stop.customerNoteContext,

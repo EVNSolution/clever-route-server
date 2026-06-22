@@ -145,6 +145,14 @@ export type RoutePlanDetailStop = {
   financialStatus: string | null;
   fulfillmentStatus: string | null;
   normalizedPaymentStatus?: NormalizedPaymentStatus | null;
+  currencyCode?: string | null;
+  distanceFromPreviousMeters?: number | null;
+  durationFromPreviousSeconds?: number | null;
+  email?: string | null;
+  estimatedArrivalAt?: string | null;
+  paymentMethodTitle?: string | null;
+  phone?: string | null;
+  totalPriceAmount?: string | null;
   orderId: string;
   items?: OrderItemDto[];
   customerNoteContext?: {
@@ -332,6 +340,15 @@ export class RoutePlanConflictError extends Error {
   constructor(message = 'Route was updated by another session. Reload the route before saving changes.') {
     super(message);
     this.name = 'RoutePlanConflictError';
+  }
+}
+
+export class RoutePlanDeleteBlockedError extends Error {
+  readonly code = 'ROUTE_DELETE_BLOCKED';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'RoutePlanDeleteBlockedError';
   }
 }
 

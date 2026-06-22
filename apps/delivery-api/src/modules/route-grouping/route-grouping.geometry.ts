@@ -19,8 +19,7 @@ export function classifyCoordinateInPolygons(
     .filter((polygon) => isPointInPolygon(coordinate, polygon.vertices))
     .map((polygon) => polygon.id);
   if (matches.length === 0) return { status: 'UNASSIGNED', polygonIds: [] };
-  if (matches.length === 1) return { status: 'ASSIGNED', polygonIds: [matches[0] as string] };
-  return { status: 'OVERLAP', polygonIds: matches };
+  return { status: 'ASSIGNED', polygonIds: [matches[matches.length - 1] as string] };
 }
 
 export function isPointInPolygon(point: Coordinate, vertices: PolygonRing): boolean {

@@ -1,6 +1,6 @@
-import { Pencil, Undo2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactElement, ReactNode } from "react";
+import { Pencil, Pentagon, Undo2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import type { CSSProperties, ReactElement } from "react";
 
 import {
   ApiError,
@@ -16,18 +16,10 @@ import { ROUTE_START_ICON_PATH } from "../components/maps/mapIcons";
 import { appendPolygonVertex, closePolygonDraft, coordinateInPolygon, insertPolygonVertex, movePolygonVertex, polygonDraftToGeoJson, readEditablePolygonVertices, removeLastPolygonVertex } from "../routeGrouping";
 import { storeSettingsToDepotPoint } from "../state";
 import type { BootstrapPayload, CanonicalOrderDto, DriverDto, RouteGroupingAssignmentDto, RouteGroupingDetailDto, RouteGroupingPolygonDto, StoreSettingsDto } from "../types";
-import { formatOrderItemLine, getOrderItemDisplayKey, getOrderItems } from "../orderItems";
 import { resolveLocale } from "../i18n";
 import { readErrorMessage } from "../utils/format";
 
 type PolygonDraft = { closed: boolean; vertices: Array<{ latitude: number; longitude: number }> };
-type OverlayDragState = { originX: number; originY: number; pointerId: number; startX: number; startY: number };
-
-const EDIT_OVERLAY_MIN_X = -84;
-const EDIT_OVERLAY_MAX_X = 760;
-const EDIT_OVERLAY_MIN_Y = 0;
-const EDIT_OVERLAY_MAX_Y = 420;
-
 export function RouteGroupingPage({
   bootstrap,
   navigate,
@@ -47,8 +39,6 @@ export function RouteGroupingPage({
   const [editingPolygonId, setEditingPolygonId] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [editOverlayOffset, setEditOverlayOffset] = useState({ x: 0, y: 0 });
-  const overlayDragRef = useRef<OverlayDragState | null>(null);
 
   useEffect(() => {
     getRouteGrouping(routeGroupId)
@@ -79,7 +69,10 @@ export function RouteGroupingPage({
   const childRoutesReady = canGenerateRouteGroupingChildRoutes(grouping);
   const mapHeaderAction = !isEditing ? (
     <div className="route-group-header-actions">
-      <button onClick={startEdit} type="button">Edit</button>
+      <button onClick={startEdit} type="button">
+        <Pentagon aria-hidden="true" className="route-group-action-icon" />
+        Assign
+      </button>
       <button
         className="primary route-group-generate-button"
         disabled={!childRoutesReady || busy}
@@ -90,8 +83,7 @@ export function RouteGroupingPage({
         Optimize
       </button>
     </div>
-  ) : undefined;
-  const mapEditOverlay = isEditing ? renderMapEditOverlay() : undefined;
+  ) : renderAssignControls();
   const visiblePolygons = useMemo(() => buildVisiblePolygons(grouping, isEditing ? editingPolygonId : undefined), [editingPolygonId, grouping, isEditing]);
   const groupedOrderMarkerStates = useMemo(
     () => buildGroupedOrderMarkerStates(grouping, isEditing ? editingPolygonId : undefined, isEditing ? draft : undefined, draftColor),
@@ -226,7 +218,6 @@ export function RouteGroupingPage({
     setEditingPolygonId(null);
     setActiveDriverId("");
     setDraft({ closed: false, vertices: [] });
-    setEditOverlayOffset({ x: 0, y: 0 });
     setIsEditing(true);
   }
 
@@ -234,7 +225,6 @@ export function RouteGroupingPage({
     setEditingPolygonId(polygon.id);
     setActiveDriverId(polygon.driverId ?? "");
     setDraft({ closed: polygon.closed, vertices: readEditablePolygonVertices(polygon.geometry) });
-    setEditOverlayOffset({ x: 0, y: 0 });
     setIsEditing(true);
   }
 
@@ -242,65 +232,17 @@ export function RouteGroupingPage({
     setDraft({ closed: false, vertices: [] });
     setEditingPolygonId(null);
     setIsEditing(false);
-    overlayDragRef.current = null;
   }
 
-  function handleEditOverlayDragStart(event: ReactPointerEvent<HTMLButtonElement>): void {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    overlayDragRef.current = {
-      originX: editOverlayOffset.x,
-      originY: editOverlayOffset.y,
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-    };
-    event.currentTarget.setPointerCapture(event.pointerId);
+  function handlePolygonSelect(polygonId: string): void {
+    if (!isEditing || draft.vertices.length > 0 || grouping === null) return;
+    const polygon = grouping.polygons.find((candidate) => candidate.id === polygonId);
+    if (polygon !== undefined) startEditPolygon(polygon);
   }
 
-  function handleEditOverlayDragMove(event: ReactPointerEvent<HTMLButtonElement>): void {
-    const drag = overlayDragRef.current;
-    if (drag === null || drag.pointerId !== event.pointerId) return;
-    event.preventDefault();
-    event.stopPropagation();
-    setEditOverlayOffset({
-      x: clamp(drag.originX + event.clientX - drag.startX, EDIT_OVERLAY_MIN_X, EDIT_OVERLAY_MAX_X),
-      y: clamp(drag.originY + event.clientY - drag.startY, EDIT_OVERLAY_MIN_Y, EDIT_OVERLAY_MAX_Y),
-    });
-  }
-
-  function handleEditOverlayDragEnd(event: ReactPointerEvent<HTMLButtonElement>): void {
-    const drag = overlayDragRef.current;
-    if (drag === null || drag.pointerId !== event.pointerId) return;
-    event.preventDefault();
-    event.stopPropagation();
-    overlayDragRef.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-  }
-
-  function renderMapEditOverlay(): ReactNode {
+  function renderAssignControls(): ReactElement {
     return (
-      <div
-        className="route-group-map-edit-overlay"
-        onClick={(event) => event.stopPropagation()}
-        onPointerDown={(event) => event.stopPropagation()}
-        role="group"
-        aria-label="Polygon edit tools"
-        style={{ "--route-group-edit-x": `${editOverlayOffset.x}px`, "--route-group-edit-y": `${editOverlayOffset.y}px` } as CSSProperties}
-      >
-        <button
-          aria-label="Move edit tools"
-          className="route-group-map-edit-grab"
-          onPointerCancel={handleEditOverlayDragEnd}
-          onPointerDown={handleEditOverlayDragStart}
-          onPointerMove={handleEditOverlayDragMove}
-          onPointerUp={handleEditOverlayDragEnd}
-          title="Move edit tools"
-          type="button"
-        >
-          <span aria-hidden="true">⋮⋮</span>
-        </button>
+      <div className="route-group-assign-tools" role="group" aria-label="Polygon assignment tools">
         <label className="route-group-map-driver-select">
           <span>Driver</span>
           <select value={activeDriverId} onChange={(event) => setActiveDriverId(event.target.value)} aria-label="Driver">
@@ -347,7 +289,6 @@ export function RouteGroupingPage({
           className="route-group-map-panel"
           fitOrdersToBounds
           headerAction={mapHeaderAction}
-          mapOverlayAction={mapEditOverlay}
           orderMarkerStates={groupedOrderMarkerStates}
           orders={mapOrders}
           polygonDraft={isEditing ? draft : undefined}
@@ -356,6 +297,7 @@ export function RouteGroupingPage({
           polygonMode={isEditing}
           polygons={visiblePolygons}
           onPolygonFinish={() => setDraft((current) => closePolygonDraft(current))}
+          onPolygonSelect={(polygonId) => handlePolygonSelect(polygonId)}
           onPolygonVertex={(coordinate) => setDraft((current) => appendPolygonVertex(current, coordinate))}
           onPolygonVertexInsert={(index, coordinate) => setDraft((current) => insertPolygonVertex(current, index, coordinate))}
           onPolygonVertexMove={(index, coordinate) => setDraft((current) => movePolygonVertex(current, index, coordinate))}
@@ -377,7 +319,7 @@ export function RouteGroupingPage({
               polygons={grouping.polygons}
             />
           ) : null}
-          <RouteGroupingOrderItemsCard assignments={grouping?.assignments ?? []} drivers={drivers} locale={bootstrap.locale} polygons={grouping?.polygons ?? []} />
+          <RouteGroupingAssignmentsCard assignments={grouping?.assignments ?? []} drivers={drivers} locale={bootstrap.locale} polygons={grouping?.polygons ?? []} />
         </div>
       }
     />
@@ -576,7 +518,7 @@ export function canGenerateRouteGroupingChildRoutes(grouping: RouteGroupingDetai
   return getRouteGroupingDuplicateDriverPolygonIds(grouping.polygons).size === 0;
 }
 
-function RouteGroupingOrderItemsCard({
+function RouteGroupingAssignmentsCard({
   assignments,
   drivers,
   locale,
@@ -591,26 +533,20 @@ function RouteGroupingOrderItemsCard({
   const assignmentResults = buildRouteGroupingAssignmentResults(assignments, polygons, drivers, locale);
   const sortedAssignments = sortRouteGroupingAssignments(assignments, assignmentResults);
   return (
-    <article className="panel route-group-order-items-card">
-      <table className="ops-table route-group-order-items-table">
-        <thead><tr><th>{t.order}</th><th>{t.driver}</th><th>{t.sequence}</th><th>{t.items}</th></tr></thead>
+    <article className="panel route-group-assignments-card">
+      <table className="ops-table route-group-assignments-table">
+        <thead><tr><th>{t.order}</th><th>{t.customer}</th><th>{t.address}</th><th>{t.contact}</th><th>{t.driver}</th><th>{t.sequence}</th></tr></thead>
         <tbody>
           {sortedAssignments.map((assignment) => {
-            const items = getOrderItems(assignment.items);
+            const result = assignmentResults.get(assignment.orderId);
             return (
               <tr key={assignment.orderId}>
                 <td><strong>{assignment.orderName}</strong></td>
-                <td><span className="route-group-assignment-pill">{assignmentResults.get(assignment.orderId)?.driverLabel ?? t.unassigned}</span></td>
-                <td className="route-group-assignment-sequence">{assignmentResults.get(assignment.orderId)?.sequenceLabel ?? "—"}</td>
-                <td>
-                  {items.length === 0 ? "—" : (
-                    <ul className="route-group-order-items-list">
-                      {items.map((item, index) => (
-                        <li key={getOrderItemDisplayKey(item, index)}>{formatOrderItemLine(item)}</li>
-                      ))}
-                    </ul>
-                  )}
-                </td>
+                <td>{assignment.recipientName ?? "—"}</td>
+                <td>{assignment.addressLabel || "—"}</td>
+                <td>{[assignment.phone, assignment.email].filter(Boolean).join(" · ") || "—"}</td>
+                <td><span className="route-group-assignment-pill">{result?.driverLabel ?? t.unassigned}</span></td>
+                <td className="route-group-assignment-sequence">{result?.sequenceLabel ?? "—"}</td>
               </tr>
             );
           })}
@@ -624,6 +560,9 @@ type RouteGroupingAssignmentResult = { driverLabel: string; groupSortOrder: numb
 
 const routeGroupingCopy = {
   "en-CA": {
+    address: "Address",
+    contact: "Contact",
+    customer: "Customer",
     driver: "Driver",
     excluded: "Excluded",
     items: "Items",
@@ -633,6 +572,9 @@ const routeGroupingCopy = {
     unassigned: "Unassigned",
   },
   "ko-KR": {
+    address: "주소",
+    contact: "연락처",
+    customer: "고객",
     driver: "배송원",
     excluded: "제외",
     items: "품목",
@@ -752,16 +694,16 @@ function assignmentToOrder(assignment: RouteGroupingDetailDto["assignments"][num
     deliveryStatus: "PENDING",
     geocodeStatus: "RESOLVED",
     health: "ready",
-    items: assignment.items,
+    items: [],
     orderId: assignment.orderId,
     orderName: assignment.orderName,
-    phone: null,
+    phone: assignment.phone,
     planningStatus: "PLANNED",
-    recipientName: null,
+    recipientName: assignment.recipientName,
     routePlanId: null,
     routePlanName: null,
     serviceType: null,
-    shippingAddress: { address1: null, address2: null, city: null, countryCode: null, postalCode: null, province: null },
+    shippingAddress: { address1: assignment.addressLabel, address2: null, city: null, countryCode: null, postalCode: null, province: null },
     sourceCreatedAt: null,
     sourceCreatedDate: null,
     sourceOrderId: assignment.sourceOrderId,
@@ -774,10 +716,6 @@ function assignmentToOrder(assignment: RouteGroupingDetailDto["assignments"][num
     timeWindowEnd: null,
     timeWindowStart: null,
   };
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
 }
 
 function driverLabel(driverId: string, drivers: DriverDto[]): string {

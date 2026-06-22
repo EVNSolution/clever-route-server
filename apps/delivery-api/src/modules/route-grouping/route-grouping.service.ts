@@ -11,10 +11,12 @@ import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js
 import type { RoutePlanDetail, RoutePlanRouteResult } from '../route-plans/route-plan.types.js';
 import {
   RouteGroupingConflictError,
+  RouteGroupingDeleteBlockedError,
   RouteGroupingRiskConfirmationRequiredError,
   RouteGroupingUnresolvedAssignmentsError,
   RouteGroupingValidationError,
   type CreateRouteGroupingInput,
+  type DeleteRouteGroupingResult,
   type GenerateChildRoutesInput,
   type ResolveRouteGroupingAssignmentsInput,
   type RollbackRouteGroupingInput,
@@ -31,7 +33,6 @@ import {
   type SaveRouteGroupingPolygonsInput
 } from './route-grouping.types.js';
 import { hashPushToken } from './driver-push-token.service.js';
-import { toOrderItemDto } from '../order-items/order-items.js';
 
 const OPTIMIZER_VERSION = 'route-grouping-projection-v1';
 const ROUTE_GROUPING_GEOMETRY_REFRESH_CONCURRENCY = 2;
@@ -56,7 +57,10 @@ type RouteGroupingPrismaClient = Pick<
   PrismaClient,
   | '$transaction'
   | 'customerRouteNotificationFact'
+  | 'driverEvent'
+  | 'driverProofMedia'
   | 'driverPushToken'
+  | 'driverRouteFeedback'
   | 'driverRouteNotificationAttempt'
   | 'orderDeliveryFact'
   | 'routeGrouping'
@@ -187,6 +191,27 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     const loaded = await this.loadGrouping(input);
     if (loaded === null) return null;
     return toGroupingDetailDto(loaded);
+  }
+
+  async deleteGrouping(input: { groupingId: string; shopDomain: string }): Promise<DeleteRouteGroupingResult> {
+    const shopDomain = normalizeShopDomain(input.shopDomain);
+    return this.prisma.$transaction(async (tx) => {
+      const group = await tx.routeGrouping.findFirst({
+        include: { childVersions: { select: { notificationStatus: true, publishedAt: true, routePlanId: true } } },
+        where: { id: input.groupingId, shop: { shopDomain } }
+      });
+      if (group === null) return { deleted: false, deletedChildRoutePlanCount: 0, groupingId: input.groupingId };
+
+      const childRoutePlanIds = [...new Set(group.childVersions.map((child) => child.routePlanId).filter((id): id is string => id !== null))];
+      await assertGroupingDeleteAllowed(tx, group.shopId, childRoutePlanIds, group.childVersions);
+
+      if (childRoutePlanIds.length > 0) {
+        await tx.routePlanStop.deleteMany({ where: { routePlanId: { in: childRoutePlanIds } } });
+        await tx.routePlan.deleteMany({ where: { id: { in: childRoutePlanIds }, shopId: group.shopId } });
+      }
+      await tx.routeGrouping.delete({ where: { id: group.id } });
+      return { deleted: true, deletedChildRoutePlanCount: childRoutePlanIds.length, groupingId: input.groupingId };
+    });
   }
 
   async listGroupings(input: { deliveryDate?: string; shopDomain: string }): Promise<RouteGroupingSummaryDto[]> {
@@ -597,6 +622,35 @@ async function recomputeAssignments(tx: Tx, groupingId: string): Promise<void> {
   }
 }
 
+const DELETE_ALLOWED_ROUTE_STATUSES = ['DRAFT'] as const;
+const DELETE_BLOCKED_STOP_STATUSES = ['EN_ROUTE', 'ARRIVED', 'DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'] as const;
+
+async function assertGroupingDeleteAllowed(
+  tx: Tx,
+  shopId: string,
+  routePlanIds: string[],
+  childVersions: Array<{ notificationStatus: string; publishedAt: Date | null }>
+): Promise<void> {
+  if (routePlanIds.length === 0) return;
+  const blockers: string[] = [];
+  const hasPublishedChild = childVersions.some((child) => child.publishedAt !== null || child.notificationStatus !== 'SKIPPED');
+  const [blockedRoutes, progressedStops, notificationAttempts, driverEvents, feedback, proofMedia] = await Promise.all([
+    tx.routePlan.count({ where: { id: { in: routePlanIds }, shopId, status: { notIn: [...DELETE_ALLOWED_ROUTE_STATUSES] } } }),
+    tx.routePlanStop.count({ where: { routePlanId: { in: routePlanIds }, deliveryStop: { status: { in: [...DELETE_BLOCKED_STOP_STATUSES] } } } }),
+    tx.driverRouteNotificationAttempt.count({ where: { routePlanId: { in: routePlanIds }, shopId } }),
+    tx.driverEvent.count({ where: { routePlanId: { in: routePlanIds }, shopId } }),
+    tx.driverRouteFeedback.count({ where: { routePlanId: { in: routePlanIds }, shopId } }),
+    tx.driverProofMedia.count({ where: { routePlanId: { in: routePlanIds }, shopId } })
+  ]);
+  if (blockedRoutes > 0) blockers.push('child route status no longer allows delete');
+  if (progressedStops > 0) blockers.push('one or more stops have driver progress');
+  if (hasPublishedChild || notificationAttempts > 0) blockers.push('driver route notification already exists');
+  if (driverEvents > 0) blockers.push('driver events already exist');
+  if (feedback > 0) blockers.push('driver feedback already exists');
+  if (proofMedia > 0) blockers.push('proof media already exists');
+  if (blockers.length > 0) throw new RouteGroupingDeleteBlockedError(blockers);
+}
+
 async function archiveCurrentChildren(tx: Tx, group: LoadedGrouping, actor: string): Promise<void> {
   const current = group.childVersions.filter((child) => child.status === 'CURRENT');
   for (const child of current) {
@@ -981,6 +1035,13 @@ function toGroupingSummaryDto(group: LoadedGrouping): RouteGroupingSummaryDto {
   };
 }
 
+function formatDeliveryStopAddress(stop: LoadedAssignment['deliveryStop']): string {
+  return [stop.address1, stop.address2, stop.city, stop.province, stop.postalCode, stop.countryCode]
+    .map((part) => part?.trim())
+    .filter((part): part is string => part !== undefined && part !== null && part !== '')
+    .join(', ');
+}
+
 function toAssignmentDto(order: LoadedAssignment): RouteGroupingAssignmentDto {
   return {
     assignedDriverId: order.assignedDriverId,
@@ -990,7 +1051,10 @@ function toAssignmentDto(order: LoadedAssignment): RouteGroupingAssignmentDto {
     deliveryStopId: order.deliveryStopId,
     orderId: order.orderId,
     orderName: order.order.name,
-    items: order.order.orderItems.map((item) => toOrderItemDto(item)),
+    recipientName: order.deliveryStop.recipientName,
+    addressLabel: formatDeliveryStopAddress(order.deliveryStop),
+    phone: order.deliveryStop.phone ?? order.order.phone ?? null,
+    email: order.order.email ?? null,
     sourceOrderId: order.order.shopifyOrderGid,
     sourceSequence: order.sourceSequence
   };

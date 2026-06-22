@@ -1,4 +1,3 @@
-import type { OrderItemDto } from '../order-items/order-items.js';
 import type { RoutePlanSummary } from '../route-plans/route-plan.types.js';
 
 export type RouteGroupingDisplayStatus = 'DRAFT' | 'NEEDS_ASSIGNMENT' | 'READY' | 'PUBLISHED' | 'CHANGED' | 'CANCELLED';
@@ -13,7 +12,10 @@ export type RouteGroupingAssignmentDto = {
   deliveryStopId: string;
   orderId: string;
   orderName: string;
-  items: OrderItemDto[];
+  recipientName: string | null;
+  addressLabel: string;
+  phone: string | null;
+  email: string | null;
   sourceOrderId: string;
   sourceSequence: number;
 };
@@ -108,8 +110,11 @@ export type RollbackRouteGroupingInput = {
   version: number;
 };
 
+export type DeleteRouteGroupingResult = { deleted: boolean; deletedChildRoutePlanCount: number; groupingId: string };
+
 export type RouteGroupingService = {
   createGrouping(input: CreateRouteGroupingInput): Promise<RouteGroupingDetailDto>;
+  deleteGrouping(input: { groupingId: string; shopDomain: string }): Promise<DeleteRouteGroupingResult>;
   getGrouping(input: { groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null>;
   listGroupings(input: { deliveryDate?: string; shopDomain: string }): Promise<RouteGroupingSummaryDto[]>;
   savePolygons(input: SaveRouteGroupingPolygonsInput): Promise<RouteGroupingDetailDto | null>;
@@ -124,6 +129,14 @@ export class RouteGroupingConflictError extends Error {
   constructor(message = 'Route grouping was changed by another save. Refresh and try again.') {
     super(message);
     this.name = 'RouteGroupingConflictError';
+  }
+}
+
+export class RouteGroupingDeleteBlockedError extends Error {
+  readonly code = 'ROUTE_GROUPING_DELETE_BLOCKED';
+  constructor(readonly blockers: string[]) {
+    super(`Route grouping delete blocked: ${blockers.join('; ')}`);
+    this.name = 'RouteGroupingDeleteBlockedError';
   }
 }
 

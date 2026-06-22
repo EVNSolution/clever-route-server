@@ -292,6 +292,15 @@ export async function getRouteGrouping(
   );
 }
 
+export async function deleteRouteGrouping(routeGroupId: string, csrfToken: string): Promise<{ deleted: boolean; deletedChildRoutePlanCount: number; groupingId: string }> {
+  return apiMutation<{ deleted: boolean; deletedChildRoutePlanCount: number; groupingId: string }>(
+    `/admin/ui/app/api/route-groups/${encodeURIComponent(routeGroupId)}`,
+    "DELETE",
+    csrfToken,
+    {},
+  );
+}
+
 export async function saveRouteGroupingPolygons(input: {
   csrfToken: string;
   deletePolygonIds?: string[];

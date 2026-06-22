@@ -5,6 +5,7 @@ import {
   RoutePlanBatchInvalidError,
   RoutePlanConflictError,
   RoutePlanDriverAssignInvalidError,
+  RoutePlanDeleteBlockedError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanPublishInvalidError,
   RoutePlanStopUpdateInvalidError
@@ -1227,6 +1228,9 @@ describe('PrismaRoutePlanRepository', () => {
       select: { id: true },
       where: { id: 'route-plan-id', shopId: 'shop-id' }
     });
+    expect(prisma.routeGroupingChildVersion.count).toHaveBeenCalledWith({
+      where: { routePlanId: 'route-plan-id', shopId: 'shop-id' }
+    });
     expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledWith({
       where: { routePlanId: 'route-plan-id' }
     });
@@ -1234,6 +1238,22 @@ describe('PrismaRoutePlanRepository', () => {
       where: { id: 'route-plan-id' }
     });
     expect(prisma.routePlan.delete).toHaveBeenCalledTimes(1);
+  });
+
+
+  test('blocks direct deletion of a route generated from a parent grouping', async () => {
+    const { prisma } = createPrismaHarness({ routeGroupingChildVersionCount: 1 });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(repository.deleteRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    })).rejects.toBeInstanceOf(RoutePlanDeleteBlockedError);
+
+    expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.routePlan.delete).not.toHaveBeenCalled();
   });
 
   test('returns deleted:false when no matching route plan is found for this shop', async () => {
@@ -1284,6 +1304,7 @@ function createPrismaHarness(input: {
   routeGeometryCacheFindUnique?: Record<string, unknown> | null;
   routePlanFindFirst?: Record<string, unknown> | null;
   routePlanToDelete?: { id: string } | null;
+  routeGroupingChildVersionCount?: number;
   shop?: Record<string, unknown> | null;
 } = {}): {
   prisma: {
@@ -1301,6 +1322,9 @@ function createPrismaHarness(input: {
     };
     orderDeliveryFact: {
       findMany: ReturnType<typeof vi.fn>;
+    };
+    routeGroupingChildVersion: {
+      count: ReturnType<typeof vi.fn>;
     };
     routePlan: {
       create: ReturnType<typeof vi.fn>;
@@ -1366,6 +1390,9 @@ function createPrismaHarness(input: {
           ]
         )
       )
+    },
+    routeGroupingChildVersion: {
+      count: vi.fn(() => Promise.resolve(input.routeGroupingChildVersionCount ?? 0))
     },
     routePlan: {
       create: vi.fn(() =>
