@@ -370,8 +370,8 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
       />,
     );
 
-    expect(html).toContain('Road path ready');
-    expect(html).toContain('class="route-publish-badge green">Published</span>');
+    expect(html).not.toContain('Road path ready');
+    expect(html).toContain('class="route-visibility-button green" disabled="" type="button">Visible to driver</button>');
     expect(html).not.toContain('Published route — visible to the linked driver after the app refreshes.');
     expect(html).not.toContain('Driver app visible');
     expect(html).toMatch(/aria-label="Save route"[^>]*disabled=""/);
@@ -409,6 +409,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('<h3>Route 2026-06-05 — Alex Driver</h3>');
     expect(extractFirstMatch(html, /<div class="route-child-sequence-header">([\s\S]*?)<\/div><div class="route-group-area-list/)).not.toContain('Save route');
     expect(html).toContain('class="route-map-header-actions"');
+    expect(html).toContain('class="route-visibility-button orange" disabled="" type="button">Send to driver</button>');
     expect(html).toContain('class="danger subtle route-map-delete-button"');
     expect(html).toContain('class="route-group-area-driver route-group-area-driver--assignable route-child-sequence-driver"');
     expect(html).not.toContain('class="route-group-area-swatch"');

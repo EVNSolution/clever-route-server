@@ -8,6 +8,7 @@ import {
   getRouteDetail,
   getRouteGrouping,
   getRoutes,
+  publishRoute,
   saveRoute,
 } from "../api";
 import { Badge, Kpi } from "../components/primitives";
@@ -25,7 +26,6 @@ import {
 } from "../orderItems";
 import {
   deriveRouteStats,
-  geometryLabel,
   hasStopSequenceChanged,
   moveStop,
   moveStopToDropPosition,
@@ -580,6 +580,7 @@ export function RouteBuilder(input: {
   const [draggingStopId, setDraggingStopId] = useState<string | null>(null);
   const [dropPreview, setDropPreview] = useState<StopDropPreview | null>(null);
   const [isSavingRoute, setIsSavingRoute] = useState(false);
+  const [isPublishingRoute, setIsPublishingRoute] = useState(false);
   const detail = input.detail;
   const locale = resolveLocale(input.locale);
   const t = getRoutesCopy(locale);
@@ -626,6 +627,8 @@ export function RouteBuilder(input: {
           stopsCount: draftStops.length,
         };
   const publishBadge = getRoutePublishBadge(effectiveRoutePlan, locale);
+  const isDriverVisible =
+    effectiveRoutePlan !== null && effectiveRoutePlan.status !== "DRAFT";
   const canPublishOnSave =
     effectiveRoutePlan !== null &&
     effectiveRoutePlan.status === "DRAFT" &&
@@ -681,6 +684,25 @@ export function RouteBuilder(input: {
     }
   };
 
+  const sendRouteToDriver = async (): Promise<void> => {
+    if (detail === null || isDriverVisible) return;
+    setIsPublishingRoute(true);
+    try {
+      const latest = hasUnsavedRouteChanges ? await saveRouteDraft() : detail;
+      const published = await publishRoute(
+        latest.routePlan.id,
+        input.bootstrap.csrfToken,
+      );
+      input.setDetail(published);
+      input.onRefreshRoutes();
+      input.setError(null);
+    } catch (error) {
+      input.setError(readErrorMessage(error));
+    } finally {
+      setIsPublishingRoute(false);
+    }
+  };
+
   const moveDraftStop = (deliveryStopId: string, direction: -1 | 1): void => {
     setDraftStops((current) => moveStop(current, deliveryStopId, direction));
     setSelectedRouteStopId(null);
@@ -719,12 +741,29 @@ export function RouteBuilder(input: {
   const returnToDepotDisabled =
     detail === null || (!returnToDepotChecked && !canReturnToDepot);
   const routeEndWarningId = "route-end-depot-warning";
+  const canSendRouteToDriver =
+    detail !== null &&
+    !isDriverVisible &&
+    !isSavingRoute &&
+    !isPublishingRoute &&
+    !isUnsafeRouteEndDraft &&
+    effectiveDriverId !== null &&
+    draftStops.length > 0;
   const routeMapHeaderAction = (
     <div className="route-map-header-actions">
       {publishBadge === null ? null : (
-        <span className={`route-publish-badge ${publishBadge.tone}`}>
-          {publishBadge.text}
-        </span>
+        <button
+          className={`route-visibility-button ${publishBadge.tone}`}
+          disabled={isDriverVisible || !canSendRouteToDriver}
+          onClick={() => void sendRouteToDriver()}
+          type="button"
+        >
+          {isDriverVisible
+            ? t.visibleToDriver
+            : isPublishingRoute
+              ? t.sendingToDriver
+              : t.sendToDriver}
+        </button>
       )}
       {isChildRouteDetail ? (
         <button
@@ -949,11 +988,6 @@ export function RouteBuilder(input: {
             onRouteStopSequencePick={moveDraftStopToSequence}
             selectedRouteStopId={selectedRouteStopId}
             showRouteStopPickerItems={!isChildRouteDetail}
-            subtitle={geometryLabel(
-              detail,
-              input.bootstrap.routerConfig.status,
-              locale,
-            )}
             title={
               detail === null
                 ? t.routeBuilder

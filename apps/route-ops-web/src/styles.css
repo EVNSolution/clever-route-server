@@ -478,23 +478,31 @@ small,
   flex-wrap: wrap;
   gap: 10px;
 }
-.route-publish-badge {
+.route-visibility-button {
+  appearance: none;
+  background: #ffffff;
   border: 1px solid #d9e1ee;
   border-radius: 999px;
   color: #374151;
+  cursor: pointer;
   display: inline-flex;
   font-size: 12px;
   font-weight: 900;
+  justify-content: center;
   line-height: 1;
-  padding: 8px 10px;
+  min-height: 32px;
+  padding: 7px 12px;
   white-space: nowrap;
 }
-.route-publish-badge.green {
+.route-visibility-button:disabled {
+  cursor: default;
+}
+.route-visibility-button.green {
   background: #ecfdf5;
   border-color: #bbf7d0;
   color: #166534;
 }
-.route-publish-badge.orange {
+.route-visibility-button.orange {
   background: #fff7ed;
   border-color: #fed7aa;
   color: #9a3412;
@@ -1718,7 +1726,7 @@ button.danger.subtle {
 
 /* Shopify-inspired compact Route Ops workspace */
 .tab-layout {
-  --route-builder-detail-panel-height: clamp(620px, calc(100vh - 220px), 760px);
+  --route-builder-detail-panel-height: clamp(500px, calc(100vh - 340px), 640px);
   align-items: start;
   display: grid;
   gap: 18px;
@@ -1741,7 +1749,14 @@ button.danger.subtle {
   min-height: 0;
 }
 .route-builder-workspace .map-panel .panel-heading {
+  align-items: center;
   flex: 0 0 auto;
+  margin-bottom: 12px;
+}
+.route-builder-workspace .map-panel .panel-heading h2 {
+  font-size: 24px;
+  line-height: 1.1;
+  margin: 0;
 }
 .map-panel-heading-action {
   align-items: center;
