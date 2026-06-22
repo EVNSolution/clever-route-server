@@ -172,32 +172,3 @@ candidate `ROUTE_OPS_WEB_STATIC_IMAGE` ref with the previous value from
 
 Use the force flag when debugging volume state, repairing a suspected stale static volume,
 or deliberately rehydrating the static artifact without changing the image digest. Local manual `--publish` fallbacks may still render mutable channel tags; those refs are intentionally staged conservatively instead of using the unchanged skip.
-
-## Legacy deploy-control cloud cleanup evidence
-
-On 2026-06-19, after the GHCR + AWS-managed `AWS-RunShellScript` lane was accepted as the
-production standard, the first approval-gated cleanup pass removed only the legacy resources
-that were no longer referenced by the current deploy lane:
-
-- deleted GitHub variables `SSM_ROUTE_OPS_DOCUMENT_NAME` and `SSM_ROUTE_OPS_DOCUMENT_VERSION`;
-- trimmed `arn:aws:ssm:ap-northeast-2:902837199612:document/CleverRoute-RouteOpsDeploy`
-  from the `GitHubActions-CleverRoute-RouteOpsDeploy` / `CleverRouteOpsSsmDeploy` inline
-  policy while keeping `AWS-RunShellScript` and command polling permissions;
-- exported and deleted the obsolete `RouteOpsDeployControlArtifactWrite` inline policy;
-- exported and deleted the obsolete custom SSM document `CleverRoute-RouteOpsDeploy`.
-
-A second explicit approval-gated cleanup pass completed the remaining legacy deploy-control
-resource removal on 2026-06-19:
-
-- backed up and deleted `s3://route-ops-artifacts-902837199612-ap-northeast-2/artifacts/route-ops/prod/deploy-control/`.
-
-Post-verify evidence for the second pass showed no matching GitHub variable/secret, an empty
-S3 prefix, and a local backup containing `104` files / `2.8G` at
-`.omx/artifacts/ghcr-deploy-standardization/cloud-mutation-bf-20260619T054413Z/route-ops-deploy-control-backup`.
-
-No legacy deploy-control cloud resources are intentionally retained. Restore sources are the
-timestamped local exports under the OMX cleanup artifact directories for these runs. Recreate
-the GitHub variables/secrets only from an approved secret source, re-put exported IAM policies
-with `aws iam put-role-policy`, recreate the SSM document from the exported `get-document`
-payload, and restore the S3 deploy-control prefix from the local backup only if the legacy
-rollback lane is deliberately reintroduced.
