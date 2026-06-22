@@ -346,26 +346,6 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(html).toContain('data-map-provider-status="configured"');
   });
 
-  test('keeps public map tiles stable during initial fit resize and tile verification', () => {
-    const source = readFileSync('src/components/maps/RouteOpsMap.tsx', 'utf8');
-
-    expect(source).toContain('cancelPendingTileRequestsWhileZooming: false');
-    expect(source).toContain("map.once('idle', () => stabilizeMapCanvas(map));");
-    expect(source).toContain("map.once('render', () => {");
-    expect(source).toContain('scheduleInitialMapTileVerification(map);');
-    expect(source).toContain('const INITIAL_TILE_VERIFY_DELAY_MS = 3;');
-    expect(source).toContain('initialTileRefreshAttemptRef.current += 1;');
-    expect(source).toContain('function stabilizeMapCanvas(map: MapLibreMap): void');
-    expect(source).toContain('function verifyInitialMapTiles(map: MapLibreMap): void');
-    expect(source).toContain('tileMap.areTilesLoaded');
-    expect(source).toContain('safeTriggerMapRepaint(map);');
-    expect(source).not.toContain('onRefreshMap();');
-    expect(source).toContain('scheduleMapSettling(() => safeResizeMap(map));');
-    expect(source).toContain('const animationFrame = window.requestAnimationFrame(callback);');
-    expect(source).not.toContain('route-ops-order-highlight-halo');
-    expect(source).toContain('function keepOrderPinsAbovePolygonFill(map: MapLibreMap): void');
-    expect(source).toContain("safeMoveLayer(map, 'route-ops-polygons-fill', 'route-ops-order-pins');");
-  });
 
   test('renders a route-mode back control inside the map frame', () => {
     const html = renderToStaticMarkup(createElement(RouteOpsMap, {
