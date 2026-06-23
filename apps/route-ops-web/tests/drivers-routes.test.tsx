@@ -426,6 +426,8 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('class="primary route-send-driver-button" disabled="" type="button">Send to driver</button>');
     expect(html).toContain('Assign a driver and add stops first.');
     expect(html).toContain('route-child-manifest-detail-row');
+    expect(html).toContain('route-child-manifest-detail-grid');
+    expect(html).toContain('route-child-manifest-toggle');
     expect(html).toContain('<td>Kimchi</td>');
     expect(html).toContain('<td>Soup</td>');
     expect(html).toContain('<td>Rice</td>');

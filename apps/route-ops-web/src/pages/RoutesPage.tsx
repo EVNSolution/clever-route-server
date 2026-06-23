@@ -1268,6 +1268,15 @@ function ChildRouteManifestCard({
 }): ReactElement {
   const t = getRoutesCopy(locale);
   const copy = childManifestCopy[resolveLocale(locale)];
+  const [collapsedStopIds, setCollapsedStopIds] = useState<ReadonlySet<string>>(() => new Set());
+  const toggleStop = (stopId: string): void => {
+    setCollapsedStopIds((current) => {
+      const next = new Set(current);
+      if (next.has(stopId)) next.delete(stopId);
+      else next.add(stopId);
+      return next;
+    });
+  };
   return (
     <article className="panel route-child-manifest-card">
       <div className="route-item-summary-heading">
@@ -1277,6 +1286,7 @@ function ChildRouteManifestCard({
         <table className="ops-table route-child-manifest-table">
           <thead>
             <tr>
+              <th aria-label={copy.details}></th>
               <th>{t.stopTable.sequence}</th>
               <th>{t.stopTable.order}</th>
               <th>{copy.recipient}</th>
@@ -1287,9 +1297,21 @@ function ChildRouteManifestCard({
           <tbody>
             {stops.map((stop, index) => {
               const orderItems = getOrderItems(stop.items);
+              const isCollapsed = collapsedStopIds.has(stop.deliveryStopId);
               return (
                 <Fragment key={stop.deliveryStopId}>
-                  <tr>
+                  <tr className="route-child-manifest-summary-row">
+                    <td>
+                      <button
+                        aria-expanded={!isCollapsed}
+                        aria-label={isCollapsed ? copy.showDetails : copy.hideDetails}
+                        className="route-child-manifest-toggle"
+                        onClick={() => toggleStop(stop.deliveryStopId)}
+                        type="button"
+                      >
+                        <span aria-hidden="true">⌄</span>
+                      </button>
+                    </td>
                     <td>{index + 1}</td>
                     <td>{stop.orderName}</td>
                     <td>{stop.recipientName ?? t.noRecipient}</td>
@@ -1299,47 +1321,50 @@ function ChildRouteManifestCard({
                     </td>
                     <td>{formatManifestEta(stop.estimatedArrivalAt, locale)} · {formatManifestLeg(stop, copy)}</td>
                   </tr>
-                  <tr className="route-child-manifest-detail-row">
-                    <td colSpan={5}>
-                      <table className="route-child-manifest-detail-table">
-                        <tbody>
-                          <tr><th>{copy.address}</th><td>{stop.addressLabel || "—"}</td></tr>
-                          <tr><th>{copy.contact}</th><td>{[stop.phone, stop.email].filter(Boolean).join(" · ") || "—"}</td></tr>
-                          <tr>
-                            <th>{copy.items}</th>
-                            <td>
-                              <div className="order-detail-items-table-scroll route-child-manifest-items-scroll">
-                                <table className="order-detail-items-table route-child-manifest-items-table">
-                                  <thead>
-                                    <tr>
-                                      <th>{copy.item}</th>
-                                      <th>{copy.options}</th>
-                                      <th>{copy.sku}</th>
-                                      <th>{copy.quantity}</th>
+                  {!isCollapsed ? (
+                    <tr className="route-child-manifest-detail-row">
+                      <td colSpan={6}>
+                        <div className="route-child-manifest-detail-grid">
+                          <div className="route-child-manifest-contact-card">
+                            <div>
+                              <div className="route-child-manifest-detail-label">{copy.address}</div>
+                              <div className="route-child-manifest-detail-value">{stop.addressLabel || "—"}</div>
+                            </div>
+                            <div>
+                              <div className="route-child-manifest-detail-label">{copy.contact}</div>
+                              <div className="route-child-manifest-detail-value">{[stop.phone, stop.email].filter(Boolean).join(" · ") || "—"}</div>
+                            </div>
+                          </div>
+                          <div className="order-detail-items-table-scroll route-child-manifest-items-scroll">
+                            <table className="order-detail-items-table route-child-manifest-items-table">
+                              <thead>
+                                <tr>
+                                  <th>{copy.item}</th>
+                                  <th>{copy.options}</th>
+                                  <th>{copy.sku}</th>
+                                  <th>{copy.quantity}</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {orderItems.length === 0 ? (
+                                  <tr><td className="order-detail-items-empty" colSpan={4}>{copy.noItems}</td></tr>
+                                ) : (
+                                  orderItems.map((item, itemIndex) => (
+                                    <tr key={`${getOrderItemSemanticDisplayKey(item)}:${itemIndex}`}>
+                                      <td>{formatOrderItemName(item)}</td>
+                                      <td>{formatOrderItemOptions(item) || "—"}</td>
+                                      <td>{item.sku ?? "—"}</td>
+                                      <td>{item.quantity}</td>
                                     </tr>
-                                  </thead>
-                                  <tbody>
-                                    {orderItems.length === 0 ? (
-                                      <tr><td className="order-detail-items-empty" colSpan={4}>{copy.noItems}</td></tr>
-                                    ) : (
-                                      orderItems.map((item, itemIndex) => (
-                                        <tr key={`${getOrderItemSemanticDisplayKey(item)}:${itemIndex}`}>
-                                          <td>{formatOrderItemName(item)}</td>
-                                          <td>{formatOrderItemOptions(item) || "—"}</td>
-                                          <td>{item.sku ?? "—"}</td>
-                                          <td>{item.quantity}</td>
-                                        </tr>
-                                      ))
-                                    )}
-                                  </tbody>
-                                </table>
-                              </div>
-                            </td>
-                          </tr>
-                        </tbody>
-                      </table>
-                    </td>
-                  </tr>
+                                  ))
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
                 </Fragment>
               );
             })}
@@ -1367,6 +1392,9 @@ const childManifestCopy = {
     quantity: "Qty",
     recipient: "Recipient",
     sku: "SKU",
+    details: "Details",
+    hideDetails: "Hide delivery details",
+    showDetails: "Show delivery details",
     title: "Driver manifest",
   },
   "ko-KR": {
@@ -1385,6 +1413,9 @@ const childManifestCopy = {
     quantity: "수량",
     recipient: "수령인",
     sku: "SKU",
+    details: "상세",
+    hideDetails: "배송 상세 숨기기",
+    showDetails: "배송 상세 보기",
     title: "배송 목록",
   },
 } as const;
