@@ -861,7 +861,7 @@ export function RouteBuilder(input: {
             savedStopSequenceLabels={savedStopSequenceLabels}
             stops={draftStops}
           />
-          <ChildRouteManifestCard dwellMinutes={input.settings?.routeOpsUiSettings.destinationDwellMinutes ?? null} locale={locale} stops={draftStops} />
+          <ChildRouteManifestCard locale={locale} stops={draftStops} />
         </>
       ) : null}
       <section className="route-item-summary-card" aria-label={t.routeItems}>
@@ -1284,11 +1284,9 @@ function ChildRouteSequenceCard({
 }
 
 function ChildRouteManifestCard({
-  dwellMinutes,
   locale,
   stops,
 }: {
-  dwellMinutes: number | null;
   locale?: string | null;
   stops: RouteStopDto[];
 }): ReactElement {
@@ -1317,7 +1315,7 @@ function ChildRouteManifestCard({
               <th>{t.stopTable.order}</th>
               <th>{copy.recipient}</th>
               <th>{copy.payment}</th>
-              <th>{copy.eta}</th>
+              <th>{copy.arrival}</th>
             </tr>
           </thead>
           <tbody>
@@ -1345,56 +1343,56 @@ function ChildRouteManifestCard({
                       <span>{formatManifestAmount(stop)}</span>
                       <span className={paymentClassName(stop.normalizedPaymentStatus)}>{formatManifestPayment(stop, copy)}</span>
                     </td>
-                    <td className="route-child-eta-cell">
-                      <span><strong>{copy.arrival}</strong> {formatManifestEta(stop.estimatedArrivalAt, locale)}</span>
-                      <span><strong>{copy.dwell}</strong> {formatManifestDwell(dwellMinutes, copy)}</span>
-                    </td>
+                    <td className="route-child-arrival-cell">{formatManifestEta(stop.estimatedArrivalAt, locale)}</td>
                   </tr>
                   {!isCollapsed ? (
                     <tr className="route-child-manifest-detail-row">
                       <td colSpan={6}>
-                        <div className="route-child-manifest-detail-grid">
-                          <div className="route-child-manifest-contact-card">
-                            <div>
-                              <div className="route-child-manifest-detail-label">{copy.address}</div>
-                              <div className="route-child-manifest-detail-value">{stop.addressLabel || "—"}</div>
-                            </div>
-                            <div>
-                              <div className="route-child-manifest-detail-label">{copy.contact}</div>
-                              <div className="route-child-manifest-detail-value route-child-manifest-contact-lines">
+                        <table className="route-child-manifest-detail-table">
+                          <thead>
+                            <tr>
+                              <th>{copy.address}</th>
+                              <th>{copy.contact}</th>
+                              <th>{copy.items}</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr>
+                              <td>{stop.addressLabel || "—"}</td>
+                              <td className="route-child-manifest-contact-lines">
                                 {stop.phone ? <span>{stop.phone}</span> : null}
                                 {stop.email ? <span>{stop.email}</span> : null}
                                 {stop.phone || stop.email ? null : <span>—</span>}
-                              </div>
-                            </div>
-                          </div>
-                          <div className="order-detail-items-table-scroll route-child-manifest-items-scroll">
-                            <table className="order-detail-items-table route-child-manifest-items-table">
-                              <thead>
-                                <tr>
-                                  <th>{copy.item}</th>
-                                  <th>{copy.options}</th>
-                                  <th>{copy.sku}</th>
-                                  <th>{copy.quantity}</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {orderItems.length === 0 ? (
-                                  <tr><td className="order-detail-items-empty" colSpan={4}>{copy.noItems}</td></tr>
-                                ) : (
-                                  orderItems.map((item, itemIndex) => (
-                                    <tr key={`${getOrderItemSemanticDisplayKey(item)}:${itemIndex}`}>
-                                      <td>{formatOrderItemName(item)}</td>
-                                      <td>{formatOrderItemOptions(item) || "—"}</td>
-                                      <td>{item.sku ?? "—"}</td>
-                                      <td>{item.quantity}</td>
+                              </td>
+                              <td>
+                                <table className="order-detail-items-table route-child-manifest-items-table">
+                                  <thead>
+                                    <tr>
+                                      <th>{copy.item}</th>
+                                      <th>{copy.options}</th>
+                                      <th>{copy.sku}</th>
+                                      <th>{copy.quantity}</th>
                                     </tr>
-                                  ))
-                                )}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
+                                  </thead>
+                                  <tbody>
+                                    {orderItems.length === 0 ? (
+                                      <tr><td className="order-detail-items-empty" colSpan={4}>{copy.noItems}</td></tr>
+                                    ) : (
+                                      orderItems.map((item, itemIndex) => (
+                                        <tr key={`${getOrderItemSemanticDisplayKey(item)}:${itemIndex}`}>
+                                          <td>{formatOrderItemName(item)}</td>
+                                          <td>{formatOrderItemOptions(item) || "—"}</td>
+                                          <td>{item.sku ?? "—"}</td>
+                                          <td>{item.quantity}</td>
+                                        </tr>
+                                      ))
+                                    )}
+                                  </tbody>
+                                </table>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
                       </td>
                     </tr>
                   ) : null}
@@ -1414,8 +1412,6 @@ const childManifestCopy = {
     contact: "Contact",
     arrival: "Arrival",
     collectCash: "Collect cash",
-    dwell: "Dwell",
-    eta: "ETA",
     item: "Item",
     items: "Items",
     leg(value: string): string { return value; },
@@ -1437,8 +1433,6 @@ const childManifestCopy = {
     contact: "연락처",
     arrival: "Arrival",
     collectCash: "현금 수금",
-    dwell: "Dwell",
-    eta: "ETA",
     item: "품목",
     items: "품목",
     leg(value: string): string { return value; },
@@ -1492,14 +1486,6 @@ function formatManifestEta(value: string | null | undefined, locale?: string | n
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return "—";
   return new Intl.DateTimeFormat(resolveLocale(locale), { hour: "2-digit", minute: "2-digit" }).format(date);
-}
-
-function formatManifestDwell(
-  dwellMinutes: number | null,
-  _copy: typeof childManifestCopy[keyof typeof childManifestCopy],
-): string {
-  if (dwellMinutes === null || !Number.isFinite(dwellMinutes)) return "—";
-  return `${dwellMinutes} min`;
 }
 
 export function RouteStopOrderCompactList({
