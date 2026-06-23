@@ -98,7 +98,7 @@ export function registerAdminOrdersRoutes(
 
     return reply.code(200).send({
       data: {
-        orders: result.orders,
+        orders: result.orders.map(toAdminOrderResponse),
         sync: syncSummary,
         ...(warnings.length > 0 ? { warnings } : {})
       },
@@ -129,9 +129,17 @@ export function registerAdminOrdersRoutes(
         shopDomain: authenticated.shopDomain
       });
 
-      return reply.code(200).send({ data: { orders }, error: null });
+      return reply.code(200).send({ data: { orders: orders.map(toAdminOrderResponse) }, error: null });
     }
   );
+}
+
+function toAdminOrderResponse(
+  order: SyncOrdersSnapshotResult['orders'][number]
+): Record<string, unknown> {
+  const responseOrder: Record<string, unknown> = { ...order };
+  delete responseOrder.rawWooGeocodeAddress;
+  return responseOrder;
 }
 
 function authenticate(

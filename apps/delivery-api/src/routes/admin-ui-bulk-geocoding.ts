@@ -189,7 +189,7 @@ export async function runBulkGeocodeJob(input: {
 
     for (const order of ordersToGeocode) {
       const geocode = await input.services.geocodingService.geocode({
-        address: readRouteOpsAddress(undefined, order.shippingAddress),
+        address: routeOpsGeocodeAddress(order),
         shopDomain: input.job.shopDomain,
       });
       if (!geocode.ok) {
@@ -265,6 +265,12 @@ export async function runBulkGeocodeJob(input: {
       status: "failed",
     });
   }
+}
+
+export function routeOpsGeocodeAddress(
+  order: Pick<CanonicalOrderRow, "rawWooGeocodeAddress" | "shippingAddress">,
+): CanonicalOrderRow["shippingAddress"] {
+  return order.rawWooGeocodeAddress ?? order.shippingAddress;
 }
 
 function updateBulkGeocodeJob(

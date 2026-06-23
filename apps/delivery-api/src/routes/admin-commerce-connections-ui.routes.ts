@@ -58,6 +58,7 @@ import {
   readBulkGeocodeJobForSession,
   readRouteOpsAddress,
   requireBulkGeocodeServices,
+  routeOpsGeocodeAddress,
   runBulkGeocodeJob,
   toBulkGeocodeJobDto,
   toBulkGeocodeOrderResponse,
@@ -2053,10 +2054,9 @@ function registerRouteOpsAppRoutes(
               "Order not found",
               404,
             );
-          const address = readRouteOpsAddress(
-            body.address,
-            current.shippingAddress,
-          );
+          const address = Object.hasOwn(body, "address")
+            ? readRouteOpsAddress(body.address, current.shippingAddress)
+            : routeOpsGeocodeAddress(current);
           const geocode = await dependencies.geocodingService.geocode({
             address,
             shopDomain,

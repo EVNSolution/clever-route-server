@@ -186,6 +186,7 @@ export type CanonicalOrderRow = {
     postalCode: string | null;
     province: string | null;
   };
+  rawWooGeocodeAddress?: CanonicalOrderRow["shippingAddress"] | null;
   shopifyOrderGid: string;
   shopifyOrderLegacyId: string | null;
   sourceOrderId?: string | null;

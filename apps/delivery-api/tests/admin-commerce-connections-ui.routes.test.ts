@@ -2635,6 +2635,71 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
+  test("keeps partial single-order geocode edits merged with canonical address", async () => {
+    const geocode = vi.fn(() =>
+      Promise.resolve({
+        cached: false,
+        ok: true as const,
+        result: {
+          addressLabel: "Override",
+          latitude: 43.6,
+          longitude: -79.6,
+          provider: "mock",
+          providerPlaceId: "place-1",
+          rawLabel: null,
+        },
+      }),
+    );
+    const { app } = await createUiHarness({
+      geocodingService: {
+        geocode,
+        status: { mode: "nominatim_compatible", persistentCacheEnabled: true },
+      },
+      orderSyncService: {
+        listCanonicalOrders: vi.fn(() =>
+          Promise.resolve([
+            canonicalOrder({
+              rawWooGeocodeAddress: {
+                address1: "999 Raw Rd",
+                address2: null,
+                city: "Raw City",
+                countryCode: "CA",
+                postalCode: "M3J 2C3",
+                province: "ON",
+              },
+            }),
+          ]),
+        ),
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/orders/order-1/geocode?shopDomain=tenant-a.example.test",
+        ...authenticatedJsonRequest(
+          cookie,
+          { address: { address1: "123 Override St" } },
+          csrfToken,
+        ),
+      });
+      expect(response.statusCode).toBe(200);
+      expect(geocode).toHaveBeenCalledWith(
+        expect.objectContaining({
+          address: expect.objectContaining({
+            address1: "123 Override St",
+            city: "Toronto",
+            postalCode: "M5H 1J9",
+          }) as unknown,
+        }),
+      );
+      expect(JSON.stringify(geocode.mock.calls)).not.toContain("M3J 2C3");
+    } finally {
+      await app.close();
+    }
+  });
+
   test("bulk geocodes only current-view orders missing coordinates", async () => {
     const geocodedOrder = canonicalOrder({
       geocodeStatus: "RESOLVED",
@@ -2656,7 +2721,23 @@ describe("Admin WooCommerce connection UI routes", () => {
           latitude: null,
           longitude: null,
           orderId: "order-missing",
+          rawWooGeocodeAddress: {
+            address1: null,
+            address2: null,
+            city: null,
+            countryCode: "CA",
+            postalCode: "M3J 2C3",
+            province: null,
+          },
           reviewReasons: ["missing_coordinates"],
+          shippingAddress: {
+            address1: "100 King St W",
+            address2: null,
+            city: "Toronto",
+            countryCode: "CA",
+            postalCode: null,
+            province: "ON",
+          },
           shopifyOrderGid: "gid://woocommerce/Order/missing",
         }),
         canonicalOrder({
@@ -2769,6 +2850,11 @@ describe("Admin WooCommerce connection UI routes", () => {
         shopDomain: "tenant-a.example.test",
       });
       expect(geocode).toHaveBeenCalledTimes(1);
+      expect(geocode).toHaveBeenCalledWith(
+        expect.objectContaining({
+          address: expect.objectContaining({ postalCode: "M3J 2C3" }) as unknown,
+        }),
+      );
       expect(patchCanonicalOrderCoordinates).toHaveBeenCalledTimes(1);
       expect(patchCanonicalOrderCoordinates).toHaveBeenCalledWith(
         expect.objectContaining({
