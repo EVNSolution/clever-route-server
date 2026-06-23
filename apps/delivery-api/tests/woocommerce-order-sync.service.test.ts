@@ -376,7 +376,7 @@ describe('WooCommerceOrderSyncService', () => {
     );
   });
 
-  test('does not geocode unchanged paginated sync orders repeatedly', async () => {
+  test('geocodes unchanged paginated sync orders when coordinates are still missing', async () => {
     const client = {
       listOrdersPage: vi.fn().mockResolvedValue({
         orders: [order(34)],
@@ -404,7 +404,18 @@ describe('WooCommerceOrderSyncService', () => {
       })
     ]);
     const geocodingService = {
-      geocode: vi.fn(),
+      geocode: vi.fn().mockResolvedValue({
+        cached: false,
+        ok: true,
+        result: {
+          addressLabel: '100 Test St, Markham, ON L3R 0A1, CA',
+          latitude: 43.8561,
+          longitude: -79.337,
+          provider: 'test-geocoder',
+          providerPlaceId: 'place-100',
+          rawLabel: '100 Test Street'
+        }
+      }),
       status: {
         mode: 'nominatim_compatible' as const,
         persistentCacheEnabled: true,
@@ -421,13 +432,13 @@ describe('WooCommerceOrderSyncService', () => {
 
     await service.syncUpdatedOrders({ pageSize: 10, status: 'processing' });
 
-    expect(geocodingService.geocode).not.toHaveBeenCalled();
+    expect(geocodingService.geocode).toHaveBeenCalledTimes(1);
     const upsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
     expect(upsert?.synced.deliveryStop).toEqual(
       expect.objectContaining({
-        geocodeStatus: 'PENDING',
-        latitude: null,
-        longitude: null
+        geocodeStatus: 'RESOLVED',
+        latitude: '43.8561000',
+        longitude: '-79.3370000'
       })
     );
   });
@@ -499,17 +510,17 @@ describe('WooCommerceOrderSyncService', () => {
     );
   });
 
-  test('does not geocode unchanged manual single-order refreshes repeatedly', async () => {
+  test('does not geocode unchanged manual single-order refreshes when coordinates are resolved', async () => {
     const client = {
       getOrder: vi.fn().mockResolvedValue(order(36))
     };
     const repository = createRepositoryHarness();
     repository.listCanonicalOrdersBySourceIdentity.mockResolvedValueOnce([
       canonicalOrderRow('36', {
-        geocodeStatus: 'PENDING',
-        hasCoordinates: false,
-        latitude: null,
-        longitude: null,
+        geocodeStatus: 'RESOLVED',
+        hasCoordinates: true,
+        latitude: 43.8561,
+        longitude: -79.337,
         shippingAddress: {
           address1: '100 Test St',
           address2: null,
