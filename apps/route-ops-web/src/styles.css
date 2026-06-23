@@ -1123,37 +1123,98 @@ small,
   opacity: 0.55;
 }
 
-.route-group-assignments-table td {
-  padding: 11px 10px;
-  vertical-align: middle;
+.route-group-assignments-card {
+  background: #ffffff;
+  border: 1px solid #d7deea;
+  border-radius: 16px;
+  overflow: hidden;
+  padding: 0;
 }
-.route-group-assignments-table td:first-child,
-.route-group-assignments-table th:first-child {
-  width: 96px;
+.route-group-assignments-scroll {
+  overflow-x: auto;
 }
-.route-group-assignment-customer,
-.route-group-assignment-contact {
-  overflow-wrap: anywhere;
-}
-.route-group-assignment-contact {
+.route-group-assignments-grid {
+  align-items: center;
+  column-gap: 16px;
   display: grid;
-  gap: 2px;
+  grid-template-columns: 96px 160px minmax(280px, 1fr) 120px 56px;
+  min-width: 760px;
+}
+.route-group-assignments-header {
+  background: #f8fafc;
+  border-bottom: 1px solid #e6eaf1;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  height: 48px;
+  letter-spacing: 0.04em;
+  padding: 0 20px;
+  text-transform: uppercase;
+}
+.route-group-assignments-header span:last-child {
+  text-align: right;
+}
+.route-group-assignments-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+.route-group-assignment-row {
+  background: #ffffff;
+  border: 1px solid #e6eaf1;
+  border-radius: 12px;
+  min-height: 88px;
+  padding: 16px 20px;
+}
+.route-group-assignment-order {
+  color: #111827;
+  font-size: 15px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.route-group-assignment-customer {
+  color: #111827;
+  font-size: 14px;
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.route-group-assignment-contact {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.route-group-assignment-contact span {
+  line-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .route-group-assignment-driver {
   color: #111827;
-  font-weight: 800;
+  font-size: 14px;
+  font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  width: 132px;
 }
 .route-group-assignment-sequence {
   color: #111827;
+  font-size: 16px;
   font-weight: 800;
   text-align: right;
   white-space: nowrap;
-  width: 52px;
 }
-.route-group-assignment-sequence strong {
-  text-align: right;
+@media (max-width: 1023px) {
+  .route-group-assignments-grid {
+    column-gap: 12px;
+    grid-template-columns: 88px 140px minmax(220px, 1fr) 100px 48px;
+  }
 }
 .route-child-manifest-card {
   gap: 6px;

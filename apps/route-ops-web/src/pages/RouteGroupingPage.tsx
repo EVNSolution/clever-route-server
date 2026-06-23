@@ -534,28 +534,34 @@ function RouteGroupingAssignmentsCard({
   const sortedAssignments = sortRouteGroupingAssignments(assignments, assignmentResults);
   return (
     <article className="panel route-group-assignments-card">
-      <table className="ops-table route-group-assignments-table">
-        <thead><tr><th>{t.order}</th><th>{t.customer}</th><th>{t.contact}</th><th>{t.driver}</th><th>{t.sequence}</th></tr></thead>
-        <tbody>
+      <div className="route-group-assignments-scroll">
+        <div className="route-group-assignments-header route-group-assignments-grid">
+          <span>{t.order}</span>
+          <span>{t.customer}</span>
+          <span>{t.contact}</span>
+          <span>{t.driver}</span>
+          <span>{t.sequence}</span>
+        </div>
+        <div className="route-group-assignments-body">
           {sortedAssignments.map((assignment) => {
             const result = assignmentResults.get(assignment.orderId);
             const contactParts = [assignment.phone, assignment.email].filter(Boolean);
-            const driverLabel = result?.driverLabel ?? t.unassigned;
+            const driverLabel = result?.driverLabel ?? "—";
             const sequenceLabel = result?.sequenceLabel ?? "—";
             return (
-              <tr key={assignment.orderId}>
-                <td><strong>{assignment.orderName}</strong></td>
-                <td className="route-group-assignment-customer">{assignment.recipientName ?? "—"}</td>
-                <td className="route-group-assignment-contact">
-                  {contactParts.length === 0 ? "—" : contactParts.map((part) => <span key={part}>{part}</span>)}
-                </td>
-                <td className="route-group-assignment-driver">{driverLabel}</td>
-                <td className="route-group-assignment-sequence"><strong>{sequenceLabel}</strong></td>
-              </tr>
+              <div className="route-group-assignment-row route-group-assignments-grid" key={assignment.orderId}>
+                <strong className="route-group-assignment-order">{assignment.orderName}</strong>
+                <span className="route-group-assignment-customer">{assignment.recipientName ?? "—"}</span>
+                <span className="route-group-assignment-contact">
+                  {contactParts.length === 0 ? <span>—</span> : contactParts.map((part) => <span key={part}>{part}</span>)}
+                </span>
+                <span className="route-group-assignment-driver">{driverLabel}</span>
+                <strong className="route-group-assignment-sequence">{sequenceLabel}</strong>
+              </div>
             );
           })}
-        </tbody>
-      </table>
+        </div>
+      </div>
     </article>
   );
 }
