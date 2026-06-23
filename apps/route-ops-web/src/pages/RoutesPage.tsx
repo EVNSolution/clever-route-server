@@ -1293,8 +1293,9 @@ function ChildRouteManifestCard({
                     <td>{index + 1}</td>
                     <td>{stop.orderName}</td>
                     <td>{stop.recipientName ?? t.noRecipient}</td>
-                    <td className={paymentClassName(stop.normalizedPaymentStatus)}>
-                      {formatManifestAmount(stop)} ({formatManifestPayment(stop, copy)})
+                    <td className="route-child-payment-cell">
+                      <span>{formatManifestAmount(stop)}</span>
+                      <span className={paymentClassName(stop.normalizedPaymentStatus)}>{formatManifestPayment(stop, copy)}</span>
                     </td>
                     <td>{formatManifestEta(stop.estimatedArrivalAt, locale)} · {formatManifestLeg(stop, copy)}</td>
                   </tr>

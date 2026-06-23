@@ -1151,10 +1151,19 @@ small,
   text-align: right;
 }
 .route-child-manifest-card {
+  gap: 8px;
   overflow: hidden;
+  padding: 12px 14px;
+}
+.route-child-manifest-card .route-item-summary-heading h3 {
+  font-size: 12px;
 }
 .route-child-manifest-table td {
+  padding: 7px 10px;
   vertical-align: top;
+}
+.route-child-manifest-table th {
+  padding: 7px 10px;
 }
 .route-child-manifest-table td:first-child,
 .route-child-manifest-table th:first-child {
@@ -1167,17 +1176,33 @@ small,
 
 .route-child-manifest-items-table {
   min-width: 460px;
+  table-layout: auto;
 }
 .route-child-manifest-items-table th,
 .route-child-manifest-items-table td {
   padding: 6px 8px;
 }
+.route-child-payment-cell {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+  white-space: nowrap;
+}
 .route-child-payment-pill {
+  background: #f1f5f9;
+  border: 1px solid #dbe3ef;
+  border-radius: 999px;
   color: #334155;
-  font-weight: 800;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  padding: 4px 7px;
   white-space: nowrap;
 }
 .route-child-payment-pill--attention {
+  background: #fff7ed;
+  border-color: #fed7aa;
   color: #9a3412;
 }
 @media (max-width: 980px) {
@@ -3766,10 +3791,10 @@ button.danger.subtle {
   height: 18px;
   width: 18px;
 }
-.route-child-manifest-detail-row td {
+.route-child-manifest-detail-row > td {
   background: #fbfdff;
   border-top: 0;
-  padding: 0 16px 12px;
+  padding: 0 10px 10px;
 }
 .route-child-manifest-detail-table {
   border-collapse: collapse;
@@ -3784,18 +3809,33 @@ button.danger.subtle {
 }
 .route-child-manifest-detail-table > tbody > tr > th {
   color: #64748b;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  width: 88px;
+  width: 76px;
 }
 .route-child-manifest-detail-table > tbody > tr > td {
   overflow-wrap: anywhere;
 }
-.route-child-manifest-table td:nth-child(4),
-.route-child-manifest-table th:nth-child(4),
-.route-child-manifest-table td:nth-child(5),
-.route-child-manifest-table th:nth-child(5) {
+.route-child-manifest-items-table th:nth-child(1),
+.route-child-manifest-items-table td:nth-child(1) {
+  width: auto;
+}
+.route-child-manifest-items-table th:nth-child(2),
+.route-child-manifest-items-table td:nth-child(2),
+.route-child-manifest-items-table th:nth-child(3),
+.route-child-manifest-items-table td:nth-child(3) {
+  width: 96px;
+}
+.route-child-manifest-items-table th:nth-child(4),
+.route-child-manifest-items-table td:nth-child(4) {
+  text-align: right;
+  width: 56px;
+}
+.route-child-manifest-table > thead > tr > th:nth-child(4),
+.route-child-manifest-table > tbody > tr:not(.route-child-manifest-detail-row) > td:nth-child(4),
+.route-child-manifest-table > thead > tr > th:nth-child(5),
+.route-child-manifest-table > tbody > tr:not(.route-child-manifest-detail-row) > td:nth-child(5) {
   width: 132px;
 }
