@@ -1349,6 +1349,11 @@ function ChildRouteManifestCard({
                     <tr className="route-child-manifest-detail-row">
                       <td colSpan={6}>
                         <table className="route-child-manifest-detail-table">
+                          <colgroup>
+                            <col className="route-child-manifest-address-col" />
+                            <col className="route-child-manifest-contact-col" />
+                            <col className="route-child-manifest-items-col" />
+                          </colgroup>
                           <thead>
                             <tr>
                               <th>{copy.address}</th>

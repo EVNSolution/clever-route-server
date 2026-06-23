@@ -3839,6 +3839,15 @@ button.danger.subtle {
   table-layout: fixed;
   width: 100%;
 }
+.route-child-manifest-address-col {
+  width: 32%;
+}
+.route-child-manifest-contact-col {
+  width: 24%;
+}
+.route-child-manifest-items-col {
+  width: 44%;
+}
 .route-child-manifest-detail-table > thead > tr > th {
   color: #64748b;
   background: #f8fafc;
@@ -3857,24 +3866,35 @@ button.danger.subtle {
   padding: 7px 8px;
   vertical-align: top;
 }
-.route-child-manifest-detail-table > thead > tr > th:nth-child(1),
-.route-child-manifest-detail-table > tbody > tr > td:nth-child(1) {
-  width: 29%;
-}
-.route-child-manifest-detail-table > thead > tr > th:nth-child(2),
-.route-child-manifest-detail-table > tbody > tr > td:nth-child(2) {
-  width: 23%;
-}
 .route-child-manifest-contact-lines {
   display: grid;
   gap: 2px;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 .route-child-manifest-items-table {
   border: 1px solid #e5ebf3;
   border-radius: 8px;
   min-width: 0;
   overflow: hidden;
+  table-layout: fixed;
   width: 100%;
+}
+.route-child-manifest-items-table th:first-child,
+.route-child-manifest-items-table td:first-child {
+  width: 56%;
+}
+.route-child-manifest-items-table th:nth-child(2),
+.route-child-manifest-items-table td:nth-child(2) {
+  width: 24%;
+}
+.route-child-manifest-items-table th:nth-child(3),
+.route-child-manifest-items-table td:nth-child(3) {
+  width: 10%;
+}
+.route-child-manifest-items-table th:nth-child(4),
+.route-child-manifest-items-table td:nth-child(4) {
+  width: 10%;
 }
 .route-child-manifest-items-table th,
 .route-child-manifest-items-table td {
