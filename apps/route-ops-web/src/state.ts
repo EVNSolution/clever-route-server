@@ -256,12 +256,23 @@ export function hasSelectedDeliveryDates(filters: OrderFilters): boolean {
   );
 }
 
+export function shouldLoadHistoryOrders(filters: OrderFilters): boolean {
+  return filters.scope === 'planning' && hasSelectedDeliveryDates(filters);
+}
+
+export function selectActiveHistoryOrders(
+  historyOrders: CanonicalOrderDto[],
+  filters: OrderFilters
+): CanonicalOrderDto[] {
+  return shouldLoadHistoryOrders(filters) ? historyOrders : [];
+}
+
 export function selectOrdersForClientFilters(
   currentOrders: CanonicalOrderDto[],
   historyOrders: CanonicalOrderDto[],
   filters: OrderFilters
 ): CanonicalOrderDto[] {
-  if (filters.scope !== 'planning' || !hasSelectedDeliveryDates(filters)) {
+  if (!shouldLoadHistoryOrders(filters)) {
     return currentOrders;
   }
   return mergeOrderListsById(currentOrders, historyOrders);
@@ -413,16 +424,22 @@ function isFilterValueAvailable(
     return options.deliveryAreas.some(
       (area) => area.toLowerCase() === value.toLowerCase()
     );
-  if (field === 'deliveryDate') return options.deliveryDates.includes(value);
+  if (field === 'deliveryDate') return isDeliveryDateValue(value);
   if (field === 'deliveryDates') {
     const selectedDates = parseDeliveryDateSet(value);
     return (
       selectedDates.length > 0 &&
-      selectedDates.every((date) => options.deliveryDates.includes(date))
+      selectedDates.every(isDeliveryDateValue)
     );
   }
   if (field === 'routeType') return options.routeTypes.includes(value);
   return options.weekdays.includes(value as OrderWeekdayFilter);
+}
+
+function isDeliveryDateValue(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 
 function uniqueSortedValues(values: Array<string | null | undefined>): string[] {

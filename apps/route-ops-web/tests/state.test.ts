@@ -33,7 +33,9 @@ import {
   moveStopToSequence,
   pruneOrderFilters,
   reconcileOrderFilters,
+  selectActiveHistoryOrders,
   selectOrdersForClientFilters,
+  shouldLoadHistoryOrders,
   storeSettingsToDepotPoint,
   summarizeOrderWorkset,
   summarizeSelection,
@@ -107,6 +109,33 @@ describe('route ops web state helpers', () => {
     const current = [order({ deliveryDate: '2026-06-26', orderId: 'future' })];
     const history = [order({ deliveryDate: '2026-06-20', orderId: 'past' })];
 
+    expect(shouldLoadHistoryOrders(createDefaultOrderFilters())).toBe(false);
+    expect(
+      shouldLoadHistoryOrders({
+        ...createDefaultOrderFilters(),
+        deliveryDate: '2026-06-20'
+      })
+    ).toBe(true);
+    expect(
+      shouldLoadHistoryOrders({
+        ...createDefaultOrderFilters(),
+        deliveryDates: '2026-06-20,2026-06-21'
+      })
+    ).toBe(true);
+    expect(
+      shouldLoadHistoryOrders({
+        ...createDefaultOrderFilters(),
+        deliveryDates: '2026-06-20',
+        scope: 'history'
+      })
+    ).toBe(false);
+    expect(selectActiveHistoryOrders(history, createDefaultOrderFilters())).toEqual([]);
+    expect(
+      selectActiveHistoryOrders(history, {
+        ...createDefaultOrderFilters(),
+        deliveryDate: '2026-06-20'
+      }).map((item) => item.orderId)
+    ).toEqual(['past']);
     expect(
       selectOrdersForClientFilters(current, history, createDefaultOrderFilters()).map(
         (item) => item.orderId
@@ -194,7 +223,23 @@ describe('route ops web state helpers', () => {
       orders,
       order: ['deliveryDate']
     });
-    expect(pruned.filters).toEqual(expect.objectContaining({ deliveryDate: '', weekday: '' }));
+    expect(pruned.filters).toEqual(expect.objectContaining({ deliveryDate: '2026-06-01', weekday: 'mon' }));
+    expect(pruned.order).toEqual(['deliveryDate']);
+
+    const prunedRange = pruneOrderFilters({
+      filters: { ...createDefaultOrderFilters(), deliveryDates: '2026-06-01,2026-06-02' },
+      orders,
+      order: ['deliveryDates']
+    });
+    expect(prunedRange.filters.deliveryDates).toBe('2026-06-01,2026-06-02');
+    expect(prunedRange.order).toEqual(['deliveryDates']);
+
+    const invalidDate = pruneOrderFilters({
+      filters: { ...createDefaultOrderFilters(), deliveryDate: 'not-a-date', weekday: 'mon' },
+      orders,
+      order: ['deliveryDate']
+    });
+    expect(invalidDate.filters).toEqual(expect.objectContaining({ deliveryDate: '', weekday: '' }));
   });
 
 

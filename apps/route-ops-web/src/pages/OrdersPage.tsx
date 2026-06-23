@@ -43,8 +43,10 @@ import {
   parseDeliveryDateSet,
   pruneOrderFilters,
   reconcileOrderFilters,
+  selectActiveHistoryOrders,
   selectOrdersForClientFilters,
   serializeDeliveryDateSet,
+  shouldLoadHistoryOrders,
   storeSettingsToDepotPoint,
   type OrderFacetedFilterKey,
   type OrderFilterOptionSets,
@@ -275,6 +277,10 @@ export function OrdersPage({
     x: number;
     y: number;
   } | null>(null);
+  const ordersRequestSeqRef = useRef(0);
+  const historyRequestSeqRef = useRef(0);
+  const ordersErrorRef = useRef<string | null>(null);
+  const historyErrorRef = useRef<string | null>(null);
 
   const fetchQuery = useMemo(() => buildOrderFetchQuery(filters), [filters]);
   const historyFetchQuery = useMemo(
@@ -285,13 +291,19 @@ export function OrdersPage({
       }),
     [],
   );
+  const selectedDateKey = `${filters.deliveryDate}|${filters.deliveryDates}`;
+  const shouldFetchHistoryOrders = shouldLoadHistoryOrders(filters);
+  const activeHistoryOrders = useMemo(
+    () => selectActiveHistoryOrders(historyOrders, filters),
+    [filters, historyOrders],
+  );
   const orderFilterPool = useMemo(
-    () => selectOrdersForClientFilters(orders, historyOrders, filters),
-    [filters, historyOrders, orders],
+    () => selectOrdersForClientFilters(orders, activeHistoryOrders, filters),
+    [activeHistoryOrders, filters, orders],
   );
   const orderOptionPool = useMemo(
-    () => mergeOrderListsById(orders, historyOrders),
-    [historyOrders, orders],
+    () => mergeOrderListsById(orders, activeHistoryOrders),
+    [activeHistoryOrders, orders],
   );
   const visibleOrders = useMemo(
     () => applyClientOrderFilters(orderFilterPool, filters),
@@ -369,6 +381,7 @@ export function OrdersPage({
   );
 
   const refreshOrders = async (): Promise<void> => {
+    const requestSeq = (ordersRequestSeqRef.current += 1);
     if (ordersLoaded) {
       pendingScrollRestoreRef.current = captureWindowScroll();
       setRefreshingOrders(true);
@@ -376,27 +389,52 @@ export function OrdersPage({
       setLoading(true);
     }
     try {
-      const [payload, historyPayload] = await Promise.all([
-        getOrders(fetchQuery),
-        filters.scope === "planning"
-          ? getOrders(historyFetchQuery)
-          : Promise.resolve({ orders: [] }),
-      ]);
+      const payload = await getOrders(fetchQuery);
+      if (requestSeq !== ordersRequestSeqRef.current) return;
       setOrders(payload.orders);
-      setHistoryOrders(historyPayload.orders);
-      setError(null);
+      ordersErrorRef.current = null;
+      setError(historyErrorRef.current);
     } catch (error) {
-      setError(readErrorMessage(error));
+      if (requestSeq !== ordersRequestSeqRef.current) return;
+      ordersErrorRef.current = readErrorMessage(error);
+      setError(ordersErrorRef.current);
     } finally {
-      setOrdersLoaded(true);
-      setLoading(false);
-      setRefreshingOrders(false);
+      if (requestSeq === ordersRequestSeqRef.current) {
+        setOrdersLoaded(true);
+        setLoading(false);
+        setRefreshingOrders(false);
+      }
+    }
+  };
+
+  const refreshHistoryOrders = async (): Promise<void> => {
+    const requestSeq = (historyRequestSeqRef.current += 1);
+    if (!shouldFetchHistoryOrders) {
+      setHistoryOrders([]);
+      historyErrorRef.current = null;
+      setError(ordersErrorRef.current);
+      return;
+    }
+    try {
+      const payload = await getOrders(historyFetchQuery);
+      if (requestSeq !== historyRequestSeqRef.current) return;
+      setHistoryOrders(payload.orders);
+      historyErrorRef.current = null;
+      setError(ordersErrorRef.current);
+    } catch (error) {
+      if (requestSeq !== historyRequestSeqRef.current) return;
+      historyErrorRef.current = readErrorMessage(error);
+      setError(ordersErrorRef.current ?? historyErrorRef.current);
     }
   };
 
   useEffect(() => {
     void refreshOrders();
   }, [fetchQuery]);
+
+  useEffect(() => {
+    void refreshHistoryOrders();
+  }, [selectedDateKey, shouldFetchHistoryOrders]);
 
   useLayoutEffect(() => {
     const snapshot = pendingScrollRestoreRef.current;
@@ -588,7 +626,10 @@ export function OrdersPage({
         setWooSyncStatus(formatWooSyncStatus(syncRun, locale));
       }
       await refreshOrders();
-      setError(null);
+      await refreshHistoryOrders();
+      if (ordersErrorRef.current === null && historyErrorRef.current === null) {
+        setError(null);
+      }
     } catch (error) {
       setError(readErrorMessage(error));
     } finally {
@@ -979,7 +1020,6 @@ function OrderDatePicker({
     monthKey(initialMonth),
   );
   const [rangeStart, setRangeStart] = useState<string | null>(null);
-  const enabled = useMemo(() => new Set(enabledDates), [enabledDates]);
   const selected = useMemo(() => new Set(selectedDates), [selectedDates]);
   useEffect(() => {
     if (selectedDates[0] !== undefined) {
@@ -1031,7 +1071,7 @@ function OrderDatePicker({
           </span>
           <span className="order-date-calendar-grid">
             {days.map((day) => {
-              const disabled = day.date === null || !enabled.has(day.date);
+              const disabled = day.date === null;
               const isSelected = day.date !== null && selected.has(day.date);
               return (
                 <button
