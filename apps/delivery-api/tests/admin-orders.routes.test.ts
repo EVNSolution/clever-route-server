@@ -93,6 +93,7 @@ describe('Admin orders routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
+      expect(response.body).not.toContain('rawWooGeocodeAddress');
       expect(response.json()).toEqual({
         data: {
           orders: [canonicalOrder],
@@ -514,6 +515,7 @@ describe('Admin orders routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
+      expect(response.body).not.toContain('rawWooGeocodeAddress');
       expect(response.json()).toEqual({ data: { orders: [canonicalOrder] }, error: null });
       expect(listCanonicalOrders).toHaveBeenCalledWith({
         filters: {
@@ -613,7 +615,20 @@ function createDependencyHarness(): {
       })
   );
   const listCanonicalOrders = vi.fn<AdminOrdersDependencies['orderSyncService']['listCanonicalOrders']>(
-    () => Promise.resolve([canonicalOrder])
+    () =>
+      Promise.resolve([
+        {
+          ...canonicalOrder,
+          rawWooGeocodeAddress: {
+            address1: 'Raw Woo Address',
+            address2: null,
+            city: 'Toronto',
+            countryCode: 'CA',
+            postalCode: 'M3J 2C3',
+            province: 'ON'
+          }
+        }
+      ])
   );
 
   return {

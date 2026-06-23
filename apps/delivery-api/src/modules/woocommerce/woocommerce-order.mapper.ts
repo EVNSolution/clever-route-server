@@ -88,6 +88,15 @@ export type WooOrderMappingConfig = {
   version?: number;
 };
 
+export type WooCommerceGeocodingAddress = {
+  address1: string | null;
+  address2: string | null;
+  city: string | null;
+  countryCode: string | null;
+  postalCode: string | null;
+  province: string | null;
+};
+
 export type MapWooCommerceOrderOptions = {
   connectionId?: string | null;
   mappingConfig?: WooOrderMappingConfig | null;
@@ -415,6 +424,18 @@ export function mapWooCommerceOrderToDeliveryInputs(
   } satisfies SyncedOrderWithDeliveryStopInput;
 }
 
+export function readWooCommerceRawGeocodingAddress(
+  rawPayload: unknown,
+): WooCommerceGeocodingAddress | null {
+  const order = objectOrNull(rawPayload);
+  if (order === null) return null;
+  const shipping = readRawGeocodingAddress(objectOrNull(order.shipping));
+  if (shipping !== null && hasGeocodingEvidence(shipping)) return shipping;
+  const billing = readRawGeocodingAddress(objectOrNull(order.billing));
+  if (billing !== null && hasGeocodingEvidence(billing)) return billing;
+  return null;
+}
+
 function buildRawPayload(input: {
   deliveryArea: string | null;
   deliveryDateRaw: string | null;
@@ -537,7 +558,7 @@ function hasAddress(address: WooCommerceAddress): boolean {
 
 function toCanonicalShippingAddress(
   address: WooCommerceAddress,
-): Record<string, string | null> {
+): WooCommerceGeocodingAddress {
   return {
     address1: normalizeString(address.address_1),
     address2: normalizeString(address.address_2),
@@ -546,6 +567,37 @@ function toCanonicalShippingAddress(
     postalCode: normalizeString(address.postcode),
     province: normalizeString(address.state),
   };
+}
+
+function objectOrNull(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function readRawGeocodingAddress(
+  address: Record<string, unknown> | null,
+): WooCommerceGeocodingAddress | null {
+  if (address === null) return null;
+  return {
+    address1: normalizeUnknownString(address.address_1),
+    address2: normalizeUnknownString(address.address_2),
+    city: normalizeUnknownString(address.city),
+    countryCode: normalizeUnknownString(address.country),
+    postalCode: normalizeUnknownString(address.postcode),
+    province: normalizeUnknownString(address.state),
+  };
+}
+
+function hasGeocodingEvidence(address: WooCommerceGeocodingAddress): boolean {
+  return [address.address1, address.city, address.postalCode].some(
+    (value) => value !== null,
+  );
+}
+
+function normalizeUnknownString(value: unknown): string | null {
+  return typeof value === "string" ? normalizeString(value) : null;
 }
 
 function formatAddressName(address: WooCommerceAddress): string | null {

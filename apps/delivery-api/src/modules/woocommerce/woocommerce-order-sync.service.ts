@@ -300,6 +300,9 @@ function shouldGeocodeChangedWooSnapshot(
   ) {
     return false;
   }
+  if (!existing.hasCoordinates || existing.geocodeStatus !== 'RESOLVED') {
+    return true;
+  }
   return (
     addressFingerprint(existing.shippingAddress) !==
     addressFingerprint(synced.deliveryStop)

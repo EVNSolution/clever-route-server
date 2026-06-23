@@ -1,7 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, test } from "vitest";
 
-import { mapWooCommerceOrderToDeliveryInputs } from "../src/modules/woocommerce/woocommerce-order.mapper.js";
+import {
+  mapWooCommerceOrderToDeliveryInputs,
+  readWooCommerceRawGeocodingAddress,
+} from "../src/modules/woocommerce/woocommerce-order.mapper.js";
 import type { WooCommerceOrder } from "../src/modules/woocommerce/woocommerce-order.types.js";
 
 const fixtureBase = new URL("./fixtures/woocommerce/", import.meta.url);
@@ -795,6 +798,40 @@ describe("mapWooCommerceOrderToDeliveryInputs", () => {
         recipientName: "Hana Kim",
       }),
     );
+  });
+
+  test("reads Woo raw geocoding address from shipping or billing without blanking fallback", () => {
+    expect(
+      readWooCommerceRawGeocodingAddress({
+        billing: { address_1: "10 Billing Rd", city: "Markham", country: "CA", postcode: "L3R 0A1", state: "ON" },
+        shipping: { address_1: "", city: "", country: "", postcode: "" },
+      }),
+    ).toEqual({
+      address1: "10 Billing Rd",
+      address2: null,
+      city: "Markham",
+      countryCode: "CA",
+      postalCode: "L3R 0A1",
+      province: "ON",
+    });
+
+    expect(readWooCommerceRawGeocodingAddress({ shipping: {} })).toBeNull();
+    expect(
+      readWooCommerceRawGeocodingAddress({
+        billing: { address_1: "10 Billing Rd", city: "Markham", country: "CA" },
+        shipping: { country: "CA" },
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        address1: "10 Billing Rd",
+        city: "Markham",
+      }),
+    );
+    expect(
+      readWooCommerceRawGeocodingAddress({
+        shipping: { country: "CA", postcode: 123 },
+      }),
+    ).toBeNull();
   });
 
   test("redacts address-like Woo diagnostic candidate values", async () => {

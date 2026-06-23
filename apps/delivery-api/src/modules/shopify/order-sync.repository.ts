@@ -21,6 +21,7 @@ import { toOrderItemDto, type OrderItemRecordLike } from "../order-items/order-i
 import { readNormalizedPaymentStatus } from "../payments/normalized-payment-status.js";
 import type { AdminNotificationServiceApi } from "../notifications/admin-notification.service.js";
 import type { AdminWebNotificationEvent } from "../notifications/admin-web-notification-events.js";
+import { readWooCommerceRawGeocodingAddress } from "../woocommerce/woocommerce-order.mapper.js";
 
 export type UpsertOrderWithDeliveryStopInput = {
   shopDomain: string;
@@ -2640,6 +2641,10 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     routeScopeKey,
     serviceType,
     shippingAddress,
+    rawWooGeocodeAddress:
+      (order.sourcePlatform ?? "SHOPIFY") === "WOOCOMMERCE"
+        ? readWooCommerceRawGeocodingAddress(raw)
+        : null,
     shopifyOrderGid: order.shopifyOrderGid,
     shopifyOrderLegacyId:
       order.shopifyOrderLegacyId === null
