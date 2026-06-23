@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 
@@ -372,7 +373,8 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     );
 
     expect(html).not.toContain('Road path ready');
-    expect(html).toContain('class="route-visibility-button green" disabled="" type="button">Visible to driver</button>');
+    expect(html).toContain('class="route-driver-visible-badge">Visible to driver</span>');
+    expect(html).not.toContain('route-visibility-button green');
     expect(html).not.toContain('Published route — visible to the linked driver after the app refreshes.');
     expect(html).not.toContain('Driver app visible');
     expect(html).toMatch(/aria-label="Save route"[^>]*disabled=""/);
@@ -384,8 +386,21 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
   });
 
   test('RouteBuilder renders a full-width child sequence card with one aggregate Save route action', () => {
+    const baseDetail = routePlanDetailFixture();
     const detail = routePlanDetailFixture({
       routePlan: routePlanFixture({ name: 'Route 2026-06-05' }),
+      stops: baseDetail.stops.map((stop, index) =>
+        index === 0
+          ? {
+              ...stop,
+              items: [
+                { name: 'Kimchi', options: [], productId: 1, quantity: 1, sku: null, variationId: 0 },
+                { name: 'Soup', options: [], productId: 2, quantity: 2, sku: null, variationId: 0 },
+                { name: 'Rice', options: [], productId: 3, quantity: 1, sku: null, variationId: 0 },
+              ],
+            }
+          : stop,
+      ),
     });
     const html = renderToStaticMarkup(
       <RouteBuilder
@@ -410,7 +425,13 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('<h3>Route 2026-06-05 — Alex Driver</h3>');
     expect(extractFirstMatch(html, /<div class="route-child-sequence-header">([\s\S]*?)<\/div><div class="route-group-area-list/)).not.toContain('Save route');
     expect(html).toContain('class="route-map-header-actions"');
-    expect(html).toContain('class="route-visibility-button orange" disabled="" type="button">Send to driver</button>');
+    expect(html).toContain('class="primary route-send-driver-button" disabled="" type="button">Send to driver</button>');
+    expect(html).toContain('Assign a driver and add stops first.');
+    expect(html).toContain('route-child-manifest-detail-row');
+    expect(html).toContain('Kimchi × 1');
+    expect(html).toContain('Soup × 2');
+    expect(html).toContain('+1 more');
+    expect(html).toContain('No items');
     expect(html).not.toContain('class="danger subtle route-map-delete-button"');
     expect(html).toContain('class="route-group-area-driver route-group-area-driver--assignable route-child-sequence-driver"');
     expect(html).not.toContain('class="route-group-area-swatch"');
@@ -444,6 +465,37 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).not.toContain('save driver');
     expect(html).not.toContain('save route options');
     expect(html).not.toContain('Publish route');
+  });
+
+  test('RouteBuilder renders send-capable child routes as a primary CTA without helper text', () => {
+    const linked = linkedDriverFixture();
+    const detail = routePlanDetailFixture({
+      routePlan: routePlanFixture({ driverId: linked.id, name: 'Route 2026-06-05', status: 'DRAFT' }),
+    });
+    const html = renderToStaticMarkup(
+      <RouteBuilder
+        isChildRouteDetail
+        bootstrap={bootstrap()}
+        deletingRouteId={null}
+        detail={detail}
+        drivers={[linked]}
+        navigate={() => undefined}
+        onDeleteRoute={() => undefined}
+        onRefreshRoutes={() => undefined}
+        setDetail={() => undefined}
+        setError={() => undefined}
+      />,
+    );
+
+    expect(html).toContain('class="primary route-send-driver-button" type="button">Send to driver</button>');
+    expect(html).not.toContain('Assign a driver and add stops first.');
+  });
+
+  test('RouteBuilder does not show unavailable helper while publishing', () => {
+    const source = readFileSync('src/pages/RoutesPage.tsx', 'utf8');
+
+    expect(source).toContain('isPublishingRoute ? t.sendingToDriver : t.sendToDriver');
+    expect(source).toContain('canSendRouteToDriver || isPublishingRoute ? null : <small>{t.sendToDriverUnavailable}</small>');
   });
 
   test('RouteBuilder keeps standalone routes on the side-control layout', () => {

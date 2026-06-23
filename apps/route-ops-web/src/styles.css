@@ -478,35 +478,6 @@ small,
   flex-wrap: wrap;
   gap: 10px;
 }
-.route-visibility-button {
-  appearance: none;
-  background: #ffffff;
-  border: 1px solid #d9e1ee;
-  border-radius: 999px;
-  color: #374151;
-  cursor: pointer;
-  display: inline-flex;
-  font-size: 12px;
-  font-weight: 900;
-  justify-content: center;
-  line-height: 1;
-  min-height: 32px;
-  padding: 7px 12px;
-  white-space: nowrap;
-}
-.route-visibility-button:disabled {
-  cursor: default;
-}
-.route-visibility-button.green {
-  background: #ecfdf5;
-  border-color: #bbf7d0;
-  color: #166534;
-}
-.route-visibility-button.orange {
-  background: #fff7ed;
-  border-color: #fed7aa;
-  color: #9a3412;
-}
 .route-end-option {
   border: 1px solid #e5e7eb;
   border-radius: 14px;
@@ -1185,12 +1156,7 @@ small,
 .route-child-manifest-table th:nth-child(2) {
   width: 96px;
 }
-.route-child-manifest-table td:nth-child(6),
-.route-child-manifest-table th:nth-child(6),
-.route-child-manifest-table td:nth-child(7),
-.route-child-manifest-table th:nth-child(7) {
-  width: 132px;
-}
+
 .route-child-manifest-table small {
   color: #64748b;
   display: block;
@@ -3770,4 +3736,82 @@ button.danger.subtle {
   .order-detail-notes-grid {
     grid-template-columns: 1fr;
   }
+}
+.route-send-driver-action {
+  align-items: flex-end;
+  display: grid;
+  gap: 4px;
+  justify-items: end;
+}
+.route-send-driver-action small {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+}
+.route-send-driver-button {
+  min-height: 40px;
+  padding-inline: 18px;
+}
+.route-driver-visible-badge {
+  align-items: center;
+  background: #ecfdf5;
+  border: 1px solid #bbf7d0;
+  border-radius: 999px;
+  color: #166534;
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1;
+  min-height: 32px;
+  padding: 7px 12px;
+  white-space: nowrap;
+}
+.route-group-assign-button {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  min-height: 48px;
+}
+.route-group-action-icon {
+  flex: 0 0 auto;
+  height: 18px;
+  width: 18px;
+}
+.route-group-assignment-detail-row td {
+  background: #fbfdff;
+  border-top: 0;
+  color: #64748b;
+  font-size: 13px;
+  padding-top: 0;
+}
+.route-group-assignment-detail {
+  display: grid;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+.route-child-manifest-detail-row td {
+  background: #fbfdff;
+  border-top: 0;
+  padding-top: 0;
+}
+.route-child-manifest-detail {
+  display: grid;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+.route-child-manifest-detail > div {
+  display: grid;
+  gap: 4px;
+}
+.route-child-manifest-detail strong {
+  color: #64748b;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.route-child-manifest-table td:nth-child(4),
+.route-child-manifest-table th:nth-child(4),
+.route-child-manifest-table td:nth-child(5),
+.route-child-manifest-table th:nth-child(5) {
+  width: 132px;
 }

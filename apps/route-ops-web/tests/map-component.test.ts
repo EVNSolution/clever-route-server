@@ -3,9 +3,9 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync } from 'node:fs';
 
-import { anchorRouteStopPicker, installRouteStopClickHandlers, resolveMapHomePoint, RouteOpsMap, RouteStopSequencePicker, syncOrdersLayer, syncRouteDropoffLayers, syncRouteLayers, syncRouteStopLayers } from '../src/components/maps/RouteOpsMap';
+import { anchorRouteStopPicker, buildGroupingFitPoints, installRouteStopClickHandlers, resolveMapHomePoint, RouteOpsMap, RouteStopSequencePicker, syncOrdersLayer, syncRouteDropoffLayers, syncRouteLayers, syncRouteStopLayers } from '../src/components/maps/RouteOpsMap';
 import { buildOrdersMapFeatureCollection, buildRouteDropoffPointFeatureCollection, buildRouteGeometryFeature, buildRouteStopMarkerFeatureCollection } from '../src/maps/geojson';
-import type { BootstrapPayload, CanonicalOrderDto, RoutePlanDetailDto, RouteStopDto } from '../src/types';
+import type { BootstrapPayload, CanonicalOrderDto, RouteGroupingPolygonDto, RoutePlanDetailDto, RouteStopDto } from '../src/types';
 
 describe('RouteOpsMap layer lifecycle', () => {
   test('updates the orders GeoJSON source to an empty collection instead of leaving stale pins', () => {
@@ -26,6 +26,34 @@ describe('RouteOpsMap layer lifecycle', () => {
 
     expect(resolveMapHomePoint(null, depot, [depot, outOfAreaOrder])).toBe(depot);
     expect(resolveMapHomePoint(null, null, [outOfAreaOrder])).toBe(outOfAreaOrder);
+  });
+
+  test('includes grouping polygons and draft vertices in fit points', () => {
+    const basePoints = [
+      { id: 'store', kind: 'depot' as const, label: 'Store', latitude: 43, longitude: -79 },
+    ];
+    const polygons = [
+      {
+        color: '#2563eb',
+        drawOrder: 1,
+        driverId: 'driver-1',
+        geometry: {
+          type: 'Polygon',
+          coordinates: [[[-80, 44], [-79, 44], [-79, 45], [-80, 44]]],
+        },
+        id: 'polygon-1',
+        label: 'Alex Driver',
+      },
+    ] as RouteGroupingPolygonDto[];
+
+    const points = buildGroupingFitPoints(basePoints, polygons, {
+      vertices: [
+        { latitude: 46, longitude: -81 },
+        { latitude: Number.NaN, longitude: -82 },
+      ],
+    });
+
+    expect(points.map((point) => point.id)).toEqual(['store', 'polygon:polygon-1:0', 'polygon:polygon-1:1', 'polygon:polygon-1:2', 'polygon:polygon-1:3', 'polygon-draft:0']);
   });
 
   test('renders Orders map pins with candidate opacity without numeric marker text', () => {
@@ -331,6 +359,14 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(html).not.toContain('route-line');
   });
 
+  test('manual grouping fit uses bounds instead of store-only centering', () => {
+    const source = readFileSync('src/components/maps/RouteOpsMap.tsx', 'utf8');
+
+    expect(source).toContain('if (detail === null && fitOrdersToBounds)');
+    expect(source).toContain('fitMap(map, maplibreRef.current, fitPoints);');
+    expect(source).toContain('detail === null && !fitOrdersToBounds ? t.centerOnStore : t.fitMap');
+  });
+
   test('renders a map-only refresh control inside configured interactive maps', () => {
     const html = renderToStaticMarkup(createElement(RouteOpsMap, {
       bootstrap: bootstrapConfigured(),
@@ -341,8 +377,8 @@ describe('RouteOpsMap layer lifecycle', () => {
 
     expect(html).toContain('aria-label="Center map on store"');
     expect(html).toContain('aria-label="Refresh map"');
-    expect(html).toContain('class="map-toolbar-symbol">↻</span>');
-    expect(html).not.toContain('M15.2 7.6');
+    expect(html).toContain('<path d="M16 7a6 6 0 1 0 1 4"></path>');
+    expect(html).not.toContain('class="map-toolbar-symbol">↻</span>');
     expect(html).toContain('data-map-provider-status="configured"');
   });
 
@@ -361,8 +397,8 @@ describe('RouteOpsMap layer lifecycle', () => {
     expect(html).not.toContain('<path d="M12.5 5 7.5 10l5 5"');
     expect(html).toContain('aria-label="Zoom map to fit"');
     expect(html).toContain('aria-label="Refresh map"');
-    expect(html).toContain('class="map-toolbar-symbol">↻</span>');
-    expect(html).not.toContain('M15.2 7.6');
+    expect(html).toContain('<path d="M16 7a6 6 0 1 0 1 4"></path>');
+    expect(html).not.toContain('class="map-toolbar-symbol">↻</span>');
   });
 
 

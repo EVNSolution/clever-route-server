@@ -120,7 +120,7 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
   const selectedRouteStopPoint = useMemo(() => selectedRouteStopId === null ? null : points.find((point) => point.kind === 'stop' && point.id === selectedRouteStopId) ?? null, [points, selectedRouteStopId]);
   const selectedRouteStop = useMemo(() => selectedRouteStopId === null ? null : routeStops.find((stop) => stop.deliveryStopId === selectedRouteStopId) ?? null, [routeStops, selectedRouteStopId]);
   const dropoffPoints = useMemo(() => getRouteDropoffPoints(detail), [detail]);
-  const fitPoints = useMemo(() => getRouteFitPoints(detail, points, dropoffPoints), [detail, dropoffPoints, points]);
+  const fitPoints = useMemo(() => (detail === null && fitOrdersToBounds ? buildGroupingFitPoints(points, polygons, polygonDraft) : getRouteFitPoints(detail, points, dropoffPoints)), [detail, dropoffPoints, fitOrdersToBounds, points, polygonDraft, polygons]);
   const fitPointsKey = useMemo(() => fitPoints.map((point) => `${point.kind}:${point.id}:${point.latitude}:${point.longitude}`).join('|'), [fitPoints]);
   const homePoint = useMemo(() => resolveMapHomePoint(detail, depot, points), [depot, detail, points]);
   const readiness = mapReadiness({ mapStatus: bootstrap.mapConfig.status });
@@ -463,13 +463,17 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
   useEffect(() => {
     if (fitRequest === 0 || !isMapReady || mapRef.current === null || !isMapUsable(mapRef.current)) return;
     const map = mapRef.current;
+    if (detail === null && fitOrdersToBounds) {
+      fitMap(map, maplibreRef.current, fitPoints);
+      return;
+    }
     if (detail === null) {
       const target = homePoint ?? points[0] ?? null;
       if (target !== null) centerMapOnPoint(map, target);
       return;
     }
     fitMap(map, maplibreRef.current, fitPoints);
-  }, [detail, fitPoints, fitRequest, homePoint, isMapReady, points]);
+  }, [detail, fitOrdersToBounds, fitPoints, fitRequest, homePoint, isMapReady, points]);
 
   useEffect(() => {
     if (!isMapReady || detail !== null || mapRef.current === null || onOrderSelect === undefined) return undefined;
@@ -578,8 +582,8 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
         {readiness === 'interactive_map' || onExitRouteMode !== undefined ? (
           <div className="map-toolbar">
             {onExitRouteMode !== undefined ? <button aria-label={t.exitRouteMode} onClick={onExitRouteMode} title={t.exitRouteMode} type="button"><span aria-hidden="true" className="map-toolbar-symbol">←</span></button> : null}
-            {readiness === 'interactive_map' ? <button aria-label={detail === null ? t.centerOnStore : t.fitMap} onClick={() => setFitRequest((value) => value + 1)} title={detail === null ? t.centerOnStore : t.fitMap} type="button"><FitMapIcon /></button> : null}
-            {readiness === 'interactive_map' ? <button aria-label={t.refreshMap} onClick={handleRefreshMap} title={t.refreshMap} type="button"><span aria-hidden="true" className="map-toolbar-symbol">↻</span></button> : null}
+            {readiness === 'interactive_map' ? <button aria-label={detail === null && !fitOrdersToBounds ? t.centerOnStore : t.fitMap} onClick={() => setFitRequest((value) => value + 1)} title={detail === null && !fitOrdersToBounds ? t.centerOnStore : t.fitMap} type="button"><FitMapIcon /></button> : null}
+            {readiness === 'interactive_map' ? <button aria-label={t.refreshMap} onClick={handleRefreshMap} title={t.refreshMap} type="button"><RefreshMapIcon /></button> : null}
           </div>
         ) : null}
         {mapOverlayAction === undefined ? null : <div className="map-edit-overlay">{mapOverlayAction}</div>}
@@ -610,6 +614,24 @@ function prependDepotPoint(depot: RouteOpsPoint | null, points: RouteOpsPoint[])
 export function resolveMapHomePoint(detail: RoutePlanDetailDto | null, depot: RouteOpsPoint | null, points: RouteOpsPoint[]): RouteOpsPoint | null {
   if (detail === null) return depot ?? points[0] ?? null;
   return points.find((point) => point.kind === 'depot') ?? points[0] ?? null;
+}
+
+export function buildGroupingFitPoints(basePoints: RouteOpsPoint[], polygons: RouteGroupingPolygonDto[] = [], draft?: { vertices: Array<{ latitude: number; longitude: number }> }): RouteOpsPoint[] {
+  const polygonPoints = polygons.flatMap((polygon) =>
+    readPolygonRing(polygon.geometry).map(([longitude, latitude], index): RouteOpsPoint => ({
+      id: `polygon:${polygon.id}:${index}`,
+      kind: 'order',
+      label: polygon.label,
+      latitude,
+      longitude,
+    })),
+  );
+  const draftPoints = (draft?.vertices ?? []).flatMap((vertex, index): RouteOpsPoint[] =>
+    Number.isFinite(vertex.latitude) && Number.isFinite(vertex.longitude)
+      ? [{ id: `polygon-draft:${index}`, kind: 'order', label: 'Draft', latitude: vertex.latitude, longitude: vertex.longitude }]
+      : [],
+  );
+  return [...basePoints, ...polygonPoints, ...draftPoints];
 }
 
 function buildPolygonFeatureCollection(polygons: RouteGroupingPolygonDto[], draft: { closed: boolean; vertices: Array<{ latitude: number; longitude: number }> } | undefined, draftColor: string): GeoJSON.FeatureCollection {
@@ -1375,6 +1397,15 @@ function FitMapIcon(): ReactElement {
       <path d="M12 4.5h3.5V8" />
       <path d="M15.5 12v3.5H12" />
       <path d="M8 15.5H4.5V12" />
+    </svg>
+  );
+}
+
+function RefreshMapIcon(): ReactElement {
+  return (
+    <svg aria-hidden="true" className="map-toolbar-icon" fill="none" focusable="false" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 20 20">
+      <path d="M16 7a6 6 0 1 0 1 4" />
+      <path d="M16 3v4h-4" />
     </svg>
   );
 }

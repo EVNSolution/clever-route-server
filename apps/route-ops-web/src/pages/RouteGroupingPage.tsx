@@ -1,5 +1,5 @@
 import { Pencil, Pentagon, Undo2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import type { CSSProperties, ReactElement } from "react";
 
 import {
@@ -69,9 +69,9 @@ export function RouteGroupingPage({
   const childRoutesReady = canGenerateRouteGroupingChildRoutes(grouping);
   const mapHeaderAction = !isEditing ? (
     <div className="route-group-header-actions">
-      <button onClick={startEdit} type="button">
+      <button className="route-group-assign-button" onClick={startEdit} type="button">
         <Pentagon aria-hidden="true" className="route-group-action-icon" />
-        Assign
+        <span>Assign</span>
       </button>
       <button
         className="primary route-group-generate-button"
@@ -535,19 +535,28 @@ function RouteGroupingAssignmentsCard({
   return (
     <article className="panel route-group-assignments-card">
       <table className="ops-table route-group-assignments-table">
-        <thead><tr><th>{t.order}</th><th>{t.customer}</th><th>{t.address}</th><th>{t.contact}</th><th>{t.driver}</th><th>{t.sequence}</th></tr></thead>
+        <thead><tr><th>{t.order}</th><th>{t.customer}</th><th>{t.driver}</th><th>{t.sequence}</th></tr></thead>
         <tbody>
           {sortedAssignments.map((assignment) => {
             const result = assignmentResults.get(assignment.orderId);
             return (
-              <tr key={assignment.orderId}>
-                <td><strong>{assignment.orderName}</strong></td>
-                <td>{assignment.recipientName ?? "—"}</td>
-                <td>{assignment.addressLabel || "—"}</td>
-                <td>{[assignment.phone, assignment.email].filter(Boolean).join(" · ") || "—"}</td>
-                <td><span className="route-group-assignment-pill">{result?.driverLabel ?? t.unassigned}</span></td>
-                <td className="route-group-assignment-sequence">{result?.sequenceLabel ?? "—"}</td>
-              </tr>
+              <Fragment key={assignment.orderId}>
+                <tr>
+                  <td><strong>{assignment.orderName}</strong></td>
+                  <td>{assignment.recipientName ?? "—"}</td>
+                  <td><span className="route-group-assignment-pill">{result?.driverLabel ?? t.unassigned}</span></td>
+                  <td className="route-group-assignment-sequence">{result?.sequenceLabel ?? "—"}</td>
+                </tr>
+                <tr className="route-group-assignment-detail-row">
+                  <td colSpan={4}>
+                    <div className="route-group-assignment-detail">
+                      <span>{t.address}: {assignment.addressLabel || "—"}</span>
+                      <span>{t.phone}: {assignment.phone || "—"}</span>
+                      <span>{t.email}: {assignment.email || "—"}</span>
+                    </div>
+                  </td>
+                </tr>
+              </Fragment>
             );
           })}
         </tbody>
@@ -562,24 +571,28 @@ const routeGroupingCopy = {
   "en-CA": {
     address: "Address",
     contact: "Contact",
+    email: "Email",
     customer: "Customer",
     driver: "Driver",
     excluded: "Excluded",
     items: "Items",
     order: "Order",
     overlap: "Overlap",
+    phone: "Phone",
     sequence: "Seq",
     unassigned: "Unassigned",
   },
   "ko-KR": {
     address: "주소",
     contact: "연락처",
+    email: "이메일",
     customer: "고객",
     driver: "배송원",
     excluded: "제외",
     items: "품목",
     order: "주문",
     overlap: "중복",
+    phone: "전화",
     sequence: "순서",
     unassigned: "미배정",
   },

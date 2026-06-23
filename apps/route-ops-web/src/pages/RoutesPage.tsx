@@ -782,19 +782,20 @@ export function RouteBuilder(input: {
     draftStops.length > 0;
   const routeMapHeaderAction = (
     <div className="route-map-header-actions">
-      {publishBadge === null ? null : (
-        <button
-          className={`route-visibility-button ${publishBadge.tone}`}
-          disabled={isDriverVisible || !canSendRouteToDriver}
-          onClick={() => void sendRouteToDriver()}
-          type="button"
-        >
-          {isDriverVisible
-            ? t.visibleToDriver
-            : isPublishingRoute
-              ? t.sendingToDriver
-              : t.sendToDriver}
-        </button>
+      {publishBadge === null ? null : isDriverVisible ? (
+        <span className="route-driver-visible-badge">{t.visibleToDriver}</span>
+      ) : (
+        <div className="route-send-driver-action">
+          <button
+            className="primary route-send-driver-button"
+            disabled={!canSendRouteToDriver}
+            onClick={() => void sendRouteToDriver()}
+            type="button"
+          >
+            {isPublishingRoute ? t.sendingToDriver : t.sendToDriver}
+          </button>
+          {canSendRouteToDriver || isPublishingRoute ? null : <small>{t.sendToDriverUnavailable}</small>}
+        </div>
       )}
     </div>
   );
@@ -1278,44 +1279,59 @@ function ChildRouteManifestCard({
             <tr>
               <th>{t.stopTable.sequence}</th>
               <th>{t.stopTable.order}</th>
-              <th>{t.stopTable.customer}</th>
-              <th>{copy.contact}</th>
-              <th>{copy.items}</th>
+              <th>{copy.recipient}</th>
               <th>{copy.payment}</th>
               <th>{copy.eta}</th>
             </tr>
           </thead>
           <tbody>
-            {stops.map((stop, index) => (
-              <tr key={stop.deliveryStopId}>
-                <td>{index + 1}</td>
-                <td>{stop.orderName}</td>
-                <td>
-                  <div>{stop.recipientName ?? t.noRecipient}</div>
-                  <small>{stop.addressLabel}</small>
-                </td>
-                <td>{[stop.phone, stop.email].filter(Boolean).join(" · ") || "—"}</td>
-                <td>
-                  <ul className="route-child-manifest-items">
-                    {getOrderItems(stop.items).map((item, itemIndex) => (
-                      <li key={`${getOrderItemSemanticDisplayKey(item)}:${itemIndex}`}>
-                        {formatOrderItemLine(item)}
-                      </li>
-                    ))}
-                  </ul>
-                </td>
-                <td>
-                  <span className={paymentClassName(stop.normalizedPaymentStatus)}>
-                    {formatManifestPayment(stop, copy)}
-                  </span>
-                  <small>{formatManifestAmount(stop)}</small>
-                </td>
-                <td>
-                  <div>{formatManifestEta(stop.estimatedArrivalAt, locale)}</div>
-                  <small>{formatManifestLeg(stop, copy)}</small>
-                </td>
-              </tr>
-            ))}
+            {stops.map((stop, index) => {
+              const orderItems = getOrderItems(stop.items);
+              const visibleItems = orderItems.slice(0, 2);
+              const hiddenItemCount = Math.max(0, orderItems.length - visibleItems.length);
+              return (
+                <Fragment key={stop.deliveryStopId}>
+                  <tr>
+                    <td>{index + 1}</td>
+                    <td>{stop.orderName}</td>
+                    <td>{stop.recipientName ?? t.noRecipient}</td>
+                    <td>
+                      <span className={paymentClassName(stop.normalizedPaymentStatus)}>
+                        {formatManifestPayment(stop, copy)}
+                      </span>
+                      <small>{formatManifestAmount(stop)}</small>
+                    </td>
+                    <td>
+                      <div>{formatManifestEta(stop.estimatedArrivalAt, locale)}</div>
+                      <small>{formatManifestLeg(stop, copy)}</small>
+                    </td>
+                  </tr>
+                  <tr className="route-child-manifest-detail-row">
+                    <td colSpan={5}>
+                      <div className="route-child-manifest-detail">
+                        <div><strong>{copy.address}</strong><span>{stop.addressLabel || "—"}</span></div>
+                        <div><strong>{copy.contact}</strong><span>{[stop.phone, stop.email].filter(Boolean).join(" · ") || "—"}</span></div>
+                        <div>
+                          <strong>{copy.items}</strong>
+                          {orderItems.length === 0 ? (
+                            <span>{copy.noItems}</span>
+                          ) : (
+                            <ul className="route-child-manifest-items">
+                              {visibleItems.map((item, itemIndex) => (
+                                <li key={`${getOrderItemSemanticDisplayKey(item)}:${itemIndex}`}>
+                                  {formatOrderItemLine(item)}
+                                </li>
+                              ))}
+                              {hiddenItemCount > 0 ? <li>{copy.moreItems(hiddenItemCount)}</li> : null}
+                            </ul>
+                          )}
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                </Fragment>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -1325,25 +1341,33 @@ function ChildRouteManifestCard({
 
 const childManifestCopy = {
   "en-CA": {
+    address: "Address",
     contact: "Contact",
     collectCash: "Collect cash",
     eta: "ETA",
     items: "Items",
     leg(value: string): string { return value; },
+    moreItems(count: number): string { return `+${count} more`; },
+    noItems: "No items",
     paid: "Paid",
     payment: "Payment",
     paymentReview: "Review",
+    recipient: "Recipient",
     title: "Driver manifest",
   },
   "ko-KR": {
+    address: "주소",
     contact: "연락처",
     collectCash: "현금 수금",
     eta: "도착 예정",
     items: "품목",
     leg(value: string): string { return value; },
+    moreItems(count: number): string { return `+${count}개 더`; },
+    noItems: "품목 없음",
     paid: "결제 완료",
     payment: "결제",
     paymentReview: "확인 필요",
+    recipient: "수령인",
     title: "배송 목록",
   },
 } as const;
