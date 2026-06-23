@@ -10,7 +10,12 @@ import {
   type UpsertOrderWithDeliveryStopResult
 } from '../shopify/order-sync.repository.js';
 import { addressFingerprint } from '../shopify/order-address-fingerprint.js';
-import { mapWooCommerceOrderToDeliveryInputs, type WooOrderMappingConfig, type WooWeekdayFallbackPolicy } from './woocommerce-order.mapper.js';
+import {
+  mapWooCommerceOrderToDeliveryInputs,
+  readWooCommerceRawGeocodingAddress,
+  type WooOrderMappingConfig,
+  type WooWeekdayFallbackPolicy
+} from './woocommerce-order.mapper.js';
 import type { WooCommerceOrder } from './woocommerce-order.types.js';
 import type { WooCommerceOrderClient, WooCommerceOrdersPage } from './woocommerce-order.client.js';
 
@@ -80,12 +85,21 @@ type WooCommerceOrderClientLike = {
   listOrdersPage?: WooCommerceOrderClient['listOrdersPage'];
 };
 
+type LoggerLike = {
+  warn(bindings: Record<string, unknown>, message: string): void;
+};
+
+const consoleLogger: LoggerLike = {
+  warn: (bindings, message) => { console.warn(message, bindings); },
+};
+
 export class WooCommerceOrderSyncService {
   constructor(
     private readonly options: {
       client?: WooCommerceOrderClientLike;
       connectionId?: string | null;
       geocodingService?: GeocodingServiceLike;
+      logger?: LoggerLike;
       repository: Repository;
       shopDomain: string;
       shopTimezone?: string;
@@ -245,7 +259,7 @@ export class WooCommerceOrderSyncService {
       return synced;
     }
 
-    const address = toGeocodingAddress(synced.deliveryStop);
+    const address = prePersistGeocodingAddress(synced);
     if (!hasGeocodableAddress(address)) return synced;
 
     const geocode = await geocodingService.geocode({
@@ -253,6 +267,7 @@ export class WooCommerceOrderSyncService {
       shopDomain: this.options.shopDomain
     });
     if (!geocode.ok) {
+      this.logPrePersistGeocodeFailure({ address, geocode, reason, synced });
       return withUpdatedDeliveryFact({
         ...synced,
         order: {
@@ -281,6 +296,28 @@ export class WooCommerceOrderSyncService {
         )
       }
     }, 'RESOLVED', geocode);
+  }
+
+  private logPrePersistGeocodeFailure(input: {
+    address: GeocodingAddress;
+    geocode: Extract<GeocodingResult, { ok: false }>;
+    reason: WooCommerceSyncOrdersInput['reason'];
+    synced: UpsertOrderWithDeliveryStopInput['synced'];
+  }): void {
+    const postal = input.address.postalCode?.replace(/[^a-z0-9]/giu, '').toUpperCase() ?? '';
+    (this.options.logger ?? consoleLogger).warn(
+      {
+        code: input.geocode.code,
+        hasPostalCode: postal.length > 0,
+        orderName: input.synced.order.name,
+        postalPrefix: postal.slice(0, 3) || null,
+        queryShapes: input.geocode.queryShapes ?? [],
+        reason: input.reason,
+        shopDomain: this.options.shopDomain,
+        sourceOrderId: input.synced.order.sourceOrderId ?? null,
+      },
+      'woocommerce pre-persist geocode failed'
+    );
   }
 }
 
@@ -385,6 +422,17 @@ function withUpdatedDeliveryFact(
       )
     }
   };
+}
+
+export function prePersistGeocodingAddress(
+  synced: UpsertOrderWithDeliveryStopInput['synced']
+): GeocodingAddress {
+  const rawAddress = readWooCommerceRawGeocodingAddress(synced.order.rawPayload);
+  if (rawAddress !== null) return rawAddress;
+  if (synced.deliveryStop === null) {
+    return { address1: null, address2: null, city: null, countryCode: null, postalCode: null, province: null };
+  }
+  return toGeocodingAddress(synced.deliveryStop);
 }
 
 function toGeocodingAddress(

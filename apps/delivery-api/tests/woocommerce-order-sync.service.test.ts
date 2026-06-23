@@ -6,6 +6,7 @@ import { GeocodingService } from '../src/modules/geocoding/geocoding.service.js'
 import type { GeocodingQuery } from '../src/modules/geocoding/geocoding.types.js';
 import {
   classifyWooCommerceSyncTier,
+  prePersistGeocodingAddress,
   WooCommerceOrderSyncService
 } from '../src/modules/woocommerce/woocommerce-order-sync.service.js';
 import type { WooCommerceOrder } from '../src/modules/woocommerce/woocommerce-order.types.js';
@@ -604,18 +605,56 @@ describe('WooCommerceOrderSyncService', () => {
     );
   });
 
+  test('prefers raw Woo geocoding address for pre-persist geocoding', () => {
+    const synced = {
+      deliveryStop: {
+        address1: 'Normalized Address',
+        address2: null,
+        city: 'Normalized City',
+        countryCode: 'CA',
+        postalCode: null,
+        province: 'ON'
+      },
+      order: {
+        rawPayload: {
+          billing: {},
+          shipping: {
+            address_1: '4475 Chesswood Drive',
+            address_2: 'Unit 2',
+            city: 'North York',
+            country: 'CA',
+            postcode: 'M3J 2C3',
+            state: 'ON'
+          }
+        }
+      }
+    } as unknown as SyncedOrderWithDeliveryStopInput;
+
+    expect(prePersistGeocodingAddress(synced)).toEqual({
+      address1: '4475 Chesswood Drive',
+      address2: 'Unit 2',
+      city: 'North York',
+      countryCode: 'CA',
+      postalCode: 'M3J 2C3',
+      province: 'ON'
+    });
+  });
+
   test('keeps saving Woo orders when pre-persist geocoding cannot resolve an address', async () => {
     const repository = createRepositoryHarness();
     const geocodingService = {
       geocode: vi.fn().mockResolvedValue({
         code: 'GEOCODER_NO_RESULT',
         message: 'No geocoding result was found.',
-        ok: false
+        ok: false,
+        queryShapes: ['structured_postal_only']
       }),
       status: { mode: 'nominatim_compatible' as const, persistentCacheEnabled: true }
     };
+    const logger = { warn: vi.fn() };
     const service = new WooCommerceOrderSyncService({
       geocodingService,
+      logger,
       repository,
       shopDomain: 'woo.example.test',
       siteUrl: 'https://woo.example.test'
@@ -623,6 +662,19 @@ describe('WooCommerceOrderSyncService', () => {
 
     await service.syncOrders({ orders: [order(31)], reason: 'webhook' });
 
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'GEOCODER_NO_RESULT',
+        hasPostalCode: true,
+        orderName: '#31',
+        postalPrefix: 'L3R',
+        queryShapes: ['structured_postal_only'],
+        reason: 'webhook',
+        shopDomain: 'woo.example.test',
+        sourceOrderId: '31'
+      }),
+      'woocommerce pre-persist geocode failed'
+    );
     const upsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
     expect(upsert?.synced.deliveryStop).toEqual(
       expect.objectContaining({
