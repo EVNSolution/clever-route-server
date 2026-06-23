@@ -748,7 +748,7 @@ export const ordersCopy = {
     },
     paymentStatusLabels: {
       PAID_CONFIRMED: 'Paid confirmed',
-      CASH_COLLECT_REQUIRED: 'Collect cash',
+      CASH_COLLECT_REQUIRED: 'Cash',
       TRANSFER_CHECK_PENDING: 'Transfer pending',
       ONLINE_PAYMENT_PENDING_OR_FAILED: 'Online pending/failed',
       NOT_DELIVERABLE_OR_EXCEPTION: 'Payment exception',
@@ -993,7 +993,7 @@ export const ordersCopy = {
     },
     paymentStatusLabels: {
       PAID_CONFIRMED: '결제 확인됨',
-      CASH_COLLECT_REQUIRED: '현금 수금 필요',
+      CASH_COLLECT_REQUIRED: 'Cash',
       TRANSFER_CHECK_PENDING: '송금 확인 대기',
       ONLINE_PAYMENT_PENDING_OR_FAILED: '온라인 결제 대기/실패',
       NOT_DELIVERABLE_OR_EXCEPTION: '결제 예외',

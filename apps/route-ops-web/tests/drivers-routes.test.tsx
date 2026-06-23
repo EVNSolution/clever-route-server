@@ -435,7 +435,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     const manifestHtml = extractFirstMatch(html, /(<article class="panel route-child-manifest-card"[\s\S]*?<\/article>)/);
     expect(manifestHtml).toContain('route-child-manifest-grid');
     expect(manifestHtml).toContain('route-child-manifest-row');
-    expect(manifestHtml).toContain('route-child-manifest-toggle');
+    expect(manifestHtml).not.toContain('route-child-manifest-toggle');
     expect(manifestHtml).toContain('<svg');
     expect(manifestHtml).not.toContain('⌄');
     expect(manifestHtml).toContain('route-child-payment-cell');

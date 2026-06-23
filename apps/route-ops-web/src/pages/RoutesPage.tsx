@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronDown, Mail, MapPin, Phone } from "lucide-react";
+import { Mail, MapPin, Phone } from "lucide-react";
 import type { CSSProperties, DragEvent, ReactElement } from "react";
 
 import {
@@ -1298,15 +1298,6 @@ function ChildRouteManifestCard({
 }): ReactElement {
   const t = getRoutesCopy(locale);
   const copy = childManifestCopy[resolveLocale(locale)];
-  const [collapsedStopIds, setCollapsedStopIds] = useState<ReadonlySet<string>>(() => new Set());
-  const toggleStop = (stopId: string): void => {
-    setCollapsedStopIds((current) => {
-      const next = new Set(current);
-      if (next.has(stopId)) next.delete(stopId);
-      else next.add(stopId);
-      return next;
-    });
-  };
   return (
     <article className="panel route-child-manifest-card">
       <div className="route-child-manifest-title">
@@ -1322,12 +1313,10 @@ function ChildRouteManifestCard({
           <span>{copy.items}</span>
           <span>{copy.payment}</span>
           <span>{copy.eta}</span>
-          <span aria-label={copy.details}></span>
         </div>
         <div className="route-child-manifest-body">
           {stops.map((stop, index) => {
             const orderItems = getOrderItems(stop.items);
-            const isCollapsed = collapsedStopIds.has(stop.deliveryStopId);
             return (
               <div className="route-child-manifest-row route-child-manifest-grid" key={stop.deliveryStopId}>
                 <span className="route-child-manifest-index">{index + 1}</span>
@@ -1371,16 +1360,6 @@ function ChildRouteManifestCard({
                   <span>{copy.dwell}</span>
                   <strong>{formatManifestDwell(dwellMinutes, copy)}</strong>
                 </div>
-                <button
-                  aria-expanded={!isCollapsed}
-                  aria-label={isCollapsed ? copy.showDetails : copy.hideDetails}
-                  className="route-child-manifest-toggle"
-                  onClick={() => toggleStop(stop.deliveryStopId)}
-                  type="button"
-                >
-                  <ChevronDown aria-hidden="true" size={16} strokeWidth={2.25} />
-                </button>
-                {isCollapsed ? null : <span className="route-child-manifest-row-open" aria-hidden="true" />}
               </div>
             );
           })}
@@ -1396,7 +1375,7 @@ const childManifestCopy = {
     contact: "Contact",
     addressContact: "Address & contact",
     arrival: "Arrival",
-    collectCash: "Collect cash",
+    collectCash: "Cash",
     dwell: "Dwell",
     dwellMinutes(value: number): string { return `${value} min`; },
     eta: "ETA",
@@ -1413,9 +1392,6 @@ const childManifestCopy = {
     quantity: "Qty",
     recipient: "Recipient",
     sku: "SKU",
-    details: "Details",
-    hideDetails: "Hide delivery details",
-    showDetails: "Show delivery details",
     stops(value: number): string { return value === 1 ? "1 stop" : `${value} stops`; },
     title: "Driver manifest",
   },
@@ -1424,7 +1400,7 @@ const childManifestCopy = {
     contact: "연락처",
     addressContact: "주소 및 연락처",
     arrival: "Arrival",
-    collectCash: "현금 수금",
+    collectCash: "Cash",
     dwell: "Dwell",
     dwellMinutes(value: number): string { return `${value} min`; },
     eta: "ETA",
@@ -1441,9 +1417,6 @@ const childManifestCopy = {
     quantity: "수량",
     recipient: "수령인",
     sku: "SKU",
-    details: "상세",
-    hideDetails: "배송 상세 숨기기",
-    showDetails: "배송 상세 보기",
     stops(value: number): string { return `${value} stops`; },
     title: "배송 목록",
   },
