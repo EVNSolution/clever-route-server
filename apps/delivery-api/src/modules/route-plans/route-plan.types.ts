@@ -96,6 +96,7 @@ export type RoutePlanSummary = {
     latitude: number | null;
     longitude: number | null;
   };
+  departureTime?: string | null;
   driver?: RoutePlanDriverSummary | null;
   driverId?: string | null;
   id: string;
@@ -183,6 +184,8 @@ export type RoutePlanRouteStopPoint = {
   shopifyOrderGid: string;
   snapDistanceMeters: number | null;
   snappedCoordinates: [number, number] | null;
+  distanceFromPreviousMeters?: number | null;
+  durationFromPreviousSeconds?: number | null;
 };
 
 export type RoutePlanRouteMetrics = {
@@ -245,6 +248,7 @@ export type SaveRoutePlanPayload = {
    * effective route remains DRAFT and has both a driver and at least one stop,
    * the server publishes it to ASSIGNED in the same save transaction.
    */
+  departureTime?: string | null | undefined;
   driverId?: string | null | undefined;
   expectedUpdatedAt?: string | undefined;
   routeEndMode?: RoutePlanEndMode | undefined;
@@ -259,7 +263,7 @@ export type SaveRoutePlanInput = {
 };
 
 export type SaveRoutePlanOperation = {
-  name: 'driver' | 'options' | 'publish' | 'stops';
+  name: 'departure_time' | 'driver' | 'options' | 'publish' | 'stops';
   reason: string;
   status: 'applied' | 'skipped';
 };

@@ -171,11 +171,13 @@ export function hasDepotCoordinates(
 export function buildRouteSaveDraftInput({
   csrfToken,
   detail,
+  departureTime,
   driverId,
   draftStops,
   routeEndMode,
 }: {
   csrfToken: string;
+  departureTime: string | null;
   detail: RoutePlanDetailDto;
   driverId: string | null;
   draftStops: RouteStopDto[];
@@ -183,6 +185,7 @@ export function buildRouteSaveDraftInput({
 }): SaveRouteInput {
   return {
     csrfToken,
+    departureTime,
     driverId,
     expectedUpdatedAt: detail.routePlan.updatedAt,
     routeEndMode,
@@ -213,11 +216,14 @@ export function RoutesPage({
   const [drivers, setDrivers] = useState<DriverDto[]>([]);
   const [settings, setSettings] = useState<StoreSettingsDto | null>(null);
   const [deletingRouteId, setDeletingRouteId] = useState<string | null>(null);
-  const [deletingRouteGroupId, setDeletingRouteGroupId] = useState<string | null>(null);
+  const [deletingRouteGroupId, setDeletingRouteGroupId] = useState<
+    string | null
+  >(null);
   const [collapsedRouteGroupIds, setCollapsedRouteGroupIds] = useState<
     Set<string>
   >(() => new Set());
-  const [collapsedRouteGroupsInitialized, setCollapsedRouteGroupsInitialized] = useState(false);
+  const [collapsedRouteGroupsInitialized, setCollapsedRouteGroupsInitialized] =
+    useState(false);
 
   const refreshRoutes = useCallback(async (): Promise<void> => {
     try {
@@ -338,7 +344,12 @@ export function RoutesPage({
   async function deleteRouteGroup(routeGroupId: string): Promise<void> {
     const group = routeGroups.find((item) => item.id === routeGroupId);
     const groupName = group?.name ?? t.routes;
-    if (!window.confirm(`Delete ${groupName}? Generated child routes will also be deleted.`)) return;
+    if (
+      !window.confirm(
+        `Delete ${groupName}? Generated child routes will also be deleted.`,
+      )
+    )
+      return;
     setDeletingRouteGroupId(routeGroupId);
     try {
       await deleteRouteGrouping(routeGroupId, bootstrap.csrfToken);
@@ -412,7 +423,9 @@ export function RoutesPage({
             locale={locale}
             navigate={navigate}
             onDeleteRoute={(routeId) => void deleteRoutePlan(routeId)}
-            onDeleteRouteGroup={(routeGroupId) => void deleteRouteGroup(routeGroupId)}
+            onDeleteRouteGroup={(routeGroupId) =>
+              void deleteRouteGroup(routeGroupId)
+            }
             onToggleRouteGroup={(routeGroupId) =>
               setCollapsedRouteGroupIds((current) => {
                 const next = new Set(current);
@@ -640,6 +653,9 @@ export function RouteBuilder(input: {
   const [draftRouteEndMode, setDraftRouteEndMode] = useState<RouteEndMode>(
     () => input.detail?.routePlan.routeEndMode ?? "END_AT_LAST_STOP",
   );
+  const [draftDepartureTime, setDraftDepartureTime] = useState(
+    () => input.detail?.routePlan.departureTime ?? "",
+  );
   const [selectedRouteStopId, setSelectedRouteStopId] = useState<string | null>(
     null,
   );
@@ -666,6 +682,10 @@ export function RouteBuilder(input: {
       ),
     [detail?.routePlan.id, detail?.routePlan.routeEndMode],
   );
+  useEffect(
+    () => setDraftDepartureTime(detail?.routePlan.departureTime ?? ""),
+    [detail?.routePlan.departureTime, detail?.routePlan.id],
+  );
 
   const itemSummary = getRouteItemSummary(detail?.routePlan.itemSummary);
   const routeItems = getOrderItems(itemSummary.items);
@@ -676,6 +696,11 @@ export function RouteBuilder(input: {
     effectiveDriverId !== (detail.routePlan.driverId ?? null);
   const hasRouteEndChanges =
     detail !== null && draftRouteEndMode !== detail.routePlan.routeEndMode;
+  const effectiveDepartureTime =
+    draftDepartureTime === "" ? null : draftDepartureTime;
+  const hasDepartureTimeChanges =
+    detail !== null &&
+    effectiveDepartureTime !== (detail.routePlan.departureTime ?? null);
   const canReturnToDepot =
     detail !== null && hasDepotCoordinates(detail.routePlan);
   const isUnsafeRouteEndDraft =
@@ -687,6 +712,7 @@ export function RouteBuilder(input: {
       ? null
       : {
           ...detail.routePlan,
+          departureTime: effectiveDepartureTime,
           driverId: effectiveDriverId,
           routeEndMode: draftRouteEndMode,
           stopsCount: draftStops.length,
@@ -695,7 +721,10 @@ export function RouteBuilder(input: {
   const isDriverVisible =
     effectiveRoutePlan !== null && effectiveRoutePlan.status !== "DRAFT";
   const hasUnsavedRouteChanges =
-    hasSequenceChanges || hasDriverChanges || hasRouteEndChanges;
+    hasSequenceChanges ||
+    hasDriverChanges ||
+    hasRouteEndChanges ||
+    hasDepartureTimeChanges;
   const canSaveRoute =
     detail !== null &&
     !isSavingRoute &&
@@ -705,7 +734,10 @@ export function RouteBuilder(input: {
   const savedStopSequenceLabels = useMemo(
     () =>
       new Map(
-        (detail?.stops ?? []).map((stop) => [stop.deliveryStopId, stop.sequence]),
+        (detail?.stops ?? []).map((stop) => [
+          stop.deliveryStopId,
+          stop.sequence,
+        ]),
       ),
     [detail?.stops],
   );
@@ -717,6 +749,7 @@ export function RouteBuilder(input: {
       buildRouteSaveDraftInput({
         csrfToken: input.bootstrap.csrfToken,
         detail,
+        departureTime: effectiveDepartureTime,
         driverId: effectiveDriverId,
         draftStops,
         routeEndMode: draftRouteEndMode,
@@ -818,7 +851,9 @@ export function RouteBuilder(input: {
           >
             {isPublishingRoute ? t.sendingToDriver : t.sendToDriver}
           </button>
-          {canSendRouteToDriver || isPublishingRoute ? null : <small>{t.sendToDriverUnavailable}</small>}
+          {canSendRouteToDriver || isPublishingRoute ? null : (
+            <small>{t.sendToDriverUnavailable}</small>
+          )}
         </div>
       )}
     </div>
@@ -833,6 +868,7 @@ export function RouteBuilder(input: {
             disabled={detail === null}
             draggingStopId={draggingStopId}
             drivers={input.drivers}
+            departureTime={draftDepartureTime}
             draftDriverId={draftDriverId}
             dropPreview={dropPreview}
             isEditing={hasUnsavedRouteChanges}
@@ -840,6 +876,7 @@ export function RouteBuilder(input: {
             locale={locale}
             onDragEnd={clearStopDragPreview}
             onDragStart={setDraggingStopId}
+            onDepartureTimeChange={setDraftDepartureTime}
             onDriverChange={setDraftDriverId}
             onDrop={dropDraftStop}
             onDropPreview={setDropPreview}
@@ -862,8 +899,16 @@ export function RouteBuilder(input: {
             stops={draftStops}
           />
           <ChildRouteManifestCard
-            dwellMinutes={input.settings?.routeOpsUiSettings.destinationDwellMinutes ?? null}
+            departureTime={effectiveDepartureTime}
+            dwellMinutes={
+              input.settings?.routeOpsUiSettings.destinationDwellMinutes ?? null
+            }
             locale={locale}
+            planDate={
+              detail?.routePlan.deliveryDate ??
+              detail?.routePlan.planDate ??
+              null
+            }
             stops={draftStops}
           />
         </>
@@ -1058,6 +1103,7 @@ function ChildRouteSequenceCard({
   disabled,
   draggingStopId,
   drivers,
+  departureTime,
   draftDriverId,
   dropPreview,
   isEditing,
@@ -1065,6 +1111,7 @@ function ChildRouteSequenceCard({
   locale,
   onDragEnd,
   onDragStart,
+  onDepartureTimeChange,
   onDriverChange,
   onDrop,
   onDropPreview,
@@ -1082,6 +1129,7 @@ function ChildRouteSequenceCard({
   disabled: boolean;
   draggingStopId: string | null;
   drivers: DriverDto[];
+  departureTime: string;
   draftDriverId: string;
   dropPreview: StopDropPreview | null;
   isEditing: boolean;
@@ -1089,6 +1137,7 @@ function ChildRouteSequenceCard({
   locale?: string | null;
   onDragEnd(): void;
   onDragStart(deliveryStopId: string): void;
+  onDepartureTimeChange(departureTime: string): void;
   onDriverChange(driverId: string): void;
   onDrop(targetStopId: string, position: StopDropPosition): void;
   onDropPreview(preview: StopDropPreview | null): void;
@@ -1142,7 +1191,10 @@ function ChildRouteSequenceCard({
             <span className="route-child-sequence-driver-name">
               {selectedDriverLabel}
             </span>
-            <span aria-hidden="true" className="route-child-sequence-driver-chevron">
+            <span
+              aria-hidden="true"
+              className="route-child-sequence-driver-chevron"
+            >
               ▾
             </span>
             <select
@@ -1159,6 +1211,16 @@ function ChildRouteSequenceCard({
                 </option>
               ))}
             </select>
+          </label>
+          <label className="route-child-sequence-departure">
+            <span>{t.departureTime}</span>
+            <input
+              aria-label={t.departureTime}
+              disabled={disabled}
+              onChange={(event) => onDepartureTimeChange(event.target.value)}
+              type="time"
+              value={departureTime}
+            />
           </label>
           <span
             className="route-group-area-track route-child-sequence-track"
@@ -1239,7 +1301,10 @@ function ChildRouteSequenceCard({
                       style={{ background: color, borderColor: color }}
                       title={stop.orderName}
                     >
-                      {getRouteStopSequenceDisplay(stop, savedStopSequenceLabels)}
+                      {getRouteStopSequenceDisplay(
+                        stop,
+                        savedStopSequenceLabels,
+                      )}
                     </span>
                   </span>
                 );
@@ -1258,7 +1323,9 @@ function ChildRouteSequenceCard({
         <div className="route-child-sequence-return">
           <label className="route-end-toggle">
             <input
-              aria-describedby={!canReturnToDepot ? routeEndWarningId : undefined}
+              aria-describedby={
+                !canReturnToDepot ? routeEndWarningId : undefined
+              }
               checked={returnToDepotChecked}
               className="route-end-toggle-checkbox"
               disabled={returnToDepotDisabled}
@@ -1288,21 +1355,30 @@ function ChildRouteSequenceCard({
 }
 
 function ChildRouteManifestCard({
+  departureTime,
   dwellMinutes,
   locale,
+  planDate,
   stops,
 }: {
+  departureTime: string | null;
   dwellMinutes: number | null;
   locale?: string | null;
+  planDate: string | null;
   stops: RouteStopDto[];
 }): ReactElement {
   const t = getRoutesCopy(locale);
   const copy = childManifestCopy[resolveLocale(locale)];
+  const displayStops = useMemo(
+    () =>
+      applyManifestArrivalTimes(stops, planDate, departureTime, dwellMinutes),
+    [departureTime, dwellMinutes, planDate, stops],
+  );
   return (
     <article className="panel route-child-manifest-card">
       <div className="route-child-manifest-title">
         <h3>{copy.title}</h3>
-        <span>{copy.stops(stops.length)}</span>
+        <span>{copy.stops(displayStops.length)}</span>
       </div>
       <div className="route-child-manifest-scroll">
         <div className="route-child-manifest-header route-child-manifest-grid">
@@ -1315,17 +1391,33 @@ function ChildRouteManifestCard({
           <span>{copy.eta}</span>
         </div>
         <div className="route-child-manifest-body">
-          {stops.map((stop, index) => {
+          {displayStops.map((stop, index) => {
             const orderItems = getOrderItems(stop.items);
             return (
-              <div className="route-child-manifest-row route-child-manifest-grid" key={stop.deliveryStopId}>
+              <div
+                className="route-child-manifest-row route-child-manifest-grid"
+                key={stop.deliveryStopId}
+              >
                 <span className="route-child-manifest-index">{index + 1}</span>
-                <strong className="route-child-manifest-order">{stop.orderName}</strong>
-                <span className="route-child-manifest-recipient">{stop.recipientName ?? t.noRecipient}</span>
+                <strong className="route-child-manifest-order">
+                  {stop.orderName}
+                </strong>
+                <span className="route-child-manifest-recipient">
+                  {stop.recipientName ?? t.noRecipient}
+                </span>
                 <div className="route-child-manifest-contact-block">
-                  <span><MapPin aria-hidden="true" size={16} />{stop.addressLabel || "—"}</span>
-                  <span><Phone aria-hidden="true" size={16} />{stop.phone || "—"}</span>
-                  <span><Mail aria-hidden="true" size={16} />{stop.email || "—"}</span>
+                  <span>
+                    <MapPin aria-hidden="true" size={16} />
+                    {stop.addressLabel || "—"}
+                  </span>
+                  <span>
+                    <Phone aria-hidden="true" size={16} />
+                    {stop.phone || "—"}
+                  </span>
+                  <span>
+                    <Mail aria-hidden="true" size={16} />
+                    {stop.email || "—"}
+                  </span>
                 </div>
                 <div className="route-child-manifest-items-block">
                   <table className="order-detail-items-table route-child-manifest-items-table">
@@ -1337,10 +1429,16 @@ function ChildRouteManifestCard({
                     </thead>
                     <tbody>
                       {orderItems.length === 0 ? (
-                        <tr><td className="order-detail-items-empty" colSpan={2}>{copy.noItems}</td></tr>
+                        <tr>
+                          <td className="order-detail-items-empty" colSpan={2}>
+                            {copy.noItems}
+                          </td>
+                        </tr>
                       ) : (
                         orderItems.map((item, itemIndex) => (
-                          <tr key={`${getOrderItemSemanticDisplayKey(item)}:${itemIndex}`}>
+                          <tr
+                            key={`${getOrderItemSemanticDisplayKey(item)}:${itemIndex}`}
+                          >
                             <td>{formatOrderItemName(item)}</td>
                             <td>{item.quantity}</td>
                           </tr>
@@ -1348,15 +1446,23 @@ function ChildRouteManifestCard({
                       )}
                     </tbody>
                   </table>
-                  <span className="route-child-manifest-item-count">{copy.itemCount(orderItems.length)}</span>
+                  <span className="route-child-manifest-item-count">
+                    {copy.itemCount(orderItems.length)}
+                  </span>
                 </div>
                 <div className="route-child-payment-cell">
-                  <span className={paymentClassName(stop.normalizedPaymentStatus)}>{formatManifestPayment(stop, copy)}</span>
+                  <span
+                    className={paymentClassName(stop.normalizedPaymentStatus)}
+                  >
+                    {formatManifestPayment(stop, copy)}
+                  </span>
                   <span>{formatManifestAmount(stop)}</span>
                 </div>
                 <div className="route-child-eta-cell">
                   <span>{copy.arrival}</span>
-                  <strong>{formatManifestEta(stop.estimatedArrivalAt, locale)}</strong>
+                  <strong>
+                    {formatManifestEta(stop.estimatedArrivalAt, locale)}
+                  </strong>
                   <span>{copy.dwell}</span>
                   <strong>{formatManifestDwell(dwellMinutes, copy)}</strong>
                 </div>
@@ -1377,12 +1483,18 @@ const childManifestCopy = {
     arrival: "Arrival",
     collectCash: "Cash",
     dwell: "Dwell",
-    dwellMinutes(value: number): string { return `${value} min`; },
+    dwellMinutes(value: number): string {
+      return `${value} min`;
+    },
     eta: "ETA",
     item: "Item",
-    itemCount(value: number): string { return value === 1 ? "1 item" : `${value} items`; },
+    itemCount(value: number): string {
+      return value === 1 ? "1 item" : `${value} items`;
+    },
     items: "Items",
-    leg(value: string): string { return value; },
+    leg(value: string): string {
+      return value;
+    },
     noItems: "No items",
     orderId: "Order ID",
     options: "Options",
@@ -1392,7 +1504,9 @@ const childManifestCopy = {
     quantity: "Qty",
     recipient: "Recipient",
     sku: "SKU",
-    stops(value: number): string { return value === 1 ? "1 stop" : `${value} stops`; },
+    stops(value: number): string {
+      return value === 1 ? "1 stop" : `${value} stops`;
+    },
     title: "Driver manifest",
   },
   "ko-KR": {
@@ -1402,12 +1516,18 @@ const childManifestCopy = {
     arrival: "Arrival",
     collectCash: "Cash",
     dwell: "Dwell",
-    dwellMinutes(value: number): string { return `${value} min`; },
+    dwellMinutes(value: number): string {
+      return `${value} min`;
+    },
     eta: "ETA",
     item: "품목",
-    itemCount(value: number): string { return `${value} items`; },
+    itemCount(value: number): string {
+      return `${value} items`;
+    },
     items: "품목",
-    leg(value: string): string { return value; },
+    leg(value: string): string {
+      return value;
+    },
     noItems: "품목 없음",
     orderId: "주문 ID",
     options: "옵션",
@@ -1417,15 +1537,21 @@ const childManifestCopy = {
     quantity: "수량",
     recipient: "수령인",
     sku: "SKU",
-    stops(value: number): string { return `${value} stops`; },
+    stops(value: number): string {
+      return `${value} stops`;
+    },
     title: "배송 목록",
   },
 } as const;
 
-function paymentClassName(status: RouteStopDto["normalizedPaymentStatus"]): string {
+function paymentClassName(
+  status: RouteStopDto["normalizedPaymentStatus"],
+): string {
   return [
     "route-child-payment-pill",
-    status === "CASH_COLLECT_REQUIRED" || status === "TRANSFER_CHECK_PENDING" || status === "ONLINE_PAYMENT_PENDING_OR_FAILED"
+    status === "CASH_COLLECT_REQUIRED" ||
+    status === "TRANSFER_CHECK_PENDING" ||
+    status === "ONLINE_PAYMENT_PENDING_OR_FAILED"
       ? "route-child-payment-pill--attention"
       : "",
   ]
@@ -1435,15 +1561,21 @@ function paymentClassName(status: RouteStopDto["normalizedPaymentStatus"]): stri
 
 function formatManifestPayment(
   stop: RouteStopDto,
-  copy: typeof childManifestCopy[keyof typeof childManifestCopy],
+  copy: (typeof childManifestCopy)[keyof typeof childManifestCopy],
 ): string {
-  if (stop.normalizedPaymentStatus === "CASH_COLLECT_REQUIRED") return copy.collectCash;
+  if (stop.normalizedPaymentStatus === "CASH_COLLECT_REQUIRED")
+    return copy.collectCash;
   if (stop.normalizedPaymentStatus === "PAID_CONFIRMED") return copy.paid;
   return copy.paymentReview;
 }
 
 function formatManifestAmount(stop: RouteStopDto): string {
-  if (stop.totalPriceAmount === null || stop.totalPriceAmount === undefined || stop.totalPriceAmount === "") return "—";
+  if (
+    stop.totalPriceAmount === null ||
+    stop.totalPriceAmount === undefined ||
+    stop.totalPriceAmount === ""
+  )
+    return "—";
   const amount = Number(stop.totalPriceAmount);
   if (!Number.isFinite(amount)) return stop.totalPriceAmount;
   return new Intl.NumberFormat("en-CA", {
@@ -1452,16 +1584,60 @@ function formatManifestAmount(stop: RouteStopDto): string {
   }).format(amount);
 }
 
-function formatManifestEta(value: string | null | undefined, locale?: string | null): string {
+function applyManifestArrivalTimes(
+  stops: RouteStopDto[],
+  planDate: string | null,
+  departureTime: string | null,
+  dwellMinutes: number | null,
+): RouteStopDto[] {
+  const departure = parseManifestDeparture(planDate, departureTime);
+  if (departure === null) return stops;
+
+  let cursor = departure.getTime();
+  const dwellMs = Math.max(0, dwellMinutes ?? 0) * 60_000;
+  return stops.map((stop) => {
+    const durationSeconds = stop.durationFromPreviousSeconds;
+    if (durationSeconds === null || durationSeconds === undefined) {
+      return stop;
+    }
+    cursor += Math.max(0, durationSeconds) * 1_000;
+    const estimatedArrivalAt = new Date(cursor).toISOString();
+    cursor += dwellMs;
+    return { ...stop, estimatedArrivalAt };
+  });
+}
+
+function parseManifestDeparture(
+  planDate: string | null,
+  departureTime: string | null,
+): Date | null {
+  if (planDate === null || departureTime === null) return null;
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/u.test(planDate) ||
+    !/^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(departureTime)
+  ) {
+    return null;
+  }
+  const date = new Date(`${planDate}T${departureTime}:00`);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function formatManifestEta(
+  value: string | null | undefined,
+  locale?: string | null,
+): string {
   if (value === null || value === undefined) return "—";
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return "—";
-  return new Intl.DateTimeFormat(resolveLocale(locale), { hour: "2-digit", minute: "2-digit" }).format(date);
+  return new Intl.DateTimeFormat(resolveLocale(locale), {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
 }
 
 function formatManifestDwell(
   value: number | null,
-  copy: typeof childManifestCopy[keyof typeof childManifestCopy],
+  copy: (typeof childManifestCopy)[keyof typeof childManifestCopy],
 ): string {
   return value === null ? "—" : copy.dwellMinutes(value);
 }

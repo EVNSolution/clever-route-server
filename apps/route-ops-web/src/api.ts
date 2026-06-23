@@ -394,6 +394,7 @@ export async function deleteRoute(
 
 export async function saveRoute(input: {
   csrfToken: string;
+  departureTime?: string | null;
   driverId?: string | null;
   expectedUpdatedAt?: string;
   routeEndMode?: RoutePlanDetailDto["routePlan"]["routeEndMode"];
@@ -405,6 +406,9 @@ export async function saveRoute(input: {
     "PATCH",
     input.csrfToken,
     {
+      ...(Object.hasOwn(input, "departureTime")
+        ? { departureTime: input.departureTime ?? null }
+        : {}),
       ...(Object.hasOwn(input, "driverId")
         ? { driverId: input.driverId ?? null }
         : {}),

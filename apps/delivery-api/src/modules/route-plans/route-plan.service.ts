@@ -167,15 +167,17 @@ export class RoutePlanAdminService implements RoutePlanService {
     const before = shouldCheckShape ? await this.repository.findRoutePlanDetail(input) : null;
     const saved = await this.repository.saveRoutePlan(input);
     if (saved === null) return null;
-    const detail = shouldCheckShape
-      ? await this.refreshRouteGeometryIfShapeChanged({
-          before,
-          after: saved.detail,
-          source: 'SHAPE_MUTATION'
-        })
-      : saved.detail;
+    const routeShapeChanged =
+      shouldCheckShape &&
+      (before === null || computeRouteShapeSignature(before) !== computeRouteShapeSignature(saved.detail));
+    const detail = routeShapeChanged ? await this.refreshRouteGeometry(saved.detail, 'SHAPE_MUTATION') : saved.detail;
+    const departureTimeChanged = saved.operations.some(
+      (operation) => operation.name === 'departure_time' && operation.status === 'applied'
+    );
+    const detailWithTiming =
+      departureTimeChanged && !routeShapeChanged ? await this.refreshRouteGeometry(detail, 'EXPLICIT_REFRESH') : detail;
     return {
-      detail,
+      detail: detailWithTiming,
       operations: saved.operations
     };
   }
@@ -286,7 +288,12 @@ function emptyRouteResult(): RoutePlanRouteResult {
 }
 
 function hasRouteMutationPayload(input: SaveRoutePlanInput): boolean {
-  return input.payload.driverId !== undefined || input.payload.routeEndMode !== undefined || input.payload.stops !== undefined;
+  return (
+    input.payload.departureTime !== undefined ||
+    input.payload.driverId !== undefined ||
+    input.payload.routeEndMode !== undefined ||
+    input.payload.stops !== undefined
+  );
 }
 
 function hasRouteShapePayload(input: SaveRoutePlanInput): boolean {

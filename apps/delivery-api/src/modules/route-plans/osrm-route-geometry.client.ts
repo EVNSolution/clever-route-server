@@ -27,6 +27,11 @@ type OsrmWaypoint = {
   name: string | null;
 };
 
+type OsrmLeg = {
+  distance: number | null;
+  duration: number | null;
+};
+
 export class OsrmRouteGeometryProvider implements RouteGeometryProvider {
   private readonly baseUrl: string;
   private readonly fetch: FetchLike;
@@ -138,13 +143,16 @@ function buildRouteStopPoints(
   payload: unknown
 ): RoutePlanRouteStopPoint[] {
   const waypoints = readOsrmWaypoints(payload);
+  const legs = readOsrmLegs(payload);
   const waypointsByStopId = new Map<string, OsrmWaypoint>();
+  const legsByStopId = new Map<string, OsrmLeg>();
 
   routePoints.forEach((routePoint, routePointIndex) => {
     if (routePoint.kind !== 'stop') {
       return;
     }
     waypointsByStopId.set(routePoint.stop.deliveryStopId, waypoints[routePointIndex] ?? emptyWaypoint());
+    legsByStopId.set(routePoint.stop.deliveryStopId, legs[routePointIndex - 1] ?? emptyLeg());
   });
 
   return sortedStops.map((stop) => {
@@ -156,7 +164,9 @@ function buildRouteStopPoints(
       sequence: stop.sequence,
       shopifyOrderGid: stop.shopifyOrderGid,
       snapDistanceMeters: waypoint.distance,
-      snappedCoordinates: waypoint.location
+      snappedCoordinates: waypoint.location,
+      distanceFromPreviousMeters: legsByStopId.get(stop.deliveryStopId)?.distance ?? null,
+      durationFromPreviousSeconds: legsByStopId.get(stop.deliveryStopId)?.duration ?? null
     };
   });
 }
@@ -215,6 +225,29 @@ function readOsrmRouteMetrics(payload: unknown): RoutePlanRouteMetrics | null {
   return { distanceMeters, durationSeconds };
 }
 
+function readOsrmLegs(payload: unknown): OsrmLeg[] {
+  const object = objectOrNull(payload);
+  if (object?.code !== 'Ok' || !Array.isArray(object.routes)) {
+    return [];
+  }
+  const route = objectOrNull(object.routes[0]);
+  if (!Array.isArray(route?.legs)) {
+    return [];
+  }
+  return route.legs.map((leg) => readOsrmLeg(leg));
+}
+
+function readOsrmLeg(value: unknown): OsrmLeg {
+  const object = objectOrNull(value);
+  if (object === null) {
+    return emptyLeg();
+  }
+  return {
+    distance: readDistanceMeters(object.distance),
+    duration: readDurationSeconds(object.duration)
+  };
+}
+
 function readOsrmWaypoint(value: unknown): OsrmWaypoint {
   const object = objectOrNull(value);
   if (object === null) {
@@ -256,6 +289,10 @@ function readWaypointName(value: unknown): string | null {
 
 function emptyWaypoint(): OsrmWaypoint {
   return { distance: null, location: null, name: null };
+}
+
+function emptyLeg(): OsrmLeg {
+  return { distance: null, duration: null };
 }
 
 function isOkOsrmPayload(payload: unknown): boolean {

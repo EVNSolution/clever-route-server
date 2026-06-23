@@ -537,7 +537,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     const source = readFileSync('src/pages/RoutesPage.tsx', 'utf8');
 
     expect(source).toContain('isPublishingRoute ? t.sendingToDriver : t.sendToDriver');
-    expect(source).toContain('canSendRouteToDriver || isPublishingRoute ? null : <small>{t.sendToDriverUnavailable}</small>');
+    expect(source).toMatch(/canSendRouteToDriver \|\| isPublishingRoute \? null : \(\s*<small>\{t\.sendToDriverUnavailable\}<\/small>\s*\)/u);
   });
 
   test('RouteBuilder keeps standalone routes on the side-control layout', () => {
@@ -630,12 +630,14 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(hasDepotCoordinates(detail.routePlan)).toBe(true);
     expect(buildRouteSaveDraftInput({
       csrfToken: 'csrf-token',
+      departureTime: '09:30',
       detail,
       driverId: 'driver-id',
       draftStops,
       routeEndMode: 'RETURN_TO_DEPOT',
     })).toEqual({
       csrfToken: 'csrf-token',
+      departureTime: '09:30',
       driverId: 'driver-id',
       expectedUpdatedAt: '2026-05-26T12:00:00.000Z',
       routeEndMode: 'RETURN_TO_DEPOT',
@@ -1066,6 +1068,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
 
     await saveRoute({
       csrfToken: 'csrf-token',
+      departureTime: '09:30',
       driverId: 'driver-id',
       expectedUpdatedAt: '2026-05-26T12:00:00.000Z',
       routeEndMode: 'END_AT_LAST_STOP',
@@ -1077,6 +1080,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
       '/admin/ui/app/api/routes/route%2Fid?shopDomain=tenant-a.example.test',
       expect.objectContaining({
         body: JSON.stringify({
+          departureTime: '09:30',
           driverId: 'driver-id',
           expectedUpdatedAt: '2026-05-26T12:00:00.000Z',
           routeEndMode: 'END_AT_LAST_STOP',

@@ -200,6 +200,7 @@ export type RoutePlanSummaryDto = {
     latitude: number | null;
     longitude: number | null;
   };
+  departureTime?: string | null;
   driverId: string | null;
   id: string;
   itemSummary?: RouteItemSummaryDto;
@@ -267,6 +268,8 @@ export type RoutePlanDetailDto = {
     snapDistanceMeters: number | null;
     snappedCoordinates: [number, number] | null;
     sourceOrderId: string;
+    distanceFromPreviousMeters?: number | null;
+    durationFromPreviousSeconds?: number | null;
   }>;
   stops: RouteStopDto[];
 };

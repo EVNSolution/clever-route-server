@@ -2134,7 +2134,7 @@ button.danger.subtle {
   gap: 8px;
 }
 .route-child-sequence-row {
-  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-columns: max-content max-content minmax(0, 1fr);
 }
 .route-child-sequence-driver {
   gap: 6px;
@@ -2170,6 +2170,26 @@ button.danger.subtle {
   padding: 0;
   position: absolute;
   width: 100%;
+}
+.route-child-sequence-departure {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  justify-self: start;
+  min-height: 38px;
+  white-space: nowrap;
+}
+.route-child-sequence-departure span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.route-child-sequence-departure input {
+  min-height: 38px;
+  padding: 6px 8px;
+  width: 112px;
 }
 .route-child-sequence-track {
   grid-template-columns: auto minmax(0, 1fr) auto;

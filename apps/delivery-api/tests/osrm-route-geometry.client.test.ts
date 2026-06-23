@@ -66,6 +66,8 @@ describe('OsrmRouteGeometryProvider', () => {
       routeStopPoints: [
         {
           deliveryStopId: 'stop-1',
+          distanceFromPreviousMeters: 1120.5,
+          durationFromPreviousSeconds: 180.25,
           inputCoordinates: [-79.2571, 43.7764],
           name: 'McCowan Road',
           sequence: 1,
@@ -75,6 +77,8 @@ describe('OsrmRouteGeometryProvider', () => {
         },
         {
           deliveryStopId: 'stop-2',
+          distanceFromPreviousMeters: 17300,
+          durationFromPreviousSeconds: 2130,
           inputCoordinates: [-79.337, 43.8561],
           name: 'Yonge Street',
           sequence: 2,
@@ -210,6 +214,8 @@ describe('OsrmRouteGeometryProvider', () => {
     expect(result.routeStopPoints).toEqual([
       {
         deliveryStopId: 'stop-1',
+        distanceFromPreviousMeters: null,
+        durationFromPreviousSeconds: null,
         inputCoordinates: [-79.2571, 43.7764],
         name: 'Bad Road',
         sequence: 1,
@@ -219,6 +225,8 @@ describe('OsrmRouteGeometryProvider', () => {
       },
       {
         deliveryStopId: 'stop-2',
+        distanceFromPreviousMeters: null,
+        durationFromPreviousSeconds: null,
         inputCoordinates: [-79.337, 43.8561],
         name: null,
         sequence: 2,
@@ -310,6 +318,10 @@ function routeOkPayload(): unknown {
       {
         distance: 18420.5,
         duration: 2310.25,
+        legs: [
+          { distance: 1120.5, duration: 180.25 },
+          { distance: 17300, duration: 2130 }
+        ],
         geometry: {
           type: 'LineString',
           coordinates: [

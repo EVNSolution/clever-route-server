@@ -352,6 +352,8 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       const initialDriverId = routePlan.driverId ?? routePlan.driver?.id ?? null;
       const initialRouteStatus = routePlan.status;
       const hasShapePayload = input.payload.routeEndMode !== undefined || input.payload.stops !== undefined;
+      const hasDepartureTimePayload = Object.hasOwn(input.payload, 'departureTime');
+      const nextDepartureTime = hasDepartureTimePayload ? input.payload.departureTime ?? null : null;
       const willRepairDraftDepot =
         hasShapePayload &&
         initialRouteStatus === 'DRAFT' &&
@@ -367,11 +369,14 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       const hasDriverPayload = Object.hasOwn(input.payload, 'driverId');
       const nextDriverId = hasDriverPayload ? input.payload.driverId ?? null : null;
       const hasDriverChange = hasDriverPayload && initialDriverId !== nextDriverId;
+      const hasDepartureTimeChange =
+        hasDepartureTimePayload && readDepartureTime(routePlan.constraints) !== nextDepartureTime;
       const hasRouteMutation =
         willRepairDraftDepot ||
         hasRouteEndModeChange ||
         hasStopSequenceChange ||
-        hasDriverChange;
+        hasDriverChange ||
+        hasDepartureTimeChange;
 
       if (input.payload.expectedUpdatedAt !== undefined && hasRouteMutation) {
         const claimed = await tx.routePlan.updateMany({
@@ -431,6 +436,20 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         }
       } else {
         operations.push({ name: 'options', reason: 'not_provided', status: 'skipped' });
+      }
+
+      if (hasDepartureTimePayload) {
+        if (!hasDepartureTimeChange) {
+          operations.push({ name: 'departure_time', reason: 'unchanged', status: 'skipped' });
+        } else {
+          const constraints = updateConstraintsDepartureTime(routePlan.constraints, nextDepartureTime);
+          await tx.routePlan.update({
+            data: { constraints },
+            where: { id: routePlan.id }
+          });
+          routePlan = { ...routePlan, constraints };
+          operations.push({ name: 'departure_time', reason: nextDepartureTime === null ? 'cleared' : 'changed', status: 'applied' });
+        }
       }
 
       if (input.payload.stops !== undefined && normalizedStops !== undefined) {
@@ -1871,6 +1890,7 @@ function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanO
       latitude: decimalNumber(routePlan.depotLatitude),
       longitude: decimalNumber(routePlan.depotLongitude)
     },
+    departureTime: readDepartureTime(routePlan.constraints),
     driver: toRoutePlanDriverSummary(routePlan.driver ?? null),
     driverId: routePlan.driverId ?? routePlan.driver?.id ?? null,
     id: routePlan.id,
@@ -2077,6 +2097,25 @@ function updateConstraintsRouteEndMode(
     routeEndMode,
     sequenceSource: readString(constraints.sequenceSource) ?? 'request-order'
   }) as Prisma.InputJsonObject;
+}
+
+function updateConstraintsDepartureTime(
+  value: unknown,
+  departureTime: string | null
+): Prisma.InputJsonObject {
+  const constraints = objectOrEmpty(value);
+  return toJson({
+    ...constraints,
+    departureTime,
+    optimizer: readString(constraints.optimizer) ?? OPTIMIZER_VERSION,
+    routeEndMode: readRouteEndMode(value),
+    sequenceSource: readString(constraints.sequenceSource) ?? 'request-order'
+  }) as Prisma.InputJsonObject;
+}
+
+function readDepartureTime(value: unknown): string | null {
+  const departureTime = readString(objectOrNull(value)?.departureTime);
+  return departureTime !== null && /^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(departureTime) ? departureTime : null;
 }
 
 function readRouteEndMode(value: unknown): RoutePlanEndMode {

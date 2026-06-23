@@ -243,6 +243,7 @@ export const routesCopy = {
     savingRouteOptions: 'saving route options…',
     routeState: 'Route state',
     routeStops: 'Route stops',
+    departureTime: 'Depart',
     storeStart: 'Store start',
     finish: 'Finish',
     routeBuilderTabs: {
@@ -363,6 +364,7 @@ export const routesCopy = {
     savingRouteOptions: '경로 옵션 저장 중…',
     routeState: '경로 상태',
     routeStops: '하차 순서',
+    departureTime: '출발',
     storeStart: '매장 출발',
     finish: '완료',
     routeBuilderTabs: {

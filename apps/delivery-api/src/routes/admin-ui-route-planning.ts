@@ -294,6 +294,19 @@ export function readRouteEndMode(
   return value;
 }
 
+export function readRouteDepartureTime(value: unknown): string | null {
+  const departureTime = readNullableJsonString(value);
+  if (departureTime === null) return null;
+  if (!/^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(departureTime)) {
+    throw new WooCommerceOnboardingError(
+      "BAD_REQUEST",
+      "Route departure time must use HH:mm format.",
+      400,
+    );
+  }
+  return departureTime;
+}
+
 export function readNullableJsonString(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== "string") {
@@ -643,6 +656,9 @@ export function readRouteOpsSaveRoutePayload(
   detail: RoutePlanDetail,
 ): SaveRoutePlanPayload {
   const payload: SaveRoutePlanPayload = {};
+  if (Object.hasOwn(body, "departureTime")) {
+    payload.departureTime = readRouteDepartureTime(body.departureTime);
+  }
   if (Object.hasOwn(body, "driverId")) {
     payload.driverId = readNullableJsonString(body.driverId);
   }
@@ -1036,6 +1052,7 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
   createdAt: string;
   deliveryAreas: string[];
   deliveryDate: string | null;
+  departureTime: string | null;
   driverId: string | null;
   depot: {
     latitude: number | null;
@@ -1047,7 +1064,9 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
   name: string;
   planDate: string;
   routeEndMode: RoutePlanSummary["routeEndMode"];
-  routeGroupingChild: NonNullable<RoutePlanSummary["routeGroupingChild"]> | null;
+  routeGroupingChild: NonNullable<
+    RoutePlanSummary["routeGroupingChild"]
+  > | null;
   status: string;
   stopsCount: number;
   updatedAt: string;
@@ -1056,6 +1075,7 @@ export function toRouteOpsRoutePlanDto(routePlan: RoutePlanSummary): {
     createdAt: routePlan.createdAt,
     deliveryAreas: routePlan.deliveryAreas,
     deliveryDate: routePlan.deliveryDate ?? null,
+    departureTime: routePlan.departureTime ?? null,
     driverId: routePlan.driverId ?? null,
     depot: routePlan.depot,
     id: routePlan.id,
@@ -1088,6 +1108,8 @@ export function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
     snapDistanceMeters: number | null;
     snappedCoordinates: [number, number] | null;
     sourceOrderId: string;
+    distanceFromPreviousMeters: number | null;
+    durationFromPreviousSeconds: number | null;
   }>;
   stops: Array<{
     addressLabel: string;
@@ -1125,38 +1147,53 @@ export function toRouteOpsRoutePlanDetailDto(detail: RoutePlanDetail): {
     routeStopPoints: detail.routeStopPoints.map((point) => ({
       deliveryStopId: point.deliveryStopId,
       items:
-        detail.stops.find((stop) => stop.deliveryStopId === point.deliveryStopId)?.items ?? [],
+        detail.stops.find(
+          (stop) => stop.deliveryStopId === point.deliveryStopId,
+        )?.items ?? [],
       inputCoordinates: point.inputCoordinates,
       name: point.name,
       sequence: point.sequence,
       snapDistanceMeters: point.snapDistanceMeters,
       snappedCoordinates: point.snappedCoordinates,
       sourceOrderId: point.shopifyOrderGid,
+      distanceFromPreviousMeters: point.distanceFromPreviousMeters ?? null,
+      durationFromPreviousSeconds: point.durationFromPreviousSeconds ?? null,
     })),
-    stops: detail.stops.map((stop) => ({
-      addressLabel: formatAddressLabel(stop.address),
-      coordinates: stop.coordinates,
-      deliveryArea: stop.deliveryArea,
-      deliveryStopId: stop.deliveryStopId,
-      items: stop.items ?? [],
-      orderId: stop.orderId,
-      orderName: stop.orderName,
-      recipientName: stop.recipientName,
-      sequence: stop.sequence,
-      currencyCode: stop.currencyCode ?? null,
-      distanceFromPreviousMeters: stop.distanceFromPreviousMeters ?? null,
-      durationFromPreviousSeconds: stop.durationFromPreviousSeconds ?? null,
-      email: stop.email ?? null,
-      estimatedArrivalAt: stop.estimatedArrivalAt ?? null,
-      financialStatus: stop.financialStatus,
-      normalizedPaymentStatus: stop.normalizedPaymentStatus ?? null,
-      paymentMethodTitle: stop.paymentMethodTitle ?? null,
-      phone: stop.phone ?? null,
-      totalPriceAmount: stop.totalPriceAmount ?? null,
-      sourceOrderId: stop.shopifyOrderGid,
-      status: stop.status,
-      customerNoteContext: stop.customerNoteContext,
-    })),
+    stops: detail.stops.map((stop) => {
+      const stopPoint = detail.routeStopPoints.find(
+        (point) => point.deliveryStopId === stop.deliveryStopId,
+      );
+      return {
+        addressLabel: formatAddressLabel(stop.address),
+        coordinates: stop.coordinates,
+        deliveryArea: stop.deliveryArea,
+        deliveryStopId: stop.deliveryStopId,
+        items: stop.items ?? [],
+        orderId: stop.orderId,
+        orderName: stop.orderName,
+        recipientName: stop.recipientName,
+        sequence: stop.sequence,
+        currencyCode: stop.currencyCode ?? null,
+        distanceFromPreviousMeters:
+          stop.distanceFromPreviousMeters ??
+          stopPoint?.distanceFromPreviousMeters ??
+          null,
+        durationFromPreviousSeconds:
+          stop.durationFromPreviousSeconds ??
+          stopPoint?.durationFromPreviousSeconds ??
+          null,
+        email: stop.email ?? null,
+        estimatedArrivalAt: stop.estimatedArrivalAt ?? null,
+        financialStatus: stop.financialStatus,
+        normalizedPaymentStatus: stop.normalizedPaymentStatus ?? null,
+        paymentMethodTitle: stop.paymentMethodTitle ?? null,
+        phone: stop.phone ?? null,
+        totalPriceAmount: stop.totalPriceAmount ?? null,
+        sourceOrderId: stop.shopifyOrderGid,
+        status: stop.status,
+        customerNoteContext: stop.customerNoteContext,
+      };
+    }),
   };
 }
 
