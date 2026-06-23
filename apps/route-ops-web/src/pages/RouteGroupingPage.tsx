@@ -1,5 +1,5 @@
 import { Pencil, Pentagon, Undo2 } from "lucide-react";
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { CSSProperties, ReactElement } from "react";
 
 import {
@@ -535,28 +535,21 @@ function RouteGroupingAssignmentsCard({
   return (
     <article className="panel route-group-assignments-card">
       <table className="ops-table route-group-assignments-table">
-        <thead><tr><th>{t.order}</th><th>{t.customer}</th><th>{t.driver}</th><th>{t.sequence}</th></tr></thead>
+        <thead><tr><th>{t.order}</th><th>{t.customer}</th><th>{t.contact}</th><th>{t.sequence}</th></tr></thead>
         <tbody>
           {sortedAssignments.map((assignment) => {
             const result = assignmentResults.get(assignment.orderId);
+            const contact = [assignment.phone, assignment.email].filter(Boolean).join(" · ") || "—";
+            const sequence = result?.sequenceLabel === null || result?.sequenceLabel === undefined
+              ? (result?.driverLabel ?? t.unassigned)
+              : `${result.driverLabel} ${result.sequenceLabel}`;
             return (
-              <Fragment key={assignment.orderId}>
-                <tr>
-                  <td><strong>{assignment.orderName}</strong></td>
-                  <td>{assignment.recipientName ?? "—"}</td>
-                  <td><span className="route-group-assignment-pill">{result?.driverLabel ?? t.unassigned}</span></td>
-                  <td className="route-group-assignment-sequence">{result?.sequenceLabel ?? "—"}</td>
-                </tr>
-                <tr className="route-group-assignment-detail-row">
-                  <td colSpan={4}>
-                    <div className="route-group-assignment-detail">
-                      <span>{t.address}: {assignment.addressLabel || "—"}</span>
-                      <span>{t.phone}: {assignment.phone || "—"}</span>
-                      <span>{t.email}: {assignment.email || "—"}</span>
-                    </div>
-                  </td>
-                </tr>
-              </Fragment>
+              <tr key={assignment.orderId}>
+                <td><strong>{assignment.orderName}</strong></td>
+                <td className="route-group-assignment-customer">{assignment.recipientName ?? "—"}</td>
+                <td className="route-group-assignment-contact">{contact}</td>
+                <td className="route-group-assignment-sequence">{sequence}</td>
+              </tr>
             );
           })}
         </tbody>

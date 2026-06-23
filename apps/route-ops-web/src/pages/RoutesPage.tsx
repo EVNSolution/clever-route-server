@@ -1295,38 +1295,36 @@ function ChildRouteManifestCard({
                     <td>{index + 1}</td>
                     <td>{stop.orderName}</td>
                     <td>{stop.recipientName ?? t.noRecipient}</td>
-                    <td>
-                      <span className={paymentClassName(stop.normalizedPaymentStatus)}>
-                        {formatManifestPayment(stop, copy)}
-                      </span>
-                      <small>{formatManifestAmount(stop)}</small>
+                    <td className={paymentClassName(stop.normalizedPaymentStatus)}>
+                      {formatManifestAmount(stop)} ({formatManifestPayment(stop, copy)})
                     </td>
-                    <td>
-                      <div>{formatManifestEta(stop.estimatedArrivalAt, locale)}</div>
-                      <small>{formatManifestLeg(stop, copy)}</small>
-                    </td>
+                    <td>{formatManifestEta(stop.estimatedArrivalAt, locale)} · {formatManifestLeg(stop, copy)}</td>
                   </tr>
                   <tr className="route-child-manifest-detail-row">
                     <td colSpan={5}>
-                      <div className="route-child-manifest-detail">
-                        <div><strong>{copy.address}</strong><span>{stop.addressLabel || "—"}</span></div>
-                        <div><strong>{copy.contact}</strong><span>{[stop.phone, stop.email].filter(Boolean).join(" · ") || "—"}</span></div>
-                        <div>
-                          <strong>{copy.items}</strong>
-                          {orderItems.length === 0 ? (
-                            <span>{copy.noItems}</span>
-                          ) : (
-                            <ul className="route-child-manifest-items">
-                              {visibleItems.map((item, itemIndex) => (
-                                <li key={`${getOrderItemSemanticDisplayKey(item)}:${itemIndex}`}>
-                                  {formatOrderItemLine(item)}
-                                </li>
-                              ))}
-                              {hiddenItemCount > 0 ? <li>{copy.moreItems(hiddenItemCount)}</li> : null}
-                            </ul>
-                          )}
-                        </div>
-                      </div>
+                      <table className="route-child-manifest-detail-table">
+                        <tbody>
+                          <tr><th>{copy.address}</th><td>{stop.addressLabel || "—"}</td></tr>
+                          <tr><th>{copy.contact}</th><td>{[stop.phone, stop.email].filter(Boolean).join(" · ") || "—"}</td></tr>
+                          <tr>
+                            <th>{copy.items}</th>
+                            <td>
+                              {orderItems.length === 0 ? (
+                                <span>{copy.noItems}</span>
+                              ) : (
+                                <ul className="route-child-manifest-items">
+                                  {visibleItems.map((item, itemIndex) => (
+                                    <li key={`${getOrderItemSemanticDisplayKey(item)}:${itemIndex}`}>
+                                      {formatOrderItemLine(item)}
+                                    </li>
+                                  ))}
+                                  {hiddenItemCount > 0 ? <li>{copy.moreItems(hiddenItemCount)}</li> : null}
+                                </ul>
+                              )}
+                            </td>
+                          </tr>
+                        </tbody>
+                      </table>
                     </td>
                   </tr>
                 </Fragment>
