@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Mail, MapPin, Phone } from "lucide-react";
 import type { CSSProperties, DragEvent, ReactElement } from "react";
 
 import {
@@ -861,7 +861,11 @@ export function RouteBuilder(input: {
             savedStopSequenceLabels={savedStopSequenceLabels}
             stops={draftStops}
           />
-          <ChildRouteManifestCard locale={locale} stops={draftStops} />
+          <ChildRouteManifestCard
+            dwellMinutes={input.settings?.routeOpsUiSettings.destinationDwellMinutes ?? null}
+            locale={locale}
+            stops={draftStops}
+          />
         </>
       ) : null}
       <section className="route-item-summary-card" aria-label={t.routeItems}>
@@ -1284,9 +1288,11 @@ function ChildRouteSequenceCard({
 }
 
 function ChildRouteManifestCard({
+  dwellMinutes,
   locale,
   stops,
 }: {
+  dwellMinutes: number | null;
   locale?: string | null;
   stops: RouteStopDto[];
 }): ReactElement {
@@ -1303,109 +1309,82 @@ function ChildRouteManifestCard({
   };
   return (
     <article className="panel route-child-manifest-card">
-      <div className="route-item-summary-heading">
+      <div className="route-child-manifest-title">
         <h3>{copy.title}</h3>
+        <span>{copy.stops(stops.length)}</span>
       </div>
-      <div className="table-scroll">
-        <table className="ops-table route-child-manifest-table">
-          <thead>
-            <tr>
-              <th aria-label={copy.details}></th>
-              <th>{t.stopTable.sequence}</th>
-              <th>{t.stopTable.order}</th>
-              <th>{copy.recipient}</th>
-              <th>{copy.payment}</th>
-              <th>{copy.arrival}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {stops.map((stop, index) => {
-              const orderItems = getOrderItems(stop.items);
-              const isCollapsed = collapsedStopIds.has(stop.deliveryStopId);
-              return (
-                <Fragment key={stop.deliveryStopId}>
-                  <tr className="route-child-manifest-summary-row">
-                    <td>
-                      <button
-                        aria-expanded={!isCollapsed}
-                        aria-label={isCollapsed ? copy.showDetails : copy.hideDetails}
-                        className="route-child-manifest-toggle"
-                        onClick={() => toggleStop(stop.deliveryStopId)}
-                        type="button"
-                      >
-                        <ChevronDown aria-hidden="true" size={16} strokeWidth={2.25} />
-                      </button>
-                    </td>
-                    <td>{index + 1}</td>
-                    <td>{stop.orderName}</td>
-                    <td>{stop.recipientName ?? t.noRecipient}</td>
-                    <td className="route-child-payment-cell">
-                      <span>{formatManifestAmount(stop)}</span>
-                      <span className={paymentClassName(stop.normalizedPaymentStatus)}>{formatManifestPayment(stop, copy)}</span>
-                    </td>
-                    <td className="route-child-arrival-cell">{formatManifestEta(stop.estimatedArrivalAt, locale)}</td>
-                  </tr>
-                  {!isCollapsed ? (
-                    <tr className="route-child-manifest-detail-row">
-                      <td colSpan={6}>
-                        <table className="route-child-manifest-detail-table">
-                          <colgroup>
-                            <col className="route-child-manifest-address-col" />
-                            <col className="route-child-manifest-contact-col" />
-                            <col className="route-child-manifest-items-col" />
-                          </colgroup>
-                          <thead>
-                            <tr>
-                              <th>{copy.address}</th>
-                              <th>{copy.contact}</th>
-                              <th>{copy.items}</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr>
-                              <td>{stop.addressLabel || "—"}</td>
-                              <td className="route-child-manifest-contact-lines">
-                                {stop.phone ? <span>{stop.phone}</span> : null}
-                                {stop.email ? <span>{stop.email}</span> : null}
-                                {stop.phone || stop.email ? null : <span>—</span>}
-                              </td>
-                              <td>
-                                <table className="order-detail-items-table route-child-manifest-items-table">
-                                  <thead>
-                                    <tr>
-                                      <th>{copy.item}</th>
-                                      <th>{copy.options}</th>
-                                      <th>{copy.sku}</th>
-                                      <th>{copy.quantity}</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {orderItems.length === 0 ? (
-                                      <tr><td className="order-detail-items-empty" colSpan={4}>{copy.noItems}</td></tr>
-                                    ) : (
-                                      orderItems.map((item, itemIndex) => (
-                                        <tr key={`${getOrderItemSemanticDisplayKey(item)}:${itemIndex}`}>
-                                          <td>{formatOrderItemName(item)}</td>
-                                          <td>{formatOrderItemOptions(item) || "—"}</td>
-                                          <td>{item.sku ?? "—"}</td>
-                                          <td>{item.quantity}</td>
-                                        </tr>
-                                      ))
-                                    )}
-                                  </tbody>
-                                </table>
-                              </td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </td>
-                    </tr>
-                  ) : null}
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
+      <div className="route-child-manifest-scroll">
+        <div className="route-child-manifest-header route-child-manifest-grid">
+          <span>{t.stopTable.sequence}</span>
+          <span>{copy.orderId}</span>
+          <span>{copy.recipient}</span>
+          <span>{copy.addressContact}</span>
+          <span>{copy.items}</span>
+          <span>{copy.payment}</span>
+          <span>{copy.eta}</span>
+          <span aria-label={copy.details}></span>
+        </div>
+        <div className="route-child-manifest-body">
+          {stops.map((stop, index) => {
+            const orderItems = getOrderItems(stop.items);
+            const isCollapsed = collapsedStopIds.has(stop.deliveryStopId);
+            return (
+              <div className="route-child-manifest-row route-child-manifest-grid" key={stop.deliveryStopId}>
+                <span className="route-child-manifest-index">{index + 1}</span>
+                <strong className="route-child-manifest-order">{stop.orderName}</strong>
+                <span className="route-child-manifest-recipient">{stop.recipientName ?? t.noRecipient}</span>
+                <div className="route-child-manifest-contact-block">
+                  <span><MapPin aria-hidden="true" size={16} />{stop.addressLabel || "—"}</span>
+                  <span><Phone aria-hidden="true" size={16} />{stop.phone || "—"}</span>
+                  <span><Mail aria-hidden="true" size={16} />{stop.email || "—"}</span>
+                </div>
+                <div className="route-child-manifest-items-block">
+                  <table className="order-detail-items-table route-child-manifest-items-table">
+                    <thead>
+                      <tr>
+                        <th>{copy.item}</th>
+                        <th>{copy.quantity}</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {orderItems.length === 0 ? (
+                        <tr><td className="order-detail-items-empty" colSpan={2}>{copy.noItems}</td></tr>
+                      ) : (
+                        orderItems.map((item, itemIndex) => (
+                          <tr key={`${getOrderItemSemanticDisplayKey(item)}:${itemIndex}`}>
+                            <td>{formatOrderItemName(item)}</td>
+                            <td>{item.quantity}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                  <span className="route-child-manifest-item-count">{copy.itemCount(orderItems.length)}</span>
+                </div>
+                <div className="route-child-payment-cell">
+                  <span className={paymentClassName(stop.normalizedPaymentStatus)}>{formatManifestPayment(stop, copy)}</span>
+                  <span>{formatManifestAmount(stop)}</span>
+                </div>
+                <div className="route-child-eta-cell">
+                  <span>{copy.arrival}</span>
+                  <strong>{formatManifestEta(stop.estimatedArrivalAt, locale)}</strong>
+                  <span>{copy.dwell}</span>
+                  <strong>{formatManifestDwell(dwellMinutes, copy)}</strong>
+                </div>
+                <button
+                  aria-expanded={!isCollapsed}
+                  aria-label={isCollapsed ? copy.showDetails : copy.hideDetails}
+                  className="route-child-manifest-toggle"
+                  onClick={() => toggleStop(stop.deliveryStopId)}
+                  type="button"
+                >
+                  <ChevronDown aria-hidden="true" size={16} strokeWidth={2.25} />
+                </button>
+                {isCollapsed ? null : <span className="route-child-manifest-row-open" aria-hidden="true" />}
+              </div>
+            );
+          })}
+        </div>
       </div>
     </article>
   );
@@ -1415,12 +1394,18 @@ const childManifestCopy = {
   "en-CA": {
     address: "Address",
     contact: "Contact",
+    addressContact: "Address & contact",
     arrival: "Arrival",
     collectCash: "Collect cash",
+    dwell: "Dwell",
+    dwellMinutes(value: number): string { return `${value} min`; },
+    eta: "ETA",
     item: "Item",
+    itemCount(value: number): string { return value === 1 ? "1 item" : `${value} items`; },
     items: "Items",
     leg(value: string): string { return value; },
     noItems: "No items",
+    orderId: "Order ID",
     options: "Options",
     paid: "Paid",
     payment: "Payment",
@@ -1431,17 +1416,24 @@ const childManifestCopy = {
     details: "Details",
     hideDetails: "Hide delivery details",
     showDetails: "Show delivery details",
+    stops(value: number): string { return value === 1 ? "1 stop" : `${value} stops`; },
     title: "Driver manifest",
   },
   "ko-KR": {
     address: "주소",
     contact: "연락처",
+    addressContact: "주소 및 연락처",
     arrival: "Arrival",
     collectCash: "현금 수금",
+    dwell: "Dwell",
+    dwellMinutes(value: number): string { return `${value} min`; },
+    eta: "ETA",
     item: "품목",
+    itemCount(value: number): string { return `${value} items`; },
     items: "품목",
     leg(value: string): string { return value; },
     noItems: "품목 없음",
+    orderId: "주문 ID",
     options: "옵션",
     paid: "결제 완료",
     payment: "결제",
@@ -1452,6 +1444,7 @@ const childManifestCopy = {
     details: "상세",
     hideDetails: "배송 상세 숨기기",
     showDetails: "배송 상세 보기",
+    stops(value: number): string { return `${value} stops`; },
     title: "배송 목록",
   },
 } as const;
@@ -1491,6 +1484,13 @@ function formatManifestEta(value: string | null | undefined, locale?: string | n
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return "—";
   return new Intl.DateTimeFormat(resolveLocale(locale), { hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
+function formatManifestDwell(
+  value: number | null,
+  copy: typeof childManifestCopy[keyof typeof childManifestCopy],
+): string {
+  return value === null ? "—" : copy.dwellMinutes(value);
 }
 
 export function RouteStopOrderCompactList({
