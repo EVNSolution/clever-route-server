@@ -4,8 +4,8 @@ This project keeps code validation and production rollout validation separate to
 
 ## Lanes
 
-- **Pull request CI** proves changed code before merge. It runs path-based Route Ops web/API/deploy checks from the shared classifier in `scripts/ci/route-ops-change-classifier.mjs`.
-- **Main push CI** is intentionally light for routine changes. It always runs hygiene checks, cancels stale runs, and escalates API/shared/critical paths through the classifier.
+- **Pull request CI is disabled** to avoid paying for branch checks that will be superseded by main/deploy validation. Run local targeted checks before opening a PR.
+- **Main push CI** is the automatic code validation lane. It runs hygiene checks, cancels stale runs, and escalates API/shared/critical paths through the classifier.
 - **Manual full verify** is available from the `CI` workflow through `workflow_dispatch` with `full_verify=true`.
 - **Route Ops simple deploy** is deployment/runtime validation only: image build/push as needed, SSM deploy, migration, health/smoke, and rollback evidence. It must not grow broad lint/typecheck/test suites.
 
@@ -19,4 +19,4 @@ Some delivery API admin tests need `apps/route-ops-web/dist`. The classifier exp
 
 ## Operator rule
 
-Use PR CI for normal work. Use manual full verify before risky deploys, large merges, or whenever classifier output looks suspicious. Use simple deploy to prove rollout health, not code correctness.
+Use local targeted checks before PRs. Use main push CI for automatic validation, manual full verify before risky deploys/large merges, and simple deploy to prove rollout health, not broad code correctness.

@@ -1,7 +1,6 @@
 name: CI
 
 on:
-  pull_request:
   push:
     branches:
       - main
@@ -17,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -45,10 +44,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags --depth=1 origin "${{ github.event.pull_request.base.sha }}"
-            git diff --name-only "${{ github.event.pull_request.base.sha }}" "$GITHUB_SHA" > changed-files.txt
-          elif [ "${{ github.event_name }}" = "push" ]; then
+          if [ "${{ github.event_name }}" = "push" ]; then
             before="${{ github.event.before }}"
             if [ -n "$before" ] && [ "$before" != "0000000000000000000000000000000000000000" ]; then
               if git fetch --no-tags --depth=1 origin "$before" && git diff --name-only "$before" "$GITHUB_SHA" > changed-files.txt; then
@@ -94,9 +90,6 @@ jobs:
       - name: Route Ops classifier tests
         if: needs.route-ops-changes.outputs.workflow_changed == 'true' || needs.route-ops-changes.outputs.full_required == 'true'
         run: node tests/ci/route-ops-change-classifier.test.mjs
-      - name: Route Ops deploy scope guard (opt-in PR only)
-        if: github.event_name == 'pull_request' && needs.route-ops-changes.outputs.route_ops_changed == 'true' && contains(github.event.pull_request.labels.*.name, 'route-ops-deploy-scope')
-        run: scripts/guard-route-ops-deploy-scope.mjs --base "${{ github.event.pull_request.base.sha }}" --head "$GITHUB_SHA" --json --allow-compose-bootstrap
       - name: Route Ops release static checks
         if: needs.route-ops-changes.outputs.deploy_changed == 'true' || needs.route-ops-changes.outputs.workflow_changed == 'true' || needs.route-ops-changes.outputs.full_required == 'true'
         run: |
@@ -118,10 +111,6 @@ jobs:
       - route-ops-hygiene
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' &&
-        (needs.route-ops-changes.outputs.web_changed == 'true' ||
-         needs.route-ops-changes.outputs.web_artifact_required == 'true' ||
-         needs.route-ops-changes.outputs.full_required == 'true')) ||
       (github.event_name == 'push' &&
         ((needs.route-ops-changes.outputs.critical_changed == 'true' &&
           needs.route-ops-changes.outputs.web_artifact_required == 'true') ||
@@ -167,9 +156,6 @@ jobs:
       needs.route-ops-hygiene.result == 'success' &&
       (needs.route-ops-web.result == 'success' || needs.route-ops-web.result == 'skipped') &&
       (github.event_name == 'workflow_dispatch' ||
-       (github.event_name == 'pull_request' &&
-         (needs.route-ops-changes.outputs.api_changed == 'true' ||
-          needs.route-ops-changes.outputs.full_required == 'true')) ||
        (github.event_name == 'push' &&
          ((needs.route-ops-changes.outputs.api_changed == 'true' &&
            needs.route-ops-changes.outputs.critical_changed == 'true') ||
