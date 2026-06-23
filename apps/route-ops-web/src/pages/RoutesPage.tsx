@@ -1287,8 +1287,6 @@ function ChildRouteManifestCard({
           <tbody>
             {stops.map((stop, index) => {
               const orderItems = getOrderItems(stop.items);
-              const visibleItems = orderItems.slice(0, 2);
-              const hiddenItemCount = Math.max(0, orderItems.length - visibleItems.length);
               return (
                 <Fragment key={stop.deliveryStopId}>
                   <tr>
@@ -1309,18 +1307,32 @@ function ChildRouteManifestCard({
                           <tr>
                             <th>{copy.items}</th>
                             <td>
-                              {orderItems.length === 0 ? (
-                                <span>{copy.noItems}</span>
-                              ) : (
-                                <ul className="route-child-manifest-items">
-                                  {visibleItems.map((item, itemIndex) => (
-                                    <li key={`${getOrderItemSemanticDisplayKey(item)}:${itemIndex}`}>
-                                      {formatOrderItemLine(item)}
-                                    </li>
-                                  ))}
-                                  {hiddenItemCount > 0 ? <li>{copy.moreItems(hiddenItemCount)}</li> : null}
-                                </ul>
-                              )}
+                              <div className="order-detail-items-table-scroll route-child-manifest-items-scroll">
+                                <table className="order-detail-items-table route-child-manifest-items-table">
+                                  <thead>
+                                    <tr>
+                                      <th>{copy.item}</th>
+                                      <th>{copy.options}</th>
+                                      <th>{copy.sku}</th>
+                                      <th>{copy.quantity}</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {orderItems.length === 0 ? (
+                                      <tr><td className="order-detail-items-empty" colSpan={4}>{copy.noItems}</td></tr>
+                                    ) : (
+                                      orderItems.map((item, itemIndex) => (
+                                        <tr key={`${getOrderItemSemanticDisplayKey(item)}:${itemIndex}`}>
+                                          <td>{formatOrderItemName(item)}</td>
+                                          <td>{formatOrderItemOptions(item) || "—"}</td>
+                                          <td>{item.sku ?? "—"}</td>
+                                          <td>{item.quantity}</td>
+                                        </tr>
+                                      ))
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
                             </td>
                           </tr>
                         </tbody>
@@ -1343,14 +1355,17 @@ const childManifestCopy = {
     contact: "Contact",
     collectCash: "Collect cash",
     eta: "ETA",
+    item: "Item",
     items: "Items",
     leg(value: string): string { return value; },
-    moreItems(count: number): string { return `+${count} more`; },
     noItems: "No items",
+    options: "Options",
     paid: "Paid",
     payment: "Payment",
     paymentReview: "Review",
+    quantity: "Qty",
     recipient: "Recipient",
+    sku: "SKU",
     title: "Driver manifest",
   },
   "ko-KR": {
@@ -1358,14 +1373,17 @@ const childManifestCopy = {
     contact: "연락처",
     collectCash: "현금 수금",
     eta: "도착 예정",
+    item: "품목",
     items: "품목",
     leg(value: string): string { return value; },
-    moreItems(count: number): string { return `+${count}개 더`; },
     noItems: "품목 없음",
+    options: "옵션",
     paid: "결제 완료",
     payment: "결제",
     paymentReview: "확인 필요",
+    quantity: "수량",
     recipient: "수령인",
+    sku: "SKU",
     title: "배송 목록",
   },
 } as const;

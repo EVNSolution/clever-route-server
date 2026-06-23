@@ -426,9 +426,10 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('class="primary route-send-driver-button" disabled="" type="button">Send to driver</button>');
     expect(html).toContain('Assign a driver and add stops first.');
     expect(html).toContain('route-child-manifest-detail-row');
-    expect(html).toContain('Kimchi × 1');
-    expect(html).toContain('Soup × 2');
-    expect(html).toContain('+1 more');
+    expect(html).toContain('<td>Kimchi</td>');
+    expect(html).toContain('<td>Soup</td>');
+    expect(html).toContain('<td>Rice</td>');
+    expect(html).not.toContain('+1 more');
     expect(html).toContain('No items');
     expect(html).not.toContain('class="danger subtle route-map-delete-button"');
     expect(html).toContain('class="route-group-area-driver route-group-area-driver--assignable route-child-sequence-driver"');
@@ -736,10 +737,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('Route items');
     expect(html).toContain('토마토 / Tomato box');
     expect(html).toContain('Size: Large &amp; Red');
-    expect(html).toContain('<th>Item</th><th>Options</th><th>Qty</th>');
+    const routeItemSummary = extractFirstMatch(html, /(<section class="route-item-summary-card"[\s\S]*?<\/section>)/);
+    expect(routeItemSummary).toContain('<th>Item</th><th>Options</th><th>Qty</th>');
     expect(html).not.toContain('Stop notes and items');
-    expect(html).not.toContain('<th>SKU</th>');
-    expect(html).not.toContain('TOM-L');
+    expect(routeItemSummary).not.toContain('<th>SKU</th>');
+    expect(routeItemSummary).not.toContain('TOM-L');
     expect(html).not.toContain('&lt;span');
   });
 

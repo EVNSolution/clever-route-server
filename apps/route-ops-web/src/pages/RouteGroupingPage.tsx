@@ -539,16 +539,20 @@ function RouteGroupingAssignmentsCard({
         <tbody>
           {sortedAssignments.map((assignment) => {
             const result = assignmentResults.get(assignment.orderId);
-            const contact = [assignment.phone, assignment.email].filter(Boolean).join(" · ") || "—";
-            const sequence = result?.sequenceLabel === null || result?.sequenceLabel === undefined
-              ? (result?.driverLabel ?? t.unassigned)
-              : `${result.driverLabel} ${result.sequenceLabel}`;
+            const contactParts = [assignment.phone, assignment.email].filter(Boolean);
+            const driverLabel = result?.driverLabel ?? t.unassigned;
+            const sequenceLabel = result?.sequenceLabel ?? "—";
             return (
               <tr key={assignment.orderId}>
                 <td><strong>{assignment.orderName}</strong></td>
                 <td className="route-group-assignment-customer">{assignment.recipientName ?? "—"}</td>
-                <td className="route-group-assignment-contact">{contact}</td>
-                <td className="route-group-assignment-sequence">{sequence}</td>
+                <td className="route-group-assignment-contact">
+                  {contactParts.length === 0 ? "—" : contactParts.map((part) => <span key={part}>{part}</span>)}
+                </td>
+                <td className="route-group-assignment-sequence">
+                  <span>{driverLabel}</span>
+                  <strong>{sequenceLabel}</strong>
+                </td>
               </tr>
             );
           })}

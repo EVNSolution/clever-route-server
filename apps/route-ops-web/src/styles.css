@@ -1134,13 +1134,21 @@ small,
 .route-group-assignment-contact {
   overflow-wrap: anywhere;
 }
-.route-group-assignment-customer {
-  display: block;
+.route-group-assignment-contact {
+  display: grid;
+  gap: 2px;
 }
 .route-group-assignment-sequence {
+  align-items: center;
   color: #111827;
-  font-weight: 800;
+  display: grid;
+  font-weight: 700;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 28px;
   white-space: nowrap;
+}
+.route-group-assignment-sequence strong {
+  text-align: right;
 }
 .route-child-manifest-card {
   overflow: hidden;
@@ -1157,12 +1165,12 @@ small,
   width: 96px;
 }
 
-.route-child-manifest-items {
-  display: grid;
-  gap: 3px;
-  list-style: none;
-  margin: 0;
-  padding: 0;
+.route-child-manifest-items-table {
+  min-width: 460px;
+}
+.route-child-manifest-items-table th,
+.route-child-manifest-items-table td {
+  padding: 6px 8px;
 }
 .route-child-payment-pill {
   color: #334155;
@@ -3773,14 +3781,14 @@ button.danger.subtle {
   border-collapse: collapse;
   inline-size: 100%;
 }
-.route-child-manifest-detail-table th,
-.route-child-manifest-detail-table td {
+.route-child-manifest-detail-table > tbody > tr > th,
+.route-child-manifest-detail-table > tbody > tr > td {
   border: 0;
   padding: 4px 0;
   text-align: left;
   vertical-align: top;
 }
-.route-child-manifest-detail-table th {
+.route-child-manifest-detail-table > tbody > tr > th {
   color: #64748b;
   font-size: 11px;
   font-weight: 800;
@@ -3788,7 +3796,7 @@ button.danger.subtle {
   text-transform: uppercase;
   width: 88px;
 }
-.route-child-manifest-detail-table td {
+.route-child-manifest-detail-table > tbody > tr > td {
   overflow-wrap: anywhere;
 }
 .route-child-manifest-table td:nth-child(4),
