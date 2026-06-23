@@ -2619,15 +2619,9 @@ button.danger.subtle {
 }
 .map-toolbar-icon {
   display: block;
-  height: 16px;
-  width: 16px;
-}
-.map-toolbar-symbol {
-  display: block;
-  font-size: 22px;
-  font-weight: 700;
-  line-height: 1;
-  transform: translateY(-1px);
+  height: 18px;
+  stroke-width: 2.2;
+  width: 18px;
 }
 .alert.success {
   background: #dcfce7;

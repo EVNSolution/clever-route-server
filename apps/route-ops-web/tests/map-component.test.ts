@@ -377,8 +377,9 @@ describe('RouteOpsMap layer lifecycle', () => {
 
     expect(html).toContain('aria-label="Center map on store"');
     expect(html).toContain('aria-label="Refresh map"');
-    expect(html).toContain('<path d="M16 7a6 6 0 1 0 1 4"></path>');
-    expect(html).not.toContain('class="map-toolbar-symbol">↻</span>');
+    expect(html).toContain('lucide-refresh-cw map-toolbar-icon');
+    expect(html).toContain('lucide-maximize-2 map-toolbar-icon');
+    expect(html).not.toContain('map-toolbar-symbol');
     expect(html).toContain('data-map-provider-status="configured"');
   });
 
@@ -393,12 +394,13 @@ describe('RouteOpsMap layer lifecycle', () => {
     }));
 
     expect(html).toContain('aria-label="Back to map orders"');
-    expect(html).toContain('>←</span>');
-    expect(html).not.toContain('<path d="M12.5 5 7.5 10l5 5"');
+    expect(html).toContain('lucide-arrow-left map-toolbar-icon');
+    expect(html).not.toContain('map-toolbar-symbol');
     expect(html).toContain('aria-label="Zoom map to fit"');
     expect(html).toContain('aria-label="Refresh map"');
-    expect(html).toContain('<path d="M16 7a6 6 0 1 0 1 4"></path>');
-    expect(html).not.toContain('class="map-toolbar-symbol">↻</span>');
+    expect(html).toContain('lucide-refresh-cw map-toolbar-icon');
+    expect(html).toContain('lucide-maximize-2 map-toolbar-icon');
+    expect(html).not.toContain('map-toolbar-symbol');
   });
 
 

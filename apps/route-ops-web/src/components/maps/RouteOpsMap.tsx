@@ -1,3 +1,4 @@
+import { ArrowLeft, Maximize2, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PointerEvent, ReactElement, ReactNode } from 'react';
 
@@ -581,9 +582,9 @@ export function RouteOpsMap({ bootstrap, className, depot = null, detail = null,
       <div className="route-ops-map-frame" data-map-provider-mode={bootstrap.mapConfig.providerMode ?? 'none'} data-map-provider-status={bootstrap.mapConfig.status} data-polygon-mode={polygonMode ? 'true' : 'false'} onDoubleClickCapture={handleMapFrameDoubleClickCapture} onPointerDown={handleMapFramePointerDown}>
         {readiness === 'interactive_map' || onExitRouteMode !== undefined ? (
           <div className="map-toolbar">
-            {onExitRouteMode !== undefined ? <button aria-label={t.exitRouteMode} onClick={onExitRouteMode} title={t.exitRouteMode} type="button"><span aria-hidden="true" className="map-toolbar-symbol">←</span></button> : null}
-            {readiness === 'interactive_map' ? <button aria-label={detail === null && !fitOrdersToBounds ? t.centerOnStore : t.fitMap} onClick={() => setFitRequest((value) => value + 1)} title={detail === null && !fitOrdersToBounds ? t.centerOnStore : t.fitMap} type="button"><FitMapIcon /></button> : null}
-            {readiness === 'interactive_map' ? <button aria-label={t.refreshMap} onClick={handleRefreshMap} title={t.refreshMap} type="button"><RefreshMapIcon /></button> : null}
+            {onExitRouteMode !== undefined ? <button aria-label={t.exitRouteMode} onClick={onExitRouteMode} title={t.exitRouteMode} type="button"><ArrowLeft aria-hidden="true" className="map-toolbar-icon" /></button> : null}
+            {readiness === 'interactive_map' ? <button aria-label={detail === null && !fitOrdersToBounds ? t.centerOnStore : t.fitMap} onClick={() => setFitRequest((value) => value + 1)} title={detail === null && !fitOrdersToBounds ? t.centerOnStore : t.fitMap} type="button"><Maximize2 aria-hidden="true" className="map-toolbar-icon" /></button> : null}
+            {readiness === 'interactive_map' ? <button aria-label={t.refreshMap} onClick={handleRefreshMap} title={t.refreshMap} type="button"><RefreshCw aria-hidden="true" className="map-toolbar-icon" /></button> : null}
           </div>
         ) : null}
         {mapOverlayAction === undefined ? null : <div className="map-edit-overlay">{mapOverlayAction}</div>}
@@ -1389,26 +1390,6 @@ function fitMap(map: MapLibreMap, maplibregl: MapLibreModule | null, points: Rou
   map.fitBounds([[bounds.west, bounds.south], [bounds.east, bounds.north]], { duration: 0, maxZoom: 14, padding: 56 });
 }
 
-
-function FitMapIcon(): ReactElement {
-  return (
-    <svg aria-hidden="true" className="map-toolbar-icon" fill="none" focusable="false" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 20 20">
-      <path d="M4.5 8V4.5H8" />
-      <path d="M12 4.5h3.5V8" />
-      <path d="M15.5 12v3.5H12" />
-      <path d="M8 15.5H4.5V12" />
-    </svg>
-  );
-}
-
-function RefreshMapIcon(): ReactElement {
-  return (
-    <svg aria-hidden="true" className="map-toolbar-icon" fill="none" focusable="false" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 20 20">
-      <path d="M16 7a6 6 0 1 0 1 4" />
-      <path d="M16 3v4h-4" />
-    </svg>
-  );
-}
 
 export function RouteStopSequencePicker({ anchor, currentSequence, items, locale, onClose, onPickSequence, orderName, sequenceCount, showItems = true }: RouteStopSequencePickerProps): ReactElement {
   const t = getMapCopy(locale);
