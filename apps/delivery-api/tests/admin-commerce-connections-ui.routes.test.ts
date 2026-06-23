@@ -131,6 +131,20 @@ async function waitForExpectation(assertion: () => void): Promise<void> {
   throw lastError;
 }
 
+describe("Route Ops route list source regressions", () => {
+  test("loads route plans and route groups through Promise.all", () => {
+    const source = readFileSync(
+      new URL("../src/routes/admin-commerce-connections-ui.routes.ts", import.meta.url),
+      "utf8",
+    );
+    const match = /const \[routePlans, routeGroups\] = await Promise\.all\(\[([\s\S]*?)\]\);/u.exec(source);
+
+    expect(match?.[1]).toContain("services.routePlanService.listRoutePlans(routeListInput)");
+    expect(match?.[1]).toContain("services.routeGroupingService.listGroupings(routeListInput)");
+    expect(match?.[1]).toContain("Promise.resolve([])");
+  });
+});
+
 describe("Admin WooCommerce connection UI routes", () => {
   test("does not register UI dependencies without dedicated strong web secrets or through JWT fallback", () => {
     const base = createBaseAdminCommerceDependencies();

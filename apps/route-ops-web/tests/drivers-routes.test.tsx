@@ -366,7 +366,6 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         drivers={[linked]}
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
-        onRefreshRoutes={() => undefined}
         setDetail={() => undefined}
         setError={() => undefined}
       />,
@@ -411,7 +410,6 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         drivers={[driverFixture()]}
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
-        onRefreshRoutes={() => undefined}
         setDetail={() => undefined}
         setError={() => undefined}
       />,
@@ -481,7 +479,6 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         drivers={[linked]}
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
-        onRefreshRoutes={() => undefined}
         setDetail={() => undefined}
         setError={() => undefined}
       />,
@@ -489,6 +486,20 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
 
     expect(html).toContain('class="primary route-send-driver-button" type="button">Send to driver</button>');
     expect(html).not.toContain('Assign a driver and add stops first.');
+  });
+
+  test('RoutesPage avoids route list fetch on direct detail entry but refetches on list re-entry', () => {
+    const appSource = readFileSync('src/App.tsx', 'utf8');
+    const routesSource = readFileSync('src/pages/RoutesPage.tsx', 'utf8');
+
+    expect(appSource).toContain('const navigate = useCallback((path: string): void => {');
+    expect(appSource).toContain('}, []);');
+    expect(routesSource).toMatch(/useEffect\(\(\) => \{\s+getDrivers\(\)[\s\S]*?\}, \[setError\]\);/u);
+    expect(routesSource).toContain('if (routePlanId === null) void refreshRoutes();');
+    expect(routesSource).toContain('}, [refreshRoutes, routePlanId]);');
+    expect(routesSource).toContain('const deletedCurrentDetail = routePlanId === routeId;');
+    expect(routesSource).toContain('if (!deletedCurrentDetail) await refreshRoutes();');
+    expect(routesSource).not.toContain('input.onRefreshRoutes();');
   });
 
   test('RouteBuilder does not show unavailable helper while publishing', () => {
@@ -524,7 +535,6 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         drivers={[driverFixture()]}
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
-        onRefreshRoutes={() => undefined}
         setDetail={() => undefined}
         setError={() => undefined}
       />,
@@ -561,7 +571,6 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         drivers={[driverFixture()]}
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
-        onRefreshRoutes={() => undefined}
         setDetail={() => undefined}
         setError={() => undefined}
       />,
@@ -623,7 +632,6 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         drivers={[driverFixture()]}
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
-        onRefreshRoutes={() => undefined}
         setDetail={() => undefined}
         setError={() => undefined}
       />,
@@ -650,7 +658,6 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         drivers={[driverFixture()]}
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
-        onRefreshRoutes={() => undefined}
         setDetail={() => undefined}
         setError={() => undefined}
       />,
@@ -719,7 +726,6 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         drivers={[driverFixture()]}
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
-        onRefreshRoutes={() => undefined}
         setDetail={() => undefined}
         setError={() => undefined}
       />,
@@ -769,7 +775,6 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         drivers={[driverFixture()]}
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
-        onRefreshRoutes={() => undefined}
         setDetail={() => undefined}
         setError={() => undefined}
       />,
@@ -797,7 +802,6 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         drivers={[driverFixture()]}
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
-        onRefreshRoutes={() => undefined}
         setDetail={() => undefined}
         setError={() => undefined}
       />,
@@ -820,7 +824,6 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         drivers={[driverFixture()]}
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
-        onRefreshRoutes={() => undefined}
         setDetail={() => undefined}
         setError={() => undefined}
       />,

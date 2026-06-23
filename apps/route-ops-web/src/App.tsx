@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { ReactElement } from 'react';
 
 import {
@@ -100,10 +100,10 @@ export function App(): ReactElement {
     };
   }, [bootstrap]);
 
-  const navigate = (path: string): void => {
+  const navigate = useCallback((path: string): void => {
     window.history.pushState({}, '', withExistingSearch(path));
     setRoute(parseRoute(path));
-  };
+  }, []);
 
   const handleNotificationOpen = (item: TopbarNotificationItem): void => {
     if (bootstrap === null || item.read === true) return;

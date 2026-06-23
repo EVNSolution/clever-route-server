@@ -2175,17 +2175,16 @@ function registerRouteOpsAppRoutes(
         const deliveryDate = normalizeOptionalDate(
           readQueryString(request.query, "deliveryDate"),
         );
-        const routePlans = await services.routePlanService.listRoutePlans({
+        const routeListInput = {
           ...(deliveryDate === null ? {} : { deliveryDate }),
           shopDomain,
-        });
-        const routeGroups =
+        };
+        const [routePlans, routeGroups] = await Promise.all([
+          services.routePlanService.listRoutePlans(routeListInput),
           services.routeGroupingService === undefined
-            ? []
-            : await services.routeGroupingService.listGroupings({
-                ...(deliveryDate === null ? {} : { deliveryDate }),
-                shopDomain,
-              });
+            ? Promise.resolve([])
+            : services.routeGroupingService.listGroupings(routeListInput),
+        ]);
         const childRoutePlanIds = new Set(
           routeGroups.flatMap((group) =>
             group.children

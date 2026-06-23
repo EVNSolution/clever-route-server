@@ -233,11 +233,14 @@ export function RoutesPage({
   }, [collapsedRouteGroupsInitialized, routeGroups]);
 
   useEffect(() => {
-    void refreshRoutes();
     getDrivers()
       .then((payload) => setDrivers(payload.drivers))
       .catch((error: unknown) => setError(readErrorMessage(error)));
-  }, [refreshRoutes, setError]);
+  }, [setError]);
+
+  useEffect(() => {
+    if (routePlanId === null) void refreshRoutes();
+  }, [refreshRoutes, routePlanId]);
 
   useEffect(() => {
     setDetail(null);
@@ -303,7 +306,6 @@ export function RoutesPage({
         locale={locale}
         navigate={navigate}
         onDeleteRoute={(id) => void deleteRoutePlan(id)}
-        onRefreshRoutes={() => void refreshRoutes()}
         setDetail={setDetail}
         setError={setError}
       />
@@ -331,15 +333,16 @@ export function RoutesPage({
       routes.find((item) => item.id === routeId) ?? detail?.routePlan ?? null;
     const routeName = route?.name ?? t.routes;
     if (!window.confirm(t.deleteConfirm(routeName))) return;
+    const deletedCurrentDetail = routePlanId === routeId;
     setDeletingRouteId(routeId);
     try {
       await deleteRoute(routeId, bootstrap.csrfToken);
       setRoutes((current) => current.filter((item) => item.id !== routeId));
-      if (routePlanId === routeId) {
+      if (deletedCurrentDetail) {
         setDetail(null);
         navigate("/admin/ui/app/routes");
       }
-      await refreshRoutes();
+      if (!deletedCurrentDetail) await refreshRoutes();
       setError(null);
     } catch (error) {
       setError(readErrorMessage(error));
@@ -601,7 +604,6 @@ export function RouteBuilder(input: {
   locale?: string | null;
   navigate(path: string): void;
   onDeleteRoute(routePlanId: string): void;
-  onRefreshRoutes(): void;
   setDetail(detail: RoutePlanDetailDto): void;
   setError(error: string | null): void;
 }): ReactElement {
@@ -698,7 +700,6 @@ export function RouteBuilder(input: {
     );
     const refreshed = await getRouteDetail(updated.routePlan.id);
     input.setDetail(refreshed);
-    input.onRefreshRoutes();
     return refreshed;
   };
 
@@ -725,7 +726,6 @@ export function RouteBuilder(input: {
         input.bootstrap.csrfToken,
       );
       input.setDetail(published);
-      input.onRefreshRoutes();
       input.setError(null);
     } catch (error) {
       input.setError(readErrorMessage(error));
