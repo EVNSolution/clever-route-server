@@ -535,7 +535,7 @@ function RouteGroupingAssignmentsCard({
   return (
     <article className="panel route-group-assignments-card">
       <table className="ops-table route-group-assignments-table">
-        <thead><tr><th>{t.order}</th><th>{t.customer}</th><th>{t.contact}</th><th>{t.sequence}</th></tr></thead>
+        <thead><tr><th>{t.order}</th><th>{t.customer}</th><th>{t.contact}</th><th>{t.driver}</th><th>{t.sequence}</th></tr></thead>
         <tbody>
           {sortedAssignments.map((assignment) => {
             const result = assignmentResults.get(assignment.orderId);
@@ -549,10 +549,8 @@ function RouteGroupingAssignmentsCard({
                 <td className="route-group-assignment-contact">
                   {contactParts.length === 0 ? "—" : contactParts.map((part) => <span key={part}>{part}</span>)}
                 </td>
-                <td className="route-group-assignment-sequence">
-                  <span>{driverLabel}</span>
-                  <strong>{sequenceLabel}</strong>
-                </td>
+                <td className="route-group-assignment-driver">{driverLabel}</td>
+                <td className="route-group-assignment-sequence"><strong>{sequenceLabel}</strong></td>
               </tr>
             );
           })}

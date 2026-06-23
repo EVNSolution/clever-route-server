@@ -1124,6 +1124,7 @@ small,
 }
 
 .route-group-assignments-table td {
+  padding: 11px 10px;
   vertical-align: middle;
 }
 .route-group-assignments-table td:first-child,
@@ -1138,40 +1139,45 @@ small,
   display: grid;
   gap: 2px;
 }
-.route-group-assignment-sequence {
-  align-items: center;
+.route-group-assignment-driver {
   color: #111827;
-  display: grid;
-  font-weight: 700;
-  gap: 8px;
-  grid-template-columns: minmax(0, 1fr) 28px;
+  font-weight: 800;
   white-space: nowrap;
+  width: 132px;
+}
+.route-group-assignment-sequence {
+  color: #111827;
+  font-weight: 800;
+  text-align: right;
+  white-space: nowrap;
+  width: 52px;
 }
 .route-group-assignment-sequence strong {
   text-align: right;
 }
 .route-child-manifest-card {
-  gap: 8px;
+  gap: 6px;
   overflow: hidden;
-  padding: 12px 14px;
+  padding: 10px 12px;
 }
 .route-child-manifest-card .route-item-summary-heading h3 {
-  font-size: 12px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
 }
 .route-child-payment-cell {
   align-items: center;
   display: inline-flex;
-  gap: 12px;
+  gap: 10px;
   white-space: nowrap;
 }
 .route-child-eta-cell {
   display: grid;
-  gap: 4px;
+  gap: 2px;
   white-space: nowrap;
 }
 .route-child-eta-cell strong {
   color: #64748b;
-  font-size: 11px;
+  font-size: 10px;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -3778,23 +3784,18 @@ button.danger.subtle {
   height: 18px;
   width: 18px;
 }
-.route-child-manifest-detail-row > td {
-  background: #fbfdff;
-  border-top: 0;
-  padding: 0 10px 10px;
-}
 /* ponytail: keep child manifest layout local; this table is the printable driver handoff. */
 .route-child-manifest-table {
   border-collapse: separate;
   border-spacing: 0;
-  font-size: 13px;
+  font-size: 12px;
 }
 .route-child-manifest-table > thead > tr > th {
-  padding: 9px 10px;
+  padding: 7px 8px;
 }
 .route-child-manifest-table > tbody > tr:not(.route-child-manifest-detail-row) > td {
   background: #ffffff;
-  padding: 11px 10px;
+  padding: 8px;
   vertical-align: middle;
 }
 .route-child-manifest-table > thead > tr > th:nth-child(1),
@@ -3807,13 +3808,13 @@ button.danger.subtle {
 }
 .route-child-manifest-table > thead > tr > th:nth-child(3),
 .route-child-manifest-table > tbody > tr:not(.route-child-manifest-detail-row) > td:nth-child(3) {
-  width: 104px;
+  width: 92px;
 }
 .route-child-manifest-table > thead > tr > th:nth-child(5),
 .route-child-manifest-table > tbody > tr:not(.route-child-manifest-detail-row) > td:nth-child(5),
 .route-child-manifest-table > thead > tr > th:nth-child(6),
 .route-child-manifest-table > tbody > tr:not(.route-child-manifest-detail-row) > td:nth-child(6) {
-  width: 132px;
+  width: 122px;
 }
 .route-child-manifest-toggle {
   align-items: center;
@@ -3835,34 +3836,36 @@ button.danger.subtle {
 }
 .route-child-manifest-detail-row > td {
   background: #ffffff;
-  padding: 0 10px 12px 44px;
+  border-top: 0;
+  padding: 0 8px 9px 44px;
 }
 .route-child-manifest-detail-grid {
+  align-items: start;
   display: grid;
-  gap: 14px;
-  grid-template-columns: minmax(220px, 0.48fr) minmax(360px, 1fr);
-  padding: 4px 0;
+  gap: 10px;
+  grid-template-columns: minmax(260px, 0.42fr) minmax(420px, 1fr);
+  padding: 2px 0;
 }
 .route-child-manifest-contact-card {
   display: grid;
-  gap: 14px;
+  gap: 8px;
 }
 .route-child-manifest-detail-label {
   color: #64748b;
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.08em;
-  margin-bottom: 6px;
+  margin-bottom: 3px;
   text-transform: uppercase;
 }
 .route-child-manifest-detail-value {
   color: #0f172a;
-  line-height: 1.35;
+  line-height: 1.3;
   overflow-wrap: anywhere;
 }
 .route-child-manifest-contact-lines {
   display: grid;
-  gap: 4px;
+  gap: 2px;
 }
 .route-child-manifest-items-scroll {
   border: 1px solid #e5ebf3;
@@ -3875,7 +3878,7 @@ button.danger.subtle {
 }
 .route-child-manifest-items-table th,
 .route-child-manifest-items-table td {
-  padding: 7px 10px;
+  padding: 5px 8px;
 }
 @media (max-width: 980px) {
   .route-child-manifest-detail-grid {
