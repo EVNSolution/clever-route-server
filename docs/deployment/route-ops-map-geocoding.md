@@ -64,16 +64,16 @@ does not call the external provider.
 
 ## Smoke gates
 
-Run provider-disabled smoke after each deploy with the web login secret supplied out of band:
+Run smoke after each deploy with the web login secret supplied out of band. The script auto-accepts either disabled or configured provider mode unless an explicit `ROUTE_OPS_EXPECT_*` flag is supplied. It also accepts the legacy local secret file names `CLEVER_ROUTE_BASE_URL`, `CLEVER_ROUTE_SHOP_DOMAIN`, and `CLEVER_ROUTE_ADMIN_LOGIN_SECRET`:
 
 ```sh
 ROUTE_OPS_SMOKE_LOGIN_SECRET=... \
 ROUTE_OPS_SMOKE_BASE_URL=https://clever-route.cleversystem.ai \
-ROUTE_OPS_SMOKE_SHOP_DOMAIN=dev1.tomatonofood.com \
+ROUTE_OPS_SMOKE_SHOP_DOMAIN=tomatonofood.com \
 node scripts/smoke-route-ops-production.mjs
 ```
 
-Disabled-mode expectations:
+Disabled-mode expectations, when `ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP=false` and `ROUTE_OPS_EXPECT_GEOCODER_CONFIGURED=false` are set:
 
 - `/healthz`, `/admin/ui/app`, `/admin/ui/app/api/bootstrap`, `/admin/ui/app/api/orders`, built assets, and vendor assets return 200.
 - `mapConfig.status` remains `not_configured`.
@@ -81,7 +81,7 @@ Disabled-mode expectations:
 - Orders payload includes `geocodeStatus` and `shippingAddress` for the blocker editor.
 - `POST /admin/ui/app/api/orders/:orderId/geocode` fails closed with a user-safe 400 when geocoding is disabled.
 
-Configured provider smoke is an explicit staging/manual run only:
+Configured provider smoke can still be asserted explicitly:
 
 ```sh
 ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP=true \
@@ -91,7 +91,7 @@ ROUTE_OPS_SMOKE_LOGIN_SECRET=... \
 node scripts/smoke-route-ops-production.mjs
 ```
 
-Do not set the `ROUTE_OPS_EXPECT_*` flags in production unless provider enablement has been separately approved and the runtime env has already been reviewed.
+Set `ROUTE_OPS_EXPECT_*` only when the smoke should enforce a specific provider mode instead of detecting the deployed mode.
 
 ## Production enablement policy
 

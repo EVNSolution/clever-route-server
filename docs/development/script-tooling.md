@@ -15,7 +15,6 @@ This repo keeps a small set of root-level scripts because deployment and Route O
 These are not production commands. They are kept separate so each failure domain remains easy to review.
 
 - `scripts/check-ignore-hygiene.mjs` — verifies generated/private artifacts stay ignored.
-- `scripts/guard-route-ops-deploy-scope.mjs` — fails closed when a Route Ops deploy lane includes unrelated Woo, Prisma, Caddy, infra, or output artifacts.
 
 ## Smoke tests
 

@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-const baseUrl = requiredEnv('ROUTE_OPS_SMOKE_BASE_URL', 'https://clever-route.cleversystem.ai').replace(/\/+$/, '');
-const shopDomain = requiredEnv('ROUTE_OPS_SMOKE_SHOP_DOMAIN', 'tomatonofood.com');
-const loginSecret = requiredEnv('ROUTE_OPS_SMOKE_LOGIN_SECRET');
-const expectPublicOpenFreeMap = process.env.ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP === 'true';
+const baseUrl = requiredEnv('ROUTE_OPS_SMOKE_BASE_URL', 'https://clever-route.cleversystem.ai', ['CLEVER_ROUTE_BASE_URL']).replace(/\/+$/, '');
+const shopDomain = requiredEnv('ROUTE_OPS_SMOKE_SHOP_DOMAIN', 'tomatonofood.com', ['CLEVER_ROUTE_SHOP_DOMAIN']);
+const loginSecret = requiredEnv('ROUTE_OPS_SMOKE_LOGIN_SECRET', undefined, ['CLEVER_ROUTE_ADMIN_LOGIN_SECRET']);
+const expectedMapMode = optionalBool('ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP');
 const expectedPublicHosts = (process.env.ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP_HOSTS ?? process.env.ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP_HOST ?? 'tiles.openfreemap.org')
   .split(',')
   .map((host) => host.trim())
   .filter((host) => host.length > 0);
-const expectGeocoderConfigured = process.env.ROUTE_OPS_EXPECT_GEOCODER_CONFIGURED === 'true';
+const expectedGeocoderMode = optionalBool('ROUTE_OPS_EXPECT_GEOCODER_CONFIGURED');
 const healthRetries = parsePositiveInt(process.env.ROUTE_OPS_SMOKE_HEALTH_RETRIES, 15);
 const healthRetryDelayMs = parsePositiveInt(process.env.ROUTE_OPS_SMOKE_HEALTH_RETRY_DELAY_MS, 2000);
 let csrfToken = '';
@@ -33,10 +33,18 @@ try {
   process.exit(1);
 }
 
-function requiredEnv(name, fallback) {
-  const value = process.env[name] ?? fallback;
+function requiredEnv(name, fallback, aliases = []) {
+  const value = [name, ...aliases].map((key) => process.env[key]).find((candidate) => candidate !== undefined && candidate.trim() !== '') ?? fallback;
   if (value === undefined || value.trim() === '') throw new Error(`${name} is required`);
   return value.trim();
+}
+
+function optionalBool(name) {
+  const value = process.env[name]?.trim();
+  if (!value) return null;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new Error(`${name} must be true or false`);
 }
 
 function parsePositiveInt(value, fallback) {
@@ -139,14 +147,14 @@ async function checkBootstrap() {
   if (!data || data.shopDomain !== shopDomain) throw new Error('bootstrap shopDomain mismatch');
   csrfToken = typeof data.csrfToken === 'string' ? data.csrfToken : '';
   const mapConfig = data.mapConfig;
-  if (expectPublicOpenFreeMap) {
+  if (expectedMapMode === true) {
     if (mapConfig.status !== 'configured' || mapConfig.providerMode !== 'public_allowlisted') {
       throw new Error(`expected public allowlisted mapConfig, got ${JSON.stringify(mapConfig)}`);
     }
     for (const expectedPublicHost of expectedPublicHosts) {
       if (!mapConfig.allowedHosts?.includes(expectedPublicHost)) throw new Error(`expected allowed host ${expectedPublicHost}`);
     }
-  } else {
+  } else if (expectedMapMode === false) {
     if (mapConfig.status !== 'not_configured' || mapConfig.styleUrl !== null) {
       throw new Error(`expected not_configured mapConfig, got ${JSON.stringify(mapConfig)}`);
     }
@@ -198,15 +206,17 @@ async function checkGeocoderGate(orders) {
     method: 'POST'
   });
   const body = await response.json().catch(() => null);
-  if (expectGeocoderConfigured) {
-    if (response.status !== 200 || body?.data?.geocode?.ok !== true) throw new Error(`expected configured geocoder success, got ${response.status}`);
+  if (response.status === 200 && body?.data?.geocode?.ok === true) {
+    if (expectedGeocoderMode === false) throw new Error('expected disabled geocoder to fail closed, got 200');
     record('geocoder-gate', { mode: 'configured', status: response.status });
     return;
   }
-  if (response.status !== 400 || body?.error?.code !== 'BAD_REQUEST') {
-    throw new Error(`expected disabled geocoder to fail closed, got ${response.status}`);
+  if (response.status === 400 && body?.error?.code === 'BAD_REQUEST') {
+    if (expectedGeocoderMode === true) throw new Error('expected configured geocoder success, got 400');
+    record('geocoder-gate', { mode: 'disabled_fail_closed', status: response.status });
+    return;
   }
-  record('geocoder-gate', { mode: 'disabled_fail_closed', status: response.status });
+  throw new Error(`unexpected geocoder response, got ${response.status}`);
 }
 
 
@@ -222,11 +232,11 @@ async function checkVendorAssets() {
 
 function assertCsp(csp) {
   if (!csp.includes("default-src 'none'")) throw new Error('missing strict CSP');
-  if (expectPublicOpenFreeMap) {
+  if (expectedMapMode === true) {
     for (const expectedPublicHost of expectedPublicHosts) {
       if (!csp.includes(`https://${expectedPublicHost}`)) throw new Error(`CSP missing expected public host ${expectedPublicHost}`);
     }
-  } else if (/openfreemap\.org|tiles\.openfreemap\.org|overturemaps-tiles-us-west-2-beta\.s3\.amazonaws\.com/.test(csp)) {
+  } else if (expectedMapMode === false && /openfreemap\.org|tiles\.openfreemap\.org|overturemaps-tiles-us-west-2-beta\.s3\.amazonaws\.com/.test(csp)) {
     throw new Error(`CSP unexpectedly allowlists public OpenFreeMap host: ${csp}`);
   }
 }

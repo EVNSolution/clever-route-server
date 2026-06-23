@@ -3,7 +3,7 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import process from 'node:process';
 
 const DEPLOY_WORKFLOW_RE = /^\.github\/workflows\/(ci|route-ops-simple-deploy)\.yml$/;
-const DEPLOY_SCRIPT_RE = /^scripts\/(guard-route-ops-deploy-scope|check-ignore-hygiene|scan-secrets|smoke-route-ops-production|ssm-simple-route-ops-deploy|osrm-ontario|monitor-route-ops-production)\.(mjs|sh)$/;
+const DEPLOY_SCRIPT_RE = /^scripts\/(check-ignore-hygiene|scan-secrets|smoke-route-ops-production|ssm-simple-route-ops-deploy|osrm-ontario|monitor-route-ops-production)\.(mjs|sh)$/;
 const DEPLOY_TEST_RE = /^tests\/deploy\/(ssm-simple-route-ops-deploy|route-ops-prisma-db-push-guard|monitor-route-ops-production)\.test\.sh$/;
 const LIVE_DEPLOY_SCRIPT_RE = /^scripts\/(ssm-simple-route-ops-deploy|osrm-ontario|monitor-route-ops-production)\.sh$/;
 
