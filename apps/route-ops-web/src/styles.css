@@ -1824,7 +1824,7 @@ button.danger.subtle {
   height: 100%;
   min-height: 0;
 }
-.route-builder-workspace .route-ops-map-frame svg {
+.route-builder-workspace .route-ops-map-frame > svg {
   flex: 1 1 auto;
   height: 100%;
   min-height: 0;
@@ -2519,7 +2519,7 @@ button.danger.subtle {
   }
   .route-builder-workspace .route-ops-map-frame,
   .route-builder-workspace .route-ops-map-canvas,
-  .route-builder-workspace .route-ops-map-frame svg {
+  .route-builder-workspace .route-ops-map-frame > svg {
     min-height: 460px;
   }
   .route-builder-card-shell {

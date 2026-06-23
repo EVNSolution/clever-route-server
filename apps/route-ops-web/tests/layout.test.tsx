@@ -361,7 +361,7 @@ describe('route ops layout components', () => {
     expect(css).toContain('@media (max-width: 980px)');
     expect(css).toContain(`.route-builder-workspace .route-ops-map-frame,
   .route-builder-workspace .route-ops-map-canvas,
-  .route-builder-workspace .route-ops-map-frame svg`);
+  .route-builder-workspace .route-ops-map-frame > svg`);
   });
 
   test('Route grouping CSS keeps assignment tokens circular and the split map tall', () => {
