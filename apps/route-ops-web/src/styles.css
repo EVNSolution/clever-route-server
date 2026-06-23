@@ -1158,6 +1158,23 @@ small,
 .route-child-manifest-card .route-item-summary-heading h3 {
   font-size: 12px;
 }
+.route-child-payment-cell {
+  align-items: center;
+  display: inline-flex;
+  gap: 12px;
+  white-space: nowrap;
+}
+.route-child-eta-cell {
+  display: grid;
+  gap: 4px;
+  white-space: nowrap;
+}
+.route-child-eta-cell strong {
+  color: #64748b;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
 .route-child-payment-pill {
   background: #f1f5f9;
   border: 1px solid #dbe3ef;
@@ -3810,26 +3827,21 @@ button.danger.subtle {
   padding: 0;
   width: 24px;
 }
-.route-child-manifest-toggle span {
+.route-child-manifest-toggle svg {
   display: block;
-  font-size: 15px;
-  line-height: 1;
-  transform: translateY(-1px);
 }
-.route-child-manifest-toggle[aria-expanded="false"] span {
-  transform: rotate(-90deg) translateX(1px);
+.route-child-manifest-toggle[aria-expanded="false"] svg {
+  transform: rotate(-90deg);
 }
 .route-child-manifest-detail-row > td {
   background: #ffffff;
   padding: 0 10px 12px 44px;
 }
 .route-child-manifest-detail-grid {
-  border: 1px solid #e5ebf3;
-  border-radius: 12px;
   display: grid;
   gap: 14px;
   grid-template-columns: minmax(220px, 0.48fr) minmax(360px, 1fr);
-  padding: 10px 12px;
+  padding: 4px 0;
 }
 .route-child-manifest-contact-card {
   display: grid;
@@ -3847,6 +3859,10 @@ button.danger.subtle {
   color: #0f172a;
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+.route-child-manifest-contact-lines {
+  display: grid;
+  gap: 4px;
 }
 .route-child-manifest-items-scroll {
   border: 1px solid #e5ebf3;

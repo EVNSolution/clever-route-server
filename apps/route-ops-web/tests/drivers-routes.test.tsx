@@ -51,6 +51,7 @@ import type {
   RouteOptimizationJobDto,
   RoutePlanDetailDto,
   RoutePlanSummaryDto,
+  StoreSettingsDto,
 } from '../src/types';
 
 describe('Route Ops driver invite and route assignment UI helpers', () => {
@@ -392,6 +393,11 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         index === 0
           ? {
               ...stop,
+              distanceFromPreviousMeters: 4200,
+              durationFromPreviousSeconds: 1080,
+              email: 'yuri@example.test',
+              estimatedArrivalAt: '2026-06-05T14:30:00.000Z',
+              phone: '+14165550123',
               items: [
                 { name: 'Kimchi', options: [], productId: 1, quantity: 1, sku: null, variationId: 0 },
                 { name: 'Soup', options: [], productId: 2, quantity: 2, sku: null, variationId: 0 },
@@ -408,6 +414,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         deletingRouteId={null}
         detail={detail}
         drivers={[driverFixture()]}
+        settings={settingsFixture()}
         navigate={() => undefined}
         onDeleteRoute={() => undefined}
         setDetail={() => undefined}
@@ -425,9 +432,23 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(html).toContain('class="route-map-header-actions"');
     expect(html).toContain('class="primary route-send-driver-button" disabled="" type="button">Send to driver</button>');
     expect(html).toContain('Assign a driver and add stops first.');
-    expect(html).toContain('route-child-manifest-detail-row');
-    expect(html).toContain('route-child-manifest-detail-grid');
-    expect(html).toContain('route-child-manifest-toggle');
+    const manifestHtml = extractFirstMatch(html, /(<article class="panel route-child-manifest-card"[\s\S]*?<\/article>)/);
+    expect(manifestHtml).toContain('route-child-manifest-detail-row');
+    expect(manifestHtml).toContain('route-child-manifest-detail-grid');
+    expect(manifestHtml).toContain('route-child-manifest-toggle');
+    expect(manifestHtml).toContain('<svg');
+    expect(manifestHtml).not.toContain('⌄');
+    expect(manifestHtml).toContain('route-child-payment-cell');
+    expect(manifestHtml).toContain('route-child-eta-cell');
+    expect(manifestHtml).toContain('Arrival');
+    expect(manifestHtml).toContain('Dwell');
+    expect(manifestHtml).toContain('12 min');
+    expect(manifestHtml).not.toContain('18 min');
+    expect(manifestHtml).not.toContain('4.2 km');
+    expect(manifestHtml).not.toContain(' · ');
+    expect(manifestHtml).toContain('route-child-manifest-contact-lines');
+    expect(manifestHtml).toContain('+14165550123');
+    expect(manifestHtml).toContain('yuri@example.test');
     expect(html).toContain('<td>Kimchi</td>');
     expect(html).toContain('<td>Soup</td>');
     expect(html).toContain('<td>Rice</td>');
@@ -498,6 +519,13 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     expect(appSource).toContain('const navigate = useCallback((path: string): void => {');
     expect(appSource).toContain('}, []);');
     expect(routesSource).toMatch(/useEffect\(\(\) => \{\s+getDrivers\(\)[\s\S]*?\}, \[setError\]\);/u);
+    const settingsEffectStart = routesSource.indexOf('    let active = true;');
+    const settingsEffectEnd = routesSource.indexOf('  }, [detail?.routePlan.routeGroupingChild]);', settingsEffectStart);
+    const settingsEffect = routesSource.slice(settingsEffectStart, settingsEffectEnd);
+    expect(settingsEffect).toContain('if (detail?.routePlan.routeGroupingChild == null)');
+    expect(settingsEffect).toContain('getSettings()');
+    expect(settingsEffect).toContain('setSettings(null)');
+    expect(settingsEffect).not.toContain('setError(');
     expect(routesSource).toContain('if (routePlanId === null) void refreshRoutes();');
     expect(routesSource).toContain('}, [refreshRoutes, routePlanId]);');
     expect(routesSource).toContain('const deletedCurrentDetail = routePlanId === routeId;');
@@ -1259,6 +1287,32 @@ function routeGroupingFixture(overrides: Partial<RouteGroupingSummaryDto> = {}):
     unresolvedOrders: 0,
     updatedAt: '2026-06-19T12:00:00.000Z',
     warningState: [],
+    ...overrides,
+  };
+}
+
+function settingsFixture(overrides: Partial<StoreSettingsDto> = {}): StoreSettingsDto {
+  return {
+    defaultDepotAddress: '100 Store St, Toronto, ON',
+    defaultDepotLatitude: 43.6532,
+    defaultDepotLongitude: -79.3832,
+    locale: 'en-CA',
+    routeOpsUiSettings: {
+      destinationDwellMinutes: 12,
+      emailNotifications: {
+        enabled: false,
+        reminderPlans: [],
+        template: { body: '', subject: '' },
+      },
+      version: 1,
+    },
+    routeScopeConfig: {
+      deliverySessions: [],
+      serviceTypes: [],
+      timeWindow: { endExample: '', helpText: '', startExample: '' },
+      version: 1,
+    },
+    shopDomain: 'dev1.tomatonofood.com',
     ...overrides,
   };
 }

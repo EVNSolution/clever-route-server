@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import type { CSSProperties, DragEvent, ReactElement } from "react";
 
 import {
@@ -6,6 +7,7 @@ import {
   deleteRoute,
   deleteRouteGrouping,
   getDrivers,
+  getSettings,
   getRouteDetail,
   getRouteGrouping,
   getRoutes,
@@ -39,6 +41,7 @@ import type {
   RoutePlanDetailDto,
   RoutePlanSummaryDto,
   RouteStopDto,
+  StoreSettingsDto,
 } from "../types";
 import { readErrorMessage } from "../utils/format";
 
@@ -208,6 +211,7 @@ export function RoutesPage({
   const [routeGroups, setRouteGroups] = useState<RouteGroupingSummaryDto[]>([]);
   const [detail, setDetail] = useState<RoutePlanDetailDto | null>(null);
   const [drivers, setDrivers] = useState<DriverDto[]>([]);
+  const [settings, setSettings] = useState<StoreSettingsDto | null>(null);
   const [deletingRouteId, setDeletingRouteId] = useState<string | null>(null);
   const [deletingRouteGroupId, setDeletingRouteGroupId] = useState<string | null>(null);
   const [collapsedRouteGroupIds, setCollapsedRouteGroupIds] = useState<
@@ -237,6 +241,24 @@ export function RoutesPage({
       .then((payload) => setDrivers(payload.drivers))
       .catch((error: unknown) => setError(readErrorMessage(error)));
   }, [setError]);
+
+  useEffect(() => {
+    let active = true;
+    if (detail?.routePlan.routeGroupingChild == null) {
+      setSettings(null);
+      return;
+    }
+    getSettings()
+      .then((payload) => {
+        if (active) setSettings(payload.settings);
+      })
+      .catch(() => {
+        if (active) setSettings(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [detail?.routePlan.routeGroupingChild]);
 
   useEffect(() => {
     if (routePlanId === null) void refreshRoutes();
@@ -304,6 +326,7 @@ export function RoutesPage({
         drivers={drivers}
         isChildRouteDetail={detail.routePlan.routeGroupingChild != null}
         locale={locale}
+        settings={settings}
         navigate={navigate}
         onDeleteRoute={(id) => void deleteRoutePlan(id)}
         setDetail={setDetail}
@@ -603,6 +626,7 @@ export function RouteBuilder(input: {
   isChildRouteDetail?: boolean;
   locale?: string | null;
   navigate(path: string): void;
+  settings?: StoreSettingsDto | null;
   onDeleteRoute(routePlanId: string): void;
   setDetail(detail: RoutePlanDetailDto): void;
   setError(error: string | null): void;
@@ -837,7 +861,7 @@ export function RouteBuilder(input: {
             savedStopSequenceLabels={savedStopSequenceLabels}
             stops={draftStops}
           />
-          <ChildRouteManifestCard locale={locale} stops={draftStops} />
+          <ChildRouteManifestCard dwellMinutes={input.settings?.routeOpsUiSettings.destinationDwellMinutes ?? null} locale={locale} stops={draftStops} />
         </>
       ) : null}
       <section className="route-item-summary-card" aria-label={t.routeItems}>
@@ -1260,9 +1284,11 @@ function ChildRouteSequenceCard({
 }
 
 function ChildRouteManifestCard({
+  dwellMinutes,
   locale,
   stops,
 }: {
+  dwellMinutes: number | null;
   locale?: string | null;
   stops: RouteStopDto[];
 }): ReactElement {
@@ -1309,7 +1335,7 @@ function ChildRouteManifestCard({
                         onClick={() => toggleStop(stop.deliveryStopId)}
                         type="button"
                       >
-                        <span aria-hidden="true">⌄</span>
+                        <ChevronDown aria-hidden="true" size={16} strokeWidth={2.25} />
                       </button>
                     </td>
                     <td>{index + 1}</td>
@@ -1319,7 +1345,10 @@ function ChildRouteManifestCard({
                       <span>{formatManifestAmount(stop)}</span>
                       <span className={paymentClassName(stop.normalizedPaymentStatus)}>{formatManifestPayment(stop, copy)}</span>
                     </td>
-                    <td>{formatManifestEta(stop.estimatedArrivalAt, locale)} · {formatManifestLeg(stop, copy)}</td>
+                    <td className="route-child-eta-cell">
+                      <span><strong>{copy.arrival}</strong> {formatManifestEta(stop.estimatedArrivalAt, locale)}</span>
+                      <span><strong>{copy.dwell}</strong> {formatManifestDwell(dwellMinutes, copy)}</span>
+                    </td>
                   </tr>
                   {!isCollapsed ? (
                     <tr className="route-child-manifest-detail-row">
@@ -1332,7 +1361,11 @@ function ChildRouteManifestCard({
                             </div>
                             <div>
                               <div className="route-child-manifest-detail-label">{copy.contact}</div>
-                              <div className="route-child-manifest-detail-value">{[stop.phone, stop.email].filter(Boolean).join(" · ") || "—"}</div>
+                              <div className="route-child-manifest-detail-value route-child-manifest-contact-lines">
+                                {stop.phone ? <span>{stop.phone}</span> : null}
+                                {stop.email ? <span>{stop.email}</span> : null}
+                                {stop.phone || stop.email ? null : <span>—</span>}
+                              </div>
                             </div>
                           </div>
                           <div className="order-detail-items-table-scroll route-child-manifest-items-scroll">
@@ -1379,7 +1412,9 @@ const childManifestCopy = {
   "en-CA": {
     address: "Address",
     contact: "Contact",
+    arrival: "Arrival",
     collectCash: "Collect cash",
+    dwell: "Dwell",
     eta: "ETA",
     item: "Item",
     items: "Items",
@@ -1400,8 +1435,10 @@ const childManifestCopy = {
   "ko-KR": {
     address: "주소",
     contact: "연락처",
+    arrival: "Arrival",
     collectCash: "현금 수금",
-    eta: "도착 예정",
+    dwell: "Dwell",
+    eta: "ETA",
     item: "품목",
     items: "품목",
     leg(value: string): string { return value; },
@@ -1457,14 +1494,12 @@ function formatManifestEta(value: string | null | undefined, locale?: string | n
   return new Intl.DateTimeFormat(resolveLocale(locale), { hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
-function formatManifestLeg(
-  stop: RouteStopDto,
-  copy: typeof childManifestCopy[keyof typeof childManifestCopy],
+function formatManifestDwell(
+  dwellMinutes: number | null,
+  _copy: typeof childManifestCopy[keyof typeof childManifestCopy],
 ): string {
-  const parts: string[] = [];
-  if (typeof stop.durationFromPreviousSeconds === "number") parts.push(`${Math.round(stop.durationFromPreviousSeconds / 60)} min`);
-  if (typeof stop.distanceFromPreviousMeters === "number") parts.push(`${(stop.distanceFromPreviousMeters / 1000).toFixed(1)} km`);
-  return parts.length === 0 ? "—" : copy.leg(parts.join(" · "));
+  if (dwellMinutes === null || !Number.isFinite(dwellMinutes)) return "—";
+  return `${dwellMinutes} min`;
 }
 
 export function RouteStopOrderCompactList({
