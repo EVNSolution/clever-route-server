@@ -7,6 +7,7 @@ import {
   type DriverRouteSessionRestoreResult,
   type DriverRouteSessionRestoreSession
 } from './driver-route-session.types.js';
+import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 
 type DriverRouteSessionPrismaClient = Pick<PrismaClient, 'driver' | 'driverEvent' | 'routePlan' | 'shop'>;
 
@@ -79,7 +80,7 @@ export class PrismaDriverRouteSessionRepository {
     const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
     const shop = await this.prisma.shop.findUnique({
       select: { id: true },
-      where: { shopDomain }
+      where: appScopedShopWhere({ shopDomain })
     });
     if (shop === null) {
       throw new DriverRouteSessionScopeError(`Shop not installed: ${shopDomain}`);

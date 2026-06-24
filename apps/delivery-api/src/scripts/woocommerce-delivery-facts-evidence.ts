@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import { PrismaClient } from '@prisma/client';
 
 import { buildWooDeliveryFactsEvidence } from './woocommerce-delivery-facts-evidence.lib.js';
+import { appScopedShopWhere } from '../modules/shopify/shopify-app-scope.js';
 
 const prisma = new PrismaClient();
 
@@ -18,7 +19,7 @@ try {
       ? null
       : await prisma.shop.findUnique({
           select: { id: true, shopDomain: true },
-          where: { shopDomain: normalizeShopDomain(shopDomain) },
+          where: appScopedShopWhere({ shopDomain: normalizeShopDomain(shopDomain) }),
         });
 
   const facts = await prisma.orderDeliveryFact.findMany({

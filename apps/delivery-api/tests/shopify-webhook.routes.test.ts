@@ -6,6 +6,7 @@ import type { ShopifyWebhookDependencies } from '../src/routes/shopify-webhook.r
 
 const rawPayload = JSON.stringify({ id: 123, name: '#1001' });
 const clientSecret = 'shared-secret-456';
+const devClientSecret = 'dev-secret-789';
 
 describe('Shopify webhook routes', () => {
   test('rejects webhook requests without a valid Shopify HMAC', async () => {
@@ -52,6 +53,7 @@ describe('Shopify webhook routes', () => {
         error: null
       });
       expect(recordWebhook).toHaveBeenCalledWith({
+        appId: 'clever',
         apiVersion: '2026-04',
         eventId: '98880550-7158-44d4-b7cd-2c97c8a091b5',
         payload: { id: 123, name: '#1001' },
@@ -61,6 +63,38 @@ describe('Shopify webhook routes', () => {
         triggeredAt: new Date('2026-05-07T05:40:00.000Z'),
         webhookId: 'b54557e4-bdd9-4b37-8a5f-bf7d70bcd043'
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('records the app id for the Shopify credential whose webhook secret matches', async () => {
+    const { dependencies, recordWebhook } = createDependencyHarness({
+      appCredentials: [
+        { appId: 'clever', clientSecret },
+        { appId: 'clever-route-dev', clientSecret: devClientSecret }
+      ]
+    });
+    const app = await buildApp({ shopifyWebhook: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: webhookHeaders({
+          hmac: createHmac('sha256', devClientSecret).update(rawPayload).digest('base64')
+        }),
+        method: 'POST',
+        payload: rawPayload,
+        url: '/shopify/webhooks'
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(recordWebhook).toHaveBeenCalledWith(
+        expect.objectContaining({
+          appId: 'clever-route-dev',
+          shopDomain: 'example.myshopify.com',
+          webhookId: 'b54557e4-bdd9-4b37-8a5f-bf7d70bcd043'
+        })
+      );
     } finally {
       await app.close();
     }
@@ -96,7 +130,9 @@ describe('Shopify webhook routes', () => {
   });
 });
 
-function createDependencyHarness(): {
+function createDependencyHarness(input: {
+  appCredentials?: ShopifyWebhookDependencies['appCredentials'];
+} = {}): {
   dependencies: ShopifyWebhookDependencies;
   recordWebhook: ReturnType<typeof vi.fn<ShopifyWebhookDependencies['webhookService']['recordWebhook']>>;
 } {
@@ -109,7 +145,7 @@ function createDependencyHarness(): {
 
   return {
     dependencies: {
-      clientSecret,
+      appCredentials: input.appCredentials ?? [{ appId: 'clever', clientSecret }],
       webhookService: {
         recordWebhook
       }

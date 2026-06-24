@@ -137,6 +137,7 @@ describe('Admin drivers routes', () => {
       expect(response.statusCode).toBe(201);
       expect(response.json()).toEqual({ data: { driver: pendingDriver }, error: null });
       expect(createPendingDriver).toHaveBeenCalledWith({
+        appId: 'clever',
         createdBy: 'shopify-user-id',
         displayName: null,
         inviteLink: 'https://clever.delivery/driver/download',
@@ -188,7 +189,7 @@ describe('Admin drivers routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ data: { drivers: [linkedDriver, pendingDriver] }, error: null });
-      expect(listDrivers).toHaveBeenCalledWith({ shopDomain: 'example.myshopify.com' });
+      expect(listDrivers).toHaveBeenCalledWith({ appId: 'clever', shopDomain: 'example.myshopify.com' });
     } finally {
       await app.close();
     }
@@ -233,6 +234,7 @@ describe('Admin drivers routes', () => {
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ data: { driverId: 'driver-id' }, error: null });
       expect(deleteDriver).toHaveBeenCalledWith({
+        appId: 'clever',
         driverId: 'driver-id',
         shopDomain: 'example.myshopify.com'
       });

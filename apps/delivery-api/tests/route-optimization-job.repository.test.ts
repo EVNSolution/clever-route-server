@@ -22,7 +22,7 @@ describe('PrismaRouteOptimizationJobRepository', () => {
       traceId: 'trace-id'
     });
 
-    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ select: { id: true }, where: { shopDomain: 'example.myshopify.com' } });
+    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ select: { id: true }, where: { appId_shopDomain: { appId: 'clever', shopDomain: 'example.myshopify.com' } } });
     const staleUpdate = readFirstCallArg(prisma.routeOptimizationJob.update);
     expect(staleUpdate?.data).toMatchObject({
       currentStep: 'COMPLETED',

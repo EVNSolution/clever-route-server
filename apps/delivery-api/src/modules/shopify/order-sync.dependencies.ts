@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 
+import { loadShopifyAppCredentials, type ShopifyAppCredentialsEnv } from './shopify-app-credentials.js';
 import { PrismaOrderSyncRepository } from './order-sync.repository.js';
 import { ShopifyOrderSyncService } from './order-sync.service.js';
 import { ShopifySessionTokenVerifier } from './session-token-verifier.js';
@@ -8,18 +9,15 @@ import type { AdminOrdersDependencies } from '../../routes/admin-orders.routes.j
 
 const DEFAULT_SHOPIFY_API_VERSION = '2026-04';
 
-export type AdminOrdersRuntimeEnv = Partial<
-  Record<'SHOPIFY_API_KEY' | 'SHOPIFY_API_SECRET' | 'SHOPIFY_API_VERSION', string>
->;
+export type AdminOrdersRuntimeEnv = ShopifyAppCredentialsEnv & Partial<Record<'SHOPIFY_API_VERSION', string>>;
 
 export function loadAdminOrdersDependencies(input: {
   adminNotificationService?: AdminNotificationServiceApi | undefined;
   env: AdminOrdersRuntimeEnv;
   prisma: PrismaClient;
 }): AdminOrdersDependencies | undefined {
-  const apiKey = readOptional(input.env.SHOPIFY_API_KEY);
-  const apiSecret = readOptional(input.env.SHOPIFY_API_SECRET);
-  if (apiKey === undefined || apiSecret === undefined) {
+  const appCredentials = loadShopifyAppCredentials(input.env);
+  if (appCredentials.length === 0) {
     return undefined;
   }
 
@@ -38,7 +36,7 @@ export function loadAdminOrdersDependencies(input: {
       },
       repository
     }),
-    sessionTokenVerifier: new ShopifySessionTokenVerifier({ clientId: apiKey, clientSecret: apiSecret })
+    sessionTokenVerifier: new ShopifySessionTokenVerifier({ appCredentials })
   };
 }
 

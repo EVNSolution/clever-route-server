@@ -219,6 +219,7 @@ enum CustomerRouteNotificationStatus {
 
 model Shop {
   id                                String                             @id @default(uuid()) @db.Uuid
+  appId                             String                             @default("clever") @db.Text
   shopDomain                        String                             @db.Text
   shopifyShopGid                    String?                            @db.Text
   apiVersion                        String                             @default("2026-04") @db.Text
@@ -271,8 +272,9 @@ model Shop {
   driverRouteNotificationAttempts   DriverRouteNotificationAttempt[]
   customerRouteNotificationFacts    CustomerRouteNotificationFact[]
 
-  @@unique([shopDomain])
-  @@unique([shopifyShopGid])
+  @@unique([appId, shopDomain])
+  @@unique([appId, shopifyShopGid])
+  @@index([shopDomain])
   @@map("shops")
 }
 

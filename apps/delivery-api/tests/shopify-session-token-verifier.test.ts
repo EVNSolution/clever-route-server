@@ -5,11 +5,14 @@ import { verifyShopifySessionToken } from '../src/modules/shopify/session-token-
 
 const clientId = 'client-id-123';
 const clientSecret = 'shared-secret-456';
+const devClientId = 'dev-client-id-789';
+const devClientSecret = 'dev-secret-012';
 const now = new Date('2026-05-07T05:00:00.000Z');
 
 function signTestSessionToken(
   overrides: Record<string, unknown> = {},
-  headerOverrides: Record<string, unknown> = {}
+  headerOverrides: Record<string, unknown> = {},
+  signingSecret = clientSecret
 ): string {
   const header = { alg: 'HS256', typ: 'JWT', ...headerOverrides };
   const payload = {
@@ -27,7 +30,7 @@ function signTestSessionToken(
   const encodedHeader = encodeBase64Url(JSON.stringify(header));
   const encodedPayload = encodeBase64Url(JSON.stringify(payload));
   const signingInput = `${encodedHeader}.${encodedPayload}`;
-  const signature = createHmac('sha256', clientSecret)
+  const signature = createHmac('sha256', signingSecret)
     .update(signingInput)
     .digest('base64url');
 
@@ -44,9 +47,45 @@ describe('verifyShopifySessionToken', () => {
     });
 
     expect(verified).toEqual({
+      appId: 'clever',
       shopDomain: 'example.myshopify.com',
       subject: '42'
     });
+  });
+
+  test('accepts an alternate app credential based on the token audience', () => {
+    const verified = verifyShopifySessionToken(
+      signTestSessionToken({ aud: devClientId }, {}, devClientSecret),
+      {
+        appCredentials: [
+          { appId: 'clever', clientId, clientSecret },
+          { appId: 'clever-route-dev', clientId: devClientId, clientSecret: devClientSecret }
+        ],
+        expectedAppId: 'clever-route-dev',
+        now
+      }
+    );
+
+    expect(verified).toEqual({
+      appId: 'clever-route-dev',
+      shopDomain: 'example.myshopify.com',
+      subject: '42'
+    });
+  });
+
+  test('rejects a valid token when it belongs to a different expected app', () => {
+    const token = signTestSessionToken({ aud: devClientId }, {}, devClientSecret);
+
+    expect(() =>
+      verifyShopifySessionToken(token, {
+        appCredentials: [
+          { appId: 'clever', clientId, clientSecret },
+          { appId: 'clever-route-dev', clientId: devClientId, clientSecret: devClientSecret }
+        ],
+        expectedAppId: 'clever',
+        now
+      })
+    ).toThrow('Shopify session token app mismatch');
   });
 
   test('rejects a token with an invalid signature', () => {

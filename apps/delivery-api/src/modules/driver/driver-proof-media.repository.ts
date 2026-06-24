@@ -19,6 +19,7 @@ import type {
   StoreDriverProofMediaInput,
   StoreDriverProofMediaResult
 } from './driver-proof-media.types.js';
+import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 
 type DriverProofMediaPrismaClient = Pick<
   PrismaClient,
@@ -92,7 +93,7 @@ export class PrismaDriverProofMediaRepository {
     input: CreateDriverProofMediaReadAccessInput
   ): Promise<CreateDriverProofMediaReadAccessResult> {
     const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
-    const shop = await this.prisma.shop.findUnique({ where: { shopDomain } });
+    const shop = await this.prisma.shop.findUnique({ where: appScopedShopWhere({ shopDomain }) });
     if (shop === null) {
       throw new DriverProofMediaScopeError(`Shop not installed: ${shopDomain}`);
     }
@@ -131,7 +132,7 @@ export class PrismaDriverProofMediaRepository {
 
   async storeProofMedia(input: StoreDriverProofMediaInput): Promise<StoreDriverProofMediaResult> {
     const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
-    const shop = await this.prisma.shop.findUnique({ where: { shopDomain } });
+    const shop = await this.prisma.shop.findUnique({ where: appScopedShopWhere({ shopDomain }) });
     if (shop === null) {
       throw new DriverProofMediaScopeError(`Shop not installed: ${shopDomain}`);
     }

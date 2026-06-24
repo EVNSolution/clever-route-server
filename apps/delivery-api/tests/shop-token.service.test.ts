@@ -55,7 +55,7 @@ describe('ShopTokenService', () => {
     expect(stored.tokenScopes).toEqual(['read_orders', 'write_orders']);
     expect(prisma.shop.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { shopDomain: 'example.myshopify.com' }
+        where: { appId_shopDomain: { appId: 'clever', shopDomain: 'example.myshopify.com' } }
       })
     );
   });

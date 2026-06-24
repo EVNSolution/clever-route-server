@@ -1,3 +1,5 @@
+import { appScopedShopWhere, normalizeShopifyAppId } from './shopify-app-scope.js';
+
 export type ShopTokenRow = {
   adminAccessTokenCiphertext: string | null;
   adminAccessTokenExpiresAt: Date | null;
@@ -6,6 +8,7 @@ export type ShopTokenRow = {
   apiVersion: string;
   createdAt: Date;
   installedAt: Date;
+  appId: string;
   shopDomain: string;
   shopifyShopGid: string | null;
   tokenIssuedAt: Date | null;
@@ -15,6 +18,7 @@ export type ShopTokenRow = {
 };
 
 export type EncryptedShopTokenInput = {
+  appId?: string | undefined;
   adminAccessTokenCiphertext: string;
   adminAccessTokenExpiresAt: Date | null;
   adminRefreshTokenCiphertext: string | null;
@@ -31,14 +35,14 @@ type ShopTokenUpsertArgs = {
   create: ShopTokenRow;
   update: Partial<ShopTokenRow>;
   where: {
-    shopDomain: string;
+    appId_shopDomain: { appId: string; shopDomain: string };
   };
 };
 
 type ShopTokenFindUniqueArgs = {
   select: Record<keyof ShopTokenRow, true>;
   where: {
-    shopDomain: string;
+    appId_shopDomain: { appId: string; shopDomain: string };
   };
 };
 
@@ -52,6 +56,7 @@ type PrismaLikeClient = {
 };
 
 const SHOP_TOKEN_SELECT: Record<keyof ShopTokenRow, true> = {
+  appId: true,
   adminAccessTokenCiphertext: true,
   adminAccessTokenExpiresAt: true,
   adminRefreshTokenCiphertext: true,
@@ -70,10 +75,12 @@ const SHOP_TOKEN_SELECT: Record<keyof ShopTokenRow, true> = {
 export class PrismaShopTokenRepository {
   constructor(private readonly prisma: PrismaLikeClient) {}
 
-  async findByShopDomain(shopDomain: string): Promise<ShopTokenRow | null> {
+  async findByShopDomain(input: { appId?: string | undefined; shopDomain: string } | string): Promise<ShopTokenRow | null> {
+    const shopDomain = typeof input === 'string' ? input : input.shopDomain;
+    const appId = typeof input === 'string' ? undefined : input.appId;
     return this.prisma.shop.findUnique({
       select: SHOP_TOKEN_SELECT,
-      where: { shopDomain }
+      where: appScopedShopWhere({ appId, shopDomain })
     });
   }
 
@@ -87,6 +94,7 @@ export class PrismaShopTokenRepository {
       apiVersion: input.apiVersion,
       createdAt: now,
       installedAt: input.installedAt ?? now,
+      appId: normalizeShopifyAppId(input.appId),
       shopDomain: input.shopDomain,
       shopifyShopGid: input.shopifyShopGid,
       tokenIssuedAt: input.tokenIssuedAt,
@@ -111,7 +119,7 @@ export class PrismaShopTokenRepository {
     return this.prisma.shop.upsert({
       create,
       update,
-      where: { shopDomain: input.shopDomain }
+      where: appScopedShopWhere({ appId: input.appId, shopDomain: input.shopDomain })
     });
   }
 }

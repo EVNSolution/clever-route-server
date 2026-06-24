@@ -71,7 +71,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
       shopDomain: 'https://Dev1.TomatonoFood.com/routes'
     });
 
-    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { shopDomain: 'dev1.tomatonofood.com' } });
+    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { appId_shopDomain: { appId: 'clever', shopDomain: 'dev1.tomatonofood.com' } } });
     expect(prisma.driver.findUnique).toHaveBeenCalledWith({ where: { id: 'driver-id' } });
     const routePlanFindArgs = prisma.routePlan.findFirst.mock.calls[0]?.[0];
     expect(routePlanFindArgs?.where).toMatchObject({

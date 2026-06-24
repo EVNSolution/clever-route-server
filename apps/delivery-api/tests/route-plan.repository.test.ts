@@ -39,7 +39,7 @@ describe('PrismaRoutePlanRepository', () => {
     expect(result).toEqual(expect.objectContaining({ id: 'route-plan-id', stopsCount: 2 }));
     expect(prisma.shop.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { shopDomain: 'example.myshopify.com' }
+        where: { appId_shopDomain: { appId: 'clever', shopDomain: 'example.myshopify.com' } }
       })
     );
     expect(prisma.order.upsert).toHaveBeenNthCalledWith(

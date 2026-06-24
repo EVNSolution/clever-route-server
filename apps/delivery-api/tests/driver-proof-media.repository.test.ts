@@ -33,7 +33,7 @@ describe('PrismaDriverProofMediaRepository', () => {
       source: 'camera'
     });
 
-    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { shopDomain: 'dev1.tomatonofood.com' } });
+    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { appId_shopDomain: { appId: 'clever', shopDomain: 'dev1.tomatonofood.com' } } });
     expect(prisma.driver.findUnique).toHaveBeenCalledWith({ where: { id: 'driver-id' } });
     expect(prisma.routePlan.findFirst).toHaveBeenCalledWith({
       where: {
@@ -263,7 +263,7 @@ describe('PrismaDriverProofMediaRepository', () => {
       shopDomain: 'Tomatono.myshopify.com'
     });
 
-    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { shopDomain: 'tomatono.myshopify.com' } });
+    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { appId_shopDomain: { appId: 'clever', shopDomain: 'tomatono.myshopify.com' } } });
     expect(prisma.driverProofMedia.findFirst).toHaveBeenCalledWith({
       where: {
         deletedAt: null,

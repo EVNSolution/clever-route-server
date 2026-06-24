@@ -5,8 +5,10 @@ import type {
   AdminDriverRow,
   CreatePendingDriverRecordInput,
   DeleteAdminDriverInput,
-  ListAdminDriversInput
+  ListAdminDriversInput,
+  RegenerateInviteCodeInput
 } from './admin-driver.types.js';
+import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
 
 type AdminDriverPrismaClient = Pick<PrismaClient, 'driver' | 'driverSession' | 'shop'>;
 
@@ -34,11 +36,12 @@ export class PrismaAdminDriverRepository {
   constructor(private readonly prisma: AdminDriverPrismaClient) {}
 
   async createPendingDriver(input: CreatePendingDriverRecordInput): Promise<AdminDriverRow> {
+    const appId = normalizeShopifyAppId(input.appId);
     const shopDomain = normalizeShopDomain(input.shopDomain);
     const shop = await this.prisma.shop.upsert({
-      create: { shopDomain },
+      create: { appId, shopDomain },
       update: {},
-      where: { shopDomain }
+      where: appScopedShopWhere({ appId, shopDomain })
     });
     const displayName = normalizeDisplayName(input.displayName) ?? input.phone;
 
@@ -76,10 +79,11 @@ export class PrismaAdminDriverRepository {
   }
 
   async listDrivers(input: ListAdminDriversInput): Promise<AdminDriverRow[]> {
+    const appId = normalizeShopifyAppId(input.appId);
     const shopDomain = normalizeShopDomain(input.shopDomain);
     const shop = await this.prisma.shop.findUnique({
       select: { id: true },
-      where: { shopDomain }
+      where: appScopedShopWhere({ appId, shopDomain })
     });
     if (shop === null) {
       return [];
@@ -95,10 +99,11 @@ export class PrismaAdminDriverRepository {
   }
 
   async deleteDriver(input: DeleteAdminDriverInput): Promise<string> {
+    const appId = normalizeShopifyAppId(input.appId);
     const shopDomain = normalizeShopDomain(input.shopDomain);
     const shop = await this.prisma.shop.findUnique({
       select: { id: true },
-      where: { shopDomain }
+      where: appScopedShopWhere({ appId, shopDomain })
     });
     if (shop === null) {
       throw new Error('Shop not found');
@@ -112,11 +117,12 @@ export class PrismaAdminDriverRepository {
     return deletedDriver.id;
   }
 
-  async regenerateInviteCode(input: { driverId: string; shopDomain: string }): Promise<AdminDriverRow> {
+  async regenerateInviteCode(input: RegenerateInviteCodeInput): Promise<AdminDriverRow> {
+    const appId = normalizeShopifyAppId(input.appId);
     const shopDomain = normalizeShopDomain(input.shopDomain);
     const shop = await this.prisma.shop.findUnique({
       select: { id: true },
-      where: { shopDomain }
+      where: appScopedShopWhere({ appId, shopDomain })
     });
     if (shop === null) {
       throw new Error('Shop not found');

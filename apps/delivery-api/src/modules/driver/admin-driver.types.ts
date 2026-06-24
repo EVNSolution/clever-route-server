@@ -21,6 +21,7 @@ export type CreatePendingDriverInput = {
   displayName: string | null;
   inviteLink: string | null;
   phone: string;
+  appId?: string | undefined;
   shopDomain: string;
   source: 'clever-app-driver-invite';
 };
@@ -28,20 +29,24 @@ export type CreatePendingDriverInput = {
 export type CreatePendingDriverRecordInput = {
   displayName: string | null;
   phone: string;
+  appId?: string | undefined;
   shopDomain: string;
 };
 
 export type ListAdminDriversInput = {
+  appId?: string | undefined;
   shopDomain: string;
 };
 
 export type DeleteAdminDriverInput = {
   driverId: string;
+  appId?: string | undefined;
   shopDomain: string;
 };
 
 export type RegenerateInviteCodeInput = {
   driverId: string;
+  appId?: string | undefined;
   shopDomain: string;
 };
 

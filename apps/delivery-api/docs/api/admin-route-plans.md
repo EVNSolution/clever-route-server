@@ -12,10 +12,14 @@ All routes require a Shopify embedded app session token:
 Authorization: Bearer <shopify-session-token>
 ```
 
-The server verifies the token with `SHOPIFY_API_KEY` and `SHOPIFY_API_SECRET`.
-`shopDomain` is derived from the token, not from request payload. If the embedded
-UI runs from another origin, configure `SHOPIFY_APP_URL` so CORS allows that app
-origin.
+The server verifies the token against configured Shopify app credentials:
+`SHOPIFY_API_KEY`/`SHOPIFY_API_SECRET` for the default `clever` app,
+`SHOPIFY_DEV_API_KEY`/`SHOPIFY_DEV_API_SECRET` for `clever-route-dev`, or
+additional `SHOPIFY_APP_CREDENTIALS` entries. `shopDomain` and `appId` are
+derived from the token, not from request payload. The embedded UI can also send
+`x-clever-app-id` to make admin routes reject tokens for the wrong app. If the
+embedded UI runs from another origin, configure `SHOPIFY_APP_URL` so CORS allows
+that app origin.
 
 ## POST `/admin/route-plans`
 
@@ -65,7 +69,7 @@ Request:
 
 Persistence contract:
 
-- `Shop` is upserted by token-derived `shopDomain`.
+- `Shop` is upserted by token-derived `(appId, shopDomain)`.
 - `Order` is upserted by `(shopId, shopifyOrderGid)`.
 - `DeliveryStop` is upserted by `(shopId, orderId)`.
 - `RoutePlan` is created with `status=DRAFT`,

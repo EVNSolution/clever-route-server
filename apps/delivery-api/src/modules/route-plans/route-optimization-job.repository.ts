@@ -9,6 +9,7 @@ import {
   type RouteOptimizationJobDto,
   type RouteOptimizationJobRepository
 } from './route-optimization-job.types.js';
+import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 
 const DEFAULT_QUEUE_START_BUDGET_MS = 10000;
 const DEFAULT_TIMEOUT_BUDGET_MS = 180000;
@@ -32,7 +33,7 @@ export class PrismaRouteOptimizationJobRepository implements RouteOptimizationJo
     const queueStartBudgetMs = normalizeQueueStartBudgetMs(input.queueStartBudgetMs);
 
     return this.prisma.$transaction(async (tx) => {
-      const shop = await tx.shop.findUnique({ select: { id: true }, where: { shopDomain } });
+      const shop = await tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain }) });
       if (shop === null) return null;
 
       const routePlan = await tx.routePlan.findFirst({
@@ -83,7 +84,7 @@ export class PrismaRouteOptimizationJobRepository implements RouteOptimizationJo
   async findJob(input: FindRouteOptimizationJobInput): Promise<RouteOptimizationJobDto | null> {
     const shopDomain = normalizeShopDomain(input.shopDomain);
     return this.prisma.$transaction(async (tx) => {
-      const shop = await tx.shop.findUnique({ select: { id: true }, where: { shopDomain } });
+      const shop = await tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain }) });
       if (shop === null) return null;
       const job = await tx.routeOptimizationJob.findFirst({
         where: {
@@ -99,7 +100,7 @@ export class PrismaRouteOptimizationJobRepository implements RouteOptimizationJo
   async findLatestJob(input: FindLatestRouteOptimizationJobInput): Promise<RouteOptimizationJobDto | null> {
     const shopDomain = normalizeShopDomain(input.shopDomain);
     return this.prisma.$transaction(async (tx) => {
-      const shop = await tx.shop.findUnique({ select: { id: true }, where: { shopDomain } });
+      const shop = await tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain }) });
       if (shop === null) return null;
       const job = await tx.routeOptimizationJob.findFirst({
         orderBy: { createdAt: 'desc' },
@@ -212,7 +213,7 @@ export class PrismaRouteOptimizationJobRepository implements RouteOptimizationJo
   async reconcileStaleActiveJobs(input: ReconcileRouteOptimizationJobsInput): Promise<RouteOptimizationJobDto[]> {
     const shopDomain = normalizeShopDomain(input.shopDomain);
     return this.prisma.$transaction(async (tx) => {
-      const shop = await tx.shop.findUnique({ select: { id: true }, where: { shopDomain } });
+      const shop = await tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain }) });
       if (shop === null) return [];
       return reconcileStaleActiveJobsInTransaction(tx, {
         now: new Date(),

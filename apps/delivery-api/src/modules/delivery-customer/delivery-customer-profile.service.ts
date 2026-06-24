@@ -6,6 +6,7 @@ import {
   type Order,
   type PrismaClient,
 } from "@prisma/client";
+import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 
 export type DeliveryCustomerMatchStatus = "AUTO_MATCHED" | "CREATED_NEW";
 
@@ -76,7 +77,7 @@ export class PrismaDeliveryCustomerProfileService {
   }): Promise<DeliveryCustomerContext | null> {
     const shop = await this.prisma.shop.findUnique({
       select: { id: true },
-      where: { shopDomain: input.shopDomain },
+      where: appScopedShopWhere({ shopDomain: input.shopDomain }),
     });
     if (shop === null) return null;
 
@@ -95,7 +96,7 @@ export class PrismaDeliveryCustomerProfileService {
   }): Promise<DeliveryCustomerAdminMemoResult | null> {
     const shop = await this.prisma.shop.findUnique({
       select: { id: true },
-      where: { shopDomain: input.shopDomain },
+      where: appScopedShopWhere({ shopDomain: input.shopDomain }),
     });
     if (shop === null) return null;
 
@@ -127,7 +128,7 @@ export class PrismaDeliveryCustomerProfileService {
     if (input.sourceProfileId === input.targetProfileId) return null;
     const shop = await this.prisma.shop.findUnique({
       select: { id: true },
-      where: { shopDomain: input.shopDomain },
+      where: appScopedShopWhere({ shopDomain: input.shopDomain }),
     });
     if (shop === null) return null;
 

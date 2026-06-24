@@ -27,7 +27,7 @@ describe('PrismaDriverEventRepository', () => {
       shopDomain: 'https://Dev1.TomatonoFood.com/admin'
     })).resolves.toEqual({ duplicate: false, eventId: 'driver-event-id' });
 
-    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { shopDomain: 'dev1.tomatonofood.com' } });
+    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { appId_shopDomain: { appId: 'clever', shopDomain: 'dev1.tomatonofood.com' } } });
     expect(prisma.driverEvent.create).toHaveBeenCalledWith({
       data: {
         clientEventId: 'client-event-id',

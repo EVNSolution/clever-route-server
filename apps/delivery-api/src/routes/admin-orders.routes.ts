@@ -6,6 +6,7 @@ import {
   type AdminSessionTokenVerifier
 } from './admin-session-auth.js';
 
+import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js';
 import type { ListCanonicalOrdersFilters } from '../modules/shopify/order-sync.repository.js';
 import type { ShopifyOrderNode } from '../modules/shopify/order-sync.mapper.js';
 import type { SyncOrdersSnapshotInput, SyncOrdersSnapshotResult } from '../modules/shopify/order-sync.service.js';
@@ -38,6 +39,7 @@ export type AdminOrdersDependencies = {
   orderSyncService: {
     listCanonicalOrders(input: {
       filters?: ListCanonicalOrdersFilters;
+      appId?: string | undefined;
       shopDomain: string;
     }): Promise<SyncOrdersSnapshotResult['orders']>;
     syncOrdersSnapshot(input: SyncOrdersSnapshotInput): Promise<SyncOrdersSnapshotResult>;
@@ -50,7 +52,7 @@ export function registerAdminOrdersRoutes(
   dependencies: AdminOrdersDependencies
 ): void {
   app.patch<{ Body: unknown }>('/admin/orders/sync', async (request, reply) => {
-    const authenticated = authenticate(request.headers.authorization, dependencies, {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
       surface: 'admin_orders'
     });
@@ -78,6 +80,7 @@ export function registerAdminOrdersRoutes(
         ? { orders: [], sync: createEmptySyncSummary() }
         : await dependencies.orderSyncService.syncOrdersSnapshot({
             ...payload,
+            appId: authenticated.appId,
             shopDomain: authenticated.shopDomain,
             subject: authenticated.subject,
             orders: payload.orders
@@ -109,7 +112,7 @@ export function registerAdminOrdersRoutes(
   app.get<{ Querystring: Record<string, string | string[] | undefined> }>(
     '/admin/orders',
     async (request, reply) => {
-      const authenticated = authenticate(request.headers.authorization, dependencies, {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
         log: request.log,
         surface: 'admin_orders'
       });
@@ -126,6 +129,7 @@ export function registerAdminOrdersRoutes(
 
       const orders = await dependencies.orderSyncService.listCanonicalOrders({
         filters,
+        appId: authenticated.appId,
         shopDomain: authenticated.shopDomain
       });
 
@@ -144,10 +148,11 @@ function toAdminOrderResponse(
 
 function authenticate(
   authorization: string | undefined,
+  appIdHeader: string | string[] | undefined,
   dependencies: AdminOrdersDependencies,
   options: AdminSessionAuthLogContext
 ):
-  | { shopDomain: string; status: 'authenticated'; subject: string }
+  | { appId: string; shopDomain: string; status: 'authenticated'; subject: string }
   | { message: string; status: 'unauthorized' } {
   const sessionToken = extractBearerToken(authorization);
   if (sessionToken === null) {
@@ -155,12 +160,27 @@ function authenticate(
   }
 
   try {
-    const verified = dependencies.sessionTokenVerifier.verify(sessionToken);
-    return { shopDomain: verified.shopDomain, status: 'authenticated', subject: verified.subject };
+    const expectedAppId = readHeaderValue(appIdHeader);
+    const verified = dependencies.sessionTokenVerifier.verify(
+      sessionToken,
+      expectedAppId === null ? {} : { expectedAppId }
+    );
+    return {
+      appId: verified.appId ?? DEFAULT_SHOPIFY_APP_ID,
+      shopDomain: verified.shopDomain,
+      status: 'authenticated',
+      subject: verified.subject
+    };
   } catch (error) {
     logRejectedAdminSessionToken({ ...options, error });
     return { message: 'Invalid Shopify session token', status: 'unauthorized' };
   }
+}
+
+function readHeaderValue(value: string | string[] | undefined): string | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (raw === undefined || raw.trim() === '') return null;
+  return raw.trim();
 }
 
 function readSyncPayload(value: unknown): {

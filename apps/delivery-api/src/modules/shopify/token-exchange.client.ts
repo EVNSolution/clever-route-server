@@ -1,3 +1,5 @@
+import { DEFAULT_SHOPIFY_APP_ID, normalizeShopifyAppId } from './shopify-app-scope.js';
+
 export type ShopifyTokenExchangeResult = {
   accessToken: string;
   expiresIn: number | null;
@@ -7,13 +9,22 @@ export type ShopifyTokenExchangeResult = {
 };
 
 export type ShopifyTokenExchangeInput = {
+  appId?: string | undefined;
   sessionToken: string;
   shopDomain: string;
 };
 
-type ShopifyTokenExchangeClientOptions = {
+type ShopifyTokenExchangeCredential = {
+  appId: string;
   clientId: string;
   clientSecret: string;
+};
+
+type ShopifyTokenExchangeClientOptions = {
+  appCredentials?: ShopifyTokenExchangeCredential[];
+  appId?: string | undefined;
+  clientId?: string;
+  clientSecret?: string;
   fetchImpl?: FetchLike;
 };
 
@@ -29,18 +40,29 @@ type ShopifyTokenExchangeResponse = {
 
 export class ShopifyTokenExchangeClient {
   private readonly fetchImpl: FetchLike;
+  private readonly appCredentials: ShopifyTokenExchangeCredential[];
 
-  constructor(private readonly options: ShopifyTokenExchangeClientOptions) {
+  constructor(options: ShopifyTokenExchangeClientOptions) {
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.appCredentials =
+      options.appCredentials ??
+      [
+        {
+          appId: normalizeShopifyAppId(options.appId ?? DEFAULT_SHOPIFY_APP_ID),
+          clientId: requireOption(options.clientId, 'clientId'),
+          clientSecret: requireOption(options.clientSecret, 'clientSecret')
+        }
+      ];
   }
 
   async exchangeSessionTokenForOfflineToken(
     input: ShopifyTokenExchangeInput
   ): Promise<ShopifyTokenExchangeResult> {
     const shopDomain = normalizeShopDomain(input.shopDomain);
+    const credential = this.findCredential(input.appId);
     const body = new URLSearchParams({
-      client_id: this.options.clientId,
-      client_secret: this.options.clientSecret,
+      client_id: credential.clientId,
+      client_secret: credential.clientSecret,
       expiring: '1',
       grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
       requested_token_type: 'urn:shopify:params:oauth:token-type:offline-access-token',
@@ -64,6 +86,22 @@ export class ShopifyTokenExchangeClient {
 
     return parseTokenExchangeResponse(payload);
   }
+
+  private findCredential(appId = DEFAULT_SHOPIFY_APP_ID): ShopifyTokenExchangeCredential {
+    const normalizedAppId = normalizeShopifyAppId(appId);
+    const credential = this.appCredentials.find((item) => normalizeShopifyAppId(item.appId) === normalizedAppId);
+    if (credential === undefined) {
+      throw new Error(`Shopify token exchange credential not configured for ${normalizedAppId}`);
+    }
+    return credential;
+  }
+}
+
+function requireOption(value: string | undefined, name: string): string {
+  if (value === undefined || value.trim() === '') {
+    throw new Error(`Shopify token exchange ${name} is required`);
+  }
+  return value.trim();
 }
 
 function parseTokenExchangeResponse(

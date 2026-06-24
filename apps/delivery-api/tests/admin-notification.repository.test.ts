@@ -32,7 +32,7 @@ describe('PrismaAdminNotificationRepository', () => {
 
     expect(prisma.shop.findUnique).toHaveBeenCalledWith({
       select: { id: true },
-      where: { shopDomain: 'tenant-a.example.test' }
+      where: { appId_shopDomain: { appId: 'clever', shopDomain: 'tenant-a.example.test' } }
     });
     expect(prisma.adminNotification.findMany).toHaveBeenCalledWith({
       orderBy: [{ createdAt: 'desc' }],
@@ -139,7 +139,7 @@ describe('PrismaAdminNotificationRepository', () => {
 
     expect(prisma.shop.findUnique).toHaveBeenCalledWith({
       select: { id: true },
-      where: { shopDomain: 'tenant-a.example.test' }
+      where: { appId_shopDomain: { appId: 'clever', shopDomain: 'tenant-a.example.test' } }
     });
   });
 

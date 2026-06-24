@@ -42,9 +42,10 @@ blank fails closed. A wildcard (`*`) is acceptable only for a deliberate,
 reviewed compatibility exception during a controlled test.
 
 Optional legacy Shopify compatibility values (`SHOPIFY_API_KEY`,
-`SHOPIFY_API_SECRET`, `SHOPIFY_TOKEN_ENCRYPTION_KEY`, etc.) should remain unset
-for the WordPress/Woo main runtime unless a rollback/compatibility path needs
-those routes enabled.
+`SHOPIFY_API_SECRET`, `SHOPIFY_DEV_API_KEY`, `SHOPIFY_DEV_API_SECRET`,
+`SHOPIFY_APP_CREDENTIALS`, `SHOPIFY_TOKEN_ENCRYPTION_KEY`, etc.) should remain
+unset for the WordPress/Woo main runtime unless a rollback/compatibility path
+needs those routes enabled.
 
 Never commit real `.env` files, DB passwords, JWT secrets, Shopify credentials,
 Woo credentials, webhook secrets, proof media, or private evidence.

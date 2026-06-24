@@ -1,4 +1,5 @@
 import type { CommerceConnectionStatus, CommerceSourcePlatform, PrismaClient, Prisma } from '@prisma/client';
+import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 
 type CommerceConnectionPrismaClient = Pick<PrismaClient, 'commerceConnection' | 'commerceConnectionAuditLog' | 'shop'>;
 
@@ -233,7 +234,7 @@ export class PrismaCommerceConnectionRepository {
   private async findShop(shopDomain: string): Promise<{ id: string } | null> {
     return this.prisma.shop.findUnique({
       select: { id: true },
-      where: { shopDomain }
+      where: appScopedShopWhere({ shopDomain })
     });
   }
 }

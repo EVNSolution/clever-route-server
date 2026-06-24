@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from '@prisma/client';
 
 import { normalizeShopDomain } from '../commerce/commerce-connection.repository.js';
+import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 
 export const WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED_NOTIFICATION =
   'WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED';
@@ -192,7 +193,7 @@ export class PrismaAdminNotificationRepository {
   private async findShop(shopDomain: string): Promise<{ id: string } | null> {
     return this.prisma.shop.findUnique({
       select: { id: true },
-      where: { shopDomain: normalizeShopDomain(shopDomain) },
+      where: appScopedShopWhere({ shopDomain: normalizeShopDomain(shopDomain) }),
     });
   }
 }

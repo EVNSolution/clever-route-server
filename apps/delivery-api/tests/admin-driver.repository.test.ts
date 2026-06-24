@@ -18,9 +18,9 @@ describe('PrismaAdminDriverRepository', () => {
     });
 
     expect(prisma.shop.upsert).toHaveBeenCalledWith({
-      create: { shopDomain: 'example.myshopify.com' },
+      create: { appId: 'clever', shopDomain: 'example.myshopify.com' },
       update: {},
-      where: { shopDomain: 'example.myshopify.com' }
+      where: { appId_shopDomain: { appId: 'clever', shopDomain: 'example.myshopify.com' } }
     });
     expect(prisma.driver.create).toHaveBeenCalledWith({
       data: {
@@ -59,9 +59,9 @@ describe('PrismaAdminDriverRepository', () => {
     });
 
     expect(prisma.shop.upsert).toHaveBeenCalledWith({
-      create: { shopDomain: 'dev1.tomatonofood.com' },
+      create: { appId: 'clever', shopDomain: 'dev1.tomatonofood.com' },
       update: {},
-      where: { shopDomain: 'dev1.tomatonofood.com' }
+      where: { appId_shopDomain: { appId: 'clever', shopDomain: 'dev1.tomatonofood.com' } }
     });
   });
 
@@ -105,7 +105,7 @@ describe('PrismaAdminDriverRepository', () => {
 
     expect(prisma.shop.findUnique).toHaveBeenCalledWith({
       select: { id: true },
-      where: { shopDomain: 'example.myshopify.com' }
+      where: { appId_shopDomain: { appId: 'clever', shopDomain: 'example.myshopify.com' } }
     });
     expect(prisma.driver.update).toHaveBeenCalledWith({
       data: {
@@ -193,7 +193,7 @@ describe('PrismaAdminDriverRepository', () => {
 
     expect(prisma.shop.findUnique).toHaveBeenCalledWith({
       select: { id: true },
-      where: { shopDomain: 'example.myshopify.com' }
+      where: { appId_shopDomain: { appId: 'clever', shopDomain: 'example.myshopify.com' } }
     });
     expect(prisma.driver.delete).toHaveBeenCalledWith({
       select: { id: true },

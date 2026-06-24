@@ -6,6 +6,7 @@ import {
   type AdminSessionTokenVerifier
 } from './admin-session-auth.js';
 
+import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js';
 import {
   RoutePlanDriverAssignInvalidError,
   RoutePlanOrderAlreadyPlannedError,
@@ -35,7 +36,7 @@ export function registerAdminRoutePlanRoutes(
   dependencies: AdminRoutePlanDependencies
 ): void {
   app.post<{ Body: unknown }>('/admin/route-plans', async (request, reply) => {
-    const authenticated = authenticate(request.headers.authorization, dependencies, {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
       surface: 'admin_route_plans'
     });
@@ -58,6 +59,7 @@ export function registerAdminRoutePlanRoutes(
     let routePlan;
     try {
       routePlan = await dependencies.routePlanService.createRoutePlan({
+        appId: authenticated.appId,
         createdBy: authenticated.subject,
         payload,
         shopDomain: authenticated.shopDomain
@@ -84,7 +86,7 @@ export function registerAdminRoutePlanRoutes(
   });
 
   app.get('/admin/route-plans', async (request, reply) => {
-    const authenticated = authenticate(request.headers.authorization, dependencies, {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
       surface: 'admin_route_plans'
     });
@@ -93,6 +95,7 @@ export function registerAdminRoutePlanRoutes(
     }
 
     const routePlans = await dependencies.routePlanService.listRoutePlans({
+      appId: authenticated.appId,
       shopDomain: authenticated.shopDomain
     });
 
@@ -105,7 +108,7 @@ export function registerAdminRoutePlanRoutes(
   app.get<{ Params: { routePlanId: string } }>(
     '/admin/route-plans/:routePlanId',
     async (request, reply) => {
-      const authenticated = authenticate(request.headers.authorization, dependencies, {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
         log: request.log,
         surface: 'admin_route_plans'
       });
@@ -114,6 +117,7 @@ export function registerAdminRoutePlanRoutes(
       }
 
       const detail = await dependencies.routePlanService.getRoutePlanDetail({
+        appId: authenticated.appId,
         routePlanId: request.params.routePlanId,
         shopDomain: authenticated.shopDomain
       });
@@ -131,7 +135,7 @@ export function registerAdminRoutePlanRoutes(
   app.patch<{ Body: unknown; Params: { routePlanId: string } }>(
     '/admin/route-plans/:routePlanId/driver',
     async (request, reply) => {
-      const authenticated = authenticate(request.headers.authorization, dependencies, {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
         log: request.log,
         surface: 'admin_route_plans'
       });
@@ -148,6 +152,7 @@ export function registerAdminRoutePlanRoutes(
 
       try {
         const detail = await dependencies.routePlanService.assignRoutePlanDriver({
+          appId: authenticated.appId,
           payload,
           routePlanId: request.params.routePlanId,
           shopDomain: authenticated.shopDomain
@@ -172,7 +177,7 @@ export function registerAdminRoutePlanRoutes(
   app.patch<{ Body: unknown; Params: { routePlanId: string } }>(
     '/admin/route-plans/:routePlanId/stops',
     async (request, reply) => {
-      const authenticated = authenticate(request.headers.authorization, dependencies, {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
         log: request.log,
         surface: 'admin_route_plans'
       });
@@ -189,6 +194,7 @@ export function registerAdminRoutePlanRoutes(
 
       try {
         const detail = await dependencies.routePlanService.updateRoutePlanStops({
+          appId: authenticated.appId,
           payload,
           routePlanId: request.params.routePlanId,
           shopDomain: authenticated.shopDomain
@@ -226,7 +232,7 @@ export function registerAdminRoutePlanRoutes(
   app.patch<{ Body: unknown; Params: { routePlanId: string } }>(
     '/admin/route-plans/:routePlanId/options',
     async (request, reply) => {
-      const authenticated = authenticate(request.headers.authorization, dependencies, {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
         log: request.log,
         surface: 'admin_route_plans'
       });
@@ -243,6 +249,7 @@ export function registerAdminRoutePlanRoutes(
 
       try {
         const detail = await dependencies.routePlanService.updateRoutePlanOptions({
+          appId: authenticated.appId,
           payload,
           routePlanId: request.params.routePlanId,
           shopDomain: authenticated.shopDomain
@@ -270,7 +277,7 @@ export function registerAdminRoutePlanRoutes(
   app.delete<{ Params: { routePlanId: string } }>(
     '/admin/route-plans/:routePlanId',
     async (request, reply) => {
-      const authenticated = authenticate(request.headers.authorization, dependencies, {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
         log: request.log,
         surface: 'admin_route_plans'
       });
@@ -279,6 +286,7 @@ export function registerAdminRoutePlanRoutes(
       }
 
       const result = await dependencies.routePlanService.deleteRoutePlan({
+        appId: authenticated.appId,
         routePlanId: request.params.routePlanId,
         shopDomain: authenticated.shopDomain
       });
@@ -293,10 +301,11 @@ export function registerAdminRoutePlanRoutes(
 
 function authenticate(
   authorization: string | undefined,
+  appIdHeader: string | string[] | undefined,
   dependencies: AdminRoutePlanDependencies,
   options: AdminSessionAuthLogContext
 ):
-  | { shopDomain: string; status: 'authenticated'; subject: string }
+  | { appId: string; shopDomain: string; status: 'authenticated'; subject: string }
   | { message: string; status: 'unauthorized' } {
   const sessionToken = extractBearerToken(authorization);
   if (sessionToken === null) {
@@ -304,8 +313,13 @@ function authenticate(
   }
 
   try {
-    const verified = dependencies.sessionTokenVerifier.verify(sessionToken);
+    const expectedAppId = readHeaderValue(appIdHeader);
+    const verified = dependencies.sessionTokenVerifier.verify(
+      sessionToken,
+      expectedAppId === null ? {} : { expectedAppId }
+    );
     return {
+      appId: verified.appId ?? DEFAULT_SHOPIFY_APP_ID,
       shopDomain: verified.shopDomain,
       status: 'authenticated',
       subject: verified.subject
@@ -314,6 +328,13 @@ function authenticate(
     logRejectedAdminSessionToken({ ...options, error });
     return { message: 'Invalid Shopify session token', status: 'unauthorized' };
   }
+}
+
+
+function readHeaderValue(value: string | string[] | undefined): string | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (raw === undefined || raw.trim() === '') return null;
+  return raw.trim();
 }
 
 function extractBearerToken(authorization: string | undefined): string | null {

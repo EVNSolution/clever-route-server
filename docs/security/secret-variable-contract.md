@@ -17,8 +17,12 @@ These variables are maintained by the server runtime environment (`apps/delivery
 | `DRIVER_PROOF_MEDIA_S3_SESSION_TOKEN` | temporary S3 credentials used | Optional temporary S3 session token. |
 | `DRIVER_PROOF_MEDIA_SCANNER_BEARER_TOKEN` | scanner backend enabled | Optional malware scanner bearer token. |
 | `DRIVER_PROOF_MEDIA_SCAN_MONITOR_BEARER_TOKEN` | scan-monitor backend enabled | Optional scan monitor bearer token. |
-| `SHOPIFY_API_SECRET` | legacy Shopify auth compatibility enabled | Legacy Shopify app OAuth secret. Keep unset for Woo-first runtime unless compatibility is needed. |
-| `SHOPIFY_WEBHOOK_SECRET` | legacy Shopify webhook compatibility enabled | Legacy Shopify webhook HMAC secret. |
+| `SHOPIFY_API_KEY` | default Shopify embedded app compatibility enabled | Default `clever` Shopify app client id. Pair with `SHOPIFY_API_SECRET`. Keep unset for Woo-first runtime unless compatibility is needed. |
+| `SHOPIFY_API_SECRET` | default Shopify embedded app compatibility enabled | Default `clever` Shopify app OAuth/webhook secret. Pair with `SHOPIFY_API_KEY`; webhook-only fallback may use this secret if no app credential pair is configured. |
+| `SHOPIFY_DEV_API_KEY` | `clever-route-dev` Shopify embedded app compatibility enabled | Dev Shopify app client id. Pair with `SHOPIFY_DEV_API_SECRET`. |
+| `SHOPIFY_DEV_API_SECRET` | `clever-route-dev` Shopify embedded app compatibility enabled | Dev Shopify app OAuth/webhook secret. Pair with `SHOPIFY_DEV_API_KEY`. |
+| `SHOPIFY_APP_CREDENTIALS` | additional Shopify embedded apps enabled | Comma-separated `appId:clientId:clientSecret` entries for any extra Shopify apps beyond the default/dev shortcuts. |
+| `SHOPIFY_WEBHOOK_SECRET` | legacy Shopify webhook-only compatibility enabled | Legacy Shopify webhook HMAC fallback secret used only when no Shopify app credential pair is configured. |
 | `SHOPIFY_TOKEN_ENCRYPTION_KEY` | legacy Shopify token storage enabled before migration | Existing Shopify-token encryption key. New generic connector storage should use `CREDENTIAL_ENCRYPTION_KEY`. |
 
 ### `CREDENTIAL_ENCRYPTION_KEY` format

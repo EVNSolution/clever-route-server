@@ -3,13 +3,15 @@ import { describe, expect, test, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import type { ShopifyAuthDependencies } from '../src/routes/shopify-auth.routes.js';
 
-const verifySession = (): { shopDomain: string; subject: string } => ({
+const verifySession = (): { appId: string; shopDomain: string; subject: string } => ({
+  appId: 'clever',
   shopDomain: 'example.myshopify.com',
   subject: '42'
 });
 
-const storeAdminApiToken = (): Promise<{ shopDomain: string; tokenScopes: string[] }> =>
+const storeAdminApiToken = (): Promise<{ appId: string; shopDomain: string; tokenScopes: string[] }> =>
   Promise.resolve({
+    appId: 'clever',
     shopDomain: 'example.myshopify.com',
     tokenScopes: ['read_orders', 'write_orders']
   });
@@ -78,6 +80,7 @@ describe('Shopify auth routes', () => {
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({
         data: {
+          appId: 'clever',
           shopDomain: 'example.myshopify.com',
           tokenStored: true,
           tokenScopes: ['read_orders', 'write_orders']
@@ -88,11 +91,13 @@ describe('Shopify auth routes', () => {
         expectedShopDomain: 'example.myshopify.com'
       });
       expect(exchange).toHaveBeenCalledWith({
+        appId: 'clever',
         sessionToken: 'session-token',
         shopDomain: 'example.myshopify.com'
       });
       expect(store).toHaveBeenCalledWith(
         expect.objectContaining({
+          appId: 'clever',
           accessToken: 'shpat_access_token',
           apiVersion: '2026-04',
           refreshToken: 'shprt_refresh_token',
