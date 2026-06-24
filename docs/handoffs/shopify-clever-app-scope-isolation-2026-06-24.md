@@ -175,6 +175,31 @@ x-clever-app-id: clever
 
 단, 최종 권한 판단은 클라이언트 header를 그대로 믿지 말고 delivery-api가 session token `aud`로 검증해야 한다. `x-clever-app-id`는 로깅/명시성/전환 보조용으로만 쓰고, 보안 기준은 검증된 `aud -> appId` mapping이어야 한다.
 
+
+## 구현 전에 반드시 확인할 추가 결합 지점
+
+### 1. `shopifyShopGid` unique도 app scope를 고려해야 함
+
+`Shop` 모델은 현재 `@@unique([shopDomain])`뿐 아니라 `@@unique([shopifyShopGid])`도 가진다. 같은 Shopify store를 main/dev 두 앱에서 각각 설치하면 `shopifyShopGid`도 같을 가능성이 높다.
+
+따라서 `shopDomain`만 `appId + shopDomain`으로 바꾸면 충분하지 않을 수 있다. 구현 시 아래 중 하나를 결정해야 한다.
+
+- `shopifyShopGid`도 `@@unique([appId, shopifyShopGid])`로 변경
+- 또는 앱별 Shop row를 만들지 않고 별도 AppInstallation 모델로 token/scope를 분리
+
+현재 요구사항의 기본 방향은 가장 단순한 `Shop.appId + shopDomain` 분리이지만, `shopifyShopGid` unique도 함께 해소해야 실제로 두 앱 row가 공존할 수 있다.
+
+### 2. 토큰/secret 선택도 app scope를 가져야 함
+
+현재 Shopify verifier/auth/token 경로는 단일 `SHOPIFY_API_KEY` / `SHOPIFY_API_SECRET` 전제를 가진다. main/dev 앱을 동시에 받으려면 서버가 다음을 명시적으로 처리해야 한다.
+
+- session token `aud`에 맞는 appId 산출
+- appId에 맞는 client secret 선택
+- token 저장/조회 시 `appId + shopDomain` 기준 적용
+- webhook 검증도 topic/shopDomain만이 아니라 어떤 앱 secret으로 검증할지 결정
+
+즉 데이터 row 분리만으로는 부족하고, auth artifact도 앱별로 분리되어야 한다.
+
 ## 수용 기준
 
 - 같은 shopDomain에 `CLEVER`와 `CleverRoute Dev`를 둘 다 설치해도 DB row가 분리된다.
