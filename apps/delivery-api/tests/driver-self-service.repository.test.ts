@@ -23,7 +23,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
 
     expect(prisma.shop.findUnique).toHaveBeenCalledWith({
       select: { id: true, shopDomain: true },
-      where: { shopDomain: 'example.myshopify.com' }
+      where: { appId_shopDomain: { appId: 'clever', shopDomain: 'example.myshopify.com' } }
     });
     expect(prisma.driver.findFirst).toHaveBeenCalledWith({
       select: { displayName: true, id: true, phone: true, status: true },
@@ -71,7 +71,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
     });
     expect(prisma.shop.findUnique).toHaveBeenCalledWith({
       select: { id: true, shopDomain: true },
-      where: { shopDomain: 'dev1.tomatonofood.com' }
+      where: { appId_shopDomain: { appId: 'clever', shopDomain: 'dev1.tomatonofood.com' } }
     });
   });
 

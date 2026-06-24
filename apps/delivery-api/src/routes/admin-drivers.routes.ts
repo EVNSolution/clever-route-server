@@ -6,6 +6,7 @@ import {
   type AdminSessionTokenVerifier
 } from './admin-session-auth.js';
 
+import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js';
 import type { AdminDriverServiceContract, CreatePendingDriverInput } from '../modules/driver/admin-driver.types.js';
 
 export type AdminDriversDependencies = {
@@ -20,7 +21,7 @@ type ErrorResponse = {
 
 export function registerAdminDriversRoutes(app: FastifyInstance, dependencies: AdminDriversDependencies): void {
   app.post<{ Body: unknown }>('/admin/drivers', async (request, reply) => {
-    const authenticated = authenticate(request.headers.authorization, dependencies, {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
       surface: 'admin_drivers'
     });
@@ -37,6 +38,7 @@ export function registerAdminDriversRoutes(app: FastifyInstance, dependencies: A
 
     try {
       const driver = await dependencies.adminDriverService.createPendingDriver({
+        appId: authenticated.appId,
         createdBy: authenticated.subject,
         displayName: payload.displayName,
         inviteLink: payload.inviteLink,
@@ -53,7 +55,7 @@ export function registerAdminDriversRoutes(app: FastifyInstance, dependencies: A
   });
 
   app.get('/admin/drivers', async (request, reply) => {
-    const authenticated = authenticate(request.headers.authorization, dependencies, {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
       surface: 'admin_drivers'
     });
@@ -63,6 +65,7 @@ export function registerAdminDriversRoutes(app: FastifyInstance, dependencies: A
 
     try {
       const drivers = await dependencies.adminDriverService.listDrivers({
+        appId: authenticated.appId,
         shopDomain: authenticated.shopDomain
       });
 
@@ -74,7 +77,7 @@ export function registerAdminDriversRoutes(app: FastifyInstance, dependencies: A
   });
 
   app.delete<{ Params: { id: string } }>('/admin/drivers/:id', async (request, reply) => {
-    const authenticated = authenticate(request.headers.authorization, dependencies, {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
       surface: 'admin_drivers'
     });
@@ -84,6 +87,7 @@ export function registerAdminDriversRoutes(app: FastifyInstance, dependencies: A
 
     try {
       const driverId = await dependencies.adminDriverService.deleteDriver({
+        appId: authenticated.appId,
         driverId: request.params.id,
         shopDomain: authenticated.shopDomain
       });
@@ -103,7 +107,7 @@ export function registerAdminDriversRoutes(app: FastifyInstance, dependencies: A
   });
 
   app.post<{ Params: { id: string } }>('/admin/drivers/:id/regenerate-invite-code', async (request, reply) => {
-    const authenticated = authenticate(request.headers.authorization, dependencies, {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
       surface: 'admin_drivers'
     });
@@ -113,6 +117,7 @@ export function registerAdminDriversRoutes(app: FastifyInstance, dependencies: A
 
     try {
       const driver = await dependencies.adminDriverService.regenerateInviteCode({
+        appId: authenticated.appId,
         driverId: request.params.id,
         shopDomain: authenticated.shopDomain
       });
@@ -143,10 +148,11 @@ function readDriverInvitePayload(value: unknown): DriverInvitePayload {
 
 function authenticate(
   authorization: string | undefined,
+  appIdHeader: string | string[] | undefined,
   dependencies: AdminDriversDependencies,
   options: AdminSessionAuthLogContext
 ):
-  | { shopDomain: string; status: 'authenticated'; subject: string }
+  | { appId: string; shopDomain: string; status: 'authenticated'; subject: string }
   | { message: string; status: 'unauthorized' } {
   const sessionToken = extractBearerToken(authorization);
   if (sessionToken === null) {
@@ -154,8 +160,13 @@ function authenticate(
   }
 
   try {
-    const verified = dependencies.sessionTokenVerifier.verify(sessionToken);
+    const expectedAppId = readHeaderValue(appIdHeader);
+    const verified = dependencies.sessionTokenVerifier.verify(
+      sessionToken,
+      expectedAppId === null ? {} : { expectedAppId }
+    );
     return {
+      appId: verified.appId ?? DEFAULT_SHOPIFY_APP_ID,
       shopDomain: verified.shopDomain,
       status: 'authenticated',
       subject: verified.subject
@@ -164,6 +175,13 @@ function authenticate(
     logRejectedAdminSessionToken({ ...options, error });
     return { message: 'Invalid Shopify session token', status: 'unauthorized' };
   }
+}
+
+
+function readHeaderValue(value: string | string[] | undefined): string | null {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (raw === undefined || raw.trim() === '') return null;
+  return raw.trim();
 }
 
 function extractBearerToken(authorization: string | undefined): string | null {

@@ -518,6 +518,7 @@ describe('Admin orders routes', () => {
       expect(response.body).not.toContain('rawWooGeocodeAddress');
       expect(response.json()).toEqual({ data: { orders: [canonicalOrder] }, error: null });
       expect(listCanonicalOrders).toHaveBeenCalledWith({
+        appId: 'clever',
         filters: {
           deliveryBatchEndDate: '2026-05-09',
           deliveryBatchStartDate: '2026-05-07',
@@ -552,6 +553,7 @@ describe('Admin orders routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(listCanonicalOrders).toHaveBeenCalledWith({
+        appId: 'clever',
         filters: { deliveryWeekday: 'MONDAY' },
         shopDomain: 'example.myshopify.com'
       });

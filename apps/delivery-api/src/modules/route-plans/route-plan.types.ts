@@ -71,6 +71,7 @@ export type CreateRoutePlanPayload = {
 export type CreateRoutePlanInput = {
   createdBy: string;
   payload: CreateRoutePlanPayload;
+  appId?: string | undefined;
   shopDomain: string;
 };
 
@@ -84,6 +85,7 @@ export type CreateRoutePlanFromOrderIdsPayload = {
 export type CreateRoutePlanFromOrderIdsInput = {
   createdBy: string;
   payload: CreateRoutePlanFromOrderIdsPayload;
+  appId?: string | undefined;
   shopDomain: string;
 };
 
@@ -117,6 +119,7 @@ export type RoutePlanSummary = {
 
 export type ListRoutePlansInput = {
   deliveryDate?: string;
+  appId?: string | undefined;
   shopDomain: string;
 };
 
@@ -215,6 +218,7 @@ export type RoutePlanMutationContext =
 
 export type UpdateRoutePlanStopsInput = {
   routePlanId: string;
+  appId?: string | undefined;
   shopDomain: string;
   payload: UpdateRoutePlanStopsPayload;
   mutationContext?: RoutePlanMutationContext | undefined;
@@ -226,6 +230,7 @@ export type UpdateRoutePlanDriverPayload = {
 
 export type UpdateRoutePlanDriverInput = {
   routePlanId: string;
+  appId?: string | undefined;
   shopDomain: string;
   payload: UpdateRoutePlanDriverPayload;
 };
@@ -236,6 +241,7 @@ export type UpdateRoutePlanOptionsPayload = {
 
 export type UpdateRoutePlanOptionsInput = {
   routePlanId: string;
+  appId?: string | undefined;
   shopDomain: string;
   payload: UpdateRoutePlanOptionsPayload;
 };
@@ -257,6 +263,7 @@ export type SaveRoutePlanPayload = {
 
 export type SaveRoutePlanInput = {
   routePlanId: string;
+  appId?: string | undefined;
   shopDomain: string;
   payload: SaveRoutePlanPayload;
   mutationContext?: RoutePlanMutationContext | undefined;
@@ -275,6 +282,7 @@ export type SaveRoutePlanResult = {
 
 export type PublishRoutePlanInput = {
   routePlanId: string;
+  appId?: string | undefined;
   shopDomain: string;
 };
 
@@ -294,21 +302,24 @@ export type RoutePlanService = {
   assignRoutePlanDriver(input: UpdateRoutePlanDriverInput): Promise<RoutePlanDetail | null>;
   createRoutePlan(input: CreateRoutePlanInput): Promise<RoutePlanSummary>;
   createRoutePlanFromOrderIds?(input: CreateRoutePlanFromOrderIdsInput): Promise<RoutePlanSummary>;
-  deleteRoutePlan(input: { routePlanId: string; shopDomain: string }): Promise<{
+  deleteRoutePlan(input: { appId?: string | undefined; routePlanId: string; shopDomain: string }): Promise<{
     routePlanId: string;
     deleted: boolean;
   }>;
   getRoutePlanDetail(input: {
     routePlanId: string;
+    appId?: string | undefined;
     shopDomain: string;
   }): Promise<RoutePlanDetail | null>;
   refreshRouteGeometryForRoutePlan?(input: {
     routePlanId: string;
+    appId?: string | undefined;
     shopDomain: string;
     source?: 'CREATE_ROUTE' | 'SHAPE_MUTATION' | 'SNAPSHOT' | 'OPTIMIZATION_APPLY' | 'EXPLICIT_REFRESH' | 'PERIODIC_SYNC';
   }): Promise<RoutePlanDetail | null>;
   routePlanExists?(input: {
     routePlanId: string;
+    appId?: string | undefined;
     shopDomain: string;
   }): Promise<boolean>;
   listRoutePlans(input: ListRoutePlansInput): Promise<RoutePlanSummary[]>;

@@ -6,6 +6,7 @@ import type {
   RecordDriverConsentsInput,
   RecordDriverConsentsResult
 } from './driver-consent.types.js';
+import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 
 type DriverConsentPrismaClient = Pick<PrismaClient, 'driver' | 'driverConsentRecord' | 'shop'>;
 
@@ -14,7 +15,7 @@ export class PrismaDriverConsentRepository {
 
   async recordDriverConsents(input: RecordDriverConsentsInput): Promise<RecordDriverConsentsResult> {
     const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
-    const shop = await this.prisma.shop.findUnique({ where: { shopDomain } });
+    const shop = await this.prisma.shop.findUnique({ where: appScopedShopWhere({ shopDomain }) });
     if (shop === null) {
       throw new Error(`Shop not installed: ${shopDomain}`);
     }

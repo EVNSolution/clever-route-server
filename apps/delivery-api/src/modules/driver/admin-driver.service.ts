@@ -22,6 +22,7 @@ export class AdminDriverService {
     void input.inviteLink;
     void input.source;
     return this.repository.createPendingDriver({
+      appId: input.appId,
       displayName: input.displayName,
       phone: input.phone,
       shopDomain: input.shopDomain

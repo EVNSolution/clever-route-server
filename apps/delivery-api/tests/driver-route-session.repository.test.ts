@@ -67,7 +67,7 @@ describe('PrismaDriverRouteSessionRepository', () => {
 
     expect(prisma.shop.findUnique).toHaveBeenCalledWith({
       select: { id: true },
-      where: { shopDomain: 'dev1.tomatonofood.com' }
+      where: { appId_shopDomain: { appId: 'clever', shopDomain: 'dev1.tomatonofood.com' } }
     });
     expect(prisma.routePlan.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: {

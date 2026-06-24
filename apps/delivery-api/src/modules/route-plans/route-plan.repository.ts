@@ -42,6 +42,7 @@ import { applyCachedRouteGeometry, computeRouteShapeSignature, routeGeometryCach
 import type { RouteGeometryCacheRead, RouteGeometryCacheWrite } from './route-plan-geometry-cache.js';
 import type { RoutePlanRepository } from './route-plan.service.js';
 import { readNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
+import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
 
 const DEFAULT_API_VERSION = '2026-04';
 const OPTIMIZER_VERSION = 'manual-sequence-mvp';
@@ -204,7 +205,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     const assigned = await this.prisma.$transaction(async (tx) => {
       const shop = await tx.shop.findUnique({
         select: { id: true },
-        where: { shopDomain }
+        where: this.shopWhere({ appId: input.appId, shopDomain })
       });
       if (shop === null) {
         return false;
@@ -247,6 +248,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     }
 
     return this.findRoutePlanDetail({
+      appId: input.appId,
       routePlanId: input.routePlanId,
       shopDomain: input.shopDomain
     });
@@ -258,7 +260,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     const published = await this.prisma.$transaction(async (tx) => {
       const shop = await tx.shop.findUnique({
         select: { id: true },
-        where: { shopDomain }
+        where: this.shopWhere({ appId: input.appId, shopDomain })
       });
       if (shop === null) {
         return false;
@@ -316,6 +318,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     }
 
     return this.findRoutePlanDetail({
+      appId: input.appId,
       routePlanId: input.routePlanId,
       shopDomain: input.shopDomain
     });
@@ -332,7 +335,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     return this.prisma.$transaction(async (tx) => {
       const shop = await tx.shop.findUnique({
         select: shopDepotSelect(),
-        where: { shopDomain }
+        where: this.shopWhere({ appId: input.appId, shopDomain })
       });
       if (shop === null) {
         return null;
@@ -630,6 +633,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     orders: RoutePlanOrderInput[];
     planDate: string;
     routeScope?: RoutePlanRouteScopeInput;
+    appId?: string | undefined;
     shopDomain: string;
   }): Promise<RoutePlanSummary> {
     const shopDomain = this.normalizeShopDomain(input.shopDomain);
@@ -641,11 +645,12 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       const shop = await tx.shop.upsert({
         create: {
           apiVersion: DEFAULT_API_VERSION,
+          appId: normalizeShopifyAppId(input.appId),
           shopDomain
         },
         select: shopDepotSelect(),
         update: {},
-        where: { shopDomain }
+        where: this.shopWhere({ appId: input.appId, shopDomain })
       });
       const effectiveDepot = resolveEffectiveDepot(input.depot, shop);
       const constraints = createConstraints(effectiveDepot, input.routeScope);
@@ -753,6 +758,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     name: string;
     orderIds: string[];
     planDate: string;
+    appId?: string | undefined;
     shopDomain: string;
   }): Promise<RoutePlanSummary> {
     const shopDomain = this.normalizeShopDomain(input.shopDomain);
@@ -762,7 +768,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     return this.prisma.$transaction(async (tx) => {
       const shop = await tx.shop.findUnique({
         select: shopDepotSelect(),
-        where: { shopDomain }
+        where: this.shopWhere({ appId: input.appId, shopDomain })
       });
       if (shop === null) {
         throw new RoutePlanBatchInvalidError(['shop not found']);
@@ -852,7 +858,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
   }
 
   async listRoutePlans(input: ListRoutePlansInput): Promise<RoutePlanSummary[]> {
-    const shop = await this.findShop(input.shopDomain);
+    const shop = await this.findShop(input);
     if (shop === null) {
       return [];
     }
@@ -872,9 +878,10 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
 
   async findRoutePlanDetail(input: {
     routePlanId: string;
+    appId?: string | undefined;
     shopDomain: string;
   }): Promise<RoutePlanDetail | null> {
-    const shop = await this.findShop(input.shopDomain);
+    const shop = await this.findShop(input);
     if (shop === null) {
       return null;
     }
@@ -896,9 +903,10 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
 
   async routePlanExists(input: {
     routePlanId: string;
+    appId?: string | undefined;
     shopDomain: string;
   }): Promise<boolean> {
-    const shop = await this.findShop(input.shopDomain);
+    const shop = await this.findShop(input);
     if (shop === null) {
       return false;
     }
@@ -922,9 +930,10 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
 
   async deleteRoutePlan(input: {
     routePlanId: string;
+    appId?: string | undefined;
     shopDomain: string;
   }): Promise<{ routePlanId: string; deleted: boolean }> {
-    const shop = await this.findShop(input.shopDomain);
+    const shop = await this.findShop(input);
     if (shop === null) {
       return { routePlanId: input.routePlanId, deleted: false };
     }
@@ -966,7 +975,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     const updated = await this.prisma.$transaction(async (tx) => {
       const shop = await tx.shop.findUnique({
         select: shopDepotSelect(),
-        where: { shopDomain }
+        where: this.shopWhere({ appId: input.appId, shopDomain })
       });
       if (shop === null) {
         return false;
@@ -1016,6 +1025,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     }
 
     return this.findRoutePlanDetail({
+      appId: input.appId,
       routePlanId: input.routePlanId,
       shopDomain: input.shopDomain
     });
@@ -1029,7 +1039,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     const updated = await this.prisma.$transaction(async (tx) => {
       const shop = await tx.shop.findUnique({
         select: { id: true },
-        where: { shopDomain }
+        where: this.shopWhere({ appId: input.appId, shopDomain })
       });
       if (shop === null) {
         return false;
@@ -1163,15 +1173,25 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     }
 
     return this.findRoutePlanDetail({
+      appId: input.appId,
       routePlanId: input.routePlanId,
       shopDomain: input.shopDomain
     });
   }
 
-  private async findShop(shopDomain: string): Promise<RoutePlanShopRecord | null> {
+  private async findShop(input: { appId?: string | undefined; shopDomain: string }): Promise<RoutePlanShopRecord | null> {
     return this.prisma.shop.findUnique({
       select: shopDepotSelect(),
-      where: { shopDomain: this.normalizeShopDomain(shopDomain) }
+      where: this.shopWhere(input)
+    });
+  }
+
+  private shopWhere(input: { appId?: string | undefined; shopDomain: string }): {
+    appId_shopDomain: { appId: string; shopDomain: string };
+  } {
+    return appScopedShopWhere({
+      appId: input.appId,
+      shopDomain: this.normalizeShopDomain(input.shopDomain)
     });
   }
 

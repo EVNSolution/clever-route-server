@@ -27,6 +27,7 @@ export type RouteOptimizationJobDto = {
 };
 
 export type CreateRouteOptimizationJobInput = {
+  appId?: string | undefined;
   createdBy?: string | null | undefined;
   queueStartBudgetMs?: number | undefined;
   routePlanId: string;
@@ -36,17 +37,20 @@ export type CreateRouteOptimizationJobInput = {
 };
 
 export type FindRouteOptimizationJobInput = {
+  appId?: string | undefined;
   jobId: string;
   routePlanId: string;
   shopDomain: string;
 };
 
 export type FindLatestRouteOptimizationJobInput = {
+  appId?: string | undefined;
   routePlanId: string;
   shopDomain: string;
 };
 
 export type ReconcileRouteOptimizationJobsInput = {
+  appId?: string | undefined;
   queueStartBudgetMs?: number | undefined;
   routePlanId?: string | undefined;
   shopDomain: string;

@@ -96,6 +96,7 @@ describe('Admin route plan routes', () => {
         error: null
       });
       expect(createRoutePlan).toHaveBeenCalledWith({
+        appId: 'clever',
         createdBy: 'shopify-user-id',
         payload: {
           ...routePlanPayload(),
@@ -293,7 +294,7 @@ describe('Admin route plan routes', () => {
         },
         error: null
       });
-      expect(listRoutePlans).toHaveBeenCalledWith({ shopDomain: 'example.myshopify.com' });
+      expect(listRoutePlans).toHaveBeenCalledWith({ appId: 'clever', shopDomain: 'example.myshopify.com' });
     } finally {
       await app.close();
     }
@@ -325,6 +326,7 @@ describe('Admin route plan routes', () => {
         error: null
       });
       expect(getRoutePlanDetail).toHaveBeenCalledWith({
+        appId: 'clever',
         routePlanId: 'route-plan-id',
         shopDomain: 'example.myshopify.com'
       });
@@ -454,6 +456,7 @@ describe('Admin route plan routes', () => {
         error: null
       });
       expect(updateRoutePlanStops).toHaveBeenCalledWith({
+        appId: 'clever',
         payload: {
           stops: [
             { deliveryStopId: 'stop-2', shopifyOrderGid: 'gid://shopify/Order/2', sequence: 10 },
@@ -487,6 +490,7 @@ describe('Admin route plan routes', () => {
         error: { code: 'NOT_FOUND', message: 'Route plan not found' }
       });
       expect(updateRoutePlanStops).toHaveBeenCalledWith({
+        appId: 'clever',
         payload: { stops: [] },
         routePlanId: 'other-shop-route-plan-id',
         shopDomain: 'example.myshopify.com'
@@ -608,6 +612,7 @@ describe('Admin route plan routes', () => {
         error: null
       });
       expect(updateRoutePlanOptions).toHaveBeenCalledWith({
+        appId: 'clever',
         payload: { routeEndMode: 'RETURN_TO_DEPOT' },
         routePlanId: 'route-plan-id',
         shopDomain: 'example.myshopify.com'
@@ -703,6 +708,7 @@ describe('Admin route plan routes', () => {
         error: null
       });
       expect(assignRoutePlanDriver).toHaveBeenCalledWith({
+        appId: 'clever',
         payload: { driverId: 'driver-id' },
         routePlanId: 'route-plan-id',
         shopDomain: 'example.myshopify.com'
@@ -787,6 +793,7 @@ describe('Admin route plan routes', () => {
         error: null
       });
       expect(deleteRoutePlan).toHaveBeenCalledWith({
+        appId: 'clever',
         routePlanId: 'route-plan-id',
         shopDomain: 'example.myshopify.com'
       });

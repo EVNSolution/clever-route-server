@@ -22,8 +22,10 @@ import { readNormalizedPaymentStatus } from "../payments/normalized-payment-stat
 import type { AdminNotificationServiceApi } from "../notifications/admin-notification.service.js";
 import type { AdminWebNotificationEvent } from "../notifications/admin-web-notification-events.js";
 import { readWooCommerceRawGeocodingAddress } from "../woocommerce/woocommerce-order.mapper.js";
+import { appScopedShopWhere, normalizeShopifyAppId } from "./shopify-app-scope.js";
 
 export type UpsertOrderWithDeliveryStopInput = {
+  appId?: string | undefined;
   shopDomain: string;
   synced: SyncedOrderWithDeliveryStopInput;
 };
@@ -58,6 +60,7 @@ export type ListCanonicalOrdersFilters = {
 
 export type ListCanonicalOrdersInput = {
   filters?: ListCanonicalOrdersFilters;
+  appId?: string | undefined;
   shopDomain: string;
 };
 
@@ -68,6 +71,7 @@ export type ListCanonicalOrdersBySourceIdentityInput = {
     sourcePlatform: CommerceSourcePlatform;
     sourceSiteUrl: string | null;
   }>;
+  appId?: string | undefined;
   shopDomain: string;
 };
 
@@ -88,6 +92,7 @@ export type DeliveryBatchCandidate = {
 
 export type ListDeliveryBatchCandidatesInput = {
   deliveryDate?: string;
+  appId?: string | undefined;
   shopDomain: string;
 };
 
@@ -110,6 +115,7 @@ export type PatchCanonicalOrderInput = {
   actor: string;
   orderId: string;
   patch: RouteOpsCanonicalMetadataPatch;
+  appId?: string | undefined;
   shopDomain: string;
 };
 
@@ -124,6 +130,7 @@ export type PatchCanonicalOrderCoordinatesInput = {
   orderId: string;
   provider?: string | null;
   providerPlaceId?: string | null;
+  appId?: string | undefined;
   shopDomain: string;
   source: "geocoder" | "manual" | "map_click";
 };
@@ -133,6 +140,7 @@ export type PatchCanonicalOrderGeocodeDiagnosticsInput = {
   diagnostic: Record<string, unknown>;
   geocodeStatus: "FAILED" | "PENDING" | "RESOLVED";
   orderId: string;
+  appId?: string | undefined;
   shopDomain: string;
   source: "bulk_geocode" | "server_pre_persist" | "single_order_geocode";
 };
@@ -330,7 +338,7 @@ export class PrismaOrderSyncRepository {
   async upsertOrderWithDeliveryStop(
     input: UpsertOrderWithDeliveryStopInput,
   ): Promise<UpsertOrderWithDeliveryStopResult> {
-    const shop = await this.findShop(input.shopDomain);
+    const shop = await this.findShop(input);
     if (shop === null) {
       throw new Error(`Shop not installed: ${input.shopDomain}`);
     }
@@ -406,9 +414,10 @@ export class PrismaOrderSyncRepository {
 
   async findCanonicalOrderById(input: {
     orderId: string;
+    appId?: string | undefined;
     shopDomain: string;
   }): Promise<CanonicalOrderRow | null> {
-    const shop = await this.findShop(input.shopDomain);
+    const shop = await this.findShop(input);
     if (shop === null) {
       return null;
     }
@@ -424,7 +433,7 @@ export class PrismaOrderSyncRepository {
   async listCanonicalOrders(
     input: ListCanonicalOrdersInput,
   ): Promise<CanonicalOrderRow[]> {
-    const shop = await this.findShop(input.shopDomain);
+    const shop = await this.findShop(input);
     if (shop === null) {
       return [];
     }
@@ -443,7 +452,7 @@ export class PrismaOrderSyncRepository {
   async listCanonicalOrdersBySourceIdentity(
     input: ListCanonicalOrdersBySourceIdentityInput,
   ): Promise<CanonicalOrderRow[]> {
-    const shop = await this.findShop(input.shopDomain);
+    const shop = await this.findShop(input);
     if (shop === null || input.identities.length === 0) {
       return [];
     }
@@ -475,7 +484,7 @@ export class PrismaOrderSyncRepository {
   async listDeliveryBatchCandidates(
     input: ListDeliveryBatchCandidatesInput,
   ): Promise<DeliveryBatchCandidate[]> {
-    const shop = await this.findShop(input.shopDomain);
+    const shop = await this.findShop(input);
     if (shop === null) {
       return [];
     }
@@ -507,7 +516,7 @@ export class PrismaOrderSyncRepository {
   async patchCanonicalOrder(
     input: PatchCanonicalOrderInput,
   ): Promise<CanonicalOrderRow | null> {
-    const shop = await this.findShop(input.shopDomain);
+    const shop = await this.findShop(input);
     if (shop === null) return null;
     const order = await this.findOrderForPatch({
       orderId: input.orderId,
@@ -720,7 +729,7 @@ export class PrismaOrderSyncRepository {
   async patchCanonicalOrderCoordinates(
     input: PatchCanonicalOrderCoordinatesInput,
   ): Promise<CanonicalOrderRow | null> {
-    const shop = await this.findShop(input.shopDomain);
+    const shop = await this.findShop(input);
     if (shop === null) return null;
     const order = await this.findOrderForPatch({
       orderId: input.orderId,
@@ -854,7 +863,7 @@ export class PrismaOrderSyncRepository {
   async patchCanonicalOrderGeocodeDiagnostics(
     input: PatchCanonicalOrderGeocodeDiagnosticsInput,
   ): Promise<CanonicalOrderRow | null> {
-    const shop = await this.findShop(input.shopDomain);
+    const shop = await this.findShop(input);
     if (shop === null) return null;
     const order = await this.findOrderForPatch({
       orderId: input.orderId,
@@ -1003,20 +1012,21 @@ export class PrismaOrderSyncRepository {
     });
   }
 
-  private async findShop(shopDomain: string): Promise<{ id: string } | null> {
-    const normalized = normalizeShopDomain(shopDomain, {
+  private async findShop(input: { appId?: string | undefined; shopDomain: string }): Promise<{ id: string } | null> {
+    const normalized = normalizeShopDomain(input.shopDomain, {
       allowAnyDomain: this.options.allowAnyShopDomain === true,
     });
+    const appId = normalizeShopifyAppId(input.appId);
     const shop = await this.prisma.shop.findUnique({
       select: { id: true },
-      where: { shopDomain: normalized },
+      where: appScopedShopWhere({ appId, shopDomain: normalized }),
     });
     if (shop !== null || this.options.createMissingShop !== true) {
       return shop;
     }
 
     return this.prisma.shop.create({
-      data: { shopDomain: normalized },
+      data: { appId, shopDomain: normalized },
       select: { id: true },
     });
   }

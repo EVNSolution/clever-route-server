@@ -10,6 +10,7 @@ import {
   validateRouteOpsUiSettingsPayload,
   type RouteOpsUiSettingsDto,
 } from "../route-ops/route-ops-ui-settings.js";
+import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 
 export type AdminStoreSettings = {
   defaultDepotAddress: string | null;
@@ -49,7 +50,7 @@ export class PrismaAdminStoreSettingsService {
         routeScopeConfig: true,
         shopDomain: true,
       },
-      where: { shopDomain: input.shopDomain },
+      where: appScopedShopWhere({ shopDomain: input.shopDomain }),
     });
     return shop === null ? null : toAdminStoreSettings(shop);
   }
@@ -92,7 +93,7 @@ export class PrismaAdminStoreSettingsService {
         ...(routeOpsUiSettings === undefined ? {} : { routeOpsUiSettings }),
         ...(routeScopeConfig === undefined ? {} : { routeScopeConfig }),
       },
-      where: { shopDomain: input.shopDomain },
+      where: appScopedShopWhere({ shopDomain: input.shopDomain }),
     });
     return toAdminStoreSettings(shop);
   }

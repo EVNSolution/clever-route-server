@@ -23,6 +23,7 @@ import {
   toOrderItemDto,
   type OrderItemRecordLike
 } from '../order-items/order-items.js';
+import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 
 type DriverAssignedRoutePrismaClient = Pick<PrismaClient, 'driver' | 'routePlan' | 'routePlanGeometryCache' | 'shop'>;
 
@@ -115,7 +116,7 @@ export class PrismaDriverAssignedRouteRepository {
 
   async getAssignedRoute(input: DriverAssignedRouteInput): Promise<DriverAssignedRouteResult> {
     const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
-    const shop = await this.prisma.shop.findUnique({ where: { shopDomain } });
+    const shop = await this.prisma.shop.findUnique({ where: appScopedShopWhere({ shopDomain }) });
     if (shop === null) {
       throw new Error(`Shop not installed: ${shopDomain}`);
     }

@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 
+import { loadShopifyAppCredentials, type ShopifyAppCredentialsEnv } from '../shopify/shopify-app-credentials.js';
 import { ShopifySessionTokenVerifier } from '../shopify/session-token-verifier.js';
 import { OsrmRouteGeometryProvider } from './osrm-route-geometry.client.js';
 import { PrismaRouteOptimizationJobRepository } from './route-optimization-job.repository.js';
@@ -8,18 +9,15 @@ import { PrismaRoutePlanRepository } from './route-plan.repository.js';
 import { RoutePlanAdminService } from './route-plan.service.js';
 import type { AdminRoutePlanDependencies } from '../../routes/admin-route-plans.routes.js';
 
-export type AdminRoutePlanRuntimeEnv = Partial<
-  Record<'OSRM_BASE_URL' | 'SHOPIFY_API_KEY' | 'SHOPIFY_API_SECRET', string>
->;
+export type AdminRoutePlanRuntimeEnv = ShopifyAppCredentialsEnv & Partial<Record<'OSRM_BASE_URL', string>>;
 
 export function loadAdminRoutePlanDependencies(input: {
   env: AdminRoutePlanRuntimeEnv;
   prisma: PrismaClient;
 }): AdminRoutePlanDependencies | undefined {
-  const apiKey = readOptional(input.env.SHOPIFY_API_KEY);
-  const apiSecret = readOptional(input.env.SHOPIFY_API_SECRET);
+  const appCredentials = loadShopifyAppCredentials(input.env);
 
-  if (apiKey === undefined || apiSecret === undefined) {
+  if (appCredentials.length === 0) {
     return undefined;
   }
 
@@ -32,10 +30,7 @@ export function loadAdminRoutePlanDependencies(input: {
   );
   return {
     routePlanService: new RoutePlanAdminService(repository, routeGeometryProvider, routeOptimizationJobService),
-    sessionTokenVerifier: new ShopifySessionTokenVerifier({
-      clientId: apiKey,
-      clientSecret: apiSecret
-    })
+    sessionTokenVerifier: new ShopifySessionTokenVerifier({ appCredentials })
   };
 }
 

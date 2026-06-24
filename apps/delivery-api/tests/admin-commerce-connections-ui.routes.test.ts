@@ -319,7 +319,7 @@ describe("Admin WooCommerce connection UI routes", () => {
     expect(legacyAdminRoutePlanList).not.toHaveBeenCalled();
     expect(shopFindUnique).toHaveBeenCalledWith({
       select: { id: true },
-      where: { shopDomain: "dev1.tomatonofood.com" },
+      where: { appId_shopDomain: { appId: "clever", shopDomain: "dev1.tomatonofood.com" } },
     });
   });
 

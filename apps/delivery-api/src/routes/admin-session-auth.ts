@@ -1,7 +1,7 @@
 import type { FastifyBaseLogger } from 'fastify';
 
 export type AdminSessionTokenVerifier = {
-  verify(sessionToken: string, options?: object): { shopDomain: string; subject: string };
+  verify(sessionToken: string, options?: object): { appId?: string | undefined; shopDomain: string; subject: string };
 };
 
 type AdminSessionAuthSurface =
@@ -44,6 +44,7 @@ export function classifyShopifySessionTokenFailure(error: unknown): string {
   if (message.includes('audience mismatch')) return 'audience_mismatch';
   if (message.includes('issuer mismatch')) return 'issuer_mismatch';
   if (message.includes('shop mismatch')) return 'shop_mismatch';
+  if (message.includes('app mismatch')) return 'app_mismatch';
   if (message.includes('Shop domain must end with .myshopify.com')) return 'invalid_shop_domain';
   if (message.includes('Shop domain is not a valid myshopify.com domain')) return 'invalid_shop_domain';
 

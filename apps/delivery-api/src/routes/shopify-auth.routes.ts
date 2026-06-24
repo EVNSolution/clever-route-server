@@ -10,6 +10,7 @@ export type ShopifyAuthDependencies = {
   sessionTokenVerifier: AdminSessionTokenVerifier;
   shopTokenService: {
     storeAdminApiToken(input: {
+      appId?: string | undefined;
       accessToken: string;
       accessTokenExpiresAt?: Date | null;
       apiVersion: string;
@@ -18,10 +19,11 @@ export type ShopifyAuthDependencies = {
       shopDomain: string;
       tokenIssuedAt?: Date | null;
       tokenScopes: string[];
-    }): Promise<{ shopDomain: string; tokenScopes: string[] }>;
+    }): Promise<{ appId: string; shopDomain: string; tokenScopes: string[] }>;
   };
   tokenExchangeClient: {
     exchangeSessionTokenForOfflineToken(input: {
+      appId?: string | undefined;
       sessionToken: string;
       shopDomain: string;
     }): Promise<{
@@ -58,7 +60,7 @@ export function registerShopifyAuthRoutes(
         .send(errorResponse('BAD_REQUEST', 'shopDomain must be a non-empty string'));
     }
 
-    let verified: { shopDomain: string; subject: string };
+    let verified: { appId?: string | undefined; shopDomain: string; subject: string };
     try {
       const verifyOptions =
         expectedShopDomain === undefined ? {} : { expectedShopDomain };
@@ -74,11 +76,13 @@ export function registerShopifyAuthRoutes(
 
     try {
       const exchanged = await dependencies.tokenExchangeClient.exchangeSessionTokenForOfflineToken({
+        appId: verified.appId,
         sessionToken,
         shopDomain: verified.shopDomain
       });
       const now = dependencies.now?.() ?? new Date();
       const stored = await dependencies.shopTokenService.storeAdminApiToken({
+        appId: verified.appId,
         accessToken: exchanged.accessToken,
         accessTokenExpiresAt: secondsFromNow(now, exchanged.expiresIn),
         apiVersion: dependencies.apiVersion,
@@ -91,6 +95,7 @@ export function registerShopifyAuthRoutes(
 
       return reply.code(200).send({
         data: {
+          appId: stored.appId,
           shopDomain: stored.shopDomain,
           tokenScopes: stored.tokenScopes,
           tokenStored: true

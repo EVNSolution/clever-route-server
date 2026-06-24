@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
+import { appScopedShopWhere, normalizeShopifyAppId } from './shopify-app-scope.js';
 
 export type RecordShopifyWebhookEventInput = {
+  appId?: string | undefined;
   apiVersion: string | null;
   eventId: string | null;
   payload: unknown;
@@ -32,18 +34,20 @@ export class PrismaShopifyWebhookEventRepository {
   async recordWebhookEvent(
     input: RecordShopifyWebhookEventInput
   ): Promise<RecordShopifyWebhookEventResult> {
+    const appId = normalizeShopifyAppId(input.appId);
     const shopDomain = normalizeShopDomain(input.shopDomain);
     const createShop =
       input.apiVersion === null
-        ? { shopDomain }
+        ? { appId, shopDomain }
         : {
             apiVersion: input.apiVersion,
+            appId,
             shopDomain
           };
     const shop = await this.prisma.shop.upsert({
       create: createShop,
       update: input.apiVersion === null ? {} : { apiVersion: input.apiVersion },
-      where: { shopDomain }
+      where: appScopedShopWhere({ appId, shopDomain })
     });
     const complianceAction = getComplianceAction(input.payload, input.topic);
 

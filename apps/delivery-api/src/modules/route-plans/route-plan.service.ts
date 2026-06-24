@@ -26,8 +26,8 @@ export type RouteGeometryProvider = {
 };
 
 export type RouteOptimizationJobGuard = {
-  findLatestJob(input: { routePlanId: string; shopDomain: string }): Promise<RouteOptimizationJobDto | null>;
-  reconcileStaleActiveJobs?(input: { routePlanId: string; shopDomain: string }): Promise<RouteOptimizationJobDto[]>;
+  findLatestJob(input: { appId?: string | undefined; routePlanId: string; shopDomain: string }): Promise<RouteOptimizationJobDto | null>;
+  reconcileStaleActiveJobs?(input: { appId?: string | undefined; routePlanId: string; shopDomain: string }): Promise<RouteOptimizationJobDto[]>;
 };
 
 export type RoutePlanRepository = {
@@ -39,6 +39,7 @@ export type RoutePlanRepository = {
     orders: CreateRoutePlanInput['payload']['orders'];
     planDate: string;
     routeScope?: CreateRoutePlanInput['payload']['routeScope'];
+    appId?: string | undefined;
     shopDomain: string;
   }): Promise<RoutePlanSummary>;
   createRoutePlanDraftFromOrderIds?(input: {
@@ -47,19 +48,23 @@ export type RoutePlanRepository = {
     name: string;
     orderIds: string[];
     planDate: string;
+    appId?: string | undefined;
     shopDomain: string;
   }): Promise<RoutePlanSummary>;
   findRoutePlanDetail(input: {
     routePlanId: string;
+    appId?: string | undefined;
     shopDomain: string;
   }): Promise<RoutePlanDetail | null>;
   routePlanExists?(input: {
     routePlanId: string;
+    appId?: string | undefined;
     shopDomain: string;
   }): Promise<boolean>;
   upsertRouteGeometryCache?(input: RouteGeometryCacheWrite): Promise<void>;
   deleteRoutePlan(input: {
     routePlanId: string;
+    appId?: string | undefined;
     shopDomain: string;
   }): Promise<{ routePlanId: string; deleted: boolean }>;
   listRoutePlans(input: ListRoutePlansInput): Promise<RoutePlanSummary[]>;
@@ -78,6 +83,7 @@ export class RoutePlanAdminService implements RoutePlanService {
 
   async createRoutePlan(input: CreateRoutePlanInput): Promise<RoutePlanSummary> {
     const summary = await this.repository.createRoutePlanDraft({
+      appId: input.appId,
       createdBy: input.createdBy,
       depot: input.payload.depot,
       name: input.payload.name,
@@ -87,6 +93,7 @@ export class RoutePlanAdminService implements RoutePlanService {
       shopDomain: input.shopDomain
     });
     await this.refreshRouteGeometryById({
+      appId: input.appId,
       routePlanId: summary.id,
       shopDomain: input.shopDomain,
       source: 'CREATE_ROUTE'
@@ -99,6 +106,7 @@ export class RoutePlanAdminService implements RoutePlanService {
       throw new Error('Route creation from selected order ids is not supported by this repository');
     }
     const summary = await this.repository.createRoutePlanDraftFromOrderIds({
+      appId: input.appId,
       createdBy: input.createdBy,
       depot: input.payload.depot,
       name: input.payload.name,
@@ -107,6 +115,7 @@ export class RoutePlanAdminService implements RoutePlanService {
       shopDomain: input.shopDomain
     });
     await this.refreshRouteGeometryById({
+      appId: input.appId,
       routePlanId: summary.id,
       shopDomain: input.shopDomain,
       source: 'CREATE_ROUTE'
@@ -120,6 +129,7 @@ export class RoutePlanAdminService implements RoutePlanService {
 
   getRoutePlanDetail(input: {
     routePlanId: string;
+    appId?: string | undefined;
     shopDomain: string;
   }): Promise<RoutePlanDetail | null> {
     return this.repository.findRoutePlanDetail(input);
@@ -127,24 +137,26 @@ export class RoutePlanAdminService implements RoutePlanService {
 
   async refreshRouteGeometryForRoutePlan(input: {
     routePlanId: string;
+    appId?: string | undefined;
     shopDomain: string;
     source?: RouteGeometryCacheSource;
   }): Promise<RoutePlanDetail | null> {
     return this.refreshRouteGeometryById({
+      appId: input.appId,
       routePlanId: input.routePlanId,
       shopDomain: input.shopDomain,
       source: input.source ?? 'EXPLICIT_REFRESH'
     });
   }
 
-  routePlanExists(input: { routePlanId: string; shopDomain: string }): Promise<boolean> {
+  routePlanExists(input: { appId?: string | undefined; routePlanId: string; shopDomain: string }): Promise<boolean> {
     if (this.repository.routePlanExists !== undefined) {
       return this.repository.routePlanExists(input);
     }
     return this.repository.findRoutePlanDetail(input).then((detail) => detail !== null);
   }
 
-  deleteRoutePlan(input: { routePlanId: string; shopDomain: string }): Promise<{
+  deleteRoutePlan(input: { appId?: string | undefined; routePlanId: string; shopDomain: string }): Promise<{
     routePlanId: string;
     deleted: boolean;
   }> {
@@ -212,10 +224,12 @@ export class RoutePlanAdminService implements RoutePlanService {
     if ('mutationContext' in input && input.mutationContext?.source === 'route_optimization_job') return;
     if (this.routeOptimizationJobGuard === undefined) return;
     await this.routeOptimizationJobGuard.reconcileStaleActiveJobs?.({
+      appId: input.appId,
       routePlanId: input.routePlanId,
       shopDomain: input.shopDomain
     });
     const latestJob = await this.routeOptimizationJobGuard.findLatestJob({
+      appId: input.appId,
       routePlanId: input.routePlanId,
       shopDomain: input.shopDomain
     });
@@ -226,10 +240,12 @@ export class RoutePlanAdminService implements RoutePlanService {
 
   private async refreshRouteGeometryById(input: {
     routePlanId: string;
+    appId?: string | undefined;
     shopDomain: string;
     source: RouteGeometryCacheSource;
   }): Promise<RoutePlanDetail | null> {
     const detail = await this.repository.findRoutePlanDetail({
+      appId: input.appId,
       routePlanId: input.routePlanId,
       shopDomain: input.shopDomain
     });

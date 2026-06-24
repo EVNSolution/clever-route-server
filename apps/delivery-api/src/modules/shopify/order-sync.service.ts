@@ -16,6 +16,7 @@ import type {
 export type SyncUpdatedOrdersPageInput = {
   after?: string | null;
   first: number;
+  appId?: string | undefined;
   shopDomain: string;
   updatedSince: Date;
 };
@@ -29,6 +30,7 @@ export type SyncUpdatedOrdersPageResult = {
 export type SyncOrdersSnapshotInput = {
   orders: ShopifyOrderNode[];
   reason: 'orders_page_open' | 'manual_refresh' | 'route_create_preflight';
+  appId?: string | undefined;
   shopDomain: string;
   source: 'clever-app-orders';
   subject: string;
@@ -60,9 +62,14 @@ type OrdersUpdatedSinceResponse = {
 };
 
 type OrderSyncRepository = {
-  findCanonicalOrderById?(input: { orderId: string; shopDomain: string }): Promise<CanonicalOrderRow | null>;
+  findCanonicalOrderById?(input: {
+    appId?: string | undefined;
+    orderId: string;
+    shopDomain: string;
+  }): Promise<CanonicalOrderRow | null>;
   listCanonicalOrders(input: {
     filters?: ListCanonicalOrdersFilters;
+    appId?: string | undefined;
     shopDomain: string;
   }): Promise<CanonicalOrderRow[]>;
   listDeliveryBatchCandidates?(input: ListDeliveryBatchCandidatesInput): Promise<DeliveryBatchCandidate[]>;
@@ -93,6 +100,7 @@ export class ShopifyOrderSyncService {
     for (const node of data.orders.nodes) {
       const synced: SyncedOrderWithDeliveryStopInput = mapShopifyOrderNodeToDeliveryInputs(node);
       await this.options.repository.upsertOrderWithDeliveryStop({
+        appId: input.appId,
         shopDomain: input.shopDomain,
         synced
       });
@@ -121,12 +129,17 @@ export class ShopifyOrderSyncService {
     for (const node of input.orders) {
       const synced = mapShopifyOrderNodeToDeliveryInputs(node);
       const result = await this.options.repository.upsertOrderWithDeliveryStop({
+        appId: input.appId,
         shopDomain: input.shopDomain,
         synced
       });
       summary[result.status] += 1;
 
-      const canonical = await this.readCanonicalOrder(input.shopDomain, result.orderId);
+      const canonical = await this.readCanonicalOrder({
+        appId: input.appId,
+        orderId: result.orderId,
+        shopDomain: input.shopDomain
+      });
       if (canonical !== null) {
         orders.push(canonical);
         if (canonical.readiness === 'READY_TO_PLAN') summary.readyToPlan += 1;
@@ -139,6 +152,7 @@ export class ShopifyOrderSyncService {
 
   listCanonicalOrders(input: {
     filters?: ListCanonicalOrdersFilters;
+    appId?: string | undefined;
     shopDomain: string;
   }): Promise<CanonicalOrderRow[]> {
     return this.options.repository.listCanonicalOrders(input);
@@ -173,12 +187,19 @@ export class ShopifyOrderSyncService {
     return this.options.repository.patchCanonicalOrderGeocodeDiagnostics(input);
   }
 
-  private async readCanonicalOrder(shopDomain: string, orderId: string): Promise<CanonicalOrderRow | null> {
+  private async readCanonicalOrder(input: {
+    appId?: string | undefined;
+    orderId: string;
+    shopDomain: string;
+  }): Promise<CanonicalOrderRow | null> {
     if (this.options.repository.findCanonicalOrderById !== undefined) {
-      return this.options.repository.findCanonicalOrderById({ orderId, shopDomain });
+      return this.options.repository.findCanonicalOrderById(input);
     }
 
-    const orders = await this.options.repository.listCanonicalOrders({ shopDomain });
-    return orders.find((order) => order.orderId === orderId) ?? null;
+    const orders = await this.options.repository.listCanonicalOrders({
+      appId: input.appId,
+      shopDomain: input.shopDomain
+    });
+    return orders.find((order) => order.orderId === input.orderId) ?? null;
   }
 }

@@ -507,7 +507,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     });
 
     expect(prisma.shop.create).toHaveBeenCalledWith({
-      data: { shopDomain: 'localhost:8088' },
+      data: { appId: 'clever', shopDomain: 'localhost:8088' },
       select: { id: true }
     });
     const findFirstInput = prisma.order.findFirst.mock.calls[0]?.[0] as

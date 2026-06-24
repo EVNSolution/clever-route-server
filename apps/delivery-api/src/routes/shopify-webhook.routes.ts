@@ -4,9 +4,10 @@ import { verifyShopifyWebhookHmac } from '../modules/shopify/webhook-hmac.js';
 import { getRawBody } from './json-body-parser.js';
 
 export type ShopifyWebhookDependencies = {
-  clientSecret: string;
+  appCredentials: Array<{ appId: string; clientSecret: string }>;
   webhookService: {
     recordWebhook(input: {
+      appId: string;
       apiVersion: string | null;
       eventId: string | null;
       payload: unknown;
@@ -50,16 +51,17 @@ export function registerShopifyWebhookRoutes(
       return reply.code(400).send(errorResponse('BAD_REQUEST', 'Missing Shopify webhook headers'));
     }
 
-    const hmacValid = verifyShopifyWebhookHmac({
-      clientSecret: dependencies.clientSecret,
+    const appId = verifyShopifyWebhookAppId({
+      appCredentials: dependencies.appCredentials,
       hmac: headers.hmac,
       rawBody
     });
-    if (!hmacValid) {
+    if (appId === null) {
       return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Invalid Shopify webhook HMAC'));
     }
 
     const result = await dependencies.webhookService.recordWebhook({
+      appId,
       apiVersion: headers.apiVersion,
       eventId: headers.eventId,
       payload: request.body,
@@ -78,6 +80,24 @@ export function registerShopifyWebhookRoutes(
       error: null
     });
   });
+}
+
+function verifyShopifyWebhookAppId(input: {
+  appCredentials: Array<{ appId: string; clientSecret: string }>;
+  hmac: string;
+  rawBody: string;
+}): string | null {
+  for (const credential of input.appCredentials) {
+    if (verifyShopifyWebhookHmac({
+      clientSecret: credential.clientSecret,
+      hmac: input.hmac,
+      rawBody: input.rawBody
+    })) {
+      return credential.appId;
+    }
+  }
+
+  return null;
 }
 
 function readShopifyWebhookHeaders(request: FastifyRequest): ShopifyWebhookHeaders | null {

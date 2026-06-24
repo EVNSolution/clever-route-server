@@ -46,6 +46,10 @@ const rawOrderIngestEventsMigrationPath = new URL(
   '../prisma/migrations/20260619030000_add_commerce_raw_order_ingest_events/migration.sql',
   import.meta.url
 );
+const shopAppScopeMigrationPath = new URL(
+  '../prisma/migrations/20260624033000_add_shop_app_scope/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
@@ -56,6 +60,7 @@ describe('Prisma schema', () => {
     const schema = await readSchema();
 
     expect(schema).toContain('model Shop');
+    expect(schema).toContain('appId');
     expect(schema).toContain('shopDomain');
     expect(schema).toContain('shopifyShopGid');
     expect(schema).toContain('adminAccessTokenCiphertext');
@@ -71,7 +76,20 @@ describe('Prisma schema', () => {
     expect(schema).toContain('locale');
     expect(schema).toContain('routeScopeConfig');
     expect(schema).toContain('routeOpsUiSettings');
-    expect(schema).toMatch(/@@unique\(\[shopDomain\]\)/);
+    expect(schema).toMatch(/@@unique\(\[appId, shopDomain\]\)/);
+    expect(schema).toMatch(/@@unique\(\[appId, shopifyShopGid\]\)/);
+    expect(schema).toMatch(/@@index\(\[shopDomain\]\)/);
+  });
+
+  test('ships a migration for Shopify app-scoped shops', async () => {
+    const migration = await readFile(shopAppScopeMigrationPath, 'utf8');
+
+    expect(migration).toContain('ADD COLUMN "appId" TEXT NOT NULL DEFAULT \'clever\'');
+    expect(migration).toContain('DROP INDEX IF EXISTS "shops_shopDomain_key"');
+    expect(migration).toContain('DROP INDEX IF EXISTS "shops_shopifyShopGid_key"');
+    expect(migration).toContain('CREATE UNIQUE INDEX "shops_appId_shopDomain_key"');
+    expect(migration).toContain('CREATE UNIQUE INDEX "shops_appId_shopifyShopGid_key"');
+    expect(migration).toContain('CREATE INDEX "shops_shopDomain_idx"');
   });
 
   test('defines core delivery operation models and idempotency constraints', async () => {

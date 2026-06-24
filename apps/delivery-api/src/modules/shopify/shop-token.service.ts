@@ -7,6 +7,7 @@ import type {
 } from './shop-token.repository.js';
 
 export type StoreAdminApiTokenInput = {
+  appId?: string | undefined;
   accessToken: string;
   accessTokenExpiresAt?: Date | null;
   apiVersion: string;
@@ -45,6 +46,7 @@ export class ShopTokenService {
       : null;
 
     const encryptedInput: EncryptedShopTokenInput = {
+      appId: input.appId,
       adminAccessTokenCiphertext,
       adminAccessTokenExpiresAt: input.accessTokenExpiresAt ?? null,
       adminRefreshTokenCiphertext,
@@ -63,9 +65,11 @@ export class ShopTokenService {
     return this.options.repository.upsertShopToken(encryptedInput);
   }
 
-  async getAdminAccessToken(shopDomainInput: string): Promise<string | null> {
-    const shopDomain = normalizeShopDomain(shopDomainInput);
-    const row = await this.options.repository.findByShopDomain(shopDomain);
+  async getAdminAccessToken(input: { appId?: string | undefined; shopDomain: string } | string): Promise<string | null> {
+    const shopDomain = normalizeShopDomain(typeof input === 'string' ? input : input.shopDomain);
+    const row = await this.options.repository.findByShopDomain(
+      typeof input === 'string' ? shopDomain : { appId: input.appId, shopDomain }
+    );
 
     if (row?.adminAccessTokenCiphertext == null) {
       return null;

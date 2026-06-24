@@ -5,6 +5,7 @@ import {
   sanitizeRawIntakeMessage,
   sanitizeRawIntakeMetadata
 } from './raw-order-intake-guard.js';
+import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 
 type OrderIngestAuditPrismaClient = Pick<
   PrismaClient,
@@ -86,7 +87,7 @@ export class PrismaOrderIngestAuditService {
     const orderNumber = normalizeOrderNumber(input.orderNumber);
     const shop = await this.prisma.shop.findUnique({
       select: { id: true, shopDomain: true },
-      where: { shopDomain }
+      where: appScopedShopWhere({ shopDomain })
     });
     if (shop === null) return emptyResult({ orderNumber, shopDomain });
 

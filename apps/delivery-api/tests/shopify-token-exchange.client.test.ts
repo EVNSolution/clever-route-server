@@ -66,6 +66,46 @@ describe('ShopifyTokenExchangeClient', () => {
     expect(body.get('expiring')).toBe('1');
   });
 
+  test('chooses the Shopify client credential for the requested app id', async () => {
+    const fetchImpl = vi.fn((input: string, init: RequestInit) => {
+      void input;
+      void init;
+
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            access_token: 'shpat_dev_access_token',
+            scope: 'read_orders'
+          }),
+          { headers: { 'content-type': 'application/json' }, status: 200 }
+        )
+      );
+    });
+    const client = new ShopifyTokenExchangeClient({
+      appCredentials: [
+        { appId: 'clever', clientId: 'main-client-id', clientSecret: 'main-secret' },
+        { appId: 'clever-route-dev', clientId: 'dev-client-id', clientSecret: 'dev-secret' }
+      ],
+      fetchImpl
+    });
+
+    await client.exchangeSessionTokenForOfflineToken({
+      appId: 'clever-route-dev',
+      sessionToken: 'dev-session-token',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    const firstCall = fetchImpl.mock.calls[0];
+    expect(firstCall).toBeDefined();
+    if (firstCall === undefined) {
+      throw new Error('Expected token exchange fetch call');
+    }
+    const body = firstCall[1].body as URLSearchParams;
+    expect(body.get('client_id')).toBe('dev-client-id');
+    expect(body.get('client_secret')).toBe('dev-secret');
+    expect(body.get('subject_token')).toBe('dev-session-token');
+  });
+
   test('raises an exchange error when Shopify rejects the token exchange', async () => {
     const client = new ShopifyTokenExchangeClient({
       clientId: 'client-id-123',

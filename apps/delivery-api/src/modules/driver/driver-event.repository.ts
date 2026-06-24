@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
+import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 
 export type RecordDriverEventInput = {
   clientEventId: string | null;
@@ -54,7 +55,7 @@ export class PrismaDriverEventRepository {
 
     try {
       return await this.prisma.$transaction(async (transaction) => {
-        const shop = await transaction.shop.findUnique({ where: { shopDomain } });
+        const shop = await transaction.shop.findUnique({ where: appScopedShopWhere({ shopDomain }) });
         if (shop === null) {
           throw new Error(`Shop not installed: ${shopDomain}`);
         }

@@ -33,6 +33,7 @@ import {
   type SaveRouteGroupingPolygonsInput
 } from './route-grouping.types.js';
 import { hashPushToken } from './driver-push-token.service.js';
+import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 
 const OPTIMIZER_VERSION = 'route-grouping-projection-v1';
 const ROUTE_GROUPING_GEOMETRY_REFRESH_CONCURRENCY = 2;
@@ -138,7 +139,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     if (orderIds.length === 0) throw new RouteGroupingValidationError(['select at least one order']);
 
     const groupingId = await this.prisma.$transaction(async (tx) => {
-      const shop = await tx.shop.findUnique({ select: { id: true }, where: { shopDomain: normalizeShopDomain(input.shopDomain) } });
+      const shop = await tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ shopDomain: normalizeShopDomain(input.shopDomain) }) });
       if (shop === null) throw new RouteGroupingValidationError(['shop not found']);
       const facts = await tx.orderDeliveryFact.findMany({
         include: {
@@ -215,7 +216,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
   }
 
   async listGroupings(input: { deliveryDate?: string; shopDomain: string }): Promise<RouteGroupingSummaryDto[]> {
-    const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: { shopDomain: normalizeShopDomain(input.shopDomain) } });
+    const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ shopDomain: normalizeShopDomain(input.shopDomain) }) });
     if (shop === null) return [];
     const groups = await this.prisma.routeGrouping.findMany({
       include: groupingInclude(),
@@ -484,7 +485,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
   }
 
   private async loadGrouping(input: { groupingId: string; shopDomain: string }): Promise<LoadedGrouping | null> {
-    const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: { shopDomain: normalizeShopDomain(input.shopDomain) } });
+    const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ shopDomain: normalizeShopDomain(input.shopDomain) }) });
     if (shop === null) return null;
     return this.prisma.routeGrouping.findFirst({ include: groupingInclude(), where: { id: input.groupingId, shopId: shop.id } });
   }
@@ -573,7 +574,7 @@ function groupingInclude() {
 }
 
 async function findGroupingForUpdate(tx: Tx, shopDomain: string, groupingId: string): Promise<{ id: string; shopId: string; updatedAt: Date } | null> {
-  const shop = await tx.shop.findUnique({ select: { id: true }, where: { shopDomain: normalizeShopDomain(shopDomain) } });
+  const shop = await tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ shopDomain: normalizeShopDomain(shopDomain) }) });
   if (shop === null) return null;
   return tx.routeGrouping.findFirst({ select: { id: true, shopId: true, updatedAt: true }, where: { id: groupingId, shopId: shop.id } });
 }

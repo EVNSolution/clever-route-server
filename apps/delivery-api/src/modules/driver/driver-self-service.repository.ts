@@ -20,6 +20,7 @@ import {
   type UpdateDriverProfileInput
 } from './driver-self-service.types.js';
 import { coerceIanaTimezone } from './driver-route-timezone.js';
+import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 
 export type DriverSelfServicePrismaClient = Pick<
   PrismaClient,
@@ -209,7 +210,7 @@ export class PrismaDriverSelfServiceRepository {
     const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
     const shop = await this.prisma.shop.findUnique({
       select: { id: true, shopDomain: true },
-      where: { shopDomain }
+      where: appScopedShopWhere({ shopDomain })
     });
 
     if (shop === null) {

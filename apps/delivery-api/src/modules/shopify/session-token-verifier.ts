@@ -1,13 +1,24 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { DEFAULT_SHOPIFY_APP_ID, normalizeShopifyAppId } from './shopify-app-scope.js';
 
 export type VerifiedShopifySession = {
+  appId: string;
   shopDomain: string;
   subject: string;
 };
 
-export type ShopifySessionTokenVerifierOptions = {
+export type ShopifySessionTokenAppCredential = {
+  appId: string;
   clientId: string;
   clientSecret: string;
+};
+
+export type ShopifySessionTokenVerifierOptions = {
+  appCredentials?: ShopifySessionTokenAppCredential[];
+  appId?: string | undefined;
+  clientId?: string;
+  clientSecret?: string;
+  expectedAppId?: string;
   expectedShopDomain?: string;
   now?: Date;
 };
@@ -27,18 +38,23 @@ type ShopifySessionHeader = {
 };
 
 export class ShopifySessionTokenVerifier {
-  constructor(
-    private readonly options: Pick<ShopifySessionTokenVerifierOptions, 'clientId' | 'clientSecret'>
-  ) {}
+  private readonly appCredentials: ShopifySessionTokenAppCredential[];
+
+  constructor(options: Pick<ShopifySessionTokenVerifierOptions, 'appCredentials' | 'appId' | 'clientId' | 'clientSecret'>) {
+    this.appCredentials = normalizeCredentials(options);
+  }
 
   verify(
     sessionToken: string,
-    options: Pick<ShopifySessionTokenVerifierOptions, 'expectedShopDomain' | 'now'> = {}
+    options: Pick<ShopifySessionTokenVerifierOptions, 'expectedAppId' | 'expectedShopDomain' | 'now'> = {}
   ): VerifiedShopifySession {
     const verifierOptions: ShopifySessionTokenVerifierOptions = {
-      clientId: this.options.clientId,
-      clientSecret: this.options.clientSecret
+      appCredentials: this.appCredentials
     };
+
+    if (options.expectedAppId !== undefined) {
+      verifierOptions.expectedAppId = options.expectedAppId;
+    }
 
     if (options.expectedShopDomain !== undefined) {
       verifierOptions.expectedShopDomain = options.expectedShopDomain;
@@ -71,11 +87,16 @@ export function verifyShopifySessionToken(
   }
 
   verifyHeader(encodedHeader);
-  verifySignature(`${encodedHeader}.${encodedPayload}`, encodedSignature, options.clientSecret);
 
   const claims = parseClaims(encodedPayload);
   const nowSeconds = Math.floor((options.now ?? new Date()).getTime() / 1000);
   const audience = requireStringClaim(claims.aud, 'aud');
+  const credential = findCredentialForAudience(normalizeCredentials(options), audience);
+  if (credential === null) {
+    throw new Error('Shopify session token audience mismatch');
+  }
+  verifySignature(`${encodedHeader}.${encodedPayload}`, encodedSignature, credential.clientSecret);
+
   const dest = requireStringClaim(claims.dest, 'dest');
   const expiresAt = requireNumberClaim(claims.exp, 'exp');
   const issuer = requireStringClaim(claims.iss, 'iss');
@@ -88,10 +109,6 @@ export function verifyShopifySessionToken(
 
   if (notBefore > nowSeconds) {
     throw new Error('Shopify session token is not active yet');
-  }
-
-  if (audience !== options.clientId) {
-    throw new Error('Shopify session token audience mismatch');
   }
 
   const shopDomain = normalizeShopDomain(dest);
@@ -108,7 +125,51 @@ export function verifyShopifySessionToken(
     }
   }
 
-  return { shopDomain, subject };
+  if (options.expectedAppId !== undefined) {
+    const expectedAppId = normalizeShopifyAppId(options.expectedAppId);
+    if (expectedAppId !== credential.appId) {
+      throw new Error('Shopify session token app mismatch');
+    }
+  }
+
+  return { appId: credential.appId, shopDomain, subject };
+}
+
+function normalizeCredentials(
+  options: Pick<ShopifySessionTokenVerifierOptions, 'appCredentials' | 'appId' | 'clientId' | 'clientSecret'>
+): ShopifySessionTokenAppCredential[] {
+  if (options.appCredentials !== undefined) {
+    if (options.appCredentials.length === 0) {
+      throw new Error('At least one Shopify app credential is required');
+    }
+    return options.appCredentials.map((credential) => ({
+      appId: normalizeShopifyAppId(credential.appId),
+      clientId: requireNonEmptyConfig(credential.clientId, 'clientId'),
+      clientSecret: requireNonEmptyConfig(credential.clientSecret, 'clientSecret')
+    }));
+  }
+
+  return [
+    {
+      appId: normalizeShopifyAppId(options.appId ?? DEFAULT_SHOPIFY_APP_ID),
+      clientId: requireNonEmptyConfig(options.clientId, 'clientId'),
+      clientSecret: requireNonEmptyConfig(options.clientSecret, 'clientSecret')
+    }
+  ];
+}
+
+function findCredentialForAudience(
+  credentials: ShopifySessionTokenAppCredential[],
+  audience: string
+): ShopifySessionTokenAppCredential | null {
+  return credentials.find((credential) => credential.clientId === audience) ?? null;
+}
+
+function requireNonEmptyConfig(value: string | undefined, name: string): string {
+  if (value === undefined || value.trim() === '') {
+    throw new Error(`Shopify session token verifier ${name} is required`);
+  }
+  return value.trim();
 }
 
 function verifyHeader(encodedHeader: string): void {
