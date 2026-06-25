@@ -26,8 +26,8 @@ export function loadAdminOrdersDependencies(input: {
   const repository = new PrismaOrderSyncRepository(
     input.prisma,
     input.adminNotificationService === undefined
-      ? {}
-      : { notificationService: input.adminNotificationService },
+      ? { createMissingShop: true }
+      : { createMissingShop: true, notificationService: input.adminNotificationService },
   );
   return {
     orderSyncService: new ShopifyOrderSyncService({
