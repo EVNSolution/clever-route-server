@@ -46,6 +46,7 @@ type RepositoryCarrier = {
   options: {
     repository: {
       options?: {
+        createMissingShop?: boolean;
         notificationService?: AdminNotificationServiceApi;
       };
     };
@@ -71,6 +72,7 @@ describe('admin notification dependency wiring', () => {
 
     const carrier = dependencies?.orderSyncService as unknown as RepositoryCarrier;
     expect(carrier.options.repository.options?.notificationService).toBe(service);
+    expect(carrier.options.repository.options?.createMissingShop).toBe(true);
   });
 
   test('threads the shared notification service into WooCommerce webhook order sync', () => {
