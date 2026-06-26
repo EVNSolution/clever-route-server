@@ -10,7 +10,6 @@ import {
 import {
   RoutePlanBatchInvalidError,
   RoutePlanConflictError,
-  RoutePlanDeleteBlockedError,
   RoutePlanDriverAssignInvalidError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanOptionsUpdateInvalidError,
@@ -50,7 +49,7 @@ const DEFAULT_ROUTE_END_MODE: RoutePlanEndMode = 'END_AT_LAST_STOP';
 
 type RoutePlanPrismaClient = Pick<
   PrismaClient,
-  '$transaction' | 'deliveryStop' | 'driver' | 'order' | 'orderDeliveryFact' | 'routeGroupingChildVersion' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'shop'
+  '$transaction' | 'deliveryStop' | 'driver' | 'order' | 'orderDeliveryFact' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'shop'
 >;
 
 type RoutePlanGeometryCacheRecord = {
@@ -949,13 +948,6 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     if (routePlan === null) {
       return { routePlanId: input.routePlanId, deleted: false };
     }
-    const childRouteLinks = await this.prisma.routeGroupingChildVersion.count({
-      where: { routePlanId: input.routePlanId, shopId: shop.id }
-    });
-    if (childRouteLinks > 0) {
-      throw new RoutePlanDeleteBlockedError('Child driver routes must be deleted through the parent route grouping.');
-    }
-
     await this.prisma.$transaction(async (tx) => {
       await tx.routePlanStop.deleteMany({
         where: { routePlanId: input.routePlanId }
