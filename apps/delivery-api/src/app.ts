@@ -9,6 +9,10 @@ import {
   type AdminRoutePlanDependencies
 } from './routes/admin-route-plans.routes.js';
 import {
+  registerAdminRouteGroupRoutes,
+  type AdminRouteGroupDependencies
+} from './routes/admin-route-groups.routes.js';
+import {
   registerAdminCommerceConnectionsRoutes,
   type AdminCommerceConnectionsDependencies
 } from './routes/admin-commerce-connections.routes.js';
@@ -43,6 +47,7 @@ export type BuildAppOptions = {
   adminCommerceConnectionsUi?: AdminCommerceConnectionsUiDependencies;
   adminDrivers?: AdminDriversDependencies;
   adminOrders?: AdminOrdersDependencies;
+  adminRouteGroups?: AdminRouteGroupDependencies;
   adminRoutePlans?: AdminRoutePlanDependencies;
   corsOrigin?: false | string;
   driverApi?: DriverApiDependencies;
@@ -88,6 +93,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   if (options.adminOrders !== undefined) {
     registerAdminOrdersRoutes(app, options.adminOrders);
+  }
+
+  if (options.adminRouteGroups !== undefined) {
+    registerAdminRouteGroupRoutes(app, options.adminRouteGroups);
   }
 
   if (options.adminRoutePlans !== undefined) {

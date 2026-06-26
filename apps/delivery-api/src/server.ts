@@ -9,6 +9,7 @@ import {
 import { loadAdminDriverDependencies } from './modules/driver/admin-driver.dependencies.js';
 import { loadDriverApiDependencies } from './modules/driver/driver.dependencies.js';
 import { loadDriverAuthDependencies } from './modules/driver/driver-auth.dependencies.js';
+import { loadAdminRouteGroupDependencies } from './modules/route-grouping/route-grouping.dependencies.js';
 import { loadAdminRoutePlanDependencies } from './modules/route-plans/route-plan.dependencies.js';
 import { loadAdminOrdersDependencies } from './modules/shopify/order-sync.dependencies.js';
 import { loadShopifyAuthDependencies } from './modules/shopify/auth.dependencies.js';
@@ -17,6 +18,7 @@ import { loadWooCommerceWebhookDependencies } from './modules/woocommerce/woocom
 import { createAdminNotificationRuntime } from './modules/notifications/admin-notification.dependencies.js';
 import { loadWordPressPluginDependencies } from './modules/wordpress-plugin/wordpress-plugin.dependencies.js';
 import type { AdminRoutePlanDependencies } from './routes/admin-route-plans.routes.js';
+import type { AdminRouteGroupDependencies } from './routes/admin-route-groups.routes.js';
 import type { AdminDriversDependencies } from './routes/admin-drivers.routes.js';
 import type { AdminOrdersDependencies } from './routes/admin-orders.routes.js';
 import type { DriverApiDependencies } from './routes/driver-events.routes.js';
@@ -32,6 +34,7 @@ const env = loadEnv();
 const prisma = new PrismaClient();
 const adminCommerceConnections = loadAdminCommerceConnectionsDependencies({ env: process.env, prisma });
 const adminDrivers = loadAdminDriverDependencies({ env: process.env, prisma });
+const adminRouteGroups = loadAdminRouteGroupDependencies({ env: process.env, prisma });
 const adminRoutePlans = loadAdminRoutePlanDependencies({ env: process.env, prisma });
 const adminNotificationRuntime = createAdminNotificationRuntime({
   ...(process.env.DATABASE_URL === undefined
@@ -76,6 +79,7 @@ const app = await buildApp(
     adminCommerceConnectionsUi,
     adminDrivers,
     adminOrders,
+    adminRouteGroups,
     adminRoutePlans,
     corsOrigin: readCorsOrigin(process.env.SHOPIFY_APP_URL),
     driverApi,
@@ -114,6 +118,7 @@ function createBuildAppOptions(input: {
   adminCommerceConnectionsUi: AdminCommerceConnectionsUiDependencies | undefined;
   adminDrivers: AdminDriversDependencies | undefined;
   adminOrders: AdminOrdersDependencies | undefined;
+  adminRouteGroups: AdminRouteGroupDependencies | undefined;
   adminRoutePlans: AdminRoutePlanDependencies | undefined;
   corsOrigin: false | string;
   driverApi: DriverApiDependencies | undefined;
@@ -128,6 +133,7 @@ function createBuildAppOptions(input: {
   adminCommerceConnectionsUi?: AdminCommerceConnectionsUiDependencies;
   adminDrivers?: AdminDriversDependencies;
   adminOrders?: AdminOrdersDependencies;
+  adminRouteGroups?: AdminRouteGroupDependencies;
   adminRoutePlans?: AdminRoutePlanDependencies;
   corsOrigin?: false | string;
   driverApi?: DriverApiDependencies;
@@ -143,6 +149,7 @@ function createBuildAppOptions(input: {
     ...(input.adminCommerceConnectionsUi === undefined ? {} : { adminCommerceConnectionsUi: input.adminCommerceConnectionsUi }),
     ...(input.adminDrivers === undefined ? {} : { adminDrivers: input.adminDrivers }),
     ...(input.adminOrders === undefined ? {} : { adminOrders: input.adminOrders }),
+    ...(input.adminRouteGroups === undefined ? {} : { adminRouteGroups: input.adminRouteGroups }),
     ...(input.adminRoutePlans === undefined ? {} : { adminRoutePlans: input.adminRoutePlans }),
     corsOrigin: input.corsOrigin,
     ...(input.driverApi === undefined ? {} : { driverApi: input.driverApi }),

@@ -7,6 +7,7 @@ export type AdminSessionTokenVerifier = {
 type AdminSessionAuthSurface =
   | 'admin_drivers'
   | 'admin_orders'
+  | 'admin_route_groups'
   | 'admin_route_plans'
   | 'shopify_auth_token_exchange';
 
