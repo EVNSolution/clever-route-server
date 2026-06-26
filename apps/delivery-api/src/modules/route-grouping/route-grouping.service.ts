@@ -33,6 +33,7 @@ import {
   type RouteGroupingSummaryDto,
   type RouteGroupingWarningDto,
   type SaveRouteGroupingPolygonsInput,
+  type UpdateRouteGroupingBranchInput,
   type UpdateRouteGroupingBranchOrdersInput,
   type UpdateRouteGroupingOrdersInput
 } from './route-grouping.types.js';
@@ -145,13 +146,16 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const group = await findGroupingForUpdate(tx, input);
       if (group === null) return null;
       const driverId = await readBranchDriverId(tx, group.shopId, input.driverId);
+      const sortOrder = input.sortOrder ?? (await nextBranchSortOrder(tx, group.id));
       const branch = await tx.routeGroupingBranch.create({
         data: {
+          color: normalizeOptionalText(input.color),
           createdBy: input.actor,
           driverId,
           groupingId: group.id,
           label: normalizeOptionalText(input.label),
-          shopId: group.shopId
+          shopId: group.shopId,
+          sortOrder
         },
         select: { id: true }
       });
@@ -258,6 +262,30 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       where: { shopId: shop.id, ...rangeFilter }
     });
     return groups.map((group) => toGroupingSummaryDto(group));
+  }
+
+
+  async updateBranch(input: UpdateRouteGroupingBranchInput): Promise<RouteGroupingDetailDto | null> {
+    const groupingId = await this.prisma.$transaction(async (tx) => {
+      const group = await findGroupingForUpdate(tx, input);
+      if (group === null) return null;
+      const branch = await tx.routeGroupingBranch.findFirst({
+        select: { id: true },
+        where: { groupingId: group.id, id: input.branchId, shopId: group.shopId }
+      });
+      if (branch === null) throw new RouteGroupingValidationError(['branch not found']);
+      const data: Prisma.RouteGroupingBranchUpdateInput = {};
+      if (input.label !== undefined) data.label = normalizeOptionalText(input.label);
+      if (input.color !== undefined) data.color = normalizeOptionalText(input.color);
+      if (input.sortOrder !== undefined) data.sortOrder = input.sortOrder;
+      if (input.driverId !== undefined) data.driver = await branchDriverRelation(tx, group.shopId, input.driverId);
+      if (Object.keys(data).length === 0) return group.id;
+      await tx.routeGroupingBranch.update({ data, where: { id: branch.id } });
+      await tx.routeGrouping.update({ data: { status: 'CHANGED' }, where: { id: group.id } });
+      return group.id;
+    });
+    if (groupingId === null) return null;
+    return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
   }
 
   async updateBranchOrders(input: UpdateRouteGroupingBranchOrdersInput): Promise<RouteGroupingDetailDto | null> {
@@ -741,6 +769,16 @@ async function readBranchDriverId(tx: Tx, shopId: string, driverId: string | nul
   const driver = await tx.driver.findFirst({ select: { id: true }, where: { id: driverId.trim(), shopId } });
   if (driver === null) throw new RouteGroupingValidationError(['driver must belong to the current shop']);
   return driver.id;
+}
+
+async function branchDriverRelation(tx: Tx, shopId: string, driverId: string | null | undefined): Promise<NonNullable<Prisma.RouteGroupingBranchUpdateInput['driver']>> {
+  const id = await readBranchDriverId(tx, shopId, driverId);
+  return id === null ? { disconnect: true } : { connect: { id } };
+}
+
+async function nextBranchSortOrder(tx: Tx, groupingId: string): Promise<number> {
+  const max = await tx.routeGroupingBranch.aggregate({ _max: { sortOrder: true }, where: { groupingId } });
+  return (max._max.sortOrder ?? 0) + 1;
 }
 
 async function claimBranchOrders(
@@ -1362,11 +1400,13 @@ function toBranchDto(branch: LoadedBranch) {
   return {
     createdAt: branch.createdAt.toISOString(),
     driverId: branch.driverId,
+    color: branch.color,
     driverName: branch.driver?.displayName ?? null,
     id: branch.id,
     label: branch.label,
     orderIds: branch.orderLocks.map((lock) => lock.orderId),
     ordersCount: branch.orderLocks.length,
+    sortOrder: branch.sortOrder,
     updatedAt: branch.updatedAt.toISOString()
   };
 }
