@@ -4,6 +4,17 @@ export type RouteGroupingDisplayStatus = 'DRAFT' | 'NEEDS_ASSIGNMENT' | 'READY' 
 export type RouteGroupingChildDisplayStatus = 'DRAFT' | 'PUBLISHED' | 'NEEDS_REPUBLISH' | 'SUPERSEDED';
 export type RouteGroupingNotificationStatus = 'NOT_REQUIRED' | 'PENDING' | 'SENT' | 'FAILED';
 
+export type RouteGroupingBranchDto = {
+  createdAt: string;
+  driverId: string | null;
+  driverName: string | null;
+  id: string;
+  label: string | null;
+  orderIds: string[];
+  ordersCount: number;
+  updatedAt: string;
+};
+
 export type RouteGroupingAssignmentDto = {
   assignedDriverId: string | null;
   assignedPolygonId: string | null;
@@ -51,6 +62,8 @@ export type RouteGroupingWarningDto = {
 export type RouteGroupingSummaryDto = {
   children: RouteGroupingChildDto[];
   currentVersion: number;
+  dateRangeEnd: string;
+  dateRangeStart: string;
   displayStatus: RouteGroupingDisplayStatus;
   id: string;
   name: string;
@@ -64,18 +77,23 @@ export type RouteGroupingSummaryDto = {
 
 export type RouteGroupingDetailDto = RouteGroupingSummaryDto & {
   assignments: RouteGroupingAssignmentDto[];
+  branches: RouteGroupingBranchDto[];
   polygons: RouteGroupingPolygonDto[];
 };
 
 export type CreateRouteGroupingInput = {
+  appId?: string | undefined;
   createdBy: string;
+  dateRangeEnd?: string;
+  dateRangeStart?: string;
   name: string;
   orderIds: string[];
-  planDate: string;
+  planDate?: string;
   shopDomain: string;
 };
 
 export type SaveRouteGroupingPolygonsInput = {
+  appId?: string | undefined;
   groupingId: string;
   deletePolygonIds?: string[];
   expectedUpdatedAt: string;
@@ -91,12 +109,14 @@ export type SaveRouteGroupingPolygonsInput = {
 };
 
 export type ResolveRouteGroupingAssignmentsInput = {
+  appId?: string | undefined;
   assignments: Array<{ assignedDriverId: string; orderId: string }>;
   groupingId: string;
   shopDomain: string;
 };
 
 export type GenerateChildRoutesInput = {
+  appId?: string | undefined;
   actor: string;
   confirmRisk?: boolean;
   groupingId: string;
@@ -104,19 +124,52 @@ export type GenerateChildRoutesInput = {
 };
 
 export type RollbackRouteGroupingInput = {
+  appId?: string | undefined;
   actor: string;
   groupingId: string;
   shopDomain: string;
   version: number;
 };
 
+export type UpdateRouteGroupingOrdersInput = {
+  addOrderIds?: string[];
+  appId?: string | undefined;
+  expectedUpdatedAt?: string;
+  groupingId: string;
+  removeOrderIds?: string[];
+  shopDomain: string;
+};
+
+export type CreateRouteGroupingBranchInput = {
+  actor: string;
+  appId?: string | undefined;
+  driverId?: string | null;
+  groupingId: string;
+  label?: string | null;
+  orderIds?: string[];
+  shopDomain: string;
+};
+
+export type UpdateRouteGroupingBranchOrdersInput = {
+  addOrderIds?: string[];
+  appId?: string | undefined;
+  branchId: string;
+  groupingId: string;
+  removeOrderIds?: string[];
+  shopDomain: string;
+};
+
 export type DeleteRouteGroupingResult = { deleted: boolean; deletedChildRoutePlanCount: number; groupingId: string };
 
 export type RouteGroupingService = {
+  createBranch(input: CreateRouteGroupingBranchInput): Promise<RouteGroupingDetailDto | null>;
   createGrouping(input: CreateRouteGroupingInput): Promise<RouteGroupingDetailDto>;
-  deleteGrouping(input: { groupingId: string; shopDomain: string }): Promise<DeleteRouteGroupingResult>;
-  getGrouping(input: { groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null>;
-  listGroupings(input: { deliveryDate?: string; shopDomain: string }): Promise<RouteGroupingSummaryDto[]>;
+  deleteBranch(input: { appId?: string | undefined; branchId: string; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null>;
+  deleteGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<DeleteRouteGroupingResult>;
+  getGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null>;
+  listGroupings(input: { appId?: string | undefined; dateRangeEnd?: string; dateRangeStart?: string; deliveryDate?: string; shopDomain: string }): Promise<RouteGroupingSummaryDto[]>;
+  updateBranchOrders(input: UpdateRouteGroupingBranchOrdersInput): Promise<RouteGroupingDetailDto | null>;
+  updateGroupingOrders(input: UpdateRouteGroupingOrdersInput): Promise<RouteGroupingDetailDto | null>;
   savePolygons(input: SaveRouteGroupingPolygonsInput): Promise<RouteGroupingDetailDto | null>;
   resolveAssignments(input: ResolveRouteGroupingAssignmentsInput): Promise<RouteGroupingDetailDto | null>;
   generateChildRoutes(input: GenerateChildRoutesInput): Promise<RouteGroupingDetailDto | null>;
@@ -129,6 +182,14 @@ export class RouteGroupingConflictError extends Error {
   constructor(message = 'Route grouping was changed by another save. Refresh and try again.') {
     super(message);
     this.name = 'RouteGroupingConflictError';
+  }
+}
+
+export class RouteGroupingBranchLockConflictError extends Error {
+  readonly code = 'ROUTE_GROUPING_BRANCH_LOCK_CONFLICT';
+  constructor(readonly orderIds: string[]) {
+    super('One or more orders already belong to another branch.');
+    this.name = 'RouteGroupingBranchLockConflictError';
   }
 }
 

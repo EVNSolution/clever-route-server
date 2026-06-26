@@ -13,6 +13,24 @@ describe('route grouping contracts', () => {
     expect(enumBody).not.toContain('SUPERSEDED');
   });
 
+  test('keeps parent route group date range on the canonical model', () => {
+    const schema = readFileSync(join(process.cwd(), 'prisma/schema.prisma'), 'utf8');
+    const modelBody = /model RouteGrouping \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+    expect(modelBody).toContain('dateRangeStart       DateTime?');
+    expect(modelBody).toContain('dateRangeEnd         DateTime?');
+    expect(modelBody).toContain('@@index([shopId, dateRangeStart, dateRangeEnd, status])');
+  });
+
+  test('keeps branch ownership as an explicit active lock table', () => {
+    const schema = readFileSync(join(process.cwd(), 'prisma/schema.prisma'), 'utf8');
+    const branchBody = /model RouteGroupingBranch \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+    const lockBody = /model RouteGroupingBranchOrderLock \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+    expect(branchBody).toContain('orderLocks');
+    expect(lockBody).toContain('@@unique([shopId, orderId])');
+    expect(lockBody).not.toContain('releasedAt');
+    expect(lockBody).not.toContain('status');
+  });
+
   test('classifies overlapping split polygons by latest draw order', () => {
     const first = { id: 'a', vertices: [{ latitude: 0, longitude: 0 }, { latitude: 0, longitude: 10 }, { latitude: 10, longitude: 10 }, { latitude: 10, longitude: 0 }] };
     const second = { id: 'b', vertices: [{ latitude: 5, longitude: 5 }, { latitude: 5, longitude: 15 }, { latitude: 15, longitude: 15 }, { latitude: 15, longitude: 5 }] };

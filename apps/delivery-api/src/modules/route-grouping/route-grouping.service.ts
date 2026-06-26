@@ -10,11 +10,13 @@ import { computeRouteShapeSignature, routeGeometryCacheCreateData } from '../rou
 import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanRouteResult } from '../route-plans/route-plan.types.js';
 import {
+  RouteGroupingBranchLockConflictError,
   RouteGroupingConflictError,
   RouteGroupingDeleteBlockedError,
   RouteGroupingRiskConfirmationRequiredError,
   RouteGroupingUnresolvedAssignmentsError,
   RouteGroupingValidationError,
+  type CreateRouteGroupingBranchInput,
   type CreateRouteGroupingInput,
   type DeleteRouteGroupingResult,
   type GenerateChildRoutesInput,
@@ -30,10 +32,12 @@ import {
   type RouteGroupingService,
   type RouteGroupingSummaryDto,
   type RouteGroupingWarningDto,
-  type SaveRouteGroupingPolygonsInput
+  type SaveRouteGroupingPolygonsInput,
+  type UpdateRouteGroupingBranchOrdersInput,
+  type UpdateRouteGroupingOrdersInput
 } from './route-grouping.types.js';
 import { hashPushToken } from './driver-push-token.service.js';
-import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
+import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
 
 const OPTIMIZER_VERSION = 'route-grouping-projection-v1';
 const ROUTE_GROUPING_GEOMETRY_REFRESH_CONCURRENCY = 2;
@@ -80,6 +84,8 @@ type Tx = Parameters<Parameters<RouteGroupingPrismaClient['$transaction']>[0]>[0
 type LoadedGrouping = Prisma.RouteGroupingGetPayload<{ include: ReturnType<typeof groupingInclude> }>;
 type LoadedChild = LoadedGrouping['childVersions'][number];
 type LoadedAssignment = LoadedGrouping['orders'][number];
+type LoadedBranch = LoadedGrouping['branches'][number];
+type GroupingForUpdate = { dateRangeEnd: Date | null; dateRangeStart: Date | null; id: string; planDate: Date; shopId: string; updatedAt: Date };
 
 type ChildSnapshot = {
   driverId: string | null;
@@ -133,13 +139,40 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     private readonly options: RouteGroupingServiceOptions = {}
   ) {}
 
+  async createBranch(input: CreateRouteGroupingBranchInput): Promise<RouteGroupingDetailDto | null> {
+    const orderIds = normalizeIds(input.orderIds ?? []);
+    const groupingId = await this.prisma.$transaction(async (tx) => {
+      const group = await findGroupingForUpdate(tx, input);
+      if (group === null) return null;
+      const driverId = await readBranchDriverId(tx, group.shopId, input.driverId);
+      const branch = await tx.routeGroupingBranch.create({
+        data: {
+          createdBy: input.actor,
+          driverId,
+          groupingId: group.id,
+          label: normalizeOptionalText(input.label),
+          shopId: group.shopId
+        },
+        select: { id: true }
+      });
+      if (orderIds.length > 0) await claimBranchOrders(tx, group, branch.id, orderIds);
+      await tx.routeGrouping.update({ data: { status: 'CHANGED' }, where: { id: group.id } });
+      return group.id;
+    }).catch((error: unknown) => {
+      if (isUniqueConstraintError(error)) throw new RouteGroupingBranchLockConflictError(orderIds);
+      throw error;
+    });
+    if (groupingId === null) return null;
+    return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
+  }
+
   async createGrouping(input: CreateRouteGroupingInput): Promise<RouteGroupingDetailDto> {
     const orderIds = normalizeIds(input.orderIds);
-    const planDate = parsePlanDate(input.planDate);
+    const dateRange = readGroupingDateRange(input);
     if (orderIds.length === 0) throw new RouteGroupingValidationError(['select at least one order']);
 
     const groupingId = await this.prisma.$transaction(async (tx) => {
-      const shop = await tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ shopDomain: normalizeShopDomain(input.shopDomain) }) });
+      const shop = await tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
       if (shop === null) throw new RouteGroupingValidationError(['shop not found']);
       const facts = await tx.orderDeliveryFact.findMany({
         include: {
@@ -151,19 +184,19 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         },
         where: { orderId: { in: orderIds }, shopId: shop.id }
       });
-      const blockers = validateCreateFacts({ facts, orderIds, planDate: input.planDate });
+      const blockers = validateCreateFacts({ dateRange, facts, orderIds });
       if (blockers.length > 0) throw new RouteGroupingValidationError(blockers);
       const orderedFacts = orderIds.map((orderId) => facts.find((fact) => fact.orderId === orderId)).filter((fact): fact is typeof facts[number] => fact !== undefined);
-      const first = orderedFacts[0];
-      if (first === undefined) throw new RouteGroupingValidationError(['selected order facts not found']);
       const grouping = await tx.routeGrouping.create({
         data: {
           createdBy: input.createdBy,
-          deliverySession: first.deliverySession,
+          dateRangeEnd: dateRange.end,
+          dateRangeStart: dateRange.start,
+          deliverySession: sharedFactValue(orderedFacts, 'deliverySession'),
           name: input.name,
-          planDate,
-          routeScopeKey: first.routeScopeKey,
-          serviceType: first.serviceType,
+          planDate: dateRange.planDate,
+          routeScopeKey: sharedFactValue(orderedFacts, 'routeScopeKey'),
+          serviceType: sharedFactValue(orderedFacts, 'serviceType'),
           shopId: shop.id,
           status: 'DRAFT'
         },
@@ -183,23 +216,23 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       });
       return grouping.id;
     });
-    const detail = await this.getGrouping({ groupingId, shopDomain: input.shopDomain });
+    const detail = await this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
     if (detail === null) throw new RouteGroupingValidationError(['created grouping not found']);
     return detail;
   }
 
-  async getGrouping(input: { groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null> {
+  async getGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null> {
     const loaded = await this.loadGrouping(input);
     if (loaded === null) return null;
     return toGroupingDetailDto(loaded);
   }
 
-  async deleteGrouping(input: { groupingId: string; shopDomain: string }): Promise<DeleteRouteGroupingResult> {
+  async deleteGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<DeleteRouteGroupingResult> {
     const shopDomain = normalizeShopDomain(input.shopDomain);
     return this.prisma.$transaction(async (tx) => {
       const group = await tx.routeGrouping.findFirst({
         include: { childVersions: { select: { notificationStatus: true, publishedAt: true, routePlanId: true } } },
-        where: { id: input.groupingId, shop: { shopDomain } }
+        where: { id: input.groupingId, shop: { appId: normalizeShopifyAppId(input.appId), shopDomain } }
       });
       if (group === null) return { deleted: false, deletedChildRoutePlanCount: 0, groupingId: input.groupingId };
 
@@ -215,21 +248,113 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     });
   }
 
-  async listGroupings(input: { deliveryDate?: string; shopDomain: string }): Promise<RouteGroupingSummaryDto[]> {
-    const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ shopDomain: normalizeShopDomain(input.shopDomain) }) });
+  async listGroupings(input: { appId?: string | undefined; dateRangeEnd?: string; dateRangeStart?: string; deliveryDate?: string; shopDomain: string }): Promise<RouteGroupingSummaryDto[]> {
+    const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
     if (shop === null) return [];
+    const rangeFilter = routeGroupingRangeFilter(input);
     const groups = await this.prisma.routeGrouping.findMany({
       include: groupingInclude(),
       orderBy: { createdAt: 'desc' },
-      where: { shopId: shop.id, ...(input.deliveryDate === undefined ? {} : { planDate: parsePlanDate(input.deliveryDate) }) }
+      where: { shopId: shop.id, ...rangeFilter }
     });
     return groups.map((group) => toGroupingSummaryDto(group));
+  }
+
+  async updateBranchOrders(input: UpdateRouteGroupingBranchOrdersInput): Promise<RouteGroupingDetailDto | null> {
+    const addOrderIds = normalizeIds(input.addOrderIds ?? []);
+    const removeOrderIds = normalizeIds(input.removeOrderIds ?? []);
+    if (addOrderIds.length === 0 && removeOrderIds.length === 0) {
+      return this.getGrouping({ appId: input.appId, groupingId: input.groupingId, shopDomain: input.shopDomain });
+    }
+
+    const groupingId = await this.prisma.$transaction(async (tx) => {
+      const group = await findGroupingForUpdate(tx, input);
+      if (group === null) return null;
+      const branch = await tx.routeGroupingBranch.findFirst({
+        select: { id: true },
+        where: { groupingId: group.id, id: input.branchId, shopId: group.shopId }
+      });
+      if (branch === null) throw new RouteGroupingValidationError(['branch not found']);
+      if (removeOrderIds.length > 0) await deleteBranchOrderLocks(tx, group, branch.id, removeOrderIds);
+      if (addOrderIds.length > 0) await claimBranchOrders(tx, group, branch.id, addOrderIds);
+      await tx.routeGrouping.update({ data: { status: 'CHANGED' }, where: { id: group.id } });
+      return group.id;
+    }).catch((error: unknown) => {
+      if (isUniqueConstraintError(error)) throw new RouteGroupingBranchLockConflictError(addOrderIds);
+      throw error;
+    });
+    if (groupingId === null) return null;
+    return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
+  }
+
+  async updateGroupingOrders(input: UpdateRouteGroupingOrdersInput): Promise<RouteGroupingDetailDto | null> {
+    const addOrderIds = normalizeIds(input.addOrderIds ?? []);
+    const removeOrderIds = normalizeIds(input.removeOrderIds ?? []);
+    if (addOrderIds.length === 0 && removeOrderIds.length === 0) {
+      return this.getGrouping({ appId: input.appId, groupingId: input.groupingId, shopDomain: input.shopDomain });
+    }
+
+    const groupingId = await this.prisma.$transaction(async (tx) => {
+      const group = await findGroupingForUpdate(tx, input);
+      if (group === null) return null;
+      if (input.expectedUpdatedAt !== undefined) {
+        const guarded = await tx.routeGrouping.updateMany({
+          data: { status: 'CHANGED' },
+          where: { id: group.id, shopId: group.shopId, updatedAt: parseExpectedUpdatedAt(input.expectedUpdatedAt) }
+        });
+        if (guarded.count !== 1) throw new RouteGroupingConflictError();
+      } else {
+        await tx.routeGrouping.update({ data: { status: 'CHANGED' }, where: { id: group.id } });
+      }
+
+      if (removeOrderIds.length > 0) {
+        await deleteBranchOrderLocks(tx, group, undefined, removeOrderIds);
+        await tx.routeGroupingOrder.deleteMany({ where: { groupingId: group.id, orderId: { in: removeOrderIds } } });
+      }
+
+      const existingOrderIds = new Set(
+        (await tx.routeGroupingOrder.findMany({ select: { orderId: true }, where: { groupingId: group.id } }))
+          .map((row) => row.orderId)
+      );
+      const newOrderIds = addOrderIds.filter((orderId) => !existingOrderIds.has(orderId));
+      if (newOrderIds.length > 0) {
+        const facts = await tx.orderDeliveryFact.findMany({
+          include: {
+            order: {
+              include: {
+                deliveryStops: { include: { routePlanStops: { select: { id: true } } }, take: 1 }
+              }
+            }
+          },
+          where: { orderId: { in: newOrderIds }, shopId: group.shopId }
+        });
+        const blockers = validateCreateFacts({ dateRange: loadedGroupDateRange(group), facts, orderIds: newOrderIds });
+        if (blockers.length > 0) throw new RouteGroupingValidationError(blockers);
+        const orderedFacts = newOrderIds.map((orderId) => facts.find((fact) => fact.orderId === orderId)).filter((fact): fact is typeof facts[number] => fact !== undefined);
+        const maxSequence = await tx.routeGroupingOrder.aggregate({ _max: { sourceSequence: true }, where: { groupingId: group.id } });
+        const startSequence = maxSequence._max.sourceSequence ?? 0;
+        await tx.routeGroupingOrder.createMany({
+          data: orderedFacts.map((fact, index) => ({
+            deliveryStopId: fact.order.deliveryStops[0]?.id ?? '',
+            groupingId: group.id,
+            orderId: fact.orderId,
+            shopId: group.shopId,
+            sourceSequence: startSequence + index + 1
+          }))
+        });
+      }
+
+      await recomputeAssignments(tx, group.id);
+      return group.id;
+    });
+    if (groupingId === null) return null;
+    return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
   }
 
   async savePolygons(input: SaveRouteGroupingPolygonsInput): Promise<RouteGroupingDetailDto | null> {
     assertUniquePolygonDrivers(input.polygons);
     const groupingId = await this.prisma.$transaction(async (tx) => {
-      const group = await findGroupingForUpdate(tx, input.shopDomain, input.groupingId);
+      const group = await findGroupingForUpdate(tx, input);
       if (group === null) return null;
       const expectedUpdatedAt = parseExpectedUpdatedAt(input.expectedUpdatedAt);
       const guarded = await tx.routeGrouping.updateMany({
@@ -289,12 +414,12 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       return group.id;
     });
     if (groupingId === null) return null;
-    return this.getGrouping({ groupingId, shopDomain: input.shopDomain });
+    return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
   }
 
   async resolveAssignments(input: ResolveRouteGroupingAssignmentsInput): Promise<RouteGroupingDetailDto | null> {
     const groupingId = await this.prisma.$transaction(async (tx) => {
-      const group = await findGroupingForUpdate(tx, input.shopDomain, input.groupingId);
+      const group = await findGroupingForUpdate(tx, input);
       if (group === null) return null;
       for (const assignment of input.assignments) {
         const driver = await tx.driver.findFirst({ select: { id: true }, where: { id: assignment.assignedDriverId, shopId: group.shopId } });
@@ -308,18 +433,18 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       return group.id;
     });
     if (groupingId === null) return null;
-    return this.getGrouping({ groupingId, shopDomain: input.shopDomain });
+    return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
   }
 
   async generateChildRoutes(input: GenerateChildRoutesInput): Promise<RouteGroupingDetailDto | null> {
-    const initial = await this.loadGrouping({ groupingId: input.groupingId, shopDomain: input.shopDomain });
+    const initial = await this.loadGrouping({ appId: input.appId, groupingId: input.groupingId, shopDomain: input.shopDomain });
     if (initial === null) return null;
     validateReadyForChildGeneration(initial, input.confirmRisk);
     const candidates = await this.prepareOptimizedChildRouteCandidates(initial, input.shopDomain);
     const expectedSnapshot = childGenerationSnapshotSignature(initial);
 
     const projection = await this.prisma.$transaction(async (tx): Promise<ChildRouteProjectionResult | null> => {
-      const group = await findGroupingForUpdate(tx, input.shopDomain, input.groupingId);
+      const group = await findGroupingForUpdate(tx, input);
       if (group === null) return null;
       const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
       if (loaded === null) return null;
@@ -354,12 +479,29 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       return { childRoutePlanIds, groupingId: loaded.id };
     });
     if (projection === null) return null;
-    return this.getGrouping({ groupingId: projection.groupingId, shopDomain: input.shopDomain });
+    return this.getGrouping({ appId: input.appId, groupingId: projection.groupingId, shopDomain: input.shopDomain });
+  }
+
+  async deleteBranch(input: { appId?: string | undefined; branchId: string; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null> {
+    const groupingId = await this.prisma.$transaction(async (tx) => {
+      const group = await findGroupingForUpdate(tx, input);
+      if (group === null) return null;
+      const branch = await tx.routeGroupingBranch.findFirst({
+        select: { id: true },
+        where: { groupingId: group.id, id: input.branchId, shopId: group.shopId }
+      });
+      if (branch === null) return group.id;
+      await tx.routeGroupingBranch.delete({ where: { id: branch.id } });
+      await tx.routeGrouping.update({ data: { status: 'CHANGED' }, where: { id: group.id } });
+      return group.id;
+    });
+    if (groupingId === null) return null;
+    return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
   }
 
   async rollback(input: RollbackRouteGroupingInput): Promise<RouteGroupingDetailDto | null> {
     const projection = await this.prisma.$transaction(async (tx): Promise<ChildRouteProjectionResult | null> => {
-      const group = await findGroupingForUpdate(tx, input.shopDomain, input.groupingId);
+      const group = await findGroupingForUpdate(tx, input);
       if (group === null) return null;
       const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
       if (loaded === null) return null;
@@ -395,7 +537,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     });
     if (projection === null) return null;
     await this.refreshChildRouteGeometry(projection.childRoutePlanIds, input.shopDomain);
-    return this.getGrouping({ groupingId: projection.groupingId, shopDomain: input.shopDomain });
+    return this.getGrouping({ appId: input.appId, groupingId: projection.groupingId, shopDomain: input.shopDomain });
   }
 
   private async refreshChildRouteGeometry(routePlanIds: string[], shopDomain: string): Promise<void> {
@@ -484,8 +626,8 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     return count > 0;
   }
 
-  private async loadGrouping(input: { groupingId: string; shopDomain: string }): Promise<LoadedGrouping | null> {
-    const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ shopDomain: normalizeShopDomain(input.shopDomain) }) });
+  private async loadGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<LoadedGrouping | null> {
+    const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
     if (shop === null) return null;
     return this.prisma.routeGrouping.findFirst({ include: groupingInclude(), where: { id: input.groupingId, shopId: shop.id } });
   }
@@ -550,6 +692,15 @@ function logRouteGeometryRefreshFailure(routePlanId: string, reason: unknown): v
 
 function groupingInclude() {
   return {
+    branches: {
+      include: {
+        driver: true,
+        orderLocks: {
+          orderBy: { createdAt: 'asc' as const }
+        }
+      },
+      orderBy: { createdAt: 'asc' as const }
+    },
     childVersions: {
       include: {
         driver: true,
@@ -573,21 +724,155 @@ function groupingInclude() {
   } satisfies Prisma.RouteGroupingInclude;
 }
 
-async function findGroupingForUpdate(tx: Tx, shopDomain: string, groupingId: string): Promise<{ id: string; shopId: string; updatedAt: Date } | null> {
-  const shop = await tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ shopDomain: normalizeShopDomain(shopDomain) }) });
+async function findGroupingForUpdate(
+  tx: Tx,
+  input: { appId?: string | undefined; groupingId: string; shopDomain: string }
+): Promise<GroupingForUpdate | null> {
+  const shop = await tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
   if (shop === null) return null;
-  return tx.routeGrouping.findFirst({ select: { id: true, shopId: true, updatedAt: true }, where: { id: groupingId, shopId: shop.id } });
+  return tx.routeGrouping.findFirst({
+    select: { dateRangeEnd: true, dateRangeStart: true, id: true, planDate: true, shopId: true, updatedAt: true },
+    where: { id: input.groupingId, shopId: shop.id }
+  });
 }
 
-function validateCreateFacts(input: { facts: Array<{ deliveryDate: Date | null; routeScopeKey: string | null; deliverySession: string | null; serviceType: string | null; orderId: string; order: { deliveryStops: Array<{ latitude: unknown; longitude: unknown; routePlanStops: Array<{ id: string }> }> } }>; orderIds: string[]; planDate: string }): string[] {
+async function readBranchDriverId(tx: Tx, shopId: string, driverId: string | null | undefined): Promise<string | null> {
+  if (driverId === undefined || driverId === null || driverId.trim() === '') return null;
+  const driver = await tx.driver.findFirst({ select: { id: true }, where: { id: driverId.trim(), shopId } });
+  if (driver === null) throw new RouteGroupingValidationError(['driver must belong to the current shop']);
+  return driver.id;
+}
+
+async function claimBranchOrders(
+  tx: Tx,
+  group: GroupingForUpdate,
+  branchId: string,
+  orderIds: string[]
+): Promise<void> {
+  const rows = await tx.routeGroupingOrder.findMany({
+    select: { deliveryStopId: true, id: true, orderId: true },
+    where: { groupingId: group.id, orderId: { in: orderIds } }
+  });
+  if (rows.length !== orderIds.length) throw new RouteGroupingValidationError(['branch orders must belong to the current route grouping']);
+
+  const activeLocks = await tx.routeGroupingBranchOrderLock.findMany({
+    select: { branchId: true, orderId: true },
+    where: { orderId: { in: orderIds }, shopId: group.shopId }
+  });
+  const conflictOrderIds = activeLocks.filter((lock) => lock.branchId !== branchId).map((lock) => lock.orderId);
+  if (conflictOrderIds.length > 0) throw new RouteGroupingBranchLockConflictError([...new Set(conflictOrderIds)]);
+
+  const byOrderId = new Map(rows.map((row) => [row.orderId, row]));
+  const alreadyClaimedByBranch = new Set(activeLocks.filter((lock) => lock.branchId === branchId).map((lock) => lock.orderId));
+  const orderIdsToClaim = orderIds.filter((orderId) => !alreadyClaimedByBranch.has(orderId));
+  if (orderIdsToClaim.length === 0) return;
+  await tx.routeGroupingBranchOrderLock.createMany({
+    data: orderIdsToClaim.map((orderId) => {
+      const row = byOrderId.get(orderId);
+      if (row === undefined) throw new RouteGroupingValidationError(['branch orders must belong to the current route grouping']);
+      return {
+        branchId,
+        deliveryStopId: row.deliveryStopId,
+        groupingId: group.id,
+        orderId,
+        routeGroupingOrderId: row.id,
+        shopId: group.shopId
+      };
+    })
+  });
+}
+
+async function deleteBranchOrderLocks(
+  tx: Tx,
+  group: GroupingForUpdate,
+  branchId: string | undefined,
+  orderIds: string[] | undefined
+): Promise<void> {
+  await tx.routeGroupingBranchOrderLock.deleteMany({
+    where: {
+      groupingId: group.id,
+      shopId: group.shopId,
+      ...(branchId === undefined ? {} : { branchId }),
+      ...(orderIds === undefined ? {} : { orderId: { in: orderIds } })
+    }
+  });
+}
+
+type GroupingDateRange = { end: Date; endText: string; planDate: Date; start: Date; startText: string };
+
+type DeliveryFactForGrouping = {
+  deliveryDate: Date | null;
+  deliverySession: string | null;
+  order: { deliveryStops: Array<{ latitude: unknown; longitude: unknown; routePlanStops: Array<{ id: string }> }> };
+  orderId: string;
+  routeScopeKey: string | null;
+  serviceType: string | null;
+};
+
+function readGroupingDateRange(input: { dateRangeEnd?: string; dateRangeStart?: string; planDate?: string }): GroupingDateRange {
+  const hasRange = input.dateRangeStart !== undefined || input.dateRangeEnd !== undefined;
+  if (hasRange) {
+    if (input.dateRangeStart === undefined || input.dateRangeEnd === undefined) {
+      throw new RouteGroupingValidationError(['date range requires start and end']);
+    }
+    const start = parsePlanDate(input.dateRangeStart);
+    const end = parsePlanDate(input.dateRangeEnd);
+    if (start.getTime() > end.getTime()) throw new RouteGroupingValidationError(['date range start must be before end']);
+    return { end, endText: formatDateOnly(end) ?? '', planDate: start, start, startText: formatDateOnly(start) ?? '' };
+  }
+  const planDate = parsePlanDate(input.planDate ?? '');
+  const planDateText = formatDateOnly(planDate) ?? '';
+  return { end: planDate, endText: planDateText, planDate, start: planDate, startText: planDateText };
+}
+
+function loadedGroupDateRange(group: { dateRangeEnd: Date | null; dateRangeStart: Date | null; planDate: Date }): GroupingDateRange {
+  const start = group.dateRangeStart ?? group.planDate;
+  const end = group.dateRangeEnd ?? group.planDate;
+  return { end, endText: formatDateOnly(end) ?? '', planDate: group.planDate, start, startText: formatDateOnly(start) ?? '' };
+}
+
+function routeGroupingRangeFilter(input: { dateRangeEnd?: string; dateRangeStart?: string; deliveryDate?: string }): Prisma.RouteGroupingWhereInput {
+  if (input.deliveryDate !== undefined) {
+    const deliveryDate = parsePlanDate(input.deliveryDate);
+    return {
+      OR: [
+        { dateRangeStart: { lte: deliveryDate }, dateRangeEnd: { gte: deliveryDate } },
+        { dateRangeEnd: null, dateRangeStart: null, planDate: deliveryDate }
+      ]
+    };
+  }
+  if (input.dateRangeStart !== undefined || input.dateRangeEnd !== undefined) {
+    if (input.dateRangeStart === undefined || input.dateRangeEnd === undefined) {
+      throw new RouteGroupingValidationError(['date range requires start and end']);
+    }
+    const start = parsePlanDate(input.dateRangeStart);
+    const end = parsePlanDate(input.dateRangeEnd);
+    if (start.getTime() > end.getTime()) throw new RouteGroupingValidationError(['date range start must be before end']);
+    return {
+      OR: [
+        { dateRangeStart: { lte: end }, dateRangeEnd: { gte: start } },
+        { dateRangeEnd: null, dateRangeStart: null, planDate: { gte: start, lte: end } }
+      ]
+    };
+  }
+  return {};
+}
+
+function sharedFactValue(facts: DeliveryFactForGrouping[], key: 'deliverySession' | 'routeScopeKey' | 'serviceType'): string | null {
+  const first = facts[0]?.[key] ?? null;
+  return facts.every((fact) => fact[key] === first) ? first : null;
+}
+
+function validateCreateFacts(input: { dateRange: GroupingDateRange; facts: DeliveryFactForGrouping[]; orderIds: string[] }): string[] {
   const blockers: string[] = [];
   if (input.facts.length !== input.orderIds.length) blockers.push('selected orders must have delivery facts');
-  const first = input.facts[0];
   for (const orderId of input.orderIds) {
     const fact = input.facts.find((candidate) => candidate.orderId === orderId);
     if (fact === undefined) continue;
-    if (formatDateOnly(fact.deliveryDate) !== input.planDate) blockers.push('selected orders must match grouping date');
-    if (first !== undefined && (fact.routeScopeKey !== first.routeScopeKey || fact.deliverySession !== first.deliverySession || fact.serviceType !== first.serviceType)) blockers.push('selected orders must share one route scope');
+    const deliveryDate = formatDateOnly(fact.deliveryDate);
+    if (deliveryDate !== null && (deliveryDate < input.dateRange.startText || deliveryDate > input.dateRange.endText)) {
+      blockers.push('selected orders must fall within grouping date range');
+    }
     if (isPickupService(fact.serviceType)) blockers.push('pickup orders cannot be grouped into driver delivery routes');
     const stop = fact.order.deliveryStops[0];
     if (stop === undefined) blockers.push('selected orders must have delivery stops');
@@ -1015,15 +1300,23 @@ function routeMetrics(assignments: LoadedAssignment[]): Prisma.InputJsonObject {
 }
 
 function toGroupingDetailDto(group: LoadedGrouping): RouteGroupingDetailDto {
-  return { ...toGroupingSummaryDto(group), assignments: group.orders.map(toAssignmentDto), polygons: group.polygons.map(toPolygonDto) };
+  return {
+    ...toGroupingSummaryDto(group),
+    assignments: group.orders.map(toAssignmentDto),
+    branches: group.branches.map(toBranchDto),
+    polygons: group.polygons.map(toPolygonDto)
+  };
 }
 
 function toGroupingSummaryDto(group: LoadedGrouping): RouteGroupingSummaryDto {
   const unresolvedOrders = group.orders.filter((order) => order.assignmentStatus !== 'ASSIGNED').length;
   const currentChildren = group.childVersions.filter((child) => child.status === 'CURRENT');
+  const dateRange = loadedGroupDateRange(group);
   return {
     children: currentChildren.map((child) => toChildDto(child, group.status)),
     currentVersion: group.currentVersion,
+    dateRangeEnd: dateRange.endText,
+    dateRangeStart: dateRange.startText,
     displayStatus: deriveGroupingDisplayStatus(group, unresolvedOrders, currentChildren),
     id: group.id,
     name: group.name,
@@ -1063,6 +1356,19 @@ function toAssignmentDto(order: LoadedAssignment): RouteGroupingAssignmentDto {
 
 function toPolygonDto(polygon: LoadedGrouping['polygons'][number]): RouteGroupingPolygonDto {
   return { closed: polygon.closed, color: polygon.color, drawOrder: polygon.drawOrder, driverId: polygon.driverId, geometry: polygon.geometryJson, id: polygon.id, label: polygon.label };
+}
+
+function toBranchDto(branch: LoadedBranch) {
+  return {
+    createdAt: branch.createdAt.toISOString(),
+    driverId: branch.driverId,
+    driverName: branch.driver?.displayName ?? null,
+    id: branch.id,
+    label: branch.label,
+    orderIds: branch.orderLocks.map((lock) => lock.orderId),
+    ordersCount: branch.orderLocks.length,
+    updatedAt: branch.updatedAt.toISOString()
+  };
 }
 
 function toChildDto(child: LoadedChild, groupingStatus: string): RouteGroupingChildDto {
@@ -1150,6 +1456,12 @@ function normalizeIds(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value !== ''))];
 }
 
+function normalizeOptionalText(value: string | null | undefined): string | null {
+  if (value === undefined || value === null) return null;
+  const normalized = value.trim();
+  return normalized === '' ? null : normalized;
+}
+
 function normalizeShopDomain(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -1164,7 +1476,11 @@ function parseExpectedUpdatedAt(value: string): Date {
 function parsePlanDate(value: string): Date {
   const normalized = /^\d{4}-\d{2}-\d{2}$/u.test(value) ? value : '';
   if (normalized === '') throw new RouteGroupingValidationError(['plan date must be YYYY-MM-DD']);
-  return new Date(`${normalized}T00:00:00.000Z`);
+  const date = new Date(`${normalized}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime()) || formatDateOnly(date) !== normalized) {
+    throw new RouteGroupingValidationError(['plan date must be valid']);
+  }
+  return date;
 }
 
 function formatDateOnly(value: Date | null): string | null {
@@ -1203,6 +1519,10 @@ function describeError(error: unknown): string {
   if (error instanceof Error && error.message.trim() !== '') return error.message;
   if (typeof error === 'string' && error.trim() !== '') return error;
   return 'unknown error';
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === 'P2002';
 }
 
 function readDepotFromShop(group: LoadedGrouping): DepotCoordinates | null {

@@ -268,6 +268,8 @@ model Shop {
   routeGroupingPolygons             RouteGroupingPolygon[]
   routeGroupingVersions             RouteGroupingVersion[]
   routeGroupingChildVersions        RouteGroupingChildVersion[]
+  routeGroupingBranches             RouteGroupingBranch[]
+  routeGroupingBranchOrderLocks     RouteGroupingBranchOrderLock[]
   driverPushTokens                  DriverPushToken[]
   driverRouteNotificationAttempts   DriverRouteNotificationAttempt[]
   customerRouteNotificationFacts    CustomerRouteNotificationFact[]
@@ -547,37 +549,38 @@ model ShopifyWebhookEvent {
 }
 
 model Order {
-  id                           String                             @id @default(uuid()) @db.Uuid
-  shopId                       String                             @db.Uuid
-  shop                         Shop                               @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  shopifyOrderGid              String                             @db.Text
-  shopifyOrderLegacyId         BigInt?
-  sourcePlatform               CommerceSourcePlatform             @default(SHOPIFY)
-  sourceSiteUrl                String?                            @db.Text
-  sourceOrderId                String?                            @db.Text
-  sourceOrderNumber            String?                            @db.Text
-  sourceUpdatedAt              DateTime?                          @db.Timestamptz(6)
-  name                         String                             @db.Text
-  email                        String?                            @db.Text
-  phone                        String?                            @db.Text
-  financialStatus              String?                            @db.Text
-  fulfillmentStatus            String?                            @db.Text
-  cancelledAt                  DateTime?                          @db.Timestamptz(6)
-  processedAt                  DateTime?                          @db.Timestamptz(6)
-  updatedAtShopify             DateTime?                          @db.Timestamptz(6)
-  totalPriceAmount             Decimal?                           @db.Decimal(12, 2)
-  currencyCode                 String?                            @db.Text
-  shippingAddress              Json?
-  rawPayload                   Json
-  deliveryStatus               DeliveryOrderStatus                @default(PENDING)
-  createdAt                    DateTime                           @default(now()) @db.Timestamptz(6)
-  updatedAt                    DateTime                           @updatedAt @db.Timestamptz(6)
-  orderItems                   OrderItem[]
-  deliveryStops                DeliveryStop[]
-  deliveryFacts                OrderDeliveryFact[]
-  deliveryCustomerProfileLinks DeliveryCustomerProfileOrderLink[]
-  routeGroupingOrders          RouteGroupingOrder[]
-  customerRouteNotifications   CustomerRouteNotificationFact[]
+  id                            String                             @id @default(uuid()) @db.Uuid
+  shopId                        String                             @db.Uuid
+  shop                          Shop                               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shopifyOrderGid               String                             @db.Text
+  shopifyOrderLegacyId          BigInt?
+  sourcePlatform                CommerceSourcePlatform             @default(SHOPIFY)
+  sourceSiteUrl                 String?                            @db.Text
+  sourceOrderId                 String?                            @db.Text
+  sourceOrderNumber             String?                            @db.Text
+  sourceUpdatedAt               DateTime?                          @db.Timestamptz(6)
+  name                          String                             @db.Text
+  email                         String?                            @db.Text
+  phone                         String?                            @db.Text
+  financialStatus               String?                            @db.Text
+  fulfillmentStatus             String?                            @db.Text
+  cancelledAt                   DateTime?                          @db.Timestamptz(6)
+  processedAt                   DateTime?                          @db.Timestamptz(6)
+  updatedAtShopify              DateTime?                          @db.Timestamptz(6)
+  totalPriceAmount              Decimal?                           @db.Decimal(12, 2)
+  currencyCode                  String?                            @db.Text
+  shippingAddress               Json?
+  rawPayload                    Json
+  deliveryStatus                DeliveryOrderStatus                @default(PENDING)
+  createdAt                     DateTime                           @default(now()) @db.Timestamptz(6)
+  updatedAt                     DateTime                           @updatedAt @db.Timestamptz(6)
+  orderItems                    OrderItem[]
+  deliveryStops                 DeliveryStop[]
+  deliveryFacts                 OrderDeliveryFact[]
+  deliveryCustomerProfileLinks  DeliveryCustomerProfileOrderLink[]
+  routeGroupingOrders           RouteGroupingOrder[]
+  routeGroupingBranchOrderLocks RouteGroupingBranchOrderLock[]
+  customerRouteNotifications    CustomerRouteNotificationFact[]
 
   @@unique([shopId, shopifyOrderGid])
   @@unique([shopId, sourcePlatform, sourceSiteUrl, sourceOrderId])
@@ -611,35 +614,36 @@ model OrderItem {
 }
 
 model DeliveryStop {
-  id                  String               @id @default(uuid()) @db.Uuid
-  shopId              String               @db.Uuid
-  shop                Shop                 @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  orderId             String               @db.Uuid
-  order               Order                @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  recipientName       String?              @db.Text
-  phone               String?              @db.Text
-  address1            String?              @db.Text
-  address2            String?              @db.Text
-  city                String?              @db.Text
-  province            String?              @db.Text
-  postalCode          String?              @db.Text
-  countryCode         String?              @db.Text
-  latitude            Decimal?             @db.Decimal(10, 7)
-  longitude           Decimal?             @db.Decimal(10, 7)
-  geocodeStatus       GeocodeStatus        @default(PENDING)
-  deliveryDate        DateTime?            @db.Date
-  timeWindowStart     DateTime?            @db.Timestamptz(6)
-  timeWindowEnd       DateTime?            @db.Timestamptz(6)
-  serviceMinutes      Int                  @default(5)
-  priority            Int                  @default(0)
-  instructions        String?              @db.Text
-  status              DeliveryStopStatus   @default(PENDING)
-  createdAt           DateTime             @default(now()) @db.Timestamptz(6)
-  updatedAt           DateTime             @updatedAt @db.Timestamptz(6)
-  routePlanStops      RoutePlanStop[]
-  driverEvents        DriverEvent[]
-  driverProofMedia    DriverProofMedia[]
-  routeGroupingOrders RouteGroupingOrder[]
+  id                            String                         @id @default(uuid()) @db.Uuid
+  shopId                        String                         @db.Uuid
+  shop                          Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  orderId                       String                         @db.Uuid
+  order                         Order                          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  recipientName                 String?                        @db.Text
+  phone                         String?                        @db.Text
+  address1                      String?                        @db.Text
+  address2                      String?                        @db.Text
+  city                          String?                        @db.Text
+  province                      String?                        @db.Text
+  postalCode                    String?                        @db.Text
+  countryCode                   String?                        @db.Text
+  latitude                      Decimal?                       @db.Decimal(10, 7)
+  longitude                     Decimal?                       @db.Decimal(10, 7)
+  geocodeStatus                 GeocodeStatus                  @default(PENDING)
+  deliveryDate                  DateTime?                      @db.Date
+  timeWindowStart               DateTime?                      @db.Timestamptz(6)
+  timeWindowEnd                 DateTime?                      @db.Timestamptz(6)
+  serviceMinutes                Int                            @default(5)
+  priority                      Int                            @default(0)
+  instructions                  String?                        @db.Text
+  status                        DeliveryStopStatus             @default(PENDING)
+  createdAt                     DateTime                       @default(now()) @db.Timestamptz(6)
+  updatedAt                     DateTime                       @updatedAt @db.Timestamptz(6)
+  routePlanStops                RoutePlanStop[]
+  driverEvents                  DriverEvent[]
+  driverProofMedia              DriverProofMedia[]
+  routeGroupingOrders           RouteGroupingOrder[]
+  routeGroupingBranchOrderLocks RouteGroupingBranchOrderLock[]
 
   @@unique([shopId, orderId])
   @@index([shopId, deliveryDate, status])
@@ -774,7 +778,6 @@ model RoutePlan {
   @@map("route_plans")
 }
 
-
 model RoutePlanGeometryCache {
   id              String    @id @default(uuid()) @db.Uuid
   routePlanId     String    @db.Uuid
@@ -868,6 +871,7 @@ model Driver {
   routeGroupingOrders        RouteGroupingOrder[]
   routeGroupingPolygons      RouteGroupingPolygon[]
   routeGroupingChildVersions RouteGroupingChildVersion[]
+  routeGroupingBranches      RouteGroupingBranch[]
   pushTokens                 DriverPushToken[]
   routeNotificationAttempts  DriverRouteNotificationAttempt[]
 
@@ -981,6 +985,8 @@ model RouteGrouping {
   shop                 Shop                             @relation(fields: [shopId], references: [id], onDelete: Cascade)
   name                 String                           @db.Text
   planDate             DateTime                         @db.Date
+  dateRangeStart       DateTime?                        @db.Date
+  dateRangeEnd         DateTime?                        @db.Date
   routeScopeKey        String?                          @db.Text
   serviceType          String?                          @db.Text
   deliverySession      String?                          @db.Text
@@ -993,36 +999,82 @@ model RouteGrouping {
   polygons             RouteGroupingPolygon[]
   versions             RouteGroupingVersion[]
   childVersions        RouteGroupingChildVersion[]
+  branches             RouteGroupingBranch[]
+  branchOrderLocks     RouteGroupingBranchOrderLock[]
   notificationAttempts DriverRouteNotificationAttempt[]
 
   @@index([shopId, planDate, status])
+  @@index([shopId, dateRangeStart, dateRangeEnd, status])
   @@map("route_groupings")
 }
 
 model RouteGroupingOrder {
-  id                String                        @id @default(uuid()) @db.Uuid
-  shopId            String                        @db.Uuid
-  shop              Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  groupingId        String                        @db.Uuid
-  grouping          RouteGrouping                 @relation(fields: [groupingId], references: [id], onDelete: Cascade)
-  orderId           String                        @db.Uuid
-  order             Order                         @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  deliveryStopId    String                        @db.Uuid
-  deliveryStop      DeliveryStop                  @relation(fields: [deliveryStopId], references: [id], onDelete: Cascade)
-  assignmentStatus  RouteGroupingAssignmentStatus @default(UNASSIGNED)
-  assignedDriverId  String?                       @db.Uuid
-  assignedDriver    Driver?                       @relation(fields: [assignedDriverId], references: [id], onDelete: SetNull)
-  assignedPolygonId String?                       @db.Uuid
-  assignedPolygon   RouteGroupingPolygon?         @relation(fields: [assignedPolygonId], references: [id], onDelete: SetNull)
+  id                String                         @id @default(uuid()) @db.Uuid
+  shopId            String                         @db.Uuid
+  shop              Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  groupingId        String                         @db.Uuid
+  grouping          RouteGrouping                  @relation(fields: [groupingId], references: [id], onDelete: Cascade)
+  orderId           String                         @db.Uuid
+  order             Order                          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  deliveryStopId    String                         @db.Uuid
+  deliveryStop      DeliveryStop                   @relation(fields: [deliveryStopId], references: [id], onDelete: Cascade)
+  assignmentStatus  RouteGroupingAssignmentStatus  @default(UNASSIGNED)
+  assignedDriverId  String?                        @db.Uuid
+  assignedDriver    Driver?                        @relation(fields: [assignedDriverId], references: [id], onDelete: SetNull)
+  assignedPolygonId String?                        @db.Uuid
+  assignedPolygon   RouteGroupingPolygon?          @relation(fields: [assignedPolygonId], references: [id], onDelete: SetNull)
   sourceSequence    Int
-  createdAt         DateTime                      @default(now()) @db.Timestamptz(6)
-  updatedAt         DateTime                      @updatedAt @db.Timestamptz(6)
+  createdAt         DateTime                       @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime                       @updatedAt @db.Timestamptz(6)
+  branchOrderLocks  RouteGroupingBranchOrderLock[]
 
   @@unique([groupingId, orderId])
   @@unique([groupingId, deliveryStopId])
   @@index([shopId, assignedDriverId])
   @@index([groupingId, assignmentStatus])
   @@map("route_grouping_orders")
+}
+
+model RouteGroupingBranch {
+  id         String                         @id @default(uuid()) @db.Uuid
+  shopId     String                         @db.Uuid
+  shop       Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  groupingId String                         @db.Uuid
+  grouping   RouteGrouping                  @relation(fields: [groupingId], references: [id], onDelete: Cascade)
+  driverId   String?                        @db.Uuid
+  driver     Driver?                        @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  label      String?                        @db.Text
+  createdBy  String?                        @db.Text
+  createdAt  DateTime                       @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime                       @updatedAt @db.Timestamptz(6)
+  orderLocks RouteGroupingBranchOrderLock[]
+
+  @@index([groupingId, createdAt])
+  @@index([shopId, driverId])
+  @@map("route_grouping_branches")
+}
+
+model RouteGroupingBranchOrderLock {
+  id                   String              @id @default(uuid()) @db.Uuid
+  shopId               String              @db.Uuid
+  shop                 Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  groupingId           String              @db.Uuid
+  grouping             RouteGrouping       @relation(fields: [groupingId], references: [id], onDelete: Cascade)
+  branchId             String              @db.Uuid
+  branch               RouteGroupingBranch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  routeGroupingOrderId String              @db.Uuid
+  routeGroupingOrder   RouteGroupingOrder  @relation(fields: [routeGroupingOrderId], references: [id], onDelete: Cascade)
+  orderId              String              @db.Uuid
+  order                Order               @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  deliveryStopId       String              @db.Uuid
+  deliveryStop         DeliveryStop        @relation(fields: [deliveryStopId], references: [id], onDelete: Cascade)
+  createdAt            DateTime            @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime            @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, orderId])
+  @@index([groupingId])
+  @@index([branchId])
+  @@map("route_grouping_branch_order_locks")
 }
 
 model RouteGroupingPolygon {
