@@ -190,6 +190,7 @@ export type RouteGroupingService = {
   savePolygons(input: SaveRouteGroupingPolygonsInput): Promise<RouteGroupingDetailDto | null>;
   resolveAssignments(input: ResolveRouteGroupingAssignmentsInput): Promise<RouteGroupingDetailDto | null>;
   generateChildRoutes(input: GenerateChildRoutesInput): Promise<RouteGroupingDetailDto | null>;
+  reOptimizeRoutes(input: GenerateChildRoutesInput): Promise<RouteGroupingDetailDto | null>;
   rollback(input: RollbackRouteGroupingInput): Promise<RouteGroupingDetailDto | null>;
   recordChildRoutePublished(input: { routePlanId: string; shopDomain: string }): Promise<void>;
 };
