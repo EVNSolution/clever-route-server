@@ -336,6 +336,27 @@ test('stores delivery route scope fields from line item date ranges', () => {
       routeScopeKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00'
     })
   );
+  expect(mapped.deliveryFact).toEqual(
+    expect.objectContaining({
+      batchEligible: true,
+      deliveryArea: 'Thornhill',
+      deliveryDate: '2026-05-08',
+      deliveryDateWeekday: 'FRIDAY',
+      deliveryDateWeekdayVerified: true,
+      deliveryDayParseStatus: 'PARSED',
+      deliverySession: 'EVENING',
+      deliveryWeekday: 'FRIDAY',
+      geocodeStatus: 'RESOLVED',
+      planningGroupKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00|Thornhill',
+      routeScopeKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00',
+      serviceType: 'EVENING_DELIVERY',
+      sourceOrderId: 'gid://shopify/Order/900',
+      sourceOrderNumber: '#1900',
+      sourcePlatform: 'SHOPIFY',
+      timeWindowEnd: '21:00',
+      timeWindowStart: '17:00'
+    })
+  );
   expect(mapped.order.readiness).toBe('READY_TO_PLAN');
 });
 
