@@ -12,7 +12,6 @@ import type { RoutePlanDetail, RoutePlanRouteResult } from '../route-plans/route
 import {
   RouteGroupingBranchLockConflictError,
   RouteGroupingConflictError,
-  RouteGroupingDeleteBlockedError,
   RouteGroupingRiskConfirmationRequiredError,
   RouteGroupingUnresolvedAssignmentsError,
   RouteGroupingValidationError,
@@ -245,14 +244,12 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     const shopDomain = normalizeShopDomain(input.shopDomain);
     return this.prisma.$transaction(async (tx) => {
       const group = await tx.routeGrouping.findFirst({
-        include: { childVersions: { select: { notificationStatus: true, publishedAt: true, routePlanId: true } } },
+        include: { childVersions: { select: { routePlanId: true } } },
         where: { id: input.groupingId, shop: { appId: normalizeShopifyAppId(input.appId), shopDomain } }
       });
       if (group === null) return { deleted: false, deletedChildRoutePlanCount: 0, groupingId: input.groupingId };
 
       const childRoutePlanIds = [...new Set(group.childVersions.map((child) => child.routePlanId).filter((id): id is string => id !== null))];
-      await assertGroupingDeleteAllowed(tx, group.shopId, childRoutePlanIds, group.childVersions);
-
       if (childRoutePlanIds.length > 0) {
         await tx.routePlanStop.deleteMany({ where: { routePlanId: { in: childRoutePlanIds } } });
         await tx.routePlan.deleteMany({ where: { id: { in: childRoutePlanIds }, shopId: group.shopId } });
@@ -954,35 +951,6 @@ async function recomputeAssignments(tx: Tx, groupingId: string): Promise<void> {
     }
     await tx.routeGroupingOrder.update({ data: { assignedDriverId: polygon.driverId, assignedPolygonId: polygon.id, assignmentStatus: 'ASSIGNED' }, where: { id: order.id } });
   }
-}
-
-const DELETE_ALLOWED_ROUTE_STATUSES = ['DRAFT'] as const;
-const DELETE_BLOCKED_STOP_STATUSES = ['EN_ROUTE', 'ARRIVED', 'DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED'] as const;
-
-async function assertGroupingDeleteAllowed(
-  tx: Tx,
-  shopId: string,
-  routePlanIds: string[],
-  childVersions: Array<{ notificationStatus: string; publishedAt: Date | null }>
-): Promise<void> {
-  if (routePlanIds.length === 0) return;
-  const blockers: string[] = [];
-  const hasPublishedChild = childVersions.some((child) => child.publishedAt !== null || child.notificationStatus !== 'SKIPPED');
-  const [blockedRoutes, progressedStops, notificationAttempts, driverEvents, feedback, proofMedia] = await Promise.all([
-    tx.routePlan.count({ where: { id: { in: routePlanIds }, shopId, status: { notIn: [...DELETE_ALLOWED_ROUTE_STATUSES] } } }),
-    tx.routePlanStop.count({ where: { routePlanId: { in: routePlanIds }, deliveryStop: { status: { in: [...DELETE_BLOCKED_STOP_STATUSES] } } } }),
-    tx.driverRouteNotificationAttempt.count({ where: { routePlanId: { in: routePlanIds }, shopId } }),
-    tx.driverEvent.count({ where: { routePlanId: { in: routePlanIds }, shopId } }),
-    tx.driverRouteFeedback.count({ where: { routePlanId: { in: routePlanIds }, shopId } }),
-    tx.driverProofMedia.count({ where: { routePlanId: { in: routePlanIds }, shopId } })
-  ]);
-  if (blockedRoutes > 0) blockers.push('child route status no longer allows delete');
-  if (progressedStops > 0) blockers.push('one or more stops have driver progress');
-  if (hasPublishedChild || notificationAttempts > 0) blockers.push('driver route notification already exists');
-  if (driverEvents > 0) blockers.push('driver events already exist');
-  if (feedback > 0) blockers.push('driver feedback already exists');
-  if (proofMedia > 0) blockers.push('proof media already exists');
-  if (blockers.length > 0) throw new RouteGroupingDeleteBlockedError(blockers);
 }
 
 async function archiveCurrentChildren(tx: Tx, group: LoadedGrouping, actor: string): Promise<void> {

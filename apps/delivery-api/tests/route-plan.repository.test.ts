@@ -5,7 +5,6 @@ import {
   RoutePlanBatchInvalidError,
   RoutePlanConflictError,
   RoutePlanDriverAssignInvalidError,
-  RoutePlanDeleteBlockedError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanPublishInvalidError,
   RoutePlanStopUpdateInvalidError
@@ -1228,9 +1227,6 @@ describe('PrismaRoutePlanRepository', () => {
       select: { id: true },
       where: { id: 'route-plan-id', shopId: 'shop-id' }
     });
-    expect(prisma.routeGroupingChildVersion.count).toHaveBeenCalledWith({
-      where: { routePlanId: 'route-plan-id', shopId: 'shop-id' }
-    });
     expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledWith({
       where: { routePlanId: 'route-plan-id' }
     });
@@ -1241,19 +1237,27 @@ describe('PrismaRoutePlanRepository', () => {
   });
 
 
-  test('blocks direct deletion of a route generated from a parent grouping', async () => {
+  test('deletes a route generated from a parent grouping', async () => {
     const { prisma } = createPrismaHarness({ routeGroupingChildVersionCount: 1 });
     const repository = new PrismaRoutePlanRepository(
       prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
     );
 
-    await expect(repository.deleteRoutePlan({
+    const result = await repository.deleteRoutePlan({
       routePlanId: 'route-plan-id',
       shopDomain: 'example.myshopify.com'
-    })).rejects.toBeInstanceOf(RoutePlanDeleteBlockedError);
+    });
 
-    expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalled();
-    expect(prisma.routePlan.delete).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      routePlanId: 'route-plan-id',
+      deleted: true
+    });
+    expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledWith({
+      where: { routePlanId: 'route-plan-id' }
+    });
+    expect(prisma.routePlan.delete).toHaveBeenCalledWith({
+      where: { id: 'route-plan-id' }
+    });
   });
 
   test('returns deleted:false when no matching route plan is found for this shop', async () => {

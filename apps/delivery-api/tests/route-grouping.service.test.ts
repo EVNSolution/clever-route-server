@@ -47,6 +47,12 @@ describe('route grouping contracts', () => {
     expect(source).toContain("driverId === null ? 'Unassigned'");
   });
 
+  test('keeps route group deletion free of child-route status blockers', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    expect(source).not.toContain('child route status no longer allows delete');
+    expect(source).not.toContain('assertGroupingDeleteAllowed');
+  });
+
   test('fake FCM provider records string-safe route payload fields', async () => {
     const provider = new FakeDriverPushProvider();
     const result = await provider.sendRouteNotification({
