@@ -354,6 +354,58 @@ export function mapShopifyOrderNodeToDeliveryInputs(
       : "READY_TO_PLAN";
 
   return {
+    deliveryFact: {
+      batchEligible: readiness === "READY_TO_PLAN",
+      commerceConnectionId: null,
+      deliveryArea,
+      deliveryDate: scope.deliveryDate,
+      deliveryDateWeekday: scope.deliveryDateWeekday,
+      deliveryDateWeekdayMismatch: scope.deliveryDateWeekdayMismatch,
+      deliveryDateWeekdayVerified:
+        scope.deliveryDateWeekday !== null &&
+        scope.deliveryWeekday !== null &&
+        !scope.deliveryDateWeekdayMismatch,
+      deliveryDayParseStatus:
+        canonicalDayRaw === null
+          ? "NOT_PROVIDED"
+          : scope.deliveryWeekday === null || scope.serviceType === null
+            ? "UNPARSED"
+            : "PARSED",
+      deliveryDayUnparsedReason:
+        canonicalDayRaw !== null &&
+        (scope.deliveryWeekday === null || scope.serviceType === null)
+          ? "unrecognized_shopify_delivery_day"
+          : null,
+      deliverySession: scope.deliverySession,
+      deliveryWeekday: scope.deliveryWeekday,
+      geocodeStatus: hasCoordinates ? "RESOLVED" : "PENDING",
+      mappingDiagnostics: {
+        deliveryDateSource: scope.deliveryDateSource,
+      },
+      matchedMappingPaths: {
+        deliveryArea: deliveryArea === null ? null : "customAttributes.Delivery Area",
+        deliveryDate: deliveryDateRaw === null ? null : "customAttributes.Delivery Date",
+        deliveryDay: deliveryDayRaw === null ? null : "customAttributes.Delivery Day",
+        deliveryTimeWindow: canonicalDayRaw === null ? null : "customAttributes.Delivery Day",
+      },
+      planningGroupKey: scope.planningGroupKey,
+      rawDeliveryArea: deliveryArea,
+      rawDeliveryDate: deliveryDateRaw,
+      rawDeliveryDay: deliveryDayRaw,
+      rawDeliveryTimeWindow: canonicalDayRaw,
+      rawPickupDay: pickupDay,
+      readiness,
+      reviewReasons,
+      routeScopeKey: scope.routeScopeKey,
+      serviceType: scope.serviceType,
+      sourceOrderId: node.id,
+      sourceOrderNumber: node.name,
+      sourcePlatform: "SHOPIFY",
+      sourceSiteUrl: null,
+      sourceUpdatedAt: parseRequiredDate(node.updatedAt),
+      timeWindowEnd: scope.timeWindowEnd,
+      timeWindowStart: scope.timeWindowStart,
+    },
     deliveryStop:
       node.shippingAddress === null
         ? null
