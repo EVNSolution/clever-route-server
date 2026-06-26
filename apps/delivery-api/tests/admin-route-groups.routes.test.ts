@@ -129,7 +129,7 @@ describe('Admin route group routes', () => {
       const response = await app.inject({
         headers: { authorization: 'Bearer session-token' },
         method: 'POST',
-        payload: { driverId: 'driver-id', label: 'Driver A', orderIds: ['order-1'] },
+        payload: { color: '#006fbb', driverId: 'driver-id', label: 'Driver A', orderIds: ['order-1'], sortOrder: 2 },
         url: '/admin/route-groups/route-group-id/branches'
       });
 
@@ -138,11 +138,13 @@ describe('Admin route group routes', () => {
       expect(createBranch).toHaveBeenCalledWith({
         actor: 'shopify-user-id',
         appId: 'clever',
+        color: '#006fbb',
         driverId: 'driver-id',
         groupingId: 'route-group-id',
         label: 'Driver A',
         orderIds: ['order-1'],
-        shopDomain: 'example.myshopify.com'
+        shopDomain: 'example.myshopify.com',
+        sortOrder: 2
       });
       expect(generateChildRoutes).not.toHaveBeenCalled();
     } finally {
@@ -173,6 +175,37 @@ describe('Admin route group routes', () => {
     }
   });
 
+
+  test('updates branch draft metadata without generating child routes', async () => {
+    const { dependencies, generateChildRoutes, updateBranch } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { color: '#16a34a', driverId: null, label: 'Route B', sortOrder: 3 },
+        url: '/admin/route-groups/route-group-id/branches/branch-id'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ data: { routeGroup }, error: null });
+      expect(updateBranch).toHaveBeenCalledWith({
+        appId: 'clever',
+        branchId: 'branch-id',
+        color: '#16a34a',
+        driverId: null,
+        groupingId: 'route-group-id',
+        label: 'Route B',
+        shopDomain: 'example.myshopify.com',
+        sortOrder: 3
+      });
+      expect(generateChildRoutes).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('updates branch orders without generating child routes', async () => {
     const { dependencies, generateChildRoutes, updateBranchOrders } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });
@@ -196,6 +229,33 @@ describe('Admin route group routes', () => {
         shopDomain: 'example.myshopify.com'
       });
       expect(generateChildRoutes).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+
+  test('re-optimizes by reusing child-route generation service', async () => {
+    const { dependencies, generateChildRoutes } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: { confirmRisk: true },
+        url: '/admin/route-groups/route-group-id/re-optimize'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ data: { routeGroup }, error: null });
+      expect(generateChildRoutes).toHaveBeenCalledWith({
+        actor: 'shopify-user-id',
+        appId: 'clever',
+        confirmRisk: true,
+        groupingId: 'route-group-id',
+        shopDomain: 'example.myshopify.com'
+      });
     } finally {
       await app.close();
     }
@@ -234,6 +294,7 @@ function createDependencyHarness(): {
   dependencies: AdminRouteGroupDependencies;
   generateChildRoutes: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['generateChildRoutes']>>;
   listGroupings: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['listGroupings']>>;
+  updateBranch: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['updateBranch']>>;
   updateBranchOrders: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['updateBranchOrders']>>;
   updateGroupingOrders: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['updateGroupingOrders']>>;
 } {
@@ -247,6 +308,7 @@ function createDependencyHarness(): {
   const deleteBranch = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteBranch']>(() => Promise.resolve(routeGroup));
   const listGroupings = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['listGroupings']>(() => Promise.resolve([routeGroup]));
   const getGrouping = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['getGrouping']>(() => Promise.resolve(routeGroup));
+  const updateBranch = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['updateBranch']>(() => Promise.resolve(routeGroup));
   const updateBranchOrders = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['updateBranchOrders']>(() => Promise.resolve(routeGroup));
   const updateGroupingOrders = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['updateGroupingOrders']>(() => Promise.resolve(routeGroup));
   const savePolygons = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['savePolygons']>(() => Promise.resolve(routeGroup));
@@ -273,6 +335,7 @@ function createDependencyHarness(): {
         resolveAssignments,
         rollback,
         savePolygons,
+        updateBranch,
         updateBranchOrders,
         updateGroupingOrders
       },
@@ -280,6 +343,7 @@ function createDependencyHarness(): {
     },
     generateChildRoutes,
     listGroupings,
+    updateBranch,
     updateBranchOrders,
     updateGroupingOrders
   };

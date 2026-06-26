@@ -270,6 +270,9 @@ model Shop {
   routeGroupingChildVersions        RouteGroupingChildVersion[]
   routeGroupingBranches             RouteGroupingBranch[]
   routeGroupingBranchOrderLocks     RouteGroupingBranchOrderLock[]
+  inventories                       Inventory[]
+  inventoryOrders                   InventoryOrder[]
+  inventoryEvents                   InventoryEvent[]
   driverPushTokens                  DriverPushToken[]
   driverRouteNotificationAttempts   DriverRouteNotificationAttempt[]
   customerRouteNotificationFacts    CustomerRouteNotificationFact[]
@@ -580,6 +583,8 @@ model Order {
   deliveryCustomerProfileLinks  DeliveryCustomerProfileOrderLink[]
   routeGroupingOrders           RouteGroupingOrder[]
   routeGroupingBranchOrderLocks RouteGroupingBranchOrderLock[]
+  inventoryOrders               InventoryOrder[]
+  inventoryEvents               InventoryEvent[]
   customerRouteNotifications    CustomerRouteNotificationFact[]
 
   @@unique([shopId, shopifyOrderGid])
@@ -592,25 +597,85 @@ model Order {
 }
 
 model OrderItem {
-  id          String   @id @default(uuid()) @db.Uuid
-  shopId      String   @db.Uuid
-  shop        Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  orderId     String   @db.Uuid
-  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  productId   Int
-  variationId Int      @default(0)
-  lineIndex   Int
-  name        String   @db.Text
-  sku         String?  @db.Text
-  options     Json
-  quantity    Int
-  createdAt   DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt   DateTime @updatedAt @db.Timestamptz(6)
+  id              String           @id @default(uuid()) @db.Uuid
+  shopId          String           @db.Uuid
+  shop            Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  orderId         String           @db.Uuid
+  order           Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId       Int
+  variationId     Int              @default(0)
+  lineIndex       Int
+  name            String           @db.Text
+  sku             String?          @db.Text
+  options         Json
+  quantity        Int
+  createdAt       DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime         @updatedAt @db.Timestamptz(6)
+  inventoryEvents InventoryEvent[]
 
   @@unique([orderId, lineIndex])
   @@index([shopId, orderId])
   @@index([shopId, productId, variationId])
   @@map("order_items")
+}
+
+model Inventory {
+  id        String           @id @default(uuid()) @db.Uuid
+  shopId    String           @db.Uuid
+  shop      Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  name      String           @db.Text
+  note      String?          @db.Text
+  createdBy String?          @db.Text
+  createdAt DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt DateTime         @updatedAt @db.Timestamptz(6)
+  orders    InventoryOrder[]
+  events    InventoryEvent[]
+
+  @@index([shopId, createdAt])
+  @@map("inventories")
+}
+
+model InventoryOrder {
+  id          String    @id @default(uuid()) @db.Uuid
+  shopId      String    @db.Uuid
+  shop        Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  inventoryId String    @db.Uuid
+  inventory   Inventory @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
+  orderId     String    @db.Uuid
+  order       Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  addedBy     String?   @db.Text
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @db.Timestamptz(6)
+
+  @@unique([inventoryId, orderId])
+  @@index([shopId, orderId])
+  @@map("inventory_orders")
+}
+
+model InventoryEvent {
+  id          String    @id @default(uuid()) @db.Uuid
+  shopId      String    @db.Uuid
+  shop        Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  inventoryId String    @db.Uuid
+  inventory   Inventory @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
+  orderId     String    @db.Uuid
+  order       Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderItemId String    @db.Uuid
+  orderItem   OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  action      String    @db.Text
+  productId   Int
+  variationId Int
+  name        String    @db.Text
+  sku         String?   @db.Text
+  options     Json
+  quantity    Int
+  actor       String?   @db.Text
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([inventoryId, createdAt])
+  @@index([shopId, orderId])
+  @@index([shopId, productId, variationId])
+  @@map("inventory_events")
 }
 
 model DeliveryStop {
@@ -1044,11 +1109,14 @@ model RouteGroupingBranch {
   driverId   String?                        @db.Uuid
   driver     Driver?                        @relation(fields: [driverId], references: [id], onDelete: SetNull)
   label      String?                        @db.Text
+  color      String?                        @db.Text
+  sortOrder  Int                            @default(0)
   createdBy  String?                        @db.Text
   createdAt  DateTime                       @default(now()) @db.Timestamptz(6)
   updatedAt  DateTime                       @updatedAt @db.Timestamptz(6)
   orderLocks RouteGroupingBranchOrderLock[]
 
+  @@index([groupingId, sortOrder])
   @@index([groupingId, createdAt])
   @@index([shopId, driverId])
   @@map("route_grouping_branches")

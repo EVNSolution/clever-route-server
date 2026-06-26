@@ -105,6 +105,30 @@ export function registerAdminRouteGroupRoutes(
     }
   });
 
+
+  app.patch<{ Body: unknown; Params: { branchId: string; routeGroupId: string } }>('/admin/route-groups/:routeGroupId/branches/:branchId', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+      log: request.log,
+      surface: 'admin_route_groups'
+    });
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+
+    try {
+      const payload = readUpdateBranchPayload(request.body);
+      const routeGroup = await dependencies.routeGroupingService.updateBranch({
+        appId: authenticated.appId,
+        branchId: request.params.branchId,
+        groupingId: request.params.routeGroupId,
+        shopDomain: authenticated.shopDomain,
+        ...payload
+      });
+      if (routeGroup === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route group not found'));
+      return reply.code(200).send({ data: { routeGroup }, error: null });
+    } catch (error) {
+      return sendRouteGroupingError(reply, error);
+    }
+  });
+
   app.patch<{ Body: unknown; Params: { branchId: string; routeGroupId: string } }>('/admin/route-groups/:routeGroupId/branches/:branchId/orders', async (request, reply) => {
     const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
@@ -238,6 +262,30 @@ export function registerAdminRouteGroupRoutes(
     }
   });
 
+
+  app.post<{ Body: unknown; Params: { routeGroupId: string } }>('/admin/route-groups/:routeGroupId/re-optimize', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+      log: request.log,
+      surface: 'admin_route_groups'
+    });
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+
+    try {
+      const payload = readGenerateChildRoutesPayload(request.body);
+      const routeGroup = await dependencies.routeGroupingService.generateChildRoutes({
+        appId: authenticated.appId,
+        actor: authenticated.subject,
+        groupingId: request.params.routeGroupId,
+        shopDomain: authenticated.shopDomain,
+        ...payload
+      });
+      if (routeGroup === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route group not found'));
+      return reply.code(200).send({ data: { routeGroup }, error: null });
+    } catch (error) {
+      return sendRouteGroupingError(reply, error);
+    }
+  });
+
   app.delete<{ Params: { routeGroupId: string } }>('/admin/route-groups/:routeGroupId', async (request, reply) => {
     const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
@@ -335,12 +383,24 @@ function readUpdateGroupingOrdersPayload(value: unknown): { addOrderIds?: string
   };
 }
 
-function readCreateBranchPayload(value: unknown): { driverId?: string | null; label?: string | null; orderIds?: string[] } {
+function readCreateBranchPayload(value: unknown): { color?: string | null; driverId?: string | null; label?: string | null; orderIds?: string[]; sortOrder?: number } {
   const object = requireObject(value);
   return {
+    ...(object.color === undefined ? {} : { color: readNullableString(object.color) }),
     ...(object.driverId === undefined ? {} : { driverId: readNullableString(object.driverId) }),
     ...(object.label === undefined ? {} : { label: readNullableString(object.label) }),
-    ...(object.orderIds === undefined ? {} : { orderIds: readStringArray(object.orderIds) })
+    ...(object.orderIds === undefined ? {} : { orderIds: readStringArray(object.orderIds) }),
+    ...(object.sortOrder === undefined ? {} : { sortOrder: readNonNegativeInteger(object.sortOrder) })
+  };
+}
+
+function readUpdateBranchPayload(value: unknown): { color?: string | null; driverId?: string | null; label?: string | null; sortOrder?: number } {
+  const object = requireObject(value);
+  return {
+    ...(object.color === undefined ? {} : { color: readNullableString(object.color) }),
+    ...(object.driverId === undefined ? {} : { driverId: readNullableString(object.driverId) }),
+    ...(object.label === undefined ? {} : { label: readNullableString(object.label) }),
+    ...(object.sortOrder === undefined ? {} : { sortOrder: readNonNegativeInteger(object.sortOrder) })
   };
 }
 
@@ -431,6 +491,11 @@ function readNullableString(value: unknown): string | null {
 
 function readBoolean(value: unknown): boolean {
   if (typeof value !== 'boolean') throw new BadRouteGroupPayloadError('boolean required');
+  return value;
+}
+
+function readNonNegativeInteger(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) throw new BadRouteGroupPayloadError('non-negative integer required');
   return value;
 }
 

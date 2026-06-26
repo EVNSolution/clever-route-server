@@ -7,11 +7,13 @@ export type RouteGroupingNotificationStatus = 'NOT_REQUIRED' | 'PENDING' | 'SENT
 export type RouteGroupingBranchDto = {
   createdAt: string;
   driverId: string | null;
+  color: string | null;
   driverName: string | null;
   id: string;
   label: string | null;
   orderIds: string[];
   ordersCount: number;
+  sortOrder: number;
   updatedAt: string;
 };
 
@@ -143,11 +145,24 @@ export type UpdateRouteGroupingOrdersInput = {
 export type CreateRouteGroupingBranchInput = {
   actor: string;
   appId?: string | undefined;
+  color?: string | null;
   driverId?: string | null;
   groupingId: string;
   label?: string | null;
   orderIds?: string[];
+  sortOrder?: number;
   shopDomain: string;
+};
+
+export type UpdateRouteGroupingBranchInput = {
+  appId?: string | undefined;
+  branchId: string;
+  color?: string | null;
+  driverId?: string | null;
+  groupingId: string;
+  label?: string | null;
+  shopDomain: string;
+  sortOrder?: number;
 };
 
 export type UpdateRouteGroupingBranchOrdersInput = {
@@ -168,6 +183,7 @@ export type RouteGroupingService = {
   deleteGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<DeleteRouteGroupingResult>;
   getGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null>;
   listGroupings(input: { appId?: string | undefined; dateRangeEnd?: string; dateRangeStart?: string; deliveryDate?: string; shopDomain: string }): Promise<RouteGroupingSummaryDto[]>;
+  updateBranch(input: UpdateRouteGroupingBranchInput): Promise<RouteGroupingDetailDto | null>;
   updateBranchOrders(input: UpdateRouteGroupingBranchOrdersInput): Promise<RouteGroupingDetailDto | null>;
   updateGroupingOrders(input: UpdateRouteGroupingOrdersInput): Promise<RouteGroupingDetailDto | null>;
   savePolygons(input: SaveRouteGroupingPolygonsInput): Promise<RouteGroupingDetailDto | null>;

@@ -21,6 +21,7 @@ import {
   type AdminCommerceConnectionsUiDependencies
 } from './routes/admin-commerce-connections-ui.routes.js';
 import { registerAdminDriversRoutes, type AdminDriversDependencies } from './routes/admin-drivers.routes.js';
+import { registerAdminInventoryRoutes, type AdminInventoryDependencies } from './routes/admin-inventories.routes.js';
 import { registerAdminOrdersRoutes, type AdminOrdersDependencies } from './routes/admin-orders.routes.js';
 import { registerApiDocsRoutes } from './routes/api-docs.routes.js';
 import { registerDriverEventRoutes, type DriverApiDependencies } from './routes/driver-events.routes.js';
@@ -46,6 +47,7 @@ export type BuildAppOptions = {
   adminCommerceConnections?: AdminCommerceConnectionsDependencies;
   adminCommerceConnectionsUi?: AdminCommerceConnectionsUiDependencies;
   adminDrivers?: AdminDriversDependencies;
+  adminInventories?: AdminInventoryDependencies;
   adminOrders?: AdminOrdersDependencies;
   adminRouteGroups?: AdminRouteGroupDependencies;
   adminRoutePlans?: AdminRoutePlanDependencies;
@@ -89,6 +91,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   if (options.adminDrivers !== undefined) {
     registerAdminDriversRoutes(app, options.adminDrivers);
+  }
+
+  if (options.adminInventories !== undefined) {
+    registerAdminInventoryRoutes(app, options.adminInventories);
   }
 
   if (options.adminOrders !== undefined) {
