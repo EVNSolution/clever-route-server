@@ -120,7 +120,7 @@ type DepotCoordinates = {
 type OptimizedChildRouteCandidate = {
   assignments: LoadedAssignment[];
   depot: DepotCoordinates;
-  driverId: string;
+  driverId: string | null;
   name: string;
   routeResult: RoutePlanRouteResult;
   shapeSignature: string;
@@ -178,6 +178,16 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     const groupingId = await this.prisma.$transaction(async (tx) => {
       const shop = await tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
       if (shop === null) throw new RouteGroupingValidationError(['shop not found']);
+      if (hasValidDepotCoordinates(input.depot)) {
+        await tx.shop.update({
+          data: {
+            defaultDepotAddress: input.depot.address,
+            defaultDepotLatitude: decimalString(input.depot.latitude),
+            defaultDepotLongitude: decimalString(input.depot.longitude)
+          },
+          where: { id: shop.id }
+        });
+      }
       const facts = await tx.orderDeliveryFact.findMany({
         include: {
           order: {
@@ -1021,13 +1031,14 @@ async function createCurrentGroupingVersion(
   });
 }
 
-function groupAssignmentsByDriver(assignments: LoadedAssignment[]): Map<string, LoadedAssignment[]> {
-  const byDriver = new Map<string, LoadedAssignment[]>();
+function groupAssignmentsByDriver(assignments: LoadedAssignment[]): Map<string | null, LoadedAssignment[]> {
+  const byDriver = new Map<string | null, LoadedAssignment[]>();
   for (const assignment of assignments) {
-    if (assignment.assignmentStatus !== 'ASSIGNED' || assignment.assignedDriverId === null) continue;
-    const current = byDriver.get(assignment.assignedDriverId) ?? [];
+    const driverId = assignment.assignmentStatus === 'ASSIGNED' ? assignment.assignedDriverId : null;
+    if (assignment.assignmentStatus !== 'ASSIGNED' && assignment.assignmentStatus !== 'UNASSIGNED') continue;
+    const current = byDriver.get(driverId) ?? [];
     current.push(assignment);
-    byDriver.set(assignment.assignedDriverId, current);
+    byDriver.set(driverId, current);
   }
   for (const entries of byDriver.values()) entries.sort((left, right) => left.sourceSequence - right.sourceSequence);
   return byDriver;
@@ -1035,7 +1046,7 @@ function groupAssignmentsByDriver(assignments: LoadedAssignment[]): Map<string, 
 
 function validateReadyForChildGeneration(group: LoadedGrouping, confirmRisk?: boolean): void {
   assertUniquePolygonDrivers(group.polygons);
-  const unresolved = group.orders.filter((order) => order.assignmentStatus !== 'ASSIGNED' || order.assignedDriverId === null);
+  const unresolved = group.orders.filter((order) => order.assignmentStatus !== 'ASSIGNED' && order.assignmentStatus !== 'UNASSIGNED');
   if (unresolved.length > 0) throw new RouteGroupingUnresolvedAssignmentsError(unresolved.length);
   const currentChildRoutePlanIds = new Set(group.childVersions.filter((child) => child.status === 'CURRENT' && child.routePlanId !== null).map((child) => child.routePlanId));
   const externallyOwnedStops = group.orders.filter((order) => order.deliveryStop.routePlanStops.some((stop) => !currentChildRoutePlanIds.has(stop.routePlanId)));
@@ -1156,7 +1167,7 @@ function validateChildRouteStopsNearDepot(assignments: LoadedAssignment[], depot
 function buildChildRouteDetail(input: {
   assignments: LoadedAssignment[];
   depot: DepotCoordinates;
-  driverId: string;
+  driverId: string | null;
   group: LoadedGrouping;
   name: string;
 }): RoutePlanDetail {
@@ -1171,7 +1182,7 @@ function buildChildRouteDetail(input: {
       depot: { latitude: input.depot.latitude, longitude: input.depot.longitude },
       driver: null,
       driverId: input.driverId,
-      id: `route-grouping:${input.group.id}:${input.driverId}`,
+      id: `route-grouping:${input.group.id}:${input.driverId ?? 'unassigned'}`,
       missingCoordinates: input.assignments.filter((assignment) => decimalNumber(assignment.deliveryStop.latitude) === null || decimalNumber(assignment.deliveryStop.longitude) === null).length,
       name: input.name,
       planDate: formatDateOnly(input.group.planDate) ?? '',
@@ -1213,8 +1224,8 @@ function childAssignmentToRouteStop(assignment: LoadedAssignment, sequence: numb
   };
 }
 
-function childRouteName(group: LoadedGrouping, driverId: string): string {
-  const driverName = group.orders.find((assignment) => assignment.assignedDriverId === driverId)?.assignedDriver?.displayName ?? 'Driver';
+function childRouteName(group: LoadedGrouping, driverId: string | null): string {
+  const driverName = driverId === null ? 'Unassigned' : group.orders.find((assignment) => assignment.assignedDriverId === driverId)?.assignedDriver?.displayName ?? 'Driver';
   return `${group.name} — ${driverName}`;
 }
 
@@ -1286,7 +1297,7 @@ async function createChildRouteGeometryCache(
   });
 }
 
-function createChildSnapshot(group: LoadedGrouping, assignments: LoadedAssignment[], driverId: string, name: string, version: number): ChildSnapshot {
+function createChildSnapshot(group: LoadedGrouping, assignments: LoadedAssignment[], driverId: string | null, name: string, version: number): ChildSnapshot {
   return {
     driverId,
     groupingId: group.id,
@@ -1347,7 +1358,7 @@ function toGroupingDetailDto(group: LoadedGrouping): RouteGroupingDetailDto {
 }
 
 function toGroupingSummaryDto(group: LoadedGrouping): RouteGroupingSummaryDto {
-  const unresolvedOrders = group.orders.filter((order) => order.assignmentStatus !== 'ASSIGNED').length;
+  const unresolvedOrders = group.orders.filter((order) => order.assignmentStatus !== 'ASSIGNED' && order.assignmentStatus !== 'UNASSIGNED').length;
   const currentChildren = group.childVersions.filter((child) => child.status === 'CURRENT');
   const dateRange = loadedGroupDateRange(group);
   return {
@@ -1563,6 +1574,10 @@ function describeError(error: unknown): string {
 
 function isUniqueConstraintError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === 'P2002';
+}
+
+function hasValidDepotCoordinates(depot: CreateRouteGroupingInput['depot']): depot is { address: string | null; latitude: number; longitude: number } {
+  return depot !== undefined && isValidLatitude(decimalNumber(depot.latitude)) && isValidLongitude(decimalNumber(depot.longitude));
 }
 
 function readDepotFromShop(group: LoadedGrouping): DepotCoordinates | null {

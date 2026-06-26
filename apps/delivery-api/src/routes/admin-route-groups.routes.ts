@@ -5,6 +5,7 @@ import {
   type AdminSessionAuthLogContext,
   type AdminSessionTokenVerifier
 } from './admin-session-auth.js';
+import type { RoutePlanDepotInput } from '../modules/route-plans/route-plan.types.js';
 import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js';
 import {
   RouteGroupingBranchLockConflictError,
@@ -360,6 +361,7 @@ function readListQuery(value: unknown): { dateRangeEnd?: string; dateRangeStart?
 function readCreateGroupingPayload(value: unknown): {
   dateRangeEnd?: string;
   dateRangeStart?: string;
+  depot?: RoutePlanDepotInput;
   name: string;
   orderIds: string[];
   planDate?: string;
@@ -369,8 +371,18 @@ function readCreateGroupingPayload(value: unknown): {
     ...optionalDateField(object, 'planDate'),
     ...optionalDateField(object, 'dateRangeStart'),
     ...optionalDateField(object, 'dateRangeEnd'),
+    ...(object.depot === undefined ? {} : { depot: readDepot(object.depot) }),
     name: requireNonEmptyString(object.name),
     orderIds: readStringArray(object.orderIds)
+  };
+}
+
+function readDepot(value: unknown): RoutePlanDepotInput {
+  const object = requireObject(value);
+  return {
+    address: object.address === undefined ? null : readNullableString(object.address),
+    latitude: object.latitude === undefined ? null : readNullableNumber(object.latitude),
+    longitude: object.longitude === undefined ? null : readNullableNumber(object.longitude)
   };
 }
 
@@ -481,6 +493,16 @@ function readStringArray(value: unknown): string[] {
 function requireNonEmptyString(value: unknown): string {
   if (typeof value !== 'string' || value.trim() === '') throw new BadRouteGroupPayloadError('non-empty string required');
   return value.trim();
+}
+
+function readNullableNumber(value: unknown): number | null {
+  if (value === null) return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  throw new BadRouteGroupPayloadError('number field must be a finite number or null');
 }
 
 function readNullableString(value: unknown): string | null {

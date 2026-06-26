@@ -1,4 +1,4 @@
-import type { RoutePlanSummary } from '../route-plans/route-plan.types.js';
+import type { RoutePlanDepotInput, RoutePlanSummary } from '../route-plans/route-plan.types.js';
 
 export type RouteGroupingDisplayStatus = 'DRAFT' | 'NEEDS_ASSIGNMENT' | 'READY' | 'PUBLISHED' | 'CHANGED' | 'CANCELLED';
 export type RouteGroupingChildDisplayStatus = 'DRAFT' | 'PUBLISHED' | 'NEEDS_REPUBLISH' | 'SUPERSEDED';
@@ -88,6 +88,7 @@ export type CreateRouteGroupingInput = {
   createdBy: string;
   dateRangeEnd?: string;
   dateRangeStart?: string;
+  depot?: RoutePlanDepotInput | undefined;
   name: string;
   orderIds: string[];
   planDate?: string;
