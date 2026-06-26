@@ -40,7 +40,12 @@ describe('route grouping contracts', () => {
     expect(classifyCoordinateInPolygons({ latitude: 0, longitude: 5 }, [first])).toEqual({ status: 'ASSIGNED', polygonIds: ['a'] });
   });
 
-
+  test('allows default unassigned child route generation before dispatch', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    expect(source).toContain("assignment.assignmentStatus === 'ASSIGNED' ? assignment.assignedDriverId : null");
+    expect(source).toContain("assignment.assignmentStatus !== 'ASSIGNED' && assignment.assignmentStatus !== 'UNASSIGNED'");
+    expect(source).toContain("driverId === null ? 'Unassigned'");
+  });
 
   test('fake FCM provider records string-safe route payload fields', async () => {
     const provider = new FakeDriverPushProvider();

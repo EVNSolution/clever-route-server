@@ -61,6 +61,7 @@ describe('Admin route group routes', () => {
         createdBy: 'shopify-user-id',
         dateRangeEnd: '2026-06-27',
         dateRangeStart: '2026-06-25',
+        depot: { address: '123 Main St', latitude: 43.7, longitude: -79.4 },
         name: 'June delivery group',
         orderIds: ['order-1', 'order-2'],
         shopDomain: 'example.myshopify.com'
@@ -353,6 +354,7 @@ function createPayload(): Record<string, unknown> {
   return {
     dateRangeEnd: '2026-06-27',
     dateRangeStart: '2026-06-25',
+    depot: { address: '123 Main St', latitude: 43.7, longitude: -79.4 },
     name: 'June delivery group',
     orderIds: ['order-1', 'order-2']
   };
