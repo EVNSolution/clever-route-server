@@ -273,7 +273,7 @@ export function registerAdminRouteGroupRoutes(
 
     try {
       const payload = readGenerateChildRoutesPayload(request.body);
-      const routeGroup = await dependencies.routeGroupingService.generateChildRoutes({
+      const routeGroup = await dependencies.routeGroupingService.reOptimizeRoutes({
         appId: authenticated.appId,
         actor: authenticated.subject,
         groupingId: request.params.routeGroupId,

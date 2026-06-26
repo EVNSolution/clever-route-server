@@ -125,6 +125,11 @@ type OptimizedChildRouteCandidate = {
   shapeSignature: string;
 };
 
+type ReOptimizedCurrentRouteCandidate = OptimizedChildRouteCandidate & {
+  childId: string;
+  routePlanId: string;
+};
+
 type RouteGroupingServiceOptions = {
   maxChildRouteStopDistanceFromDepotMeters?: number;
 };
@@ -515,6 +520,92 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     });
     if (projection === null) return null;
     return this.getGrouping({ appId: input.appId, groupingId: projection.groupingId, shopDomain: input.shopDomain });
+  }
+
+  async reOptimizeRoutes(input: GenerateChildRoutesInput): Promise<RouteGroupingDetailDto | null> {
+    const initial = await this.loadGrouping({ appId: input.appId, groupingId: input.groupingId, shopDomain: input.shopDomain });
+    if (initial === null) return null;
+    const currentChildren = initial.childVersions.filter((child) => child.status === 'CURRENT' && child.routePlanId !== null);
+    if (currentChildren.length === 0) {
+      return this.getGrouping({ appId: input.appId, groupingId: input.groupingId, shopDomain: input.shopDomain });
+    }
+    if (this.routeOptimizationService === undefined) {
+      throw new RouteGroupingValidationError(['route optimization service is not configured']);
+    }
+    if (this.routeGeometryProvider === undefined) {
+      throw new RouteGroupingValidationError(['route geometry provider is not configured']);
+    }
+    const depot = readDepotFromShop(initial);
+    if (depot === null) {
+      throw new RouteGroupingValidationError(['default depot coordinates are required before re-optimizing routes']);
+    }
+
+    const expectedSnapshot = childGenerationSnapshotSignature(initial);
+    const candidates: ReOptimizedCurrentRouteCandidate[] = [];
+    for (const child of currentChildren) {
+      const routePlanId = child.routePlanId;
+      if (routePlanId === null) continue;
+      const assignments = currentChildAssignments(initial, child);
+      if (assignments.length === 0) continue;
+      validateChildRouteStopsNearDepot(assignments, depot, this.maxChildRouteStopDistanceFromDepotMeters());
+      const name = child.routePlan?.name ?? readChildSnapshot(child.snapshot).name;
+      const sourceDetail = buildChildRouteDetail({ assignments, depot, driverId: child.driverId, group: initial, name });
+      const outcome = await resolveChildRouteOptimization(this.routeOptimizationService, sourceDetail, input.shopDomain);
+      if (!outcome.ok) {
+        throw new RouteGroupingValidationError([`route re-optimization failed: ${outcome.failure.message}`]);
+      }
+      if (outcome.result.missingCoordinateStops > 0) {
+        throw new RouteGroupingValidationError(['route re-optimization requires coordinates for every stop']);
+      }
+      const orderedAssignments = orderAssignmentsByOptimizationResult(assignments, outcome.result.stops);
+      const optimizedDetail = buildChildRouteDetail({ assignments: orderedAssignments, depot, driverId: child.driverId, group: initial, name });
+      const routeResult = await buildChildRouteGeometry(this.routeGeometryProvider, optimizedDetail);
+      if (routeResult.routeGeometry === null) {
+        throw new RouteGroupingValidationError(['route geometry could not be generated']);
+      }
+      candidates.push({
+        assignments: orderedAssignments,
+        childId: child.id,
+        depot,
+        driverId: child.driverId,
+        name,
+        routePlanId,
+        routeResult,
+        shapeSignature: computeRouteShapeSignature(optimizedDetail)
+      });
+    }
+
+    const groupingId = await this.prisma.$transaction(async (tx): Promise<string | null> => {
+      const group = await findGroupingForUpdate(tx, input);
+      if (group === null) return null;
+      const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
+      if (loaded === null) return null;
+      if (childGenerationSnapshotSignature(loaded) !== expectedSnapshot) {
+        throw new RouteGroupingValidationError(['route grouping changed; reload and retry re-optimization']);
+      }
+      for (const candidate of candidates) {
+        await rewriteRoutePlanStops(tx, candidate.routePlanId, candidate.assignments);
+        await tx.routePlan.update({
+          data: {
+            metrics: routeMetrics(candidate.assignments),
+            optimizerVersion: OPTIMIZER_VERSION
+          },
+          where: { id: candidate.routePlanId }
+        });
+        await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: candidate.routePlanId } });
+        await createChildRouteGeometryCache(tx, candidate.routePlanId, candidate);
+        await tx.routeGroupingChildVersion.update({
+          data: {
+            snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, candidate.name, loaded.currentVersion)
+          },
+          where: { id: candidate.childId }
+        });
+      }
+      await tx.routeGrouping.update({ data: { status: 'READY' }, where: { id: loaded.id } });
+      return loaded.id;
+    });
+    if (groupingId === null) return null;
+    return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
   }
 
   async deleteBranch(input: { appId?: string | undefined; branchId: string; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null> {
@@ -1048,6 +1139,36 @@ function childGenerationSnapshotSignature(group: LoadedGrouping): string {
       sourceSequence: order.sourceSequence
     }))
   });
+}
+
+function currentChildAssignments(group: LoadedGrouping, child: LoadedChild): LoadedAssignment[] {
+  const assignmentsByStopId = new Map(group.orders.map((assignment) => [assignment.deliveryStopId, assignment]));
+  const snapshotStops = readChildSnapshot(child.snapshot).stops
+    .sort((left, right) => left.sequence - right.sequence)
+    .map((stop) => stop.deliveryStopId);
+  const routePlanStops = (child.routePlan?.routeStops ?? [])
+    .sort((left, right) => left.sequence - right.sequence)
+    .map((stop) => stop.deliveryStopId);
+  const stopIds = snapshotStops.length > 0 ? snapshotStops : routePlanStops;
+
+  return stopIds
+    .map((deliveryStopId) => assignmentsByStopId.get(deliveryStopId) ?? null)
+    .filter((assignment): assignment is LoadedAssignment => assignment !== null);
+}
+
+async function rewriteRoutePlanStops(tx: Tx, routePlanId: string, assignments: LoadedAssignment[]): Promise<void> {
+  for (const [index, assignment] of assignments.entries()) {
+    await tx.routePlanStop.updateMany({
+      data: { sequence: -(index + 1) },
+      where: { deliveryStopId: assignment.deliveryStopId, routePlanId }
+    });
+  }
+  for (const [index, assignment] of assignments.entries()) {
+    await tx.routePlanStop.updateMany({
+      data: { sequence: index + 1 },
+      where: { deliveryStopId: assignment.deliveryStopId, routePlanId }
+    });
+  }
 }
 
 async function optimizeWithLegacyResult(
