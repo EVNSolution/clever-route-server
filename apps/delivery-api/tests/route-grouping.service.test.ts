@@ -41,6 +41,13 @@ describe('route grouping contracts', () => {
   });
 
 
+  test('lets re-optimization persist visible route slots without a pre-save blocker', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    expect(source).not.toContain('save route changes before re-optimizing new routes');
+    expect(source).toContain('const routeSlotCount = Math.max(routeAssignmentGroups.length, currentChildren.length)');
+    expect(source).toContain('const routePlan = await createChildRoutePlan(tx, loaded, candidate, input.actor)');
+  });
+
   test('defaults generated route groups to loop back to the depot', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain("const DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE = 'RETURN_TO_DEPOT'");

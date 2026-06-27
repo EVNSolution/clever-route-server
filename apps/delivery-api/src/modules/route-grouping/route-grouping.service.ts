@@ -128,8 +128,8 @@ type OptimizedChildRouteCandidate = {
 };
 
 type ReOptimizedCurrentRouteCandidate = OptimizedChildRouteCandidate & {
-  childId: string;
-  routePlanId: string;
+  childId: string | null;
+  routePlanId: string | null;
 };
 
 type RouteGroupingServiceOptions = {
@@ -617,26 +617,31 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     }
 
     const expectedSnapshot = childGenerationSnapshotSignature(initial);
-    const routeAssignmentGroups = hasBranchRouteLocks(initial)
+    const hasRouteLocks = hasBranchRouteLocks(initial);
+    const routeAssignmentGroups = hasRouteLocks
       ? groupAssignmentsByRouteBranch(initial)
-      : currentChildren.map((child) => ({ assignments: currentChildAssignments(initial, child), driverId: child.driverId, name: child.routePlan?.name ?? readChildSnapshot(child.snapshot).name }));
-    if (routeAssignmentGroups.length > currentChildren.length) {
-      throw new RouteGroupingValidationError(['save route changes before re-optimizing new routes']);
-    }
-
+      : currentChildren.map((child) => ({ assignments: currentChildAssignments(initial, child), driverId: child.driverId, name: childRouteSlotName(child) }));
+    const childByName = new Map(currentChildren.map((child) => [childRouteSlotName(child), child]));
+    const currentChildrenByRouteName = [...currentChildren].sort((left, right) => childRouteSlotName(left).localeCompare(childRouteSlotName(right), undefined, { numeric: true, sensitivity: 'base' }));
     const candidates: ReOptimizedCurrentRouteCandidate[] = [];
-    for (const [index, child] of currentChildren.entries()) {
-      const routePlanId = child.routePlanId;
-      if (routePlanId === null) continue;
-      const assignmentGroup = routeAssignmentGroups[index] ?? { assignments: [], driverId: child.driverId, name: child.routePlan?.name ?? readChildSnapshot(child.snapshot).name };
-      const assignments = assignmentGroup.assignments;
-      const name = assignmentGroup.name || child.routePlan?.name || readChildSnapshot(child.snapshot).name;
-      const driverId = assignmentGroup.driverId;
+    const routeSlotCount = Math.max(routeAssignmentGroups.length, currentChildren.length);
+    for (let index = 0; index < routeSlotCount; index += 1) {
+      const assignmentGroup = routeAssignmentGroups[index];
+      const child = hasRouteLocks && assignmentGroup !== undefined
+        ? childByName.get(assignmentGroup.name) ?? currentChildrenByRouteName[index]
+        : currentChildren[index];
+      const fallbackName = child?.routePlan?.name ?? (child ? readChildSnapshot(child.snapshot).name : `Route ${index + 1}`);
+      const effectiveGroup = assignmentGroup ?? { assignments: [], driverId: child?.driverId ?? null, name: fallbackName };
+      const assignments = effectiveGroup.assignments;
+      const name = effectiveGroup.name || fallbackName;
+      const driverId = effectiveGroup.driverId;
+      const routePlanId = child?.routePlanId ?? null;
+      const childId = child?.id ?? null;
       const sourceDetail = buildChildRouteDetail({ assignments, depot, driverId, group: initial, name });
       if (assignments.length === 0) {
         candidates.push({
           assignments,
-          childId: child.id,
+          childId,
           depot,
           driverId,
           name,
@@ -662,7 +667,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       }
       candidates.push({
         assignments: orderedAssignments,
-        childId: child.id,
+        childId,
         depot,
         driverId,
         name,
@@ -680,23 +685,47 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       if (childGenerationSnapshotSignature(loaded) !== expectedSnapshot) {
         throw new RouteGroupingValidationError(['route grouping changed; reload and retry re-optimization']);
       }
+      const currentVersion = loaded.versions.find((version) => version.status === 'CURRENT')
+        ?? await createCurrentGroupingVersion(tx, loaded, { actor: input.actor, hasCurrent: false, nextVersion: loaded.currentVersion });
       for (const candidate of candidates) {
-        await rewriteRoutePlanStops(tx, candidate.routePlanId, candidate.assignments);
-        await tx.routePlan.update({
+        if (candidate.routePlanId !== null && candidate.childId !== null) {
+          await rewriteRoutePlanStops(tx, candidate.routePlanId, candidate.assignments);
+          await tx.routePlan.update({
+            data: {
+              constraints: routeConstraints(loaded, candidate.depot),
+              driverId: candidate.driverId,
+              metrics: routeMetrics(candidate.assignments),
+              name: candidate.name,
+              optimizerVersion: OPTIMIZER_VERSION
+            },
+            where: { id: candidate.routePlanId }
+          });
+          await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: candidate.routePlanId } });
+          await createChildRouteGeometryCache(tx, candidate.routePlanId, candidate);
+          await tx.routeGroupingChildVersion.update({
+            data: {
+              driverId: candidate.driverId,
+              snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, candidate.name, loaded.currentVersion)
+            },
+            where: { id: candidate.childId }
+          });
+          continue;
+        }
+
+        const routePlan = await createChildRoutePlan(tx, loaded, candidate, input.actor);
+        await createChildRouteGeometryCache(tx, routePlan.id, candidate);
+        await tx.routeGroupingChildVersion.create({
           data: {
-            constraints: routeConstraints(loaded, candidate.depot),
-            metrics: routeMetrics(candidate.assignments),
-            optimizerVersion: OPTIMIZER_VERSION
-          },
-          where: { id: candidate.routePlanId }
-        });
-        await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: candidate.routePlanId } });
-        await createChildRouteGeometryCache(tx, candidate.routePlanId, candidate);
-        await tx.routeGroupingChildVersion.update({
-          data: {
-            snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, candidate.name, loaded.currentVersion)
-          },
-          where: { id: candidate.childId }
+            driverId: candidate.driverId,
+            groupingId: loaded.id,
+            groupingVersionId: currentVersion.id,
+            notificationStatus: 'SKIPPED',
+            routePlanId: routePlan.id,
+            shopId: loaded.shopId,
+            snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, routePlan.name, loaded.currentVersion),
+            status: 'CURRENT',
+            version: loaded.currentVersion
+          }
         });
       }
       await tx.routeGrouping.update({ data: { status: 'READY' }, where: { id: loaded.id } });
@@ -1288,6 +1317,10 @@ function childGenerationSnapshotSignature(group: LoadedGrouping): string {
   });
 }
 
+function childRouteSlotName(child: LoadedChild): string {
+  return child.routePlan?.name ?? readChildSnapshot(child.snapshot).name;
+}
+
 function currentChildAssignments(group: LoadedGrouping, child: LoadedChild): LoadedAssignment[] {
   const assignmentsByStopId = new Map(group.orders.map((assignment) => [assignment.deliveryStopId, assignment]));
   const snapshotStops = readChildSnapshot(child.snapshot).stops
@@ -1484,7 +1517,9 @@ async function createChildRoutePlan(tx: Tx, group: LoadedGrouping, candidate: Op
     },
     select: { id: true, name: true }
   });
-  await tx.routePlanStop.createMany({ data: candidate.assignments.map((assignment, index) => ({ deliveryStopId: assignment.deliveryStopId, routePlanId: routePlan.id, sequence: index + 1 })) });
+  if (candidate.assignments.length > 0) {
+    await tx.routePlanStop.createMany({ data: candidate.assignments.map((assignment, index) => ({ deliveryStopId: assignment.deliveryStopId, routePlanId: routePlan.id, sequence: index + 1 })) });
+  }
   return routePlan;
 }
 
