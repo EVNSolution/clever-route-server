@@ -41,6 +41,7 @@ import { hashPushToken } from './driver-push-token.service.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
 
 const OPTIMIZER_VERSION = 'route-grouping-projection-v1';
+const DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE = 'RETURN_TO_DEPOT' as const;
 const ROUTE_GROUPING_GEOMETRY_REFRESH_CONCURRENCY = 2;
 export const DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS = 500_000;
 
@@ -661,6 +662,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         await rewriteRoutePlanStops(tx, candidate.routePlanId, candidate.assignments);
         await tx.routePlan.update({
           data: {
+            constraints: routeConstraints(loaded, candidate.depot),
             metrics: routeMetrics(candidate.assignments),
             optimizerVersion: OPTIMIZER_VERSION
           },
@@ -1350,7 +1352,7 @@ function buildChildRouteDetail(input: {
       missingCoordinates: input.assignments.filter((assignment) => decimalNumber(assignment.deliveryStop.latitude) === null || decimalNumber(assignment.deliveryStop.longitude) === null).length,
       name: input.name,
       planDate: formatDateOnly(input.group.planDate) ?? '',
-      routeEndMode: 'END_AT_LAST_STOP',
+      routeEndMode: DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE,
       status: 'DRAFT',
       stopsCount: input.assignments.length,
       updatedAt: now
@@ -1503,7 +1505,7 @@ function readOptionalSnapshotString(value: unknown): string {
 function routeConstraints(group: LoadedGrouping, depot?: DepotCoordinates | null): Prisma.InputJsonObject {
   return {
     ...(depot === undefined || depot === null ? {} : { depot }),
-    routeEndMode: 'END_AT_LAST_STOP',
+    routeEndMode: DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE,
     routeScope: { deliveryDate: formatDateOnly(group.planDate), deliverySession: group.deliverySession, routeScopeKey: group.routeScopeKey, serviceType: group.serviceType }
   };
 }
@@ -1613,7 +1615,7 @@ function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan
     missingCoordinates: 0,
     name: routePlan.name,
     planDate: formatDateOnly(routePlan.planDate) ?? '',
-    routeEndMode: 'END_AT_LAST_STOP' as const,
+    routeEndMode: DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE,
     status: routePlan.status,
     stopsCount: routePlan.routeStops.length,
     updatedAt: routePlan.updatedAt.toISOString()
