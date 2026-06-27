@@ -196,6 +196,28 @@ export function registerAdminRouteGroupRoutes(
     }
   });
 
+  app.patch<{ Body: unknown; Params: { routeGroupId: string } }>('/admin/route-groups/:routeGroupId/draft', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+      log: request.log,
+      surface: 'admin_route_groups'
+    });
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+
+    try {
+      const payload = readSaveDraftPayload(request.body);
+      const routeGroup = await dependencies.routeGroupingService.saveDraft({
+        appId: authenticated.appId,
+        groupingId: request.params.routeGroupId,
+        shopDomain: authenticated.shopDomain,
+        ...payload
+      });
+      if (routeGroup === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route group not found'));
+      return reply.code(200).send({ data: { routeGroup }, error: null });
+    } catch (error) {
+      return sendRouteGroupingError(reply, error);
+    }
+  });
+
   app.patch<{ Body: unknown; Params: { routeGroupId: string } }>('/admin/route-groups/:routeGroupId/polygons', async (request, reply) => {
     const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
@@ -413,6 +435,20 @@ function readUpdateBranchPayload(value: unknown): { color?: string | null; drive
     ...(object.driverId === undefined ? {} : { driverId: readNullableString(object.driverId) }),
     ...(object.label === undefined ? {} : { label: readNullableString(object.label) }),
     ...(object.sortOrder === undefined ? {} : { sortOrder: readNonNegativeInteger(object.sortOrder) })
+  };
+}
+
+function readSaveDraftPayload(value: unknown): { routes: Array<{ branchId: string | null; orderIds: string[] }> } {
+  const object = requireObject(value);
+  if (!Array.isArray(object.routes)) throw new BadRouteGroupPayloadError('routes must be an array');
+  return {
+    routes: object.routes.map((entry) => {
+      const route = requireObject(entry);
+      return {
+        branchId: route.branchId === undefined ? null : readNullableString(route.branchId),
+        orderIds: readStringArray(route.orderIds)
+      };
+    })
   };
 }
 

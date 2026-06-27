@@ -175,6 +175,16 @@ export type UpdateRouteGroupingBranchOrdersInput = {
   shopDomain: string;
 };
 
+export type SaveRouteGroupingDraftInput = {
+  appId?: string | undefined;
+  groupingId: string;
+  routes: Array<{
+    branchId: string | null;
+    orderIds: string[];
+  }>;
+  shopDomain: string;
+};
+
 export type DeleteRouteGroupingResult = { deleted: boolean; deletedChildRoutePlanCount: number; groupingId: string };
 
 export type RouteGroupingService = {
@@ -187,6 +197,7 @@ export type RouteGroupingService = {
   updateBranch(input: UpdateRouteGroupingBranchInput): Promise<RouteGroupingDetailDto | null>;
   updateBranchOrders(input: UpdateRouteGroupingBranchOrdersInput): Promise<RouteGroupingDetailDto | null>;
   updateGroupingOrders(input: UpdateRouteGroupingOrdersInput): Promise<RouteGroupingDetailDto | null>;
+  saveDraft(input: SaveRouteGroupingDraftInput): Promise<RouteGroupingDetailDto | null>;
   savePolygons(input: SaveRouteGroupingPolygonsInput): Promise<RouteGroupingDetailDto | null>;
   resolveAssignments(input: ResolveRouteGroupingAssignmentsInput): Promise<RouteGroupingDetailDto | null>;
   generateChildRoutes(input: GenerateChildRoutesInput): Promise<RouteGroupingDetailDto | null>;

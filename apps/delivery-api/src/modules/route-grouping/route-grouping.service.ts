@@ -31,6 +31,7 @@ import {
   type RouteGroupingService,
   type RouteGroupingSummaryDto,
   type RouteGroupingWarningDto,
+  type SaveRouteGroupingDraftInput,
   type SaveRouteGroupingPolygonsInput,
   type UpdateRouteGroupingBranchInput,
   type UpdateRouteGroupingBranchOrdersInput,
@@ -386,6 +387,79 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
 
       await recomputeAssignments(tx, group.id);
       return group.id;
+    });
+    if (groupingId === null) return null;
+    return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
+  }
+
+  async saveDraft(input: SaveRouteGroupingDraftInput): Promise<RouteGroupingDetailDto | null> {
+    const routes = input.routes.map((route) => ({
+      branchId: route.branchId === null ? null : route.branchId.trim(),
+      orderIds: normalizeIds(route.orderIds)
+    }));
+    const submittedOrderIds = routes.flatMap((route) => route.orderIds);
+    if (routes.length === 0) throw new RouteGroupingValidationError(['route draft must include at least one route']);
+    if (new Set(submittedOrderIds).size !== submittedOrderIds.length) throw new RouteGroupingValidationError(['route draft order ids must be unique']);
+
+    const groupingId = await this.prisma.$transaction(async (tx) => {
+      const group = await findGroupingForUpdate(tx, input);
+      if (group === null) return null;
+
+      const existingOrders = await tx.routeGroupingOrder.findMany({
+        select: { deliveryStopId: true, id: true, orderId: true },
+        where: { groupingId: group.id, shopId: group.shopId }
+      });
+      const existingOrderIds = new Set(existingOrders.map((order) => order.orderId));
+      if (existingOrders.length !== submittedOrderIds.length || submittedOrderIds.some((orderId) => !existingOrderIds.has(orderId))) {
+        throw new RouteGroupingValidationError(['route draft must include every current route group order exactly once']);
+      }
+
+      const branchIds = routes.map((route) => route.branchId).filter((branchId): branchId is string => branchId !== null && branchId !== '');
+      if (new Set(branchIds).size !== branchIds.length) throw new RouteGroupingValidationError(['route draft branch ids must be unique']);
+      if (branchIds.length > 0) {
+        const branches = await tx.routeGroupingBranch.findMany({
+          select: { id: true },
+          where: { groupingId: group.id, id: { in: branchIds }, shopId: group.shopId }
+        });
+        if (branches.length !== branchIds.length) throw new RouteGroupingValidationError(['route draft branch ids must belong to the current route grouping']);
+      }
+
+      const byOrderId = new Map(existingOrders.map((order) => [order.orderId, order]));
+      await tx.routeGroupingBranchOrderLock.deleteMany({ where: { groupingId: group.id, shopId: group.shopId } });
+
+      let sourceSequence = 1;
+      for (const route of routes) {
+        for (const orderId of route.orderIds) {
+          await tx.routeGroupingOrder.updateMany({
+            data: { sourceSequence },
+            where: { groupingId: group.id, orderId, shopId: group.shopId }
+          });
+          sourceSequence += 1;
+        }
+      }
+
+      const lockRows = routes.flatMap((route) => {
+        if (route.branchId === null || route.branchId === '') return [];
+        return route.orderIds.map((orderId) => {
+          const row = byOrderId.get(orderId);
+          if (row === undefined) throw new RouteGroupingValidationError(['route draft orders must belong to the current route grouping']);
+          return {
+            branchId: route.branchId as string,
+            deliveryStopId: row.deliveryStopId,
+            groupingId: group.id,
+            orderId,
+            routeGroupingOrderId: row.id,
+            shopId: group.shopId
+          };
+        });
+      });
+      if (lockRows.length > 0) await tx.routeGroupingBranchOrderLock.createMany({ data: lockRows });
+      await recomputeAssignments(tx, group.id);
+      await tx.routeGrouping.update({ data: { status: 'CHANGED' }, where: { id: group.id } });
+      return group.id;
+    }).catch((error: unknown) => {
+      if (isUniqueConstraintError(error)) throw new RouteGroupingBranchLockConflictError(submittedOrderIds);
+      throw error;
     });
     if (groupingId === null) return null;
     return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
@@ -822,6 +896,7 @@ function groupingInclude() {
       include: {
         driver: true,
         orderLocks: {
+          include: { routeGroupingOrder: { select: { sourceSequence: true } } },
           orderBy: { createdAt: 'asc' as const }
         }
       },
@@ -1504,7 +1579,9 @@ function toBranchDto(branch: LoadedBranch) {
     driverName: branch.driver?.displayName ?? null,
     id: branch.id,
     label: branch.label,
-    orderIds: branch.orderLocks.map((lock) => lock.orderId),
+    orderIds: [...branch.orderLocks]
+      .sort((first, second) => first.routeGroupingOrder.sourceSequence - second.routeGroupingOrder.sourceSequence)
+      .map((lock) => lock.orderId),
     ordersCount: branch.orderLocks.length,
     sortOrder: branch.sortOrder,
     updatedAt: branch.updatedAt.toISOString()
