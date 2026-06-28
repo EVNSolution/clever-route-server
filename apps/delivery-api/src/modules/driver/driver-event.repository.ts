@@ -45,7 +45,6 @@ export class DriverEventScopeError extends Error {
   }
 }
 
-const TERMINAL_DELIVERY_STOP_STATUSES = new Set(['DELIVERED', 'FAILED']);
 
 export class PrismaDriverEventRepository {
   constructor(private readonly prisma: DriverEventPrismaClient) {}
@@ -154,33 +153,15 @@ async function applyDriverEventStateTransition(
         shopId
       }
     });
-    await completeRoutePlanIfTerminal(prisma, {
-      driverId: input.driverId,
-      routePlanId,
-      shopId
-    });
     return;
   }
 
   if (input.eventType === 'ROUTE_STARTED') {
-    await prisma.routePlan.updateMany({
-      data: { status: 'IN_PROGRESS' },
-      where: {
-        driverId: input.driverId,
-        id: requireRoutePlanId(input),
-        shopId,
-        status: { in: ['ASSIGNED', 'OPTIMIZED'] }
-      }
-    });
     return;
   }
 
   if (input.eventType === 'ROUTE_COMPLETED') {
-    await completeRoutePlanIfTerminal(prisma, {
-      driverId: input.driverId,
-      routePlanId: requireRoutePlanId(input),
-      shopId
-    });
+    return;
   }
 }
 
@@ -219,64 +200,6 @@ async function requireOwnedRoutePlanStop(
   if (routePlanStop === null) {
     throw new DriverEventScopeError('Driver stop context is outside the authenticated route scope');
   }
-}
-
-async function completeRoutePlanIfTerminal(
-  prisma: DriverEventTransactionClient,
-  input: { driverId: string; routePlanId: string; shopId: string }
-): Promise<void> {
-  const routePlan = await prisma.routePlan.findFirst({
-    select: {
-      id: true,
-      routeStops: {
-        select: {
-          deliveryStop: {
-            select: {
-              status: true
-            }
-          }
-        }
-      }
-    },
-    where: {
-      driverId: input.driverId,
-      id: input.routePlanId,
-      shopId: input.shopId
-    }
-  });
-  if (routePlan === null || routePlan.routeStops.length === 0) {
-    return;
-  }
-
-  const allStopsTerminal = routePlan.routeStops.every((routeStop) =>
-    TERMINAL_DELIVERY_STOP_STATUSES.has(routeStop.deliveryStop.status)
-  );
-  if (!allStopsTerminal) {
-    return;
-  }
-
-  const completionEvent = await prisma.driverEvent.findFirst({
-    select: { id: true },
-    where: {
-      driverId: input.driverId,
-      eventType: 'ROUTE_COMPLETED',
-      routePlanId: input.routePlanId,
-      shopId: input.shopId
-    }
-  });
-  if (completionEvent === null) {
-    return;
-  }
-
-  await prisma.routePlan.updateMany({
-    data: { status: 'COMPLETED' },
-    where: {
-      driverId: input.driverId,
-      id: input.routePlanId,
-      shopId: input.shopId,
-      status: { notIn: ['COMPLETED', 'CANCELLED'] }
-    }
-  });
 }
 
 function requireRoutePlanId(input: RecordDriverEventInput): string {

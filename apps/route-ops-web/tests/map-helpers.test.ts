@@ -234,7 +234,7 @@ describe('route ops map helpers', () => {
   test('keeps published route stops neutral while still fitting to stops and depot', () => {
     const detail: RoutePlanDetailDto = {
       ...routeDetail(),
-      routePlan: { ...routeDetail().routePlan, status: 'ASSIGNED' },
+      routePlan: { ...routeDetail().routePlan, status: 'PUBLISHED' },
       routeGeometry: null,
       routeStopPoints: []
     };

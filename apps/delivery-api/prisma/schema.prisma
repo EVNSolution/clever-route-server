@@ -88,10 +88,7 @@ enum OrderDeliveryFactReadiness {
 
 enum RoutePlanStatus {
   DRAFT
-  OPTIMIZED
-  ASSIGNED
-  IN_PROGRESS
-  COMPLETED
+  PUBLISHED
   CANCELLED
 }
 
@@ -168,9 +165,7 @@ enum DriverAccountDeletionRequestStatus {
 
 enum RouteGroupingStatus {
   DRAFT
-  READY
   PUBLISHED
-  CHANGED
   CANCELLED
 }
 

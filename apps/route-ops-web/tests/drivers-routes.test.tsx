@@ -183,7 +183,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
       '미배정',
     );
     expect(formatRoutePlanStatus('DRAFT', 'ko-KR')).toBe('초안');
-    expect(formatRoutePlanStatus('ASSIGNED', 'ko-KR')).toBe('배정됨');
+    expect(formatRoutePlanStatus('PUBLISHED', 'ko-KR')).toBe('게시됨');
   });
 
 
@@ -332,8 +332,8 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
     const pending = driverFixture();
     const linked = linkedDriverFixture();
     const draftAssigned = routePlanFixture({ driverId: linked.id, status: 'DRAFT' });
-    const publishedLinked = routePlanFixture({ driverId: linked.id, status: 'ASSIGNED' });
-    const publishedPending = routePlanFixture({ driverId: pending.id, status: 'ASSIGNED' });
+    const publishedLinked = routePlanFixture({ driverId: linked.id, status: 'PUBLISHED' });
+    const publishedPending = routePlanFixture({ driverId: pending.id, status: 'PUBLISHED' });
 
     expect(isRouteVisibleToLinkedDriver(draftAssigned, [linked])).toBe(false);
     expect(getRoutePublishBadge(draftAssigned)?.text).toBe('Draft');
@@ -352,7 +352,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
         deliveryDate: '2026-05-30',
         driverId: linked.id,
         planDate: '2026-05-30',
-        status: 'ASSIGNED',
+        status: 'PUBLISHED',
       }),
     });
 
@@ -1013,7 +1013,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
           JSON.stringify({
             data: {
               routeGeometry: null,
-              routePlan: routePlanFixture({ status: 'ASSIGNED' }),
+              routePlan: routePlanFixture({ status: 'PUBLISHED' }),
               routeStopPoints: [],
               stops: [],
             },
@@ -1049,7 +1049,7 @@ describe('Route Ops driver invite and route assignment UI helpers', () => {
           JSON.stringify({
             data: {
               routeGeometry: null,
-              routePlan: routePlanFixture({ driverId: 'driver-id', status: 'ASSIGNED' }),
+              routePlan: routePlanFixture({ driverId: 'driver-id', status: 'PUBLISHED' }),
               routeStopPoints: [],
               saveOperations: [{ name: 'driver', reason: 'driver_changed', status: 'applied' }],
               stops: [],
@@ -1282,7 +1282,7 @@ function routeGroupingFixture(overrides: Partial<RouteGroupingSummaryDto> = {}):
   return {
     children: [],
     currentVersion: 1,
-    displayStatus: 'READY',
+    displayStatus: 'DRAFT',
     id: 'group-id',
     name: 'Route 2026-06-19',
     planDate: '2026-06-19',

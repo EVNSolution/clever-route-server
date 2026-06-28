@@ -147,7 +147,7 @@ export class PrismaDriverProofMediaRepository {
         driverId: input.driverId,
         id: input.routePlanId,
         shopId: shop.id,
-        status: { in: ['ASSIGNED', 'IN_PROGRESS', 'OPTIMIZED'] }
+        status: 'PUBLISHED'
       }
     });
     if (routePlan === null) {

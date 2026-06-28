@@ -118,7 +118,7 @@ describe('WordPress plugin routes', () => {
       const list = await app.inject({
         headers: { authorization: 'Bearer valid-token' },
         method: 'GET',
-        url: '/wordpress/plugin/route-plans?status=optimized&from=2026-05-21'
+        url: '/wordpress/plugin/route-plans?status=published&from=2026-05-21'
       });
       expect(list.statusCode).toBe(200);
       expect(list.json()).toEqual({
@@ -131,7 +131,7 @@ describe('WordPress plugin routes', () => {
       expect(listRoutePlans).toHaveBeenCalledWith(
         expect.objectContaining({
           context: pluginContext(),
-          filters: { driverId: null, from: '2026-05-21', status: 'optimized', to: null }
+          filters: { driverId: null, from: '2026-05-21', status: 'published', to: null }
         })
       );
       const listRoutePlansInput = listRoutePlans.mock.calls[0]?.[0];
@@ -939,7 +939,7 @@ function routePlanSummary(): WordPressPluginRoutePlanSummary {
     id: '11111111-1111-4111-8111-111111111111',
     name: 'Morning route',
     planDate: '2026-05-21',
-    status: 'optimized',
+    status: 'published',
     stopCount: 1,
     totalDistanceMeters: 12345,
     updatedAt: '2026-05-21T12:00:00.000Z'

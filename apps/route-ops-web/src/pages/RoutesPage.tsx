@@ -118,7 +118,7 @@ export function isRouteVisibleToLinkedDriver(
     driver?.appLinked === true || driver?.authStatus === "APP_LINKED";
   return (
     isDriverLinked &&
-    ["ASSIGNED", "IN_PROGRESS", "OPTIMIZED"].includes(routePlan.status)
+    routePlan.status === "PUBLISHED"
   );
 }
 

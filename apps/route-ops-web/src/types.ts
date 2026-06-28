@@ -277,7 +277,7 @@ export type RoutePlanDetailDto = {
 
 export type RouteGroupingChildDto = {
   childVersion: number;
-  displayStatus: "DRAFT" | "PUBLISHED" | "NEEDS_REPUBLISH" | "SUPERSEDED";
+  displayStatus: "DRAFT" | "PUBLISHED" | "CANCELLED";
   driverId: string | null;
   driverName: string | null;
   notificationStatus: "NOT_REQUIRED" | "PENDING" | "SENT" | "FAILED";
@@ -322,7 +322,7 @@ export type RouteGroupingWarningDto = {
 export type RouteGroupingSummaryDto = {
   children: RouteGroupingChildDto[];
   currentVersion: number;
-  displayStatus: "DRAFT" | "NEEDS_ASSIGNMENT" | "READY" | "PUBLISHED" | "CHANGED" | "CANCELLED";
+  displayStatus: "DRAFT" | "PUBLISHED" | "CANCELLED";
   id: string;
   name: string;
   planDate: string;

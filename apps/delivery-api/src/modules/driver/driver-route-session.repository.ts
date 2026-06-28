@@ -38,11 +38,7 @@ type StartedRouteEventRecord = {
   routePlanId: string | null;
 };
 
-const ACTIVE_ROUTE_STATUSES = [
-  RoutePlanStatus.ASSIGNED,
-  RoutePlanStatus.IN_PROGRESS,
-  RoutePlanStatus.OPTIMIZED
-] as const;
+const ACTIVE_ROUTE_STATUSES = [RoutePlanStatus.PUBLISHED] as const;
 const TERMINAL_DELIVERY_STOP_STATUSES = new Set(['DELIVERED', 'FAILED']);
 
 const activeRoutePlanInclude = (driverId: string) => ({
@@ -133,7 +129,7 @@ export class PrismaDriverRouteSessionRepository {
       where: {
         driverId: input.driverId,
         shopId: input.shopId,
-        status: RoutePlanStatus.IN_PROGRESS
+        status: RoutePlanStatus.PUBLISHED
       }
     });
     const activeInProgressRoute = inProgressRoute as ActiveRoutePlanRecord | null;
@@ -194,6 +190,7 @@ export class PrismaDriverRouteSessionRepository {
     shopId: string;
   }): Promise<boolean> {
     const latestStart = input.routePlan.driverEvents.at(0) ?? null;
+    if (latestStart === null) return false;
     const completionEvent = await this.prisma.driverEvent.findFirst({
       select: { id: true },
       where: {
@@ -201,7 +198,7 @@ export class PrismaDriverRouteSessionRepository {
         eventType: DriverEventType.ROUTE_COMPLETED,
         routePlanId: input.routePlan.id,
         shopId: input.shopId,
-        ...(latestStart === null ? {} : { occurredAt: { gt: latestStart.occurredAt } })
+        occurredAt: { gt: latestStart.occurredAt }
       }
     });
 

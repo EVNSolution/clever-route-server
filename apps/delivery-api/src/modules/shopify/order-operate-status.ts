@@ -22,7 +22,7 @@ export function deriveOrderHealth(row: CanonicalOrderRow): OrderHealth {
 }
 
 export function deriveOperateDeliveryStatus(row: CanonicalOrderRow): OperateDeliveryStatus {
-  if (row.deliveryStopStatus === 'DELIVERED' || row.routePlanStatus === 'COMPLETED') {
+  if (row.deliveryStopStatus === 'DELIVERED') {
     return 'completed';
   }
 
@@ -42,19 +42,7 @@ export function deriveOperateDeliveryStatus(row: CanonicalOrderRow): OperateDeli
 }
 
 function hasActiveRouteState(row: CanonicalOrderRow): boolean {
-  if (row.planningStatus === 'PLANNED') return true;
-  if (row.deliveryStopStatus === 'ASSIGNED' || row.deliveryStopStatus === 'EN_ROUTE' || row.deliveryStopStatus === 'ARRIVED') {
-    return true;
-  }
-  if (
-    row.routePlanStatus === 'DRAFT' ||
-    row.routePlanStatus === 'OPTIMIZED' ||
-    row.routePlanStatus === 'ASSIGNED' ||
-    row.routePlanStatus === 'IN_PROGRESS'
-  ) {
-    return true;
-  }
-  return row.routePlanStatus !== null && row.routePlanStatus !== 'CANCELLED';
+  return row.deliveryStopStatus === 'ASSIGNED' || row.deliveryStopStatus === 'EN_ROUTE' || row.deliveryStopStatus === 'ARRIVED';
 }
 
 function hasPreparationBlocker(row: CanonicalOrderRow): boolean {

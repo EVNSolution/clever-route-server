@@ -286,11 +286,9 @@ export const routesCopy = {
     appLinked: 'App linked',
     invitePending: 'Invite pending',
     routeStatus: {
-      ASSIGNED: 'Assigned',
-      COMPLETED: 'Completed',
+      CANCELLED: 'Cancelled',
       DRAFT: 'Draft',
-      IN_PROGRESS: 'In progress',
-      OPTIMIZED: 'Optimized'
+      PUBLISHED: 'Published'
     },
     publishState: {
       draft: 'Draft',
@@ -407,11 +405,9 @@ export const routesCopy = {
     appLinked: '앱 연결됨',
     invitePending: '초대 대기',
     routeStatus: {
-      ASSIGNED: '배정됨',
-      COMPLETED: '완료됨',
+      CANCELLED: '취소됨',
       DRAFT: '초안',
-      IN_PROGRESS: '진행 중',
-      OPTIMIZED: '최적화됨'
+      PUBLISHED: '게시됨'
     },
     publishState: {
       draft: '초안',

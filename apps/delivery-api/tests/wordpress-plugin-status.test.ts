@@ -9,10 +9,7 @@ import {
 describe('WordPress plugin status DTO mapping', () => {
   test('maps route plan statuses exactly for WordPress DTOs', () => {
     expect(toWordPressRoutePlanStatus('DRAFT')).toBe('draft');
-    expect(toWordPressRoutePlanStatus('OPTIMIZED')).toBe('optimized');
-    expect(toWordPressRoutePlanStatus('ASSIGNED')).toBe('assigned');
-    expect(toWordPressRoutePlanStatus('IN_PROGRESS')).toBe('in_progress');
-    expect(toWordPressRoutePlanStatus('COMPLETED')).toBe('completed');
+    expect(toWordPressRoutePlanStatus('PUBLISHED')).toBe('published');
     expect(toWordPressRoutePlanStatus('CANCELLED')).toBe('cancelled');
   });
 
@@ -28,7 +25,8 @@ describe('WordPress plugin status DTO mapping', () => {
   });
 
   test('maps plugin status filters back to internal route plan enums', () => {
-    expect(toInternalRoutePlanStatus('in_progress')).toBe('IN_PROGRESS');
+    expect(toInternalRoutePlanStatus('published')).toBe('PUBLISHED');
+    expect(toInternalRoutePlanStatus('in_progress')).toBe('PUBLISHED');
     expect(toInternalRoutePlanStatus('bogus')).toBeNull();
   });
 });

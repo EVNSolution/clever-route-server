@@ -276,8 +276,8 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         return false;
       }
 
-      if (routePlan.status === 'CANCELLED' || routePlan.status === 'COMPLETED') {
-        throw new RoutePlanPublishInvalidError('Completed or cancelled routes cannot be published to drivers.');
+      if (routePlan.status === 'CANCELLED') {
+        throw new RoutePlanPublishInvalidError('Cancelled routes cannot be published to drivers.');
       }
 
       if (routePlan.driverId === null) {
@@ -303,7 +303,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
               ...objectOrEmpty(routePlan.metrics),
               itemFingerprint: currentItemSummary.fingerprint
             }),
-            status: 'ASSIGNED'
+            status: 'PUBLISHED'
           },
           where: { id: routePlan.id }
         });

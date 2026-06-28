@@ -32,12 +32,12 @@ describe('PrismaDriverSelfServiceRepository', () => {
     expect(prisma.routePlan.findMany).toHaveBeenCalledWith(expect.objectContaining({
       include: routeHistoryIncludeMatcher('driver-id'),
       orderBy: [{ planDate: 'asc' }, { id: 'asc' }],
-      take: 26,
+      take: 104,
       where: routePlanWhereMatcher({
         driverId: 'driver-id',
         planDate: { gte: new Date('2026-05-01T00:00:00.000Z'), lte: new Date('2026-05-31T00:00:00.000Z') },
         shopId: 'shop-id',
-        status: { in: ['COMPLETED'] }
+        status: { in: ['PUBLISHED'] }
       })
     }));
     expect(result.routes).toEqual([
@@ -117,6 +117,43 @@ describe('PrismaDriverSelfServiceRepository', () => {
     }));
   });
 
+  test('continues raw pagination until a filtered route-history page has matches', async () => {
+    const pendingBatch = Array.from({ length: 104 }, (_, index) => routePlanRecord({
+      driverEvents: [],
+      id: `${String(index).padStart(8, '0')}-1111-4111-8111-111111111111`,
+      routeStops: [{ deliveryStop: { status: 'ASSIGNED' } }]
+    }));
+    const { prisma } = createPrismaHarness({ routePlans: [] });
+    prisma.routePlan.findMany
+      .mockResolvedValueOnce(pendingBatch)
+      .mockResolvedValueOnce([routePlanRecord({ id: nextRoutePlanId })]);
+    const repository = new PrismaDriverSelfServiceRepository(prisma as never);
+
+    const result = await repository.listDriverRoutes({
+      cursor: null,
+      driverId: 'driver-id',
+      from: null,
+      shopDomain: 'example.myshopify.com',
+      status: 'completed',
+      to: null
+    });
+
+    expect(result.routes).toHaveLength(1);
+    expect(result.pageInfo.hasNextPage).toBe(false);
+    expect(prisma.routePlan.findMany).toHaveBeenCalledTimes(2);
+    expect(prisma.routePlan.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      where: routePlanWhereMatcher({
+        OR: [
+          { planDate: { gt: new Date('2026-05-19T00:00:00.000Z') } },
+          {
+            id: { gt: '00000103-1111-4111-8111-111111111111' },
+            planDate: new Date('2026-05-19T00:00:00.000Z')
+          }
+        ]
+      })
+    }));
+  });
+
   test('falls back to a valid server timezone when route constraints are missing or invalid', async () => {
     const { prisma } = createPrismaHarness({ routePlans: [routePlanRecord({ constraints: { timezone: 'Mars/Base' } })] });
     const repository = new PrismaDriverSelfServiceRepository(prisma as never);
@@ -160,7 +197,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
         driverId: 'driver-id',
         id: routePlanId,
         shopId: 'shop-id',
-        status: { in: ['OPTIMIZED', 'ASSIGNED', 'IN_PROGRESS', 'COMPLETED'] }
+        status: { in: ['PUBLISHED'] }
       }
     });
     expect(prisma.driverRouteFeedback.create).toHaveBeenCalledWith({
@@ -259,7 +296,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
         driverId: 'driver-id',
         planDate: { gte: new Date('2026-05-01T00:00:00.000Z'), lt: new Date('2026-06-01T00:00:00.000Z') },
         shopId: 'shop-id',
-        status: 'COMPLETED'
+        status: 'PUBLISHED'
       }
     }));
     expect(result).toEqual({
@@ -322,7 +359,7 @@ function routePlanWhereMatcher(expected: Record<string, unknown>): unknown {
 
 function routeHistoryIncludeMatcher(driverId: string): unknown {
   const driverEventsMatcher: unknown = expect.objectContaining({
-    where: { driverId, eventType: 'ROUTE_COMPLETED' }
+    where: { driverId, eventType: { in: ['ROUTE_STARTED', 'ROUTE_COMPLETED'] } }
   });
 
   return expect.objectContaining({
@@ -332,13 +369,14 @@ function routeHistoryIncludeMatcher(driverId: string): unknown {
 
 function routePlanRecord(input: {
   constraints?: unknown;
+  driverEvents?: { eventType: string; occurredAt: Date }[];
   id?: string;
   routeStops?: { deliveryStop: { status: string } }[];
   status?: string;
 } = {}) {
   return {
     constraints: input.constraints ?? { companyDisplayName: 'Tomatono Toronto', timezone: 'America/Toronto' },
-    driverEvents: [{ occurredAt: new Date('2026-05-19T08:30:00.000Z') }],
+    driverEvents: input.driverEvents ?? [{ eventType: 'ROUTE_COMPLETED', occurredAt: new Date('2026-05-19T08:30:00.000Z') }],
     id: input.id ?? routePlanId,
     name: 'Tuesday AM Route',
     planDate: new Date('2026-05-19T00:00:00.000Z'),
@@ -348,6 +386,6 @@ function routePlanRecord(input: {
       { deliveryStop: { status: 'ASSIGNED' } }
     ],
     shop: { shopDomain: 'example.myshopify.com' },
-    status: input.status ?? 'COMPLETED'
+    status: input.status ?? 'PUBLISHED'
   };
 }

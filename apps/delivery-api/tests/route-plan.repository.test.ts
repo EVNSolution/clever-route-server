@@ -471,7 +471,7 @@ describe('PrismaRoutePlanRepository', () => {
           missingCoordinates: 0,
           stopsCount: 2
         },
-        status: 'ASSIGNED'
+        status: 'PUBLISHED'
       })
     });
     const repository = new PrismaRoutePlanRepository(
@@ -519,7 +519,7 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
-  test('publishes a driver-assigned draft route as assigned for driver app visibility', async () => {
+  test('publishes a driver-assigned draft route for driver app visibility', async () => {
     const { prisma } = createPrismaHarness();
     prisma.routePlan.findFirst
       .mockResolvedValueOnce({
@@ -543,7 +543,7 @@ describe('PrismaRoutePlanRepository', () => {
         name: 'CLEVER route draft',
         planDate: new Date('2026-05-08T00:00:00.000Z'),
         routeStops: [],
-        status: 'ASSIGNED',
+        status: 'PUBLISHED',
         updatedAt: new Date('2026-05-07T12:30:00.000Z')
       });
     const repository = new PrismaRoutePlanRepository(
@@ -555,8 +555,8 @@ describe('PrismaRoutePlanRepository', () => {
       shopDomain: 'example.myshopify.com'
     });
 
-    expect(result?.routePlan.status).toBe('ASSIGNED');
-    expect(hasRouteStatusUpdate(prisma.routePlan.update.mock.calls, 'route-plan-id', 'ASSIGNED')).toBe(true);
+    expect(result?.routePlan.status).toBe('PUBLISHED');
+    expect(hasRouteStatusUpdate(prisma.routePlan.update.mock.calls, 'route-plan-id', 'PUBLISHED')).toBe(true);
   });
 
   test('rejects publishing a route before a driver is assigned', async () => {
@@ -579,7 +579,7 @@ describe('PrismaRoutePlanRepository', () => {
     ).rejects.toBeInstanceOf(RoutePlanPublishInvalidError);
 
     expect(prisma.routePlan.update).not.toHaveBeenCalledWith(expect.objectContaining({
-      data: { status: 'ASSIGNED' }
+      data: { status: 'PUBLISHED' }
     }));
   });
 
@@ -923,7 +923,7 @@ describe('PrismaRoutePlanRepository', () => {
         depotLatitude: '43.6532',
         depotLongitude: '-79.3832',
         id: 'route-plan-id',
-        status: 'ASSIGNED'
+        status: 'PUBLISHED'
       })
       .mockResolvedValueOnce({
         createdAt: new Date('2026-05-07T12:30:00.000Z'),
@@ -940,7 +940,7 @@ describe('PrismaRoutePlanRepository', () => {
         name: 'Published return route',
         planDate: new Date('2026-05-08T00:00:00.000Z'),
         routeStops: [],
-        status: 'ASSIGNED',
+        status: 'PUBLISHED',
         updatedAt: new Date('2026-05-07T12:30:00.000Z')
       });
     const repository = new PrismaRoutePlanRepository(
@@ -954,7 +954,7 @@ describe('PrismaRoutePlanRepository', () => {
     });
 
     expect(detail?.routePlan.routeEndMode).toBe('RETURN_TO_DEPOT');
-    expect(detail?.routePlan.status).toBe('ASSIGNED');
+    expect(detail?.routePlan.status).toBe('PUBLISHED');
     expect(prisma.routePlan.update).toHaveBeenCalledWith({
       data: {
         constraints: {
@@ -1052,7 +1052,7 @@ describe('PrismaRoutePlanRepository', () => {
       data: { driverId: 'driver-id' },
       where: { id: 'route-plan-id' }
     }));
-    expect(hasRouteStatusUpdate(prisma.routePlan.update.mock.calls, 'route-plan-id', 'ASSIGNED')).toBe(false);
+    expect(hasRouteStatusUpdate(prisma.routePlan.update.mock.calls, 'route-plan-id', 'PUBLISHED')).toBe(false);
   });
 
   test('aggregate save applies route options after publishing without republishing', async () => {
@@ -1060,13 +1060,13 @@ describe('PrismaRoutePlanRepository', () => {
     const assignedRoute = routePlanRecord({
       constraints: { routeEndMode: 'END_AT_LAST_STOP' },
       driverId: 'driver-id',
-      status: 'ASSIGNED',
+      status: 'PUBLISHED',
       updatedAt: new Date('2026-05-07T12:30:00.000Z')
     });
     const savedRoute = routePlanRecord({
       constraints: { routeEndMode: 'RETURN_TO_DEPOT' },
       driverId: 'driver-id',
-      status: 'ASSIGNED',
+      status: 'PUBLISHED',
       updatedAt: new Date('2026-05-07T12:31:00.000Z')
     });
     prisma.routePlan.findFirst
@@ -1087,12 +1087,12 @@ describe('PrismaRoutePlanRepository', () => {
 
     expectRoutePlanVersionClaim(prisma, '2026-05-07T12:30:00.000Z');
     expect(result?.detail.routePlan.routeEndMode).toBe('RETURN_TO_DEPOT');
-    expect(result?.detail.routePlan.status).toBe('ASSIGNED');
+    expect(result?.detail.routePlan.status).toBe('PUBLISHED');
     expect(result?.operations).toEqual([
       { name: 'options', reason: 'route_end_mode_changed', status: 'applied' },
       { name: 'stops', reason: 'not_provided', status: 'skipped' },
       { name: 'driver', reason: 'not_provided', status: 'skipped' },
-      { name: 'publish', reason: 'status_assigned', status: 'skipped' }
+      { name: 'publish', reason: 'status_published', status: 'skipped' }
     ]);
     expect(routePlanStopCreateMany).not.toHaveBeenCalled();
     expect(prisma.routePlan.update).toHaveBeenCalledWith({
@@ -1123,7 +1123,7 @@ describe('PrismaRoutePlanRepository', () => {
         missingCoordinates: 0,
         stopsCount: 2
       },
-      status: 'ASSIGNED',
+      status: 'PUBLISHED',
       updatedAt: new Date('2026-05-07T12:30:00.000Z')
     });
     prisma.routePlan.findFirst
@@ -1178,7 +1178,7 @@ describe('PrismaRoutePlanRepository', () => {
     const { prisma, routePlanStopCreateMany } = createPrismaHarness();
     const assignedRoute = routePlanRecord({
       driverId: 'driver-id',
-      status: 'ASSIGNED',
+      status: 'PUBLISHED',
       updatedAt: new Date('2026-05-07T12:30:00.000Z')
     });
     prisma.routePlan.findFirst
@@ -1204,7 +1204,7 @@ describe('PrismaRoutePlanRepository', () => {
       { name: 'options', reason: 'not_provided', status: 'skipped' },
       { name: 'stops', reason: 'not_provided', status: 'skipped' },
       { name: 'driver', reason: 'not_provided', status: 'skipped' },
-      { name: 'publish', reason: 'status_assigned', status: 'skipped' }
+      { name: 'publish', reason: 'status_published', status: 'skipped' }
     ]);
   });
 

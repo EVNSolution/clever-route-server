@@ -56,7 +56,7 @@ const activeRoutePlan: ActiveRoutePlanTestRecord = {
 };
 
 describe('PrismaDriverRouteSessionRepository', () => {
-  test('restores an active route session from an IN_PROGRESS route plan', async () => {
+  test('restores an active route session from a started published route plan', async () => {
     const { assignedRouteService, prisma } = createHarness();
     const repository = new PrismaDriverRouteSessionRepository(prisma as never, assignedRouteService);
 
@@ -73,7 +73,7 @@ describe('PrismaDriverRouteSessionRepository', () => {
       where: {
         driverId: 'driver-id',
         shopId: 'shop-id',
-        status: 'IN_PROGRESS'
+        status: 'PUBLISHED'
       }
     }));
     expect(assignedRouteService.getAssignedRoute).toHaveBeenCalledWith({
@@ -124,9 +124,7 @@ describe('PrismaDriverRouteSessionRepository', () => {
     expect(JSON.stringify(prisma.driverEvent.findMany.mock.calls)).toContain('"eventType":"ROUTE_STARTED"');
     expect(JSON.stringify(prisma.driverEvent.findMany.mock.calls)).toContain('"driverId":"driver-id"');
     expect(JSON.stringify(prisma.driverEvent.findMany.mock.calls)).toContain('"shopId":"shop-id"');
-    expect(JSON.stringify(prisma.driverEvent.findMany.mock.calls)).toContain('"ASSIGNED"');
-    expect(JSON.stringify(prisma.driverEvent.findMany.mock.calls)).toContain('"IN_PROGRESS"');
-    expect(JSON.stringify(prisma.driverEvent.findMany.mock.calls)).toContain('"OPTIMIZED"');
+    expect(JSON.stringify(prisma.driverEvent.findMany.mock.calls)).toContain('"PUBLISHED"');
     expect(result).toMatchObject({
       status: 'ACTIVE_SESSION',
       session: {

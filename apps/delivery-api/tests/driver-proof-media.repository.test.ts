@@ -40,7 +40,7 @@ describe('PrismaDriverProofMediaRepository', () => {
         driverId: 'driver-id',
         id: 'route-plan-id',
         shopId: 'shop-id',
-        status: { in: ['ASSIGNED', 'IN_PROGRESS', 'OPTIMIZED'] }
+        status: 'PUBLISHED'
       }
     });
     expect(prisma.routePlanStop.findUnique).toHaveBeenCalledWith({

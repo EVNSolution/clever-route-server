@@ -43,7 +43,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
         planningStatus: 'PLANNED',
         readiness: 'READY_TO_PLAN',
         routePlanName: 'Route draft',
-        routePlanStatus: 'ASSIGNED',
+        routePlanStatus: 'PUBLISHED',
         serviceType: 'EVENING_DELIVERY',
         timeWindowEnd: '21:00',
         timeWindowStart: '17:00'
@@ -356,7 +356,8 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     expect(deriveOrderHealth(canonicalRow())).toBe('normal');
     expect(deriveOperateDeliveryStatus(canonicalRow({ readiness: 'NEEDS_REVIEW', reviewReasons: ['missing_delivery_date'] }))).toBe('preparing');
     expect(deriveOrderHealth(canonicalRow({ cancelledAt: '2026-05-25T00:00:00.000Z' }))).toBe('needs_review');
-    expect(deriveOperateDeliveryStatus(canonicalRow({ planningStatus: 'PLANNED', routePlanStatus: 'IN_PROGRESS' }))).toBe('in_progress');
+    expect(deriveOperateDeliveryStatus(canonicalRow({ planningStatus: 'PLANNED', routePlanStatus: 'PUBLISHED' }))).toBe('preparing');
+    expect(deriveOperateDeliveryStatus(canonicalRow({ deliveryStopStatus: 'ASSIGNED', planningStatus: 'PLANNED' }))).toBe('in_progress');
     expect(deriveOperateDeliveryStatus(canonicalRow({ deliveryStopStatus: 'DELIVERED', planningStatus: 'PLANNED' }))).toBe('completed');
   });
 
@@ -1007,7 +1008,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     });
   });
 
-  test.each(['DRAFT', 'IN_PROGRESS'])(
+  test.each(['DRAFT', 'PUBLISHED'])(
     'creates a critical notification when Woo changes an address already assigned to a %s route',
     async (routePlanStatus) => {
       const { prisma } = createPrismaHarness({
@@ -1518,7 +1519,7 @@ function canonicalOrderRecord(routeStopCount: number): Record<string, unknown> {
         recipientName: 'Noah Yoon',
         routePlanStops: Array.from({ length: routeStopCount }, (_, index) => ({
           id: `rps-${index}`,
-          routePlan: { id: 'route-plan-id', name: 'Route draft', status: 'ASSIGNED' }
+          routePlan: { id: 'route-plan-id', name: 'Route draft', status: 'PUBLISHED' }
         })),
         status: routeStopCount > 0 ? 'ASSIGNED' : 'PENDING',
       }

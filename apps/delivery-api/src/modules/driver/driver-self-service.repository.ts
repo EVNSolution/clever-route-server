@@ -1,4 +1,4 @@
-import { RoutePlanStatus } from '@prisma/client';
+import { DriverEventType, RoutePlanStatus } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 
@@ -35,62 +35,76 @@ type ScopedDriverRecord = {
   };
 };
 
-type RoutePlanHistoryRecord = {
+type RouteProgressRecord = {
+  driverEvents: { eventType: string; occurredAt: Date }[];
+  routeStops: { deliveryStop: { status: string } }[];
+};
+
+type RoutePlanHistoryRecord = RouteProgressRecord & {
   constraints: unknown;
-  driverEvents: { occurredAt: Date }[];
   id: string;
   name: string;
   planDate: Date;
-  routeStops: { deliveryStop: { status: string } }[];
   shop: { shopDomain: string };
   status: string;
 };
 
 const DEFAULT_ROUTE_HISTORY_LIMIT = 25;
 const ROUTE_HISTORY_LIMIT_PLUS_ONE = DEFAULT_ROUTE_HISTORY_LIMIT + 1;
-const SUPPORTED_ROUTE_STATUSES: RoutePlanStatus[] = [
-  RoutePlanStatus.OPTIMIZED,
-  RoutePlanStatus.ASSIGNED,
-  RoutePlanStatus.IN_PROGRESS,
-  RoutePlanStatus.COMPLETED
-];
+const ROUTE_HISTORY_FETCH_LIMIT = ROUTE_HISTORY_LIMIT_PLUS_ONE * 4;
+const SUPPORTED_ROUTE_STATUSES: RoutePlanStatus[] = [RoutePlanStatus.PUBLISHED];
+const TERMINAL_STOP_STATUSES = new Set(['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED']);
+const ROUTE_HISTORY_EVENT_TYPES: DriverEventType[] = [DriverEventType.ROUTE_STARTED, DriverEventType.ROUTE_COMPLETED];
 
 export class PrismaDriverSelfServiceRepository {
   constructor(private readonly prisma: DriverSelfServicePrismaClient) {}
 
   async listDriverRoutes(input: ListDriverRoutesInput): Promise<ListDriverRoutesResult> {
     const scoped = await this.resolveScopedDriver(input);
-    const cursor = decodeRouteHistoryCursor(input.cursor);
-    const routePlans = await this.prisma.routePlan.findMany({
-      include: routeHistoryIncludeFor(input.driverId),
-      orderBy: [{ planDate: 'asc' }, { id: 'asc' }],
-      take: ROUTE_HISTORY_LIMIT_PLUS_ONE,
-      where: {
-        driverId: input.driverId,
-        planDate: {
-          ...(input.from === null ? {} : { gte: input.from }),
-          ...(input.to === null ? {} : { lte: input.to })
-        },
-        shopId: scoped.shop.id,
-        status: { in: routePlanStatusesFor(input.status) },
-        ...(cursor === null ? {} : {
-          OR: [
-            { planDate: { gt: cursor.planDate } },
-            { planDate: cursor.planDate, id: { gt: cursor.id } }
-          ]
-        })
-      }
-    });
+    let cursor = decodeRouteHistoryCursor(input.cursor);
+    const pageItems: RoutePlanHistoryRecord[] = [];
+    let rawExhausted = false;
 
-    const pageItems: RoutePlanHistoryRecord[] = routePlans.slice(0, DEFAULT_ROUTE_HISTORY_LIMIT);
-    const hasNextPage = routePlans.length > DEFAULT_ROUTE_HISTORY_LIMIT;
-    const lastItem = pageItems.at(-1) ?? null;
+    while (pageItems.length <= DEFAULT_ROUTE_HISTORY_LIMIT && !rawExhausted) {
+      const routePlans = await this.prisma.routePlan.findMany({
+        include: routeHistoryIncludeFor(input.driverId),
+        orderBy: [{ planDate: 'asc' }, { id: 'asc' }],
+        take: ROUTE_HISTORY_FETCH_LIMIT,
+        where: {
+          driverId: input.driverId,
+          planDate: {
+            ...(input.from === null ? {} : { gte: input.from }),
+            ...(input.to === null ? {} : { lte: input.to })
+          },
+          shopId: scoped.shop.id,
+          status: { in: [...SUPPORTED_ROUTE_STATUSES] },
+          ...(cursor === null ? {} : {
+            OR: [
+              { planDate: { gt: cursor.planDate } },
+              { planDate: cursor.planDate, id: { gt: cursor.id } }
+            ]
+          })
+        }
+      });
+      const records = routePlans as unknown as RoutePlanHistoryRecord[];
+      for (const routePlan of records) {
+        if (input.status === null || toHistoryStatus(routePlan) === input.status) pageItems.push(routePlan);
+        if (pageItems.length > DEFAULT_ROUTE_HISTORY_LIMIT) break;
+      }
+      rawExhausted = records.length < ROUTE_HISTORY_FETCH_LIMIT;
+      const lastRaw = records.at(-1) ?? null;
+      if (lastRaw === null) break;
+      cursor = { id: lastRaw.id, planDate: lastRaw.planDate };
+    }
+
+    const visibleItems = pageItems.slice(0, DEFAULT_ROUTE_HISTORY_LIMIT);
+    const lastItem = visibleItems.at(-1) ?? null;
 
     return {
-      routes: pageItems.map(toRouteHistoryItem),
+      routes: visibleItems.map(toRouteHistoryItem),
       pageInfo: {
         endCursor: lastItem === null ? null : encodeRouteHistoryCursor(lastItem),
-        hasNextPage
+        hasNextPage: pageItems.length > DEFAULT_ROUTE_HISTORY_LIMIT || !rawExhausted
       }
     };
   }
@@ -171,6 +185,11 @@ export class PrismaDriverSelfServiceRepository {
     const { end, start } = monthRange(input.period);
     const routePlans = await this.prisma.routePlan.findMany({
       include: {
+        driverEvents: {
+          orderBy: { occurredAt: 'desc' },
+          select: { eventType: true, occurredAt: true },
+          where: { driverId: input.driverId, eventType: { in: ROUTE_HISTORY_EVENT_TYPES } }
+        },
         routeStops: {
           include: {
             deliveryStop: {
@@ -183,11 +202,12 @@ export class PrismaDriverSelfServiceRepository {
         driverId: input.driverId,
         planDate: { gte: start, lt: end },
         shopId: scoped.shop.id,
-        status: RoutePlanStatus.COMPLETED
+        status: RoutePlanStatus.PUBLISHED
       }
     });
 
-    const completedStops = routePlans.reduce(
+    const completedRoutePlans = (routePlans as unknown as RouteProgressRecord[]).filter((routePlan) => toHistoryStatus(routePlan) === 'completed');
+    const completedStops = completedRoutePlans.reduce(
       (sum, routePlan) => sum + routePlan.routeStops.filter((stop) => stop.deliveryStop.status === 'DELIVERED').length,
       0
     );
@@ -198,7 +218,7 @@ export class PrismaDriverSelfServiceRepository {
       period: input.period,
       summary: {
         adjustments: 0,
-        completedRoutes: routePlans.length,
+        completedRoutes: completedRoutePlans.length,
         completedStops,
         estimatedPayout: 0,
         grossAmount: 0
@@ -245,11 +265,10 @@ function routeHistoryIncludeFor(driverId: string) {
   return {
     driverEvents: {
       orderBy: { occurredAt: 'desc' },
-      select: { occurredAt: true },
-      take: 1,
+      select: { eventType: true, occurredAt: true },
       where: {
         driverId,
-        eventType: 'ROUTE_COMPLETED'
+        eventType: { in: ROUTE_HISTORY_EVENT_TYPES }
       }
     },
     routeStops: {
@@ -280,7 +299,7 @@ function toDriverProfile(driver: {
 function toRouteHistoryItem(routePlan: RoutePlanHistoryRecord): DriverRouteHistoryItem {
   const stopStatuses = routePlan.routeStops.map((stop) => stop.deliveryStop.status);
   return {
-    completedAt: routePlan.driverEvents[0]?.occurredAt.toISOString() ?? null,
+    completedAt: routePlan.driverEvents.find((event) => event.eventType === 'ROUTE_COMPLETED')?.occurredAt.toISOString() ?? null,
     completedStopCount: stopStatuses.filter((status) => status === 'DELIVERED').length,
     deliveryDate: formatDateOnly(routePlan.planDate),
     failedStopCount: stopStatuses.filter((status) => status === 'FAILED').length,
@@ -288,34 +307,25 @@ function toRouteHistoryItem(routePlan: RoutePlanHistoryRecord): DriverRouteHisto
     routePlanId: routePlan.id,
     shopDomain: normalizeDriverCommerceDomain(routePlan.shop.shopDomain),
     companyDisplayName: readCompanyDisplayName(routePlan.constraints, routePlan.shop.shopDomain),
-    status: toHistoryStatus(routePlan.status),
+    status: toHistoryStatus(routePlan),
     stopCount: stopStatuses.length,
     timezone: readIanaTimezone(routePlan.constraints),
   };
 }
 
-function toHistoryStatus(status: string): DriverRouteHistoryStatus {
-  if (status === 'COMPLETED') {
-    return 'completed';
-  }
-  if (status === 'IN_PROGRESS') {
-    return 'active';
-  }
+function toHistoryStatus(routePlan: RouteProgressRecord): DriverRouteHistoryStatus {
+  if (hasRouteCompleted(routePlan)) return 'completed';
+  if (hasRouteStarted(routePlan)) return 'active';
   return 'pending';
 }
 
-function routePlanStatusesFor(status: DriverRouteHistoryStatus | null): RoutePlanStatus[] {
-  if (status === 'completed') {
-    return [RoutePlanStatus.COMPLETED];
-  }
-  if (status === 'active') {
-    return [RoutePlanStatus.IN_PROGRESS];
-  }
-  if (status === 'pending') {
-    return [RoutePlanStatus.OPTIMIZED, RoutePlanStatus.ASSIGNED];
-  }
+function hasRouteStarted(routePlan: RouteProgressRecord): boolean {
+  return routePlan.driverEvents.some((event) => event.eventType === 'ROUTE_STARTED');
+}
 
-  return [...SUPPORTED_ROUTE_STATUSES];
+function hasRouteCompleted(routePlan: RouteProgressRecord): boolean {
+  if (routePlan.driverEvents.some((event) => event.eventType === 'ROUTE_COMPLETED')) return true;
+  return routePlan.routeStops.length > 0 && routePlan.routeStops.every((stop) => TERMINAL_STOP_STATUSES.has(stop.deliveryStop.status));
 }
 
 function readCompanyDisplayName(value: unknown, shopDomain: string): string {

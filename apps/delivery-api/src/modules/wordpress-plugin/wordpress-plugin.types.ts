@@ -67,12 +67,9 @@ export type WordPressPluginRoutePlanSummary = {
 };
 
 export type WordPressPluginRoutePlanStatus =
-  | 'assigned'
   | 'cancelled'
-  | 'completed'
   | 'draft'
-  | 'in_progress'
-  | 'optimized';
+  | 'published';
 
 export type WordPressPluginStopStatus =
   | 'arrived'

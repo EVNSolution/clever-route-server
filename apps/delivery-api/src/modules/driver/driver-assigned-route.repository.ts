@@ -133,7 +133,7 @@ export class PrismaDriverAssignedRouteRepository {
         driverId: input.driverId,
         ...(input.routeContext === null ? {} : { id: input.routeContext }),
         shopId: shop.id,
-        status: { in: ['ASSIGNED', 'IN_PROGRESS', 'OPTIMIZED'] }
+        status: 'PUBLISHED'
       }
     });
 

@@ -70,7 +70,7 @@ export class PrismaDriverRouteAccessRepository {
       select: routePlanSelect,
       where: {
         driver: { is: { authSubject: { not: null }, phone: phoneE164, status: 'ACTIVE' } },
-        status: { in: ['ASSIGNED', 'IN_PROGRESS', 'OPTIMIZED'] }
+        status: 'PUBLISHED'
       }
     });
 

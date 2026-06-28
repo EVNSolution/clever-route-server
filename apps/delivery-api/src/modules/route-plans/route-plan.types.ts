@@ -252,7 +252,7 @@ export type SaveRoutePlanPayload = {
    *
    * This is a command-style save, not a plain partial update: when the final
    * effective route remains DRAFT and has both a driver and at least one stop,
-   * the server publishes it to ASSIGNED in the same save transaction.
+   * the server publishes it to PUBLISHED in the same save transaction.
    */
   departureTime?: string | null | undefined;
   driverId?: string | null | undefined;

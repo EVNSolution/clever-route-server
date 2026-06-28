@@ -5,11 +5,16 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 describe('route grouping contracts', () => {
-  test('keeps RoutePlanStatus free of UI-derived published/superseded values', () => {
+  test('keeps RoutePlanStatus collapsed to durable lifecycle values only', () => {
     const schema = readFileSync(join(process.cwd(), 'prisma/schema.prisma'), 'utf8');
     const enumBody = /enum RoutePlanStatus \{(?<body>[\s\S]*?)\}/u.exec(schema)?.groups?.body ?? '';
-    expect(enumBody).toContain('ASSIGNED');
-    expect(enumBody).not.toContain('PUBLISHED');
+    expect(enumBody).toContain('DRAFT');
+    expect(enumBody).toContain('PUBLISHED');
+    expect(enumBody).toContain('CANCELLED');
+    expect(enumBody).not.toContain('ASSIGNED');
+    expect(enumBody).not.toContain('OPTIMIZED');
+    expect(enumBody).not.toContain('IN_PROGRESS');
+    expect(enumBody).not.toContain('COMPLETED');
     expect(enumBody).not.toContain('SUPERSEDED');
   });
 
@@ -100,6 +105,12 @@ describe('route grouping contracts', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).not.toContain('child route status no longer allows delete');
     expect(source).not.toContain('assertGroupingDeleteAllowed');
+  });
+
+  test('marks the parent route group published when a child route is published', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    expect(source).toContain("this.prisma.routeGrouping.updateMany({ data: { status: 'PUBLISHED' }");
+    expect(source).toContain("where: { id: child.groupingId, status: { not: 'CANCELLED' } }");
   });
 
   test('fake FCM provider records string-safe route payload fields', async () => {

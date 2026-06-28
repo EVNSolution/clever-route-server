@@ -4,12 +4,9 @@ import type {
 } from './wordpress-plugin.types.js';
 
 const routePlanStatusMap = {
-  ASSIGNED: 'assigned',
   CANCELLED: 'cancelled',
-  COMPLETED: 'completed',
   DRAFT: 'draft',
-  IN_PROGRESS: 'in_progress',
-  OPTIMIZED: 'optimized'
+  PUBLISHED: 'published'
 } as const satisfies Record<string, WordPressPluginRoutePlanStatus>;
 
 const stopStatusMap = {
@@ -24,12 +21,16 @@ const stopStatusMap = {
 } as const satisfies Record<string, WordPressPluginStopStatus>;
 
 const internalRoutePlanStatusMap: Record<WordPressPluginRoutePlanStatus, keyof typeof routePlanStatusMap> = {
-  assigned: 'ASSIGNED',
   cancelled: 'CANCELLED',
-  completed: 'COMPLETED',
   draft: 'DRAFT',
-  in_progress: 'IN_PROGRESS',
-  optimized: 'OPTIMIZED'
+  published: 'PUBLISHED'
+};
+
+const legacyInternalRoutePlanStatusMap: Record<string, keyof typeof routePlanStatusMap> = {
+  assigned: 'PUBLISHED',
+  completed: 'PUBLISHED',
+  in_progress: 'PUBLISHED',
+  optimized: 'PUBLISHED'
 };
 
 export function toWordPressRoutePlanStatus(status: string): WordPressPluginRoutePlanStatus {
@@ -41,7 +42,7 @@ export function toWordPressRoutePlanStatus(status: string): WordPressPluginRoute
 }
 
 export function toInternalRoutePlanStatus(status: string): string | null {
-  return internalRoutePlanStatusMap[status as WordPressPluginRoutePlanStatus] ?? null;
+  return internalRoutePlanStatusMap[status as WordPressPluginRoutePlanStatus] ?? legacyInternalRoutePlanStatusMap[status] ?? null;
 }
 
 export function toWordPressStopStatus(status: string): WordPressPluginStopStatus {

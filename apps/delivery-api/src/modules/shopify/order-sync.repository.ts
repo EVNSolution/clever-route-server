@@ -1403,8 +1403,7 @@ function matchesRouteOpsTab(
 function isRouteOpsTerminal(row: CanonicalOrderRow): boolean {
   return (
     row.cancelledAt !== null ||
-    row.deliveryStopStatus === "DELIVERED" ||
-    row.routePlanStatus === "COMPLETED"
+    row.deliveryStopStatus === "DELIVERED"
   );
 }
 

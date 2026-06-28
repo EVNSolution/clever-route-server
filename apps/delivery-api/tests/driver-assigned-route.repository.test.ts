@@ -232,7 +232,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
     expect(routePlanFindArgs?.where).toMatchObject({ id: 'wrong-route' });
   });
 
-  test('excludes completed routes from assigned-route lookup', async () => {
+  test('looks up only published routes for assigned-route visibility', async () => {
     const { prisma } = createPrismaHarness({ routePlan: null });
     const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
 
@@ -244,10 +244,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
 
     expect(result).toEqual({ status: 'NO_ASSIGNED_ROUTE' });
     const routePlanFindArgs = prisma.routePlan.findFirst.mock.calls[0]?.[0];
-    expect(routePlanFindArgs?.where.status).toEqual({
-      in: ['ASSIGNED', 'IN_PROGRESS', 'OPTIMIZED']
-    });
-    expect(routePlanFindArgs?.where.status?.in).not.toContain('COMPLETED');
+    expect(routePlanFindArgs?.where.status).toBe('PUBLISHED');
   });
 });
 

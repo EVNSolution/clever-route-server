@@ -87,7 +87,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
       },
       where: {
         driver: { is: { authSubject: { not: null }, phone: '+14165550123', status: 'ACTIVE' } },
-        status: { in: ['ASSIGNED', 'IN_PROGRESS', 'OPTIMIZED'] }
+        status: 'PUBLISHED'
       }
     });
     expect(result.status).toBe('ROUTES_FOUND');
