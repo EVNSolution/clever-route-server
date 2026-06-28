@@ -63,12 +63,15 @@ describe('route grouping contracts', () => {
     expect(source).toContain("'route draft route keys must be unique'");
   });
 
-  test('guards saved preview geometry against stale route order and stale cache', () => {
+  test('keeps ordinary draft save from consuming existing route geometry payloads', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
-    expect(source).toContain('optimized.orderIds === undefined || !sameStringSequence(optimized.orderIds, route.orderIds)');
-    expect(source).toContain("'optimized route order must match the saved route order'");
-    expect(source).toContain('} else if (routeAssignmentsChanged(targetChild, assignments)) {');
+    expect(source).toContain('const draftOptimized = normalizeOptionalText(route.routePlanId) === null ? route.optimized : undefined');
+    expect(source).toContain("route.tempId !== null && route.tempId !== undefined && route.tempId !== '' && route.orderIds.length > 0");
+    expect(source).toContain('logIgnoredExistingRouteOptimizedPayload(group.id, targetChild.routePlanId, route.routeKey ?? null)');
+    expect(source).toContain('logPreservedExistingRouteGeometryCache(group.id, targetChild.routePlanId, route.routeKey ?? null)');
     expect(source).toContain('function routeAssignmentsChanged(child: LoadedChild, assignments: LoadedAssignment[]): boolean');
+    expect(source).toContain('errorName: reason instanceof Error ? reason.name : typeof reason');
+    expect(source).not.toContain('errorMessage: reason instanceof Error ? reason.message : String(reason)');
   });
 
   test('keeps branch colors attached when re-optimization recreates child routes', () => {

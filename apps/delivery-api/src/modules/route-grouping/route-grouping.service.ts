@@ -477,12 +477,13 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
 
       const routeBranchId = new Map<string, string | null>();
       for (const route of routes) {
+        const draftOptimized = normalizeOptionalText(route.routePlanId) === null ? route.optimized : undefined;
         if (route.branchId !== null && route.branchId !== '') {
           await tx.routeGroupingBranch.update({
             data: {
               ...(route.color === undefined ? {} : { color: route.color }),
               ...(route.label === undefined ? {} : { label: route.label }),
-              ...(route.optimized === undefined ? {} : { optimizedJson: route.optimized === null ? Prisma.JsonNull : toJson(route.optimized) }),
+              ...(draftOptimized === undefined ? {} : { optimizedJson: draftOptimized === null ? Prisma.JsonNull : toJson(draftOptimized) }),
               ...(route.sortOrder === undefined ? {} : { sortOrder: route.sortOrder })
             },
             where: { id: route.branchId }
@@ -490,13 +491,13 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           routeBranchId.set(route.routeKey ?? route.branchId, route.branchId);
           continue;
         }
-        if (!isRootDraftRoute(route) && route.tempId !== null && route.tempId !== undefined && route.tempId !== '') {
+        if (!isRootDraftRoute(route) && route.tempId !== null && route.tempId !== undefined && route.tempId !== '' && route.orderIds.length > 0) {
           const branch = await tx.routeGroupingBranch.create({
             data: {
               color: route.color ?? null,
               groupingId: group.id,
               label: route.label ?? 'Route',
-              optimizedJson: route.optimized === undefined || route.optimized === null ? Prisma.JsonNull : toJson(route.optimized),
+              optimizedJson: draftOptimized === undefined || draftOptimized === null ? Prisma.JsonNull : toJson(draftOptimized),
               shopId: group.shopId,
               sortOrder: route.sortOrder ?? await nextBranchSortOrder(tx, group.id)
             },
@@ -550,31 +551,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           data: { snapshot: createChildSnapshot(loaded, assignments, targetChild.driverId, route.label ?? childRouteSlotName(targetChild), loaded.currentVersion, route.color ?? readChildSnapshot(targetChild.snapshot).color ?? null) },
           where: { id: targetChild.id }
         });
-        const optimized = route.optimized;
-        if (optimized?.routeGeometry !== undefined || optimized?.routeStopPoints !== undefined) {
-          if (optimized.orderIds === undefined || !sameStringSequence(optimized.orderIds, route.orderIds)) {
-            throw new RouteGroupingValidationError(['optimized route order must match the saved route order']);
-          }
-          const depot = readDepotFromShop(loaded);
-          if (depot === null) throw new RouteGroupingValidationError(['default depot coordinates are required before saving optimized route geometry']);
-          const routeGeometry = optimized.routeGeometry ?? null;
-          const routeStopPoints = optimized.routeStopPoints ?? [];
-          const candidate: OptimizedChildRouteCandidate = {
-            assignments,
-            depot,
-            driverId: targetChild.driverId,
-            name: route.label ?? childRouteSlotName(targetChild),
-            routeResult: {
-              routeGeometry,
-              routeMetrics: optimized.metrics ?? null,
-              routeStopPoints
-            },
-            shapeSignature: computeRouteShapeSignature(buildChildRouteDetail({ assignments, depot, driverId: targetChild.driverId, group: loaded, name: route.label ?? childRouteSlotName(targetChild) }))
-          };
-          await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: targetChild.routePlanId } });
-          await createChildRouteGeometryCache(tx, targetChild.routePlanId, candidate);
-        } else if (routeAssignmentsChanged(targetChild, assignments)) {
-          await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: targetChild.routePlanId } });
+        if (route.optimized !== undefined) {
+          logIgnoredExistingRouteOptimizedPayload(group.id, targetChild.routePlanId, route.routeKey ?? null);
+        }
+        if (routeAssignmentsChanged(targetChild, assignments)) {
+          logPreservedExistingRouteGeometryCache(group.id, targetChild.routePlanId, route.routeKey ?? null);
         }
       }
 
@@ -1107,13 +1088,29 @@ function routeAssignmentsChanged(child: LoadedChild, assignments: LoadedAssignme
   return !sameStringSequence(savedStopIds, assignments.map((assignment) => assignment.deliveryStopId));
 }
 
+function logIgnoredExistingRouteOptimizedPayload(groupingId: string, routePlanId: string, routeKey: string | null): void {
+  console.warn('[route-grouping] ignored optimized payload for existing route during draft save', {
+    groupingId,
+    routeKey,
+    routePlanId
+  });
+}
+
+function logPreservedExistingRouteGeometryCache(groupingId: string, routePlanId: string, routeKey: string | null): void {
+  console.info('[route-grouping] preserved existing route geometry during draft save', {
+    groupingId,
+    routeKey,
+    routePlanId
+  });
+}
+
 function sameStringSequence(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function logRouteGeometryRefreshFailure(routePlanId: string, reason: unknown): void {
   console.warn('[route-grouping] child route geometry refresh failed after projection commit', {
-    errorMessage: reason instanceof Error ? reason.message : String(reason),
+    errorName: reason instanceof Error ? reason.name : typeof reason,
     routePlanId
   });
 }

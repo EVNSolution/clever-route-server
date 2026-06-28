@@ -203,8 +203,24 @@ export function registerAdminRouteGroupRoutes(
     });
     if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
 
+    let draftLogSummary: ReturnType<typeof summarizeDraftRoutes> | null = null;
     try {
       const payload = readSaveDraftPayload(request.body);
+      draftLogSummary = summarizeDraftRoutes(payload.routes);
+      request.log.info({
+        appId: authenticated.appId,
+        routeGroupId: request.params.routeGroupId,
+        shopDomain: authenticated.shopDomain,
+        ...draftLogSummary
+      }, 'route group draft save request');
+      if (draftLogSummary.optimizedExistingRoutePlanRows > 0) {
+        request.log.warn({
+          appId: authenticated.appId,
+          optimizedExistingRoutePlanRows: draftLogSummary.optimizedExistingRoutePlanRows,
+          routeGroupId: request.params.routeGroupId,
+          shopDomain: authenticated.shopDomain
+        }, 'route group draft save received optimized payload for existing routes');
+      }
       const routeGroup = await dependencies.routeGroupingService.saveDraft({
         appId: authenticated.appId,
         groupingId: request.params.routeGroupId,
@@ -214,6 +230,14 @@ export function registerAdminRouteGroupRoutes(
       if (routeGroup === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route group not found'));
       return reply.code(200).send({ data: { routeGroup }, error: null });
     } catch (error) {
+      request.log.warn({
+        appId: authenticated.appId,
+        errorCode: getRouteGroupingErrorLogCode(error),
+        errorName: error instanceof Error ? error.name : typeof error,
+        routeGroupId: request.params.routeGroupId,
+        shopDomain: authenticated.shopDomain,
+        ...(draftLogSummary === null ? {} : draftLogSummary)
+      }, 'route group draft save failed');
       return sendRouteGroupingError(reply, error);
     }
   });
@@ -474,6 +498,24 @@ function readSaveDraftPayload(value: unknown): { routes: ReturnType<typeof readD
   return { routes: readDraftRouteRows(object.routes) };
 }
 
+function summarizeDraftRoutes(routes: ReturnType<typeof readDraftRouteRows>): {
+  existingRoutePlanRows: number;
+  optimizedExistingRoutePlanRows: number;
+  optimizedRows: number;
+  orderCounts: number[];
+  routeCount: number;
+  tempRows: number;
+} {
+  return {
+    existingRoutePlanRows: routes.filter((route) => route.routePlanId !== undefined && route.routePlanId !== null).length,
+    optimizedExistingRoutePlanRows: routes.filter((route) => route.routePlanId !== undefined && route.routePlanId !== null && route.optimized !== undefined).length,
+    optimizedRows: routes.filter((route) => route.optimized !== undefined).length,
+    orderCounts: routes.map((route) => route.orderIds.length),
+    routeCount: routes.length,
+    tempRows: routes.filter((route) => route.tempId !== undefined && route.tempId !== null).length
+  };
+}
+
 function readDraftRouteRows(value: unknown): Array<{
   branchId: string | null;
   color?: string | null;
@@ -573,6 +615,17 @@ function sendRouteGroupingError(reply: FastifyReply, error: unknown): FastifyRep
   if (error instanceof RouteGroupingValidationError) return reply.code(400).send(errorResponse(error.code, error.blockers.join('; ')));
   if (error instanceof BadRouteGroupPayloadError) return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid route group payload'));
   throw error;
+}
+
+function getRouteGroupingErrorLogCode(error: unknown): string {
+  if (error instanceof RouteGroupingBranchLockConflictError) return error.code;
+  if (error instanceof RouteGroupingConflictError) return error.code;
+  if (error instanceof RouteGroupingDeleteBlockedError) return error.code;
+  if (error instanceof RouteGroupingRiskConfirmationRequiredError) return error.code;
+  if (error instanceof RouteGroupingUnresolvedAssignmentsError) return error.code;
+  if (error instanceof RouteGroupingValidationError) return error.code;
+  if (error instanceof BadRouteGroupPayloadError) return 'BAD_REQUEST';
+  return 'UNHANDLED_ERROR';
 }
 
 class BadRouteGroupPayloadError extends Error {}
