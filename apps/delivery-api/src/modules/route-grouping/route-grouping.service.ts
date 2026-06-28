@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import { classifyCoordinateInPolygons, coordinatesFromGeoJsonPolygon } from './route-grouping.geometry.js';
 import type { DriverPushProvider } from './driver-push.provider.js';
 import type {
@@ -22,6 +22,7 @@ import {
   type ResolveRouteGroupingAssignmentsInput,
   type RollbackRouteGroupingInput,
   type RouteGroupingAssignmentDto,
+  type RouteGroupingBranchDto,
   type RouteGroupingChildDisplayStatus,
   type RouteGroupingChildDto,
   type RouteGroupingDetailDto,
@@ -481,6 +482,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
             data: {
               ...(route.color === undefined ? {} : { color: route.color }),
               ...(route.label === undefined ? {} : { label: route.label }),
+              ...(route.optimized === undefined ? {} : { optimizedJson: route.optimized === null ? Prisma.JsonNull : toJson(route.optimized) }),
               ...(route.sortOrder === undefined ? {} : { sortOrder: route.sortOrder })
             },
             where: { id: route.branchId }
@@ -494,6 +496,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
               color: route.color ?? null,
               groupingId: group.id,
               label: route.label ?? 'Route',
+              optimizedJson: route.optimized === undefined || route.optimized === null ? Prisma.JsonNull : toJson(route.optimized),
               shopId: group.shopId,
               sortOrder: route.sortOrder ?? await nextBranchSortOrder(tx, group.id)
             },
@@ -1068,7 +1071,7 @@ function normalizeDraftRoutes(routes: RouteGroupingDraftRouteInput[]): RouteGrou
     branchId: route.branchId === null ? null : route.branchId?.trim() ?? null,
     color: normalizeOptionalText(route.color),
     label: normalizeOptionalText(route.label),
-    optimized: route.optimized ?? null,
+    ...(route.optimized === undefined ? {} : { optimized: route.optimized ?? null }),
     orderIds: normalizeIds(route.orderIds),
     routeKey: normalizeOptionalText(route.routeKey) ?? (route.branchId === null ? 'root' : `branch:${route.branchId}`),
     routePlanId: normalizeOptionalText(route.routePlanId),
@@ -1848,6 +1851,15 @@ function toPolygonDto(polygon: LoadedGrouping['polygons'][number]): RouteGroupin
   return { closed: polygon.closed, color: polygon.color, drawOrder: polygon.drawOrder, driverId: polygon.driverId, geometry: polygon.geometryJson, id: polygon.id, label: polygon.label };
 }
 
+function toJson(value: unknown): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
+function readOptimizedBranchSnapshot(value: unknown): RouteGroupingBranchDto['optimized'] {
+  if (value === null || value === undefined || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value;
+}
+
 function toBranchDto(branch: LoadedBranch) {
   return {
     createdAt: branch.createdAt.toISOString(),
@@ -1856,6 +1868,7 @@ function toBranchDto(branch: LoadedBranch) {
     driverName: branch.driver?.displayName ?? null,
     id: branch.id,
     label: branch.label,
+    optimized: readOptimizedBranchSnapshot(branch.optimizedJson),
     orderIds: [...branch.orderLocks]
       .sort((first, second) => first.routeGroupingOrder.sourceSequence - second.routeGroupingOrder.sourceSequence)
       .map((lock) => lock.orderId),

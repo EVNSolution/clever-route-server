@@ -1101,20 +1101,21 @@ model RouteGroupingOrder {
 }
 
 model RouteGroupingBranch {
-  id         String                         @id @default(uuid()) @db.Uuid
-  shopId     String                         @db.Uuid
-  shop       Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  groupingId String                         @db.Uuid
-  grouping   RouteGrouping                  @relation(fields: [groupingId], references: [id], onDelete: Cascade)
-  driverId   String?                        @db.Uuid
-  driver     Driver?                        @relation(fields: [driverId], references: [id], onDelete: SetNull)
-  label      String?                        @db.Text
-  color      String?                        @db.Text
-  sortOrder  Int                            @default(0)
-  createdBy  String?                        @db.Text
-  createdAt  DateTime                       @default(now()) @db.Timestamptz(6)
-  updatedAt  DateTime                       @updatedAt @db.Timestamptz(6)
-  orderLocks RouteGroupingBranchOrderLock[]
+  id            String                         @id @default(uuid()) @db.Uuid
+  shopId        String                         @db.Uuid
+  shop          Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  groupingId    String                         @db.Uuid
+  grouping      RouteGrouping                  @relation(fields: [groupingId], references: [id], onDelete: Cascade)
+  driverId      String?                        @db.Uuid
+  driver        Driver?                        @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  label         String?                        @db.Text
+  color         String?                        @db.Text
+  sortOrder     Int                            @default(0)
+  optimizedJson Json?
+  createdBy     String?                        @db.Text
+  createdAt     DateTime                       @default(now()) @db.Timestamptz(6)
+  updatedAt     DateTime                       @updatedAt @db.Timestamptz(6)
+  orderLocks    RouteGroupingBranchOrderLock[]
 
   @@index([groupingId, sortOrder])
   @@index([groupingId, createdAt])

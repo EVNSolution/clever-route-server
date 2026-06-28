@@ -11,6 +11,12 @@ export type RouteGroupingBranchDto = {
   driverName: string | null;
   id: string;
   label: string | null;
+  optimized: {
+    metrics?: RoutePlanRouteMetrics | null;
+    orderIds?: string[];
+    routeGeometry?: RoutePlanRouteGeometry | null;
+    routeStopPoints?: RoutePlanRouteStopPoint[];
+  } | null;
   orderIds: string[];
   ordersCount: number;
   sortOrder: number;
