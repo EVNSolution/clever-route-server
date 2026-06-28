@@ -1,4 +1,4 @@
-import type { RoutePlanDepotInput, RoutePlanSummary } from '../route-plans/route-plan.types.js';
+import type { RoutePlanDepotInput, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteStopPoint, RoutePlanSummary } from '../route-plans/route-plan.types.js';
 
 export type RouteGroupingDisplayStatus = 'DRAFT' | 'NEEDS_ASSIGNMENT' | 'READY' | 'PUBLISHED' | 'CHANGED' | 'CANCELLED';
 export type RouteGroupingChildDisplayStatus = 'DRAFT' | 'PUBLISHED' | 'NEEDS_REPUBLISH' | 'SUPERSEDED';
@@ -45,6 +45,7 @@ export type RouteGroupingPolygonDto = {
 
 export type RouteGroupingChildDto = {
   childVersion: number;
+  color: string | null;
   displayStatus: RouteGroupingChildDisplayStatus;
   driverId: string | null;
   driverName: string | null;
@@ -175,13 +176,46 @@ export type UpdateRouteGroupingBranchOrdersInput = {
   shopDomain: string;
 };
 
+export type RouteGroupingDraftRouteInput = {
+  branchId: string | null;
+  color?: string | null;
+  label?: string | null;
+  optimized?: {
+    metrics?: RoutePlanRouteMetrics | null;
+    orderIds?: string[];
+    routeGeometry?: RoutePlanRouteGeometry | null;
+    routeStopPoints?: RoutePlanRouteStopPoint[];
+  } | null;
+  orderIds: string[];
+  routeKey?: string;
+  routePlanId?: string | null;
+  sortOrder?: number;
+  tempId?: string | null;
+};
+
+export type RouteGroupingOptimizationPreviewInput = {
+  appId?: string | undefined;
+  groupingId: string;
+  mode?: 'OPTIMIZE_ORDER';
+  routes: RouteGroupingDraftRouteInput[];
+  shopDomain: string;
+};
+
+export type RouteGroupingOptimizationPreviewResult = {
+  preview: {
+    routes: Array<RouteGroupingDraftRouteInput & {
+      metrics: RoutePlanRouteMetrics | null;
+      orderIds: string[];
+      routeGeometry: RoutePlanRouteGeometry | null;
+      routeStopPoints: RoutePlanRouteStopPoint[];
+    }>;
+  };
+};
+
 export type SaveRouteGroupingDraftInput = {
   appId?: string | undefined;
   groupingId: string;
-  routes: Array<{
-    branchId: string | null;
-    orderIds: string[];
-  }>;
+  routes: RouteGroupingDraftRouteInput[];
   shopDomain: string;
 };
 
@@ -197,6 +231,7 @@ export type RouteGroupingService = {
   updateBranch(input: UpdateRouteGroupingBranchInput): Promise<RouteGroupingDetailDto | null>;
   updateBranchOrders(input: UpdateRouteGroupingBranchOrdersInput): Promise<RouteGroupingDetailDto | null>;
   updateGroupingOrders(input: UpdateRouteGroupingOrdersInput): Promise<RouteGroupingDetailDto | null>;
+  previewOptimization(input: RouteGroupingOptimizationPreviewInput): Promise<RouteGroupingOptimizationPreviewResult | null>;
   saveDraft(input: SaveRouteGroupingDraftInput): Promise<RouteGroupingDetailDto | null>;
   savePolygons(input: SaveRouteGroupingPolygonsInput): Promise<RouteGroupingDetailDto | null>;
   resolveAssignments(input: ResolveRouteGroupingAssignmentsInput): Promise<RouteGroupingDetailDto | null>;

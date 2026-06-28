@@ -5,7 +5,7 @@ import {
   type AdminSessionAuthLogContext,
   type AdminSessionTokenVerifier
 } from './admin-session-auth.js';
-import type { RoutePlanDepotInput } from '../modules/route-plans/route-plan.types.js';
+import type { RoutePlanDepotInput, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteStopPoint } from '../modules/route-plans/route-plan.types.js';
 import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js';
 import {
   RouteGroupingBranchLockConflictError,
@@ -286,6 +286,30 @@ export function registerAdminRouteGroupRoutes(
   });
 
 
+
+  app.post<{ Body: unknown; Params: { routeGroupId: string } }>('/admin/route-groups/:routeGroupId/optimize-preview', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+      log: request.log,
+      surface: 'admin_route_groups'
+    });
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+
+    try {
+      const payload = readPreviewOptimizationPayload(request.body);
+      const preview = await dependencies.routeGroupingService.previewOptimization({
+        appId: authenticated.appId,
+        groupingId: request.params.routeGroupId,
+        shopDomain: authenticated.shopDomain,
+        ...payload
+      });
+      if (preview === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route group not found'));
+      return reply.code(200).send({ data: preview, error: null });
+    } catch (error) {
+      return sendRouteGroupingError(reply, error);
+    }
+  });
+
+
   app.post<{ Body: unknown; Params: { routeGroupId: string } }>('/admin/route-groups/:routeGroupId/re-optimize', async (request, reply) => {
     const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
@@ -438,18 +462,60 @@ function readUpdateBranchPayload(value: unknown): { color?: string | null; drive
   };
 }
 
-function readSaveDraftPayload(value: unknown): { routes: Array<{ branchId: string | null; orderIds: string[] }> } {
+function readPreviewOptimizationPayload(value: unknown): { mode?: 'OPTIMIZE_ORDER'; routes: ReturnType<typeof readDraftRouteRows> } {
   const object = requireObject(value);
-  if (!Array.isArray(object.routes)) throw new BadRouteGroupPayloadError('routes must be an array');
+  const mode = object.mode === undefined ? undefined : requireNonEmptyString(object.mode);
+  if (mode !== undefined && mode !== 'OPTIMIZE_ORDER') throw new BadRouteGroupPayloadError('unsupported optimization mode');
+  return { ...(mode === undefined ? {} : { mode }), routes: readDraftRouteRows(object.routes) };
+}
+
+function readSaveDraftPayload(value: unknown): { routes: ReturnType<typeof readDraftRouteRows> } {
+  const object = requireObject(value);
+  return { routes: readDraftRouteRows(object.routes) };
+}
+
+function readDraftRouteRows(value: unknown): Array<{
+  branchId: string | null;
+  color?: string | null;
+  label?: string | null;
+  optimized?: { metrics?: RoutePlanRouteMetrics | null; orderIds?: string[]; routeGeometry?: RoutePlanRouteGeometry | null; routeStopPoints?: RoutePlanRouteStopPoint[] } | null;
+  orderIds: string[];
+  routeKey?: string;
+  routePlanId?: string | null;
+  sortOrder?: number;
+  tempId?: string | null;
+}> {
+  if (!Array.isArray(value)) throw new BadRouteGroupPayloadError('routes must be an array');
+  return value.map((entry) => {
+    const route = requireObject(entry);
+    return {
+      branchId: route.branchId === undefined ? null : readNullableString(route.branchId),
+      ...(route.color === undefined ? {} : { color: readNullableString(route.color) }),
+      ...(route.label === undefined ? {} : { label: readNullableString(route.label) }),
+      ...(route.optimized === undefined ? {} : { optimized: readOptionalOptimizedRoute(route.optimized) }),
+      orderIds: readStringArray(route.orderIds),
+      ...(route.routeKey === undefined ? {} : { routeKey: requireNonEmptyString(route.routeKey) }),
+      ...(route.routePlanId === undefined ? {} : { routePlanId: readNullableString(route.routePlanId) }),
+      ...(route.sortOrder === undefined ? {} : { sortOrder: readNonNegativeInteger(route.sortOrder) }),
+      ...(route.tempId === undefined ? {} : { tempId: readNullableString(route.tempId) })
+    };
+  });
+}
+
+function readOptionalOptimizedRoute(value: unknown): { metrics?: RoutePlanRouteMetrics | null; orderIds?: string[]; routeGeometry?: RoutePlanRouteGeometry | null; routeStopPoints?: RoutePlanRouteStopPoint[] } | null {
+  if (value === null) return null;
+  const object = requireObject(value);
   return {
-    routes: object.routes.map((entry) => {
-      const route = requireObject(entry);
-      return {
-        branchId: route.branchId === undefined ? null : readNullableString(route.branchId),
-        orderIds: readStringArray(route.orderIds)
-      };
-    })
+    ...(object.metrics === undefined ? {} : { metrics: object.metrics as RoutePlanRouteMetrics | null }),
+    ...(object.orderIds === undefined ? {} : { orderIds: readStringArray(object.orderIds) }),
+    ...(object.routeGeometry === undefined ? {} : { routeGeometry: object.routeGeometry as RoutePlanRouteGeometry | null }),
+    ...(object.routeStopPoints === undefined ? {} : { routeStopPoints: readUnknownArray(object.routeStopPoints) as RoutePlanRouteStopPoint[] })
   };
+}
+
+function readUnknownArray(value: unknown): unknown[] {
+  if (!Array.isArray(value)) throw new BadRouteGroupPayloadError('array required');
+  return value;
 }
 
 function readSavePolygonsPayload(value: unknown): {

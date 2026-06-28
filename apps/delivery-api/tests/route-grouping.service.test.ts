@@ -55,6 +55,29 @@ describe('route grouping contracts', () => {
     expect(source).toContain('constraints: routeConstraints(loaded, candidate.depot)');
   });
 
+  test('requires one explicit root draft row before saving route detail edits', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    expect(source).toContain('assertDraftRouteEnvelope(routes)');
+    expect(source).toContain('const rootRoutes = routes.filter(isRootDraftRoute)');
+    expect(source).toContain("rootRoutes.length !== 1");
+    expect(source).toContain("'route draft route keys must be unique'");
+  });
+
+  test('guards saved preview geometry against stale route order and stale cache', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    expect(source).toContain('optimized.orderIds === undefined || !sameStringSequence(optimized.orderIds, route.orderIds)');
+    expect(source).toContain("'optimized route order must match the saved route order'");
+    expect(source).toContain('} else if (routeAssignmentsChanged(targetChild, assignments)) {');
+    expect(source).toContain('function routeAssignmentsChanged(child: LoadedChild, assignments: LoadedAssignment[]): boolean');
+  });
+
+  test('keeps branch colors attached when re-optimization recreates child routes', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    expect(source).toContain('color: readChildSnapshot(child.snapshot).color ?? null');
+    expect(source).toContain('color: effectiveGroup.color ?? null');
+    expect(source).toContain('snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, routePlan.name, loaded.currentVersion, candidate.color)');
+  });
+
   test('allows default unassigned child route generation before dispatch', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain("assignment.assignmentStatus === 'ASSIGNED' ? assignment.assignedDriverId : null");
