@@ -90,6 +90,14 @@ enum RoutePlanStatus {
   DRAFT
   PUBLISHED
   CANCELLED
+  /// Legacy DB value retained so prisma db push stays non-destructive; app code must not create it.
+  OPTIMIZED
+  /// Legacy DB value retained so prisma db push stays non-destructive; app code must not create it.
+  ASSIGNED
+  /// Legacy DB value retained so prisma db push stays non-destructive; app code must not create it.
+  IN_PROGRESS
+  /// Legacy DB value retained so prisma db push stays non-destructive; app code must not create it.
+  COMPLETED
 }
 
 enum RouteOptimizationJobStatus {
@@ -167,6 +175,10 @@ enum RouteGroupingStatus {
   DRAFT
   PUBLISHED
   CANCELLED
+  /// Legacy DB value retained so prisma db push stays non-destructive; app code must not create it.
+  READY
+  /// Legacy DB value retained so prisma db push stays non-destructive; app code must not create it.
+  CHANGED
 }
 
 enum RouteGroupingAssignmentStatus {

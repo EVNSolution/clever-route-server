@@ -1,30 +1,21 @@
--- Collapse route/group persisted lifecycle states to DRAFT/PUBLISHED/CANCELLED.
--- Operational progress is represented by driver events and delivery stop state.
+-- Collapse persisted route/group lifecycle values without dropping enum variants.
+-- ponytail: old enum variants stay in the DB schema because production deploy uses prisma db push,
+-- which correctly blocks enum removal as data-loss. App code must only create DRAFT/PUBLISHED/CANCELLED.
 
-ALTER TABLE "RoutePlan" ALTER COLUMN "status" DROP DEFAULT;
-ALTER TYPE "RoutePlanStatus" RENAME TO "RoutePlanStatus_old";
-CREATE TYPE "RoutePlanStatus" AS ENUM ('DRAFT', 'PUBLISHED', 'CANCELLED');
-ALTER TABLE "RoutePlan" ALTER COLUMN "status" TYPE "RoutePlanStatus" USING (
-  CASE "status"::text
-    WHEN 'OPTIMIZED' THEN 'DRAFT'
-    WHEN 'ASSIGNED' THEN 'PUBLISHED'
-    WHEN 'IN_PROGRESS' THEN 'PUBLISHED'
-    WHEN 'COMPLETED' THEN 'PUBLISHED'
-    ELSE "status"::text
-  END
-)::"RoutePlanStatus";
-ALTER TABLE "RoutePlan" ALTER COLUMN "status" SET DEFAULT 'DRAFT';
-DROP TYPE "RoutePlanStatus_old";
+UPDATE "RoutePlan"
+SET "status" = CASE "status"::text
+  WHEN 'OPTIMIZED' THEN 'DRAFT'
+  WHEN 'ASSIGNED' THEN 'PUBLISHED'
+  WHEN 'IN_PROGRESS' THEN 'PUBLISHED'
+  WHEN 'COMPLETED' THEN 'PUBLISHED'
+  ELSE "status"::text
+END::"RoutePlanStatus"
+WHERE "status"::text IN ('OPTIMIZED', 'ASSIGNED', 'IN_PROGRESS', 'COMPLETED');
 
-ALTER TABLE "RouteGrouping" ALTER COLUMN "status" DROP DEFAULT;
-ALTER TYPE "RouteGroupingStatus" RENAME TO "RouteGroupingStatus_old";
-CREATE TYPE "RouteGroupingStatus" AS ENUM ('DRAFT', 'PUBLISHED', 'CANCELLED');
-ALTER TABLE "RouteGrouping" ALTER COLUMN "status" TYPE "RouteGroupingStatus" USING (
-  CASE "status"::text
-    WHEN 'READY' THEN 'DRAFT'
-    WHEN 'CHANGED' THEN 'DRAFT'
-    ELSE "status"::text
-  END
-)::"RouteGroupingStatus";
-ALTER TABLE "RouteGrouping" ALTER COLUMN "status" SET DEFAULT 'DRAFT';
-DROP TYPE "RouteGroupingStatus_old";
+UPDATE "RouteGrouping"
+SET "status" = CASE "status"::text
+  WHEN 'READY' THEN 'DRAFT'
+  WHEN 'CHANGED' THEN 'DRAFT'
+  ELSE "status"::text
+END::"RouteGroupingStatus"
+WHERE "status"::text IN ('READY', 'CHANGED');

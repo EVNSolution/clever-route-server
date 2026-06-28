@@ -5,17 +5,22 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 describe('route grouping contracts', () => {
-  test('keeps RoutePlanStatus collapsed to durable lifecycle values only', () => {
+  test('keeps app-created route lifecycles limited to draft/published/cancelled', () => {
     const schema = readFileSync(join(process.cwd(), 'prisma/schema.prisma'), 'utf8');
-    const enumBody = /enum RoutePlanStatus \{(?<body>[\s\S]*?)\}/u.exec(schema)?.groups?.body ?? '';
-    expect(enumBody).toContain('DRAFT');
-    expect(enumBody).toContain('PUBLISHED');
-    expect(enumBody).toContain('CANCELLED');
-    expect(enumBody).not.toContain('ASSIGNED');
-    expect(enumBody).not.toContain('OPTIMIZED');
-    expect(enumBody).not.toContain('IN_PROGRESS');
-    expect(enumBody).not.toContain('COMPLETED');
-    expect(enumBody).not.toContain('SUPERSEDED');
+    const routePlanModel = /model RoutePlan \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+    const routeGroupModel = /model RouteGrouping \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+    expect(routePlanModel).toContain('status');
+    expect(routePlanModel).toContain('@default(DRAFT)');
+    expect(routeGroupModel).toContain('status');
+    expect(routeGroupModel).toContain('@default(DRAFT)');
+
+    const service = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    expect(service).toContain("status: 'DRAFT'");
+    expect(service).toContain("status: 'PUBLISHED'");
+    expect(service).toContain("status: 'CANCELLED'");
+    expect(service).not.toContain("status: 'OPTIMIZED'");
+    expect(service).not.toContain("status: 'IN_PROGRESS'");
+    expect(service).not.toContain("status: 'COMPLETED'");
   });
 
   test('keeps parent route group date range on the canonical model', () => {
