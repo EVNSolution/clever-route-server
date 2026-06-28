@@ -74,6 +74,14 @@ describe('route grouping contracts', () => {
     expect(source).not.toContain('errorMessage: reason instanceof Error ? reason.message : String(reason)');
   });
 
+  test('materializes non-empty draft branches without saving empty routes', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    expect(source).toContain('async function createDraftChildRoutePlan(');
+    expect(source).toContain('if (isRootDraftRoute(route) || normalizeOptionalText(route.routePlanId) !== null || route.orderIds.length === 0) continue');
+    expect(source).toContain('routePlanId: routePlan.id');
+    expect(source).toContain('snapshot: createChildSnapshot(group, input.assignments, null, routePlan.name, group.currentVersion, input.color ?? null)');
+  });
+
   test('keeps branch colors attached when re-optimization recreates child routes', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain('color: readChildSnapshot(child.snapshot).color ?? null');

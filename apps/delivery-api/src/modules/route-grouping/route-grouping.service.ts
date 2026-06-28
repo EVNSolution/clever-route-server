@@ -47,6 +47,7 @@ import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-ap
 const OPTIMIZER_VERSION = 'route-grouping-projection-v1';
 const DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE = 'RETURN_TO_DEPOT' as const;
 const ROUTE_GROUPING_GEOMETRY_REFRESH_CONCURRENCY = 2;
+const ROUTE_GROUPING_DRAFT_SAVE_ACTOR = 'route-detail-draft-save';
 export const DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS = 500_000;
 
 const ROUTE_GROUPING_POLYGON_COLORS = [
@@ -557,6 +558,26 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         if (routeAssignmentsChanged(targetChild, assignments)) {
           logPreservedExistingRouteGeometryCache(group.id, targetChild.routePlanId, route.routeKey ?? null);
         }
+      }
+
+      const currentGroupingVersion = loaded.versions.find((version) => version.status === 'CURRENT') ??
+        await createCurrentGroupingVersion(tx, loaded, { actor: ROUTE_GROUPING_DRAFT_SAVE_ACTOR, hasCurrent: false, nextVersion: loaded.currentVersion });
+      for (const route of routes) {
+        if (isRootDraftRoute(route) || normalizeOptionalText(route.routePlanId) !== null || route.orderIds.length === 0) continue;
+        const existingChild = findCurrentChildByOrderIds(loaded, route.orderIds);
+        if (existingChild?.routePlanId !== null && existingChild?.routePlanId !== undefined) continue;
+        const branchId = routeBranchId.get(route.routeKey ?? route.branchId ?? route.tempId ?? '');
+        if (branchId === null || branchId === undefined || branchId === '') continue;
+        const assignments = route.orderIds.map((orderId) => assignmentByOrderId.get(orderId)).filter((assignment): assignment is LoadedAssignment => assignment !== undefined);
+        if (assignments.length === 0) continue;
+        await createDraftChildRoutePlan(tx, loaded, {
+          assignments,
+          color: route.color,
+          groupingVersionId: currentGroupingVersion.id,
+          name: route.label ?? `Route ${route.sortOrder ?? 1}`,
+          optimized: route.optimized ?? null,
+          sortOrder: route.sortOrder
+        });
       }
 
       await recomputeAssignments(tx, group.id);
@@ -1079,6 +1100,13 @@ function findRootDraftChild(group: LoadedGrouping, route: RouteGroupingDraftRout
   if (routePlanId !== null) return currentChildren.find((child) => child.routePlanId === routePlanId) ?? null;
   if (!isRootDraftRoute(route)) return null;
   return currentChildren.length === 1 ? currentChildren[0] ?? null : null;
+}
+
+function findCurrentChildByOrderIds(group: LoadedGrouping, orderIds: string[]): LoadedChild | null {
+  const normalizedOrderIds = normalizeIds(orderIds);
+  return group.childVersions
+    .filter((child) => child.status === 'CURRENT')
+    .find((child) => sameStringSequence(readChildSnapshot(child.snapshot).stops.map((stop) => stop.orderId), normalizedOrderIds)) ?? null;
 }
 
 function routeAssignmentsChanged(child: LoadedChild, assignments: LoadedAssignment[]): boolean {
@@ -1668,6 +1696,71 @@ function childRouteName(group: LoadedGrouping, driverId: string | null): string 
 
 function stripGeneratedChildRouteVersion(name: string): string {
   return name.replace(/\s+v\d+$/u, '');
+}
+
+async function createDraftChildRoutePlan(
+  tx: Tx,
+  group: LoadedGrouping,
+  input: {
+    assignments: LoadedAssignment[];
+    color: string | null | undefined;
+    groupingVersionId: string;
+    name: string;
+    optimized: RouteGroupingDraftRouteInput['optimized'] | null;
+    sortOrder: number | undefined;
+  }
+): Promise<{ id: string; name: string }> {
+  const depot = readDepotFromShop(group);
+  const name = stripGeneratedChildRouteVersion(input.name.trim() || `Route ${input.sortOrder ?? 1}`);
+  const metrics = input.optimized?.metrics === undefined || input.optimized?.metrics === null
+    ? routeMetrics(input.assignments)
+    : toJson(input.optimized.metrics);
+  const routePlan = await tx.routePlan.create({
+    data: {
+      constraints: routeConstraints(group, depot),
+      createdBy: ROUTE_GROUPING_DRAFT_SAVE_ACTOR,
+      ...(depot === null ? {} : { depotLatitude: decimalString(depot.latitude), depotLongitude: decimalString(depot.longitude) }),
+      driverId: null,
+      metrics,
+      name,
+      optimizerVersion: OPTIMIZER_VERSION,
+      planDate: group.planDate,
+      shopId: group.shopId,
+      status: 'DRAFT'
+    },
+    select: { id: true, name: true }
+  });
+  await tx.routePlanStop.createMany({ data: input.assignments.map((assignment, index) => ({ deliveryStopId: assignment.deliveryStopId, routePlanId: routePlan.id, sequence: index + 1 })) });
+  await tx.routeGroupingChildVersion.create({
+    data: {
+      driverId: null,
+      groupingId: group.id,
+      groupingVersionId: input.groupingVersionId,
+      notificationStatus: 'SKIPPED',
+      routePlanId: routePlan.id,
+      shopId: group.shopId,
+      snapshot: createChildSnapshot(group, input.assignments, null, routePlan.name, group.currentVersion, input.color ?? null),
+      status: 'CURRENT',
+      version: group.currentVersion
+    }
+  });
+  if (depot !== null && input.optimized?.routeGeometry !== undefined) {
+    const detail = buildChildRouteDetail({ assignments: input.assignments, depot, driverId: null, group, name: routePlan.name });
+    await tx.routePlanGeometryCache.create({
+      data: routeGeometryCacheCreateData({
+        generatedAt: new Date(),
+        geometry: input.optimized.routeGeometry ?? null,
+        metrics: input.optimized.metrics ?? null,
+        provider: 'osrm',
+        providerVersion: null,
+        routePlanId: routePlan.id,
+        shapeSignature: computeRouteShapeSignature(detail),
+        source: 'SNAPSHOT',
+        stopPoints: input.optimized.routeStopPoints ?? []
+      })
+    });
+  }
+  return routePlan;
 }
 
 async function createChildRoutePlan(tx: Tx, group: LoadedGrouping, candidate: OptimizedChildRouteCandidate, actor: string): Promise<{ id: string; name: string }> {
