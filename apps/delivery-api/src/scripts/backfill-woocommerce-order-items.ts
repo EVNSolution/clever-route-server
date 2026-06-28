@@ -6,6 +6,8 @@ import {
   parseWooCommerceOrderItems
 } from '../modules/order-items/order-items.js';
 import type { WooCommerceLineItem } from '../modules/woocommerce/woocommerce-order.types.js';
+import { recordInventorySourceItemDeltas } from '../modules/inventory/inventory.service.js';
+import { toOrderItemDto } from '../modules/order-items/order-items.js';
 
 const prisma = new PrismaClient();
 
@@ -26,7 +28,7 @@ async function main(): Promise<void> {
   const orders = await prisma.order.findMany({
     include: {
       deliveryFacts: { take: 1 },
-      orderItems: { select: { id: true }, take: 1 }
+      orderItems: true
     },
     orderBy: { updatedAt: 'asc' },
     where: { sourcePlatform: 'WOOCOMMERCE' }
@@ -55,6 +57,7 @@ async function main(): Promise<void> {
 
     try {
       await prisma.$transaction(async (tx) => {
+        const previousItems = await tx.orderItem.findMany({ orderBy: { lineIndex: 'asc' }, where: { orderId: order.id, shopId: order.shopId } });
         await tx.orderItem.deleteMany({ where: { orderId: order.id, shopId: order.shopId } });
         if (parsed.items.length > 0) {
           await tx.orderItem.createMany({
@@ -71,6 +74,14 @@ async function main(): Promise<void> {
             }))
           });
         }
+        const currentItems = await tx.orderItem.findMany({ orderBy: { lineIndex: 'asc' }, where: { orderId: order.id, shopId: order.shopId } });
+        await recordInventorySourceItemDeltas(tx, {
+          actor: 'woocommerce-order-items-backfill',
+          currentItems: currentItems.map(toOrderItemDto),
+          orderId: order.id,
+          previousItems: previousItems.map(toOrderItemDto),
+          shopId: order.shopId
+        });
         if (existingFact !== null) {
           const readiness = nextReasons.length === 0 && existingFact.deliveryDate !== null && existingFact.routeScopeKey !== null && existingFact.serviceType !== null
             ? 'READY_TO_PLAN'

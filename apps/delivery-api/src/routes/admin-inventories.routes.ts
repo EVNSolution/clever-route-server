@@ -36,14 +36,8 @@ export function registerAdminInventoryRoutes(app: FastifyInstance, dependencies:
     if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
 
     try {
-      const payload = readCreateInventoryPayload(request.body);
-      const inventory = await dependencies.inventoryService.createInventory({
-        actor: authenticated.subject,
-        appId: authenticated.appId,
-        shopDomain: authenticated.shopDomain,
-        ...payload
-      });
-      return reply.code(201).send({ data: { inventory }, error: null });
+      readCreateInventoryPayload(request.body);
+      throw new InventoryValidationError(['inventory is managed by route groups']);
     } catch (error) {
       return sendInventoryError(reply, error);
     }
@@ -95,12 +89,16 @@ export function registerAdminInventoryRoutes(app: FastifyInstance, dependencies:
     });
     if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
 
-    const result = await dependencies.inventoryService.deleteInventory({
-      appId: authenticated.appId,
-      inventoryId: request.params.inventoryId,
-      shopDomain: authenticated.shopDomain
-    });
-    return reply.code(200).send({ data: result, error: null });
+    try {
+      const result = await dependencies.inventoryService.deleteInventory({
+        appId: authenticated.appId,
+        inventoryId: request.params.inventoryId,
+        shopDomain: authenticated.shopDomain
+      });
+      return reply.code(200).send({ data: result, error: null });
+    } catch (error) {
+      return sendInventoryError(reply, error);
+    }
   });
 }
 

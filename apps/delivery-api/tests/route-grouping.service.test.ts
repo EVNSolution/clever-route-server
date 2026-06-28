@@ -41,6 +41,52 @@ describe('route grouping contracts', () => {
     expect(lockBody).not.toContain('status');
   });
 
+  test('links route groups to inventory without child branch deltas', () => {
+    const schema = readFileSync(join(process.cwd(), 'prisma/schema.prisma'), 'utf8');
+    const inventoryBody = /model Inventory \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+    const routeGroupBody = /model RouteGrouping \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+    expect(inventoryBody).toContain('routeGroupingId');
+    expect(inventoryBody).toContain('@unique');
+    expect(inventoryBody).toContain('onDelete: SetNull');
+    expect(routeGroupBody).toContain('inventory');
+
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    expect(source).toContain('createRouteGroupingInventory(tx');
+    expect(source).toContain('syncRouteGroupingInventoryOrders(tx');
+    expect(source).toContain('await recomputeAssignments(tx, group.id)');
+    expect(source).not.toContain('syncRouteGroupingInventoryOrders(tx, input.branch');
+  });
+
+  test('keeps inventory history after order item replacement', () => {
+    const schema = readFileSync(join(process.cwd(), 'prisma/schema.prisma'), 'utf8');
+    const eventBody = /model InventoryEvent \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+    expect(eventBody).toMatch(/orderItemId\s+String\?/u);
+    expect(eventBody).toContain('onDelete: SetNull');
+    expect(eventBody).toContain('quantityDelta Int?');
+
+    const source = readFileSync(join(process.cwd(), 'src/modules/shopify/order-sync.repository.ts'), 'utf8');
+    expect(source).toContain('const previousItems = await input.tx.orderItem.findMany');
+    expect(source).toContain('recordInventorySourceItemDeltas(input.tx');
+    expect(source).toContain('actor: "order-sync"');
+  });
+
+
+  test('backfills existing route groups into linked inventories during migration', () => {
+    const migration = readFileSync(join(process.cwd(), 'prisma/migrations/20260629183000_link_route_grouping_inventory/migration.sql'), 'utf8');
+    expect(migration).toContain('WITH missing_group_inventories AS');
+    expect(migration).toContain('FROM "route_groupings" rg');
+    expect(migration).toContain('JOIN "route_grouping_orders" rgo');
+    expect(migration).toContain('ON CONFLICT ("inventoryId", "orderId") DO NOTHING');
+  });
+
+  test('blocks standalone inventory creation so inventories remain route-group followers', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/inventory/inventory.service.ts'), 'utf8');
+    const routes = readFileSync(join(process.cwd(), 'src/routes/admin-inventories.routes.ts'), 'utf8');
+    expect(source).toContain("throw new InventoryValidationError(['inventory is managed by route groups'])");
+    expect(source).toContain('routeGroupingId: { not: null }');
+    expect(routes).toContain('inventory is managed by route groups');
+  });
+
   test('classifies overlapping split polygons by latest draw order', () => {
     const first = { id: 'a', vertices: [{ latitude: 0, longitude: 0 }, { latitude: 0, longitude: 10 }, { latitude: 10, longitude: 10 }, { latitude: 10, longitude: 0 }] };
     const second = { id: 'b', vertices: [{ latitude: 5, longitude: 5 }, { latitude: 5, longitude: 15 }, { latitude: 15, longitude: 15 }, { latitude: 15, longitude: 5 }] };

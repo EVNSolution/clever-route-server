@@ -1,9 +1,16 @@
 import type { OrderItemDto, RouteItemSummary } from '../order-items/order-items.js';
 
 export type InventoryChangeItemDto = OrderItemDto & {
-  action: 'ADD' | 'REMOVE';
+  action: 'ADD' | 'CHANGE' | 'REMOVE';
+  createdAt: string;
   orderId: string;
   quantityDelta: number;
+};
+
+export type InventoryOrderDto = {
+  id: string;
+  items: OrderItemDto[];
+  name: string;
 };
 
 export type InventoryDto = {
@@ -14,7 +21,9 @@ export type InventoryDto = {
   name: string;
   note: string | null;
   orderIds: string[];
+  orders: InventoryOrderDto[];
   ordersCount: number;
+  routeGroupingId: string | null;
   updatedAt: string;
 };
 

@@ -42,6 +42,7 @@ import type { RouteGeometryCacheRead, RouteGeometryCacheWrite } from './route-pl
 import type { RoutePlanRepository } from './route-plan.service.js';
 import { readNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
+import { recordInventorySourceItemDeltas } from '../inventory/inventory.service.js';
 
 const DEFAULT_API_VERSION = '2026-04';
 const OPTIMIZER_VERSION = 'manual-sequence-mvp';
@@ -670,6 +671,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           }
         });
         if (orderInput.items !== undefined) {
+          const previousItems = await tx.orderItem.findMany({ orderBy: { lineIndex: 'asc' }, where: { orderId: order.id, shopId: shop.id } });
           await tx.orderItem.deleteMany({ where: { orderId: order.id, shopId: shop.id } });
           if (orderInput.items.length > 0) {
             await tx.orderItem.createMany({
@@ -686,6 +688,14 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
               }))
             });
           }
+          const currentItems = await tx.orderItem.findMany({ orderBy: { lineIndex: 'asc' }, where: { orderId: order.id, shopId: shop.id } });
+          await recordInventorySourceItemDeltas(tx, {
+            actor: input.createdBy,
+            currentItems: currentItems.map(toOrderItemDto),
+            orderId: order.id,
+            previousItems: previousItems.map(toOrderItemDto),
+            shopId: shop.id
+          });
         }
         const deliveryStop = await tx.deliveryStop.upsert({
           create: {

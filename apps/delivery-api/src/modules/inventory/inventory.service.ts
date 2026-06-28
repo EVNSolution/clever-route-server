@@ -10,76 +10,134 @@ type InventoryPrismaClient = Pick<
 >;
 
 type Tx = Parameters<Parameters<InventoryPrismaClient['$transaction']>[0]>[0];
+type InventoryBaseWriteClient = Pick<PrismaClient, 'inventory' | 'inventoryEvent' | 'inventoryOrder' | 'order'>;
+type InventoryWriteClient = InventoryBaseWriteClient & Pick<PrismaClient, 'routeGroupingOrder'>;
 type LoadedInventory = Prisma.InventoryGetPayload<{ include: ReturnType<typeof inventoryInclude> }>;
 type LoadedInventoryEvent = Prisma.InventoryEventGetPayload<object>;
 type LoadedOrder = Prisma.OrderGetPayload<{ include: { orderItems: true } }>;
+type InventoryItemRecord = OrderItemDto & { id?: string | null };
 
 export class PrismaInventoryService implements InventoryService {
   constructor(private readonly prisma: InventoryPrismaClient) {}
 
-  async createInventory(input: CreateInventoryInput): Promise<InventoryDto> {
-    const orderIds = normalizeIds(input.orderIds ?? []);
-    const inventoryId = await this.prisma.$transaction(async (tx) => {
-      const shop = await findShop(tx, input);
-      if (shop === null) throw new InventoryValidationError(['shop not found']);
-      const inventory = await tx.inventory.create({
-        data: {
-          createdBy: input.actor,
-          name: requireText(input.name, 'name'),
-          note: normalizeOptionalText(input.note),
-          shopId: shop.id
-        },
-        select: { id: true }
-      });
-      if (orderIds.length > 0) await addInventoryOrders(tx, shop.id, inventory.id, orderIds, input.actor);
-      return inventory.id;
-    });
-    const inventory = await this.getInventory({ appId: input.appId, inventoryId, shopDomain: input.shopDomain });
-    if (inventory === null) throw new InventoryValidationError(['inventory not found after create']);
-    return inventory;
+  async createInventory(_input: CreateInventoryInput): Promise<InventoryDto> {
+    throw new InventoryValidationError(['inventory is managed by route groups']);
   }
 
-  async deleteInventory(input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<{ deleted: boolean; inventoryId: string }> {
-    const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
-    if (shop === null) return { deleted: false, inventoryId: input.inventoryId };
-    const deleted = await this.prisma.inventory.deleteMany({ where: { id: input.inventoryId, shopId: shop.id } });
-    return { deleted: deleted.count === 1, inventoryId: input.inventoryId };
+  async deleteInventory(_input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<{ deleted: boolean; inventoryId: string }> {
+    throw new InventoryValidationError(['inventory is managed by route groups']);
   }
 
   async getInventory(input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<InventoryDto | null> {
     const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
     if (shop === null) return null;
-    const inventory = await this.prisma.inventory.findFirst({ include: inventoryInclude(), where: { id: input.inventoryId, shopId: shop.id } });
+    const inventory = await this.prisma.inventory.findFirst({ include: inventoryInclude(), where: { id: input.inventoryId, routeGroupingId: { not: null }, shopId: shop.id } });
     return inventory === null ? null : toInventoryDto(inventory);
   }
 
   async listInventories(input: { appId?: string | undefined; shopDomain: string }): Promise<InventoryDto[]> {
     const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
     if (shop === null) return [];
-    const inventories = await this.prisma.inventory.findMany({ include: inventoryInclude(), orderBy: { createdAt: 'desc' }, where: { shopId: shop.id } });
+    const inventories = await this.prisma.inventory.findMany({ include: inventoryInclude(), orderBy: { createdAt: 'desc' }, where: { routeGroupingId: { not: null }, shopId: shop.id } });
     return inventories.map(toInventoryDto);
   }
 
-  async updateInventoryOrders(input: UpdateInventoryOrdersInput): Promise<InventoryDto | null> {
-    const addOrderIds = normalizeIds(input.addOrderIds ?? []);
-    const removeOrderIds = normalizeIds(input.removeOrderIds ?? []);
-    if (addOrderIds.length === 0 && removeOrderIds.length === 0) {
-      return this.getInventory({ appId: input.appId, inventoryId: input.inventoryId, shopDomain: input.shopDomain });
-    }
-
-    const inventoryId = await this.prisma.$transaction(async (tx) => {
-      const shop = await findShop(tx, input);
-      if (shop === null) return null;
-      const inventory = await tx.inventory.findFirst({ select: { id: true }, where: { id: input.inventoryId, shopId: shop.id } });
-      if (inventory === null) return null;
-      if (removeOrderIds.length > 0) await removeInventoryOrders(tx, shop.id, inventory.id, removeOrderIds, input.actor);
-      if (addOrderIds.length > 0) await addInventoryOrders(tx, shop.id, inventory.id, addOrderIds, input.actor);
-      await tx.inventory.update({ data: { updatedAt: new Date() }, where: { id: inventory.id } });
-      return inventory.id;
-    });
-    if (inventoryId === null) return null;
-    return this.getInventory({ appId: input.appId, inventoryId, shopDomain: input.shopDomain });
+  async updateInventoryOrders(_input: UpdateInventoryOrdersInput): Promise<InventoryDto | null> {
+    throw new InventoryValidationError(['inventory is managed by route groups']);
   }
+}
+
+export async function createRouteGroupingInventory(
+  tx: InventoryWriteClient,
+  input: { actor: string; groupingId: string; name: string; orderIds: string[]; shopId: string }
+): Promise<string> {
+  const inventory = await tx.inventory.upsert({
+    create: {
+      createdBy: input.actor,
+      name: requireText(input.name, 'name'),
+      routeGroupingId: input.groupingId,
+      shopId: input.shopId
+    },
+    select: { id: true },
+    update: { name: requireText(input.name, 'name') },
+    where: { routeGroupingId: input.groupingId }
+  });
+  await addInventoryOrders(tx, input.shopId, inventory.id, normalizeIds(input.orderIds), input.actor);
+  await tx.inventory.update({ data: { updatedAt: new Date() }, where: { id: inventory.id } });
+  return inventory.id;
+}
+
+export async function syncRouteGroupingInventoryOrders(
+  tx: InventoryWriteClient,
+  input: { actor: string; addOrderIds: string[]; groupingId: string; name: string; removeOrderIds: string[]; shopId: string }
+): Promise<string> {
+  const existing = await tx.inventory.findUnique({ select: { id: true }, where: { routeGroupingId: input.groupingId } });
+  if (existing === null) {
+    const currentMembership = await tx.routeGroupingOrder.findMany({
+      orderBy: { sourceSequence: 'asc' },
+      select: { orderId: true },
+      where: { groupingId: input.groupingId, shopId: input.shopId }
+    });
+    return createRouteGroupingInventory(tx, {
+      actor: input.actor,
+      groupingId: input.groupingId,
+      name: input.name,
+      orderIds: currentMembership.map((row) => row.orderId),
+      shopId: input.shopId
+    });
+  }
+  const addOrderIds = normalizeIds(input.addOrderIds);
+  const removeOrderIds = normalizeIds(input.removeOrderIds);
+  if (removeOrderIds.length > 0) await removeInventoryOrders(tx, input.shopId, existing.id, removeOrderIds, input.actor);
+  if (addOrderIds.length > 0) await addInventoryOrders(tx, input.shopId, existing.id, addOrderIds, input.actor);
+  await tx.inventory.update({ data: { name: requireText(input.name, 'name'), updatedAt: new Date() }, where: { id: existing.id } });
+  return existing.id;
+}
+
+export async function recordInventorySourceItemDeltas(
+  tx: InventoryBaseWriteClient,
+  input: { actor: string; currentItems: InventoryItemRecord[]; orderId: string; previousItems: InventoryItemRecord[]; shopId: string }
+): Promise<void> {
+  const memberships = await tx.inventoryOrder.findMany({
+    select: { inventoryId: true },
+    where: { orderId: input.orderId, shopId: input.shopId }
+  });
+  const inventoryIds = [...new Set(memberships.map((membership) => membership.inventoryId))];
+  if (inventoryIds.length === 0) return;
+
+  const previous = aggregateInventoryItemsByKey(input.previousItems);
+  const current = aggregateInventoryItemsByKey(input.currentItems);
+  const events: Prisma.InventoryEventCreateManyInput[] = [];
+
+  for (const key of new Set([...previous.keys(), ...current.keys()])) {
+    const before = previous.get(key);
+    const after = current.get(key);
+    const delta = (after?.quantity ?? 0) - (before?.quantity ?? 0);
+    if (delta === 0) continue;
+    const item = after ?? before;
+    if (item === undefined) continue;
+    for (const inventoryId of inventoryIds) {
+      events.push({
+        action: before === undefined ? 'ADD' : after === undefined ? 'REMOVE' : 'CHANGE',
+        actor: input.actor,
+        inventoryId,
+        name: item.name,
+        options: item.options as Prisma.InputJsonValue,
+        orderId: input.orderId,
+        orderItemId: after?.id ?? null,
+        productId: item.productId,
+        quantity: Math.abs(delta),
+        quantityDelta: delta,
+        shopId: input.shopId,
+        sku: item.sku,
+        variationId: item.variationId
+      });
+    }
+  }
+
+  if (events.length === 0) return;
+  await tx.inventoryEvent.createMany({ data: events });
+  await tx.inventory.updateMany({ data: { updatedAt: new Date() }, where: { id: { in: inventoryIds }, shopId: input.shopId } });
 }
 
 function inventoryInclude() {
@@ -96,7 +154,7 @@ async function findShop(tx: Tx, input: { appId?: string | undefined; shopDomain:
   return tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
 }
 
-async function addInventoryOrders(tx: Tx, shopId: string, inventoryId: string, orderIds: string[], actor: string): Promise<void> {
+async function addInventoryOrders(tx: InventoryBaseWriteClient, shopId: string, inventoryId: string, orderIds: string[], actor: string): Promise<void> {
   const existing = new Set((await tx.inventoryOrder.findMany({ select: { orderId: true }, where: { inventoryId, orderId: { in: orderIds }, shopId } })).map((row) => row.orderId));
   const orderIdsToAdd = orderIds.filter((orderId) => !existing.has(orderId));
   if (orderIdsToAdd.length === 0) return;
@@ -107,7 +165,7 @@ async function addInventoryOrders(tx: Tx, shopId: string, inventoryId: string, o
   await createInventoryEvents(tx, shopId, inventoryId, orders, 'ADD', actor);
 }
 
-async function removeInventoryOrders(tx: Tx, shopId: string, inventoryId: string, orderIds: string[], actor: string): Promise<void> {
+async function removeInventoryOrders(tx: InventoryBaseWriteClient, shopId: string, inventoryId: string, orderIds: string[], actor: string): Promise<void> {
   const rows = await tx.inventoryOrder.findMany({ select: { orderId: true }, where: { inventoryId, orderId: { in: orderIds }, shopId } });
   const orderIdsToRemove = rows.map((row) => row.orderId);
   if (orderIdsToRemove.length === 0) return;
@@ -116,7 +174,7 @@ async function removeInventoryOrders(tx: Tx, shopId: string, inventoryId: string
   await tx.inventoryOrder.deleteMany({ where: { inventoryId, orderId: { in: orderIdsToRemove }, shopId } });
 }
 
-async function loadOrders(tx: Tx, shopId: string, orderIds: string[]): Promise<LoadedOrder[]> {
+async function loadOrders(tx: InventoryBaseWriteClient, shopId: string, orderIds: string[]): Promise<LoadedOrder[]> {
   const orders = await tx.order.findMany({ include: { orderItems: { orderBy: { lineIndex: 'asc' } } }, where: { id: { in: orderIds }, shopId } });
   if (orders.length !== orderIds.length) throw new InventoryValidationError(['orders must belong to the current shop']);
   const byId = new Map(orders.map((order) => [order.id, order]));
@@ -127,7 +185,8 @@ async function loadOrders(tx: Tx, shopId: string, orderIds: string[]): Promise<L
   });
 }
 
-async function createInventoryEvents(tx: Tx, shopId: string, inventoryId: string, orders: LoadedOrder[], action: 'ADD' | 'REMOVE', actor: string): Promise<void> {
+async function createInventoryEvents(tx: InventoryBaseWriteClient, shopId: string, inventoryId: string, orders: LoadedOrder[], action: 'ADD' | 'REMOVE', actor: string): Promise<void> {
+  const sign = action === 'REMOVE' ? -1 : 1;
   const data = orders.flatMap((order) => order.orderItems.map((item) => ({
     action,
     actor,
@@ -138,6 +197,7 @@ async function createInventoryEvents(tx: Tx, shopId: string, inventoryId: string
     orderItemId: item.id,
     productId: item.productId,
     quantity: item.quantity,
+    quantityDelta: sign * item.quantity,
     shopId,
     sku: item.sku,
     variationId: item.variationId
@@ -156,7 +216,13 @@ function toInventoryDto(inventory: LoadedInventory): InventoryDto {
     name: inventory.name,
     note: inventory.note,
     orderIds,
+    orders: inventory.orders.map((entry) => ({
+      id: entry.orderId,
+      items: entry.order.orderItems.map(toOrderItemDto),
+      name: entry.order.name
+    })),
     ordersCount: orderIds.length,
+    routeGroupingId: inventory.routeGroupingId,
     updatedAt: inventory.updatedAt.toISOString()
   };
 }
@@ -172,10 +238,44 @@ function toChangeItemDto(event: LoadedInventoryEvent): InventoryChangeItemDto {
   };
   return {
     ...item,
-    action: event.action === 'REMOVE' ? 'REMOVE' : 'ADD',
+    action: event.action === 'REMOVE' ? 'REMOVE' : event.action === 'CHANGE' ? 'CHANGE' : 'ADD',
+    createdAt: event.createdAt.toISOString(),
     orderId: event.orderId,
-    quantityDelta: event.action === 'REMOVE' ? -event.quantity : event.quantity
+    quantityDelta: event.quantityDelta ?? (event.action === 'REMOVE' ? -event.quantity : event.quantity)
   };
+}
+
+function aggregateInventoryItemsByKey(items: InventoryItemRecord[]): Map<string, InventoryItemRecord> {
+  const grouped = new Map<string, InventoryItemRecord>();
+  for (const item of items) {
+    const key = inventoryItemKey(item);
+    const existing = grouped.get(key);
+    if (existing === undefined) {
+      grouped.set(key, { ...item });
+      continue;
+    }
+    existing.quantity += item.quantity;
+    if ((existing.id === undefined || existing.id === null) && item.id != null) existing.id = item.id;
+  }
+  return grouped;
+}
+
+function inventoryItemKey(item: OrderItemDto): string {
+  return JSON.stringify({
+    options: canonicalInventoryOptions(item.options),
+    productId: item.productId,
+    variationId: item.variationId
+  });
+}
+
+function canonicalInventoryOptions(options: OrderItemDto['options']): OrderItemDto['options'] {
+  return options
+    .flatMap((option) => {
+      const key = normalizeOptionalText(option.key);
+      const value = normalizeOptionalText(option.value);
+      return key === null || value === null ? [] : [{ key, value }];
+    })
+    .sort((left, right) => left.key.localeCompare(right.key) || left.value.localeCompare(right.value));
 }
 
 function readOrderItemOptions(value: unknown): OrderItemDto['options'] {

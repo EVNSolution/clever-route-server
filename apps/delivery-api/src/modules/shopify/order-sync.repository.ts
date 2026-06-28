@@ -18,6 +18,7 @@ import {
   type OrderHealth,
 } from "./order-operate-status.js";
 import { toOrderItemDto, type OrderItemRecordLike } from "../order-items/order-items.js";
+import { recordInventorySourceItemDeltas } from "../inventory/inventory.service.js";
 import { readNormalizedPaymentStatus } from "../payments/normalized-payment-status.js";
 import type { AdminNotificationServiceApi } from "../notifications/admin-notification.service.js";
 import type { AdminWebNotificationEvent } from "../notifications/admin-web-notification-events.js";
@@ -151,6 +152,9 @@ type OrderSyncPrismaClient = Pick<
   | "adminNotification"
   | "commerceConnectionOrderMapping"
   | "deliveryStop"
+  | "inventory"
+  | "inventoryEvent"
+  | "inventoryOrder"
   | "order"
   | "orderItem"
   | "orderDeliveryFact"
@@ -159,7 +163,7 @@ type OrderSyncPrismaClient = Pick<
 
 type OrderSyncWriteClient = Pick<
   PrismaClient,
-  "deliveryStop" | "order" | "orderItem" | "orderDeliveryFact"
+  "deliveryStop" | "inventory" | "inventoryEvent" | "inventoryOrder" | "order" | "orderItem" | "orderDeliveryFact"
 >;
 
 export type OrderSyncNotificationLogger = {
@@ -1049,6 +1053,10 @@ export class PrismaOrderSyncRepository {
       },
     });
     if (input.synced.orderItems !== undefined) {
+      const previousItems = await input.tx.orderItem.findMany({
+        orderBy: { lineIndex: "asc" },
+        where: { orderId: order.id, shopId: input.shopId },
+      });
       await input.tx.orderItem.deleteMany({
         where: { orderId: order.id, shopId: input.shopId },
       });
@@ -1067,6 +1075,17 @@ export class PrismaOrderSyncRepository {
           })),
         });
       }
+      const currentItems = await input.tx.orderItem.findMany({
+        orderBy: { lineIndex: "asc" },
+        where: { orderId: order.id, shopId: input.shopId },
+      });
+      await recordInventorySourceItemDeltas(input.tx, {
+        actor: "order-sync",
+        currentItems: currentItems.map((item) => ({ ...toOrderItemDto(item), id: item.id })),
+        orderId: order.id,
+        previousItems: previousItems.map((item) => ({ ...toOrderItemDto(item), id: item.id })),
+        shopId: input.shopId,
+      });
     }
 
     const existingFact = input.existing?.deliveryFacts?.[0] ?? null;

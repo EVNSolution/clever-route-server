@@ -627,16 +627,18 @@ model OrderItem {
 }
 
 model Inventory {
-  id        String           @id @default(uuid()) @db.Uuid
-  shopId    String           @db.Uuid
-  shop      Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  name      String           @db.Text
-  note      String?          @db.Text
-  createdBy String?          @db.Text
-  createdAt DateTime         @default(now()) @db.Timestamptz(6)
-  updatedAt DateTime         @updatedAt @db.Timestamptz(6)
-  orders    InventoryOrder[]
-  events    InventoryEvent[]
+  id              String           @id @default(uuid()) @db.Uuid
+  shopId          String           @db.Uuid
+  shop            Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  routeGroupingId String?          @unique @db.Uuid
+  routeGrouping   RouteGrouping?   @relation(fields: [routeGroupingId], references: [id], onDelete: SetNull)
+  name            String           @db.Text
+  note            String?          @db.Text
+  createdBy       String?          @db.Text
+  createdAt       DateTime         @default(now()) @db.Timestamptz(6)
+  updatedAt       DateTime         @updatedAt @db.Timestamptz(6)
+  orders          InventoryOrder[]
+  events          InventoryEvent[]
 
   @@index([shopId, createdAt])
   @@map("inventories")
@@ -660,24 +662,25 @@ model InventoryOrder {
 }
 
 model InventoryEvent {
-  id          String    @id @default(uuid()) @db.Uuid
-  shopId      String    @db.Uuid
-  shop        Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  inventoryId String    @db.Uuid
-  inventory   Inventory @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
-  orderId     String    @db.Uuid
-  order       Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  orderItemId String    @db.Uuid
-  orderItem   OrderItem @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
-  action      String    @db.Text
-  productId   Int
-  variationId Int
-  name        String    @db.Text
-  sku         String?   @db.Text
-  options     Json
-  quantity    Int
-  actor       String?   @db.Text
-  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+  id            String     @id @default(uuid()) @db.Uuid
+  shopId        String     @db.Uuid
+  shop          Shop       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  inventoryId   String     @db.Uuid
+  inventory     Inventory  @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
+  orderId       String     @db.Uuid
+  order         Order      @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  orderItemId   String?    @db.Uuid
+  orderItem     OrderItem? @relation(fields: [orderItemId], references: [id], onDelete: SetNull)
+  action        String     @db.Text
+  productId     Int
+  variationId   Int
+  name          String     @db.Text
+  sku           String?    @db.Text
+  options       Json
+  quantity      Int
+  quantityDelta Int?
+  actor         String?    @db.Text
+  createdAt     DateTime   @default(now()) @db.Timestamptz(6)
 
   @@index([inventoryId, createdAt])
   @@index([shopId, orderId])
@@ -1074,6 +1077,7 @@ model RouteGrouping {
   branches             RouteGroupingBranch[]
   branchOrderLocks     RouteGroupingBranchOrderLock[]
   notificationAttempts DriverRouteNotificationAttempt[]
+  inventory            Inventory?
 
   @@index([shopId, planDate, status])
   @@index([shopId, dateRangeStart, dateRangeEnd, status])

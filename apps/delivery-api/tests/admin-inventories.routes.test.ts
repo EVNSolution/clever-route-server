@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
+import { InventoryValidationError } from '../src/modules/inventory/inventory.types.js';
 import type { InventoryDto } from '../src/modules/inventory/inventory.types.js';
 import type { AdminInventoryDependencies } from '../src/routes/admin-inventories.routes.js';
 
@@ -14,16 +15,18 @@ const inventory: InventoryDto = {
     items: [{ name: 'Kimchi', options: [], productId: 1, quantity: 3, sku: null, variationId: 0 }],
     totalQuantity: 3
   },
-  lastChange: [{ action: 'ADD', name: 'Kimchi', options: [], orderId: 'order-1', productId: 1, quantity: 3, quantityDelta: 3, sku: null, variationId: 0 }],
+  lastChange: [{ action: 'ADD', createdAt: '2026-06-26T00:00:00.000Z', name: 'Kimchi', options: [], orderId: 'order-1', productId: 1, quantity: 3, quantityDelta: 3, sku: null, variationId: 0 }],
   name: 'Prep batch',
   note: null,
   orderIds: ['order-1'],
+  orders: [{ id: 'order-1', items: [{ name: 'Kimchi', options: [], productId: 1, quantity: 3, sku: null, variationId: 0 }], name: '#1001' }],
   ordersCount: 1,
+  routeGroupingId: 'route-group-1',
   updatedAt: '2026-06-26T00:00:00.000Z'
 };
 
 describe('Admin inventory routes', () => {
-  test('creates inventory with token app/shop scope', async () => {
+  test('rejects standalone inventory creation because inventories follow route groups', async () => {
     const { createInventory, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminInventories: dependencies });
 
@@ -35,21 +38,15 @@ describe('Admin inventory routes', () => {
         url: '/admin/inventories'
       });
 
-      expect(response.statusCode).toBe(201);
-      expect(response.json()).toEqual({ data: { inventory }, error: null });
-      expect(createInventory).toHaveBeenCalledWith({
-        actor: 'shopify-user-id',
-        appId: 'clever-route-dev',
-        name: 'Prep batch',
-        orderIds: ['order-1'],
-        shopDomain: 'example.myshopify.com'
-      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({ data: null, error: { code: 'INVENTORY_INVALID', message: 'inventory is managed by route groups' } });
+      expect(createInventory).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
   });
 
-  test('updates inventory order membership', async () => {
+  test('rejects direct inventory order membership changes', async () => {
     const { dependencies, updateInventoryOrders } = createDependencyHarness();
     const app = await buildApp({ adminInventories: dependencies });
 
@@ -61,8 +58,8 @@ describe('Admin inventory routes', () => {
         url: '/admin/inventories/inventory-id/orders'
       });
 
-      expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ data: { inventory }, error: null });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({ data: null, error: { code: 'INVENTORY_INVALID', message: 'inventory is managed by route groups' } });
       expect(updateInventoryOrders).toHaveBeenCalledWith({
         actor: 'shopify-user-id',
         addOrderIds: ['order-2'],
@@ -75,10 +72,34 @@ describe('Admin inventory routes', () => {
       await app.close();
     }
   });
+
+  test('rejects direct inventory deletion', async () => {
+    const { deleteInventory, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminInventories: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'DELETE',
+        url: '/admin/inventories/inventory-id'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({ data: null, error: { code: 'INVENTORY_INVALID', message: 'inventory is managed by route groups' } });
+      expect(deleteInventory).toHaveBeenCalledWith({
+        appId: 'clever',
+        inventoryId: 'inventory-id',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 function createDependencyHarness(): {
   createInventory: ReturnType<typeof vi.fn<AdminInventoryDependencies['inventoryService']['createInventory']>>;
+  deleteInventory: ReturnType<typeof vi.fn<AdminInventoryDependencies['inventoryService']['deleteInventory']>>;
   dependencies: AdminInventoryDependencies;
   updateInventoryOrders: ReturnType<typeof vi.fn<AdminInventoryDependencies['inventoryService']['updateInventoryOrders']>>;
 } {
@@ -88,13 +109,15 @@ function createDependencyHarness(): {
     subject: 'shopify-user-id'
   }));
   const createInventory = vi.fn<AdminInventoryDependencies['inventoryService']['createInventory']>(() => Promise.resolve(inventory));
-  const deleteInventory = vi.fn<AdminInventoryDependencies['inventoryService']['deleteInventory']>(() => Promise.resolve({ deleted: true, inventoryId: 'inventory-id' }));
+  const inventoryManagedError = () => Promise.reject(new InventoryValidationError(['inventory is managed by route groups']));
+  const deleteInventory = vi.fn<AdminInventoryDependencies['inventoryService']['deleteInventory']>(inventoryManagedError);
   const getInventory = vi.fn<AdminInventoryDependencies['inventoryService']['getInventory']>(() => Promise.resolve(inventory));
   const listInventories = vi.fn<AdminInventoryDependencies['inventoryService']['listInventories']>(() => Promise.resolve([inventory]));
-  const updateInventoryOrders = vi.fn<AdminInventoryDependencies['inventoryService']['updateInventoryOrders']>(() => Promise.resolve(inventory));
+  const updateInventoryOrders = vi.fn<AdminInventoryDependencies['inventoryService']['updateInventoryOrders']>(inventoryManagedError);
 
   return {
     createInventory,
+    deleteInventory,
     dependencies: {
       inventoryService: {
         createInventory,

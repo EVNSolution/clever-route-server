@@ -42,12 +42,14 @@ import {
   type UpdateRouteGroupingOrdersInput
 } from './route-grouping.types.js';
 import { hashPushToken } from './driver-push-token.service.js';
+import { createRouteGroupingInventory, syncRouteGroupingInventoryOrders } from '../inventory/inventory.service.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
 
 const OPTIMIZER_VERSION = 'route-grouping-projection-v1';
 const DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE = 'RETURN_TO_DEPOT' as const;
 const ROUTE_GROUPING_GEOMETRY_REFRESH_CONCURRENCY = 2;
 const ROUTE_GROUPING_DRAFT_SAVE_ACTOR = 'route-detail-draft-save';
+const ROUTE_GROUPING_INVENTORY_ACTOR = 'route-grouping-membership';
 export const DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS = 500_000;
 
 const ROUTE_GROUPING_POLYGON_COLORS = [
@@ -74,6 +76,10 @@ type RouteGroupingPrismaClient = Pick<
   | 'driverPushToken'
   | 'driverRouteFeedback'
   | 'driverRouteNotificationAttempt'
+  | 'inventory'
+  | 'inventoryEvent'
+  | 'inventoryOrder'
+  | 'order'
   | 'orderDeliveryFact'
   | 'routeGrouping'
   | 'routeGroupingChildVersion'
@@ -92,7 +98,7 @@ type LoadedGrouping = Prisma.RouteGroupingGetPayload<{ include: ReturnType<typeo
 type LoadedChild = LoadedGrouping['childVersions'][number];
 type LoadedAssignment = LoadedGrouping['orders'][number];
 type LoadedBranch = LoadedGrouping['branches'][number];
-type GroupingForUpdate = { dateRangeEnd: Date | null; dateRangeStart: Date | null; id: string; planDate: Date; shopId: string; updatedAt: Date };
+type GroupingForUpdate = { dateRangeEnd: Date | null; dateRangeStart: Date | null; id: string; name: string; planDate: Date; shopId: string; updatedAt: Date };
 
 type ChildSnapshot = {
   color?: string | null;
@@ -240,6 +246,13 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           shopId: shop.id,
           sourceSequence: index + 1
         }))
+      });
+      await createRouteGroupingInventory(tx, {
+        actor: input.createdBy,
+        groupingId: grouping.id,
+        name: input.name,
+        orderIds,
+        shopId: shop.id
       });
       return grouping.id;
     });
@@ -393,6 +406,14 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         });
       }
 
+      await syncRouteGroupingInventoryOrders(tx, {
+        actor: ROUTE_GROUPING_INVENTORY_ACTOR,
+        addOrderIds: newOrderIds,
+        groupingId: group.id,
+        name: group.name,
+        removeOrderIds,
+        shopId: group.shopId
+      });
       await recomputeAssignments(tx, group.id);
       return group.id;
     });
@@ -1189,7 +1210,7 @@ async function findGroupingForUpdate(
   const shop = await tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
   if (shop === null) return null;
   return tx.routeGrouping.findFirst({
-    select: { dateRangeEnd: true, dateRangeStart: true, id: true, planDate: true, shopId: true, updatedAt: true },
+    select: { dateRangeEnd: true, dateRangeStart: true, id: true, name: true, planDate: true, shopId: true, updatedAt: true },
     where: { id: input.groupingId, shopId: shop.id }
   });
 }
