@@ -23,4 +23,10 @@ clever-admin.cleversystem.ai {
 		lb_try_interval 500ms
 	}
 }
-
+clever-kfood-app.cleversystem.ai {
+	encode zstd gzip
+	reverse_proxy shopify-app-kfood:3000 {
+		lb_try_duration 30s
+		lb_try_interval 500ms
+	}
+}
