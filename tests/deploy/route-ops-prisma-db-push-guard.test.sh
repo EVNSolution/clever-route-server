@@ -68,6 +68,33 @@ EOF_NPM
   fi
 }
 
+run_pre_db_push_sql_case() {
+  local tmp sha
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-prisma-guard-pre-sql.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  mkdir -p "$tmp/bin"
+  cat > "$tmp/bin/npm" <<'EOF_NPM'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_NPM_ARGS_FILE"
+case "$*" in
+  *'--accept-data-loss'*) echo 'guard passed forbidden --accept-data-loss' >&2; exit 88 ;;
+esac
+EOF_NPM
+  chmod +x "$tmp/bin/npm"
+  printf 'model Example { id String @id }\n' > "$tmp/schema.prisma"
+  printf 'SELECT 1;\n' > "$tmp/pre-db-push.sql"
+  sha="$(sha256sum "$tmp/schema.prisma" | awk '{print $1}')"
+  PATH="$tmp/bin:$PATH" FAKE_NPM_ARGS_FILE="$tmp/npm.args" PRISMA_PRE_DB_PUSH_SQL_FILE="$tmp/pre-db-push.sql" PRISMA_SCHEMA_PATH="$tmp/schema.prisma" PRISMA_SCHEMA_SHA="$sha" "$GUARD" > "$tmp/stdout" 2> "$tmp/stderr"
+  grep -q 'applying pre-db-push SQL' "$tmp/stdout"
+  grep -q -- '--prefix apps/delivery-api exec -- prisma db execute --schema' "$tmp/npm.args"
+  grep -q -- "--file $tmp/pre-db-push.sql" "$tmp/npm.args"
+  grep -q -- '--prefix apps/delivery-api exec -- prisma db push --schema' "$tmp/npm.args"
+  if grep -q -- '--accept-data-loss' "$tmp/npm.args"; then
+    fail "guard must not pass --accept-data-loss"
+  fi
+}
+
 run_runtime_layout_case() {
   local tmp sha
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-prisma-guard-runtime.XXXXXX")"
@@ -99,6 +126,7 @@ run_missing_sha_case
 run_bad_shape_case
 run_mismatch_case
 run_match_executes_prisma_case
+run_pre_db_push_sql_case
 run_runtime_layout_case
 run_static_contract_case
 printf '{"ok":true,"guard":"%s"}\n' "$GUARD"

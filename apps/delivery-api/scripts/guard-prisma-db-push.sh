@@ -45,4 +45,23 @@ if [ "$actual_schema_sha" != "$PRISMA_SCHEMA_SHA" ]; then
 fi
 
 printf 'guard-prisma-db-push: schema SHA verified for %s\n' "$schema_path"
+
+if [ -n "${PRISMA_PRE_DB_PUSH_SQL_FILE:-}" ]; then
+  pre_db_push_sql_file="$PRISMA_PRE_DB_PUSH_SQL_FILE"
+elif [ -f apps/delivery-api/prisma/migrations/20260629183000_link_route_grouping_inventory/migration.sql ]; then
+  pre_db_push_sql_file="apps/delivery-api/prisma/migrations/20260629183000_link_route_grouping_inventory/migration.sql"
+elif [ -f prisma/migrations/20260629183000_link_route_grouping_inventory/migration.sql ]; then
+  pre_db_push_sql_file="prisma/migrations/20260629183000_link_route_grouping_inventory/migration.sql"
+else
+  pre_db_push_sql_file=""
+fi
+
+if [ -n "$pre_db_push_sql_file" ]; then
+  if [ ! -f "$pre_db_push_sql_file" ]; then
+    fail "pre db push SQL file not found: $pre_db_push_sql_file"
+  fi
+  printf 'guard-prisma-db-push: applying pre-db-push SQL %s\n' "$pre_db_push_sql_file"
+  npm --prefix "$npm_prefix" exec -- prisma db execute --schema "$schema_path" --file "$pre_db_push_sql_file"
+fi
+
 exec npm --prefix "$npm_prefix" exec -- prisma db push --schema "$schema_path" --skip-generate
