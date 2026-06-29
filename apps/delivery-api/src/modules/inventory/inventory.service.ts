@@ -9,7 +9,6 @@ type InventoryPrismaClient = Pick<
   '$transaction' | 'inventory' | 'inventoryEvent' | 'inventoryOrder' | 'order' | 'shop'
 >;
 
-type Tx = Parameters<Parameters<InventoryPrismaClient['$transaction']>[0]>[0];
 type InventoryBaseWriteClient = Pick<PrismaClient, 'inventory' | 'inventoryEvent' | 'inventoryOrder' | 'order'>;
 type InventoryWriteClient = InventoryBaseWriteClient & Pick<PrismaClient, 'routeGroupingOrder'>;
 type LoadedInventory = Prisma.InventoryGetPayload<{ include: ReturnType<typeof inventoryInclude> }>;
@@ -20,12 +19,14 @@ type InventoryItemRecord = OrderItemDto & { id?: string | null };
 export class PrismaInventoryService implements InventoryService {
   constructor(private readonly prisma: InventoryPrismaClient) {}
 
-  async createInventory(_input: CreateInventoryInput): Promise<InventoryDto> {
-    throw new InventoryValidationError(['inventory is managed by route groups']);
+  createInventory(input: CreateInventoryInput): Promise<InventoryDto> {
+    void input;
+    return Promise.reject(new InventoryValidationError(['inventory is managed by route groups']));
   }
 
-  async deleteInventory(_input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<{ deleted: boolean; inventoryId: string }> {
-    throw new InventoryValidationError(['inventory is managed by route groups']);
+  deleteInventory(input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<{ deleted: boolean; inventoryId: string }> {
+    void input;
+    return Promise.reject(new InventoryValidationError(['inventory is managed by route groups']));
   }
 
   async getInventory(input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<InventoryDto | null> {
@@ -42,8 +43,9 @@ export class PrismaInventoryService implements InventoryService {
     return inventories.map(toInventoryDto);
   }
 
-  async updateInventoryOrders(_input: UpdateInventoryOrdersInput): Promise<InventoryDto | null> {
-    throw new InventoryValidationError(['inventory is managed by route groups']);
+  updateInventoryOrders(input: UpdateInventoryOrdersInput): Promise<InventoryDto | null> {
+    void input;
+    return Promise.reject(new InventoryValidationError(['inventory is managed by route groups']));
   }
 }
 
@@ -122,7 +124,7 @@ export async function recordInventorySourceItemDeltas(
         actor: input.actor,
         inventoryId,
         name: item.name,
-        options: item.options as Prisma.InputJsonValue,
+        options: item.options,
         orderId: input.orderId,
         orderItemId: after?.id ?? null,
         productId: item.productId,
@@ -148,10 +150,6 @@ function inventoryInclude() {
       orderBy: { createdAt: 'asc' as const }
     }
   } satisfies Prisma.InventoryInclude;
-}
-
-async function findShop(tx: Tx, input: { appId?: string | undefined; shopDomain: string }): Promise<{ id: string } | null> {
-  return tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
 }
 
 async function addInventoryOrders(tx: InventoryBaseWriteClient, shopId: string, inventoryId: string, orderIds: string[], actor: string): Promise<void> {

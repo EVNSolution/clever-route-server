@@ -2,12 +2,16 @@ import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaInventoryService, recordInventorySourceItemDeltas, syncRouteGroupingInventoryOrders } from '../src/modules/inventory/inventory.service.js';
 
+type CreateManyArgs = { data: Array<Record<string, unknown>> };
+type FindOrdersArgs = { where: { id: { in: string[] } } };
+type UpdateManyArgs = { data: { updatedAt: Date } };
+
 describe('inventory service route-group follower behavior', () => {
   test('lists only route-group linked inventories', async () => {
-    const findMany = vi.fn(async () => []);
+    const findMany = vi.fn(() => []);
     const service = new PrismaInventoryService({
       inventory: { findMany },
-      shop: { findUnique: vi.fn(async () => ({ id: 'shop-1' })) }
+      shop: { findUnique: vi.fn(() => ({ id: 'shop-1' })) }
     } as never);
 
     await service.listInventories({ appId: 'clever-route-dev', shopDomain: 'example.myshopify.com' });
@@ -21,23 +25,23 @@ describe('inventory service route-group follower behavior', () => {
     const createdInventoryOrders: unknown[] = [];
     const tx = {
       inventory: {
-        findUnique: vi.fn(async () => null),
-        update: vi.fn(async () => ({})),
-        upsert: vi.fn(async () => ({ id: 'inventory-1' }))
+        findUnique: vi.fn(() => null),
+        update: vi.fn(() => ({})),
+        upsert: vi.fn(() => ({ id: 'inventory-1' }))
       },
-      inventoryEvent: { createMany: vi.fn(async () => ({ count: 2 })) },
+      inventoryEvent: { createMany: vi.fn(() => ({ count: 2 })) },
       inventoryOrder: {
-        createMany: vi.fn(async ({ data }) => { createdInventoryOrders.push(...data); return { count: data.length }; }),
-        findMany: vi.fn(async () => [])
+        createMany: vi.fn(({ data }: CreateManyArgs) => { createdInventoryOrders.push(...data); return { count: data.length }; }),
+        findMany: vi.fn(() => [])
       },
       order: {
-        findMany: vi.fn(async ({ where }) => where.id.in.map((id: string) => ({
+        findMany: vi.fn(({ where }: FindOrdersArgs) => where.id.in.map((id) => ({
           id,
           orderItems: [{ id: `item-${id}`, name: 'Kimchi', options: [], productId: 1, quantity: 1, sku: null, variationId: 0 }]
         })))
       },
       routeGroupingOrder: {
-        findMany: vi.fn(async () => [{ orderId: 'existing-order' }, { orderId: 'new-order' }])
+        findMany: vi.fn(() => [{ orderId: 'existing-order' }, { orderId: 'new-order' }])
       }
     };
 
@@ -61,10 +65,10 @@ describe('inventory service route-group follower behavior', () => {
 
   test('records source item deltas with canonical option identity', async () => {
     const events: unknown[] = [];
-    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const updateMany = vi.fn((input: UpdateManyArgs) => { void input; return { count: 1 }; });
     const tx = {
-      inventoryEvent: { createMany: vi.fn(async ({ data }) => { events.push(...data); return { count: data.length }; }) },
-      inventoryOrder: { findMany: vi.fn(async () => [{ inventoryId: 'inventory-1' }]) },
+      inventoryEvent: { createMany: vi.fn(({ data }: CreateManyArgs) => { events.push(...data); return { count: data.length }; }) },
+      inventoryOrder: { findMany: vi.fn(() => [{ inventoryId: 'inventory-1' }]) },
       inventory: { updateMany }
     };
 
@@ -86,6 +90,8 @@ describe('inventory service route-group follower behavior', () => {
     });
 
     expect(events).toEqual([expect.objectContaining({ action: 'CHANGE', orderId: 'order-1', quantity: 2, quantityDelta: 2 })]);
-    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ updatedAt: expect.any(Date) }) }));
+    expect(updateMany).toHaveBeenCalledTimes(1);
+    const updateManyInput = updateMany.mock.calls[0]?.[0];
+    expect(updateManyInput?.data.updatedAt).toBeInstanceOf(Date);
   });
 });
