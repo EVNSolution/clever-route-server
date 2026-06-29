@@ -1921,7 +1921,7 @@ function toGroupingSummaryDto(group: LoadedGrouping): RouteGroupingSummaryDto {
   const currentChildren = group.childVersions.filter((child) => child.status === 'CURRENT');
   const dateRange = loadedGroupDateRange(group);
   return {
-    children: currentChildren.map((child) => toChildDto(child)),
+    children: currentChildren.map((child) => toChildDto(child, group)),
     currentVersion: group.currentVersion,
     dateRangeEnd: dateRange.endText,
     dateRangeStart: dateRange.startText,
@@ -1994,8 +1994,9 @@ function toBranchDto(branch: LoadedBranch) {
   };
 }
 
-function toChildDto(child: LoadedChild): RouteGroupingChildDto {
+function toChildDto(child: LoadedChild, group: LoadedGrouping): RouteGroupingChildDto {
   const snapshot = readChildSnapshot(child.snapshot);
+  const stops = currentChildAssignments(group, child).map(toAssignmentDto);
   return {
     childVersion: child.version,
     color: snapshot.color ?? null,
@@ -2003,9 +2004,11 @@ function toChildDto(child: LoadedChild): RouteGroupingChildDto {
     driverId: child.driverId,
     driverName: child.driver?.displayName ?? child.routePlan?.driver?.displayName ?? null,
     notificationStatus: normalizeNotificationStatus(child.notificationStatus),
+    orderIds: stops.map((stop) => stop.orderId),
     routePlan: child.routePlan === null ? null : toMinimalRoutePlanSummary(child.routePlan),
     routePlanId: child.routePlanId,
-    stopsCount: child.routePlan?.routeStops.length ?? snapshot.stops.length
+    stops,
+    stopsCount: stops.length
   };
 }
 
