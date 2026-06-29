@@ -28,6 +28,7 @@ export const ORDERS_UPDATED_SINCE_QUERY = `#graphql
         name
         phone
         displayFinancialStatus
+        paymentGatewayNames
         displayFulfillmentStatus
         createdAt
         processedAt

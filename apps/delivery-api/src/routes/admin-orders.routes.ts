@@ -334,6 +334,7 @@ function readShopifyOrderSnapshot(
     lineItems,
     name,
     note: readNullableString(object.note),
+    paymentGatewayNames: readStringArray(object.paymentGatewayNames),
     phone: readNullableString(object.phone),
     processedAt: readDateOrIssue(
       object.processedAt,
@@ -488,6 +489,11 @@ function parseLineItem(
     title: readNullableString(object.title),
     variantTitle: readNullableString(object.variantTitle)
   };
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => (typeof item === 'string' ? [item] : []));
 }
 
 function readAttributes(

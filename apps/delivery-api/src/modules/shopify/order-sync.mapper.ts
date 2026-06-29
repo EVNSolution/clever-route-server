@@ -43,6 +43,7 @@ export type ShopifyOrderNode = {
     | undefined;
   name: string;
   note?: string | null;
+  paymentGatewayNames?: string[] | null;
   phone: string | null;
   processedAt: string | null;
   shippingAddress: ShopifyShippingAddress | null;

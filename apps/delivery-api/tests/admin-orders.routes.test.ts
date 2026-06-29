@@ -120,6 +120,7 @@ describe('Admin orders routes', () => {
       expect(syncInput.source).toBe('clever-app-orders');
       expect(syncInput.subject).toBe('shopify-user-id');
       expect(syncInput.orders[0]?.id).toBe('gid://shopify/Order/123');
+      expect(syncInput.orders[0]?.paymentGatewayNames).toEqual(['Cash on Delivery (COD)']);
       expect(syncInput.orders[0]?.customAttributes).toContainEqual({
         key: 'Delivery Day',
         value: 'Friday 5pm to 9pm *Check delivery map'
@@ -665,6 +666,7 @@ function orderSyncPayload(): Record<string, unknown> {
         lineItems: { nodes: [{ title: 'Tomatono 5/7-5/9', name: 'Tomatono 5/7-5/9', variantTitle: null, quantity: 1, sku: 'TOMA' }] },
         name: '#1035',
         note: 'Leave at door',
+        paymentGatewayNames: ['Cash on Delivery (COD)'],
         phone: '+14165550000',
         processedAt: '2026-05-07T12:00:00.000Z',
         shippingAddress: {

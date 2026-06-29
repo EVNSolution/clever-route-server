@@ -18,6 +18,7 @@ describe('buildOrdersUpdatedSinceQuery', () => {
     });
     expect(payload.query).toContain('orders(first: $first, after: $after, query: $query');
     expect(payload.query).toContain('shippingAddress');
+    expect(payload.query).toContain('paymentGatewayNames');
   });
 });
 
@@ -36,6 +37,7 @@ describe('mapShopifyOrderNodeToDeliveryInputs', () => {
       id: 'gid://shopify/Order/123',
       legacyResourceId: '123',
       name: '#1001',
+      paymentGatewayNames: ['Cash on Delivery (COD)'],
       phone: '+15551234567',
       processedAt: '2026-05-07T04:00:00Z',
       shippingAddress: {
@@ -54,6 +56,7 @@ describe('mapShopifyOrderNodeToDeliveryInputs', () => {
     });
 
     expect(mapped.order.rawPayload.id).toBe('gid://shopify/Order/123');
+    expect(mapped.order.rawPayload.paymentGatewayNames).toEqual(['Cash on Delivery (COD)']);
     expect(mapped.deliveryStop).toEqual(
       expect.objectContaining({
         address1: '1 Main St',
