@@ -1930,6 +1930,7 @@ function toGroupingSummaryDto(group: LoadedGrouping): RouteGroupingSummaryDto {
     name: group.name,
     planDate: formatDateOnly(group.planDate) ?? '',
     status: group.status,
+    switchRoutes: toGroupingSwitchRoutes(group, currentChildren),
     totalOrders: group.orders.length,
     unresolvedOrders,
     updatedAt: group.updatedAt.toISOString(),
@@ -2006,6 +2007,26 @@ function toChildDto(child: LoadedChild): RouteGroupingChildDto {
     routePlanId: child.routePlanId,
     stopsCount: child.routePlan?.routeStops.length ?? snapshot.stops.length
   };
+}
+
+function toGroupingSwitchRoutes(group: LoadedGrouping, currentChildren: LoadedChild[]) {
+  const seen = new Set<string>();
+  const routes: Array<{ label: string; routePlanId: string | null }> = [];
+  const add = (label: string | null | undefined, routePlanId: string | null) => {
+    const safeLabel = label?.trim();
+    const key = `${routePlanId ?? ''}:${safeLabel ?? ''}`;
+    if (!safeLabel || seen.has(key)) return;
+    seen.add(key);
+    routes.push({ label: safeLabel, routePlanId });
+  };
+
+  add(group.name, currentChildren.find((child) => child.routePlanId !== null)?.routePlanId ?? null);
+  currentChildren.forEach((child) => {
+    const snapshot = readChildSnapshot(child.snapshot);
+    add(child.routePlan?.name ?? snapshot.name, child.routePlanId);
+  });
+
+  return routes;
 }
 
 function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan']>) {

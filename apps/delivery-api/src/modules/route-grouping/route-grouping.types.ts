@@ -68,6 +68,11 @@ export type RouteGroupingWarningDto = {
   routePlanIds?: string[];
 };
 
+export type RouteGroupingSwitchRouteDto = {
+  label: string;
+  routePlanId: string | null;
+};
+
 export type RouteGroupingSummaryDto = {
   children: RouteGroupingChildDto[];
   currentVersion: number;
@@ -78,6 +83,7 @@ export type RouteGroupingSummaryDto = {
   name: string;
   planDate: string;
   status: string;
+  switchRoutes?: RouteGroupingSwitchRouteDto[];
   totalOrders: number;
   unresolvedOrders: number;
   updatedAt: string;
