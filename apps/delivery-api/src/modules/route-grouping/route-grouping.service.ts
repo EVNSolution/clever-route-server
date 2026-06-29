@@ -1056,7 +1056,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     const candidates: OptimizedChildRouteCandidate[] = [];
     const routeAssignmentGroups = hasBranchRouteLocks(group)
       ? groupAssignmentsByRouteBranch(group)
-      : [...groupAssignmentsByDriver(group.orders)].map(([driverId, assignments]) => ({ assignments, color: null, driverId, name: childRouteName(group, driverId) }));
+      : [...groupAssignmentsByDriver(group.orders)].map(([driverId, assignments], index) => ({ assignments, color: null, driverId, name: `Route ${index + 1}` }));
     for (const { assignments, color, driverId, name } of routeAssignmentGroups) {
       if (assignments.length === 0) continue;
       validateChildRouteStopsNearDepot(assignments, depot, this.maxChildRouteStopDistanceFromDepotMeters());
@@ -1712,11 +1712,6 @@ function childAssignmentToRouteStop(assignment: LoadedAssignment, sequence: numb
     shopifyOrderGid: assignment.order.shopifyOrderGid,
     status: stop.status
   };
-}
-
-function childRouteName(group: LoadedGrouping, driverId: string | null): string {
-  const driverName = driverId === null ? 'Unassigned' : group.orders.find((assignment) => assignment.assignedDriverId === driverId)?.assignedDriver?.displayName ?? 'Driver';
-  return `${group.name} — ${driverName}`;
 }
 
 function stripGeneratedChildRouteVersion(name: string): string {

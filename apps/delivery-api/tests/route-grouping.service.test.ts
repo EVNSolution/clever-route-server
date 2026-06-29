@@ -147,11 +147,12 @@ describe('route grouping contracts', () => {
     expect(source).toContain('snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, routePlan.name, loaded.currentVersion, candidate.color)');
   });
 
-  test('allows default unassigned child route generation before dispatch', () => {
+  test('uses numbered child route names before dispatch', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain("assignment.assignmentStatus === 'ASSIGNED' ? assignment.assignedDriverId : null");
     expect(source).toContain("assignment.assignmentStatus !== 'ASSIGNED' && assignment.assignmentStatus !== 'UNASSIGNED'");
-    expect(source).toContain("driverId === null ? 'Unassigned'");
+    expect(source).toContain('name: `Route ${index + 1}`');
+    expect(source).not.toContain('return `${group.name} — ${driverName}`');
   });
 
   test('keeps route group deletion free of child-route status blockers', () => {
