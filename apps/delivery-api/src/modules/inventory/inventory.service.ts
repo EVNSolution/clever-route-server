@@ -19,33 +19,69 @@ type InventoryItemRecord = OrderItemDto & { id?: string | null };
 export class PrismaInventoryService implements InventoryService {
   constructor(private readonly prisma: InventoryPrismaClient) {}
 
-  createInventory(input: CreateInventoryInput): Promise<InventoryDto> {
-    void input;
-    return Promise.reject(new InventoryValidationError(['inventory is managed by route groups']));
+  async createInventory(input: CreateInventoryInput): Promise<InventoryDto> {
+    const shopDomain = normalizeShopDomain(input.shopDomain);
+    const inventoryId = await this.prisma.$transaction(async (tx) => {
+      const shop = await tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain }) });
+      if (shop === null) throw new InventoryValidationError(['shop not found']);
+
+      const inventory = await tx.inventory.create({
+        data: {
+          createdBy: input.actor,
+          name: requireText(input.name, 'name'),
+          note: normalizeOptionalText(input.note),
+          shopId: shop.id
+        },
+        select: { id: true }
+      });
+      await addInventoryOrders(tx, shop.id, inventory.id, normalizeIds(input.orderIds ?? []), input.actor);
+      await tx.inventory.update({ data: { updatedAt: new Date() }, where: { id: inventory.id } });
+      return inventory.id;
+    });
+    const inventory = await this.getInventory({ appId: input.appId, inventoryId, shopDomain });
+    if (inventory === null) throw new InventoryValidationError(['created inventory not found']);
+    return inventory;
   }
 
-  deleteInventory(input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<{ deleted: boolean; inventoryId: string }> {
-    void input;
-    return Promise.reject(new InventoryValidationError(['inventory is managed by route groups']));
+  async deleteInventory(input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<{ deleted: boolean; inventoryId: string }> {
+    const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
+    if (shop === null) return { deleted: false, inventoryId: input.inventoryId };
+    const inventory = await this.prisma.inventory.findFirst({ select: { routeGroupingId: true }, where: { id: input.inventoryId, shopId: shop.id } });
+    if (inventory?.routeGroupingId) throw new InventoryValidationError(['route group inventory is managed by route groups']);
+    const deleted = await this.prisma.inventory.deleteMany({ where: { id: input.inventoryId, routeGroupingId: null, shopId: shop.id } });
+    return { deleted: deleted.count > 0, inventoryId: input.inventoryId };
   }
 
   async getInventory(input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<InventoryDto | null> {
     const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
     if (shop === null) return null;
-    const inventory = await this.prisma.inventory.findFirst({ include: inventoryInclude(), where: { id: input.inventoryId, routeGroupingId: { not: null }, shopId: shop.id } });
+    const inventory = await this.prisma.inventory.findFirst({ include: inventoryInclude(), where: { id: input.inventoryId, shopId: shop.id } });
     return inventory === null ? null : toInventoryDto(inventory);
   }
 
   async listInventories(input: { appId?: string | undefined; shopDomain: string }): Promise<InventoryDto[]> {
     const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
     if (shop === null) return [];
-    const inventories = await this.prisma.inventory.findMany({ include: inventoryInclude(), orderBy: { createdAt: 'desc' }, where: { routeGroupingId: { not: null }, shopId: shop.id } });
+    const inventories = await this.prisma.inventory.findMany({ include: inventoryInclude(), orderBy: { createdAt: 'desc' }, where: { shopId: shop.id } });
     return inventories.map(toInventoryDto);
   }
 
-  updateInventoryOrders(input: UpdateInventoryOrdersInput): Promise<InventoryDto | null> {
-    void input;
-    return Promise.reject(new InventoryValidationError(['inventory is managed by route groups']));
+  async updateInventoryOrders(input: UpdateInventoryOrdersInput): Promise<InventoryDto | null> {
+    const shopDomain = normalizeShopDomain(input.shopDomain);
+    const inventoryId = await this.prisma.$transaction(async (tx) => {
+      const shop = await tx.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain }) });
+      if (shop === null) return null;
+      const inventory = await tx.inventory.findFirst({ select: { id: true, routeGroupingId: true }, where: { id: input.inventoryId, shopId: shop.id } });
+      if (inventory === null) return null;
+      if (inventory.routeGroupingId) throw new InventoryValidationError(['route group inventory is managed by route groups']);
+
+      await removeInventoryOrders(tx, shop.id, inventory.id, normalizeIds(input.removeOrderIds ?? []), input.actor);
+      await addInventoryOrders(tx, shop.id, inventory.id, normalizeIds(input.addOrderIds ?? []), input.actor);
+      await tx.inventory.update({ data: { updatedAt: new Date() }, where: { id: inventory.id } });
+      return inventory.id;
+    });
+    if (inventoryId === null) return null;
+    return this.getInventory({ appId: input.appId, inventoryId, shopDomain });
   }
 }
 

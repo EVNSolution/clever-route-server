@@ -79,12 +79,14 @@ describe('route grouping contracts', () => {
     expect(migration).toContain('ON CONFLICT ("inventoryId", "orderId") DO NOTHING');
   });
 
-  test('blocks standalone inventory creation so inventories remain route-group followers', () => {
+  test('allows standalone inventory creation while keeping route-group inventory sync separate', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/inventory/inventory.service.ts'), 'utf8');
     const routes = readFileSync(join(process.cwd(), 'src/routes/admin-inventories.routes.ts'), 'utf8');
-    expect(source).toContain("throw new InventoryValidationError(['inventory is managed by route groups'])");
-    expect(source).toContain('routeGroupingId: { not: null }');
-    expect(routes).toContain('inventory is managed by route groups');
+    expect(source).toContain('async createInventory(input: CreateInventoryInput)');
+    expect(source).toContain('routeGroupingId: null');
+    expect(source).toContain('route group inventory is managed by route groups');
+    expect(routes).toContain('inventoryService.createInventory');
+    expect(routes).not.toContain('inventory is managed by route groups');
   });
 
   test('classifies overlapping split polygons by latest draw order', () => {

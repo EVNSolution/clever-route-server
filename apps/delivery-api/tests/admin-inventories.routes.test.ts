@@ -1,7 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
-import { InventoryValidationError } from '../src/modules/inventory/inventory.types.js';
 import type { InventoryDto } from '../src/modules/inventory/inventory.types.js';
 import type { AdminInventoryDependencies } from '../src/routes/admin-inventories.routes.js';
 
@@ -26,7 +25,7 @@ const inventory: InventoryDto = {
 };
 
 describe('Admin inventory routes', () => {
-  test('rejects standalone inventory creation because inventories follow route groups', async () => {
+  test('creates standalone inventory without route ownership validation', async () => {
     const { createInventory, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminInventories: dependencies });
 
@@ -38,15 +37,21 @@ describe('Admin inventory routes', () => {
         url: '/admin/inventories'
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(response.json()).toEqual({ data: null, error: { code: 'INVENTORY_INVALID', message: 'inventory is managed by route groups' } });
-      expect(createInventory).not.toHaveBeenCalled();
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toEqual({ data: { inventory }, error: null });
+      expect(createInventory).toHaveBeenCalledWith({
+        actor: 'shopify-user-id',
+        appId: 'clever-route-dev',
+        name: 'Prep batch',
+        orderIds: ['order-1'],
+        shopDomain: 'example.myshopify.com'
+      });
     } finally {
       await app.close();
     }
   });
 
-  test('rejects direct inventory order membership changes', async () => {
+  test('updates standalone inventory order membership', async () => {
     const { dependencies, updateInventoryOrders } = createDependencyHarness();
     const app = await buildApp({ adminInventories: dependencies });
 
@@ -58,8 +63,8 @@ describe('Admin inventory routes', () => {
         url: '/admin/inventories/inventory-id/orders'
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(response.json()).toEqual({ data: null, error: { code: 'INVENTORY_INVALID', message: 'inventory is managed by route groups' } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ data: { inventory }, error: null });
       expect(updateInventoryOrders).toHaveBeenCalledWith({
         actor: 'shopify-user-id',
         addOrderIds: ['order-2'],
@@ -73,7 +78,7 @@ describe('Admin inventory routes', () => {
     }
   });
 
-  test('rejects direct inventory deletion', async () => {
+  test('deletes standalone inventory', async () => {
     const { deleteInventory, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminInventories: dependencies });
 
@@ -84,8 +89,8 @@ describe('Admin inventory routes', () => {
         url: '/admin/inventories/inventory-id'
       });
 
-      expect(response.statusCode).toBe(400);
-      expect(response.json()).toEqual({ data: null, error: { code: 'INVENTORY_INVALID', message: 'inventory is managed by route groups' } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ data: { deleted: true, inventoryId: 'inventory-id' }, error: null });
       expect(deleteInventory).toHaveBeenCalledWith({
         appId: 'clever',
         inventoryId: 'inventory-id',
@@ -135,11 +140,10 @@ function createDependencyHarness(): {
     subject: 'shopify-user-id'
   }));
   const createInventory = vi.fn<AdminInventoryDependencies['inventoryService']['createInventory']>(() => Promise.resolve(inventory));
-  const inventoryManagedError = () => Promise.reject(new InventoryValidationError(['inventory is managed by route groups']));
-  const deleteInventory = vi.fn<AdminInventoryDependencies['inventoryService']['deleteInventory']>(inventoryManagedError);
+  const deleteInventory = vi.fn<AdminInventoryDependencies['inventoryService']['deleteInventory']>(() => Promise.resolve({ deleted: true, inventoryId: 'inventory-id' }));
   const getInventory = vi.fn<AdminInventoryDependencies['inventoryService']['getInventory']>(() => Promise.resolve(inventory));
   const listInventories = vi.fn<AdminInventoryDependencies['inventoryService']['listInventories']>(() => Promise.resolve([inventory]));
-  const updateInventoryOrders = vi.fn<AdminInventoryDependencies['inventoryService']['updateInventoryOrders']>(inventoryManagedError);
+  const updateInventoryOrders = vi.fn<AdminInventoryDependencies['inventoryService']['updateInventoryOrders']>(() => Promise.resolve(inventory));
 
   return {
     createInventory,

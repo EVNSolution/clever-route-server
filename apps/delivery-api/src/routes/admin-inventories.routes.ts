@@ -36,8 +36,14 @@ export function registerAdminInventoryRoutes(app: FastifyInstance, dependencies:
     if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
 
     try {
-      readCreateInventoryPayload(request.body);
-      throw new InventoryValidationError(['inventory is managed by route groups']);
+      const payload = readCreateInventoryPayload(request.body);
+      const inventory = await dependencies.inventoryService.createInventory({
+        actor: authenticated.subject,
+        appId: authenticated.appId,
+        shopDomain: authenticated.shopDomain,
+        ...payload
+      });
+      return reply.code(201).send({ data: { inventory }, error: null });
     } catch (error) {
       return sendInventoryError(reply, error);
     }
