@@ -115,6 +115,79 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     );
   });
 
+  test('bulk patches selected order state and payment overrides', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
+    const repository = createOrderSyncRepository(prisma);
+
+    await repository.bulkPatchCanonicalOrderStatus({
+      actor: 'shopify-user-id',
+      field: 'state',
+      orderIds: ['order-id'],
+      shopDomain: 'example.myshopify.com',
+      value: 'DELIVERED'
+    });
+
+    const deliveryStopCreateMatcher: unknown = expect.objectContaining({
+      orderId: 'order-id',
+      shopId: 'shop-id',
+      status: 'DELIVERED'
+    });
+    const deliveryStopUpsertMatcher: unknown = expect.objectContaining({
+      create: deliveryStopCreateMatcher,
+      update: { status: 'DELIVERED' }
+    });
+    expect(prisma.deliveryStop.upsert).toHaveBeenCalledWith(deliveryStopUpsertMatcher);
+
+    await repository.bulkPatchCanonicalOrderStatus({
+      actor: 'shopify-user-id',
+      field: 'payment',
+      orderIds: ['order-id'],
+      shopDomain: 'example.myshopify.com',
+      value: 'ETRANSFER'
+    });
+
+    const paymentRawPayloadMatcher: unknown = expect.objectContaining({
+      cleverManualPaymentStatus: 'ETRANSFER',
+      cleverManualPaymentUpdatedBy: 'shopify-user-id'
+    });
+    const paymentUpdateDataMatcher: unknown = expect.objectContaining({
+      financialStatus: 'ETRANSFER',
+      rawPayload: paymentRawPayloadMatcher
+    });
+    const paymentUpdateMatcher: unknown = expect.objectContaining({
+      data: paymentUpdateDataMatcher,
+      where: { id: 'order-id' }
+    });
+    expect(prisma.order.update).toHaveBeenCalledWith(paymentUpdateMatcher);
+  });
+
+  test('keeps manual payment override when Shopify sync refreshes the order', async () => {
+    const { prisma } = createPrismaHarness({
+      existingOrder: {
+        ...canonicalOrderRecord(0),
+        id: 'order-id',
+        rawPayload: { cleverManualPaymentStatus: 'CASH' },
+        updatedAtShopify: new Date('2026-05-07T13:00:00.000Z')
+      },
+      routeStopCount: 0
+    });
+    const repository = createOrderSyncRepository(prisma);
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: syncedOrder({ financialStatus: 'PAID' })
+    });
+
+    const rawPayloadOverrideMatcher: unknown = expect.objectContaining({ cleverManualPaymentStatus: 'CASH' });
+    const orderUpdateMatcher: unknown = expect.objectContaining({
+      rawPayload: rawPayloadOverrideMatcher
+    });
+    const orderUpsertMatcher: unknown = expect.objectContaining({
+      update: orderUpdateMatcher
+    });
+    expect(prisma.order.upsert).toHaveBeenCalledWith(orderUpsertMatcher);
+  });
+
   test('reads source-created and source-updated store-local dates from raw payload', async () => {
     const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
     const repository = createOrderSyncRepository(prisma);

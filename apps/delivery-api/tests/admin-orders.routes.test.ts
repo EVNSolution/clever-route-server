@@ -541,6 +541,67 @@ describe('Admin orders routes', () => {
     }
   });
 
+  test('bulk-updates selected order payment for the token shop', async () => {
+    const { bulkPatchCanonicalOrderStatus, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminOrders: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: {
+          field: 'payment',
+          orderIds: ['order-id'],
+          value: 'CASH'
+        },
+        url: '/admin/orders/bulk-update'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        data: { orders: [{ ...canonicalOrder, financialStatus: 'CASH' }], updated: 1 },
+        error: null
+      });
+      expect(bulkPatchCanonicalOrderStatus).toHaveBeenCalledWith({
+        actor: 'shopify-user-id',
+        appId: 'clever',
+        field: 'payment',
+        orderIds: ['order-id'],
+        shopDomain: 'example.myshopify.com',
+        value: 'CASH'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects invalid order bulk update values', async () => {
+    const { bulkPatchCanonicalOrderStatus, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminOrders: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: {
+          field: 'payment',
+          orderIds: ['order-id'],
+          value: 'Voided · manual'
+        },
+        url: '/admin/orders/bulk-update'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'Invalid order bulk update payload' }
+      });
+      expect(bulkPatchCanonicalOrderStatus).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('accepts full-week delivery weekday filters', async () => {
     const { dependencies, listCanonicalOrders } = createDependencyHarness();
     const app = await buildApp({ adminOrders: dependencies });
@@ -590,6 +651,9 @@ describe('Admin orders routes', () => {
 });
 
 function createDependencyHarness(): {
+  bulkPatchCanonicalOrderStatus: ReturnType<
+    typeof vi.fn<NonNullable<AdminOrdersDependencies['orderSyncService']['bulkPatchCanonicalOrderStatus']>>
+  >;
   dependencies: AdminOrdersDependencies;
   listCanonicalOrders: ReturnType<
     typeof vi.fn<AdminOrdersDependencies['orderSyncService']['listCanonicalOrders']>
@@ -633,10 +697,15 @@ function createDependencyHarness(): {
         }
       ])
   );
+  const bulkPatchCanonicalOrderStatus = vi.fn<NonNullable<AdminOrdersDependencies['orderSyncService']['bulkPatchCanonicalOrderStatus']>>(
+    () => Promise.resolve([{ ...canonicalOrder, financialStatus: 'CASH' }])
+  );
 
   return {
+    bulkPatchCanonicalOrderStatus,
     dependencies: {
       orderSyncService: {
+        bulkPatchCanonicalOrderStatus,
         listCanonicalOrders,
         syncOrdersSnapshot
       },

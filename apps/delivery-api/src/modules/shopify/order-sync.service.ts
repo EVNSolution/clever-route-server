@@ -4,6 +4,7 @@ import { mapShopifyOrderNodeToDeliveryInputs } from './order-sync.mapper.js';
 import { buildOrdersUpdatedSinceQuery } from './order-sync.query.js';
 import type {
   DeliveryBatchCandidate,
+  BulkPatchCanonicalOrderStatusInput,
   ListCanonicalOrdersFilters,
   ListDeliveryBatchCandidatesInput,
   PatchCanonicalOrderCoordinatesInput,
@@ -72,6 +73,7 @@ type OrderSyncRepository = {
     appId?: string | undefined;
     shopDomain: string;
   }): Promise<CanonicalOrderRow[]>;
+  bulkPatchCanonicalOrderStatus?(input: BulkPatchCanonicalOrderStatusInput): Promise<CanonicalOrderRow[]>;
   listDeliveryBatchCandidates?(input: ListDeliveryBatchCandidatesInput): Promise<DeliveryBatchCandidate[]>;
   patchCanonicalOrder?(input: PatchCanonicalOrderInput): Promise<CanonicalOrderRow | null>;
   patchCanonicalOrderCoordinates?(input: PatchCanonicalOrderCoordinatesInput): Promise<CanonicalOrderRow | null>;
@@ -165,6 +167,12 @@ export class ShopifyOrderSyncService {
     return this.options.repository.listDeliveryBatchCandidates(input);
   }
 
+  bulkPatchCanonicalOrderStatus(input: BulkPatchCanonicalOrderStatusInput): Promise<CanonicalOrderRow[]> {
+    if (this.options.repository.bulkPatchCanonicalOrderStatus === undefined) {
+      return Promise.resolve([]);
+    }
+    return this.options.repository.bulkPatchCanonicalOrderStatus(input);
+  }
 
   patchCanonicalOrder(input: PatchCanonicalOrderInput): Promise<CanonicalOrderRow | null> {
     if (this.options.repository.patchCanonicalOrder === undefined) {

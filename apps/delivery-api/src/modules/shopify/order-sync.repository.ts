@@ -146,6 +146,36 @@ export type PatchCanonicalOrderGeocodeDiagnosticsInput = {
   source: "bulk_geocode" | "server_pre_persist" | "single_order_geocode";
 };
 
+export const BULK_ORDER_STATE_VALUES = [
+  "PENDING",
+  "ASSIGNED",
+  "EN_ROUTE",
+  "ARRIVED",
+  "DELIVERED",
+  "FAILED",
+  "SKIPPED",
+  "CANCELLED",
+] as const;
+export type BulkOrderStateValue = (typeof BULK_ORDER_STATE_VALUES)[number];
+
+export const BULK_ORDER_PAYMENT_VALUES = [
+  "PAID",
+  "CASH",
+  "ETRANSFER",
+  "PENDING",
+  "UNKNOWN",
+] as const;
+export type BulkOrderPaymentValue = (typeof BULK_ORDER_PAYMENT_VALUES)[number];
+
+export type BulkPatchCanonicalOrderStatusInput = {
+  actor: string;
+  appId?: string | undefined;
+  field: "payment" | "state";
+  orderIds: string[];
+  shopDomain: string;
+  value: BulkOrderPaymentValue | BulkOrderStateValue;
+};
+
 type OrderSyncPrismaClient = Pick<
   PrismaClient,
   | "$transaction"
@@ -174,6 +204,7 @@ type ExistingOrder = {
   deliveryFacts?: ExistingDeliveryFact[];
   deliveryStops?: ExistingDeliveryStop[];
   id: string;
+  rawPayload?: unknown;
   sourceUpdatedAt: Date | null;
   updatedAtShopify: Date | null;
 };
@@ -359,6 +390,7 @@ export class PrismaOrderSyncRepository {
           take: 1,
         },
         id: true,
+        rawPayload: true,
         sourceUpdatedAt: true,
         updatedAtShopify: true,
       },
@@ -515,6 +547,59 @@ export class PrismaOrderSyncRepository {
       },
     })) as DeliveryFactCandidateRecord[];
     return summarizeDeliveryBatchCandidates(facts);
+  }
+
+  async bulkPatchCanonicalOrderStatus(
+    input: BulkPatchCanonicalOrderStatusInput,
+  ): Promise<CanonicalOrderRow[]> {
+    const shop = await this.findShop(input);
+    if (shop === null) return [];
+
+    const orderIds = [...new Set(input.orderIds)];
+    const orders = await this.prisma.order.findMany({
+      select: { id: true, rawPayload: true },
+      where: { id: { in: orderIds }, shopId: shop.id },
+    });
+    if (orders.length === 0) return [];
+
+    await this.prisma.$transaction(async (tx) => {
+      if (input.field === "state") {
+        for (const order of orders) {
+          await tx.deliveryStop.upsert({
+            create: {
+              orderId: order.id,
+              shopId: shop.id,
+              status: input.value as BulkOrderStateValue,
+            },
+            update: { status: input.value as BulkOrderStateValue },
+            where: { shopId_orderId: { orderId: order.id, shopId: shop.id } },
+          });
+        }
+        return;
+      }
+
+      for (const order of orders) {
+        await tx.order.update({
+          data: {
+            financialStatus: input.value,
+            rawPayload: toJson({
+              ...(objectOrNull(order.rawPayload) ?? {}),
+              cleverManualPaymentStatus: input.value,
+              cleverManualPaymentUpdatedBy: input.actor,
+            }),
+          },
+          where: { id: order.id },
+        });
+      }
+    });
+
+    const updatedOrders = (await this.prisma.order.findMany({
+      include: canonicalOrderInclude(),
+      orderBy: { updatedAtShopify: "desc" },
+      where: { id: { in: orders.map((order) => order.id) }, shopId: shop.id },
+    })) as CanonicalOrderRecord[];
+
+    return updatedOrders.map((order) => toCanonicalOrderRow(order));
   }
 
   async patchCanonicalOrder(
@@ -1042,6 +1127,15 @@ export class PrismaOrderSyncRepository {
     tx: OrderSyncWriteClient;
   }): Promise<OrderWriteWithNotificationIntents> {
     const orderWrite = toOrderWrite(input.synced.order);
+    const manualPaymentStatus = readManualPaymentStatus(
+      objectOrNull(input.existing?.rawPayload)?.cleverManualPaymentStatus,
+    );
+    if (manualPaymentStatus !== null) {
+      orderWrite.rawPayload = toJson({
+        ...input.synced.order.rawPayload,
+        cleverManualPaymentStatus: manualPaymentStatus,
+      });
+    }
     const order = await input.tx.order.upsert({
       create: { ...orderWrite, shopId: input.shopId },
       update: orderWrite,
@@ -2631,7 +2725,9 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     deliveryStopStatus: stop?.status ?? null,
     deliveryWeekday,
     email: order.email,
-    financialStatus: order.financialStatus,
+    financialStatus:
+      readManualPaymentStatus(raw?.cleverManualPaymentStatus) ??
+      order.financialStatus,
     fulfillmentStatus: order.fulfillmentStatus,
     geocodeDiagnostics,
     geocodeStatus: readGeocodeStatus(
@@ -2764,6 +2860,13 @@ function readDeliveryWeekday(value: unknown): DeliveryWeekday | null {
 
 function readServiceType(value: unknown): string | null {
   return isSafeRouteScopeToken(value) ? value : null;
+}
+
+function readManualPaymentStatus(value: unknown): BulkOrderPaymentValue | null {
+  return typeof value === "string" &&
+    (BULK_ORDER_PAYMENT_VALUES as readonly string[]).includes(value)
+    ? (value as BulkOrderPaymentValue)
+    : null;
 }
 
 function readDeliverySession(

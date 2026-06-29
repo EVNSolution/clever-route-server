@@ -7,7 +7,13 @@ import {
 } from './admin-session-auth.js';
 
 import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js';
-import type { ListCanonicalOrdersFilters } from '../modules/shopify/order-sync.repository.js';
+import {
+  BULK_ORDER_PAYMENT_VALUES,
+  BULK_ORDER_STATE_VALUES,
+  type BulkOrderPaymentValue,
+  type BulkOrderStateValue,
+  type ListCanonicalOrdersFilters
+} from '../modules/shopify/order-sync.repository.js';
 import type { ShopifyOrderNode } from '../modules/shopify/order-sync.mapper.js';
 import type { SyncOrdersSnapshotInput, SyncOrdersSnapshotResult } from '../modules/shopify/order-sync.service.js';
 
@@ -43,6 +49,14 @@ export type AdminOrdersDependencies = {
       shopDomain: string;
     }): Promise<SyncOrdersSnapshotResult['orders']>;
     syncOrdersSnapshot(input: SyncOrdersSnapshotInput): Promise<SyncOrdersSnapshotResult>;
+    bulkPatchCanonicalOrderStatus?(input: {
+      actor: string;
+      appId?: string | undefined;
+      field: 'payment' | 'state';
+      orderIds: string[];
+      shopDomain: string;
+      value: BulkOrderPaymentValue | BulkOrderStateValue;
+    }): Promise<SyncOrdersSnapshotResult['orders']>;
   };
   sessionTokenVerifier: AdminSessionTokenVerifier;
 };
@@ -136,6 +150,44 @@ export function registerAdminOrdersRoutes(
       return reply.code(200).send({ data: { orders: orders.map(toAdminOrderResponse) }, error: null });
     }
   );
+
+  app.patch<{ Body: unknown }>('/admin/orders/bulk-update', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+      log: request.log,
+      surface: 'admin_orders'
+    });
+    if (authenticated.status === 'unauthorized') {
+      return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+    }
+    if (dependencies.orderSyncService.bulkPatchCanonicalOrderStatus === undefined) {
+      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Order bulk update is not enabled in this runtime.'));
+    }
+
+    let payload: {
+      field: 'payment' | 'state';
+      orderIds: string[];
+      value: BulkOrderPaymentValue | BulkOrderStateValue;
+    };
+    try {
+      payload = readBulkUpdatePayload(request.body);
+    } catch {
+      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid order bulk update payload'));
+    }
+
+    const orders = await dependencies.orderSyncService.bulkPatchCanonicalOrderStatus({
+      actor: authenticated.subject,
+      appId: authenticated.appId,
+      field: payload.field,
+      orderIds: payload.orderIds,
+      shopDomain: authenticated.shopDomain,
+      value: payload.value
+    });
+
+    return reply.code(200).send({
+      data: { orders: orders.map(toAdminOrderResponse), updated: orders.length },
+      error: null
+    });
+  });
 }
 
 function toAdminOrderResponse(
@@ -238,6 +290,36 @@ function readSyncPayload(value: unknown): {
     source,
     skipped: results.length - valid.length
   };
+}
+
+function readBulkUpdatePayload(value: unknown): {
+  field: 'payment' | 'state';
+  orderIds: string[];
+  value: BulkOrderPaymentValue | BulkOrderStateValue;
+} {
+  const object = requireObject(value);
+  const orderIds = Array.isArray(object.orderIds)
+    ? object.orderIds.flatMap((orderId) => {
+        const text = readNullableString(orderId);
+        return text === null ? [] : [text];
+      })
+    : [];
+  const field = readStringFromAllowedValues(object.field, {
+    allowedValues: ['payment', 'state'] as const
+  });
+  if (orderIds.length === 0 || field === null) {
+    throw new Error('invalid bulk update payload');
+  }
+
+  const parsedValue =
+    field === 'state'
+      ? readStringFromAllowedValues(object.value, { allowedValues: BULK_ORDER_STATE_VALUES })
+      : readStringFromAllowedValues(object.value, { allowedValues: BULK_ORDER_PAYMENT_VALUES });
+  if (parsedValue === null) {
+    throw new Error('invalid bulk update value');
+  }
+
+  return { field, orderIds: [...new Set(orderIds)], value: parsedValue };
 }
 
 function readSyncOrderFieldIssue(
