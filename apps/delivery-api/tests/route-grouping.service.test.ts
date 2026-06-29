@@ -164,6 +164,15 @@ describe('route grouping contracts', () => {
     expect(source).toContain("where: { id: child.groupingId, status: { not: 'CANCELLED' } }");
   });
 
+  test('keeps parent switch route on the group id, not the first child route', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const types = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.types.ts'), 'utf8');
+
+    expect(source).toContain('add(group.name, null, group.id)');
+    expect(source).not.toContain('add(group.name, currentChildren.find');
+    expect(types).toContain('routeGroupId?: string | null');
+  });
+
   test('fake FCM provider records string-safe route payload fields', async () => {
     const provider = new FakeDriverPushProvider();
     const result = await provider.sendRouteNotification({

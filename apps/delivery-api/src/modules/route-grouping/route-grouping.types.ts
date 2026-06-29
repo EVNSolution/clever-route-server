@@ -70,6 +70,7 @@ export type RouteGroupingWarningDto = {
 
 export type RouteGroupingSwitchRouteDto = {
   label: string;
+  routeGroupId?: string | null;
   routePlanId: string | null;
 };
 

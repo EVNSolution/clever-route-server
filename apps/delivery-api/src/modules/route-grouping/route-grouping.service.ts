@@ -2011,16 +2011,16 @@ function toChildDto(child: LoadedChild): RouteGroupingChildDto {
 
 function toGroupingSwitchRoutes(group: LoadedGrouping, currentChildren: LoadedChild[]) {
   const seen = new Set<string>();
-  const routes: Array<{ label: string; routePlanId: string | null }> = [];
-  const add = (label: string | null | undefined, routePlanId: string | null) => {
+  const routes: Array<{ label: string; routeGroupId?: string | null; routePlanId: string | null }> = [];
+  const add = (label: string | null | undefined, routePlanId: string | null, routeGroupId: string | null = null) => {
     const safeLabel = label?.trim();
-    const key = `${routePlanId ?? ''}:${safeLabel ?? ''}`;
+    const key = `${routeGroupId ?? ''}:${routePlanId ?? ''}:${safeLabel ?? ''}`;
     if (!safeLabel || seen.has(key)) return;
     seen.add(key);
-    routes.push({ label: safeLabel, routePlanId });
+    routes.push({ label: safeLabel, routeGroupId, routePlanId });
   };
 
-  add(group.name, currentChildren.find((child) => child.routePlanId !== null)?.routePlanId ?? null);
+  add(group.name, null, group.id);
   currentChildren.forEach((child) => {
     const snapshot = readChildSnapshot(child.snapshot);
     add(child.routePlan?.name ?? snapshot.name, child.routePlanId);
