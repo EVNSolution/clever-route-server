@@ -65,6 +65,23 @@ type AppLoggerOption = Exclude<FastifyServerOptions['logger'], undefined>;
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: withSafeRequestLogging(options.logger ?? false) });
+  app.setErrorHandler((error, request, reply) => {
+    if (isPrismaSchemaDriftError(error)) {
+      const code = request.url.startsWith('/admin/inventories')
+        ? 'INVENTORY_SCHEMA_NOT_READY'
+        : 'DELIVERY_SCHEMA_NOT_READY';
+      request.log.error({ code, error }, 'delivery api schema is not up to date');
+      return reply.code(500).send({
+        data: null,
+        error: {
+          code,
+          message: 'Delivery API storage schema is not up to date. Apply the delivery API database migration and retry.'
+        }
+      });
+    }
+
+    throw error;
+  });
 
   registerJsonBodyParser(app);
   await app.register(multipart, {
@@ -134,6 +151,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   }
 
   return app;
+}
+
+function isPrismaSchemaDriftError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2022';
 }
 
 function withSafeRequestLogging(logger: AppLoggerOption): AppLoggerOption {

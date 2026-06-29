@@ -17,16 +17,16 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 WITH missing_group_inventories AS (
-  INSERT INTO "inventories" ("shopId", "routeGroupingId", "name", "createdBy", "createdAt", "updatedAt")
-  SELECT rg."shopId", rg."id", rg."name", rg."createdBy", rg."createdAt", rg."updatedAt"
+  INSERT INTO "inventories" ("id", "shopId", "routeGroupingId", "name", "createdBy", "createdAt", "updatedAt")
+  SELECT gen_random_uuid(), rg."shopId", rg."id", rg."name", rg."createdBy", rg."createdAt", rg."updatedAt"
   FROM "route_groupings" rg
   LEFT JOIN "inventories" i ON i."routeGroupingId" = rg."id"
   WHERE i."id" IS NULL
   ON CONFLICT ("routeGroupingId") DO NOTHING
   RETURNING "id", "shopId", "routeGroupingId", "createdBy"
 )
-INSERT INTO "inventory_orders" ("shopId", "inventoryId", "orderId", "addedBy", "createdAt", "updatedAt")
-SELECT mgi."shopId", mgi."id", rgo."orderId", COALESCE(mgi."createdBy", 'route-grouping-backfill'), rgo."createdAt", rgo."updatedAt"
+INSERT INTO "inventory_orders" ("id", "shopId", "inventoryId", "orderId", "addedBy", "createdAt", "updatedAt")
+SELECT gen_random_uuid(), mgi."shopId", mgi."id", rgo."orderId", COALESCE(mgi."createdBy", 'route-grouping-backfill'), rgo."createdAt", rgo."updatedAt"
 FROM missing_group_inventories mgi
 JOIN "route_grouping_orders" rgo ON rgo."groupingId" = mgi."routeGroupingId" AND rgo."shopId" = mgi."shopId"
 ON CONFLICT ("inventoryId", "orderId") DO NOTHING;

@@ -95,12 +95,38 @@ describe('Admin inventory routes', () => {
       await app.close();
     }
   });
+
+  test('returns a clear schema-drift error when inventory storage is not migrated', async () => {
+    const { dependencies, listInventories } = createDependencyHarness();
+    listInventories.mockRejectedValueOnce(Object.assign(new Error('missing column'), { code: 'P2022' }));
+    const app = await buildApp({ adminInventories: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'GET',
+        url: '/admin/inventories'
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'INVENTORY_SCHEMA_NOT_READY',
+          message: 'Delivery API storage schema is not up to date. Apply the delivery API database migration and retry.'
+        }
+      });
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 function createDependencyHarness(): {
   createInventory: ReturnType<typeof vi.fn<AdminInventoryDependencies['inventoryService']['createInventory']>>;
   deleteInventory: ReturnType<typeof vi.fn<AdminInventoryDependencies['inventoryService']['deleteInventory']>>;
   dependencies: AdminInventoryDependencies;
+  listInventories: ReturnType<typeof vi.fn<AdminInventoryDependencies['inventoryService']['listInventories']>>;
   updateInventoryOrders: ReturnType<typeof vi.fn<AdminInventoryDependencies['inventoryService']['updateInventoryOrders']>>;
 } {
   const verify = vi.fn((_token: string, options?: object) => ({
@@ -128,6 +154,7 @@ function createDependencyHarness(): {
       },
       sessionTokenVerifier: { verify }
     },
+    listInventories,
     updateInventoryOrders
   };
 }
