@@ -235,7 +235,7 @@ describe('Admin route group routes', () => {
     }
   });
 
-  test('saves a route draft allocation without generating child routes', async () => {
+  test('saves child-only route draft allocation with routeIdx assertions', async () => {
     const { dependencies, generateChildRoutes, saveDraft } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });
 
@@ -243,7 +243,7 @@ describe('Admin route group routes', () => {
       const response = await app.inject({
         headers: { authorization: 'Bearer session-token' },
         method: 'PATCH',
-        payload: { routes: [{ branchId: null, orderIds: ['order-1'] }, { branchId: 'branch-id', orderIds: ['order-2'] }] },
+        payload: { routes: [{ orderIds: ['order-1'], routeIdx: 1, routePlanId: 'route-plan-1' }, { orderIds: ['order-2'], routeIdx: 2, tempId: 'temp-2' }] },
         url: '/admin/route-groups/route-group-id/draft'
       });
 
@@ -252,7 +252,7 @@ describe('Admin route group routes', () => {
       expect(saveDraft).toHaveBeenCalledWith({
         appId: 'clever',
         groupingId: 'route-group-id',
-        routes: [{ branchId: null, orderIds: ['order-1'] }, { branchId: 'branch-id', orderIds: ['order-2'] }],
+        routes: [{ branchId: null, orderIds: ['order-1'], routeIdx: 1, routePlanId: 'route-plan-1' }, { branchId: null, orderIds: ['order-2'], routeIdx: 2, tempId: 'temp-2' }],
         shopDomain: 'example.myshopify.com'
       });
       expect(generateChildRoutes).not.toHaveBeenCalled();
@@ -268,7 +268,7 @@ describe('Admin route group routes', () => {
     try {
       const payload = {
         mode: 'OPTIMIZE_ORDER',
-        routes: [{ branchId: null, color: '#0070bb', label: 'Route 1', orderIds: ['order-1'], routeKey: 'root', sortOrder: 1 }]
+        routes: [{ branchId: null, color: '#0070bb', label: 'Route 1', orderIds: ['order-1'], routeIdx: 1, routePlanId: 'route-plan-1', sortOrder: 1 }]
       };
       const response = await app.inject({
         headers: { authorization: 'Bearer session-token', 'x-clever-app-id': 'clever-route-dev' },
