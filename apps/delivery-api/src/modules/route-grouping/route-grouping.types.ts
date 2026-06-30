@@ -59,6 +59,7 @@ export type RouteGroupingChildDto = {
   orderIds: string[];
   routePlan: RoutePlanSummary | null;
   routePlanId: string | null;
+  routeIdx: number | null;
   sortOrder: number | null;
   stops: RouteGroupingAssignmentDto[];
   stopsCount: number;
@@ -203,6 +204,7 @@ export type RouteGroupingDraftRouteInput = {
     routeStopPoints?: RoutePlanRouteStopPoint[];
   } | null;
   orderIds: string[];
+  routeIdx?: number;
   routeKey?: string;
   routePlanId?: string | null;
   sortOrder?: number;

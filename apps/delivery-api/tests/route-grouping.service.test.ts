@@ -103,7 +103,8 @@ describe('route grouping contracts', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).not.toContain('save route changes before re-optimizing new routes');
     expect(source).toContain('const routeSlotCount = Math.max(routeAssignmentGroups.length, currentChildren.length)');
-    expect(source).toContain('const routePlan = await createChildRoutePlan(tx, loaded, candidate, input.actor)');
+    expect(source).toContain('const numberedCandidate = { ...candidate, name: `Route ${routeIdx}`, routeIdx }');
+    expect(source).toContain('const routePlan = await createChildRoutePlan(tx, loaded, numberedCandidate, input.actor)');
   });
 
   test('defaults generated route groups to loop back to the depot', () => {
@@ -113,21 +114,21 @@ describe('route grouping contracts', () => {
     expect(source).toContain('constraints: routeConstraints(loaded, candidate.depot)');
   });
 
-  test('allows materialized child route drafts without a root row before saving route detail edits', () => {
+  test('keeps draft saves child-only without root or branch rows', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
-    expect(source).toContain('assertDraftRouteEnvelope(routes)');
-    expect(source).toContain('const rootRoutes = routes.filter(isRootDraftRoute)');
-    expect(source).toContain('rootRoutes.length > 1');
+    expect(source).toContain('assertChildOnlyDraftRouteEnvelope(routes)');
     expect(source).toContain('routePlanId !== null ? `routePlan:${routePlanId}`');
-    expect(source).toContain('route.routePlanId === null && route.branchId === null && route.tempId === null');
-    expect(source).toContain('rootRoute !== undefined && rootChild === null && hasCurrentChildren(loaded)');
+    expect(source).toContain('tempId !== null ? `temp:${tempId}`');
+    expect(source).toContain('routeIdx !== undefined ? `routeIdx:${routeIdx}`');
+    expect(source).toContain("route draft must not include a root route row");
+    expect(source).toContain("route draft must include child routes only");
     expect(source).toContain("'route draft route keys must be unique'");
   });
 
   test('keeps ordinary draft save from consuming existing route geometry payloads', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
-    expect(source).toContain('const draftOptimized = normalizeOptionalText(route.routePlanId) === null ? route.optimized : undefined');
-    expect(source).toContain("route.tempId !== null && route.tempId !== undefined && route.tempId !== '' && route.orderIds.length > 0");
+    expect(source).toContain('if (route.optimized !== undefined && targetChild.routePlanId !== null)');
+    expect(source).toContain('optimized: route.optimized ?? null');
     expect(source).toContain('logIgnoredExistingRouteOptimizedPayload(group.id, targetChild.routePlanId, route.routeKey ?? null)');
     expect(source).toContain('logPreservedExistingRouteGeometryCache(group.id, targetChild.routePlanId, route.routeKey ?? null)');
     expect(source).toContain('function routeAssignmentsChanged(child: LoadedChild, assignments: LoadedAssignment[]): boolean');
@@ -135,40 +136,85 @@ describe('route grouping contracts', () => {
     expect(source).not.toContain('errorMessage: reason instanceof Error ? reason.message : String(reason)');
   });
 
-  test('materializes non-empty draft branches without saving empty routes', () => {
+  test('materializes child draft rows with server-assigned routeIdx', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain('async function createDraftChildRoutePlan(');
-    expect(source).toContain('const shouldCreateDraftRoute = normalizeOptionalText(route.routePlanId) === null');
-    expect(source).toContain('&& (materializeRootDraftRoute || !isRootRoute)');
-    expect(source).toContain('if (!shouldCreateDraftRoute) continue');
+    expect(source).toContain('const routeIdx = await nextGlobalRouteIdx(tx, group.shopId)');
+    expect(source).toContain('name: route.label ?? `Route ${routeIdx}`');
+    expect(source).toContain('routeIdx,');
     expect(source).toContain('routePlanId: routePlan.id');
-    expect(source).toContain('snapshot: createChildSnapshot(group, input.assignments, null, routePlan.name, group.currentVersion, input.color ?? null, input.sortOrder)');
+    expect(source).toContain('snapshot: createChildSnapshot(group, input.assignments, null, routePlan.name, group.currentVersion, input.color ?? null, input.sortOrder, input.routeIdx)');
   });
 
-  test('does not materialize a single all-order child route', () => {
+  test('does not replace a single generated child route when no split exists', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain('if (candidates.length < 2)');
     expect(source).toContain('if (routeAssignmentGroups.length < 2) return []');
-    expect(source).toContain('function shouldMaterializeRootDraftRoute(');
-    expect(source).toContain('routes.filter((route) => route.orderIds.length > 0).length >= 2');
+    expect(source).toContain('createDraftChildRoutePlan(tx, loaded');
+    expect(source).toContain('name: `Route ${routeIdx}`');
   });
 
-  test('keeps branch colors attached when re-optimization recreates child routes', () => {
+  test('keeps child colors and routeIdx attached when re-optimization recreates child routes', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain('color: readChildSnapshot(child.snapshot).color ?? null');
     expect(source).toContain('color: effectiveGroup.color ?? null');
-    expect(source).toContain('snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, routePlan.name, loaded.currentVersion, candidate.color, index + 1)');
+    expect(source).toContain('const existingRouteIdx = existingChildSnapshot.routeIdx ?? await nextGlobalRouteIdx(tx, loaded.shopId)');
+    expect(source).toContain('snapshot: createChildSnapshot(loaded, numberedCandidate.assignments, numberedCandidate.driverId, routePlan.name, loaded.currentVersion, numberedCandidate.color, routeIdx, routeIdx)');
   });
 
-  test('persists route slot order separately from editable names', () => {
+  test('persists global routeIdx separately from editable names', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     const types = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.types.ts'), 'utf8');
 
+    expect(source).toContain('routeIdx?: number;');
     expect(source).toContain('sortOrder?: number;');
+    expect(source).toContain('routeIdx: snapshot.routeIdx ?? null');
     expect(source).toContain('sortOrder: snapshot.sortOrder ?? null');
-    expect(source).toContain('route.sortOrder ?? readChildSnapshot(targetChild.snapshot).sortOrder');
-    expect(source).toContain('return Math.max(max._max.sortOrder ?? 1, 1) + 1');
+    expect(source).toContain('function nextGlobalRouteIdx');
+    expect(source).not.toContain('return Math.max(max._max.sortOrder ?? 1, 1) + 1');
+    expect(types).toContain('routeIdx: number | null');
     expect(types).toContain('sortOrder: number | null');
+  });
+
+
+  test('allocates child route indexes globally instead of per-group sort order', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const types = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.types.ts'), 'utf8');
+
+    expect(types).toContain('routeIdx: number | null');
+    expect(source).toContain('routeIdx?: number;');
+    expect(source).toContain('function nextGlobalRouteIdx');
+    expect(source).toContain('pg_advisory_xact_lock');
+    expect(source).toContain('routeIdx: snapshot.routeIdx ?? null');
+    expect(source).not.toContain('return Math.max(max._max.sortOrder ?? 1, 1) + 1');
+  });
+
+  test('creates a default child route when a route group is created', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const start = source.indexOf('async createGrouping(');
+    const end = source.indexOf('async getGrouping(', start);
+    const createGroupingBody = source.slice(start, end);
+
+    expect(createGroupingBody).toContain('const routeIdx = await nextGlobalRouteIdx');
+    expect(createGroupingBody).toContain('createDraftChildRoutePlan');
+    expect(createGroupingBody).toContain('name: `Route ${routeIdx}`');
+    expect(createGroupingBody).toContain('routeIdx');
+    expect(createGroupingBody).toContain("status: 'CURRENT'");
+  });
+
+  test('keeps draft save child-only and rejects stale route indexes', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const start = source.indexOf('async saveDraft(');
+    const end = source.indexOf('async savePolygons(', start);
+    const saveDraftBody = source.slice(start, end);
+
+    expect(saveDraftBody).toContain('assertChildOnlyDraftRouteEnvelope(routes)');
+    expect(saveDraftBody).toContain('route draft routeIdx changed; reload and retry');
+    expect(saveDraftBody).toContain('routeIdx: readChildSnapshot(targetChild.snapshot).routeIdx');
+    expect(saveDraftBody).not.toContain('routeGroupingBranch.create');
+    expect(saveDraftBody).not.toContain('routeGroupingBranch.update');
+    expect(saveDraftBody).not.toContain('routeGroupingBranchOrderLock.createMany');
+    expect(saveDraftBody).not.toContain('routeBranchId');
   });
 
   test('uses numbered child route names before dispatch', () => {

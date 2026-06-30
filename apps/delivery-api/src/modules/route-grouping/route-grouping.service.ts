@@ -1,4 +1,4 @@
-import { Prisma, type PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient } from '@prisma/client';
 import { classifyCoordinateInPolygons, coordinatesFromGeoJsonPolygon } from './route-grouping.geometry.js';
 import type { DriverPushProvider } from './driver-push.provider.js';
 import type {
@@ -107,6 +107,7 @@ type ChildSnapshot = {
   groupingVersion: number;
   name: string;
   planDate: string;
+  routeIdx?: number;
   sortOrder?: number;
   routeScope: { deliverySession: string | null; routeScopeKey: string | null; serviceType: string | null };
   stops: Array<{ deliveryStopId: string; orderId: string; sequence: number; sourceOrderId: string }>;
@@ -137,6 +138,7 @@ type OptimizedChildRouteCandidate = {
   depot: DepotCoordinates;
   driverId: string | null;
   name: string;
+  routeIdx?: number;
   routeResult: RoutePlanRouteResult;
   shapeSignature: string;
 };
@@ -236,8 +238,9 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         },
         select: { id: true }
       });
-      await tx.routeGroupingVersion.create({
-        data: { actor: input.createdBy, groupingId: grouping.id, shopId: shop.id, status: 'DRAFT', version: 1 }
+      const version = await tx.routeGroupingVersion.create({
+        data: { actor: input.createdBy, groupingId: grouping.id, shopId: shop.id, status: 'CURRENT', version: 1 },
+        select: { id: true }
       });
       await tx.routeGroupingOrder.createMany({
         data: orderedFacts.map((fact, index) => ({
@@ -247,6 +250,18 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           shopId: shop.id,
           sourceSequence: index + 1
         }))
+      });
+      const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: grouping.id } });
+      if (loaded === null) throw new RouteGroupingValidationError(['created grouping not found']);
+      const routeIdx = await nextGlobalRouteIdx(tx, shop.id);
+      await createDraftChildRoutePlan(tx, loaded, {
+        assignments: loaded.orders,
+        color: null,
+        groupingVersionId: version.id,
+        name: `Route ${routeIdx}`,
+        optimized: null,
+        routeIdx,
+        sortOrder: routeIdx
       });
       await createRouteGroupingInventory(tx, {
         actor: input.createdBy,
@@ -438,7 +453,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const assignments = route.orderIds.map((orderId) => assignmentByOrderId.get(orderId));
       if (assignments.some((assignment) => assignment === undefined)) throw new RouteGroupingValidationError(['route preview orders must belong to the current route grouping']);
       const typedAssignments = assignments as LoadedAssignment[];
-      const label = route.label ?? `Route ${route.sortOrder ?? previewRoutes.length + 1}`;
+      const label = route.label ?? `Route ${route.routeIdx ?? route.sortOrder ?? previewRoutes.length + 1}`;
       if (typedAssignments.length === 0) {
         previewRoutes.push({ ...route, label, metrics: null, optimized: null, orderIds: [], routeGeometry: null, routeStopPoints: [] });
         continue;
@@ -469,7 +484,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     const submittedOrderIds = routes.flatMap((route) => route.orderIds);
     if (routes.length === 0) throw new RouteGroupingValidationError(['route draft must include at least one route']);
     if (new Set(submittedOrderIds).size !== submittedOrderIds.length) throw new RouteGroupingValidationError(['route draft order ids must be unique']);
-    assertDraftRouteEnvelope(routes);
+    assertChildOnlyDraftRouteEnvelope(routes);
 
     const groupingId = await this.prisma.$transaction(async (tx) => {
       const group = await findGroupingForUpdate(tx, input);
@@ -486,55 +501,17 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         throw new RouteGroupingValidationError(['route draft must include every current route group order exactly once']);
       }
 
-      const branchIds = routes.map((route) => route.branchId).filter((branchId): branchId is string => branchId !== null && branchId !== '');
-      if (new Set(branchIds).size !== branchIds.length) throw new RouteGroupingValidationError(['route draft branch ids must be unique']);
-      const existingBranches = branchIds.length === 0 ? [] : await tx.routeGroupingBranch.findMany({
-        select: { id: true },
-        where: { groupingId: group.id, id: { in: branchIds }, shopId: group.shopId }
-      });
-      if (existingBranches.length !== branchIds.length) throw new RouteGroupingValidationError(['route draft branch ids must belong to the current route grouping']);
-
-      const rootRoute = routes.find((route) => isRootDraftRoute(route));
-      const rootChild = findRootDraftChild(loaded, rootRoute);
-      const materializeRootDraftRoute = shouldMaterializeRootDraftRoute(loaded, routes);
-      if (rootRoute !== undefined && rootChild === null && hasCurrentChildren(loaded)) throw new RouteGroupingValidationError(['root route draft row must identify the current child route']);
-
-      const routeBranchId = new Map<string, string | null>();
-      for (const route of routes) {
-        const draftOptimized = normalizeOptionalText(route.routePlanId) === null ? route.optimized : undefined;
-        if (route.branchId !== null && route.branchId !== '') {
-          await tx.routeGroupingBranch.update({
-            data: {
-              ...(route.color === undefined ? {} : { color: route.color }),
-              ...(route.label === undefined ? {} : { label: route.label }),
-              ...(draftOptimized === undefined ? {} : { optimizedJson: draftOptimized === null ? Prisma.JsonNull : toJson(draftOptimized) }),
-              ...(route.sortOrder === undefined ? {} : { sortOrder: route.sortOrder })
-            },
-            where: { id: route.branchId }
-          });
-          routeBranchId.set(route.routeKey ?? route.branchId, route.branchId);
-          continue;
-        }
-        if (!isRootDraftRoute(route) && route.tempId !== null && route.tempId !== undefined && route.tempId !== '' && route.orderIds.length > 0) {
-          const branch = await tx.routeGroupingBranch.create({
-            data: {
-              color: route.color ?? null,
-              groupingId: group.id,
-              label: route.label ?? 'Route',
-              optimizedJson: draftOptimized === undefined || draftOptimized === null ? Prisma.JsonNull : toJson(draftOptimized),
-              shopId: group.shopId,
-              sortOrder: route.sortOrder ?? await nextBranchSortOrder(tx, group.id)
-            },
-            select: { id: true }
-          });
-          routeBranchId.set(route.routeKey ?? route.tempId, branch.id);
-        } else {
-          routeBranchId.set(route.routeKey ?? 'root', null);
-        }
+      const currentChildren = loaded.childVersions.filter((child) => child.status === 'CURRENT');
+      const currentRoutePlanIds = currentChildren.map((child) => child.routePlanId).filter((routePlanId): routePlanId is string => routePlanId !== null);
+      const submittedRoutePlanIds = routes.map((route) => route.routePlanId).filter((routePlanId): routePlanId is string => routePlanId !== null);
+      if (new Set(submittedRoutePlanIds).size !== submittedRoutePlanIds.length) throw new RouteGroupingValidationError(['route draft route plan ids must be unique']);
+      const submittedRoutePlanIdSet = new Set(submittedRoutePlanIds);
+      if (currentRoutePlanIds.some((routePlanId) => !submittedRoutePlanIdSet.has(routePlanId))) {
+        throw new RouteGroupingValidationError(['route draft must include every current child route']);
       }
 
-      const byOrderId = new Map(existingOrders.map((order) => [order.orderId, order]));
-      await tx.routeGroupingBranchOrderLock.deleteMany({ where: { groupingId: group.id, shopId: group.shopId } });
+      const submittedRouteIdxes = routes.map((route) => route.routeIdx).filter((routeIdx): routeIdx is number => routeIdx !== undefined);
+      if (new Set(submittedRouteIdxes).size !== submittedRouteIdxes.length) throw new RouteGroupingValidationError(['route draft routeIdx values must be unique']);
 
       let sourceSequence = 1;
       for (const route of routes) {
@@ -547,72 +524,71 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         }
       }
 
-      const lockRows = routes.flatMap((route) => {
-        const branchId = routeBranchId.get(route.routeKey ?? route.branchId ?? route.tempId ?? 'root') ?? null;
-        if (branchId === null || branchId === '') return [];
-        return route.orderIds.map((orderId) => {
-          const row = byOrderId.get(orderId);
-          if (row === undefined) throw new RouteGroupingValidationError(['route draft orders must belong to the current route grouping']);
-          return { branchId, deliveryStopId: row.deliveryStopId, groupingId: group.id, orderId, routeGroupingOrderId: row.id, shopId: group.shopId };
-        });
-      });
-      if (lockRows.length > 0) await tx.routeGroupingBranchOrderLock.createMany({ data: lockRows });
-
       const assignmentByOrderId = new Map(loaded.orders.map((assignment) => [assignment.orderId, assignment]));
-      for (const route of routes) {
-        const targetChild = findRootDraftChild(loaded, route);
-        if (targetChild?.routePlanId === null || targetChild?.routePlanId === undefined) continue;
-        const assignments = route.orderIds.map((orderId) => assignmentByOrderId.get(orderId)).filter((assignment): assignment is LoadedAssignment => assignment !== undefined);
-        await rewriteRoutePlanStops(tx, targetChild.routePlanId, assignments);
-        await tx.routePlan.update({
-          data: {
-            ...(route.label === null ? {} : { name: route.label }),
-            metrics: routeMetrics(assignments)
-          },
-          where: { id: targetChild.routePlanId }
-        });
-        await tx.routeGroupingChildVersion.update({
-          data: { snapshot: createChildSnapshot(loaded, assignments, targetChild.driverId, route.label ?? childRouteSlotName(targetChild), loaded.currentVersion, route.color ?? readChildSnapshot(targetChild.snapshot).color ?? null, route.sortOrder ?? readChildSnapshot(targetChild.snapshot).sortOrder) },
-          where: { id: targetChild.id }
-        });
-        if (route.optimized !== undefined) {
-          logIgnoredExistingRouteOptimizedPayload(group.id, targetChild.routePlanId, route.routeKey ?? null);
-        }
-        if (routeAssignmentsChanged(targetChild, assignments)) {
-          logPreservedExistingRouteGeometryCache(group.id, targetChild.routePlanId, route.routeKey ?? null);
-        }
-      }
+      const currentGroupingVersion = loaded.versions.find((version) => version.status === 'CURRENT')
+        ?? await createCurrentGroupingVersion(tx, loaded, { actor: ROUTE_GROUPING_DRAFT_SAVE_ACTOR, hasCurrent: false, nextVersion: loaded.currentVersion });
 
-      const currentGroupingVersion = loaded.versions.find((version) => version.status === 'CURRENT') ??
-        await createCurrentGroupingVersion(tx, loaded, { actor: ROUTE_GROUPING_DRAFT_SAVE_ACTOR, hasCurrent: false, nextVersion: loaded.currentVersion });
       for (const route of routes) {
-        const isRootRoute = isRootDraftRoute(route);
-        const shouldCreateDraftRoute = normalizeOptionalText(route.routePlanId) === null
-          && route.orderIds.length > 0
-          && (materializeRootDraftRoute || !isRootRoute);
-        if (!shouldCreateDraftRoute) continue;
-        const existingChild = findCurrentChildByOrderIds(loaded, route.orderIds);
-        if (existingChild?.routePlanId !== null && existingChild?.routePlanId !== undefined) continue;
-        const branchId = routeBranchId.get(route.routeKey ?? route.branchId ?? route.tempId ?? '');
-        if (!isRootRoute && (branchId === null || branchId === undefined || branchId === '')) continue;
+        const targetChild = findDraftChild(loaded, route);
         const assignments = route.orderIds.map((orderId) => assignmentByOrderId.get(orderId)).filter((assignment): assignment is LoadedAssignment => assignment !== undefined);
-        if (assignments.length === 0) continue;
+        if (targetChild !== null) {
+          const preservedRouteIdx = { routeIdx: readChildSnapshot(targetChild.snapshot).routeIdx };
+          const savedRouteIdx = preservedRouteIdx.routeIdx;
+          if (route.routeIdx !== undefined && savedRouteIdx !== undefined && route.routeIdx !== savedRouteIdx) {
+            throw new RouteGroupingValidationError(['route draft routeIdx changed; reload and retry']);
+          }
+          const routeIdx = savedRouteIdx ?? await nextGlobalRouteIdx(tx, group.shopId);
+          const previousSnapshot = readChildSnapshot(targetChild.snapshot);
+          if (targetChild.routePlanId !== null) {
+            await rewriteRoutePlanStops(tx, targetChild.routePlanId, assignments);
+            await tx.routePlan.update({
+              data: {
+                ...(route.label === null ? {} : { name: route.label }),
+                metrics: routeMetrics(assignments)
+              },
+              where: { id: targetChild.routePlanId }
+            });
+          }
+          await tx.routeGroupingChildVersion.update({
+            data: {
+              snapshot: createChildSnapshot(
+                loaded,
+                assignments,
+                targetChild.driverId,
+                route.label ?? childRouteSlotName(targetChild),
+                loaded.currentVersion,
+                route.color ?? previousSnapshot.color ?? null,
+                route.sortOrder ?? previousSnapshot.sortOrder ?? routeIdx,
+                routeIdx
+              )
+            },
+            where: { id: targetChild.id }
+          });
+          if (route.optimized !== undefined && targetChild.routePlanId !== null) {
+            logIgnoredExistingRouteOptimizedPayload(group.id, targetChild.routePlanId, route.routeKey ?? null);
+          }
+          if (targetChild.routePlanId !== null && routeAssignmentsChanged(targetChild, assignments)) {
+            logPreservedExistingRouteGeometryCache(group.id, targetChild.routePlanId, route.routeKey ?? null);
+          }
+          continue;
+        }
+
+        if (route.routePlanId !== null) throw new RouteGroupingValidationError(['route draft route plans must belong to the current route grouping']);
+        const routeIdx = await nextGlobalRouteIdx(tx, group.shopId);
         await createDraftChildRoutePlan(tx, loaded, {
           assignments,
           color: route.color,
           groupingVersionId: currentGroupingVersion.id,
-          name: route.label ?? `Route ${route.sortOrder ?? 1}`,
+          name: route.label ?? `Route ${routeIdx}`,
           optimized: route.optimized ?? null,
-          sortOrder: route.sortOrder
+          routeIdx,
+          sortOrder: route.sortOrder ?? routeIdx
         });
       }
 
       await recomputeAssignments(tx, group.id);
       await tx.routeGrouping.update({ data: { status: 'DRAFT' }, where: { id: group.id } });
       return group.id;
-    }).catch((error: unknown) => {
-      if (isUniqueConstraintError(error)) throw new RouteGroupingBranchLockConflictError(submittedOrderIds);
-      throw error;
     });
     if (groupingId === null) return null;
     return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
@@ -727,19 +703,21 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const nextVersion = hasCurrent ? loaded.currentVersion + 1 : loaded.currentVersion;
       const version = await createCurrentGroupingVersion(tx, loaded, { actor: input.actor, hasCurrent, nextVersion });
       const childRoutePlanIds: string[] = [];
-      for (const [index, candidate] of candidates.entries()) {
-        const routePlan = await createChildRoutePlan(tx, loaded, candidate, input.actor);
+      for (const candidate of candidates) {
+        const routeIdx = await nextGlobalRouteIdx(tx, loaded.shopId);
+        const numberedCandidate = { ...candidate, name: `Route ${routeIdx}`, routeIdx };
+        const routePlan = await createChildRoutePlan(tx, loaded, numberedCandidate, input.actor);
         childRoutePlanIds.push(routePlan.id);
-        await createChildRouteGeometryCache(tx, routePlan.id, candidate);
+        await createChildRouteGeometryCache(tx, routePlan.id, numberedCandidate);
         await tx.routeGroupingChildVersion.create({
           data: {
-            driverId: candidate.driverId,
+            driverId: numberedCandidate.driverId,
             groupingId: loaded.id,
             groupingVersionId: version.id,
             notificationStatus: 'SKIPPED',
             routePlanId: routePlan.id,
             shopId: loaded.shopId,
-            snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, routePlan.name, nextVersion, candidate.color, index + 1),
+            snapshot: createChildSnapshot(loaded, numberedCandidate.assignments, numberedCandidate.driverId, routePlan.name, nextVersion, numberedCandidate.color, routeIdx, routeIdx),
             status: 'CURRENT',
             version: nextVersion
           }
@@ -772,19 +750,12 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     }
 
     const expectedSnapshot = childGenerationSnapshotSignature(initial);
-    const hasRouteLocks = hasBranchRouteLocks(initial);
-    const routeAssignmentGroups = hasRouteLocks
-      ? groupAssignmentsByRouteBranch(initial)
-      : currentChildren.map((child) => ({ assignments: currentChildAssignments(initial, child), color: readChildSnapshot(child.snapshot).color ?? null, driverId: child.driverId, name: childRouteSlotName(child) }));
-    const childByName = new Map(currentChildren.map((child) => [childRouteSlotName(child), child]));
-    const currentChildrenByRouteName = [...currentChildren].sort((left, right) => childRouteSlotName(left).localeCompare(childRouteSlotName(right), undefined, { numeric: true, sensitivity: 'base' }));
+    const routeAssignmentGroups = currentChildren.map((child) => ({ assignments: currentChildAssignments(initial, child), color: readChildSnapshot(child.snapshot).color ?? null, driverId: child.driverId, name: childRouteSlotName(child) }));
     const candidates: ReOptimizedCurrentRouteCandidate[] = [];
     const routeSlotCount = Math.max(routeAssignmentGroups.length, currentChildren.length);
     for (let index = 0; index < routeSlotCount; index += 1) {
       const assignmentGroup = routeAssignmentGroups[index];
-      const child = hasRouteLocks && assignmentGroup !== undefined
-        ? childByName.get(assignmentGroup.name) ?? currentChildrenByRouteName[index]
-        : currentChildren[index];
+      const child = currentChildren[index];
       const fallbackName = child?.routePlan?.name ?? (child ? readChildSnapshot(child.snapshot).name : `Route ${index + 1}`);
       const effectiveGroup = assignmentGroup ?? { assignments: [], color: child ? readChildSnapshot(child.snapshot).color ?? null : null, driverId: child?.driverId ?? null, name: fallbackName };
       const assignments = effectiveGroup.assignments;
@@ -844,10 +815,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       }
       const currentVersion = loaded.versions.find((version) => version.status === 'CURRENT')
         ?? await createCurrentGroupingVersion(tx, loaded, { actor: input.actor, hasCurrent: false, nextVersion: loaded.currentVersion });
-      for (const [index, candidate] of candidates.entries()) {
+      for (const candidate of candidates) {
         if (candidate.routePlanId !== null && candidate.childId !== null) {
           const existingChildSnapshot = readChildSnapshot(loaded.childVersions.find((child) => child.id === candidate.childId)?.snapshot ?? {});
           const existingChildColor = existingChildSnapshot.color ?? null;
+          const existingRouteIdx = existingChildSnapshot.routeIdx ?? await nextGlobalRouteIdx(tx, loaded.shopId);
           await rewriteRoutePlanStops(tx, candidate.routePlanId, candidate.assignments);
           await tx.routePlan.update({
             data: {
@@ -864,24 +836,26 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           await tx.routeGroupingChildVersion.update({
             data: {
               driverId: candidate.driverId,
-              snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, candidate.name, loaded.currentVersion, candidate.color ?? existingChildColor, existingChildSnapshot.sortOrder)
+              snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, candidate.name, loaded.currentVersion, candidate.color ?? existingChildColor, existingChildSnapshot.sortOrder ?? existingRouteIdx, existingRouteIdx)
             },
             where: { id: candidate.childId }
           });
           continue;
         }
 
-        const routePlan = await createChildRoutePlan(tx, loaded, candidate, input.actor);
-        await createChildRouteGeometryCache(tx, routePlan.id, candidate);
+        const routeIdx = await nextGlobalRouteIdx(tx, loaded.shopId);
+        const numberedCandidate = { ...candidate, name: `Route ${routeIdx}`, routeIdx };
+        const routePlan = await createChildRoutePlan(tx, loaded, numberedCandidate, input.actor);
+        await createChildRouteGeometryCache(tx, routePlan.id, numberedCandidate);
         await tx.routeGroupingChildVersion.create({
           data: {
-            driverId: candidate.driverId,
+            driverId: numberedCandidate.driverId,
             groupingId: loaded.id,
             groupingVersionId: currentVersion.id,
             notificationStatus: 'SKIPPED',
             routePlanId: routePlan.id,
             shopId: loaded.shopId,
-            snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, routePlan.name, loaded.currentVersion, candidate.color, index + 1),
+            snapshot: createChildSnapshot(loaded, numberedCandidate.assignments, numberedCandidate.driverId, routePlan.name, loaded.currentVersion, numberedCandidate.color, routeIdx, routeIdx),
             status: 'CURRENT',
             version: loaded.currentVersion
           }
@@ -1064,9 +1038,8 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     }
 
     const candidates: OptimizedChildRouteCandidate[] = [];
-    const routeAssignmentGroups = (hasBranchRouteLocks(group)
-      ? groupAssignmentsByRouteBranch(group)
-      : [...groupAssignmentsByDriver(group.orders)].map(([driverId, assignments], index) => ({ assignments, color: null, driverId, name: `Route ${index + 1}` })))
+    const routeAssignmentGroups = [...groupAssignmentsByDriver(group.orders)]
+      .map(([driverId, assignments], index) => ({ assignments, color: null, driverId, name: `Route ${index + 1}` }))
       .filter((route) => route.assignments.length > 0);
     if (routeAssignmentGroups.length < 2) return [];
     for (const { assignments, color, driverId, name } of routeAssignmentGroups) {
@@ -1110,53 +1083,35 @@ function normalizeDraftRoutes(routes: RouteGroupingDraftRouteInput[]): RouteGrou
     const branchId = route.branchId === null ? null : route.branchId?.trim() ?? null;
     const routePlanId = normalizeOptionalText(route.routePlanId);
     const tempId = normalizeOptionalText(route.tempId);
+    const routeIdx = typeof route.routeIdx === 'number' && Number.isInteger(route.routeIdx) ? route.routeIdx : undefined;
     return {
       branchId,
       color: normalizeOptionalText(route.color),
       label: normalizeOptionalText(route.label),
       ...(route.optimized === undefined ? {} : { optimized: route.optimized ?? null }),
       orderIds: normalizeIds(route.orderIds),
-      routeKey: normalizeOptionalText(route.routeKey) ?? (routePlanId !== null ? `routePlan:${routePlanId}` : branchId === null ? 'root' : `branch:${branchId}`),
+      ...(routeIdx === undefined ? {} : { routeIdx }),
+      routeKey: normalizeOptionalText(route.routeKey) ?? (routePlanId !== null ? `routePlan:${routePlanId}` : tempId !== null ? `temp:${tempId}` : routeIdx !== undefined ? `routeIdx:${routeIdx}` : `draft:${index + 1}`),
       routePlanId,
-      sortOrder: typeof route.sortOrder === 'number' && Number.isInteger(route.sortOrder) ? route.sortOrder : index + 1,
+      sortOrder: typeof route.sortOrder === 'number' && Number.isInteger(route.sortOrder) ? route.sortOrder : routeIdx ?? index + 1,
       tempId
     };
   });
 }
 
-function assertDraftRouteEnvelope(routes: RouteGroupingDraftRouteInput[]): void {
+function assertChildOnlyDraftRouteEnvelope(routes: RouteGroupingDraftRouteInput[]): void {
   const routeKeys = routes.map((route) => route.routeKey ?? '');
   if (new Set(routeKeys).size !== routeKeys.length) throw new RouteGroupingValidationError(['route draft route keys must be unique']);
-  const rootRoutes = routes.filter(isRootDraftRoute);
-  if (rootRoutes.length > 1) throw new RouteGroupingValidationError(['route draft may include at most one root route row']);
+  if (routes.some((route) => route.branchId !== null)) throw new RouteGroupingValidationError(['route draft must include child routes only']);
+  if (routes.some((route) => route.routeKey === 'root')) throw new RouteGroupingValidationError(['route draft must not include a root route row']);
 }
 
-function isRootDraftRoute(route: RouteGroupingDraftRouteInput): boolean {
-  return route.routeKey === 'root' || (route.routePlanId === null && route.branchId === null && route.tempId === null);
-}
-
-function hasCurrentChildren(group: LoadedGrouping): boolean {
-  return group.childVersions.some((child) => child.status === 'CURRENT');
-}
-
-function shouldMaterializeRootDraftRoute(group: LoadedGrouping, routes: RouteGroupingDraftRouteInput[]): boolean {
-  return !hasCurrentChildren(group) && routes.filter((route) => route.orderIds.length > 0).length >= 2;
-}
-
-function findRootDraftChild(group: LoadedGrouping, route: RouteGroupingDraftRouteInput | undefined): LoadedChild | null {
-  if (route === undefined) return null;
-  const currentChildren = group.childVersions.filter((child) => child.status === 'CURRENT');
+function findDraftChild(group: LoadedGrouping, route: RouteGroupingDraftRouteInput): LoadedChild | null {
   const routePlanId = normalizeOptionalText(route.routePlanId);
-  if (routePlanId !== null) return currentChildren.find((child) => child.routePlanId === routePlanId) ?? null;
-  if (!isRootDraftRoute(route)) return null;
-  return currentChildren.length === 1 ? currentChildren[0] ?? null : null;
-}
-
-function findCurrentChildByOrderIds(group: LoadedGrouping, orderIds: string[]): LoadedChild | null {
-  const normalizedOrderIds = normalizeIds(orderIds);
+  if (routePlanId === null) return null;
   return group.childVersions
     .filter((child) => child.status === 'CURRENT')
-    .find((child) => sameStringSequence(readChildSnapshot(child.snapshot).stops.map((stop) => stop.orderId), normalizedOrderIds)) ?? null;
+    .find((child) => child.routePlanId === routePlanId) ?? null;
 }
 
 function routeAssignmentsChanged(child: LoadedChild, assignments: LoadedAssignment[]): boolean {
@@ -1254,7 +1209,20 @@ async function branchDriverRelation(tx: Tx, shopId: string, driverId: string | n
 
 async function nextBranchSortOrder(tx: Tx, groupingId: string): Promise<number> {
   const max = await tx.routeGroupingBranch.aggregate({ _max: { sortOrder: true }, where: { groupingId } });
-  return Math.max(max._max.sortOrder ?? 1, 1) + 1;
+  return (max._max.sortOrder ?? 0) + 1;
+}
+
+async function nextGlobalRouteIdx(tx: Tx, shopId: string): Promise<number> {
+  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`route-grouping-route-idx:${shopId}`}))`;
+  const rows = await tx.routeGroupingChildVersion.findMany({
+    select: { snapshot: true },
+    where: { shopId }
+  });
+  const maxRouteIdx = rows.reduce((max, row) => {
+    const snapshot = readChildSnapshot(row.snapshot);
+    return Math.max(max, snapshot.routeIdx ?? 0);
+  }, 0);
+  return Math.max(maxRouteIdx, rows.length) + 1;
 }
 
 async function claimBranchOrders(
@@ -1481,46 +1449,6 @@ function groupAssignmentsByDriver(assignments: LoadedAssignment[]): Map<string |
   return byDriver;
 }
 
-function hasBranchRouteLocks(group: LoadedGrouping): boolean {
-  return group.branches.some((branch) => branch.orderLocks.length > 0);
-}
-
-function groupAssignmentsByRouteBranch(group: LoadedGrouping): Array<{ assignments: LoadedAssignment[]; color: string | null; driverId: string | null; name: string }> {
-  const assignmentByOrderId = new Map(group.orders.map((assignment) => [assignment.orderId, assignment]));
-  const claimedOrderIds = new Set<string>();
-  const routes: Array<{ assignments: LoadedAssignment[]; color: string | null; driverId: string | null; name: string }> = [];
-
-  const branches = [...group.branches].sort((first, second) => first.sortOrder - second.sortOrder || first.createdAt.getTime() - second.createdAt.getTime());
-  const eligibleAssignment = (assignment: LoadedAssignment | undefined): assignment is LoadedAssignment => (
-    assignment !== undefined && (assignment.assignmentStatus === 'ASSIGNED' || assignment.assignmentStatus === 'UNASSIGNED')
-  );
-
-  for (const branch of branches) {
-    const assignments = [...branch.orderLocks]
-      .sort((first, second) => first.routeGroupingOrder.sourceSequence - second.routeGroupingOrder.sourceSequence)
-      .map((lock) => assignmentByOrderId.get(lock.orderId))
-      .filter(eligibleAssignment);
-    assignments.forEach((assignment) => claimedOrderIds.add(assignment.orderId));
-    if (assignments.length === 0) continue;
-    routes.push({
-      assignments,
-      color: branch.color,
-      driverId: branch.driverId,
-      name: branch.label?.trim() || `Route ${routes.length + 2}`
-    });
-  }
-
-  const rootAssignments = group.orders
-    .filter((assignment) => !claimedOrderIds.has(assignment.orderId))
-    .filter(eligibleAssignment)
-    .sort((left, right) => left.sourceSequence - right.sourceSequence);
-  if (rootAssignments.length > 0) {
-    routes.unshift({ assignments: rootAssignments, color: null, driverId: null, name: 'Route 1' });
-  }
-
-  return routes;
-}
-
 function validateReadyForChildGeneration(group: LoadedGrouping, confirmRisk?: boolean): void {
   assertUniquePolygonDrivers(group.polygons);
   const unresolved = group.orders.filter((order) => order.assignmentStatus !== 'ASSIGNED' && order.assignmentStatus !== 'UNASSIGNED');
@@ -1545,13 +1473,6 @@ function childGenerationSnapshotSignature(group: LoadedGrouping): string {
       .filter((child) => child.status === 'CURRENT')
       .map((child) => ({ id: child.id, routePlanId: child.routePlanId, version: child.version }))
       .sort((left, right) => left.id.localeCompare(right.id)),
-    branches: group.branches.map((branch) => ({
-      id: branch.id,
-      driverId: branch.driverId,
-      label: branch.label,
-      orderIds: branch.orderLocks.map((lock) => lock.orderId).sort(),
-      sortOrder: branch.sortOrder
-    })),
     currentVersion: group.currentVersion,
     depot: readDepotFromShop(group),
     orders: group.orders.map((order) => ({
@@ -1752,11 +1673,12 @@ async function createDraftChildRoutePlan(
     groupingVersionId: string;
     name: string;
     optimized: RouteGroupingDraftRouteInput['optimized'] | null;
+    routeIdx: number | undefined;
     sortOrder: number | undefined;
   }
 ): Promise<{ id: string; name: string }> {
   const depot = readDepotFromShop(group);
-  const name = stripGeneratedChildRouteVersion(input.name.trim() || `Route ${input.sortOrder ?? 1}`);
+  const name = stripGeneratedChildRouteVersion(input.name.trim() || `Route ${input.routeIdx ?? input.sortOrder ?? 1}`);
   const metrics = input.optimized?.metrics === undefined || input.optimized?.metrics === null
     ? routeMetrics(input.assignments)
     : toJson(input.optimized.metrics);
@@ -1784,7 +1706,7 @@ async function createDraftChildRoutePlan(
       notificationStatus: 'SKIPPED',
       routePlanId: routePlan.id,
       shopId: group.shopId,
-      snapshot: createChildSnapshot(group, input.assignments, null, routePlan.name, group.currentVersion, input.color ?? null, input.sortOrder),
+      snapshot: createChildSnapshot(group, input.assignments, null, routePlan.name, group.currentVersion, input.color ?? null, input.sortOrder, input.routeIdx),
       status: 'CURRENT',
       version: group.currentVersion
     }
@@ -1809,7 +1731,7 @@ async function createDraftChildRoutePlan(
 }
 
 async function createChildRoutePlan(tx: Tx, group: LoadedGrouping, candidate: OptimizedChildRouteCandidate, actor: string): Promise<{ id: string; name: string }> {
-  const name = candidate.name;
+  const name = candidate.name.trim() || `Route ${candidate.routeIdx ?? 1}`;
   const routePlan = await tx.routePlan.create({
     data: {
       constraints: routeConstraints(group, candidate.depot),
@@ -1874,9 +1796,10 @@ async function createChildRouteGeometryCache(
   });
 }
 
-function createChildSnapshot(group: LoadedGrouping, assignments: LoadedAssignment[], driverId: string | null, name: string, version: number, color?: string | null, sortOrder?: number): ChildSnapshot {
+function createChildSnapshot(group: LoadedGrouping, assignments: LoadedAssignment[], driverId: string | null, name: string, version: number, color?: string | null, sortOrder?: number, routeIdx?: number): ChildSnapshot {
   return {
     ...(color === undefined ? {} : { color }),
+    ...(routeIdx === undefined ? {} : { routeIdx }),
     ...(sortOrder === undefined ? {} : { sortOrder }),
     driverId,
     groupingId: group.id,
@@ -1891,6 +1814,7 @@ function createChildSnapshot(group: LoadedGrouping, assignments: LoadedAssignmen
 function readChildSnapshot(value: Prisma.JsonValue): ChildSnapshot {
   const object = value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const stops = Array.isArray(object.stops) ? object.stops : [];
+  const routeIdx = typeof object.routeIdx === 'number' && Number.isInteger(object.routeIdx) ? object.routeIdx : undefined;
   const sortOrder = typeof object.sortOrder === 'number' && Number.isInteger(object.sortOrder) ? object.sortOrder : undefined;
   return {
     color: typeof object.color === 'string' ? object.color : null,
@@ -1899,6 +1823,7 @@ function readChildSnapshot(value: Prisma.JsonValue): ChildSnapshot {
     groupingVersion: typeof object.groupingVersion === 'number' ? object.groupingVersion : 0,
     name: typeof object.name === 'string' ? object.name : 'Rolled back route',
     planDate: typeof object.planDate === 'string' ? object.planDate : '',
+    ...(routeIdx === undefined ? {} : { routeIdx }),
     ...(sortOrder === undefined ? {} : { sortOrder }),
     routeScope: { deliverySession: null, routeScopeKey: null, serviceType: null },
     stops: stops.map((entry, index) => {
@@ -2030,6 +1955,7 @@ function toChildDto(child: LoadedChild, group: LoadedGrouping): RouteGroupingChi
     orderIds: stops.map((stop) => stop.orderId),
     routePlan: child.routePlan === null ? null : toMinimalRoutePlanSummary(child.routePlan),
     routePlanId: child.routePlanId,
+    routeIdx: snapshot.routeIdx ?? null,
     sortOrder: snapshot.sortOrder ?? null,
     stops,
     stopsCount: stops.length

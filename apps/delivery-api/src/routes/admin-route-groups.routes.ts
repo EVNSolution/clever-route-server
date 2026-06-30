@@ -522,6 +522,7 @@ function readDraftRouteRows(value: unknown): Array<{
   label?: string | null;
   optimized?: { metrics?: RoutePlanRouteMetrics | null; orderIds?: string[]; routeGeometry?: RoutePlanRouteGeometry | null; routeStopPoints?: RoutePlanRouteStopPoint[] } | null;
   orderIds: string[];
+  routeIdx?: number;
   routeKey?: string;
   routePlanId?: string | null;
   sortOrder?: number;
@@ -536,6 +537,7 @@ function readDraftRouteRows(value: unknown): Array<{
       ...(route.label === undefined ? {} : { label: readNullableString(route.label) }),
       ...(route.optimized === undefined ? {} : { optimized: readOptionalOptimizedRoute(route.optimized) }),
       orderIds: readStringArray(route.orderIds),
+      ...(route.routeIdx === undefined ? {} : { routeIdx: readNonNegativeInteger(route.routeIdx) }),
       ...(route.routeKey === undefined ? {} : { routeKey: requireNonEmptyString(route.routeKey) }),
       ...(route.routePlanId === undefined ? {} : { routePlanId: readNullableString(route.routePlanId) }),
       ...(route.sortOrder === undefined ? {} : { sortOrder: readNonNegativeInteger(route.sortOrder) }),
