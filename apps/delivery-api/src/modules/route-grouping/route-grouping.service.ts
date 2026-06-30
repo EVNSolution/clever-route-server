@@ -1213,7 +1213,7 @@ async function nextBranchSortOrder(tx: Tx, groupingId: string): Promise<number> 
 }
 
 async function nextGlobalRouteIdx(tx: Tx, shopId: string): Promise<number> {
-  await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`route-grouping-route-idx:${shopId}`}))`;
+  await tx.$queryRaw<{ locked: number }[]>`WITH lock AS (SELECT pg_advisory_xact_lock(hashtext(${`route-grouping-route-idx:${shopId}`}))) SELECT 1 AS locked FROM lock`;
   const rows = await tx.routeGroupingChildVersion.findMany({
     select: { snapshot: true },
     where: { shopId }
