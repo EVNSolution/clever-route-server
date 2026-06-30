@@ -14,11 +14,11 @@ const inventory: InventoryDto = {
     items: [{ name: 'Kimchi', options: [], productId: 1, quantity: 3, sku: null, variationId: 0 }],
     totalQuantity: 3
   },
-  lastChange: [{ action: 'ADD', createdAt: '2026-06-26T00:00:00.000Z', name: 'Kimchi', options: [], orderId: 'order-1', productId: 1, quantity: 3, quantityDelta: 3, sku: null, variationId: 0 }],
+  lastChange: [{ action: 'ADD', createdAt: '2026-06-26T00:00:00.000Z', name: 'Kimchi', options: [], orderId: 'order-1', orderName: '#1001', productId: 1, quantity: 3, quantityDelta: 3, recipientName: 'Lee Hana', sku: null, variationId: 0 }],
   name: 'Prep batch',
   note: null,
   orderIds: ['order-1'],
-  orders: [{ deliveryDate: '2026-06-25', id: 'order-1', items: [{ name: 'Kimchi', options: [], productId: 1, quantity: 3, sku: null, variationId: 0 }], name: '#1001', orderDateLocal: '2026-06-24', processedAt: '2026-06-24' }],
+  orders: [{ deliveryDate: '2026-06-25', id: 'order-1', items: [{ name: 'Kimchi', options: [], productId: 1, quantity: 3, sku: null, variationId: 0 }], name: '#1001', orderDateLocal: '2026-06-24', processedAt: '2026-06-24', recipientName: 'Lee Hana' }],
   ordersCount: 1,
   routeGroupingId: 'route-group-1',
   updatedAt: '2026-06-26T00:00:00.000Z'

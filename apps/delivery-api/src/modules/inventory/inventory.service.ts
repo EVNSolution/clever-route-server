@@ -12,10 +12,12 @@ type InventoryPrismaClient = Pick<
 
 type InventoryBaseWriteClient = Pick<PrismaClient, 'inventory' | 'inventoryEvent' | 'inventoryOrder' | 'order'>;
 type InventoryWriteClient = InventoryBaseWriteClient & Pick<PrismaClient, 'routeGroupingOrder'>;
-type LoadedInventory = Prisma.InventoryGetPayload<{ include: ReturnType<typeof inventoryInclude> }>;
-type LoadedInventoryEvent = Prisma.InventoryEventGetPayload<object>;
+type LoadedDetailInventory = Prisma.InventoryGetPayload<{ include: ReturnType<typeof inventoryDetailInclude> }>;
+type LoadedListInventory = Prisma.InventoryGetPayload<{ include: ReturnType<typeof inventoryListInclude> }>;
+type LoadedInventory = LoadedDetailInventory | LoadedListInventory;
+type LoadedInventoryEvent = LoadedDetailInventory['events'][number] | LoadedListInventory['events'][number];
 type LoadedOrder = Prisma.OrderGetPayload<{ include: { orderItems: true } }>;
-type InventoryOrderRecord = LoadedInventory['orders'][number]['order'];
+type InventoryOrderRecord = LoadedDetailInventory['orders'][number]['order'] | LoadedListInventory['orders'][number]['order'];
 type InventoryItemRecord = OrderItemDto & { id?: string | null };
 
 export class PrismaInventoryService implements InventoryService {
@@ -57,14 +59,14 @@ export class PrismaInventoryService implements InventoryService {
   async getInventory(input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<InventoryDto | null> {
     const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
     if (shop === null) return null;
-    const inventory = await this.prisma.inventory.findFirst({ include: inventoryInclude(), where: { id: input.inventoryId, shopId: shop.id } });
+    const inventory = await this.prisma.inventory.findFirst({ include: inventoryDetailInclude(), where: { id: input.inventoryId, shopId: shop.id } });
     return inventory === null ? null : toInventoryDto(inventory);
   }
 
   async listInventories(input: { appId?: string | undefined; shopDomain: string }): Promise<InventoryDto[]> {
     const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
     if (shop === null) return [];
-    const inventories = await this.prisma.inventory.findMany({ include: inventoryInclude(), orderBy: { createdAt: 'desc' }, where: { shopId: shop.id } });
+    const inventories = await this.prisma.inventory.findMany({ include: inventoryListInclude(), orderBy: { createdAt: 'desc' }, where: { shopId: shop.id } });
     return inventories.map(toInventoryDto);
   }
 
@@ -180,7 +182,35 @@ export async function recordInventorySourceItemDeltas(
   await tx.inventory.updateMany({ data: { updatedAt: new Date() }, where: { id: { in: inventoryIds }, shopId: input.shopId } });
 }
 
-function inventoryInclude() {
+function inventoryDetailInclude() {
+  return {
+    events: {
+      include: {
+        order: {
+          include: {
+            deliveryStops: { select: { recipientName: true }, take: 1 }
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' as const },
+      take: 50
+    },
+    orders: {
+      include: {
+        order: {
+          include: {
+            deliveryFacts: { orderBy: { computedAt: 'desc' as const }, select: { deliveryDate: true }, take: 1 },
+            deliveryStops: { select: { recipientName: true }, take: 1 },
+            orderItems: { orderBy: { lineIndex: 'asc' as const } }
+          }
+        }
+      },
+      orderBy: { createdAt: 'asc' as const }
+    }
+  } satisfies Prisma.InventoryInclude;
+}
+
+function inventoryListInclude() {
   return {
     events: { orderBy: { createdAt: 'desc' as const }, take: 50 },
     orders: {
@@ -274,7 +304,8 @@ function toInventoryOrderDto(orderId: string, order: InventoryOrderRecord): Inve
     items: getInventoryOrderItems(order),
     name: order.name,
     orderDateLocal: readDateString(raw?.orderDateLocal),
-    processedAt: formatDateOnly(order.processedAt)
+    processedAt: formatDateOnly(order.processedAt),
+    recipientName: readInventoryRecipientName(order)
   };
 }
 
@@ -284,6 +315,7 @@ function getInventoryOrderItems(order: InventoryOrderRecord): OrderItemDto[] {
 }
 
 function toChangeItemDto(event: LoadedInventoryEvent): InventoryChangeItemDto {
+  const order = 'order' in event ? event.order : null;
   const item: OrderItemDto = {
     name: event.name,
     options: readOrderItemOptions(event.options),
@@ -297,8 +329,27 @@ function toChangeItemDto(event: LoadedInventoryEvent): InventoryChangeItemDto {
     action: event.action === 'REMOVE' ? 'REMOVE' : event.action === 'CHANGE' ? 'CHANGE' : 'ADD',
     createdAt: event.createdAt.toISOString(),
     orderId: event.orderId,
-    quantityDelta: event.quantityDelta ?? (event.action === 'REMOVE' ? -event.quantity : event.quantity)
+    orderName: order?.name ?? null,
+    quantityDelta: event.quantityDelta ?? (event.action === 'REMOVE' ? -event.quantity : event.quantity),
+    recipientName: order === null ? null : readInventoryRecipientName(order)
   };
+}
+
+function readInventoryRecipientName(order: {
+  deliveryStops?: Array<{ recipientName: string | null }> | null;
+  rawPayload: unknown;
+  shippingAddress?: unknown;
+}): string | null {
+  const raw = asRecord(order.rawPayload);
+  const rawShippingAddress = asRecord(raw?.shippingAddress);
+  const normalizedShippingAddress = asRecord(order.shippingAddress);
+  // Inventory display names prefer the current delivery stop so corrected
+  // recipient labels can repair existing inventory views; source payload names
+  // remain the fallback when no delivery stop recipient exists.
+  return readString(order.deliveryStops?.[0]?.recipientName)
+    ?? readString(raw?.recipientName)
+    ?? readString(rawShippingAddress?.name)
+    ?? readString(normalizedShippingAddress?.name);
 }
 
 function aggregateInventoryItemsByKey(items: InventoryItemRecord[]): Map<string, InventoryItemRecord> {
@@ -354,6 +405,10 @@ function formatDateOnly(value: Date | null | undefined): string | null {
 function readDateString(value: unknown): string | null {
   const text = normalizeOptionalText(typeof value === 'string' ? value : null);
   return text?.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? null;
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === 'string' ? normalizeOptionalText(value) : null;
 }
 
 function normalizeIds(values: string[]): string[] {

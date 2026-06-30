@@ -4,7 +4,9 @@ export type InventoryChangeItemDto = OrderItemDto & {
   action: 'ADD' | 'CHANGE' | 'REMOVE';
   createdAt: string;
   orderId: string;
+  orderName: string | null;
   quantityDelta: number;
+  recipientName: string | null;
 };
 
 export type InventoryOrderDto = {
@@ -14,6 +16,7 @@ export type InventoryOrderDto = {
   name: string;
   orderDateLocal: string | null;
   processedAt: string | null;
+  recipientName: string | null;
 };
 
 export type InventoryDto = {
