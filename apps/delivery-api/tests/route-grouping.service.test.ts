@@ -185,6 +185,8 @@ describe('route grouping contracts', () => {
     expect(source).toContain('routeIdx?: number;');
     expect(source).toContain('function nextGlobalRouteIdx');
     expect(source).toContain('pg_advisory_xact_lock');
+    expect(source).toContain('SELECT 1 AS locked FROM lock');
+    expect(source).not.toContain('await tx.$queryRaw`SELECT pg_advisory_xact_lock');
     expect(source).toContain('routeIdx: snapshot.routeIdx ?? null');
     expect(source).not.toContain('return Math.max(max._max.sortOrder ?? 1, 1) + 1');
   });
