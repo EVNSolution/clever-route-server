@@ -8,9 +8,12 @@ export type InventoryChangeItemDto = OrderItemDto & {
 };
 
 export type InventoryOrderDto = {
+  deliveryDate: string | null;
   id: string;
   items: OrderItemDto[];
   name: string;
+  orderDateLocal: string | null;
+  processedAt: string | null;
 };
 
 export type InventoryDto = {

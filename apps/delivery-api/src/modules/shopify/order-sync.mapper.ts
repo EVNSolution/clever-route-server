@@ -480,7 +480,43 @@ export function mapShopifyOrderNodeToDeliveryInputs(
       totalPriceAmount: node.currentTotalPriceSet?.shopMoney.amount ?? null,
       updatedAtShopify: parseRequiredDate(node.updatedAt),
     },
+    orderItems: mapShopifyLineItemsToOrderItems(lineItems),
   };
+}
+
+export function mapShopifyLineItemsToOrderItems(
+  value: ShopifyOrderLineItem[] | ShopifyOrderNode['lineItems'],
+): OrderItemDto[] {
+  const lineItems = Array.isArray(value) ? value : normalizeLineItems(value);
+  return lineItems.flatMap((item) => {
+    const quantity = typeof item.quantity === 'number' && Number.isFinite(item.quantity)
+      ? Math.trunc(item.quantity)
+      : 0;
+    const name = normalizeOptionalString(item.name) ?? normalizeOptionalString(item.title);
+    if (quantity <= 0 || name === null) return [];
+
+    const variantTitle = normalizeOptionalString(item.variantTitle);
+    const sku = normalizeOptionalString(item.sku);
+    const identity = [sku, item.title, item.name, variantTitle].filter(Boolean).join('|') || name;
+
+    return [{
+      // ponytail: Shopify GIDs do not fit Prisma Int reliably; hash until OrderItem stores source IDs.
+      productId: stablePositiveInt(identity),
+      variationId: variantTitle === null ? 0 : stablePositiveInt(`${identity}|${variantTitle}`),
+      name,
+      sku,
+      options: variantTitle === null ? [] : [{ key: 'Variant', value: variantTitle }],
+      quantity,
+    }];
+  });
+}
+
+function stablePositiveInt(value: string): number {
+  let hash = 5381;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash * 33) ^ value.charCodeAt(index)) >>> 0;
+  }
+  return (hash % 2_000_000_000) + 1;
 }
 
 function mapShippingAddressToDeliveryStop(
@@ -553,7 +589,7 @@ function buildReviewReasons(input: {
 }
 
 function normalizeLineItems(
-  value: ShopifyOrderNode["lineItems"],
+  value: ShopifyOrderNode['lineItems'],
 ): ShopifyOrderLineItem[] {
   const nodes = value?.nodes ?? null;
   if (Array.isArray(nodes)) return nodes.map(normalizeLineItem);
@@ -567,7 +603,7 @@ function normalizeLineItem(value: ShopifyOrderLineItem): ShopifyOrderLineItem {
   return {
     name: normalizeOptionalString(value.name),
     quantity:
-      typeof value.quantity === "number" && Number.isFinite(value.quantity)
+      typeof value.quantity === 'number' && Number.isFinite(value.quantity)
         ? value.quantity
         : null,
     sku: normalizeOptionalString(value.sku),

@@ -91,6 +91,34 @@ describe('mapShopifyOrderNodeToDeliveryInputs', () => {
     );
   });
 
+  test('maps Shopify line items into persisted order items', () => {
+    const mapped = mapShopifyOrderNodeToDeliveryInputs({
+      currentTotalPriceSet: null,
+      displayFinancialStatus: 'PAID',
+      displayFulfillmentStatus: 'UNFULFILLED',
+      email: null,
+      id: 'gid://shopify/Order/789',
+      legacyResourceId: '789',
+      lineItems: {
+        nodes: [{ title: 'Kimchi Box', name: 'Kimchi Box', variantTitle: 'Large', quantity: 3, sku: 'KIMCHI-L' }]
+      },
+      name: '#1003',
+      phone: null,
+      processedAt: '2026-05-07T04:00:00Z',
+      shippingAddress: null,
+      updatedAt: '2026-05-07T05:00:00Z'
+    });
+
+    expect(mapped.orderItems).toHaveLength(1);
+    expect(mapped.orderItems?.[0]).toEqual(expect.objectContaining({
+      name: 'Kimchi Box',
+      options: [{ key: 'Variant', value: 'Large' }],
+      quantity: 3,
+      sku: 'KIMCHI-L'
+    }));
+    expect(mapped.orderItems?.[0]?.productId).toBeGreaterThan(0);
+  });
+
   test('returns no delivery stop when an order has no shipping address', () => {
     const mapped = mapShopifyOrderNodeToDeliveryInputs({
       currentTotalPriceSet: null,

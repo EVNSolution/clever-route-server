@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 
 import { aggregateOrderItems, toOrderItemDto, type OrderItemDto } from '../order-items/order-items.js';
+import { mapShopifyLineItemsToOrderItems } from '../shopify/order-sync.mapper.js';
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import { InventoryValidationError, type CreateInventoryInput, type InventoryChangeItemDto, type InventoryDto, type InventoryService, type UpdateInventoryOrdersInput } from './inventory.types.js';
 
@@ -14,6 +15,7 @@ type InventoryWriteClient = InventoryBaseWriteClient & Pick<PrismaClient, 'route
 type LoadedInventory = Prisma.InventoryGetPayload<{ include: ReturnType<typeof inventoryInclude> }>;
 type LoadedInventoryEvent = Prisma.InventoryEventGetPayload<object>;
 type LoadedOrder = Prisma.OrderGetPayload<{ include: { orderItems: true } }>;
+type InventoryOrderRecord = LoadedInventory['orders'][number]['order'];
 type InventoryItemRecord = OrderItemDto & { id?: string | null };
 
 export class PrismaInventoryService implements InventoryService {
@@ -182,7 +184,14 @@ function inventoryInclude() {
   return {
     events: { orderBy: { createdAt: 'desc' as const }, take: 50 },
     orders: {
-      include: { order: { include: { orderItems: { orderBy: { lineIndex: 'asc' as const } } } } },
+      include: {
+        order: {
+          include: {
+            deliveryFacts: { orderBy: { computedAt: 'desc' as const }, select: { deliveryDate: true }, take: 1 },
+            orderItems: { orderBy: { lineIndex: 'asc' as const } }
+          }
+        }
+      },
       orderBy: { createdAt: 'asc' as const }
     }
   } satisfies Prisma.InventoryInclude;
@@ -241,7 +250,7 @@ async function createInventoryEvents(tx: InventoryBaseWriteClient, shopId: strin
 
 function toInventoryDto(inventory: LoadedInventory): InventoryDto {
   const orderIds = inventory.orders.map((entry) => entry.orderId);
-  const items = inventory.orders.flatMap((entry) => entry.order.orderItems.map(toOrderItemDto));
+  const items = inventory.orders.flatMap((entry) => getInventoryOrderItems(entry.order));
   return {
     createdAt: inventory.createdAt.toISOString(),
     id: inventory.id,
@@ -250,15 +259,28 @@ function toInventoryDto(inventory: LoadedInventory): InventoryDto {
     name: inventory.name,
     note: inventory.note,
     orderIds,
-    orders: inventory.orders.map((entry) => ({
-      id: entry.orderId,
-      items: entry.order.orderItems.map(toOrderItemDto),
-      name: entry.order.name
-    })),
+    orders: inventory.orders.map((entry) => toInventoryOrderDto(entry.orderId, entry.order)),
     ordersCount: orderIds.length,
     routeGroupingId: inventory.routeGroupingId,
     updatedAt: inventory.updatedAt.toISOString()
   };
+}
+
+function toInventoryOrderDto(orderId: string, order: InventoryOrderRecord): InventoryDto['orders'][number] {
+  const raw = asRecord(order.rawPayload);
+  return {
+    deliveryDate: formatDateOnly(order.deliveryFacts[0]?.deliveryDate ?? null) ?? readDateString(raw?.deliveryDate),
+    id: orderId,
+    items: getInventoryOrderItems(order),
+    name: order.name,
+    orderDateLocal: readDateString(raw?.orderDateLocal),
+    processedAt: formatDateOnly(order.processedAt)
+  };
+}
+
+function getInventoryOrderItems(order: InventoryOrderRecord): OrderItemDto[] {
+  if (order.orderItems.length > 0) return order.orderItems.map(toOrderItemDto);
+  return mapShopifyLineItemsToOrderItems(asRecord(order.rawPayload)?.lineItems as never);
 }
 
 function toChangeItemDto(event: LoadedInventoryEvent): InventoryChangeItemDto {
@@ -319,6 +341,19 @@ function readOrderItemOptions(value: unknown): OrderItemDto['options'] {
     const record = item as Record<string, unknown>;
     return typeof record.key === 'string' && typeof record.value === 'string' ? [{ key: record.key, value: record.value }] : [];
   });
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function formatDateOnly(value: Date | null | undefined): string | null {
+  return value instanceof Date ? value.toISOString().slice(0, 10) : null;
+}
+
+function readDateString(value: unknown): string | null {
+  const text = normalizeOptionalText(typeof value === 'string' ? value : null);
+  return text?.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? null;
 }
 
 function normalizeIds(values: string[]): string[] {

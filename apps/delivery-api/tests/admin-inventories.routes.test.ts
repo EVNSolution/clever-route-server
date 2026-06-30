@@ -18,7 +18,7 @@ const inventory: InventoryDto = {
   name: 'Prep batch',
   note: null,
   orderIds: ['order-1'],
-  orders: [{ id: 'order-1', items: [{ name: 'Kimchi', options: [], productId: 1, quantity: 3, sku: null, variationId: 0 }], name: '#1001' }],
+  orders: [{ deliveryDate: '2026-06-25', id: 'order-1', items: [{ name: 'Kimchi', options: [], productId: 1, quantity: 3, sku: null, variationId: 0 }], name: '#1001', orderDateLocal: '2026-06-24', processedAt: '2026-06-24' }],
   ordersCount: 1,
   routeGroupingId: 'route-group-1',
   updatedAt: '2026-06-26T00:00:00.000Z'
