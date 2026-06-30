@@ -495,7 +495,8 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
 
       const rootRoute = routes.find((route) => isRootDraftRoute(route));
       const rootChild = findRootDraftChild(loaded, rootRoute);
-      if (rootChild === null) throw new RouteGroupingValidationError(['root route draft row must identify the current child route']);
+      const materializeRootDraftRoute = shouldMaterializeRootDraftRoute(loaded, routes);
+      if (rootChild === null && hasCurrentChildren(loaded)) throw new RouteGroupingValidationError(['root route draft row must identify the current child route']);
 
       const routeBranchId = new Map<string, string | null>();
       for (const route of routes) {
@@ -584,11 +585,15 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const currentGroupingVersion = loaded.versions.find((version) => version.status === 'CURRENT') ??
         await createCurrentGroupingVersion(tx, loaded, { actor: ROUTE_GROUPING_DRAFT_SAVE_ACTOR, hasCurrent: false, nextVersion: loaded.currentVersion });
       for (const route of routes) {
-        if (isRootDraftRoute(route) || normalizeOptionalText(route.routePlanId) !== null || route.orderIds.length === 0) continue;
+        const isRootRoute = isRootDraftRoute(route);
+        const shouldCreateDraftRoute = normalizeOptionalText(route.routePlanId) === null
+          && route.orderIds.length > 0
+          && (materializeRootDraftRoute || !isRootRoute);
+        if (!shouldCreateDraftRoute) continue;
         const existingChild = findCurrentChildByOrderIds(loaded, route.orderIds);
         if (existingChild?.routePlanId !== null && existingChild?.routePlanId !== undefined) continue;
         const branchId = routeBranchId.get(route.routeKey ?? route.branchId ?? route.tempId ?? '');
-        if (branchId === null || branchId === undefined || branchId === '') continue;
+        if (!isRootRoute && (branchId === null || branchId === undefined || branchId === '')) continue;
         const assignments = route.orderIds.map((orderId) => assignmentByOrderId.get(orderId)).filter((assignment): assignment is LoadedAssignment => assignment !== undefined);
         if (assignments.length === 0) continue;
         await createDraftChildRoutePlan(tx, loaded, {
@@ -702,6 +707,9 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     if (initial === null) return null;
     validateReadyForChildGeneration(initial, input.confirmRisk);
     const candidates = await this.prepareOptimizedChildRouteCandidates(initial, input.shopDomain);
+    if (candidates.length < 2) {
+      return this.getGrouping({ appId: input.appId, groupingId: input.groupingId, shopDomain: input.shopDomain });
+    }
     const expectedSnapshot = childGenerationSnapshotSignature(initial);
 
     const projection = await this.prisma.$transaction(async (tx): Promise<ChildRouteProjectionResult | null> => {
@@ -1054,9 +1062,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     }
 
     const candidates: OptimizedChildRouteCandidate[] = [];
-    const routeAssignmentGroups = hasBranchRouteLocks(group)
+    const routeAssignmentGroups = (hasBranchRouteLocks(group)
       ? groupAssignmentsByRouteBranch(group)
-      : [...groupAssignmentsByDriver(group.orders)].map(([driverId, assignments], index) => ({ assignments, color: null, driverId, name: `Route ${index + 1}` }));
+      : [...groupAssignmentsByDriver(group.orders)].map(([driverId, assignments], index) => ({ assignments, color: null, driverId, name: `Route ${index + 1}` })))
+      .filter((route) => route.assignments.length > 0);
+    if (routeAssignmentGroups.length < 2) return [];
     for (const { assignments, color, driverId, name } of routeAssignmentGroups) {
       if (assignments.length === 0) continue;
       validateChildRouteStopsNearDepot(assignments, depot, this.maxChildRouteStopDistanceFromDepotMeters());
@@ -1116,6 +1126,14 @@ function assertDraftRouteEnvelope(routes: RouteGroupingDraftRouteInput[]): void 
 
 function isRootDraftRoute(route: RouteGroupingDraftRouteInput): boolean {
   return route.routeKey === 'root' || (route.branchId === null && route.tempId === null);
+}
+
+function hasCurrentChildren(group: LoadedGrouping): boolean {
+  return group.childVersions.some((child) => child.status === 'CURRENT');
+}
+
+function shouldMaterializeRootDraftRoute(group: LoadedGrouping, routes: RouteGroupingDraftRouteInput[]): boolean {
+  return !hasCurrentChildren(group) && routes.filter((route) => route.orderIds.length > 0).length >= 2;
 }
 
 function findRootDraftChild(group: LoadedGrouping, route: RouteGroupingDraftRouteInput | undefined): LoadedChild | null {

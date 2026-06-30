@@ -1224,7 +1224,13 @@ describe('PrismaRoutePlanRepository', () => {
       deleted: true
     });
     expect(prisma.routePlan.findFirst).toHaveBeenCalledWith({
-      select: { id: true },
+      select: {
+        id: true,
+        routeGroupingChildVersions: {
+          select: { groupingId: true, id: true },
+          where: { status: 'CURRENT' }
+        }
+      },
       where: { id: 'route-plan-id', shopId: 'shop-id' }
     });
     expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledWith({
@@ -1235,7 +1241,6 @@ describe('PrismaRoutePlanRepository', () => {
     });
     expect(prisma.routePlan.delete).toHaveBeenCalledTimes(1);
   });
-
 
   test('deletes a route generated from a parent grouping', async () => {
     const { prisma } = createPrismaHarness({ routeGroupingChildVersionCount: 1 });
@@ -1258,6 +1263,71 @@ describe('PrismaRoutePlanRepository', () => {
     expect(prisma.routePlan.delete).toHaveBeenCalledWith({
       where: { id: 'route-plan-id' }
     });
+    expect(prisma.routeGroupingChildVersion.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: { in: ['child-version-1'] }, shopId: 'shop-id', status: 'CURRENT' }
+    }));
+    expect(prisma.routeGroupingBranchOrderLock.deleteMany).toHaveBeenCalledWith({
+      where: { groupingId: 'grouping-id', shopId: 'shop-id' }
+    });
+    expect(prisma.routeGroupingBranch.deleteMany).toHaveBeenCalledWith({
+      where: { groupingId: 'grouping-id', shopId: 'shop-id' }
+    });
+  });
+
+  test('collapses a parent grouping split when deleting a child leaves only one child route', async () => {
+    const { prisma } = createPrismaHarness({
+      routeGroupingChildVersionCount: 1,
+      routeGroupingCurrentChildrenAfterDelete: [{ routePlanId: 'remaining-route-plan-id' }]
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await repository.deleteRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledWith({
+      where: { routePlanId: { in: ['remaining-route-plan-id'] } }
+    });
+    expect(prisma.routePlan.updateMany).toHaveBeenCalledWith({
+      data: { status: 'CANCELLED' },
+      where: { id: { in: ['remaining-route-plan-id'] }, shopId: 'shop-id' }
+    });
+    expect(prisma.routeGroupingChildVersion.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { groupingId: 'grouping-id', shopId: 'shop-id', status: 'CURRENT' }
+    }));
+    expect(prisma.routeGroupingBranchOrderLock.deleteMany).toHaveBeenCalledWith({
+      where: { groupingId: 'grouping-id', shopId: 'shop-id' }
+    });
+    expect(prisma.routeGroupingBranch.deleteMany).toHaveBeenCalledWith({
+      where: { groupingId: 'grouping-id', shopId: 'shop-id' }
+    });
+  });
+
+  test('keeps a parent grouping split when deleting a child still leaves multiple child routes', async () => {
+    const { prisma } = createPrismaHarness({
+      routeGroupingChildVersionCount: 1,
+      routeGroupingCurrentChildrenAfterDelete: [{ routePlanId: 'route-plan-2' }, { routePlanId: 'route-plan-3' }]
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await repository.deleteRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalledWith({
+      where: { routePlanId: { in: ['route-plan-2', 'route-plan-3'] } }
+    });
+    expect(prisma.routePlan.updateMany).not.toHaveBeenCalledWith(expect.objectContaining({
+      data: { status: 'CANCELLED' }
+    }));
+    expect(prisma.routeGroupingBranchOrderLock.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.routeGroupingBranch.deleteMany).not.toHaveBeenCalled();
   });
 
   test('returns deleted:false when no matching route plan is found for this shop', async () => {
@@ -1278,7 +1348,13 @@ describe('PrismaRoutePlanRepository', () => {
       deleted: false
     });
     expect(prisma.routePlan.findFirst).toHaveBeenCalledWith({
-      select: { id: true },
+      select: {
+        id: true,
+        routeGroupingChildVersions: {
+          select: { groupingId: true, id: true },
+          where: { status: 'CURRENT' }
+        }
+      },
       where: { id: 'route-plan-id', shopId: 'shop-id' }
     });
     expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalled();
@@ -1309,6 +1385,7 @@ function createPrismaHarness(input: {
   routePlanFindFirst?: Record<string, unknown> | null;
   routePlanToDelete?: { id: string } | null;
   routeGroupingChildVersionCount?: number;
+  routeGroupingCurrentChildrenAfterDelete?: Array<{ routePlanId: string | null }>;
   shop?: Record<string, unknown> | null;
 } = {}): {
   prisma: {
@@ -1327,8 +1404,16 @@ function createPrismaHarness(input: {
     orderDeliveryFact: {
       findMany: ReturnType<typeof vi.fn>;
     };
+    routeGroupingBranch: {
+      deleteMany: ReturnType<typeof vi.fn>;
+    };
+    routeGroupingBranchOrderLock: {
+      deleteMany: ReturnType<typeof vi.fn>;
+    };
     routeGroupingChildVersion: {
       count: ReturnType<typeof vi.fn>;
+      findMany: ReturnType<typeof vi.fn>;
+      updateMany: ReturnType<typeof vi.fn>;
     };
     routePlan: {
       create: ReturnType<typeof vi.fn>;
@@ -1395,8 +1480,16 @@ function createPrismaHarness(input: {
         )
       )
     },
+    routeGroupingBranch: {
+      deleteMany: vi.fn(() => Promise.resolve({ count: 1 }))
+    },
+    routeGroupingBranchOrderLock: {
+      deleteMany: vi.fn(() => Promise.resolve({ count: 1 }))
+    },
     routeGroupingChildVersion: {
-      count: vi.fn(() => Promise.resolve(input.routeGroupingChildVersionCount ?? 0))
+      count: vi.fn(() => Promise.resolve(input.routeGroupingChildVersionCount ?? 0)),
+      findMany: vi.fn(() => Promise.resolve(input.routeGroupingCurrentChildrenAfterDelete ?? [])),
+      updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
     },
     routePlan: {
       create: vi.fn(() =>
@@ -1430,6 +1523,10 @@ function createPrismaHarness(input: {
               depotLatitude: '43.6532',
               depotLongitude: '-79.3832',
               id: 'route-plan-id',
+              routeGroupingChildVersions: Array.from({ length: input.routeGroupingChildVersionCount ?? 0 }, (_, index) => ({
+                groupingId: 'grouping-id',
+                id: `child-version-${index + 1}`
+              })),
               metrics: {
                 deliveryAreas: ['Mississauga'],
                 deliveryDays: ['Thursday'],

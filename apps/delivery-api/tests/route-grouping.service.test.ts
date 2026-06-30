@@ -135,9 +135,19 @@ describe('route grouping contracts', () => {
   test('materializes non-empty draft branches without saving empty routes', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain('async function createDraftChildRoutePlan(');
-    expect(source).toContain('if (isRootDraftRoute(route) || normalizeOptionalText(route.routePlanId) !== null || route.orderIds.length === 0) continue');
+    expect(source).toContain('const shouldCreateDraftRoute = normalizeOptionalText(route.routePlanId) === null');
+    expect(source).toContain('&& (materializeRootDraftRoute || !isRootRoute)');
+    expect(source).toContain('if (!shouldCreateDraftRoute) continue');
     expect(source).toContain('routePlanId: routePlan.id');
     expect(source).toContain('snapshot: createChildSnapshot(group, input.assignments, null, routePlan.name, group.currentVersion, input.color ?? null)');
+  });
+
+  test('does not materialize a single all-order child route', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    expect(source).toContain('if (candidates.length < 2)');
+    expect(source).toContain('if (routeAssignmentGroups.length < 2) return []');
+    expect(source).toContain('function shouldMaterializeRootDraftRoute(');
+    expect(source).toContain('routes.filter((route) => route.orderIds.length > 0).length >= 2');
   });
 
   test('keeps branch colors attached when re-optimization recreates child routes', () => {

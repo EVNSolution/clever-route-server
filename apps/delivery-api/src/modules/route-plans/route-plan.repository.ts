@@ -50,7 +50,7 @@ const DEFAULT_ROUTE_END_MODE: RoutePlanEndMode = 'END_AT_LAST_STOP';
 
 type RoutePlanPrismaClient = Pick<
   PrismaClient,
-  '$transaction' | 'deliveryStop' | 'driver' | 'order' | 'orderDeliveryFact' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'shop'
+  '$transaction' | 'deliveryStop' | 'driver' | 'order' | 'orderDeliveryFact' | 'routeGroupingBranch' | 'routeGroupingBranchOrderLock' | 'routeGroupingChildVersion' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'shop'
 >;
 
 type RoutePlanGeometryCacheRecord = {
@@ -948,7 +948,13 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     }
 
     const routePlan = await this.prisma.routePlan.findFirst({
-      select: { id: true },
+      select: {
+        id: true,
+        routeGroupingChildVersions: {
+          select: { groupingId: true, id: true },
+          where: { status: 'CURRENT' }
+        }
+      },
       where: {
         id: input.routePlanId,
         shopId: shop.id
@@ -964,6 +970,10 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       });
       await tx.routePlan.delete({
         where: { id: input.routePlanId }
+      });
+      await collapseRouteGroupingSplitAfterChildDelete(tx, {
+        deletedChildVersions: routePlan.routeGroupingChildVersions,
+        shopId: shop.id
       });
     });
 
@@ -1713,6 +1723,39 @@ function routeItemDtosFromRouteStops(routeStops: RoutePlanStopRecord[]): OrderIt
   return routeStops.flatMap((routeStop) =>
     (routeStop.deliveryStop.order.orderItems ?? []).map((item) => toOrderItemDto(item))
   );
+}
+
+async function collapseRouteGroupingSplitAfterChildDelete(
+  tx: Pick<PrismaClient, 'routeGroupingBranch' | 'routeGroupingBranchOrderLock' | 'routeGroupingChildVersion' | 'routePlan' | 'routePlanStop'>,
+  input: { deletedChildVersions: Array<{ groupingId: string; id: string }>; shopId: string }
+): Promise<void> {
+  const groupingIds = [...new Set(input.deletedChildVersions.map((child) => child.groupingId))];
+  if (groupingIds.length === 0) return;
+
+  await tx.routeGroupingChildVersion.updateMany({
+    data: { status: 'ARCHIVED', supersededAt: new Date() },
+    where: { id: { in: input.deletedChildVersions.map((child) => child.id) }, shopId: input.shopId, status: 'CURRENT' }
+  });
+
+  for (const groupingId of groupingIds) {
+    const currentChildren = await tx.routeGroupingChildVersion.findMany({
+      select: { routePlanId: true },
+      where: { groupingId, shopId: input.shopId, status: 'CURRENT' }
+    });
+    const remainingRoutePlanIds = [...new Set(currentChildren.map((child) => child.routePlanId).filter((id): id is string => id !== null))];
+    if (remainingRoutePlanIds.length > 1) continue;
+
+    if (remainingRoutePlanIds.length > 0) {
+      await tx.routePlanStop.deleteMany({ where: { routePlanId: { in: remainingRoutePlanIds } } });
+      await tx.routePlan.updateMany({ data: { status: 'CANCELLED' }, where: { id: { in: remainingRoutePlanIds }, shopId: input.shopId } });
+    }
+    await tx.routeGroupingChildVersion.updateMany({
+      data: { status: 'ARCHIVED', supersededAt: new Date() },
+      where: { groupingId, shopId: input.shopId, status: 'CURRENT' }
+    });
+    await tx.routeGroupingBranchOrderLock.deleteMany({ where: { groupingId, shopId: input.shopId } });
+    await tx.routeGroupingBranch.deleteMany({ where: { groupingId, shopId: input.shopId } });
+  }
 }
 
 function routePlanSummaryInclude() {
