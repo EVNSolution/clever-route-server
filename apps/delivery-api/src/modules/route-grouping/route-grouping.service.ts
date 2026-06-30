@@ -107,6 +107,7 @@ type ChildSnapshot = {
   groupingVersion: number;
   name: string;
   planDate: string;
+  sortOrder?: number;
   routeScope: { deliverySession: string | null; routeScopeKey: string | null; serviceType: string | null };
   stops: Array<{ deliveryStopId: string; orderId: string; sequence: number; sourceOrderId: string }>;
 };
@@ -571,7 +572,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           where: { id: targetChild.routePlanId }
         });
         await tx.routeGroupingChildVersion.update({
-          data: { snapshot: createChildSnapshot(loaded, assignments, targetChild.driverId, route.label ?? childRouteSlotName(targetChild), loaded.currentVersion, route.color ?? readChildSnapshot(targetChild.snapshot).color ?? null) },
+          data: { snapshot: createChildSnapshot(loaded, assignments, targetChild.driverId, route.label ?? childRouteSlotName(targetChild), loaded.currentVersion, route.color ?? readChildSnapshot(targetChild.snapshot).color ?? null, route.sortOrder ?? readChildSnapshot(targetChild.snapshot).sortOrder) },
           where: { id: targetChild.id }
         });
         if (route.optimized !== undefined) {
@@ -726,7 +727,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const nextVersion = hasCurrent ? loaded.currentVersion + 1 : loaded.currentVersion;
       const version = await createCurrentGroupingVersion(tx, loaded, { actor: input.actor, hasCurrent, nextVersion });
       const childRoutePlanIds: string[] = [];
-      for (const candidate of candidates) {
+      for (const [index, candidate] of candidates.entries()) {
         const routePlan = await createChildRoutePlan(tx, loaded, candidate, input.actor);
         childRoutePlanIds.push(routePlan.id);
         await createChildRouteGeometryCache(tx, routePlan.id, candidate);
@@ -738,7 +739,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
             notificationStatus: 'SKIPPED',
             routePlanId: routePlan.id,
             shopId: loaded.shopId,
-            snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, routePlan.name, nextVersion, candidate.color),
+            snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, routePlan.name, nextVersion, candidate.color, index + 1),
             status: 'CURRENT',
             version: nextVersion
           }
@@ -843,9 +844,10 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       }
       const currentVersion = loaded.versions.find((version) => version.status === 'CURRENT')
         ?? await createCurrentGroupingVersion(tx, loaded, { actor: input.actor, hasCurrent: false, nextVersion: loaded.currentVersion });
-      for (const candidate of candidates) {
+      for (const [index, candidate] of candidates.entries()) {
         if (candidate.routePlanId !== null && candidate.childId !== null) {
-          const existingChildColor = readChildSnapshot(loaded.childVersions.find((child) => child.id === candidate.childId)?.snapshot ?? {}).color ?? null;
+          const existingChildSnapshot = readChildSnapshot(loaded.childVersions.find((child) => child.id === candidate.childId)?.snapshot ?? {});
+          const existingChildColor = existingChildSnapshot.color ?? null;
           await rewriteRoutePlanStops(tx, candidate.routePlanId, candidate.assignments);
           await tx.routePlan.update({
             data: {
@@ -862,7 +864,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           await tx.routeGroupingChildVersion.update({
             data: {
               driverId: candidate.driverId,
-              snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, candidate.name, loaded.currentVersion, candidate.color ?? existingChildColor)
+              snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, candidate.name, loaded.currentVersion, candidate.color ?? existingChildColor, existingChildSnapshot.sortOrder)
             },
             where: { id: candidate.childId }
           });
@@ -879,7 +881,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
             notificationStatus: 'SKIPPED',
             routePlanId: routePlan.id,
             shopId: loaded.shopId,
-            snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, routePlan.name, loaded.currentVersion, candidate.color),
+            snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, routePlan.name, loaded.currentVersion, candidate.color, index + 1),
             status: 'CURRENT',
             version: loaded.currentVersion
           }
@@ -1247,7 +1249,7 @@ async function branchDriverRelation(tx: Tx, shopId: string, driverId: string | n
 
 async function nextBranchSortOrder(tx: Tx, groupingId: string): Promise<number> {
   const max = await tx.routeGroupingBranch.aggregate({ _max: { sortOrder: true }, where: { groupingId } });
-  return (max._max.sortOrder ?? 0) + 1;
+  return Math.max(max._max.sortOrder ?? 1, 1) + 1;
 }
 
 async function claimBranchOrders(
@@ -1777,7 +1779,7 @@ async function createDraftChildRoutePlan(
       notificationStatus: 'SKIPPED',
       routePlanId: routePlan.id,
       shopId: group.shopId,
-      snapshot: createChildSnapshot(group, input.assignments, null, routePlan.name, group.currentVersion, input.color ?? null),
+      snapshot: createChildSnapshot(group, input.assignments, null, routePlan.name, group.currentVersion, input.color ?? null, input.sortOrder),
       status: 'CURRENT',
       version: group.currentVersion
     }
@@ -1867,9 +1869,10 @@ async function createChildRouteGeometryCache(
   });
 }
 
-function createChildSnapshot(group: LoadedGrouping, assignments: LoadedAssignment[], driverId: string | null, name: string, version: number, color?: string | null): ChildSnapshot {
+function createChildSnapshot(group: LoadedGrouping, assignments: LoadedAssignment[], driverId: string | null, name: string, version: number, color?: string | null, sortOrder?: number): ChildSnapshot {
   return {
     ...(color === undefined ? {} : { color }),
+    ...(sortOrder === undefined ? {} : { sortOrder }),
     driverId,
     groupingId: group.id,
     groupingVersion: version,
@@ -1883,6 +1886,7 @@ function createChildSnapshot(group: LoadedGrouping, assignments: LoadedAssignmen
 function readChildSnapshot(value: Prisma.JsonValue): ChildSnapshot {
   const object = value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const stops = Array.isArray(object.stops) ? object.stops : [];
+  const sortOrder = typeof object.sortOrder === 'number' && Number.isInteger(object.sortOrder) ? object.sortOrder : undefined;
   return {
     color: typeof object.color === 'string' ? object.color : null,
     driverId: typeof object.driverId === 'string' ? object.driverId : null,
@@ -1890,6 +1894,7 @@ function readChildSnapshot(value: Prisma.JsonValue): ChildSnapshot {
     groupingVersion: typeof object.groupingVersion === 'number' ? object.groupingVersion : 0,
     name: typeof object.name === 'string' ? object.name : 'Rolled back route',
     planDate: typeof object.planDate === 'string' ? object.planDate : '',
+    ...(sortOrder === undefined ? {} : { sortOrder }),
     routeScope: { deliverySession: null, routeScopeKey: null, serviceType: null },
     stops: stops.map((entry, index) => {
       const row = entry !== null && typeof entry === 'object' && !Array.isArray(entry) ? entry as Record<string, unknown> : {};
@@ -2020,6 +2025,7 @@ function toChildDto(child: LoadedChild, group: LoadedGrouping): RouteGroupingChi
     orderIds: stops.map((stop) => stop.orderId),
     routePlan: child.routePlan === null ? null : toMinimalRoutePlanSummary(child.routePlan),
     routePlanId: child.routePlanId,
+    sortOrder: snapshot.sortOrder ?? null,
     stops,
     stopsCount: stops.length
   };

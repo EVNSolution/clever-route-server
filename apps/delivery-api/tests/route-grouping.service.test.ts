@@ -139,7 +139,7 @@ describe('route grouping contracts', () => {
     expect(source).toContain('&& (materializeRootDraftRoute || !isRootRoute)');
     expect(source).toContain('if (!shouldCreateDraftRoute) continue');
     expect(source).toContain('routePlanId: routePlan.id');
-    expect(source).toContain('snapshot: createChildSnapshot(group, input.assignments, null, routePlan.name, group.currentVersion, input.color ?? null)');
+    expect(source).toContain('snapshot: createChildSnapshot(group, input.assignments, null, routePlan.name, group.currentVersion, input.color ?? null, input.sortOrder)');
   });
 
   test('does not materialize a single all-order child route', () => {
@@ -154,7 +154,18 @@ describe('route grouping contracts', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain('color: readChildSnapshot(child.snapshot).color ?? null');
     expect(source).toContain('color: effectiveGroup.color ?? null');
-    expect(source).toContain('snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, routePlan.name, loaded.currentVersion, candidate.color)');
+    expect(source).toContain('snapshot: createChildSnapshot(loaded, candidate.assignments, candidate.driverId, routePlan.name, loaded.currentVersion, candidate.color, index + 1)');
+  });
+
+  test('persists route slot order separately from editable names', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const types = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.types.ts'), 'utf8');
+
+    expect(source).toContain('sortOrder?: number;');
+    expect(source).toContain('sortOrder: snapshot.sortOrder ?? null');
+    expect(source).toContain('route.sortOrder ?? readChildSnapshot(targetChild.snapshot).sortOrder');
+    expect(source).toContain('return Math.max(max._max.sortOrder ?? 1, 1) + 1');
+    expect(types).toContain('sortOrder: number | null');
   });
 
   test('uses numbered child route names before dispatch', () => {

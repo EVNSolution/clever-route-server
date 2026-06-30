@@ -59,6 +59,7 @@ export type RouteGroupingChildDto = {
   orderIds: string[];
   routePlan: RoutePlanSummary | null;
   routePlanId: string | null;
+  sortOrder: number | null;
   stops: RouteGroupingAssignmentDto[];
   stopsCount: number;
 };
