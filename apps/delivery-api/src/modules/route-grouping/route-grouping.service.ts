@@ -497,7 +497,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const rootRoute = routes.find((route) => isRootDraftRoute(route));
       const rootChild = findRootDraftChild(loaded, rootRoute);
       const materializeRootDraftRoute = shouldMaterializeRootDraftRoute(loaded, routes);
-      if (rootChild === null && hasCurrentChildren(loaded)) throw new RouteGroupingValidationError(['root route draft row must identify the current child route']);
+      if (rootRoute !== undefined && rootChild === null && hasCurrentChildren(loaded)) throw new RouteGroupingValidationError(['root route draft row must identify the current child route']);
 
       const routeBranchId = new Map<string, string | null>();
       for (const route of routes) {
@@ -1106,28 +1106,33 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
 
 
 function normalizeDraftRoutes(routes: RouteGroupingDraftRouteInput[]): RouteGroupingDraftRouteInput[] {
-  return routes.map((route, index) => ({
-    branchId: route.branchId === null ? null : route.branchId?.trim() ?? null,
-    color: normalizeOptionalText(route.color),
-    label: normalizeOptionalText(route.label),
-    ...(route.optimized === undefined ? {} : { optimized: route.optimized ?? null }),
-    orderIds: normalizeIds(route.orderIds),
-    routeKey: normalizeOptionalText(route.routeKey) ?? (route.branchId === null ? 'root' : `branch:${route.branchId}`),
-    routePlanId: normalizeOptionalText(route.routePlanId),
-    sortOrder: typeof route.sortOrder === 'number' && Number.isInteger(route.sortOrder) ? route.sortOrder : index + 1,
-    tempId: normalizeOptionalText(route.tempId)
-  }));
+  return routes.map((route, index) => {
+    const branchId = route.branchId === null ? null : route.branchId?.trim() ?? null;
+    const routePlanId = normalizeOptionalText(route.routePlanId);
+    const tempId = normalizeOptionalText(route.tempId);
+    return {
+      branchId,
+      color: normalizeOptionalText(route.color),
+      label: normalizeOptionalText(route.label),
+      ...(route.optimized === undefined ? {} : { optimized: route.optimized ?? null }),
+      orderIds: normalizeIds(route.orderIds),
+      routeKey: normalizeOptionalText(route.routeKey) ?? (routePlanId !== null ? `routePlan:${routePlanId}` : branchId === null ? 'root' : `branch:${branchId}`),
+      routePlanId,
+      sortOrder: typeof route.sortOrder === 'number' && Number.isInteger(route.sortOrder) ? route.sortOrder : index + 1,
+      tempId
+    };
+  });
 }
 
 function assertDraftRouteEnvelope(routes: RouteGroupingDraftRouteInput[]): void {
   const routeKeys = routes.map((route) => route.routeKey ?? '');
   if (new Set(routeKeys).size !== routeKeys.length) throw new RouteGroupingValidationError(['route draft route keys must be unique']);
   const rootRoutes = routes.filter(isRootDraftRoute);
-  if (rootRoutes.length !== 1) throw new RouteGroupingValidationError(['route draft must include exactly one root route row']);
+  if (rootRoutes.length > 1) throw new RouteGroupingValidationError(['route draft may include at most one root route row']);
 }
 
 function isRootDraftRoute(route: RouteGroupingDraftRouteInput): boolean {
-  return route.routeKey === 'root' || (route.branchId === null && route.tempId === null);
+  return route.routeKey === 'root' || (route.routePlanId === null && route.branchId === null && route.tempId === null);
 }
 
 function hasCurrentChildren(group: LoadedGrouping): boolean {

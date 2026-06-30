@@ -113,11 +113,14 @@ describe('route grouping contracts', () => {
     expect(source).toContain('constraints: routeConstraints(loaded, candidate.depot)');
   });
 
-  test('requires one explicit root draft row before saving route detail edits', () => {
+  test('allows materialized child route drafts without a root row before saving route detail edits', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain('assertDraftRouteEnvelope(routes)');
     expect(source).toContain('const rootRoutes = routes.filter(isRootDraftRoute)');
-    expect(source).toContain("rootRoutes.length !== 1");
+    expect(source).toContain('rootRoutes.length > 1');
+    expect(source).toContain('routePlanId !== null ? `routePlan:${routePlanId}`');
+    expect(source).toContain('route.routePlanId === null && route.branchId === null && route.tempId === null');
+    expect(source).toContain('rootRoute !== undefined && rootChild === null && hasCurrentChildren(loaded)');
     expect(source).toContain("'route draft route keys must be unique'");
   });
 
