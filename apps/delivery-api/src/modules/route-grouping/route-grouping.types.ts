@@ -58,10 +58,12 @@ export type RouteGroupingChildDto = {
   driverName: string | null;
   notificationStatus: RouteGroupingNotificationStatus;
   orderIds: string[];
+  routeGeometry: RoutePlanRouteGeometry | null;
   routeMetrics: RoutePlanRouteMetrics | null;
   routePlan: RoutePlanSummary | null;
   routePlanId: string | null;
   routeIdx: number | null;
+  routeStopPoints: RoutePlanRouteStopPoint[];
   sortOrder: number | null;
   stops: RouteGroupingAssignmentDto[];
   stopsCount: number;

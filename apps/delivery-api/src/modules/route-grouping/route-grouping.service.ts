@@ -9,7 +9,7 @@ import type {
 import { applyCachedRouteGeometry, computeRouteShapeSignature, routeGeometryCacheCreateData } from '../route-plans/route-plan-geometry-cache.js';
 import type { RouteGeometryCacheRead } from '../route-plans/route-plan-geometry-cache.js';
 import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
-import type { RoutePlanDetail, RoutePlanRouteMetrics, RoutePlanRouteResult } from '../route-plans/route-plan.types.js';
+import type { RoutePlanDetail, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteResult, RoutePlanRouteStopPoint } from '../route-plans/route-plan.types.js';
 import { aggregateOrderItems, toOrderItemDto } from '../order-items/order-items.js';
 import {
   RouteGroupingBranchLockConflictError,
@@ -110,6 +110,11 @@ type RouteGeometryCacheSummaryRecord = {
   shapeSignature: string;
   source: string;
   stopPoints: unknown;
+};
+type ChildRouteGeometrySnapshot = {
+  routeGeometry: RoutePlanRouteGeometry | null;
+  routeMetrics: RoutePlanRouteMetrics | null;
+  routeStopPoints: RoutePlanRouteStopPoint[];
 };
 
 type OptimizedDraftRoute = {
@@ -2102,7 +2107,8 @@ function toChildDto(child: LoadedChild, group: LoadedGrouping): RouteGroupingChi
   const snapshot = readChildSnapshot(child.snapshot);
   const assignments = currentChildAssignments(group, child);
   const stops = assignments.map(toAssignmentDto);
-  const childRouteMetrics = readChildRouteMetrics(child, group);
+  const childRouteGeometry = readChildRouteGeometry(child, group);
+  const childRouteMetrics = childRouteGeometry.routeMetrics;
   return {
     childVersion: child.version,
     color: snapshot.color ?? null,
@@ -2111,20 +2117,22 @@ function toChildDto(child: LoadedChild, group: LoadedGrouping): RouteGroupingChi
     driverName: child.driver?.displayName ?? child.routePlan?.driver?.displayName ?? null,
     notificationStatus: normalizeNotificationStatus(child.notificationStatus),
     orderIds: stops.map((stop) => stop.orderId),
+    routeGeometry: childRouteGeometry.routeGeometry,
     routeMetrics: childRouteMetrics,
     routePlan: child.routePlan === null ? null : toMinimalRoutePlanSummary(child.routePlan, childRouteMetrics, assignments),
     routePlanId: child.routePlanId,
     routeIdx: snapshot.routeIdx ?? null,
+    routeStopPoints: childRouteGeometry.routeStopPoints,
     sortOrder: snapshot.sortOrder ?? null,
     stops,
     stopsCount: stops.length
   };
 }
 
-function readChildRouteMetrics(child: LoadedChild, group: LoadedGrouping): RoutePlanRouteMetrics | null {
-  if (child.routePlan === null) return null;
+function readChildRouteGeometry(child: LoadedChild, group: LoadedGrouping): ChildRouteGeometrySnapshot {
+  if (child.routePlan === null) return emptyChildRouteGeometrySnapshot();
   const depot = readDepotFromShop(group);
-  if (depot === null) return null;
+  if (depot === null) return emptyChildRouteGeometrySnapshot();
 
   const detail = buildChildRouteDetail({
     assignments: currentChildAssignments(group, child),
@@ -2134,21 +2142,30 @@ function readChildRouteMetrics(child: LoadedChild, group: LoadedGrouping): Route
     name: child.routePlan.name
   });
 
-  return readChildRouteMetricsFromRoutePlan(child.routePlan, detail);
-}
-
-function readChildRouteMetricsFromRoutePlan(routePlan: NonNullable<LoadedChild['routePlan']>, detail: RoutePlanDetail): RoutePlanRouteMetrics | null {
-  return readExactChildRouteMetricsFromRoutePlan(routePlan, detail);
+  return readExactChildRouteGeometryFromRoutePlan(child.routePlan, detail);
 }
 
 function readExactChildRouteMetricsFromRoutePlan(routePlan: NonNullable<LoadedChild['routePlan']>, detail: RoutePlanDetail): RoutePlanRouteMetrics | null {
+  return readExactChildRouteGeometryFromRoutePlan(routePlan, detail).routeMetrics;
+}
+
+function readExactChildRouteGeometryFromRoutePlan(routePlan: NonNullable<LoadedChild['routePlan']>, detail: RoutePlanDetail): ChildRouteGeometrySnapshot {
   const caches = routePlan.routeGeometryCaches as RouteGeometryCacheSummaryRecord[] | undefined;
-  if (caches === undefined || caches.length === 0) return null;
+  if (caches === undefined || caches.length === 0) return emptyChildRouteGeometrySnapshot();
 
   const shapeSignature = computeRouteShapeSignature(detail);
   const cache = caches.find((entry) => entry.shapeSignature === shapeSignature) ?? null;
   const applied = applyCachedRouteGeometry(detail, toRouteGeometrySummaryCacheRead(cache));
-  return applied.routeGeometry !== null && applied.routeMetrics !== null ? applied.routeMetrics : null;
+  if (applied.routeGeometry === null) return emptyChildRouteGeometrySnapshot();
+  return {
+    routeGeometry: applied.routeGeometry,
+    routeMetrics: applied.routeMetrics,
+    routeStopPoints: applied.routeStopPoints
+  };
+}
+
+function emptyChildRouteGeometrySnapshot(): ChildRouteGeometrySnapshot {
+  return { routeGeometry: null, routeMetrics: null, routeStopPoints: [] };
 }
 
 function toRouteGeometrySummaryCacheRead(record: RouteGeometryCacheSummaryRecord | null): RouteGeometryCacheRead | null {
