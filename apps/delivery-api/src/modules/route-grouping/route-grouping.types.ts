@@ -35,6 +35,7 @@ export type RouteGroupingAssignmentDto = {
   addressLabel: string;
   phone: string | null;
   email: string | null;
+  itemCount: number;
   sourceOrderId: string;
   sourceSequence: number;
 };
