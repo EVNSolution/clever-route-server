@@ -149,6 +149,7 @@ export type RoutePlanDetailStop = {
   deliveryStopId: string;
   financialStatus: string | null;
   fulfillmentStatus: string | null;
+  itemCount?: number;
   normalizedPaymentStatus?: NormalizedPaymentStatus | null;
   currencyCode?: string | null;
   distanceFromPreviousMeters?: number | null;

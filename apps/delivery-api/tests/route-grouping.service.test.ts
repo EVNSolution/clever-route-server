@@ -125,15 +125,38 @@ describe('route grouping contracts', () => {
     expect(source).toContain("'route draft route keys must be unique'");
   });
 
-  test('keeps ordinary draft save from consuming existing route geometry payloads', () => {
+  test('server fills missing draft-save OSRM cache instead of relying on frontend optimized payloads', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    expect(source).toContain('await lockRouteGroupingDraftSave(tx, group.id)');
+    expect(source).toContain('const draftOptimizations = await this.prepareDraftRouteOptimizations(input, loaded, routes)');
+    expect(source).toContain('return shouldOptimizeDraftRoute(group, route, typedAssignments)');
+    expect(source).toContain('routeAssignmentsChanged(targetChild, assignments)');
+    expect(source).toContain('readExactChildRouteMetricsFromRoutePlan(targetChild.routePlan, detail) === null');
+    expect(source).toContain('await createDraftRouteGeometryCache(tx, targetChild.routePlanId, draftOptimization)');
     expect(source).toContain('if (route.optimized !== undefined && targetChild.routePlanId !== null)');
-    expect(source).toContain('optimized: route.optimized ?? null');
+    expect(source).toContain('optimized: route.optimized ?? toDraftOptimizedSnapshot(draftOptimization)');
     expect(source).toContain('logIgnoredExistingRouteOptimizedPayload(group.id, targetChild.routePlanId, route.routeKey ?? null)');
-    expect(source).toContain('logPreservedExistingRouteGeometryCache(group.id, targetChild.routePlanId, route.routeKey ?? null)');
     expect(source).toContain('function routeAssignmentsChanged(child: LoadedChild, assignments: LoadedAssignment[]): boolean');
+    expect(source).not.toContain('logPreservedExistingRouteGeometryCache');
     expect(source).toContain('errorName: reason instanceof Error ? reason.name : typeof reason');
     expect(source).not.toContain('errorMessage: reason instanceof Error ? reason.message : String(reason)');
+  });
+
+  test('first global save can materialize route metrics without a re-optimize action', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const saveDraftBody = source.slice(source.indexOf('async saveDraft('), source.indexOf('async savePolygons('));
+
+    expect(saveDraftBody).toContain('await lockRouteGroupingDraftSave(tx, group.id)');
+    expect(saveDraftBody).toContain('const draftOptimizations = await this.prepareDraftRouteOptimizations(input, loaded, routes)');
+    expect(saveDraftBody).toContain('const draftOptimization = draftOptimizations.get(route)');
+    expect(saveDraftBody).toContain('const assignments = draftOptimization?.assignments');
+    expect(source).toContain('if (this.routeOptimizationService === undefined) throw new RouteGroupingValidationError');
+    expect(source).toContain('if (this.routeGeometryProvider === undefined) throw new RouteGroupingValidationError');
+    expect(source).toContain('const routeResult = await buildChildRouteGeometry(this.routeGeometryProvider, optimizedDetail)');
+    expect(source).toContain('optimizedRoutes.set(route, {');
+    expect(source).toContain('&& optimized.routeGeometry !== null');
+    expect(source).toContain('async function lockRouteGroupingDraftSave(tx: Tx, groupingId: string): Promise<void>');
+    expect(source).toContain('function toDraftOptimizedSnapshot(route: OptimizedDraftRoute | undefined)');
   });
 
   test('materializes child draft rows with server-assigned routeIdx', () => {
@@ -260,10 +283,28 @@ describe('route grouping contracts', () => {
     expect(source).toContain('applyCachedRouteGeometry(detail, toRouteGeometrySummaryCacheRead(cache))');
     expect(source).toContain('const childRouteMetrics = readChildRouteMetrics(child, group)');
     expect(source).toContain('routeMetrics: childRouteMetrics');
-    expect(source).toContain('routePlan: child.routePlan === null ? null : toMinimalRoutePlanSummary(child.routePlan, childRouteMetrics)');
+    expect(source).toContain('routePlan: child.routePlan === null ? null : toMinimalRoutePlanSummary(child.routePlan, childRouteMetrics, assignments)');
+    expect(source).toContain('const cache = caches.find((entry) => entry.shapeSignature === shapeSignature) ?? null');
+    expect(source).toContain('const applied = applyCachedRouteGeometry(detail, toRouteGeometrySummaryCacheRead(cache))');
+    expect(source).toContain('return applied.routeGeometry !== null && applied.routeMetrics !== null ? applied.routeMetrics : null');
     expect(source).toContain('routeMetrics,');
-    expect(source).not.toContain('geometry: true,');
-    expect(source).not.toContain('stopPoints: true,');
+    expect(source).toContain('geometry: true,');
+    expect(source).toContain('stopPoints: true');
+  });
+
+  test('exposes child route item counts from order item quantities', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const groupingTypes = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.types.ts'), 'utf8');
+    const routePlanTypes = readFileSync(join(process.cwd(), 'src/modules/route-plans/route-plan.types.ts'), 'utf8');
+
+    expect(source).toContain("import { aggregateOrderItems, toOrderItemDto } from '../order-items/order-items.js'");
+    expect(source).toContain('function assignmentItemCount(assignment: LoadedAssignment): number');
+    expect(source).toContain('return assignmentOrderItems(assignment).reduce((sum, item) => sum + item.quantity, 0)');
+    expect(source).toContain('itemCount: assignmentItemCount(order)');
+    expect(source).toContain('itemSummary: routeItemSummary(assignments)');
+    expect(source).toContain('itemSummary: routeItemSummary(input.assignments)');
+    expect(groupingTypes).toContain('itemCount: number');
+    expect(routePlanTypes).toContain('itemCount?: number');
   });
 
   test('fake FCM provider records string-safe route payload fields', async () => {
