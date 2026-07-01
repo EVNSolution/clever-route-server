@@ -103,7 +103,7 @@ describe('route grouping contracts', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).not.toContain('save route changes before re-optimizing new routes');
     expect(source).toContain('const routeSlotCount = Math.max(routeAssignmentGroups.length, currentChildren.length)');
-    expect(source).toContain('const numberedCandidate = { ...candidate, name: `Route ${routeIdx}`, routeIdx }');
+    expect(source).toContain('const numberedCandidate = { ...candidate, name: `#${routeIdx}`, routeIdx }');
     expect(source).toContain('const routePlan = await createChildRoutePlan(tx, loaded, numberedCandidate, input.actor)');
   });
 
@@ -140,7 +140,7 @@ describe('route grouping contracts', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain('async function createDraftChildRoutePlan(');
     expect(source).toContain('const routeIdx = await nextGlobalRouteIdx(tx, group.shopId)');
-    expect(source).toContain('name: route.label ?? `Route ${routeIdx}`');
+    expect(source).toContain('name: route.label ?? `#${routeIdx}`');
     expect(source).toContain('routeIdx,');
     expect(source).toContain('routePlanId: routePlan.id');
     expect(source).toContain('snapshot: createChildSnapshot(group, input.assignments, null, routePlan.name, group.currentVersion, input.color ?? null, input.sortOrder, input.routeIdx)');
@@ -151,7 +151,7 @@ describe('route grouping contracts', () => {
     expect(source).toContain('if (candidates.length < 2)');
     expect(source).toContain('if (routeAssignmentGroups.length < 2) return []');
     expect(source).toContain('createDraftChildRoutePlan(tx, loaded');
-    expect(source).toContain('name: `Route ${routeIdx}`');
+    expect(source).toContain('name: `#${routeIdx}`');
   });
 
   test('keeps child colors and routeIdx attached when re-optimization recreates child routes', () => {
@@ -199,7 +199,7 @@ describe('route grouping contracts', () => {
 
     expect(createGroupingBody).toContain('const routeIdx = await nextGlobalRouteIdx');
     expect(createGroupingBody).toContain('createDraftChildRoutePlan');
-    expect(createGroupingBody).toContain('name: `Route ${routeIdx}`');
+    expect(createGroupingBody).toContain('name: `#${routeIdx}`');
     expect(createGroupingBody).toContain('routeIdx');
     expect(createGroupingBody).toContain("status: 'CURRENT'");
   });
@@ -223,7 +223,7 @@ describe('route grouping contracts', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain("assignment.assignmentStatus === 'ASSIGNED' ? assignment.assignedDriverId : null");
     expect(source).toContain("assignment.assignmentStatus !== 'ASSIGNED' && assignment.assignmentStatus !== 'UNASSIGNED'");
-    expect(source).toContain('name: `Route ${index + 1}`');
+    expect(source).toContain('name: `#${index + 1}`');
     expect(source).not.toContain('return `${group.name} — ${driverName}`');
   });
 
