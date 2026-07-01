@@ -248,6 +248,24 @@ describe('route grouping contracts', () => {
     expect(types).toContain('routeGroupId?: string | null');
   });
 
+  test('exposes fresh OSRM route metrics on current child route DTOs only through the geometry cache contract', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const types = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.types.ts'), 'utf8');
+
+    expect(types).toContain('routeMetrics: RoutePlanRouteMetrics | null');
+    expect(source).toContain('routeGeometryCaches: {');
+    expect(source).toContain('select: routeGeometryCacheSummarySelect()');
+    expect(source).toContain('function readChildRouteMetrics(child: LoadedChild, group: LoadedGrouping): RoutePlanRouteMetrics | null');
+    expect(source).toContain('return readChildRouteMetricsFromRoutePlan(child.routePlan, detail)');
+    expect(source).toContain('applyCachedRouteGeometry(detail, toRouteGeometrySummaryCacheRead(cache))');
+    expect(source).toContain('const childRouteMetrics = readChildRouteMetrics(child, group)');
+    expect(source).toContain('routeMetrics: childRouteMetrics');
+    expect(source).toContain('routePlan: child.routePlan === null ? null : toMinimalRoutePlanSummary(child.routePlan, childRouteMetrics)');
+    expect(source).toContain('routeMetrics,');
+    expect(source).not.toContain('geometry: true,');
+    expect(source).not.toContain('stopPoints: true,');
+  });
+
   test('fake FCM provider records string-safe route payload fields', async () => {
     const provider = new FakeDriverPushProvider();
     const result = await provider.sendRouteNotification({

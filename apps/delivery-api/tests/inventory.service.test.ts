@@ -8,7 +8,10 @@ type UpdateManyArgs = { data: { updatedAt: Date } };
 
 describe('inventory service route-group follower behavior', () => {
   test('lists standalone and route-group inventories for the shop', async () => {
-    const findMany = vi.fn((_args?: { include?: Record<string, unknown> }) => []);
+    const findMany = vi.fn((args?: { include?: Record<string, unknown> }) => {
+      void args;
+      return [];
+    });
     const service = new PrismaInventoryService({
       inventory: { findMany },
       shop: { findUnique: vi.fn(() => ({ id: 'shop-1' })) }

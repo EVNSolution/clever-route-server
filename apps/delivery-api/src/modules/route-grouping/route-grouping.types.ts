@@ -57,6 +57,7 @@ export type RouteGroupingChildDto = {
   driverName: string | null;
   notificationStatus: RouteGroupingNotificationStatus;
   orderIds: string[];
+  routeMetrics: RoutePlanRouteMetrics | null;
   routePlan: RoutePlanSummary | null;
   routePlanId: string | null;
   routeIdx: number | null;

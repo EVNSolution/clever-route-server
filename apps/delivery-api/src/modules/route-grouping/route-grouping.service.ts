@@ -6,9 +6,10 @@ import type {
   RouteOptimizationService,
   RouteOptimizationStopSequence
 } from '../route-plans/route-optimization.types.js';
-import { computeRouteShapeSignature, routeGeometryCacheCreateData } from '../route-plans/route-plan-geometry-cache.js';
+import { applyCachedRouteGeometry, computeRouteShapeSignature, routeGeometryCacheCreateData } from '../route-plans/route-plan-geometry-cache.js';
+import type { RouteGeometryCacheRead } from '../route-plans/route-plan-geometry-cache.js';
 import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
-import type { RoutePlanDetail, RoutePlanRouteResult } from '../route-plans/route-plan.types.js';
+import type { RoutePlanDetail, RoutePlanRouteMetrics, RoutePlanRouteResult } from '../route-plans/route-plan.types.js';
 import {
   RouteGroupingBranchLockConflictError,
   RouteGroupingConflictError,
@@ -99,6 +100,14 @@ type LoadedChild = LoadedGrouping['childVersions'][number];
 type LoadedAssignment = LoadedGrouping['orders'][number];
 type LoadedBranch = LoadedGrouping['branches'][number];
 type GroupingForUpdate = { dateRangeEnd: Date | null; dateRangeStart: Date | null; id: string; name: string; planDate: Date; shopId: string; updatedAt: Date };
+type RouteGeometryCacheSummaryRecord = {
+  generatedAt: Date;
+  metrics: unknown;
+  provider: string;
+  providerVersion: string | null;
+  shapeSignature: string;
+  source: string;
+};
 
 type ChildSnapshot = {
   color?: string | null;
@@ -1164,7 +1173,16 @@ function groupingInclude() {
       include: {
         driver: true,
         notificationAttempts: true,
-        routePlan: { include: { driver: true, routeStops: true } }
+        routePlan: {
+          include: {
+            driver: true,
+            routeGeometryCaches: {
+              orderBy: { generatedAt: 'desc' as const },
+              select: routeGeometryCacheSummarySelect()
+            },
+            routeStops: true
+          }
+        }
       },
       orderBy: [{ version: 'desc' as const }, { createdAt: 'desc' as const }]
     },
@@ -1181,6 +1199,19 @@ function groupingInclude() {
     shop: true,
     versions: { orderBy: { version: 'desc' as const } }
   } satisfies Prisma.RouteGroupingInclude;
+}
+
+function routeGeometryCacheSummarySelect() {
+  return {
+    generatedAt: true,
+    geometry: false,
+    metrics: true,
+    provider: true,
+    providerVersion: true,
+    shapeSignature: true,
+    source: true,
+    stopPoints: false
+  } as const;
 }
 
 async function findGroupingForUpdate(
@@ -1945,6 +1976,7 @@ function toBranchDto(branch: LoadedBranch) {
 function toChildDto(child: LoadedChild, group: LoadedGrouping): RouteGroupingChildDto {
   const snapshot = readChildSnapshot(child.snapshot);
   const stops = currentChildAssignments(group, child).map(toAssignmentDto);
+  const childRouteMetrics = readChildRouteMetrics(child, group);
   return {
     childVersion: child.version,
     color: snapshot.color ?? null,
@@ -1953,12 +1985,47 @@ function toChildDto(child: LoadedChild, group: LoadedGrouping): RouteGroupingChi
     driverName: child.driver?.displayName ?? child.routePlan?.driver?.displayName ?? null,
     notificationStatus: normalizeNotificationStatus(child.notificationStatus),
     orderIds: stops.map((stop) => stop.orderId),
-    routePlan: child.routePlan === null ? null : toMinimalRoutePlanSummary(child.routePlan),
+    routeMetrics: childRouteMetrics,
+    routePlan: child.routePlan === null ? null : toMinimalRoutePlanSummary(child.routePlan, childRouteMetrics),
     routePlanId: child.routePlanId,
     routeIdx: snapshot.routeIdx ?? null,
     sortOrder: snapshot.sortOrder ?? null,
     stops,
     stopsCount: stops.length
+  };
+}
+
+function readChildRouteMetrics(child: LoadedChild, group: LoadedGrouping): RoutePlanRouteMetrics | null {
+  if (child.routePlan === null) return null;
+  const depot = readDepotFromShop(group);
+  if (depot === null) return null;
+
+  const detail = buildChildRouteDetail({
+    assignments: currentChildAssignments(group, child),
+    depot,
+    driverId: child.driverId,
+    group,
+    name: child.routePlan.name
+  });
+
+  return readChildRouteMetricsFromRoutePlan(child.routePlan, detail);
+}
+
+function readChildRouteMetricsFromRoutePlan(routePlan: NonNullable<LoadedChild['routePlan']>, detail: RoutePlanDetail): RoutePlanRouteMetrics | null {
+  const caches = routePlan.routeGeometryCaches as RouteGeometryCacheSummaryRecord[] | undefined;
+  if (caches === undefined || caches.length === 0) return null;
+
+  const shapeSignature = computeRouteShapeSignature(detail);
+  const cache = caches.find((entry) => entry.shapeSignature === shapeSignature) ?? caches[0] ?? null;
+  return applyCachedRouteGeometry(detail, toRouteGeometrySummaryCacheRead(cache)).routeMetrics;
+}
+
+function toRouteGeometrySummaryCacheRead(record: RouteGeometryCacheSummaryRecord | null): RouteGeometryCacheRead | null {
+  if (record === null) return null;
+  return {
+    ...record,
+    geometry: null,
+    stopPoints: []
   };
 }
 
@@ -1982,7 +2049,7 @@ function toGroupingSwitchRoutes(group: LoadedGrouping, currentChildren: LoadedCh
   return routes;
 }
 
-function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan']>) {
+function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan']>, routeMetrics: RoutePlanRouteMetrics | null) {
   return {
     createdAt: routePlan.createdAt.toISOString(),
     deliveryAreas: [],
@@ -1995,6 +2062,7 @@ function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan
     name: routePlan.name,
     planDate: formatDateOnly(routePlan.planDate) ?? '',
     routeEndMode: DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE,
+    routeMetrics,
     status: routePlan.status,
     stopsCount: routePlan.routeStops.length,
     updatedAt: routePlan.updatedAt.toISOString()

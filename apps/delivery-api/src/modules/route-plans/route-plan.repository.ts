@@ -34,6 +34,7 @@ import type {
   UpdateRoutePlanOptionsInput,
   UpdateRoutePlanStopsInput,
   RoutePlanShippingAddressInput,
+  RoutePlanRouteMetrics,
   RoutePlanRouteScopeInput,
   RoutePlanSummary
 } from './route-plan.types.js';
@@ -64,6 +65,7 @@ type RoutePlanGeometryCacheRecord = {
   stopPoints: unknown;
 };
 
+type RoutePlanGeometryCacheSummaryRecord = Omit<RoutePlanGeometryCacheRecord, 'geometry' | 'stopPoints'>;
 type RoutePlanGeometryCacheMetadataRecord = Omit<RoutePlanGeometryCacheRecord, 'geometry' | 'metrics' | 'stopPoints'>;
 
 type RoutePlanRecord = {
@@ -78,6 +80,7 @@ type RoutePlanRecord = {
   metrics: unknown;
   name: string;
   planDate: Date;
+  routeGeometryCaches?: RoutePlanGeometryCacheSummaryRecord[];
   routeGroupingChildVersions?: RouteGroupingChildVersionRecord[];
   routeStops?: RoutePlanStopRecord[];
   status: string;
@@ -1305,7 +1308,7 @@ function parseExpectedRoutePlanUpdatedAt(value: string): Date {
 
 function toRoutePlanDetail(record: RoutePlanRecord): RoutePlanDetail {
   return {
-    routePlan: toRoutePlanSummary(record),
+    routePlan: toRoutePlanSummary(record, undefined, { includeRouteMetrics: false }),
     routeGeometry: null,
     routeMetrics: null,
     routeStopPoints: [],
@@ -1339,6 +1342,19 @@ async function applyRouteGeometryCache(
     where: { routePlanId: detail.routePlan.id }
   });
   return applyCachedRouteGeometry(detail, toStaleRouteGeometryCacheRead(latest));
+}
+
+function routeGeometryCacheSummarySelect() {
+  return {
+    generatedAt: true,
+    geometry: false,
+    metrics: true,
+    provider: true,
+    providerVersion: true,
+    shapeSignature: true,
+    source: true,
+    stopPoints: false
+  } as const;
 }
 
 function routeGeometryCacheSelect() {
@@ -1778,6 +1794,10 @@ function routePlanSummaryInclude() {
       },
       take: 1
     },
+    routeGeometryCaches: {
+      orderBy: { generatedAt: 'desc' as const },
+      select: routeGeometryCacheSummarySelect()
+    },
     routeStops: {
       include: {
         deliveryStop: {
@@ -1938,8 +1958,13 @@ function toDeliveryStopWrite(
   };
 }
 
-function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanOrderInput[]): RoutePlanSummary {
+type RoutePlanSummaryOptions = {
+  includeRouteMetrics?: boolean;
+};
+
+function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanOrderInput[], options: RoutePlanSummaryOptions = {}): RoutePlanSummary {
   const metrics = readMetrics(routePlan.metrics, inputOrders, routePlan.routeStops ?? []);
+  const routeMetrics = options.includeRouteMetrics === false ? null : readRoutePlanSummaryMetrics(routePlan);
   const itemSummary = aggregateOrderItems(
     inputOrders === undefined
       ? routeItemDtosFromRouteStops(routePlan.routeStops ?? [])
@@ -1965,9 +1990,30 @@ function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanO
     planDate: formatDateOnly(routePlan.planDate),
     routeEndMode: readRouteEndMode(routePlan.constraints),
     routeGroupingChild: toRouteGroupingChildSummary(routePlan.routeGroupingChildVersions),
+    routeMetrics,
     status: routePlan.status,
     stopsCount: metrics.stopsCount,
     updatedAt: routePlan.updatedAt.toISOString()
+  };
+}
+
+function readRoutePlanSummaryMetrics(routePlan: RoutePlanRecord): RoutePlanRouteMetrics | null {
+  const caches = routePlan.routeGeometryCaches ?? [];
+  if (caches.length === 0) return null;
+
+  const detail = toRoutePlanDetail(routePlan);
+  const shapeSignature = computeRouteShapeSignature(detail);
+  const cache = caches.find((entry) => entry.shapeSignature === shapeSignature) ?? caches[0] ?? null;
+
+  return applyCachedRouteGeometry(detail, toSummaryRouteGeometryCacheRead(cache)).routeMetrics;
+}
+
+function toSummaryRouteGeometryCacheRead(record: RoutePlanGeometryCacheSummaryRecord | null): RouteGeometryCacheRead | null {
+  if (record === null) return null;
+  return {
+    ...record,
+    geometry: null,
+    stopPoints: []
   };
 }
 

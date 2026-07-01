@@ -112,6 +112,7 @@ export type RoutePlanSummary = {
     status: string;
     version: number;
   } | null;
+  routeMetrics?: RoutePlanRouteMetrics | null;
   status: string;
   stopsCount: number;
   updatedAt: string;

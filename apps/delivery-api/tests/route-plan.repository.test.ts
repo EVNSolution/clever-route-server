@@ -1,4 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { PrismaRoutePlanRepository } from '../src/modules/route-plans/route-plan.repository.js';
 import {
@@ -1359,6 +1361,26 @@ describe('PrismaRoutePlanRepository', () => {
     });
     expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalled();
     expect(prisma.routePlan.delete).not.toHaveBeenCalled();
+  });
+
+  test('list summaries expose fresh OSRM route metrics without loading geometry payloads', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-plans/route-plan.repository.ts'), 'utf8');
+    const types = readFileSync(join(process.cwd(), 'src/modules/route-plans/route-plan.types.ts'), 'utf8');
+
+    expect(types).toContain('routeMetrics?: RoutePlanRouteMetrics | null');
+    expect(source).toContain('routeGeometryCaches: {');
+    expect(source).toContain('select: routeGeometryCacheSummarySelect()');
+    expect(source).toContain('function readRoutePlanSummaryMetrics(routePlan: RoutePlanRecord): RoutePlanRouteMetrics | null');
+    expect(source).toContain('readRoutePlanSummaryMetrics(routePlan)');
+    expect(source).toContain('routeMetrics,');
+    expect(source).toContain('const detail = toRoutePlanDetail(routePlan)');
+    expect(source).toContain('applyCachedRouteGeometry(detail, toSummaryRouteGeometryCacheRead(cache))');
+    const summarySelectBody = source.slice(
+      source.indexOf('function routeGeometryCacheSummarySelect()'),
+      source.indexOf('function routeGeometryCacheSelect()')
+    );
+    expect(summarySelectBody).not.toContain('geometry: true,');
+    expect(summarySelectBody).not.toContain('stopPoints: true,');
   });
 });
 
