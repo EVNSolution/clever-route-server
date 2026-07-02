@@ -256,6 +256,20 @@ describe('route grouping contracts', () => {
     expect(saveDraftBody).not.toContain('routeBranchId');
   });
 
+  test('lets draft save remove omitted route group orders', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const start = source.indexOf('async saveDraft(');
+    const end = source.indexOf('async savePolygons(', start);
+    const saveDraftBody = source.slice(start, end);
+
+    expect(saveDraftBody).not.toContain('existingOrders.length !== submittedOrderIds.length');
+    expect(saveDraftBody).toContain('const removeOrderIds = existingOrders.map((order) => order.orderId).filter((orderId) => !submittedOrderIdSet.has(orderId))');
+    expect(saveDraftBody).toContain('await deleteBranchOrderLocks(tx, group, undefined, removeOrderIds)');
+    expect(saveDraftBody).toContain('await tx.routeGroupingOrder.deleteMany({ where: { groupingId: group.id, orderId: { in: removeOrderIds } } })');
+    expect(saveDraftBody).toContain('addOrderIds: []');
+    expect(saveDraftBody).toContain('removeOrderIds,');
+  });
+
   test('uses numbered child route names before dispatch', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain("assignment.assignmentStatus === 'ASSIGNED' ? assignment.assignedDriverId : null");

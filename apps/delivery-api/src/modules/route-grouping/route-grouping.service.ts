@@ -522,8 +522,22 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         where: { groupingId: group.id, shopId: group.shopId }
       });
       const existingOrderIds = new Set(existingOrders.map((order) => order.orderId));
-      if (existingOrders.length !== submittedOrderIds.length || submittedOrderIds.some((orderId) => !existingOrderIds.has(orderId))) {
+      if (submittedOrderIds.some((orderId) => !existingOrderIds.has(orderId))) {
         throw new RouteGroupingValidationError(['route draft must include every current route group order exactly once']);
+      }
+      const submittedOrderIdSet = new Set(submittedOrderIds);
+      const removeOrderIds = existingOrders.map((order) => order.orderId).filter((orderId) => !submittedOrderIdSet.has(orderId));
+      if (removeOrderIds.length > 0) {
+        await deleteBranchOrderLocks(tx, group, undefined, removeOrderIds);
+        await tx.routeGroupingOrder.deleteMany({ where: { groupingId: group.id, orderId: { in: removeOrderIds } } });
+        await syncRouteGroupingInventoryOrders(tx, {
+          actor: ROUTE_GROUPING_INVENTORY_ACTOR,
+          addOrderIds: [],
+          groupingId: group.id,
+          name: group.name,
+          removeOrderIds,
+          shopId: group.shopId
+        });
       }
 
       const currentChildren = loaded.childVersions.filter((child) => child.status === 'CURRENT');
