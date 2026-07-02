@@ -1479,7 +1479,6 @@ function validateCreateFacts(input: { dateRange: GroupingDateRange; facts: Deliv
     if (deliveryDate !== null && (deliveryDate < input.dateRange.startText || deliveryDate > input.dateRange.endText)) {
       blockers.push('selected orders must fall within grouping date range');
     }
-    if (isPickupService(fact.serviceType)) blockers.push('pickup orders cannot be grouped into driver delivery routes');
     const stop = fact.order.deliveryStops[0];
     if (stop === undefined) blockers.push('selected orders must have delivery stops');
     if (decimalNumber(stop?.latitude) === null || decimalNumber(stop?.longitude) === null) blockers.push('selected orders must have coordinates');
@@ -2360,8 +2359,4 @@ function isValidLatitude(value: number | null): value is number {
 
 function isValidLongitude(value: number | null): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= -180 && value <= 180;
-}
-
-function isPickupService(value: string | null): boolean {
-  return value?.toLowerCase().includes('pickup') ?? false;
 }

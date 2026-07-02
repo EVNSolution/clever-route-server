@@ -107,6 +107,16 @@ describe('route grouping contracts', () => {
     expect(source).toContain('const routePlan = await createChildRoutePlan(tx, loaded, numberedCandidate, input.actor)');
   });
 
+  test('allows pickup facts through shared route group create/add validation', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const validatorBody = source.slice(source.indexOf('function validateCreateFacts'), source.indexOf('async function recomputeAssignments'));
+
+    expect(source).toContain('const blockers = validateCreateFacts({ dateRange, facts, orderIds });');
+    expect(source).toContain('const blockers = validateCreateFacts({ dateRange: loadedGroupDateRange(group), facts, orderIds: newOrderIds });');
+    expect(validatorBody).not.toContain('pickup orders cannot be grouped into driver delivery routes');
+    expect(validatorBody).not.toContain('isPickupService');
+  });
+
   test('defaults generated route groups to loop back to the depot', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain("const DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE = 'RETURN_TO_DEPOT'");
