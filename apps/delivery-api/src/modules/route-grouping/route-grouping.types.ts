@@ -89,6 +89,7 @@ export type RouteGroupingSummaryDto = {
   dateRangeStart: string;
   displayStatus: RouteGroupingDisplayStatus;
   id: string;
+  linkedInventoryId: string | null;
   name: string;
   planDate: string;
   status: string;

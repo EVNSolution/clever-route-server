@@ -1284,6 +1284,7 @@ function groupingInclude() {
       },
       orderBy: { sourceSequence: 'asc' as const }
     },
+    inventory: { select: { id: true } },
     polygons: { orderBy: { drawOrder: 'asc' as const } },
     shop: true,
     versions: { orderBy: { version: 'desc' as const } }
@@ -2034,6 +2035,7 @@ function toGroupingSummaryDto(group: LoadedGrouping): RouteGroupingSummaryDto {
     dateRangeStart: dateRange.startText,
     displayStatus: deriveGroupingDisplayStatus(group),
     id: group.id,
+    linkedInventoryId: group.inventory?.id ?? null,
     name: group.name,
     planDate: formatDateOnly(group.planDate) ?? '',
     status: group.status,

@@ -125,6 +125,83 @@ describe('inventory service route-group follower behavior', () => {
     expect(detail?.orders[0]?.recipientName).toBe('Raw Payload Recipient');
   });
 
+  test('hydrates order-view route fields from the linked route group', async () => {
+    const service = new PrismaInventoryService({
+      inventory: {
+        findFirst: vi.fn(() => ({
+          createdAt: new Date('2026-07-02T00:00:00Z'),
+          events: [],
+          id: 'inventory-1',
+          name: 'Thu 07/02 orders',
+          note: null,
+          orders: [{
+            order: {
+              currencyCode: 'CAD',
+              deliveryFacts: [],
+              deliveryStops: [{
+                address1: '200 Church St',
+                address2: null,
+                city: 'Markham',
+                countryCode: 'CA',
+                phone: '555-0101',
+                postalCode: 'L3P 2M7',
+                province: 'Ontario',
+                recipientName: 'Lee Hana'
+              }],
+              financialStatus: 'PAID',
+              name: '#1001',
+              orderItems: [{ id: 'item-1', name: 'Kimchi', options: [], productId: 1, quantity: 2, sku: null, variationId: 0 }],
+              phone: null,
+              processedAt: new Date('2026-07-01T12:00:00Z'),
+              rawPayload: {},
+              shippingAddress: null,
+              totalPriceAmount: '42.00'
+            },
+            orderId: 'order-1'
+          }],
+          routeGrouping: {
+            childVersions: [{
+              driver: { displayName: 'Driver One', id: 'driver-1', phone: '555-driver' },
+              routePlan: {
+                constraints: { departureTime: '09:00' },
+                driver: null,
+                id: 'route-1',
+                name: 'Route A',
+                routeStops: [{
+                  deliveryStop: { orderId: 'order-1', serviceMinutes: 7 },
+                  durationFromPreviousSeconds: 600,
+                  estimatedArrivalAt: new Date('2026-07-02T09:15:00Z'),
+                  sequence: 1
+                }]
+              },
+              status: 'CURRENT'
+            }]
+          },
+          routeGroupingId: 'group-1',
+          updatedAt: new Date('2026-07-02T00:00:00Z')
+        }))
+      },
+      shop: { findUnique: vi.fn(() => ({ id: 'shop-1' })) }
+    } as never);
+
+    const detail = await service.getInventoryOrderView({ appId: 'clever-route-dev', inventoryId: 'inventory-1', shopDomain: 'example.myshopify.com' });
+
+    expect(detail?.linkedRoutes[0]).toEqual(expect.objectContaining({
+      driverName: 'Driver One',
+      name: 'Route A',
+      startTime: '09:00'
+    }));
+    expect(detail?.orders[0]).toEqual(expect.objectContaining({
+      address: '200 Church St, Markham, Ontario, L3P 2M7, CA',
+      driveTimeMinutes: 10,
+      eta: '09:15',
+      financialStatus: 'PAID',
+      phone: '555-0101',
+      stopTimeMinutes: 7,
+      totalPriceAmount: '42.00'
+    }));
+  });
+
   test('creates a missing linked inventory from full current route-group membership', async () => {
     const createdInventoryOrders: unknown[] = [];
     const tx = {

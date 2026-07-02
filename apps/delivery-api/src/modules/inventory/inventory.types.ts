@@ -10,13 +10,40 @@ export type InventoryChangeItemDto = OrderItemDto & {
 };
 
 export type InventoryOrderDto = {
+  address: string | null;
+  currencyCode: string | null;
   deliveryDate: string | null;
+  driveTimeMinutes?: number | null;
+  eta?: string | null;
+  financialStatus: string | null;
   id: string;
   items: OrderItemDto[];
   name: string;
   orderDateLocal: string | null;
+  paymentStatus: string | null;
+  phone: string | null;
   processedAt: string | null;
   recipientName: string | null;
+  routeStop?: InventoryRouteStopDto | null;
+  stopTimeMinutes?: number | null;
+  totalPriceAmount: string | null;
+};
+
+export type InventoryRouteStopDto = {
+  driveTimeMinutes: number | null;
+  eta: string | null;
+  orderId: string;
+  sequence: number;
+  stopTimeMinutes: number | null;
+};
+
+export type InventoryLinkedRouteDto = {
+  driver: { displayName: string; id: string; phone: string | null } | null;
+  driverName: string | null;
+  id: string;
+  name: string;
+  startTime: string | null;
+  stops: InventoryRouteStopDto[];
 };
 
 export type InventoryDto = {
@@ -24,6 +51,7 @@ export type InventoryDto = {
   id: string;
   itemSummary: RouteItemSummary;
   lastChange: InventoryChangeItemDto[];
+  linkedRoutes: InventoryLinkedRouteDto[];
   name: string;
   note: string | null;
   orderIds: string[];
@@ -55,6 +83,7 @@ export type InventoryService = {
   createInventory(input: CreateInventoryInput): Promise<InventoryDto>;
   deleteInventory(input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<{ deleted: boolean; inventoryId: string }>;
   getInventory(input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<InventoryDto | null>;
+  getInventoryOrderView(input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<InventoryDto | null>;
   listInventories(input: { appId?: string | undefined; shopDomain: string }): Promise<InventoryDto[]>;
   updateInventoryOrders(input: UpdateInventoryOrdersInput): Promise<InventoryDto | null>;
 };

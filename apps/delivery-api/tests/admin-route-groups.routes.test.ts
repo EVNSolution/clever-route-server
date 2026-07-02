@@ -13,6 +13,7 @@ const routeGroup = {
   dateRangeStart: '2026-06-25',
   displayStatus: 'DRAFT' as const,
   id: 'route-group-id',
+  linkedInventoryId: 'inventory-id',
   name: 'June delivery group',
   planDate: '2026-06-25',
   polygons: [],

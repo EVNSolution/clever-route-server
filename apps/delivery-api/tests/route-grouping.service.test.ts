@@ -51,8 +51,12 @@ describe('route grouping contracts', () => {
     expect(routeGroupBody).toContain('inventory');
 
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const types = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.types.ts'), 'utf8');
     expect(source).toContain('createRouteGroupingInventory(tx');
     expect(source).toContain('syncRouteGroupingInventoryOrders(tx');
+    expect(source).toContain('inventory: { select: { id: true } }');
+    expect(source).toContain('linkedInventoryId: group.inventory?.id ?? null');
+    expect(types).toContain('linkedInventoryId: string | null');
     expect(source).toContain('await recomputeAssignments(tx, group.id)');
     expect(source).not.toContain('syncRouteGroupingInventoryOrders(tx, input.branch');
   });
