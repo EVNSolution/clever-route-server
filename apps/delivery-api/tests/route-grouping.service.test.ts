@@ -264,6 +264,15 @@ describe('route grouping contracts', () => {
     expect(source).not.toContain('return `${group.name} — ${driverName}`');
   });
 
+  test('hard-deletes linked inventory when deleting a route group', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const deleteBody = source.slice(source.indexOf('async deleteGrouping'), source.indexOf('async listGroupings'));
+
+    expect(deleteBody).toContain('tx.inventory.deleteMany');
+    expect(deleteBody).toContain('where: { routeGroupingId: group.id, shopId: group.shopId }');
+    expect(deleteBody.indexOf('tx.inventory.deleteMany')).toBeLessThan(deleteBody.indexOf('tx.routeGrouping.delete'));
+  });
+
   test('keeps route group deletion free of child-route status blockers', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).not.toContain('child route status no longer allows delete');

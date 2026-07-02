@@ -202,6 +202,72 @@ describe('inventory service route-group follower behavior', () => {
     }));
   });
 
+  test('returns linked inventory order-view rows in route delivery order', async () => {
+    const inventoryOrder = (orderId: string, name: string) => ({
+      order: {
+        currencyCode: 'CAD',
+        deliveryFacts: [],
+        deliveryStops: [],
+        financialStatus: 'PAID',
+        name,
+        orderItems: [],
+        phone: null,
+        processedAt: null,
+        rawPayload: {},
+        shippingAddress: null,
+        totalPriceAmount: '10.00'
+      },
+      orderId
+    });
+    const routeStop = (orderId: string, sequence: number) => ({
+      deliveryStop: { orderId, serviceMinutes: 5 },
+      durationFromPreviousSeconds: sequence * 60,
+      estimatedArrivalAt: new Date(`2026-07-02T09:0${sequence}:00Z`),
+      sequence
+    });
+    const service = new PrismaInventoryService({
+      inventory: {
+        findFirst: vi.fn(() => ({
+          createdAt: new Date('2026-07-02T00:00:00Z'),
+          events: [],
+          id: 'inventory-1',
+          name: 'Route group inventory',
+          note: null,
+          orders: [
+            inventoryOrder('order-2', '#1002'),
+            inventoryOrder('order-unassigned', '#9999'),
+            inventoryOrder('order-1', '#1001')
+          ],
+          routeGrouping: {
+            childVersions: [
+              {
+                driver: null,
+                routePlan: { constraints: {}, driver: null, id: 'route-b', name: 'Route B', routeStops: [routeStop('order-2', 1)] },
+                snapshot: { routeIdx: 2, sortOrder: 2 },
+                status: 'CURRENT'
+              },
+              {
+                driver: null,
+                routePlan: { constraints: {}, driver: null, id: 'route-a', name: 'Route A', routeStops: [routeStop('order-1', 1)] },
+                snapshot: { routeIdx: 1, sortOrder: 1 },
+                status: 'CURRENT'
+              }
+            ]
+          },
+          routeGroupingId: 'group-1',
+          updatedAt: new Date('2026-07-02T00:00:00Z')
+        }))
+      },
+      shop: { findUnique: vi.fn(() => ({ id: 'shop-1' })) }
+    } as never);
+
+    const detail = await service.getInventoryOrderView({ appId: 'clever-route-dev', inventoryId: 'inventory-1', shopDomain: 'example.myshopify.com' });
+
+    expect(detail?.linkedRoutes.map((route) => route.name)).toEqual(['Route A', 'Route B']);
+    expect(detail?.orders.map((order) => order.id)).toEqual(['order-1', 'order-2', 'order-unassigned']);
+    expect(detail?.orders.map((order) => order.routeStop?.sequence ?? null)).toEqual([1, 1, null]);
+  });
+
   test('creates a missing linked inventory from full current route-group membership', async () => {
     const createdInventoryOrders: unknown[] = [];
     const tx = {

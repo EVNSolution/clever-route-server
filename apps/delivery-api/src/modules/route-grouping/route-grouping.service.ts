@@ -320,6 +320,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         await tx.routePlanStop.deleteMany({ where: { routePlanId: { in: childRoutePlanIds } } });
         await tx.routePlan.deleteMany({ where: { id: { in: childRoutePlanIds }, shopId: group.shopId } });
       }
+      await tx.inventory.deleteMany({ where: { routeGroupingId: group.id, shopId: group.shopId } });
       await tx.routeGrouping.delete({ where: { id: group.id } });
       return { deleted: true, deletedChildRoutePlanCount: childRoutePlanIds.length, groupingId: input.groupingId };
     });
