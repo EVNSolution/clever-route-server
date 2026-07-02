@@ -1,9 +1,9 @@
-import type { Prisma, PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 
 import { aggregateOrderItems, toOrderItemDto, type OrderItemDto } from '../order-items/order-items.js';
 import { mapShopifyLineItemsToOrderItems } from '../shopify/order-sync.mapper.js';
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
-import { InventoryValidationError, type CreateInventoryInput, type InventoryChangeItemDto, type InventoryDto, type InventoryService, type UpdateInventoryOrdersInput } from './inventory.types.js';
+import { InventoryValidationError, type CreateInventoryInput, type InventoryChangeItemDto, type InventoryDto, type InventoryLinkedRouteDto, type InventoryRouteStopDto, type InventoryService, type UpdateInventoryOrdersInput } from './inventory.types.js';
 
 type InventoryPrismaClient = Pick<
   PrismaClient,
@@ -14,7 +14,8 @@ type InventoryBaseWriteClient = Pick<PrismaClient, 'inventory' | 'inventoryEvent
 type InventoryWriteClient = InventoryBaseWriteClient & Pick<PrismaClient, 'routeGroupingOrder'>;
 type LoadedDetailInventory = Prisma.InventoryGetPayload<{ include: ReturnType<typeof inventoryDetailInclude> }>;
 type LoadedListInventory = Prisma.InventoryGetPayload<{ include: ReturnType<typeof inventoryListInclude> }>;
-type LoadedInventory = LoadedDetailInventory | LoadedListInventory;
+type LoadedOrderViewInventory = Prisma.InventoryGetPayload<{ include: ReturnType<typeof inventoryOrderViewInclude> }>;
+type LoadedInventory = LoadedDetailInventory | LoadedListInventory | LoadedOrderViewInventory;
 type LoadedInventoryEvent = LoadedDetailInventory['events'][number] | LoadedListInventory['events'][number];
 type LoadedOrder = Prisma.OrderGetPayload<{ include: { orderItems: true } }>;
 type InventoryOrderRecord = LoadedDetailInventory['orders'][number]['order'] | LoadedListInventory['orders'][number]['order'];
@@ -63,11 +64,20 @@ export class PrismaInventoryService implements InventoryService {
     return inventory === null ? null : toInventoryDto(inventory);
   }
 
+  async getInventoryOrderView(input: { appId?: string | undefined; inventoryId: string; shopDomain: string }): Promise<InventoryDto | null> {
+    const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
+    if (shop === null) return null;
+    const inventory = await this.prisma.inventory.findFirst({ include: inventoryOrderViewInclude(), where: { id: input.inventoryId, shopId: shop.id } });
+    if (inventory === null) return null;
+    const routeView = buildInventoryRouteView(inventory);
+    return toInventoryDto(inventory, routeView);
+  }
+
   async listInventories(input: { appId?: string | undefined; shopDomain: string }): Promise<InventoryDto[]> {
     const shop = await this.prisma.shop.findUnique({ select: { id: true }, where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }) });
     if (shop === null) return [];
     const inventories = await this.prisma.inventory.findMany({ include: inventoryListInclude(), orderBy: { createdAt: 'desc' }, where: { shopId: shop.id } });
-    return inventories.map(toInventoryDto);
+    return inventories.map((inventory) => toInventoryDto(inventory));
   }
 
   async updateInventoryOrders(input: UpdateInventoryOrdersInput): Promise<InventoryDto | null> {
@@ -200,12 +210,37 @@ function inventoryDetailInclude() {
         order: {
           include: {
             deliveryFacts: { orderBy: { computedAt: 'desc' as const }, select: { deliveryDate: true }, take: 1 },
-            deliveryStops: { select: { recipientName: true }, take: 1 },
+            deliveryStops: { select: inventoryDeliveryStopSelect(), take: 1 },
             orderItems: { orderBy: { lineIndex: 'asc' as const } }
           }
         }
       },
       orderBy: { createdAt: 'asc' as const }
+    }
+  } satisfies Prisma.InventoryInclude;
+}
+
+function inventoryOrderViewInclude() {
+  return {
+    ...inventoryDetailInclude(),
+    routeGrouping: {
+      include: {
+        childVersions: {
+          include: {
+            driver: true,
+            routePlan: {
+              include: {
+                driver: true,
+                routeStops: {
+                  include: { deliveryStop: { select: { orderId: true, serviceMinutes: true } } },
+                  orderBy: { sequence: 'asc' as const }
+                }
+              }
+            }
+          },
+          orderBy: [{ version: 'desc' as const }, { createdAt: 'desc' as const }]
+        }
+      }
     }
   } satisfies Prisma.InventoryInclude;
 }
@@ -225,6 +260,19 @@ function inventoryListInclude() {
       orderBy: { createdAt: 'asc' as const }
     }
   } satisfies Prisma.InventoryInclude;
+}
+
+function inventoryDeliveryStopSelect() {
+  return {
+    address1: true,
+    address2: true,
+    city: true,
+    countryCode: true,
+    phone: true,
+    postalCode: true,
+    province: true,
+    recipientName: true
+  } satisfies Prisma.DeliveryStopSelect;
 }
 
 async function addInventoryOrders(tx: InventoryBaseWriteClient, shopId: string, inventoryId: string, orderIds: string[], actor: string): Promise<void> {
@@ -278,7 +326,10 @@ async function createInventoryEvents(tx: InventoryBaseWriteClient, shopId: strin
   if (data.length > 0) await tx.inventoryEvent.createMany({ data });
 }
 
-function toInventoryDto(inventory: LoadedInventory): InventoryDto {
+function toInventoryDto(
+  inventory: LoadedInventory,
+  routeView: { linkedRoutes: InventoryLinkedRouteDto[]; routeStopsByOrderId: Map<string, InventoryRouteStopDto> } = { linkedRoutes: [], routeStopsByOrderId: new Map() }
+): InventoryDto {
   const orderIds = inventory.orders.map((entry) => entry.orderId);
   const items = inventory.orders.flatMap((entry) => getInventoryOrderItems(entry.order));
   return {
@@ -286,27 +337,109 @@ function toInventoryDto(inventory: LoadedInventory): InventoryDto {
     id: inventory.id,
     itemSummary: aggregateOrderItems(items),
     lastChange: inventory.events.map(toChangeItemDto),
+    linkedRoutes: routeView.linkedRoutes,
     name: inventory.name,
     note: inventory.note,
     orderIds,
-    orders: inventory.orders.map((entry) => toInventoryOrderDto(entry.orderId, entry.order)),
+    orders: inventory.orders.map((entry) => toInventoryOrderDto(entry.orderId, entry.order, routeView.routeStopsByOrderId.get(entry.orderId) ?? null)),
     ordersCount: orderIds.length,
     routeGroupingId: inventory.routeGroupingId,
     updatedAt: inventory.updatedAt.toISOString()
   };
 }
 
-function toInventoryOrderDto(orderId: string, order: InventoryOrderRecord): InventoryDto['orders'][number] {
+function toInventoryOrderDto(orderId: string, order: InventoryOrderRecord, routeStop: InventoryRouteStopDto | null = null): InventoryDto['orders'][number] {
   const raw = asRecord(order.rawPayload);
   return {
+    address: formatInventoryAddress(order),
+    currencyCode: order.currencyCode ?? null,
     deliveryDate: formatDateOnly(order.deliveryFacts[0]?.deliveryDate ?? null) ?? readDateString(raw?.deliveryDate),
+    driveTimeMinutes: routeStop?.driveTimeMinutes ?? null,
+    eta: routeStop?.eta ?? null,
+    financialStatus: order.financialStatus ?? null,
     id: orderId,
     items: getInventoryOrderItems(order),
     name: order.name,
     orderDateLocal: readDateString(raw?.orderDateLocal),
+    paymentStatus: order.financialStatus ?? null,
+    phone: readInventoryPhone(order),
     processedAt: formatDateOnly(order.processedAt),
-    recipientName: readInventoryRecipientName(order)
+    recipientName: readInventoryRecipientName(order),
+    routeStop,
+    stopTimeMinutes: routeStop?.stopTimeMinutes ?? null,
+    totalPriceAmount: stringOrNull(order.totalPriceAmount)
   };
+}
+
+function buildInventoryRouteView(inventory: LoadedOrderViewInventory): { linkedRoutes: InventoryLinkedRouteDto[]; routeStopsByOrderId: Map<string, InventoryRouteStopDto> } {
+  const routeStopsByOrderId = new Map<string, InventoryRouteStopDto>();
+  const currentChildren = (inventory.routeGrouping?.childVersions ?? []).filter((child) => child.status === 'CURRENT' && child.routePlan !== null);
+  const linkedRoutes = currentChildren.map((child) => {
+    const routePlan = child.routePlan;
+    if (routePlan === null) throw new Error('unreachable');
+    const stops = routePlan.routeStops.flatMap((stop) => {
+      const routeStop = toInventoryRouteStopDto(stop);
+      if (routeStop === null) return [];
+      routeStopsByOrderId.set(routeStop.orderId, routeStop);
+      return [routeStop];
+    });
+    return {
+      driver: toInventoryRouteDriver(child.driver ?? routePlan.driver),
+      driverName: child.driver?.displayName ?? routePlan.driver?.displayName ?? null,
+      id: routePlan.id,
+      name: routePlan.name,
+      startTime: readDepartureTime(routePlan.constraints),
+      stops
+    };
+  });
+
+  return { linkedRoutes, routeStopsByOrderId };
+}
+
+function toInventoryRouteStopDto(stop: {
+  deliveryStop: { orderId: string; serviceMinutes: number };
+  durationFromPreviousSeconds: number | null;
+  estimatedArrivalAt: Date | null;
+  sequence: number;
+}): InventoryRouteStopDto | null {
+  const orderId = stop.deliveryStop.orderId;
+  if (orderId === null || orderId === undefined) return null;
+  return {
+    driveTimeMinutes: secondsToMinutes(stop.durationFromPreviousSeconds),
+    eta: formatTimeOnly(stop.estimatedArrivalAt),
+    orderId,
+    sequence: stop.sequence,
+    stopTimeMinutes: stop.deliveryStop.serviceMinutes
+  };
+}
+
+function toInventoryRouteDriver(driver: { displayName: string; id: string; phone: string | null } | null): InventoryLinkedRouteDto['driver'] {
+  return driver === null ? null : { displayName: driver.displayName, id: driver.id, phone: driver.phone };
+}
+
+function formatInventoryAddress(order: { deliveryStops?: Array<Record<string, unknown>> | null; rawPayload: unknown; shippingAddress?: unknown }): string | null {
+  const stop = order.deliveryStops?.[0] ?? null;
+  const rawShippingAddress = asRecord(asRecord(order.rawPayload)?.shippingAddress);
+  const normalizedShippingAddress = asRecord(order.shippingAddress);
+  return [
+    readString(stop?.address1) ?? readString(rawShippingAddress?.address1) ?? readString(normalizedShippingAddress?.address1),
+    readString(stop?.address2) ?? readString(rawShippingAddress?.address2) ?? readString(normalizedShippingAddress?.address2),
+    readString(stop?.city) ?? readString(rawShippingAddress?.city) ?? readString(normalizedShippingAddress?.city),
+    readString(stop?.province) ?? readString(rawShippingAddress?.province) ?? readString(rawShippingAddress?.provinceCode) ?? readString(normalizedShippingAddress?.province),
+    readString(stop?.postalCode) ?? readString(rawShippingAddress?.zip) ?? readString(normalizedShippingAddress?.zip),
+    readString(stop?.countryCode) ?? readString(rawShippingAddress?.countryCodeV2) ?? readString(rawShippingAddress?.country) ?? readString(normalizedShippingAddress?.country)
+  ].filter((part): part is string => part !== null).join(', ') || null;
+}
+
+function readInventoryPhone(order: { deliveryStops?: Array<{ phone: string | null }> | null; phone?: string | null; rawPayload: unknown; shippingAddress?: unknown }): string | null {
+  const raw = asRecord(order.rawPayload);
+  const rawShippingAddress = asRecord(raw?.shippingAddress);
+  const normalizedShippingAddress = asRecord(order.shippingAddress);
+  return readString(order.deliveryStops?.[0]?.phone)
+    ?? readString(order.phone)
+    ?? readString(rawShippingAddress?.phone)
+    ?? readString(normalizedShippingAddress?.phone)
+    ?? readString(raw?.phone);
 }
 
 function getInventoryOrderItems(order: InventoryOrderRecord): OrderItemDto[] {
@@ -402,6 +535,10 @@ function formatDateOnly(value: Date | null | undefined): string | null {
   return value instanceof Date ? value.toISOString().slice(0, 10) : null;
 }
 
+function formatTimeOnly(value: Date | null | undefined): string | null {
+  return value instanceof Date ? value.toISOString().slice(11, 16) : null;
+}
+
 function readDateString(value: unknown): string | null {
   const text = normalizeOptionalText(typeof value === 'string' ? value : null);
   return text?.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? null;
@@ -419,6 +556,22 @@ function normalizeOptionalText(value: string | null | undefined): string | null 
   if (value === undefined || value === null) return null;
   const normalized = value.trim();
   return normalized === '' ? null : normalized;
+}
+
+function readDepartureTime(value: unknown): string | null {
+  const record = asRecord(value);
+  const text = readString(record?.departureTime);
+  return text?.match(/^(?:[01]\d|2[0-3]):[0-5]\d$/u) ? text : null;
+}
+
+function secondsToMinutes(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.round(value / 60) : null;
+}
+
+function stringOrNull(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Prisma.Decimal) return value.toString();
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : null;
 }
 
 function normalizeShopDomain(value: string): string {

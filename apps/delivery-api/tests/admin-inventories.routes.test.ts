@@ -15,10 +15,25 @@ const inventory: InventoryDto = {
     totalQuantity: 3
   },
   lastChange: [{ action: 'ADD', createdAt: '2026-06-26T00:00:00.000Z', name: 'Kimchi', options: [], orderId: 'order-1', orderName: '#1001', productId: 1, quantity: 3, quantityDelta: 3, recipientName: 'Lee Hana', sku: null, variationId: 0 }],
+  linkedRoutes: [],
   name: 'Prep batch',
   note: null,
   orderIds: ['order-1'],
-  orders: [{ deliveryDate: '2026-06-25', id: 'order-1', items: [{ name: 'Kimchi', options: [], productId: 1, quantity: 3, sku: null, variationId: 0 }], name: '#1001', orderDateLocal: '2026-06-24', processedAt: '2026-06-24', recipientName: 'Lee Hana' }],
+  orders: [{
+    address: '200 Church St, Markham',
+    currencyCode: 'CAD',
+    deliveryDate: '2026-06-25',
+    financialStatus: 'PAID',
+    id: 'order-1',
+    items: [{ name: 'Kimchi', options: [], productId: 1, quantity: 3, sku: null, variationId: 0 }],
+    name: '#1001',
+    orderDateLocal: '2026-06-24',
+    paymentStatus: 'PAID',
+    phone: '555-0101',
+    processedAt: '2026-06-24',
+    recipientName: 'Lee Hana',
+    totalPriceAmount: '42.00'
+  }],
   ordersCount: 1,
   routeGroupingId: 'route-group-1',
   updatedAt: '2026-06-26T00:00:00.000Z'
@@ -71,6 +86,29 @@ describe('Admin inventory routes', () => {
         appId: 'clever',
         inventoryId: 'inventory-id',
         removeOrderIds: ['order-1'],
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns the dedicated inventory order-view projection', async () => {
+    const { dependencies, getInventoryOrderView } = createDependencyHarness();
+    const app = await buildApp({ adminInventories: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'GET',
+        url: '/admin/inventories/inventory-id/order-view'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ data: { inventory }, error: null });
+      expect(getInventoryOrderView).toHaveBeenCalledWith({
+        appId: 'clever',
+        inventoryId: 'inventory-id',
         shopDomain: 'example.myshopify.com'
       });
     } finally {
@@ -131,6 +169,7 @@ function createDependencyHarness(): {
   createInventory: ReturnType<typeof vi.fn<AdminInventoryDependencies['inventoryService']['createInventory']>>;
   deleteInventory: ReturnType<typeof vi.fn<AdminInventoryDependencies['inventoryService']['deleteInventory']>>;
   dependencies: AdminInventoryDependencies;
+  getInventoryOrderView: ReturnType<typeof vi.fn<AdminInventoryDependencies['inventoryService']['getInventoryOrderView']>>;
   listInventories: ReturnType<typeof vi.fn<AdminInventoryDependencies['inventoryService']['listInventories']>>;
   updateInventoryOrders: ReturnType<typeof vi.fn<AdminInventoryDependencies['inventoryService']['updateInventoryOrders']>>;
 } {
@@ -142,6 +181,7 @@ function createDependencyHarness(): {
   const createInventory = vi.fn<AdminInventoryDependencies['inventoryService']['createInventory']>(() => Promise.resolve(inventory));
   const deleteInventory = vi.fn<AdminInventoryDependencies['inventoryService']['deleteInventory']>(() => Promise.resolve({ deleted: true, inventoryId: 'inventory-id' }));
   const getInventory = vi.fn<AdminInventoryDependencies['inventoryService']['getInventory']>(() => Promise.resolve(inventory));
+  const getInventoryOrderView = vi.fn<AdminInventoryDependencies['inventoryService']['getInventoryOrderView']>(() => Promise.resolve(inventory));
   const listInventories = vi.fn<AdminInventoryDependencies['inventoryService']['listInventories']>(() => Promise.resolve([inventory]));
   const updateInventoryOrders = vi.fn<AdminInventoryDependencies['inventoryService']['updateInventoryOrders']>(() => Promise.resolve(inventory));
 
@@ -153,11 +193,13 @@ function createDependencyHarness(): {
         createInventory,
         deleteInventory,
         getInventory,
+        getInventoryOrderView,
         listInventories,
         updateInventoryOrders
       },
       sessionTokenVerifier: { verify }
     },
+    getInventoryOrderView,
     listInventories,
     updateInventoryOrders
   };

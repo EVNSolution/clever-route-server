@@ -65,6 +65,22 @@ export function registerAdminInventoryRoutes(app: FastifyInstance, dependencies:
     return reply.code(200).send({ data: { inventory }, error: null });
   });
 
+  app.get<{ Params: { inventoryId: string } }>('/admin/inventories/:inventoryId/order-view', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+      log: request.log,
+      surface: 'admin_inventories'
+    });
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+
+    const inventory = await dependencies.inventoryService.getInventoryOrderView({
+      appId: authenticated.appId,
+      inventoryId: request.params.inventoryId,
+      shopDomain: authenticated.shopDomain
+    });
+    if (inventory === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Inventory not found'));
+    return reply.code(200).send({ data: { inventory }, error: null });
+  });
+
   app.patch<{ Body: unknown; Params: { inventoryId: string } }>('/admin/inventories/:inventoryId/orders', async (request, reply) => {
     const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
