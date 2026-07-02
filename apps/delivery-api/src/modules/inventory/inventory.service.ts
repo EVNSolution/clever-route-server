@@ -20,6 +20,11 @@ type LoadedInventoryEvent = LoadedDetailInventory['events'][number] | LoadedList
 type LoadedOrder = Prisma.OrderGetPayload<{ include: { orderItems: true } }>;
 type InventoryOrderRecord = LoadedDetailInventory['orders'][number]['order'] | LoadedListInventory['orders'][number]['order'];
 type InventoryItemRecord = OrderItemDto & { id?: string | null };
+type InventoryRouteView = {
+  linkedRoutes: InventoryLinkedRouteDto[];
+  routeOrderByOrderId: Map<string, number>;
+  routeStopsByOrderId: Map<string, InventoryRouteStopDto>;
+};
 
 export class PrismaInventoryService implements InventoryService {
   constructor(private readonly prisma: InventoryPrismaClient) {}
@@ -328,10 +333,15 @@ async function createInventoryEvents(tx: InventoryBaseWriteClient, shopId: strin
 
 function toInventoryDto(
   inventory: LoadedInventory,
-  routeView: { linkedRoutes: InventoryLinkedRouteDto[]; routeStopsByOrderId: Map<string, InventoryRouteStopDto> } = { linkedRoutes: [], routeStopsByOrderId: new Map() }
+  routeView: InventoryRouteView = { linkedRoutes: [], routeOrderByOrderId: new Map(), routeStopsByOrderId: new Map() }
 ): InventoryDto {
-  const orderIds = inventory.orders.map((entry) => entry.orderId);
-  const items = inventory.orders.flatMap((entry) => getInventoryOrderItems(entry.order));
+  const inventoryOrders = routeView.routeOrderByOrderId.size === 0
+    ? inventory.orders
+    : [...inventory.orders].sort((left, right) =>
+      (routeView.routeOrderByOrderId.get(left.orderId) ?? Number.MAX_SAFE_INTEGER)
+      - (routeView.routeOrderByOrderId.get(right.orderId) ?? Number.MAX_SAFE_INTEGER));
+  const orderIds = inventoryOrders.map((entry) => entry.orderId);
+  const items = inventoryOrders.flatMap((entry) => getInventoryOrderItems(entry.order));
   return {
     createdAt: inventory.createdAt.toISOString(),
     id: inventory.id,
@@ -341,7 +351,7 @@ function toInventoryDto(
     name: inventory.name,
     note: inventory.note,
     orderIds,
-    orders: inventory.orders.map((entry) => toInventoryOrderDto(entry.orderId, entry.order, routeView.routeStopsByOrderId.get(entry.orderId) ?? null)),
+    orders: inventoryOrders.map((entry) => toInventoryOrderDto(entry.orderId, entry.order, routeView.routeStopsByOrderId.get(entry.orderId) ?? null)),
     ordersCount: orderIds.length,
     routeGroupingId: inventory.routeGroupingId,
     updatedAt: inventory.updatedAt.toISOString()
@@ -371,16 +381,24 @@ function toInventoryOrderDto(orderId: string, order: InventoryOrderRecord, route
   };
 }
 
-function buildInventoryRouteView(inventory: LoadedOrderViewInventory): { linkedRoutes: InventoryLinkedRouteDto[]; routeStopsByOrderId: Map<string, InventoryRouteStopDto> } {
+function buildInventoryRouteView(inventory: LoadedOrderViewInventory): InventoryRouteView {
+  const routeOrderByOrderId = new Map<string, number>();
   const routeStopsByOrderId = new Map<string, InventoryRouteStopDto>();
-  const currentChildren = (inventory.routeGrouping?.childVersions ?? []).filter((child) => child.status === 'CURRENT' && child.routePlan !== null);
+  const currentChildren = (inventory.routeGrouping?.childVersions ?? [])
+    .filter((child) => child.status === 'CURRENT' && child.routePlan !== null)
+    .map((child, index) => ({ child, order: readRouteChildOrder(child.snapshot, index + 1) }))
+    .sort((left, right) => left.order - right.order)
+    .map(({ child }) => child);
+  let routeOrder = 0;
   const linkedRoutes = currentChildren.map((child) => {
     const routePlan = child.routePlan;
     if (routePlan === null) throw new Error('unreachable');
-    const stops = routePlan.routeStops.flatMap((stop) => {
+    const stops = [...routePlan.routeStops].sort((left, right) => left.sequence - right.sequence).flatMap((stop) => {
       const routeStop = toInventoryRouteStopDto(stop);
       if (routeStop === null) return [];
+      routeOrderByOrderId.set(routeStop.orderId, routeOrder);
       routeStopsByOrderId.set(routeStop.orderId, routeStop);
+      routeOrder += 1;
       return [routeStop];
     });
     return {
@@ -393,7 +411,16 @@ function buildInventoryRouteView(inventory: LoadedOrderViewInventory): { linkedR
     };
   });
 
-  return { linkedRoutes, routeStopsByOrderId };
+  return { linkedRoutes, routeOrderByOrderId, routeStopsByOrderId };
+}
+
+function readRouteChildOrder(snapshotValue: unknown, fallback: number): number {
+  const snapshot = asRecord(snapshotValue);
+  const sortOrder = snapshot?.sortOrder;
+  const routeIdx = snapshot?.routeIdx;
+  if (typeof sortOrder === 'number' && Number.isFinite(sortOrder)) return sortOrder;
+  if (typeof routeIdx === 'number' && Number.isFinite(routeIdx)) return routeIdx;
+  return fallback;
 }
 
 function toInventoryRouteStopDto(stop: {

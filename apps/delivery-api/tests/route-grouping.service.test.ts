@@ -256,12 +256,35 @@ describe('route grouping contracts', () => {
     expect(saveDraftBody).not.toContain('routeBranchId');
   });
 
+  test('lets draft save remove omitted route group orders', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const start = source.indexOf('async saveDraft(');
+    const end = source.indexOf('async savePolygons(', start);
+    const saveDraftBody = source.slice(start, end);
+
+    expect(saveDraftBody).not.toContain('existingOrders.length !== submittedOrderIds.length');
+    expect(saveDraftBody).toContain('const removeOrderIds = existingOrders.map((order) => order.orderId).filter((orderId) => !submittedOrderIdSet.has(orderId))');
+    expect(saveDraftBody).toContain('await deleteBranchOrderLocks(tx, group, undefined, removeOrderIds)');
+    expect(saveDraftBody).toContain('await tx.routeGroupingOrder.deleteMany({ where: { groupingId: group.id, orderId: { in: removeOrderIds } } })');
+    expect(saveDraftBody).toContain('addOrderIds: []');
+    expect(saveDraftBody).toContain('removeOrderIds,');
+  });
+
   test('uses numbered child route names before dispatch', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain("assignment.assignmentStatus === 'ASSIGNED' ? assignment.assignedDriverId : null");
     expect(source).toContain("assignment.assignmentStatus !== 'ASSIGNED' && assignment.assignmentStatus !== 'UNASSIGNED'");
     expect(source).toContain('name: `#${index + 1}`');
     expect(source).not.toContain('return `${group.name} — ${driverName}`');
+  });
+
+  test('hard-deletes linked inventory when deleting a route group', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const deleteBody = source.slice(source.indexOf('async deleteGrouping'), source.indexOf('async listGroupings'));
+
+    expect(deleteBody).toContain('tx.inventory.deleteMany');
+    expect(deleteBody).toContain('where: { routeGroupingId: group.id, shopId: group.shopId }');
+    expect(deleteBody.indexOf('tx.inventory.deleteMany')).toBeLessThan(deleteBody.indexOf('tx.routeGrouping.delete'));
   });
 
   test('keeps route group deletion free of child-route status blockers', () => {
