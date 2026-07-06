@@ -12,7 +12,8 @@ import {
   BULK_ORDER_STATE_VALUES,
   type BulkOrderPaymentValue,
   type BulkOrderStateValue,
-  type ListCanonicalOrdersFilters
+  type ListCanonicalOrdersFilters,
+  type RouteOpsCanonicalMetadataPatch
 } from '../modules/shopify/order-sync.repository.js';
 import type { ShopifyOrderNode } from '../modules/shopify/order-sync.mapper.js';
 import type { SyncOrdersSnapshotInput, SyncOrdersSnapshotResult } from '../modules/shopify/order-sync.service.js';
@@ -57,6 +58,13 @@ export type AdminOrdersDependencies = {
       shopDomain: string;
       value: BulkOrderPaymentValue | BulkOrderStateValue;
     }): Promise<SyncOrdersSnapshotResult['orders']>;
+    patchCanonicalOrder?(input: {
+      actor: string;
+      appId?: string | undefined;
+      orderId: string;
+      patch: RouteOpsCanonicalMetadataPatch;
+      shopDomain: string;
+    }): Promise<SyncOrdersSnapshotResult['orders'][number] | null>;
   };
   sessionTokenVerifier: AdminSessionTokenVerifier;
 };
@@ -148,6 +156,42 @@ export function registerAdminOrdersRoutes(
       });
 
       return reply.code(200).send({ data: { orders: orders.map(toAdminOrderResponse) }, error: null });
+    }
+  );
+
+  app.patch<{ Body: unknown; Params: { orderId: string } }>(
+    '/admin/orders/:orderId/metadata',
+    async (request, reply) => {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+        log: request.log,
+        surface: 'admin_orders'
+      });
+      if (authenticated.status === 'unauthorized') {
+        return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+      }
+      if (dependencies.orderSyncService.patchCanonicalOrder === undefined) {
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Order metadata editing is not enabled in this runtime.'));
+      }
+
+      let patch: RouteOpsCanonicalMetadataPatch;
+      try {
+        patch = readMetadataPatchPayload(request.body);
+      } catch {
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid order metadata payload'));
+      }
+
+      const order = await dependencies.orderSyncService.patchCanonicalOrder({
+        actor: authenticated.subject,
+        appId: authenticated.appId,
+        orderId: request.params.orderId,
+        patch,
+        shopDomain: authenticated.shopDomain
+      });
+      if (order === null) {
+        return reply.code(404).send(errorResponse('NOT_FOUND', 'Order not found'));
+      }
+
+      return reply.code(200).send({ data: { order: toAdminOrderResponse(order) }, error: null });
     }
   );
 
@@ -320,6 +364,26 @@ function readBulkUpdatePayload(value: unknown): {
   }
 
   return { field, orderIds: [...new Set(orderIds)], value: parsedValue };
+}
+
+function readMetadataPatchPayload(value: unknown): RouteOpsCanonicalMetadataPatch {
+  const object = requireObject(value);
+  const patch: RouteOpsCanonicalMetadataPatch = {};
+
+  if (Object.hasOwn(object, 'deliveryDate')) {
+    const deliveryDate = readNullableString(object.deliveryDate);
+    if (deliveryDate !== null) requireDateOnly(deliveryDate);
+    patch.deliveryDate = deliveryDate;
+  }
+  if (Object.hasOwn(object, 'deliveryArea')) {
+    patch.deliveryArea = readNullableString(object.deliveryArea);
+  }
+
+  if (Object.keys(patch).length === 0) {
+    throw new Error('metadata patch required');
+  }
+
+  return patch;
 }
 
 function readSyncOrderFieldIssue(
