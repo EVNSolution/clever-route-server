@@ -575,6 +575,64 @@ describe('Admin orders routes', () => {
     }
   });
 
+  test('patches selected order metadata for the token shop', async () => {
+    const { dependencies, patchCanonicalOrder } = createDependencyHarness();
+    const app = await buildApp({ adminOrders: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: {
+          deliveryArea: 'North York',
+          deliveryDate: '2026-05-10'
+        },
+        url: '/admin/orders/order-id/metadata'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        data: { order: { ...canonicalOrder, deliveryArea: 'North York', deliveryDate: '2026-05-10' } },
+        error: null
+      });
+      expect(patchCanonicalOrder).toHaveBeenCalledWith({
+        actor: 'shopify-user-id',
+        appId: 'clever',
+        orderId: 'order-id',
+        patch: {
+          deliveryArea: 'North York',
+          deliveryDate: '2026-05-10'
+        },
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects invalid order metadata payloads', async () => {
+    const { dependencies, patchCanonicalOrder } = createDependencyHarness();
+    const app = await buildApp({ adminOrders: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { deliveryDate: 'Friday' },
+        url: '/admin/orders/order-id/metadata'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'Invalid order metadata payload' }
+      });
+      expect(patchCanonicalOrder).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects invalid order bulk update values', async () => {
     const { bulkPatchCanonicalOrderStatus, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminOrders: dependencies });
@@ -661,6 +719,9 @@ function createDependencyHarness(): {
   syncOrdersSnapshot: ReturnType<
     typeof vi.fn<AdminOrdersDependencies['orderSyncService']['syncOrdersSnapshot']>
   >;
+  patchCanonicalOrder: ReturnType<
+    typeof vi.fn<NonNullable<AdminOrdersDependencies['orderSyncService']['patchCanonicalOrder']>>
+  >;
 } {
   const verify = vi.fn(() => ({
     shopDomain: 'example.myshopify.com',
@@ -700,6 +761,9 @@ function createDependencyHarness(): {
   const bulkPatchCanonicalOrderStatus = vi.fn<NonNullable<AdminOrdersDependencies['orderSyncService']['bulkPatchCanonicalOrderStatus']>>(
     () => Promise.resolve([{ ...canonicalOrder, financialStatus: 'CASH' }])
   );
+  const patchCanonicalOrder = vi.fn<NonNullable<AdminOrdersDependencies['orderSyncService']['patchCanonicalOrder']>>(
+    () => Promise.resolve({ ...canonicalOrder, deliveryArea: 'North York', deliveryDate: '2026-05-10' })
+  );
 
   return {
     bulkPatchCanonicalOrderStatus,
@@ -707,11 +771,13 @@ function createDependencyHarness(): {
       orderSyncService: {
         bulkPatchCanonicalOrderStatus,
         listCanonicalOrders,
+        patchCanonicalOrder,
         syncOrdersSnapshot
       },
       sessionTokenVerifier: { verify }
     },
     listCanonicalOrders,
+    patchCanonicalOrder,
     syncOrdersSnapshot
   };
 }
