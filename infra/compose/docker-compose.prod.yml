@@ -88,6 +88,20 @@ services:
     volumes:
       - ../vroom/config.yml:/conf/config.yml:ro
 
+  vroom-korea:
+    image: ${VROOM_IMAGE:-ghcr.io/vroom-project/vroom-docker@sha256:247d5683d6745c755d718a156d16b16aac80baccc276a003a68b986c13883b08}
+    depends_on:
+      osrm-korea:
+        condition: service_started
+    expose:
+      - "3000"
+    profiles:
+      - korea
+      - vroom-korea
+    restart: unless-stopped
+    volumes:
+      - ../vroom/config.korea.yml:/conf/config.yml:ro
+
   postgres:
     image: postgres:17-bookworm
     env_file:
@@ -122,6 +136,28 @@ services:
     restart: unless-stopped
     volumes:
       - /srv/clever-route-server/data/osrm/ontario:/data:ro
+
+  osrm-korea:
+    image: ${OSRM_IMAGE:-ghcr.io/project-osrm/osrm-backend:latest}
+    command:
+      [
+        "osrm-routed",
+        "--algorithm",
+        "mld",
+        "--port",
+        "5000",
+        "/data/south-korea-latest.osrm"
+      ]
+    expose:
+      - "5000"
+    ports:
+      - "127.0.0.1:5001:5000"
+    profiles:
+      - korea
+      - osrm-korea
+    restart: unless-stopped
+    volumes:
+      - /srv/clever-route-server/data/osrm/korea:/data:ro
 
 volumes:
   caddy-data:

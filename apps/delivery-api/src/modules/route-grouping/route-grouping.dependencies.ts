@@ -4,6 +4,13 @@ import type { AdminRouteGroupDependencies } from '../../routes/admin-route-group
 import { loadShopifyAppCredentials, type ShopifyAppCredentialsEnv } from '../shopify/shopify-app-credentials.js';
 import { ShopifySessionTokenVerifier } from '../shopify/session-token-verifier.js';
 import { OsrmRouteGeometryProvider } from '../route-plans/osrm-route-geometry.client.js';
+import {
+  CoverageAwareRouteGeometryProvider,
+  CoverageAwareRouteOptimizationService,
+  hasExplicitCoverageUrls,
+  readConfiguredCoverageBaseUrls,
+  readDefaultRouteEngineCoverage
+} from '../route-plans/route-engine-coverage.js';
 import { VroomRouteOptimizationClient } from '../route-plans/vroom-route-optimizer.client.js';
 import { loadDriverPushProvider } from './driver-push.provider.js';
 import {
@@ -15,9 +22,15 @@ export type AdminRouteGroupRuntimeEnv = ShopifyAppCredentialsEnv & Partial<Recor
   | 'FIREBASE_PROJECT_ID'
   | 'GOOGLE_APPLICATION_CREDENTIALS'
   | 'OSRM_BASE_URL'
+  | 'OSRM_DEFAULT_COVERAGE'
+  | 'OSRM_KOREA_BASE_URL'
+  | 'OSRM_ONTARIO_BASE_URL'
   | 'OSRM_TIMEOUT_MS'
   | 'ROUTE_GROUPING_MAX_STOP_DISTANCE_METERS'
+  | 'ROUTE_OPS_ROUTER_COVERAGE'
   | 'VROOM_BASE_URL'
+  | 'VROOM_KOREA_BASE_URL'
+  | 'VROOM_ONTARIO_BASE_URL'
   | 'VROOM_TIMEOUT_MS',
   string
 >>;
@@ -29,24 +42,60 @@ export function loadAdminRouteGroupDependencies(input: {
   const appCredentials = loadShopifyAppCredentials(input.env);
   if (appCredentials.length === 0) return undefined;
 
-  const vroomBaseUrl = readOptional(input.env.VROOM_BASE_URL);
-  const osrmBaseUrl = readOptional(input.env.OSRM_BASE_URL);
+  const routeOptimizationService = readRouteOptimizationService(input.env);
+  const routeGeometryProvider = readRouteGeometryProvider(input.env);
 
   return {
     routeGroupingService: new PrismaRouteGroupingService(
       input.prisma,
       loadDriverPushProvider(input.env),
       undefined,
-      vroomBaseUrl === undefined
-        ? undefined
-        : new VroomRouteOptimizationClient({ baseUrl: vroomBaseUrl, ...optionalTimeout(input.env.VROOM_TIMEOUT_MS) }),
-      osrmBaseUrl === undefined
-        ? undefined
-        : new OsrmRouteGeometryProvider({ baseUrl: osrmBaseUrl, ...optionalTimeout(input.env.OSRM_TIMEOUT_MS) }),
+      routeOptimizationService,
+      routeGeometryProvider,
       { maxChildRouteStopDistanceFromDepotMeters: readOptionalNumber(input.env.ROUTE_GROUPING_MAX_STOP_DISTANCE_METERS) ?? DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS }
     ),
     sessionTokenVerifier: new ShopifySessionTokenVerifier({ appCredentials })
   };
+}
+
+function readRouteOptimizationService(env: AdminRouteGroupRuntimeEnv) {
+  if (hasExplicitCoverageUrls(env, 'VROOM')) {
+    const services = Object.fromEntries(
+      Object.entries(readConfiguredCoverageBaseUrls(env, 'VROOM')).map(([coverage, baseUrl]) => [
+        coverage,
+        new VroomRouteOptimizationClient({ baseUrl, ...optionalTimeout(env.VROOM_TIMEOUT_MS) })
+      ])
+    ) as ConstructorParameters<typeof CoverageAwareRouteOptimizationService>[0]['services'];
+    return new CoverageAwareRouteOptimizationService({
+      defaultCoverage: readDefaultRouteEngineCoverage(env),
+      services
+    });
+  }
+
+  const vroomBaseUrl = readOptional(env.VROOM_BASE_URL);
+  return vroomBaseUrl === undefined
+    ? undefined
+    : new VroomRouteOptimizationClient({ baseUrl: vroomBaseUrl, ...optionalTimeout(env.VROOM_TIMEOUT_MS) });
+}
+
+function readRouteGeometryProvider(env: AdminRouteGroupRuntimeEnv) {
+  if (hasExplicitCoverageUrls(env, 'OSRM')) {
+    const providers = Object.fromEntries(
+      Object.entries(readConfiguredCoverageBaseUrls(env, 'OSRM')).map(([coverage, baseUrl]) => [
+        coverage,
+        new OsrmRouteGeometryProvider({ baseUrl, ...optionalTimeout(env.OSRM_TIMEOUT_MS) })
+      ])
+    ) as ConstructorParameters<typeof CoverageAwareRouteGeometryProvider>[0]['providers'];
+    return new CoverageAwareRouteGeometryProvider({
+      defaultCoverage: readDefaultRouteEngineCoverage(env),
+      providers
+    });
+  }
+
+  const osrmBaseUrl = readOptional(env.OSRM_BASE_URL);
+  return osrmBaseUrl === undefined
+    ? undefined
+    : new OsrmRouteGeometryProvider({ baseUrl: osrmBaseUrl, ...optionalTimeout(env.OSRM_TIMEOUT_MS) });
 }
 
 function readOptional(value: string | undefined): string | undefined {

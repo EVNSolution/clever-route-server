@@ -75,6 +75,16 @@ check('deploy script only stays deploy-critical without API artifact', ['scripts
   web_artifact_required: false,
 });
 
+check('multi-coverage deploy config is deploy-critical', [
+  'infra/vroom/config.korea.yml',
+  'docs/deployment/route-ops-multi-coverage-routing.md',
+], {
+  api_changed: false,
+  deploy_changed: true,
+  critical_changed: true,
+  full_required: false,
+});
+
 check('route geometry refresh script uses light API profile without web artifact', ['apps/delivery-api/src/scripts/refresh-route-geometry-cache.ts'], {
   api_changed: true,
   critical_changed: true,

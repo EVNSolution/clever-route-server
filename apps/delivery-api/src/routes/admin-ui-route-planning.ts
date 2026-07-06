@@ -43,6 +43,7 @@ import type {
   RouteOptimizationService,
   RouteOptimizationStopSequence,
 } from "../modules/route-plans/route-optimization.types.js";
+import { readRouteEngineRegistrySummary } from "../modules/route-plans/route-engine-coverage.js";
 const ADMIN_UI_APP_ROUTE_PLANS_PATH = "/admin/ui/app/routes";
 
 type RoutePlanningDependencies = {
@@ -891,19 +892,11 @@ export function buildRouteOpsCsp(mapConfig: RouteOpsMapConfig): string {
 
 export function readRouteOpsRouterConfig(): {
   coverage: string | null;
+  coverages?: string[] | undefined;
   provider: "osrm" | null;
   status: "configured" | "not_configured";
 } {
-  const configured =
-    process.env.OSRM_BASE_URL?.trim() !== "" &&
-    process.env.OSRM_BASE_URL !== undefined;
-  return configured
-    ? {
-        coverage: process.env.ROUTE_OPS_ROUTER_COVERAGE?.trim() || "ontario",
-        provider: "osrm",
-        status: "configured",
-      }
-    : { coverage: null, provider: null, status: "not_configured" };
+  return readRouteEngineRegistrySummary(process.env);
 }
 
 export function toRouteOpsOrderDto(order: CanonicalOrderRow): {

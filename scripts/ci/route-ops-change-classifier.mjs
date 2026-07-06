@@ -69,11 +69,11 @@ export function classifyRouteOpsChanges(files, options = {}) {
 
   const deployChanged = any(files, [
     /^infra\/compose\/docker-compose\.prod\.yml$/,
-    /^infra\/vroom\/config\.yml$/,
+    /^infra\/vroom\/config(\.[a-z0-9-]+)?\.yml$/,
     /^infra\/env\/delivery-api\.env\.example$/,
     DEPLOY_SCRIPT_RE,
     DEPLOY_TEST_RE,
-    /^docs\/deployment\/(route-ops-simple-ssm-deploy|route-ops-osrm-ontario|route-ops-vroom)\.md$/,
+    /^docs\/deployment\/(route-ops-simple-ssm-deploy|route-ops-osrm-ontario|route-ops-vroom|route-ops-multi-coverage-routing)\.md$/,
   ]);
 
   const apiChanged = any(files, [
@@ -102,7 +102,7 @@ export function classifyRouteOpsChanges(files, options = {}) {
     /^apps\/route-ops-web\//,
     /^apps\/delivery-api\//,
     /^infra\/compose\/docker-compose\.prod\.yml$/,
-    /^infra\/vroom\/config\.yml$/,
+    /^infra\/vroom\/config(\.[a-z0-9-]+)?\.yml$/,
     /^infra\/env\/delivery-api\.env\.example$/,
     /^scripts\/ci\/route-ops-change-classifier\.mjs$/,
     DEPLOY_SCRIPT_RE,
@@ -130,11 +130,11 @@ export function classifyRouteOpsChanges(files, options = {}) {
     /^apps\/delivery-api\/src\/modules\/wordpress-plugin\/(wordpress-plugin-auth\.service|wordpress-plugin\.dependencies)\.ts$/,
     /^apps\/delivery-api\/src\/modules\/woocommerce\/woocommerce\.dependencies\.ts$/,
     /^apps\/delivery-api\/src\/scripts\/(.*proof-media.*|refresh-route-geometry-cache)\.ts$/,
-    /^apps\/delivery-api\/tests\/(admin-commerce-auth|admin-session-auth|admin-commerce-connections-ui\.routes|admin-route-plans\.routes|admin-notification\.(dependencies|repository|service|stream|postgres-stream)|order-sync\.repository|driver-auth\.(repository|routes)|driver\.dependencies|driver-route-access\.routes|driver-proof-media.*|driver-route-session\.(repository|routes)|geocoding\.service|osrm-route-geometry\.client|vroom-route-optimizer\.client|route-plan\.(repository|service)|route-scope-config|prisma-schema|shopify-auth\.(dependencies|routes)|shopify-session-token-verifier|wordpress-plugin-auth\.service)\.test\.ts$/,
+    /^apps\/delivery-api\/tests\/(admin-commerce-auth|admin-session-auth|admin-commerce-connections-ui\.routes|admin-route-plans\.routes|admin-notification\.(dependencies|repository|service|stream|postgres-stream)|order-sync\.repository|driver-auth\.(repository|routes)|driver\.dependencies|driver-route-access\.routes|driver-proof-media.*|driver-route-session\.(repository|routes)|geocoding\.service|osrm-route-geometry\.client|vroom-route-optimizer\.client|route-engine-coverage|route-plan\.(repository|service)|route-scope-config|prisma-schema|shopify-auth\.(dependencies|routes)|shopify-session-token-verifier|wordpress-plugin-auth\.service)\.test\.ts$/,
     /^scripts\/ci\/route-ops-change-classifier\.mjs$/,
     /^tests\/ci\/route-ops-change-classifier\.test\.mjs$/,
     /^infra\/compose\/docker-compose\.prod\.yml$/,
-    /^infra\/vroom\/config\.yml$/,
+    /^infra\/vroom\/config(\.[a-z0-9-]+)?\.yml$/,
     LIVE_DEPLOY_SCRIPT_RE,
     /^tests\/deploy\//,
     DEPLOY_WORKFLOW_RE,

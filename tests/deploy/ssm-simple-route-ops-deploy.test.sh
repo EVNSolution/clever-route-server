@@ -22,8 +22,8 @@ caddyfile = pathlib.Path('infra/caddy/Caddyfile').read_text()
 web_dockerfile = pathlib.Path('apps/route-ops-web/Dockerfile').read_text()
 dry_run_idx = command.index('if [ "$DRY_RUN" = "1" ]')
 forward_mutation_snippets = [
-    '--profile osrm --profile vroom pull delivery-api vroom',
-    '--profile osrm --profile vroom pull route-ops-web-static',
+    '--profile osrm --profile vroom --profile korea pull delivery-api vroom vroom-korea',
+    '--profile osrm --profile vroom --profile korea pull route-ops-web-static',
     'run --rm delivery-api-migrate',
     'up --no-build --force-recreate route-ops-web-static',
     'up -d --no-build --no-deps --force-recreate delivery-api',
@@ -39,8 +39,10 @@ checks = {
     'compose_preflight': 'docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env' in command,
     'dry_run_exits_before_forward_mutations': all(dry_run_idx < command.index(snippet) for snippet in forward_mutation_snippets),
     'vroom_env': 'VROOM_BASE_URL' in command and 'http://vroom:3000' in command,
+    'multi_coverage_env': 'OSRM_ONTARIO_BASE_URL' in command and 'http://osrm-ontario:5000' in command and 'OSRM_KOREA_BASE_URL' in command and 'http://osrm-korea:5000' in command and 'VROOM_KOREA_BASE_URL' in command and 'http://vroom-korea:3000' in command and 'OSRM_DEFAULT_COVERAGE' in command and 'korea' in command,
+    'vroom_configs_synced_to_host': 'VROOM_CONFIG_B64=' in command and 'VROOM_KOREA_CONFIG_B64=' in command and 'base64 -d > "$VROOM_KOREA_CONFIG"' in command,
     'proof_media_bootstrap': 'chown -R 100:101 /srv/clever-route-server/data/driver-proof-media' in command and 'chmod 750 /srv/clever-route-server/data/driver-proof-media' in command,
-    'compose_pull_only_on_host': '--profile osrm --profile vroom pull delivery-api vroom' in command and 'pull route-ops-web-static' in command and 'docker pull "$DELIVERY_API_IMAGE"' not in command,
+    'compose_pull_only_on_host': '--profile osrm --profile vroom --profile korea pull delivery-api vroom vroom-korea' in command and 'pull route-ops-web-static' in command and 'docker pull "$DELIVERY_API_IMAGE"' not in command,
     'migrate_uses_compose_service': 'run --rm delivery-api-migrate' in command,
     'migrate_before_static_stage': command.index('run --rm delivery-api-migrate') < command.index('simple deploy static stage required', command.index('run --rm delivery-api-migrate')),
     'api_up_no_deps': 'up -d --no-build --no-deps --force-recreate delivery-api' in command,

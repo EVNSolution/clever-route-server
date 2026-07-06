@@ -46,6 +46,18 @@ Target compose topology:
 delivery-api -> vroom:3000 -> osrm-ontario:5000
 ```
 
+For Korea or future multi-country routing, keep this Ontario service as the
+Ontario VROOM instance and add separate per-coverage services, for example:
+
+```text
+delivery-api -> vroom:3000       -> osrm-ontario:5000
+delivery-api -> vroom-korea:3000 -> osrm-korea:5000
+```
+
+See `docs/deployment/route-ops-multi-coverage-routing.md` for the coverage
+selector env contract, Korea rollout sequence, and fail-closed mixed-coverage
+behavior.
+
 Recommended env names for `delivery-api`:
 
 ```sh

@@ -9,7 +9,7 @@ It intentionally avoids the old S3 deploy-control bundle, EC2 image builds, sepa
 - Host app path: `/srv/clever-route-server`.
 - The host is **not** a git checkout and cannot fetch the private GitHub repo directly.
 - The host has `docker`, `aws`, and `python3`; it does not need host `node` or `npm`.
-- Optimizer lane is `delivery-api -> vroom -> osrm-ontario`.
+- Optimizer lane is multi-coverage: `delivery-api -> vroom -> osrm-ontario` and `delivery-api -> vroom-korea -> osrm-korea` once Korea data is installed.
 - Local proof media storage must be bootstrapped before compose restart:
   `/srv/clever-route-server/data/driver-proof-media`, owner `100:101`, mode `750`.
 
@@ -23,6 +23,7 @@ server-side GitHub credentials and a real checkout are deliberately provisioned.
 - Compose: `infra/compose/docker-compose.prod.yml`
 - Caddy: `infra/caddy/Caddyfile`
 - Runtime env: `infra/env/delivery-api.env`
+- VROOM configs: `infra/vroom/config.yml`, `infra/vroom/config.korea.yml`
 
 ## Expected fast path
 
@@ -44,15 +45,15 @@ server-side GitHub credentials and a real checkout are deliberately provisioned.
 The EC2 host does not build. A real deploy does this in order:
 
 1. Takes `.deploy/route-ops-simple-deploy.lock.d`.
-2. Writes the reviewed `infra/compose/docker-compose.prod.yml` and `infra/caddy/Caddyfile` from the workflow checkout onto the host, so compose/Caddy/script-only changes can deploy through SSM without image builds.
+2. Writes the reviewed `infra/compose/docker-compose.prod.yml`, `infra/caddy/Caddyfile`, and VROOM config files from the workflow checkout onto the host, so compose/Caddy/VROOM config/script-only changes can deploy through SSM without image builds.
 3. Writes `.deploy/simple-candidate-image.env` with digest-addressable image refs.
 4. Copies existing `.deploy/current-image.env` to `.deploy/simple-rollback-image.env`.
-5. Validates compose config with `--profile osrm --profile vroom`.
-6. Rewrites optimizer env to VROOM/OSRM.
+5. Validates compose config with `--profile osrm --profile vroom --profile korea`.
+6. Rewrites optimizer env to legacy Ontario URLs plus explicit Ontario/Korea OSRM/VROOM URLs and `OSRM_DEFAULT_COVERAGE=korea`.
 7. Bootstraps proof-media directory owner/mode.
 8. Reloads Caddy in place so the retry policy is active before `delivery-api` is recreated.
 9. Logs into GHCR using SSM parameters only on the host.
-10. Runs `docker compose --profile osrm --profile vroom pull delivery-api vroom`; pulls `route-ops-web-static` only when static staging is required.
+10. Runs `docker compose --profile osrm --profile vroom --profile korea pull delivery-api vroom vroom-korea`; pulls `route-ops-web-static` only when static staging is required.
 11. Runs `docker compose run --rm delivery-api-migrate` before touching the live static volume.
 12. Compares candidate and current `ROUTE_OPS_WEB_STATIC_IMAGE` digest refs.
 13. Stages the static volume via `route-ops-web-static` when the static digest changed, the current ref is missing, either ref is a mutable tag/non-digest ref, or `ROUTE_OPS_FORCE_STATIC_RESTAGE=1` is set.

@@ -12,6 +12,13 @@ import { PrismaRouteOptimizationJobRepository } from '../route-plans/route-optim
 import { RouteOptimizationJobService } from '../route-plans/route-optimization-job.service.js';
 import { RoutePlanAdminService, type RouteGeometryProvider } from '../route-plans/route-plan.service.js';
 import { OsrmRouteGeometryProvider } from '../route-plans/osrm-route-geometry.client.js';
+import {
+  CoverageAwareRouteGeometryProvider,
+  CoverageAwareRouteOptimizationService,
+  hasExplicitCoverageUrls,
+  readConfiguredCoverageBaseUrls,
+  readDefaultRouteEngineCoverage
+} from '../route-plans/route-engine-coverage.js';
 import { VroomRouteOptimizationClient } from '../route-plans/vroom-route-optimizer.client.js';
 import { PrismaOrderSyncRepository } from '../shopify/order-sync.repository.js';
 import type { AdminNotificationServiceApi } from '../notifications/admin-notification.service.js';
@@ -64,10 +71,15 @@ export type AdminCommerceConnectionsRuntimeEnv = Partial<
     | 'FIREBASE_PROJECT_ID'
     | 'GOOGLE_APPLICATION_CREDENTIALS'
     | 'OSRM_BASE_URL'
+    | 'OSRM_DEFAULT_COVERAGE'
+    | 'OSRM_KOREA_BASE_URL'
+    | 'OSRM_ONTARIO_BASE_URL'
     | 'OSRM_TIMEOUT_MS'
     | 'ROUTE_GROUPING_MAX_STOP_DISTANCE_METERS'
     | 'ROUTE_OPS_ROUTER_COVERAGE'
     | 'VROOM_BASE_URL'
+    | 'VROOM_KOREA_BASE_URL'
+    | 'VROOM_ONTARIO_BASE_URL'
     | 'VROOM_TIMEOUT_MS'
     | 'WOOCOMMERCE_SHOP_TIMEZONE',
     string
@@ -328,6 +340,24 @@ function readAdminUiOrderSyncService(
 function readAdminUiRouteOptimizationService(
   env: AdminCommerceConnectionsRuntimeEnv
 ): Pick<AdminCommerceConnectionsUiDependencies, 'routeOptimizationService'> {
+  if (hasExplicitCoverageUrls(env, 'VROOM')) {
+    const services = Object.fromEntries(
+      Object.entries(readConfiguredCoverageBaseUrls(env, 'VROOM')).map(([coverage, baseUrl]) => [
+        coverage,
+        new VroomRouteOptimizationClient({
+          baseUrl,
+          ...optionalTimeout(env.VROOM_TIMEOUT_MS)
+        })
+      ])
+    ) as ConstructorParameters<typeof CoverageAwareRouteOptimizationService>[0]['services'];
+    return {
+      routeOptimizationService: new CoverageAwareRouteOptimizationService({
+        defaultCoverage: readDefaultRouteEngineCoverage(env),
+        services
+      })
+    };
+  }
+
   const vroomBaseUrl = readOptional(env.VROOM_BASE_URL);
   if (vroomBaseUrl === undefined) return {};
   return {
@@ -341,6 +371,22 @@ function readAdminUiRouteOptimizationService(
 function readAdminUiRouteGeometryProvider(
   env: AdminCommerceConnectionsRuntimeEnv
 ): RouteGeometryProvider | undefined {
+  if (hasExplicitCoverageUrls(env, 'OSRM')) {
+    const providers = Object.fromEntries(
+      Object.entries(readConfiguredCoverageBaseUrls(env, 'OSRM')).map(([coverage, baseUrl]) => [
+        coverage,
+        new OsrmRouteGeometryProvider({
+          baseUrl,
+          ...optionalTimeout(env.OSRM_TIMEOUT_MS),
+        })
+      ])
+    ) as ConstructorParameters<typeof CoverageAwareRouteGeometryProvider>[0]['providers'];
+    return new CoverageAwareRouteGeometryProvider({
+      defaultCoverage: readDefaultRouteEngineCoverage(env),
+      providers
+    });
+  }
+
   const osrmBaseUrl = readOptional(env.OSRM_BASE_URL);
   return osrmBaseUrl === undefined
     ? undefined

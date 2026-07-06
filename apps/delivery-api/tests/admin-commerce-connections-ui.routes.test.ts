@@ -892,6 +892,51 @@ describe("Admin WooCommerce connection UI routes", () => {
     );
   });
 
+  test("reports multi-coverage router bootstrap state without exposing private engine URLs", async () => {
+    await withRouteOpsRouterEnv(
+      {
+        OSRM_DEFAULT_COVERAGE: "korea",
+        OSRM_KOREA_BASE_URL: "http://osrm-korea:5000",
+        OSRM_ONTARIO_BASE_URL: "http://osrm-ontario:5000",
+      },
+      async () => {
+        const { app } = await createUiHarness();
+
+        try {
+          const { cookie } = await loginAndReadCsrf(app);
+          const response = await app.inject({
+            headers: { cookie, accept: "application/json" },
+            method: "GET",
+            url: "/admin/ui/app/api/bootstrap?shopDomain=tenant-a.example.test",
+          });
+
+          expect(response.statusCode).toBe(200);
+          const bootstrapData = readApiData<{
+            routerConfig: {
+              coverage: string | null;
+              coverages?: string[];
+              provider: string | null;
+              status: string;
+            };
+          }>(response);
+          expect(bootstrapData.routerConfig).toEqual({
+            coverage: "korea",
+            coverages: ["ontario", "korea"],
+            provider: "osrm",
+            status: "configured",
+          });
+          expect(response.body).not.toContain("osrm-korea");
+          expect(response.body).not.toContain("osrm-ontario");
+          expect(response.body).not.toContain("5000");
+          expect(response.body).not.toContain("OSRM_KOREA_BASE_URL");
+          expect(response.body).not.toContain("OSRM_ONTARIO_BASE_URL");
+        } finally {
+          await app.close();
+        }
+      },
+    );
+  });
+
   test("redirects legacy operation GET paths to SPA routes after auth", async () => {
     const { app } = await createUiHarness();
     const cases: Array<readonly [string, string]> = [
@@ -6746,7 +6791,13 @@ async function withRouteOpsRouterEnv<T>(
   env: Record<string, string>,
   run: () => Promise<T>,
 ): Promise<T> {
-  const keys = ["OSRM_BASE_URL", "ROUTE_OPS_ROUTER_COVERAGE"];
+  const keys = [
+    "OSRM_BASE_URL",
+    "OSRM_DEFAULT_COVERAGE",
+    "OSRM_KOREA_BASE_URL",
+    "OSRM_ONTARIO_BASE_URL",
+    "ROUTE_OPS_ROUTER_COVERAGE",
+  ];
   const previous = new Map(keys.map((key) => [key, process.env[key]]));
   for (const key of keys) delete process.env[key];
   for (const [key, value] of Object.entries(env)) process.env[key] = value;

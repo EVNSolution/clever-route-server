@@ -34,6 +34,7 @@ export type BootstrapPayload = {
   locale?: AppLocale;
   routerConfig: {
     coverage?: string | null;
+    coverages?: string[];
     provider?: "osrm" | null;
     status: MapProviderStatus;
   };
