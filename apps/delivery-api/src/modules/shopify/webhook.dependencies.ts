@@ -1,11 +1,20 @@
 import type { PrismaClient } from '@prisma/client';
 
 import type { ShopifyWebhookDependencies } from '../../routes/shopify-webhook.routes.js';
+import { loadTokenEncryptionKey } from '../security/token-encryption.js';
+import { ShopifyAdminGraphqlClient } from './admin-graphql.client.js';
+import { PrismaOrderSyncRepository } from './order-sync.repository.js';
+import { ShopifyOrderWebhookProcessor } from './order-webhook.processor.js';
 import { DEFAULT_SHOPIFY_APP_ID } from './shopify-app-scope.js';
 import { loadShopifyAppCredentials, type ShopifyAppCredentialsEnv } from './shopify-app-credentials.js';
+import { PrismaShopTokenRepository } from './shop-token.repository.js';
+import { ShopTokenService } from './shop-token.service.js';
 import { PrismaShopifyWebhookEventRepository } from './webhook-event.repository.js';
 
-export type ShopifyWebhookRuntimeEnv = ShopifyAppCredentialsEnv & Partial<Record<'SHOPIFY_WEBHOOK_SECRET', string>>;
+const DEFAULT_SHOPIFY_API_VERSION = '2026-04';
+
+export type ShopifyWebhookRuntimeEnv = ShopifyAppCredentialsEnv &
+  Partial<Record<'SHOPIFY_API_VERSION' | 'SHOPIFY_TOKEN_ENCRYPTION_KEY' | 'SHOPIFY_WEBHOOK_SECRET', string>>;
 
 type LoadShopifyWebhookDependenciesInput = {
   env: ShopifyWebhookRuntimeEnv;
@@ -28,9 +37,30 @@ export function loadShopifyWebhookDependencies(
     return undefined;
   }
 
+  const webhookService = new PrismaShopifyWebhookEventRepository(input.prisma);
+  const encryptionKey = readOptional(input.env.SHOPIFY_TOKEN_ENCRYPTION_KEY);
+
+  if (encryptionKey === undefined) {
+    return {
+      appCredentials,
+      webhookService
+    };
+  }
+
   return {
     appCredentials,
-    webhookService: new PrismaShopifyWebhookEventRepository(input.prisma)
+    orderWebhookProcessor: new ShopifyOrderWebhookProcessor({
+      defaultApiVersion: readOptional(input.env.SHOPIFY_API_VERSION) ?? DEFAULT_SHOPIFY_API_VERSION,
+      eventStore: webhookService,
+      graphqlClientFactory: ({ accessToken, apiVersion, shopDomain }) =>
+        new ShopifyAdminGraphqlClient({ accessToken, apiVersion, shopDomain }),
+      orderRepository: new PrismaOrderSyncRepository(input.prisma),
+      shopTokenService: new ShopTokenService({
+        encryptionKey: loadTokenEncryptionKey(encryptionKey),
+        repository: new PrismaShopTokenRepository(input.prisma)
+      })
+    }),
+    webhookService
   };
 }
 

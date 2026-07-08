@@ -22,6 +22,11 @@ export type RecordShopifyWebhookEventResult = {
 
 type ShopifyWebhookPrivacyPrismaClient = Pick<PrismaClient, 'order' | 'shop' | 'shopifyWebhookEvent'>;
 
+export type ClaimOrderWebhookResult =
+  | { action: 'process' }
+  | { action: 'noop'; reason: 'already_done' | 'permanent_failure' }
+  | { action: 'conflict'; retryAfterSeconds: number };
+
 export class PrismaShopifyWebhookEventRepository {
   constructor(private readonly prisma: ShopifyWebhookPrivacyPrismaClient) {}
 
@@ -29,6 +34,115 @@ export class PrismaShopifyWebhookEventRepository {
     input: RecordShopifyWebhookEventInput
   ): Promise<RecordShopifyWebhookEventResult> {
     return this.recordWebhookEvent(input);
+  }
+
+  async claimOrderWebhook(input: {
+    appId?: string | undefined;
+    now?: Date | undefined;
+    processingStaleAfterMs?: number | undefined;
+    shopDomain: string;
+    webhookId: string;
+  }): Promise<ClaimOrderWebhookResult> {
+    const now = input.now ?? new Date();
+    const shop = await this.prisma.shop.findUnique({
+      select: { id: true },
+      where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) })
+    });
+    if (shop === null) {
+      throw new Error(`Shop not installed: ${input.shopDomain}`);
+    }
+
+    const event = await this.prisma.shopifyWebhookEvent.findUnique({
+      select: { id: true, lastError: true, status: true, updatedAt: true },
+      where: { shopId_webhookId: { shopId: shop.id, webhookId: input.webhookId } }
+    });
+    if (event === null) {
+      throw new Error(`Shopify webhook event not recorded: ${input.webhookId}`);
+    }
+
+    if (event.status === 'PROCESSED' || event.status === 'IGNORED') {
+      return { action: 'noop', reason: 'already_done' };
+    }
+    if (event.status === 'FAILED' && event.lastError?.startsWith('PERMANENT:')) {
+      return { action: 'noop', reason: 'permanent_failure' };
+    }
+    if (event.status === 'PROCESSING') {
+      const staleAfterMs = input.processingStaleAfterMs ?? 120_000;
+      if (now.getTime() - event.updatedAt.getTime() < staleAfterMs) {
+        return { action: 'conflict', retryAfterSeconds: Math.ceil(staleAfterMs / 1000) };
+      }
+    }
+
+    const claimed = await this.prisma.shopifyWebhookEvent.updateMany({
+      data: {
+        attemptCount: { increment: 1 },
+        lastError: null,
+        status: 'PROCESSING'
+      },
+      where: {
+        id: event.id,
+        status: event.status
+      }
+    });
+    if (claimed.count !== 1) {
+      return { action: 'conflict', retryAfterSeconds: 120 };
+    }
+
+    return { action: 'process' };
+  }
+
+  async markOrderWebhookProcessed(input: {
+    appId?: string | undefined;
+    shopDomain: string;
+    webhookId: string;
+  }): Promise<void> {
+    await this.updateOrderWebhookStatus({
+      ...input,
+      data: {
+        lastError: null,
+        processedAt: new Date(),
+        status: 'PROCESSED'
+      }
+    });
+  }
+
+  async markOrderWebhookFailed(input: {
+    appId?: string | undefined;
+    error: string;
+    shopDomain: string;
+    webhookId: string;
+  }): Promise<void> {
+    await this.updateOrderWebhookStatus({
+      ...input,
+      data: {
+        lastError: input.error,
+        status: 'FAILED'
+      }
+    });
+  }
+
+  private async updateOrderWebhookStatus(input: {
+    appId?: string | undefined;
+    data: {
+      lastError: string | null;
+      processedAt?: Date;
+      status: 'PROCESSED' | 'FAILED';
+    };
+    shopDomain: string;
+    webhookId: string;
+  }): Promise<void> {
+    const shop = await this.prisma.shop.findUnique({
+      select: { id: true },
+      where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) })
+    });
+    if (shop === null) {
+      throw new Error(`Shop not installed: ${input.shopDomain}`);
+    }
+
+    await this.prisma.shopifyWebhookEvent.update({
+      data: input.data,
+      where: { shopId_webhookId: { shopId: shop.id, webhookId: input.webhookId } }
+    });
   }
 
   async recordWebhookEvent(
@@ -138,9 +252,11 @@ function sanitizeCustomerCompliancePayload(payload: unknown): Record<string, unk
     return {};
   }
 
+  const dataRequest = objectOrNull(object.data_request);
+
   return {
     customer: sanitizeCustomerPayload(object.customer),
-    data_request: objectOrNull(object.data_request) === null ? undefined : { id: objectOrNull(object.data_request)?.id },
+    data_request: dataRequest === null ? undefined : { id: dataRequest.id },
     orders_requested: sanitizeLegacyIdList(object.orders_requested),
     orders_to_redact: sanitizeLegacyIdList(object.orders_to_redact),
     shop_domain: object.shop_domain,

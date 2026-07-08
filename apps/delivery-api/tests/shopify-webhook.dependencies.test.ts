@@ -32,6 +32,18 @@ describe('loadShopifyWebhookDependencies', () => {
       { appId: 'clever-route-dev', clientSecret: 'dev-secret' }
     ]);
   });
+
+  test('wires order webhook processing when token encryption is configured', () => {
+    const dependencies = loadShopifyWebhookDependencies({
+      env: {
+        SHOPIFY_API_SECRET: 'shared-secret',
+        SHOPIFY_TOKEN_ENCRYPTION_KEY: 'base64:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+      },
+      prisma: prisma()
+    });
+
+    expect(dependencies?.orderWebhookProcessor?.canProcessTopic('orders/updated')).toBe(true);
+  });
 });
 
 function prisma(): PrismaClient {

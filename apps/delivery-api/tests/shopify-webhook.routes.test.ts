@@ -58,7 +58,7 @@ describe('Shopify webhook routes', () => {
         eventId: '98880550-7158-44d4-b7cd-2c97c8a091b5',
         payload: { id: 123, name: '#1001' },
         rawBody: rawPayload,
-        shopDomain: 'example.myshopify.com',
+        shopDomain: 'clever-route-test.myshopify.com',
         topic: 'orders/create',
         triggeredAt: new Date('2026-05-07T05:40:00.000Z'),
         webhookId: 'b54557e4-bdd9-4b37-8a5f-bf7d70bcd043'
@@ -91,7 +91,40 @@ describe('Shopify webhook routes', () => {
       expect(recordWebhook).toHaveBeenCalledWith(
         expect.objectContaining({
           appId: 'clever-route-dev',
-          shopDomain: 'example.myshopify.com',
+          shopDomain: 'clever-route-test.myshopify.com',
+          webhookId: 'b54557e4-bdd9-4b37-8a5f-bf7d70bcd043'
+        })
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('processes order topics after recording the receipt', async () => {
+    const { dependencies, recordWebhook } = createDependencyHarness();
+    const process = vi.fn<NonNullable<ShopifyWebhookDependencies['orderWebhookProcessor']>['process']>(() =>
+      Promise.resolve({ duplicate: false, statusCode: 200, webhookId: 'b54557e4-bdd9-4b37-8a5f-bf7d70bcd043' })
+    );
+    dependencies.orderWebhookProcessor = {
+      canProcessTopic: (topic) => topic === 'orders/create',
+      process
+    };
+    const app = await buildApp({ shopifyWebhook: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: webhookHeaders(),
+        method: 'POST',
+        payload: rawPayload,
+        url: '/shopify/webhooks'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(recordWebhook).toHaveBeenCalledOnce();
+      expect(process).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: { id: 123, name: '#1001' },
+          topic: 'orders/create',
           webhookId: 'b54557e4-bdd9-4b37-8a5f-bf7d70bcd043'
         })
       );
@@ -161,7 +194,7 @@ function webhookHeaders(overrides: { hmac?: string } = {}): Record<string, strin
     'x-shopify-event-id': '98880550-7158-44d4-b7cd-2c97c8a091b5',
     'x-shopify-hmac-sha256':
       overrides.hmac ?? createHmac('sha256', clientSecret).update(rawPayload).digest('base64'),
-    'x-shopify-shop-domain': 'example.myshopify.com',
+    'x-shopify-shop-domain': 'clever-route-test.myshopify.com',
     'x-shopify-topic': 'orders/create',
     'x-shopify-triggered-at': '2026-05-07T05:40:00.000Z',
     'x-shopify-webhook-id': 'b54557e4-bdd9-4b37-8a5f-bf7d70bcd043'

@@ -5,6 +5,17 @@ import { getRawBody } from './json-body-parser.js';
 
 export type ShopifyWebhookDependencies = {
   appCredentials: Array<{ appId: string; clientSecret: string }>;
+  orderWebhookProcessor?: {
+    canProcessTopic(topic: string): boolean;
+    process(input: {
+      apiVersion: string | null;
+      appId?: string | undefined;
+      payload: unknown;
+      shopDomain: string;
+      topic: string;
+      webhookId: string;
+    }): Promise<{ duplicate: boolean; statusCode: 200 | 409 | 500; webhookId: string }>;
+  } | undefined;
   webhookService: {
     recordWebhook(input: {
       appId: string;
@@ -60,7 +71,7 @@ export function registerShopifyWebhookRoutes(
       return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Invalid Shopify webhook HMAC'));
     }
 
-    const result = await dependencies.webhookService.recordWebhook({
+    const record = {
       appId,
       apiVersion: headers.apiVersion,
       eventId: headers.eventId,
@@ -70,7 +81,19 @@ export function registerShopifyWebhookRoutes(
       topic: headers.topic,
       triggeredAt: headers.triggeredAt,
       webhookId: headers.webhookId
-    });
+    };
+    const result = await dependencies.webhookService.recordWebhook(record);
+
+    if (dependencies.orderWebhookProcessor?.canProcessTopic(headers.topic) === true) {
+      const processed = await dependencies.orderWebhookProcessor.process(record);
+      return reply.code(processed.statusCode).send({
+        data: {
+          duplicate: processed.duplicate,
+          webhookId: processed.webhookId
+        },
+        error: null
+      });
+    }
 
     return reply.code(result.duplicate ? 200 : 202).send({
       data: {

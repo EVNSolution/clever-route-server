@@ -19,10 +19,14 @@ export function buildOrdersUpdatedSinceQuery(
   };
 }
 
-export const ORDERS_UPDATED_SINCE_QUERY = `#graphql
-  query CleverDeliveryOrdersUpdatedSince($first: Int!, $after: String, $query: String!) {
-    orders(first: $first, after: $after, query: $query, sortKey: UPDATED_AT) {
-      nodes {
+export function buildOrderByIdQuery(input: { id: string }): ShopifyAdminGraphqlRequest {
+  return {
+    query: ORDER_BY_ID_QUERY,
+    variables: { id: input.id }
+  };
+}
+
+const ORDER_FIELDS = `#graphql
         id
         legacyResourceId
         name
@@ -67,11 +71,26 @@ export const ORDERS_UPDATED_SINCE_QUERY = `#graphql
           latitude
           longitude
         }
-      }
+`;
+
+export const ORDERS_UPDATED_SINCE_QUERY = `#graphql
+  query CleverDeliveryOrdersUpdatedSince($first: Int!, $after: String, $query: String!) {
+    orders(first: $first, after: $after, query: $query, sortKey: UPDATED_AT) {
+      nodes {
+${ORDER_FIELDS}      }
       pageInfo {
         endCursor
         hasNextPage
       }
+    }
+  }
+`;
+
+export const ORDER_BY_ID_QUERY = `#graphql
+  query CleverDeliveryOrderById($id: ID!) {
+    node(id: $id) {
+      ... on Order {
+${ORDER_FIELDS}      }
     }
   }
 `;
