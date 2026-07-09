@@ -561,7 +561,7 @@ describe('WordPress plugin routes', () => {
         expect(response.json()).toEqual({
           data: {
             expiresAt: '2026-05-26T06:10:00.000Z',
-            launchUrl: 'https://clever-route.cleversystem.ai/admin/ui/plugin-launch?token=launch-token'
+            launchUrl: 'https://clever-route-api.cleversystem.ai/admin/ui/plugin-launch?token=launch-token'
           },
           error: null
         });
@@ -787,7 +787,7 @@ function createDependencies(input: { validToken?: boolean } = {}): {
     () =>
       Promise.resolve({
         expiresAt: '2026-05-26T06:10:00.000Z',
-        launchUrl: 'https://clever-route.cleversystem.ai/admin/ui/plugin-launch?token=launch-token'
+        launchUrl: 'https://clever-route-api.cleversystem.ai/admin/ui/plugin-launch?token=launch-token'
       })
   );
   return {

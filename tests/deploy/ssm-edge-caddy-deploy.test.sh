@@ -28,16 +28,18 @@ checks = {
     'dry_run_exits_before_ingress_mutation': dry_run_idx < install_idx,
     'validates_container_before_reload': container_validate_idx < container_reload_idx,
     'reloads_not_restarts': 'exec -T caddy caddy reload --config /etc/caddy/Caddyfile' in command and 'restart caddy' not in command,
-    'rollback_restores_backup': 'cp "$backup" "$CADDYFILE"' in command and 'restore_caddy' in command and 'reload failed' in command and 'route-api smoke failed' in command,
+    'rollback_restores_backup': 'cp "$backup" "$CADDYFILE"' in command and 'restore_caddy' in command and 'reload failed' in command and 'route-api smoke failed' in command and 'route-legacy smoke failed' in command and 'shopify-prod smoke failed' in command and 'shopify-legacy-admin smoke failed' in command,
     'smoke_hosts': all(url in command for url in [
+        'https://clever-route-api.cleversystem.ai/healthz',
         'https://clever-route.cleversystem.ai/healthz',
+        'https://clever-route-app-dev.cleversystem.ai/auth/login',
         'https://clever-route-app.cleversystem.ai/auth/login',
         'https://clever-admin.cleversystem.ai/auth/login',
         'https://clever-kfood-app.cleversystem.ai/auth/login',
     ]),
-    'does_not_touch_runtime_lane': 'delivery-api-migrate' not in command and 'force-recreate delivery-api' not in command and 'route-ops-web-static' not in command,
+    'does_not_touch_runtime_lane': 'clever-route-api-migrate' not in command and 'force-recreate clever-route-api' not in command and 'route-ops-web-static' not in command,
     'history_append': '"lane":"edge-caddy"' in command,
-    'wrapper_no_publish_or_migration': '--publish' not in wrapper and 'DELIVERY_API_IMAGE' not in wrapper and 'ROUTE_OPS_WEB_STATIC_IMAGE' not in wrapper and 'delivery-api-migrate' not in wrapper,
+    'wrapper_no_publish_or_migration': '--publish' not in wrapper and 'DELIVERY_API_IMAGE' not in wrapper and 'ROUTE_OPS_WEB_STATIC_IMAGE' not in wrapper and 'clever-route-api-migrate' not in wrapper,
 }
 missing = [name for name, ok in checks.items() if not ok]
 if missing:

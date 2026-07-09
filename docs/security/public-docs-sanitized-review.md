@@ -7,7 +7,7 @@ Scope: `apps/delivery-api/src/routes/api-docs.routes.ts` and `apps/delivery-api/
 ## Decision
 
 `/docs` and `/docs/openapi.yaml` may remain public on
-`https://clever-route.cleversystem.ai` for the current route-server API-contract
+`https://clever-route-api.cleversystem.ai` for the current route-server API-contract
 surface because the published material is limited to route shapes, schemas, and
 high-level authentication requirements.
 

@@ -36,7 +36,7 @@ For the MVP implementation lane:
    API-contract MVP if it resolves an actor and tenant scope and is covered by
    tests.
 4. **Frontend/domain placement:** this lane is limited to
-   `https://clever-route.cleversystem.ai` and its server-owned subroutes.
+   `https://clever-route-api.cleversystem.ai` and its server-owned subroutes.
    Do not create a separate CLEVER Admin Web domain/app. If operator/customer
    pages are added later, they must live on this route-server surface (for
    example a protected `/admin/...` page backed by the existing `/admin/...`

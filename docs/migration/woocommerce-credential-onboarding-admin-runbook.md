@@ -1,6 +1,6 @@
 # WooCommerce credential onboarding admin runbook
 
-Status: API-contract MVP, 2026-05-22. This runbook is for internal CLEVER operators using the delivery API admin endpoints on `https://clever-route.cleversystem.ai`. The current plan does **not** create a separate CLEVER Admin Web app or `admin.cleversystem.ai`; any future operator/customer pages should stay on route-server subroutes unless a newer ADR overrides the domain strategy.
+Status: API-contract MVP, 2026-05-22. This runbook is for internal CLEVER operators using the delivery API admin endpoints on `https://clever-route-api.cleversystem.ai`. The current plan does **not** create a separate CLEVER Admin Web app or `admin.cleversystem.ai`; any future operator/customer pages should stay on route-server subroutes unless a newer ADR overrides the domain strategy.
 
 ## Safety rules
 
@@ -12,7 +12,7 @@ Status: API-contract MVP, 2026-05-22. This runbook is for internal CLEVER operat
 
 ## Domain and public-route scope
 
-- Delivery API and Woo webhook host: `https://clever-route.cleversystem.ai`.
+- Delivery API and Woo webhook host: `https://clever-route-api.cleversystem.ai`.
 - Woo webhook delivery URLs use the same host, for example `/woocommerce/webhooks/<connectionId>/orders`.
 - Internal admin API endpoints use the same host under `/admin/...`.
 - Public privacy policy routes are prepared on the same host:
@@ -27,7 +27,7 @@ Delivery API environment:
 - `CREDENTIAL_ENCRYPTION_KEY` set to the server-side encryption key.
 - `CLEVER_ADMIN_API_TOKEN` set for the internal admin API bearer guard.
 - `CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS` set to an explicit comma-separated allowlist for the operator token. Leave blank to fail closed; use `*` only for a deliberate, reviewed compatibility exception.
-- `DELIVERY_API_PUBLIC_URL=https://clever-route.cleversystem.ai` for deployed route-server responses; otherwise local responses derive a base URL from request headers.
+- `DELIVERY_API_PUBLIC_URL=https://clever-route-api.cleversystem.ai` for deployed route-server responses; otherwise local responses derive a base URL from request headers.
 
 WooCommerce access:
 

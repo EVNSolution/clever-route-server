@@ -68,7 +68,7 @@ Run smoke after each deploy with the web login secret supplied out of band. The 
 
 ```sh
 ROUTE_OPS_SMOKE_LOGIN_SECRET=... \
-ROUTE_OPS_SMOKE_BASE_URL=https://clever-route.cleversystem.ai \
+ROUTE_OPS_SMOKE_BASE_URL=https://clever-route-api.cleversystem.ai \
 ROUTE_OPS_SMOKE_SHOP_DOMAIN=tomatonofood.com \
 node scripts/smoke-route-ops-production.mjs
 ```

@@ -12,7 +12,7 @@ describe('privacy routes', () => {
       expect(response.statusCode).toBe(200);
       expect(response.headers['content-type']).toContain('text/html');
       expect(response.body).toContain('Clever Route 개인정보 처리방침');
-      expect(response.body).toContain('https://clever-route.cleversystem.ai/privacy');
+      expect(response.body).toContain('https://clever-route-api.cleversystem.ai/privacy');
       expect(response.body).toContain('WordPress/WooCommerce');
       expect(response.body).toContain('Consumer Key');
       expect(response.body).toContain('webhook secret');

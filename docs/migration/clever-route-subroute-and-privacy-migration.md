@@ -8,7 +8,7 @@ Status: planning note for the WordPress/WooCommerce migration lane
 This lane uses only the existing route-server host:
 
 ```text
-https://clever-route.cleversystem.ai
+https://clever-route-api.cleversystem.ai
 ```
 
 Do **not** introduce a separate CLEVER Admin Web app or `admin.cleversystem.ai`
@@ -38,7 +38,7 @@ Current implementation prep:
 - The policy text has been generalized from Shopify-only language to
   WordPress/WooCommerce + route planning + driver/proof-of-delivery operations.
 - The page avoids a separate admin-host dependency and points to
-  `https://clever-route.cleversystem.ai/privacy`.
+  `https://clever-route-api.cleversystem.ai/privacy`.
 
 Remaining owner/legal work before final publication:
 
@@ -50,7 +50,7 @@ Remaining owner/legal work before final publication:
 3. Confirm any production processors for hosting, maps, geocoding, routing,
    proof-media storage, and scanning.
 4. Replace any legacy Shopify App Store listing privacy URL with
-   `https://clever-route.cleversystem.ai/privacy` only after deployment evidence
+   `https://clever-route-api.cleversystem.ai/privacy` only after deployment evidence
    confirms the route is live.
 5. Keep Woo Consumer Key, Consumer Secret, webhook secret, customer PII, proof
    media, and private evidence out of docs, logs, screenshots, and tickets.

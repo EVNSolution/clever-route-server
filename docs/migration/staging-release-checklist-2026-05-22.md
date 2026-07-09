@@ -1,7 +1,7 @@
 # Staging Release Checklist — Woo Credential Onboarding and Same-Host Policy
 
 Date: 2026-05-22
-Scope: `https://clever-route.cleversystem.ai` route-server only.
+Scope: `https://clever-route-api.cleversystem.ai` route-server only.
 
 This checklist executes the approved release-readiness plan from the workspace OMX artifacts:
 
@@ -24,7 +24,7 @@ Confirm these names exist in the staging/server secret configuration without wri
 
 | Variable | Required value or shape | Notes |
 | --- | --- | --- |
-| `DELIVERY_API_PUBLIC_URL` | `https://clever-route.cleversystem.ai` | canonical public URL for webhook setup data |
+| `DELIVERY_API_PUBLIC_URL` | `https://clever-route-api.cleversystem.ai` | canonical public URL for webhook setup data |
 | `PRIVACY_CONTACT_EMAIL` | official business/privacy email | if unset, privacy page must keep pending contact wording |
 | `CLEVER_ADMIN_API_TOKEN` | high-entropy internal operator token | protects Woo onboarding admin API |
 | `CREDENTIAL_ENCRYPTION_KEY` | valid application encryption key | required before storing Woo credentials |
@@ -70,15 +70,15 @@ Stop if the first migration is not intended for the release; split or supersede 
 
 ## Same-host route smoke checks
 
-Use only `https://clever-route.cleversystem.ai`.
+Use only `https://clever-route-api.cleversystem.ai`.
 
 ```bash
-curl -fsS https://clever-route.cleversystem.ai/healthz
-curl -fsS https://clever-route.cleversystem.ai/readyz
-curl -fsS https://clever-route.cleversystem.ai/privacy
-curl -fsSI https://clever-route.cleversystem.ai/privacy-policy
-curl -fsS https://clever-route.cleversystem.ai/docs >/tmp/clever-route-docs.html
-curl -fsS https://clever-route.cleversystem.ai/docs/openapi.yaml >/tmp/clever-route-openapi.yaml
+curl -fsS https://clever-route-api.cleversystem.ai/healthz
+curl -fsS https://clever-route-api.cleversystem.ai/readyz
+curl -fsS https://clever-route-api.cleversystem.ai/privacy
+curl -fsSI https://clever-route-api.cleversystem.ai/privacy-policy
+curl -fsS https://clever-route-api.cleversystem.ai/docs >/tmp/clever-route-docs.html
+curl -fsS https://clever-route-api.cleversystem.ai/docs/openapi.yaml >/tmp/clever-route-openapi.yaml
 ```
 
 Expected:
@@ -93,7 +93,7 @@ Unauthenticated request must fail with a 401/403-class response and no secret ec
 
 ```bash
 curl -sS -o /tmp/woo-test-unauth.json -w '%{http_code}' \
-  -X POST https://clever-route.cleversystem.ai/admin/commerce-connections/woocommerce/test \
+  -X POST https://clever-route-api.cleversystem.ai/admin/commerce-connections/woocommerce/test \
   -H 'content-type: application/json' \
   --data '{"siteUrl":"https://example.invalid","consumerKey":"placeholder_consumer_key","consumerSecret":"placeholder_consumer_secret"}'
 ```

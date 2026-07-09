@@ -8,7 +8,7 @@ This runbook is for the first real customer onboarding rehearsal using CLEVER Ro
 ## Preconditions
 
 - Local verification and staging smoke checklist have passed.
-- `DELIVERY_API_PUBLIC_URL` is `https://clever-route.cleversystem.ai`.
+- `DELIVERY_API_PUBLIC_URL` is `https://clever-route-api.cleversystem.ai`.
 - `CLEVER_ADMIN_API_TOKEN` and `CREDENTIAL_ENCRYPTION_KEY` are configured server-side.
 - `PRIVACY_CONTACT_EMAIL` is either an official business/privacy email or intentionally unset with pending contact copy.
 - The customer/operator understands that exactly one controlled test order will be created.
@@ -28,7 +28,7 @@ This runbook is for the first real customer onboarding rehearsal using CLEVER Ro
 4. Server stores the credential encrypted and returns only safe connection metadata.
 5. Operator generates or rotates the connection webhook secret through the protected admin API.
 6. Operator manually registers WooCommerce webhook:
-   - Delivery URL: `https://clever-route.cleversystem.ai/woocommerce/webhooks/:connectionId/orders`
+   - Delivery URL: `https://clever-route-api.cleversystem.ai/woocommerce/webhooks/:connectionId/orders`
    - Topic: approved order event for this phase
    - Secret: one-time webhook secret from the protected admin API response
 7. Customer/operator creates one controlled test order.
