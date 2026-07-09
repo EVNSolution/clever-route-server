@@ -106,6 +106,54 @@ describe('ShopifyTokenExchangeClient', () => {
     expect(body.get('subject_token')).toBe('dev-session-token');
   });
 
+  test('refreshes an expiring offline access token with the stored refresh token', async () => {
+    const fetchImpl = vi.fn((input: string, init: RequestInit) => {
+      void input;
+      void init;
+
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            access_token: 'shpat_refreshed_access_token',
+            expires_in: 3600,
+            refresh_token: 'shprt_refreshed_refresh_token',
+            refresh_token_expires_in: 7_776_000,
+            scope: 'read_orders'
+          }),
+          { headers: { 'content-type': 'application/json' }, status: 200 }
+        )
+      );
+    });
+    const client = new ShopifyTokenExchangeClient({
+      clientId: 'client-id-123',
+      clientSecret: 'shared-secret-456',
+      fetchImpl
+    });
+
+    const result = await client.refreshOfflineToken({
+      refreshToken: 'shprt_old_refresh_token',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result).toEqual({
+      accessToken: 'shpat_refreshed_access_token',
+      expiresIn: 3600,
+      refreshToken: 'shprt_refreshed_refresh_token',
+      refreshTokenExpiresIn: 7_776_000,
+      scope: 'read_orders'
+    });
+    const firstCall = fetchImpl.mock.calls[0];
+    expect(firstCall).toBeDefined();
+    if (firstCall === undefined) {
+      throw new Error('Expected token refresh fetch call');
+    }
+    const body = firstCall[1].body as URLSearchParams;
+    expect(body.get('client_id')).toBe('client-id-123');
+    expect(body.get('client_secret')).toBe('shared-secret-456');
+    expect(body.get('grant_type')).toBe('refresh_token');
+    expect(body.get('refresh_token')).toBe('shprt_old_refresh_token');
+  });
+
   test('raises an exchange error when Shopify rejects the token exchange', async () => {
     const client = new ShopifyTokenExchangeClient({
       clientId: 'client-id-123',

@@ -123,10 +123,19 @@ export class ShopifyOrderWebhookProcessor {
       return { duplicate: false, statusCode: 500, webhookId: input.webhookId };
     }
 
-    const accessToken = await this.options.shopTokenService.getAdminAccessToken({
-      appId: input.appId,
-      shopDomain: input.shopDomain
-    });
+    let accessToken: string | null;
+    try {
+      accessToken = await this.options.shopTokenService.getAdminAccessToken({
+        appId: input.appId,
+        shopDomain: input.shopDomain
+      });
+    } catch (error) {
+      await this.options.eventStore.markOrderWebhookFailed({
+        ...input,
+        error: `TRANSIENT:${error instanceof Error ? error.message : 'SHOPIFY_TOKEN_REFRESH_FAILED'}`
+      });
+      return { duplicate: false, statusCode: 500, webhookId: input.webhookId };
+    }
     if (accessToken === null) {
       await this.options.eventStore.markOrderWebhookFailed({
         ...input,

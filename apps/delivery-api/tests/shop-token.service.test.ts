@@ -27,6 +27,7 @@ function createRepositoryHarness() {
   };
 
   return {
+    getStored: () => stored,
     prisma: { shop },
     repository: new PrismaShopTokenRepository({ shop })
   };
@@ -74,6 +75,46 @@ describe('ShopTokenService', () => {
     await expect(service.getAdminAccessToken('example.myshopify.com')).resolves.toBe(
       'shpat_access_token'
     );
+  });
+
+  test('refreshes an expired expiring offline access token before returning it', async () => {
+    const { getStored, repository } = createRepositoryHarness();
+    const refreshOfflineToken = vi.fn(() =>
+      Promise.resolve({
+        accessToken: 'shpat_refreshed_access_token',
+        expiresIn: 3600,
+        refreshToken: 'shprt_refreshed_refresh_token',
+        refreshTokenExpiresIn: 7_776_000,
+        scope: 'read_orders,read_locations'
+      })
+    );
+    const service = new ShopTokenService({
+      encryptionKey,
+      now: () => new Date('2026-05-07T03:00:00.000Z'),
+      repository,
+      tokenRefreshClient: { refreshOfflineToken }
+    });
+
+    await service.storeAdminApiToken({
+      accessToken: 'shpat_expired_access_token',
+      accessTokenExpiresAt: new Date('2026-05-07T02:00:00.000Z'),
+      apiVersion: '2026-04',
+      refreshToken: 'shprt_refresh_token',
+      refreshTokenExpiresAt: new Date('2026-08-05T02:00:00.000Z'),
+      shopDomain: 'example.myshopify.com',
+      tokenScopes: ['read_orders']
+    });
+
+    await expect(service.getAdminAccessToken('example.myshopify.com')).resolves.toBe(
+      'shpat_refreshed_access_token'
+    );
+    expect(refreshOfflineToken).toHaveBeenCalledWith({
+      appId: 'clever',
+      refreshToken: 'shprt_refresh_token',
+      shopDomain: 'example.myshopify.com'
+    });
+    expect(getStored()?.tokenScopes).toEqual(['read_orders', 'read_locations']);
+    expect(getStored()?.adminAccessTokenExpiresAt?.toISOString()).toBe('2026-05-07T04:00:00.000Z');
   });
 
   test('rejects invalid shop domains before writing tokens', async () => {

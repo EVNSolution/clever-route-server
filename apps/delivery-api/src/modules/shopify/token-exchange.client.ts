@@ -87,6 +87,37 @@ export class ShopifyTokenExchangeClient {
     return parseTokenExchangeResponse(payload);
   }
 
+  async refreshOfflineToken(input: {
+    appId?: string | undefined;
+    refreshToken: string;
+    shopDomain: string;
+  }): Promise<ShopifyTokenExchangeResult> {
+    const shopDomain = normalizeShopDomain(input.shopDomain);
+    const credential = this.findCredential(input.appId);
+    const body = new URLSearchParams({
+      client_id: credential.clientId,
+      client_secret: credential.clientSecret,
+      grant_type: 'refresh_token',
+      refresh_token: input.refreshToken
+    });
+
+    const response = await this.fetchImpl(`https://${shopDomain}/admin/oauth/access_token`, {
+      body,
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      method: 'POST'
+    });
+
+    const payload = (await readJson(response)) as ShopifyTokenExchangeResponse;
+    if (!response.ok) {
+      throw new Error('Shopify token refresh failed');
+    }
+
+    return parseTokenExchangeResponse(payload);
+  }
+
   private findCredential(appId = DEFAULT_SHOPIFY_APP_ID): ShopifyTokenExchangeCredential {
     const normalizedAppId = normalizeShopifyAppId(appId);
     const credential = this.appCredentials.find((item) => normalizeShopifyAppId(item.appId) === normalizedAppId);

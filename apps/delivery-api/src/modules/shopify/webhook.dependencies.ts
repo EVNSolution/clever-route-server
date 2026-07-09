@@ -9,6 +9,7 @@ import { DEFAULT_SHOPIFY_APP_ID } from './shopify-app-scope.js';
 import { loadShopifyAppCredentials, type ShopifyAppCredentialsEnv } from './shopify-app-credentials.js';
 import { PrismaShopTokenRepository } from './shop-token.repository.js';
 import { ShopTokenService } from './shop-token.service.js';
+import { ShopifyTokenExchangeClient } from './token-exchange.client.js';
 import { PrismaShopifyWebhookEventRepository } from './webhook-event.repository.js';
 
 const DEFAULT_SHOPIFY_API_VERSION = '2026-04';
@@ -24,7 +25,8 @@ type LoadShopifyWebhookDependenciesInput = {
 export function loadShopifyWebhookDependencies(
   input: LoadShopifyWebhookDependenciesInput
 ): ShopifyWebhookDependencies | undefined {
-  const appCredentials = loadShopifyAppCredentials(input.env).map(({ appId, clientSecret }) => ({
+  const shopifyAppCredentials = loadShopifyAppCredentials(input.env);
+  const appCredentials = shopifyAppCredentials.map(({ appId, clientSecret }) => ({
     appId,
     clientSecret
   }));
@@ -57,7 +59,8 @@ export function loadShopifyWebhookDependencies(
       orderRepository: new PrismaOrderSyncRepository(input.prisma),
       shopTokenService: new ShopTokenService({
         encryptionKey: loadTokenEncryptionKey(encryptionKey),
-        repository: new PrismaShopTokenRepository(input.prisma)
+        repository: new PrismaShopTokenRepository(input.prisma),
+        tokenRefreshClient: new ShopifyTokenExchangeClient({ appCredentials: shopifyAppCredentials })
       })
     }),
     webhookService

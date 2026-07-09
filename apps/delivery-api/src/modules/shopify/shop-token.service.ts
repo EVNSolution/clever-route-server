@@ -6,6 +6,8 @@ import type {
   ShopTokenRow
 } from './shop-token.repository.js';
 
+const ACCESS_TOKEN_REFRESH_SKEW_MS = 60_000;
+
 export type StoreAdminApiTokenInput = {
   appId?: string | undefined;
   accessToken: string;
@@ -20,9 +22,25 @@ export type StoreAdminApiTokenInput = {
   tokenScopes: string[];
 };
 
+export type ShopifyOfflineTokenRefreshResult = {
+  accessToken: string;
+  expiresIn: number | null;
+  refreshToken: string | null;
+  refreshTokenExpiresIn: number | null;
+  scope: string;
+};
+
 type ShopTokenServiceOptions = {
   encryptionKey: TokenEncryptionKey;
   repository: Pick<PrismaShopTokenRepository, 'findByShopDomain' | 'upsertShopToken'>;
+  tokenRefreshClient?: {
+    refreshOfflineToken(input: {
+      appId?: string | undefined;
+      refreshToken: string;
+      shopDomain: string;
+    }): Promise<ShopifyOfflineTokenRefreshResult>;
+  } | undefined;
+  now?: () => Date;
 };
 
 export class ShopTokenService {
@@ -75,10 +93,57 @@ export class ShopTokenService {
       return null;
     }
 
+    if (this.shouldRefreshAccessToken(row)) {
+      const refreshed = await this.refreshAccessToken(row);
+      if (refreshed !== null) return refreshed;
+    }
+
     return decryptSecret(row.adminAccessTokenCiphertext, {
       aad: tokenAad(shopDomain, 'access'),
       key: this.options.encryptionKey
     });
+  }
+
+  private shouldRefreshAccessToken(row: ShopTokenRow): boolean {
+    if (row.adminAccessTokenExpiresAt === null) return false;
+    const now = this.options.now?.() ?? new Date();
+    return row.adminAccessTokenExpiresAt.getTime() - now.getTime() <= ACCESS_TOKEN_REFRESH_SKEW_MS;
+  }
+
+  private async refreshAccessToken(row: ShopTokenRow): Promise<string | null> {
+    if (this.options.tokenRefreshClient === undefined || row.adminRefreshTokenCiphertext === null) {
+      return null;
+    }
+    if (row.adminRefreshTokenExpiresAt !== null) {
+      const now = this.options.now?.() ?? new Date();
+      if (row.adminRefreshTokenExpiresAt.getTime() <= now.getTime()) return null;
+    }
+
+    const refreshToken = decryptSecret(row.adminRefreshTokenCiphertext, {
+      aad: tokenAad(row.shopDomain, 'refresh'),
+      key: this.options.encryptionKey
+    });
+    const refreshed = await this.options.tokenRefreshClient.refreshOfflineToken({
+      appId: row.appId,
+      refreshToken,
+      shopDomain: row.shopDomain
+    });
+    const now = this.options.now?.() ?? new Date();
+
+    await this.storeAdminApiToken({
+      appId: row.appId,
+      accessToken: refreshed.accessToken,
+      accessTokenExpiresAt: secondsFromNow(now, refreshed.expiresIn),
+      apiVersion: row.apiVersion,
+      refreshToken: refreshed.refreshToken ?? refreshToken,
+      refreshTokenExpiresAt: secondsFromNow(now, refreshed.refreshTokenExpiresIn) ?? row.adminRefreshTokenExpiresAt,
+      shopDomain: row.shopDomain,
+      shopifyShopGid: row.shopifyShopGid,
+      tokenIssuedAt: now,
+      tokenScopes: normalizeScopes(refreshed.scope.split(','))
+    });
+
+    return refreshed.accessToken;
   }
 }
 
@@ -109,4 +174,9 @@ function assertNonEmpty(value: string, fieldName: string): void {
 
 function tokenAad(shopDomain: string, tokenKind: 'access' | 'refresh'): string {
   return `shopify-admin-token:${tokenKind}:${shopDomain}`;
+}
+
+function secondsFromNow(now: Date, seconds: number | null): Date | null {
+  if (seconds === null) return null;
+  return new Date(now.getTime() + seconds * 1000);
 }
