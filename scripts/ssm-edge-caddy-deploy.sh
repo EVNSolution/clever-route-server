@@ -110,7 +110,8 @@ restore_caddy() {
   cp "$backup" "$CADDYFILE"
   docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" exec -T caddy caddy reload --config /etc/caddy/Caddyfile || true
 }
-install -m 0644 "$candidate" "$CADDYFILE"
+cat "$candidate" > "$CADDYFILE"
+chmod 0644 "$CADDYFILE"
 if ! docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" exec -T caddy caddy validate --config /etc/caddy/Caddyfile; then
   restore_caddy 'container validate failed'
   exit 1
