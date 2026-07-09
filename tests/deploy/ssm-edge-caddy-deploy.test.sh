@@ -18,14 +18,15 @@ payload = json.loads(path.read_text())
 command = payload['commands'][0]
 wrapper = pathlib.Path('scripts/ssm-edge-caddy-deploy.sh').read_text()
 dry_run_idx = command.index('if [ "$DRY_RUN" = "1" ]')
-install_idx = command.index('install -m 0644 "$candidate" "$CADDYFILE"')
+write_idx = command.index('cat "$candidate" > "$CADDYFILE"')
 container_validate_idx = command.index('if ! docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" exec -T caddy caddy validate --config /etc/caddy/Caddyfile')
 container_reload_idx = command.index('if ! docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" exec -T caddy caddy reload --config /etc/caddy/Caddyfile')
 checks = {
     'uses_run_shell_command': command.startswith('bash -lc '),
     'caddyfile_rendered': 'CADDYFILE_B64=' in command and 'base64 -d > "$candidate"' in command,
     'validates_candidate_before_dry_run': 'docker run --rm -v "$candidate_abs:/etc/caddy/Caddyfile:ro" caddy:2-alpine caddy validate --config /etc/caddy/Caddyfile' in command and command.index('docker run --rm -v "$candidate_abs:/etc/caddy/Caddyfile:ro"') < dry_run_idx,
-    'dry_run_exits_before_ingress_mutation': dry_run_idx < install_idx,
+    'dry_run_exits_before_ingress_mutation': dry_run_idx < write_idx,
+    'updates_caddyfile_in_place_before_validate': write_idx < container_validate_idx and 'install -m 0644 "$candidate" "$CADDYFILE"' not in command,
     'validates_container_before_reload': container_validate_idx < container_reload_idx,
     'reloads_not_restarts': 'exec -T caddy caddy reload --config /etc/caddy/Caddyfile' in command and 'restart caddy' not in command,
     'rollback_restores_backup': 'cp "$backup" "$CADDYFILE"' in command and 'restore_caddy' in command and 'reload failed' in command and 'route-api smoke failed' in command and 'route-legacy smoke failed' in command and 'shopify-prod smoke failed' in command and 'shopify-legacy-admin smoke failed' in command,
