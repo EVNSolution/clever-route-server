@@ -19,6 +19,8 @@ STATIC_IMAGE="${ROUTE_OPS_WEB_STATIC_IMAGE:-${STATIC_IMAGE_REPO}:${CHANNEL_TAG}}
 STATIC_VOLUME="${ROUTE_OPS_WEB_STATIC_VOLUME:-clever-route-route-ops-web-static-${CHANNEL_TAG}}"
 VROOM_IMAGE="${VROOM_IMAGE:-ghcr.io/vroom-project/vroom-docker@sha256:247d5683d6745c755d718a156d16b16aac80baccc276a003a68b986c13883b08}"
 BASE_URL="${ROUTE_OPS_SMOKE_BASE_URL:-https://clever-route-api.cleversystem.ai}"
+LEGACY_BASE_URL="${ROUTE_OPS_LEGACY_SMOKE_BASE_URL:-https://clever-route.cleversystem.ai}"
+SMOKE_URLS="${ROUTE_OPS_SMOKE_URLS:-${BASE_URL}/healthz ${LEGACY_BASE_URL}/healthz}"
 DRY_RUN=0
 BUILD_AND_PUSH=0
 SEND_COMMAND=1
@@ -146,6 +148,7 @@ ROUTE_OPS_WEB_STATIC_IMAGE=__STATIC_IMAGE__
 ROUTE_OPS_WEB_STATIC_VOLUME=__STATIC_VOLUME__
 VROOM_IMAGE=__VROOM_IMAGE__
 BASE_URL=__BASE_URL__
+SMOKE_URLS=__SMOKE_URLS__
 DRY_RUN=__DRY_RUN__
 FORCE_STATIC_RESTAGE=__FORCE_STATIC_RESTAGE__
 COMPOSE_FILE_B64=__COMPOSE_FILE_B64__
@@ -216,6 +219,15 @@ should_stage_static() {
   return 0
 }
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea config --quiet
+smoke_health() {
+  for url in $SMOKE_URLS; do
+    if curl -fsS "$url"; then
+      printf 'simple deploy health ok: %s\n' "$url"
+      return 0
+    fi
+  done
+  return 1
+}
 if [ "$DRY_RUN" = "1" ]; then
   printf 'simple deploy dry-run complete; no host image pull, migration, or restart mutation performed.\n'
   exit 0
@@ -226,7 +238,7 @@ rollback_delivery_api() {
   docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up --no-build --force-recreate route-ops-web-static
   docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up -d --no-build --no-deps --force-recreate --remove-orphans clever-route-api
   for rollback_attempt in $(seq 1 30); do
-    if curl -fsS "$BASE_URL/healthz"; then
+    if smoke_health; then
       echo 'simple deploy rollback completed; previous clever-route-api is healthy' >&2
       return 0
     fi
@@ -288,7 +300,7 @@ else
 fi
 docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --no-deps --force-recreate --remove-orphans clever-route-api
 for attempt in $(seq 1 30); do
-  if curl -fsS "$BASE_URL/healthz"; then break; fi
+  if smoke_health; then break; fi
   if [ "$attempt" = "30" ]; then rollback_delivery_api || true; exit 1; fi
   sleep 2
 done
@@ -320,6 +332,7 @@ replacements = {
     '__STATIC_VOLUME__': shlex.quote(os.environ['STATIC_VOLUME']),
     '__VROOM_IMAGE__': shlex.quote(os.environ['VROOM_IMAGE']),
     '__BASE_URL__': shlex.quote(os.environ['BASE_URL']),
+    '__SMOKE_URLS__': shlex.quote(os.environ['SMOKE_URLS']),
     '__DRY_RUN__': shlex.quote(os.environ['DRY_RUN']),
     '__FORCE_STATIC_RESTAGE__': shlex.quote(os.environ['FORCE_STATIC_RESTAGE']),
     '__COMPOSE_FILE_B64__': shlex.quote(os.environ['COMPOSE_FILE_B64']),
@@ -341,7 +354,7 @@ fi
 COMPOSE_FILE_B64="$(base64 < "$COMPOSE_FILE" | tr -d '\n')"
 VROOM_CONFIG_B64="$(base64 < "$VROOM_CONFIG" | tr -d '\n')"
 VROOM_KOREA_CONFIG_B64="$(base64 < "$VROOM_KOREA_CONFIG" | tr -d '\n')"
-export APP_DIR COMPOSE_FILE VROOM_CONFIG VROOM_KOREA_CONFIG COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL DRY_RUN FORCE_STATIC_RESTAGE COMPOSE_FILE_B64 VROOM_CONFIG_B64 VROOM_KOREA_CONFIG_B64
+export APP_DIR COMPOSE_FILE VROOM_CONFIG VROOM_KOREA_CONFIG COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL SMOKE_URLS DRY_RUN FORCE_STATIC_RESTAGE COMPOSE_FILE_B64 VROOM_CONFIG_B64 VROOM_KOREA_CONFIG_B64
 parameters_path="$(mktemp /tmp/route-ops-simple-ssm.XXXXXX)"
 write_parameters "$parameters_path"
 if [ "$SEND_COMMAND" = "0" ]; then
