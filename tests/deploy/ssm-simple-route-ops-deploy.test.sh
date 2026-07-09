@@ -18,7 +18,6 @@ payload = json.loads(path.read_text())
 command = payload['commands'][0]
 wrapper = pathlib.Path('scripts/ssm-simple-route-ops-deploy.sh').read_text()
 workflow = pathlib.Path('.github/workflows/route-ops-simple-deploy.yml').read_text()
-caddyfile = pathlib.Path('infra/caddy/Caddyfile').read_text()
 web_dockerfile = pathlib.Path('apps/route-ops-web/Dockerfile').read_text()
 dry_run_idx = command.index('if [ "$DRY_RUN" = "1" ]')
 forward_mutation_snippets = [
@@ -34,8 +33,7 @@ checks = {
     'digest_runtime_rendered': 'DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:1111111111111111111111111111111111111111111111111111111111111111' in command,
     'digest_static_rendered': 'ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static@sha256:2222222222222222222222222222222222222222222222222222222222222222' in command,
     'compose_synced_to_host': 'COMPOSE_FILE_B64=' in command and 'base64 -d > "$COMPOSE_FILE"' in command,
-    'caddyfile_synced_and_reloaded': 'CADDYFILE_B64=' in command and 'base64 -d > "$CADDYFILE"' in command and 'caddy reload --config /etc/caddy/Caddyfile' in command,
-    'caddyfile_retries_api_swap': 'lb_try_duration 30s' in caddyfile and 'lb_try_interval 500ms' in caddyfile,
+    'does_not_mutate_ingress': 'CADDYFILE_B64=' not in command and 'base64 -d > "$CADDYFILE"' not in command and 'caddy reload --config /etc/caddy/Caddyfile' not in command and 'caddy validate --config /etc/caddy/Caddyfile' not in command and '/etc/caddy/Caddyfile' not in command,
     'compose_preflight': 'docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env' in command,
     'dry_run_exits_before_forward_mutations': all(dry_run_idx < command.index(snippet) for snippet in forward_mutation_snippets),
     'vroom_env': 'VROOM_BASE_URL' in command and 'http://vroom:3000' in command,

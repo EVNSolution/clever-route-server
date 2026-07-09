@@ -1,0 +1,99 @@
+name: Edge Caddy deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Git ref to check out for the Caddyfile and deploy script"
+        required: true
+        default: main
+      dry_run:
+        description: "Validate candidate Caddyfile through SSM without mutating ingress"
+        required: true
+        type: boolean
+        default: true
+      skip_smoke:
+        description: "Skip public smoke checks after real Caddy reload"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: edge-caddy-deploy
+  cancel-in-progress: false
+
+# This workflow is the public ingress lane. Do not add image build, migration, or Route Ops runtime restart work here.
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Require main branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "Edge Caddy deploy must run from refs/heads/main." >&2
+          exit 1
+
+      - name: Require actor allowlist
+        shell: bash
+        env:
+          DEPLOY_ALLOWED_ACTORS: ${{ vars.DEPLOY_ALLOWED_ACTORS }}
+          GITHUB_ACTOR_NAME: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_ALLOWED_ACTORS//[[:space:],]/}" ]; then
+            echo "DEPLOY_ALLOWED_ACTORS is required and must fail closed before Edge Caddy deploy." >&2
+            exit 1
+          fi
+          IFS=',' read -ra actors <<< "$DEPLOY_ALLOWED_ACTORS"
+          allowed=false
+          for actor in "${actors[@]}"; do
+            actor="$(echo "$actor" | xargs)"
+            if [ "$actor" = "$GITHUB_ACTOR_NAME" ]; then allowed=true; fi
+          done
+          if [ "$allowed" != true ]; then
+            echo "$GITHUB_ACTOR_NAME is not allowed to run Edge Caddy deploy." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source_ref }}
+
+      - name: Require deploy source on main history
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD origin/main
+
+      - name: Validate edge Caddy deploy wrapper
+        run: |
+          bash -n scripts/ssm-edge-caddy-deploy.sh tests/deploy/ssm-edge-caddy-deploy.test.sh
+          tests/deploy/ssm-edge-caddy-deploy.test.sh
+
+      - name: Configure AWS credentials through OIDC
+        # aws-actions/configure-aws-credentials v6.2.0 (Node 24) pinned to full commit SHA.
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b
+        with:
+          role-to-assume: ${{ vars.AWS_ROUTE_OPS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+
+      - name: Deploy via Edge Caddy SSM lane
+        shell: bash
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+          EDGE_CADDY_SSM_TAG_KEY: ${{ vars.SSM_ROUTE_OPS_TARGET_TAG_KEY || 'Service' }}
+          EDGE_CADDY_SSM_TAG_VALUE: ${{ vars.SSM_ROUTE_OPS_TARGET_TAG_VALUE || 'clever-delivery-server' }}
+          EDGE_CADDY_SKIP_SMOKE: ${{ inputs.skip_smoke && '1' || '0' }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "$DRY_RUN" = "true" ]; then
+            args+=(--dry-run)
+          fi
+          scripts/ssm-edge-caddy-deploy.sh "${args[@]}"

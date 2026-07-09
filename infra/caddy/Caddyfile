@@ -1,3 +1,13 @@
+# Edge ingress lane owns this file. Do not deploy Caddy/domain routing changes
+# through the Route Ops runtime lane.
+#
+# Host ownership:
+# - clever-route.cleversystem.ai      -> Route delivery-api in this compose project
+# - clever-route-app.cleversystem.ai  -> Shopify dev/legacy app on external compose network
+# - clever-admin.cleversystem.ai      -> Shopify main/admin app on external compose network
+# - clever-kfood-app.cleversystem.ai  -> Shopify K-food app on external compose network
+# Add new host blocks through the Edge Caddy deploy lane only after scope approval.
+
 clever-route.cleversystem.ai {
 	encode zstd gzip
 	reverse_proxy delivery-api:3000 {

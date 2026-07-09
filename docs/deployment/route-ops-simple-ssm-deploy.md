@@ -21,7 +21,7 @@ server-side GitHub credentials and a real checkout are deliberately provisioned.
 - Script: `scripts/ssm-simple-route-ops-deploy.sh`
 - GitHub workflow: `.github/workflows/route-ops-simple-deploy.yml`
 - Compose: `infra/compose/docker-compose.prod.yml`
-- Caddy: `infra/caddy/Caddyfile`
+- Edge/Caddy: owned by `docs/deployment/edge-caddy-deploy.md`, not this lane
 - Runtime env: `infra/env/delivery-api.env`
 - VROOM configs: `infra/vroom/config.yml`, `infra/vroom/config.korea.yml`
 
@@ -45,21 +45,20 @@ server-side GitHub credentials and a real checkout are deliberately provisioned.
 The EC2 host does not build. A real deploy does this in order:
 
 1. Takes `.deploy/route-ops-simple-deploy.lock.d`.
-2. Writes the reviewed `infra/compose/docker-compose.prod.yml`, `infra/caddy/Caddyfile`, and VROOM config files from the workflow checkout onto the host, so compose/Caddy/VROOM config/script-only changes can deploy through SSM without image builds.
+2. Writes the reviewed `infra/compose/docker-compose.prod.yml` and VROOM config files from the workflow checkout onto the host, so compose/VROOM config/script-only changes can deploy through SSM without image builds. It does **not** write or reload Caddy.
 3. Writes `.deploy/simple-candidate-image.env` with digest-addressable image refs.
 4. Copies existing `.deploy/current-image.env` to `.deploy/simple-rollback-image.env`.
 5. Validates compose config with `--profile osrm --profile vroom --profile korea`.
 6. Rewrites optimizer env to legacy Ontario URLs plus explicit Ontario/Korea OSRM/VROOM URLs and `OSRM_DEFAULT_COVERAGE=korea`.
 7. Bootstraps proof-media directory owner/mode.
-8. Reloads Caddy in place so the retry policy is active before `delivery-api` is recreated.
-9. Logs into GHCR using SSM parameters only on the host.
-10. Runs `docker compose --profile osrm --profile vroom --profile korea pull delivery-api vroom vroom-korea`; pulls `route-ops-web-static` only when static staging is required.
-11. Runs `docker compose run --rm delivery-api-migrate` before touching the live static volume.
-12. Compares candidate and current `ROUTE_OPS_WEB_STATIC_IMAGE` digest refs.
-13. Stages the static volume via `route-ops-web-static` when the static digest changed, the current ref is missing, either ref is a mutable tag/non-digest ref, or `ROUTE_OPS_FORCE_STATIC_RESTAGE=1` is set.
-14. Recreates `delivery-api` only with `up -d --no-build --no-deps --force-recreate`.
-15. Verifies public `/healthz`.
-16. Backs up `.deploy/current-image.env`, promotes the candidate env, and appends deploy history including `staticStage`.
+8. Logs into GHCR using SSM parameters only on the host.
+9. Runs `docker compose --profile osrm --profile vroom --profile korea pull delivery-api vroom vroom-korea`; pulls `route-ops-web-static` only when static staging is required.
+10. Runs `docker compose run --rm delivery-api-migrate` before touching the live static volume.
+11. Compares candidate and current `ROUTE_OPS_WEB_STATIC_IMAGE` digest refs.
+12. Stages the static volume via `route-ops-web-static` when the static digest changed, the current ref is missing, either ref is a mutable tag/non-digest ref, or `ROUTE_OPS_FORCE_STATIC_RESTAGE=1` is set.
+13. Recreates `delivery-api` only with `up -d --no-build --no-deps --force-recreate`.
+14. Verifies public `/healthz`.
+15. Backs up `.deploy/current-image.env`, promotes the candidate env, and appends deploy history including `staticStage`.
 
 ## Commands
 
@@ -156,10 +155,11 @@ The runtime image includes the guard script and Prisma schema, so this removes t
 ## Availability expectation
 
 Build/push happens in GitHub Actions and does not stop production. The SSM phase only pulls,
-runs migration, stages static assets, and recreates `delivery-api`. Caddy is not recreated;
-it is reloaded in place and uses `lb_try_duration 30s` / `lb_try_interval 500ms` so brief
-connection failures during the single-container `delivery-api` swap are retried instead of
-returned immediately as transient 502 responses.
+runs migration, stages static assets, and recreates `delivery-api`. Caddy is neither
+rewritten nor reloaded by this lane. The edge lane must already have the
+`lb_try_duration 30s` / `lb_try_interval 500ms` retry policy in place so brief connection
+failures during the single-container `delivery-api` swap are retried instead of returned
+immediately as transient 502 responses.
 
 ## Static staging skip
 

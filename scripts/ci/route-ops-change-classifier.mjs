@@ -2,10 +2,10 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import process from 'node:process';
 
-const DEPLOY_WORKFLOW_RE = /^\.github\/workflows\/(ci|route-ops-simple-deploy)\.yml$/;
-const DEPLOY_SCRIPT_RE = /^scripts\/(check-ignore-hygiene|scan-secrets|smoke-route-ops-production|ssm-simple-route-ops-deploy|osrm-ontario|monitor-route-ops-production)\.(mjs|sh)$/;
-const DEPLOY_TEST_RE = /^tests\/deploy\/(ssm-simple-route-ops-deploy|route-ops-prisma-db-push-guard|monitor-route-ops-production)\.test\.sh$/;
-const LIVE_DEPLOY_SCRIPT_RE = /^scripts\/(ssm-simple-route-ops-deploy|osrm-ontario|monitor-route-ops-production)\.sh$/;
+const DEPLOY_WORKFLOW_RE = /^\.github\/workflows\/(ci|route-ops-simple-deploy|edge-caddy-deploy)\.yml$/;
+const DEPLOY_SCRIPT_RE = /^scripts\/(check-ignore-hygiene|scan-secrets|smoke-route-ops-production|ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|osrm-ontario|monitor-route-ops-production)\.(mjs|sh)$/;
+const DEPLOY_TEST_RE = /^tests\/deploy\/(ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|route-ops-prisma-db-push-guard|monitor-route-ops-production)\.test\.sh$/;
+const LIVE_DEPLOY_SCRIPT_RE = /^scripts\/(ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|osrm-ontario|monitor-route-ops-production)\.sh$/;
 
 if (isCliEntryPoint()) {
   const args = new Set(process.argv.slice(2));
@@ -69,11 +69,12 @@ export function classifyRouteOpsChanges(files, options = {}) {
 
   const deployChanged = any(files, [
     /^infra\/compose\/docker-compose\.prod\.yml$/,
+    /^infra\/caddy\/Caddyfile$/,
     /^infra\/vroom\/config(\.[a-z0-9-]+)?\.yml$/,
     /^infra\/env\/delivery-api\.env\.example$/,
     DEPLOY_SCRIPT_RE,
     DEPLOY_TEST_RE,
-    /^docs\/deployment\/(route-ops-simple-ssm-deploy|route-ops-osrm-ontario|route-ops-vroom|route-ops-multi-coverage-routing)\.md$/,
+    /^docs\/deployment\/(route-ops-simple-ssm-deploy|edge-caddy-deploy|route-ops-osrm-ontario|route-ops-vroom|route-ops-multi-coverage-routing)\.md$/,
   ]);
 
   const apiChanged = any(files, [
@@ -102,6 +103,7 @@ export function classifyRouteOpsChanges(files, options = {}) {
     /^apps\/route-ops-web\//,
     /^apps\/delivery-api\//,
     /^infra\/compose\/docker-compose\.prod\.yml$/,
+    /^infra\/caddy\/Caddyfile$/,
     /^infra\/vroom\/config(\.[a-z0-9-]+)?\.yml$/,
     /^infra\/env\/delivery-api\.env\.example$/,
     /^scripts\/ci\/route-ops-change-classifier\.mjs$/,
@@ -134,6 +136,7 @@ export function classifyRouteOpsChanges(files, options = {}) {
     /^scripts\/ci\/route-ops-change-classifier\.mjs$/,
     /^tests\/ci\/route-ops-change-classifier\.test\.mjs$/,
     /^infra\/compose\/docker-compose\.prod\.yml$/,
+    /^infra\/caddy\/Caddyfile$/,
     /^infra\/vroom\/config(\.[a-z0-9-]+)?\.yml$/,
     LIVE_DEPLOY_SCRIPT_RE,
     /^tests\/deploy\//,

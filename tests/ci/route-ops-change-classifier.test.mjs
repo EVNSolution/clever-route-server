@@ -42,6 +42,13 @@ check('deploy workflow change', ['scripts/ssm-simple-route-ops-deploy.sh', '.git
   full_required: true,
 });
 
+check('edge caddy workflow change', ['scripts/ssm-edge-caddy-deploy.sh', '.github/workflows/edge-caddy-deploy.yml'], {
+  deploy_changed: true,
+  workflow_changed: true,
+  critical_changed: true,
+  full_required: true,
+});
+
 check('docs-only change', ['README.md', 'docs/deployment/route-ops-ci-deploy-validation.md'], {
   docs_only: true,
   web_changed: false,
@@ -68,6 +75,14 @@ check('admin UI API test needs web artifact', ['apps/delivery-api/tests/admin-ro
 });
 
 check('deploy script only stays deploy-critical without API artifact', ['scripts/ssm-simple-route-ops-deploy.sh'], {
+  api_changed: false,
+  deploy_changed: true,
+  critical_changed: true,
+  full_required: false,
+  web_artifact_required: false,
+});
+
+check('edge caddy file stays deploy-critical without API artifact', ['infra/caddy/Caddyfile'], {
   api_changed: false,
   deploy_changed: true,
   critical_changed: true,
