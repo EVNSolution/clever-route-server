@@ -177,7 +177,7 @@ Use the reviewed simple SSM deploy path or a host-only app restart approved for 
 Check admin bootstrap contains coverage names but no internal URLs:
 
 ```bash
-curl -fsS https://clever-route.cleversystem.ai/healthz
+curl -fsS https://clever-route-api.cleversystem.ai/healthz
 # then authenticated admin bootstrap smoke through the existing production smoke tooling
 ```
 

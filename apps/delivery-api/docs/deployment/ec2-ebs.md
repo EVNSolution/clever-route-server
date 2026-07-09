@@ -9,7 +9,7 @@ migration if operational load requires it.
 
 - API: `clever-route-server` delivery API container
 - Database: PostgreSQL 17 container running on the same EC2 instance
-- Ingress: Caddy serving `https://clever-route.cleversystem.ai`
+- Ingress: Caddy serving `https://clever-route-api.cleversystem.ai`
 - Storage: EBS mounted on the EC2 host and exposed to containers through
   `/srv/clever-route-server/data/*` bind mounts
 - Health checks: `GET /healthz`, `GET /readyz`
@@ -20,7 +20,7 @@ Use `infra/env/delivery-api.env.example` from the repository root as the compose
 runtime template. Minimum values:
 
 ```env
-DELIVERY_API_PUBLIC_URL=https://clever-route.cleversystem.ai
+DELIVERY_API_PUBLIC_URL=https://clever-route-api.cleversystem.ai
 PRIVACY_CONTACT_EMAIL=chase@evnsolution.com
 CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS=<comma-separated-shop-domains>
 DATABASE_URL=postgresql://clever:<password>@postgres:5432/clever_route
@@ -56,7 +56,7 @@ When `CLEVER_ADMIN_WEB_LOGIN_SECRET` and `CLEVER_ADMIN_WEB_SESSION_SECRET` are
 set, the API exposes the browser-only Woo onboarding UI at:
 
 ```text
-https://clever-route.cleversystem.ai/admin/ui/commerce-connections/woocommerce
+https://clever-route-api.cleversystem.ai/admin/ui/commerce-connections/woocommerce
 ```
 
 The browser login secret is intentionally separate from `CLEVER_ADMIN_API_TOKEN`.

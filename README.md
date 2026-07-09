@@ -16,7 +16,7 @@ The Shopify embedded admin app is intentionally **not** part of this repository.
 - Legacy compatibility still present: Shopify token/webhook/order-sync modules
   remain available until the WordPress/WooCommerce connector and tenant/order
   identity migration are complete
-- Intended public endpoint: `https://clever-route.cleversystem.ai`
+- Intended public endpoint: `https://clever-route-api.cleversystem.ai`
 - Public and operator-facing surfaces for this lane stay on this same host:
   `/privacy`, `/privacy-policy`, `/docs`, `/admin/...`, and
   `/woocommerce/webhooks/...`. `/docs` is public only under the sanitized docs

@@ -38,7 +38,7 @@ If the relocated Shopify reference repo is run for comparison, keep its compose 
 
 ## Mobile base URL
 
-Future mobile/server contract should use `https://clever-route.cleversystem.ai`.
+Future mobile/server contract should use `https://clever-route-api.cleversystem.ai`.
 Do not hardcode raw EIP or `sslip.io` as the normal app contract except in
 emergency diagnostics notes.
 
@@ -48,7 +48,7 @@ The current WordPress/WooCommerce migration lane is constrained to the existing
 route-server host. Do not plan a separate `admin.cleversystem.ai` or standalone
 CLEVER Admin Web for this lane.
 
-Expected public/protected subroutes on `https://clever-route.cleversystem.ai`:
+Expected public/protected subroutes on `https://clever-route-api.cleversystem.ai`:
 
 - `/privacy` — public privacy policy page migrated from the legacy Shopify app surface.
 - `/privacy-policy` — legacy privacy URL redirect to `/privacy`.

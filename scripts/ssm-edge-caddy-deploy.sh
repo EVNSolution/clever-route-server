@@ -9,9 +9,11 @@ COMPOSE_PROJECT="${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}"
 SERVICE_TAG_KEY="${EDGE_CADDY_SSM_TAG_KEY:-${ROUTE_OPS_SSM_TAG_KEY:-Service}}"
 SERVICE_TAG_VALUE="${EDGE_CADDY_SSM_TAG_VALUE:-${ROUTE_OPS_SSM_TAG_VALUE:-clever-delivery-server}}"
 COMMIT_SHA="$(git rev-parse --short=40 HEAD)"
-ROUTE_HEALTH_URL="${EDGE_CADDY_ROUTE_HEALTH_URL:-https://clever-route.cleversystem.ai/healthz}"
-SHOPIFY_DEV_URL="${EDGE_CADDY_SHOPIFY_DEV_URL:-https://clever-route-app.cleversystem.ai/auth/login}"
-SHOPIFY_ADMIN_URL="${EDGE_CADDY_SHOPIFY_ADMIN_URL:-https://clever-admin.cleversystem.ai/auth/login}"
+ROUTE_HEALTH_URL="${EDGE_CADDY_ROUTE_HEALTH_URL:-https://clever-route-api.cleversystem.ai/healthz}"
+LEGACY_ROUTE_HEALTH_URL="${EDGE_CADDY_LEGACY_ROUTE_HEALTH_URL:-https://clever-route.cleversystem.ai/healthz}"
+SHOPIFY_DEV_URL="${EDGE_CADDY_SHOPIFY_DEV_URL:-https://clever-route-app-dev.cleversystem.ai/auth/login}"
+SHOPIFY_PROD_URL="${EDGE_CADDY_SHOPIFY_PROD_URL:-https://clever-route-app.cleversystem.ai/auth/login}"
+SHOPIFY_LEGACY_ADMIN_URL="${EDGE_CADDY_SHOPIFY_LEGACY_ADMIN_URL:-https://clever-admin.cleversystem.ai/auth/login}"
 SHOPIFY_KFOOD_URL="${EDGE_CADDY_SHOPIFY_KFOOD_URL:-https://clever-kfood-app.cleversystem.ai/auth/login}"
 SKIP_SMOKE="${EDGE_CADDY_SKIP_SMOKE:-0}"
 DRY_RUN=0
@@ -23,7 +25,7 @@ Usage: $0 [--dry-run] [--no-send]
 
 Edge Caddy SSM deploy lane: owns public ingress/Caddyfile changes only. It does
 not build images, run migrations, stage Route Ops static assets, recreate
-\`delivery-api\`, or deploy Shopify app containers. Use this lane before Route
+\`clever-route-api\`, or deploy Shopify app containers. Use this lane before Route
 Ops/Shopify runtime deploys when host/domain routing changes.
 
 Env:
@@ -76,8 +78,10 @@ COMMIT_SHA=__COMMIT_SHA__
 DRY_RUN=__DRY_RUN__
 SKIP_SMOKE=__SKIP_SMOKE__
 ROUTE_HEALTH_URL=__ROUTE_HEALTH_URL__
+LEGACY_ROUTE_HEALTH_URL=__LEGACY_ROUTE_HEALTH_URL__
 SHOPIFY_DEV_URL=__SHOPIFY_DEV_URL__
-SHOPIFY_ADMIN_URL=__SHOPIFY_ADMIN_URL__
+SHOPIFY_PROD_URL=__SHOPIFY_PROD_URL__
+SHOPIFY_LEGACY_ADMIN_URL=__SHOPIFY_LEGACY_ADMIN_URL__
 SHOPIFY_KFOOD_URL=__SHOPIFY_KFOOD_URL__
 CADDYFILE_B64=__CADDYFILE_B64__
 cd "$APP_DIR"
@@ -130,8 +134,10 @@ smoke_status() {
 }
 if [ "$SKIP_SMOKE" != "1" ]; then
   if ! smoke_status route-api "$ROUTE_HEALTH_URL" 200 299; then restore_caddy 'route-api smoke failed'; exit 1; fi
+  if ! smoke_status route-legacy "$LEGACY_ROUTE_HEALTH_URL" 200 299; then restore_caddy 'route-legacy smoke failed'; exit 1; fi
   if ! smoke_status shopify-dev "$SHOPIFY_DEV_URL" 200 499; then restore_caddy 'shopify-dev smoke failed'; exit 1; fi
-  if ! smoke_status shopify-admin "$SHOPIFY_ADMIN_URL" 200 499; then restore_caddy 'shopify-admin smoke failed'; exit 1; fi
+  if ! smoke_status shopify-prod "$SHOPIFY_PROD_URL" 200 499; then restore_caddy 'shopify-prod smoke failed'; exit 1; fi
+  if ! smoke_status shopify-legacy-admin "$SHOPIFY_LEGACY_ADMIN_URL" 200 499; then restore_caddy 'shopify-legacy-admin smoke failed'; exit 1; fi
   if ! smoke_status shopify-kfood "$SHOPIFY_KFOOD_URL" 200 499; then restore_caddy 'shopify-kfood smoke failed'; exit 1; fi
 fi
 printf '{"ts":"%s","commitSha":"%s","lane":"edge-caddy","caddyfile":"%s","backup":"%s","smokeSkipped":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$COMMIT_SHA" "$CADDYFILE" "$backup" "$SKIP_SMOKE" >> .deploy/deploy-history.jsonl
@@ -155,8 +161,10 @@ replacements = {
     '__DRY_RUN__': shlex.quote(os.environ['DRY_RUN']),
     '__SKIP_SMOKE__': shlex.quote(os.environ['SKIP_SMOKE']),
     '__ROUTE_HEALTH_URL__': shlex.quote(os.environ['ROUTE_HEALTH_URL']),
+    '__LEGACY_ROUTE_HEALTH_URL__': shlex.quote(os.environ['LEGACY_ROUTE_HEALTH_URL']),
     '__SHOPIFY_DEV_URL__': shlex.quote(os.environ['SHOPIFY_DEV_URL']),
-    '__SHOPIFY_ADMIN_URL__': shlex.quote(os.environ['SHOPIFY_ADMIN_URL']),
+    '__SHOPIFY_PROD_URL__': shlex.quote(os.environ['SHOPIFY_PROD_URL']),
+    '__SHOPIFY_LEGACY_ADMIN_URL__': shlex.quote(os.environ['SHOPIFY_LEGACY_ADMIN_URL']),
     '__SHOPIFY_KFOOD_URL__': shlex.quote(os.environ['SHOPIFY_KFOOD_URL']),
     '__CADDYFILE_B64__': shlex.quote(os.environ['CADDYFILE_B64']),
 }
@@ -170,7 +178,7 @@ PY
 
 [ -f "$CADDYFILE" ] || fail "missing Caddyfile: $CADDYFILE"
 CADDYFILE_B64="$(base64 < "$CADDYFILE" | tr -d '\n')"
-export APP_DIR COMPOSE_FILE CADDYFILE COMPOSE_PROJECT COMMIT_SHA DRY_RUN SKIP_SMOKE ROUTE_HEALTH_URL SHOPIFY_DEV_URL SHOPIFY_ADMIN_URL SHOPIFY_KFOOD_URL CADDYFILE_B64
+export APP_DIR COMPOSE_FILE CADDYFILE COMPOSE_PROJECT COMMIT_SHA DRY_RUN SKIP_SMOKE ROUTE_HEALTH_URL LEGACY_ROUTE_HEALTH_URL SHOPIFY_DEV_URL SHOPIFY_PROD_URL SHOPIFY_LEGACY_ADMIN_URL SHOPIFY_KFOOD_URL CADDYFILE_B64
 parameters_path="$(mktemp /tmp/edge-caddy-ssm.XXXXXX)"
 write_parameters "$parameters_path"
 if [ "$SEND_COMMAND" = "0" ]; then

@@ -21,11 +21,11 @@ workflow = pathlib.Path('.github/workflows/route-ops-simple-deploy.yml').read_te
 web_dockerfile = pathlib.Path('apps/route-ops-web/Dockerfile').read_text()
 dry_run_idx = command.index('if [ "$DRY_RUN" = "1" ]')
 forward_mutation_snippets = [
-    '--profile osrm --profile vroom --profile korea pull delivery-api vroom vroom-korea',
+    '--profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea',
     '--profile osrm --profile vroom --profile korea pull route-ops-web-static',
-    'run --rm delivery-api-migrate',
+    'run --rm clever-route-api-migrate',
     'up --no-build --force-recreate route-ops-web-static',
-    'up -d --no-build --no-deps --force-recreate delivery-api',
+    'up -d --no-build --no-deps --force-recreate --remove-orphans clever-route-api',
 ]
 checks = {
     'uses_run_shell_command': command.startswith('bash -lc '),
@@ -40,13 +40,13 @@ checks = {
     'multi_coverage_env': 'OSRM_ONTARIO_BASE_URL' in command and 'http://osrm-ontario:5000' in command and 'OSRM_KOREA_BASE_URL' in command and 'http://osrm-korea:5000' in command and 'VROOM_KOREA_BASE_URL' in command and 'http://vroom-korea:3000' in command and 'OSRM_DEFAULT_COVERAGE' in command and 'korea' in command,
     'vroom_configs_synced_to_host': 'VROOM_CONFIG_B64=' in command and 'VROOM_KOREA_CONFIG_B64=' in command and 'base64 -d > "$VROOM_KOREA_CONFIG"' in command,
     'proof_media_bootstrap': 'chown -R 100:101 /srv/clever-route-server/data/driver-proof-media' in command and 'chmod 750 /srv/clever-route-server/data/driver-proof-media' in command,
-    'compose_pull_only_on_host': '--profile osrm --profile vroom --profile korea pull delivery-api vroom vroom-korea' in command and 'pull route-ops-web-static' in command and 'docker pull "$DELIVERY_API_IMAGE"' not in command,
-    'migrate_uses_compose_service': 'run --rm delivery-api-migrate' in command,
-    'migrate_before_static_stage': command.index('run --rm delivery-api-migrate') < command.index('simple deploy static stage required', command.index('run --rm delivery-api-migrate')),
-    'api_up_no_deps': 'up -d --no-build --no-deps --force-recreate delivery-api' in command,
-    'does_not_recreate_caddy': '--force-recreate delivery-api caddy' not in command,
+    'compose_pull_only_on_host': '--profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea' in command and 'pull route-ops-web-static' in command and 'docker pull "$DELIVERY_API_IMAGE"' not in command,
+    'migrate_uses_compose_service': 'run --rm clever-route-api-migrate' in command,
+    'migrate_before_static_stage': command.index('run --rm clever-route-api-migrate') < command.index('simple deploy static stage required', command.index('run --rm clever-route-api-migrate')),
+    'api_up_no_deps': 'up -d --no-build --no-deps --force-recreate --remove-orphans clever-route-api' in command,
+    'does_not_recreate_caddy': '--force-recreate --remove-orphans clever-route-api caddy' not in command and '--force-recreate clever-route-api caddy' not in command,
     'does_not_push_prod_prev': 'backup_channel_images' not in wrapper and 'previous_image_ref' not in wrapper and 'docker tag' not in wrapper,
-    'rollback_uses_previous_env': 'cp .deploy/current-image.env .deploy/simple-rollback-image.env' in command and 'rolling delivery-api back to previous image env' in command,
+    'rollback_uses_previous_env': 'cp .deploy/current-image.env .deploy/simple-rollback-image.env' in command and 'rolling clever-route-api back to previous image env' in command,
     'static_missing_current_guard': 'HAD_CURRENT_IMAGE_ENV=0' in wrapper and "CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE=''" in wrapper and "echo 'missing-current'" in wrapper,
     'static_non_digest_is_conservative': 'is_digest_ref()' in wrapper and "echo 'non-digest-ref'" in wrapper,
     'static_skip_logic': 'should_stage_static()' in command and 'simple deploy static stage skipped' in command and 'ROUTE_OPS_FORCE_STATIC_RESTAGE' in wrapper and "echo 'unchanged'" in wrapper and "echo 'unchanged'\n  return 1" not in wrapper,
@@ -59,7 +59,7 @@ checks = {
     'workflow_publishes_sha_and_channel_tags': '${{ env.DELIVERY_API_IMAGE_REPO }}:${{ github.sha }}' in workflow and '${{ env.DELIVERY_API_IMAGE_REPO }}:${{ inputs.channel_tag }}' in workflow and '${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}:${{ github.sha }}' in workflow and '${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}:${{ inputs.channel_tag }}' in workflow,
     'workflow_uses_digest_output': 'API_DIGEST: ${{ steps.build_api.outputs.digest }}' in workflow and 'WEB_DIGEST: ${{ steps.build_web.outputs.digest }}' in workflow,
     'workflow_splits_image_scope': "grep -Eq '^(apps/delivery-api/|\\.dockerignore$)'" in workflow and "grep -Eq '^(apps/route-ops-web/|\\.dockerignore$)'" in workflow,
-    'workflow_has_no_migrate_build': 'delivery-api-migrate' not in workflow and 'target: migrate' not in workflow,
+    'workflow_has_no_migrate_build': 'clever-route-api-migrate' not in workflow and 'target: migrate' not in workflow,
     'manual_publish_uses_buildx': 'docker buildx build --platform linux/amd64' in wrapper and '--push' in wrapper and '--provenance=false' in wrapper,
     'manual_publish_uses_registry_cache': f'--cache-from "type=registry,ref=${{STATIC_IMAGE_REPO}}:buildcache"' in wrapper and f'--cache-to "type=registry,ref=${{RUNTIME_IMAGE_REPO}}:buildcache,mode=max"' in wrapper,
     'manual_publish_requires_buildx': 'docker buildx version >/dev/null 2>&1 || fail "docker buildx is required for --publish' in wrapper,

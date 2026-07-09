@@ -197,7 +197,7 @@ describe("Admin WooCommerce connection UI routes", () => {
         env: {
           CLEVER_ADMIN_WEB_LOGIN_SECRET: "abcdefghij",
           CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
-          DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
+          DELIVERY_API_PUBLIC_URL: "https://clever-route-api.cleversystem.ai",
         },
         nodeEnv: "production",
       }),
@@ -208,7 +208,7 @@ describe("Admin WooCommerce connection UI routes", () => {
         env: {
           CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
           CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
-          DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
+          DELIVERY_API_PUBLIC_URL: "https://clever-route-api.cleversystem.ai",
         },
         nodeEnv: "production",
       }),
@@ -223,7 +223,7 @@ describe("Admin WooCommerce connection UI routes", () => {
       env: {
         CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
         CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
-        DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
+        DELIVERY_API_PUBLIC_URL: "https://clever-route-api.cleversystem.ai",
         DRIVER_APP_DOWNLOAD_URL:
           "https://drive.example.test/uc?id=apk&export=download",
       },
@@ -239,7 +239,7 @@ describe("Admin WooCommerce connection UI routes", () => {
         env: {
           CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
           CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
-          DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
+          DELIVERY_API_PUBLIC_URL: "https://clever-route-api.cleversystem.ai",
           DRIVER_APP_DOWNLOAD_URL: "file:///tmp/driver.apk",
         },
         nodeEnv: "production",
@@ -255,7 +255,7 @@ describe("Admin WooCommerce connection UI routes", () => {
       env: {
         CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
         CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
-        DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
+        DELIVERY_API_PUBLIC_URL: "https://clever-route-api.cleversystem.ai",
         VROOM_BASE_URL: "http://vroom:3000",
         VROOM_TIMEOUT_MS: "3000",
       },
@@ -293,7 +293,7 @@ describe("Admin WooCommerce connection UI routes", () => {
       env: {
         CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
         CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
-        DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
+        DELIVERY_API_PUBLIC_URL: "https://clever-route-api.cleversystem.ai",
       },
       nodeEnv: "production",
       prisma: {
@@ -349,7 +349,7 @@ describe("Admin WooCommerce connection UI routes", () => {
       env: {
         CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
         CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
-        DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
+        DELIVERY_API_PUBLIC_URL: "https://clever-route-api.cleversystem.ai",
       },
       nodeEnv: "test",
     });
@@ -813,7 +813,7 @@ describe("Admin WooCommerce connection UI routes", () => {
         readApiData<{ driverApp: { installUrl: string | null } }>(bootstrap)
           .driverApp,
       ).toEqual({
-        installUrl: "https://clever-route.cleversystem.ai/driver-app",
+        installUrl: "https://clever-route-api.cleversystem.ai/driver-app",
       });
       expect(bootstrap.body).not.toContain("drive.example.test");
       expect(bootstrap.body).not.toContain("driver-apk");
@@ -5509,7 +5509,7 @@ describe("Admin WooCommerce connection UI routes", () => {
         CLEVER_ADMIN_API_ACTOR: "web-operator",
         CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
         CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
-        DELIVERY_API_PUBLIC_URL: "https://clever-route.cleversystem.ai",
+        DELIVERY_API_PUBLIC_URL: "https://clever-route-api.cleversystem.ai",
       },
       nodeEnv: "test",
     });
@@ -5654,7 +5654,7 @@ describe("Admin WooCommerce connection UI routes", () => {
           credentialFormFields({ csrfToken }),
           undefined,
           {
-            origin: "https://clever-route.cleversystem.ai",
+            origin: "https://clever-route-api.cleversystem.ai",
             "sec-fetch-site": "same-site",
           },
         ),
@@ -5679,7 +5679,7 @@ describe("Admin WooCommerce connection UI routes", () => {
           credentialFormFields({ csrfToken }),
           undefined,
           {
-            origin: "https://clever-route.cleversystem.ai:443",
+            origin: "https://clever-route-api.cleversystem.ai:443",
             "sec-fetch-site": "same-origin",
           },
         ),
@@ -5693,7 +5693,7 @@ describe("Admin WooCommerce connection UI routes", () => {
           undefined,
           {
             referer:
-              "https://clever-route.cleversystem.ai:443/admin/ui/commerce-connections/woocommerce",
+              "https://clever-route-api.cleversystem.ai:443/admin/ui/commerce-connections/woocommerce",
             "sec-fetch-site": "same-origin",
           },
         ),
@@ -5731,7 +5731,7 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(response.body).toContain("WooCommerce connection saved.");
       expect(response.body).toContain("Copy this generated webhook secret now");
       expect(response.body).toContain(
-        "https://clever-route.cleversystem.ai/woocommerce/webhooks/11111111-1111-4111-8111-111111111111/orders",
+        "https://clever-route-api.cleversystem.ai/woocommerce/webhooks/11111111-1111-4111-8111-111111111111/orders",
       );
       expect(response.body).toContain("generated-whsec");
       expect(countOccurrences(response.body, "generated-whsec")).toBe(1);
@@ -6729,7 +6729,7 @@ async function createUiHarness(
       ? {}
       : { notificationService: overrides.notificationService }),
     ...(overrides.now === undefined ? {} : { now: overrides.now }),
-    publicBaseUrl: "https://clever-route.cleversystem.ai",
+    publicBaseUrl: "https://clever-route-api.cleversystem.ai",
     ...(overrides.routeOptimizationJobService === undefined
       ? {}
       : { routeOptimizationJobService: overrides.routeOptimizationJobService }),
@@ -6848,7 +6848,7 @@ function createBaseAdminCommerceDependencies() {
         Promise.resolve(safeConnection({ status: "DISABLED" })),
       ),
     },
-    publicBaseUrl: "https://clever-route.cleversystem.ai",
+    publicBaseUrl: "https://clever-route-api.cleversystem.ai",
   };
   return { adminTokenVerifier, dependencies, testConnection };
 }

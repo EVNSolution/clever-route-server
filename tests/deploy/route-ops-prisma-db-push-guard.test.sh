@@ -115,7 +115,7 @@ EOF_NPM
 }
 
 run_static_contract_case() {
-  grep -Fq 'delivery-api-migrate:' infra/compose/docker-compose.prod.yml
+  grep -Fq 'clever-route-api-migrate:' infra/compose/docker-compose.prod.yml
   grep -Fq 'image: ${DELIVERY_API_IMAGE:?DELIVERY_API_IMAGE is required}' infra/compose/docker-compose.prod.yml
   grep -Fq 'command: ["sh", "scripts/guard-prisma-db-push.sh"]' infra/compose/docker-compose.prod.yml
   grep -Fq 'PRISMA_SCHEMA_SHA: ${PRISMA_SCHEMA_SHA:?PRISMA_SCHEMA_SHA is required}' infra/compose/docker-compose.prod.yml

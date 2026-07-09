@@ -18,7 +18,7 @@ RUNTIME_IMAGE="${ROUTE_OPS_RUNTIME_IMAGE:-${RUNTIME_IMAGE_REPO}:${CHANNEL_TAG}}"
 STATIC_IMAGE="${ROUTE_OPS_WEB_STATIC_IMAGE:-${STATIC_IMAGE_REPO}:${CHANNEL_TAG}}"
 STATIC_VOLUME="${ROUTE_OPS_WEB_STATIC_VOLUME:-clever-route-route-ops-web-static-${CHANNEL_TAG}}"
 VROOM_IMAGE="${VROOM_IMAGE:-ghcr.io/vroom-project/vroom-docker@sha256:247d5683d6745c755d718a156d16b16aac80baccc276a003a68b986c13883b08}"
-BASE_URL="${ROUTE_OPS_SMOKE_BASE_URL:-https://clever-route.cleversystem.ai}"
+BASE_URL="${ROUTE_OPS_SMOKE_BASE_URL:-https://clever-route-api.cleversystem.ai}"
 DRY_RUN=0
 BUILD_AND_PUSH=0
 SEND_COMMAND=1
@@ -33,7 +33,7 @@ no separate migrate image, no prod-prev image retagging, and no ingress/Caddy
 mutation. GitHub Actions should publish digest-addressable images first, then
 pass ROUTE_OPS_RUNTIME_IMAGE and ROUTE_OPS_WEB_STATIC_IMAGE as repo@sha256 refs.
 The SSM command only pulls, runs migration, stages static assets, recreates
-delivery-api, and healthchecks.
+clever-route-api, and healthchecks.
 
 Env:
   ROUTE_OPS_SIMPLE_CHANNEL_TAG   default: prod
@@ -221,13 +221,13 @@ if [ "$DRY_RUN" = "1" ]; then
   exit 0
 fi
 rollback_delivery_api() {
-  echo 'simple deploy health failed; rolling delivery-api back to previous image env' >&2
-  docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull delivery-api route-ops-web-static vroom vroom-korea
+  echo 'simple deploy health failed; rolling clever-route-api back to previous image env' >&2
+  docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull clever-route-api route-ops-web-static vroom vroom-korea
   docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up --no-build --force-recreate route-ops-web-static
-  docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up -d --no-build --no-deps --force-recreate delivery-api
+  docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" up -d --no-build --no-deps --force-recreate --remove-orphans clever-route-api
   for rollback_attempt in $(seq 1 30); do
     if curl -fsS "$BASE_URL/healthz"; then
-      echo 'simple deploy rollback completed; previous delivery-api is healthy' >&2
+      echo 'simple deploy rollback completed; previous clever-route-api is healthy' >&2
       return 0
     fi
     sleep 2
@@ -275,18 +275,18 @@ token="$(aws ssm get-parameter --name "$GHCR_TOKEN_PARAM" --with-decryption --qu
 printf '%s' "$token" | docker login ghcr.io -u "$username" --password-stdin >/dev/null
 token=''
 static_stage_reason="$(should_stage_static)"
-docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull delivery-api vroom vroom-korea
+docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea
 if [ "$static_stage_reason" != "unchanged" ]; then
   docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull route-ops-web-static
 fi
-docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" run --rm delivery-api-migrate
+docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" run --rm clever-route-api-migrate
 if [ "$static_stage_reason" = "unchanged" ]; then
   printf 'simple deploy static stage skipped: candidate static digest matches current (%s)\n' "$ROUTE_OPS_WEB_STATIC_IMAGE"
 else
   printf 'simple deploy static stage required: reason=%s current=%s candidate=%s\n' "$static_stage_reason" "$CURRENT_ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE"
   docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up --no-build --force-recreate route-ops-web-static
 fi
-docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --no-deps --force-recreate delivery-api
+docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" up -d --no-build --no-deps --force-recreate --remove-orphans clever-route-api
 for attempt in $(seq 1 30); do
   if curl -fsS "$BASE_URL/healthz"; then break; fi
   if [ "$attempt" = "30" ]; then rollback_delivery_api || true; exit 1; fi

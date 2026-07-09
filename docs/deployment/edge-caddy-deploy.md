@@ -10,16 +10,18 @@ other's routing layer.
 - Script: `scripts/ssm-edge-caddy-deploy.sh`
 - GitHub workflow: `.github/workflows/edge-caddy-deploy.yml`
 - Caddyfile: `infra/caddy/Caddyfile`
-- Runtime lane intentionally excluded: no image build, no `delivery-api` recreate,
+- Runtime lane intentionally excluded: no image build, no `clever-route-api` recreate,
   no Prisma migration, no Route Ops static staging, and no Shopify app container deploy.
 
 Current host blocks:
 
 ```text
-clever-route.cleversystem.ai      -> delivery-api:3000
-clever-route-app.cleversystem.ai  -> shopify-app-clever-route:3000  [external Shopify compose]
-clever-admin.cleversystem.ai      -> shopify-app:3000               [external Shopify compose]
-clever-kfood-app.cleversystem.ai  -> shopify-app-kfood:3000         [external Shopify compose]
+clever-route-api.cleversystem.ai      -> clever-route-api:3000
+clever-route.cleversystem.ai          -> clever-route-api:3000      [legacy Route API alias]
+clever-route-app.cleversystem.ai      -> clever-route-app:3000      [external Shopify compose, production]
+clever-route-app-dev.cleversystem.ai  -> clever-route-app-dev:3000  [external Shopify compose, dev]
+clever-admin.cleversystem.ai          -> clever-route-app:3000      [legacy Shopify production alias]
+clever-kfood-app.cleversystem.ai      -> clever-kfood-app:3000      [external Shopify compose, K-food]
 ```
 
 ## SSM host work
@@ -33,7 +35,7 @@ A real Edge Caddy deploy does this in order:
 5. Installs the candidate to `infra/caddy/Caddyfile`.
 6. Validates the live Caddy container config.
 7. Reloads Caddy in place; it does not restart the container.
-8. Public-smokes the Route API and the three Shopify hostnames.
+8. Public-smokes canonical and legacy Route API hosts plus Shopify prod/dev/K-food hosts.
 9. Restores the backup and reloads Caddy if validation, reload, or smoke fails.
 10. Appends `.deploy/deploy-history.jsonl` with `lane=edge-caddy`.
 

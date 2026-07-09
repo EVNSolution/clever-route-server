@@ -5,7 +5,7 @@ AWS_REGION="${AWS_REGION:-${ROUTE_OPS_AWS_REGION:-ap-northeast-2}}"
 INSTANCE_ID="${ROUTE_OPS_MONITOR_INSTANCE_ID:-}"
 TARGET_TAG_KEY="${SSM_ROUTE_OPS_TARGET_TAG_KEY:-Service}"
 TARGET_TAG_VALUE="${SSM_ROUTE_OPS_TARGET_TAG_VALUE:-clever-delivery-server}"
-BASE_URL="${ROUTE_OPS_SMOKE_BASE_URL:-https://clever-route.cleversystem.ai}"
+BASE_URL="${ROUTE_OPS_SMOKE_BASE_URL:-https://clever-route-api.cleversystem.ai}"
 SHOP_DOMAIN="${ROUTE_OPS_SMOKE_SHOP_DOMAIN:-tomatonofood.com}"
 EXPECT_PUBLIC_OPENFREEMAP="${ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP:-true}"
 EXPECT_PUBLIC_OPENFREEMAP_HOSTS="${ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP_HOSTS:-${ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP_HOST:-tiles.openfreemap.org}}"
@@ -22,13 +22,13 @@ Usage: scripts/monitor-route-ops-production.sh [--render-host-script] [--status-
 
 Runs a read-only production monitor through AWS SSM. The host script checks disk,
 Docker/compose container health, recent error signals, and by default executes the
-Route Ops production smoke through the deployed delivery-api runtime image.
+Route Ops production smoke through the deployed clever-route-api runtime image.
 
 Environment knobs:
   AWS_REGION / ROUTE_OPS_AWS_REGION                 default: ap-northeast-2
   ROUTE_OPS_MONITOR_INSTANCE_ID                     exact SSM instance id override
   SSM_ROUTE_OPS_TARGET_TAG_KEY/VALUE                default: Service/clever-delivery-server
-  ROUTE_OPS_SMOKE_BASE_URL                          default: https://clever-route.cleversystem.ai
+  ROUTE_OPS_SMOKE_BASE_URL                          default: https://clever-route-api.cleversystem.ai
   ROUTE_OPS_SMOKE_SHOP_DOMAIN                       default: tomatonofood.com
   ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP               default: true
   ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP_HOSTS         default: tiles.openfreemap.org
@@ -93,10 +93,10 @@ for c in $(docker ps --filter label=com.docker.compose.project=clever-route --fo
 done || true
 
 echo "SECTION=local_delivery_health"
-docker exec clever-route-delivery-api-1 node -e "fetch('http://127.0.0.1:3000/healthz').then(async r=>{console.log(r.status, await r.text())}).catch(e=>{console.error(e.message); process.exit(1)})"
+docker exec clever-route-clever-route-api-1 node -e "fetch('http://127.0.0.1:3000/healthz').then(async r=>{console.log(r.status, await r.text())}).catch(e=>{console.error(e.message); process.exit(1)})"
 
 echo "SECTION=recent_error_signals"
-for c in clever-route-delivery-api-1 clever-route-caddy-1 clever-route-postgres-1 clever-route-osrm-ontario-1; do
+for c in clever-route-clever-route-api-1 clever-route-caddy-1 clever-route-postgres-1 clever-route-osrm-ontario-1; do
   if docker inspect "$c" >/dev/null 2>&1; then
     echo "--- $c"
     docker logs --since "${ROUTE_OPS_MONITOR_LOG_SINCE}" --tail 250 "$c" 2>&1 \
@@ -126,7 +126,7 @@ if not line:
 secret = line.split('=', 1)[1].strip()
 if (secret.startswith('"') and secret.endswith('"')) or (secret.startswith("'") and secret.endswith("'")):
     secret = secret[1:-1]
-image = subprocess.check_output(['docker', 'inspect', '--format', '{{.Config.Image}}', 'clever-route-delivery-api-1'], text=True).strip()
+image = subprocess.check_output(['docker', 'inspect', '--format', '{{.Config.Image}}', 'clever-route-clever-route-api-1'], text=True).strip()
 cmd = [
     'docker', 'run', '--rm',
     '-v', '/srv/clever-route-server/scripts/smoke-route-ops-production.mjs:/tmp/route-ops-smoke.mjs:ro',

@@ -2,16 +2,26 @@
 # through the Route Ops runtime lane.
 #
 # Host ownership:
-# - clever-route.cleversystem.ai      -> Route delivery-api in this compose project
-# - clever-route-app.cleversystem.ai  -> Shopify dev/legacy app on external compose network
-# - clever-admin.cleversystem.ai      -> Shopify main/admin app on external compose network
-# - clever-kfood-app.cleversystem.ai  -> Shopify K-food app on external compose network
-# Add new host blocks through the Edge Caddy deploy lane only after scope approval.
+# - clever-route-api.cleversystem.ai      -> Route clever-route-api in this compose project
+# - clever-route.cleversystem.ai          -> Legacy Route API alias during host migration
+# - clever-route-app-dev.cleversystem.ai  -> Shopify dev app on external compose network
+# - clever-route-app.cleversystem.ai      -> Shopify production app on external compose network
+# - clever-admin.cleversystem.ai          -> Legacy Shopify production alias during host migration
+# - clever-kfood-app.cleversystem.ai      -> Shopify K-food app on external compose network
+# Remove legacy host blocks only after the staged migration and smoke evidence complete.
+
+clever-route-api.cleversystem.ai {
+	encode zstd gzip
+	reverse_proxy clever-route-api:3000 {
+		lb_try_duration 30s
+		lb_try_interval 500ms
+	}
+}
 
 clever-route.cleversystem.ai {
 	encode zstd gzip
-	reverse_proxy delivery-api:3000 {
-		# During SSM deploys the single delivery-api container is recreated.
+	reverse_proxy clever-route-api:3000 {
+		# During SSM deploys the single clever-route-api container is recreated.
 		# Retry connection failures briefly so clients wait for the new healthy
 		# container instead of receiving an immediate transient 502.
 		lb_try_duration 30s
@@ -19,23 +29,31 @@ clever-route.cleversystem.ai {
 	}
 }
 
+clever-route-app-dev.cleversystem.ai {
+	encode zstd gzip
+	reverse_proxy clever-route-app-dev:3000 {
+		lb_try_duration 30s
+		lb_try_interval 500ms
+	}
+}
+
 clever-route-app.cleversystem.ai {
 	encode zstd gzip
-	reverse_proxy shopify-app-clever-route:3000 {
+	reverse_proxy clever-route-app:3000 {
 		lb_try_duration 30s
 		lb_try_interval 500ms
 	}
 }
 clever-admin.cleversystem.ai {
 	encode zstd gzip
-	reverse_proxy shopify-app:3000 {
+	reverse_proxy clever-route-app:3000 {
 		lb_try_duration 30s
 		lb_try_interval 500ms
 	}
 }
 clever-kfood-app.cleversystem.ai {
 	encode zstd gzip
-	reverse_proxy shopify-app-kfood:3000 {
+	reverse_proxy clever-kfood-app:3000 {
 		lb_try_duration 30s
 		lb_try_interval 500ms
 	}

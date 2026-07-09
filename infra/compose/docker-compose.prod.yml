@@ -4,7 +4,7 @@ services:
   caddy:
     image: caddy:2-alpine
     depends_on:
-      - delivery-api
+      - clever-route-api
     ports:
       - "80:80"
       - "443:443"
@@ -34,12 +34,12 @@ services:
     volumes:
       - route-ops-web-static:/route-ops-web
 
-  delivery-api:
+  clever-route-api:
     image: ${DELIVERY_API_IMAGE:?DELIVERY_API_IMAGE is required}
     depends_on:
       postgres:
         condition: service_healthy
-      delivery-api-migrate:
+      clever-route-api-migrate:
         condition: service_completed_successfully
       route-ops-web-static:
         condition: service_completed_successfully
@@ -61,8 +61,12 @@ services:
     volumes:
       - route-ops-web-static:/app/external/route-ops-web:ro
       - /srv/clever-route-server/data/driver-proof-media:/app/var/driver-proof-media
+    networks:
+      default:
+        aliases:
+          - delivery-api
 
-  delivery-api-migrate:
+  clever-route-api-migrate:
     image: ${DELIVERY_API_IMAGE:?DELIVERY_API_IMAGE is required}
     depends_on:
       postgres:

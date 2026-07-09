@@ -31,7 +31,7 @@ WordPress/Woo replacement exists.
 1. Keep the delivery API running as `clever-route-server`.
 2. Add WordPress/WooCommerce order ingestion additively.
 3. Preserve driver mobile API contracts while server base URL migrates toward
-   `https://clever-route.cleversystem.ai`.
+   `https://clever-route-api.cleversystem.ai`.
 4. Keep Shopify compatibility as a legacy rollback path until migration evidence
    proves it can be retired.
 

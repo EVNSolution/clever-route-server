@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 
 const LAST_UPDATED = '2026-05-22';
-const PUBLIC_PRIVACY_URL = 'https://clever-route.cleversystem.ai/privacy';
+const PUBLIC_PRIVACY_URL = 'https://clever-route-api.cleversystem.ai/privacy';
 
 export function registerPrivacyRoutes(app: FastifyInstance): void {
   app.get('/privacy', async (_request, reply) => {

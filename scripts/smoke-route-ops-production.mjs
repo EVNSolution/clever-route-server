@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const baseUrl = requiredEnv('ROUTE_OPS_SMOKE_BASE_URL', 'https://clever-route.cleversystem.ai', ['CLEVER_ROUTE_BASE_URL']).replace(/\/+$/, '');
+const baseUrl = requiredEnv('ROUTE_OPS_SMOKE_BASE_URL', 'https://clever-route-api.cleversystem.ai', ['CLEVER_ROUTE_BASE_URL']).replace(/\/+$/, '');
 const shopDomain = requiredEnv('ROUTE_OPS_SMOKE_SHOP_DOMAIN', 'tomatonofood.com', ['CLEVER_ROUTE_SHOP_DOMAIN']);
 const loginSecret = requiredEnv('ROUTE_OPS_SMOKE_LOGIN_SECRET', undefined, ['CLEVER_ROUTE_ADMIN_LOGIN_SECRET']);
 const expectedMapMode = optionalBool('ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP');
