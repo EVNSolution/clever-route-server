@@ -4,7 +4,6 @@ set -euo pipefail
 AWS_REGION="${AWS_REGION:-ap-northeast-2}"
 APP_DIR="${APP_DIR:-/srv/clever-route-server}"
 COMPOSE_FILE="${COMPOSE_FILE:-infra/compose/docker-compose.prod.yml}"
-CADDYFILE="${CADDYFILE:-infra/caddy/Caddyfile}"
 VROOM_CONFIG="${VROOM_CONFIG:-infra/vroom/config.yml}"
 VROOM_KOREA_CONFIG="${VROOM_KOREA_CONFIG:-infra/vroom/config.korea.yml}"
 COMPOSE_PROJECT="${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}"
@@ -30,10 +29,11 @@ usage() {
 Usage: $0 [--dry-run] [--publish] [--no-send]
 
 Simple Route Ops SSM deploy lane: no S3 deploy-control bundle, no EC2 build,
-no separate migrate image, and no prod-prev image retagging. GitHub Actions
-should publish digest-addressable images first, then pass ROUTE_OPS_RUNTIME_IMAGE
-and ROUTE_OPS_WEB_STATIC_IMAGE as repo@sha256 refs. The SSM command only pulls,
-runs migration, stages static assets, recreates delivery-api, and healthchecks.
+no separate migrate image, no prod-prev image retagging, and no ingress/Caddy
+mutation. GitHub Actions should publish digest-addressable images first, then
+pass ROUTE_OPS_RUNTIME_IMAGE and ROUTE_OPS_WEB_STATIC_IMAGE as repo@sha256 refs.
+The SSM command only pulls, runs migration, stages static assets, recreates
+delivery-api, and healthchecks.
 
 Env:
   ROUTE_OPS_SIMPLE_CHANNEL_TAG   default: prod
@@ -135,7 +135,6 @@ write_parameters() {
 set -euo pipefail
 APP_DIR=__APP_DIR__
 COMPOSE_FILE=__COMPOSE_FILE__
-CADDYFILE=__CADDYFILE__
 VROOM_CONFIG=__VROOM_CONFIG__
 VROOM_KOREA_CONFIG=__VROOM_KOREA_CONFIG__
 COMPOSE_PROJECT=__COMPOSE_PROJECT__
@@ -150,7 +149,6 @@ BASE_URL=__BASE_URL__
 DRY_RUN=__DRY_RUN__
 FORCE_STATIC_RESTAGE=__FORCE_STATIC_RESTAGE__
 COMPOSE_FILE_B64=__COMPOSE_FILE_B64__
-CADDYFILE_B64=__CADDYFILE_B64__
 VROOM_CONFIG_B64=__VROOM_CONFIG_B64__
 VROOM_KOREA_CONFIG_B64=__VROOM_KOREA_CONFIG_B64__
 GHCR_USERNAME_PARAM="${ROUTE_OPS_GHCR_USERNAME_PARAM:-/clever/deploy/github/username}"
@@ -165,9 +163,8 @@ command -v docker >/dev/null
 command -v aws >/dev/null
 command -v python3 >/dev/null
 command -v base64 >/dev/null
-mkdir -p "$(dirname "$COMPOSE_FILE")" "$(dirname "$CADDYFILE")" "$(dirname "$VROOM_CONFIG")" "$(dirname "$VROOM_KOREA_CONFIG")"
+mkdir -p "$(dirname "$COMPOSE_FILE")" "$(dirname "$VROOM_CONFIG")" "$(dirname "$VROOM_KOREA_CONFIG")"
 printf '%s' "$COMPOSE_FILE_B64" | base64 -d > "$COMPOSE_FILE"
-printf '%s' "$CADDYFILE_B64" | base64 -d > "$CADDYFILE"
 printf '%s' "$VROOM_CONFIG_B64" | base64 -d > "$VROOM_CONFIG"
 printf '%s' "$VROOM_KOREA_CONFIG_B64" | base64 -d > "$VROOM_KOREA_CONFIG"
 [ -f infra/env/delivery-api.env ]
@@ -223,7 +220,6 @@ if [ "$DRY_RUN" = "1" ]; then
   printf 'simple deploy dry-run complete; no host image pull, migration, or restart mutation performed.\n'
   exit 0
 fi
-docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env -f "$COMPOSE_FILE" exec -T caddy caddy reload --config /etc/caddy/Caddyfile
 rollback_delivery_api() {
   echo 'simple deploy health failed; rolling delivery-api back to previous image env' >&2
   docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull delivery-api route-ops-web-static vroom vroom-korea
@@ -313,7 +309,6 @@ with open(inner_path, 'r', encoding='utf-8') as handle:
 replacements = {
     '__APP_DIR__': shlex.quote(os.environ['APP_DIR']),
     '__COMPOSE_FILE__': shlex.quote(os.environ['COMPOSE_FILE']),
-    '__CADDYFILE__': shlex.quote(os.environ['CADDYFILE']),
     '__COMPOSE_PROJECT__': shlex.quote(os.environ['COMPOSE_PROJECT']),
     '__VROOM_CONFIG__': shlex.quote(os.environ['VROOM_CONFIG']),
     '__VROOM_KOREA_CONFIG__': shlex.quote(os.environ['VROOM_KOREA_CONFIG']),
@@ -328,7 +323,6 @@ replacements = {
     '__DRY_RUN__': shlex.quote(os.environ['DRY_RUN']),
     '__FORCE_STATIC_RESTAGE__': shlex.quote(os.environ['FORCE_STATIC_RESTAGE']),
     '__COMPOSE_FILE_B64__': shlex.quote(os.environ['COMPOSE_FILE_B64']),
-    '__CADDYFILE_B64__': shlex.quote(os.environ['CADDYFILE_B64']),
     '__VROOM_CONFIG_B64__': shlex.quote(os.environ['VROOM_CONFIG_B64']),
     '__VROOM_KOREA_CONFIG_B64__': shlex.quote(os.environ['VROOM_KOREA_CONFIG_B64']),
 }
@@ -345,10 +339,9 @@ if [ "$BUILD_AND_PUSH" = "1" ]; then
 fi
 
 COMPOSE_FILE_B64="$(base64 < "$COMPOSE_FILE" | tr -d '\n')"
-CADDYFILE_B64="$(base64 < "$CADDYFILE" | tr -d '\n')"
 VROOM_CONFIG_B64="$(base64 < "$VROOM_CONFIG" | tr -d '\n')"
 VROOM_KOREA_CONFIG_B64="$(base64 < "$VROOM_KOREA_CONFIG" | tr -d '\n')"
-export APP_DIR COMPOSE_FILE CADDYFILE VROOM_CONFIG VROOM_KOREA_CONFIG COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL DRY_RUN FORCE_STATIC_RESTAGE COMPOSE_FILE_B64 CADDYFILE_B64 VROOM_CONFIG_B64 VROOM_KOREA_CONFIG_B64
+export APP_DIR COMPOSE_FILE VROOM_CONFIG VROOM_KOREA_CONFIG COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL DRY_RUN FORCE_STATIC_RESTAGE COMPOSE_FILE_B64 VROOM_CONFIG_B64 VROOM_KOREA_CONFIG_B64
 parameters_path="$(mktemp /tmp/route-ops-simple-ssm.XXXXXX)"
 write_parameters "$parameters_path"
 if [ "$SEND_COMMAND" = "0" ]; then
