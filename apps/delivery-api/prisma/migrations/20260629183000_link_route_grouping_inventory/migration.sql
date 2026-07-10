@@ -1,3 +1,8 @@
+-- Keep operational backup tables outside Prisma's managed public schema.
+CREATE SCHEMA IF NOT EXISTS ops_backup;
+ALTER TABLE IF EXISTS "delivery_stops_kfood_backup_20260709" SET SCHEMA ops_backup;
+ALTER TABLE IF EXISTS "order_delivery_facts_kfood_backup_20260709" SET SCHEMA ops_backup;
+
 ALTER TABLE "inventories"
   ADD COLUMN IF NOT EXISTS "routeGroupingId" UUID;
 
