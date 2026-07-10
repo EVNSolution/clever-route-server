@@ -181,7 +181,6 @@ jobs:
           printf 'build_api=%s build_web=%s\n' "$build_api" "$build_web"
 
       - name: Login to GHCR
-        if: steps.changes.outputs.build_api == 'true' || steps.changes.outputs.build_web == 'true' || inputs.publish_images == false
         # docker/login-action v4.2.0 (Node 24) pinned to full commit SHA.
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee
         with:
@@ -190,7 +189,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        if: steps.changes.outputs.build_api == 'true' || steps.changes.outputs.build_web == 'true' || inputs.publish_images == false
         uses: docker/setup-buildx-action@v4
 
       - name: Build and push Route Ops web static image
@@ -259,8 +257,11 @@ jobs:
               return 0
             fi
             repo="${image%:*}"
-            digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest.Digest}}' | tr -d '"')"
-            test -n "$digest"
+            if ! digest="$(docker buildx imagetools inspect "$image" --format '{{json .Manifest.Digest}}' | tr -d '"')"; then
+              echo "failed to resolve image digest: $image" >&2
+              return 1
+            fi
+            [[ "$digest" == sha256:* ]] || return 1
             printf '%s@%s\n' "$repo" "$digest"
           }
           if [ "$BUILD_API" = "true" ]; then
