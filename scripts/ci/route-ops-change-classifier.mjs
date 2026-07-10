@@ -2,10 +2,10 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import process from 'node:process';
 
-const DEPLOY_WORKFLOW_RE = /^\.github\/workflows\/(ci|route-ops-simple-deploy|edge-caddy-deploy)\.yml$/;
-const DEPLOY_SCRIPT_RE = /^scripts\/(check-ignore-hygiene|scan-secrets|smoke-route-ops-production|ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|osrm-ontario|monitor-route-ops-production)\.(mjs|sh)$/;
-const DEPLOY_TEST_RE = /^tests\/deploy\/(ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|route-ops-prisma-db-push-guard|monitor-route-ops-production)\.test\.sh$/;
-const LIVE_DEPLOY_SCRIPT_RE = /^scripts\/(ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|osrm-ontario|monitor-route-ops-production)\.sh$/;
+const DEPLOY_WORKFLOW_RE = /^\.github\/workflows\/(ci|route-ops-simple-deploy|edge-caddy-deploy|route-ops-backup)\.yml$/;
+const DEPLOY_SCRIPT_RE = /^scripts\/(check-ignore-hygiene|scan-secrets|smoke-route-ops-production|ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|backup-route-ops-data|ssm-install-route-ops-backup|osrm-ontario|monitor-route-ops-production)\.(mjs|sh)$/;
+const DEPLOY_TEST_RE = /^tests\/deploy\/(ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|route-ops-backup|route-ops-prisma-db-push-guard|monitor-route-ops-production)\.test\.sh$/;
+const LIVE_DEPLOY_SCRIPT_RE = /^scripts\/(ssm-simple-route-ops-deploy|ssm-edge-caddy-deploy|backup-route-ops-data|ssm-install-route-ops-backup|osrm-ontario|monitor-route-ops-production)\.sh$/;
 
 if (isCliEntryPoint()) {
   const args = new Set(process.argv.slice(2));

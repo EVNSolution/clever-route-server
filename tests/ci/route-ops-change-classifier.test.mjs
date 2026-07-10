@@ -49,6 +49,13 @@ check('edge caddy workflow change', ['scripts/ssm-edge-caddy-deploy.sh', '.githu
   full_required: true,
 });
 
+check('backup workflow change', ['scripts/backup-route-ops-data.sh', 'scripts/ssm-install-route-ops-backup.sh', '.github/workflows/route-ops-backup.yml'], {
+  deploy_changed: true,
+  workflow_changed: true,
+  critical_changed: true,
+  full_required: true,
+});
+
 check('docs-only change', ['README.md', 'docs/deployment/route-ops-ci-deploy-validation.md'], {
   docs_only: true,
   web_changed: false,
