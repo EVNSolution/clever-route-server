@@ -115,11 +115,18 @@ EOF_NPM
 }
 
 run_static_contract_case() {
+  migration="apps/delivery-api/prisma/migrations/20260629183000_link_route_grouping_inventory/migration.sql"
   grep -Fq 'clever-route-api-migrate:' infra/compose/docker-compose.prod.yml
   grep -Fq 'image: ${DELIVERY_API_IMAGE:?DELIVERY_API_IMAGE is required}' infra/compose/docker-compose.prod.yml
   grep -Fq 'command: ["sh", "scripts/guard-prisma-db-push.sh"]' infra/compose/docker-compose.prod.yml
   grep -Fq 'PRISMA_SCHEMA_SHA: ${PRISMA_SCHEMA_SHA:?PRISMA_SCHEMA_SHA is required}' infra/compose/docker-compose.prod.yml
   grep -Fq 'COPY apps/delivery-api/scripts/guard-prisma-db-push.sh ./scripts/guard-prisma-db-push.sh' apps/delivery-api/Dockerfile
+  grep -Fq 'CREATE SCHEMA IF NOT EXISTS ops_backup' "$migration"
+  grep -Fq 'ALTER TABLE IF EXISTS "delivery_stops_kfood_backup_20260709" SET SCHEMA ops_backup' "$migration"
+  grep -Fq 'ALTER TABLE IF EXISTS "order_delivery_facts_kfood_backup_20260709" SET SCHEMA ops_backup' "$migration"
+  if grep -Eq 'DROP TABLE.*kfood_backup_20260709' "$migration"; then
+    fail "K-food backup tables must be archived, not dropped"
+  fi
 }
 
 run_missing_sha_case
