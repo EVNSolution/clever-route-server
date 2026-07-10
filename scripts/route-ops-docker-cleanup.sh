@@ -5,7 +5,7 @@ DRY_RUN=0
 ENFORCE=0
 IMAGE_MAX_AGE="${ROUTE_OPS_DOCKER_IMAGE_MAX_AGE:-168h}"
 BUILD_CACHE_MAX_AGE="${ROUTE_OPS_DOCKER_BUILD_CACHE_MAX_AGE:-168h}"
-BUILD_CACHE_KEEP_STORAGE="${ROUTE_OPS_DOCKER_BUILD_CACHE_KEEP_STORAGE:-4GB}"
+BUILD_CACHE_RESERVED_SPACE="${ROUTE_OPS_DOCKER_BUILD_CACHE_RESERVED_SPACE:-4GB}"
 MIN_FREE_MB="${ROUTE_OPS_DOCKER_MIN_FREE_MB:-20480}"
 MIN_FREE_PERCENT="${ROUTE_OPS_DOCKER_MIN_FREE_PERCENT:-20}"
 
@@ -60,8 +60,8 @@ EOF_STATS
 
 docker ps --no-trunc --format '{{.ID}}\t{{.Image}}' | sort > "$work_dir/running-containers.before"
 dangling_count="$(docker image ls -q --filter dangling=true | sort -u | wc -l | tr -d ' ')"
-printf 'docker cleanup policy: dangling_images_older_than=%s build_cache_older_than=%s build_cache_keep=%s dangling_total=%s\n' \
-  "$IMAGE_MAX_AGE" "$BUILD_CACHE_MAX_AGE" "$BUILD_CACHE_KEEP_STORAGE" "$dangling_count"
+printf 'docker cleanup policy: dangling_images_older_than=%s build_cache_older_than=%s build_cache_reserved=%s dangling_total=%s\n' \
+  "$IMAGE_MAX_AGE" "$BUILD_CACHE_MAX_AGE" "$BUILD_CACHE_RESERVED_SPACE" "$dangling_count"
 docker system df
 check_capacity before "$DRY_RUN"
 
@@ -72,7 +72,7 @@ fi
 
 # Intentionally no --all: Docker's image prune default is dangling images only.
 docker image prune --force --filter "until=$IMAGE_MAX_AGE"
-docker builder prune --force --filter "until=$BUILD_CACHE_MAX_AGE" --keep-storage "$BUILD_CACHE_KEEP_STORAGE"
+docker builder prune --force --filter "until=$BUILD_CACHE_MAX_AGE" --reserved-space "$BUILD_CACHE_RESERVED_SPACE"
 
 docker ps --no-trunc --format '{{.ID}}\t{{.Image}}' | sort > "$work_dir/running-containers.after"
 if ! diff -u "$work_dir/running-containers.before" "$work_dir/running-containers.after"; then
