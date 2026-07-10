@@ -14,7 +14,7 @@ workflow = Path('.github/workflows/route-ops-docker-cleanup.yml').read_text()
 
 checks = {
     'worker_is_dangling_only': 'docker image prune --force --filter "until=$IMAGE_MAX_AGE"' in worker,
-    'worker_prunes_old_build_cache': 'docker builder prune --force --filter "until=$BUILD_CACHE_MAX_AGE" --keep-storage "$BUILD_CACHE_KEEP_STORAGE"' in worker,
+    'worker_prunes_old_build_cache': 'docker builder prune --force --filter "until=$BUILD_CACHE_MAX_AGE" --reserved-space "$BUILD_CACHE_RESERVED_SPACE"' in worker,
     'worker_has_20gb_and_20pct_guard': 'MIN_FREE_MB="${ROUTE_OPS_DOCKER_MIN_FREE_MB:-20480}"' in worker and 'MIN_FREE_PERCENT="${ROUTE_OPS_DOCKER_MIN_FREE_PERCENT:-20}"' in worker,
     'worker_cleans_before_enforcing_actual_capacity': 'check_capacity before "$DRY_RUN"' in worker and 'check_capacity after 1' in worker,
     'worker_supports_dry_run': '--dry-run' in worker and 'cleanup dry-run complete; no Docker data was removed' in worker,
