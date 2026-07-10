@@ -154,6 +154,7 @@ FORCE_STATIC_RESTAGE=__FORCE_STATIC_RESTAGE__
 COMPOSE_FILE_B64=__COMPOSE_FILE_B64__
 VROOM_CONFIG_B64=__VROOM_CONFIG_B64__
 VROOM_KOREA_CONFIG_B64=__VROOM_KOREA_CONFIG_B64__
+DOCKER_CLEANUP_SCRIPT_B64=__DOCKER_CLEANUP_SCRIPT_B64__
 GHCR_USERNAME_PARAM="${ROUTE_OPS_GHCR_USERNAME_PARAM:-/clever/deploy/github/username}"
 GHCR_TOKEN_PARAM="${ROUTE_OPS_GHCR_TOKEN_PARAM:-/clever/deploy/github/read-token}"
 cd "$APP_DIR"
@@ -170,6 +171,8 @@ mkdir -p "$(dirname "$COMPOSE_FILE")" "$(dirname "$VROOM_CONFIG")" "$(dirname "$
 printf '%s' "$COMPOSE_FILE_B64" | base64 -d > "$COMPOSE_FILE"
 printf '%s' "$VROOM_CONFIG_B64" | base64 -d > "$VROOM_CONFIG"
 printf '%s' "$VROOM_KOREA_CONFIG_B64" | base64 -d > "$VROOM_KOREA_CONFIG"
+printf '%s' "$DOCKER_CLEANUP_SCRIPT_B64" | base64 -d > .deploy/route-ops-docker-cleanup.sh
+chmod 750 .deploy/route-ops-docker-cleanup.sh
 [ -f infra/env/delivery-api.env ]
 cat > .deploy/simple-candidate-image.env <<EOF_ENV
 IMAGE_TAG=$CHANNEL_TAG
@@ -229,6 +232,7 @@ smoke_health() {
   return 1
 }
 if [ "$DRY_RUN" = "1" ]; then
+  .deploy/route-ops-docker-cleanup.sh --dry-run --enforce
   printf 'simple deploy dry-run complete; no host image pull, migration, or restart mutation performed.\n'
   exit 0
 fi
@@ -282,6 +286,7 @@ ENVUP
 mkdir -p /srv/clever-route-server/data/driver-proof-media
 chown -R 100:101 /srv/clever-route-server/data/driver-proof-media
 chmod 750 /srv/clever-route-server/data/driver-proof-media
+.deploy/route-ops-docker-cleanup.sh --enforce
 username="$(aws ssm get-parameter --name "$GHCR_USERNAME_PARAM" --query 'Parameter.Value' --output text)"
 token="$(aws ssm get-parameter --name "$GHCR_TOKEN_PARAM" --with-decryption --query 'Parameter.Value' --output text)"
 printf '%s' "$token" | docker login ghcr.io -u "$username" --password-stdin >/dev/null
@@ -306,6 +311,7 @@ for attempt in $(seq 1 30); do
 done
 cp .deploy/current-image.env ".deploy/current-image.env.before-simple-$(date -u +%Y%m%dT%H%M%SZ)" 2>/dev/null || true
 cp .deploy/simple-candidate-image.env .deploy/current-image.env
+.deploy/route-ops-docker-cleanup.sh --enforce
 printf '{"ts":"%s","commitSha":"%s","channelTag":"%s","deliveryApiImage":"%s","routeOpsWebStaticImage":"%s","routeOpsWebStaticVolume":"%s","vroomImage":"%s","prismaSchemaSha":"%s","staticStage":"%s","lane":"simple-ssm"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$COMMIT_SHA" "$CHANNEL_TAG" "$DELIVERY_API_IMAGE" "$ROUTE_OPS_WEB_STATIC_IMAGE" "$ROUTE_OPS_WEB_STATIC_VOLUME" "$VROOM_IMAGE" "$PRISMA_SCHEMA_SHA" "$static_stage_reason" >> .deploy/deploy-history.jsonl
 printf 'simple deploy completed: commit=%s channel=%s\n' "$COMMIT_SHA" "$CHANNEL_TAG"
 HOST_SCRIPT
@@ -338,6 +344,7 @@ replacements = {
     '__COMPOSE_FILE_B64__': shlex.quote(os.environ['COMPOSE_FILE_B64']),
     '__VROOM_CONFIG_B64__': shlex.quote(os.environ['VROOM_CONFIG_B64']),
     '__VROOM_KOREA_CONFIG_B64__': shlex.quote(os.environ['VROOM_KOREA_CONFIG_B64']),
+    '__DOCKER_CLEANUP_SCRIPT_B64__': shlex.quote(os.environ['DOCKER_CLEANUP_SCRIPT_B64']),
 }
 for key, value in replacements.items():
     script = script.replace(key, value)
@@ -354,7 +361,8 @@ fi
 COMPOSE_FILE_B64="$(base64 < "$COMPOSE_FILE" | tr -d '\n')"
 VROOM_CONFIG_B64="$(base64 < "$VROOM_CONFIG" | tr -d '\n')"
 VROOM_KOREA_CONFIG_B64="$(base64 < "$VROOM_KOREA_CONFIG" | tr -d '\n')"
-export APP_DIR COMPOSE_FILE VROOM_CONFIG VROOM_KOREA_CONFIG COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL SMOKE_URLS DRY_RUN FORCE_STATIC_RESTAGE COMPOSE_FILE_B64 VROOM_CONFIG_B64 VROOM_KOREA_CONFIG_B64
+DOCKER_CLEANUP_SCRIPT_B64="$(base64 < scripts/route-ops-docker-cleanup.sh | tr -d '\n')"
+export APP_DIR COMPOSE_FILE VROOM_CONFIG VROOM_KOREA_CONFIG COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL SMOKE_URLS DRY_RUN FORCE_STATIC_RESTAGE COMPOSE_FILE_B64 VROOM_CONFIG_B64 VROOM_KOREA_CONFIG_B64 DOCKER_CLEANUP_SCRIPT_B64
 parameters_path="$(mktemp /tmp/route-ops-simple-ssm.XXXXXX)"
 write_parameters "$parameters_path"
 if [ "$SEND_COMMAND" = "0" ]; then

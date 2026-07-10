@@ -1,0 +1,81 @@
+name: Route Ops Docker cleanup
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Git ref containing the cleanup worker"
+        required: true
+        default: main
+      dry_run:
+        description: "Inspect cleanup candidates without deleting Docker data"
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: route-ops-docker-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Require main branch
+        if: github.ref != 'refs/heads/main'
+        run: exit 1
+
+      - name: Require actor allowlist
+        shell: bash
+        env:
+          DEPLOY_ALLOWED_ACTORS: ${{ vars.DEPLOY_ALLOWED_ACTORS }}
+          GITHUB_ACTOR_NAME: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          IFS=',' read -ra actors <<< "$DEPLOY_ALLOWED_ACTORS"
+          for actor in "${actors[@]}"; do
+            if [ "$(echo "$actor" | xargs)" = "$GITHUB_ACTOR_NAME" ]; then exit 0; fi
+          done
+          echo "$GITHUB_ACTOR_NAME is not allowed to clean Route Ops Docker storage." >&2
+          exit 1
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source_ref }}
+
+      - name: Require source on main history
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD origin/main
+
+      - name: Validate Docker cleanup lane
+        run: |
+          chmod +x scripts/route-ops-docker-cleanup.sh scripts/ssm-route-ops-docker-cleanup.sh tests/deploy/route-ops-docker-cleanup.test.sh
+          bash -n scripts/route-ops-docker-cleanup.sh scripts/ssm-route-ops-docker-cleanup.sh tests/deploy/route-ops-docker-cleanup.test.sh
+          tests/deploy/route-ops-docker-cleanup.test.sh
+
+      - name: Configure AWS credentials through OIDC
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b9
+        with:
+          role-to-assume: ${{ vars.AWS_ROUTE_OPS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+
+      - name: Clean Docker storage through SSM
+        shell: bash
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
+          ROUTE_OPS_SSM_TAG_KEY: ${{ vars.SSM_ROUTE_OPS_TARGET_TAG_KEY || 'Service' }}
+          ROUTE_OPS_SSM_TAG_VALUE: ${{ vars.SSM_ROUTE_OPS_TARGET_TAG_VALUE || 'clever-delivery-server' }}
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.dry_run }}" = true ]; then
+            scripts/ssm-route-ops-docker-cleanup.sh --dry-run
+          else
+            scripts/ssm-route-ops-docker-cleanup.sh
+          fi
