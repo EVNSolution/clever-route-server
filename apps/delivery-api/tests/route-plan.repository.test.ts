@@ -101,6 +101,66 @@ describe('PrismaRoutePlanRepository', () => {
     expect(typeof cacheFindArgs?.where?.routePlanId_shapeSignature?.shapeSignature).toBe('string');
   });
 
+  test('maps route-plan detail stop service minutes without changing sequence or leg fields', async () => {
+    const firstStop = routePlanStopRecord({
+      deliveryStopId: 'stop-1',
+      estimatedArrivalAt: new Date('2026-05-08T13:00:00.000Z'),
+      distanceFromPreviousMeters: 7400,
+      durationFromPreviousSeconds: 960,
+      order: orderRecord({
+        deliveryDate: '2026-05-08',
+        gid: 'gid://shopify/Order/123',
+        id: 'order-1',
+        stopId: 'stop-1'
+      }),
+      sequence: 1,
+      serviceMinutes: 5
+    });
+    const secondStop = routePlanStopRecord({
+      deliveryStopId: 'stop-2',
+      estimatedArrivalAt: new Date('2026-05-08T13:30:00.000Z'),
+      distanceFromPreviousMeters: 3100,
+      durationFromPreviousSeconds: 420,
+      order: orderRecord({
+        deliveryDate: '2026-05-08',
+        gid: 'gid://shopify/Order/124',
+        id: 'order-2',
+        stopId: 'stop-2'
+      }),
+      sequence: 2,
+      serviceMinutes: null
+    });
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord({
+        routeStops: [secondStop, firstStop]
+      })
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.findRoutePlanDetail({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.stops.map((stop) => stop.sequence)).toEqual([1, 2]);
+    expect(result?.stops[0]).toEqual(expect.objectContaining({
+      deliveryStopId: 'stop-1',
+      distanceFromPreviousMeters: 7400,
+      durationFromPreviousSeconds: 960,
+      estimatedArrivalAt: '2026-05-08T13:00:00.000Z',
+      serviceMinutes: 5
+    }));
+    expect(result?.stops[1]).toEqual(expect.objectContaining({
+      deliveryStopId: 'stop-2',
+      distanceFromPreviousMeters: 3100,
+      durationFromPreviousSeconds: 420,
+      estimatedArrivalAt: '2026-05-08T13:30:00.000Z',
+      serviceMinutes: null
+    }));
+  });
+
   test('marks route geometry stale from metadata without overfetching cached geometry rows', async () => {
     const { prisma } = createPrismaHarness({
       routeGeometryCacheFindFirst: {
@@ -1706,6 +1766,46 @@ function orderRecord(input: {
     },
     shopifyOrderGid: input.gid
   };
+}
+
+function routePlanStopRecord(input: {
+  deliveryStopId: string;
+  distanceFromPreviousMeters: number | null;
+  durationFromPreviousSeconds: number | null;
+  estimatedArrivalAt: Date | null;
+  order: Record<string, unknown>;
+  sequence: number;
+  serviceMinutes: number | null;
+}): Record<string, unknown> {
+  return {
+    deliveryStop: {
+      address1: '300 City Centre Dr',
+      address2: '#08',
+      city: 'Mississauga',
+      countryCode: 'CA',
+      id: input.deliveryStopId,
+      latitude: '43.589',
+      longitude: '-79.644',
+      order: input.order,
+      orderId: readRecordString(input.order, 'id'),
+      phone: '+14165550000',
+      postalCode: 'L5B 3C1',
+      province: 'ON',
+      recipientName: 'Noah Yoon',
+      serviceMinutes: input.serviceMinutes,
+      status: 'PENDING'
+    },
+    deliveryStopId: input.deliveryStopId,
+    distanceFromPreviousMeters: input.distanceFromPreviousMeters,
+    durationFromPreviousSeconds: input.durationFromPreviousSeconds,
+    estimatedArrivalAt: input.estimatedArrivalAt,
+    sequence: input.sequence
+  };
+}
+
+function readRecordString(record: Record<string, unknown>, key: string): string {
+  const value = record[key];
+  return typeof value === 'string' ? value : '';
 }
 
 function orderDeliveryFact(input: {

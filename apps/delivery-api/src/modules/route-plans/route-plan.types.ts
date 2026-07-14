@@ -158,6 +158,7 @@ export type RoutePlanDetailStop = {
   estimatedArrivalAt?: string | null;
   paymentMethodTitle?: string | null;
   phone?: string | null;
+  serviceMinutes?: number | null;
   totalPriceAmount?: string | null;
   orderId: string;
   items?: OrderItemDto[];
