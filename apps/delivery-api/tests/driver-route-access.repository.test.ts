@@ -12,14 +12,14 @@ describe('PrismaDriverRouteAccessRepository', () => {
     const repository = new PrismaDriverRouteAccessRepository(prisma as never);
 
     const result = await repository.lookupRouteAccess({
-      phoneE164: '+14165550123',
+      accountId: 'account-id',
       routeContext: routePlanId
     });
 
     expect(prisma.routePlan.findUnique).toHaveBeenCalledWith({
       select: {
         constraints: true,
-        driver: { select: { authSubject: true, id: true, phone: true, status: true, tokenVersion: true } },
+        driver: { select: { accountId: true, authSubject: true, id: true, status: true, tokenVersion: true } },
         id: true,
         name: true,
         planDate: true,
@@ -71,7 +71,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
     const repository = new PrismaDriverRouteAccessRepository(prisma as never);
 
     const result = await repository.lookupRouteAccess({
-      phoneE164: '+14165550123',
+      accountId: 'account-id',
       routeContext: null
     });
 
@@ -79,14 +79,14 @@ describe('PrismaDriverRouteAccessRepository', () => {
       orderBy: [{ planDate: 'asc' }, { name: 'asc' }],
       select: {
         constraints: true,
-        driver: { select: { authSubject: true, id: true, phone: true, status: true, tokenVersion: true } },
+        driver: { select: { accountId: true, authSubject: true, id: true, status: true, tokenVersion: true } },
         id: true,
         name: true,
         planDate: true,
         shop: { select: { shopDomain: true } }
       },
       where: {
-        driver: { is: { authSubject: { not: null }, phone: '+14165550123', status: 'ACTIVE' } },
+        driver: { is: { authSubject: { not: null }, accountId: 'account-id', status: 'ACTIVE' } },
         status: 'PUBLISHED'
       }
     });
@@ -138,7 +138,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
     const repository = new PrismaDriverRouteAccessRepository(prisma as never);
 
     const result = await repository.lookupRouteAccess({
-      phoneE164: '+14165550123',
+      accountId: 'account-id',
       routeContext: null
     });
 
@@ -153,13 +153,13 @@ describe('PrismaDriverRouteAccessRepository', () => {
     const repository = new PrismaDriverRouteAccessRepository(prisma as never);
 
     const result = await repository.lookupRouteAccess({
-      phoneE164: '+14165550123',
+      accountId: 'account-id',
       routeContext: null
     });
 
     expect(prisma.driver.findMany).toHaveBeenCalledWith({
       select: { authSubject: true, status: true },
-      where: { phone: '+14165550123' }
+      where: { accountId: 'account-id' }
     });
     expect(result).toEqual({
       status: 'ROUTES_FOUND',
@@ -172,7 +172,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
     const repository = new PrismaDriverRouteAccessRepository(prisma as never);
 
     await expect(
-      repository.lookupRouteAccess({ phoneE164: '+14165559999', routeContext: routePlanId })
+      repository.lookupRouteAccess({ accountId: 'other-account-id', routeContext: routePlanId })
     ).resolves.toEqual({ status: 'NOT_FOUND' });
   });
 
@@ -185,10 +185,10 @@ describe('PrismaDriverRouteAccessRepository', () => {
     );
 
     await expect(
-      inactive.lookupRouteAccess({ phoneE164: '+14165550123', routeContext: routePlanId })
+      inactive.lookupRouteAccess({ accountId: 'account-id', routeContext: routePlanId })
     ).resolves.toEqual({ status: 'DISABLED' });
     await expect(
-      suspended.lookupRouteAccess({ phoneE164: '+14165550123', routeContext: routePlanId })
+      suspended.lookupRouteAccess({ accountId: 'account-id', routeContext: routePlanId })
     ).resolves.toEqual({ status: 'BLOCKED' });
   });
 
@@ -209,7 +209,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
     const repository = new PrismaDriverRouteAccessRepository(prisma as never);
 
     const result = await repository.lookupRouteAccess({
-      phoneE164: '+14165550123',
+      accountId: 'account-id',
       routeContext: 'toronto-shared-route-scope'
     });
 
@@ -217,7 +217,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
       orderBy: [{ planDate: 'asc' }, { name: 'asc' }],
       select: {
         constraints: true,
-        driver: { select: { authSubject: true, id: true, phone: true, status: true, tokenVersion: true } },
+        driver: { select: { accountId: true, authSubject: true, id: true, status: true, tokenVersion: true } },
         id: true,
         name: true,
         planDate: true,
@@ -226,7 +226,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
       take: 3,
       where: {
         constraints: { path: ['routeScope', 'routeScopeKey'], equals: 'toronto-shared-route-scope' },
-        driver: { is: { authSubject: { not: null }, phone: '+14165550123', status: 'ACTIVE' } }
+        driver: { is: { authSubject: { not: null }, accountId: 'account-id', status: 'ACTIVE' } }
       }
     });
     expect(result).toEqual({
@@ -251,7 +251,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
           timezone: 'America/Toronto'
         }
       ],
-      resolutionHint: 'Use the phone-only route list or contact dispatch.'
+      resolutionHint: 'Use the account route list or contact dispatch.'
     });
     expect(JSON.stringify(result)).not.toContain('driverContext');
     expect(JSON.stringify(result)).not.toContain('routePlanId');
@@ -266,7 +266,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
     const repository = new PrismaDriverRouteAccessRepository(prisma as never);
 
     const result = await repository.lookupRouteAccess({
-      phoneE164: '+14165550123',
+      accountId: 'account-id',
       routeContext: 'toronto-shared-route-scope'
     });
 
@@ -285,7 +285,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
     const repository = new PrismaDriverRouteAccessRepository(prisma as never);
 
     await expect(
-      repository.lookupRouteAccess({ phoneE164: '+14165550123', routeContext: 'tomato-route' })
+      repository.lookupRouteAccess({ accountId: 'account-id', routeContext: 'tomato-route' })
     ).resolves.toEqual({ status: 'NOT_FOUND' });
     expect(prisma.routePlan.findUnique).not.toHaveBeenCalled();
     expect(prisma.routePlan.findMany).toHaveBeenCalledOnce();
@@ -358,7 +358,7 @@ function routePlanRecord(
     driver: {
       authSubject: overrides.authSubject === undefined ? 'driver-auth-subject' : overrides.authSubject,
       id: 'driver-id',
-      phone: '+14165550123',
+      accountId: 'account-id',
       status: overrides.driverStatus ?? 'ACTIVE',
       tokenVersion: 4
     },

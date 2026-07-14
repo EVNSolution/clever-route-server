@@ -1,6 +1,6 @@
 # Driver Route Access API
 
-Purpose: the native driver app verifies an E.164 phone number against registered drivers and returns the active route choices assigned to that phone before showing route/stop/customer details.
+Purpose: the native driver app uses an authenticated phone account to return that account's active route choices before showing route/stop/customer details.
 
 This is the first driver-facing contract for `clever-driver-app`. It intentionally returns only non-sensitive company/route guidance. Consent records and assigned-route reads are implemented as separate authenticated contracts; stop detail/actions, driver session issuance, and location collection remain follow-up APIs.
 
@@ -8,25 +8,25 @@ This is the first driver-facing contract for `clever-driver-app`. It intentional
 
 The route is registered with the existing Driver API runtime dependencies when `JWT_SECRET` is configured. Driver mobile clients still call this server, not Shopify Admin APIs.
 
-## Phone-first lookup
+## Account-first lookup
 
-The primary lookup shape is phone-only:
+The primary lookup uses the `clever-driver-account` bearer token returned by registration or phone + PIN login:
 
-- client sends `phoneE164` and omits `routeContext` or sends `routeContext: null`
-- server finds active route plans assigned to active drivers with that phone number
+- client sends the account bearer token and omits `routeContext` or sends `routeContext: null`
+- server finds active route plans assigned to active drivers linked to that account
 - if active route assignments exist, server returns `ROUTES_FOUND` with route choices; each choice carries company guidance, route access identifiers, and short-lived `driverAccess`
-- if the phone belongs to an active driver but no active route is assigned, server returns `ROUTES_FOUND` with an empty `routes` array
-- if the phone is not registered, server returns `NOT_FOUND`
-- if the phone is registered only to inactive/suspended drivers, server returns `DISABLED` or `BLOCKED`
+- if the account has active driver assignments but no active route, server returns `ROUTES_FOUND` with an empty `routes` array
+- if the account has no driver assignment, server returns `NOT_FOUND`
+- if the account is linked only to inactive/suspended drivers, server returns `DISABLED` or `BLOCKED`
 
-`routeContext` remains accepted only as a backward-compatible exact/narrowed lookup field for internal clients and older app builds:
+`routeContext` is an optional exact/narrowed lookup field:
 
 - exact route context: an assigned `RoutePlan.id` UUID
 - shared route/company scope: a non-UUID value stored at `RoutePlan.constraints.routeScope.routeScopeKey`
 
 The current driver app does not ask drivers for external route access artifacts. Multi-company assignments are returned as route choices; company/shop guidance is attached to each route.
 
-Phone numbers must be normalized to E.164 before request.
+The phone number is not accepted in this request body. Account identity comes only from the verified bearer token.
 
 ## POST `/driver/route-access/lookup`
 
@@ -35,11 +35,11 @@ Request:
 ```http
 POST /driver/route-access/lookup
 Content-Type: application/json
+Authorization: Bearer <driver-account-jwt>
 ```
 
 ```json
 {
-  "phoneE164": "+14165550123",
   "routeContext": null
 }
 ```
@@ -56,7 +56,7 @@ Validation failures return `400` before repository lookup:
 }
 ```
 
-Phone-first active route response:
+Account route response:
 
 ```json
 {
@@ -93,13 +93,13 @@ Phone-first active route response:
 }
 ```
 
-Registered active phone with no active route assignments:
+Registered account with no active route assignments:
 
 ```json
 { "data": { "status": "ROUTES_FOUND", "routes": [] }, "error": null }
 ```
 
-Backward-compatible exact route context lookup may return a single `INVITED` object with the same route choice fields at the top level.
+Exact route context lookup may return a single `INVITED` object with the same route choice fields at the top level.
 
 Safe denial statuses return `200` with no guidance payload:
 
@@ -109,9 +109,9 @@ Safe denial statuses return `200` with no guidance payload:
 { "data": { "status": "BLOCKED" }, "error": null }
 ```
 
-`NOT_FOUND` covers unregistered phones and backward-compatible exact/narrowed lookups that do not match the supplied phone. Registered active phones with no active route assignments return `ROUTES_FOUND` with an empty `routes` array.
+`NOT_FOUND` covers accounts without driver assignments and exact/narrowed lookups that do not belong to the authenticated account. Registered accounts with no active route assignments return `ROUTES_FOUND` with an empty `routes` array.
 
-Backward-compatible ambiguous shared route/company scope response:
+Ambiguous shared route/company scope response:
 
 ```json
 {
@@ -128,7 +128,7 @@ Backward-compatible ambiguous shared route/company scope response:
         "operatorSupportContact": "+14165550000"
       }
     ],
-    "resolutionHint": "Use the phone-only route list or contact dispatch."
+    "resolutionHint": "Use the account route list or contact dispatch."
   },
   "error": null
 }
@@ -138,9 +138,9 @@ Backward-compatible ambiguous shared route/company scope response:
 
 The lookup response must not include delivery stops, customer addresses, coordinates, or order data. `ROUTES_FOUND` route choices and legacy `INVITED` only return enough non-sensitive context for the driver to confirm the company/shop/route before the consent gate, plus a short-lived bearer token for the matched driver/shop boundary.
 
-`driverAccess.accessToken` is a server-signed HS256 JWT with audience `clever-delivery-driver`. It is scoped to the matched `driverId` and `shopDomain`, expires after 900 seconds, and is intended only for the next driver-app calls such as `POST /driver/consents` and `GET /driver/assigned-route`. Denial responses never include `driverAccess`. OTP/deep-link hardening, refresh sessions, and token rotation remain follow-up security work.
+`driverAccess.accessToken` is a server-signed HS256 JWT with audience `clever-delivery-driver`. It is scoped to the matched `driverId` and `shopDomain`, expires after 900 seconds, and is intended only for the next driver-app calls such as `POST /driver/consents` and `GET /driver/assigned-route`. Denial responses never include `driverAccess`. SMS-based phone verification and PIN recovery remain follow-up security work.
 
-`MULTIPLE_MATCHES` responses are stricter than route choices: they must not include `driverAccess`, `driverContext`, `routeAccess`, `routePlanId`, stops, customer names, customer addresses, coordinates, orders, proof-media data, or any other route-specific bearer credential. They are legacy display-only responses; current driver UX should use phone-only route choices or dispatch support.
+`MULTIPLE_MATCHES` responses are stricter than route choices: they must not include `driverAccess`, `driverContext`, `routeAccess`, `routePlanId`, stops, customer names, customer addresses, coordinates, orders, proof-media data, or any other route-specific bearer credential. They are display-only responses; current driver UX should use account route choices or dispatch support.
 
 ## Adjacent and follow-up APIs
 

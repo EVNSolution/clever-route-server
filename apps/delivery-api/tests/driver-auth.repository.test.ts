@@ -1,33 +1,33 @@
+import { scrypt } from 'node:crypto';
 import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaDriverAuthRepository } from '../src/modules/driver/driver-auth.repository.js';
 
 const anyDateMatcher: unknown = expect.any(Date);
 const anyStringMatcher: unknown = expect.any(String);
-const activeSessionExpiresAt = new Date('2100-01-01T00:00:00.000Z');
 
 describe('PrismaDriverAuthRepository', () => {
-  test('stores the registration display name when an invite is verified', async () => {
-    const { prisma } = createPrismaHarness();
+  test('creates one phone account, links matching drivers, and stores a refresh session', async () => {
+    const { prisma, transaction } = createPrismaHarness();
     const repository = new PrismaDriverAuthRepository(prisma as never);
 
     const session = await repository.verifyInvite({
       displayName: '  Minji Kim  ',
       inviteCode: 'ABC123',
-      phone: '+14165550123'
+      phone: '+14165550123',
+      pin: '012345'
     });
 
-    expect(prisma.driver.findFirst).toHaveBeenCalledWith({
-      include: { shop: { select: { shopDomain: true } } },
-      where: {
+    expect(transaction.driverAccount.create).toHaveBeenCalledWith({
+      data: {
         phone: '+14165550123',
-        inviteCode: 'ABC123',
-        status: 'ACTIVE',
-        inviteCodeExpiresAt: { gt: anyDateMatcher }
+        pinHash: anyStringMatcher,
+        pinSalt: anyStringMatcher
       }
     });
-    expect(prisma.driver.update).toHaveBeenCalledWith({
+    expect(transaction.driver.update).toHaveBeenCalledWith({
       data: {
+        accountId: 'account-id',
         authSubject: 'driver-driver-id',
         displayName: 'Minji Kim',
         inviteCode: null,
@@ -36,162 +36,187 @@ describe('PrismaDriverAuthRepository', () => {
       },
       where: { id: 'driver-id' }
     });
-    expect(prisma.driverSession.create).toHaveBeenCalledWith({
+    expect(prisma.driverAccountSession.create).toHaveBeenCalledWith({
       data: {
-        driverId: 'driver-id',
+        accountId: 'account-id',
         expiresAt: anyDateMatcher,
         refreshTokenHash: anyStringMatcher
       }
     });
     expect(session).toEqual({
-      driverId: 'driver-id',
+      accountId: 'account-id',
       expiresAt: anyDateMatcher,
+      kind: 'account',
       refreshToken: anyStringMatcher,
-      shopDomain: 'example.myshopify.com',
-      tokenVersion: 2
+      tokenVersion: 0
     });
   });
 
-  test('refreshes an active driver session without rotating the stored refresh token', async () => {
-    const { prisma } = createPrismaHarness();
+  test('logs in with the account PIN and clears failed attempts', async () => {
+    const pinSalt = 'test-salt';
+    const pinHash = await derivePin('012345', pinSalt);
+    const { prisma } = createPrismaHarness({
+      account: accountFixture({ pinHash, pinSalt })
+    });
+    const repository = new PrismaDriverAuthRepository(prisma as never);
+
+    const session = await repository.loginWithPin({ phone: '+14165550123', pin: '012345' });
+
+    expect(prisma.driverAccount.update).toHaveBeenCalledWith({
+      data: { failedPinAttempts: 0, pinLockedUntil: null },
+      where: { id: 'account-id' }
+    });
+    expect(session).toMatchObject({ accountId: 'account-id', kind: 'account', tokenVersion: 0 });
+  });
+
+  test('locks the account for fifteen minutes after the fifth failed PIN attempt', async () => {
+    const pinSalt = 'test-salt';
+    const pinHash = await derivePin('012345', pinSalt);
+    const { prisma } = createPrismaHarness({
+      account: accountFixture({ failedPinAttempts: 4, pinHash, pinSalt })
+    });
+    const repository = new PrismaDriverAuthRepository(prisma as never);
+
+    await expect(repository.loginWithPin({ phone: '+14165550123', pin: '999999' }))
+      .rejects.toThrow('Invalid phone or PIN');
+
+    expect(prisma.driverAccount.update).toHaveBeenNthCalledWith(1, {
+      data: { failedPinAttempts: { increment: 1 } },
+      select: { failedPinAttempts: true },
+      where: { id: 'account-id' }
+    });
+    expect(prisma.driverAccount.update).toHaveBeenNthCalledWith(2, {
+      data: { pinLockedUntil: anyDateMatcher },
+      where: { id: 'account-id' }
+    });
+    expect(prisma.driverAccountSession.create).not.toHaveBeenCalled();
+  });
+
+  test('refreshes an active account session without rotating its refresh token', async () => {
+    const { prisma } = createPrismaHarness({ accountRefreshSession: accountSessionFixture() });
     const repository = new PrismaDriverAuthRepository(prisma as never);
 
     const session = await repository.refreshSession({ refreshToken: 'stored-refresh-token' });
 
-    expect(prisma.driverSession.findUnique).toHaveBeenCalledWith({
-      include: { driver: { include: { shop: { select: { shopDomain: true } } } } },
-      where: { refreshTokenHash: anyStringMatcher }
-    });
-    expect(prisma.driverSession.update).toHaveBeenCalledWith({
+    expect(prisma.driverAccountSession.update).toHaveBeenCalledWith({
       data: { lastUsedAt: anyDateMatcher },
-      where: { id: 'session-id' }
+      where: { id: 'account-session-id' }
     });
     expect(session).toEqual({
-      driverId: 'driver-id',
-      expiresAt: activeSessionExpiresAt,
+      accountId: 'account-id',
+      expiresAt: new Date('2100-01-01T00:00:00.000Z'),
+      kind: 'account',
       refreshToken: 'stored-refresh-token',
-      shopDomain: 'example.myshopify.com',
-      tokenVersion: 2
+      tokenVersion: 0
     });
-  });
-
-  test('rejects expired, revoked, missing, or inactive-driver refresh sessions', async () => {
-    for (const session of [
-      null,
-      createDriverSessionFixture({ expiresAt: new Date('2020-01-01T00:00:00.000Z') }),
-      createDriverSessionFixture({ revokedAt: new Date('2026-05-01T00:00:00.000Z') }),
-      createDriverSessionFixture({ driverStatus: 'INACTIVE' })
-    ]) {
-      const { prisma } = createPrismaHarness({ refreshSession: session });
-      const repository = new PrismaDriverAuthRepository(prisma as never);
-
-      await expect(repository.refreshSession({ refreshToken: 'stored-refresh-token' })).rejects.toThrow('Invalid or expired refresh token');
-      expect(prisma.driverSession.update).not.toHaveBeenCalled();
-    }
-  });
-
-  test('matches legacy national phone rows against E.164 invite verification and repairs the stored phone', async () => {
-    const { prisma } = createPrismaHarness({ exactDriver: null, legacyPhone: '010-8921-6198' });
-    const repository = new PrismaDriverAuthRepository(prisma as never);
-
-    await repository.verifyInvite({
-      displayName: null,
-      inviteCode: 'FACE12',
-      phone: '+821089216198'
-    });
-
-    expect(prisma.driver.findMany).toHaveBeenCalledWith({
-      include: { shop: { select: { shopDomain: true } } },
-      where: {
-        inviteCode: 'FACE12',
-        status: 'ACTIVE',
-        inviteCodeExpiresAt: { gt: anyDateMatcher }
-      }
-    });
-    expect(prisma.driver.update).toHaveBeenCalledWith({
-      data: {
-        authSubject: 'driver-driver-id',
-        inviteCode: null,
-        inviteCodeExpiresAt: null,
-        phone: '+821089216198'
-      },
-      where: { id: 'driver-id' }
-    });
+    expect(prisma.driverSession.findUnique).not.toHaveBeenCalled();
   });
 });
 
-function createPrismaHarness(input: { exactDriver?: DriverFixture | null; legacyPhone?: string; refreshSession?: DriverSessionFixture | null } = {}): {
-  prisma: {
+function createPrismaHarness(input: {
+  account?: ReturnType<typeof accountFixture> | null;
+  accountRefreshSession?: ReturnType<typeof accountSessionFixture> | null;
+} = {}) {
+  const account = input.account === undefined ? null : input.account;
+  const accountRefreshSession = input.accountRefreshSession === undefined ? null : input.accountRefreshSession;
+  const transaction = {
     driver: {
-      findFirst: ReturnType<typeof vi.fn>;
-      findMany: ReturnType<typeof vi.fn>;
-      update: ReturnType<typeof vi.fn>;
-    };
-    driverSession: {
-      create: ReturnType<typeof vi.fn>;
-      findUnique: ReturnType<typeof vi.fn>;
-      update: ReturnType<typeof vi.fn>;
-    };
-  };
-} {
-  const driver = createDriverFixture({ phone: '+14165550123' });
-  const exactDriver = input.exactDriver === undefined ? driver : input.exactDriver;
-  const legacyDriver = createDriverFixture({ phone: input.legacyPhone ?? '01089216198' });
-  const refreshSession = input.refreshSession === undefined ? createDriverSessionFixture() : input.refreshSession;
-
-  return {
-    prisma: {
-      driver: {
-        findFirst: vi.fn(() => Promise.resolve(exactDriver)),
-        findMany: vi.fn(() => Promise.resolve([legacyDriver])),
-        update: vi.fn(() => Promise.resolve({ ...driver, displayName: 'Minji Kim' }))
-      },
-      driverSession: {
-        create: vi.fn(() => Promise.resolve({ id: 'session-id' })),
-        findUnique: vi.fn(() => Promise.resolve(refreshSession)),
-        update: vi.fn(() => Promise.resolve({ id: 'session-id' }))
-      }
+      findMany: vi.fn(() => Promise.resolve([{ id: 'driver-id' }])),
+      update: vi.fn(() => Promise.resolve({ id: 'driver-id' }))
+    },
+    driverAccount: {
+      create: vi.fn(() => Promise.resolve(accountFixture()))
     }
   };
-}
-
-type DriverSessionFixture = {
-  driver: DriverFixture;
-  expiresAt: Date;
-  id: string;
-  revokedAt: Date | null;
-};
-
-type DriverFixture = {
-  authSubject: string | null;
-  displayName: string;
-  id: string;
-  phone: string;
-  shop: { shopDomain: string };
-  status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
-  tokenVersion: number;
-};
-
-function createDriverSessionFixture(input: { driverStatus?: DriverFixture['status']; expiresAt?: Date; revokedAt?: Date | null } = {}): DriverSessionFixture {
-  return {
+  const prisma = {
+    $transaction: vi.fn(async (callback: (tx: typeof transaction) => Promise<unknown>) => callback(transaction)),
     driver: {
-      ...createDriverFixture({ phone: '+14165550123' }),
-      status: input.driverStatus ?? 'ACTIVE'
+      findFirst: vi.fn(() => Promise.resolve(driverFixture())),
+      findMany: vi.fn(() => Promise.resolve([driverFixture()])),
+      update: vi.fn(() => Promise.resolve(driverFixture()))
     },
-    expiresAt: input.expiresAt ?? activeSessionExpiresAt,
-    id: 'session-id',
-    revokedAt: input.revokedAt ?? null
+    driverAccount: {
+      findUnique: vi.fn(() => Promise.resolve(account)),
+      update: vi.fn((query: { data?: { failedPinAttempts?: { increment: number } } }) =>
+        Promise.resolve(
+          query.data?.failedPinAttempts === undefined
+            ? account ?? accountFixture()
+            : { failedPinAttempts: (account?.failedPinAttempts ?? 0) + query.data.failedPinAttempts.increment }
+        )
+      )
+    },
+    driverAccountSession: {
+      create: vi.fn(() => Promise.resolve({ id: 'account-session-id' })),
+      findUnique: vi.fn(() => Promise.resolve(accountRefreshSession)),
+      update: vi.fn(() => Promise.resolve({ id: 'account-session-id' }))
+    },
+    driverSession: {
+      findUnique: vi.fn(() => Promise.resolve(null)),
+      update: vi.fn()
+    }
+  };
+  return { prisma, transaction };
+}
+
+function accountFixture(overrides: Partial<{
+  failedPinAttempts: number;
+  pinHash: string;
+  pinLockedUntil: Date | null;
+  pinSalt: string;
+  status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
+}> = {}) {
+  return {
+    createdAt: new Date('2026-07-14T00:00:00.000Z'),
+    failedPinAttempts: overrides.failedPinAttempts ?? 0,
+    id: 'account-id',
+    phone: '+14165550123',
+    pinHash: overrides.pinHash ?? 'hash',
+    pinLockedUntil: overrides.pinLockedUntil ?? null,
+    pinSalt: overrides.pinSalt ?? 'salt',
+    status: overrides.status ?? 'ACTIVE',
+    tokenVersion: 0,
+    updatedAt: new Date('2026-07-14T00:00:00.000Z')
   };
 }
 
-function createDriverFixture(input: { phone: string }): DriverFixture {
+function accountSessionFixture() {
   return {
-    authSubject: null,
-    displayName: input.phone,
-    id: 'driver-id',
-    phone: input.phone,
-    shop: { shopDomain: 'example.myshopify.com' },
-    status: 'ACTIVE',
-    tokenVersion: 2
+    account: accountFixture(),
+    accountId: 'account-id',
+    createdAt: new Date('2026-07-14T00:00:00.000Z'),
+    expiresAt: new Date('2100-01-01T00:00:00.000Z'),
+    id: 'account-session-id',
+    lastUsedAt: null,
+    refreshTokenHash: 'stored-hash',
+    revokedAt: null
   };
+}
+
+function driverFixture() {
+  return {
+    accountId: null,
+    authSubject: null,
+    createdAt: new Date('2026-07-14T00:00:00.000Z'),
+    displayName: '+14165550123',
+    id: 'driver-id',
+    inviteCode: 'ABC123',
+    inviteCodeExpiresAt: new Date('2100-01-01T00:00:00.000Z'),
+    lastSeenAt: null,
+    phone: '+14165550123',
+    shop: { shopDomain: 'example.myshopify.com' },
+    shopId: 'shop-id',
+    status: 'ACTIVE' as const,
+    tokenVersion: 0,
+    tokensInvalidatedAt: null,
+    updatedAt: new Date('2026-07-14T00:00:00.000Z')
+  };
+}
+
+function derivePin(pin: string, salt: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    scrypt(pin, salt, 64, (error, derivedKey) => {
+      if (error) reject(error);
+      else resolve(derivedKey.toString('base64url'));
+    });
+  });
 }

@@ -424,7 +424,10 @@ async function createAppHarness(input: { activeToken?: boolean } = {}) {
         recordDriverEvent: vi.fn(() => Promise.resolve({ duplicate: false, eventId: 'unused-event-id' }))
       },
       driverSelfService: selfService,
-      driverTokenAccessRepository: { isDriverAccessTokenActive },
+      driverTokenAccessRepository: {
+        isDriverAccountAccessTokenActive: vi.fn(() => Promise.resolve(true)),
+        isDriverAccessTokenActive
+      },
       jwtSecret: secret,
       now: () => now
     }

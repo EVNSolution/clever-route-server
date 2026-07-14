@@ -24,8 +24,10 @@ describe('PrismaAdminDriverRepository', () => {
     });
     expect(prisma.driver.create).toHaveBeenCalledWith({
       data: {
+        accountId: null,
         authSubject: null,
         displayName: '+821089216198',
+        id: anyStringMatcher,
         inviteCode: sixHexCodeMatcher,
         inviteCodeExpiresAt: anyDateMatcher,
         phone: '+821089216198',
@@ -80,6 +82,8 @@ describe('PrismaAdminDriverRepository', () => {
     expect(prisma.driver.create).not.toHaveBeenCalled();
     expect(prisma.driver.update).toHaveBeenCalledWith({
       data: {
+        accountId: null,
+        authSubject: null,
         displayName: 'Minji Kim',
         inviteCode: sixHexCodeMatcher,
         inviteCodeExpiresAt: anyDateMatcher,
@@ -91,6 +95,30 @@ describe('PrismaAdminDriverRepository', () => {
     expect(driver.id).toBe('existing-driver-id');
     expect(driver.displayName).toBe('Minji Kim');
     expect(driver.authStatus).toBe('INVITE_PENDING');
+  });
+
+  test('links a new shop driver immediately when the phone already has an account', async () => {
+    const linkedDriver = driverRecord({ accountId: 'account-id', authSubject: 'driver-driver-id', inviteCode: null, inviteCodeExpiresAt: null });
+    const { prisma } = createPrismaHarness({ account: { id: 'account-id' }, createdDriver: linkedDriver, existingDriver: null });
+    const repository = new PrismaAdminDriverRepository(prisma as never);
+
+    const driver = await repository.createPendingDriver({
+      displayName: 'Minji Kim',
+      phone: '+821089216198',
+      shopDomain: 'example.myshopify.com'
+    });
+    const linkedDriverDataMatcher: unknown = expect.objectContaining({
+      accountId: 'account-id',
+      authSubject: expect.stringMatching(/^driver-/u) as unknown,
+      inviteCode: null,
+      inviteCodeExpiresAt: null
+    });
+
+    expect(prisma.driver.create).toHaveBeenCalledWith({
+      data: linkedDriverDataMatcher,
+      include: { _count: { select: { driverEvents: true } } }
+    });
+    expect(driver).toEqual(expect.objectContaining({ authStatus: 'APP_LINKED', inviteCode: null, status: 'ACTIVE' }));
   });
 
   test('regenerates an invite code only for the authenticated shop driver', async () => {
@@ -129,6 +157,24 @@ describe('PrismaAdminDriverRepository', () => {
       inviteCodeExpiresAt: '2026-05-12T02:00:00.000Z',
       status: 'PENDING'
     }));
+  });
+
+  test('does not create a new invite or revoke global login for an existing account', async () => {
+    const linkedDriver = driverRecord({ accountId: 'account-id', authSubject: 'driver-driver-id', inviteCode: null, inviteCodeExpiresAt: null });
+    const { prisma } = createPrismaHarness({ foundDriver: { accountId: 'account-id' }, updatedDriver: linkedDriver });
+    const repository = new PrismaAdminDriverRepository(prisma as never);
+
+    const driver = await repository.regenerateInviteCode({
+      driverId: 'driver-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    const linkedUpdateMatcher: unknown = expect.objectContaining({
+      data: expect.objectContaining({ inviteCode: null, inviteCodeExpiresAt: null }) as unknown
+    });
+    expect(prisma.driver.update).toHaveBeenCalledWith(linkedUpdateMatcher);
+    expect(prisma.driverSession.updateMany).not.toHaveBeenCalled();
+    expect(driver).toEqual(expect.objectContaining({ authStatus: 'APP_LINKED', inviteCode: null }));
   });
 
   test('lists only drivers for the requested shop and masks linked auth subjects', async () => {
@@ -204,8 +250,11 @@ describe('PrismaAdminDriverRepository', () => {
 });
 
 function createPrismaHarness(input: {
+  account?: { id: string } | null;
+  createdDriver?: ReturnType<typeof driverRecord>;
   deletedDriver?: { id: string };
   existingDriver?: ReturnType<typeof driverRecord> | null;
+  foundDriver?: { accountId: string | null } | null;
   listDrivers?: ReturnType<typeof driverRecord>[];
   shop?: { id: string } | null;
   updatedDriver?: ReturnType<typeof driverRecord>;
@@ -215,8 +264,12 @@ function createPrismaHarness(input: {
       create: ReturnType<typeof vi.fn>;
       delete: ReturnType<typeof vi.fn>;
       findFirst: ReturnType<typeof vi.fn>;
+      findUnique: ReturnType<typeof vi.fn>;
       findMany: ReturnType<typeof vi.fn>;
       update: ReturnType<typeof vi.fn>;
+    };
+    driverAccount: {
+      findUnique: ReturnType<typeof vi.fn>;
     };
     driverSession: {
       updateMany: ReturnType<typeof vi.fn>;
@@ -228,15 +281,19 @@ function createPrismaHarness(input: {
   };
 } {
   const shop = input.shop === undefined ? { id: 'shop-id' } : input.shop;
-  const createdDriver = driverRecord();
+  const createdDriver = input.createdDriver ?? driverRecord();
   return {
     prisma: {
       driver: {
         create: vi.fn(() => Promise.resolve(createdDriver)),
         delete: vi.fn(() => Promise.resolve(input.deletedDriver ?? { id: 'driver-id' })),
         findFirst: vi.fn(() => Promise.resolve(input.existingDriver ?? null)),
+        findUnique: vi.fn(() => Promise.resolve(input.foundDriver ?? { accountId: null })),
         findMany: vi.fn(() => Promise.resolve(input.listDrivers ?? [])),
         update: vi.fn(() => Promise.resolve(input.updatedDriver ?? input.existingDriver ?? createdDriver))
+      },
+      driverAccount: {
+        findUnique: vi.fn(() => Promise.resolve(input.account ?? null))
       },
       driverSession: {
         updateMany: vi.fn(() => Promise.resolve({ count: 0 }))
@@ -250,6 +307,7 @@ function createPrismaHarness(input: {
 }
 
 function driverRecord(overrides: Partial<{
+  accountId: string | null;
   authSubject: string | null;
   createdAt: Date;
   displayName: string;
@@ -265,6 +323,7 @@ function driverRecord(overrides: Partial<{
   updatedAt: Date;
 }> = {}): {
   _count: { driverEvents: number };
+  accountId: string | null;
   authSubject: string | null;
   createdAt: Date;
   displayName: string;
@@ -280,12 +339,15 @@ function driverRecord(overrides: Partial<{
 } {
   return {
     _count: { driverEvents: overrides.recentEventsCount ?? 0 },
+    accountId: overrides.accountId ?? null,
     authSubject: overrides.authSubject ?? null,
     createdAt: overrides.createdAt ?? new Date('2026-05-11T02:00:00.000Z'),
     displayName: overrides.displayName ?? '+821089216198',
     id: overrides.id ?? 'driver-id',
-    inviteCode: overrides.inviteCode ?? 'ABCDEF',
-    inviteCodeExpiresAt: overrides.inviteCodeExpiresAt ?? new Date('2026-05-12T02:00:00.000Z'),
+    inviteCode: 'inviteCode' in overrides ? overrides.inviteCode ?? null : 'ABCDEF',
+    inviteCodeExpiresAt: 'inviteCodeExpiresAt' in overrides
+      ? overrides.inviteCodeExpiresAt ?? null
+      : new Date('2026-05-12T02:00:00.000Z'),
     lastSeenAt: overrides.lastSeenAt ?? null,
     phone: overrides.phone ?? '+821089216198',
     status: overrides.status ?? 'ACTIVE',

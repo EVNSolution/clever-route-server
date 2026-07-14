@@ -51,15 +51,38 @@ describe('PrismaDriverTokenAccessRepository', () => {
       })
     ).resolves.toBe(false);
   });
+
+  test('accepts an active account token only while its token version matches', async () => {
+    const { prisma } = createPrismaHarness({ account: { status: 'ACTIVE', tokenVersion: 2 } });
+    const repository = new PrismaDriverTokenAccessRepository(prisma as never);
+
+    await expect(repository.isDriverAccountAccessTokenActive({
+      accountId: 'account-id',
+      tokenVersion: 2
+    })).resolves.toBe(true);
+    await expect(repository.isDriverAccountAccessTokenActive({
+      accountId: 'account-id',
+      tokenVersion: 1
+    })).resolves.toBe(false);
+
+    expect(prisma.driverAccount.findUnique).toHaveBeenCalledWith({
+      select: { status: true, tokenVersion: true },
+      where: { id: 'account-id' }
+    });
+  });
 });
 
 function createPrismaHarness(input: {
+  account?: { status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED'; tokenVersion: number } | null;
   driver?: { tokenVersion: number } | null;
   tokenVersion?: number;
 } = {}): {
   prisma: {
     driver: {
       findFirst: ReturnType<typeof vi.fn>;
+    };
+    driverAccount: {
+      findUnique: ReturnType<typeof vi.fn>;
     };
   };
 } {
@@ -70,6 +93,9 @@ function createPrismaHarness(input: {
     prisma: {
       driver: {
         findFirst: vi.fn(() => Promise.resolve(driver))
+      },
+      driverAccount: {
+        findUnique: vi.fn(() => Promise.resolve(input.account ?? null))
       }
     }
   };

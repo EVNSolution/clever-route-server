@@ -1,19 +1,19 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
-import { verifyDriverToken } from '../src/modules/driver/driver-token-verifier.js';
+import { verifyDriverAccountToken, verifyDriverToken } from '../src/modules/driver/driver-token-verifier.js';
 import type { DriverAuthDependencies } from '../src/routes/driver-auth.routes.js';
 
 const anyStringMatcher: unknown = expect.any(String);
 
 describe('Driver auth routes', () => {
-  test('verifies invite codes case-insensitively and returns driver access session evidence', async () => {
+  test('verifies invite codes case-insensitively and returns account access session evidence', async () => {
     const verifyInvite = vi.fn<DriverAuthDependencies['driverAuthRepository']['verifyInvite']>(() =>
       Promise.resolve({
-        driverId: 'driver-id',
+        accountId: 'account-id',
         expiresAt: new Date('2026-06-15T00:00:00.000Z'),
+        kind: 'account',
         refreshToken: 'refresh-token',
-        shopDomain: 'tomatono.myshopify.com',
         tokenVersion: 2
       })
     );
@@ -27,7 +27,7 @@ describe('Driver auth routes', () => {
     try {
       const response = await app.inject({
         method: 'POST',
-        payload: { phone: '+14165550123', inviteCode: 'abc123', displayName: '  Minji Kim  ' },
+        payload: { phone: '+14165550123', inviteCode: 'abc123', pin: '012345', displayName: '  Minji Kim  ' },
         url: '/driver/auth/verify-invite'
       });
 
@@ -35,6 +35,7 @@ describe('Driver auth routes', () => {
       expect(verifyInvite).toHaveBeenCalledWith({
         phone: '+14165550123',
         inviteCode: 'ABC123',
+        pin: '012345',
         displayName: 'Minji Kim'
       });
       expect(response.json()).toMatchObject({
@@ -50,13 +51,13 @@ describe('Driver auth routes', () => {
     }
   });
 
-  test('returns driver access tokens for Woo customer-domain drivers', async () => {
+  test('returns account access tokens for Woo customer-domain drivers', async () => {
     const verifyInvite = vi.fn<DriverAuthDependencies['driverAuthRepository']['verifyInvite']>(() =>
       Promise.resolve({
-        driverId: 'driver-id',
+        accountId: 'account-id',
         expiresAt: new Date('2026-06-15T00:00:00.000Z'),
+        kind: 'account',
         refreshToken: 'refresh-token',
-        shopDomain: 'dev1.tomatonofood.com',
         tokenVersion: 4
       })
     );
@@ -70,7 +71,7 @@ describe('Driver auth routes', () => {
     try {
       const response = await app.inject({
         method: 'POST',
-        payload: { phone: '+821089216198', inviteCode: 'face12', displayName: '  임 지인  ' },
+        payload: { phone: '+821089216198', inviteCode: 'face12', pin: '012345', displayName: '  임 지인  ' },
         url: '/driver/auth/verify-invite'
       });
 
@@ -91,10 +92,9 @@ describe('Driver auth routes', () => {
         },
         error: null
       });
-      expect(verifyDriverToken(body.data.accessToken, { secret: 'test-secret' })).toMatchObject({
-        driverId: 'driver-id',
-        shopDomain: 'dev1.tomatonofood.com',
-        subject: 'driver:driver-id',
+      expect(verifyDriverAccountToken(body.data.accessToken, { secret: 'test-secret' })).toMatchObject({
+        accountId: 'account-id',
+        subject: 'driver-account:account-id',
         tokenVersion: 4
       });
     } finally {
@@ -107,6 +107,7 @@ describe('Driver auth routes', () => {
       Promise.resolve({
         driverId: 'driver-id',
         expiresAt: new Date('2026-06-15T00:00:00.000Z'),
+        kind: 'driver',
         refreshToken: 'stored-refresh-token',
         shopDomain: 'tomatono.myshopify.com',
         tokenVersion: 2
@@ -220,10 +221,10 @@ describe('Driver auth routes', () => {
   test('logs sanitized verify-invite payload shape without raw invite secrets', async () => {
     const verifyInvite = vi.fn<DriverAuthDependencies['driverAuthRepository']['verifyInvite']>(() =>
       Promise.resolve({
-        driverId: 'driver-id',
+        accountId: 'account-id',
         expiresAt: new Date('2026-06-15T00:00:00.000Z'),
+        kind: 'account',
         refreshToken: 'refresh-token',
-        shopDomain: 'tomatono.myshopify.com',
         tokenVersion: 2
       })
     );
@@ -242,7 +243,7 @@ describe('Driver auth routes', () => {
     try {
       const response = await app.inject({
         method: 'POST',
-        payload: { phone: '+14165550123', inviteCode: 'abc123', displayName: '  Minji Kim  ' },
+        payload: { phone: '+14165550123', inviteCode: 'abc123', pin: '012345', displayName: '  Minji Kim  ' },
         url: '/driver/auth/verify-invite'
       });
 
@@ -274,7 +275,7 @@ describe('Driver auth routes', () => {
     try {
       const response = await app.inject({
         method: 'POST',
-        payload: { phone: '+14165550123', inviteCode: '1234567' },
+        payload: { phone: '+14165550123', inviteCode: '1234567', pin: '012345' },
         url: '/driver/auth/verify-invite'
       });
 
