@@ -30,6 +30,8 @@ const routePlanSummary = {
   updatedAt: '2026-05-07T12:30:00.000Z'
 };
 
+type SaveRoutePlan = NonNullable<AdminRoutePlanDependencies['routePlanService']['saveRoutePlan']>;
+
 describe('Admin route plan routes', () => {
   test('rejects route plan creation without a Shopify session token', async () => {
     const { createRoutePlan, dependencies } = createDependencyHarness();
@@ -747,6 +749,57 @@ describe('Admin route plan routes', () => {
     }
   });
 
+  test('saves a route plan departure time for the token shop', async () => {
+    const { dependencies, saveRoutePlan } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { departureTime: '08:30' },
+        url: '/admin/route-plans/route-plan-id/departure-time'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        data: { routePlan: { departureTime: '08:30', id: 'route-plan-id' } },
+        error: null
+      });
+      expect(saveRoutePlan).toHaveBeenCalledWith({
+        appId: 'clever',
+        payload: { departureTime: '08:30' },
+        routePlanId: 'route-plan-id',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects invalid route plan departure times before saving', async () => {
+    const { dependencies, saveRoutePlan } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { departureTime: '25:00' },
+        url: '/admin/route-plans/route-plan-id/departure-time'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'Invalid route departure time payload' }
+      });
+      expect(saveRoutePlan).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects adding a stop already assigned to another route plan', async () => {
     const { dependencies, updateRoutePlanStops } = createDependencyHarness();
     updateRoutePlanStops.mockRejectedValueOnce(new RoutePlanOrderAlreadyPlannedError());
@@ -823,6 +876,9 @@ function createDependencyHarness(): {
   publishRoutePlan: ReturnType<
     typeof vi.fn<AdminRoutePlanDependencies['routePlanService']['publishRoutePlan']>
   >;
+  saveRoutePlan: ReturnType<
+    typeof vi.fn<SaveRoutePlan>
+  >;
   updateRoutePlanOptions: ReturnType<
     typeof vi.fn<AdminRoutePlanDependencies['routePlanService']['updateRoutePlanOptions']>
   >;
@@ -885,6 +941,21 @@ function createDependencyHarness(): {
       ]
     })
   );
+  const saveRoutePlan = vi.fn<SaveRoutePlan>(() =>
+    Promise.resolve({
+      detail: {
+        routePlan: { ...routePlanSummary, departureTime: '08:30' },
+        routeGeometry: null,
+        routeMetrics: null,
+        routeStopPoints: routePlanStopPoints(),
+        stops: [
+          routePlanStop({ orderName: '#1035', sequence: 1 }),
+          routePlanStop({ orderName: '#1036', sequence: 2 })
+        ]
+      },
+      operations: []
+    })
+  );
   const updateRoutePlanStops = vi.fn<
     AdminRoutePlanDependencies['routePlanService']['updateRoutePlanStops']
   >(() =>
@@ -925,6 +996,7 @@ function createDependencyHarness(): {
         getRoutePlanDetail,
         listRoutePlans,
         publishRoutePlan,
+        saveRoutePlan,
         updateRoutePlanOptions,
         updateRoutePlanStops
       },
@@ -936,6 +1008,7 @@ function createDependencyHarness(): {
     deleteRoutePlan,
     listRoutePlans,
     publishRoutePlan,
+    saveRoutePlan,
     updateRoutePlanOptions,
     updateRoutePlanStops
   };
