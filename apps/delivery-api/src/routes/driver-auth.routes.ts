@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
-import { signDriverToken, verifyDriverToken } from '../modules/driver/driver-token-verifier.js';
-import type { PrismaDriverAuthRepository } from '../modules/driver/driver-auth.repository.js';
+import { signDriverAccountToken, signDriverToken, verifyDriverToken } from '../modules/driver/driver-token-verifier.js';
+import type { DriverAuthSessionInfo, PrismaDriverAuthRepository } from '../modules/driver/driver-auth.repository.js';
 import type { DriverPushTokenService } from '../modules/route-grouping/driver-push-token.service.js';
 
 export type DriverAuthDependencies = {
@@ -8,6 +8,9 @@ export type DriverAuthDependencies = {
   jwtSecret: string;
   pushTokenService?: DriverPushTokenService;
 };
+
+const DRIVER_ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
+const DRIVER_PIN_PATTERN = /^\d{6}$/u;
 
 export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: DriverAuthDependencies): void {
   app.post<{ Body: unknown }>('/driver/auth/refresh', async (request, reply) => {
@@ -25,26 +28,7 @@ export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: Dri
       const sessionInfo = await dependencies.driverAuthRepository.refreshSession({
         refreshToken: refreshToken.trim()
       });
-      const tokenResult = signDriverToken(
-        {
-          driverId: sessionInfo.driverId,
-          expiresInSeconds: 15 * 60,
-          shopDomain: sessionInfo.shopDomain,
-          subject: `driver:${sessionInfo.driverId}`,
-          tokenVersion: sessionInfo.tokenVersion
-        },
-        { secret: dependencies.jwtSecret }
-      );
-
-      return reply.code(200).send({
-        data: {
-          accessToken: tokenResult.token,
-          expiresAt: tokenResult.expiresAt,
-          refreshToken: sessionInfo.refreshToken,
-          refreshTokenExpiresAt: sessionInfo.expiresAt.toISOString()
-        },
-        error: null
-      });
+      return reply.code(200).send(buildAuthSessionResponse(sessionInfo, dependencies.jwtSecret));
     } catch (error) {
       if (isInvalidRefreshTokenError(error)) {
         return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: 'Invalid or expired refresh token' } });
@@ -52,6 +36,22 @@ export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: Dri
 
       request.log.error({ err: error }, 'driver auth refresh failed');
       return reply.code(500).send({ data: null, error: { code: 'INTERNAL_SERVER_ERROR', message: 'Driver session could not be refreshed' } });
+    }
+  });
+
+  app.post<{ Body: unknown }>('/driver/auth/login', async (request, reply) => {
+    const body = objectOrNull(request.body);
+    const phone = body === null ? null : readRequiredString(body.phone);
+    const pin = body === null ? null : readRequiredString(body.pin);
+    if (phone === null || !/^\+[1-9]\d{7,14}$/u.test(phone) || pin === null || !DRIVER_PIN_PATTERN.test(pin)) {
+      return reply.code(400).send({ data: null, error: { code: 'BAD_REQUEST', message: 'phone and 6-digit PIN are required' } });
+    }
+
+    try {
+      const sessionInfo = await dependencies.driverAuthRepository.loginWithPin({ phone, pin });
+      return reply.code(200).send(buildAuthSessionResponse(sessionInfo, dependencies.jwtSecret));
+    } catch {
+      return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: 'Invalid phone or PIN' } });
     }
   });
 
@@ -120,11 +120,21 @@ export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: Dri
     return reply.code(200).send({ data: result, error: null });
   });
 
-  app.post<{ Body: { displayName?: unknown; phone: string; inviteCode: string } }>('/driver/auth/verify-invite', async (request, reply) => {
-    const { displayName, phone, inviteCode } = request.body;
+  app.post<{ Body: unknown }>('/driver/auth/verify-invite', async (request, reply) => {
+    const body = objectOrNull(request.body);
+    const displayName = body?.displayName;
+    const phone = body?.phone;
+    const inviteCode = body?.inviteCode;
+    const pin = body?.pin;
 
-    if (typeof phone !== 'string' || !/^\+[1-9]\d{7,14}$/u.test(phone.trim()) || typeof inviteCode !== 'string') {
-      return reply.code(400).send({ data: null, error: { code: 'BAD_REQUEST', message: 'phone and inviteCode are required' } });
+    if (
+      typeof phone !== 'string' ||
+      !/^\+[1-9]\d{7,14}$/u.test(phone.trim()) ||
+      typeof inviteCode !== 'string' ||
+      typeof pin !== 'string' ||
+      !DRIVER_PIN_PATTERN.test(pin.trim())
+    ) {
+      return reply.code(400).send({ data: null, error: { code: 'BAD_REQUEST', message: 'phone, inviteCode, and 6-digit PIN are required' } });
     }
     if (displayName !== undefined && displayName !== null && typeof displayName !== 'string') {
       return reply.code(400).send({ data: null, error: { code: 'BAD_REQUEST', message: 'displayName must be a string' } });
@@ -140,7 +150,7 @@ export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: Dri
         displayNameLength: normalizedDisplayName?.length ?? 0,
         displayNameProvided: normalizedDisplayName !== undefined,
         inviteCodeLength: normalizedInviteCode.length,
-        payloadKeys: Object.keys(request.body).sort(),
+        payloadKeys: Object.keys(body ?? {}).sort(),
         phoneLast4: phone.trim().slice(-4)
       },
       'driver invite verification payload accepted'
@@ -150,33 +160,61 @@ export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: Dri
       const sessionInfo = await dependencies.driverAuthRepository.verifyInvite({
         phone: phone.trim(),
         inviteCode: normalizedInviteCode,
+        pin: pin.trim(),
         ...(normalizedDisplayName === undefined ? {} : { displayName: normalizedDisplayName })
       });
-
-      const tokenResult = signDriverToken(
-        {
-          driverId: sessionInfo.driverId,
-          expiresInSeconds: 15 * 60, // 15 minutes access token
-          shopDomain: sessionInfo.shopDomain,
-          subject: `driver:${sessionInfo.driverId}`,
-          tokenVersion: sessionInfo.tokenVersion
-        },
-        { secret: dependencies.jwtSecret }
-      );
-
-      return reply.code(200).send({
-        data: {
-          accessToken: tokenResult.token,
-          expiresAt: tokenResult.expiresAt,
-          refreshToken: sessionInfo.refreshToken,
-          refreshTokenExpiresAt: sessionInfo.expiresAt.toISOString()
-        },
-        error: null
-      });
+      return reply.code(200).send(buildAuthSessionResponse(sessionInfo, dependencies.jwtSecret));
     } catch (error) {
       return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: (error as Error).message } });
     }
   });
+}
+
+function buildAuthSessionResponse(sessionInfo: DriverAuthSessionInfo, secret: string): {
+  data: {
+    accessToken: string;
+    expiresAt: string;
+    refreshToken: string;
+    refreshTokenExpiresAt: string;
+    tokenType: 'Bearer';
+    ttlSeconds: number;
+    use: 'consent_and_assigned_route' | 'driver_account';
+  };
+  error: null;
+} {
+  const tokenResult = sessionInfo.kind === 'account'
+    ? signDriverAccountToken({
+        accountId: sessionInfo.accountId,
+        expiresInSeconds: DRIVER_ACCESS_TOKEN_TTL_SECONDS,
+        subject: `driver-account:${sessionInfo.accountId}`,
+        tokenVersion: sessionInfo.tokenVersion
+      }, { secret })
+    : signDriverToken({
+        driverId: sessionInfo.driverId,
+        expiresInSeconds: DRIVER_ACCESS_TOKEN_TTL_SECONDS,
+        shopDomain: sessionInfo.shopDomain,
+        subject: `driver:${sessionInfo.driverId}`,
+        tokenVersion: sessionInfo.tokenVersion
+      }, { secret });
+
+  return {
+    data: {
+      accessToken: tokenResult.token,
+      expiresAt: tokenResult.expiresAt,
+      refreshToken: sessionInfo.refreshToken,
+      refreshTokenExpiresAt: sessionInfo.expiresAt.toISOString(),
+      tokenType: 'Bearer',
+      ttlSeconds: DRIVER_ACCESS_TOKEN_TTL_SECONDS,
+      use: sessionInfo.kind === 'account' ? 'driver_account' : 'consent_and_assigned_route'
+    },
+    error: null
+  };
+}
+
+function objectOrNull(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 

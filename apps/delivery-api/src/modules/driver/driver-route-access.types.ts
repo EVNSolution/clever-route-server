@@ -1,5 +1,5 @@
 export type DriverRouteAccessLookupInput = {
-  phoneE164: string;
+  accountId: string;
   routeContext: string | null;
 };
 

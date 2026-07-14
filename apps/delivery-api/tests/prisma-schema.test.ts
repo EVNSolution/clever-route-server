@@ -50,6 +50,10 @@ const shopAppScopeMigrationPath = new URL(
   '../prisma/migrations/20260624033000_add_shop_app_scope/migration.sql',
   import.meta.url
 );
+const driverPhonePinAccountsMigrationPath = new URL(
+  '../prisma/migrations/20260714070000_add_driver_phone_pin_accounts/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
@@ -110,6 +114,8 @@ describe('Prisma schema', () => {
       'RoutePlan',
       'RoutePlanStop',
       'Driver',
+      'DriverAccount',
+      'DriverAccountSession',
       'DriverSession',
       'DriverConsentRecord',
       'DriverProofMedia',
@@ -193,6 +199,16 @@ describe('Prisma schema', () => {
     expect(schema).toContain('provider = "postgresql"');
     expect(schema).toContain('env("DATABASE_URL")');
     expect(schema).toContain('provider = "prisma-client-js"');
+  });
+
+  test('ships a migration for phone-owned driver PIN accounts', async () => {
+    const migration = await readFile(driverPhonePinAccountsMigrationPath, 'utf8');
+
+    expect(migration).toContain('CREATE TABLE "driver_accounts"');
+    expect(migration).toContain('CREATE UNIQUE INDEX "driver_accounts_phone_key"');
+    expect(migration).toContain('ALTER TABLE "drivers" ADD COLUMN "accountId" UUID');
+    expect(migration).toContain('CREATE TABLE "driver_account_sessions"');
+    expect(migration).toContain('ON DELETE CASCADE ON UPDATE CASCADE');
   });
 
   test('ships a migration for the WooCommerce connection store rollout', async () => {

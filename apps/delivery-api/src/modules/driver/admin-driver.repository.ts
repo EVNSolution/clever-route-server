@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import type { PrismaClient } from '@prisma/client';
 
 import type {
@@ -10,12 +10,13 @@ import type {
 } from './admin-driver.types.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
 
-type AdminDriverPrismaClient = Pick<PrismaClient, 'driver' | 'driverSession' | 'shop'>;
+type AdminDriverPrismaClient = Pick<PrismaClient, 'driver' | 'driverAccount' | 'driverSession' | 'shop'>;
 
 const INVITE_CODE_TTL_HOURS = 24;
 
 type DriverRecord = {
   _count?: { driverEvents?: number };
+  accountId: string | null;
   authSubject: string | null;
   createdAt: Date;
   displayName: string;
@@ -45,8 +46,14 @@ export class PrismaAdminDriverRepository {
     });
     const displayName = normalizeDisplayName(input.displayName) ?? input.phone;
 
-    const inviteCode = generateInviteCode();
-    const inviteCodeExpiresAt = new Date(Date.now() + INVITE_CODE_TTL_HOURS * 60 * 60 * 1000);
+    const account = await this.prisma.driverAccount.findUnique({
+      select: { id: true },
+      where: { phone: input.phone }
+    });
+    const inviteCode = account === null ? generateInviteCode() : null;
+    const inviteCodeExpiresAt = account === null
+      ? new Date(Date.now() + INVITE_CODE_TTL_HOURS * 60 * 60 * 1000)
+      : null;
 
     const existing = await this.prisma.driver.findFirst({
       include: driverInclude,
@@ -55,16 +62,26 @@ export class PrismaAdminDriverRepository {
 
     if (existing !== null) {
       const driver = await this.prisma.driver.update({
-        data: { displayName, phone: input.phone, inviteCode, inviteCodeExpiresAt },
+        data: {
+          accountId: account?.id ?? null,
+          authSubject: account === null ? null : `driver-${existing.id}`,
+          displayName,
+          phone: input.phone,
+          inviteCode,
+          inviteCodeExpiresAt
+        },
         include: driverInclude,
         where: { id: existing.id }
       });
       return toAdminDriverRow(driver);
     }
 
+    const driverId = randomUUID();
     const driver = await this.prisma.driver.create({
       data: {
-        authSubject: null,
+        id: driverId,
+        accountId: account?.id ?? null,
+        authSubject: account === null ? null : `driver-${driverId}`,
         displayName,
         phone: input.phone,
         shopId: shop.id,
@@ -128,9 +145,28 @@ export class PrismaAdminDriverRepository {
       throw new Error('Shop not found');
     }
 
+    const tokensInvalidatedAt = new Date();
+    const existing = await this.prisma.driver.findUnique({
+      select: { accountId: true },
+      where: { id: input.driverId, shopId: shop.id }
+    });
+    if (existing === null) {
+      throw new Error('Driver not found');
+    }
+
+    if (existing.accountId !== null) {
+      return toAdminDriverRow(await this.prisma.driver.update({
+        data: {
+          inviteCode: null,
+          inviteCodeExpiresAt: null
+        },
+        include: driverInclude,
+        where: { id: input.driverId, shopId: shop.id }
+      }));
+    }
+
     const inviteCode = generateInviteCode();
     const inviteCodeExpiresAt = new Date(Date.now() + INVITE_CODE_TTL_HOURS * 60 * 60 * 1000);
-    const tokensInvalidatedAt = new Date();
 
     const driver = await this.prisma.driver.update({
       data: {

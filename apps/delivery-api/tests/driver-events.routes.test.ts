@@ -237,6 +237,7 @@ function createDependencyHarness(input: { accessTokenActive?: boolean } = {}): {
         recordDriverEvent
       },
       driverTokenAccessRepository: {
+        isDriverAccountAccessTokenActive: vi.fn(() => Promise.resolve(true)),
         isDriverAccessTokenActive
       },
       jwtSecret: secret,

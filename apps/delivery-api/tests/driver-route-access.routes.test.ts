@@ -1,13 +1,19 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
-import { verifyDriverToken } from '../src/modules/driver/driver-token-verifier.js';
+import { signDriverAccountToken, verifyDriverToken } from '../src/modules/driver/driver-token-verifier.js';
 import type { DriverApiDependencies } from '../src/routes/driver-events.routes.js';
 
 type LookupRouteAccess = NonNullable<DriverApiDependencies['routeAccessService']>['lookupRouteAccess'];
 type RecordDriverEvent = DriverApiDependencies['driverEventService']['recordDriverEvent'];
 
 const now = new Date('2026-05-12T06:40:00.000Z');
+const accountAccessToken = signDriverAccountToken({
+  accountId: 'account-id',
+  expiresInSeconds: 900,
+  subject: 'driver-account:account-id',
+  tokenVersion: 1
+}, { now, secret: 'driver-secret' }).token;
 
 
 type InvitedLookupResponseBody = {
@@ -58,8 +64,9 @@ describe('Driver route access lookup route', () => {
 
     try {
       const response = await app.inject({
+        headers: { authorization: `Bearer ${accountAccessToken}` },
         method: 'POST',
-        payload: { phoneE164: '+14165550123' },
+        payload: {},
         url: '/driver/route-access/lookup'
       });
 
@@ -77,7 +84,7 @@ describe('Driver route access lookup route', () => {
       expect(body.data.routes[0]?.driverAccess.accessToken).toEqual(expect.any(String));
       expect(body.data.routes[0]).not.toHaveProperty('status');
       expect(lookupRouteAccess).toHaveBeenCalledWith({
-        phoneE164: '+14165550123',
+        accountId: 'account-id',
         routeContext: null
       });
       expect(JSON.stringify(body)).not.toContain('driverContext');
@@ -97,8 +104,9 @@ describe('Driver route access lookup route', () => {
 
     try {
       const response = await app.inject({
+        headers: { authorization: `Bearer ${accountAccessToken}` },
         method: 'POST',
-        payload: { phoneE164: '+14165550123' },
+        payload: {},
         url: '/driver/route-access/lookup'
       });
 
@@ -111,7 +119,7 @@ describe('Driver route access lookup route', () => {
         error: null
       });
       expect(lookupRouteAccess).toHaveBeenCalledWith({
-        phoneE164: '+14165550123',
+        accountId: 'account-id',
         routeContext: null
       });
     } finally {
@@ -119,13 +127,14 @@ describe('Driver route access lookup route', () => {
     }
   });
 
-  test('rejects non-E.164 phone numbers before repository lookup', async () => {
+  test('rejects malformed route context before repository lookup', async () => {
     const { app, lookupRouteAccess } = await createAppHarness();
 
     try {
       const response = await app.inject({
+        headers: { authorization: `Bearer ${accountAccessToken}` },
         method: 'POST',
-        payload: { phoneE164: '010-1234-5678', routeContext: 'route-plan-id' },
+        payload: { routeContext: 42 },
         url: '/driver/route-access/lookup'
       });
 
@@ -140,13 +149,36 @@ describe('Driver route access lookup route', () => {
     }
   });
 
+  test('rejects an account access token after the account token version changes', async () => {
+    const { app, lookupRouteAccess } = await createAppHarness({ accountTokenActive: false });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${accountAccessToken}` },
+        method: 'POST',
+        payload: {},
+        url: '/driver/route-access/lookup'
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'UNAUTHORIZED', message: 'Invalid driver account bearer token' }
+      });
+      expect(lookupRouteAccess).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('returns company guidance for a matched active driver without stop data', async () => {
     const { app, lookupRouteAccess } = await createAppHarness();
 
     try {
       const response = await app.inject({
+        headers: { authorization: `Bearer ${accountAccessToken}` },
         method: 'POST',
-        payload: { phoneE164: '+14165550123', routeContext: ' route-plan-id ' },
+        payload: { routeContext: ' route-plan-id ' },
         url: '/driver/route-access/lookup'
       });
 
@@ -175,7 +207,7 @@ describe('Driver route access lookup route', () => {
       });
       expect(JSON.stringify(body)).not.toContain('driverContext');
       expect(lookupRouteAccess).toHaveBeenCalledWith({
-        phoneE164: '+14165550123',
+        accountId: 'account-id',
         routeContext: 'route-plan-id'
       });
       expect(JSON.stringify(response.json())).not.toContain('deliveryStop');
@@ -190,8 +222,9 @@ describe('Driver route access lookup route', () => {
 
     try {
       const response = await app.inject({
+        headers: { authorization: `Bearer ${accountAccessToken}` },
         method: 'POST',
-        payload: { phoneE164: '+14165550123', routeContext: 'missing-route' },
+        payload: { routeContext: 'missing-route' },
         url: '/driver/route-access/lookup'
       });
 
@@ -227,14 +260,15 @@ describe('Driver route access lookup route', () => {
             timezone: 'America/Toronto'
           }
         ],
-        resolutionHint: 'Use the phone-only route list or contact dispatch.'
+        resolutionHint: 'Use the account route list or contact dispatch.'
       }
     });
 
     try {
       const response = await multipleMatches.app.inject({
+        headers: { authorization: `Bearer ${accountAccessToken}` },
         method: 'POST',
-        payload: { phoneE164: '+14165550123', routeContext: 'toronto-shared-route-scope' },
+        payload: { routeContext: 'toronto-shared-route-scope' },
         url: '/driver/route-access/lookup'
       });
 
@@ -262,7 +296,7 @@ describe('Driver route access lookup route', () => {
               timezone: 'America/Toronto'
             }
           ],
-          resolutionHint: 'Use the phone-only route list or contact dispatch.'
+          resolutionHint: 'Use the account route list or contact dispatch.'
         },
         error: null
       });
@@ -281,13 +315,15 @@ describe('Driver route access lookup route', () => {
 
     try {
       const inactiveResponse = await inactive.app.inject({
+        headers: { authorization: `Bearer ${accountAccessToken}` },
         method: 'POST',
-        payload: { phoneE164: '+14165550123', routeContext: 'route-plan-id' },
+        payload: { routeContext: 'route-plan-id' },
         url: '/driver/route-access/lookup'
       });
       const blockedResponse = await blocked.app.inject({
+        headers: { authorization: `Bearer ${accountAccessToken}` },
         method: 'POST',
-        payload: { phoneE164: '+14165550123', routeContext: 'route-plan-id' },
+        payload: { routeContext: 'route-plan-id' },
         url: '/driver/route-access/lookup'
       });
 
@@ -304,6 +340,7 @@ describe('Driver route access lookup route', () => {
 
 async function createAppHarness(
   override: {
+    accountTokenActive?: boolean;
     result?: Awaited<ReturnType<LookupRouteAccess>>;
     status?: 'BLOCKED' | 'DISABLED' | 'NOT_FOUND';
   } = {}
@@ -321,6 +358,10 @@ async function createAppHarness(
     driverApi: {
       driverEventService: {
         recordDriverEvent
+      },
+      driverTokenAccessRepository: {
+        isDriverAccessTokenActive: vi.fn(() => Promise.resolve(true)),
+        isDriverAccountAccessTokenActive: vi.fn(() => Promise.resolve(override.accountTokenActive ?? true))
       },
       jwtSecret: 'driver-secret',
       now: () => now,

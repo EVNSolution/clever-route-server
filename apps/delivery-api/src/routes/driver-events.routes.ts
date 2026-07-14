@@ -3,6 +3,7 @@ import type { MultipartFile, MultipartValue } from '@fastify/multipart';
 
 import {
   signDriverToken,
+  verifyDriverAccountToken,
   verifyDriverToken,
   type VerifiedDriverToken
 } from '../modules/driver/driver-token-verifier.js';
@@ -78,7 +79,6 @@ export type DriverApiDependencies = {
 };
 
 type DriverRouteAccessRequestBody = {
-  phoneE164?: unknown;
   routeContext?: unknown;
 };
 
@@ -178,9 +178,35 @@ export function registerDriverEventRoutes(
     app.post<{ Body: DriverRouteAccessRequestBody }>(
       '/driver/route-access/lookup',
       async (request, reply) => {
+        const token = extractBearerToken(request.headers.authorization);
+        if (token === null) {
+          return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Missing driver account bearer token'));
+        }
+
+        let accountId: string;
+        try {
+          const now = dependencies.now?.();
+          const accountContext = verifyDriverAccountToken(
+            token,
+            now === undefined ? { secret: dependencies.jwtSecret } : { now, secret: dependencies.jwtSecret }
+          );
+          accountId = accountContext.accountId;
+          if (
+            dependencies.driverTokenAccessRepository !== undefined &&
+            !(await dependencies.driverTokenAccessRepository.isDriverAccountAccessTokenActive({
+              accountId,
+              tokenVersion: accountContext.tokenVersion
+            }))
+          ) {
+            return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Invalid driver account bearer token'));
+          }
+        } catch {
+          return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Invalid driver account bearer token'));
+        }
+
         let lookupInput: DriverRouteAccessLookupInput;
         try {
-          lookupInput = readDriverRouteAccessBody(request.body);
+          lookupInput = readDriverRouteAccessBody(request.body, accountId);
         } catch {
           return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid route access lookup payload'));
         }
@@ -821,15 +847,9 @@ function buildInvitedDriverRouteAccessResponse(
   };
 }
 
-function readDriverRouteAccessBody(body: DriverRouteAccessRequestBody): DriverRouteAccessLookupInput {
+function readDriverRouteAccessBody(body: DriverRouteAccessRequestBody, accountId: string): DriverRouteAccessLookupInput {
   const routeContext = readOptionalString(body.routeContext);
-  const phoneE164 = readRequiredString(body.phoneE164);
-
-  if (!/^\+[1-9]\d{7,14}$/u.test(phoneE164)) {
-    throw new Error('Invalid E.164 phone');
-  }
-
-  return { phoneE164, routeContext };
+  return { accountId, routeContext };
 }
 
 function readDriverRoutesHistoryQuery(query: DriverRoutesHistoryQuery): {

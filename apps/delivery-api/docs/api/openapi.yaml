@@ -11,7 +11,7 @@ info:
     admin clients, legacy Shopify compatibility routes, native driver mobile
     clients, and operational health checks. Human behavior notes live beside
     this file in docs/api/*.md.
-  x-contract-revision: 2026-05-14
+  x-contract-revision: 2026-07-14
   x-source-repository: EVNSolution/clever-route-server
 servers:
   - url: http://localhost:3000
@@ -467,12 +467,60 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+  /driver/auth/login:
+    post:
+      tags: [Driver Mobile]
+      summary: Log an existing driver account in with phone and PIN
+      operationId: loginDriverWithPin
+      x-source-file: src/routes/driver-auth.routes.ts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriverPhonePinLoginRequest'
+      responses:
+        '200':
+          description: Driver-account access and refresh session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverAccountAuthSessionEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /driver/auth/verify-invite:
+    post:
+      tags: [Driver Mobile]
+      summary: Register an invited phone and set its six-digit PIN
+      operationId: registerInvitedDriverAccount
+      x-source-file: src/routes/driver-auth.routes.ts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriverInviteRegistrationRequest'
+      responses:
+        '200':
+          description: Newly registered driver-account access and refresh session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverAccountAuthSessionEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /driver/route-access/lookup:
     post:
       tags: [Driver Mobile]
-      summary: Phone-first route access lookup for the driver app
+      summary: Account-authenticated route access lookup for the driver app
       operationId: lookupDriverRouteAccess
       x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccountAccessToken: []
       requestBody:
         required: true
         content:
@@ -488,6 +536,8 @@ paths:
                 $ref: '#/components/schemas/DriverRouteAccessEnvelope'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /driver/assigned-route:
     get:
       tags: [Driver Mobile]
@@ -837,6 +887,11 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Server-issued short-lived driver JWT with audience clever-delivery-driver.
+    DriverAccountAccessToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Server-issued short-lived phone-account JWT with audience clever-driver-account.
     ShopifyWebhookHmac:
       type: apiKey
       in: header
@@ -1541,16 +1596,64 @@ components:
           type: 'null'
     DriverRouteAccessLookupRequest:
       type: object
-      required: [phoneE164]
       properties:
-        phoneE164:
-          pattern: '^\+[1-9]\d{7,14}$'
-          type: string
         routeContext:
           type:
             - string
             - 'null'
       additionalProperties: false
+    DriverPhonePinLoginRequest:
+      type: object
+      required: [phone, pin]
+      properties:
+        phone:
+          pattern: '^\+[1-9]\d{7,14}$'
+          type: string
+        pin:
+          pattern: '^\d{6}$'
+          type: string
+      additionalProperties: false
+    DriverInviteRegistrationRequest:
+      type: object
+      required: [phone, inviteCode, pin]
+      properties:
+        phone:
+          pattern: '^\+[1-9]\d{7,14}$'
+          type: string
+        inviteCode:
+          pattern: '^[0-9A-Fa-f]{6}$'
+          type: string
+        pin:
+          pattern: '^\d{6}$'
+          type: string
+      additionalProperties: false
+    DriverAccountAuthSessionEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [accessToken, expiresAt, refreshToken, refreshTokenExpiresAt, tokenType, ttlSeconds, use]
+          properties:
+            accessToken:
+              type: string
+            expiresAt:
+              format: date-time
+              type: string
+            refreshToken:
+              type: string
+            refreshTokenExpiresAt:
+              format: date-time
+              type: string
+            tokenType:
+              const: Bearer
+            ttlSeconds:
+              type: integer
+              example: 900
+            use:
+              const: driver_account
+        error:
+          type: 'null'
     DriverRouteAccessEnvelope:
       type: object
       required: [data, error]

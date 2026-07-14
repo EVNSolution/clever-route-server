@@ -923,6 +923,8 @@ model RoutePlanStop {
 
 model Driver {
   id                         String                           @id @default(uuid()) @db.Uuid
+  accountId                  String?                          @db.Uuid
+  account                    DriverAccount?                   @relation(fields: [accountId], references: [id], onDelete: SetNull)
   shopId                     String                           @db.Uuid
   shop                       Shop                             @relation(fields: [shopId], references: [id], onDelete: Cascade)
   displayName                String                           @db.Text
@@ -951,8 +953,41 @@ model Driver {
   routeNotificationAttempts  DriverRouteNotificationAttempt[]
 
   @@unique([shopId, inviteCode])
+  @@index([accountId, status])
   @@index([shopId, status])
   @@map("drivers")
+}
+
+model DriverAccount {
+  id                String                 @id @default(uuid()) @db.Uuid
+  phone             String                 @unique @db.Text
+  pinHash           String                 @db.Text
+  pinSalt           String                 @db.Text
+  status            DriverStatus           @default(ACTIVE)
+  tokenVersion      Int                    @default(0)
+  failedPinAttempts Int                    @default(0)
+  pinLockedUntil    DateTime?              @db.Timestamptz(6)
+  createdAt         DateTime               @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime               @updatedAt @db.Timestamptz(6)
+  drivers           Driver[]
+  sessions          DriverAccountSession[]
+
+  @@index([status])
+  @@map("driver_accounts")
+}
+
+model DriverAccountSession {
+  id               String        @id @default(uuid()) @db.Uuid
+  accountId        String        @db.Uuid
+  account          DriverAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  refreshTokenHash String        @unique @db.Text
+  expiresAt        DateTime      @db.Timestamptz(6)
+  revokedAt        DateTime?     @db.Timestamptz(6)
+  createdAt        DateTime      @default(now()) @db.Timestamptz(6)
+  lastUsedAt       DateTime?     @db.Timestamptz(6)
+
+  @@index([accountId, expiresAt])
+  @@map("driver_account_sessions")
 }
 
 model DriverSession {

@@ -30,7 +30,7 @@ Do not treat raw EIP or `sslip.io` hostnames as the normal integration contract.
 | --- | --- | --- | --- |
 | Current admin clients | `/admin/orders*`, `/admin/drivers*`, `/admin/route-plans*` | Current admin session-token verifier while legacy Shopify admin is retained | `shopify-and-admin-api.md`, `admin-route-plans.md` |
 | Legacy Shopify compatibility | `/shopify/auth/token-exchange`, `/shopify/webhooks` | Shopify session token or webhook HMAC | `shopify-and-admin-api.md` |
-| Native driver app | `/driver/route-access/lookup`, `/driver/consents`, `/driver/assigned-route`, `/driver/proof-media*`, `/driver/events` | Phone/invite flow followed by short-lived server-issued driver JWT | `driver-route-access.md`, `driver-consents.md`, `driver-assigned-route.md`, `driver-proof-media.md` |
+| Native driver app | `/driver/auth/*`, `/driver/route-access/lookup`, `/driver/consents`, `/driver/assigned-route`, `/driver/proof-media*`, `/driver/events` | Invite + PIN registration, then phone + PIN login and short-lived server-issued JWTs | `driver-auth.md`, `driver-route-access.md`, `driver-consents.md`, `driver-assigned-route.md`, `driver-proof-media.md` |
 | Operations / deployment monitors | `/healthz`, `/readyz`, `/docs` | None in current local contract | `openapi.yaml`, deployment docs |
 
 ## Source-of-truth rules
