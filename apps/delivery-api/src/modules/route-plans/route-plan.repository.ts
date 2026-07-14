@@ -130,6 +130,7 @@ type DeliveryStopRecord = {
   province: string | null;
   recipientName: string | null;
   routePlanStops?: Array<{ id: string }>;
+  serviceMinutes: number | null;
   status: string;
 };
 
@@ -1651,6 +1652,7 @@ function emptyDeliveryStopFallback(order: OrderRecord): DeliveryStopRecord {
     postalCode: null,
     province: null,
     recipientName: null,
+    serviceMinutes: null,
     status: 'PENDING'
   };
 }
@@ -2082,6 +2084,7 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
     estimatedArrivalAt: routeStop.estimatedArrivalAt?.toISOString() ?? null,
     paymentMethodTitle: readPaymentMethodTitle(rawPayload),
     phone: deliveryStop.phone ?? order.phone ?? null,
+    serviceMinutes: deliveryStop.serviceMinutes,
     totalPriceAmount: stringOrNull(order.totalPriceAmount),
     orderId: order.id,
     orderName: order.name,
