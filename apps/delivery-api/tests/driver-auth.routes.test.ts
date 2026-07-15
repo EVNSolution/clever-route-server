@@ -1,12 +1,133 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
-import { verifyDriverAccountToken, verifyDriverToken } from '../src/modules/driver/driver-token-verifier.js';
+import {
+  signDriverAccountToken,
+  verifyDriverAccountToken,
+  verifyDriverToken
+} from '../src/modules/driver/driver-token-verifier.js';
 import type { DriverAuthDependencies } from '../src/routes/driver-auth.routes.js';
 
 const anyStringMatcher: unknown = expect.any(String);
 
 describe('Driver auth routes', () => {
+  test('reads the authenticated phone-account profile without a shop route token', async () => {
+    const getAccountProfile = vi.fn(() => Promise.resolve({ name: null, phone: '+14165550123' }));
+    const app = await buildApp({
+      driverAuth: {
+        driverAuthRepository: { getAccountProfile } as never,
+        jwtSecret: 'test-secret'
+      }
+    });
+    const accessToken = signDriverAccountToken({
+      accountId: 'account-id',
+      expiresInSeconds: 60,
+      subject: 'driver-account:account-id',
+      tokenVersion: 3
+    }, { secret: 'test-secret' }).token;
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${accessToken}` },
+        method: 'GET',
+        url: '/driver/account/profile'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(getAccountProfile).toHaveBeenCalledWith({ accountId: 'account-id', tokenVersion: 3 });
+      expect(response.json()).toEqual({
+        data: { account: { name: null, phone: '+14165550123' } },
+        error: null
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('updates only the authenticated phone-account name', async () => {
+    const updateAccountProfile = vi.fn(() => Promise.resolve({ name: '임 지인', phone: '+821089216198' }));
+    const app = await buildApp({
+      driverAuth: {
+        driverAuthRepository: { updateAccountProfile } as never,
+        jwtSecret: 'test-secret'
+      }
+    });
+    const accessToken = signDriverAccountToken({
+      accountId: 'account-id',
+      expiresInSeconds: 60,
+      subject: 'driver-account:account-id',
+      tokenVersion: 4
+    }, { secret: 'test-secret' }).token;
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${accessToken}` },
+        method: 'PATCH',
+        payload: { name: '  임 지인  ' },
+        url: '/driver/account/profile'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(updateAccountProfile).toHaveBeenCalledWith({
+        accountId: 'account-id',
+        name: '임 지인',
+        tokenVersion: 4
+      });
+      expect(response.json()).toEqual({
+        data: { account: { name: '임 지인', phone: '+821089216198' } },
+        error: null
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects invalid account profile credentials and invalid name payloads', async () => {
+    const getAccountProfile = vi.fn(() => Promise.resolve(null));
+    const updateAccountProfile = vi.fn(() => Promise.resolve(null));
+    const app = await buildApp({
+      driverAuth: {
+        driverAuthRepository: { getAccountProfile, updateAccountProfile } as never,
+        jwtSecret: 'test-secret'
+      }
+    });
+    const accessToken = signDriverAccountToken({
+      accountId: 'account-id',
+      expiresInSeconds: 60,
+      subject: 'driver-account:account-id',
+      tokenVersion: 7
+    }, { secret: 'test-secret' }).token;
+
+    try {
+      const missingToken = await app.inject({ method: 'GET', url: '/driver/account/profile' });
+      const revokedToken = await app.inject({
+        headers: { authorization: `Bearer ${accessToken}` },
+        method: 'GET',
+        url: '/driver/account/profile'
+      });
+      const invalidName = await app.inject({
+        headers: { authorization: `Bearer ${accessToken}` },
+        method: 'PATCH',
+        payload: { name: ' '.repeat(3) },
+        url: '/driver/account/profile'
+      });
+      const unexpectedField = await app.inject({
+        headers: { authorization: `Bearer ${accessToken}` },
+        method: 'PATCH',
+        payload: { name: 'Jiin', phone: '+10000000000' },
+        url: '/driver/account/profile'
+      });
+
+      expect(missingToken.statusCode).toBe(401);
+      expect(revokedToken.statusCode).toBe(401);
+      expect(invalidName.statusCode).toBe(400);
+      expect(unexpectedField.statusCode).toBe(400);
+      expect(updateAccountProfile).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('verifies invite codes case-insensitively and returns account access session evidence', async () => {
     const verifyInvite = vi.fn<DriverAuthDependencies['driverAuthRepository']['verifyInvite']>(() =>
       Promise.resolve({

@@ -546,6 +546,47 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /driver/account/profile:
+    get:
+      tags: [Driver Mobile]
+      summary: Read the authenticated phone-account profile
+      operationId: getDriverAccountProfile
+      x-source-file: src/routes/driver-auth.routes.ts
+      security:
+        - DriverAccountAccessToken: []
+      responses:
+        '200':
+          description: Phone-account profile independent from shop driver aliases.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverAccountProfileEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    patch:
+      tags: [Driver Mobile]
+      summary: Update the authenticated phone-account name
+      operationId: updateDriverAccountProfile
+      x-source-file: src/routes/driver-auth.routes.ts
+      security:
+        - DriverAccountAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriverAccountProfileUpdateRequest'
+      responses:
+        '200':
+          description: Updated phone-account profile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverAccountProfileEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /driver/route-access/lookup:
     post:
       tags: [Driver Mobile]
@@ -1696,6 +1737,39 @@ components:
               const: driver_account
         error:
           type: 'null'
+    DriverAccountProfileEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [account]
+          properties:
+            account:
+              $ref: '#/components/schemas/DriverAccountProfile'
+        error:
+          type: 'null'
+    DriverAccountProfile:
+      type: object
+      required: [name, phone]
+      properties:
+        name:
+          type:
+            - string
+            - 'null'
+          maxLength: 80
+        phone:
+          pattern: '^\+[1-9]\d{7,14}$'
+          type: string
+    DriverAccountProfileUpdateRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+      additionalProperties: false
     DriverRouteAccessEnvelope:
       type: object
       required: [data, error]

@@ -7,6 +7,28 @@ const anyDateMatcher: unknown = expect.any(Date);
 const anyStringMatcher: unknown = expect.any(String);
 
 describe('PrismaDriverAuthRepository', () => {
+  test('reads and updates only an active matching account version', async () => {
+    const { prisma } = createPrismaHarness({
+      account: accountFixture({ name: null, tokenVersion: 2 }),
+      updatedAccount: accountFixture({ name: 'Jiin', tokenVersion: 2 })
+    });
+    const repository = new PrismaDriverAuthRepository(prisma as never);
+
+    await expect(repository.getAccountProfile({ accountId: 'account-id', tokenVersion: 2 }))
+      .resolves.toEqual({ name: null, phone: '+14165550123' });
+    await expect(repository.updateAccountProfile({ accountId: 'account-id', name: 'Jiin', tokenVersion: 2 }))
+      .resolves.toEqual({ name: 'Jiin', phone: '+14165550123' });
+
+    expect(prisma.driverAccount.findFirst).toHaveBeenCalledWith({
+      select: { name: true, phone: true },
+      where: { id: 'account-id', status: 'ACTIVE', tokenVersion: 2 }
+    });
+    expect(prisma.driverAccount.updateMany).toHaveBeenCalledWith({
+      data: { name: 'Jiin' },
+      where: { id: 'account-id', status: 'ACTIVE', tokenVersion: 2 }
+    });
+  });
+
   test('creates one phone account, links matching drivers, and stores a refresh session', async () => {
     const { prisma, transaction } = createPrismaHarness();
     const repository = new PrismaDriverAuthRepository(prisma as never);
@@ -116,9 +138,13 @@ describe('PrismaDriverAuthRepository', () => {
 function createPrismaHarness(input: {
   account?: ReturnType<typeof accountFixture> | null;
   accountRefreshSession?: ReturnType<typeof accountSessionFixture> | null;
+  updatedAccount?: ReturnType<typeof accountFixture> | null;
 } = {}) {
   const account = input.account === undefined ? null : input.account;
   const accountRefreshSession = input.accountRefreshSession === undefined ? null : input.accountRefreshSession;
+  const updatedAccount = input.updatedAccount === undefined ? account : input.updatedAccount;
+  const accountProfile = account === null ? null : { name: account.name, phone: account.phone };
+  const updatedAccountProfile = updatedAccount === null ? null : { name: updatedAccount.name, phone: updatedAccount.phone };
   const transaction = {
     driver: {
       findMany: vi.fn(() => Promise.resolve([{ id: 'driver-id' }])),
@@ -136,6 +162,9 @@ function createPrismaHarness(input: {
       update: vi.fn(() => Promise.resolve(driverFixture()))
     },
     driverAccount: {
+      findFirst: vi.fn()
+        .mockResolvedValueOnce(accountProfile)
+        .mockResolvedValue(updatedAccountProfile),
       findUnique: vi.fn(() => Promise.resolve(account)),
       update: vi.fn((query: { data?: { failedPinAttempts?: { increment: number } } }) =>
         Promise.resolve(
@@ -143,7 +172,8 @@ function createPrismaHarness(input: {
             ? account ?? accountFixture()
             : { failedPinAttempts: (account?.failedPinAttempts ?? 0) + query.data.failedPinAttempts.increment }
         )
-      )
+      ),
+      updateMany: vi.fn(() => Promise.resolve({ count: account === null ? 0 : 1 }))
     },
     driverAccountSession: {
       create: vi.fn(() => Promise.resolve({ id: 'account-session-id' })),
@@ -160,21 +190,24 @@ function createPrismaHarness(input: {
 
 function accountFixture(overrides: Partial<{
   failedPinAttempts: number;
+  name: string | null;
   pinHash: string;
   pinLockedUntil: Date | null;
   pinSalt: string;
   status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
+  tokenVersion: number;
 }> = {}) {
   return {
     createdAt: new Date('2026-07-14T00:00:00.000Z'),
     failedPinAttempts: overrides.failedPinAttempts ?? 0,
     id: 'account-id',
+    name: overrides.name ?? null,
     phone: '+14165550123',
     pinHash: overrides.pinHash ?? 'hash',
     pinLockedUntil: overrides.pinLockedUntil ?? null,
     pinSalt: overrides.pinSalt ?? 'salt',
     status: overrides.status ?? 'ACTIVE',
-    tokenVersion: 0,
+    tokenVersion: overrides.tokenVersion ?? 0,
     updatedAt: new Date('2026-07-14T00:00:00.000Z')
   };
 }

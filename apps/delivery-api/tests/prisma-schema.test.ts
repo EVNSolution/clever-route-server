@@ -54,6 +54,10 @@ const driverPhonePinAccountsMigrationPath = new URL(
   '../prisma/migrations/20260714070000_add_driver_phone_pin_accounts/migration.sql',
   import.meta.url
 );
+const driverAccountNameMigrationPath = new URL(
+  '../prisma/migrations/20260715083000_add_driver_account_name/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
@@ -209,6 +213,16 @@ describe('Prisma schema', () => {
     expect(migration).toContain('ALTER TABLE "drivers" ADD COLUMN "accountId" UUID');
     expect(migration).toContain('CREATE TABLE "driver_account_sessions"');
     expect(migration).toContain('ON DELETE CASCADE ON UPDATE CASCADE');
+  });
+
+  test('keeps the self-chosen account name nullable and separate from shop driver display names', async () => {
+    const schema = await readSchema();
+    const migration = await readFile(driverAccountNameMigrationPath, 'utf8');
+    const accountModel = /model DriverAccount \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+
+    expect(accountModel).toContain('name              String?                @db.VarChar(80)');
+    expect(migration).toContain('ALTER TABLE "driver_accounts" ADD COLUMN "name" VARCHAR(80)');
+    expect(migration).not.toContain('drivers');
   });
 
   test('ships a migration for the WooCommerce connection store rollout', async () => {
