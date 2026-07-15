@@ -62,6 +62,29 @@ Both successful endpoints return the same account session shape:
 
 The account access token uses audience `clever-driver-account`. The app sends it to `POST /driver/route-access/lookup`; the server then issues the existing shop-and-driver-scoped access token for the selected route.
 
+## Account profile name
+
+The driver's self-chosen app name belongs to the phone account and is independent from every shop's merchant-managed `Driver.displayName`. Existing accounts start with no account name; store aliases are not copied or synchronized.
+
+```http
+GET /driver/account/profile
+Authorization: Bearer <driver-account-access-token>
+```
+
+```http
+PATCH /driver/account/profile
+Authorization: Bearer <driver-account-access-token>
+Content-Type: application/json
+```
+
+```json
+{
+  "name": "Jiin"
+}
+```
+
+Both endpoints return only the account phone and nullable name. The account JWT must still match an active account and its current token version.
+
 ## Security boundary
 
 The invitation code proves that a shop assigned the phone. The PIN protects later app access but is not SMS-based proof that the user owns the phone number. SMS verification can replace the invitation step later without changing the phone-owned account or normal phone + PIN login contract.

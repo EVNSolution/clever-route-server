@@ -961,6 +961,7 @@ model Driver {
 model DriverAccount {
   id                String                 @id @default(uuid()) @db.Uuid
   phone             String                 @unique @db.Text
+  name              String?                @db.VarChar(80)
   pinHash           String                 @db.Text
   pinSalt           String                 @db.Text
   status            DriverStatus           @default(ACTIVE)

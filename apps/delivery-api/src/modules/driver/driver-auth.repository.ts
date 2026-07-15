@@ -29,6 +29,20 @@ export type RefreshSessionInput = {
   refreshToken: string;
 };
 
+export type DriverAccountProfile = {
+  name: string | null;
+  phone: string;
+};
+
+export type DriverAccountProfileScope = {
+  accountId: string;
+  tokenVersion: number;
+};
+
+export type UpdateDriverAccountProfileInput = DriverAccountProfileScope & {
+  name: string;
+};
+
 export type DriverSessionInfo = {
   driverId: string;
   shopDomain: string;
@@ -57,6 +71,21 @@ const DUMMY_PIN_HASH = 'CCrdwgxar5IhXbGpEZ_vYVcgujFSmiPgteYGuwjpGvDcRz9GD8gODaO3
 
 export class PrismaDriverAuthRepository {
   constructor(private readonly prisma: DriverAuthPrismaClient) {}
+
+  async getAccountProfile(input: DriverAccountProfileScope): Promise<DriverAccountProfile | null> {
+    return this.prisma.driverAccount.findFirst({
+      select: { name: true, phone: true },
+      where: { id: input.accountId, status: 'ACTIVE', tokenVersion: input.tokenVersion }
+    });
+  }
+
+  async updateAccountProfile(input: UpdateDriverAccountProfileInput): Promise<DriverAccountProfile | null> {
+    const updated = await this.prisma.driverAccount.updateMany({
+      data: { name: input.name },
+      where: { id: input.accountId, status: 'ACTIVE', tokenVersion: input.tokenVersion }
+    });
+    return updated.count === 1 ? this.getAccountProfile(input) : null;
+  }
 
   async refreshSession(input: RefreshSessionInput): Promise<DriverAuthSessionInfo> {
     const refreshToken = input.refreshToken.trim();

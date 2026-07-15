@@ -1,5 +1,10 @@
 import type { FastifyInstance } from 'fastify';
-import { signDriverAccountToken, signDriverToken, verifyDriverToken } from '../modules/driver/driver-token-verifier.js';
+import {
+  signDriverAccountToken,
+  signDriverToken,
+  verifyDriverAccountToken,
+  verifyDriverToken
+} from '../modules/driver/driver-token-verifier.js';
 import type { DriverAuthSessionInfo, PrismaDriverAuthRepository } from '../modules/driver/driver-auth.repository.js';
 import type { DriverPushTokenService } from '../modules/route-grouping/driver-push-token.service.js';
 
@@ -13,6 +18,33 @@ const DRIVER_ACCESS_TOKEN_TTL_SECONDS = 15 * 60;
 const DRIVER_PIN_PATTERN = /^\d{6}$/u;
 
 export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: DriverAuthDependencies): void {
+  app.get('/driver/account/profile', async (request, reply) => {
+    const account = readDriverAccountToken(request.headers.authorization, dependencies.jwtSecret);
+    if (account === null) {
+      return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: 'Invalid driver account bearer token' } });
+    }
+    const profile = await dependencies.driverAuthRepository.getAccountProfile(account);
+    return profile === null
+      ? reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: 'Invalid driver account bearer token' } })
+      : reply.code(200).send({ data: { account: profile }, error: null });
+  });
+
+  app.patch<{ Body: unknown }>('/driver/account/profile', async (request, reply) => {
+    const account = readDriverAccountToken(request.headers.authorization, dependencies.jwtSecret);
+    if (account === null) {
+      return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: 'Invalid driver account bearer token' } });
+    }
+    const body = objectOrNull(request.body);
+    const name = body === null ? null : readRequiredString(body.name);
+    if (body === null || Object.keys(body).length !== 1 || name === null || name.length > 80) {
+      return reply.code(400).send({ data: null, error: { code: 'BAD_REQUEST', message: 'name must be between 1 and 80 characters' } });
+    }
+    const profile = await dependencies.driverAuthRepository.updateAccountProfile({ ...account, name });
+    return profile === null
+      ? reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: 'Invalid driver account bearer token' } })
+      : reply.code(200).send({ data: { account: profile }, error: null });
+  });
+
   app.post<{ Body: unknown }>('/driver/auth/refresh', async (request, reply) => {
     const body = request.body;
     if (typeof body !== 'object' || body === null || Array.isArray(body)) {
@@ -222,6 +254,20 @@ function readBearerToken(value: string | undefined): string | null {
   if (value === undefined) return null;
   const match = /^Bearer\s+(.+)$/iu.exec(value.trim());
   return match?.[1]?.trim() ?? null;
+}
+
+function readDriverAccountToken(
+  authorization: string | undefined,
+  secret: string
+): { accountId: string; tokenVersion: number } | null {
+  const token = readBearerToken(authorization);
+  if (token === null) return null;
+  try {
+    const verified = verifyDriverAccountToken(token, { secret });
+    return { accountId: verified.accountId, tokenVersion: verified.tokenVersion };
+  } catch {
+    return null;
+  }
 }
 
 function readRequiredString(value: unknown): string | null {
