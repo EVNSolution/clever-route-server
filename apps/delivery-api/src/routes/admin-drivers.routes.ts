@@ -76,6 +76,48 @@ export function registerAdminDriversRoutes(app: FastifyInstance, dependencies: A
     }
   });
 
+  app.patch<{ Body: unknown; Params: { id: string } }>('/admin/drivers/:id', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+      log: request.log,
+      surface: 'admin_drivers'
+    });
+    if (authenticated.status === 'unauthorized') {
+      return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+    }
+
+    let displayName: string;
+    try {
+      displayName = readDriverNamePayload(request.body);
+    } catch {
+      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid driver name payload'));
+    }
+
+    try {
+      const driver = await dependencies.adminDriverService.updateDriverName({
+        appId: authenticated.appId,
+        displayName,
+        driverId: request.params.id,
+        shopDomain: authenticated.shopDomain
+      });
+
+      return reply.code(200).send({ data: { driver }, error: null });
+    } catch (error) {
+      if (isPrismaRecordNotFoundError(error)) {
+        return reply.code(404).send(errorResponse('NOT_FOUND', 'Driver not found'));
+      }
+
+      request.log.error(
+        {
+          driverId: request.params.id,
+          err: error,
+          shopDomain: authenticated.shopDomain
+        },
+        'admin driver name update failed'
+      );
+      return reply.code(500).send(adminDriverStorageErrorResponse(error));
+    }
+  });
+
   app.delete<{ Params: { id: string } }>('/admin/drivers/:id', async (request, reply) => {
     const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
@@ -146,6 +188,20 @@ function readDriverInvitePayload(value: unknown): DriverInvitePayload {
   };
 }
 
+function readDriverNamePayload(value: unknown): string {
+  const object = requireObject(value);
+  if (Object.keys(object).length !== 1 || !Object.hasOwn(object, 'displayName')) {
+    throw new Error('displayName only');
+  }
+
+  const displayName = requireNonEmptyString(object.displayName);
+  if (displayName.length > 80) {
+    throw new Error('displayName too long');
+  }
+
+  return displayName;
+}
+
 function authenticate(
   authorization: string | undefined,
   appIdHeader: string | string[] | undefined,
@@ -214,6 +270,10 @@ function adminDriverStorageErrorResponse(error: unknown): ErrorResponse {
 
 function isPrismaSchemaDriftError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2022';
+}
+
+function isPrismaRecordNotFoundError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2025';
 }
 
 function requireObject(value: unknown): Record<string, unknown> {

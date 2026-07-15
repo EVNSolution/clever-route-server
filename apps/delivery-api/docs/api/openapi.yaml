@@ -302,6 +302,39 @@ paths:
                 $ref: '#/components/schemas/AdminDriversListEnvelope'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /admin/drivers/{driverId}:
+    parameters:
+      - name: driverId
+        in: path
+        required: true
+        schema:
+          type: string
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Update a driver name for the authenticated shop
+      operationId: updateAdminDriverName
+      x-source-file: src/routes/admin-drivers.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminDriverUpdateRequest'
+      responses:
+        '200':
+          description: Driver name was updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminDriverEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
     post:
       tags: [Shopify Embedded Admin]
       summary: Create a pending driver for the authenticated shop
@@ -1294,6 +1327,15 @@ components:
             - string
             - 'null'
           format: uri
+      additionalProperties: false
+    AdminDriverUpdateRequest:
+      type: object
+      required: [displayName]
+      properties:
+        displayName:
+          type: string
+          minLength: 1
+          maxLength: 80
       additionalProperties: false
     AdminDriver:
       type: object

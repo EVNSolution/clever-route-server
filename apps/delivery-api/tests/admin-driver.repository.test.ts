@@ -228,6 +228,29 @@ describe('PrismaAdminDriverRepository', () => {
     expect(prisma.driver.findMany).not.toHaveBeenCalled();
   });
 
+  test('updates only the authenticated shop driver name', async () => {
+    const updatedDriver = driverRecord({ displayName: 'Mina Kim', id: 'driver-id' });
+    const { prisma } = createPrismaHarness({ updatedDriver });
+    const repository = new PrismaAdminDriverRepository(prisma as never);
+
+    const driver = await repository.updateDriverName({
+      displayName: 'Mina Kim',
+      driverId: 'driver-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(prisma.shop.findUnique).toHaveBeenCalledWith({
+      select: { id: true },
+      where: { appId_shopDomain: { appId: 'clever', shopDomain: 'example.myshopify.com' } }
+    });
+    expect(prisma.driver.update).toHaveBeenCalledWith({
+      data: { displayName: 'Mina Kim' },
+      include: { _count: { select: { driverEvents: true } } },
+      where: { id: 'driver-id', shopId: 'shop-id' }
+    });
+    expect(driver).toEqual(expect.objectContaining({ displayName: 'Mina Kim', id: 'driver-id' }));
+  });
+
   test('deletes only the authenticated shop driver', async () => {
     const { prisma } = createPrismaHarness({ deletedDriver: { id: 'driver-id' } });
     const repository = new PrismaAdminDriverRepository(prisma as never);

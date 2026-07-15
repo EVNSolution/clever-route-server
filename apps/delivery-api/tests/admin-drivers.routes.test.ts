@@ -195,6 +195,107 @@ describe('Admin drivers routes', () => {
     }
   });
 
+  test('updates a driver name for the authenticated shop', async () => {
+    const { dependencies, updateDriverName } = createDependencyHarness();
+    const app = await buildApp({ adminDrivers: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { displayName: '  Mina Kim  ' },
+        url: '/admin/drivers/linked-driver-id'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ data: { driver: linkedDriver }, error: null });
+      expect(updateDriverName).toHaveBeenCalledWith({
+        appId: 'clever',
+        displayName: 'Mina Kim',
+        driverId: 'linked-driver-id',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test.each([
+    [{ displayName: '   ' }],
+    [{ displayName: 'a'.repeat(81) }],
+    [{ displayName: 'Mina Kim', phone: '+14165550108' }]
+  ])('rejects invalid driver name updates: %j', async (payload) => {
+    const { dependencies, updateDriverName } = createDependencyHarness();
+    const app = await buildApp({ adminDrivers: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload,
+        url: '/admin/drivers/linked-driver-id'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'Invalid driver name payload' }
+      });
+      expect(updateDriverName).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns not found only when the scoped driver does not exist', async () => {
+    const { dependencies, updateDriverName } = createDependencyHarness();
+    updateDriverName.mockRejectedValueOnce(Object.assign(new Error('missing driver'), { code: 'P2025' }));
+    const app = await buildApp({ adminDrivers: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { displayName: 'Mina Kim' },
+        url: '/admin/drivers/missing-driver-id'
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'NOT_FOUND', message: 'Driver not found' }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('does not hide driver name storage failures behind a not-found response', async () => {
+    const { dependencies, updateDriverName } = createDependencyHarness();
+    updateDriverName.mockRejectedValueOnce(new Error('database unavailable'));
+    const app = await buildApp({ adminDrivers: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { displayName: 'Mina Kim' },
+        url: '/admin/drivers/linked-driver-id'
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'DRIVER_STORAGE_ERROR',
+          message: 'Delivery driver storage is temporarily unavailable.'
+        }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('returns a clear schema-drift error when driver listing storage is not migrated', async () => {
     const { dependencies, listDrivers } = createDependencyHarness();
     listDrivers.mockRejectedValueOnce(Object.assign(new Error('missing column'), { code: 'P2022' }));
@@ -286,6 +387,7 @@ function createDependencyHarness(): {
   dependencies: AdminDriversDependencies;
   listDrivers: ReturnType<typeof vi.fn<AdminDriversDependencies['adminDriverService']['listDrivers']>>;
   regenerateInviteCode: ReturnType<typeof vi.fn<AdminDriversDependencies['adminDriverService']['regenerateInviteCode']>>;
+  updateDriverName: ReturnType<typeof vi.fn<AdminDriversDependencies['adminDriverService']['updateDriverName']>>;
 } {
   const verify = vi.fn(() => ({
     shopDomain: 'example.myshopify.com',
@@ -303,6 +405,9 @@ function createDependencyHarness(): {
   const regenerateInviteCode = vi.fn<AdminDriversDependencies['adminDriverService']['regenerateInviteCode']>(() =>
     Promise.resolve(pendingDriver)
   );
+  const updateDriverName = vi.fn<AdminDriversDependencies['adminDriverService']['updateDriverName']>(() =>
+    Promise.resolve(linkedDriver)
+  );
 
   return {
     createPendingDriver,
@@ -311,13 +416,15 @@ function createDependencyHarness(): {
         createPendingDriver,
         deleteDriver,
         listDrivers,
-        regenerateInviteCode
+        regenerateInviteCode,
+        updateDriverName
       },
       sessionTokenVerifier: { verify }
     },
     deleteDriver,
     listDrivers,
-    regenerateInviteCode
+    regenerateInviteCode,
+    updateDriverName
   };
 }
 
