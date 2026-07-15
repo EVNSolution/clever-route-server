@@ -6,7 +6,8 @@ import type {
   CreatePendingDriverRecordInput,
   DeleteAdminDriverInput,
   ListAdminDriversInput,
-  RegenerateInviteCodeInput
+  RegenerateInviteCodeInput,
+  UpdateAdminDriverNameInput
 } from './admin-driver.types.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
 
@@ -132,6 +133,26 @@ export class PrismaAdminDriverRepository {
     });
 
     return deletedDriver.id;
+  }
+
+  async updateDriverName(input: UpdateAdminDriverNameInput): Promise<AdminDriverRow> {
+    const appId = normalizeShopifyAppId(input.appId);
+    const shopDomain = normalizeShopDomain(input.shopDomain);
+    const shop = await this.prisma.shop.findUnique({
+      select: { id: true },
+      where: appScopedShopWhere({ appId, shopDomain })
+    });
+    if (shop === null) {
+      throw new Error('Shop not found');
+    }
+
+    const driver = await this.prisma.driver.update({
+      data: { displayName: input.displayName },
+      include: driverInclude,
+      where: { id: input.driverId, shopId: shop.id }
+    });
+
+    return toAdminDriverRow(driver);
   }
 
   async regenerateInviteCode(input: RegenerateInviteCodeInput): Promise<AdminDriverRow> {

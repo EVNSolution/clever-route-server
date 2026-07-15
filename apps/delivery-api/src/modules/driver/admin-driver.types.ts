@@ -50,9 +50,17 @@ export type RegenerateInviteCodeInput = {
   shopDomain: string;
 };
 
+export type UpdateAdminDriverNameInput = {
+  displayName: string;
+  driverId: string;
+  appId?: string | undefined;
+  shopDomain: string;
+};
+
 export type AdminDriverServiceContract = {
   createPendingDriver(input: CreatePendingDriverInput): Promise<AdminDriverRow>;
   deleteDriver(input: DeleteAdminDriverInput): Promise<string>;
   listDrivers(input: ListAdminDriversInput): Promise<AdminDriverRow[]>;
   regenerateInviteCode(input: RegenerateInviteCodeInput): Promise<AdminDriverRow>;
+  updateDriverName(input: UpdateAdminDriverNameInput): Promise<AdminDriverRow>;
 };
