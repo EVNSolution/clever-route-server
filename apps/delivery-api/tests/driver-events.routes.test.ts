@@ -1,12 +1,11 @@
-import { createHmac } from 'node:crypto';
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
 import {
-  DriverEventContextError,
-  DriverEventScopeError
+  DriverEventContextError
 } from '../src/modules/driver/driver-event.repository.js';
 import type { DriverApiDependencies } from '../src/routes/driver-events.routes.js';
+import { signDriverRouteToken } from '../src/modules/driver/driver-token-verifier.js';
 
 const secret = 'driver-secret';
 const now = new Date('2026-05-07T06:10:00Z');
@@ -64,7 +63,8 @@ describe('Driver events route', () => {
         occurredAt: new Date('2026-05-07T06:09:30.000Z'),
         payload: eventPayload(),
         routePlanId: 'route-plan-id',
-        shopDomain: 'example.myshopify.com'
+        shopDomain: 'example.myshopify.com',
+        shopId: 'shop-id'
       });
     } finally {
       await app.close();
@@ -72,7 +72,7 @@ describe('Driver events route', () => {
   });
 
   test('rejects driver event tokens invalidated by a relogin token-version cutoff', async () => {
-    const { dependencies, isDriverAccessTokenActive, recordDriverEvent } = createDependencyHarness({
+    const { dependencies, resolveDriverRouteAccess, recordDriverEvent } = createDependencyHarness({
       accessTokenActive: false
     });
     const app = await buildApp({ driverApi: dependencies });
@@ -88,11 +88,11 @@ describe('Driver events route', () => {
       expect(response.statusCode).toBe(401);
       expect(response.json()).toEqual({
         data: null,
-        error: { code: 'UNAUTHORIZED', message: 'Invalid driver bearer token' }
+        error: { code: 'DRIVER_ACCESS_TOKEN_INVALID', message: 'Invalid driver access token' }
       });
-      expect(isDriverAccessTokenActive).toHaveBeenCalledWith({
-        driverId: 'driver-id',
-        shopDomain: 'example.myshopify.com',
+      expect(resolveDriverRouteAccess).toHaveBeenCalledWith({
+        accountId: 'account-id',
+        routePlanId: 'route-plan-id',
         tokenVersion: 1
       });
       expect(recordDriverEvent).not.toHaveBeenCalled();
@@ -158,7 +158,6 @@ describe('Driver events route', () => {
 
   test('maps terminal route/stop ownership mismatch to a deterministic forbidden response', async () => {
     const { dependencies, recordDriverEvent } = createDependencyHarness();
-    recordDriverEvent.mockRejectedValueOnce(new DriverEventScopeError('foreign route'));
     const app = await buildApp({ driverApi: dependencies });
 
     try {
@@ -178,8 +177,9 @@ describe('Driver events route', () => {
       expect(response.statusCode).toBe(403);
       expect(response.json()).toEqual({
         data: null,
-        error: { code: 'FORBIDDEN', message: 'Driver event route or stop scope rejected' }
+        error: { code: 'ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH', message: 'Driver route assignment rejected' }
       });
+      expect(recordDriverEvent).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -187,7 +187,6 @@ describe('Driver events route', () => {
 
   test('maps invalid route completion ownership to a deterministic forbidden response', async () => {
     const { dependencies, recordDriverEvent } = createDependencyHarness();
-    recordDriverEvent.mockRejectedValueOnce(new DriverEventScopeError('foreign completed route'));
     const app = await buildApp({ driverApi: dependencies });
 
     try {
@@ -207,8 +206,9 @@ describe('Driver events route', () => {
       expect(response.statusCode).toBe(403);
       expect(response.json()).toEqual({
         data: null,
-        error: { code: 'FORBIDDEN', message: 'Driver event route or stop scope rejected' }
+        error: { code: 'ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH', message: 'Driver route assignment rejected' }
       });
+      expect(recordDriverEvent).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -217,9 +217,9 @@ describe('Driver events route', () => {
 
 function createDependencyHarness(input: { accessTokenActive?: boolean } = {}): {
   dependencies: DriverApiDependencies;
-  isDriverAccessTokenActive: ReturnType<
+  resolveDriverRouteAccess: ReturnType<
     typeof vi.fn<
-      NonNullable<DriverApiDependencies['driverTokenAccessRepository']>['isDriverAccessTokenActive']
+      NonNullable<DriverApiDependencies['driverTokenAccessRepository']>['resolveDriverRouteAccess']
     >
   >;
   recordDriverEvent: ReturnType<typeof vi.fn<DriverApiDependencies['driverEventService']['recordDriverEvent']>>;
@@ -227,9 +227,15 @@ function createDependencyHarness(input: { accessTokenActive?: boolean } = {}): {
   const recordDriverEvent = vi.fn<DriverApiDependencies['driverEventService']['recordDriverEvent']>(() =>
     Promise.resolve({ duplicate: false, eventId: 'driver-event-id' })
   );
-  const isDriverAccessTokenActive = vi.fn<
-    NonNullable<DriverApiDependencies['driverTokenAccessRepository']>['isDriverAccessTokenActive']
-  >(() => Promise.resolve(input.accessTokenActive ?? true));
+  const resolveDriverRouteAccess = vi.fn<
+    NonNullable<DriverApiDependencies['driverTokenAccessRepository']>['resolveDriverRouteAccess']
+  >(() => Promise.resolve(input.accessTokenActive === false ? null : {
+    accountId: 'account-id',
+    driverId: 'driver-id',
+    routePlanId: 'route-plan-id',
+    shopDomain: 'example.myshopify.com',
+    shopId: 'shop-id'
+  }));
 
   return {
     dependencies: {
@@ -238,12 +244,13 @@ function createDependencyHarness(input: { accessTokenActive?: boolean } = {}): {
       },
       driverTokenAccessRepository: {
         isDriverAccountAccessTokenActive: vi.fn(() => Promise.resolve(true)),
-        isDriverAccessTokenActive
+        isDriverAccessTokenActive: vi.fn(() => Promise.resolve(false)),
+        resolveDriverRouteAccess
       },
       jwtSecret: secret,
       now: () => now
     },
-    isDriverAccessTokenActive,
+    resolveDriverRouteAccess,
     recordDriverEvent
   };
 }
@@ -261,20 +268,11 @@ function eventPayload(): Record<string, unknown> {
 }
 
 function driverToken(input: { tokenVersion?: number } = {}): string {
-  const header = { alg: 'HS256', typ: 'JWT' };
-  const payload = {
-    aud: 'clever-delivery-driver',
-    driverId: 'driver-id',
-    exp: Math.floor(now.getTime() / 1000) + 60,
-    iat: Math.floor(now.getTime() / 1000),
-    shopDomain: 'example.myshopify.com',
-    sub: 'driver-auth-subject',
+  return signDriverRouteToken({
+    accountId: 'account-id',
+    expiresInSeconds: 60,
+    routePlanId: 'route-plan-id',
+    subject: 'driver-account:account-id',
     tokenVersion: input.tokenVersion ?? 0
-  };
-  const encodedHeader = Buffer.from(JSON.stringify(header), 'utf8').toString('base64url');
-  const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const signingInput = `${encodedHeader}.${encodedPayload}`;
-  const signature = createHmac('sha256', secret).update(signingInput).digest('base64url');
-
-  return `${signingInput}.${signature}`;
+  }, { now, secret }).token;
 }

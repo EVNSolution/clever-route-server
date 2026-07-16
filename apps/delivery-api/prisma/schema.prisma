@@ -1020,6 +1020,7 @@ model DriverAccount {
   createdAt         DateTime               @default(now()) @db.Timestamptz(6)
   updatedAt         DateTime               @updatedAt @db.Timestamptz(6)
   drivers           Driver[]
+  consentRecords    DriverConsentRecord[]
   sessions          DriverAccountSession[]
 
   @@index([status])
@@ -1056,10 +1057,12 @@ model DriverSession {
 
 model DriverConsentRecord {
   id             String            @id @default(uuid()) @db.Uuid
-  shopId         String            @db.Uuid
-  shop           Shop              @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  driverId       String            @db.Uuid
-  driver         Driver            @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  accountId      String?           @db.Uuid
+  account        DriverAccount?    @relation(fields: [accountId], references: [id], onDelete: SetNull)
+  shopId         String?           @db.Uuid
+  shop           Shop?             @relation(fields: [shopId], references: [id], onDelete: SetNull)
+  driverId       String?           @db.Uuid
+  driver         Driver?           @relation(fields: [driverId], references: [id], onDelete: SetNull)
   consentType    DriverConsentType
   consentVersion String            @db.Text
   accepted       Boolean
@@ -1070,6 +1073,7 @@ model DriverConsentRecord {
   createdAt      DateTime          @default(now()) @db.Timestamptz(6)
   updatedAt      DateTime          @updatedAt @db.Timestamptz(6)
 
+  @@unique([accountId, consentType, consentVersion])
   @@unique([driverId, consentType, consentVersion])
   @@index([shopId, driverId, recordedAt])
   @@map("driver_consent_records")
@@ -1079,8 +1083,8 @@ model DriverProofMedia {
   id               String                 @id @default(uuid()) @db.Uuid
   shopId           String                 @db.Uuid
   shop             Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  driverId         String                 @db.Uuid
-  driver           Driver                 @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  driverId         String?                @db.Uuid
+  driver           Driver?                @relation(fields: [driverId], references: [id], onDelete: SetNull)
   routePlanId      String                 @db.Uuid
   routePlan        RoutePlan              @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
   deliveryStopId   String                 @db.Uuid
@@ -1106,8 +1110,8 @@ model DriverRouteFeedback {
   id          String    @id @default(uuid()) @db.Uuid
   shopId      String    @db.Uuid
   shop        Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  driverId    String    @db.Uuid
-  driver      Driver    @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  driverId    String?   @db.Uuid
+  driver      Driver?   @relation(fields: [driverId], references: [id], onDelete: SetNull)
   routePlanId String    @db.Uuid
   routePlan   RoutePlan @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
   reviewNote  String    @db.Text
@@ -1345,8 +1349,8 @@ model DriverRouteNotificationAttempt {
   childVersion      RouteGroupingChildVersion     @relation(fields: [childVersionId], references: [id], onDelete: Cascade)
   routePlanId       String                        @db.Uuid
   routePlan         RoutePlan                     @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
-  driverId          String                        @db.Uuid
-  driver            Driver                        @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  driverId          String?                       @db.Uuid
+  driver            Driver?                       @relation(fields: [driverId], references: [id], onDelete: SetNull)
   action            DriverRouteNotificationAction
   idempotencyKey    String                        @db.Text
   provider          String                        @db.Text
@@ -1424,8 +1428,8 @@ model DriverEvent {
   id             String          @id @default(uuid()) @db.Uuid
   shopId         String          @db.Uuid
   shop           Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  driverId       String          @db.Uuid
-  driver         Driver          @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  driverId       String?         @db.Uuid
+  driver         Driver?         @relation(fields: [driverId], references: [id], onDelete: SetNull)
   routePlanId    String?         @db.Uuid
   routePlan      RoutePlan?      @relation(fields: [routePlanId], references: [id], onDelete: SetNull)
   deliveryStopId String?         @db.Uuid

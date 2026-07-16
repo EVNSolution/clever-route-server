@@ -1,12 +1,9 @@
-import { createHmac } from 'node:crypto';
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
-import {
-  DriverRouteHistoryCursorError,
-  DriverSelfServiceScopeError
-} from '../src/modules/driver/driver-self-service.types.js';
+import { DriverRouteHistoryCursorError } from '../src/modules/driver/driver-self-service.types.js';
 import type { DriverApiDependencies } from '../src/routes/driver-events.routes.js';
+import { signDriverRouteToken } from '../src/modules/driver/driver-token-verifier.js';
 
 const secret = 'driver-secret';
 const now = new Date('2026-05-19T06:40:00.000Z');
@@ -42,7 +39,7 @@ describe('Driver self-service routes', () => {
   });
 
   test('rejects new self-service routes when tokenVersion was invalidated', async () => {
-    const { app, isDriverAccessTokenActive } = await createAppHarness({ activeToken: false });
+    const { app, resolveDriverRouteAccess } = await createAppHarness({ activeToken: false });
 
     try {
       const response = await app.inject({
@@ -54,11 +51,11 @@ describe('Driver self-service routes', () => {
       expect(response.statusCode).toBe(401);
       expect(response.json()).toEqual({
         data: null,
-        error: { code: 'UNAUTHORIZED', message: 'Invalid driver bearer token' }
+        error: { code: 'DRIVER_ACCESS_TOKEN_INVALID', message: 'Invalid driver access token' }
       });
-      expect(isDriverAccessTokenActive).toHaveBeenCalledWith({
-        driverId: 'driver-id',
-        shopDomain: 'example.myshopify.com',
+      expect(resolveDriverRouteAccess).toHaveBeenCalledWith({
+        accountId: 'account-id',
+        routePlanId: 'route-plan-id',
         tokenVersion: 0
       });
     } finally {
@@ -103,6 +100,7 @@ describe('Driver self-service routes', () => {
         driverId: 'driver-id',
         from: new Date('2026-05-01T00:00:00.000Z'),
         shopDomain: 'example.myshopify.com',
+        shopId: 'shop-id',
         status: 'completed',
         to: new Date('2026-05-31T00:00:00.000Z')
       });
@@ -153,6 +151,7 @@ describe('Driver self-service routes', () => {
         driverId: 'driver-id',
         from: null,
         shopDomain: 'example.myshopify.com',
+        shopId: 'shop-id',
         status: null,
         to: null
       });
@@ -187,6 +186,7 @@ describe('Driver self-service routes', () => {
         reviewNote: 'Use west entrance next time.',
         routePlanId: 'route-plan-id',
         shopDomain: 'example.myshopify.com',
+        shopId: 'shop-id',
         submittedAt: now
       });
     } finally {
@@ -194,9 +194,8 @@ describe('Driver self-service routes', () => {
     }
   });
 
-  test('maps route feedback scope errors to a safe forbidden response', async () => {
+  test('rejects feedback for a route other than the token assignment', async () => {
     const { app, selfService } = await createAppHarness();
-    selfService.submitRouteFeedback.mockRejectedValueOnce(new DriverSelfServiceScopeError('wrong route'));
 
     try {
       const response = await app.inject({
@@ -209,8 +208,12 @@ describe('Driver self-service routes', () => {
       expect(response.statusCode).toBe(403);
       expect(response.json()).toEqual({
         data: null,
-        error: { code: 'FORBIDDEN', message: 'Route feedback scope rejected' }
+        error: {
+          code: 'ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH',
+          message: 'Driver route assignment rejected'
+        }
       });
+      expect(selfService.submitRouteFeedback).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -240,7 +243,8 @@ describe('Driver self-service routes', () => {
       expect(selfService.updateDriverProfile).toHaveBeenCalledWith({
         displayName: 'Mina Kang',
         driverId: 'driver-id',
-        shopDomain: 'example.myshopify.com'
+        shopDomain: 'example.myshopify.com',
+        shopId: 'shop-id'
       });
     } finally {
       await app.close();
@@ -289,7 +293,8 @@ describe('Driver self-service routes', () => {
         driverId: 'driver-id',
         reason: 'No longer driving',
         requestedAt: now,
-        shopDomain: 'example.myshopify.com'
+        shopDomain: 'example.myshopify.com',
+        shopId: 'shop-id'
       });
     } finally {
       await app.close();
@@ -347,7 +352,8 @@ describe('Driver self-service routes', () => {
       expect(selfService.getDriverEarnings).toHaveBeenCalledWith({
         driverId: 'driver-id',
         period: '2026-05',
-        shopDomain: 'example.myshopify.com'
+        shopDomain: 'example.myshopify.com',
+        shopId: 'shop-id'
       });
     } finally {
       await app.close();
@@ -414,9 +420,15 @@ async function createAppHarness(input: { activeToken?: boolean } = {}) {
     }))
   } satisfies NonNullable<DriverApiDependencies['driverSelfService']>;
 
-  const isDriverAccessTokenActive = vi.fn<
-    NonNullable<DriverApiDependencies['driverTokenAccessRepository']>['isDriverAccessTokenActive']
-  >(() => Promise.resolve(input.activeToken ?? true));
+  const resolveDriverRouteAccess = vi.fn<
+    NonNullable<DriverApiDependencies['driverTokenAccessRepository']>['resolveDriverRouteAccess']
+  >(() => Promise.resolve(input.activeToken === false ? null : {
+    accountId: 'account-id',
+    driverId: 'driver-id',
+    routePlanId: 'route-plan-id',
+    shopDomain: 'example.myshopify.com',
+    shopId: 'shop-id'
+  }));
 
   const app = await buildApp({
     driverApi: {
@@ -426,31 +438,23 @@ async function createAppHarness(input: { activeToken?: boolean } = {}) {
       driverSelfService: selfService,
       driverTokenAccessRepository: {
         isDriverAccountAccessTokenActive: vi.fn(() => Promise.resolve(true)),
-        isDriverAccessTokenActive
+        isDriverAccessTokenActive: vi.fn(() => Promise.resolve(false)),
+        resolveDriverRouteAccess
       },
       jwtSecret: secret,
       now: () => now
     }
   });
 
-  return { app, isDriverAccessTokenActive, selfService };
+  return { app, resolveDriverRouteAccess, selfService };
 }
 
 function driverToken(): string {
-  const header = { alg: 'HS256', typ: 'JWT' };
-  const payload = {
-    aud: 'clever-delivery-driver',
-    driverId: 'driver-id',
-    exp: Math.floor(now.getTime() / 1000) + 60,
-    iat: Math.floor(now.getTime() / 1000),
-    shopDomain: 'example.myshopify.com',
-    sub: 'driver-auth-subject',
+  return signDriverRouteToken({
+    accountId: 'account-id',
+    expiresInSeconds: 60,
+    routePlanId: 'route-plan-id',
+    subject: 'driver-account:account-id',
     tokenVersion: 0
-  };
-  const encodedHeader = Buffer.from(JSON.stringify(header), 'utf8').toString('base64url');
-  const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const signingInput = `${encodedHeader}.${encodedPayload}`;
-  const signature = createHmac('sha256', secret).update(signingInput).digest('base64url');
-
-  return `${signingInput}.${signature}`;
+  }, { now, secret }).token;
 }

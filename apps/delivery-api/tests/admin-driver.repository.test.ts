@@ -268,6 +268,7 @@ describe('PrismaAdminDriverRepository', () => {
       select: { id: true },
       where: { id: 'driver-id', shopId: 'shop-id' }
     });
+    expect(prisma.driverAccount.delete).not.toHaveBeenCalled();
     expect(driverId).toBe('driver-id');
   });
 });
@@ -292,6 +293,7 @@ function createPrismaHarness(input: {
       update: ReturnType<typeof vi.fn>;
     };
     driverAccount: {
+      delete: ReturnType<typeof vi.fn>;
       findUnique: ReturnType<typeof vi.fn>;
     };
     driverSession: {
@@ -316,6 +318,7 @@ function createPrismaHarness(input: {
         update: vi.fn(() => Promise.resolve(input.updatedDriver ?? input.existingDriver ?? createdDriver))
       },
       driverAccount: {
+        delete: vi.fn(),
         findUnique: vi.fn(() => Promise.resolve(input.account ?? null))
       },
       driverSession: {

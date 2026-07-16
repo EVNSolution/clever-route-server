@@ -2,7 +2,9 @@ import type { DriverAssignedRoute } from './driver-assigned-route.types.js';
 
 export type DriverRouteSessionRestoreInput = {
   driverId: string;
+  routePlanId: string;
   shopDomain: string;
+  shopId: string;
 };
 
 export type DriverRouteSessionRestoreResult =

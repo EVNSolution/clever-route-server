@@ -20,7 +20,6 @@ import {
   type UpdateDriverProfileInput
 } from './driver-self-service.types.js';
 import { coerceIanaTimezone } from './driver-route-timezone.js';
-import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import { ROUTE_DRIVER_VISIBLE_STATUSES, toRouteExecutionStatus } from '../route-plans/route-plan-lifecycle.js';
 
 export type DriverSelfServicePrismaClient = Pick<
@@ -231,11 +230,11 @@ export class PrismaDriverSelfServiceRepository {
     const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
     const shop = await this.prisma.shop.findUnique({
       select: { id: true, shopDomain: true },
-      where: appScopedShopWhere({ shopDomain })
+      where: { id: input.shopId }
     });
 
-    if (shop === null) {
-      throw new DriverSelfServiceScopeError(`Shop not installed: ${shopDomain}`);
+    if (shop === null || normalizeDriverCommerceDomain(shop.shopDomain) !== shopDomain) {
+      throw new DriverSelfServiceScopeError(`Store context not found: ${input.shopId}`);
     }
 
     const driver = await this.prisma.driver.findFirst({

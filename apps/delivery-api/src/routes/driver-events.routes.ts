@@ -2,12 +2,14 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { MultipartFile, MultipartValue } from '@fastify/multipart';
 
 import {
-  signDriverToken,
+  signDriverRouteToken,
   verifyDriverAccountToken,
-  verifyDriverToken,
-  type VerifiedDriverToken
+  verifyDriverRouteToken
 } from '../modules/driver/driver-token-verifier.js';
-import type { DriverTokenAccessRepositoryApi } from '../modules/driver/driver-token-access.repository.js';
+import type {
+  DriverRouteAccessScope,
+  DriverTokenAccessRepositoryApi
+} from '../modules/driver/driver-token-access.repository.js';
 import type {
   DriverAssignedRoute,
   DriverAssignedRouteServiceContract,
@@ -19,6 +21,7 @@ import type {
   DriverConsentServiceContract,
   RecordDriverConsentsInput
 } from '../modules/driver/driver-consent.types.js';
+import { DriverRouteAssignmentError } from '../modules/driver/driver-consent.repository.js';
 import type {
   DriverRouteAccessInvitedRoute,
   DriverRouteAccessLookupInput,
@@ -65,6 +68,7 @@ export type DriverApiDependencies = {
       payload: unknown;
       routePlanId: string | null;
       shopDomain: string;
+      shopId: string;
     }): Promise<{ duplicate: boolean; eventId: string }>;
   };
   driverSelfService?: DriverSelfServiceApi;
@@ -148,7 +152,7 @@ type DriverProofMediaAccessParams = {
 };
 
 type DriverAuthenticationResult =
-  | { status: 'authenticated'; context: VerifiedDriverToken }
+  | { status: 'authenticated'; context: DriverRouteAccessScope }
   | { status: 'invalid' | 'missing' };
 
 const DRIVER_EVENT_TYPES = new Set([
@@ -227,7 +231,7 @@ export function registerDriverEventRoutes(
       if (authentication.status !== 'authenticated') {
         return reply
           .code(401)
-          .send(errorResponse('UNAUTHORIZED', driverAuthenticationMessage(authentication.status)));
+          .send(driverAuthenticationErrorResponse(authentication.status));
       }
       reply.header('Cache-Control', 'private, no-store');
       const driverContext = authentication.context;
@@ -238,11 +242,17 @@ export function registerDriverEventRoutes(
       } catch {
         return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid driver assigned route query'));
       }
+      if (routeContext !== null && routeContext !== driverContext.routePlanId) {
+        return reply
+          .code(403)
+          .send(errorResponse('ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH', 'Driver route assignment rejected'));
+      }
 
       const result = await driverAssignedRouteService.getAssignedRoute({
         driverId: driverContext.driverId,
-        routeContext,
-        shopDomain: driverContext.shopDomain
+        routeContext: driverContext.routePlanId,
+        shopDomain: driverContext.shopDomain,
+        shopId: driverContext.shopId
       });
 
       if (result.status === 'ASSIGNED_ROUTE') {
@@ -254,7 +264,8 @@ export function registerDriverEventRoutes(
               routeMapPreview: createDriverRouteMapPreview(dependencies, {
                 driverId: driverContext.driverId,
                 route: result.route,
-                shopDomain: driverContext.shopDomain
+                shopDomain: driverContext.shopDomain,
+                shopId: driverContext.shopId
               }) ?? result.route.routeMapPreview
             }
           },
@@ -276,7 +287,7 @@ export function registerDriverEventRoutes(
       if (authentication.status !== 'authenticated') {
         return reply
           .code(401)
-          .send(errorResponse('UNAUTHORIZED', driverAuthenticationMessage(authentication.status)));
+          .send(driverAuthenticationErrorResponse(authentication.status));
       }
       reply.header('Cache-Control', 'private, no-store');
       const driverContext = authentication.context;
@@ -284,7 +295,9 @@ export function registerDriverEventRoutes(
       try {
         const result = await driverRouteSessionRestoreService.getActiveRouteSession({
           driverId: driverContext.driverId,
-          shopDomain: driverContext.shopDomain
+          routePlanId: driverContext.routePlanId,
+          shopDomain: driverContext.shopDomain,
+          shopId: driverContext.shopId
         });
         if (result.status !== 'ACTIVE_SESSION') {
           return reply.code(200).send({ data: result, error: null });
@@ -298,7 +311,8 @@ export function registerDriverEventRoutes(
               routeMapPreview: createDriverRouteMapPreview(dependencies, {
                 driverId: driverContext.driverId,
                 route: result.route,
-                shopDomain: driverContext.shopDomain
+                shopDomain: driverContext.shopDomain,
+                shopId: driverContext.shopId
               }) ?? result.route.routeMapPreview
             }
           },
@@ -361,7 +375,7 @@ export function registerDriverEventRoutes(
       if (authentication.status !== 'authenticated') {
         return reply
           .code(401)
-          .send(errorResponse('UNAUTHORIZED', driverAuthenticationMessage(authentication.status)));
+          .send(driverAuthenticationErrorResponse(authentication.status));
       }
       const driverContext = authentication.context;
 
@@ -376,7 +390,8 @@ export function registerDriverEventRoutes(
         const result = await driverSelfService.listDriverRoutes({
           ...query,
           driverId: driverContext.driverId,
-          shopDomain: driverContext.shopDomain
+          shopDomain: driverContext.shopDomain,
+          shopId: driverContext.shopId
         });
 
         return reply.code(200).send({ data: result, error: null });
@@ -399,7 +414,7 @@ export function registerDriverEventRoutes(
         if (authentication.status !== 'authenticated') {
           return reply
             .code(401)
-            .send(errorResponse('UNAUTHORIZED', driverAuthenticationMessage(authentication.status)));
+            .send(driverAuthenticationErrorResponse(authentication.status));
         }
         const driverContext = authentication.context;
 
@@ -413,12 +428,18 @@ export function registerDriverEventRoutes(
         } catch {
           return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid driver route feedback payload'));
         }
+        if (feedbackInput.routePlanId !== driverContext.routePlanId) {
+          return reply
+            .code(403)
+            .send(errorResponse('ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH', 'Driver route assignment rejected'));
+        }
 
         try {
           const result = await driverSelfService.submitRouteFeedback({
             ...feedbackInput,
             driverId: driverContext.driverId,
-            shopDomain: driverContext.shopDomain
+            shopDomain: driverContext.shopDomain,
+            shopId: driverContext.shopId
           });
 
           return reply.code(201).send({ data: result, error: null });
@@ -437,14 +458,15 @@ export function registerDriverEventRoutes(
       if (authentication.status !== 'authenticated') {
         return reply
           .code(401)
-          .send(errorResponse('UNAUTHORIZED', driverAuthenticationMessage(authentication.status)));
+          .send(driverAuthenticationErrorResponse(authentication.status));
       }
       const driverContext = authentication.context;
 
       try {
         const result = await driverSelfService.getDriverProfile({
           driverId: driverContext.driverId,
-          shopDomain: driverContext.shopDomain
+          shopDomain: driverContext.shopDomain,
+          shopId: driverContext.shopId
         });
 
         return reply.code(200).send({ data: result, error: null });
@@ -462,7 +484,7 @@ export function registerDriverEventRoutes(
       if (authentication.status !== 'authenticated') {
         return reply
           .code(401)
-          .send(errorResponse('UNAUTHORIZED', driverAuthenticationMessage(authentication.status)));
+          .send(driverAuthenticationErrorResponse(authentication.status));
       }
       const driverContext = authentication.context;
 
@@ -477,7 +499,8 @@ export function registerDriverEventRoutes(
         const result = await driverSelfService.updateDriverProfile({
           ...updateInput,
           driverId: driverContext.driverId,
-          shopDomain: driverContext.shopDomain
+          shopDomain: driverContext.shopDomain,
+          shopId: driverContext.shopId
         });
 
         return reply.code(200).send({ data: result, error: null });
@@ -497,7 +520,7 @@ export function registerDriverEventRoutes(
         if (authentication.status !== 'authenticated') {
           return reply
             .code(401)
-            .send(errorResponse('UNAUTHORIZED', driverAuthenticationMessage(authentication.status)));
+            .send(driverAuthenticationErrorResponse(authentication.status));
         }
         const driverContext = authentication.context;
 
@@ -512,7 +535,8 @@ export function registerDriverEventRoutes(
           const result = await driverSelfService.requestAccountDeletion({
             ...deletionInput,
             driverId: driverContext.driverId,
-            shopDomain: driverContext.shopDomain
+            shopDomain: driverContext.shopDomain,
+            shopId: driverContext.shopId
           });
 
           return reply.code(202).send({ data: result, error: null });
@@ -531,7 +555,7 @@ export function registerDriverEventRoutes(
       if (authentication.status !== 'authenticated') {
         return reply
           .code(401)
-          .send(errorResponse('UNAUTHORIZED', driverAuthenticationMessage(authentication.status)));
+          .send(driverAuthenticationErrorResponse(authentication.status));
       }
       const driverContext = authentication.context;
 
@@ -546,7 +570,8 @@ export function registerDriverEventRoutes(
         const result = await driverSelfService.getDriverEarnings({
           driverId: driverContext.driverId,
           period,
-          shopDomain: driverContext.shopDomain
+          shopDomain: driverContext.shopDomain,
+          shopId: driverContext.shopId
         });
 
         return reply.code(200).send({ data: result, error: null });
@@ -567,22 +592,43 @@ export function registerDriverEventRoutes(
       if (authentication.status !== 'authenticated') {
         return reply
           .code(401)
-          .send(errorResponse('UNAUTHORIZED', driverAuthenticationMessage(authentication.status)));
+          .send(driverAuthenticationErrorResponse(authentication.status));
       }
       const driverContext = authentication.context;
 
-      let consentInput: Omit<RecordDriverConsentsInput, 'driverId' | 'shopDomain'>;
+      let consentInput: Omit<RecordDriverConsentsInput, 'accountId' | 'routePlanId'> & {
+        routeContext: string | null;
+      };
       try {
         consentInput = readDriverConsentBody(request.body, dependencies.now?.() ?? new Date());
       } catch {
         return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid driver consent payload'));
       }
+      if (consentInput.routeContext !== null && consentInput.routeContext !== driverContext.routePlanId) {
+        return reply
+          .code(403)
+          .send(errorResponse('ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH', 'Driver route assignment rejected'));
+      }
 
-      const result = await driverConsentService.recordDriverConsents({
-        ...consentInput,
-        driverId: driverContext.driverId,
-        shopDomain: driverContext.shopDomain
-      });
+      let result;
+      try {
+        result = await driverConsentService.recordDriverConsents({
+          accountId: driverContext.accountId,
+          appContext: consentInput.appContext,
+          consents: consentInput.consents,
+          deviceContext: consentInput.deviceContext,
+          recordedAt: consentInput.recordedAt,
+          routePlanId: driverContext.routePlanId
+        });
+      } catch (error) {
+        if (error instanceof DriverRouteAssignmentError) {
+          const statusCode = error.code === 'ROUTE_ASSIGNMENT_NOT_FOUND' ? 404 : 403;
+          return reply.code(statusCode).send(errorResponse(error.code, 'Driver route assignment rejected'));
+        }
+
+        request.log.error({ err: error }, 'driver consent recording failed');
+        return reply.code(500).send(errorResponse('CONSENT_RECORD_FAILED', 'Driver consent could not be recorded'));
+      }
 
       return reply.code(201).send({
         data: result,
@@ -599,7 +645,7 @@ export function registerDriverEventRoutes(
       if (authentication.status !== 'authenticated') {
         return reply
           .code(401)
-          .send(errorResponse('UNAUTHORIZED', driverAuthenticationMessage(authentication.status)));
+          .send(driverAuthenticationErrorResponse(authentication.status));
       }
       const driverContext = authentication.context;
 
@@ -614,7 +660,9 @@ export function registerDriverEventRoutes(
         const result = await proofMediaService.createProofMediaReadAccess({
           driverId: driverContext.driverId,
           mediaId,
-          shopDomain: driverContext.shopDomain
+          routePlanId: driverContext.routePlanId,
+          shopDomain: driverContext.shopDomain,
+          shopId: driverContext.shopId
         });
 
         return reply.code(200).send({
@@ -640,22 +688,28 @@ export function registerDriverEventRoutes(
       if (authentication.status !== 'authenticated') {
         return reply
           .code(401)
-          .send(errorResponse('UNAUTHORIZED', driverAuthenticationMessage(authentication.status)));
+          .send(driverAuthenticationErrorResponse(authentication.status));
       }
       const driverContext = authentication.context;
 
-      let uploadInput: Omit<StoreDriverProofMediaInput, 'driverId' | 'shopDomain'>;
+      let uploadInput: Omit<StoreDriverProofMediaInput, 'driverId' | 'shopDomain' | 'shopId'>;
       try {
         uploadInput = await readDriverProofMediaUpload(request);
       } catch {
         return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid proof media upload payload'));
+      }
+      if (uploadInput.routePlanId !== driverContext.routePlanId) {
+        return reply
+          .code(403)
+          .send(errorResponse('ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH', 'Driver route assignment rejected'));
       }
 
       try {
         const result = await proofMediaService.storeProofMedia({
           ...uploadInput,
           driverId: driverContext.driverId,
-          shopDomain: driverContext.shopDomain
+          shopDomain: driverContext.shopDomain,
+          shopId: driverContext.shopId
         });
 
         return reply.code(201).send({
@@ -687,7 +741,7 @@ export function registerDriverEventRoutes(
     if (authentication.status !== 'authenticated') {
       return reply
         .code(401)
-        .send(errorResponse('UNAUTHORIZED', driverAuthenticationMessage(authentication.status)));
+        .send(driverAuthenticationErrorResponse(authentication.status));
     }
     const driverContext = authentication.context;
 
@@ -697,6 +751,11 @@ export function registerDriverEventRoutes(
     } catch {
       return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid driver event payload'));
     }
+    if (eventInput.routePlanId !== null && eventInput.routePlanId !== driverContext.routePlanId) {
+      return reply
+        .code(403)
+        .send(errorResponse('ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH', 'Driver route assignment rejected'));
+    }
 
     let result: { duplicate: boolean; eventId: string };
     try {
@@ -704,7 +763,9 @@ export function registerDriverEventRoutes(
         ...eventInput,
         driverId: driverContext.driverId,
         payload: request.body,
-        shopDomain: driverContext.shopDomain
+        routePlanId: driverContext.routePlanId,
+        shopDomain: driverContext.shopDomain,
+        shopId: driverContext.shopId
       });
     } catch (error) {
       if (error instanceof DriverEventContextError) {
@@ -736,10 +797,10 @@ async function authenticateDriverRequest(
     return { status: 'missing' };
   }
 
-  let driverContext: VerifiedDriverToken;
+  let routeToken;
   try {
     const now = dependencies.now?.();
-    driverContext = verifyDriverToken(
+    routeToken = verifyDriverRouteToken(
       token,
       now === undefined ? { secret: dependencies.jwtSecret } : { now, secret: dependencies.jwtSecret }
     );
@@ -748,22 +809,29 @@ async function authenticateDriverRequest(
   }
 
   const tokenAccessRepository = dependencies.driverTokenAccessRepository;
-  if (tokenAccessRepository !== undefined) {
-    const isActive = await tokenAccessRepository.isDriverAccessTokenActive({
-      driverId: driverContext.driverId,
-      shopDomain: driverContext.shopDomain,
-      tokenVersion: driverContext.tokenVersion
-    });
-    if (!isActive) {
-      return { status: 'invalid' };
-    }
+  if (tokenAccessRepository === undefined) {
+    return { status: 'invalid' };
   }
+
+  const driverContext = await tokenAccessRepository.resolveDriverRouteAccess({
+    accountId: routeToken.accountId,
+    routePlanId: routeToken.routePlanId,
+    tokenVersion: routeToken.tokenVersion
+  });
+  if (driverContext === null) return { status: 'invalid' };
 
   return { status: 'authenticated', context: driverContext };
 }
 
 function driverAuthenticationMessage(status: DriverAuthenticationResult['status']): string {
-  return status === 'missing' ? 'Missing driver bearer token' : 'Invalid driver bearer token';
+  return status === 'missing' ? 'Missing driver bearer token' : 'Invalid driver access token';
+}
+
+function driverAuthenticationErrorResponse(status: DriverAuthenticationResult['status']): unknown {
+  return errorResponse(
+    status === 'missing' ? 'UNAUTHORIZED' : 'DRIVER_ACCESS_TOKEN_INVALID',
+    driverAuthenticationMessage(status)
+  );
 }
 
 function createDriverRouteMapPreview(
@@ -772,6 +840,7 @@ function createDriverRouteMapPreview(
     driverId: string;
     route: DriverAssignedRoute;
     shopDomain: string;
+    shopId: string;
   }
 ): DriverRouteMapPreview | null {
   if (dependencies.driverRouteMapPreviewService === undefined || dependencies.driverRouteMapPreviewBaseUrl === undefined) {
@@ -781,7 +850,8 @@ function createDriverRouteMapPreview(
     baseUrl: dependencies.driverRouteMapPreviewBaseUrl,
     driverId: input.driverId,
     route: input.route,
-    shopDomain: input.shopDomain
+    shopDomain: input.shopDomain,
+    shopId: input.shopId
   });
 }
 
@@ -811,12 +881,12 @@ function buildInvitedDriverRouteAccessResponse(
   options: { includeStatus: boolean }
 ): unknown {
   const now = dependencies.now?.();
-  const token = signDriverToken(
+  const token = signDriverRouteToken(
     {
-      driverId: result.driverContext.driverId,
+      accountId: result.driverContext.accountId,
       expiresInSeconds: DRIVER_ACCESS_TOKEN_TTL_SECONDS,
-      shopDomain: result.driverContext.shopDomain,
-      subject: `driver:${result.driverContext.driverId}`,
+      routePlanId: result.driverContext.routePlanId,
+      subject: `driver-account:${result.driverContext.accountId}`,
       tokenVersion: result.driverContext.tokenVersion
     },
     now === undefined ? { secret: dependencies.jwtSecret } : { now, secret: dependencies.jwtSecret }
@@ -827,8 +897,6 @@ function buildInvitedDriverRouteAccessResponse(
     driverAccess: {
       accessToken: token.token,
       expiresAt: token.expiresAt,
-      // Compatibility note: these scopes are app-facing capability metadata.
-      // Authorization remains the signed driver/shop/tokenVersion token so existing driver-app tokens keep working.
       scopes: [
         'route:assigned:read',
         'route:history:read',
@@ -935,7 +1003,7 @@ function readDriverEarningsPeriod(value: unknown, now: Date): string {
 function readDriverConsentBody(
   body: DriverConsentRequestBody,
   fallbackRecordedAt: Date
-): Omit<RecordDriverConsentsInput, 'driverId' | 'shopDomain'> {
+): Omit<RecordDriverConsentsInput, 'accountId' | 'routePlanId'> & { routeContext: string | null } {
   if (!Array.isArray(body.consents)) {
     throw new Error('Consents are required');
   }
@@ -1015,7 +1083,7 @@ function readDriverEventBody(body: DriverEventRequestBody): {
 
 async function readDriverProofMediaUpload(
   request: FastifyRequest
-): Promise<Omit<StoreDriverProofMediaInput, 'driverId' | 'shopDomain'>> {
+): Promise<Omit<StoreDriverProofMediaInput, 'driverId' | 'shopDomain' | 'shopId'>> {
   if (!request.isMultipart()) {
     throw new Error('Proof media upload must be multipart');
   }

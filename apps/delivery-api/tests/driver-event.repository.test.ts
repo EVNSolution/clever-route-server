@@ -24,10 +24,10 @@ describe('PrismaDriverEventRepository', () => {
       occurredAt,
       payload: { source: 'driver-app' },
       routePlanId: 'route-plan-id',
-      shopDomain: 'https://Dev1.TomatonoFood.com/admin'
+      shopDomain: 'https://Dev1.TomatonoFood.com/admin',
+      shopId: 'shop-id'
     })).resolves.toEqual({ duplicate: false, eventId: 'driver-event-id' });
 
-    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { appId_shopDomain: { appId: 'clever', shopDomain: 'dev1.tomatonofood.com' } } });
     expect(prisma.driverEvent.create).toHaveBeenCalledWith({
       data: {
         clientEventId: 'client-event-id',
@@ -306,6 +306,7 @@ function baseInput(overrides: Partial<Parameters<PrismaDriverEventRepository['re
     payload: { source: 'driver-app' },
     routePlanId: 'route-plan-id',
     shopDomain: 'dev1.tomatonofood.com',
+    shopId: 'shop-id',
     ...overrides
   };
 }

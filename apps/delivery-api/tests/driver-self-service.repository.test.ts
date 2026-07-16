@@ -18,13 +18,14 @@ describe('PrismaDriverSelfServiceRepository', () => {
       driverId: 'driver-id',
       from: new Date('2026-05-01T00:00:00.000Z'),
       shopDomain: 'Example.myshopify.com',
+      shopId: 'shop-id',
       status: 'completed',
       to: new Date('2026-05-31T00:00:00.000Z')
     });
 
     expect(prisma.shop.findUnique).toHaveBeenCalledWith({
       select: { id: true, shopDomain: true },
-      where: { appId_shopDomain: { appId: 'clever', shopDomain: 'example.myshopify.com' } }
+      where: { id: 'shop-id' }
     });
     expect(prisma.driver.findFirst).toHaveBeenCalledWith({
       select: { displayName: true, id: true, phone: true, status: true },
@@ -61,18 +62,19 @@ describe('PrismaDriverSelfServiceRepository', () => {
 
 
   test('resolves driver profiles for Woo customer domains', async () => {
-    const { prisma } = createPrismaHarness();
+    const { prisma } = createPrismaHarness({ shopDomain: 'dev1.tomatonofood.com' });
     const repository = new PrismaDriverSelfServiceRepository(prisma as never);
 
     await expect(repository.getDriverProfile({
       driverId: 'driver-id',
-      shopDomain: 'https://Dev1.TomatonoFood.com/driver'
+      shopDomain: 'https://Dev1.TomatonoFood.com/driver',
+      shopId: 'shop-id'
     })).resolves.toEqual({
       driver: { displayName: 'Minji Kim', id: 'driver-id', phone: '+14165550123', status: 'ACTIVE' }
     });
     expect(prisma.shop.findUnique).toHaveBeenCalledWith({
       select: { id: true, shopDomain: true },
-      where: { appId_shopDomain: { appId: 'clever', shopDomain: 'dev1.tomatonofood.com' } }
+      where: { id: 'shop-id' }
     });
   });
 
@@ -88,6 +90,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
       driverId: 'driver-id',
       from: null,
       shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id',
       status: null,
       to: null
     });
@@ -101,6 +104,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
       driverId: 'driver-id',
       from: null,
       shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id',
       status: null,
       to: null
     });
@@ -135,6 +139,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
       driverId: 'driver-id',
       from: null,
       shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id',
       status: 'completed',
       to: null
     });
@@ -164,6 +169,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
       driverId: 'driver-id',
       from: null,
       shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id',
       status: null,
       to: null
     });
@@ -175,7 +181,11 @@ describe('PrismaDriverSelfServiceRepository', () => {
     const { prisma } = createPrismaHarness({ driver: null });
     const repository = new PrismaDriverSelfServiceRepository(prisma as never);
 
-    await expect(repository.getDriverProfile({ driverId: 'driver-id', shopDomain: 'example.myshopify.com' }))
+    await expect(repository.getDriverProfile({
+      driverId: 'driver-id',
+      shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id'
+    }))
       .rejects.toThrow(DriverSelfServiceScopeError);
     expect(prisma.routePlan.findMany).not.toHaveBeenCalled();
   });
@@ -189,6 +199,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
       reviewNote: 'Use west entrance next time.',
       routePlanId,
       shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id',
       submittedAt: new Date('2026-05-19T08:45:00.000Z')
     });
 
@@ -227,6 +238,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
       reviewNote: 'Use west entrance next time.',
       routePlanId,
       shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id',
       submittedAt: new Date('2026-05-19T08:45:00.000Z')
     })).rejects.toThrow(DriverSelfServiceScopeError);
     expect(prisma.driverRouteFeedback.create).not.toHaveBeenCalled();
@@ -239,7 +251,8 @@ describe('PrismaDriverSelfServiceRepository', () => {
     const result = await repository.updateDriverProfile({
       displayName: 'Mina Kang',
       driverId: 'driver-id',
-      shopDomain: 'example.myshopify.com'
+      shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id'
     });
 
     expect(prisma.driver.update).toHaveBeenCalledWith({
@@ -258,7 +271,8 @@ describe('PrismaDriverSelfServiceRepository', () => {
       driverId: 'driver-id',
       reason: 'No longer driving',
       requestedAt: new Date('2026-05-19T09:00:00.000Z'),
-      shopDomain: 'example.myshopify.com'
+      shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id'
     });
 
     expect(prisma.driverAccountDeletionRequest.create).toHaveBeenCalledWith({
@@ -289,7 +303,8 @@ describe('PrismaDriverSelfServiceRepository', () => {
     const result = await repository.getDriverEarnings({
       driverId: 'driver-id',
       period: '2026-05',
-      shopDomain: 'example.myshopify.com'
+      shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id'
     });
 
     expect(prisma.routePlan.findMany).toHaveBeenCalledWith(expect.objectContaining({
@@ -319,6 +334,7 @@ function createPrismaHarness(input: {
   driver?: { displayName: string; id: string; phone: string | null; status: 'ACTIVE' } | null;
   routePlanScope?: { id: string } | null;
   routePlans?: ReturnType<typeof routePlanRecord>[];
+  shopDomain?: string;
 } = {}) {
   const driver = input.driver === undefined
     ? { displayName: 'Minji Kim', id: 'driver-id', phone: '+14165550123', status: 'ACTIVE' as const }
@@ -348,7 +364,7 @@ function createPrismaHarness(input: {
         findMany: vi.fn(() => Promise.resolve(routePlans))
       },
       shop: {
-        findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id', shopDomain: 'example.myshopify.com' }))
+        findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id', shopDomain: input.shopDomain ?? 'example.myshopify.com' }))
       }
     }
   };

@@ -31,11 +31,10 @@ describe('PrismaDriverProofMediaRepository', () => {
       filename: 'proof.jpg',
       routePlanId: 'route-plan-id',
       shopDomain: 'Dev1.TomatonoFood.com',
+      shopId: 'shop-id',
       source: 'camera'
     });
 
-    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { appId_shopDomain: { appId: 'clever', shopDomain: 'dev1.tomatonofood.com' } } });
-    expect(prisma.driver.findUnique).toHaveBeenCalledWith({ where: { id: 'driver-id' } });
     expect(prisma.routePlan.findFirst).toHaveBeenCalledWith({
       where: {
         driverId: 'driver-id',
@@ -103,6 +102,7 @@ describe('PrismaDriverProofMediaRepository', () => {
       filename: 'proof-with-exif.jpg',
       routePlanId: 'route-plan-id',
       shopDomain: 'tomatono.myshopify.com',
+      shopId: 'shop-id',
       source: 'library'
     });
 
@@ -161,6 +161,7 @@ describe('PrismaDriverProofMediaRepository', () => {
       filename: 'proof-with-exif.jpg',
       routePlanId: 'route-plan-id',
       shopDomain: 'tomatono.myshopify.com',
+      shopId: 'shop-id',
       source: 'camera'
     });
 
@@ -209,6 +210,7 @@ describe('PrismaDriverProofMediaRepository', () => {
       filename: 'proof-with-exif.jpg',
       routePlanId: 'route-plan-id',
       shopDomain: 'tomatono.myshopify.com',
+      shopId: 'shop-id',
       source: 'camera'
     });
 
@@ -261,15 +263,17 @@ describe('PrismaDriverProofMediaRepository', () => {
     const result = await repository.createProofMediaReadAccess({
       driverId: 'driver-id',
       mediaId: 'proof-media-id',
-      shopDomain: 'Tomatono.myshopify.com'
+      routePlanId: 'route-plan-id',
+      shopDomain: 'Tomatono.myshopify.com',
+      shopId: 'shop-id'
     });
 
-    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { appId_shopDomain: { appId: 'clever', shopDomain: 'tomatono.myshopify.com' } } });
     expect(prisma.driverProofMedia.findFirst).toHaveBeenCalledWith({
       where: {
         deletedAt: null,
         driverId: 'driver-id',
         id: 'proof-media-id',
+        routePlanId: 'route-plan-id',
         shopId: 'shop-id'
       }
     });
@@ -331,6 +335,7 @@ describe('PrismaDriverProofMediaRepository', () => {
         filename: 'proof-with-exif.jpg',
         routePlanId: 'route-plan-id',
         shopDomain: 'tomatono.myshopify.com',
+        shopId: 'shop-id',
         source: 'camera'
       })
     ).rejects.toThrow('Proof media rejected by malware scan');
@@ -377,6 +382,7 @@ describe('PrismaDriverProofMediaRepository', () => {
       filename: 'proof-without-exif.jpg',
       routePlanId: 'route-plan-id',
       shopDomain: 'tomatono.myshopify.com',
+      shopId: 'shop-id',
       source: 'camera'
     });
 
@@ -425,6 +431,7 @@ describe('PrismaDriverProofMediaRepository', () => {
         filename: 'proof.jpg',
         routePlanId: 'route-plan-id',
         shopDomain: 'tomatono.myshopify.com',
+        shopId: 'shop-id',
         source: 'camera'
       })
     ).rejects.toThrow('Route plan not assigned to driver');

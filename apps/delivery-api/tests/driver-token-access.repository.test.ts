@@ -3,6 +3,87 @@ import { describe, expect, test, vi } from 'vitest';
 import { PrismaDriverTokenAccessRepository } from '../src/modules/driver/driver-token-access.repository.js';
 
 describe('PrismaDriverTokenAccessRepository', () => {
+  test('resolves a route token only from the account-to-route assignment', async () => {
+    const { prisma } = createPrismaHarness({
+      account: { status: 'ACTIVE', tokenVersion: 2 },
+      routePlan: {
+        driver: {
+          accountId: 'account-id',
+          authSubject: 'driver-driver-id',
+          id: 'driver-id',
+          status: 'ACTIVE'
+        },
+        id: 'route-plan-id',
+        shop: { id: 'shop-id', shopDomain: 'dev1.tomatonofood.com' }
+      }
+    });
+    const repository = new PrismaDriverTokenAccessRepository(prisma as never);
+
+    await expect(repository.resolveDriverRouteAccess({
+      accountId: 'account-id',
+      routePlanId: 'route-plan-id',
+      tokenVersion: 2
+    })).resolves.toEqual({
+      accountId: 'account-id',
+      driverId: 'driver-id',
+      routePlanId: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(prisma.routePlan.findFirst).toHaveBeenCalledWith({
+      select: {
+        driver: {
+          select: { accountId: true, authSubject: true, id: true, status: true }
+        },
+        id: true,
+        shop: { select: { id: true, shopDomain: true } }
+      },
+      where: {
+        driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        id: 'route-plan-id',
+        status: { in: ['READY', 'IN_PROGRESS', 'DRAFT', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED'] }
+      }
+    });
+  });
+
+  test('rejects a route token when the assignment belongs to another account', async () => {
+    const { prisma } = createPrismaHarness({
+      account: { status: 'ACTIVE', tokenVersion: 2 },
+      routePlan: {
+        driver: {
+          accountId: 'other-account-id',
+          authSubject: 'driver-driver-id',
+          id: 'driver-id',
+          status: 'ACTIVE'
+        },
+        id: 'route-plan-id',
+        shop: { id: 'shop-id', shopDomain: 'dev1.tomatonofood.com' }
+      }
+    });
+    const repository = new PrismaDriverTokenAccessRepository(prisma as never);
+
+    await expect(repository.resolveDriverRouteAccess({
+      accountId: 'account-id',
+      routePlanId: 'route-plan-id',
+      tokenVersion: 2
+    })).resolves.toBeNull();
+  });
+
+  test('rejects a route token after the route is completed or cancelled', async () => {
+    const { prisma } = createPrismaHarness({
+      account: { status: 'ACTIVE', tokenVersion: 2 },
+      routePlan: null
+    });
+    const repository = new PrismaDriverTokenAccessRepository(prisma as never);
+
+    await expect(repository.resolveDriverRouteAccess({
+      accountId: 'account-id',
+      routePlanId: 'route-plan-id',
+      tokenVersion: 2
+    })).resolves.toBeNull();
+  });
+
   test('accepts an active linked driver token only when the token version still matches', async () => {
     const { prisma } = createPrismaHarness({ tokenVersion: 3 });
     const repository = new PrismaDriverTokenAccessRepository(prisma as never);
@@ -75,6 +156,16 @@ describe('PrismaDriverTokenAccessRepository', () => {
 function createPrismaHarness(input: {
   account?: { status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED'; tokenVersion: number } | null;
   driver?: { tokenVersion: number } | null;
+  routePlan?: {
+    driver: {
+      accountId: string | null;
+      authSubject: string | null;
+      id: string;
+      status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
+    } | null;
+    id: string;
+    shop: { id: string; shopDomain: string };
+  } | null;
   tokenVersion?: number;
 } = {}): {
   prisma: {
@@ -83,6 +174,9 @@ function createPrismaHarness(input: {
     };
     driverAccount: {
       findUnique: ReturnType<typeof vi.fn>;
+    };
+    routePlan: {
+      findFirst: ReturnType<typeof vi.fn>;
     };
   };
 } {
@@ -96,6 +190,9 @@ function createPrismaHarness(input: {
       },
       driverAccount: {
         findUnique: vi.fn(() => Promise.resolve(input.account ?? null))
+      },
+      routePlan: {
+        findFirst: vi.fn(() => Promise.resolve(input.routePlan ?? null))
       }
     }
   };

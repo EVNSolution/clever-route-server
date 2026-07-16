@@ -24,9 +24,7 @@ import {
   toOrderItemDto,
   type OrderItemRecordLike
 } from '../order-items/order-items.js';
-import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
-
-type DriverAssignedRoutePrismaClient = Pick<PrismaClient, 'driver' | 'routePlan' | 'routePlanGeometryCache' | 'shop'>;
+type DriverAssignedRoutePrismaClient = Pick<PrismaClient, 'routePlan' | 'routePlanGeometryCache'>;
 
 type AssignedRoutePlanRecord = {
   createdAt: Date;
@@ -116,17 +114,6 @@ export class PrismaDriverAssignedRouteRepository {
   constructor(private readonly prisma: DriverAssignedRoutePrismaClient) {}
 
   async getAssignedRoute(input: DriverAssignedRouteInput): Promise<DriverAssignedRouteResult> {
-    const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
-    const shop = await this.prisma.shop.findUnique({ where: appScopedShopWhere({ shopDomain }) });
-    if (shop === null) {
-      throw new Error(`Shop not installed: ${shopDomain}`);
-    }
-
-    const driver = await this.prisma.driver.findUnique({ where: { id: input.driverId } });
-    if (driver === null || driver.shopId !== shop.id) {
-      throw new Error(`Driver not found for shop: ${input.driverId}`);
-    }
-
     const routePlan = await this.prisma.routePlan.findFirst({
       include: assignedRouteInclude,
       orderBy: { planDate: 'desc' },
@@ -134,7 +121,7 @@ export class PrismaDriverAssignedRouteRepository {
         driverId: input.driverId,
         ...(input.routeContext === null ? {} : { id: input.routeContext }),
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
-        shopId: shop.id,
+        shopId: input.shopId,
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });

@@ -1,4 +1,3 @@
-import { createHmac } from 'node:crypto';
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
@@ -8,6 +7,7 @@ import {
   DriverProofMediaScopeError
 } from '../src/modules/driver/driver-proof-media.types.js';
 import type { DriverApiDependencies } from '../src/routes/driver-events.routes.js';
+import { signDriverRouteToken } from '../src/modules/driver/driver-token-verifier.js';
 
 const secret = 'driver-secret';
 const now = new Date('2026-05-12T10:00:00.000Z');
@@ -40,7 +40,9 @@ describe('Driver proof media route', () => {
       expect(createProofMediaReadAccess).toHaveBeenCalledWith({
         driverId: 'driver-id',
         mediaId: 'proof-media-id',
-        shopDomain: 'tomatono.myshopify.com'
+        routePlanId: 'route-plan-id',
+        shopDomain: 'tomatono.myshopify.com',
+        shopId: 'shop-id'
       });
     } finally {
       await app.close();
@@ -150,6 +152,7 @@ describe('Driver proof media route', () => {
         filename: 'proof.jpg',
         routePlanId: 'route-plan-id',
         shopDomain: 'tomatono.myshopify.com',
+        shopId: 'shop-id',
         source: 'camera'
       });
     } finally {
@@ -284,6 +287,29 @@ describe('Driver proof media route', () => {
       await app.close();
     }
   });
+
+  test('rejects proof uploads outside the token route assignment', async () => {
+    const { app, storeProofMedia } = await createAppHarness();
+    const request = multipartUploadRequest({ routePlanId: 'other-route-plan-id' });
+
+    try {
+      const response = await app.inject({
+        ...request,
+        headers: { ...request.headers, authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        url: '/driver/proof-media'
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH', message: 'Driver route assignment rejected' }
+      });
+      expect(storeProofMedia).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 type StoreProofMedia = (input: {
@@ -294,6 +320,7 @@ type StoreProofMedia = (input: {
   filename: string;
   routePlanId: string;
   shopDomain: string;
+  shopId: string;
   source: 'camera' | 'library';
 }) => Promise<{
   contentType: string;
@@ -309,7 +336,9 @@ type StoreProofMedia = (input: {
 type CreateProofMediaReadAccess = (input: {
   driverId: string;
   mediaId: string;
+  routePlanId: string;
   shopDomain: string;
+  shopId: string;
 }) => Promise<{
   contentType: string;
   expiresAt: string;
@@ -381,6 +410,17 @@ async function createAppHarness(input: {
     driverEventService: {
       recordDriverEvent: vi.fn(() => Promise.resolve({ duplicate: false, eventId: 'unused' }))
     },
+    driverTokenAccessRepository: {
+      isDriverAccessTokenActive: vi.fn(() => Promise.resolve(false)),
+      isDriverAccountAccessTokenActive: vi.fn(() => Promise.resolve(true)),
+      resolveDriverRouteAccess: vi.fn(() => Promise.resolve({
+        accountId: 'account-id',
+        driverId: 'driver-id',
+        routePlanId: 'route-plan-id',
+        shopDomain: 'tomatono.myshopify.com',
+        shopId: 'shop-id'
+      }))
+    },
     jwtSecret: secret,
     now: () => now,
     proofMediaService: {
@@ -393,7 +433,7 @@ async function createAppHarness(input: {
   return { app, createProofMediaReadAccess, storeProofMedia };
 }
 
-function multipartUploadRequest(input: { contentType?: string; source?: string } = {}): {
+function multipartUploadRequest(input: { contentType?: string; routePlanId?: string; source?: string } = {}): {
   headers: Record<string, string>;
   payload: Buffer;
 } {
@@ -402,7 +442,7 @@ function multipartUploadRequest(input: { contentType?: string; source?: string }
   const contentType = input.contentType ?? 'image/jpeg';
   const chunks = [
     fieldPart(boundary, 'deliveryStopId', 'stop-id'),
-    fieldPart(boundary, 'routePlanId', 'route-plan-id'),
+    fieldPart(boundary, 'routePlanId', input.routePlanId ?? 'route-plan-id'),
     fieldPart(boundary, 'source', source),
     Buffer.from(
       `--${boundary}\r\n` +
@@ -430,20 +470,11 @@ function fieldPart(boundary: string, name: string, value: string): Buffer {
 }
 
 function driverToken(): string {
-  const header = { alg: 'HS256', typ: 'JWT' };
-  const payload = {
-    aud: 'clever-delivery-driver',
-    driverId: 'driver-id',
-    exp: Math.floor(now.getTime() / 1000) + 60,
-    iat: Math.floor(now.getTime() / 1000),
-    shopDomain: 'tomatono.myshopify.com',
-    sub: 'driver-auth-subject',
+  return signDriverRouteToken({
+    accountId: 'account-id',
+    expiresInSeconds: 60,
+    routePlanId: 'route-plan-id',
+    subject: 'driver-account:account-id',
     tokenVersion: 0
-  };
-  const encodedHeader = Buffer.from(JSON.stringify(header), 'utf8').toString('base64url');
-  const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const signingInput = `${encodedHeader}.${encodedPayload}`;
-  const signature = createHmac('sha256', secret).update(signingInput).digest('base64url');
-
-  return `${signingInput}.${signature}`;
+  }, { now, secret }).token;
 }

@@ -9,6 +9,7 @@ export type DriverAssignedRouteInput = {
   driverId: string;
   routeContext: string | null;
   shopDomain: string;
+  shopId: string;
 };
 
 export type DriverAssignedRouteStop = {

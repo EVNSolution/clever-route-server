@@ -1,9 +1,9 @@
-import { createHmac } from 'node:crypto';
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
 import { DriverRouteSessionScopeError } from '../src/modules/driver/driver-route-session.types.js';
 import type { DriverApiDependencies } from '../src/routes/driver-events.routes.js';
+import { signDriverRouteToken } from '../src/modules/driver/driver-token-verifier.js';
 
 const secret = 'driver-secret';
 const now = new Date('2026-06-15T12:20:00.000Z');
@@ -69,7 +69,9 @@ describe('Driver route session restore route', () => {
       expect(response.json()).toEqual({ data: activeSession, error: null });
       expect(getActiveRouteSession).toHaveBeenCalledWith({
         driverId: 'driver-id',
-        shopDomain: 'example.myshopify.com'
+        routePlanId: 'route-plan-id',
+        shopDomain: 'example.myshopify.com',
+        shopId: 'shop-id'
       });
     } finally {
       await app.close();
@@ -153,7 +155,8 @@ describe('Driver route session restore route', () => {
         baseUrl: 'https://delivery.example.com',
         driverId: 'driver-id',
         route: activeSession.route,
-        shopDomain: 'example.myshopify.com'
+        shopDomain: 'example.myshopify.com',
+        shopId: 'shop-id'
       });
     } finally {
       await app.close();
@@ -175,6 +178,17 @@ async function createAppHarness(input: {
         recordDriverEvent: vi.fn(() => Promise.resolve({ duplicate: false, eventId: 'unused-event-id' }))
       },
       driverRouteSessionRestoreService: { getActiveRouteSession },
+      driverTokenAccessRepository: {
+        isDriverAccessTokenActive: vi.fn(() => Promise.resolve(false)),
+        isDriverAccountAccessTokenActive: vi.fn(() => Promise.resolve(true)),
+        resolveDriverRouteAccess: vi.fn(() => Promise.resolve({
+          accountId: 'account-id',
+          driverId: 'driver-id',
+          routePlanId: 'route-plan-id',
+          shopDomain: 'example.myshopify.com',
+          shopId: 'shop-id'
+        }))
+      },
       ...(input.driverRouteMapPreviewBaseUrl === undefined ? {} : { driverRouteMapPreviewBaseUrl: input.driverRouteMapPreviewBaseUrl }),
       ...(input.driverRouteMapPreviewService === undefined ? {} : { driverRouteMapPreviewService: input.driverRouteMapPreviewService }),
       jwtSecret: secret,
@@ -186,20 +200,11 @@ async function createAppHarness(input: {
 }
 
 function driverToken(): string {
-  const header = { alg: 'HS256', typ: 'JWT' };
-  const payload = {
-    aud: 'clever-delivery-driver',
-    driverId: 'driver-id',
-    exp: Math.floor(now.getTime() / 1000) + 60,
-    iat: Math.floor(now.getTime() / 1000),
-    shopDomain: 'example.myshopify.com',
-    sub: 'driver-auth-subject',
+  return signDriverRouteToken({
+    accountId: 'account-id',
+    expiresInSeconds: 60,
+    routePlanId: 'route-plan-id',
+    subject: 'driver-account:account-id',
     tokenVersion: 0
-  };
-  const encodedHeader = Buffer.from(JSON.stringify(header), 'utf8').toString('base64url');
-  const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const signingInput = `${encodedHeader}.${encodedPayload}`;
-  const signature = createHmac('sha256', secret).update(signingInput).digest('base64url');
-
-  return `${signingInput}.${signature}`;
+  }, { now, secret }).token;
 }

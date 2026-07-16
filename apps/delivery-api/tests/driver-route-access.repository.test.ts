@@ -20,7 +20,15 @@ describe('PrismaDriverRouteAccessRepository', () => {
     expect(prisma.routePlan.findUnique).toHaveBeenCalledWith({
       select: {
         constraints: true,
-        driver: { select: { accountId: true, authSubject: true, id: true, status: true, tokenVersion: true } },
+        driver: {
+          select: {
+            account: { select: { id: true, status: true, tokenVersion: true } },
+            accountId: true,
+            authSubject: true,
+            id: true,
+            status: true
+          }
+        },
         id: true,
         name: true,
         planDate: true,
@@ -30,8 +38,8 @@ describe('PrismaDriverRouteAccessRepository', () => {
     });
     expect(result).toEqual({
       driverContext: {
-        driverId: 'driver-id',
-        shopDomain: 'dev1.tomatonofood.com',
+        accountId: 'account-id',
+        routePlanId,
         tokenVersion: 4
       },
       status: 'INVITED',
@@ -80,7 +88,15 @@ describe('PrismaDriverRouteAccessRepository', () => {
       orderBy: [{ planDate: 'asc' }, { name: 'asc' }],
       select: {
         constraints: true,
-        driver: { select: { accountId: true, authSubject: true, id: true, status: true, tokenVersion: true } },
+        driver: {
+          select: {
+            account: { select: { id: true, status: true, tokenVersion: true } },
+            accountId: true,
+            authSubject: true,
+            id: true,
+            status: true
+          }
+        },
         id: true,
         name: true,
         planDate: true,
@@ -219,7 +235,15 @@ describe('PrismaDriverRouteAccessRepository', () => {
       orderBy: [{ planDate: 'asc' }, { name: 'asc' }],
       select: {
         constraints: true,
-        driver: { select: { accountId: true, authSubject: true, id: true, status: true, tokenVersion: true } },
+        driver: {
+          select: {
+            account: { select: { id: true, status: true, tokenVersion: true } },
+            accountId: true,
+            authSubject: true,
+            id: true,
+            status: true
+          }
+        },
         id: true,
         name: true,
         planDate: true,
@@ -358,11 +382,15 @@ function routePlanRecord(
       timezone: 'America/Toronto'
     },
     driver: {
+      account: {
+        id: 'account-id',
+        status: 'ACTIVE',
+        tokenVersion: 4
+      },
       authSubject: overrides.authSubject === undefined ? 'driver-auth-subject' : overrides.authSubject,
       id: 'driver-id',
       accountId: 'account-id',
       status: overrides.driverStatus ?? 'ACTIVE',
-      tokenVersion: 4
     },
     id: overrides.id ?? routePlanId,
     name: overrides.name ?? 'Tuesday AM Route',

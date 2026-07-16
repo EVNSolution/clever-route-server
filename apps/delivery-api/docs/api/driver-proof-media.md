@@ -77,7 +77,7 @@ Success, when the storage backend supports short-lived read access:
 }
 ```
 
-The access route verifies the same Driver API bearer token shape as upload, scopes the media row to token `shopDomain` + `driverId`, requires `deletedAt: null`, and only then asks the storage backend to create a short-lived read URL. It does not expose raw bytes, storage keys, other driver media, deleted media, scanner internals, or object-storage provider credentials.
+The access route verifies the same account/route bearer token as upload, resolves the current Store driver reference from the token route assignment, scopes the media row to that route/reference/Store, requires `deletedAt: null`, and only then asks the storage backend to create a short-lived read URL. It does not expose raw bytes, storage keys, other driver media, deleted media, scanner internals, or object-storage provider credentials.
 
 Missing or invalid bearer tokens return `401`. Invalid media ids return `400`. A bearer-token driver that is not allowed to read the media receives `403` without route/stop details. If the configured storage backend cannot create read access, the route returns `503`:
 
@@ -168,7 +168,7 @@ Scanner-rejected proof media returns `422` without route/stop details, scanner i
 
 ## Persistence model
 
-`DriverProofMedia` stores upload metadata under the JWT shop/driver boundary:
+`DriverProofMedia` stores upload metadata under the verified account/route assignment boundary:
 
 - shop, driver, route plan, and delivery stop references
 - `kind: PHOTO`
@@ -178,9 +178,9 @@ Scanner-rejected proof media returns `422` without route/stop details, scanner i
 
 The repository checks all of the following before writing bytes or metadata:
 
-- `shopDomain` from the bearer token resolves to an installed shop
-- `driverId` from the bearer token belongs to that shop
-- `routePlanId` belongs to that shop and is assigned to that driver in an active/assigned route state
+- the bearer-token `accountId` still owns the token `routePlanId` through its current Store driver reference
+- Store id, Store domain, and driver-reference id are derived from that route assignment
+- the multipart `routePlanId` equals the token route id and remains in an active/assigned route state
 - `deliveryStopId` is a stop in that route plan
 - any configured `DriverProofMediaScanner` returns `status: "clean"` for the sanitized bytes
 

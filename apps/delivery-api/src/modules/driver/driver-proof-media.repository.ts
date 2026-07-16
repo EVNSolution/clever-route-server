@@ -19,12 +19,11 @@ import type {
   StoreDriverProofMediaInput,
   StoreDriverProofMediaResult
 } from './driver-proof-media.types.js';
-import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import { ROUTE_DRIVER_VISIBLE_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 
 type DriverProofMediaPrismaClient = Pick<
   PrismaClient,
-  'driver' | 'driverProofMedia' | 'routePlan' | 'routePlanStop' | 'shop'
+  'driverProofMedia' | 'routePlan' | 'routePlanStop'
 >;
 
 type PrismaProofMediaSource = 'CAMERA' | 'LIBRARY';
@@ -93,18 +92,13 @@ export class PrismaDriverProofMediaRepository {
   async createProofMediaReadAccess(
     input: CreateDriverProofMediaReadAccessInput
   ): Promise<CreateDriverProofMediaReadAccessResult> {
-    const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
-    const shop = await this.prisma.shop.findUnique({ where: appScopedShopWhere({ shopDomain }) });
-    if (shop === null) {
-      throw new DriverProofMediaScopeError(`Shop not installed: ${shopDomain}`);
-    }
-
     const media = await this.prisma.driverProofMedia.findFirst({
       where: {
         deletedAt: null,
         driverId: input.driverId,
         id: input.mediaId,
-        shopId: shop.id
+        routePlanId: input.routePlanId,
+        shopId: input.shopId
       }
     });
     if (media === null) {
@@ -133,21 +127,12 @@ export class PrismaDriverProofMediaRepository {
 
   async storeProofMedia(input: StoreDriverProofMediaInput): Promise<StoreDriverProofMediaResult> {
     const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
-    const shop = await this.prisma.shop.findUnique({ where: appScopedShopWhere({ shopDomain }) });
-    if (shop === null) {
-      throw new DriverProofMediaScopeError(`Shop not installed: ${shopDomain}`);
-    }
-
-    const driver = await this.prisma.driver.findUnique({ where: { id: input.driverId } });
-    if (driver === null || driver.shopId !== shop.id) {
-      throw new DriverProofMediaScopeError(`Driver not found for shop: ${input.driverId}`);
-    }
 
     const routePlan = await this.prisma.routePlan.findFirst({
       where: {
         driverId: input.driverId,
         id: input.routePlanId,
-        shopId: shop.id,
+        shopId: input.shopId,
         status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] }
       }
     });
@@ -210,7 +195,7 @@ export class PrismaDriverProofMediaRepository {
         originalFilename: input.filename,
         routePlanId: input.routePlanId,
         sha256,
-        shopId: shop.id,
+        shopId: input.shopId,
         sizeBytes: storedFileBytes.byteLength,
         source: toPrismaSource(input.source),
         storageKey,

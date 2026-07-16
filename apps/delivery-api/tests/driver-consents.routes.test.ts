@@ -1,7 +1,7 @@
-import { createHmac } from 'node:crypto';
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
+import { signDriverRouteToken } from '../src/modules/driver/driver-token-verifier.js';
 
 const secret = 'driver-secret';
 const now = new Date('2026-05-12T05:50:00.000Z');
@@ -74,26 +74,69 @@ describe('Driver consents route', () => {
         error: null
       });
       expect(recordDriverConsents).toHaveBeenCalledWith({
+        accountId: 'account-id',
         appContext: { appVersion: '0.1.0' },
         consents: [
           { accepted: true, type: 'LOCATION_INFORMATION', version: 'location-v1' },
           { accepted: true, type: 'PERSONAL_INFORMATION', version: 'privacy-v1' }
         ],
         deviceContext: { platform: 'ios' },
-        driverId: 'driver-id',
         recordedAt: now,
-        routeContext: '11111111-1111-4111-8111-111111111111',
-        shopDomain: 'example.myshopify.com'
+        routePlanId: '11111111-1111-4111-8111-111111111111'
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects consent context outside the token route assignment', async () => {
+    const { app, recordDriverConsents } = await createAppHarness();
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: { ...consentPayload(), routeContext: 'other-route-plan-id' },
+        url: '/driver/consents'
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH', message: 'Driver route assignment rejected' }
+      });
+      expect(recordDriverConsents).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns a deterministic consent failure without leaking repository details', async () => {
+    const { app } = await createAppHarness({ recordError: new Error('database unavailable') });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: consentPayload(),
+        url: '/driver/consents'
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'CONSENT_RECORD_FAILED', message: 'Driver consent could not be recorded' }
+      });
+      expect(response.body).not.toContain('database unavailable');
     } finally {
       await app.close();
     }
   });
 });
 
-async function createAppHarness() {
-  const recordDriverConsents = vi.fn(() =>
-    Promise.resolve({
+async function createAppHarness(input: { recordError?: Error } = {}) {
+  const recordDriverConsents = vi.fn(() => input.recordError === undefined
+    ? Promise.resolve({
       status: 'CONSENT_RECORDED' as const,
       recordedAt: now.toISOString(),
       records: [
@@ -101,11 +144,23 @@ async function createAppHarness() {
         { accepted: true, type: 'PERSONAL_INFORMATION' as const, version: 'privacy-v1' }
       ]
     })
+    : Promise.reject(input.recordError)
   );
   const app = await buildApp({
     driverApi: {
       driverConsentService: { recordDriverConsents },
       driverEventService: { recordDriverEvent: vi.fn() },
+      driverTokenAccessRepository: {
+        isDriverAccessTokenActive: vi.fn(() => Promise.resolve(false)),
+        isDriverAccountAccessTokenActive: vi.fn(() => Promise.resolve(true)),
+        resolveDriverRouteAccess: vi.fn(() => Promise.resolve({
+          accountId: 'account-id',
+          driverId: 'driver-id',
+          routePlanId: '11111111-1111-4111-8111-111111111111',
+          shopDomain: 'example.myshopify.com',
+          shopId: 'shop-id'
+        }))
+      },
       jwtSecret: secret,
       now: () => now
     }
@@ -128,20 +183,11 @@ function consentPayload(): Record<string, unknown> {
 }
 
 function driverToken(): string {
-  const header = { alg: 'HS256', typ: 'JWT' };
-  const payload = {
-    aud: 'clever-delivery-driver',
-    driverId: 'driver-id',
-    exp: Math.floor(now.getTime() / 1000) + 60,
-    iat: Math.floor(now.getTime() / 1000),
-    shopDomain: 'example.myshopify.com',
-    sub: 'driver-auth-subject',
+  return signDriverRouteToken({
+    accountId: 'account-id',
+    expiresInSeconds: 60,
+    routePlanId: '11111111-1111-4111-8111-111111111111',
+    subject: 'driver-account:account-id',
     tokenVersion: 0
-  };
-  const encodedHeader = Buffer.from(JSON.stringify(header), 'utf8').toString('base64url');
-  const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const signingInput = `${encodedHeader}.${encodedPayload}`;
-  const signature = createHmac('sha256', secret).update(signingInput).digest('base64url');
-
-  return `${signingInput}.${signature}`;
+  }, { now, secret }).token;
 }

@@ -3,8 +3,8 @@ import { describe, expect, test, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import {
   signDriverAccountToken,
-  verifyDriverAccountToken,
-  verifyDriverToken
+  signDriverRouteToken,
+  verifyDriverAccountToken
 } from '../src/modules/driver/driver-token-verifier.js';
 import type { DriverAuthDependencies } from '../src/routes/driver-auth.routes.js';
 
@@ -223,7 +223,7 @@ describe('Driver auth routes', () => {
     }
   });
 
-  test('refreshes driver auth sessions and returns a new access token', async () => {
+  test('rejects legacy Store-driver refresh sessions that cannot produce a route token', async () => {
     const refreshSession = vi.fn<DriverAuthDependencies['driverAuthRepository']['refreshSession']>(() =>
       Promise.resolve({
         driverId: 'driver-id',
@@ -248,22 +248,80 @@ describe('Driver auth routes', () => {
         url: '/driver/auth/refresh'
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(401);
       expect(refreshSession).toHaveBeenCalledWith({ refreshToken: 'stored-refresh-token' });
-      const body: { data: { accessToken: string; refreshToken: string; refreshTokenExpiresAt: string }; error: null } = response.json();
-      expect(body).toMatchObject({
-        data: {
-          accessToken: anyStringMatcher,
-          refreshToken: 'stored-refresh-token',
-          refreshTokenExpiresAt: '2026-06-15T00:00:00.000Z'
-        },
-        error: null
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'DRIVER_ACCESS_TOKEN_INVALID',
+          message: 'Driver account login and route lookup required'
+        }
       });
-      expect(verifyDriverToken(body.data.accessToken, { secret: 'test-secret' })).toMatchObject({
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('registers and revokes push tokens through the current account route assignment', async () => {
+    const resolveDriverRouteAccess = vi.fn(() => Promise.resolve({
+      accountId: 'account-id',
+      driverId: 'driver-id',
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id'
+    }));
+    const upsertDriverPushToken = vi.fn(() => Promise.resolve({ id: 'push-token-id', status: 'ACTIVE' }));
+    const revokeDriverPushToken = vi.fn(() => Promise.resolve({ revoked: true }));
+    const accessToken = signDriverRouteToken({
+      accountId: 'account-id',
+      expiresInSeconds: 900,
+      routePlanId: 'route-plan-id',
+      subject: 'driver-account:account-id',
+      tokenVersion: 4
+    }, { secret: 'test-secret' }).token;
+    const app = await buildApp({
+      driverAuth: {
+        driverAuthRepository: {} as never,
+        driverTokenAccessRepository: { resolveDriverRouteAccess } as never,
+        jwtSecret: 'test-secret',
+        pushTokenService: { revokeDriverPushToken, upsertDriverPushToken }
+      }
+    });
+
+    try {
+      const registered = await app.inject({
+        headers: { authorization: `Bearer ${accessToken}` },
+        method: 'PUT',
+        payload: {
+          appId: 'clever-driver',
+          devicePushToken: 'device-push-token',
+          platform: 'android'
+        },
+        url: '/api/driver/mobile/push-token'
+      });
+      const revoked = await app.inject({
+        headers: { authorization: `Bearer ${accessToken}` },
+        method: 'DELETE',
+        payload: { devicePushToken: 'device-push-token' },
+        url: '/api/driver/mobile/push-token'
+      });
+
+      expect(registered.statusCode).toBe(200);
+      expect(revoked.statusCode).toBe(200);
+      expect(resolveDriverRouteAccess).toHaveBeenCalledWith({
+        accountId: 'account-id',
+        routePlanId: 'route-plan-id',
+        tokenVersion: 4
+      });
+      expect(upsertDriverPushToken).toHaveBeenCalledWith(expect.objectContaining({
+        appId: 'clever-driver',
+        devicePushToken: 'device-push-token',
         driverId: 'driver-id',
-        shopDomain: 'tomatono.myshopify.com',
-        subject: 'driver:driver-id',
-        tokenVersion: 2
+        platform: 'android'
+      }));
+      expect(revokeDriverPushToken).toHaveBeenCalledWith({
+        devicePushToken: 'device-push-token',
+        driverId: 'driver-id'
       });
     } finally {
       await app.close();

@@ -1,6 +1,7 @@
 export type DriverSelfServiceScopeInput = {
   driverId: string;
   shopDomain: string;
+  shopId: string;
 };
 
 export type DriverRouteHistoryStatus = 'pending' | 'active' | 'completed';

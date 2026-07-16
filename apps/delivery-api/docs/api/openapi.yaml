@@ -779,7 +779,7 @@ paths:
   /driver/assigned-route:
     get:
       tags: [Driver Mobile]
-      summary: Read the assigned route for the bearer-token driver
+      summary: Read the exact route assigned to the bearer-token account
       operationId: getDriverAssignedRoute
       x-source-file: src/routes/driver-events.routes.ts
       security:
@@ -801,6 +801,8 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /driver/routes:
     get:
       tags: [Driver Mobile]
@@ -1006,6 +1008,23 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          description: Consent persistence failed without exposing internal details.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+              examples:
+                failed:
+                  value:
+                    data: null
+                    error:
+                      code: CONSENT_RECORD_FAILED
+                      message: Driver consent could not be recorded
   /driver/proof-media/{mediaId}/access:
     get:
       tags: [Driver Mobile]
@@ -1129,7 +1148,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: Server-issued short-lived driver JWT with audience clever-delivery-driver.
+      description: Server-issued short-lived account/route JWT with audience clever-delivery-driver-route.
     DriverAccountAccessToken:
       type: http
       scheme: bearer
@@ -2036,8 +2055,8 @@ components:
           type: array
           description: >-
             Additive app-facing capability metadata. Existing app clients may ignore this field.
-            Server authorization for these endpoints still uses the signed driver/shop/tokenVersion
-            bearer token, not scope claims.
+            Server authorization for these endpoints uses the signed accountId/routePlanId/tokenVersion
+            bearer token and the current route assignment, not scope claims.
           items:
             type: string
     DriverCompanyGuidance:

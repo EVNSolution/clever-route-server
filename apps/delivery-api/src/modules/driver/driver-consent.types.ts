@@ -7,13 +7,12 @@ export type DriverConsentRecordInput = {
 };
 
 export type RecordDriverConsentsInput = {
+  accountId: string;
   appContext: Record<string, unknown> | null;
   consents: DriverConsentRecordInput[];
   deviceContext: Record<string, unknown> | null;
-  driverId: string;
   recordedAt: Date;
-  routeContext: string | null;
-  shopDomain: string;
+  routePlanId: string;
 };
 
 export type RecordDriverConsentsResult = {

@@ -95,7 +95,8 @@ describe('Driver route map preview service', () => {
       baseUrl: 'https://delivery.example.com/',
       driverId: 'driver-id',
       route,
-      shopDomain: 'example.myshopify.com'
+      shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id'
     });
 
     expect(preview).not.toBeNull();
@@ -120,7 +121,8 @@ describe('Driver route map preview service', () => {
       baseUrl: 'https://delivery.example.com',
       driverId: 'driver-id',
       route,
-      shopDomain: 'example.myshopify.com'
+      shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id'
     });
     expect(preview).not.toBeNull();
     const url = new URL(preview?.imageUrl ?? '');
@@ -135,7 +137,8 @@ describe('Driver route map preview service', () => {
     expect(getAssignedRoute).toHaveBeenCalledWith({
       driverId: 'driver-id',
       routeContext: 'route-plan-id',
-      shopDomain: 'example.myshopify.com'
+      shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id'
     });
 
     const expired = await service.readRouteMapPreviewImage({
@@ -162,7 +165,8 @@ describe('Driver route map preview service', () => {
       baseUrl: 'https://delivery.example.com',
       driverId: 'driver-id',
       route,
-      shopDomain: 'example.myshopify.com'
+      shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id'
     });
     const url = new URL(preview?.imageUrl ?? '');
 
@@ -179,7 +183,8 @@ describe('Driver route map preview service', () => {
       baseUrl: 'https://delivery.example.com',
       driverId: 'driver-id',
       route: { ...route, routeGeometry: null },
-      shopDomain: 'example.myshopify.com'
+      shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id'
     })).toBeNull();
 
     expect(renderDriverRouteMapPreviewPng({
@@ -221,7 +226,8 @@ describe('Driver route map preview service', () => {
       baseUrl: 'https://delivery.example.com',
       driverId: 'driver-id',
       route,
-      shopDomain: 'example.myshopify.com'
+      shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id'
     });
     const url = new URL(preview?.imageUrl ?? '');
 
