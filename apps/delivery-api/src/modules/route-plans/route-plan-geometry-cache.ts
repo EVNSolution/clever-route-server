@@ -89,7 +89,7 @@ export function computeRouteShapeSignature(detail: RoutePlanDetail): string {
 export function applyCachedRouteGeometry(detail: RoutePlanDetail, cache: RouteGeometryCacheRead | null | undefined): RoutePlanDetail {
   const expectedSignature = computeRouteShapeSignature(detail);
   if (cache === null || cache === undefined) {
-    return {
+    return applyEstimatedRouteTiming({
       ...detail,
       routeGeometry: null,
       routeGeometryGeneratedAt: null,
@@ -98,11 +98,11 @@ export function applyCachedRouteGeometry(detail: RoutePlanDetail, cache: RouteGe
       routeMetrics: null,
       routeShapeSignature: expectedSignature,
       routeStopPoints: []
-    };
+    });
   }
 
   if (cache.shapeSignature !== expectedSignature) {
-    return {
+    return applyEstimatedRouteTiming({
       ...detail,
       routeGeometry: null,
       routeGeometryGeneratedAt: normalizeDateString(cache.generatedAt),
@@ -111,13 +111,13 @@ export function applyCachedRouteGeometry(detail: RoutePlanDetail, cache: RouteGe
       routeMetrics: null,
       routeShapeSignature: expectedSignature,
       routeStopPoints: []
-    };
+    });
   }
 
   const geometry = readRouteGeometry(cache.geometry);
   const metrics = readRouteMetrics(cache.metrics);
   const stopPoints = readRouteStopPoints(cache.stopPoints);
-  return {
+  return applyEstimatedRouteTiming({
     ...detail,
     routeGeometry: geometry,
     routeGeometryGeneratedAt: normalizeDateString(cache.generatedAt),
@@ -126,7 +126,7 @@ export function applyCachedRouteGeometry(detail: RoutePlanDetail, cache: RouteGe
     routeMetrics: metrics,
     routeShapeSignature: expectedSignature,
     routeStopPoints: stopPoints
-  };
+  });
 }
 
 export function withRouteGeometryResult(
@@ -138,7 +138,7 @@ export function withRouteGeometryResult(
   },
   input: { generatedAt?: Date; source: RouteGeometryCacheSource }
 ): RoutePlanDetail {
-  return {
+  return applyEstimatedRouteTiming({
     ...detail,
     routeGeometry: result.routeGeometry,
     routeGeometryGeneratedAt: (input.generatedAt ?? new Date()).toISOString(),
@@ -147,6 +147,52 @@ export function withRouteGeometryResult(
     routeMetrics: result.routeMetrics,
     routeShapeSignature: computeRouteShapeSignature(detail),
     routeStopPoints: result.routeStopPoints
+  });
+}
+
+export function applyEstimatedRouteTiming(detail: RoutePlanDetail): RoutePlanDetail {
+  const startInstant = readScheduledStartInstant(detail.routePlan.scheduledStartAt);
+  const stopPointById = new Map(detail.routeStopPoints.map((point) => [point.deliveryStopId, point]));
+  const timingByStopId = new Map<string, {
+    distanceFromPreviousMeters: number | null;
+    durationFromPreviousSeconds: number | null;
+    estimatedArrivalAt: string | null;
+  }>();
+  let cursorMs = startInstant?.getTime() ?? null;
+
+  for (const stop of [...detail.stops].sort((left, right) => left.sequence - right.sequence)) {
+    const stopPoint = stopPointById.get(stop.deliveryStopId);
+    const durationFromPreviousSeconds = finiteNonNegativeNumber(
+      stopPoint?.durationFromPreviousSeconds ?? stop.durationFromPreviousSeconds
+    );
+    const distanceFromPreviousMeters = finiteNonNegativeNumber(
+      stopPoint?.distanceFromPreviousMeters ?? stop.distanceFromPreviousMeters
+    );
+    let estimatedArrivalAt: string | null = null;
+
+    if (cursorMs !== null && durationFromPreviousSeconds !== null) {
+      cursorMs += durationFromPreviousSeconds * 1000;
+      estimatedArrivalAt = new Date(cursorMs).toISOString();
+      const serviceMinutes = finiteNonNegativeNumber(stop.serviceMinutes);
+      cursorMs = serviceMinutes === null ? null : cursorMs + serviceMinutes * 60_000;
+    } else {
+      cursorMs = null;
+    }
+
+    timingByStopId.set(stop.deliveryStopId, {
+      distanceFromPreviousMeters,
+      durationFromPreviousSeconds,
+      estimatedArrivalAt
+    });
+  }
+
+  return {
+    ...detail,
+    stops: detail.stops.map((stop) => ({
+      ...stop,
+      ...timingByStopId.get(stop.deliveryStopId),
+      estimatedArrivalAt: timingByStopId.get(stop.deliveryStopId)?.estimatedArrivalAt ?? null
+    }))
   };
 }
 
@@ -222,6 +268,8 @@ function readRouteStopPoint(value: unknown): RoutePlanRouteStopPoint | null {
   if (deliveryStopId === null || sequence === null || shopifyOrderGid === null) return null;
   return {
     deliveryStopId,
+    distanceFromPreviousMeters: readNullableNumber(record.distanceFromPreviousMeters),
+    durationFromPreviousSeconds: readNullableNumber(record.durationFromPreviousSeconds),
     inputCoordinates: readCoordinateTuple(record.inputCoordinates),
     name: readString(record.name),
     sequence,
@@ -229,6 +277,18 @@ function readRouteStopPoint(value: unknown): RoutePlanRouteStopPoint | null {
     snapDistanceMeters: readNullableNumber(record.snapDistanceMeters),
     snappedCoordinates: readCoordinateTuple(record.snappedCoordinates)
   };
+}
+
+function readScheduledStartInstant(value: string | null | undefined): Date | null {
+  if (typeof value !== 'string' || !value.includes('T')) return null;
+  const instant = new Date(value);
+  return Number.isNaN(instant.getTime()) ? null : instant;
+}
+
+function finiteNonNegativeNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) && numberValue >= 0 ? numberValue : null;
 }
 
 function readNullableNumber(value: unknown): number | null {

@@ -2224,6 +2224,14 @@ function readDepartureTime(value: unknown): string | null {
   return /^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(departureTime) ? departureTime : null;
 }
 
+function readScheduledStartAt(value: unknown): string | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = (value as Record<string, unknown>).scheduledStartAt;
+  if (typeof raw !== 'string' || !raw.includes('T')) return null;
+  const instant = new Date(raw);
+  return Number.isNaN(instant.getTime()) ? null : instant.toISOString();
+}
+
 function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan']>, routeMetrics: RoutePlanRouteMetrics | null, assignments: LoadedAssignment[]) {
   return {
     createdAt: routePlan.createdAt.toISOString(),
@@ -2240,6 +2248,7 @@ function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan
     planDate: formatDateOnly(routePlan.planDate) ?? '',
     routeEndMode: DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE,
     routeMetrics,
+    scheduledStartAt: readScheduledStartAt(routePlan.constraints),
     status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
     stopsCount: routePlan.routeStops.length,
     updatedAt: routePlan.updatedAt.toISOString()

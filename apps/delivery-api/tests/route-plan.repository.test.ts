@@ -101,7 +101,7 @@ describe('PrismaRoutePlanRepository', () => {
     expect(typeof cacheFindArgs?.where?.routePlanId_shapeSignature?.shapeSignature).toBe('string');
   });
 
-  test('maps route-plan detail stop service minutes without changing sequence or leg fields', async () => {
+  test('maps stop service and leg fields but clears stale ETA until a route start is set', async () => {
     const firstStop = routePlanStopRecord({
       deliveryStopId: 'stop-1',
       estimatedArrivalAt: new Date('2026-05-08T13:00:00.000Z'),
@@ -149,14 +149,14 @@ describe('PrismaRoutePlanRepository', () => {
       deliveryStopId: 'stop-1',
       distanceFromPreviousMeters: 7400,
       durationFromPreviousSeconds: 960,
-      estimatedArrivalAt: '2026-05-08T13:00:00.000Z',
+      estimatedArrivalAt: null,
       serviceMinutes: 5
     }));
     expect(result?.stops[1]).toEqual(expect.objectContaining({
       deliveryStopId: 'stop-2',
       distanceFromPreviousMeters: 3100,
       durationFromPreviousSeconds: 420,
-      estimatedArrivalAt: '2026-05-08T13:30:00.000Z',
+      estimatedArrivalAt: null,
       serviceMinutes: null
     }));
   });

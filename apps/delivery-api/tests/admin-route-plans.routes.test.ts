@@ -777,6 +777,89 @@ describe('Admin route plan routes', () => {
     }
   });
 
+  test('saves a complete scheduled route start instant for the token shop', async () => {
+    const { dependencies, saveRoutePlan } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { scheduledStartAt: '2026-07-16T12:30:00.000Z' },
+        url: '/admin/route-plans/route-plan-id/start-time'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(saveRoutePlan).toHaveBeenCalledWith({
+        appId: 'clever',
+        payload: { scheduledStartAt: '2026-07-16T12:30:00.000Z' },
+        routePlanId: 'route-plan-id',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('allows a scheduled route start to be cleared without inferring the plan date', async () => {
+    const { dependencies, saveRoutePlan } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { scheduledStartAt: null },
+        url: '/admin/route-plans/route-plan-id/start-time'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(saveRoutePlan).toHaveBeenCalledWith(expect.objectContaining({
+        payload: { scheduledStartAt: null }
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects a route start date without an explicit time', async () => {
+    const { dependencies, saveRoutePlan } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { scheduledStartAt: '2026-07-16' },
+        url: '/admin/route-plans/route-plan-id/start-time'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(saveRoutePlan).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects a route start date-time without an explicit timezone', async () => {
+    const { dependencies, saveRoutePlan } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { scheduledStartAt: '2026-07-16T12:30' },
+        url: '/admin/route-plans/route-plan-id/start-time'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(saveRoutePlan).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects invalid route plan departure times before saving', async () => {
     const { dependencies, saveRoutePlan } = createDependencyHarness();
     const app = await buildApp({ adminRoutePlans: dependencies });
