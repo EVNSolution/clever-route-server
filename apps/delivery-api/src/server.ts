@@ -17,6 +17,7 @@ import { loadShopifyAuthDependencies } from './modules/shopify/auth.dependencies
 import { loadShopifyWebhookDependencies } from './modules/shopify/webhook.dependencies.js';
 import { loadWooCommerceWebhookDependencies } from './modules/woocommerce/woocommerce.dependencies.js';
 import { createAdminNotificationRuntime } from './modules/notifications/admin-notification.dependencies.js';
+import { loadDsvControlDependencies } from './modules/dsv/dsv-control.dependencies.js';
 import { loadWordPressPluginDependencies } from './modules/wordpress-plugin/wordpress-plugin.dependencies.js';
 import type { AdminRoutePlanDependencies } from './routes/admin-route-plans.routes.js';
 import type { AdminRouteGroupDependencies } from './routes/admin-route-groups.routes.js';
@@ -31,6 +32,7 @@ import type { WooCommerceWebhookDependencies } from './routes/woocommerce-webhoo
 import type { WordPressPluginDependencies } from './routes/wordpress-plugin.routes.js';
 import type { AdminCommerceConnectionsDependencies } from './routes/admin-commerce-connections.routes.js';
 import type { AdminCommerceConnectionsUiDependencies } from './routes/admin-commerce-connections-ui.routes.js';
+import type { DsvControlDependencies } from './routes/dsv-control.routes.js';
 
 const env = loadEnv();
 const prisma = new PrismaClient();
@@ -46,6 +48,7 @@ const adminNotificationRuntime = createAdminNotificationRuntime({
   prisma
 });
 const adminNotificationService = adminNotificationRuntime.service;
+const dsvControl = loadDsvControlDependencies({ env: process.env, nodeEnv: env.nodeEnv, prisma });
 const adminOrders = loadAdminOrdersDependencies({
   adminNotificationService,
   env: process.env,
@@ -88,6 +91,7 @@ const app = await buildApp(
     corsOrigin: readCorsOrigin(process.env.SHOPIFY_APP_URL),
     driverApi,
     driverAuth,
+    dsvControl,
     logger,
     shopifyAuth,
     shopifyWebhook,
@@ -128,6 +132,7 @@ function createBuildAppOptions(input: {
   corsOrigin: false | string;
   driverApi: DriverApiDependencies | undefined;
   driverAuth: DriverAuthDependencies | undefined;
+  dsvControl: DsvControlDependencies | undefined;
   logger: false | { level: string };
   shopifyAuth: ShopifyAuthDependencies | undefined;
   shopifyWebhook: ShopifyWebhookDependencies | undefined;
@@ -144,6 +149,7 @@ function createBuildAppOptions(input: {
   corsOrigin?: false | string;
   driverApi?: DriverApiDependencies;
   driverAuth?: DriverAuthDependencies;
+  dsvControl?: DsvControlDependencies;
   logger: false | { level: string };
   shopifyAuth?: ShopifyAuthDependencies;
   shopifyWebhook?: ShopifyWebhookDependencies;
@@ -161,6 +167,7 @@ function createBuildAppOptions(input: {
     corsOrigin: input.corsOrigin,
     ...(input.driverApi === undefined ? {} : { driverApi: input.driverApi }),
     ...(input.driverAuth === undefined ? {} : { driverAuth: input.driverAuth }),
+    ...(input.dsvControl === undefined ? {} : { dsvControl: input.dsvControl }),
     logger: input.logger,
     ...(input.shopifyAuth === undefined ? {} : { shopifyAuth: input.shopifyAuth }),
     ...(input.shopifyWebhook === undefined ? {} : { shopifyWebhook: input.shopifyWebhook }),

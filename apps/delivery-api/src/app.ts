@@ -42,6 +42,7 @@ import {
   registerWordPressPluginRoutes,
   type WordPressPluginDependencies
 } from './routes/wordpress-plugin.routes.js';
+import { registerDsvControlRoutes, type DsvControlDependencies } from './routes/dsv-control.routes.js';
 
 export type BuildAppOptions = {
   adminCommerceConnections?: AdminCommerceConnectionsDependencies;
@@ -54,6 +55,7 @@ export type BuildAppOptions = {
   corsOrigin?: false | string;
   driverApi?: DriverApiDependencies;
   driverAuth?: DriverAuthDependencies;
+  dsvControl?: DsvControlDependencies;
   logger?: FastifyServerOptions['logger'];
   shopifyAuth?: ShopifyAuthDependencies;
   shopifyWebhook?: ShopifyWebhookDependencies;
@@ -132,6 +134,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   if (options.driverAuth !== undefined) {
     registerDriverAuthRoutes(app, options.driverAuth);
+  }
+
+  if (options.dsvControl !== undefined) {
+    registerDsvControlRoutes(app, options.dsvControl);
   }
 
   if (options.shopifyAuth !== undefined) {

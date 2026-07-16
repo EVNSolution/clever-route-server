@@ -41,6 +41,7 @@ export type AdminWebSession = {
 export type CreateAdminWebSessionInput = {
   cookieName?: string;
   now?: () => Date;
+  path?: string;
   sameSite?: 'Lax' | 'Strict';
   secure: boolean;
   sessionSecret: string;
@@ -109,7 +110,7 @@ export function createAdminWebSession(input: CreateAdminWebSessionInput): {
       httpOnly: true,
       maxAgeSeconds: Math.max(1, Math.floor((expiresAt - issuedAt) / 1000)),
       name: input.cookieName ?? DEFAULT_ADMIN_UI_COOKIE_NAME,
-      path: ADMIN_UI_COOKIE_PATH,
+      path: input.path ?? ADMIN_UI_COOKIE_PATH,
       sameSite: input.sameSite ?? 'Strict',
       secure: input.secure,
       value: cookieValue
@@ -188,8 +189,8 @@ export function verifyAdminWebCsrfToken(input: {
   );
 }
 
-export function clearAdminWebSessionCookie(input: { cookieName?: string; secure: boolean }): string {
-  return clearAdminWebSessionCookieAtPath({ ...input, path: ADMIN_UI_COOKIE_PATH });
+export function clearAdminWebSessionCookie(input: { cookieName?: string; path?: string; secure: boolean }): string {
+  return clearAdminWebSessionCookieAtPath({ ...input, path: input.path ?? ADMIN_UI_COOKIE_PATH });
 }
 
 export function clearLegacyAdminWebSessionCookie(input: { cookieName?: string; secure: boolean }): string {
