@@ -341,6 +341,8 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       const hasShapePayload = input.payload.routeEndMode !== undefined || input.payload.stops !== undefined;
       const hasDepartureTimePayload = Object.hasOwn(input.payload, 'departureTime');
       const nextDepartureTime = hasDepartureTimePayload ? input.payload.departureTime ?? null : null;
+      const hasScheduledStartPayload = Object.hasOwn(input.payload, 'scheduledStartAt');
+      const nextScheduledStartAt = hasScheduledStartPayload ? input.payload.scheduledStartAt ?? null : null;
       const willRepairDraftDepot =
         hasShapePayload &&
         isRouteReadyStatus(initialRouteStatus) &&
@@ -358,12 +360,15 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       const hasDriverChange = hasDriverPayload && initialDriverId !== nextDriverId;
       const hasDepartureTimeChange =
         hasDepartureTimePayload && readDepartureTime(routePlan.constraints) !== nextDepartureTime;
+      const hasScheduledStartChange =
+        hasScheduledStartPayload && readScheduledStartAt(routePlan.constraints) !== nextScheduledStartAt;
       const hasRouteMutation =
         willRepairDraftDepot ||
         hasRouteEndModeChange ||
         hasStopSequenceChange ||
         hasDriverChange ||
-        hasDepartureTimeChange;
+        hasDepartureTimeChange ||
+        hasScheduledStartChange;
 
       if (input.payload.expectedUpdatedAt !== undefined && hasRouteMutation) {
         const claimed = await tx.routePlan.updateMany({
@@ -434,6 +439,20 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           });
           routePlan = { ...routePlan, constraints };
           operations.push({ name: 'departure_time', reason: nextDepartureTime === null ? 'cleared' : 'changed', status: 'applied' });
+        }
+      }
+
+      if (hasScheduledStartPayload) {
+        if (!hasScheduledStartChange) {
+          operations.push({ name: 'scheduled_start', reason: 'unchanged', status: 'skipped' });
+        } else {
+          const constraints = updateConstraintsScheduledStartAt(routePlan.constraints, nextScheduledStartAt);
+          await tx.routePlan.update({
+            data: { constraints },
+            where: { id: routePlan.id }
+          });
+          routePlan = { ...routePlan, constraints };
+          operations.push({ name: 'scheduled_start', reason: nextScheduledStartAt === null ? 'cleared' : 'changed', status: 'applied' });
         }
       }
 
@@ -1970,6 +1989,7 @@ function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanO
     name: routePlan.name,
     planDate: formatDateOnly(routePlan.planDate),
     routeEndMode: readRouteEndMode(routePlan.constraints),
+    scheduledStartAt: readScheduledStartAt(routePlan.constraints),
     routeGroupingChild: toRouteGroupingChildSummary(routePlan.routeGroupingChildVersions),
     routeMetrics,
     status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
@@ -2206,9 +2226,31 @@ function updateConstraintsDepartureTime(
   }) as Prisma.InputJsonObject;
 }
 
+function updateConstraintsScheduledStartAt(
+  value: unknown,
+  scheduledStartAt: string | null
+): Prisma.InputJsonObject {
+  const constraints = objectOrEmpty(value);
+  return toJson({
+    ...constraints,
+    departureTime: null,
+    optimizer: readString(constraints.optimizer) ?? OPTIMIZER_VERSION,
+    routeEndMode: readRouteEndMode(value),
+    scheduledStartAt,
+    sequenceSource: readString(constraints.sequenceSource) ?? 'request-order'
+  }) as Prisma.InputJsonObject;
+}
+
 function readDepartureTime(value: unknown): string | null {
   const departureTime = readString(objectOrNull(value)?.departureTime);
   return departureTime !== null && /^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(departureTime) ? departureTime : null;
+}
+
+function readScheduledStartAt(value: unknown): string | null {
+  const scheduledStartAt = readString(objectOrNull(value)?.scheduledStartAt);
+  if (scheduledStartAt === null || !scheduledStartAt.includes('T')) return null;
+  const instant = new Date(scheduledStartAt);
+  return Number.isNaN(instant.getTime()) ? null : instant.toISOString();
 }
 
 function readRouteEndMode(value: unknown): RoutePlanEndMode {

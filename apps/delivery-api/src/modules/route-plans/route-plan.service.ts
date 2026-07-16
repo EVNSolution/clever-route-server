@@ -308,6 +308,7 @@ function hasRouteMutationPayload(input: SaveRoutePlanInput): boolean {
     input.payload.departureTime !== undefined ||
     input.payload.driverId !== undefined ||
     input.payload.routeEndMode !== undefined ||
+    input.payload.scheduledStartAt !== undefined ||
     input.payload.stops !== undefined
   );
 }

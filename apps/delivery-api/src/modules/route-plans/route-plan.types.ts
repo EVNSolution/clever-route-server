@@ -107,6 +107,7 @@ export type RoutePlanSummary = {
   name: string;
   planDate: string;
   routeEndMode: RoutePlanEndMode;
+  scheduledStartAt?: string | null;
   routeGroupingChild?: {
     groupingId: string;
     status: string;
@@ -261,6 +262,7 @@ export type SaveRoutePlanPayload = {
   driverId?: string | null | undefined;
   expectedUpdatedAt?: string | undefined;
   routeEndMode?: RoutePlanEndMode | undefined;
+  scheduledStartAt?: string | null | undefined;
   stops?: UpdateRoutePlanStopsPayload['stops'] | undefined;
 };
 
@@ -273,7 +275,7 @@ export type SaveRoutePlanInput = {
 };
 
 export type SaveRoutePlanOperation = {
-  name: 'departure_time' | 'driver' | 'options' | 'publish' | 'stops';
+  name: 'departure_time' | 'driver' | 'options' | 'publish' | 'scheduled_start' | 'stops';
   reason: string;
   status: 'applied' | 'skipped';
 };

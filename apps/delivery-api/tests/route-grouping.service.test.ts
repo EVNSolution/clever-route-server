@@ -125,6 +125,15 @@ describe('route grouping contracts', () => {
     expect(source).toContain('constraints: routeConstraints(loaded, candidate.depot)');
   });
 
+  test('leaves generated child start date and time unset until explicitly saved', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const constraintsBody = source.slice(source.indexOf('function routeConstraints('), source.indexOf('function routeMetrics('));
+
+    expect(constraintsBody).not.toContain('departureTime');
+    expect(constraintsBody).not.toContain('scheduledStartAt');
+    expect(source).toContain('scheduledStartAt: readScheduledStartAt(routePlan.constraints)');
+  });
+
   test('keeps draft saves child-only without root or branch rows', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain('assertChildOnlyDraftRouteEnvelope(routes)');

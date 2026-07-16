@@ -220,6 +220,51 @@ export function registerAdminRoutePlanRoutes(
   );
 
   app.patch<{ Body: unknown; Params: { routePlanId: string } }>(
+    '/admin/route-plans/:routePlanId/start-time',
+    async (request, reply) => {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+        log: request.log,
+        surface: 'admin_route_plans'
+      });
+      if (authenticated.status === 'unauthorized') {
+        return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+      }
+
+      let payload: { scheduledStartAt: string | null };
+      try {
+        payload = readUpdateRoutePlanStartTimePayload(request.body);
+      } catch {
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid route start date and time payload'));
+      }
+
+      try {
+        if (dependencies.routePlanService.saveRoutePlan === undefined) {
+          return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Route start date and time updates are unavailable'));
+        }
+        const result = await dependencies.routePlanService.saveRoutePlan({
+          appId: authenticated.appId,
+          payload,
+          routePlanId: request.params.routePlanId,
+          shopDomain: authenticated.shopDomain
+        });
+        if (result === null) {
+          return reply.code(404).send(errorResponse('NOT_FOUND', 'Route plan not found'));
+        }
+
+        return reply.code(200).send({
+          data: result.detail,
+          error: null
+        });
+      } catch (error) {
+        if (error instanceof RouteOptimizationJobActiveError) {
+          return reply.code(409).send(errorResponse(error.code, error.message));
+        }
+        throw error;
+      }
+    }
+  );
+
+  app.patch<{ Body: unknown; Params: { routePlanId: string } }>(
     '/admin/route-plans/:routePlanId/stops',
     async (request, reply) => {
       const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
@@ -445,6 +490,19 @@ function readUpdateRoutePlanDepartureTimePayload(value: unknown): { departureTim
     throw new Error('departureTime must use HH:mm');
   }
   return { departureTime };
+}
+
+function readUpdateRoutePlanStartTimePayload(value: unknown): { scheduledStartAt: string | null } {
+  const raw = requireObject(value).scheduledStartAt;
+  if (raw === null) return { scheduledStartAt: null };
+  if (typeof raw !== 'string' || !/T.+(?:Z|[+-]\d{2}:\d{2})$/iu.test(raw)) {
+    throw new Error('scheduledStartAt must include a date, time, and timezone');
+  }
+  const instant = new Date(raw);
+  if (Number.isNaN(instant.getTime())) {
+    throw new Error('scheduledStartAt must be a valid instant');
+  }
+  return { scheduledStartAt: instant.toISOString() };
 }
 
 function readUpdateRoutePlanOptionsPayload(value: unknown): UpdateRoutePlanOptionsPayload {
