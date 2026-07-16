@@ -270,6 +270,8 @@ model Shop {
   routeOptimizationJobs             RouteOptimizationJob[]
   deliveryCustomerProfiles          DeliveryCustomerProfile[]
   deliveryCustomerProfileOrderLinks DeliveryCustomerProfileOrderLink[]
+  destinationTips                   DestinationTip[]
+  destinationTipAudits              DestinationTipAudit[]
   routeGroupings                    RouteGrouping[]
   routeGroupingOrders               RouteGroupingOrder[]
   routeGroupingPolygons             RouteGroupingPolygon[]
@@ -719,6 +721,7 @@ model DeliveryStop {
   driverProofMedia              DriverProofMedia[]
   routeGroupingOrders           RouteGroupingOrder[]
   routeGroupingBranchOrderLocks RouteGroupingBranchOrderLock[]
+  sourcedDestinationTips        DestinationTip[]
 
   @@unique([shopId, orderId])
   @@index([shopId, deliveryDate, status])
@@ -740,6 +743,7 @@ model DeliveryCustomerProfile {
   mergedIntoProfile   DeliveryCustomerProfile?           @relation("DeliveryCustomerProfileMerge", fields: [mergedIntoProfileId], references: [id], onDelete: SetNull)
   mergedProfiles      DeliveryCustomerProfile[]          @relation("DeliveryCustomerProfileMerge")
   orderLinks          DeliveryCustomerProfileOrderLink[]
+  destinationTips     DestinationTip[]
   createdAt           DateTime                           @default(now()) @db.Timestamptz(6)
   updatedAt           DateTime                           @updatedAt @db.Timestamptz(6)
 
@@ -748,6 +752,49 @@ model DeliveryCustomerProfile {
   @@index([shopId, canonicalEmail])
   @@index([shopId, mergedIntoProfileId])
   @@map("delivery_customer_profiles")
+}
+
+model DestinationTip {
+  id                   String                  @id @default(uuid()) @db.Uuid
+  shopId               String                  @db.Uuid
+  shop                 Shop                    @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  destinationId        String                  @db.Uuid
+  destination          DeliveryCustomerProfile @relation(fields: [destinationId], references: [id], onDelete: Cascade)
+  sourceDeliveryStopId String?                 @db.Uuid
+  sourceDeliveryStop   DeliveryStop?           @relation(fields: [sourceDeliveryStopId], references: [id], onDelete: SetNull)
+  category             String                  @db.Text
+  severity             String                  @db.Text
+  title                String                  @db.Text
+  body                 String                  @db.Text
+  status               String                  @default("active") @db.Text
+  revision             Int                     @default(1)
+  createdBy            String                  @db.Text
+  updatedBy            String                  @db.Text
+  archivedAt           DateTime?               @db.Timestamptz(6)
+  createdAt            DateTime                @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime                @updatedAt @db.Timestamptz(6)
+  audits               DestinationTipAudit[]
+
+  @@index([shopId, destinationId, status, updatedAt])
+  @@index([shopId, sourceDeliveryStopId])
+  @@map("destination_tips")
+}
+
+model DestinationTipAudit {
+  id        String         @id @default(uuid()) @db.Uuid
+  shopId    String         @db.Uuid
+  shop      Shop           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  tipId     String         @db.Uuid
+  tip       DestinationTip @relation(fields: [tipId], references: [id], onDelete: Cascade)
+  revision  Int
+  action    String         @db.Text
+  snapshot  Json
+  actor     String         @db.Text
+  createdAt DateTime       @default(now()) @db.Timestamptz(6)
+
+  @@unique([tipId, revision])
+  @@index([shopId, createdAt])
+  @@map("destination_tip_audits")
 }
 
 model DeliveryCustomerProfileOrderLink {

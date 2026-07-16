@@ -11,7 +11,7 @@ info:
     admin clients, legacy Shopify compatibility routes, native driver mobile
     clients, and operational health checks. Human behavior notes live beside
     this file in docs/api/*.md.
-  x-contract-revision: 2026-07-14
+  x-contract-revision: 2026-07-16
   x-source-repository: EVNSolution/clever-route-server
 servers:
   - url: http://localhost:3000
@@ -29,6 +29,8 @@ tags:
     description: Operational readiness and liveness probes
   - name: Route Ops Admin UI
     description: Authenticated browser/admin UI APIs protected by same-origin session cookies and CSRF tokens
+  - name: DSV Control
+    description: DSV operator session, selected delivery context, and reusable destination tips
   - name: Shopify Embedded Admin
     description: Shopify embedded/admin app calls protected by Shopify session tokens
   - name: Shopify Webhooks
@@ -94,6 +96,168 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReadyResponse'
+  /api/dsv/auth/login:
+    post:
+      tags: [DSV Control]
+      summary: Start a shop-scoped DSV operator session
+      operationId: loginDsvOperator
+      x-source-file: src/routes/dsv-control.routes.ts
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, password, shopDomain]
+              properties:
+                id: { type: string }
+                password: { type: string, format: password }
+                shopDomain: { type: string }
+      responses:
+        '200':
+          description: Session cookie and CSRF token issued.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/dsv/auth/session:
+    get:
+      tags: [DSV Control]
+      summary: Read the active DSV operator session
+      operationId: getDsvSession
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [] }]
+      responses:
+        '200':
+          description: Active shop-scoped session.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/dsv/control/delivery-stops/{deliveryStopId}/context:
+    get:
+      tags: [DSV Control]
+      summary: Read current order items and reusable tips for a selected delivery stop
+      operationId: getDsvDeliveryStopContext
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [] }]
+      parameters:
+        - name: deliveryStopId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Selected delivery stop context.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+  /api/dsv/destinations/{destinationId}/tips:
+    get:
+      tags: [DSV Control]
+      summary: List reusable tips for one physical destination
+      operationId: listDsvDestinationTips
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [] }]
+      parameters:
+        - name: destinationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema: { type: string, enum: [active, archived], default: active }
+      responses:
+        '200':
+          description: Destination tips.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+    post:
+      tags: [DSV Control]
+      summary: Create a reviewed reusable destination tip
+      operationId: createDsvDestinationTip
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [] }]
+      parameters:
+        - name: destinationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [category, severity, title, body]
+              properties:
+                category: { type: string, enum: [access, parking, handoff, proof, temperature, safety, other] }
+                severity: { type: string, enum: [info, warning] }
+                title: { type: string, minLength: 1, maxLength: 80 }
+                body: { type: string, minLength: 1, maxLength: 1000 }
+                sourceDeliveryStopId: { type: [string, 'null'], format: uuid }
+      responses:
+        '201':
+          description: Tip created with revision 1 and audit history.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+  /api/dsv/destinations/{destinationId}/tips/{tipId}:
+    patch:
+      tags: [DSV Control]
+      summary: Update or archive a destination tip with optimistic concurrency
+      operationId: updateDsvDestinationTip
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [] }]
+      parameters:
+        - name: destinationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: tipId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision]
+              properties:
+                revision: { type: integer, minimum: 1 }
+                category: { type: string, enum: [access, parking, handoff, proof, temperature, safety, other] }
+                severity: { type: string, enum: [info, warning] }
+                title: { type: string, minLength: 1, maxLength: 80 }
+                body: { type: string, minLength: 1, maxLength: 1000 }
+                status: { type: string, enum: [active, archived] }
+      responses:
+        '200':
+          description: Updated tip and next revision.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '409':
+          description: TIP_REVISION_CONFLICT with current revision.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
   /shopify/auth/token-exchange:
     post:
       tags: [Shopify Embedded Admin]
@@ -951,6 +1115,11 @@ paths:
           $ref: '#/components/responses/Unauthorized'
 components:
   securitySchemes:
+    DsvSessionCookie:
+      type: apiKey
+      in: cookie
+      name: clever_dsv_admin
+      description: Shop-scoped HTTP-only DSV operator session cookie.
     ShopifySessionToken:
       type: http
       scheme: bearer
@@ -1067,6 +1236,12 @@ components:
             $ref: '#/components/schemas/ErrorEnvelope'
     Conflict:
       description: Request conflicts with existing route/order assignment state.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    DsvSchemaNotReady:
+      description: The DSV destination-tip migration has not been applied.
       content:
         application/json:
           schema:
