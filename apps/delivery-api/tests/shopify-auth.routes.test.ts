@@ -13,7 +13,7 @@ const storeAdminApiToken = (): Promise<{ appId: string; shopDomain: string; toke
   Promise.resolve({
     appId: 'clever',
     shopDomain: 'example.myshopify.com',
-    tokenScopes: ['read_orders', 'write_orders']
+    tokenScopes: ['read_orders', 'read_customers']
   });
 
 const exchangeSessionTokenForOfflineToken = (): Promise<{
@@ -28,7 +28,7 @@ const exchangeSessionTokenForOfflineToken = (): Promise<{
     expiresIn: 3600,
     refreshToken: 'shprt_refresh_token',
     refreshTokenExpiresIn: 7_776_000,
-    scope: 'read_orders,write_orders'
+    scope: 'read_orders,read_customers'
   });
 
 const baseDependencies: ShopifyAuthDependencies = {
@@ -83,7 +83,7 @@ describe('Shopify auth routes', () => {
           appId: 'clever',
           shopDomain: 'example.myshopify.com',
           tokenStored: true,
-          tokenScopes: ['read_orders', 'write_orders']
+          tokenScopes: ['read_orders', 'read_customers']
         },
         error: null
       });
@@ -102,7 +102,7 @@ describe('Shopify auth routes', () => {
           apiVersion: '2026-04',
           refreshToken: 'shprt_refresh_token',
           shopDomain: 'example.myshopify.com',
-          tokenScopes: ['read_orders', 'write_orders']
+          tokenScopes: ['read_orders', 'read_customers']
         })
       );
     } finally {
