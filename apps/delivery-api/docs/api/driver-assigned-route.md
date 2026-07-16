@@ -86,7 +86,10 @@ The query is scoped by all of the following:
 - bearer-token `shopDomain`
 - bearer-token `driverId`
 - optional `routeContext` / `RoutePlan.id`
-- assigned route status currently limited to `ASSIGNED`, `IN_PROGRESS`, and `OPTIMIZED`
+- route execution state is `READY` before start and `IN_PROGRESS` after the
+  driver's explicit start event; legacy pre-execution values remain readable
+- persisted `COMPLETED`/`CANCELLED` routes and legacy rows with a prior
+  `ROUTE_COMPLETED` event are excluded from operational assigned-route reads
 
 The response must not include other drivers' routes, unrelated orders, raw Shopify payloads, or admin-only planning metadata. Stop address, recipient, phone, and coordinates are intentionally returned only after the driver boundary is verified.
 

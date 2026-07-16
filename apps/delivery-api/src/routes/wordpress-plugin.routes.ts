@@ -7,7 +7,7 @@ import {
   WordPressPluginPairingExpiredError,
   WordPressPluginPairingInvalidError
 } from '../modules/wordpress-plugin/wordpress-plugin-auth.service.js';
-import { toInternalRoutePlanStatus } from '../modules/wordpress-plugin/wordpress-plugin-status.js';
+import { toInternalRoutePlanStatuses } from '../modules/wordpress-plugin/wordpress-plugin-status.js';
 import type {
   WordPressPluginConnectionContext,
   WordPressPluginMappingConfig,
@@ -713,7 +713,7 @@ function readRoutePlanFilters(query: unknown): WordPressPluginRoutePlanFilters |
   if ((from !== null && !isDateOnly(from)) || (to !== null && !isDateOnly(to))) {
     return null;
   }
-  if (status !== null && toInternalRoutePlanStatus(status) === null) {
+  if (status !== null && toInternalRoutePlanStatuses(status) === null) {
     return null;
   }
   if (driverId !== null && !isUuid(driverId)) {

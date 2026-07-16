@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaDriverAssignedRouteRepository } from '../src/modules/driver/driver-assigned-route.repository.js';
 import { computeRouteShapeSignature } from '../src/modules/route-plans/route-plan-geometry-cache.js';
+import { ROUTE_DRIVER_OPERATIONAL_STATUSES } from '../src/modules/route-plans/route-plan-lifecycle.js';
 
 const routePlanRecord = {
   createdAt: new Date('2026-05-12T06:00:00.000Z'),
@@ -232,7 +233,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
     expect(routePlanFindArgs?.where).toMatchObject({ id: 'wrong-route' });
   });
 
-  test('looks up only published routes for assigned-route visibility', async () => {
+  test('keeps ready and in-progress routes visible but excludes completed routes from operations', async () => {
     const { prisma } = createPrismaHarness({ routePlan: null });
     const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
 
@@ -244,7 +245,8 @@ describe('PrismaDriverAssignedRouteRepository', () => {
 
     expect(result).toEqual({ status: 'NO_ASSIGNED_ROUTE' });
     const routePlanFindArgs = prisma.routePlan.findFirst.mock.calls[0]?.[0];
-    expect(routePlanFindArgs?.where.status).toBe('PUBLISHED');
+    expect(routePlanFindArgs?.where.status).toEqual({ in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] });
+    expect(routePlanFindArgs?.where.driverEvents).toEqual({ none: { eventType: 'ROUTE_COMPLETED' } });
   });
 });
 
@@ -337,7 +339,7 @@ function createPrismaHarness(input: {
         findUnique: vi.fn(() => Promise.resolve({ id: 'driver-id', shopId: input.driverShopId ?? 'shop-id' }))
       },
       routePlan: {
-        findFirst: vi.fn((args: { where: { id?: string; status?: { in: string[] } } }) =>
+        findFirst: vi.fn((args: { where: { driverEvents?: unknown; id?: string; status?: { in: string[] } } }) =>
           Promise.resolve(args.where.id === 'wrong-route' ? null : input.routePlan === undefined ? routePlanRecord : input.routePlan)
         )
       },

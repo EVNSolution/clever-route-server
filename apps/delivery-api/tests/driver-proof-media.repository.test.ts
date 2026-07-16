@@ -8,6 +8,7 @@ import {
   PrismaDriverProofMediaRepository,
   type DriverProofMediaStorageBackend
 } from '../src/modules/driver/driver-proof-media.repository.js';
+import { ROUTE_DRIVER_VISIBLE_STATUSES } from '../src/modules/route-plans/route-plan-lifecycle.js';
 
 const uploadBytes = Buffer.from('synthetic-proof-photo');
 const now = new Date('2026-05-12T10:00:00.000Z');
@@ -40,7 +41,7 @@ describe('PrismaDriverProofMediaRepository', () => {
         driverId: 'driver-id',
         id: 'route-plan-id',
         shopId: 'shop-id',
-        status: 'PUBLISHED'
+        status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] }
       }
     });
     expect(prisma.routePlanStop.findUnique).toHaveBeenCalledWith({

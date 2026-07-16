@@ -8,6 +8,7 @@ import {
   type DriverRouteSessionRestoreSession
 } from './driver-route-session.types.js';
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
+import { ROUTE_ACTIVE_COMPATIBILITY_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 
 type DriverRouteSessionPrismaClient = Pick<PrismaClient, 'driver' | 'driverEvent' | 'routePlan' | 'shop'>;
 
@@ -38,7 +39,6 @@ type StartedRouteEventRecord = {
   routePlanId: string | null;
 };
 
-const ACTIVE_ROUTE_STATUSES = [RoutePlanStatus.PUBLISHED] as const;
 const TERMINAL_DELIVERY_STOP_STATUSES = new Set(['DELIVERED', 'FAILED']);
 
 const activeRoutePlanInclude = (driverId: string) => ({
@@ -129,7 +129,7 @@ export class PrismaDriverRouteSessionRepository {
       where: {
         driverId: input.driverId,
         shopId: input.shopId,
-        status: RoutePlanStatus.PUBLISHED
+        status: RoutePlanStatus.IN_PROGRESS
       }
     });
     const activeInProgressRoute = inProgressRoute as ActiveRoutePlanRecord | null;
@@ -158,7 +158,7 @@ export class PrismaDriverRouteSessionRepository {
         routePlan: {
           driverId: input.driverId,
           shopId: input.shopId,
-          status: { in: [...ACTIVE_ROUTE_STATUSES] }
+          status: { in: [...ROUTE_ACTIVE_COMPATIBILITY_STATUSES] }
         },
         routePlanId: { not: null },
         shopId: input.shopId

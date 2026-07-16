@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaDriverRouteAccessRepository } from '../src/modules/driver/driver-route-access.repository.js';
+import { ROUTE_DRIVER_OPERATIONAL_STATUSES } from '../src/modules/route-plans/route-plan-lifecycle.js';
 
 const routePlanId = '11111111-1111-4111-8111-111111111111';
 
@@ -87,7 +88,8 @@ describe('PrismaDriverRouteAccessRepository', () => {
       },
       where: {
         driver: { is: { authSubject: { not: null }, accountId: 'account-id', status: 'ACTIVE' } },
-        status: 'PUBLISHED'
+        driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
     expect(result.status).toBe('ROUTES_FOUND');

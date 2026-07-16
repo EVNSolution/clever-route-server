@@ -1,4 +1,4 @@
-import { Prisma, type PrismaClient } from '@prisma/client';
+import { DriverEventType, Prisma, type PrismaClient } from '@prisma/client';
 import {
   ITEM_REVIEW_REASONS,
   aggregateOrderItems,
@@ -39,6 +39,7 @@ import type {
   RoutePlanSummary
 } from './route-plan.types.js';
 import { applyCachedRouteGeometry, computeRouteShapeSignature, routeGeometryCacheUpsertArgs } from './route-plan-geometry-cache.js';
+import { isRouteReadyStatus, toRouteExecutionStatus } from './route-plan-lifecycle.js';
 import type { RouteGeometryCacheRead, RouteGeometryCacheWrite } from './route-plan-geometry-cache.js';
 import type { RoutePlanRepository } from './route-plan.service.js';
 import { readNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
@@ -75,6 +76,7 @@ type RoutePlanRecord = {
   depotLatitude: unknown;
   depotLongitude: unknown;
   driver?: RoutePlanDriverRecord | null;
+  driverEvents?: Array<{ eventType: string }>;
   driverId?: string | null;
   id: string;
   metrics: unknown;
@@ -285,31 +287,9 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         throw new RoutePlanPublishInvalidError('Cancelled routes cannot be published to drivers.');
       }
 
-      if (routePlan.driverId === null) {
-        throw new RoutePlanPublishInvalidError('Assign a driver before publishing this route.');
-      }
-
-      if (routePlanStopCount(routePlan) === 0) {
-        throw new RoutePlanPublishInvalidError('Add at least one stop before publishing this route.');
-      }
-
-      const currentItemSummary = aggregateOrderItems(
-        routeItemDtosFromRouteStops(routePlan.routeStops ?? []),
-        readString(objectOrNull(routePlan.metrics)?.itemFingerprint)
-      );
-      if (routePlan.status !== 'DRAFT' && currentItemSummary.changedSincePublish) {
-        throw new RoutePlanPublishInvalidError('Route items changed after publish. Review the route before publishing again.');
-      }
-
-      if (routePlan.status === 'DRAFT') {
+      if (isRouteReadyStatus(routePlan.status) && routePlan.status !== 'READY') {
         await tx.routePlan.update({
-          data: {
-            metrics: toJson({
-              ...objectOrEmpty(routePlan.metrics),
-              itemFingerprint: currentItemSummary.fingerprint
-            }),
-            status: 'PUBLISHED'
-          },
+          data: { status: 'READY' },
           where: { id: routePlan.id }
         });
       }
@@ -363,7 +343,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       const nextDepartureTime = hasDepartureTimePayload ? input.payload.departureTime ?? null : null;
       const willRepairDraftDepot =
         hasShapePayload &&
-        initialRouteStatus === 'DRAFT' &&
+        isRouteReadyStatus(initialRouteStatus) &&
         readDepotFromRoutePlan(routePlan) === null &&
         readDepotFromShopDefaults(shop) !== null;
       const hasRouteEndModeChange =
@@ -404,9 +384,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       }
 
       const operations: SaveRoutePlanOperation[] = [];
-      let driverId = routePlan.driverId ?? routePlan.driver?.id ?? null;
       const routeStatus = routePlan.status;
-      let stopCount = routePlan.routeStops?.length ?? 0;
 
       if (input.payload.routeEndMode !== undefined) {
         if (!hasRouteEndModeChange) {
@@ -571,7 +549,6 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             },
             where: { id: input.routePlanId }
           });
-          stopCount = deliveryStopIds.length;
           operations.push({ name: 'stops', reason: 'sequence_changed', status: 'applied' });
         }
       } else {
@@ -599,8 +576,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             data: { driverId: nextDriverId },
             where: { id: routePlan.id }
           });
-          driverId = nextDriverId;
-          operations.push({ name: 'driver', reason: driverId === null ? 'driver_cleared' : 'driver_changed', status: 'applied' });
+          operations.push({ name: 'driver', reason: nextDriverId === null ? 'driver_cleared' : 'driver_changed', status: 'applied' });
         }
       } else {
         operations.push({ name: 'driver', reason: 'not_provided', status: 'skipped' });
@@ -608,7 +584,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
 
       operations.push({
         name: 'publish',
-        reason: publishSkipReasonFromState(routeStatus, driverId, stopCount),
+        reason: publishSkipReasonFromState(routeStatus),
         status: 'skipped'
       });
 
@@ -749,7 +725,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           optimizerVersion: OPTIMIZER_VERSION,
           planDate,
           shopId: shop.id,
-          status: 'DRAFT'
+          status: 'READY'
         }
       });
 
@@ -849,7 +825,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           optimizerVersion: OPTIMIZER_VERSION,
           planDate,
           shopId: shop.id,
-          status: 'DRAFT'
+          status: 'READY'
         }
       });
 
@@ -1215,7 +1191,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     routePlan: RoutePlanRecord,
     shop: RoutePlanShopRecord
   ): Promise<RoutePlanRecord> {
-    if (routePlan.status !== 'DRAFT' || readDepotFromRoutePlan(routePlan) !== null) {
+    if (!isRouteReadyStatus(routePlan.status) || readDepotFromRoutePlan(routePlan) !== null) {
       return routePlan;
     }
 
@@ -1262,7 +1238,7 @@ async function repairDraftDepotIfMissingInTransaction(
   routePlan: RoutePlanRecord,
   shop: RoutePlanShopRecord
 ): Promise<RoutePlanRecord> {
-  if (routePlan.status !== 'DRAFT' || readDepotFromRoutePlan(routePlan) !== null) {
+  if (!isRouteReadyStatus(routePlan.status) || readDepotFromRoutePlan(routePlan) !== null) {
     return routePlan;
   }
 
@@ -1412,16 +1388,8 @@ function sameStopSequenceRecord(
   });
 }
 
-function publishSkipReasonFromState(status: string, driverId: string | null, stopCount: number): string {
-  if (status !== 'DRAFT') return `status_${status.toLowerCase()}`;
-  if (driverId === null) return 'missing_driver';
-  if (stopCount === 0) return 'missing_stops';
-  return 'explicit_publish_required';
-}
-
-function routePlanStopCount(routePlan: RoutePlanRecord): number {
-  const count = (routePlan as RoutePlanRecord & { _count?: { routeStops?: number } })._count?.routeStops;
-  return typeof count === 'number' ? count : routePlan.routeStops?.length ?? 0;
+function publishSkipReasonFromState(status: string): string {
+  return isRouteReadyStatus(status) ? 'route_ready' : `status_${status.toLowerCase()}`;
 }
 
 function assertNoDuplicateOrderInputs(orders: RoutePlanOrderInput[]): void {
@@ -1727,7 +1695,7 @@ function routeMetricsForStatus(input: {
   nextMetrics: Prisma.InputJsonObject;
   status: string;
 }): Prisma.InputJsonObject {
-  const publishedItemFingerprint = input.status === 'DRAFT'
+  const publishedItemFingerprint = isRouteReadyStatus(input.status)
     ? null
     : readString(objectOrNull(input.existingMetrics)?.itemFingerprint);
   if (publishedItemFingerprint === null) return input.nextMetrics;
@@ -1778,6 +1746,7 @@ async function collapseRouteGroupingSplitAfterChildDelete(
 
 function routePlanSummaryInclude() {
   return {
+    driverEvents: routeLifecycleEventQuery(),
     driver: {
       include: {
         _count: {
@@ -1825,6 +1794,7 @@ function routePlanSummaryInclude() {
 
 function routePlanInclude() {
   return {
+    driverEvents: routeLifecycleEventQuery(),
     driver: {
       include: {
         _count: {
@@ -1866,6 +1836,15 @@ function routePlanInclude() {
       }
     }
   } satisfies Prisma.RoutePlanInclude;
+}
+
+function routeLifecycleEventQuery() {
+  return {
+    orderBy: { occurredAt: 'desc' as const },
+    select: { eventType: true },
+    take: 1,
+    where: { eventType: { in: [DriverEventType.ROUTE_STARTED, DriverEventType.ROUTE_COMPLETED] } }
+  };
 }
 
 function shopDepotSelect() {
@@ -1971,7 +1950,7 @@ function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanO
     inputOrders === undefined
       ? routeItemDtosFromRouteStops(routePlan.routeStops ?? [])
       : inputOrders.flatMap((order) => order.items ?? []),
-    routePlan.status === 'DRAFT' ? null : readString(objectOrNull(routePlan.metrics)?.itemFingerprint)
+    isRouteReadyStatus(routePlan.status) ? null : readString(objectOrNull(routePlan.metrics)?.itemFingerprint)
   );
   return {
     createdAt: routePlan.createdAt.toISOString(),
@@ -1993,7 +1972,7 @@ function toRoutePlanSummary(routePlan: RoutePlanRecord, inputOrders?: RoutePlanO
     routeEndMode: readRouteEndMode(routePlan.constraints),
     routeGroupingChild: toRouteGroupingChildSummary(routePlan.routeGroupingChildVersions),
     routeMetrics,
-    status: routePlan.status,
+    status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
     stopsCount: metrics.stopsCount,
     updatedAt: routePlan.updatedAt.toISOString()
   };

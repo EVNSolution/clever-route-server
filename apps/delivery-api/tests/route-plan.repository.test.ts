@@ -523,7 +523,7 @@ describe('PrismaRoutePlanRepository', () => {
     expect(updateArg?.data.metrics.stopsCount).toBe(2);
   });
 
-  test('preserves published item fingerprint when reordering assigned route stops', async () => {
+  test('preserves the execution fingerprint when reordering an in-progress route', async () => {
     const { prisma } = createPrismaHarness({
       routePlanFindFirst: routePlanRecord({
         metrics: {
@@ -533,7 +533,7 @@ describe('PrismaRoutePlanRepository', () => {
           missingCoordinates: 0,
           stopsCount: 2
         },
-        status: 'PUBLISHED'
+        status: 'IN_PROGRESS'
       })
     });
     const repository = new PrismaRoutePlanRepository(
@@ -581,12 +581,12 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
-  test('publishes a driver-assigned draft route for driver app visibility', async () => {
+  test('normalizes a legacy draft route to Ready without driver or stop prerequisites', async () => {
     const { prisma } = createPrismaHarness();
     prisma.routePlan.findFirst
       .mockResolvedValueOnce({
-        _count: { routeStops: 2 },
-        driverId: 'driver-id',
+        _count: { routeStops: 0 },
+        driverId: null,
         id: 'route-plan-id',
         status: 'DRAFT'
       })
@@ -594,7 +594,7 @@ describe('PrismaRoutePlanRepository', () => {
         createdAt: new Date('2026-05-07T12:30:00.000Z'),
         depotLatitude: '43.6532',
         depotLongitude: '-79.3832',
-        driverId: 'driver-id',
+        driverId: null,
         id: 'route-plan-id',
         metrics: {
           deliveryAreas: ['Mississauga'],
@@ -605,7 +605,7 @@ describe('PrismaRoutePlanRepository', () => {
         name: 'CLEVER route draft',
         planDate: new Date('2026-05-08T00:00:00.000Z'),
         routeStops: [],
-        status: 'PUBLISHED',
+        status: 'READY',
         updatedAt: new Date('2026-05-07T12:30:00.000Z')
       });
     const repository = new PrismaRoutePlanRepository(
@@ -617,17 +617,17 @@ describe('PrismaRoutePlanRepository', () => {
       shopDomain: 'example.myshopify.com'
     });
 
-    expect(result?.routePlan.status).toBe('PUBLISHED');
-    expect(hasRouteStatusUpdate(prisma.routePlan.update.mock.calls, 'route-plan-id', 'PUBLISHED')).toBe(true);
+    expect(result?.routePlan.status).toBe('READY');
+    expect(hasRouteStatusUpdate(prisma.routePlan.update.mock.calls, 'route-plan-id', 'READY')).toBe(true);
   });
 
-  test('rejects publishing a route before a driver is assigned', async () => {
+  test('rejects the legacy publish endpoint only for cancelled routes', async () => {
     const { prisma } = createPrismaHarness();
     prisma.routePlan.findFirst.mockResolvedValueOnce({
-      _count: { routeStops: 2 },
+      _count: { routeStops: 0 },
       driverId: null,
       id: 'route-plan-id',
-      status: 'DRAFT'
+      status: 'CANCELLED'
     });
     const repository = new PrismaRoutePlanRepository(
       prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
@@ -641,7 +641,7 @@ describe('PrismaRoutePlanRepository', () => {
     ).rejects.toBeInstanceOf(RoutePlanPublishInvalidError);
 
     expect(prisma.routePlan.update).not.toHaveBeenCalledWith(expect.objectContaining({
-      data: { status: 'PUBLISHED' }
+      data: { status: 'READY' }
     }));
   });
 
@@ -970,7 +970,7 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
-  test('saves return-to-depot route mode after route publishing', async () => {
+  test('saves return-to-depot route mode after route execution starts', async () => {
     const { prisma } = createPrismaHarness({
       shop: {
         defaultDepotAddress: '4475 Chesswood Dr North York, ON M3J 2C3',
@@ -985,7 +985,7 @@ describe('PrismaRoutePlanRepository', () => {
         depotLatitude: '43.6532',
         depotLongitude: '-79.3832',
         id: 'route-plan-id',
-        status: 'PUBLISHED'
+        status: 'IN_PROGRESS'
       })
       .mockResolvedValueOnce({
         createdAt: new Date('2026-05-07T12:30:00.000Z'),
@@ -1002,7 +1002,7 @@ describe('PrismaRoutePlanRepository', () => {
         name: 'Published return route',
         planDate: new Date('2026-05-08T00:00:00.000Z'),
         routeStops: [],
-        status: 'PUBLISHED',
+        status: 'IN_PROGRESS',
         updatedAt: new Date('2026-05-07T12:30:00.000Z')
       });
     const repository = new PrismaRoutePlanRepository(
@@ -1016,7 +1016,7 @@ describe('PrismaRoutePlanRepository', () => {
     });
 
     expect(detail?.routePlan.routeEndMode).toBe('RETURN_TO_DEPOT');
-    expect(detail?.routePlan.status).toBe('PUBLISHED');
+    expect(detail?.routePlan.status).toBe('IN_PROGRESS');
     expect(prisma.routePlan.update).toHaveBeenCalledWith({
       data: {
         constraints: {
@@ -1034,7 +1034,7 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
-  test('aggregate save applies changed fields but keeps draft routes unpublished', async () => {
+  test('aggregate save applies changed fields while keeping a route Ready', async () => {
     const firstDuplicateItem = orderItemRecord({ quantity: 1 });
     const secondDuplicateItem = orderItemRecord({ quantity: 2 });
     const duplicateItemOrders = [
@@ -1058,7 +1058,7 @@ describe('PrismaRoutePlanRepository', () => {
       constraints: { routeEndMode: 'END_AT_LAST_STOP' },
       driverId: null,
       routeStops: [],
-      status: 'DRAFT',
+      status: 'READY',
       updatedAt: new Date('2026-05-07T12:30:00.000Z')
     });
     const savedRoute = routePlanRecord({
@@ -1071,7 +1071,7 @@ describe('PrismaRoutePlanRepository', () => {
         stopsCount: 2
       },
       routeStops: [],
-      status: 'DRAFT',
+      status: 'READY',
       updatedAt: new Date('2026-05-07T12:31:00.000Z')
     });
     prisma.routePlan.findFirst
@@ -1097,12 +1097,12 @@ describe('PrismaRoutePlanRepository', () => {
 
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expectRoutePlanVersionClaim(prisma, '2026-05-07T12:30:00.000Z');
-    expect(result?.detail.routePlan.status).toBe('DRAFT');
+    expect(result?.detail.routePlan.status).toBe('READY');
     expect(result?.operations).toEqual([
       { name: 'options', reason: 'route_end_mode_changed', status: 'applied' },
       { name: 'stops', reason: 'sequence_changed', status: 'applied' },
       { name: 'driver', reason: 'driver_changed', status: 'applied' },
-      { name: 'publish', reason: 'explicit_publish_required', status: 'skipped' }
+      { name: 'publish', reason: 'route_ready', status: 'skipped' }
     ]);
     expect(routePlanStopCreateMany).toHaveBeenCalledWith({
       data: [
@@ -1117,18 +1117,18 @@ describe('PrismaRoutePlanRepository', () => {
     expect(hasRouteStatusUpdate(prisma.routePlan.update.mock.calls, 'route-plan-id', 'PUBLISHED')).toBe(false);
   });
 
-  test('aggregate save applies route options after publishing without republishing', async () => {
+  test('aggregate save applies route options to an in-progress route without changing lifecycle', async () => {
     const { prisma, routePlanStopCreateMany } = createPrismaHarness();
     const assignedRoute = routePlanRecord({
       constraints: { routeEndMode: 'END_AT_LAST_STOP' },
       driverId: 'driver-id',
-      status: 'PUBLISHED',
+      status: 'IN_PROGRESS',
       updatedAt: new Date('2026-05-07T12:30:00.000Z')
     });
     const savedRoute = routePlanRecord({
       constraints: { routeEndMode: 'RETURN_TO_DEPOT' },
       driverId: 'driver-id',
-      status: 'PUBLISHED',
+      status: 'IN_PROGRESS',
       updatedAt: new Date('2026-05-07T12:31:00.000Z')
     });
     prisma.routePlan.findFirst
@@ -1149,12 +1149,12 @@ describe('PrismaRoutePlanRepository', () => {
 
     expectRoutePlanVersionClaim(prisma, '2026-05-07T12:30:00.000Z');
     expect(result?.detail.routePlan.routeEndMode).toBe('RETURN_TO_DEPOT');
-    expect(result?.detail.routePlan.status).toBe('PUBLISHED');
+    expect(result?.detail.routePlan.status).toBe('IN_PROGRESS');
     expect(result?.operations).toEqual([
       { name: 'options', reason: 'route_end_mode_changed', status: 'applied' },
       { name: 'stops', reason: 'not_provided', status: 'skipped' },
       { name: 'driver', reason: 'not_provided', status: 'skipped' },
-      { name: 'publish', reason: 'status_published', status: 'skipped' }
+      { name: 'publish', reason: 'status_in_progress', status: 'skipped' }
     ]);
     expect(routePlanStopCreateMany).not.toHaveBeenCalled();
     expect(prisma.routePlan.update).toHaveBeenCalledWith({
@@ -1174,7 +1174,7 @@ describe('PrismaRoutePlanRepository', () => {
     });
   });
 
-  test('aggregate save preserves published item fingerprint when assigned route stops are saved', async () => {
+  test('aggregate save preserves the execution fingerprint when in-progress route stops are saved', async () => {
     const { prisma } = createPrismaHarness();
     const assignedRoute = routePlanRecord({
       driverId: 'driver-id',
@@ -1185,7 +1185,7 @@ describe('PrismaRoutePlanRepository', () => {
         missingCoordinates: 0,
         stopsCount: 2
       },
-      status: 'PUBLISHED',
+      status: 'IN_PROGRESS',
       updatedAt: new Date('2026-05-07T12:30:00.000Z')
     });
     prisma.routePlan.findFirst
@@ -1240,7 +1240,7 @@ describe('PrismaRoutePlanRepository', () => {
     const { prisma, routePlanStopCreateMany } = createPrismaHarness();
     const assignedRoute = routePlanRecord({
       driverId: 'driver-id',
-      status: 'PUBLISHED',
+      status: 'IN_PROGRESS',
       updatedAt: new Date('2026-05-07T12:30:00.000Z')
     });
     prisma.routePlan.findFirst
@@ -1266,7 +1266,7 @@ describe('PrismaRoutePlanRepository', () => {
       { name: 'options', reason: 'not_provided', status: 'skipped' },
       { name: 'stops', reason: 'not_provided', status: 'skipped' },
       { name: 'driver', reason: 'not_provided', status: 'skipped' },
-      { name: 'publish', reason: 'status_published', status: 'skipped' }
+      { name: 'publish', reason: 'status_in_progress', status: 'skipped' }
     ]);
   });
 
@@ -1588,7 +1588,7 @@ function createPrismaHarness(input: {
           },
           name: 'CLEVER route draft',
           planDate: new Date('2026-05-08T00:00:00.000Z'),
-          status: 'DRAFT',
+          status: 'READY',
           updatedAt: new Date('2026-05-07T12:30:00.000Z')
         })
       ),
@@ -1711,7 +1711,7 @@ function routePlanRecord(input: {
     name: 'CLEVER route draft',
     planDate: new Date('2026-05-08T00:00:00.000Z'),
     routeStops: input.routeStops ?? [],
-    status: input.status ?? 'DRAFT',
+    status: input.status ?? 'READY',
     updatedAt: input.updatedAt ?? new Date('2026-05-07T12:30:00.000Z')
   };
 }

@@ -58,12 +58,37 @@ const driverAccountNameMigrationPath = new URL(
   '../prisma/migrations/20260715083000_add_driver_account_name/migration.sql',
   import.meta.url
 );
+const readyRoutePlanStatusMigrationPath = new URL(
+  '../prisma/migrations/20260716143000_add_ready_route_plan_status/migration.sql',
+  import.meta.url
+);
+const readyRouteDefaultsMigrationPath = new URL(
+  '../prisma/migrations/20260716143100_set_ready_route_defaults/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
 }
 
 describe('Prisma schema', () => {
+  test('defines Ready as the initial route execution state with an additive migration', async () => {
+    const schema = await readSchema();
+    const migration = await readFile(readyRoutePlanStatusMigrationPath, 'utf8');
+    const defaultsMigration = await readFile(readyRouteDefaultsMigrationPath, 'utf8');
+
+    const routePlanStatus = /enum RoutePlanStatus \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+    for (const status of ['READY', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED']) {
+      expect(routePlanStatus).toContain(status);
+    }
+    expect(routePlanStatus).toMatch(/DRAFT[\s\S]*PUBLISHED[\s\S]*CANCELLED[\s\S]*OPTIMIZED[\s\S]*ASSIGNED[\s\S]*IN_PROGRESS[\s\S]*COMPLETED[\s\S]*READY/u);
+    expect(schema).toMatch(/model RoutePlan \{[\s\S]*status\s+RoutePlanStatus\s+@default\(READY\)/u);
+    expect(schema).toMatch(/model RouteGrouping \{[\s\S]*status\s+RouteGroupingStatus\s+@default\(READY\)/u);
+    expect(migration).toContain(`ALTER TYPE "RoutePlanStatus" ADD VALUE IF NOT EXISTS 'READY'`);
+    expect(defaultsMigration).toContain('ALTER TABLE "route_plans" ALTER COLUMN "status" SET DEFAULT \'READY\'');
+    expect(defaultsMigration).toContain('ALTER TABLE "route_groupings" ALTER COLUMN "status" SET DEFAULT \'READY\'');
+  });
+
   test('defines shop-level encrypted Shopify Admin API token storage', async () => {
     const schema = await readSchema();
 

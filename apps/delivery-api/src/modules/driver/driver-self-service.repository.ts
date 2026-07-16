@@ -1,4 +1,4 @@
-import { DriverEventType, RoutePlanStatus } from '@prisma/client';
+import { DriverEventType } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 
@@ -21,6 +21,7 @@ import {
 } from './driver-self-service.types.js';
 import { coerceIanaTimezone } from './driver-route-timezone.js';
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
+import { ROUTE_DRIVER_VISIBLE_STATUSES, toRouteExecutionStatus } from '../route-plans/route-plan-lifecycle.js';
 
 export type DriverSelfServicePrismaClient = Pick<
   PrismaClient,
@@ -38,6 +39,7 @@ type ScopedDriverRecord = {
 type RouteProgressRecord = {
   driverEvents: { eventType: string; occurredAt: Date }[];
   routeStops: { deliveryStop: { status: string } }[];
+  status: string;
 };
 
 type RoutePlanHistoryRecord = RouteProgressRecord & {
@@ -52,7 +54,6 @@ type RoutePlanHistoryRecord = RouteProgressRecord & {
 const DEFAULT_ROUTE_HISTORY_LIMIT = 25;
 const ROUTE_HISTORY_LIMIT_PLUS_ONE = DEFAULT_ROUTE_HISTORY_LIMIT + 1;
 const ROUTE_HISTORY_FETCH_LIMIT = ROUTE_HISTORY_LIMIT_PLUS_ONE * 4;
-const SUPPORTED_ROUTE_STATUSES: RoutePlanStatus[] = [RoutePlanStatus.PUBLISHED];
 const TERMINAL_STOP_STATUSES = new Set(['DELIVERED', 'FAILED', 'SKIPPED', 'CANCELLED']);
 const ROUTE_HISTORY_EVENT_TYPES: DriverEventType[] = [DriverEventType.ROUTE_STARTED, DriverEventType.ROUTE_COMPLETED];
 
@@ -77,7 +78,7 @@ export class PrismaDriverSelfServiceRepository {
             ...(input.to === null ? {} : { lte: input.to })
           },
           shopId: scoped.shop.id,
-          status: { in: [...SUPPORTED_ROUTE_STATUSES] },
+          status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] },
           ...(cursor === null ? {} : {
             OR: [
               { planDate: { gt: cursor.planDate } },
@@ -117,7 +118,7 @@ export class PrismaDriverSelfServiceRepository {
         driverId: input.driverId,
         id: input.routePlanId,
         shopId: scoped.shop.id,
-        status: { in: [...SUPPORTED_ROUTE_STATUSES] }
+        status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] }
       }
     });
 
@@ -202,7 +203,7 @@ export class PrismaDriverSelfServiceRepository {
         driverId: input.driverId,
         planDate: { gte: start, lt: end },
         shopId: scoped.shop.id,
-        status: RoutePlanStatus.PUBLISHED
+        status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] }
       }
     });
 
@@ -314,6 +315,9 @@ function toRouteHistoryItem(routePlan: RoutePlanHistoryRecord): DriverRouteHisto
 }
 
 function toHistoryStatus(routePlan: RouteProgressRecord): DriverRouteHistoryStatus {
+  const executionStatus = toRouteExecutionStatus(routePlan.status);
+  if (executionStatus === 'COMPLETED') return 'completed';
+  if (executionStatus === 'IN_PROGRESS') return 'active';
   if (hasRouteCompleted(routePlan)) return 'completed';
   if (hasRouteStarted(routePlan)) return 'active';
   return 'pending';

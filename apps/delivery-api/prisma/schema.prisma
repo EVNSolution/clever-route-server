@@ -87,17 +87,18 @@ enum OrderDeliveryFactReadiness {
 }
 
 enum RoutePlanStatus {
+  /// Legacy DB value retained for backward-compatible reads; app code must not create it.
   DRAFT
+  /// Legacy DB value retained for backward-compatible reads; app code must not create it.
   PUBLISHED
   CANCELLED
   /// Legacy DB value retained so prisma db push stays non-destructive; app code must not create it.
   OPTIMIZED
   /// Legacy DB value retained so prisma db push stays non-destructive; app code must not create it.
   ASSIGNED
-  /// Legacy DB value retained so prisma db push stays non-destructive; app code must not create it.
   IN_PROGRESS
-  /// Legacy DB value retained so prisma db push stays non-destructive; app code must not create it.
   COMPLETED
+  READY
 }
 
 enum RouteOptimizationJobStatus {
@@ -172,10 +173,11 @@ enum DriverAccountDeletionRequestStatus {
 }
 
 enum RouteGroupingStatus {
+  /// Legacy DB value retained for backward-compatible reads; app code must not create it.
   DRAFT
+  /// Legacy DB value retained for backward-compatible reads; app code must not create it.
   PUBLISHED
   CANCELLED
-  /// Legacy DB value retained so prisma db push stays non-destructive; app code must not create it.
   READY
   /// Legacy DB value retained so prisma db push stays non-destructive; app code must not create it.
   CHANGED
@@ -873,7 +875,7 @@ model RoutePlan {
   shop                            Shop                             @relation(fields: [shopId], references: [id], onDelete: Cascade)
   name                            String                           @db.Text
   planDate                        DateTime                         @db.Date
-  status                          RoutePlanStatus                  @default(DRAFT)
+  status                          RoutePlanStatus                  @default(READY)
   driverId                        String?                          @db.Uuid
   driver                          Driver?                          @relation(fields: [driverId], references: [id], onDelete: SetNull)
   vehicleId                       String?                          @db.Uuid
@@ -1148,7 +1150,7 @@ model RouteGrouping {
   routeScopeKey        String?                          @db.Text
   serviceType          String?                          @db.Text
   deliverySession      String?                          @db.Text
-  status               RouteGroupingStatus              @default(DRAFT)
+  status               RouteGroupingStatus              @default(READY)
   currentVersion       Int                              @default(1)
   createdBy            String?                          @db.Text
   createdAt            DateTime                         @default(now()) @db.Timestamptz(6)

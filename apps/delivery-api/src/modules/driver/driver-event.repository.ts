@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
+import { ROUTE_ACTIVE_COMPATIBILITY_STATUSES, ROUTE_READY_COMPATIBILITY_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 
 export type RecordDriverEventInput = {
   clientEventId: string | null;
@@ -117,13 +118,19 @@ async function validateDriverEventStateContext(
     return;
   }
 
-  if (input.eventType === 'ROUTE_STARTED' || input.eventType === 'ROUTE_COMPLETED') {
+  if (input.eventType === 'ROUTE_STARTED') {
     const routePlanId = requireRoutePlanId(input);
-    await requireOwnedRoutePlan(prisma, {
+    await requireStartableOwnedRoutePlan(prisma, {
       driverId: input.driverId,
       routePlanId,
       shopId
     });
+    return;
+  }
+
+  if (input.eventType === 'ROUTE_COMPLETED') {
+    const routePlanId = requireRoutePlanId(input);
+    await requireOwnedRoutePlan(prisma, { driverId: input.driverId, routePlanId, shopId });
   }
 }
 
@@ -157,11 +164,49 @@ async function applyDriverEventStateTransition(
   }
 
   if (input.eventType === 'ROUTE_STARTED') {
+    await prisma.routePlan.updateMany({
+      data: { status: 'IN_PROGRESS' },
+      where: {
+        driverId: input.driverId,
+        driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        id: requireRoutePlanId(input),
+        shopId,
+        status: { in: [...ROUTE_READY_COMPATIBILITY_STATUSES] }
+      }
+    });
     return;
   }
 
   if (input.eventType === 'ROUTE_COMPLETED') {
+    await prisma.routePlan.updateMany({
+      data: { status: 'COMPLETED' },
+      where: {
+        driverId: input.driverId,
+        id: requireRoutePlanId(input),
+        shopId,
+        status: { not: 'CANCELLED' }
+      }
+    });
     return;
+  }
+}
+
+async function requireStartableOwnedRoutePlan(
+  prisma: DriverEventTransactionClient,
+  input: { driverId: string; routePlanId: string; shopId: string }
+): Promise<void> {
+  const routePlan = await prisma.routePlan.findFirst({
+    select: { id: true },
+    where: {
+      driverId: input.driverId,
+      driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+      id: input.routePlanId,
+      shopId: input.shopId,
+      status: { in: [...ROUTE_ACTIVE_COMPATIBILITY_STATUSES] }
+    }
+  });
+  if (routePlan === null) {
+    throw new DriverEventScopeError('Completed or unavailable routes cannot be started');
   }
 }
 

@@ -1,3 +1,4 @@
+import type { RoutePlanStatus } from '@prisma/client';
 import type {
   WordPressPluginRoutePlanStatus,
   WordPressPluginStopStatus
@@ -5,8 +6,13 @@ import type {
 
 const routePlanStatusMap = {
   CANCELLED: 'cancelled',
-  DRAFT: 'draft',
-  PUBLISHED: 'published'
+  READY: 'published',
+  IN_PROGRESS: 'published',
+  COMPLETED: 'published',
+  DRAFT: 'published',
+  PUBLISHED: 'published',
+  OPTIMIZED: 'published',
+  ASSIGNED: 'published'
 } as const satisfies Record<string, WordPressPluginRoutePlanStatus>;
 
 const stopStatusMap = {
@@ -20,18 +26,8 @@ const stopStatusMap = {
   SKIPPED: 'skipped'
 } as const satisfies Record<string, WordPressPluginStopStatus>;
 
-const internalRoutePlanStatusMap: Record<WordPressPluginRoutePlanStatus, keyof typeof routePlanStatusMap> = {
-  cancelled: 'CANCELLED',
-  draft: 'DRAFT',
-  published: 'PUBLISHED'
-};
-
-const legacyInternalRoutePlanStatusMap: Record<string, keyof typeof routePlanStatusMap> = {
-  assigned: 'PUBLISHED',
-  completed: 'PUBLISHED',
-  in_progress: 'PUBLISHED',
-  optimized: 'PUBLISHED'
-};
+const readyCompatibilityStatuses = ['READY', 'DRAFT', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED'] as const satisfies readonly RoutePlanStatus[];
+const visibleCompatibilityStatuses = [...readyCompatibilityStatuses, 'IN_PROGRESS', 'COMPLETED'] as const satisfies readonly RoutePlanStatus[];
 
 export function toWordPressRoutePlanStatus(status: string): WordPressPluginRoutePlanStatus {
   const mapped = routePlanStatusMap[status as keyof typeof routePlanStatusMap];
@@ -41,8 +37,13 @@ export function toWordPressRoutePlanStatus(status: string): WordPressPluginRoute
   return mapped;
 }
 
-export function toInternalRoutePlanStatus(status: string): string | null {
-  return internalRoutePlanStatusMap[status as WordPressPluginRoutePlanStatus] ?? legacyInternalRoutePlanStatusMap[status] ?? null;
+export function toInternalRoutePlanStatuses(status: string): readonly RoutePlanStatus[] | null {
+  if (status === 'cancelled') return ['CANCELLED'];
+  if (status === 'published') return visibleCompatibilityStatuses;
+  if (status === 'in_progress') return ['IN_PROGRESS'];
+  if (status === 'completed') return ['COMPLETED'];
+  if (status === 'draft' || status === 'assigned' || status === 'optimized') return readyCompatibilityStatuses;
+  return null;
 }
 
 export function toWordPressStopStatus(status: string): WordPressPluginStopStatus {

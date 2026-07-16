@@ -11,7 +11,7 @@ const routeGroup = {
   currentVersion: 1,
   dateRangeEnd: '2026-06-27',
   dateRangeStart: '2026-06-25',
-  displayStatus: 'DRAFT' as const,
+  displayStatus: 'READY' as const,
   id: 'route-group-id',
   linkedInventoryId: 'inventory-id',
   name: 'June delivery group',

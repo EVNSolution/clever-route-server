@@ -1,7 +1,7 @@
 import type { RoutePlanDepotInput, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteStopPoint, RoutePlanSummary } from '../route-plans/route-plan.types.js';
 
-export type RouteGroupingDisplayStatus = 'DRAFT' | 'PUBLISHED' | 'CANCELLED';
-export type RouteGroupingChildDisplayStatus = 'DRAFT' | 'PUBLISHED' | 'CANCELLED';
+export type RouteGroupingDisplayStatus = 'READY' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+export type RouteGroupingChildDisplayStatus = RouteGroupingDisplayStatus;
 export type RouteGroupingNotificationStatus = 'NOT_REQUIRED' | 'PENDING' | 'SENT' | 'FAILED';
 
 export type RouteGroupingBranchDto = {
