@@ -20,6 +20,7 @@ import type {
   StoreDriverProofMediaResult
 } from './driver-proof-media.types.js';
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
+import { ROUTE_DRIVER_VISIBLE_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 
 type DriverProofMediaPrismaClient = Pick<
   PrismaClient,
@@ -147,7 +148,7 @@ export class PrismaDriverProofMediaRepository {
         driverId: input.driverId,
         id: input.routePlanId,
         shopId: shop.id,
-        status: 'PUBLISHED'
+        status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] }
       }
     });
     if (routePlan === null) {

@@ -134,7 +134,7 @@ describe('PrismaDriverEventRepository', () => {
     expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
   });
 
-  test('records route start without changing persisted route lifecycle', async () => {
+  test('moves a ready route to in progress when the driver starts it', async () => {
     const { prisma } = createPrismaHarness();
     const repository = new PrismaDriverEventRepository(prisma as never);
 
@@ -144,7 +144,16 @@ describe('PrismaDriverEventRepository', () => {
       routePlanId: 'route-plan-id'
     }));
 
-    expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
+    expect(prisma.routePlan.updateMany).toHaveBeenCalledWith({
+      data: { status: 'IN_PROGRESS' },
+      where: {
+        driverId: 'driver-id',
+        driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        id: 'route-plan-id',
+        shopId: 'shop-id',
+        status: { in: ['READY', 'DRAFT', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED'] }
+      }
+    });
   });
 
   test('rejects route start events outside the authenticated route scope before writing', async () => {
@@ -159,9 +168,19 @@ describe('PrismaDriverEventRepository', () => {
 
     expect(prisma.driverEvent.create).not.toHaveBeenCalled();
     expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
+    expect(prisma.routePlan.findFirst).toHaveBeenCalledWith({
+      select: { id: true },
+      where: {
+        driverId: 'driver-id',
+        driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        id: 'foreign-route-plan-id',
+        shopId: 'shop-id',
+        status: { in: ['IN_PROGRESS', 'READY', 'DRAFT', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED'] }
+      }
+    });
   });
 
-  test('records route completion without changing persisted route lifecycle', async () => {
+  test('moves the route to completed when the driver completes it', async () => {
     const { prisma } = createPrismaHarness({
       routeStops: [
         { deliveryStop: { status: 'DELIVERED' } },
@@ -176,10 +195,18 @@ describe('PrismaDriverEventRepository', () => {
       routePlanId: 'route-plan-id'
     }));
 
-    expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
+    expect(prisma.routePlan.updateMany).toHaveBeenCalledWith({
+      data: { status: 'COMPLETED' },
+      where: {
+        driverId: 'driver-id',
+        id: 'route-plan-id',
+        shopId: 'shop-id',
+        status: { not: 'CANCELLED' }
+      }
+    });
   });
 
-  test('does not complete a route when ROUTE_COMPLETED arrives before all stops are terminal', async () => {
+  test('treats explicit driver completion as authoritative even when a stop is not terminal', async () => {
     const { prisma } = createPrismaHarness({
       routeStops: [
         { deliveryStop: { status: 'DELIVERED' } },
@@ -194,7 +221,15 @@ describe('PrismaDriverEventRepository', () => {
       routePlanId: 'route-plan-id'
     }));
 
-    expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
+    expect(prisma.routePlan.updateMany).toHaveBeenCalledWith({
+      data: { status: 'COMPLETED' },
+      where: {
+        driverId: 'driver-id',
+        id: 'route-plan-id',
+        shopId: 'shop-id',
+        status: { not: 'CANCELLED' }
+      }
+    });
   });
 
   test('keeps route lifecycle unchanged when final terminal stop arrives after route completion event', async () => {
@@ -216,7 +251,7 @@ describe('PrismaDriverEventRepository', () => {
     expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
   });
 
-  test('records zero-stop ROUTE_COMPLETED events without marking the route completed', async () => {
+  test('allows an explicitly completed zero-stop child route to complete', async () => {
     const { prisma } = createPrismaHarness({ routeStops: [] });
     const repository = new PrismaDriverEventRepository(prisma as never);
 
@@ -227,7 +262,15 @@ describe('PrismaDriverEventRepository', () => {
     }))).resolves.toEqual({ duplicate: false, eventId: 'driver-event-id' });
 
     expect(prisma.driverEvent.create).toHaveBeenCalledOnce();
-    expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
+    expect(prisma.routePlan.updateMany).toHaveBeenCalledWith({
+      data: { status: 'COMPLETED' },
+      where: {
+        driverId: 'driver-id',
+        id: 'route-plan-id',
+        shopId: 'shop-id',
+        status: { not: 'CANCELLED' }
+      }
+    });
   });
 
   test('acknowledges duplicate client events without repeating state transitions', async () => {

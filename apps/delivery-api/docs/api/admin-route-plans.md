@@ -2,7 +2,20 @@
 
 Purpose: the Shopify embedded UI saves selected delivery orders into the delivery
 server as the route/order/delivery source of truth. The first MVP optimizer keeps
-the user-selected order sequence and stores a `DRAFT` route plan.
+the user-selected order sequence and stores a route plan that is immediately
+`READY`.
+
+## Route lifecycle
+
+- A direct route or route-group child is `READY` as soon as it is created.
+- Driver assignment, stop count, optimization, and the legacy publish endpoint
+  do not gate or advance lifecycle state.
+- An authenticated driver's `ROUTE_STARTED` event moves the assigned route to
+  `IN_PROGRESS`.
+- `ROUTE_COMPLETED` moves it to `COMPLETED`; cancellation remains `CANCELLED`.
+- Legacy `DRAFT`, `PUBLISHED`, `OPTIMIZED`, and `ASSIGNED` database values are
+  read as `READY`. Existing start/completion events recover the corresponding
+  execution state without reopening completed work.
 
 ## Authentication
 
@@ -23,7 +36,7 @@ that app origin.
 
 ## POST `/admin/route-plans`
 
-Creates a draft route plan for the authenticated shop.
+Creates a Ready route plan for the authenticated shop.
 
 Request:
 
@@ -72,7 +85,7 @@ Persistence contract:
 - `Shop` is upserted by token-derived `(appId, shopDomain)`.
 - `Order` is upserted by `(shopId, shopifyOrderGid)`.
 - `DeliveryStop` is upserted by `(shopId, orderId)`.
-- `RoutePlan` is created with `status=DRAFT`,
+- `RoutePlan` is created with `status=READY`,
   `optimizerVersion=manual-sequence-mvp`, depot coordinates, constraints, and
   metrics JSON.
 - `RoutePlanStop.sequence` is assigned from request order, starting at `1`.
@@ -85,7 +98,7 @@ Response `201`:
     "routePlan": {
       "id": "uuid",
       "name": "CLEVER route draft",
-      "status": "DRAFT",
+      "status": "READY",
       "planDate": "2026-05-08",
       "stopsCount": 1,
       "missingCoordinates": 0,
@@ -116,7 +129,7 @@ Response `200`:
       {
         "id": "uuid",
         "name": "CLEVER route draft",
-        "status": "DRAFT",
+        "status": "READY",
         "planDate": "2026-05-08",
         "stopsCount": 1,
         "missingCoordinates": 0,
@@ -145,7 +158,7 @@ Response `200`:
     "routePlan": {
       "id": "uuid",
       "name": "CLEVER route draft",
-      "status": "DRAFT",
+      "status": "READY",
       "planDate": "2026-05-08",
       "stopsCount": 1,
       "missingCoordinates": 0,

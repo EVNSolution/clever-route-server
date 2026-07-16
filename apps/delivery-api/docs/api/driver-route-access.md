@@ -1,6 +1,8 @@
 # Driver Route Access API
 
-Purpose: the native driver app uses an authenticated phone account to return that account's active route choices before showing route/stop/customer details.
+Purpose: the native driver app uses an authenticated phone account to return
+that account's Ready or in-progress route choices before showing
+route/stop/customer details.
 
 This is the first driver-facing contract for `clever-driver-app`. It intentionally returns only non-sensitive company/route guidance. Consent records and assigned-route reads are implemented as separate authenticated contracts; stop detail/actions, driver session issuance, and location collection remain follow-up APIs.
 
@@ -13,7 +15,9 @@ The route is registered with the existing Driver API runtime dependencies when `
 The primary lookup uses the `clever-driver-account` bearer token returned by registration or phone + PIN login:
 
 - client sends the account bearer token and omits `routeContext` or sends `routeContext: null`
-- server finds active route plans assigned to active drivers linked to that account
+- server finds `READY` or `IN_PROGRESS` route plans assigned to active drivers
+  linked to that account; completed/cancelled routes and legacy rows with a
+  prior completion event are excluded
 - if active route assignments exist, server returns `ROUTES_FOUND` with route choices; each choice carries company guidance, route access identifiers, and short-lived `driverAccess`
 - if the account has active driver assignments but no active route, server returns `ROUTES_FOUND` with an empty `routes` array
 - if the account has no driver assignment, server returns `NOT_FOUND`

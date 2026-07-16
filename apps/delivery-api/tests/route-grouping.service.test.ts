@@ -5,22 +5,19 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 describe('route grouping contracts', () => {
-  test('keeps app-created route lifecycles limited to draft/published/cancelled', () => {
+  test('creates route plans and groups immediately in Ready state', () => {
     const schema = readFileSync(join(process.cwd(), 'prisma/schema.prisma'), 'utf8');
     const routePlanModel = /model RoutePlan \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
     const routeGroupModel = /model RouteGrouping \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
     expect(routePlanModel).toContain('status');
-    expect(routePlanModel).toContain('@default(DRAFT)');
+    expect(routePlanModel).toContain('@default(READY)');
     expect(routeGroupModel).toContain('status');
-    expect(routeGroupModel).toContain('@default(DRAFT)');
+    expect(routeGroupModel).toContain('@default(READY)');
 
     const service = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
-    expect(service).toContain("status: 'DRAFT'");
-    expect(service).toContain("status: 'PUBLISHED'");
+    expect(service).toContain("status: 'READY'");
     expect(service).toContain("status: 'CANCELLED'");
     expect(service).not.toContain("status: 'OPTIMIZED'");
-    expect(service).not.toContain("status: 'IN_PROGRESS'");
-    expect(service).not.toContain("status: 'COMPLETED'");
   });
 
   test('keeps parent route group date range on the canonical model', () => {
@@ -293,9 +290,9 @@ describe('route grouping contracts', () => {
     expect(source).not.toContain('assertGroupingDeleteAllowed');
   });
 
-  test('marks the parent route group published when a child route is published', () => {
+  test('keeps the parent route group Ready when the legacy child publish endpoint is called', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
-    expect(source).toContain("this.prisma.routeGrouping.updateMany({ data: { status: 'PUBLISHED' }");
+    expect(source).toContain("this.prisma.routeGrouping.updateMany({ data: { status: 'READY' }");
     expect(source).toContain("where: { id: child.groupingId, status: { not: 'CANCELLED' } }");
   });
 

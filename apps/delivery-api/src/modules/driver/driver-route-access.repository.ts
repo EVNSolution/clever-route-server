@@ -1,4 +1,5 @@
 import type { PrismaClient } from '@prisma/client';
+import { ROUTE_DRIVER_OPERATIONAL_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 import type {
@@ -70,7 +71,8 @@ export class PrismaDriverRouteAccessRepository {
       select: routePlanSelect,
       where: {
         driver: { is: { accountId, authSubject: { not: null }, status: 'ACTIVE' } },
-        status: 'PUBLISHED'
+        driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
 

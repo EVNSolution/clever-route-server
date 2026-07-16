@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaDriverRouteSessionRepository } from '../src/modules/driver/driver-route-session.repository.js';
 import { DriverRouteSessionScopeError } from '../src/modules/driver/driver-route-session.types.js';
+import { ROUTE_ACTIVE_COMPATIBILITY_STATUSES } from '../src/modules/route-plans/route-plan-lifecycle.js';
 
 const startedAt = new Date('2026-06-15T12:00:00.000Z');
 
@@ -56,7 +57,7 @@ const activeRoutePlan: ActiveRoutePlanTestRecord = {
 };
 
 describe('PrismaDriverRouteSessionRepository', () => {
-  test('restores an active route session from a started published route plan', async () => {
+  test('restores an active route session from an in-progress route plan', async () => {
     const { assignedRouteService, prisma } = createHarness();
     const repository = new PrismaDriverRouteSessionRepository(prisma as never, assignedRouteService);
 
@@ -73,7 +74,7 @@ describe('PrismaDriverRouteSessionRepository', () => {
       where: {
         driverId: 'driver-id',
         shopId: 'shop-id',
-        status: 'PUBLISHED'
+        status: 'IN_PROGRESS'
       }
     }));
     expect(assignedRouteService.getAssignedRoute).toHaveBeenCalledWith({
@@ -124,7 +125,11 @@ describe('PrismaDriverRouteSessionRepository', () => {
     expect(JSON.stringify(prisma.driverEvent.findMany.mock.calls)).toContain('"eventType":"ROUTE_STARTED"');
     expect(JSON.stringify(prisma.driverEvent.findMany.mock.calls)).toContain('"driverId":"driver-id"');
     expect(JSON.stringify(prisma.driverEvent.findMany.mock.calls)).toContain('"shopId":"shop-id"');
-    expect(JSON.stringify(prisma.driverEvent.findMany.mock.calls)).toContain('"PUBLISHED"');
+    const fallbackCalls = prisma.driverEvent.findMany.mock.calls as unknown as Array<[unknown]>;
+    const fallbackQuery = fallbackCalls.at(-1)?.[0] as
+      | { where?: { routePlan?: { status?: unknown } } }
+      | undefined;
+    expect(fallbackQuery?.where?.routePlan?.status).toEqual({ in: [...ROUTE_ACTIVE_COMPATIBILITY_STATUSES] });
     expect(result).toMatchObject({
       status: 'ACTIVE_SESSION',
       session: {

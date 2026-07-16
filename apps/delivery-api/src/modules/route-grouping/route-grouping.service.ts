@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from '@prisma/client';
+import { DriverEventType, type Prisma, type PrismaClient } from '@prisma/client';
 import { classifyCoordinateInPolygons, coordinatesFromGeoJsonPolygon } from './route-grouping.geometry.js';
 import type { DriverPushProvider } from './driver-push.provider.js';
 import type {
@@ -8,6 +8,7 @@ import type {
 } from '../route-plans/route-optimization.types.js';
 import { applyCachedRouteGeometry, computeRouteShapeSignature, routeGeometryCacheCreateData } from '../route-plans/route-plan-geometry-cache.js';
 import type { RouteGeometryCacheRead } from '../route-plans/route-plan-geometry-cache.js';
+import { toRouteExecutionStatus } from '../route-plans/route-plan-lifecycle.js';
 import type { RouteGeometryProvider } from '../route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanRouteGeometry, RoutePlanRouteMetrics, RoutePlanRouteResult, RoutePlanRouteStopPoint } from '../route-plans/route-plan.types.js';
 import { aggregateOrderItems, toOrderItemDto } from '../order-items/order-items.js';
@@ -205,7 +206,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         select: { id: true }
       });
       if (orderIds.length > 0) await claimBranchOrders(tx, group, branch.id, orderIds);
-      await tx.routeGrouping.update({ data: { status: 'DRAFT' }, where: { id: group.id } });
+      await tx.routeGrouping.update({ data: { status: 'READY' }, where: { id: group.id } });
       return group.id;
     }).catch((error: unknown) => {
       if (isUniqueConstraintError(error)) throw new RouteGroupingBranchLockConflictError(orderIds);
@@ -257,7 +258,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           routeScopeKey: sharedFactValue(orderedFacts, 'routeScopeKey'),
           serviceType: sharedFactValue(orderedFacts, 'serviceType'),
           shopId: shop.id,
-          status: 'DRAFT'
+          status: 'READY'
         },
         select: { id: true }
       });
@@ -355,7 +356,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       if (input.driverId !== undefined) data.driver = await branchDriverRelation(tx, group.shopId, input.driverId);
       if (Object.keys(data).length === 0) return group.id;
       await tx.routeGroupingBranch.update({ data, where: { id: branch.id } });
-      await tx.routeGrouping.update({ data: { status: 'DRAFT' }, where: { id: group.id } });
+      await tx.routeGrouping.update({ data: { status: 'READY' }, where: { id: group.id } });
       return group.id;
     });
     if (groupingId === null) return null;
@@ -379,7 +380,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       if (branch === null) throw new RouteGroupingValidationError(['branch not found']);
       if (removeOrderIds.length > 0) await deleteBranchOrderLocks(tx, group, branch.id, removeOrderIds);
       if (addOrderIds.length > 0) await claimBranchOrders(tx, group, branch.id, addOrderIds);
-      await tx.routeGrouping.update({ data: { status: 'DRAFT' }, where: { id: group.id } });
+      await tx.routeGrouping.update({ data: { status: 'READY' }, where: { id: group.id } });
       return group.id;
     }).catch((error: unknown) => {
       if (isUniqueConstraintError(error)) throw new RouteGroupingBranchLockConflictError(addOrderIds);
@@ -401,12 +402,12 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       if (group === null) return null;
       if (input.expectedUpdatedAt !== undefined) {
         const guarded = await tx.routeGrouping.updateMany({
-          data: { status: 'DRAFT' },
+          data: { status: 'READY' },
           where: { id: group.id, shopId: group.shopId, updatedAt: parseExpectedUpdatedAt(input.expectedUpdatedAt) }
         });
         if (guarded.count !== 1) throw new RouteGroupingConflictError();
       } else {
-        await tx.routeGrouping.update({ data: { status: 'DRAFT' }, where: { id: group.id } });
+        await tx.routeGrouping.update({ data: { status: 'READY' }, where: { id: group.id } });
       }
 
       if (removeOrderIds.length > 0) {
@@ -631,7 +632,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       }
 
       await recomputeAssignments(tx, group.id);
-      await tx.routeGrouping.update({ data: { status: 'DRAFT' }, where: { id: group.id } });
+      await tx.routeGrouping.update({ data: { status: 'READY' }, where: { id: group.id } });
       return group.id;
     });
     if (groupingId === null) return null;
@@ -688,7 +689,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       if (group === null) return null;
       const expectedUpdatedAt = parseExpectedUpdatedAt(input.expectedUpdatedAt);
       const guarded = await tx.routeGrouping.updateMany({
-        data: { status: 'DRAFT' },
+        data: { status: 'READY' },
         where: { id: group.id, shopId: group.shopId, updatedAt: expectedUpdatedAt }
       });
       if (guarded.count !== 1) throw new RouteGroupingConflictError();
@@ -759,7 +760,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           where: { groupingId: group.id, orderId: assignment.orderId }
         });
       }
-      await tx.routeGrouping.update({ data: { status: 'DRAFT' }, where: { id: group.id } });
+      await tx.routeGrouping.update({ data: { status: 'READY' }, where: { id: group.id } });
       return group.id;
     });
     if (groupingId === null) return null;
@@ -810,7 +811,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           }
         });
       }
-      await tx.routeGrouping.update({ data: { currentVersion: nextVersion, status: 'DRAFT' }, where: { id: loaded.id } });
+      await tx.routeGrouping.update({ data: { currentVersion: nextVersion, status: 'READY' }, where: { id: loaded.id } });
       return { childRoutePlanIds, groupingId: loaded.id };
     });
     if (projection === null) return null;
@@ -948,7 +949,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           }
         });
       }
-      await tx.routeGrouping.update({ data: { status: 'DRAFT' }, where: { id: loaded.id } });
+      await tx.routeGrouping.update({ data: { status: 'READY' }, where: { id: loaded.id } });
       return loaded.id;
     });
     if (groupingId === null) return null;
@@ -965,7 +966,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       });
       if (branch === null) return group.id;
       await tx.routeGroupingBranch.delete({ where: { id: branch.id } });
-      await tx.routeGrouping.update({ data: { status: 'DRAFT' }, where: { id: group.id } });
+      await tx.routeGrouping.update({ data: { status: 'READY' }, where: { id: group.id } });
       return group.id;
     });
     if (groupingId === null) return null;
@@ -1005,7 +1006,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           }
         });
       }
-      await tx.routeGrouping.update({ data: { currentVersion: nextVersion, status: 'DRAFT' }, where: { id: loaded.id } });
+      await tx.routeGrouping.update({ data: { currentVersion: nextVersion, status: 'READY' }, where: { id: loaded.id } });
       return { childRoutePlanIds, groupingId: loaded.id };
     });
     if (projection === null) return null;
@@ -1045,7 +1046,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     const publishedAt = new Date();
     await this.prisma.$transaction([
       this.prisma.routeGroupingChildVersion.update({ data: { publishedAt }, where: { id: child.id } }),
-      this.prisma.routeGrouping.updateMany({ data: { status: 'PUBLISHED' }, where: { id: child.groupingId, status: { not: 'CANCELLED' } } })
+      this.prisma.routeGrouping.updateMany({ data: { status: 'READY' }, where: { id: child.groupingId, status: { not: 'CANCELLED' } } })
     ]);
     if (child.routePlan?.driverId === null || child.routePlan?.driverId === undefined) return;
     const tokens = await this.prisma.driverPushToken.findMany({ where: { driverId: child.routePlan.driverId, status: 'ACTIVE' } });
@@ -1280,6 +1281,12 @@ function groupingInclude() {
         routePlan: {
           include: {
             driver: true,
+            driverEvents: {
+              orderBy: { occurredAt: 'desc' as const },
+              select: { eventType: true },
+              take: 1,
+              where: { eventType: { in: [DriverEventType.ROUTE_STARTED, DriverEventType.ROUTE_COMPLETED] } }
+            },
             routeGeometryCaches: {
               orderBy: { generatedAt: 'desc' as const },
               select: routeGeometryCacheSummarySelect()
@@ -1763,7 +1770,7 @@ function buildChildRouteDetail(input: {
       name: input.name,
       planDate: formatDateOnly(input.group.planDate) ?? '',
       routeEndMode: DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE,
-      status: 'DRAFT',
+      status: 'READY',
       stopsCount: input.assignments.length,
       updatedAt: now
     },
@@ -1848,7 +1855,7 @@ async function createDraftChildRoutePlan(
       optimizerVersion: OPTIMIZER_VERSION,
       planDate: group.planDate,
       shopId: group.shopId,
-      status: 'DRAFT'
+      status: 'READY'
     },
     select: { id: true, name: true }
   });
@@ -1899,7 +1906,7 @@ async function createChildRoutePlan(tx: Tx, group: LoadedGrouping, candidate: Op
       optimizerVersion: OPTIMIZER_VERSION,
       planDate: group.planDate,
       shopId: group.shopId,
-      status: 'DRAFT'
+      status: 'READY'
     },
     select: { id: true, name: true }
   });
@@ -1923,7 +1930,7 @@ async function createChildRoutePlanFromSnapshot(tx: Tx, group: LoadedGrouping, s
       optimizerVersion: OPTIMIZER_VERSION,
       planDate: group.planDate,
       shopId: group.shopId,
-      status: 'DRAFT'
+      status: 'READY'
     },
     select: { id: true, name: true }
   });
@@ -2233,7 +2240,7 @@ function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan
     planDate: formatDateOnly(routePlan.planDate) ?? '',
     routeEndMode: DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE,
     routeMetrics,
-    status: routePlan.status,
+    status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
     stopsCount: routePlan.routeStops.length,
     updatedAt: routePlan.updatedAt.toISOString()
   };
@@ -2241,14 +2248,16 @@ function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan
 
 function deriveGroupingDisplayStatus(group: LoadedGrouping): RouteGroupingDisplayStatus {
   if (group.status === 'CANCELLED') return 'CANCELLED';
-  if (group.status === 'PUBLISHED') return 'PUBLISHED';
-  return 'DRAFT';
+  const statuses = group.childVersions
+    .filter((child) => child.status === 'CURRENT')
+    .map((child) => toRouteExecutionStatus(child.routePlan?.status, child.routePlan?.driverEvents));
+  if (statuses.length > 0 && statuses.every((status) => status === 'COMPLETED')) return 'COMPLETED';
+  if (statuses.some((status) => status === 'IN_PROGRESS' || status === 'COMPLETED')) return 'IN_PROGRESS';
+  return 'READY';
 }
 
 function deriveChildDisplayStatus(child: LoadedChild): RouteGroupingChildDisplayStatus {
-  if (child.routePlan?.status === 'CANCELLED') return 'CANCELLED';
-  if (child.routePlan?.status === 'PUBLISHED') return 'PUBLISHED';
-  return 'DRAFT';
+  return toRouteExecutionStatus(child.routePlan?.status, child.routePlan?.driverEvents);
 }
 
 function normalizeNotificationStatus(status: string): RouteGroupingNotificationStatus {

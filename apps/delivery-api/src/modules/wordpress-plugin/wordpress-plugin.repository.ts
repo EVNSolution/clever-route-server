@@ -1,4 +1,4 @@
-import { Prisma, type CommerceRawOrderIngestStatus, type CommerceSyncRunStatus, type PrismaClient, type RoutePlanStatus } from '@prisma/client';
+import { Prisma, type CommerceRawOrderIngestStatus, type CommerceSyncRunStatus, type PrismaClient } from '@prisma/client';
 import { createHash } from 'node:crypto';
 
 import { normalizeCommerceSiteUrl } from '../commerce/commerce-connection.repository.js';
@@ -6,7 +6,7 @@ import { redactDiagnosticValue } from '../security/diagnostic-redaction.js';
 import type { WordPressPluginAuthRepository } from './wordpress-plugin-auth.service.js';
 import { hashSecret, createPairingCode } from './wordpress-plugin-auth.service.js';
 import { decideRawOrderIntake, RAW_INTAKE_DECISIONS, type RawIntakeDecision } from './raw-order-intake-guard.js';
-import { toInternalRoutePlanStatus, toWordPressRoutePlanStatus, toWordPressStopStatus } from './wordpress-plugin-status.js';
+import { toInternalRoutePlanStatuses, toWordPressRoutePlanStatus, toWordPressStopStatus } from './wordpress-plugin-status.js';
 import type {
   WordPressPluginConnectionContext,
   WordPressPluginFreshness,
@@ -1249,9 +1249,9 @@ function toRoutePlanWhere(shopId: string, filters: WordPressPluginRoutePlanFilte
       ...(to === null ? {} : { lte: to })
     };
   }
-  const internalStatus = filters.status === undefined || filters.status === null ? null : toInternalRoutePlanStatus(filters.status);
-  if (internalStatus !== null) {
-    where.status = { equals: internalStatus as RoutePlanStatus };
+  const internalStatuses = filters.status === undefined || filters.status === null ? null : toInternalRoutePlanStatuses(filters.status);
+  if (internalStatuses !== null) {
+    where.status = { in: [...internalStatuses] };
   }
   if (filters.driverId !== undefined && filters.driverId !== null && filters.driverId.trim() !== '') {
     where.driverId = filters.driverId.trim();

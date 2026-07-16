@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaDriverSelfServiceRepository } from '../src/modules/driver/driver-self-service.repository.js';
 import { DriverSelfServiceScopeError } from '../src/modules/driver/driver-self-service.types.js';
+import { ROUTE_DRIVER_VISIBLE_STATUSES } from '../src/modules/route-plans/route-plan-lifecycle.js';
 
 const routePlanId = '11111111-1111-4111-8111-111111111111';
 const nextRoutePlanId = '22222222-2222-4222-8222-222222222222';
@@ -37,7 +38,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
         driverId: 'driver-id',
         planDate: { gte: new Date('2026-05-01T00:00:00.000Z'), lte: new Date('2026-05-31T00:00:00.000Z') },
         shopId: 'shop-id',
-        status: { in: ['PUBLISHED'] }
+        status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] }
       })
     }));
     expect(result.routes).toEqual([
@@ -197,7 +198,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
         driverId: 'driver-id',
         id: routePlanId,
         shopId: 'shop-id',
-        status: { in: ['PUBLISHED'] }
+        status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] }
       }
     });
     expect(prisma.driverRouteFeedback.create).toHaveBeenCalledWith({
@@ -296,7 +297,7 @@ describe('PrismaDriverSelfServiceRepository', () => {
         driverId: 'driver-id',
         planDate: { gte: new Date('2026-05-01T00:00:00.000Z'), lt: new Date('2026-06-01T00:00:00.000Z') },
         shopId: 'shop-id',
-        status: 'PUBLISHED'
+        status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] }
       }
     }));
     expect(result).toEqual({

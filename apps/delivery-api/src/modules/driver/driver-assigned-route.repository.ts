@@ -16,6 +16,7 @@ import type {
   RoutePlanRouteStopPoint
 } from '../route-plans/route-plan.types.js';
 import { applyCachedRouteGeometry, computeRouteShapeSignature } from '../route-plans/route-plan-geometry-cache.js';
+import { ROUTE_DRIVER_OPERATIONAL_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 import type { RouteGeometryCacheRead } from '../route-plans/route-plan-geometry-cache.js';
 import { readNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
 import {
@@ -132,8 +133,9 @@ export class PrismaDriverAssignedRouteRepository {
       where: {
         driverId: input.driverId,
         ...(input.routeContext === null ? {} : { id: input.routeContext }),
+        driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
         shopId: shop.id,
-        status: 'PUBLISHED'
+        status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
 
