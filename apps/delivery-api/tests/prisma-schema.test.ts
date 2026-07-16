@@ -66,6 +66,10 @@ const readyRouteDefaultsMigrationPath = new URL(
   '../prisma/migrations/20260716143100_set_ready_route_defaults/migration.sql',
   import.meta.url
 );
+const driverRouteAccountScopeMigrationPath = new URL(
+  '../prisma/migrations/20260716170000_scope_driver_access_to_account_route/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
@@ -191,6 +195,7 @@ describe('Prisma schema', () => {
     expect(schema).toContain('enum DriverConsentType');
     expect(schema).toContain('enum DriverProofMediaKind');
     expect(schema).toContain('enum DriverProofMediaSource');
+    expect(schema).toMatch(/@@unique\(\[accountId, consentType, consentVersion\]/);
     expect(schema).toMatch(/@@unique\(\[driverId, consentType, consentVersion\]/);
     expect(schema).toMatch(/@@unique\(\[shopId, storageKey\]/);
     expect(schema).toMatch(/@@index\(\[shopId, routePlanId, deliveryStopId, uploadedAt\]/);
@@ -228,6 +233,38 @@ describe('Prisma schema', () => {
     expect(schema).toContain('provider = "postgresql"');
     expect(schema).toContain('env("DATABASE_URL")');
     expect(schema).toContain('provider = "prisma-client-js"');
+  });
+
+  test('preserves global consent and delivery evidence when a Store driver reference is deleted', async () => {
+    const schema = await readSchema();
+    const migration = await readFile(driverRouteAccountScopeMigrationPath, 'utf8');
+
+    expect(schema).toMatch(/model DriverConsentRecord \{[\s\S]*accountId\s+String\?[\s\S]*account\s+DriverAccount\?\s+@relation\(fields: \[accountId\], references: \[id\], onDelete: SetNull\)/u);
+    expect(schema).toMatch(/model DriverConsentRecord \{[\s\S]*shopId\s+String\?[\s\S]*shop\s+Shop\?\s+@relation\(fields: \[shopId\], references: \[id\], onDelete: SetNull\)/u);
+    expect(schema).toMatch(/model DriverConsentRecord \{[\s\S]*driverId\s+String\?[\s\S]*driver\s+Driver\?\s+@relation\(fields: \[driverId\], references: \[id\], onDelete: SetNull\)/u);
+    for (const modelName of ['DriverProofMedia', 'DriverRouteFeedback', 'DriverRouteNotificationAttempt', 'DriverEvent']) {
+      const model = new RegExp(`model ${modelName} \\{(?<body>[\\s\\S]*?)\\n\\}`, 'u').exec(schema)?.groups?.body ?? '';
+      expect(model).toMatch(/driverId\s+String\?/u);
+      expect(model).toMatch(/driver\s+Driver\?\s+@relation\(fields: \[driverId\], references: \[id\], onDelete: SetNull\)/u);
+    }
+
+    expect(migration).toContain('ADD COLUMN "accountId" UUID');
+    expect(migration.trim()).toMatch(/^BEGIN;[\s\S]*COMMIT;$/u);
+    expect(migration).toContain('ROW_NUMBER() OVER');
+    expect(migration).toContain('ranked.account_rank = 1');
+    expect(migration).toContain('driver_consent_records_accountId_consentType_consentVersion_key');
+    expect(migration).toContain('REFERENCES "driver_accounts"("id")');
+    expect(migration).toContain('ALTER TABLE "driver_consent_records" ALTER COLUMN "shopId" DROP NOT NULL');
+    for (const tableName of [
+      'driver_consent_records',
+      'driver_proof_media',
+      'driver_route_feedback',
+      'driver_route_notification_attempts',
+      'driver_events'
+    ]) {
+      expect(migration).toContain(`ALTER TABLE "${tableName}" ALTER COLUMN "driverId" DROP NOT NULL`);
+    }
+    expect(migration.match(/ON DELETE SET NULL ON UPDATE CASCADE/g)).toHaveLength(7);
   });
 
   test('ships a migration for phone-owned driver PIN accounts', async () => {

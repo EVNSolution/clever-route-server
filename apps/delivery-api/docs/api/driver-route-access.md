@@ -140,9 +140,11 @@ Ambiguous shared route/company scope response:
 
 ## Data minimization
 
-The lookup response must not include delivery stops, customer addresses, coordinates, or order data. `ROUTES_FOUND` route choices and legacy `INVITED` only return enough non-sensitive context for the driver to confirm the company/shop/route before the consent gate, plus a short-lived bearer token for the matched driver/shop boundary.
+The lookup response must not include delivery stops, customer addresses, coordinates, or order data. `ROUTES_FOUND` route choices and legacy `INVITED` only return enough non-sensitive context for the driver to confirm the company/shop/route before the consent gate, plus a short-lived bearer token for the matched account/route assignment.
 
-`driverAccess.accessToken` is a server-signed HS256 JWT with audience `clever-delivery-driver`. It is scoped to the matched `driverId` and `shopDomain`, expires after 900 seconds, and is intended only for the next driver-app calls such as `POST /driver/consents` and `GET /driver/assigned-route`. Denial responses never include `driverAccess`. SMS-based phone verification and PIN recovery remain follow-up security work.
+`driverAccess.accessToken` is a server-signed HS256 JWT with audience `clever-delivery-driver-route`. It is scoped to the authenticated global `DriverAccount.id` and assigned `RoutePlan.id`, expires after 900 seconds, and is intended only for the next driver-app calls such as `POST /driver/consents`, `GET /driver/assigned-route`, proof media, and delivery events. The server resolves the current Store reference and Store context from that exact assignment on every request; clients do not choose Store membership through token claims or request fields. Denial responses never include `driverAccess`. SMS-based phone verification and PIN recovery remain follow-up security work.
+
+Route tokens minted before this boundary change used the legacy `clever-delivery-driver` audience and are intentionally not accepted by route-scoped endpoints. Their lifetime is 900 seconds; a `401 DRIVER_ACCESS_TOKEN_INVALID` response tells the current app to refresh account access and run route lookup again. Account login/refresh tokens keep their existing audience and contract.
 
 `MULTIPLE_MATCHES` responses are stricter than route choices: they must not include `driverAccess`, `driverContext`, `routeAccess`, `routePlanId`, stops, customer names, customer addresses, coordinates, orders, proof-media data, or any other route-specific bearer credential. They are display-only responses; current driver UX should use account route choices or dispatch support.
 

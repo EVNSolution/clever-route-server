@@ -1,7 +1,8 @@
 import type { PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
+import { ROUTE_DRIVER_OPERATIONAL_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 
-export type DriverTokenAccessPrismaClient = Pick<PrismaClient, 'driver' | 'driverAccount'>;
+export type DriverTokenAccessPrismaClient = Pick<PrismaClient, 'driver' | 'driverAccount' | 'routePlan'>;
 
 export type DriverAccountTokenAccessCheckInput = {
   accountId: string;
@@ -12,6 +13,20 @@ export type DriverTokenAccessCheckInput = {
   driverId: string;
   shopDomain: string;
   tokenVersion: number;
+};
+
+export type DriverRouteTokenAccessCheckInput = {
+  accountId: string;
+  routePlanId: string;
+  tokenVersion: number;
+};
+
+export type DriverRouteAccessScope = {
+  accountId: string;
+  driverId: string;
+  routePlanId: string;
+  shopDomain: string;
+  shopId: string;
 };
 
 export class PrismaDriverTokenAccessRepository {
@@ -39,9 +54,50 @@ export class PrismaDriverTokenAccessRepository {
 
     return driver !== null && driver.tokenVersion === input.tokenVersion;
   }
+
+  async resolveDriverRouteAccess(
+    input: DriverRouteTokenAccessCheckInput
+  ): Promise<DriverRouteAccessScope | null> {
+    if (!(await this.isDriverAccountAccessTokenActive(input))) {
+      return null;
+    }
+
+    const routePlan = await this.prisma.routePlan.findFirst({
+      select: {
+        driver: {
+          select: { accountId: true, authSubject: true, id: true, status: true }
+        },
+        id: true,
+        shop: { select: { id: true, shopDomain: true } }
+      },
+      where: {
+        driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        id: input.routePlanId,
+        status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
+      }
+    });
+
+    if (
+      routePlan === null ||
+      routePlan.driver === null ||
+      routePlan.driver.accountId !== input.accountId ||
+      routePlan.driver.authSubject === null ||
+      routePlan.driver.status !== 'ACTIVE'
+    ) {
+      return null;
+    }
+
+    return {
+      accountId: input.accountId,
+      driverId: routePlan.driver.id,
+      routePlanId: routePlan.id,
+      shopDomain: normalizeDriverCommerceDomain(routePlan.shop.shopDomain),
+      shopId: routePlan.shop.id
+    };
+  }
 }
 
 export type DriverTokenAccessRepositoryApi = Pick<
   PrismaDriverTokenAccessRepository,
-  'isDriverAccessTokenActive' | 'isDriverAccountAccessTokenActive'
+  'isDriverAccessTokenActive' | 'isDriverAccountAccessTokenActive' | 'resolveDriverRouteAccess'
 >;

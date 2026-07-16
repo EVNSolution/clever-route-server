@@ -1,7 +1,7 @@
-import { createHmac } from 'node:crypto';
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
+import { signDriverRouteToken } from '../src/modules/driver/driver-token-verifier.js';
 
 const secret = 'driver-secret';
 const now = new Date('2026-05-12T06:40:00.000Z');
@@ -73,7 +73,7 @@ describe('Driver assigned route route', () => {
       expect(response.statusCode).toBe(401);
       expect(response.json()).toEqual({
         data: null,
-        error: { code: 'UNAUTHORIZED', message: 'Invalid driver bearer token' }
+        error: { code: 'DRIVER_ACCESS_TOKEN_INVALID', message: 'Invalid driver access token' }
       });
       expect(getAssignedRoute).not.toHaveBeenCalled();
     } finally {
@@ -97,7 +97,8 @@ describe('Driver assigned route route', () => {
       expect(getAssignedRoute).toHaveBeenCalledWith({
         driverId: 'driver-id',
         routeContext: 'route-plan-id',
-        shopDomain: 'example.myshopify.com'
+        shopDomain: 'example.myshopify.com',
+        shopId: 'shop-id'
       });
       expect(JSON.stringify(response.json())).not.toContain('other-driver-id');
     } finally {
@@ -105,7 +106,7 @@ describe('Driver assigned route route', () => {
     }
   });
 
-  test('returns a safe empty status when no assigned route matches', async () => {
+  test('rejects a route query outside the token assignment', async () => {
     const { app, getAssignedRoute } = await createAppHarness({ empty: true });
 
     try {
@@ -115,9 +116,12 @@ describe('Driver assigned route route', () => {
         url: '/driver/assigned-route?routeContext=wrong-route'
       });
 
-      expect(response.statusCode).toBe(200);
-      expect(response.json()).toEqual({ data: { status: 'NO_ASSIGNED_ROUTE' }, error: null });
-      expect(getAssignedRoute).toHaveBeenCalledOnce();
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH', message: 'Driver route assignment rejected' }
+      });
+      expect(getAssignedRoute).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -164,7 +168,8 @@ describe('Driver assigned route route', () => {
         baseUrl: 'https://delivery.example.com',
         driverId: 'driver-id',
         route: assignedRoute.route,
-        shopDomain: 'example.myshopify.com'
+        shopDomain: 'example.myshopify.com',
+        shopId: 'shop-id'
       });
     } finally {
       await app.close();
@@ -247,6 +252,17 @@ async function createAppHarness(input: {
       driverEventService: {
         recordDriverEvent: vi.fn(() => Promise.resolve({ duplicate: false, eventId: 'unused-event-id' }))
       },
+      driverTokenAccessRepository: {
+        isDriverAccessTokenActive: vi.fn(() => Promise.resolve(false)),
+        isDriverAccountAccessTokenActive: vi.fn(() => Promise.resolve(true)),
+        resolveDriverRouteAccess: vi.fn(() => Promise.resolve({
+          accountId: 'account-id',
+          driverId: 'driver-id',
+          routePlanId: 'route-plan-id',
+          shopDomain: 'example.myshopify.com',
+          shopId: 'shop-id'
+        }))
+      },
       jwtSecret: secret,
       now: () => now
     }
@@ -256,20 +272,11 @@ async function createAppHarness(input: {
 }
 
 function driverToken(): string {
-  const header = { alg: 'HS256', typ: 'JWT' };
-  const payload = {
-    aud: 'clever-delivery-driver',
-    driverId: 'driver-id',
-    exp: Math.floor(now.getTime() / 1000) + 60,
-    iat: Math.floor(now.getTime() / 1000),
-    shopDomain: 'example.myshopify.com',
-    sub: 'driver-auth-subject',
+  return signDriverRouteToken({
+    accountId: 'account-id',
+    expiresInSeconds: 60,
+    routePlanId: 'route-plan-id',
+    subject: 'driver-account:account-id',
     tokenVersion: 0
-  };
-  const encodedHeader = Buffer.from(JSON.stringify(header), 'utf8').toString('base64url');
-  const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
-  const signingInput = `${encodedHeader}.${encodedPayload}`;
-  const signature = createHmac('sha256', secret).update(signingInput).digest('base64url');
-
-  return `${signingInput}.${signature}`;
+  }, { now, secret }).token;
 }

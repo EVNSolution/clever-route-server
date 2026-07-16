@@ -15,11 +15,15 @@ type DriverRouteAccessPrismaClient = Pick<PrismaClient, 'driver' | 'routePlan'>;
 type DriverRoutePlanRecord = {
   constraints: unknown;
   driver: {
+    account: {
+      id: string;
+      status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
+      tokenVersion: number;
+    } | null;
     accountId: string | null;
     authSubject: string | null;
     id: string;
     status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
-    tokenVersion: number;
   } | null;
   id: string;
   name: string;
@@ -31,7 +35,15 @@ type DriverRoutePlanRecord = {
 
 const routePlanSelect = {
   constraints: true,
-  driver: { select: { accountId: true, authSubject: true, id: true, status: true, tokenVersion: true } },
+  driver: {
+    select: {
+      account: { select: { id: true, status: true, tokenVersion: true } },
+      accountId: true,
+      authSubject: true,
+      id: true,
+      status: true
+    }
+  },
   id: true,
   name: true,
   planDate: true,
@@ -156,8 +168,20 @@ function mapRoutePlan(
   routePlan: DriverRoutePlanRecord,
   input: { accountId: string; routeContext: string }
 ): DriverRouteAccessLookupResult {
-  if (routePlan.driver === null || routePlan.driver.accountId !== input.accountId) {
+  if (
+    routePlan.driver === null ||
+    routePlan.driver.accountId !== input.accountId ||
+    routePlan.driver.account?.id !== input.accountId
+  ) {
     return { status: 'NOT_FOUND' };
+  }
+
+  if (routePlan.driver.account.status === 'INACTIVE') {
+    return { status: 'DISABLED' };
+  }
+
+  if (routePlan.driver.account.status === 'SUSPENDED') {
+    return { status: 'BLOCKED' };
   }
 
   if (routePlan.driver.status === 'INACTIVE') {
@@ -174,9 +198,9 @@ function mapRoutePlan(
 
     return {
     driverContext: {
-      driverId: routePlan.driver.id,
-      shopDomain: normalizeDriverCommerceDomain(routePlan.shop.shopDomain),
-      tokenVersion: routePlan.driver.tokenVersion
+      accountId: routePlan.driver.account.id,
+      routePlanId: routePlan.id,
+      tokenVersion: routePlan.driver.account.tokenVersion
     },
     status: 'INVITED',
     routeAccess: {

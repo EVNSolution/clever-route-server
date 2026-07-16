@@ -2,15 +2,13 @@ import { DriverEventType, RoutePlanStatus, type PrismaClient } from '@prisma/cli
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 import type { DriverAssignedRouteServiceContract } from './driver-assigned-route.types.js';
 import {
-  DriverRouteSessionScopeError,
   type DriverRouteSessionRestoreInput,
   type DriverRouteSessionRestoreResult,
   type DriverRouteSessionRestoreSession
 } from './driver-route-session.types.js';
-import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import { ROUTE_ACTIVE_COMPATIBILITY_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 
-type DriverRouteSessionPrismaClient = Pick<PrismaClient, 'driver' | 'driverEvent' | 'routePlan' | 'shop'>;
+type DriverRouteSessionPrismaClient = Pick<PrismaClient, 'driverEvent' | 'routePlan'>;
 
 type ActiveRoutePlanRecord = {
   driverEvents: ActiveRoutePlanEventRecord[];
@@ -74,29 +72,10 @@ export class PrismaDriverRouteSessionRepository {
 
   async getActiveRouteSession(input: DriverRouteSessionRestoreInput): Promise<DriverRouteSessionRestoreResult> {
     const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
-    const shop = await this.prisma.shop.findUnique({
-      select: { id: true },
-      where: appScopedShopWhere({ shopDomain })
-    });
-    if (shop === null) {
-      throw new DriverRouteSessionScopeError(`Shop not installed: ${shopDomain}`);
-    }
-
-    const driver = await this.prisma.driver.findFirst({
-      select: { id: true },
-      where: {
-        id: input.driverId,
-        shopId: shop.id,
-        status: 'ACTIVE'
-      }
-    });
-    if (driver === null) {
-      throw new DriverRouteSessionScopeError(`Driver not found for shop: ${input.driverId}`);
-    }
-
     const activeRoutePlan = await this.findActiveRoutePlan({
       driverId: input.driverId,
-      shopId: shop.id
+      routePlanId: input.routePlanId,
+      shopId: input.shopId
     });
     if (activeRoutePlan === null) {
       return { status: 'NO_ACTIVE_SESSION' };
@@ -105,7 +84,8 @@ export class PrismaDriverRouteSessionRepository {
     const assignedRoute = await this.assignedRouteService.getAssignedRoute({
       driverId: input.driverId,
       routeContext: activeRoutePlan.id,
-      shopDomain
+      shopDomain,
+      shopId: input.shopId
     });
     if (assignedRoute.status !== 'ASSIGNED_ROUTE') {
       return { status: 'NO_ACTIVE_SESSION' };
@@ -118,7 +98,11 @@ export class PrismaDriverRouteSessionRepository {
     };
   }
 
-  private async findActiveRoutePlan(input: { driverId: string; shopId: string }): Promise<ActiveRoutePlanRecord | null> {
+  private async findActiveRoutePlan(input: {
+    driverId: string;
+    routePlanId: string;
+    shopId: string;
+  }): Promise<ActiveRoutePlanRecord | null> {
     const inProgressRoute = await this.prisma.routePlan.findFirst({
       include: activeRoutePlanInclude(input.driverId),
       orderBy: [
@@ -128,6 +112,7 @@ export class PrismaDriverRouteSessionRepository {
       ],
       where: {
         driverId: input.driverId,
+        id: input.routePlanId,
         shopId: input.shopId,
         status: RoutePlanStatus.IN_PROGRESS
       }
@@ -157,10 +142,11 @@ export class PrismaDriverRouteSessionRepository {
         eventType: DriverEventType.ROUTE_STARTED,
         routePlan: {
           driverId: input.driverId,
+          id: input.routePlanId,
           shopId: input.shopId,
           status: { in: [...ROUTE_ACTIVE_COMPATIBILITY_STATUSES] }
         },
-        routePlanId: { not: null },
+        routePlanId: input.routePlanId,
         shopId: input.shopId
       }
     });

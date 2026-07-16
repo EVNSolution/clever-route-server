@@ -1,7 +1,5 @@
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
-import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
-import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import { ROUTE_ACTIVE_COMPATIBILITY_STATUSES, ROUTE_READY_COMPATIBILITY_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 
 export type RecordDriverEventInput = {
@@ -15,6 +13,7 @@ export type RecordDriverEventInput = {
   payload: unknown;
   routePlanId: string | null;
   shopDomain: string;
+  shopId: string;
 };
 
 export type RecordDriverEventResult = {
@@ -24,12 +23,12 @@ export type RecordDriverEventResult = {
 
 type DriverEventPrismaClient = Pick<
   PrismaClient,
-  '$transaction' | 'deliveryStop' | 'driver' | 'driverEvent' | 'routePlan' | 'routePlanStop' | 'shop'
+  '$transaction' | 'deliveryStop' | 'driverEvent' | 'routePlan' | 'routePlanStop'
 >;
 
 type DriverEventTransactionClient = Pick<
   DriverEventPrismaClient,
-  'deliveryStop' | 'driver' | 'driverEvent' | 'routePlan' | 'routePlanStop' | 'shop'
+  'deliveryStop' | 'driverEvent' | 'routePlan' | 'routePlanStop'
 >;
 
 export class DriverEventContextError extends Error {
@@ -51,21 +50,9 @@ export class PrismaDriverEventRepository {
   constructor(private readonly prisma: DriverEventPrismaClient) {}
 
   async recordDriverEvent(input: RecordDriverEventInput): Promise<RecordDriverEventResult> {
-    const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
-
     try {
       return await this.prisma.$transaction(async (transaction) => {
-        const shop = await transaction.shop.findUnique({ where: appScopedShopWhere({ shopDomain }) });
-        if (shop === null) {
-          throw new Error(`Shop not installed: ${shopDomain}`);
-        }
-
-        const driver = await transaction.driver.findUnique({ where: { id: input.driverId } });
-        if (driver === null || driver.shopId !== shop.id) {
-          throw new Error(`Driver not found for shop: ${input.driverId}`);
-        }
-
-        await validateDriverEventStateContext(transaction, input, shop.id);
+        await validateDriverEventStateContext(transaction, input, input.shopId);
 
         const event = await transaction.driverEvent.create({
           data: {
@@ -78,11 +65,11 @@ export class PrismaDriverEventRepository {
             occurredAt: input.occurredAt,
             payload: JSON.parse(JSON.stringify(input.payload)) as Prisma.InputJsonValue,
             routePlanId: input.routePlanId,
-            shopId: shop.id
+            shopId: input.shopId
           }
         });
 
-        await applyDriverEventStateTransition(transaction, input, shop.id);
+        await applyDriverEventStateTransition(transaction, input, input.shopId);
 
         return { duplicate: false, eventId: event.id };
       });
@@ -101,23 +88,6 @@ async function validateDriverEventStateContext(
   input: RecordDriverEventInput,
   shopId: string
 ): Promise<void> {
-  if (input.eventType === 'STOP_DELIVERED' || input.eventType === 'STOP_FAILED') {
-    const routePlanId = requireRoutePlanId(input);
-    const deliveryStopId = requireDeliveryStopId(input);
-    await requireOwnedRoutePlan(prisma, {
-      driverId: input.driverId,
-      routePlanId,
-      shopId
-    });
-    await requireOwnedRoutePlanStop(prisma, {
-      deliveryStopId,
-      driverId: input.driverId,
-      routePlanId,
-      shopId
-    });
-    return;
-  }
-
   if (input.eventType === 'ROUTE_STARTED') {
     const routePlanId = requireRoutePlanId(input);
     await requireStartableOwnedRoutePlan(prisma, {
@@ -128,9 +98,16 @@ async function validateDriverEventStateContext(
     return;
   }
 
-  if (input.eventType === 'ROUTE_COMPLETED') {
-    const routePlanId = requireRoutePlanId(input);
-    await requireOwnedRoutePlan(prisma, { driverId: input.driverId, routePlanId, shopId });
+  const routePlanId = requireRoutePlanId(input);
+  await requireOwnedRoutePlan(prisma, { driverId: input.driverId, routePlanId, shopId });
+
+  if (input.eventType === 'STOP_DELIVERED' || input.eventType === 'STOP_FAILED') {
+    await requireOwnedRoutePlanStop(prisma, {
+      deliveryStopId: requireDeliveryStopId(input),
+      driverId: input.driverId,
+      routePlanId,
+      shopId
+    });
   }
 }
 
@@ -218,8 +195,10 @@ async function requireOwnedRoutePlan(
     select: { id: true },
     where: {
       driverId: input.driverId,
+      driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
       id: input.routePlanId,
-      shopId: input.shopId
+      shopId: input.shopId,
+      status: { in: [...ROUTE_ACTIVE_COMPATIBILITY_STATUSES] }
     }
   });
   if (routePlan === null) {

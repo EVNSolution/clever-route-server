@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
-import { signDriverAccountToken, verifyDriverToken } from '../src/modules/driver/driver-token-verifier.js';
+import { signDriverAccountToken, verifyDriverRouteToken } from '../src/modules/driver/driver-token-verifier.js';
 import type { DriverApiDependencies } from '../src/routes/driver-events.routes.js';
 
 type LookupRouteAccess = NonNullable<DriverApiDependencies['routeAccessService']>['lookupRouteAccess'];
@@ -32,9 +32,9 @@ type InvitedLookupResponseBody = {
 const invitedLookup = {
   status: 'INVITED' as const,
   driverContext: {
-    driverId: 'driver-id',
-    shopDomain: 'tomatono.myshopify.com',
-    tokenVersion: 4
+    accountId: 'account-id',
+    routePlanId: 'route-plan-id',
+    tokenVersion: 1
   },
   routeAccess: {
     nextState: 'consent_required' as const,
@@ -195,15 +195,15 @@ describe('Driver route access lookup route', () => {
         ttlSeconds: 900,
         use: 'consent_and_assigned_route'
       });
-      expect(verifyDriverToken(body.data.driverAccess.accessToken, {
+      expect(verifyDriverRouteToken(body.data.driverAccess.accessToken, {
         now,
         secret: 'driver-secret'
       })).toEqual({
-        driverId: 'driver-id',
+        accountId: 'account-id',
         issuedAt: now,
-        shopDomain: 'tomatono.myshopify.com',
-        subject: 'driver:driver-id',
-        tokenVersion: 4
+        routePlanId: 'route-plan-id',
+        subject: 'driver-account:account-id',
+        tokenVersion: 1
       });
       expect(JSON.stringify(body)).not.toContain('driverContext');
       expect(lookupRouteAccess).toHaveBeenCalledWith({
@@ -361,7 +361,8 @@ async function createAppHarness(
       },
       driverTokenAccessRepository: {
         isDriverAccessTokenActive: vi.fn(() => Promise.resolve(true)),
-        isDriverAccountAccessTokenActive: vi.fn(() => Promise.resolve(override.accountTokenActive ?? true))
+        isDriverAccountAccessTokenActive: vi.fn(() => Promise.resolve(override.accountTokenActive ?? true)),
+        resolveDriverRouteAccess: vi.fn(() => Promise.resolve(null))
       },
       jwtSecret: 'driver-secret',
       now: () => now,

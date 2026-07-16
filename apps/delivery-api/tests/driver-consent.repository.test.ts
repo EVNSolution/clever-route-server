@@ -5,7 +5,7 @@ import { PrismaDriverConsentRepository } from '../src/modules/driver/driver-cons
 const recordedAt = new Date('2026-05-12T05:50:00.000Z');
 
 describe('PrismaDriverConsentRepository', () => {
-  test('upserts required driver consent records for the authenticated shop driver', async () => {
+  test('uses the assigned route Store without a same-domain default-app Store lookup', async () => {
     const { prisma } = createPrismaHarness();
     const repository = new PrismaDriverConsentRepository(prisma as never);
 
@@ -16,40 +16,44 @@ describe('PrismaDriverConsentRepository', () => {
         { accepted: true, type: 'PERSONAL_INFORMATION', version: 'privacy-v1' }
       ],
       deviceContext: { platform: 'ios' },
-      driverId: 'driver-id',
+      accountId: 'account-id',
       recordedAt,
-      routeContext: 'route-context',
-      shopDomain: 'https://Dev1.TomatonoFood.com/admin'
+      routePlanId: 'route-plan-id'
     });
 
-    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { appId_shopDomain: { appId: 'clever', shopDomain: 'dev1.tomatonofood.com' } } });
-    expect(prisma.driver.findUnique).toHaveBeenCalledWith({ where: { id: 'driver-id' } });
+    expect(prisma.routePlan.findUnique).toHaveBeenCalledWith({
+      select: { driverId: true, shopId: true, driver: { select: { accountId: true } } },
+      where: { id: 'route-plan-id' }
+    });
+    expect(prisma.shop.findUnique).not.toHaveBeenCalled();
     expect(prisma.driverConsentRecord.upsert).toHaveBeenCalledTimes(2);
     expect(prisma.driverConsentRecord.upsert).toHaveBeenNthCalledWith(1, {
       create: {
         accepted: true,
         appContext: { appVersion: '0.1.0' },
+        accountId: 'account-id',
         consentType: 'LOCATION_INFORMATION',
         consentVersion: 'location-v1',
         deviceContext: { platform: 'ios' },
         driverId: 'driver-id',
         recordedAt,
-        routeContext: 'route-context',
+        routeContext: 'route-plan-id',
         shopId: 'shop-id'
       },
       update: {
         accepted: true,
         appContext: { appVersion: '0.1.0' },
         deviceContext: { platform: 'ios' },
+        driverId: 'driver-id',
         recordedAt,
-        routeContext: 'route-context',
+        routeContext: 'route-plan-id',
         shopId: 'shop-id'
       },
       where: {
-        driverId_consentType_consentVersion: {
+        accountId_consentType_consentVersion: {
+          accountId: 'account-id',
           consentType: 'LOCATION_INFORMATION',
-          consentVersion: 'location-v1',
-          driverId: 'driver-id'
+          consentVersion: 'location-v1'
         }
       }
     });
@@ -63,8 +67,8 @@ describe('PrismaDriverConsentRepository', () => {
     });
   });
 
-  test('rejects driver consent when the token driver is not in the token shop', async () => {
-    const { prisma } = createPrismaHarness({ driverShopId: 'other-shop-id' });
+  test('rejects consent when the route assignment belongs to another account', async () => {
+    const { prisma } = createPrismaHarness({ routeAccountId: 'other-account-id' });
     const repository = new PrismaDriverConsentRepository(prisma as never);
 
     await expect(
@@ -75,22 +79,18 @@ describe('PrismaDriverConsentRepository', () => {
           { accepted: true, type: 'PERSONAL_INFORMATION', version: 'privacy-v1' }
         ],
         deviceContext: null,
-        driverId: 'driver-id',
+        accountId: 'account-id',
         recordedAt,
-        routeContext: null,
-        shopDomain: 'example.myshopify.com'
+        routePlanId: 'route-plan-id'
       })
-    ).rejects.toThrow('Driver not found for shop');
+    ).rejects.toThrow('Route assignment account mismatch');
     expect(prisma.driverConsentRecord.upsert).not.toHaveBeenCalled();
   });
 });
 
-function createPrismaHarness(input: { driverShopId?: string } = {}) {
+function createPrismaHarness(input: { routeAccountId?: string } = {}) {
   return {
     prisma: {
-      driver: {
-        findUnique: vi.fn(() => Promise.resolve({ id: 'driver-id', shopId: input.driverShopId ?? 'shop-id' }))
-      },
       driverConsentRecord: {
         upsert: vi.fn((args: { create: { accepted: boolean; consentType: string; consentVersion: string } }) =>
           Promise.resolve({
@@ -101,8 +101,19 @@ function createPrismaHarness(input: { driverShopId?: string } = {}) {
           })
         )
       },
+      routePlan: {
+        findUnique: vi.fn(() => Promise.resolve({
+          driver: { accountId: input.routeAccountId ?? 'account-id' },
+          driverId: 'driver-id',
+          shopId: 'shop-id'
+        }))
+      },
       shop: {
-        findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id' }))
+        findUnique: vi.fn(() => Promise.resolve({
+          appId: 'clever',
+          id: 'wrong-default-app-shop-id',
+          shopDomain: 'same-domain.myshopify.com'
+        }))
       }
     }
   };

@@ -27,6 +27,7 @@ type PreviewPayload = {
   driverId: string;
   routePlanId: string;
   shopDomain: string;
+  shopId: string;
   version: 1;
 };
 
@@ -48,6 +49,7 @@ export class DriverRouteMapPreviewService {
     driverId: string;
     route: DriverAssignedRoute;
     shopDomain: string;
+    shopId: string;
   }): DriverRouteMapPreview | null {
     if (!hasRenderableDriverRouteMapPreview(input.route)) {
       return null;
@@ -59,6 +61,7 @@ export class DriverRouteMapPreviewService {
       driverId: input.driverId,
       routePlanId: input.route.id,
       shopDomain: input.shopDomain,
+      shopId: input.shopId,
       version: 1
     };
     const generatedAt = this.now();
@@ -103,7 +106,8 @@ export class DriverRouteMapPreviewService {
     const result = await this.options.assignedRouteService.getAssignedRoute({
       driverId: payload.driverId,
       routeContext: payload.routePlanId,
-      shopDomain: payload.shopDomain
+      shopDomain: payload.shopDomain,
+      shopId: payload.shopId
     });
     if (result.status !== 'ASSIGNED_ROUTE') {
       return null;
@@ -193,7 +197,8 @@ function readPreviewPayload(value: unknown): PreviewPayload | null {
     typeof payload.checksum !== 'string' ||
     typeof payload.driverId !== 'string' ||
     typeof payload.routePlanId !== 'string' ||
-    typeof payload.shopDomain !== 'string'
+    typeof payload.shopDomain !== 'string' ||
+    typeof payload.shopId !== 'string'
   ) {
     return null;
   }
@@ -202,6 +207,7 @@ function readPreviewPayload(value: unknown): PreviewPayload | null {
     driverId: payload.driverId,
     routePlanId: payload.routePlanId,
     shopDomain: payload.shopDomain,
+    shopId: payload.shopId,
     version: 1
   };
 }

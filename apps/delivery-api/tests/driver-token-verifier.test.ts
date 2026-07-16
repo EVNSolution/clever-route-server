@@ -1,12 +1,40 @@
 import { createHmac } from 'node:crypto';
 import { describe, expect, test } from 'vitest';
 
-import { signDriverToken, verifyDriverToken } from '../src/modules/driver/driver-token-verifier.js';
+import {
+  signDriverRouteToken,
+  signDriverToken,
+  verifyDriverRouteToken,
+  verifyDriverToken
+} from '../src/modules/driver/driver-token-verifier.js';
 
 const secret = 'driver-secret';
 const now = new Date('2026-05-07T06:10:00Z');
 
 describe('verifyDriverToken', () => {
+  test('signs route access with only the global account and assigned route scope', () => {
+    const result = signDriverRouteToken(
+      {
+        accountId: 'account-id',
+        expiresInSeconds: 900,
+        routePlanId: 'route-plan-id',
+        subject: 'driver-account:account-id',
+        tokenVersion: 7
+      },
+      { now, secret }
+    );
+
+    expect(verifyDriverRouteToken(result.token, { now, secret })).toEqual({
+      accountId: 'account-id',
+      issuedAt: new Date('2026-05-07T06:10:00.000Z'),
+      routePlanId: 'route-plan-id',
+      subject: 'driver-account:account-id',
+      tokenVersion: 7
+    });
+    expect(decodePayload(result.token)).not.toHaveProperty('driverId');
+    expect(decodePayload(result.token)).not.toHaveProperty('shopDomain');
+  });
+
   test('signs a short-lived driver JWT that the verifier accepts', () => {
     const result = signDriverToken(
       {
@@ -93,6 +121,12 @@ describe('verifyDriverToken', () => {
     expect(() => verifyDriverToken(token, { now, secret })).toThrow('Invalid driver token signature');
   });
 });
+
+function decodePayload(token: string): Record<string, unknown> {
+  const encodedPayload = token.split('.')[1];
+  if (encodedPayload === undefined) throw new Error('missing token payload');
+  return JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8')) as Record<string, unknown>;
+}
 
 function legacySignDriverToken(payload: Record<string, unknown>): string {
   const header = { alg: 'HS256', typ: 'JWT' };

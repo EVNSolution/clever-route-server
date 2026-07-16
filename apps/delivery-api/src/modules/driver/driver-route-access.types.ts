@@ -26,8 +26,8 @@ export type DriverRouteAccessAmbiguousMatch = {
 
 export type DriverRouteAccessInvitedRoute = {
   driverContext: {
-    driverId: string;
-    shopDomain: string;
+    accountId: string;
+    routePlanId: string;
     tokenVersion: number;
   };
   status: 'INVITED';

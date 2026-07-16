@@ -8,6 +8,7 @@ export type StoreDriverProofMediaInput = {
   filename: string;
   routePlanId: string;
   shopDomain: string;
+  shopId: string;
   source: DriverProofMediaSource;
 };
 
@@ -25,7 +26,9 @@ export type StoreDriverProofMediaResult = {
 export type CreateDriverProofMediaReadAccessInput = {
   driverId: string;
   mediaId: string;
+  routePlanId: string;
   shopDomain: string;
+  shopId: string;
 };
 
 export type CreateDriverProofMediaReadAccessResult = {

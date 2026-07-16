@@ -1,15 +1,17 @@
 import type { FastifyInstance } from 'fastify';
 import {
   signDriverAccountToken,
-  signDriverToken,
   verifyDriverAccountToken,
+  verifyDriverRouteToken,
   verifyDriverToken
 } from '../modules/driver/driver-token-verifier.js';
 import type { DriverAuthSessionInfo, PrismaDriverAuthRepository } from '../modules/driver/driver-auth.repository.js';
+import type { DriverTokenAccessRepositoryApi } from '../modules/driver/driver-token-access.repository.js';
 import type { DriverPushTokenService } from '../modules/route-grouping/driver-push-token.service.js';
 
 export type DriverAuthDependencies = {
   driverAuthRepository: PrismaDriverAuthRepository;
+  driverTokenAccessRepository?: DriverTokenAccessRepositoryApi;
   jwtSecret: string;
   pushTokenService?: DriverPushTokenService;
 };
@@ -60,6 +62,12 @@ export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: Dri
       const sessionInfo = await dependencies.driverAuthRepository.refreshSession({
         refreshToken: refreshToken.trim()
       });
+      if (sessionInfo.kind === 'driver') {
+        return reply.code(401).send({
+          data: null,
+          error: { code: 'DRIVER_ACCESS_TOKEN_INVALID', message: 'Driver account login and route lookup required' }
+        });
+      }
       return reply.code(200).send(buildAuthSessionResponse(sessionInfo, dependencies.jwtSecret));
     } catch (error) {
       if (isInvalidRefreshTokenError(error)) {
@@ -96,10 +104,8 @@ export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: Dri
     if (token === null) {
       return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: 'Missing driver bearer token' } });
     }
-    let verified;
-    try {
-      verified = verifyDriverToken(token, { secret: dependencies.jwtSecret });
-    } catch {
+    const driverId = await resolvePushTokenDriverId(token, dependencies);
+    if (driverId === null) {
       return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: 'Invalid driver bearer token' } });
     }
     const body = request.body;
@@ -118,7 +124,7 @@ export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: Dri
       appVersion: readOptionalString(payload.appVersion),
       deviceId: readOptionalString(payload.deviceId),
       devicePushToken,
-      driverId: verified.driverId,
+      driverId,
       locale: readOptionalString(payload.locale),
       platform,
       timezone: readOptionalString(payload.timezone)
@@ -134,10 +140,8 @@ export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: Dri
     if (token === null) {
       return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: 'Missing driver bearer token' } });
     }
-    let verified;
-    try {
-      verified = verifyDriverToken(token, { secret: dependencies.jwtSecret });
-    } catch {
+    const driverId = await resolvePushTokenDriverId(token, dependencies);
+    if (driverId === null) {
       return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: 'Invalid driver bearer token' } });
     }
     const body = request.body;
@@ -148,7 +152,7 @@ export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: Dri
     if (devicePushToken === null) {
       return reply.code(400).send({ data: null, error: { code: 'BAD_REQUEST', message: 'devicePushToken is required' } });
     }
-    const result = await dependencies.pushTokenService.revokeDriverPushToken({ devicePushToken, driverId: verified.driverId });
+    const result = await dependencies.pushTokenService.revokeDriverPushToken({ devicePushToken, driverId });
     return reply.code(200).send({ data: result, error: null });
   });
 
@@ -202,7 +206,10 @@ export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: Dri
   });
 }
 
-function buildAuthSessionResponse(sessionInfo: DriverAuthSessionInfo, secret: string): {
+function buildAuthSessionResponse(
+  sessionInfo: Extract<DriverAuthSessionInfo, { kind: 'account' }>,
+  secret: string
+): {
   data: {
     accessToken: string;
     expiresAt: string;
@@ -210,24 +217,16 @@ function buildAuthSessionResponse(sessionInfo: DriverAuthSessionInfo, secret: st
     refreshTokenExpiresAt: string;
     tokenType: 'Bearer';
     ttlSeconds: number;
-    use: 'consent_and_assigned_route' | 'driver_account';
+    use: 'driver_account';
   };
   error: null;
 } {
-  const tokenResult = sessionInfo.kind === 'account'
-    ? signDriverAccountToken({
-        accountId: sessionInfo.accountId,
-        expiresInSeconds: DRIVER_ACCESS_TOKEN_TTL_SECONDS,
-        subject: `driver-account:${sessionInfo.accountId}`,
-        tokenVersion: sessionInfo.tokenVersion
-      }, { secret })
-    : signDriverToken({
-        driverId: sessionInfo.driverId,
-        expiresInSeconds: DRIVER_ACCESS_TOKEN_TTL_SECONDS,
-        shopDomain: sessionInfo.shopDomain,
-        subject: `driver:${sessionInfo.driverId}`,
-        tokenVersion: sessionInfo.tokenVersion
-      }, { secret });
+  const tokenResult = signDriverAccountToken({
+    accountId: sessionInfo.accountId,
+    expiresInSeconds: DRIVER_ACCESS_TOKEN_TTL_SECONDS,
+    subject: `driver-account:${sessionInfo.accountId}`,
+    tokenVersion: sessionInfo.tokenVersion
+  }, { secret });
 
   return {
     data: {
@@ -237,10 +236,31 @@ function buildAuthSessionResponse(sessionInfo: DriverAuthSessionInfo, secret: st
       refreshTokenExpiresAt: sessionInfo.expiresAt.toISOString(),
       tokenType: 'Bearer',
       ttlSeconds: DRIVER_ACCESS_TOKEN_TTL_SECONDS,
-      use: sessionInfo.kind === 'account' ? 'driver_account' : 'consent_and_assigned_route'
+      use: 'driver_account'
     },
     error: null
   };
+}
+
+async function resolvePushTokenDriverId(
+  token: string,
+  dependencies: DriverAuthDependencies
+): Promise<string | null> {
+  try {
+    const routeToken = verifyDriverRouteToken(token, { secret: dependencies.jwtSecret });
+    const scope = await dependencies.driverTokenAccessRepository?.resolveDriverRouteAccess({
+      accountId: routeToken.accountId,
+      routePlanId: routeToken.routePlanId,
+      tokenVersion: routeToken.tokenVersion
+    });
+    return scope?.driverId ?? null;
+  } catch {
+    try {
+      return verifyDriverToken(token, { secret: dependencies.jwtSecret }).driverId;
+    } catch {
+      return null;
+    }
+  }
 }
 
 function objectOrNull(value: unknown): Record<string, unknown> | null {

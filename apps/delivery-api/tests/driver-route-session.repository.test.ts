@@ -1,7 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaDriverRouteSessionRepository } from '../src/modules/driver/driver-route-session.repository.js';
-import { DriverRouteSessionScopeError } from '../src/modules/driver/driver-route-session.types.js';
 import { ROUTE_ACTIVE_COMPATIBILITY_STATUSES } from '../src/modules/route-plans/route-plan-lifecycle.js';
 
 const startedAt = new Date('2026-06-15T12:00:00.000Z');
@@ -63,16 +62,15 @@ describe('PrismaDriverRouteSessionRepository', () => {
 
     const result = await repository.getActiveRouteSession({
       driverId: 'driver-id',
-      shopDomain: 'https://Dev1.TomatonoFood.com/app'
+      routePlanId: 'route-plan-id',
+      shopDomain: 'https://Dev1.TomatonoFood.com/app',
+      shopId: 'shop-id'
     });
 
-    expect(prisma.shop.findUnique).toHaveBeenCalledWith({
-      select: { id: true },
-      where: { appId_shopDomain: { appId: 'clever', shopDomain: 'dev1.tomatonofood.com' } }
-    });
     expect(prisma.routePlan.findFirst).toHaveBeenCalledWith(expect.objectContaining({
       where: {
         driverId: 'driver-id',
+        id: 'route-plan-id',
         shopId: 'shop-id',
         status: 'IN_PROGRESS'
       }
@@ -80,7 +78,8 @@ describe('PrismaDriverRouteSessionRepository', () => {
     expect(assignedRouteService.getAssignedRoute).toHaveBeenCalledWith({
       driverId: 'driver-id',
       routeContext: 'route-plan-id',
-      shopDomain: 'dev1.tomatonofood.com'
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
     });
     expect(result).toEqual({
       status: 'ACTIVE_SESSION',
@@ -119,7 +118,9 @@ describe('PrismaDriverRouteSessionRepository', () => {
 
     const result = await repository.getActiveRouteSession({
       driverId: 'driver-id',
-      shopDomain: 'dev1.tomatonofood.com'
+      routePlanId: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
     });
 
     expect(JSON.stringify(prisma.driverEvent.findMany.mock.calls)).toContain('"eventType":"ROUTE_STARTED"');
@@ -158,7 +159,9 @@ describe('PrismaDriverRouteSessionRepository', () => {
 
     await expect(repository.getActiveRouteSession({
       driverId: 'driver-id',
-      shopDomain: 'dev1.tomatonofood.com'
+      routePlanId: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
     })).resolves.toEqual({ status: 'NO_ACTIVE_SESSION' });
     expect(assignedRouteService.getAssignedRoute).not.toHaveBeenCalled();
   });
@@ -180,7 +183,9 @@ describe('PrismaDriverRouteSessionRepository', () => {
 
     const result = await repository.getActiveRouteSession({
       driverId: 'driver-id',
-      shopDomain: 'dev1.tomatonofood.com'
+      routePlanId: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
     });
 
     expect(result).toMatchObject({
@@ -194,13 +199,15 @@ describe('PrismaDriverRouteSessionRepository', () => {
   });
 
   test('rejects token context outside the driver shop scope', async () => {
-    const { assignedRouteService, prisma } = createHarness({ driver: null });
+    const { assignedRouteService, prisma } = createHarness({ inProgressRoute: null });
     const repository = new PrismaDriverRouteSessionRepository(prisma as never, assignedRouteService);
 
     await expect(repository.getActiveRouteSession({
       driverId: 'foreign-driver-id',
-      shopDomain: 'dev1.tomatonofood.com'
-    })).rejects.toBeInstanceOf(DriverRouteSessionScopeError);
+      routePlanId: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    })).resolves.toEqual({ status: 'NO_ACTIVE_SESSION' });
   });
 });
 

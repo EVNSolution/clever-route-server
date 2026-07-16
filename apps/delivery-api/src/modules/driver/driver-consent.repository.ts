@@ -1,28 +1,38 @@
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
-import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 
 import type {
   RecordDriverConsentsInput,
   RecordDriverConsentsResult
 } from './driver-consent.types.js';
-import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
+type DriverConsentPrismaClient = Pick<PrismaClient, 'driverConsentRecord' | 'routePlan'>;
 
-type DriverConsentPrismaClient = Pick<PrismaClient, 'driver' | 'driverConsentRecord' | 'shop'>;
+export class DriverRouteAssignmentError extends Error {
+  constructor(
+    message: string,
+    readonly code: 'ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH' | 'ROUTE_ASSIGNMENT_NOT_FOUND'
+  ) {
+    super(message);
+    this.name = 'DriverRouteAssignmentError';
+  }
+}
 
 export class PrismaDriverConsentRepository {
   constructor(private readonly prisma: DriverConsentPrismaClient) {}
 
   async recordDriverConsents(input: RecordDriverConsentsInput): Promise<RecordDriverConsentsResult> {
-    const shopDomain = normalizeDriverCommerceDomain(input.shopDomain);
-    const shop = await this.prisma.shop.findUnique({ where: appScopedShopWhere({ shopDomain }) });
-    if (shop === null) {
-      throw new Error(`Shop not installed: ${shopDomain}`);
+    const routePlan = await this.prisma.routePlan.findUnique({
+      select: { driverId: true, shopId: true, driver: { select: { accountId: true } } },
+      where: { id: input.routePlanId }
+    });
+    if (routePlan === null || routePlan.driver === null || routePlan.driverId === null) {
+      throw new DriverRouteAssignmentError('Route assignment not found', 'ROUTE_ASSIGNMENT_NOT_FOUND');
     }
-
-    const driver = await this.prisma.driver.findUnique({ where: { id: input.driverId } });
-    if (driver === null || driver.shopId !== shop.id) {
-      throw new Error(`Driver not found for shop: ${input.driverId}`);
+    if (routePlan.driver.accountId !== input.accountId) {
+      throw new DriverRouteAssignmentError(
+        'Route assignment account mismatch',
+        'ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH'
+      );
     }
 
     const appContext = jsonOrNull(input.appContext);
@@ -33,28 +43,30 @@ export class PrismaDriverConsentRepository {
         const record = await this.prisma.driverConsentRecord.upsert({
           create: {
             accepted: consent.accepted,
+            accountId: input.accountId,
             appContext,
             consentType: consent.type,
             consentVersion: consent.version,
             deviceContext,
-            driverId: input.driverId,
+            driverId: routePlan.driverId,
             recordedAt: input.recordedAt,
-            routeContext: input.routeContext,
-            shopId: shop.id
+            routeContext: input.routePlanId,
+            shopId: routePlan.shopId
           },
           update: {
             accepted: consent.accepted,
             appContext,
             deviceContext,
+            driverId: routePlan.driverId,
             recordedAt: input.recordedAt,
-            routeContext: input.routeContext,
-            shopId: shop.id
+            routeContext: input.routePlanId,
+            shopId: routePlan.shopId
           },
           where: {
-            driverId_consentType_consentVersion: {
+            accountId_consentType_consentVersion: {
+              accountId: input.accountId,
               consentType: consent.type,
-              consentVersion: consent.version,
-              driverId: input.driverId
+              consentVersion: consent.version
             }
           }
         });

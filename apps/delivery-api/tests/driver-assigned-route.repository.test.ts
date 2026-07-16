@@ -69,11 +69,10 @@ describe('PrismaDriverAssignedRouteRepository', () => {
     const result = await repository.getAssignedRoute({
       driverId: 'driver-id',
       routeContext: 'route-plan-id',
-      shopDomain: 'https://Dev1.TomatonoFood.com/routes'
+      shopDomain: 'https://Dev1.TomatonoFood.com/routes',
+      shopId: 'shop-id'
     });
 
-    expect(prisma.shop.findUnique).toHaveBeenCalledWith({ where: { appId_shopDomain: { appId: 'clever', shopDomain: 'dev1.tomatonofood.com' } } });
-    expect(prisma.driver.findUnique).toHaveBeenCalledWith({ where: { id: 'driver-id' } });
     const routePlanFindArgs = prisma.routePlan.findFirst.mock.calls[0]?.[0];
     expect(routePlanFindArgs?.where).toMatchObject({
       driverId: 'driver-id',
@@ -134,7 +133,8 @@ describe('PrismaDriverAssignedRouteRepository', () => {
     const result = await repository.getAssignedRoute({
       driverId: 'driver-id',
       routeContext: 'route-plan-id',
-      shopDomain: 'dev1.tomatonofood.com'
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
     });
 
     expect(routeGeometryProvider.buildRoute).not.toHaveBeenCalled();
@@ -187,7 +187,8 @@ describe('PrismaDriverAssignedRouteRepository', () => {
     const result = await repository.getAssignedRoute({
       driverId: 'driver-id',
       routeContext: 'route-plan-id',
-      shopDomain: 'dev1.tomatonofood.com'
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
     });
 
     expect(result).toMatchObject({
@@ -205,17 +206,17 @@ describe('PrismaDriverAssignedRouteRepository', () => {
   });
 
   test('does not leak a route for a token driver outside the token shop', async () => {
-    const { prisma } = createPrismaHarness({ driverShopId: 'other-shop-id' });
+    const { prisma } = createPrismaHarness({ routePlan: null });
     const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
 
     await expect(
       repository.getAssignedRoute({
         driverId: 'driver-id',
         routeContext: 'route-plan-id',
-        shopDomain: 'example.myshopify.com'
+        shopDomain: 'example.myshopify.com',
+        shopId: 'other-shop-id'
       })
-    ).rejects.toThrow('Driver not found for shop');
-    expect(prisma.routePlan.findFirst).not.toHaveBeenCalled();
+    ).resolves.toEqual({ status: 'NO_ASSIGNED_ROUTE' });
   });
 
   test('returns no assigned route for route context mismatch', async () => {
@@ -225,7 +226,8 @@ describe('PrismaDriverAssignedRouteRepository', () => {
     const result = await repository.getAssignedRoute({
       driverId: 'driver-id',
       routeContext: 'wrong-route',
-      shopDomain: 'example.myshopify.com'
+      shopDomain: 'example.myshopify.com',
+      shopId: 'shop-id'
     });
 
     expect(result).toEqual({ status: 'NO_ASSIGNED_ROUTE' });
@@ -240,7 +242,8 @@ describe('PrismaDriverAssignedRouteRepository', () => {
     const result = await repository.getAssignedRoute({
       driverId: 'driver-id',
       routeContext: 'completed-route-plan-id',
-      shopDomain: 'dev1.tomatonofood.com'
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
     });
 
     expect(result).toEqual({ status: 'NO_ASSIGNED_ROUTE' });
