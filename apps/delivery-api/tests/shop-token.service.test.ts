@@ -47,13 +47,13 @@ describe('ShopTokenService', () => {
       shopDomain: ' Example.MyShopify.com ',
       shopifyShopGid: 'gid://shopify/Shop/123',
       tokenIssuedAt: new Date('2026-05-07T01:00:00.000Z'),
-      tokenScopes: ['read_orders', 'write_orders', 'read_orders']
+      tokenScopes: ['read_orders', 'read_customers', 'read_orders']
     });
 
     expect(stored.shopDomain).toBe('example.myshopify.com');
     expect(stored.adminAccessTokenCiphertext).not.toContain('shpat_access_token');
     expect(stored.adminRefreshTokenCiphertext).not.toContain('shpat_refresh_token');
-    expect(stored.tokenScopes).toEqual(['read_orders', 'write_orders']);
+    expect(stored.tokenScopes).toEqual(['read_orders', 'read_customers']);
     expect(prisma.shop.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { appId_shopDomain: { appId: 'clever', shopDomain: 'example.myshopify.com' } }

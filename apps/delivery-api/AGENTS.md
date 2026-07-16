@@ -4,6 +4,9 @@ This package is the CLEVER route server API. Treat Shopify-named modules as
 legacy compatibility code, not as the future product boundary.
 
 Rules:
+- Treat Shopify order and customer records as immutable upstream source data.
+  Shopify Admin GraphQL integration in this service is query-only; persist
+  operational corrections in the CLEVER database instead of writing back.
 - Keep driver/mobile API contracts backward-compatible unless a migration plan
   says otherwise.
 - Add WordPress/WooCommerce source fields additively first; do not destructively

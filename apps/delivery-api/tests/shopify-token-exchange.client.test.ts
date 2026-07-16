@@ -15,7 +15,7 @@ describe('ShopifyTokenExchangeClient', () => {
             expires_in: 3600,
             refresh_token: 'shprt_refresh_token',
             refresh_token_expires_in: 7_776_000,
-            scope: 'read_orders,write_orders'
+            scope: 'read_orders,read_customers'
           }),
           { headers: { 'content-type': 'application/json' }, status: 200 }
         )
@@ -37,7 +37,7 @@ describe('ShopifyTokenExchangeClient', () => {
       expiresIn: 3600,
       refreshToken: 'shprt_refresh_token',
       refreshTokenExpiresIn: 7_776_000,
-      scope: 'read_orders,write_orders'
+      scope: 'read_orders,read_customers'
     });
     expect(fetchImpl).toHaveBeenCalledWith(
       'https://example.myshopify.com/admin/oauth/access_token',

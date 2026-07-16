@@ -33,6 +33,15 @@ Relevant Shopify references:
 - Session-token exchange:
   <https://shopify.dev/docs/apps/auth/get-access-tokens/token-exchange/>
 
+## Shopify source data ownership
+
+Shopify order and customer records are immutable upstream source data for
+K-food and every development store. The delivery server uses Shopify Admin
+GraphQL only for queries and rejects mutation operations before network I/O.
+Operator corrections, delivery metadata, route state, and other operational
+values are written only to the CLEVER database. Synchronization flows from
+Shopify into CLEVER; there is no order/customer write-back path.
+
 ## POST `/shopify/auth/token-exchange`
 
 Exchanges a Shopify App Bridge session token for an Admin API token and stores
@@ -61,7 +70,7 @@ Success `200`:
 {
   "data": {
     "shopDomain": "example.myshopify.com",
-    "tokenScopes": ["read_orders", "write_orders"],
+    "tokenScopes": ["read_orders", "read_customers"],
     "tokenStored": true
   },
   "error": null

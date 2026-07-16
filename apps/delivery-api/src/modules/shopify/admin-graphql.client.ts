@@ -25,6 +25,8 @@ export class ShopifyAdminGraphqlClient {
   }
 
   async request<TData = unknown>(request: ShopifyAdminGraphqlRequest): Promise<TData> {
+    assertReadOnlyGraphqlOperation(request.query);
+
     const response = await this.fetchImpl(this.endpointUrl(), {
       body: JSON.stringify({
         query: request.query,
@@ -59,6 +61,15 @@ export class ShopifyAdminGraphqlClient {
 
   private endpointUrl(): string {
     return `https://${normalizeShopDomain(this.options.shopDomain)}/admin/api/${this.options.apiVersion}/graphql.json`;
+  }
+}
+
+function assertReadOnlyGraphqlOperation(query: string): void {
+  const withoutComments = query.replace(/#[^\r\n]*/gu, ' ');
+  if (/\bmutation\b/u.test(withoutComments)) {
+    throw new Error(
+      'Shopify Admin GraphQL mutations are disabled; synchronize Shopify source data into CLEVER instead.'
+    );
   }
 }
 

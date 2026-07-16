@@ -57,4 +57,25 @@ describe('ShopifyAdminGraphqlClient', () => {
       client.request({ query: 'query Orders { orders(first: 1) { nodes { id } } }' })
     ).rejects.toThrow('Shopify Admin GraphQL error: Access denied');
   });
+
+  test('rejects Shopify mutations before network I/O', async () => {
+    const fetchImpl = vi.fn();
+    const client = new ShopifyAdminGraphqlClient({
+      accessToken: 'shpat_access_token',
+      apiVersion: '2026-04',
+      fetchImpl,
+      shopDomain: 'example.myshopify.com'
+    });
+
+    await expect(
+      client.request({
+        query: `mutation UpdateOrder($input: OrderInput!) {
+          orderUpdate(input: $input) { order { id } }
+        }`,
+        variables: { input: { id: 'gid://shopify/Order/1' } }
+      })
+    ).rejects.toThrow('Shopify Admin GraphQL mutations are disabled');
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });
