@@ -52,6 +52,11 @@ export class PrismaDriverEventRepository {
   async recordDriverEvent(input: RecordDriverEventInput): Promise<RecordDriverEventResult> {
     try {
       return await this.prisma.$transaction(async (transaction) => {
+        const duplicate = await findMatchingDriverEvent(transaction, input);
+        if (duplicate !== null) {
+          return { duplicate: true, eventId: duplicate.id };
+        }
+
         await validateDriverEventStateContext(transaction, input, input.shopId);
 
         const event = await transaction.driverEvent.create({
@@ -81,6 +86,33 @@ export class PrismaDriverEventRepository {
       throw error;
     }
   }
+}
+
+async function findMatchingDriverEvent(
+  prisma: DriverEventTransactionClient,
+  input: RecordDriverEventInput
+): Promise<{ id: string } | null> {
+  if (input.clientEventId === null || input.eventType !== 'ROUTE_COMPLETED') {
+    return null;
+  }
+
+  const event = await prisma.driverEvent.findUnique({
+    select: { eventType: true, id: true, routePlanId: true },
+    where: {
+      driverId_clientEventId: {
+        clientEventId: input.clientEventId,
+        driverId: input.driverId
+      }
+    }
+  });
+  if (event === null) {
+    return null;
+  }
+  if (event.eventType !== input.eventType || event.routePlanId !== input.routePlanId) {
+    throw new DriverEventContextError('clientEventId is already used by a different driver event');
+  }
+
+  return { id: event.id };
 }
 
 async function validateDriverEventStateContext(

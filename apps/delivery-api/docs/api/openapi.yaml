@@ -2061,7 +2061,7 @@ components:
             type: string
     DriverCompanyGuidance:
       type: object
-      required: [companyDisplayName, deliveryDate, driverInstructions, operatorSupportContact, pickupGuidance, routeName, shopDomain, timezone]
+      required: [companyDisplayName, deliveryDate, driverInstructions, executionStatus, operatorSupportContact, pickupGuidance, routeName, shopDomain, timezone]
       properties:
         companyDisplayName:
           type: string
@@ -2072,6 +2072,9 @@ components:
           type: array
           items:
             type: string
+        executionStatus:
+          enum: [READY, IN_PROGRESS]
+          type: string
         operatorSupportContact:
           type:
             - string

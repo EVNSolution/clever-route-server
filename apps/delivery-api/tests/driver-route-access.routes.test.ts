@@ -45,6 +45,7 @@ const invitedLookup = {
     companyDisplayName: 'Tomatono Toronto',
     deliveryDate: '2026-05-12',
     driverInstructions: ['Bring insulated bag'],
+    executionStatus: 'READY' as const,
     operatorSupportContact: '+14165550000',
     pickupGuidance: 'Meet at dispatch desk by 9:00 AM',
     routeName: 'Tuesday AM Route',

@@ -127,6 +127,40 @@ describe('Driver events route', () => {
     }
   });
 
+  test('authenticates a completed assignment only for an idempotent completion retry', async () => {
+    const { dependencies, recordDriverEvent, resolveDriverRouteAccess } = createDependencyHarness();
+    recordDriverEvent.mockResolvedValueOnce({ duplicate: true, eventId: 'recorded-completion-id' });
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: {
+          clientEventId: 'route-completed-client-id',
+          deliveryStopId: null,
+          eventType: 'ROUTE_COMPLETED',
+          occurredAt: '2026-05-07T06:09:30.000Z',
+          routePlanId: 'route-plan-id'
+        },
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        data: { duplicate: true, eventId: 'recorded-completion-id' },
+        error: null
+      });
+      expect(resolveDriverRouteAccess).toHaveBeenCalledWith({
+        accountId: 'account-id',
+        routePlanId: 'route-plan-id',
+        tokenVersion: 0
+      }, { allowCompleted: true });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('maps missing terminal route/stop context to a deterministic bad request response', async () => {
     const { dependencies, recordDriverEvent } = createDependencyHarness();
     recordDriverEvent.mockRejectedValueOnce(new DriverEventContextError('missing routePlanId'));

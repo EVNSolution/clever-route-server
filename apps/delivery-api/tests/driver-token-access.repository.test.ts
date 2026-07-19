@@ -84,6 +84,41 @@ describe('PrismaDriverTokenAccessRepository', () => {
     })).resolves.toBeNull();
   });
 
+  test('resolves the same completed assignment only for completion retry authentication', async () => {
+    const routePlan = {
+      driver: {
+        accountId: 'account-id',
+        authSubject: 'driver-driver-id',
+        id: 'driver-id',
+        status: 'ACTIVE' as const
+      },
+      id: 'route-plan-id',
+      shop: { id: 'shop-id', shopDomain: 'dev1.tomatonofood.com' }
+    };
+    const { prisma } = createPrismaHarness({
+      account: { status: 'ACTIVE', tokenVersion: 2 },
+      routePlan
+    });
+    const repository = new PrismaDriverTokenAccessRepository(prisma as never);
+
+    await expect(repository.resolveDriverRouteAccess({
+      accountId: 'account-id',
+      routePlanId: 'route-plan-id',
+      tokenVersion: 2
+    }, { allowCompleted: true })).resolves.toMatchObject({
+      accountId: 'account-id',
+      driverId: 'driver-id',
+      routePlanId: 'route-plan-id'
+    });
+
+    expect(prisma.routePlan.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        id: 'route-plan-id',
+        status: { in: ['READY', 'IN_PROGRESS', 'DRAFT', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED', 'COMPLETED'] }
+      }
+    }));
+  });
+
   test('accepts an active linked driver token only when the token version still matches', async () => {
     const { prisma } = createPrismaHarness({ tokenVersion: 3 });
     const repository = new PrismaDriverTokenAccessRepository(prisma as never);
