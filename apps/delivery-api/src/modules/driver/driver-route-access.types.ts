@@ -7,6 +7,7 @@ export type DriverRouteAccessCompanyGuidance = {
   companyDisplayName: string;
   deliveryDate: string;
   driverInstructions: string[];
+  executionStatus: 'IN_PROGRESS' | 'READY';
   operatorSupportContact: string | null;
   pickupGuidance: string | null;
   routeName: string;

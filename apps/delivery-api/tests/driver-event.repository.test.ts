@@ -292,6 +292,37 @@ describe('PrismaDriverEventRepository', () => {
     expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
     expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
   });
+
+  test('acknowledges a recorded completion retry before completed-route validation', async () => {
+    const { prisma } = createPrismaHarness({
+      existingEvent: {
+        eventType: 'ROUTE_COMPLETED',
+        id: 'recorded-completion-id',
+        routePlanId: 'route-plan-id'
+      },
+      routePlan: null
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      clientEventId: 'route-completed-client-id',
+      deliveryStopId: null,
+      eventType: 'ROUTE_COMPLETED',
+      routePlanId: 'route-plan-id'
+    }))).resolves.toEqual({ duplicate: true, eventId: 'recorded-completion-id' });
+
+    expect(prisma.driverEvent.findUnique).toHaveBeenCalledWith({
+      select: { eventType: true, id: true, routePlanId: true },
+      where: {
+        driverId_clientEventId: {
+          clientEventId: 'route-completed-client-id',
+          driverId: 'driver-id'
+        }
+      }
+    });
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+    expect(prisma.routePlan.findFirst).not.toHaveBeenCalled();
+  });
 });
 
 function baseInput(overrides: Partial<Parameters<PrismaDriverEventRepository['recordDriverEvent']>[0]> = {}) {
@@ -314,6 +345,7 @@ function baseInput(overrides: Partial<Parameters<PrismaDriverEventRepository['re
 function createPrismaHarness(input: {
   completionEvent?: { id: string } | null;
   driverEventCreateError?: Error;
+  existingEvent?: { eventType: string; id: string; routePlanId: string | null } | null;
   routePlan?: { id: string } | null;
   routePlanStop?: { id: string } | null;
   routeStops?: { deliveryStop: { status: string } }[];
@@ -330,7 +362,11 @@ function createPrismaHarness(input: {
     $transaction: ReturnType<typeof vi.fn>;
     deliveryStop: { updateMany: ReturnType<typeof vi.fn> };
     driver: { findUnique: ReturnType<typeof vi.fn> };
-    driverEvent: { create: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> };
+    driverEvent: {
+      create: ReturnType<typeof vi.fn>;
+      findFirst: ReturnType<typeof vi.fn>;
+      findUnique: ReturnType<typeof vi.fn>;
+    };
     routePlan: { findFirst: ReturnType<typeof vi.fn>; updateMany: ReturnType<typeof vi.fn> };
     routePlanStop: { findFirst: ReturnType<typeof vi.fn> };
     shop: { findUnique: ReturnType<typeof vi.fn> };
@@ -347,7 +383,8 @@ function createPrismaHarness(input: {
       create: createDriverEvent,
       findFirst: vi.fn(() => Promise.resolve(
         input.completionEvent ?? (createdEventType === 'ROUTE_COMPLETED' ? { id: 'driver-event-id' } : null)
-      ))
+      )),
+      findUnique: vi.fn(() => Promise.resolve(input.existingEvent ?? null))
     },
     routePlan: {
       findFirst: vi.fn((args: { select?: { routeStops?: unknown } }) => {

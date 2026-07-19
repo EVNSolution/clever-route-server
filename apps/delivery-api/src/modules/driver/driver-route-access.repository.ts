@@ -1,5 +1,8 @@
 import type { PrismaClient } from '@prisma/client';
-import { ROUTE_DRIVER_OPERATIONAL_STATUSES } from '../route-plans/route-plan-lifecycle.js';
+import {
+  ROUTE_DRIVER_OPERATIONAL_STATUSES,
+  toRouteExecutionStatus
+} from '../route-plans/route-plan-lifecycle.js';
 
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 import type {
@@ -9,7 +12,6 @@ import type {
   DriverRouteAccessLookupInput,
   DriverRouteAccessLookupResult
 } from './driver-route-access.types.js';
-
 type DriverRouteAccessPrismaClient = Pick<PrismaClient, 'driver' | 'routePlan'>;
 
 type DriverRoutePlanRecord = {
@@ -31,6 +33,7 @@ type DriverRoutePlanRecord = {
   shop: {
     shopDomain: string;
   };
+  status: string;
 };
 
 const routePlanSelect = {
@@ -47,7 +50,8 @@ const routePlanSelect = {
   id: true,
   name: true,
   planDate: true,
-  shop: { select: { shopDomain: true } }
+  shop: { select: { shopDomain: true } },
+  status: true
 } as const;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -67,7 +71,11 @@ export class PrismaDriverRouteAccessRepository {
 
     const routePlan = await this.prisma.routePlan.findUnique({
       select: routePlanSelect,
-      where: { id: routeContext }
+      where: {
+        driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        id: routeContext,
+        status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
+      }
     });
 
     if (routePlan === null) {
@@ -139,7 +147,9 @@ export class PrismaDriverRouteAccessRepository {
       take: 3,
       where: {
         constraints: { path: ['routeScope', 'routeScopeKey'], equals: input.routeContext },
-        driver: { is: { accountId: input.accountId, authSubject: { not: null }, status: 'ACTIVE' } }
+        driver: { is: { accountId: input.accountId, authSubject: { not: null }, status: 'ACTIVE' } },
+        driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
 
@@ -221,6 +231,7 @@ function buildCompanyGuidance(routePlan: DriverRoutePlanRecord): DriverRouteAcce
     companyDisplayName,
     deliveryDate: routePlan.planDate.toISOString().slice(0, 10),
     driverInstructions: readStringArray(constraints?.driverInstructions),
+    executionStatus: toRouteExecutionStatus(routePlan.status) === 'IN_PROGRESS' ? 'IN_PROGRESS' : 'READY',
     operatorSupportContact: readString(constraints?.operatorSupportContact),
     pickupGuidance: readString(constraints?.pickupGuidance),
     routeName: routePlan.name,

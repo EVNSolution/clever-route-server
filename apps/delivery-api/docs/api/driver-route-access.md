@@ -85,6 +85,7 @@ Account route response:
           "shopDomain": "tomatono.myshopify.com",
           "routeName": "Tuesday AM Route",
           "deliveryDate": "2026-05-12",
+          "executionStatus": "READY",
           "timezone": "America/Toronto",
           "pickupGuidance": "Meet at dispatch desk by 9:00 AM",
           "operatorSupportContact": "+14165550000",
@@ -104,6 +105,7 @@ Registered account with no active route assignments:
 ```
 
 Exact route context lookup may return a single `INVITED` object with the same route choice fields at the top level.
+Exact and shared-scope lookups apply the same operational-state filter as the account route list, so completed or cancelled routes never receive a new route token.
 
 Safe denial statuses return `200` with no guidance payload:
 

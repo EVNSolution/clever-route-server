@@ -1,6 +1,9 @@
 import type { PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
-import { ROUTE_DRIVER_OPERATIONAL_STATUSES } from '../route-plans/route-plan-lifecycle.js';
+import {
+  ROUTE_DRIVER_OPERATIONAL_STATUSES,
+  ROUTE_DRIVER_VISIBLE_STATUSES
+} from '../route-plans/route-plan-lifecycle.js';
 
 export type DriverTokenAccessPrismaClient = Pick<PrismaClient, 'driver' | 'driverAccount' | 'routePlan'>;
 
@@ -56,7 +59,8 @@ export class PrismaDriverTokenAccessRepository {
   }
 
   async resolveDriverRouteAccess(
-    input: DriverRouteTokenAccessCheckInput
+    input: DriverRouteTokenAccessCheckInput,
+    options: { allowCompleted?: boolean } = {}
   ): Promise<DriverRouteAccessScope | null> {
     if (!(await this.isDriverAccountAccessTokenActive(input))) {
       return null;
@@ -71,9 +75,13 @@ export class PrismaDriverTokenAccessRepository {
         shop: { select: { id: true, shopDomain: true } }
       },
       where: {
-        driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
         id: input.routePlanId,
-        status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
+        ...(options.allowCompleted === true
+          ? { status: { in: [...ROUTE_DRIVER_VISIBLE_STATUSES] } }
+          : {
+              driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+              status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
+            })
       }
     });
 

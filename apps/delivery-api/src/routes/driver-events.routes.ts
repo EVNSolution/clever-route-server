@@ -737,7 +737,9 @@ export function registerDriverEventRoutes(
   }
 
   app.post<{ Body: DriverEventRequestBody }>('/driver/events', async (request, reply) => {
-    const authentication = await authenticateDriverRequest(request, dependencies);
+    const authentication = await authenticateDriverRequest(request, dependencies, {
+      allowCompletedRoute: request.body?.eventType === 'ROUTE_COMPLETED'
+    });
     if (authentication.status !== 'authenticated') {
       return reply
         .code(401)
@@ -790,7 +792,8 @@ export function registerDriverEventRoutes(
 
 async function authenticateDriverRequest(
   request: FastifyRequest,
-  dependencies: DriverApiDependencies
+  dependencies: DriverApiDependencies,
+  options: { allowCompletedRoute?: boolean } = {}
 ): Promise<DriverAuthenticationResult> {
   const token = extractBearerToken(request.headers.authorization);
   if (token === null) {
@@ -813,11 +816,14 @@ async function authenticateDriverRequest(
     return { status: 'invalid' };
   }
 
-  const driverContext = await tokenAccessRepository.resolveDriverRouteAccess({
+  const routeAccessInput = {
     accountId: routeToken.accountId,
     routePlanId: routeToken.routePlanId,
     tokenVersion: routeToken.tokenVersion
-  });
+  };
+  const driverContext = options.allowCompletedRoute === true
+    ? await tokenAccessRepository.resolveDriverRouteAccess(routeAccessInput, { allowCompleted: true })
+    : await tokenAccessRepository.resolveDriverRouteAccess(routeAccessInput);
   if (driverContext === null) return { status: 'invalid' };
 
   return { status: 'authenticated', context: driverContext };

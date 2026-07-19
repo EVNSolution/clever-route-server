@@ -32,9 +32,14 @@ describe('PrismaDriverRouteAccessRepository', () => {
         id: true,
         name: true,
         planDate: true,
-        shop: { select: { shopDomain: true } }
+        shop: { select: { shopDomain: true } },
+        status: true
       },
-      where: { id: routePlanId }
+      where: {
+        driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        id: routePlanId,
+        status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
+      }
     });
     expect(result).toEqual({
       driverContext: {
@@ -52,6 +57,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
         companyDisplayName: 'Tomatono Toronto',
         deliveryDate: '2026-05-12',
         driverInstructions: ['Bring insulated bag'],
+        executionStatus: 'READY',
         operatorSupportContact: '+14165550000',
         pickupGuidance: 'Meet at dispatch desk by 9:00 AM',
         routeName: 'Tuesday AM Route',
@@ -100,7 +106,8 @@ describe('PrismaDriverRouteAccessRepository', () => {
         id: true,
         name: true,
         planDate: true,
-        shop: { select: { shopDomain: true } }
+        shop: { select: { shopDomain: true } },
+        status: true
       },
       where: {
         driver: { is: { authSubject: { not: null }, accountId: 'account-id', status: 'ACTIVE' } },
@@ -122,6 +129,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
         },
         companyGuidance: {
           companyDisplayName: 'Tomatono Toronto',
+          executionStatus: 'READY',
           routeName: 'Tuesday AM Route',
           shopDomain: 'tomatono.myshopify.com'
         }
@@ -135,6 +143,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
         },
         companyGuidance: {
           companyDisplayName: 'North Market',
+          executionStatus: 'READY',
           routeName: 'North PM Route',
           shopDomain: 'north-market.myshopify.com'
         }
@@ -210,6 +219,23 @@ describe('PrismaDriverRouteAccessRepository', () => {
     ).resolves.toEqual({ status: 'BLOCKED' });
   });
 
+  test('narrows exact route lookup to operational routes without a completion event', async () => {
+    const { prisma } = createPrismaHarness({ routePlan: null });
+    const repository = new PrismaDriverRouteAccessRepository(prisma as never);
+
+    await expect(
+      repository.lookupRouteAccess({ accountId: 'account-id', routeContext: routePlanId })
+    ).resolves.toEqual({ status: 'NOT_FOUND' });
+
+    expect(prisma.routePlan.findUnique).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        id: routePlanId,
+        status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
+      }
+    }));
+  });
+
   test('returns multiple matches for shared route scope without route or token evidence', async () => {
     const { prisma } = createPrismaHarness({
       sharedRoutePlans: [
@@ -247,12 +273,15 @@ describe('PrismaDriverRouteAccessRepository', () => {
         id: true,
         name: true,
         planDate: true,
-        shop: { select: { shopDomain: true } }
+        shop: { select: { shopDomain: true } },
+        status: true
       },
       take: 3,
       where: {
         constraints: { path: ['routeScope', 'routeScopeKey'], equals: 'toronto-shared-route-scope' },
-        driver: { is: { authSubject: { not: null }, accountId: 'account-id', status: 'ACTIVE' } }
+        driver: { is: { authSubject: { not: null }, accountId: 'account-id', status: 'ACTIVE' } },
+        driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
     expect(result).toEqual({
@@ -367,6 +396,7 @@ function routePlanRecord(
     id?: string;
     name?: string;
     shopDomain?: string;
+    status?: string;
   } = {}
 ) {
   const shopDomain = overrides.shopDomain ?? 'tomatono.myshopify.com';
@@ -397,6 +427,7 @@ function routePlanRecord(
     planDate: new Date('2026-05-12T00:00:00.000Z'),
     shop: {
       shopDomain
-    }
+    },
+    status: overrides.status ?? 'READY'
   };
 }
