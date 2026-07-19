@@ -42,7 +42,7 @@ import { applyCachedRouteGeometry, computeRouteShapeSignature, routeGeometryCach
 import { isRouteReadyStatus, toRouteExecutionStatus } from './route-plan-lifecycle.js';
 import type { RouteGeometryCacheRead, RouteGeometryCacheWrite } from './route-plan-geometry-cache.js';
 import type { RoutePlanRepository } from './route-plan.service.js';
-import { readNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
+import { resolveNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from '../shopify/shopify-app-scope.js';
 import { recordInventorySourceItemDeltas } from '../inventory/inventory.service.js';
 
@@ -2075,7 +2075,10 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
       matchReasons: order.deliveryCustomerProfileLinks?.[0]?.matchReasons ?? [],
       matchStatus: order.deliveryCustomerProfileLinks?.[0]?.matchStatus ?? null
     },
-    normalizedPaymentStatus: readNormalizedPaymentStatus(rawPayload?.normalizedPaymentStatus),
+    normalizedPaymentStatus: resolveNormalizedPaymentStatus({
+      financialStatus: order.financialStatus,
+      normalizedPaymentStatus: rawPayload?.normalizedPaymentStatus
+    }),
     currencyCode: order.currencyCode ?? null,
     distanceFromPreviousMeters: routeStop.distanceFromPreviousMeters,
     durationFromPreviousSeconds: routeStop.durationFromPreviousSeconds,

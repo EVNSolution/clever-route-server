@@ -19,7 +19,7 @@ import {
 } from "./order-operate-status.js";
 import { toOrderItemDto, type OrderItemRecordLike } from "../order-items/order-items.js";
 import { recordInventorySourceItemDeltas } from "../inventory/inventory.service.js";
-import { readNormalizedPaymentStatus } from "../payments/normalized-payment-status.js";
+import { resolveNormalizedPaymentStatus } from "../payments/normalized-payment-status.js";
 import type { AdminNotificationServiceApi } from "../notifications/admin-notification.service.js";
 import type { AdminWebNotificationEvent } from "../notifications/admin-web-notification-events.js";
 import { readWooCommerceRawGeocodingAddress } from "../woocommerce/woocommerce-order.mapper.js";
@@ -2700,9 +2700,10 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     readYmd(raw?.sourceUpdatedDate) ??
     datePart(sourceUpdatedAt) ??
     sourceCreatedDate;
-  const normalizedPaymentStatus = readNormalizedPaymentStatus(
-    raw?.normalizedPaymentStatus,
-  );
+  const normalizedPaymentStatus = resolveNormalizedPaymentStatus({
+    financialStatus: order.financialStatus,
+    normalizedPaymentStatus: raw?.normalizedPaymentStatus,
+  });
 
   return {
     cancelledAt: formatDateTime(order.cancelledAt),

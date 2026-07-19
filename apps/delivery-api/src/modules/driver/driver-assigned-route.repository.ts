@@ -18,7 +18,7 @@ import type {
 import { applyCachedRouteGeometry, computeRouteShapeSignature } from '../route-plans/route-plan-geometry-cache.js';
 import { ROUTE_DRIVER_OPERATIONAL_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 import type { RouteGeometryCacheRead } from '../route-plans/route-plan-geometry-cache.js';
-import { readNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
+import { resolveNormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
 import {
   aggregateOrderItems,
   toOrderItemDto,
@@ -287,7 +287,10 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssi
     },
     deliveryStopId: deliveryStop.id,
     items: (deliveryStop.order.orderItems ?? []).map((item) => toOrderItemDto(item)),
-    normalizedPaymentStatus: readNormalizedPaymentStatus(rawPayload?.normalizedPaymentStatus),
+    normalizedPaymentStatus: resolveNormalizedPaymentStatus({
+      financialStatus: deliveryStop.order.financialStatus,
+      normalizedPaymentStatus: rawPayload?.normalizedPaymentStatus
+    }),
     orderName: deliveryStop.order.name,
     phone: deliveryStop.phone,
     recipientName: deliveryStop.recipientName,
@@ -330,7 +333,10 @@ function toRoutePlanDetailStop(routeStop: AssignedRoutePlanStopRecord): RoutePla
     financialStatus: deliveryStop.order.financialStatus,
     fulfillmentStatus: deliveryStop.order.fulfillmentStatus,
     items: (deliveryStop.order.orderItems ?? []).map((item) => toOrderItemDto(item)),
-    normalizedPaymentStatus: readNormalizedPaymentStatus(rawPayload?.normalizedPaymentStatus),
+    normalizedPaymentStatus: resolveNormalizedPaymentStatus({
+      financialStatus: deliveryStop.order.financialStatus,
+      normalizedPaymentStatus: rawPayload?.normalizedPaymentStatus
+    }),
     orderId: deliveryStop.order.id,
     orderName: deliveryStop.order.name,
     paymentStatus: deliveryStop.order.financialStatus,
