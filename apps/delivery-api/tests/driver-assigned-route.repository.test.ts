@@ -172,6 +172,28 @@ describe('PrismaDriverAssignedRouteRepository', () => {
     expect(typeof cacheFindArgs?.where?.routePlanId_shapeSignature?.shapeSignature).toBe('string');
   });
 
+  test('falls back to Shopify financial status when canonical payment status is absent', async () => {
+    const routePlan = structuredClone(routePlanRecord);
+    Reflect.deleteProperty(routePlan.routeStops[0]!.deliveryStop.order.rawPayload, 'normalizedPaymentStatus');
+    routePlan.routeStops[0]!.deliveryStop.order.financialStatus = 'PAID';
+    const { prisma } = createPrismaHarness({ routePlan });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(result).toMatchObject({
+      status: 'ASSIGNED_ROUTE',
+      route: {
+        stops: [{ normalizedPaymentStatus: 'PAID_CONFIRMED' }]
+      }
+    });
+  });
+
   test('falls back to latest geometry metadata without returning stale line data on assigned-route reads', async () => {
     const { prisma } = createPrismaHarness({
       routeGeometryCacheFindFirst: {
