@@ -81,6 +81,8 @@ type AssignedRoutePlanStopRecord = {
     recipientName: string | null;
     status: string;
   };
+  durationFromPreviousSeconds: number | null;
+  estimatedArrivalAt: Date | null;
   sequence: number;
 };
 
@@ -286,6 +288,8 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssi
       longitude: decimalNumber(deliveryStop.longitude)
     },
     deliveryStopId: deliveryStop.id,
+    durationFromPreviousSeconds: routeStop.durationFromPreviousSeconds,
+    estimatedArrivalAt: routeStop.estimatedArrivalAt?.toISOString() ?? null,
     items: (deliveryStop.order.orderItems ?? []).map((item) => toOrderItemDto(item)),
     normalizedPaymentStatus: resolveNormalizedPaymentStatus({
       financialStatus: deliveryStop.order.financialStatus,

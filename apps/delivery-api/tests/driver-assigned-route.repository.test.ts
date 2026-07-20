@@ -50,7 +50,9 @@ const routePlanRecord = {
         province: 'ON',
         recipientName: 'Recipient One',
         status: 'ASSIGNED'
-      },
+    },
+      durationFromPreviousSeconds: 600,
+      estimatedArrivalAt: null,
       sequence: 1
     }
   ],
@@ -102,6 +104,8 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             },
             coordinates: { latitude: 43.6487, longitude: -79.3817 },
             deliveryStopId: 'stop-id',
+            durationFromPreviousSeconds: 600,
+            estimatedArrivalAt: null,
             items: [
               {
                 name: 'Tomato Box',

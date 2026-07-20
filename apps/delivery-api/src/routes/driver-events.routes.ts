@@ -51,7 +51,8 @@ import type { DriverRouteSessionRestoreServiceApi } from '../modules/driver/driv
 import {
   DriverEventContextError,
   DriverEventRouteNotInProgressError,
-  DriverEventScopeError
+  DriverEventScopeError,
+  type RecordDriverEventResult
 } from '../modules/driver/driver-event.repository.js';
 import {
   createRouteTrackingPositionEvent,
@@ -75,7 +76,7 @@ export type DriverApiDependencies = {
       routePlanId: string | null;
       shopDomain: string;
       shopId: string;
-    }): Promise<{ duplicate: boolean; eventId: string }>;
+    }): Promise<RecordDriverEventResult>;
   };
   driverSelfService?: DriverSelfServiceApi;
   driverRouteSessionRestoreService?: DriverRouteSessionRestoreServiceApi;
@@ -766,7 +767,7 @@ export function registerDriverEventRoutes(
         .send(errorResponse('ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH', 'Driver route assignment rejected'));
     }
 
-    let result: { duplicate: boolean; eventId: string };
+    let result: RecordDriverEventResult;
     try {
       result = await dependencies.driverEventService.recordDriverEvent({
         ...eventInput,
@@ -821,6 +822,7 @@ export function registerDriverEventRoutes(
     return reply.code(result.duplicate ? 200 : 202).send({
       data: {
         duplicate: result.duplicate,
+        ...(result.etaUpdate === undefined ? {} : { etaUpdate: result.etaUpdate }),
         eventId: result.eventId
       },
       error: null

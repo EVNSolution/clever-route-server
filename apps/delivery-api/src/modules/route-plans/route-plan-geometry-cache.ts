@@ -254,7 +254,7 @@ function readRouteMetrics(value: unknown): RoutePlanRouteMetrics | null {
   };
 }
 
-function readRouteStopPoints(value: unknown): RoutePlanRouteStopPoint[] {
+export function readRouteStopPoints(value: unknown): RoutePlanRouteStopPoint[] {
   if (!Array.isArray(value)) return [];
   return value.map((entry) => readRouteStopPoint(entry)).filter((entry): entry is RoutePlanRouteStopPoint => entry !== null);
 }
