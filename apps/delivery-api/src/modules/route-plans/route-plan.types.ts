@@ -108,6 +108,7 @@ export type RoutePlanSummary = {
   planDate: string;
   routeEndMode: RoutePlanEndMode;
   scheduledStartAt?: string | null;
+  scheduledStartTimeZone?: string | null;
   routeGroupingChild?: {
     groupingId: string;
     status: string;

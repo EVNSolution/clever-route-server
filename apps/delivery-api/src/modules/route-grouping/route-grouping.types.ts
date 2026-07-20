@@ -67,6 +67,7 @@ export type RouteGroupingChildDto = {
   sortOrder: number | null;
   stops: RouteGroupingAssignmentDto[];
   stopsCount: number;
+  updatedAt: string;
 };
 
 export type RouteGroupingWarningDto = {
@@ -201,6 +202,9 @@ export type UpdateRouteGroupingBranchOrdersInput = {
 export type RouteGroupingDraftRouteInput = {
   branchId: string | null;
   color?: string | null;
+  driverId?: string | null;
+  expectedChildUpdatedAt?: string;
+  expectedRoutePlanUpdatedAt?: string;
   label?: string | null;
   optimized?: {
     metrics?: RoutePlanRouteMetrics | null;
@@ -212,6 +216,8 @@ export type RouteGroupingDraftRouteInput = {
   routeIdx?: number;
   routeKey?: string;
   routePlanId?: string | null;
+  scheduledStartAt?: string | null;
+  scheduledStartTimeZone?: string | null;
   sortOrder?: number;
   tempId?: string | null;
 };
@@ -237,7 +243,10 @@ export type RouteGroupingOptimizationPreviewResult = {
 
 export type SaveRouteGroupingDraftInput = {
   appId?: string | undefined;
+  deletedRoutePlanIds?: string[];
+  expectedUpdatedAt?: string;
   groupingId: string;
+  removedOrderIds?: string[];
   routes: RouteGroupingDraftRouteInput[];
   shopDomain: string;
 };
