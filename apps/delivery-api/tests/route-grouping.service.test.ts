@@ -148,7 +148,7 @@ describe('route grouping contracts', () => {
   test('server fills missing draft-save OSRM cache instead of relying on frontend optimized payloads', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain('await lockRouteGroupingDraftSave(tx, group.id)');
-    expect(source).toContain('const draftOptimizations = await this.prepareDraftRouteOptimizations(input, loaded, routes)');
+    expect(source).toContain('const draftOptimizations = await this.prepareDraftRouteOptimizations(input, baseline, routes)');
     expect(source).toContain('return shouldOptimizeDraftRoute(group, route, typedAssignments)');
     expect(source).toContain('routeAssignmentsChanged(targetChild, assignments)');
     expect(source).toContain('readExactChildRouteMetricsFromRoutePlan(targetChild.routePlan, detail) === null');
@@ -167,7 +167,9 @@ describe('route grouping contracts', () => {
     const saveDraftBody = source.slice(source.indexOf('async saveDraft('), source.indexOf('async savePolygons('));
 
     expect(saveDraftBody).toContain('await lockRouteGroupingDraftSave(tx, group.id)');
-    expect(saveDraftBody).toContain('const draftOptimizations = await this.prepareDraftRouteOptimizations(input, loaded, routes)');
+    expect(saveDraftBody).toContain('const draftOptimizations = await this.prepareDraftRouteOptimizations(input, baseline, routes)');
+    expect(saveDraftBody.indexOf('const draftOptimizations = await this.prepareDraftRouteOptimizations(input, baseline, routes)'))
+      .toBeLessThan(saveDraftBody.indexOf('const groupingId = await this.prisma.$transaction'));
     expect(saveDraftBody).toContain('const draftOptimization = draftOptimizations.get(route)');
     expect(saveDraftBody).toContain('const assignments = draftOptimization?.assignments');
     expect(source).toContain('if (this.routeOptimizationService === undefined) throw new RouteGroupingValidationError');
@@ -186,7 +188,7 @@ describe('route grouping contracts', () => {
     expect(source).toContain('name: route.label ?? `#${routeIdx}`');
     expect(source).toContain('routeIdx,');
     expect(source).toContain('routePlanId: routePlan.id');
-    expect(source).toContain('snapshot: createChildSnapshot(group, input.assignments, null, routePlan.name, group.currentVersion, input.color ?? null, input.sortOrder, input.routeIdx)');
+    expect(source).toContain('snapshot: createChildSnapshot(group, input.assignments, input.driverId, routePlan.name, group.currentVersion, input.color ?? null, input.sortOrder, input.routeIdx)');
   });
 
   test('does not replace a single generated child route when no split exists', () => {
@@ -262,18 +264,45 @@ describe('route grouping contracts', () => {
     expect(saveDraftBody).not.toContain('routeBranchId');
   });
 
-  test('lets draft save remove omitted route group orders', () => {
+  test('persists scheduled start changes inside the global draft transaction', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const saveDraftBody = source.slice(source.indexOf('async saveDraft('), source.indexOf('async savePolygons('));
+
+    expect(saveDraftBody).toContain('route.scheduledStartAt === undefined && route.scheduledStartTimeZone === undefined');
+    expect(saveDraftBody).toContain('updateRouteConstraintsSchedule(');
+    expect(saveDraftBody).toContain('scheduledStartAt: route.scheduledStartAt');
+    expect(saveDraftBody).toContain('scheduledStartTimeZone: route.scheduledStartTimeZone');
+    expect(source).toContain('function normalizeDraftScheduledStartAt(value: string | null)');
+    expect(source).toContain('function updateRouteConstraintsSchedule(');
+    expect(source).toContain('scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints)');
+  });
+
+  test('only removes route group orders explicitly listed in removedOrderIds', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     const start = source.indexOf('async saveDraft(');
     const end = source.indexOf('async savePolygons(', start);
     const saveDraftBody = source.slice(start, end);
 
-    expect(saveDraftBody).not.toContain('existingOrders.length !== submittedOrderIds.length');
-    expect(saveDraftBody).toContain('const removeOrderIds = existingOrders.map((order) => order.orderId).filter((orderId) => !submittedOrderIdSet.has(orderId))');
-    expect(saveDraftBody).toContain('await deleteBranchOrderLocks(tx, group, undefined, removeOrderIds)');
-    expect(saveDraftBody).toContain('await tx.routeGroupingOrder.deleteMany({ where: { groupingId: group.id, orderId: { in: removeOrderIds } } })');
+    expect(saveDraftBody).toContain("const removedOrderIds = normalizeExplicitDraftIds(input.removedOrderIds ?? [], 'removedOrderIds')");
+    expect(saveDraftBody).toContain('assertDraftOrderPartition(loaded, routes, removedOrderIds)');
+    expect(saveDraftBody).toContain('await deleteBranchOrderLocks(tx, group, undefined, removedOrderIds)');
+    expect(saveDraftBody).toContain('await tx.routeGroupingOrder.deleteMany({ where: { groupingId: group.id, orderId: { in: removedOrderIds } } })');
     expect(saveDraftBody).toContain('addOrderIds: []');
-    expect(saveDraftBody).toContain('removeOrderIds,');
+    expect(saveDraftBody).toContain('removeOrderIds: removedOrderIds');
+    expect(source).toContain('route draft orders cannot be both routed and removed');
+  });
+
+  test('saves driver assignment, staged deletion, and revisions inside the draft transaction', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const saveDraftBody = source.slice(source.indexOf('async saveDraft('), source.indexOf('async savePolygons('));
+
+    expect(saveDraftBody).toContain('assertDraftBaselineUnchanged(baseline, loaded, routes, deletedRoutePlanIds)');
+    expect(saveDraftBody).toContain('assertDraftExpectedRevisions(loaded, routes, deletedRoutePlanIds, input.expectedUpdatedAt)');
+    expect(saveDraftBody).toContain('await readBranchDriverId(tx, group.shopId, route.driverId)');
+    expect(saveDraftBody).toContain('driverId,');
+    expect(saveDraftBody).toContain('await tx.routeGroupingChildVersion.delete');
+    expect(saveDraftBody).toContain('await tx.routePlan.delete');
+    expect(source).toContain("only Ready child routes can be deleted");
   });
 
   test('uses numbered child route names before dispatch', () => {

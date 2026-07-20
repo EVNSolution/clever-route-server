@@ -281,6 +281,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       await createDraftChildRoutePlan(tx, loaded, {
         assignments: loaded.orders,
         color: null,
+        driverId: null,
         groupingVersionId: version.id,
         name: `#${routeIdx}`,
         optimized: null,
@@ -506,10 +507,23 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
 
   async saveDraft(input: SaveRouteGroupingDraftInput): Promise<RouteGroupingDetailDto | null> {
     const routes = normalizeDraftRoutes(input.routes);
+    const deletedRoutePlanIds = normalizeExplicitDraftIds(input.deletedRoutePlanIds ?? [], 'deletedRoutePlanIds');
+    const removedOrderIds = normalizeExplicitDraftIds(input.removedOrderIds ?? [], 'removedOrderIds');
     const submittedOrderIds = routes.flatMap((route) => route.orderIds);
     if (routes.length === 0) throw new RouteGroupingValidationError(['route draft must include at least one route']);
     if (new Set(submittedOrderIds).size !== submittedOrderIds.length) throw new RouteGroupingValidationError(['route draft order ids must be unique']);
     assertChildOnlyDraftRouteEnvelope(routes);
+
+    const baseline = await this.prisma.$transaction(async (tx) => {
+      const group = await findGroupingForUpdate(tx, input);
+      if (group === null) return null;
+      return tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
+    });
+    if (baseline === null) return null;
+    assertDraftOrderPartition(baseline, routes, removedOrderIds);
+    assertDraftRoutePlanEnvelope(baseline, routes, deletedRoutePlanIds);
+    assertDraftExpectedRevisions(baseline, routes, deletedRoutePlanIds, input.expectedUpdatedAt);
+    const draftOptimizations = await this.prepareDraftRouteOptimizations(input, baseline, routes);
 
     const groupingId = await this.prisma.$transaction(async (tx) => {
       const group = await findGroupingForUpdate(tx, input);
@@ -517,43 +531,44 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       await lockRouteGroupingDraftSave(tx, group.id);
       const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
       if (loaded === null) return null;
+      assertDraftBaselineUnchanged(baseline, loaded, routes, deletedRoutePlanIds);
+      assertDraftOrderPartition(loaded, routes, removedOrderIds);
+      assertDraftRoutePlanEnvelope(loaded, routes, deletedRoutePlanIds);
+      assertDraftExpectedRevisions(loaded, routes, deletedRoutePlanIds, input.expectedUpdatedAt);
 
-      const existingOrders = await tx.routeGroupingOrder.findMany({
-        select: { deliveryStopId: true, id: true, orderId: true },
-        where: { groupingId: group.id, shopId: group.shopId }
-      });
-      const existingOrderIds = new Set(existingOrders.map((order) => order.orderId));
-      if (submittedOrderIds.some((orderId) => !existingOrderIds.has(orderId))) {
-        throw new RouteGroupingValidationError(['route draft must include every current route group order exactly once']);
-      }
-      const submittedOrderIdSet = new Set(submittedOrderIds);
-      const removeOrderIds = existingOrders.map((order) => order.orderId).filter((orderId) => !submittedOrderIdSet.has(orderId));
-      if (removeOrderIds.length > 0) {
-        await deleteBranchOrderLocks(tx, group, undefined, removeOrderIds);
-        await tx.routeGroupingOrder.deleteMany({ where: { groupingId: group.id, orderId: { in: removeOrderIds } } });
+      if (removedOrderIds.length > 0) {
+        await deleteBranchOrderLocks(tx, group, undefined, removedOrderIds);
+        await tx.routeGroupingOrder.deleteMany({ where: { groupingId: group.id, orderId: { in: removedOrderIds } } });
         await syncRouteGroupingInventoryOrders(tx, {
           actor: ROUTE_GROUPING_INVENTORY_ACTOR,
           addOrderIds: [],
           groupingId: group.id,
           name: group.name,
-          removeOrderIds,
+          removeOrderIds: removedOrderIds,
           shopId: group.shopId
         });
       }
 
       const currentChildren = loaded.childVersions.filter((child) => child.status === 'CURRENT');
       const currentRoutePlanIds = currentChildren.map((child) => child.routePlanId).filter((routePlanId): routePlanId is string => routePlanId !== null);
-      const submittedRoutePlanIds = routes.map((route) => route.routePlanId).filter((routePlanId): routePlanId is string => routePlanId !== null);
-      if (new Set(submittedRoutePlanIds).size !== submittedRoutePlanIds.length) throw new RouteGroupingValidationError(['route draft route plan ids must be unique']);
-      const submittedRoutePlanIdSet = new Set(submittedRoutePlanIds);
-      if (currentRoutePlanIds.some((routePlanId) => !submittedRoutePlanIdSet.has(routePlanId))) {
-        throw new RouteGroupingValidationError(['route draft must include every current child route']);
+      const driverIdByRoute = new Map<RouteGroupingDraftRouteInput, string | null>();
+      for (const route of routes) {
+        const targetChild = findDraftChild(loaded, route);
+        const currentDriverId = targetChild?.routePlan?.driverId ?? targetChild?.driverId ?? null;
+        driverIdByRoute.set(route, route.driverId === undefined
+          ? currentDriverId
+          : await readBranchDriverId(tx, group.shopId, route.driverId));
       }
 
-      const submittedRouteIdxes = routes.map((route) => route.routeIdx).filter((routeIdx): routeIdx is number => routeIdx !== undefined);
-      if (new Set(submittedRouteIdxes).size !== submittedRouteIdxes.length) throw new RouteGroupingValidationError(['route draft routeIdx values must be unique']);
-
-      const draftOptimizations = await this.prepareDraftRouteOptimizations(input, loaded, routes);
+      if (currentRoutePlanIds.length > 0) {
+        await tx.routePlanStop.deleteMany({ where: { routePlanId: { in: currentRoutePlanIds } } });
+      }
+      for (const routePlanId of deletedRoutePlanIds) {
+        const child = currentChildren.find((candidate) => candidate.routePlanId === routePlanId);
+        if (child === undefined) throw new RouteGroupingValidationError(['deleted route plan must belong to the current route grouping']);
+        await tx.routeGroupingChildVersion.delete({ where: { id: child.id } });
+        await tx.routePlan.delete({ where: { id: routePlanId } });
+      }
 
       let sourceSequence = 1;
       for (const route of routes) {
@@ -573,6 +588,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       for (const route of routes) {
         const targetChild = findDraftChild(loaded, route);
         const draftOptimization = draftOptimizations.get(route);
+        const driverId = driverIdByRoute.get(route) ?? null;
         const assignments = draftOptimization?.assignments
           ?? route.orderIds.map((orderId) => assignmentByOrderId.get(orderId)).filter((assignment): assignment is LoadedAssignment => assignment !== undefined);
         if (targetChild !== null) {
@@ -587,7 +603,15 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
             await rewriteRoutePlanStops(tx, targetChild.routePlanId, assignments);
             await tx.routePlan.update({
               data: {
+                driverId,
                 ...(route.label === null ? {} : { name: route.label }),
+                ...(route.scheduledStartAt === undefined && route.scheduledStartTimeZone === undefined ? {} : {
+                  constraints: updateRouteConstraintsSchedule(
+                    targetChild.routePlan?.constraints,
+                    route.scheduledStartAt,
+                    route.scheduledStartTimeZone
+                  )
+                }),
                 metrics: routeMetrics(assignments)
               },
               where: { id: targetChild.routePlanId }
@@ -599,10 +623,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           }
           await tx.routeGroupingChildVersion.update({
             data: {
+              driverId,
               snapshot: createChildSnapshot(
                 loaded,
                 assignments,
-                targetChild.driverId,
+                driverId,
                 route.label ?? childRouteSlotName(targetChild),
                 loaded.currentVersion,
                 route.color ?? previousSnapshot.color ?? null,
@@ -623,10 +648,13 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         await createDraftChildRoutePlan(tx, loaded, {
           assignments,
           color: route.color,
+          driverId,
           groupingVersionId: currentGroupingVersion.id,
           name: route.label ?? `#${routeIdx}`,
           optimized: route.optimized ?? toDraftOptimizedSnapshot(draftOptimization),
           routeIdx,
+          scheduledStartAt: route.scheduledStartAt,
+          scheduledStartTimeZone: route.scheduledStartTimeZone,
           sortOrder: route.sortOrder ?? routeIdx
         });
       }
@@ -1175,23 +1203,164 @@ function normalizeDraftRoutes(routes: RouteGroupingDraftRouteInput[]): RouteGrou
     return {
       branchId,
       color: normalizeOptionalText(route.color),
+      ...(route.driverId === undefined ? {} : { driverId: normalizeOptionalText(route.driverId) }),
+      ...(route.expectedChildUpdatedAt === undefined ? {} : { expectedChildUpdatedAt: normalizeDraftRevision(route.expectedChildUpdatedAt, 'expectedChildUpdatedAt') }),
+      ...(route.expectedRoutePlanUpdatedAt === undefined ? {} : { expectedRoutePlanUpdatedAt: normalizeDraftRevision(route.expectedRoutePlanUpdatedAt, 'expectedRoutePlanUpdatedAt') }),
       label: normalizeOptionalText(route.label),
       ...(route.optimized === undefined ? {} : { optimized: route.optimized ?? null }),
       orderIds: normalizeIds(route.orderIds),
       ...(routeIdx === undefined ? {} : { routeIdx }),
       routeKey: normalizeOptionalText(route.routeKey) ?? (routePlanId !== null ? `routePlan:${routePlanId}` : tempId !== null ? `temp:${tempId}` : routeIdx !== undefined ? `routeIdx:${routeIdx}` : `draft:${index + 1}`),
       routePlanId,
+      ...(route.scheduledStartAt === undefined ? {} : { scheduledStartAt: normalizeDraftScheduledStartAt(route.scheduledStartAt) }),
+      ...(route.scheduledStartTimeZone === undefined ? {} : { scheduledStartTimeZone: normalizeDraftTimeZone(route.scheduledStartTimeZone) }),
       sortOrder: typeof route.sortOrder === 'number' && Number.isInteger(route.sortOrder) ? route.sortOrder : routeIdx ?? index + 1,
       tempId
     };
   });
 }
 
+function normalizeDraftRevision(value: string, field: string): string {
+  const instant = new Date(value);
+  if (Number.isNaN(instant.getTime())) throw new RouteGroupingValidationError([`route draft ${field} must be a valid timestamp`]);
+  return instant.toISOString();
+}
+
+function normalizeDraftTimeZone(value: string | null): string | null {
+  if (value === null) return null;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: value }).format(new Date(0));
+  } catch {
+    throw new RouteGroupingValidationError(['route draft scheduledStartTimeZone must be a valid IANA timezone']);
+  }
+  return value;
+}
+
+function normalizeDraftScheduledStartAt(value: string | null): string | null {
+  if (value === null) return null;
+  if (!/T.+(?:Z|[+-]\d{2}:\d{2})$/iu.test(value)) {
+    throw new RouteGroupingValidationError(['route draft scheduledStartAt must include a date, time, and timezone']);
+  }
+  const instant = new Date(value);
+  if (Number.isNaN(instant.getTime())) throw new RouteGroupingValidationError(['route draft scheduledStartAt must be a valid instant']);
+  return instant.toISOString();
+}
+
 function assertChildOnlyDraftRouteEnvelope(routes: RouteGroupingDraftRouteInput[]): void {
   const routeKeys = routes.map((route) => route.routeKey ?? '');
   if (new Set(routeKeys).size !== routeKeys.length) throw new RouteGroupingValidationError(['route draft route keys must be unique']);
+  const routePlanIds = routes.map((route) => route.routePlanId).filter((routePlanId): routePlanId is string => routePlanId !== null);
+  if (new Set(routePlanIds).size !== routePlanIds.length) throw new RouteGroupingValidationError(['route draft route plan ids must be unique']);
+  const routeIdxes = routes.map((route) => route.routeIdx).filter((routeIdx): routeIdx is number => routeIdx !== undefined);
+  if (new Set(routeIdxes).size !== routeIdxes.length) throw new RouteGroupingValidationError(['route draft routeIdx values must be unique']);
   if (routes.some((route) => route.branchId !== null)) throw new RouteGroupingValidationError(['route draft must include child routes only']);
   if (routes.some((route) => route.routeKey === 'root')) throw new RouteGroupingValidationError(['route draft must not include a root route row']);
+}
+
+function normalizeExplicitDraftIds(values: string[], field: string): string[] {
+  const normalized = values.map((value) => value.trim()).filter((value) => value !== '');
+  if (new Set(normalized).size !== normalized.length) {
+    throw new RouteGroupingValidationError([`route draft ${field} must be unique`]);
+  }
+  return normalized;
+}
+
+function assertDraftOrderPartition(group: LoadedGrouping, routes: RouteGroupingDraftRouteInput[], removedOrderIds: string[]): void {
+  const currentOrderIds = group.orders.map((order) => order.orderId);
+  const submittedOrderIds = routes.flatMap((route) => route.orderIds);
+  const submittedOrderIdSet = new Set(submittedOrderIds);
+  const removedOrderIdSet = new Set(removedOrderIds);
+  if (submittedOrderIds.some((orderId) => removedOrderIdSet.has(orderId))) {
+    throw new RouteGroupingValidationError(['route draft orders cannot be both routed and removed']);
+  }
+  if (removedOrderIds.some((orderId) => !currentOrderIds.includes(orderId))) {
+    throw new RouteGroupingValidationError(['route draft removed orders must belong to the current route grouping']);
+  }
+  const partition = new Set([...submittedOrderIds, ...removedOrderIds]);
+  if (partition.size !== currentOrderIds.length || currentOrderIds.some((orderId) => !partition.has(orderId))) {
+    throw new RouteGroupingValidationError(['route draft must include every current route group order exactly once across routes and removedOrderIds']);
+  }
+  if (submittedOrderIdSet.size !== submittedOrderIds.length) {
+    throw new RouteGroupingValidationError(['route draft order ids must be unique']);
+  }
+}
+
+function assertDraftRoutePlanEnvelope(group: LoadedGrouping, routes: RouteGroupingDraftRouteInput[], deletedRoutePlanIds: string[]): void {
+  const currentChildren = group.childVersions.filter((child) => child.status === 'CURRENT');
+  const currentRoutePlanIds = currentChildren.map((child) => child.routePlanId).filter((id): id is string => id !== null);
+  const currentRoutePlanIdSet = new Set(currentRoutePlanIds);
+  const deletedRoutePlanIdSet = new Set(deletedRoutePlanIds);
+  const submittedRoutePlanIds = routes.map((route) => route.routePlanId).filter((id): id is string => id !== null);
+  if (submittedRoutePlanIds.some((id) => !currentRoutePlanIdSet.has(id))) {
+    throw new RouteGroupingValidationError(['route draft route plans must belong to the current route grouping']);
+  }
+  if (deletedRoutePlanIds.some((id) => !currentRoutePlanIdSet.has(id))) {
+    throw new RouteGroupingValidationError(['deleted route plan must belong to the current route grouping']);
+  }
+  if (submittedRoutePlanIds.some((id) => deletedRoutePlanIdSet.has(id))) {
+    throw new RouteGroupingValidationError(['deleted route plans must not be included in route draft rows']);
+  }
+  const expectedRemainingRoutePlanIds = currentRoutePlanIds.filter((id) => !deletedRoutePlanIdSet.has(id));
+  if (expectedRemainingRoutePlanIds.some((id) => !submittedRoutePlanIds.includes(id))) {
+    throw new RouteGroupingValidationError(['route draft must include every current child route not marked for deletion']);
+  }
+  if (deletedRoutePlanIds.length > 0 && routes.length === 0) {
+    throw new RouteGroupingValidationError(['route draft must keep at least one child route']);
+  }
+  for (const routePlanId of deletedRoutePlanIds) {
+    const child = currentChildren.find((candidate) => candidate.routePlanId === routePlanId);
+    if (child !== undefined && deriveChildDisplayStatus(child) !== 'READY') {
+      throw new RouteGroupingValidationError(['only Ready child routes can be deleted']);
+    }
+  }
+}
+
+function assertDraftExpectedRevisions(
+  group: LoadedGrouping,
+  routes: RouteGroupingDraftRouteInput[],
+  deletedRoutePlanIds: string[],
+  expectedUpdatedAt: string | undefined
+): void {
+  if (expectedUpdatedAt !== undefined && group.updatedAt.toISOString() !== normalizeDraftRevision(expectedUpdatedAt, 'expectedUpdatedAt')) {
+    throw new RouteGroupingConflictError();
+  }
+  const currentChildren = group.childVersions.filter((child) => child.status === 'CURRENT');
+  for (const route of routes) {
+    if (route.routePlanId === null) continue;
+    const child = currentChildren.find((candidate) => candidate.routePlanId === route.routePlanId);
+    if (child === undefined) throw new RouteGroupingConflictError();
+    if (route.expectedChildUpdatedAt !== undefined && child.updatedAt.toISOString() !== route.expectedChildUpdatedAt) {
+      throw new RouteGroupingConflictError();
+    }
+    if (route.expectedRoutePlanUpdatedAt !== undefined && child.routePlan?.updatedAt.toISOString() !== route.expectedRoutePlanUpdatedAt) {
+      throw new RouteGroupingConflictError();
+    }
+  }
+  for (const routePlanId of deletedRoutePlanIds) {
+    if (!currentChildren.some((child) => child.routePlanId === routePlanId)) throw new RouteGroupingConflictError();
+  }
+}
+
+function assertDraftBaselineUnchanged(
+  baseline: LoadedGrouping,
+  current: LoadedGrouping,
+  routes: RouteGroupingDraftRouteInput[],
+  deletedRoutePlanIds: string[]
+): void {
+  if (baseline.updatedAt.getTime() !== current.updatedAt.getTime()) throw new RouteGroupingConflictError();
+  const relevantRoutePlanIds = new Set([
+    ...routes.map((route) => route.routePlanId).filter((id): id is string => id !== null),
+    ...deletedRoutePlanIds
+  ]);
+  const baselineChildren = baseline.childVersions.filter((child) => child.status === 'CURRENT');
+  const currentChildren = current.childVersions.filter((child) => child.status === 'CURRENT');
+  for (const routePlanId of relevantRoutePlanIds) {
+    const before = baselineChildren.find((child) => child.routePlanId === routePlanId);
+    const after = currentChildren.find((child) => child.routePlanId === routePlanId);
+    if (before === undefined || after === undefined) throw new RouteGroupingConflictError();
+    if (before.updatedAt.getTime() !== after.updatedAt.getTime()) throw new RouteGroupingConflictError();
+    if (before.routePlan?.updatedAt.getTime() !== after.routePlan?.updatedAt.getTime()) throw new RouteGroupingConflictError();
+  }
 }
 
 function findDraftChild(group: LoadedGrouping, route: RouteGroupingDraftRouteInput): LoadedChild | null {
@@ -1832,10 +2001,13 @@ async function createDraftChildRoutePlan(
   input: {
     assignments: LoadedAssignment[];
     color: string | null | undefined;
+    driverId: string | null;
     groupingVersionId: string;
     name: string;
     optimized: RouteGroupingDraftRouteInput['optimized'] | null;
     routeIdx: number | undefined;
+    scheduledStartAt?: string | null | undefined;
+    scheduledStartTimeZone?: string | null | undefined;
     sortOrder: number | undefined;
   }
 ): Promise<{ id: string; name: string }> {
@@ -1846,10 +2018,12 @@ async function createDraftChildRoutePlan(
     : toJson(input.optimized.metrics);
   const routePlan = await tx.routePlan.create({
     data: {
-      constraints: routeConstraints(group, depot),
+      constraints: input.scheduledStartAt === undefined && input.scheduledStartTimeZone === undefined
+        ? routeConstraints(group, depot)
+        : updateRouteConstraintsSchedule(routeConstraints(group, depot), input.scheduledStartAt, input.scheduledStartTimeZone),
       createdBy: ROUTE_GROUPING_DRAFT_SAVE_ACTOR,
       ...(depot === null ? {} : { depotLatitude: decimalString(depot.latitude), depotLongitude: decimalString(depot.longitude) }),
-      driverId: null,
+      driverId: input.driverId,
       metrics,
       name,
       optimizerVersion: OPTIMIZER_VERSION,
@@ -1862,19 +2036,19 @@ async function createDraftChildRoutePlan(
   await tx.routePlanStop.createMany({ data: input.assignments.map((assignment, index) => ({ deliveryStopId: assignment.deliveryStopId, routePlanId: routePlan.id, sequence: index + 1 })) });
   await tx.routeGroupingChildVersion.create({
     data: {
-      driverId: null,
+      driverId: input.driverId,
       groupingId: group.id,
       groupingVersionId: input.groupingVersionId,
       notificationStatus: 'SKIPPED',
       routePlanId: routePlan.id,
       shopId: group.shopId,
-      snapshot: createChildSnapshot(group, input.assignments, null, routePlan.name, group.currentVersion, input.color ?? null, input.sortOrder, input.routeIdx),
+      snapshot: createChildSnapshot(group, input.assignments, input.driverId, routePlan.name, group.currentVersion, input.color ?? null, input.sortOrder, input.routeIdx),
       status: 'CURRENT',
       version: group.currentVersion
     }
   });
   if (depot !== null && input.optimized?.routeGeometry !== undefined) {
-    const detail = buildChildRouteDetail({ assignments: input.assignments, depot, driverId: null, group, name: routePlan.name });
+    const detail = buildChildRouteDetail({ assignments: input.assignments, depot, driverId: input.driverId, group, name: routePlan.name });
     await tx.routePlanGeometryCache.create({
       data: routeGeometryCacheCreateData({
         generatedAt: new Date(),
@@ -2037,6 +2211,22 @@ function routeMetrics(assignments: LoadedAssignment[]): Prisma.InputJsonObject {
   return { missingCoordinates: 0, stopsCount: assignments.length };
 }
 
+function updateRouteConstraintsSchedule(
+  value: unknown,
+  scheduledStartAt: string | null | undefined,
+  scheduledStartTimeZone: string | null | undefined
+): Prisma.InputJsonObject {
+  const constraints = value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  return toJson({
+    ...constraints,
+    departureTime: null,
+    ...(scheduledStartAt === undefined ? {} : { scheduledStartAt }),
+    ...(scheduledStartTimeZone === undefined ? {} : { scheduledStartTimeZone })
+  }) as Prisma.InputJsonObject;
+}
+
 function toGroupingDetailDto(group: LoadedGrouping): RouteGroupingDetailDto {
   return {
     ...toGroupingSummaryDto(group),
@@ -2148,7 +2338,8 @@ function toChildDto(child: LoadedChild, group: LoadedGrouping): RouteGroupingChi
     routeStopPoints: childRouteGeometry.routeStopPoints,
     sortOrder: snapshot.sortOrder ?? null,
     stops,
-    stopsCount: stops.length
+    stopsCount: stops.length,
+    updatedAt: child.updatedAt.toISOString()
   };
 }
 
@@ -2232,6 +2423,18 @@ function readScheduledStartAt(value: unknown): string | null {
   return Number.isNaN(instant.getTime()) ? null : instant.toISOString();
 }
 
+function readScheduledStartTimeZone(value: unknown): string | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const raw = (value as Record<string, unknown>).scheduledStartTimeZone;
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: raw }).format(new Date(0));
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
 function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan']>, routeMetrics: RoutePlanRouteMetrics | null, assignments: LoadedAssignment[]) {
   return {
     createdAt: routePlan.createdAt.toISOString(),
@@ -2249,6 +2452,7 @@ function toMinimalRoutePlanSummary(routePlan: NonNullable<LoadedChild['routePlan
     routeEndMode: DEFAULT_ROUTE_GROUPING_ROUTE_END_MODE,
     routeMetrics,
     scheduledStartAt: readScheduledStartAt(routePlan.constraints),
+    scheduledStartTimeZone: readScheduledStartTimeZone(routePlan.constraints),
     status: toRouteExecutionStatus(routePlan.status, routePlan.driverEvents),
     stopsCount: routePlan.routeStops.length,
     updatedAt: routePlan.updatedAt.toISOString()

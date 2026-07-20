@@ -493,9 +493,19 @@ function readPreviewOptimizationPayload(value: unknown): { mode?: 'OPTIMIZE_ORDE
   return { ...(mode === undefined ? {} : { mode }), routes: readDraftRouteRows(object.routes) };
 }
 
-function readSaveDraftPayload(value: unknown): { routes: ReturnType<typeof readDraftRouteRows> } {
+function readSaveDraftPayload(value: unknown): {
+  deletedRoutePlanIds?: string[];
+  expectedUpdatedAt?: string;
+  removedOrderIds?: string[];
+  routes: ReturnType<typeof readDraftRouteRows>;
+} {
   const object = requireObject(value);
-  return { routes: readDraftRouteRows(object.routes) };
+  return {
+    ...(object.deletedRoutePlanIds === undefined ? {} : { deletedRoutePlanIds: readStringArray(object.deletedRoutePlanIds) }),
+    ...(object.expectedUpdatedAt === undefined ? {} : { expectedUpdatedAt: readRevisionTimestamp(object.expectedUpdatedAt, 'expectedUpdatedAt') }),
+    ...(object.removedOrderIds === undefined ? {} : { removedOrderIds: readStringArray(object.removedOrderIds) }),
+    routes: readDraftRouteRows(object.routes)
+  };
 }
 
 function summarizeDraftRoutes(routes: ReturnType<typeof readDraftRouteRows>): {
@@ -519,12 +529,17 @@ function summarizeDraftRoutes(routes: ReturnType<typeof readDraftRouteRows>): {
 function readDraftRouteRows(value: unknown): Array<{
   branchId: string | null;
   color?: string | null;
+  driverId?: string | null;
+  expectedChildUpdatedAt?: string;
+  expectedRoutePlanUpdatedAt?: string;
   label?: string | null;
   optimized?: { metrics?: RoutePlanRouteMetrics | null; orderIds?: string[]; routeGeometry?: RoutePlanRouteGeometry | null; routeStopPoints?: RoutePlanRouteStopPoint[] } | null;
   orderIds: string[];
   routeIdx?: number;
   routeKey?: string;
   routePlanId?: string | null;
+  scheduledStartAt?: string | null;
+  scheduledStartTimeZone?: string | null;
   sortOrder?: number;
   tempId?: string | null;
 }> {
@@ -534,16 +549,49 @@ function readDraftRouteRows(value: unknown): Array<{
     return {
       branchId: route.branchId === undefined ? null : readNullableString(route.branchId),
       ...(route.color === undefined ? {} : { color: readNullableString(route.color) }),
+      ...(route.driverId === undefined ? {} : { driverId: readNullableString(route.driverId) }),
+      ...(route.expectedChildUpdatedAt === undefined ? {} : { expectedChildUpdatedAt: readRevisionTimestamp(route.expectedChildUpdatedAt, 'expectedChildUpdatedAt') }),
+      ...(route.expectedRoutePlanUpdatedAt === undefined ? {} : { expectedRoutePlanUpdatedAt: readRevisionTimestamp(route.expectedRoutePlanUpdatedAt, 'expectedRoutePlanUpdatedAt') }),
       ...(route.label === undefined ? {} : { label: readNullableString(route.label) }),
       ...(route.optimized === undefined ? {} : { optimized: readOptionalOptimizedRoute(route.optimized) }),
       orderIds: readStringArray(route.orderIds),
       ...(route.routeIdx === undefined ? {} : { routeIdx: readNonNegativeInteger(route.routeIdx) }),
       ...(route.routeKey === undefined ? {} : { routeKey: requireNonEmptyString(route.routeKey) }),
       ...(route.routePlanId === undefined ? {} : { routePlanId: readNullableString(route.routePlanId) }),
+      ...(route.scheduledStartAt === undefined ? {} : { scheduledStartAt: readOptionalScheduledStartAt(route.scheduledStartAt) }),
+      ...(route.scheduledStartTimeZone === undefined ? {} : { scheduledStartTimeZone: readOptionalIanaTimeZone(route.scheduledStartTimeZone) }),
       ...(route.sortOrder === undefined ? {} : { sortOrder: readNonNegativeInteger(route.sortOrder) }),
       ...(route.tempId === undefined ? {} : { tempId: readNullableString(route.tempId) })
     };
   });
+}
+
+function readRevisionTimestamp(value: unknown, field: string): string {
+  const timestamp = requireNonEmptyString(value);
+  const instant = new Date(timestamp);
+  if (Number.isNaN(instant.getTime())) throw new BadRouteGroupPayloadError(`${field} must be a valid timestamp`);
+  return instant.toISOString();
+}
+
+function readOptionalIanaTimeZone(value: unknown): string | null {
+  if (value === null) return null;
+  const timeZone = requireNonEmptyString(value);
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone }).format(new Date(0));
+  } catch {
+    throw new BadRouteGroupPayloadError('scheduledStartTimeZone must be a valid IANA timezone');
+  }
+  return timeZone;
+}
+
+function readOptionalScheduledStartAt(value: unknown): string | null {
+  if (value === null) return null;
+  if (typeof value !== 'string' || !/T.+(?:Z|[+-]\d{2}:\d{2})$/iu.test(value)) {
+    throw new BadRouteGroupPayloadError('scheduledStartAt must include a date, time, and timezone');
+  }
+  const instant = new Date(value);
+  if (Number.isNaN(instant.getTime())) throw new BadRouteGroupPayloadError('scheduledStartAt must be a valid instant');
+  return instant.toISOString();
 }
 
 function readOptionalOptimizedRoute(value: unknown): { metrics?: RoutePlanRouteMetrics | null; orderIds?: string[]; routeGeometry?: RoutePlanRouteGeometry | null; routeStopPoints?: RoutePlanRouteStopPoint[] } | null {
