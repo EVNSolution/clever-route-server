@@ -50,6 +50,7 @@ import {
 import type { DriverRouteSessionRestoreServiceApi } from '../modules/driver/driver-route-session.repository.js';
 import {
   DriverEventContextError,
+  DriverEventRouteNotInProgressError,
   DriverEventScopeError
 } from '../modules/driver/driver-event.repository.js';
 import {
@@ -778,6 +779,9 @@ export function registerDriverEventRoutes(
     } catch (error) {
       if (error instanceof DriverEventContextError) {
         return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid driver event route or stop context'));
+      }
+      if (error instanceof DriverEventRouteNotInProgressError) {
+        return reply.code(409).send(errorResponse('ROUTE_NOT_IN_PROGRESS', 'Route is not in progress'));
       }
       if (error instanceof DriverEventScopeError) {
         return reply.code(403).send(errorResponse('FORBIDDEN', 'Driver event route or stop scope rejected'));

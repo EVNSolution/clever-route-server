@@ -45,6 +45,12 @@ export class DriverEventScopeError extends Error {
   }
 }
 
+export class DriverEventRouteNotInProgressError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DriverEventRouteNotInProgressError';
+  }
+}
 
 export class PrismaDriverEventRepository {
   constructor(private readonly prisma: DriverEventPrismaClient) {}
@@ -134,7 +140,10 @@ async function validateDriverEventStateContext(
   }
 
   const routePlanId = requireRoutePlanId(input);
-  await requireOwnedRoutePlan(prisma, { driverId: input.driverId, routePlanId, shopId });
+  const routePlan = await requireOwnedRoutePlan(prisma, { driverId: input.driverId, routePlanId, shopId });
+  if (input.eventType === 'LOCATION_UPDATED' && routePlan.status !== 'IN_PROGRESS') {
+    throw new DriverEventRouteNotInProgressError('Route must be in progress before accepting location updates');
+  }
 
   if (input.eventType === 'STOP_DELIVERED' || input.eventType === 'STOP_FAILED') {
     await requireOwnedRoutePlanStop(prisma, {
@@ -238,9 +247,9 @@ async function requireStartableOwnedRoutePlan(
 async function requireOwnedRoutePlan(
   prisma: DriverEventTransactionClient,
   input: { driverId: string; routePlanId: string; shopId: string }
-): Promise<void> {
+): Promise<{ status: string }> {
   const routePlan = await prisma.routePlan.findFirst({
-    select: { id: true },
+    select: { id: true, status: true },
     where: {
       driverId: input.driverId,
       driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
@@ -252,6 +261,8 @@ async function requireOwnedRoutePlan(
   if (routePlan === null) {
     throw new DriverEventScopeError('Driver route context is outside the authenticated driver scope');
   }
+
+  return { status: routePlan.status };
 }
 
 async function requireOwnedRoutePlanStop(
