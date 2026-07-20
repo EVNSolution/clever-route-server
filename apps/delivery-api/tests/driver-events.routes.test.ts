@@ -2,7 +2,8 @@ import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
 import {
-  DriverEventContextError
+  DriverEventContextError,
+  DriverEventRouteNotInProgressError
 } from '../src/modules/driver/driver-event.repository.js';
 import type { DriverApiDependencies } from '../src/routes/driver-events.routes.js';
 import { signDriverRouteToken } from '../src/modules/driver/driver-token-verifier.js';
@@ -250,6 +251,29 @@ describe('Driver events route', () => {
       expect(response.json()).toEqual({
         data: null,
         error: { code: 'BAD_REQUEST', message: 'Invalid driver event route or stop context' }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('maps location updates outside in-progress routes to a deterministic conflict response', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    recordDriverEvent.mockRejectedValueOnce(new DriverEventRouteNotInProgressError('route is not in progress'));
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: eventPayload(),
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'ROUTE_NOT_IN_PROGRESS', message: 'Route is not in progress' }
       });
     } finally {
       await app.close();

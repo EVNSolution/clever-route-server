@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest';
 
 import {
   DriverEventContextError,
+  DriverEventRouteNotInProgressError,
   DriverEventScopeError,
   PrismaDriverEventRepository
 } from '../src/modules/driver/driver-event.repository.js';
@@ -11,7 +12,7 @@ const occurredAt = new Date('2026-06-01T05:54:16.000Z');
 
 describe('PrismaDriverEventRepository', () => {
   test('records driver events for Woo customer-domain shops', async () => {
-    const { prisma } = createPrismaHarness();
+    const { prisma } = createPrismaHarness({ routePlan: { id: 'route-plan-id', status: 'IN_PROGRESS' } });
     const repository = new PrismaDriverEventRepository(prisma as never);
 
     await expect(repository.recordDriverEvent({
@@ -40,6 +41,29 @@ describe('PrismaDriverEventRepository', () => {
         payload: { source: 'driver-app' },
         routePlanId: 'route-plan-id',
         shopId: 'shop-id'
+      }
+    });
+  });
+
+  test('rejects location updates unless the route is in progress before writing the event', async () => {
+    const { prisma } = createPrismaHarness({ routePlan: { id: 'route-plan-id', status: 'READY' } });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      deliveryStopId: null,
+      eventType: 'LOCATION_UPDATED',
+      routePlanId: 'route-plan-id'
+    }))).rejects.toBeInstanceOf(DriverEventRouteNotInProgressError);
+
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+    expect(prisma.routePlan.findFirst).toHaveBeenCalledWith({
+      select: { id: true, status: true },
+      where: {
+        driverId: 'driver-id',
+        driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        id: 'route-plan-id',
+        shopId: 'shop-id',
+        status: { in: ['IN_PROGRESS', 'READY', 'DRAFT', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED'] }
       }
     });
   });
@@ -367,7 +391,7 @@ function createPrismaHarness(input: {
   completionEvent?: { id: string } | null;
   driverEventCreateError?: Error;
   existingEvent?: { eventType: string; id: string; routePlanId: string | null } | null;
-  routePlan?: { id: string } | null;
+  routePlan?: { id: string; status?: string } | null;
   routePlanStop?: { id: string } | null;
   routeStops?: { deliveryStop: { status: string } }[];
 } = {}) {
