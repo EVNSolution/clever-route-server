@@ -30,6 +30,17 @@ describe('route plan lifecycle', () => {
     ])).toBe('COMPLETED');
   });
 
+  test('treats a released session as ready until the route is started again', () => {
+    expect(toRouteExecutionStatus('READY', [
+      { eventType: 'ROUTE_STARTED' },
+      { eventType: 'ROUTE_PAUSED' }
+    ])).toBe('READY');
+    expect(toRouteExecutionStatus('IN_PROGRESS', [
+      { eventType: 'ROUTE_STARTED' },
+      { eventType: 'ROUTE_PAUSED' }
+    ])).toBe('IN_PROGRESS');
+  });
+
   test('keeps completed routes visible but excludes them from active session restoration', () => {
     expect(ROUTE_DRIVER_VISIBLE_STATUSES).toContain('COMPLETED');
     expect(ROUTE_DRIVER_OPERATIONAL_STATUSES).not.toContain('COMPLETED');

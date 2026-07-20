@@ -17,6 +17,7 @@ import { loadShopifyAuthDependencies } from './modules/shopify/auth.dependencies
 import { loadShopifyWebhookDependencies } from './modules/shopify/webhook.dependencies.js';
 import { loadWooCommerceWebhookDependencies } from './modules/woocommerce/woocommerce.dependencies.js';
 import { createAdminNotificationRuntime } from './modules/notifications/admin-notification.dependencies.js';
+import { RouteTrackingStreamHub } from './modules/route-tracking/route-tracking.stream.js';
 import { loadDsvControlDependencies } from './modules/dsv/dsv-control.dependencies.js';
 import { loadWordPressPluginDependencies } from './modules/wordpress-plugin/wordpress-plugin.dependencies.js';
 import type { AdminRoutePlanDependencies } from './routes/admin-route-plans.routes.js';
@@ -40,7 +41,8 @@ const adminCommerceConnections = loadAdminCommerceConnectionsDependencies({ env:
 const adminDrivers = loadAdminDriverDependencies({ env: process.env, prisma });
 const adminInventories = loadAdminInventoryDependencies({ env: process.env, prisma });
 const adminRouteGroups = loadAdminRouteGroupDependencies({ env: process.env, prisma });
-const adminRoutePlans = loadAdminRoutePlanDependencies({ env: process.env, prisma });
+const routeTrackingStreamHub = new RouteTrackingStreamHub();
+const adminRoutePlans = loadAdminRoutePlanDependencies({ env: process.env, prisma, routeTrackingStreamHub });
 const adminNotificationRuntime = createAdminNotificationRuntime({
   ...(process.env.DATABASE_URL === undefined
     ? {}
@@ -64,7 +66,7 @@ const adminCommerceConnectionsUi = loadAdminCommerceConnectionsUiDependencies({
   nodeEnv: env.nodeEnv,
   prisma
 });
-const driverApi = loadDriverApiDependencies({ env: process.env, prisma });
+const driverApi = loadDriverApiDependencies({ env: process.env, prisma, routeTrackingStreamHub });
 const driverAuth = loadDriverAuthDependencies({ env: process.env, prisma });
 const shopifyAuth = loadShopifyAuthDependencies({ env: process.env, prisma });
 const shopifyWebhook = loadShopifyWebhookDependencies({ env: process.env, prisma });

@@ -8,12 +8,15 @@ import { RouteOptimizationJobService } from './route-optimization-job.service.js
 import { PrismaRoutePlanRepository } from './route-plan.repository.js';
 import { RoutePlanAdminService } from './route-plan.service.js';
 import type { AdminRoutePlanDependencies } from '../../routes/admin-route-plans.routes.js';
+import { PrismaRouteTrackingService } from '../route-tracking/route-tracking.service.js';
+import type { RouteTrackingStreamHub } from '../route-tracking/route-tracking.stream.js';
 
 export type AdminRoutePlanRuntimeEnv = ShopifyAppCredentialsEnv & Partial<Record<'OSRM_BASE_URL', string>>;
 
 export function loadAdminRoutePlanDependencies(input: {
   env: AdminRoutePlanRuntimeEnv;
   prisma: PrismaClient;
+  routeTrackingStreamHub?: RouteTrackingStreamHub;
 }): AdminRoutePlanDependencies | undefined {
   const appCredentials = loadShopifyAppCredentials(input.env);
 
@@ -30,6 +33,8 @@ export function loadAdminRoutePlanDependencies(input: {
   );
   return {
     routePlanService: new RoutePlanAdminService(repository, routeGeometryProvider, routeOptimizationJobService),
+    routeTrackingService: new PrismaRouteTrackingService(input.prisma),
+    ...(input.routeTrackingStreamHub === undefined ? {} : { routeTrackingStreamHub: input.routeTrackingStreamHub }),
     sessionTokenVerifier: new ShopifySessionTokenVerifier({ appCredentials })
   };
 }
