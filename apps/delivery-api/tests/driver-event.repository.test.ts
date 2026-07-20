@@ -9,6 +9,7 @@ import {
 } from '../src/modules/driver/driver-event.repository.js';
 
 const occurredAt = new Date('2026-06-01T05:54:16.000Z');
+const serverReceivedAt = new Date('2026-06-01T06:00:00.000Z');
 
 describe('PrismaDriverEventRepository', () => {
   test('records driver events for Woo customer-domain shops', async () => {
@@ -127,6 +128,79 @@ describe('PrismaDriverEventRepository', () => {
       }
     });
     expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('uses the server receipt time to update future ETAs when STOP_ARRIVED is recorded', async () => {
+    const { prisma } = createPrismaHarness({
+      routeEtaStops: [
+        {
+          deliveryStop: { serviceMinutes: 5 },
+          deliveryStopId: 'stop-id',
+          distanceFromPreviousMeters: 1000,
+          durationFromPreviousSeconds: 600,
+          estimatedArrivalAt: new Date('2026-06-01T05:50:00.000Z'),
+          sequence: 1
+        },
+        {
+          deliveryStop: { serviceMinutes: 5 },
+          deliveryStopId: 'stop-2',
+          distanceFromPreviousMeters: 2000,
+          durationFromPreviousSeconds: 900,
+          estimatedArrivalAt: new Date('2026-06-01T06:10:00.000Z'),
+          sequence: 2
+        }
+      ]
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    const result = await repository.recordDriverEvent(baseInput({
+      deliveryStopId: 'stop-id',
+      eventType: 'STOP_ARRIVED',
+      occurredAt: new Date('2026-06-01T05:54:16.000Z'),
+      routePlanId: 'route-plan-id'
+    }));
+
+    expect(result).toEqual({
+      duplicate: false,
+      etaUpdate: {
+        actualArrivalAt: '2026-06-01T06:00:00.000Z',
+        deliveryStopId: 'stop-id',
+        delaySeconds: 600,
+        previousEstimatedArrivalAt: '2026-06-01T05:50:00.000Z',
+        serverReceivedAt: '2026-06-01T06:00:00.000Z',
+        trigger: 'STOP_ARRIVED',
+        updatedStops: [
+          { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-06-01T06:20:00.000Z', sequence: 2 }
+        ]
+      },
+      eventId: 'driver-event-id'
+    });
+    expect(prisma.deliveryStop.updateMany).toHaveBeenCalledWith({
+      data: { status: 'ARRIVED' },
+      where: {
+        id: 'stop-id',
+        routePlanStops: {
+          some: {
+            routePlan: {
+              driverId: 'driver-id',
+              id: 'route-plan-id',
+              shopId: 'shop-id'
+            },
+            routePlanId: 'route-plan-id'
+          }
+        },
+        shopId: 'shop-id'
+      }
+    });
+    expect(prisma.routePlanStop.update).toHaveBeenCalledWith({
+      data: { estimatedArrivalAt: new Date('2026-06-01T06:20:00.000Z') },
+      where: {
+        routePlanId_deliveryStopId: {
+          deliveryStopId: 'stop-2',
+          routePlanId: 'route-plan-id'
+        }
+      }
+    });
   });
 
   test('rejects terminal stop events without route and stop context before writing the event', async () => {
@@ -393,6 +467,14 @@ function createPrismaHarness(input: {
   existingEvent?: { eventType: string; id: string; routePlanId: string | null } | null;
   routePlan?: { id: string; status?: string } | null;
   routePlanStop?: { id: string } | null;
+  routeEtaStops?: Array<{
+    deliveryStop: { serviceMinutes: number | null };
+    deliveryStopId: string;
+    distanceFromPreviousMeters: number | null;
+    durationFromPreviousSeconds: number | null;
+    estimatedArrivalAt: Date | null;
+    sequence: number;
+  }>;
   routeStops?: { deliveryStop: { status: string } }[];
 } = {}) {
   let createdEventType: string | null = null;
@@ -401,7 +483,7 @@ function createPrismaHarness(input: {
       throw input.driverEventCreateError;
     }
     createdEventType = args.data.eventType;
-    return Promise.resolve({ id: 'driver-event-id' });
+    return Promise.resolve({ createdAt: serverReceivedAt, id: 'driver-event-id' });
   });
   const prisma: {
     $transaction: ReturnType<typeof vi.fn>;
@@ -413,7 +495,12 @@ function createPrismaHarness(input: {
       findUnique: ReturnType<typeof vi.fn>;
     };
     routePlan: { findFirst: ReturnType<typeof vi.fn>; updateMany: ReturnType<typeof vi.fn> };
-    routePlanStop: { findFirst: ReturnType<typeof vi.fn> };
+    routePlanGeometryCache: { findFirst: ReturnType<typeof vi.fn> };
+    routePlanStop: {
+      findFirst: ReturnType<typeof vi.fn>;
+      findMany: ReturnType<typeof vi.fn>;
+      update: ReturnType<typeof vi.fn>;
+    };
     shop: { findUnique: ReturnType<typeof vi.fn> };
   } = {} as never;
   Object.assign(prisma, {
@@ -448,8 +535,22 @@ function createPrismaHarness(input: {
       }),
       updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
     },
+    routePlanGeometryCache: {
+      findFirst: vi.fn(() => Promise.resolve(null))
+    },
     routePlanStop: {
-      findFirst: vi.fn(() => Promise.resolve(input.routePlanStop === undefined ? { id: 'route-plan-stop-id' } : input.routePlanStop))
+      findFirst: vi.fn(() => Promise.resolve(input.routePlanStop === undefined ? { id: 'route-plan-stop-id' } : input.routePlanStop)),
+      findMany: vi.fn(() => Promise.resolve(input.routeEtaStops ?? [
+        {
+          deliveryStop: { serviceMinutes: 5 },
+          deliveryStopId: 'stop-id',
+          distanceFromPreviousMeters: 1000,
+          durationFromPreviousSeconds: 600,
+          estimatedArrivalAt: null,
+          sequence: 1
+        }
+      ])),
+      update: vi.fn(() => Promise.resolve({ id: 'route-plan-stop-id' }))
     },
     shop: {
       findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id' }))

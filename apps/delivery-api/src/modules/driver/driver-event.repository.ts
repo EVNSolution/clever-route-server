@@ -1,6 +1,13 @@
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 import { ROUTE_ACTIVE_COMPATIBILITY_STATUSES, ROUTE_READY_COMPATIBILITY_STATUSES } from '../route-plans/route-plan-lifecycle.js';
+import { readRouteStopPoints } from '../route-plans/route-plan-geometry-cache.js';
+import {
+  calculateArrivalEtaUpdate,
+  calculateRouteStartEtaUpdate,
+  type DriverRouteEtaStop,
+  type DriverRouteEtaUpdate
+} from './driver-route-eta.js';
 
 export type RecordDriverEventInput = {
   clientEventId: string | null;
@@ -18,17 +25,18 @@ export type RecordDriverEventInput = {
 
 export type RecordDriverEventResult = {
   duplicate: boolean;
+  etaUpdate?: DriverRouteEtaUpdate;
   eventId: string;
 };
 
 type DriverEventPrismaClient = Pick<
   PrismaClient,
-  '$transaction' | 'deliveryStop' | 'driverEvent' | 'routePlan' | 'routePlanStop'
+  '$transaction' | 'deliveryStop' | 'driverEvent' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop'
 >;
 
 type DriverEventTransactionClient = Pick<
   DriverEventPrismaClient,
-  'deliveryStop' | 'driverEvent' | 'routePlan' | 'routePlanStop'
+  'deliveryStop' | 'driverEvent' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop'
 >;
 
 export class DriverEventContextError extends Error {
@@ -80,9 +88,13 @@ export class PrismaDriverEventRepository {
           }
         });
 
-        await applyDriverEventStateTransition(transaction, input, input.shopId);
+        const etaUpdate = await applyDriverEventStateTransition(transaction, input, input.shopId, event.createdAt);
 
-        return { duplicate: false, eventId: event.id };
+        return {
+          duplicate: false,
+          ...(etaUpdate === null ? {} : { etaUpdate }),
+          eventId: event.id
+        };
       });
     } catch (error) {
       if (isUniqueConstraintError(error)) {
@@ -98,6 +110,18 @@ async function findMatchingDriverEvent(
   prisma: DriverEventTransactionClient,
   input: RecordDriverEventInput
 ): Promise<{ id: string } | null> {
+  if (input.eventType === 'STOP_ARRIVED') {
+    return prisma.driverEvent.findFirst({
+      select: { id: true },
+      where: {
+        deliveryStopId: requireDeliveryStopId(input),
+        driverId: input.driverId,
+        eventType: 'STOP_ARRIVED',
+        routePlanId: requireRoutePlanId(input)
+      }
+    });
+  }
+
   if (
     input.clientEventId === null
     || (input.eventType !== 'ROUTE_COMPLETED' && input.eventType !== 'ROUTE_PAUSED')
@@ -145,7 +169,7 @@ async function validateDriverEventStateContext(
     throw new DriverEventRouteNotInProgressError('Route must be in progress before accepting location updates');
   }
 
-  if (input.eventType === 'STOP_DELIVERED' || input.eventType === 'STOP_FAILED') {
+  if (input.eventType === 'STOP_ARRIVED' || input.eventType === 'STOP_DELIVERED' || input.eventType === 'STOP_FAILED') {
     await requireOwnedRoutePlanStop(prisma, {
       deliveryStopId: requireDeliveryStopId(input),
       driverId: input.driverId,
@@ -158,8 +182,39 @@ async function validateDriverEventStateContext(
 async function applyDriverEventStateTransition(
   prisma: DriverEventTransactionClient,
   input: RecordDriverEventInput,
-  shopId: string
-): Promise<void> {
+  shopId: string,
+  serverReceivedAt: Date
+): Promise<DriverRouteEtaUpdate | null> {
+  if (input.eventType === 'STOP_ARRIVED') {
+    const routePlanId = requireRoutePlanId(input);
+    const deliveryStopId = requireDeliveryStopId(input);
+    await prisma.deliveryStop.updateMany({
+      data: { status: 'ARRIVED' },
+      where: {
+        id: deliveryStopId,
+        routePlanStops: {
+          some: {
+            routePlan: {
+              driverId: input.driverId,
+              id: routePlanId,
+              shopId
+            },
+            routePlanId
+          }
+        },
+        shopId
+      }
+    });
+    const stops = await loadRouteEtaStops(prisma, routePlanId);
+    const etaUpdate = calculateArrivalEtaUpdate({
+      arrivedDeliveryStopId: deliveryStopId,
+      serverReceivedAt,
+      stops
+    });
+    await persistEtaUpdate(prisma, routePlanId, etaUpdate);
+    return etaUpdate;
+  }
+
   if (input.eventType === 'STOP_DELIVERED' || input.eventType === 'STOP_FAILED') {
     const routePlanId = requireRoutePlanId(input);
     await prisma.deliveryStop.updateMany({
@@ -181,21 +236,27 @@ async function applyDriverEventStateTransition(
         shopId
       }
     });
-    return;
+    return null;
   }
 
   if (input.eventType === 'ROUTE_STARTED') {
+    const routePlanId = requireRoutePlanId(input);
     await prisma.routePlan.updateMany({
       data: { status: 'IN_PROGRESS' },
       where: {
         driverId: input.driverId,
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
-        id: requireRoutePlanId(input),
+        id: routePlanId,
         shopId,
         status: { in: [...ROUTE_READY_COMPATIBILITY_STATUSES] }
       }
     });
-    return;
+    const etaUpdate = calculateRouteStartEtaUpdate({
+      serverReceivedAt,
+      stops: await loadRouteEtaStops(prisma, routePlanId)
+    });
+    await persistEtaUpdate(prisma, routePlanId, etaUpdate);
+    return etaUpdate;
   }
 
   if (input.eventType === 'ROUTE_COMPLETED') {
@@ -208,7 +269,7 @@ async function applyDriverEventStateTransition(
         status: { not: 'CANCELLED' }
       }
     });
-    return;
+    return null;
   }
 
   if (input.eventType === 'ROUTE_PAUSED') {
@@ -221,8 +282,108 @@ async function applyDriverEventStateTransition(
         status: 'IN_PROGRESS'
       }
     });
-    return;
+    return null;
   }
+
+  return null;
+}
+
+async function loadRouteEtaStops(
+  prisma: DriverEventTransactionClient,
+  routePlanId: string
+): Promise<DriverRouteEtaStop[]> {
+  const rows = await prisma.routePlanStop.findMany({
+    orderBy: { sequence: 'asc' },
+    select: {
+      deliveryStop: { select: { serviceMinutes: true } },
+      deliveryStopId: true,
+      distanceFromPreviousMeters: true,
+      durationFromPreviousSeconds: true,
+      estimatedArrivalAt: true,
+      sequence: true
+    },
+    where: { routePlanId }
+  });
+  if (rows.every((row) => row.durationFromPreviousSeconds !== null)) {
+    return rows.map(toEtaStop);
+  }
+
+  const cache = await prisma.routePlanGeometryCache.findFirst({
+    orderBy: { generatedAt: 'desc' },
+    select: { stopPoints: true },
+    where: { routePlanId }
+  });
+  const stopPoints = readRouteStopPoints(cache?.stopPoints);
+  const stopPointById = new Map(stopPoints.map((point) => [point.deliveryStopId, point]));
+  const cacheMatchesRoute = rows.length > 0 && rows.every((row) => {
+    const point = stopPointById.get(row.deliveryStopId);
+    return point?.sequence === row.sequence;
+  });
+  if (!cacheMatchesRoute) {
+    return rows.map(toEtaStop);
+  }
+
+  const hydratedRows = rows.map((row) => {
+    const point = stopPointById.get(row.deliveryStopId)!;
+    return {
+      ...row,
+      distanceFromPreviousMeters: normalizedInteger(point.distanceFromPreviousMeters),
+      durationFromPreviousSeconds: normalizedInteger(point.durationFromPreviousSeconds)
+    };
+  });
+  await Promise.all(hydratedRows.map((row) => prisma.routePlanStop.update({
+    data: {
+      distanceFromPreviousMeters: row.distanceFromPreviousMeters,
+      durationFromPreviousSeconds: row.durationFromPreviousSeconds
+    },
+    where: {
+      routePlanId_deliveryStopId: {
+        deliveryStopId: row.deliveryStopId,
+        routePlanId
+      }
+    }
+  })));
+  return hydratedRows.map(toEtaStop);
+}
+
+async function persistEtaUpdate(
+  prisma: DriverEventTransactionClient,
+  routePlanId: string,
+  etaUpdate: DriverRouteEtaUpdate
+): Promise<void> {
+  await Promise.all(etaUpdate.updatedStops.map((stop) => prisma.routePlanStop.update({
+    data: {
+      estimatedArrivalAt: stop.estimatedArrivalAt === null ? null : new Date(stop.estimatedArrivalAt)
+    },
+    where: {
+      routePlanId_deliveryStopId: {
+        deliveryStopId: stop.deliveryStopId,
+        routePlanId
+      }
+    }
+  })));
+}
+
+function toEtaStop(row: {
+  deliveryStop: { serviceMinutes: number | null };
+  deliveryStopId: string;
+  durationFromPreviousSeconds: number | null;
+  estimatedArrivalAt: Date | null;
+  sequence: number;
+}): DriverRouteEtaStop {
+  return {
+    deliveryStopId: row.deliveryStopId,
+    durationFromPreviousSeconds: row.durationFromPreviousSeconds,
+    estimatedArrivalAt: row.estimatedArrivalAt,
+    sequence: row.sequence,
+    serviceMinutes: row.deliveryStop.serviceMinutes
+  };
+}
+
+function normalizedInteger(value: number | null | undefined): number | null {
+  return value === null || value === undefined || !Number.isFinite(value) || value < 0
+    ? null
+    : Math.round(value);
 }
 
 async function requireStartableOwnedRoutePlan(

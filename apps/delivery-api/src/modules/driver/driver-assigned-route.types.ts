@@ -26,6 +26,8 @@ export type DriverAssignedRouteStop = {
     longitude: number | null;
   };
   deliveryStopId: string;
+  durationFromPreviousSeconds?: number | null;
+  estimatedArrivalAt?: string | null;
   items: OrderItemDto[];
   normalizedPaymentStatus: NormalizedPaymentStatus | null;
   orderName: string;

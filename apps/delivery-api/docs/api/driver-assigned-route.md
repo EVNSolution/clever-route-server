@@ -34,6 +34,8 @@ Success with an assigned route:
       "stops": [
         {
           "deliveryStopId": "22222222-2222-4222-8222-222222222222",
+          "durationFromPreviousSeconds": 480,
+          "estimatedArrivalAt": "2026-05-12T11:08:00.000Z",
           "sequence": 1,
           "status": "ASSIGNED",
           "orderName": "#1001",
@@ -96,6 +98,14 @@ The query is scoped by all of the following:
   `ROUTE_COMPLETED` event are excluded from operational assigned-route reads
 
 The response must not include other drivers' routes, unrelated orders, raw Shopify payloads, or admin-only planning metadata. Stop address, recipient, phone, and coordinates are intentionally returned only after the driver boundary is verified.
+
+## Server-authoritative ETA lifecycle
+
+- `ROUTE_STARTED` uses the persisted driver event `createdAt` as the route start clock and writes an initial `estimatedArrivalAt` chain for every stop.
+- Each stop ETA is the server start/arrival time plus the stored drive duration for the next leg and the preceding stop's service time (default 5 minutes when absent).
+- `STOP_ARRIVED` marks the stop `ARRIVED`, compares the event's server receipt time with that stop's previous ETA, and rewrites only future stop ETAs.
+- The client-provided `occurredAt` remains event evidence but cannot move the ETA clock.
+- The event response may include `etaUpdate` with the server time, early/late delta, triggering stop, and changed future stops. A later assigned-route read returns the same persisted ETA values.
 
 ## Compliance note
 

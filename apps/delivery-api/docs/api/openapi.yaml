@@ -2157,10 +2157,19 @@ components:
             $ref: '#/components/schemas/DriverAssignedRouteStop'
     DriverAssignedRouteStop:
       type: object
-      required: [address, coordinates, deliveryStopId, orderName, phone, recipientName, sequence, status]
+      required: [address, coordinates, deliveryStopId, durationFromPreviousSeconds, estimatedArrivalAt, orderName, phone, recipientName, sequence, status]
       properties:
         deliveryStopId:
           type: string
+        durationFromPreviousSeconds:
+          type:
+            - integer
+            - 'null'
+        estimatedArrivalAt:
+          format: date-time
+          type:
+            - string
+            - 'null'
         sequence:
           type: integer
         status:
@@ -2552,10 +2561,57 @@ components:
           properties:
             duplicate:
               type: boolean
+            etaUpdate:
+              $ref: '#/components/schemas/DriverRouteEtaUpdate'
             eventId:
               type: string
         error:
           type: 'null'
+    DriverRouteEtaUpdate:
+      type: object
+      required: [actualArrivalAt, deliveryStopId, delaySeconds, previousEstimatedArrivalAt, serverReceivedAt, trigger, updatedStops]
+      properties:
+        actualArrivalAt:
+          format: date-time
+          type:
+            - string
+            - 'null'
+        deliveryStopId:
+          type:
+            - string
+            - 'null'
+        delaySeconds:
+          type:
+            - integer
+            - 'null'
+        previousEstimatedArrivalAt:
+          format: date-time
+          type:
+            - string
+            - 'null'
+        serverReceivedAt:
+          format: date-time
+          type: string
+        trigger:
+          enum: [ROUTE_STARTED, STOP_ARRIVED]
+          type: string
+        updatedStops:
+          type: array
+          items:
+            $ref: '#/components/schemas/DriverRouteEtaStopUpdate'
+    DriverRouteEtaStopUpdate:
+      type: object
+      required: [deliveryStopId, estimatedArrivalAt, sequence]
+      properties:
+        deliveryStopId:
+          type: string
+        estimatedArrivalAt:
+          format: date-time
+          type:
+            - string
+            - 'null'
+        sequence:
+          type: integer
     ShippingAddress:
       type: object
       properties:
