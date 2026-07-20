@@ -155,7 +155,7 @@ export class PrismaDriverRouteSessionRepository {
       if (event.routePlan === null || event.routePlanId === null) {
         continue;
       }
-      if (await this.hasLaterCompletionEvent({
+      if (await this.hasLaterSessionEndEvent({
         driverId: input.driverId,
         routePlanId: event.routePlanId,
         shopId: input.shopId,
@@ -177,38 +177,38 @@ export class PrismaDriverRouteSessionRepository {
   }): Promise<boolean> {
     const latestStart = input.routePlan.driverEvents.at(0) ?? null;
     if (latestStart === null) return false;
-    const completionEvent = await this.prisma.driverEvent.findFirst({
+    const sessionEndEvent = await this.prisma.driverEvent.findFirst({
       select: { id: true },
       where: {
         driverId: input.driverId,
-        eventType: DriverEventType.ROUTE_COMPLETED,
+        eventType: { in: [DriverEventType.ROUTE_PAUSED, DriverEventType.ROUTE_COMPLETED] },
         routePlanId: input.routePlan.id,
         shopId: input.shopId,
         occurredAt: { gt: latestStart.occurredAt }
       }
     });
 
-    return completionEvent === null;
+    return sessionEndEvent === null;
   }
 
-  private async hasLaterCompletionEvent(input: {
+  private async hasLaterSessionEndEvent(input: {
     driverId: string;
     routePlanId: string;
     shopId: string;
     startedAt: Date;
   }): Promise<boolean> {
-    const completionEvent = await this.prisma.driverEvent.findFirst({
+    const sessionEndEvent = await this.prisma.driverEvent.findFirst({
       select: { id: true },
       where: {
         driverId: input.driverId,
-        eventType: DriverEventType.ROUTE_COMPLETED,
+        eventType: { in: [DriverEventType.ROUTE_PAUSED, DriverEventType.ROUTE_COMPLETED] },
         occurredAt: { gt: input.startedAt },
         routePlanId: input.routePlanId,
         shopId: input.shopId
       }
     });
 
-    return completionEvent !== null;
+    return sessionEndEvent !== null;
   }
 }
 

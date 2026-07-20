@@ -41,6 +41,7 @@ export function toRouteExecutionStatus(
   if (status === 'COMPLETED') return 'COMPLETED';
   if (status === 'CANCELLED') return 'CANCELLED';
   if (driverEvents.some((event) => event.eventType === 'ROUTE_COMPLETED')) return 'COMPLETED';
+  if (driverEvents.some((event) => event.eventType === 'ROUTE_PAUSED')) return 'READY';
   if (driverEvents.some((event) => event.eventType === 'ROUTE_STARTED')) return 'IN_PROGRESS';
   return 'READY';
 }

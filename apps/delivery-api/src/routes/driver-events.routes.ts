@@ -52,6 +52,11 @@ import {
   DriverEventContextError,
   DriverEventScopeError
 } from '../modules/driver/driver-event.repository.js';
+import {
+  createRouteTrackingPositionEvent,
+  createRouteTrackingProgressEvent
+} from '../modules/route-tracking/route-tracking.service.js';
+import type { RouteTrackingStreamHub } from '../modules/route-tracking/route-tracking.stream.js';
 
 export type DriverApiDependencies = {
   driverAssignedRouteService?: DriverAssignedRouteServiceContract;
@@ -78,6 +83,7 @@ export type DriverApiDependencies = {
   driverTokenAccessRepository?: DriverTokenAccessRepositoryApi;
   jwtSecret: string;
   proofMediaService?: DriverProofMediaServiceContract;
+  routeTrackingStreamHub?: RouteTrackingStreamHub;
   now?: () => Date;
   routeAccessService?: DriverRouteAccessServiceApi;
 };
@@ -778,6 +784,34 @@ export function registerDriverEventRoutes(
       }
 
       throw error;
+    }
+
+    if (!result.duplicate && eventInput.eventType === 'LOCATION_UPDATED') {
+      const positionEvent = createRouteTrackingPositionEvent({
+        driverId: driverContext.driverId,
+        eventId: result.eventId,
+        latitude: eventInput.latitude,
+        longitude: eventInput.longitude,
+        occurredAt: eventInput.occurredAt,
+        receivedAt: dependencies.now?.() ?? new Date(),
+        routePlanId: driverContext.routePlanId
+      });
+      if (positionEvent !== null) {
+        dependencies.routeTrackingStreamHub?.publishPosition(positionEvent);
+      }
+    } else if (!result.duplicate) {
+      const progressEvent = createRouteTrackingProgressEvent({
+        deliveryStopId: eventInput.deliveryStopId,
+        driverId: driverContext.driverId,
+        eventId: result.eventId,
+        eventType: eventInput.eventType,
+        occurredAt: eventInput.occurredAt,
+        receivedAt: dependencies.now?.() ?? new Date(),
+        routePlanId: driverContext.routePlanId
+      });
+      if (progressEvent !== null) {
+        dependencies.routeTrackingStreamHub?.publishProgress(progressEvent);
+      }
     }
 
     return reply.code(result.duplicate ? 200 : 202).send({

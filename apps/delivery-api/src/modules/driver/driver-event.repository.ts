@@ -92,7 +92,10 @@ async function findMatchingDriverEvent(
   prisma: DriverEventTransactionClient,
   input: RecordDriverEventInput
 ): Promise<{ id: string } | null> {
-  if (input.clientEventId === null || input.eventType !== 'ROUTE_COMPLETED') {
+  if (
+    input.clientEventId === null
+    || (input.eventType !== 'ROUTE_COMPLETED' && input.eventType !== 'ROUTE_PAUSED')
+  ) {
     return null;
   }
 
@@ -194,6 +197,19 @@ async function applyDriverEventStateTransition(
         id: requireRoutePlanId(input),
         shopId,
         status: { not: 'CANCELLED' }
+      }
+    });
+    return;
+  }
+
+  if (input.eventType === 'ROUTE_PAUSED') {
+    await prisma.routePlan.updateMany({
+      data: { status: 'READY' },
+      where: {
+        driverId: input.driverId,
+        id: requireRoutePlanId(input),
+        shopId,
+        status: 'IN_PROGRESS'
       }
     });
     return;

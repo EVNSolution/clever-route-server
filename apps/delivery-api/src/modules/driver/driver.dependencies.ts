@@ -16,6 +16,7 @@ import {
 import type { DriverProofMediaStorageBackend } from './driver-proof-media.repository.js';
 import type { DriverProofMediaScanMonitor, DriverProofMediaScanner } from './driver-proof-media.types.js';
 import type { DriverApiDependencies } from '../../routes/driver-events.routes.js';
+import type { RouteTrackingStreamHub } from '../route-tracking/route-tracking.stream.js';
 import {
   DEFAULT_DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS,
   DriverRouteMapPreviewService
@@ -74,6 +75,7 @@ type DriverProofMediaRepositorySafetyOptions = {
 type LoadDriverApiDependenciesInput = {
   env: DriverApiRuntimeEnv;
   prisma: PrismaClient;
+  routeTrackingStreamHub?: RouteTrackingStreamHub;
 };
 
 export function loadDriverApiDependencies(
@@ -113,6 +115,7 @@ export function loadDriverApiDependencies(
       ...proofMediaStorageOptions,
       ...proofMediaSafetyOptions
     }),
+    ...(input.routeTrackingStreamHub === undefined ? {} : { routeTrackingStreamHub: input.routeTrackingStreamHub }),
     routeAccessService: new PrismaDriverRouteAccessRepository(input.prisma)
   };
 }

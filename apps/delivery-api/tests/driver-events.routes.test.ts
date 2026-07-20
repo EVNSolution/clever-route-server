@@ -71,6 +71,72 @@ describe('Driver events route', () => {
     }
   });
 
+  test('publishes a v1 route tracking position after a nonduplicate location update is committed', async () => {
+    const publishPosition = vi.fn();
+    const { dependencies } = createDependencyHarness();
+    dependencies.routeTrackingStreamHub = { publishPosition } as never;
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: eventPayload(),
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(publishPosition).toHaveBeenCalledWith({
+        driverId: 'driver-id',
+        eventId: 'driver-event-id',
+        latitude: 40.7128,
+        longitude: -74.006,
+        occurredAt: '2026-05-07T06:09:30.000Z',
+        receivedAt: '2026-05-07T06:10:00.000Z',
+        routePlanId: 'route-plan-id',
+        schemaVersion: 'route_tracking.v1'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('publishes route progress after a nonduplicate driver stage event is committed', async () => {
+    const publishProgress = vi.fn();
+    const { dependencies } = createDependencyHarness();
+    dependencies.routeTrackingStreamHub = { publishProgress } as never;
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: {
+          clientEventId: 'stop-arrived-1',
+          deliveryStopId: 'stop-id',
+          eventType: 'STOP_ARRIVED',
+          occurredAt: '2026-05-07T06:09:30.000Z',
+          routePlanId: 'route-plan-id'
+        },
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(publishProgress).toHaveBeenCalledWith({
+        deliveryStopId: 'stop-id',
+        driverId: 'driver-id',
+        eventId: 'driver-event-id',
+        eventType: 'STOP_ARRIVED',
+        occurredAt: '2026-05-07T06:09:30.000Z',
+        receivedAt: '2026-05-07T06:10:00.000Z',
+        routePlanId: 'route-plan-id',
+        schemaVersion: 'route_tracking.v1'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects driver event tokens invalidated by a relogin token-version cutoff', async () => {
     const { dependencies, resolveDriverRouteAccess, recordDriverEvent } = createDependencyHarness({
       accessTokenActive: false

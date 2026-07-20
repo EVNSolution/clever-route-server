@@ -142,7 +142,7 @@ describe('PrismaDriverRouteSessionRepository', () => {
     });
   });
 
-  test('returns no active session when the started route was later completed', async () => {
+  test('returns no active session when the started route was later completed or released', async () => {
     const { assignedRouteService, prisma } = createHarness({
       completionEvent: { id: 'completion-event-id' },
       inProgressRoute: null,
@@ -164,6 +164,12 @@ describe('PrismaDriverRouteSessionRepository', () => {
       shopId: 'shop-id'
     })).resolves.toEqual({ status: 'NO_ACTIVE_SESSION' });
     expect(assignedRouteService.getAssignedRoute).not.toHaveBeenCalled();
+    const sessionEndCalls = prisma.driverEvent.findFirst.mock.calls as unknown as Array<[
+      { where?: { eventType?: unknown } }
+    ]>;
+    expect(sessionEndCalls.at(-1)?.[0].where?.eventType).toEqual({
+      in: ['ROUTE_PAUSED', 'ROUTE_COMPLETED']
+    });
   });
 
   test('keeps pickup as the current step until a terminal stop exists', async () => {

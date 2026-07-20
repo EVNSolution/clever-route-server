@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 
 import {
   logRejectedAdminSessionToken,
@@ -25,9 +25,24 @@ import type {
   UpdateRoutePlanOptionsPayload,
   UpdateRoutePlanStopsPayload
 } from '../modules/route-plans/route-plan.types.js';
+import {
+  ROUTE_TRACKING_V1_POLICY
+} from '../modules/route-tracking/route-tracking.policy.js';
+import type {
+  RouteTrackingPositionEventV1,
+  RouteTrackingProgressEventV1,
+  RouteTrackingService,
+  RouteTrackingSnapshotV1
+} from '../modules/route-tracking/route-tracking.types.js';
+import type {
+  RouteTrackingStreamEvent,
+  RouteTrackingStreamHub
+} from '../modules/route-tracking/route-tracking.stream.js';
 
 export type AdminRoutePlanDependencies = {
   routePlanService: RoutePlanService;
+  routeTrackingService?: RouteTrackingService;
+  routeTrackingStreamHub?: RouteTrackingStreamHub;
   sessionTokenVerifier: AdminSessionTokenVerifier;
 };
 
@@ -129,6 +144,109 @@ export function registerAdminRoutePlanRoutes(
         data: detail,
         error: null
       });
+    }
+  );
+
+  app.get<{ Params: { routePlanId: string } }>(
+    '/admin/route-plans/:routePlanId/tracking',
+    async (request, reply) => {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+        log: request.log,
+        surface: 'admin_route_plans'
+      });
+      if (authenticated.status === 'unauthorized') {
+        return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+      }
+      if (dependencies.routeTrackingService === undefined) {
+        return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Route tracking is unavailable'));
+      }
+
+      const exists = await routePlanExistsForAdmin(dependencies, {
+        appId: authenticated.appId,
+        routePlanId: request.params.routePlanId,
+        shopDomain: authenticated.shopDomain
+      });
+      if (!exists) {
+        return reply.code(404).send(errorResponse('NOT_FOUND', 'Route plan not found'));
+      }
+
+      const snapshot = await dependencies.routeTrackingService.getRouteTrackingSnapshot({
+        routePlanId: request.params.routePlanId
+      });
+      return reply.code(200).send({
+        data: snapshot,
+        error: null
+      });
+    }
+  );
+
+  app.get<{ Params: { routePlanId: string } }>(
+    '/admin/route-plans/:routePlanId/tracking/stream',
+    async (request, reply) => {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+        log: request.log,
+        surface: 'admin_route_plans'
+      });
+      if (authenticated.status === 'unauthorized') {
+        return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+      }
+      if (dependencies.routeTrackingService === undefined || dependencies.routeTrackingStreamHub === undefined) {
+        return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Route tracking stream is unavailable'));
+      }
+
+      const routePlanId = request.params.routePlanId;
+      const exists = await routePlanExistsForAdmin(dependencies, {
+        appId: authenticated.appId,
+        routePlanId,
+        shopDomain: authenticated.shopDomain
+      });
+      if (!exists) {
+        return reply.code(404).send(errorResponse('NOT_FOUND', 'Route plan not found'));
+      }
+
+      const queuedEvents: RouteTrackingStreamEvent[] = [];
+      let isSnapshotSent = false;
+      let heartbeat: NodeJS.Timeout | null = null;
+      let isCleanedUp = false;
+      const unsubscribe = dependencies.routeTrackingStreamHub.subscribeToRoute(routePlanId, (event) => {
+        if (!isSnapshotSent) {
+          queuedEvents.push(event);
+          return;
+        }
+        writeTrackingStreamEvent(reply, event);
+      });
+      const cleanup = () => {
+        if (isCleanedUp) return;
+        isCleanedUp = true;
+        if (heartbeat !== null) clearInterval(heartbeat);
+        unsubscribe();
+      };
+      reply.raw.on('close', cleanup);
+      reply.raw.on('error', cleanup);
+      let snapshot: RouteTrackingSnapshotV1;
+      try {
+        snapshot = await dependencies.routeTrackingService.getRouteTrackingSnapshot({ routePlanId });
+      } catch (error) {
+        cleanup();
+        throw error;
+      }
+      if (request.raw.destroyed || reply.raw.destroyed) {
+        cleanup();
+        return;
+      }
+      openTrackingStream(reply);
+      writeSseRetry(reply, ROUTE_TRACKING_V1_POLICY.streamRetryMs);
+      writeSseEvent(reply, 'tracking_snapshot', snapshot);
+      isSnapshotSent = true;
+      const snapshotEventIds = new Set(snapshot.recentPositions.map((position) => position.eventId));
+      if (snapshot.progress.latestEvent !== null) snapshotEventIds.add(snapshot.progress.latestEvent.eventId);
+      for (const event of queuedEvents) {
+        if (!snapshotEventIds.has(event.data.eventId)) writeTrackingStreamEvent(reply, event);
+      }
+      heartbeat = setInterval(() => {
+        reply.raw.write(`: heartbeat ${new Date().toISOString()}\n\n`);
+      }, ROUTE_TRACKING_V1_POLICY.heartbeatMs);
+      heartbeat.unref();
     }
   );
 
@@ -387,6 +505,67 @@ export function registerAdminRoutePlanRoutes(
       });
     }
   );
+}
+
+async function routePlanExistsForAdmin(
+  dependencies: AdminRoutePlanDependencies,
+  input: { appId?: string | undefined; routePlanId: string; shopDomain: string }
+): Promise<boolean> {
+  if (dependencies.routePlanService.routePlanExists !== undefined) {
+    return dependencies.routePlanService.routePlanExists(input);
+  }
+  return dependencies.routePlanService.getRoutePlanDetail(input).then((detail) => detail !== null);
+}
+
+function openTrackingStream(reply: FastifyReply): void {
+  const headers = {
+    'Cache-Control': 'no-store, no-transform',
+    Connection: 'keep-alive',
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'X-Accel-Buffering': 'no'
+  };
+  reply.code(200);
+  for (const [name, value] of Object.entries(headers)) {
+    reply.header(name, value);
+  }
+  reply.hijack();
+  reply.raw.writeHead(200, headers);
+}
+
+function writeSseRetry(reply: FastifyReply, retryMs: number): void {
+  reply.raw.write(`retry: ${retryMs}\n\n`);
+}
+
+function writeTrackingStreamEvent(reply: FastifyReply, event: RouteTrackingStreamEvent): void {
+  if (event.eventName === 'tracking_position') {
+    writeSseEvent(reply, event.eventName, event.data);
+    return;
+  }
+  writeSseEvent(reply, event.eventName, event.data);
+}
+
+function writeSseEvent(
+  reply: FastifyReply,
+  eventName: 'tracking_position',
+  data: RouteTrackingPositionEventV1
+): void;
+function writeSseEvent(
+  reply: FastifyReply,
+  eventName: 'tracking_progress',
+  data: RouteTrackingProgressEventV1
+): void;
+function writeSseEvent(
+  reply: FastifyReply,
+  eventName: 'tracking_snapshot',
+  data: RouteTrackingSnapshotV1
+): void;
+function writeSseEvent(
+  reply: FastifyReply,
+  eventName: 'tracking_position' | 'tracking_progress' | 'tracking_snapshot',
+  data: RouteTrackingPositionEventV1 | RouteTrackingProgressEventV1 | RouteTrackingSnapshotV1
+): void {
+  reply.raw.write(`event: ${eventName}\n`);
+  reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
 function authenticate(

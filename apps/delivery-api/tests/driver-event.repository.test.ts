@@ -206,6 +206,27 @@ describe('PrismaDriverEventRepository', () => {
     });
   });
 
+  test('moves an in-progress route back to ready when the driver releases the session', async () => {
+    const { prisma } = createPrismaHarness();
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await repository.recordDriverEvent(baseInput({
+      deliveryStopId: null,
+      eventType: 'ROUTE_PAUSED',
+      routePlanId: 'route-plan-id'
+    }));
+
+    expect(prisma.routePlan.updateMany).toHaveBeenCalledWith({
+      data: { status: 'READY' },
+      where: {
+        driverId: 'driver-id',
+        id: 'route-plan-id',
+        shopId: 'shop-id',
+        status: 'IN_PROGRESS'
+      }
+    });
+  });
+
   test('treats explicit driver completion as authoritative even when a stop is not terminal', async () => {
     const { prisma } = createPrismaHarness({
       routeStops: [
