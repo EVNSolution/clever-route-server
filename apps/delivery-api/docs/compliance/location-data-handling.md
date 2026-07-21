@@ -17,6 +17,7 @@ This document records how `clever-route-server` should treat location informatio
 | --- | --- | --- | --- | --- |
 | Delivery stop latitude/longitude | `DeliveryStop.latitude`, `DeliveryStop.longitude` | Dispatch planning, routing, geocode status | High | Keep as canonical coordinate; restrict admin/driver access by shop and route/stop ownership. |
 | Driver event latitude/longitude | `DriverEvent.latitude`, `DriverEvent.longitude`, `DriverEvent.payload` | Driver route progress, live/update events | High | Treat as personal location if tied to a driver; retain raw update events for the shortest operational period. |
+| Recorded route geometry | `RouteTrackingGeometry.geometry`, `RouteTrackingGeometry.sampleMetadata` | Complete route-level GPS history for tracking review without event-tail limits | High | Read-optimized projection of retained driver events; apply the same access boundary and raw GPS retention window. |
 | Depot coordinates | `RoutePlan.depotLatitude`, `RoutePlan.depotLongitude`, route plan request | Dispatch start point | Medium | Usually business location; still keep behind admin auth. |
 | Route plan stop sequence/location context | `RoutePlanStop`, related `DeliveryStop` | Route execution and audit | High when joined with customer address | Log accesses when returned through admin/driver APIs. |
 | Shopify snapshot coordinates | `Order.rawPayload.shippingAddress.latitude/longitude` if app sends full snapshot | Original source snapshot | High and duplicated | Remove from raw payload in a hardening pass; keep coordinates only in `DeliveryStop`. |
@@ -76,6 +77,7 @@ Retention days are maximum engineering defaults, not guaranteed holding periods.
 | `LocationAccessLog` | 400 days | Access fact logs should be available for at least 1 year plus operational buffer. | Delete after retention unless litigation/incident hold is active. |
 | `LocationUsageRecord` | 215 days | Location collection/use/provision confirmation data should be available for at least 6 months plus buffer. | Delete after retention unless legal/incident hold is active. |
 | `DriverEvent` with `LOCATION_UPDATED` and raw coordinates | 90 days after occurrence | High-volume live driver GPS is rarely needed after delivery operations settle. | Null `latitude`, `longitude`, and coordinate fields inside `payload`; keep non-location event metadata if still operationally useful. |
+| `RouteTrackingGeometry` route projection | 90 days after the latest represented occurrence | Contains the same personal location path in compressed route form. | Delete the route-scoped projection by `expiresAt` with the raw GPS cleanup; never retain it longer merely because it is compressed. |
 | Other `DriverEvent` rows tied to proof of delivery/failure | 180 days after occurrence | Needed for customer support and delivery dispute handling. | Remove embedded coordinate fields from `payload` after 90 days; keep event type/timestamps longer if needed. |
 | `DriverProofMedia` rows and stored proof files | 180 days after occurrence/upload by default | Needed for customer support and delivery dispute handling. | Delete stored file bytes through the configured proof-media storage backend and mark/delete metadata after retention unless legal/incident hold exists; stored JPEG bytes have EXIF APP1 metadata stripped before hash/size recording and accepted media can pass through a scanner hook before persistence. |
 | `DeliveryStop.latitude/longitude` | 180 days after `deliveryDate` by default | Needed for active routing, route review, and short-term support. | Null coordinates and mark retained address data separately if order history must remain. |
@@ -95,7 +97,7 @@ POSTGRES_BACKUP_RETENTION_DAYS=35
 
 ## Processing rules for future code changes
 
-1. **Minimize duplicate coordinates**: canonical GPS belongs in `DeliveryStop` or `DriverEvent`; do not also keep it in `Order.rawPayload` unless a test documents why.
+1. **Minimize duplicate coordinates**: canonical stop coordinates belong in `DeliveryStop`, while raw driver GPS belongs in `DriverEvent`. `RouteTrackingGeometry` is the only permitted duplicate GPS projection because it replaces unbounded event scans for route-history reads; do not also keep coordinates in `Order.rawPayload` unless a test documents why.
 2. **Split new-write sanitizing and existing-data backfill**: stop writing new `rawPayload` coordinates/email first, then run a dry-run/apply backfill against existing `Order.rawPayload` rows and store evidence.
 3. **Log reads, not just writes**: returning admin orders, route plan details, driver route/stop details, or driver location events should emit access/usage records.
 4. **Do not put sensitive values in compliance logs**: metadata should store IDs, counts, action names, routeScopeKey, and evidence artifact references; omit addresses, phones, emails, recipient names, and coordinates.

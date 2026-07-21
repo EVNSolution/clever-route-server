@@ -4,6 +4,10 @@ import {
   ROUTE_TRACKING_SCHEMA_VERSION,
   ROUTE_TRACKING_V1_POLICY
 } from './route-tracking.policy.js';
+import {
+  toRouteTrackingPositionEvents,
+  toRouteTrackingRecordedPath
+} from './route-tracking.geometry.js';
 import type {
   RouteTrackingPositionEventV1,
   RouteTrackingProgressEventType,
@@ -14,7 +18,7 @@ import type {
   RouteTrackingStatus
 } from './route-tracking.types.js';
 
-type RouteTrackingPrismaClient = Pick<PrismaClient, 'driverEvent' | 'routePlanStop'>;
+type RouteTrackingPrismaClient = Pick<PrismaClient, 'driverEvent' | 'routePlanStop' | 'routeTrackingGeometry'>;
 
 const ROUTE_TRACKING_PROGRESS_EVENT_TYPES: RouteTrackingProgressEventType[] = [
   'ROUTE_STARTED',
@@ -53,25 +57,9 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
     routePlanId: string;
   }): Promise<RouteTrackingSnapshotV1> {
     const serverTime = input.now ?? new Date();
-    const [rows, latestProgressRow, routeStops] = await Promise.all([
-      this.prisma.driverEvent.findMany({
-      orderBy: [{ occurredAt: 'desc' }, { createdAt: 'desc' }],
-      select: {
-        createdAt: true,
-        driverId: true,
-        id: true,
-        latitude: true,
-        longitude: true,
-        occurredAt: true,
-        routePlanId: true
-      },
-      take: ROUTE_TRACKING_V1_POLICY.recentPositionsLimit,
-      where: {
-        eventType: 'LOCATION_UPDATED',
-        latitude: { not: null },
-        longitude: { not: null },
-        routePlanId: input.routePlanId
-      }
+    const [recordedGeometry, latestProgressRow, routeStops] = await Promise.all([
+      this.prisma.routeTrackingGeometry.findUnique({
+        where: { routePlanId: input.routePlanId }
       }),
       this.prisma.driverEvent.findFirst({
         orderBy: [{ occurredAt: 'desc' }, { createdAt: 'desc' }],
@@ -97,10 +85,32 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
         where: { routePlanId: input.routePlanId }
       })
     ]);
-    const recentPositions = rows
-      .map((row) => toPositionEvent(row))
-      .filter((position): position is RouteTrackingPositionEventV1 => position !== null)
-      .sort((left, right) => left.occurredAt.localeCompare(right.occurredAt));
+    const fallbackRows = recordedGeometry === null
+      ? await this.prisma.driverEvent.findMany({
+          orderBy: [{ occurredAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+          select: {
+            createdAt: true,
+            driverId: true,
+            id: true,
+            latitude: true,
+            longitude: true,
+            occurredAt: true,
+            routePlanId: true
+          },
+          where: {
+            eventType: 'LOCATION_UPDATED',
+            latitude: { not: null },
+            longitude: { not: null },
+            routePlanId: input.routePlanId
+          }
+        })
+      : [];
+    const recentPositions = recordedGeometry === null
+      ? fallbackRows
+          .map((row) => toPositionEvent(row))
+          .filter((position): position is RouteTrackingPositionEventV1 => position !== null)
+          .sort((left, right) => left.occurredAt.localeCompare(right.occurredAt))
+      : toRouteTrackingPositionEvents(recordedGeometry);
     const latestPosition = recentPositions.at(-1) ?? null;
     const progress = buildProgressSnapshot(latestProgressRow, routeStops);
 
@@ -108,6 +118,7 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
       latestPosition,
       policy: ROUTE_TRACKING_V1_POLICY,
       progress,
+      recordedPath: toRouteTrackingRecordedPath(recordedGeometry),
       recentPositions,
       routePlanId: input.routePlanId,
       schemaVersion: ROUTE_TRACKING_SCHEMA_VERSION,

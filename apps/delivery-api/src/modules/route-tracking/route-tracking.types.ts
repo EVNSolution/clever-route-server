@@ -42,10 +42,30 @@ export type RouteTrackingProgressSnapshotV1 = {
 
 export type RouteTrackingStatus = 'DELAYED' | 'LIVE' | 'NO_POSITION' | 'STALE';
 
+export type RouteTrackingRecordedPathV1 = {
+  firstOccurredAt: string;
+  geometry: {
+    coordinates: Array<[number, number]>;
+    type: 'LineString';
+  } | null;
+  geometryPointCount: number;
+  lastOccurredAt: string;
+  lastReceivedAt: string;
+  samples: Array<{
+    driverId: string | null;
+    eventId: string;
+    occurredAt: string;
+    receivedAt: string;
+  }>;
+  schemaVersion: 'route_tracking_geometry.v1';
+  sourcePointCount: number;
+};
+
 export type RouteTrackingSnapshotV1 = {
   latestPosition: RouteTrackingPositionEventV1 | null;
   policy: RouteTrackingPolicy;
   progress: RouteTrackingProgressSnapshotV1;
+  recordedPath?: RouteTrackingRecordedPathV1 | null;
   recentPositions: RouteTrackingPositionEventV1[];
   routePlanId: string;
   schemaVersion: 'route_tracking.v1';

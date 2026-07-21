@@ -5,8 +5,8 @@ export const ROUTE_TRACKING_V1_POLICY = {
   delayedThresholdMs: 180_000,
   heartbeatMs: 15_000,
   liveThresholdMs: 60_000,
+  geometrySimplificationToleranceMeters: 5,
   minDistanceMeters: 50,
-  recentPositionsLimit: 1_000,
   streamRetryMs: 3_000
 } as const;
 
