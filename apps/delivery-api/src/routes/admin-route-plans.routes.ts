@@ -208,12 +208,26 @@ export function registerAdminRoutePlanRoutes(
       let isSnapshotSent = false;
       let heartbeat: NodeJS.Timeout | null = null;
       let isCleanedUp = false;
+      let isReconcilingSnapshot = false;
+      let streamVersion = 0;
+      let lastSentPositionEventId: string | null = null;
+      let lastSentProgressEventId: string | null = null;
+      const rememberSnapshot = (currentSnapshot: RouteTrackingSnapshotV1) => {
+        lastSentPositionEventId = currentSnapshot.latestPosition?.eventId ?? null;
+        lastSentProgressEventId = currentSnapshot.progress.latestEvent?.eventId ?? null;
+      };
+      const rememberEvent = (event: RouteTrackingStreamEvent) => {
+        if (event.eventName === 'tracking_position') lastSentPositionEventId = event.data.eventId;
+        if (event.eventName === 'tracking_progress') lastSentProgressEventId = event.data.eventId;
+      };
       const unsubscribe = dependencies.routeTrackingStreamHub.subscribeToRoute(routePlanId, (event) => {
+        streamVersion += 1;
         if (!isSnapshotSent) {
           queuedEvents.push(event);
           return;
         }
         writeTrackingStreamEvent(reply, event);
+        rememberEvent(event);
       });
       const cleanup = () => {
         if (isCleanedUp) return;
@@ -237,14 +251,49 @@ export function registerAdminRoutePlanRoutes(
       openTrackingStream(reply);
       writeSseRetry(reply, ROUTE_TRACKING_V1_POLICY.streamRetryMs);
       writeSseEvent(reply, 'tracking_snapshot', snapshot);
+      rememberSnapshot(snapshot);
       isSnapshotSent = true;
       const snapshotEventIds = new Set(snapshot.recentPositions.map((position) => position.eventId));
       if (snapshot.progress.latestEvent !== null) snapshotEventIds.add(snapshot.progress.latestEvent.eventId);
       for (const event of queuedEvents) {
-        if (!snapshotEventIds.has(event.data.eventId)) writeTrackingStreamEvent(reply, event);
+        if (!snapshotEventIds.has(event.data.eventId)) {
+          writeTrackingStreamEvent(reply, event);
+          rememberEvent(event);
+        }
       }
+      const reconcileSnapshot = async () => {
+        if (isCleanedUp || isReconcilingSnapshot) return;
+        isReconcilingSnapshot = true;
+        const reconciliationVersion = streamVersion;
+        try {
+          const reconciledSnapshot = await dependencies.routeTrackingService!.getRouteTrackingSnapshot({ routePlanId });
+          if (
+            isCleanedUp
+            || request.raw.destroyed
+            || reply.raw.destroyed
+            || reconciliationVersion !== streamVersion
+          ) {
+            return;
+          }
+          const nextPositionEventId = reconciledSnapshot.latestPosition?.eventId ?? null;
+          const nextProgressEventId = reconciledSnapshot.progress.latestEvent?.eventId ?? null;
+          if (
+            nextPositionEventId === lastSentPositionEventId
+            && nextProgressEventId === lastSentProgressEventId
+          ) {
+            return;
+          }
+          writeSseEvent(reply, 'tracking_snapshot', reconciledSnapshot);
+          rememberSnapshot(reconciledSnapshot);
+        } catch (error) {
+          request.log.warn({ err: error, routePlanId }, 'Route tracking stream reconciliation failed');
+        } finally {
+          isReconcilingSnapshot = false;
+        }
+      };
       heartbeat = setInterval(() => {
         reply.raw.write(`: heartbeat ${new Date().toISOString()}\n\n`);
+        void reconcileSnapshot();
       }, ROUTE_TRACKING_V1_POLICY.heartbeatMs);
       heartbeat.unref();
     }
