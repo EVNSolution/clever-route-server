@@ -10,6 +10,7 @@ const openApps: Array<Awaited<ReturnType<typeof buildApp>>> = [];
 
 afterEach(async () => {
   await Promise.all(openApps.splice(0).map((app) => app.close()));
+  vi.restoreAllMocks();
 });
 
 describe('Admin route tracking routes', () => {
@@ -138,6 +139,43 @@ describe('Admin route tracking routes', () => {
     expect(body).toContain('event: tracking_position');
     expect(body).toContain('"eventId":"during-snapshot"');
   });
+
+  test('reconciles durable GPS missed by the process-local stream hub on heartbeat', async () => {
+    let heartbeat: (() => void) | undefined;
+    const routeTrackingStreamHub = new RouteTrackingStreamHub();
+    const { dependencies, getRouteTrackingSnapshot } = createDependencyHarness({ routeTrackingStreamHub });
+    const reconciledSnapshot = trackingSnapshot({
+      eventId: 'driver-event-from-another-process',
+      latitude: 43.71,
+      longitude: -79.41,
+      occurredAt: '2026-05-07T12:00:30.000Z',
+      receivedAt: '2026-05-07T12:00:31.000Z'
+    });
+    getRouteTrackingSnapshot
+      .mockResolvedValueOnce(trackingSnapshot())
+      .mockResolvedValueOnce(reconciledSnapshot);
+    const app = await buildApp({ adminRoutePlans: dependencies });
+    openApps.push(app);
+    await app.listen({ port: 0 });
+    const address = app.server.address() as AddressInfo;
+    const abortController = new AbortController();
+    vi.spyOn(globalThis, 'setInterval').mockImplementation((callback) => {
+      heartbeat = callback;
+      return { unref: vi.fn() } as unknown as NodeJS.Timeout;
+    });
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/admin/route-plans/route-plan-id/tracking/stream`, {
+      headers: { authorization: 'Bearer session-token', 'x-clever-app-id': 'clever-route-dev' },
+      signal: abortController.signal
+    });
+    expect(response.status).toBe(200);
+    heartbeat?.();
+    const body = await readUntil(response, 'driver-event-from-another-process');
+    abortController.abort();
+
+    expect(body.match(/event: tracking_snapshot/g)).toHaveLength(2);
+    expect(body).toContain('"eventId":"driver-event-from-another-process"');
+  });
 });
 
 function createDependencyHarness(input: {
@@ -186,7 +224,13 @@ function createDependencyHarness(input: {
   };
 }
 
-function trackingSnapshot() {
+function trackingSnapshot(positionOverrides: Partial<{
+  eventId: string;
+  latitude: number;
+  longitude: number;
+  occurredAt: string;
+  receivedAt: string;
+}> = {}) {
   const position = {
     driverId: 'driver-id',
     eventId: 'driver-event-1',
@@ -195,7 +239,8 @@ function trackingSnapshot() {
     occurredAt: '2026-05-07T12:00:00.000Z',
     receivedAt: '2026-05-07T12:00:01.000Z',
     routePlanId: 'route-plan-id',
-    schemaVersion: 'route_tracking.v1' as const
+    schemaVersion: 'route_tracking.v1' as const,
+    ...positionOverrides
   };
   return {
     latestPosition: position,
