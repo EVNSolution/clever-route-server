@@ -2,10 +2,30 @@ import { describe, expect, test } from 'vitest';
 
 import {
   appendRouteTrackingGeometryPosition,
-  buildRouteTrackingGeometryDocument
+  buildRouteTrackingGeometryDocument,
+  persistRouteTrackingGeometryPosition
 } from '../src/modules/route-tracking/route-tracking.geometry.js';
 
 describe('route tracking geometry projection', () => {
+  test('projects the advisory lock to a supported scalar before Prisma reads it', async () => {
+    let lockSql = '';
+    const prisma = {
+      $queryRaw: (query: { strings: readonly string[] }) => {
+        lockSql = query.strings.join('?');
+        return Promise.resolve([{ locked: true }]);
+      },
+      driverEvent: { findMany: () => Promise.resolve([]) },
+      routeTrackingGeometry: {
+        findUnique: () => Promise.resolve(null),
+        upsert: () => Promise.resolve(null)
+      }
+    } as unknown as Parameters<typeof persistRouteTrackingGeometryPosition>[0];
+
+    await persistRouteTrackingGeometryPosition(prisma, position());
+
+    expect(lockSql).toContain('SELECT TRUE AS "locked" FROM pg_advisory_xact_lock');
+  });
+
   test('keeps a route-scoped geometry with more than 1000 GPS samples without a count cap', () => {
     const positions = Array.from({ length: 1_205 }, (_, index) => position({
       eventId: `event-${index}`,
