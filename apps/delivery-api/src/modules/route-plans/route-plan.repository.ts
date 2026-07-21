@@ -39,6 +39,7 @@ import type {
   RoutePlanSummary
 } from './route-plan.types.js';
 import { applyCachedRouteGeometry, computeRouteShapeSignature, routeGeometryCacheUpsertArgs } from './route-plan-geometry-cache.js';
+import { assertRouteExecutionOwnership } from './route-execution-ownership.js';
 import { isRouteReadyStatus, toRouteExecutionStatus } from './route-plan-lifecycle.js';
 import type { RouteGeometryCacheRead, RouteGeometryCacheWrite } from './route-plan-geometry-cache.js';
 import type { RoutePlanRepository } from './route-plan.service.js';
@@ -531,16 +532,12 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             deliveryStopIds.push(deliveryStop.id);
           }
 
-          const stopsAssignedElsewhere = await tx.routePlanStop.findMany({
-            select: { deliveryStopId: true },
-            where: {
-              deliveryStopId: { in: deliveryStopIds },
-              routePlanId: { not: input.routePlanId },
-              routePlan: { shopId: shop.id }
-            }
-          });
-          if (stopsAssignedElsewhere.length > 0) {
-            throw new RoutePlanOrderAlreadyPlannedError();
+          if (routePlan.status === 'IN_PROGRESS') {
+            await assertRouteExecutionOwnership(tx, {
+              deliveryStopIds,
+              routePlanId: input.routePlanId,
+              shopId: shop.id
+            });
           }
 
           await tx.routePlanStop.deleteMany({
@@ -712,25 +709,6 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         });
 
         deliveryStopIds.push(deliveryStop.id);
-      }
-
-      const existingRoutePlanStops = await tx.routePlanStop.findMany({
-        select: { deliveryStopId: true },
-        where: {
-          deliveryStopId: { in: deliveryStopIds },
-          routePlan: { shopId: shop.id }
-        }
-      });
-
-      if (existingRoutePlanStops.length > 0) {
-        const duplicateDeliveryStopIds = new Set(
-          existingRoutePlanStops.map((routeStop) => routeStop.deliveryStopId)
-        );
-        const duplicateOrderNames = input.orders
-          .filter((_, orderIndex) => duplicateDeliveryStopIds.has(deliveryStopIds[orderIndex] ?? ''))
-          .map((order) => order.name);
-
-        throw new RoutePlanOrderAlreadyPlannedError(duplicateOrderNames);
       }
 
       const routePlan = await tx.routePlan.create({
@@ -1138,16 +1116,12 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         deliveryStopIds.push(deliveryStop.id);
       }
 
-      const stopsAssignedElsewhere = await tx.routePlanStop.findMany({
-        select: { deliveryStopId: true },
-        where: {
-          deliveryStopId: { in: deliveryStopIds },
-          routePlanId: { not: input.routePlanId },
-          routePlan: { shopId: shop.id }
-        }
-      });
-      if (stopsAssignedElsewhere.length > 0) {
-        throw new RoutePlanOrderAlreadyPlannedError();
+      if (routePlan.status === 'IN_PROGRESS') {
+        await assertRouteExecutionOwnership(tx, {
+          deliveryStopIds,
+          routePlanId: input.routePlanId,
+          shopId: shop.id
+        });
       }
 
       await tx.routePlanStop.deleteMany({
@@ -1471,8 +1445,7 @@ function validateFactsForRouteCreation(input: {
       blockers.push(`${label}: delivery date does not match the route date`);
     }
     const hasCoordinates = stop === null ? false : decimalNumber(stop.latitude) !== null && decimalNumber(stop.longitude) !== null;
-    const alreadyPlanned = (stop?.routePlanStops?.length ?? 0) > 0;
-    const operationalReviewReasons = discountLiveOperationalReviewReasons(reviewReasons, { alreadyPlanned, hasCoordinates });
+    const operationalReviewReasons = discountLiveOperationalReviewReasons(reviewReasons, { hasCoordinates });
     const factReady = fact.readiness === 'READY_TO_PLAN' || operationalReviewReasons.length === 0;
     if (!factReady) {
       blockers.push(`${label}: needs review (${operationalReviewReasons.length === 0 ? 'needs_delivery_metadata_review' : operationalReviewReasons.join(', ')})`);
@@ -1500,9 +1473,6 @@ function validateFactsForRouteCreation(input: {
     if (!hasCoordinates) {
       blockers.push(`${label}: missing delivery coordinates`);
     }
-    if (alreadyPlanned) {
-      blockers.push(`${label}: already assigned to a route`);
-    }
   }
 
   if (sourceScopes.size > 1) blockers.push('selected orders have mixed source scope');
@@ -1512,13 +1482,13 @@ function validateFactsForRouteCreation(input: {
 
 function discountLiveOperationalReviewReasons(
   reviewReasons: string[],
-  input: { alreadyPlanned: boolean; hasCoordinates: boolean }
+  input: { hasCoordinates: boolean }
 ): string[] {
   const itemReviewReasons = new Set<string>(ITEM_REVIEW_REASONS);
   return reviewReasons.filter((reason) => {
     if (itemReviewReasons.has(reason)) return false;
     if (reason === 'missing_coordinates' && input.hasCoordinates) return false;
-    if (reason === 'already_planned' && !input.alreadyPlanned) return false;
+    if (reason === 'already_planned') return false;
     return true;
   });
 }

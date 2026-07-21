@@ -13,6 +13,7 @@ import {
   RoutePlanOptionsUpdateInvalidError,
   RoutePlanStopUpdateInvalidError
 } from '../modules/route-plans/route-plan.types.js';
+import { RouteExecutionConflictError } from '../modules/route-plans/route-execution-ownership.js';
 import { RouteOptimizationJobActiveError } from '../modules/route-plans/route-optimization-job.types.js';
 import type {
   CreateRoutePlanPayload,
@@ -473,6 +474,9 @@ export function registerAdminRoutePlanRoutes(
           return reply.code(400).send(errorResponse(error.code, error.message));
         }
         if (error instanceof RouteOptimizationJobActiveError) {
+          return reply.code(409).send(errorResponse(error.code, error.message));
+        }
+        if (error instanceof RouteExecutionConflictError) {
           return reply.code(409).send(errorResponse(error.code, error.message));
         }
         if (error instanceof RoutePlanOrderAlreadyPlannedError) {

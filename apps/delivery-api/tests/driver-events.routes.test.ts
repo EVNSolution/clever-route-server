@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import {
   DriverEventContextError,
+  DriverEventExecutionConflictError,
   DriverEventRouteNotInProgressError
 } from '../src/modules/driver/driver-event.repository.js';
 import type { DriverApiDependencies } from '../src/routes/driver-events.routes.js';
@@ -369,6 +370,32 @@ describe('Driver events route', () => {
       expect(response.json()).toEqual({
         data: null,
         error: { code: 'ROUTE_NOT_IN_PROGRESS', message: 'Route is not in progress' }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('maps overlapping active route ownership to a deterministic conflict response', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    recordDriverEvent.mockRejectedValueOnce(new DriverEventExecutionConflictError(
+      'other-route-plan-id',
+      'stop-id'
+    ));
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: { ...eventPayload(), deliveryStopId: null, eventType: 'ROUTE_STARTED' },
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'ROUTE_EXECUTION_CONFLICT', message: 'An overlapping route is already in progress' }
       });
     } finally {
       await app.close();

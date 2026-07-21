@@ -38,6 +38,7 @@ import {
   RoutePlanStopUpdateInvalidError,
   type RoutePlanService,
 } from "../modules/route-plans/route-plan.types.js";
+import { RouteExecutionConflictError } from "../modules/route-plans/route-execution-ownership.js";
 import type { RouteOptimizationService } from "../modules/route-plans/route-optimization.types.js";
 import {
   RouteOptimizationJobActiveError,
@@ -45,6 +46,7 @@ import {
 } from "../modules/route-plans/route-optimization-job.types.js";
 import type { RouteOptimizationJobService } from "../modules/route-plans/route-optimization-job.service.js";
 import {
+  RouteGroupingBranchLockConflictError,
   RouteGroupingConflictError,
   RouteGroupingDeleteBlockedError,
   RouteGroupingRiskConfirmationRequiredError,
@@ -2553,6 +2555,9 @@ function registerRouteOpsAppRoutes(
             if (error instanceof RouteOptimizationJobActiveError) {
               throw createRouteOpsHttpError(error.code, error.message, 409);
             }
+            if (error instanceof RouteExecutionConflictError) {
+              throw createRouteOpsHttpError(error.code, error.message, 409);
+            }
             if (
               error instanceof RoutePlanConflictError ||
               error instanceof RoutePlanDriverAssignInvalidError ||
@@ -4494,6 +4499,9 @@ function requireRouteGroupingService(
 }
 
 function toRouteGroupingHttpError(error: unknown): Error {
+  if (error instanceof RouteGroupingBranchLockConflictError) {
+    return createRouteOpsHttpError(error.code, error.message, 409);
+  }
   if (error instanceof RouteGroupingConflictError) {
     return createRouteOpsHttpError(error.code, error.message, 409);
   }

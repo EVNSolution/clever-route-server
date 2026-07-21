@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest';
 
 import {
   DriverEventContextError,
+  DriverEventExecutionConflictError,
   DriverEventRouteNotInProgressError,
   DriverEventScopeError,
   PrismaDriverEventRepository
@@ -68,6 +69,20 @@ describe('PrismaDriverEventRepository', () => {
         status: { in: ['IN_PROGRESS', 'READY', 'DRAFT', 'PUBLISHED', 'OPTIMIZED', 'ASSIGNED'] }
       }
     });
+  });
+
+  test('rejects stop execution events unless the route is in progress', async () => {
+    const { prisma } = createPrismaHarness({ routePlan: { id: 'route-plan-id', status: 'READY' } });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      deliveryStopId: 'stop-id',
+      eventType: 'STOP_DELIVERED',
+      routePlanId: 'route-plan-id'
+    }))).rejects.toBeInstanceOf(DriverEventRouteNotInProgressError);
+
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+    expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
   });
 
   test('updates the matching stop when STOP_DELIVERED is recorded', async () => {
@@ -298,6 +313,23 @@ describe('PrismaDriverEventRepository', () => {
     });
   });
 
+  test('rejects route start when another in-progress route owns an overlapping stop', async () => {
+    const { prisma } = createPrismaHarness({
+      conflictingRoutePlanStop: { deliveryStopId: 'stop-id', routePlanId: 'other-route-plan-id' }
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      deliveryStopId: null,
+      eventType: 'ROUTE_STARTED',
+      routePlanId: 'route-plan-id'
+    }))).rejects.toBeInstanceOf(DriverEventExecutionConflictError);
+
+    expect(prisma.$queryRaw).toHaveBeenCalledOnce();
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+    expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
+  });
+
   test('rejects route start events outside the authenticated route scope before writing', async () => {
     const { prisma } = createPrismaHarness({ routePlan: null });
     const repository = new PrismaDriverEventRepository(prisma as never);
@@ -506,6 +538,7 @@ function baseInput(overrides: Partial<Parameters<PrismaDriverEventRepository['re
 }
 
 function createPrismaHarness(input: {
+  conflictingRoutePlanStop?: { deliveryStopId: string; routePlanId: string } | null;
   completionEvent?: { id: string } | null;
   driverEventCreateError?: Error;
   existingEvent?: { eventType: string; id: string; routePlanId: string | null } | null;
@@ -575,7 +608,7 @@ function createPrismaHarness(input: {
     },
     routePlan: {
       findFirst: vi.fn((args: { select?: { routeStops?: unknown } }) => {
-        const routePlan = input.routePlan === undefined ? { id: 'route-plan-id' } : input.routePlan;
+        const routePlan = input.routePlan === undefined ? { id: 'route-plan-id', status: 'IN_PROGRESS' } : input.routePlan;
         if (routePlan === null) {
           return Promise.resolve(null);
         }
@@ -594,7 +627,11 @@ function createPrismaHarness(input: {
       findFirst: vi.fn(() => Promise.resolve(null))
     },
     routePlanStop: {
-      findFirst: vi.fn(() => Promise.resolve(input.routePlanStop === undefined ? { id: 'route-plan-stop-id' } : input.routePlanStop)),
+      findFirst: vi.fn((args: { where?: { routePlan?: { status?: string } } }) => Promise.resolve(
+        args.where?.routePlan?.status === 'IN_PROGRESS'
+          ? input.conflictingRoutePlanStop ?? null
+          : input.routePlanStop === undefined ? { id: 'route-plan-stop-id' } : input.routePlanStop
+      )),
       findMany: vi.fn((args: { select?: { deliveryStop?: { select?: { status?: boolean } } } }) => (
         args.select?.deliveryStop?.select?.status === true
           ? Promise.resolve(input.routeSequenceStops ?? [

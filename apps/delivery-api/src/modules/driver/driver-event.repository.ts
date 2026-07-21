@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
+import { assertRoutePlanExecutionOwnership, RouteExecutionConflictError } from '../route-plans/route-execution-ownership.js';
 import { ROUTE_ACTIVE_COMPATIBILITY_STATUSES, ROUTE_READY_COMPATIBILITY_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 import { readRouteStopPoints } from '../route-plans/route-plan-geometry-cache.js';
 import { persistRouteTrackingGeometryPosition } from '../route-tracking/route-tracking.geometry.js';
@@ -73,6 +74,13 @@ export class DriverEventRouteNotInProgressError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'DriverEventRouteNotInProgressError';
+  }
+}
+
+export class DriverEventExecutionConflictError extends RouteExecutionConflictError {
+  constructor(conflictingRoutePlanId: string, deliveryStopId: string) {
+    super(conflictingRoutePlanId, deliveryStopId);
+    this.name = 'DriverEventExecutionConflictError';
   }
 }
 
@@ -254,8 +262,16 @@ async function validateDriverEventStateContext(
 
   const routePlanId = requireRoutePlanId(input);
   const routePlan = await requireOwnedRoutePlan(prisma, { driverId: input.driverId, routePlanId, shopId });
-  if (input.eventType === 'LOCATION_UPDATED' && routePlan.status !== 'IN_PROGRESS') {
-    throw new DriverEventRouteNotInProgressError('Route must be in progress before accepting location updates');
+  if (
+    routePlan.status !== 'IN_PROGRESS'
+    && (
+      input.eventType === 'LOCATION_UPDATED'
+      || input.eventType === 'STOP_ARRIVED'
+      || input.eventType === 'STOP_DELIVERED'
+      || input.eventType === 'STOP_FAILED'
+    )
+  ) {
+    throw new DriverEventRouteNotInProgressError('Route must be in progress before accepting execution events');
   }
 
   if (input.eventType === 'STOP_ARRIVED' || input.eventType === 'STOP_DELIVERED' || input.eventType === 'STOP_FAILED') {
@@ -492,6 +508,11 @@ async function requireStartableOwnedRoutePlan(
   if (routePlan === null) {
     throw new DriverEventScopeError('Completed or unavailable routes cannot be started');
   }
+  await assertRoutePlanExecutionOwnership(prisma, {
+    createConflictError: (conflict) => new DriverEventExecutionConflictError(conflict.routePlanId, conflict.deliveryStopId),
+    routePlanId: input.routePlanId,
+    shopId: input.shopId
+  });
 }
 
 async function requireOwnedRoutePlan(

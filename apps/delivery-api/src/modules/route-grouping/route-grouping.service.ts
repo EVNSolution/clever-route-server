@@ -262,7 +262,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         },
         select: { id: true }
       });
-      const version = await tx.routeGroupingVersion.create({
+      await tx.routeGroupingVersion.create({
         data: { actor: input.createdBy, groupingId: grouping.id, shopId: shop.id, status: 'CURRENT', version: 1 },
         select: { id: true }
       });
@@ -277,17 +277,6 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       });
       const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: grouping.id } });
       if (loaded === null) throw new RouteGroupingValidationError(['created grouping not found']);
-      const routeIdx = await nextGlobalRouteIdx(tx, shop.id);
-      await createDraftChildRoutePlan(tx, loaded, {
-        assignments: loaded.orders,
-        color: null,
-        driverId: null,
-        groupingVersionId: version.id,
-        name: `#${routeIdx}`,
-        optimized: null,
-        routeIdx,
-        sortOrder: routeIdx
-      });
       await createRouteGroupingInventory(tx, {
         actor: input.createdBy,
         groupingId: grouping.id,
@@ -1555,7 +1544,7 @@ async function claimBranchOrders(
 
   const activeLocks = await tx.routeGroupingBranchOrderLock.findMany({
     select: { branchId: true, orderId: true },
-    where: { orderId: { in: orderIds }, shopId: group.shopId }
+    where: { groupingId: group.id, orderId: { in: orderIds }, shopId: group.shopId }
   });
   const conflictOrderIds = activeLocks.filter((lock) => lock.branchId !== branchId).map((lock) => lock.orderId);
   if (conflictOrderIds.length > 0) throw new RouteGroupingBranchLockConflictError([...new Set(conflictOrderIds)]);
@@ -1674,7 +1663,6 @@ function validateCreateFacts(input: { dateRange: GroupingDateRange; facts: Deliv
     const stop = fact.order.deliveryStops[0];
     if (stop === undefined) blockers.push('selected orders must have delivery stops');
     if (decimalNumber(stop?.latitude) === null || decimalNumber(stop?.longitude) === null) blockers.push('selected orders must have coordinates');
-    if ((stop?.routePlanStops.length ?? 0) > 0) blockers.push('selected orders already have active route ownership');
   }
   return [...new Set(blockers)];
 }
@@ -1768,13 +1756,6 @@ function validateReadyForChildGeneration(group: LoadedGrouping, confirmRisk?: bo
   assertUniquePolygonDrivers(group.polygons);
   const unresolved = group.orders.filter((order) => order.assignmentStatus !== 'ASSIGNED' && order.assignmentStatus !== 'UNASSIGNED');
   if (unresolved.length > 0) throw new RouteGroupingUnresolvedAssignmentsError(unresolved.length);
-  const currentChildRoutePlanIds = new Set(group.childVersions.filter((child) => child.status === 'CURRENT' && child.routePlanId !== null).map((child) => child.routePlanId));
-  const externallyOwnedStops = group.orders.filter((order) => order.deliveryStop.routePlanStops.some((stop) => !currentChildRoutePlanIds.has(stop.routePlanId)));
-  if (externallyOwnedStops.length > 0) {
-    throw new RouteGroupingValidationError([
-      `selected orders already have active route ownership: ${externallyOwnedStops.map((order) => order.order.name).slice(0, 5).join(', ')}`
-    ]);
-  }
   const warnings = toGroupingSummaryDto(group).warningState;
   const hasCurrent = group.childVersions.some((child) => child.status === 'CURRENT');
   if (hasCurrent && warnings.length > 0 && confirmRisk !== true) {

@@ -173,6 +173,11 @@ export type CanonicalOrderRow = {
   readiness: CanonicalOrderReadiness;
   recipientName: string | null;
   reviewReasons: string[];
+  routeMemberships?: Array<{
+    id: string;
+    name: string;
+    status: string;
+  }>;
   routePlanId: string | null;
   routePlanName: string | null;
   routeEligible?: boolean;
