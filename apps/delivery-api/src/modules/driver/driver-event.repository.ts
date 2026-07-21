@@ -28,6 +28,14 @@ export type RecordDriverEventResult = {
   duplicate: boolean;
   etaUpdate?: DriverRouteEtaUpdate;
   eventId: string;
+  sequenceDeviation?: DriverStopSequenceDeviation;
+};
+
+export type DriverStopSequenceDeviation = {
+  expectedDeliveryStopId: string;
+  expectedSequence: number;
+  selectedDeliveryStopId: string;
+  selectedSequence: number;
 };
 
 type DriverEventPrismaClient = Pick<
@@ -39,6 +47,13 @@ type DriverEventTransactionClient = Pick<
   Prisma.TransactionClient,
   '$queryRaw' | 'deliveryStop' | 'driverEvent' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry'
 >;
+
+const TERMINAL_DELIVERY_STOP_STATUSES = new Set([
+  'CANCELLED',
+  'DELIVERED',
+  'FAILED',
+  'SKIPPED'
+]);
 
 export class DriverEventContextError extends Error {
   constructor(message: string) {
@@ -73,6 +88,7 @@ export class PrismaDriverEventRepository {
         }
 
         await validateDriverEventStateContext(transaction, input, input.shopId);
+        const sequenceDeviation = await detectStopSequenceDeviation(transaction, input);
 
         const event = await transaction.driverEvent.create({
           data: {
@@ -99,7 +115,8 @@ export class PrismaDriverEventRepository {
         return {
           duplicate: false,
           ...(etaUpdate === null ? {} : { etaUpdate }),
-          eventId: event.id
+          eventId: event.id,
+          ...(sequenceDeviation === null ? {} : { sequenceDeviation })
         };
       });
     } catch (error) {
@@ -110,6 +127,52 @@ export class PrismaDriverEventRepository {
       throw error;
     }
   }
+}
+
+async function detectStopSequenceDeviation(
+  prisma: DriverEventTransactionClient,
+  input: RecordDriverEventInput
+): Promise<DriverStopSequenceDeviation | null> {
+  if (
+    input.eventType !== 'STOP_ARRIVED'
+    && input.eventType !== 'STOP_DELIVERED'
+    && input.eventType !== 'STOP_FAILED'
+  ) {
+    return null;
+  }
+
+  const selectedDeliveryStopId = requireDeliveryStopId(input);
+  const routePlanId = requireRoutePlanId(input);
+  const routeStops = await prisma.routePlanStop.findMany({
+    orderBy: { sequence: 'asc' },
+    select: {
+      deliveryStop: { select: { status: true } },
+      deliveryStopId: true,
+      sequence: true
+    },
+    where: { routePlanId }
+  });
+  const expectedStop = routeStops.find(
+    (stop) => !TERMINAL_DELIVERY_STOP_STATUSES.has(stop.deliveryStop.status)
+  );
+  const selectedStop = routeStops.find(
+    (stop) => stop.deliveryStopId === selectedDeliveryStopId
+  );
+  if (
+    expectedStop === undefined
+    || selectedStop === undefined
+    || TERMINAL_DELIVERY_STOP_STATUSES.has(selectedStop.deliveryStop.status)
+    || expectedStop.deliveryStopId === selectedStop.deliveryStopId
+  ) {
+    return null;
+  }
+
+  return {
+    expectedDeliveryStopId: expectedStop.deliveryStopId,
+    expectedSequence: expectedStop.sequence,
+    selectedDeliveryStopId: selectedStop.deliveryStopId,
+    selectedSequence: selectedStop.sequence
+  };
 }
 
 function toRouteTrackingGeometryPosition(

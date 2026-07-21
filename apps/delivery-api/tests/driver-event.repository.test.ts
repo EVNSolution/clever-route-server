@@ -204,6 +204,49 @@ describe('PrismaDriverEventRepository', () => {
     });
   });
 
+  test('reports a stop sequence deviation without rejecting the owned stop event', async () => {
+    const { prisma } = createPrismaHarness({
+      routeSequenceStops: [
+        { deliveryStop: { status: 'ASSIGNED' }, deliveryStopId: 'stop-id', sequence: 1 },
+        { deliveryStop: { status: 'ASSIGNED' }, deliveryStopId: 'stop-2', sequence: 2 }
+      ],
+      routeEtaStops: [
+        {
+          deliveryStop: { serviceMinutes: 5 },
+          deliveryStopId: 'stop-id',
+          distanceFromPreviousMeters: 1000,
+          durationFromPreviousSeconds: 600,
+          estimatedArrivalAt: new Date('2026-06-01T05:50:00.000Z'),
+          sequence: 1
+        },
+        {
+          deliveryStop: { serviceMinutes: 5 },
+          deliveryStopId: 'stop-2',
+          distanceFromPreviousMeters: 2000,
+          durationFromPreviousSeconds: 900,
+          estimatedArrivalAt: new Date('2026-06-01T06:10:00.000Z'),
+          sequence: 2
+        }
+      ]
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      deliveryStopId: 'stop-2',
+      eventType: 'STOP_ARRIVED',
+      routePlanId: 'route-plan-id'
+    }))).resolves.toEqual(expect.objectContaining({
+      duplicate: false,
+      eventId: 'driver-event-id',
+      sequenceDeviation: {
+        expectedDeliveryStopId: 'stop-id',
+        expectedSequence: 1,
+        selectedDeliveryStopId: 'stop-2',
+        selectedSequence: 2
+      }
+    }));
+  });
+
   test('rejects terminal stop events without route and stop context before writing the event', async () => {
     const { prisma } = createPrismaHarness();
     const repository = new PrismaDriverEventRepository(prisma as never);
@@ -476,6 +519,11 @@ function createPrismaHarness(input: {
     estimatedArrivalAt: Date | null;
     sequence: number;
   }>;
+  routeSequenceStops?: Array<{
+    deliveryStop: { status: string };
+    deliveryStopId: string;
+    sequence: number;
+  }>;
   routeStops?: { deliveryStop: { status: string } }[];
 } = {}) {
   let createdEventType: string | null = null;
@@ -547,16 +595,22 @@ function createPrismaHarness(input: {
     },
     routePlanStop: {
       findFirst: vi.fn(() => Promise.resolve(input.routePlanStop === undefined ? { id: 'route-plan-stop-id' } : input.routePlanStop)),
-      findMany: vi.fn(() => Promise.resolve(input.routeEtaStops ?? [
-        {
-          deliveryStop: { serviceMinutes: 5 },
-          deliveryStopId: 'stop-id',
-          distanceFromPreviousMeters: 1000,
-          durationFromPreviousSeconds: 600,
-          estimatedArrivalAt: null,
-          sequence: 1
-        }
-      ])),
+      findMany: vi.fn((args: { select?: { deliveryStop?: { select?: { status?: boolean } } } }) => (
+        args.select?.deliveryStop?.select?.status === true
+          ? Promise.resolve(input.routeSequenceStops ?? [
+              { deliveryStop: { status: 'ASSIGNED' }, deliveryStopId: 'stop-id', sequence: 1 }
+            ])
+          : Promise.resolve(input.routeEtaStops ?? [
+              {
+                deliveryStop: { serviceMinutes: 5 },
+                deliveryStopId: 'stop-id',
+                distanceFromPreviousMeters: 1000,
+                durationFromPreviousSeconds: 600,
+                estimatedArrivalAt: null,
+                sequence: 1
+              }
+            ])
+      )),
       update: vi.fn(() => Promise.resolve({ id: 'route-plan-stop-id' }))
     },
     routeTrackingGeometry: {

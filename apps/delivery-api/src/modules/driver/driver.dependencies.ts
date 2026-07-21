@@ -17,6 +17,7 @@ import type { DriverProofMediaStorageBackend } from './driver-proof-media.reposi
 import type { DriverProofMediaScanMonitor, DriverProofMediaScanner } from './driver-proof-media.types.js';
 import type { DriverApiDependencies } from '../../routes/driver-events.routes.js';
 import type { RouteTrackingStreamHub } from '../route-tracking/route-tracking.stream.js';
+import type { AdminNotificationServiceApi } from '../notifications/admin-notification.service.js';
 import {
   DEFAULT_DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS,
   DriverRouteMapPreviewService
@@ -73,6 +74,7 @@ type DriverProofMediaRepositorySafetyOptions = {
 };
 
 type LoadDriverApiDependenciesInput = {
+  adminNotificationService?: Pick<AdminNotificationServiceApi, 'createAdminNotification'>;
   env: DriverApiRuntimeEnv;
   prisma: PrismaClient;
   routeTrackingStreamHub?: RouteTrackingStreamHub;
@@ -97,6 +99,9 @@ export function loadDriverApiDependencies(
   });
 
   return {
+    ...(input.adminNotificationService === undefined
+      ? {}
+      : { adminNotificationService: input.adminNotificationService }),
     driverAssignedRouteService,
     driverConsentService: new PrismaDriverConsentRepository(input.prisma),
     driverEventService: new PrismaDriverEventRepository(input.prisma),

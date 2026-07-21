@@ -21,7 +21,7 @@ import { toOrderItemDto, type OrderItemRecordLike } from "../order-items/order-i
 import { recordInventorySourceItemDeltas } from "../inventory/inventory.service.js";
 import { resolveNormalizedPaymentStatus } from "../payments/normalized-payment-status.js";
 import type { AdminNotificationServiceApi } from "../notifications/admin-notification.service.js";
-import type { AdminWebNotificationEvent } from "../notifications/admin-web-notification-events.js";
+import type { AssignedRouteAddressChangedEvent } from "../notifications/admin-web-notification-events.js";
 import { readWooCommerceRawGeocodingAddress } from "../woocommerce/woocommerce-order.mapper.js";
 import { appScopedShopWhere, normalizeShopifyAppId } from "./shopify-app-scope.js";
 
@@ -1184,7 +1184,7 @@ export class PrismaOrderSyncRepository {
 
     const existingFact = input.existing?.deliveryFacts?.[0] ?? null;
     const existingStop = input.existing?.deliveryStops?.[0] ?? null;
-    const notificationEvents: AdminWebNotificationEvent[] = [];
+    const notificationEvents: AssignedRouteAddressChangedEvent[] = [];
     const correctedFields = readRouteOpsCorrectedFields(
       existingFact?.mappingDiagnostics,
     );
@@ -1282,7 +1282,7 @@ export class PrismaOrderSyncRepository {
 }
 
 type OrderWriteWithNotificationIntents = {
-  notificationEvents: AdminWebNotificationEvent[];
+  notificationEvents: AssignedRouteAddressChangedEvent[];
   result: UpsertOrderWithDeliveryStopResult;
 };
 
@@ -1699,7 +1699,7 @@ function existingDeliveryStopSelect() {
 }
 
 async function createAdminNotificationsBestEffort(input: {
-  events: AdminWebNotificationEvent[];
+  events: AssignedRouteAddressChangedEvent[];
   notificationLogger: OrderSyncNotificationLogger;
   notificationService: AdminNotificationServiceApi;
 }): Promise<void> {

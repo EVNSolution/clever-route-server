@@ -59,8 +59,10 @@ import {
   createRouteTrackingProgressEvent
 } from '../modules/route-tracking/route-tracking.service.js';
 import type { RouteTrackingStreamHub } from '../modules/route-tracking/route-tracking.stream.js';
+import type { AdminNotificationServiceApi } from '../modules/notifications/admin-notification.service.js';
 
 export type DriverApiDependencies = {
+  adminNotificationService?: Pick<AdminNotificationServiceApi, 'createAdminNotification'>;
   driverAssignedRouteService?: DriverAssignedRouteServiceContract;
   driverConsentService?: DriverConsentServiceContract;
   driverEventService: {
@@ -789,6 +791,28 @@ export function registerDriverEventRoutes(
       }
 
       throw error;
+    }
+
+    if (!result.duplicate && result.sequenceDeviation !== undefined) {
+      const deviation = result.sequenceDeviation;
+      try {
+        await dependencies.adminNotificationService?.createAdminNotification({
+          createdAt: dependencies.now?.() ?? new Date(),
+          driverId: driverContext.driverId,
+          eventId: result.eventId,
+          eventType: eventInput.eventType,
+          expectedDeliveryStopId: deviation.expectedDeliveryStopId,
+          expectedSequence: deviation.expectedSequence,
+          occurredAt: eventInput.occurredAt,
+          routePlanId: driverContext.routePlanId,
+          selectedDeliveryStopId: deviation.selectedDeliveryStopId,
+          selectedSequence: deviation.selectedSequence,
+          shopId: driverContext.shopId,
+          type: 'driver.stop_sequence_deviated'
+        });
+      } catch (error) {
+        request.log.warn({ error, eventId: result.eventId }, 'failed to create driver stop sequence notification');
+      }
     }
 
     if (!result.duplicate && eventInput.eventType === 'LOCATION_UPDATED') {
