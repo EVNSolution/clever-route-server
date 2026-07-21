@@ -212,9 +212,11 @@ export function registerAdminRoutePlanRoutes(
       let streamVersion = 0;
       let lastSentPositionEventId: string | null = null;
       let lastSentProgressEventId: string | null = null;
+      let lastSentRoadMatchWatermark: string | null = null;
       const rememberSnapshot = (currentSnapshot: RouteTrackingSnapshotV1) => {
         lastSentPositionEventId = currentSnapshot.latestPosition?.eventId ?? null;
         lastSentProgressEventId = currentSnapshot.progress.latestEvent?.eventId ?? null;
+        lastSentRoadMatchWatermark = currentSnapshot.roadMatchedPath?.watermark ?? null;
       };
       const rememberEvent = (event: RouteTrackingStreamEvent) => {
         if (event.eventName === 'tracking_position') lastSentPositionEventId = event.data.eventId;
@@ -277,9 +279,11 @@ export function registerAdminRoutePlanRoutes(
           }
           const nextPositionEventId = reconciledSnapshot.latestPosition?.eventId ?? null;
           const nextProgressEventId = reconciledSnapshot.progress.latestEvent?.eventId ?? null;
+          const nextRoadMatchWatermark = reconciledSnapshot.roadMatchedPath?.watermark ?? null;
           if (
             nextPositionEventId === lastSentPositionEventId
             && nextProgressEventId === lastSentProgressEventId
+            && nextRoadMatchWatermark === lastSentRoadMatchWatermark
           ) {
             return;
           }

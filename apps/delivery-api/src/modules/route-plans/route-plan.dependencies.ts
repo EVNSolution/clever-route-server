@@ -3,15 +3,20 @@ import type { PrismaClient } from '@prisma/client';
 import { loadShopifyAppCredentials, type ShopifyAppCredentialsEnv } from '../shopify/shopify-app-credentials.js';
 import { ShopifySessionTokenVerifier } from '../shopify/session-token-verifier.js';
 import { OsrmRouteGeometryProvider } from './osrm-route-geometry.client.js';
+import {
+  readConfiguredCoverageBaseUrls,
+  type RouteEngineRuntimeEnv,
+} from './route-engine-coverage.js';
 import { PrismaRouteOptimizationJobRepository } from './route-optimization-job.repository.js';
 import { RouteOptimizationJobService } from './route-optimization-job.service.js';
 import { PrismaRoutePlanRepository } from './route-plan.repository.js';
 import { RoutePlanAdminService } from './route-plan.service.js';
 import type { AdminRoutePlanDependencies } from '../../routes/admin-route-plans.routes.js';
 import { PrismaRouteTrackingService } from '../route-tracking/route-tracking.service.js';
+import { OsrmRouteTrackingRoadMatchProvider } from '../route-tracking/route-tracking.road-match.js';
 import type { RouteTrackingStreamHub } from '../route-tracking/route-tracking.stream.js';
 
-export type AdminRoutePlanRuntimeEnv = ShopifyAppCredentialsEnv & Partial<Record<'OSRM_BASE_URL', string>>;
+export type AdminRoutePlanRuntimeEnv = ShopifyAppCredentialsEnv & RouteEngineRuntimeEnv & Partial<Record<'OSRM_TIMEOUT_MS', string>>;
 
 export function loadAdminRoutePlanDependencies(input: {
   env: AdminRoutePlanRuntimeEnv;
@@ -33,10 +38,21 @@ export function loadAdminRoutePlanDependencies(input: {
   );
   return {
     routePlanService: new RoutePlanAdminService(repository, routeGeometryProvider, routeOptimizationJobService),
-    routeTrackingService: new PrismaRouteTrackingService(input.prisma),
+    routeTrackingService: new PrismaRouteTrackingService(input.prisma, {
+      roadMatchProvider: createRouteTrackingRoadMatchProvider(input.env)
+    }),
     ...(input.routeTrackingStreamHub === undefined ? {} : { routeTrackingStreamHub: input.routeTrackingStreamHub }),
     sessionTokenVerifier: new ShopifySessionTokenVerifier({ appCredentials })
   };
+}
+
+function createRouteTrackingRoadMatchProvider(env: AdminRoutePlanRuntimeEnv): OsrmRouteTrackingRoadMatchProvider | undefined {
+  const baseUrls = readConfiguredCoverageBaseUrls(env, 'OSRM');
+  if (Object.keys(baseUrls).length === 0) return undefined;
+  return new OsrmRouteTrackingRoadMatchProvider({
+    baseUrls,
+    ...optionalTimeout(env.OSRM_TIMEOUT_MS)
+  });
 }
 
 function readOptional(value: string | undefined): string | undefined {
@@ -45,4 +61,9 @@ function readOptional(value: string | undefined): string | undefined {
   }
 
   return value.trim();
+}
+
+function optionalTimeout(value: string | undefined): { timeoutMs?: number } {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? { timeoutMs: parsed } : {};
 }
