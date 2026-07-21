@@ -999,7 +999,7 @@ model RoutePlanStop {
 
   @@unique([routePlanId, sequence])
   @@unique([routePlanId, deliveryStopId])
-  @@unique([deliveryStopId])
+  @@index([deliveryStopId])
   @@map("route_plan_stops")
 }
 
@@ -1273,7 +1273,7 @@ model RouteGroupingBranchOrderLock {
   createdAt            DateTime            @default(now()) @db.Timestamptz(6)
   updatedAt            DateTime            @updatedAt @db.Timestamptz(6)
 
-  @@unique([shopId, orderId])
+  @@unique([groupingId, orderId])
   @@index([groupingId])
   @@index([branchId])
   @@map("route_grouping_branch_order_locks")

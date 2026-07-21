@@ -330,6 +330,12 @@ type DeliveryStopRoutePlanStopRecord = {
   } | null;
 };
 
+type RouteMembership = {
+  id: string;
+  name: string;
+  status: string;
+};
+
 type DeliveryFactCandidateRecord = {
   deliveryArea: string | null;
   deliveryDate: Date | null;
@@ -1583,7 +1589,7 @@ function summarizeDeliveryBatchCandidates(
         reviewReasons.includes("delivery_date_weekday_unverified"));
     const operationalReviewReasons = discountLiveOperationalReviewReasons(
       reviewReasons,
-      { hasCoordinates, alreadyPlanned },
+      { hasCoordinates },
     );
     const factReady =
       fact.readiness === "READY_TO_PLAN" ||
@@ -1593,7 +1599,6 @@ function summarizeDeliveryBatchCandidates(
       fact.routeScopeKey !== null &&
       fact.deliveryDate !== null &&
       hasCoordinates &&
-      !alreadyPlanned &&
       !mismatch &&
       !unverifiedDay;
 
@@ -1615,11 +1620,11 @@ function summarizeDeliveryBatchCandidates(
 
 function discountLiveOperationalReviewReasons(
   reviewReasons: string[],
-  input: { alreadyPlanned: boolean; hasCoordinates: boolean },
+  input: { hasCoordinates: boolean },
 ): string[] {
   return reviewReasons.filter((reason) => {
     if (reason === "missing_coordinates" && input.hasCoordinates) return false;
-    if (reason === "already_planned" && !input.alreadyPlanned) return false;
+    if (reason === "already_planned") return false;
     return true;
   });
 }
@@ -2648,9 +2653,10 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     order.cancelledAt,
     reviewReasons,
   );
+  const routeMemberships = canonicalRouteMemberships(stop?.routePlanStops ?? []);
   const planningStatus: PlanningStatus =
-    (stop?.routePlanStops?.length ?? 0) > 0 ? "PLANNED" : "UNPLANNED";
-  const routePlan = stop?.routePlanStops?.[0]?.routePlan ?? null;
+    routeMemberships.length > 0 ? "PLANNED" : "UNPLANNED";
+  const routePlan = routeMemberships[0] ?? null;
   const deliveryDate =
     formatDateOnlyNullable(fact?.deliveryDate ?? null) ??
     readString(raw?.deliveryDate) ??
@@ -2672,8 +2678,6 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
   const routeEligible =
     metadataResolved &&
     readiness === "READY_TO_PLAN" &&
-    planningStatus === "UNPLANNED" &&
-    routePlan === null &&
     hasCoordinates;
   const deliveryMetadataDiagnostics =
     buildDeliveryMetadataDiagnostics({
@@ -2759,6 +2763,7 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     readiness,
     recipientName: stop?.recipientName ?? readString(raw?.recipientName),
     reviewReasons,
+    routeMemberships,
     routePlanId: routePlan?.id ?? null,
     routePlanName: routePlan?.name ?? null,
     routeEligible,
@@ -2800,6 +2805,24 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     updatedAtShopify: formatDateTime(order.updatedAtShopify),
     wooOrderStatus: readString(raw?.wooOrderStatus),
   };
+}
+
+function canonicalRouteMemberships(routePlanStops: DeliveryStopRoutePlanStopRecord[]): RouteMembership[] {
+  return routePlanStops
+    .map((stop) => stop.routePlan)
+    .filter((routePlan): routePlan is RouteMembership => routePlan !== null && routePlan !== undefined)
+    .sort((left, right) => {
+      const priorityDelta = routeMembershipPriority(left.status) - routeMembershipPriority(right.status);
+      if (priorityDelta !== 0) return priorityDelta;
+      const nameDelta = left.name.localeCompare(right.name);
+      return nameDelta === 0 ? left.id.localeCompare(right.id) : nameDelta;
+    });
+}
+
+function routeMembershipPriority(status: string): number {
+  if (status === "IN_PROGRESS") return 0;
+  if (status === "READY" || status === "DRAFT" || status === "PUBLISHED" || status === "OPTIMIZED" || status === "ASSIGNED") return 1;
+  return 2;
 }
 
 function readReadiness(

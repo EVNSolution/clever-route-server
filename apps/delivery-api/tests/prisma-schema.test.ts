@@ -70,12 +70,32 @@ const driverRouteAccountScopeMigrationPath = new URL(
   '../prisma/migrations/20260716170000_scope_driver_access_to_account_route/migration.sql',
   import.meta.url
 );
+const multiRouteMembershipMigrationPath = new URL(
+  '../prisma/migrations/20260722090000_allow_safe_multi_route_membership/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
 }
 
 describe('Prisma schema', () => {
+  test('allows multiple planning memberships while retaining indexed stop lookup', async () => {
+    const schema = await readSchema();
+    const migration = await readFile(multiRouteMembershipMigrationPath, 'utf8');
+    const routePlanStop = /model RoutePlanStop \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+    const branchOrderLock = /model RouteGroupingBranchOrderLock \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+
+    expect(routePlanStop).toContain('@@unique([routePlanId, deliveryStopId])');
+    expect(routePlanStop).not.toContain('@@unique([deliveryStopId])');
+    expect(routePlanStop).toContain('@@index([deliveryStopId])');
+    expect(branchOrderLock).toContain('@@unique([groupingId, orderId])');
+    expect(migration).toContain('DROP INDEX IF EXISTS "route_plan_stops_deliveryStopId_key"');
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS "route_plan_stops_deliveryStopId_idx"');
+    expect(migration).toContain('DROP INDEX IF EXISTS "route_grouping_branch_order_locks_shopId_orderId_key"');
+    expect(migration).toContain('CREATE UNIQUE INDEX "route_grouping_branch_order_locks_groupingId_orderId_key"');
+  });
+
   test('defines Ready as the initial route execution state with an additive migration', async () => {
     const schema = await readSchema();
     const migration = await readFile(readyRoutePlanStatusMigrationPath, 'utf8');

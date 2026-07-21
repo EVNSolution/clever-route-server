@@ -51,6 +51,25 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     );
   });
 
+  test('returns every route membership and keeps planned orders eligible for another plan', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 2 });
+    const repository = createOrderSyncRepository(prisma);
+
+    const rows = await repository.listCanonicalOrders({
+      filters: {},
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(rows[0]).toEqual(expect.objectContaining({
+      planningStatus: 'PLANNED',
+      routeEligible: true,
+      routeMemberships: [
+        { id: 'route-plan-id-1', name: 'Route draft 1', status: 'READY' },
+        { id: 'route-plan-id-2', name: 'Route draft 2', status: 'READY' }
+      ]
+    }));
+  });
+
   test('reads canonical time windows from route scope without UTC-shifting stored Toronto times', async () => {
     const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
     const repository = createOrderSyncRepository(prisma);
@@ -520,10 +539,10 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
     expect(candidates[0]).toEqual(
       expect.objectContaining({
         alreadyPlannedCount: 1,
-        blockedCount: 2,
+        blockedCount: 1,
         missingCoordinatesCount: 1,
         orderCount: 3,
-        readyCount: 1
+        readyCount: 2
       })
     );
   });
@@ -1592,7 +1611,9 @@ function canonicalOrderRecord(routeStopCount: number): Record<string, unknown> {
         recipientName: 'Noah Yoon',
         routePlanStops: Array.from({ length: routeStopCount }, (_, index) => ({
           id: `rps-${index}`,
-          routePlan: { id: 'route-plan-id', name: 'Route draft', status: 'PUBLISHED' }
+          routePlan: routeStopCount === 1
+            ? { id: 'route-plan-id', name: 'Route draft', status: 'PUBLISHED' }
+            : { id: `route-plan-id-${index + 1}`, name: `Route draft ${index + 1}`, status: 'READY' }
         })),
         status: routeStopCount > 0 ? 'ASSIGNED' : 'PENDING',
       }

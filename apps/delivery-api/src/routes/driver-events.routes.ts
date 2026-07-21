@@ -50,6 +50,7 @@ import {
 import type { DriverRouteSessionRestoreServiceApi } from '../modules/driver/driver-route-session.repository.js';
 import {
   DriverEventContextError,
+  DriverEventExecutionConflictError,
   DriverEventRouteNotInProgressError,
   DriverEventScopeError,
   type RecordDriverEventResult
@@ -785,6 +786,9 @@ export function registerDriverEventRoutes(
       }
       if (error instanceof DriverEventRouteNotInProgressError) {
         return reply.code(409).send(errorResponse('ROUTE_NOT_IN_PROGRESS', 'Route is not in progress'));
+      }
+      if (error instanceof DriverEventExecutionConflictError) {
+        return reply.code(409).send(errorResponse('ROUTE_EXECUTION_CONFLICT', 'An overlapping route is already in progress'));
       }
       if (error instanceof DriverEventScopeError) {
         return reply.code(403).send(errorResponse('FORBIDDEN', 'Driver event route or stop scope rejected'));

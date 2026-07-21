@@ -33,7 +33,8 @@ describe('route grouping contracts', () => {
     const branchBody = /model RouteGroupingBranch \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
     const lockBody = /model RouteGroupingBranchOrderLock \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
     expect(branchBody).toContain('orderLocks');
-    expect(lockBody).toContain('@@unique([shopId, orderId])');
+    expect(lockBody).toContain('@@unique([groupingId, orderId])');
+    expect(lockBody).not.toContain('@@unique([shopId, orderId])');
     expect(lockBody).not.toContain('releasedAt');
     expect(lockBody).not.toContain('status');
   });
@@ -236,17 +237,37 @@ describe('route grouping contracts', () => {
     expect(source).not.toContain('return Math.max(max._max.sortOrder ?? 1, 1) + 1');
   });
 
-  test('creates a default child route when a route group is created', () => {
+  test('keeps a new route group childless until the first route is explicitly added', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     const start = source.indexOf('async createGrouping(');
     const end = source.indexOf('async getGrouping(', start);
     const createGroupingBody = source.slice(start, end);
 
-    expect(createGroupingBody).toContain('const routeIdx = await nextGlobalRouteIdx');
-    expect(createGroupingBody).toContain('createDraftChildRoutePlan');
-    expect(createGroupingBody).toContain('name: `#${routeIdx}`');
-    expect(createGroupingBody).toContain('routeIdx');
-    expect(createGroupingBody).toContain("status: 'CURRENT'");
+    expect(createGroupingBody).not.toContain('const routeIdx = await nextGlobalRouteIdx');
+    expect(createGroupingBody).not.toContain('createDraftChildRoutePlan');
+    expect(createGroupingBody).toContain('routeGroupingVersion.create');
+    expect(createGroupingBody).toContain('createRouteGroupingInventory');
+  });
+
+  test('allows an order to participate in more than one route group', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const validateCreateFactsBody = source.slice(
+      source.indexOf('function validateCreateFacts('),
+      source.indexOf('async function recomputeAssignments(', source.indexOf('function validateCreateFacts('))
+    );
+    const validateGenerationBody = source.slice(
+      source.indexOf('function validateReadyForChildGeneration('),
+      source.indexOf('function childGenerationSnapshotSignature(', source.indexOf('function validateReadyForChildGeneration('))
+    );
+
+    expect(validateCreateFactsBody).not.toContain('active route ownership');
+    expect(validateCreateFactsBody).not.toContain('routePlanStops.length');
+    expect(validateGenerationBody).not.toContain('externallyOwnedStops');
+    expect(validateGenerationBody).not.toContain('active route ownership');
+    expect(source).toContain('where: { groupingId: group.id, orderId: { in: orderIds }, shopId: group.shopId }');
+    const embeddedRouteOpsSource = readFileSync(join(process.cwd(), 'src/routes/admin-commerce-connections-ui.routes.ts'), 'utf8');
+    expect(embeddedRouteOpsSource).toContain('error instanceof RouteGroupingBranchLockConflictError');
+    expect(embeddedRouteOpsSource).toContain('createRouteOpsHttpError(error.code, error.message, 409)');
   });
 
   test('keeps draft save child-only and rejects stale route indexes', () => {

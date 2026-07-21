@@ -7,10 +7,10 @@ import {
   RoutePlanBatchInvalidError,
   RoutePlanConflictError,
   RoutePlanDriverAssignInvalidError,
-  RoutePlanOrderAlreadyPlannedError,
   RoutePlanPublishInvalidError,
   RoutePlanStopUpdateInvalidError
 } from '../src/modules/route-plans/route-plan.types.js';
+import { RouteExecutionConflictError } from '../src/modules/route-plans/route-execution-ownership.js';
 import type { OrderItemDto } from '../src/modules/order-items/order-items.js';
 import type { RoutePlanOrderInput } from '../src/modules/route-plans/route-plan.types.js';
 
@@ -239,7 +239,7 @@ describe('PrismaRoutePlanRepository', () => {
     }));
   });
 
-  test('rejects route plan drafts when a selected order already belongs to another route plan', async () => {
+  test('allows route plan drafts when selected orders also belong to another ready route plan', async () => {
     const { prisma, routePlanStopCreateMany } = createPrismaHarness({
       existingRoutePlanStops: [{ deliveryStopId: 'stop-1' }]
     });
@@ -247,8 +247,7 @@ describe('PrismaRoutePlanRepository', () => {
       prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
     );
 
-    await expect(
-      repository.createRoutePlanDraft({
+    await expect(repository.createRoutePlanDraft({
         createdBy: 'shopify-user-id',
         depot: {
           address: 'Shopify departure location',
@@ -262,18 +261,10 @@ describe('PrismaRoutePlanRepository', () => {
         ],
         planDate: '2026-05-08',
         shopDomain: 'Example.myshopify.com'
-      })
-    ).rejects.toBeInstanceOf(RoutePlanOrderAlreadyPlannedError);
+      })).resolves.toEqual(expect.objectContaining({ id: 'route-plan-id' }));
 
-    expect(prisma.routePlanStop.findMany).toHaveBeenCalledWith({
-      select: { deliveryStopId: true },
-      where: {
-        deliveryStopId: { in: ['stop-1', 'stop-2'] },
-        routePlan: { shopId: 'shop-id' }
-      }
-    });
-    expect(prisma.routePlan.create).not.toHaveBeenCalled();
-    expect(routePlanStopCreateMany).not.toHaveBeenCalled();
+    expect(prisma.routePlan.create).toHaveBeenCalledOnce();
+    expect(routePlanStopCreateMany).toHaveBeenCalledOnce();
   });
 
   test('creates route drafts from selected order ids by reloading delivery facts and stops', async () => {
@@ -764,28 +755,38 @@ describe('PrismaRoutePlanRepository', () => {
     expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalled();
   });
 
-  test('rejects stop update orders already assigned to another route plan while allowing same-route stops', async () => {
+  test('allows stop updates to retain membership in another ready route plan', async () => {
     const { prisma } = createPrismaHarness({ existingRoutePlanStops: [{ deliveryStopId: 'stop-1' }] });
     const repository = new PrismaRoutePlanRepository(
       prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
     );
 
-    await expect(
-      repository.updateRoutePlanStops({
+    const result = await repository.updateRoutePlanStops({
         routePlanId: 'route-plan-id',
         shopDomain: 'example.myshopify.com',
         payload: { stops: [{ deliveryStopId: 'stop-1', shopifyOrderGid: 'gid://shopify/Order/123', sequence: 1 }] }
-      })
-    ).rejects.toBeInstanceOf(RoutePlanOrderAlreadyPlannedError);
+      });
 
-    expect(prisma.routePlanStop.findMany).toHaveBeenCalledWith({
-      select: { deliveryStopId: true },
-      where: {
-        deliveryStopId: { in: ['stop-1'] },
-        routePlanId: { not: 'route-plan-id' },
-        routePlan: { shopId: 'shop-id' }
-      }
+    expect(result?.routePlan.id).toBe('route-plan-id');
+    expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledWith({ where: { routePlanId: 'route-plan-id' } });
+  });
+
+  test('rejects adding a stop owned by another in-progress route to an in-progress route', async () => {
+    const { prisma } = createPrismaHarness({
+      conflictingRoutePlanStop: { deliveryStopId: 'stop-1', routePlanId: 'other-route-plan-id' },
+      routePlanFindFirst: routePlanRecord({ status: 'IN_PROGRESS' })
     });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(repository.updateRoutePlanStops({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: { stops: [{ deliveryStopId: 'stop-1', shopifyOrderGid: 'gid://shopify/Order/123', sequence: 1 }] }
+    })).rejects.toBeInstanceOf(RouteExecutionConflictError);
+
+    expect(prisma.$queryRaw).toHaveBeenCalledOnce();
     expect(prisma.routePlanStop.deleteMany).not.toHaveBeenCalled();
   });
 
@@ -1456,6 +1457,7 @@ function hasRouteStatusUpdate(
 }
 
 function createPrismaHarness(input: {
+  conflictingRoutePlanStop?: { deliveryStopId: string; routePlanId: string } | null;
   deliveryStopForId?: { id: string } | null;
   deliveryFacts?: Array<Record<string, unknown>>;
   driverForAssignment?: { id: string } | null;
@@ -1471,6 +1473,7 @@ function createPrismaHarness(input: {
   shop?: Record<string, unknown> | null;
 } = {}): {
   prisma: {
+    $queryRaw: ReturnType<typeof vi.fn>;
     $transaction: ReturnType<typeof vi.fn>;
     deliveryStop: {
       findFirst: ReturnType<typeof vi.fn>;
@@ -1512,6 +1515,7 @@ function createPrismaHarness(input: {
     };
     routePlanStop: {
       createMany: ReturnType<typeof vi.fn>;
+      findFirst: ReturnType<typeof vi.fn>;
       findMany: ReturnType<typeof vi.fn>;
       deleteMany: ReturnType<typeof vi.fn>;
     };
@@ -1524,6 +1528,7 @@ function createPrismaHarness(input: {
 } {
   const routePlanStopCreateMany = vi.fn(() => Promise.resolve({ count: 2 }));
   const prisma = {
+    $queryRaw: vi.fn(() => Promise.resolve([])),
     $transaction: vi.fn(async (callback: (client: unknown) => Promise<unknown>) => callback(prisma)),
     deliveryStop: {
       findFirst: vi.fn((args: { where?: { id?: string } }) =>
@@ -1651,6 +1656,7 @@ function createPrismaHarness(input: {
     },
     routePlanStop: {
       createMany: routePlanStopCreateMany,
+      findFirst: vi.fn(() => Promise.resolve(input.conflictingRoutePlanStop ?? null)),
       findMany: vi.fn(() => Promise.resolve(input.existingRoutePlanStops ?? [])),
       deleteMany: vi.fn(() => Promise.resolve({ count: 2 }))
     },

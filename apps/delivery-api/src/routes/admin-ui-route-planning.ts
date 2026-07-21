@@ -39,6 +39,7 @@ import {
   type RoutePlanSummary,
   type SaveRoutePlanPayload,
 } from "../modules/route-plans/route-plan.types.js";
+import { RouteExecutionConflictError } from "../modules/route-plans/route-execution-ownership.js";
 import type {
   RouteOptimizationService,
   RouteOptimizationStopSequence,
@@ -926,6 +927,7 @@ export function toRouteOpsOrderDto(order: CanonicalOrderRow): {
   planningStatus: string;
   recipientName: string | null;
   routeEligible: boolean;
+  routeMemberships: Array<{ id: string; name: string; status: string }>;
   routePlanId: string | null;
   routePlanName: string | null;
   serviceType: string | null;
@@ -992,6 +994,7 @@ export function toRouteOpsOrderDto(order: CanonicalOrderRow): {
     routeEligible,
     routePlanId: order.routePlanId,
     routePlanName: order.routePlanName,
+    routeMemberships: order.routeMemberships ?? [],
     serviceType: order.serviceType,
     shippingAddress: order.shippingAddress,
     sourceCreatedAt: order.sourceCreatedAt ?? order.processedAt,
@@ -1030,8 +1033,6 @@ export function readOrderOperateBlockers(order: CanonicalOrderRow): string[] {
         : order.reviewReasons),
     );
   }
-  if (order.planningStatus !== "UNPLANNED" || order.routePlanId !== null)
-    blockers.push("already_planned");
   if (
     !order.hasCoordinates ||
     order.latitude === null ||
@@ -1336,9 +1337,6 @@ export function readRouteCreationBlockers(
         ? "needs delivery metadata review"
         : order.reviewReasons.join(", ");
     blockers.push(`needs review (${reasons})`);
-  }
-  if (order.planningStatus !== "UNPLANNED" || order.routePlanId !== null) {
-    blockers.push("already assigned to a route");
   }
   if (
     !order.hasCoordinates ||
@@ -1926,6 +1924,9 @@ export function sanitizeRouteUiError(error: unknown): string {
   }
   if (error instanceof RoutePlanOrderAlreadyPlannedError) {
     return "Some selected orders are already assigned to a route. Refresh the page and try again.";
+  }
+  if (error instanceof RouteExecutionConflictError) {
+    return error.message;
   }
   if (error instanceof RoutePlanDriverAssignInvalidError) {
     return error.message;
