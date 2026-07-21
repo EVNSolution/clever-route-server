@@ -35,6 +35,15 @@ export type RouteTrackingGeometryRecord = {
   lastLongitude: unknown;
   lastOccurredAt: Date;
   lastReceivedAt: Date;
+  roadMatchedCoverage?: string | null;
+  roadMatchedGeometry?: unknown;
+  roadMatchedLastInputOccurredAt?: Date | null;
+  roadMatchedLastPosition?: unknown;
+  roadMatchedPointCount?: number | null;
+  roadMatchedSchemaVersion?: string | null;
+  roadMatchedSourcePointCount?: number | null;
+  roadMatchedUncertainGeometry?: unknown;
+  roadMatchedWatermark?: string | null;
   routePlanId: string;
   sampleMetadata: unknown;
   sourcePointCount: number;

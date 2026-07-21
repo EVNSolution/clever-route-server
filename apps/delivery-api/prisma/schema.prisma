@@ -904,23 +904,32 @@ model RoutePlan {
 }
 
 model RouteTrackingGeometry {
-  id                 String    @id @default(uuid()) @db.Uuid
-  routePlanId        String    @unique @db.Uuid
-  routePlan          RoutePlan @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
-  geometry           Json?
-  sampleMetadata     Json
-  sourcePointCount   Int
-  geometryPointCount Int
-  firstOccurredAt    DateTime  @db.Timestamptz(6)
-  lastOccurredAt     DateTime  @db.Timestamptz(6)
-  lastReceivedAt     DateTime  @db.Timestamptz(6)
-  lastEventId        String    @db.Uuid
-  lastDriverId       String?   @db.Uuid
-  lastLatitude       Decimal   @db.Decimal(10, 7)
-  lastLongitude      Decimal   @db.Decimal(10, 7)
-  expiresAt          DateTime  @db.Timestamptz(6)
-  createdAt          DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt          DateTime  @updatedAt @db.Timestamptz(6)
+  id                             String    @id @default(uuid()) @db.Uuid
+  routePlanId                    String    @unique @db.Uuid
+  routePlan                      RoutePlan @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
+  geometry                       Json?
+  sampleMetadata                 Json
+  sourcePointCount               Int
+  geometryPointCount             Int
+  firstOccurredAt                DateTime  @db.Timestamptz(6)
+  lastOccurredAt                 DateTime  @db.Timestamptz(6)
+  lastReceivedAt                 DateTime  @db.Timestamptz(6)
+  lastEventId                    String    @db.Uuid
+  lastDriverId                   String?   @db.Uuid
+  lastLatitude                   Decimal   @db.Decimal(10, 7)
+  lastLongitude                  Decimal   @db.Decimal(10, 7)
+  roadMatchedGeometry            Json?
+  roadMatchedUncertainGeometry   Json?
+  roadMatchedCoverage            String?   @db.Text
+  roadMatchedSchemaVersion       String?   @db.Text
+  roadMatchedSourcePointCount    Int?
+  roadMatchedPointCount          Int?
+  roadMatchedLastInputOccurredAt DateTime? @db.Timestamptz(6)
+  roadMatchedLastPosition        Json?
+  roadMatchedWatermark           String?   @db.Text
+  expiresAt                      DateTime  @db.Timestamptz(6)
+  createdAt                      DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt                      DateTime  @updatedAt @db.Timestamptz(6)
 
   @@index([expiresAt])
   @@map("route_tracking_geometries")

@@ -61,11 +61,33 @@ export type RouteTrackingRecordedPathV1 = {
   sourcePointCount: number;
 };
 
+export type RouteTrackingRoadMatchedGeometryV1 = {
+  coordinates: Array<Array<[number, number]>>;
+  type: 'MultiLineString';
+};
+
+export type RouteTrackingRoadMatchedPathV1 = {
+  coverage: 'korea' | 'ontario';
+  inputPointCount: number;
+  lastInputOccurredAt: string;
+  lastMatchedPosition: {
+    latitude: number;
+    longitude: number;
+    occurredAt: string;
+  } | null;
+  matchedGeometry: RouteTrackingRoadMatchedGeometryV1 | null;
+  matchedPointCount: number;
+  schemaVersion: 'route_tracking_road_match.v1';
+  uncertainGeometry: RouteTrackingRoadMatchedGeometryV1 | null;
+  watermark: string;
+};
+
 export type RouteTrackingSnapshotV1 = {
   latestPosition: RouteTrackingPositionEventV1 | null;
   policy: RouteTrackingPolicy;
   progress: RouteTrackingProgressSnapshotV1;
   recordedPath?: RouteTrackingRecordedPathV1 | null;
+  roadMatchedPath?: RouteTrackingRoadMatchedPathV1 | null;
   recentPositions: RouteTrackingPositionEventV1[];
   routePlanId: string;
   schemaVersion: 'route_tracking.v1';
