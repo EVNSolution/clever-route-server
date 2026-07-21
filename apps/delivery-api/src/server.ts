@@ -66,7 +66,12 @@ const adminCommerceConnectionsUi = loadAdminCommerceConnectionsUiDependencies({
   nodeEnv: env.nodeEnv,
   prisma
 });
-const driverApi = loadDriverApiDependencies({ env: process.env, prisma, routeTrackingStreamHub });
+const driverApi = loadDriverApiDependencies({
+  adminNotificationService,
+  env: process.env,
+  prisma,
+  routeTrackingStreamHub
+});
 const driverAuth = loadDriverAuthDependencies({ env: process.env, prisma });
 const shopifyAuth = loadShopifyAuthDependencies({ env: process.env, prisma });
 const shopifyWebhook = loadShopifyWebhookDependencies({ env: process.env, prisma });

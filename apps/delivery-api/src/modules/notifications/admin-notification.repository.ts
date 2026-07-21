@@ -5,6 +5,8 @@ import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 
 export const WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED_NOTIFICATION =
   'WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED';
+export const DRIVER_STOP_SEQUENCE_DEVIATED_NOTIFICATION =
+  'DRIVER_STOP_SEQUENCE_DEVIATED';
 
 export type AdminNotificationSeverity =
   | 'critical'

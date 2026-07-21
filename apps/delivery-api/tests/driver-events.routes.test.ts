@@ -138,6 +138,101 @@ describe('Driver events route', () => {
     }
   });
 
+  test('creates a durable administrator alert when the server detects an out-of-order stop', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    const createAdminNotification = vi.fn(() => Promise.resolve({
+      createdCount: 1,
+      dedupedCount: 0,
+      notifications: []
+    }));
+    dependencies.adminNotificationService = { createAdminNotification };
+    recordDriverEvent.mockResolvedValueOnce({
+      duplicate: false,
+      eventId: 'driver-event-id',
+      sequenceDeviation: {
+        expectedDeliveryStopId: 'stop-1',
+        expectedSequence: 1,
+        selectedDeliveryStopId: 'stop-2',
+        selectedSequence: 2
+      }
+    });
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: {
+          clientEventId: 'stop-arrived-2',
+          deliveryStopId: 'stop-2',
+          eventType: 'STOP_ARRIVED',
+          occurredAt: '2026-05-07T06:09:30.000Z',
+          routePlanId: 'route-plan-id'
+        },
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(createAdminNotification).toHaveBeenCalledWith({
+        createdAt: now,
+        driverId: 'driver-id',
+        eventId: 'driver-event-id',
+        eventType: 'STOP_ARRIVED',
+        expectedDeliveryStopId: 'stop-1',
+        expectedSequence: 1,
+        occurredAt: new Date('2026-05-07T06:09:30.000Z'),
+        routePlanId: 'route-plan-id',
+        selectedDeliveryStopId: 'stop-2',
+        selectedSequence: 2,
+        shopId: 'shop-id',
+        type: 'driver.stop_sequence_deviated'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('accepts the driver event when the administrator alert cannot be created', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    dependencies.adminNotificationService = {
+      createAdminNotification: vi.fn(() => Promise.reject(new Error('notification store unavailable')))
+    };
+    recordDriverEvent.mockResolvedValueOnce({
+      duplicate: false,
+      eventId: 'driver-event-id',
+      sequenceDeviation: {
+        expectedDeliveryStopId: 'stop-1',
+        expectedSequence: 1,
+        selectedDeliveryStopId: 'stop-2',
+        selectedSequence: 2
+      }
+    });
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: {
+          clientEventId: 'stop-arrived-2',
+          deliveryStopId: 'stop-2',
+          eventType: 'STOP_ARRIVED',
+          occurredAt: '2026-05-07T06:09:30.000Z',
+          routePlanId: 'route-plan-id'
+        },
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(response.json()).toEqual({
+        data: { duplicate: false, eventId: 'driver-event-id' },
+        error: null
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects driver event tokens invalidated by a relogin token-version cutoff', async () => {
     const { dependencies, resolveDriverRouteAccess, recordDriverEvent } = createDependencyHarness({
       accessTokenActive: false

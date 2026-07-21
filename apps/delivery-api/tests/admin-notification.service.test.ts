@@ -8,7 +8,7 @@ import { AdminNotificationStreamHub } from '../src/modules/notifications/admin-n
 import type {
   AdminNotificationDto,
 } from '../src/modules/notifications/admin-notification.repository.js';
-import type { AdminWebNotificationEvent } from '../src/modules/notifications/admin-web-notification-events.js';
+import type { AssignedRouteAddressChangedEvent } from '../src/modules/notifications/admin-web-notification-events.js';
 
 const notification: AdminNotificationDto = {
   body: 'Address changed after routing.',
@@ -117,6 +117,53 @@ describe('AdminNotificationService', () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
+  test('formats an out-of-order driver stop as a warning linked to the affected route', async () => {
+    const repository = createRepositoryHarness();
+    repository.createForShopOnceWithStatus.mockResolvedValueOnce({
+      created: true,
+      notification,
+    });
+    const service = new AdminNotificationService(repository as never, new AdminNotificationStreamHub());
+
+    await service.createAdminNotification({
+      createdAt: new Date('2026-05-07T06:10:00.000Z'),
+      driverId: 'driver-id',
+      eventId: 'driver-event-id',
+      eventType: 'STOP_ARRIVED',
+      expectedDeliveryStopId: 'stop-1',
+      expectedSequence: 1,
+      occurredAt: new Date('2026-05-07T06:09:30.000Z'),
+      routePlanId: 'route-plan-id',
+      selectedDeliveryStopId: 'stop-2',
+      selectedSequence: 2,
+      shopId: 'shop-id',
+      type: 'driver.stop_sequence_deviated',
+    });
+
+    expect(repository.createForShopOnceWithStatus).toHaveBeenCalledWith({
+      body: 'Stop 2 was handled before planned Stop 1. Review the active route and updated ETAs.',
+      createdAt: new Date('2026-05-07T06:10:00.000Z'),
+      dedupeKey: 'driver_stop_sequence_deviation:route-plan-id:stop-2',
+      href: '/admin/ui/app/routes/route-plan-id',
+      payload: {
+        driverId: 'driver-id',
+        eventId: 'driver-event-id',
+        eventType: 'STOP_ARRIVED',
+        expectedDeliveryStopId: 'stop-1',
+        expectedSequence: 1,
+        occurredAt: '2026-05-07T06:09:30.000Z',
+        selectedDeliveryStopId: 'stop-2',
+        selectedSequence: 2,
+        version: 1,
+      },
+      routePlanId: 'route-plan-id',
+      severity: 'warning',
+      shopId: 'shop-id',
+      title: 'Driver changed the planned stop order',
+      type: 'DRIVER_STOP_SEQUENCE_DEVIATED',
+    });
+  });
+
 
   test('subscribes browser streams by normalized shop domain lookup', async () => {
     const repository = createRepositoryHarness();
@@ -154,7 +201,7 @@ function createRepositoryHarness() {
 }
 
 
-function addressChangedEvent(): AdminWebNotificationEvent {
+function addressChangedEvent(): AssignedRouteAddressChangedEvent {
   return {
     existingStop: {
       address1: '100 Old Route St',

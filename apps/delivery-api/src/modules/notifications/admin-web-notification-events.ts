@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 
 import type { CreateAdminNotificationInput } from './admin-notification.repository.js';
-import { WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED_NOTIFICATION } from './admin-notification.repository.js';
+import {
+  DRIVER_STOP_SEQUENCE_DEVIATED_NOTIFICATION,
+  WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED_NOTIFICATION,
+} from './admin-notification.repository.js';
 import {
   addressFingerprint,
   addressFingerprintPayload,
@@ -18,7 +21,7 @@ type AssignedRouteAddressChangeStop = DeliveryStopAddressFields & {
   }>;
 };
 
-export type AdminWebNotificationEvent = {
+export type AssignedRouteAddressChangedEvent = {
   existingStop: AssignedRouteAddressChangeStop | null;
   incomingStop: DeliveryStopAddressFields;
   orderId: string;
@@ -27,17 +30,65 @@ export type AdminWebNotificationEvent = {
   type: 'woo.assigned_route_address_changed';
 };
 
+type DriverStopSequenceDeviatedEvent = {
+  createdAt: Date;
+  driverId: string;
+  eventId: string;
+  eventType: string;
+  expectedDeliveryStopId: string;
+  expectedSequence: number;
+  occurredAt: Date;
+  routePlanId: string;
+  selectedDeliveryStopId: string;
+  selectedSequence: number;
+  shopId: string;
+  type: 'driver.stop_sequence_deviated';
+};
+
+export type AdminWebNotificationEvent =
+  | AssignedRouteAddressChangedEvent
+  | DriverStopSequenceDeviatedEvent;
+
 export function createAdminNotificationInputsForEvent(
   event: AdminWebNotificationEvent,
 ): CreateAdminNotificationInput[] {
   switch (event.type) {
+    case 'driver.stop_sequence_deviated':
+      return [createDriverStopSequenceDeviationNotification(event)];
     case 'woo.assigned_route_address_changed':
       return createAssignedRouteAddressChangeNotifications(event);
   }
 }
 
+function createDriverStopSequenceDeviationNotification(
+  event: DriverStopSequenceDeviatedEvent,
+): CreateAdminNotificationInput {
+  return {
+    body: `Stop ${event.selectedSequence} was handled before planned Stop ${event.expectedSequence}. Review the active route and updated ETAs.`,
+    createdAt: event.createdAt,
+    dedupeKey: `driver_stop_sequence_deviation:${event.routePlanId}:${event.selectedDeliveryStopId}`,
+    href: `/admin/ui/app/routes/${event.routePlanId}`,
+    payload: {
+      driverId: event.driverId,
+      eventId: event.eventId,
+      eventType: event.eventType,
+      expectedDeliveryStopId: event.expectedDeliveryStopId,
+      expectedSequence: event.expectedSequence,
+      occurredAt: event.occurredAt.toISOString(),
+      selectedDeliveryStopId: event.selectedDeliveryStopId,
+      selectedSequence: event.selectedSequence,
+      version: 1,
+    },
+    routePlanId: event.routePlanId,
+    severity: 'warning',
+    shopId: event.shopId,
+    title: 'Driver changed the planned stop order',
+    type: DRIVER_STOP_SEQUENCE_DEVIATED_NOTIFICATION,
+  };
+}
+
 function createAssignedRouteAddressChangeNotifications(
-  event: AdminWebNotificationEvent,
+  event: AssignedRouteAddressChangedEvent,
 ): CreateAdminNotificationInput[] {
   const existingStop = event.existingStop;
   if (existingStop === null) return [];
