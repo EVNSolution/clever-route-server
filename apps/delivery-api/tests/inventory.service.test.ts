@@ -125,6 +125,71 @@ describe('inventory service route-group follower behavior', () => {
     expect(detail?.orders[0]?.recipientName).toBe('Raw Payload Recipient');
   });
 
+  test('normalizes inventory customer notes from delivery instructions and source payload fallbacks', async () => {
+    const findFirst = vi.fn(() => ({
+      createdAt: new Date('2026-07-02T00:00:00Z'),
+      events: [],
+      id: 'inventory-1',
+      name: 'Thu 07/02 orders',
+      note: null,
+      orders: [
+        {
+          order: {
+            deliveryFacts: [],
+            deliveryStops: [{ instructions: 'Use the side entrance.', recipientName: 'Recipient One' }],
+            name: '#1001',
+            orderItems: [],
+            processedAt: null,
+            rawPayload: { note: 'Stale source note' }
+          },
+          orderId: 'order-1'
+        },
+        {
+          order: {
+            deliveryFacts: [],
+            deliveryStops: [{ instructions: null, recipientName: 'Recipient Two' }],
+            name: '#1002',
+            orderItems: [],
+            processedAt: null,
+            rawPayload: { customerNote: 'Call before arrival.' }
+          },
+          orderId: 'order-2'
+        },
+        {
+          order: {
+            deliveryFacts: [],
+            deliveryStops: [],
+            name: '#1003',
+            orderItems: [],
+            processedAt: null,
+            rawPayload: { customer: { note: 'Leave with concierge.' } }
+          },
+          orderId: 'order-3'
+        }
+      ],
+      routeGrouping: null,
+      routeGroupingId: null,
+      updatedAt: new Date('2026-07-02T00:00:00Z')
+    }));
+    const service = new PrismaInventoryService({
+      inventory: { findFirst },
+      shop: { findUnique: vi.fn(() => ({ id: 'shop-1' })) }
+    } as never);
+
+    const detail = await service.getInventoryOrderView({ appId: 'clever-route-dev', inventoryId: 'inventory-1', shopDomain: 'example.myshopify.com' });
+
+    expect(detail?.orders.map((order) => order.customerNote)).toEqual([
+      'Use the side entrance.',
+      'Call before arrival.',
+      'Leave with concierge.'
+    ]);
+    const findFirstCalls = (findFirst as unknown as { mock: { calls: Array<[{ include?: unknown }]> } }).mock.calls;
+    const include = findFirstCalls[0]?.[0]?.include as {
+      orders?: { include?: { order?: { include?: { deliveryStops?: { select?: Record<string, boolean> } } } } };
+    } | undefined;
+    expect(include?.orders?.include?.order?.include?.deliveryStops?.select?.instructions).toBe(true);
+  });
+
   test('hydrates order-view route fields from the linked route group', async () => {
     const service = new PrismaInventoryService({
       inventory: {

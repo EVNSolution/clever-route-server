@@ -22,6 +22,7 @@ const inventory: InventoryDto = {
   orders: [{
     address: '200 Church St, Markham',
     currencyCode: 'CAD',
+    customerNote: null,
     deliveryDate: '2026-06-25',
     financialStatus: 'PAID',
     id: 'order-1',

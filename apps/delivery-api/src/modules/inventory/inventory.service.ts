@@ -273,6 +273,7 @@ function inventoryDeliveryStopSelect() {
     address2: true,
     city: true,
     countryCode: true,
+    instructions: true,
     phone: true,
     postalCode: true,
     province: true,
@@ -363,6 +364,7 @@ function toInventoryOrderDto(orderId: string, order: InventoryOrderRecord, route
   return {
     address: formatInventoryAddress(order),
     currencyCode: order.currencyCode ?? null,
+    customerNote: readInventoryCustomerNote(order),
     deliveryDate: formatDateOnly(order.deliveryFacts[0]?.deliveryDate ?? null) ?? readDateString(raw?.deliveryDate),
     driveTimeMinutes: routeStop?.driveTimeMinutes ?? null,
     eta: routeStop?.eta ?? null,
@@ -467,6 +469,19 @@ function readInventoryPhone(order: { deliveryStops?: Array<{ phone: string | nul
     ?? readString(rawShippingAddress?.phone)
     ?? readString(normalizedShippingAddress?.phone)
     ?? readString(raw?.phone);
+}
+
+function readInventoryCustomerNote(order: {
+  deliveryStops?: Array<{ instructions?: string | null }> | null;
+  rawPayload: unknown;
+}): string | null {
+  const raw = asRecord(order.rawPayload);
+  const customer = asRecord(raw?.customer);
+  return readString(order.deliveryStops?.[0]?.instructions)
+    ?? readString(raw?.customer_note)
+    ?? readString(raw?.customerNote)
+    ?? readString(raw?.note)
+    ?? readString(customer?.note);
 }
 
 function getInventoryOrderItems(order: InventoryOrderRecord): OrderItemDto[] {

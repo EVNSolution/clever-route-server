@@ -12,6 +12,7 @@ export type InventoryChangeItemDto = OrderItemDto & {
 export type InventoryOrderDto = {
   address: string | null;
   currencyCode: string | null;
+  customerNote: string | null;
   deliveryDate: string | null;
   driveTimeMinutes?: number | null;
   eta?: string | null;
