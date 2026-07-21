@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 import { ROUTE_ACTIVE_COMPATIBILITY_STATUSES, ROUTE_READY_COMPATIBILITY_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 import { readRouteStopPoints } from '../route-plans/route-plan-geometry-cache.js';
+import { persistRouteTrackingGeometryPosition } from '../route-tracking/route-tracking.geometry.js';
 import {
   calculateArrivalEtaUpdate,
   calculateRouteStartEtaUpdate,
@@ -31,12 +32,12 @@ export type RecordDriverEventResult = {
 
 type DriverEventPrismaClient = Pick<
   PrismaClient,
-  '$transaction' | 'deliveryStop' | 'driverEvent' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop'
+  '$transaction' | 'deliveryStop' | 'driverEvent' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry'
 >;
 
 type DriverEventTransactionClient = Pick<
-  DriverEventPrismaClient,
-  'deliveryStop' | 'driverEvent' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop'
+  Prisma.TransactionClient,
+  '$queryRaw' | 'deliveryStop' | 'driverEvent' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry'
 >;
 
 export class DriverEventContextError extends Error {
@@ -88,6 +89,11 @@ export class PrismaDriverEventRepository {
           }
         });
 
+        const trackingPosition = toRouteTrackingGeometryPosition(input, event.id, event.createdAt);
+        if (trackingPosition !== null) {
+          await persistRouteTrackingGeometryPosition(transaction, trackingPosition);
+        }
+
         const etaUpdate = await applyDriverEventStateTransition(transaction, input, input.shopId, event.createdAt);
 
         return {
@@ -104,6 +110,26 @@ export class PrismaDriverEventRepository {
       throw error;
     }
   }
+}
+
+function toRouteTrackingGeometryPosition(
+  input: RecordDriverEventInput,
+  eventId: string,
+  receivedAt: Date
+) {
+  if (input.eventType !== 'LOCATION_UPDATED' || input.routePlanId === null) return null;
+  const latitude = input.latitude === null ? Number.NaN : Number(input.latitude);
+  const longitude = input.longitude === null ? Number.NaN : Number(input.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  return {
+    driverId: input.driverId,
+    eventId,
+    latitude,
+    longitude,
+    occurredAt: input.occurredAt.toISOString(),
+    receivedAt: receivedAt.toISOString(),
+    routePlanId: input.routePlanId
+  };
 }
 
 async function findMatchingDriverEvent(

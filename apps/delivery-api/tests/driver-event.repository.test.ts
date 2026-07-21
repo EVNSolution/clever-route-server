@@ -44,6 +44,7 @@ describe('PrismaDriverEventRepository', () => {
         shopId: 'shop-id'
       }
     });
+    expect(prisma.routeTrackingGeometry.upsert).toHaveBeenCalledOnce();
   });
 
   test('rejects location updates unless the route is in progress before writing the event', async () => {
@@ -486,6 +487,7 @@ function createPrismaHarness(input: {
     return Promise.resolve({ createdAt: serverReceivedAt, id: 'driver-event-id' });
   });
   const prisma: {
+    $queryRaw: ReturnType<typeof vi.fn>;
     $transaction: ReturnType<typeof vi.fn>;
     deliveryStop: { updateMany: ReturnType<typeof vi.fn> };
     driver: { findUnique: ReturnType<typeof vi.fn> };
@@ -501,9 +503,14 @@ function createPrismaHarness(input: {
       findMany: ReturnType<typeof vi.fn>;
       update: ReturnType<typeof vi.fn>;
     };
+    routeTrackingGeometry: {
+      findUnique: ReturnType<typeof vi.fn>;
+      upsert: ReturnType<typeof vi.fn>;
+    };
     shop: { findUnique: ReturnType<typeof vi.fn> };
   } = {} as never;
   Object.assign(prisma, {
+    $queryRaw: vi.fn(() => Promise.resolve([])),
     $transaction: vi.fn((callback: (transaction: unknown) => unknown) => Promise.resolve(callback(prisma))),
     deliveryStop: {
       updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
@@ -551,6 +558,10 @@ function createPrismaHarness(input: {
         }
       ])),
       update: vi.fn(() => Promise.resolve({ id: 'route-plan-stop-id' }))
+    },
+    routeTrackingGeometry: {
+      findUnique: vi.fn(() => Promise.resolve(null)),
+      upsert: vi.fn(() => Promise.resolve({ id: 'route-tracking-geometry-id' }))
     },
     shop: {
       findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id' }))

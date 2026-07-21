@@ -257,3 +257,29 @@ Common errors:
 - `404` with `NOT_FOUND`: route plan does not exist for the token shop.
 - `409` with `ROUTE_ORDER_ALREADY_PLANNED`: an order is already assigned to a
   different route plan.
+
+## GET `/admin/route-plans/:routePlanId/tracking`
+
+Returns the current tracking snapshot and opens the same route-scoped SSE
+stream used by the embedded admin app. The snapshot keeps `recentPositions`
+for backward compatibility and adds `recordedPath` as the canonical historical
+GPS path.
+
+`recordedPath` is one route-scoped projection:
+
+- `geometry` is a GeoJSON `LineString` containing the server-compressed path.
+- `samples` is aligned by index with `geometry.coordinates` and retains the
+  event, driver, recorded, and received timestamps needed for inspection.
+- `sourcePointCount` is the number of valid raw GPS events represented by the
+  projection; `geometryPointCount` is the number of coordinates retained after
+  compression.
+- No fixed event-count or point-count tail limit is applied. The complete
+  retained route history is returned even when it exceeds 1,000 points.
+- Compression preserves the first and latest points and does not simplify
+  across a tracking gap. Raw `DriverEvent` rows remain the audit and rebuild
+  source; `recordedPath` is the read-optimized route projection.
+
+If a route has not yet been projected, the server temporarily rebuilds the
+response from every retained raw location event for that route without a
+count limit. New location writes update both the raw event and the route-level
+projection in one database transaction before the event is published to SSE.
