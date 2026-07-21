@@ -50,7 +50,7 @@ export async function persistRouteTrackingGeometryPosition(
   position: RouteTrackingGeometryPositionInput
 ): Promise<RouteTrackingGeometryDocumentV1> {
   await prisma.$queryRaw(
-    Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${position.routePlanId}, 0))`
+    Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(hashtextextended(${position.routePlanId}, 0))`
   );
 
   const current = await prisma.routeTrackingGeometry.findUnique({
