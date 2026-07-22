@@ -14,8 +14,6 @@ export type RouteOpsUiSettingsDto = {
       subject: string;
     };
   };
-  loadingStartTime: string | null;
-  plannedDepartureTime: string | null;
   version: 1;
 };
 
@@ -44,8 +42,6 @@ export function defaultRouteOpsUiSettings(): RouteOpsUiSettingsDto {
         subject: "",
       },
     },
-    loadingStartTime: null,
-    plannedDepartureTime: null,
     version: 1,
   };
 }
@@ -72,14 +68,6 @@ export function validateRouteOpsUiSettingsPayload(
     240,
     "Destination dwell minutes",
   );
-  const loadingStartTime = readNullableTimeOfDay(
-    value.loadingStartTime,
-    "Loading start time",
-  );
-  const plannedDepartureTime = readNullableTimeOfDay(
-    value.plannedDepartureTime,
-    "Planned departure time",
-  );
   const emailNotifications = value.emailNotifications;
   if (!isRecord(emailNotifications)) {
     throw new Error("Email notification settings must be an object.");
@@ -96,8 +84,6 @@ export function validateRouteOpsUiSettingsPayload(
       reminderPlans,
       template,
     },
-    loadingStartTime,
-    plannedDepartureTime,
     version: 1,
   };
 }
@@ -188,10 +174,6 @@ function readTimeOfDay(value: unknown, label: string): string {
     throw new Error(`${label} must use HH:mm from 00:00 through 23:59.`);
   }
   return timeOfDay;
-}
-
-function readNullableTimeOfDay(value: unknown, label: string): string | null {
-  return value === null || value === undefined ? null : readTimeOfDay(value, label);
 }
 
 function readString(value: unknown, label: string): string {

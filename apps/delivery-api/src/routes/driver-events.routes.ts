@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { MultipartFile, MultipartValue } from '@fastify/multipart';
 
 import {
@@ -16,17 +16,6 @@ import type {
   DriverRouteMapPreview
 } from '../modules/driver/driver-assigned-route.types.js';
 import type { DriverRouteMapPreviewServiceApi } from '../modules/driver/driver-route-map-preview.service.js';
-import {
-  DriverSellerOrderAlreadyAcquiredError,
-  DriverSellerOrderAssignmentConflictError,
-  DriverSellerOrderNotFoundError,
-  DriverSellerOrderRecalculationError,
-  DriverSellerOrderRecalculationUnavailableError,
-  DriverSellerOrderScopeError,
-  DriverSellerOrderTransferClosedError,
-  DriverSellerOrderVehicleRequiredError,
-  type DriverSellerOrderAssignmentServiceContract
-} from '../modules/driver/driver-seller-order-assignment.service.js';
 import type {
   DriverConsentRecordInput,
   DriverConsentServiceContract,
@@ -92,7 +81,6 @@ export type DriverApiDependencies = {
       shopId: string;
     }): Promise<RecordDriverEventResult>;
   };
-  driverSellerOrderAssignmentService?: DriverSellerOrderAssignmentServiceContract;
   driverSelfService?: DriverSelfServiceApi;
   driverRouteSessionRestoreService?: DriverRouteSessionRestoreServiceApi;
   driverRouteMapPreviewBaseUrl?: string;
@@ -111,10 +99,6 @@ type DriverRouteAccessRequestBody = {
 
 type DriverAssignedRouteQuery = {
   routeContext?: unknown;
-};
-
-type DriverSellerOrderParams = {
-  orderId?: unknown;
 };
 
 type DriverRouteMapPreviewParams = {
@@ -304,74 +288,6 @@ export function registerDriverEventRoutes(
         data: result,
         error: null
       });
-    });
-  }
-
-  const driverSellerOrderAssignmentService = dependencies.driverSellerOrderAssignmentService;
-  if (driverSellerOrderAssignmentService !== undefined) {
-    app.get('/driver/orders/unassigned', async (request, reply) => {
-      const authentication = await authenticateDriverRequest(request, dependencies);
-      if (authentication.status !== 'authenticated') {
-        return reply.code(401).send(driverAuthenticationErrorResponse(authentication.status));
-      }
-      reply.header('Cache-Control', 'private, no-store');
-
-      try {
-        const orders = await driverSellerOrderAssignmentService.listUnassigned(authentication.context);
-        return reply.code(200).send({ data: { orders }, error: null });
-      } catch (error) {
-        return sendDriverSellerOrderError(reply, error);
-      }
-    });
-
-    app.post<{ Params: DriverSellerOrderParams }>('/driver/orders/:orderId/acquire', async (request, reply) => {
-      const authentication = await authenticateDriverRequest(request, dependencies);
-      if (authentication.status !== 'authenticated') {
-        return reply.code(401).send(driverAuthenticationErrorResponse(authentication.status));
-      }
-      reply.header('Cache-Control', 'private, no-store');
-
-      let orderId: string;
-      try {
-        orderId = readRequiredString(request.params.orderId);
-      } catch {
-        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid seller order id'));
-      }
-
-      try {
-        const result = await driverSellerOrderAssignmentService.acquire({
-          ...authentication.context,
-          orderId
-        });
-        return reply.code(200).send({ data: result, error: null });
-      } catch (error) {
-        return sendDriverSellerOrderError(reply, error);
-      }
-    });
-
-    app.post<{ Params: DriverSellerOrderParams }>('/driver/orders/:orderId/release', async (request, reply) => {
-      const authentication = await authenticateDriverRequest(request, dependencies);
-      if (authentication.status !== 'authenticated') {
-        return reply.code(401).send(driverAuthenticationErrorResponse(authentication.status));
-      }
-      reply.header('Cache-Control', 'private, no-store');
-
-      let orderId: string;
-      try {
-        orderId = readRequiredString(request.params.orderId);
-      } catch {
-        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid seller order id'));
-      }
-
-      try {
-        const result = await driverSellerOrderAssignmentService.release({
-          ...authentication.context,
-          orderId
-        });
-        return reply.code(200).send({ data: result, error: null });
-      } catch (error) {
-        return sendDriverSellerOrderError(reply, error);
-      }
     });
   }
 
@@ -1057,8 +973,6 @@ function buildInvitedDriverRouteAccessResponse(
       expiresAt: token.expiresAt,
       scopes: [
         'route:assigned:read',
-        'order:unassigned:read',
-        'order:assignment:write',
         'route:history:read',
         'route:feedback:write',
         'profile:read',
@@ -1481,31 +1395,4 @@ function errorResponse(code: string, message: string): { data: null; error: { co
     data: null,
     error: { code, message }
   };
-}
-
-function sendDriverSellerOrderError(
-  reply: FastifyReply,
-  error: unknown
-): FastifyReply {
-  if (error instanceof DriverSellerOrderNotFoundError) {
-    return reply.code(404).send(errorResponse(error.code, error.message));
-  }
-  if (error instanceof DriverSellerOrderScopeError) {
-    return reply.code(403).send(errorResponse(error.code, error.message));
-  }
-  if (
-    error instanceof DriverSellerOrderAlreadyAcquiredError ||
-    error instanceof DriverSellerOrderAssignmentConflictError ||
-    error instanceof DriverSellerOrderTransferClosedError ||
-    error instanceof DriverSellerOrderVehicleRequiredError
-  ) {
-    return reply.code(409).send(errorResponse(error.code, error.message));
-  }
-  if (error instanceof DriverSellerOrderRecalculationError) {
-    return reply.code(422).send(errorResponse(error.code, error.message));
-  }
-  if (error instanceof DriverSellerOrderRecalculationUnavailableError) {
-    return reply.code(503).send(errorResponse(error.code, error.message));
-  }
-  throw error;
 }

@@ -25,7 +25,6 @@ export type DriverAssignedRouteStop = {
     latitude: number | null;
     longitude: number | null;
   };
-  customerNote: string | null;
   deliveryStopId: string;
   durationFromPreviousSeconds?: number | null;
   estimatedArrivalAt?: string | null;

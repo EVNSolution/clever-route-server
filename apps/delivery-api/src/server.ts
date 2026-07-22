@@ -10,7 +10,7 @@ import { loadAdminDriverDependencies } from './modules/driver/admin-driver.depen
 import { loadAdminInventoryDependencies } from './modules/inventory/inventory.dependencies.js';
 import { loadDriverApiDependencies } from './modules/driver/driver.dependencies.js';
 import { loadDriverAuthDependencies } from './modules/driver/driver-auth.dependencies.js';
-import { createRouteGroupingService, loadAdminRouteGroupDependencies } from './modules/route-grouping/route-grouping.dependencies.js';
+import { loadAdminRouteGroupDependencies } from './modules/route-grouping/route-grouping.dependencies.js';
 import { loadAdminRoutePlanDependencies } from './modules/route-plans/route-plan.dependencies.js';
 import { loadAdminOrdersDependencies } from './modules/shopify/order-sync.dependencies.js';
 import { loadShopifyAuthDependencies } from './modules/shopify/auth.dependencies.js';
@@ -40,8 +40,7 @@ const prisma = new PrismaClient();
 const adminCommerceConnections = loadAdminCommerceConnectionsDependencies({ env: process.env, prisma });
 const adminDrivers = loadAdminDriverDependencies({ env: process.env, prisma });
 const adminInventories = loadAdminInventoryDependencies({ env: process.env, prisma });
-const routeGroupingService = createRouteGroupingService({ env: process.env, prisma });
-const adminRouteGroups = loadAdminRouteGroupDependencies({ env: process.env, prisma, routeGroupingService });
+const adminRouteGroups = loadAdminRouteGroupDependencies({ env: process.env, prisma });
 const routeTrackingStreamHub = new RouteTrackingStreamHub();
 const adminRoutePlans = loadAdminRoutePlanDependencies({ env: process.env, prisma, routeTrackingStreamHub });
 const adminNotificationRuntime = createAdminNotificationRuntime({
@@ -71,7 +70,6 @@ const driverApi = loadDriverApiDependencies({
   adminNotificationService,
   env: process.env,
   prisma,
-  routeGroupingService,
   routeTrackingStreamHub
 });
 const driverAuth = loadDriverAuthDependencies({ env: process.env, prisma });

@@ -55,7 +55,6 @@ const route: DriverAssignedRoute = {
         province: 'ON'
       },
       coordinates: { latitude: 43.6487, longitude: -79.3817 },
-      customerNote: null,
       deliveryStopId: 'stop-id-1',
       items: [],
       normalizedPaymentStatus: 'CASH_COLLECT_REQUIRED',
@@ -75,7 +74,6 @@ const route: DriverAssignedRoute = {
         province: 'ON'
       },
       coordinates: { latitude: 43.6509, longitude: -79.3909 },
-      customerNote: null,
       deliveryStopId: 'stop-id-2',
       items: [],
       normalizedPaymentStatus: 'PAID_CONFIRMED',
