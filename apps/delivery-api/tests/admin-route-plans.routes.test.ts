@@ -3,7 +3,9 @@ import { describe, expect, test, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { RouteOptimizationJobActiveError } from '../src/modules/route-plans/route-optimization-job.types.js';
 import {
+  RoutePlanGeometryRefreshFailedError,
   RoutePlanOrderAlreadyPlannedError,
+  RoutePlanRefreshNotAllowedError,
   RoutePlanStopUpdateInvalidError
 } from '../src/modules/route-plans/route-plan.types.js';
 import type {
@@ -53,8 +55,65 @@ describe('Admin route plan routes', () => {
         appId: 'clever',
         routePlanId: 'route-plan-id',
         shopDomain: 'example.myshopify.com',
-        source: 'EXPLICIT_REFRESH'
+        source: 'ORDER_DATA_REFRESH'
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns conflict when route order-data refresh overlaps optimization', async () => {
+    const { dependencies, refreshRouteGeometryForRoutePlan } = createDependencyHarness();
+    refreshRouteGeometryForRoutePlan.mockRejectedValueOnce(new RouteOptimizationJobActiveError());
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        url: '/admin/route-plans/route-plan-id/refresh-order-data'
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ error: { code: 'ROUTE_OPTIMIZATION_JOB_ACTIVE' } });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns conflict when route status forbids order-data refresh', async () => {
+    const { dependencies, refreshRouteGeometryForRoutePlan } = createDependencyHarness();
+    refreshRouteGeometryForRoutePlan.mockRejectedValueOnce(new RoutePlanRefreshNotAllowedError('COMPLETED'));
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        url: '/admin/route-plans/route-plan-id/refresh-order-data'
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ error: { code: 'ROUTE_REFRESH_NOT_ALLOWED' } });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns unprocessable entity without replacing geometry when strict refresh fails', async () => {
+    const { dependencies, refreshRouteGeometryForRoutePlan } = createDependencyHarness();
+    refreshRouteGeometryForRoutePlan.mockRejectedValueOnce(new RoutePlanGeometryRefreshFailedError());
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        url: '/admin/route-plans/route-plan-id/refresh-order-data'
+      });
+
+      expect(response.statusCode).toBe(422);
+      expect(response.json()).toMatchObject({ error: { code: 'ROUTE_REFRESH_GEOMETRY_FAILED' } });
     } finally {
       await app.close();
     }

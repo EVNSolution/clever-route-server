@@ -321,7 +321,7 @@ export type RoutePlanService = {
     routePlanId: string;
     appId?: string | undefined;
     shopDomain: string;
-    source?: 'CREATE_ROUTE' | 'SHAPE_MUTATION' | 'SNAPSHOT' | 'OPTIMIZATION_APPLY' | 'EXPLICIT_REFRESH' | 'PERIODIC_SYNC';
+    source?: 'CREATE_ROUTE' | 'SHAPE_MUTATION' | 'SNAPSHOT' | 'OPTIMIZATION_APPLY' | 'EXPLICIT_REFRESH' | 'ORDER_DATA_REFRESH' | 'PERIODIC_SYNC';
   }): Promise<RoutePlanDetail | null>;
   routePlanExists?(input: {
     routePlanId: string;
@@ -397,6 +397,26 @@ export class RoutePlanOptionsUpdateInvalidError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'RoutePlanOptionsUpdateInvalidError';
+  }
+}
+
+export class RoutePlanRefreshNotAllowedError extends Error {
+  readonly code = 'ROUTE_REFRESH_NOT_ALLOWED';
+  readonly status: string;
+
+  constructor(status: string) {
+    super(`Route order-data refresh is not allowed while the route status is ${status}.`);
+    this.name = 'RoutePlanRefreshNotAllowedError';
+    this.status = status;
+  }
+}
+
+export class RoutePlanGeometryRefreshFailedError extends Error {
+  readonly code = 'ROUTE_REFRESH_GEOMETRY_FAILED';
+
+  constructor(message = 'Route geometry could not be safely refreshed from the latest order data.') {
+    super(message);
+    this.name = 'RoutePlanGeometryRefreshFailedError';
   }
 }
 

@@ -9,8 +9,10 @@ import {
 import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js';
 import {
   RoutePlanDriverAssignInvalidError,
+  RoutePlanGeometryRefreshFailedError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanOptionsUpdateInvalidError,
+  RoutePlanRefreshNotAllowedError,
   RoutePlanStopUpdateInvalidError
 } from '../modules/route-plans/route-plan.types.js';
 import { RouteExecutionConflictError } from '../modules/route-plans/route-execution-ownership.js';
@@ -162,20 +164,30 @@ export function registerAdminRoutePlanRoutes(
         return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Route order-data refresh is unavailable'));
       }
 
-      const detail = await dependencies.routePlanService.refreshRouteGeometryForRoutePlan({
-        appId: authenticated.appId,
-        routePlanId: request.params.routePlanId,
-        shopDomain: authenticated.shopDomain,
-        source: 'EXPLICIT_REFRESH'
-      });
-      if (detail === null) {
-        return reply.code(404).send(errorResponse('NOT_FOUND', 'Route plan not found'));
-      }
+      try {
+        const detail = await dependencies.routePlanService.refreshRouteGeometryForRoutePlan({
+          appId: authenticated.appId,
+          routePlanId: request.params.routePlanId,
+          shopDomain: authenticated.shopDomain,
+          source: 'ORDER_DATA_REFRESH'
+        });
+        if (detail === null) {
+          return reply.code(404).send(errorResponse('NOT_FOUND', 'Route plan not found'));
+        }
 
-      return reply.code(200).send({
-        data: detail,
-        error: null
-      });
+        return reply.code(200).send({
+          data: detail,
+          error: null
+        });
+      } catch (error) {
+        if (error instanceof RouteOptimizationJobActiveError || error instanceof RoutePlanRefreshNotAllowedError) {
+          return reply.code(409).send(errorResponse(error.code, error.message));
+        }
+        if (error instanceof RoutePlanGeometryRefreshFailedError) {
+          return reply.code(422).send(errorResponse(error.code, error.message));
+        }
+        throw error;
+      }
     }
   );
 

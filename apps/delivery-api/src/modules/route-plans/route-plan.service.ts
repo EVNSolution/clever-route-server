@@ -5,6 +5,7 @@ import {
   withRouteGeometryResult
 } from './route-plan-geometry-cache.js';
 import type { RouteGeometryCacheSource, RouteGeometryCacheWrite } from './route-plan-geometry-cache.js';
+import { isRouteReadyStatus } from './route-plan-lifecycle.js';
 import type {
   CreateRoutePlanInput,
   CreateRoutePlanFromOrderIdsInput,
@@ -19,6 +20,10 @@ import type {
   UpdateRoutePlanDriverInput,
   UpdateRoutePlanOptionsInput,
   UpdateRoutePlanStopsInput
+} from './route-plan.types.js';
+import {
+  RoutePlanGeometryRefreshFailedError,
+  RoutePlanRefreshNotAllowedError
 } from './route-plan.types.js';
 
 export type RouteGeometryProvider = {
@@ -141,11 +146,15 @@ export class RoutePlanAdminService implements RoutePlanService {
     shopDomain: string;
     source?: RouteGeometryCacheSource;
   }): Promise<RoutePlanDetail | null> {
+    const source = input.source ?? 'EXPLICIT_REFRESH';
+    if (source === 'ORDER_DATA_REFRESH') {
+      await this.assertNoActiveUserOptimizationJob(input);
+    }
     return this.refreshRouteGeometryById({
       appId: input.appId,
       routePlanId: input.routePlanId,
       shopDomain: input.shopDomain,
-      source: input.source ?? 'EXPLICIT_REFRESH'
+      source
     });
   }
 
@@ -219,9 +228,14 @@ export class RoutePlanAdminService implements RoutePlanService {
   }
 
   private async assertNoActiveUserOptimizationJob(
-    input: SaveRoutePlanInput | UpdateRoutePlanOptionsInput | UpdateRoutePlanStopsInput
+    input: {
+      appId?: string | undefined;
+      mutationContext?: SaveRoutePlanInput['mutationContext'];
+      routePlanId: string;
+      shopDomain: string;
+    }
   ): Promise<void> {
-    if ('mutationContext' in input && input.mutationContext?.source === 'route_optimization_job') return;
+    if (input.mutationContext?.source === 'route_optimization_job') return;
     if (this.routeOptimizationJobGuard === undefined) return;
     await this.routeOptimizationJobGuard.reconcileStaleActiveJobs?.({
       appId: input.appId,
@@ -250,6 +264,12 @@ export class RoutePlanAdminService implements RoutePlanService {
       shopDomain: input.shopDomain
     });
     if (detail === null) return null;
+    if (input.source === 'ORDER_DATA_REFRESH') {
+      const status = detail.routePlan.status;
+      if (!isRouteReadyStatus(status) && status !== 'IN_PROGRESS') {
+        throw new RoutePlanRefreshNotAllowedError(status);
+      }
+    }
     return this.refreshRouteGeometry(detail, input.source);
   }
 
@@ -265,6 +285,9 @@ export class RoutePlanAdminService implements RoutePlanService {
   }
 
   private async refreshRouteGeometry(detail: RoutePlanDetail, source: RouteGeometryCacheSource): Promise<RoutePlanDetail> {
+    if (source === 'ORDER_DATA_REFRESH') {
+      return this.refreshOrderDataGeometry(detail);
+    }
     if (this.routeGeometryProvider === undefined) {
       return detail;
     }
@@ -290,6 +313,44 @@ export class RoutePlanAdminService implements RoutePlanService {
     return withRouteGeometryResult(detail, routeResult, { generatedAt, source });
   }
 
+  private async refreshOrderDataGeometry(detail: RoutePlanDetail): Promise<RoutePlanDetail> {
+    if (detail.stops.length === 0) return detail;
+    if (this.routeGeometryProvider === undefined) {
+      throw new RoutePlanGeometryRefreshFailedError('Route geometry provider is unavailable. Existing geometry was preserved.');
+    }
+    if (!hasValidCoordinates(detail.routePlan.depot.latitude, detail.routePlan.depot.longitude)) {
+      throw new RoutePlanGeometryRefreshFailedError('Route depot coordinates are missing. Existing geometry was preserved.');
+    }
+    if (detail.stops.some((stop) => !hasValidCoordinates(stop.coordinates.latitude, stop.coordinates.longitude))) {
+      throw new RoutePlanGeometryRefreshFailedError('One or more route stops have no valid coordinates. Existing geometry was preserved.');
+    }
+
+    let routeResult: RoutePlanRouteResult;
+    try {
+      routeResult = await this.routeGeometryProvider.buildRoute(detail);
+    } catch {
+      throw new RoutePlanGeometryRefreshFailedError('Route geometry provider failed. Existing geometry was preserved.');
+    }
+    if (!isCompleteOrderDataRouteResult(detail, routeResult)) {
+      throw new RoutePlanGeometryRefreshFailedError('Route geometry provider returned an incomplete route. Existing geometry was preserved.');
+    }
+
+    const generatedAt = new Date();
+    const source = 'ORDER_DATA_REFRESH';
+    await this.repository.upsertRouteGeometryCache?.({
+      generatedAt,
+      geometry: routeResult.routeGeometry,
+      metrics: routeResult.routeMetrics,
+      provider: 'osrm',
+      providerVersion: null,
+      routePlanId: detail.routePlan.id,
+      shapeSignature: computeRouteShapeSignature(detail),
+      source,
+      stopPoints: routeResult.routeStopPoints
+    });
+    return withRouteGeometryResult(detail, routeResult, { generatedAt, source });
+  }
+
   private async buildRouteSafely(detail: RoutePlanDetail): Promise<RoutePlanRouteResult | null> {
     try {
       return await this.routeGeometryProvider?.buildRoute(detail) ?? emptyRouteResult();
@@ -297,6 +358,44 @@ export class RoutePlanAdminService implements RoutePlanService {
       return null;
     }
   }
+}
+
+function hasValidCoordinates(latitude: number | null, longitude: number | null): boolean {
+  return (
+    typeof latitude === 'number' &&
+    Number.isFinite(latitude) &&
+    latitude >= -90 &&
+    latitude <= 90 &&
+    typeof longitude === 'number' &&
+    Number.isFinite(longitude) &&
+    longitude >= -180 &&
+    longitude <= 180
+  );
+}
+
+function isCompleteOrderDataRouteResult(detail: RoutePlanDetail, result: RoutePlanRouteResult): boolean {
+  if (result.routeGeometry === null || result.routeMetrics === null) return false;
+  if (
+    !isNonNegativeFiniteNumber(result.routeMetrics.distanceMeters) ||
+    !isNonNegativeFiniteNumber(result.routeMetrics.durationSeconds) ||
+    result.routeGeometry.coordinates.length < 2 ||
+    result.routeGeometry.coordinates.some(([longitude, latitude]) => !hasValidCoordinates(latitude, longitude))
+  ) return false;
+  if (result.routeStopPoints.length !== detail.stops.length) return false;
+  const expectedStopIds = new Set(detail.stops.map((stop) => stop.deliveryStopId));
+  const actualStopIds = new Set(result.routeStopPoints.map((point) => point.deliveryStopId));
+  return (
+    actualStopIds.size === expectedStopIds.size &&
+    result.routeStopPoints.every((point) => (
+      expectedStopIds.has(point.deliveryStopId) &&
+      isNonNegativeFiniteNumber(point.distanceFromPreviousMeters) &&
+      isNonNegativeFiniteNumber(point.durationFromPreviousSeconds)
+    ))
+  );
+}
+
+function isNonNegativeFiniteNumber(value: number | null | undefined): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
 function emptyRouteResult(): RoutePlanRouteResult {
