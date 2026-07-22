@@ -40,6 +40,21 @@ export type RouteTrackingProgressSnapshotV1 = {
   latestEvent: RouteTrackingProgressEventV1 | null;
 };
 
+export type RouteTrackingStopArrivalV1 = {
+  deliveryStopId: string;
+  driverId: string;
+  eventId: string;
+  latitude: number | null;
+  longitude: number | null;
+  occurredAt: string;
+  positionAgeMs: number | null;
+  positionSource: 'event' | 'nearest_location' | 'unavailable';
+  receivedAt: string;
+  routePlanId: string;
+  schemaVersion: 'route_tracking_arrival.v1';
+  stopSequence: number;
+};
+
 export type RouteTrackingStatus = 'DELAYED' | 'LIVE' | 'NO_POSITION' | 'STALE';
 
 export type RouteTrackingRecordedPathV1 = {
@@ -93,6 +108,7 @@ export type RouteTrackingSnapshotV1 = {
   schemaVersion: 'route_tracking.v1';
   serverTime: string;
   status: RouteTrackingStatus;
+  stopArrivals?: RouteTrackingStopArrivalV1[];
 };
 
 export type RouteTrackingService = {

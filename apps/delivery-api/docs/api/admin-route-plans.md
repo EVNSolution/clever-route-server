@@ -294,3 +294,17 @@ If a route has not yet been projected, the server temporarily rebuilds the
 response from every retained raw location event for that route without a
 count limit. New location writes update both the raw event and the route-level
 projection in one database transaction before the event is published to SSE.
+
+The snapshot also includes `stopArrivals`, one durable entry for every
+`STOP_ARRIVED` event. An arrival uses coordinates recorded on the event when
+available. Otherwise, the server may associate the nearest retained GPS event
+only when it is within the route tracking delayed threshold (three minutes by
+default). Entries outside that window remain auditable with
+`positionSource: "unavailable"` and null coordinates; clients must not invent a
+map position for them. `stopSequence` is the route's Stop number at the time the
+snapshot is read.
+
+Road matching splits input at tracking gaps and physically implausible jumps
+before calling the matching provider. This prevents a single corrupted GPS
+sample from creating long straight connectors or contaminating adjacent route
+segments.

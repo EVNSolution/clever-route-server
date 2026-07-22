@@ -22,6 +22,7 @@ import type {
   RouteTrackingProgressSnapshotV1,
   RouteTrackingService,
   RouteTrackingSnapshotV1,
+  RouteTrackingStopArrivalV1,
   RouteTrackingStatus
 } from './route-tracking.types.js';
 
@@ -56,6 +57,11 @@ type DriverProgressEventRow = {
   routePlanId: string | null;
 };
 
+type DriverArrivalEventRow = DriverProgressEventRow & {
+  latitude: unknown;
+  longitude: unknown;
+};
+
 export class PrismaRouteTrackingService implements RouteTrackingService {
   private readonly roadMatchProvider: RouteTrackingRoadMatchProvider | undefined;
   private readonly roadMatchRefreshes = new Set<string>();
@@ -72,7 +78,7 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
     routePlanId: string;
   }): Promise<RouteTrackingSnapshotV1> {
     const serverTime = input.now ?? new Date();
-    const [recordedGeometry, latestProgressRow, routeStops] = await Promise.all([
+    const [recordedGeometry, latestProgressRow, routeStops, arrivalRows] = await Promise.all([
       this.prisma.routeTrackingGeometry.findUnique({
         where: { routePlanId: input.routePlanId }
       }),
@@ -95,9 +101,30 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
       this.prisma.routePlanStop.findMany({
         select: {
           deliveryStop: { select: { status: true } },
-          deliveryStopId: true
+          deliveryStopId: true,
+          sequence: true
         },
         where: { routePlanId: input.routePlanId }
+      }),
+      this.prisma.driverEvent.findMany({
+        orderBy: [{ occurredAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+        select: {
+          createdAt: true,
+          deliveryStopId: true,
+          driverId: true,
+          eventType: true,
+          id: true,
+          latitude: true,
+          longitude: true,
+          occurredAt: true,
+          routePlanId: true
+        },
+        where: {
+          deliveryStopId: { not: null },
+          driverId: { not: null },
+          eventType: 'STOP_ARRIVED',
+          routePlanId: input.routePlanId
+        }
       })
     ]);
     const fallbackRows = recordedGeometry === null
@@ -120,6 +147,39 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
           }
         })
       : [];
+    const arrivalLocationRows = recordedGeometry !== null && arrivalRows.some((row) => (
+      readCoordinate(row.latitude, row.longitude) === null
+    ))
+      ? await this.prisma.driverEvent.findMany({
+          orderBy: [{ occurredAt: 'asc' }, { createdAt: 'asc' }, { id: 'asc' }],
+          select: {
+            createdAt: true,
+            driverId: true,
+            id: true,
+            latitude: true,
+            longitude: true,
+            occurredAt: true,
+            routePlanId: true
+          },
+          where: {
+            driverId: {
+              in: [...new Set(arrivalRows.flatMap((row) => row.driverId === null ? [] : [row.driverId]))]
+            },
+            eventType: 'LOCATION_UPDATED',
+            latitude: { not: null },
+            longitude: { not: null },
+            OR: arrivalRows
+              .filter((row) => readCoordinate(row.latitude, row.longitude) === null)
+              .map((row) => ({
+                occurredAt: {
+                  gte: new Date(row.occurredAt.getTime() - ROUTE_TRACKING_V1_POLICY.delayedThresholdMs),
+                  lte: new Date(row.occurredAt.getTime() + ROUTE_TRACKING_V1_POLICY.delayedThresholdMs)
+                }
+              })),
+            routePlanId: input.routePlanId
+          }
+        })
+      : [];
     const recentPositions = recordedGeometry === null
       ? fallbackRows
           .map((row) => toPositionEvent(row))
@@ -127,6 +187,9 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
           .sort((left, right) => left.occurredAt.localeCompare(right.occurredAt))
       : toRouteTrackingPositionEvents(recordedGeometry);
     const latestPosition = recentPositions.at(-1) ?? null;
+    const arrivalPositions = arrivalLocationRows
+      .map((row) => toPositionEvent(row))
+      .filter((position): position is RouteTrackingPositionEventV1 => position !== null);
     const progress = buildProgressSnapshot(latestProgressRow, routeStops);
     this.refreshRoadMatchedPath(recordedGeometry);
 
@@ -140,7 +203,8 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
       routePlanId: input.routePlanId,
       schemaVersion: ROUTE_TRACKING_SCHEMA_VERSION,
       serverTime: serverTime.toISOString(),
-      status: getTrackingStatus(latestPosition, serverTime)
+      status: getTrackingStatus(latestPosition, serverTime),
+      stopArrivals: buildStopArrivals(arrivalRows, routeStops, [...recentPositions, ...arrivalPositions])
     };
   }
 
@@ -270,7 +334,7 @@ function toProgressEvent(row: DriverProgressEventRow | null): RouteTrackingProgr
 
 function buildProgressSnapshot(
   latestProgressRow: DriverProgressEventRow | null,
-  routeStops: Array<{ deliveryStop: { status: string }; deliveryStopId: string }>
+  routeStops: Array<{ deliveryStop: { status: string }; deliveryStopId: string; sequence: number }>
 ): RouteTrackingProgressSnapshotV1 {
   const latestEvent = toProgressEvent(latestProgressRow);
   return {
@@ -284,6 +348,76 @@ function buildProgressSnapshot(
       .map((routeStop) => routeStop.deliveryStopId),
     latestEvent
   };
+}
+
+function buildStopArrivals(
+  arrivalRows: DriverArrivalEventRow[],
+  routeStops: Array<{ deliveryStopId: string; sequence: number }>,
+  positions: RouteTrackingPositionEventV1[]
+): RouteTrackingStopArrivalV1[] {
+  const stopSequenceById = new Map(routeStops.map((routeStop) => [routeStop.deliveryStopId, routeStop.sequence]));
+  return arrivalRows.flatMap((row) => {
+    if (row.deliveryStopId === null || row.driverId === null || row.routePlanId === null) return [];
+    const stopSequence = stopSequenceById.get(row.deliveryStopId);
+    if (stopSequence === undefined) return [];
+
+    const directCoordinate = readCoordinate(row.latitude, row.longitude);
+    const nearestPosition = directCoordinate === null
+      ? findNearestPosition(positions, row.occurredAt, row.driverId)
+      : null;
+    const positionAgeMs = nearestPosition === null
+      ? directCoordinate === null ? null : 0
+      : Math.abs(row.occurredAt.getTime() - Date.parse(nearestPosition.occurredAt));
+    const canUseNearestPosition = nearestPosition !== null
+      && positionAgeMs !== null
+      && positionAgeMs <= ROUTE_TRACKING_V1_POLICY.delayedThresholdMs;
+
+    return [{
+      deliveryStopId: row.deliveryStopId,
+      driverId: row.driverId,
+      eventId: row.id,
+      latitude: directCoordinate?.latitude ?? (canUseNearestPosition ? nearestPosition.latitude : null),
+      longitude: directCoordinate?.longitude ?? (canUseNearestPosition ? nearestPosition.longitude : null),
+      occurredAt: row.occurredAt.toISOString(),
+      positionAgeMs,
+      positionSource: directCoordinate !== null
+        ? 'event'
+        : canUseNearestPosition ? 'nearest_location' : 'unavailable',
+      receivedAt: row.createdAt.toISOString(),
+      routePlanId: row.routePlanId,
+      schemaVersion: 'route_tracking_arrival.v1',
+      stopSequence
+    }];
+  });
+}
+
+function readCoordinate(latitudeValue: unknown, longitudeValue: unknown): { latitude: number; longitude: number } | null {
+  const latitudeText = stringifyCoordinate(latitudeValue);
+  const longitudeText = stringifyCoordinate(longitudeValue);
+  if (latitudeText === null || longitudeText === null) return null;
+  const latitude = Number(latitudeText);
+  const longitude = Number(longitudeText);
+  if (
+    !Number.isFinite(latitude) || latitude < -90 || latitude > 90 ||
+    !Number.isFinite(longitude) || longitude < -180 || longitude > 180
+  ) {
+    return null;
+  }
+  return { latitude, longitude };
+}
+
+function findNearestPosition(
+  positions: RouteTrackingPositionEventV1[],
+  occurredAt: Date,
+  driverId: string
+): RouteTrackingPositionEventV1 | null {
+  const targetTimestamp = occurredAt.getTime();
+  return positions.filter((position) => position.driverId === driverId).reduce<RouteTrackingPositionEventV1 | null>((nearest, position) => {
+    if (nearest === null) return position;
+    const currentDistance = Math.abs(Date.parse(position.occurredAt) - targetTimestamp);
+    const nearestDistance = Math.abs(Date.parse(nearest.occurredAt) - targetTimestamp);
+    return currentDistance < nearestDistance ? position : nearest;
+  }, null);
 }
 
 function getDriverStage(event: RouteTrackingProgressEventV1 | null): RouteTrackingProgressSnapshotV1['currentStage'] {

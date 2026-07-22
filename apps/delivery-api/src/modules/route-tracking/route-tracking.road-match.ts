@@ -20,6 +20,8 @@ import type {
 const ROUTE_TRACKING_ROAD_MATCH_SCHEMA_VERSION = 'route_tracking_road_match.v1';
 const MIN_CONFIDENT_MATCH = 0.5;
 const MAX_OSRM_MATCH_POINTS = 80;
+const MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND = 55;
+const EARTH_RADIUS_METERS = 6_371_000;
 
 type FetchLike = (url: string, init: { method: 'GET'; signal?: AbortSignal }) => Promise<Response>;
 
@@ -232,9 +234,18 @@ function splitForOsrmMatch(document: RouteTrackingGeometryDocumentV1, coverage: 
       continue;
     }
     const previousSample = current.samples.at(-1);
+    const previousCoordinate = current.coordinates.at(-1);
+    const elapsedMs = previousSample === undefined
+      ? null
+      : Date.parse(sample.occurredAt) - Date.parse(previousSample.occurredAt);
+    const isImplausibleJump = previousCoordinate !== undefined
+      && elapsedMs !== null
+      && elapsedMs > 0
+      && distanceBetweenCoordinatesMeters(previousCoordinate, coordinate) / (elapsedMs / 1000)
+        > MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND;
     if (
       previousSample !== undefined &&
-      Date.parse(sample.occurredAt) - Date.parse(previousSample.occurredAt) > ROUTE_TRACKING_V1_POLICY.delayedThresholdMs
+      (elapsedMs !== null && elapsedMs > ROUTE_TRACKING_V1_POLICY.delayedThresholdMs || isImplausibleJump)
     ) {
       if (current.coordinates.length >= 2) byGap.push(current);
       current = { coordinates: [], samples: [] };
@@ -245,6 +256,20 @@ function splitForOsrmMatch(document: RouteTrackingGeometryDocumentV1, coverage: 
   if (current.coordinates.length >= 2) byGap.push(current);
 
   return byGap.flatMap((chunk) => splitByMaxPoints(chunk));
+}
+
+function distanceBetweenCoordinatesMeters(left: [number, number], right: [number, number]): number {
+  const leftLatitude = toRadians(left[1]);
+  const rightLatitude = toRadians(right[1]);
+  const latitudeDelta = rightLatitude - leftLatitude;
+  const longitudeDelta = toRadians(right[0] - left[0]);
+  const halfChord = Math.sin(latitudeDelta / 2) ** 2
+    + Math.cos(leftLatitude) * Math.cos(rightLatitude) * Math.sin(longitudeDelta / 2) ** 2;
+  return 2 * EARTH_RADIUS_METERS * Math.asin(Math.min(1, Math.sqrt(halfChord)));
+}
+
+function toRadians(degrees: number): number {
+  return degrees * Math.PI / 180;
 }
 
 function splitByMaxPoints(chunk: MatchChunk): MatchChunk[] {
