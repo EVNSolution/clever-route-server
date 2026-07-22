@@ -251,6 +251,12 @@ export type SaveRouteGroupingDraftInput = {
   shopDomain: string;
 };
 
+export type NextRouteGroupingRouteIdxInput = {
+  appId?: string | undefined;
+  groupingId: string;
+  shopDomain: string;
+};
+
 export type DeleteRouteGroupingResult = { deleted: boolean; deletedChildRoutePlanCount: number; groupingId: string };
 
 export type RouteGroupingService = {
@@ -260,6 +266,7 @@ export type RouteGroupingService = {
   deleteGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<DeleteRouteGroupingResult>;
   getGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<RouteGroupingDetailDto | null>;
   listGroupings(input: { appId?: string | undefined; dateRangeEnd?: string; dateRangeStart?: string; deliveryDate?: string; shopDomain: string }): Promise<RouteGroupingSummaryDto[]>;
+  nextRouteIdx(input: NextRouteGroupingRouteIdxInput): Promise<number | null>;
   updateBranch(input: UpdateRouteGroupingBranchInput): Promise<RouteGroupingDetailDto | null>;
   updateBranchOrders(input: UpdateRouteGroupingBranchOrdersInput): Promise<RouteGroupingDetailDto | null>;
   updateGroupingOrders(input: UpdateRouteGroupingOrdersInput): Promise<RouteGroupingDetailDto | null>;

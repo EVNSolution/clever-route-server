@@ -83,6 +83,22 @@ export function registerAdminRouteGroupRoutes(
     return reply.code(200).send({ data: { routeGroup }, error: null });
   });
 
+  app.get<{ Params: { routeGroupId: string } }>('/admin/route-groups/:routeGroupId/next-route-idx', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+      log: request.log,
+      surface: 'admin_route_groups'
+    });
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+
+    const nextRouteIdx = await dependencies.routeGroupingService.nextRouteIdx({
+      appId: authenticated.appId,
+      groupingId: request.params.routeGroupId,
+      shopDomain: authenticated.shopDomain
+    });
+    if (nextRouteIdx === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Route group not found'));
+    return reply.code(200).send({ data: { nextRouteIdx }, error: null });
+  });
+
   app.post<{ Body: unknown; Params: { routeGroupId: string } }>('/admin/route-groups/:routeGroupId/branches', async (request, reply) => {
     const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,

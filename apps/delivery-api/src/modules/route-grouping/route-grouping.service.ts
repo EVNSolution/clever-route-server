@@ -22,6 +22,7 @@ import {
   type CreateRouteGroupingInput,
   type DeleteRouteGroupingResult,
   type GenerateChildRoutesInput,
+  type NextRouteGroupingRouteIdxInput,
   type ResolveRouteGroupingAssignmentsInput,
   type RollbackRouteGroupingInput,
   type RouteGroupingAssignmentDto,
@@ -295,6 +296,14 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     const loaded = await this.loadGrouping(input);
     if (loaded === null) return null;
     return toGroupingDetailDto(loaded);
+  }
+
+  async nextRouteIdx(input: NextRouteGroupingRouteIdxInput): Promise<number | null> {
+    return this.prisma.$transaction(async (tx) => {
+      const group = await findGroupingForUpdate(tx, input);
+      if (group === null) return null;
+      return nextGlobalRouteIdx(tx, group.shopId);
+    });
   }
 
   async deleteGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<DeleteRouteGroupingResult> {
@@ -633,13 +642,13 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         }
 
         if (route.routePlanId !== null) throw new RouteGroupingValidationError(['route draft route plans must belong to the current route grouping']);
-        const routeIdx = await nextGlobalRouteIdx(tx, group.shopId);
+        const routeIdx = resolveNewChildRouteIdx(route.routeIdx, await nextGlobalRouteIdx(tx, group.shopId));
         await createDraftChildRoutePlan(tx, loaded, {
           assignments,
           color: route.color,
           driverId,
           groupingVersionId: currentGroupingVersion.id,
-          name: route.label ?? `#${routeIdx}`,
+          name: newChildRouteName(route.label, routeIdx),
           optimized: route.optimized ?? toDraftOptimizedSnapshot(draftOptimization),
           routeIdx,
           scheduledStartAt: route.scheduledStartAt,
@@ -1974,6 +1983,17 @@ function routeItemSummary(assignments: LoadedAssignment[]) {
 
 function stripGeneratedChildRouteVersion(name: string): string {
   return name.replace(/\s+v\d+$/u, '');
+}
+
+export function newChildRouteName(label: string | null | undefined, routeIdx: number): string {
+  if (label === null || label === undefined || /^#\d+$/u.test(label)) return `#${routeIdx}`;
+  return label;
+}
+
+export function resolveNewChildRouteIdx(requestedRouteIdx: number | undefined, nextAvailableRouteIdx: number): number {
+  if (requestedRouteIdx === undefined) return nextAvailableRouteIdx;
+  if (requestedRouteIdx !== nextAvailableRouteIdx) throw new RouteGroupingConflictError('Route index changed. Refresh and try again.');
+  return requestedRouteIdx;
 }
 
 async function createDraftChildRoutePlan(
