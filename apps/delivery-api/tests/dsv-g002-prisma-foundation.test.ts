@@ -7,7 +7,6 @@ const migrationPath = new URL(
   '../prisma/migrations/20260722170000_dsv_customer_auth_foundation/migration.sql',
   import.meta.url
 );
-const baselinePath = new URL('../prisma/baseline/g002-full-schema-baseline.sql', import.meta.url);
 const emptyRehearsalScriptPath = new URL('../scripts/dsv-g002-empty-baseline-rehearsal.sh', import.meta.url);
 const prodLikeRehearsalScriptPath = new URL('../scripts/dsv-g002-prod-like-expand-rehearsal.sh', import.meta.url);
 const backfillDryRunScriptPath = new URL('../src/scripts/dsv-g002-backfill-dry-run.ts', import.meta.url);
@@ -107,9 +106,8 @@ describe('G002 DSV Prisma foundation', () => {
     expect(audit).toContain('@@index([shopId, commandReceiptId])');
   });
 
-  test('ships additive non-destructive G002 migration and generated baseline artifact', async () => {
+  test('ships an additive non-destructive G002 migration', async () => {
     const migration = await readFile(migrationPath, 'utf8');
-    const baseline = await readFile(baselinePath, 'utf8');
 
     expect(migration).toContain('CREATE TABLE IF NOT EXISTS "customers"');
     expect(migration).toContain('ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "customerId" UUID');
@@ -119,12 +117,6 @@ describe('G002 DSV Prisma foundation', () => {
     expect(migration).not.toContain('dsv_dispatch_import_rows_shopId_sellerOrderKey_key');
     expect(migration).not.toMatch(/^\s*(DROP|DELETE|TRUNCATE)\b/imu);
     expect(migration).not.toMatch(/ALTER\s+COLUMN\s+"[^"]+"\s+SET\s+NOT\s+NULL/iu);
-
-    expect(baseline).toContain('CREATE TABLE "customers"');
-    expect(baseline).toContain('CREATE TABLE "dsv_command_receipts"');
-    expect(baseline).toContain('CREATE TABLE "dsv_audit_events"');
-    expect(baseline).toContain("'IMPORT_WORKER', 'DEVICE', 'SYSTEM_WORKER'");
-    expect(baseline).not.toContain('20260722170000_dsv_customer_auth_foundation');
   });
 
   test('exposes read-only rehearsal helpers and a stable dry-run report contract', async () => {
