@@ -24,6 +24,7 @@ describe('WooCommerceOrderSyncService', () => {
       client,
       repository,
       shopDomain: 'woo.example.test',
+      shopId: 'woo-shop-id',
       siteUrl: 'https://woo.example.test'
     });
 
@@ -38,6 +39,7 @@ describe('WooCommerceOrderSyncService', () => {
     expect(repository.upsertOrderWithDeliveryStop).toHaveBeenCalledTimes(2);
     const firstUpsert = repository.upsertOrderWithDeliveryStop.mock.calls[0]?.[0];
     expect(firstUpsert?.shopDomain).toBe('woo.example.test');
+    expect(firstUpsert?.shopId).toBe('woo-shop-id');
     expect(firstUpsert?.synced.order.sourcePlatform).toBe('WOOCOMMERCE');
     expect(firstUpsert?.synced.order.sourceOrderId).toBe('1');
   });
@@ -767,7 +769,7 @@ function createRepositoryHarness() {
     listCanonicalOrders: vi.fn(() => Promise.resolve<CanonicalOrderRow[]>([])),
     readOrderMappingConfig: vi.fn(() => Promise.resolve<Record<string, unknown> | null>(null)),
     upsertOrderWithDeliveryStop: vi.fn(
-      (input: { shopDomain: string; synced: SyncedOrderWithDeliveryStopInput }): Promise<UpsertOrderWithDeliveryStopResult> =>
+      (input: { shopDomain: string; shopId?: string; synced: SyncedOrderWithDeliveryStopInput }): Promise<UpsertOrderWithDeliveryStopResult> =>
         Promise.resolve({ orderId: input.synced.order.sourceOrderId ?? input.synced.order.shopifyOrderGid, status: 'created', stopId: 'stop-id' })
     )
   };

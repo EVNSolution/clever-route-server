@@ -88,6 +88,7 @@ describe('ShopifyOrderSyncService', () => {
 
 test('syncs app-provided order snapshots and summarizes repository outcomes', async () => {
   const repository = {
+    assertOrdersSnapshotRefreshable: vi.fn(() => Promise.resolve()),
     listCanonicalOrders: vi.fn(() => Promise.resolve([])),
     upsertOrderWithDeliveryStop: vi
       .fn()
@@ -123,6 +124,13 @@ test('syncs app-provided order snapshots and summarizes repository outcomes', as
       updated: 0
     }
   });
+  expect(repository.assertOrdersSnapshotRefreshable).toHaveBeenCalledWith({
+    shopDomain: 'example.myshopify.com',
+    shopifyOrderGids: ['gid://shopify/Order/1', 'gid://shopify/Order/2']
+  });
+  expect(repository.assertOrdersSnapshotRefreshable.mock.invocationCallOrder[0]).toBeLessThan(
+    repository.upsertOrderWithDeliveryStop.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER
+  );
 });
 
 function snapshotOrder(overrides: Partial<ShopifyOrderNode> = {}): ShopifyOrderNode {

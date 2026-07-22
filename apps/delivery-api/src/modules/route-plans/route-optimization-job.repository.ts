@@ -182,13 +182,15 @@ export class PrismaRouteOptimizationJobRepository implements RouteOptimizationJo
   }): Promise<RouteOptimizationJobDto | null> {
     const now = new Date();
     const current = await this.prisma.routeOptimizationJob.findUnique({ where: { id: input.jobId } });
-    return this.updateJob(input.jobId, {
+    return this.updateJobIfActive(input.jobId, {
       currentStep: 'COMPLETED',
       elapsedMs: input.elapsedMs ?? elapsedMs(current?.startedAt ?? current?.createdAt ?? now, now),
       errorCode: input.errorCode ?? 'solver_timeout',
       errorMessage: safeErrorMessage(input.errorMessage ?? 'Route optimization timed out.'),
       finishedAt: now,
       status: 'TIMEOUT'
+    }, {
+      status: { in: [...ACTIVE_JOB_STATUSES] }
     });
   }
 
@@ -200,13 +202,15 @@ export class PrismaRouteOptimizationJobRepository implements RouteOptimizationJo
   }): Promise<RouteOptimizationJobDto | null> {
     const now = new Date();
     const current = await this.prisma.routeOptimizationJob.findUnique({ where: { id: input.jobId } });
-    return this.updateJob(input.jobId, {
+    return this.updateJobIfActive(input.jobId, {
       currentStep: 'COMPLETED',
       elapsedMs: input.elapsedMs ?? elapsedMs(current?.startedAt ?? current?.createdAt ?? now, now),
       errorCode: normalizeErrorCode(input.errorCode),
       errorMessage: safeErrorMessage(input.errorMessage),
       finishedAt: now,
       status: 'FAILED'
+    }, {
+      status: { in: [...ACTIVE_JOB_STATUSES] }
     });
   }
 
@@ -222,14 +226,6 @@ export class PrismaRouteOptimizationJobRepository implements RouteOptimizationJo
         shopId: shop.id
       });
     });
-  }
-
-  private async updateJob(jobId: string, data: Prisma.RouteOptimizationJobUpdateInput): Promise<RouteOptimizationJobDto | null> {
-    const job = await this.prisma.routeOptimizationJob.update({ data, where: { id: jobId } }).catch((error: unknown) => {
-      if (isPrismaNotFoundError(error)) return null;
-      throw error;
-    });
-    return job === null ? null : toRouteOptimizationJobDto(job);
   }
 
   private async updateJobIfActive(
@@ -363,10 +359,6 @@ function safeErrorMessage(value: string): string {
 
 function elapsedMs(startedAt: Date, finishedAt: Date): number {
   return Math.max(0, finishedAt.getTime() - startedAt.getTime());
-}
-
-function isPrismaNotFoundError(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2025';
 }
 
 function isPrismaUniqueConstraintError(error: unknown): boolean {

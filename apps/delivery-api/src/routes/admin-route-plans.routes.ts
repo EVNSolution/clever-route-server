@@ -10,6 +10,7 @@ import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js'
 import {
   RoutePlanDriverAssignInvalidError,
   RoutePlanGeometryRefreshFailedError,
+  RoutePlanConflictError,
   RoutePlanOrderAlreadyPlannedError,
   RoutePlanOptionsUpdateInvalidError,
   RoutePlanRefreshNotAllowedError,
@@ -180,7 +181,11 @@ export function registerAdminRoutePlanRoutes(
           error: null
         });
       } catch (error) {
-        if (error instanceof RouteOptimizationJobActiveError || error instanceof RoutePlanRefreshNotAllowedError) {
+        if (
+          error instanceof RouteOptimizationJobActiveError ||
+          error instanceof RoutePlanRefreshNotAllowedError ||
+          error instanceof RoutePlanConflictError
+        ) {
           return reply.code(409).send(errorResponse(error.code, error.message));
         }
         if (error instanceof RoutePlanGeometryRefreshFailedError) {

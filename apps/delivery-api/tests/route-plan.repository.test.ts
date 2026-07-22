@@ -514,6 +514,66 @@ describe('PrismaRoutePlanRepository', () => {
     expect(updateArg?.data.metrics.stopsCount).toBe(2);
   });
 
+  test('refuses a late order-data geometry commit after the route starts', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord({ status: 'IN_PROGRESS' })
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await expect(repository.commitOrderDataRouteGeometryCache({
+      expectedRoutePlanUpdatedAt: '2026-05-07T12:30:00.000Z',
+      geometry: null,
+      metrics: null,
+      provider: 'osrm',
+      routePlanId: 'route-plan-id',
+      shapeSignature: 'stale-signature',
+      shopDomain: 'example.myshopify.com',
+      source: 'ORDER_DATA_REFRESH',
+      stopPoints: []
+    })).resolves.toBe(false);
+
+    expect(prisma.routePlanGeometryCache.upsert).not.toHaveBeenCalled();
+  });
+
+  test('commits optimized stops and the applied job state in the same transaction', async () => {
+    const { prisma } = createPrismaHarness();
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await repository.updateRoutePlanStops({
+      mutationContext: { jobId: 'optimization-job-id', source: 'route_optimization_job' },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      payload: {
+        stops: [
+          { deliveryStopId: 'stop-2', shopifyOrderGid: 'gid://shopify/Order/124', sequence: 1 },
+          { deliveryStopId: 'stop-1', shopifyOrderGid: 'gid://shopify/Order/123', sequence: 2 }
+        ]
+      }
+    });
+
+    const activeOptimizationJobMatcher: unknown = expect.objectContaining({
+      currentStep: 'APPLYING_RESULT',
+      id: 'optimization-job-id',
+      routePlanId: 'route-plan-id',
+      status: 'RUNNING'
+    });
+    expect(prisma.routeOptimizationJob.findFirst).toHaveBeenCalledWith({
+      where: activeOptimizationJobMatcher
+    });
+    const appliedOptimizationJobMatcher: unknown = expect.objectContaining({
+      currentStep: 'COMPLETED',
+      status: 'APPLIED'
+    });
+    expect(prisma.routeOptimizationJob.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: appliedOptimizationJobMatcher
+    }));
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
   test('preserves the execution fingerprint when reordering an in-progress route', async () => {
     const { prisma } = createPrismaHarness({
       routePlanFindFirst: routePlanRecord({
@@ -1513,6 +1573,10 @@ function createPrismaHarness(input: {
       findUnique: ReturnType<typeof vi.fn>;
       upsert: ReturnType<typeof vi.fn>;
     };
+    routeOptimizationJob: {
+      findFirst: ReturnType<typeof vi.fn>;
+      updateMany: ReturnType<typeof vi.fn>;
+    };
     routePlanStop: {
       createMany: ReturnType<typeof vi.fn>;
       findFirst: ReturnType<typeof vi.fn>;
@@ -1653,6 +1717,14 @@ function createPrismaHarness(input: {
       findFirst: vi.fn((args: unknown) => { void args; return Promise.resolve(input.routeGeometryCacheFindFirst ?? null); }),
       findUnique: vi.fn((args: unknown) => { void args; return Promise.resolve(input.routeGeometryCacheFindUnique ?? null); }),
       upsert: vi.fn((args: unknown) => { void args; return Promise.resolve({ id: 'route-geometry-cache-id' }); })
+    },
+    routeOptimizationJob: {
+      findFirst: vi.fn(() => Promise.resolve({
+        createdAt: new Date('2026-05-07T12:30:00.000Z'),
+        id: 'optimization-job-id',
+        startedAt: new Date('2026-05-07T12:30:01.000Z')
+      })),
+      updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
     },
     routePlanStop: {
       createMany: routePlanStopCreateMany,

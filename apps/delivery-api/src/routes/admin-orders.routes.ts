@@ -10,6 +10,7 @@ import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js'
 import {
   BULK_ORDER_PAYMENT_VALUES,
   BULK_ORDER_STATE_VALUES,
+  OrderSyncRouteLockedError,
   type BulkOrderPaymentValue,
   type BulkOrderStateValue,
   type ListCanonicalOrdersFilters,
@@ -73,7 +74,9 @@ export function registerAdminOrdersRoutes(
   app: FastifyInstance,
   dependencies: AdminOrdersDependencies
 ): void {
-  app.patch<{ Body: unknown }>('/admin/orders/sync', async (request, reply) => {
+  app.patch<{ Body: unknown }>('/admin/orders/sync', {
+    bodyLimit: 16 * 1024 * 1024
+  }, async (request, reply) => {
     const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
       surface: 'admin_orders'
@@ -97,8 +100,9 @@ export function registerAdminOrdersRoutes(
         .send(errorResponse('INVALID_ORDER_SYNC_PAYLOAD', message));
     }
 
-    const result: SyncOrdersSnapshotResult =
-      payload.orders.length === 0
+    let result: SyncOrdersSnapshotResult;
+    try {
+      result = payload.orders.length === 0
         ? { orders: [], sync: createEmptySyncSummary() }
         : await dependencies.orderSyncService.syncOrdersSnapshot({
             ...payload,
@@ -107,6 +111,12 @@ export function registerAdminOrdersRoutes(
             subject: authenticated.subject,
             orders: payload.orders
           });
+    } catch (error) {
+      if (error instanceof OrderSyncRouteLockedError) {
+        return reply.code(409).send(errorResponse(error.code, error.message));
+      }
+      throw error;
+    }
 
     const syncSummary = {
       ...result.sync,
@@ -314,6 +324,16 @@ function readSyncPayload(value: unknown): {
       { field: 'orders', orderIndex: -1, orderName: '#request', reason: 'Must be an array' }
     ]);
   }
+  if (reason === 'manual_refresh' && object.orders.length > 2000) {
+    throw createSyncPayloadValidationError('Manual route refresh is limited to 2000 orders per operation', [
+      {
+        field: 'orders',
+        orderIndex: -1,
+        orderName: '#request',
+        reason: `Received ${object.orders.length} orders`
+      }
+    ]);
+  }
 
   const results = object.orders.map((order, orderIndex) => readShopifyOrderSnapshot(order, orderIndex));
   const valid = results.filter(
@@ -321,9 +341,26 @@ function readSyncPayload(value: unknown): {
       result.order !== null
   );
   const reasons = results.flatMap((result) => result.issues);
+  const seenOrderIds = new Set<string>();
+  for (const [orderIndex, result] of results.entries()) {
+    const orderId = result.order?.id;
+    if (orderId === undefined) continue;
+    if (seenOrderIds.has(orderId)) {
+      reasons.push(readSyncOrderFieldIssue(
+        orderIndex,
+        result.order?.name ?? orderId,
+        'id',
+        'Duplicate Shopify order id'
+      ));
+    }
+    seenOrderIds.add(orderId);
+  }
   const timestampIssues = reasons.filter((reason) => ORDER_SYNC_TIMESTAMP_FIELDS.has(reason.field));
   if (timestampIssues.length > 0) {
     throw createSyncPayloadValidationError('Invalid order sync timestamp', timestampIssues);
+  }
+  if (reason === 'manual_refresh' && reasons.length > 0) {
+    throw createSyncPayloadValidationError('Manual route refresh requires complete order snapshots', reasons);
   }
 
   return {

@@ -4,7 +4,11 @@ import { deriveOperateDeliveryStatus, deriveOrderHealth } from '../src/modules/s
 import { PrismaAdminNotificationRepository } from '../src/modules/notifications/admin-notification.repository.js';
 import { AdminNotificationService } from '../src/modules/notifications/admin-notification.service.js';
 import { AdminNotificationStreamHub } from '../src/modules/notifications/admin-notification.stream.js';
-import { PrismaOrderSyncRepository, type OrderSyncNotificationLogger } from '../src/modules/shopify/order-sync.repository.js';
+import {
+  OrderSyncRouteLockedError,
+  PrismaOrderSyncRepository,
+  type OrderSyncNotificationLogger
+} from '../src/modules/shopify/order-sync.repository.js';
 import type { CanonicalOrderRow, SyncedOrderWithDeliveryStopInput } from '../src/modules/shopify/order-sync.mapper.js';
 
 describe('PrismaOrderSyncRepository canonical orders', () => {
@@ -68,6 +72,37 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
         { id: 'route-plan-id-2', name: 'Route draft 2', status: 'READY' }
       ]
     }));
+  });
+
+  test('rejects an explicit shop id that does not match the app and domain scope', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
+    prisma.shop.findFirst.mockResolvedValue(null);
+    const repository = createOrderSyncRepository(prisma);
+
+    await expect(repository.upsertOrderWithDeliveryStop({
+      appId: 'clever-route-dev',
+      shopDomain: 'shop-a.myshopify.com',
+      shopId: 'shop-b-id',
+      synced: syncedOrder()
+    })).rejects.toThrow('Shop not installed: shop-a.myshopify.com');
+    await expect(repository.listCanonicalOrders({
+      appId: 'clever-route-dev',
+      filters: {},
+      shopDomain: 'shop-a.myshopify.com',
+      shopId: 'shop-b-id'
+    })).resolves.toEqual([]);
+
+    const exactShopScopeMatcher: unknown = expect.objectContaining({
+      appId: 'clever-route-dev',
+      id: 'shop-b-id',
+      shopDomain: 'shop-a.myshopify.com'
+    });
+    expect(prisma.shop.findFirst).toHaveBeenCalledWith({
+      select: { id: true },
+      where: exactShopScopeMatcher
+    });
+    expect(prisma.order.upsert).not.toHaveBeenCalled();
+    expect(prisma.order.findMany).not.toHaveBeenCalled();
   });
 
   test('reads canonical time windows from route scope without UTC-shifting stored Toronto times', async () => {
@@ -155,7 +190,17 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       create: deliveryStopCreateMatcher,
       update: { status: 'DELIVERED' }
     });
+    const manualDeliveryStatusMatcher: unknown = expect.objectContaining({
+      cleverManualDeliveryStatus: 'DELIVERED',
+      cleverManualDeliveryUpdatedBy: 'shopify-user-id'
+    });
     expect(prisma.deliveryStop.upsert).toHaveBeenCalledWith(deliveryStopUpsertMatcher);
+    expect(prisma.order.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: {
+        rawPayload: manualDeliveryStatusMatcher
+      },
+      where: { id: 'order-id' }
+    }));
 
     await repository.bulkPatchCanonicalOrderStatus({
       actor: 'shopify-user-id',
@@ -205,6 +250,220 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       update: orderUpdateMatcher
     });
     expect(prisma.order.upsert).toHaveBeenCalledWith(orderUpsertMatcher);
+  });
+
+  test('recreates a missing delivery stop with its manual delivery state', async () => {
+    const { prisma } = createPrismaHarness({
+      existingOrder: {
+        ...canonicalOrderRecord(0),
+        deliveryStops: [],
+        id: 'order-id',
+        rawPayload: { cleverManualDeliveryStatus: 'DELIVERED' },
+        updatedAtShopify: new Date('2026-05-07T13:00:00.000Z')
+      },
+      routeStopCount: 0
+    });
+    const repository = createOrderSyncRepository(prisma);
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: syncedOrder()
+    });
+
+    const preservedDeliveryStatusMatcher: unknown = expect.objectContaining({ status: 'DELIVERED' });
+    expect(prisma.deliveryStop.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: preservedDeliveryStatusMatcher
+    }));
+  });
+
+  test('reads the current source version inside the write transaction', async () => {
+    const { prisma } = createPrismaHarness({
+      existingOrder: { id: 'order-id', updatedAtShopify: new Date('2026-05-07T12:00:00.000Z') },
+      routeStopCount: 0
+    });
+    const repository = createOrderSyncRepository(prisma);
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: syncedOrder({ updatedAtShopify: new Date('2026-05-08T13:00:00.000Z') })
+    });
+
+    const transactionOrder = prisma.$transaction.mock.invocationCallOrder[0] ?? 0;
+    const sourceReadOrder = prisma.order.findFirst.mock.invocationCallOrder[0] ?? 0;
+    expect(transactionOrder).toBeLessThan(sourceReadOrder);
+  });
+
+  test.each(['IN_PROGRESS', 'COMPLETED', 'CANCELLED'])(
+    'blocks manual refresh before mutating an order shared with a %s route',
+    async (routePlanStatus) => {
+      const { prisma } = createPrismaHarness({
+        existingOrder: routedExistingOrder(routePlanStatus),
+        routeStopCount: 0
+      });
+      const repository = createOrderSyncRepository(prisma);
+
+      await expect(repository.upsertOrderWithDeliveryStop({
+        shopDomain: 'example.myshopify.com',
+        syncReason: 'manual_refresh',
+        synced: syncedOrder({ updatedAtShopify: new Date('2026-05-08T13:00:00.000Z') })
+      })).rejects.toBeInstanceOf(OrderSyncRouteLockedError);
+
+      expect(prisma.order.upsert).not.toHaveBeenCalled();
+      expect(prisma.deliveryStop.upsert).not.toHaveBeenCalled();
+    }
+  );
+
+  test('blocks manual refresh while any shared ready route is optimizing', async () => {
+    const { prisma } = createPrismaHarness({
+      existingOrder: routedExistingOrder('READY', {
+        routePlanStops: [{
+          routePlan: {
+            id: 'route-plan-id',
+            name: 'Route draft',
+            optimizationJobs: [{ id: 'job-id' }],
+            status: 'READY'
+          }
+        }]
+      }),
+      routeStopCount: 0
+    });
+    const repository = createOrderSyncRepository(prisma);
+
+    await expect(repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      syncReason: 'manual_refresh',
+      synced: syncedOrder({ updatedAtShopify: new Date('2026-05-08T13:00:00.000Z') })
+    })).rejects.toBeInstanceOf(OrderSyncRouteLockedError);
+
+    expect(prisma.order.upsert).not.toHaveBeenCalled();
+  });
+
+  test('preflights the whole manual snapshot before any order write', async () => {
+    const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 0 });
+    prisma.order.findMany.mockResolvedValueOnce([
+      { deliveryStops: routedExistingOrder('IN_PROGRESS').deliveryStops }
+    ]);
+    const repository = createOrderSyncRepository(prisma);
+
+    await expect(repository.assertOrdersSnapshotRefreshable({
+      shopDomain: 'example.myshopify.com',
+      shopifyOrderGids: ['gid://shopify/Order/123', 'gid://shopify/Order/456']
+    })).rejects.toBeInstanceOf(OrderSyncRouteLockedError);
+
+    expect(prisma.order.upsert).not.toHaveBeenCalled();
+    expect(prisma.deliveryStop.upsert).not.toHaveBeenCalled();
+  });
+
+  test('infers and preserves legacy planned-order corrections that predate correction metadata', async () => {
+    const existing = routedExistingOrder('READY');
+    existing.rawPayload = {
+      ...syncedOrder().order.rawPayload,
+      deliveryArea: 'Source Area',
+      deliveryDate: '2026-05-08',
+      deliverySession: 'EVENING',
+      routeScopeKey: '2026-05-08|EVENING_DELIVERY|17:00|21:00',
+      serviceType: 'EVENING_DELIVERY'
+    };
+    existing.shippingAddress = {
+      address1: '100 Source St',
+      address2: null,
+      city: 'Toronto',
+      countryCode: 'CA',
+      postalCode: 'M1M 1M1',
+      province: 'ON'
+    };
+    existing.deliveryFacts = [{
+      batchEligible: true,
+      deliveryArea: 'Operator Area',
+      deliveryDate: new Date('2026-05-09T00:00:00.000Z'),
+      deliveryDateWeekday: 'SATURDAY',
+      deliveryDateWeekdayMismatch: false,
+      deliveryDateWeekdayVerified: true,
+      deliverySession: 'DAY',
+      geocodeStatus: 'RESOLVED',
+      mappingDiagnostics: {},
+      planningGroupKey: '2026-05-09|DELIVERY|||Operator Area',
+      readiness: 'READY_TO_PLAN',
+      reviewReasons: [],
+      routeScopeKey: '2026-05-09|DELIVERY||',
+      serviceType: 'DELIVERY',
+      timeWindowEnd: null,
+      timeWindowStart: null
+    }];
+    const existingStop = existing.deliveryStops[0] as Record<string, unknown>;
+    existingStop.address1 = '200 Corrected St';
+    existingStop.latitude = '43.7000000';
+    existingStop.longitude = '-79.4000000';
+
+    const { prisma } = createPrismaHarness({ existingOrder: existing, routeStopCount: 0 });
+    const repository = createOrderSyncRepository(prisma);
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      syncReason: 'manual_refresh',
+      synced: {
+        ...syncedOrder({ updatedAtShopify: new Date('2026-05-08T13:00:00.000Z') }),
+        deliveryFact: syncedDeliveryFact()
+      }
+    });
+
+    const stopCall = prisma.deliveryStop.upsert.mock.calls[0]?.[0] as { update: Record<string, unknown> } | undefined;
+    const factCall = prisma.orderDeliveryFact.upsert.mock.calls[0]?.[0] as { update: Record<string, unknown> } | undefined;
+    expect(stopCall?.update).toMatchObject({
+      address1: '200 Corrected St',
+      latitude: '43.7000000',
+      longitude: '-79.4000000'
+    });
+    expect(factCall?.update).toMatchObject({
+      deliveryArea: 'Operator Area',
+      deliveryDate: new Date('2026-05-09T00:00:00.000Z'),
+      deliverySession: 'DAY',
+      routeScopeKey: '2026-05-09|DELIVERY||',
+      serviceType: 'DELIVERY'
+    });
+    const legacyCorrectionMatcher: unknown = expect.objectContaining({
+      source: 'legacy_db_divergence_guard'
+    });
+    const legacyCorrectionFieldsMatcher: unknown = expect.objectContaining({
+      address1: legacyCorrectionMatcher,
+      deliveryDate: legacyCorrectionMatcher,
+      latitude: legacyCorrectionMatcher
+    });
+    expect(factCall?.update.mappingDiagnostics).toMatchObject({
+      routeOpsCorrections: {
+        fields: legacyCorrectionFieldsMatcher
+      }
+    });
+  });
+
+  test('does not mistake old geocoded coordinates for a manual pin after the source address changes', async () => {
+    const existing = routedExistingOrder('READY');
+    existing.shippingAddress = {
+      address1: '100 Old Route St',
+      address2: 'Unit 1',
+      city: 'Mississauga',
+      countryCodeV2: 'CA',
+      latitude: null,
+      longitude: null,
+      province: 'ON',
+      zip: 'L5A 1A1'
+    };
+    const { prisma } = createPrismaHarness({ existingOrder: existing, routeStopCount: 0 });
+    const repository = createOrderSyncRepository(prisma);
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      syncReason: 'manual_refresh',
+      synced: syncedOrder()
+    });
+
+    const sourceCoordinateMatcher: unknown = expect.objectContaining({
+      latitude: '43.589',
+      longitude: '-79.644'
+    });
+    expect(prisma.deliveryStop.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: sourceCoordinateMatcher
+    }));
   });
 
   test('reads source-created and source-updated store-local dates from raw payload', async () => {
@@ -1338,7 +1597,11 @@ function createPrismaHarness(input: {
       upsert: ReturnType<typeof vi.fn>;
     };
     orderDeliveryFact: { findMany: ReturnType<typeof vi.fn>; upsert: ReturnType<typeof vi.fn> };
-    shop: { create?: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn> };
+    shop: {
+      create?: ReturnType<typeof vi.fn>;
+      findFirst: ReturnType<typeof vi.fn>;
+      findUnique: ReturnType<typeof vi.fn>;
+    };
   };
 } {
   const orderRecord = canonicalOrderRecord(input.routeStopCount);
@@ -1380,7 +1643,10 @@ function createPrismaHarness(input: {
       findMany: vi.fn(() => Promise.resolve([])),
       upsert: vi.fn(() => Promise.resolve({ id: 'fact-id' }))
     },
-    shop: { findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id' })) }
+    shop: {
+      findFirst: vi.fn(() => Promise.resolve({ id: 'shop-id' })),
+      findUnique: vi.fn(() => Promise.resolve({ id: 'shop-id' }))
+    }
   };
   return {
     prisma

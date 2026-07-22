@@ -3,6 +3,7 @@ import type { CanonicalOrderRow, ShopifyOrderNode, SyncedOrderWithDeliveryStopIn
 import { mapShopifyOrderNodeToDeliveryInputs } from './order-sync.mapper.js';
 import { buildOrdersUpdatedSinceQuery } from './order-sync.query.js';
 import type {
+  AssertOrdersSnapshotRefreshableInput,
   DeliveryBatchCandidate,
   BulkPatchCanonicalOrderStatusInput,
   ListCanonicalOrdersFilters,
@@ -63,6 +64,7 @@ type OrdersUpdatedSinceResponse = {
 };
 
 type OrderSyncRepository = {
+  assertOrdersSnapshotRefreshable?(input: AssertOrdersSnapshotRefreshableInput): Promise<void>;
   findCanonicalOrderById?(input: {
     appId?: string | undefined;
     orderId: string;
@@ -127,12 +129,21 @@ export class ShopifyOrderSyncService {
       updated: 0
     };
     const orders: CanonicalOrderRow[] = [];
+    const syncedOrders = input.orders.map((node) => mapShopifyOrderNodeToDeliveryInputs(node));
 
-    for (const node of input.orders) {
-      const synced = mapShopifyOrderNodeToDeliveryInputs(node);
+    if (input.reason === 'manual_refresh' && this.options.repository.assertOrdersSnapshotRefreshable !== undefined) {
+      await this.options.repository.assertOrdersSnapshotRefreshable({
+        appId: input.appId,
+        shopDomain: input.shopDomain,
+        shopifyOrderGids: syncedOrders.map((synced) => synced.order.shopifyOrderGid)
+      });
+    }
+
+    for (const synced of syncedOrders) {
       const result = await this.options.repository.upsertOrderWithDeliveryStop({
         appId: input.appId,
         shopDomain: input.shopDomain,
+        syncReason: input.reason,
         synced
       });
       summary[result.status] += 1;

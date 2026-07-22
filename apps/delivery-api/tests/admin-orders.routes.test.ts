@@ -206,6 +206,72 @@ describe('Admin orders routes', () => {
     }
   });
 
+  test('rejects every malformed snapshot field during manual route refresh', async () => {
+    const { dependencies, syncOrdersSnapshot } = createDependencyHarness();
+    const app = await buildApp({ adminOrders: dependencies });
+
+    try {
+      const payload = orderSyncPayload();
+      payload.reason = 'manual_refresh';
+      const firstOrder = (payload.orders as Record<string, unknown>[])[0];
+      if (firstOrder === undefined) throw new Error('Expected order payload');
+      firstOrder.lineItems = 'not-an-object';
+
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload,
+        url: '/admin/orders/sync'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        data: null,
+        error: {
+          code: 'INVALID_ORDER_SYNC_PAYLOAD',
+          details: [expect.objectContaining({ field: 'lineItems', orderIndex: 0 })],
+          message: 'Manual route refresh requires complete order snapshots'
+        }
+      });
+      expect(syncOrdersSnapshot).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects duplicate Shopify order ids during manual route refresh', async () => {
+    const { dependencies, syncOrdersSnapshot } = createDependencyHarness();
+    const app = await buildApp({ adminOrders: dependencies });
+
+    try {
+      const payload = orderSyncPayload();
+      payload.reason = 'manual_refresh';
+      const firstOrder = (payload.orders as Record<string, unknown>[])[0];
+      if (firstOrder === undefined) throw new Error('Expected order payload');
+      (payload.orders as Record<string, unknown>[]).push({ ...firstOrder });
+
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload,
+        url: '/admin/orders/sync'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        data: null,
+        error: {
+          code: 'INVALID_ORDER_SYNC_PAYLOAD',
+          details: [expect.objectContaining({ field: 'id', orderIndex: 1, reason: 'Duplicate Shopify order id' })],
+          message: 'Manual route refresh requires complete order snapshots'
+        }
+      });
+      expect(syncOrdersSnapshot).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects the whole order sync payload when any snapshot has an invalid timestamp', async () => {
     const { dependencies, syncOrdersSnapshot } = createDependencyHarness();
     const app = await buildApp({ adminOrders: dependencies });

@@ -24,10 +24,24 @@ import type { AdminNotificationServiceApi } from "../notifications/admin-notific
 import type { AssignedRouteAddressChangedEvent } from "../notifications/admin-web-notification-events.js";
 import { readWooCommerceRawGeocodingAddress } from "../woocommerce/woocommerce-order.mapper.js";
 import { appScopedShopWhere, normalizeShopifyAppId } from "./shopify-app-scope.js";
+import { isRouteReadyStatus } from "../route-plans/route-plan-lifecycle.js";
+
+export type OrderSyncReason = "orders_page_open" | "manual_refresh" | "route_create_preflight";
+
+export class OrderSyncRouteLockedError extends Error {
+  readonly code = "ORDER_SYNC_ROUTE_LOCKED";
+
+  constructor(message = "Order refresh is blocked because a route is active, terminal, or optimizing.") {
+    super(message);
+    this.name = "OrderSyncRouteLockedError";
+  }
+}
 
 export type UpsertOrderWithDeliveryStopInput = {
   appId?: string | undefined;
   shopDomain: string;
+  shopId?: string | undefined;
+  syncReason?: OrderSyncReason | undefined;
   synced: SyncedOrderWithDeliveryStopInput;
 };
 
@@ -35,6 +49,13 @@ export type UpsertOrderWithDeliveryStopResult = {
   orderId: string;
   status: "created" | "updated" | "unchanged" | "skipped";
   stopId: string | null;
+};
+
+export type AssertOrdersSnapshotRefreshableInput = {
+  appId?: string | undefined;
+  shopDomain: string;
+  shopId?: string | undefined;
+  shopifyOrderGids: string[];
 };
 
 export type ListCanonicalOrdersFilters = {
@@ -63,6 +84,7 @@ export type ListCanonicalOrdersInput = {
   filters?: ListCanonicalOrdersFilters;
   appId?: string | undefined;
   shopDomain: string;
+  shopId?: string | undefined;
 };
 
 export type ListCanonicalOrdersBySourceIdentityInput = {
@@ -74,6 +96,7 @@ export type ListCanonicalOrdersBySourceIdentityInput = {
   }>;
   appId?: string | undefined;
   shopDomain: string;
+  shopId?: string | undefined;
 };
 
 export type DeliveryBatchCandidate = {
@@ -95,6 +118,7 @@ export type ListDeliveryBatchCandidatesInput = {
   deliveryDate?: string;
   appId?: string | undefined;
   shopDomain: string;
+  shopId?: string | undefined;
 };
 
 export type RouteOpsCanonicalMetadataPatch = {
@@ -205,6 +229,7 @@ type ExistingOrder = {
   deliveryStops?: ExistingDeliveryStop[];
   id: string;
   rawPayload?: unknown;
+  shippingAddress?: unknown;
   sourceUpdatedAt: Date | null;
   updatedAtShopify: Date | null;
 };
@@ -243,6 +268,7 @@ type ExistingDeliveryStop = {
     routePlan: {
       id: string;
       name: string;
+      optimizationJobs?: Array<{ id: string }>;
       status: string;
     };
   }>;
@@ -384,54 +410,29 @@ export class PrismaOrderSyncRepository {
       throw new Error(`Shop not installed: ${input.shopDomain}`);
     }
 
-    const sourceIdentity = readSourceIdentity(input.synced.order);
-    const existing = await this.prisma.order.findFirst({
-      select: {
-        deliveryFacts: {
-          select: existingDeliveryFactSelect(),
-          take: 1,
-        },
-        deliveryStops: {
-          select: existingDeliveryStopSelect(),
-          take: 1,
-        },
-        id: true,
-        rawPayload: true,
-        sourceUpdatedAt: true,
-        updatedAtShopify: true,
-      },
-      where: {
+    const write = await this.runSerializableWrite(async (tx) => {
+      const sourceIdentity = readSourceIdentity(input.synced.order);
+      const existing = await findExistingOrderForSync(tx, {
         shopId: shop.id,
-        OR: [
-          { shopifyOrderGid: input.synced.order.shopifyOrderGid },
-          ...(sourceIdentity.sourceOrderId === null
-            ? []
-            : [
-                {
-                  sourceOrderId: sourceIdentity.sourceOrderId,
-                  sourcePlatform: sourceIdentity.sourcePlatform,
-                  sourceSiteUrl: sourceIdentity.sourceSiteUrl,
-                },
-              ]),
-        ],
-      },
-    });
+        sourceIdentity,
+        shopifyOrderGid: input.synced.order.shopifyOrderGid,
+      });
 
-    if (
-      existing !== null &&
-      isExistingNewerThanSnapshot(existing, sourceIdentity.sourceUpdatedAt)
-    ) {
-      return { orderId: existing.id, status: "unchanged", stopId: null };
-    }
+      if (existing !== null && isExistingNewerThanSnapshot(existing, sourceIdentity.sourceUpdatedAt)) {
+        return {
+          notificationEvents: [],
+          result: { orderId: existing.id, status: "unchanged", stopId: null },
+        } satisfies OrderWriteWithNotificationIntents;
+      }
 
-    const write = await this.prisma.$transaction((tx) =>
-      this.writeOrderWithDeliveryStop({
+      return this.writeOrderWithDeliveryStop({
         existing,
         shopId: shop.id,
+        syncReason: input.syncReason,
         synced: input.synced,
         tx,
-      }),
-    );
+      });
+    });
     if (this.notificationService !== undefined) {
       await createAdminNotificationsBestEffort({
         events: write.notificationEvents,
@@ -440,6 +441,41 @@ export class PrismaOrderSyncRepository {
       });
     }
     return write.result;
+  }
+
+  async assertOrdersSnapshotRefreshable(input: AssertOrdersSnapshotRefreshableInput): Promise<void> {
+    if (input.shopifyOrderGids.length === 0) return;
+    const shop = await this.findShop(input);
+    if (shop === null) throw new Error(`Shop not installed: ${input.shopDomain}`);
+
+    const orders = await this.prisma.order.findMany({
+      select: {
+        deliveryStops: {
+          select: existingDeliveryStopSelect()
+        }
+      },
+      where: {
+        shopId: shop.id,
+        shopifyOrderGid: { in: [...new Set(input.shopifyOrderGids)] }
+      }
+    }) as Array<{ deliveryStops: ExistingDeliveryStop[] }>;
+
+    for (const order of orders) {
+      assertManualRefreshRouteUnlocked(order.deliveryStops[0] ?? null, "manual_refresh");
+    }
+  }
+
+  private async runSerializableWrite<T>(operation: (tx: OrderSyncWriteClient) => Promise<T>): Promise<T> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(operation, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        });
+      } catch (error) {
+        if (!isRetryableTransactionConflict(error) || attempt === 2) throw error;
+      }
+    }
+    throw new Error("unreachable order sync transaction retry state");
   }
 
   async readOrderMappingConfig(input: {
@@ -458,6 +494,7 @@ export class PrismaOrderSyncRepository {
     orderId: string;
     appId?: string | undefined;
     shopDomain: string;
+    shopId?: string | undefined;
   }): Promise<CanonicalOrderRow | null> {
     const shop = await this.findShop(input);
     if (shop === null) {
@@ -571,6 +608,16 @@ export class PrismaOrderSyncRepository {
     await this.prisma.$transaction(async (tx) => {
       if (input.field === "state") {
         for (const order of orders) {
+          await tx.order.update({
+            data: {
+              rawPayload: toJson({
+                ...(objectOrNull(order.rawPayload) ?? {}),
+                cleverManualDeliveryStatus: input.value,
+                cleverManualDeliveryUpdatedBy: input.actor,
+              }),
+            },
+            where: { id: order.id },
+          });
           await tx.deliveryStop.upsert({
             create: {
               orderId: order.id,
@@ -1107,11 +1154,21 @@ export class PrismaOrderSyncRepository {
     });
   }
 
-  private async findShop(input: { appId?: string | undefined; shopDomain: string }): Promise<{ id: string } | null> {
+  private async findShop(input: {
+    appId?: string | undefined;
+    shopDomain: string;
+    shopId?: string | undefined;
+  }): Promise<{ id: string } | null> {
     const normalized = normalizeShopDomain(input.shopDomain, {
       allowAnyDomain: this.options.allowAnyShopDomain === true,
     });
     const appId = normalizeShopifyAppId(input.appId);
+    if (input.shopId !== undefined) {
+      return this.prisma.shop.findFirst({
+        select: { id: true },
+        where: { appId, id: input.shopId, shopDomain: normalized },
+      });
+    }
     const shop = await this.prisma.shop.findUnique({
       select: { id: true },
       where: appScopedShopWhere({ appId, shopDomain: normalized }),
@@ -1129,17 +1186,24 @@ export class PrismaOrderSyncRepository {
   private async writeOrderWithDeliveryStop(input: {
     existing: ExistingOrder | null;
     shopId: string;
+    syncReason?: OrderSyncReason | undefined;
     synced: SyncedOrderWithDeliveryStopInput;
     tx: OrderSyncWriteClient;
   }): Promise<OrderWriteWithNotificationIntents> {
+    assertManualRefreshRouteUnlocked(input.existing?.deliveryStops?.[0] ?? null, input.syncReason);
     const orderWrite = toOrderWrite(input.synced.order);
+    const existingRawPayload = objectOrNull(input.existing?.rawPayload);
     const manualPaymentStatus = readManualPaymentStatus(
-      objectOrNull(input.existing?.rawPayload)?.cleverManualPaymentStatus,
+      existingRawPayload?.cleverManualPaymentStatus,
     );
-    if (manualPaymentStatus !== null) {
+    const manualDeliveryStatus = readManualDeliveryStatus(
+      existingRawPayload?.cleverManualDeliveryStatus,
+    );
+    if (manualPaymentStatus !== null || manualDeliveryStatus !== null) {
       orderWrite.rawPayload = toJson({
         ...input.synced.order.rawPayload,
-        cleverManualPaymentStatus: manualPaymentStatus,
+        ...(manualPaymentStatus === null ? {} : { cleverManualPaymentStatus: manualPaymentStatus }),
+        ...(manualDeliveryStatus === null ? {} : { cleverManualDeliveryStatus: manualDeliveryStatus }),
       });
     }
     const order = await input.tx.order.upsert({
@@ -1188,7 +1252,7 @@ export class PrismaOrderSyncRepository {
       });
     }
 
-    const existingFact = input.existing?.deliveryFacts?.[0] ?? null;
+    const existingFact = withInferredLegacyRouteOpsCorrections(input.existing, input.synced);
     const existingStop = input.existing?.deliveryStops?.[0] ?? null;
     const notificationEvents: AssignedRouteAddressChangedEvent[] = [];
     const correctedFields = readRouteOpsCorrectedFields(
@@ -1226,6 +1290,7 @@ export class PrismaOrderSyncRepository {
           ...deliveryStopWrite,
           orderId: order.id,
           shopId: input.shopId,
+          ...(manualDeliveryStatus === null ? {} : { status: manualDeliveryStatus }),
         },
         update: deliveryStopWrite,
         where: {
@@ -1291,6 +1356,52 @@ type OrderWriteWithNotificationIntents = {
   notificationEvents: AssignedRouteAddressChangedEvent[];
   result: UpsertOrderWithDeliveryStopResult;
 };
+
+async function findExistingOrderForSync(
+  tx: OrderSyncWriteClient,
+  input: {
+    shopId: string;
+    shopifyOrderGid: string;
+    sourceIdentity: ReturnType<typeof readSourceIdentity>;
+  },
+): Promise<ExistingOrder | null> {
+  return await tx.order.findFirst({
+    select: {
+      deliveryFacts: {
+        select: existingDeliveryFactSelect(),
+        take: 1,
+      },
+      deliveryStops: {
+        select: existingDeliveryStopSelect(),
+        take: 1,
+      },
+      id: true,
+      rawPayload: true,
+      shippingAddress: true,
+      sourceUpdatedAt: true,
+      updatedAtShopify: true,
+    },
+    where: {
+      shopId: input.shopId,
+      OR: [
+        { shopifyOrderGid: input.shopifyOrderGid },
+        ...(input.sourceIdentity.sourceOrderId === null
+          ? []
+          : [
+              {
+                sourceOrderId: input.sourceIdentity.sourceOrderId,
+                sourcePlatform: input.sourceIdentity.sourcePlatform,
+                sourceSiteUrl: input.sourceIdentity.sourceSiteUrl,
+              },
+            ]),
+      ],
+    },
+  });
+}
+
+function isRetryableTransactionConflict(error: unknown): boolean {
+  return objectOrNull(error)?.code === "P2034";
+}
 
 function isExistingNewerThanSnapshot(
   existing: ExistingOrder,
@@ -1694,13 +1805,119 @@ function existingDeliveryStopSelect() {
     routePlanStops: {
       select: {
         routePlan: {
-          select: { id: true, name: true, status: true },
+          select: {
+            id: true,
+            name: true,
+            optimizationJobs: {
+              select: { id: true },
+              take: 1,
+              where: { status: { in: ["QUEUED", "RUNNING"] } },
+            },
+            status: true,
+          },
         },
       },
     },
     timeWindowEnd: true,
     timeWindowStart: true,
   } satisfies Prisma.DeliveryStopSelect;
+}
+
+function assertManualRefreshRouteUnlocked(
+  stop: ExistingDeliveryStop | null,
+  syncReason: OrderSyncReason | undefined,
+): void {
+  if (syncReason !== "manual_refresh") return;
+  const lockedRoutes = (stop?.routePlanStops ?? []).flatMap((membership) => {
+    const routePlan = membership.routePlan;
+    const optimizing = (routePlan.optimizationJobs?.length ?? 0) > 0;
+    return !isRouteReadyStatus(routePlan.status) || optimizing
+      ? [`${routePlan.name} (${optimizing ? "OPTIMIZING" : routePlan.status})`]
+      : [];
+  });
+  if (lockedRoutes.length > 0) {
+    throw new OrderSyncRouteLockedError(
+      `Order refresh is blocked by route state: ${lockedRoutes.join(", ")}`,
+    );
+  }
+}
+
+function withInferredLegacyRouteOpsCorrections(
+  existing: ExistingOrder | null,
+  incoming: SyncedOrderWithDeliveryStopInput,
+): ExistingDeliveryFact | null {
+  const fact = existing?.deliveryFacts?.[0] ?? null;
+  const stop = existing?.deliveryStops?.[0] ?? null;
+  if (fact === null || stop === null || (stop.routePlanStops?.length ?? 0) === 0) return fact;
+
+  const raw = objectOrNull(existing?.rawPayload);
+  const sourceAddress = readShippingAddress(existing?.shippingAddress, null);
+  const rawShippingAddress = objectOrNull(raw?.shippingAddress);
+  const fields = new Set<string>();
+
+  inferChangedField(fields, "deliveryArea", fact.deliveryArea, readString(raw?.deliveryArea));
+  inferChangedField(fields, "deliveryDate", formatDateOnlyNullable(fact.deliveryDate), readString(raw?.deliveryDate));
+  inferChangedField(fields, "deliverySession", fact.deliverySession, readString(raw?.deliverySession));
+  inferChangedField(fields, "serviceType", fact.serviceType, readString(raw?.serviceType));
+  inferChangedField(fields, "routeScopeKey", fact.routeScopeKey, readString(raw?.routeScopeKey));
+  inferChangedField(fields, "address1", stop.address1, sourceAddress.address1);
+  inferChangedField(fields, "address2", stop.address2, sourceAddress.address2);
+  inferChangedField(fields, "city", stop.city, sourceAddress.city);
+  inferChangedField(fields, "countryCode", stop.countryCode, sourceAddress.countryCode);
+  inferChangedField(fields, "postalCode", stop.postalCode, sourceAddress.postalCode);
+  inferChangedField(fields, "province", stop.province, sourceAddress.province);
+
+  const sourceLatitude = readNumber(rawShippingAddress?.latitude);
+  const sourceLongitude = readNumber(rawShippingAddress?.longitude);
+  const currentLatitude = decimalNumber(stop.latitude);
+  const currentLongitude = decimalNumber(stop.longitude);
+  const incomingStop = incoming.deliveryStop;
+  const sourceAddressChanged = incomingStop !== null && [
+    [incomingStop.address1, sourceAddress.address1],
+    [incomingStop.address2, sourceAddress.address2],
+    [incomingStop.city, sourceAddress.city],
+    [incomingStop.countryCode, sourceAddress.countryCode],
+    [incomingStop.postalCode, sourceAddress.postalCode],
+    [incomingStop.province, sourceAddress.province],
+  ].some(([next, previous]) => (next ?? null) !== (previous ?? null));
+  const hasAddressCorrection = [
+    "address1",
+    "address2",
+    "city",
+    "countryCode",
+    "postalCode",
+    "province",
+  ].some((field) => fields.has(field));
+  if (!sourceAddressChanged || hasAddressCorrection) {
+    if (!sameOptionalNumber(currentLatitude, sourceLatitude)) fields.add("latitude");
+    if (!sameOptionalNumber(currentLongitude, sourceLongitude)) fields.add("longitude");
+  }
+  if (fields.has("latitude") || fields.has("longitude")) fields.add("geocodeStatus");
+
+  const expandedFields = expandRouteOpsCorrectionFields([...fields]);
+  if (expandedFields.length === 0) return fact;
+  return {
+    ...fact,
+    mappingDiagnostics: mergeRouteOpsCorrectionMetadata(
+      fact.mappingDiagnostics,
+      expandedFields,
+      { actor: "system", source: "legacy_db_divergence_guard" },
+    ),
+  };
+}
+
+function inferChangedField(
+  fields: Set<string>,
+  field: string,
+  current: string | null | undefined,
+  source: string | null | undefined,
+): void {
+  if ((current ?? null) !== (source ?? null)) fields.add(field);
+}
+
+function sameOptionalNumber(left: number | null, right: number | null): boolean {
+  if (left === null || right === null) return left === right;
+  return Math.abs(left - right) < 0.0000001;
 }
 
 async function createAdminNotificationsBestEffort(input: {
@@ -2890,6 +3107,13 @@ function readManualPaymentStatus(value: unknown): BulkOrderPaymentValue | null {
   return typeof value === "string" &&
     (BULK_ORDER_PAYMENT_VALUES as readonly string[]).includes(value)
     ? (value as BulkOrderPaymentValue)
+    : null;
+}
+
+function readManualDeliveryStatus(value: unknown): BulkOrderStateValue | null {
+  return typeof value === "string" &&
+    (BULK_ORDER_STATE_VALUES as readonly string[]).includes(value)
+    ? (value as BulkOrderStateValue)
     : null;
 }
 

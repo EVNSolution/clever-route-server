@@ -22,6 +22,7 @@ import type {
   UpdateRoutePlanStopsInput
 } from './route-plan.types.js';
 import {
+  RoutePlanConflictError,
   RoutePlanGeometryRefreshFailedError,
   RoutePlanRefreshNotAllowedError
 } from './route-plan.types.js';
@@ -67,6 +68,11 @@ export type RoutePlanRepository = {
     shopDomain: string;
   }): Promise<boolean>;
   upsertRouteGeometryCache?(input: RouteGeometryCacheWrite): Promise<void>;
+  commitOrderDataRouteGeometryCache?(input: RouteGeometryCacheWrite & {
+    appId?: string | undefined;
+    expectedRoutePlanUpdatedAt: string;
+    shopDomain: string;
+  }): Promise<boolean>;
   deleteRoutePlan(input: {
     routePlanId: string;
     appId?: string | undefined;
@@ -266,11 +272,11 @@ export class RoutePlanAdminService implements RoutePlanService {
     if (detail === null) return null;
     if (input.source === 'ORDER_DATA_REFRESH') {
       const status = detail.routePlan.status;
-      if (!isRouteReadyStatus(status) && status !== 'IN_PROGRESS') {
+      if (!isRouteReadyStatus(status)) {
         throw new RoutePlanRefreshNotAllowedError(status);
       }
     }
-    return this.refreshRouteGeometry(detail, input.source);
+    return this.refreshRouteGeometry(detail, input.source, input);
   }
 
   private async refreshRouteGeometryIfShapeChanged(input: {
@@ -284,9 +290,13 @@ export class RoutePlanAdminService implements RoutePlanService {
     return await this.refreshRouteGeometry(input.after, input.source);
   }
 
-  private async refreshRouteGeometry(detail: RoutePlanDetail, source: RouteGeometryCacheSource): Promise<RoutePlanDetail> {
+  private async refreshRouteGeometry(
+    detail: RoutePlanDetail,
+    source: RouteGeometryCacheSource,
+    scope?: { appId?: string | undefined; shopDomain: string }
+  ): Promise<RoutePlanDetail> {
     if (source === 'ORDER_DATA_REFRESH') {
-      return this.refreshOrderDataGeometry(detail);
+      return this.refreshOrderDataGeometry(detail, scope);
     }
     if (this.routeGeometryProvider === undefined) {
       return detail;
@@ -313,7 +323,10 @@ export class RoutePlanAdminService implements RoutePlanService {
     return withRouteGeometryResult(detail, routeResult, { generatedAt, source });
   }
 
-  private async refreshOrderDataGeometry(detail: RoutePlanDetail): Promise<RoutePlanDetail> {
+  private async refreshOrderDataGeometry(
+    detail: RoutePlanDetail,
+    scope?: { appId?: string | undefined; shopDomain: string }
+  ): Promise<RoutePlanDetail> {
     if (detail.stops.length === 0) return detail;
     if (this.routeGeometryProvider === undefined) {
       throw new RoutePlanGeometryRefreshFailedError('Route geometry provider is unavailable. Existing geometry was preserved.');
@@ -337,7 +350,12 @@ export class RoutePlanAdminService implements RoutePlanService {
 
     const generatedAt = new Date();
     const source = 'ORDER_DATA_REFRESH';
-    await this.repository.upsertRouteGeometryCache?.({
+    if (scope === undefined || this.repository.commitOrderDataRouteGeometryCache === undefined) {
+      throw new RoutePlanGeometryRefreshFailedError('Safe route geometry commit is unavailable. Existing geometry was preserved.');
+    }
+    const committed = await this.repository.commitOrderDataRouteGeometryCache({
+      appId: scope.appId,
+      expectedRoutePlanUpdatedAt: detail.routePlan.updatedAt,
       generatedAt,
       geometry: routeResult.routeGeometry,
       metrics: routeResult.routeMetrics,
@@ -345,9 +363,13 @@ export class RoutePlanAdminService implements RoutePlanService {
       providerVersion: null,
       routePlanId: detail.routePlan.id,
       shapeSignature: computeRouteShapeSignature(detail),
+      shopDomain: scope.shopDomain,
       source,
       stopPoints: routeResult.routeStopPoints
     });
+    if (!committed) {
+      throw new RoutePlanConflictError('Route changed while order data was refreshing. Reload and retry; existing geometry was preserved.');
+    }
     return withRouteGeometryResult(detail, routeResult, { generatedAt, source });
   }
 
