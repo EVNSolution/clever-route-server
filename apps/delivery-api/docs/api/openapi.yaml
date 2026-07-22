@@ -11,7 +11,7 @@ info:
     admin clients, legacy Shopify compatibility routes, native driver mobile
     clients, and operational health checks. Human behavior notes live beside
     this file in docs/api/*.md.
-  x-contract-revision: 2026-07-16
+  x-contract-revision: 2026-07-22
   x-source-repository: EVNSolution/clever-route-server
 servers:
   - url: http://localhost:3000
@@ -135,6 +135,282 @@ paths:
             application/json:
               schema: { type: object, additionalProperties: true }
         '401': { $ref: '#/components/responses/Unauthorized' }
+  /api/dsv/settings/operations:
+    get:
+      tags: [DSV Control]
+      summary: Read common loading and planned departure times
+      operationId: getDsvOperationSettings
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [] }]
+      responses:
+        '200':
+          description: Common operation times. Null means the administrator has not configured a value.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvOperationSettingsEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [DSV Control]
+      summary: Update common loading and planned departure times
+      operationId: updateDsvOperationSettings
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                loadingStartTime:
+                  type: [string, 'null']
+                  pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+                plannedDepartureTime:
+                  type: [string, 'null']
+                  pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+              additionalProperties: false
+      responses:
+        '200':
+          description: Saved common operation times.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvOperationSettingsEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/dsv/resources:
+    get:
+      tags: [DSV Control]
+      summary: List DSV drivers, vehicles, and default vehicle-driver assignments
+      operationId: listDsvResources
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [] }]
+      responses:
+        '200':
+          description: Shop-scoped transport resource snapshot.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvResourceSnapshotEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+  /api/dsv/drivers:
+    post:
+      tags: [DSV Control]
+      summary: Register one DSV driver
+      operationId: createDsvDriver
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DsvDriverRequest' }
+      responses:
+        '201':
+          description: Driver registered.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+  /api/dsv/drivers/{driverId}:
+    parameters:
+      - name: driverId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [DSV Control]
+      summary: Replace the editable profile of one DSV driver
+      operationId: updateDsvDriver
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DsvDriverRequest' }
+      responses:
+        '200':
+          description: Driver profile updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+    delete:
+      tags: [DSV Control]
+      summary: Permanently delete one DSV driver during the demo phase
+      operationId: deleteDsvDriver
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      responses:
+        '200':
+          description: Driver and dependent DSV profile or assignment rows deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+  /api/dsv/vehicles:
+    post:
+      tags: [DSV Control]
+      summary: Register one DSV vehicle
+      operationId: createDsvVehicle
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DsvVehicleRequest' }
+      responses:
+        '201':
+          description: Vehicle registered.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+  /api/dsv/vehicles/{vehicleId}:
+    parameters:
+      - name: vehicleId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [DSV Control]
+      summary: Replace the editable profile of one DSV vehicle
+      operationId: updateDsvVehicle
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DsvVehicleRequest' }
+      responses:
+        '200':
+          description: Vehicle profile updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+    delete:
+      tags: [DSV Control]
+      summary: Permanently delete one DSV vehicle during the demo phase
+      operationId: deleteDsvVehicle
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      responses:
+        '200':
+          description: Vehicle and dependent DSV profile or assignment rows deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+  /api/dsv/vehicles/{vehicleId}/drivers:
+    post:
+      tags: [DSV Control]
+      summary: Add a default driver assignment to one DSV vehicle
+      operationId: assignDsvDriverToVehicle
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - name: vehicleId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [driverId]
+              properties:
+                driverId: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Default assignment created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+  /api/dsv/vehicles/{vehicleId}/drivers/{assignmentId}:
+    delete:
+      tags: [DSV Control]
+      summary: Remove one default driver assignment from a DSV vehicle
+      operationId: unassignDsvDriverFromVehicle
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - name: vehicleId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: assignmentId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      responses:
+        '200':
+          description: Default assignment removed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
   /api/dsv/control/delivery-stops/{deliveryStopId}/context:
     get:
       tags: [DSV Control]
@@ -256,6 +532,125 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+  /api/dsv/conditions:
+    get:
+      tags: [DSV Control]
+      summary: List exact-case transport conditions available to dispatch imports
+      operationId: listDsvTransportConditions
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [] }]
+      responses:
+        '200':
+          description: Registered transport conditions.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+    post:
+      tags: [DSV Control]
+      summary: Register one exact-case transport condition
+      operationId: createDsvTransportCondition
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code, name, description]
+              properties:
+                code: { type: string, minLength: 1, maxLength: 80 }
+                name: { type: string, minLength: 1, maxLength: 160 }
+                description: { type: string, minLength: 1, maxLength: 1000 }
+      responses:
+        '201':
+          description: Transport condition registered.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+  /api/dsv/dispatch-imports/preview:
+    post:
+      tags: [DSV Control]
+      summary: Validate dispatch CSV rows without persisting them
+      operationId: previewDsvDispatchImport
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DsvDispatchImportRequest' }
+      responses:
+        '200':
+          description: Row-level validation, resolved resources, and condition candidates.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+  /api/dsv/dispatch-imports:
+    post:
+      tags: [DSV Control]
+      summary: Persist a validated dispatch import as staging rows
+      operationId: createDsvDispatchImport
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DsvDispatchImportRequest' }
+      responses:
+        '201':
+          description: Dispatch staging rows created atomically.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422':
+          description: One or more rows failed required validation.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+  /api/dsv/dispatch-imports/{importId}:
+    get:
+      tags: [DSV Control]
+      summary: Read one persisted dispatch import inside the authenticated shop
+      operationId: getDsvDispatchImport
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [] }]
+      parameters:
+        - name: importId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Dispatch import and ordered staging rows.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
         '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
   /shopify/auth/token-exchange:
@@ -803,6 +1198,111 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /driver/orders/unassigned:
+    get:
+      tags: [Driver Mobile]
+      summary: List unassigned SellerOrder rows in the bearer route group
+      operationId: listDriverUnassignedSellerOrders
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      responses:
+        '200':
+          description: Whole SellerOrder rows currently available for acquisition.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverSellerOrderListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /driver/orders/{orderId}/acquire:
+    post:
+      tags: [Driver Mobile]
+      summary: Atomically acquire one unassigned SellerOrder row
+      operationId: acquireDriverSellerOrder
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The complete SellerOrder row moved to the bearer route and the route was recalculated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverSellerOrderAssignmentEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Another driver acquired the order first, the assignment changed, the route departed, or the target route has no vehicle.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: The affected route data cannot be recalculated from the current order coordinates.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: Route recalculation is not configured in this runtime.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  /driver/orders/{orderId}/release:
+    post:
+      tags: [Driver Mobile]
+      summary: Release one SellerOrder row without deleting it
+      operationId: releaseDriverSellerOrder
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The complete SellerOrder row moved to an unassigned route and the source route was recalculated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverSellerOrderAssignmentEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The assignment changed or the route already departed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: The affected route data cannot be recalculated from the current order coordinates.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: Route recalculation is not configured in this runtime.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
   /driver/routes:
     get:
       tags: [Driver Mobile]
@@ -1139,6 +1639,11 @@ components:
       in: cookie
       name: clever_dsv_admin
       description: Shop-scoped HTTP-only DSV operator session cookie.
+    DsvCsrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+      description: CSRF token issued with the shop-scoped DSV operator session.
     ShopifySessionToken:
       type: http
       scheme: bearer
@@ -1260,7 +1765,7 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
     DsvSchemaNotReady:
-      description: The DSV destination-tip migration has not been applied.
+      description: A required DSV schema migration has not been applied.
       content:
         application/json:
           schema:
@@ -1283,6 +1788,115 @@ components:
           type: 'null'
         error:
           $ref: '#/components/schemas/Error'
+    DsvOperationSettingsEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [loadingStartTime, plannedDepartureTime]
+          properties:
+            loadingStartTime:
+              type: [string, 'null']
+              pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+            plannedDepartureTime:
+              type: [string, 'null']
+              pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+        error: { type: 'null' }
+    DsvDriver:
+      allOf:
+        - $ref: '#/components/schemas/DsvDriverRequest'
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string, format: uuid }
+    DsvDriverRequest:
+      type: object
+      additionalProperties: false
+      required: [age, career, gender, name, score, traits, zone]
+      properties:
+        age: { type: integer, minimum: 18, maximum: 100 }
+        career: { type: string, minLength: 1, maxLength: 160 }
+        gender: { type: string, minLength: 1, maxLength: 40 }
+        name: { type: string, minLength: 1, maxLength: 80 }
+        score: { type: string, minLength: 1, maxLength: 40 }
+        traits:
+          type: array
+          maxItems: 20
+          items: { type: string, minLength: 1, maxLength: 160 }
+        zone: { type: string, minLength: 1, maxLength: 160 }
+    DsvVehicle:
+      allOf:
+        - $ref: '#/components/schemas/DsvVehicleRequest'
+        - type: object
+          required: [id]
+          properties:
+            id: { type: string, format: uuid }
+    DsvVehicleRequest:
+      type: object
+      additionalProperties: false
+      required: [note, plate, type]
+      properties:
+        note: { type: string, maxLength: 1000 }
+        plate: { type: string, minLength: 1, maxLength: 40 }
+        type: { type: string, minLength: 1, maxLength: 160 }
+    DsvVehicleDriverAssignment:
+      type: object
+      additionalProperties: false
+      required: [driverId, id, kind, vehicleId]
+      properties:
+        driverId: { type: string, format: uuid }
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: ['기본 배정'] }
+        vehicleId: { type: string, format: uuid }
+    DsvResourceSnapshotEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [assignments, drivers, vehicles]
+          properties:
+            assignments:
+              type: array
+              items: { $ref: '#/components/schemas/DsvVehicleDriverAssignment' }
+            drivers:
+              type: array
+              items: { $ref: '#/components/schemas/DsvDriver' }
+            vehicles:
+              type: array
+              items: { $ref: '#/components/schemas/DsvVehicle' }
+        error: { type: 'null' }
+    DsvDispatchImportRequest:
+      type: object
+      additionalProperties: false
+      required: [fileName, planDate, rows]
+      properties:
+        fileName: { type: string, minLength: 1, maxLength: 255 }
+        planDate: { type: string, format: date }
+        rows:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { $ref: '#/components/schemas/DsvDispatchImportRowInput' }
+    DsvDispatchImportRowInput:
+      type: object
+      additionalProperties: false
+      required: [rowNumber, driverName, vehiclePlate, destinationName, conditionCode, shippedBoxes, address, customerCode, sellerOrderKey, notes, latitude, longitude]
+      properties:
+        rowNumber: { type: integer, minimum: 2 }
+        driverName: { type: string, maxLength: 80 }
+        vehiclePlate: { type: string, maxLength: 40 }
+        destinationName: { type: string, maxLength: 160 }
+        conditionCode: { type: string, maxLength: 80 }
+        shippedBoxes: { type: integer }
+        address: { type: string, maxLength: 500 }
+        customerCode: { type: string, maxLength: 160 }
+        sellerOrderKey: { type: string, maxLength: 160 }
+        notes: { type: [string, 'null'], maxLength: 1000 }
+        latitude: { type: [number, 'null'], minimum: -90, maximum: 90 }
+        longitude: { type: [number, 'null'], minimum: -180, maximum: 180 }
     GenericDataEnvelope:
       type: object
       required: [data, error]
@@ -2133,9 +2747,47 @@ components:
                 status:
                   const: ASSIGNED_ROUTE
                 route:
-                  $ref: '#/components/schemas/DriverAssignedRoute'
+                $ref: '#/components/schemas/DriverAssignedRoute'
         error:
           type: 'null'
+    DriverSellerOrder:
+      type: object
+      required: [addressLabel, itemCount, orderId, orderName, recipientName, sellerOrderKey, sourceSequence]
+      properties:
+        addressLabel: { type: string }
+        itemCount: { type: integer, minimum: 0 }
+        orderId: { type: string, format: uuid }
+        orderName: { type: string }
+        recipientName:
+          type: [string, 'null']
+        sellerOrderKey: { type: string }
+        sourceSequence: { type: integer, minimum: 1 }
+      additionalProperties: false
+    DriverSellerOrderListEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [orders]
+          properties:
+            orders:
+              type: array
+              items: { $ref: '#/components/schemas/DriverSellerOrder' }
+        error: { type: 'null' }
+    DriverSellerOrderAssignmentEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [groupingId, groupingUpdatedAt, order, routePlanId]
+          properties:
+            groupingId: { type: string, format: uuid }
+            groupingUpdatedAt: { type: string, format: date-time }
+            order: { $ref: '#/components/schemas/DriverSellerOrder' }
+            routePlanId: { type: string, format: uuid }
+        error: { type: 'null' }
     DriverAssignedRoute:
       type: object
       required: [deliveryDate, id, name, shopDomain, stops, timezone]

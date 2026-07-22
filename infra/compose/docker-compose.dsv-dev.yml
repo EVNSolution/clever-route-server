@@ -1,0 +1,75 @@
+name: clever-dsv-dev
+
+x-api-environment: &api-environment
+  DATABASE_URL: postgresql://clever:clever@postgres:5432/clever_route
+  NODE_ENV: development
+  PORT: 3000
+  LOG_LEVEL: info
+  CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS: dsv-demo.local
+  CLEVER_ADMIN_WEB_LOGIN_SECRET: local-demo-password-2026
+  CLEVER_ADMIN_WEB_SESSION_SECRET: local-demo-session-secret-2026-change-me
+  CLEVER_DSV_ADMIN_ID: operator
+  CLEVER_DSV_DEMO_SHOP_DOMAIN: dsv-demo.local
+  SHOPIFY_APP_URL: http://localhost:5174
+
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: clever_route
+      POSTGRES_PASSWORD: clever
+      POSTGRES_USER: clever
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clever -d clever_route"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - dsv-postgres:/var/lib/postgresql/data
+
+  schema:
+    build:
+      context: ../..
+      dockerfile: apps/delivery-api/Dockerfile
+      target: build
+    command: ["sh", "-c", "cd apps/delivery-api && npx prisma db push --skip-generate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: *api-environment
+    restart: "no"
+
+  seed:
+    build:
+      context: ../..
+      dockerfile: apps/delivery-api/Dockerfile
+      target: build
+    command: ["sh", "-c", "cd apps/delivery-api && npm run dsv:dispatch-demo:seed"]
+    depends_on:
+      schema:
+        condition: service_completed_successfully
+    environment: *api-environment
+    restart: "no"
+
+  delivery-api:
+    build:
+      context: ../..
+      dockerfile: apps/delivery-api/Dockerfile
+      target: runtime
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    environment: *api-environment
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const http=require('node:http');const req=http.get('http://127.0.0.1:3000/healthz',res=>process.exit(res.statusCode===200?0:1));req.on('error',()=>process.exit(1));\""]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "127.0.0.1:3001:3000"
+    restart: unless-stopped
+
+volumes:
+  dsv-postgres:
