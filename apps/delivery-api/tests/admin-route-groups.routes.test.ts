@@ -96,6 +96,29 @@ describe('Admin route group routes', () => {
     }
   });
 
+  test('returns next shop-global route index for a route group', async () => {
+    const { dependencies, nextRouteIdx } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token', 'x-clever-app-id': 'clever-route-dev' },
+        method: 'GET',
+        url: '/admin/route-groups/route-group-id/next-route-idx'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ data: { nextRouteIdx: 7 }, error: null });
+      expect(nextRouteIdx).toHaveBeenCalledWith({
+        appId: 'clever-route-dev',
+        groupingId: 'route-group-id',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('updates route group membership without generating child routes', async () => {
     const { dependencies, generateChildRoutes, updateGroupingOrders } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });
@@ -401,6 +424,7 @@ function createDependencyHarness(): {
   deleteBranch: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['deleteBranch']>>;
   dependencies: AdminRouteGroupDependencies;
   generateChildRoutes: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['generateChildRoutes']>>;
+  nextRouteIdx: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['nextRouteIdx']>>;
   previewOptimization: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['previewOptimization']>>;
   reOptimizeRoutes: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['reOptimizeRoutes']>>;
   saveDraft: ReturnType<typeof vi.fn<AdminRouteGroupDependencies['routeGroupingService']['saveDraft']>>;
@@ -425,6 +449,7 @@ function createDependencyHarness(): {
   const savePolygons = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['savePolygons']>(() => Promise.resolve(routeGroup));
   const resolveAssignments = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['resolveAssignments']>(() => Promise.resolve(routeGroup));
   const generateChildRoutes = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['generateChildRoutes']>(() => Promise.resolve(routeGroup));
+  const nextRouteIdx = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['nextRouteIdx']>(() => Promise.resolve(7));
   const reOptimizeRoutes = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['reOptimizeRoutes']>(() => Promise.resolve(routeGroup));
   const previewOptimization = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['previewOptimization']>(() => Promise.resolve({ preview: { routes: [] } }));
   const saveDraft = vi.fn<AdminRouteGroupDependencies['routeGroupingService']['saveDraft']>(() => Promise.resolve(routeGroup));
@@ -445,6 +470,7 @@ function createDependencyHarness(): {
         generateChildRoutes,
         getGrouping,
         listGroupings,
+        nextRouteIdx,
         recordChildRoutePublished,
         previewOptimization,
         reOptimizeRoutes,
@@ -459,6 +485,7 @@ function createDependencyHarness(): {
       sessionTokenVerifier: { verify }
     },
     generateChildRoutes,
+    nextRouteIdx,
     previewOptimization,
     reOptimizeRoutes,
     saveDraft,

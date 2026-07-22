@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'vitest';
 import { classifyCoordinateInPolygons } from '../src/modules/route-grouping/route-grouping.geometry.js';
 import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
+import { newChildRouteName, resolveNewChildRouteIdx } from '../src/modules/route-grouping/route-grouping.service.js';
+import { RouteGroupingConflictError } from '../src/modules/route-grouping/route-grouping.types.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -185,11 +187,25 @@ describe('route grouping contracts', () => {
   test('materializes child draft rows with server-assigned routeIdx', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain('async function createDraftChildRoutePlan(');
-    expect(source).toContain('const routeIdx = await nextGlobalRouteIdx(tx, group.shopId)');
-    expect(source).toContain('name: route.label ?? `#${routeIdx}`');
+    expect(source).toContain('const routeIdx = resolveNewChildRouteIdx(route.routeIdx, await nextGlobalRouteIdx(tx, group.shopId))');
+    expect(source).toContain('name: newChildRouteName(route.label, routeIdx)');
     expect(source).toContain('routeIdx,');
     expect(source).toContain('routePlanId: routePlan.id');
     expect(source).toContain('snapshot: createChildSnapshot(group, input.assignments, input.driverId, routePlan.name, group.currentVersion, input.color ?? null, input.sortOrder, input.routeIdx)');
+  });
+
+  test('accepts queried routeIdx for generated new child labels', () => {
+    const serverRouteIdx = 7;
+    const acceptedRouteIdx = resolveNewChildRouteIdx(7, serverRouteIdx);
+
+    expect({ name: newChildRouteName('#1', acceptedRouteIdx), routeIdx: acceptedRouteIdx }).toEqual({ name: '#7', routeIdx: 7 });
+    expect(newChildRouteName(undefined, acceptedRouteIdx)).toBe('#7');
+    expect(newChildRouteName(null, acceptedRouteIdx)).toBe('#7');
+    expect(newChildRouteName('Downtown express', acceptedRouteIdx)).toBe('Downtown express');
+  });
+
+  test('rejects stale requested new child routeIdx', () => {
+    expect(() => resolveNewChildRouteIdx(6, 7)).toThrow(RouteGroupingConflictError);
   });
 
   test('does not replace a single generated child route when no split exists', () => {
