@@ -33,6 +33,50 @@ const routePlanSummary = {
 type SaveRoutePlan = NonNullable<AdminRoutePlanDependencies['routePlanService']['saveRoutePlan']>;
 
 describe('Admin route plan routes', () => {
+  test('refreshes route geometry and ETA from the latest canonical order data', async () => {
+    const { dependencies, refreshRouteGeometryForRoutePlan } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        url: '/admin/route-plans/route-plan-id/refresh-order-data'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        data: { routePlan: { id: 'route-plan-id' } },
+        error: null
+      });
+      expect(refreshRouteGeometryForRoutePlan).toHaveBeenCalledWith({
+        appId: 'clever',
+        routePlanId: 'route-plan-id',
+        shopDomain: 'example.myshopify.com',
+        source: 'EXPLICIT_REFRESH'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects route order-data refresh without a Shopify session token', async () => {
+    const { dependencies, refreshRouteGeometryForRoutePlan } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: '/admin/route-plans/route-plan-id/refresh-order-data'
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(refreshRouteGeometryForRoutePlan).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects route plan creation without a Shopify session token', async () => {
     const { createRoutePlan, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminRoutePlans: dependencies });
@@ -959,6 +1003,9 @@ function createDependencyHarness(): {
   publishRoutePlan: ReturnType<
     typeof vi.fn<AdminRoutePlanDependencies['routePlanService']['publishRoutePlan']>
   >;
+  refreshRouteGeometryForRoutePlan: ReturnType<
+    typeof vi.fn<NonNullable<AdminRoutePlanDependencies['routePlanService']['refreshRouteGeometryForRoutePlan']>>
+  >;
   saveRoutePlan: ReturnType<
     typeof vi.fn<SaveRoutePlan>
   >;
@@ -1024,6 +1071,20 @@ function createDependencyHarness(): {
       ]
     })
   );
+  const refreshRouteGeometryForRoutePlan = vi.fn<
+    NonNullable<AdminRoutePlanDependencies['routePlanService']['refreshRouteGeometryForRoutePlan']>
+  >(() =>
+    Promise.resolve({
+      routePlan: routePlanSummary,
+      routeGeometry: null,
+      routeMetrics: null,
+      routeStopPoints: routePlanStopPoints(),
+      stops: [
+        routePlanStop({ orderName: '#1035', sequence: 1 }),
+        routePlanStop({ orderName: '#1036', sequence: 2 })
+      ]
+    })
+  );
   const saveRoutePlan = vi.fn<SaveRoutePlan>(() =>
     Promise.resolve({
       detail: {
@@ -1079,6 +1140,7 @@ function createDependencyHarness(): {
         getRoutePlanDetail,
         listRoutePlans,
         publishRoutePlan,
+        refreshRouteGeometryForRoutePlan,
         saveRoutePlan,
         updateRoutePlanOptions,
         updateRoutePlanStops
@@ -1091,6 +1153,7 @@ function createDependencyHarness(): {
     deleteRoutePlan,
     listRoutePlans,
     publishRoutePlan,
+    refreshRouteGeometryForRoutePlan,
     saveRoutePlan,
     updateRoutePlanOptions,
     updateRoutePlanStops
