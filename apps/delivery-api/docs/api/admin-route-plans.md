@@ -225,6 +225,17 @@ If OSRM is unavailable, the route detail still succeeds with
 missing or malformed, that stop keeps its `inputCoordinates` and receives
 `snappedCoordinates: null`.
 
+## POST `/admin/route-plans/:routePlanId/refresh-order-data`
+
+Rebuilds the stored route geometry, stop snap points, drive metrics, and ETAs
+from the route's current canonical `Order` and `DeliveryStop` rows. The caller
+must synchronize the latest commerce order snapshot first. Route membership,
+stop sequence, driver, and execution status are preserved.
+
+The response uses the same detail shape as
+`GET /admin/route-plans/:routePlanId`. A route owned by another shop returns
+`404`.
+
 ## PATCH `/admin/route-plans/:routePlanId/stops`
 
 Replaces the route plan's stop links with the provided ordered Shopify orders

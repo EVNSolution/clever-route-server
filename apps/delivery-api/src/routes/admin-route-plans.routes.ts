@@ -148,6 +148,37 @@ export function registerAdminRoutePlanRoutes(
     }
   );
 
+  app.post<{ Params: { routePlanId: string } }>(
+    '/admin/route-plans/:routePlanId/refresh-order-data',
+    async (request, reply) => {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+        log: request.log,
+        surface: 'admin_route_plans'
+      });
+      if (authenticated.status === 'unauthorized') {
+        return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+      }
+      if (dependencies.routePlanService.refreshRouteGeometryForRoutePlan === undefined) {
+        return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Route order-data refresh is unavailable'));
+      }
+
+      const detail = await dependencies.routePlanService.refreshRouteGeometryForRoutePlan({
+        appId: authenticated.appId,
+        routePlanId: request.params.routePlanId,
+        shopDomain: authenticated.shopDomain,
+        source: 'EXPLICIT_REFRESH'
+      });
+      if (detail === null) {
+        return reply.code(404).send(errorResponse('NOT_FOUND', 'Route plan not found'));
+      }
+
+      return reply.code(200).send({
+        data: detail,
+        error: null
+      });
+    }
+  );
+
   app.get<{ Params: { routePlanId: string } }>(
     '/admin/route-plans/:routePlanId/tracking',
     async (request, reply) => {
