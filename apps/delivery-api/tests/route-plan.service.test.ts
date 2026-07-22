@@ -9,6 +9,10 @@ import type {
   RoutePlanRouteGeometry,
   RoutePlanRouteResult
 } from '../src/modules/route-plans/route-plan.types.js';
+import {
+  RoutePlanGeometryRefreshFailedError,
+  RoutePlanRefreshNotAllowedError
+} from '../src/modules/route-plans/route-plan.types.js';
 
 const routePlanDetail = {
   routePlan: {
@@ -196,6 +200,114 @@ describe('RoutePlanAdminService route geometry policy', () => {
       routePlanId: 'route-plan-id',
       source: 'CREATE_ROUTE'
     }));
+  });
+
+  test('order-data refresh persists complete geometry for ready routes', async () => {
+    const { repository, routeGeometryProvider, upsertRouteGeometryCache } = createHarness(baseDetail);
+    const service = new RoutePlanAdminService(repository, routeGeometryProvider);
+
+    const detail = await service.refreshRouteGeometryForRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      source: 'ORDER_DATA_REFRESH'
+    });
+
+    expect(detail?.routeGeometryStatus).toBe('fresh');
+    expect(upsertRouteGeometryCache).toHaveBeenCalledWith(expect.objectContaining({
+      routePlanId: 'route-plan-id',
+      source: 'ORDER_DATA_REFRESH'
+    }));
+  });
+
+  test.each(['COMPLETED', 'CANCELLED'])('blocks order-data refresh for %s routes', async (status) => {
+    const terminalDetail = detailWithComputedSignature({
+      ...baseDetail,
+      routePlan: { ...baseDetail.routePlan, status }
+    });
+    const { repository, routeGeometryProvider, upsertRouteGeometryCache } = createHarness(terminalDetail);
+    const service = new RoutePlanAdminService(repository, routeGeometryProvider);
+
+    await expect(service.refreshRouteGeometryForRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      source: 'ORDER_DATA_REFRESH'
+    })).rejects.toBeInstanceOf(RoutePlanRefreshNotAllowedError);
+
+    expect(routeGeometryProvider.buildRoute).not.toHaveBeenCalled();
+    expect(upsertRouteGeometryCache).not.toHaveBeenCalled();
+  });
+
+  test('blocks order-data refresh while route optimization is active', async () => {
+    const { repository, routeGeometryProvider } = createHarness(baseDetail);
+    const routeOptimizationJobGuard = {
+      findLatestJob: vi.fn().mockResolvedValue({ status: 'RUNNING' }),
+      reconcileStaleActiveJobs: vi.fn().mockResolvedValue([])
+    };
+    const service = new RoutePlanAdminService(repository, routeGeometryProvider, routeOptimizationJobGuard);
+
+    await expect(service.refreshRouteGeometryForRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      source: 'ORDER_DATA_REFRESH'
+    })).rejects.toBeInstanceOf(RouteOptimizationJobActiveError);
+
+    expect(routeGeometryProvider.buildRoute).not.toHaveBeenCalled();
+  });
+
+  test('does not replace geometry when an order-data refresh stop has no coordinates', async () => {
+    const incompleteDetail = detailWithComputedSignature({
+      ...baseDetail,
+      routePlan: { ...baseDetail.routePlan, missingCoordinates: 1 },
+      stops: [
+        { ...baseDetail.stops[0]!, coordinates: { latitude: null, longitude: null } },
+        baseDetail.stops[1]!
+      ]
+    });
+    const { repository, routeGeometryProvider, upsertRouteGeometryCache } = createHarness(incompleteDetail);
+    const service = new RoutePlanAdminService(repository, routeGeometryProvider);
+
+    await expect(service.refreshRouteGeometryForRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      source: 'ORDER_DATA_REFRESH'
+    })).rejects.toBeInstanceOf(RoutePlanGeometryRefreshFailedError);
+
+    expect(routeGeometryProvider.buildRoute).not.toHaveBeenCalled();
+    expect(upsertRouteGeometryCache).not.toHaveBeenCalled();
+  });
+
+  test('does not replace geometry when OSRM fails during order-data refresh', async () => {
+    const { repository, routeGeometryProvider, upsertRouteGeometryCache } = createHarness(baseDetail);
+    routeGeometryProvider.buildRoute.mockRejectedValueOnce(new Error('OSRM unavailable'));
+    const service = new RoutePlanAdminService(repository, routeGeometryProvider);
+
+    await expect(service.refreshRouteGeometryForRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      source: 'ORDER_DATA_REFRESH'
+    })).rejects.toBeInstanceOf(RoutePlanGeometryRefreshFailedError);
+
+    expect(upsertRouteGeometryCache).not.toHaveBeenCalled();
+  });
+
+  test('does not replace geometry when OSRM omits route stop timing', async () => {
+    const { repository, routeGeometryProvider, upsertRouteGeometryCache } = createHarness(baseDetail);
+    routeGeometryProvider.buildRoute.mockResolvedValueOnce({
+      ...routeResult,
+      routeStopPoints: routeResult.routeStopPoints.map((point) => ({
+        ...point,
+        durationFromPreviousSeconds: null
+      }))
+    });
+    const service = new RoutePlanAdminService(repository, routeGeometryProvider);
+
+    await expect(service.refreshRouteGeometryForRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      source: 'ORDER_DATA_REFRESH'
+    })).rejects.toBeInstanceOf(RoutePlanGeometryRefreshFailedError);
+
+    expect(upsertRouteGeometryCache).not.toHaveBeenCalled();
   });
 
   test('returns unavailable geometry without overwriting cache when explicit OSRM refresh fails', async () => {
@@ -387,6 +499,8 @@ const routeResult = {
   routeStopPoints: [
     {
       deliveryStopId: 'stop-1',
+      distanceFromPreviousMeters: 1012,
+      durationFromPreviousSeconds: 300,
       inputCoordinates: [-79.2571, 43.7764],
       name: 'McCowan Road',
       sequence: 1,
@@ -396,6 +510,8 @@ const routeResult = {
     },
     {
       deliveryStopId: 'stop-2',
+      distanceFromPreviousMeters: 2034,
+      durationFromPreviousSeconds: 600,
       inputCoordinates: [-79.337, 43.8561],
       name: 'Yonge Street',
       sequence: 2,

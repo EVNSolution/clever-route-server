@@ -14,6 +14,7 @@ export type RouteGeometryCacheSource =
   | 'SNAPSHOT'
   | 'OPTIMIZATION_APPLY'
   | 'EXPLICIT_REFRESH'
+  | 'ORDER_DATA_REFRESH'
   | 'PERIODIC_SYNC';
 
 export type RouteGeometryCacheRead = {
