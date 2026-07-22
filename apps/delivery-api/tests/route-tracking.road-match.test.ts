@@ -91,6 +91,36 @@ describe('route tracking road matching', () => {
     expect(requestPointCounts).toEqual([80, 2, 2]);
   });
 
+  test('splits implausible GPS jumps before asking OSRM to match the path', async () => {
+    const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      code: 'Ok',
+      matchings: [{
+        confidence: 0.9,
+        geometry: {
+          coordinates: [[126.9, 37.5], [126.901, 37.501]],
+          type: 'LineString',
+        },
+      }],
+      tracepoints: [{}, {}],
+    }))));
+    const provider = new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { korea: 'https://osrm-korea.example' },
+      fetch,
+    });
+
+    await provider.match(document([
+      [126.9, 37.5],
+      [126.901, 37.501],
+      [127.1, 37.7],
+      [127.101, 37.701],
+    ], { intervalMs: 10_000 }));
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const requestPointCounts = (fetch.mock.calls as unknown as Array<[string]>)
+      .map((call) => decodeURIComponent(String(call[0])).split('/driving/')[1]!.split('?')[0]!.split(';').length);
+    expect(requestPointCounts).toEqual([2, 2]);
+  });
+
   test('returns uncertain geometry when OSRM confidence is below the display threshold', async () => {
     const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
       code: 'Ok',
@@ -225,8 +255,9 @@ describe('route tracking road matching', () => {
 
 function document(
   coordinates: Array<[number, number]>,
-  options: { gapBeforeIndex?: number } = {},
+  options: { gapBeforeIndex?: number; intervalMs?: number } = {},
 ): RouteTrackingGeometryDocumentV1 {
+  const intervalMs = options.intervalMs ?? 30_000;
   return {
     coordinates,
     samples: coordinates.map((_, index) => ({
@@ -234,10 +265,10 @@ function document(
       eventId: `event-${index}`,
       occurredAt: new Date(Date.parse('2026-07-21T00:00:00.000Z') + (
         options.gapBeforeIndex !== undefined && index >= options.gapBeforeIndex
-          ? 600_000 + index * 30_000
-          : index * 30_000
+          ? 600_000 + index * intervalMs
+          : index * intervalMs
       )).toISOString(),
-      receivedAt: new Date(Date.parse('2026-07-21T00:00:01.000Z') + index * 30_000).toISOString(),
+      receivedAt: new Date(Date.parse('2026-07-21T00:00:01.000Z') + index * intervalMs).toISOString(),
     })),
     sourcePointCount: coordinates.length,
   };
