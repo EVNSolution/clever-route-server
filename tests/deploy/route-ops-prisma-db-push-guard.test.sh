@@ -95,6 +95,31 @@ EOF_NPM
   fi
 }
 
+run_default_pre_db_push_sql_case() {
+  local tmp sha
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-prisma-guard-default-pre-sql.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  mkdir -p "$tmp/bin"
+  cat > "$tmp/bin/npm" <<'EOF_NPM'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_NPM_ARGS_FILE"
+case "$*" in
+  *'--accept-data-loss'*) echo 'guard passed forbidden --accept-data-loss' >&2; exit 88 ;;
+esac
+EOF_NPM
+  chmod +x "$tmp/bin/npm"
+  printf 'model Example { id String @id }\n' > "$tmp/schema.prisma"
+  sha="$(sha256sum "$tmp/schema.prisma" | awk '{print $1}')"
+  PATH="$tmp/bin:$PATH" FAKE_NPM_ARGS_FILE="$tmp/npm.args" PRISMA_SCHEMA_PATH="$tmp/schema.prisma" PRISMA_SCHEMA_SHA="$sha" "$GUARD" > "$tmp/stdout" 2> "$tmp/stderr"
+  grep -q '20260629183000_link_route_grouping_inventory/migration.sql' "$tmp/npm.args"
+  grep -q '20260722090000_allow_safe_multi_route_membership/migration.sql' "$tmp/npm.args"
+  grep -q -- '--prefix apps/delivery-api exec -- prisma db push --schema' "$tmp/npm.args"
+  if grep -q -- '--accept-data-loss' "$tmp/npm.args"; then
+    fail "guard must not pass --accept-data-loss"
+  fi
+}
+
 run_runtime_layout_case() {
   local tmp sha
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-prisma-guard-runtime.XXXXXX")"
@@ -127,6 +152,10 @@ run_static_contract_case() {
   if grep -Eq 'DROP TABLE.*kfood_backup_20260709' "$migration"; then
     fail "K-food backup tables must be archived, not dropped"
   fi
+  multi_route_migration="apps/delivery-api/prisma/migrations/20260722090000_allow_safe_multi_route_membership/migration.sql"
+  grep -Fq 'BEGIN;' "$multi_route_migration"
+  grep -Fq 'CREATE UNIQUE INDEX IF NOT EXISTS "route_grouping_branch_order_locks_groupingId_orderId_key"' "$multi_route_migration"
+  grep -Fq 'COMMIT;' "$multi_route_migration"
 }
 
 run_missing_sha_case
@@ -134,6 +163,7 @@ run_bad_shape_case
 run_mismatch_case
 run_match_executes_prisma_case
 run_pre_db_push_sql_case
+run_default_pre_db_push_sql_case
 run_runtime_layout_case
 run_static_contract_case
 printf '{"ok":true,"guard":"%s"}\n' "$GUARD"

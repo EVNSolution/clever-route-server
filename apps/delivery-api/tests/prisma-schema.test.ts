@@ -93,7 +93,7 @@ describe('Prisma schema', () => {
     expect(migration).toContain('DROP INDEX IF EXISTS "route_plan_stops_deliveryStopId_key"');
     expect(migration).toContain('CREATE INDEX IF NOT EXISTS "route_plan_stops_deliveryStopId_idx"');
     expect(migration).toContain('DROP INDEX IF EXISTS "route_grouping_branch_order_locks_shopId_orderId_key"');
-    expect(migration).toContain('CREATE UNIQUE INDEX "route_grouping_branch_order_locks_groupingId_orderId_key"');
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "route_grouping_branch_order_locks_groupingId_orderId_key"');
   });
 
   test('defines Ready as the initial route execution state with an additive migration', async () => {
