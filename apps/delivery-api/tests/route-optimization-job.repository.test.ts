@@ -119,6 +119,24 @@ describe('PrismaRouteOptimizationJobRepository', () => {
     expect(prisma.routeOptimizationJob.updateMany).not.toHaveBeenCalled();
   });
 
+  test('does not overwrite an applied job with a late failure', async () => {
+    const applied = jobRecord({ currentStep: 'COMPLETED', id: 'applied-job-id', status: 'APPLIED' });
+    const prisma = createPrismaHarness({ currentJob: applied, updateManyCount: 0 });
+    const repository = new PrismaRouteOptimizationJobRepository(prisma as unknown as ConstructorParameters<typeof PrismaRouteOptimizationJobRepository>[0]);
+
+    const result = await repository.markFailed({
+      errorCode: 'invalid_input',
+      errorMessage: 'late cache failure',
+      jobId: 'applied-job-id'
+    });
+
+    expect(result).toBeNull();
+    expect(prisma.routeOptimizationJob.update).not.toHaveBeenCalled();
+    expect(prisma.routeOptimizationJob.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'applied-job-id', status: { in: ['QUEUED', 'RUNNING'] } }
+    }));
+  });
+
   test('claims apply step only for running jobs', async () => {
     const failed = jobRecord({ currentStep: 'COMPLETED', id: 'failed-job-id', status: 'FAILED' });
     const prisma = createPrismaHarness({ currentJob: failed });

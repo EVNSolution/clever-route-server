@@ -107,10 +107,12 @@ export type SafeWooCommerceConnection = {
 export type DecryptedWooCommerceConnection = SafeWooCommerceConnection & {
   consumerKey: string;
   consumerSecret: string;
+  shopId?: string | undefined;
   webhookSecret: string;
 };
 
 export type WooCommerceWebhookConnection = SafeWooCommerceConnection & {
+  shopId?: string | undefined;
   webhookSecret: string;
 };
 
@@ -178,6 +180,7 @@ export class CommerceConnectionCredentialService {
         key: this.options.credentialKey,
         kind: 'consumer-secret'
       }),
+      shopId: record.shopId,
       webhookSecret: decryptCommerceCredential({
         ciphertext: record.webhookSecretCiphertext,
         connectionId: record.id,
@@ -199,6 +202,7 @@ export class CommerceConnectionCredentialService {
 
     return {
       ...toSafeWooCommerceConnection(record),
+      shopId: record.shopId,
       webhookSecret: decryptCommerceCredential({
         ciphertext: record.webhookSecretCiphertext,
         connectionId: record.id,

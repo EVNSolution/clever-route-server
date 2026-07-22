@@ -53,7 +53,7 @@ const DEFAULT_ROUTE_END_MODE: RoutePlanEndMode = 'END_AT_LAST_STOP';
 
 type RoutePlanPrismaClient = Pick<
   PrismaClient,
-  '$transaction' | 'deliveryStop' | 'driver' | 'order' | 'orderDeliveryFact' | 'routeGroupingBranch' | 'routeGroupingBranchOrderLock' | 'routeGroupingChildVersion' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'shop'
+  '$transaction' | 'deliveryStop' | 'driver' | 'order' | 'orderDeliveryFact' | 'routeGroupingBranch' | 'routeGroupingBranchOrderLock' | 'routeGroupingChildVersion' | 'routeOptimizationJob' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'shop'
 >;
 
 type RoutePlanGeometryCacheRecord = {
@@ -910,6 +910,44 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     await this.prisma.routePlanGeometryCache.upsert(routeGeometryCacheUpsertArgs(input));
   }
 
+  async commitOrderDataRouteGeometryCache(input: RouteGeometryCacheWrite & {
+    appId?: string | undefined;
+    expectedRoutePlanUpdatedAt: string;
+    shopDomain: string;
+  }): Promise<boolean> {
+    const shop = await this.findShop(input);
+    if (shop === null) return false;
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(async (tx) => {
+          const routePlan = await tx.routePlan.findFirst({
+            include: routePlanInclude(),
+            where: { id: input.routePlanId, shopId: shop.id }
+          }) as RoutePlanRecord | null;
+          if (routePlan === null || !isRouteReadyStatus(routePlan.status)) return false;
+          if (routePlan.updatedAt.toISOString() !== input.expectedRoutePlanUpdatedAt) return false;
+          if (computeRouteShapeSignature(toRoutePlanDetail(routePlan)) !== input.shapeSignature) return false;
+
+          const activeOptimizationJob = await tx.routeOptimizationJob.findFirst({
+            select: { id: true },
+            where: {
+              routePlanId: input.routePlanId,
+              status: { in: ['QUEUED', 'RUNNING'] }
+            }
+          });
+          if (activeOptimizationJob !== null) return false;
+
+          await tx.routePlanGeometryCache.upsert(routeGeometryCacheUpsertArgs(input));
+          return true;
+        }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+      } catch (error) {
+        if (!isRouteGeometryCommitConflict(error) || attempt === 2) throw error;
+      }
+    }
+    return false;
+  }
+
   private applyRouteGeometryCache(detail: RoutePlanDetail): Promise<RoutePlanDetail> {
     return applyRouteGeometryCache(this.prisma, detail);
   }
@@ -1045,6 +1083,25 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         return false;
       }
 
+      const optimizationJobId =
+        input.mutationContext?.source === 'route_optimization_job'
+          ? input.mutationContext.jobId
+          : null;
+      const applyingJob = optimizationJobId === null
+        ? null
+        : await tx.routeOptimizationJob.findFirst({
+            where: {
+              currentStep: 'APPLYING_RESULT',
+              id: optimizationJobId,
+              routePlanId: input.routePlanId,
+              shopId: shop.id,
+              status: 'RUNNING'
+            }
+          });
+      if (optimizationJobId !== null && applyingJob === null) {
+        throw new RoutePlanConflictError('Route optimization result is no longer claimable. No route stops were changed.');
+      }
+
       const routeDate = deriveRouteDate(routePlan);
       const orderGids = normalizedStops.map((stop) => stop.shopifyOrderGid);
       const orders = (await tx.order.findMany({
@@ -1149,6 +1206,30 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         },
         where: { id: input.routePlanId }
       });
+
+      if (optimizationJobId !== null && applyingJob !== null) {
+        const finishedAt = new Date();
+        const applied = await tx.routeOptimizationJob.updateMany({
+          data: {
+            appliedAt: finishedAt,
+            currentStep: 'COMPLETED',
+            elapsedMs: Math.max(0, finishedAt.getTime() - (applyingJob.startedAt ?? applyingJob.createdAt).getTime()),
+            engineResultSequence: normalizedStops,
+            finishedAt,
+            status: 'APPLIED'
+          },
+          where: {
+            currentStep: 'APPLYING_RESULT',
+            id: optimizationJobId,
+            routePlanId: input.routePlanId,
+            shopId: shop.id,
+            status: 'RUNNING'
+          }
+        });
+        if (applied.count !== 1) {
+          throw new RoutePlanConflictError('Route optimization result lost its apply claim. No route stops were changed.');
+        }
+      }
 
       return true;
     });
@@ -1825,6 +1906,10 @@ function routePlanInclude() {
       }
     }
   } satisfies Prisma.RoutePlanInclude;
+}
+
+function isRouteGeometryCommitConflict(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034';
 }
 
 function routeLifecycleEventQuery() {

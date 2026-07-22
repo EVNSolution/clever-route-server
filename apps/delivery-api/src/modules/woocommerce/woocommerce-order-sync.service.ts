@@ -63,9 +63,9 @@ export type WooCommerceSyncTierClassification = {
 };
 
 type Repository = {
-  findCanonicalOrderById?(input: { orderId: string; shopDomain: string }): Promise<CanonicalOrderRow | null>;
+  findCanonicalOrderById?(input: { orderId: string; shopDomain: string; shopId?: string | undefined }): Promise<CanonicalOrderRow | null>;
   listCanonicalOrdersBySourceIdentity(input: ListCanonicalOrdersBySourceIdentityInput): Promise<CanonicalOrderRow[]>;
-  listCanonicalOrders(input: { filters?: ListCanonicalOrdersFilters; shopDomain: string }): Promise<CanonicalOrderRow[]>;
+  listCanonicalOrders(input: { filters?: ListCanonicalOrdersFilters; shopDomain: string; shopId?: string | undefined }): Promise<CanonicalOrderRow[]>;
   listDeliveryBatchCandidates?(input: ListDeliveryBatchCandidatesInput): Promise<DeliveryBatchCandidate[]>;
   readOrderMappingConfig?(input: { commerceConnectionId: string }): Promise<Record<string, unknown> | null>;
   upsertOrderWithDeliveryStop(input: UpsertOrderWithDeliveryStopInput): Promise<UpsertOrderWithDeliveryStopResult>;
@@ -102,6 +102,7 @@ export class WooCommerceOrderSyncService {
       logger?: LoggerLike;
       repository: Repository;
       shopDomain: string;
+      shopId?: string | undefined;
       shopTimezone?: string;
       siteUrl: string;
     }
@@ -176,6 +177,7 @@ export class WooCommerceOrderSyncService {
       );
       const result = await this.options.repository.upsertOrderWithDeliveryStop({
         shopDomain: this.options.shopDomain,
+        ...(this.options.shopId === undefined ? {} : { shopId: this.options.shopId }),
         synced
       });
       summary[result.status] += 1;
@@ -193,7 +195,8 @@ export class WooCommerceOrderSyncService {
   listCanonicalOrders(input: { filters?: ListCanonicalOrdersFilters }): Promise<CanonicalOrderRow[]> {
     return this.options.repository.listCanonicalOrders({
       ...(input.filters === undefined ? {} : { filters: input.filters }),
-      shopDomain: this.options.shopDomain
+      shopDomain: this.options.shopDomain,
+      ...(this.options.shopId === undefined ? {} : { shopId: this.options.shopId })
     });
   }
 
@@ -201,15 +204,23 @@ export class WooCommerceOrderSyncService {
     if (this.options.repository.listDeliveryBatchCandidates === undefined) return Promise.resolve([]);
     return this.options.repository.listDeliveryBatchCandidates({
       ...input,
-      shopDomain: this.options.shopDomain
+      shopDomain: this.options.shopDomain,
+      ...(this.options.shopId === undefined ? {} : { shopId: this.options.shopId })
     });
   }
 
   private async readCanonicalOrder(orderId: string): Promise<CanonicalOrderRow | null> {
     if (this.options.repository.findCanonicalOrderById !== undefined) {
-      return this.options.repository.findCanonicalOrderById({ orderId, shopDomain: this.options.shopDomain });
+      return this.options.repository.findCanonicalOrderById({
+        orderId,
+        shopDomain: this.options.shopDomain,
+        ...(this.options.shopId === undefined ? {} : { shopId: this.options.shopId })
+      });
     }
-    const rows = await this.options.repository.listCanonicalOrders({ shopDomain: this.options.shopDomain });
+    const rows = await this.options.repository.listCanonicalOrders({
+      shopDomain: this.options.shopDomain,
+      ...(this.options.shopId === undefined ? {} : { shopId: this.options.shopId })
+    });
     return rows.find((row) => row.orderId === orderId) ?? null;
   }
 
@@ -232,7 +243,8 @@ export class WooCommerceOrderSyncService {
         sourcePlatform: synced.order.sourcePlatform ?? 'SHOPIFY',
         sourceSiteUrl: synced.order.sourceSiteUrl ?? null
       })),
-      shopDomain: this.options.shopDomain
+      shopDomain: this.options.shopDomain,
+      ...(this.options.shopId === undefined ? {} : { shopId: this.options.shopId })
     });
     const bySource = new Map<string, CanonicalOrderRow>();
     for (const row of rows) {

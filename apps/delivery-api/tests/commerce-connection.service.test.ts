@@ -54,10 +54,12 @@ describe('CommerceConnectionCredentialService', () => {
       ...safe,
       consumerKey: 'ck_test_value',
       consumerSecret: 'cs_test_value',
+      shopId: 'shop-tomatonofood.com',
       webhookSecret: 'whsec_test_value'
     });
     await expect(service.readWooCommerceWebhookConnection({ connectionId: safe.id })).resolves.toEqual({
       ...safe,
+      shopId: 'shop-tomatonofood.com',
       webhookSecret: 'whsec_test_value'
     });
   });

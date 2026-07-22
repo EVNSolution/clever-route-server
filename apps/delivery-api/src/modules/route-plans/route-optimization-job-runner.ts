@@ -154,6 +154,17 @@ export async function runRouteOptimizationJob(
 
   const applied = await jobService.recordEngineOutcome({ jobId: input.job.id, outcome });
   if (applied === null) {
+    const current = await jobService.findLatestJob({
+      routePlanId: input.job.routePlanId,
+      shopDomain: input.shopDomain,
+    });
+    if (current?.id === input.job.id && current.status === 'APPLIED') {
+      input.logger?.info?.(
+        { jobId: input.job.id, routePlanId: input.job.routePlanId },
+        'route optimization stops and terminal job state committed atomically',
+      );
+      return;
+    }
     input.logger?.warn?.(
       { jobId: input.job.id, routePlanId: input.job.routePlanId },
       'route optimization result applied to stops but terminal job state was no longer claimable',

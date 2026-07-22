@@ -257,6 +257,7 @@ function readAdminUiWooSyncService(
         geocodingService,
         repository: orderRepository,
         shopDomain: connection.shopDomain,
+        shopId: connection.shopId,
         ...(resolvedTimezone === undefined ? {} : { shopTimezone: resolvedTimezone }),
         siteUrl: connection.siteUrl
       });

@@ -10,6 +10,7 @@ import type {
   RoutePlanRouteResult
 } from '../src/modules/route-plans/route-plan.types.js';
 import {
+  RoutePlanConflictError,
   RoutePlanGeometryRefreshFailedError,
   RoutePlanRefreshNotAllowedError
 } from '../src/modules/route-plans/route-plan.types.js';
@@ -203,7 +204,7 @@ describe('RoutePlanAdminService route geometry policy', () => {
   });
 
   test('order-data refresh persists complete geometry for ready routes', async () => {
-    const { repository, routeGeometryProvider, upsertRouteGeometryCache } = createHarness(baseDetail);
+    const { commitOrderDataRouteGeometryCache, repository, routeGeometryProvider, upsertRouteGeometryCache } = createHarness(baseDetail);
     const service = new RoutePlanAdminService(repository, routeGeometryProvider);
 
     const detail = await service.refreshRouteGeometryForRoutePlan({
@@ -213,13 +214,14 @@ describe('RoutePlanAdminService route geometry policy', () => {
     });
 
     expect(detail?.routeGeometryStatus).toBe('fresh');
-    expect(upsertRouteGeometryCache).toHaveBeenCalledWith(expect.objectContaining({
+    expect(commitOrderDataRouteGeometryCache).toHaveBeenCalledWith(expect.objectContaining({
       routePlanId: 'route-plan-id',
       source: 'ORDER_DATA_REFRESH'
     }));
+    expect(upsertRouteGeometryCache).not.toHaveBeenCalled();
   });
 
-  test.each(['COMPLETED', 'CANCELLED'])('blocks order-data refresh for %s routes', async (status) => {
+  test.each(['IN_PROGRESS', 'COMPLETED', 'CANCELLED'])('blocks order-data refresh for %s routes', async (status) => {
     const terminalDetail = detailWithComputedSignature({
       ...baseDetail,
       routePlan: { ...baseDetail.routePlan, status }
@@ -235,6 +237,18 @@ describe('RoutePlanAdminService route geometry policy', () => {
 
     expect(routeGeometryProvider.buildRoute).not.toHaveBeenCalled();
     expect(upsertRouteGeometryCache).not.toHaveBeenCalled();
+  });
+
+  test('preserves existing geometry when the route changes during OSRM refresh', async () => {
+    const { commitOrderDataRouteGeometryCache, repository, routeGeometryProvider } = createHarness(baseDetail);
+    commitOrderDataRouteGeometryCache.mockResolvedValueOnce(false);
+    const service = new RoutePlanAdminService(repository, routeGeometryProvider);
+
+    await expect(service.refreshRouteGeometryForRoutePlan({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com',
+      source: 'ORDER_DATA_REFRESH'
+    })).rejects.toBeInstanceOf(RoutePlanConflictError);
   });
 
   test('blocks order-data refresh while route optimization is active', async () => {
@@ -447,6 +461,7 @@ function createHarness(detail: RoutePlanDetail, options: {
   updateRoutePlanOptions: ReturnType<typeof vi.fn<RoutePlanRepository['updateRoutePlanOptions']>>;
   updateRoutePlanStops: ReturnType<typeof vi.fn<RoutePlanRepository['updateRoutePlanStops']>>;
   upsertRouteGeometryCache: ReturnType<typeof vi.fn<NonNullable<RoutePlanRepository['upsertRouteGeometryCache']>>>;
+  commitOrderDataRouteGeometryCache: ReturnType<typeof vi.fn<NonNullable<RoutePlanRepository['commitOrderDataRouteGeometryCache']>>>;
 } {
   const assignRoutePlanDriver = vi.fn<RoutePlanRepository['assignRoutePlanDriver']>().mockResolvedValue(detail);
   const createRoutePlanDraft = vi.fn<RoutePlanRepository['createRoutePlanDraft']>().mockResolvedValue(detail.routePlan);
@@ -465,9 +480,11 @@ function createHarness(detail: RoutePlanDetail, options: {
   const routePlanExists = vi.fn<NonNullable<RoutePlanRepository['routePlanExists']>>().mockResolvedValue(true);
   const findRoutePlanDetail = vi.fn<RoutePlanRepository['findRoutePlanDetail']>().mockResolvedValue(detail);
   const upsertRouteGeometryCache = vi.fn<NonNullable<RoutePlanRepository['upsertRouteGeometryCache']>>().mockResolvedValue(undefined);
+  const commitOrderDataRouteGeometryCache = vi.fn<NonNullable<RoutePlanRepository['commitOrderDataRouteGeometryCache']>>().mockResolvedValue(true);
   const repository = {
     assignRoutePlanDriver,
     createRoutePlanDraft,
+    commitOrderDataRouteGeometryCache,
     deleteRoutePlan: vi.fn(),
     findRoutePlanDetail,
     listRoutePlans: vi.fn(),
@@ -483,7 +500,7 @@ function createHarness(detail: RoutePlanDetail, options: {
     buildRoute: vi.fn<RouteGeometryProvider['buildRoute']>(() => Promise.resolve(routeResult))
   };
 
-  return { assignRoutePlanDriver, createRoutePlanDraft, findRoutePlanDetail, publishRoutePlan, repository, routeGeometryProvider, routePlanExists, saveRoutePlan, updateRoutePlanOptions, updateRoutePlanStops, upsertRouteGeometryCache };
+  return { assignRoutePlanDriver, commitOrderDataRouteGeometryCache, createRoutePlanDraft, findRoutePlanDetail, publishRoutePlan, repository, routeGeometryProvider, routePlanExists, saveRoutePlan, updateRoutePlanOptions, updateRoutePlanStops, upsertRouteGeometryCache };
 }
 
 const routeResult = {
