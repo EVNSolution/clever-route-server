@@ -114,6 +114,8 @@ EOF_NPM
   PATH="$tmp/bin:$PATH" FAKE_NPM_ARGS_FILE="$tmp/npm.args" PRISMA_SCHEMA_PATH="$tmp/schema.prisma" PRISMA_SCHEMA_SHA="$sha" "$GUARD" > "$tmp/stdout" 2> "$tmp/stderr"
   grep -q '20260629183000_link_route_grouping_inventory/migration.sql' "$tmp/npm.args"
   grep -q '20260722090000_allow_safe_multi_route_membership/migration.sql' "$tmp/npm.args"
+  grep -q '20260722150000_add_dsv_dispatch_and_resources/migration.sql' "$tmp/npm.args"
+  grep -q '20260722170000_dsv_customer_auth_foundation/migration.sql' "$tmp/npm.args"
   grep -q -- '--prefix apps/delivery-api exec -- prisma db push --schema' "$tmp/npm.args"
   if grep -q -- '--accept-data-loss' "$tmp/npm.args"; then
     fail "guard must not pass --accept-data-loss"
@@ -156,6 +158,17 @@ run_static_contract_case() {
   grep -Fq 'BEGIN;' "$multi_route_migration"
   grep -Fq 'CREATE UNIQUE INDEX IF NOT EXISTS "route_grouping_branch_order_locks_groupingId_orderId_key"' "$multi_route_migration"
   grep -Fq 'COMMIT;' "$multi_route_migration"
+
+  dsv_dispatch_migration="apps/delivery-api/prisma/migrations/20260722150000_add_dsv_dispatch_and_resources/migration.sql"
+  grep -Fq 'CREATE TABLE IF NOT EXISTS "dsv_dispatch_imports"' "$dsv_dispatch_migration"
+  grep -Fq 'CREATE UNIQUE INDEX IF NOT EXISTS "dsv_dispatch_import_rows_shopId_sellerOrderKey_key"' "$dsv_dispatch_migration"
+  if grep -Eq '^CREATE TYPE |^CREATE TABLE "|^CREATE (UNIQUE )?INDEX "|^ALTER TABLE .* ADD CONSTRAINT ' "$dsv_dispatch_migration"; then
+    fail "DSV dispatch pre-db-push migration must remain retry-safe"
+  fi
+
+  dsv_customer_migration="apps/delivery-api/prisma/migrations/20260722170000_dsv_customer_auth_foundation/migration.sql"
+  grep -Fq 'ALTER TYPE "DsvPrincipalType" ADD VALUE IF NOT EXISTS '\''IMPORT_WORKER'\''' "$dsv_customer_migration"
+  grep -Fq 'CREATE UNIQUE INDEX IF NOT EXISTS "orders_shopId_sellerOrderSourceKind_sellerOrderKey_key"' "$dsv_customer_migration"
 }
 
 run_missing_sha_case
