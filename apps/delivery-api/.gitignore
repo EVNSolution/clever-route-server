@@ -37,6 +37,9 @@ backups/
 !prisma/migrations/
 !prisma/migrations/**/
 !prisma/migrations/**/migration.sql
+!prisma/baseline/
+!prisma/baseline/**/
+!prisma/baseline/**/*.sql
 *.sql.gz
 *.sqlite
 *.sqlite3

@@ -11,6 +11,9 @@
     "test": "npm --prefix apps/route-ops-web run test && npm --prefix apps/delivery-api run test",
     "check:workspace": "npm --prefix apps/route-ops-web run lint && npm --prefix apps/route-ops-web run typecheck && npm --prefix apps/route-ops-web run test && npm --prefix apps/route-ops-web run build && npm --prefix apps/delivery-api run check:workspace",
     "compose:config": "docker compose -f infra/compose/docker-compose.prod.yml config --quiet",
+    "dsv:dev:up": "docker compose -f infra/compose/docker-compose.dsv-dev.yml up -d --build",
+    "dsv:dev:down": "docker compose -f infra/compose/docker-compose.dsv-dev.yml down",
+    "dsv:dev:reset": "docker compose -f infra/compose/docker-compose.dsv-dev.yml down -v",
     "package:wordpress-plugin": "bash scripts/package-wordpress-plugin.sh"
   }
 }

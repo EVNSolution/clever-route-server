@@ -41,6 +41,18 @@ Success with an assigned route:
           "orderName": "#1001",
           "recipientName": "Recipient One",
           "phone": "+14165550123",
+          "customerNote": "Leave the box beside the loading entrance.",
+          "items": [
+            {
+              "name": "Tomato Box",
+              "quantity": 2,
+              "sku": "TB-1",
+              "productId": 1000,
+              "variationId": 0,
+              "options": [{ "key": "Size", "value": "Large" }]
+            }
+          ],
+          "normalizedPaymentStatus": "CASH_COLLECT_REQUIRED",
           "address": {
             "address1": "100 King St W",
             "address2": null,
@@ -97,7 +109,7 @@ The query is scoped by all of the following:
 - persisted `COMPLETED`/`CANCELLED` routes and legacy rows with a prior
   `ROUTE_COMPLETED` event are excluded from operational assigned-route reads
 
-The response must not include other drivers' routes, unrelated orders, raw Shopify payloads, or admin-only planning metadata. Stop address, recipient, phone, and coordinates are intentionally returned only after the driver boundary is verified.
+The response must not include other drivers' routes, unrelated orders, raw Shopify payloads, or admin-only planning metadata. Stop address, recipient, phone, customer note, order items, and coordinates are intentionally returned only after the driver boundary is verified.
 
 ## Server-authoritative ETA lifecycle
 
