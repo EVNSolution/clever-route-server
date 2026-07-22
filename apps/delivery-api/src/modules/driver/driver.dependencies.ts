@@ -22,11 +22,6 @@ import {
   DEFAULT_DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS,
   DriverRouteMapPreviewService
 } from './driver-route-map-preview.service.js';
-import {
-  DriverSellerOrderAssignmentService,
-  PrismaDriverSellerOrderContextRepository
-} from './driver-seller-order-assignment.service.js';
-import type { RouteGroupingService } from '../route-grouping/route-grouping.types.js';
 
 export const DEFAULT_DRIVER_PROOF_MEDIA_RETENTION_DAYS = 180;
 export const DEFAULT_DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS = 5 * 60;
@@ -82,7 +77,6 @@ type LoadDriverApiDependenciesInput = {
   adminNotificationService?: Pick<AdminNotificationServiceApi, 'createAdminNotification'>;
   env: DriverApiRuntimeEnv;
   prisma: PrismaClient;
-  routeGroupingService?: RouteGroupingService;
   routeTrackingStreamHub?: RouteTrackingStreamHub;
 };
 
@@ -111,14 +105,6 @@ export function loadDriverApiDependencies(
     driverAssignedRouteService,
     driverConsentService: new PrismaDriverConsentRepository(input.prisma),
     driverEventService: new PrismaDriverEventRepository(input.prisma),
-    ...(input.routeGroupingService === undefined
-      ? {}
-      : {
-          driverSellerOrderAssignmentService: new DriverSellerOrderAssignmentService(
-            new PrismaDriverSellerOrderContextRepository(input.prisma),
-            input.routeGroupingService
-          )
-        }),
     ...(driverRouteMapPreview === undefined
       ? {}
       : {

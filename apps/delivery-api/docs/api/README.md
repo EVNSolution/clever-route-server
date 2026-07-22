@@ -29,9 +29,8 @@ Do not treat raw EIP or `sslip.io` hostnames as the normal integration contract.
 | Consumer | Contract surface | Auth boundary | Human docs |
 | --- | --- | --- | --- |
 | Current admin clients | `/admin/orders*`, `/admin/drivers*`, `/admin/route-plans*` | Current admin session-token verifier while legacy Shopify admin is retained | `shopify-and-admin-api.md`, `admin-route-plans.md` |
-| DSV operator web | `/api/dsv/resources`, `/api/dsv/drivers*`, `/api/dsv/vehicles*`, `/api/dsv/conditions`, `/api/dsv/dispatch-imports*`, `/api/dsv/control*` | Shop-scoped DSV session cookie and CSRF on writes | `dsv-resource-management.md`, `dsv-dispatch-import.md` |
 | Legacy Shopify compatibility | `/shopify/auth/token-exchange`, `/shopify/webhooks` | Shopify session token or webhook HMAC | `shopify-and-admin-api.md` |
-| Native driver app | `/driver/auth/*`, `/driver/route-access/lookup`, `/driver/consents`, `/driver/assigned-route`, `/driver/orders/*`, `/driver/proof-media*`, `/driver/events` | Invite + PIN registration, then phone + PIN login and short-lived server-issued JWTs | `driver-auth.md`, `driver-route-access.md`, `driver-consents.md`, `driver-assigned-route.md`, `driver-seller-order-assignment.md`, `driver-proof-media.md` |
+| Native driver app | `/driver/auth/*`, `/driver/route-access/lookup`, `/driver/consents`, `/driver/assigned-route`, `/driver/proof-media*`, `/driver/events` | Invite + PIN registration, then phone + PIN login and short-lived server-issued JWTs | `driver-auth.md`, `driver-route-access.md`, `driver-consents.md`, `driver-assigned-route.md`, `driver-proof-media.md` |
 | Operations / deployment monitors | `/healthz`, `/readyz`, `/docs` | None in current local contract | `openapi.yaml`, deployment docs |
 
 ## Source-of-truth rules
