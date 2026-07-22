@@ -1,11 +1,21 @@
 -- CreateEnum
-CREATE TYPE "DsvDispatchImportStatus" AS ENUM ('READY', 'NEEDS_REVIEW');
+DO $$
+BEGIN
+  CREATE TYPE "DsvDispatchImportStatus" AS ENUM ('READY', 'NEEDS_REVIEW');
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 -- CreateEnum
-CREATE TYPE "DsvDispatchImportRowStatus" AS ENUM ('READY', 'NEEDS_REVIEW');
+DO $$
+BEGIN
+  CREATE TYPE "DsvDispatchImportRowStatus" AS ENUM ('READY', 'NEEDS_REVIEW');
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 -- CreateTable
-CREATE TABLE "dsv_driver_profiles" (
+CREATE TABLE IF NOT EXISTS "dsv_driver_profiles" (
     "driverId" UUID NOT NULL,
     "shopId" UUID NOT NULL,
     "lookupName" TEXT NOT NULL,
@@ -22,7 +32,7 @@ CREATE TABLE "dsv_driver_profiles" (
 );
 
 -- CreateTable
-CREATE TABLE "dsv_vehicle_profiles" (
+CREATE TABLE IF NOT EXISTS "dsv_vehicle_profiles" (
     "vehicleId" UUID NOT NULL,
     "shopId" UUID NOT NULL,
     "typeLabel" TEXT NOT NULL,
@@ -34,7 +44,7 @@ CREATE TABLE "dsv_vehicle_profiles" (
 );
 
 -- CreateTable
-CREATE TABLE "dsv_vehicle_driver_assignments" (
+CREATE TABLE IF NOT EXISTS "dsv_vehicle_driver_assignments" (
     "id" UUID NOT NULL,
     "shopId" UUID NOT NULL,
     "vehicleId" UUID NOT NULL,
@@ -46,7 +56,7 @@ CREATE TABLE "dsv_vehicle_driver_assignments" (
 );
 
 -- CreateTable
-CREATE TABLE "dsv_transport_conditions" (
+CREATE TABLE IF NOT EXISTS "dsv_transport_conditions" (
     "id" UUID NOT NULL,
     "shopId" UUID NOT NULL,
     "code" TEXT NOT NULL,
@@ -60,7 +70,7 @@ CREATE TABLE "dsv_transport_conditions" (
 );
 
 -- CreateTable
-CREATE TABLE "dsv_dispatch_imports" (
+CREATE TABLE IF NOT EXISTS "dsv_dispatch_imports" (
     "id" UUID NOT NULL,
     "shopId" UUID NOT NULL,
     "fileName" TEXT NOT NULL,
@@ -75,7 +85,7 @@ CREATE TABLE "dsv_dispatch_imports" (
 );
 
 -- CreateTable
-CREATE TABLE "dsv_dispatch_import_rows" (
+CREATE TABLE IF NOT EXISTS "dsv_dispatch_import_rows" (
     "id" UUID NOT NULL,
     "shopId" UUID NOT NULL,
     "importId" UUID NOT NULL,
@@ -102,82 +112,147 @@ CREATE TABLE "dsv_dispatch_import_rows" (
 );
 
 -- CreateIndex
-CREATE INDEX "dsv_driver_profiles_shopId_idx" ON "dsv_driver_profiles"("shopId");
+CREATE INDEX IF NOT EXISTS "dsv_driver_profiles_shopId_idx" ON "dsv_driver_profiles"("shopId");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "dsv_driver_profiles_shopId_lookupName_key" ON "dsv_driver_profiles"("shopId", "lookupName");
+CREATE UNIQUE INDEX IF NOT EXISTS "dsv_driver_profiles_shopId_lookupName_key" ON "dsv_driver_profiles"("shopId", "lookupName");
 
 -- CreateIndex
-CREATE INDEX "dsv_vehicle_profiles_shopId_idx" ON "dsv_vehicle_profiles"("shopId");
+CREATE INDEX IF NOT EXISTS "dsv_vehicle_profiles_shopId_idx" ON "dsv_vehicle_profiles"("shopId");
 
 -- CreateIndex
-CREATE INDEX "dsv_vehicle_driver_assignments_shopId_driverId_idx" ON "dsv_vehicle_driver_assignments"("shopId", "driverId");
+CREATE INDEX IF NOT EXISTS "dsv_vehicle_driver_assignments_shopId_driverId_idx" ON "dsv_vehicle_driver_assignments"("shopId", "driverId");
 
 -- CreateIndex
-CREATE INDEX "dsv_vehicle_driver_assignments_shopId_vehicleId_idx" ON "dsv_vehicle_driver_assignments"("shopId", "vehicleId");
+CREATE INDEX IF NOT EXISTS "dsv_vehicle_driver_assignments_shopId_vehicleId_idx" ON "dsv_vehicle_driver_assignments"("shopId", "vehicleId");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "dsv_vehicle_driver_assignments_shopId_vehicleId_driverId_key" ON "dsv_vehicle_driver_assignments"("shopId", "vehicleId", "driverId");
+CREATE UNIQUE INDEX IF NOT EXISTS "dsv_vehicle_driver_assignments_shopId_vehicleId_driverId_key" ON "dsv_vehicle_driver_assignments"("shopId", "vehicleId", "driverId");
 
 -- CreateIndex
-CREATE INDEX "dsv_transport_conditions_shopId_createdAt_idx" ON "dsv_transport_conditions"("shopId", "createdAt");
+CREATE INDEX IF NOT EXISTS "dsv_transport_conditions_shopId_createdAt_idx" ON "dsv_transport_conditions"("shopId", "createdAt");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "dsv_transport_conditions_shopId_code_key" ON "dsv_transport_conditions"("shopId", "code");
+CREATE UNIQUE INDEX IF NOT EXISTS "dsv_transport_conditions_shopId_code_key" ON "dsv_transport_conditions"("shopId", "code");
 
 -- CreateIndex
-CREATE INDEX "dsv_dispatch_imports_shopId_planDate_createdAt_idx" ON "dsv_dispatch_imports"("shopId", "planDate", "createdAt");
+CREATE INDEX IF NOT EXISTS "dsv_dispatch_imports_shopId_planDate_createdAt_idx" ON "dsv_dispatch_imports"("shopId", "planDate", "createdAt");
 
 -- CreateIndex
-CREATE INDEX "dsv_dispatch_import_rows_importId_status_rowNumber_idx" ON "dsv_dispatch_import_rows"("importId", "status", "rowNumber");
+CREATE INDEX IF NOT EXISTS "dsv_dispatch_import_rows_importId_status_rowNumber_idx" ON "dsv_dispatch_import_rows"("importId", "status", "rowNumber");
 
 -- CreateIndex
-CREATE INDEX "dsv_dispatch_import_rows_driverId_idx" ON "dsv_dispatch_import_rows"("driverId");
+CREATE INDEX IF NOT EXISTS "dsv_dispatch_import_rows_driverId_idx" ON "dsv_dispatch_import_rows"("driverId");
 
 -- CreateIndex
-CREATE INDEX "dsv_dispatch_import_rows_vehicleId_idx" ON "dsv_dispatch_import_rows"("vehicleId");
+CREATE INDEX IF NOT EXISTS "dsv_dispatch_import_rows_vehicleId_idx" ON "dsv_dispatch_import_rows"("vehicleId");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "dsv_dispatch_import_rows_importId_rowNumber_key" ON "dsv_dispatch_import_rows"("importId", "rowNumber");
+CREATE UNIQUE INDEX IF NOT EXISTS "dsv_dispatch_import_rows_importId_rowNumber_key" ON "dsv_dispatch_import_rows"("importId", "rowNumber");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "dsv_dispatch_import_rows_shopId_sellerOrderKey_key" ON "dsv_dispatch_import_rows"("shopId", "sellerOrderKey");
+CREATE UNIQUE INDEX IF NOT EXISTS "dsv_dispatch_import_rows_shopId_sellerOrderKey_key" ON "dsv_dispatch_import_rows"("shopId", "sellerOrderKey");
 
 -- AddForeignKey
-ALTER TABLE "dsv_driver_profiles" ADD CONSTRAINT "dsv_driver_profiles_driverId_fkey" FOREIGN KEY ("driverId") REFERENCES "drivers"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$
+BEGIN
+  ALTER TABLE "dsv_driver_profiles" ADD CONSTRAINT "dsv_driver_profiles_driverId_fkey" FOREIGN KEY ("driverId") REFERENCES "drivers"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "dsv_driver_profiles" ADD CONSTRAINT "dsv_driver_profiles_shopId_fkey" FOREIGN KEY ("shopId") REFERENCES "shops"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$
+BEGIN
+  ALTER TABLE "dsv_driver_profiles" ADD CONSTRAINT "dsv_driver_profiles_shopId_fkey" FOREIGN KEY ("shopId") REFERENCES "shops"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "dsv_vehicle_profiles" ADD CONSTRAINT "dsv_vehicle_profiles_vehicleId_fkey" FOREIGN KEY ("vehicleId") REFERENCES "vehicles"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$
+BEGIN
+  ALTER TABLE "dsv_vehicle_profiles" ADD CONSTRAINT "dsv_vehicle_profiles_vehicleId_fkey" FOREIGN KEY ("vehicleId") REFERENCES "vehicles"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "dsv_vehicle_profiles" ADD CONSTRAINT "dsv_vehicle_profiles_shopId_fkey" FOREIGN KEY ("shopId") REFERENCES "shops"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$
+BEGIN
+  ALTER TABLE "dsv_vehicle_profiles" ADD CONSTRAINT "dsv_vehicle_profiles_shopId_fkey" FOREIGN KEY ("shopId") REFERENCES "shops"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "dsv_vehicle_driver_assignments" ADD CONSTRAINT "dsv_vehicle_driver_assignments_shopId_fkey" FOREIGN KEY ("shopId") REFERENCES "shops"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$
+BEGIN
+  ALTER TABLE "dsv_vehicle_driver_assignments" ADD CONSTRAINT "dsv_vehicle_driver_assignments_shopId_fkey" FOREIGN KEY ("shopId") REFERENCES "shops"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "dsv_vehicle_driver_assignments" ADD CONSTRAINT "dsv_vehicle_driver_assignments_vehicleId_fkey" FOREIGN KEY ("vehicleId") REFERENCES "vehicles"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$
+BEGIN
+  ALTER TABLE "dsv_vehicle_driver_assignments" ADD CONSTRAINT "dsv_vehicle_driver_assignments_vehicleId_fkey" FOREIGN KEY ("vehicleId") REFERENCES "vehicles"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "dsv_vehicle_driver_assignments" ADD CONSTRAINT "dsv_vehicle_driver_assignments_driverId_fkey" FOREIGN KEY ("driverId") REFERENCES "drivers"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$
+BEGIN
+  ALTER TABLE "dsv_vehicle_driver_assignments" ADD CONSTRAINT "dsv_vehicle_driver_assignments_driverId_fkey" FOREIGN KEY ("driverId") REFERENCES "drivers"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "dsv_transport_conditions" ADD CONSTRAINT "dsv_transport_conditions_shopId_fkey" FOREIGN KEY ("shopId") REFERENCES "shops"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$
+BEGIN
+  ALTER TABLE "dsv_transport_conditions" ADD CONSTRAINT "dsv_transport_conditions_shopId_fkey" FOREIGN KEY ("shopId") REFERENCES "shops"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "dsv_dispatch_imports" ADD CONSTRAINT "dsv_dispatch_imports_shopId_fkey" FOREIGN KEY ("shopId") REFERENCES "shops"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$
+BEGIN
+  ALTER TABLE "dsv_dispatch_imports" ADD CONSTRAINT "dsv_dispatch_imports_shopId_fkey" FOREIGN KEY ("shopId") REFERENCES "shops"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "dsv_dispatch_import_rows" ADD CONSTRAINT "dsv_dispatch_import_rows_shopId_fkey" FOREIGN KEY ("shopId") REFERENCES "shops"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$
+BEGIN
+  ALTER TABLE "dsv_dispatch_import_rows" ADD CONSTRAINT "dsv_dispatch_import_rows_shopId_fkey" FOREIGN KEY ("shopId") REFERENCES "shops"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "dsv_dispatch_import_rows" ADD CONSTRAINT "dsv_dispatch_import_rows_importId_fkey" FOREIGN KEY ("importId") REFERENCES "dsv_dispatch_imports"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$
+BEGIN
+  ALTER TABLE "dsv_dispatch_import_rows" ADD CONSTRAINT "dsv_dispatch_import_rows_importId_fkey" FOREIGN KEY ("importId") REFERENCES "dsv_dispatch_imports"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "dsv_dispatch_import_rows" ADD CONSTRAINT "dsv_dispatch_import_rows_driverId_fkey" FOREIGN KEY ("driverId") REFERENCES "drivers"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$
+BEGIN
+  ALTER TABLE "dsv_dispatch_import_rows" ADD CONSTRAINT "dsv_dispatch_import_rows_driverId_fkey" FOREIGN KEY ("driverId") REFERENCES "drivers"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
 
 -- AddForeignKey
-ALTER TABLE "dsv_dispatch_import_rows" ADD CONSTRAINT "dsv_dispatch_import_rows_vehicleId_fkey" FOREIGN KEY ("vehicleId") REFERENCES "vehicles"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+DO $$
+BEGIN
+  ALTER TABLE "dsv_dispatch_import_rows" ADD CONSTRAINT "dsv_dispatch_import_rows_vehicleId_fkey" FOREIGN KEY ("vehicleId") REFERENCES "vehicles"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;

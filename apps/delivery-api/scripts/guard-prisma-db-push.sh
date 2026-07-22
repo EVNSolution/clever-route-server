@@ -60,7 +60,9 @@ if [ -n "${PRISMA_PRE_DB_PUSH_SQL_FILE:-}" ]; then
 else
   for migration in \
     20260629183000_link_route_grouping_inventory \
-    20260722090000_allow_safe_multi_route_membership
+    20260722090000_allow_safe_multi_route_membership \
+    20260722150000_add_dsv_dispatch_and_resources \
+    20260722170000_dsv_customer_auth_foundation
   do
     if [ -f "apps/delivery-api/prisma/migrations/$migration/migration.sql" ]; then
       apply_pre_db_push_sql "apps/delivery-api/prisma/migrations/$migration/migration.sql"
