@@ -26,7 +26,7 @@
     {
       "name": "migrations",
       "source": "apps/delivery-api/prisma/migrations compared to successful _prisma_migrations rows",
-      "criticalWhen": "any checked-in migration is missing from successful applied history, required latest migration 20260723013000_g010_import_row_resource_tenant_fks is absent, any row has finished_at IS NULL or rolled_back_at IS NOT NULL, or successful history contains a migration outside the 44-migration directory-derived chain",
+      "criticalWhen": "any checked-in migration is missing from successful applied history, required latest migration 20260723023000_g011_production_baseline_drift_repair is absent, any row has finished_at IS NULL or rolled_back_at IS NOT NULL, or successful history contains a migration outside the 45-migration directory-derived chain",
       "fields": ["expectedCount", "appliedCount", "pendingCount", "failedCount", "latestMigration", "actualLatestMigration", "pendingMigrations", "unexpectedCount", "unexpectedMigrations"]
     },
     {

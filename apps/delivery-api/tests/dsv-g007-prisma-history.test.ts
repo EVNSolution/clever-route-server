@@ -37,6 +37,8 @@ const finalRepairMigrationName = '20260722233000_align_migration_history_to_sche
 const finalRepairMigrationPath = new URL(`../prisma/migrations/${finalRepairMigrationName}/migration.sql`, import.meta.url);
 const g009MigrationName = '20260723003000_g009_tenant_composite_dsv_fks';
 const g010MigrationName = '20260723013000_g010_import_row_resource_tenant_fks';
+const g011MigrationName = '20260723023000_g011_production_baseline_drift_repair';
+const g011MigrationPath = new URL(`../prisma/migrations/${g011MigrationName}/migration.sql`, import.meta.url);
 const schemaPath = new URL('../prisma/schema.prisma', import.meta.url);
 
 const legacySingleColumnConstraints = [
@@ -92,7 +94,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(44);
+    expect(migrations).toHaveLength(45);
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -159,7 +161,7 @@ describe('G007 DSV Prisma migration history', () => {
     expect(bridgeApply).not.toMatch(/\bDROP\s+TABLE\s+"(?:shops|route_plans|route_groupings)"/iu);
   });
 
-  test('orders the additive cleanup, final repair, and G009/G010 tenant-composite FK repairs', async () => {
+  test('orders the additive cleanup and G009 through G011 tenant-composite repairs', async () => {
     const migrations = await readMigrationNames();
 
     expect(migrations).toContain('20260722213000_dsv_assignment_eta_state');
@@ -167,6 +169,7 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations).toContain(finalRepairMigrationName);
     expect(migrations).toContain(g009MigrationName);
     expect(migrations).toContain(g010MigrationName);
+    expect(migrations).toContain(g011MigrationName);
     expect(migrations.indexOf('20260722213000_dsv_assignment_eta_state')).toBeLessThan(
       migrations.indexOf('20260722223000_drop_legacy_single_tenant_fks')
     );
@@ -175,7 +178,20 @@ describe('G007 DSV Prisma migration history', () => {
     );
     expect(migrations.indexOf(finalRepairMigrationName)).toBeLessThan(migrations.indexOf(g009MigrationName));
     expect(migrations.indexOf(g009MigrationName)).toBeLessThan(migrations.indexOf(g010MigrationName));
-    expect(migrations.at(-1)).toBe(g010MigrationName);
+    expect(migrations.indexOf(g010MigrationName)).toBeLessThan(migrations.indexOf(g011MigrationName));
+    expect(migrations.at(-1)).toBe(g011MigrationName);
+  });
+
+  test('keeps the production baseline drift repair additive and fail closed', async () => {
+    const migration = await readFile(g011MigrationPath, 'utf8');
+
+    expect(migration).toContain('missing or cross-shop customer references exist');
+    expect(migration).toContain('missing or cross-shop destination references exist');
+    expect(migration.match(/SET DEFAULT gen_random_uuid\(\)/gu) ?? []).toHaveLength(4);
+    expect(migration).toContain('DROP CONSTRAINT IF EXISTS "orders_customerId_shopId_fkey"');
+    expect(migration).toContain('DROP CONSTRAINT IF EXISTS "dsv_audit_events_customerId_shopId_fkey"');
+    expect(migration.match(/ON DELETE NO ACTION ON UPDATE CASCADE/gu) ?? []).toHaveLength(4);
+    expect(stripSqlLineComments(migration)).not.toMatch(/\bDROP\s+(?:TABLE|INDEX|SCHEMA|TYPE)\b|\bDELETE\s+FROM\b|\bTRUNCATE\b/iu);
   });
 
   test('documents the baseline, G004 tenant-composite replacement, and G007 cleanup transition', async () => {

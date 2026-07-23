@@ -1,0 +1,7 @@
+{
+  "id": "dsv-production-20260723",
+  "expectedAppliedThrough": "20260722170000_dsv_customer_auth_foundation",
+  "schemaSha256": "e73805e7eeb2187f45520da24e75b80c1a8ad27ad91940bd7a46d494d653a7df",
+  "diffToLatestSha256": "30ad14a08c84f25bb7dc0c143ef93edb4590f0291690b053c096f8c2c586b45b",
+  "source": "Read-only prisma migrate diff fingerprints captured from the production clever_route schema before the first migration-history baseline."
+}

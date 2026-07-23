@@ -153,8 +153,8 @@ for forbidden in ['docker volume rm', 'docker compose down -v', 'prisma migrate 
 for required in ['require_disposable_target "$target_url"', 'require_existing_schema_bootstrap_inputs', 'prisma migrate resolve --applied', '--exit-code', 'postgres-backup.sh', 'dsv-g007-restore.sh', 'dsv-g007-migrate-deploy.sh']:
     if required not in script:
         raise SystemExit(f'missing rehearsal contract: {required}')
-if 'cutoff_migration="20260723013000_g010_import_row_resource_tenant_fks"' not in script:
-    raise SystemExit('rehearsal cutoff must track the current G010 latest migration')
+if 'cutoff_migration="20260723023000_g011_production_baseline_drift_repair"' not in script:
+    raise SystemExit('rehearsal cutoff must track the current G011 latest migration')
 main = script.split('require_target_class\n', 1)[1]
 if main.index('require_disposable_target "$target_url"') > main.index('run_or_echo'):
     raise SystemExit('rehearsal can run commands before target validation')

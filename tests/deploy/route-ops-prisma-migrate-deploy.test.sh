@@ -298,12 +298,48 @@ run_production_contract_case() {
   grep -Fq -- "--prefix $ROOT/apps/delivery-api run prisma:migrate:deploy" "$tmp/npm.args"
 }
 
+run_production_baseline_contract_case() {
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/route-ops-migrate-production-baseline.XXXXXX")"
+  trap 'rm -rf "$tmp"' RETURN
+  make_fake_npm "$tmp"
+
+  run_expect_fail "$tmp" 'DSV_PRODUCTION_BASELINE_MANIFEST_SHA256 is required' env \
+    PATH="$tmp/bin:$PATH" \
+    FAKE_NPM_ARGS_FILE="$tmp/npm.args" \
+    DSV_MIGRATION_MODE='production' \
+    DSV_MIGRATION_APPROVED='1' \
+    DSV_MIGRATION_MANIFEST_SHA256='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+    DSV_RESTORE_REHEARSAL_SHA256='abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789' \
+    DSV_PRODUCTION_BASELINE_APPROVED='1' \
+    DATABASE_URL='postgresql://clever:clever@db.example.invalid:5432/clever_route' \
+    bash "$WRAPPER"
+
+  run_expect_fail "$tmp" 'production baseline manifest SHA mismatch' env \
+    PATH="$tmp/bin:$PATH" \
+    FAKE_NPM_ARGS_FILE="$tmp/npm.args" \
+    DSV_MIGRATION_MODE='production' \
+    DSV_MIGRATION_APPROVED='1' \
+    DSV_MIGRATION_MANIFEST_SHA256='0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+    DSV_RESTORE_REHEARSAL_SHA256='abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789' \
+    DSV_PRODUCTION_BASELINE_APPROVED='1' \
+    DSV_PRODUCTION_BASELINE_MANIFEST_SHA256='0000000000000000000000000000000000000000000000000000000000000000' \
+    DATABASE_URL='postgresql://clever:clever@db.example.invalid:5432/clever_route' \
+    bash "$WRAPPER"
+}
+
 run_static_contract_case() {
   grep -Fq '"prisma:migrate:deploy": "prisma migrate deploy"' apps/delivery-api/package.json
   grep -Fq 'COPY apps/delivery-api/scripts/dsv-g007-migrate-deploy.sh ./scripts/dsv-g007-migrate-deploy.sh' apps/delivery-api/Dockerfile
   grep -Fq 'chmod 0755 ./scripts/dsv-g007-migrate-deploy.sh' apps/delivery-api/Dockerfile
   grep -Fq 'command: ["/app/scripts/dsv-g007-migrate-deploy.sh"]' infra/compose/docker-compose.prod.yml
   grep -Fq 'DSV_MIGRATION_MODE: production' infra/compose/docker-compose.prod.yml
+  grep -Fq 'DSV_PRODUCTION_BASELINE_APPROVED:' infra/compose/docker-compose.prod.yml
+  grep -Fq 'DSV_PRODUCTION_BASELINE_MANIFEST_SHA256:' infra/compose/docker-compose.prod.yml
+  test -f apps/delivery-api/prisma/production-baselines/dsv-production-20260723.json
+  grep -Fq 'production migration history contains unknown migration' apps/delivery-api/scripts/dsv-g007-migrate-deploy.sh
+  grep -Fq 'production migration history advanced past baseline with missing prefix' apps/delivery-api/scripts/dsv-g007-migrate-deploy.sh
+  grep -Fq 'all_expected_file' apps/delivery-api/scripts/dsv-g007-migrate-deploy.sh
   grep -Fq 'command: ["/app/scripts/dsv-g007-migrate-deploy.sh"]' infra/compose/docker-compose.dsv-dev.yml
   grep -Fq 'DSV_MIGRATION_MODE: compose-dev' infra/compose/docker-compose.dsv-dev.yml
   grep -Fq 'DSV_DEV_FRESH_VOLUME: "1"' infra/compose/docker-compose.dsv-dev.yml
@@ -336,5 +372,6 @@ run_compose_dev_old_volume_case
 run_compose_dev_missing_volume_name_case
 run_production_loopback_case
 run_production_contract_case
+run_production_baseline_contract_case
 run_static_contract_case
 printf '{"ok":true,"wrapper":"%s"}\n' "$WRAPPER"

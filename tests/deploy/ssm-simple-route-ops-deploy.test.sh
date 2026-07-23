@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-params_path="$(DSV_MIGRATION_APPROVED=1 DSV_MIGRATION_MANIFEST_SHA256=3333333333333333333333333333333333333333333333333333333333333333 DSV_RESTORE_REHEARSAL_SHA256=4444444444444444444444444444444444444444444444444444444444444444 ROUTE_OPS_SIMPLE_CHANNEL_TAG=prod-test ROUTE_OPS_RUNTIME_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:1111111111111111111111111111111111111111111111111111111111111111 ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static@sha256:2222222222222222222222222222222222222222222222222222222222222222 scripts/ssm-simple-route-ops-deploy.sh --dry-run --no-send)"
+params_path="$(DSV_MIGRATION_APPROVED=1 DSV_MIGRATION_MANIFEST_SHA256=3333333333333333333333333333333333333333333333333333333333333333 DSV_RESTORE_REHEARSAL_SHA256=4444444444444444444444444444444444444444444444444444444444444444 DSV_PRODUCTION_BASELINE_APPROVED=1 DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=5555555555555555555555555555555555555555555555555555555555555555 ROUTE_OPS_SIMPLE_CHANNEL_TAG=prod-test ROUTE_OPS_RUNTIME_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:1111111111111111111111111111111111111111111111111111111111111111 ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static@sha256:2222222222222222222222222222222222222222222222222222222222222222 scripts/ssm-simple-route-ops-deploy.sh --dry-run --no-send)"
 cleanup() { rm -f "$params_path"; }
 trap cleanup EXIT
 
@@ -33,6 +33,7 @@ checks = {
     'digest_runtime_rendered': 'DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:1111111111111111111111111111111111111111111111111111111111111111' in command,
     'digest_static_rendered': 'ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static@sha256:2222222222222222222222222222222222222222222222222222222222222222' in command,
     'migration_evidence_rendered': 'DSV_MIGRATION_APPROVED=1' in command and 'DSV_MIGRATION_MANIFEST_SHA256=3333333333333333333333333333333333333333333333333333333333333333' in command and 'DSV_RESTORE_REHEARSAL_SHA256=4444444444444444444444444444444444444444444444444444444444444444' in command,
+    'production_baseline_evidence_rendered': 'DSV_PRODUCTION_BASELINE_APPROVED=1' in command and 'DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=5555555555555555555555555555555555555555555555555555555555555555' in command,
     'compose_synced_to_host': 'COMPOSE_FILE_B64=' in command and 'base64 -d > "$COMPOSE_FILE"' in command,
     'runtime_env_fails_before_synced_file_mutation': 'missing required runtime env: infra/env/delivery-api.env' in command and command.index('missing required runtime env: infra/env/delivery-api.env') < command.index('base64 -d > "$COMPOSE_FILE"'),
     'does_not_mutate_ingress': 'CADDYFILE_B64=' not in command and 'base64 -d > "$CADDYFILE"' not in command and 'caddy reload --config /etc/caddy/Caddyfile' not in command and 'caddy validate --config /etc/caddy/Caddyfile' not in command and '/etc/caddy/Caddyfile' not in command,
@@ -58,6 +59,7 @@ checks = {
     'gh_write_packages_warning_only': 'does not show write:packages; continuing because docker push is the authoritative GHCR publish check' in wrapper and 'GHCR publish requires a GitHub/GHCR token with write:packages' not in wrapper,
     'workflow_uses_node24_docker_build_actions': 'uses: docker/setup-buildx-action@v4' in workflow and 'uses: docker/build-push-action@v7' in workflow,
     'workflow_requires_migration_approval_evidence': 'approve_dsv_migration:' in workflow and 'restore_rehearsal_sha256:' in workflow and 'approve_dsv_migration=true is required for a production rollout' in workflow and 'restore_rehearsal_sha256 must be 64 lowercase hex characters' in workflow,
+    'workflow_exposes_one_time_production_baseline': 'approve_production_baseline:' in workflow and 'DSV_PRODUCTION_BASELINE_APPROVED:' in workflow and 'production_baseline_manifest_sha256' in workflow,
     'workflow_always_prepares_private_registry_resolution': '      - name: Login to GHCR\n        # docker/login-action' in workflow and '      - name: Set up Docker Buildx\n        uses: docker/setup-buildx-action@v4' in workflow,
     'workflow_fails_closed_when_digest_resolution_fails': 'if ! digest="$(docker buildx imagetools inspect' in workflow and '[[ "$digest" == sha256:* ]] || return 1' in workflow,
     'workflow_uses_registry_cache': 'cache-from: type=registry,ref=${{ env.DELIVERY_API_IMAGE_REPO }}:buildcache' in workflow and 'cache-to: type=registry,ref=${{ env.ROUTE_OPS_WEB_STATIC_IMAGE_REPO }}:buildcache,mode=max' in workflow,

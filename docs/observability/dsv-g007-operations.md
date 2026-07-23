@@ -57,8 +57,8 @@ Migration status compares successful applied migration names in `_prisma_migrati
 to the checked-in `apps/delivery-api/prisma/migrations` directory, with that
 directory-derived chain remaining authoritative for expected/applied counts. It
 also requires latest migration
-`20260723013000_g010_import_row_resource_tenant_fks`, so the current expected chain is
-44 migrations. The status reports `expectedCount`, `appliedCount`,
+`20260723023000_g011_production_baseline_drift_repair`, so the current expected chain is
+45 migrations. The status reports `expectedCount`, `appliedCount`,
 `pendingCount`, `failedCount`, `latestMigration`, `actualLatestMigration`,
 `pendingMigrations`, `unexpectedCount`, and `unexpectedMigrations`; any pending,
 missing, failed, or unexpected history entry is `critical`.
