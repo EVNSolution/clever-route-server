@@ -11,9 +11,9 @@ trap cleanup EXIT
 
 bash -n "$script"
 
-rg -q "to_regclass\\('public\\._prisma_migrations'\\) IS NOT NULL" "$script"
-rg -q 'db-push-source-before-20260722233000.sql.template' "$script"
-rg -q 'stale-clone requires G007_EXPECTED_APPLIED_THROUGH=' "$script"
+grep -ERq "to_regclass\\('public\\._prisma_migrations'\\) IS NOT NULL" "$script"
+grep -ERq 'db-push-source-before-20260722233000.sql.template' "$script"
+grep -ERq 'stale-clone requires G007_EXPECTED_APPLIED_THROUGH=' "$script"
 
 expect_reject() {
   local class="$1"
@@ -22,7 +22,7 @@ expect_reject() {
     echo "expected rehearsal guard to reject $class $url" >&2
     exit 1
   fi
-  if rg -q 'would_run:.*(psql|postgres-backup|dsv-g007-restore|dsv-g007-migrate-deploy|prisma)' "$tmp_dir/reject.out" "$tmp_dir/reject.err"; then
+  if grep -ERq 'would_run:.*(psql|postgres-backup|dsv-g007-restore|dsv-g007-migrate-deploy|prisma)' "$tmp_dir/reject.out" "$tmp_dir/reject.err"; then
     echo "rehearsal guard reached a DB or migration command for rejected URL $url" >&2
     exit 1
   fi
@@ -42,11 +42,11 @@ G007_DATABASE_TARGET_CLASS=empty \
 G007_REHEARSAL_DATABASE_URL='postgresql://clever:clever@localhost:55456/clever_g007_empty_rehearsal_test' \
 G007_FAKE_COMMANDS=1 \
 "$script" --evidence "$tmp_dir/empty-evidence" > "$tmp_dir/empty.out"
-rg -q 'dsv-g007-migrate-deploy\.sh' "$tmp_dir/empty.out"
-rg -q -- '--exit-code' "$tmp_dir/empty-evidence/post-deploy-drift.diff"
+grep -ERq 'dsv-g007-migrate-deploy\.sh' "$tmp_dir/empty.out"
+grep -ERq -- '--exit-code' "$tmp_dir/empty-evidence/post-deploy-drift.diff"
 test -f "$tmp_dir/empty-evidence/rehearsal.json"
 
-if rg -q 'migrate resolve --applied|fingerprint-bootstrap|existing-schema-drift' "$tmp_dir/empty.out" "$tmp_dir/empty-evidence" 2>/dev/null; then
+if grep -ERq 'migrate resolve --applied|fingerprint-bootstrap|existing-schema-drift' "$tmp_dir/empty.out" "$tmp_dir/empty-evidence" 2>/dev/null; then
   echo "empty target must go directly to migrate deploy without existing-schema bootstrap" >&2
   exit 1
 fi
@@ -59,7 +59,7 @@ if G007_DATABASE_TARGET_CLASS=restore \
   echo "non-empty target without expected-applied-through and fingerprint DB should fail" >&2
   exit 1
 fi
-rg -q 'G007_EXPECTED_APPLIED_THROUGH is required' "$tmp_dir/missing-bootstrap.err"
+grep -ERq 'G007_EXPECTED_APPLIED_THROUGH is required' "$tmp_dir/missing-bootstrap.err"
 
 if G007_DATABASE_TARGET_CLASS=stale-clone \
   G007_REHEARSAL_DATABASE_URL='postgresql://clever:clever@localhost:55456/clever_g007_stale_clone_bad_fingerprint' \
@@ -71,7 +71,7 @@ if G007_DATABASE_TARGET_CLASS=stale-clone \
   echo "stale-clone target with generic fingerprint DB should fail" >&2
   exit 1
 fi
-rg -q 'fingerprint scratch database name does not match target class stale-clone' "$tmp_dir/bad-fingerprint.err"
+grep -ERq 'fingerprint scratch database name does not match target class stale-clone' "$tmp_dir/bad-fingerprint.err"
 
 G007_DATABASE_TARGET_CLASS=stale-clone \
 G007_REHEARSAL_DATABASE_URL='postgresql://clever:clever@localhost:55456/clever_g007_stale_clone_rehearsal_test' \
@@ -80,15 +80,15 @@ G007_FINGERPRINT_DATABASE_URL='postgresql://clever:clever@localhost:55456/clever
 G007_EXPECTED_APPLIED_THROUGH='20260722150000_add_dsv_dispatch_and_resources' \
 G007_FAKE_COMMANDS=1 \
 "$script" --evidence "$tmp_dir/stale-evidence" > "$tmp_dir/stale.out"
-rg -q 'postgres-backup\.sh' "$tmp_dir/stale.out"
-rg -q 'dsv-g007-restore\.sh' "$tmp_dir/stale.out"
-rg -q 'psql .*20260520000000_initial_route_ops_baseline/migration\.sql' "$tmp_dir/stale-evidence/fingerprint-bootstrap.log"
-rg -q 'psql .*20260722150000_add_dsv_dispatch_and_resources/migration\.sql' "$tmp_dir/stale-evidence/fingerprint-bootstrap.log"
-rg -q 'psql .*db-push-source-before-20260722233000\.sql' "$tmp_dir/stale-evidence/fingerprint-bootstrap.log"
-rg -q 'prisma migrate resolve --applied 20260520000000_initial_route_ops_baseline' "$tmp_dir/stale-evidence/resolve-applied.log"
-rg -q 'prisma migrate resolve --applied 20260722150000_add_dsv_dispatch_and_resources' "$tmp_dir/stale-evidence/resolve-applied.log"
-rg -q -- '--to-url postgresql://clever:clever@localhost:55456/clever_g007_stale_fingerprint_test --exit-code' "$tmp_dir/stale-evidence/existing-schema-drift.diff"
-rg -q 'dsv-g007-migrate-deploy\.sh' "$tmp_dir/stale.out"
+grep -ERq 'postgres-backup\.sh' "$tmp_dir/stale.out"
+grep -ERq 'dsv-g007-restore\.sh' "$tmp_dir/stale.out"
+grep -ERq 'psql .*20260520000000_initial_route_ops_baseline/migration\.sql' "$tmp_dir/stale-evidence/fingerprint-bootstrap.log"
+grep -ERq 'psql .*20260722150000_add_dsv_dispatch_and_resources/migration\.sql' "$tmp_dir/stale-evidence/fingerprint-bootstrap.log"
+grep -ERq 'psql .*db-push-source-before-20260722233000\.sql' "$tmp_dir/stale-evidence/fingerprint-bootstrap.log"
+grep -ERq 'prisma migrate resolve --applied 20260520000000_initial_route_ops_baseline' "$tmp_dir/stale-evidence/resolve-applied.log"
+grep -ERq 'prisma migrate resolve --applied 20260722150000_add_dsv_dispatch_and_resources' "$tmp_dir/stale-evidence/resolve-applied.log"
+grep -ERq -- '--to-url postgresql://clever:clever@localhost:55456/clever_g007_stale_fingerprint_test --exit-code' "$tmp_dir/stale-evidence/existing-schema-drift.diff"
+grep -ERq 'dsv-g007-migrate-deploy\.sh' "$tmp_dir/stale.out"
 test -f "$tmp_dir/stale-evidence/rehearsal.json"
 
 G007_DATABASE_TARGET_CLASS=prod-like-clone \
@@ -97,10 +97,10 @@ G007_FINGERPRINT_DATABASE_URL='postgresql://clever:clever@localhost:55456/clever
 G007_EXPECTED_APPLIED_THROUGH='20260722223000_drop_legacy_single_tenant_fks' \
 G007_FAKE_COMMANDS=1 \
 "$script" --evidence "$tmp_dir/prod-like-evidence" > "$tmp_dir/prod-like.out"
-rg -q 'migrate resolve --applied' "$tmp_dir/prod-like-evidence/resolve-applied.log"
-rg -q 'psql .*db-push-source-before-20260722233000\.sql' "$tmp_dir/prod-like-evidence/fingerprint-bootstrap.log"
-rg -q -- '--to-url postgresql://clever:clever@localhost:55456/clever_g007_prod_like_fingerprint_test --exit-code' "$tmp_dir/prod-like-evidence/existing-schema-drift.diff"
-rg -q 'dsv-g007-migrate-deploy\.sh' "$tmp_dir/prod-like.out"
+grep -ERq 'migrate resolve --applied' "$tmp_dir/prod-like-evidence/resolve-applied.log"
+grep -ERq 'psql .*db-push-source-before-20260722233000\.sql' "$tmp_dir/prod-like-evidence/fingerprint-bootstrap.log"
+grep -ERq -- '--to-url postgresql://clever:clever@localhost:55456/clever_g007_prod_like_fingerprint_test --exit-code' "$tmp_dir/prod-like-evidence/existing-schema-drift.diff"
+grep -ERq 'dsv-g007-migrate-deploy\.sh' "$tmp_dir/prod-like.out"
 test -f "$tmp_dir/prod-like-evidence/rehearsal.json"
 
 touch "$tmp_dir/restore.dump"
@@ -111,9 +111,9 @@ G007_FINGERPRINT_DATABASE_URL='postgresql://clever:clever@localhost:55456/clever
 G007_EXPECTED_APPLIED_THROUGH='20260722213000_dsv_assignment_eta_state' \
 G007_FAKE_COMMANDS=1 \
 "$script" --evidence "$tmp_dir/restore-evidence" > "$tmp_dir/restore.out"
-rg -q 'dsv-g007-restore\.sh' "$tmp_dir/restore.out"
-rg -q 'migrate resolve --applied' "$tmp_dir/restore-evidence/resolve-applied.log"
-rg -q 'dsv-g007-migrate-deploy\.sh' "$tmp_dir/restore.out"
+grep -ERq 'dsv-g007-restore\.sh' "$tmp_dir/restore.out"
+grep -ERq 'migrate resolve --applied' "$tmp_dir/restore-evidence/resolve-applied.log"
+grep -ERq 'dsv-g007-migrate-deploy\.sh' "$tmp_dir/restore.out"
 test -f "$tmp_dir/restore-evidence/rehearsal.json"
 
 if G007_DATABASE_TARGET_CLASS=restore \
@@ -127,8 +127,8 @@ if G007_DATABASE_TARGET_CLASS=restore \
   echo "non-empty target with nonzero proof diff must fail" >&2
   exit 1
 fi
-rg -q 'Existing target schema does not exactly match' "$tmp_dir/diff-fail.err"
-if rg -q 'migrate resolve --applied|dsv-g007-migrate-deploy\.sh' "$tmp_dir/diff-fail.out" "$tmp_dir/diff-fail-evidence/resolve-applied.log" 2>/dev/null; then
+grep -ERq 'Existing target schema does not exactly match' "$tmp_dir/diff-fail.err"
+if grep -ERq 'migrate resolve --applied|dsv-g007-migrate-deploy\.sh' "$tmp_dir/diff-fail.out" "$tmp_dir/diff-fail-evidence/resolve-applied.log" 2>/dev/null; then
   echo "failed existing-schema proof must not resolve or deploy" >&2
   exit 1
 fi
@@ -141,7 +141,7 @@ if G007_DATABASE_TARGET_CLASS=empty \
   echo "post-deploy nonzero drift must fail" >&2
   exit 1
 fi
-rg -q 'Post-deploy drift is nonzero' "$tmp_dir/post-drift-fail.err"
+grep -ERq 'Post-deploy drift is nonzero' "$tmp_dir/post-drift-fail.err"
 
 python3 - <<'PY'
 import pathlib
