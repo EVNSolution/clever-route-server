@@ -48,8 +48,8 @@ case "$g007_status" in
   *) echo "G007 JSON status must use the API container for default health/readiness probes" >&2; exit 1 ;;
 esac
 case "$g007_status" in
-  *"scripts/dsv-g007-observation-report.sh"*) ;;
-  *) echo "G007 JSON status must include legacy, invariant, and migration policy outputs" >&2; exit 1 ;;
+  *"ROUTE_OPS_G007_OBSERVATION_REPORT_B64"*"ROUTE_OPS_G007_OBSERVATION_REPORT_PATH"*"deployed_migration_names"*) ;;
+  *) echo "G007 JSON status must embed legacy observation and inspect migrations from the deployed image" >&2; exit 1 ;;
 esac
 case "$rendered" in
   *"export ROUTE_OPS_MONITOR_G007_JSON_STATUS=false"*) ;;

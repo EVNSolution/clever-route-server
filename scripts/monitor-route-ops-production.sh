@@ -63,6 +63,8 @@ shell_quote() {
 }
 
 host_script() {
+  local observation_report_b64
+  observation_report_b64="$(base64 < scripts/dsv-g007-observation-report.sh | tr -d '\n')"
   cat <<HOST
 #!/usr/bin/env bash
 set -euo pipefail
@@ -75,6 +77,7 @@ export ROUTE_OPS_SMOKE_SHOP_DOMAIN=$(shell_quote "$SHOP_DOMAIN")
 export ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP=$(shell_quote "$EXPECT_PUBLIC_OPENFREEMAP")
 export ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP_HOSTS=$(shell_quote "$EXPECT_PUBLIC_OPENFREEMAP_HOSTS")
 export ROUTE_OPS_EXPECT_GEOCODER_CONFIGURED=$(shell_quote "$EXPECT_GEOCODER_CONFIGURED")
+export ROUTE_OPS_G007_OBSERVATION_REPORT_B64=$(shell_quote "$observation_report_b64")
 HOST
   cat <<'HOST'
 cd /srv/clever-route-server
@@ -117,6 +120,11 @@ done
 
 if [ "${ROUTE_OPS_MONITOR_G007_JSON_STATUS}" = "true" ]; then
   echo "SECTION=g007_json_status"
+  observation_report_path="$(mktemp /tmp/dsv-g007-observation-report.XXXXXX)"
+  trap 'rm -f "$observation_report_path"' EXIT
+  printf '%s' "$ROUTE_OPS_G007_OBSERVATION_REPORT_B64" | base64 -d > "$observation_report_path"
+  chmod 700 "$observation_report_path"
+  export ROUTE_OPS_G007_OBSERVATION_REPORT_PATH="$observation_report_path"
   python3 - <<'PY'
 import json
 import os
@@ -131,10 +139,11 @@ postgres_container = 'clever-route-postgres-1'
 migration_dir = Path('apps/delivery-api/prisma/migrations')
 required_latest_migration = '20260723023000_g011_production_baseline_drift_repair'
 configured_status_base_url = os.environ.get('ROUTE_OPS_G007_STATUS_BASE_URL', '').strip().rstrip('/')
+observation_report_path = os.environ.get('ROUTE_OPS_G007_OBSERVATION_REPORT_PATH', '').strip()
 
 
-def run(command, timeout=15):
-    return subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+def run(command, timeout=15, input_text=None):
+    return subprocess.run(command, text=True, input=input_text, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
 
 
 # BEGIN G007_HTTP_STATUS_POLICY
@@ -215,6 +224,20 @@ def psql_json(sql):
     return {'status': 'ok', 'value': payload}
 
 
+def deployed_migration_names():
+    proc = run([
+        'docker', 'exec', api_container,
+        'find', 'prisma/migrations', '-mindepth', '2', '-maxdepth', '2',
+        '-type', 'f', '-name', 'migration.sql', '-print',
+    ])
+    if proc.returncode != 0:
+        return {'status': 'unknown', 'error': proc.stderr.strip() or proc.stdout.strip()}
+    names = sorted({Path(line.strip()).parent.name for line in proc.stdout.splitlines() if line.strip()})
+    if required_latest_migration not in names:
+        return {'status': 'unknown', 'error': 'deployed image does not contain the required latest migration'}
+    return names
+
+
 # BEGIN G007_MIGRATION_POLICY
 def expected_migration_names(path=migration_dir):
     names = []
@@ -275,7 +298,10 @@ def migration_status_from_history(history, expected=None):
 
 
 def migration_status():
-    return migration_status_from_history(psql_json(migration_history_sql))
+    expected = deployed_migration_names()
+    if isinstance(expected, dict):
+        return expected
+    return migration_status_from_history(psql_json(migration_history_sql), expected)
 
 
 migration_history_sql = """
@@ -333,21 +359,29 @@ SELECT json_build_object(
 ) FROM checks;
 """
 
-legacy_proc = run([
-    'bash', '-lc',
-    "docker logs --since \"${ROUTE_OPS_MONITOR_LOG_SINCE:-45m}\" "
-    + api_container
-    + " 2>/dev/null | scripts/dsv-g007-observation-report.sh",
+legacy_logs = run([
+    'docker', 'logs', '--since', os.environ.get('ROUTE_OPS_MONITOR_LOG_SINCE', '45m'), api_container,
 ], timeout=30)
-if legacy_proc.returncode == 0:
-    legacy = json.loads(legacy_proc.stdout)
+if legacy_logs.returncode != 0:
+    legacy = {'status': 'unknown', 'error': legacy_logs.stderr.strip() or legacy_logs.stdout.strip()}
+elif not observation_report_path:
+    legacy = {'status': 'unknown', 'error': 'missing embedded observation report path'}
+else:
+    legacy_proc = run([observation_report_path], timeout=30, input_text=legacy_logs.stdout)
+    try:
+        legacy = json.loads(legacy_proc.stdout) if legacy_proc.returncode == 0 else {
+            'status': 'unknown',
+            'error': legacy_proc.stderr.strip() or legacy_proc.stdout.strip(),
+        }
+    except json.JSONDecodeError:
+        legacy = {'status': 'unknown', 'error': 'observation report returned non-json output'}
+
+if legacy.get('status') != 'unknown':
     has_legacy = (
         not legacy.get('legacyZeroEvidence', {}).get('legacy_read', False)
         or not legacy.get('legacyZeroEvidence', {}).get('legacy_write', False)
     )
     legacy['status'] = 'critical' if has_legacy else 'ok'
-else:
-    legacy = {'status': 'unknown', 'error': legacy_proc.stderr.strip() or legacy_proc.stdout.strip()}
 
 report = {
     'schemaVersion': 1,
