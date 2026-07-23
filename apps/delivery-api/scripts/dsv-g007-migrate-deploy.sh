@@ -93,7 +93,6 @@ run_production_baseline_if_approved() {
   if [[ "${DSV_PRODUCTION_BASELINE_APPROVED:-}" != "1" ]]; then
     return 0
   fi
-  [[ -x "$prisma_bin" ]] || fail "production baseline requires Prisma CLI at $prisma_bin"
   [[ -f "$production_baseline_manifest" ]] || fail "production baseline manifest is missing"
   require_env DSV_PRODUCTION_BASELINE_MANIFEST_SHA256
   [[ "$DSV_PRODUCTION_BASELINE_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]] \
@@ -102,6 +101,7 @@ run_production_baseline_if_approved() {
   manifest_sha="$(sha256_file "$production_baseline_manifest")"
   [[ "$manifest_sha" == "$DSV_PRODUCTION_BASELINE_MANIFEST_SHA256" ]] \
     || fail "production baseline manifest SHA mismatch"
+  [[ -x "$prisma_bin" ]] || fail "production baseline requires Prisma CLI at $prisma_bin"
 
   read -r expected_through expected_schema_sha < <(
     node -e '
