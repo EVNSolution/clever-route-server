@@ -29,27 +29,36 @@ try {
     { code: 'TS03', description: '계약서에 정의된 TS03 운송 조건을 적용합니다.', name: '특수 운송 03' },
   ]) {
     const comparisonKey = condition.code.trim().toUpperCase();
-    await prisma.dsvTransportCondition.upsert({
-      create: {
-        ...condition,
-        activatedAt: new Date(),
-        comparisonKey,
-        createdBy: 'demo-seed',
-        rawValue: condition.code,
-        shopId: shop.id,
-        status: 'ACTIVE',
-      },
-      update: {
-        activatedAt: new Date(),
-        comparisonKey,
-        deactivatedAt: null,
-        description: condition.description,
-        name: condition.name,
-        rawValue: condition.code,
-        status: 'ACTIVE',
-      },
-      where: { shopId_code: { code: condition.code, shopId: shop.id } },
+    const current = await prisma.dsvTransportCondition.findFirst({
+      where: { code: { equals: condition.code, mode: 'insensitive' }, shopId: shop.id },
     });
+    if (current === null) {
+      await prisma.dsvTransportCondition.create({
+        data: {
+          ...condition,
+          activatedAt: new Date(),
+          comparisonKey,
+          createdBy: 'demo-seed',
+          rawValue: condition.code,
+          shopId: shop.id,
+          status: 'ACTIVE',
+        },
+      });
+    } else {
+      await prisma.dsvTransportCondition.update({
+        data: {
+          code: condition.code,
+          activatedAt: new Date(),
+          comparisonKey,
+          deactivatedAt: null,
+          description: condition.description,
+          name: condition.name,
+          rawValue: condition.code,
+          status: 'ACTIVE',
+        },
+        where: { id: current.id },
+      });
+    }
   }
 
   const bootstrapLoginId = process.env.CLEVER_DSV_BOOTSTRAP_ADMIN_ID?.trim();
