@@ -305,7 +305,7 @@ describe("calculateDeliveryScope", () => {
     );
   });
 
-  test("flags explicit delivery dates whose weekday disagrees with the Woo day value", () => {
+  test("keeps the product date range ahead of an explicit delivery date", () => {
     const scope = calculateDeliveryScope({
       createdAt: "2026-05-05T14:00:00Z",
       deliveryArea: "Thornhill",
@@ -318,14 +318,48 @@ describe("calculateDeliveryScope", () => {
 
     expect(scope).toEqual(
       expect.objectContaining({
-        deliveryDate: "2026-05-21",
-        deliveryDateSource: "EXPLICIT_ATTRIBUTE",
-        deliveryDateWeekday: "THURSDAY",
-        deliveryDateWeekdayMismatch: true,
+        deliveryDate: "2026-05-22",
+        deliveryDateSource: "LINE_ITEM_DATE_RANGE",
+        deliveryDateWeekday: "FRIDAY",
+        deliveryDateWeekdayMismatch: false,
         deliveryWeekday: "FRIDAY",
-        routeScopeKey: "2026-05-21|DELIVERY||",
+        routeScopeKey: "2026-05-22|DELIVERY||",
       }),
     );
+  });
+
+  test("keeps a Tuesday 16:59 order in the current configured cycle", () => {
+    const scope = calculateDeliveryScope({
+      createdAt: "2026-05-05T20:59:00Z",
+      deliveryCycle: {
+        cutoffTime: "17:00",
+        cutoffWeekday: "TUESDAY",
+        timeZone: "America/Toronto",
+      },
+      deliveryDayRaw: "Friday",
+      lineItems: [],
+      pickupDayRaw: null,
+      processedAt: null,
+    });
+
+    expect(scope.deliveryDate).toBe("2026-05-08");
+  });
+
+  test("moves a Tuesday 17:00 order into the next configured cycle", () => {
+    const scope = calculateDeliveryScope({
+      createdAt: "2026-05-05T21:00:00Z",
+      deliveryCycle: {
+        cutoffTime: "17:00",
+        cutoffWeekday: "TUESDAY",
+        timeZone: "America/Toronto",
+      },
+      deliveryDayRaw: "Friday",
+      lineItems: [],
+      pickupDayRaw: null,
+      processedAt: null,
+    });
+
+    expect(scope.deliveryDate).toBe("2026-05-15");
   });
 
   test("falls back to order-date cycle when no line item date range exists", () => {

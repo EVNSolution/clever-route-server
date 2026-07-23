@@ -14,8 +14,15 @@ export type DeliveryDateSource =
 
 export type WeekdayFallbackPolicy = "DELIVERY_CYCLE" | "ORDER_WEEK";
 
+export type DeliveryCycleConfig = {
+  cutoffTime: string;
+  cutoffWeekday: DeliveryWeekday;
+  timeZone: string;
+};
+
 export type DeliveryScopeInput = {
   createdAt: string | null;
+  deliveryCycle?: DeliveryCycleConfig;
   deliveryArea?: string | null;
   deliveryDateRaw?: string | null;
   deliveryDayRaw: string | null;
@@ -91,9 +98,10 @@ export function calculateDeliveryScope(
     input.pickupDayRaw === null ? input.deliveryTimeWindow ?? null : null,
   );
   const orderCreatedAt = input.createdAt ?? input.processedAt;
-  const timezone = input.shopTimezone ?? DEFAULT_TIMEZONE;
-  const orderDateLocal =
-    orderCreatedAt === null ? null : toLocalDate(orderCreatedAt, timezone);
+  const timezone = input.deliveryCycle?.timeZone ?? input.shopTimezone ?? DEFAULT_TIMEZONE;
+  const orderLocalDateTime =
+    orderCreatedAt === null ? null : toLocalDateTime(orderCreatedAt, timezone);
+  const orderDateLocal = orderLocalDateTime?.date ?? null;
   const explicitDeliveryDate = parseExplicitDeliveryDate(
     input.deliveryDateRaw ?? null,
     orderDateLocal,
@@ -106,7 +114,13 @@ export function calculateDeliveryScope(
       ? null
       : weekdayFallbackPolicy === "ORDER_WEEK"
         ? calculateOrderWeekRange(orderDateLocal)
-        : calculateCycleRange(orderDateLocal);
+        : input.deliveryCycle === undefined
+          ? calculateCycleRange(orderDateLocal)
+          : calculateConfiguredCycleRange(
+              orderDateLocal,
+              orderLocalDateTime?.minutes ?? null,
+              input.deliveryCycle,
+            );
   const fallbackRange =
     lineItemRange ?? orderDateFallbackRange;
   const explicitDeliveryDateWeekday = weekdayFromDate(explicitDeliveryDate);
@@ -116,21 +130,26 @@ export function calculateDeliveryScope(
     service.serviceType ?? (explicitDeliveryDate === null ? null : "DELIVERY");
   const deliverySession =
     service.deliverySession ?? (explicitDeliveryDate === null ? null : "DAY");
-  const deliveryDate =
-    explicitDeliveryDate ??
-    (fallbackRange === null || deliveryWeekday === null
+  const lineItemDeliveryDate =
+    lineItemRange === null || deliveryWeekday === null
       ? null
-      : findDateForWeekday(fallbackRange, deliveryWeekday));
+      : findDateForWeekday(lineItemRange, deliveryWeekday);
+  const fallbackDeliveryDate =
+    orderDateFallbackRange === null || deliveryWeekday === null
+      ? null
+      : findDateForWeekday(orderDateFallbackRange, deliveryWeekday);
+  const deliveryDate =
+    lineItemDeliveryDate ?? explicitDeliveryDate ?? fallbackDeliveryDate;
   const deliveryDateSource: DeliveryDateSource =
-    explicitDeliveryDate !== null
-      ? "EXPLICIT_ATTRIBUTE"
+    lineItemDeliveryDate !== null
+      ? "LINE_ITEM_DATE_RANGE"
+      : explicitDeliveryDate !== null
+        ? "EXPLICIT_ATTRIBUTE"
       : deliveryDate === null
         ? "MISSING"
-        : lineItemRange === null
-          ? weekdayFallbackPolicy === "ORDER_WEEK"
-            ? "ORDER_DATE_WEEK_RULE"
-            : "ORDER_DATE_CYCLE_RULE"
-          : "LINE_ITEM_DATE_RANGE";
+        : weekdayFallbackPolicy === "ORDER_WEEK"
+          ? "ORDER_DATE_WEEK_RULE"
+          : "ORDER_DATE_CYCLE_RULE";
   const routeScopeKey =
     deliveryDate === null || serviceType === null
       ? null
@@ -619,6 +638,35 @@ function calculateCycleRange(orderDateLocal: string): DateRange {
   };
 }
 
+function calculateConfiguredCycleRange(
+  orderDateLocal: string,
+  orderLocalMinutes: number | null,
+  cycle: DeliveryCycleConfig,
+): DateRange {
+  const cutoffMinutes = parseTimeMinutes(cycle.cutoffTime);
+  if (cutoffMinutes === null || orderLocalMinutes === null) {
+    return calculateCycleRange(orderDateLocal);
+  }
+
+  const orderDate = parseYmd(orderDateLocal);
+  const cutoffWeekday = weekdayIndex(cycle.cutoffWeekday);
+  let daysUntilCutoff = (cutoffWeekday - orderDate.getUTCDay() + 7) % 7;
+  if (daysUntilCutoff === 0 && orderLocalMinutes >= cutoffMinutes) {
+    daysUntilCutoff = 7;
+  }
+
+  const cutoffDate = addDays(orderDate, daysUntilCutoff);
+  const deliveryOffsets = ["THURSDAY", "FRIDAY", "SATURDAY"].map((weekday) => {
+    const offset = (weekdayIndex(weekday as DeliveryWeekday) - cutoffWeekday + 7) % 7;
+    return offset === 0 ? 7 : offset;
+  });
+
+  return {
+    endDate: formatDate(addDays(cutoffDate, Math.max(...deliveryOffsets))),
+    startDate: formatDate(addDays(cutoffDate, Math.min(...deliveryOffsets))),
+  };
+}
+
 function calculateOrderWeekRange(orderDateLocal: string): DateRange {
   const orderDate = parseYmd(orderDateLocal);
   const day = orderDate.getUTCDay();
@@ -673,21 +721,45 @@ function weekdayFromIndex(index: number): DeliveryWeekday | null {
   return null;
 }
 
-function toLocalDate(value: string, timezone: string): string | null {
+function toLocalDateTime(
+  value: string,
+  timezone: string,
+): { date: string; minutes: number } | null {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    day: "2-digit",
-    month: "2-digit",
-    timeZone: timezone,
-    year: "numeric",
-  }).formatToParts(date);
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat("en-CA", {
+      day: "2-digit",
+      hour: "2-digit",
+      hourCycle: "h23",
+      minute: "2-digit",
+      month: "2-digit",
+      timeZone: timezone,
+      year: "numeric",
+    }).formatToParts(date);
+  } catch {
+    return null;
+  }
   const year = parts.find((part) => part.type === "year")?.value;
   const month = parts.find((part) => part.type === "month")?.value;
   const day = parts.find((part) => part.type === "day")?.value;
-  return year === undefined || month === undefined || day === undefined
+  const hour = Number(parts.find((part) => part.type === "hour")?.value);
+  const minute = Number(parts.find((part) => part.type === "minute")?.value);
+  return year === undefined || month === undefined || day === undefined ||
+    !Number.isFinite(hour) || !Number.isFinite(minute)
     ? null
-    : `${year}-${month}-${day}`;
+    : { date: `${year}-${month}-${day}`, minutes: hour * 60 + minute };
+}
+
+function parseTimeMinutes(value: string): number | null {
+  const match = /^(\d{2}):(\d{2})$/u.exec(value);
+  if (match === null) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59
+    ? hour * 60 + minute
+    : null;
 }
 
 function normalizeOptional(value: string | null | undefined): string | null {

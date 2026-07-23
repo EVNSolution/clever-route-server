@@ -17,6 +17,7 @@ import {
   type RouteOpsCanonicalMetadataPatch
 } from '../modules/shopify/order-sync.repository.js';
 import type { ShopifyOrderNode } from '../modules/shopify/order-sync.mapper.js';
+import type { DeliveryCycleConfig } from '../modules/shopify/order-delivery-scope.js';
 import type { SyncOrdersSnapshotInput, SyncOrdersSnapshotResult } from '../modules/shopify/order-sync.service.js';
 
 type SyncPayloadErrorDetail = {
@@ -33,6 +34,7 @@ type SyncPayloadValidationError = Error & {
 };
 
 type ParsedOrderSyncPayload = {
+  deliveryCycle?: DeliveryCycleConfig;
   orders: ShopifyOrderNode[];
   reason: SyncOrdersSnapshotInput['reason'];
   reasons: SyncPayloadErrorDetail[];
@@ -290,6 +292,7 @@ function readHeaderValue(value: string | string[] | undefined): string | null {
 }
 
 function readSyncPayload(value: unknown): {
+  deliveryCycle?: DeliveryCycleConfig;
   orders: ShopifyOrderNode[];
   reason: SyncOrdersSnapshotInput['reason'];
   reasons: SyncPayloadErrorDetail[];
@@ -298,6 +301,7 @@ function readSyncPayload(value: unknown): {
   skipped: number;
 } {
   const object = requireObject(value);
+  const deliveryCycle = readDeliveryCycle(object.deliveryCycle);
   const source = readStringFromAllowedValues(object.source, {
     allowedValues: ['clever-app-orders'] as const
   });
@@ -364,6 +368,7 @@ function readSyncPayload(value: unknown): {
   }
 
   return {
+    ...(deliveryCycle === undefined ? {} : { deliveryCycle }),
     orders: valid.map((result) => result.order),
     reason,
     reasons,
@@ -371,6 +376,45 @@ function readSyncPayload(value: unknown): {
     source,
     skipped: results.length - valid.length
   };
+}
+
+function readDeliveryCycle(value: unknown): DeliveryCycleConfig | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw createSyncPayloadValidationError('Invalid order sync delivery cycle', [
+      { field: 'deliveryCycle', orderIndex: -1, orderName: '#request', reason: 'Must be an object' }
+    ]);
+  }
+
+  const object = value as Record<string, unknown>;
+  const cutoffTime = readNullableString(object.cutoffTime);
+  const cutoffWeekday = readStringFromAllowedValues(object.cutoffWeekday, {
+    allowedValues: ['SUNDAY', 'MONDAY', 'TUESDAY', 'WEDNESDAY', 'THURSDAY', 'FRIDAY', 'SATURDAY'] as const
+  });
+  const timeZone = readNullableString(object.timeZone);
+  const validTimeZone = timeZone !== null && isValidTimeZone(timeZone);
+
+  if (cutoffTime === null || !/^([01]\d|2[0-3]):[0-5]\d$/u.test(cutoffTime) || cutoffWeekday === null || !validTimeZone) {
+    throw createSyncPayloadValidationError('Invalid order sync delivery cycle', [
+      {
+        field: 'deliveryCycle',
+        orderIndex: -1,
+        orderName: '#request',
+        reason: 'Requires a valid cutoffWeekday, HH:mm cutoffTime, and IANA timeZone'
+      }
+    ]);
+  }
+
+  return { cutoffTime, cutoffWeekday, timeZone };
+}
+
+function isValidTimeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone: value }).format();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function readBulkUpdatePayload(value: unknown): {

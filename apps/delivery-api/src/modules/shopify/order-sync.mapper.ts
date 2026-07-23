@@ -1,4 +1,5 @@
 import type {
+  DeliveryCycleConfig,
   DeliveryDateSource,
   DeliverySession,
 } from "./order-delivery-scope.js";
@@ -312,6 +313,7 @@ export type SyncedOrderWithDeliveryStopInput = {
 
 export function mapShopifyOrderNodeToDeliveryInputs(
   node: ShopifyOrderNode,
+  options: { deliveryCycle?: DeliveryCycleConfig } = {},
 ): SyncedOrderWithDeliveryStopInput {
   const attributes = normalizeAttributes(node.customAttributes ?? []);
   const deliveryArea = readAttribute(attributes, "Delivery Area");
@@ -323,6 +325,7 @@ export function mapShopifyOrderNodeToDeliveryInputs(
   const lineItems = normalizeLineItems(node.lineItems);
   const scope = calculateDeliveryScope({
     createdAt: node.createdAt ?? null,
+    ...(options.deliveryCycle === undefined ? {} : { deliveryCycle: options.deliveryCycle }),
     deliveryArea,
     deliveryDateRaw,
     deliveryDayRaw,
