@@ -2819,10 +2819,13 @@ components:
         - device:telemetry:write
     DsvV1Session:
       type: object
-      required: [principalType, scopes, shopId]
+      required: [csrfToken, principalType, scopes, shopId]
       properties:
         actorId:
           type: string
+        csrfToken:
+          type: string
+          minLength: 1
         customerId:
           type: string
         displayName:

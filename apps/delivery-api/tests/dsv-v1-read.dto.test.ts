@@ -53,9 +53,10 @@ describe('G005 DSV v1 read DTO adapter', () => {
       principalType: 'CUSTOMER_USER',
       scopes,
       shopId: 'shop-1',
-    });
+    }, 'csrf-1');
 
     expect(dto).toEqual({
+      csrfToken: 'csrf-1',
       customerId: 'customer-1',
       principalType: 'CUSTOMER_USER',
       scopes: ['dsv:session:read', 'dsv:customer-deliveries:read'],

@@ -46,6 +46,7 @@ describe('DSV v1 read routes', () => {
       });
       expect(customerResponse.statusCode).toBe(200);
       expectDsvV1Envelope(customerResponse, {
+        csrfToken: customer.csrfToken,
         customerId,
         principalType: 'CUSTOMER_USER',
         scopes: ['dsv:session:read', 'dsv:customer-deliveries:read'],
@@ -708,8 +709,9 @@ function expectDsvV1Error(response: JsonResponse, error: Omit<DsvV1ErrorBody['er
 
 function expectDsvAdminSessionData(data: unknown): void {
   const record = expectJsonRecord(data);
-  expect(Object.keys(record).sort()).toEqual(['actorId', 'principalType', 'scopes', 'shopId']);
+  expect(Object.keys(record).sort()).toEqual(['actorId', 'csrfToken', 'principalType', 'scopes', 'shopId']);
   expect(record.actorId).toBe('legacy-env-admin');
+  expect(record.csrfToken).toEqual(expect.any(String));
   expect(record.principalType).toBe('DSV_ADMIN');
   expect(record.scopes).toEqual(expect.arrayContaining(['dsv:session:read', 'dsv:dispatches:read']));
   expect(record.shopId).toBe(shopId);

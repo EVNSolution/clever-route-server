@@ -49,7 +49,7 @@ describe('G005 DSV v1 OpenAPI contract floor', () => {
   });
 
   test('freezes session, ETA, proof, and emitted proof enum floors', () => {
-    expect(dsvV1SessionRequiredFields).toEqual(['principalType', 'shopId', 'scopes']);
+    expect(dsvV1SessionRequiredFields).toEqual(['csrfToken', 'principalType', 'shopId', 'scopes']);
     expect(dsvV1EtaStatuses).toEqual(['NOT_REQUIRED', 'PENDING', 'READY', 'FAILED', 'STALE']);
     expect(dsvV1ProofStatuses).toEqual(['NONE', 'AVAILABLE', 'REDACTED', 'EXPIRED']);
     expect(dsvV1EmittedProofStatuses).toEqual(['NONE', 'AVAILABLE', 'EXPIRED']);
@@ -58,7 +58,7 @@ describe('G005 DSV v1 OpenAPI contract floor', () => {
       principalType: 'DSV_ADMIN',
       scopes: ['dsv:session:read'],
       shopId: 'shop-1',
-    });
+    }, 'csrf-1');
 
     for (const key of dsvV1SessionRequiredFields) {
       expect(dto).toHaveProperty(key);

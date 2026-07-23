@@ -76,7 +76,11 @@ type RouteSpec<Query> = {
 export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV1ReadDependencies): void {
   app.get(`${apiRoot}/session`, (request, reply) =>
     withDsvV1Session(request, reply, dependencies, (session) =>
-      sendV1Data(reply, request, mapDsvV1SessionPrincipal(session.principal))));
+      sendV1Data(
+        reply,
+        request,
+        mapDsvV1SessionPrincipal(session.principal, session.session.csrfToken),
+      )));
 
   app.post(`${apiRoot}/session/logout`, (request, reply) =>
     withDsvV1Session(request, reply, dependencies, (session) => {

@@ -42,7 +42,7 @@ export const dsvV1SellerOrderSummaryRequiredFields = [
   'etaStatus',
 ] as const;
 
-export const dsvV1SessionRequiredFields = ['principalType', 'shopId', 'scopes'] as const;
+export const dsvV1SessionRequiredFields = ['csrfToken', 'principalType', 'shopId', 'scopes'] as const;
 
 export type DsvV1PrincipalType = 'DSV_ADMIN' | 'CUSTOMER_USER' | 'DRIVER' | 'IMPORT_WORKER' | 'DEVICE';
 
@@ -80,6 +80,7 @@ export type DsvV1SessionPrincipalInput = {
 
 export type DsvV1SessionDto = {
   actorId?: string;
+  csrfToken: string;
   customerId?: string;
   displayName?: string;
   driverId?: string;
@@ -402,9 +403,13 @@ export function mapDsvV1PageInfo(input?: DsvV1PageInfo): DsvV1PageInfo | undefin
   };
 }
 
-export function mapDsvV1SessionPrincipal(input: DsvV1SessionPrincipalInput): DsvV1SessionDto {
+export function mapDsvV1SessionPrincipal(
+  input: DsvV1SessionPrincipalInput,
+  csrfToken: string,
+): DsvV1SessionDto {
   return {
     ...(input.actorId === undefined || input.actorId === null ? {} : { actorId: input.actorId }),
+    csrfToken,
     ...(input.customerId === undefined || input.customerId === null ? {} : { customerId: input.customerId }),
     ...(input.displayName === undefined || input.displayName === null ? {} : { displayName: input.displayName }),
     ...(input.driverId === undefined || input.driverId === null ? {} : { driverId: input.driverId }),
