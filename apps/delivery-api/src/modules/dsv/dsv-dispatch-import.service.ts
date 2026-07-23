@@ -162,9 +162,17 @@ export type DsvDispatchImportService = {
     principal?: DsvDispatchImportApplyInput['principal'];
     shopDomain: string;
   }): Promise<DsvTransportConditionView>;
+  deleteCondition(input: { conditionId: string; shopDomain: string }): Promise<void>;
   getImport(input: { importId: string; shopDomain: string }): Promise<DsvDispatchImportView | null>;
   listConditions(input: { shopDomain: string }): Promise<DsvTransportConditionView[] | null>;
   preview(input: DsvDispatchImportInput & { shopDomain: string }): Promise<DsvDispatchImportPreview>;
+  updateCondition(input: {
+    code: string;
+    conditionId: string;
+    description: string;
+    name: string;
+    shopDomain: string;
+  }): Promise<DsvTransportConditionView>;
 };
 
 type Tx = Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
@@ -204,10 +212,12 @@ export class DsvDispatchImportValidationError extends Error {
 }
 
 export class DsvDispatchImportConflictError extends Error {
-  constructor(readonly code: 'CONDITION_EXISTS' | 'SELLER_ORDER_ALREADY_IMPORTED' | 'DISPATCH_IMPORT_PREVIEW_STALE') {
+  constructor(readonly code: 'CONDITION_EXISTS' | 'CONDITION_IN_USE' | 'SELLER_ORDER_ALREADY_IMPORTED' | 'DISPATCH_IMPORT_PREVIEW_STALE') {
     super(
       code === 'CONDITION_EXISTS'
         ? '이미 등록된 운송조건입니다.'
+        : code === 'CONDITION_IN_USE'
+          ? '배차 기록에서 사용 중인 운송조건은 삭제할 수 없습니다.'
         : code === 'DISPATCH_IMPORT_PREVIEW_STALE'
           ? '배차 파일 미리보기 결과가 현재 기준과 다릅니다.'
           : '이미 업로드된 SellerOrderKey가 있습니다.',
@@ -227,6 +237,13 @@ export class DsvDispatchImportShopNotFoundError extends Error {
   constructor() {
     super('Customer workspace not found');
     this.name = 'DsvDispatchImportShopNotFoundError';
+  }
+}
+
+export class DsvTransportConditionNotFoundError extends Error {
+  constructor() {
+    super('Transport condition not found');
+    this.name = 'DsvTransportConditionNotFoundError';
   }
 }
 
@@ -651,6 +668,63 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
           },
         });
         return promoted;
+      });
+      return conditionView(condition);
+    } catch (error) {
+      if (isUniqueConflict(error)) throw new DsvDispatchImportConflictError('CONDITION_EXISTS');
+      throw error;
+    }
+  }
+
+  async deleteCondition(input: { conditionId: string; shopDomain: string }): Promise<void> {
+    const shop = await this.findShop(input.shopDomain);
+    if (shop === null) throw new DsvDispatchImportShopNotFoundError();
+    await this.prisma.$transaction(async (tx) => {
+      const condition = await tx.dsvTransportCondition.findUnique({
+        where: { id_shopId: { id: input.conditionId, shopId: shop.id } },
+      });
+      if (condition === null) throw new DsvTransportConditionNotFoundError();
+      const references = await tx.dsvDispatchImportRow.count({
+        where: { conditionId: condition.id, shopId: shop.id },
+      });
+      if (references > 0) throw new DsvDispatchImportConflictError('CONDITION_IN_USE');
+      await tx.dsvTransportCondition.delete({
+        where: { id_shopId: { id: condition.id, shopId: shop.id } },
+      });
+    });
+  }
+
+  async updateCondition(input: {
+    code: string;
+    conditionId: string;
+    description: string;
+    name: string;
+    shopDomain: string;
+  }): Promise<DsvTransportConditionView> {
+    const shop = await this.findShop(input.shopDomain);
+    if (shop === null) throw new DsvDispatchImportShopNotFoundError();
+    const comparisonKey = conditionComparisonKey(input.code);
+    try {
+      const condition = await this.prisma.$transaction(async (tx) => {
+        await lockCondition(tx, shop.id, comparisonKey);
+        const current = await tx.dsvTransportCondition.findUnique({
+          where: { id_shopId: { id: input.conditionId, shopId: shop.id } },
+        });
+        if (current === null) throw new DsvTransportConditionNotFoundError();
+        const duplicate = await tx.dsvTransportCondition.findFirst({
+          where: { comparisonKey, id: { not: current.id }, shopId: shop.id },
+        });
+        if (duplicate !== null) throw new DsvDispatchImportConflictError('CONDITION_EXISTS');
+        return tx.dsvTransportCondition.update({
+          data: {
+            code: comparisonKey,
+            comparisonKey,
+            description: input.description,
+            name: input.name,
+            rawValue: input.code,
+          },
+          where: { id_shopId: { id: current.id, shopId: shop.id } },
+        });
       });
       return conditionView(condition);
     } catch (error) {

@@ -1216,6 +1216,64 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+  /api/dsv/conditions/{conditionId}:
+    parameters:
+      - name: conditionId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [DSV Control]
+      summary: Update one transport condition
+      operationId: updateDsvTransportCondition
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code, name, description]
+              properties:
+                code: { type: string, minLength: 1, maxLength: 80 }
+                name: { type: string, minLength: 1, maxLength: 160 }
+                description: { type: string, minLength: 1, maxLength: 1000 }
+      responses:
+        '200':
+          description: Transport condition updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+    delete:
+      tags: [DSV Control]
+      summary: Permanently delete an unused transport condition
+      operationId: deleteDsvTransportCondition
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      responses:
+        '200':
+          description: Transport condition deleted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
   /api/dsv/dispatch-imports/preview:
     post:
       tags: [DSV Control]

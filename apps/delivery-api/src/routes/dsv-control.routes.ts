@@ -26,6 +26,7 @@ import {
   DsvDispatchImportConflictError,
   DsvDispatchImportShopNotFoundError,
   DsvDispatchImportValidationError,
+  DsvTransportConditionNotFoundError,
 } from '../modules/dsv/dsv-dispatch-import.service.js';
 import type {
   DsvDispatchImportApplyInput,
@@ -479,6 +480,42 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       }
     }, ['dsv:conditions:write']));
 
+  app.patch(`${apiRoot}/conditions/:conditionId`, async (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {
+      const conditionId = readUuidParam(request, 'conditionId');
+      const body = objectBody(request.body);
+      const code = readBoundedText(body?.code, 80);
+      const name = readBoundedText(body?.name, 160);
+      const description = readBoundedText(body?.description, 1_000);
+      if (conditionId === null || code === null || name === null || description === null) {
+        return sendError(reply, 400, 'BAD_REQUEST', 'Invalid transport condition payload');
+      }
+      try {
+        const condition = await dependencies.dispatchImportService.updateCondition({
+          code,
+          conditionId,
+          description,
+          name,
+          shopDomain,
+        });
+        return sendData(reply, { condition });
+      } catch (error) {
+        return sendConditionMutationError(reply, error);
+      }
+    }, ['dsv:conditions:write']));
+
+  app.delete(`${apiRoot}/conditions/:conditionId`, async (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {
+      const conditionId = readUuidParam(request, 'conditionId');
+      if (conditionId === null) return sendError(reply, 400, 'BAD_REQUEST', 'Condition id must be a UUID');
+      try {
+        await dependencies.dispatchImportService.deleteCondition({ conditionId, shopDomain });
+        return sendData(reply, { conditionId });
+      } catch (error) {
+        return sendConditionMutationError(reply, error);
+      }
+    }, ['dsv:conditions:write']));
+
   app.post(`${apiRoot}/dispatch-imports/preview`, async (request, reply) =>
     withDsvSession(request, reply, dependencies, async ({ shopDomain }) => {
       const input = readDispatchImportInput(request.body);
@@ -854,6 +891,14 @@ async function withDsvMutation(
 
 function sendData<T>(reply: FastifyReply, data: T, statusCode = 200): unknown {
   return reply.code(statusCode).type('application/json; charset=utf-8').header('Cache-Control', 'private, no-store').send({ data, error: null });
+}
+
+function sendConditionMutationError(reply: FastifyReply, error: unknown): unknown {
+  if (error instanceof DsvDispatchImportConflictError) return sendError(reply, 409, error.code, error.message);
+  if (error instanceof DsvDispatchImportShopNotFoundError || error instanceof DsvTransportConditionNotFoundError) {
+    return sendError(reply, 404, 'NOT_FOUND', error.message);
+  }
+  throw error;
 }
 
 function sendError(

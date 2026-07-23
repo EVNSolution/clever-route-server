@@ -1080,6 +1080,33 @@ describe('DSV control routes', () => {
         shopDomain: 'tomatonofood.com',
       });
       expect(conditionInput?.principal?.requestId).toEqual(expect.any(String));
+
+      const conditionId = '55555555-5555-4555-8555-555555555555';
+      const updated = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'PATCH',
+        payload: { code: 'TS03', description: '수정한 운송 설명', name: '특수 운송 03' },
+        url: `/api/dsv/conditions/${conditionId}`,
+      });
+      expect(updated.statusCode).toBe(200);
+      expect(dispatchImportService.updateCondition).toHaveBeenCalledWith({
+        code: 'TS03',
+        conditionId,
+        description: '수정한 운송 설명',
+        name: '특수 운송 03',
+        shopDomain: 'tomatonofood.com',
+      });
+
+      const deleted = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'DELETE',
+        url: `/api/dsv/conditions/${conditionId}`,
+      });
+      expect(deleted.statusCode).toBe(200);
+      expect(dispatchImportService.deleteCondition).toHaveBeenCalledWith({
+        conditionId,
+        shopDomain: 'tomatonofood.com',
+      });
     } finally {
       await app.close();
     }
@@ -1353,9 +1380,18 @@ function createDispatchImportService(): MockDispatchImportService {
       name: 'TS03',
       updatedAt: '2026-07-22T00:00:00.000Z',
     })),
+    deleteCondition: vi.fn(() => Promise.resolve()),
     getImport: vi.fn(() => Promise.resolve(dispatchImport)),
     listConditions: vi.fn(() => Promise.resolve([])),
     preview: vi.fn(() => Promise.resolve(preview)),
+    updateCondition: vi.fn((input) => Promise.resolve({
+      code: input.code,
+      createdAt: '2026-07-22T00:00:00.000Z',
+      description: input.description,
+      id: input.conditionId,
+      name: input.name,
+      updatedAt: '2026-07-22T00:00:00.000Z',
+    })),
   };
 }
 
