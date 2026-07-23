@@ -15,6 +15,14 @@ const message = {
   status: 'COMPLETED' as const
 };
 
+function readRequestIdempotencyKey(requestInit: RequestInit | undefined): string | undefined {
+  if (typeof requestInit?.body !== 'string') return undefined;
+  const parsed: unknown = JSON.parse(requestInit.body);
+  if (parsed === null || typeof parsed !== 'object' || !('idempotencyKey' in parsed)) return undefined;
+  const idempotencyKey = (parsed as { idempotencyKey?: unknown }).idempotencyKey;
+  return typeof idempotencyKey === 'string' ? idempotencyKey : undefined;
+}
+
 describe('customer delivery notification sender', () => {
   test('is unwired when CUSTOMER_DELIVERY_NOTIFICATION_URL is absent', () => {
     expect(loadCustomerDeliveryNotificationSender({})).toBeUndefined();
@@ -65,6 +73,107 @@ describe('customer delivery notification sender', () => {
       status: 'FAILED'
     });
     expect(result.errorMessage).not.toContain('super-secret-token');
+  });
+
+  test('configured HTTP sender retries transient failures with the same idempotency key', async () => {
+    const sleep = vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(undefined);
+    const fetchImpl = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(new TypeError('socket hang up'))
+      .mockResolvedValueOnce(new Response('busy', { status: 429 }))
+      .mockResolvedValueOnce(new Response(
+        JSON.stringify({ providerMessageId: 'provider-message-id' }),
+        { headers: { 'Content-Type': 'application/json' }, status: 202 }
+      ));
+    const sender = new HttpCustomerDeliveryNotificationSender({
+      fetchImpl,
+      sleep,
+      url: 'https://notifications.example.com/customer-delivery'
+    });
+
+    await expect(sender.send(message)).resolves.toEqual({
+      provider: 'http',
+      providerMessageId: 'provider-message-id',
+      status: 'SENT'
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(fetchImpl.mock.calls.map(([, requestInit]) => readRequestIdempotencyKey(requestInit)))
+      .toEqual([
+        'admin-stop-key:customer-notification',
+        'admin-stop-key:customer-notification',
+        'admin-stop-key:customer-notification'
+      ]);
+  });
+
+  test('configured HTTP sender stops retrying transient HTTP failures after three attempts', async () => {
+    const sleep = vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(undefined);
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response('unavailable', { status: 503 }));
+    const sender = new HttpCustomerDeliveryNotificationSender({
+      fetchImpl,
+      sleep,
+      url: 'https://notifications.example.com/customer-delivery'
+    });
+
+    await expect(sender.send(message)).resolves.toEqual({
+      errorCode: 'HTTP_CUSTOMER_NOTIFICATION_FAILED',
+      errorMessage: 'Customer notification sender returned HTTP 503.',
+      provider: 'http',
+      status: 'FAILED'
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+    expect(sleep.mock.calls.map(([delayMs]) => delayMs)).toEqual([100, 200]);
+  });
+
+  test('configured HTTP sender bounds each timed out attempt', async () => {
+    vi.useFakeTimers();
+    const sleep = vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(undefined);
+    const fetchImpl = vi.fn<typeof fetch>((_url, requestInit) => new Promise((_resolve, reject) => {
+      requestInit?.signal?.addEventListener('abort', () => {
+        reject(new DOMException('The operation was aborted.', 'AbortError'));
+      }, { once: true });
+    }));
+    const sender = new HttpCustomerDeliveryNotificationSender({
+      fetchImpl,
+      sleep,
+      timeoutMs: 10,
+      url: 'https://notifications.example.com/customer-delivery'
+    });
+
+    try {
+      const resultPromise = sender.send(message);
+      await vi.advanceTimersByTimeAsync(10);
+      await vi.advanceTimersByTimeAsync(10);
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(resultPromise).resolves.toEqual({
+        errorCode: 'HTTP_CUSTOMER_NOTIFICATION_TIMEOUT',
+        errorMessage: 'The operation was aborted.',
+        provider: 'http',
+        status: 'FAILED'
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('configured HTTP sender does not retry non-429 client failures', async () => {
+    const sleep = vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(undefined);
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response('bad request', { status: 400 }));
+    const sender = new HttpCustomerDeliveryNotificationSender({
+      fetchImpl,
+      sleep,
+      url: 'https://notifications.example.com/customer-delivery'
+    });
+
+    await expect(sender.send(message)).resolves.toEqual({
+      errorCode: 'HTTP_CUSTOMER_NOTIFICATION_FAILED',
+      errorMessage: 'Customer notification sender returned HTTP 400.',
+      provider: 'http',
+      status: 'FAILED'
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   test('loader accepts HTTPS and localhost smoke URLs only', () => {

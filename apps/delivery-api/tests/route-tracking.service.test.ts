@@ -188,6 +188,100 @@ describe('PrismaRouteTrackingService', () => {
     expect(snapshot.stopArrivals).toEqual([]);
   });
 
+  test('preserves nullable-driver admin stop progress in the snapshot', async () => {
+    const driverEvent = {
+      findFirst: vi.fn((input: { where?: { OR?: unknown } }) => Promise.resolve(
+        input.where?.OR
+          ? null
+          : {
+              createdAt: new Date('2026-07-20T04:05:01.000Z'),
+              deliveryStopId: 'stop-admin-delivered',
+              driverId: null,
+              eventType: 'STOP_DELIVERED',
+              id: 'admin-progress-1',
+              occurredAt: new Date('2026-07-20T04:05:00.000Z'),
+              routePlanId: 'route-1'
+            }
+      )),
+      findMany: vi.fn((input: { where?: { eventType?: string } }) => (
+        input.where?.eventType === 'STOP_ARRIVED'
+          ? Promise.resolve([])
+          : Promise.resolve([])
+      ))
+    };
+    const routePlanStop = { findMany: vi.fn(() => Promise.resolve([
+      { deliveryStop: { status: 'DELIVERED' }, deliveryStopId: 'stop-admin-delivered', sequence: 1 }
+    ])) };
+    const service = new PrismaRouteTrackingService({
+      driverEvent,
+      routePlanStop,
+      routeTrackingGeometry: { findUnique: vi.fn(() => Promise.resolve(null)) }
+    } as never);
+
+    const snapshot = await service.getRouteTrackingSnapshot({ routePlanId: 'route-1' });
+
+    expect(snapshot.progress).toEqual({
+      completedStopIds: ['stop-admin-delivered'],
+      currentStage: 'READY',
+      currentStopId: null,
+      failedStopIds: [],
+      latestEvent: {
+        deliveryStopId: 'stop-admin-delivered',
+        driverId: null,
+        eventId: 'admin-progress-1',
+        eventType: 'STOP_DELIVERED',
+        occurredAt: '2026-07-20T04:05:00.000Z',
+        receivedAt: '2026-07-20T04:05:01.000Z',
+        routePlanId: 'route-1',
+        schemaVersion: 'route_tracking.v1'
+      }
+    });
+    expect(snapshot.stopArrivals).toEqual([]);
+  });
+
+  test('keeps the active driver stop when a newer admin stop outcome is recorded', async () => {
+    const driverEvent = {
+      findFirst: vi.fn((input: { where?: { OR?: unknown } }) => Promise.resolve(
+        input.where?.OR
+          ? {
+              createdAt: new Date('2026-07-20T04:04:01.000Z'),
+              deliveryStopId: 'stop-driver-current',
+              driverId: 'driver-1',
+              eventType: 'STOP_ARRIVED',
+              id: 'driver-arrived',
+              occurredAt: new Date('2026-07-20T04:04:00.000Z'),
+              routePlanId: 'route-1'
+            }
+          : {
+              createdAt: new Date('2026-07-20T04:05:01.000Z'),
+              deliveryStopId: 'stop-admin-delivered',
+              driverId: null,
+              eventType: 'STOP_DELIVERED',
+              id: 'admin-progress-1',
+              occurredAt: new Date('2026-07-20T04:05:00.000Z'),
+              routePlanId: 'route-1'
+            }
+      )),
+      findMany: vi.fn(() => Promise.resolve([]))
+    };
+    const routePlanStop = { findMany: vi.fn(() => Promise.resolve([
+      { deliveryStop: { status: 'DELIVERED' }, deliveryStopId: 'stop-admin-delivered', sequence: 1 },
+      { deliveryStop: { status: 'PENDING' }, deliveryStopId: 'stop-driver-current', sequence: 2 }
+    ])) };
+    const service = new PrismaRouteTrackingService({
+      driverEvent,
+      routePlanStop,
+      routeTrackingGeometry: { findUnique: vi.fn(() => Promise.resolve(null)) }
+    } as never);
+
+    const snapshot = await service.getRouteTrackingSnapshot({ routePlanId: 'route-1' });
+
+    expect(snapshot.progress.currentStage).toBe('AT_STOP');
+    expect(snapshot.progress.currentStopId).toBe('stop-driver-current');
+    expect(snapshot.progress.latestEvent?.eventId).toBe('admin-progress-1');
+    expect(snapshot.progress.completedStopIds).toEqual(['stop-admin-delivered']);
+  });
+
   test('reads the full compressed route geometry without scanning raw GPS events or applying a point cap', async () => {
     const pointCount = 1_205;
     const coordinates = Array.from({ length: pointCount }, (_, index) => [126.9 + index * 0.0001, 37.5]);

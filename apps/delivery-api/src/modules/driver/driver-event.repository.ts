@@ -41,13 +41,29 @@ export type DriverStopSequenceDeviation = {
 
 type DriverEventPrismaClient = Pick<
   PrismaClient,
-  '$transaction' | 'deliveryStop' | 'driverEvent' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry'
+  '$queryRaw' | '$transaction' | 'deliveryStop' | 'driverEvent' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry'
 >;
 
 type DriverEventTransactionClient = Pick<
   Prisma.TransactionClient,
   '$queryRaw' | 'deliveryStop' | 'driverEvent' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry'
 >;
+
+type DriverEventSchemaCapabilities = {
+  driverEventRouteVersionColumnExists: boolean;
+  routePlanStopEtaOwnershipColumnsExist: boolean;
+};
+
+type DriverEventSchemaCapabilityLoader = {
+  load: () => Promise<DriverEventSchemaCapabilities>;
+};
+
+type ExistingDriverEventContext = {
+  deliveryStopId: string | null;
+  eventType: string;
+  id: string;
+  routePlanId: string | null;
+};
 
 const TERMINAL_DELIVERY_STOP_STATUSES = new Set([
   'CANCELLED',
@@ -92,9 +108,15 @@ export class DriverEventEtaStaleConflictError extends Error {
 }
 
 export class PrismaDriverEventRepository {
-  constructor(private readonly prisma: DriverEventPrismaClient) {}
+  private readonly schemaCapabilityLoader: DriverEventSchemaCapabilityLoader;
+
+  constructor(private readonly prisma: DriverEventPrismaClient) {
+    this.schemaCapabilityLoader = schemaCapabilityLoaderFor(prisma);
+  }
 
   async recordDriverEvent(input: RecordDriverEventInput): Promise<RecordDriverEventResult> {
+    const schemaCapabilities = await this.schemaCapabilityLoader.load();
+
     try {
       return await this.prisma.$transaction(async (transaction) => {
         const duplicate = await findMatchingDriverEvent(transaction, input);
@@ -106,7 +128,7 @@ export class PrismaDriverEventRepository {
         const sequenceDeviation = await detectStopSequenceDeviation(transaction, input);
         const routeVersionId = input.routePlanId === null
           ? null
-          : await loadCurrentRouteVersionIdForDriverEvent(transaction, input.routePlanId, input.shopId);
+          : await loadCurrentRouteVersionIdForDriverEvent(transaction, schemaCapabilities, input.routePlanId, input.shopId);
 
         const event = await transaction.driverEvent.create({
           data: {
@@ -129,7 +151,13 @@ export class PrismaDriverEventRepository {
           await persistRouteTrackingGeometryPosition(transaction, trackingPosition);
         }
 
-        const etaUpdate = await applyDriverEventStateTransition(transaction, input, input.shopId, event.createdAt);
+        const etaUpdate = await applyDriverEventStateTransition(
+          transaction,
+          schemaCapabilities,
+          input,
+          input.shopId,
+          event.createdAt
+        );
 
         return {
           duplicate: false,
@@ -140,7 +168,10 @@ export class PrismaDriverEventRepository {
       });
     } catch (error) {
       if (isUniqueConstraintError(error)) {
-        return { duplicate: true, eventId: input.clientEventId ?? 'duplicate' };
+        const duplicate = await findDuplicateDriverEventAfterUniqueConstraint(this.prisma, input);
+        if (duplicate !== null) {
+          return { duplicate: true, eventId: duplicate.id };
+        }
       }
 
       throw error;
@@ -238,7 +269,7 @@ async function findMatchingDriverEvent(
   }
 
   const event = await prisma.driverEvent.findUnique({
-    select: { eventType: true, id: true, routePlanId: true },
+    select: { deliveryStopId: true, eventType: true, id: true, routePlanId: true },
     where: {
       driverId_clientEventId: {
         clientEventId: input.clientEventId,
@@ -249,11 +280,49 @@ async function findMatchingDriverEvent(
   if (event === null) {
     return null;
   }
-  if (event.eventType !== input.eventType || event.routePlanId !== input.routePlanId) {
+  if (!driverEventContextMatchesInput(event, input)) {
     throw new DriverEventContextError('clientEventId is already used by a different driver event');
   }
 
   return { id: event.id };
+}
+
+async function findDuplicateDriverEventAfterUniqueConstraint(
+  prisma: DriverEventPrismaClient,
+  input: RecordDriverEventInput
+): Promise<{ id: string } | null> {
+  if (input.clientEventId === null) {
+    return null;
+  }
+
+  const event = await prisma.driverEvent.findUnique({
+    select: { deliveryStopId: true, eventType: true, id: true, routePlanId: true },
+    where: {
+      driverId_clientEventId: {
+        clientEventId: input.clientEventId,
+        driverId: input.driverId
+      }
+    }
+  });
+  if (event === null) {
+    return null;
+  }
+  if (!driverEventContextMatchesInput(event, input)) {
+    throw new DriverEventContextError('clientEventId is already used by a different driver event');
+  }
+
+  return { id: event.id };
+}
+
+function driverEventContextMatchesInput(
+  event: ExistingDriverEventContext,
+  input: RecordDriverEventInput
+): boolean {
+  return (
+    event.eventType === input.eventType
+    && event.routePlanId === input.routePlanId
+    && event.deliveryStopId === input.deliveryStopId
+  );
 }
 
 async function validateDriverEventStateContext(
@@ -297,6 +366,7 @@ async function validateDriverEventStateContext(
 
 async function applyDriverEventStateTransition(
   prisma: DriverEventTransactionClient,
+  schemaCapabilities: DriverEventSchemaCapabilities,
   input: RecordDriverEventInput,
   shopId: string,
   serverReceivedAt: Date
@@ -322,14 +392,14 @@ async function applyDriverEventStateTransition(
       }
     });
     const stops = await loadRouteEtaStops(prisma, routePlanId);
-    const inputRouteVersionId = await loadCurrentRouteVersionIdForEta(prisma, routePlanId, shopId);
+    const inputRouteVersionId = await loadCurrentRouteVersionIdForEta(prisma, schemaCapabilities, routePlanId, shopId);
     const etaUpdate = calculateArrivalEtaUpdate({
       arrivedDeliveryStopId: deliveryStopId,
       inputRouteVersionId,
       serverReceivedAt,
       stops
     });
-    await persistEtaUpdate(prisma, shopId, routePlanId, etaUpdate);
+    await persistEtaUpdate(prisma, schemaCapabilities, shopId, routePlanId, etaUpdate);
     return etaUpdate;
   }
 
@@ -369,13 +439,13 @@ async function applyDriverEventStateTransition(
         status: { in: [...ROUTE_READY_COMPATIBILITY_STATUSES] }
       }
     });
-    const inputRouteVersionId = await loadCurrentRouteVersionIdForEta(prisma, routePlanId, shopId);
+    const inputRouteVersionId = await loadCurrentRouteVersionIdForEta(prisma, schemaCapabilities, routePlanId, shopId);
     const etaUpdate = calculateRouteStartEtaUpdate({
       inputRouteVersionId,
       serverReceivedAt,
       stops: await loadRouteEtaStops(prisma, routePlanId)
     });
-    await persistEtaUpdate(prisma, shopId, routePlanId, etaUpdate);
+    await persistEtaUpdate(prisma, schemaCapabilities, shopId, routePlanId, etaUpdate);
     return etaUpdate;
   }
 
@@ -468,11 +538,12 @@ async function loadRouteEtaStops(
 
 async function persistEtaUpdate(
   prisma: DriverEventTransactionClient,
+  schemaCapabilities: DriverEventSchemaCapabilities,
   shopId: string,
   routePlanId: string,
   etaUpdate: DriverRouteEtaUpdate
 ): Promise<void> {
-  if (await routePlanStopEtaOwnershipColumnsExist(prisma)) {
+  if (schemaCapabilities.routePlanStopEtaOwnershipColumnsExist) {
     if (etaUpdate.updatedStops.length === 0) {
       return;
     }
@@ -560,7 +631,7 @@ async function persistEtaUpdate(
   })));
 }
 
-async function routePlanStopEtaOwnershipColumnsExist(prisma: DriverEventTransactionClient): Promise<boolean> {
+async function routePlanStopEtaOwnershipColumnsExist(prisma: Pick<DriverEventPrismaClient, '$queryRaw'>): Promise<boolean> {
   const columns = await prisma.$queryRaw<Array<{ column_name: string }>>(Prisma.sql`
     SELECT column_name
     FROM information_schema.columns
@@ -587,10 +658,11 @@ async function routePlanStopEtaOwnershipColumnsExist(prisma: DriverEventTransact
 
 async function loadCurrentRouteVersionIdForEta(
   prisma: DriverEventTransactionClient,
+  schemaCapabilities: DriverEventSchemaCapabilities,
   routePlanId: string,
   shopId: string
 ): Promise<string | null> {
-  if (!await routePlanStopEtaOwnershipColumnsExist(prisma)) {
+  if (!schemaCapabilities.routePlanStopEtaOwnershipColumnsExist) {
     return null;
   }
 
@@ -599,10 +671,11 @@ async function loadCurrentRouteVersionIdForEta(
 
 async function loadCurrentRouteVersionIdForDriverEvent(
   prisma: DriverEventTransactionClient,
+  schemaCapabilities: DriverEventSchemaCapabilities,
   routePlanId: string,
   shopId: string
 ): Promise<string | null | undefined> {
-  if (!await driverEventRouteVersionColumnExists(prisma)) {
+  if (!schemaCapabilities.driverEventRouteVersionColumnExists) {
     return undefined;
   }
 
@@ -626,7 +699,7 @@ async function loadCurrentRouteVersionId(
   return routeVersions[0]?.id ?? null;
 }
 
-async function driverEventRouteVersionColumnExists(prisma: DriverEventTransactionClient): Promise<boolean> {
+async function driverEventRouteVersionColumnExists(prisma: Pick<DriverEventPrismaClient, '$queryRaw'>): Promise<boolean> {
   const columns = await prisma.$queryRaw<Array<{ column_name: string }>>(Prisma.sql`
     SELECT column_name
     FROM information_schema.columns
@@ -634,6 +707,36 @@ async function driverEventRouteVersionColumnExists(prisma: DriverEventTransactio
       AND column_name = 'routeVersionId'
   `);
   return columns.length > 0;
+}
+
+const schemaCapabilityLoadersByClient = new WeakMap<object, DriverEventSchemaCapabilityLoader>();
+
+function schemaCapabilityLoaderFor(prisma: DriverEventPrismaClient): DriverEventSchemaCapabilityLoader {
+  const existing = schemaCapabilityLoadersByClient.get(prisma);
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  let capabilitiesResult: Promise<DriverEventSchemaCapabilities> | undefined;
+  const loader = {
+    load: () => {
+      capabilitiesResult ??= Promise.all([
+        driverEventRouteVersionColumnExists(prisma),
+        routePlanStopEtaOwnershipColumnsExist(prisma)
+      ])
+        .then(([driverEventRouteVersionColumnExistsValue, routePlanStopEtaOwnershipColumnsExistValue]) => ({
+          driverEventRouteVersionColumnExists: driverEventRouteVersionColumnExistsValue,
+          routePlanStopEtaOwnershipColumnsExist: routePlanStopEtaOwnershipColumnsExistValue
+        }))
+        .catch((error: unknown) => {
+          capabilitiesResult = undefined;
+          throw error;
+        });
+      return capabilitiesResult;
+    }
+  };
+  schemaCapabilityLoadersByClient.set(prisma, loader);
+  return loader;
 }
 
 function toEtaStop(row: {
