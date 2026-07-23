@@ -67,6 +67,7 @@ checks = {
     'workflow_uses_digest_output': 'API_DIGEST: ${{ steps.build_api.outputs.digest }}' in workflow and 'WEB_DIGEST: ${{ steps.build_web.outputs.digest }}' in workflow,
     'workflow_splits_image_scope': "grep -Eq '^(apps/delivery-api/|\\.dockerignore$)'" in workflow and "grep -Eq '^(apps/route-ops-web/|\\.dockerignore$)'" in workflow,
     'workflow_has_no_migrate_build': 'clever-route-api-migrate' not in workflow and 'target: migrate' not in workflow,
+    'ssm_wait_covers_real_deploy_duration': 'SSM_WAIT_TIMEOUT_SECONDS:-1800' in wrapper and 'aws ssm wait command-executed' not in wrapper and '--query Status' in wrapper and 'sleep 5' in wrapper,
     'manual_publish_uses_buildx': 'docker buildx build --platform linux/amd64' in wrapper and '--push' in wrapper and '--provenance=false' in wrapper,
     'manual_publish_uses_registry_cache': f'--cache-from "type=registry,ref=${{STATIC_IMAGE_REPO}}:buildcache"' in wrapper and f'--cache-to "type=registry,ref=${{RUNTIME_IMAGE_REPO}}:buildcache,mode=max"' in wrapper,
     'manual_publish_requires_buildx': 'docker buildx version >/dev/null 2>&1 || fail "docker buildx is required for --publish' in wrapper,

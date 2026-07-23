@@ -400,10 +400,29 @@ COMMAND_ID="$(aws ssm send-command \
   --query Command.CommandId \
   --output text)"
 printf 'SSM_SIMPLE_COMMAND_ID=%s\nSSM_SIMPLE_INSTANCE_ID=%s\n' "$COMMAND_ID" "$INSTANCE_ID"
-set +e
-aws ssm wait command-executed --region "$AWS_REGION" --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID"
-wait_status=$?
-set -e
+wait_timeout_seconds="${SSM_WAIT_TIMEOUT_SECONDS:-1800}"
+wait_started_at="$SECONDS"
+wait_status=1
+while (( SECONDS - wait_started_at < wait_timeout_seconds )); do
+  command_status="$(aws ssm get-command-invocation \
+    --region "$AWS_REGION" \
+    --command-id "$COMMAND_ID" \
+    --instance-id "$INSTANCE_ID" \
+    --query Status \
+    --output text 2>/dev/null || true)"
+  case "$command_status" in
+    Success)
+      wait_status=0
+      break
+      ;;
+    Pending|InProgress|Delayed|Cancelling|"")
+      sleep 5
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 aws ssm get-command-invocation \
   --region "$AWS_REGION" \
   --command-id "$COMMAND_ID" \
