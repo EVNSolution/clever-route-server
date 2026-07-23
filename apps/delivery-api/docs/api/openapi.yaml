@@ -3403,13 +3403,29 @@ components:
       type: object
       required: [displayName, driverId]
       properties:
+        age:
+          type: integer
+          minimum: 18
+          maximum: 100
+        career:
+          type: string
         displayName:
           type: string
         driverId:
           type: string
+        gender:
+          type: string
         phone:
           type: string
+        score:
+          type: string
         status:
+          type: string
+        traits:
+          type: array
+          items:
+            type: string
+        zone:
           type: string
       additionalProperties: false
     DsvV1VehicleListItem:
@@ -3423,6 +3439,8 @@ components:
           maxItems: 1
           items:
             $ref: '#/components/schemas/DsvV1VehicleDriverAssignmentListItem'
+        note:
+          type: string
         status:
           type: string
         telematicsCapabilities:
@@ -3431,6 +3449,8 @@ components:
             type: string
             enum: [LOCATION, TEMPERATURE, TACHOMETER]
         telematicsSerialNumber:
+          type: string
+        type:
           type: string
         vehicleId:
           type: string

@@ -422,11 +422,25 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     return this.listManagement('drivers', principal.shopId, input, async (page) => {
       const rows = await this.prisma.driver.findMany({
         orderBy: [{ displayName: 'asc' }, { id: 'asc' }],
-        select: { displayName: true, id: true, phone: true, status: true },
+        select: {
+          displayName: true,
+          dsvProfile: { select: { age: true, career: true, gender: true, score: true, traits: true, zone: true } },
+          id: true,
+          phone: true,
+          status: true,
+        },
         take: page.limit + 1,
         where: { dsvProfile: { isNot: null }, shopId: principal.shopId, ...labelCursorWhere(page.cursor, 'displayName') },
       });
       return rows.map((row) => ({
+        ...(row.dsvProfile ? {
+          age: row.dsvProfile.age,
+          career: row.dsvProfile.career,
+          gender: row.dsvProfile.gender,
+          score: row.dsvProfile.score,
+          traits: row.dsvProfile.traits,
+          zone: row.dsvProfile.zone,
+        } : {}),
         displayName: row.displayName,
         driverId: row.id,
         phone: row.phone,
@@ -443,7 +457,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       const rows = await this.prisma.vehicle.findMany({
         orderBy: [{ label: 'asc' }, { id: 'asc' }],
         select: {
-          dsvProfile: { select: { typeLabel: true } },
+          dsvProfile: { select: { note: true, typeLabel: true } },
           dsvTelematicsDevice: { select: { capabilities: true, serialNumber: true } },
           id: true,
           label: true,
@@ -461,6 +475,10 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       return rows.map((row) => ({
         displayName: row.label,
         driverAssignments: assignmentsByVehicleId.get(row.id) ?? [],
+        ...(row.dsvProfile ? {
+          note: row.dsvProfile.note,
+          type: row.dsvProfile.typeLabel,
+        } : {}),
         status: row.status,
         ...(row.dsvTelematicsDevice?.serialNumber === undefined
           ? {}

@@ -225,25 +225,39 @@ export type DsvV1RecordPageDto = {
 };
 
 export type DsvV1DriverListItemRow = {
+  age?: number | null;
+  career?: string | null;
   displayName: string;
   driverId: string;
+  gender?: string | null;
   phone?: string | null;
+  score?: string | null;
   status?: string | null;
+  traits?: string[] | null;
+  zone?: string | null;
 };
 
 export type DsvV1DriverListItemDto = {
+  age?: number;
+  career?: string;
   displayName: string;
   driverId: string;
+  gender?: string;
   phone?: string;
+  score?: string;
   status?: string;
+  traits?: string[];
+  zone?: string;
 };
 
 export type DsvV1VehicleListItemRow = {
   displayName: string;
   driverAssignments: DsvV1VehicleDriverAssignmentRow[];
+  note?: string | null;
   status?: string | null;
   telematicsCapabilities?: string[] | null;
   telematicsSerialNumber?: string | null;
+  type?: string | null;
   vehicleId: string;
   vehiclePlate?: string | null;
   vehicleType?: string | null;
@@ -257,9 +271,11 @@ export type DsvV1VehicleDriverAssignmentRow = {
 export type DsvV1VehicleListItemDto = {
   displayName: string;
   driverAssignments: DsvV1VehicleDriverAssignmentDto[];
+  note?: string;
   status?: string;
   telematicsCapabilities?: string[];
   telematicsSerialNumber?: string;
+  type?: string;
   vehicleId: string;
   vehiclePlate?: string;
   vehicleType?: string;
@@ -492,10 +508,16 @@ export function mapDsvV1RecordPage(input: {
 
 export function mapDsvV1DriverListItem(row: DsvV1DriverListItemRow): DsvV1DriverListItemDto {
   return {
+    ...(row.age === undefined || row.age === null ? {} : { age: row.age }),
+    ...(row.career === undefined || row.career === null ? {} : { career: row.career }),
     displayName: row.displayName,
     driverId: row.driverId,
+    ...(row.gender === undefined || row.gender === null ? {} : { gender: row.gender }),
     ...(row.phone === undefined || row.phone === null ? {} : { phone: row.phone }),
+    ...(row.score === undefined || row.score === null ? {} : { score: row.score }),
     ...(row.status === undefined || row.status === null ? {} : { status: row.status }),
+    ...(row.traits === undefined || row.traits === null ? {} : { traits: row.traits }),
+    ...(row.zone === undefined || row.zone === null ? {} : { zone: row.zone }),
   };
 }
 
@@ -506,6 +528,7 @@ export function mapDsvV1VehicleListItem(row: DsvV1VehicleListItemRow): DsvV1Vehi
       assignmentId: assignment.assignmentId,
       driverId: assignment.driverId,
     })),
+    ...(row.note === undefined || row.note === null ? {} : { note: row.note }),
     ...(row.status === undefined || row.status === null ? {} : { status: row.status }),
     ...(row.telematicsCapabilities === undefined || row.telematicsCapabilities === null
       ? {}
@@ -513,6 +536,7 @@ export function mapDsvV1VehicleListItem(row: DsvV1VehicleListItemRow): DsvV1Vehi
     ...(row.telematicsSerialNumber === undefined || row.telematicsSerialNumber === null
       ? {}
       : { telematicsSerialNumber: row.telematicsSerialNumber }),
+    ...(row.type === undefined || row.type === null ? {} : { type: row.type }),
     vehicleId: row.vehicleId,
     ...(row.vehiclePlate === undefined || row.vehiclePlate === null ? {} : { vehiclePlate: row.vehiclePlate }),
     ...(row.vehicleType === undefined || row.vehicleType === null ? {} : { vehicleType: row.vehicleType }),

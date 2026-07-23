@@ -210,12 +210,25 @@ describe('G005 DSV v1 read DTO adapter', () => {
 
     const list = mapDsvV1ManagementListPage({
       items: [
-        mapDsvV1DriverListItem({ displayName: 'Driver A', driverId: 'driver-1', phone: null, status: 'ACTIVE' }),
+        mapDsvV1DriverListItem({
+          age: 42,
+          career: '6 years',
+          displayName: 'Driver A',
+          driverId: 'driver-1',
+          gender: 'male',
+          phone: null,
+          score: 'A',
+          status: 'ACTIVE',
+          traits: ['cold-chain'],
+          zone: 'Seoul',
+        }),
         mapDsvV1VehicleListItem({
           displayName: 'Truck A',
           driverAssignments: [{ assignmentId: 'assignment-1', driverId: 'driver-1' }],
+          note: 'Refrigerated',
           telematicsCapabilities: ['LOCATION', 'TEMPERATURE', 'TACHOMETER'],
           telematicsSerialNumber: '012-5273-8978',
+          type: 'Cold truck',
           vehicleId: 'vehicle-1',
           vehiclePlate: '11A1111',
           vehicleType: 'REFRIGERATED',
@@ -235,12 +248,24 @@ describe('G005 DSV v1 read DTO adapter', () => {
 
     expect(list).toEqual({
       items: [
-        { displayName: 'Driver A', driverId: 'driver-1', status: 'ACTIVE' },
+        {
+          age: 42,
+          career: '6 years',
+          displayName: 'Driver A',
+          driverId: 'driver-1',
+          gender: 'male',
+          score: 'A',
+          status: 'ACTIVE',
+          traits: ['cold-chain'],
+          zone: 'Seoul',
+        },
         {
           displayName: 'Truck A',
           driverAssignments: [{ assignmentId: 'assignment-1', driverId: 'driver-1' }],
+          note: 'Refrigerated',
           telematicsCapabilities: ['LOCATION', 'TEMPERATURE', 'TACHOMETER'],
           telematicsSerialNumber: '012-5273-8978',
+          type: 'Cold truck',
           vehicleId: 'vehicle-1',
           vehiclePlate: '11A1111',
           vehicleType: 'REFRIGERATED',

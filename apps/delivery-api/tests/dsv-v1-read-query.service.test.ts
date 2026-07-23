@@ -379,6 +379,43 @@ describe('PrismaDsvV1ReadQueryService', () => {
     }
   });
 
+  test('driver list includes the editable DSV profile without replacing it with canonical ACTIVE status', async () => {
+    const prisma = prismaMock({
+      driver: { findMany: vi.fn(() => Promise.resolve([
+        {
+          displayName: 'Alpha Driver',
+          dsvProfile: {
+            age: 42,
+            career: '6 years',
+            gender: 'male',
+            score: 'A',
+            traits: ['cold-chain'],
+            zone: 'Seoul',
+          },
+          id: 'driver-a',
+          phone: '010-0000-0000',
+          status: 'ACTIVE',
+        },
+      ])) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never);
+
+    const result = await service.listDrivers(adminPrincipal(), { limit: 2 });
+
+    expect(result.items).toEqual([{
+      age: 42,
+      career: '6 years',
+      displayName: 'Alpha Driver',
+      driverId: 'driver-a',
+      gender: 'male',
+      phone: '010-0000-0000',
+      score: 'A',
+      status: 'ACTIVE',
+      traits: ['cold-chain'],
+      zone: 'Seoul',
+    }]);
+  });
+
   test('vehicle list reads canonical driver assignments scoped to the shop and listed vehicles', async () => {
     const prisma = prismaMock({
       dsvVehicleDriverAssignment: { findMany: vi.fn(() => Promise.resolve([
@@ -387,7 +424,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
       ])) },
       vehicle: { findMany: vi.fn(() => Promise.resolve([
         {
-          dsvProfile: { typeLabel: '봉고3 1톤 EV' },
+          dsvProfile: { note: 'Alpha note', typeLabel: '봉고3 1톤 EV' },
           dsvTelematicsDevice: {
             capabilities: ['LOCATION', 'TEMPERATURE', 'TACHOMETER'],
             serialNumber: '012-5273-8978',
@@ -399,7 +436,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
           vehicleType: 'VAN',
         },
         {
-          dsvProfile: null,
+          dsvProfile: { note: 'Beta note', typeLabel: 'Ambient' },
           dsvTelematicsDevice: null,
           id: 'vehicle-b',
           label: 'Beta Vehicle',
@@ -419,9 +456,11 @@ describe('PrismaDsvV1ReadQueryService', () => {
         driverAssignments: [
           { assignmentId: 'assignment-a', driverId: 'driver-a' },
         ],
+        note: 'Alpha note',
         status: 'ACTIVE',
         telematicsCapabilities: ['LOCATION', 'TEMPERATURE', 'TACHOMETER'],
         telematicsSerialNumber: '012-5273-8978',
+        type: '봉고3 1톤 EV',
         vehicleId: 'vehicle-a',
         vehiclePlate: 'A',
         vehicleType: '봉고3 1톤 EV',
@@ -429,7 +468,9 @@ describe('PrismaDsvV1ReadQueryService', () => {
       {
         displayName: 'Beta Vehicle',
         driverAssignments: [{ assignmentId: 'assignment-c', driverId: 'driver-c' }],
+        note: 'Beta note',
         status: 'ACTIVE',
+        type: 'Ambient',
         vehicleId: 'vehicle-b',
         vehiclePlate: 'B',
         vehicleType: 'TRUCK',
