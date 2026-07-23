@@ -16,6 +16,12 @@ export type DriverRouteEtaUpdate = {
   actualArrivalAt: string | null;
   deliveryStopId: string | null;
   delaySeconds: number | null;
+  etaCalculatedAt: string;
+  etaFailureCode: string | null;
+  etaFailureMessage: string | null;
+  etaSource: string;
+  etaStatus: 'READY' | 'FAILED';
+  inputRouteVersionId: string | null;
   previousEstimatedArrivalAt: string | null;
   serverReceivedAt: string;
   trigger: 'ROUTE_STARTED' | 'STOP_ARRIVED';
@@ -25,6 +31,7 @@ export type DriverRouteEtaUpdate = {
 const DEFAULT_SERVICE_MINUTES = 5;
 
 export function calculateRouteStartEtaUpdate(input: {
+  inputRouteVersionId?: string | null;
   serverReceivedAt: Date;
   stops: DriverRouteEtaStop[];
 }): DriverRouteEtaUpdate {
@@ -36,11 +43,18 @@ export function calculateRouteStartEtaUpdate(input: {
     cursorMs = addServiceTime(cursorMs, stop.serviceMinutes);
     return toStopUpdate(stop, estimatedArrivalAt);
   });
+  const failure = etaFailureFor(updatedStops);
 
   return {
     actualArrivalAt: null,
     deliveryStopId: null,
     delaySeconds: null,
+    etaCalculatedAt: input.serverReceivedAt.toISOString(),
+    etaFailureCode: failure?.code ?? null,
+    etaFailureMessage: failure?.message ?? null,
+    etaSource: 'ROUTE_STARTED',
+    etaStatus: failure === null ? 'READY' : 'FAILED',
+    inputRouteVersionId: input.inputRouteVersionId ?? null,
     previousEstimatedArrivalAt: null,
     serverReceivedAt: input.serverReceivedAt.toISOString(),
     trigger: 'ROUTE_STARTED',
@@ -50,6 +64,7 @@ export function calculateRouteStartEtaUpdate(input: {
 
 export function calculateArrivalEtaUpdate(input: {
   arrivedDeliveryStopId: string;
+  inputRouteVersionId?: string | null;
   serverReceivedAt: Date;
   stops: DriverRouteEtaStop[];
 }): DriverRouteEtaUpdate {
@@ -68,6 +83,7 @@ export function calculateArrivalEtaUpdate(input: {
     cursorMs = addServiceTime(cursorMs, stop.serviceMinutes);
     return toStopUpdate(stop, estimatedArrivalAt);
   });
+  const failure = etaFailureFor(updatedStops);
 
   return {
     actualArrivalAt: input.serverReceivedAt.toISOString(),
@@ -75,6 +91,12 @@ export function calculateArrivalEtaUpdate(input: {
     delaySeconds: previousEstimatedArrivalAt === null
       ? null
       : Math.round((input.serverReceivedAt.getTime() - previousEstimatedArrivalAt.getTime()) / 1000),
+    etaCalculatedAt: input.serverReceivedAt.toISOString(),
+    etaFailureCode: failure?.code ?? null,
+    etaFailureMessage: failure?.message ?? null,
+    etaSource: 'STOP_ARRIVED',
+    etaStatus: failure === null ? 'READY' : 'FAILED',
+    inputRouteVersionId: input.inputRouteVersionId ?? null,
     previousEstimatedArrivalAt: previousEstimatedArrivalAt?.toISOString() ?? null,
     serverReceivedAt: input.serverReceivedAt.toISOString(),
     trigger: 'STOP_ARRIVED',
@@ -107,4 +129,13 @@ function toStopUpdate(stop: DriverRouteEtaStop, estimatedArrivalAt: string | nul
     estimatedArrivalAt,
     sequence: stop.sequence
   };
+}
+
+function etaFailureFor(updatedStops: DriverRouteEtaStopUpdate[]): { code: string; message: string } | null {
+  return updatedStops.some((stop) => stop.estimatedArrivalAt === null)
+    ? {
+        code: 'ETA_INPUT_DURATION_UNAVAILABLE',
+        message: 'ETA could not be calculated because route leg durations are unavailable.'
+      }
+    : null;
 }

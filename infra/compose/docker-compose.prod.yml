@@ -74,8 +74,11 @@ services:
     env_file:
       - ../env/delivery-api.env
     environment:
-      PRISMA_SCHEMA_SHA: ${PRISMA_SCHEMA_SHA:?PRISMA_SCHEMA_SHA is required}
-    command: ["sh", "scripts/guard-prisma-db-push.sh"]
+      DSV_MIGRATION_MODE: production
+      DSV_MIGRATION_APPROVED: ${DSV_MIGRATION_APPROVED:-}
+      DSV_MIGRATION_MANIFEST_SHA256: ${DSV_MIGRATION_MANIFEST_SHA256:-}
+      DSV_RESTORE_REHEARSAL_SHA256: ${DSV_RESTORE_REHEARSAL_SHA256:-}
+    command: ["/app/scripts/dsv-g007-migrate-deploy.sh"]
     restart: "no"
 
 

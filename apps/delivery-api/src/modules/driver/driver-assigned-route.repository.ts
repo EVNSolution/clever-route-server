@@ -287,6 +287,7 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssi
       latitude: decimalNumber(deliveryStop.latitude),
       longitude: decimalNumber(deliveryStop.longitude)
     },
+    customerNote: readCustomerNote(rawPayload),
     deliveryStopId: deliveryStop.id,
     durationFromPreviousSeconds: routeStop.durationFromPreviousSeconds,
     estimatedArrivalAt: routeStop.estimatedArrivalAt?.toISOString() ?? null,
@@ -383,6 +384,22 @@ function readString(value: unknown): string | null {
 
   const trimmed = value.trim();
   return trimmed === '' ? null : trimmed;
+}
+
+function readCustomerNote(rawPayload: Record<string, unknown> | null): string | null {
+  if (rawPayload === null) {
+    return null;
+  }
+
+  for (const key of ['customer_note', 'customerNote', 'note']) {
+    const value = readString(rawPayload[key]);
+    if (value !== null) {
+      return value;
+    }
+  }
+
+  const customer = objectOrNull(rawPayload.customer);
+  return readString(customer?.note);
 }
 
 function decimalNumber(value: unknown): number | null {

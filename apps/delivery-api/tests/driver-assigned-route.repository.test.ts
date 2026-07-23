@@ -41,6 +41,7 @@ const routePlanRecord = {
             }
           ],
           rawPayload: {
+            customer_note: 'Leave the box beside the loading entrance.',
             normalizedPaymentStatus: 'CASH_COLLECT_REQUIRED'
           },
           shopifyOrderGid: 'gid://shopify/Order/1001'
@@ -103,6 +104,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
               province: 'ON'
             },
             coordinates: { latitude: 43.6487, longitude: -79.3817 },
+            customerNote: 'Leave the box beside the loading entrance.',
             deliveryStopId: 'stop-id',
             durationFromPreviousSeconds: 600,
             estimatedArrivalAt: null,

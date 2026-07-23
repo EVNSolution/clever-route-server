@@ -67,8 +67,8 @@ describe('PrismaRoutePlanRepository', () => {
     );
     expect(routePlanStopCreateMany).toHaveBeenCalledWith({
       data: [
-        { deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1 },
-        { deliveryStopId: 'stop-2', routePlanId: 'route-plan-id', sequence: 2 }
+        { deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1, shopId: 'shop-id' },
+        { deliveryStopId: 'stop-2', routePlanId: 'route-plan-id', sequence: 2, shopId: 'shop-id' }
       ]
     });
   });
@@ -159,6 +159,29 @@ describe('PrismaRoutePlanRepository', () => {
       estimatedArrivalAt: null,
       serviceMinutes: null
     }));
+  });
+
+  test('keeps planned scheduled start time from closing transfer as actual in-progress execution', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord({
+        constraints: {
+          scheduledStartAt: '2026-05-08T13:00:00.000Z'
+        },
+        driverEvents: [],
+        status: 'READY'
+      })
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.findRoutePlanDetail({
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.routePlan.scheduledStartAt).toBe('2026-05-08T13:00:00.000Z');
+    expect(result?.routePlan.status).toBe('READY');
   });
 
   test('marks route geometry stale from metadata without overfetching cached geometry rows', async () => {
@@ -292,8 +315,8 @@ describe('PrismaRoutePlanRepository', () => {
     );
     expect(routePlanStopCreateMany).toHaveBeenCalledWith({
       data: [
-        { deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1 },
-        { deliveryStopId: 'stop-2', routePlanId: 'route-plan-id', sequence: 2 }
+        { deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1, shopId: 'shop-id' },
+        { deliveryStopId: 'stop-2', routePlanId: 'route-plan-id', sequence: 2, shopId: 'shop-id' }
       ]
     });
   });
@@ -369,7 +392,7 @@ describe('PrismaRoutePlanRepository', () => {
       })
     );
     expect(routePlanStopCreateMany).toHaveBeenCalledWith({
-      data: [{ deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1 }]
+      data: [{ deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1, shopId: 'shop-id' }]
     });
   });
 
@@ -421,7 +444,7 @@ describe('PrismaRoutePlanRepository', () => {
     ).resolves.toEqual(expect.objectContaining({ id: 'route-plan-id' }));
 
     expect(routePlanStopCreateMany).toHaveBeenCalledWith({
-      data: [{ deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1 }]
+      data: [{ deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1, shopId: 'shop-id' }]
     });
   });
 
@@ -454,7 +477,7 @@ describe('PrismaRoutePlanRepository', () => {
     ).resolves.toEqual(expect.objectContaining({ id: 'route-plan-id' }));
 
     expect(routePlanStopCreateMany).toHaveBeenCalledWith({
-      data: [{ deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1 }]
+      data: [{ deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1, shopId: 'shop-id' }]
     });
   });
 
@@ -502,8 +525,8 @@ describe('PrismaRoutePlanRepository', () => {
     expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledWith({ where: { routePlanId: 'route-plan-id' } });
     expect(routePlanStopCreateMany).toHaveBeenLastCalledWith({
       data: [
-        { deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1 },
-        { deliveryStopId: 'stop-2', routePlanId: 'route-plan-id', sequence: 2 }
+        { deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 1, shopId: 'shop-id' },
+        { deliveryStopId: 'stop-2', routePlanId: 'route-plan-id', sequence: 2, shopId: 'shop-id' }
       ]
     });
     expect(prisma.routePlan.update).toHaveBeenCalledOnce();
@@ -1167,8 +1190,8 @@ describe('PrismaRoutePlanRepository', () => {
     ]);
     expect(routePlanStopCreateMany).toHaveBeenCalledWith({
       data: [
-        { deliveryStopId: 'stop-2', routePlanId: 'route-plan-id', sequence: 1 },
-        { deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 2 }
+        { deliveryStopId: 'stop-2', routePlanId: 'route-plan-id', sequence: 1, shopId: 'shop-id' },
+        { deliveryStopId: 'stop-1', routePlanId: 'route-plan-id', sequence: 2, shopId: 'shop-id' }
       ]
     });
     expect(prisma.routePlan.update).toHaveBeenCalledWith(expect.objectContaining({
@@ -1331,7 +1354,7 @@ describe('PrismaRoutePlanRepository', () => {
     ]);
   });
 
-  test('deletes route-plan stops first and then deletes the route plan within shop scope', async () => {
+  test('clears all same-shop route-grouping child route-plan refs before deleting a route plan', async () => {
     const { prisma } = createPrismaHarness();
     const repository = new PrismaRoutePlanRepository(
       prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
@@ -1359,9 +1382,18 @@ describe('PrismaRoutePlanRepository', () => {
     expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledWith({
       where: { routePlanId: 'route-plan-id' }
     });
+    expect(prisma.routeGroupingChildVersion.updateMany).toHaveBeenNthCalledWith(1, {
+      data: { routePlanId: null },
+      where: {
+        routePlanId: { in: ['route-plan-id'] },
+        shopId: 'shop-id'
+      }
+    });
     expect(prisma.routePlan.delete).toHaveBeenCalledWith({
       where: { id: 'route-plan-id' }
     });
+    expect(prisma.routeGroupingChildVersion.updateMany.mock.invocationCallOrder[0])
+      .toBeLessThan(prisma.routePlan.delete.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY);
     expect(prisma.routePlan.delete).toHaveBeenCalledTimes(1);
   });
 
@@ -1768,6 +1800,7 @@ function findRoutePlanMetricsUpdate(
 function routePlanRecord(input: {
   constraints?: Record<string, unknown>;
   driverId?: string | null;
+  driverEvents?: Array<{ eventType: string }>;
   metrics?: Record<string, unknown>;
   routeStops?: Array<Record<string, unknown>>;
   status?: string;
@@ -1779,6 +1812,7 @@ function routePlanRecord(input: {
     depotLatitude: '43.6532',
     depotLongitude: '-79.3832',
     driverId: input.driverId ?? null,
+    driverEvents: input.driverEvents,
     id: 'route-plan-id',
     metrics: input.metrics ?? {
       deliveryAreas: ['Mississauga'],

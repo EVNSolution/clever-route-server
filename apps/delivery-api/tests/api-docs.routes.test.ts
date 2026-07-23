@@ -3,6 +3,9 @@ import { describe, expect, test } from 'vitest';
 
 import { buildApp } from '../src/app.js';
 
+const dsvControlRouteSourceUrl = new URL('../src/routes/dsv-control.routes.ts', import.meta.url);
+const dsvV1ReadRouteSourceUrl = new URL('../src/routes/dsv-v1-read.routes.ts', import.meta.url);
+
 describe('API documentation routes', () => {
   test('GET /docs serves a minimal page pointing at the deployed OpenAPI document', async () => {
     const app = await buildApp();
@@ -79,4 +82,150 @@ describe('API documentation routes', () => {
       await app.close();
     }
   });
+
+  test('GET /docs/openapi.yaml documents the complete served DSV v1 runtime boundary', async () => {
+    const app = await buildApp();
+    const [controlRouteSource, readRouteSource] = await Promise.all([
+      readFile(dsvControlRouteSourceUrl, 'utf8'),
+      readFile(dsvV1ReadRouteSourceUrl, 'utf8'),
+    ]);
+    const implementedRoutes = implementedDsvV1Routes(readRouteSource, controlRouteSource);
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+      const documentedRoutes = openApiRoutes(response.body);
+
+      expect(response.statusCode).toBe(200);
+      expect(implementedRoutes).toEqual([
+        { method: 'get', path: '/api/dsv/v1/conditions' },
+        { method: 'get', path: '/api/dsv/v1/control' },
+        { method: 'get', path: '/api/dsv/v1/customer/deliveries' },
+        { method: 'get', path: '/api/dsv/v1/customers' },
+        { method: 'get', path: '/api/dsv/v1/destinations' },
+        { method: 'get', path: '/api/dsv/v1/dispatches' },
+        { method: 'get', path: '/api/dsv/v1/drivers' },
+        { method: 'get', path: '/api/dsv/v1/records' },
+        { method: 'post', path: '/api/dsv/v1/seller-orders/:sellerOrderId/assignment/reassign' },
+        { method: 'post', path: '/api/dsv/v1/seller-orders/:sellerOrderId/assignment/unassign' },
+        { method: 'get', path: '/api/dsv/v1/session' },
+        { method: 'post', path: '/api/dsv/v1/session/logout' },
+        { method: 'get', path: '/api/dsv/v1/vehicles' },
+      ]);
+      expect(missingDocumentedRoutes(implementedRoutes, documentedRoutes)).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('GET /docs/openapi.yaml keeps forbidden G005 DSV v1 proof event route undocumented', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+      const documentedRoutes = openApiRoutes(response.body);
+
+      expect(response.statusCode).toBe(200);
+      expect(documentedRoutes.has('/api/dsv/v1/resources/proofs/events')).toBe(false);
+      expect(response.body).not.toContain('/api/dsv/v1/resources/proofs/events');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('GET /docs/openapi.yaml documents strict DSV v1 vehicle driver assignment items', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('required: [displayName, driverAssignments, vehicleId]');
+      expect(response.body).toContain('$ref: \'#/components/schemas/DsvV1VehicleDriverAssignmentListItem\'');
+      expect(response.body).toContain('DsvV1VehicleDriverAssignmentListItem:');
+      expect(response.body).toContain('required: [assignmentId, driverId]');
+      expect(response.body).toContain('additionalProperties: false');
+      expect(response.body).not.toContain('DsvV1VehicleDriverAssignmentListItem:\n      type: object\n      required: [assignmentId, driverId, kind');
+    } finally {
+      await app.close();
+    }
+  });
 });
+
+type RouteMethod = 'delete' | 'get' | 'patch' | 'post' | 'put';
+
+type RouteMethodPair = {
+  method: RouteMethod;
+  path: string;
+};
+
+const httpMethods = ['delete', 'get', 'patch', 'post', 'put'] as const satisfies readonly RouteMethod[];
+
+function implementedDsvV1Routes(readRouteSource: string, controlRouteSource: string): RouteMethodPair[] {
+  const routes: RouteMethodPair[] = [];
+
+  for (const match of readRouteSource.matchAll(/app\.(get|post|put|patch|delete)\(`\$\{apiRoot\}(\/[^`]*)`/gu)) {
+    const pathSuffix = match[2] ?? '';
+    if (!pathSuffix.includes('${')) {
+      routes.push({ method: toRouteMethod(match[1]), path: `/api/dsv/v1${pathSuffix}` });
+    }
+  }
+
+  for (const match of readRouteSource.matchAll(/registerReadRoute\(\s*app,\s*dependencies,\s*'([^']+)'/gu)) {
+    routes.push({ method: 'get', path: `/api/dsv/v1/${match[1] ?? ''}` });
+  }
+
+  for (const match of controlRouteSource.matchAll(
+    /app\.(get|post|put|patch|delete)\(`\$\{versionedApiRoot\}(\/[^`]*)`/gu
+  )) {
+    routes.push({ method: toRouteMethod(match[1]), path: `/api/dsv/v1${match[2] ?? ''}` });
+  }
+
+  return [...routes].sort(compareRouteMethodPair);
+}
+
+function openApiRoutes(openApiYaml: string): Map<string, Set<RouteMethod>> {
+  const routes = new Map<string, Set<RouteMethod>>();
+  let currentPath: string | null = null;
+
+  for (const line of openApiYaml.split('\n')) {
+    const pathMatch = /^ {2}(\/[^:]+):\s*$/u.exec(line);
+    if (pathMatch !== null) {
+      currentPath = pathMatch[1] ?? null;
+      if (currentPath !== null && !routes.has(currentPath)) {
+        routes.set(currentPath, new Set<RouteMethod>());
+      }
+      continue;
+    }
+
+    const methodMatch = /^ {4}(delete|get|patch|post|put):\s*$/u.exec(line);
+    if (methodMatch !== null && currentPath !== null) {
+      routes.get(currentPath)?.add(toRouteMethod(methodMatch[1]));
+    }
+  }
+
+  return routes;
+}
+
+function missingDocumentedRoutes(
+  implementedRoutes: readonly RouteMethodPair[],
+  documentedRoutes: ReadonlyMap<string, ReadonlySet<RouteMethod>>,
+): RouteMethodPair[] {
+  return implementedRoutes.filter(({ method, path }) => !documentedRoutes.get(toOpenApiPath(path))?.has(method));
+}
+
+function toOpenApiPath(runtimePath: string): string {
+  return runtimePath.replace(/:([A-Za-z][A-Za-z0-9_]*)/gu, '{$1}');
+}
+
+function compareRouteMethodPair(left: RouteMethodPair, right: RouteMethodPair): number {
+  return left.path.localeCompare(right.path) || left.method.localeCompare(right.method);
+}
+
+function toRouteMethod(method: string | undefined): RouteMethod {
+  for (const candidate of httpMethods) {
+    if (candidate === method) {
+      return candidate;
+    }
+  }
+  throw new Error(`Unsupported HTTP method in route docs parity test: ${String(method)}`);
+}

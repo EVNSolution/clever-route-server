@@ -549,6 +549,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
               data: deliveryStopIds.map((deliveryStopId, index) => ({
                 deliveryStopId,
                 routePlanId: input.routePlanId,
+                shopId: shop.id,
                 sequence: index + 1
               }))
             });
@@ -730,6 +731,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         data: deliveryStopIds.map((deliveryStopId, index) => ({
           deliveryStopId,
           routePlanId: routePlan.id,
+          shopId: shop.id,
           sequence: index + 1
         }))
       });
@@ -830,6 +832,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
         data: deliveryStopIds.map((deliveryStopId, index) => ({
           deliveryStopId,
           routePlanId: routePlan.id,
+          shopId: shop.id,
           sequence: index + 1
         }))
       });
@@ -982,6 +985,10 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     await this.prisma.$transaction(async (tx) => {
       await tx.routePlanStop.deleteMany({
         where: { routePlanId: input.routePlanId }
+      });
+      await clearRouteGroupingChildVersionRoutePlanRefs(tx, {
+        routePlanIds: [input.routePlanId],
+        shopId: shop.id
       });
       await tx.routePlan.delete({
         where: { id: input.routePlanId }
@@ -1190,6 +1197,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
           data: deliveryStopIds.map((deliveryStopId, index) => ({
             deliveryStopId,
             routePlanId: input.routePlanId,
+            shopId: shop.id,
             sequence: index + 1
           }))
         });
@@ -1779,6 +1787,20 @@ function routeItemDtosFromRouteStops(routeStops: RoutePlanStopRecord[]): OrderIt
   return routeStops.flatMap((routeStop) =>
     (routeStop.deliveryStop.order.orderItems ?? []).map((item) => toOrderItemDto(item))
   );
+}
+
+async function clearRouteGroupingChildVersionRoutePlanRefs(
+  tx: Pick<PrismaClient, 'routeGroupingChildVersion'>,
+  input: { routePlanIds: string[]; shopId: string }
+): Promise<void> {
+  if (input.routePlanIds.length === 0) return;
+  await tx.routeGroupingChildVersion.updateMany({
+    data: { routePlanId: null },
+    where: {
+      routePlanId: { in: input.routePlanIds },
+      shopId: input.shopId
+    }
+  });
 }
 
 async function collapseRouteGroupingSplitAfterChildDelete(

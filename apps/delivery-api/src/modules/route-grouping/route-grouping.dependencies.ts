@@ -17,6 +17,7 @@ import {
   DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS,
   PrismaRouteGroupingService
 } from './route-grouping.service.js';
+import type { RouteGroupingService } from './route-grouping.types.js';
 
 export type AdminRouteGroupRuntimeEnv = ShopifyAppCredentialsEnv & Partial<Record<
   | 'FIREBASE_PROJECT_ID'
@@ -38,24 +39,29 @@ export type AdminRouteGroupRuntimeEnv = ShopifyAppCredentialsEnv & Partial<Recor
 export function loadAdminRouteGroupDependencies(input: {
   env: AdminRouteGroupRuntimeEnv;
   prisma: PrismaClient;
+  routeGroupingService?: RouteGroupingService;
 }): AdminRouteGroupDependencies | undefined {
   const appCredentials = loadShopifyAppCredentials(input.env);
   if (appCredentials.length === 0) return undefined;
 
-  const routeOptimizationService = readRouteOptimizationService(input.env);
-  const routeGeometryProvider = readRouteGeometryProvider(input.env);
-
   return {
-    routeGroupingService: new PrismaRouteGroupingService(
-      input.prisma,
-      loadDriverPushProvider(input.env),
-      undefined,
-      routeOptimizationService,
-      routeGeometryProvider,
-      { maxChildRouteStopDistanceFromDepotMeters: readOptionalNumber(input.env.ROUTE_GROUPING_MAX_STOP_DISTANCE_METERS) ?? DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS }
-    ),
+    routeGroupingService: input.routeGroupingService ?? createRouteGroupingService(input),
     sessionTokenVerifier: new ShopifySessionTokenVerifier({ appCredentials })
   };
+}
+
+export function createRouteGroupingService(input: {
+  env: AdminRouteGroupRuntimeEnv;
+  prisma: PrismaClient;
+}): RouteGroupingService {
+  return new PrismaRouteGroupingService(
+    input.prisma,
+    loadDriverPushProvider(input.env),
+    undefined,
+    readRouteOptimizationService(input.env),
+    readRouteGeometryProvider(input.env),
+    { maxChildRouteStopDistanceFromDepotMeters: readOptionalNumber(input.env.ROUTE_GROUPING_MAX_STOP_DISTANCE_METERS) ?? DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS }
+  );
 }
 
 function readRouteOptimizationService(env: AdminRouteGroupRuntimeEnv) {

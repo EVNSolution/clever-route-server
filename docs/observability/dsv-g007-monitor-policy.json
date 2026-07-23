@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "name": "dsv-g007-monitor-policy",
+  "source": "repo-owned structured logs, health checks, checked-in Prisma migration directory, Prisma migration table, and DSV audit tables",
+  "statusPolicy": {
+    "ok": "all required checks return ok and legacy_read/legacy_write are zero in the selected window",
+    "unknown": "one or more checks cannot be read without a critical finding",
+    "critical": "health/ready failure, pending/missing/failed/unexpected migration, invariant failure, or nonzero legacy_read/legacy_write"
+  },
+  "exitPolicy": {
+    "ok": 0,
+    "unknown": 1,
+    "critical": 2
+  },
+  "checks": [
+    {
+      "name": "healthz",
+      "source": "GET /healthz",
+      "criticalWhen": "HTTP status is not 200"
+    },
+    {
+      "name": "readyz",
+      "source": "GET /readyz",
+      "criticalWhen": "HTTP status is not 200"
+    },
+    {
+      "name": "migrations",
+      "source": "apps/delivery-api/prisma/migrations compared to successful _prisma_migrations rows",
+      "criticalWhen": "any checked-in migration is missing from successful applied history, required latest migration 20260723013000_g010_import_row_resource_tenant_fks is absent, any row has finished_at IS NULL or rolled_back_at IS NOT NULL, or successful history contains a migration outside the 44-migration directory-derived chain",
+      "fields": ["expectedCount", "appliedCount", "pendingCount", "failedCount", "latestMigration", "actualLatestMigration", "pendingMigrations", "unexpectedCount", "unexpectedMigrations"]
+    },
+    {
+      "name": "duplicate_active_assignments",
+      "source": "orders",
+      "criticalWhen": "more than one active currentRouteVersionId exists for the same shopId/sellerOrderKey"
+    },
+    {
+      "name": "failed_command_receipts",
+      "source": "dsv_command_receipts",
+      "criticalWhen": "status = FAILED"
+    },
+    {
+      "name": "audit_rows_missing_request_ids",
+      "source": "dsv_audit_events",
+      "criticalWhen": "requestId is null or empty"
+    },
+    {
+      "name": "import_partial_apply_indicators",
+      "source": "dsv_dispatch_import_rows",
+      "criticalWhen": "an applying or blocked import row has an apply receipt"
+    },
+    {
+      "name": "eta_input_route_version_mismatches",
+      "source": "route_plan_stops",
+      "criticalWhen": "an active route plan stop has a non-null etaInputRouteVersionId that is missing or differs from that route plan's current RouteGroupingChildVersion, regardless of etaStatus"
+    },
+    {
+      "name": "legacy_usage",
+      "source": "structured request logs aggregated by scripts/dsv-g007-observation-report.sh",
+      "categories": [
+        "v1_read",
+        "canonical_assignment_command_alias",
+        "legacy_read",
+        "legacy_write"
+      ],
+      "criticalWhen": "legacy_read or legacy_write is nonzero",
+      "note": "canonical_assignment_command_alias is reported separately and does not count as legacy_write"
+    }
+  ]
+}

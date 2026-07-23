@@ -1,6 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 
+import { DsvAssignmentCommandService } from '../src/modules/dsv/dsv-assignment-command.service.js';
 import {
   DEFAULT_DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS,
   DEFAULT_DRIVER_PROOF_MEDIA_RETENTION_DAYS,
@@ -11,8 +12,13 @@ import {
   loadDriverProofMediaReadAccessPolicy,
   loadDriverProofMediaRetentionPolicy
 } from '../src/modules/driver/driver.dependencies.js';
+import type { RouteGroupingService } from '../src/modules/route-grouping/route-grouping.types.js';
 
 describe('loadDriverApiDependencies', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   test('leaves driver API disabled until JWT secret is configured', () => {
     const dependencies = loadDriverApiDependencies({ env: {}, prisma: {} as PrismaClient });
 
@@ -215,5 +221,84 @@ describe('loadDriverApiDependencies', () => {
     expect(() => loadDriverProofMediaReadAccessPolicy({ DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS: '0' })).toThrow(
       'DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS must be a positive integer'
     );
+  });
+
+  test('wires driver seller order assignment commands through the DSV kernel', async () => {
+    const saveDraft = vi.fn(() => {
+      throw new Error('legacy direct assignment path should not be used');
+    });
+    const routeGroupingService = {
+      getGrouping: vi.fn(() => Promise.resolve({
+        assignments: [
+          {
+            addressLabel: '100 Test Rd',
+            assignedDriverId: 'driver-1',
+            assignedPolygonId: null,
+            assignmentStatus: 'ASSIGNED',
+            coordinates: { latitude: null, longitude: null },
+            deliveryStopId: 'stop-1',
+            email: null,
+            itemCount: 1,
+            orderId: 'order-1',
+            orderName: '#1001',
+            phone: null,
+            recipientName: 'Recipient',
+            sourceOrderId: 'seller-order-1',
+            sourceSequence: 1
+          }
+        ],
+        children: [],
+        id: 'grouping-1',
+        updatedAt: '2026-07-22T00:00:00.000Z'
+      })),
+      saveDraft
+    } as unknown as RouteGroupingService;
+    const prisma = {
+      routeGroupingChildVersion: {
+        findFirst: vi.fn(() => Promise.resolve({
+          groupingId: 'grouping-1',
+          routePlan: { vehicleId: 'vehicle-1' }
+        }))
+      }
+    } as unknown as PrismaClient;
+    const acquire = vi.spyOn(DsvAssignmentCommandService.prototype, 'acquire').mockResolvedValue({
+      assignmentStatus: 'ASSIGNED',
+      auditEventId: 'audit-1',
+      commandId: 'command-1',
+      etaStatus: 'PENDING',
+      newRouteVersionId: 'route-version-2',
+      previousRouteVersionId: 'route-version-1',
+      receiptId: 'receipt-1',
+      routePlanId: 'route-1',
+      sellerOrderId: 'order-1'
+    });
+    const dependencies = loadDriverApiDependencies({
+      env: { JWT_SECRET: 'driver-secret' },
+      prisma,
+      routeGroupingService
+    });
+
+    await expect(dependencies?.driverSellerOrderAssignmentService?.acquire({
+      accountId: 'account-1',
+      commandId: 'command-1',
+      driverId: 'driver-1',
+      expectedVersion: 'route-version-1',
+      orderId: 'order-1',
+      routePlanId: 'route-1',
+      shopDomain: 'example.myshopify.com',
+      shopId: 'shop-1'
+    })).resolves.toMatchObject({
+      newRouteVersionId: 'route-version-2',
+      order: { orderId: 'order-1', sellerOrderKey: 'seller-order-1' },
+      receiptId: 'receipt-1'
+    });
+
+    expect(acquire).toHaveBeenCalledWith(expect.objectContaining({
+      commandId: 'command-1',
+      driverId: 'driver-1',
+      sellerOrderId: 'order-1',
+      shopDomain: 'example.myshopify.com'
+    }));
+    expect(saveDraft).not.toHaveBeenCalled();
   });
 });

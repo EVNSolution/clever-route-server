@@ -22,6 +22,26 @@ import {
   DEFAULT_DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS,
   DriverRouteMapPreviewService
 } from './driver-route-map-preview.service.js';
+import {
+  DriverSellerOrderAssignmentService,
+  DriverSellerOrderAlreadyAcquiredError,
+  DriverSellerOrderAssignmentConflictError,
+  type DriverSellerOrderAssignmentCommandKernel,
+  type DriverSellerOrderAssignmentCommandKernelInput,
+  type DriverSellerOrderAssignmentResult,
+  DriverSellerOrderNotFoundError,
+  DriverSellerOrderScopeError,
+  DriverSellerOrderTransferClosedError,
+  DriverSellerOrderVehicleRequiredError,
+  PrismaDriverSellerOrderContextRepository
+} from './driver-seller-order-assignment.service.js';
+import type { RouteGroupingService } from '../route-grouping/route-grouping.types.js';
+import type { RouteGroupingAssignmentDto } from '../route-grouping/route-grouping.types.js';
+import {
+  DsvAssignmentCommandError,
+  DsvAssignmentCommandService,
+  assignmentMap
+} from '../dsv/dsv-assignment-command.service.js';
 
 export const DEFAULT_DRIVER_PROOF_MEDIA_RETENTION_DAYS = 180;
 export const DEFAULT_DRIVER_PROOF_MEDIA_READ_ACCESS_TTL_SECONDS = 5 * 60;
@@ -77,6 +97,7 @@ type LoadDriverApiDependenciesInput = {
   adminNotificationService?: Pick<AdminNotificationServiceApi, 'createAdminNotification'>;
   env: DriverApiRuntimeEnv;
   prisma: PrismaClient;
+  routeGroupingService?: RouteGroupingService;
   routeTrackingStreamHub?: RouteTrackingStreamHub;
 };
 
@@ -92,6 +113,7 @@ export function loadDriverApiDependencies(
   const proofMediaSafetyOptions = loadDriverProofMediaRepositorySafetyOptions(input.env);
 
   const driverAssignedRouteService = new PrismaDriverAssignedRouteRepository(input.prisma);
+  const driverSellerOrderContextRepository = new PrismaDriverSellerOrderContextRepository(input.prisma);
   const driverRouteMapPreview = loadDriverRouteMapPreviewService({
     assignedRouteService: driverAssignedRouteService,
     env: input.env,
@@ -105,6 +127,19 @@ export function loadDriverApiDependencies(
     driverAssignedRouteService,
     driverConsentService: new PrismaDriverConsentRepository(input.prisma),
     driverEventService: new PrismaDriverEventRepository(input.prisma),
+    ...(input.routeGroupingService === undefined
+      ? {}
+      : {
+          driverSellerOrderAssignmentService: new DriverSellerOrderAssignmentService(
+            driverSellerOrderContextRepository,
+            input.routeGroupingService,
+            createDsvDriverSellerOrderAssignmentCommandKernel({
+              commandService: new DsvAssignmentCommandService(input.prisma, input.routeGroupingService),
+              contextRepository: driverSellerOrderContextRepository,
+              routeGroupingService: input.routeGroupingService
+            })
+          )
+        }),
     ...(driverRouteMapPreview === undefined
       ? {}
       : {
@@ -122,6 +157,100 @@ export function loadDriverApiDependencies(
     }),
     ...(input.routeTrackingStreamHub === undefined ? {} : { routeTrackingStreamHub: input.routeTrackingStreamHub }),
     routeAccessService: new PrismaDriverRouteAccessRepository(input.prisma)
+  };
+}
+
+function createDsvDriverSellerOrderAssignmentCommandKernel(input: {
+  commandService: Pick<DsvAssignmentCommandService, 'acquire' | 'release'>;
+  contextRepository: PrismaDriverSellerOrderContextRepository;
+  routeGroupingService: RouteGroupingService;
+}): DriverSellerOrderAssignmentCommandKernel {
+  return {
+    acquireDriverSellerOrder: async (command) => {
+      const result = await runDsvDriverCommand(() => input.commandService.acquire({
+        ...command,
+        sellerOrderId: command.orderId
+      }));
+      return loadDriverSellerOrderAssignmentResult(input, command, result.routePlanId ?? command.routePlanId, result);
+    },
+    releaseDriverSellerOrder: async (command) => {
+      const result = await runDsvDriverCommand(() => input.commandService.release({
+        ...command,
+        sellerOrderId: command.orderId
+      }));
+      return loadDriverSellerOrderAssignmentResult(input, command, result.routePlanId ?? command.routePlanId, result);
+    }
+  };
+}
+
+async function runDsvDriverCommand<T>(command: () => Promise<T>): Promise<T> {
+  try {
+    return await command();
+  } catch (error) {
+    if (error instanceof DsvAssignmentCommandError) throw toDriverSellerOrderAssignmentError(error);
+    throw error;
+  }
+}
+
+function toDriverSellerOrderAssignmentError(error: DsvAssignmentCommandError): Error {
+  switch (error.code) {
+    case 'SELLER_ORDER_ALREADY_ACQUIRED':
+      return new DriverSellerOrderAlreadyAcquiredError(error.message);
+    case 'SELLER_ORDER_NOT_FOUND':
+      return new DriverSellerOrderNotFoundError(error.message);
+    case 'SELLER_ORDER_ROUTE_SCOPE_REJECTED':
+      return new DriverSellerOrderScopeError(error.message);
+    case 'SELLER_ORDER_TARGET_VEHICLE_REQUIRED':
+      return new DriverSellerOrderVehicleRequiredError(error.message);
+    case 'SELLER_ORDER_TRANSFER_CLOSED':
+      return new DriverSellerOrderTransferClosedError(error.message);
+    case 'COMMAND_IN_PROGRESS':
+    case 'DUPLICATE_ACTIVE_DELIVERY':
+    case 'IDEMPOTENCY_PAYLOAD_MISMATCH':
+    case 'SELLER_ORDER_ASSIGNMENT_CHANGED':
+      return new DriverSellerOrderAssignmentConflictError(error.message);
+  }
+}
+
+async function loadDriverSellerOrderAssignmentResult(
+  dependencies: {
+    contextRepository: PrismaDriverSellerOrderContextRepository;
+    routeGroupingService: RouteGroupingService;
+  },
+  command: DriverSellerOrderAssignmentCommandKernelInput,
+  routePlanId: string,
+  result: Awaited<ReturnType<DsvAssignmentCommandService['acquire']>>
+): Promise<DriverSellerOrderAssignmentResult> {
+  const context = await dependencies.contextRepository.findRouteContext(command);
+  if (context === null) throw new DriverSellerOrderNotFoundError('Current route group was not found.');
+  const grouping = await dependencies.routeGroupingService.getGrouping({
+    groupingId: context.groupingId,
+    shopDomain: command.shopDomain
+  });
+  if (grouping === null) throw new DriverSellerOrderNotFoundError('Current route group was not found.');
+  const assignment = assignmentMap(grouping).get(command.orderId);
+  if (assignment === undefined) throw new DriverSellerOrderNotFoundError();
+  return {
+    auditEventId: result.auditEventId,
+    groupingId: grouping.id,
+    groupingUpdatedAt: grouping.updatedAt,
+    newRouteVersionId: result.newRouteVersionId,
+    order: toDriverSellerOrder(assignment),
+    previousRouteVersionId: result.previousRouteVersionId,
+    receiptId: result.receiptId,
+    routePlanId
+  };
+}
+
+function toDriverSellerOrder(assignment: RouteGroupingAssignmentDto) {
+  return {
+    addressLabel: assignment.addressLabel,
+    itemCount: assignment.itemCount,
+    orderId: assignment.orderId,
+    orderName: assignment.orderName,
+    recipientName: assignment.recipientName,
+    sellerOrderKey: assignment.sourceOrderId,
+    sourceSequence: assignment.sourceSequence
   };
 }
 

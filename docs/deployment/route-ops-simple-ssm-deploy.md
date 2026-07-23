@@ -53,7 +53,7 @@ The EC2 host does not build. A real deploy does this in order:
 7. Bootstraps proof-media directory owner/mode.
 8. Logs into GHCR using SSM parameters only on the host.
 9. Runs `docker compose --profile osrm --profile vroom --profile korea pull delivery-api vroom vroom-korea`; pulls `route-ops-web-static` only when static staging is required.
-10. Runs `docker compose run --rm delivery-api-migrate` before touching the live static volume.
+10. Runs `docker compose run --rm delivery-api-migrate` before touching the live static volume. The migration service must use the G007 migrate-deploy entrypoint and its target guard.
 11. Compares candidate and current `ROUTE_OPS_WEB_STATIC_IMAGE` digest refs.
 12. Stages the static volume via `route-ops-web-static` when the static digest changed, the current ref is missing, either ref is a mutable tag/non-digest ref, or `ROUTE_OPS_FORCE_STATIC_RESTAGE=1` is set.
 13. Recreates `delivery-api` only with `up -d --no-build --no-deps --force-recreate`.
@@ -140,17 +140,25 @@ production mutation.
 
 ## Migrate image model
 
-`delivery-api-migrate` remains a compose service, but it now uses the same
-`DELIVERY_API_IMAGE` as the runtime service and overrides only `command`:
+`delivery-api-migrate` remains a compose service, but it uses the same
+`DELIVERY_API_IMAGE` as the runtime service and overrides only `command` with
+the guarded G007 migrate-deploy entrypoint:
 
 ```yaml
 delivery-api-migrate:
   image: ${DELIVERY_API_IMAGE}
-  command: ["sh", "scripts/guard-prisma-db-push.sh"]
+  command: ["sh", "scripts/dsv-g007-migrate-deploy.sh"]
 ```
 
-The runtime image includes the guard script and Prisma schema, so this removes the second
-`delivery-api-migrate` image build/push from the deploy path.
+The runtime image includes the migration script and Prisma schema, so this removes the
+second `delivery-api-migrate` image build/push from the deploy path. Production mode must
+provide `DSV_MIGRATION_APPROVED=1`, `DSV_MIGRATION_MANIFEST_SHA256`, and
+`DSV_RESTORE_REHEARSAL_SHA256`; rehearsals must use disposable `clever_g007_*` targets.
+
+Database recovery for G007 is rehearsed through `apps/delivery-api/scripts/dsv-g007-restore.sh`.
+It restores only to `clever_g007_stale_clone_*`, `clever_g007_restore_*`, or
+`clever_g007_recovery_*` databases and rejects protected targets before any restore command
+can run.
 
 ## Availability expectation
 

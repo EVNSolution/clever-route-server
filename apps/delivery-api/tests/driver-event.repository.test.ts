@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest';
 
 import {
   DriverEventContextError,
+  DriverEventEtaStaleConflictError,
   DriverEventExecutionConflictError,
   DriverEventRouteNotInProgressError,
   DriverEventScopeError,
@@ -182,6 +183,12 @@ describe('PrismaDriverEventRepository', () => {
         actualArrivalAt: '2026-06-01T06:00:00.000Z',
         deliveryStopId: 'stop-id',
         delaySeconds: 600,
+        etaCalculatedAt: '2026-06-01T06:00:00.000Z',
+        etaFailureCode: null,
+        etaFailureMessage: null,
+        etaSource: 'STOP_ARRIVED',
+        etaStatus: 'READY',
+        inputRouteVersionId: null,
         previousEstimatedArrivalAt: '2026-06-01T05:50:00.000Z',
         serverReceivedAt: '2026-06-01T06:00:00.000Z',
         trigger: 'STOP_ARRIVED',
@@ -217,6 +224,217 @@ describe('PrismaDriverEventRepository', () => {
         }
       }
     });
+  });
+
+  test('persists ETA status and input route version when ETA ownership columns exist', async () => {
+    const { prisma } = createPrismaHarness({
+      etaOwnershipColumnsExist: true,
+      routeEtaInputVersionId: '11111111-1111-4111-8111-111111111111',
+      routeEtaStops: [
+        {
+          deliveryStop: { serviceMinutes: 5 },
+          deliveryStopId: '22222222-2222-4222-8222-222222222222',
+          distanceFromPreviousMeters: 1000,
+          durationFromPreviousSeconds: 600,
+          estimatedArrivalAt: null,
+          sequence: 1
+        }
+      ]
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    const result = await repository.recordDriverEvent(baseInput({
+      deliveryStopId: null,
+      eventType: 'ROUTE_STARTED',
+      routePlanId: '33333333-3333-4333-8333-333333333333'
+    }));
+
+    expect(result.etaUpdate).toEqual(expect.objectContaining({
+      etaCalculatedAt: '2026-06-01T06:00:00.000Z',
+      etaFailureCode: null,
+      etaFailureMessage: null,
+      etaSource: 'ROUTE_STARTED',
+      etaStatus: 'READY',
+      inputRouteVersionId: '11111111-1111-4111-8111-111111111111',
+      trigger: 'ROUTE_STARTED'
+    }));
+    const etaPersistenceQueries = prisma.$queryRaw.mock.calls.filter(([query]) =>
+      sqlText(query).includes('UPDATE route_plan_stops')
+    );
+    expect(etaPersistenceQueries).toHaveLength(1);
+    expect(sqlText(etaPersistenceQueries[0]?.[0])).toContain('"etaStatus"');
+    expect(sqlText(etaPersistenceQueries[0]?.[0])).toContain('"etaInputRouteVersionId"');
+    expect(sqlText(etaPersistenceQueries[0]?.[0])).toContain('"etaSource"');
+    expect(sqlText(etaPersistenceQueries[0]?.[0])).toContain('"shopId"');
+    expect(sqlText(etaPersistenceQueries[0]?.[0])).toContain('current_route_version.status = \'CURRENT\'');
+    expect(sqlText(etaPersistenceQueries[0]?.[0])).toContain('"etaInputRouteVersionId" IS NULL');
+    expect(prisma.routePlanStop.update).not.toHaveBeenCalled();
+  });
+
+  test('persists the current route version on driver events when the optional column exists', async () => {
+    const { prisma } = createPrismaHarness({
+      driverEventRouteVersionColumnExists: true,
+      routeEtaInputVersionId: '11111111-1111-4111-8111-111111111111'
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await repository.recordDriverEvent(baseInput({
+      deliveryStopId: null,
+      eventType: 'ROUTE_PAUSED',
+      routePlanId: '33333333-3333-4333-8333-333333333333'
+    }));
+
+    const createArgs = prisma.driverEvent.create.mock.calls[0]?.[0] as {
+      data: { routePlanId: string | null; routeVersionId?: string | null; shopId: string };
+    } | undefined;
+    expect(createArgs?.data).toMatchObject({
+      routePlanId: '33333333-3333-4333-8333-333333333333',
+      routeVersionId: '11111111-1111-4111-8111-111111111111',
+      shopId: 'shop-id'
+    });
+  });
+
+  test('treats null-owner ETA writes as stale when the current version changes after calculation', async () => {
+    const { prisma } = createPrismaHarness({
+      etaOwnershipColumnsExist: true,
+      routeEtaInputVersionId: '11111111-1111-4111-8111-111111111111',
+      routeEtaPersistenceRows: [],
+      routeEtaStops: [
+        {
+          deliveryStop: { serviceMinutes: 5 },
+          deliveryStopId: '22222222-2222-4222-8222-222222222222',
+          distanceFromPreviousMeters: 1000,
+          durationFromPreviousSeconds: 600,
+          estimatedArrivalAt: null,
+          sequence: 1
+        }
+      ]
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      deliveryStopId: null,
+      eventType: 'ROUTE_STARTED',
+      routePlanId: '33333333-3333-4333-8333-333333333333'
+    }))).rejects.toBeInstanceOf(DriverEventEtaStaleConflictError);
+
+    expect(prisma.$queryRaw.mock.calls.some(([query]) => sqlText(query).includes('UPDATE route_plan_stops'))).toBe(true);
+    expect(prisma.routePlanStop.update).not.toHaveBeenCalled();
+  });
+
+  test('persists ETAs for legacy routes without a route grouping child version', async () => {
+    const { prisma } = createPrismaHarness({
+      etaOwnershipColumnsExist: true,
+      routeEtaInputVersionId: null,
+      routeEtaStops: [
+        {
+          deliveryStop: { serviceMinutes: 5 },
+          deliveryStopId: '22222222-2222-4222-8222-222222222222',
+          distanceFromPreviousMeters: 1000,
+          durationFromPreviousSeconds: 600,
+          estimatedArrivalAt: null,
+          sequence: 1
+        }
+      ]
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    const result = await repository.recordDriverEvent(baseInput({
+      deliveryStopId: null,
+      eventType: 'ROUTE_STARTED',
+      routePlanId: '33333333-3333-4333-8333-333333333333'
+    }));
+
+    expect(result.duplicate).toBe(false);
+    expect(result.eventId).toBe('driver-event-id');
+    expect(result.etaUpdate?.inputRouteVersionId).toBeNull();
+    expect(result.etaUpdate?.trigger).toBe('ROUTE_STARTED');
+
+    const etaPersistenceQueries = prisma.$queryRaw.mock.calls.filter(([query]) =>
+      sqlText(query).includes('UPDATE route_plan_stops')
+    );
+    expect(etaPersistenceQueries).toHaveLength(1);
+    const queryText = sqlText(etaPersistenceQueries[0]?.[0]);
+    expect(queryText).toContain('"etaInputRouteVersionId" = NULL');
+    expect(queryText).toContain('"etaInputRouteVersionId" IS NULL');
+    expect(queryText).toContain('NOT EXISTS');
+    expect(queryText).toContain('FROM route_grouping_child_versions');
+    expect(queryText).not.toContain('current_route_version.id =');
+    expect(prisma.routePlanStop.update).not.toHaveBeenCalled();
+  });
+
+  test('treats legacy ETA writes as stale when a route version appears before persistence', async () => {
+    const { prisma } = createPrismaHarness({
+      etaOwnershipColumnsExist: true,
+      routeEtaInputVersionId: null,
+      routeEtaPersistenceRows: [],
+      routeEtaStops: [
+        {
+          deliveryStop: { serviceMinutes: 5 },
+          deliveryStopId: '22222222-2222-4222-8222-222222222222',
+          distanceFromPreviousMeters: 1000,
+          durationFromPreviousSeconds: 600,
+          estimatedArrivalAt: null,
+          sequence: 1
+        }
+      ]
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      deliveryStopId: null,
+      eventType: 'ROUTE_STARTED',
+      routePlanId: '33333333-3333-4333-8333-333333333333'
+    }))).rejects.toBeInstanceOf(DriverEventEtaStaleConflictError);
+
+    const etaPersistenceQueries = prisma.$queryRaw.mock.calls.filter(([query]) =>
+      sqlText(query).includes('UPDATE route_plan_stops')
+    );
+    expect(etaPersistenceQueries).toHaveLength(1);
+    expect(sqlText(etaPersistenceQueries[0]?.[0])).toContain('NOT EXISTS');
+    expect(prisma.routePlanStop.update).not.toHaveBeenCalled();
+  });
+
+  test('records FAILED ETA state with null estimates when route leg durations are unavailable', async () => {
+    const { prisma } = createPrismaHarness({
+      etaOwnershipColumnsExist: true,
+      routeEtaInputVersionId: '11111111-1111-4111-8111-111111111111',
+      routeEtaStops: [
+        {
+          deliveryStop: { serviceMinutes: 5 },
+          deliveryStopId: '22222222-2222-4222-8222-222222222222',
+          distanceFromPreviousMeters: null,
+          durationFromPreviousSeconds: null,
+          estimatedArrivalAt: null,
+          sequence: 1
+        }
+      ]
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    const result = await repository.recordDriverEvent(baseInput({
+      deliveryStopId: null,
+      eventType: 'ROUTE_STARTED',
+      routePlanId: '33333333-3333-4333-8333-333333333333'
+    }));
+
+    expect(result.etaUpdate).toEqual(expect.objectContaining({
+      etaFailureCode: 'ETA_INPUT_DURATION_UNAVAILABLE',
+      etaFailureMessage: 'ETA could not be calculated because route leg durations are unavailable.',
+      etaSource: 'ROUTE_STARTED',
+      etaStatus: 'FAILED',
+      updatedStops: [
+        {
+          deliveryStopId: '22222222-2222-4222-8222-222222222222',
+          estimatedArrivalAt: null,
+          sequence: 1
+        }
+      ]
+    }));
+    expect(prisma.$queryRaw.mock.calls.some(([query]) =>
+      sqlText(query).includes('"etaStatus" = ') && sqlText(query).includes('"etaFailureCode"')
+    )).toBe(true);
+    expect(prisma.driverEvent.create).toHaveBeenCalledOnce();
   });
 
   test('reports a stop sequence deviation without rejecting the owned stop event', async () => {
@@ -541,8 +759,12 @@ function createPrismaHarness(input: {
   conflictingRoutePlanStop?: { deliveryStopId: string; routePlanId: string } | null;
   completionEvent?: { id: string } | null;
   driverEventCreateError?: Error;
+  driverEventRouteVersionColumnExists?: boolean;
+  etaOwnershipColumnsExist?: boolean;
   existingEvent?: { eventType: string; id: string; routePlanId: string | null } | null;
   routePlan?: { id: string; status?: string } | null;
+  routeEtaInputVersionId?: string | null;
+  routeEtaPersistenceRows?: Array<{ id: string }>;
   routePlanStop?: { id: string } | null;
   routeEtaStops?: Array<{
     deliveryStop: { serviceMinutes: number | null };
@@ -591,7 +813,35 @@ function createPrismaHarness(input: {
     shop: { findUnique: ReturnType<typeof vi.fn> };
   } = {} as never;
   Object.assign(prisma, {
-    $queryRaw: vi.fn(() => Promise.resolve([])),
+    $queryRaw: vi.fn((query: unknown) => {
+      const text = sqlText(query);
+      if (text.includes('information_schema.columns')) {
+        if (text.includes("table_name = 'driver_events'")) {
+          return Promise.resolve(input.driverEventRouteVersionColumnExists === true
+            ? [{ column_name: 'routeVersionId' }]
+            : []);
+        }
+        return Promise.resolve(input.etaOwnershipColumnsExist === true
+          ? [
+              { column_name: 'etaStatus' },
+              { column_name: 'etaInputRouteVersionId' },
+              { column_name: 'etaSource' },
+              { column_name: 'etaCalculatedAt' },
+              { column_name: 'etaFailureCode' },
+              { column_name: 'etaFailureMessage' }
+            ]
+          : []);
+      }
+      if (text.includes('UPDATE route_plan_stops')) {
+        return Promise.resolve(input.routeEtaPersistenceRows ?? [{ id: 'route-plan-stop-id' }]);
+      }
+      if (text.includes('FROM route_grouping_child_versions')) {
+        return Promise.resolve(input.routeEtaInputVersionId === undefined || input.routeEtaInputVersionId === null
+          ? []
+          : [{ id: input.routeEtaInputVersionId }]);
+      }
+      return Promise.resolve([]);
+    }),
     $transaction: vi.fn((callback: (transaction: unknown) => unknown) => Promise.resolve(callback(prisma))),
     deliveryStop: {
       updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
@@ -660,4 +910,9 @@ function createPrismaHarness(input: {
   });
 
   return { prisma };
+}
+
+function sqlText(query: unknown): string {
+  const sql = query as { sql?: string; strings?: string[] };
+  return sql.sql ?? sql.strings?.join('') ?? String(query);
 }

@@ -10,7 +10,7 @@ import { loadAdminDriverDependencies } from './modules/driver/admin-driver.depen
 import { loadAdminInventoryDependencies } from './modules/inventory/inventory.dependencies.js';
 import { loadDriverApiDependencies } from './modules/driver/driver.dependencies.js';
 import { loadDriverAuthDependencies } from './modules/driver/driver-auth.dependencies.js';
-import { loadAdminRouteGroupDependencies } from './modules/route-grouping/route-grouping.dependencies.js';
+import { createRouteGroupingService, loadAdminRouteGroupDependencies } from './modules/route-grouping/route-grouping.dependencies.js';
 import { loadAdminRoutePlanDependencies } from './modules/route-plans/route-plan.dependencies.js';
 import { loadAdminOrdersDependencies } from './modules/shopify/order-sync.dependencies.js';
 import { loadShopifyAuthDependencies } from './modules/shopify/auth.dependencies.js';
@@ -19,6 +19,7 @@ import { loadWooCommerceWebhookDependencies } from './modules/woocommerce/woocom
 import { createAdminNotificationRuntime } from './modules/notifications/admin-notification.dependencies.js';
 import { RouteTrackingStreamHub } from './modules/route-tracking/route-tracking.stream.js';
 import { loadDsvControlDependencies } from './modules/dsv/dsv-control.dependencies.js';
+import { loadDsvV1ReadDependencies } from './modules/dsv/dsv-v1-read.dependencies.js';
 import { loadWordPressPluginDependencies } from './modules/wordpress-plugin/wordpress-plugin.dependencies.js';
 import type { AdminRoutePlanDependencies } from './routes/admin-route-plans.routes.js';
 import type { AdminRouteGroupDependencies } from './routes/admin-route-groups.routes.js';
@@ -34,13 +35,15 @@ import type { WordPressPluginDependencies } from './routes/wordpress-plugin.rout
 import type { AdminCommerceConnectionsDependencies } from './routes/admin-commerce-connections.routes.js';
 import type { AdminCommerceConnectionsUiDependencies } from './routes/admin-commerce-connections-ui.routes.js';
 import type { DsvControlDependencies } from './routes/dsv-control.routes.js';
+import type { DsvV1ReadDependencies } from './routes/dsv-v1-read.routes.js';
 
 const env = loadEnv();
 const prisma = new PrismaClient();
 const adminCommerceConnections = loadAdminCommerceConnectionsDependencies({ env: process.env, prisma });
 const adminDrivers = loadAdminDriverDependencies({ env: process.env, prisma });
 const adminInventories = loadAdminInventoryDependencies({ env: process.env, prisma });
-const adminRouteGroups = loadAdminRouteGroupDependencies({ env: process.env, prisma });
+const routeGroupingService = createRouteGroupingService({ env: process.env, prisma });
+const adminRouteGroups = loadAdminRouteGroupDependencies({ env: process.env, prisma, routeGroupingService });
 const routeTrackingStreamHub = new RouteTrackingStreamHub();
 const adminRoutePlans = loadAdminRoutePlanDependencies({ env: process.env, prisma, routeTrackingStreamHub });
 const adminNotificationRuntime = createAdminNotificationRuntime({
@@ -50,7 +53,8 @@ const adminNotificationRuntime = createAdminNotificationRuntime({
   prisma
 });
 const adminNotificationService = adminNotificationRuntime.service;
-const dsvControl = loadDsvControlDependencies({ env: process.env, nodeEnv: env.nodeEnv, prisma });
+const dsvControl = loadDsvControlDependencies({ env: process.env, nodeEnv: env.nodeEnv, prisma, routeGroupingService });
+const dsvV1Read = loadDsvV1ReadDependencies({ env: process.env, nodeEnv: env.nodeEnv, prisma });
 const adminOrders = loadAdminOrdersDependencies({
   adminNotificationService,
   env: process.env,
@@ -70,6 +74,7 @@ const driverApi = loadDriverApiDependencies({
   adminNotificationService,
   env: process.env,
   prisma,
+  routeGroupingService,
   routeTrackingStreamHub
 });
 const driverAuth = loadDriverAuthDependencies({ env: process.env, prisma });
@@ -99,6 +104,7 @@ const app = await buildApp(
     driverApi,
     driverAuth,
     dsvControl,
+    dsvV1Read,
     logger,
     shopifyAuth,
     shopifyWebhook,
@@ -140,6 +146,7 @@ function createBuildAppOptions(input: {
   driverApi: DriverApiDependencies | undefined;
   driverAuth: DriverAuthDependencies | undefined;
   dsvControl: DsvControlDependencies | undefined;
+  dsvV1Read: DsvV1ReadDependencies | undefined;
   logger: false | { level: string };
   shopifyAuth: ShopifyAuthDependencies | undefined;
   shopifyWebhook: ShopifyWebhookDependencies | undefined;
@@ -157,6 +164,7 @@ function createBuildAppOptions(input: {
   driverApi?: DriverApiDependencies;
   driverAuth?: DriverAuthDependencies;
   dsvControl?: DsvControlDependencies;
+  dsvV1Read?: DsvV1ReadDependencies;
   logger: false | { level: string };
   shopifyAuth?: ShopifyAuthDependencies;
   shopifyWebhook?: ShopifyWebhookDependencies;
@@ -175,6 +183,7 @@ function createBuildAppOptions(input: {
     ...(input.driverApi === undefined ? {} : { driverApi: input.driverApi }),
     ...(input.driverAuth === undefined ? {} : { driverAuth: input.driverAuth }),
     ...(input.dsvControl === undefined ? {} : { dsvControl: input.dsvControl }),
+    ...(input.dsvV1Read === undefined ? {} : { dsvV1Read: input.dsvV1Read }),
     logger: input.logger,
     ...(input.shopifyAuth === undefined ? {} : { shopifyAuth: input.shopifyAuth }),
     ...(input.shopifyWebhook === undefined ? {} : { shopifyWebhook: input.shopifyWebhook }),

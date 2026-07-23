@@ -1,0 +1,552 @@
+import { describe, expect, test, vi } from 'vitest';
+
+import { buildApp } from '../src/app.js';
+import { createAdminWebSession } from '../src/routes/admin-ui-session.js';
+import type {
+  DsvV1ReadDependencies,
+  DsvV1ReadQueryService,
+  DsvV1SessionResolver,
+} from '../src/routes/dsv-v1-read.routes.js';
+import {
+  DsvV1AuthenticationError,
+  DsvV1ForbiddenError,
+} from '../src/routes/dsv-v1-read.routes.js';
+import {
+  createDsvAdminPrincipal,
+  createDsvCustomerUserPrincipalFromAccount,
+} from '../src/modules/dsv/dsv-principal.js';
+import { DsvV1ReadQueryError } from '../src/modules/dsv/dsv-v1-read-query.service.js';
+
+const sessionSecret = '12345678901234567890123456789012';
+const cookieName = 'clever_dsv_admin';
+const shopId = '99999999-9999-4999-8999-999999999999';
+const customerId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const accountId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+describe('DSV v1 read routes', () => {
+  test('returns exact v1 session envelope for admin and customer browser sessions', async () => {
+    const { app, queryService, sessionResolver } = await createHarness();
+    try {
+      const admin = signedCookie(`dsv-shop:tomatonofood.com`);
+      const adminResponse = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/session',
+      });
+      expect(adminResponse.statusCode).toBe(200);
+      const adminBody = expectDsvV1Metadata(adminResponse);
+      expectDsvAdminSessionData(adminBody.data);
+
+      const customer = signedCookie(`dsv-customer-account:${accountId}`);
+      const customerResponse = await app.inject({
+        headers: { cookie: customer.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/session',
+      });
+      expect(customerResponse.statusCode).toBe(200);
+      expectDsvV1Envelope(customerResponse, {
+        customerId,
+        principalType: 'CUSTOMER_USER',
+        scopes: ['dsv:session:read', 'dsv:customer-deliveries:read'],
+        shopId,
+      });
+      expect(sessionResolver.resolve).toHaveBeenCalledWith('dsv-shop:tomatonofood.com');
+      expect(sessionResolver.resolve).toHaveBeenCalledWith(`dsv-customer-account:${accountId}`);
+      expect(queryService.listDispatches).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('maps missing, invalid, expired, unknown, and inactive sessions to stable auth errors', async () => {
+    const { app, sessionResolver } = await createHarness();
+    sessionResolver.resolve.mockRejectedValueOnce(new DsvV1AuthenticationError());
+    sessionResolver.resolve.mockRejectedValueOnce(new DsvV1ForbiddenError('DSV customer account is inactive'));
+    try {
+      const missing = await app.inject({ method: 'GET', url: '/api/dsv/v1/session' });
+      expect(missing.statusCode).toBe(401);
+      expectDsvV1Error(missing, { code: 'UNAUTHENTICATED', message: 'DSV session required' });
+
+      const invalid = await app.inject({
+        headers: { cookie: `${cookieName}=not-signed` },
+        method: 'GET',
+        url: '/api/dsv/v1/session',
+      });
+      expect(invalid.statusCode).toBe(401);
+
+      const expired = signedCookie(`dsv-customer-account:${accountId}`, -1);
+      const expiredResponse = await app.inject({
+        headers: { cookie: expired.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/session',
+      });
+      expect(expiredResponse.statusCode).toBe(401);
+
+      const unknown = signedCookie('dsv-unknown:subject');
+      const unknownResponse = await app.inject({
+        headers: { cookie: unknown.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/session',
+      });
+      expect(unknownResponse.statusCode).toBe(401);
+
+      const inactive = signedCookie(`dsv-customer-account:${accountId}`);
+      const inactiveResponse = await app.inject({
+        headers: { cookie: inactive.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/session',
+      });
+      expect(inactiveResponse.statusCode).toBe(403);
+      expectDsvV1Error(inactiveResponse, { code: 'FORBIDDEN', message: 'DSV customer account is inactive' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('registers v1 read endpoints with strict query policies and v1 envelopes', async () => {
+    const { app, queryService } = await createHarness();
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    try {
+      for (const path of [
+        '/dispatches?serviceDate=2026-07-23',
+        '/control?serviceDate=2026-07-23',
+        '/records?serviceDate=2026-07-23',
+        '/drivers',
+        '/vehicles',
+        '/customers',
+        '/destinations',
+        '/conditions',
+      ]) {
+        const registered = await app.inject({
+          headers: { cookie: admin.cookie },
+          method: 'GET',
+          url: `/api/dsv/v1${path}`,
+        });
+        expect(registered.statusCode, path).toBe(200);
+        expectDsvV1Metadata(registered);
+      }
+
+      const response = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/dispatches?serviceDate=2026-07-23&limit=25&cursor=opaque',
+      });
+      expect(response.statusCode).toBe(200);
+      expectDsvV1Envelope(response, {
+        items: [{
+          assignmentStatus: 'ASSIGNED',
+          customerId: 'customer-a',
+          destinationId: 'destination-a',
+          etaStatus: 'READY',
+          sellerOrderId: 'order-1',
+          sellerOrderKey: 'SO-001',
+        }],
+        page: { hasMore: false },
+      });
+      expect(queryService.listDispatches).toHaveBeenCalledWith(
+        expect.objectContaining({ principalType: 'DSV_ADMIN', shopId }),
+        { cursor: 'opaque', limit: 25, serviceDate: '2026-07-23' },
+      );
+
+      queryService.listVehicles.mockResolvedValueOnce({
+        items: [{
+          displayName: 'Truck A',
+          driverAssignments: [{ assignmentId: 'assignment-1', driverId: 'driver-1' }],
+          status: 'ACTIVE',
+          vehicleId: 'vehicle-1',
+          vehiclePlate: '11A1111',
+        }],
+        page: { hasMore: false },
+      });
+      const vehicles = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/vehicles?limit=10',
+      });
+      expect(vehicles.statusCode).toBe(200);
+      expectDsvV1Envelope(vehicles, {
+        items: [{
+          displayName: 'Truck A',
+          driverAssignments: [{ assignmentId: 'assignment-1', driverId: 'driver-1' }],
+          status: 'ACTIVE',
+          vehicleId: 'vehicle-1',
+          vehiclePlate: '11A1111',
+        }],
+        page: { hasMore: false },
+      });
+      const vehicleBody = parseJsonBody<{ data: { items: Array<{ driverAssignments: unknown }> } }>(vehicles);
+      expect(JSON.stringify(vehicleBody.data.items[0]?.driverAssignments)).not.toMatch(
+        /kind|displayName|phone|vehicleId/u
+      );
+
+      const unsupported = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/dispatches?sort=createdAt',
+      });
+      expect(unsupported.statusCode).toBe(400);
+      expectDsvV1Error(unsupported, { code: 'BAD_REQUEST', message: 'Unsupported query parameter' });
+
+      for (const path of [
+        '/session?extra=1',
+        '/dispatches?extra=1',
+        '/control?extra=1',
+        '/records?extra=1',
+        '/drivers?extra=1',
+        '/vehicles?extra=1',
+        '/customers?extra=1',
+        '/destinations?extra=1',
+        '/conditions?extra=1',
+        '/customer/deliveries?extra=1',
+      ]) {
+        const rejected = await app.inject({
+          headers: { cookie: admin.cookie },
+          method: 'GET',
+          url: `/api/dsv/v1${path}`,
+        });
+        expect(rejected.statusCode, path).toBe(400);
+        expectDsvV1Error(rejected, { code: 'BAD_REQUEST', message: 'Unsupported query parameter' });
+      }
+
+      const invalidLimit = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/drivers?limit=101',
+      });
+      expect(invalidLimit.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('enforces admin-only management endpoints and customer-only inquiry without /resources path', async () => {
+    const { app, queryService } = await createHarness();
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    const customer = signedCookie(`dsv-customer-account:${accountId}`);
+    try {
+      for (const path of [
+        '/dispatches',
+        '/control',
+        '/records',
+        '/drivers',
+        '/vehicles',
+        '/customers',
+        '/destinations',
+        '/conditions',
+      ]) {
+        const response = await app.inject({
+          headers: { cookie: customer.cookie },
+          method: 'GET',
+          url: `/api/dsv/v1${path}`,
+        });
+        expect(response.statusCode, path).toBe(403);
+      }
+
+      const noResources = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/resources',
+      });
+      expect(noResources.statusCode).toBe(404);
+
+      const adminInquiry = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/customer/deliveries',
+      });
+      expect(adminInquiry.statusCode).toBe(403);
+
+      const customerInquiry = await app.inject({
+        headers: { cookie: customer.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/customer/deliveries?window=today&limit=10',
+      });
+      expect(customerInquiry.statusCode).toBe(200);
+      expect(queryService.listCustomerDeliveries).toHaveBeenCalledWith(
+        expect.objectContaining({ customerId, principalType: 'CUSTOMER_USER', shopId }),
+        { limit: 10, window: 'today' },
+      );
+
+      const overrideAttempt = await app.inject({
+        headers: { cookie: customer.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/customer/deliveries?customerId=${customerId}`,
+      });
+      expect(overrideAttempt.statusCode).toBe(400);
+      expectDsvV1Error(overrideAttempt, { code: 'BAD_REQUEST', message: 'Unsupported query parameter' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('maps typed query cursor, service date window, and timezone errors to v1 error envelopes', async () => {
+    const { app, queryService } = await createHarness();
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    const customer = signedCookie(`dsv-customer-account:${accountId}`);
+    try {
+      queryService.listDrivers.mockRejectedValueOnce(new DsvV1ReadQueryError(
+        'BAD_REQUEST',
+        'cursor is invalid.',
+        { field: 'cursor', internal: { sql: 'select * from private_table' } },
+      ));
+      const invalidCursor = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/drivers?cursor=not-a-query-cursor',
+      });
+      expect(invalidCursor.statusCode).toBe(400);
+      expectDsvV1Error(invalidCursor, {
+        code: 'BAD_REQUEST',
+        details: { field: 'cursor' },
+        message: 'cursor is invalid.',
+      });
+      expect(JSON.stringify(invalidCursor.json())).not.toContain('private_table');
+
+      queryService.listDispatches.mockRejectedValueOnce(new DsvV1ReadQueryError(
+        'BAD_REQUEST',
+        'cursor does not match the requested filters.',
+      ));
+      const mismatchedCursor = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/dispatches?serviceDate=2026-07-23&cursor=other-filter-cursor',
+      });
+      expect(mismatchedCursor.statusCode).toBe(400);
+      expectDsvV1Error(mismatchedCursor, {
+        code: 'BAD_REQUEST',
+        message: 'cursor does not match the requested filters.',
+      });
+
+      queryService.listCustomerDeliveries.mockRejectedValueOnce(new DsvV1ReadQueryError(
+        'BAD_REQUEST',
+        'window and serviceDate resolve to different service dates.',
+        { resolvedServiceDate: '2026-07-24', serviceDate: '2026-07-23', window: 'tomorrow' },
+      ));
+      const windowMismatch = await app.inject({
+        headers: { cookie: customer.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/customer/deliveries?serviceDate=2026-07-23&window=tomorrow',
+      });
+      expect(windowMismatch.statusCode).toBe(400);
+      expectDsvV1Error(windowMismatch, {
+        code: 'BAD_REQUEST',
+        details: { resolvedServiceDate: '2026-07-24', serviceDate: '2026-07-23', window: 'tomorrow' },
+        message: 'window and serviceDate resolve to different service dates.',
+      });
+
+      queryService.listControl.mockRejectedValueOnce(new DsvV1ReadQueryError(
+        'DEPENDENCY_UNAVAILABLE',
+        'Active commerce connection has invalid timezone.',
+        { timezone: 'Invalid/Zone' },
+      ));
+      const timezoneDependency = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/control?serviceDate=2026-07-23',
+      });
+      expect(timezoneDependency.statusCode).toBe(503);
+      expectDsvV1Error(timezoneDependency, {
+        code: 'DEPENDENCY_UNAVAILABLE',
+        details: { timezone: 'Invalid/Zone' },
+        message: 'Active commerce connection has invalid timezone.',
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('logout requires CSRF and clears only the configured DSV cookie', async () => {
+    const { app } = await createHarness();
+    const customer = signedCookie(`dsv-customer-account:${accountId}`);
+    try {
+      const missingCsrf = await app.inject({
+        headers: { cookie: customer.cookie },
+        method: 'POST',
+        url: '/api/dsv/v1/session/logout',
+      });
+      expect(missingCsrf.statusCode).toBe(403);
+
+      const logout = await app.inject({
+        headers: { cookie: customer.cookie, 'x-csrf-token': customer.csrfToken },
+        method: 'POST',
+        url: '/api/dsv/v1/session/logout',
+      });
+      expect(logout.statusCode).toBe(200);
+      expectDsvV1Envelope(logout, { ok: true });
+      expect(logout.headers['set-cookie']).toContain(`${cookieName}=;`);
+      expect(logout.headers['set-cookie']).toContain('Path=/api/dsv/');
+      expect(logout.headers['set-cookie']).not.toContain('clever_admin_ui');
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+async function createHarness(): Promise<{
+  app: Awaited<ReturnType<typeof buildApp>>;
+  queryService: MockQueryService;
+  sessionResolver: MockSessionResolver;
+}> {
+  const queryService = createQueryService();
+  const sessionResolver = createSessionResolver();
+  const dependencies: DsvV1ReadDependencies = {
+    cookieName,
+    queryService,
+    secureCookies: false,
+    sessionResolver,
+    sessionSecret,
+  };
+  return { app: await buildApp({ dsvV1Read: dependencies }), queryService, sessionResolver };
+}
+
+type MockQueryService = {
+  [Key in keyof DsvV1ReadQueryService]: ReturnType<typeof vi.fn<DsvV1ReadQueryService[Key]>>;
+};
+
+function createQueryService(): MockQueryService {
+  const list = { items: [], page: { hasMore: false } };
+  return {
+    listConditions: vi.fn(() => Promise.resolve(list)),
+    listControl: vi.fn(() => Promise.resolve({
+      assignedCount: 0,
+      failedEtaCount: 0,
+      pendingEtaCount: 0,
+      readyEtaCount: 0,
+      serviceDate: '2026-07-23',
+      timezone: 'Asia/Seoul',
+      totalDispatchCount: 0,
+      unassignedCount: 0,
+    })),
+    listCustomerDeliveries: vi.fn(() => Promise.resolve({ items: [], page: { hasMore: false }, serviceDate: '2026-07-23', timezone: 'Asia/Seoul' })),
+    listCustomers: vi.fn(() => Promise.resolve(list)),
+    listDestinations: vi.fn(() => Promise.resolve(list)),
+    listDispatches: vi.fn(() => Promise.resolve({
+      items: [{
+        assignmentStatus: 'ASSIGNED',
+        customerId: 'customer-a',
+        destinationId: 'destination-a',
+        etaStatus: 'READY',
+        sellerOrderId: 'order-1',
+        sellerOrderKey: 'SO-001',
+      }],
+      page: { hasMore: false },
+    })),
+    listDrivers: vi.fn(() => Promise.resolve(list)),
+    listRecords: vi.fn(() => Promise.resolve({ items: [], page: { hasMore: false } })),
+    listVehicles: vi.fn(() => Promise.resolve(list)),
+    resolveTenantDates: vi.fn(() => Promise.resolve({
+      dayAfterTomorrow: '2026-07-25',
+      timezone: 'Asia/Seoul',
+      today: '2026-07-23',
+      tomorrow: '2026-07-24',
+    })),
+  };
+}
+
+type MockSessionResolver = {
+  [Key in keyof DsvV1SessionResolver]: ReturnType<typeof vi.fn<DsvV1SessionResolver[Key]>>;
+};
+
+function createSessionResolver(): MockSessionResolver {
+  return {
+    resolve: vi.fn((subject) => {
+      if (subject === 'dsv-shop:tomatonofood.com') {
+        return Promise.resolve(createDsvAdminPrincipal({ shopDomain: 'tomatonofood.com', shopId }));
+      }
+      if (subject === `dsv-customer-account:${accountId}`) {
+        return Promise.resolve(createDsvCustomerUserPrincipalFromAccount({
+          account: {
+            customerId,
+            shopId,
+            status: 'ACTIVE',
+          },
+        }));
+      }
+      return Promise.reject(new DsvV1AuthenticationError());
+    }),
+  };
+}
+
+function signedCookie(subject: string, ttlMs = 60_000): { cookie: string; csrfToken: string } {
+  const { cookieHeader, session } = createAdminWebSession({
+    cookieName,
+    path: '/api/dsv/',
+    secure: false,
+    sessionSecret,
+    subject,
+    ttlMs,
+  });
+  return {
+    cookie: cookieHeader.split(';')[0] ?? '',
+    csrfToken: session.csrfToken,
+  };
+}
+
+type JsonResponse = {
+  json<Body = unknown>(): Body;
+};
+
+type DsvV1EnvelopeBody = {
+  data: unknown;
+  meta: { apiVersion: 'dsv.v1' };
+  requestId: string;
+};
+
+type DsvV1ErrorBody = {
+  error: {
+    code: string;
+    details?: Record<string, unknown>;
+    message: string;
+    requestId: string;
+  };
+};
+
+function parseJsonBody<Body>(response: JsonResponse): Body {
+  return response.json<Body>();
+}
+
+function expectDsvV1Envelope(response: JsonResponse, data: unknown): void {
+  const body = parseJsonBody<DsvV1EnvelopeBody>(response);
+  expect(body.requestId).toEqual(expect.any(String));
+  expect(body).toEqual({
+    data,
+    meta: { apiVersion: 'dsv.v1' },
+    requestId: body.requestId,
+  });
+}
+
+function expectDsvV1Metadata(response: JsonResponse): DsvV1EnvelopeBody {
+  const body = parseJsonBody<DsvV1EnvelopeBody>(response);
+  expect(body.requestId).toEqual(expect.any(String));
+  expect(body).toMatchObject({
+    meta: { apiVersion: 'dsv.v1' },
+    requestId: body.requestId,
+  });
+  return body;
+}
+
+function expectDsvV1Error(response: JsonResponse, error: Omit<DsvV1ErrorBody['error'], 'requestId'>): void {
+  const body = parseJsonBody<DsvV1ErrorBody>(response);
+  expect(body.error.requestId).toEqual(expect.any(String));
+  expect(body).toEqual({
+    error: {
+      ...error,
+      requestId: body.error.requestId,
+    },
+  });
+}
+
+function expectDsvAdminSessionData(data: unknown): void {
+  const record = expectJsonRecord(data);
+  expect(Object.keys(record).sort()).toEqual(['principalType', 'scopes', 'shopId']);
+  expect(record.principalType).toBe('DSV_ADMIN');
+  expect(record.scopes).toEqual(expect.arrayContaining(['dsv:session:read', 'dsv:dispatches:read']));
+  expect(record.shopId).toBe(shopId);
+}
+
+function expectJsonRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new TypeError('Expected JSON object');
+  }
+  return value as Record<string, unknown>;
+}
