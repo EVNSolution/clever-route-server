@@ -13,6 +13,7 @@ export type CustomerDeliveryNotificationSendResult = {
   errorMessage?: string | null;
   provider: string;
   providerMessageId?: string | null;
+  retryable?: boolean | undefined;
   status: 'FAILED' | 'SENT';
 };
 
@@ -73,6 +74,7 @@ export class HttpCustomerDeliveryNotificationSender implements CustomerDeliveryN
             errorCode: 'HTTP_CUSTOMER_NOTIFICATION_FAILED',
             errorMessage: `Customer notification sender returned HTTP ${response.status}.`,
             provider: this.providerName,
+            retryable: shouldRetryHttpStatus(response.status),
             status: 'FAILED'
           } satisfies CustomerDeliveryNotificationSendResult;
           if (!shouldRetryHttpStatus(response.status) || attempt === maxNotificationSendAttempts - 1) return result;
@@ -92,6 +94,7 @@ export class HttpCustomerDeliveryNotificationSender implements CustomerDeliveryN
             : 'HTTP_CUSTOMER_NOTIFICATION_ERROR',
           errorMessage: error instanceof Error ? error.message : 'Customer notification sender failed.',
           provider: this.providerName,
+          retryable: true,
           status: 'FAILED'
         } satisfies CustomerDeliveryNotificationSendResult;
         if (attempt === maxNotificationSendAttempts - 1) return result;
@@ -105,6 +108,7 @@ export class HttpCustomerDeliveryNotificationSender implements CustomerDeliveryN
       errorCode: 'HTTP_CUSTOMER_NOTIFICATION_ERROR',
       errorMessage: 'Customer notification sender failed.',
       provider: this.providerName,
+      retryable: true,
       status: 'FAILED'
     };
   }

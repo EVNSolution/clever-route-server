@@ -1,9 +1,5 @@
 import { RouteOptimizationJobActiveError } from './route-optimization-job.types.js';
 import type { RouteOptimizationJobDto } from './route-optimization-job.types.js';
-import type {
-  CustomerDeliveryNotificationSendResult,
-  CustomerDeliveryNotificationSender
-} from './customer-delivery-notification.sender.js';
 import {
   computeRouteShapeSignature,
   withRouteGeometryResult
@@ -59,14 +55,6 @@ export type RouteTrackingProgressPublisher = {
 
 export type RoutePlanRepository = {
   transitionAdminRouteStop?(input: AdminRouteStopTransitionInput): Promise<AdminRouteStopTransitionResult | null>;
-  updateCustomerRouteNotificationFactStatus?(input: {
-    errorCode?: string | null | undefined;
-    errorMessage?: string | null | undefined;
-    idempotencyKey: string;
-    provider?: string | null | undefined;
-    providerMessageId?: string | null | undefined;
-    status: 'QUEUED' | 'SENT';
-  }): Promise<void>;
   updateAdminRouteStopOverride?(input: AdminRouteStopOverrideInput): Promise<AdminRouteStopOverrideResult | null>;
   assignRoutePlanDriver(input: UpdateRoutePlanDriverInput): Promise<RoutePlanDetail | null>;
   createRoutePlanDraft(input: {
@@ -121,8 +109,7 @@ export class RoutePlanAdminService implements RoutePlanService {
     private readonly repository: RoutePlanRepository,
     private readonly routeGeometryProvider?: RouteGeometryProvider,
     private readonly routeOptimizationJobGuard?: RouteOptimizationJobGuard,
-    private readonly routeTrackingProgressPublisher?: RouteTrackingProgressPublisher,
-    private readonly customerDeliveryNotificationSender?: CustomerDeliveryNotificationSender
+    private readonly routeTrackingProgressPublisher?: RouteTrackingProgressPublisher
   ) {}
 
   async createRoutePlan(input: CreateRoutePlanInput): Promise<RoutePlanSummary> {
@@ -185,52 +172,7 @@ export class RoutePlanAdminService implements RoutePlanService {
       });
     }
 
-    if (this.customerDeliveryNotificationSender === undefined) {
-      return {
-        ...result,
-        notification: {
-          ...result.notification,
-          provider: 'unwired',
-          status: 'QUEUED'
-        }
-      };
-    }
-
-    if (result.notification.recipientEmail === null || result.notification.recipientEmail === undefined) {
-      return {
-        ...result,
-        notification: {
-          ...result.notification,
-          errorCode: 'CUSTOMER_EMAIL_MISSING',
-          errorMessage: 'Customer email is missing from the canonical order.',
-          provider: this.customerDeliveryNotificationSender.providerName,
-          status: 'QUEUED'
-        }
-      };
-    }
-
-    const sendResult = await this.customerDeliveryNotificationSender.send({
-      deliveryStopId: input.deliveryStopId,
-      idempotencyKey: result.notification.idempotencyKey,
-      orderId: result.notification.orderId,
-      recipientEmail: result.notification.recipientEmail,
-      routePlanId: input.routePlanId,
-      shopDomain: input.shopDomain,
-      status: input.payload.status
-    });
-    const notification = toNotificationResult(result.notification, sendResult);
-    await this.repository.updateCustomerRouteNotificationFactStatus?.({
-      errorCode: notification.errorCode,
-      errorMessage: notification.errorMessage,
-      idempotencyKey: notification.idempotencyKey,
-      provider: notification.provider,
-      providerMessageId: sendResult.providerMessageId ?? null,
-      status: notification.status
-    });
-    return {
-      ...result,
-      notification
-    };
+    return result;
   }
 
   updateAdminRouteStopOverride(input: AdminRouteStopOverrideInput): Promise<AdminRouteStopOverrideResult | null> {
@@ -538,26 +480,4 @@ function hasRouteMutationPayload(input: SaveRoutePlanInput): boolean {
 
 function hasRouteShapePayload(input: SaveRoutePlanInput): boolean {
   return input.payload.routeEndMode !== undefined || input.payload.stops !== undefined;
-}
-
-function toNotificationResult(
-  notification: AdminRouteStopTransitionResult['notification'],
-  sendResult: CustomerDeliveryNotificationSendResult
-): AdminRouteStopTransitionResult['notification'] {
-  if (sendResult.status === 'SENT') {
-    return {
-      ...notification,
-      errorCode: null,
-      errorMessage: null,
-      provider: sendResult.provider,
-      status: 'SENT'
-    };
-  }
-  return {
-    ...notification,
-    errorCode: sendResult.errorCode ?? 'CUSTOMER_NOTIFICATION_SEND_FAILED',
-    errorMessage: sendResult.errorMessage ?? 'Customer notification sender failed.',
-    provider: sendResult.provider,
-    status: 'QUEUED'
-  };
 }

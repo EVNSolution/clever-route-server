@@ -223,7 +223,9 @@ enum DriverRouteNotificationAction {
 
 enum CustomerRouteNotificationStatus {
   QUEUED
+  PROCESSING
   SENT
+  DEAD
 }
 
 enum DsvDispatchImportStatus {
@@ -1573,20 +1575,39 @@ model DriverRouteNotificationAttempt {
 }
 
 model CustomerRouteNotificationFact {
-  id             String                          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  shopId         String                          @db.Uuid
-  shop           Shop                            @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  orderId        String                          @db.Uuid
-  order          Order                           @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  idempotencyKey String?                         @db.Text
-  source         String                          @db.Text
-  status         CustomerRouteNotificationStatus
-  metadata       Json?
-  occurredAt     DateTime                        @default(now()) @db.Timestamptz(6)
-  createdAt      DateTime                        @default(now()) @db.Timestamptz(6)
+  id                     String                          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId                 String                          @db.Uuid
+  shop                   Shop                            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  orderId                String                          @db.Uuid
+  order                  Order                           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  routePlanId            String?                         @db.Uuid
+  deliveryStopId         String?                         @db.Uuid
+  recipientEmailSnapshot String?                         @db.Text
+  requestedUiStatus      String?                         @db.Text
+  idempotencyKey         String?                         @db.Text
+  source                 String                          @db.Text
+  status                 CustomerRouteNotificationStatus
+  attemptCount           Int                             @default(0)
+  nextAttemptAt          DateTime?                       @default(now()) @db.Timestamptz(6)
+  processingStartedAt    DateTime?                       @db.Timestamptz(6)
+  leaseToken             String?                         @db.Text
+  leaseExpiresAt         DateTime?                       @db.Timestamptz(6)
+  provider               String?                         @db.Text
+  providerMessageId      String?                         @db.Text
+  errorCode              String?                         @db.Text
+  errorMessage           String?                         @db.Text
+  sentAt                 DateTime?                       @db.Timestamptz(6)
+  deadAt                 DateTime?                       @db.Timestamptz(6)
+  metadata               Json?
+  occurredAt             DateTime                        @default(now()) @db.Timestamptz(6)
+  createdAt              DateTime                        @default(now()) @db.Timestamptz(6)
+  updatedAt              DateTime                        @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@unique([idempotencyKey])
   @@index([shopId, orderId, status])
+  @@index([status, nextAttemptAt])
+  @@index([status, leaseExpiresAt])
+  @@index([deliveryStopId, occurredAt])
   @@map("customer_route_notification_facts")
 }
 

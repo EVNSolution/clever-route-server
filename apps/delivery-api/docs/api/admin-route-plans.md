@@ -297,26 +297,33 @@ tracking stream hub, so route tracking/progress reads observe the same terminal
 stop effect without creating a fake driver identity.
 
 The endpoint creates or reuses a `CustomerRouteNotificationFact` with a unique
-notification idempotency key. If `CUSTOMER_DELIVERY_NOTIFICATION_URL` is
-configured, the server POSTs an idempotent customer delivery notification to
-that HTTPS endpoint after the transition, using the optional
+notification idempotency key in the same transaction as the stop update. The
+request path only persists the notification as `QUEUED`; it does not wait for
+the remote notification provider.
+
+If `CUSTOMER_DELIVERY_NOTIFICATION_URL` is configured, the Delivery API starts
+a PostgreSQL-backed notification worker. The worker claims due facts with a
+lease, POSTs an idempotent customer delivery notification to that HTTPS
+endpoint, and recovers expired leases after process restarts. It uses the optional
 `CUSTOMER_DELIVERY_NOTIFICATION_BEARER_TOKEN` and
-`CUSTOMER_DELIVERY_NOTIFICATION_TIMEOUT_MS`. A successful runtime send updates
-the fact to `status=SENT`; sender failure, missing customer email, or an
-unconfigured sender leaves the fact `status=QUEUED`. `QUEUED` means no send has
-been confirmed and the fact remains eligible for a later retry/sender worker;
-`SENT` means the configured runtime sender accepted the notification for this
-idempotency key. The response reports the actual notification status:
-unwired sender -> `QUEUED`, configured successful sender -> `SENT`, configured
-failed sender -> `QUEUED`. Customer email is read from CLEVER canonical
-`Order.email`; Shopify source data remains read-only and no Shopify mutation is
-performed.
+`CUSTOMER_DELIVERY_NOTIFICATION_TIMEOUT_MS`. Retryable network, timeout, 429,
+and 5xx failures are rescheduled with bounded exponential backoff. Successful
+delivery records `SENT`; invalid payloads, missing customer email, expired
+notifications, permanent provider failures, and exhausted retries record
+`DEAD`. An unconfigured sender leaves facts `QUEUED` for a later deployment
+with a configured worker.
+
+Customer email is snapshotted from CLEVER canonical `Order.email` when the fact
+is created. Shopify source data remains read-only and no Shopify mutation is
+performed. Delivery is at-least-once across worker crashes, so the notification
+provider must deduplicate the stable notification idempotency key.
 
 Duplicate requests with the same `idempotencyKey` and same route stop return
-the current route with `duplicate=true` and do not create another stop update,
-driver event, notification fact, audit row, tracking SSE publish, or runtime
-notification send. Reusing an idempotency key for a different route stop
-returns `409 ROUTE_PLAN_CONFLICT`.
+the current route with `duplicate=true`, report the persisted notification state
+(`QUEUED`, `PROCESSING`, `SENT`, or `DEAD`), and do not create another stop
+update, driver event, notification fact, audit row, tracking SSE publish, or
+worker send. Reusing an idempotency key for a different route stop returns
+`409 ROUTE_PLAN_CONFLICT`.
 
 ## PATCH `/admin/route-plans/:routePlanId/stops/:deliveryStopId/override`
 

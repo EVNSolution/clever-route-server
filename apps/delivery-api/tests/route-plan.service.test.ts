@@ -4,10 +4,6 @@ import { RouteOptimizationJobActiveError } from '../src/modules/route-plans/rout
 import { computeRouteShapeSignature } from '../src/modules/route-plans/route-plan-geometry-cache.js';
 import { RoutePlanAdminService } from '../src/modules/route-plans/route-plan.service.js';
 import type { RouteGeometryProvider, RoutePlanRepository, RouteTrackingProgressPublisher } from '../src/modules/route-plans/route-plan.service.js';
-import type {
-  CustomerDeliveryNotificationSender,
-  CustomerDeliveryNotificationSendResult
-} from '../src/modules/route-plans/customer-delivery-notification.sender.js';
 import { RouteTrackingStreamHub } from '../src/modules/route-tracking/route-tracking.stream.js';
 import type {
   AdminRouteStopTransitionResult,
@@ -149,33 +145,6 @@ describe('RoutePlanAdminService route geometry policy', () => {
     expect(publisher.publishProgress).toHaveBeenCalledOnce();
   });
 
-  test('admin stop transition sends configured customer notification once and marks fact SENT', async () => {
-    const { repository, updateCustomerRouteNotificationFactStatus } = createHarness(baseDetail);
-    const sender = createCustomerNotificationSender({ status: 'SENT', providerMessageId: 'provider-message-id' });
-    const service = new RoutePlanAdminService(repository, undefined, undefined, undefined, sender);
-
-    const result = await service.transitionAdminRouteStop(adminStopTransitionInput());
-
-    expect(sender.send).toHaveBeenCalledWith({
-      deliveryStopId: 'stop-1',
-      idempotencyKey: 'admin-stop-key:customer-notification',
-      orderId: 'order-1',
-      recipientEmail: 'customer@example.com',
-      routePlanId: 'route-plan-id',
-      shopDomain: 'example.myshopify.com',
-      status: 'COMPLETED'
-    });
-    expect(updateCustomerRouteNotificationFactStatus).toHaveBeenCalledWith({
-      errorCode: null,
-      errorMessage: null,
-      idempotencyKey: 'admin-stop-key:customer-notification',
-      provider: 'test-http',
-      providerMessageId: 'provider-message-id',
-      status: 'SENT'
-    });
-    expect(result?.notification.status).toBe('SENT');
-  });
-
   test('admin completed stop transition publishes one live tracking SSE progress event', async () => {
     const { repository } = createHarness(baseDetail);
     const streamHub = new RouteTrackingStreamHub();
@@ -206,60 +175,30 @@ describe('RoutePlanAdminService route geometry policy', () => {
     ]);
   });
 
-  test('admin stop transition keeps notification queued when configured sender fails', async () => {
-    const { repository, updateCustomerRouteNotificationFactStatus } = createHarness(baseDetail);
-    const sender = createCustomerNotificationSender({
-      errorCode: 'HTTP_CUSTOMER_NOTIFICATION_FAILED',
-      errorMessage: 'sender failed',
-      status: 'FAILED'
-    });
-    const service = new RoutePlanAdminService(repository, undefined, undefined, undefined, sender);
-
-    const result = await service.transitionAdminRouteStop(adminStopTransitionInput());
-
-    expect(sender.send).toHaveBeenCalledOnce();
-    expect(updateCustomerRouteNotificationFactStatus).toHaveBeenCalledWith({
-      errorCode: 'HTTP_CUSTOMER_NOTIFICATION_FAILED',
-      errorMessage: 'sender failed',
-      idempotencyKey: 'admin-stop-key:customer-notification',
-      provider: 'test-http',
-      providerMessageId: null,
-      status: 'QUEUED'
-    });
-    expect(result?.notification.status).toBe('QUEUED');
-  });
-
-  test('admin stop transition leaves notification queued when sender is unwired', async () => {
-    const { repository, updateCustomerRouteNotificationFactStatus } = createHarness(baseDetail);
+  test('admin stop transition leaves its durable notification queued for the worker', async () => {
+    const { repository } = createHarness(baseDetail);
     const service = new RoutePlanAdminService(repository);
 
     const result = await service.transitionAdminRouteStop(adminStopTransitionInput());
 
-    expect(updateCustomerRouteNotificationFactStatus).not.toHaveBeenCalled();
-    expect(result?.notification).toEqual(expect.objectContaining({
-      provider: 'unwired',
-      status: 'QUEUED'
-    }));
+    expect(result?.notification.status).toBe('QUEUED');
   });
 
-  test('duplicate admin stop transition does not publish tracking or send notification again', async () => {
-    const { publisher, repository, transitionAdminRouteStop, updateCustomerRouteNotificationFactStatus } = createHarness(baseDetail, {
+  test('duplicate admin stop transition does not publish tracking again', async () => {
+    const { publisher, repository, transitionAdminRouteStop } = createHarness(baseDetail, {
       transitionResult: {
         ...adminStopTransitionResult(baseDetail),
         duplicate: true,
         trackingEvent: null
       }
     });
-    const sender = createCustomerNotificationSender({ status: 'SENT' });
-    const service = new RoutePlanAdminService(repository, undefined, undefined, publisher, sender);
+    const service = new RoutePlanAdminService(repository, undefined, undefined, publisher);
 
     const result = await service.transitionAdminRouteStop(adminStopTransitionInput());
 
     expect(result?.duplicate).toBe(true);
     expect(transitionAdminRouteStop).toHaveBeenCalledOnce();
     expect(publisher.publishProgress).not.toHaveBeenCalled();
-    expect(sender.send).not.toHaveBeenCalled();
-    expect(updateCustomerRouteNotificationFactStatus).not.toHaveBeenCalled();
   });
 
   test('admin stop override delegates stale geometry handling to the repository', async () => {
@@ -641,7 +580,6 @@ function createHarness(detail: RoutePlanDetail, options: {
   routePlanExists: ReturnType<typeof vi.fn<NonNullable<RoutePlanRepository['routePlanExists']>>>;
   saveRoutePlan: ReturnType<typeof vi.fn<RoutePlanRepository['saveRoutePlan']>>;
   transitionAdminRouteStop: ReturnType<typeof vi.fn<NonNullable<RoutePlanRepository['transitionAdminRouteStop']>>>;
-  updateCustomerRouteNotificationFactStatus: ReturnType<typeof vi.fn<NonNullable<RoutePlanRepository['updateCustomerRouteNotificationFactStatus']>>>;
   updateAdminRouteStopOverride: ReturnType<typeof vi.fn<NonNullable<RoutePlanRepository['updateAdminRouteStopOverride']>>>;
   updateRoutePlanOptions: ReturnType<typeof vi.fn<RoutePlanRepository['updateRoutePlanOptions']>>;
   updateRoutePlanStops: ReturnType<typeof vi.fn<RoutePlanRepository['updateRoutePlanStops']>>;
@@ -663,7 +601,6 @@ function createHarness(detail: RoutePlanDetail, options: {
   const updateRoutePlanOptions = vi.fn<RoutePlanRepository['updateRoutePlanOptions']>().mockResolvedValue(options.updateRoutePlanOptionsDetail ?? detail);
   const updateRoutePlanStops = vi.fn<RoutePlanRepository['updateRoutePlanStops']>().mockResolvedValue(options.updateRoutePlanStopsDetail ?? detail);
   const transitionAdminRouteStop = vi.fn<NonNullable<RoutePlanRepository['transitionAdminRouteStop']>>().mockResolvedValue(options.transitionResult ?? adminStopTransitionResult(detail));
-  const updateCustomerRouteNotificationFactStatus = vi.fn<NonNullable<RoutePlanRepository['updateCustomerRouteNotificationFactStatus']>>().mockResolvedValue(undefined);
   const updateAdminRouteStopOverride = vi.fn<NonNullable<RoutePlanRepository['updateAdminRouteStopOverride']>>().mockResolvedValue({
     geometry: { status: 'stale' },
     routePlan: detail
@@ -683,7 +620,6 @@ function createHarness(detail: RoutePlanDetail, options: {
     routePlanExists,
     saveRoutePlan,
     transitionAdminRouteStop,
-    updateCustomerRouteNotificationFactStatus,
     updateAdminRouteStopOverride,
     updateRoutePlanOptions,
     updateRoutePlanStops,
@@ -695,7 +631,7 @@ function createHarness(detail: RoutePlanDetail, options: {
   };
   const publisher = { publishProgress: vi.fn<RouteTrackingProgressPublisher['publishProgress']>() };
 
-  return { assignRoutePlanDriver, commitOrderDataRouteGeometryCache, createRoutePlanDraft, findRoutePlanDetail, publishRoutePlan, publisher, repository, routeGeometryProvider, routePlanExists, saveRoutePlan, transitionAdminRouteStop, updateAdminRouteStopOverride, updateCustomerRouteNotificationFactStatus, updateRoutePlanOptions, updateRoutePlanStops, upsertRouteGeometryCache };
+  return { assignRoutePlanDriver, commitOrderDataRouteGeometryCache, createRoutePlanDraft, findRoutePlanDetail, publishRoutePlan, publisher, repository, routeGeometryProvider, routePlanExists, saveRoutePlan, transitionAdminRouteStop, updateAdminRouteStopOverride, updateRoutePlanOptions, updateRoutePlanStops, upsertRouteGeometryCache };
 }
 
 function adminStopTransitionInput() {
@@ -735,19 +671,6 @@ function adminStopTransitionResult(detail: RoutePlanDetail): AdminRouteStopTrans
       receivedAt: '2026-05-07T12:30:00.100Z',
       routePlanId: 'route-plan-id'
     }
-  };
-}
-
-function createCustomerNotificationSender(
-  result: Omit<CustomerDeliveryNotificationSendResult, 'provider'> & { provider?: string }
-): CustomerDeliveryNotificationSender & { send: ReturnType<typeof vi.fn<CustomerDeliveryNotificationSender['send']>> } {
-  const provider = result.provider ?? 'test-http';
-  return {
-    providerName: provider,
-    send: vi.fn<CustomerDeliveryNotificationSender['send']>().mockResolvedValue({
-      ...result,
-      provider
-    })
   };
 }
 

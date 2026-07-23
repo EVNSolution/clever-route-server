@@ -2769,7 +2769,9 @@ function normalizeNotificationStatus(status: string): RouteGroupingNotificationS
 
 function deriveWarnings(group: LoadedGrouping): RouteGroupingWarningDto[] {
   const customerOrderIds = group.orders
-    .filter((order) => order.order.customerRouteNotifications.some((fact) => fact.status === 'QUEUED' || fact.status === 'SENT'))
+    .filter((order) => order.order.customerRouteNotifications.some((fact) => (
+      fact.status === 'QUEUED' || fact.status === 'PROCESSING' || fact.status === 'SENT'
+    )))
     .map((order) => order.orderId);
   const currentChildren = group.childVersions.filter((child) => isOperationalCurrentChild(child));
   const warnings: RouteGroupingWarningDto[] = [];

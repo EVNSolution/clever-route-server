@@ -70,6 +70,7 @@ describe('customer delivery notification sender', () => {
       errorCode: 'HTTP_CUSTOMER_NOTIFICATION_FAILED',
       errorMessage: 'Customer notification sender returned HTTP 500.',
       provider: 'http',
+      retryable: true,
       status: 'FAILED'
     });
     expect(result.errorMessage).not.toContain('super-secret-token');
@@ -118,6 +119,7 @@ describe('customer delivery notification sender', () => {
       errorCode: 'HTTP_CUSTOMER_NOTIFICATION_FAILED',
       errorMessage: 'Customer notification sender returned HTTP 503.',
       provider: 'http',
+      retryable: true,
       status: 'FAILED'
     });
     expect(fetchImpl).toHaveBeenCalledTimes(3);
@@ -149,6 +151,7 @@ describe('customer delivery notification sender', () => {
         errorCode: 'HTTP_CUSTOMER_NOTIFICATION_TIMEOUT',
         errorMessage: 'The operation was aborted.',
         provider: 'http',
+        retryable: true,
         status: 'FAILED'
       });
       expect(fetchImpl).toHaveBeenCalledTimes(3);
@@ -170,6 +173,7 @@ describe('customer delivery notification sender', () => {
       errorCode: 'HTTP_CUSTOMER_NOTIFICATION_FAILED',
       errorMessage: 'Customer notification sender returned HTTP 400.',
       provider: 'http',
+      retryable: false,
       status: 'FAILED'
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);

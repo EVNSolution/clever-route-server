@@ -936,12 +936,20 @@ describe('PrismaRoutePlanRepository', () => {
     } | undefined;
     expect(notificationUpsertArg).toMatchObject({
       create: {
+        deliveryStopId: 'stop-1',
         idempotencyKey: 'admin-stop-action-key:customer-notification',
         orderId: 'order-1',
+        recipientEmailSnapshot: 'customer@example.com',
+        requestedUiStatus: 'COMPLETED',
+        routePlanId: 'route-plan-id',
         source: 'ADMIN_ROUTE_STOP_TRANSITION',
         status: 'QUEUED'
       },
       update: {
+        deliveryStopId: 'stop-1',
+        recipientEmailSnapshot: 'customer@example.com',
+        requestedUiStatus: 'COMPLETED',
+        routePlanId: 'route-plan-id',
         source: 'ADMIN_ROUTE_STOP_TRANSITION',
         status: 'QUEUED'
       },
@@ -969,6 +977,7 @@ describe('PrismaRoutePlanRepository', () => {
         routePlanId: 'route-plan-id',
         shopId: 'shop-id'
       },
+      customerNotificationStatus: 'DEAD',
       routePlanFindFirst: routePlanRecord({
         routeStops: [
           routePlanStopRecord({
@@ -1004,6 +1013,7 @@ describe('PrismaRoutePlanRepository', () => {
     });
 
     expect(result?.duplicate).toBe(true);
+    expect(result?.notification.status).toBe('DEAD');
     expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
     expect(prisma.driverEvent.create).not.toHaveBeenCalled();
     expect(prisma.customerRouteNotificationFact.upsert).not.toHaveBeenCalled();
@@ -1844,6 +1854,7 @@ function hasRouteStatusUpdate(
 function createPrismaHarness(input: {
   adminStopActionAudit?: { deliveryStopId: string; routePlanId: string; shopId: string } | null;
   conflictingRoutePlanStop?: { deliveryStopId: string; routePlanId: string } | null;
+  customerNotificationStatus?: 'DEAD' | 'PROCESSING' | 'QUEUED' | 'SENT';
   deliveryStopForId?: { id: string } | null;
   deliveryFacts?: Array<Record<string, unknown>>;
   driverForAssignment?: { id: string } | null;
@@ -1944,7 +1955,7 @@ function createPrismaHarness(input: {
       findUnique: vi.fn(() => Promise.resolve({
         id: 'customer-notification-fact-id',
         orderId: 'order-1',
-        status: 'QUEUED'
+        status: input.customerNotificationStatus ?? 'QUEUED'
       })),
       update: vi.fn(() => Promise.resolve({ id: 'customer-notification-fact-id' })),
       upsert: vi.fn(() => Promise.resolve({ id: 'customer-notification-fact-id' }))
