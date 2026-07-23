@@ -1,11 +1,17 @@
 import type { PrismaClient } from '@prisma/client';
 
 import { parseAllowedShopDomains } from '../commerce/admin-commerce-auth.js';
+import { createRouteGroupingService, type AdminRouteGroupRuntimeEnv } from '../route-grouping/route-grouping.dependencies.js';
+import type { RouteGroupingService } from '../route-grouping/route-grouping.types.js';
+import { DsvAssignmentCommandService } from './dsv-assignment-command.service.js';
 import { PrismaDsvControlRepository } from './dsv-control.repository.js';
+import { PrismaDsvDispatchImportService } from './dsv-dispatch-import.service.js';
+import { PrismaDsvResourceService } from './dsv-resource.service.js';
 import type { DsvControlDependencies } from '../../routes/dsv-control.routes.js';
 import { isStrongAdminWebSecret, isValidAdminWebLoginSecret } from '../../routes/admin-ui-session.js';
+import { PrismaAdminStoreSettingsService } from '../commerce/admin-store-settings.service.js';
 
-export type DsvControlRuntimeEnv = Partial<Record<
+export type DsvControlRuntimeEnv = AdminRouteGroupRuntimeEnv & Partial<Record<
   | 'CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS'
   | 'CLEVER_ADMIN_WEB_LOGIN_SECRET'
   | 'CLEVER_ADMIN_WEB_SESSION_SECRET'
@@ -18,19 +24,26 @@ export function loadDsvControlDependencies(input: {
   env: DsvControlRuntimeEnv;
   nodeEnv: string;
   prisma: PrismaClient;
+  routeGroupingService?: RouteGroupingService;
 }): DsvControlDependencies | undefined {
   const loginSecret = readOptional(input.env.CLEVER_ADMIN_WEB_LOGIN_SECRET);
   const sessionSecret = readOptional(input.env.CLEVER_ADMIN_WEB_SESSION_SECRET);
   if (!isValidAdminWebLoginSecret(loginSecret) || !isStrongAdminWebSecret(sessionSecret)) return undefined;
 
+  const routeGroupingService = input.routeGroupingService ?? createRouteGroupingService(input);
+
   return {
     allowedShopDomains: parseAllowedShopDomains(input.env.CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS),
+    assignmentCommandService: new DsvAssignmentCommandService(input.prisma, routeGroupingService),
     cookieName: readOptional(input.env.CLEVER_DSV_WEB_COOKIE_NAME) ?? 'clever_dsv_admin',
     loginId: readOptional(input.env.CLEVER_DSV_ADMIN_ID) ?? 'operator',
     loginSecret,
+    dispatchImportService: new PrismaDsvDispatchImportService(input.prisma),
     repository: new PrismaDsvControlRepository(input.prisma),
+    resourceService: new PrismaDsvResourceService(input.prisma),
     secureCookies: input.nodeEnv !== 'development' && input.nodeEnv !== 'test',
     sessionSecret,
+    settingsService: new PrismaAdminStoreSettingsService(input.prisma),
   };
 }
 

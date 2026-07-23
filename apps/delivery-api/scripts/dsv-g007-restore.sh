@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+: "${DATABASE_URL:?DATABASE_URL is required}"
+: "${BACKUP_FILE:?BACKUP_FILE is required}"
+
+fake_commands="${G007_FAKE_COMMANDS:-0}"
+pg_client_container="${G007_PG_CLIENT_CONTAINER:-}"
+
+fail() {
+  echo "G007 restore guard: $*" >&2
+  exit 64
+}
+
+parse_postgres_url() {
+  local database_url="$1"
+  node -e '
+const { URL } = require("url");
+const raw = process.argv[1];
+function die(message) {
+  console.error(message);
+  process.exit(1);
+}
+function parseNumericPart(part) {
+  if (/^0x[0-9a-f]+$/i.test(part)) return Number.parseInt(part, 16);
+  if (/^0[0-7]+$/.test(part)) return Number.parseInt(part, 8);
+  if (/^[0-9]+$/.test(part)) return Number.parseInt(part, 10);
+  return Number.NaN;
+}
+function isIpv4Loopback(host) {
+  if (/^[0-9]+$|^0x[0-9a-f]+$/i.test(host)) {
+    const value = parseNumericPart(host);
+    return Number.isFinite(value) && value >= 0x7f000000 && value <= 0x7fffffff;
+  }
+  const parts = host.split(".");
+  if (parts.length >= 1 && parts.length <= 4 && parts.every((part) => /^[0-9]+$|^0x[0-9a-f]+$/i.test(part))) {
+    return parseNumericPart(parts[0]) === 127;
+  }
+  return false;
+}
+function isLoopbackHost(host) {
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (host === "::1" || host === "0:0:0:0:0:0:0:1") return true;
+  if (host.startsWith("::ffff:")) {
+    const mapped = host.slice("::ffff:".length);
+    return isIpv4Loopback(mapped) || mapped.startsWith("7f");
+  }
+  return isIpv4Loopback(host);
+}
+try {
+  const url = new URL(raw);
+  if (url.protocol !== "postgresql:" && url.protocol !== "postgres:") {
+    die("DATABASE_URL must use postgresql:// or postgres://");
+  }
+  if (!url.hostname) {
+    die("DATABASE_URL must include a host");
+  }
+  const rawPath = url.pathname || "";
+  if (!rawPath.startsWith("/") || rawPath === "/") {
+    die("DATABASE_URL must include a database name");
+  }
+  const databaseName = decodeURIComponent(rawPath.slice(1));
+  if (!databaseName || databaseName.includes("/") || databaseName.includes("\\") || databaseName.includes("\0")) {
+    die("DATABASE_URL database name is unsafe");
+  }
+  let host = url.hostname.toLowerCase().replace(/^\[(.*)\]$/, "$1").replace(/\.$/, "");
+  if (host === "0:0:0:0:0:0:0:1") {
+    host = "::1";
+  }
+  process.stdout.write(JSON.stringify({
+    host,
+    port: url.port || "",
+    databaseName,
+    username: decodeURIComponent(url.username || ""),
+    isLoopback: isLoopbackHost(host)
+  }));
+} catch (error) {
+  die(error instanceof Error ? error.message : String(error));
+}
+' "$database_url"
+}
+
+require_guarded_restore_target() {
+  local database_url="$1"
+  local parsed database_name host port is_loopback username
+  parsed="$(parse_postgres_url "$database_url")" || fail "DATABASE_URL must be a valid PostgreSQL URL"
+  database_name="$(node -e 'const parsed = JSON.parse(process.argv[1]); process.stdout.write(parsed.databaseName);' "$parsed")"
+  host="$(node -e 'const parsed = JSON.parse(process.argv[1]); process.stdout.write(parsed.host);' "$parsed")"
+  port="$(node -e 'const parsed = JSON.parse(process.argv[1]); process.stdout.write(parsed.port);' "$parsed")"
+  is_loopback="$(node -e 'const parsed = JSON.parse(process.argv[1]); process.stdout.write(parsed.isLoopback ? "1" : "0");' "$parsed")"
+  username="$(node -e 'const parsed = JSON.parse(process.argv[1]); process.stdout.write(parsed.username);' "$parsed")"
+
+  case "$database_name" in
+    clever_g007_stale_clone_*|clever_g007_prod_like_clone_*|clever_g007_restore_*|clever_g007_recovery_*)
+      ;;
+    *)
+      fail "restore target database must be clever_g007_stale_clone_*, clever_g007_prod_like_clone_*, clever_g007_restore_*, or clever_g007_recovery_*; got $database_name"
+      ;;
+  esac
+
+  case "$database_name" in
+    clever_route|clever_route_recovery_20260722)
+      fail "refusing protected database name $database_name"
+      ;;
+  esac
+
+  if [ "$is_loopback" = "1" ] && { [ "$database_name" = "clever_route" ] || [ "$database_name" = "clever_route_recovery_20260722" ] || [ "$port" = "5433" ]; }; then
+    fail "refusing protected database target $host:$port/$database_name"
+  fi
+
+  case "$host:$port/$database_name" in
+    *:*/clever_route_recovery_20260722|*:55444/*|*:55455/*)
+      fail "refusing protected database target $host:$port/$database_name"
+      ;;
+  esac
+
+  printf '%s\t%s\n' "$database_name" "$username"
+}
+
+require_safe_pg_client_container() {
+  local container="$1"
+  if [[ ! "$container" =~ ^clever-g007-[A-Za-z0-9_.-]+$ ]]; then
+    fail "G007_PG_CLIENT_CONTAINER must start with clever-g007- and contain only letters, numbers, dot, underscore, or dash"
+  fi
+}
+
+filter_newer_pg_restore_sql() {
+  # PostgreSQL 17 emits client directives/settings that PostgreSQL 16 does not
+  # understand. Remove only those exact compatibility lines; preserve all DDL
+  # and data generated by the archive-compatible local pg_restore.
+  sed \
+    -e '/^\\restrict [A-Za-z0-9]\+$/d' \
+    -e '/^\\unrestrict [A-Za-z0-9]\+$/d' \
+    -e '/^SET transaction_timeout = 0;$/d'
+}
+
+target_restore_fields="$(require_guarded_restore_target "$DATABASE_URL")"
+database_name="${target_restore_fields%%$'\t'*}"
+database_user="${target_restore_fields#*$'\t'}"
+
+if [ ! -f "$BACKUP_FILE" ]; then
+  echo "BACKUP_FILE not found: $BACKUP_FILE" >&2
+  exit 66
+fi
+
+if [ "$pg_client_container" != "" ]; then
+  require_safe_pg_client_container "$pg_client_container"
+  if [ "$database_user" = "" ] || [[ "$database_user" == *"/"* ]] || [[ "$database_user" == *"\\"* ]]; then
+    fail "DATABASE_URL username is required and must be safe for container restore"
+  fi
+  if [ "$fake_commands" = "1" ]; then
+    printf 'g007_restore_guard=passed\n'
+    printf 'restore_target=%s\n' "$database_name"
+    printf 'restore_user=%s\n' "$database_user"
+    printf 'would_run: pg_restore --clean --if-exists --no-owner --no-acl --file=- %q | filter_newer_pg_restore_sql | ' "$BACKUP_FILE"
+    printf '%q ' docker exec -i "$pg_client_container" psql -v ON_ERROR_STOP=1 -U "$database_user" -d "$database_name"
+    printf '\n'
+    exit 0
+  fi
+  pg_restore --clean --if-exists --no-owner --no-acl --file=- "$BACKUP_FILE" \
+    | filter_newer_pg_restore_sql \
+    | docker exec -i "$pg_client_container" psql -v ON_ERROR_STOP=1 -U "$database_user" -d "$database_name"
+  printf 'restored=%s\n' "$BACKUP_FILE"
+  exit 0
+fi
+
+if [ "$fake_commands" = "1" ]; then
+  printf 'g007_restore_guard=passed\n'
+  printf 'restore_target=%s\n' "$database_name"
+  printf 'would_run=%q\n' "$script_dir/postgres-restore.sh"
+  exit 0
+fi
+
+"$script_dir/postgres-restore.sh"

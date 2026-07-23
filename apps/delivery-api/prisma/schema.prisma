@@ -227,13 +227,20 @@ enum CustomerRouteNotificationStatus {
 }
 
 enum DsvDispatchImportStatus {
+  STAGED
   READY
   NEEDS_REVIEW
+  APPLYING
+  APPLIED
+  FAILED
 }
 
 enum DsvDispatchImportRowStatus {
   READY
   NEEDS_REVIEW
+  APPLYING
+  APPLIED
+  BLOCKED
 }
 
 enum CustomerStatus {
@@ -271,6 +278,14 @@ enum DsvAuditRedactionClass {
   STANDARD
   PII_REDACTED
   SECRET_REDACTED
+}
+
+enum DsvEtaStatus {
+  NOT_REQUIRED
+  PENDING
+  READY
+  FAILED
+  STALE
 }
 
 model Shop {
@@ -317,6 +332,7 @@ model Shop {
   orderDeliveryFacts                OrderDeliveryFact[]
   wordpressPluginPairingCodes       WordPressPluginPairingCode[]
   routeOptimizationJobs             RouteOptimizationJob[]
+  routePlanStops                    RoutePlanStop[]
   deliveryCustomerProfiles          DeliveryCustomerProfile[]
   deliveryCustomerProfileOrderLinks DeliveryCustomerProfileOrderLink[]
   destinationTips                   DestinationTip[]
@@ -352,7 +368,7 @@ model Shop {
 }
 
 model AdminNotification {
-  id          String    @id @default(uuid()) @db.Uuid
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId      String    @db.Uuid
   shop        Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
   type        String    @db.Text
@@ -366,7 +382,7 @@ model AdminNotification {
   payload     Json?
   readAt      DateTime? @db.Timestamptz(6)
   createdAt   DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt   DateTime  @updatedAt @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@unique([shopId, dedupeKey])
   @@index([shopId, readAt, createdAt])
@@ -436,7 +452,7 @@ model CommerceSyncRun {
   geocodeFailed        Int?
   geocodePending       Int?
   geocodeNotRequired   Int?
-  warnings             Json
+  warnings             Json                          @default("[]")
   errorMessage         String?                       @db.Text
   acceptedAt           DateTime                      @default(now()) @db.Timestamptz(6)
   startedAt            DateTime?                     @db.Timestamptz(6)
@@ -453,7 +469,7 @@ model CommerceSyncRun {
 }
 
 model CommerceRawOrderIngest {
-  id                   String                        @id @default(uuid()) @db.Uuid
+  id                   String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId               String                        @db.Uuid
   shop                 Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
   commerceConnectionId String                        @db.Uuid
@@ -480,7 +496,7 @@ model CommerceRawOrderIngest {
   retryable            Boolean                       @default(true)
   receivedAt           DateTime                      @default(now()) @db.Timestamptz(6)
   createdAt            DateTime                      @default(now()) @db.Timestamptz(6)
-  updatedAt            DateTime                      @updatedAt @db.Timestamptz(6)
+  updatedAt            DateTime                      @default(now()) @updatedAt @db.Timestamptz(6)
   events               CommerceRawOrderIngestEvent[]
 
   @@unique([commerceConnectionId, sourceOrderId, rawPayloadSha256])
@@ -491,7 +507,7 @@ model CommerceRawOrderIngest {
 }
 
 model CommerceRawOrderIngestEvent {
-  id                   String                  @id @default(uuid()) @db.Uuid
+  id                   String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId               String                  @db.Uuid
   shop                 Shop                    @relation(fields: [shopId], references: [id], onDelete: Cascade)
   commerceConnectionId String?                 @db.Uuid
@@ -647,11 +663,11 @@ model Order {
   sellerOrderKey                String?                            @db.Text
   sellerOrderVersion            Int?
   customerId                    String?                            @db.Uuid
-  customer                      Customer?                          @relation(fields: [customerId, shopId], references: [id, shopId])
+  customer                      Customer?                          @relation(fields: [customerId, shopId], references: [id, shopId], onDelete: NoAction)
   destinationId                 String?                            @db.Uuid
-  destination                   DeliveryCustomerProfile?           @relation("OrderCurrentDestination", fields: [destinationId, shopId], references: [id, shopId])
+  destination                   DeliveryCustomerProfile?           @relation("OrderCurrentDestination", fields: [destinationId, shopId], references: [id, shopId], onDelete: NoAction)
   currentRouteVersionId         String?                            @db.Uuid
-  currentRouteVersion           RouteGroupingChildVersion?         @relation("OrderCurrentRouteVersion", fields: [currentRouteVersionId], references: [id], onDelete: SetNull)
+  currentRouteVersion           RouteGroupingChildVersion?         @relation("OrderCurrentRouteVersion", fields: [currentRouteVersionId, shopId], references: [id, shopId], onDelete: NoAction)
   createdAt                     DateTime                           @default(now()) @db.Timestamptz(6)
   updatedAt                     DateTime                           @updatedAt @db.Timestamptz(6)
   orderItems                    OrderItem[]
@@ -665,7 +681,9 @@ model Order {
   customerRouteNotifications    CustomerRouteNotificationFact[]
   dsvCommandReceipts            DsvCommandReceipt[]
   dsvAuditEvents                DsvAuditEvent[]
+  dsvDispatchImportRows         DsvDispatchImportRow[]
 
+  @@unique([id, shopId])
   @@unique([shopId, shopifyOrderGid])
   @@unique([shopId, sourcePlatform, sourceSiteUrl, sourceOrderId])
   @@unique([shopId, sellerOrderSourceKind, sellerOrderKey])
@@ -680,19 +698,20 @@ model Order {
 }
 
 model Customer {
-  id                   String            @id @default(uuid()) @db.Uuid
-  shopId               String            @db.Uuid
-  shop                 Shop              @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  sourceKind           String            @db.Text
-  externalCustomerCode String            @db.Text
-  displayName          String?           @db.Text
-  status               CustomerStatus    @default(ACTIVE)
-  metadata             Json?
-  createdAt            DateTime          @default(now()) @db.Timestamptz(6)
-  updatedAt            DateTime          @updatedAt @db.Timestamptz(6)
-  accounts             CustomerAccount[]
-  orders               Order[]
-  dsvAuditEvents       DsvAuditEvent[]
+  id                    String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId                String                 @db.Uuid
+  shop                  Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  sourceKind            String                 @db.Text
+  externalCustomerCode  String                 @db.Text
+  displayName           String?                @db.Text
+  status                CustomerStatus         @default(ACTIVE)
+  metadata              Json?
+  createdAt             DateTime               @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime               @updatedAt @db.Timestamptz(6)
+  accounts              CustomerAccount[]
+  orders                Order[]
+  dsvAuditEvents        DsvAuditEvent[]
+  dsvDispatchImportRows DsvDispatchImportRow[]
 
   @@unique([id, shopId])
   @@unique([shopId, sourceKind, externalCustomerCode])
@@ -701,7 +720,7 @@ model Customer {
 }
 
 model CustomerAccount {
-  id                  String                @id @default(uuid()) @db.Uuid
+  id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId              String                @db.Uuid
   shop                Shop                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
   customerId          String                @db.Uuid
@@ -722,7 +741,7 @@ model CustomerAccount {
 }
 
 model OrderItem {
-  id              String           @id @default(uuid()) @db.Uuid
+  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId          String           @db.Uuid
   shop            Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
   orderId         String           @db.Uuid
@@ -735,7 +754,7 @@ model OrderItem {
   options         Json
   quantity        Int
   createdAt       DateTime         @default(now()) @db.Timestamptz(6)
-  updatedAt       DateTime         @updatedAt @db.Timestamptz(6)
+  updatedAt       DateTime         @default(now()) @updatedAt @db.Timestamptz(6)
   inventoryEvents InventoryEvent[]
 
   @@unique([orderId, lineIndex])
@@ -745,7 +764,7 @@ model OrderItem {
 }
 
 model Inventory {
-  id              String           @id @default(uuid()) @db.Uuid
+  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId          String           @db.Uuid
   shop            Shop             @relation(fields: [shopId], references: [id], onDelete: Cascade)
   routeGroupingId String?          @unique @db.Uuid
@@ -754,7 +773,7 @@ model Inventory {
   note            String?          @db.Text
   createdBy       String?          @db.Text
   createdAt       DateTime         @default(now()) @db.Timestamptz(6)
-  updatedAt       DateTime         @updatedAt @db.Timestamptz(6)
+  updatedAt       DateTime         @default(now()) @updatedAt @db.Timestamptz(6)
   orders          InventoryOrder[]
   events          InventoryEvent[]
 
@@ -763,7 +782,7 @@ model Inventory {
 }
 
 model InventoryOrder {
-  id          String    @id @default(uuid()) @db.Uuid
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId      String    @db.Uuid
   shop        Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
   inventoryId String    @db.Uuid
@@ -772,7 +791,7 @@ model InventoryOrder {
   order       Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
   addedBy     String?   @db.Text
   createdAt   DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt   DateTime  @updatedAt @db.Timestamptz(6)
+  updatedAt   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@unique([inventoryId, orderId])
   @@index([shopId, orderId])
@@ -780,7 +799,7 @@ model InventoryOrder {
 }
 
 model InventoryEvent {
-  id            String     @id @default(uuid()) @db.Uuid
+  id            String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId        String     @db.Uuid
   shop          Shop       @relation(fields: [shopId], references: [id], onDelete: Cascade)
   inventoryId   String     @db.Uuid
@@ -811,7 +830,7 @@ model DeliveryStop {
   shopId                        String                         @db.Uuid
   shop                          Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
   orderId                       String                         @db.Uuid
-  order                         Order                          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order                         Order                          @relation(fields: [orderId, shopId], references: [id, shopId], onDelete: Cascade)
   recipientName                 String?                        @db.Text
   phone                         String?                        @db.Text
   address1                      String?                        @db.Text
@@ -838,32 +857,35 @@ model DeliveryStop {
   routeGroupingOrders           RouteGroupingOrder[]
   routeGroupingBranchOrderLocks RouteGroupingBranchOrderLock[]
   sourcedDestinationTips        DestinationTip[]
+  dsvDispatchImportRows         DsvDispatchImportRow[]
 
   @@unique([shopId, orderId])
+  @@unique([id, shopId])
   @@index([shopId, deliveryDate, status])
   @@map("delivery_stops")
 }
 
 model DeliveryCustomerProfile {
-  id                  String                             @id @default(uuid()) @db.Uuid
-  shopId              String                             @db.Uuid
-  shop                Shop                               @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  canonicalName       String?                            @db.Text
-  canonicalPhone      String?                            @db.Text
-  canonicalEmail      String?                            @db.Text
-  addressFingerprint  String                             @db.Text
-  normalizedAddress   Json
-  normalizedNameKey   String?                            @db.Text
-  adminMemo           String?                            @db.Text
-  mergedIntoProfileId String?                            @db.Uuid
-  mergedIntoProfile   DeliveryCustomerProfile?           @relation("DeliveryCustomerProfileMerge", fields: [mergedIntoProfileId], references: [id], onDelete: SetNull)
-  mergedProfiles      DeliveryCustomerProfile[]          @relation("DeliveryCustomerProfileMerge")
-  orderLinks          DeliveryCustomerProfileOrderLink[]
-  destinationTips     DestinationTip[]
-  currentOrders       Order[]                            @relation("OrderCurrentDestination")
-  dsvAuditEvents      DsvAuditEvent[]
-  createdAt           DateTime                           @default(now()) @db.Timestamptz(6)
-  updatedAt           DateTime                           @updatedAt @db.Timestamptz(6)
+  id                    String                             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId                String                             @db.Uuid
+  shop                  Shop                               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  canonicalName         String?                            @db.Text
+  canonicalPhone        String?                            @db.Text
+  canonicalEmail        String?                            @db.Text
+  addressFingerprint    String                             @db.Text
+  normalizedAddress     Json
+  normalizedNameKey     String?                            @db.Text
+  adminMemo             String?                            @db.Text
+  mergedIntoProfileId   String?                            @db.Uuid
+  mergedIntoProfile     DeliveryCustomerProfile?           @relation("DeliveryCustomerProfileMerge", fields: [mergedIntoProfileId], references: [id], onDelete: SetNull)
+  mergedProfiles        DeliveryCustomerProfile[]          @relation("DeliveryCustomerProfileMerge")
+  orderLinks            DeliveryCustomerProfileOrderLink[]
+  destinationTips       DestinationTip[]
+  currentOrders         Order[]                            @relation("OrderCurrentDestination")
+  dsvAuditEvents        DsvAuditEvent[]
+  dsvDispatchImportRows DsvDispatchImportRow[]
+  createdAt             DateTime                           @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime                           @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@unique([id, shopId])
   @@index([shopId, addressFingerprint])
@@ -917,7 +939,7 @@ model DestinationTipAudit {
 }
 
 model DeliveryCustomerProfileOrderLink {
-  id           String                  @id @default(uuid()) @db.Uuid
+  id           String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId       String                  @db.Uuid
   shop         Shop                    @relation(fields: [shopId], references: [id], onDelete: Cascade)
   profileId    String                  @db.Uuid
@@ -928,7 +950,7 @@ model DeliveryCustomerProfileOrderLink {
   matchScore   Decimal?                @db.Decimal(5, 4)
   matchReasons Json
   createdAt    DateTime                @default(now()) @db.Timestamptz(6)
-  updatedAt    DateTime                @updatedAt @db.Timestamptz(6)
+  updatedAt    DateTime                @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@unique([shopId, orderId])
   @@index([shopId, profileId])
@@ -1019,13 +1041,14 @@ model RoutePlan {
   previousDsvAuditEvents          DsvAuditEvent[]                  @relation("DsvAuditEventPreviousRoutePlan")
   nextDsvAuditEvents              DsvAuditEvent[]                  @relation("DsvAuditEventNextRoutePlan")
 
+  @@unique([id, shopId])
   @@index([shopId, planDate, status])
   @@index([shopId, driverId, status])
   @@map("route_plans")
 }
 
 model RouteTrackingGeometry {
-  id                             String    @id @default(uuid()) @db.Uuid
+  id                             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   routePlanId                    String    @unique @db.Uuid
   routePlan                      RoutePlan @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
   geometry                       Json?
@@ -1050,14 +1073,14 @@ model RouteTrackingGeometry {
   roadMatchedWatermark           String?   @db.Text
   expiresAt                      DateTime  @db.Timestamptz(6)
   createdAt                      DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt                      DateTime  @updatedAt @db.Timestamptz(6)
+  updatedAt                      DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@index([expiresAt])
   @@map("route_tracking_geometries")
 }
 
 model RoutePlanGeometryCache {
-  id              String    @id @default(uuid()) @db.Uuid
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   routePlanId     String    @db.Uuid
   routePlan       RoutePlan @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
   shapeSignature  String    @db.Text
@@ -1070,7 +1093,7 @@ model RoutePlanGeometryCache {
   source          String    @db.Text
   generatedAt     DateTime  @default(now()) @db.Timestamptz(6)
   createdAt       DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt       DateTime  @updatedAt @db.Timestamptz(6)
+  updatedAt       DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@unique([routePlanId, shapeSignature])
   @@index([shapeSignature])
@@ -1078,7 +1101,7 @@ model RoutePlanGeometryCache {
 }
 
 model RouteOptimizationJob {
-  id                   String                     @id @default(uuid()) @db.Uuid
+  id                   String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId               String                     @db.Uuid
   shop                 Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
   routePlanId          String                     @db.Uuid
@@ -1097,7 +1120,7 @@ model RouteOptimizationJob {
   startedAt            DateTime?                  @db.Timestamptz(6)
   finishedAt           DateTime?                  @db.Timestamptz(6)
   createdAt            DateTime                   @default(now()) @db.Timestamptz(6)
-  updatedAt            DateTime                   @updatedAt @db.Timestamptz(6)
+  updatedAt            DateTime                   @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@index([routePlanId, createdAt])
   @@index([shopId, status, createdAt])
@@ -1106,21 +1129,33 @@ model RouteOptimizationJob {
 }
 
 model RoutePlanStop {
-  id                          String       @id @default(uuid()) @db.Uuid
-  routePlanId                 String       @db.Uuid
-  routePlan                   RoutePlan    @relation(fields: [routePlanId], references: [id], onDelete: Cascade)
-  deliveryStopId              String       @db.Uuid
-  deliveryStop                DeliveryStop @relation(fields: [deliveryStopId], references: [id], onDelete: Cascade)
+  id                          String                     @id @default(uuid()) @db.Uuid
+  shopId                      String                     @db.Uuid
+  shop                        Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  routePlanId                 String                     @db.Uuid
+  routePlan                   RoutePlan                  @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: Cascade)
+  deliveryStopId              String                     @db.Uuid
+  deliveryStop                DeliveryStop               @relation(fields: [deliveryStopId, shopId], references: [id, shopId], onDelete: Cascade)
   sequence                    Int
-  estimatedArrivalAt          DateTime?    @db.Timestamptz(6)
+  estimatedArrivalAt          DateTime?                  @db.Timestamptz(6)
+  etaStatus                   DsvEtaStatus               @default(NOT_REQUIRED)
+  etaInputRouteVersionId      String?                    @db.Uuid
+  etaInputRouteVersion        RouteGroupingChildVersion? @relation("RoutePlanStopEtaInputRouteVersion", fields: [etaInputRouteVersionId, shopId, routePlanId], references: [id, shopId, routePlanId], onDelete: NoAction)
+  etaSource                   String?                    @db.Text
+  etaCalculatedAt             DateTime?                  @db.Timestamptz(6)
+  etaFailureCode              String?                    @db.Text
+  etaFailureMessage           String?                    @db.Text
   distanceFromPreviousMeters  Int?
   durationFromPreviousSeconds Int?
-  createdAt                   DateTime     @default(now()) @db.Timestamptz(6)
-  updatedAt                   DateTime     @updatedAt @db.Timestamptz(6)
+  createdAt                   DateTime                   @default(now()) @db.Timestamptz(6)
+  updatedAt                   DateTime                   @updatedAt @db.Timestamptz(6)
 
   @@unique([routePlanId, sequence])
   @@unique([routePlanId, deliveryStopId])
+  @@index([shopId, routePlanId])
   @@index([deliveryStopId])
+  @@index([etaInputRouteVersionId])
+  @@index([routePlanId, etaStatus])
   @@map("route_plan_stops")
 }
 
@@ -1158,6 +1193,7 @@ model Driver {
   dsvProfile                 DsvDriverProfile?
   dsvVehicleAssignments      DsvVehicleDriverAssignment[]
 
+  @@unique([id, shopId])
   @@unique([shopId, inviteCode])
   @@index([accountId, status])
   @@index([shopId, status])
@@ -1301,7 +1337,7 @@ model DriverAccountDeletionRequest {
 }
 
 model RouteGrouping {
-  id                   String                           @id @default(uuid()) @db.Uuid
+  id                   String                           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId               String                           @db.Uuid
   shop                 Shop                             @relation(fields: [shopId], references: [id], onDelete: Cascade)
   name                 String                           @db.Text
@@ -1331,7 +1367,7 @@ model RouteGrouping {
 }
 
 model RouteGroupingOrder {
-  id                String                         @id @default(uuid()) @db.Uuid
+  id                String                         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId            String                         @db.Uuid
   shop              Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
   groupingId        String                         @db.Uuid
@@ -1358,7 +1394,7 @@ model RouteGroupingOrder {
 }
 
 model RouteGroupingBranch {
-  id            String                         @id @default(uuid()) @db.Uuid
+  id            String                         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId        String                         @db.Uuid
   shop          Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
   groupingId    String                         @db.Uuid
@@ -1381,7 +1417,7 @@ model RouteGroupingBranch {
 }
 
 model RouteGroupingBranchOrderLock {
-  id                   String              @id @default(uuid()) @db.Uuid
+  id                   String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId               String              @db.Uuid
   shop                 Shop                @relation(fields: [shopId], references: [id], onDelete: Cascade)
   groupingId           String              @db.Uuid
@@ -1404,7 +1440,7 @@ model RouteGroupingBranchOrderLock {
 }
 
 model RouteGroupingPolygon {
-  id             String               @id @default(uuid()) @db.Uuid
+  id             String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId         String               @db.Uuid
   shop           Shop                 @relation(fields: [shopId], references: [id], onDelete: Cascade)
   groupingId     String               @db.Uuid
@@ -1426,7 +1462,7 @@ model RouteGroupingPolygon {
 }
 
 model RouteGroupingVersion {
-  id            String                      @id @default(uuid()) @db.Uuid
+  id            String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId        String                      @db.Uuid
   shop          Shop                        @relation(fields: [shopId], references: [id], onDelete: Cascade)
   groupingId    String                      @db.Uuid
@@ -1444,7 +1480,7 @@ model RouteGroupingVersion {
 }
 
 model RouteGroupingChildVersion {
-  id                   String                           @id @default(uuid()) @db.Uuid
+  id                   String                           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId               String                           @db.Uuid
   shop                 Shop                             @relation(fields: [shopId], references: [id], onDelete: Cascade)
   groupingId           String                           @db.Uuid
@@ -1454,7 +1490,7 @@ model RouteGroupingChildVersion {
   driverId             String?                          @db.Uuid
   driver               Driver?                          @relation(fields: [driverId], references: [id], onDelete: SetNull)
   routePlanId          String?                          @db.Uuid
-  routePlan            RoutePlan?                       @relation(fields: [routePlanId], references: [id], onDelete: SetNull)
+  routePlan            RoutePlan?                       @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: NoAction)
   version              Int
   status               RouteGroupingChildVersionStatus  @default(CURRENT)
   snapshot             Json
@@ -1469,14 +1505,18 @@ model RouteGroupingChildVersion {
   nextReceipts         DsvCommandReceipt[]              @relation("DsvCommandReceiptNextRouteVersion")
   previousAuditEvents  DsvAuditEvent[]                  @relation("DsvAuditEventPreviousRouteVersion")
   nextAuditEvents      DsvAuditEvent[]                  @relation("DsvAuditEventNextRouteVersion")
+  etaInputRouteStops   RoutePlanStop[]                  @relation("RoutePlanStopEtaInputRouteVersion")
+  driverEvents         DriverEvent[]                    @relation("DriverEventRouteVersion")
 
+  @@unique([id, shopId])
+  @@unique([id, shopId, routePlanId])
   @@index([groupingId, version, status])
   @@index([shopId, routePlanId])
   @@map("route_grouping_child_versions")
 }
 
 model DriverPushToken {
-  id              String                @id @default(uuid()) @db.Uuid
+  id              String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId          String                @db.Uuid
   shop            Shop                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
   driverId        String                @db.Uuid
@@ -1501,7 +1541,7 @@ model DriverPushToken {
 }
 
 model DriverRouteNotificationAttempt {
-  id                String                        @id @default(uuid()) @db.Uuid
+  id                String                        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId            String                        @db.Uuid
   shop              Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
   groupingId        String                        @db.Uuid
@@ -1532,7 +1572,7 @@ model DriverRouteNotificationAttempt {
 }
 
 model CustomerRouteNotificationFact {
-  id         String                          @id @default(uuid()) @db.Uuid
+  id         String                          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId     String                          @db.Uuid
   shop       Shop                            @relation(fields: [shopId], references: [id], onDelete: Cascade)
   orderId    String                          @db.Uuid
@@ -1584,6 +1624,7 @@ model Vehicle {
   dsvProfile            DsvVehicleProfile?
   dsvDriverAssignments  DsvVehicleDriverAssignment[]
 
+  @@unique([id, shopId])
   @@unique([shopId, licensePlate])
   @@index([shopId, status])
   @@map("vehicles")
@@ -1591,7 +1632,7 @@ model Vehicle {
 
 model DsvDriverProfile {
   driverId   String   @id @db.Uuid
-  driver     Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  driver     Driver   @relation(fields: [driverId, shopId], references: [id, shopId], onDelete: Cascade)
   shopId     String   @db.Uuid
   shop       Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   lookupName String   @db.Text
@@ -1604,6 +1645,7 @@ model DsvDriverProfile {
   createdAt  DateTime @default(now()) @db.Timestamptz(6)
   updatedAt  DateTime @updatedAt @db.Timestamptz(6)
 
+  @@unique([driverId, shopId])
   @@unique([shopId, lookupName])
   @@index([shopId])
   @@map("dsv_driver_profiles")
@@ -1611,7 +1653,7 @@ model DsvDriverProfile {
 
 model DsvVehicleProfile {
   vehicleId String   @id @db.Uuid
-  vehicle   Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  vehicle   Vehicle  @relation(fields: [vehicleId, shopId], references: [id, shopId], onDelete: Cascade)
   shopId    String   @db.Uuid
   shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   typeLabel String   @db.Text
@@ -1619,6 +1661,7 @@ model DsvVehicleProfile {
   createdAt DateTime @default(now()) @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @db.Timestamptz(6)
 
+  @@unique([vehicleId, shopId])
   @@index([shopId])
   @@map("dsv_vehicle_profiles")
 }
@@ -1628,9 +1671,9 @@ model DsvVehicleDriverAssignment {
   shopId    String   @db.Uuid
   shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   vehicleId String   @db.Uuid
-  vehicle   Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  vehicle   Vehicle  @relation(fields: [vehicleId, shopId], references: [id, shopId], onDelete: Cascade)
   driverId  String   @db.Uuid
-  driver    Driver   @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  driver    Driver   @relation(fields: [driverId, shopId], references: [id, shopId], onDelete: Cascade)
   createdBy String?  @db.Text
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
@@ -1655,7 +1698,9 @@ model DsvTransportCondition {
   createdBy     String?                      @db.Text
   createdAt     DateTime                     @default(now()) @db.Timestamptz(6)
   updatedAt     DateTime                     @updatedAt @db.Timestamptz(6)
+  importRows    DsvDispatchImportRow[]
 
+  @@unique([id, shopId])
   @@unique([shopId, code])
   @@unique([shopId, comparisonKey])
   @@index([shopId, status, updatedAt])
@@ -1667,18 +1712,32 @@ model DsvDispatchImport {
   id                 String                  @id @default(uuid()) @db.Uuid
   shopId             String                  @db.Uuid
   shop               Shop                    @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  sourceKind         String                  @default("DSV_DISPATCH_IMPORT") @db.Text
   fileName           String                  @db.Text
   planDate           DateTime                @db.Date
   status             DsvDispatchImportStatus
   rowCount           Int
+  sourceHash         String                  @db.Text
+  previewHash        String                  @db.Text
+  appliedAt          DateTime?               @db.Timestamptz(6)
+  appliedBy          String?                 @db.Text
+  applyReceiptId     String?                 @db.Uuid
+  applyReceipt       DsvCommandReceipt?      @relation("DsvDispatchImportApplyReceipt", fields: [applyReceiptId, shopId], references: [id, shopId], onDelete: NoAction)
+  applyResult        Json?
+  failureCode        String?                 @db.Text
+  failureMessage     String?                 @db.Text
   createdBy          String?                 @db.Text
   createdAt          DateTime                @default(now()) @db.Timestamptz(6)
   updatedAt          DateTime                @updatedAt @db.Timestamptz(6)
   rows               DsvDispatchImportRow[]
-  dsvCommandReceipts DsvCommandReceipt[]
+  dsvCommandReceipts DsvCommandReceipt[]     @relation("DsvCommandReceiptImport")
   dsvAuditEvents     DsvAuditEvent[]
 
+  @@unique([id, shopId])
   @@index([shopId, planDate, createdAt])
+  @@index([shopId, sourceHash])
+  @@index([shopId, status, createdAt])
+  @@index([shopId, previewHash])
   @@map("dsv_dispatch_imports")
 }
 
@@ -1687,12 +1746,13 @@ model DsvDispatchImportRow {
   shopId          String                     @db.Uuid
   shop            Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
   importId        String                     @db.Uuid
-  importRecord    DsvDispatchImport          @relation(fields: [importId], references: [id], onDelete: Cascade)
+  importRecord    DsvDispatchImport          @relation(fields: [importId, shopId], references: [id, shopId], onDelete: Cascade)
   rowNumber       Int
   driverId        String?                    @db.Uuid
-  driver          Driver?                    @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  driver          Driver?                    @relation(fields: [driverId, shopId], references: [id, shopId], onDelete: NoAction)
   vehicleId       String?                    @db.Uuid
-  vehicle         Vehicle?                   @relation(fields: [vehicleId], references: [id], onDelete: SetNull)
+  vehicle         Vehicle?                   @relation(fields: [vehicleId, shopId], references: [id, shopId], onDelete: NoAction)
+  sourceKind      String                     @default("DSV_DISPATCH_IMPORT") @db.Text
   driverName      String                     @db.Text
   vehiclePlate    String                     @db.Text
   destinationName String                     @db.Text
@@ -1706,19 +1766,42 @@ model DsvDispatchImportRow {
   longitude       Decimal?                   @db.Decimal(10, 7)
   status          DsvDispatchImportRowStatus
   issues          Json
+  normalized      Json
+  diffKind        String                     @db.Text
+  sourceHash      String                     @db.Text
+  previewHash     String                     @db.Text
+  customerId      String?                    @db.Uuid
+  customer        Customer?                  @relation(fields: [customerId, shopId], references: [id, shopId], onDelete: NoAction)
+  destinationId   String?                    @db.Uuid
+  destination     DeliveryCustomerProfile?   @relation(fields: [destinationId, shopId], references: [id, shopId], onDelete: NoAction)
+  conditionId     String?                    @db.Uuid
+  condition       DsvTransportCondition?     @relation(fields: [conditionId, shopId], references: [id, shopId], onDelete: NoAction)
+  sellerOrderId   String?                    @db.Uuid
+  sellerOrder     Order?                     @relation(fields: [sellerOrderId, shopId], references: [id, shopId], onDelete: NoAction)
+  deliveryStopId  String?                    @db.Uuid
+  deliveryStop    DeliveryStop?              @relation(fields: [deliveryStopId, shopId], references: [id, shopId], onDelete: NoAction)
+  applyReceiptId  String?                    @db.Uuid
+  applyReceipt    DsvCommandReceipt?         @relation("DsvDispatchImportRowApplyReceipt", fields: [applyReceiptId, shopId], references: [id, shopId], onDelete: NoAction)
+  appliedAt       DateTime?                  @db.Timestamptz(6)
+  canonicalLink   Json?
+  candidateDiff   Json?
   createdAt       DateTime                   @default(now()) @db.Timestamptz(6)
   updatedAt       DateTime                   @updatedAt @db.Timestamptz(6)
 
   @@unique([importId, rowNumber])
-  @@unique([shopId, sellerOrderKey])
+  @@unique([importId, sellerOrderKey])
   @@index([importId, status, rowNumber])
+  @@index([shopId, sellerOrderKey, createdAt])
+  @@index([shopId, sellerOrderId])
+  @@index([shopId, deliveryStopId])
+  @@index([importId, diffKind, rowNumber])
   @@index([driverId])
   @@index([vehicleId])
   @@map("dsv_dispatch_import_rows")
 }
 
 model DsvCommandReceipt {
-  id                     String                     @id @default(uuid()) @db.Uuid
+  id                     String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId                 String                     @db.Uuid
   shop                   Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
   commandName            String                     @db.Text
@@ -1734,22 +1817,25 @@ model DsvCommandReceipt {
   responseStatus         Int?
   responseBodyRef        String?                    @db.Text
   importId               String?                    @db.Uuid
-  importRecord           DsvDispatchImport?         @relation(fields: [importId], references: [id], onDelete: SetNull)
+  importRecord           DsvDispatchImport?         @relation("DsvCommandReceiptImport", fields: [importId, shopId], references: [id, shopId], onDelete: NoAction)
   sellerOrderId          String?                    @db.Uuid
-  sellerOrder            Order?                     @relation(fields: [sellerOrderId], references: [id], onDelete: SetNull)
+  sellerOrder            Order?                     @relation(fields: [sellerOrderId, shopId], references: [id, shopId], onDelete: NoAction)
   previousRoutePlanId    String?                    @db.Uuid
-  previousRoutePlan      RoutePlan?                 @relation("DsvCommandReceiptPreviousRoutePlan", fields: [previousRoutePlanId], references: [id], onDelete: SetNull)
+  previousRoutePlan      RoutePlan?                 @relation("DsvCommandReceiptPreviousRoutePlan", fields: [previousRoutePlanId, shopId], references: [id, shopId], onDelete: NoAction)
   nextRoutePlanId        String?                    @db.Uuid
-  nextRoutePlan          RoutePlan?                 @relation("DsvCommandReceiptNextRoutePlan", fields: [nextRoutePlanId], references: [id], onDelete: SetNull)
+  nextRoutePlan          RoutePlan?                 @relation("DsvCommandReceiptNextRoutePlan", fields: [nextRoutePlanId, shopId], references: [id, shopId], onDelete: NoAction)
   previousRouteVersionId String?                    @db.Uuid
-  previousRouteVersion   RouteGroupingChildVersion? @relation("DsvCommandReceiptPreviousRouteVersion", fields: [previousRouteVersionId], references: [id], onDelete: SetNull)
+  previousRouteVersion   RouteGroupingChildVersion? @relation("DsvCommandReceiptPreviousRouteVersion", fields: [previousRouteVersionId, shopId], references: [id, shopId], onDelete: NoAction)
   nextRouteVersionId     String?                    @db.Uuid
-  nextRouteVersion       RouteGroupingChildVersion? @relation("DsvCommandReceiptNextRouteVersion", fields: [nextRouteVersionId], references: [id], onDelete: SetNull)
+  nextRouteVersion       RouteGroupingChildVersion? @relation("DsvCommandReceiptNextRouteVersion", fields: [nextRouteVersionId, shopId], references: [id, shopId], onDelete: NoAction)
   createdAt              DateTime                   @default(now()) @db.Timestamptz(6)
   completedAt            DateTime?                  @db.Timestamptz(6)
   retainedUntil          DateTime?                  @db.Timestamptz(6)
   auditEvents            DsvAuditEvent[]
+  appliedImports         DsvDispatchImport[]        @relation("DsvDispatchImportApplyReceipt")
+  appliedImportRows      DsvDispatchImportRow[]     @relation("DsvDispatchImportRowApplyReceipt")
 
+  @@unique([id, shopId])
   @@unique([shopId, commandName, commandId])
   @@index([shopId, status, createdAt])
   @@index([shopId, requestId])
@@ -1759,34 +1845,34 @@ model DsvCommandReceipt {
 }
 
 model DsvAuditEvent {
-  id                     String                     @id @default(uuid()) @db.Uuid
+  id                     String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   shopId                 String                     @db.Uuid
   shop                   Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
   eventType              String                     @db.Text
   entityType             String                     @db.Text
   entityId               String                     @db.Text
   sellerOrderId          String?                    @db.Uuid
-  sellerOrder            Order?                     @relation(fields: [sellerOrderId], references: [id], onDelete: SetNull)
+  sellerOrder            Order?                     @relation(fields: [sellerOrderId, shopId], references: [id, shopId], onDelete: NoAction)
   customerId             String?                    @db.Uuid
-  customer               Customer?                  @relation(fields: [customerId, shopId], references: [id, shopId])
+  customer               Customer?                  @relation(fields: [customerId, shopId], references: [id, shopId], onDelete: NoAction)
   destinationId          String?                    @db.Uuid
-  destination            DeliveryCustomerProfile?   @relation(fields: [destinationId, shopId], references: [id, shopId])
+  destination            DeliveryCustomerProfile?   @relation(fields: [destinationId, shopId], references: [id, shopId], onDelete: NoAction)
   actorType              String                     @db.Text
   actorId                String?                    @db.Text
   principalType          DsvPrincipalType
   requestId              String                     @db.Text
   commandReceiptId       String?                    @db.Uuid
-  commandReceipt         DsvCommandReceipt?         @relation(fields: [commandReceiptId], references: [id], onDelete: SetNull)
+  commandReceipt         DsvCommandReceipt?         @relation(fields: [commandReceiptId, shopId], references: [id, shopId], onDelete: NoAction)
   importId               String?                    @db.Uuid
-  importRecord           DsvDispatchImport?         @relation(fields: [importId], references: [id], onDelete: SetNull)
+  importRecord           DsvDispatchImport?         @relation(fields: [importId, shopId], references: [id, shopId], onDelete: NoAction)
   previousRoutePlanId    String?                    @db.Uuid
-  previousRoutePlan      RoutePlan?                 @relation("DsvAuditEventPreviousRoutePlan", fields: [previousRoutePlanId], references: [id], onDelete: SetNull)
+  previousRoutePlan      RoutePlan?                 @relation("DsvAuditEventPreviousRoutePlan", fields: [previousRoutePlanId, shopId], references: [id, shopId], onDelete: NoAction)
   nextRoutePlanId        String?                    @db.Uuid
-  nextRoutePlan          RoutePlan?                 @relation("DsvAuditEventNextRoutePlan", fields: [nextRoutePlanId], references: [id], onDelete: SetNull)
+  nextRoutePlan          RoutePlan?                 @relation("DsvAuditEventNextRoutePlan", fields: [nextRoutePlanId, shopId], references: [id, shopId], onDelete: NoAction)
   previousRouteVersionId String?                    @db.Uuid
-  previousRouteVersion   RouteGroupingChildVersion? @relation("DsvAuditEventPreviousRouteVersion", fields: [previousRouteVersionId], references: [id], onDelete: SetNull)
+  previousRouteVersion   RouteGroupingChildVersion? @relation("DsvAuditEventPreviousRouteVersion", fields: [previousRouteVersionId, shopId], references: [id, shopId], onDelete: NoAction)
   nextRouteVersionId     String?                    @db.Uuid
-  nextRouteVersion       RouteGroupingChildVersion? @relation("DsvAuditEventNextRouteVersion", fields: [nextRouteVersionId], references: [id], onDelete: SetNull)
+  nextRouteVersion       RouteGroupingChildVersion? @relation("DsvAuditEventNextRouteVersion", fields: [nextRouteVersionId, shopId], references: [id, shopId], onDelete: NoAction)
   redactedDiff           Json?
   beforeSnapshotRef      String?                    @db.Text
   afterSnapshotRef       String?                    @db.Text
@@ -1807,25 +1893,28 @@ model DsvAuditEvent {
 }
 
 model DriverEvent {
-  id             String          @id @default(uuid()) @db.Uuid
-  shopId         String          @db.Uuid
-  shop           Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  driverId       String?         @db.Uuid
-  driver         Driver?         @relation(fields: [driverId], references: [id], onDelete: SetNull)
-  routePlanId    String?         @db.Uuid
-  routePlan      RoutePlan?      @relation(fields: [routePlanId], references: [id], onDelete: SetNull)
-  deliveryStopId String?         @db.Uuid
-  deliveryStop   DeliveryStop?   @relation(fields: [deliveryStopId], references: [id], onDelete: SetNull)
-  clientEventId  String?         @db.Text
+  id             String                     @id @default(uuid()) @db.Uuid
+  shopId         String                     @db.Uuid
+  shop           Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  driverId       String?                    @db.Uuid
+  driver         Driver?                    @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  routePlanId    String?                    @db.Uuid
+  routePlan      RoutePlan?                 @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: NoAction)
+  routeVersionId String?                    @db.Uuid
+  routeVersion   RouteGroupingChildVersion? @relation("DriverEventRouteVersion", fields: [routeVersionId, shopId, routePlanId], references: [id, shopId, routePlanId], onDelete: NoAction)
+  deliveryStopId String?                    @db.Uuid
+  deliveryStop   DeliveryStop?              @relation(fields: [deliveryStopId], references: [id], onDelete: SetNull)
+  clientEventId  String?                    @db.Text
   eventType      DriverEventType
-  occurredAt     DateTime        @db.Timestamptz(6)
-  latitude       Decimal?        @db.Decimal(10, 7)
-  longitude      Decimal?        @db.Decimal(10, 7)
+  occurredAt     DateTime                   @db.Timestamptz(6)
+  latitude       Decimal?                   @db.Decimal(10, 7)
+  longitude      Decimal?                   @db.Decimal(10, 7)
   payload        Json
-  createdAt      DateTime        @default(now()) @db.Timestamptz(6)
+  createdAt      DateTime                   @default(now()) @db.Timestamptz(6)
 
   @@unique([driverId, clientEventId])
   @@index([shopId, routePlanId, occurredAt])
+  @@index([shopId, routeVersionId, occurredAt])
   @@index([shopId, deliveryStopId, occurredAt])
   @@map("driver_events")
 }

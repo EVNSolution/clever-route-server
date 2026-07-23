@@ -31,4 +31,169 @@ case "$status_only" in
   *) echo "monitor host script must support status-only mode" >&2; exit 1 ;;
 esac
 
+g007_status="$(scripts/monitor-route-ops-production.sh --render-host-script --status-only --g007-json-status)"
+case "$g007_status" in
+  *"export ROUTE_OPS_MONITOR_G007_JSON_STATUS=true"*"SECTION=g007_json_status"*) ;;
+  *) echo "monitor host script must support opt-in G007 JSON status mode" >&2; exit 1 ;;
+esac
+case "$g007_status" in
+  *"export ROUTE_OPS_G007_STATUS_BASE_URL=''"*) ;;
+  *) echo "G007 JSON status must default to no external status URL" >&2; exit 1 ;;
+esac
+case "$g007_status" in
+  *"urlopen(f'http://127.0.0.1:3000{path}'"*) echo "G007 JSON status must not probe host-local 127.0.0.1:3000" >&2; exit 1 ;;
+esac
+case "$g007_status" in
+  *"'docker', 'exec', api_container, 'node', '-e'"*"fetch('http://127.0.0.1:3000'+path)"*) ;;
+  *) echo "G007 JSON status must use the API container for default health/readiness probes" >&2; exit 1 ;;
+esac
+case "$g007_status" in
+  *"scripts/dsv-g007-observation-report.sh"*) ;;
+  *) echo "G007 JSON status must include legacy, invariant, and migration policy outputs" >&2; exit 1 ;;
+esac
+case "$rendered" in
+  *"export ROUTE_OPS_MONITOR_G007_JSON_STATUS=false"*) ;;
+  *) echo "default monitor must render G007 JSON status as disabled" >&2; exit 1 ;;
+esac
+case "$g007_status" in *"legacyUsage"*) ;; *) echo "G007 JSON status must include legacy usage output" >&2; exit 1 ;; esac
+case "$g007_status" in *"invariantFailures"*) ;; *) echo "G007 JSON status must include invariant output" >&2; exit 1 ;; esac
+case "$g007_status" in *"latestMigration"*) ;; *) echo "G007 JSON status must include migration output" >&2; exit 1 ;; esac
+case "$g007_status" in *"20260723013000_g010_import_row_resource_tenant_fks"*) ;; *) echo "G007 JSON status must require the latest migration" >&2; exit 1 ;; esac
+case "$g007_status" in *"eta_input_route_version_mismatches"*"route_plan.status NOT IN ('CANCELLED', 'COMPLETED')"*) ;;
+  *) echo "G007 invariant must compare active route-plan ETA input versions to the current child version regardless of etaStatus" >&2; exit 1 ;;
+esac
+case "$g007_status" in *"\"etaStatus\" = 'STALE'"*) echo "G007 invariant must not only count stale ETA statuses" >&2; exit 1 ;; esac
+case "$g007_status" in *"expectedCount"*"appliedCount"*"pendingCount"*"failedCount"*"pendingMigrations"*) ;;
+  *) echo "G007 JSON status must report expected, applied, pending, failed counts and pending names" >&2; exit 1 ;;
+esac
+
+configured_status="$(ROUTE_OPS_G007_STATUS_BASE_URL=https://route.example.invalid scripts/monitor-route-ops-production.sh --render-host-script --status-only --g007-json-status)"
+case "$configured_status" in
+  *"export ROUTE_OPS_G007_STATUS_BASE_URL=https://route.example.invalid"*"urlopen(f'{configured_status_base_url}{path}'"*) ;;
+  *) echo "G007 JSON status must support an explicit configured external URL" >&2; exit 1 ;;
+esac
+
+python3 - <<'PY'
+import re
+import tempfile
+from pathlib import Path
+
+script = Path('scripts/monitor-route-ops-production.sh').read_text()
+
+http_match = re.search(r"# BEGIN G007_HTTP_STATUS_POLICY\n(?P<body>.*?)\n# END G007_HTTP_STATUS_POLICY", script, re.S)
+if not http_match:
+    raise SystemExit('missing G007 HTTP status policy block')
+
+http_namespace = {}
+exec(http_match.group('body'), http_namespace)
+status_from_http_fixture = http_namespace['status_from_http_fixture']
+
+ok = status_from_http_fixture(200, '{"ok":true}', duration_ms=12)
+assert ok == {
+    'status': 'ok',
+    'httpStatus': 200,
+    'durationMs': 12,
+    'sample': '{"ok":true}',
+}, ok
+
+unready = status_from_http_fixture(503, '{"ready":false}', duration_ms=7)
+assert unready['status'] == 'critical', unready
+assert unready['httpStatus'] == 503, unready
+assert unready['sample'] == '{"ready":false}', unready
+
+failed_probe = status_from_http_fixture(error='connection refused')
+assert failed_probe == {'status': 'critical', 'error': 'connection refused'}, failed_probe
+
+match = re.search(r"# BEGIN G007_MIGRATION_POLICY\n(?P<body>.*?)\n# END G007_MIGRATION_POLICY", script, re.S)
+if not match:
+    raise SystemExit('missing G007 migration policy block')
+
+namespace = {
+    'Path': Path,
+    'migration_dir': Path('/definitely-missing-clever-route-migrations'),
+    'required_latest_migration': '20260723013000_g010_import_row_resource_tenant_fks',
+}
+exec(match.group('body'), namespace)
+status_from_history = namespace['migration_status_from_history']
+expected_migration_names = namespace['expected_migration_names']
+expected = [
+    '20260722203000_dsv_import_stage_apply',
+    '20260722213000_dsv_assignment_eta_state',
+    '20260722223000_drop_legacy_single_tenant_fks',
+    '20260722233000_align_migration_history_to_schema',
+    '20260723003000_g009_tenant_composite_dsv_fks',
+    '20260723013000_g010_import_row_resource_tenant_fks',
+]
+
+with tempfile.TemporaryDirectory() as tmp:
+    migrations = Path(tmp)
+    for name in expected[:5]:
+        migration = migrations / name
+        migration.mkdir()
+        (migration / 'migration.sql').write_text('-- fixture\n')
+    assert expected_migration_names(migrations) == expected
+
+repo_expected = expected_migration_names(Path('apps/delivery-api/prisma/migrations'))
+assert len(repo_expected) == 44, repo_expected
+assert repo_expected[-1] == '20260723013000_g010_import_row_resource_tenant_fks', repo_expected[-1]
+assert repo_expected.count('20260722233000_align_migration_history_to_schema') == 1, repo_expected
+
+empty = status_from_history([], expected)
+assert empty['status'] == 'critical', empty
+assert empty['expectedCount'] == 6, empty
+assert empty['appliedCount'] == 0, empty
+assert empty['pendingCount'] == 6, empty
+assert empty['failedCount'] == 0, empty
+assert empty['pendingMigrations'] == expected, empty
+assert empty['actualLatestMigration'] == '', empty
+assert empty['unexpectedMigrations'] == [], empty
+
+missing_latest = status_from_history([
+    {'migrationName': expected[0], 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': expected[1], 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': expected[2], 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': expected[3], 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': expected[4], 'finishedAt': True, 'rolledBackAt': False},
+], expected)
+assert missing_latest['status'] == 'critical', missing_latest
+assert missing_latest['appliedCount'] == 5, missing_latest
+assert missing_latest['pendingCount'] == 1, missing_latest
+assert missing_latest['pendingMigrations'] == [expected[5]], missing_latest
+assert missing_latest['latestMigration'] == expected[5], missing_latest
+assert missing_latest['actualLatestMigration'] == expected[4], missing_latest
+
+complete = status_from_history([
+    {'migrationName': expected[0], 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': expected[1], 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': expected[2], 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': expected[3], 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': expected[4], 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': expected[5], 'finishedAt': True, 'rolledBackAt': False},
+], expected)
+assert complete['status'] == 'ok', complete
+assert complete['expectedCount'] == 6, complete
+assert complete['appliedCount'] == 6, complete
+assert complete['pendingCount'] == 0, complete
+assert complete['failedCount'] == 0, complete
+assert complete['pendingMigrations'] == [], complete
+assert complete['actualLatestMigration'] == expected[5], complete
+assert complete['unexpectedCount'] == 0, complete
+
+complete_with_unexpected_history_row = status_from_history([
+    {'migrationName': expected[0], 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': expected[1], 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': expected[2], 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': expected[3], 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': expected[4], 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': expected[5], 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': '99999999999999_unchecked_history_row', 'finishedAt': True, 'rolledBackAt': False},
+], expected)
+assert complete_with_unexpected_history_row['status'] == 'critical', complete_with_unexpected_history_row
+assert complete_with_unexpected_history_row['expectedCount'] == 6, complete_with_unexpected_history_row
+assert complete_with_unexpected_history_row['appliedCount'] == 6, complete_with_unexpected_history_row
+assert complete_with_unexpected_history_row['unexpectedCount'] == 1, complete_with_unexpected_history_row
+assert complete_with_unexpected_history_row['unexpectedMigrations'] == ['99999999999999_unchecked_history_row'], complete_with_unexpected_history_row
+assert complete_with_unexpected_history_row['actualLatestMigration'] == '99999999999999_unchecked_history_row', complete_with_unexpected_history_row
+PY
+
 printf '{"ok":true,"monitor":"scripts/monitor-route-ops-production.sh"}\n'

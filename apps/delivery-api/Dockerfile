@@ -28,10 +28,15 @@ ENV ROUTE_OPS_WEB_DIST_PATH=/app/external/route-ops-web/dist
 ENV ROUTE_OPS_WEB_PUBLIC_PATH=/app/external/route-ops-web/public
 RUN addgroup --system clever && adduser --system --ingroup clever clever
 COPY --from=build /app/apps/delivery-api/package.json ./package.json
+COPY --from=build /app/apps/delivery-api/package.json ./apps/delivery-api/package.json
 COPY --from=pruned /app/apps/delivery-api/node_modules ./node_modules
 COPY --from=build /app/apps/delivery-api/prisma ./prisma
+COPY --from=build /app/apps/delivery-api/prisma ./apps/delivery-api/prisma
 COPY --from=build /app/apps/delivery-api/dist ./dist
 COPY apps/delivery-api/scripts/guard-prisma-db-push.sh ./scripts/guard-prisma-db-push.sh
+COPY apps/delivery-api/scripts/dsv-g007-migrate-deploy.sh ./scripts/dsv-g007-migrate-deploy.sh
+RUN ln -s ../../node_modules ./apps/delivery-api/node_modules \
+  && chmod 0755 ./scripts/dsv-g007-migrate-deploy.sh
 COPY apps/delivery-api/docs/api ./docs/api
 USER clever
 EXPOSE 3000

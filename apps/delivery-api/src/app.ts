@@ -43,6 +43,7 @@ import {
   type WordPressPluginDependencies
 } from './routes/wordpress-plugin.routes.js';
 import { registerDsvControlRoutes, type DsvControlDependencies } from './routes/dsv-control.routes.js';
+import { registerDsvV1ReadRoutes, type DsvV1ReadDependencies } from './routes/dsv-v1-read.routes.js';
 
 export type BuildAppOptions = {
   adminCommerceConnections?: AdminCommerceConnectionsDependencies;
@@ -56,6 +57,7 @@ export type BuildAppOptions = {
   driverApi?: DriverApiDependencies;
   driverAuth?: DriverAuthDependencies;
   dsvControl?: DsvControlDependencies;
+  dsvV1Read?: DsvV1ReadDependencies;
   logger?: FastifyServerOptions['logger'];
   shopifyAuth?: ShopifyAuthDependencies;
   shopifyWebhook?: ShopifyWebhookDependencies;
@@ -64,9 +66,14 @@ export type BuildAppOptions = {
 };
 
 type AppLoggerOption = Exclude<FastifyServerOptions['logger'], undefined>;
+type DsvApiSurfaceCategory = 'v1_read' | 'canonical_assignment_command_alias' | 'legacy_read' | 'legacy_write';
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: withSafeRequestLogging(options.logger ?? false) });
+  app.addHook('onResponse', (request, reply, done) => {
+    logDsvApiSurfaceRequest(request, reply);
+    done();
+  });
   app.setErrorHandler((error, request, reply) => {
     if (isPrismaSchemaDriftError(error)) {
       const code = request.url.startsWith('/admin/inventories')
@@ -138,6 +145,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   if (options.dsvControl !== undefined) {
     registerDsvControlRoutes(app, options.dsvControl);
+  }
+
+  if (options.dsvV1Read !== undefined) {
+    registerDsvV1ReadRoutes(app, options.dsvV1Read);
   }
 
   if (options.shopifyAuth !== undefined) {
@@ -220,5 +231,85 @@ export function redactSensitiveUrl(value: string): string {
     return `${url.pathname}${url.search}`;
   } catch {
     return '/admin/ui/plugin-launch?token=[redacted]';
+  }
+}
+
+function logDsvApiSurfaceRequest(
+  request: FastifyRequest,
+  reply: { elapsedTime: number; statusCode: number },
+): void {
+  const classification = classifyDsvApiSurfaceRequest(request.method, request.url, request.routeOptions.url);
+  if (classification === null) return;
+
+  request.log.info({
+    callerSurface: readCallerSurface(request),
+    durationMs: Math.round(reply.elapsedTime),
+    event: 'dsv_api_surface_request',
+    legacyCategory: classification.legacyCategory,
+    method: request.method,
+    path: redactSensitiveUrl(pathWithQuery(request.url)),
+    requestId: request.id,
+    route: classification.route,
+    statusCode: reply.statusCode,
+  }, 'DSV API surface request classified');
+}
+
+function classifyDsvApiSurfaceRequest(
+  method: string,
+  url: string,
+  matchedRoute: string | undefined,
+): { legacyCategory: DsvApiSurfaceCategory; route: string } | null {
+  const path = pathname(url);
+  if (!path.startsWith('/api/dsv')) return null;
+
+  const normalizedMethod = method.toUpperCase();
+  if (normalizedMethod === 'GET' && path.startsWith('/api/dsv/v1/')) {
+    return { legacyCategory: 'v1_read', route: matchedRoute ?? path };
+  }
+
+  const assignmentAliasRoute = assignmentCommandAliasRoute(normalizedMethod, path);
+  if (assignmentAliasRoute !== null) {
+    return { legacyCategory: 'canonical_assignment_command_alias', route: assignmentAliasRoute };
+  }
+
+  if (path.startsWith('/api/dsv/v1/')) return null;
+  if (normalizedMethod === 'GET' || normalizedMethod === 'HEAD') {
+    return { legacyCategory: 'legacy_read', route: matchedRoute ?? path };
+  }
+  if (normalizedMethod === 'POST' || normalizedMethod === 'PUT' || normalizedMethod === 'PATCH' || normalizedMethod === 'DELETE') {
+    return { legacyCategory: 'legacy_write', route: matchedRoute ?? path };
+  }
+  return null;
+}
+
+function assignmentCommandAliasRoute(method: string, path: string): string | null {
+  if (method !== 'POST') return null;
+  const match = /^\/api\/dsv\/seller-orders\/[^/]+\/assignment\/(reassign|unassign)$/u.exec(path);
+  if (match === null) return null;
+  return `/api/dsv/seller-orders/:sellerOrderId/assignment/${match[1]}`;
+}
+
+function readCallerSurface(request: FastifyRequest): string {
+  const value = request.headers['x-caller-surface'];
+  if (typeof value !== 'string') return 'unknown';
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 120) return 'unknown';
+  return /^[A-Za-z0-9._:-]+$/u.test(trimmed) ? trimmed : 'unknown';
+}
+
+function pathname(url: string): string {
+  try {
+    return new URL(url, 'https://clever-route.local').pathname;
+  } catch {
+    return url.split('?')[0] ?? url;
+  }
+}
+
+function pathWithQuery(url: string): string {
+  try {
+    const parsed = new URL(url, 'https://clever-route.local');
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return url;
   }
 }

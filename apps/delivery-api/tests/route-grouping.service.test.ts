@@ -342,6 +342,27 @@ describe('route grouping contracts', () => {
     expect(source).toContain("only Ready child routes can be deleted");
   });
 
+  test('clears current and archived child-version route-plan refs before route-plan deletes', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const deleteGroupingBody = source.slice(source.indexOf('async deleteGrouping'), source.indexOf('async listGroupings'));
+    const saveDraftBody = source.slice(source.indexOf('async saveDraft('), source.indexOf('async savePolygons('));
+    const clearRefsBody = source.slice(
+      source.indexOf('async function clearRouteGroupingChildVersionRoutePlanRefs'),
+      source.indexOf('type GroupingDateRange')
+    );
+
+    expect(deleteGroupingBody).toContain('await clearRouteGroupingChildVersionRoutePlanRefs(tx, {');
+    expect(deleteGroupingBody.indexOf('await clearRouteGroupingChildVersionRoutePlanRefs(tx, {'))
+      .toBeLessThan(deleteGroupingBody.indexOf('await tx.routePlan.deleteMany'));
+    expect(saveDraftBody).toContain('await clearRouteGroupingChildVersionRoutePlanRefs(tx, {');
+    expect(saveDraftBody.indexOf('await clearRouteGroupingChildVersionRoutePlanRefs(tx, {'))
+      .toBeLessThan(saveDraftBody.indexOf('await tx.routePlan.delete({ where: { id: routePlanId } })'));
+    expect(clearRefsBody).toContain('data: { routePlanId: null }');
+    expect(clearRefsBody).toContain('routePlanId: { in: input.routePlanIds }');
+    expect(clearRefsBody).toContain('shopId: input.shopId');
+    expect(clearRefsBody).not.toContain('status');
+  });
+
   test('uses numbered child route names before dispatch', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain("assignment.assignmentStatus === 'ASSIGNED' ? assignment.assignedDriverId : null");

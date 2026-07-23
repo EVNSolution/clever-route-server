@@ -84,6 +84,13 @@ export class DriverEventExecutionConflictError extends RouteExecutionConflictErr
   }
 }
 
+export class DriverEventEtaStaleConflictError extends Error {
+  constructor(routePlanId: string) {
+    super(`ETA update is stale for route plan ${routePlanId}`);
+    this.name = 'DriverEventEtaStaleConflictError';
+  }
+}
+
 export class PrismaDriverEventRepository {
   constructor(private readonly prisma: DriverEventPrismaClient) {}
 
@@ -97,6 +104,9 @@ export class PrismaDriverEventRepository {
 
         await validateDriverEventStateContext(transaction, input, input.shopId);
         const sequenceDeviation = await detectStopSequenceDeviation(transaction, input);
+        const routeVersionId = input.routePlanId === null
+          ? null
+          : await loadCurrentRouteVersionIdForDriverEvent(transaction, input.routePlanId, input.shopId);
 
         const event = await transaction.driverEvent.create({
           data: {
@@ -109,6 +119,7 @@ export class PrismaDriverEventRepository {
             occurredAt: input.occurredAt,
             payload: JSON.parse(JSON.stringify(input.payload)) as Prisma.InputJsonValue,
             routePlanId: input.routePlanId,
+            ...(routeVersionId === undefined ? {} : { routeVersionId }),
             shopId: input.shopId
           }
         });
@@ -311,12 +322,14 @@ async function applyDriverEventStateTransition(
       }
     });
     const stops = await loadRouteEtaStops(prisma, routePlanId);
+    const inputRouteVersionId = await loadCurrentRouteVersionIdForEta(prisma, routePlanId, shopId);
     const etaUpdate = calculateArrivalEtaUpdate({
       arrivedDeliveryStopId: deliveryStopId,
+      inputRouteVersionId,
       serverReceivedAt,
       stops
     });
-    await persistEtaUpdate(prisma, routePlanId, etaUpdate);
+    await persistEtaUpdate(prisma, shopId, routePlanId, etaUpdate);
     return etaUpdate;
   }
 
@@ -356,11 +369,13 @@ async function applyDriverEventStateTransition(
         status: { in: [...ROUTE_READY_COMPATIBILITY_STATUSES] }
       }
     });
+    const inputRouteVersionId = await loadCurrentRouteVersionIdForEta(prisma, routePlanId, shopId);
     const etaUpdate = calculateRouteStartEtaUpdate({
+      inputRouteVersionId,
       serverReceivedAt,
       stops: await loadRouteEtaStops(prisma, routePlanId)
     });
-    await persistEtaUpdate(prisma, routePlanId, etaUpdate);
+    await persistEtaUpdate(prisma, shopId, routePlanId, etaUpdate);
     return etaUpdate;
   }
 
@@ -453,9 +468,85 @@ async function loadRouteEtaStops(
 
 async function persistEtaUpdate(
   prisma: DriverEventTransactionClient,
+  shopId: string,
   routePlanId: string,
   etaUpdate: DriverRouteEtaUpdate
 ): Promise<void> {
+  if (await routePlanStopEtaOwnershipColumnsExist(prisma)) {
+    if (etaUpdate.updatedStops.length === 0) {
+      return;
+    }
+    if (etaUpdate.inputRouteVersionId === null) {
+      const updatedRows = await Promise.all(etaUpdate.updatedStops.map(async (stop) => {
+        return prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          UPDATE route_plan_stops
+          SET
+            "estimatedArrivalAt" = ${stop.estimatedArrivalAt === null ? null : new Date(stop.estimatedArrivalAt)},
+            "etaStatus" = ${etaUpdate.etaStatus}::"DsvEtaStatus",
+            "etaInputRouteVersionId" = NULL,
+            "etaSource" = ${etaUpdate.etaSource},
+            "etaCalculatedAt" = ${new Date(etaUpdate.etaCalculatedAt)},
+            "etaFailureCode" = ${etaUpdate.etaFailureCode},
+            "etaFailureMessage" = ${etaUpdate.etaFailureMessage}
+          WHERE
+            "shopId" = ${shopId}::uuid
+            AND
+            "routePlanId" = ${routePlanId}::uuid
+            AND "deliveryStopId" = ${stop.deliveryStopId}::uuid
+            AND "etaInputRouteVersionId" IS NULL
+            AND NOT EXISTS (
+              SELECT 1
+              FROM route_grouping_child_versions current_route_version
+              WHERE current_route_version."shopId" = route_plan_stops."shopId"
+                AND current_route_version."routePlanId" = route_plan_stops."routePlanId"
+                AND current_route_version.status = 'CURRENT'
+            )
+          RETURNING id
+        `);
+      }));
+      if (updatedRows.some((rows) => rows.length === 0)) {
+        throw new DriverEventEtaStaleConflictError(routePlanId);
+      }
+      return;
+    }
+
+    const updatedRows = await Promise.all(etaUpdate.updatedStops.map(async (stop) => {
+      return prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        UPDATE route_plan_stops
+        SET
+          "estimatedArrivalAt" = ${stop.estimatedArrivalAt === null ? null : new Date(stop.estimatedArrivalAt)},
+          "etaStatus" = ${etaUpdate.etaStatus}::"DsvEtaStatus",
+          "etaInputRouteVersionId" = ${etaUpdate.inputRouteVersionId}::uuid,
+          "etaSource" = ${etaUpdate.etaSource},
+          "etaCalculatedAt" = ${new Date(etaUpdate.etaCalculatedAt)},
+          "etaFailureCode" = ${etaUpdate.etaFailureCode},
+          "etaFailureMessage" = ${etaUpdate.etaFailureMessage}
+        WHERE
+          "shopId" = ${shopId}::uuid
+          AND
+          "routePlanId" = ${routePlanId}::uuid
+          AND "deliveryStopId" = ${stop.deliveryStopId}::uuid
+          AND EXISTS (
+            SELECT 1
+            FROM route_grouping_child_versions current_route_version
+            WHERE current_route_version.id = ${etaUpdate.inputRouteVersionId}::uuid
+              AND current_route_version."shopId" = route_plan_stops."shopId"
+              AND current_route_version."routePlanId" = route_plan_stops."routePlanId"
+              AND current_route_version.status = 'CURRENT'
+          )
+          AND (
+            "etaInputRouteVersionId" IS NULL
+            OR "etaInputRouteVersionId" = ${etaUpdate.inputRouteVersionId}::uuid
+          )
+        RETURNING id
+      `);
+    }));
+    if (updatedRows.some((rows) => rows.length === 0)) {
+      throw new DriverEventEtaStaleConflictError(routePlanId);
+    }
+    return;
+  }
+
   await Promise.all(etaUpdate.updatedStops.map((stop) => prisma.routePlanStop.update({
     data: {
       estimatedArrivalAt: stop.estimatedArrivalAt === null ? null : new Date(stop.estimatedArrivalAt)
@@ -467,6 +558,82 @@ async function persistEtaUpdate(
       }
     }
   })));
+}
+
+async function routePlanStopEtaOwnershipColumnsExist(prisma: DriverEventTransactionClient): Promise<boolean> {
+  const columns = await prisma.$queryRaw<Array<{ column_name: string }>>(Prisma.sql`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_name = 'route_plan_stops'
+      AND column_name IN (
+        'etaStatus',
+        'etaInputRouteVersionId',
+        'etaSource',
+        'etaCalculatedAt',
+        'etaFailureCode',
+        'etaFailureMessage'
+      )
+  `);
+  const columnNames = new Set(columns.map((column) => column.column_name));
+  return (
+    columnNames.has('etaStatus')
+    && columnNames.has('etaInputRouteVersionId')
+    && columnNames.has('etaSource')
+    && columnNames.has('etaCalculatedAt')
+    && columnNames.has('etaFailureCode')
+    && columnNames.has('etaFailureMessage')
+  );
+}
+
+async function loadCurrentRouteVersionIdForEta(
+  prisma: DriverEventTransactionClient,
+  routePlanId: string,
+  shopId: string
+): Promise<string | null> {
+  if (!await routePlanStopEtaOwnershipColumnsExist(prisma)) {
+    return null;
+  }
+
+  return loadCurrentRouteVersionId(prisma, routePlanId, shopId);
+}
+
+async function loadCurrentRouteVersionIdForDriverEvent(
+  prisma: DriverEventTransactionClient,
+  routePlanId: string,
+  shopId: string
+): Promise<string | null | undefined> {
+  if (!await driverEventRouteVersionColumnExists(prisma)) {
+    return undefined;
+  }
+
+  return loadCurrentRouteVersionId(prisma, routePlanId, shopId);
+}
+
+async function loadCurrentRouteVersionId(
+  prisma: DriverEventTransactionClient,
+  routePlanId: string,
+  shopId: string
+): Promise<string | null> {
+  const routeVersions = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+    SELECT id
+    FROM route_grouping_child_versions
+    WHERE "routePlanId" = ${routePlanId}::uuid
+      AND "shopId" = ${shopId}::uuid
+      AND status = 'CURRENT'
+    ORDER BY "createdAt" DESC
+    LIMIT 1
+  `);
+  return routeVersions[0]?.id ?? null;
+}
+
+async function driverEventRouteVersionColumnExists(prisma: DriverEventTransactionClient): Promise<boolean> {
+  const columns = await prisma.$queryRaw<Array<{ column_name: string }>>(Prisma.sql`
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_name = 'driver_events'
+      AND column_name = 'routeVersionId'
+  `);
+  return columns.length > 0;
 }
 
 function toEtaStop(row: {

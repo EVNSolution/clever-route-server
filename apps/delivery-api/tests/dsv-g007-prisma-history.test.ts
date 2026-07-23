@@ -1,0 +1,293 @@
+import { createHash } from 'node:crypto';
+import { readdir, readFile } from 'node:fs/promises';
+
+import { describe, expect, test } from 'vitest';
+
+const migrationsDir = new URL('../prisma/migrations/', import.meta.url);
+const baselineMigrationPath = new URL(
+  '../prisma/migrations/20260520000000_initial_route_ops_baseline/migration.sql',
+  import.meta.url
+);
+const bridgeCreateMigrationPath = new URL(
+  '../prisma/migrations/20260618022400_create_mapped_table_compatibility_bridges/migration.sql',
+  import.meta.url
+);
+const legacyRouteOpsUiSettingsMigrationPath = new URL(
+  '../prisma/migrations/20260618022500_add_route_ops_ui_settings/migration.sql',
+  import.meta.url
+);
+const legacyLifecycleCollapseMigrationPath = new URL(
+  '../prisma/migrations/20260628170000_collapse_route_lifecycle_statuses/migration.sql',
+  import.meta.url
+);
+const bridgeApplyMigrationPath = new URL(
+  '../prisma/migrations/20260628170100_apply_mapped_table_compatibility/migration.sql',
+  import.meta.url
+);
+const g002RepairMigrationName = '20260722193000_repair_g002_tenant_integrity';
+const g004MigrationPath = new URL(
+  '../prisma/migrations/20260722213000_dsv_assignment_eta_state/migration.sql',
+  import.meta.url
+);
+const cleanupMigrationPath = new URL(
+  '../prisma/migrations/20260722223000_drop_legacy_single_tenant_fks/migration.sql',
+  import.meta.url
+);
+const finalRepairMigrationName = '20260722233000_align_migration_history_to_schema';
+const finalRepairMigrationPath = new URL(`../prisma/migrations/${finalRepairMigrationName}/migration.sql`, import.meta.url);
+const g009MigrationName = '20260723003000_g009_tenant_composite_dsv_fks';
+const g010MigrationName = '20260723013000_g010_import_row_resource_tenant_fks';
+const schemaPath = new URL('../prisma/schema.prisma', import.meta.url);
+
+const legacySingleColumnConstraints = [
+  'route_plan_stops_routePlanId_fkey',
+  'route_plan_stops_deliveryStopId_fkey',
+  'driver_events_routePlanId_fkey'
+] as const;
+
+const tenantCompositeConstraints = [
+  'route_plan_stops_routePlanId_shopId_fkey',
+  'route_plan_stops_deliveryStopId_shopId_fkey',
+  'driver_events_routePlanId_shopId_fkey'
+] as const;
+
+const indexRenames = [
+  [
+    'commerce_raw_order_ingests_connection_order_receivedAt_idx',
+    'commerce_raw_order_ingests_commerceConnectionId_sourceOrder_idx'
+  ],
+  ['commerce_raw_order_ingests_connection_order_hash_key', 'commerce_raw_order_ingests_commerceConnectionId_sourceOrder_key'],
+  ['commerce_raw_order_ingests_run_chunk_order_hash_key', 'commerce_raw_order_ingests_syncRunId_chunkId_sourceOrderId__key'],
+  [
+    'commerce_connection_audit_logs_commerceConnectionId_createdAt_idx',
+    'commerce_connection_audit_logs_commerceConnectionId_created_idx'
+  ],
+  [
+    'wordpress_plugin_pairing_codes_commerceConnectionId_expiresAt_idx',
+    'wordpress_plugin_pairing_codes_commerceConnectionId_expires_idx'
+  ],
+  [
+    'orders_shopId_sourcePlatform_sourceSiteUrl_sourceOrderNumber_idx',
+    'orders_shopId_sourcePlatform_sourceSiteUrl_sourceOrderNumbe_idx'
+  ],
+  [
+    'order_delivery_facts_shopId_sourcePlatform_sourceSiteUrl_sourceOrderId_idx',
+    'order_delivery_facts_shopId_sourcePlatform_sourceSiteUrl_so_idx'
+  ],
+  [
+    'driver_route_notification_attempts_groupingId_groupingVersion_idx',
+    'driver_route_notification_attempts_groupingId_groupingVersi_idx'
+  ]
+] as const;
+
+const constraintRenames = [
+  [
+    'route_plan_stops_etaInputRouteVersionId_fkey',
+    'route_plan_stops_etaInputRouteVersionId_shopId_routePlanId_fkey'
+  ],
+  ['driver_events_routeVersionId_shopId_fkey', 'driver_events_routeVersionId_shopId_routePlanId_fkey']
+] as const;
+
+describe('G007 DSV Prisma migration history', () => {
+  test('orders compatibility bridges around the broken mapped-table migrations', async () => {
+    const migrations = await readMigrationNames();
+
+    expect(migrations).toHaveLength(44);
+    expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
+    expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
+    expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
+    expect(migrations).toContain('20260628170100_apply_mapped_table_compatibility');
+    expect(migrations.indexOf('20260618022400_create_mapped_table_compatibility_bridges')).toBeLessThan(
+      migrations.indexOf('20260618022500_add_route_ops_ui_settings')
+    );
+    expect(migrations.indexOf('20260628170000_collapse_route_lifecycle_statuses')).toBeLessThan(
+      migrations.indexOf('20260628170100_apply_mapped_table_compatibility')
+    );
+    expect(migrations.indexOf('20260628170100_apply_mapped_table_compatibility')).toBeLessThan(
+      migrations.indexOf(g002RepairMigrationName)
+    );
+  });
+
+  test('keeps migration SQL files directly under first-level migration directories', async () => {
+    const migrations = await readMigrationNames();
+    const migrationSqlPaths = await findMigrationSqlRelativePaths();
+    const nestedMigrationSqlPaths = migrationSqlPaths.filter((path) => path.split('/').length !== 2);
+
+    expect(nestedMigrationSqlPaths).toEqual([]);
+    expect(migrationSqlPaths.sort()).toEqual(migrations.map((migration) => `${migration}/migration.sql`));
+  });
+
+  test('keeps old mapped-table migration checksums untouched', async () => {
+    await expect(sqlSha256(legacyRouteOpsUiSettingsMigrationPath)).resolves.toBe(
+      'a379b48bd023a08f659325ae3b96020b79c2a5fc44598f90172aaff28bbf5343'
+    );
+    await expect(sqlSha256(legacyLifecycleCollapseMigrationPath)).resolves.toBe(
+      '17d3fa1f569b3166980629314232100992038354860b17e171d0ded9884db7cc'
+    );
+  });
+
+  test('creates and drops only marked transient quoted compatibility tables', async () => {
+    const [bridgeCreate, bridgeApply] = await Promise.all([
+      readFile(bridgeCreateMigrationPath, 'utf8'),
+      readFile(bridgeApplyMigrationPath, 'utf8')
+    ]);
+
+    for (const tableName of ['Shop', 'RoutePlan', 'RouteGrouping']) {
+      expect(bridgeCreate).toContain(`to_regclass('"${tableName}"') IS NULL`);
+      expect(bridgeCreate).toContain(`CREATE TABLE "${tableName}"`);
+      expect(bridgeCreate).toContain(`COMMENT ON TABLE "${tableName}" IS 'G007 transient mapped-table compatibility bridge'`);
+      expect(bridgeApply).toContain(`SELECT to_regclass('"${tableName}"') INTO legacy_oid`);
+      expect(bridgeApply).toContain(`DROP TABLE "${tableName}"`);
+    }
+
+    expect(bridgeCreate).toContain('"status" "RoutePlanStatus" NOT NULL DEFAULT \'DRAFT\'');
+    expect(bridgeCreate).toContain('"status" TEXT NOT NULL DEFAULT \'DRAFT\'');
+    expect(dropTableNames(bridgeApply)).toEqual(['RouteGrouping', 'RoutePlan', 'Shop']);
+    expect(bridgeApply.match(/obj_description\(legacy_oid, 'pg_class'\) = 'G007 transient mapped-table compatibility bridge'/gu)).toHaveLength(3);
+  });
+
+  test('applies legacy mapped-table effects to lowercase tables without deleting mapped data', async () => {
+    const bridgeApply = await readFile(bridgeApplyMigrationPath, 'utf8');
+
+    expect(bridgeApply).toContain('ALTER TABLE "shops"');
+    expect(bridgeApply).toContain('ADD COLUMN IF NOT EXISTS "routeOpsUiSettings" JSONB');
+    expect(bridgeApply).toContain('UPDATE "route_plans"');
+    expect(bridgeApply).toContain('END::"RoutePlanStatus"');
+    expect(bridgeApply).toContain('UPDATE "route_groupings"');
+    expect(bridgeApply).toContain('END::"RouteGroupingStatus"');
+    expect(bridgeApply).not.toMatch(/\bDELETE\b|\bTRUNCATE\b/iu);
+    expect(bridgeApply).not.toMatch(/\bDROP\s+TABLE\s+"(?:shops|route_plans|route_groupings)"/iu);
+  });
+
+  test('orders the additive cleanup, final repair, and G009/G010 tenant-composite FK repairs', async () => {
+    const migrations = await readMigrationNames();
+
+    expect(migrations).toContain('20260722213000_dsv_assignment_eta_state');
+    expect(migrations).toContain('20260722223000_drop_legacy_single_tenant_fks');
+    expect(migrations).toContain(finalRepairMigrationName);
+    expect(migrations).toContain(g009MigrationName);
+    expect(migrations).toContain(g010MigrationName);
+    expect(migrations.indexOf('20260722213000_dsv_assignment_eta_state')).toBeLessThan(
+      migrations.indexOf('20260722223000_drop_legacy_single_tenant_fks')
+    );
+    expect(migrations.indexOf('20260722223000_drop_legacy_single_tenant_fks')).toBeLessThan(
+      migrations.indexOf(finalRepairMigrationName)
+    );
+    expect(migrations.indexOf(finalRepairMigrationName)).toBeLessThan(migrations.indexOf(g009MigrationName));
+    expect(migrations.indexOf(g009MigrationName)).toBeLessThan(migrations.indexOf(g010MigrationName));
+    expect(migrations.at(-1)).toBe(g010MigrationName);
+  });
+
+  test('documents the baseline, G004 tenant-composite replacement, and G007 cleanup transition', async () => {
+    const [baseline, g004, cleanup] = await Promise.all([
+      readFile(baselineMigrationPath, 'utf8'),
+      readFile(g004MigrationPath, 'utf8'),
+      readFile(cleanupMigrationPath, 'utf8')
+    ]);
+
+    for (const constraintName of legacySingleColumnConstraints) {
+      expect(baseline).toContain(`ADD CONSTRAINT "${constraintName}"`);
+      expect(g004).not.toContain(`DROP CONSTRAINT "${constraintName}"`);
+      expect(cleanup).toContain(`DROP CONSTRAINT IF EXISTS "${constraintName}"`);
+    }
+
+    for (const constraintName of tenantCompositeConstraints) {
+      expect(g004).toContain(`ADD CONSTRAINT "${constraintName}"`);
+      expect(cleanup).not.toContain(`DROP CONSTRAINT IF EXISTS "${constraintName}"`);
+      expect(cleanup).not.toContain(`DROP CONSTRAINT "${constraintName}"`);
+    }
+
+    expect(dropConstraintNames(cleanup)).toEqual([...legacySingleColumnConstraints]);
+    expect(cleanup).not.toMatch(/\bDROP\s+(?:TABLE|INDEX|SCHEMA|TYPE)\b/iu);
+    expect(cleanup).not.toMatch(/\bDELETE\b|\bTRUNCATE\b/iu);
+  });
+
+  test('final repair migration conditionally aligns drifted names and route plan stop shop FK', async () => {
+    const finalRepair = await readFile(finalRepairMigrationPath, 'utf8');
+
+    expect(finalRepair).toContain('ALTER TYPE "RoutePlanStatus" ADD VALUE IF NOT EXISTS \'PUBLISHED\'');
+
+    for (const [from, to] of indexRenames) {
+      expect(finalRepair).toContain(from);
+      expect(finalRepair).toContain(to);
+    }
+    expect(finalRepair.match(/ALTER INDEX %I RENAME TO %I/gu)).toHaveLength(1);
+
+    for (const [from, to] of constraintRenames) {
+      expect(finalRepair).toContain(`c.conname = '${from}'`);
+      expect(finalRepair).toContain(`c.conname = '${to}'`);
+      expect(finalRepair).toContain(`RENAME CONSTRAINT "${from}"`);
+      expect(finalRepair).toContain(`TO "${to}"`);
+    }
+
+    expect(finalRepair).toContain('Cannot add route_plan_stops_shopId_fkey: orphan route_plan_stops.shopId values exist');
+    expect(finalRepair).toContain('ADD CONSTRAINT "route_plan_stops_shopId_fkey"');
+    expect(finalRepair).toContain('FOREIGN KEY ("shopId") REFERENCES "shops"("id")');
+    expect(finalRepair).toContain('ON DELETE CASCADE ON UPDATE CASCADE');
+    expect(finalRepair).toContain("to_regclass('public.route_plan_stops') IS NOT NULL");
+    expect(finalRepair).toContain('ALTER COLUMN "warnings" SET DEFAULT \'[]\'::jsonb');
+    expect(finalRepair.match(/SET DEFAULT gen_random_uuid\(\)/gu) ?? []).toHaveLength(22);
+    expect(finalRepair.match(/SET DEFAULT CURRENT_TIMESTAMP/gu) ?? []).toHaveLength(10);
+    expect(stripSqlLineComments(finalRepair)).not.toMatch(/\bDROP\b|\bDELETE\s+FROM\b|\bTRUNCATE\b/iu);
+  });
+
+  test('schema preserves historical DB defaults instead of planning default drops', async () => {
+    const schema = await readFile(schemaPath, 'utf8');
+
+    expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(26);
+    expect(schema.match(/updatedAt\s+DateTime\s+@default\(now\(\)\)\s+@updatedAt/gu)).toHaveLength(10);
+    expect(schema).toContain('warnings             Json                          @default("[]")');
+  });
+});
+
+async function readMigrationNames(): Promise<string[]> {
+  return (await readdir(migrationsDir)).filter((entry) => /^\d+_/u.test(entry)).sort();
+}
+
+async function findMigrationSqlRelativePaths(dir = migrationsDir, prefix: string[] = []): Promise<string[]> {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const paths = await Promise.all(
+    entries.map(async (entry) => {
+      const entryPath = [...prefix, entry.name];
+
+      if (entry.isDirectory()) {
+        return findMigrationSqlRelativePaths(new URL(`${entry.name}/`, dir), entryPath);
+      }
+
+      return entry.isFile() && entry.name === 'migration.sql' ? [entryPath.join('/')] : [];
+    })
+  );
+
+  return paths.flat();
+}
+
+async function sqlSha256(path: URL): Promise<string> {
+  return createHash('sha256').update(await readFile(path)).digest('hex');
+}
+
+function dropTableNames(sql: string): string[] {
+  return [...sql.matchAll(/\bDROP\s+TABLE\s+"(?<tableName>[^"]+)"/giu)].map((match) => {
+    const tableName = match.groups?.tableName;
+    if (tableName === undefined) {
+      throw new Error(`Could not parse table name from ${match[0]}`);
+    }
+    return tableName;
+  });
+}
+
+function dropConstraintNames(sql: string): string[] {
+  return [...sql.matchAll(/\bDROP\s+CONSTRAINT\s+IF\s+EXISTS\s+"(?<constraintName>[^"]+)"/giu)].map((match) => {
+    const constraintName = match.groups?.constraintName;
+    if (constraintName === undefined) {
+      throw new Error(`Could not parse constraint name from ${match[0]}`);
+    }
+    return constraintName;
+  });
+}
+
+function stripSqlLineComments(sql: string): string {
+  return sql
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('--'))
+    .join('\n');
+}

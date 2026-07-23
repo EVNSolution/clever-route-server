@@ -6,6 +6,7 @@ INSTANCE_ID="${ROUTE_OPS_MONITOR_INSTANCE_ID:-}"
 TARGET_TAG_KEY="${SSM_ROUTE_OPS_TARGET_TAG_KEY:-Service}"
 TARGET_TAG_VALUE="${SSM_ROUTE_OPS_TARGET_TAG_VALUE:-clever-delivery-server}"
 BASE_URL="${ROUTE_OPS_SMOKE_BASE_URL:-https://clever-route-api.cleversystem.ai}"
+G007_STATUS_BASE_URL="${ROUTE_OPS_G007_STATUS_BASE_URL:-}"
 SHOP_DOMAIN="${ROUTE_OPS_SMOKE_SHOP_DOMAIN:-tomatonofood.com}"
 EXPECT_PUBLIC_OPENFREEMAP="${ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP:-true}"
 EXPECT_PUBLIC_OPENFREEMAP_HOSTS="${ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP_HOSTS:-${ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP_HOST:-tiles.openfreemap.org}}"
@@ -15,20 +16,25 @@ POLL_SECONDS="${ROUTE_OPS_MONITOR_POLL_SECONDS:-2}"
 POLL_ATTEMPTS="${ROUTE_OPS_MONITOR_POLL_ATTEMPTS:-90}"
 RENDER_HOST_SCRIPT="false"
 STATUS_ONLY="false"
+G007_JSON_STATUS="false"
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/monitor-route-ops-production.sh [--render-host-script] [--status-only]
+Usage: scripts/monitor-route-ops-production.sh [--render-host-script] [--status-only] [--g007-json-status]
 
 Runs a read-only production monitor through AWS SSM. The host script checks disk,
 Docker/compose container health, recent error signals, and by default executes the
 Route Ops production smoke through the deployed clever-route-api runtime image.
+The optional G007 JSON status mode adds deterministic machine-readable health,
+migration, invariant, and legacy-observation status without changing the default
+text monitor behavior.
 
 Environment knobs:
   AWS_REGION / ROUTE_OPS_AWS_REGION                 default: ap-northeast-2
   ROUTE_OPS_MONITOR_INSTANCE_ID                     exact SSM instance id override
   SSM_ROUTE_OPS_TARGET_TAG_KEY/VALUE                default: Service/clever-delivery-server
   ROUTE_OPS_SMOKE_BASE_URL                          default: https://clever-route-api.cleversystem.ai
+  ROUTE_OPS_G007_STATUS_BASE_URL                    optional external URL for G007 health/readiness
   ROUTE_OPS_SMOKE_SHOP_DOMAIN                       default: tomatonofood.com
   ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP               default: true
   ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP_HOSTS         default: tiles.openfreemap.org
@@ -41,6 +47,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --render-host-script) RENDER_HOST_SCRIPT="true" ;;
     --status-only) STATUS_ONLY="true" ;;
+    --g007-json-status) G007_JSON_STATUS="true" ;;
     -h|--help) usage; exit 0 ;;
     *) echo "monitor-route-ops-production: unknown argument: $1" >&2; usage >&2; exit 64 ;;
   esac
@@ -61,7 +68,9 @@ host_script() {
 set -euo pipefail
 export ROUTE_OPS_MONITOR_LOG_SINCE=$(shell_quote "$LOG_SINCE")
 export ROUTE_OPS_MONITOR_STATUS_ONLY=$(shell_quote "$STATUS_ONLY")
+export ROUTE_OPS_MONITOR_G007_JSON_STATUS=$(shell_quote "$G007_JSON_STATUS")
 export ROUTE_OPS_SMOKE_BASE_URL=$(shell_quote "$BASE_URL")
+export ROUTE_OPS_G007_STATUS_BASE_URL=$(shell_quote "$G007_STATUS_BASE_URL")
 export ROUTE_OPS_SMOKE_SHOP_DOMAIN=$(shell_quote "$SHOP_DOMAIN")
 export ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP=$(shell_quote "$EXPECT_PUBLIC_OPENFREEMAP")
 export ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP_HOSTS=$(shell_quote "$EXPECT_PUBLIC_OPENFREEMAP_HOSTS")
@@ -105,6 +114,266 @@ for c in clever-route-clever-route-api-1 clever-route-caddy-1 clever-route-postg
       | tail -n 60 || true
   fi
 done
+
+if [ "${ROUTE_OPS_MONITOR_G007_JSON_STATUS}" = "true" ]; then
+  echo "SECTION=g007_json_status"
+  python3 - <<'PY'
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.request import urlopen
+
+api_container = 'clever-route-clever-route-api-1'
+postgres_container = 'clever-route-postgres-1'
+migration_dir = Path('apps/delivery-api/prisma/migrations')
+required_latest_migration = '20260723013000_g010_import_row_resource_tenant_fks'
+configured_status_base_url = os.environ.get('ROUTE_OPS_G007_STATUS_BASE_URL', '').strip().rstrip('/')
+
+
+def run(command, timeout=15):
+    return subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+
+
+# BEGIN G007_HTTP_STATUS_POLICY
+def status_from_http_fixture(http_status=None, body='', error='', duration_ms=0):
+    if error:
+        return {'status': 'critical', 'error': str(error)}
+    if http_status is None:
+        return {'status': 'critical', 'error': 'missing HTTP status'}
+    return {
+        'status': 'ok' if int(http_status) == 200 else 'critical',
+        'httpStatus': int(http_status),
+        'durationMs': int(duration_ms),
+        'sample': str(body)[:500],
+    }
+# END G007_HTTP_STATUS_POLICY
+
+
+def external_http_status(path):
+    started = datetime.now(timezone.utc)
+    try:
+        with urlopen(f'{configured_status_base_url}{path}', timeout=5) as response:
+            body = response.read(500).decode('utf-8', 'replace')
+            duration_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+            return status_from_http_fixture(response.status, body, duration_ms=duration_ms)
+    except Exception as exc:
+        return status_from_http_fixture(error=exc)
+
+
+def container_http_status(path):
+    started = datetime.now(timezone.utc)
+    proc = run([
+        'docker', 'exec', api_container, 'node', '-e',
+        "const path=process.argv[1];"
+        "const started=Date.now();"
+        "fetch('http://127.0.0.1:3000'+path)"
+        ".then(async r=>{"
+        "const body=(await r.text()).slice(0,500);"
+        "console.log(JSON.stringify({httpStatus:r.status,durationMs:Date.now()-started,sample:body}));"
+        "})"
+        ".catch(e=>{console.error(e && e.message ? e.message : String(e)); process.exit(1);})",
+        path,
+    ])
+    if proc.returncode != 0:
+        return status_from_http_fixture(error=proc.stderr.strip() or proc.stdout.strip())
+    try:
+        payload = json.loads(proc.stdout.strip())
+    except json.JSONDecodeError:
+        return status_from_http_fixture(error='non-json health probe result')
+    duration_ms = payload.get('durationMs')
+    if duration_ms is None:
+        duration_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+    return status_from_http_fixture(payload.get('httpStatus'), payload.get('sample', ''), duration_ms=duration_ms)
+
+
+def http_status(path):
+    if configured_status_base_url:
+        return external_http_status(path)
+    return container_http_status(path)
+
+
+def psql_json(sql):
+    proc = run([
+        'docker', 'exec', postgres_container,
+        'psql', '-U', 'clever', '-d', 'clever_route',
+        '-v', 'ON_ERROR_STOP=1', '-Atc', sql,
+    ])
+    if proc.returncode != 0:
+        return {'status': 'unknown', 'error': proc.stderr.strip() or proc.stdout.strip()}
+    text = proc.stdout.strip()
+    if not text:
+        return {'status': 'unknown', 'error': 'empty query result'}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return {'status': 'unknown', 'error': 'non-json query result'}
+    if isinstance(payload, dict):
+        return payload
+    return {'status': 'ok', 'value': payload}
+
+
+# BEGIN G007_MIGRATION_POLICY
+def expected_migration_names(path=migration_dir):
+    names = []
+    if path.is_dir():
+        names = sorted(
+            child.name for child in path.iterdir()
+            if child.is_dir() and (child / 'migration.sql').is_file()
+        )
+    if required_latest_migration not in names:
+        names.append(required_latest_migration)
+        names.sort()
+    return names
+
+
+def migration_status_from_history(history, expected=None):
+    if expected is None:
+        expected = expected_migration_names()
+    if isinstance(history, dict) and history.get('status') == 'unknown':
+        return history
+    if isinstance(history, dict) and 'value' in history:
+        history = history['value']
+    if not isinstance(history, list):
+        return {'status': 'unknown', 'error': 'migration history is not a JSON array'}
+
+    expected_set = set(expected)
+    successful = set()
+    failed = []
+    for row in history:
+        if not isinstance(row, dict):
+            failed.append('')
+            continue
+        name = str(row.get('migrationName') or row.get('migration_name') or '')
+        is_finished = bool(row.get('finishedAt') or row.get('finished_at'))
+        is_rolled_back = bool(row.get('rolledBackAt') or row.get('rolled_back_at'))
+        if name and is_finished and not is_rolled_back:
+            successful.add(name)
+        else:
+            failed.append(name)
+
+    expected_successful = [name for name in expected if name in successful]
+    pending = [name for name in expected if name not in successful]
+    unexpected = sorted(name for name in successful if name not in expected_set)
+    actual_latest = max(successful) if successful else ''
+    status = 'critical' if pending or failed or unexpected else 'ok'
+    return {
+        'status': status,
+        'expectedCount': len(expected),
+        'appliedCount': len(expected_successful),
+        'pendingCount': len(pending),
+        'failedCount': len(failed),
+        'latestMigration': expected[-1] if expected else '',
+        'actualLatestMigration': actual_latest,
+        'pendingMigrations': pending,
+        'unexpectedCount': len(unexpected),
+        'unexpectedMigrations': unexpected,
+    }
+# END G007_MIGRATION_POLICY
+
+
+def migration_status():
+    return migration_status_from_history(psql_json(migration_history_sql))
+
+
+migration_history_sql = """
+SELECT COALESCE(json_agg(json_build_object(
+  'migrationName', migration_name,
+  'finishedAt', finished_at IS NOT NULL,
+  'rolledBackAt', rolled_back_at IS NOT NULL
+) ORDER BY migration_name), '[]'::json) FROM _prisma_migrations;
+"""
+
+invariant_sql = """
+WITH checks(name, failures) AS (
+  VALUES
+    ('duplicate_active_assignments', (
+      SELECT COUNT(*) FROM (
+        SELECT "shopId", "sellerOrderKey", COUNT(*)
+        FROM orders
+        WHERE "currentRouteVersionId" IS NOT NULL
+          AND "sellerOrderKey" IS NOT NULL
+        GROUP BY "shopId", "sellerOrderKey"
+        HAVING COUNT(*) > 1
+      ) duplicates
+    )),
+    ('failed_command_receipts', (
+      SELECT COUNT(*) FROM dsv_command_receipts WHERE status = 'FAILED'
+    )),
+    ('audit_rows_missing_request_ids', (
+      SELECT COUNT(*) FROM dsv_audit_events WHERE "requestId" IS NULL OR "requestId" = ''
+    )),
+    ('import_partial_apply_indicators', (
+      SELECT COUNT(*) FROM dsv_dispatch_import_rows
+      WHERE status IN ('APPLYING', 'BLOCKED') AND "applyReceiptId" IS NOT NULL
+    )),
+    ('eta_input_route_version_mismatches', (
+      SELECT COUNT(*)
+      FROM route_plan_stops stop
+      JOIN route_plans route_plan
+        ON route_plan.id = stop."routePlanId"
+       AND route_plan."shopId" = stop."shopId"
+      LEFT JOIN route_grouping_child_versions current_version
+        ON current_version."routePlanId" = route_plan.id
+       AND current_version."shopId" = route_plan."shopId"
+       AND current_version.status = 'CURRENT'
+      WHERE stop."etaInputRouteVersionId" IS NOT NULL
+        AND route_plan.status NOT IN ('CANCELLED', 'COMPLETED')
+        AND (
+          current_version.id IS NULL
+          OR stop."etaInputRouteVersionId" <> current_version.id
+        )
+    ))
+)
+SELECT json_build_object(
+  'status', CASE WHEN SUM(failures) > 0 THEN 'critical' ELSE 'ok' END,
+  'invariantFailures', COALESCE(json_object_agg(name, failures), '{}'::json)
+) FROM checks;
+"""
+
+legacy_proc = run([
+    'bash', '-lc',
+    "docker logs --since \"${ROUTE_OPS_MONITOR_LOG_SINCE:-45m}\" "
+    + api_container
+    + " 2>/dev/null | scripts/dsv-g007-observation-report.sh",
+], timeout=30)
+if legacy_proc.returncode == 0:
+    legacy = json.loads(legacy_proc.stdout)
+    has_legacy = (
+        not legacy.get('legacyZeroEvidence', {}).get('legacy_read', False)
+        or not legacy.get('legacyZeroEvidence', {}).get('legacy_write', False)
+    )
+    legacy['status'] = 'critical' if has_legacy else 'ok'
+else:
+    legacy = {'status': 'unknown', 'error': legacy_proc.stderr.strip() or legacy_proc.stdout.strip()}
+
+report = {
+    'schemaVersion': 1,
+    'generatedAt': datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z'),
+    'checks': {
+        'healthz': http_status('/healthz'),
+        'readyz': http_status('/readyz'),
+        'migrations': migration_status(),
+        'invariants': psql_json(invariant_sql),
+        'legacyUsage': legacy,
+    },
+}
+statuses = [str(check.get('status', 'unknown')) for check in report['checks'].values()]
+if 'critical' in statuses:
+    report['status'] = 'critical'
+    exit_code = 2
+elif 'unknown' in statuses:
+    report['status'] = 'unknown'
+    exit_code = 1
+else:
+    report['status'] = 'ok'
+    exit_code = 0
+print(json.dumps(report, indent=2, sort_keys=True))
+sys.exit(exit_code)
+PY
+fi
 
 if [ "${ROUTE_OPS_MONITOR_STATUS_ONLY}" = "true" ]; then
   exit 0
@@ -157,7 +426,9 @@ HOST
 if [ "$RENDER_HOST_SCRIPT" = "true" ]; then
   ROUTE_OPS_MONITOR_LOG_SINCE="$LOG_SINCE" \
   ROUTE_OPS_MONITOR_STATUS_ONLY="$STATUS_ONLY" \
+  ROUTE_OPS_MONITOR_G007_JSON_STATUS="$G007_JSON_STATUS" \
   ROUTE_OPS_SMOKE_BASE_URL="$BASE_URL" \
+  ROUTE_OPS_G007_STATUS_BASE_URL="$G007_STATUS_BASE_URL" \
   ROUTE_OPS_SMOKE_SHOP_DOMAIN="$SHOP_DOMAIN" \
   ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP="$EXPECT_PUBLIC_OPENFREEMAP" \
   ROUTE_OPS_EXPECT_PUBLIC_OPENFREEMAP_HOSTS="$EXPECT_PUBLIC_OPENFREEMAP_HOSTS" \

@@ -28,6 +28,7 @@ const assignedRoute = {
           province: 'ON'
         },
         coordinates: { latitude: 43.6487, longitude: -79.3817 },
+        customerNote: 'Leave the box beside the loading entrance.',
         deliveryStopId: 'stop-id',
         items: [],
         normalizedPaymentStatus: 'TRANSFER_CHECK_PENDING' as const,

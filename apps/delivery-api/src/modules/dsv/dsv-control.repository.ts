@@ -76,6 +76,7 @@ export type DsvControlRepository = {
     tipId: string;
     title?: string;
   }): Promise<DestinationTipView | null>;
+  resolveShopId(shopDomain: string): Promise<string | null>;
 };
 
 export class DestinationTipConflictError extends Error {
@@ -100,10 +101,11 @@ export class PrismaDsvControlRepository implements DsvControlRepository {
   }
 
   async hasShop(shopDomain: string): Promise<boolean> {
-    return (await this.prisma.shop.findUnique({
-      select: { id: true },
-      where: appScopedShopWhere({ shopDomain }),
-    })) !== null;
+    return (await this.resolveShopId(shopDomain)) !== null;
+  }
+
+  async resolveShopId(shopDomain: string): Promise<string | null> {
+    return (await this.findShop(shopDomain))?.id ?? null;
   }
 
   async getDeliveryStopContext(input: {

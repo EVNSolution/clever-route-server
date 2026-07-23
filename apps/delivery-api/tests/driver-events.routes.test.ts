@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import {
   DriverEventContextError,
+  DriverEventEtaStaleConflictError,
   DriverEventExecutionConflictError,
   DriverEventRouteNotInProgressError
 } from '../src/modules/driver/driver-event.repository.js';
@@ -396,6 +397,29 @@ describe('Driver events route', () => {
       expect(response.json()).toEqual({
         data: null,
         error: { code: 'ROUTE_EXECUTION_CONFLICT', message: 'An overlapping route is already in progress' }
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('maps stale versioned ETA persistence to a deterministic conflict response', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    recordDriverEvent.mockRejectedValueOnce(new DriverEventEtaStaleConflictError('route-plan-id'));
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: { ...eventPayload(), deliveryStopId: null, eventType: 'ROUTE_STARTED' },
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'ETA_STALE_CONFLICT', message: 'ETA update is stale' }
       });
     } finally {
       await app.close();

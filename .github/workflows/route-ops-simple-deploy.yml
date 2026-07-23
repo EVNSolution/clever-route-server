@@ -21,6 +21,16 @@ on:
         required: true
         type: boolean
         default: false
+      approve_dsv_migration:
+        description: "Approve the guarded DSV production migration for this rollout"
+        required: true
+        type: boolean
+        default: false
+      restore_rehearsal_sha256:
+        description: "SHA-256 of the reviewed restore rehearsal evidence"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -78,6 +88,22 @@ jobs:
       - name: Capture source SHA
         id: source
         run: echo "sha=$(git rev-parse --short=40 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve DSV migration approval evidence
+        id: migration
+        shell: bash
+        env:
+          APPROVED: ${{ inputs.approve_dsv_migration }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          RESTORE_REHEARSAL_SHA256: ${{ inputs.restore_rehearsal_sha256 }}
+        run: |
+          set -euo pipefail
+          manifest_sha256="$(shasum -a 256 docs/migration/g007-baseline-manifest.md | awk '{print $1}')"
+          if [ "$DRY_RUN" != "true" ]; then
+            test "$APPROVED" = "true" || { echo "approve_dsv_migration=true is required for a production rollout" >&2; exit 1; }
+            [[ "$RESTORE_REHEARSAL_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "restore_rehearsal_sha256 must be 64 lowercase hex characters" >&2; exit 1; }
+          fi
+          echo "manifest_sha256=$manifest_sha256" >> "$GITHUB_OUTPUT"
 
       - name: Require deploy source on main history
         run: |
@@ -309,6 +335,9 @@ jobs:
           ROUTE_OPS_RUNTIME_IMAGE: ${{ steps.images.outputs.delivery_api_image }}
           ROUTE_OPS_WEB_STATIC_IMAGE: ${{ steps.images.outputs.route_ops_web_static_image }}
           ROUTE_OPS_SIMPLE_CHANNEL_TAG: ${{ inputs.channel_tag }}
+          DSV_MIGRATION_APPROVED: ${{ inputs.approve_dsv_migration && '1' || '' }}
+          DSV_MIGRATION_MANIFEST_SHA256: ${{ steps.migration.outputs.manifest_sha256 }}
+          DSV_RESTORE_REHEARSAL_SHA256: ${{ inputs.restore_rehearsal_sha256 }}
           AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
