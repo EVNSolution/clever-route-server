@@ -158,6 +158,135 @@ describe('Admin route plan routes', () => {
     }
   });
 
+  test('transitions one child stop through the admin stop action service without using bulk stop reorder', async () => {
+    const { dependencies, transitionAdminRouteStop, updateRoutePlanStops } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: {
+          idempotencyKey: 'admin-stop-action-key',
+          status: 'COMPLETED'
+        },
+        url: '/admin/route-plans/route-plan-id/stops/stop-1/transition'
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(response.json()).toMatchObject({
+        data: {
+          duplicate: false,
+          notification: {
+            idempotencyKey: 'admin-stop-action-key:customer-notification',
+            status: 'QUEUED'
+          },
+          status: {
+            deliveryStopStatus: 'DELIVERED',
+            uiStatus: 'COMPLETED'
+          }
+        },
+        error: null
+      });
+      expect(transitionAdminRouteStop).toHaveBeenCalledWith({
+        actor: 'shopify-user-id',
+        appId: 'clever',
+        deliveryStopId: 'stop-1',
+        payload: {
+          idempotencyKey: 'admin-stop-action-key',
+          status: 'COMPLETED'
+        },
+        routePlanId: 'route-plan-id',
+        shopDomain: 'example.myshopify.com'
+      });
+      expect(updateRoutePlanStops).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('updates one delivery stop operational override in CLEVER DB scope', async () => {
+    const { dependencies, updateAdminRouteStopOverride } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: {
+          address1: '42 Admin Rd',
+          address2: null,
+          city: 'Toronto',
+          countryCode: 'CA',
+          instructions: 'Leave with concierge',
+          latitude: 43.6426,
+          longitude: -79.3871,
+          phone: '+14165550100',
+          postalCode: 'M5V 2T6',
+          province: 'ON',
+          recipientName: 'Jane Admin',
+          serviceMinutes: 8,
+          timeWindowEnd: '18:00',
+          timeWindowStart: '14:00'
+        },
+        url: '/admin/route-plans/route-plan-id/stops/stop-1/override'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(updateAdminRouteStopOverride).toHaveBeenCalledWith({
+        actor: 'shopify-user-id',
+        appId: 'clever',
+        deliveryStopId: 'stop-1',
+        payload: {
+          address1: '42 Admin Rd',
+          address2: null,
+          city: 'Toronto',
+          countryCode: 'CA',
+          instructions: 'Leave with concierge',
+          latitude: 43.6426,
+          longitude: -79.3871,
+          phone: '+14165550100',
+          postalCode: 'M5V 2T6',
+          province: 'ON',
+          recipientName: 'Jane Admin',
+          serviceMinutes: 8,
+          timeWindowEnd: '18:00',
+          timeWindowStart: '14:00'
+        },
+        routePlanId: 'route-plan-id',
+        shopDomain: 'example.myshopify.com'
+      });
+      expect(response.json()).toMatchObject({
+        data: { geometry: { status: 'stale' } },
+        error: null
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects legacy nested stop override payloads instead of silently ignoring them', async () => {
+    const { dependencies, updateAdminRouteStopOverride } = createDependencyHarness();
+    const app = await buildApp({ adminRoutePlans: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: {
+          address: { address1: '42 Admin Rd' },
+          coordinates: { latitude: 43.6426, longitude: -79.3871 }
+        },
+        url: '/admin/route-plans/route-plan-id/stops/stop-1/override'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(updateAdminRouteStopOverride).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('rejects invalid route plan payloads before persisting', async () => {
     const { createRoutePlan, dependencies } = createDependencyHarness();
     const app = await buildApp({ adminRoutePlans: dependencies });
@@ -1071,6 +1200,12 @@ function createDependencyHarness(): {
   updateRoutePlanOptions: ReturnType<
     typeof vi.fn<AdminRoutePlanDependencies['routePlanService']['updateRoutePlanOptions']>
   >;
+  transitionAdminRouteStop: ReturnType<
+    typeof vi.fn<NonNullable<AdminRoutePlanDependencies['routePlanService']['transitionAdminRouteStop']>>
+  >;
+  updateAdminRouteStopOverride: ReturnType<
+    typeof vi.fn<NonNullable<AdminRoutePlanDependencies['routePlanService']['updateAdminRouteStopOverride']>>
+  >;
   updateRoutePlanStops: ReturnType<
     typeof vi.fn<AdminRoutePlanDependencies['routePlanService']['updateRoutePlanStops']>
   >;
@@ -1187,6 +1322,50 @@ function createDependencyHarness(): {
       ]
     })
   );
+  const transitionAdminRouteStop = vi.fn<
+    NonNullable<AdminRoutePlanDependencies['routePlanService']['transitionAdminRouteStop']>
+  >(() =>
+    Promise.resolve({
+      duplicate: false,
+      notification: {
+        idempotencyKey: 'admin-stop-action-key:customer-notification',
+        orderId: 'order-1',
+        recipientEmail: 'customer@example.com',
+        status: 'QUEUED'
+      },
+      routePlan: {
+        routePlan: routePlanSummary,
+        routeGeometry: null,
+        routeMetrics: null,
+        routeStopPoints: routePlanStopPoints(),
+        stops: [
+          routePlanStop({ orderName: '#1035', sequence: 1, status: 'DELIVERED' }),
+          routePlanStop({ orderName: '#1036', sequence: 2 })
+        ]
+      },
+      status: {
+        deliveryStopStatus: 'DELIVERED',
+        uiStatus: 'COMPLETED'
+      }
+    })
+  );
+  const updateAdminRouteStopOverride = vi.fn<
+    NonNullable<AdminRoutePlanDependencies['routePlanService']['updateAdminRouteStopOverride']>
+  >(() =>
+    Promise.resolve({
+      geometry: { status: 'stale' },
+      routePlan: {
+        routePlan: routePlanSummary,
+        routeGeometry: null,
+        routeMetrics: null,
+        routeStopPoints: routePlanStopPoints(),
+        stops: [
+          routePlanStop({ orderName: '#1035', sequence: 1 }),
+          routePlanStop({ orderName: '#1036', sequence: 2 })
+        ]
+      }
+    })
+  );
 
   return {
     assignRoutePlanDriver,
@@ -1201,6 +1380,8 @@ function createDependencyHarness(): {
         publishRoutePlan,
         refreshRouteGeometryForRoutePlan,
         saveRoutePlan,
+        transitionAdminRouteStop,
+        updateAdminRouteStopOverride,
         updateRoutePlanOptions,
         updateRoutePlanStops
       },
@@ -1214,6 +1395,8 @@ function createDependencyHarness(): {
     publishRoutePlan,
     refreshRouteGeometryForRoutePlan,
     saveRoutePlan,
+    transitionAdminRouteStop,
+    updateAdminRouteStopOverride,
     updateRoutePlanOptions,
     updateRoutePlanStops
   };
@@ -1286,7 +1469,7 @@ function routePlanPayload(): Record<string, unknown> {
   };
 }
 
-function routePlanStop(input: { orderName: string; sequence: number }): RoutePlanDetailStop {
+function routePlanStop(input: { orderName: string; sequence: number; status?: string }): RoutePlanDetailStop {
   return {
     address: {
       address1: '300 City Centre Dr',
@@ -1312,7 +1495,7 @@ function routePlanStop(input: { orderName: string; sequence: number }): RoutePla
     recipientName: 'Noah Yoon',
     sequence: input.sequence,
     shopifyOrderGid: `gid://shopify/Order/${input.sequence}`,
-    status: 'PENDING'
+    status: input.status ?? 'PENDING'
   };
 }
 

@@ -350,6 +350,7 @@ model Shop {
   driverPushTokens                  DriverPushToken[]
   driverRouteNotificationAttempts   DriverRouteNotificationAttempt[]
   customerRouteNotificationFacts    CustomerRouteNotificationFact[]
+  adminRouteStopActionAudits        AdminRouteStopActionAudit[]
   dsvTransportConditions            DsvTransportCondition[]
   dsvDispatchImports                DsvDispatchImport[]
   dsvDispatchImportRows             DsvDispatchImportRow[]
@@ -1572,19 +1573,45 @@ model DriverRouteNotificationAttempt {
 }
 
 model CustomerRouteNotificationFact {
-  id         String                          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  shopId     String                          @db.Uuid
-  shop       Shop                            @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  orderId    String                          @db.Uuid
-  order      Order                           @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  source     String                          @db.Text
-  status     CustomerRouteNotificationStatus
-  metadata   Json?
-  occurredAt DateTime                        @default(now()) @db.Timestamptz(6)
-  createdAt  DateTime                        @default(now()) @db.Timestamptz(6)
+  id             String                          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId         String                          @db.Uuid
+  shop           Shop                            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  orderId        String                          @db.Uuid
+  order          Order                           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  idempotencyKey String?                         @db.Text
+  source         String                          @db.Text
+  status         CustomerRouteNotificationStatus
+  metadata       Json?
+  occurredAt     DateTime                        @default(now()) @db.Timestamptz(6)
+  createdAt      DateTime                        @default(now()) @db.Timestamptz(6)
 
+  @@unique([idempotencyKey])
   @@index([shopId, orderId, status])
   @@map("customer_route_notification_facts")
+}
+
+model AdminRouteStopActionAudit {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId             String             @db.Uuid
+  shop               Shop               @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  routePlanId        String             @db.Uuid
+  deliveryStopId     String             @db.Uuid
+  idempotencyKey     String             @db.Text
+  actor              String             @db.Text
+  source             String             @default("ADMIN") @db.Text
+  action             String             @db.Text
+  requestedUiStatus  String             @db.Text
+  deliveryStopStatus DeliveryStopStatus
+  executionEventType DriverEventType?
+  driverEventId      String?            @db.Uuid
+  notificationFactId String?            @db.Uuid
+  metadata           Json?
+  occurredAt         DateTime           @default(now()) @db.Timestamptz(6)
+  createdAt          DateTime           @default(now()) @db.Timestamptz(6)
+
+  @@unique([idempotencyKey])
+  @@index([shopId, routePlanId, deliveryStopId, occurredAt])
+  @@map("admin_route_stop_action_audits")
 }
 
 model RetentionJobRun {

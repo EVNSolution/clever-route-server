@@ -269,6 +269,87 @@ Common errors:
 - `409` with `ROUTE_ORDER_ALREADY_PLANNED`: an order is already assigned to a
   different route plan.
 
+## POST `/admin/route-plans/:routePlanId/stops/:deliveryStopId/transition`
+
+Transitions one child stop for the authenticated shop without mutating Shopify
+or reusing the bulk route stop reorder endpoint.
+
+Request:
+
+```json
+{
+  "status": "COMPLETED",
+  "idempotencyKey": "admin-stop-action-key"
+}
+```
+
+Status mapping:
+
+- `READY` -> `DeliveryStop.status=PENDING`
+- `IN_PROGRESS` -> `DeliveryStop.status=EN_ROUTE`
+- `COMPLETED` -> `DeliveryStop.status=DELIVERED`
+
+The command is scoped by token shop, `routePlanId`, and `deliveryStopId`.
+`source=ADMIN` is recorded in the admin stop action audit metadata. For
+`COMPLETED`, the server records a nullable-driver `STOP_DELIVERED` execution
+event and publishes one live `tracking_progress` SSE event through the route
+tracking stream hub, so route tracking/progress reads observe the same terminal
+stop effect without creating a fake driver identity.
+
+The endpoint creates or reuses a `CustomerRouteNotificationFact` with a unique
+notification idempotency key. If `CUSTOMER_DELIVERY_NOTIFICATION_URL` is
+configured, the server POSTs an idempotent customer delivery notification to
+that HTTPS endpoint after the transition, using the optional
+`CUSTOMER_DELIVERY_NOTIFICATION_BEARER_TOKEN` and
+`CUSTOMER_DELIVERY_NOTIFICATION_TIMEOUT_MS`. A successful runtime send updates
+the fact to `status=SENT`; sender failure, missing customer email, or an
+unconfigured sender leaves the fact `status=QUEUED`. `QUEUED` means no send has
+been confirmed and the fact remains eligible for a later retry/sender worker;
+`SENT` means the configured runtime sender accepted the notification for this
+idempotency key. The response reports the actual notification status:
+unwired sender -> `QUEUED`, configured successful sender -> `SENT`, configured
+failed sender -> `QUEUED`. Customer email is read from CLEVER canonical
+`Order.email`; Shopify source data remains read-only and no Shopify mutation is
+performed.
+
+Duplicate requests with the same `idempotencyKey` and same route stop return
+the current route with `duplicate=true` and do not create another stop update,
+driver event, notification fact, audit row, tracking SSE publish, or runtime
+notification send. Reusing an idempotency key for a different route stop
+returns `409 ROUTE_PLAN_CONFLICT`.
+
+## PATCH `/admin/route-plans/:routePlanId/stops/:deliveryStopId/override`
+
+Updates CLEVER DB operational override fields for one delivery stop. The server
+does not mutate Shopify source order/customer data.
+
+Request fields are flat and owned by the server:
+
+```json
+{
+  "recipientName": "Jane Admin",
+  "phone": "+14165550100",
+  "address1": "42 Admin Rd",
+  "address2": null,
+  "city": "Toronto",
+  "province": "ON",
+  "postalCode": "M5V 2T6",
+  "countryCode": "CA",
+  "latitude": 43.6426,
+  "longitude": -79.3871,
+  "timeWindowStart": "14:00",
+  "timeWindowEnd": "18:00",
+  "serviceMinutes": 8,
+  "instructions": "Leave with concierge"
+}
+```
+
+Address, coordinate, or service-time edits invalidate stored route geometry and
+mark route stop ETA fields `STALE` for rebuild. Non-geometry notes/contact edits
+preserve the current geometry cache.
+Passing `null` for `serviceMinutes` resets the CLEVER stop to the database
+default of 5 minutes.
+
 ## GET `/admin/route-plans/:routePlanId/tracking`
 
 Returns the current tracking snapshot and opens the same route-scoped SSE

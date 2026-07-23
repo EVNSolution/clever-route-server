@@ -281,10 +281,18 @@ export type RouteGroupingService = {
 };
 
 export class RouteGroupingConflictError extends Error {
-  readonly code = 'ROUTE_GROUPING_STALE_WRITE';
+  readonly code: string = 'ROUTE_GROUPING_STALE_WRITE';
   constructor(message = 'Route grouping was changed by another save. Refresh and try again.') {
     super(message);
     this.name = 'RouteGroupingConflictError';
+  }
+}
+
+export class RouteGroupingStopMembershipConflictError extends RouteGroupingConflictError {
+  readonly code = 'ROUTE_GROUPING_STOP_MEMBERSHIP_CONFLICT';
+  constructor(readonly orderIds: string[], readonly routePlanIds: string[]) {
+    super('In-progress or terminal child route stop membership cannot be changed by draft save.');
+    this.name = 'RouteGroupingStopMembershipConflictError';
   }
 }
 

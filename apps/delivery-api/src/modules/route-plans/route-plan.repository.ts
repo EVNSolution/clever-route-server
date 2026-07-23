@@ -18,6 +18,10 @@ import {
 } from './route-plan.types.js';
 import { assertSafeRouteScopeToken } from '../route-ops/route-scope-config.js';
 import type {
+  AdminRouteStopOverrideInput,
+  AdminRouteStopOverrideResult,
+  AdminRouteStopTransitionInput,
+  AdminRouteStopTransitionResult,
   RoutePlanDepotInput,
   RoutePlanDetail,
   RoutePlanDetailStop,
@@ -53,7 +57,7 @@ const DEFAULT_ROUTE_END_MODE: RoutePlanEndMode = 'END_AT_LAST_STOP';
 
 type RoutePlanPrismaClient = Pick<
   PrismaClient,
-  '$transaction' | 'deliveryStop' | 'driver' | 'order' | 'orderDeliveryFact' | 'routeGroupingBranch' | 'routeGroupingBranchOrderLock' | 'routeGroupingChildVersion' | 'routeOptimizationJob' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'shop'
+  '$transaction' | 'adminRouteStopActionAudit' | 'customerRouteNotificationFact' | 'deliveryStop' | 'driver' | 'driverEvent' | 'order' | 'orderDeliveryFact' | 'routeGroupingBranch' | 'routeGroupingBranchOrderLock' | 'routeGroupingChildVersion' | 'routeOptimizationJob' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'shop'
 >;
 
 type RoutePlanGeometryCacheRecord = {
@@ -204,6 +208,296 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
     private readonly prisma: RoutePlanPrismaClient,
     private readonly options: { allowAnyShopDomain?: boolean } = {}
   ) {}
+
+  async transitionAdminRouteStop(input: AdminRouteStopTransitionInput): Promise<AdminRouteStopTransitionResult | null> {
+    const shopDomain = this.normalizeShopDomain(input.shopDomain);
+    const deliveryStopStatus = toDeliveryStopStatus(input.payload.status);
+    const notificationIdempotencyKey = `${input.payload.idempotencyKey}:customer-notification`;
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      const shop = await tx.shop.findUnique({
+        select: { id: true },
+        where: this.shopWhere({ appId: input.appId, shopDomain })
+      });
+      if (shop === null) return { duplicate: false as const, found: false as const };
+
+      const routeStop = await tx.routePlanStop.findFirst({
+        select: {
+          deliveryStop: { select: { order: { select: { email: true } }, orderId: true, status: true } },
+          deliveryStopId: true,
+          routePlan: { select: { status: true } }
+        },
+        where: {
+          deliveryStopId: input.deliveryStopId,
+          routePlanId: input.routePlanId,
+          shopId: shop.id
+        }
+      });
+      if (routeStop === null) return { duplicate: false as const, found: false as const };
+
+      const existingAudit = await tx.adminRouteStopActionAudit.findUnique({
+        select: {
+          deliveryStopId: true,
+          routePlanId: true,
+          shopId: true
+        },
+        where: { idempotencyKey: input.payload.idempotencyKey }
+      });
+      if (existingAudit !== null) {
+        if (
+          existingAudit.deliveryStopId !== input.deliveryStopId ||
+          existingAudit.routePlanId !== input.routePlanId ||
+          existingAudit.shopId !== shop.id
+        ) {
+          throw new RoutePlanConflictError('Admin stop transition idempotency key is already used for another route stop.');
+        }
+        const existingNotification = await tx.customerRouteNotificationFact.findUnique({
+          select: { id: true, orderId: true, status: true },
+          where: { idempotencyKey: notificationIdempotencyKey }
+        });
+        return {
+          duplicate: true as const,
+          found: true as const,
+          notification: {
+            factId: existingNotification?.id ?? null,
+            orderId: existingNotification?.orderId ?? routeStop.deliveryStop.orderId,
+            recipientEmail: routeStop.deliveryStop.order?.email ?? null,
+            status: existingNotification?.status === 'SENT' ? 'SENT' as const : 'QUEUED' as const
+          },
+          trackingEvent: null
+        };
+      }
+
+      if (routeStop.deliveryStop.status === deliveryStopStatus) {
+        return {
+          duplicate: true as const,
+          found: true as const,
+          notification: {
+            factId: null,
+            orderId: routeStop.deliveryStop.orderId,
+            recipientEmail: routeStop.deliveryStop.order?.email ?? null,
+            status: 'QUEUED' as const
+          },
+          trackingEvent: null
+        };
+      }
+
+      await tx.deliveryStop.updateMany({
+        data: { status: deliveryStopStatus },
+        where: {
+          id: input.deliveryStopId,
+          shopId: shop.id
+        }
+      });
+
+      let driverEvent: { createdAt: Date; id: string; occurredAt: Date } | null = null;
+      const eventType = input.payload.status === 'COMPLETED' ? DriverEventType.STOP_DELIVERED : null;
+      if (eventType !== null) {
+        const event = await tx.driverEvent.create({
+          data: {
+            clientEventId: input.payload.idempotencyKey,
+            deliveryStopId: input.deliveryStopId,
+            driverId: null,
+            eventType,
+            latitude: null,
+            longitude: null,
+            occurredAt: new Date(),
+            payload: {
+              actor: input.actor,
+              source: 'ADMIN',
+              uiStatus: input.payload.status
+            },
+            routePlanId: input.routePlanId,
+            shopId: shop.id
+          }
+        });
+        driverEvent = event;
+      }
+
+      const notificationFact = await tx.customerRouteNotificationFact.upsert({
+        create: {
+          idempotencyKey: notificationIdempotencyKey,
+          metadata: {
+            deliveryStopId: input.deliveryStopId,
+            routePlanId: input.routePlanId,
+            runtimeSender: 'unwired',
+            uiStatus: input.payload.status
+          },
+          orderId: routeStop.deliveryStop.orderId,
+          shopId: shop.id,
+          source: 'ADMIN_ROUTE_STOP_TRANSITION',
+          status: 'QUEUED'
+        },
+        update: {
+          metadata: {
+            deliveryStopId: input.deliveryStopId,
+            routePlanId: input.routePlanId,
+            runtimeSender: 'unwired',
+            uiStatus: input.payload.status
+          },
+          source: 'ADMIN_ROUTE_STOP_TRANSITION',
+          status: 'QUEUED'
+        },
+        where: { idempotencyKey: notificationIdempotencyKey }
+      });
+
+      await tx.adminRouteStopActionAudit.create({
+        data: {
+          action: 'STOP_STATUS_TRANSITION',
+          actor: input.actor,
+          deliveryStopId: input.deliveryStopId,
+          deliveryStopStatus,
+          driverEventId: driverEvent?.id ?? null,
+          executionEventType: eventType,
+          idempotencyKey: input.payload.idempotencyKey,
+          metadata: {
+            routeStatus: routeStop.routePlan.status,
+            runtimeSender: 'unwired'
+          },
+          notificationFactId: notificationFact.id,
+          requestedUiStatus: input.payload.status,
+          routePlanId: input.routePlanId,
+          shopId: shop.id,
+          source: 'ADMIN'
+        }
+      });
+
+      return {
+        duplicate: false as const,
+        found: true as const,
+        notification: {
+          factId: notificationFact.id,
+          orderId: routeStop.deliveryStop.orderId,
+          recipientEmail: routeStop.deliveryStop.order?.email ?? null,
+          status: 'QUEUED' as const
+        },
+        trackingEvent: driverEvent === null ? null : {
+          deliveryStopId: input.deliveryStopId,
+          driverId: null,
+          eventId: driverEvent.id,
+          eventType: 'STOP_DELIVERED' as const,
+          occurredAt: driverEvent.occurredAt.toISOString(),
+          receivedAt: driverEvent.createdAt.toISOString(),
+          routePlanId: input.routePlanId
+        }
+      };
+    });
+
+    if (!result.found) return null;
+    const detail = await this.findRoutePlanDetail({
+      appId: input.appId,
+      routePlanId: input.routePlanId,
+      shopDomain: input.shopDomain
+    });
+    if (detail === null) return null;
+
+    return {
+      duplicate: result.duplicate,
+      notification: {
+        factId: result.notification.factId,
+        idempotencyKey: notificationIdempotencyKey,
+        orderId: result.notification.orderId,
+        recipientEmail: result.notification.recipientEmail,
+        status: result.notification.status
+      },
+      routePlan: detail,
+      status: {
+        deliveryStopStatus,
+        uiStatus: input.payload.status
+      },
+      trackingEvent: result.trackingEvent
+    };
+  }
+
+  async updateCustomerRouteNotificationFactStatus(input: {
+    errorCode?: string | null | undefined;
+    errorMessage?: string | null | undefined;
+    idempotencyKey: string;
+    provider?: string | null | undefined;
+    providerMessageId?: string | null | undefined;
+    status: 'QUEUED' | 'SENT';
+  }): Promise<void> {
+    await this.prisma.customerRouteNotificationFact.update({
+      data: {
+        metadata: {
+          errorCode: input.errorCode ?? null,
+          errorMessage: input.errorMessage ?? null,
+          provider: input.provider ?? null,
+          providerMessageId: input.providerMessageId ?? null,
+          runtimeSender: input.provider ?? 'unwired'
+        },
+        status: input.status
+      },
+      where: { idempotencyKey: input.idempotencyKey }
+    });
+  }
+
+  async updateAdminRouteStopOverride(input: AdminRouteStopOverrideInput): Promise<AdminRouteStopOverrideResult | null> {
+    const shopDomain = this.normalizeShopDomain(input.shopDomain);
+    const geometryAffecting = hasGeometryAffectingStopOverride(input.payload);
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const shop = await tx.shop.findUnique({
+        select: { id: true },
+        where: this.shopWhere({ appId: input.appId, shopDomain })
+      });
+      if (shop === null) return false;
+
+      const routeStop = await tx.routePlanStop.findFirst({
+        select: { id: true },
+        where: {
+          deliveryStopId: input.deliveryStopId,
+          routePlanId: input.routePlanId,
+          shopId: shop.id
+        }
+      });
+      if (routeStop === null) return false;
+
+      await tx.deliveryStop.updateMany({
+        data: toDeliveryStopOperationalOverrideWrite(input.payload),
+        where: {
+          id: input.deliveryStopId,
+          shopId: shop.id
+        }
+      });
+
+      if (geometryAffecting) {
+        await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: input.routePlanId } });
+        await tx.routePlanStop.updateMany({
+          data: {
+            distanceFromPreviousMeters: null,
+            durationFromPreviousSeconds: null,
+            estimatedArrivalAt: null,
+            etaCalculatedAt: null,
+            etaFailureCode: null,
+            etaFailureMessage: null,
+            etaInputRouteVersionId: null,
+            etaSource: 'ADMIN_STOP_OVERRIDE',
+            etaStatus: 'STALE'
+          },
+          where: {
+            routePlanId: input.routePlanId,
+            shopId: shop.id
+          }
+        });
+      }
+
+      return true;
+    });
+
+    if (!updated) return null;
+    const detail = await this.findRoutePlanDetail({
+      appId: input.appId,
+      routePlanId: input.routePlanId,
+      shopDomain: input.shopDomain
+    });
+    if (detail === null) return null;
+
+    return {
+      geometry: { status: geometryAffecting ? 'stale' : 'preserved' },
+      routePlan: detail
+    };
+  }
 
   async assignRoutePlanDriver(input: UpdateRoutePlanDriverInput): Promise<RoutePlanDetail | null> {
     const shopDomain = this.normalizeShopDomain(input.shopDomain);
@@ -1614,6 +1908,55 @@ function assertNoDuplicateStopUpdateInputs(stops: UpdateRoutePlanStopsInput['pay
   }
 }
 
+function toDeliveryStopStatus(status: AdminRouteStopTransitionInput['payload']['status']): 'DELIVERED' | 'EN_ROUTE' | 'PENDING' {
+  if (status === 'COMPLETED') return 'DELIVERED';
+  if (status === 'IN_PROGRESS') return 'EN_ROUTE';
+  return 'PENDING';
+}
+
+function toDeliveryStopOperationalOverrideWrite(
+  payload: AdminRouteStopOverrideInput['payload']
+): Prisma.DeliveryStopUpdateManyMutationInput {
+  const hasLatitude = payload.latitude !== undefined;
+  const hasLongitude = payload.longitude !== undefined;
+  const latitude = hasLatitude ? payload.latitude ?? null : undefined;
+  const longitude = hasLongitude ? payload.longitude ?? null : undefined;
+  const shouldWriteCoordinates = hasLatitude || hasLongitude;
+  return {
+    ...(payload.address1 === undefined ? {} : { address1: payload.address1 }),
+    ...(payload.address2 === undefined ? {} : { address2: payload.address2 }),
+    ...(payload.city === undefined ? {} : { city: payload.city }),
+    ...(payload.countryCode === undefined ? {} : { countryCode: payload.countryCode }),
+    ...(shouldWriteCoordinates ? {
+      geocodeStatus: latitude === null || longitude === null ? 'PENDING' : 'RESOLVED',
+      ...(hasLatitude ? { latitude: decimalString(latitude ?? null) } : {}),
+      ...(hasLongitude ? { longitude: decimalString(longitude ?? null) } : {})
+    } : {}),
+    ...(payload.instructions === undefined ? {} : { instructions: payload.instructions }),
+    ...(payload.phone === undefined ? {} : { phone: payload.phone }),
+    ...(payload.postalCode === undefined ? {} : { postalCode: payload.postalCode }),
+    ...(payload.province === undefined ? {} : { province: payload.province }),
+    ...(payload.recipientName === undefined ? {} : { recipientName: payload.recipientName }),
+    ...(payload.serviceMinutes === undefined ? {} : { serviceMinutes: payload.serviceMinutes ?? 5 }),
+    ...(payload.timeWindowEnd === undefined ? {} : { timeWindowEnd: timeOnlyToUtcDate(payload.timeWindowEnd) }),
+    ...(payload.timeWindowStart === undefined ? {} : { timeWindowStart: timeOnlyToUtcDate(payload.timeWindowStart) })
+  };
+}
+
+function hasGeometryAffectingStopOverride(payload: AdminRouteStopOverrideInput['payload']): boolean {
+  return (
+    payload.address1 !== undefined ||
+    payload.address2 !== undefined ||
+    payload.city !== undefined ||
+    payload.countryCode !== undefined ||
+    payload.latitude !== undefined ||
+    payload.longitude !== undefined ||
+    payload.postalCode !== undefined ||
+    payload.province !== undefined ||
+    payload.serviceMinutes !== undefined
+  );
+}
+
 function normalizeStopUpdateInputs(
   stops: UpdateRoutePlanStopsInput['payload']['stops']
 ): Array<{ deliveryStopId: string | null; sequence: number; shopifyOrderGid: string }> {
@@ -2518,6 +2861,10 @@ function parseTorontoTimeWindow(deliveryDate: string | null, time: string | null
 
 function parsePlanDate(value: string): Date {
   return new Date(`${value}T00:00:00.000Z`);
+}
+
+function timeOnlyToUtcDate(value: string | null): Date | null {
+  return value === null ? null : new Date(`1970-01-01T${value}:00.000Z`);
 }
 
 function formatDateOnly(value: Date): string {
