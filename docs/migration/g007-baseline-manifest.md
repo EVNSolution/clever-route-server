@@ -75,7 +75,7 @@ Final rehearsals used these exact existing-schema cutoffs:
 | `restore` | `20260722233000_align_migration_history_to_schema` |
 | `recovery` | `20260722233000_align_migration_history_to_schema` |
 
-`apps/delivery-api/prisma/rehearsal-fingerprints/db-push-source-before-20260722233000.sql` is a checked-in fingerprint adjustment for empty fingerprint scratch DBs only. It is never applied to a source DB, restore target, migration target, or production target.
+`apps/delivery-api/prisma/rehearsal-fingerprints/db-push-source-before-20260722233000.sql.template` is a checked-in fingerprint adjustment for empty fingerprint scratch DBs only. It is never applied to a source DB, restore target, migration target, or production target.
 
 For clones whose schema already includes the lowercase mapped-table effects but lacks `_prisma_migrations` history for the broken quoted-table migrations, the grouped resolve proof must include the bridge pair as a single compatibility window: `20260618022400_create_mapped_table_compatibility_bridges` before `20260618022500_add_route_ops_ui_settings`, and `20260628170100_apply_mapped_table_compatibility` immediately after `20260628170000_collapse_route_lifecycle_statuses`. The fingerprint DB must prove the resulting lowercase `shops`, `route_plans`, and `route_groupings` schema/data effects match before any resolve. The bridge cleanup must also prove the marked transient quoted `"Shop"`, `"RoutePlan"`, and `"RouteGrouping"` tables are gone before the G002 repair cutoff and that `20260723013000_g010_import_row_resource_tenant_fks` remains the latest migration.
 
