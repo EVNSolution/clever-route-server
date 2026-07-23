@@ -31,6 +31,11 @@ on:
         required: false
         type: string
         default: ""
+      approve_production_baseline:
+        description: "Approve the one-time fingerprinted production migration-history baseline"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -99,11 +104,13 @@ jobs:
         run: |
           set -euo pipefail
           manifest_sha256="$(shasum -a 256 docs/migration/g007-baseline-manifest.md | awk '{print $1}')"
+          production_baseline_manifest_sha256="$(shasum -a 256 apps/delivery-api/prisma/production-baselines/dsv-production-20260723.json | awk '{print $1}')"
           if [ "$DRY_RUN" != "true" ]; then
             test "$APPROVED" = "true" || { echo "approve_dsv_migration=true is required for a production rollout" >&2; exit 1; }
             [[ "$RESTORE_REHEARSAL_SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "restore_rehearsal_sha256 must be 64 lowercase hex characters" >&2; exit 1; }
           fi
           echo "manifest_sha256=$manifest_sha256" >> "$GITHUB_OUTPUT"
+          echo "production_baseline_manifest_sha256=$production_baseline_manifest_sha256" >> "$GITHUB_OUTPUT"
 
       - name: Require deploy source on main history
         run: |
@@ -338,6 +345,8 @@ jobs:
           DSV_MIGRATION_APPROVED: ${{ inputs.approve_dsv_migration && '1' || '' }}
           DSV_MIGRATION_MANIFEST_SHA256: ${{ steps.migration.outputs.manifest_sha256 }}
           DSV_RESTORE_REHEARSAL_SHA256: ${{ inputs.restore_rehearsal_sha256 }}
+          DSV_PRODUCTION_BASELINE_APPROVED: ${{ inputs.approve_production_baseline && '1' || '' }}
+          DSV_PRODUCTION_BASELINE_MANIFEST_SHA256: ${{ steps.migration.outputs.production_baseline_manifest_sha256 }}
           AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |

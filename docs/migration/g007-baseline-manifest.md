@@ -11,7 +11,7 @@ The server import root is `1dbcb548fc577b6fbee0fe2a45f256c49f55f0d6`. The baseli
 ## SHA Workflow
 
 1. Record the exact checked-out commit SHA.
-2. List migration directories in lexical order through `20260723013000_g010_import_row_resource_tenant_fks`.
+2. List migration directories in lexical order through `20260723023000_g011_production_baseline_drift_repair`.
 3. Record a SHA-256 for each `migration.sql`.
 4. Record the SHA-256 for `20260520000000_initial_route_ops_baseline/migration.sql`.
 5. For every non-empty target class, record the exact `G007_EXPECTED_APPLIED_THROUGH` migration name.
@@ -39,6 +39,7 @@ Use this shape for each migration entry:
 | `20260722233000_align_migration_history_to_schema` | `<sha256>` | final drift repair: idempotent enum value add, name-only index/constraint repairs, route plan stop shop FK add after orphan preflight, and preserved DB defaults |
 | `20260723003000_g009_tenant_composite_dsv_fks` | `<sha256>` | replaces final DSV/order resource single-column FKs with tenant-composite FKs after explicit mismatch preflights |
 | `20260723013000_g010_import_row_resource_tenant_fks` | `<sha256>` | replaces dispatch import-row driver/vehicle single-column FKs with tenant-composite fail-closed FKs after explicit null/missing/cross-shop preflights |
+| `20260723023000_g011_production_baseline_drift_repair` | `<sha256>` | repairs the exact post-G010 drift proven on the restored production baseline clone, with missing/cross-shop preflights before FK replacement |
 
 ## Target Evidence
 
@@ -62,7 +63,7 @@ Use this shape for each migration entry:
 
 Never resolve the baseline or a historical migration because it is convenient. Resolve only when the checked-in migration name and checksum are present locally and the disposable clone proves that migration's SQL effects already exist exactly. The proof is a zero-exit `prisma migrate diff --exit-code` comparison against a separately bootstrapped fingerprint scratch DB named for the target class. Stop on missing DDL, partial or nonzero diff, failed `_prisma_migrations` rows, checksum mismatch, or missing local migration directory.
 
-Empty `clever_g007_empty_*` rehearsals run normal `prisma migrate deploy` from the baseline through `20260723013000_g010_import_row_resource_tenant_fks`; they do not use `migrate resolve`.
+Empty `clever_g007_empty_*` rehearsals run normal `prisma migrate deploy` from the baseline through `20260723023000_g011_production_baseline_drift_repair`; they do not use `migrate resolve`.
 
 Existing or production-like clones never execute the baseline. They must set `G007_EXPECTED_APPLIED_THROUGH` to the exact migration already present in schema, validate existing `_prisma_migrations` rows/checksums/failures, build that expected schema on the fingerprint DB from checked-in SQL, refuse any nonzero diff, resolve only missing history through that migration, and then deploy remaining migrations normally.
 
@@ -77,11 +78,11 @@ Final rehearsals used these exact existing-schema cutoffs:
 
 `apps/delivery-api/prisma/rehearsal-fingerprints/db-push-source-before-20260722233000.sql.template` is a checked-in fingerprint adjustment for empty fingerprint scratch DBs only. It is never applied to a source DB, restore target, migration target, or production target.
 
-For clones whose schema already includes the lowercase mapped-table effects but lacks `_prisma_migrations` history for the broken quoted-table migrations, the grouped resolve proof must include the bridge pair as a single compatibility window: `20260618022400_create_mapped_table_compatibility_bridges` before `20260618022500_add_route_ops_ui_settings`, and `20260628170100_apply_mapped_table_compatibility` immediately after `20260628170000_collapse_route_lifecycle_statuses`. The fingerprint DB must prove the resulting lowercase `shops`, `route_plans`, and `route_groupings` schema/data effects match before any resolve. The bridge cleanup must also prove the marked transient quoted `"Shop"`, `"RoutePlan"`, and `"RouteGrouping"` tables are gone before the G002 repair cutoff and that `20260723013000_g010_import_row_resource_tenant_fks` remains the latest migration.
+For clones whose schema already includes the lowercase mapped-table effects but lacks `_prisma_migrations` history for the broken quoted-table migrations, the grouped resolve proof must include the bridge pair as a single compatibility window: `20260618022400_create_mapped_table_compatibility_bridges` before `20260618022500_add_route_ops_ui_settings`, and `20260628170100_apply_mapped_table_compatibility` immediately after `20260628170000_collapse_route_lifecycle_statuses`. The fingerprint DB must prove the resulting lowercase `shops`, `route_plans`, and `route_groupings` schema/data effects match before any resolve. The bridge cleanup must also prove the marked transient quoted `"Shop"`, `"RoutePlan"`, and `"RouteGrouping"` tables are gone before the G002 repair cutoff and that `20260723023000_g011_production_baseline_drift_repair` remains the latest migration.
 
 ## Final Drift Repairs
 
-The checked-in chain now contains 44 migrations. The latest migration is `20260723013000_g010_import_row_resource_tenant_fks`.
+The checked-in chain now contains 45 migrations. The latest migration is `20260723023000_g011_production_baseline_drift_repair`.
 
 The final migration repairs exactly these historical-to-schema object names when the old name exists and the target name does not:
 

@@ -3,6 +3,8 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 api_root="$(cd "$script_dir/.." && pwd)"
+prisma_bin="$api_root/node_modules/.bin/prisma"
+production_baseline_manifest="$api_root/prisma/production-baselines/dsv-production-20260723.json"
 
 fail() {
   echo "dsv-g007-migrate-deploy: $*" >&2
@@ -16,8 +18,166 @@ require_env() {
   fi
 }
 
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+sha256_stream() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    shasum -a 256 | awk '{print $1}'
+  fi
+}
+
 require_env DSV_MIGRATION_MODE
 require_env DATABASE_URL
+
+production_baseline_history() {
+  (
+    cd "$api_root"
+    node <<'NODE'
+const { Client } = require('pg');
+
+async function main() {
+  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  await client.connect();
+  try {
+    const exists = await client.query(
+      "SELECT to_regclass('public._prisma_migrations') IS NOT NULL AS exists",
+    );
+    if (!exists.rows[0].exists) {
+      process.stdout.write('__ABSENT__\n');
+      return;
+    }
+    const result = await client.query(`
+      SELECT migration_name,
+             checksum,
+             finished_at IS NOT NULL AS finished,
+             rolled_back_at IS NULL AS not_rolled_back,
+             COALESCE(logs, '') = '' AS no_failure_logs
+        FROM public._prisma_migrations
+       ORDER BY migration_name
+    `);
+    for (const row of result.rows) {
+      process.stdout.write([
+        row.migration_name,
+        row.checksum,
+        row.finished,
+        row.not_rolled_back,
+        row.no_failure_logs,
+      ].join('\t') + '\n');
+    }
+  } finally {
+    await client.end();
+  }
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});
+NODE
+  )
+}
+
+run_production_baseline_if_approved() {
+  local manifest_sha expected_manifest_sha expected_through expected_schema_sha
+  local history_file expected_file all_expected_file migration_path migration_name checksum
+  local has_post_baseline_history=0
+
+  if [[ "${DSV_PRODUCTION_BASELINE_APPROVED:-}" != "1" ]]; then
+    return 0
+  fi
+  [[ -x "$prisma_bin" ]] || fail "production baseline requires Prisma CLI at $prisma_bin"
+  [[ -f "$production_baseline_manifest" ]] || fail "production baseline manifest is missing"
+  require_env DSV_PRODUCTION_BASELINE_MANIFEST_SHA256
+  [[ "$DSV_PRODUCTION_BASELINE_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+    || fail "DSV_PRODUCTION_BASELINE_MANIFEST_SHA256 must be 64 lowercase hex characters"
+
+  manifest_sha="$(sha256_file "$production_baseline_manifest")"
+  [[ "$manifest_sha" == "$DSV_PRODUCTION_BASELINE_MANIFEST_SHA256" ]] \
+    || fail "production baseline manifest SHA mismatch"
+
+  read -r expected_through expected_schema_sha < <(
+    node -e '
+const fs = require("fs");
+const manifest = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+if (!/^20[0-9]{12}_[a-z0-9_]+$/.test(manifest.expectedAppliedThrough || "")) process.exit(1);
+if (!/^[0-9a-f]{64}$/.test(manifest.schemaSha256 || "")) process.exit(1);
+process.stdout.write(`${manifest.expectedAppliedThrough} ${manifest.schemaSha256}\n`);
+' "$production_baseline_manifest"
+  ) || fail "production baseline manifest is invalid"
+  [[ -f "$api_root/prisma/migrations/$expected_through/migration.sql" ]] \
+    || fail "production baseline boundary is not a checked-in migration"
+
+  history_file="$(mktemp "${TMPDIR:-/tmp}/dsv-production-baseline-history.XXXXXX")"
+  expected_file="$(mktemp "${TMPDIR:-/tmp}/dsv-production-baseline-expected.XXXXXX")"
+  all_expected_file="$(mktemp "${TMPDIR:-/tmp}/dsv-production-baseline-all-expected.XXXXXX")"
+  trap 'rm -f "$history_file" "$expected_file" "$all_expected_file"' RETURN
+  production_baseline_history > "$history_file" \
+    || fail "could not read production migration history"
+
+  : > "$expected_file"
+  : > "$all_expected_file"
+  for migration_path in "$api_root"/prisma/migrations/*/migration.sql; do
+    migration_name="$(basename "$(dirname "$migration_path")")"
+    checksum="$(sha256_file "$migration_path")"
+    printf '%s\t%s\n' "$migration_name" "$checksum" >> "$all_expected_file"
+    if [[ "$migration_name" < "$expected_through" || "$migration_name" == "$expected_through" ]]; then
+      printf '%s\t%s\n' "$migration_name" "$checksum" >> "$expected_file"
+    fi
+  done
+
+  if ! grep -Fxq '__ABSENT__' "$history_file"; then
+    while IFS=$'\t' read -r migration_name checksum finished not_rolled_back no_failure_logs; do
+      [[ -z "$migration_name" ]] && continue
+      expected_manifest_sha="$(awk -F '\t' -v name="$migration_name" '$1 == name { print $2 }' "$all_expected_file")"
+      [[ -n "$expected_manifest_sha" ]] \
+        || fail "production migration history contains unknown migration $migration_name"
+      [[ "$checksum" == "$expected_manifest_sha" ]] \
+        || fail "production migration checksum mismatch for $migration_name"
+      [[ "$finished" == "true" && "$not_rolled_back" == "true" && "$no_failure_logs" == "true" ]] \
+        || fail "production migration history contains failed migration $migration_name"
+      if [[ "$migration_name" > "$expected_through" ]]; then
+        has_post_baseline_history=1
+      fi
+    done < "$history_file"
+  fi
+
+  if [[ "$has_post_baseline_history" == "1" ]]; then
+    while IFS=$'\t' read -r migration_name checksum; do
+      if ! awk -F '\t' -v name="$migration_name" '$1 == name { found = 1 } END { exit found ? 0 : 1 }' "$history_file"; then
+        fail "production migration history advanced past baseline with missing prefix $migration_name"
+      fi
+    done < "$expected_file"
+    echo "dsv-g007-migrate-deploy: production baseline already advanced beyond $expected_through"
+    return 0
+  fi
+
+  local actual_schema_sha
+  actual_schema_sha="$(
+    "$prisma_bin" migrate diff \
+      --from-empty \
+      --to-url "$DATABASE_URL" \
+      --script \
+      | sha256_stream
+  )" || fail "could not fingerprint production schema"
+  [[ "$actual_schema_sha" == "$expected_schema_sha" ]] \
+    || fail "production schema fingerprint does not match the approved baseline"
+
+  while IFS=$'\t' read -r migration_name checksum; do
+    if awk -F '\t' -v name="$migration_name" '$1 == name { found = 1 } END { exit found ? 0 : 1 }' "$history_file"; then
+      continue
+    fi
+    echo "dsv-g007-migrate-deploy: resolving approved production baseline $migration_name"
+    DATABASE_URL="$DATABASE_URL" "$prisma_bin" migrate resolve --applied "$migration_name"
+  done < "$expected_file"
+}
 
 case "$DSV_MIGRATION_MODE" in
   rehearsal|compose-dev|production) ;;
@@ -153,8 +313,14 @@ case "$DSV_MIGRATION_MODE" in
     if [[ ! "${DSV_RESTORE_REHEARSAL_SHA256:-}" =~ ^[0-9a-f]{64}$ ]]; then
       fail "production mode requires DSV_RESTORE_REHEARSAL_SHA256 as 64 lowercase hex characters"
     fi
+    if [[ -n "${DSV_PRODUCTION_BASELINE_APPROVED:-}" && "${DSV_PRODUCTION_BASELINE_APPROVED:-}" != "1" ]]; then
+      fail "DSV_PRODUCTION_BASELINE_APPROVED must be empty or 1"
+    fi
     ;;
 esac
 
 echo "dsv-g007-migrate-deploy: validated $DSV_MIGRATION_MODE target $database_host/$database_name"
+if [[ "$DSV_MIGRATION_MODE" == "production" ]]; then
+  run_production_baseline_if_approved
+fi
 exec npm --prefix "$api_root" run prisma:migrate:deploy
