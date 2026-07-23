@@ -12,7 +12,7 @@ trap cleanup EXIT
 bash -n "$script"
 
 rg -q "to_regclass\\('public\\._prisma_migrations'\\) IS NOT NULL" "$script"
-rg -q 'db-push-source-before-20260722233000.sql' "$script"
+rg -q 'db-push-source-before-20260722233000.sql.template' "$script"
 rg -q 'stale-clone requires G007_EXPECTED_APPLIED_THROUGH=' "$script"
 
 expect_reject() {

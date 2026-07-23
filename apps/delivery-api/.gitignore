@@ -34,7 +34,6 @@ var/driver-proof-media/
 backups/
 *.dump
 *.sql
-!prisma/rehearsal-fingerprints/db-push-source-before-20260722233000.sql
 !prisma/migrations/
 !prisma/migrations/**/
 !prisma/migrations/**/migration.sql
