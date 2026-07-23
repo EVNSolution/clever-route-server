@@ -419,6 +419,14 @@ export type RouteOpsUiSettingsDto = {
       subject: string;
     };
   };
+  etaDelayMinutes: number;
+  forwardDelayAlerts: boolean;
+  gpsSilenceSeconds: number;
+  loadingStartTime: string;
+  plannedDepartureTime: string;
+  recordMissingProof: boolean;
+  showTemperatureAlerts: boolean;
+  temperatureLimit: number;
   version: 1;
 };
 

@@ -44,6 +44,14 @@ export function defaultRouteOpsUiSettings(): RouteOpsUiSettingsDto {
         subject: "",
       },
     },
+    etaDelayMinutes: 10,
+    forwardDelayAlerts: true,
+    gpsSilenceSeconds: 30,
+    loadingStartTime: "07:30",
+    plannedDepartureTime: "08:30",
+    recordMissingProof: true,
+    showTemperatureAlerts: true,
+    temperatureLimit: 8,
     version: 1,
   };
 }
@@ -68,6 +76,36 @@ export function normalizeRouteOpsUiSettings(
         subject: value.emailNotifications.template.subject,
       },
     },
+    etaDelayMinutes: Number.isInteger(value.etaDelayMinutes)
+      ? value.etaDelayMinutes
+      : defaults.etaDelayMinutes,
+    forwardDelayAlerts:
+      typeof value.forwardDelayAlerts === "boolean"
+        ? value.forwardDelayAlerts
+        : defaults.forwardDelayAlerts,
+    gpsSilenceSeconds: Number.isInteger(value.gpsSilenceSeconds)
+      ? value.gpsSilenceSeconds
+      : defaults.gpsSilenceSeconds,
+    loadingStartTime:
+      typeof value.loadingStartTime === "string"
+        ? value.loadingStartTime
+        : defaults.loadingStartTime,
+    plannedDepartureTime:
+      typeof value.plannedDepartureTime === "string"
+        ? value.plannedDepartureTime
+        : defaults.plannedDepartureTime,
+    recordMissingProof:
+      typeof value.recordMissingProof === "boolean"
+        ? value.recordMissingProof
+        : defaults.recordMissingProof,
+    showTemperatureAlerts:
+      typeof value.showTemperatureAlerts === "boolean"
+        ? value.showTemperatureAlerts
+        : defaults.showTemperatureAlerts,
+    temperatureLimit:
+      typeof value.temperatureLimit === "number"
+        ? value.temperatureLimit
+        : defaults.temperatureLimit,
     version: 1,
   };
 }

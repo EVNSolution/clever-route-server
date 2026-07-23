@@ -5,7 +5,7 @@ export type RouteOpsUiReminderPlanDto = {
 };
 
 export type RouteOpsUiSettingsDto = {
-  destinationDwellMinutes: number | null;
+  destinationDwellMinutes: number;
   emailNotifications: {
     enabled: boolean;
     reminderPlans: RouteOpsUiReminderPlanDto[];
@@ -14,8 +14,14 @@ export type RouteOpsUiSettingsDto = {
       subject: string;
     };
   };
-  loadingStartTime: string | null;
-  plannedDepartureTime: string | null;
+  etaDelayMinutes: number;
+  forwardDelayAlerts: boolean;
+  gpsSilenceSeconds: number;
+  loadingStartTime: string;
+  plannedDepartureTime: string;
+  recordMissingProof: boolean;
+  showTemperatureAlerts: boolean;
+  temperatureLimit: number;
   version: 1;
 };
 
@@ -35,7 +41,7 @@ const ROUTE_OPS_TEMPLATE_VARIABLE_SET = new Set<string>(
 
 export function defaultRouteOpsUiSettings(): RouteOpsUiSettingsDto {
   return {
-    destinationDwellMinutes: null,
+    destinationDwellMinutes: 5,
     emailNotifications: {
       enabled: false,
       reminderPlans: [],
@@ -44,8 +50,14 @@ export function defaultRouteOpsUiSettings(): RouteOpsUiSettingsDto {
         subject: "",
       },
     },
-    loadingStartTime: null,
-    plannedDepartureTime: null,
+    etaDelayMinutes: 10,
+    forwardDelayAlerts: true,
+    gpsSilenceSeconds: 30,
+    loadingStartTime: "07:30",
+    plannedDepartureTime: "08:30",
+    recordMissingProof: true,
+    showTemperatureAlerts: true,
+    temperatureLimit: 8,
     version: 1,
   };
 }
@@ -66,19 +78,59 @@ export function validateRouteOpsUiSettingsPayload(
   if (value.version !== 1) {
     throw new Error("Route Ops UI settings version must be 1.");
   }
-  const destinationDwellMinutes = readNullableIntegerInRange(
+  const defaults = defaultRouteOpsUiSettings();
+  const destinationDwellMinutes = readDefaultedIntegerInRange(
     value.destinationDwellMinutes,
+    defaults.destinationDwellMinutes,
     0,
     240,
     "Destination dwell minutes",
   );
-  const loadingStartTime = readNullableTimeOfDay(
+  const etaDelayMinutes = readDefaultedIntegerInRange(
+    value.etaDelayMinutes,
+    defaults.etaDelayMinutes,
+    1,
+    240,
+    "ETA delay minutes",
+  );
+  const gpsSilenceSeconds = readDefaultedIntegerInRange(
+    value.gpsSilenceSeconds,
+    defaults.gpsSilenceSeconds,
+    5,
+    3600,
+    "GPS silence seconds",
+  );
+  const loadingStartTime = readDefaultedTimeOfDay(
     value.loadingStartTime,
+    defaults.loadingStartTime,
     "Loading start time",
   );
-  const plannedDepartureTime = readNullableTimeOfDay(
+  const plannedDepartureTime = readDefaultedTimeOfDay(
     value.plannedDepartureTime,
+    defaults.plannedDepartureTime,
     "Planned departure time",
+  );
+  const temperatureLimit = readDefaultedNumberInRange(
+    value.temperatureLimit,
+    defaults.temperatureLimit,
+    -50,
+    50,
+    "Temperature limit",
+  );
+  const forwardDelayAlerts = readDefaultedBoolean(
+    value.forwardDelayAlerts,
+    defaults.forwardDelayAlerts,
+    "Forward delay alerts",
+  );
+  const recordMissingProof = readDefaultedBoolean(
+    value.recordMissingProof,
+    defaults.recordMissingProof,
+    "Record missing proof",
+  );
+  const showTemperatureAlerts = readDefaultedBoolean(
+    value.showTemperatureAlerts,
+    defaults.showTemperatureAlerts,
+    "Show temperature alerts",
   );
   const emailNotifications = value.emailNotifications;
   if (!isRecord(emailNotifications)) {
@@ -96,8 +148,14 @@ export function validateRouteOpsUiSettingsPayload(
       reminderPlans,
       template,
     },
+    etaDelayMinutes,
+    forwardDelayAlerts,
+    gpsSilenceSeconds,
     loadingStartTime,
     plannedDepartureTime,
+    recordMissingProof,
+    showTemperatureAlerts,
+    temperatureLimit,
     version: 1,
   };
 }
@@ -155,14 +213,46 @@ function assertAllowedTemplateTokens(value: string): void {
   }
 }
 
-function readNullableIntegerInRange(
+function readDefaultedIntegerInRange(
   value: unknown,
+  fallback: number,
   min: number,
   max: number,
   label: string,
-): number | null {
-  if (value === null || value === undefined) return null;
+): number {
+  if (value === null || value === undefined) return fallback;
   return readIntegerInRange(value, min, max, label);
+}
+
+function readDefaultedNumberInRange(
+  value: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+  label: string,
+): number {
+  if (value === null || value === undefined) return fallback;
+  if (
+    typeof value !== "number" ||
+    !Number.isFinite(value) ||
+    value < min ||
+    value > max
+  ) {
+    throw new Error(`${label} must be a number from ${min} through ${max}.`);
+  }
+  return value;
+}
+
+function readDefaultedBoolean(
+  value: unknown,
+  fallback: boolean,
+  label: string,
+): boolean {
+  if (value === null || value === undefined) return fallback;
+  if (typeof value !== "boolean") {
+    throw new Error(`${label} must be boolean.`);
+  }
+  return value;
 }
 
 function readIntegerInRange(
@@ -190,8 +280,12 @@ function readTimeOfDay(value: unknown, label: string): string {
   return timeOfDay;
 }
 
-function readNullableTimeOfDay(value: unknown, label: string): string | null {
-  return value === null || value === undefined ? null : readTimeOfDay(value, label);
+function readDefaultedTimeOfDay(
+  value: unknown,
+  fallback: string,
+  label: string,
+): string {
+  return value === null || value === undefined ? fallback : readTimeOfDay(value, label);
 }
 
 function readString(value: unknown, label: string): string {
