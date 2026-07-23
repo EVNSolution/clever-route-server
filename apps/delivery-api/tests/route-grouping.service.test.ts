@@ -2,7 +2,10 @@ import { describe, expect, test } from 'vitest';
 import { classifyCoordinateInPolygons } from '../src/modules/route-grouping/route-grouping.geometry.js';
 import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
 import { newChildRouteName, resolveNewChildRouteIdx } from '../src/modules/route-grouping/route-grouping.service.js';
-import { RouteGroupingConflictError } from '../src/modules/route-grouping/route-grouping.types.js';
+import {
+  RouteGroupingConflictError,
+  RouteGroupingStopMembershipConflictError
+} from '../src/modules/route-grouping/route-grouping.types.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -327,6 +330,33 @@ describe('route grouping contracts', () => {
     expect(saveDraftBody).toContain('addOrderIds: []');
     expect(saveDraftBody).toContain('removeOrderIds: removedOrderIds');
     expect(source).toContain('route draft orders cannot be both routed and removed');
+  });
+
+  test('blocks draft save stop membership changes for non-ready child routes before inventory sync', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const types = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.types.ts'), 'utf8');
+    const start = source.indexOf('async saveDraft(');
+    const end = source.indexOf('async savePolygons(', start);
+    const saveDraftBody = source.slice(start, end);
+    const guardBody = source.slice(
+      source.indexOf('function assertDraftNonReadyChildStopMembershipUnchanged'),
+      source.indexOf('function assertDraftExpectedRevisions')
+    );
+    const conflict = new RouteGroupingStopMembershipConflictError(['order-1'], ['route-plan-1']);
+
+    expect(conflict).toBeInstanceOf(RouteGroupingConflictError);
+    expect(conflict.code).toBe('ROUTE_GROUPING_STOP_MEMBERSHIP_CONFLICT');
+    expect(types).toContain('class RouteGroupingStopMembershipConflictError extends RouteGroupingConflictError');
+    expect(saveDraftBody).toContain('assertDraftNonReadyChildStopMembershipUnchanged(baseline, routes, removedOrderIds)');
+    expect(saveDraftBody).toContain('assertDraftNonReadyChildStopMembershipUnchanged(loaded, routes, removedOrderIds)');
+    expect(saveDraftBody.indexOf('assertDraftNonReadyChildStopMembershipUnchanged(loaded, routes, removedOrderIds)'))
+      .toBeLessThan(saveDraftBody.indexOf('await deleteBranchOrderLocks(tx, group, undefined, removedOrderIds)'));
+    expect(saveDraftBody.indexOf('assertDraftNonReadyChildStopMembershipUnchanged(loaded, routes, removedOrderIds)'))
+      .toBeLessThan(saveDraftBody.indexOf('await syncRouteGroupingInventoryOrders(tx, {'));
+    expect(guardBody).toContain("deriveChildDisplayStatus(child) === 'READY'");
+    expect(guardBody).toContain('sameStringSet(currentOrderIds, draftOrderIds)');
+    expect(guardBody).toContain('removedOrderIdSet.has(orderId)');
+    expect(guardBody).toContain('throw new RouteGroupingStopMembershipConflictError');
   });
 
   test('saves driver assignment, staged deletion, and revisions inside the draft transaction', () => {

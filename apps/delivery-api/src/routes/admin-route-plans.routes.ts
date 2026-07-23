@@ -19,6 +19,9 @@ import {
 import { RouteExecutionConflictError } from '../modules/route-plans/route-execution-ownership.js';
 import { RouteOptimizationJobActiveError } from '../modules/route-plans/route-optimization-job.types.js';
 import type {
+  AdminRouteStopOverridePayload,
+  AdminRouteStopTransitionResult,
+  AdminRouteStopTransitionPayload,
   CreateRoutePlanPayload,
   RoutePlanOrderAttributeInput,
   RoutePlanOrderInput,
@@ -542,6 +545,94 @@ export function registerAdminRoutePlanRoutes(
     }
   );
 
+  app.post<{ Body: unknown; Params: { deliveryStopId: string; routePlanId: string } }>(
+    '/admin/route-plans/:routePlanId/stops/:deliveryStopId/transition',
+    async (request, reply) => {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+        log: request.log,
+        surface: 'admin_route_plans'
+      });
+      if (authenticated.status === 'unauthorized') {
+        return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+      }
+      if (dependencies.routePlanService.transitionAdminRouteStop === undefined) {
+        return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Admin route stop transitions are unavailable'));
+      }
+
+      let payload: AdminRouteStopTransitionPayload;
+      try {
+        payload = readAdminRouteStopTransitionPayload(request.body);
+      } catch {
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid admin route stop transition payload'));
+      }
+
+      let result: AdminRouteStopTransitionResult | null;
+      try {
+        result = await dependencies.routePlanService.transitionAdminRouteStop({
+          actor: authenticated.subject,
+          appId: authenticated.appId,
+          deliveryStopId: request.params.deliveryStopId,
+          payload,
+          routePlanId: request.params.routePlanId,
+          shopDomain: authenticated.shopDomain
+        });
+      } catch (error) {
+        if (error instanceof RoutePlanConflictError) {
+          return reply.code(409).send(errorResponse(error.code, error.message));
+        }
+        throw error;
+      }
+      if (result === null) {
+        return reply.code(404).send(errorResponse('NOT_FOUND', 'Route stop not found'));
+      }
+
+      return reply.code(result.duplicate ? 200 : 202).send({
+        data: result,
+        error: null
+      });
+    }
+  );
+
+  app.patch<{ Body: unknown; Params: { deliveryStopId: string; routePlanId: string } }>(
+    '/admin/route-plans/:routePlanId/stops/:deliveryStopId/override',
+    async (request, reply) => {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+        log: request.log,
+        surface: 'admin_route_plans'
+      });
+      if (authenticated.status === 'unauthorized') {
+        return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+      }
+      if (dependencies.routePlanService.updateAdminRouteStopOverride === undefined) {
+        return reply.code(501).send(errorResponse('NOT_IMPLEMENTED', 'Admin route stop overrides are unavailable'));
+      }
+
+      let payload: AdminRouteStopOverridePayload;
+      try {
+        payload = readAdminRouteStopOverridePayload(request.body);
+      } catch {
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid admin route stop override payload'));
+      }
+
+      const result = await dependencies.routePlanService.updateAdminRouteStopOverride({
+        actor: authenticated.subject,
+        appId: authenticated.appId,
+        deliveryStopId: request.params.deliveryStopId,
+        payload,
+        routePlanId: request.params.routePlanId,
+        shopDomain: authenticated.shopDomain
+      });
+      if (result === null) {
+        return reply.code(404).send(errorResponse('NOT_FOUND', 'Route stop not found'));
+      }
+
+      return reply.code(200).send({
+        data: result,
+        error: null
+      });
+    }
+  );
+
   app.patch<{ Body: unknown; Params: { routePlanId: string } }>(
     '/admin/route-plans/:routePlanId/options',
     async (request, reply) => {
@@ -766,6 +857,70 @@ function readUpdateRoutePlanDriverPayload(value: unknown): UpdateRoutePlanDriver
   return {
     driverId: readNullableString(object.driverId)
   };
+}
+
+function readAdminRouteStopTransitionPayload(value: unknown): AdminRouteStopTransitionPayload {
+  const object = requireObject(value);
+  const status = requireNonEmptyString(object.status);
+  if (status !== 'READY' && status !== 'IN_PROGRESS' && status !== 'COMPLETED') {
+    throw new Error('unsupported stop status');
+  }
+  return {
+    idempotencyKey: requireNonEmptyString(object.idempotencyKey),
+    status
+  };
+}
+
+function readAdminRouteStopOverridePayload(value: unknown): AdminRouteStopOverridePayload {
+  const object = requireObject(value);
+  const allowedFields = new Set([
+    'address1',
+    'address2',
+    'city',
+    'countryCode',
+    'instructions',
+    'latitude',
+    'longitude',
+    'phone',
+    'postalCode',
+    'province',
+    'recipientName',
+    'serviceMinutes',
+    'timeWindowEnd',
+    'timeWindowStart'
+  ]);
+  for (const key of Object.keys(object)) {
+    if (!allowedFields.has(key)) {
+      throw new Error('unsupported admin route stop override field');
+    }
+  }
+  const payload: AdminRouteStopOverridePayload = {};
+  if ('address1' in object) payload.address1 = readNullableString(object.address1);
+  if ('address2' in object) payload.address2 = readNullableString(object.address2);
+  if ('city' in object) payload.city = readNullableString(object.city);
+  if ('countryCode' in object) payload.countryCode = readNullableString(object.countryCode);
+  if ('latitude' in object) payload.latitude = readNullableCoordinate(object.latitude);
+  if ('longitude' in object) payload.longitude = readNullableCoordinate(object.longitude);
+  if ('postalCode' in object) payload.postalCode = readNullableString(object.postalCode);
+  if ('province' in object) payload.province = readNullableString(object.province);
+  if ('recipientName' in object) payload.recipientName = readNullableString(object.recipientName);
+  if ('phone' in object) payload.phone = readNullableString(object.phone);
+  if ('instructions' in object) payload.instructions = readNullableString(object.instructions);
+  if ('serviceMinutes' in object) {
+    if (object.serviceMinutes === null) {
+      payload.serviceMinutes = null;
+    } else if (typeof object.serviceMinutes === 'number' && Number.isInteger(object.serviceMinutes) && object.serviceMinutes >= 0) {
+      payload.serviceMinutes = object.serviceMinutes;
+    } else {
+      throw new Error('serviceMinutes must be a non-negative integer');
+    }
+  }
+  if ('timeWindowStart' in object) payload.timeWindowStart = readNullableTime(object.timeWindowStart);
+  if ('timeWindowEnd' in object) payload.timeWindowEnd = readNullableTime(object.timeWindowEnd);
+  if (Object.keys(payload).length === 0) {
+    throw new Error('admin route stop override payload must include at least one field');
+  }
+  return payload;
 }
 
 function readUpdateRoutePlanDepartureTimePayload(value: unknown): { departureTime: string } {

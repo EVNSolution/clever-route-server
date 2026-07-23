@@ -1428,6 +1428,68 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+  /admin/route-plans/{routePlanId}/stops/{deliveryStopId}/transition:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+      - $ref: '#/components/parameters/DeliveryStopId'
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Transition one route stop through an admin action
+      operationId: transitionAdminRoutePlanStop
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminRouteStopTransitionRequest'
+      responses:
+        '202':
+          description: Stop transition accepted; response reports queued or sent customer notification status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /admin/route-plans/{routePlanId}/stops/{deliveryStopId}/override:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+      - $ref: '#/components/parameters/DeliveryStopId'
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Update CLEVER DB operational overrides for one route stop
+      operationId: updateAdminRoutePlanStopOverride
+      x-source-file: src/routes/admin-route-plans.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AdminRouteStopOverrideRequest'
+      responses:
+        '200':
+          description: Stop override updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /driver/auth/login:
     post:
       tags: [Driver Mobile]
@@ -2105,6 +2167,12 @@ components:
         when both values are supplied they must match after runtime trimming.
     RoutePlanId:
       name: routePlanId
+      in: path
+      required: true
+      schema:
+        type: string
+    DeliveryStopId:
+      name: deliveryStopId
       in: path
       required: true
       schema:
@@ -3463,6 +3531,42 @@ components:
                 minimum: 1
               shopifyOrderGid:
                 type: string
+      additionalProperties: false
+    AdminRouteStopTransitionRequest:
+      type: object
+      required: [status, idempotencyKey]
+      properties:
+        status:
+          type: string
+          enum: [READY, IN_PROGRESS, COMPLETED]
+        idempotencyKey:
+          type: string
+          minLength: 1
+      additionalProperties: false
+    AdminRouteStopOverrideRequest:
+      type: object
+      properties:
+        recipientName: { type: [string, 'null'] }
+        phone: { type: [string, 'null'] }
+        address1: { type: [string, 'null'] }
+        address2: { type: [string, 'null'] }
+        city: { type: [string, 'null'] }
+        province: { type: [string, 'null'] }
+        postalCode: { type: [string, 'null'] }
+        countryCode: { type: [string, 'null'] }
+        latitude: { type: [number, 'null'] }
+        longitude: { type: [number, 'null'] }
+        timeWindowStart:
+          type: [string, 'null']
+          pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+        timeWindowEnd:
+          type: [string, 'null']
+          pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+        serviceMinutes:
+          type: [integer, 'null']
+          minimum: 0
+          description: Null resets the CLEVER stop to the default of 5 minutes.
+        instructions: { type: [string, 'null'] }
       additionalProperties: false
     RoutePlanSummary:
       type: object

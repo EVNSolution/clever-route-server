@@ -21,7 +21,7 @@ export type RouteTrackingProgressEventType =
 
 export type RouteTrackingProgressEventV1 = {
   deliveryStopId: string | null;
-  driverId: string;
+  driverId: string | null;
   eventId: string;
   eventType: RouteTrackingProgressEventType;
   occurredAt: string;

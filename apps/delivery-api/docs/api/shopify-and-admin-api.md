@@ -275,6 +275,8 @@ Route planning endpoints are documented in `admin-route-plans.md` and indexed in
 - `GET /admin/route-plans`
 - `GET /admin/route-plans/:routePlanId`
 - `PATCH /admin/route-plans/:routePlanId/stops`
+- `POST /admin/route-plans/:routePlanId/stops/:deliveryStopId/transition`
+- `PATCH /admin/route-plans/:routePlanId/stops/:deliveryStopId/override`
 - `DELETE /admin/route-plans/:routePlanId`
 
 ## Data minimization and public-doc rules

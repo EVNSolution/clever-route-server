@@ -11,12 +11,16 @@ import { PrismaRouteOptimizationJobRepository } from './route-optimization-job.r
 import { RouteOptimizationJobService } from './route-optimization-job.service.js';
 import { PrismaRoutePlanRepository } from './route-plan.repository.js';
 import { RoutePlanAdminService } from './route-plan.service.js';
+import {
+  loadCustomerDeliveryNotificationSender,
+  type CustomerDeliveryNotificationRuntimeEnv
+} from './customer-delivery-notification.sender.js';
 import type { AdminRoutePlanDependencies } from '../../routes/admin-route-plans.routes.js';
 import { PrismaRouteTrackingService } from '../route-tracking/route-tracking.service.js';
 import { OsrmRouteTrackingRoadMatchProvider } from '../route-tracking/route-tracking.road-match.js';
 import type { RouteTrackingStreamHub } from '../route-tracking/route-tracking.stream.js';
 
-export type AdminRoutePlanRuntimeEnv = ShopifyAppCredentialsEnv & RouteEngineRuntimeEnv & Partial<Record<'OSRM_TIMEOUT_MS', string>>;
+export type AdminRoutePlanRuntimeEnv = ShopifyAppCredentialsEnv & RouteEngineRuntimeEnv & CustomerDeliveryNotificationRuntimeEnv & Partial<Record<'OSRM_TIMEOUT_MS', string>>;
 
 export function loadAdminRoutePlanDependencies(input: {
   env: AdminRoutePlanRuntimeEnv;
@@ -36,8 +40,15 @@ export function loadAdminRoutePlanDependencies(input: {
   const routeOptimizationJobService = new RouteOptimizationJobService(
     new PrismaRouteOptimizationJobRepository(input.prisma)
   );
+  const customerDeliveryNotificationSender = loadCustomerDeliveryNotificationSender(input.env);
   return {
-    routePlanService: new RoutePlanAdminService(repository, routeGeometryProvider, routeOptimizationJobService),
+    routePlanService: new RoutePlanAdminService(
+      repository,
+      routeGeometryProvider,
+      routeOptimizationJobService,
+      input.routeTrackingStreamHub,
+      customerDeliveryNotificationSender
+    ),
     routeTrackingService: new PrismaRouteTrackingService(input.prisma, {
       roadMatchProvider: createRouteTrackingRoadMatchProvider(input.env)
     }),

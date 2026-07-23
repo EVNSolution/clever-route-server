@@ -229,6 +229,83 @@ export type UpdateRoutePlanStopsInput = {
   mutationContext?: RoutePlanMutationContext | undefined;
 };
 
+export type AdminRouteStopUiStatus = 'COMPLETED' | 'IN_PROGRESS' | 'READY';
+
+export type AdminRouteStopTransitionPayload = {
+  idempotencyKey: string;
+  status: AdminRouteStopUiStatus;
+};
+
+export type AdminRouteStopTransitionInput = {
+  actor: string;
+  appId?: string | undefined;
+  deliveryStopId: string;
+  payload: AdminRouteStopTransitionPayload;
+  routePlanId: string;
+  shopDomain: string;
+};
+
+export type AdminRouteStopTransitionResult = {
+  duplicate: boolean;
+  notification: {
+    errorCode?: string | null;
+    errorMessage?: string | null;
+    factId?: string | null;
+    idempotencyKey: string;
+    orderId: string;
+    provider?: string | null;
+    recipientEmail?: string | null;
+    status: 'QUEUED' | 'SENT';
+  };
+  routePlan: RoutePlanDetail;
+  status: {
+    deliveryStopStatus: 'DELIVERED' | 'EN_ROUTE' | 'PENDING';
+    uiStatus: AdminRouteStopUiStatus;
+  };
+  trackingEvent?: {
+    deliveryStopId: string | null;
+    driverId: string | null;
+    eventId: string;
+    eventType: 'STOP_DELIVERED';
+    occurredAt: string;
+    receivedAt: string;
+    routePlanId: string;
+  } | null;
+};
+
+export type AdminRouteStopOverridePayload = {
+  address1?: string | null | undefined;
+  address2?: string | null | undefined;
+  city?: string | null | undefined;
+  countryCode?: string | null | undefined;
+  instructions?: string | null | undefined;
+  latitude?: number | null | undefined;
+  longitude?: number | null | undefined;
+  phone?: string | null | undefined;
+  postalCode?: string | null | undefined;
+  province?: string | null | undefined;
+  recipientName?: string | null | undefined;
+  serviceMinutes?: number | null | undefined;
+  timeWindowEnd?: string | null | undefined;
+  timeWindowStart?: string | null | undefined;
+};
+
+export type AdminRouteStopOverrideInput = {
+  actor: string;
+  appId?: string | undefined;
+  deliveryStopId: string;
+  payload: AdminRouteStopOverridePayload;
+  routePlanId: string;
+  shopDomain: string;
+};
+
+export type AdminRouteStopOverrideResult = {
+  geometry: {
+    status: 'preserved' | 'stale';
+  };
+  routePlan: RoutePlanDetail;
+};
+
 export type UpdateRoutePlanDriverPayload = {
   driverId: string | null;
 };
@@ -306,6 +383,8 @@ export type RoutePlanDetail = {
 
 export type RoutePlanService = {
   assignRoutePlanDriver(input: UpdateRoutePlanDriverInput): Promise<RoutePlanDetail | null>;
+  transitionAdminRouteStop?(input: AdminRouteStopTransitionInput): Promise<AdminRouteStopTransitionResult | null>;
+  updateAdminRouteStopOverride?(input: AdminRouteStopOverrideInput): Promise<AdminRouteStopOverrideResult | null>;
   createRoutePlan(input: CreateRoutePlanInput): Promise<RoutePlanSummary>;
   createRoutePlanFromOrderIds?(input: CreateRoutePlanFromOrderIdsInput): Promise<RoutePlanSummary>;
   deleteRoutePlan(input: { appId?: string | undefined; routePlanId: string; shopDomain: string }): Promise<{

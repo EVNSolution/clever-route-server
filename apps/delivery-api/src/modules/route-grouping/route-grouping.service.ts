@@ -16,6 +16,7 @@ import {
   RouteGroupingBranchLockConflictError,
   RouteGroupingConflictError,
   RouteGroupingRiskConfirmationRequiredError,
+  RouteGroupingStopMembershipConflictError,
   RouteGroupingUnresolvedAssignmentsError,
   RouteGroupingValidationError,
   type CreateRouteGroupingBranchInput,
@@ -524,6 +525,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     if (baseline === null) return null;
     assertDraftOrderPartition(baseline, routes, removedOrderIds);
     assertDraftRoutePlanEnvelope(baseline, routes, deletedRoutePlanIds);
+    assertDraftNonReadyChildStopMembershipUnchanged(baseline, routes, removedOrderIds);
     assertDraftExpectedRevisions(baseline, routes, deletedRoutePlanIds, input.expectedUpdatedAt);
     const draftOptimizations = await this.prepareDraftRouteOptimizations(input, baseline, routes);
 
@@ -536,6 +538,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       assertDraftBaselineUnchanged(baseline, loaded, routes, deletedRoutePlanIds);
       assertDraftOrderPartition(loaded, routes, removedOrderIds);
       assertDraftRoutePlanEnvelope(loaded, routes, deletedRoutePlanIds);
+      assertDraftNonReadyChildStopMembershipUnchanged(loaded, routes, removedOrderIds);
       assertDraftExpectedRevisions(loaded, routes, deletedRoutePlanIds, input.expectedUpdatedAt);
 
       if (removedOrderIds.length > 0) {
@@ -689,6 +692,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     if (loaded === null) return null;
     assertDraftOrderPartition(loaded, routes, removedOrderIds);
     assertDraftRoutePlanEnvelope(loaded, routes, deletedRoutePlanIds);
+    assertDraftNonReadyChildStopMembershipUnchanged(loaded, routes, removedOrderIds);
     assertDraftExpectedRevisions(loaded, routes, deletedRoutePlanIds, input.expectedUpdatedAt);
 
     if (removedOrderIds.length > 0) {
@@ -1505,6 +1509,35 @@ function assertDraftRoutePlanEnvelope(group: LoadedGrouping, routes: RouteGroupi
   }
 }
 
+function assertDraftNonReadyChildStopMembershipUnchanged(group: LoadedGrouping, routes: RouteGroupingDraftRouteInput[], removedOrderIds: string[]): void {
+  const routesByRoutePlanId = new Map(routes.map((route) => [route.routePlanId, route]));
+  const removedOrderIdSet = new Set(removedOrderIds);
+  const conflictingOrderIds = new Set<string>();
+  const conflictingRoutePlanIds = new Set<string>();
+
+  for (const child of group.childVersions.filter((candidate) => isOperationalCurrentChild(candidate))) {
+    const routePlanId = child.routePlanId;
+    if (routePlanId === null || deriveChildDisplayStatus(child) === 'READY') continue;
+    const currentOrderIds = currentChildAssignments(group, child).map((assignment) => assignment.orderId);
+    const draftOrderIds = routesByRoutePlanId.get(routePlanId)?.orderIds ?? [];
+    if (sameStringSet(currentOrderIds, draftOrderIds)) continue;
+    conflictingRoutePlanIds.add(routePlanId);
+    currentOrderIds
+      .filter((orderId) => removedOrderIdSet.has(orderId) || !draftOrderIds.includes(orderId))
+      .forEach((orderId) => conflictingOrderIds.add(orderId));
+    draftOrderIds
+      .filter((orderId) => !currentOrderIds.includes(orderId))
+      .forEach((orderId) => conflictingOrderIds.add(orderId));
+  }
+
+  if (conflictingRoutePlanIds.size > 0) {
+    throw new RouteGroupingStopMembershipConflictError(
+      [...conflictingOrderIds].sort((left, right) => left.localeCompare(right)),
+      [...conflictingRoutePlanIds].sort((left, right) => left.localeCompare(right))
+    );
+  }
+}
+
 function assertDraftExpectedRevisions(
   group: LoadedGrouping,
   routes: RouteGroupingDraftRouteInput[],
@@ -1627,6 +1660,12 @@ function logIgnoredExistingRouteOptimizedPayload(groupingId: string, routePlanId
 
 function sameStringSequence(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) return false;
+  const rightSet = new Set(right);
+  return left.every((value) => rightSet.has(value));
 }
 
 function logRouteGeometryRefreshFailure(routePlanId: string, reason: unknown): void {

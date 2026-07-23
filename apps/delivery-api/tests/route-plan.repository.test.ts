@@ -854,6 +854,299 @@ describe('PrismaRoutePlanRepository', () => {
     expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledWith({ where: { routePlanId: 'route-plan-id' } });
   });
 
+  test('admin stop transition writes admin audit, nullable-driver tracking event, and queued customer notification fact', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord({
+        routeStops: [
+          routePlanStopRecord({
+            deliveryStopId: 'stop-1',
+            distanceFromPreviousMeters: null,
+            durationFromPreviousSeconds: null,
+            estimatedArrivalAt: null,
+            order: orderRecord({ id: 'order-1', gid: 'gid://shopify/Order/123', stopId: 'stop-1', deliveryDate: '2026-05-08' }),
+            sequence: 1,
+            serviceMinutes: 5
+          })
+        ]
+      }),
+      routePlanStopFindFirst: {
+        deliveryStop: { order: { email: 'customer@example.com' }, orderId: 'order-1' },
+        deliveryStopId: 'stop-1',
+        routePlan: { status: 'IN_PROGRESS' }
+      }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.transitionAdminRouteStop({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: {
+        idempotencyKey: 'admin-stop-action-key',
+        status: 'COMPLETED'
+      },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result).toMatchObject({
+      duplicate: false,
+      notification: {
+        factId: 'customer-notification-fact-id',
+        idempotencyKey: 'admin-stop-action-key:customer-notification',
+        orderId: 'order-1',
+        recipientEmail: 'customer@example.com',
+        status: 'QUEUED'
+      },
+      status: {
+        deliveryStopStatus: 'DELIVERED',
+        uiStatus: 'COMPLETED'
+      }
+    });
+    expect(result?.trackingEvent).toMatchObject({
+      deliveryStopId: 'stop-1',
+      driverId: null,
+      eventId: 'driver-event-id',
+      eventType: 'STOP_DELIVERED',
+      routePlanId: 'route-plan-id'
+    });
+    expect(prisma.deliveryStop.updateMany).toHaveBeenCalledWith({
+      data: { status: 'DELIVERED' },
+      where: { id: 'stop-1', shopId: 'shop-id' }
+    });
+    const driverEventCreateArg = prisma.driverEvent.create.mock.calls[0]?.[0] as unknown as { data: Record<string, unknown> } | undefined;
+    expect(driverEventCreateArg?.data).toMatchObject({
+      clientEventId: 'admin-stop-action-key',
+      deliveryStopId: 'stop-1',
+      driverId: null,
+      eventType: 'STOP_DELIVERED',
+      payload: {
+        actor: 'admin-user',
+        source: 'ADMIN',
+        uiStatus: 'COMPLETED'
+      },
+      routePlanId: 'route-plan-id',
+      shopId: 'shop-id'
+    });
+    const notificationUpsertArg = prisma.customerRouteNotificationFact.upsert.mock.calls[0]?.[0] as unknown as {
+      create: Record<string, unknown>;
+      update: Record<string, unknown>;
+      where: Record<string, unknown>;
+    } | undefined;
+    expect(notificationUpsertArg).toMatchObject({
+      create: {
+        idempotencyKey: 'admin-stop-action-key:customer-notification',
+        orderId: 'order-1',
+        source: 'ADMIN_ROUTE_STOP_TRANSITION',
+        status: 'QUEUED'
+      },
+      update: {
+        source: 'ADMIN_ROUTE_STOP_TRANSITION',
+        status: 'QUEUED'
+      },
+      where: { idempotencyKey: 'admin-stop-action-key:customer-notification' }
+    });
+    const auditCreateArg = prisma.adminRouteStopActionAudit.create.mock.calls[0]?.[0] as unknown as { data: Record<string, unknown> } | undefined;
+    expect(auditCreateArg?.data).toMatchObject({
+      action: 'STOP_STATUS_TRANSITION',
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      deliveryStopStatus: 'DELIVERED',
+      executionEventType: 'STOP_DELIVERED',
+      idempotencyKey: 'admin-stop-action-key',
+      requestedUiStatus: 'COMPLETED',
+      routePlanId: 'route-plan-id',
+      shopId: 'shop-id',
+      source: 'ADMIN'
+    });
+  });
+
+  test('duplicate admin stop transition returns current route without duplicate side effects', async () => {
+    const { prisma } = createPrismaHarness({
+      adminStopActionAudit: {
+        deliveryStopId: 'stop-1',
+        routePlanId: 'route-plan-id',
+        shopId: 'shop-id'
+      },
+      routePlanFindFirst: routePlanRecord({
+        routeStops: [
+          routePlanStopRecord({
+            deliveryStopId: 'stop-1',
+            distanceFromPreviousMeters: null,
+            durationFromPreviousSeconds: null,
+            estimatedArrivalAt: null,
+            order: orderRecord({ id: 'order-1', gid: 'gid://shopify/Order/123', stopId: 'stop-1', deliveryDate: '2026-05-08' }),
+            sequence: 1,
+            serviceMinutes: 5
+          })
+        ]
+      }),
+      routePlanStopFindFirst: {
+        deliveryStop: { order: { email: 'customer@example.com' }, orderId: 'order-1' },
+        deliveryStopId: 'stop-1',
+        routePlan: { status: 'IN_PROGRESS' }
+      }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.transitionAdminRouteStop({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: {
+        idempotencyKey: 'admin-stop-action-key',
+        status: 'COMPLETED'
+      },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.duplicate).toBe(true);
+    expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+    expect(prisma.customerRouteNotificationFact.upsert).not.toHaveBeenCalled();
+    expect(prisma.adminRouteStopActionAudit.create).not.toHaveBeenCalled();
+  });
+
+  test('same-state admin stop transition is a no-op even with a fresh idempotency key', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord({
+        routeStops: [
+          routePlanStopRecord({
+            deliveryStopId: 'stop-1',
+            distanceFromPreviousMeters: null,
+            durationFromPreviousSeconds: null,
+            estimatedArrivalAt: null,
+            order: orderRecord({ id: 'order-1', gid: 'gid://shopify/Order/123', stopId: 'stop-1', deliveryDate: '2026-05-08' }),
+            sequence: 1,
+            serviceMinutes: 5
+          })
+        ]
+      }),
+      routePlanStopFindFirst: {
+        deliveryStop: {
+          order: { email: 'customer@example.com' },
+          orderId: 'order-1',
+          status: 'DELIVERED'
+        },
+        deliveryStopId: 'stop-1',
+        routePlan: { status: 'IN_PROGRESS' }
+      }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.transitionAdminRouteStop({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: {
+        idempotencyKey: 'fresh-completed-key',
+        status: 'COMPLETED'
+      },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.duplicate).toBe(true);
+    expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+    expect(prisma.customerRouteNotificationFact.upsert).not.toHaveBeenCalled();
+    expect(prisma.adminRouteStopActionAudit.create).not.toHaveBeenCalled();
+  });
+
+  test('admin stop override marks route geometry and ETA stale without touching orders', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord({
+        routeStops: [
+          routePlanStopRecord({
+            deliveryStopId: 'stop-1',
+            distanceFromPreviousMeters: null,
+            durationFromPreviousSeconds: null,
+            estimatedArrivalAt: null,
+            order: orderRecord({ id: 'order-1', gid: 'gid://shopify/Order/123', stopId: 'stop-1', deliveryDate: '2026-05-08' }),
+            sequence: 1,
+            serviceMinutes: 5
+          })
+        ]
+      }),
+      routePlanStopFindFirst: { id: 'route-plan-stop-id' }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    const result = await repository.updateAdminRouteStopOverride({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: {
+        latitude: 43.6426,
+        longitude: -79.3871,
+        recipientName: 'Jane Admin',
+        serviceMinutes: 8
+      },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(result?.geometry.status).toBe('stale');
+    const stopUpdateArg = prisma.deliveryStop.updateMany.mock.calls[0]?.[0] as unknown as {
+      data: Record<string, unknown>;
+      where: Record<string, unknown>;
+    } | undefined;
+    expect(stopUpdateArg).toMatchObject({
+      data: {
+        geocodeStatus: 'RESOLVED',
+        latitude: '43.6426',
+        longitude: '-79.3871',
+        recipientName: 'Jane Admin',
+        serviceMinutes: 8
+      },
+      where: { id: 'stop-1', shopId: 'shop-id' }
+    });
+    expect(prisma.routePlanGeometryCache.deleteMany).toHaveBeenCalledWith({ where: { routePlanId: 'route-plan-id' } });
+    const routeStopUpdateArg = prisma.routePlanStop.updateMany.mock.calls[0]?.[0] as unknown as {
+      data: Record<string, unknown>;
+      where: Record<string, unknown>;
+    } | undefined;
+    expect(routeStopUpdateArg).toMatchObject({
+      data: {
+        distanceFromPreviousMeters: null,
+        durationFromPreviousSeconds: null,
+        estimatedArrivalAt: null,
+        etaSource: 'ADMIN_STOP_OVERRIDE',
+        etaStatus: 'STALE'
+      },
+      where: { routePlanId: 'route-plan-id', shopId: 'shop-id' }
+    });
+    expect(prisma.order.upsert).not.toHaveBeenCalled();
+  });
+
+  test('admin stop override resets service minutes to the database default when null is requested', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanFindFirst: routePlanRecord(),
+      routePlanStopFindFirst: { id: 'route-plan-stop-id' }
+    });
+    const repository = new PrismaRoutePlanRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaRoutePlanRepository>[0]
+    );
+
+    await repository.updateAdminRouteStopOverride({
+      actor: 'admin-user',
+      deliveryStopId: 'stop-1',
+      payload: { serviceMinutes: null },
+      routePlanId: 'route-plan-id',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(prisma.deliveryStop.updateMany).toHaveBeenCalledWith({
+      data: { serviceMinutes: 5 },
+      where: { id: 'stop-1', shopId: 'shop-id' }
+    });
+  });
+
   test('rejects adding a stop owned by another in-progress route to an in-progress route', async () => {
     const { prisma } = createPrismaHarness({
       conflictingRoutePlanStop: { deliveryStopId: 'stop-1', routePlanId: 'other-route-plan-id' },
@@ -1549,6 +1842,7 @@ function hasRouteStatusUpdate(
 }
 
 function createPrismaHarness(input: {
+  adminStopActionAudit?: { deliveryStopId: string; routePlanId: string; shopId: string } | null;
   conflictingRoutePlanStop?: { deliveryStopId: string; routePlanId: string } | null;
   deliveryStopForId?: { id: string } | null;
   deliveryFacts?: Array<Record<string, unknown>>;
@@ -1559,6 +1853,7 @@ function createPrismaHarness(input: {
   routeGeometryCacheFindFirst?: Record<string, unknown> | null;
   routeGeometryCacheFindUnique?: Record<string, unknown> | null;
   routePlanFindFirst?: Record<string, unknown> | null;
+  routePlanStopFindFirst?: Record<string, unknown> | null;
   routePlanToDelete?: { id: string } | null;
   routeGroupingChildVersionCount?: number;
   routeGroupingCurrentChildrenAfterDelete?: Array<{ routePlanId: string | null }>;
@@ -1567,12 +1862,25 @@ function createPrismaHarness(input: {
   prisma: {
     $queryRaw: ReturnType<typeof vi.fn>;
     $transaction: ReturnType<typeof vi.fn>;
+    adminRouteStopActionAudit: {
+      create: ReturnType<typeof vi.fn>;
+      findUnique: ReturnType<typeof vi.fn>;
+    };
+    customerRouteNotificationFact: {
+      findUnique: ReturnType<typeof vi.fn>;
+      update: ReturnType<typeof vi.fn>;
+      upsert: ReturnType<typeof vi.fn>;
+    };
     deliveryStop: {
       findFirst: ReturnType<typeof vi.fn>;
+      updateMany: ReturnType<typeof vi.fn>;
       upsert: ReturnType<typeof vi.fn>;
     };
     driver: {
       findFirst: ReturnType<typeof vi.fn>;
+    };
+    driverEvent: {
+      create: ReturnType<typeof vi.fn>;
     };
     order: {
       findMany: ReturnType<typeof vi.fn>;
@@ -1601,6 +1909,7 @@ function createPrismaHarness(input: {
       updateMany: ReturnType<typeof vi.fn>;
     };
     routePlanGeometryCache: {
+      deleteMany: ReturnType<typeof vi.fn>;
       findFirst: ReturnType<typeof vi.fn>;
       findUnique: ReturnType<typeof vi.fn>;
       upsert: ReturnType<typeof vi.fn>;
@@ -1611,6 +1920,7 @@ function createPrismaHarness(input: {
     };
     routePlanStop: {
       createMany: ReturnType<typeof vi.fn>;
+      updateMany: ReturnType<typeof vi.fn>;
       findFirst: ReturnType<typeof vi.fn>;
       findMany: ReturnType<typeof vi.fn>;
       deleteMany: ReturnType<typeof vi.fn>;
@@ -1626,6 +1936,19 @@ function createPrismaHarness(input: {
   const prisma = {
     $queryRaw: vi.fn(() => Promise.resolve([])),
     $transaction: vi.fn(async (callback: (client: unknown) => Promise<unknown>) => callback(prisma)),
+    adminRouteStopActionAudit: {
+      create: vi.fn(() => Promise.resolve({ id: 'admin-stop-action-audit-id' })),
+      findUnique: vi.fn(() => Promise.resolve(input.adminStopActionAudit ?? null))
+    },
+    customerRouteNotificationFact: {
+      findUnique: vi.fn(() => Promise.resolve({
+        id: 'customer-notification-fact-id',
+        orderId: 'order-1',
+        status: 'QUEUED'
+      })),
+      update: vi.fn(() => Promise.resolve({ id: 'customer-notification-fact-id' })),
+      upsert: vi.fn(() => Promise.resolve({ id: 'customer-notification-fact-id' }))
+    },
     deliveryStop: {
       findFirst: vi.fn((args: { where?: { id?: string } }) =>
         Promise.resolve(
@@ -1634,6 +1957,7 @@ function createPrismaHarness(input: {
             : input.deliveryStopForId
         )
       ),
+      updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
       upsert: vi
         .fn()
         .mockResolvedValueOnce({ id: 'stop-1' })
@@ -1642,6 +1966,13 @@ function createPrismaHarness(input: {
     },
     driver: {
       findFirst: vi.fn(() => Promise.resolve(input.driverForAssignment === undefined ? { id: 'driver-id' } : input.driverForAssignment))
+    },
+    driverEvent: {
+      create: vi.fn(() => Promise.resolve({
+        createdAt: new Date('2026-05-07T12:30:00.100Z'),
+        id: 'driver-event-id',
+        occurredAt: new Date('2026-05-07T12:30:00.000Z')
+      }))
     },
     order: {
       findMany: vi.fn(() => Promise.resolve(input.orders ?? [
@@ -1746,6 +2077,7 @@ function createPrismaHarness(input: {
       )
     },
     routePlanGeometryCache: {
+      deleteMany: vi.fn(() => Promise.resolve({ count: 1 })),
       findFirst: vi.fn((args: unknown) => { void args; return Promise.resolve(input.routeGeometryCacheFindFirst ?? null); }),
       findUnique: vi.fn((args: unknown) => { void args; return Promise.resolve(input.routeGeometryCacheFindUnique ?? null); }),
       upsert: vi.fn((args: unknown) => { void args; return Promise.resolve({ id: 'route-geometry-cache-id' }); })
@@ -1760,7 +2092,8 @@ function createPrismaHarness(input: {
     },
     routePlanStop: {
       createMany: routePlanStopCreateMany,
-      findFirst: vi.fn(() => Promise.resolve(input.conflictingRoutePlanStop ?? null)),
+      updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
+      findFirst: vi.fn(() => Promise.resolve(input.routePlanStopFindFirst ?? input.conflictingRoutePlanStop ?? null)),
       findMany: vi.fn(() => Promise.resolve(input.existingRoutePlanStops ?? [])),
       deleteMany: vi.fn(() => Promise.resolve({ count: 2 }))
     },
