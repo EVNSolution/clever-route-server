@@ -130,6 +130,38 @@ describe('Admin orders routes', () => {
     }
   });
 
+  test('passes the validated shop delivery cycle into snapshot sync', async () => {
+    const { dependencies, syncOrdersSnapshot } = createDependencyHarness();
+    const app = await buildApp({ adminOrders: dependencies });
+
+    try {
+      const payload = orderSyncPayload();
+      payload.deliveryCycle = {
+        cutoffTime: '17:00',
+        cutoffWeekday: 'TUESDAY',
+        timeZone: 'America/Toronto'
+      };
+
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload,
+        url: '/admin/orders/sync'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(syncOrdersSnapshot).toHaveBeenCalledWith(expect.objectContaining({
+        deliveryCycle: {
+          cutoffTime: '17:00',
+          cutoffWeekday: 'TUESDAY',
+          timeZone: 'America/Toronto'
+        }
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
   test('accepts Shopify snapshots with blank custom attribute values', async () => {
     const { dependencies, syncOrdersSnapshot } = createDependencyHarness();
     const app = await buildApp({ adminOrders: dependencies });

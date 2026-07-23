@@ -1,4 +1,5 @@
 import type { ShopifyAdminGraphqlClient } from './admin-graphql.client.js';
+import type { DeliveryCycleConfig } from './order-delivery-scope.js';
 import type { CanonicalOrderRow, ShopifyOrderNode, SyncedOrderWithDeliveryStopInput } from './order-sync.mapper.js';
 import { mapShopifyOrderNodeToDeliveryInputs } from './order-sync.mapper.js';
 import { buildOrdersUpdatedSinceQuery } from './order-sync.query.js';
@@ -30,6 +31,7 @@ export type SyncUpdatedOrdersPageResult = {
 };
 
 export type SyncOrdersSnapshotInput = {
+  deliveryCycle?: DeliveryCycleConfig;
   orders: ShopifyOrderNode[];
   reason: 'orders_page_open' | 'manual_refresh' | 'route_create_preflight';
   appId?: string | undefined;
@@ -129,7 +131,9 @@ export class ShopifyOrderSyncService {
       updated: 0
     };
     const orders: CanonicalOrderRow[] = [];
-    const syncedOrders = input.orders.map((node) => mapShopifyOrderNodeToDeliveryInputs(node));
+    const syncedOrders = input.orders.map((node) => mapShopifyOrderNodeToDeliveryInputs(node, {
+      ...(input.deliveryCycle === undefined ? {} : { deliveryCycle: input.deliveryCycle })
+    }));
 
     if (input.reason === 'manual_refresh' && this.options.repository.assertOrdersSnapshotRefreshable !== undefined) {
       await this.options.repository.assertOrdersSnapshotRefreshable({
