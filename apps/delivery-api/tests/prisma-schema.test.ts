@@ -70,6 +70,10 @@ const driverRouteAccountScopeMigrationPath = new URL(
   '../prisma/migrations/20260716170000_scope_driver_access_to_account_route/migration.sql',
   import.meta.url
 );
+const driverAccountDeletionMigrationPath = new URL(
+  '../prisma/migrations/20260727180000_scope_deletion_request_to_driver_account/migration.sql',
+  import.meta.url
+);
 const multiRouteMembershipMigrationPath = new URL(
   '../prisma/migrations/20260722090000_allow_safe_multi_route_membership/migration.sql',
   import.meta.url
@@ -302,9 +306,23 @@ describe('Prisma schema', () => {
     const migration = await readFile(driverAccountNameMigrationPath, 'utf8');
     const accountModel = /model DriverAccount \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
 
-    expect(accountModel).toContain('name              String?                @db.VarChar(80)');
+    expect(accountModel).toMatch(/name\s+String\?\s+@db\.VarChar\(80\)/u);
     expect(migration).toContain('ALTER TABLE "driver_accounts" ADD COLUMN "name" VARCHAR(80)');
     expect(migration).not.toContain('drivers');
+  });
+
+  test('scopes account deletion requests to the global phone account without cascading history', async () => {
+    const schema = await readSchema();
+    const migration = await readFile(driverAccountDeletionMigrationPath, 'utf8');
+
+    expect(schema).toMatch(/model DriverAccountDeletionRequest \{[\s\S]*accountId\s+String\?\s+@unique[\s\S]*account\s+DriverAccount\?\s+@relation\(fields: \[accountId\], references: \[id\], onDelete: SetNull\)/u);
+    expect(schema).toMatch(/model DriverAccountDeletionRequest \{[\s\S]*shopDomain\s+String\?/u);
+    expect(migration).toContain('ADD COLUMN "accountId" UUID');
+    expect(migration).toContain('ALTER COLUMN "shopDomain" DROP NOT NULL');
+    expect(migration).toContain('driver_account_deletion_requests_accountId_key');
+    expect(migration).toContain('REFERENCES "driver_accounts"("id")');
+    expect(migration).toContain('ON DELETE SET NULL');
+    expect(migration.trim()).toMatch(/^BEGIN;[\s\S]*COMMIT;$/u);
   });
 
   test('ships a migration for the WooCommerce connection store rollout', async () => {

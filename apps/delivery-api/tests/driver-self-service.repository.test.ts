@@ -1,7 +1,10 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaDriverSelfServiceRepository } from '../src/modules/driver/driver-self-service.repository.js';
-import { DriverSelfServiceScopeError } from '../src/modules/driver/driver-self-service.types.js';
+import {
+  DriverAccountDeletionActiveRouteError,
+  DriverSelfServiceScopeError
+} from '../src/modules/driver/driver-self-service.types.js';
 import { ROUTE_DRIVER_VISIBLE_STATUSES } from '../src/modules/route-plans/route-plan-lifecycle.js';
 
 const routePlanId = '11111111-1111-4111-8111-111111111111';
@@ -288,7 +291,61 @@ describe('PrismaDriverSelfServiceRepository', () => {
       }
     });
     expect(prisma.driver.update).not.toHaveBeenCalled();
-    expect(result).toEqual({ requestId: 'deletion-request-id', status: 'REQUESTED' });
+    expect(result).toEqual({ duplicate: false, requestId: 'deletion-request-id', status: 'REQUESTED' });
+  });
+
+  test('creates one global account deletion request without Store ownership', async () => {
+    const { prisma } = createPrismaHarness({ activeAccountRoute: null });
+    const repository = new PrismaDriverSelfServiceRepository(prisma as never);
+
+    const result = await repository.requestGlobalAccountDeletion({
+      accountId: 'account-id',
+      reason: 'Delete my account',
+      requestedAt: new Date('2026-07-27T09:00:00.000Z'),
+      tokenVersion: 3
+    });
+
+    expect(prisma.driverAccount.findFirst).toHaveBeenCalledWith({
+      select: { name: true, phone: true },
+      where: { id: 'account-id', status: 'ACTIVE', tokenVersion: 3 }
+    });
+    expect(prisma.driverAccountDeletionRequest.create).toHaveBeenCalledWith({
+      data: {
+        accountId: 'account-id',
+        driverDisplayName: 'Jiin',
+        driverPhone: '+14165550123',
+        reason: 'Delete my account',
+        requestedAt: new Date('2026-07-27T09:00:00.000Z'),
+        shopDomain: null,
+        status: 'REQUESTED'
+      }
+    });
+    expect(result).toEqual({ duplicate: false, requestId: 'deletion-request-id', status: 'REQUESTED' });
+  });
+
+  test('returns an existing global deletion request and blocks only a new request during an active route', async () => {
+    const existingHarness = createPrismaHarness({
+      deletionRequest: { id: 'existing-request-id', status: 'REQUESTED' }
+    });
+    const existingRepository = new PrismaDriverSelfServiceRepository(existingHarness.prisma as never);
+
+    await expect(existingRepository.requestGlobalAccountDeletion({
+      accountId: 'account-id',
+      reason: null,
+      requestedAt: new Date('2026-07-27T09:00:00.000Z'),
+      tokenVersion: 3
+    })).resolves.toEqual({ duplicate: true, requestId: 'existing-request-id', status: 'REQUESTED' });
+    expect(existingHarness.prisma.routePlan.findFirst).not.toHaveBeenCalled();
+
+    const activeHarness = createPrismaHarness({ activeAccountRoute: { id: routePlanId } });
+    const activeRepository = new PrismaDriverSelfServiceRepository(activeHarness.prisma as never);
+    await expect(activeRepository.requestGlobalAccountDeletion({
+      accountId: 'account-id',
+      reason: null,
+      requestedAt: new Date('2026-07-27T09:00:00.000Z'),
+      tokenVersion: 3
+    })).rejects.toThrow(DriverAccountDeletionActiveRouteError);
+    expect(activeHarness.prisma.driverAccountDeletionRequest.create).not.toHaveBeenCalled();
   });
 
   test('returns zero-money earnings from completed scoped route work only', async () => {
@@ -331,6 +388,8 @@ describe('PrismaDriverSelfServiceRepository', () => {
 });
 
 function createPrismaHarness(input: {
+  activeAccountRoute?: { id: string } | null;
+  deletionRequest?: { id: string; status: 'REQUESTED' } | null;
   driver?: { displayName: string; id: string; phone: string | null; status: 'ACTIVE' } | null;
   routePlanScope?: { id: string } | null;
   routePlans?: ReturnType<typeof routePlanRecord>[];
@@ -341,6 +400,8 @@ function createPrismaHarness(input: {
     : input.driver;
   const routePlanScope = input.routePlanScope === undefined ? { id: routePlanId } : input.routePlanScope;
   const routePlans = input.routePlans ?? [routePlanRecord()];
+  const activeAccountRoute = input.activeAccountRoute ?? null;
+  const deletionRequest = input.deletionRequest ?? null;
 
   return {
     prisma: {
@@ -348,8 +409,12 @@ function createPrismaHarness(input: {
         findFirst: vi.fn(() => Promise.resolve(driver)),
         update: vi.fn(() => Promise.resolve({ displayName: 'Mina Kang', id: 'driver-id', phone: '+14165550123', status: 'ACTIVE' }))
       },
+      driverAccount: {
+        findFirst: vi.fn(() => Promise.resolve({ name: 'Jiin', phone: '+14165550123' }))
+      },
       driverAccountDeletionRequest: {
-        create: vi.fn(() => Promise.resolve({ id: 'deletion-request-id', status: 'REQUESTED' }))
+        create: vi.fn(() => Promise.resolve({ id: 'deletion-request-id', status: 'REQUESTED' })),
+        findUnique: vi.fn(() => Promise.resolve(deletionRequest))
       },
       driverRouteFeedback: {
         create: vi.fn((args: { data: { reviewNote: string; routePlanId: string; submittedAt: Date } }) => Promise.resolve({
@@ -360,7 +425,9 @@ function createPrismaHarness(input: {
         }))
       },
       routePlan: {
-        findFirst: vi.fn(() => Promise.resolve(routePlanScope)),
+        findFirst: vi.fn((args: { where?: { driver?: { accountId?: string } } }) => Promise.resolve(
+          args.where?.driver?.accountId === undefined ? routePlanScope : activeAccountRoute
+        )),
         findMany: vi.fn(() => Promise.resolve(routePlans))
       },
       shop: {

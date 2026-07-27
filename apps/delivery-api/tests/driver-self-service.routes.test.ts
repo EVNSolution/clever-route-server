@@ -1,9 +1,15 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
-import { DriverRouteHistoryCursorError } from '../src/modules/driver/driver-self-service.types.js';
+import {
+  DriverAccountDeletionActiveRouteError,
+  DriverRouteHistoryCursorError
+} from '../src/modules/driver/driver-self-service.types.js';
 import type { DriverApiDependencies } from '../src/routes/driver-events.routes.js';
-import { signDriverRouteToken } from '../src/modules/driver/driver-token-verifier.js';
+import {
+  signDriverAccountToken,
+  signDriverRouteToken
+} from '../src/modules/driver/driver-token-verifier.js';
 
 const secret = 'driver-secret';
 const now = new Date('2026-05-19T06:40:00.000Z');
@@ -32,6 +38,7 @@ describe('Driver self-service routes', () => {
       expect(selfService.getDriverProfile).not.toHaveBeenCalled();
       expect(selfService.updateDriverProfile).not.toHaveBeenCalled();
       expect(selfService.requestAccountDeletion).not.toHaveBeenCalled();
+      expect(selfService.requestGlobalAccountDeletion).not.toHaveBeenCalled();
       expect(selfService.getDriverEarnings).not.toHaveBeenCalled();
     } finally {
       await app.close();
@@ -286,7 +293,7 @@ describe('Driver self-service routes', () => {
 
       expect(response.statusCode).toBe(202);
       expect(response.json()).toEqual({
-        data: { requestId: 'deletion-request-id', status: 'REQUESTED' },
+        data: { duplicate: false, requestId: 'deletion-request-id', status: 'REQUESTED' },
         error: null
       });
       expect(selfService.requestAccountDeletion).toHaveBeenCalledWith({
@@ -295,6 +302,61 @@ describe('Driver self-service routes', () => {
         requestedAt: now,
         shopDomain: 'example.myshopify.com',
         shopId: 'shop-id'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('creates one global deletion request from the account bearer without Store scope', async () => {
+    const { app, selfService } = await createAppHarness();
+
+    try {
+      const response = await app.inject({
+        body: { confirmation: 'DELETE', reason: 'Delete my account' },
+        headers: { authorization: `Bearer ${accountToken()}` },
+        method: 'POST',
+        url: '/driver/account-deletion-requests'
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(response.json()).toEqual({
+        data: { duplicate: false, requestId: 'global-deletion-request-id', status: 'REQUESTED' },
+        error: null
+      });
+      expect(selfService.requestGlobalAccountDeletion).toHaveBeenCalledWith({
+        accountId: 'account-id',
+        reason: 'Delete my account',
+        requestedAt: now,
+        tokenVersion: 0
+      });
+      expect(selfService.requestAccountDeletion).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('blocks a new global deletion request while a route is in progress', async () => {
+    const { app, selfService } = await createAppHarness();
+    selfService.requestGlobalAccountDeletion.mockRejectedValueOnce(
+      new DriverAccountDeletionActiveRouteError()
+    );
+
+    try {
+      const response = await app.inject({
+        body: { confirmation: 'DELETE' },
+        headers: { authorization: `Bearer ${accountToken()}` },
+        method: 'POST',
+        url: '/driver/account-deletion-requests'
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({
+        data: null,
+        error: {
+          code: 'ACCOUNT_DELETION_ACTIVE_ROUTE',
+          message: 'Finish or release the active route before requesting account deletion'
+        }
       });
     } finally {
       await app.close();
@@ -407,7 +469,10 @@ async function createAppHarness(input: { activeToken?: boolean } = {}) {
       pageInfo: { endCursor: null, hasNextPage: false }
     })),
     requestAccountDeletion: vi.fn<DriverSelfService['requestAccountDeletion']>(() =>
-      Promise.resolve({ requestId: 'deletion-request-id', status: 'REQUESTED' })
+      Promise.resolve({ duplicate: false, requestId: 'deletion-request-id', status: 'REQUESTED' })
+    ),
+    requestGlobalAccountDeletion: vi.fn<DriverSelfService['requestGlobalAccountDeletion']>(() =>
+      Promise.resolve({ duplicate: false, requestId: 'global-deletion-request-id', status: 'REQUESTED' })
     ),
     submitRouteFeedback: vi.fn<DriverSelfService['submitRouteFeedback']>((request) => Promise.resolve({
       feedbackId: 'feedback-id',
@@ -454,6 +519,15 @@ function driverToken(): string {
     accountId: 'account-id',
     expiresInSeconds: 60,
     routePlanId: 'route-plan-id',
+    subject: 'driver-account:account-id',
+    tokenVersion: 0
+  }, { now, secret }).token;
+}
+
+function accountToken(): string {
+  return signDriverAccountToken({
+    accountId: 'account-id',
+    expiresInSeconds: 60,
     subject: 'driver-account:account-id',
     tokenVersion: 0
   }, { now, secret }).token;

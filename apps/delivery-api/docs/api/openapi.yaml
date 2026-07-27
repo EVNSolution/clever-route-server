@@ -1860,9 +1860,12 @@ paths:
       operationId: requestDriverAccountDeletion
       x-source-file: src/routes/driver-events.routes.ts
       description: >-
-        First-pass compliance-safe receive path. This creates an audit request only;
-        it does not delete, anonymize, revoke tokens, remove proof media, or alter route assignments.
+        Global phone-account receive path. A DriverAccount bearer is preferred and
+        creates one idempotent account-scoped audit request. The legacy route bearer
+        remains temporarily accepted for backward compatibility. This endpoint does
+        not delete, anonymize, revoke tokens, remove proof media, or alter route assignments.
       security:
+        - DriverAccountAccessToken: []
         - DriverAccessToken: []
       requestBody:
         required: true
@@ -1883,6 +1886,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /driver/earnings:
     get:
       tags: [Driver Mobile]
@@ -4166,8 +4171,10 @@ components:
       properties:
         data:
           type: object
-          required: [requestId, status]
+          required: [duplicate, requestId, status]
           properties:
+            duplicate:
+              type: boolean
             requestId:
               type: string
             status:

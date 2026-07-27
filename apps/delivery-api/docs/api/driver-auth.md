@@ -85,6 +85,23 @@ Content-Type: application/json
 
 Both endpoints return only the account phone and nullable name. The account JWT must still match an active account and its current token version.
 
+## Global account deletion request
+
+The app requests deletion with the phone-account bearer, not a selected Store
+route token:
+
+```http
+POST /driver/account-deletion-requests
+Authorization: Bearer <driver-account-access-token>
+Content-Type: application/json
+```
+
+The body requires `confirmation: "DELETE"` and accepts an optional `reason`.
+The endpoint creates one idempotent `REQUESTED` audit record for the global
+`DriverAccount`. It returns `409 ACCOUNT_DELETION_ACTIVE_ROUTE` while any route
+linked to the account is `IN_PROGRESS`. The request does not immediately delete
+delivery, consent, proof, or route history records.
+
 ## Security boundary
 
 The invitation code proves that a shop assigned the phone. The PIN protects later app access but is not SMS-based proof that the user owns the phone number. SMS verification can replace the invitation step later without changing the phone-owned account or normal phone + PIN login contract.
