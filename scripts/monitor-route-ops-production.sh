@@ -137,7 +137,7 @@ from urllib.request import urlopen
 api_container = 'clever-route-clever-route-api-1'
 postgres_container = 'clever-route-postgres-1'
 migration_dir = Path('apps/delivery-api/prisma/migrations')
-required_latest_migration = '20260723023000_g011_production_baseline_drift_repair'
+required_latest_migration = '20260723170000_add_customer_notification_outbox_worker'
 configured_status_base_url = os.environ.get('ROUTE_OPS_G007_STATUS_BASE_URL', '').strip().rstrip('/')
 observation_report_path = os.environ.get('ROUTE_OPS_G007_OBSERVATION_REPORT_PATH', '').strip()
 

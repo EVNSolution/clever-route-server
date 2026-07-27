@@ -58,7 +58,7 @@ esac
 case "$g007_status" in *"legacyUsage"*) ;; *) echo "G007 JSON status must include legacy usage output" >&2; exit 1 ;; esac
 case "$g007_status" in *"invariantFailures"*) ;; *) echo "G007 JSON status must include invariant output" >&2; exit 1 ;; esac
 case "$g007_status" in *"latestMigration"*) ;; *) echo "G007 JSON status must include migration output" >&2; exit 1 ;; esac
-case "$g007_status" in *"20260723023000_g011_production_baseline_drift_repair"*) ;; *) echo "G007 JSON status must require the latest migration" >&2; exit 1 ;; esac
+case "$g007_status" in *"20260723170000_add_customer_notification_outbox_worker"*) ;; *) echo "G007 JSON status must require the latest migration" >&2; exit 1 ;; esac
 case "$g007_status" in *"eta_input_route_version_mismatches"*"route_plan.status NOT IN ('CANCELLED', 'COMPLETED')"*) ;;
   *) echo "G007 invariant must compare active route-plan ETA input versions to the current child version regardless of etaStatus" >&2; exit 1 ;;
 esac
@@ -111,7 +111,7 @@ if not match:
 namespace = {
     'Path': Path,
     'migration_dir': Path('/definitely-missing-clever-route-migrations'),
-    'required_latest_migration': '20260723023000_g011_production_baseline_drift_repair',
+    'required_latest_migration': '20260723170000_add_customer_notification_outbox_worker',
 }
 exec(match.group('body'), namespace)
 status_from_history = namespace['migration_status_from_history']
@@ -124,77 +124,67 @@ expected = [
     '20260723003000_g009_tenant_composite_dsv_fks',
     '20260723013000_g010_import_row_resource_tenant_fks',
     '20260723023000_g011_production_baseline_drift_repair',
+    '20260723120000_add_admin_route_stop_actions',
+    '20260723170000_add_customer_notification_outbox_worker',
 ]
 
 with tempfile.TemporaryDirectory() as tmp:
     migrations = Path(tmp)
-    for name in expected[:6]:
+    for name in expected[:-1]:
         migration = migrations / name
         migration.mkdir()
         (migration / 'migration.sql').write_text('-- fixture\n')
     assert expected_migration_names(migrations) == expected
 
 repo_expected = expected_migration_names(Path('apps/delivery-api/prisma/migrations'))
-assert len(repo_expected) == 45, repo_expected
-assert repo_expected[-1] == '20260723023000_g011_production_baseline_drift_repair', repo_expected[-1]
+assert len(repo_expected) == 47, repo_expected
+assert repo_expected[-1] == '20260723170000_add_customer_notification_outbox_worker', repo_expected[-1]
 assert repo_expected.count('20260722233000_align_migration_history_to_schema') == 1, repo_expected
 
 empty = status_from_history([], expected)
 assert empty['status'] == 'critical', empty
-assert empty['expectedCount'] == 7, empty
+assert empty['expectedCount'] == len(expected), empty
 assert empty['appliedCount'] == 0, empty
-assert empty['pendingCount'] == 7, empty
+assert empty['pendingCount'] == len(expected), empty
 assert empty['failedCount'] == 0, empty
 assert empty['pendingMigrations'] == expected, empty
 assert empty['actualLatestMigration'] == '', empty
 assert empty['unexpectedMigrations'] == [], empty
 
 missing_latest = status_from_history([
-    {'migrationName': expected[0], 'finishedAt': True, 'rolledBackAt': False},
-    {'migrationName': expected[1], 'finishedAt': True, 'rolledBackAt': False},
-    {'migrationName': expected[2], 'finishedAt': True, 'rolledBackAt': False},
-    {'migrationName': expected[3], 'finishedAt': True, 'rolledBackAt': False},
-    {'migrationName': expected[4], 'finishedAt': True, 'rolledBackAt': False},
-    {'migrationName': expected[5], 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': name, 'finishedAt': True, 'rolledBackAt': False}
+    for name in expected[:-1]
 ], expected)
 assert missing_latest['status'] == 'critical', missing_latest
-assert missing_latest['appliedCount'] == 6, missing_latest
+assert missing_latest['appliedCount'] == len(expected) - 1, missing_latest
 assert missing_latest['pendingCount'] == 1, missing_latest
-assert missing_latest['pendingMigrations'] == [expected[6]], missing_latest
-assert missing_latest['latestMigration'] == expected[6], missing_latest
-assert missing_latest['actualLatestMigration'] == expected[5], missing_latest
+assert missing_latest['pendingMigrations'] == [expected[-1]], missing_latest
+assert missing_latest['latestMigration'] == expected[-1], missing_latest
+assert missing_latest['actualLatestMigration'] == expected[-2], missing_latest
 
 complete = status_from_history([
-    {'migrationName': expected[0], 'finishedAt': True, 'rolledBackAt': False},
-    {'migrationName': expected[1], 'finishedAt': True, 'rolledBackAt': False},
-    {'migrationName': expected[2], 'finishedAt': True, 'rolledBackAt': False},
-    {'migrationName': expected[3], 'finishedAt': True, 'rolledBackAt': False},
-    {'migrationName': expected[4], 'finishedAt': True, 'rolledBackAt': False},
-    {'migrationName': expected[5], 'finishedAt': True, 'rolledBackAt': False},
-    {'migrationName': expected[6], 'finishedAt': True, 'rolledBackAt': False},
+    {'migrationName': name, 'finishedAt': True, 'rolledBackAt': False}
+    for name in expected
 ], expected)
 assert complete['status'] == 'ok', complete
-assert complete['expectedCount'] == 7, complete
-assert complete['appliedCount'] == 7, complete
+assert complete['expectedCount'] == len(expected), complete
+assert complete['appliedCount'] == len(expected), complete
 assert complete['pendingCount'] == 0, complete
 assert complete['failedCount'] == 0, complete
 assert complete['pendingMigrations'] == [], complete
-assert complete['actualLatestMigration'] == expected[6], complete
+assert complete['actualLatestMigration'] == expected[-1], complete
 assert complete['unexpectedCount'] == 0, complete
 
 complete_with_unexpected_history_row = status_from_history([
-    {'migrationName': expected[0], 'finishedAt': True, 'rolledBackAt': False},
-    {'migrationName': expected[1], 'finishedAt': True, 'rolledBackAt': False},
-    {'migrationName': expected[2], 'finishedAt': True, 'rolledBackAt': False},
-    {'migrationName': expected[3], 'finishedAt': True, 'rolledBackAt': False},
-    {'migrationName': expected[4], 'finishedAt': True, 'rolledBackAt': False},
-    {'migrationName': expected[5], 'finishedAt': True, 'rolledBackAt': False},
-    {'migrationName': expected[6], 'finishedAt': True, 'rolledBackAt': False},
+    *[
+        {'migrationName': name, 'finishedAt': True, 'rolledBackAt': False}
+        for name in expected
+    ],
     {'migrationName': '99999999999999_unchecked_history_row', 'finishedAt': True, 'rolledBackAt': False},
 ], expected)
 assert complete_with_unexpected_history_row['status'] == 'critical', complete_with_unexpected_history_row
-assert complete_with_unexpected_history_row['expectedCount'] == 7, complete_with_unexpected_history_row
-assert complete_with_unexpected_history_row['appliedCount'] == 7, complete_with_unexpected_history_row
+assert complete_with_unexpected_history_row['expectedCount'] == len(expected), complete_with_unexpected_history_row
+assert complete_with_unexpected_history_row['appliedCount'] == len(expected), complete_with_unexpected_history_row
 assert complete_with_unexpected_history_row['unexpectedCount'] == 1, complete_with_unexpected_history_row
 assert complete_with_unexpected_history_row['unexpectedMigrations'] == ['99999999999999_unchecked_history_row'], complete_with_unexpected_history_row
 assert complete_with_unexpected_history_row['actualLatestMigration'] == '99999999999999_unchecked_history_row', complete_with_unexpected_history_row
