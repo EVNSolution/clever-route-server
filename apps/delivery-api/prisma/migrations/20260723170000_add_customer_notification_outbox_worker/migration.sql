@@ -1,6 +1,9 @@
 ALTER TYPE "CustomerRouteNotificationStatus" ADD VALUE 'PROCESSING';
 ALTER TYPE "CustomerRouteNotificationStatus" ADD VALUE 'DEAD';
 
+COMMIT;
+BEGIN;
+
 ALTER TABLE "customer_route_notification_facts"
   ADD COLUMN "routePlanId" UUID,
   ADD COLUMN "deliveryStopId" UUID,
@@ -66,3 +69,5 @@ CREATE INDEX "customer_route_notification_facts_status_leaseExpiresAt_idx"
 
 CREATE INDEX "customer_route_notification_facts_deliveryStopId_occurredAt_idx"
   ON "customer_route_notification_facts"("deliveryStopId", "occurredAt");
+
+COMMIT;

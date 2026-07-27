@@ -40,6 +40,7 @@ const g010MigrationName = '20260723013000_g010_import_row_resource_tenant_fks';
 const g011MigrationName = '20260723023000_g011_production_baseline_drift_repair';
 const g011MigrationPath = new URL(`../prisma/migrations/${g011MigrationName}/migration.sql`, import.meta.url);
 const adminStopActionsMigrationName = '20260723120000_add_admin_route_stop_actions';
+const notificationOutboxMigrationName = '20260723170000_add_customer_notification_outbox_worker';
 const schemaPath = new URL('../prisma/schema.prisma', import.meta.url);
 
 const legacySingleColumnConstraints = [
@@ -95,7 +96,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(46);
+    expect(migrations).toHaveLength(47);
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -172,6 +173,7 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations).toContain(g010MigrationName);
     expect(migrations).toContain(g011MigrationName);
     expect(migrations).toContain(adminStopActionsMigrationName);
+    expect(migrations).toContain(notificationOutboxMigrationName);
     expect(migrations.indexOf('20260722213000_dsv_assignment_eta_state')).toBeLessThan(
       migrations.indexOf('20260722223000_drop_legacy_single_tenant_fks')
     );
@@ -182,7 +184,8 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf(g009MigrationName)).toBeLessThan(migrations.indexOf(g010MigrationName));
     expect(migrations.indexOf(g010MigrationName)).toBeLessThan(migrations.indexOf(g011MigrationName));
     expect(migrations.indexOf(g011MigrationName)).toBeLessThan(migrations.indexOf(adminStopActionsMigrationName));
-    expect(migrations.at(-1)).toBe(adminStopActionsMigrationName);
+    expect(migrations.indexOf(adminStopActionsMigrationName)).toBeLessThan(migrations.indexOf(notificationOutboxMigrationName));
+    expect(migrations.at(-1)).toBe(notificationOutboxMigrationName);
   });
 
   test('keeps the production baseline drift repair additive and fail closed', async () => {
@@ -254,7 +257,7 @@ describe('G007 DSV Prisma migration history', () => {
     const schema = await readFile(schemaPath, 'utf8');
 
     expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(27);
-    expect(schema.match(/updatedAt\s+DateTime\s+@default\(now\(\)\)\s+@updatedAt/gu)).toHaveLength(10);
+    expect(schema.match(/updatedAt\s+DateTime\s+@default\(now\(\)\)\s+@updatedAt/gu)).toHaveLength(11);
     expect(schema).toContain('warnings             Json                          @default("[]")');
   });
 });
