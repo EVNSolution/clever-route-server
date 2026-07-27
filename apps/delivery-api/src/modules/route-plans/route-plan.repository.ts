@@ -262,7 +262,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             factId: existingNotification?.id ?? null,
             orderId: existingNotification?.orderId ?? routeStop.deliveryStop.orderId,
             recipientEmail: routeStop.deliveryStop.order?.email ?? null,
-            status: existingNotification?.status === 'SENT' ? 'SENT' as const : 'QUEUED' as const
+            status: existingNotification?.status ?? 'QUEUED'
           },
           trackingEvent: null
         };
@@ -316,6 +316,7 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
 
       const notificationFact = await tx.customerRouteNotificationFact.upsert({
         create: {
+          deliveryStopId: input.deliveryStopId,
           idempotencyKey: notificationIdempotencyKey,
           metadata: {
             deliveryStopId: input.deliveryStopId,
@@ -323,18 +324,37 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
             runtimeSender: 'unwired',
             uiStatus: input.payload.status
           },
+          nextAttemptAt: new Date(),
           orderId: routeStop.deliveryStop.orderId,
+          recipientEmailSnapshot: routeStop.deliveryStop.order?.email ?? null,
+          requestedUiStatus: input.payload.status,
+          routePlanId: input.routePlanId,
           shopId: shop.id,
           source: 'ADMIN_ROUTE_STOP_TRANSITION',
           status: 'QUEUED'
         },
         update: {
+          attemptCount: 0,
+          deadAt: null,
+          deliveryStopId: input.deliveryStopId,
+          errorCode: null,
+          errorMessage: null,
+          leaseExpiresAt: null,
+          leaseToken: null,
           metadata: {
             deliveryStopId: input.deliveryStopId,
             routePlanId: input.routePlanId,
             runtimeSender: 'unwired',
             uiStatus: input.payload.status
           },
+          nextAttemptAt: new Date(),
+          processingStartedAt: null,
+          provider: null,
+          providerMessageId: null,
+          recipientEmailSnapshot: routeStop.deliveryStop.order?.email ?? null,
+          requestedUiStatus: input.payload.status,
+          routePlanId: input.routePlanId,
+          sentAt: null,
           source: 'ADMIN_ROUTE_STOP_TRANSITION',
           status: 'QUEUED'
         },
@@ -407,29 +427,6 @@ export class PrismaRoutePlanRepository implements RoutePlanRepository {
       },
       trackingEvent: result.trackingEvent
     };
-  }
-
-  async updateCustomerRouteNotificationFactStatus(input: {
-    errorCode?: string | null | undefined;
-    errorMessage?: string | null | undefined;
-    idempotencyKey: string;
-    provider?: string | null | undefined;
-    providerMessageId?: string | null | undefined;
-    status: 'QUEUED' | 'SENT';
-  }): Promise<void> {
-    await this.prisma.customerRouteNotificationFact.update({
-      data: {
-        metadata: {
-          errorCode: input.errorCode ?? null,
-          errorMessage: input.errorMessage ?? null,
-          provider: input.provider ?? null,
-          providerMessageId: input.providerMessageId ?? null,
-          runtimeSender: input.provider ?? 'unwired'
-        },
-        status: input.status
-      },
-      where: { idempotencyKey: input.idempotencyKey }
-    });
   }
 
   async updateAdminRouteStopOverride(input: AdminRouteStopOverrideInput): Promise<AdminRouteStopOverrideResult | null> {

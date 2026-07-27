@@ -255,7 +255,7 @@ export type AdminRouteStopTransitionResult = {
     orderId: string;
     provider?: string | null;
     recipientEmail?: string | null;
-    status: 'QUEUED' | 'SENT';
+    status: 'DEAD' | 'PROCESSING' | 'QUEUED' | 'SENT';
   };
   routePlan: RoutePlanDetail;
   status: {

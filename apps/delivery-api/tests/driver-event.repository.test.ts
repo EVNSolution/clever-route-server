@@ -543,7 +543,10 @@ describe('PrismaDriverEventRepository', () => {
       routePlanId: 'route-plan-id'
     }))).rejects.toBeInstanceOf(DriverEventExecutionConflictError);
 
-    expect(prisma.$queryRaw).toHaveBeenCalledOnce();
+    const routeExecutionLockQueries = prisma.$queryRaw.mock.calls.filter(([query]) =>
+      sqlText(query).includes('pg_advisory_xact_lock')
+    );
+    expect(routeExecutionLockQueries).toHaveLength(1);
     expect(prisma.driverEvent.create).not.toHaveBeenCalled();
     expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
   });
@@ -686,8 +689,14 @@ describe('PrismaDriverEventRepository', () => {
     });
   });
 
-  test('acknowledges duplicate client events without repeating state transitions', async () => {
+  test('acknowledges matching duplicate client events after a unique constraint race', async () => {
     const { prisma } = createPrismaHarness({
+      existingEvent: {
+        deliveryStopId: 'stop-id',
+        eventType: 'STOP_DELIVERED',
+        id: 'recorded-stop-delivered-id',
+        routePlanId: 'route-plan-id'
+      },
       driverEventCreateError: new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
         clientVersion: 'test',
         code: 'P2002'
@@ -700,15 +709,97 @@ describe('PrismaDriverEventRepository', () => {
       deliveryStopId: 'stop-id',
       eventType: 'STOP_DELIVERED',
       routePlanId: 'route-plan-id'
-    }))).resolves.toEqual({ duplicate: true, eventId: 'already-seen-client-id' });
+    }))).resolves.toEqual({ duplicate: true, eventId: 'recorded-stop-delivered-id' });
 
     expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
     expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
   });
 
+  test('rejects conflicting client events after a unique constraint race', async () => {
+    const { prisma } = createPrismaHarness({
+      existingEvent: {
+        deliveryStopId: 'other-stop-id',
+        eventType: 'STOP_DELIVERED',
+        id: 'conflicting-event-id',
+        routePlanId: 'route-plan-id'
+      },
+      driverEventCreateError: new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+        clientVersion: 'test',
+        code: 'P2002'
+      })
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      clientEventId: 'already-seen-client-id',
+      deliveryStopId: 'stop-id',
+      eventType: 'STOP_DELIVERED',
+      routePlanId: 'route-plan-id'
+    }))).rejects.toBeInstanceOf(DriverEventContextError);
+
+    expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
+    expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('resolves and memoizes schema capability checks before entering transactions', async () => {
+    const { operations, prisma } = createPrismaHarness({ driverEventRouteVersionColumnExists: true });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await repository.recordDriverEvent(baseInput({
+      clientEventId: 'gps-client-event-id-1',
+      deliveryStopId: null,
+      eventType: 'LOCATION_UPDATED',
+      routePlanId: 'route-plan-id'
+    }));
+    await repository.recordDriverEvent(baseInput({
+      clientEventId: 'gps-client-event-id-2',
+      deliveryStopId: null,
+      eventType: 'LOCATION_UPDATED',
+      routePlanId: 'route-plan-id'
+    }));
+
+    const driverEventColumnChecks = prisma.$queryRaw.mock.calls.filter(([query]) => {
+      const text = sqlText(query);
+      return text.includes('information_schema.columns') && text.includes("table_name = 'driver_events'");
+    });
+    expect(driverEventColumnChecks).toHaveLength(1);
+    expect(operations.indexOf('schema:driver_events')).toBeLessThan(operations.indexOf('transaction'));
+    expect(operations.indexOf('schema:route_plan_stops')).toBeLessThan(operations.indexOf('transaction'));
+  });
+
+  test('retries schema capability checks after a rejected probe', async () => {
+    const { prisma } = createPrismaHarness({
+      driverEventRouteVersionColumnExists: true,
+      schemaCapabilityFailures: 1
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      clientEventId: 'gps-client-event-id-1',
+      deliveryStopId: null,
+      eventType: 'LOCATION_UPDATED',
+      routePlanId: 'route-plan-id'
+    }))).rejects.toThrow('schema capability probe failed');
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+
+    await expect(repository.recordDriverEvent(baseInput({
+      clientEventId: 'gps-client-event-id-2',
+      deliveryStopId: null,
+      eventType: 'LOCATION_UPDATED',
+      routePlanId: 'route-plan-id'
+    }))).resolves.toEqual({ duplicate: false, eventId: 'driver-event-id' });
+
+    const driverEventColumnChecks = prisma.$queryRaw.mock.calls.filter(([query]) => {
+      const text = sqlText(query);
+      return text.includes('information_schema.columns') && text.includes("table_name = 'driver_events'");
+    });
+    expect(driverEventColumnChecks).toHaveLength(2);
+  });
+
   test('acknowledges a recorded completion retry before completed-route validation', async () => {
     const { prisma } = createPrismaHarness({
       existingEvent: {
+        deliveryStopId: null,
         eventType: 'ROUTE_COMPLETED',
         id: 'recorded-completion-id',
         routePlanId: 'route-plan-id'
@@ -725,7 +816,7 @@ describe('PrismaDriverEventRepository', () => {
     }))).resolves.toEqual({ duplicate: true, eventId: 'recorded-completion-id' });
 
     expect(prisma.driverEvent.findUnique).toHaveBeenCalledWith({
-      select: { eventType: true, id: true, routePlanId: true },
+      select: { deliveryStopId: true, eventType: true, id: true, routePlanId: true },
       where: {
         driverId_clientEventId: {
           clientEventId: 'route-completed-client-id',
@@ -761,7 +852,7 @@ function createPrismaHarness(input: {
   driverEventCreateError?: Error;
   driverEventRouteVersionColumnExists?: boolean;
   etaOwnershipColumnsExist?: boolean;
-  existingEvent?: { eventType: string; id: string; routePlanId: string | null } | null;
+  existingEvent?: { deliveryStopId: string | null; eventType: string; id: string; routePlanId: string | null } | null;
   routePlan?: { id: string; status?: string } | null;
   routeEtaInputVersionId?: string | null;
   routeEtaPersistenceRows?: Array<{ id: string }>;
@@ -780,8 +871,11 @@ function createPrismaHarness(input: {
     sequence: number;
   }>;
   routeStops?: { deliveryStop: { status: string } }[];
+  schemaCapabilityFailures?: number;
 } = {}) {
   let createdEventType: string | null = null;
+  let schemaCapabilityFailuresRemaining = input.schemaCapabilityFailures ?? 0;
+  const operations: string[] = [];
   const createDriverEvent = vi.fn((args: { data: { eventType: string } }) => {
     if (input.driverEventCreateError !== undefined) {
       throw input.driverEventCreateError;
@@ -816,6 +910,13 @@ function createPrismaHarness(input: {
     $queryRaw: vi.fn((query: unknown) => {
       const text = sqlText(query);
       if (text.includes('information_schema.columns')) {
+        operations.push(text.includes("table_name = 'driver_events'")
+          ? 'schema:driver_events'
+          : 'schema:route_plan_stops');
+        if (schemaCapabilityFailuresRemaining > 0) {
+          schemaCapabilityFailuresRemaining -= 1;
+          return Promise.reject(new Error('schema capability probe failed'));
+        }
         if (text.includes("table_name = 'driver_events'")) {
           return Promise.resolve(input.driverEventRouteVersionColumnExists === true
             ? [{ column_name: 'routeVersionId' }]
@@ -842,7 +943,10 @@ function createPrismaHarness(input: {
       }
       return Promise.resolve([]);
     }),
-    $transaction: vi.fn((callback: (transaction: unknown) => unknown) => Promise.resolve(callback(prisma))),
+    $transaction: vi.fn((callback: (transaction: unknown) => unknown) => {
+      operations.push('transaction');
+      return Promise.resolve(callback(prisma));
+    }),
     deliveryStop: {
       updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
     },
@@ -909,7 +1013,7 @@ function createPrismaHarness(input: {
     }
   });
 
-  return { prisma };
+  return { operations, prisma };
 }
 
 function sqlText(query: unknown): string {

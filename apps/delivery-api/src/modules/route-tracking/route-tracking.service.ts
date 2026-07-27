@@ -37,6 +37,12 @@ const ROUTE_TRACKING_PROGRESS_EVENT_TYPES: RouteTrackingProgressEventType[] = [
   'STOP_FAILED'
 ];
 
+const ROUTE_TRACKING_LIFECYCLE_EVENT_TYPES: RouteTrackingProgressEventType[] = [
+  'ROUTE_STARTED',
+  'ROUTE_PAUSED',
+  'ROUTE_COMPLETED'
+];
+
 type DriverLocationEventRow = {
   createdAt: Date;
   driverId: string | null;
@@ -78,7 +84,7 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
     routePlanId: string;
   }): Promise<RouteTrackingSnapshotV1> {
     const serverTime = input.now ?? new Date();
-    const [recordedGeometry, latestProgressRow, routeStops, arrivalRows] = await Promise.all([
+    const [recordedGeometry, latestProgressRow, latestDriverStageRow, routeStops, arrivalRows] = await Promise.all([
       this.prisma.routeTrackingGeometry.findUnique({
         where: { routePlanId: input.routePlanId }
       }),
@@ -95,6 +101,30 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
         },
         where: {
           eventType: { in: ROUTE_TRACKING_PROGRESS_EVENT_TYPES },
+          routePlanId: input.routePlanId
+        }
+      }),
+      this.prisma.driverEvent.findFirst({
+        orderBy: [{ occurredAt: 'desc' }, { createdAt: 'desc' }],
+        select: {
+          createdAt: true,
+          deliveryStopId: true,
+          driverId: true,
+          eventType: true,
+          id: true,
+          occurredAt: true,
+          routePlanId: true
+        },
+        where: {
+          OR: [
+            {
+              driverId: { not: null },
+              eventType: { in: ROUTE_TRACKING_PROGRESS_EVENT_TYPES }
+            },
+            {
+              eventType: { in: ROUTE_TRACKING_LIFECYCLE_EVENT_TYPES }
+            }
+          ],
           routePlanId: input.routePlanId
         }
       }),
@@ -190,7 +220,7 @@ export class PrismaRouteTrackingService implements RouteTrackingService {
     const arrivalPositions = arrivalLocationRows
       .map((row) => toPositionEvent(row))
       .filter((position): position is RouteTrackingPositionEventV1 => position !== null);
-    const progress = buildProgressSnapshot(latestProgressRow, routeStops);
+    const progress = buildProgressSnapshot(latestProgressRow, latestDriverStageRow, routeStops);
     this.refreshRoadMatchedPath(recordedGeometry);
 
     return {
@@ -254,7 +284,6 @@ export function createRouteTrackingProgressEvent(input: {
   routePlanId: string | null;
 }): RouteTrackingProgressEventV1 | null {
   if (
-    input.driverId === null ||
     input.routePlanId === null ||
     !isRouteTrackingProgressEventType(input.eventType)
   ) {
@@ -334,15 +363,19 @@ function toProgressEvent(row: DriverProgressEventRow | null): RouteTrackingProgr
 
 function buildProgressSnapshot(
   latestProgressRow: DriverProgressEventRow | null,
+  latestDriverStageRow: DriverProgressEventRow | null,
   routeStops: Array<{ deliveryStop: { status: string }; deliveryStopId: string; sequence: number }>
 ): RouteTrackingProgressSnapshotV1 {
   const latestEvent = toProgressEvent(latestProgressRow);
+  const latestDriverStageEvent = toProgressEvent(latestDriverStageRow);
   return {
     completedStopIds: routeStops
       .filter((routeStop) => routeStop.deliveryStop.status === 'DELIVERED')
       .map((routeStop) => routeStop.deliveryStopId),
-    currentStage: getDriverStage(latestEvent),
-    currentStopId: latestEvent?.eventType === 'STOP_ARRIVED' ? latestEvent.deliveryStopId : null,
+    currentStage: getDriverStage(latestDriverStageEvent),
+    currentStopId: latestDriverStageEvent?.eventType === 'STOP_ARRIVED'
+      ? latestDriverStageEvent.deliveryStopId
+      : null,
     failedStopIds: routeStops
       .filter((routeStop) => routeStop.deliveryStop.status === 'FAILED')
       .map((routeStop) => routeStop.deliveryStopId),

@@ -12,6 +12,7 @@ import { loadDriverApiDependencies } from './modules/driver/driver.dependencies.
 import { loadDriverAuthDependencies } from './modules/driver/driver-auth.dependencies.js';
 import { createRouteGroupingService, loadAdminRouteGroupDependencies } from './modules/route-grouping/route-grouping.dependencies.js';
 import { loadAdminRoutePlanDependencies } from './modules/route-plans/route-plan.dependencies.js';
+import { createCustomerDeliveryNotificationRuntime } from './modules/route-plans/customer-delivery-notification.runtime.js';
 import { loadAdminOrdersDependencies } from './modules/shopify/order-sync.dependencies.js';
 import { loadShopifyAuthDependencies } from './modules/shopify/auth.dependencies.js';
 import { loadShopifyWebhookDependencies } from './modules/shopify/webhook.dependencies.js';
@@ -112,22 +113,37 @@ const app = await buildApp(
     wordPressPlugin
   })
 );
+const customerDeliveryNotificationRuntime = createCustomerDeliveryNotificationRuntime({
+  env: process.env,
+  logger: app.log,
+  prisma
+});
 
 try {
-  await adminNotificationRuntime.start();
   await app.listen({ host: '0.0.0.0', port: env.port });
+  await adminNotificationRuntime.start();
+  await customerDeliveryNotificationRuntime.start();
   app.log.info({ port: env.port }, 'clever-route-server listening');
 } catch (error) {
   app.log.error(error, 'failed to start clever-route-server');
+  await Promise.allSettled([
+    app.close(),
+    adminNotificationRuntime.close(),
+    customerDeliveryNotificationRuntime.close(),
+    prisma.$disconnect()
+  ]);
   process.exitCode = 1;
 }
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.once(signal, () => {
     void app.close().finally(() => {
-      void adminNotificationRuntime.close().finally(() => {
+      void Promise.all([
+        adminNotificationRuntime.close(),
+        customerDeliveryNotificationRuntime.close()
+      ]).finally(() => {
         void prisma.$disconnect().finally(() => {
-        process.kill(process.pid, signal);
+          process.kill(process.pid, signal);
         });
       });
     });
