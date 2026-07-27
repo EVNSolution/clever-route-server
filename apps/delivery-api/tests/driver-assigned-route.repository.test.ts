@@ -26,6 +26,7 @@ const routePlanRecord = {
         latitude: '43.6487000',
         longitude: '-79.3817000',
         order: {
+          currencyCode: 'CAD',
           financialStatus: 'Cash',
           fulfillmentStatus: 'PROCESSING',
           id: 'order-id',
@@ -42,9 +43,11 @@ const routePlanRecord = {
           ],
           rawPayload: {
             customer_note: 'Leave the box beside the loading entrance.',
-            normalizedPaymentStatus: 'CASH_COLLECT_REQUIRED'
+            normalizedPaymentStatus: 'CASH_COLLECT_REQUIRED',
+            paymentMethodTitle: 'Cash on delivery'
           },
-          shopifyOrderGid: 'gid://shopify/Order/1001'
+          shopifyOrderGid: 'gid://shopify/Order/1001',
+          totalPriceAmount: '84.50'
         },
         phone: '+14165550123',
         postalCode: 'M5X 1A9',
@@ -104,6 +107,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
               province: 'ON'
             },
             coordinates: { latitude: 43.6487, longitude: -79.3817 },
+            currencyCode: 'CAD',
             customerNote: 'Leave the box beside the loading entrance.',
             deliveryStopId: 'stop-id',
             durationFromPreviousSeconds: 600,
@@ -120,10 +124,12 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             ],
             normalizedPaymentStatus: 'CASH_COLLECT_REQUIRED',
             orderName: '#1001',
+            paymentMethodTitle: 'Cash on delivery',
             phone: '+14165550123',
             recipientName: 'Recipient One',
             sequence: 1,
-            status: 'ASSIGNED'
+            status: 'ASSIGNED',
+            totalPriceAmount: '84.50'
           }
         ],
         timezone: 'America/Toronto'

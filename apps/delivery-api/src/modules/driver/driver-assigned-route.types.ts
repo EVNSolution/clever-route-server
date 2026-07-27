@@ -25,6 +25,7 @@ export type DriverAssignedRouteStop = {
     latitude: number | null;
     longitude: number | null;
   };
+  currencyCode: string | null;
   customerNote: string | null;
   deliveryStopId: string;
   durationFromPreviousSeconds?: number | null;
@@ -32,10 +33,12 @@ export type DriverAssignedRouteStop = {
   items: OrderItemDto[];
   normalizedPaymentStatus: NormalizedPaymentStatus | null;
   orderName: string;
+  paymentMethodTitle: string | null;
   phone: string | null;
   recipientName: string | null;
   sequence: number;
   status: string;
+  totalPriceAmount: string | null;
 };
 
 export type DriverAssignedRouteStopPoint = {

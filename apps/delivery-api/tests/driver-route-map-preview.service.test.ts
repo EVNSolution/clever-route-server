@@ -55,15 +55,18 @@ const route: DriverAssignedRoute = {
         province: 'ON'
       },
       coordinates: { latitude: 43.6487, longitude: -79.3817 },
+      currencyCode: null,
       customerNote: null,
       deliveryStopId: 'stop-id-1',
       items: [],
       normalizedPaymentStatus: 'CASH_COLLECT_REQUIRED',
       orderName: '#1001',
+      paymentMethodTitle: null,
       phone: '+14165550123',
       recipientName: 'Recipient One',
       sequence: 1,
-      status: 'ASSIGNED'
+      status: 'ASSIGNED',
+      totalPriceAmount: null
     },
     {
       address: {
@@ -75,15 +78,18 @@ const route: DriverAssignedRoute = {
         province: 'ON'
       },
       coordinates: { latitude: 43.6509, longitude: -79.3909 },
+      currencyCode: null,
       customerNote: null,
       deliveryStopId: 'stop-id-2',
       items: [],
       normalizedPaymentStatus: 'PAID_CONFIRMED',
       orderName: '#1002',
+      paymentMethodTitle: null,
       phone: '+14165550124',
       recipientName: 'Recipient Two',
       sequence: 2,
-      status: 'ASSIGNED'
+      status: 'ASSIGNED',
+      totalPriceAmount: null
     }
   ],
   timezone: 'America/Toronto'

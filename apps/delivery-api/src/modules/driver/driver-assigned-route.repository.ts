@@ -1,4 +1,4 @@
-import type { PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 
 import type {
@@ -67,6 +67,7 @@ type AssignedRoutePlanStopRecord = {
     latitude: unknown;
     longitude: unknown;
     order: {
+      currencyCode: string | null;
       financialStatus: string | null;
       fulfillmentStatus: string | null;
       id: string;
@@ -74,6 +75,7 @@ type AssignedRoutePlanStopRecord = {
       orderItems?: OrderItemRecordLike[];
       rawPayload: unknown;
       shopifyOrderGid: string;
+      totalPriceAmount: unknown;
     };
     phone: string | null;
     postalCode: string | null;
@@ -287,6 +289,7 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssi
       latitude: decimalNumber(deliveryStop.latitude),
       longitude: decimalNumber(deliveryStop.longitude)
     },
+    currencyCode: readCurrencyCode(deliveryStop.order.currencyCode),
     customerNote: readCustomerNote(rawPayload),
     deliveryStopId: deliveryStop.id,
     durationFromPreviousSeconds: routeStop.durationFromPreviousSeconds,
@@ -297,10 +300,12 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssi
       normalizedPaymentStatus: rawPayload?.normalizedPaymentStatus
     }),
     orderName: deliveryStop.order.name,
+    paymentMethodTitle: readPaymentMethodTitle(rawPayload),
     phone: deliveryStop.phone,
     recipientName: deliveryStop.recipientName,
     sequence: routeStop.sequence,
-    status: deliveryStop.status
+    status: deliveryStop.status,
+    totalPriceAmount: decimalString(deliveryStop.order.totalPriceAmount)
   };
 }
 
@@ -400,6 +405,36 @@ function readCustomerNote(rawPayload: Record<string, unknown> | null): string | 
 
   const customer = objectOrNull(rawPayload.customer);
   return readString(customer?.note);
+}
+
+function readCurrencyCode(value: unknown): string | null {
+  const currencyCode = readString(value)?.toUpperCase() ?? null;
+  return currencyCode !== null && /^[A-Z]{3}$/u.test(currencyCode) ? currencyCode : null;
+}
+
+function readPaymentMethodTitle(rawPayload: Record<string, unknown> | null): string | null {
+  if (rawPayload === null) {
+    return null;
+  }
+  return readString(rawPayload.payment_method_title)
+    ?? readString(rawPayload.paymentMethodTitle)
+    ?? readString(rawPayload.payment_method)
+    ?? readString(rawPayload.paymentMethod);
+}
+
+function decimalString(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'bigint') {
+    const normalized = String(value).trim();
+    return /^-?\d+(?:\.\d+)?$/u.test(normalized) ? normalized : null;
+  }
+  if (value instanceof Prisma.Decimal) {
+    const normalized = value.toString().trim();
+    return /^-?\d+(?:\.\d+)?$/u.test(normalized) ? normalized : null;
+  }
+  return null;
 }
 
 function decimalNumber(value: unknown): number | null {
