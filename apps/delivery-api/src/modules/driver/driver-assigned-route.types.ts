@@ -27,6 +27,7 @@ export type DriverAssignedRouteStop = {
   };
   currencyCode: string | null;
   customerNote: string | null;
+  deliverySession?: string | null;
   deliveryStopId: string;
   durationFromPreviousSeconds?: number | null;
   estimatedArrivalAt?: string | null;
@@ -37,6 +38,7 @@ export type DriverAssignedRouteStop = {
   phone: string | null;
   recipientName: string | null;
   sequence: number;
+  serviceType?: string | null;
   status: string;
   totalPriceAmount: string | null;
 };

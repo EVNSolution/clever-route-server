@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { CreateAdminNotificationInput } from './admin-notification.repository.js';
 import {
+  DRIVER_STOP_SKIPPED_ASSIGNMENT_ERROR_NOTIFICATION,
   DRIVER_STOP_SEQUENCE_DEVIATED_NOTIFICATION,
   WOO_ASSIGNED_ROUTE_ADDRESS_CHANGED_NOTIFICATION,
 } from './admin-notification.repository.js';
@@ -45,19 +46,56 @@ type DriverStopSequenceDeviatedEvent = {
   type: 'driver.stop_sequence_deviated';
 };
 
+type DriverStopSkippedAssignmentErrorEvent = {
+  createdAt: Date;
+  deliveryStopId: string;
+  driverId: string;
+  eventId: string;
+  occurredAt: Date;
+  routePlanId: string;
+  shopId: string;
+  type: 'driver.stop_skipped_assignment_error';
+};
+
 export type AdminWebNotificationEvent =
   | AssignedRouteAddressChangedEvent
+  | DriverStopSkippedAssignmentErrorEvent
   | DriverStopSequenceDeviatedEvent;
 
 export function createAdminNotificationInputsForEvent(
   event: AdminWebNotificationEvent,
 ): CreateAdminNotificationInput[] {
   switch (event.type) {
+    case 'driver.stop_skipped_assignment_error':
+      return [createDriverStopSkippedAssignmentErrorNotification(event)];
     case 'driver.stop_sequence_deviated':
       return [createDriverStopSequenceDeviationNotification(event)];
     case 'woo.assigned_route_address_changed':
       return createAssignedRouteAddressChangeNotifications(event);
   }
+}
+
+function createDriverStopSkippedAssignmentErrorNotification(
+  event: DriverStopSkippedAssignmentErrorEvent,
+): CreateAdminNotificationInput {
+  return {
+    body: 'A driver skipped a pickup order that was incorrectly included in this delivery route.',
+    createdAt: event.createdAt,
+    dedupeKey: `driver_stop_skipped_assignment_error:${event.routePlanId}:${event.deliveryStopId}`,
+    href: `/admin/ui/app/routes/${event.routePlanId}`,
+    payload: {
+      deliveryStopId: event.deliveryStopId,
+      driverId: event.driverId,
+      eventId: event.eventId,
+      occurredAt: event.occurredAt.toISOString(),
+      version: 1,
+    },
+    routePlanId: event.routePlanId,
+    severity: 'warning',
+    shopId: event.shopId,
+    title: 'Pickup stop skipped by driver',
+    type: DRIVER_STOP_SKIPPED_ASSIGNMENT_ERROR_NOTIFICATION,
+  };
 }
 
 function createDriverStopSequenceDeviationNotification(

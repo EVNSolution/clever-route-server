@@ -43,8 +43,10 @@ const routePlanRecord = {
           ],
           rawPayload: {
             customer_note: 'Leave the box beside the loading entrance.',
+            deliverySession: 'PICKUP',
             normalizedPaymentStatus: 'CASH_COLLECT_REQUIRED',
-            paymentMethodTitle: 'Cash on delivery'
+            paymentMethodTitle: 'Cash on delivery',
+            serviceType: 'PICKUP'
           },
           shopifyOrderGid: 'gid://shopify/Order/1001',
           totalPriceAmount: '84.50'
@@ -109,6 +111,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             coordinates: { latitude: 43.6487, longitude: -79.3817 },
             currencyCode: 'CAD',
             customerNote: 'Leave the box beside the loading entrance.',
+            deliverySession: 'PICKUP',
             deliveryStopId: 'stop-id',
             durationFromPreviousSeconds: 600,
             estimatedArrivalAt: null,
@@ -128,6 +131,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             phone: '+14165550123',
             recipientName: 'Recipient One',
             sequence: 1,
+            serviceType: 'PICKUP',
             status: 'ASSIGNED',
             totalPriceAmount: '84.50'
           }

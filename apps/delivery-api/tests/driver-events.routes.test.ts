@@ -194,6 +194,52 @@ describe('Driver events route', () => {
     }
   });
 
+  test('creates a durable administrator alert when a driver skips an incorrectly assigned pickup stop', async () => {
+    const { dependencies } = createDependencyHarness();
+    const createAdminNotification = vi.fn(() => Promise.resolve({
+      createdCount: 1,
+      dedupedCount: 0,
+      notifications: []
+    }));
+    dependencies.adminNotificationService = { createAdminNotification };
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: {
+          clientEventId: 'stop-failed-pickup',
+          deliveryStopId: 'stop-id',
+          eventType: 'STOP_FAILED',
+          occurredAt: '2026-05-07T06:09:30.000Z',
+          proof: {
+            note: 'Pickup order was incorrectly included in the delivery route.',
+            reason: 'ADMIN_ROUTE_ASSIGNMENT_ERROR',
+            source: 'driver-app-mvp',
+            type: 'FAILED_REASON'
+          },
+          routePlanId: 'route-plan-id'
+        },
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(createAdminNotification).toHaveBeenCalledWith({
+        createdAt: now,
+        deliveryStopId: 'stop-id',
+        driverId: 'driver-id',
+        eventId: 'driver-event-id',
+        occurredAt: new Date('2026-05-07T06:09:30.000Z'),
+        routePlanId: 'route-plan-id',
+        shopId: 'shop-id',
+        type: 'driver.stop_skipped_assignment_error'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('accepts the driver event when the administrator alert cannot be created', async () => {
     const { dependencies, recordDriverEvent } = createDependencyHarness();
     dependencies.adminNotificationService = {
