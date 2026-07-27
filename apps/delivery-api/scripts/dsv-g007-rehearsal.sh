@@ -18,7 +18,11 @@ fake_commands="${G007_FAKE_COMMANDS:-0}"
 schema_path="prisma/schema.prisma"
 migrations_dir="prisma/migrations"
 baseline_migration="20260520000000_initial_route_ops_baseline"
-cutoff_migration="20260723023000_g011_production_baseline_drift_repair"
+cutoff_migration="$(
+  find "$api_root/$migrations_dir" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; \
+    | LC_ALL=C sort \
+    | tail -n 1
+)"
 stale_source_expected_migration="20260722150000_add_dsv_dispatch_and_resources"
 prod_like_expected_migration="20260722223000_drop_legacy_single_tenant_fks"
 db_push_source_fingerprint_sql="prisma/rehearsal-fingerprints/db-push-source-before-20260722233000.sql.template"
