@@ -1204,20 +1204,21 @@ model Driver {
 }
 
 model DriverAccount {
-  id                String                 @id @default(uuid()) @db.Uuid
-  phone             String                 @unique @db.Text
-  name              String?                @db.VarChar(80)
-  pinHash           String                 @db.Text
-  pinSalt           String                 @db.Text
-  status            DriverStatus           @default(ACTIVE)
-  tokenVersion      Int                    @default(0)
-  failedPinAttempts Int                    @default(0)
-  pinLockedUntil    DateTime?              @db.Timestamptz(6)
-  createdAt         DateTime               @default(now()) @db.Timestamptz(6)
-  updatedAt         DateTime               @updatedAt @db.Timestamptz(6)
+  id                String                        @id @default(uuid()) @db.Uuid
+  phone             String                        @unique @db.Text
+  name              String?                       @db.VarChar(80)
+  pinHash           String                        @db.Text
+  pinSalt           String                        @db.Text
+  status            DriverStatus                  @default(ACTIVE)
+  tokenVersion      Int                           @default(0)
+  failedPinAttempts Int                           @default(0)
+  pinLockedUntil    DateTime?                     @db.Timestamptz(6)
+  createdAt         DateTime                      @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime                      @updatedAt @db.Timestamptz(6)
   drivers           Driver[]
   consentRecords    DriverConsentRecord[]
   sessions          DriverAccountSession[]
+  deletionRequest   DriverAccountDeletionRequest?
 
   @@index([status])
   @@map("driver_accounts")
@@ -1322,11 +1323,13 @@ model DriverRouteFeedback {
 
 model DriverAccountDeletionRequest {
   id                String                             @id @default(uuid()) @db.Uuid
+  accountId         String?                            @unique @db.Uuid
+  account           DriverAccount?                     @relation(fields: [accountId], references: [id], onDelete: SetNull)
   shopId            String?                            @db.Uuid
   shop              Shop?                              @relation(fields: [shopId], references: [id], onDelete: SetNull)
   driverId          String?                            @db.Uuid
   driver            Driver?                            @relation(fields: [driverId], references: [id], onDelete: SetNull)
-  shopDomain        String                             @db.Text
+  shopDomain        String?                            @db.Text
   driverDisplayName String?                            @db.Text
   driverPhone       String?                            @db.Text
   status            DriverAccountDeletionRequestStatus @default(REQUESTED)

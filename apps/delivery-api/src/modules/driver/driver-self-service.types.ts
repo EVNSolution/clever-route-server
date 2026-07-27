@@ -65,8 +65,16 @@ export type DriverAccountDeletionRequestInput = DriverSelfServiceScopeInput & {
 };
 
 export type DriverAccountDeletionRequestResult = {
+  duplicate: boolean;
   requestId: string;
   status: 'REQUESTED';
+};
+
+export type GlobalDriverAccountDeletionRequestInput = {
+  accountId: string;
+  reason: string | null;
+  requestedAt: Date;
+  tokenVersion: number;
 };
 
 export type GetDriverEarningsInput = DriverSelfServiceScopeInput & {
@@ -87,5 +95,7 @@ export type DriverEarningsResult = {
 };
 
 export class DriverRouteHistoryCursorError extends Error {}
+
+export class DriverAccountDeletionActiveRouteError extends Error {}
 
 export class DriverSelfServiceScopeError extends Error {}

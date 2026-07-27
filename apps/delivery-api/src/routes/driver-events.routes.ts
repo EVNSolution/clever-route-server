@@ -50,6 +50,7 @@ import type {
   StoreDriverProofMediaInput
 } from '../modules/driver/driver-proof-media.types.js';
 import {
+  DriverAccountDeletionActiveRouteError,
   DriverRouteHistoryCursorError,
   DriverSelfServiceScopeError,
   type DriverRouteHistoryStatus
@@ -628,14 +629,10 @@ export function registerDriverEventRoutes(
     app.post<{ Body: DriverAccountDeletionRequestBody }>(
       '/driver/account-deletion-requests',
       async (request, reply) => {
-        const authentication = await authenticateDriverRequest(request, dependencies);
-        if (authentication.status !== 'authenticated') {
-          return reply
-            .code(401)
-            .send(driverAuthenticationErrorResponse(authentication.status));
+        const token = extractBearerToken(request.headers.authorization);
+        if (token === null) {
+          return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Missing driver bearer token'));
         }
-        const driverContext = authentication.context;
-
         let deletionInput: ReturnType<typeof readDriverAccountDeletionRequestBody>;
         try {
           deletionInput = readDriverAccountDeletionRequestBody(request.body, dependencies.now?.() ?? new Date());
@@ -643,6 +640,45 @@ export function registerDriverEventRoutes(
           return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid account deletion request payload'));
         }
 
+        let accountContext: { accountId: string; tokenVersion: number } | null = null;
+        try {
+          const now = dependencies.now?.();
+          const account = verifyDriverAccountToken(
+            token,
+            now === undefined ? { secret: dependencies.jwtSecret } : { now, secret: dependencies.jwtSecret }
+          );
+          accountContext = { accountId: account.accountId, tokenVersion: account.tokenVersion };
+        } catch {
+          // Legacy route tokens are checked below.
+        }
+        if (accountContext !== null) {
+          try {
+            const result = await driverSelfService.requestGlobalAccountDeletion({
+              ...deletionInput,
+              ...accountContext
+            });
+            if (result === null) {
+              return reply.code(401).send(errorResponse('UNAUTHORIZED', 'Invalid driver account bearer token'));
+            }
+            return reply.code(202).send({ data: result, error: null });
+          } catch (error) {
+            if (error instanceof DriverAccountDeletionActiveRouteError) {
+              return reply.code(409).send(errorResponse(
+                'ACCOUNT_DELETION_ACTIVE_ROUTE',
+                'Finish or release the active route before requesting account deletion'
+              ));
+            }
+            throw error;
+          }
+        }
+
+        const authentication = await authenticateDriverRequest(request, dependencies);
+        if (authentication.status !== 'authenticated') {
+          return reply
+            .code(401)
+            .send(driverAuthenticationErrorResponse(authentication.status));
+        }
+        const driverContext = authentication.context;
         try {
           const result = await driverSelfService.requestAccountDeletion({
             ...deletionInput,

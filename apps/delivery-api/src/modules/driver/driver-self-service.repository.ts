@@ -1,8 +1,9 @@
-import { DriverEventType } from '@prisma/client';
+import { DriverEventType, Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 
 import {
+  DriverAccountDeletionActiveRouteError,
   DriverSelfServiceScopeError,
   DriverRouteHistoryCursorError,
   type DriverAccountDeletionRequestInput,
@@ -13,6 +14,7 @@ import {
   type DriverSelfProfile,
   type DriverSelfServiceScopeInput,
   type GetDriverEarningsInput,
+  type GlobalDriverAccountDeletionRequestInput,
   type ListDriverRoutesInput,
   type ListDriverRoutesResult,
   type SubmitDriverRouteFeedbackInput,
@@ -24,7 +26,7 @@ import { ROUTE_DRIVER_VISIBLE_STATUSES, toRouteExecutionStatus } from '../route-
 
 export type DriverSelfServicePrismaClient = Pick<
   PrismaClient,
-  'driver' | 'driverAccountDeletionRequest' | 'driverRouteFeedback' | 'routePlan' | 'shop'
+  'driver' | 'driverAccount' | 'driverAccountDeletionRequest' | 'driverRouteFeedback' | 'routePlan' | 'shop'
 >;
 
 type ScopedDriverRecord = {
@@ -175,9 +177,66 @@ export class PrismaDriverSelfServiceRepository {
     });
 
     return {
+      duplicate: false,
       requestId: request.id,
       status: request.status
     };
+  }
+
+  async requestGlobalAccountDeletion(
+    input: GlobalDriverAccountDeletionRequestInput
+  ): Promise<DriverAccountDeletionRequestResult | null> {
+    const account = await this.prisma.driverAccount.findFirst({
+      select: { name: true, phone: true },
+      where: {
+        id: input.accountId,
+        status: 'ACTIVE',
+        tokenVersion: input.tokenVersion
+      }
+    });
+    if (account === null) return null;
+
+    const existing = await this.prisma.driverAccountDeletionRequest.findUnique({
+      where: { accountId: input.accountId }
+    });
+    if (existing !== null) {
+      return { duplicate: true, requestId: existing.id, status: existing.status };
+    }
+
+    const activeRoute = await this.prisma.routePlan.findFirst({
+      select: { id: true },
+      where: {
+        driver: { accountId: input.accountId },
+        status: 'IN_PROGRESS'
+      }
+    });
+    if (activeRoute !== null) {
+      throw new DriverAccountDeletionActiveRouteError('Finish or release the active route before requesting account deletion');
+    }
+
+    try {
+      const request = await this.prisma.driverAccountDeletionRequest.create({
+        data: {
+          accountId: input.accountId,
+          driverDisplayName: account.name,
+          driverPhone: account.phone,
+          reason: input.reason,
+          requestedAt: input.requestedAt,
+          shopDomain: null,
+          status: 'REQUESTED'
+        }
+      });
+      return { duplicate: false, requestId: request.id, status: request.status };
+    } catch (error) {
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2002') {
+        throw error;
+      }
+      const concurrent = await this.prisma.driverAccountDeletionRequest.findUnique({
+        where: { accountId: input.accountId }
+      });
+      if (concurrent === null) throw error;
+      return { duplicate: true, requestId: concurrent.id, status: concurrent.status };
+    }
   }
 
   async getDriverEarnings(input: GetDriverEarningsInput): Promise<DriverEarningsResult> {
@@ -433,6 +492,7 @@ export type DriverSelfServiceApi = Pick<
   | 'getDriverProfile'
   | 'listDriverRoutes'
   | 'requestAccountDeletion'
+  | 'requestGlobalAccountDeletion'
   | 'submitRouteFeedback'
   | 'updateDriverProfile'
 >;
