@@ -923,6 +923,28 @@ export function registerDriverEventRoutes(
       }
     }
 
+    if (
+      !result.duplicate
+      && eventInput.eventType === 'STOP_FAILED'
+      && eventInput.deliveryStopId !== null
+      && isDriverAssignmentErrorStopFailure(request.body)
+    ) {
+      try {
+        await dependencies.adminNotificationService?.createAdminNotification({
+          createdAt: dependencies.now?.() ?? new Date(),
+          deliveryStopId: eventInput.deliveryStopId,
+          driverId: driverContext.driverId,
+          eventId: result.eventId,
+          occurredAt: eventInput.occurredAt,
+          routePlanId: driverContext.routePlanId,
+          shopId: driverContext.shopId,
+          type: 'driver.stop_skipped_assignment_error'
+        });
+      } catch (error) {
+        request.log.warn({ error, eventId: result.eventId }, 'failed to create skipped pickup notification');
+      }
+    }
+
     if (!result.duplicate && eventInput.eventType === 'LOCATION_UPDATED') {
       const positionEvent = createRouteTrackingPositionEvent({
         driverId: driverContext.driverId,
@@ -1258,6 +1280,17 @@ function readDriverEventBody(body: DriverEventRequestBody): {
     occurredAt: readRequiredDate(body.occurredAt),
     routePlanId: readOptionalString(body.routePlanId)
   };
+}
+
+function isDriverAssignmentErrorStopFailure(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const proof = (value as Record<string, unknown>).proof;
+  return typeof proof === 'object'
+    && proof !== null
+    && !Array.isArray(proof)
+    && (proof as Record<string, unknown>).reason === 'ADMIN_ROUTE_ASSIGNMENT_ERROR';
 }
 
 

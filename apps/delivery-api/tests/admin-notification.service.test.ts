@@ -164,6 +164,45 @@ describe('AdminNotificationService', () => {
     });
   });
 
+  test('formats an incorrectly assigned skipped pickup as an administrator warning', async () => {
+    const repository = createRepositoryHarness();
+    repository.createForShopOnceWithStatus.mockResolvedValueOnce({
+      created: true,
+      notification,
+    });
+    const service = new AdminNotificationService(repository as never, new AdminNotificationStreamHub());
+
+    await service.createAdminNotification({
+      createdAt: new Date('2026-05-07T06:10:00.000Z'),
+      deliveryStopId: 'stop-id',
+      driverId: 'driver-id',
+      eventId: 'driver-event-id',
+      occurredAt: new Date('2026-05-07T06:09:30.000Z'),
+      routePlanId: 'route-plan-id',
+      shopId: 'shop-id',
+      type: 'driver.stop_skipped_assignment_error',
+    });
+
+    expect(repository.createForShopOnceWithStatus).toHaveBeenCalledWith({
+      body: 'A driver skipped a pickup order that was incorrectly included in this delivery route.',
+      createdAt: new Date('2026-05-07T06:10:00.000Z'),
+      dedupeKey: 'driver_stop_skipped_assignment_error:route-plan-id:stop-id',
+      href: '/admin/ui/app/routes/route-plan-id',
+      payload: {
+        deliveryStopId: 'stop-id',
+        driverId: 'driver-id',
+        eventId: 'driver-event-id',
+        occurredAt: '2026-05-07T06:09:30.000Z',
+        version: 1,
+      },
+      routePlanId: 'route-plan-id',
+      severity: 'warning',
+      shopId: 'shop-id',
+      title: 'Pickup stop skipped by driver',
+      type: 'DRIVER_STOP_SKIPPED_ASSIGNMENT_ERROR',
+    });
+  });
+
 
   test('subscribes browser streams by normalized shop domain lookup', async () => {
     const repository = createRepositoryHarness();

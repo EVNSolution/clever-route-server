@@ -291,6 +291,8 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssi
     },
     currencyCode: readCurrencyCode(deliveryStop.order.currencyCode),
     customerNote: readCustomerNote(rawPayload),
+    deliverySession: readString(rawPayload?.deliverySession)
+      ?? readString(rawPayload?.delivery_session),
     deliveryStopId: deliveryStop.id,
     durationFromPreviousSeconds: routeStop.durationFromPreviousSeconds,
     estimatedArrivalAt: routeStop.estimatedArrivalAt?.toISOString() ?? null,
@@ -304,6 +306,8 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssi
     phone: deliveryStop.phone,
     recipientName: deliveryStop.recipientName,
     sequence: routeStop.sequence,
+    serviceType: readString(rawPayload?.serviceType)
+      ?? readString(rawPayload?.service_type),
     status: deliveryStop.status,
     totalPriceAmount: decimalString(deliveryStop.order.totalPriceAmount)
   };
