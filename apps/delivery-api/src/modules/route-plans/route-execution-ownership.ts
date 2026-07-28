@@ -44,7 +44,7 @@ export async function assertRouteExecutionOwnership(
   if (deliveryStopIds.length === 0) return;
 
   for (const deliveryStopId of deliveryStopIds) {
-    await tx.$queryRaw(Prisma.sql`SELECT pg_advisory_xact_lock(710027, hashtext(${deliveryStopId}))`);
+    await tx.$queryRaw(Prisma.sql`SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(710027, hashtext(${deliveryStopId}))`);
   }
 
   const conflict = await tx.routePlanStop.findFirst({
