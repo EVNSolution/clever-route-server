@@ -7,8 +7,13 @@ import {
 
 describe('route execution ownership', () => {
   test('locks unique stop ids in deterministic order before checking active overlap', async () => {
+    const lockSql: string[] = [];
     const tx = {
-      $queryRaw: vi.fn(() => Promise.resolve([])),
+      $queryRaw: vi.fn((query: TemplateStringsArray | { strings: readonly string[] }) => {
+        const strings = 'strings' in query ? query.strings : query;
+        lockSql.push(Array.from(strings).join('?'));
+        return Promise.resolve([{ locked: true }]);
+      }),
       routePlanStop: {
         findFirst: vi.fn(() => Promise.resolve({
           deliveryStopId: 'stop-a',
@@ -25,6 +30,10 @@ describe('route execution ownership', () => {
     })).rejects.toBeInstanceOf(RouteExecutionConflictError);
 
     expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+    expect(lockSql).toEqual([
+      'SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(710027, hashtext(?))',
+      'SELECT TRUE AS "locked" FROM pg_advisory_xact_lock(710027, hashtext(?))'
+    ]);
     expect(tx.routePlanStop.findFirst).toHaveBeenCalledWith({
       select: { deliveryStopId: true, routePlanId: true },
       where: {
