@@ -173,6 +173,7 @@ const ADMIN_UI_APP_API_PATH = `${ADMIN_UI_APP_PATH}/api`;
 const ADMIN_UI_APP_ASSETS_PATH = `${ADMIN_UI_APP_PATH}/assets`;
 const ADMIN_UI_APP_VENDOR_PATH = `${ADMIN_UI_APP_PATH}/vendor`;
 const DRIVER_APP_INSTALL_PATH = "/driver-app";
+const DRIVER_APP_ANDROID_RELEASE_PATH = `${DRIVER_APP_INSTALL_PATH}/release/android`;
 const ADMIN_UI_ORDERS_PATH = `${ADMIN_UI_ROOT_PATH}/orders`;
 const ADMIN_UI_ROUTE_PLANS_PATH = `${ADMIN_UI_ROOT_PATH}/route-plans`;
 const ADMIN_UI_DRIVERS_PATH = `${ADMIN_UI_ROOT_PATH}/drivers`;
@@ -462,6 +463,7 @@ export type AdminCommerceConnectionsUiDependencies = {
   };
   wooSyncService?: AdminWooSyncServiceApi;
   driverAppDownloadUrl?: string;
+  driverAppAndroidRelease?: DriverAppAndroidReleaseConfig;
   publicBaseUrl?: string;
   routeOptimizationJobService?: Pick<
     RouteOptimizationJobService,
@@ -505,6 +507,13 @@ export type AdminCommerceConnectionsUiDependencies = {
   };
 };
 
+export type DriverAppAndroidReleaseConfig = {
+  distributionChannel: "direct";
+  latestVersionCode: number;
+  latestVersionName: string;
+  minimumSupportedVersionCode: number;
+};
+
 export function registerAdminCommerceConnectionsUiRoutes(
   app: FastifyInstance,
   dependencies: AdminCommerceConnectionsUiDependencies,
@@ -524,6 +533,25 @@ export function registerAdminCommerceConnectionsUiRoutes(
       });
     }
     return reply.code(302).header("Location", downloadUrl).send("");
+  });
+
+  app.get(DRIVER_APP_ANDROID_RELEASE_PATH, async (request, reply) => {
+    const release = dependencies.driverAppAndroidRelease;
+    if (release === undefined) {
+      return sendPublicApiEnvelope(reply, 404, null, {
+        code: "DRIVER_APP_RELEASE_UNAVAILABLE",
+        message: "Driver app Android release manifest is not configured.",
+      });
+    }
+
+    return sendPublicApiEnvelope(reply, 200, {
+      distributionChannel: release.distributionChannel,
+      installUrl: `${resolveBaseUrl(request, dependencies)}${DRIVER_APP_INSTALL_PATH}`,
+      latestVersionCode: release.latestVersionCode,
+      latestVersionName: release.latestVersionName,
+      minimumSupportedVersionCode: release.minimumSupportedVersionCode,
+      platform: "android",
+    });
   });
 
   app.get(ADMIN_UI_WOOCOMMERCE_TEST_SCRIPT_PATH, async (_request, reply) =>
@@ -3975,6 +4003,19 @@ function sendJson(
     .type("application/json; charset=utf-8")
     .header("Cache-Control", "no-store")
     .send(body);
+}
+
+function sendPublicApiEnvelope<TData>(
+  reply: FastifyReply,
+  statusCode: number,
+  data: TData,
+  error: { code: string; message: string } | null = null,
+): unknown {
+  return reply
+    .code(statusCode)
+    .type("application/json; charset=utf-8")
+    .header("Cache-Control", "no-store")
+    .send({ data, error });
 }
 
 function redirect(reply: FastifyReply, location: string): unknown {

@@ -247,6 +247,57 @@ describe("Admin WooCommerce connection UI routes", () => {
     ).toThrow("DRIVER_APP_DOWNLOAD_URL must be an http(s) URL");
   });
 
+  test("loads Android driver app release manifest config without the raw download URL", () => {
+    const base = createBaseAdminCommerceDependencies();
+
+    const dependencies = loadAdminCommerceConnectionsUiDependencies({
+      adminCommerceConnections: base.dependencies,
+      env: {
+        CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
+        CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
+        DELIVERY_API_PUBLIC_URL: "https://clever-route-api.cleversystem.ai",
+        DRIVER_APP_ANDROID_LATEST_VERSION_CODE: "42",
+        DRIVER_APP_ANDROID_LATEST_VERSION_NAME: "1.4.2",
+        DRIVER_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE: "40",
+        DRIVER_APP_DISTRIBUTION_CHANNEL: "direct",
+        DRIVER_APP_DOWNLOAD_URL:
+          "https://drive.example.test/uc?id=apk&export=download",
+      },
+      nodeEnv: "production",
+    });
+
+    expect(dependencies?.driverAppAndroidRelease).toEqual({
+      distributionChannel: "direct",
+      latestVersionCode: 42,
+      latestVersionName: "1.4.2",
+      minimumSupportedVersionCode: 40,
+    });
+    expect(JSON.stringify(dependencies?.driverAppAndroidRelease)).not.toContain(
+      "drive.example.test",
+    );
+  });
+
+  test("keeps Android driver app release unavailable for missing or inconsistent config", () => {
+    const base = createBaseAdminCommerceDependencies();
+
+    const dependencies = loadAdminCommerceConnectionsUiDependencies({
+      adminCommerceConnections: base.dependencies,
+      env: {
+        CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
+        CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
+        DELIVERY_API_PUBLIC_URL: "https://clever-route-api.cleversystem.ai",
+        DRIVER_APP_ANDROID_LATEST_VERSION_CODE: "40",
+        DRIVER_APP_ANDROID_LATEST_VERSION_NAME: "1.4.0",
+        DRIVER_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE: "42",
+        DRIVER_APP_DISTRIBUTION_CHANNEL: "direct",
+      },
+      nodeEnv: "production",
+    });
+
+    expect(dependencies).toBeDefined();
+    expect(dependencies?.driverAppAndroidRelease).toBeUndefined();
+  });
+
   test("enables VROOM optimization with base URL", () => {
     const base = createBaseAdminCommerceDependencies();
 
@@ -826,6 +877,41 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
+  test("exposes the public Android driver app release manifest", async () => {
+    const rawDownloadUrl =
+      "https://drive.example.test/uc?id=driver-apk&export=download";
+    const { app } = await createUiHarness({
+      driverAppAndroidRelease: {
+        distributionChannel: "direct",
+        latestVersionCode: 42,
+        latestVersionName: "1.4.2",
+        minimumSupportedVersionCode: 40,
+      },
+      driverAppDownloadUrl: rawDownloadUrl,
+    });
+
+    try {
+      const response = await app.inject({
+        method: "GET",
+        url: "/driver-app/release/android",
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["cache-control"]).toBe("no-store");
+      expect(readApiData(response)).toEqual({
+        distributionChannel: "direct",
+        installUrl: "https://clever-route-api.cleversystem.ai/driver-app",
+        latestVersionCode: 42,
+        latestVersionName: "1.4.2",
+        minimumSupportedVersionCode: 40,
+        platform: "android",
+      });
+      expect(response.body).not.toContain("drive.example.test");
+      expect(response.body).not.toContain("driver-apk");
+    } finally {
+      await app.close();
+    }
+  });
+
   test("keeps the driver app install link disabled until a download URL is configured", async () => {
     const { app } = await createUiHarness({ driverAppDownloadUrl: null });
 
@@ -847,6 +933,17 @@ describe("Admin WooCommerce connection UI routes", () => {
       const redirect = await app.inject({ method: "GET", url: "/driver-app" });
       expect(redirect.statusCode).toBe(404);
       expect(redirect.body).toContain("Driver app download is not configured.");
+
+      const manifest = await app.inject({
+        method: "GET",
+        url: "/driver-app/release/android",
+      });
+      expect(manifest.statusCode).toBe(404);
+      expect(manifest.headers["cache-control"]).toBe("no-store");
+      expect(readApiError(manifest)).toEqual({
+        code: "DRIVER_APP_RELEASE_UNAVAILABLE",
+        message: "Driver app Android release manifest is not configured.",
+      });
     } finally {
       await app.close();
     }
@@ -6607,6 +6704,7 @@ async function createUiHarness(
   overrides: Partial<{
     actor: AdminCommerceActor;
     createConnection: ReturnType<typeof vi.fn>;
+    driverAppAndroidRelease: AdminCommerceConnectionsUiDependencies["driverAppAndroidRelease"];
     driverAppDownloadUrl: string | null;
     deliveryCustomerService: AdminCommerceConnectionsUiDependencies["deliveryCustomerService"];
     driverService: AdminCommerceConnectionsUiDependencies["driverService"];
@@ -6708,6 +6806,9 @@ async function createUiHarness(
     overrides.driverAppDownloadUrl === undefined
       ? {}
       : { driverAppDownloadUrl: overrides.driverAppDownloadUrl }),
+    ...(overrides.driverAppAndroidRelease === undefined
+      ? {}
+      : { driverAppAndroidRelease: overrides.driverAppAndroidRelease }),
     ...(overrides.geocodingService === undefined
       ? {}
       : { geocodingService: overrides.geocodingService }),

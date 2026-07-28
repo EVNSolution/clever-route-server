@@ -14,6 +14,7 @@ const expectedRouteRegistrations: RouteRegistration[] = [
   { line: 444, method: "GET", pathExpression: "\"/\"" },
   { line: 446, method: "GET", pathExpression: "ADMIN_ROOT_PATH" },
   { line: 450, method: "GET", pathExpression: "DRIVER_APP_INSTALL_PATH" },
+  { line: 461, method: "GET", pathExpression: "DRIVER_APP_ANDROID_RELEASE_PATH" },
   { line: 461, method: "GET", pathExpression: "ADMIN_UI_WOOCOMMERCE_TEST_SCRIPT_PATH" },
   { line: 469, method: "GET", pathExpression: "ADMIN_UI_ROUTE_APP_SCRIPT_PATH" },
   { line: 479, method: "GET", pathExpression: "ADMIN_UI_PLUGIN_LAUNCH_PATH" },
@@ -234,6 +235,6 @@ describe("admin UI route inventory", () => {
     expect(registrations).toContain("GET `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/optimize-jobs/:jobId`");
     expect(registrations).toContain("POST `${ADMIN_UI_APP_API_PATH}/routes/:routePlanId/publish`");
     expect(registrations).toContain("PATCH `${ADMIN_UI_APP_API_PATH}/settings`");
-    expect(expectedRouteRegistrations).toHaveLength(104);
+    expect(expectedRouteRegistrations).toHaveLength(105);
   });
 });
