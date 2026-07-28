@@ -3969,7 +3969,7 @@ components:
         error: { type: 'null' }
     DriverAssignedRoute:
       type: object
-      required: [deliveryDate, id, name, shopDomain, stops, timezone]
+      required: [deliveryDate, etaSnapshot, id, name, shopDomain, stops, timezone]
       properties:
         id:
           type: string
@@ -3978,6 +3978,8 @@ components:
         deliveryDate:
           format: date
           type: string
+        etaSnapshot:
+          $ref: '#/components/schemas/DriverRouteEtaSnapshot'
         shopDomain:
           type: string
         timezone:
@@ -3988,10 +3990,14 @@ components:
             $ref: '#/components/schemas/DriverAssignedRouteStop'
     DriverAssignedRouteStop:
       type: object
-      required: [address, coordinates, deliveryStopId, durationFromPreviousSeconds, estimatedArrivalAt, orderName, phone, recipientName, sequence, status]
+      required: [address, coordinates, deliveryStopId, distanceFromPreviousMeters, durationFromPreviousSeconds, estimatedArrivalAt, orderName, phone, recipientName, sequence, status]
       properties:
         deliveryStopId:
           type: string
+        distanceFromPreviousMeters:
+          type:
+            - integer
+            - 'null'
         durationFromPreviousSeconds:
           type:
             - integer
@@ -4356,17 +4362,20 @@ components:
     DriverEventRequest:
       type: object
       required: [eventType, occurredAt]
+      description: PICKUP_COMPLETED requires a nonblank clientEventId and deliveryStopId must be omitted or null.
       properties:
         clientEventId:
+          description: Client-side idempotency key. Required and nonblank when eventType is PICKUP_COMPLETED.
           type:
             - string
             - 'null'
         deliveryStopId:
+          description: Stop-scoped event target. Must be omitted or null when eventType is PICKUP_COMPLETED.
           type:
             - string
             - 'null'
         eventType:
-          enum: [ROUTE_STARTED, ROUTE_PAUSED, ROUTE_COMPLETED, STOP_ARRIVED, STOP_DELIVERED, STOP_FAILED, LOCATION_UPDATED, NOTE_ADDED]
+          enum: [ROUTE_STARTED, ROUTE_PAUSED, ROUTE_COMPLETED, PICKUP_COMPLETED, STOP_ARRIVED, STOP_DELIVERED, STOP_FAILED, LOCATION_UPDATED, NOTE_ADDED]
           type: string
         latitude:
           type:
@@ -4384,6 +4393,14 @@ components:
             - string
             - 'null'
       additionalProperties: true
+      examples:
+        pickupCompleted:
+          value:
+            clientEventId: pickup-2026-05-07T06-09-30Z
+            deliveryStopId: null
+            eventType: PICKUP_COMPLETED
+            occurredAt: '2026-05-07T06:09:30.000Z'
+            routePlanId: route-plan-id
     DriverEventEnvelope:
       type: object
       required: [data, error]
@@ -4396,13 +4413,78 @@ components:
               type: boolean
             etaUpdate:
               $ref: '#/components/schemas/DriverRouteEtaUpdate'
+            etaSnapshot:
+              $ref: '#/components/schemas/DriverRouteEtaSnapshot'
             eventId:
               type: string
         error:
           type: 'null'
+    DriverRouteEtaSnapshot:
+      type: object
+      required: [status, pickupCompletedAt, nextStopEta, remainingRouteEta, failureCode, failureMessage, calculatedAt]
+      properties:
+        status:
+          enum: [PRE_PICKUP, READY, FAILED]
+          type: string
+        pickupCompletedAt:
+          format: date-time
+          type:
+            - string
+            - 'null'
+        nextStopEta:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/DriverRouteEtaNextStop'
+        remainingRouteEta:
+          oneOf:
+            - type: 'null'
+            - $ref: '#/components/schemas/DriverRouteEtaRemainingRoute'
+        failureCode:
+          type:
+            - string
+            - 'null'
+        failureMessage:
+          type:
+            - string
+            - 'null'
+        calculatedAt:
+          format: date-time
+          type:
+            - string
+            - 'null'
+    DriverRouteEtaNextStop:
+      type: object
+      required: [deliveryStopId, sequence, distanceFromPreviousMeters, estimatedArrivalAt]
+      properties:
+        deliveryStopId:
+          type: string
+        sequence:
+          type: integer
+        distanceFromPreviousMeters:
+          type:
+            - integer
+            - 'null'
+        estimatedArrivalAt:
+          format: date-time
+          type:
+            - string
+            - 'null'
+    DriverRouteEtaRemainingRoute:
+      type: object
+      required: [distanceMeters, estimatedCompletionAt]
+      properties:
+        distanceMeters:
+          type:
+            - integer
+            - 'null'
+        estimatedCompletionAt:
+          format: date-time
+          type:
+            - string
+            - 'null'
     DriverRouteEtaUpdate:
       type: object
-      required: [actualArrivalAt, deliveryStopId, delaySeconds, previousEstimatedArrivalAt, serverReceivedAt, trigger, updatedStops]
+      required: [actualArrivalAt, deliveryStopId, delaySeconds, etaCalculatedAt, etaFailureCode, etaFailureMessage, etaStatus, previousEstimatedArrivalAt, serverReceivedAt, trigger, updatedStops]
       properties:
         actualArrivalAt:
           format: date-time
@@ -4417,6 +4499,20 @@ components:
           type:
             - integer
             - 'null'
+        etaCalculatedAt:
+          format: date-time
+          type: string
+        etaFailureCode:
+          type:
+            - string
+            - 'null'
+        etaFailureMessage:
+          type:
+            - string
+            - 'null'
+        etaStatus:
+          enum: [READY, FAILED]
+          type: string
         previousEstimatedArrivalAt:
           format: date-time
           type:
@@ -4426,7 +4522,7 @@ components:
           format: date-time
           type: string
         trigger:
-          enum: [ROUTE_STARTED, STOP_ARRIVED]
+          enum: [ROUTE_STARTED, STOP_ARRIVED, PICKUP_COMPLETED]
           type: string
         updatedStops:
           type: array

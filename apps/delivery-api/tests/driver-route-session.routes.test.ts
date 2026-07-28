@@ -12,6 +12,15 @@ const activeSession = {
   status: 'ACTIVE_SESSION' as const,
   route: {
     deliveryDate: '2026-06-15',
+    etaSnapshot: {
+      calculatedAt: null,
+      failureCode: null,
+      failureMessage: null,
+      nextStopEta: null,
+      pickupCompletedAt: null,
+      remainingRouteEta: null,
+      status: 'PRE_PICKUP' as const
+    },
     id: 'route-plan-id',
     name: 'Monday Route',
     routeGeometry: null,

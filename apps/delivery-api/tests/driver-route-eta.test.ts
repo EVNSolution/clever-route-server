@@ -1,7 +1,9 @@
 import { describe, expect, test } from 'vitest';
 
 import {
+  buildDriverRouteEtaSnapshot,
   calculateArrivalEtaUpdate,
+  calculatePickupEtaUpdate,
   calculateRouteStartEtaUpdate
 } from '../src/modules/driver/driver-route-eta.js';
 
@@ -103,5 +105,114 @@ describe('driver route ETA', () => {
     expect(update.updatedStops).toEqual([
       { deliveryStopId: 'stop-3', estimatedArrivalAt: null, sequence: 3 }
     ]);
+  });
+
+  test('builds pickup ETA from the authoritative server receipt time and sorts stops', () => {
+    const update = calculatePickupEtaUpdate({
+      serverReceivedAt: new Date('2026-07-20T11:00:00.000Z'),
+      stops: [stops[1]!, stops[0]!]
+    });
+
+    expect(update.trigger).toBe('PICKUP_COMPLETED');
+    expect(update.etaSource).toBe('PICKUP_COMPLETED');
+    expect(update.serverReceivedAt).toBe('2026-07-20T11:00:00.000Z');
+    expect(update.updatedStops).toEqual([
+      { deliveryStopId: 'stop-1', estimatedArrivalAt: '2026-07-20T11:10:00.000Z', sequence: 1 },
+      { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-07-20T11:30:00.000Z', sequence: 2 }
+    ]);
+  });
+
+  test('derives a READY pickup snapshot with distance and final service time completion', () => {
+    const snapshot = buildDriverRouteEtaSnapshot({
+      pickupCompletedAt: new Date('2026-07-20T11:00:00.000Z'),
+      stops: [
+        {
+          ...stops[0]!,
+          distanceFromPreviousMeters: 1000,
+          etaCalculatedAt: new Date('2026-07-20T11:00:00.000Z'),
+          estimatedArrivalAt: new Date('2026-07-20T11:10:00.000Z')
+        },
+        {
+          ...stops[1]!,
+          distanceFromPreviousMeters: 2000,
+          etaCalculatedAt: new Date('2026-07-20T11:00:00.000Z'),
+          estimatedArrivalAt: new Date('2026-07-20T11:30:00.000Z')
+        }
+      ]
+    });
+
+    expect(snapshot).toEqual({
+      calculatedAt: '2026-07-20T11:00:00.000Z',
+      failureCode: null,
+      failureMessage: null,
+      nextStopEta: {
+        deliveryStopId: 'stop-1',
+        distanceFromPreviousMeters: 1000,
+        estimatedArrivalAt: '2026-07-20T11:10:00.000Z',
+        sequence: 1
+      },
+      pickupCompletedAt: '2026-07-20T11:00:00.000Z',
+      remainingRouteEta: {
+        distanceMeters: 3000,
+        estimatedCompletionAt: '2026-07-20T11:35:00.000Z'
+      },
+      status: 'READY'
+    });
+  });
+
+  test('keeps READY when only distance is missing and returns null distance labels', () => {
+    const snapshot = buildDriverRouteEtaSnapshot({
+      pickupCompletedAt: new Date('2026-07-20T11:00:00.000Z'),
+      stops: [
+        {
+          ...stops[0]!,
+          distanceFromPreviousMeters: null,
+          etaCalculatedAt: new Date('2026-07-20T11:00:00.000Z'),
+          estimatedArrivalAt: new Date('2026-07-20T11:10:00.000Z')
+        }
+      ]
+    });
+
+    expect(snapshot.status).toBe('READY');
+    expect(snapshot.nextStopEta?.distanceFromPreviousMeters).toBeNull();
+    expect(snapshot.remainingRouteEta?.distanceMeters).toBeNull();
+  });
+
+  test('derives exact pre-pickup and failed snapshot null semantics', () => {
+    expect(buildDriverRouteEtaSnapshot({ pickupCompletedAt: null, stops })).toEqual({
+      calculatedAt: null,
+      failureCode: null,
+      failureMessage: null,
+      nextStopEta: null,
+      pickupCompletedAt: null,
+      remainingRouteEta: null,
+      status: 'PRE_PICKUP'
+    });
+
+    expect(buildDriverRouteEtaSnapshot({
+      pickupCompletedAt: new Date('2026-07-20T11:00:00.000Z'),
+      stops: [{
+        ...stops[0]!,
+        distanceFromPreviousMeters: 1000,
+        etaCalculatedAt: new Date('2026-07-20T11:00:00.000Z'),
+        estimatedArrivalAt: null
+      }]
+    })).toEqual({
+      calculatedAt: '2026-07-20T11:00:00.000Z',
+      failureCode: 'ETA_INPUT_DURATION_UNAVAILABLE',
+      failureMessage: 'ETA could not be calculated because route leg durations are unavailable.',
+      nextStopEta: {
+        deliveryStopId: 'stop-1',
+        distanceFromPreviousMeters: 1000,
+        estimatedArrivalAt: null,
+        sequence: 1
+      },
+      pickupCompletedAt: '2026-07-20T11:00:00.000Z',
+      remainingRouteEta: {
+        distanceMeters: 1000,
+        estimatedCompletionAt: null
+      },
+      status: 'FAILED'
+    });
   });
 });
