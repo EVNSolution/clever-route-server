@@ -1,7 +1,10 @@
 import type { PrismaClient } from '@prisma/client';
 
 import type { AdminCommerceConnectionsDependencies } from '../../routes/admin-commerce-connections.routes.js';
-import type { AdminCommerceConnectionsUiDependencies } from '../../routes/admin-commerce-connections-ui.routes.js';
+import type {
+  AdminCommerceConnectionsUiDependencies,
+  DriverAppAndroidReleaseConfig
+} from '../../routes/admin-commerce-connections-ui.routes.js';
 import type { AdminDriversDependencies } from '../../routes/admin-drivers.routes.js';
 import type { AdminOrdersDependencies } from '../../routes/admin-orders.routes.js';
 import type { AdminRoutePlanDependencies } from '../../routes/admin-route-plans.routes.js';
@@ -61,6 +64,10 @@ export type AdminCommerceConnectionsRuntimeEnv = Partial<
     | 'CLEVER_ADMIN_WEB_SESSION_SECRET'
     | 'CREDENTIAL_ENCRYPTION_KEY'
     | 'DELIVERY_API_PUBLIC_URL'
+    | 'DRIVER_APP_ANDROID_LATEST_VERSION_CODE'
+    | 'DRIVER_APP_ANDROID_LATEST_VERSION_NAME'
+    | 'DRIVER_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE'
+    | 'DRIVER_APP_DISTRIBUTION_CHANNEL'
     | 'DRIVER_APP_DOWNLOAD_URL'
     | 'GEOCODING_CACHE_TTL_DAYS'
     | 'GEOCODING_PROVIDER_MODE'
@@ -147,6 +154,7 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     input.env.DRIVER_APP_DOWNLOAD_URL,
     'DRIVER_APP_DOWNLOAD_URL'
   );
+  const driverAppAndroidRelease = readDriverAppAndroidReleaseConfig(input.env);
   if (input.nodeEnv === 'production' && publicBaseUrl === undefined) {
     return undefined;
   }
@@ -179,6 +187,7 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     ...readAdminUiPairingCodeService(input),
     ...routeOptimizationDeps,
     ...readAdminUiWooSyncService(input, notificationService),
+    ...(driverAppAndroidRelease === undefined ? {} : { driverAppAndroidRelease }),
     ...(driverAppDownloadUrl === undefined ? {} : { driverAppDownloadUrl }),
     ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
     ...routePlanDeps,
@@ -477,6 +486,43 @@ function readOptionalHttpUrl(value: string | undefined, name: string): string | 
     // Fall through to the explicit configuration error below.
   }
   throw new Error(`${name} must be an http(s) URL`);
+}
+
+function readDriverAppAndroidReleaseConfig(
+  env: AdminCommerceConnectionsRuntimeEnv
+): DriverAppAndroidReleaseConfig | undefined {
+  const distributionChannel = readOptional(env.DRIVER_APP_DISTRIBUTION_CHANNEL);
+  const latestVersionName = readOptional(env.DRIVER_APP_ANDROID_LATEST_VERSION_NAME);
+  const latestVersionCode = readOptionalInteger(
+    env.DRIVER_APP_ANDROID_LATEST_VERSION_CODE
+  );
+  const minimumSupportedVersionCode = readOptionalInteger(
+    env.DRIVER_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE
+  );
+
+  if (
+    distributionChannel !== 'direct' ||
+    latestVersionName === undefined ||
+    latestVersionCode === undefined ||
+    minimumSupportedVersionCode === undefined ||
+    minimumSupportedVersionCode > latestVersionCode
+  ) {
+    return undefined;
+  }
+
+  return {
+    distributionChannel,
+    latestVersionCode,
+    latestVersionName,
+    minimumSupportedVersionCode
+  };
+}
+
+function readOptionalInteger(value: string | undefined): number | undefined {
+  const normalized = readOptional(value);
+  if (normalized === undefined || !/^\d+$/u.test(normalized)) return undefined;
+  const parsed = Number.parseInt(normalized, 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function readOptionalNumber(value: string | undefined): number | undefined {

@@ -25,6 +25,21 @@ server-side GitHub credentials and a real checkout are deliberately provisioned.
 - Runtime env: `infra/env/delivery-api.env`
 - VROOM configs: `infra/vroom/config.yml`, `infra/vroom/config.korea.yml`
 
+For the temporary direct Android distribution channel, the runtime env also
+owns the public driver release manifest:
+
+```dotenv
+DRIVER_APP_DISTRIBUTION_CHANNEL=direct
+DRIVER_APP_ANDROID_LATEST_VERSION_CODE=2
+DRIVER_APP_ANDROID_LATEST_VERSION_NAME=1.0.1
+DRIVER_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE=1
+```
+
+`GET /driver-app/release/android` is unavailable when these values are absent or
+inconsistent. Update the latest version values only after the stable APK target
+behind `/driver-app` has been replaced and verified. The API returns the stable
+server URL and never exposes `DRIVER_APP_DOWNLOAD_URL`.
+
 ## Expected fast path
 
 1. GitHub Actions reads `.deploy/current-image.env` from EC2 through SSM.
