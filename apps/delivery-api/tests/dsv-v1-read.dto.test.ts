@@ -189,6 +189,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
   test('allowlists event summaries to type and occurredAt only', () => {
     const eventRows = [
       eventRow({ eventType: 'STOP_ARRIVED', occurredAt: new Date('2026-07-23T01:00:00.000Z') }),
+      eventRow({ eventType: 'PICKUP_COMPLETED', occurredAt: '2026-07-23T01:00:30.000Z' }),
       eventRow({ eventType: 'LOCATION_UPDATED', occurredAt: '2026-07-23T01:01:00.000Z' }),
       eventRow({ eventType: 'NOTE_ADDED', occurredAt: '2026-07-23T01:02:00.000Z' }),
     ];

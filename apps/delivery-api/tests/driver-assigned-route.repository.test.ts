@@ -12,6 +12,7 @@ const routePlanRecord = {
   depotLatitude: '43.6532000',
   depotLongitude: '-79.3832000',
   id: 'route-plan-id',
+  driverEvents: [],
   metrics: {},
   name: 'Tuesday AM Route',
   planDate: new Date('2026-05-12T00:00:00.000Z'),
@@ -55,9 +56,14 @@ const routePlanRecord = {
         postalCode: 'M5X 1A9',
         province: 'ON',
         recipientName: 'Recipient One',
+        serviceMinutes: 5,
         status: 'ASSIGNED'
     },
+      distanceFromPreviousMeters: 1000,
       durationFromPreviousSeconds: 600,
+      etaCalculatedAt: null,
+      etaFailureCode: null,
+      etaFailureMessage: null,
       estimatedArrivalAt: null,
       sequence: 1
     }
@@ -67,6 +73,19 @@ const routePlanRecord = {
   },
   status: 'ASSIGNED',
   updatedAt: new Date('2026-05-12T06:30:00.000Z')
+};
+
+type MutableRoutePlanRecord = Omit<typeof routePlanRecord, 'driverEvents' | 'routeStops'> & {
+  driverEvents: Array<{ createdAt: Date }>;
+  routeStops: Array<Omit<typeof routePlanRecord.routeStops[number],
+    'durationFromPreviousSeconds' | 'estimatedArrivalAt' | 'etaCalculatedAt' | 'etaFailureCode' | 'etaFailureMessage'
+  > & {
+    durationFromPreviousSeconds: number | null;
+    estimatedArrivalAt: Date | null;
+    etaCalculatedAt: Date | null;
+    etaFailureCode: string | null;
+    etaFailureMessage: string | null;
+  }>;
 };
 
 describe('PrismaDriverAssignedRouteRepository', () => {
@@ -91,6 +110,15 @@ describe('PrismaDriverAssignedRouteRepository', () => {
       status: 'ASSIGNED_ROUTE',
       route: {
         deliveryDate: '2026-05-12',
+        etaSnapshot: {
+          calculatedAt: null,
+          failureCode: null,
+          failureMessage: null,
+          nextStopEta: null,
+          pickupCompletedAt: null,
+          remainingRouteEta: null,
+          status: 'PRE_PICKUP'
+        },
         id: 'route-plan-id',
         name: 'Tuesday AM Route',
         routeGeometry: null,
@@ -113,6 +141,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             customerNote: 'Leave the box beside the loading entrance.',
             deliverySession: 'PICKUP',
             deliveryStopId: 'stop-id',
+            distanceFromPreviousMeters: 1000,
             durationFromPreviousSeconds: 600,
             estimatedArrivalAt: null,
             items: [
@@ -186,6 +215,83 @@ describe('PrismaDriverAssignedRouteRepository', () => {
       | undefined;
     expect(cacheFindArgs?.where?.routePlanId_shapeSignature?.routePlanId).toBe('route-plan-id');
     expect(typeof cacheFindArgs?.where?.routePlanId_shapeSignature?.shapeSignature).toBe('string');
+  });
+
+  test('derives READY eta snapshot from persisted pickup event and route stops', async () => {
+    const routePlan = structuredClone(routePlanRecord) as MutableRoutePlanRecord;
+    const routeStop = routePlan.routeStops[0]!;
+    routePlan.driverEvents = [{ createdAt: new Date('2026-05-12T06:40:00.000Z') }];
+    routeStop.estimatedArrivalAt = new Date('2026-05-12T06:50:00.000Z');
+    routeStop.etaCalculatedAt = new Date('2026-05-12T06:40:00.000Z');
+    const { prisma } = createPrismaHarness({ routePlan });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(result).toMatchObject({
+      status: 'ASSIGNED_ROUTE',
+      route: {
+        etaSnapshot: {
+          calculatedAt: '2026-05-12T06:40:00.000Z',
+          nextStopEta: {
+            deliveryStopId: 'stop-id',
+            distanceFromPreviousMeters: 1000,
+            estimatedArrivalAt: '2026-05-12T06:50:00.000Z',
+            sequence: 1
+          },
+          pickupCompletedAt: '2026-05-12T06:40:00.000Z',
+          remainingRouteEta: {
+            distanceMeters: 1000,
+            estimatedCompletionAt: '2026-05-12T06:55:00.000Z'
+          },
+          status: 'READY'
+        }
+      }
+    });
+  });
+
+  test('derives FAILED eta snapshot after pickup when clock ETA is unavailable', async () => {
+    const routePlan = structuredClone(routePlanRecord) as MutableRoutePlanRecord;
+    const routeStop = routePlan.routeStops[0]!;
+    routePlan.driverEvents = [{ createdAt: new Date('2026-05-12T06:40:00.000Z') }];
+    routeStop.durationFromPreviousSeconds = null;
+    routeStop.etaCalculatedAt = new Date('2026-05-12T06:40:00.000Z');
+    routeStop.etaFailureCode = 'ETA_INPUT_DURATION_UNAVAILABLE';
+    routeStop.etaFailureMessage = 'ETA could not be calculated because route leg durations are unavailable.';
+    const { prisma } = createPrismaHarness({ routePlan });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(result).toMatchObject({
+      status: 'ASSIGNED_ROUTE',
+      route: {
+        etaSnapshot: {
+          calculatedAt: '2026-05-12T06:40:00.000Z',
+          failureCode: 'ETA_INPUT_DURATION_UNAVAILABLE',
+          nextStopEta: {
+            deliveryStopId: 'stop-id',
+            estimatedArrivalAt: null
+          },
+          pickupCompletedAt: '2026-05-12T06:40:00.000Z',
+          remainingRouteEta: {
+            distanceMeters: 1000,
+            estimatedCompletionAt: null
+          },
+          status: 'FAILED'
+        }
+      }
+    });
   });
 
   test('falls back to Shopify financial status when canonical payment status is absent', async () => {
@@ -372,7 +478,7 @@ function createPrismaHarness(input: {
   driverShopId?: string;
   routeGeometryCacheFindFirst?: Record<string, unknown> | null;
   routeGeometryCacheFindUnique?: Record<string, unknown> | null;
-  routePlan?: typeof routePlanRecord | null;
+  routePlan?: MutableRoutePlanRecord | typeof routePlanRecord | null;
 } = {}) {
   return {
     prisma: {

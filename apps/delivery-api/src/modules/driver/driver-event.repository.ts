@@ -5,9 +5,12 @@ import { ROUTE_ACTIVE_COMPATIBILITY_STATUSES, ROUTE_READY_COMPATIBILITY_STATUSES
 import { readRouteStopPoints } from '../route-plans/route-plan-geometry-cache.js';
 import { persistRouteTrackingGeometryPosition } from '../route-tracking/route-tracking.geometry.js';
 import {
+  buildDriverRouteEtaSnapshot,
   calculateArrivalEtaUpdate,
+  calculatePickupEtaUpdate,
   calculateRouteStartEtaUpdate,
   type DriverRouteEtaStop,
+  type DriverRouteEtaSnapshot,
   type DriverRouteEtaUpdate
 } from './driver-route-eta.js';
 
@@ -27,6 +30,7 @@ export type RecordDriverEventInput = {
 
 export type RecordDriverEventResult = {
   duplicate: boolean;
+  etaSnapshot?: DriverRouteEtaSnapshot;
   etaUpdate?: DriverRouteEtaUpdate;
   eventId: string;
   sequenceDeviation?: DriverStopSequenceDeviation;
@@ -59,6 +63,7 @@ type DriverEventSchemaCapabilityLoader = {
 };
 
 type ExistingDriverEventContext = {
+  createdAt?: Date;
   deliveryStopId: string | null;
   eventType: string;
   id: string;
@@ -121,7 +126,13 @@ export class PrismaDriverEventRepository {
       return await this.prisma.$transaction(async (transaction) => {
         const duplicate = await findMatchingDriverEvent(transaction, input);
         if (duplicate !== null) {
-          return { duplicate: true, eventId: duplicate.id };
+          return {
+            duplicate: true,
+            eventId: duplicate.id,
+            ...(input.eventType === 'PICKUP_COMPLETED'
+              ? { etaSnapshot: await buildCurrentEtaSnapshot(transaction, requireRoutePlanId(input), duplicate.createdAt ?? null) }
+              : {})
+          };
         }
 
         await validateDriverEventStateContext(transaction, input, input.shopId);
@@ -151,7 +162,7 @@ export class PrismaDriverEventRepository {
           await persistRouteTrackingGeometryPosition(transaction, trackingPosition);
         }
 
-        const etaUpdate = await applyDriverEventStateTransition(
+        const etaResult = await applyDriverEventStateTransition(
           transaction,
           schemaCapabilities,
           input,
@@ -161,7 +172,8 @@ export class PrismaDriverEventRepository {
 
         return {
           duplicate: false,
-          ...(etaUpdate === null ? {} : { etaUpdate }),
+          ...(etaResult.etaSnapshot === undefined ? {} : { etaSnapshot: etaResult.etaSnapshot }),
+          ...(etaResult.etaUpdate === undefined ? {} : { etaUpdate: etaResult.etaUpdate }),
           eventId: event.id,
           ...(sequenceDeviation === null ? {} : { sequenceDeviation })
         };
@@ -170,7 +182,13 @@ export class PrismaDriverEventRepository {
       if (isUniqueConstraintError(error)) {
         const duplicate = await findDuplicateDriverEventAfterUniqueConstraint(this.prisma, input);
         if (duplicate !== null) {
-          return { duplicate: true, eventId: duplicate.id };
+          return {
+            duplicate: true,
+            eventId: duplicate.id,
+            ...(input.eventType === 'PICKUP_COMPLETED'
+              ? { etaSnapshot: await buildCurrentEtaSnapshot(this.prisma, requireRoutePlanId(input), duplicate.createdAt ?? null) }
+              : {})
+          };
         }
       }
 
@@ -248,7 +266,37 @@ function toRouteTrackingGeometryPosition(
 async function findMatchingDriverEvent(
   prisma: DriverEventTransactionClient,
   input: RecordDriverEventInput
-): Promise<{ id: string } | null> {
+): Promise<{ createdAt?: Date; id: string } | null> {
+  if (input.eventType === 'PICKUP_COMPLETED') {
+    if (input.clientEventId !== null) {
+      const event = await prisma.driverEvent.findUnique({
+        select: { createdAt: true, deliveryStopId: true, eventType: true, id: true, routePlanId: true },
+        where: {
+          driverId_clientEventId: {
+            clientEventId: input.clientEventId,
+            driverId: input.driverId
+          }
+        }
+      });
+      if (event !== null) {
+        if (!driverEventContextMatchesInput(event, input)) {
+          throw new DriverEventContextError('clientEventId is already used by a different driver event');
+        }
+        return { createdAt: event.createdAt, id: event.id };
+      }
+    }
+
+    return prisma.driverEvent.findFirst({
+      orderBy: { createdAt: 'asc' },
+      select: { createdAt: true, id: true },
+      where: {
+        driverId: input.driverId,
+        eventType: 'PICKUP_COMPLETED',
+        routePlanId: requireRoutePlanId(input)
+      }
+    });
+  }
+
   if (input.eventType === 'STOP_ARRIVED') {
     return prisma.driverEvent.findFirst({
       select: { id: true },
@@ -290,13 +338,13 @@ async function findMatchingDriverEvent(
 async function findDuplicateDriverEventAfterUniqueConstraint(
   prisma: DriverEventPrismaClient,
   input: RecordDriverEventInput
-): Promise<{ id: string } | null> {
+): Promise<{ createdAt?: Date; id: string } | null> {
   if (input.clientEventId === null) {
     return null;
   }
 
   const event = await prisma.driverEvent.findUnique({
-    select: { deliveryStopId: true, eventType: true, id: true, routePlanId: true },
+    select: { createdAt: true, deliveryStopId: true, eventType: true, id: true, routePlanId: true },
     where: {
       driverId_clientEventId: {
         clientEventId: input.clientEventId,
@@ -304,14 +352,27 @@ async function findDuplicateDriverEventAfterUniqueConstraint(
       }
     }
   });
-  if (event === null) {
-    return null;
-  }
-  if (!driverEventContextMatchesInput(event, input)) {
+  if (event !== null && !driverEventContextMatchesInput(event, input)) {
     throw new DriverEventContextError('clientEventId is already used by a different driver event');
   }
 
-  return { id: event.id };
+  if (event !== null) {
+    return { createdAt: event.createdAt, id: event.id };
+  }
+
+  if (input.eventType !== 'PICKUP_COMPLETED') {
+    return null;
+  }
+
+  return prisma.driverEvent.findFirst({
+    orderBy: { createdAt: 'asc' },
+    select: { createdAt: true, id: true },
+    where: {
+      driverId: input.driverId,
+      eventType: 'PICKUP_COMPLETED',
+      routePlanId: requireRoutePlanId(input)
+    }
+  });
 }
 
 function driverEventContextMatchesInput(
@@ -345,7 +406,8 @@ async function validateDriverEventStateContext(
   if (
     routePlan.status !== 'IN_PROGRESS'
     && (
-      input.eventType === 'LOCATION_UPDATED'
+      input.eventType === 'PICKUP_COMPLETED'
+      || input.eventType === 'LOCATION_UPDATED'
       || input.eventType === 'STOP_ARRIVED'
       || input.eventType === 'STOP_DELIVERED'
       || input.eventType === 'STOP_FAILED'
@@ -370,7 +432,7 @@ async function applyDriverEventStateTransition(
   input: RecordDriverEventInput,
   shopId: string,
   serverReceivedAt: Date
-): Promise<DriverRouteEtaUpdate | null> {
+): Promise<{ etaSnapshot?: DriverRouteEtaSnapshot; etaUpdate?: DriverRouteEtaUpdate }> {
   if (input.eventType === 'STOP_ARRIVED') {
     const routePlanId = requireRoutePlanId(input);
     const deliveryStopId = requireDeliveryStopId(input);
@@ -392,6 +454,7 @@ async function applyDriverEventStateTransition(
       }
     });
     const stops = await loadRouteEtaStops(prisma, routePlanId);
+    const pickupCompletedAt = await loadPickupCompletedAt(prisma, input.driverId, routePlanId);
     const inputRouteVersionId = await loadCurrentRouteVersionIdForEta(prisma, schemaCapabilities, routePlanId, shopId);
     const etaUpdate = calculateArrivalEtaUpdate({
       arrivedDeliveryStopId: deliveryStopId,
@@ -400,7 +463,16 @@ async function applyDriverEventStateTransition(
       stops
     });
     await persistEtaUpdate(prisma, schemaCapabilities, shopId, routePlanId, etaUpdate);
-    return etaUpdate;
+    if (pickupCompletedAt === null) {
+      return { etaUpdate };
+    }
+    return {
+      etaSnapshot: buildDriverRouteEtaSnapshot({
+        pickupCompletedAt,
+        stops: applyEtaUpdateToStops(stops, etaUpdate)
+      }),
+      etaUpdate
+    };
   }
 
   if (input.eventType === 'STOP_DELIVERED' || input.eventType === 'STOP_FAILED') {
@@ -424,7 +496,7 @@ async function applyDriverEventStateTransition(
         shopId
       }
     });
-    return null;
+    return {};
   }
 
   if (input.eventType === 'ROUTE_STARTED') {
@@ -446,7 +518,26 @@ async function applyDriverEventStateTransition(
       stops: await loadRouteEtaStops(prisma, routePlanId)
     });
     await persistEtaUpdate(prisma, schemaCapabilities, shopId, routePlanId, etaUpdate);
-    return etaUpdate;
+    return { etaUpdate };
+  }
+
+  if (input.eventType === 'PICKUP_COMPLETED') {
+    const routePlanId = requireRoutePlanId(input);
+    const stops = await loadRouteEtaStops(prisma, routePlanId);
+    const inputRouteVersionId = await loadCurrentRouteVersionIdForEta(prisma, schemaCapabilities, routePlanId, shopId);
+    const etaUpdate = calculatePickupEtaUpdate({
+      inputRouteVersionId,
+      serverReceivedAt,
+      stops
+    });
+    await persistEtaUpdate(prisma, schemaCapabilities, shopId, routePlanId, etaUpdate);
+    return {
+      etaSnapshot: buildDriverRouteEtaSnapshot({
+        pickupCompletedAt: serverReceivedAt,
+        stops: applyEtaUpdateToStops(stops, etaUpdate)
+      }),
+      etaUpdate
+    };
   }
 
   if (input.eventType === 'ROUTE_COMPLETED') {
@@ -459,7 +550,7 @@ async function applyDriverEventStateTransition(
         status: { not: 'CANCELLED' }
       }
     });
-    return null;
+    return {};
   }
 
   if (input.eventType === 'ROUTE_PAUSED') {
@@ -472,29 +563,75 @@ async function applyDriverEventStateTransition(
         status: 'IN_PROGRESS'
       }
     });
-    return null;
+    return {};
   }
 
-  return null;
+  return {};
+}
+
+async function buildCurrentEtaSnapshot(
+  prisma: Pick<DriverEventPrismaClient, 'routePlanStop' | 'routePlanGeometryCache'>,
+  routePlanId: string,
+  pickupCompletedAt: Date | null
+): Promise<DriverRouteEtaSnapshot> {
+  return buildDriverRouteEtaSnapshot({
+    pickupCompletedAt,
+    stops: await loadRouteEtaStops(prisma, routePlanId, { hydrateGeometryCache: false })
+  });
+}
+
+async function loadPickupCompletedAt(
+  prisma: Pick<DriverEventPrismaClient, 'driverEvent'>,
+  driverId: string,
+  routePlanId: string
+): Promise<Date | null> {
+  const event = await prisma.driverEvent.findFirst({
+    orderBy: { createdAt: 'asc' },
+    select: { createdAt: true },
+    where: {
+      driverId,
+      eventType: 'PICKUP_COMPLETED',
+      routePlanId
+    }
+  });
+  return event?.createdAt ?? null;
+}
+
+function applyEtaUpdateToStops(stops: DriverRouteEtaStop[], etaUpdate: DriverRouteEtaUpdate): DriverRouteEtaStop[] {
+  const updates = new Map(etaUpdate.updatedStops.map((stop) => [stop.deliveryStopId, stop]));
+  return stops.map((stop) => {
+    const update = updates.get(stop.deliveryStopId);
+    return update === undefined ? stop : {
+      ...stop,
+      etaCalculatedAt: new Date(etaUpdate.etaCalculatedAt),
+      etaFailureCode: etaUpdate.etaFailureCode,
+      etaFailureMessage: etaUpdate.etaFailureMessage,
+      estimatedArrivalAt: update.estimatedArrivalAt === null ? null : new Date(update.estimatedArrivalAt)
+    };
+  });
 }
 
 async function loadRouteEtaStops(
-  prisma: DriverEventTransactionClient,
-  routePlanId: string
+  prisma: Pick<DriverEventPrismaClient, 'routePlanStop' | 'routePlanGeometryCache'>,
+  routePlanId: string,
+  options: { hydrateGeometryCache?: boolean } = {}
 ): Promise<DriverRouteEtaStop[]> {
   const rows = await prisma.routePlanStop.findMany({
     orderBy: { sequence: 'asc' },
     select: {
-      deliveryStop: { select: { serviceMinutes: true } },
+      deliveryStop: { select: { serviceMinutes: true, status: true } },
       deliveryStopId: true,
       distanceFromPreviousMeters: true,
       durationFromPreviousSeconds: true,
+      etaCalculatedAt: true,
+      etaFailureCode: true,
+      etaFailureMessage: true,
       estimatedArrivalAt: true,
       sequence: true
     },
     where: { routePlanId }
   });
-  if (rows.every((row) => row.durationFromPreviousSeconds !== null)) {
+  if (rows.every((row) => row.durationFromPreviousSeconds !== null) || options.hydrateGeometryCache === false) {
     return rows.map(toEtaStop);
   }
 
@@ -740,18 +877,28 @@ function schemaCapabilityLoaderFor(prisma: DriverEventPrismaClient): DriverEvent
 }
 
 function toEtaStop(row: {
-  deliveryStop: { serviceMinutes: number | null };
+  deliveryStop: { serviceMinutes: number | null; status?: string | null };
   deliveryStopId: string;
+  distanceFromPreviousMeters: number | null;
   durationFromPreviousSeconds: number | null;
   estimatedArrivalAt: Date | null;
+  etaCalculatedAt?: Date | null;
+  etaFailureCode?: string | null;
+  etaFailureMessage?: string | null;
   sequence: number;
+  status?: string | null;
 }): DriverRouteEtaStop {
   return {
     deliveryStopId: row.deliveryStopId,
+    distanceFromPreviousMeters: row.distanceFromPreviousMeters,
     durationFromPreviousSeconds: row.durationFromPreviousSeconds,
+    etaCalculatedAt: row.etaCalculatedAt,
+    etaFailureCode: row.etaFailureCode,
+    etaFailureMessage: row.etaFailureMessage,
     estimatedArrivalAt: row.estimatedArrivalAt,
     sequence: row.sequence,
-    serviceMinutes: row.deliveryStop.serviceMinutes
+    serviceMinutes: row.deliveryStop.serviceMinutes,
+    status: row.deliveryStop.status ?? row.status ?? null
   };
 }
 

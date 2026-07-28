@@ -10,6 +10,15 @@ const assignedRoute = {
   status: 'ASSIGNED_ROUTE' as const,
   route: {
     deliveryDate: '2026-05-12',
+    etaSnapshot: {
+      calculatedAt: null,
+      failureCode: null,
+      failureMessage: null,
+      nextStopEta: null,
+      pickupCompletedAt: null,
+      remainingRouteEta: null,
+      status: 'PRE_PICKUP' as const
+    },
     id: 'route-plan-id',
     name: 'Tuesday AM Route',
     routeGeometry: null,

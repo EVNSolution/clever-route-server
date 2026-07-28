@@ -7,6 +7,7 @@ import type {
   DriverAssignedRouteStop,
   DriverAssignedRouteStopPoint
 } from './driver-assigned-route.types.js';
+import { buildDriverRouteEtaSnapshot, type DriverRouteEtaStop } from './driver-route-eta.js';
 import { coerceIanaTimezone } from './driver-route-timezone.js';
 import type {
   RoutePlanDetail,
@@ -36,6 +37,7 @@ type AssignedRoutePlanRecord = {
   name: string;
   planDate: Date;
   routeStops: AssignedRoutePlanStopRecord[];
+  driverEvents: Array<{ createdAt: Date }>;
   shop: {
     shopDomain: string;
   };
@@ -81,14 +83,25 @@ type AssignedRoutePlanStopRecord = {
     postalCode: string | null;
     province: string | null;
     recipientName: string | null;
+    serviceMinutes: number | null;
     status: string;
   };
   durationFromPreviousSeconds: number | null;
+  distanceFromPreviousMeters: number | null;
+  etaCalculatedAt: Date | null;
+  etaFailureCode: string | null;
+  etaFailureMessage: string | null;
   estimatedArrivalAt: Date | null;
   sequence: number;
 };
 
 const assignedRouteInclude = {
+  driverEvents: {
+    orderBy: { createdAt: 'asc' },
+    select: { createdAt: true },
+    take: 1,
+    where: { eventType: 'PICKUP_COMPLETED' }
+  },
   routeStops: {
     include: {
       deliveryStop: {
@@ -226,6 +239,10 @@ function toAssignedRouteResult(
     status: 'ASSIGNED_ROUTE',
     route: {
       deliveryDate: formatDateOnly(routePlan.planDate),
+      etaSnapshot: buildDriverRouteEtaSnapshot({
+        pickupCompletedAt: routePlan.driverEvents[0]?.createdAt ?? null,
+        stops: routePlan.routeStops.map(toEtaStop)
+      }),
       id: routePlan.id,
       name: routePlan.name,
       routeGeometry: routeResult.routeGeometry,
@@ -294,6 +311,7 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssi
     deliverySession: readString(rawPayload?.deliverySession)
       ?? readString(rawPayload?.delivery_session),
     deliveryStopId: deliveryStop.id,
+    distanceFromPreviousMeters: routeStop.distanceFromPreviousMeters,
     durationFromPreviousSeconds: routeStop.durationFromPreviousSeconds,
     estimatedArrivalAt: routeStop.estimatedArrivalAt?.toISOString() ?? null,
     items: (deliveryStop.order.orderItems ?? []).map((item) => toOrderItemDto(item)),
@@ -310,6 +328,21 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssi
       ?? readString(rawPayload?.service_type),
     status: deliveryStop.status,
     totalPriceAmount: decimalString(deliveryStop.order.totalPriceAmount)
+  };
+}
+
+function toEtaStop(routeStop: AssignedRoutePlanStopRecord): DriverRouteEtaStop {
+  return {
+    deliveryStopId: routeStop.deliveryStop.id,
+    distanceFromPreviousMeters: routeStop.distanceFromPreviousMeters,
+    durationFromPreviousSeconds: routeStop.durationFromPreviousSeconds,
+    etaCalculatedAt: routeStop.etaCalculatedAt,
+    etaFailureCode: routeStop.etaFailureCode,
+    etaFailureMessage: routeStop.etaFailureMessage,
+    estimatedArrivalAt: routeStop.estimatedArrivalAt,
+    sequence: routeStop.sequence,
+    serviceMinutes: routeStop.deliveryStop.serviceMinutes,
+    status: routeStop.deliveryStop.status
   };
 }
 

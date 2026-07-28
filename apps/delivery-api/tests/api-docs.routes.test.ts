@@ -149,6 +149,28 @@ describe('API documentation routes', () => {
       await app.close();
     }
   });
+
+  test('GET /docs/openapi.yaml documents pickup ETA snapshot without server-local status field', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('PICKUP_COMPLETED');
+      expect(response.body).toContain('DriverRouteEtaSnapshot:');
+      expect(response.body).toContain('etaSnapshot:');
+      expect(response.body).toContain('PICKUP_COMPLETED requires a nonblank clientEventId and deliveryStopId must be omitted or null.');
+      expect(response.body).toContain('clientEventId: pickup-2026-05-07T06-09-30Z');
+      expect(response.body).toContain('deliveryStopId: null');
+      expect(response.body).toContain('distanceFromPreviousMeters:');
+      expect(response.body).toContain('estimatedCompletionAt:');
+      expect(response.body).toContain('enum: [ROUTE_STARTED, STOP_ARRIVED, PICKUP_COMPLETED]');
+      expect(response.body).not.toMatch(/DriverEventEnvelope:[\s\S]*required: \[duplicate, eventId, status\]/u);
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 type RouteMethod = 'delete' | 'get' | 'patch' | 'post' | 'put';

@@ -78,12 +78,29 @@ const multiRouteMembershipMigrationPath = new URL(
   '../prisma/migrations/20260722090000_allow_safe_multi_route_membership/migration.sql',
   import.meta.url
 );
+const pickupCompletedMigrationPath = new URL(
+  '../prisma/migrations/20260728120000_add_pickup_completed_driver_event/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
 }
 
 describe('Prisma schema', () => {
+  test('defines pickup completed as an additive driver event migration', async () => {
+    const schema = await readSchema();
+    const migration = await readFile(pickupCompletedMigrationPath, 'utf8');
+    const driverEventType = /enum DriverEventType \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+
+    expect(driverEventType).toContain('PICKUP_COMPLETED');
+    expect(migration).toContain(`ALTER TYPE "DriverEventType" ADD VALUE IF NOT EXISTS 'PICKUP_COMPLETED'`);
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "driver_events_pickup_completed_driver_route_key"');
+    expect(migration).toContain('ON "driver_events"("driverId", "routePlanId")');
+    expect(migration).toContain('WHERE "eventType" = \'PICKUP_COMPLETED\' AND "driverId" IS NOT NULL AND "routePlanId" IS NOT NULL');
+    expect(schema).not.toContain('PickupEtaSnapshot');
+  });
+
   test('allows multiple planning memberships while retaining indexed stop lookup', async () => {
     const schema = await readSchema();
     const migration = await readFile(multiRouteMembershipMigrationPath, 'utf8');

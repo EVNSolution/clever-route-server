@@ -29,6 +29,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(deliveryStopsSelect?.where).toEqual({ deliveryDate: new Date('2026-07-22T00:00:00.000Z'), shopId: 'shop-a' });
     expect(deliveryStopsSelect?.select.driverEvents.where.shopId).toBe('shop-a');
     expect(deliveryStopsSelect?.select.driverEvents.where.eventType.in).toContain('STOP_DELIVERED');
+    expect(deliveryStopsSelect?.select.driverEvents.where.eventType.in).not.toContain('PICKUP_COMPLETED');
     expect(deliveryStopsSelect?.select.driverProofMedia.where).toEqual({ shopId: 'shop-a' });
     expect(deliveryStopsSelect?.select.routePlanStops.where).toEqual({ shopId: 'shop-a' });
     expect(prisma.$transaction).toBeUndefined();

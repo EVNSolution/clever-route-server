@@ -4,6 +4,7 @@ import type {
 } from '../route-plans/route-plan.types.js';
 import type { OrderItemDto } from '../order-items/order-items.js';
 import type { NormalizedPaymentStatus } from '../payments/normalized-payment-status.js';
+import type { DriverRouteEtaSnapshot } from './driver-route-eta.js';
 
 export type DriverAssignedRouteInput = {
   driverId: string;
@@ -29,6 +30,7 @@ export type DriverAssignedRouteStop = {
   customerNote: string | null;
   deliverySession?: string | null;
   deliveryStopId: string;
+  distanceFromPreviousMeters?: number | null;
   durationFromPreviousSeconds?: number | null;
   estimatedArrivalAt?: string | null;
   items: OrderItemDto[];
@@ -66,6 +68,7 @@ export type DriverRouteMapPreview = {
 
 export type DriverAssignedRoute = {
   deliveryDate: string;
+  etaSnapshot: DriverRouteEtaSnapshot;
   id: string;
   name: string;
   routeGeometry: RoutePlanRouteGeometry | null;

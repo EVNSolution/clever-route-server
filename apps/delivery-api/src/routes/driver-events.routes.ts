@@ -198,6 +198,7 @@ const DRIVER_EVENT_TYPES = new Set([
   'ROUTE_STARTED',
   'ROUTE_PAUSED',
   'ROUTE_COMPLETED',
+  'PICKUP_COMPLETED',
   'STOP_ARRIVED',
   'STOP_DELIVERED',
   'STOP_FAILED',
@@ -1012,6 +1013,7 @@ export function registerDriverEventRoutes(
     return reply.code(result.duplicate ? 200 : 202).send({
       data: {
         duplicate: result.duplicate,
+        ...(result.etaSnapshot === undefined ? {} : { etaSnapshot: result.etaSnapshot }),
         ...(result.etaUpdate === undefined ? {} : { etaUpdate: result.etaUpdate }),
         eventId: result.eventId
       },
@@ -1307,9 +1309,20 @@ function readDriverEventBody(body: DriverEventRequestBody): {
     throw new Error('Invalid driver event type');
   }
 
+  const clientEventId = readOptionalString(body.clientEventId);
+  const deliveryStopId = readOptionalString(body.deliveryStopId);
+  if (eventType === 'PICKUP_COMPLETED') {
+    if (clientEventId === null) {
+      throw new Error('Pickup completed requires clientEventId');
+    }
+    if (deliveryStopId !== null) {
+      throw new Error('Pickup completed must not include deliveryStopId');
+    }
+  }
+
   return {
-    clientEventId: readOptionalString(body.clientEventId),
-    deliveryStopId: readOptionalString(body.deliveryStopId),
+    clientEventId,
+    deliveryStopId,
     eventType,
     latitude: readOptionalCoordinate(body.latitude),
     longitude: readOptionalCoordinate(body.longitude),

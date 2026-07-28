@@ -140,6 +140,196 @@ describe('Driver events route', () => {
     }
   });
 
+  test('accepts pickup completed with eta snapshot without publishing route progress', async () => {
+    const publishProgress = vi.fn();
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    dependencies.routeTrackingStreamHub = { publishProgress } as never;
+    recordDriverEvent.mockResolvedValueOnce({
+      duplicate: false,
+      etaSnapshot: {
+        calculatedAt: '2026-05-07T06:10:00.000Z',
+        failureCode: null,
+        failureMessage: null,
+        nextStopEta: {
+          deliveryStopId: 'stop-id',
+          distanceFromPreviousMeters: 1000,
+          estimatedArrivalAt: '2026-05-07T06:20:00.000Z',
+          sequence: 1
+        },
+        pickupCompletedAt: '2026-05-07T06:10:00.000Z',
+        remainingRouteEta: {
+          distanceMeters: 3000,
+          estimatedCompletionAt: '2026-05-07T07:00:00.000Z'
+        },
+        status: 'READY'
+      },
+      etaUpdate: {
+        actualArrivalAt: null,
+        deliveryStopId: null,
+        delaySeconds: null,
+        etaCalculatedAt: '2026-05-07T06:10:00.000Z',
+        etaFailureCode: null,
+        etaFailureMessage: null,
+        etaSource: 'PICKUP_COMPLETED',
+        etaStatus: 'READY',
+        inputRouteVersionId: null,
+        previousEstimatedArrivalAt: null,
+        serverReceivedAt: '2026-05-07T06:10:00.000Z',
+        trigger: 'PICKUP_COMPLETED',
+        updatedStops: [
+          { deliveryStopId: 'stop-id', estimatedArrivalAt: '2026-05-07T06:20:00.000Z', sequence: 1 }
+        ]
+      },
+      eventId: 'pickup-event-id'
+    });
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: {
+          clientEventId: 'pickup-1',
+          deliveryStopId: null,
+          eventType: 'PICKUP_COMPLETED',
+          occurredAt: '2026-05-07T06:09:30.000Z',
+          routePlanId: 'route-plan-id'
+        },
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(response.json()).toMatchObject({
+        data: {
+          duplicate: false,
+          etaSnapshot: { status: 'READY' },
+          etaUpdate: { trigger: 'PICKUP_COMPLETED' },
+          eventId: 'pickup-event-id'
+        },
+        error: null
+      });
+      expect(recordDriverEvent).toHaveBeenCalledWith(expect.objectContaining({
+        deliveryStopId: null,
+        eventType: 'PICKUP_COMPLETED'
+      }));
+      expect(publishProgress).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns duplicate pickup with eta snapshot and no eta update', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    recordDriverEvent.mockResolvedValueOnce({
+      duplicate: true,
+      etaSnapshot: {
+        calculatedAt: '2026-05-07T06:10:00.000Z',
+        failureCode: null,
+        failureMessage: null,
+        nextStopEta: null,
+        pickupCompletedAt: '2026-05-07T06:10:00.000Z',
+        remainingRouteEta: null,
+        status: 'FAILED'
+      },
+      eventId: 'original-pickup-id'
+    });
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: {
+          clientEventId: 'pickup-dup',
+          deliveryStopId: null,
+          eventType: 'PICKUP_COMPLETED',
+          occurredAt: '2026-05-07T06:09:30.000Z',
+          routePlanId: 'route-plan-id'
+        },
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        data: {
+          duplicate: true,
+          etaSnapshot: {
+            calculatedAt: '2026-05-07T06:10:00.000Z',
+            failureCode: null,
+            failureMessage: null,
+            nextStopEta: null,
+            pickupCompletedAt: '2026-05-07T06:10:00.000Z',
+            remainingRouteEta: null,
+            status: 'FAILED'
+          },
+          eventId: 'original-pickup-id'
+        },
+        error: null
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects pickup completed without a required nonblank client event id', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      for (const clientEventId of [undefined, null, '   ']) {
+        const response = await app.inject({
+          headers: { authorization: `Bearer ${driverToken()}` },
+          method: 'POST',
+          payload: {
+            ...(clientEventId === undefined ? {} : { clientEventId }),
+            eventType: 'PICKUP_COMPLETED',
+            occurredAt: '2026-05-07T06:09:30.000Z',
+            routePlanId: 'route-plan-id'
+          },
+          url: '/driver/events'
+        });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json()).toEqual({
+          data: null,
+          error: { code: 'BAD_REQUEST', message: 'Invalid driver event payload' }
+        });
+      }
+      expect(recordDriverEvent).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects pickup completed when a delivery stop id is supplied', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: {
+          clientEventId: 'pickup-1',
+          deliveryStopId: 'stop-id',
+          eventType: 'PICKUP_COMPLETED',
+          occurredAt: '2026-05-07T06:09:30.000Z',
+          routePlanId: 'route-plan-id'
+        },
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'Invalid driver event payload' }
+      });
+      expect(recordDriverEvent).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('creates a durable administrator alert when the server detects an out-of-order stop', async () => {
     const { dependencies, recordDriverEvent } = createDependencyHarness();
     const createAdminNotification = vi.fn(() => Promise.resolve({

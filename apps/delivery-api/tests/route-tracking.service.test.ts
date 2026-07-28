@@ -92,6 +92,8 @@ describe('PrismaRouteTrackingService', () => {
     });
 
     expect(driverEvent.findMany.mock.calls[0]?.[0]).not.toHaveProperty('take');
+    expect((driverEvent.findFirst.mock.calls as unknown as Array<[{ where: { eventType: { in: string[] } } }]>)[0]![0].where.eventType.in)
+      .not.toContain('PICKUP_COMPLETED');
     expect(snapshot.recentPositions.map((position) => position.eventId)).toEqual(['position-1', 'position-2']);
     expect(snapshot.latestPosition?.eventId).toBe('position-2');
     expect(snapshot.progress).toEqual({
