@@ -43,6 +43,15 @@ const adminStopActionsMigrationName = '20260723120000_add_admin_route_stop_actio
 const notificationOutboxMigrationName = '20260723170000_add_customer_notification_outbox_worker';
 const driverAccountDeletionMigrationName = '20260727180000_scope_deletion_request_to_driver_account';
 const pickupCompletedDriverEventMigrationName = '20260728120000_add_pickup_completed_driver_event';
+const pickupCompletedUniqueIndexMigrationName = '20260728124500_add_pickup_completed_unique_index';
+const pickupCompletedDriverEventMigrationPath = new URL(
+  `../prisma/migrations/${pickupCompletedDriverEventMigrationName}/migration.sql`,
+  import.meta.url
+);
+const pickupCompletedUniqueIndexMigrationPath = new URL(
+  `../prisma/migrations/${pickupCompletedUniqueIndexMigrationName}/migration.sql`,
+  import.meta.url
+);
 const schemaPath = new URL('../prisma/schema.prisma', import.meta.url);
 
 const legacySingleColumnConstraints = [
@@ -98,7 +107,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(49);
+    expect(migrations).toHaveLength(50);
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -178,6 +187,7 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations).toContain(notificationOutboxMigrationName);
     expect(migrations).toContain(driverAccountDeletionMigrationName);
     expect(migrations).toContain(pickupCompletedDriverEventMigrationName);
+    expect(migrations).toContain(pickupCompletedUniqueIndexMigrationName);
     expect(migrations.indexOf('20260722213000_dsv_assignment_eta_state')).toBeLessThan(
       migrations.indexOf('20260722223000_drop_legacy_single_tenant_fks')
     );
@@ -195,7 +205,27 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf(driverAccountDeletionMigrationName)).toBeLessThan(
       migrations.indexOf(pickupCompletedDriverEventMigrationName)
     );
-    expect(migrations.at(-1)).toBe(pickupCompletedDriverEventMigrationName);
+    expect(migrations.indexOf(pickupCompletedDriverEventMigrationName)).toBeLessThan(
+      migrations.indexOf(pickupCompletedUniqueIndexMigrationName)
+    );
+    expect(migrations.at(-1)).toBe(pickupCompletedUniqueIndexMigrationName);
+  });
+
+  test('separates pickup completed enum addition from enum-using partial index', async () => {
+    const [enumMigration, indexMigration] = await Promise.all([
+      readFile(pickupCompletedDriverEventMigrationPath, 'utf8'),
+      readFile(pickupCompletedUniqueIndexMigrationPath, 'utf8')
+    ]);
+
+    expect(enumMigration.trim()).toBe(`ALTER TYPE "DriverEventType" ADD VALUE IF NOT EXISTS 'PICKUP_COMPLETED';`);
+    expect(enumMigration).not.toContain('CREATE UNIQUE INDEX');
+    expect(enumMigration).not.toContain('driver_events_pickup_completed_driver_route_key');
+    expect(indexMigration).not.toContain('ALTER TYPE "DriverEventType" ADD VALUE');
+    expect(indexMigration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "driver_events_pickup_completed_driver_route_key"');
+    expect(indexMigration).toContain('ON "driver_events"("driverId", "routePlanId")');
+    expect(indexMigration).toContain(
+      'WHERE "eventType" = \'PICKUP_COMPLETED\' AND "driverId" IS NOT NULL AND "routePlanId" IS NOT NULL'
+    );
   });
 
   test('keeps the production baseline drift repair additive and fail closed', async () => {
