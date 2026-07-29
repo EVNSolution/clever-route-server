@@ -873,12 +873,14 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         throw new RouteGroupingValidationError(['route draft orders must belong to the current route grouping']);
       }
       const typedAssignments = assignments as LoadedAssignment[];
-      return shouldOptimizeDraftRoute(group, route, typedAssignments)
+      return shouldPrepareDraftRouteResult(input.mode, group, route, typedAssignments)
         ? [{ assignments: typedAssignments, route }]
         : [];
     });
     if (routesToOptimize.length === 0) return new Map();
-    if (this.routeOptimizationService === undefined) throw new RouteGroupingValidationError(['route optimization service is not configured']);
+    if (input.mode !== 'MANUAL_ORDER' && this.routeOptimizationService === undefined) {
+      throw new RouteGroupingValidationError(['route optimization service is not configured']);
+    }
     if (this.routeGeometryProvider === undefined) throw new RouteGroupingValidationError(['route geometry provider is not configured']);
     const depot = readDepotFromShop(group);
     if (depot === null) throw new RouteGroupingValidationError(['default depot coordinates are required before saving route draft']);
@@ -888,10 +890,17 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const name = route.label ?? `#${route.routeIdx ?? route.sortOrder ?? optimizedRoutes.size + 1}`;
       validateChildRouteStopsNearDepot(assignments, depot, this.maxChildRouteStopDistanceFromDepotMeters());
       const sourceDetail = buildChildRouteDetail({ assignments, depot, driverId: null, group, name });
-      const outcome = await resolveChildRouteOptimization(this.routeOptimizationService, sourceDetail, input.shopDomain);
-      if (!outcome.ok) throw new RouteGroupingValidationError([`route draft optimization failed: ${outcome.failure.message}`]);
-      if (outcome.result.missingCoordinateStops > 0) throw new RouteGroupingValidationError(['route draft optimization requires coordinates for every stop']);
-      const orderedAssignments = orderAssignmentsByOptimizationResult(assignments, outcome.result.stops);
+      const optimizationStops = input.mode === 'MANUAL_ORDER'
+        ? null
+        : await (async () => {
+          const outcome = await resolveChildRouteOptimization(this.routeOptimizationService!, sourceDetail, input.shopDomain);
+          if (!outcome.ok) throw new RouteGroupingValidationError([`route draft optimization failed: ${outcome.failure.message}`]);
+          if (outcome.result.missingCoordinateStops > 0) throw new RouteGroupingValidationError(['route draft optimization requires coordinates for every stop']);
+          return outcome.result.stops;
+        })();
+      const orderedAssignments = input.mode === 'MANUAL_ORDER'
+        ? assignments
+        : orderAssignmentsByOptimizationResult(assignments, optimizationStops ?? []);
       const optimizedDetail = buildChildRouteDetail({ assignments: orderedAssignments, depot, driverId: null, group, name });
       const routeResult = await buildChildRouteGeometry(this.routeGeometryProvider, optimizedDetail);
       if (routeResult.routeGeometry === null) throw new RouteGroupingValidationError(['route draft geometry could not be generated']);
@@ -1614,6 +1623,35 @@ function routeAssignmentsChanged(child: LoadedChild, assignments: LoadedAssignme
     .sort((left, right) => left.sequence - right.sequence)
     .map((stop) => stop.deliveryStopId);
   return !sameStringSequence(savedStopIds, assignments.map((assignment) => assignment.deliveryStopId));
+}
+
+function shouldPrepareDraftRouteResult(
+  mode: SaveRouteGroupingDraftInput['mode'],
+  group: LoadedGrouping,
+  route: RouteGroupingDraftRouteInput,
+  assignments: LoadedAssignment[]
+): boolean {
+  if (mode === 'MANUAL_ORDER') return shouldBuildManualDraftRouteResult(group, route, assignments);
+  return shouldOptimizeDraftRoute(group, route, assignments);
+}
+
+function shouldBuildManualDraftRouteResult(
+  group: LoadedGrouping,
+  route: RouteGroupingDraftRouteInput,
+  assignments: LoadedAssignment[]
+): boolean {
+  if (assignments.length === 0) return false;
+  const targetChild = findDraftChild(group, route);
+  if (targetChild === null) {
+    if (route.routePlanId !== null) throw new RouteGroupingValidationError(['route draft route plans must belong to the current route grouping']);
+    return true;
+  }
+  if (routeAssignmentsChanged(targetChild, assignments)) return true;
+  if (targetChild.routePlan === null) return true;
+  const depot = readDepotFromShop(group);
+  if (depot === null) return true;
+  const detail = buildChildRouteDetail({ assignments, depot, driverId: targetChild.driverId, group, name: targetChild.routePlan.name });
+  return readExactChildRouteMetricsFromRoutePlan(targetChild.routePlan, detail) === null;
 }
 
 function shouldOptimizeDraftRoute(group: LoadedGrouping, route: RouteGroupingDraftRouteInput, assignments: LoadedAssignment[]): boolean {

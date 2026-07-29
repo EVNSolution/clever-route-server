@@ -270,6 +270,7 @@ describe('Admin route group routes', () => {
         payload: {
           deletedRoutePlanIds: ['route-plan-delete'],
           expectedUpdatedAt: '2026-07-20T09:00:00-04:00',
+          mode: 'MANUAL_ORDER',
           removedOrderIds: ['order-remove'],
           routes: [{ driverId: null, expectedChildUpdatedAt: '2026-07-20T09:10:00-04:00', expectedRoutePlanUpdatedAt: '2026-07-20T09:20:00-04:00', orderIds: ['order-1'], routeIdx: 1, routePlanId: 'route-plan-1', scheduledStartAt: '2026-07-20T09:30:00-04:00', scheduledStartTimeZone: 'America/Toronto' }, { driverId: 'driver-2', orderIds: ['order-2'], routeIdx: 2, scheduledStartAt: null, scheduledStartTimeZone: null, tempId: 'temp-2' }]
         },
@@ -283,11 +284,31 @@ describe('Admin route group routes', () => {
         deletedRoutePlanIds: ['route-plan-delete'],
         expectedUpdatedAt: '2026-07-20T13:00:00.000Z',
         groupingId: 'route-group-id',
+        mode: 'MANUAL_ORDER',
         removedOrderIds: ['order-remove'],
         routes: [{ branchId: null, driverId: null, expectedChildUpdatedAt: '2026-07-20T13:10:00.000Z', expectedRoutePlanUpdatedAt: '2026-07-20T13:20:00.000Z', orderIds: ['order-1'], routeIdx: 1, routePlanId: 'route-plan-1', scheduledStartAt: '2026-07-20T13:30:00.000Z', scheduledStartTimeZone: 'America/Toronto' }, { branchId: null, driverId: 'driver-2', orderIds: ['order-2'], routeIdx: 2, scheduledStartAt: null, scheduledStartTimeZone: null, tempId: 'temp-2' }],
         shopDomain: 'example.myshopify.com'
       });
       expect(generateChildRoutes).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects unsupported route draft save modes', async () => {
+    const { dependencies, saveDraft } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: { mode: 'OPTIMIZE_ORDER', routes: [{ orderIds: ['order-1'], routePlanId: 'route-plan-1' }] },
+        url: '/admin/route-groups/route-group-id/draft'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(saveDraft).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
