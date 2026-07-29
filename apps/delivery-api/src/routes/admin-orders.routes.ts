@@ -568,6 +568,7 @@ function readShopifyOrderSnapshot(
       (reason) => issues.push(readSyncOrderFieldIssue(orderIndex, orderName, 'processedAt', reason))
     ),
     shippingAddress,
+    tags: readStringArray(object.tags),
     updatedAt
   };
 

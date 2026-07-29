@@ -85,10 +85,17 @@ describe('Admin orders routes', () => {
     const app = await buildApp({ adminOrders: dependencies });
 
     try {
+      const payload = orderSyncPayload();
+      const firstOrder = (payload.orders as Record<string, unknown>[])[0];
+      if (firstOrder === undefined) {
+        throw new Error('Expected order payload');
+      }
+      firstOrder.tags = ['appstle_subscription_recurring_order'];
+
       const response = await app.inject({
         headers: { authorization: 'Bearer session-token' },
         method: 'PATCH',
-        payload: orderSyncPayload(),
+        payload,
         url: '/admin/orders/sync'
       });
 
@@ -125,6 +132,9 @@ describe('Admin orders routes', () => {
         key: 'Delivery Day',
         value: 'Friday 5pm to 9pm *Check delivery map'
       });
+      expect(syncInput.orders[0]?.tags).toEqual([
+        'appstle_subscription_recurring_order'
+      ]);
     } finally {
       await app.close();
     }
