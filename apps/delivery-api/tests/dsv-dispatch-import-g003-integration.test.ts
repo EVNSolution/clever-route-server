@@ -160,6 +160,41 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     });
   });
 
+  test('promotes a legacy seeded condition that has no comparison key', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'legacy-condition-activation');
+    const service = new PrismaDsvDispatchImportService(prisma);
+    const legacy = await prisma.dsvTransportCondition.create({
+      data: {
+        code: 'AMBIENT',
+        createdBy: 'legacy-demo-seed',
+        description: 'Legacy description',
+        name: 'Legacy ambient',
+        shopId: fixture.shopId,
+      },
+    });
+
+    const activated = await service.createCondition({
+      actor: 'condition-admin',
+      code: 'Ambient',
+      description: '상온 조건으로 운송합니다.',
+      name: '상온 운송',
+      shopDomain: fixture.shopDomain,
+    });
+    const stored = await prisma.dsvTransportCondition.findUniqueOrThrow({
+      where: { id: legacy.id },
+    });
+
+    expect(activated).toMatchObject({ id: legacy.id, status: 'ACTIVE' });
+    expect(stored).toMatchObject({
+      code: 'AMBIENT',
+      comparisonKey: 'AMBIENT',
+      description: '상온 조건으로 운송합니다.',
+      name: '상온 운송',
+      rawValue: 'Ambient',
+      status: 'ACTIVE',
+    });
+  });
+
   test('applies a staged import into one customer, destination, order, stop, and row link set', async () => {
     const fixture = await createFixture(prisma, createdShopIds, 'apply');
     const service = new PrismaDsvDispatchImportService(prisma);

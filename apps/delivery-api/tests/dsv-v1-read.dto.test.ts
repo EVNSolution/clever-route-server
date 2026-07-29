@@ -64,31 +64,59 @@ describe('G005 DSV v1 read DTO adapter', () => {
     expect(dto.scopes).not.toBe(scopes);
   });
 
+  test('keeps the personal administrator identity in the session contract', () => {
+    expect(mapDsvV1SessionPrincipal({
+      actorId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      displayName: '운영 관리자',
+      principalType: 'DSV_ADMIN',
+      scopes: ['dsv:session:read'],
+      shopId: 'shop-1',
+    })).toEqual({
+      actorId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      displayName: '운영 관리자',
+      principalType: 'DSV_ADMIN',
+      scopes: ['dsv:session:read'],
+      shopId: 'shop-1',
+    });
+  });
+
   test('maps seller order summaries and page info from supplied route-stop ETA only', () => {
     const dto = mapDsvV1SellerOrderSummary({
       assignmentStatus: 'ASSIGNED',
       customerId: 'customer-1',
+      destinationAddress: '1 Shared Way, Seoul',
+      destinationDisplayName: 'Destination A',
       destinationId: 'destination-1',
+      driverId: 'driver-1',
       estimatedArrivalAt: new Date('2026-07-23T01:02:03.000Z'),
       etaInputRouteVersionId: 'route-version-private',
       etaSource: 'ROUTE_STARTED',
       etaStatus: 'READY',
+      latitude: 37.1234567,
+      longitude: 127.1234567,
       routePlanId: 'route-plan-1',
       routeVersionId: 'route-version-1',
       sellerOrderId: 'order-1',
       sellerOrderKey: 'SO-001',
+      vehicleId: 'vehicle-1',
     });
 
     expect(dto).toEqual({
       assignmentStatus: 'ASSIGNED',
       customerId: 'customer-1',
+      destinationAddress: '1 Shared Way, Seoul',
+      destinationDisplayName: 'Destination A',
       destinationId: 'destination-1',
+      driverId: 'driver-1',
       estimatedArrivalAt: '2026-07-23T01:02:03.000Z',
       etaStatus: 'READY',
+      latitude: 37.1234567,
+      longitude: 127.1234567,
       routePlanId: 'route-plan-1',
       routeVersionId: 'route-version-1',
       sellerOrderId: 'order-1',
       sellerOrderKey: 'SO-001',
+      vehicleId: 'vehicle-1',
     });
     expect(dto).not.toHaveProperty('etaInputRouteVersionId');
     expect(dto).not.toHaveProperty('etaSource');
@@ -146,12 +174,21 @@ describe('G005 DSV v1 read DTO adapter', () => {
         mapDsvV1VehicleListItem({
           displayName: 'Truck A',
           driverAssignments: [{ assignmentId: 'assignment-1', driverId: 'driver-1' }],
+          telematicsCapabilities: ['LOCATION', 'TEMPERATURE', 'TACHOMETER'],
+          telematicsSerialNumber: '012-5273-8978',
           vehicleId: 'vehicle-1',
           vehiclePlate: '11A1111',
+          vehicleType: 'REFRIGERATED',
         }),
         mapDsvV1CustomerListItem({ customerId: 'customer-1', displayName: 'Customer A', externalCustomerCode: 'C-1' }),
         mapDsvV1DestinationListItem({ address: null, destinationId: 'destination-1', displayName: 'Dock A' }),
-        mapDsvV1ConditionListItem({ conditionId: 'condition-1', name: 'Cold', status: 'ACTIVE' }),
+        mapDsvV1ConditionListItem({
+          code: 'COLD',
+          conditionId: 'condition-1',
+          description: 'Keep refrigerated.',
+          name: 'Cold',
+          status: 'ACTIVE',
+        }),
       ],
       page: { hasMore: false },
     });
@@ -162,12 +199,21 @@ describe('G005 DSV v1 read DTO adapter', () => {
         {
           displayName: 'Truck A',
           driverAssignments: [{ assignmentId: 'assignment-1', driverId: 'driver-1' }],
+          telematicsCapabilities: ['LOCATION', 'TEMPERATURE', 'TACHOMETER'],
+          telematicsSerialNumber: '012-5273-8978',
           vehicleId: 'vehicle-1',
           vehiclePlate: '11A1111',
+          vehicleType: 'REFRIGERATED',
         },
         { customerId: 'customer-1', displayName: 'Customer A', externalCustomerCode: 'C-1' },
         { destinationId: 'destination-1', displayName: 'Dock A' },
-        { conditionId: 'condition-1', name: 'Cold', status: 'ACTIVE' },
+        {
+          code: 'COLD',
+          conditionId: 'condition-1',
+          description: 'Keep refrigerated.',
+          name: 'Cold',
+          status: 'ACTIVE',
+        },
       ],
       page: { hasMore: false },
     });

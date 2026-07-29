@@ -18,6 +18,8 @@ import type { DsvResourceService } from '../src/modules/dsv/dsv-resource.service
 import { defaultRouteOpsUiSettings } from '../src/modules/route-ops/route-ops-ui-settings.js';
 import { defaultRouteScopeConfig } from '../src/modules/route-ops/route-scope-config.js';
 import type { AdminStoreSettings, SaveAdminStoreSettingsInput } from '../src/modules/commerce/admin-store-settings.service.js';
+import { defaultDsvOperationalSettings } from '../src/modules/dsv/dsv-operational-settings.js';
+import type { DsvAddressCanonicalizer } from '../src/modules/dsv/dsv-address-canonicalization.js';
 
 const stopId = '11111111-1111-4111-8111-111111111111';
 const destinationId = '22222222-2222-4222-8222-222222222222';
@@ -32,6 +34,7 @@ const nextRouteVersionId = 'bcbcbcbc-bcbc-4bcb-8bcb-bcbcbcbcbcbc';
 const targetDriverId = '66666666-6666-4666-8666-666666666666';
 const targetVehicleId = '77777777-7777-4777-8777-777777777777';
 const targetRoutePlanId = '12121212-1212-4121-8121-121212121212';
+const adminAccountId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 describe('DSV control routes', () => {
   test('requires a DSV session before returning selected delivery context', async () => {
@@ -176,6 +179,26 @@ describe('DSV control routes', () => {
     }
   });
 
+  test('rejects invalid DSV credentials without issuing a session cookie', async () => {
+    const { app } = await createHarness();
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        payload: { id: 'operator', password: 'wrong-password', shopDomain: 'tomatonofood.com' },
+        url: '/api/dsv/auth/login',
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(response.headers['set-cookie']).toBeUndefined();
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'UNAUTHORIZED', message: '로그인 정보가 올바르지 않습니다.' },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('reports an actionable error when the DSV migration is missing', async () => {
     const { app, repository } = await createHarness();
     repository.getDeliveryStopContext.mockRejectedValueOnce({ code: 'P2021' });
@@ -207,7 +230,14 @@ describe('DSV control routes', () => {
       });
       expect(read.statusCode).toBe(200);
       expect(read.json()).toEqual({
-        data: { loadingStartTime: null, plannedDepartureTime: null },
+        data: {
+          departureAddress: null,
+          departureLatitude: null,
+          departureLongitude: null,
+          ...defaultDsvOperationalSettings(),
+          loadingStartTime: '07:30',
+          plannedDepartureTime: '08:30',
+        },
         error: null,
       });
 
@@ -222,7 +252,14 @@ describe('DSV control routes', () => {
       const update = await app.inject({
         headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
         method: 'PATCH',
-        payload: { loadingStartTime: '07:40', plannedDepartureTime: '08:20' },
+        payload: {
+          departureAddress: '경기도 군포시 번영로 82 군포복합물류센터',
+          departureLatitude: 37.330948,
+          departureLongitude: 126.9372235,
+          etaDelayMinutes: 15,
+          loadingStartTime: '07:40',
+          plannedDepartureTime: '08:20',
+        },
         url: '/api/dsv/settings/operations',
       });
       expect(update.statusCode).toBe(200);
@@ -230,6 +267,12 @@ describe('DSV control routes', () => {
       expect(savedInput?.routeOpsUiSettings).toMatchObject({
         loadingStartTime: '07:40',
         plannedDepartureTime: '08:20',
+      });
+      expect(savedInput).toMatchObject({
+        defaultDepotAddress: '경기도 군포시 번영로 82 군포복합물류센터',
+        defaultDepotLatitude: 37.330948,
+        defaultDepotLongitude: 126.9372235,
+        dsvOperationalSettings: { etaDelayMinutes: 15 },
       });
       expect(savedInput?.shopDomain).toBe('tomatonofood.com');
 
@@ -250,6 +293,85 @@ describe('DSV control routes', () => {
       });
       expect(unsupported.statusCode).toBe(400);
       expect(settingsService.saveSettings).toHaveBeenCalledTimes(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('geocodes a departure address as a draft without saving settings', async () => {
+    const { app, geocodingService, settingsService } = await createHarness();
+    try {
+      const login = await loginToDsv(app);
+      const response = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: { address: '서울특별시 중구 세종대로 110' },
+        url: '/api/dsv/settings/operations/geocode',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        data: {
+          address: '서울특별시 중구 세종대로 110',
+          latitude: 37.5663,
+          longitude: 126.9779,
+        },
+        error: null,
+      });
+      expect(geocodingService.geocode).toHaveBeenCalledWith({
+        address: {
+          address1: '서울특별시 중구 세종대로 110',
+          address2: null,
+          city: null,
+          countryCode: 'KR',
+          postalCode: null,
+          province: null,
+        },
+        shopDomain: 'tomatonofood.com',
+      });
+      expect(settingsService.saveSettings).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('resolves an official road address and postal code through the server-side address API', async () => {
+    const resolveAddress = vi.fn(() => Promise.resolve({
+      address: '서울특별시 중구 세종대로 110',
+      detailAddress: null,
+      jibunAddress: '서울특별시 중구 태평로1가 31',
+      latitude: 37.5663,
+      longitude: 126.9779,
+      postalCode: '04524',
+      rawAddress: '서울 중구 세종대로 110',
+      status: 'RESOLVED' as const,
+    }));
+    const addressCanonicalizer: DsvAddressCanonicalizer = {
+      resolve: resolveAddress,
+    };
+    const { app } = await createHarness({ addressCanonicalizer });
+    try {
+      const login = await loginToDsv(app);
+      const response = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: { address: '서울 중구 세종대로 110' },
+        url: '/api/dsv/addresses/resolve',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        data: {
+          address: '서울특별시 중구 세종대로 110',
+          postalCode: '04524',
+          status: 'RESOLVED',
+        },
+        error: null,
+      });
+      expect(resolveAddress).toHaveBeenCalledWith({
+        address: '서울 중구 세종대로 110',
+        shopDomain: 'tomatonofood.com',
+      });
     } finally {
       await app.close();
     }
@@ -289,7 +411,7 @@ describe('DSV control routes', () => {
       expect(committed.json()).toMatchObject({ data: { dispatchImport: { rowCount: 1, status: 'READY' } }, error: null });
       expect(dispatchImportService.commit).toHaveBeenCalledWith({
         ...payload,
-        actor: 'operator',
+        actor: adminAccountId,
         shopDomain: 'tomatonofood.com',
       });
       const loginBody = login.response.json<{
@@ -370,7 +492,7 @@ describe('DSV control routes', () => {
       expect(dispatchImportService.commit).toHaveBeenCalledOnce();
       expect(dispatchImportService.commit).toHaveBeenCalledWith({
         ...dispatchPayload(),
-        actor: 'operator',
+        actor: adminAccountId,
         previewHash,
         shopDomain: 'tomatonofood.com',
       });
@@ -438,12 +560,12 @@ describe('DSV control routes', () => {
       });
       const applyInput = dispatchImportService.apply.mock.calls[0]?.[0];
       expect(applyInput).toMatchObject({
-        actor: 'operator',
+        actor: adminAccountId,
         commandId: 'apply-command-1',
         expectedSourceHash: sourceHash,
         importId,
         principal: {
-          actorId: 'operator',
+          actorId: adminAccountId,
           actorType: 'DSV_ADMIN',
           principalType: 'DSV_ADMIN',
         },
@@ -622,7 +744,7 @@ describe('DSV control routes', () => {
       const input = assignmentCommandService.unassign.mock.calls[0]?.[0];
       expect(input).toMatchObject({
         actor: {
-          actorId: 'operator',
+          actorId: adminAccountId,
           actorType: 'DSV_ADMIN',
           principalType: 'DSV_ADMIN',
         },
@@ -690,7 +812,7 @@ describe('DSV control routes', () => {
       const input = assignmentCommandService.reassign.mock.calls[0]?.[0];
       expect(input).toMatchObject({
         actor: {
-          actorId: 'operator',
+          actorId: adminAccountId,
           actorType: 'DSV_ADMIN',
           principalType: 'DSV_ADMIN',
         },
@@ -869,12 +991,12 @@ describe('DSV control routes', () => {
       expect(response.statusCode).toBe(201);
       const conditionInput = dispatchImportService.createCondition.mock.calls[0]?.[0];
       expect(conditionInput).toMatchObject({
-        actor: 'operator',
+        actor: adminAccountId,
         code: 'TS03',
         description: '계약 조건에 따른 운송',
         name: 'TS03',
         principal: {
-          actorId: 'operator',
+          actorId: adminAccountId,
           actorType: 'DSV_ADMIN',
           principalType: 'DSV_ADMIN',
         },
@@ -913,7 +1035,7 @@ describe('DSV control routes', () => {
       });
       expect(assignment.statusCode).toBe(201);
       expect(resourceService.assignDriver).toHaveBeenCalledWith({
-        actor: 'operator',
+        actor: adminAccountId,
         driverId: '66666666-6666-4666-8666-666666666666',
         shopDomain: 'tomatonofood.com',
         vehicleId: '77777777-7777-4777-8777-777777777777',
@@ -924,10 +1046,13 @@ describe('DSV control routes', () => {
   });
 });
 
-async function createHarness(): Promise<{
+async function createHarness(overrides: {
+  addressCanonicalizer?: DsvAddressCanonicalizer;
+} = {}): Promise<{
   app: Awaited<ReturnType<typeof buildApp>>;
   assignmentCommandService: MockAssignmentCommandService;
   dispatchImportService: MockDispatchImportService;
+  geocodingService: ReturnType<typeof createGeocodingService>;
   repository: MockRepository;
   resourceService: MockResourceService;
   settingsService: ReturnType<typeof createSettingsService>;
@@ -935,22 +1060,60 @@ async function createHarness(): Promise<{
   const repository = createRepository();
   const assignmentCommandService = createAssignmentCommandService();
   const dispatchImportService = createDispatchImportService();
+  const geocodingService = createGeocodingService();
   const settingsService = createSettingsService();
   const resourceService = createResourceService();
   const dependencies: DsvControlDependencies = {
+    ...(overrides.addressCanonicalizer === undefined ? {} : { addressCanonicalizer: overrides.addressCanonicalizer }),
+    adminAccounts: {
+      authenticate: vi.fn(({ loginId, password }) =>
+        Promise.resolve(loginId === 'operator' && password === 'correct-password'
+          ? {
+              accountId: adminAccountId,
+              displayName: '운영 관리자',
+              scopes: dsvAdminScopes,
+              tokenVersion: 0,
+            }
+          : null)),
+      resolveSession: vi.fn(({ accountId, tokenVersion }) =>
+        Promise.resolve(accountId === adminAccountId && tokenVersion === 0
+          ? {
+              accountId: adminAccountId,
+              displayName: '운영 관리자',
+              scopes: dsvAdminScopes,
+              tokenVersion: 0,
+            }
+          : null)),
+    },
     allowedShopDomains: ['tomatonofood.com'],
     assignmentCommandService,
     cookieName: 'clever_dsv_admin',
     dispatchImportService,
-    loginId: 'operator',
-    loginSecret: 'correct-password',
+    geocodingService,
     repository,
     resourceService,
     secureCookies: false,
     sessionSecret: '12345678901234567890123456789012',
     settingsService,
   };
-  return { app: await buildApp({ dsvControl: dependencies }), assignmentCommandService, dispatchImportService, repository, resourceService, settingsService };
+  return { app: await buildApp({ dsvControl: dependencies }), assignmentCommandService, dispatchImportService, geocodingService, repository, resourceService, settingsService };
+}
+
+function createGeocodingService() {
+  return {
+    geocode: vi.fn(() => Promise.resolve({
+      cached: false as const,
+      ok: true as const,
+      result: {
+        addressLabel: 'geocoded_address',
+        latitude: 37.5663,
+        longitude: 126.9779,
+        provider: 'test',
+        providerPlaceId: null,
+        rawLabel: null,
+      },
+    })),
+  };
 }
 
 type MockAssignmentCommandService = {
@@ -996,6 +1159,7 @@ function createSettingsService() {
     defaultDepotAddress: null,
     defaultDepotLatitude: null,
     defaultDepotLongitude: null,
+    dsvOperationalSettings: defaultDsvOperationalSettings(),
     locale: 'ko-KR',
     routeOpsUiSettings: defaultRouteOpsUiSettings(),
     routeScopeConfig: defaultRouteScopeConfig(),

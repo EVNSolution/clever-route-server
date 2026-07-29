@@ -36,6 +36,8 @@ type DsvPrincipalBase = {
 };
 
 export type DsvAdminPrincipal = DsvPrincipalBase & {
+  actorId?: string;
+  displayName?: string;
   principalType: 'DSV_ADMIN';
   shopDomain?: string;
 };
@@ -106,13 +108,27 @@ export class DsvForbiddenError extends Error {
   }
 }
 
-export function createDsvAdminPrincipal(input: { shopDomain?: string; shopId: string }): DsvAdminPrincipal {
+export function createDsvAdminPrincipal(input: {
+  actorId?: string;
+  displayName?: string;
+  scopes?: readonly DsvScope[];
+  shopDomain?: string;
+  shopId: string;
+}): DsvAdminPrincipal {
   return {
+    actorId: input.actorId ?? 'legacy-env-admin',
+    ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
     principalType: 'DSV_ADMIN',
-    scopes: dsvAdminScopes,
+    scopes: input.scopes ?? dsvAdminScopes,
     ...(input.shopDomain === undefined ? {} : { shopDomain: input.shopDomain }),
     shopId: input.shopId,
   };
+}
+
+export function normalizeDsvScopes(values: readonly string[]): DsvScope[] | null {
+  const knownScopes = new Set<string>(dsvScopes);
+  if (values.some((scope) => !knownScopes.has(scope))) return null;
+  return [...new Set(values)] as DsvScope[];
 }
 
 export function createDsvCustomerUserPrincipalFromAccount(input: {

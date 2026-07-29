@@ -6,11 +6,17 @@ import {
   createDsvAdminPrincipal,
   createDsvCustomerUserPrincipalFromAccount,
 } from './dsv-principal.js';
+import {
+  PrismaDsvAdminAccountRepository,
+  type DsvAdminAccountAuthenticator,
+} from './dsv-admin-account.repository.js';
+import { parseDsvAdminSessionSubject } from './dsv-admin-session-subject.js';
 import type { DsvPrincipal } from './dsv-principal.js';
 import {
   PrismaDsvV1ReadQueryService,
   type DsvV1ReadQueryService,
 } from './dsv-v1-read-query.service.js';
+import { loadDsvMapProfileFromEnv, type DsvMapProfileEnv } from './dsv-map-profile.config.js';
 import type {
   DsvV1ReadDependencies,
   DsvV1SessionResolver,
@@ -21,13 +27,13 @@ import {
 } from '../../routes/dsv-v1-read.routes.js';
 import { isStrongAdminWebSecret } from '../../routes/admin-ui-session.js';
 
-const adminSubjectPrefix = 'dsv-shop:';
 const customerSubjectPrefix = 'dsv-customer-account:';
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
-export type DsvV1ReadRuntimeEnv = Partial<Record<
+export type DsvV1ReadRuntimeEnv = DsvMapProfileEnv & Partial<Record<
   | 'CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS'
   | 'CLEVER_ADMIN_WEB_SESSION_SECRET'
+  | 'CLEVER_DSV_ENABLED'
   | 'CLEVER_DSV_WEB_COOKIE_NAME',
   string
 >>;
@@ -38,14 +44,30 @@ export function loadDsvV1ReadDependencies(input: {
   prisma: PrismaClient;
   queryService?: DsvV1ReadQueryService;
 }): DsvV1ReadDependencies | undefined {
+  const isProduction = input.nodeEnv === 'production';
+  const dsvEnabled = readBoolean(input.env.CLEVER_DSV_ENABLED);
+  if (isProduction && dsvEnabled !== true) return undefined;
+
   const sessionSecret = readOptional(input.env.CLEVER_ADMIN_WEB_SESSION_SECRET);
-  if (!isStrongAdminWebSecret(sessionSecret)) return undefined;
+  const allowedShopDomains = parseAllowedShopDomains(input.env.CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS);
+  if (isProduction) {
+    if (!isStrongAdminWebSecret(sessionSecret)) {
+      throw new Error('CLEVER_DSV_ENABLED=true requires a strong CLEVER_ADMIN_WEB_SESSION_SECRET in production');
+    }
+    if (allowedShopDomains === '*' || allowedShopDomains.length === 0) {
+      throw new Error('CLEVER_DSV_ENABLED=true requires explicit non-wildcard CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS in production');
+    }
+  } else if (!isStrongAdminWebSecret(sessionSecret)) {
+    return undefined;
+  }
+  const mapProfile = loadDsvMapProfileFromEnv(input.env);
   return {
     cookieName: readOptional(input.env.CLEVER_DSV_WEB_COOKIE_NAME) ?? 'clever_dsv_admin',
+    ...(mapProfile === undefined ? {} : { mapProfile }),
     queryService: input.queryService ?? new PrismaDsvV1ReadQueryService(input.prisma),
     secureCookies: input.nodeEnv !== 'development' && input.nodeEnv !== 'test',
     sessionResolver: new PrismaDsvV1SessionResolver({
-      allowedShopDomains: parseAllowedShopDomains(input.env.CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS),
+      allowedShopDomains,
       prisma: input.prisma,
     }),
     sessionSecret,
@@ -53,33 +75,48 @@ export function loadDsvV1ReadDependencies(input: {
 }
 
 class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
+  private readonly adminAccounts: DsvAdminAccountAuthenticator;
   private readonly allowedShopDomains: AdminCommerceActor['allowedShopDomains'];
   private readonly prisma: PrismaClient;
 
   constructor(input: { allowedShopDomains: AdminCommerceActor['allowedShopDomains']; prisma: PrismaClient }) {
+    this.adminAccounts = new PrismaDsvAdminAccountRepository(input.prisma);
     this.allowedShopDomains = input.allowedShopDomains;
     this.prisma = input.prisma;
   }
 
   async resolve(subject: string): Promise<DsvPrincipal> {
-    if (subject.startsWith(adminSubjectPrefix)) {
-      return this.resolveAdmin(subject.slice(adminSubjectPrefix.length));
-    }
+    const adminSubject = parseDsvAdminSessionSubject(subject);
+    if (adminSubject !== null) return this.resolveAdmin(adminSubject);
     if (subject.startsWith(customerSubjectPrefix)) {
       return this.resolveCustomer(subject.slice(customerSubjectPrefix.length));
     }
     throw new DsvV1AuthenticationError();
   }
 
-  private async resolveAdmin(rawShopDomain: string): Promise<DsvPrincipal> {
-    const shopDomain = normalizeShopDomain(rawShopDomain);
-    if (shopDomain === null || !this.canAccessShopDomain(shopDomain)) throw new DsvV1AuthenticationError();
+  private async resolveAdmin(subject: NonNullable<ReturnType<typeof parseDsvAdminSessionSubject>>): Promise<DsvPrincipal> {
+    const shopDomain = subject.shopDomain;
+    if (!this.canAccessShopDomain(shopDomain)) throw new DsvV1AuthenticationError();
     const shop = await this.prisma.shop.findFirst({
       select: { id: true, shopDomain: true },
       where: { appId: 'clever', shopDomain },
     });
     if (shop === null) throw new DsvV1AuthenticationError();
-    return createDsvAdminPrincipal({ shopDomain: shop.shopDomain, shopId: shop.id });
+    if (subject.kind === 'legacy') {
+      return createDsvAdminPrincipal({ shopDomain: shop.shopDomain, shopId: shop.id });
+    }
+    const account = await this.adminAccounts.resolveSession({
+      accountId: subject.accountId,
+      tokenVersion: subject.tokenVersion,
+    });
+    if (account === null) throw new DsvV1AuthenticationError();
+    return createDsvAdminPrincipal({
+      actorId: account.accountId,
+      ...(account.displayName === undefined ? {} : { displayName: account.displayName }),
+      scopes: account.scopes,
+      shopDomain: shop.shopDomain,
+      shopId: shop.id,
+    });
   }
 
   private async resolveCustomer(accountId: string): Promise<DsvPrincipal> {
@@ -110,12 +147,15 @@ class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
   }
 }
 
-function normalizeShopDomain(value: string): string | null {
-  const normalized = value.trim().toLowerCase();
-  return normalized === '' ? null : normalized;
-}
-
 function readOptional(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized === undefined || normalized === '' ? undefined : normalized;
+}
+
+function readBoolean(value: string | undefined): boolean | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === undefined || normalized === '') return undefined;
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  throw new Error('CLEVER_DSV_ENABLED must be true or false');
 }

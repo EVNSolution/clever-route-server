@@ -68,7 +68,9 @@ export type DsvV1PageInfo = {
 };
 
 export type DsvV1SessionPrincipalInput = {
+  actorId?: string | null;
   customerId?: string | null;
+  displayName?: string | null;
   driverId?: string | null;
   principalType: DsvV1PrincipalType;
   scopes: readonly string[];
@@ -76,7 +78,9 @@ export type DsvV1SessionPrincipalInput = {
 };
 
 export type DsvV1SessionDto = {
+  actorId?: string;
   customerId?: string;
+  displayName?: string;
   driverId?: string;
   principalType: DsvV1PrincipalType;
   scopes: string[];
@@ -93,23 +97,35 @@ export type DsvV1RoutePlanStopEtaInput = {
 export type DsvV1SellerOrderSummaryRow = DsvV1RoutePlanStopEtaInput & {
   assignmentStatus: 'UNASSIGNED' | 'ASSIGNED';
   customerId: string;
+  destinationAddress?: string | null;
+  destinationDisplayName?: string | null;
   destinationId: string;
+  driverId?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
   routePlanId?: string | null;
   routeVersionId?: string | null;
   sellerOrderId: string;
   sellerOrderKey: string;
+  vehicleId?: string | null;
 };
 
 export type DsvV1SellerOrderSummaryDto = {
   assignmentStatus: 'UNASSIGNED' | 'ASSIGNED';
   customerId: string;
+  destinationAddress?: string;
+  destinationDisplayName?: string;
   destinationId: string;
+  driverId?: string;
   estimatedArrivalAt?: string;
   etaStatus: DsvV1EtaStatus;
+  latitude?: number;
+  longitude?: number;
   routePlanId?: string;
   routeVersionId?: string;
   sellerOrderId: string;
   sellerOrderKey: string;
+  vehicleId?: string;
 };
 
 export type DsvV1SellerOrderSummaryPageDto = {
@@ -184,8 +200,11 @@ export type DsvV1VehicleListItemRow = {
   displayName: string;
   driverAssignments: DsvV1VehicleDriverAssignmentRow[];
   status?: string | null;
+  telematicsCapabilities?: string[] | null;
+  telematicsSerialNumber?: string | null;
   vehicleId: string;
   vehiclePlate?: string | null;
+  vehicleType?: string | null;
 };
 
 export type DsvV1VehicleDriverAssignmentRow = {
@@ -197,8 +216,11 @@ export type DsvV1VehicleListItemDto = {
   displayName: string;
   driverAssignments: DsvV1VehicleDriverAssignmentDto[];
   status?: string;
+  telematicsCapabilities?: string[];
+  telematicsSerialNumber?: string;
   vehicleId: string;
   vehiclePlate?: string;
+  vehicleType?: string;
 };
 
 export type DsvV1VehicleDriverAssignmentDto = {
@@ -233,13 +255,17 @@ export type DsvV1DestinationListItemDto = {
 };
 
 export type DsvV1ConditionListItemRow = {
+  code: string;
   conditionId: string;
+  description: string;
   name: string;
   status?: string | null;
 };
 
 export type DsvV1ConditionListItemDto = {
+  code: string;
   conditionId: string;
+  description: string;
   name: string;
   status?: string;
 };
@@ -316,7 +342,9 @@ export function mapDsvV1PageInfo(input?: DsvV1PageInfo): DsvV1PageInfo | undefin
 
 export function mapDsvV1SessionPrincipal(input: DsvV1SessionPrincipalInput): DsvV1SessionDto {
   return {
+    ...(input.actorId === undefined || input.actorId === null ? {} : { actorId: input.actorId }),
     ...(input.customerId === undefined || input.customerId === null ? {} : { customerId: input.customerId }),
+    ...(input.displayName === undefined || input.displayName === null ? {} : { displayName: input.displayName }),
     ...(input.driverId === undefined || input.driverId === null ? {} : { driverId: input.driverId }),
     principalType: input.principalType,
     scopes: [...input.scopes],
@@ -328,13 +356,19 @@ export function mapDsvV1SellerOrderSummary(row: DsvV1SellerOrderSummaryRow): Dsv
   return {
     assignmentStatus: row.assignmentStatus,
     customerId: row.customerId,
+    ...(row.destinationAddress === undefined || row.destinationAddress === null ? {} : { destinationAddress: row.destinationAddress }),
+    ...(row.destinationDisplayName === undefined || row.destinationDisplayName === null ? {} : { destinationDisplayName: row.destinationDisplayName }),
     destinationId: row.destinationId,
+    ...(row.driverId === undefined || row.driverId === null ? {} : { driverId: row.driverId }),
     ...optionalIso('estimatedArrivalAt', row.estimatedArrivalAt),
     etaStatus: row.etaStatus,
+    ...(row.latitude === undefined || row.latitude === null ? {} : { latitude: row.latitude }),
+    ...(row.longitude === undefined || row.longitude === null ? {} : { longitude: row.longitude }),
     ...(row.routePlanId === undefined || row.routePlanId === null ? {} : { routePlanId: row.routePlanId }),
     ...(row.routeVersionId === undefined || row.routeVersionId === null ? {} : { routeVersionId: row.routeVersionId }),
     sellerOrderId: row.sellerOrderId,
     sellerOrderKey: row.sellerOrderKey,
+    ...(row.vehicleId === undefined || row.vehicleId === null ? {} : { vehicleId: row.vehicleId }),
   };
 }
 
@@ -399,8 +433,15 @@ export function mapDsvV1VehicleListItem(row: DsvV1VehicleListItemRow): DsvV1Vehi
       driverId: assignment.driverId,
     })),
     ...(row.status === undefined || row.status === null ? {} : { status: row.status }),
+    ...(row.telematicsCapabilities === undefined || row.telematicsCapabilities === null
+      ? {}
+      : { telematicsCapabilities: row.telematicsCapabilities }),
+    ...(row.telematicsSerialNumber === undefined || row.telematicsSerialNumber === null
+      ? {}
+      : { telematicsSerialNumber: row.telematicsSerialNumber }),
     vehicleId: row.vehicleId,
     ...(row.vehiclePlate === undefined || row.vehiclePlate === null ? {} : { vehiclePlate: row.vehiclePlate }),
+    ...(row.vehicleType === undefined || row.vehicleType === null ? {} : { vehicleType: row.vehicleType }),
   };
 }
 
@@ -425,7 +466,9 @@ export function mapDsvV1DestinationListItem(row: DsvV1DestinationListItemRow): D
 
 export function mapDsvV1ConditionListItem(row: DsvV1ConditionListItemRow): DsvV1ConditionListItemDto {
   return {
+    code: row.code,
     conditionId: row.conditionId,
+    description: row.description,
     name: row.name,
     ...(row.status === undefined || row.status === null ? {} : { status: row.status }),
   };

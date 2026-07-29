@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { PrismaDsvAdminAccountRepository } from '../modules/dsv/dsv-admin-account.repository.js';
 
 const prisma = new PrismaClient();
 const shopDomain = process.env.CLEVER_DSV_DEMO_SHOP_DOMAIN?.trim() || 'dsv-demo.local';
@@ -27,10 +28,37 @@ try {
     { code: 'COLD', description: '냉장 상태를 유지하여 운송합니다.', name: '냉장 운송' },
     { code: 'TS03', description: '계약서에 정의된 TS03 운송 조건을 적용합니다.', name: '특수 운송 03' },
   ]) {
+    const comparisonKey = condition.code.trim().toUpperCase();
     await prisma.dsvTransportCondition.upsert({
-      create: { ...condition, createdBy: 'demo-seed', shopId: shop.id },
-      update: { description: condition.description, name: condition.name },
+      create: {
+        ...condition,
+        activatedAt: new Date(),
+        comparisonKey,
+        createdBy: 'demo-seed',
+        rawValue: condition.code,
+        shopId: shop.id,
+        status: 'ACTIVE',
+      },
+      update: {
+        activatedAt: new Date(),
+        comparisonKey,
+        deactivatedAt: null,
+        description: condition.description,
+        name: condition.name,
+        rawValue: condition.code,
+        status: 'ACTIVE',
+      },
       where: { shopId_code: { code: condition.code, shopId: shop.id } },
+    });
+  }
+
+  const bootstrapLoginId = process.env.CLEVER_DSV_BOOTSTRAP_ADMIN_ID?.trim();
+  const bootstrapPassword = process.env.CLEVER_DSV_BOOTSTRAP_ADMIN_PASSWORD?.trim();
+  if (bootstrapLoginId !== undefined && bootstrapLoginId !== '' && bootstrapPassword !== undefined && bootstrapPassword !== '') {
+    await new PrismaDsvAdminAccountRepository(prisma).bootstrap({
+      displayName: process.env.CLEVER_DSV_BOOTSTRAP_ADMIN_DISPLAY_NAME?.trim() || '운영 관리자',
+      loginId: bootstrapLoginId,
+      password: bootstrapPassword,
     });
   }
 

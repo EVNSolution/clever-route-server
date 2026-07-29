@@ -57,7 +57,7 @@ export class DsvResourceNotFoundError extends Error {
 export class DsvResourceConflictError extends Error {
   constructor(readonly code: 'ASSIGNMENT_EXISTS' | 'DRIVER_NAME_EXISTS' | 'VEHICLE_PLATE_EXISTS') {
     super({
-      ASSIGNMENT_EXISTS: '이미 배정된 배송원입니다.',
+      ASSIGNMENT_EXISTS: '이미 기본 배정된 차량 또는 배송원입니다.',
       DRIVER_NAME_EXISTS: '같은 이름의 배송원이 이미 등록되어 있습니다.',
       VEHICLE_PLATE_EXISTS: '같은 차량 번호가 이미 등록되어 있습니다.',
     }[code]);
@@ -100,7 +100,7 @@ export class PrismaDsvResourceService implements DsvResourceService {
       const driver = await this.prisma.driver.create({
         data: {
           displayName: input.name,
-          dsvProfile: { create: { ...driverProfileData(input), lookupName: input.name, shopId: shop.id } },
+          dsvProfile: { create: { ...driverProfileData(input), lookupName: input.name } },
           shopId: shop.id,
           status: 'ACTIVE',
         },
@@ -146,7 +146,7 @@ export class PrismaDsvResourceService implements DsvResourceService {
     try {
       const vehicle = await this.prisma.vehicle.create({
         data: {
-          dsvProfile: { create: { note: input.note, shopId: shop.id, typeLabel: input.type } },
+          dsvProfile: { create: { note: input.note, typeLabel: input.type } },
           label: input.type,
           licensePlate: input.plate,
           shopId: shop.id,
@@ -200,12 +200,20 @@ export class PrismaDsvResourceService implements DsvResourceService {
     vehicleId: string;
   }): Promise<DsvVehicleDriverAssignmentView> {
     const shop = await this.requireShop(input.shopDomain);
-    const [driver, vehicle] = await Promise.all([
-      this.prisma.dsvDriverProfile.findFirst({ select: { driverId: true }, where: { driverId: input.driverId, shopId: shop.id } }),
-      this.prisma.dsvVehicleProfile.findFirst({ select: { vehicleId: true }, where: { shopId: shop.id, vehicleId: input.vehicleId } }),
+    const [driver, vehicle, existingAssignment] = await Promise.all([
+      this.prisma.driver.findFirst({ select: { id: true }, where: { id: input.driverId, shopId: shop.id } }),
+      this.prisma.vehicle.findFirst({ select: { id: true }, where: { id: input.vehicleId, shopId: shop.id } }),
+      this.prisma.dsvVehicleDriverAssignment.findFirst({
+        select: { id: true },
+        where: {
+          OR: [{ driverId: input.driverId }, { vehicleId: input.vehicleId }],
+          shopId: shop.id,
+        },
+      }),
     ]);
     if (driver === null) throw new DsvResourceNotFoundError('driver');
     if (vehicle === null) throw new DsvResourceNotFoundError('vehicle');
+    if (existingAssignment !== null) throw new DsvResourceConflictError('ASSIGNMENT_EXISTS');
     try {
       return assignmentView(await this.prisma.dsvVehicleDriverAssignment.create({
         data: { createdBy: input.actor, driverId: input.driverId, shopId: shop.id, vehicleId: input.vehicleId },

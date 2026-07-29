@@ -432,7 +432,15 @@ function keepsUnitInStructuredShape(shape: GeocodingQuery['shape']): boolean {
 }
 
 function addressParts(address: GeocodingAddress): Array<string | null> {
-  return [cleanPostalCode(address.postalCode), address.address1, address.address2, address.city, address.province, address.countryCode];
+  const countryCode = countryCodeFilter(address.countryCode);
+  return [
+    cleanPostalCode(address.postalCode),
+    address.address1,
+    address.address2,
+    address.city,
+    address.province,
+    countryCode === 'kr' ? null : address.countryCode,
+  ];
 }
 
 function normalizeAddressParts(parts: Array<string | null>): string | null {
@@ -471,6 +479,7 @@ function countryName(value: string | null): string | null {
   const countryCode = clean(value)?.toUpperCase() ?? null;
   if (countryCode === null) return null;
   if (countryCode === 'CA' || countryCode === 'CAN') return 'Canada';
+  if (countryCode === 'KR' || countryCode === 'KOR') return 'South Korea';
   if (countryCode === 'US' || countryCode === 'USA') return 'United States';
   return countryCode;
 }
@@ -479,6 +488,7 @@ function countryCodeFilter(value: string | null): string | null {
   const countryCode = clean(value)?.toLowerCase() ?? null;
   if (countryCode === null) return null;
   if (countryCode === 'ca' || countryCode === 'can') return 'ca';
+  if (countryCode === 'kr' || countryCode === 'kor') return 'kr';
   if (countryCode === 'us' || countryCode === 'usa') return 'us';
   return /^[a-z]{2}$/u.test(countryCode) ? countryCode : null;
 }
@@ -550,13 +560,16 @@ function isPlausibleCoordinateForAddress(
     countryCode === 'CAN' ||
     /^[A-Z][0-9][A-Z] [0-9][A-Z][0-9]$/u.test(postalCode ?? '');
 
-  if (!looksCanadian) return true;
-
-  if (!isWithinBounds(latitude, longitude, CANADA_BOUNDS)) return false;
-  if (province === 'ON' || province === 'ONTARIO') {
-    return isWithinBounds(latitude, longitude, ONTARIO_BOUNDS);
+  if (looksCanadian) {
+    if (!isWithinBounds(latitude, longitude, CANADA_BOUNDS)) return false;
+    if (province === 'ON' || province === 'ONTARIO') {
+      return isWithinBounds(latitude, longitude, ONTARIO_BOUNDS);
+    }
+    return true;
   }
-  return true;
+
+  const looksSouthKorean = countryCode === 'KR' || countryCode === 'KOR';
+  return !looksSouthKorean || isWithinBounds(latitude, longitude, SOUTH_KOREA_BOUNDS);
 }
 
 type CoordinateBounds = {
@@ -578,6 +591,13 @@ const ONTARIO_BOUNDS: CoordinateBounds = {
   maxLng: -74,
   minLat: 41,
   minLng: -96,
+};
+
+const SOUTH_KOREA_BOUNDS: CoordinateBounds = {
+  maxLat: 39.5,
+  maxLng: 132,
+  minLat: 32.5,
+  minLng: 124,
 };
 
 function isWithinBounds(latitude: number, longitude: number, bounds: CoordinateBounds): boolean {

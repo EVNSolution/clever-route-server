@@ -150,6 +150,26 @@ describe('G003 DSV dispatch preview diff', () => {
     expect(preview.rows[0]?.issues.map((issue) => issue.code)).toEqual(['DRIVER_MISSING', 'VEHICLE_MISSING']);
   });
 
+  test('blocks apply when a road address or postal code cannot be canonically resolved', () => {
+    const preview = buildDsvDispatchPreviewDiff(input({
+      rows: [sourceRow({
+        addressResolutionStatus: 'NOT_FOUND',
+        latitude: null,
+        longitude: null,
+        postalCode: null,
+      })],
+    }));
+
+    expect(preview.canApply).toBe(false);
+    expect(preview.summary.reviewRows).toBe(1);
+    expect(preview.rows[0]?.issues).toContainEqual({
+      code: 'ADDRESS_NOT_FOUND',
+      field: 'address',
+      message: '도로명주소와 우편번호를 확인하지 못했습니다.',
+      severity: 'review',
+    });
+  });
+
   test('blocks an exact inactive customer without coupling physical destination resolution to customer code', () => {
     const preview = buildDsvDispatchPreviewDiff(input({
       rows: [sourceRow({ customerCode: 'CUSTOMER-INACTIVE', sellerOrderKey: 'SO-INACTIVE-CUSTOMER' })],

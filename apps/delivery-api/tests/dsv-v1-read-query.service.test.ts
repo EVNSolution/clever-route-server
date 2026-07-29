@@ -285,8 +285,8 @@ describe('PrismaDsvV1ReadQueryService', () => {
         endpoint: 'conditions',
         prisma: prismaMock({
           dsvTransportCondition: { findMany: vi.fn(() => Promise.resolve([
-            { code: 'A', id: 'condition-a', name: 'Alpha Condition', status: 'ACTIVE' },
-            { code: 'B', id: 'condition-b', name: 'Beta Condition', status: 'ACTIVE' },
+            { code: 'A', description: 'Alpha description', id: 'condition-a', name: 'Alpha Condition', status: 'ACTIVE' },
+            { code: 'B', description: 'Beta description', id: 'condition-b', name: 'Beta Condition', status: 'ACTIVE' },
           ])) },
         }),
         sort: 'name:asc,id:asc',
@@ -320,8 +320,27 @@ describe('PrismaDsvV1ReadQueryService', () => {
         { driverId: 'driver-c', id: 'assignment-c', vehicleId: 'vehicle-b' },
       ])) },
       vehicle: { findMany: vi.fn(() => Promise.resolve([
-        { id: 'vehicle-a', label: 'Alpha Vehicle', licensePlate: 'A', status: 'ACTIVE', vehicleType: 'VAN' },
-        { id: 'vehicle-b', label: 'Beta Vehicle', licensePlate: 'B', status: 'ACTIVE', vehicleType: 'TRUCK' },
+        {
+          dsvProfile: { typeLabel: '봉고3 1톤 EV' },
+          dsvTelematicsDevice: {
+            capabilities: ['LOCATION', 'TEMPERATURE', 'TACHOMETER'],
+            serialNumber: '012-5273-8978',
+          },
+          id: 'vehicle-a',
+          label: 'Alpha Vehicle',
+          licensePlate: 'A',
+          status: 'ACTIVE',
+          vehicleType: 'VAN',
+        },
+        {
+          dsvProfile: null,
+          dsvTelematicsDevice: null,
+          id: 'vehicle-b',
+          label: 'Beta Vehicle',
+          licensePlate: 'B',
+          status: 'ACTIVE',
+          vehicleType: 'TRUCK',
+        },
       ])) },
     });
     const service = new PrismaDsvV1ReadQueryService(prisma as never);
@@ -336,8 +355,11 @@ describe('PrismaDsvV1ReadQueryService', () => {
           { assignmentId: 'assignment-b', driverId: 'driver-b' },
         ],
         status: 'ACTIVE',
+        telematicsCapabilities: ['LOCATION', 'TEMPERATURE', 'TACHOMETER'],
+        telematicsSerialNumber: '012-5273-8978',
         vehicleId: 'vehicle-a',
         vehiclePlate: 'A',
+        vehicleType: '봉고3 1톤 EV',
       },
       {
         displayName: 'Beta Vehicle',
@@ -345,6 +367,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
         status: 'ACTIVE',
         vehicleId: 'vehicle-b',
         vehiclePlate: 'B',
+        vehicleType: 'TRUCK',
       },
     ]);
     expect(prisma.dsvVehicleDriverAssignment.findMany).toHaveBeenCalledWith({
@@ -419,6 +442,48 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(result.items[0]).not.toHaveProperty('estimatedArrivalAt');
     expect(result.items[0]).not.toHaveProperty('etaInputRouteVersionId');
     expect(result.items[0]).not.toHaveProperty('etaSource');
+  });
+
+  test('dispatch summaries derive ownership from current child driver and keep route plan while ETA is pending', async () => {
+    const row = customerDeliveryOrderRow({
+      currentRouteVersion: {
+        driverId: null,
+        routePlan: { vehicleId: 'vehicle-a' },
+        routePlanId: 'route-a',
+      },
+      latitude: '37.1234567',
+      longitude: '127.1234567',
+      routePlanStops: [],
+    });
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      order: { findMany: vi.fn(() => Promise.resolve([row])) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-22T12:00:00.000Z'));
+
+    await expect(service.listDispatches(adminPrincipal(), { serviceDate: '2026-07-22' })).resolves.toMatchObject({
+      items: [{
+        assignmentStatus: 'UNASSIGNED',
+        destinationAddress: '1 Shared Way',
+        destinationDisplayName: 'Destination X',
+        driverId: null,
+        etaStatus: 'NOT_REQUIRED',
+        latitude: 37.1234567,
+        longitude: 127.1234567,
+        routePlanId: 'route-a',
+        routeVersionId: 'route-version-a',
+        vehicleId: 'vehicle-a',
+      }],
+    });
+
+    const query = firstMockArg<OrderFindManyQuery>(prisma.order.findMany);
+    expect(query?.select?.currentRouteVersion).toMatchObject({
+      select: {
+        driverId: true,
+        routePlan: { select: { vehicleId: true } },
+        routePlanId: true,
+      },
+    });
   });
 
   test('control reads are unpaginated', async () => {
@@ -514,9 +579,16 @@ function replaceCursorSort(cursor: string, sort: string): string {
 }
 
 function customerDeliveryOrderRow(input: {
+  currentRouteVersion?: {
+    driverId: string | null;
+    routePlan: { vehicleId: string | null } | null;
+    routePlanId: string | null;
+  } | null;
   driverEvents?: Array<{ eventType: string; id: string; occurredAt: Date }>;
   driverProofMedia?: Array<{ deletedAt: Date | null; id: string }>;
   id?: string;
+  latitude?: unknown;
+  longitude?: unknown;
   routePlanStops?: Array<{
     estimatedArrivalAt: Date | null;
     etaInputRouteVersionId: string | null;
@@ -529,12 +601,23 @@ function customerDeliveryOrderRow(input: {
 } = {}) {
   return {
     currentRouteVersionId: 'route-version-a',
+    currentRouteVersion: input.currentRouteVersion === undefined
+      ? { driverId: 'driver-a', routePlan: { vehicleId: 'vehicle-a' }, routePlanId: 'route-a' }
+      : input.currentRouteVersion,
     customer: { displayName: 'Customer A', id: 'customer-a' },
     deliveryStatus: 'ASSIGNED',
     deliveryStops: [{
       driverEvents: input.driverEvents ?? [],
       driverProofMedia: input.driverProofMedia ?? [],
       id: `stop-${input.id ?? 'a'}`,
+      address1: '1 Shared Way',
+      address2: null,
+      city: null,
+      countryCode: null,
+      latitude: input.latitude ?? null,
+      longitude: input.longitude ?? null,
+      postalCode: null,
+      province: null,
       recipientName: 'Recipient A',
       routePlanStops: input.routePlanStops ?? [],
       status: 'PENDING',

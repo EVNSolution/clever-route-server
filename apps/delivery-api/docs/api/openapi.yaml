@@ -183,6 +183,25 @@ paths:
         '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
         '403': { $ref: '#/components/responses/DsvV1Forbidden' }
         '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
+  /api/dsv/v1/map/profile:
+    get:
+      tags: [DSV API v1]
+      summary: Read the DSV map provider profile
+      description: Returns an env-configured style profile for the DSV web. The API does not proxy, fetch, or sign tiles.
+      operationId: getDsvV1MapProfile
+      x-source-file: src/routes/dsv-v1-read.routes.ts
+      x-required-scopes: []
+      security: [{ DsvSessionCookie: [] }]
+      responses:
+        '200':
+          description: Configured DSV map profile.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvV1MapProfileEnvelope' }
+        '400': { $ref: '#/components/responses/DsvV1BadRequest' }
+        '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
+        '403': { $ref: '#/components/responses/DsvV1Forbidden' }
+        '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
   /api/dsv/v1/records:
     get:
       tags: [DSV API v1]
@@ -468,7 +487,7 @@ paths:
   /api/dsv/auth/login:
     post:
       tags: [DSV Control]
-      summary: Start a shop-scoped DSV operator session
+      summary: Start a shop-scoped personal DSV administrator session
       operationId: loginDsvOperator
       x-source-file: src/routes/dsv-control.routes.ts
       requestBody:
@@ -507,13 +526,13 @@ paths:
   /api/dsv/settings/operations:
     get:
       tags: [DSV Control]
-      summary: Read common loading and planned departure times
+      summary: Read global DSV operation settings
       operationId: getDsvOperationSettings
       x-source-file: src/routes/dsv-control.routes.ts
       security: [{ DsvSessionCookie: [] }]
       responses:
         '200':
-          description: Common operation times. Null means the administrator has not configured a value.
+          description: Global departure location, operation times, and alert thresholds.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DsvOperationSettingsEnvelope' }
@@ -521,7 +540,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
     patch:
       tags: [DSV Control]
-      summary: Update common loading and planned departure times
+      summary: Update global DSV operation settings
       operationId: updateDsvOperationSettings
       x-source-file: src/routes/dsv-control.routes.ts
       security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
@@ -532,12 +551,22 @@ paths:
             schema:
               type: object
               properties:
+                departureAddress: { type: string, minLength: 1, maxLength: 500 }
+                departureLatitude: { type: number, minimum: -90, maximum: 90 }
+                departureLongitude: { type: number, minimum: -180, maximum: 180 }
+                dwellMinutes: { type: integer, minimum: 0, maximum: 240 }
+                etaDelayMinutes: { type: integer, minimum: 1, maximum: 240 }
+                forwardDelayAlerts: { type: boolean }
+                gpsSilenceSeconds: { type: integer, minimum: 5, maximum: 3600 }
                 loadingStartTime:
-                  type: [string, 'null']
+                  type: string
                   pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
                 plannedDepartureTime:
-                  type: [string, 'null']
+                  type: string
                   pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+                recordMissingProof: { type: boolean }
+                showTemperatureAlerts: { type: boolean }
+                temperatureLimit: { type: number, minimum: -50, maximum: 50 }
               additionalProperties: false
       responses:
         '200':
@@ -549,6 +578,62 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /api/dsv/settings/operations/geocode:
+    post:
+      tags: [DSV Control]
+      summary: Resolve a departure address to a coordinate draft
+      operationId: geocodeDsvDepartureAddress
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address]
+              properties:
+                address: { type: string, minLength: 1, maxLength: 500 }
+              additionalProperties: false
+      responses:
+        '200':
+          description: Resolved address and coordinates. This endpoint does not save the settings.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvDepartureGeocodeEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+  /api/dsv/addresses/resolve:
+    post:
+      tags: [DSV Control]
+      summary: Resolve a Korean road address, postal code, and map coordinates
+      operationId: resolveDsvCanonicalAddress
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [address]
+              properties:
+                address: { type: string, minLength: 1, maxLength: 500 }
+              additionalProperties: false
+      responses:
+        '200':
+          description: Canonical road-address result. Non-resolved candidates retain an explicit status.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvAddressResolutionEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
   /api/dsv/resources:
     get:
       tags: [DSV Control]
@@ -2391,7 +2476,11 @@ components:
       type: object
       required: [principalType, scopes, shopId]
       properties:
+        actorId:
+          type: string
         customerId:
+          type: string
+        displayName:
           type: string
         driverId:
           type: string
@@ -2473,6 +2562,7 @@ components:
         targetRoutePlanId:
           type: string
           format: uuid
+          description: Optional. When omitted, the command uses the selected driver's ready route in the grouping or creates a new ready draft route.
         targetSequence:
           type: integer
           minimum: 0
@@ -2480,7 +2570,7 @@ components:
         targetVehicleId:
           type: string
           format: uuid
-          description: Required when assignment policy cannot derive a target vehicle.
+          description: Required when targetRoutePlanId is omitted and the command must create a new driver route; persisted to that RoutePlan.
       additionalProperties: false
     DsvV1AssignmentResult:
       type: object
@@ -2591,13 +2681,23 @@ components:
           enum: [UNASSIGNED, ASSIGNED]
         customerId:
           type: string
+        destinationAddress:
+          type: string
+        destinationDisplayName:
+          type: string
         destinationId:
+          type: string
+        driverId:
           type: string
         estimatedArrivalAt:
           type: string
           format: date-time
         etaStatus:
           $ref: '#/components/schemas/DsvV1EtaStatus'
+        latitude:
+          type: number
+        longitude:
+          type: number
         routePlanId:
           type: string
         routeVersionId:
@@ -2605,6 +2705,8 @@ components:
         sellerOrderId:
           type: string
         sellerOrderKey:
+          type: string
+        vehicleId:
           type: string
       additionalProperties: false
     DsvV1SellerOrderSummaryPage:
@@ -2667,6 +2769,83 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/DsvV1ControlSummary'
+    DsvV1MapProviderMode:
+      type: string
+      enum: [public_allowlisted, self_hosted]
+    DsvV1LngLat:
+      type: array
+      minItems: 2
+      maxItems: 2
+      prefixItems:
+        - type: number
+          minimum: -180
+          maximum: 180
+        - type: number
+          minimum: -90
+          maximum: 90
+    DsvV1MapBounds:
+      type: array
+      description: '[west, south, east, north] with west < east and south < north.'
+      minItems: 4
+      maxItems: 4
+      prefixItems:
+        - type: number
+          minimum: -180
+          maximum: 180
+        - type: number
+          minimum: -90
+          maximum: 90
+        - type: number
+          minimum: -180
+          maximum: 180
+        - type: number
+          minimum: -90
+          maximum: 90
+    DsvV1MapInitialView:
+      type: object
+      required: [center, zoom]
+      properties:
+        center:
+          $ref: '#/components/schemas/DsvV1LngLat'
+        zoom:
+          type: number
+          minimum: 0
+          maximum: 24
+      additionalProperties: false
+    DsvV1MapProfile:
+      type: object
+      required: [profileId, regionCode, providerMode, styleUrl, attribution, version, bounds, initialView]
+      properties:
+        profileId:
+          type: string
+          minLength: 1
+        regionCode:
+          type: string
+          minLength: 1
+        providerMode:
+          $ref: '#/components/schemas/DsvV1MapProviderMode'
+        styleUrl:
+          type: string
+          minLength: 1
+        attribution:
+          type: string
+          minLength: 1
+        version:
+          type: string
+          minLength: 1
+        bounds:
+          $ref: '#/components/schemas/DsvV1MapBounds'
+        initialView:
+          $ref: '#/components/schemas/DsvV1MapInitialView'
+      additionalProperties: false
+    DsvV1MapProfileEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/DsvV1SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: '#/components/schemas/DsvV1MapProfile'
     DsvV1EventSummary:
       type: object
       required: [occurredAt, type]
@@ -2743,9 +2922,18 @@ components:
             $ref: '#/components/schemas/DsvV1VehicleDriverAssignmentListItem'
         status:
           type: string
+        telematicsCapabilities:
+          type: array
+          items:
+            type: string
+            enum: [LOCATION, TEMPERATURE, TACHOMETER]
+        telematicsSerialNumber:
+          type: string
         vehicleId:
           type: string
         vehiclePlate:
+          type: string
+        vehicleType:
           type: string
       additionalProperties: false
     DsvV1VehicleDriverAssignmentListItem:
@@ -2783,9 +2971,13 @@ components:
       additionalProperties: false
     DsvV1ConditionListItem:
       type: object
-      required: [conditionId, name]
+      required: [code, conditionId, description, name]
       properties:
+        code:
+          type: string
         conditionId:
+          type: string
+        description:
           type: string
         name:
           type: string
@@ -2937,15 +3129,78 @@ components:
       properties:
         data:
           type: object
-          required: [loadingStartTime, plannedDepartureTime]
+          required:
+            - departureAddress
+            - departureLatitude
+            - departureLongitude
+            - dwellMinutes
+            - etaDelayMinutes
+            - forwardDelayAlerts
+            - gpsSilenceSeconds
+            - loadingStartTime
+            - plannedDepartureTime
+            - recordMissingProof
+            - showTemperatureAlerts
+            - temperatureLimit
           properties:
+            departureAddress: { type: [string, 'null'] }
+            departureLatitude: { type: [number, 'null'] }
+            departureLongitude: { type: [number, 'null'] }
+            dwellMinutes: { type: integer }
+            etaDelayMinutes: { type: integer }
+            forwardDelayAlerts: { type: boolean }
+            gpsSilenceSeconds: { type: integer }
             loadingStartTime:
-              type: [string, 'null']
+              type: string
               pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
             plannedDepartureTime:
-              type: [string, 'null']
+              type: string
               pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+            recordMissingProof: { type: boolean }
+            showTemperatureAlerts: { type: boolean }
+            temperatureLimit: { type: number }
+          additionalProperties: false
         error: { type: 'null' }
+      additionalProperties: false
+    DsvDepartureGeocodeEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [address, latitude, longitude]
+          properties:
+            address: { type: string }
+            detailAddress: { type: [string, 'null'] }
+            jibunAddress: { type: [string, 'null'] }
+            latitude: { type: number, minimum: -90, maximum: 90 }
+            longitude: { type: number, minimum: -180, maximum: 180 }
+            postalCode: { type: [string, 'null'], pattern: '^\d{5}$' }
+            rawAddress: { type: string }
+          additionalProperties: false
+        error: { type: 'null' }
+      additionalProperties: false
+    DsvAddressResolutionEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [address, detailAddress, jibunAddress, latitude, longitude, postalCode, rawAddress, status]
+          properties:
+            address: { type: string }
+            detailAddress: { type: [string, 'null'] }
+            jibunAddress: { type: [string, 'null'] }
+            latitude: { type: [number, 'null'], minimum: -90, maximum: 90 }
+            longitude: { type: [number, 'null'], minimum: -180, maximum: 180 }
+            postalCode: { type: [string, 'null'], pattern: '^\d{5}$' }
+            rawAddress: { type: string }
+            status:
+              type: string
+              enum: [ADDRESS_ONLY, AMBIGUOUS, NOT_FOUND, RESOLVED]
+          additionalProperties: false
+        error: { type: 'null' }
+      additionalProperties: false
     DsvDriver:
       allOf:
         - $ref: '#/components/schemas/DsvDriverRequest'

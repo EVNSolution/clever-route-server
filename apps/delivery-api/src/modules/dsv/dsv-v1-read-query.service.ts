@@ -397,7 +397,15 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     return this.listManagement('vehicles', principal.shopId, input, async (page) => {
       const rows = await this.prisma.vehicle.findMany({
         orderBy: [{ label: 'asc' }, { id: 'asc' }],
-        select: { id: true, label: true, licensePlate: true, status: true, vehicleType: true },
+        select: {
+          dsvProfile: { select: { typeLabel: true } },
+          dsvTelematicsDevice: { select: { capabilities: true, serialNumber: true } },
+          id: true,
+          label: true,
+          licensePlate: true,
+          status: true,
+          vehicleType: true,
+        },
         take: page.limit + 1,
         where: { shopId: principal.shopId, ...labelCursorWhere(page.cursor, 'label') },
       });
@@ -409,8 +417,15 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         displayName: row.label,
         driverAssignments: assignmentsByVehicleId.get(row.id) ?? [],
         status: row.status,
+        ...(row.dsvTelematicsDevice?.serialNumber === undefined
+          ? {}
+          : {
+              telematicsCapabilities: row.dsvTelematicsDevice.capabilities,
+              telematicsSerialNumber: row.dsvTelematicsDevice.serialNumber,
+            }),
         vehicleId: row.id,
         vehiclePlate: row.licensePlate,
+        vehicleType: row.dsvProfile?.typeLabel || row.vehicleType,
       }));
     });
   }
@@ -480,11 +495,17 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     return this.listManagement('conditions', principal.shopId, input, async (page) => {
       const rows = await this.prisma.dsvTransportCondition.findMany({
         orderBy: [{ name: 'asc' }, { id: 'asc' }],
-        select: { code: true, id: true, name: true, status: true },
+        select: { code: true, description: true, id: true, name: true, status: true },
         take: page.limit + 1,
         where: { shopId: principal.shopId, ...labelCursorWhere(page.cursor, 'name') },
       });
-      return rows.map((row) => ({ conditionId: row.id, name: row.name, status: row.status }));
+      return rows.map((row) => ({
+        code: row.code,
+        conditionId: row.id,
+        description: row.description,
+        name: row.name,
+        status: row.status,
+      }));
     });
   }
 
@@ -602,6 +623,15 @@ const routePlanStopSelect = {
 function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
   return {
     currentRouteVersionId: true,
+    currentRouteVersion: {
+      select: {
+        driverId: true,
+        routePlanId: true,
+        routePlan: {
+          select: { vehicleId: true },
+        },
+      },
+    },
     customer: {
       select: { displayName: true, id: true },
     },
@@ -619,6 +649,14 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
           where: { shopId },
         },
         id: true,
+        address1: true,
+        address2: true,
+        city: true,
+        countryCode: true,
+        latitude: true,
+        longitude: true,
+        postalCode: true,
+        province: true,
         recipientName: true,
         routePlanStops: {
           orderBy: [{ createdAt: 'desc' }],
@@ -700,16 +738,25 @@ function toCustomerDeliveryInquiryRow(row: CustomerDeliveryOrderRow): DsvV1Custo
 function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow): DsvV1SellerOrderSummaryRow {
   const stop = row.deliveryStops[0] ?? null;
   const eta = stop === null ? null : selectCanonicalEta(stop.routePlanStops, row.currentRouteVersionId);
+  const currentRoute = row.currentRouteVersion;
+  const currentRouteDriverId = currentRoute?.driverId ?? null;
+  const routePlanId = eta?.routePlanId ?? currentRoute?.routePlanId ?? null;
   return {
-    assignmentStatus: row.currentRouteVersionId === null ? 'UNASSIGNED' : 'ASSIGNED',
+    assignmentStatus: currentRouteDriverId === null ? 'UNASSIGNED' : 'ASSIGNED',
     customerId: row.customer?.id ?? '',
+    destinationAddress: stop === null ? normalizedAddressLabel(row.destination?.normalizedAddress ?? null) : deliveryStopAddressLabel(stop),
+    destinationDisplayName: row.destination?.canonicalName ?? stop?.recipientName ?? '',
     destinationId: row.destination?.id ?? '',
+    driverId: currentRouteDriverId,
     ...etaFields(eta),
-    etaStatus: fallbackEtaStatus(row.currentRouteVersionId, eta),
-    ...(eta?.routePlanId === undefined ? {} : { routePlanId: eta.routePlanId }),
+    etaStatus: fallbackEtaStatus(currentRouteDriverId === null ? null : row.currentRouteVersionId, eta),
+    latitude: decimalToNumber(stop?.latitude ?? null),
+    longitude: decimalToNumber(stop?.longitude ?? null),
+    ...(routePlanId === null ? {} : { routePlanId }),
     ...(row.currentRouteVersionId === null ? {} : { routeVersionId: row.currentRouteVersionId }),
     sellerOrderId: row.id,
     sellerOrderKey: row.sellerOrderKey ?? row.id,
+    vehicleId: currentRoute?.routePlan?.vehicleId ?? null,
   };
 }
 
@@ -915,6 +962,41 @@ function normalizedAddressLabel(value: Prisma.JsonValue): string | null {
       .map((key) => value[key])
       .filter((part): part is string => typeof part === 'string' && part.length > 0);
     return parts.length === 0 ? null : parts.join(', ');
+  }
+  return null;
+}
+
+function deliveryStopAddressLabel(value: {
+  address1: string | null;
+  address2: string | null;
+  city: string | null;
+  countryCode: string | null;
+  postalCode: string | null;
+  province: string | null;
+}): string | null {
+  const parts = [value.address1, value.address2, value.city, value.province, value.postalCode, value.countryCode]
+    .filter((part): part is string => typeof part === 'string' && part.trim() !== '')
+    .map((part) => part.trim());
+  return parts.length === 0 ? null : parts.join(', ');
+}
+
+function decimalToNumber(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  if (typeof value === 'object') {
+    const record = value as { toNumber?: unknown; toString?: unknown };
+    if (typeof record.toNumber === 'function') {
+      const parsed = (record.toNumber as () => unknown)();
+      return typeof parsed === 'number' && Number.isFinite(parsed) ? parsed : null;
+    }
+    if (typeof record.toString === 'function' && record.toString !== Object.prototype.toString) {
+      const parsed = Number((record.toString as () => string)());
+      return Number.isFinite(parsed) ? parsed : null;
+    }
   }
   return null;
 }

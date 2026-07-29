@@ -3,6 +3,10 @@ import { createHash } from 'node:crypto';
 import { Prisma, type PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
+import type {
+  DsvAddressCanonicalizer,
+  DsvAddressResolutionStatus,
+} from './dsv-address-canonicalization.js';
 import {
   buildDsvDispatchPreviewDiff,
   canonicalJson,
@@ -17,13 +21,18 @@ import {
 
 export type DsvDispatchImportSourceRow = {
   address: string;
+  addressResolutionStatus?: DsvAddressResolutionStatus;
   conditionCode: string;
   customerCode: string;
+  detailAddress?: string | null;
   destinationName: string;
   driverName: string;
+  jibunAddress?: string | null;
   latitude: number | null;
   longitude: number | null;
   notes: string | null;
+  postalCode?: string | null;
+  rawAddress?: string;
   rowNumber: number;
   sellerOrderKey: string;
   shippedBoxes: number;
@@ -173,6 +182,7 @@ type ApplyFailureCode =
   | 'IDEMPOTENCY_PAYLOAD_MISMATCH';
 
 type DsvDispatchImportServiceOptions = {
+  addressCanonicalizer?: DsvAddressCanonicalizer;
   applyTransactionMaxWaitMs?: number;
   applyTransactionTimeoutMs?: number;
   delayAfterCanonicalRowsMs?: number;
@@ -226,16 +236,22 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
   async preview(input: DsvDispatchImportInput & { shopDomain: string }): Promise<DsvDispatchImportPreview> {
     const shop = await this.findShop(input.shopDomain);
     if (shop === null) throw new DsvDispatchImportShopNotFoundError();
-    const diff = await this.buildPreviewForRows(this.prisma, shop.id, input);
-    return previewView(diff, input.rows);
+    const rows = await this.canonicalizeRows(input.rows, input.shopDomain);
+    const diff = await this.buildPreviewForRows(this.prisma, shop.id, { ...input, rows });
+    return previewView(diff, rows);
   }
 
   async commit(input: DsvDispatchImportInput & { actor: string; shopDomain: string }): Promise<DsvDispatchImportView> {
     const shop = await this.findShop(input.shopDomain);
     if (shop === null) throw new DsvDispatchImportShopNotFoundError();
-    const diff = await this.buildPreviewForRows(this.prisma, shop.id, input);
+    const rows = await this.canonicalizeRows(input.rows, input.shopDomain);
+    const diff = await this.buildPreviewForRows(this.prisma, shop.id, { ...input, rows });
+    const preview = previewView(diff, rows);
     if (input.previewHash !== undefined && input.previewHash !== diff.previewHash) {
       throw new DsvDispatchImportConflictError('DISPATCH_IMPORT_PREVIEW_STALE');
+    }
+    if (preview.rows.some((row) => row.issues.some((issue) => isAddressResolutionIssue(issue.code)))) {
+      throw new DsvDispatchImportValidationError(preview);
     }
     const candidateConditionIds = await this.persistConditionCandidates(shop.id, input.actor, diff);
 
@@ -252,7 +268,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         status: stageStatus(diff),
         rows: {
           create: diff.rows.map((row) => {
-            const source = input.rows.find((item) => item.rowNumber === row.rowNumber && item.sellerOrderKey.trim() === row.sellerOrderKey);
+            const source = rows.find((item) => item.rowNumber === row.rowNumber && item.sellerOrderKey.trim() === row.sellerOrderKey);
             if (source === undefined) throw new Error(`Missing source row ${row.rowNumber}`);
             return {
               address: source.address,
@@ -554,8 +570,14 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     try {
       const condition = await this.prisma.$transaction(async (tx) => {
         await lockCondition(tx, shop.id, comparisonKey);
-        const existing = await tx.dsvTransportCondition.findUnique({
-          where: { shopId_comparisonKey: { comparisonKey, shopId: shop.id } },
+        const existing = await tx.dsvTransportCondition.findFirst({
+          where: {
+            OR: [
+              { comparisonKey },
+              { code: comparisonKey },
+            ],
+            shopId: shop.id,
+          },
         });
         const previousStatus = existing?.status ?? null;
         const promoted = existing === null
@@ -576,9 +598,11 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
             data: {
               activatedAt: new Date(),
               code: comparisonKey,
+              comparisonKey,
               deactivatedAt: null,
               description: input.description,
               name: input.name,
+              rawValue: existing.rawValue ?? input.code,
               status: 'ACTIVE',
             },
             where: { id_shopId: { id: existing.id, shopId: shop.id } },
@@ -740,6 +764,47 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     });
   }
 
+  private async canonicalizeRows(
+    rows: DsvDispatchImportSourceRow[],
+    shopDomain: string,
+  ): Promise<DsvDispatchImportSourceRow[]> {
+    const canonicalizer = this.options.addressCanonicalizer;
+    if (canonicalizer === undefined) return rows;
+
+    const resolutions = new Map<string, Awaited<ReturnType<DsvAddressCanonicalizer['resolve']>>>();
+    for (const row of rows) {
+      if (row.addressResolutionStatus === 'RESOLVED' && row.postalCode !== undefined) continue;
+      const rawAddress = row.rawAddress ?? row.address;
+      const key = rawAddress.trim().replace(/\s+/gu, ' ').toLowerCase();
+      if (!resolutions.has(key)) {
+        resolutions.set(key, await canonicalizer.resolve({ address: rawAddress, shopDomain }));
+      }
+    }
+
+    return rows.map((row) => {
+      if (row.addressResolutionStatus === 'RESOLVED' && row.postalCode !== undefined) return row;
+      const rawAddress = row.rawAddress ?? row.address;
+      const key = rawAddress.trim().replace(/\s+/gu, ' ').toLowerCase();
+      const resolution = resolutions.get(key);
+      if (resolution === undefined) return row;
+      const hasSourceCoordinates = row.latitude !== null && row.longitude !== null;
+      const hasResolvedCoordinates = resolution.latitude !== null && resolution.longitude !== null;
+      return {
+        ...row,
+        address: resolution.address,
+        addressResolutionStatus: resolution.status === 'RESOLVED' && (hasResolvedCoordinates || hasSourceCoordinates)
+          ? 'RESOLVED'
+          : resolution.status,
+        detailAddress: resolution.detailAddress,
+        jibunAddress: resolution.jibunAddress,
+        latitude: hasResolvedCoordinates ? resolution.latitude : row.latitude,
+        longitude: hasResolvedCoordinates ? resolution.longitude : row.longitude,
+        postalCode: resolution.postalCode,
+        rawAddress: resolution.rawAddress,
+      };
+    });
+  }
+
   private async persistConditionCandidates(
     shopId: string,
     actor: string,
@@ -792,7 +857,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     if (customer.status !== 'ACTIVE') {
       throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_HAS_REVIEW_ROWS');
     }
-    const destination = await findOrCreateDestination(tx, shopId, source);
+    const destination = await findOrCreateDestination(tx, shopId, source, row.normalized);
     const order = await tx.order.upsert({
       create: {
         customerId: customer.id,
@@ -819,11 +884,15 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     const stop = await tx.deliveryStop.upsert({
       create: {
         address1: row.normalized.address,
+        address2: row.normalized.detailAddress ?? null,
+        countryCode: 'KR',
         deliveryDate: new Date(`${row.normalized.planDate}T00:00:00.000Z`),
+        geocodeStatus: row.normalized.latitude !== null && row.normalized.longitude !== null ? 'RESOLVED' : 'FAILED',
         instructions: row.normalized.notes,
         latitude: row.normalized.latitude,
         longitude: row.normalized.longitude,
         orderId: order.id,
+        postalCode: row.normalized.postalCode ?? null,
         recipientName: row.normalized.destinationName,
         shopId,
       },
@@ -986,10 +1055,14 @@ export function buildDispatchImportPreview(input: {
 
 function previewView(diff: DsvDispatchPreviewDiff, sourceRows: DsvDispatchImportSourceRow[]): DsvDispatchImportPreview {
   const errorRows = diff.summary.errorRows + diff.summary.conflictRows + diff.summary.updateCandidateRows;
-  const reviewRows = diff.rows.filter((row) => row.issues.some((issue) => issue.severity === 'review')).length;
+  const reviewRows = diff.rows.filter((row) =>
+    row.issues.some((issue) => issue.severity === 'review')
+    && !row.issues.some((issue) => issue.severity === 'error')).length;
+  const hasAddressResolutionIssue = diff.rows.some((row) =>
+    row.issues.some((issue) => isAddressResolutionIssue(issue.code)));
   return {
     canApply: diff.canApply,
-    canCommit: diff.rows.length > 0 && errorRows === 0,
+    canCommit: diff.rows.length > 0 && errorRows === 0 && !hasAddressResolutionIssue,
     conditionCandidates: diff.conditionCandidates,
     fileName: diff.fileName,
     planDate: diff.planDate,
@@ -1037,6 +1110,13 @@ function previewView(diff: DsvDispatchPreviewDiff, sourceRows: DsvDispatchImport
       updateCandidateRows: diff.summary.updateCandidateRows,
     },
   };
+}
+
+function isAddressResolutionIssue(code: string): boolean {
+  return code === 'ADDRESS_AMBIGUOUS'
+    || code === 'ADDRESS_COORDINATES_NOT_RESOLVED'
+    || code === 'ADDRESS_NOT_FOUND'
+    || code === 'ADDRESS_SERVICE_UNAVAILABLE';
 }
 
 function matchesStagedPreviewExceptResolvedDestination(
@@ -1243,7 +1323,12 @@ type ApplyCanonicalLink = {
   sellerOrderId: string;
 };
 
-async function findOrCreateDestination(tx: Tx, shopId: string, source: DsvDispatchImportSourceRow) {
+async function findOrCreateDestination(
+  tx: Tx,
+  shopId: string,
+  source: DsvDispatchImportSourceRow,
+  normalized: DsvDispatchDiffRow['normalized'],
+) {
   const fingerprint = addressFingerprint(source);
   const existing = await tx.deliveryCustomerProfile.findFirst({
     where: { addressFingerprint: fingerprint, mergedIntoProfileId: null, shopId },
@@ -1254,10 +1339,14 @@ async function findOrCreateDestination(tx: Tx, shopId: string, source: DsvDispat
       addressFingerprint: fingerprint,
       canonicalName: source.destinationName.trim(),
       normalizedAddress: toJson({
-        address: source.address.trim(),
-        latitude: source.latitude,
-        longitude: source.longitude,
+        address: normalized.address,
+        detailAddress: normalized.detailAddress ?? null,
+        jibunAddress: normalized.jibunAddress ?? null,
+        latitude: normalized.latitude,
+        longitude: normalized.longitude,
         name: source.destinationName.trim(),
+        postalCode: normalized.postalCode ?? null,
+        rawAddress: normalized.rawAddress ?? source.address.trim(),
       }),
       normalizedNameKey: source.destinationName.trim().toUpperCase(),
       shopId,
@@ -1265,9 +1354,14 @@ async function findOrCreateDestination(tx: Tx, shopId: string, source: DsvDispat
   });
 }
 
-function addressFingerprint(row: Pick<DsvDispatchImportSourceRow, 'address' | 'destinationName'>): string {
+function addressFingerprint(
+  row: Pick<DsvDispatchImportSourceRow, 'address' | 'destinationName' | 'detailAddress' | 'postalCode'>,
+): string {
+  const structuredSuffix = row.detailAddress === undefined && row.postalCode === undefined
+    ? ''
+    : `|${row.postalCode?.trim() ?? ''}|${row.detailAddress?.trim().toUpperCase() ?? ''}`;
   return createHash('sha256')
-    .update(`${row.destinationName.trim().toUpperCase()}|${row.address.trim().toUpperCase()}`, 'utf8')
+    .update(`${row.destinationName.trim().toUpperCase()}|${row.address.trim().toUpperCase()}${structuredSuffix}`, 'utf8')
     .digest('hex');
 }
 
@@ -1280,20 +1374,29 @@ function sourceRowFromRecord(row: {
   latitude: Prisma.Decimal | null;
   longitude: Prisma.Decimal | null;
   notes: string | null;
+  normalized: Prisma.JsonValue;
   rowNumber: number;
   sellerOrderKey: string;
   shippedBoxes: number;
   vehiclePlate: string;
 }): DsvDispatchImportSourceRow {
+  const normalized = normalizedFromJson(row.normalized);
   return {
     address: row.address,
+    ...(normalized?.addressResolutionStatus === undefined
+      ? {}
+      : { addressResolutionStatus: normalized.addressResolutionStatus }),
     conditionCode: row.conditionCode,
     customerCode: row.customerCode,
+    ...(normalized?.detailAddress === undefined ? {} : { detailAddress: normalized.detailAddress }),
     destinationName: row.destinationName,
     driverName: row.driverName,
+    ...(normalized?.jibunAddress === undefined ? {} : { jibunAddress: normalized.jibunAddress }),
     latitude: row.latitude?.toNumber() ?? null,
     longitude: row.longitude?.toNumber() ?? null,
     notes: row.notes,
+    ...(normalized?.postalCode === undefined ? {} : { postalCode: normalized.postalCode }),
+    ...(normalized?.rawAddress === undefined ? {} : { rawAddress: normalized.rawAddress }),
     rowNumber: row.rowNumber,
     sellerOrderKey: row.sellerOrderKey,
     shippedBoxes: row.shippedBoxes,

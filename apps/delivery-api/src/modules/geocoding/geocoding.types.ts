@@ -84,6 +84,7 @@ export type GeocodingLookupResult = {
   addressLabel: string;
   latitude: number;
   longitude: number;
+  postalCode?: string | null;
   provider: string;
   providerPlaceId: string | null;
   rawLabel: string | null;

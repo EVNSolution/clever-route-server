@@ -39,6 +39,36 @@ describe('Route Ops geocoding', () => {
     }));
   });
 
+  test('builds country-bounded South Korean address queries', () => {
+    const queries = buildGeocodingQueries({
+      address1: '서울특별시 강남구 언주로 211',
+      address2: null,
+      city: null,
+      countryCode: 'KR',
+      postalCode: null,
+      province: null,
+    });
+    const [query] = queries;
+
+    expect(query).toEqual({
+      cacheKey: 'structured:street=서울특별시 강남구 언주로 211&country=south korea&countrycodes=kr',
+      kind: 'structured',
+      params: {
+        country: 'South Korea',
+        countrycodes: 'kr',
+        street: '서울특별시 강남구 언주로 211',
+      },
+      shape: 'structured_without_unit',
+    });
+    expect(queries).toContainEqual({
+      cacheKey: 'freeform:서울특별시 강남구 언주로 211|countrycodes=kr',
+      countrycodes: 'kr',
+      kind: 'freeform',
+      q: '서울특별시 강남구 언주로 211',
+      shape: 'freeform',
+    });
+  });
+
   test('fails closed when disabled and does not call a provider', async () => {
     const provider = { geocodeAddress: vi.fn(), providerName: 'mock' };
     const service = new GeocodingService({ mode: 'disabled', provider });
@@ -53,7 +83,13 @@ describe('Route Ops geocoding', () => {
 
   test('uses Nominatim-compatible search parameters and identifying user agent', async () => {
     const rawFetch = vi.fn(() => Promise.resolve({
-      json: () => Promise.resolve([{ display_name: 'City Centre', lat: '43.589045', lon: '-79.644119', place_id: 42 }]),
+      json: () => Promise.resolve([{
+        address: { postcode: 'L5B 3C1' },
+        display_name: 'City Centre',
+        lat: '43.589045',
+        lon: '-79.644119',
+        place_id: 42,
+      }]),
       ok: true,
       status: 200
     }));
@@ -78,10 +114,16 @@ describe('Route Ops geocoding', () => {
       shape: 'structured_without_unit'
     });
 
-    expect(result).toEqual(expect.objectContaining({ latitude: 43.589045, longitude: -79.644119, providerPlaceId: '42' }));
+    expect(result).toEqual(expect.objectContaining({
+      latitude: 43.589045,
+      longitude: -79.644119,
+      postalCode: 'L5B 3C1',
+      providerPlaceId: '42',
+    }));
     const call = rawFetch.mock.calls[0];
     if (call === undefined) throw new Error('expected fetch call');
     const [url, init] = call as unknown as [URL, RequestInit];
+    expect(url.searchParams.get('addressdetails')).toBe('1');
     expect(url.toString()).toContain('format=jsonv2');
     expect(url.toString()).toContain('limit=1');
     expect(url.searchParams.get('q')).toBe(null);
@@ -257,6 +299,58 @@ describe('Route Ops geocoding', () => {
       'freeform_postal_only',
       'structured_without_unit'
     ]);
+  });
+
+  test('rejects South Korean address coordinates outside South Korea', async () => {
+    const provider = {
+      geocodeAddress: vi
+        .fn()
+        .mockResolvedValueOnce({
+          addressLabel: 'structured_without_unit',
+          latitude: 43.6532,
+          longitude: -79.3832,
+          provider: 'mock',
+          providerPlaceId: 'toronto',
+          rawLabel: null,
+        })
+        .mockResolvedValueOnce({
+          addressLabel: 'freeform_without_unit',
+          latitude: 37.4923433,
+          longitude: 127.04661,
+          postalCode: '06273',
+          provider: 'mock',
+          providerPlaceId: 'gangnam',
+          rawLabel: null,
+        }),
+      providerName: 'mock',
+    };
+    const service = new GeocodingService({
+      minIntervalMs: 0,
+      mode: 'nominatim_compatible',
+      provider,
+    });
+
+    const result = await service.geocode({
+      address: {
+        address1: '서울특별시 강남구 언주로 211',
+        address2: null,
+        city: null,
+        countryCode: 'KR',
+        postalCode: null,
+        province: null,
+      },
+      shopDomain: 'dsv-demo.local',
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      result: {
+        latitude: 37.4923433,
+        longitude: 127.04661,
+        postalCode: '06273',
+      },
+    });
+    expect(provider.geocodeAddress).toHaveBeenCalledTimes(2);
   });
 
   test('uses postal-only fallback before no-postal fallback', async () => {

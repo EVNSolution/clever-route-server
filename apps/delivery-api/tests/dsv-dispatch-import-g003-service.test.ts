@@ -190,7 +190,7 @@ describe('G003 DSV dispatch import service apply contract', () => {
     expect(method).toContain('requestId: input.principal?.requestId');
     expect(method).toContain('sourceRows');
     expect(update).not.toContain('createdBy');
-    expect(update).not.toContain('rawValue');
+    expect(update).toContain('rawValue: existing.rawValue ?? input.code');
   });
 
   test('blocks candidates, inactive/missing/ambiguous resources, conflicts, and update candidates before canonical writes', async () => {

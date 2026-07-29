@@ -17,7 +17,7 @@ import type { DsvAssignmentTransactionClient, DsvAssignmentTransactionPort } fro
 
 type DsvAssignmentPrismaClient = DsvAssignmentTransactionPort & Pick<
   PrismaClient,
-  'dsvAuditEvent' | 'dsvCommandReceipt' | 'order' | 'routeGroupingChildVersion' | 'routeGroupingOrder' | 'routePlan' | 'routePlanStop' | 'shop'
+  'dsvAuditEvent' | 'dsvCommandReceipt' | 'dsvVehicleDriverAssignment' | 'order' | 'routeGroupingChildVersion' | 'routeGroupingOrder' | 'routePlan' | 'routePlanStop' | 'shop' | 'vehicle'
 >;
 
 type DsvAssignmentRouteGroupingService = RouteGroupingService & {
@@ -45,7 +45,7 @@ export type DsvAssignmentCommandBaseInput = {
 
 export type DsvAdminReassignInput = DsvAssignmentCommandBaseInput & {
   targetDriverId: string;
-  targetRoutePlanId: string;
+  targetRoutePlanId?: string | null;
   targetSequence?: number | null;
   targetVehicleId?: string | null;
 };
@@ -142,17 +142,23 @@ export class DsvAssignmentCommandService {
       payload: assignmentPayload('reassignSellerOrder', input),
       plan: async (tx, grouping, shopId, currentRouteVersionId) => {
         const source = await this.requireOwner(tx, input.sellerOrderId, grouping, currentRouteVersionId);
-        const target = requireTargetRoute(grouping, input.targetRoutePlanId);
+        const target = await this.resolveAdminTargetRoute(tx, grouping, shopId, input);
         if (target.driverId !== input.targetDriverId) throw new DsvAssignmentCommandError('SELLER_ORDER_ROUTE_SCOPE_REJECTED');
         assertTransferOpen(source);
         assertTransferOpen(target);
-        await this.assertTargetVehicle(tx, shopId, target, input.targetVehicleId);
+        if (target.routePlanId === null) {
+          await this.assertNewRouteTargetVehicle(tx, shopId, input.targetDriverId, input.targetVehicleId);
+        } else {
+          await this.assertTargetVehicle(tx, shopId, target, input.targetVehicleId);
+        }
         return {
           assignmentStatus: 'ASSIGNED',
           etaStatus: 'PENDING',
           previousRoutePlanId: source.routePlanId,
           previousRouteVersionId: source.currentVersionId,
-          routes: moveOrder(grouping, input.sellerOrderId, source, target, input.targetSequence),
+          routes: target.routePlanId === null
+            ? moveOrderToNewDriverRoute(grouping, input.sellerOrderId, source, target, input.targetVehicleId, input.targetSequence)
+            : moveOrder(grouping, input.sellerOrderId, source, target, input.targetSequence),
           targetRoutePlanId: target.routePlanId,
         };
       },
@@ -257,7 +263,10 @@ export class DsvAssignmentCommandService {
       }).then((updated) => {
         if (updated.count !== 1) throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
       });
-      const affectedRouteVersions = await this.readAffectedRouteVersions(tx, grouping.id, shop.id, movement);
+      const affectedRouteVersions = await this.readAffectedRouteVersions(tx, grouping.id, shop.id, {
+        ...movement,
+        targetRoutePlanId: movement.targetRoutePlanId ?? nextOwner.routePlanId,
+      });
       await this.invalidateAffectedEtas(tx, affectedRouteVersions);
 
       const resultWithoutAudit = {
@@ -477,6 +486,47 @@ export class DsvAssignmentCommandService {
     }
   }
 
+  private async assertNewRouteTargetVehicle(
+    tx: DsvAssignmentTransactionClient,
+    shopId: string,
+    targetDriverId: string,
+    targetVehicleId: string | null | undefined,
+  ): Promise<void> {
+    if (targetVehicleId === undefined || targetVehicleId === null) {
+      throw new DsvAssignmentCommandError('SELLER_ORDER_TARGET_VEHICLE_REQUIRED');
+    }
+    const [vehicle, assignment] = await Promise.all([
+      tx.vehicle.findFirst({
+        select: { id: true },
+        where: { id: targetVehicleId, shopId },
+      }),
+      tx.dsvVehicleDriverAssignment.findFirst({
+        select: { id: true },
+        where: { driverId: targetDriverId, shopId, vehicleId: targetVehicleId },
+      }),
+    ]);
+    if (vehicle === null || assignment === null) {
+      throw new DsvAssignmentCommandError('SELLER_ORDER_TARGET_VEHICLE_REQUIRED');
+    }
+  }
+
+  private async resolveAdminTargetRoute(
+    tx: DsvAssignmentTransactionClient,
+    grouping: RouteGroupingDetailDto,
+    shopId: string,
+    input: DsvAdminReassignInput,
+  ): Promise<RouteGroupingChildDto> {
+    if (input.targetRoutePlanId !== undefined && input.targetRoutePlanId !== null) {
+      return requireTargetRoute(grouping, input.targetRoutePlanId);
+    }
+    const existingReadyRoute = grouping.children
+      .filter((child) => child.driverId === input.targetDriverId && child.displayStatus === 'READY' && child.routePlanId !== null)
+      .sort((left, right) => (left.sortOrder ?? Number.MAX_SAFE_INTEGER) - (right.sortOrder ?? Number.MAX_SAFE_INTEGER))[0];
+    if (existingReadyRoute !== undefined) return existingReadyRoute;
+    await this.assertNewRouteTargetVehicle(tx, shopId, input.targetDriverId, input.targetVehicleId);
+    return newDriverRoute(grouping, input.targetDriverId);
+  }
+
   private async lockSellerOrder(
     tx: DsvAssignmentTransactionClient,
     shopId: string,
@@ -597,6 +647,29 @@ function requireTargetRoute(grouping: RouteGroupingDetailDto, routePlanId: strin
   return target;
 }
 
+function newDriverRoute(grouping: RouteGroupingDetailDto, driverId: string): RouteGroupingChildDto {
+  const sortOrder = nextSortOrder(grouping.children);
+  return {
+    childVersion: 0,
+    color: null,
+    displayStatus: 'READY',
+    driverId,
+    driverName: null,
+    notificationStatus: 'NOT_REQUIRED',
+    orderIds: [],
+    routeGeometry: null,
+    routeIdx: sortOrder,
+    routeMetrics: null,
+    routePlan: null,
+    routePlanId: null,
+    routeStopPoints: [],
+    sortOrder,
+    stops: [],
+    stopsCount: 0,
+    updatedAt: grouping.updatedAt,
+  };
+}
+
 function firstUnassignedRoute(grouping: RouteGroupingDetailDto): RouteGroupingChildDto | undefined {
   return grouping.children
     .filter((child) => child.driverId === null && child.displayStatus === 'READY')
@@ -624,6 +697,32 @@ function moveOrder(
     }
     return childToDraftRoute(child, child.orderIds);
   });
+}
+
+function moveOrderToNewDriverRoute(
+  grouping: RouteGroupingDetailDto,
+  orderId: string,
+  source: RouteGroupingChildDto,
+  target: RouteGroupingChildDto,
+  targetVehicleId: string | null | undefined,
+  targetSequence?: number | null,
+): RouteGroupingDraftRouteInput[] {
+  return [
+    ...grouping.children.map((child) => childToDraftRoute(
+      child,
+      child.routePlanId === source.routePlanId ? child.orderIds.filter((candidate) => candidate !== orderId) : child.orderIds,
+    )),
+    {
+      branchId: null,
+      driverId: target.driverId,
+      label: null,
+      orderIds: placeOrderInRoute([], orderId, targetSequence),
+      routePlanId: null,
+      sortOrder: target.sortOrder ?? nextSortOrder(grouping.children),
+      tempId: `driver:${target.driverId ?? 'unassigned'}:${target.sortOrder ?? nextSortOrder(grouping.children)}`,
+      vehicleId: targetVehicleId ?? null,
+    },
+  ];
 }
 
 function releaseToNewUnassignedRoute(
