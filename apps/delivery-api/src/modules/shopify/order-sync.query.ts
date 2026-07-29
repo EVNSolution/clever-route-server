@@ -39,6 +39,7 @@ const ORDER_FIELDS = `#graphql
         updatedAt
         cancelledAt
         note
+        tags
         customAttributes {
           key
           value

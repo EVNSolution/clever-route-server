@@ -19,6 +19,7 @@ describe('buildOrdersUpdatedSinceQuery', () => {
     expect(payload.query).toContain('orders(first: $first, after: $after, query: $query');
     expect(payload.query).toContain('shippingAddress');
     expect(payload.query).toContain('paymentGatewayNames');
+    expect(payload.query).toContain('tags');
   });
 });
 
@@ -389,6 +390,120 @@ test('stores delivery route scope fields from line item date ranges', () => {
     })
   );
   expect(mapped.order.readiness).toBe('READY_TO_PLAN');
+});
+
+test('uses configured delivery cycle fallback for Appstle recurring subscription orders', () => {
+  const mapped = mapShopifyOrderNodeToDeliveryInputs({
+    cancelledAt: null,
+    createdAt: '2026-05-05T21:00:00Z',
+    currentTotalPriceSet: { shopMoney: { amount: '95.00', currencyCode: 'CAD' } },
+    customAttributes: [
+      { key: 'Delivery Area', value: 'Thornhill' },
+      { key: 'Delivery Day', value: 'Friday' }
+    ],
+    displayFinancialStatus: 'PAID',
+    displayFulfillmentStatus: 'UNFULFILLED',
+    email: null,
+    id: 'gid://shopify/Order/904',
+    legacyResourceId: '904',
+    lineItems: { nodes: [{ title: 'Tomatono 5/7-5/9', quantity: 1 }] },
+    name: '#1904',
+    note: null,
+    phone: null,
+    processedAt: '2026-05-05T21:00:00Z',
+    shippingAddress: {
+      address1: '1 Yonge St',
+      address2: null,
+      city: 'Toronto',
+      countryCodeV2: 'CA',
+      latitude: 43.65,
+      longitude: -79.38,
+      name: 'Customer',
+      phone: null,
+      province: 'ON',
+      provinceCode: 'ON',
+      zip: 'M5E 1E5'
+    },
+    tags: ['appstle_subscription_recurring_order'],
+    updatedAt: '2026-05-05T22:00:00Z'
+  }, {
+    deliveryCycle: {
+      cutoffTime: '17:00',
+      cutoffWeekday: 'TUESDAY',
+      timeZone: 'America/Toronto'
+    }
+  });
+
+  expect(mapped.order).toEqual(
+    expect.objectContaining({
+      deliveryBatchEndDate: '2026-05-16',
+      deliveryBatchStartDate: '2026-05-14',
+      deliveryDate: '2026-05-15',
+      deliveryDateSource: 'ORDER_DATE_CYCLE_RULE',
+      routeScopeKey: '2026-05-15|DELIVERY||'
+    })
+  );
+  expect(mapped.order.rawPayload).toEqual(
+    expect.objectContaining({
+      tags: ['appstle_subscription_recurring_order']
+    })
+  );
+});
+
+test.each([
+  ['first Appstle subscription order', ['appstle_subscription_first_order']],
+  ['regular order', []]
+])('keeps line item date range priority for %s', (_label, tags) => {
+  const mapped = mapShopifyOrderNodeToDeliveryInputs({
+    cancelledAt: null,
+    createdAt: '2026-05-05T21:00:00Z',
+    currentTotalPriceSet: { shopMoney: { amount: '95.00', currencyCode: 'CAD' } },
+    customAttributes: [
+      { key: 'Delivery Area', value: 'Thornhill' },
+      { key: 'Delivery Day', value: 'Friday' }
+    ],
+    displayFinancialStatus: 'PAID',
+    displayFulfillmentStatus: 'UNFULFILLED',
+    email: null,
+    id: 'gid://shopify/Order/905',
+    legacyResourceId: '905',
+    lineItems: { nodes: [{ title: 'Tomatono 5/7-5/9', quantity: 1 }] },
+    name: '#1905',
+    note: null,
+    phone: null,
+    processedAt: '2026-05-05T21:00:00Z',
+    shippingAddress: {
+      address1: '1 Yonge St',
+      address2: null,
+      city: 'Toronto',
+      countryCodeV2: 'CA',
+      latitude: 43.65,
+      longitude: -79.38,
+      name: 'Customer',
+      phone: null,
+      province: 'ON',
+      provinceCode: 'ON',
+      zip: 'M5E 1E5'
+    },
+    tags,
+    updatedAt: '2026-05-05T22:00:00Z'
+  }, {
+    deliveryCycle: {
+      cutoffTime: '17:00',
+      cutoffWeekday: 'TUESDAY',
+      timeZone: 'America/Toronto'
+    }
+  });
+
+  expect(mapped.order).toEqual(
+    expect.objectContaining({
+      deliveryBatchEndDate: '2026-05-09',
+      deliveryBatchStartDate: '2026-05-07',
+      deliveryDate: '2026-05-08',
+      deliveryDateSource: 'LINE_ITEM_DATE_RANGE',
+      routeScopeKey: '2026-05-08|DELIVERY||'
+    })
+  );
 });
 
 test('requires delivery date and route scope for readiness', () => {
