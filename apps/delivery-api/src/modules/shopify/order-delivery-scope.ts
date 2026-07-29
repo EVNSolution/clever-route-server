@@ -27,6 +27,7 @@ export type DeliveryScopeInput = {
   deliveryDateRaw?: string | null;
   deliveryDayRaw: string | null;
   deliveryTimeWindow?: DeliveryTimeWindowParseResult | null;
+  ignoreLineItemDateRanges?: boolean;
   lineItems: ShopifyOrderLineItem[];
   pickupDayRaw: string | null;
   processedAt: string | null;
@@ -106,7 +107,10 @@ export function calculateDeliveryScope(
     input.deliveryDateRaw ?? null,
     orderDateLocal,
   );
-  const lineItemRange = findLineItemDateRange(input.lineItems, orderDateLocal);
+  const lineItemRange =
+    input.ignoreLineItemDateRanges === true
+      ? null
+      : findLineItemDateRange(input.lineItems, orderDateLocal);
   const weekdayFallbackPolicy =
     input.weekdayFallbackPolicy ?? "DELIVERY_CYCLE";
   const orderDateFallbackRange =

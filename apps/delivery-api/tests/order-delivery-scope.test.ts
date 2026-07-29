@@ -429,6 +429,33 @@ describe("calculateDeliveryScope", () => {
     );
   });
 
+  test("can ignore stale line item date ranges before configured cycle fallback", () => {
+    const scope = calculateDeliveryScope({
+      createdAt: "2026-05-05T21:00:00Z",
+      deliveryArea: "Scarborough",
+      deliveryCycle: {
+        cutoffTime: "17:00",
+        cutoffWeekday: "TUESDAY",
+        timeZone: "America/Toronto",
+      },
+      deliveryDayRaw: "Friday",
+      ignoreLineItemDateRanges: true,
+      lineItems: [{ title: "Bundle 05/07-05/09" }],
+      pickupDayRaw: null,
+      processedAt: null,
+    });
+
+    expect(scope).toEqual(
+      expect.objectContaining({
+        deliveryBatchStartDate: "2026-05-14",
+        deliveryBatchEndDate: "2026-05-16",
+        deliveryDate: "2026-05-15",
+        deliveryDateSource: "ORDER_DATE_CYCLE_RULE",
+        routeScopeKey: "2026-05-15|DELIVERY||",
+      }),
+    );
+  });
+
   test("uses the local timezone date before order-week fallback", () => {
     const scope = calculateDeliveryScope({
       createdAt: "2026-05-19T02:30:00Z",

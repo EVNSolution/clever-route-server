@@ -48,6 +48,7 @@ export type ShopifyOrderNode = {
   phone: string | null;
   processedAt: string | null;
   shippingAddress: ShopifyShippingAddress | null;
+  tags?: string[] | null;
   updatedAt: string;
 };
 
@@ -311,6 +312,8 @@ export type SyncedOrderWithDeliveryStopInput = {
   order: SyncedOrderInput;
 };
 
+const APPSTLE_RECURRING_ORDER_TAG = "appstle_subscription_recurring_order";
+
 export function mapShopifyOrderNodeToDeliveryInputs(
   node: ShopifyOrderNode,
   options: { deliveryCycle?: DeliveryCycleConfig } = {},
@@ -323,12 +326,17 @@ export function mapShopifyOrderNodeToDeliveryInputs(
   const pickup = pickupDay !== null;
   const canonicalDayRaw = deliveryDayRaw ?? pickupDay;
   const lineItems = normalizeLineItems(node.lineItems);
+  const tags = normalizeTags(node.tags);
+  const ignoreLineItemDateRanges = tags.some(
+    (tag) => tag.toLowerCase() === APPSTLE_RECURRING_ORDER_TAG,
+  );
   const scope = calculateDeliveryScope({
     createdAt: node.createdAt ?? null,
     ...(options.deliveryCycle === undefined ? {} : { deliveryCycle: options.deliveryCycle }),
     deliveryArea,
     deliveryDateRaw,
     deliveryDayRaw,
+    ignoreLineItemDateRanges,
     lineItems,
     pickupDayRaw: pickupDay,
     processedAt: node.processedAt,
@@ -469,6 +477,7 @@ export function mapShopifyOrderNodeToDeliveryInputs(
         reviewReasons,
         routeScopeKey: scope.routeScopeKey,
         serviceType: scope.serviceType,
+        tags,
         timeWindowEnd: scope.timeWindowEnd,
         timeWindowStart: scope.timeWindowStart,
       },
@@ -618,6 +627,14 @@ function normalizeLineItem(value: ShopifyOrderLineItem): ShopifyOrderLineItem {
     title: normalizeOptionalString(value.title),
     variantTitle: normalizeOptionalString(value.variantTitle),
   };
+}
+
+function normalizeTags(value: ShopifyOrderNode["tags"]): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((tag) => {
+    const normalized = normalizeOptionalString(tag);
+    return normalized === null ? [] : [normalized];
+  });
 }
 
 function hasAddress(address: ShopifyShippingAddress): boolean {
