@@ -373,11 +373,14 @@ function toInventoryOrderDto(orderId: string, order: InventoryOrderRecord, route
     items: getInventoryOrderItems(order),
     name: order.name,
     orderDateLocal: readDateString(raw?.orderDateLocal),
+    paymentGatewayNames: readStringArray(raw?.paymentGatewayNames),
+    paymentMethodTitle: readInventoryPaymentMethodTitle(raw),
     paymentStatus: order.financialStatus ?? null,
     phone: readInventoryPhone(order),
     processedAt: formatDateOnly(order.processedAt),
     recipientName: readInventoryRecipientName(order),
     routeStop,
+    shopifyPaymentStatus: readString(raw?.displayFinancialStatus),
     stopTimeMinutes: routeStop?.stopTimeMinutes ?? null,
     totalPriceAmount: stringOrNull(order.totalPriceAmount)
   };
@@ -588,6 +591,47 @@ function readDateString(value: unknown): string | null {
 
 function readString(value: unknown): string | null {
   return typeof value === 'string' ? normalizeOptionalText(value) : null;
+}
+
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.flatMap((item) => {
+    const text = readString(item);
+    return text === null ? [] : [text];
+  }))];
+}
+
+function readInventoryPaymentMethodTitle(raw: Record<string, unknown> | null): string | null {
+  const gatewayNames = readStringArray(raw?.paymentGatewayNames);
+  if (gatewayNames.length > 0) {
+    return [...new Set(gatewayNames.map(formatPaymentGatewayName))].join(' / ');
+  }
+
+  const manualMethod = readString(raw?.cleverManualPaymentMethod)
+    ?? readLegacyManualPaymentMethod(raw?.cleverManualPaymentStatus);
+  if (manualMethod !== null) {
+    return formatPaymentGatewayName(manualMethod);
+  }
+
+  return readString(raw?.paymentMethodTitle)
+    ?? readString(raw?.payment_method_title)
+    ?? readString(raw?.paymentMethod)
+    ?? readString(raw?.payment_method);
+}
+
+function readLegacyManualPaymentMethod(value: unknown): string | null {
+  return value === 'CASH' || value === 'ETRANSFER' ? value : null;
+}
+
+function formatPaymentGatewayName(value: string): string {
+  const searchValue = value.toLowerCase();
+  const compactValue = searchValue.replace(/[\s_-]+/gu, '');
+  if (compactValue.includes('etransfer') || compactValue.includes('emailtransfer') || compactValue.includes('moneytransfer')) return 'e-Transfer';
+  if (searchValue.includes('cash') || searchValue.includes('cod') || searchValue.includes('현금')) return 'Cash';
+  if (compactValue === 'shopifypayments') return 'Shopify Payments';
+  if (compactValue === 'shopifystorecredit') return 'Shopify Store Credit';
+  if (compactValue === 'manual') return 'Manual';
+  return value;
 }
 
 function normalizeIds(values: string[]): string[] {

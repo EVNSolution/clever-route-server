@@ -660,14 +660,14 @@ describe('Admin orders routes', () => {
         payload: {
           field: 'payment',
           orderIds: ['order-id'],
-          value: 'CASH'
+          value: 'PENDING'
         },
         url: '/admin/orders/bulk-update'
       });
 
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({
-        data: { orders: [{ ...canonicalOrder, financialStatus: 'CASH' }], updated: 1 },
+        data: { orders: [{ ...canonicalOrder, financialStatus: 'PENDING' }], updated: 1 },
         error: null
       });
       expect(bulkPatchCanonicalOrderStatus).toHaveBeenCalledWith({
@@ -676,8 +676,31 @@ describe('Admin orders routes', () => {
         field: 'payment',
         orderIds: ['order-id'],
         shopDomain: 'example.myshopify.com',
-        value: 'CASH'
+        value: 'PENDING'
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test.each(['CASH', 'ETRANSFER'])('rejects %s passed as a financial status', async (paymentMethod) => {
+    const { bulkPatchCanonicalOrderStatus, dependencies } = createDependencyHarness();
+    const app = await buildApp({ adminOrders: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: {
+          field: 'payment',
+          orderIds: ['order-id'],
+          value: paymentMethod
+        },
+        url: '/admin/orders/bulk-update'
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(bulkPatchCanonicalOrderStatus).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -867,7 +890,7 @@ function createDependencyHarness(): {
       ])
   );
   const bulkPatchCanonicalOrderStatus = vi.fn<NonNullable<AdminOrdersDependencies['orderSyncService']['bulkPatchCanonicalOrderStatus']>>(
-    () => Promise.resolve([{ ...canonicalOrder, financialStatus: 'CASH' }])
+    () => Promise.resolve([{ ...canonicalOrder, financialStatus: 'PENDING' }])
   );
   const patchCanonicalOrder = vi.fn<NonNullable<AdminOrdersDependencies['orderSyncService']['patchCanonicalOrder']>>(
     () => Promise.resolve({ ...canonicalOrder, deliveryArea: 'North York', deliveryDate: '2026-05-10' })
