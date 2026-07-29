@@ -184,8 +184,6 @@ export type BulkOrderStateValue = (typeof BULK_ORDER_STATE_VALUES)[number];
 
 export const BULK_ORDER_PAYMENT_VALUES = [
   "PAID",
-  "CASH",
-  "ETRANSFER",
   "PENDING",
   "UNKNOWN",
 ] as const;
@@ -1196,13 +1194,17 @@ export class PrismaOrderSyncRepository {
     const manualPaymentStatus = readManualPaymentStatus(
       existingRawPayload?.cleverManualPaymentStatus,
     );
+    const manualPaymentMethod =
+      readManualPaymentMethod(existingRawPayload?.cleverManualPaymentMethod) ??
+      readLegacyManualPaymentMethod(existingRawPayload?.cleverManualPaymentStatus);
     const manualDeliveryStatus = readManualDeliveryStatus(
       existingRawPayload?.cleverManualDeliveryStatus,
     );
-    if (manualPaymentStatus !== null || manualDeliveryStatus !== null) {
+    if (manualPaymentStatus !== null || manualPaymentMethod !== null || manualDeliveryStatus !== null) {
       orderWrite.rawPayload = toJson({
         ...input.synced.order.rawPayload,
         ...(manualPaymentStatus === null ? {} : { cleverManualPaymentStatus: manualPaymentStatus }),
+        ...(manualPaymentMethod === null ? {} : { cleverManualPaymentMethod: manualPaymentMethod }),
         ...(manualDeliveryStatus === null ? {} : { cleverManualDeliveryStatus: manualDeliveryStatus }),
       });
     }
@@ -3108,6 +3110,14 @@ function readManualPaymentStatus(value: unknown): BulkOrderPaymentValue | null {
     (BULK_ORDER_PAYMENT_VALUES as readonly string[]).includes(value)
     ? (value as BulkOrderPaymentValue)
     : null;
+}
+
+function readManualPaymentMethod(value: unknown): 'CASH' | 'ETRANSFER' | null {
+  return value === 'CASH' || value === 'ETRANSFER' ? value : null;
+}
+
+function readLegacyManualPaymentMethod(value: unknown): 'CASH' | 'ETRANSFER' | null {
+  return readManualPaymentMethod(value);
 }
 
 function readManualDeliveryStatus(value: unknown): BulkOrderStateValue | null {

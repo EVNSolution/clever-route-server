@@ -21,7 +21,10 @@ export type InventoryOrderDto = {
   items: OrderItemDto[];
   name: string;
   orderDateLocal: string | null;
+  paymentGatewayNames: string[];
+  paymentMethodTitle: string | null;
   paymentStatus: string | null;
+  shopifyPaymentStatus: string | null;
   phone: string | null;
   processedAt: string | null;
   recipientName: string | null;

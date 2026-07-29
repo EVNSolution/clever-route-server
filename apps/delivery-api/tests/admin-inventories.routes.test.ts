@@ -29,10 +29,13 @@ const inventory: InventoryDto = {
     items: [{ name: 'Kimchi', options: [], productId: 1, quantity: 3, sku: null, variationId: 0 }],
     name: '#1001',
     orderDateLocal: '2026-06-24',
+    paymentGatewayNames: ['eTransfer'],
+    paymentMethodTitle: 'e-Transfer',
     paymentStatus: 'PAID',
     phone: '555-0101',
     processedAt: '2026-06-24',
     recipientName: 'Lee Hana',
+    shopifyPaymentStatus: 'PAID',
     totalPriceAmount: '42.00'
   }],
   ordersCount: 1,

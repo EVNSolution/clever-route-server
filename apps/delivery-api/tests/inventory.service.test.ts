@@ -218,7 +218,10 @@ describe('inventory service route-group follower behavior', () => {
               orderItems: [{ id: 'item-1', name: 'Kimchi', options: [], productId: 1, quantity: 2, sku: null, variationId: 0 }],
               phone: null,
               processedAt: new Date('2026-07-01T12:00:00Z'),
-              rawPayload: {},
+              rawPayload: {
+                displayFinancialStatus: 'PAID',
+                paymentGatewayNames: ['Email Money Transfer']
+              },
               shippingAddress: null,
               totalPriceAmount: '42.00'
             },
@@ -261,6 +264,10 @@ describe('inventory service route-group follower behavior', () => {
       driveTimeMinutes: 10,
       eta: '09:15',
       financialStatus: 'PAID',
+      paymentGatewayNames: ['Email Money Transfer'],
+      paymentMethodTitle: 'e-Transfer',
+      paymentStatus: 'PAID',
+      shopifyPaymentStatus: 'PAID',
       phone: '555-0101',
       stopTimeMinutes: 7,
       totalPriceAmount: '42.00'
@@ -268,7 +275,11 @@ describe('inventory service route-group follower behavior', () => {
   });
 
   test('returns linked inventory order-view rows in route delivery order', async () => {
-    const inventoryOrder = (orderId: string, name: string) => ({
+    const inventoryOrder = (
+      orderId: string,
+      name: string,
+      rawPayload: Record<string, unknown> = {}
+    ) => ({
       order: {
         currencyCode: 'CAD',
         deliveryFacts: [],
@@ -278,7 +289,7 @@ describe('inventory service route-group follower behavior', () => {
         orderItems: [],
         phone: null,
         processedAt: null,
-        rawPayload: {},
+        rawPayload,
         shippingAddress: null,
         totalPriceAmount: '10.00'
       },
@@ -299,7 +310,7 @@ describe('inventory service route-group follower behavior', () => {
           name: 'Route group inventory',
           note: null,
           orders: [
-            inventoryOrder('order-2', '#1002'),
+            inventoryOrder('order-2', '#1002', { cleverManualPaymentStatus: 'ETRANSFER' }),
             inventoryOrder('order-unassigned', '#9999'),
             inventoryOrder('order-1', '#1001')
           ],
@@ -331,6 +342,11 @@ describe('inventory service route-group follower behavior', () => {
     expect(detail?.linkedRoutes.map((route) => route.name)).toEqual(['Route A', 'Route B']);
     expect(detail?.orders.map((order) => order.id)).toEqual(['order-1', 'order-2', 'order-unassigned']);
     expect(detail?.orders.map((order) => order.routeStop?.sequence ?? null)).toEqual([1, 1, null]);
+    expect(detail?.orders[1]).toEqual(expect.objectContaining({
+      paymentGatewayNames: [],
+      paymentMethodTitle: 'e-Transfer',
+      paymentStatus: 'PAID'
+    }));
   });
 
   test('creates a missing linked inventory from full current route-group membership', async () => {

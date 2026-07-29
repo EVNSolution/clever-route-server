@@ -207,15 +207,15 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       field: 'payment',
       orderIds: ['order-id'],
       shopDomain: 'example.myshopify.com',
-      value: 'ETRANSFER'
+      value: 'PENDING'
     });
 
     const paymentRawPayloadMatcher: unknown = expect.objectContaining({
-      cleverManualPaymentStatus: 'ETRANSFER',
+      cleverManualPaymentStatus: 'PENDING',
       cleverManualPaymentUpdatedBy: 'shopify-user-id'
     });
     const paymentUpdateDataMatcher: unknown = expect.objectContaining({
-      financialStatus: 'ETRANSFER',
+      financialStatus: 'PENDING',
       rawPayload: paymentRawPayloadMatcher
     });
     const paymentUpdateMatcher: unknown = expect.objectContaining({
@@ -230,7 +230,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       existingOrder: {
         ...canonicalOrderRecord(0),
         id: 'order-id',
-        rawPayload: { cleverManualPaymentStatus: 'CASH' },
+        rawPayload: { cleverManualPaymentStatus: 'PENDING' },
         updatedAtShopify: new Date('2026-05-07T13:00:00.000Z')
       },
       routeStopCount: 0
@@ -242,7 +242,7 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       synced: syncedOrder({ financialStatus: 'PAID' })
     });
 
-    const rawPayloadOverrideMatcher: unknown = expect.objectContaining({ cleverManualPaymentStatus: 'CASH' });
+    const rawPayloadOverrideMatcher: unknown = expect.objectContaining({ cleverManualPaymentStatus: 'PENDING' });
     const orderUpdateMatcher: unknown = expect.objectContaining({
       rawPayload: rawPayloadOverrideMatcher
     });
@@ -250,6 +250,45 @@ describe('PrismaOrderSyncRepository canonical orders', () => {
       update: orderUpdateMatcher
     });
     expect(prisma.order.upsert).toHaveBeenCalledWith(orderUpsertMatcher);
+  });
+
+  test('migrates a legacy payment method out of manual financial status during sync', async () => {
+    const { prisma } = createPrismaHarness({
+      existingOrder: {
+        ...canonicalOrderRecord(0),
+        id: 'order-id',
+        rawPayload: { cleverManualPaymentStatus: 'ETRANSFER' },
+        updatedAtShopify: new Date('2026-05-07T13:00:00.000Z')
+      },
+      routeStopCount: 0
+    });
+    const repository = createOrderSyncRepository(prisma);
+
+    await repository.upsertOrderWithDeliveryStop({
+      shopDomain: 'example.myshopify.com',
+      synced: syncedOrder({ financialStatus: 'PENDING' })
+    });
+
+    const migratedMethodRawPayloadMatcher: unknown = expect.objectContaining({
+      cleverManualPaymentMethod: 'ETRANSFER'
+    });
+    const migratedMethodUpdateMatcher: unknown = expect.objectContaining({
+      financialStatus: 'PENDING',
+      rawPayload: migratedMethodRawPayloadMatcher
+    });
+    expect(prisma.order.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: migratedMethodUpdateMatcher
+    }));
+
+    const removedLegacyStatusRawPayloadMatcher: unknown = expect.not.objectContaining({
+      cleverManualPaymentStatus: 'ETRANSFER'
+    });
+    const removedLegacyStatusUpdateMatcher: unknown = expect.objectContaining({
+      rawPayload: removedLegacyStatusRawPayloadMatcher
+    });
+    expect(prisma.order.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: removedLegacyStatusUpdateMatcher
+    }));
   });
 
   test('recreates a missing delivery stop with its manual delivery state', async () => {
