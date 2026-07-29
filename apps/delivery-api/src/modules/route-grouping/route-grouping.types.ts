@@ -246,6 +246,7 @@ export type SaveRouteGroupingDraftInput = {
   deletedRoutePlanIds?: string[];
   expectedUpdatedAt?: string;
   groupingId: string;
+  mode?: 'MANUAL_ORDER';
   removedOrderIds?: string[];
   routes: RouteGroupingDraftRouteInput[];
   shopDomain: string;

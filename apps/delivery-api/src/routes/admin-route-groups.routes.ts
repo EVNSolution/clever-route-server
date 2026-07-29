@@ -512,13 +512,17 @@ function readPreviewOptimizationPayload(value: unknown): { mode?: 'OPTIMIZE_ORDE
 function readSaveDraftPayload(value: unknown): {
   deletedRoutePlanIds?: string[];
   expectedUpdatedAt?: string;
+  mode?: 'MANUAL_ORDER';
   removedOrderIds?: string[];
   routes: ReturnType<typeof readDraftRouteRows>;
 } {
   const object = requireObject(value);
+  const mode = object.mode === undefined ? undefined : requireNonEmptyString(object.mode);
+  if (mode !== undefined && mode !== 'MANUAL_ORDER') throw new BadRouteGroupPayloadError('unsupported draft save mode');
   return {
     ...(object.deletedRoutePlanIds === undefined ? {} : { deletedRoutePlanIds: readStringArray(object.deletedRoutePlanIds) }),
     ...(object.expectedUpdatedAt === undefined ? {} : { expectedUpdatedAt: readRevisionTimestamp(object.expectedUpdatedAt, 'expectedUpdatedAt') }),
+    ...(mode === undefined ? {} : { mode }),
     ...(object.removedOrderIds === undefined ? {} : { removedOrderIds: readStringArray(object.removedOrderIds) }),
     routes: readDraftRouteRows(object.routes)
   };

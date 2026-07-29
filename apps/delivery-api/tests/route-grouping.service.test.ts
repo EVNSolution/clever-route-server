@@ -155,7 +155,7 @@ describe('route grouping contracts', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain('await lockRouteGroupingDraftSave(tx, group.id)');
     expect(source).toContain('const draftOptimizations = await this.prepareDraftRouteOptimizations(input, baseline, routes)');
-    expect(source).toContain('return shouldOptimizeDraftRoute(group, route, typedAssignments)');
+    expect(source).toContain('shouldPrepareDraftRouteResult(input.mode, group, route, typedAssignments)');
     expect(source).toContain('routeAssignmentsChanged(targetChild, assignments)');
     expect(source).toContain('readExactChildRouteMetricsFromRoutePlan(targetChild.routePlan, detail) === null');
     expect(source).toContain('await createDraftRouteGeometryCache(tx, targetChild.routePlanId, draftOptimization)');
@@ -166,6 +166,21 @@ describe('route grouping contracts', () => {
     expect(source).not.toContain('logPreservedExistingRouteGeometryCache');
     expect(source).toContain('errorName: reason instanceof Error ? reason.name : typeof reason');
     expect(source).not.toContain('errorMessage: reason instanceof Error ? reason.message : String(reason)');
+  });
+
+  test('manual-order draft saves rebuild route geometry without invoking optimization', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const prepareStart = source.indexOf('private async prepareDraftRouteOptimizations(');
+    const prepareEnd = source.indexOf('async savePolygons(', prepareStart);
+    const prepareBody = source.slice(prepareStart, prepareEnd);
+
+    expect(prepareBody).toContain("input.mode === 'MANUAL_ORDER'");
+    expect(prepareBody).toContain('const orderedAssignments = input.mode ===');
+    expect(prepareBody).toContain('? assignments');
+    expect(prepareBody).toContain(': orderAssignmentsByOptimizationResult');
+    expect(source).toContain('function shouldPrepareDraftRouteResult(');
+    expect(source).toContain("if (mode === 'MANUAL_ORDER') return shouldBuildManualDraftRouteResult(group, route, assignments)");
+    expect(source).toContain('function shouldBuildManualDraftRouteResult(');
   });
 
   test('first global save can materialize route metrics without a re-optimize action', () => {
