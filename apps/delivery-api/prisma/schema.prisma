@@ -256,6 +256,11 @@ enum CustomerAccountStatus {
   INACTIVE
 }
 
+enum DsvAdminAccountStatus {
+  ACTIVE
+  DISABLED
+}
+
 enum DsvTransportConditionStatus {
   CANDIDATE
   ACTIVE
@@ -311,6 +316,7 @@ model Shop {
   locale                            String?                            @db.Text
   routeScopeConfig                  Json?
   routeOpsUiSettings                Json?
+  dsvOperationalSettings            Json?
   createdAt                         DateTime                           @default(now()) @db.Timestamptz(6)
   updatedAt                         DateTime                           @updatedAt @db.Timestamptz(6)
   webhookEvents                     ShopifyWebhookEvent[]
@@ -360,6 +366,7 @@ model Shop {
   dsvDriverProfiles                 DsvDriverProfile[]
   dsvVehicleProfiles                DsvVehicleProfile[]
   dsvVehicleDriverAssignments       DsvVehicleDriverAssignment[]
+  dsvVehicleTelematicsDevices       DsvVehicleTelematicsDevice[]
   customers                         Customer[]
   customerAccounts                  CustomerAccount[]
   dsvCommandReceipts                DsvCommandReceipt[]
@@ -742,6 +749,25 @@ model CustomerAccount {
   @@unique([shopId, issuer, subject])
   @@index([shopId, customerId, status])
   @@map("customer_accounts")
+}
+
+model DsvAdminAccount {
+  id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  loginId             String                @unique @db.Text
+  displayName         String?               @db.Text
+  passwordHash        String                @db.Text
+  passwordSalt        String                @db.Text
+  status              DsvAdminAccountStatus @default(ACTIVE)
+  scopes              String[]              @default([])
+  tokenVersion        Int                   @default(0)
+  failedLoginAttempts Int                   @default(0)
+  lockedUntil         DateTime?             @db.Timestamptz(6)
+  lastAuthenticatedAt DateTime?             @db.Timestamptz(6)
+  createdAt           DateTime              @default(now()) @db.Timestamptz(6)
+  updatedAt           DateTime              @updatedAt @db.Timestamptz(6)
+
+  @@index([status])
+  @@map("dsv_admin_accounts")
 }
 
 model OrderItem {
@@ -1675,6 +1701,7 @@ model Vehicle {
   dsvDispatchImportRows DsvDispatchImportRow[]
   dsvProfile            DsvVehicleProfile?
   dsvDriverAssignments  DsvVehicleDriverAssignment[]
+  dsvTelematicsDevice   DsvVehicleTelematicsDevice?
 
   @@unique([id, shopId])
   @@unique([shopId, licensePlate])
@@ -1729,10 +1756,28 @@ model DsvVehicleDriverAssignment {
   createdBy String?  @db.Text
   createdAt DateTime @default(now()) @db.Timestamptz(6)
 
-  @@unique([shopId, vehicleId, driverId])
-  @@index([shopId, driverId])
-  @@index([shopId, vehicleId])
+  @@unique([shopId, driverId])
+  @@unique([shopId, vehicleId])
   @@map("dsv_vehicle_driver_assignments")
+}
+
+model DsvVehicleTelematicsDevice {
+  id           String   @id @default(uuid()) @db.Uuid
+  shopId       String   @db.Uuid
+  shop         Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  vehicleId    String   @db.Uuid
+  vehicle      Vehicle  @relation(fields: [vehicleId, shopId], references: [id, shopId], onDelete: Cascade)
+  serialNumber String   @db.Text
+  capabilities String[] @default([])
+  installedAt  DateTime @db.Timestamptz(6)
+  createdAt    DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @db.Timestamptz(6)
+
+  @@unique([id, shopId])
+  @@unique([vehicleId, shopId])
+  @@unique([shopId, serialNumber])
+  @@index([shopId, installedAt])
+  @@map("dsv_vehicle_telematics_devices")
 }
 
 model DsvTransportCondition {
