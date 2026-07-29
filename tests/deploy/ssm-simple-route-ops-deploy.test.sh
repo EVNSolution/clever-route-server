@@ -35,7 +35,7 @@ checks = {
     'migration_evidence_rendered': 'DSV_MIGRATION_APPROVED=1' in command and 'DSV_MIGRATION_MANIFEST_SHA256=3333333333333333333333333333333333333333333333333333333333333333' in command and 'DSV_RESTORE_REHEARSAL_SHA256=4444444444444444444444444444444444444444444444444444444444444444' in command,
     'production_baseline_evidence_rendered': 'DSV_PRODUCTION_BASELINE_APPROVED=1' in command and 'DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=5555555555555555555555555555555555555555555555555555555555555555' in command,
     'compose_synced_to_host': 'COMPOSE_FILE_B64=' in command and 'base64 -d > "$COMPOSE_FILE"' in command,
-    'runtime_env_fails_before_synced_file_mutation': 'missing required runtime env: infra/env/delivery-api.env' in command and command.index('missing required runtime env: infra/env/delivery-api.env') < command.index('base64 -d > "$COMPOSE_FILE"'),
+    'runtime_env_fails_before_synced_file_mutation': 'missing required runtime env: apps/delivery-api/.env' in command and command.index('missing required runtime env: apps/delivery-api/.env') < command.index('base64 -d > "$COMPOSE_FILE"'),
     'does_not_mutate_ingress': 'CADDYFILE_B64=' not in command and 'base64 -d > "$CADDYFILE"' not in command and 'caddy reload --config /etc/caddy/Caddyfile' not in command and 'caddy validate --config /etc/caddy/Caddyfile' not in command and '/etc/caddy/Caddyfile' not in command,
     'compose_preflight': 'docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-candidate-image.env' in command,
     'smoke_tries_canonical_and_legacy_urls': 'SMOKE_URLS=' in command and 'https://clever-route-api.cleversystem.ai/healthz https://clever-route.cleversystem.ai/healthz' in command and 'smoke_health()' in command,

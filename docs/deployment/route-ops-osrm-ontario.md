@@ -8,7 +8,7 @@ Purpose: enable road-following route geometry for Route Ops without changing sto
 - OSRM is internal-only: compose binds port 5000 to host loopback only
   (`127.0.0.1:5000`); do not expose it through Caddy or security groups.
 - Do not set `OSRM_BASE_URL` for `delivery-api` until OSRM smoke passes.
-- `infra/env/delivery-api.env` is the authoritative runtime source for OSRM enablement; deploy history records `osrmEnabled` at promotion/rollback time for auditability.
+- `apps/delivery-api/.env` is the authoritative runtime source for OSRM enablement; deploy history records `osrmEnabled` at promotion/rollback time for auditability.
 - When `OSRM_BASE_URL` is configured, the reviewed image deploy and rollback scripts must start `osrm-ontario` through the `clever-route` compose project and smoke it before `delivery-api` restarts. Do not leave OSRM as a manually attached sidecar/container.
 - Rollback is env-only for disabling road geometry: unset `OSRM_BASE_URL`, restart `delivery-api`, and Route Ops removes road geometry instead of drawing fake straight lines. When disabled, deploy/rollback automatically stops `osrm-ontario` after the app restarts with the disabled env.
 - Run preflight before any storage expansion or data preparation. This server may
@@ -135,7 +135,7 @@ Smoke:
 ## Rollback
 
 ```sh
-# remove/blank OSRM_BASE_URL in infra/env/delivery-api.env
+# remove/blank OSRM_BASE_URL in apps/delivery-api/.env
 export ROUTE_OPS_COMPOSE_PROJECT_NAME=clever-route
 DELIVERY_API_IMAGE="$CURRENT_DELIVERY_API_IMAGE" \
 docker compose -p "$ROUTE_OPS_COMPOSE_PROJECT_NAME" -f infra/compose/docker-compose.prod.yml up -d delivery-api

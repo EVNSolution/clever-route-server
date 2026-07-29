@@ -177,7 +177,7 @@ command -v docker >/dev/null
 command -v aws >/dev/null
 command -v python3 >/dev/null
 command -v base64 >/dev/null
-[ -f infra/env/delivery-api.env ] || { echo 'missing required runtime env: infra/env/delivery-api.env' >&2; exit 65; }
+[ -f apps/delivery-api/.env ] || { echo 'missing required runtime env: apps/delivery-api/.env' >&2; exit 65; }
 mkdir -p "$(dirname "$COMPOSE_FILE")" "$(dirname "$VROOM_CONFIG")" "$(dirname "$VROOM_KOREA_CONFIG")"
 printf '%s' "$COMPOSE_FILE_B64" | base64 -d > "$COMPOSE_FILE"
 printf '%s' "$VROOM_CONFIG_B64" | base64 -d > "$VROOM_CONFIG"
@@ -268,7 +268,7 @@ rollback_delivery_api() {
 }
 python3 - <<'ENVUP'
 from pathlib import Path
-path = Path('infra/env/delivery-api.env')
+path = Path('apps/delivery-api/.env')
 updates = {
     'VROOM_BASE_URL': 'http://vroom:3000',
     'VROOM_ONTARIO_BASE_URL': 'http://vroom:3000',

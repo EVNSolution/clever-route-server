@@ -32,8 +32,8 @@ If the relocated Shopify reference repo is run for comparison, keep its compose 
 
 ## Env templates
 
-- Server package local env: `apps/delivery-api/.env.example`
-- Delivery-only compose env: `infra/env/delivery-api.env.example`
+- Single server env contract: `apps/delivery-api/.env.example`
+- Single ignored runtime env: `apps/delivery-api/.env`
 - Real env files are ignored and must not be committed.
 
 ## Mobile base URL
@@ -60,7 +60,6 @@ Expected public/protected subroutes on `https://clever-route-api.cleversystem.ai
 
 ```bash
 git status --short --branch
-rm -f infra/env/delivery-api.env
 rm -rf apps/delivery-api/dist apps/delivery-api/coverage apps/delivery-api/.vitest
 ```
 

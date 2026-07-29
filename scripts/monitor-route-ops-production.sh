@@ -419,7 +419,7 @@ from pathlib import Path
 import os, re, subprocess, sys
 
 line = ''
-for raw in Path('infra/env/delivery-api.env').read_text().splitlines():
+for raw in Path('apps/delivery-api/.env').read_text().splitlines():
     if raw.startswith('CLEVER_ADMIN_WEB_LOGIN_SECRET='):
         line = raw
         break

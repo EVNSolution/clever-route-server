@@ -21,7 +21,7 @@ Dry-run:
 Environment:
   ROOT_DIR              Default: /srv/clever-route-server
   OSRM_DATA_DIR         Default: $ROOT_DIR/data/osrm/ontario
-  OSRM_ENV_FILE         Default: $ROOT_DIR/infra/env/delivery-api.env
+  OSRM_ENV_FILE         Default: $ROOT_DIR/apps/delivery-api/.env
   OSRM_COMPOSE_FILE     Default: $ROOT_DIR/infra/compose/docker-compose.prod.yml
   OSRM_PBF_URL          Default: Geofabrik Ontario extract
   PBF_FILE              Default: ontario-latest.osm.pbf
@@ -110,7 +110,7 @@ preflight_osrm() {
   local compose_project_name
   compose_project_name="${ROUTE_OPS_COMPOSE_PROJECT_NAME:-clever-route}"
   data_dir="${OSRM_DATA_DIR:-${root_dir}/data/osrm/ontario}"
-  env_file="${OSRM_ENV_FILE:-${root_dir}/infra/env/delivery-api.env}"
+  env_file="${OSRM_ENV_FILE:-${root_dir}/apps/delivery-api/.env}"
   compose_file="${OSRM_COMPOSE_FILE:-${root_dir}/infra/compose/docker-compose.prod.yml}"
   osrm_file="${OSRM_FILE:-ontario-latest.osrm}"
   min_free_mb="${OSRM_MIN_FREE_MB:-20000}"

@@ -2,43 +2,12 @@ name: clever-dsv-dev
 
 x-api-environment: &api-environment
   DATABASE_URL: postgresql://clever:clever@postgres:5432/clever_route
-  NODE_ENV: development
-  PORT: 3000
-  LOG_LEVEL: info
-  CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS: dsv-demo.local
-  CLEVER_ADMIN_WEB_LOGIN_SECRET: local-demo-password-2026
-  CLEVER_ADMIN_WEB_SESSION_SECRET: local-demo-session-secret-2026-change-me
-  CLEVER_DSV_ENABLED: "true"
-  CLEVER_DSV_DEMO_SHOP_DOMAIN: dsv-demo.local
-  DELIVERY_API_PUBLIC_URL: http://localhost:3001
-  DRIVER_APP_DISTRIBUTION_CHANNEL: direct
-  DRIVER_APP_ANDROID_LATEST_VERSION_CODE: ${DRIVER_APP_ANDROID_LATEST_VERSION_CODE:-}
-  DRIVER_APP_ANDROID_LATEST_VERSION_NAME: ${DRIVER_APP_ANDROID_LATEST_VERSION_NAME:-}
-  DRIVER_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE: ${DRIVER_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE:-}
-  DSV_MAP_PROFILE_ID: dsv-korea-v1
-  DSV_MAP_REGION_CODE: KR
-  DSV_MAP_PROVIDER_MODE: public_allowlisted
-  DSV_MAP_STYLE_URL: /map/styles/dsv-korea-v1.json
-  DSV_MAP_ATTRIBUTION: OpenFreeMap © OpenMapTiles Data from OpenStreetMap
-  DSV_MAP_VERSION: "2026-07"
-  DSV_MAP_BOUNDS: 124.5,33,132,39.5
-  DSV_MAP_INITIAL_CENTER: 126.995,37.43
-  DSV_MAP_INITIAL_ZOOM: "10.35"
-  DSV_MAP_ALLOWED_HOSTS: tiles.openfreemap.org
-  GEOCODING_PROVIDER_MODE: nominatim_compatible
-  GEOCODING_SEARCH_URL: https://nominatim.openstreetmap.org/search
-  GEOCODING_USER_AGENT: CLEVER-DSV-Development/1.0 (https://cleversystem.ai)
-  GEOCODING_CACHE_TTL_DAYS: "30"
-  GEOCODING_TIMEOUT_MS: "5000"
-  SHOPIFY_APP_URL: http://localhost:5174
 
 services:
   postgres:
     image: postgres:17-bookworm
-    environment:
-      POSTGRES_DB: clever_route
-      POSTGRES_PASSWORD: clever
-      POSTGRES_USER: clever
+    env_file:
+      - ../../apps/delivery-api/.env
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U clever -d clever_route"]
       interval: 2s
@@ -58,6 +27,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    env_file:
+      - ../../apps/delivery-api/.env
     environment:
       <<: *api-environment
       DSV_MIGRATION_MODE: compose-dev
@@ -74,11 +45,10 @@ services:
     depends_on:
       schema:
         condition: service_completed_successfully
+    env_file:
+      - ../../apps/delivery-api/.env
     environment:
       <<: *api-environment
-      CLEVER_DSV_BOOTSTRAP_ADMIN_ID: operator
-      CLEVER_DSV_BOOTSTRAP_ADMIN_PASSWORD: local-demo-password-2026
-      CLEVER_DSV_BOOTSTRAP_ADMIN_DISPLAY_NAME: 운영 관리자
     restart: "no"
 
   delivery-api:
@@ -89,6 +59,8 @@ services:
     depends_on:
       seed:
         condition: service_completed_successfully
+    env_file:
+      - ../../apps/delivery-api/.env
     environment: *api-environment
     healthcheck:
       test: ["CMD-SHELL", "node -e \"const http=require('node:http');const req=http.get('http://127.0.0.1:3000/healthz',res=>process.exit(res.statusCode===200?0:1));req.on('error',()=>process.exit(1));\""]

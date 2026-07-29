@@ -85,8 +85,8 @@ On the production host, capture the current optimizer env before changing it:
 ```bash
 cd /srv/clever-route-server
 ts="$(date -u +%Y%m%dT%H%M%SZ)"
-cp infra/env/delivery-api.env ".deploy/delivery-api.env.before-vroom-${ts}"
-grep -E '^(VROOM_BASE_URL|VROOM_TIMEOUT_MS|ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS|OSRM_BASE_URL|OSRM_TIMEOUT_MS)=' infra/env/delivery-api.env || true
+cp apps/delivery-api/.env ".deploy/delivery-api.env.before-vroom-${ts}"
+grep -E '^(VROOM_BASE_URL|VROOM_TIMEOUT_MS|ROUTE_OPTIMIZATION_JOB_TIMEOUT_BUDGET_MS|OSRM_BASE_URL|OSRM_TIMEOUT_MS)=' apps/delivery-api/.env || true
 ```
 
 Required preflight state:
@@ -99,7 +99,7 @@ Required preflight state:
 
 ### 2. Enable VROOM host env
 
-Update only these optimizer keys in `infra/env/delivery-api.env`:
+Update only these optimizer keys in `apps/delivery-api/.env`:
 
 ```env
 VROOM_BASE_URL=http://vroom:3000

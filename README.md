@@ -53,17 +53,11 @@ npm run build
 ## Compose preview
 
 The delivery-only compose stack is under `infra/compose/docker-compose.prod.yml`.
-Use the example runtime env file for config validation only; do not commit real env files.
+The adjacent application env is the only runtime env source. Do not overwrite or commit it.
 
 ```bash
-cp infra/env/delivery-api.env.example infra/env/delivery-api.env
-DELIVERY_API_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api:prod \
-DELIVERY_API_MIGRATE_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api-migrate:prod \
-ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static:prod \
-ROUTE_OPS_WEB_STATIC_VOLUME=clever-route-route-ops-web-static-prod \
-PRISMA_SCHEMA_SHA=abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd \
-docker compose -f infra/compose/docker-compose.prod.yml config --quiet
-rm -f infra/env/delivery-api.env
+test -f apps/delivery-api/.env
+npm run compose:config
 ```
 
 ## Migration references
