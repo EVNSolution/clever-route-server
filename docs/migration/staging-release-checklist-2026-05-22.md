@@ -46,15 +46,14 @@ npm --prefix apps/delivery-api run test
 npm --prefix apps/delivery-api run build
 ```
 
-For local compose syntax validation only, create `infra/env/delivery-api.env` from the example or a local secret manager source, run the config check, then remove the local placeholder if it was copied from the example:
+Compose validation uses the same adjacent application env as every runtime:
 
 ```bash
-cp infra/env/delivery-api.env.example infra/env/delivery-api.env
+test -f apps/delivery-api/.env
 npm run compose:config
-rm -f infra/env/delivery-api.env
 ```
 
-`infra/env/*.env` is ignored by Git. Never commit a real server env file.
+`apps/delivery-api/.env` is ignored by Git. Never commit the runtime file.
 
 ## DB migration order
 

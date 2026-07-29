@@ -22,7 +22,7 @@ server-side GitHub credentials and a real checkout are deliberately provisioned.
 - GitHub workflow: `.github/workflows/route-ops-simple-deploy.yml`
 - Compose: `infra/compose/docker-compose.prod.yml`
 - Edge/Caddy: owned by `docs/deployment/edge-caddy-deploy.md`, not this lane
-- Runtime env: `infra/env/delivery-api.env`
+- Runtime env: `apps/delivery-api/.env`
 - VROOM configs: `infra/vroom/config.yml`, `infra/vroom/config.korea.yml`
 
 For the temporary direct Android distribution channel, the runtime env also

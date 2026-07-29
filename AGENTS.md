@@ -15,7 +15,7 @@ additive until the WordPress/Woo tenant/order migration is proven.
 
 - Do not modify AWS, EC2, EIP, Route53, Caddy production hosts, or DNS records
   unless the user explicitly asks for that operation in the current turn.
-- Do not commit secrets, `.env`, `infra/env/*.env`, DB dumps, proof media, or
+- Do not commit secrets, `.env`, DB dumps, proof media, or
   private evidence.
 - Keep production deploys manual and evidence-backed; do not introduce an
   automatic production deploy workflow without an approved change-control issue.
@@ -39,9 +39,8 @@ npm --prefix apps/delivery-api run build
 For runtime config changes, also run:
 
 ```bash
-cp infra/env/delivery-api.env.example infra/env/delivery-api.env
-docker compose -f infra/compose/docker-compose.prod.yml config --quiet
-rm -f infra/env/delivery-api.env
+test -f apps/delivery-api/.env
+npm run compose:config
 ```
 
 Report any command that could not run and why.

@@ -16,8 +16,8 @@ migration if operational load requires it.
 
 ## Required environment
 
-Use `infra/env/delivery-api.env.example` from the repository root as the compose
-runtime template. Minimum values:
+Use `apps/delivery-api/.env.example` as the single compose and application
+runtime contract. Minimum values:
 
 ```env
 DELIVERY_API_PUBLIC_URL=https://clever-route-api.cleversystem.ai
@@ -77,9 +77,8 @@ under the existing sanitized-docs review.
 From the repo root:
 
 ```bash
-cp infra/env/delivery-api.env.example infra/env/delivery-api.env
-docker compose -f infra/compose/docker-compose.prod.yml config --quiet
-rm -f infra/env/delivery-api.env
+test -f apps/delivery-api/.env
+npm run compose:config
 ```
 
 ## EC2 host outline
@@ -90,10 +89,9 @@ rm -f infra/env/delivery-api.env
    - `/srv/clever-route-server/data/postgres`
    - `/srv/clever-route-server/data/postgres-backups`
    - `/srv/clever-route-server/data/driver-proof-media`
-   - `/srv/clever-route-server/infra/env`
+   - `/srv/clever-route-server/apps/delivery-api`
 3. Install Docker Engine and the Compose plugin.
-4. Place runtime env at `/srv/clever-route-server/infra/env/delivery-api.env` or
-   the host path selected by the deploy runbook.
+4. Place runtime env at `/srv/clever-route-server/apps/delivery-api/.env`.
 5. Start the delivery-only compose stack. The first compose start creates the
    PostgreSQL database under the EBS-backed bind mount if it does not already
    exist.

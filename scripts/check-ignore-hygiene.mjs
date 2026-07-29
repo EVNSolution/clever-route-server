@@ -27,7 +27,6 @@ function normalize(file) {
 function isAllowedTracked(file) {
   return (
     /(^|\/)\.env\.example$/i.test(file) ||
-    /^infra\/env\/[^/]+\.env\.example$/i.test(file) ||
     /^apps\/delivery-api\/prisma\/migrations\/[^/]+\/migration\.sql$/i.test(file)
   );
 }

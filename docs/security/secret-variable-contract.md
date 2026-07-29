@@ -5,7 +5,7 @@ Do not store real secret values in git, GitHub issues, PRs, screenshots, or proo
 
 ## Server-held environment secrets
 
-These variables are maintained by the server runtime environment (`apps/delivery-api/.env` for local development, `infra/env/delivery-api.env` or the host secret store for deployment).
+These variables are maintained in `apps/delivery-api/.env` for every environment; a host secret store may materialize that file during deployment.
 
 | Variable | Required when | Purpose |
 | --- | --- | --- |

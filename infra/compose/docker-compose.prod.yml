@@ -44,7 +44,7 @@ services:
       route-ops-web-static:
         condition: service_completed_successfully
     env_file:
-      - ../env/delivery-api.env
+      - ../../apps/delivery-api/.env
     environment:
       NODE_ENV: production
       PORT: 3000
@@ -72,7 +72,7 @@ services:
       postgres:
         condition: service_healthy
     env_file:
-      - ../env/delivery-api.env
+      - ../../apps/delivery-api/.env
     environment:
       DSV_MIGRATION_MODE: production
       DSV_MIGRATION_APPROVED: ${DSV_MIGRATION_APPROVED:-}
@@ -114,7 +114,7 @@ services:
   postgres:
     image: postgres:17-bookworm
     env_file:
-      - ../env/delivery-api.env
+      - ../../apps/delivery-api/.env
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 10s

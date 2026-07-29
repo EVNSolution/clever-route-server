@@ -28,8 +28,6 @@ playwright/.auth/
 .env
 .env.*
 !.env.example
-infra/env/*.env
-!infra/env/*.env.example
 *.local
 .envrc
 *.pem
