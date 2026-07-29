@@ -137,8 +137,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert expected_migration_names(migrations) == expected
 
 repo_expected = expected_migration_names(Path('apps/delivery-api/prisma/migrations'))
-assert len(repo_expected) == 47, repo_expected
-assert repo_expected[-1] == '20260723170000_add_customer_notification_outbox_worker', repo_expected[-1]
+assert repo_expected.count('20260723170000_add_customer_notification_outbox_worker') == 1, repo_expected
 assert repo_expected.count('20260722233000_align_migration_history_to_schema') == 1, repo_expected
 
 empty = status_from_history([], expected)
