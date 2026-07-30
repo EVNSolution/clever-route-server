@@ -27,6 +27,17 @@ check('delivery route-plan API change keeps web artifact for broad API tests', [
   api_test_profile: 'route_ops',
 });
 
+check('route grouping allocation changes are critical API changes', [
+  'apps/delivery-api/src/modules/route-grouping/route-grouping.service.ts',
+  'apps/delivery-api/tests/route-grouping.service.test.ts',
+], {
+  api_changed: true,
+  critical_changed: true,
+  full_required: false,
+  web_artifact_required: true,
+  api_test_profile: 'route_ops',
+});
+
 check('prisma migration change keeps web artifact for broad API tests', ['apps/delivery-api/prisma/schema.prisma', 'apps/delivery-api/prisma/migrations/20260622000000_x/migration.sql'], {
   api_changed: true,
   critical_changed: true,
