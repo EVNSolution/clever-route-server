@@ -1220,6 +1220,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const childRoutePlanIds: string[] = [];
       for (const child of snapshots) {
         const snapshot = readChildSnapshot(child.snapshot);
+        const routeIdx = snapshot.routeIdx ?? await nextGlobalRouteIdx(tx, loaded.shopId);
         const assignments = snapshot.stops.map((stop) => ({ deliveryStopId: stop.deliveryStopId, orderId: stop.orderId, sourceSequence: stop.sequence }));
         const routePlan = await createChildRoutePlanFromSnapshot(tx, loaded, snapshot, input.actor);
         childRoutePlanIds.push(routePlan.id);
@@ -1231,7 +1232,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
             notificationStatus: 'SKIPPED',
             routePlanId: routePlan.id,
             shopId: loaded.shopId,
-            snapshot: { ...snapshot, groupingVersion: nextVersion, stops: assignments },
+            snapshot: { ...snapshot, groupingVersion: nextVersion, routeIdx, stops: assignments },
             status: 'CURRENT',
             version: nextVersion
           }
@@ -1812,15 +1813,32 @@ async function nextBranchSortOrder(tx: Tx, groupingId: string): Promise<number> 
 
 async function nextGlobalRouteIdx(tx: Tx, shopId: string): Promise<number> {
   await tx.$queryRaw<{ locked: number }[]>`WITH lock AS (SELECT pg_advisory_xact_lock(hashtext(${`route-grouping-route-idx:${shopId}`}))) SELECT 1 AS locked FROM lock`;
-  const rows = await tx.routeGroupingChildVersion.findMany({
-    select: { snapshot: true },
-    where: { shopId }
+  const stats = await tx.$queryRaw<{ maxRouteIdx: number | null; rowCount: number }[]>`
+    SELECT
+      COUNT(*)::INTEGER AS "rowCount",
+      MAX(
+        CASE
+          WHEN jsonb_typeof("snapshot"->'routeIdx') = 'number' THEN
+            CASE
+              WHEN trunc(("snapshot"->>'routeIdx')::NUMERIC) = ("snapshot"->>'routeIdx')::NUMERIC
+                AND ("snapshot"->>'routeIdx')::NUMERIC BETWEEN -2147483648 AND 2147483647
+              THEN ("snapshot"->>'routeIdx')::INTEGER
+              ELSE NULL
+            END
+          ELSE NULL
+        END
+      ) AS "maxRouteIdx"
+    FROM "route_grouping_child_versions"
+    WHERE "shopId" = ${shopId}
+  `;
+  return resolveNextGlobalRouteIdx({
+    maxRouteIdx: stats[0]?.maxRouteIdx ?? 0,
+    rowCount: stats[0]?.rowCount ?? 0
   });
-  const maxRouteIdx = rows.reduce((max, row) => {
-    const snapshot = readChildSnapshot(row.snapshot);
-    return Math.max(max, snapshot.routeIdx ?? 0);
-  }, 0);
-  return Math.max(maxRouteIdx, rows.length) + 1;
+}
+
+export function resolveNextGlobalRouteIdx(input: { maxRouteIdx: number | null; rowCount: number }): number {
+  return Math.max(input.maxRouteIdx ?? 0, input.rowCount) + 1;
 }
 
 async function claimBranchOrders(

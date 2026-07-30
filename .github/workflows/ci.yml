@@ -202,6 +202,7 @@ jobs:
           tests/admin-commerce-connections-ui.routes.test.ts
           tests/admin-ui-route-inventory.test.ts
           tests/admin-ui-route-planning.optimize.test.ts
+          tests/route-grouping.service.test.ts
           tests/vroom-route-optimizer.client.test.ts
           tests/admin-route-plans.routes.test.ts
           tests/admin-notification.dependencies.test.ts

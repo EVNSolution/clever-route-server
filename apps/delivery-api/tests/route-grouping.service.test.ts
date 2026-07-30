@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { classifyCoordinateInPolygons } from '../src/modules/route-grouping/route-grouping.geometry.js';
 import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
-import { newChildRouteName, resolveNewChildRouteIdx } from '../src/modules/route-grouping/route-grouping.service.js';
+import { newChildRouteName, resolveNewChildRouteIdx, resolveNextGlobalRouteIdx } from '../src/modules/route-grouping/route-grouping.service.js';
 import {
   RouteGroupingConflictError,
   RouteGroupingStopMembershipConflictError
@@ -242,6 +242,14 @@ describe('route grouping contracts', () => {
     expect(source).toContain('snapshot: createChildSnapshot(loaded, numberedCandidate.assignments, numberedCandidate.driverId, routePlan.name, loaded.currentVersion, numberedCandidate.color, routeIdx, routeIdx)');
   });
 
+  test('assigns a global routeIdx when rolling back a legacy child snapshot', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const rollbackBody = source.slice(source.indexOf('async rollback('), source.indexOf('private async refreshChildRouteGeometry'));
+
+    expect(rollbackBody).toContain('const routeIdx = snapshot.routeIdx ?? await nextGlobalRouteIdx(tx, loaded.shopId)');
+    expect(rollbackBody).toContain('snapshot: { ...snapshot, groupingVersion: nextVersion, routeIdx, stops: assignments }');
+  });
+
   test('persists global routeIdx separately from editable names', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     const types = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.types.ts'), 'utf8');
@@ -269,6 +277,29 @@ describe('route grouping contracts', () => {
     expect(source).not.toContain('await tx.$queryRaw`SELECT pg_advisory_xact_lock');
     expect(source).toContain('routeIdx: snapshot.routeIdx ?? null');
     expect(source).not.toContain('return Math.max(max._max.sortOrder ?? 1, 1) + 1');
+  });
+
+  test('keeps next route indexes globally increasing from the snapshot maximum and row count', () => {
+    expect(resolveNextGlobalRouteIdx({ maxRouteIdx: null, rowCount: 0 })).toBe(1);
+    expect(resolveNextGlobalRouteIdx({ maxRouteIdx: 3, rowCount: 10 })).toBe(11);
+    expect(resolveNextGlobalRouteIdx({ maxRouteIdx: 17, rowCount: 10 })).toBe(18);
+  });
+
+  test('aggregates valid snapshot route indexes in PostgreSQL instead of loading every snapshot', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const nextRouteIdxBody = source.slice(source.indexOf('async function nextGlobalRouteIdx'), source.indexOf('async function claimBranchOrders'));
+
+    expect(nextRouteIdxBody).toContain('pg_advisory_xact_lock');
+    expect(nextRouteIdxBody.match(/\$queryRaw/gu)).toHaveLength(2);
+    expect(nextRouteIdxBody).toContain('COUNT(*)::INTEGER AS "rowCount"');
+    expect(nextRouteIdxBody).toContain('MAX(');
+    expect(nextRouteIdxBody).toContain('jsonb_typeof("snapshot"->\'routeIdx\') = \'number\'');
+    expect(nextRouteIdxBody).toContain('trunc(("snapshot"->>\'routeIdx\')::NUMERIC)');
+    expect(nextRouteIdxBody).toContain('BETWEEN -2147483648 AND 2147483647');
+    expect(nextRouteIdxBody).toContain("\"snapshot\"->>'routeIdx'");
+    expect(nextRouteIdxBody).not.toContain('findMany({\n    select: { snapshot: true },\n    where: { shopId }');
+    expect(nextRouteIdxBody).not.toContain('readChildSnapshot(row.snapshot)');
+    expect(nextRouteIdxBody).not.toContain('routeGroupingChildVersion.aggregate');
   });
 
   test('keeps a new route group childless until the first route is explicitly added', () => {
