@@ -1829,7 +1829,7 @@ async function nextGlobalRouteIdx(tx: Tx, shopId: string): Promise<number> {
         END
       ) AS "maxRouteIdx"
     FROM "route_grouping_child_versions"
-    WHERE "shopId" = ${shopId}
+    WHERE "shopId" = ${shopId}::UUID
   `;
   return resolveNextGlobalRouteIdx({
     maxRouteIdx: stats[0]?.maxRouteIdx ?? 0,
