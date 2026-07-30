@@ -297,6 +297,7 @@ describe('route grouping contracts', () => {
     expect(nextRouteIdxBody).toContain('trunc(("snapshot"->>\'routeIdx\')::NUMERIC)');
     expect(nextRouteIdxBody).toContain('BETWEEN -2147483648 AND 2147483647');
     expect(nextRouteIdxBody).toContain("\"snapshot\"->>'routeIdx'");
+    expect(nextRouteIdxBody).toContain('WHERE "shopId" = ${shopId}::UUID');
     expect(nextRouteIdxBody).not.toContain('findMany({\n    select: { snapshot: true },\n    where: { shopId }');
     expect(nextRouteIdxBody).not.toContain('readChildSnapshot(row.snapshot)');
     expect(nextRouteIdxBody).not.toContain('routeGroupingChildVersion.aggregate');
