@@ -173,7 +173,12 @@ const ADMIN_UI_APP_API_PATH = `${ADMIN_UI_APP_PATH}/api`;
 const ADMIN_UI_APP_ASSETS_PATH = `${ADMIN_UI_APP_PATH}/assets`;
 const ADMIN_UI_APP_VENDOR_PATH = `${ADMIN_UI_APP_PATH}/vendor`;
 const ROUTES_APP_INSTALL_PATH = "/routes-app";
+const ROUTES_APP_DOWNLOAD_PATH = `${ROUTES_APP_INSTALL_PATH}/download`;
 const ROUTES_APP_ANDROID_RELEASE_PATH = `${ROUTES_APP_INSTALL_PATH}/release/android`;
+const LEGACY_DRIVER_APP_INSTALL_PATH = "/driver-app";
+const LEGACY_DRIVER_APP_ANDROID_RELEASE_PATH = `${LEGACY_DRIVER_APP_INSTALL_PATH}/release/android`;
+const ROUTES_APP_PACKAGE_ID = "com.evnsolution.clever.routes";
+const LEGACY_DRIVER_APP_PACKAGE_ID = "com.evns.cleverdriverapp";
 const ADMIN_UI_ORDERS_PATH = `${ADMIN_UI_ROOT_PATH}/orders`;
 const ADMIN_UI_ROUTE_PLANS_PATH = `${ADMIN_UI_ROOT_PATH}/route-plans`;
 const ADMIN_UI_DRIVERS_PATH = `${ADMIN_UI_ROOT_PATH}/drivers`;
@@ -524,7 +529,38 @@ export function registerAdminCommerceConnectionsUiRoutes(
     redirect(reply, ADMIN_UI_ROOT_PATH),
   );
 
-  app.get(ROUTES_APP_INSTALL_PATH, async (_request, reply) => {
+  const sendRoutesAppInstallPage = async (
+    _request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<unknown> => {
+    const downloadUrl = dependencies.routesAppDownloadUrl;
+    if (downloadUrl === undefined) {
+      return sendJson(reply, 404, {
+        ok: false,
+        message: "Routes app download is not configured.",
+      });
+    }
+    return sendHtml(reply, 200, renderRoutesAppInstallPage(false));
+  };
+
+  const sendLegacyDriverAppInstallPage = async (
+    _request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<unknown> => {
+    const downloadUrl = dependencies.routesAppDownloadUrl;
+    if (downloadUrl === undefined) {
+      return sendJson(reply, 404, {
+        ok: false,
+        message: "Routes app download is not configured.",
+      });
+    }
+    return sendHtml(reply, 200, renderRoutesAppInstallPage(true));
+  };
+
+  const sendRoutesAppDownload = async (
+    _request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<unknown> => {
     const downloadUrl = dependencies.routesAppDownloadUrl;
     if (downloadUrl === undefined) {
       return sendJson(reply, 404, {
@@ -533,9 +569,12 @@ export function registerAdminCommerceConnectionsUiRoutes(
       });
     }
     return reply.code(302).header("Location", downloadUrl).send("");
-  });
+  };
 
-  app.get(ROUTES_APP_ANDROID_RELEASE_PATH, async (request, reply) => {
+  const sendRoutesAppAndroidRelease = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ): Promise<unknown> => {
     const release = dependencies.routesAppAndroidRelease;
     if (release === undefined) {
       return sendPublicApiEnvelope(reply, 404, null, {
@@ -546,13 +585,32 @@ export function registerAdminCommerceConnectionsUiRoutes(
 
     return sendPublicApiEnvelope(reply, 200, {
       distributionChannel: release.distributionChannel,
-      installUrl: `${resolveBaseUrl(request, dependencies)}${ROUTES_APP_INSTALL_PATH}`,
+      installation: {
+        guideUrl: `${resolveBaseUrl(request, dependencies)}${LEGACY_DRIVER_APP_INSTALL_PATH}`,
+        mode: "package_migration",
+        replacesPackageIds: [LEGACY_DRIVER_APP_PACKAGE_ID],
+        targetPackageId: ROUTES_APP_PACKAGE_ID,
+      },
+      installUrl: `${resolveBaseUrl(request, dependencies)}${
+        request.url.startsWith(LEGACY_DRIVER_APP_INSTALL_PATH)
+          ? LEGACY_DRIVER_APP_INSTALL_PATH
+          : ROUTES_APP_INSTALL_PATH
+      }`,
       latestVersionCode: release.latestVersionCode,
       latestVersionName: release.latestVersionName,
       minimumSupportedVersionCode: release.minimumSupportedVersionCode,
       platform: "android",
     });
-  });
+  };
+
+  app.get(ROUTES_APP_INSTALL_PATH, sendRoutesAppInstallPage);
+  app.get(ROUTES_APP_DOWNLOAD_PATH, sendRoutesAppDownload);
+  app.get(LEGACY_DRIVER_APP_INSTALL_PATH, sendLegacyDriverAppInstallPage);
+  app.get(ROUTES_APP_ANDROID_RELEASE_PATH, sendRoutesAppAndroidRelease);
+  app.get(
+    LEGACY_DRIVER_APP_ANDROID_RELEASE_PATH,
+    sendRoutesAppAndroidRelease,
+  );
 
   app.get(ADMIN_UI_WOOCOMMERCE_TEST_SCRIPT_PATH, async (_request, reply) =>
     reply
@@ -3975,6 +4033,46 @@ function sendHtml(
     .header("Cache-Control", "no-store")
     .header("Content-Security-Policy", ADMIN_UI_CSP)
     .send(body);
+}
+
+function renderRoutesAppInstallPage(legacyMigration: boolean): string {
+  const heading = legacyMigration
+    ? "Install the new CLEVER Routes app"
+    : "Install CLEVER Routes";
+  const migrationGuidance = legacyMigration
+    ? `<p class="notice">CLEVER Driver is now CLEVER Routes. Reinstallation is required because the app name and Android identity changed.</p>
+      <p>The new package is <code>${ROUTES_APP_PACKAGE_ID}</code>. It replaces <code>${LEGACY_DRIVER_APP_PACKAGE_ID}</code>, so Android may keep both apps until you remove the previous one.</p>
+      <ol>
+        <li>Download and install CLEVER Routes.</li>
+        <li>Open the new app and sign in again.</li>
+        <li>Confirm your routes, then uninstall the previous app.</li>
+      </ol>`
+    : "<p>Download the current Android release from the managed CLEVER Routes distribution.</p>";
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Install CLEVER Routes</title>
+    <style>
+      body { background: #f6f8fb; color: #111827; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; }
+      main { background: #fff; border-radius: 20px; box-sizing: border-box; margin: 40px auto; max-width: 560px; padding: 32px; width: calc(100% - 32px); }
+      h1 { font-size: 28px; margin: 0 0 14px; }
+      p, li { color: #4b5563; font-size: 16px; line-height: 1.55; }
+      ol { padding-left: 22px; }
+      code { overflow-wrap: anywhere; }
+      a { background: #0b57d0; border-radius: 12px; color: #fff; display: block; font-size: 17px; font-weight: 700; margin-top: 28px; padding: 15px 20px; text-align: center; text-decoration: none; }
+      .notice { background: #fff7ed; border-radius: 12px; color: #9a3412; padding: 14px 16px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>${heading}</h1>
+      ${migrationGuidance}
+      <a href="${ROUTES_APP_DOWNLOAD_PATH}">Download CLEVER Routes</a>
+    </main>
+  </body>
+</html>`;
 }
 
 function sendRouteOpsHtml(
