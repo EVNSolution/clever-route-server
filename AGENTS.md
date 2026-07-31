@@ -20,7 +20,7 @@ additive until the WordPress/Woo tenant/order migration is proven.
 - Keep production deploys manual and evidence-backed; do not introduce an
   automatic production deploy workflow without an approved change-control issue.
 - Do not remove legacy Shopify-compatible fields/routes until rollback and
-  driver-app compatibility have been verified.
+  routes-app compatibility have been verified.
 - Work on branches and PRs; do not push directly to `main` for implementation
   work.
 

@@ -83,6 +83,23 @@ describe('API documentation routes', () => {
     }
   });
 
+  test('GET /docs/openapi.yaml documents the public CLEVER Routes distribution boundary', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('  /routes-app:');
+      expect(response.body).toContain('  /routes-app/release/android:');
+      expect(response.body).toContain('RoutesAppAndroidReleaseEnvelope:');
+      expect(response.body).toContain('const: ROUTES_APP_RELEASE_UNAVAILABLE');
+      expect(response.body).toContain('const: no-store');
+    } finally {
+      await app.close();
+    }
+  });
+
   test('GET /docs/openapi.yaml documents the complete served DSV v1 runtime boundary', async () => {
     const app = await buildApp();
     const [controlRouteSource, readRouteSource] = await Promise.all([

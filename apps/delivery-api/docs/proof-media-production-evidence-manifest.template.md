@@ -107,5 +107,5 @@ Decision timestamp:
 | Blocker | Issue | Status / evidence reference |
 | --- | --- | --- |
 | Delivery-server production proof-media evidence | EVNSolution/clever-route-server#71 | pending |
-| Driver-app native build/store/privacy evidence | EVNSolution/clever-driver-app#73 | pending |
-| Driver-app physical iOS/Android smoke evidence | EVNSolution/clever-driver-app#72 | pending |
+| Routes-app native build/store/privacy evidence | EVNSolution/clever-routes-app#73 | pending |
+| Routes-app physical iOS/Android smoke evidence | EVNSolution/clever-routes-app#72 | pending |

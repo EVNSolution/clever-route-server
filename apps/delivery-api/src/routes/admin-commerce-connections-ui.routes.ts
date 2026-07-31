@@ -172,8 +172,8 @@ const ADMIN_UI_APP_SETTINGS_PATH = `${ADMIN_UI_APP_PATH}/settings`;
 const ADMIN_UI_APP_API_PATH = `${ADMIN_UI_APP_PATH}/api`;
 const ADMIN_UI_APP_ASSETS_PATH = `${ADMIN_UI_APP_PATH}/assets`;
 const ADMIN_UI_APP_VENDOR_PATH = `${ADMIN_UI_APP_PATH}/vendor`;
-const DRIVER_APP_INSTALL_PATH = "/driver-app";
-const DRIVER_APP_ANDROID_RELEASE_PATH = `${DRIVER_APP_INSTALL_PATH}/release/android`;
+const ROUTES_APP_INSTALL_PATH = "/routes-app";
+const ROUTES_APP_ANDROID_RELEASE_PATH = `${ROUTES_APP_INSTALL_PATH}/release/android`;
 const ADMIN_UI_ORDERS_PATH = `${ADMIN_UI_ROOT_PATH}/orders`;
 const ADMIN_UI_ROUTE_PLANS_PATH = `${ADMIN_UI_ROOT_PATH}/route-plans`;
 const ADMIN_UI_DRIVERS_PATH = `${ADMIN_UI_ROOT_PATH}/drivers`;
@@ -462,8 +462,8 @@ export type AdminCommerceConnectionsUiDependencies = {
     ): Promise<CanonicalOrderRow | null>;
   };
   wooSyncService?: AdminWooSyncServiceApi;
-  driverAppDownloadUrl?: string;
-  driverAppAndroidRelease?: DriverAppAndroidReleaseConfig;
+  routesAppDownloadUrl?: string;
+  routesAppAndroidRelease?: RoutesAppAndroidReleaseConfig;
   publicBaseUrl?: string;
   routeOptimizationJobService?: Pick<
     RouteOptimizationJobService,
@@ -507,7 +507,7 @@ export type AdminCommerceConnectionsUiDependencies = {
   };
 };
 
-export type DriverAppAndroidReleaseConfig = {
+export type RoutesAppAndroidReleaseConfig = {
   distributionChannel: "direct";
   latestVersionCode: number;
   latestVersionName: string;
@@ -524,29 +524,29 @@ export function registerAdminCommerceConnectionsUiRoutes(
     redirect(reply, ADMIN_UI_ROOT_PATH),
   );
 
-  app.get(DRIVER_APP_INSTALL_PATH, async (_request, reply) => {
-    const downloadUrl = dependencies.driverAppDownloadUrl;
+  app.get(ROUTES_APP_INSTALL_PATH, async (_request, reply) => {
+    const downloadUrl = dependencies.routesAppDownloadUrl;
     if (downloadUrl === undefined) {
       return sendJson(reply, 404, {
         ok: false,
-        message: "Driver app download is not configured.",
+        message: "Routes app download is not configured.",
       });
     }
     return reply.code(302).header("Location", downloadUrl).send("");
   });
 
-  app.get(DRIVER_APP_ANDROID_RELEASE_PATH, async (request, reply) => {
-    const release = dependencies.driverAppAndroidRelease;
+  app.get(ROUTES_APP_ANDROID_RELEASE_PATH, async (request, reply) => {
+    const release = dependencies.routesAppAndroidRelease;
     if (release === undefined) {
       return sendPublicApiEnvelope(reply, 404, null, {
-        code: "DRIVER_APP_RELEASE_UNAVAILABLE",
-        message: "Driver app Android release manifest is not configured.",
+        code: "ROUTES_APP_RELEASE_UNAVAILABLE",
+        message: "Routes app Android release manifest is not configured.",
       });
     }
 
     return sendPublicApiEnvelope(reply, 200, {
       distributionChannel: release.distributionChannel,
-      installUrl: `${resolveBaseUrl(request, dependencies)}${DRIVER_APP_INSTALL_PATH}`,
+      installUrl: `${resolveBaseUrl(request, dependencies)}${ROUTES_APP_INSTALL_PATH}`,
       latestVersionCode: release.latestVersionCode,
       latestVersionName: release.latestVersionName,
       minimumSupportedVersionCode: release.minimumSupportedVersionCode,
@@ -1368,11 +1368,11 @@ function registerRouteOpsAppRoutes(
             settings: ADMIN_UI_APP_SETTINGS_PATH,
           },
           csrfToken: session.csrfToken,
-          driverApp: {
+          routesApp: {
             installUrl:
-              dependencies.driverAppDownloadUrl === undefined
+              dependencies.routesAppDownloadUrl === undefined
                 ? null
-                : `${resolveBaseUrl(request, dependencies)}${DRIVER_APP_INSTALL_PATH}`,
+                : `${resolveBaseUrl(request, dependencies)}${ROUTES_APP_INSTALL_PATH}`,
           },
           locale: settings?.locale === "ko-KR" ? "ko-KR" : "en-CA",
           mapConfig: readCurrentRouteOpsMapConfig(),

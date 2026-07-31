@@ -5,7 +5,7 @@ Parent workspace:
 ```text
 04_CLEVER_Route/
   clever-route-server/   # active Route Ops monorepo
-  clever-driver-app/     # sibling mobile app repo; preserve existing WIP
+  clever-routes-app/     # sibling mobile app repo; preserve existing WIP
   worktrees/             # disposable local worktrees, ignored
 
 05_CLEVER_Shopify/
@@ -63,4 +63,4 @@ git status --short --branch
 rm -rf apps/delivery-api/dist apps/delivery-api/coverage apps/delivery-api/.vitest
 ```
 
-Do not delete or reset `../05_CLEVER_Shopify/shopify-clever` or `clever-driver-app` from this workflow. Shopify is reference-only and no longer part of the active Route workspace.
+Do not delete or reset `../05_CLEVER_Shopify/shopify-clever` or `clever-routes-app` from this workflow. Shopify is reference-only and no longer part of the active Route workspace.
