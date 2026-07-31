@@ -13,8 +13,8 @@ type RouteSurface = Omit<RouteRegistration, "line">;
 const expectedRouteRegistrations: RouteRegistration[] = [
   { line: 444, method: "GET", pathExpression: "\"/\"" },
   { line: 446, method: "GET", pathExpression: "ADMIN_ROOT_PATH" },
-  { line: 450, method: "GET", pathExpression: "DRIVER_APP_INSTALL_PATH" },
-  { line: 461, method: "GET", pathExpression: "DRIVER_APP_ANDROID_RELEASE_PATH" },
+  { line: 450, method: "GET", pathExpression: "ROUTES_APP_INSTALL_PATH" },
+  { line: 461, method: "GET", pathExpression: "ROUTES_APP_ANDROID_RELEASE_PATH" },
   { line: 461, method: "GET", pathExpression: "ADMIN_UI_WOOCOMMERCE_TEST_SCRIPT_PATH" },
   { line: 469, method: "GET", pathExpression: "ADMIN_UI_ROUTE_APP_SCRIPT_PATH" },
   { line: 479, method: "GET", pathExpression: "ADMIN_UI_PLUGIN_LAUNCH_PATH" },

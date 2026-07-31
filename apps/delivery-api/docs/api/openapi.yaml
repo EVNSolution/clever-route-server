@@ -11,7 +11,7 @@ info:
     admin clients, legacy Shopify compatibility routes, native driver mobile
     clients, and operational health checks. Human behavior notes live beside
     this file in docs/api/*.md.
-  x-contract-revision: 2026-07-22
+  x-contract-revision: 2026-07-31
   x-source-repository: EVNSolution/clever-route-server
 servers:
   - url: http://localhost:3000
@@ -39,6 +39,8 @@ tags:
     description: Shopify HTTPS webhook ingress protected by HMAC headers
   - name: Driver Mobile
     description: Native driver app API calls
+  - name: Routes App Distribution
+    description: Public install redirect and release metadata for CLEVER Routes
 paths:
   /docs:
     get:
@@ -98,6 +100,66 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReadyResponse'
+  /routes-app:
+    get:
+      tags: [Routes App Distribution]
+      summary: Redirect to the current CLEVER Routes Android package
+      description: Public, unauthenticated stable install URL. The configured download target is never returned in a JSON response.
+      operationId: getRoutesAppInstall
+      x-source-file: src/routes/admin-commerce-connections-ui.routes.ts
+      security: []
+      responses:
+        '302':
+          description: Redirect to the configured Android package target.
+          headers:
+            Location:
+              required: true
+              description: Current Android package download URL.
+              schema:
+                type: string
+                format: uri
+        '404':
+          description: The CLEVER Routes download URL is not configured.
+          headers:
+            Cache-Control:
+              description: Prevent clients and intermediaries from caching unavailable state.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoutesAppInstallUnavailableResponse' }
+  /routes-app/release/android:
+    get:
+      tags: [Routes App Distribution]
+      summary: Read the current CLEVER Routes Android release manifest
+      description: Public, unauthenticated release metadata. The response exposes the stable server install URL, not the configured package target.
+      operationId: getRoutesAppAndroidRelease
+      x-source-file: src/routes/admin-commerce-connections-ui.routes.ts
+      security: []
+      responses:
+        '200':
+          description: Current Android release manifest.
+          headers:
+            Cache-Control:
+              description: Release metadata must be revalidated on every request.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoutesAppAndroidReleaseEnvelope' }
+        '404':
+          description: The Android release manifest is not configured or is inconsistent.
+          headers:
+            Cache-Control:
+              description: Prevent clients and intermediaries from caching unavailable state.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoutesAppReleaseUnavailableEnvelope' }
   /api/dsv/v1/session:
     get:
       tags: [DSV API v1]
@@ -2393,6 +2455,73 @@ components:
           type: 'null'
         error:
           $ref: '#/components/schemas/Error'
+    RoutesAppInstallUnavailableResponse:
+      type: object
+      required: [message, ok]
+      properties:
+        message:
+          type: string
+          const: Routes app download is not configured.
+        ok:
+          type: boolean
+          const: false
+      additionalProperties: false
+    RoutesAppAndroidReleaseEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          $ref: '#/components/schemas/RoutesAppAndroidRelease'
+        error:
+          type: 'null'
+      additionalProperties: false
+    RoutesAppAndroidRelease:
+      type: object
+      required:
+        - distributionChannel
+        - installUrl
+        - latestVersionCode
+        - latestVersionName
+        - minimumSupportedVersionCode
+        - platform
+      properties:
+        distributionChannel:
+          type: string
+          const: direct
+        installUrl:
+          type: string
+          format: uri
+        latestVersionCode:
+          type: integer
+          minimum: 1
+        latestVersionName:
+          type: string
+          minLength: 1
+        minimumSupportedVersionCode:
+          type: integer
+          minimum: 1
+        platform:
+          type: string
+          const: android
+      additionalProperties: false
+    RoutesAppReleaseUnavailableEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: 'null'
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              const: ROUTES_APP_RELEASE_UNAVAILABLE
+            message:
+              type: string
+              const: Routes app Android release manifest is not configured.
+          additionalProperties: false
+      additionalProperties: false
     DsvV1SuccessEnvelope:
       type: object
       required: [data, meta, requestId]

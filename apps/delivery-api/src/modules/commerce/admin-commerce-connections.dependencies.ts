@@ -3,7 +3,7 @@ import type { PrismaClient } from '@prisma/client';
 import type { AdminCommerceConnectionsDependencies } from '../../routes/admin-commerce-connections.routes.js';
 import type {
   AdminCommerceConnectionsUiDependencies,
-  DriverAppAndroidReleaseConfig
+  RoutesAppAndroidReleaseConfig
 } from '../../routes/admin-commerce-connections-ui.routes.js';
 import type { AdminDriversDependencies } from '../../routes/admin-drivers.routes.js';
 import type { AdminOrdersDependencies } from '../../routes/admin-orders.routes.js';
@@ -64,11 +64,11 @@ export type AdminCommerceConnectionsRuntimeEnv = Partial<
     | 'CLEVER_ADMIN_WEB_SESSION_SECRET'
     | 'CREDENTIAL_ENCRYPTION_KEY'
     | 'DELIVERY_API_PUBLIC_URL'
-    | 'DRIVER_APP_ANDROID_LATEST_VERSION_CODE'
-    | 'DRIVER_APP_ANDROID_LATEST_VERSION_NAME'
-    | 'DRIVER_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE'
-    | 'DRIVER_APP_DISTRIBUTION_CHANNEL'
-    | 'DRIVER_APP_DOWNLOAD_URL'
+    | 'ROUTES_APP_ANDROID_LATEST_VERSION_CODE'
+    | 'ROUTES_APP_ANDROID_LATEST_VERSION_NAME'
+    | 'ROUTES_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE'
+    | 'ROUTES_APP_DISTRIBUTION_CHANNEL'
+    | 'ROUTES_APP_DOWNLOAD_URL'
     | 'GEOCODING_CACHE_TTL_DAYS'
     | 'GEOCODING_PROVIDER_MODE'
     | 'GEOCODING_RATE_LIMIT_PER_SECOND'
@@ -151,11 +151,11 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
   const actorSubject = readOptional(input.env.CLEVER_ADMIN_API_ACTOR) ?? 'internal-web-operator';
   const cookieName = readOptional(input.env.CLEVER_ADMIN_WEB_COOKIE_NAME) ?? DEFAULT_ADMIN_UI_COOKIE_NAME;
   const publicBaseUrl = readOptional(input.env.DELIVERY_API_PUBLIC_URL);
-  const driverAppDownloadUrl = readOptionalHttpUrl(
-    input.env.DRIVER_APP_DOWNLOAD_URL,
-    'DRIVER_APP_DOWNLOAD_URL'
+  const routesAppDownloadUrl = readOptionalHttpUrl(
+    input.env.ROUTES_APP_DOWNLOAD_URL,
+    'ROUTES_APP_DOWNLOAD_URL'
   );
-  const driverAppAndroidRelease = readDriverAppAndroidReleaseConfig(input.env);
+  const routesAppAndroidRelease = readRoutesAppAndroidReleaseConfig(input.env);
   if (input.nodeEnv === 'production' && publicBaseUrl === undefined) {
     return undefined;
   }
@@ -188,8 +188,8 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     ...readAdminUiPairingCodeService(input),
     ...routeOptimizationDeps,
     ...readAdminUiWooSyncService(input, notificationService),
-    ...(driverAppAndroidRelease === undefined ? {} : { driverAppAndroidRelease }),
-    ...(driverAppDownloadUrl === undefined ? {} : { driverAppDownloadUrl }),
+    ...(routesAppAndroidRelease === undefined ? {} : { routesAppAndroidRelease }),
+    ...(routesAppDownloadUrl === undefined ? {} : { routesAppDownloadUrl }),
     ...(publicBaseUrl === undefined ? {} : { publicBaseUrl }),
     ...routePlanDeps,
     ...readAdminUiRouteGroupingService(input, routeGeometryRefresher, routeOptimizationDeps.routeOptimizationService, routeGeometryProvider),
@@ -489,16 +489,16 @@ function readOptionalHttpUrl(value: string | undefined, name: string): string | 
   throw new Error(`${name} must be an http(s) URL`);
 }
 
-function readDriverAppAndroidReleaseConfig(
+function readRoutesAppAndroidReleaseConfig(
   env: AdminCommerceConnectionsRuntimeEnv
-): DriverAppAndroidReleaseConfig | undefined {
-  const distributionChannel = readOptional(env.DRIVER_APP_DISTRIBUTION_CHANNEL);
-  const latestVersionName = readOptional(env.DRIVER_APP_ANDROID_LATEST_VERSION_NAME);
+): RoutesAppAndroidReleaseConfig | undefined {
+  const distributionChannel = readOptional(env.ROUTES_APP_DISTRIBUTION_CHANNEL);
+  const latestVersionName = readOptional(env.ROUTES_APP_ANDROID_LATEST_VERSION_NAME);
   const latestVersionCode = readOptionalInteger(
-    env.DRIVER_APP_ANDROID_LATEST_VERSION_CODE
+    env.ROUTES_APP_ANDROID_LATEST_VERSION_CODE
   );
   const minimumSupportedVersionCode = readOptionalInteger(
-    env.DRIVER_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE
+    env.ROUTES_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE
   );
 
   if (

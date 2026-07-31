@@ -38,7 +38,7 @@ describe('driver proof media production evidence seed', () => {
     expect(markdown).toContain('| `DRIVER_PROOF_MEDIA_CLEANUP_EVIDENCE_REF` | present |');
     expect(markdown).toContain('Bucket ownership and IAM least-privilege approval');
     expect(markdown).toContain('EVNSolution/clever-route-server#71');
-    expect(markdown).toContain('EVNSolution/clever-driver-app#73');
+    expect(markdown).toContain('EVNSolution/clever-routes-app#73');
 
     expect(markdown).not.toContain('prod-driver-proof-private-bucket');
     expect(markdown).not.toContain('AKIA_TEST_VALUE');

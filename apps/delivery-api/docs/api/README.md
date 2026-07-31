@@ -52,6 +52,6 @@ Do not treat raw EIP or `sslip.io` hostnames as the normal integration contract.
 - [ ] Update route implementation and nearest route tests.
 - [ ] Update `docs/api/openapi.yaml`.
 - [ ] Update matching Markdown behavior notes.
-- [ ] Keep driver-app consumed responses backward-compatible or document the
+- [ ] Keep routes-app consumed responses backward-compatible or document the
       mobile migration.
 - [ ] Run lint/typecheck/tests/build before completion.
