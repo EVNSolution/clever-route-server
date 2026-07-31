@@ -1,9 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import {
   signDriverAccountToken,
-  verifyDriverAccountToken,
-  verifyDriverRouteToken,
-  verifyDriverToken
+  verifyDriverAccountToken
 } from '../modules/driver/driver-token-verifier.js';
 import type { DriverAuthSessionInfo, PrismaDriverAuthRepository } from '../modules/driver/driver-auth.repository.js';
 import type { DriverTokenAccessRepositoryApi } from '../modules/driver/driver-token-access.repository.js';
@@ -104,8 +102,8 @@ export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: Dri
     if (token === null) {
       return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: 'Missing driver bearer token' } });
     }
-    const driverId = await resolvePushTokenDriverId(token, dependencies);
-    if (driverId === null) {
+    const accountId = await resolvePushTokenAccountId(token, dependencies);
+    if (accountId === null) {
       return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: 'Invalid driver bearer token' } });
     }
     const body = request.body;
@@ -113,18 +111,33 @@ export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: Dri
       return reply.code(400).send({ data: null, error: { code: 'BAD_REQUEST', message: 'push token payload is required' } });
     }
     const payload = body as Record<string, unknown>;
-    const devicePushToken = readRequiredString(payload.devicePushToken);
-    const platform = readRequiredString(payload.platform);
-    const appId = readRequiredString(payload.appId);
-    if (devicePushToken === null || platform === null || appId === null) {
-      return reply.code(400).send({ data: null, error: { code: 'BAD_REQUEST', message: 'platform, appId, and devicePushToken are required' } });
+    const devicePushToken = readBoundedRequiredString(payload.devicePushToken, 4096);
+    const platform = readBoundedRequiredString(payload.platform, 16);
+    const appId = readBoundedRequiredString(payload.appId, 160);
+    const optionalMetadata: Array<[unknown, number]> = [
+      [payload.appVersion, 64],
+      [payload.deviceId, 256],
+      [payload.locale, 32],
+      [payload.timezone, 128]
+    ];
+    const optionalMetadataIsValid = optionalMetadata.every(
+      ([value, maxLength]) => isOptionalBoundedString(value, maxLength)
+    );
+    if (
+      devicePushToken === null
+      || (platform !== 'android' && platform !== 'ios')
+      || appId === null
+      || !optionalMetadataIsValid
+      || Object.keys(payload).some((key) => !PUSH_INSTALLATION_KEYS.has(key))
+    ) {
+      return reply.code(400).send({ data: null, error: { code: 'BAD_REQUEST', message: 'Invalid Push installation payload' } });
     }
     const result = await dependencies.pushTokenService.upsertDriverPushToken({
+      accountId,
       appId,
       appVersion: readOptionalString(payload.appVersion),
       deviceId: readOptionalString(payload.deviceId),
       devicePushToken,
-      driverId,
       locale: readOptionalString(payload.locale),
       platform,
       timezone: readOptionalString(payload.timezone)
@@ -140,19 +153,24 @@ export function registerDriverAuthRoutes(app: FastifyInstance, dependencies: Dri
     if (token === null) {
       return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: 'Missing driver bearer token' } });
     }
-    const driverId = await resolvePushTokenDriverId(token, dependencies);
-    if (driverId === null) {
+    const accountId = await resolvePushTokenAccountId(token, dependencies);
+    if (accountId === null) {
       return reply.code(401).send({ data: null, error: { code: 'UNAUTHORIZED', message: 'Invalid driver bearer token' } });
     }
     const body = request.body;
-    if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    if (
+      typeof body !== 'object'
+      || body === null
+      || Array.isArray(body)
+      || Object.keys(body).some((key) => key !== 'devicePushToken')
+    ) {
       return reply.code(400).send({ data: null, error: { code: 'BAD_REQUEST', message: 'devicePushToken is required' } });
     }
     const devicePushToken = readRequiredString((body as Record<string, unknown>).devicePushToken);
     if (devicePushToken === null) {
       return reply.code(400).send({ data: null, error: { code: 'BAD_REQUEST', message: 'devicePushToken is required' } });
     }
-    const result = await dependencies.pushTokenService.revokeDriverPushToken({ devicePushToken, driverId });
+    const result = await dependencies.pushTokenService.revokeDriverPushToken({ accountId, devicePushToken });
     return reply.code(200).send({ data: result, error: null });
   });
 
@@ -242,25 +260,27 @@ function buildAuthSessionResponse(
   };
 }
 
-async function resolvePushTokenDriverId(
+async function resolvePushTokenAccountId(
   token: string,
   dependencies: DriverAuthDependencies
 ): Promise<string | null> {
-  try {
-    const routeToken = verifyDriverRouteToken(token, { secret: dependencies.jwtSecret });
-    const scope = await dependencies.driverTokenAccessRepository?.resolveDriverRouteAccess({
-      accountId: routeToken.accountId,
-      routePlanId: routeToken.routePlanId,
-      tokenVersion: routeToken.tokenVersion
-    });
-    return scope?.driverId ?? null;
-  } catch {
+  const accountToken = (() => {
     try {
-      return verifyDriverToken(token, { secret: dependencies.jwtSecret }).driverId;
+      return verifyDriverAccountToken(token, { secret: dependencies.jwtSecret });
     } catch {
       return null;
     }
+  })();
+  if (accountToken !== null) {
+    if (
+      dependencies.driverTokenAccessRepository !== undefined
+      && !(await dependencies.driverTokenAccessRepository.isDriverAccountAccessTokenActive(accountToken))
+    ) {
+      return null;
+    }
+    return accountToken.accountId;
   }
+  return null;
 }
 
 function objectOrNull(value: unknown): Record<string, unknown> | null {
@@ -294,9 +314,30 @@ function readRequiredString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
 }
 
+function readBoundedRequiredString(value: unknown, maxLength: number): string | null {
+  const normalized = readRequiredString(value);
+  return normalized !== null && normalized.length <= maxLength ? normalized : null;
+}
+
 function readOptionalString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
 }
+
+function isOptionalBoundedString(value: unknown, maxLength: number): boolean {
+  return value === undefined
+    || value === null
+    || (typeof value === 'string' && value.trim().length <= maxLength);
+}
+
+const PUSH_INSTALLATION_KEYS = new Set([
+  'appId',
+  'appVersion',
+  'deviceId',
+  'devicePushToken',
+  'locale',
+  'platform',
+  'timezone'
+]);
 
 function isInvalidRefreshTokenError(error: unknown): boolean {
   return error instanceof Error && (error.message === 'Invalid refresh token' || error.message === 'Invalid or expired refresh token');

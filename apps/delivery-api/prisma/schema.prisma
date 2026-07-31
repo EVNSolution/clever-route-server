@@ -220,6 +220,8 @@ enum DriverRouteNotificationStatus {
 enum DriverRouteNotificationAction {
   ASSIGNED
   CHANGED
+  CANCELLED
+  RELEASED
 }
 
 enum CustomerRouteNotificationStatus {
@@ -356,7 +358,6 @@ model Shop {
   inventories                       Inventory[]
   inventoryOrders                   InventoryOrder[]
   inventoryEvents                   InventoryEvent[]
-  driverPushTokens                  DriverPushToken[]
   driverRouteNotificationAttempts   DriverRouteNotificationAttempt[]
   customerRouteNotificationFacts    CustomerRouteNotificationFact[]
   adminRouteStopActionAudits        AdminRouteStopActionAudit[]
@@ -1217,7 +1218,6 @@ model Driver {
   routeGroupingPolygons      RouteGroupingPolygon[]
   routeGroupingChildVersions RouteGroupingChildVersion[]
   routeGroupingBranches      RouteGroupingBranch[]
-  pushTokens                 DriverPushToken[]
   routeNotificationAttempts  DriverRouteNotificationAttempt[]
   dsvDispatchImportRows      DsvDispatchImportRow[]
   dsvProfile                 DsvDriverProfile?
@@ -1246,6 +1246,7 @@ model DriverAccount {
   consentRecords    DriverConsentRecord[]
   sessions          DriverAccountSession[]
   deletionRequest   DriverAccountDeletionRequest?
+  pushTokens        DriverPushToken[]
 
   @@index([status])
   @@map("driver_accounts")
@@ -1550,11 +1551,9 @@ model RouteGroupingChildVersion {
 
 model DriverPushToken {
   id              String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  shopId          String                @db.Uuid
-  shop            Shop                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  driverId        String                @db.Uuid
-  driver          Driver                @relation(fields: [driverId], references: [id], onDelete: Cascade)
-  tokenHash       String                @db.Text
+  accountId       String                @db.Uuid
+  account         DriverAccount         @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  tokenHash       String                @unique @db.Text
   devicePushToken String                @db.Text
   platform        String                @db.Text
   deviceId        String?               @db.Text
@@ -1568,8 +1567,7 @@ model DriverPushToken {
   createdAt       DateTime              @default(now()) @db.Timestamptz(6)
   updatedAt       DateTime              @updatedAt @db.Timestamptz(6)
 
-  @@unique([driverId, tokenHash])
-  @@index([shopId, driverId, status])
+  @@index([accountId, status])
   @@map("driver_push_tokens")
 }
 

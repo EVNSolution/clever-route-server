@@ -1,6 +1,10 @@
 import { DriverEventType, type Prisma, type PrismaClient } from '@prisma/client';
 import { classifyCoordinateInPolygons, coordinatesFromGeoJsonPolygon } from './route-grouping.geometry.js';
-import type { DriverPushProvider } from './driver-push.provider.js';
+import type {
+  DriverPushProvider,
+  DriverRoutePushAction,
+  DriverRoutePushResult
+} from './driver-push.provider.js';
 import type {
   RouteOptimizationOutcome,
   RouteOptimizationService,
@@ -178,6 +182,26 @@ type RouteGroupingServiceOptions = {
   maxChildRouteStopDistanceFromDepotMeters?: number;
 };
 
+type DriverRouteNotificationTarget = {
+  accountId: string;
+  childVersion: number;
+  routeGroupingId: string;
+  routePlanId: string;
+};
+
+type PublishedRouteChild = Prisma.RouteGroupingChildVersionGetPayload<{
+  include: {
+    grouping: { include: { shop: { select: { shopDomain: true } } } };
+    routePlan: {
+      select: {
+        driver: { select: { accountId: true } };
+        driverId: true;
+        status: true;
+      };
+    };
+  };
+}>;
+
 export class PrismaRouteGroupingService implements RouteGroupingService {
   constructor(
     private readonly prisma: RouteGroupingPrismaClient,
@@ -309,14 +333,47 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
 
   async deleteGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<DeleteRouteGroupingResult> {
     const shopDomain = normalizeShopDomain(input.shopDomain);
-    return this.prisma.$transaction(async (tx) => {
+    const deletion = await this.prisma.$transaction(async (tx) => {
       const group = await tx.routeGrouping.findFirst({
-        include: { childVersions: { select: { routePlanId: true } } },
+        include: {
+          childVersions: {
+            select: {
+              routePlan: {
+                select: {
+                  driver: { select: { accountId: true } }
+                }
+              },
+              routePlanId: true,
+              status: true,
+              supersededAt: true,
+              version: true
+            }
+          }
+        },
         where: { id: input.groupingId, shop: { appId: normalizeShopifyAppId(input.appId), shopDomain } }
       });
-      if (group === null) return { deleted: false, deletedChildRoutePlanCount: 0, groupingId: input.groupingId };
+      if (group === null) {
+        return {
+          notificationTargets: [] as DriverRouteNotificationTarget[],
+          result: { deleted: false, deletedChildRoutePlanCount: 0, groupingId: input.groupingId }
+        };
+      }
 
       const childRoutePlanIds = [...new Set(group.childVersions.map((child) => child.routePlanId).filter((id): id is string => id !== null))];
+      const notificationTargets = dedupeDriverNotificationTargets(group.childVersions.flatMap((child): DriverRouteNotificationTarget[] => {
+        if (child.status !== 'CURRENT' || child.supersededAt !== null) {
+          return [];
+        }
+        const accountId = child.routePlan?.driver?.accountId;
+        return accountId === null || accountId === undefined || child.routePlanId === null
+          ? []
+          : [{
+              accountId,
+              childVersion: child.version,
+              routeGroupingId: group.id,
+              routePlanId: child.routePlanId
+            }];
+      }));
       if (childRoutePlanIds.length > 0) {
         await tx.routePlanStop.deleteMany({ where: { routePlanId: { in: childRoutePlanIds } } });
         await clearRouteGroupingChildVersionRoutePlanRefs(tx, {
@@ -327,8 +384,13 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       }
       await tx.inventory.deleteMany({ where: { routeGroupingId: group.id, shopId: group.shopId } });
       await tx.routeGrouping.delete({ where: { id: group.id } });
-      return { deleted: true, deletedChildRoutePlanCount: childRoutePlanIds.length, groupingId: input.groupingId };
+      return {
+        notificationTargets,
+        result: { deleted: true, deletedChildRoutePlanCount: childRoutePlanIds.length, groupingId: input.groupingId }
+      };
     });
+    await this.sendRouteNotificationsBestEffort('cancelled', deletion.notificationTargets);
+    return deletion.result;
   }
 
   async listGroupings(input: { appId?: string | undefined; dateRangeEnd?: string; dateRangeStart?: string; deliveryDate?: string; shopDomain: string }): Promise<RouteGroupingSummaryDto[]> {
@@ -527,6 +589,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     assertDraftRoutePlanEnvelope(baseline, routes, deletedRoutePlanIds);
     assertDraftNonReadyChildStopMembershipUnchanged(baseline, routes, removedOrderIds);
     assertDraftExpectedRevisions(baseline, routes, deletedRoutePlanIds, input.expectedUpdatedAt);
+    const releasedNotificationTargets = collectReleasedDriverNotificationTargets(
+      baseline,
+      routes,
+      deletedRoutePlanIds
+    );
     const draftOptimizations = await this.prepareDraftRouteOptimizations(input, baseline, routes);
 
     const groupingId = await this.prisma.$transaction(async (tx) => {
@@ -681,6 +748,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       return group.id;
     });
     if (groupingId === null) return null;
+    await this.sendRouteNotificationsBestEffort('released', releasedNotificationTargets);
     return this.getGrouping({ appId: input.appId, groupingId, shopDomain: input.shopDomain });
   }
 
@@ -1288,7 +1356,16 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
 
   async recordChildRoutePublished(input: { routePlanId: string; shopDomain: string }): Promise<void> {
     const child = await this.prisma.routeGroupingChildVersion.findFirst({
-      include: { grouping: { include: { shop: { select: { shopDomain: true } } } }, routePlan: { select: { driverId: true, status: true } } },
+      include: {
+        grouping: { include: { shop: { select: { shopDomain: true } } } },
+        routePlan: {
+          select: {
+            driver: { select: { accountId: true } },
+            driverId: true,
+            status: true
+          }
+        }
+      },
       where: { routePlanId: input.routePlanId, status: 'CURRENT', supersededAt: null }
     });
     if (child === null || child.grouping.shop.shopDomain !== normalizeShopDomain(input.shopDomain)) return;
@@ -1297,15 +1374,25 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       this.prisma.routeGroupingChildVersion.update({ data: { publishedAt }, where: { id: child.id } }),
       this.prisma.routeGrouping.updateMany({ data: { status: 'READY' }, where: { id: child.groupingId, status: { not: 'CANCELLED' } } })
     ]);
-    if (child.routePlan?.driverId === null || child.routePlan?.driverId === undefined) return;
-    const tokens = await this.prisma.driverPushToken.findMany({ where: { driverId: child.routePlan.driverId, status: 'ACTIVE' } });
-    if (tokens.length === 0) {
-      await this.prisma.routeGroupingChildVersion.update({ data: { notificationStatus: 'SKIPPED' }, where: { id: child.id } });
-      return;
-    }
+    await this.recordPublishedRouteNotification(child, input.routePlanId).catch((error: unknown) => {
+      console.warn('[route-grouping] driver route notification failed after publish commit', {
+        errorName: error instanceof Error ? error.name : typeof error,
+        routePlanId: input.routePlanId
+      });
+    });
+  }
+
+  private async recordPublishedRouteNotification(
+    child: PublishedRouteChild,
+    routePlanId: string
+  ): Promise<void> {
+    if (
+      child.routePlan?.driverId === null
+      || child.routePlan?.driverId === undefined
+      || child.routePlan.driver?.accountId === null
+      || child.routePlan.driver?.accountId === undefined
+    ) return;
     const action = await this.hasPriorSentAttempt(child.groupingId, child.routePlan.driverId) ? 'CHANGED' : 'ASSIGNED';
-    const firstToken = tokens[0];
-    if (firstToken === undefined) return;
     const idempotencyKey = `${child.shopId}:${child.groupingId}:${child.version}:${child.id}:${child.routePlan.driverId}:${action}`;
     const existing = await this.prisma.driverRouteNotificationAttempt.findUnique({ where: { idempotencyKey } });
     if (existing?.status === 'SENT') return;
@@ -1318,19 +1405,19 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         groupingVersion: child.version,
         idempotencyKey,
         provider: this.pushProvider.providerName,
-        routePlanId: input.routePlanId,
+        routePlanId,
         shopId: child.shopId,
         status: 'PENDING'
       },
       update: { attemptedAt: new Date(), provider: this.pushProvider.providerName, status: 'PENDING' },
       where: { idempotencyKey }
     });
-    const result = await this.pushProvider.sendRouteNotification({
+    const result = await this.sendRouteNotificationToAccount({
+      accountId: child.routePlan.driver.accountId,
       action: action === 'ASSIGNED' ? 'assigned' : 'changed',
       childVersion: child.version,
-      devicePushToken: firstToken.devicePushToken,
       routeGroupingId: child.groupingId,
-      routePlanId: input.routePlanId
+      routePlanId
     });
     await this.prisma.driverRouteNotificationAttempt.update({
       data: {
@@ -1343,14 +1430,83 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       where: { id: pending.id }
     });
     await this.prisma.routeGroupingChildVersion.update({ data: { notificationStatus: result.status }, where: { id: child.id } });
-    if (result.invalidToken === true) {
-      await this.prisma.driverPushToken.updateMany({ data: { revokedAt: new Date(), status: 'INVALID' }, where: { id: firstToken.id, tokenHash: hashPushToken(firstToken.devicePushToken) } });
-    }
   }
 
   private async hasPriorSentAttempt(groupingId: string, driverId: string): Promise<boolean> {
     const count = await this.prisma.driverRouteNotificationAttempt.count({ where: { driverId, groupingId, status: 'SENT' } });
     return count > 0;
+  }
+
+  private async sendRouteNotificationToAccount(
+    input: DriverRouteNotificationTarget & { action: DriverRoutePushAction }
+  ): Promise<DriverRoutePushResult> {
+    const tokens = await this.prisma.driverPushToken.findMany({
+      orderBy: { lastSeenAt: 'desc' },
+      where: { accountId: input.accountId, status: 'ACTIVE' }
+    });
+    if (tokens.length === 0) {
+      return {
+        errorCode: 'NO_ACTIVE_TOKEN',
+        errorMessage: 'No active Push token is registered for the driver account.',
+        status: 'SKIPPED'
+      };
+    }
+
+    const tokenResults = await Promise.all(tokens.map(async (token) => ({
+      result: await this.pushProvider.sendRouteNotification({
+        action: input.action,
+        childVersion: input.childVersion,
+        devicePushToken: token.devicePushToken,
+        routeGroupingId: input.routeGroupingId,
+        routePlanId: input.routePlanId
+      }),
+      token
+    })));
+    for (const invalidToken of tokenResults.filter(({ result }) => result.invalidToken === true)) {
+      await this.prisma.driverPushToken.updateMany({
+        data: { revokedAt: new Date(), status: 'INVALID' },
+        where: { id: invalidToken.token.id, tokenHash: hashPushToken(invalidToken.token.devicePushToken) }
+      });
+    }
+
+    return tokenResults.find(({ result }) => result.status === 'SENT')?.result
+      ?? tokenResults.find(({ result }) => result.status === 'FAILED')?.result
+      ?? tokenResults[0]?.result
+      ?? {
+        errorCode: 'NO_PROVIDER_RESULT',
+        errorMessage: 'Driver Push provider did not return a result.',
+        status: 'FAILED'
+      };
+  }
+
+  private async sendRouteNotificationsBestEffort(
+    action: DriverRoutePushAction,
+    targets: DriverRouteNotificationTarget[]
+  ): Promise<void> {
+    const uniqueTargets = dedupeDriverNotificationTargets(targets);
+    const outcomes = await Promise.allSettled(uniqueTargets.map((target) =>
+      this.sendRouteNotificationToAccount({ action, ...target })
+    ));
+    outcomes.forEach((outcome, index) => {
+      const target = uniqueTargets[index];
+      if (target === undefined) return;
+      if (outcome.status === 'rejected') {
+        console.warn('[route-grouping] driver route notification rejected after route mutation', {
+          action,
+          errorName: outcome.reason instanceof Error ? outcome.reason.name : typeof outcome.reason,
+          routePlanId: target.routePlanId
+        });
+        return;
+      }
+      if (outcome.value.status !== 'SENT') {
+        console.warn('[route-grouping] driver route notification was not sent after route mutation', {
+          action,
+          errorCode: outcome.value.errorCode ?? null,
+          routePlanId: target.routePlanId,
+          status: outcome.value.status
+        });
+      }
+    });
   }
 
   private async loadGrouping(input: { appId?: string | undefined; groupingId: string; shopDomain: string }): Promise<LoadedGrouping | null> {
@@ -1723,6 +1879,49 @@ function sameStringSet(left: string[], right: string[]): boolean {
   if (left.length !== right.length) return false;
   const rightSet = new Set(right);
   return left.every((value) => rightSet.has(value));
+}
+
+function collectReleasedDriverNotificationTargets(
+  group: LoadedGrouping,
+  routes: RouteGroupingDraftRouteInput[],
+  deletedRoutePlanIds: string[]
+): DriverRouteNotificationTarget[] {
+  return dedupeDriverNotificationTargets(group.childVersions
+    .filter((child) => isOperationalCurrentChild(child))
+    .flatMap((child): DriverRouteNotificationTarget[] => {
+      const accountId = child.routePlan?.driver?.accountId;
+      const routePlanId = child.routePlanId;
+      const currentDriverId = child.routePlan?.driverId ?? child.driverId;
+      if (accountId === null || accountId === undefined || routePlanId === null || currentDriverId === null) {
+        return [];
+      }
+
+      const submittedRoute = routes.find((route) => findDraftChild(group, route)?.id === child.id);
+      const wasDeleted = deletedRoutePlanIds.includes(routePlanId);
+      const wasReleased = submittedRoute?.driverId !== undefined && submittedRoute.driverId !== currentDriverId;
+      return wasDeleted || wasReleased
+        ? [{
+            accountId,
+            childVersion: child.version,
+            routeGroupingId: group.id,
+            routePlanId
+          }]
+        : [];
+    }));
+}
+
+function dedupeDriverNotificationTargets(
+  targets: DriverRouteNotificationTarget[]
+): DriverRouteNotificationTarget[] {
+  const uniqueTargets = new Map<string, DriverRouteNotificationTarget>();
+  for (const target of targets) {
+    const key = `${target.accountId}:${target.routePlanId}`;
+    const existing = uniqueTargets.get(key);
+    if (existing === undefined || target.childVersion > existing.childVersion) {
+      uniqueTargets.set(key, target);
+    }
+  }
+  return [...uniqueTargets.values()];
 }
 
 function logRouteGeometryRefreshFailure(routePlanId: string, reason: unknown): void {

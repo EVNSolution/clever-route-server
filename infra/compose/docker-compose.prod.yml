@@ -61,6 +61,7 @@ services:
     volumes:
       - route-ops-web-static:/app/external/route-ops-web:ro
       - /srv/clever-route-server/data/driver-proof-media:/app/var/driver-proof-media
+      - /srv/clever-route-server/secrets/firebase-fcm.json:/run/secrets/firebase-fcm.json:ro
     networks:
       default:
         aliases:

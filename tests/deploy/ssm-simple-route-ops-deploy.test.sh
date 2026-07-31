@@ -19,6 +19,7 @@ command = payload['commands'][0]
 wrapper = pathlib.Path('scripts/ssm-simple-route-ops-deploy.sh').read_text()
 workflow = pathlib.Path('.github/workflows/route-ops-simple-deploy.yml').read_text()
 web_dockerfile = pathlib.Path('apps/route-ops-web/Dockerfile').read_text()
+compose = pathlib.Path('infra/compose/docker-compose.prod.yml').read_text()
 dry_run_idx = command.index('if [ "$DRY_RUN" = "1" ]')
 forward_mutation_snippets = [
     '--profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea',
@@ -44,6 +45,9 @@ checks = {
     'multi_coverage_env': 'OSRM_ONTARIO_BASE_URL' in command and 'http://osrm-ontario:5000' in command and 'OSRM_KOREA_BASE_URL' in command and 'http://osrm-korea:5000' in command and 'VROOM_KOREA_BASE_URL' in command and 'http://vroom-korea:3000' in command and 'OSRM_DEFAULT_COVERAGE' in command and 'korea' in command,
     'vroom_configs_synced_to_host': 'VROOM_CONFIG_B64=' in command and 'VROOM_KOREA_CONFIG_B64=' in command and 'base64 -d > "$VROOM_KOREA_CONFIG"' in command,
     'proof_media_bootstrap': 'chown -R 100:101 /srv/clever-route-server/data/driver-proof-media' in command and 'chmod 750 /srv/clever-route-server/data/driver-proof-media' in command,
+    'firebase_credential_bootstrap': 'FIREBASE_CREDENTIALS_PARAM=' in command and 'aws ssm get-parameter --name "$FIREBASE_CREDENTIALS_PARAM" --with-decryption' in command and 'chown 100:101 "$FIREBASE_CREDENTIALS_FILE"' in command and 'chmod 400 "$FIREBASE_CREDENTIALS_FILE"' in command,
+    'firebase_runtime_env': "'FIREBASE_PROJECT_ID': 'clever-routes-prod'" in wrapper and "'GOOGLE_APPLICATION_CREDENTIALS': '/run/secrets/firebase-fcm.json'" in wrapper,
+    'firebase_credential_mount': '/srv/clever-route-server/secrets/firebase-fcm.json:/run/secrets/firebase-fcm.json:ro' in compose,
     'compose_pull_only_on_host': '--profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea' in command and 'pull route-ops-web-static' in command and 'docker pull "$DELIVERY_API_IMAGE"' not in command,
     'migrate_uses_compose_service': 'run --rm clever-route-api-migrate' in command,
     'migrate_before_static_stage': command.index('run --rm clever-route-api-migrate') < command.index('simple deploy static stage required', command.index('run --rm clever-route-api-migrate')),
