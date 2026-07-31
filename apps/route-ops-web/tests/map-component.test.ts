@@ -570,7 +570,7 @@ function bootstrapNotConfigured(): BootstrapPayload {
       settings: '/admin/ui/app/settings'
     },
     csrfToken: 'csrf',
-    driverApp: { installUrl: 'https://clever-route-api.cleversystem.ai/driver-app' },
+    routesApp: { installUrl: 'https://clever-route-api.cleversystem.ai/routes-app' },
     mapConfig: {
       allowedHosts: [],
       attribution: null,

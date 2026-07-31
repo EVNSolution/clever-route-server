@@ -207,7 +207,7 @@ export function DriversPage({ bootstrap, setError }: { bootstrap: BootstrapPaylo
 
   const copyInvite = async (driver: DriverDto): Promise<void> => {
     if (driver.inviteCode === null) return;
-    const message = buildDriverInviteMessage(driver, locale, bootstrap.driverApp.installUrl);
+    const message = buildDriverInviteMessage(driver, locale, bootstrap.routesApp.installUrl);
     try {
       if (typeof navigator !== 'undefined' && navigator.clipboard !== undefined) {
         await navigator.clipboard.writeText(message);
@@ -428,7 +428,7 @@ export function buildDriverInviteMessage(
   const codeLine = `${t.authenticationCode}: ${driver.inviteCode ?? ''}`;
   if (installUrl === null || installUrl.trim() === '') return codeLine;
   return [
-    `${t.installDriverApp}:`,
+    `${t.installRoutesApp}:`,
     installUrl,
     '',
     codeLine,

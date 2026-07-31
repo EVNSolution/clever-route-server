@@ -85,8 +85,8 @@ export function buildDriverProofMediaEvidenceSeed(input: DriverProofMediaEvidenc
     '| Gate | Issue | Status to fill privately |',
     '| --- | --- | --- |',
     '| Delivery-server production proof-media evidence | EVNSolution/clever-route-server#71 | pending external evidence |',
-    '| Driver-app native build/store/privacy evidence | EVNSolution/clever-driver-app#73 | pending external evidence |',
-    '| Driver-app physical iOS/Android smoke evidence | EVNSolution/clever-driver-app#72 | pending external evidence |',
+    '| Routes-app native build/store/privacy evidence | EVNSolution/clever-routes-app#73 | pending external evidence |',
+    '| Routes-app physical iOS/Android smoke evidence | EVNSolution/clever-routes-app#72 | pending external evidence |',
     ''
   ].join('\n');
 }

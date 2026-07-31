@@ -26,19 +26,19 @@ server-side GitHub credentials and a real checkout are deliberately provisioned.
 - VROOM configs: `infra/vroom/config.yml`, `infra/vroom/config.korea.yml`
 
 For the temporary direct Android distribution channel, the runtime env also
-owns the public driver release manifest:
+owns the public routes release manifest:
 
 ```dotenv
-DRIVER_APP_DISTRIBUTION_CHANNEL=direct
-DRIVER_APP_ANDROID_LATEST_VERSION_CODE=2
-DRIVER_APP_ANDROID_LATEST_VERSION_NAME=1.0.1
-DRIVER_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE=1
+ROUTES_APP_DISTRIBUTION_CHANNEL=direct
+ROUTES_APP_ANDROID_LATEST_VERSION_CODE=2
+ROUTES_APP_ANDROID_LATEST_VERSION_NAME=1.0.1
+ROUTES_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE=1
 ```
 
-`GET /driver-app/release/android` is unavailable when these values are absent or
+`GET /routes-app/release/android` is unavailable when these values are absent or
 inconsistent. Update the latest version values only after the stable APK target
-behind `/driver-app` has been replaced and verified. The API returns the stable
-server URL and never exposes `DRIVER_APP_DOWNLOAD_URL`.
+behind `/routes-app` has been replaced and verified. The API returns the stable
+server URL and never exposes `ROUTES_APP_DOWNLOAD_URL`.
 
 ## Expected fast path
 

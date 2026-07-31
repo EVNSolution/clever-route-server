@@ -2,7 +2,7 @@
 
 Purpose: after account route lookup and consent recording, the native driver app can read only the route assigned to the authenticated global DriverAccount.
 
-This endpoint is the first route/stop read contract for `clever-driver-app`. Unlike route access lookup and consent submission, it can return stop address and coordinate context needed for delivery work. Treat successful responses as location-information provision from an engineering compliance standpoint.
+This endpoint is the first route/stop read contract for `clever-routes-app`. Unlike route access lookup and consent submission, it can return stop address and coordinate context needed for delivery work. Treat successful responses as location-information provision from an engineering compliance standpoint.
 
 ## Runtime registration
 

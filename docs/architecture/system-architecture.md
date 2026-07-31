@@ -10,7 +10,7 @@
     apps/wordpress-connector-plugin/   Woo/WordPress setup, sync, launch glue
     infra/                             Caddy, compose, env examples, deploy controls
     docs/                              architecture, migration, deployment runbooks
-  clever-driver-app/                   sibling mobile driver app repo
+  clever-routes-app/                   sibling mobile routes app repo
   worktrees/                           local Git branch workspaces only
 
 05_CLEVER_Shopify/
@@ -27,7 +27,7 @@ Technology rationale:
 - **Prisma** gives typed PostgreSQL access while preserving migration/schema auditability.
 - **PostgreSQL** is the durable source for shops, canonical orders, route plans, drivers, auth state, and operational settings.
 
-Compatibility note: some modules still use Shopify names because the backend was bootstrapped from the Shopify codebase. Treat those as additive compatibility seams until Woo and driver-app compatibility have fresh evidence.
+Compatibility note: some modules still use Shopify names because the backend was bootstrapped from the Shopify codebase. Treat those as additive compatibility seams until Woo and routes-app compatibility have fresh evidence.
 
 ## Frontend: `apps/route-ops-web`
 

@@ -15,7 +15,7 @@ export type BootstrapPayload = {
     settings: string;
   };
   csrfToken: string;
-  driverApp: {
+  routesApp: {
     installUrl: string | null;
   };
   mapConfig: {

@@ -4,7 +4,7 @@ Purpose: the native driver app uses an authenticated phone account to return
 that account's Ready or in-progress route choices before showing
 route/stop/customer details.
 
-This is the first driver-facing contract for `clever-driver-app`. It intentionally returns only non-sensitive company/route guidance. Consent records and assigned-route reads are implemented as separate authenticated contracts; stop detail/actions, driver session issuance, and location collection remain follow-up APIs.
+This is the first driver-facing contract for `clever-routes-app`. It intentionally returns only non-sensitive company/route guidance. Consent records and assigned-route reads are implemented as separate authenticated contracts; stop detail/actions, driver session issuance, and location collection remain follow-up APIs.
 
 ## Runtime registration
 

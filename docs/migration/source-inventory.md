@@ -37,4 +37,4 @@ This document records the historical delivery-api bootstrap. It does not make Sh
 
 The imported server still contains Shopify-named schemas/modules/routes. Those are
 legacy compatibility seams and must remain additive until WordPress/WooCommerce
-order ingestion and driver-app compatibility have fresh test/smoke evidence.
+order ingestion and routes-app compatibility have fresh test/smoke evidence.

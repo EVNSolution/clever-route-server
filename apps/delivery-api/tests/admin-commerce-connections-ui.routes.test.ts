@@ -215,7 +215,7 @@ describe("Admin WooCommerce connection UI routes", () => {
     ).toBeDefined();
   });
 
-  test("loads the driver app download URL without exposing it as the install URL", () => {
+  test("loads the routes app download URL without exposing it as the install URL", () => {
     const base = createBaseAdminCommerceDependencies();
 
     const dependencies = loadAdminCommerceConnectionsUiDependencies({
@@ -224,13 +224,13 @@ describe("Admin WooCommerce connection UI routes", () => {
         CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
         CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
         DELIVERY_API_PUBLIC_URL: "https://clever-route-api.cleversystem.ai",
-        DRIVER_APP_DOWNLOAD_URL:
+        ROUTES_APP_DOWNLOAD_URL:
           "https://drive.example.test/uc?id=apk&export=download",
       },
       nodeEnv: "production",
     });
 
-    expect(dependencies?.driverAppDownloadUrl).toBe(
+    expect(dependencies?.routesAppDownloadUrl).toBe(
       "https://drive.example.test/uc?id=apk&export=download",
     );
     expect(() =>
@@ -240,14 +240,14 @@ describe("Admin WooCommerce connection UI routes", () => {
           CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
           CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
           DELIVERY_API_PUBLIC_URL: "https://clever-route-api.cleversystem.ai",
-          DRIVER_APP_DOWNLOAD_URL: "file:///tmp/driver.apk",
+          ROUTES_APP_DOWNLOAD_URL: "file:///tmp/driver.apk",
         },
         nodeEnv: "production",
       }),
-    ).toThrow("DRIVER_APP_DOWNLOAD_URL must be an http(s) URL");
+    ).toThrow("ROUTES_APP_DOWNLOAD_URL must be an http(s) URL");
   });
 
-  test("loads Android driver app release manifest config without the raw download URL", () => {
+  test("loads Android routes app release manifest config without the raw download URL", () => {
     const base = createBaseAdminCommerceDependencies();
 
     const dependencies = loadAdminCommerceConnectionsUiDependencies({
@@ -256,23 +256,23 @@ describe("Admin WooCommerce connection UI routes", () => {
         CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
         CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
         DELIVERY_API_PUBLIC_URL: "https://clever-route-api.cleversystem.ai",
-        DRIVER_APP_ANDROID_LATEST_VERSION_CODE: "42",
-        DRIVER_APP_ANDROID_LATEST_VERSION_NAME: "1.4.2",
-        DRIVER_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE: "40",
-        DRIVER_APP_DISTRIBUTION_CHANNEL: "direct",
-        DRIVER_APP_DOWNLOAD_URL:
+        ROUTES_APP_ANDROID_LATEST_VERSION_CODE: "42",
+        ROUTES_APP_ANDROID_LATEST_VERSION_NAME: "1.4.2",
+        ROUTES_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE: "40",
+        ROUTES_APP_DISTRIBUTION_CHANNEL: "direct",
+        ROUTES_APP_DOWNLOAD_URL:
           "https://drive.example.test/uc?id=apk&export=download",
       },
       nodeEnv: "production",
     });
 
-    expect(dependencies?.driverAppAndroidRelease).toEqual({
+    expect(dependencies?.routesAppAndroidRelease).toEqual({
       distributionChannel: "direct",
       latestVersionCode: 42,
       latestVersionName: "1.4.2",
       minimumSupportedVersionCode: 40,
     });
-    expect(JSON.stringify(dependencies?.driverAppAndroidRelease)).not.toContain(
+    expect(JSON.stringify(dependencies?.routesAppAndroidRelease)).not.toContain(
       "drive.example.test",
     );
   });
@@ -286,16 +286,16 @@ describe("Admin WooCommerce connection UI routes", () => {
         CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
         CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
         DELIVERY_API_PUBLIC_URL: "https://clever-route-api.cleversystem.ai",
-        DRIVER_APP_ANDROID_LATEST_VERSION_CODE: "40",
-        DRIVER_APP_ANDROID_LATEST_VERSION_NAME: "1.4.0",
-        DRIVER_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE: "42",
-        DRIVER_APP_DISTRIBUTION_CHANNEL: "direct",
+        ROUTES_APP_ANDROID_LATEST_VERSION_CODE: "40",
+        ROUTES_APP_ANDROID_LATEST_VERSION_NAME: "1.4.0",
+        ROUTES_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE: "42",
+        ROUTES_APP_DISTRIBUTION_CHANNEL: "direct",
       },
       nodeEnv: "production",
     });
 
     expect(dependencies).toBeDefined();
-    expect(dependencies?.driverAppAndroidRelease).toBeUndefined();
+    expect(dependencies?.routesAppAndroidRelease).toBeUndefined();
   });
 
   test("enables VROOM optimization with base URL", () => {
@@ -845,11 +845,11 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
-  test("exposes a stable driver app install link and redirects it to the configured download", async () => {
+  test("exposes a stable routes app install link and redirects it to the configured download", async () => {
     const rawDownloadUrl =
       "https://drive.example.test/uc?id=driver-apk&export=download";
     const { app } = await createUiHarness({
-      driverAppDownloadUrl: rawDownloadUrl,
+      routesAppDownloadUrl: rawDownloadUrl,
     });
 
     try {
@@ -861,15 +861,15 @@ describe("Admin WooCommerce connection UI routes", () => {
       });
       expect(bootstrap.statusCode).toBe(200);
       expect(
-        readApiData<{ driverApp: { installUrl: string | null } }>(bootstrap)
-          .driverApp,
+        readApiData<{ routesApp: { installUrl: string | null } }>(bootstrap)
+          .routesApp,
       ).toEqual({
-        installUrl: "https://clever-route-api.cleversystem.ai/driver-app",
+        installUrl: "https://clever-route-api.cleversystem.ai/routes-app",
       });
       expect(bootstrap.body).not.toContain("drive.example.test");
       expect(bootstrap.body).not.toContain("driver-apk");
 
-      const redirect = await app.inject({ method: "GET", url: "/driver-app" });
+      const redirect = await app.inject({ method: "GET", url: "/routes-app" });
       expect(redirect.statusCode).toBe(302);
       expect(redirect.headers.location).toBe(rawDownloadUrl);
     } finally {
@@ -877,29 +877,29 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
-  test("exposes the public Android driver app release manifest", async () => {
+  test("exposes the public Android routes app release manifest", async () => {
     const rawDownloadUrl =
       "https://drive.example.test/uc?id=driver-apk&export=download";
     const { app } = await createUiHarness({
-      driverAppAndroidRelease: {
+      routesAppAndroidRelease: {
         distributionChannel: "direct",
         latestVersionCode: 42,
         latestVersionName: "1.4.2",
         minimumSupportedVersionCode: 40,
       },
-      driverAppDownloadUrl: rawDownloadUrl,
+      routesAppDownloadUrl: rawDownloadUrl,
     });
 
     try {
       const response = await app.inject({
         method: "GET",
-        url: "/driver-app/release/android",
+        url: "/routes-app/release/android",
       });
       expect(response.statusCode).toBe(200);
       expect(response.headers["cache-control"]).toBe("no-store");
       expect(readApiData(response)).toEqual({
         distributionChannel: "direct",
-        installUrl: "https://clever-route-api.cleversystem.ai/driver-app",
+        installUrl: "https://clever-route-api.cleversystem.ai/routes-app",
         latestVersionCode: 42,
         latestVersionName: "1.4.2",
         minimumSupportedVersionCode: 40,
@@ -912,8 +912,8 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
-  test("keeps the driver app install link disabled until a download URL is configured", async () => {
-    const { app } = await createUiHarness({ driverAppDownloadUrl: null });
+  test("keeps the routes app install link disabled until a download URL is configured", async () => {
+    const { app } = await createUiHarness({ routesAppDownloadUrl: null });
 
     try {
       const { cookie } = await loginAndReadCsrf(app);
@@ -924,25 +924,25 @@ describe("Admin WooCommerce connection UI routes", () => {
       });
       expect(bootstrap.statusCode).toBe(200);
       expect(
-        readApiData<{ driverApp: { installUrl: string | null } }>(bootstrap)
-          .driverApp,
+        readApiData<{ routesApp: { installUrl: string | null } }>(bootstrap)
+          .routesApp,
       ).toEqual({
         installUrl: null,
       });
 
-      const redirect = await app.inject({ method: "GET", url: "/driver-app" });
+      const redirect = await app.inject({ method: "GET", url: "/routes-app" });
       expect(redirect.statusCode).toBe(404);
-      expect(redirect.body).toContain("Driver app download is not configured.");
+      expect(redirect.body).toContain("Routes app download is not configured.");
 
       const manifest = await app.inject({
         method: "GET",
-        url: "/driver-app/release/android",
+        url: "/routes-app/release/android",
       });
       expect(manifest.statusCode).toBe(404);
       expect(manifest.headers["cache-control"]).toBe("no-store");
       expect(readApiError(manifest)).toEqual({
-        code: "DRIVER_APP_RELEASE_UNAVAILABLE",
-        message: "Driver app Android release manifest is not configured.",
+        code: "ROUTES_APP_RELEASE_UNAVAILABLE",
+        message: "Routes app Android release manifest is not configured.",
       });
     } finally {
       await app.close();
@@ -6704,8 +6704,8 @@ async function createUiHarness(
   overrides: Partial<{
     actor: AdminCommerceActor;
     createConnection: ReturnType<typeof vi.fn>;
-    driverAppAndroidRelease: AdminCommerceConnectionsUiDependencies["driverAppAndroidRelease"];
-    driverAppDownloadUrl: string | null;
+    routesAppAndroidRelease: AdminCommerceConnectionsUiDependencies["routesAppAndroidRelease"];
+    routesAppDownloadUrl: string | null;
     deliveryCustomerService: AdminCommerceConnectionsUiDependencies["deliveryCustomerService"];
     driverService: AdminCommerceConnectionsUiDependencies["driverService"];
     geocodingService: AdminCommerceConnectionsUiDependencies["geocodingService"];
@@ -6802,13 +6802,13 @@ async function createUiHarness(
       subject: "web-operator",
     },
     loginSecret: webLoginSecret,
-    ...(overrides.driverAppDownloadUrl === null ||
-    overrides.driverAppDownloadUrl === undefined
+    ...(overrides.routesAppDownloadUrl === null ||
+    overrides.routesAppDownloadUrl === undefined
       ? {}
-      : { driverAppDownloadUrl: overrides.driverAppDownloadUrl }),
-    ...(overrides.driverAppAndroidRelease === undefined
+      : { routesAppDownloadUrl: overrides.routesAppDownloadUrl }),
+    ...(overrides.routesAppAndroidRelease === undefined
       ? {}
-      : { driverAppAndroidRelease: overrides.driverAppAndroidRelease }),
+      : { routesAppAndroidRelease: overrides.routesAppAndroidRelease }),
     ...(overrides.geocodingService === undefined
       ? {}
       : { geocodingService: overrides.geocodingService }),

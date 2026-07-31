@@ -45,7 +45,7 @@ Remaining owner/legal work before final publication:
 1. Confirm the legal operator name, support/privacy email, retention wording,
    and data storage region. Configure the finalized contact through
    `PRIVACY_CONTACT_EMAIL`; do not hardcode personal email addresses in source.
-2. Confirm whether driver-app store privacy disclosures and this public privacy
+2. Confirm whether routes-app store privacy disclosures and this public privacy
    policy should share the same published URL or use separate mobile-store copy.
 3. Confirm any production processors for hosting, maps, geocoding, routing,
    proof-media storage, and scanning.

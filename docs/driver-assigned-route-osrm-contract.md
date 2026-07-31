@@ -66,4 +66,4 @@ Fallback behavior for missing/stale/unavailable cache:
 - Driver assigned-route repository tests: `tests/driver-assigned-route.repository.test.ts`
 - Driver runtime config tests: `tests/driver.dependencies.test.ts`
 - Route geometry policy docs: `docs/deployment/route-ops-osrm-geometry-policy.md`
-- App contract/legacy parser tests: `src/domain/route/assignedRoute.test.ts` in `clever-driver-app`
+- App contract/legacy parser tests: `src/domain/route/assignedRoute.test.ts` in `clever-routes-app`
