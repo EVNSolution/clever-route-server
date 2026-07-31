@@ -3,18 +3,23 @@ import {
   type GeocodingAddress,
   type GeocodingFailureCode,
   type GeocodingLookupResult,
+  type GeocodingPlaceCandidate,
   type GeocodingProvider,
   type GeocodingQuery,
   type GeocodingQueryShape,
   type GeocodingResult,
 } from './geocoding.types.js';
 
-export type GeocodingProviderPolicy = 'disabled' | 'private_nominatim_compatible' | 'public_nominatim';
+export type GeocodingProviderPolicy =
+  | 'disabled'
+  | 'private_nominatim_compatible'
+  | 'public_nominatim'
+  | 'vworld';
 
 export type GeocodingServiceOptions = {
   maxRetries?: number;
   minIntervalMs?: number;
-  mode: 'disabled' | 'nominatim_compatible';
+  mode: 'disabled' | 'nominatim_compatible' | 'vworld';
   persistentCacheEnabled?: boolean;
   provider?: GeocodingProvider;
   providerPolicy?: GeocodingProviderPolicy;
@@ -81,7 +86,11 @@ export class GeocodingService {
     this.provider = options.provider;
     this.providerPolicy =
       options.providerPolicy ??
-      (options.mode === 'disabled' ? 'disabled' : 'private_nominatim_compatible');
+      (options.mode === 'disabled'
+        ? 'disabled'
+        : options.mode === 'vworld'
+          ? 'vworld'
+          : 'private_nominatim_compatible');
     this.rateLimiter = options.rateLimiter ?? new SerializedGeocodingRateLimiter();
     this.requirePersistentCache = options.requirePersistentCache === true;
   }
@@ -121,7 +130,7 @@ export class GeocodingService {
     }
 
     const provider = this.provider;
-    const result = await this.runSerialized(async () => {
+    const lookupTask = async (): Promise<GeocodingResult> => {
       const state: ProviderCallState = { attemptCount: 0, queryShapes: [] };
       let sawInvalidResult = false;
       for (const lookupQuery of queries) {
@@ -160,11 +169,30 @@ export class GeocodingService {
         ok: false,
         queryShapes,
       } satisfies GeocodingResult;
-    });
+    };
+    const result =
+      this.providerPolicy === 'vworld'
+        ? await lookupTask()
+        : await this.runSerialized(lookupTask);
     if (result.ok || result.transient !== true) {
       this.cache.set(key, { cachedAt: Date.now(), result });
     }
     return result;
+  }
+
+  async searchPlaces(input: { limit?: number; text: string }): Promise<GeocodingPlaceCandidate[]> {
+    const text = input.text.normalize('NFKC').replace(/\s+/gu, ' ').trim();
+    if (
+      text === ''
+      || this.mode === 'disabled'
+      || this.provider?.searchPlaces === undefined
+    ) return [];
+
+    await this.waitForProviderRateLimit();
+    return this.provider.searchPlaces({
+      limit: Math.max(1, Math.min(10, Math.floor(input.limit ?? 10))),
+      text,
+    });
   }
 
   private async geocodeQuery(

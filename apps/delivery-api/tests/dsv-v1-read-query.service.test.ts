@@ -205,27 +205,94 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(secondQueryText).toContain('ORDER BY LOWER(COALESCE("canonicalName", id::text)) ASC, id ASC');
   });
 
-  test('scopes real and synthetic records through the related order shop', async () => {
+  test('scopes one record per delivery stop through the related order shop', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
       deliveryStop: { findMany: vi.fn(() => Promise.resolve([])) },
-      driverEvent: { findMany: vi.fn(() => Promise.resolve([])) },
     });
     const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-22T12:00:00.000Z'));
 
     await service.listRecords(adminPrincipal(), { serviceDate: '2026-07-22' });
 
-    expect(prisma.driverEvent.findMany).toHaveBeenCalledOnce();
-    const eventQuery = firstMockArg<DriverEventFindManyQuery>(prisma.driverEvent.findMany);
-    expect(eventQuery?.where?.shopId).toBe('shop-a');
-    expect(eventQuery?.where?.deliveryStop?.shopId).toBe('shop-a');
-    expect(eventQuery?.where?.deliveryStop?.order).toEqual({ shopId: 'shop-a' });
     expect(prisma.deliveryStop.findMany).toHaveBeenCalledOnce();
-    const syntheticQuery = firstMockArg<DeliveryStopFindManyQuery>(prisma.deliveryStop.findMany);
-    expect(syntheticQuery?.where?.shopId).toBe('shop-a');
-    expect(syntheticQuery?.where?.order).toEqual({ shopId: 'shop-a' });
-    expect(syntheticQuery?.where?.driverEvents?.none?.shopId).toBe('shop-a');
-    expect(syntheticQuery?.where?.driverEvents?.none?.eventType.in).toContain('STOP_DELIVERED');
+    const query = firstMockArg<DeliveryStopFindManyQuery>(prisma.deliveryStop.findMany);
+    expect(query?.where?.shopId).toBe('shop-a');
+    expect(query?.where?.order).toEqual({ shopId: 'shop-a' });
+  });
+
+  test('returns proof metadata and an ordered event timeline for each delivery record', async () => {
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      deliveryStop: {
+        findMany: vi.fn(() => Promise.resolve([{
+          address1: '퇴계로 131',
+          address2: '5층',
+          city: '서울 중구',
+          countryCode: 'KR',
+          dsvDispatchImportRows: [{
+            address: '서울 중구 퇴계로 131, 5층(충무로2가, 신일빌딩)',
+          }],
+          driverEvents: [{
+            driver: { displayName: '김도윤' },
+            eventType: 'STOP_DELIVERED',
+            id: 'event-1',
+            latitude: '37.5600000',
+            longitude: '126.9900000',
+            occurredAt: new Date('2026-07-22T01:00:00.000Z'),
+          }],
+          driverProofMedia: [{
+            contentType: 'image/jpeg',
+            deletedAt: null,
+            driver: { displayName: '김도윤' },
+            id: 'proof-1',
+            kind: 'PHOTO',
+            originalFilename: 'delivery.jpg',
+            sizeBytes: 2048,
+            source: 'CAMERA',
+            uploadedAt: new Date('2026-07-22T01:01:00.000Z'),
+          }],
+          id: 'stop-1',
+          order: {
+            currentRouteVersionId: null,
+            deliveryStatus: 'DELIVERED',
+            destination: { canonicalName: '명동 병원' },
+            id: 'order-1',
+            sellerOrderKey: 'SO-001',
+            sellerOrderSourceKind: 'DSV_DISPATCH_IMPORT',
+            sourceOrderNumber: null,
+          },
+          postalCode: '04536',
+          province: '서울특별시',
+          recipientName: '명동 병원',
+          routePlanStops: [],
+          status: 'DELIVERED',
+          updatedAt: new Date('2026-07-22T01:02:00.000Z'),
+        }])),
+      },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-22T12:00:00.000Z'));
+
+    const result = await service.listRecords(adminPrincipal(), { serviceDate: '2026-07-22' });
+    expect(result.items[0]?.destinationAddress).toBe('서울 중구 퇴계로 131, 5층(충무로2가, 신일빌딩)');
+    expect(result).toMatchObject({
+      items: [{
+        eventRows: [{
+          driverDisplayName: '김도윤',
+          eventId: 'event-1',
+          eventType: 'STOP_DELIVERED',
+          latitude: 37.56,
+          longitude: 126.99,
+        }],
+        proofRows: [{
+          contentType: 'image/jpeg',
+          driverDisplayName: '김도윤',
+          proofId: 'proof-1',
+          sizeBytes: 2048,
+        }],
+        sellerOrderId: 'order-1',
+        sellerOrderKey: 'SO-001',
+      }],
+    });
   });
 
   test('management cursors bind endpoint-specific frozen sort identities', async () => {
@@ -316,7 +383,6 @@ describe('PrismaDsvV1ReadQueryService', () => {
     const prisma = prismaMock({
       dsvVehicleDriverAssignment: { findMany: vi.fn(() => Promise.resolve([
         { driverId: 'driver-a', id: 'assignment-a', vehicleId: 'vehicle-a' },
-        { driverId: 'driver-b', id: 'assignment-b', vehicleId: 'vehicle-a' },
         { driverId: 'driver-c', id: 'assignment-c', vehicleId: 'vehicle-b' },
       ])) },
       vehicle: { findMany: vi.fn(() => Promise.resolve([
@@ -352,7 +418,6 @@ describe('PrismaDsvV1ReadQueryService', () => {
         displayName: 'Alpha Vehicle',
         driverAssignments: [
           { assignmentId: 'assignment-a', driverId: 'driver-a' },
-          { assignmentId: 'assignment-b', driverId: 'driver-b' },
         ],
         status: 'ACTIVE',
         telematicsCapabilities: ['LOCATION', 'TEMPERATURE', 'TACHOMETER'],
@@ -378,6 +443,28 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(JSON.stringify(result.items.flatMap((item) => item.driverAssignments))).not.toMatch(
       /kind|displayName|phone|vehicleId/u
     );
+  });
+
+  test('driver and vehicle management reads are limited to DSV profiled resources', async () => {
+    const driversPrisma = prismaMock({
+      driver: { findMany: vi.fn(() => Promise.resolve([])) },
+    });
+    const vehiclesPrisma = prismaMock({
+      dsvVehicleDriverAssignment: { findMany: vi.fn(() => Promise.resolve([])) },
+      vehicle: { findMany: vi.fn(() => Promise.resolve([])) },
+    });
+
+    await new PrismaDsvV1ReadQueryService(driversPrisma as never).listDrivers(adminPrincipal());
+    await new PrismaDsvV1ReadQueryService(vehiclesPrisma as never).listVehicles(adminPrincipal());
+
+    expect(firstMockArg<OrderFindManyQuery>(driversPrisma.driver.findMany)?.where).toMatchObject({
+      dsvProfile: { isNot: null },
+      shopId: 'shop-a',
+    });
+    expect(firstMockArg<OrderFindManyQuery>(vehiclesPrisma.vehicle.findMany)?.where).toMatchObject({
+      dsvProfile: { isNot: null },
+      shopId: 'shop-a',
+    });
   });
 
   test('reads ETA only from canonical RoutePlanStop fields and summarizes proof/event evidence', async () => {
@@ -530,15 +617,7 @@ type OrderFindManyQuery = {
 
 type DeliveryStopFindManyQuery = {
   where?: {
-    driverEvents?: { none?: { eventType: { in: string[] }; shopId: string } };
     order?: { shopId: string };
-    shopId?: string;
-  };
-};
-
-type DriverEventFindManyQuery = {
-  where?: {
-    deliveryStop?: { order?: { shopId: string }; shopId?: string };
     shopId?: string;
   };
 };

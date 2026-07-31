@@ -146,11 +146,23 @@ export type DsvV1ControlSummaryInput = {
 export type DsvV1ControlSummaryDto = DsvV1ControlSummaryInput;
 
 export type DsvV1ProofRowInput = {
+  contentType?: string;
   deletedAt?: Date | string | null;
+  driverDisplayName?: string | null;
+  kind?: string;
+  originalFilename?: string | null;
+  proofId?: string;
+  sizeBytes?: number;
+  source?: string;
+  uploadedAt?: Date | string;
 };
 
 export type DsvV1EventRowInput = {
+  driverDisplayName?: string | null;
+  eventId?: string;
   eventType: string;
+  latitude?: number | null;
+  longitude?: number | null;
   occurredAt: Date | string;
 };
 
@@ -159,21 +171,45 @@ export type DsvV1EventSummaryDto = {
   type: string;
 };
 
+export type DsvV1RecordEventDto = DsvV1EventSummaryDto & {
+  driverDisplayName?: string;
+  eventId: string;
+  latitude?: number;
+  longitude?: number;
+};
+
+export type DsvV1RecordProofDto = {
+  contentType: string;
+  driverDisplayName?: string;
+  kind: string;
+  originalFilename?: string;
+  proofId: string;
+  sizeBytes: number;
+  source: string;
+  status: 'AVAILABLE' | 'EXPIRED';
+  uploadedAt: string;
+};
+
 export type DsvV1RecordRow = DsvV1RoutePlanStopEtaInput & {
   deliveryStatus: string;
+  destinationAddress?: string | null;
   destinationDisplayName: string;
   eventRows?: readonly DsvV1EventRowInput[];
   proofRows?: readonly DsvV1ProofRowInput[];
+  sellerOrderId: string;
   sellerOrderKey: string;
 };
 
 export type DsvV1RecordDto = {
   deliveryStatus: string;
+  destinationAddress?: string;
   destinationDisplayName: string;
   estimatedArrivalAt?: string;
   etaStatus: DsvV1EtaStatus;
-  eventSummary: DsvV1EventSummaryDto[];
+  eventSummary: DsvV1RecordEventDto[];
+  proofs: DsvV1RecordProofDto[];
   proofStatus: DsvV1EmittedProofStatus;
+  sellerOrderId: string;
   sellerOrderKey: string;
 };
 
@@ -307,6 +343,11 @@ const allowedPublicEventTypes = new Set([
   'STOP_DELIVERED',
   'STOP_FAILED',
 ]);
+const allowedRecordEventTypes = new Set([
+  ...allowedPublicEventTypes,
+  'NOTE_ADDED',
+  'PICKUP_COMPLETED',
+]);
 
 export function toDsvV1SuccessEnvelope<TData>(data: TData, requestId: string): DsvV1SuccessEnvelope<TData> {
   return {
@@ -397,11 +438,16 @@ export function mapDsvV1ControlSummary(input: DsvV1ControlSummaryInput): DsvV1Co
 export function mapDsvV1Record(row: DsvV1RecordRow): DsvV1RecordDto {
   return {
     deliveryStatus: row.deliveryStatus,
+    ...(row.destinationAddress === undefined || row.destinationAddress === null
+      ? {}
+      : { destinationAddress: row.destinationAddress }),
     destinationDisplayName: row.destinationDisplayName,
     ...optionalIso('estimatedArrivalAt', row.estimatedArrivalAt),
     etaStatus: row.etaStatus,
-    eventSummary: mapDsvV1EventSummary(row.eventRows ?? []),
+    eventSummary: mapDsvV1RecordEvents(row.eventRows ?? []),
+    proofs: mapDsvV1RecordProofs(row.proofRows ?? []),
     proofStatus: deriveDsvV1ProofStatus(row.proofRows ?? []),
+    sellerOrderId: row.sellerOrderId,
     sellerOrderKey: row.sellerOrderKey,
   };
 }
@@ -522,6 +568,44 @@ export function mapDsvV1EventSummary(rows: readonly DsvV1EventRowInput[]): DsvV1
     return [{
       occurredAt: toIsoDateTime(row.occurredAt),
       type: row.eventType,
+    }];
+  });
+}
+
+export function mapDsvV1RecordEvents(rows: readonly DsvV1EventRowInput[]): DsvV1RecordEventDto[] {
+  return rows.flatMap((row) => {
+    if (!allowedRecordEventTypes.has(row.eventType) || row.eventId === undefined) return [];
+    return [{
+      ...(row.driverDisplayName === undefined || row.driverDisplayName === null ? {} : { driverDisplayName: row.driverDisplayName }),
+      eventId: row.eventId,
+      ...(row.latitude === undefined || row.latitude === null ? {} : { latitude: row.latitude }),
+      ...(row.longitude === undefined || row.longitude === null ? {} : { longitude: row.longitude }),
+      occurredAt: toIsoDateTime(row.occurredAt),
+      type: row.eventType,
+    }];
+  });
+}
+
+export function mapDsvV1RecordProofs(rows: readonly DsvV1ProofRowInput[]): DsvV1RecordProofDto[] {
+  return rows.flatMap((row) => {
+    if (
+      row.contentType === undefined
+      || row.kind === undefined
+      || row.proofId === undefined
+      || row.sizeBytes === undefined
+      || row.source === undefined
+      || row.uploadedAt === undefined
+    ) return [];
+    return [{
+      contentType: row.contentType,
+      ...(row.driverDisplayName === undefined || row.driverDisplayName === null ? {} : { driverDisplayName: row.driverDisplayName }),
+      kind: row.kind,
+      ...(row.originalFilename === undefined || row.originalFilename === null ? {} : { originalFilename: row.originalFilename }),
+      proofId: row.proofId,
+      sizeBytes: row.sizeBytes,
+      source: row.source,
+      status: row.deletedAt === null || row.deletedAt === undefined ? 'AVAILABLE' : 'EXPIRED',
+      uploadedAt: toIsoDateTime(row.uploadedAt),
     }];
   });
 }

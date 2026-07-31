@@ -47,6 +47,11 @@ type DsvV1PublicEventType =
   | 'STOP_ARRIVED'
   | 'STOP_DELIVERED'
   | 'STOP_FAILED';
+type DsvV1RecordEventType =
+  | DsvV1PublicEventType
+  | 'NOTE_ADDED'
+  | 'PICKUP_COMPLETED'
+  | 'ROUTE_PAUSED';
 
 export type DsvV1PaginatedRead<T> = {
   items: T[];
@@ -155,7 +160,7 @@ type DestinationManagementRow = {
 };
 
 const dispatchSort = 'serviceDate:asc,sellerOrderKey:asc,orderId:asc';
-const recordsSort = 'occurredAt:desc,eventId:desc';
+const recordsSort = 'updatedAt:desc,stopId:desc';
 const managementSortByEndpoint = {
   conditions: 'name:asc,id:asc',
   customers: 'displayName:asc,id:asc',
@@ -169,6 +174,12 @@ const eventAllowlist = new Set<DsvV1PublicEventType>([
   'STOP_ARRIVED',
   'STOP_DELIVERED',
   'STOP_FAILED',
+]);
+const recordEventAllowlist = new Set<DsvV1RecordEventType>([
+  ...eventAllowlist,
+  'NOTE_ADDED',
+  'PICKUP_COMPLETED',
+  'ROUTE_PAUSED',
 ]);
 
 export class DsvV1ReadQueryError extends Error {
@@ -333,40 +344,21 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       sort: recordsSort,
     };
     const page = readCursor(input.cursor, context);
-    const eventRows = await this.prisma.driverEvent.findMany({
-      orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
-      select: recordEventSelect(principal.shopId),
+    const rows = await this.prisma.deliveryStop.findMany({
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      select: recordStopSelect(principal.shopId),
       take: limit + 1,
       where: {
-        eventType: { in: [...eventAllowlist] },
+        deliveryDate: serviceDateAsDbDate(serviceDate),
+        order: { shopId: principal.shopId },
         shopId: principal.shopId,
-        ...recordEventCursorWhere(page.cursor),
-        deliveryStop: {
-          deliveryDate: serviceDateAsDbDate(serviceDate),
-          order: { shopId: principal.shopId },
-          shopId: principal.shopId,
-        },
+        ...recordStopCursorWhere(page.cursor),
       },
     });
-    const flattened = eventRows.map(toEventRecordRow);
-    if (flattened.length <= limit && shouldReadSyntheticRecords(page.cursor)) {
-      const syntheticRows = await this.prisma.deliveryStop.findMany({
-        orderBy: [{ id: 'desc' }],
-        select: recordStopSelect(principal.shopId),
-        take: limit + 1 - flattened.length,
-        where: {
-          deliveryDate: serviceDateAsDbDate(serviceDate),
-          order: { shopId: principal.shopId },
-          shopId: principal.shopId,
-          ...syntheticRecordCursorWhere(page.cursor),
-          driverEvents: { none: { eventType: { in: [...eventAllowlist] }, shopId: principal.shopId } },
-        },
-      });
-      flattened.push(...syntheticRows.map(toSyntheticRecordRow));
-    }
+    const records = rows.map(toRecordRow);
     return {
-      items: flattened.slice(0, limit).map(stripRecordCursor),
-      page: toPage(nextRecordCursor(flattened, limit, context)),
+      items: records.slice(0, limit).map(stripRecordCursor),
+      page: toPage(nextRecordCursor(records, limit, context)),
     };
   }
 
@@ -379,7 +371,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         orderBy: [{ displayName: 'asc' }, { id: 'asc' }],
         select: { displayName: true, id: true, phone: true, status: true },
         take: page.limit + 1,
-        where: { shopId: principal.shopId, ...labelCursorWhere(page.cursor, 'displayName') },
+        where: { dsvProfile: { isNot: null }, shopId: principal.shopId, ...labelCursorWhere(page.cursor, 'displayName') },
       });
       return rows.map((row) => ({
         displayName: row.displayName,
@@ -407,7 +399,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
           vehicleType: true,
         },
         take: page.limit + 1,
-        where: { shopId: principal.shopId, ...labelCursorWhere(page.cursor, 'label') },
+        where: { dsvProfile: { isNot: null }, shopId: principal.shopId, ...labelCursorWhere(page.cursor, 'label') },
       });
       const assignmentsByVehicleId = await this.listVehicleDriverAssignments(
         principal.shopId,
@@ -600,14 +592,35 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
   }
 }
 
-const proofMediaSelect = {
+const proofStatusSelect = {
   deletedAt: true,
   id: true,
+} satisfies Prisma.DriverProofMediaSelect;
+
+const recordProofMediaSelect = {
+  contentType: true,
+  deletedAt: true,
+  driver: { select: { displayName: true } },
+  id: true,
+  kind: true,
+  originalFilename: true,
+  sizeBytes: true,
+  source: true,
+  uploadedAt: true,
 } satisfies Prisma.DriverProofMediaSelect;
 
 const publicEventSelect = {
   eventType: true,
   id: true,
+  occurredAt: true,
+} satisfies Prisma.DriverEventSelect;
+
+const recordEventSelect = {
+  driver: { select: { displayName: true } },
+  eventType: true,
+  id: true,
+  latitude: true,
+  longitude: true,
   occurredAt: true,
 } satisfies Prisma.DriverEventSelect;
 
@@ -645,7 +658,7 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
           where: { eventType: { in: [...eventAllowlist] }, shopId },
         },
         driverProofMedia: {
-          select: proofMediaSelect,
+          select: proofStatusSelect,
           where: { shopId },
         },
         id: true,
@@ -683,7 +696,26 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
 
 function recordStopSelect(shopId: string) {
   return {
-    driverProofMedia: { select: proofMediaSelect, where: { shopId } },
+    address1: true,
+    address2: true,
+    city: true,
+    countryCode: true,
+    dsvDispatchImportRows: {
+      orderBy: [{ appliedAt: 'desc' }, { createdAt: 'desc' }],
+      select: { address: true },
+      take: 1,
+      where: { shopId, status: 'APPLIED' },
+    },
+    driverEvents: {
+      orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+      select: recordEventSelect,
+      where: { eventType: { in: [...recordEventAllowlist] }, shopId },
+    },
+    driverProofMedia: {
+      orderBy: [{ uploadedAt: 'desc' }, { id: 'desc' }],
+      select: recordProofMediaSelect,
+      where: { shopId },
+    },
     id: true,
     order: {
       select: {
@@ -696,30 +728,21 @@ function recordStopSelect(shopId: string) {
         sourceOrderNumber: true,
       },
     },
+    postalCode: true,
+    province: true,
     recipientName: true,
     routePlanStops: {
       orderBy: [{ createdAt: 'desc' }],
       select: routePlanStopSelect,
     },
     status: true,
+    updatedAt: true,
   } satisfies Prisma.DeliveryStopSelect;
-}
-
-function recordEventSelect(shopId: string) {
-  return {
-    eventType: true,
-    id: true,
-    occurredAt: true,
-    deliveryStop: {
-      select: recordStopSelect(shopId),
-    },
-  } satisfies Prisma.DriverEventSelect;
 }
 
 type CustomerDeliveryOrderRow = Prisma.OrderGetPayload<{ select: ReturnType<typeof customerDeliveryOrderSelect> }>;
 type RecordStopRow = Prisma.DeliveryStopGetPayload<{ select: ReturnType<typeof recordStopSelect> }>;
-type RecordEventRow = Prisma.DriverEventGetPayload<{ select: ReturnType<typeof recordEventSelect> }>;
-type RecordCursorRow = DsvV1RecordRow & { cursorEventId: string };
+type RecordCursorRow = DsvV1RecordRow & { cursorStopId: string; cursorUpdatedAt: Date };
 
 function toCustomerDeliveryInquiryRow(row: CustomerDeliveryOrderRow): DsvV1CustomerDeliveryInquiryRow {
   const stop = row.deliveryStops[0] ?? null;
@@ -760,28 +783,23 @@ function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow): DsvV1SellerOrde
   };
 }
 
-function toSyntheticRecordRow(stop: RecordStopRow): RecordCursorRow {
+function toRecordRow(stop: RecordStopRow): RecordCursorRow {
   const eta = selectCanonicalEta(stop.routePlanStops, stop.order.currentRouteVersionId);
+  const sourceAddress = stop.dsvDispatchImportRows[0]?.address.trim();
   return {
-    cursorEventId: syntheticRecordId(stop.id),
+    cursorStopId: stop.id,
+    cursorUpdatedAt: stop.updatedAt,
     deliveryStatus: stop.order.deliveryStatus,
+    destinationAddress: sourceAddress === undefined || sourceAddress === ''
+      ? deliveryStopAddressLabel(stop)
+      : sourceAddress,
     destinationDisplayName: stop.order.destination?.canonicalName ?? stop.recipientName ?? '',
     ...etaFields(eta),
     etaStatus: fallbackEtaStatus(stop.order.currentRouteVersionId, eta),
-    eventRows: [],
-    proofRows: stop.driverProofMedia.map(toDtoProofRow),
+    eventRows: stop.driverEvents.map(toRecordDtoEventRow),
+    proofRows: stop.driverProofMedia.map(toRecordDtoProofRow),
+    sellerOrderId: stop.order.id,
     sellerOrderKey: stop.order.sellerOrderKey ?? stop.order.id,
-  };
-}
-
-function toEventRecordRow(row: RecordEventRow): RecordCursorRow {
-  if (row.deliveryStop === null) {
-    throw new DsvV1ReadQueryError('DEPENDENCY_UNAVAILABLE', 'Record event is missing its delivery stop.');
-  }
-  return {
-    ...toSyntheticRecordRow(row.deliveryStop),
-    cursorEventId: row.id,
-    eventRows: [toDtoEventRow(row)],
   };
 }
 
@@ -807,6 +825,37 @@ function toDtoEventRow(row: { eventType: string; id: string; occurredAt: Date })
   }
   return {
     eventType: row.eventType,
+    occurredAt: row.occurredAt,
+  };
+}
+
+function toRecordDtoProofRow(row: RecordStopRow['driverProofMedia'][number]): DsvV1ProofRowInput {
+  return {
+    contentType: row.contentType,
+    deletedAt: row.deletedAt,
+    driverDisplayName: row.driver?.displayName ?? null,
+    kind: row.kind,
+    originalFilename: row.originalFilename,
+    proofId: row.id,
+    sizeBytes: row.sizeBytes,
+    source: row.source,
+    uploadedAt: row.uploadedAt,
+  };
+}
+
+function toRecordDtoEventRow(row: RecordStopRow['driverEvents'][number]): DsvV1EventRowInput {
+  if (!recordEventAllowlist.has(row.eventType as DsvV1RecordEventType)) {
+    throw new DsvV1ReadQueryError('DEPENDENCY_UNAVAILABLE', 'Unexpected record event type selected.', {
+      eventId: row.id,
+      eventType: row.eventType,
+    });
+  }
+  return {
+    driverDisplayName: row.driver?.displayName ?? null,
+    eventId: row.id,
+    eventType: row.eventType,
+    latitude: decimalToNumber(row.latitude),
+    longitude: decimalToNumber(row.longitude),
     occurredAt: row.occurredAt,
   };
 }
@@ -915,11 +964,10 @@ function nextRecordCursor(rows: RecordCursorRow[], limit: number, context: Curso
   if (rows.length <= limit) return null;
   const last = rows[limit - 1];
   if (last === undefined) return null;
-  const lastEvent = last.eventRows?.[0];
   return encodeCursor(context, {
-    eventId: last.cursorEventId,
-    occurredAt: toCursorDate(lastEvent?.occurredAt),
+    stopId: last.cursorStopId,
     serviceDate: context.serviceDate ?? null,
+    updatedAt: last.cursorUpdatedAt.toISOString(),
   });
 }
 
@@ -974,9 +1022,10 @@ function deliveryStopAddressLabel(value: {
   postalCode: string | null;
   province: string | null;
 }): string | null {
-  const parts = [value.address1, value.address2, value.city, value.province, value.postalCode, value.countryCode]
+  const parts = [value.address1, value.address2, value.city, value.province]
     .filter((part): part is string => typeof part === 'string' && part.trim() !== '')
-    .map((part) => part.trim());
+    .map((part) => part.trim())
+    .filter((part, index, all) => all.findIndex((candidate) => candidate === part) === index);
   return parts.length === 0 ? null : parts.join(', ');
 }
 
@@ -999,11 +1048,6 @@ function decimalToNumber(value: unknown): number | null {
     }
   }
   return null;
-}
-
-function toCursorDate(value: Date | string | undefined): string {
-  if (value === undefined) return '';
-  return value instanceof Date ? value.toISOString() : value;
 }
 
 function orderCursorWhere(cursor: CursorPayload | null): Prisma.OrderWhereInput {
@@ -1029,46 +1073,23 @@ function orderCursorWhere(cursor: CursorPayload | null): Prisma.OrderWhereInput 
   };
 }
 
-function recordEventCursorWhere(cursor: CursorPayload | null): Prisma.DriverEventWhereInput {
+function recordStopCursorWhere(cursor: CursorPayload | null): Prisma.DeliveryStopWhereInput {
   if (cursor === null) return {};
-  const occurredAt = cursor.last.occurredAt;
-  const eventId = cursor.last.eventId;
-  if (occurredAt === undefined || eventId === undefined || occurredAt === null || eventId === null) {
+  const updatedAt = cursor.last.updatedAt;
+  const stopId = cursor.last.stopId;
+  if (updatedAt === undefined || stopId === undefined || updatedAt === null || stopId === null) {
     throw new DsvV1ReadQueryError('BAD_REQUEST', 'cursor is missing record position.');
   }
-  if (occurredAt === '') return { id: { equals: neverMatchUuid } };
-  const occurredAtDate = new Date(occurredAt);
-  if (Number.isNaN(occurredAtDate.getTime())) {
+  const updatedAtDate = new Date(updatedAt);
+  if (Number.isNaN(updatedAtDate.getTime())) {
     throw new DsvV1ReadQueryError('BAD_REQUEST', 'cursor has invalid record position.');
   }
   return {
     OR: [
-      { occurredAt: { lt: occurredAtDate } },
-      { occurredAt: occurredAtDate, id: { lt: eventId } },
+      { updatedAt: { lt: updatedAtDate } },
+      { updatedAt: updatedAtDate, id: { lt: stopId } },
     ],
   };
-}
-
-function shouldReadSyntheticRecords(cursor: CursorPayload | null): boolean {
-  if (cursor === null) return true;
-  const occurredAt = cursor.last.occurredAt;
-  const eventId = cursor.last.eventId;
-  if (occurredAt === undefined || eventId === undefined || occurredAt === null || eventId === null) {
-    throw new DsvV1ReadQueryError('BAD_REQUEST', 'cursor is missing record position.');
-  }
-  return true;
-}
-
-function syntheticRecordCursorWhere(cursor: CursorPayload | null): Prisma.DeliveryStopWhereInput {
-  if (cursor === null) return {};
-  const occurredAt = cursor.last.occurredAt;
-  const eventId = cursor.last.eventId;
-  if (occurredAt === undefined || eventId === undefined || occurredAt === null || eventId === null) {
-    throw new DsvV1ReadQueryError('BAD_REQUEST', 'cursor is missing record position.');
-  }
-  if (occurredAt !== '') return {};
-  const stopId = eventId.startsWith(syntheticRecordPrefix) ? eventId.slice(syntheticRecordPrefix.length) : eventId;
-  return { id: { lt: stopId } };
 }
 
 function labelCursorWhere(
@@ -1105,16 +1126,10 @@ function effectiveLabelCursorSql(cursor: CursorPayload | null, effectiveLabelExp
 }
 
 function stripRecordCursor(row: RecordCursorRow): DsvV1RecordRow {
-  const { cursorEventId, ...record } = row;
-  void cursorEventId;
+  const { cursorStopId, cursorUpdatedAt, ...record } = row;
+  void cursorStopId;
+  void cursorUpdatedAt;
   return record;
-}
-
-const syntheticRecordPrefix = 'synthetic:';
-const neverMatchUuid = '00000000-0000-0000-0000-000000000000';
-
-function syntheticRecordId(stopId: string): string {
-  return `${syntheticRecordPrefix}${stopId}`;
 }
 
 function resolveWindowDate(window: DsvV1DateWindow, dates: DsvV1TenantDateResolution): string {

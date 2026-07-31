@@ -141,6 +141,7 @@ describe('API documentation routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain('required: [displayName, driverAssignments, vehicleId]');
+      expect(response.body).toContain('maxItems: 1');
       expect(response.body).toContain('$ref: \'#/components/schemas/DsvV1VehicleDriverAssignmentListItem\'');
       expect(response.body).toContain('DsvV1VehicleDriverAssignmentListItem:');
       expect(response.body).toContain('required: [assignmentId, driverId]');

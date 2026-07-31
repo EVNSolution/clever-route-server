@@ -209,7 +209,7 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
       deliveryStops: 1,
       destinations: 1,
       orders: 1,
-      routeGroupingOrders: 0,
+      routeGroupingOrders: 1,
       routePlanStops: 0,
       routePlans: 0,
     });
@@ -219,6 +219,39 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     expect(row.sellerOrderId).toBe(result.rows[0]?.sellerOrderId);
     expect(row.deliveryStopId).toBe(result.rows[0]?.deliveryStopId);
     expect(row.applyReceiptId).toBe(result.receiptId);
+  });
+
+  test('applies geocoded rows after coordinates are normalized to database precision', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'apply-geocoded-precision');
+    const service = new PrismaDsvDispatchImportService(prisma, {
+      addressCanonicalizer: {
+        resolve: ({ address }) => Promise.resolve({
+          address: '서울특별시 강남구 테헤란로 152',
+          detailAddress: null,
+          jibunAddress: '서울특별시 강남구 역삼동 737',
+          latitude: 37.500643012345,
+          longitude: 127.036545098765,
+          postalCode: '06236',
+          rawAddress: address,
+          status: 'RESOLVED',
+        }),
+      },
+    });
+    const input = {
+      ...fixture.input,
+      rows: fixture.input.rows.map((row) => ({ ...row, latitude: null, longitude: null })),
+    };
+
+    const staged = await service.commit({ ...input, actor: 'g003-test', shopDomain: fixture.shopDomain });
+    const result = await service.apply(applyInput(
+      fixture.shopDomain,
+      staged.id,
+      staged.sourceHash ?? '',
+      'cmd-apply-geocoded-precision',
+    ));
+
+    expect(staged.rows[0]).toMatchObject({ latitude: 37.500643, longitude: 127.0365451 });
+    expect(result.summary).toEqual({ appliedRows: 1, newRows: 1, noOpRows: 0 });
   });
 
   test('applies and replays a valid 500-row max batch within the transaction budget', async () => {
@@ -270,7 +303,7 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
       deliveryStops: 500,
       destinations: 500,
       orders: 500,
-      routeGroupingOrders: 0,
+      routeGroupingOrders: 500,
       routePlanStops: 0,
       routePlans: 0,
     });
@@ -503,7 +536,7 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
       deliveryStops: 1,
       destinations: 1,
       orders: 1,
-      routeGroupingOrders: 0,
+      routeGroupingOrders: 1,
       routePlanStops: 0,
       routePlans: 0,
     });
@@ -707,7 +740,7 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
       deliveryStops: 2,
       destinations: 1,
       orders: 2,
-      routeGroupingOrders: 0,
+      routeGroupingOrders: 2,
       routePlanStops: 0,
       routePlans: 0,
     });
@@ -750,7 +783,7 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
       deliveryStops: 8,
       destinations: 1,
       orders: 8,
-      routeGroupingOrders: 0,
+      routeGroupingOrders: 8,
       routePlanStops: 0,
       routePlans: 0,
     });
@@ -770,7 +803,7 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     await expect(canonicalCounts(prisma, fixture.shopId)).resolves.toMatchObject({
       deliveryStops: 1,
       orders: 1,
-      routeGroupingOrders: 0,
+      routeGroupingOrders: 1,
       routePlanStops: 0,
       routePlans: 0,
     });

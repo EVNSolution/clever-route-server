@@ -75,6 +75,7 @@ export type AdminCommerceConnectionsRuntimeEnv = Partial<
     | 'GEOCODING_SEARCH_URL'
     | 'GEOCODING_TIMEOUT_MS'
     | 'GEOCODING_USER_AGENT'
+    | 'VWORLD_API_KEY'
     | 'FIREBASE_PROJECT_ID'
     | 'GOOGLE_APPLICATION_CREDENTIALS'
     | 'OSRM_BASE_URL'

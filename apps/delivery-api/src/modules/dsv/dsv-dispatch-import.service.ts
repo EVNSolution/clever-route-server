@@ -4,6 +4,7 @@ import { Prisma, type PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import type {
+  DsvAddressSuggestion,
   DsvAddressCanonicalizer,
   DsvAddressResolutionStatus,
 } from './dsv-address-canonicalization.js';
@@ -22,6 +23,7 @@ import {
 export type DsvDispatchImportSourceRow = {
   address: string;
   addressResolutionStatus?: DsvAddressResolutionStatus;
+  addressSuggestions?: DsvAddressSuggestion[];
   conditionCode: string;
   customerCode: string;
   detailAddress?: string | null;
@@ -418,6 +420,15 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
             sellerOrderKey: row.sellerOrderKey,
           });
         }
+        await this.ensureDispatchGrouping(
+          tx,
+          shop.id,
+          input.importId,
+          lockedImport.fileName,
+          lockedImport.planDate,
+          input.actor,
+          resultRows,
+        );
 
         const result: DsvDispatchImportApplyResult = {
           commandId: input.commandId,
@@ -768,23 +779,41 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     rows: DsvDispatchImportSourceRow[],
     shopDomain: string,
   ): Promise<DsvDispatchImportSourceRow[]> {
+    const persistenceSafeRows = rows.map(withPersistenceSafeCoordinates);
     const canonicalizer = this.options.addressCanonicalizer;
-    if (canonicalizer === undefined) return rows;
+    if (canonicalizer === undefined) return persistenceSafeRows;
 
     const resolutions = new Map<string, Awaited<ReturnType<DsvAddressCanonicalizer['resolve']>>>();
-    for (const row of rows) {
+    const pendingAddresses = new Map<string, { destinationName: string; rawAddress: string }>();
+    for (const row of persistenceSafeRows) {
       if (row.addressResolutionStatus === 'RESOLVED' && row.postalCode !== undefined) continue;
       const rawAddress = row.rawAddress ?? row.address;
-      const key = rawAddress.trim().replace(/\s+/gu, ' ').toLowerCase();
-      if (!resolutions.has(key)) {
-        resolutions.set(key, await canonicalizer.resolve({ address: rawAddress, shopDomain }));
+      const key = addressResolutionKey(rawAddress, row.destinationName);
+      if (!pendingAddresses.has(key)) {
+        pendingAddresses.set(key, { destinationName: row.destinationName, rawAddress });
       }
     }
+    const entries = [...pendingAddresses.entries()];
+    let nextEntryIndex = 0;
+    const workerCount = Math.min(10, entries.length);
+    await Promise.all(Array.from({ length: workerCount }, async () => {
+      while (nextEntryIndex < entries.length) {
+        const entry = entries[nextEntryIndex];
+        nextEntryIndex += 1;
+        if (entry === undefined) return;
+        const [key, pending] = entry;
+        resolutions.set(key, await canonicalizer.resolve({
+          address: pending.rawAddress,
+          destinationName: pending.destinationName,
+          shopDomain,
+        }));
+      }
+    }));
 
-    return rows.map((row) => {
+    return persistenceSafeRows.map((row) => {
       if (row.addressResolutionStatus === 'RESOLVED' && row.postalCode !== undefined) return row;
       const rawAddress = row.rawAddress ?? row.address;
-      const key = rawAddress.trim().replace(/\s+/gu, ' ').toLowerCase();
+      const key = addressResolutionKey(rawAddress, row.destinationName);
       const resolution = resolutions.get(key);
       if (resolution === undefined) return row;
       const hasSourceCoordinates = row.latitude !== null && row.longitude !== null;
@@ -792,13 +821,16 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
       return {
         ...row,
         address: resolution.address,
+        ...(resolution.suggestions === undefined
+          ? {}
+          : { addressSuggestions: resolution.suggestions }),
         addressResolutionStatus: resolution.status === 'RESOLVED' && (hasResolvedCoordinates || hasSourceCoordinates)
           ? 'RESOLVED'
           : resolution.status,
         detailAddress: resolution.detailAddress,
         jibunAddress: resolution.jibunAddress,
-        latitude: hasResolvedCoordinates ? resolution.latitude : row.latitude,
-        longitude: hasResolvedCoordinates ? resolution.longitude : row.longitude,
+        latitude: persistenceSafeCoordinate(hasResolvedCoordinates ? resolution.latitude : row.latitude),
+        longitude: persistenceSafeCoordinate(hasResolvedCoordinates ? resolution.longitude : row.longitude),
         postalCode: resolution.postalCode,
         rawAddress: resolution.rawAddress,
       };
@@ -924,6 +956,57 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
       destinationId: order.destinationId ?? row.destinationId ?? '',
       sellerOrderId: order.id,
     };
+  }
+
+  private async ensureDispatchGrouping(
+    tx: Tx,
+    shopId: string,
+    importId: string,
+    fileName: string,
+    planDate: Date,
+    actor: string,
+    rows: DsvDispatchImportApplyResult['rows'],
+  ): Promise<void> {
+    const orderIds = rows.map((row) => row.sellerOrderId);
+    const ownedOrderIds = new Set((await tx.routeGroupingOrder.findMany({
+      select: { orderId: true },
+      where: { orderId: { in: orderIds }, shopId },
+    })).map((row) => row.orderId));
+    const unownedRows = rows.filter((row) => !ownedOrderIds.has(row.sellerOrderId));
+    if (unownedRows.length === 0) return;
+
+    const grouping = await tx.routeGrouping.create({
+      data: {
+        createdBy: actor,
+        name: fileName,
+        planDate,
+        routeScopeKey: `dsv-import:${importId}`,
+        serviceType: 'DSV_DISPATCH',
+        shopId,
+        status: 'READY',
+      },
+      select: { id: true },
+    });
+    await tx.routeGroupingVersion.create({
+      data: {
+        actor,
+        changeReason: 'DSV dispatch import apply',
+        groupingId: grouping.id,
+        shopId,
+        status: 'CURRENT',
+        version: 1,
+      },
+    });
+    await tx.routeGroupingOrder.createMany({
+      data: unownedRows.map((row, index) => ({
+        assignmentStatus: 'UNASSIGNED',
+        deliveryStopId: row.deliveryStopId,
+        groupingId: grouping.id,
+        orderId: row.sellerOrderId,
+        shopId,
+        sourceSequence: index + 1,
+      })),
+    });
   }
 
   private async recordFailedApplyAttempt(
@@ -1363,6 +1446,24 @@ function addressFingerprint(
   return createHash('sha256')
     .update(`${row.destinationName.trim().toUpperCase()}|${row.address.trim().toUpperCase()}${structuredSuffix}`, 'utf8')
     .digest('hex');
+}
+
+function withPersistenceSafeCoordinates(row: DsvDispatchImportSourceRow): DsvDispatchImportSourceRow {
+  return {
+    ...row,
+    latitude: persistenceSafeCoordinate(row.latitude),
+    longitude: persistenceSafeCoordinate(row.longitude),
+  };
+}
+
+function addressResolutionKey(rawAddress: string, destinationName: string): string {
+  const normalize = (value: string): string =>
+    value.trim().replace(/\s+/gu, ' ').toLowerCase();
+  return `${normalize(rawAddress)}|${normalize(destinationName)}`;
+}
+
+function persistenceSafeCoordinate(value: number | null): number | null {
+  return value === null ? null : Number(value.toFixed(7));
 }
 
 function sourceRowFromRecord(row: {

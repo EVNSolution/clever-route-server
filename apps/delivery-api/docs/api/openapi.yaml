@@ -205,7 +205,7 @@ paths:
   /api/dsv/v1/records:
     get:
       tags: [DSV API v1]
-      summary: Read delivery records, event summaries, and proof status
+      summary: Read delivery records with event and proof details
       operationId: listDsvV1Records
       x-source-file: src/routes/dsv-v1-read.routes.ts
       x-required-scopes: ['dsv:records:read']
@@ -2858,9 +2858,11 @@ components:
       additionalProperties: false
     DsvV1Record:
       type: object
-      required: [deliveryStatus, destinationDisplayName, etaStatus, eventSummary, proofStatus, sellerOrderKey]
+      required: [deliveryStatus, destinationDisplayName, etaStatus, eventSummary, proofs, proofStatus, sellerOrderId, sellerOrderKey]
       properties:
         deliveryStatus:
+          type: string
+        destinationAddress:
           type: string
         destinationDisplayName:
           type: string
@@ -2872,11 +2874,63 @@ components:
         eventSummary:
           type: array
           items:
-            $ref: '#/components/schemas/DsvV1EventSummary'
+            $ref: '#/components/schemas/DsvV1RecordEvent'
+        proofs:
+          type: array
+          items:
+            $ref: '#/components/schemas/DsvV1RecordProof'
         proofStatus:
           $ref: '#/components/schemas/DsvV1ProofStatus'
+        sellerOrderId:
+          type: string
         sellerOrderKey:
           type: string
+      additionalProperties: false
+    DsvV1RecordEvent:
+      type: object
+      required: [eventId, occurredAt, type]
+      properties:
+        driverDisplayName:
+          type: string
+        eventId:
+          type: string
+        latitude:
+          type: number
+          format: double
+        longitude:
+          type: number
+          format: double
+        occurredAt:
+          type: string
+          format: date-time
+        type:
+          type: string
+      additionalProperties: false
+    DsvV1RecordProof:
+      type: object
+      required: [contentType, kind, proofId, sizeBytes, source, status, uploadedAt]
+      properties:
+        contentType:
+          type: string
+        driverDisplayName:
+          type: string
+        kind:
+          type: string
+        originalFilename:
+          type: string
+        proofId:
+          type: string
+        sizeBytes:
+          type: integer
+          minimum: 0
+        source:
+          type: string
+        status:
+          type: string
+          enum: [AVAILABLE, EXPIRED]
+        uploadedAt:
+          type: string
+          format: date-time
       additionalProperties: false
     DsvV1RecordPage:
       type: object
@@ -2918,6 +2972,7 @@ components:
           type: string
         driverAssignments:
           type: array
+          maxItems: 1
           items:
             $ref: '#/components/schemas/DsvV1VehicleDriverAssignmentListItem'
         status:
@@ -3217,6 +3272,7 @@ components:
         career: { type: string, minLength: 1, maxLength: 160 }
         gender: { type: string, minLength: 1, maxLength: 40 }
         name: { type: string, minLength: 1, maxLength: 80 }
+        phone: { type: string, maxLength: 40 }
         score: { type: string, minLength: 1, maxLength: 40 }
         traits:
           type: array

@@ -121,6 +121,26 @@ describe('DsvAssignmentCommandService', () => {
     });
   });
 
+  test('reassign preserves other imported orders that have not been assigned to a route yet', async () => {
+    const harness = createHarness({
+      grouping: {
+        ...groupingFixture(),
+        assignments: [assignment('order-a', 1), assignment('order-b', 2)],
+        children: [],
+      },
+    });
+
+    await harness.service.reassign({
+      ...adminInput({ commandId: 'cmd-reassign-imported-order', expectedVersion: 'UNASSIGNED' }),
+      targetDriverId: 'driver-c',
+      targetVehicleId: 'vehicle-c',
+    });
+
+    const routes = harness.savedRoutes();
+    expect(routes.find((route) => route.driverId === null)?.orderIds).toEqual(['order-b']);
+    expect(routes.find((route) => route.driverId === 'driver-c')?.orderIds).toEqual(['order-a']);
+  });
+
   test('replays a succeeded command and rejects same id with different payload or STARTED receipt', async () => {
     const replay = createHarness({
       existingReceipt: {
@@ -322,9 +342,12 @@ function createHarness(input: {
   grouping?: RouteGroupingDetailDto;
 } = {}) {
   const grouping = input.grouping ?? groupingFixture();
-  let currentRouteVersionId: string | null = grouping.children.find((child) => child.orderIds.includes('order-a'))?.routePlanId === 'route-unassigned'
-    ? 'version-unassigned'
-    : 'version-route-a';
+  const initialOwner = grouping.children.find((child) => child.orderIds.includes('order-a'));
+  let currentRouteVersionId: string | null = initialOwner === undefined
+    ? null
+    : initialOwner.routePlanId === 'route-unassigned'
+      ? 'version-unassigned'
+      : 'version-route-a';
   const routeGroupingService: Pick<RouteGroupingService, 'getGrouping' | 'saveDraft'> = {
     getGrouping: vi.fn<RouteGroupingService['getGrouping']>(() => Promise.resolve(grouping)),
     saveDraft: vi.fn<RouteGroupingService['saveDraft']>((draftInput) => Promise.resolve(groupingFromDraftRoutes(grouping, draftInput.routes))),

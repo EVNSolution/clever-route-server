@@ -14,6 +14,7 @@ import {
 import { dsvAdminScopes } from '../src/modules/dsv/dsv-principal.js';
 import { DsvAssignmentCommandError } from '../src/modules/dsv/dsv-assignment-command.service.js';
 import type { DsvAdminAssignmentCommandService, DsvControlDependencies } from '../src/routes/dsv-control.routes.js';
+import { DsvResourceConflictError } from '../src/modules/dsv/dsv-resource.service.js';
 import type { DsvResourceService } from '../src/modules/dsv/dsv-resource.service.js';
 import { defaultRouteOpsUiSettings } from '../src/modules/route-ops/route-ops-ui-settings.js';
 import { defaultRouteScopeConfig } from '../src/modules/route-ops/route-scope-config.js';
@@ -427,6 +428,39 @@ describe('DSV control routes', () => {
         error: null,
       });
       expect(Number.isNaN(Date.parse(loginBody.data.expiresAt))).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('preserves resolved address metadata so repeated previews can skip geocoding', async () => {
+    const { app, dispatchImportService } = await createHarness();
+    try {
+      const login = await loginToDsv(app);
+      const source = dispatchPayload();
+      const payload = {
+        ...source,
+        rows: source.rows.map((row) => ({
+          ...row,
+          addressResolutionStatus: 'RESOLVED',
+          detailAddress: '5층',
+          jibunAddress: '서울 중구 충무로2가 62-7',
+          postalCode: '04536',
+          rawAddress: '서울 중구 퇴계로 131, 5층',
+        })),
+      };
+      const response = await app.inject({
+        headers: { cookie: login.cookie },
+        method: 'POST',
+        payload,
+        url: '/api/dsv/dispatch-imports/preview',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(dispatchImportService.preview).toHaveBeenCalledWith({
+        ...payload,
+        shopDomain: 'tomatonofood.com',
+      });
     } finally {
       await app.close();
     }
@@ -1017,7 +1051,7 @@ describe('DSV control routes', () => {
       expect(resources.statusCode).toBe(200);
       expect(resources.json()).toMatchObject({ data: { assignments: [], drivers: [], vehicles: [] }, error: null });
 
-      const driverPayload = { age: 42, career: '냉장 의약품 6년', gender: '남성', name: '김도윤', score: 'A+', traits: ['병원 하역장 숙련'], zone: '강남 서초' };
+      const driverPayload = { age: 42, career: '냉장 의약품 6년', gender: '남성', name: '김도윤', phone: '010-6000-0000', score: 'A+', traits: ['병원 하역장 숙련'], zone: '강남 서초' };
       const createdDriver = await app.inject({ headers, method: 'POST', payload: driverPayload, url: '/api/dsv/drivers' });
       expect(createdDriver.statusCode).toBe(201);
       expect(resourceService.createDriver).toHaveBeenCalledWith({ ...driverPayload, shopDomain: 'tomatonofood.com' });
@@ -1039,6 +1073,28 @@ describe('DSV control routes', () => {
         driverId: '66666666-6666-4666-8666-666666666666',
         shopDomain: 'tomatonofood.com',
         vehicleId: '77777777-7777-4777-8777-777777777777',
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns distinct default assignment conflict codes from the resource service', async () => {
+    const { app, resourceService } = await createHarness();
+    try {
+      resourceService.assignDriver.mockRejectedValueOnce(new DsvResourceConflictError('VEHICLE_ASSIGNMENT_EXISTS'));
+      const login = await loginToDsv(app);
+      const response = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: { driverId: '66666666-6666-4666-8666-666666666666' },
+        url: '/api/dsv/vehicles/77777777-7777-4777-8777-777777777777/drivers',
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({
+        data: null,
+        error: { code: 'VEHICLE_ASSIGNMENT_EXISTS' },
       });
     } finally {
       await app.close();

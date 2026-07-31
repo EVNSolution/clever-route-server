@@ -941,20 +941,50 @@ function readDispatchImportInput(value: unknown): DsvDispatchImportInput | null 
     const notes = readNullableText(row?.notes);
     const latitude = readNullableNumber(row?.latitude);
     const longitude = readNullableNumber(row?.longitude);
+    const hasAddressResolutionStatus = Object.hasOwn(row ?? {}, 'addressResolutionStatus');
+    const hasDetailAddress = Object.hasOwn(row ?? {}, 'detailAddress');
+    const hasJibunAddress = Object.hasOwn(row ?? {}, 'jibunAddress');
+    const hasPostalCode = Object.hasOwn(row ?? {}, 'postalCode');
+    const hasRawAddress = Object.hasOwn(row ?? {}, 'rawAddress');
+    const addressResolutionStatus = hasAddressResolutionStatus
+      ? readAddressResolutionStatus(row?.addressResolutionStatus)
+      : undefined;
+    const detailAddress = hasDetailAddress
+      ? readNullableText(row?.detailAddress)
+      : undefined;
+    const jibunAddress = hasJibunAddress
+      ? readNullableText(row?.jibunAddress)
+      : undefined;
+    const postalCode = hasPostalCode
+      ? readNullableText(row?.postalCode)
+      : undefined;
+    const rawAddress = hasRawAddress
+      ? readText(row?.rawAddress)
+      : undefined;
     if (
       rowNumber === null || shippedBoxes === null || driverName === null || vehiclePlate === null
       || destinationName === null || conditionCode === null || address === null || customerCode === null
       || sellerOrderKey === null || notes === undefined || latitude === undefined || longitude === undefined
+      || addressResolutionStatus === null
+      || (hasDetailAddress && detailAddress === undefined)
+      || (hasJibunAddress && jibunAddress === undefined)
+      || (hasPostalCode && postalCode === undefined)
+      || rawAddress === null
     ) return null;
     rows.push({
       address,
+      ...(addressResolutionStatus === undefined ? {} : { addressResolutionStatus }),
       conditionCode,
       customerCode,
+      ...(detailAddress === undefined ? {} : { detailAddress }),
       destinationName,
       driverName,
+      ...(jibunAddress === undefined ? {} : { jibunAddress }),
       latitude,
       longitude,
       notes,
+      ...(postalCode === undefined ? {} : { postalCode }),
+      ...(rawAddress === undefined ? {} : { rawAddress }),
       rowNumber,
       sellerOrderKey,
       shippedBoxes,
@@ -969,18 +999,32 @@ function readDispatchImportInput(value: unknown): DsvDispatchImportInput | null 
   };
 }
 
+function readAddressResolutionStatus(value: unknown): DsvAddressResolutionStatus | null {
+  const statuses: readonly DsvAddressResolutionStatus[] = [
+    'ADDRESS_ONLY',
+    'AMBIGUOUS',
+    'NOT_FOUND',
+    'RESOLVED',
+    'UNAVAILABLE',
+  ];
+  return typeof value === 'string' && includes(statuses, value)
+    ? value
+    : null;
+}
+
 function readDriverInput(value: unknown): DsvDriverInput | null {
   const body = objectBody(value);
-  if (body === null || !hasOnlyKeys(body, ['age', 'career', 'gender', 'name', 'score', 'traits', 'zone'])) return null;
+  if (body === null || !hasOnlyKeys(body, ['age', 'career', 'gender', 'name', 'phone', 'score', 'traits', 'zone'])) return null;
   const age = readInteger(body.age);
   const career = readBoundedText(body.career, 160);
   const gender = readBoundedText(body.gender, 40);
   const name = readBoundedText(body.name, 80);
+  const phone = Object.hasOwn(body, 'phone') ? readBoundedTextAllowEmpty(body.phone, 40) : undefined;
   const score = readBoundedText(body.score, 40);
   const traits = readBoundedTextArray(body.traits, 20, 160);
   const zone = readBoundedText(body.zone, 160);
-  if (age === null || age < 18 || age > 100 || career === null || gender === null || name === null || score === null || traits === null || zone === null) return null;
-  return { age, career, gender, name, score, traits, zone };
+  if (age === null || age < 18 || age > 100 || career === null || gender === null || name === null || phone === null || score === null || traits === null || zone === null) return null;
+  return { age, career, gender, name, ...(phone === undefined ? {} : { phone }), score, traits, zone };
 }
 
 function readVehicleInput(value: unknown): DsvVehicleInput | null {

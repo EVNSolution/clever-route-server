@@ -19,6 +19,7 @@ export type WooCommerceRuntimeEnv = Partial<
     | 'GEOCODING_SEARCH_URL'
     | 'GEOCODING_TIMEOUT_MS'
     | 'GEOCODING_USER_AGENT'
+    | 'VWORLD_API_KEY'
     | 'WOOCOMMERCE_SHOP_TIMEZONE',
     string
   >

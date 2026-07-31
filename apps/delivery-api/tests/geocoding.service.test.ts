@@ -570,6 +570,62 @@ describe('Route Ops geocoding', () => {
     expect(secondCall - firstCall).toBeGreaterThanOrEqual(15);
   });
 
+  test('allows bounded callers to overlap VWorld requests while preserving its rate limiter', async () => {
+    let activeRequests = 0;
+    let maximumActiveRequests = 0;
+    const provider = {
+      geocodeAddress: vi.fn(async (query: GeocodingQuery) => {
+        activeRequests += 1;
+        maximumActiveRequests = Math.max(maximumActiveRequests, activeRequests);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        activeRequests -= 1;
+        return {
+          addressLabel: query.shape,
+          latitude: 37.4923433,
+          longitude: 127.04661,
+          postalCode: '06273',
+          provider: 'vworld',
+          providerPlaceId: null,
+          rawLabel: null,
+        };
+      }),
+      providerName: 'vworld',
+    };
+    const service = new GeocodingService({
+      minIntervalMs: 0,
+      mode: 'vworld',
+      provider,
+      providerPolicy: 'vworld',
+    });
+
+    await Promise.all([
+      service.geocode({
+        address: {
+          address1: '서울특별시 강남구 언주로 211',
+          address2: null,
+          city: null,
+          countryCode: 'KR',
+          postalCode: null,
+          province: null,
+        },
+        shopDomain: 'dsv-demo.local',
+      }),
+      service.geocode({
+        address: {
+          address1: '경기도 구리시 아차산로 489',
+          address2: null,
+          city: null,
+          countryCode: 'KR',
+          postalCode: null,
+          province: null,
+        },
+        shopDomain: 'dsv-demo.local',
+      }),
+    ]);
+
+    expect(maximumActiveRequests).toBe(2);
+  });
+
   test('classifies malformed Nominatim payloads as invalid provider results', async () => {
     const fetchImpl = vi.fn(() => Promise.resolve({
       json: () => Promise.resolve({ code: 'not-an-array' }),

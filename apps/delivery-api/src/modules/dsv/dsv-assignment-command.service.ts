@@ -419,7 +419,7 @@ export class DsvAssignmentCommandService {
     if (groupingRef === null) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
     const grouping = await this.routeGroupingService.getGrouping({ groupingId: groupingRef.groupingId, shopDomain });
     if (grouping === null) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
-    return grouping;
+    return withUnassignedAssignments(grouping);
   }
 
   private async requireOwner(
@@ -868,6 +868,23 @@ function nullRouteOwner(grouping: RouteGroupingDetailDto, sellerOrderId: string)
     stopsCount: 1,
     updatedAt: grouping.updatedAt,
   };
+}
+
+function withUnassignedAssignments(grouping: RouteGroupingDetailDto): RouteGroupingDetailDto {
+  const routedOrderIds = new Set(grouping.children.flatMap((child) => child.orderIds));
+  const unassignedOrderIds = grouping.assignments
+    .map((assignment) => assignment.orderId)
+    .filter((orderId) => !routedOrderIds.has(orderId));
+  const firstUnassignedOrderId = unassignedOrderIds[0];
+  if (firstUnassignedOrderId === undefined) return grouping;
+  const route = {
+    ...nullRouteOwner(grouping, firstUnassignedOrderId),
+    orderIds: unassignedOrderIds,
+    routeIdx: nextSortOrder(grouping.children),
+    sortOrder: nextSortOrder(grouping.children),
+    stopsCount: unassignedOrderIds.length,
+  };
+  return { ...grouping, children: [...grouping.children, route] };
 }
 
 export function assignmentMap(grouping: RouteGroupingDetailDto): Map<string, RouteGroupingAssignmentDto> {

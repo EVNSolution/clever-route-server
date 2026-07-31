@@ -74,9 +74,9 @@ type Repository = {
 type GeocodingServiceLike = {
   geocode(input: { address: GeocodingAddress; shopDomain: string }): Promise<GeocodingResult>;
   status?: {
-    mode: 'disabled' | 'nominatim_compatible';
+    mode: 'disabled' | 'nominatim_compatible' | 'vworld';
     persistentCacheEnabled: boolean;
-    providerPolicy?: 'disabled' | 'private_nominatim_compatible' | 'public_nominatim';
+    providerPolicy?: 'disabled' | 'private_nominatim_compatible' | 'public_nominatim' | 'vworld';
   };
 };
 
