@@ -103,9 +103,41 @@ paths:
   /routes-app:
     get:
       tags: [Routes App Distribution]
-      summary: Redirect to the current CLEVER Routes Android package
-      description: Public, unauthenticated stable install URL. The configured download target is never returned in a JSON response.
+      summary: Show the CLEVER Routes Android installation guide
+      description: Public, unauthenticated stable install page that hands off to the managed package download.
       operationId: getRoutesAppInstall
+      x-source-file: src/routes/admin-commerce-connections-ui.routes.ts
+      security: []
+      responses:
+        '200':
+          description: Installation and legacy-app removal guidance.
+          headers:
+            Cache-Control:
+              description: Installation guidance must be revalidated.
+              schema:
+                type: string
+                const: no-store
+          content:
+            text/html:
+              schema:
+                type: string
+        '404':
+          description: The CLEVER Routes download URL is not configured.
+          headers:
+            Cache-Control:
+              description: Prevent clients and intermediaries from caching unavailable state.
+              schema:
+                type: string
+                const: no-store
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoutesAppInstallUnavailableResponse' }
+  /routes-app/download:
+    get:
+      tags: [Routes App Distribution]
+      summary: Download the current CLEVER Routes Android package
+      description: Public handoff from the installation guide to the managed binary target.
+      operationId: downloadRoutesAppAndroid
       x-source-file: src/routes/admin-commerce-connections-ui.routes.ts
       security: []
       responses:
@@ -120,15 +152,53 @@ paths:
                 format: uri
         '404':
           description: The CLEVER Routes download URL is not configured.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoutesAppInstallUnavailableResponse' }
+  /driver-app:
+    get:
+      tags: [Routes App Distribution]
+      summary: Show legacy clients the CLEVER Routes reinstall guide
+      description: Explains the CLEVER Driver to CLEVER Routes name change and Android package-identity migration before handing off to the managed package download.
+      operationId: redirectLegacyDriverAppInstall
+      x-source-file: src/routes/admin-commerce-connections-ui.routes.ts
+      security: []
+      responses:
+        '200':
+          description: Package-identity migration and legacy-app removal guidance.
           headers:
             Cache-Control:
-              description: Prevent clients and intermediaries from caching unavailable state.
+              schema:
+                type: string
+                const: no-store
+          content:
+            text/html:
+              schema:
+                type: string
+  /driver-app/release/android:
+    get:
+      tags: [Routes App Distribution]
+      summary: Read the CLEVER Routes Android release manifest from a legacy client
+      description: Backward-compatible alias for `/routes-app/release/android`.
+      operationId: getLegacyDriverAppAndroidRelease
+      x-source-file: src/routes/admin-commerce-connections-ui.routes.ts
+      security: []
+      responses:
+        '200':
+          description: Current Android release manifest.
+          headers:
+            Cache-Control:
               schema:
                 type: string
                 const: no-store
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/RoutesAppInstallUnavailableResponse' }
+              schema: { $ref: '#/components/schemas/RoutesAppAndroidReleaseEnvelope' }
+        '404':
+          description: The Android release manifest is not configured or is inconsistent.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RoutesAppReleaseUnavailableEnvelope' }
   /routes-app/release/android:
     get:
       tags: [Routes App Distribution]
@@ -2479,6 +2549,7 @@ components:
       type: object
       required:
         - distributionChannel
+        - installation
         - installUrl
         - latestVersionCode
         - latestVersionName
@@ -2488,6 +2559,30 @@ components:
         distributionChannel:
           type: string
           const: direct
+        installation:
+          type: object
+          required:
+            - guideUrl
+            - mode
+            - replacesPackageIds
+            - targetPackageId
+          properties:
+            guideUrl:
+              type: string
+              format: uri
+            mode:
+              type: string
+              const: package_migration
+            replacesPackageIds:
+              type: array
+              minItems: 1
+              items:
+                type: string
+                minLength: 1
+            targetPackageId:
+              type: string
+              const: com.evnsolution.clever.routes
+          additionalProperties: false
         installUrl:
           type: string
           format: uri

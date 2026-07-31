@@ -91,8 +91,12 @@ describe('API documentation routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain('  /routes-app:');
+      expect(response.body).toContain('  /routes-app/download:');
       expect(response.body).toContain('  /routes-app/release/android:');
+      expect(response.body).toContain('  /driver-app:');
+      expect(response.body).toContain('  /driver-app/release/android:');
       expect(response.body).toContain('RoutesAppAndroidReleaseEnvelope:');
+      expect(response.body).toContain('const: package_migration');
       expect(response.body).toContain('const: ROUTES_APP_RELEASE_UNAVAILABLE');
       expect(response.body).toContain('const: no-store');
     } finally {

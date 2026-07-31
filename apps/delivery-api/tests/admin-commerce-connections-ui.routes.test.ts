@@ -277,6 +277,36 @@ describe("Admin WooCommerce connection UI routes", () => {
     );
   });
 
+  test("accepts the legacy driver app release environment during the identity cutover", () => {
+    const base = createBaseAdminCommerceDependencies();
+
+    const dependencies = loadAdminCommerceConnectionsUiDependencies({
+      adminCommerceConnections: base.dependencies,
+      env: {
+        CLEVER_ADMIN_WEB_LOGIN_SECRET: webLoginSecret,
+        CLEVER_ADMIN_WEB_SESSION_SECRET: webSessionSecret,
+        DELIVERY_API_PUBLIC_URL: "https://clever-route-api.cleversystem.ai",
+        DRIVER_APP_ANDROID_LATEST_VERSION_CODE: "6",
+        DRIVER_APP_ANDROID_LATEST_VERSION_NAME: "1.0.5",
+        DRIVER_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE: "6",
+        DRIVER_APP_DISTRIBUTION_CHANNEL: "direct",
+        DRIVER_APP_DOWNLOAD_URL:
+          "https://drive.example.test/uc?id=legacy-apk&export=download",
+      },
+      nodeEnv: "production",
+    });
+
+    expect(dependencies?.routesAppDownloadUrl).toBe(
+      "https://drive.example.test/uc?id=legacy-apk&export=download",
+    );
+    expect(dependencies?.routesAppAndroidRelease).toEqual({
+      distributionChannel: "direct",
+      latestVersionCode: 6,
+      latestVersionName: "1.0.5",
+      minimumSupportedVersionCode: 6,
+    });
+  });
+
   test("keeps Android driver app release unavailable for missing or inconsistent config", () => {
     const base = createBaseAdminCommerceDependencies();
 
@@ -869,9 +899,34 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(bootstrap.body).not.toContain("drive.example.test");
       expect(bootstrap.body).not.toContain("driver-apk");
 
-      const redirect = await app.inject({ method: "GET", url: "/routes-app" });
-      expect(redirect.statusCode).toBe(302);
-      expect(redirect.headers.location).toBe(rawDownloadUrl);
+      const installPage = await app.inject({ method: "GET", url: "/routes-app" });
+      expect(installPage.statusCode).toBe(200);
+      expect(installPage.headers["content-type"]).toContain("text/html");
+      expect(installPage.headers["cache-control"]).toBe("no-store");
+      expect(installPage.body).toContain("Install CLEVER Routes");
+      expect(installPage.body).toContain('href="/routes-app/download"');
+      expect(installPage.body).not.toContain(rawDownloadUrl);
+
+      const download = await app.inject({
+        method: "GET",
+        url: "/routes-app/download",
+      });
+      expect(download.statusCode).toBe(302);
+      expect(download.headers.location).toBe(rawDownloadUrl);
+
+      const legacyInstall = await app.inject({
+        method: "GET",
+        url: "/driver-app",
+      });
+      expect(legacyInstall.statusCode).toBe(200);
+      expect(legacyInstall.headers["content-type"]).toContain("text/html");
+      expect(legacyInstall.body).toContain("Install the new CLEVER Routes app");
+      expect(legacyInstall.body).toContain("CLEVER Driver is now CLEVER Routes");
+      expect(legacyInstall.body).toContain("app name and Android identity changed");
+      expect(legacyInstall.body).toContain("com.evnsolution.clever.routes");
+      expect(legacyInstall.body).toContain("com.evns.cleverdriverapp");
+      expect(legacyInstall.body).toContain('href="/routes-app/download"');
+      expect(legacyInstall.body).not.toContain(rawDownloadUrl);
     } finally {
       await app.close();
     }
@@ -899,6 +954,12 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(response.headers["cache-control"]).toBe("no-store");
       expect(readApiData(response)).toEqual({
         distributionChannel: "direct",
+        installation: {
+          guideUrl: "https://clever-route-api.cleversystem.ai/driver-app",
+          mode: "package_migration",
+          replacesPackageIds: ["com.evns.cleverdriverapp"],
+          targetPackageId: "com.evnsolution.clever.routes",
+        },
         installUrl: "https://clever-route-api.cleversystem.ai/routes-app",
         latestVersionCode: 42,
         latestVersionName: "1.4.2",
@@ -907,6 +968,17 @@ describe("Admin WooCommerce connection UI routes", () => {
       });
       expect(response.body).not.toContain("drive.example.test");
       expect(response.body).not.toContain("driver-apk");
+
+      const legacyResponse = await app.inject({
+        method: "GET",
+        url: "/driver-app/release/android",
+      });
+      expect(legacyResponse.statusCode).toBe(200);
+      expect(legacyResponse.headers["cache-control"]).toBe("no-store");
+      expect(readApiData(legacyResponse)).toEqual({
+        ...readApiData<Record<string, unknown>>(response),
+        installUrl: "https://clever-route-api.cleversystem.ai/driver-app",
+      });
     } finally {
       await app.close();
     }
@@ -934,6 +1006,12 @@ describe("Admin WooCommerce connection UI routes", () => {
       expect(redirect.statusCode).toBe(404);
       expect(redirect.body).toContain("Routes app download is not configured.");
 
+      const download = await app.inject({
+        method: "GET",
+        url: "/routes-app/download",
+      });
+      expect(download.statusCode).toBe(404);
+
       const manifest = await app.inject({
         method: "GET",
         url: "/routes-app/release/android",
@@ -944,6 +1022,13 @@ describe("Admin WooCommerce connection UI routes", () => {
         code: "ROUTES_APP_RELEASE_UNAVAILABLE",
         message: "Routes app Android release manifest is not configured.",
       });
+
+      const legacyManifest = await app.inject({
+        method: "GET",
+        url: "/driver-app/release/android",
+      });
+      expect(legacyManifest.statusCode).toBe(404);
+      expect(legacyManifest.headers["cache-control"]).toBe("no-store");
     } finally {
       await app.close();
     }

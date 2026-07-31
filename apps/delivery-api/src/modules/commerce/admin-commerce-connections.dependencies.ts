@@ -64,6 +64,11 @@ export type AdminCommerceConnectionsRuntimeEnv = Partial<
     | 'CLEVER_ADMIN_WEB_SESSION_SECRET'
     | 'CREDENTIAL_ENCRYPTION_KEY'
     | 'DELIVERY_API_PUBLIC_URL'
+    | 'DRIVER_APP_ANDROID_LATEST_VERSION_CODE'
+    | 'DRIVER_APP_ANDROID_LATEST_VERSION_NAME'
+    | 'DRIVER_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE'
+    | 'DRIVER_APP_DISTRIBUTION_CHANNEL'
+    | 'DRIVER_APP_DOWNLOAD_URL'
     | 'ROUTES_APP_ANDROID_LATEST_VERSION_CODE'
     | 'ROUTES_APP_ANDROID_LATEST_VERSION_NAME'
     | 'ROUTES_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE'
@@ -152,7 +157,8 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
   const cookieName = readOptional(input.env.CLEVER_ADMIN_WEB_COOKIE_NAME) ?? DEFAULT_ADMIN_UI_COOKIE_NAME;
   const publicBaseUrl = readOptional(input.env.DELIVERY_API_PUBLIC_URL);
   const routesAppDownloadUrl = readOptionalHttpUrl(
-    input.env.ROUTES_APP_DOWNLOAD_URL,
+    readOptional(input.env.ROUTES_APP_DOWNLOAD_URL)
+      ?? readOptional(input.env.DRIVER_APP_DOWNLOAD_URL),
     'ROUTES_APP_DOWNLOAD_URL'
   );
   const routesAppAndroidRelease = readRoutesAppAndroidReleaseConfig(input.env);
@@ -492,13 +498,17 @@ function readOptionalHttpUrl(value: string | undefined, name: string): string | 
 function readRoutesAppAndroidReleaseConfig(
   env: AdminCommerceConnectionsRuntimeEnv
 ): RoutesAppAndroidReleaseConfig | undefined {
-  const distributionChannel = readOptional(env.ROUTES_APP_DISTRIBUTION_CHANNEL);
-  const latestVersionName = readOptional(env.ROUTES_APP_ANDROID_LATEST_VERSION_NAME);
+  const distributionChannel = readOptional(env.ROUTES_APP_DISTRIBUTION_CHANNEL)
+    ?? readOptional(env.DRIVER_APP_DISTRIBUTION_CHANNEL);
+  const latestVersionName = readOptional(env.ROUTES_APP_ANDROID_LATEST_VERSION_NAME)
+    ?? readOptional(env.DRIVER_APP_ANDROID_LATEST_VERSION_NAME);
   const latestVersionCode = readOptionalInteger(
-    env.ROUTES_APP_ANDROID_LATEST_VERSION_CODE
+    readOptional(env.ROUTES_APP_ANDROID_LATEST_VERSION_CODE)
+      ?? readOptional(env.DRIVER_APP_ANDROID_LATEST_VERSION_CODE)
   );
   const minimumSupportedVersionCode = readOptionalInteger(
-    env.ROUTES_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE
+    readOptional(env.ROUTES_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE)
+      ?? readOptional(env.DRIVER_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE)
   );
 
   if (
