@@ -29,16 +29,31 @@ For the temporary direct Android distribution channel, the runtime env also
 owns the public routes release manifest:
 
 ```dotenv
+ROUTES_APP_DOWNLOAD_URL=https://downloads.example.com/clever-routes.apk
 ROUTES_APP_DISTRIBUTION_CHANNEL=direct
 ROUTES_APP_ANDROID_LATEST_VERSION_CODE=2
 ROUTES_APP_ANDROID_LATEST_VERSION_NAME=1.0.1
 ROUTES_APP_ANDROID_MIN_SUPPORTED_VERSION_CODE=1
 ```
 
-`GET /routes-app/release/android` is unavailable when these values are absent or
-inconsistent. Update the latest version values only after the stable APK target
-behind `/routes-app` has been replaced and verified. The API returns the stable
-server URL and never exposes `ROUTES_APP_DOWNLOAD_URL`.
+During the identity cutover, carry the current `DRIVER_APP_DOWNLOAD_URL` value
+to `ROUTES_APP_DOWNLOAD_URL`; do not leave both namespaces active. `GET
+/routes-app` returns `404` when the download URL is absent, and `GET
+/routes-app/release/android` is unavailable when the release values are absent
+or inconsistent. Update the latest version values only after the stable APK
+target behind `/routes-app` has been replaced and verified. The API returns the
+stable server URL and never exposes `ROUTES_APP_DOWNLOAD_URL`.
+
+Before deploying the matching mobile build, verify the public cutover:
+
+```bash
+curl -sS -o /dev/null -D - https://clever-route-api.cleversystem.ai/routes-app
+curl -sS https://clever-route-api.cleversystem.ai/routes-app/release/android
+```
+
+The first response must be `302` to the current package target. The release
+manifest must be `200`, use the stable `/routes-app` install URL, and report the
+intended Android version values.
 
 ## Expected fast path
 
