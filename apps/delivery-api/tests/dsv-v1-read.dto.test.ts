@@ -64,31 +64,59 @@ describe('G005 DSV v1 read DTO adapter', () => {
     expect(dto.scopes).not.toBe(scopes);
   });
 
+  test('keeps the personal administrator identity in the session contract', () => {
+    expect(mapDsvV1SessionPrincipal({
+      actorId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      displayName: '운영 관리자',
+      principalType: 'DSV_ADMIN',
+      scopes: ['dsv:session:read'],
+      shopId: 'shop-1',
+    })).toEqual({
+      actorId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      displayName: '운영 관리자',
+      principalType: 'DSV_ADMIN',
+      scopes: ['dsv:session:read'],
+      shopId: 'shop-1',
+    });
+  });
+
   test('maps seller order summaries and page info from supplied route-stop ETA only', () => {
     const dto = mapDsvV1SellerOrderSummary({
       assignmentStatus: 'ASSIGNED',
       customerId: 'customer-1',
+      destinationAddress: '1 Shared Way, Seoul',
+      destinationDisplayName: 'Destination A',
       destinationId: 'destination-1',
+      driverId: 'driver-1',
       estimatedArrivalAt: new Date('2026-07-23T01:02:03.000Z'),
       etaInputRouteVersionId: 'route-version-private',
       etaSource: 'ROUTE_STARTED',
       etaStatus: 'READY',
+      latitude: 37.1234567,
+      longitude: 127.1234567,
       routePlanId: 'route-plan-1',
       routeVersionId: 'route-version-1',
       sellerOrderId: 'order-1',
       sellerOrderKey: 'SO-001',
+      vehicleId: 'vehicle-1',
     });
 
     expect(dto).toEqual({
       assignmentStatus: 'ASSIGNED',
       customerId: 'customer-1',
+      destinationAddress: '1 Shared Way, Seoul',
+      destinationDisplayName: 'Destination A',
       destinationId: 'destination-1',
+      driverId: 'driver-1',
       estimatedArrivalAt: '2026-07-23T01:02:03.000Z',
       etaStatus: 'READY',
+      latitude: 37.1234567,
+      longitude: 127.1234567,
       routePlanId: 'route-plan-1',
       routeVersionId: 'route-version-1',
       sellerOrderId: 'order-1',
       sellerOrderKey: 'SO-001',
+      vehicleId: 'vehicle-1',
     });
     expect(dto).not.toHaveProperty('etaInputRouteVersionId');
     expect(dto).not.toHaveProperty('etaSource');
@@ -126,17 +154,54 @@ describe('G005 DSV v1 read DTO adapter', () => {
       destinationDisplayName: 'Front Dock',
       etaStatus: 'STALE',
       eventRows: [
-        { eventType: 'STOP_DELIVERED', occurredAt: '2026-07-23T02:00:00.000Z' },
+        {
+          driverDisplayName: 'Driver A',
+          eventId: 'event-1',
+          eventType: 'STOP_DELIVERED',
+          latitude: 37.5,
+          longitude: 127,
+          occurredAt: '2026-07-23T02:00:00.000Z',
+        },
         { eventType: 'LOCATION_UPDATED', occurredAt: '2026-07-23T01:59:00.000Z' },
       ],
-      proofRows: [{ deletedAt: null }],
+      proofRows: [{
+        contentType: 'image/jpeg',
+        deletedAt: null,
+        driverDisplayName: 'Driver A',
+        kind: 'PHOTO',
+        originalFilename: 'delivery.jpg',
+        proofId: 'proof-1',
+        sizeBytes: 1200,
+        source: 'CAMERA',
+        uploadedAt: '2026-07-23T02:01:00.000Z',
+      }],
+      sellerOrderId: 'order-1',
       sellerOrderKey: 'SO-001',
     })).toEqual({
       deliveryStatus: 'DELIVERED',
       destinationDisplayName: 'Front Dock',
       etaStatus: 'STALE',
-      eventSummary: [{ type: 'STOP_DELIVERED', occurredAt: '2026-07-23T02:00:00.000Z' }],
+      eventSummary: [{
+        driverDisplayName: 'Driver A',
+        eventId: 'event-1',
+        latitude: 37.5,
+        longitude: 127,
+        type: 'STOP_DELIVERED',
+        occurredAt: '2026-07-23T02:00:00.000Z',
+      }],
       proofStatus: 'AVAILABLE',
+      proofs: [{
+        contentType: 'image/jpeg',
+        driverDisplayName: 'Driver A',
+        kind: 'PHOTO',
+        originalFilename: 'delivery.jpg',
+        proofId: 'proof-1',
+        sizeBytes: 1200,
+        source: 'CAMERA',
+        status: 'AVAILABLE',
+        uploadedAt: '2026-07-23T02:01:00.000Z',
+      }],
+      sellerOrderId: 'order-1',
       sellerOrderKey: 'SO-001',
     });
 
@@ -146,12 +211,21 @@ describe('G005 DSV v1 read DTO adapter', () => {
         mapDsvV1VehicleListItem({
           displayName: 'Truck A',
           driverAssignments: [{ assignmentId: 'assignment-1', driverId: 'driver-1' }],
+          telematicsCapabilities: ['LOCATION', 'TEMPERATURE', 'TACHOMETER'],
+          telematicsSerialNumber: '012-5273-8978',
           vehicleId: 'vehicle-1',
           vehiclePlate: '11A1111',
+          vehicleType: 'REFRIGERATED',
         }),
         mapDsvV1CustomerListItem({ customerId: 'customer-1', displayName: 'Customer A', externalCustomerCode: 'C-1' }),
         mapDsvV1DestinationListItem({ address: null, destinationId: 'destination-1', displayName: 'Dock A' }),
-        mapDsvV1ConditionListItem({ conditionId: 'condition-1', name: 'Cold', status: 'ACTIVE' }),
+        mapDsvV1ConditionListItem({
+          code: 'COLD',
+          conditionId: 'condition-1',
+          description: 'Keep refrigerated.',
+          name: 'Cold',
+          status: 'ACTIVE',
+        }),
       ],
       page: { hasMore: false },
     });
@@ -162,12 +236,21 @@ describe('G005 DSV v1 read DTO adapter', () => {
         {
           displayName: 'Truck A',
           driverAssignments: [{ assignmentId: 'assignment-1', driverId: 'driver-1' }],
+          telematicsCapabilities: ['LOCATION', 'TEMPERATURE', 'TACHOMETER'],
+          telematicsSerialNumber: '012-5273-8978',
           vehicleId: 'vehicle-1',
           vehiclePlate: '11A1111',
+          vehicleType: 'REFRIGERATED',
         },
         { customerId: 'customer-1', displayName: 'Customer A', externalCustomerCode: 'C-1' },
         { destinationId: 'destination-1', displayName: 'Dock A' },
-        { conditionId: 'condition-1', name: 'Cold', status: 'ACTIVE' },
+        {
+          code: 'COLD',
+          conditionId: 'condition-1',
+          description: 'Keep refrigerated.',
+          name: 'Cold',
+          status: 'ACTIVE',
+        },
       ],
       page: { hasMore: false },
     });

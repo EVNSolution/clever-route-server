@@ -20,7 +20,8 @@ test('keeps one tracked delivery-api env contract beside the application', () =>
     'CLEVER_DSV_DEMO_SHOP_DOMAIN',
     'DSV_MAP_PROFILE_ID',
     'GEOCODING_PROVIDER_MODE',
-    'ROUTE_OPS_MAP_STYLE_URL'
+    'ROUTE_OPS_MAP_STYLE_URL',
+    'VWORLD_API_KEY'
   ]) {
     assert.match(example, new RegExp(`^${key}=`, 'mu'), `missing ${key}`);
   }

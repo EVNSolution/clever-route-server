@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import type { DsvAddressResolutionStatus } from './dsv-address-canonicalization.js';
+
 export const dsvDispatchImportSourceKind = 'DSV_DISPATCH_IMPORT';
 
 export const dsvDispatchDiffKinds = ['NEW', 'NO_OP', 'UPDATE_CANDIDATE', 'CONFLICT', 'ERROR'] as const;
@@ -7,13 +9,18 @@ export type DsvDispatchDiffKind = typeof dsvDispatchDiffKinds[number];
 
 export type DsvDispatchSourceRow = {
   address: string;
+  addressResolutionStatus?: DsvAddressResolutionStatus;
   conditionCode: string;
   customerCode: string;
+  detailAddress?: string | null;
   destinationName: string;
   driverName: string;
+  jibunAddress?: string | null;
   latitude: number | null;
   longitude: number | null;
   notes: string | null;
+  postalCode?: string | null;
+  rawAddress?: string;
   rowNumber: number;
   sellerOrderKey: string;
   shippedBoxes: number;
@@ -120,14 +127,19 @@ export type DsvDispatchPreviewInput = {
 
 export type DsvDispatchNormalizedRow = {
   address: string;
+  addressResolutionStatus?: DsvAddressResolutionStatus;
   conditionComparisonKey: string;
   customerCode: string;
+  detailAddress?: string | null;
   destinationName: string;
   driverName: string;
+  jibunAddress?: string | null;
   latitude: number | null;
   longitude: number | null;
   notes: string | null;
   planDate: string;
+  postalCode?: string | null;
+  rawAddress?: string;
   sellerOrderKey: string;
   shippedBoxes: number;
   sourceKind: string;
@@ -322,7 +334,11 @@ export function buildDsvDispatchPreviewDiff(input: DsvDispatchPreviewInput): Dsv
 
   const summary = summarize(rows);
   return {
-    canApply: rows.length > 0 && summary.errorRows === 0 && summary.conflictRows === 0 && summary.updateCandidateRows === 0,
+    canApply: rows.length > 0
+      && summary.errorRows === 0
+      && summary.reviewRows === 0
+      && summary.conflictRows === 0
+      && summary.updateCandidateRows === 0,
     conditionCandidates: sortedConditionCandidates(conditionCandidates),
     fileName: input.fileName,
     planDate: input.planDate,
@@ -360,14 +376,19 @@ export function canonicalJson(value: unknown): string {
 function normalizeRow(row: DsvDispatchSourceRow, planDate: string, sourceKind: string): DsvDispatchNormalizedRow {
   return {
     address: normalizeText(row.address),
+    ...(row.addressResolutionStatus === undefined ? {} : { addressResolutionStatus: row.addressResolutionStatus }),
     conditionComparisonKey: conditionComparisonKey(row.conditionCode),
     customerCode: normalizeText(row.customerCode),
+    ...(row.detailAddress === undefined ? {} : { detailAddress: normalizeNullableText(row.detailAddress) }),
     destinationName: normalizeText(row.destinationName),
     driverName: normalizeText(row.driverName),
+    ...(row.jibunAddress === undefined ? {} : { jibunAddress: normalizeNullableText(row.jibunAddress) }),
     latitude: row.latitude,
     longitude: row.longitude,
     notes: row.notes === null ? null : normalizeText(row.notes),
     planDate,
+    ...(row.postalCode === undefined ? {} : { postalCode: normalizeNullableText(row.postalCode) }),
+    ...(row.rawAddress === undefined ? {} : { rawAddress: normalizeText(row.rawAddress) }),
     sellerOrderKey: normalizeText(row.sellerOrderKey),
     shippedBoxes: row.shippedBoxes,
     sourceKind,
@@ -378,13 +399,18 @@ function normalizeRow(row: DsvDispatchSourceRow, planDate: string, sourceKind: s
 function canonicalSourceRow(row: DsvDispatchSourceRow): DsvDispatchSourceRow {
   return {
     address: row.address,
+    ...(row.addressResolutionStatus === undefined ? {} : { addressResolutionStatus: row.addressResolutionStatus }),
     conditionCode: row.conditionCode,
     customerCode: row.customerCode,
+    ...(row.detailAddress === undefined ? {} : { detailAddress: row.detailAddress }),
     destinationName: row.destinationName,
     driverName: row.driverName,
+    ...(row.jibunAddress === undefined ? {} : { jibunAddress: row.jibunAddress }),
     latitude: row.latitude,
     longitude: row.longitude,
     notes: row.notes,
+    ...(row.postalCode === undefined ? {} : { postalCode: row.postalCode }),
+    ...(row.rawAddress === undefined ? {} : { rawAddress: row.rawAddress }),
     rowNumber: row.rowNumber,
     sellerOrderKey: row.sellerOrderKey,
     shippedBoxes: row.shippedBoxes,
@@ -418,7 +444,25 @@ function validateSourceRow(row: DsvDispatchSourceRow): DsvDispatchPreviewIssue[]
   if ((row.latitude === null) !== (row.longitude === null)) issues.push(issue('LOCATION_INCOMPLETE', 'row', '위도와 경도는 함께 입력해야 합니다.'));
   if (row.latitude !== null && (row.latitude < -90 || row.latitude > 90)) issues.push(issue('LATITUDE_INVALID', 'latitude', '위도 범위가 올바르지 않습니다.'));
   if (row.longitude !== null && (row.longitude < -180 || row.longitude > 180)) issues.push(issue('LONGITUDE_INVALID', 'longitude', '경도 범위가 올바르지 않습니다.'));
+  const addressIssue = addressResolutionIssue(row.addressResolutionStatus);
+  if (addressIssue !== null) issues.push(addressIssue);
   return issues;
+}
+
+function addressResolutionIssue(
+  status: DsvAddressResolutionStatus | undefined,
+): DsvDispatchPreviewIssue | null {
+  if (status === undefined || status === 'RESOLVED') return null;
+  if (status === 'ADDRESS_ONLY') {
+    return issue('ADDRESS_COORDINATES_NOT_RESOLVED', 'address', '주소와 우편번호는 확인했지만 지도 좌표를 확정하지 못했습니다.', 'review');
+  }
+  if (status === 'AMBIGUOUS') {
+    return issue('ADDRESS_AMBIGUOUS', 'address', '동일 후보가 여러 개라 주소 정본을 확정하지 못했습니다.', 'review');
+  }
+  if (status === 'NOT_FOUND') {
+    return issue('ADDRESS_NOT_FOUND', 'address', '도로명주소와 우편번호를 확인하지 못했습니다.', 'review');
+  }
+  return issue('ADDRESS_SERVICE_UNAVAILABLE', 'address', '주소 정본화 서비스를 사용할 수 없습니다.', 'review');
 }
 
 function addCardinalityIssues(

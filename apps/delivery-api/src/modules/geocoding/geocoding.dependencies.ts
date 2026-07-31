@@ -1,5 +1,7 @@
 import { GeocodingService, SerializedGeocodingRateLimiter } from './geocoding.service.js';
 import { NominatimGeocodingClient } from './nominatim-geocoding.client.js';
+import type { GeocodingProviderMode } from './geocoding.types.js';
+import { VWorldGeocodingClient } from './vworld-geocoding.client.js';
 
 export type GeocodingRuntimeEnv = Partial<
   Record<
@@ -8,7 +10,8 @@ export type GeocodingRuntimeEnv = Partial<
     | 'GEOCODING_USER_AGENT'
     | 'GEOCODING_RATE_LIMIT_PER_SECOND'
     | 'GEOCODING_CACHE_TTL_DAYS'
-    | 'GEOCODING_TIMEOUT_MS',
+    | 'GEOCODING_TIMEOUT_MS'
+    | 'VWORLD_API_KEY',
     string
   >
 >;
@@ -19,6 +22,23 @@ const publicProviderLimiters = new Map<string, SerializedGeocodingRateLimiter>()
 export function loadGeocodingService(input: { env: GeocodingRuntimeEnv }): GeocodingService {
   const mode = readMode(input.env.GEOCODING_PROVIDER_MODE);
   if (mode === 'disabled') return new GeocodingService({ mode });
+  if (mode === 'vworld') {
+    const apiKey = readOptional(input.env.VWORLD_API_KEY);
+    return new GeocodingService({
+      minIntervalMs: Math.ceil(1000 / readVWorldRateLimit(input.env.GEOCODING_RATE_LIMIT_PER_SECOND)),
+      mode,
+      persistentCacheEnabled: readPersistentCacheSignal(input.env.GEOCODING_CACHE_TTL_DAYS),
+      ...(apiKey === undefined
+        ? {}
+        : {
+            provider: new VWorldGeocodingClient({
+              apiKey,
+              ...optionalTimeout(input.env.GEOCODING_TIMEOUT_MS),
+            }),
+          }),
+      providerPolicy: 'vworld',
+    });
+  }
 
   const searchUrl = readOptional(input.env.GEOCODING_SEARCH_URL) ?? PUBLIC_NOMINATIM_URL;
   const userAgent = readOptional(input.env.GEOCODING_USER_AGENT);
@@ -69,8 +89,9 @@ function readSharedPublicProviderLimiter(searchUrl: string): SerializedGeocoding
   return next;
 }
 
-function readMode(value: string | undefined): 'disabled' | 'nominatim_compatible' {
+function readMode(value: string | undefined): GeocodingProviderMode {
   const trimmed = value?.trim();
+  if (trimmed === 'vworld') return 'vworld';
   return trimmed === 'nominatim_compatible' ? 'nominatim_compatible' : 'disabled';
 }
 
@@ -78,6 +99,12 @@ function readRateLimit(value: string | undefined): number {
   const parsed = Number(value ?? '1');
   if (!Number.isFinite(parsed) || parsed <= 0) return 1;
   return Math.min(parsed, 1);
+}
+
+function readVWorldRateLimit(value: string | undefined): number {
+  const parsed = Number(value ?? '5');
+  if (!Number.isFinite(parsed) || parsed <= 0) return 5;
+  return Math.min(parsed, 10);
 }
 
 function readOptional(value: string | undefined): string | undefined {

@@ -68,7 +68,9 @@ export type DsvV1PageInfo = {
 };
 
 export type DsvV1SessionPrincipalInput = {
+  actorId?: string | null;
   customerId?: string | null;
+  displayName?: string | null;
   driverId?: string | null;
   principalType: DsvV1PrincipalType;
   scopes: readonly string[];
@@ -76,7 +78,9 @@ export type DsvV1SessionPrincipalInput = {
 };
 
 export type DsvV1SessionDto = {
+  actorId?: string;
   customerId?: string;
+  displayName?: string;
   driverId?: string;
   principalType: DsvV1PrincipalType;
   scopes: string[];
@@ -93,23 +97,35 @@ export type DsvV1RoutePlanStopEtaInput = {
 export type DsvV1SellerOrderSummaryRow = DsvV1RoutePlanStopEtaInput & {
   assignmentStatus: 'UNASSIGNED' | 'ASSIGNED';
   customerId: string;
+  destinationAddress?: string | null;
+  destinationDisplayName?: string | null;
   destinationId: string;
+  driverId?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
   routePlanId?: string | null;
   routeVersionId?: string | null;
   sellerOrderId: string;
   sellerOrderKey: string;
+  vehicleId?: string | null;
 };
 
 export type DsvV1SellerOrderSummaryDto = {
   assignmentStatus: 'UNASSIGNED' | 'ASSIGNED';
   customerId: string;
+  destinationAddress?: string;
+  destinationDisplayName?: string;
   destinationId: string;
+  driverId?: string;
   estimatedArrivalAt?: string;
   etaStatus: DsvV1EtaStatus;
+  latitude?: number;
+  longitude?: number;
   routePlanId?: string;
   routeVersionId?: string;
   sellerOrderId: string;
   sellerOrderKey: string;
+  vehicleId?: string;
 };
 
 export type DsvV1SellerOrderSummaryPageDto = {
@@ -130,11 +146,23 @@ export type DsvV1ControlSummaryInput = {
 export type DsvV1ControlSummaryDto = DsvV1ControlSummaryInput;
 
 export type DsvV1ProofRowInput = {
+  contentType?: string;
   deletedAt?: Date | string | null;
+  driverDisplayName?: string | null;
+  kind?: string;
+  originalFilename?: string | null;
+  proofId?: string;
+  sizeBytes?: number;
+  source?: string;
+  uploadedAt?: Date | string;
 };
 
 export type DsvV1EventRowInput = {
+  driverDisplayName?: string | null;
+  eventId?: string;
   eventType: string;
+  latitude?: number | null;
+  longitude?: number | null;
   occurredAt: Date | string;
 };
 
@@ -143,21 +171,45 @@ export type DsvV1EventSummaryDto = {
   type: string;
 };
 
+export type DsvV1RecordEventDto = DsvV1EventSummaryDto & {
+  driverDisplayName?: string;
+  eventId: string;
+  latitude?: number;
+  longitude?: number;
+};
+
+export type DsvV1RecordProofDto = {
+  contentType: string;
+  driverDisplayName?: string;
+  kind: string;
+  originalFilename?: string;
+  proofId: string;
+  sizeBytes: number;
+  source: string;
+  status: 'AVAILABLE' | 'EXPIRED';
+  uploadedAt: string;
+};
+
 export type DsvV1RecordRow = DsvV1RoutePlanStopEtaInput & {
   deliveryStatus: string;
+  destinationAddress?: string | null;
   destinationDisplayName: string;
   eventRows?: readonly DsvV1EventRowInput[];
   proofRows?: readonly DsvV1ProofRowInput[];
+  sellerOrderId: string;
   sellerOrderKey: string;
 };
 
 export type DsvV1RecordDto = {
   deliveryStatus: string;
+  destinationAddress?: string;
   destinationDisplayName: string;
   estimatedArrivalAt?: string;
   etaStatus: DsvV1EtaStatus;
-  eventSummary: DsvV1EventSummaryDto[];
+  eventSummary: DsvV1RecordEventDto[];
+  proofs: DsvV1RecordProofDto[];
   proofStatus: DsvV1EmittedProofStatus;
+  sellerOrderId: string;
   sellerOrderKey: string;
 };
 
@@ -184,8 +236,11 @@ export type DsvV1VehicleListItemRow = {
   displayName: string;
   driverAssignments: DsvV1VehicleDriverAssignmentRow[];
   status?: string | null;
+  telematicsCapabilities?: string[] | null;
+  telematicsSerialNumber?: string | null;
   vehicleId: string;
   vehiclePlate?: string | null;
+  vehicleType?: string | null;
 };
 
 export type DsvV1VehicleDriverAssignmentRow = {
@@ -197,8 +252,11 @@ export type DsvV1VehicleListItemDto = {
   displayName: string;
   driverAssignments: DsvV1VehicleDriverAssignmentDto[];
   status?: string;
+  telematicsCapabilities?: string[];
+  telematicsSerialNumber?: string;
   vehicleId: string;
   vehiclePlate?: string;
+  vehicleType?: string;
 };
 
 export type DsvV1VehicleDriverAssignmentDto = {
@@ -233,13 +291,17 @@ export type DsvV1DestinationListItemDto = {
 };
 
 export type DsvV1ConditionListItemRow = {
+  code: string;
   conditionId: string;
+  description: string;
   name: string;
   status?: string | null;
 };
 
 export type DsvV1ConditionListItemDto = {
+  code: string;
   conditionId: string;
+  description: string;
   name: string;
   status?: string;
 };
@@ -281,6 +343,11 @@ const allowedPublicEventTypes = new Set([
   'STOP_DELIVERED',
   'STOP_FAILED',
 ]);
+const allowedRecordEventTypes = new Set([
+  ...allowedPublicEventTypes,
+  'NOTE_ADDED',
+  'PICKUP_COMPLETED',
+]);
 
 export function toDsvV1SuccessEnvelope<TData>(data: TData, requestId: string): DsvV1SuccessEnvelope<TData> {
   return {
@@ -316,7 +383,9 @@ export function mapDsvV1PageInfo(input?: DsvV1PageInfo): DsvV1PageInfo | undefin
 
 export function mapDsvV1SessionPrincipal(input: DsvV1SessionPrincipalInput): DsvV1SessionDto {
   return {
+    ...(input.actorId === undefined || input.actorId === null ? {} : { actorId: input.actorId }),
     ...(input.customerId === undefined || input.customerId === null ? {} : { customerId: input.customerId }),
+    ...(input.displayName === undefined || input.displayName === null ? {} : { displayName: input.displayName }),
     ...(input.driverId === undefined || input.driverId === null ? {} : { driverId: input.driverId }),
     principalType: input.principalType,
     scopes: [...input.scopes],
@@ -328,13 +397,19 @@ export function mapDsvV1SellerOrderSummary(row: DsvV1SellerOrderSummaryRow): Dsv
   return {
     assignmentStatus: row.assignmentStatus,
     customerId: row.customerId,
+    ...(row.destinationAddress === undefined || row.destinationAddress === null ? {} : { destinationAddress: row.destinationAddress }),
+    ...(row.destinationDisplayName === undefined || row.destinationDisplayName === null ? {} : { destinationDisplayName: row.destinationDisplayName }),
     destinationId: row.destinationId,
+    ...(row.driverId === undefined || row.driverId === null ? {} : { driverId: row.driverId }),
     ...optionalIso('estimatedArrivalAt', row.estimatedArrivalAt),
     etaStatus: row.etaStatus,
+    ...(row.latitude === undefined || row.latitude === null ? {} : { latitude: row.latitude }),
+    ...(row.longitude === undefined || row.longitude === null ? {} : { longitude: row.longitude }),
     ...(row.routePlanId === undefined || row.routePlanId === null ? {} : { routePlanId: row.routePlanId }),
     ...(row.routeVersionId === undefined || row.routeVersionId === null ? {} : { routeVersionId: row.routeVersionId }),
     sellerOrderId: row.sellerOrderId,
     sellerOrderKey: row.sellerOrderKey,
+    ...(row.vehicleId === undefined || row.vehicleId === null ? {} : { vehicleId: row.vehicleId }),
   };
 }
 
@@ -363,11 +438,16 @@ export function mapDsvV1ControlSummary(input: DsvV1ControlSummaryInput): DsvV1Co
 export function mapDsvV1Record(row: DsvV1RecordRow): DsvV1RecordDto {
   return {
     deliveryStatus: row.deliveryStatus,
+    ...(row.destinationAddress === undefined || row.destinationAddress === null
+      ? {}
+      : { destinationAddress: row.destinationAddress }),
     destinationDisplayName: row.destinationDisplayName,
     ...optionalIso('estimatedArrivalAt', row.estimatedArrivalAt),
     etaStatus: row.etaStatus,
-    eventSummary: mapDsvV1EventSummary(row.eventRows ?? []),
+    eventSummary: mapDsvV1RecordEvents(row.eventRows ?? []),
+    proofs: mapDsvV1RecordProofs(row.proofRows ?? []),
     proofStatus: deriveDsvV1ProofStatus(row.proofRows ?? []),
+    sellerOrderId: row.sellerOrderId,
     sellerOrderKey: row.sellerOrderKey,
   };
 }
@@ -399,8 +479,15 @@ export function mapDsvV1VehicleListItem(row: DsvV1VehicleListItemRow): DsvV1Vehi
       driverId: assignment.driverId,
     })),
     ...(row.status === undefined || row.status === null ? {} : { status: row.status }),
+    ...(row.telematicsCapabilities === undefined || row.telematicsCapabilities === null
+      ? {}
+      : { telematicsCapabilities: row.telematicsCapabilities }),
+    ...(row.telematicsSerialNumber === undefined || row.telematicsSerialNumber === null
+      ? {}
+      : { telematicsSerialNumber: row.telematicsSerialNumber }),
     vehicleId: row.vehicleId,
     ...(row.vehiclePlate === undefined || row.vehiclePlate === null ? {} : { vehiclePlate: row.vehiclePlate }),
+    ...(row.vehicleType === undefined || row.vehicleType === null ? {} : { vehicleType: row.vehicleType }),
   };
 }
 
@@ -425,7 +512,9 @@ export function mapDsvV1DestinationListItem(row: DsvV1DestinationListItemRow): D
 
 export function mapDsvV1ConditionListItem(row: DsvV1ConditionListItemRow): DsvV1ConditionListItemDto {
   return {
+    code: row.code,
     conditionId: row.conditionId,
+    description: row.description,
     name: row.name,
     ...(row.status === undefined || row.status === null ? {} : { status: row.status }),
   };
@@ -479,6 +568,44 @@ export function mapDsvV1EventSummary(rows: readonly DsvV1EventRowInput[]): DsvV1
     return [{
       occurredAt: toIsoDateTime(row.occurredAt),
       type: row.eventType,
+    }];
+  });
+}
+
+export function mapDsvV1RecordEvents(rows: readonly DsvV1EventRowInput[]): DsvV1RecordEventDto[] {
+  return rows.flatMap((row) => {
+    if (!allowedRecordEventTypes.has(row.eventType) || row.eventId === undefined) return [];
+    return [{
+      ...(row.driverDisplayName === undefined || row.driverDisplayName === null ? {} : { driverDisplayName: row.driverDisplayName }),
+      eventId: row.eventId,
+      ...(row.latitude === undefined || row.latitude === null ? {} : { latitude: row.latitude }),
+      ...(row.longitude === undefined || row.longitude === null ? {} : { longitude: row.longitude }),
+      occurredAt: toIsoDateTime(row.occurredAt),
+      type: row.eventType,
+    }];
+  });
+}
+
+export function mapDsvV1RecordProofs(rows: readonly DsvV1ProofRowInput[]): DsvV1RecordProofDto[] {
+  return rows.flatMap((row) => {
+    if (
+      row.contentType === undefined
+      || row.kind === undefined
+      || row.proofId === undefined
+      || row.sizeBytes === undefined
+      || row.source === undefined
+      || row.uploadedAt === undefined
+    ) return [];
+    return [{
+      contentType: row.contentType,
+      ...(row.driverDisplayName === undefined || row.driverDisplayName === null ? {} : { driverDisplayName: row.driverDisplayName }),
+      kind: row.kind,
+      ...(row.originalFilename === undefined || row.originalFilename === null ? {} : { originalFilename: row.originalFilename }),
+      proofId: row.proofId,
+      sizeBytes: row.sizeBytes,
+      source: row.source,
+      status: row.deletedAt === null || row.deletedAt === undefined ? 'AVAILABLE' : 'EXPIRED',
+      uploadedAt: toIsoDateTime(row.uploadedAt),
     }];
   });
 }

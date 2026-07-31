@@ -110,6 +110,7 @@ describe('DSV v1 read routes', () => {
       for (const path of [
         '/dispatches?serviceDate=2026-07-23',
         '/control?serviceDate=2026-07-23',
+        '/map/profile',
         '/records?serviceDate=2026-07-23',
         '/drivers',
         '/vehicles',
@@ -153,6 +154,8 @@ describe('DSV v1 read routes', () => {
           displayName: 'Truck A',
           driverAssignments: [{ assignmentId: 'assignment-1', driverId: 'driver-1' }],
           status: 'ACTIVE',
+          telematicsCapabilities: ['LOCATION', 'TEMPERATURE', 'TACHOMETER'],
+          telematicsSerialNumber: '012-5273-8978',
           vehicleId: 'vehicle-1',
           vehiclePlate: '11A1111',
         }],
@@ -169,6 +172,8 @@ describe('DSV v1 read routes', () => {
           displayName: 'Truck A',
           driverAssignments: [{ assignmentId: 'assignment-1', driverId: 'driver-1' }],
           status: 'ACTIVE',
+          telematicsCapabilities: ['LOCATION', 'TEMPERATURE', 'TACHOMETER'],
+          telematicsSerialNumber: '012-5273-8978',
           vehicleId: 'vehicle-1',
           vehiclePlate: '11A1111',
         }],
@@ -178,6 +183,14 @@ describe('DSV v1 read routes', () => {
       expect(JSON.stringify(vehicleBody.data.items[0]?.driverAssignments)).not.toMatch(
         /kind|displayName|phone|vehicleId/u
       );
+
+      const mapProfile = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/map/profile',
+      });
+      expect(mapProfile.statusCode).toBe(200);
+      expectDsvV1Envelope(mapProfile, dsvMapProfile());
 
       const unsupported = await app.inject({
         headers: { cookie: admin.cookie },
@@ -191,6 +204,7 @@ describe('DSV v1 read routes', () => {
         '/session?extra=1',
         '/dispatches?extra=1',
         '/control?extra=1',
+        '/map/profile?extra=1',
         '/records?extra=1',
         '/drivers?extra=1',
         '/vehicles?extra=1',
@@ -241,6 +255,14 @@ describe('DSV v1 read routes', () => {
         });
         expect(response.statusCode, path).toBe(403);
       }
+
+      const customerMapProfile = await app.inject({
+        headers: { cookie: customer.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/map/profile',
+      });
+      expect(customerMapProfile.statusCode).toBe(200);
+      expectDsvV1Envelope(customerMapProfile, dsvMapProfile());
 
       const noResources = await app.inject({
         headers: { cookie: admin.cookie },
@@ -355,6 +377,25 @@ describe('DSV v1 read routes', () => {
     }
   });
 
+  test('fails closed when DSV map profile is not configured', async () => {
+    const { app } = await createHarness({ mapProfile: false });
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    try {
+      const response = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/map/profile',
+      });
+      expect(response.statusCode).toBe(503);
+      expectDsvV1Error(response, {
+        code: 'DEPENDENCY_UNAVAILABLE',
+        message: 'DSV map profile is not configured',
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('logout requires CSRF and clears only the configured DSV cookie', async () => {
     const { app } = await createHarness();
     const customer = signedCookie(`dsv-customer-account:${accountId}`);
@@ -382,7 +423,7 @@ describe('DSV v1 read routes', () => {
   });
 });
 
-async function createHarness(): Promise<{
+async function createHarness(options: { mapProfile?: false } = {}): Promise<{
   app: Awaited<ReturnType<typeof buildApp>>;
   queryService: MockQueryService;
   sessionResolver: MockSessionResolver;
@@ -391,12 +432,29 @@ async function createHarness(): Promise<{
   const sessionResolver = createSessionResolver();
   const dependencies: DsvV1ReadDependencies = {
     cookieName,
+    ...(options.mapProfile === false ? {} : { mapProfile: dsvMapProfile() }),
     queryService,
     secureCookies: false,
     sessionResolver,
     sessionSecret,
   };
   return { app: await buildApp({ dsvV1Read: dependencies }), queryService, sessionResolver };
+}
+
+function dsvMapProfile(): NonNullable<DsvV1ReadDependencies['mapProfile']> {
+  return {
+    attribution: 'OpenFreeMap © OpenMapTiles Data from OpenStreetMap',
+    bounds: [124.5, 33, 132, 39.5],
+    initialView: {
+      center: [126.995, 37.43],
+      zoom: 10.35,
+    },
+    profileId: 'dsv-korea-v1',
+    providerMode: 'public_allowlisted',
+    regionCode: 'KR',
+    styleUrl: '/map/styles/dsv-korea-v1.json',
+    version: '2026-07',
+  };
 }
 
 type MockQueryService = {
@@ -538,7 +596,8 @@ function expectDsvV1Error(response: JsonResponse, error: Omit<DsvV1ErrorBody['er
 
 function expectDsvAdminSessionData(data: unknown): void {
   const record = expectJsonRecord(data);
-  expect(Object.keys(record).sort()).toEqual(['principalType', 'scopes', 'shopId']);
+  expect(Object.keys(record).sort()).toEqual(['actorId', 'principalType', 'scopes', 'shopId']);
+  expect(record.actorId).toBe('legacy-env-admin');
   expect(record.principalType).toBe('DSV_ADMIN');
   expect(record.scopes).toEqual(expect.arrayContaining(['dsv:session:read', 'dsv:dispatches:read']));
   expect(record.shopId).toBe(shopId);

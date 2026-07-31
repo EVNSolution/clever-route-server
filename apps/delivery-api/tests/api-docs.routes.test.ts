@@ -104,6 +104,7 @@ describe('API documentation routes', () => {
         { method: 'get', path: '/api/dsv/v1/destinations' },
         { method: 'get', path: '/api/dsv/v1/dispatches' },
         { method: 'get', path: '/api/dsv/v1/drivers' },
+        { method: 'get', path: '/api/dsv/v1/map/profile' },
         { method: 'get', path: '/api/dsv/v1/records' },
         { method: 'post', path: '/api/dsv/v1/seller-orders/:sellerOrderId/assignment/reassign' },
         { method: 'post', path: '/api/dsv/v1/seller-orders/:sellerOrderId/assignment/unassign' },
@@ -140,6 +141,7 @@ describe('API documentation routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain('required: [displayName, driverAssignments, vehicleId]');
+      expect(response.body).toContain('maxItems: 1');
       expect(response.body).toContain('$ref: \'#/components/schemas/DsvV1VehicleDriverAssignmentListItem\'');
       expect(response.body).toContain('DsvV1VehicleDriverAssignmentListItem:');
       expect(response.body).toContain('required: [assignmentId, driverId]');
@@ -167,6 +169,24 @@ describe('API documentation routes', () => {
       expect(response.body).toContain('estimatedCompletionAt:');
       expect(response.body).toContain('enum: [ROUTE_STARTED, STOP_ARRIVED, PICKUP_COMPLETED]');
       expect(response.body).not.toMatch(/DriverEventEnvelope:[\s\S]*required: \[duplicate, eventId, status\]/u);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('GET /docs/openapi.yaml documents exact DSV v1 map and control scopes', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+
+      expect(response.statusCode).toBe(200);
+      expect(pathBlock(response.body, '/api/dsv/v1/control')).toContain(
+        "x-required-scopes: ['dsv:control:read']"
+      );
+      expect(pathBlock(response.body, '/api/dsv/v1/map/profile')).toContain(
+        'x-required-scopes: []'
+      );
     } finally {
       await app.close();
     }
@@ -226,6 +246,16 @@ function openApiRoutes(openApiYaml: string): Map<string, Set<RouteMethod>> {
   }
 
   return routes;
+}
+
+function pathBlock(openApiYaml: string, path: string): string {
+  const marker = `  ${path}:`;
+  const start = openApiYaml.indexOf(marker);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const nextPathOffset = openApiYaml.slice(start + marker.length).search(/\n {2}\/[^:\n]+:/u);
+  return nextPathOffset === -1
+    ? openApiYaml.slice(start)
+    : openApiYaml.slice(start, start + marker.length + nextPathOffset);
 }
 
 function missingDocumentedRoutes(

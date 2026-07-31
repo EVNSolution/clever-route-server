@@ -170,7 +170,7 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
     ].sort());
   });
 
-  test('paginates records from occurredAt and event id without omitting later events beyond limit plus one stops', async () => {
+  test('paginates one record per delivery stop and keeps each stop event timeline intact', async () => {
     const fixture = await createRecordPaginationFixture(prisma, createdShopIds, 'record-pagination');
     const service = new PrismaDsvV1ReadQueryService(prisma, () => new Date('2026-07-22T15:30:00.000Z'));
 
@@ -187,10 +187,11 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
     } while (cursor !== null);
     const eventSummaries = pages.flatMap((page) => page.items.flatMap((item) => item.eventRows ?? []));
 
-    expect(eventSummaries.map((event) => `${new Date(event.occurredAt).toISOString()}:${event.eventType}`)).toEqual(fixture.expectedEvents);
+    expect(eventSummaries.map((event) => `${new Date(event.occurredAt).toISOString()}:${event.eventType}`).sort())
+      .toEqual([...fixture.expectedEvents].sort());
     expect(new Set(eventSummaries.map((event) => `${new Date(event.occurredAt).toISOString()}:${event.eventType}`)).size)
       .toBe(fixture.expectedEvents.length);
-    expect(pages.map((page) => page.items).flat()).toHaveLength(fixture.expectedEvents.length + 1);
+    expect(pages.map((page) => page.items).flat()).toHaveLength(5);
   });
 
   test('keeps a shop-A synthetic record when its only public event belongs to shop B', async () => {
@@ -211,7 +212,9 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
       eventRows: [],
       sellerOrderKey: fixture.orderKey,
     });
-    expect(result.items[0]?.proofRows).toEqual([{ deletedAt: fixture.expiredAt }]);
+    expect(result.items[0]?.proofRows).toEqual([
+      expect.objectContaining({ deletedAt: fixture.expiredAt }),
+    ]);
     expect(deriveDsvV1ProofStatus(result.items[0]?.proofRows ?? [])).toBe('EXPIRED');
     expect(JSON.stringify(result.items)).not.toContain(fixture.crossShopEventId);
   });

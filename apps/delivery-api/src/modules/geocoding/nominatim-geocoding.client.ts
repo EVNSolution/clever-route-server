@@ -13,6 +13,7 @@ export type NominatimGeocodingClientOptions = {
 };
 
 type NominatimSearchItem = {
+  address?: unknown;
   display_name?: unknown;
   lat?: unknown;
   lon?: unknown;
@@ -39,6 +40,7 @@ export class NominatimGeocodingClient implements GeocodingProvider {
 
   async geocodeAddress(query: GeocodingQuery): Promise<GeocodingLookupResult | null> {
     const url = new URL(this.searchUrl);
+    url.searchParams.set('addressdetails', '1');
     url.searchParams.set('format', 'jsonv2');
     url.searchParams.set('limit', '1');
     applyQueryParams(url, query);
@@ -125,10 +127,17 @@ function toResult(value: unknown, query: GeocodingQuery): GeocodingLookupResult 
     addressLabel: query.shape,
     latitude,
     longitude,
+    postalCode: readPostalCode(item.address),
     provider: 'nominatim_compatible',
     providerPlaceId: readPlaceId(item),
     rawLabel: null
   };
+}
+
+function readPostalCode(value: unknown): string | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const postcode = (value as Record<string, unknown>).postcode;
+  return typeof postcode === 'string' && postcode.trim() !== '' ? postcode.trim() : null;
 }
 
 function readCoordinate(value: unknown, kind: 'latitude' | 'longitude'): number | null {

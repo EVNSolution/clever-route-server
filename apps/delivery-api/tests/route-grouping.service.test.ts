@@ -151,6 +151,17 @@ describe('route grouping contracts', () => {
     expect(source).toContain("'route draft route keys must be unique'");
   });
 
+  test('allows draft saves to persist a validated vehicle on child route plans', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const types = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.types.ts'), 'utf8');
+
+    expect(types).toContain('vehicleId?: string | null');
+    expect(source).toContain('async function readRouteVehicleId');
+    expect(source).toContain("throw new RouteGroupingValidationError(['vehicle must belong to the current shop'])");
+    expect(source).toContain('vehicleIdByRoute.set(route, route.vehicleId === undefined');
+    expect(source).toContain('vehicleId: input.vehicleId ?? null');
+  });
+
   test('server fills missing draft-save OSRM cache instead of relying on frontend optimized payloads', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain('await lockRouteGroupingDraftSave(tx, group.id)');

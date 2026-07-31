@@ -11,11 +11,17 @@ import {
   type RouteOpsUiSettingsDto,
 } from "../route-ops/route-ops-ui-settings.js";
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
+import {
+  normalizeDsvOperationalSettings,
+  validateDsvOperationalSettings,
+  type DsvOperationalSettings,
+} from '../dsv/dsv-operational-settings.js';
 
 export type AdminStoreSettings = {
   defaultDepotAddress: string | null;
   defaultDepotLatitude: number | null;
   defaultDepotLongitude: number | null;
+  dsvOperationalSettings?: DsvOperationalSettings;
   locale: string;
   routeOpsUiSettings: RouteOpsUiSettingsDto;
   routeScopeConfig: RouteScopeConfigDto;
@@ -26,6 +32,7 @@ export type SaveAdminStoreSettingsInput = {
   defaultDepotAddress: string | null;
   defaultDepotLatitude: number | null;
   defaultDepotLongitude: number | null;
+  dsvOperationalSettings?: DsvOperationalSettings;
   locale: string;
   routeOpsUiSettings?: RouteOpsUiSettingsDto;
   routeScopeConfig?: RouteScopeConfigDto;
@@ -45,6 +52,7 @@ export class PrismaAdminStoreSettingsService {
         defaultDepotAddress: true,
         defaultDepotLatitude: true,
         defaultDepotLongitude: true,
+        dsvOperationalSettings: true,
         locale: true,
         routeOpsUiSettings: true,
         routeScopeConfig: true,
@@ -66,11 +74,16 @@ export class PrismaAdminStoreSettingsService {
       input.routeOpsUiSettings === undefined
         ? undefined
         : validateRouteOpsUiSettingsPayload(input.routeOpsUiSettings);
+    const dsvOperationalSettings =
+      input.dsvOperationalSettings === undefined
+        ? undefined
+        : validateDsvOperationalSettings(input.dsvOperationalSettings);
     const shop = await this.prisma.shop.upsert({
       create: {
         defaultDepotAddress: input.defaultDepotAddress,
         defaultDepotLatitude: input.defaultDepotLatitude,
         defaultDepotLongitude: input.defaultDepotLongitude,
+        ...(dsvOperationalSettings === undefined ? {} : { dsvOperationalSettings }),
         locale: input.locale,
         ...(routeOpsUiSettings === undefined ? {} : { routeOpsUiSettings }),
         ...(routeScopeConfig === undefined ? {} : { routeScopeConfig }),
@@ -80,6 +93,7 @@ export class PrismaAdminStoreSettingsService {
         defaultDepotAddress: true,
         defaultDepotLatitude: true,
         defaultDepotLongitude: true,
+        dsvOperationalSettings: true,
         locale: true,
         routeOpsUiSettings: true,
         routeScopeConfig: true,
@@ -89,6 +103,7 @@ export class PrismaAdminStoreSettingsService {
         defaultDepotAddress: input.defaultDepotAddress,
         defaultDepotLatitude: input.defaultDepotLatitude,
         defaultDepotLongitude: input.defaultDepotLongitude,
+        ...(dsvOperationalSettings === undefined ? {} : { dsvOperationalSettings }),
         locale: input.locale,
         ...(routeOpsUiSettings === undefined ? {} : { routeOpsUiSettings }),
         ...(routeScopeConfig === undefined ? {} : { routeScopeConfig }),
@@ -103,6 +118,7 @@ function toAdminStoreSettings(input: {
   defaultDepotAddress: unknown;
   defaultDepotLatitude: unknown;
   defaultDepotLongitude: unknown;
+  dsvOperationalSettings: unknown;
   locale: string | null;
   routeOpsUiSettings: unknown;
   routeScopeConfig: unknown;
@@ -115,6 +131,7 @@ function toAdminStoreSettings(input: {
         : null,
     defaultDepotLatitude: decimalToNumber(input.defaultDepotLatitude),
     defaultDepotLongitude: decimalToNumber(input.defaultDepotLongitude),
+    dsvOperationalSettings: normalizeDsvOperationalSettings(input.dsvOperationalSettings),
     locale: input.locale ?? "en-CA",
     routeOpsUiSettings: normalizeRouteOpsUiSettings(input.routeOpsUiSettings),
     routeScopeConfig: normalizeRouteScopeConfig(input.routeScopeConfig),

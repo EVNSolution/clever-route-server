@@ -19,7 +19,7 @@ export function defaultRouteOpsSettings(
 
 export function toRouteOpsSettingsDto(
   settings: AdminStoreSettings,
-): AdminStoreSettings {
+): Omit<AdminStoreSettings, "dsvOperationalSettings"> {
   return {
     defaultDepotAddress: settings.defaultDepotAddress,
     defaultDepotLatitude: settings.defaultDepotLatitude,

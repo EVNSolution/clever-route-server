@@ -7,6 +7,7 @@ export type DsvDriverInput = {
   career: string;
   gender: string;
   name: string;
+  phone?: string;
   score: string;
   traits: string[];
   zone: string;
@@ -55,10 +56,12 @@ export class DsvResourceNotFoundError extends Error {
 }
 
 export class DsvResourceConflictError extends Error {
-  constructor(readonly code: 'ASSIGNMENT_EXISTS' | 'DRIVER_NAME_EXISTS' | 'VEHICLE_PLATE_EXISTS') {
+  constructor(readonly code: 'ASSIGNMENT_EXISTS' | 'DRIVER_ASSIGNMENT_EXISTS' | 'DRIVER_NAME_EXISTS' | 'VEHICLE_ASSIGNMENT_EXISTS' | 'VEHICLE_PLATE_EXISTS') {
     super({
-      ASSIGNMENT_EXISTS: '이미 배정된 배송원입니다.',
+      ASSIGNMENT_EXISTS: '이미 기본 배정된 차량 또는 배송원입니다.',
+      DRIVER_ASSIGNMENT_EXISTS: '이미 기본 배정된 배송원입니다.',
       DRIVER_NAME_EXISTS: '같은 이름의 배송원이 이미 등록되어 있습니다.',
+      VEHICLE_ASSIGNMENT_EXISTS: '이미 기본 배정된 차량입니다.',
       VEHICLE_PLATE_EXISTS: '같은 차량 번호가 이미 등록되어 있습니다.',
     }[code]);
     this.name = 'DsvResourceConflictError';
@@ -100,7 +103,8 @@ export class PrismaDsvResourceService implements DsvResourceService {
       const driver = await this.prisma.driver.create({
         data: {
           displayName: input.name,
-          dsvProfile: { create: { ...driverProfileData(input), lookupName: input.name, shopId: shop.id } },
+          dsvProfile: { create: { ...driverProfileData(input), lookupName: input.name } },
+          phone: normalizedPhone(input.phone),
           shopId: shop.id,
           status: 'ACTIVE',
         },
@@ -119,7 +123,13 @@ export class PrismaDsvResourceService implements DsvResourceService {
       const driver = await this.prisma.$transaction(async (tx) => {
         const profile = await tx.dsvDriverProfile.findFirst({ where: { driverId: input.driverId, shopId: shop.id } });
         if (profile === null) throw new DsvResourceNotFoundError('driver');
-        await tx.driver.update({ data: { displayName: input.name }, where: { id: input.driverId, shopId: shop.id } });
+        await tx.driver.update({
+          data: {
+            displayName: input.name,
+            ...(input.phone === undefined ? {} : { phone: normalizedPhone(input.phone) }),
+          },
+          where: { id: input.driverId, shopId: shop.id },
+        });
         await tx.dsvDriverProfile.update({
           data: { ...driverProfileData(input), lookupName: input.name },
           where: { driverId: input.driverId },
@@ -146,7 +156,7 @@ export class PrismaDsvResourceService implements DsvResourceService {
     try {
       const vehicle = await this.prisma.vehicle.create({
         data: {
-          dsvProfile: { create: { note: input.note, shopId: shop.id, typeLabel: input.type } },
+          dsvProfile: { create: { note: input.note, typeLabel: input.type } },
           label: input.type,
           licensePlate: input.plate,
           shopId: shop.id,
@@ -200,18 +210,35 @@ export class PrismaDsvResourceService implements DsvResourceService {
     vehicleId: string;
   }): Promise<DsvVehicleDriverAssignmentView> {
     const shop = await this.requireShop(input.shopDomain);
-    const [driver, vehicle] = await Promise.all([
-      this.prisma.dsvDriverProfile.findFirst({ select: { driverId: true }, where: { driverId: input.driverId, shopId: shop.id } }),
-      this.prisma.dsvVehicleProfile.findFirst({ select: { vehicleId: true }, where: { shopId: shop.id, vehicleId: input.vehicleId } }),
+    const [driver, vehicle, existingDriverAssignment, existingVehicleAssignment] = await Promise.all([
+      this.prisma.driver.findFirst({
+        select: { id: true },
+        where: { dsvProfile: { isNot: null }, id: input.driverId, shopId: shop.id, status: 'ACTIVE' },
+      }),
+      this.prisma.vehicle.findFirst({
+        select: { id: true },
+        where: { dsvProfile: { isNot: null }, id: input.vehicleId, shopId: shop.id, status: 'ACTIVE' },
+      }),
+      this.prisma.dsvVehicleDriverAssignment.findFirst({
+        select: { id: true },
+        where: { driverId: input.driverId, shopId: shop.id },
+      }),
+      this.prisma.dsvVehicleDriverAssignment.findFirst({
+        select: { id: true },
+        where: { shopId: shop.id, vehicleId: input.vehicleId },
+      }),
     ]);
     if (driver === null) throw new DsvResourceNotFoundError('driver');
     if (vehicle === null) throw new DsvResourceNotFoundError('vehicle');
+    if (existingDriverAssignment !== null) throw new DsvResourceConflictError('DRIVER_ASSIGNMENT_EXISTS');
+    if (existingVehicleAssignment !== null) throw new DsvResourceConflictError('VEHICLE_ASSIGNMENT_EXISTS');
     try {
       return assignmentView(await this.prisma.dsvVehicleDriverAssignment.create({
         data: { createdBy: input.actor, driverId: input.driverId, shopId: shop.id, vehicleId: input.vehicleId },
       }));
     } catch (error) {
-      if (isUniqueConflict(error)) throw new DsvResourceConflictError('ASSIGNMENT_EXISTS');
+      if (isUniqueConflict(error)) throw new DsvResourceConflictError(assignmentConflictCode(error));
+      if (isForeignKeyConflict(error)) throw new DsvResourceNotFoundError(foreignKeyResource(error));
       throw error;
     }
   }
@@ -247,7 +274,7 @@ function driverProfileData(input: DsvDriverInput) {
 }
 
 function driverView(
-  driver: { displayName: string; id: string },
+  driver: { displayName: string; id: string; phone?: string | null },
   profile: { age: number; career: string; gender: string; score: string; traits: string[]; zone: string },
 ): DsvDriverView {
   return {
@@ -256,10 +283,16 @@ function driverView(
     gender: profile.gender,
     id: driver.id,
     name: driver.displayName,
+    ...(driver.phone === null || driver.phone === undefined ? {} : { phone: driver.phone }),
     score: profile.score,
     traits: profile.traits,
     zone: profile.zone,
   };
+}
+
+function normalizedPhone(phone: string | undefined): string | null {
+  const normalized = phone?.trim();
+  return normalized === undefined || normalized === '' ? null : normalized;
 }
 
 function vehicleView(
@@ -283,10 +316,26 @@ function vehicleType(type: string): 'BIKE' | 'CAR' | 'OTHER' | 'SCOOTER' | 'TRUC
   return 'OTHER';
 }
 
-function isUniqueConflict(error: unknown): boolean {
+function isUniqueConflict(error: unknown): error is Prisma.PrismaClientKnownRequestError {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
 }
 
 function isNotFound(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025';
+}
+
+function isForeignKeyConflict(error: unknown): error is Prisma.PrismaClientKnownRequestError {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003';
+}
+
+function assignmentConflictCode(error: Prisma.PrismaClientKnownRequestError): 'DRIVER_ASSIGNMENT_EXISTS' | 'VEHICLE_ASSIGNMENT_EXISTS' {
+  const target = error.meta?.target;
+  const targetText = Array.isArray(target) ? target.join(' ') : typeof target === 'string' ? target : '';
+  return /vehicleId/u.test(targetText) ? 'VEHICLE_ASSIGNMENT_EXISTS' : 'DRIVER_ASSIGNMENT_EXISTS';
+}
+
+function foreignKeyResource(error: Prisma.PrismaClientKnownRequestError): 'driver' | 'vehicle' {
+  const field = error.meta?.field_name;
+  const fieldText = typeof field === 'string' ? field : '';
+  return /vehicle/i.test(fieldText) ? 'vehicle' : 'driver';
 }

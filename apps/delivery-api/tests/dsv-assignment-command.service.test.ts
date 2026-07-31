@@ -71,6 +71,76 @@ describe('DsvAssignmentCommandService', () => {
     expect(receiptUpdate.where).toMatchObject({ status: 'STARTED' });
   });
 
+  test('reassign without target route uses the selected driver ready route when it exists', async () => {
+    const harness = createHarness();
+
+    await harness.service.reassign({
+      ...adminInput({ commandId: 'cmd-reassign-existing-driver-route' }),
+      targetDriverId: 'driver-b',
+      targetVehicleId: 'vehicle-b',
+    });
+
+    expect(harness.routeGroupingService.saveDraft).toHaveBeenCalledTimes(1);
+    const routes = harness.savedRoutes();
+    expect(routes.find((route: RouteGroupingDraftRouteInput) => route.routePlanId === 'route-a')?.orderIds).toEqual([]);
+    expect(routes.find((route: RouteGroupingDraftRouteInput) => route.routePlanId === 'route-b')?.orderIds).toEqual(['order-a']);
+    expect(routes).not.toContainEqual(expect.objectContaining({ routePlanId: null, vehicleId: 'vehicle-b' }));
+  });
+
+  test('reassign without target route creates a driver draft route and requires a target vehicle', async () => {
+    const missingVehicle = createHarness();
+    await expect(missingVehicle.service.reassign({
+      ...adminInput({ commandId: 'cmd-reassign-new-route-no-vehicle' }),
+      targetDriverId: 'driver-c',
+    })).rejects.toMatchObject({
+      code: 'SELLER_ORDER_TARGET_VEHICLE_REQUIRED',
+    } satisfies Partial<DsvAssignmentCommandError>);
+    expect(missingVehicle.routeGroupingService.saveDraft).not.toHaveBeenCalled();
+
+    const harness = createHarness();
+    const result = await harness.service.reassign({
+      ...adminInput({ commandId: 'cmd-reassign-new-route' }),
+      targetDriverId: 'driver-c',
+      targetSequence: 1,
+      targetVehicleId: 'vehicle-c',
+    });
+
+    expect(result).toMatchObject({
+      assignmentStatus: 'ASSIGNED',
+      newRouteVersionId: 'version-route-new',
+      routePlanId: 'route-new',
+    });
+    const newRoute = harness.savedRoutes().find((route: RouteGroupingDraftRouteInput) => route.routePlanId === null && route.driverId === 'driver-c');
+    expect(newRoute).toMatchObject({
+      orderIds: ['order-a'],
+      vehicleId: 'vehicle-c',
+    });
+    expect(harness.updatedRoutePlanStops().at(-1)).toMatchObject({
+      data: { etaInputRouteVersionId: 'version-route-new', etaStatus: 'PENDING' },
+      where: { routePlanId: 'route-new' },
+    });
+  });
+
+  test('reassign preserves other imported orders that have not been assigned to a route yet', async () => {
+    const harness = createHarness({
+      grouping: {
+        ...groupingFixture(),
+        assignments: [assignment('order-a', 1), assignment('order-b', 2)],
+        children: [],
+      },
+    });
+
+    await harness.service.reassign({
+      ...adminInput({ commandId: 'cmd-reassign-imported-order', expectedVersion: 'UNASSIGNED' }),
+      targetDriverId: 'driver-c',
+      targetVehicleId: 'vehicle-c',
+    });
+
+    const routes = harness.savedRoutes();
+    expect(routes.find((route) => route.driverId === null)?.orderIds).toEqual(['order-b']);
+    expect(routes.find((route) => route.driverId === 'driver-c')?.orderIds).toEqual(['order-a']);
+  });
+
   test('replays a succeeded command and rejects same id with different payload or STARTED receipt', async () => {
     const replay = createHarness({
       existingReceipt: {
@@ -272,9 +342,12 @@ function createHarness(input: {
   grouping?: RouteGroupingDetailDto;
 } = {}) {
   const grouping = input.grouping ?? groupingFixture();
-  let currentRouteVersionId: string | null = grouping.children.find((child) => child.orderIds.includes('order-a'))?.routePlanId === 'route-unassigned'
-    ? 'version-unassigned'
-    : 'version-route-a';
+  const initialOwner = grouping.children.find((child) => child.orderIds.includes('order-a'));
+  let currentRouteVersionId: string | null = initialOwner === undefined
+    ? null
+    : initialOwner.routePlanId === 'route-unassigned'
+      ? 'version-unassigned'
+      : 'version-route-a';
   const routeGroupingService: Pick<RouteGroupingService, 'getGrouping' | 'saveDraft'> = {
     getGrouping: vi.fn<RouteGroupingService['getGrouping']>(() => Promise.resolve(grouping)),
     saveDraft: vi.fn<RouteGroupingService['saveDraft']>((draftInput) => Promise.resolve(groupingFromDraftRoutes(grouping, draftInput.routes))),
@@ -298,6 +371,18 @@ function createHarness(input: {
         return Promise.resolve({ count: 1 });
       }),
     },
+    dsvVehicleDriverAssignment: {
+      findFirst: vi.fn((args: { where?: { driverId?: string; vehicleId?: string } }) => {
+        const expectedVehicleId = args.where?.driverId === 'driver-a'
+          ? 'vehicle-a'
+          : args.where?.driverId === 'driver-b'
+            ? 'vehicle-b'
+            : args.where?.driverId === 'driver-c'
+              ? 'vehicle-c'
+              : undefined;
+        return Promise.resolve(expectedVehicleId === args.where?.vehicleId ? { id: `assignment-${args.where?.driverId}` } : null);
+      }),
+    },
     order: {
       findFirst: vi.fn((args: { select?: { currentRouteVersionId?: boolean } }) => Promise.resolve(
         args.select?.currentRouteVersionId === true
@@ -314,9 +399,11 @@ function createHarness(input: {
         if (args.where?.currentOrders !== undefined) return { groupingId: 'grouping-1' };
         if (args.where?.id === 'version-route-a') return { groupingId: 'grouping-1', routePlanId: 'route-a' };
         if (args.where?.id === 'version-route-b') return { groupingId: 'grouping-1', routePlanId: 'route-b' };
+        if (args.where?.id === 'version-route-new') return { groupingId: 'grouping-1', routePlanId: 'route-new' };
         if (args.where?.id === 'version-unassigned') return { groupingId: 'grouping-1', routePlanId: 'route-unassigned' };
         if (args.where?.routePlanId === 'route-a') return { driverId: 'driver-a', id: 'version-route-a', routePlanId: 'route-a' };
         if (args.where?.routePlanId === 'route-b') return { driverId: 'driver-b', id: 'version-route-b', routePlanId: 'route-b' };
+        if (args.where?.routePlanId === 'route-new') return { driverId: 'driver-c', id: 'version-route-new', routePlanId: 'route-new' };
         if (args.where?.routePlanId === 'route-unassigned') return { driverId: null, id: 'version-unassigned', routePlanId: 'route-unassigned' };
         return Promise.resolve(null);
       }),
@@ -328,6 +415,7 @@ function createHarness(input: {
       findFirst: vi.fn((args: { where?: { id?: string } }) => {
         if (args.where?.id === 'route-a') return Promise.resolve({ vehicleId: 'vehicle-a' });
         if (args.where?.id === 'route-b') return Promise.resolve({ vehicleId: 'vehicle-b' });
+        if (args.where?.id === 'route-new') return Promise.resolve({ vehicleId: 'vehicle-c' });
         if (args.where?.id === 'route-unassigned') return Promise.resolve({ vehicleId: null });
         return Promise.resolve(null);
       }),
@@ -338,6 +426,14 @@ function createHarness(input: {
     },
     shop: {
       findUnique: vi.fn(() => Promise.resolve({ id: 'shop-1' })),
+    },
+    vehicle: {
+      findFirst: vi.fn((args: { where?: { id?: string } }) => {
+        if (args.where?.id === 'vehicle-a' || args.where?.id === 'vehicle-b' || args.where?.id === 'vehicle-c') {
+          return Promise.resolve({ id: args.where.id });
+        }
+        return Promise.resolve(null);
+      }),
     },
   };
   const service = new DsvAssignmentCommandService(prisma as never, routeGroupingService as RouteGroupingService);
@@ -410,12 +506,21 @@ function sortJson(value: unknown): unknown {
 }
 
 function groupingFromDraftRoutes(grouping: RouteGroupingDetailDto, routes: RouteGroupingDraftRouteInput[]): RouteGroupingDetailDto {
+  const newDriverRoutes = routes
+    .filter((route) => route.routePlanId === null && route.driverId !== null && route.driverId !== undefined)
+    .map((route) => child({
+      driverId: route.driverId ?? null,
+      orderIds: route.orderIds,
+      routePlanId: 'route-new',
+      sortOrder: route.sortOrder ?? 4,
+      vehicleId: route.vehicleId ?? null,
+    }));
   return {
     ...grouping,
-    children: grouping.children.map((child) => ({
+    children: [...grouping.children.map((child) => ({
       ...child,
       orderIds: routes.find((route) => route.routePlanId === child.routePlanId)?.orderIds ?? child.orderIds,
-    })),
+    })), ...newDriverRoutes],
   };
 }
 

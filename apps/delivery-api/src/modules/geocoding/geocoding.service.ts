@@ -3,18 +3,23 @@ import {
   type GeocodingAddress,
   type GeocodingFailureCode,
   type GeocodingLookupResult,
+  type GeocodingPlaceCandidate,
   type GeocodingProvider,
   type GeocodingQuery,
   type GeocodingQueryShape,
   type GeocodingResult,
 } from './geocoding.types.js';
 
-export type GeocodingProviderPolicy = 'disabled' | 'private_nominatim_compatible' | 'public_nominatim';
+export type GeocodingProviderPolicy =
+  | 'disabled'
+  | 'private_nominatim_compatible'
+  | 'public_nominatim'
+  | 'vworld';
 
 export type GeocodingServiceOptions = {
   maxRetries?: number;
   minIntervalMs?: number;
-  mode: 'disabled' | 'nominatim_compatible';
+  mode: 'disabled' | 'nominatim_compatible' | 'vworld';
   persistentCacheEnabled?: boolean;
   provider?: GeocodingProvider;
   providerPolicy?: GeocodingProviderPolicy;
@@ -81,7 +86,11 @@ export class GeocodingService {
     this.provider = options.provider;
     this.providerPolicy =
       options.providerPolicy ??
-      (options.mode === 'disabled' ? 'disabled' : 'private_nominatim_compatible');
+      (options.mode === 'disabled'
+        ? 'disabled'
+        : options.mode === 'vworld'
+          ? 'vworld'
+          : 'private_nominatim_compatible');
     this.rateLimiter = options.rateLimiter ?? new SerializedGeocodingRateLimiter();
     this.requirePersistentCache = options.requirePersistentCache === true;
   }
@@ -121,7 +130,7 @@ export class GeocodingService {
     }
 
     const provider = this.provider;
-    const result = await this.runSerialized(async () => {
+    const lookupTask = async (): Promise<GeocodingResult> => {
       const state: ProviderCallState = { attemptCount: 0, queryShapes: [] };
       let sawInvalidResult = false;
       for (const lookupQuery of queries) {
@@ -160,11 +169,30 @@ export class GeocodingService {
         ok: false,
         queryShapes,
       } satisfies GeocodingResult;
-    });
+    };
+    const result =
+      this.providerPolicy === 'vworld'
+        ? await lookupTask()
+        : await this.runSerialized(lookupTask);
     if (result.ok || result.transient !== true) {
       this.cache.set(key, { cachedAt: Date.now(), result });
     }
     return result;
+  }
+
+  async searchPlaces(input: { limit?: number; text: string }): Promise<GeocodingPlaceCandidate[]> {
+    const text = input.text.normalize('NFKC').replace(/\s+/gu, ' ').trim();
+    if (
+      text === ''
+      || this.mode === 'disabled'
+      || this.provider?.searchPlaces === undefined
+    ) return [];
+
+    await this.waitForProviderRateLimit();
+    return this.provider.searchPlaces({
+      limit: Math.max(1, Math.min(10, Math.floor(input.limit ?? 10))),
+      text,
+    });
   }
 
   private async geocodeQuery(
@@ -432,7 +460,15 @@ function keepsUnitInStructuredShape(shape: GeocodingQuery['shape']): boolean {
 }
 
 function addressParts(address: GeocodingAddress): Array<string | null> {
-  return [cleanPostalCode(address.postalCode), address.address1, address.address2, address.city, address.province, address.countryCode];
+  const countryCode = countryCodeFilter(address.countryCode);
+  return [
+    cleanPostalCode(address.postalCode),
+    address.address1,
+    address.address2,
+    address.city,
+    address.province,
+    countryCode === 'kr' ? null : address.countryCode,
+  ];
 }
 
 function normalizeAddressParts(parts: Array<string | null>): string | null {
@@ -471,6 +507,7 @@ function countryName(value: string | null): string | null {
   const countryCode = clean(value)?.toUpperCase() ?? null;
   if (countryCode === null) return null;
   if (countryCode === 'CA' || countryCode === 'CAN') return 'Canada';
+  if (countryCode === 'KR' || countryCode === 'KOR') return 'South Korea';
   if (countryCode === 'US' || countryCode === 'USA') return 'United States';
   return countryCode;
 }
@@ -479,6 +516,7 @@ function countryCodeFilter(value: string | null): string | null {
   const countryCode = clean(value)?.toLowerCase() ?? null;
   if (countryCode === null) return null;
   if (countryCode === 'ca' || countryCode === 'can') return 'ca';
+  if (countryCode === 'kr' || countryCode === 'kor') return 'kr';
   if (countryCode === 'us' || countryCode === 'usa') return 'us';
   return /^[a-z]{2}$/u.test(countryCode) ? countryCode : null;
 }
@@ -550,13 +588,16 @@ function isPlausibleCoordinateForAddress(
     countryCode === 'CAN' ||
     /^[A-Z][0-9][A-Z] [0-9][A-Z][0-9]$/u.test(postalCode ?? '');
 
-  if (!looksCanadian) return true;
-
-  if (!isWithinBounds(latitude, longitude, CANADA_BOUNDS)) return false;
-  if (province === 'ON' || province === 'ONTARIO') {
-    return isWithinBounds(latitude, longitude, ONTARIO_BOUNDS);
+  if (looksCanadian) {
+    if (!isWithinBounds(latitude, longitude, CANADA_BOUNDS)) return false;
+    if (province === 'ON' || province === 'ONTARIO') {
+      return isWithinBounds(latitude, longitude, ONTARIO_BOUNDS);
+    }
+    return true;
   }
-  return true;
+
+  const looksSouthKorean = countryCode === 'KR' || countryCode === 'KOR';
+  return !looksSouthKorean || isWithinBounds(latitude, longitude, SOUTH_KOREA_BOUNDS);
 }
 
 type CoordinateBounds = {
@@ -578,6 +619,13 @@ const ONTARIO_BOUNDS: CoordinateBounds = {
   maxLng: -74,
   minLat: 41,
   minLng: -96,
+};
+
+const SOUTH_KOREA_BOUNDS: CoordinateBounds = {
+  maxLat: 39.5,
+  maxLng: 132,
+  minLat: 32.5,
+  minLng: 124,
 };
 
 function isWithinBounds(latitude: number, longitude: number, bounds: CoordinateBounds): boolean {

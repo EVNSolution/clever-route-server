@@ -41,15 +41,29 @@ const g011MigrationName = '20260723023000_g011_production_baseline_drift_repair'
 const g011MigrationPath = new URL(`../prisma/migrations/${g011MigrationName}/migration.sql`, import.meta.url);
 const adminStopActionsMigrationName = '20260723120000_add_admin_route_stop_actions';
 const notificationOutboxMigrationName = '20260723170000_add_customer_notification_outbox_worker';
+const operationalSettingsMigrationName = '20260727150000_add_dsv_operational_settings';
+const vehicleDriverOneToOneMigrationName = '20260727161000_enforce_dsv_vehicle_driver_one_to_one';
 const driverAccountDeletionMigrationName = '20260727180000_scope_deletion_request_to_driver_account';
+const dsvAdminAccountsMigrationName = '20260727190000_add_dsv_admin_accounts';
+const dsvVehicleTelematicsMigrationName = '20260728090000_add_dsv_vehicle_telematics_devices';
 const pickupCompletedDriverEventMigrationName = '20260728120000_add_pickup_completed_driver_event';
 const pickupCompletedUniqueIndexMigrationName = '20260728124500_add_pickup_completed_unique_index';
+const assignedDriverProfileBackfillMigrationName = '20260729170000_backfill_assigned_dsv_driver_profiles';
+const dispatchGroupingBackfillMigrationName = '20260730170000_backfill_dsv_dispatch_groupings';
 const pickupCompletedDriverEventMigrationPath = new URL(
   `../prisma/migrations/${pickupCompletedDriverEventMigrationName}/migration.sql`,
   import.meta.url
 );
 const pickupCompletedUniqueIndexMigrationPath = new URL(
   `../prisma/migrations/${pickupCompletedUniqueIndexMigrationName}/migration.sql`,
+  import.meta.url
+);
+const assignedDriverProfileBackfillMigrationPath = new URL(
+  `../prisma/migrations/${assignedDriverProfileBackfillMigrationName}/migration.sql`,
+  import.meta.url
+);
+const dispatchGroupingBackfillMigrationPath = new URL(
+  `../prisma/migrations/${dispatchGroupingBackfillMigrationName}/migration.sql`,
   import.meta.url
 );
 const schemaPath = new URL('../prisma/schema.prisma', import.meta.url);
@@ -107,7 +121,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(50);
+    expect(migrations).toHaveLength(56);
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -185,9 +199,15 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations).toContain(g011MigrationName);
     expect(migrations).toContain(adminStopActionsMigrationName);
     expect(migrations).toContain(notificationOutboxMigrationName);
+    expect(migrations).toContain(operationalSettingsMigrationName);
+    expect(migrations).toContain(vehicleDriverOneToOneMigrationName);
     expect(migrations).toContain(driverAccountDeletionMigrationName);
+    expect(migrations).toContain(dsvAdminAccountsMigrationName);
+    expect(migrations).toContain(dsvVehicleTelematicsMigrationName);
     expect(migrations).toContain(pickupCompletedDriverEventMigrationName);
     expect(migrations).toContain(pickupCompletedUniqueIndexMigrationName);
+    expect(migrations).toContain(assignedDriverProfileBackfillMigrationName);
+    expect(migrations).toContain(dispatchGroupingBackfillMigrationName);
     expect(migrations.indexOf('20260722213000_dsv_assignment_eta_state')).toBeLessThan(
       migrations.indexOf('20260722223000_drop_legacy_single_tenant_fks')
     );
@@ -200,15 +220,57 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf(g011MigrationName)).toBeLessThan(migrations.indexOf(adminStopActionsMigrationName));
     expect(migrations.indexOf(adminStopActionsMigrationName)).toBeLessThan(migrations.indexOf(notificationOutboxMigrationName));
     expect(migrations.indexOf(notificationOutboxMigrationName)).toBeLessThan(
+      migrations.indexOf(operationalSettingsMigrationName)
+    );
+    expect(migrations.indexOf(operationalSettingsMigrationName)).toBeLessThan(
+      migrations.indexOf(vehicleDriverOneToOneMigrationName)
+    );
+    expect(migrations.indexOf(vehicleDriverOneToOneMigrationName)).toBeLessThan(
       migrations.indexOf(driverAccountDeletionMigrationName)
     );
     expect(migrations.indexOf(driverAccountDeletionMigrationName)).toBeLessThan(
+      migrations.indexOf(dsvAdminAccountsMigrationName)
+    );
+    expect(migrations.indexOf(dsvAdminAccountsMigrationName)).toBeLessThan(
+      migrations.indexOf(dsvVehicleTelematicsMigrationName)
+    );
+    expect(migrations.indexOf(dsvVehicleTelematicsMigrationName)).toBeLessThan(
       migrations.indexOf(pickupCompletedDriverEventMigrationName)
     );
     expect(migrations.indexOf(pickupCompletedDriverEventMigrationName)).toBeLessThan(
       migrations.indexOf(pickupCompletedUniqueIndexMigrationName)
     );
-    expect(migrations.at(-1)).toBe(pickupCompletedUniqueIndexMigrationName);
+    expect(migrations.indexOf(pickupCompletedUniqueIndexMigrationName)).toBeLessThan(
+      migrations.indexOf(assignedDriverProfileBackfillMigrationName)
+    );
+    expect(migrations.indexOf(assignedDriverProfileBackfillMigrationName)).toBeLessThan(
+      migrations.indexOf(dispatchGroupingBackfillMigrationName)
+    );
+    expect(migrations.at(-1)).toBe(dispatchGroupingBackfillMigrationName);
+  });
+
+  test('backfills only assigned drivers without replacing canonical contact or assignment data', async () => {
+    const migration = await readFile(assignedDriverProfileBackfillMigrationPath, 'utf8');
+
+    expect(migration).toContain('INSERT INTO "dsv_driver_profiles"');
+    expect(migration).toContain('FROM "drivers" driver');
+    expect(migration).toContain('FROM "dsv_vehicle_driver_assignments" assignment');
+    expect(migration).toContain('assignment."driverId" = driver.id');
+    expect(migration).toContain('assignment."shopId" = driver."shopId"');
+    expect(migration).not.toContain('UPDATE "drivers"');
+    expect(migration).not.toContain('UPDATE "dsv_vehicle_driver_assignments"');
+    expect(stripSqlLineComments(migration)).not.toMatch(/\bDELETE\b|\bTRUNCATE\b|\bDROP\b/iu);
+  });
+
+  test('backfills assignment ownership for applied dispatch imports without existing grouping rows', async () => {
+    const migration = await readFile(dispatchGroupingBackfillMigrationPath, 'utf8');
+
+    expect(migration).toContain('CREATE TEMP TABLE "_dsv_orphan_dispatch_rows"');
+    expect(migration).toContain('INSERT INTO "route_groupings"');
+    expect(migration).toContain('INSERT INTO "route_grouping_versions"');
+    expect(migration).toContain('INSERT INTO "route_grouping_orders"');
+    expect(migration).toContain("row.\"status\" = 'APPLIED'");
+    expect(migration).toContain('NOT EXISTS');
   });
 
   test('separates pickup completed enum addition from enum-using partial index', async () => {
@@ -296,7 +358,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('schema preserves historical DB defaults instead of planning default drops', async () => {
     const schema = await readFile(schemaPath, 'utf8');
 
-    expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(27);
+    expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(28);
     expect(schema.match(/updatedAt\s+DateTime\s+@default\(now\(\)\)\s+@updatedAt/gu)).toHaveLength(11);
     expect(schema).toContain('warnings             Json                          @default("[]")');
   });

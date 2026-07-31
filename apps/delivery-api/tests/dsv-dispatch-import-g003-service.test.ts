@@ -115,14 +115,18 @@ describe('G003 DSV dispatch import service apply contract', () => {
     expect(source).toContain('await lockDestinationFingerprint(tx, shop.id, fingerprint)');
   });
 
-  test('creates only canonical order and delivery stop rows, leaving route writes for G004', async () => {
+  test('creates canonical rows and assignment ownership while leaving route-plan writes for G004', async () => {
     const source = await serviceSource();
 
     expect(source).toContain('tx.order.upsert');
     expect(source).toContain('tx.deliveryStop.upsert');
     expect(source).toContain('tx.customer.upsert');
     expect(source).toContain('findOrCreateDestination');
-    expect(source).not.toMatch(/tx\.route(?:Plan|PlanStop|Grouping|GroupingOrder|GroupingBranchOrderLock)\.(?:create|update|upsert|delete|deleteMany|createMany|updateMany)/u);
+    expect(source).toContain('await this.ensureDispatchGrouping(');
+    expect(source).toContain('tx.routeGrouping.create');
+    expect(source).toContain('tx.routeGroupingVersion.create');
+    expect(source).toContain('tx.routeGroupingOrder.createMany');
+    expect(source).not.toMatch(/tx\.route(?:Plan|PlanStop)\.(?:create|update|upsert|delete|deleteMany|createMany|updateMany)/u);
   });
 
   test('uses a physical destination fingerprint that is independent of customer identity', async () => {
@@ -190,7 +194,7 @@ describe('G003 DSV dispatch import service apply contract', () => {
     expect(method).toContain('requestId: input.principal?.requestId');
     expect(method).toContain('sourceRows');
     expect(update).not.toContain('createdBy');
-    expect(update).not.toContain('rawValue');
+    expect(update).toContain('rawValue: existing.rawValue ?? input.code');
   });
 
   test('blocks candidates, inactive/missing/ambiguous resources, conflicts, and update candidates before canonical writes', async () => {

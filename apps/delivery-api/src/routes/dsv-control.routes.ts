@@ -12,7 +12,10 @@ import {
 import type {
   DsvControlRepository,
 } from '../modules/dsv/dsv-control.repository.js';
-import type { PrismaAdminStoreSettingsService } from '../modules/commerce/admin-store-settings.service.js';
+import type {
+  AdminStoreSettings,
+  PrismaAdminStoreSettingsService,
+} from '../modules/commerce/admin-store-settings.service.js';
 import {
   DsvAssignmentCommandError,
   type DsvAssignmentCommandBaseInput,
@@ -45,25 +48,53 @@ import {
   createDsvAdminPrincipal,
   requireDsvScopes,
 } from '../modules/dsv/dsv-principal.js';
+import type { DsvAdminAccountAuthenticator } from '../modules/dsv/dsv-admin-account.repository.js';
+import {
+  createDsvAdminSessionSubject,
+  parseDsvAdminSessionSubject,
+} from '../modules/dsv/dsv-admin-session-subject.js';
 import type {
   DsvPrincipal,
   DsvScope,
 } from '../modules/dsv/dsv-principal.js';
 import {
+  normalizeDsvOperationalSettings,
+  validateDsvOperationalSettings,
+} from '../modules/dsv/dsv-operational-settings.js';
+import type {
+  DsvAddressCanonicalizer,
+  DsvAddressResolutionStatus,
+} from '../modules/dsv/dsv-address-canonicalization.js';
+import type { GeocodingService } from '../modules/geocoding/geocoding.service.js';
+import {
   clearAdminWebSessionCookie,
   createAdminWebSession,
   verifyAdminWebCsrfToken,
-  verifyAdminWebLoginSecret,
   verifyAdminWebSessionFromRequest,
 } from './admin-ui-session.js';
 
 const apiRoot = '/api/dsv';
 const cookiePath = `${apiRoot}/`;
-const sessionSubjectPrefix = 'dsv-shop:';
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const applyCommandIdHeader = 'idempotency-key';
 const assignmentCommandIdHeader = 'idempotency-key';
 const versionedApiRoot = `${apiRoot}/v1`;
+const defaultLoadingStartTime = '07:30';
+const defaultPlannedDepartureTime = '08:30';
+const operationSettingFields = [
+  'departureAddress',
+  'departureLatitude',
+  'departureLongitude',
+  'dwellMinutes',
+  'etaDelayMinutes',
+  'forwardDelayAlerts',
+  'gpsSilenceSeconds',
+  'loadingStartTime',
+  'plannedDepartureTime',
+  'recordMissingProof',
+  'showTemperatureAlerts',
+  'temperatureLimit',
+] as const;
 
 type DsvAdminReassignCommandInput = DsvAssignmentCommandBaseInput & {
   targetDriverId: string;
@@ -85,12 +116,13 @@ type DsvControlSession = {
 };
 
 export type DsvControlDependencies = {
+  addressCanonicalizer?: DsvAddressCanonicalizer;
+  adminAccounts: DsvAdminAccountAuthenticator;
   allowedShopDomains: AdminCommerceActor['allowedShopDomains'];
   assignmentCommandService?: DsvAdminAssignmentCommandService;
   cookieName: string;
   dispatchImportService: DsvDispatchImportService;
-  loginId: string;
-  loginSecret: string;
+  geocodingService?: Pick<GeocodingService, 'geocode'>;
   repository: DsvControlRepository;
   resourceService: DsvResourceService;
   secureCookies: boolean;
@@ -102,12 +134,13 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
   app.post(`${apiRoot}/auth/login`, async (request, reply) => {
     const body = objectBody(request.body);
     const id = readTrimmed(body?.id);
-    const password = readTrimmed(body?.password);
+    const password = readPassword(body?.password);
     const shopDomain = normalizeShopDomain(readTrimmed(body?.shopDomain));
     if (id === null || password === null || shopDomain === null) {
       return sendError(reply, 400, 'BAD_REQUEST', 'ID, password, and shopDomain are required');
     }
-    if (id !== dependencies.loginId || !verifyAdminWebLoginSecret({ candidate: password, expected: dependencies.loginSecret })) {
+    const account = await dependencies.adminAccounts.authenticate({ loginId: id, password });
+    if (account === null) {
       return sendError(reply, 401, 'UNAUTHORIZED', '로그인 정보가 올바르지 않습니다.');
     }
     if (!canAccessShopDomain(actor(dependencies), shopDomain) || !(await dependencies.repository.hasShop(shopDomain))) {
@@ -118,7 +151,11 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       path: cookiePath,
       secure: dependencies.secureCookies,
       sessionSecret: dependencies.sessionSecret,
-      subject: `${sessionSubjectPrefix}${shopDomain}`,
+      subject: createDsvAdminSessionSubject({
+        accountId: account.accountId,
+        shopDomain,
+        tokenVersion: account.tokenVersion,
+      }),
     });
     return sendData(reply.header('Set-Cookie', cookieHeader), {
       csrfToken: session.csrfToken,
@@ -151,24 +188,21 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       const settings = await dependencies.settingsService.getSettings({ shopDomain });
       return settings === null
         ? sendError(reply, 404, 'NOT_FOUND', 'Customer workspace not found')
-        : sendData(reply, {
-            loadingStartTime: settings.routeOpsUiSettings.loadingStartTime,
-            plannedDepartureTime: settings.routeOpsUiSettings.plannedDepartureTime,
-          });
+        : sendData(reply, operationSettingsData(settings));
     }, ['dsv:settings:read']));
 
   app.patch(`${apiRoot}/settings/operations`, async (request, reply) =>
     withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {
       const body = objectBody(request.body);
       if (body === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid operation settings payload');
-      if (Object.keys(body).some((key) => key !== 'loadingStartTime' && key !== 'plannedDepartureTime')) {
+      if (!hasOnlyAllowedKeys(body, [...operationSettingFields])) {
         return sendError(reply, 400, 'BAD_REQUEST', 'Operation settings payload contains an unsupported field');
+      }
+      if (Object.keys(body).length === 0) {
+        return sendError(reply, 400, 'BAD_REQUEST', 'Operation settings update is empty');
       }
       const hasLoadingStartTime = Object.hasOwn(body, 'loadingStartTime');
       const hasPlannedDepartureTime = Object.hasOwn(body, 'plannedDepartureTime');
-      if (!hasLoadingStartTime && !hasPlannedDepartureTime) {
-        return sendError(reply, 400, 'BAD_REQUEST', 'Operation settings update is empty');
-      }
       const loadingStartTime = hasLoadingStartTime ? readNullableTime(body.loadingStartTime) : null;
       const plannedDepartureTime = hasPlannedDepartureTime ? readNullableTime(body.plannedDepartureTime) : null;
       if ((hasLoadingStartTime && loadingStartTime === undefined) || (hasPlannedDepartureTime && plannedDepartureTime === undefined)) {
@@ -176,10 +210,37 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       }
       const current = await dependencies.settingsService.getSettings({ shopDomain });
       if (current === null) return sendError(reply, 404, 'NOT_FOUND', 'Customer workspace not found');
+      const departureAddress = Object.hasOwn(body, 'departureAddress')
+        ? readNullableText(body.departureAddress)
+        : current.defaultDepotAddress;
+      const departureLatitude = Object.hasOwn(body, 'departureLatitude')
+        ? readNullableNumber(body.departureLatitude)
+        : current.defaultDepotLatitude;
+      const departureLongitude = Object.hasOwn(body, 'departureLongitude')
+        ? readNullableNumber(body.departureLongitude)
+        : current.defaultDepotLongitude;
+      if (
+        departureAddress === undefined
+        || departureLatitude === undefined
+        || departureLongitude === undefined
+        || !validDepartureLocation(departureAddress, departureLatitude, departureLongitude)
+      ) {
+        return sendError(reply, 400, 'BAD_REQUEST', 'Departure address and coordinates must form one valid location');
+      }
+      let dsvOperationalSettings;
+      try {
+        dsvOperationalSettings = validateDsvOperationalSettings({
+          ...normalizeDsvOperationalSettings(current.dsvOperationalSettings),
+          ...operationFieldsFrom(body),
+        });
+      } catch {
+        return sendError(reply, 400, 'BAD_REQUEST', 'Operation settings contain an invalid value');
+      }
       const saved = await dependencies.settingsService.saveSettings({
-        defaultDepotAddress: current.defaultDepotAddress,
-        defaultDepotLatitude: current.defaultDepotLatitude,
-        defaultDepotLongitude: current.defaultDepotLongitude,
+        defaultDepotAddress: departureAddress,
+        defaultDepotLatitude: departureLatitude,
+        defaultDepotLongitude: departureLongitude,
+        dsvOperationalSettings,
         locale: current.locale,
         routeOpsUiSettings: {
           ...current.routeOpsUiSettings,
@@ -189,11 +250,81 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
         routeScopeConfig: current.routeScopeConfig,
         shopDomain,
       });
+      return sendData(reply, operationSettingsData(saved));
+    }, ['dsv:settings:write']));
+
+  app.post(`${apiRoot}/settings/operations/geocode`, async (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {
+      const body = objectBody(request.body);
+      const address = readBoundedText(body?.address, 500);
+      if (body === null || !hasOnlyKeys(body, ['address']) || address === null) {
+        return sendError(reply, 400, 'BAD_REQUEST', 'A departure address is required');
+      }
+      const current = await dependencies.settingsService.getSettings({ shopDomain });
+      if (
+        current !== null
+        && normalizedAddress(current.defaultDepotAddress) === normalizedAddress(address)
+        && validCoordinates(current.defaultDepotLatitude, current.defaultDepotLongitude)
+      ) {
+        return sendData(reply, {
+          address,
+          latitude: current.defaultDepotLatitude,
+          longitude: current.defaultDepotLongitude,
+        });
+      }
+      if (dependencies.geocodingService === undefined) {
+        return sendError(reply, 503, 'GEOCODING_UNAVAILABLE', 'Geocoding is not enabled');
+      }
+      if (dependencies.addressCanonicalizer !== undefined) {
+        const resolved = await dependencies.addressCanonicalizer.resolve({ address, shopDomain });
+        if (resolved.status !== 'RESOLVED') {
+          return sendAddressResolutionError(reply, resolved.status);
+        }
+        return sendData(reply, {
+          address: resolved.address,
+          detailAddress: resolved.detailAddress,
+          jibunAddress: resolved.jibunAddress,
+          latitude: resolved.latitude,
+          longitude: resolved.longitude,
+          postalCode: resolved.postalCode,
+          rawAddress: resolved.rawAddress,
+        });
+      }
+      const geocode = await dependencies.geocodingService.geocode({
+        address: {
+          address1: address,
+          address2: null,
+          city: null,
+          countryCode: 'KR',
+          postalCode: null,
+          province: null,
+        },
+        shopDomain,
+      });
+      if (!geocode.ok) {
+        return sendError(reply, 400, geocode.code, geocode.message);
+      }
       return sendData(reply, {
-        loadingStartTime: saved.routeOpsUiSettings.loadingStartTime,
-        plannedDepartureTime: saved.routeOpsUiSettings.plannedDepartureTime,
+        address,
+        latitude: geocode.result.latitude,
+        longitude: geocode.result.longitude,
       });
     }, ['dsv:settings:write']));
+
+  app.post(`${apiRoot}/addresses/resolve`, async (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {
+      const body = objectBody(request.body);
+      const address = readBoundedText(body?.address, 500);
+      if (body === null || !hasOnlyKeys(body, ['address']) || address === null) {
+        return sendError(reply, 400, 'BAD_REQUEST', 'An address is required');
+      }
+      if (dependencies.addressCanonicalizer === undefined) {
+        return sendError(reply, 503, 'ADDRESS_SERVICE_UNAVAILABLE', 'Address canonicalization is not enabled');
+      }
+      const resolved = await dependencies.addressCanonicalizer.resolve({ address, shopDomain });
+      if (resolved.status === 'UNAVAILABLE') return sendAddressResolutionError(reply, resolved.status);
+      return sendData(reply, resolved);
+    }, ['dsv:destinations:write']));
 
   app.get(`${apiRoot}/conditions`, async (request, reply) =>
     withDsvSession(request, reply, dependencies, async ({ shopDomain }) => {
@@ -614,7 +745,7 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
 }
 
 function actor(dependencies: DsvControlDependencies): AdminCommerceActor {
-  return { allowedShopDomains: dependencies.allowedShopDomains, subject: dependencies.loginId };
+  return { allowedShopDomains: dependencies.allowedShopDomains, subject: 'dsv-admin-login' };
 }
 
 function dsvAdminCommandActor(session: DsvControlSession, request: FastifyRequest): DsvAssignmentCommandBaseInput['actor'] {
@@ -632,14 +763,30 @@ async function readDsvSession(request: FastifyRequest, dependencies: DsvControlD
     request,
     sessionSecret: dependencies.sessionSecret,
   });
-  if (session === null || !session.subject.startsWith(sessionSubjectPrefix)) return null;
-  const shopDomain = normalizeShopDomain(session.subject.slice(sessionSubjectPrefix.length));
+  if (session === null) return null;
+  const subject = parseDsvAdminSessionSubject(session.subject);
+  if (subject === null) return null;
+  const shopDomain = subject.shopDomain;
   if (shopDomain === null || !canAccessShopDomain(actor(dependencies), shopDomain)) return null;
   const shopId = await dependencies.repository.resolveShopId(shopDomain);
   if (shopId === null) return null;
+  const account = subject.kind === 'account'
+    ? await dependencies.adminAccounts.resolveSession({
+        accountId: subject.accountId,
+        tokenVersion: subject.tokenVersion,
+      })
+    : null;
+  if (subject.kind === 'account' && account === null) return null;
+  const actorId = account?.accountId ?? 'legacy-env-admin';
   return {
-    actor: dependencies.loginId,
-    principal: createDsvAdminPrincipal({ shopDomain, shopId }),
+    actor: actorId,
+    principal: createDsvAdminPrincipal({
+      actorId,
+      ...(account?.displayName === undefined ? {} : { displayName: account.displayName }),
+      ...(account === null ? {} : { scopes: account.scopes }),
+      shopDomain,
+      shopId,
+    }),
     session,
     shopDomain,
   };
@@ -701,8 +848,71 @@ function sendError(
   });
 }
 
+function sendAddressResolutionError(
+  reply: FastifyReply,
+  status: Exclude<DsvAddressResolutionStatus, 'RESOLVED'>,
+): unknown {
+  if (status === 'UNAVAILABLE') {
+    return sendError(reply, 503, 'ADDRESS_SERVICE_UNAVAILABLE', 'Address canonicalization is unavailable');
+  }
+  if (status === 'AMBIGUOUS') {
+    return sendError(reply, 409, 'ADDRESS_AMBIGUOUS', 'Multiple canonical address candidates remain');
+  }
+  if (status === 'NOT_FOUND') {
+    return sendError(reply, 422, 'ADDRESS_NOT_FOUND', 'A canonical road address and postal code could not be found');
+  }
+  return sendError(reply, 422, 'ADDRESS_COORDINATES_NOT_RESOLVED', 'The address was found but map coordinates could not be resolved');
+}
+
 function objectBody(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function operationSettingsData(settings: AdminStoreSettings): Record<string, boolean | number | string | null> {
+  return {
+    departureAddress: settings.defaultDepotAddress,
+    departureLatitude: settings.defaultDepotLatitude,
+    departureLongitude: settings.defaultDepotLongitude,
+    ...normalizeDsvOperationalSettings(settings.dsvOperationalSettings),
+    loadingStartTime: settings.routeOpsUiSettings.loadingStartTime ?? defaultLoadingStartTime,
+    plannedDepartureTime: settings.routeOpsUiSettings.plannedDepartureTime ?? defaultPlannedDepartureTime,
+  };
+}
+
+function operationFieldsFrom(body: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const field of [
+    'dwellMinutes',
+    'etaDelayMinutes',
+    'forwardDelayAlerts',
+    'gpsSilenceSeconds',
+    'recordMissingProof',
+    'showTemperatureAlerts',
+    'temperatureLimit',
+  ] as const) {
+    if (Object.hasOwn(body, field)) result[field] = body[field];
+  }
+  return result;
+}
+
+function validDepartureLocation(address: string | null, latitude: number | null, longitude: number | null): boolean {
+  if (address === null || latitude === null || longitude === null) {
+    return address === null && latitude === null && longitude === null;
+  }
+  return address.length <= 500 && validCoordinates(latitude, longitude);
+}
+
+function validCoordinates(latitude: number | null, longitude: number | null): latitude is number {
+  return latitude !== null
+    && longitude !== null
+    && latitude >= -90
+    && latitude <= 90
+    && longitude >= -180
+    && longitude <= 180;
+}
+
+function normalizedAddress(value: string | null): string | null {
+  return value === null ? null : value.trim().replace(/\s+/gu, ' ').toLowerCase();
 }
 
 function readDispatchImportInput(value: unknown): DsvDispatchImportInput | null {
@@ -731,20 +941,50 @@ function readDispatchImportInput(value: unknown): DsvDispatchImportInput | null 
     const notes = readNullableText(row?.notes);
     const latitude = readNullableNumber(row?.latitude);
     const longitude = readNullableNumber(row?.longitude);
+    const hasAddressResolutionStatus = Object.hasOwn(row ?? {}, 'addressResolutionStatus');
+    const hasDetailAddress = Object.hasOwn(row ?? {}, 'detailAddress');
+    const hasJibunAddress = Object.hasOwn(row ?? {}, 'jibunAddress');
+    const hasPostalCode = Object.hasOwn(row ?? {}, 'postalCode');
+    const hasRawAddress = Object.hasOwn(row ?? {}, 'rawAddress');
+    const addressResolutionStatus = hasAddressResolutionStatus
+      ? readAddressResolutionStatus(row?.addressResolutionStatus)
+      : undefined;
+    const detailAddress = hasDetailAddress
+      ? readNullableText(row?.detailAddress)
+      : undefined;
+    const jibunAddress = hasJibunAddress
+      ? readNullableText(row?.jibunAddress)
+      : undefined;
+    const postalCode = hasPostalCode
+      ? readNullableText(row?.postalCode)
+      : undefined;
+    const rawAddress = hasRawAddress
+      ? readText(row?.rawAddress)
+      : undefined;
     if (
       rowNumber === null || shippedBoxes === null || driverName === null || vehiclePlate === null
       || destinationName === null || conditionCode === null || address === null || customerCode === null
       || sellerOrderKey === null || notes === undefined || latitude === undefined || longitude === undefined
+      || addressResolutionStatus === null
+      || (hasDetailAddress && detailAddress === undefined)
+      || (hasJibunAddress && jibunAddress === undefined)
+      || (hasPostalCode && postalCode === undefined)
+      || rawAddress === null
     ) return null;
     rows.push({
       address,
+      ...(addressResolutionStatus === undefined ? {} : { addressResolutionStatus }),
       conditionCode,
       customerCode,
+      ...(detailAddress === undefined ? {} : { detailAddress }),
       destinationName,
       driverName,
+      ...(jibunAddress === undefined ? {} : { jibunAddress }),
       latitude,
       longitude,
       notes,
+      ...(postalCode === undefined ? {} : { postalCode }),
+      ...(rawAddress === undefined ? {} : { rawAddress }),
       rowNumber,
       sellerOrderKey,
       shippedBoxes,
@@ -759,18 +999,32 @@ function readDispatchImportInput(value: unknown): DsvDispatchImportInput | null 
   };
 }
 
+function readAddressResolutionStatus(value: unknown): DsvAddressResolutionStatus | null {
+  const statuses: readonly DsvAddressResolutionStatus[] = [
+    'ADDRESS_ONLY',
+    'AMBIGUOUS',
+    'NOT_FOUND',
+    'RESOLVED',
+    'UNAVAILABLE',
+  ];
+  return typeof value === 'string' && includes(statuses, value)
+    ? value
+    : null;
+}
+
 function readDriverInput(value: unknown): DsvDriverInput | null {
   const body = objectBody(value);
-  if (body === null || !hasOnlyKeys(body, ['age', 'career', 'gender', 'name', 'score', 'traits', 'zone'])) return null;
+  if (body === null || !hasOnlyKeys(body, ['age', 'career', 'gender', 'name', 'phone', 'score', 'traits', 'zone'])) return null;
   const age = readInteger(body.age);
   const career = readBoundedText(body.career, 160);
   const gender = readBoundedText(body.gender, 40);
   const name = readBoundedText(body.name, 80);
+  const phone = Object.hasOwn(body, 'phone') ? readBoundedTextAllowEmpty(body.phone, 40) : undefined;
   const score = readBoundedText(body.score, 40);
   const traits = readBoundedTextArray(body.traits, 20, 160);
   const zone = readBoundedText(body.zone, 160);
-  if (age === null || age < 18 || age > 100 || career === null || gender === null || name === null || score === null || traits === null || zone === null) return null;
-  return { age, career, gender, name, score, traits, zone };
+  if (age === null || age < 18 || age > 100 || career === null || gender === null || name === null || phone === null || score === null || traits === null || zone === null) return null;
+  return { age, career, gender, name, ...(phone === undefined ? {} : { phone }), score, traits, zone };
 }
 
 function readVehicleInput(value: unknown): DsvVehicleInput | null {
@@ -1031,6 +1285,10 @@ function readTrimmed(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
   return trimmed === '' ? null : trimmed;
+}
+
+function readPassword(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
 function normalizeShopDomain(value: string | null): string | null {

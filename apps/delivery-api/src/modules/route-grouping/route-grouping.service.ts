@@ -557,12 +557,17 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
       const currentChildren = loaded.childVersions.filter((child) => isOperationalCurrentChild(child));
       const currentRoutePlanIds = currentChildren.map((child) => child.routePlanId).filter((routePlanId): routePlanId is string => routePlanId !== null);
       const driverIdByRoute = new Map<RouteGroupingDraftRouteInput, string | null>();
+      const vehicleIdByRoute = new Map<RouteGroupingDraftRouteInput, string | null>();
       for (const route of routes) {
         const targetChild = findDraftChild(loaded, route);
         const currentDriverId = targetChild?.routePlan?.driverId ?? targetChild?.driverId ?? null;
+        const currentVehicleId = targetChild?.routePlan?.vehicleId ?? null;
         driverIdByRoute.set(route, route.driverId === undefined
           ? currentDriverId
           : await readBranchDriverId(tx, group.shopId, route.driverId));
+        vehicleIdByRoute.set(route, route.vehicleId === undefined
+          ? currentVehicleId
+          : await readRouteVehicleId(tx, group.shopId, route.vehicleId));
       }
 
       if (currentRoutePlanIds.length > 0) {
@@ -598,6 +603,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         const targetChild = findDraftChild(loaded, route);
         const draftOptimization = draftOptimizations.get(route);
         const driverId = driverIdByRoute.get(route) ?? null;
+        const vehicleId = vehicleIdByRoute.get(route) ?? null;
         const assignments = draftOptimization?.assignments
           ?? route.orderIds.map((orderId) => assignmentByOrderId.get(orderId)).filter((assignment): assignment is LoadedAssignment => assignment !== undefined);
         if (targetChild !== null) {
@@ -621,7 +627,8 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
                     route.scheduledStartTimeZone
                   )
                 }),
-                metrics: routeMetrics(assignments)
+                metrics: routeMetrics(assignments),
+                ...(route.vehicleId === undefined ? {} : { vehicleId })
               },
               where: { id: targetChild.routePlanId }
             });
@@ -664,7 +671,8 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           routeIdx,
           scheduledStartAt: route.scheduledStartAt,
           scheduledStartTimeZone: route.scheduledStartTimeZone,
-          sortOrder: route.sortOrder ?? routeIdx
+          sortOrder: route.sortOrder ?? routeIdx,
+          vehicleId
         });
       }
 
@@ -710,12 +718,17 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
 
     const currentChildren = loaded.childVersions.filter((child) => isOperationalCurrentChild(child));
     const driverIdByRoute = new Map<RouteGroupingDraftRouteInput, string | null>();
+    const vehicleIdByRoute = new Map<RouteGroupingDraftRouteInput, string | null>();
     for (const route of routes) {
       const targetChild = findDraftChild(loaded, route);
       const currentDriverId = targetChild?.routePlan?.driverId ?? targetChild?.driverId ?? null;
+      const currentVehicleId = targetChild?.routePlan?.vehicleId ?? null;
       driverIdByRoute.set(route, route.driverId === undefined
         ? currentDriverId
         : await readBranchDriverId(tx, group.shopId, route.driverId));
+      vehicleIdByRoute.set(route, route.vehicleId === undefined
+        ? currentVehicleId
+        : await readRouteVehicleId(tx, group.shopId, route.vehicleId));
     }
 
     for (const routePlanId of deletedRoutePlanIds) {
@@ -747,6 +760,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
     for (const route of routes) {
       const targetChild = findDraftChild(loaded, route);
       const driverId = driverIdByRoute.get(route) ?? null;
+      const vehicleId = vehicleIdByRoute.get(route) ?? null;
       const assignments = route.orderIds.map((orderId) => assignmentByOrderId.get(orderId)).filter((assignment): assignment is LoadedAssignment => assignment !== undefined);
       if (targetChild !== null) {
         const previousSnapshot = readChildSnapshot(targetChild.snapshot);
@@ -758,6 +772,7 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
           || (route.label !== null && route.label !== undefined && route.label !== childRouteSlotName(targetChild))
           || route.scheduledStartAt !== undefined
           || route.scheduledStartTimeZone !== undefined
+          || route.vehicleId !== undefined
           || (route.color !== undefined && route.color !== (previousSnapshot.color ?? null))
           || (previousSnapshot.sortOrder !== undefined && route.sortOrder !== previousSnapshot.sortOrder);
         if (!assignmentsChanged && !routeDetailsChanged) continue;
@@ -779,7 +794,8 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
                   route.scheduledStartTimeZone
                 )
               }),
-              metrics: routeMetrics(assignments)
+              metrics: routeMetrics(assignments),
+              ...(route.vehicleId === undefined ? {} : { vehicleId })
             },
             where: { id: targetChild.routePlanId }
           });
@@ -851,7 +867,8 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         routeIdx,
         scheduledStartAt: route.scheduledStartAt,
         scheduledStartTimeZone: route.scheduledStartTimeZone,
-        sortOrder: route.sortOrder ?? routeIdx
+        sortOrder: route.sortOrder ?? routeIdx,
+        vehicleId
       });
     }
 
@@ -1419,7 +1436,8 @@ function normalizeDraftRoutes(routes: RouteGroupingDraftRouteInput[]): RouteGrou
       ...(route.scheduledStartAt === undefined ? {} : { scheduledStartAt: normalizeDraftScheduledStartAt(route.scheduledStartAt) }),
       ...(route.scheduledStartTimeZone === undefined ? {} : { scheduledStartTimeZone: normalizeDraftTimeZone(route.scheduledStartTimeZone) }),
       sortOrder: typeof route.sortOrder === 'number' && Number.isInteger(route.sortOrder) ? route.sortOrder : routeIdx ?? index + 1,
-      tempId
+      tempId,
+      ...(route.vehicleId === undefined ? {} : { vehicleId: normalizeOptionalText(route.vehicleId) })
     };
   });
 }
@@ -1799,6 +1817,13 @@ async function readBranchDriverId(tx: Tx, shopId: string, driverId: string | nul
   const driver = await tx.driver.findFirst({ select: { id: true }, where: { id: driverId.trim(), shopId } });
   if (driver === null) throw new RouteGroupingValidationError(['driver must belong to the current shop']);
   return driver.id;
+}
+
+async function readRouteVehicleId(tx: Tx, shopId: string, vehicleId: string | null | undefined): Promise<string | null> {
+  if (vehicleId === undefined || vehicleId === null || vehicleId.trim() === '') return null;
+  const vehicle = await tx.vehicle.findFirst({ select: { id: true }, where: { id: vehicleId.trim(), shopId } });
+  if (vehicle === null) throw new RouteGroupingValidationError(['vehicle must belong to the current shop']);
+  return vehicle.id;
 }
 
 async function branchDriverRelation(tx: Tx, shopId: string, driverId: string | null | undefined): Promise<NonNullable<Prisma.RouteGroupingBranchUpdateInput['driver']>> {
@@ -2354,6 +2379,7 @@ async function createDraftChildRoutePlan(
     scheduledStartAt?: string | null | undefined;
     scheduledStartTimeZone?: string | null | undefined;
     sortOrder: number | undefined;
+    vehicleId?: string | null;
   }
 ): Promise<{ id: string; name: string }> {
   const depot = readDepotFromShop(group);
@@ -2374,7 +2400,8 @@ async function createDraftChildRoutePlan(
       optimizerVersion: OPTIMIZER_VERSION,
       planDate: group.planDate,
       shopId: group.shopId,
-      status: 'READY'
+      status: 'READY',
+      vehicleId: input.vehicleId ?? null
     },
     select: { id: true, name: true }
   });

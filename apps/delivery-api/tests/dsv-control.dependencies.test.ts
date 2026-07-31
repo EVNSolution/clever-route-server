@@ -4,10 +4,12 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { DsvAssignmentCommandService } from '../src/modules/dsv/dsv-assignment-command.service.js';
 import { loadDsvControlDependencies } from '../src/modules/dsv/dsv-control.dependencies.js';
+import { dsvAdminScopes } from '../src/modules/dsv/dsv-principal.js';
 import type { RouteGroupingService } from '../src/modules/route-grouping/route-grouping.types.js';
 
-const loginSecret = 'operator-password';
 const sessionSecret = '0123456789abcdef0123456789abcdef';
+const loginSecret = 'operator-password';
+const adminAccountId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 
 describe('loadDsvControlDependencies', () => {
   afterEach(() => {
@@ -23,11 +25,99 @@ describe('loadDsvControlDependencies', () => {
     })).toBeUndefined();
   });
 
-  test('wires assignment command service so unassign route is not service unavailable', async () => {
+  test('keeps DSV control disabled in production until explicitly enabled', () => {
+    expect(loadDsvControlDependencies({
+      env: {
+        CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS: 'example.myshopify.com',
+        CLEVER_ADMIN_WEB_SESSION_SECRET: sessionSecret,
+      },
+      nodeEnv: 'production',
+      prisma: {} as PrismaClient,
+      routeGroupingService: {} as RouteGroupingService
+    })).toBeUndefined();
+  });
+
+  test.each([
+    ['missing session secret', 'CLEVER_ADMIN_WEB_SESSION_SECRET', undefined, 'CLEVER_ADMIN_WEB_SESSION_SECRET'],
+    ['empty tenant allowlist', 'CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS', '', 'CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS'],
+    ['wildcard tenant allowlist', 'CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS', '*', 'CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS'],
+  ] as const)('throws a clear production configuration error for %s', (_caseName, key, value, messagePart) => {
+    const env: Record<string, string> = {
+      CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS: 'example.myshopify.com',
+      CLEVER_ADMIN_WEB_SESSION_SECRET: sessionSecret,
+      CLEVER_DSV_ENABLED: 'true',
+    };
+    if (value === undefined) {
+      delete env[key];
+    } else {
+      env[key] = value;
+    }
+
+    expect(() => loadDsvControlDependencies({
+      env,
+      nodeEnv: 'production',
+      prisma: {} as PrismaClient,
+      routeGroupingService: {} as RouteGroupingService
+    })).toThrow(messagePart);
+  });
+
+  test('loads DSV control in production with explicit enabled flag and tenant-scoped auth settings', () => {
+    const dependencies = loadDsvControlDependencies({
+      adminAccounts: {
+        authenticate: vi.fn(({ loginId, password }) =>
+          Promise.resolve(loginId === 'operator' && password === loginSecret
+            ? { accountId: adminAccountId, scopes: dsvAdminScopes, tokenVersion: 0 }
+            : null)),
+        resolveSession: vi.fn(({ accountId, tokenVersion }) =>
+          Promise.resolve(accountId === adminAccountId && tokenVersion === 0
+            ? { accountId: adminAccountId, scopes: dsvAdminScopes, tokenVersion: 0 }
+            : null)),
+      },
+      env: {
+        CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS: 'example.myshopify.com',
+        CLEVER_ADMIN_WEB_SESSION_SECRET: sessionSecret,
+        CLEVER_DSV_ENABLED: 'true',
+      },
+      nodeEnv: 'production',
+      prisma: {} as PrismaClient,
+      routeGroupingService: {} as RouteGroupingService
+    });
+
+    expect(dependencies).toMatchObject({
+      allowedShopDomains: ['example.myshopify.com'],
+      secureCookies: true,
+    });
+    expect(dependencies?.adminAccounts).toBeDefined();
+  });
+
+  test('wires a fail-closed server-side address canonicalizer even before an approval key is configured', () => {
     const dependencies = loadDsvControlDependencies({
       env: {
         CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS: 'example.myshopify.com',
-        CLEVER_ADMIN_WEB_LOGIN_SECRET: loginSecret,
+        CLEVER_ADMIN_WEB_SESSION_SECRET: sessionSecret,
+      },
+      nodeEnv: 'test',
+      prisma: {} as PrismaClient,
+      routeGroupingService: {} as RouteGroupingService,
+    });
+
+    expect(dependencies?.addressCanonicalizer).toBeDefined();
+  });
+
+  test('wires assignment command service so unassign route is not service unavailable', async () => {
+    const dependencies = loadDsvControlDependencies({
+      adminAccounts: {
+        authenticate: vi.fn(({ loginId, password }) =>
+          Promise.resolve(loginId === 'operator' && password === loginSecret
+            ? { accountId: adminAccountId, scopes: dsvAdminScopes, tokenVersion: 0 }
+            : null)),
+        resolveSession: vi.fn(({ accountId, tokenVersion }) =>
+          Promise.resolve(accountId === adminAccountId && tokenVersion === 0
+            ? { accountId: adminAccountId, scopes: dsvAdminScopes, tokenVersion: 0 }
+            : null)),
+      },
+      env: {
+        CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS: 'example.myshopify.com',
         CLEVER_ADMIN_WEB_SESSION_SECRET: sessionSecret
       },
       nodeEnv: 'test',

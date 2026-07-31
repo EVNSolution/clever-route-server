@@ -1,4 +1,4 @@
-export type GeocodingProviderMode = 'disabled' | 'nominatim_compatible';
+export type GeocodingProviderMode = 'disabled' | 'nominatim_compatible' | 'vworld';
 
 export type GeocodingAddress = {
   address1: string | null;
@@ -82,11 +82,23 @@ export type GeocodingQuery = StructuredGeocodingQuery | FreeformGeocodingQuery;
 
 export type GeocodingLookupResult = {
   addressLabel: string;
+  jibunAddress?: string | null;
   latitude: number;
   longitude: number;
+  postalCode?: string | null;
   provider: string;
   providerPlaceId: string | null;
   rawLabel: string | null;
+  roadAddress?: string | null;
+};
+
+export type GeocodingPlaceCandidate = {
+  jibunAddress: string | null;
+  latitude: number;
+  longitude: number;
+  providerPlaceId: string | null;
+  roadAddress: string | null;
+  title: string;
 };
 
 export type GeocodingFailureCode =
@@ -120,6 +132,7 @@ export type GeocodingResult =
 export type GeocodingProvider = {
   geocodeAddress(query: GeocodingQuery): Promise<GeocodingLookupResult | null>;
   readonly providerName: string;
+  searchPlaces?(query: { limit: number; text: string }): Promise<GeocodingPlaceCandidate[]>;
 };
 
 export type GeocodingProviderErrorKind =

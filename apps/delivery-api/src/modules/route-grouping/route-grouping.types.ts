@@ -220,6 +220,7 @@ export type RouteGroupingDraftRouteInput = {
   scheduledStartTimeZone?: string | null;
   sortOrder?: number;
   tempId?: string | null;
+  vehicleId?: string | null;
 };
 
 export type RouteGroupingOptimizationPreviewInput = {

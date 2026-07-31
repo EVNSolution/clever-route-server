@@ -33,6 +33,7 @@ import {
   type DsvV1ReadQueryService,
   type DsvV1ServiceDateInput,
 } from '../modules/dsv/dsv-v1-read-query.service.js';
+import type { DsvMapProfile } from '../modules/dsv/dsv-map-profile.config.js';
 import {
   clearAdminWebSessionCookie,
   verifyAdminWebCsrfToken,
@@ -55,6 +56,7 @@ export type DsvV1SessionResolver = {
 
 export type DsvV1ReadDependencies = {
   cookieName: string;
+  mapProfile?: DsvMapProfile;
   queryService?: DsvV1ReadQueryService;
   secureCookies: boolean;
   sessionResolver: DsvV1SessionResolver;
@@ -63,7 +65,7 @@ export type DsvV1ReadDependencies = {
 
 type RouteSpec<Query> = {
   allowedQuery: readonly string[];
-  handler: (principal: DsvPrincipal, query: Query) => Promise<unknown>;
+  handler: (principal: DsvPrincipal, query: Query) => unknown;
   parseQuery: (request: FastifyRequest) => Query | null;
   requiredScopes: readonly DsvScope[];
 };
@@ -102,6 +104,17 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     ),
     parseQuery: parseServiceDateOnlyQuery,
     requiredScopes: ['dsv:control:read'],
+  });
+  registerReadRoute(app, dependencies, 'map/profile', {
+    allowedQuery: [],
+    handler: () => {
+      if (dependencies.mapProfile === undefined) {
+        throw new DsvV1DependencyError('DSV map profile is not configured');
+      }
+      return dependencies.mapProfile;
+    },
+    parseQuery: parseEmptyQuery,
+    requiredScopes: [],
   });
   registerReadRoute(app, dependencies, 'records', {
     allowedQuery: ['cursor', 'limit', 'serviceDate'],
@@ -320,6 +333,10 @@ function parseCustomerDeliveriesQuery(request: FastifyRequest): DsvV1CustomerDel
     ...base,
     ...(window === undefined ? {} : { window }),
   };
+}
+
+function parseEmptyQuery(): Record<string, never> {
+  return {};
 }
 
 function readServiceDate(request: FastifyRequest): string | undefined | null {
