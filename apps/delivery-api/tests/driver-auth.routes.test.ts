@@ -262,27 +262,18 @@ describe('Driver auth routes', () => {
     }
   });
 
-  test('registers and revokes push tokens through the current account route assignment', async () => {
-    const resolveDriverRouteAccess = vi.fn(() => Promise.resolve({
-      accountId: 'account-id',
-      driverId: 'driver-id',
-      routePlanId: 'route-plan-id',
-      shopDomain: 'example.myshopify.com',
-      shopId: 'shop-id'
-    }));
+  test('registers and revokes push tokens with the global driver account token', async () => {
     const upsertDriverPushToken = vi.fn(() => Promise.resolve({ id: 'push-token-id', status: 'ACTIVE' }));
     const revokeDriverPushToken = vi.fn(() => Promise.resolve({ revoked: true }));
-    const accessToken = signDriverRouteToken({
+    const accessToken = signDriverAccountToken({
       accountId: 'account-id',
       expiresInSeconds: 900,
-      routePlanId: 'route-plan-id',
       subject: 'driver-account:account-id',
       tokenVersion: 4
     }, { secret: 'test-secret' }).token;
     const app = await buildApp({
       driverAuth: {
         driverAuthRepository: {} as never,
-        driverTokenAccessRepository: { resolveDriverRouteAccess } as never,
         jwtSecret: 'test-secret',
         pushTokenService: { revokeDriverPushToken, upsertDriverPushToken }
       }
@@ -308,21 +299,146 @@ describe('Driver auth routes', () => {
 
       expect(registered.statusCode).toBe(200);
       expect(revoked.statusCode).toBe(200);
-      expect(resolveDriverRouteAccess).toHaveBeenCalledWith({
-        accountId: 'account-id',
-        routePlanId: 'route-plan-id',
-        tokenVersion: 4
-      });
       expect(upsertDriverPushToken).toHaveBeenCalledWith(expect.objectContaining({
+        accountId: 'account-id',
         appId: 'clever-driver',
         devicePushToken: 'device-push-token',
-        driverId: 'driver-id',
         platform: 'android'
       }));
       expect(revokeDriverPushToken).toHaveBeenCalledWith({
+        accountId: 'account-id',
         devicePushToken: 'device-push-token',
-        driverId: 'driver-id'
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects Push installation registration after the account token version is revoked', async () => {
+    const upsertDriverPushToken = vi.fn(() => Promise.resolve({ id: 'push-token-id', status: 'ACTIVE' }));
+    const accessToken = signDriverAccountToken({
+      accountId: 'account-id',
+      expiresInSeconds: 900,
+      subject: 'driver-account:account-id',
+      tokenVersion: 4
+    }, { secret: 'test-secret' }).token;
+    const app = await buildApp({
+      driverAuth: {
+        driverAuthRepository: {} as never,
+        driverTokenAccessRepository: {
+          isDriverAccountAccessTokenActive: vi.fn(() => Promise.resolve(false))
+        } as never,
+        jwtSecret: 'test-secret',
+        pushTokenService: { upsertDriverPushToken } as never
+      }
+    });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${accessToken}` },
+        method: 'PUT',
+        payload: {
+          appId: 'com.evnsolution.clever.routes',
+          devicePushToken: 'device-push-token',
+          platform: 'android'
+        },
+        url: '/api/driver/mobile/push-token'
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(upsertDriverPushToken).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('does not let a route-scoped token create a persistent account Push installation', async () => {
+    const upsertDriverPushToken = vi.fn(() => Promise.resolve({ id: 'push-token-id', status: 'ACTIVE' }));
+    const routeToken = signDriverRouteToken({
+      accountId: 'account-id',
+      expiresInSeconds: 900,
+      routePlanId: 'route-plan-id',
+      subject: 'driver-route:route-plan-id',
+      tokenVersion: 4
+    }, { secret: 'test-secret' }).token;
+    const app = await buildApp({
+      driverAuth: {
+        driverAuthRepository: {} as never,
+        driverTokenAccessRepository: {
+          resolveDriverRouteAccess: vi.fn(() => Promise.resolve({
+            accountId: 'account-id',
+            driverId: 'driver-id',
+            routePlanId: 'route-plan-id',
+            shopDomain: 'test.example',
+            shopId: 'shop-id'
+          }))
+        } as never,
+        jwtSecret: 'test-secret',
+        pushTokenService: { upsertDriverPushToken } as never
+      }
+    });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${routeToken}` },
+        method: 'PUT',
+        payload: {
+          appId: 'com.evnsolution.clever.routes',
+          devicePushToken: 'device-push-token',
+          platform: 'android'
+        },
+        url: '/api/driver/mobile/push-token'
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(upsertDriverPushToken).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects Push installation fields outside the public mobile contract', async () => {
+    const upsertDriverPushToken = vi.fn(() => Promise.resolve({ id: 'push-token-id', status: 'ACTIVE' }));
+    const revokeDriverPushToken = vi.fn(() => Promise.resolve({ revoked: true }));
+    const accessToken = signDriverAccountToken({
+      accountId: 'account-id',
+      expiresInSeconds: 900,
+      subject: 'driver-account:account-id',
+      tokenVersion: 4
+    }, { secret: 'test-secret' }).token;
+    const app = await buildApp({
+      driverAuth: {
+        driverAuthRepository: {} as never,
+        jwtSecret: 'test-secret',
+        pushTokenService: { revokeDriverPushToken, upsertDriverPushToken }
+      }
+    });
+
+    try {
+      const registered = await app.inject({
+        headers: { authorization: `Bearer ${accessToken}` },
+        method: 'PUT',
+        payload: {
+          appId: 'com.evnsolution.clever.routes',
+          devicePushToken: 'device-push-token',
+          platform: 'web'
+        },
+        url: '/api/driver/mobile/push-token'
+      });
+      const revoked = await app.inject({
+        headers: { authorization: `Bearer ${accessToken}` },
+        method: 'DELETE',
+        payload: {
+          devicePushToken: 'device-push-token',
+          unexpected: true
+        },
+        url: '/api/driver/mobile/push-token'
+      });
+
+      expect(registered.statusCode).toBe(400);
+      expect(revoked.statusCode).toBe(400);
+      expect(upsertDriverPushToken).not.toHaveBeenCalled();
+      expect(revokeDriverPushToken).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

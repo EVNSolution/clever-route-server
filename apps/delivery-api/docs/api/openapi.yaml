@@ -1794,6 +1794,61 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /api/driver/mobile/push-token:
+    put:
+      tags: [Driver Mobile]
+      summary: Register or refresh one mobile installation for the authenticated driver account
+      operationId: registerDriverPushInstallation
+      x-source-file: src/routes/driver-auth.routes.ts
+      security:
+        - DriverAccountAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DriverPushInstallationRequest'
+      responses:
+        '200':
+          description: Installation token registered for the global driver account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverPushInstallationEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    delete:
+      tags: [Driver Mobile]
+      summary: Revoke one mobile installation for the authenticated driver account
+      operationId: revokeDriverPushInstallation
+      x-source-file: src/routes/driver-auth.routes.ts
+      security:
+        - DriverAccountAccessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [devicePushToken]
+              properties:
+                devicePushToken:
+                  type: string
+                  minLength: 1
+              additionalProperties: false
+      responses:
+        '200':
+          description: Matching account installation revoked when present.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DriverPushRevocationEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
   /driver/route-access/lookup:
     post:
       tags: [Driver Mobile]
@@ -4292,6 +4347,66 @@ components:
           minLength: 1
           maxLength: 80
       additionalProperties: false
+    DriverPushInstallationRequest:
+      type: object
+      required: [appId, devicePushToken, platform]
+      properties:
+        appId:
+          type: string
+          minLength: 1
+          maxLength: 160
+        appVersion:
+          type: string
+          maxLength: 64
+        deviceId:
+          type: string
+          maxLength: 256
+        devicePushToken:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        locale:
+          type: string
+          maxLength: 32
+        platform:
+          type: string
+          enum: [android, ios]
+        timezone:
+          type: string
+          maxLength: 128
+      additionalProperties: false
+    DriverPushInstallationEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [pushToken]
+          properties:
+            pushToken:
+              type: object
+              required: [id, status]
+              properties:
+                id:
+                  type: string
+                  format: uuid
+                status:
+                  type: string
+                  enum: [ACTIVE]
+        error:
+          type: 'null'
+    DriverPushRevocationEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [revoked]
+          properties:
+            revoked:
+              type: boolean
+        error:
+          type: 'null'
     DriverRouteAccessEnvelope:
       type: object
       required: [data, error]

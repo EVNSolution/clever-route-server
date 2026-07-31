@@ -474,6 +474,17 @@ describe('route grouping contracts', () => {
     expect(source).not.toContain('assertGroupingDeleteAllowed');
   });
 
+  test('notifies only unique current route assignments after delete or release mutations', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const deleteBody = source.slice(source.indexOf('async deleteGrouping'), source.indexOf('async listGroupings'));
+
+    expect(deleteBody).toContain("child.status !== 'CURRENT' || child.supersededAt !== null");
+    expect(deleteBody).toContain('dedupeDriverNotificationTargets');
+    expect(source).toContain("sendRouteNotificationsBestEffort('cancelled'");
+    expect(source).toContain("sendRouteNotificationsBestEffort('released'");
+    expect(source).toContain('driver route notification was not sent after route mutation');
+  });
+
   test('keeps the parent route group Ready when the legacy child publish endpoint is called', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     expect(source).toContain("this.prisma.routeGrouping.updateMany({ data: { status: 'READY' }");

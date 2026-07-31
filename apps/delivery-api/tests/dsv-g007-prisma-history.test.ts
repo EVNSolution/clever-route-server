@@ -50,6 +50,7 @@ const pickupCompletedDriverEventMigrationName = '20260728120000_add_pickup_compl
 const pickupCompletedUniqueIndexMigrationName = '20260728124500_add_pickup_completed_unique_index';
 const assignedDriverProfileBackfillMigrationName = '20260729170000_backfill_assigned_dsv_driver_profiles';
 const dispatchGroupingBackfillMigrationName = '20260730170000_backfill_dsv_dispatch_groupings';
+const accountScopedPushTokenMigrationName = '20260731140000_account_scope_driver_push_tokens';
 const pickupCompletedDriverEventMigrationPath = new URL(
   `../prisma/migrations/${pickupCompletedDriverEventMigrationName}/migration.sql`,
   import.meta.url
@@ -121,7 +122,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(56);
+    expect(migrations).toHaveLength(57);
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -208,6 +209,7 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations).toContain(pickupCompletedUniqueIndexMigrationName);
     expect(migrations).toContain(assignedDriverProfileBackfillMigrationName);
     expect(migrations).toContain(dispatchGroupingBackfillMigrationName);
+    expect(migrations).toContain(accountScopedPushTokenMigrationName);
     expect(migrations.indexOf('20260722213000_dsv_assignment_eta_state')).toBeLessThan(
       migrations.indexOf('20260722223000_drop_legacy_single_tenant_fks')
     );
@@ -246,7 +248,9 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf(assignedDriverProfileBackfillMigrationName)).toBeLessThan(
       migrations.indexOf(dispatchGroupingBackfillMigrationName)
     );
-    expect(migrations.at(-1)).toBe(dispatchGroupingBackfillMigrationName);
+    expect(migrations.indexOf(dispatchGroupingBackfillMigrationName))
+      .toBeLessThan(migrations.indexOf(accountScopedPushTokenMigrationName));
+    expect(migrations.at(-1)).toBe(accountScopedPushTokenMigrationName);
   });
 
   test('backfills only assigned drivers without replacing canonical contact or assignment data', async () => {

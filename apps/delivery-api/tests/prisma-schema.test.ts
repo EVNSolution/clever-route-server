@@ -86,12 +86,35 @@ const pickupCompletedUniqueIndexMigrationPath = new URL(
   '../prisma/migrations/20260728124500_add_pickup_completed_unique_index/migration.sql',
   import.meta.url
 );
+const accountScopedPushTokenMigrationPath = new URL(
+  '../prisma/migrations/20260731140000_account_scope_driver_push_tokens/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
 }
 
 describe('Prisma schema', () => {
+  test('owns mobile Push installations by the global driver account', async () => {
+    const schema = await readSchema();
+    const migration = await readFile(accountScopedPushTokenMigrationPath, 'utf8');
+    const pushTokenModel = /model DriverPushToken \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+
+    expect(pushTokenModel).toMatch(/accountId\s+String\s+@db\.Uuid/u);
+    expect(pushTokenModel).toContain('account         DriverAccount');
+    expect(pushTokenModel).toMatch(/tokenHash\s+String\s+@unique/u);
+    expect(pushTokenModel).not.toContain('shopId');
+    expect(pushTokenModel).not.toContain('driverId');
+    expect(migration).toContain('SET "accountId" = driver."accountId"');
+    expect(migration).toContain('DELETE FROM "driver_push_tokens"');
+    expect(migration).toContain('ROW_NUMBER() OVER');
+    expect(migration).toContain('PARTITION BY "tokenHash"');
+    expect(migration).toContain('DROP COLUMN "shopId"');
+    expect(migration).toContain('DROP COLUMN "driverId"');
+    expect(migration).toContain('REFERENCES "driver_accounts"("id")');
+  });
+
   test('defines pickup completed as an additive driver event migration', async () => {
     const schema = await readSchema();
     const migration = await readFile(pickupCompletedMigrationPath, 'utf8');

@@ -1,4 +1,4 @@
-export type DriverRoutePushAction = 'assigned' | 'changed';
+export type DriverRoutePushAction = 'assigned' | 'cancelled' | 'changed' | 'released';
 
 export type DriverRoutePushMessage = {
   action: DriverRoutePushAction;
@@ -68,8 +68,8 @@ export class FirebaseAdminDriverPushProvider implements DriverPushProvider {
           type: 'driver_route_changed'
         },
         notification: {
-          body: message.action === 'assigned' ? 'Your route is ready.' : 'Your assigned route has changed.',
-          title: message.action === 'assigned' ? 'Route assigned' : 'Route updated'
+          body: routeNotificationBody(message.action),
+          title: routeNotificationTitle(message.action)
         },
         token: message.devicePushToken
       });
@@ -83,6 +83,32 @@ export class FirebaseAdminDriverPushProvider implements DriverPushProvider {
         status: 'FAILED'
       };
     }
+  }
+}
+
+function routeNotificationBody(action: DriverRoutePushAction): string {
+  switch (action) {
+    case 'assigned':
+      return 'Your route is ready.';
+    case 'cancelled':
+      return 'This route was cancelled. Open the app to refresh your routes.';
+    case 'released':
+      return 'This route is no longer assigned to you.';
+    case 'changed':
+      return 'Your assigned route has changed.';
+  }
+}
+
+function routeNotificationTitle(action: DriverRoutePushAction): string {
+  switch (action) {
+    case 'assigned':
+      return 'Route assigned';
+    case 'cancelled':
+      return 'Route cancelled';
+    case 'released':
+      return 'Route assignment removed';
+    case 'changed':
+      return 'Route updated';
   }
 }
 

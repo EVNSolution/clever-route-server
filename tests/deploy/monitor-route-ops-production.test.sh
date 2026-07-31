@@ -58,7 +58,7 @@ esac
 case "$g007_status" in *"legacyUsage"*) ;; *) echo "G007 JSON status must include legacy usage output" >&2; exit 1 ;; esac
 case "$g007_status" in *"invariantFailures"*) ;; *) echo "G007 JSON status must include invariant output" >&2; exit 1 ;; esac
 case "$g007_status" in *"latestMigration"*) ;; *) echo "G007 JSON status must include migration output" >&2; exit 1 ;; esac
-case "$g007_status" in *"20260730170000_backfill_dsv_dispatch_groupings"*) ;; *) echo "G007 JSON status must require the latest migration" >&2; exit 1 ;; esac
+case "$g007_status" in *"20260731140000_account_scope_driver_push_tokens"*) ;; *) echo "G007 JSON status must require the latest migration" >&2; exit 1 ;; esac
 case "$g007_status" in *"eta_input_route_version_mismatches"*"route_plan.status NOT IN ('CANCELLED', 'COMPLETED')"*) ;;
   *) echo "G007 invariant must compare active route-plan ETA input versions to the current child version regardless of etaStatus" >&2; exit 1 ;;
 esac
@@ -111,7 +111,7 @@ if not match:
 namespace = {
     'Path': Path,
     'migration_dir': Path('/definitely-missing-clever-route-migrations'),
-    'required_latest_migration': '20260730170000_backfill_dsv_dispatch_groupings',
+    'required_latest_migration': '20260731140000_account_scope_driver_push_tokens',
 }
 exec(match.group('body'), namespace)
 status_from_history = namespace['migration_status_from_history']
@@ -135,6 +135,7 @@ expected = [
     '20260728124500_add_pickup_completed_unique_index',
     '20260729170000_backfill_assigned_dsv_driver_profiles',
     '20260730170000_backfill_dsv_dispatch_groupings',
+    '20260731140000_account_scope_driver_push_tokens',
 ]
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -147,8 +148,8 @@ with tempfile.TemporaryDirectory() as tmp:
 
 repo_expected = expected_migration_names(Path('apps/delivery-api/prisma/migrations'))
 assert repo_expected.count('20260723170000_add_customer_notification_outbox_worker') == 1, repo_expected
-assert len(repo_expected) == 56, repo_expected
-assert repo_expected[-1] == '20260730170000_backfill_dsv_dispatch_groupings', repo_expected[-1]
+assert len(repo_expected) == 57, repo_expected
+assert repo_expected[-1] == '20260731140000_account_scope_driver_push_tokens', repo_expected[-1]
 assert repo_expected.count('20260722233000_align_migration_history_to_schema') == 1, repo_expected
 
 empty = status_from_history([], expected)

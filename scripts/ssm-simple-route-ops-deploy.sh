@@ -30,6 +30,7 @@ DSV_MIGRATION_MANIFEST_SHA256="${DSV_MIGRATION_MANIFEST_SHA256:-}"
 DSV_RESTORE_REHEARSAL_SHA256="${DSV_RESTORE_REHEARSAL_SHA256:-}"
 DSV_PRODUCTION_BASELINE_APPROVED="${DSV_PRODUCTION_BASELINE_APPROVED:-}"
 DSV_PRODUCTION_BASELINE_MANIFEST_SHA256="${DSV_PRODUCTION_BASELINE_MANIFEST_SHA256:-}"
+FIREBASE_CREDENTIALS_PARAM="${ROUTE_OPS_FIREBASE_CREDENTIALS_PARAM:-/clever/route-ops/firebase/fcm-service-account-json}"
 
 usage() {
   cat <<USAGE
@@ -47,6 +48,7 @@ Env:
   ROUTE_OPS_RUNTIME_IMAGE        optional full runtime image ref, preferably repo@sha256
   ROUTE_OPS_WEB_STATIC_IMAGE     optional full static image ref, preferably repo@sha256
   ROUTE_OPS_FORCE_STATIC_RESTAGE  set to 1 to stage static even when digest matches current
+  ROUTE_OPS_FIREBASE_CREDENTIALS_PARAM encrypted SSM parameter containing FCM credentials
   AWS_REGION                     default: ap-northeast-2
   ROUTE_OPS_SSM_TAG_KEY          default: Service
   ROUTE_OPS_SSM_TAG_VALUE        default: clever-delivery-server
@@ -161,6 +163,7 @@ DSV_MIGRATION_MANIFEST_SHA256=__DSV_MIGRATION_MANIFEST_SHA256__
 DSV_RESTORE_REHEARSAL_SHA256=__DSV_RESTORE_REHEARSAL_SHA256__
 DSV_PRODUCTION_BASELINE_APPROVED=__DSV_PRODUCTION_BASELINE_APPROVED__
 DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=__DSV_PRODUCTION_BASELINE_MANIFEST_SHA256__
+FIREBASE_CREDENTIALS_PARAM=__FIREBASE_CREDENTIALS_PARAM__
 COMPOSE_FILE_B64=__COMPOSE_FILE_B64__
 VROOM_CONFIG_B64=__VROOM_CONFIG_B64__
 VROOM_KOREA_CONFIG_B64=__VROOM_KOREA_CONFIG_B64__
@@ -251,6 +254,14 @@ if [ "$DRY_RUN" = "1" ]; then
   printf 'simple deploy dry-run complete; no host image pull, migration, or restart mutation performed.\n'
   exit 0
 fi
+FIREBASE_CREDENTIALS_FILE=/srv/clever-route-server/secrets/firebase-fcm.json
+mkdir -p "$(dirname "$FIREBASE_CREDENTIALS_FILE")"
+firebase_credentials="$(aws ssm get-parameter --name "$FIREBASE_CREDENTIALS_PARAM" --with-decryption --query 'Parameter.Value' --output text)"
+printf '%s' "$firebase_credentials" > "$FIREBASE_CREDENTIALS_FILE"
+firebase_credentials=''
+python3 -c 'import json,sys; value=json.load(open(sys.argv[1])); assert value.get("project_id") == "clever-routes-prod"; assert value.get("client_email")' "$FIREBASE_CREDENTIALS_FILE"
+chown 100:101 "$FIREBASE_CREDENTIALS_FILE"
+chmod 400 "$FIREBASE_CREDENTIALS_FILE"
 rollback_delivery_api() {
   echo 'simple deploy health failed; rolling clever-route-api back to previous image env' >&2
   docker compose -p "$COMPOSE_PROJECT" --env-file .deploy/simple-rollback-image.env -f "$COMPOSE_FILE" --profile osrm --profile vroom --profile korea pull clever-route-api route-ops-web-static vroom vroom-korea
@@ -280,6 +291,8 @@ updates = {
     'OSRM_KOREA_BASE_URL': 'http://osrm-korea:5000',
     'OSRM_DEFAULT_COVERAGE': 'korea',
     'OSRM_TIMEOUT_MS': '10000',
+    'FIREBASE_PROJECT_ID': 'clever-routes-prod',
+    'GOOGLE_APPLICATION_CREDENTIALS': '/run/secrets/firebase-fcm.json',
 }
 text = path.read_text().splitlines()
 out, seen = [], set()
@@ -361,6 +374,7 @@ replacements = {
     '__DSV_RESTORE_REHEARSAL_SHA256__': shlex.quote(os.environ['DSV_RESTORE_REHEARSAL_SHA256']),
     '__DSV_PRODUCTION_BASELINE_APPROVED__': shlex.quote(os.environ['DSV_PRODUCTION_BASELINE_APPROVED']),
     '__DSV_PRODUCTION_BASELINE_MANIFEST_SHA256__': shlex.quote(os.environ['DSV_PRODUCTION_BASELINE_MANIFEST_SHA256']),
+    '__FIREBASE_CREDENTIALS_PARAM__': shlex.quote(os.environ['FIREBASE_CREDENTIALS_PARAM']),
     '__COMPOSE_FILE_B64__': shlex.quote(os.environ['COMPOSE_FILE_B64']),
     '__VROOM_CONFIG_B64__': shlex.quote(os.environ['VROOM_CONFIG_B64']),
     '__VROOM_KOREA_CONFIG_B64__': shlex.quote(os.environ['VROOM_KOREA_CONFIG_B64']),
@@ -382,7 +396,7 @@ COMPOSE_FILE_B64="$(base64 < "$COMPOSE_FILE" | tr -d '\n')"
 VROOM_CONFIG_B64="$(base64 < "$VROOM_CONFIG" | tr -d '\n')"
 VROOM_KOREA_CONFIG_B64="$(base64 < "$VROOM_KOREA_CONFIG" | tr -d '\n')"
 DOCKER_CLEANUP_SCRIPT_B64="$(base64 < scripts/route-ops-docker-cleanup.sh | tr -d '\n')"
-export APP_DIR COMPOSE_FILE VROOM_CONFIG VROOM_KOREA_CONFIG COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL SMOKE_URLS DRY_RUN FORCE_STATIC_RESTAGE DSV_MIGRATION_APPROVED DSV_MIGRATION_MANIFEST_SHA256 DSV_RESTORE_REHEARSAL_SHA256 DSV_PRODUCTION_BASELINE_APPROVED DSV_PRODUCTION_BASELINE_MANIFEST_SHA256 COMPOSE_FILE_B64 VROOM_CONFIG_B64 VROOM_KOREA_CONFIG_B64 DOCKER_CLEANUP_SCRIPT_B64
+export APP_DIR COMPOSE_FILE VROOM_CONFIG VROOM_KOREA_CONFIG COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL SMOKE_URLS DRY_RUN FORCE_STATIC_RESTAGE DSV_MIGRATION_APPROVED DSV_MIGRATION_MANIFEST_SHA256 DSV_RESTORE_REHEARSAL_SHA256 DSV_PRODUCTION_BASELINE_APPROVED DSV_PRODUCTION_BASELINE_MANIFEST_SHA256 FIREBASE_CREDENTIALS_PARAM COMPOSE_FILE_B64 VROOM_CONFIG_B64 VROOM_KOREA_CONFIG_B64 DOCKER_CLEANUP_SCRIPT_B64
 parameters_path="$(mktemp /tmp/route-ops-simple-ssm.XXXXXX)"
 write_parameters "$parameters_path"
 if [ "$SEND_COMMAND" = "0" ]; then
