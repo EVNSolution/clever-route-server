@@ -194,6 +194,53 @@ describe('DSV Korean address canonicalization', () => {
     });
   });
 
+  test('rejects coordinates when the provider result points to a different Korean address', async () => {
+    const searchPlaces = vi.fn().mockResolvedValue([{
+      jibunAddress: '서울특별시 중구 충무로2가 65-9',
+      latitude: 37.561338,
+      longitude: 126.988292,
+      providerPlaceId: 'place-myeongdong',
+      roadAddress: '서울특별시 중구 퇴계로 131',
+      title: '닥터에버스의원 명동점',
+    }]);
+    const service = new GeocodingDsvAddressCanonicalizer({
+      geocode: vi.fn().mockResolvedValue({
+        cached: false,
+        ok: true,
+        result: {
+          addressLabel: 'structured_without_unit',
+          jibunAddress: '서울특별시 강남구 역삼동 735-3',
+          latitude: 37.497942,
+          longitude: 127.027621,
+          postalCode: '06236',
+          provider: 'vworld',
+          providerPlaceId: 'wrong-place',
+          rawLabel: '서울특별시 강남구 테헤란로 131',
+          roadAddress: '서울특별시 강남구 테헤란로 131',
+        },
+      }),
+      searchPlaces,
+    });
+
+    await expect(service.resolve({
+      address: '서울 중구 퇴계로 131, 5,6층',
+      destinationName: '닥터에버스의원 명동점',
+      shopDomain: 'dsv-demo.local',
+    })).resolves.toMatchObject({
+      address: '서울 중구 퇴계로 131',
+      detailAddress: '5, 6층',
+      latitude: null,
+      longitude: null,
+      status: 'NOT_FOUND',
+      suggestions: [{
+        address: '서울특별시 중구 퇴계로 131',
+        recommended: true,
+        title: '닥터에버스의원 명동점',
+      }],
+    });
+    expect(searchPlaces).toHaveBeenCalledWith({ limit: 10, text: '닥터에버스의원 명동점' });
+  });
+
   test('does not mark an address resolved when no postal code is available', async () => {
     const geocode = vi.fn().mockResolvedValue({
       cached: false,

@@ -116,6 +116,15 @@ export class GeocodingDsvAddressCanonicalizer implements DsvAddressCanonicalizer
       );
     }
 
+    if (!resolvedAddressMatchesSource(parsed.searchAddress, geocode.result)) {
+      return this.withSuggestions(
+        unresolvedAddress(parsed, 'NOT_FOUND'),
+        parsed,
+        destinationName,
+        'NOT_FOUND',
+      );
+    }
+
     const postalCode = cleanPostalCode(geocode.result.postalCode) ?? parsed.postalCode;
     if (postalCode === null) {
       return this.withSuggestions(
@@ -323,6 +332,36 @@ function failureStatus(
     code === 'GEOCODER_NO_RESULT'
     ? 'NOT_FOUND'
     : 'UNAVAILABLE';
+}
+
+function resolvedAddressMatchesSource(
+  sourceAddress: string,
+  result: {
+    jibunAddress?: string | null;
+    rawLabel?: string | null;
+    roadAddress?: string | null;
+  },
+): boolean {
+  const resolvedAddress = clean(result.roadAddress) ?? clean(result.rawLabel) ?? clean(result.jibunAddress);
+  if (resolvedAddress === null) return true;
+  const source = addressPartsForSuggestion(sourceAddress);
+  const resolved = addressPartsForSuggestion(resolvedAddress);
+  if (
+    source.province !== null
+    && resolved.province !== null
+    && source.province !== resolved.province
+  ) return false;
+  if (
+    source.locality !== null
+    && resolved.locality !== null
+    && source.locality !== resolved.locality
+  ) return false;
+  if (source.road !== null && resolved.road !== null && source.road !== resolved.road) return false;
+  return !(
+    source.number !== null
+    && resolved.number !== null
+    && source.number !== resolved.number
+  );
 }
 
 function topLevelCommaIndex(value: string): number {
