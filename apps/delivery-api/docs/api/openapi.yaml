@@ -283,6 +283,8 @@ paths:
       security: [{ DsvSessionCookie: [] }]
       parameters:
         - $ref: '#/components/parameters/DsvV1ServiceDateQuery'
+        - $ref: '#/components/parameters/DsvV1OrderNumberQuery'
+        - $ref: '#/components/parameters/DsvV1DestinationNameQuery'
         - $ref: '#/components/parameters/DsvV1CursorQuery'
         - $ref: '#/components/parameters/DsvV1LimitQuery'
       responses:
@@ -311,6 +313,27 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DsvV1ControlSummaryEnvelope' }
+        '400': { $ref: '#/components/responses/DsvV1BadRequest' }
+        '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
+        '403': { $ref: '#/components/responses/DsvV1Forbidden' }
+        '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
+  /api/dsv/v1/control/routes:
+    get:
+      tags: [DSV API v1]
+      summary: Read date-scoped cached control route geometry
+      description: Returns only server-generated route cache state. This read never invokes OSRM or starts route optimization.
+      operationId: listDsvV1ControlRoutes
+      x-source-file: src/routes/dsv-v1-read.routes.ts
+      x-required-scopes: ['dsv:control:read']
+      security: [{ DsvSessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/DsvV1ServiceDateQuery'
+      responses:
+        '200':
+          description: Cached route geometry for the selected service date.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvV1ControlRoutesEnvelope' }
         '400': { $ref: '#/components/responses/DsvV1BadRequest' }
         '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
         '403': { $ref: '#/components/responses/DsvV1Forbidden' }
@@ -477,6 +500,33 @@ paths:
       responses:
         '200':
           description: Customer-scoped delivery inquiry page.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvV1CustomerDeliveryInquiryEnvelope' }
+        '400': { $ref: '#/components/responses/DsvV1BadRequest' }
+        '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
+        '403': { $ref: '#/components/responses/DsvV1Forbidden' }
+        '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
+  /api/dsv/v1/customers/deliveries:
+    get:
+      tags: [DSV API v1]
+      summary: Read one customer's deliveries as a DSV administrator
+      operationId: listDsvV1CustomerDeliveriesForAdmin
+      x-source-file: src/routes/dsv-v1-read.routes.ts
+      x-required-scopes: ['dsv:customers:read', 'dsv:dispatches:read']
+      security: [{ DsvSessionCookie: [] }]
+      parameters:
+        - name: customerId
+          in: query
+          required: true
+          schema: { type: string }
+        - $ref: '#/components/parameters/DsvV1WindowQuery'
+        - $ref: '#/components/parameters/DsvV1ServiceDateQuery'
+        - $ref: '#/components/parameters/DsvV1CursorQuery'
+        - $ref: '#/components/parameters/DsvV1LimitQuery'
+      responses:
+        '200':
+          description: Administrator read of one customer-scoped delivery inquiry page.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DsvV1CustomerDeliveryInquiryEnvelope' }
@@ -2397,6 +2447,22 @@ components:
         format: date
         pattern: '^\d{4}-\d{2}-\d{2}$'
       description: Optional service date. Runtime rejects non-YYYY-MM-DD values.
+    DsvV1OrderNumberQuery:
+      name: orderNumber
+      in: query
+      required: false
+      schema:
+        type: string
+        maxLength: 120
+      description: Case-insensitive partial match against SellerOrderKey.
+    DsvV1DestinationNameQuery:
+      name: destinationName
+      in: query
+      required: false
+      schema:
+        type: string
+        maxLength: 120
+      description: Case-insensitive partial match against the canonical destination name or stop recipient name.
     DsvV1CursorQuery:
       name: cursor
       in: query
@@ -2955,6 +3021,9 @@ components:
       type: object
       required: [assignmentStatus, customerId, destinationId, etaStatus, sellerOrderId, sellerOrderKey]
       properties:
+        actualCompletedAt:
+          type: string
+          format: date-time
         assignmentStatus:
           type: string
           enum: [UNASSIGNED, ASSIGNED]
@@ -2979,6 +3048,9 @@ components:
           type: number
         routePlanId:
           type: string
+        routeStopSequence:
+          type: integer
+          minimum: 1
         routeVersionId:
           type: string
         sellerOrderId:
@@ -3048,6 +3120,42 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/DsvV1ControlSummary'
+    DsvV1ControlRoute:
+      type: object
+      required: [routePlanId, geometryStatus, generatedAt, coordinates, legDurationsSeconds]
+      properties:
+        routePlanId: { type: string, minLength: 1 }
+        geometryStatus:
+          type: string
+          enum: [fresh, missing, stale, unavailable]
+        generatedAt:
+          type: [string, 'null']
+          format: date-time
+        coordinates:
+          type: array
+          items: { $ref: '#/components/schemas/DsvV1LngLat' }
+        legDurationsSeconds:
+          type: array
+          items:
+            type: [number, 'null']
+            minimum: 0
+      additionalProperties: false
+    DsvV1ControlRoutes:
+      type: object
+      required: [serviceDate, routes]
+      properties:
+        serviceDate: { type: string, format: date }
+        routes:
+          type: array
+          items: { $ref: '#/components/schemas/DsvV1ControlRoute' }
+      additionalProperties: false
+    DsvV1ControlRoutesEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/DsvV1SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data: { $ref: '#/components/schemas/DsvV1ControlRoutes' }
     DsvV1MapProviderMode:
       type: string
       enum: [public_allowlisted, self_hosted]
@@ -3265,6 +3373,10 @@ components:
           type: string
         vehicleId:
           type: string
+        vehicleLatitude:
+          type: number
+        vehicleLongitude:
+          type: number
         vehiclePlate:
           type: string
         vehicleType:
@@ -3415,9 +3527,11 @@ components:
               $ref: '#/components/schemas/DsvV1ConditionListPage'
     DsvV1CustomerDeliveryInquiryItem:
       type: object
-      required: [deliveryStatus, destinationDisplayName, etaStatus, eventSummary, proofStatus, sellerOrderKey]
+      required: [deliveryStatus, destinationDisplayName, etaStatus, eventSummary, proofStatus, sellerOrderId, sellerOrderKey]
       properties:
         deliveryStatus:
+          type: string
+        destinationAddress:
           type: string
         destinationDisplayName:
           type: string
@@ -3430,9 +3544,19 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DsvV1EventSummary'
+        latitude:
+          type: number
+        longitude:
+          type: number
         proofStatus:
           $ref: '#/components/schemas/DsvV1ProofStatus'
+        sellerOrderId:
+          type: string
         sellerOrderKey:
+          type: string
+        vehicleDisplayName:
+          type: string
+        vehicleId:
           type: string
       additionalProperties: false
     DsvV1CustomerDeliveryInquiryPage:
@@ -5172,7 +5296,7 @@ components:
           format: date-time
           type: string
         trigger:
-          enum: [ROUTE_STARTED, STOP_ARRIVED, PICKUP_COMPLETED]
+          enum: [ROUTE_STARTED, STOP_ARRIVED, STOP_DELIVERED, PICKUP_COMPLETED]
           type: string
         updatedStops:
           type: array

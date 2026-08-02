@@ -136,7 +136,7 @@ export type DsvDispatchImportApplyResult = {
     customerId: string;
     deliveryStopId: string;
     destinationId: string;
-    outcome: 'NEW' | 'NO_OP';
+    outcome: 'NEW' | 'NO_OP' | 'UPDATE_CANDIDATE';
     rowId: string;
     rowNumber: number;
     sellerOrderId: string;
@@ -148,6 +148,7 @@ export type DsvDispatchImportApplyResult = {
     appliedRows: number;
     newRows: number;
     noOpRows: number;
+    updatedRows: number;
   };
 };
 
@@ -358,6 +359,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         for (const key of [...new Set(sourceRows.map((row) => row.sellerOrderKey))].sort()) {
           await lockSellerOrder(tx, shop.id, key);
         }
+        await lockCanonicalOrderRows(tx, shop.id, sourceRows.map((row) => row.sellerOrderKey));
 
         const recomputed = await this.buildPreviewForRows(tx, shop.id, {
           fileName: lockedImport.fileName,
@@ -388,7 +390,9 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
           if (source === undefined || importRow === undefined) throw new Error(`Missing locked row ${row.rowNumber}`);
           const link = row.diffKind === 'NO_OP'
             ? await this.linkNoOpRow(tx, shop.id, row)
-            : await this.createNewCanonicalRows(tx, shop.id, source, row);
+            : row.diffKind === 'UPDATE_CANDIDATE'
+              ? await this.updateCanonicalRows(tx, shop.id, source, row)
+              : await this.createNewCanonicalRows(tx, shop.id, source, row);
           if (row.diffKind === 'NEW') {
             canonicalWrites += 1;
             if (this.options.delayAfterCanonicalRowsMs !== undefined) {
@@ -398,7 +402,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
               throw new Error('G003 forced mid-transaction failure');
             }
           }
-          const outcome = row.diffKind as 'NEW' | 'NO_OP';
+          const outcome = row.diffKind as 'NEW' | 'NO_OP' | 'UPDATE_CANDIDATE';
           await tx.dsvDispatchImportRow.update({
             data: {
               applyReceiptId: receipt.id,
@@ -420,6 +424,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
             sellerOrderKey: row.sellerOrderKey,
           });
         }
+        await invalidateReadyRoutePlansForUpdates(tx, shop.id, resultRows.filter((row) => row.outcome === 'UPDATE_CANDIDATE'));
         await this.ensureDispatchGrouping(
           tx,
           shop.id,
@@ -442,6 +447,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
             appliedRows: resultRows.length,
             newRows: resultRows.filter((row) => row.outcome === 'NEW').length,
             noOpRows: resultRows.filter((row) => row.outcome === 'NO_OP').length,
+            updatedRows: resultRows.filter((row) => row.outcome === 'UPDATE_CANDIDATE').length,
           },
         };
 
@@ -664,6 +670,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     const customerCodes = unique(normalizedRows.map((row) => row.customerCode.trim()));
     const sellerOrderKeys = unique(normalizedRows.map((row) => row.sellerOrderKey));
     const addressFingerprints = unique(normalizedRows.map((row) => addressFingerprint(row)));
+    const serviceDate = new Date(`${input.planDate}T00:00:00.000Z`);
 
     const [drivers, vehicles, conditions, customers, destinations, orders, priorRows] = await Promise.all([
       prisma.dsvDriverProfile.findMany({
@@ -688,7 +695,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
       }),
       prisma.order.findMany({
         include: { deliveryStops: { orderBy: { createdAt: 'asc' }, take: 1 } },
-        where: { sellerOrderKey: { in: sellerOrderKeys }, sellerOrderSourceKind: dsvDispatchImportSourceKind, shopId },
+        where: { sellerOrderKey: { in: sellerOrderKeys }, sellerOrderSourceKind: dsvDispatchImportSourceKind, serviceDate, shopId },
       }),
       prisma.dsvDispatchImportRow.findMany({
         select: { canonicalLink: true, normalized: true, sellerOrderKey: true, sourceKind: true },
@@ -746,10 +753,12 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
               longitude: stop.longitude?.toNumber() ?? null,
               notes: stop.instructions,
               shippedBoxes: normalized?.shippedBoxes ?? null,
+              status: stop.status,
             },
             destinationId: order.destinationId,
             id: order.id,
             sellerOrderKey: order.sellerOrderKey ?? '',
+            serviceDate: order.serviceDate?.toISOString().slice(0, 10) ?? null,
             sourceKind: order.sellerOrderSourceKind ?? '',
           };
         }),
@@ -890,6 +899,8 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
       throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_HAS_REVIEW_ROWS');
     }
     const destination = await findOrCreateDestination(tx, shopId, source, row.normalized);
+    const serviceDate = new Date(`${row.normalized.planDate}T00:00:00.000Z`);
+    const datedSourceOrderId = `${row.normalized.planDate}:${row.sellerOrderKey}`;
     const order = await tx.order.upsert({
       create: {
         customerId: customer.id,
@@ -898,17 +909,19 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         rawPayload: toJson({ dsv: { normalized: row.normalized, source } }),
         sellerOrderKey: row.sellerOrderKey,
         sellerOrderSourceKind: dsvDispatchImportSourceKind,
+        serviceDate,
         shopId,
-        shopifyOrderGid: `dsv:${dsvDispatchImportSourceKind}:${row.sellerOrderKey}`,
-        sourceOrderId: row.sellerOrderKey,
+        shopifyOrderGid: `dsv:${dsvDispatchImportSourceKind}:${datedSourceOrderId}`,
+        sourceOrderId: datedSourceOrderId,
         sourceOrderNumber: row.sellerOrderKey,
         sourcePlatform: 'SHOPIFY',
       },
       update: {},
       where: {
-        shopId_sellerOrderSourceKind_sellerOrderKey: {
+        shopId_sellerOrderSourceKind_sellerOrderKey_serviceDate: {
           sellerOrderKey: row.sellerOrderKey,
           sellerOrderSourceKind: dsvDispatchImportSourceKind,
+          serviceDate,
           shopId,
         },
       },
@@ -937,6 +950,106 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
       destinationId: destination.id,
       sellerOrderId: order.id,
     };
+  }
+
+  private async updateCanonicalRows(
+    tx: Tx,
+    shopId: string,
+    source: DsvDispatchImportSourceRow,
+    row: DsvDispatchDiffRow,
+  ): Promise<ApplyCanonicalLink> {
+    if (row.sellerOrderId === null || row.deliveryStopId === null) {
+      throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT');
+    }
+    const customer = await tx.customer.upsert({
+      create: {
+        displayName: row.normalized.customerCode,
+        externalCustomerCode: row.normalized.customerCode,
+        metadata: toJson({ sourceKind: dsvDispatchImportSourceKind }),
+        shopId,
+        sourceKind: dsvDispatchImportSourceKind,
+        status: 'ACTIVE',
+      },
+      update: {},
+      where: {
+        shopId_sourceKind_externalCustomerCode: {
+          externalCustomerCode: row.normalized.customerCode,
+          shopId,
+          sourceKind: dsvDispatchImportSourceKind,
+        },
+      },
+    });
+    if (customer.status !== 'ACTIVE') {
+      throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_HAS_REVIEW_ROWS');
+    }
+    const destination = await this.resolveUpdateDestination(tx, shopId, source, row);
+    const deliveryDate = new Date(`${row.normalized.planDate}T00:00:00.000Z`);
+    const updatedOrder = await tx.order.updateMany({
+      data: {
+        customerId: customer.id,
+        destinationId: destination.id,
+        rawPayload: toJson({ dsv: { normalized: row.normalized, source } }),
+      },
+      where: {
+        cancelledAt: null,
+        deliveryStatus: 'PENDING',
+        id: row.sellerOrderId,
+        serviceDate: deliveryDate,
+        shopId,
+      },
+    });
+    if (updatedOrder.count !== 1) throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT');
+    const updatedStop = await tx.deliveryStop.updateMany({
+      data: {
+        address1: row.normalized.address,
+        address2: row.normalized.detailAddress ?? null,
+        countryCode: 'KR',
+        deliveryDate,
+        geocodeStatus: row.normalized.latitude !== null && row.normalized.longitude !== null ? 'RESOLVED' : 'FAILED',
+        instructions: row.normalized.notes,
+        latitude: row.normalized.latitude,
+        longitude: row.normalized.longitude,
+        postalCode: row.normalized.postalCode ?? null,
+        recipientName: row.normalized.destinationName,
+      },
+      where: {
+        id: row.deliveryStopId,
+        shopId,
+        status: 'PENDING',
+      },
+    });
+    if (updatedStop.count !== 1) throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT');
+    const [order, stop] = await Promise.all([
+      tx.order.findUniqueOrThrow({ where: { id_shopId: { id: row.sellerOrderId, shopId } } }),
+      tx.deliveryStop.findUniqueOrThrow({ where: { id_shopId: { id: row.deliveryStopId, shopId } } }),
+    ]);
+    return {
+      customerId: order.customerId ?? customer.id,
+      deliveryStopId: stop.id,
+      destinationId: order.destinationId ?? destination.id,
+      sellerOrderId: order.id,
+    };
+  }
+
+  private async resolveUpdateDestination(
+    tx: Tx,
+    shopId: string,
+    source: DsvDispatchImportSourceRow,
+    row: DsvDispatchDiffRow,
+  ) {
+    if (row.destinationId !== null && !row.candidateDiff.some((diff) => diff.field === 'destinationId')) {
+      const existing = await tx.deliveryCustomerProfile.findFirst({
+        where: { id: row.destinationId, mergedIntoProfileId: null, shopId },
+      });
+      if (existing !== null) return existing;
+    }
+    if (row.destinationId !== null) {
+      const matched = await tx.deliveryCustomerProfile.findFirst({
+        where: { id: row.destinationId, mergedIntoProfileId: null, shopId },
+      });
+      if (matched !== null) return matched;
+    }
+    return findOrCreateDestination(tx, shopId, source, row.normalized);
   }
 
   private async linkNoOpRow(tx: Tx, shopId: string, row: DsvDispatchDiffRow): Promise<ApplyCanonicalLink> {
@@ -975,28 +1088,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     const unownedRows = rows.filter((row) => !ownedOrderIds.has(row.sellerOrderId));
     if (unownedRows.length === 0) return;
 
-    const grouping = await tx.routeGrouping.create({
-      data: {
-        createdBy: actor,
-        name: fileName,
-        planDate,
-        routeScopeKey: `dsv-import:${importId}`,
-        serviceType: 'DSV_DISPATCH',
-        shopId,
-        status: 'READY',
-      },
-      select: { id: true },
-    });
-    await tx.routeGroupingVersion.create({
-      data: {
-        actor,
-        changeReason: 'DSV dispatch import apply',
-        groupingId: grouping.id,
-        shopId,
-        status: 'CURRENT',
-        version: 1,
-      },
-    });
+    const grouping = await findOrCreateUnassignedDispatchGrouping(tx, shopId, importId, fileName, planDate, actor);
     await tx.routeGroupingOrder.createMany({
       data: unownedRows.map((row, index) => ({
         assignmentStatus: 'UNASSIGNED',
@@ -1137,7 +1229,7 @@ export function buildDispatchImportPreview(input: {
 }
 
 function previewView(diff: DsvDispatchPreviewDiff, sourceRows: DsvDispatchImportSourceRow[]): DsvDispatchImportPreview {
-  const errorRows = diff.summary.errorRows + diff.summary.conflictRows + diff.summary.updateCandidateRows;
+  const errorRows = diff.summary.errorRows + diff.summary.conflictRows;
   const reviewRows = diff.rows.filter((row) =>
     row.issues.some((issue) => issue.severity === 'review')
     && !row.issues.some((issue) => issue.severity === 'error')).length;
@@ -1177,7 +1269,7 @@ function previewView(diff: DsvDispatchPreviewDiff, sourceRows: DsvDispatchImport
         issues: row.issues,
         normalized: row.normalized,
         sellerOrderId: row.sellerOrderId,
-        status: row.issues.length === 0 && (row.diffKind === 'NEW' || row.diffKind === 'NO_OP') ? 'READY' : 'NEEDS_REVIEW',
+        status: row.issues.length === 0 && isReadyDiffKind(row.diffKind) ? 'READY' : 'NEEDS_REVIEW',
         vehicleId: row.vehicleId,
       };
     }),
@@ -1259,9 +1351,6 @@ function issueCodes(value: Prisma.JsonValue): string[] {
 }
 
 function assertApplicable(diff: DsvDispatchPreviewDiff): void {
-  if (diff.rows.some((row) => row.diffKind === 'UPDATE_CANDIDATE')) {
-    throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_HAS_UPDATE_CANDIDATES');
-  }
   if (diff.rows.some((row) => row.diffKind === 'CONFLICT')) {
     throw new DsvDispatchImportApplyError(
       diff.rows.some((row) => row.issues.some((issue) => issue.code === 'DUPLICATE_ACTIVE_DELIVERY'))
@@ -1298,6 +1387,24 @@ async function lockApplyCommand(tx: Pick<Tx, '$queryRaw'>, shopId: string, comma
 
 async function lockSellerOrder(tx: Pick<Tx, '$queryRaw'>, shopId: string, sellerOrderKey: string): Promise<void> {
   await tx.$queryRaw<{ locked: number }[]>`WITH lock AS (SELECT pg_advisory_xact_lock(hashtextextended(${`dsv-seller-order:${shopId}:${sellerOrderKey}`}, 0))) SELECT 1 AS locked FROM lock`;
+}
+
+async function lockCanonicalOrderRows(
+  tx: Pick<Tx, '$queryRaw'>,
+  shopId: string,
+  sellerOrderKeys: string[],
+): Promise<void> {
+  const keys = unique(sellerOrderKeys).sort((left, right) => left.localeCompare(right));
+  if (keys.length === 0) return;
+  await tx.$queryRaw<{ id: string }[]>`
+    SELECT id
+    FROM orders
+    WHERE "shopId" = ${shopId}::uuid
+      AND "sellerOrderSourceKind" = ${dsvDispatchImportSourceKind}
+      AND "sellerOrderKey" IN (${Prisma.join(keys)})
+    ORDER BY "sellerOrderKey"
+    FOR UPDATE
+  `;
 }
 
 async function lockDestinationFingerprint(tx: Pick<Tx, '$queryRaw'>, shopId: string, fingerprint: string): Promise<void> {
@@ -1342,10 +1449,7 @@ async function activeDeliveryOwnershipCount(
       select: { routePlanId: true },
       where: {
         deliveryStopId,
-        routePlan: {
-          shopId,
-          status: { in: ['PUBLISHED', 'OPTIMIZED', 'ASSIGNED', 'IN_PROGRESS', 'READY'] },
-        },
+        routePlan: { shopId, status: { in: ['PUBLISHED', 'OPTIMIZED', 'ASSIGNED', 'IN_PROGRESS', 'READY'] } },
       },
     }),
   ]);
@@ -1356,7 +1460,13 @@ async function activeDeliveryOwnershipCount(
   const childVersions = versionSelectors.length === 0
     ? []
     : await prisma.routeGroupingChildVersion.findMany({
-      select: { groupingId: true, id: true, routePlan: { select: { status: true } }, routePlanId: true },
+      select: {
+        grouping: { select: { routeScopeKey: true, serviceType: true } },
+        groupingId: true,
+        id: true,
+        routePlan: { select: { status: true } },
+        routePlanId: true,
+      },
       where: {
         OR: versionSelectors,
         grouping: { status: { in: ['PUBLISHED', 'READY', 'CHANGED'] } },
@@ -1366,8 +1476,15 @@ async function activeDeliveryOwnershipCount(
         supersededAt: null,
       },
     });
+  const mutableReadyRoutePlanIds = new Set(childVersions
+    .filter((child) => child.routePlanId !== null && isMutableDsvReadyRouteVersion(child, groupingOrders))
+    .map((child) => child.routePlanId));
   const activeChildVersions = childVersions.filter((child) =>
-    child.routePlan === null || activeRoutePlanStatuses.has(child.routePlan.status));
+    child.routePlan !== null
+    && (
+      activeRoutePlanStatuses.has(child.routePlan.status)
+      || (child.routePlan.status === 'READY' && !isMutableDsvReadyRouteVersion(child, groupingOrders))
+    ));
   const routePlanVersions = new Map(
     activeChildVersions
       .filter((child): child is typeof child & { routePlanId: string } => child.routePlanId !== null)
@@ -1382,6 +1499,7 @@ async function activeDeliveryOwnershipCount(
     routeOwnerGroupingIds.add(currentVersion.groupingId);
   }
   for (const stop of routePlanStops) {
+    if (mutableReadyRoutePlanIds.has(stop.routePlanId)) continue;
     const version = routePlanVersions.get(stop.routePlanId);
     if (version === undefined) {
       ownershipIdentities.add(`route-plan:${stop.routePlanId}`);
@@ -1397,7 +1515,21 @@ async function activeDeliveryOwnershipCount(
 }
 
 const activeDeliveryStopStatuses: ReadonlySet<string> = new Set(['PENDING', 'ASSIGNED', 'EN_ROUTE', 'ARRIVED']);
-const activeRoutePlanStatuses: ReadonlySet<string> = new Set(['PUBLISHED', 'OPTIMIZED', 'ASSIGNED', 'IN_PROGRESS', 'READY']);
+const activeRoutePlanStatuses: ReadonlySet<string> = new Set(['PUBLISHED', 'OPTIMIZED', 'ASSIGNED', 'IN_PROGRESS']);
+
+function isMutableDsvReadyRouteVersion(
+  version: {
+    grouping: { routeScopeKey: string | null; serviceType: string | null };
+    groupingId: string;
+    routePlan: { status: string } | null;
+  },
+  groupingOrders: Array<{ groupingId: string }>,
+): boolean {
+  return version.routePlan?.status === 'READY'
+    && version.grouping.serviceType === 'DSV_DISPATCH'
+    && (version.grouping.routeScopeKey?.startsWith('dsv-import:') ?? false)
+    && groupingOrders.every((order) => order.groupingId !== version.groupingId);
+}
 
 type ApplyCanonicalLink = {
   customerId: string;
@@ -1405,6 +1537,98 @@ type ApplyCanonicalLink = {
   destinationId: string;
   sellerOrderId: string;
 };
+
+async function invalidateReadyRoutePlansForUpdates(
+  tx: Tx,
+  shopId: string,
+  rows: DsvDispatchImportApplyResult['rows'],
+): Promise<void> {
+  if (rows.length === 0) return;
+  const routePlanStops = await tx.routePlanStop.findMany({
+    select: { routePlanId: true },
+    where: {
+      deliveryStopId: { in: rows.map((row) => row.deliveryStopId) },
+      routePlan: {
+        routeGroupingChildVersions: {
+          some: {
+            grouping: {
+              routeScopeKey: { startsWith: 'dsv-import:' },
+              serviceType: 'DSV_DISPATCH',
+            },
+            groupingVersion: { status: 'CURRENT' },
+            shopId,
+            status: 'CURRENT',
+            supersededAt: null,
+          },
+        },
+        shopId,
+        status: 'READY',
+      },
+      shopId,
+    },
+  });
+  const routePlanIds = unique(routePlanStops.map((stop) => stop.routePlanId));
+  if (routePlanIds.length === 0) return;
+
+  await Promise.all([
+    tx.routePlanStop.updateMany({
+      data: {
+        distanceFromPreviousMeters: null,
+        durationFromPreviousSeconds: null,
+        estimatedArrivalAt: null,
+        etaCalculatedAt: null,
+        etaFailureCode: null,
+        etaFailureMessage: null,
+        etaInputRouteVersionId: null,
+        etaSource: null,
+        etaStatus: 'NOT_REQUIRED',
+      },
+      where: { routePlanId: { in: routePlanIds }, shopId },
+    }),
+    tx.routePlanGeometryCache.deleteMany({
+      where: { routePlanId: { in: routePlanIds } },
+    }),
+  ]);
+}
+
+async function findOrCreateUnassignedDispatchGrouping(
+  tx: Tx,
+  shopId: string,
+  importId: string,
+  fileName: string,
+  planDate: Date,
+  actor: string,
+): Promise<{ id: string }> {
+  const routeScopeKey = `dsv-import:${importId}`;
+  const existing = await tx.routeGrouping.findFirst({
+    select: { id: true },
+    where: { planDate, routeScopeKey, shopId, status: { in: ['READY', 'CHANGED'] } },
+  });
+  if (existing !== null) return existing;
+  const grouping = await tx.routeGrouping.create({
+    data: {
+      createdBy: actor,
+      name: fileName,
+      planDate,
+      routeScopeKey,
+      serviceType: 'DSV_DISPATCH',
+      shopId,
+      status: 'READY',
+    },
+    select: { id: true },
+  });
+  await tx.routeGroupingVersion.create({
+    data: {
+      actor,
+      changeReason: 'DSV dispatch import date sync',
+      groupingId: grouping.id,
+      shopId,
+      status: 'CURRENT',
+      version: 1,
+    },
+  });
+  return grouping;
+}
 
 async function findOrCreateDestination(
   tx: Tx,
@@ -1506,13 +1730,17 @@ function sourceRowFromRecord(row: {
 }
 
 function stageStatus(diff: DsvDispatchPreviewDiff): 'READY' | 'NEEDS_REVIEW' {
-  return diff.rows.every((row) => row.issues.length === 0 && (row.diffKind === 'NEW' || row.diffKind === 'NO_OP'))
+  return diff.rows.every((row) => row.issues.length === 0 && isReadyDiffKind(row.diffKind))
     ? 'READY'
     : 'NEEDS_REVIEW';
 }
 
 function rowStatus(row: DsvDispatchDiffRow): 'READY' | 'NEEDS_REVIEW' {
-  return row.issues.length === 0 && (row.diffKind === 'NEW' || row.diffKind === 'NO_OP') ? 'READY' : 'NEEDS_REVIEW';
+  return row.issues.length === 0 && isReadyDiffKind(row.diffKind) ? 'READY' : 'NEEDS_REVIEW';
+}
+
+function isReadyDiffKind(kind: DsvDispatchDiffRow['diffKind']): boolean {
+  return kind === 'NEW' || kind === 'NO_OP' || kind === 'UPDATE_CANDIDATE';
 }
 
 function applyPayloadHash(input: {

@@ -51,7 +51,7 @@ export function loadWooCommerceWebhookDependencies(input: {
     credentialKey,
     repository: connectionRepository
   });
-  const geocodingService = loadGeocodingService({ env: input.env });
+  const geocodingService = loadGeocodingService({ env: input.env, prisma: input.prisma });
 
   return {
     connectionService,

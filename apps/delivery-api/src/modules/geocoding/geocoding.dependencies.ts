@@ -1,3 +1,6 @@
+import type { PrismaClient } from '@prisma/client';
+
+import { PrismaGeocodingCacheRepository } from './geocoding-cache.repository.js';
 import { GeocodingService, SerializedGeocodingRateLimiter } from './geocoding.service.js';
 import { NominatimGeocodingClient } from './nominatim-geocoding.client.js';
 import type { GeocodingProviderMode } from './geocoding.types.js';
@@ -19,15 +22,19 @@ export type GeocodingRuntimeEnv = Partial<
 const PUBLIC_NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 const publicProviderLimiters = new Map<string, SerializedGeocodingRateLimiter>();
 
-export function loadGeocodingService(input: { env: GeocodingRuntimeEnv }): GeocodingService {
+export function loadGeocodingService(input: {
+  env: GeocodingRuntimeEnv;
+  prisma?: PrismaClient | undefined;
+}): GeocodingService {
   const mode = readMode(input.env.GEOCODING_PROVIDER_MODE);
   if (mode === 'disabled') return new GeocodingService({ mode });
+  const persistentCache = readPersistentCache(input);
   if (mode === 'vworld') {
     const apiKey = readOptional(input.env.VWORLD_API_KEY);
     return new GeocodingService({
+      ...persistentCache.options,
       minIntervalMs: Math.ceil(1000 / readVWorldRateLimit(input.env.GEOCODING_RATE_LIMIT_PER_SECOND)),
       mode,
-      persistentCacheEnabled: readPersistentCacheSignal(input.env.GEOCODING_CACHE_TTL_DAYS),
       ...(apiKey === undefined
         ? {}
         : {
@@ -44,13 +51,12 @@ export function loadGeocodingService(input: { env: GeocodingRuntimeEnv }): Geoco
   const userAgent = readOptional(input.env.GEOCODING_USER_AGENT);
   const rateLimit = readRateLimit(input.env.GEOCODING_RATE_LIMIT_PER_SECOND);
   const isPublicNominatim = normalizeUrl(searchUrl) === PUBLIC_NOMINATIM_URL;
-  const persistentCacheEnabled = readPersistentCacheSignal(input.env.GEOCODING_CACHE_TTL_DAYS);
 
   if (isPublicNominatim) {
     return new GeocodingService({
+      ...persistentCache.options,
       minIntervalMs: Math.ceil(1000 / rateLimit),
       mode: 'nominatim_compatible',
-      persistentCacheEnabled,
       providerPolicy: 'public_nominatim',
       rateLimiter: readSharedPublicProviderLimiter(searchUrl),
       ...(userAgent === undefined
@@ -67,9 +73,9 @@ export function loadGeocodingService(input: { env: GeocodingRuntimeEnv }): Geoco
   }
 
   return new GeocodingService({
+    ...persistentCache.options,
     minIntervalMs: Math.ceil(1000 / rateLimit),
     mode,
-    persistentCacheEnabled,
     provider: new NominatimGeocodingClient({
       searchUrl,
       ...optionalTimeout(input.env.GEOCODING_TIMEOUT_MS),
@@ -112,9 +118,30 @@ function readOptional(value: string | undefined): string | undefined {
   return value.trim();
 }
 
-function readPersistentCacheSignal(value: string | undefined): boolean {
+function readPersistentCache(input: {
+  env: GeocodingRuntimeEnv;
+  prisma?: PrismaClient | undefined;
+}): {
+  options: Pick<ConstructorParameters<typeof GeocodingService>[0], 'cacheRepository' | 'cacheTtlDays' | 'persistentCacheEnabled'>;
+} {
+  const cacheTtlDays = readCacheTtlDays(input.env.GEOCODING_CACHE_TTL_DAYS);
+  if (cacheTtlDays === undefined) return { options: {} };
+  if (input.prisma === undefined) {
+    return { options: { cacheTtlDays, persistentCacheEnabled: false } };
+  }
+  return {
+    options: {
+      cacheRepository: new PrismaGeocodingCacheRepository(input.prisma),
+      cacheTtlDays,
+      persistentCacheEnabled: true,
+    },
+  };
+}
+
+function readCacheTtlDays(value: string | undefined): number | undefined {
   const parsed = Number(value ?? '');
-  return Number.isFinite(parsed) && parsed > 0;
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return parsed;
 }
 
 function readTimeoutMs(value: string | undefined): number | undefined {

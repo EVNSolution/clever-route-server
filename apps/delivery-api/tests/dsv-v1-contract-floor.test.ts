@@ -115,10 +115,12 @@ describe('G005 DSV v1 OpenAPI contract floor', () => {
         { eventType: 'LOCATION_UPDATED', occurredAt: '2026-07-23T02:59:00.000Z' },
       ],
       proofRows: [{ deletedAt: '2026-07-22T00:00:00.000Z' }],
+      sellerOrderId: 'seller-order-1',
       sellerOrderKey: 'SO-001',
     });
 
     expect(dsvV1CustomerDeliveryRequiredFields).toEqual([
+      'sellerOrderId',
       'sellerOrderKey',
       'destinationDisplayName',
       'deliveryStatus',
@@ -136,6 +138,7 @@ describe('G005 DSV v1 OpenAPI contract floor', () => {
       etaStatus: 'READY',
       eventSummary: [{ type: 'STOP_DELIVERED', occurredAt: '2026-07-23T03:00:00.000Z' }],
       proofStatus: 'EXPIRED',
+      sellerOrderId: 'seller-order-1',
       sellerOrderKey: 'SO-001',
     });
     expect(Object.keys(dto.eventSummary[0] ?? {}).sort()).toEqual(['occurredAt', 'type']);

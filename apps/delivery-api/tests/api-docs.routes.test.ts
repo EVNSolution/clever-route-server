@@ -120,8 +120,10 @@ describe('API documentation routes', () => {
       expect(implementedRoutes).toEqual([
         { method: 'get', path: '/api/dsv/v1/conditions' },
         { method: 'get', path: '/api/dsv/v1/control' },
+        { method: 'get', path: '/api/dsv/v1/control/routes' },
         { method: 'get', path: '/api/dsv/v1/customer/deliveries' },
         { method: 'get', path: '/api/dsv/v1/customers' },
+        { method: 'get', path: '/api/dsv/v1/customers/deliveries' },
         { method: 'get', path: '/api/dsv/v1/destinations' },
         { method: 'get', path: '/api/dsv/v1/dispatches' },
         { method: 'get', path: '/api/dsv/v1/drivers' },
@@ -188,7 +190,7 @@ describe('API documentation routes', () => {
       expect(response.body).toContain('deliveryStopId: null');
       expect(response.body).toContain('distanceFromPreviousMeters:');
       expect(response.body).toContain('estimatedCompletionAt:');
-      expect(response.body).toContain('enum: [ROUTE_STARTED, STOP_ARRIVED, PICKUP_COMPLETED]');
+      expect(response.body).toContain('enum: [ROUTE_STARTED, STOP_ARRIVED, STOP_DELIVERED, PICKUP_COMPLETED]');
       expect(response.body).not.toMatch(/DriverEventEnvelope:[\s\S]*required: \[duplicate, eventId, status\]/u);
     } finally {
       await app.close();

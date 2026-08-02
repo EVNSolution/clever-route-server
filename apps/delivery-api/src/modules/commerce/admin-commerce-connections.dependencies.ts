@@ -186,7 +186,7 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     loginSecret,
     ...readAdminUiDeliveryCustomerService(input),
     ...readAdminUiDriverService(input),
-    geocodingService: loadGeocodingService({ env: input.env }),
+    geocodingService: loadGeocodingService({ env: input.env, prisma: input.prisma }),
     onboardingService: input.adminCommerceConnections.onboardingService,
     ...(notificationService === undefined ? {} : { notificationService }),
     ...readAdminUiOrderIngestAuditService(input),
@@ -261,7 +261,7 @@ function readAdminUiWooSyncService(
     ...(notificationService === undefined ? {} : { notificationService })
   });
   const wordpressRepository = new PrismaWordPressPluginRepository(input.prisma);
-  const geocodingService = loadGeocodingService({ env: input.env });
+  const geocodingService = loadGeocodingService({ env: input.env, prisma: input.prisma });
   const shopTimezone = readOptional(input.env.WOOCOMMERCE_SHOP_TIMEZONE);
   const syncService = new WordPressPluginSyncRequestService({
     connectionService,

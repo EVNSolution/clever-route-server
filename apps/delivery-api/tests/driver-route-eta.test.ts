@@ -3,6 +3,7 @@ import { describe, expect, test } from 'vitest';
 import {
   buildDriverRouteEtaSnapshot,
   calculateArrivalEtaUpdate,
+  calculateCompletionEtaUpdate,
   calculatePickupEtaUpdate,
   calculateRouteStartEtaUpdate
 } from '../src/modules/driver/driver-route-eta.js';
@@ -105,6 +106,37 @@ describe('driver route ETA', () => {
     expect(update.updatedStops).toEqual([
       { deliveryStopId: 'stop-3', estimatedArrivalAt: null, sequence: 3 }
     ]);
+  });
+
+  test('shifts only future stop ETAs from the server-confirmed completion time', () => {
+    const update = calculateCompletionEtaUpdate({
+      completedDeliveryStopId: 'stop-1',
+      serverReceivedAt: new Date('2026-07-20T10:25:00.000Z'),
+      stops: [
+        { ...stops[0]!, estimatedArrivalAt: new Date('2026-07-20T10:10:00.000Z') },
+        { ...stops[1]!, estimatedArrivalAt: new Date('2026-07-20T10:30:00.000Z') },
+        { ...stops[2]!, estimatedArrivalAt: new Date('2026-07-20T10:40:00.000Z') }
+      ]
+    });
+
+    expect(update).toEqual({
+      actualArrivalAt: null,
+      deliveryStopId: 'stop-1',
+      delaySeconds: 600,
+      etaCalculatedAt: '2026-07-20T10:25:00.000Z',
+      etaFailureCode: null,
+      etaFailureMessage: null,
+      etaSource: 'STOP_DELIVERED',
+      etaStatus: 'READY',
+      inputRouteVersionId: null,
+      previousEstimatedArrivalAt: '2026-07-20T10:10:00.000Z',
+      serverReceivedAt: '2026-07-20T10:25:00.000Z',
+      trigger: 'STOP_DELIVERED',
+      updatedStops: [
+        { deliveryStopId: 'stop-2', estimatedArrivalAt: '2026-07-20T10:40:00.000Z', sequence: 2 },
+        { deliveryStopId: 'stop-3', estimatedArrivalAt: '2026-07-20T10:50:00.000Z', sequence: 3 }
+      ]
+    });
   });
 
   test('builds pickup ETA from the authoritative server receipt time and sorts stops', () => {

@@ -4,6 +4,7 @@
 # Host ownership:
 # - clever-route-api.cleversystem.ai      -> Route clever-route-api in this compose project
 # - clever-route.cleversystem.ai          -> Legacy Route API alias during host migration
+# - dsv.cleversystem.ai                   -> DSV web and same-origin DSV API
 # - clever-route-app-dev.cleversystem.ai  -> Shopify dev app on external compose network
 # - clever-route-app.cleversystem.ai      -> Shopify production app on external compose network
 # - clever-admin.cleversystem.ai          -> Legacy Shopify production alias during host migration
@@ -26,6 +27,24 @@ clever-route.cleversystem.ai {
 		# container instead of receiving an immediate transient 502.
 		lb_try_duration 30s
 		lb_try_interval 500ms
+	}
+}
+
+dsv.cleversystem.ai {
+	encode zstd gzip
+
+	handle /api/dsv* {
+		reverse_proxy clever-route-api:3000 {
+			lb_try_duration 30s
+			lb_try_interval 500ms
+		}
+	}
+
+	handle {
+		reverse_proxy clever-dsv-web:80 {
+			lb_try_duration 30s
+			lb_try_interval 500ms
+		}
 	}
 }
 

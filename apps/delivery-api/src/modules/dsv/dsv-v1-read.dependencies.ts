@@ -17,6 +17,8 @@ import {
   type DsvV1ReadQueryService,
 } from './dsv-v1-read-query.service.js';
 import { loadDsvMapProfileFromEnv, type DsvMapProfileEnv } from './dsv-map-profile.config.js';
+import { PrismaRoutePlanRepository } from '../route-plans/route-plan.repository.js';
+import { RoutePlanAdminService } from '../route-plans/route-plan.service.js';
 import type {
   DsvV1ReadDependencies,
   DsvV1SessionResolver,
@@ -65,6 +67,9 @@ export function loadDsvV1ReadDependencies(input: {
     cookieName: readOptional(input.env.CLEVER_DSV_WEB_COOKIE_NAME) ?? 'clever_dsv_admin',
     ...(mapProfile === undefined ? {} : { mapProfile }),
     queryService: input.queryService ?? new PrismaDsvV1ReadQueryService(input.prisma),
+    routePlanService: new RoutePlanAdminService(
+      new PrismaRoutePlanRepository(input.prisma, { allowAnyShopDomain: true }),
+    ),
     secureCookies: input.nodeEnv !== 'development' && input.nodeEnv !== 'test',
     sessionResolver: new PrismaDsvV1SessionResolver({
       allowedShopDomains,

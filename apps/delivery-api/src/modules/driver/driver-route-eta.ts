@@ -33,7 +33,7 @@ export type DriverRouteEtaUpdate = {
   updatedStops: DriverRouteEtaStopUpdate[];
 };
 
-export type DriverRouteEtaTrigger = 'ROUTE_STARTED' | 'STOP_ARRIVED' | 'PICKUP_COMPLETED';
+export type DriverRouteEtaTrigger = 'ROUTE_STARTED' | 'STOP_ARRIVED' | 'STOP_DELIVERED' | 'PICKUP_COMPLETED';
 
 export type DriverRouteEtaSnapshot = {
   calculatedAt: string | null;
@@ -152,6 +152,51 @@ export function calculateArrivalEtaUpdate(input: {
     previousEstimatedArrivalAt: previousEstimatedArrivalAt?.toISOString() ?? null,
     serverReceivedAt: input.serverReceivedAt.toISOString(),
     trigger: 'STOP_ARRIVED',
+    updatedStops
+  };
+}
+
+export function calculateCompletionEtaUpdate(input: {
+  completedDeliveryStopId: string;
+  inputRouteVersionId?: string | null;
+  serverReceivedAt: Date;
+  stops: DriverRouteEtaStop[];
+}): DriverRouteEtaUpdate {
+  const sortedStops = [...input.stops].sort((left, right) => left.sequence - right.sequence);
+  const completedIndex = sortedStops.findIndex((stop) => stop.deliveryStopId === input.completedDeliveryStopId);
+  if (completedIndex < 0) {
+    throw new Error(`Route ETA stop not found: ${input.completedDeliveryStopId}`);
+  }
+
+  const completedStop = sortedStops[completedIndex]!;
+  const previousEstimatedArrivalAt = completedStop.estimatedArrivalAt;
+  const previousEstimatedCompletionMs = previousEstimatedArrivalAt === null
+    ? null
+    : addServiceTime(previousEstimatedArrivalAt.getTime(), completedStop.serviceMinutes);
+  let cursorMs: number | null = input.serverReceivedAt.getTime();
+  const updatedStops = sortedStops.slice(completedIndex + 1).map((stop) => {
+    cursorMs = addDuration(cursorMs, stop.durationFromPreviousSeconds);
+    const estimatedArrivalAt = toIsoString(cursorMs);
+    cursorMs = addServiceTime(cursorMs, stop.serviceMinutes);
+    return toStopUpdate(stop, estimatedArrivalAt);
+  });
+  const failure = etaFailureFor(updatedStops);
+
+  return {
+    actualArrivalAt: null,
+    deliveryStopId: input.completedDeliveryStopId,
+    delaySeconds: previousEstimatedCompletionMs === null
+      ? null
+      : Math.round((input.serverReceivedAt.getTime() - previousEstimatedCompletionMs) / 1000),
+    etaCalculatedAt: input.serverReceivedAt.toISOString(),
+    etaFailureCode: failure?.code ?? null,
+    etaFailureMessage: failure?.message ?? null,
+    etaSource: 'STOP_DELIVERED',
+    etaStatus: failure === null ? 'READY' : 'FAILED',
+    inputRouteVersionId: input.inputRouteVersionId ?? null,
+    previousEstimatedArrivalAt: previousEstimatedArrivalAt?.toISOString() ?? null,
+    serverReceivedAt: input.serverReceivedAt.toISOString(),
+    trigger: 'STOP_DELIVERED',
     updatedStops
   };
 }

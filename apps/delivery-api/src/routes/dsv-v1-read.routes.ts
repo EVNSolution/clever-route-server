@@ -29,11 +29,13 @@ import {
 import {
   DsvV1ReadQueryError,
   type DsvV1CustomerDeliveriesInput,
+  type DsvV1DispatchListInput,
   type DsvV1ReadListInput,
   type DsvV1ReadQueryService,
   type DsvV1ServiceDateInput,
 } from '../modules/dsv/dsv-v1-read-query.service.js';
 import type { DsvMapProfile } from '../modules/dsv/dsv-map-profile.config.js';
+import type { RoutePlanService } from '../modules/route-plans/route-plan.types.js';
 import {
   clearAdminWebSessionCookie,
   verifyAdminWebCsrfToken,
@@ -58,6 +60,7 @@ export type DsvV1ReadDependencies = {
   cookieName: string;
   mapProfile?: DsvMapProfile;
   queryService?: DsvV1ReadQueryService;
+  routePlanService?: Pick<RoutePlanService, 'getRoutePlanDetail' | 'listRoutePlans'>;
   secureCookies: boolean;
   sessionResolver: DsvV1SessionResolver;
   sessionSecret: string;
@@ -90,11 +93,11 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     }));
 
   registerReadRoute(app, dependencies, 'dispatches', {
-    allowedQuery: ['cursor', 'limit', 'serviceDate'],
+    allowedQuery: ['cursor', 'destinationName', 'limit', 'orderNumber', 'serviceDate'],
     handler: async (principal, query) => mapDsvV1SellerOrderSummaryPage(
       await requireQueryService(dependencies).listDispatches(requireAdminPrincipal(principal), query)
     ),
-    parseQuery: parsePagedDateQuery,
+    parseQuery: parseDispatchesQuery,
     requiredScopes: ['dsv:dispatches:read'],
   });
   registerReadRoute(app, dependencies, 'control', {
@@ -102,6 +105,43 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     handler: async (principal, query) => mapDsvV1ControlSummary(
       await requireQueryService(dependencies).listControl(requireAdminPrincipal(principal), query)
     ),
+    parseQuery: parseServiceDateOnlyQuery,
+    requiredScopes: ['dsv:control:read'],
+  });
+  registerReadRoute(app, dependencies, 'control/routes', {
+    allowedQuery: ['serviceDate'],
+    handler: async (principal, query) => {
+      const admin = requireAdminPrincipal(principal);
+      const queryService = requireQueryService(dependencies);
+      const routePlanService = requireRoutePlanService(dependencies);
+      const shopDomain = requireAdminShopDomain(admin);
+      const serviceDate = query.serviceDate ?? (await queryService.resolveTenantDates(admin.shopId)).today;
+      const routePlans = await routePlanService.listRoutePlans({
+        appId: 'clever',
+        deliveryDate: serviceDate,
+        shopDomain,
+      });
+      const details = await Promise.all(routePlans.map((routePlan) => routePlanService.getRoutePlanDetail({
+        appId: 'clever',
+        routePlanId: routePlan.id,
+        shopDomain,
+      })));
+      return {
+        routes: details.flatMap((detail) => {
+          if (detail === null) return [];
+          return [{
+            coordinates: detail.routeGeometry?.coordinates ?? [],
+            generatedAt: detail.routeGeometryGeneratedAt ?? null,
+            geometryStatus: detail.routeGeometryStatus ?? 'missing',
+            legDurationsSeconds: [...detail.routeStopPoints]
+              .sort((left, right) => left.sequence - right.sequence)
+              .map((stop) => stop.durationFromPreviousSeconds ?? null),
+            routePlanId: detail.routePlan.id,
+          }];
+        }),
+        serviceDate,
+      };
+    },
     parseQuery: parseServiceDateOnlyQuery,
     requiredScopes: ['dsv:control:read'],
   });
@@ -176,6 +216,18 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     ),
     parseQuery: parseCustomerDeliveriesQuery,
     requiredScopes: ['dsv:customer-deliveries:read'],
+  });
+  registerReadRoute(app, dependencies, 'customers/deliveries', {
+    allowedQuery: ['cursor', 'customerId', 'limit', 'serviceDate', 'window'],
+    handler: async (principal, query) => mapDsvV1CustomerDeliveryInquiryPage(
+      await requireQueryService(dependencies).listCustomerDeliveriesForAdmin(
+        requireAdminPrincipal(principal),
+        query.customerId,
+        query,
+      )
+    ),
+    parseQuery: parseAdminCustomerDeliveriesQuery,
+    requiredScopes: ['dsv:customers:read', 'dsv:dispatches:read'],
   });
 }
 
@@ -313,6 +365,18 @@ function parsePagedDateQuery(request: FastifyRequest): DsvV1ServiceDateInput | n
   };
 }
 
+function parseDispatchesQuery(request: FastifyRequest): DsvV1DispatchListInput | null {
+  const base = parsePagedDateQuery(request);
+  const destinationName = readOptionalSearchText(request, 'destinationName');
+  const orderNumber = readOptionalSearchText(request, 'orderNumber');
+  if (base === null || destinationName === null || orderNumber === null) return null;
+  return {
+    ...base,
+    ...(destinationName === undefined ? {} : { destinationName }),
+    ...(orderNumber === undefined ? {} : { orderNumber }),
+  };
+}
+
 function parseServiceDateOnlyQuery(request: FastifyRequest): Pick<DsvV1ServiceDateInput, 'serviceDate'> | null {
   const serviceDate = readServiceDate(request);
   if (serviceDate === null) return null;
@@ -335,6 +399,15 @@ function parseCustomerDeliveriesQuery(request: FastifyRequest): DsvV1CustomerDel
   };
 }
 
+function parseAdminCustomerDeliveriesQuery(
+  request: FastifyRequest,
+): (DsvV1CustomerDeliveriesInput & { customerId: string }) | null {
+  const base = parseCustomerDeliveriesQuery(request);
+  const customerId = readSingleQueryString(request, 'customerId');
+  if (base === null || customerId === undefined || customerId === null) return null;
+  return { ...base, customerId };
+}
+
 function parseEmptyQuery(): Record<string, never> {
   return {};
 }
@@ -351,6 +424,13 @@ function readLimit(request: FastifyRequest): number | undefined | null {
   if (!/^\d+$/u.test(value)) return null;
   const limit = Number(value);
   return Number.isInteger(limit) && limit >= 1 && limit <= 100 ? limit : null;
+}
+
+function readOptionalSearchText(request: FastifyRequest, key: string): string | undefined | null {
+  const value = readSingleQueryString(request, key);
+  if (value === undefined || value === null) return value;
+  const normalized = value.trim().replace(/\s+/gu, ' ');
+  return normalized.length <= 120 ? normalized : null;
 }
 
 function readSingleQueryString(request: FastifyRequest, key: string): string | undefined | null {
@@ -382,9 +462,26 @@ function requireQueryService(dependencies: DsvV1ReadDependencies): DsvV1ReadQuer
   return dependencies.queryService;
 }
 
+function requireRoutePlanService(
+  dependencies: DsvV1ReadDependencies,
+): Pick<RoutePlanService, 'getRoutePlanDetail' | 'listRoutePlans'> {
+  if (dependencies.routePlanService === undefined) {
+    throw new DsvV1DependencyError('DSV route plan read service is not configured');
+  }
+  return dependencies.routePlanService;
+}
+
 function requireAdminPrincipal(principal: DsvPrincipal): DsvAdminPrincipal {
   if (principal.principalType === 'DSV_ADMIN') return principal;
   throw new DsvForbiddenError({ principal, requiredScopes: [] });
+}
+
+function requireAdminShopDomain(principal: DsvAdminPrincipal): string {
+  const shopDomain = principal.shopDomain?.trim();
+  if (shopDomain === undefined || shopDomain === '') {
+    throw new DsvV1DependencyError('DSV admin shop domain is not available');
+  }
+  return shopDomain;
 }
 
 function requireCustomerPrincipal(principal: DsvPrincipal): DsvCustomerUserPrincipal {

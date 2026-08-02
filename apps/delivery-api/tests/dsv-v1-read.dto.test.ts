@@ -95,6 +95,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
       latitude: 37.1234567,
       longitude: 127.1234567,
       routePlanId: 'route-plan-1',
+      routeStopSequence: 4,
       routeVersionId: 'route-version-1',
       sellerOrderId: 'order-1',
       sellerOrderKey: 'SO-001',
@@ -113,6 +114,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
       latitude: 37.1234567,
       longitude: 127.1234567,
       routePlanId: 'route-plan-1',
+      routeStopSequence: 4,
       routeVersionId: 'route-version-1',
       sellerOrderId: 'order-1',
       sellerOrderKey: 'SO-001',
@@ -285,8 +287,9 @@ describe('G005 DSV v1 read DTO adapter', () => {
     );
   });
 
-  test('redacts customer delivery DTOs to the frozen customer floor', () => {
+  test('emits only customer-owned delivery location and assigned vehicle context', () => {
     const noisyRow = customerDeliveryRow({
+      destinationAddress: '서울 중구 퇴계로 131',
       eventRows: [
         eventRow({ eventType: 'STOP_DELIVERED', occurredAt: '2026-07-23T03:00:00.000Z' }),
         eventRow({ eventType: 'LOCATION_UPDATED', occurredAt: '2026-07-23T02:59:00.000Z' }),
@@ -295,26 +298,48 @@ describe('G005 DSV v1 read DTO adapter', () => {
         proofRow({ deletedAt: '2026-07-22T03:00:00.000Z' }),
         proofRow({ deletedAt: null }),
       ],
+      latitude: 37.561,
+      longitude: 126.986,
+      vehicleDisplayName: '서울86바3800',
+      vehicleId: 'vehicle-1',
+      vehicleLatitude: 37.5,
+      vehicleLongitude: 127,
     });
     const dto = mapDsvV1CustomerDeliveryInquiryItem(noisyRow);
 
     expect(dto).toEqual({
       deliveryStatus: 'DELIVERED',
+      destinationAddress: '서울 중구 퇴계로 131',
       destinationDisplayName: 'Shared Dock',
       estimatedArrivalAt: '2026-07-23T02:30:00.000Z',
       etaStatus: 'READY',
       eventSummary: [{ type: 'STOP_DELIVERED', occurredAt: '2026-07-23T03:00:00.000Z' }],
+      latitude: 37.561,
+      longitude: 126.986,
       proofStatus: 'AVAILABLE',
+      sellerOrderId: 'seller-order-private-id',
       sellerOrderKey: 'SO-REDIRECT',
+      vehicleDisplayName: '서울86바3800',
+      vehicleId: 'vehicle-1',
+      vehicleLatitude: 37.5,
+      vehicleLongitude: 127,
     });
     expect(Object.keys(dto).sort()).toEqual([
       'deliveryStatus',
+      'destinationAddress',
       'destinationDisplayName',
       'estimatedArrivalAt',
       'etaStatus',
       'eventSummary',
+      'latitude',
+      'longitude',
       'proofStatus',
+      'sellerOrderId',
       'sellerOrderKey',
+      'vehicleDisplayName',
+      'vehicleId',
+      'vehicleLatitude',
+      'vehicleLongitude',
     ]);
     expectNoForbiddenCustomerFields(dto);
   });
@@ -398,6 +423,6 @@ function proofRow(input: { deletedAt: Date | string | null }) {
 
 function expectNoForbiddenCustomerFields(value: unknown): void {
   expect(JSON.stringify(value)).not.toMatch(
-    /storageKey|signedUrl|url|originalFilename|contentType|sizeBytes|sha256|hash|metadata|payload|latitude|longitude|note|clientEventId|event-id|driverId|privatePhone|sellerOrderId|routePlanId|etaInputRouteVersionId|etaSource|auditDetails|redactedDiff|otherCustomer/u
+    /storageKey|signedUrl|url|originalFilename|contentType|sizeBytes|sha256|hash|metadata|payload|note|clientEventId|event-id|driverId|privatePhone|routePlanId|routeStopSequence|etaInputRouteVersionId|etaSource|auditDetails|redactedDiff|otherCustomer/u
   );
 }

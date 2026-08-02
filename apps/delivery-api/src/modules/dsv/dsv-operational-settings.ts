@@ -13,7 +13,7 @@ export function defaultDsvOperationalSettings(): DsvOperationalSettings {
     dwellMinutes: 5,
     etaDelayMinutes: 10,
     forwardDelayAlerts: true,
-    gpsSilenceSeconds: 30,
+    gpsSilenceSeconds: 180,
     recordMissingProof: true,
     showTemperatureAlerts: true,
     temperatureLimit: 8,

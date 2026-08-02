@@ -674,6 +674,7 @@ model Order {
   sellerOrderSourceKind         String?                            @db.Text
   sellerOrderKey                String?                            @db.Text
   sellerOrderVersion            Int?
+  serviceDate                   DateTime?                          @db.Date
   customerId                    String?                            @db.Uuid
   customer                      Customer?                          @relation(fields: [customerId, shopId], references: [id, shopId], onDelete: NoAction)
   destinationId                 String?                            @db.Uuid
@@ -698,7 +699,7 @@ model Order {
   @@unique([id, shopId])
   @@unique([shopId, shopifyOrderGid])
   @@unique([shopId, sourcePlatform, sourceSiteUrl, sourceOrderId])
-  @@unique([shopId, sellerOrderSourceKind, sellerOrderKey])
+  @@unique([shopId, sellerOrderSourceKind, sellerOrderKey, serviceDate])
   @@index([shopId, name])
   @@index([shopId, sourcePlatform, sourceSiteUrl, sourceOrderNumber])
   @@index([shopId, sourcePlatform, sourceUpdatedAt])
@@ -1129,6 +1130,21 @@ model RoutePlanGeometryCache {
   @@unique([routePlanId, shapeSignature])
   @@index([shapeSignature])
   @@map("route_plan_geometry_caches")
+}
+
+model GeocodingCache {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopDomain String   @db.Text
+  cacheKey   String   @db.Text
+  result     Json
+  cachedAt   DateTime @default(now()) @db.Timestamptz(6)
+  expiresAt  DateTime @db.Timestamptz(6)
+  createdAt  DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt  DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopDomain, cacheKey])
+  @@index([expiresAt])
+  @@map("geocoding_caches")
 }
 
 model RouteOptimizationJob {

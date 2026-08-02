@@ -117,7 +117,7 @@ The response must not include other drivers' routes, unrelated orders, raw Shopi
 - Each stop ETA is the server start/arrival time plus the stored drive duration for the next leg and the preceding stop's service time (default 5 minutes when absent).
 - `STOP_ARRIVED` marks the stop `ARRIVED`, compares the event's server receipt time with that stop's previous ETA, and rewrites only future stop ETAs.
 - The client-provided `occurredAt` remains event evidence but cannot move the ETA clock.
-- The event response may include `etaUpdate` with the server time, early/late delta, triggering stop, and changed future stops. A later assigned-route read returns the same persisted ETA values.
+- The event response may include `etaUpdate` with the server time, early/late delta, triggering stop, and changed future stops. Arrival recalculates from the expected service duration, while delivery completion recalculates again from the server-confirmed completion time. A later assigned-route read returns the same persisted ETA values.
 
 ## Compliance note
 
