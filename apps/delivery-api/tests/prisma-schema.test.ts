@@ -90,6 +90,10 @@ const accountScopedPushTokenMigrationPath = new URL(
   '../prisma/migrations/20260731140000_account_scope_driver_push_tokens/migration.sql',
   import.meta.url
 );
+const geocodingCacheMigrationPath = new URL(
+  '../prisma/migrations/20260802090000_add_geocoding_cache/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
@@ -113,6 +117,24 @@ describe('Prisma schema', () => {
     expect(migration).toContain('DROP COLUMN "shopId"');
     expect(migration).toContain('DROP COLUMN "driverId"');
     expect(migration).toContain('REFERENCES "driver_accounts"("id")');
+  });
+
+  test('defines persistent geocoding cache with TTL lookup indexes', async () => {
+    const schema = await readSchema();
+    const migration = await readFile(geocodingCacheMigrationPath, 'utf8');
+    const geocodingCache = /model GeocodingCache \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+
+    expect(geocodingCache).toContain('shopDomain String');
+    expect(geocodingCache).toContain('cacheKey   String');
+    expect(geocodingCache).toContain('result     Json');
+    expect(geocodingCache).toContain('expiresAt  DateTime');
+    expect(geocodingCache).toContain('@@unique([shopDomain, cacheKey])');
+    expect(geocodingCache).toContain('@@index([expiresAt])');
+    expect(geocodingCache).toContain('@@map("geocoding_caches")');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS "geocoding_caches"');
+    expect(migration).toContain('"result" JSONB NOT NULL');
+    expect(migration).toContain('CREATE UNIQUE INDEX IF NOT EXISTS "geocoding_caches_shopDomain_cacheKey_key"');
+    expect(migration).toContain('CREATE INDEX IF NOT EXISTS "geocoding_caches_expiresAt_idx"');
   });
 
   test('defines pickup completed as an additive driver event migration', async () => {

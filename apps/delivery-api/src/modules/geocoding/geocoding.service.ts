@@ -17,6 +17,8 @@ export type GeocodingProviderPolicy =
   | 'vworld';
 
 export type GeocodingServiceOptions = {
+  cacheRepository?: GeocodingCacheRepository;
+  cacheTtlDays?: number;
   maxRetries?: number;
   minIntervalMs?: number;
   mode: 'disabled' | 'nominatim_compatible' | 'vworld';
@@ -27,8 +29,24 @@ export type GeocodingServiceOptions = {
   requirePersistentCache?: boolean;
 };
 
+export type GeocodingCacheRepository = {
+  findFresh(input: {
+    cacheKey: string;
+    now: Date;
+    shopDomain: string;
+  }): Promise<CachedGeocode | null>;
+  upsert(input: {
+    cacheKey: string;
+    cachedAt: Date;
+    expiresAt: Date;
+    result: GeocodingResult;
+    shopDomain: string;
+  }): Promise<void>;
+};
+
 type CachedGeocode = {
   cachedAt: number;
+  expiresAt?: number;
   result: GeocodingResult;
 };
 
@@ -64,6 +82,8 @@ export class SerializedGeocodingRateLimiter implements GeocodingRateLimiter {
 }
 
 export class GeocodingService {
+  private readonly cacheRepository: GeocodingCacheRepository | undefined;
+  private readonly cacheTtlMs: number | undefined;
   private readonly cache = new Map<string, CachedGeocode>();
   private readonly maxRetries: number;
   private readonly minIntervalMs: number;
@@ -76,13 +96,16 @@ export class GeocodingService {
   private queue: Promise<void> = Promise.resolve();
 
   constructor(options: GeocodingServiceOptions) {
+    this.cacheRepository = options.cacheRepository;
+    this.cacheTtlMs = readCacheTtlMs(options.cacheTtlDays);
     this.maxRetries =
       typeof options.maxRetries === 'number' && Number.isFinite(options.maxRetries)
         ? Math.max(0, Math.floor(options.maxRetries))
         : 1;
     this.minIntervalMs = options.minIntervalMs ?? 1000;
     this.mode = options.mode;
-    this.persistentCacheEnabled = options.persistentCacheEnabled === true;
+    this.persistentCacheEnabled =
+      options.persistentCacheEnabled === true || this.cacheRepository !== undefined;
     this.provider = options.provider;
     this.providerPolicy =
       options.providerPolicy ??
@@ -123,10 +146,28 @@ export class GeocodingService {
       };
     }
 
-    const key = `${input.shopDomain.trim().toLowerCase()}|${primaryQuery.cacheKey}`;
+    const shopDomain = input.shopDomain.trim().toLowerCase();
+    const key = `${shopDomain}|${primaryQuery.cacheKey}`;
+    const now = Date.now();
     const cached = this.cache.get(key);
-    if (cached !== undefined) {
+    if (cached !== undefined && isFreshCachedGeocode(cached, now)) {
       return cached.result.ok ? { ...cached.result, cached: true } : cached.result;
+    }
+    if (cached !== undefined) this.cache.delete(key);
+
+    const persistentCached = await this.readPersistentCache({
+      cacheKey: primaryQuery.cacheKey,
+      now: new Date(now),
+      shopDomain,
+    });
+    if (persistentCached === 'unavailable') {
+      return persistentCacheUnavailable();
+    }
+    if (persistentCached !== undefined && persistentCached !== null) {
+      this.cache.set(key, persistentCached);
+      return persistentCached.result.ok
+        ? { ...persistentCached.result, cached: true }
+        : persistentCached.result;
     }
 
     const provider = this.provider;
@@ -175,7 +216,23 @@ export class GeocodingService {
         ? await lookupTask()
         : await this.runSerialized(lookupTask);
     if (result.ok || result.transient !== true) {
-      this.cache.set(key, { cachedAt: Date.now(), result });
+      const cachedAt = Date.now();
+      const expiresAt = this.cacheTtlMs === undefined ? undefined : cachedAt + this.cacheTtlMs;
+      this.cache.set(key, {
+        cachedAt,
+        result,
+        ...(expiresAt === undefined ? {} : { expiresAt }),
+      });
+      if (expiresAt !== undefined) {
+        const cacheWrite = await this.writePersistentCache({
+          cacheKey: primaryQuery.cacheKey,
+          cachedAt: new Date(cachedAt),
+          expiresAt: new Date(expiresAt),
+          result,
+          shopDomain,
+        });
+        if (cacheWrite === 'unavailable') return persistentCacheUnavailable();
+      }
     }
     return result;
   }
@@ -248,6 +305,55 @@ export class GeocodingService {
   private async waitForProviderRateLimit(): Promise<void> {
     await this.rateLimiter.wait(this.minIntervalMs);
   }
+
+  private async readPersistentCache(input: {
+    cacheKey: string;
+    now: Date;
+    shopDomain: string;
+  }): Promise<Awaited<ReturnType<GeocodingCacheRepository['findFresh']>> | 'unavailable' | undefined> {
+    if (this.cacheRepository === undefined) return undefined;
+    try {
+      return await this.cacheRepository.findFresh(input);
+    } catch {
+      if (this.requirePersistentCache) return 'unavailable';
+      return undefined;
+    }
+  }
+
+  private async writePersistentCache(input: {
+    cacheKey: string;
+    cachedAt: Date;
+    expiresAt: Date;
+    result: GeocodingResult;
+    shopDomain: string;
+  }): Promise<'ok' | 'unavailable'> {
+    if (this.cacheRepository === undefined) return 'ok';
+    try {
+      await this.cacheRepository.upsert(input);
+      return 'ok';
+    } catch {
+      return this.requirePersistentCache ? 'unavailable' : 'ok';
+    }
+  }
+}
+
+function isFreshCachedGeocode(cached: CachedGeocode, now: number): boolean {
+  return cached.expiresAt === undefined || cached.expiresAt > now;
+}
+
+function persistentCacheUnavailable(): GeocodingResult {
+  return {
+    ok: false,
+    code: 'GEOCODER_NOT_CONFIGURED',
+    message: 'Persistent geocoding cache is unavailable.',
+  };
+}
+
+function readCacheTtlMs(value: number | undefined): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return undefined;
+  }
+  return Math.floor(value * 86_400_000);
 }
 
 export function normalizeAddress(address: GeocodingAddress): string | null {

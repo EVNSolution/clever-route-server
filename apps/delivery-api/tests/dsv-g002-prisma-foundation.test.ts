@@ -11,6 +11,10 @@ const repairMigrationPath = new URL(
   '../prisma/migrations/20260722193000_repair_g002_tenant_integrity/migration.sql',
   import.meta.url
 );
+const serviceDateIdentityMigrationPath = new URL(
+  '../prisma/migrations/20260731120000_dsv_order_service_date_identity/migration.sql',
+  import.meta.url
+);
 const emptyRehearsalScriptPath = new URL('../scripts/dsv-g002-empty-baseline-rehearsal.sh', import.meta.url);
 const prodLikeRehearsalScriptPath = new URL('../scripts/dsv-g002-prod-like-expand-rehearsal.sh', import.meta.url);
 const backfillDryRunScriptPath = new URL('../src/scripts/dsv-g002-backfill-dry-run.ts', import.meta.url);
@@ -50,15 +54,30 @@ describe('G002 DSV Prisma foundation', () => {
     expect(order).toContain('sellerOrderSourceKind         String?');
     expect(order).toContain('sellerOrderKey                String?');
     expect(order).toContain('sellerOrderVersion            Int?');
+    expect(order).toContain('serviceDate                   DateTime?');
     expect(order).toContain('customerId                    String?');
     expect(order).toContain('destinationId                 String?');
     expect(order).toContain('currentRouteVersionId         String?');
     expect(order).toContain('@@unique([id, shopId])');
-    expect(order).toContain('@@unique([shopId, sellerOrderSourceKind, sellerOrderKey])');
+    expect(order).toContain('@@unique([shopId, sellerOrderSourceKind, sellerOrderKey, serviceDate])');
     expect(order).toContain('@@index([shopId, customerId, deliveryStatus])');
     expect(order).toContain('@@index([shopId, destinationId])');
     expect(order).toContain('@@index([shopId, currentRouteVersionId])');
     expect(order).toContain('fields: [currentRouteVersionId, shopId], references: [id, shopId], onDelete: NoAction');
+  });
+
+  test('ships DSV order service-date identity migration with delivery-stop backfill', async () => {
+    const migration = await readFile(serviceDateIdentityMigrationPath, 'utf8');
+
+    expect(migration).toContain('ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "serviceDate" DATE');
+    expect(migration).toContain('FROM "delivery_stops" AS stop');
+    expect(migration).toContain('WHERE order_row."sellerOrderSourceKind" = \'DSV_DISPATCH_IMPORT\'');
+    expect(migration).toContain('RAISE EXCEPTION \'DSV order serviceDate backfill failed: serviceDate is still null\'');
+    expect(migration).toContain('ADD CONSTRAINT "orders_dsv_serviceDate_not_null_chk"');
+    expect(migration).toContain('CHECK ("sellerOrderSourceKind" <> \'DSV_DISPATCH_IMPORT\' OR "serviceDate" IS NOT NULL)');
+    expect(migration).toContain('ALTER TABLE "orders" VALIDATE CONSTRAINT "orders_dsv_serviceDate_not_null_chk"');
+    expect(migration).toContain('DROP INDEX IF EXISTS "orders_shopId_sellerOrderSourceKind_sellerOrderKey_key"');
+    expect(migration).toContain('CREATE UNIQUE INDEX "orders_shopId_sellerOrderSourceKind_sellerOrderKey_serviceDate_key"');
   });
 
   test('adds DSV transport condition lifecycle while preserving G002 and G003 import-row safety', async () => {

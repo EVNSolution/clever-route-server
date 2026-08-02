@@ -7,6 +7,10 @@ const migrationPath = new URL(
   '../prisma/migrations/20260722203000_dsv_import_stage_apply/migration.sql',
   import.meta.url
 );
+const serviceDateIdentityMigrationPath = new URL(
+  '../prisma/migrations/20260731120000_dsv_order_service_date_identity/migration.sql',
+  import.meta.url
+);
 
 describe('G003 DSV Prisma import staging and apply schema', () => {
   test('adds staging and apply lifecycle states without replacing legacy ready states', async () => {
@@ -99,13 +103,27 @@ describe('G003 DSV Prisma import staging and apply schema', () => {
     const condition = modelBody(schema, 'DsvTransportCondition');
     const receipt = modelBody(schema, 'DsvCommandReceipt');
 
-    expect(order).toContain('@@unique([shopId, sellerOrderSourceKind, sellerOrderKey])');
+    expect(order).toContain('serviceDate                   DateTime?');
+    expect(order).toContain('@@unique([shopId, sellerOrderSourceKind, sellerOrderKey, serviceDate])');
     expect(deliveryStop).toContain('@@unique([shopId, orderId])');
     expect(deliveryStop).toContain('@@unique([id, shopId])');
     expect(condition).toContain('@@unique([id, shopId])');
     expect(receipt).toContain('@@unique([id, shopId])');
     expect(receipt).toContain('appliedImports');
     expect(receipt).toContain('appliedImportRows');
+  });
+
+  test('ships canonical DSV order identity migration keyed by service date', async () => {
+    const migration = await readFile(serviceDateIdentityMigrationPath, 'utf8');
+
+    expect(migration).toContain('ALTER TABLE "orders" ADD COLUMN IF NOT EXISTS "serviceDate" DATE');
+    expect(migration).toContain('ORDER BY stop."createdAt" ASC');
+    expect(migration).toContain('ADD CONSTRAINT "orders_dsv_serviceDate_not_null_chk"');
+    expect(migration).toContain('CHECK ("sellerOrderSourceKind" <> \'DSV_DISPATCH_IMPORT\' OR "serviceDate" IS NOT NULL)');
+    expect(migration).toContain('ALTER TABLE "orders" VALIDATE CONSTRAINT "orders_dsv_serviceDate_not_null_chk"');
+    expect(migration).toContain('DROP INDEX IF EXISTS "orders_shopId_sellerOrderSourceKind_sellerOrderKey_key"');
+    expect(migration).toContain('CREATE UNIQUE INDEX "orders_shopId_sellerOrderSourceKind_sellerOrderKey_serviceDate_key"');
+    expect(migration).not.toMatch(/^\s*(DROP\s+TABLE|DROP\s+COLUMN|DELETE|TRUNCATE)\b/imu);
   });
 
   test('ships a deterministic migration that preserves history and drops only the old global staging unique', async () => {

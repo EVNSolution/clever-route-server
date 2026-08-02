@@ -75,6 +75,11 @@ type DsvV1EtaReadRow = {
   routePlanStopId: string;
 };
 
+type DsvV1RoutePlanStopReadRow = Omit<DsvV1EtaReadRow, 'routePlanStopId'> & {
+  id: string;
+  sequence: number;
+};
+
 export type DsvV1ReadListInput = {
   cursor?: string | null;
   limit?: number | string | null;
@@ -82,6 +87,11 @@ export type DsvV1ReadListInput = {
 
 export type DsvV1ServiceDateInput = DsvV1ReadListInput & {
   serviceDate?: string | null;
+};
+
+export type DsvV1DispatchListInput = DsvV1ServiceDateInput & {
+  destinationName?: string | null;
+  orderNumber?: string | null;
 };
 
 export type DsvV1CustomerDeliveriesInput = DsvV1ReadListInput & {
@@ -103,9 +113,14 @@ export type DsvV1ReadQueryService = {
     principal: DsvCustomerUserPrincipal,
     input?: DsvV1CustomerDeliveriesInput,
   ): Promise<DsvV1CustomerDeliveryReadResult>;
+  listCustomerDeliveriesForAdmin(
+    principal: DsvAdminPrincipal,
+    customerId: string,
+    input?: DsvV1CustomerDeliveriesInput,
+  ): Promise<DsvV1CustomerDeliveryReadResult>;
   listCustomers(principal: DsvAdminPrincipal, input?: DsvV1ReadListInput): Promise<DsvV1PaginatedRead<DsvV1CustomerListItemRow>>;
   listDestinations(principal: DsvAdminPrincipal, input?: DsvV1ReadListInput): Promise<DsvV1PaginatedRead<DsvV1DestinationListItemRow>>;
-  listDispatches(principal: DsvAdminPrincipal, input?: DsvV1ServiceDateInput): Promise<DsvV1PaginatedRead<DsvV1SellerOrderSummaryRow>>;
+  listDispatches(principal: DsvAdminPrincipal, input?: DsvV1DispatchListInput): Promise<DsvV1PaginatedRead<DsvV1SellerOrderSummaryRow>>;
   listDrivers(principal: DsvAdminPrincipal, input?: DsvV1ReadListInput): Promise<DsvV1PaginatedRead<DsvV1DriverListItemRow>>;
   listRecords(principal: DsvAdminPrincipal, input?: DsvV1ServiceDateInput): Promise<DsvV1PaginatedRead<DsvV1RecordRow>>;
   listVehicles(principal: DsvAdminPrincipal, input?: DsvV1ReadListInput): Promise<DsvV1PaginatedRead<DsvV1VehicleListItemRow>>;
@@ -130,9 +145,11 @@ type DsvV1ReadPrismaClient = Pick<
 
 type CursorPayload = {
   customerId?: string;
+  destinationName?: string;
   endpoint: DsvV1ReadEndpoint;
   last: Record<string, string | null>;
   limit: number;
+  orderNumber?: string;
   serviceDate?: string;
   shopId: string;
   sort: string;
@@ -268,15 +285,32 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     };
   }
 
+  async listCustomerDeliveriesForAdmin(
+    principal: DsvAdminPrincipal,
+    customerId: string,
+    input: DsvV1CustomerDeliveriesInput = {},
+  ): Promise<DsvV1CustomerDeliveryReadResult> {
+    return this.listCustomerDeliveries({
+      customerId,
+      principalType: 'CUSTOMER_USER',
+      scopes: ['dsv:customer-deliveries:read'],
+      shopId: principal.shopId,
+    }, input);
+  }
+
   async listDispatches(
     principal: DsvAdminPrincipal,
-    input: DsvV1ServiceDateInput = {},
+    input: DsvV1DispatchListInput = {},
   ): Promise<DsvV1PaginatedRead<DsvV1SellerOrderSummaryRow>> {
     const serviceDate = await this.resolveAdminServiceDate(principal.shopId, input.serviceDate);
     const limit = parseLimit(input.limit);
+    const destinationName = normalizeSearchText(input.destinationName);
+    const orderNumber = normalizeSearchText(input.orderNumber);
     const context: CursorContext = {
+      ...(destinationName === undefined ? {} : { destinationName }),
       endpoint: 'dispatches',
       limit,
+      ...(orderNumber === undefined ? {} : { orderNumber }),
       serviceDate,
       shopId: principal.shopId,
       sort: dispatchSort,
@@ -289,6 +323,25 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       where: {
         shopId: principal.shopId,
         ...orderCursorWhere(page.cursor),
+        ...(orderNumber === undefined
+          ? {}
+          : { sellerOrderKey: { contains: orderNumber, mode: 'insensitive' } }),
+        ...(destinationName === undefined
+          ? {}
+          : {
+              OR: [
+                { destination: { canonicalName: { contains: destinationName, mode: 'insensitive' } } },
+                {
+                  deliveryStops: {
+                    some: {
+                      deliveryDate: serviceDateAsDbDate(serviceDate),
+                      recipientName: { contains: destinationName, mode: 'insensitive' },
+                      shopId: principal.shopId,
+                    },
+                  },
+                },
+              ],
+            }),
         deliveryStops: {
           some: { deliveryDate: serviceDateAsDbDate(serviceDate), shopId: principal.shopId },
         },
@@ -631,6 +684,7 @@ const routePlanStopSelect = {
   etaStatus: true,
   id: true,
   routePlanId: true,
+  sequence: true,
 } satisfies Prisma.RoutePlanStopSelect;
 
 function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
@@ -641,7 +695,22 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
         driverId: true,
         routePlanId: true,
         routePlan: {
-          select: { vehicleId: true },
+          select: {
+            vehicle: {
+              select: {
+                id: true,
+                label: true,
+                licensePlate: true,
+              },
+            },
+            vehicleId: true,
+            trackingGeometry: {
+              select: {
+                lastLatitude: true,
+                lastLongitude: true,
+              },
+            },
+          },
         },
       },
     },
@@ -747,14 +816,24 @@ type RecordCursorRow = DsvV1RecordRow & { cursorStopId: string; cursorUpdatedAt:
 function toCustomerDeliveryInquiryRow(row: CustomerDeliveryOrderRow): DsvV1CustomerDeliveryInquiryRow {
   const stop = row.deliveryStops[0] ?? null;
   const eta = stop === null ? null : selectCanonicalEta(stop.routePlanStops, row.currentRouteVersionId);
+  const vehicle = row.currentRouteVersion?.routePlan?.vehicle ?? null;
+  const vehiclePosition = row.currentRouteVersion?.routePlan?.trackingGeometry ?? null;
   return {
     deliveryStatus: row.deliveryStatus,
+    destinationAddress: stop === null ? normalizedAddressLabel(row.destination?.normalizedAddress ?? null) : deliveryStopAddressLabel(stop),
     destinationDisplayName: row.destination?.canonicalName ?? '',
     ...etaFields(eta),
     etaStatus: fallbackEtaStatus(row.currentRouteVersionId, eta),
     eventRows: stop?.driverEvents.map(toDtoEventRow) ?? [],
+    latitude: decimalToNumber(stop?.latitude ?? null),
+    longitude: decimalToNumber(stop?.longitude ?? null),
     proofRows: stop?.driverProofMedia.map(toDtoProofRow) ?? [],
+    sellerOrderId: row.id,
     sellerOrderKey: row.sellerOrderKey ?? row.id,
+    vehicleDisplayName: vehicle === null ? null : vehicle.licensePlate ?? vehicle.label,
+    vehicleId: vehicle?.id ?? null,
+    vehicleLatitude: decimalToNumber(vehiclePosition?.lastLatitude ?? null),
+    vehicleLongitude: decimalToNumber(vehiclePosition?.lastLongitude ?? null),
   };
 }
 
@@ -763,8 +842,12 @@ function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow): DsvV1SellerOrde
   const eta = stop === null ? null : selectCanonicalEta(stop.routePlanStops, row.currentRouteVersionId);
   const currentRoute = row.currentRouteVersion;
   const currentRouteDriverId = currentRoute?.driverId ?? null;
-  const routePlanId = eta?.routePlanId ?? currentRoute?.routePlanId ?? null;
+  const currentRouteStop = stop === null
+    ? null
+    : selectCurrentRouteStop(stop.routePlanStops, currentRoute?.routePlanId ?? null);
+  const routePlanId = currentRouteStop?.routePlanId ?? eta?.routePlanId ?? currentRoute?.routePlanId ?? null;
   return {
+    actualCompletedAt: latestDeliveredAt(stop?.driverEvents ?? []),
     assignmentStatus: currentRouteDriverId === null ? 'UNASSIGNED' : 'ASSIGNED',
     customerId: row.customer?.id ?? '',
     destinationAddress: stop === null ? normalizedAddressLabel(row.destination?.normalizedAddress ?? null) : deliveryStopAddressLabel(stop),
@@ -776,11 +859,16 @@ function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow): DsvV1SellerOrde
     latitude: decimalToNumber(stop?.latitude ?? null),
     longitude: decimalToNumber(stop?.longitude ?? null),
     ...(routePlanId === null ? {} : { routePlanId }),
+    ...(currentRouteStop === null ? {} : { routeStopSequence: currentRouteStop.sequence }),
     ...(row.currentRouteVersionId === null ? {} : { routeVersionId: row.currentRouteVersionId }),
     sellerOrderId: row.id,
     sellerOrderKey: row.sellerOrderKey ?? row.id,
     vehicleId: currentRoute?.routePlan?.vehicleId ?? null,
   };
+}
+
+function latestDeliveredAt(events: readonly { eventType: string; occurredAt: Date }[]): Date | null {
+  return events.find((event) => event.eventType === 'STOP_DELIVERED')?.occurredAt ?? null;
 }
 
 function toRecordRow(stop: RecordStopRow): RecordCursorRow {
@@ -861,14 +949,7 @@ function toRecordDtoEventRow(row: RecordStopRow['driverEvents'][number]): DsvV1E
 }
 
 function selectCanonicalEta(
-  rows: Array<{
-    estimatedArrivalAt: Date | null;
-    etaInputRouteVersionId: string | null;
-    etaSource: string | null;
-    etaStatus: string;
-    id: string;
-    routePlanId: string;
-  }>,
+  rows: DsvV1RoutePlanStopReadRow[],
   currentRouteVersionId: string | null,
 ): (DsvV1EtaReadRow & { etaStatus: DsvV1EtaStatus }) | null {
   if (currentRouteVersionId === null) return null;
@@ -882,6 +963,15 @@ function selectCanonicalEta(
     routePlanId: selected.routePlanId,
     routePlanStopId: selected.id,
   };
+}
+
+function selectCurrentRouteStop(
+  rows: DsvV1RoutePlanStopReadRow[],
+  currentRoutePlanId: string | null,
+): Pick<DsvV1RoutePlanStopReadRow, 'routePlanId' | 'sequence'> | null {
+  if (currentRoutePlanId === null) return null;
+  const selected = rows.find((row) => row.routePlanId === currentRoutePlanId) ?? null;
+  return selected === null ? null : { routePlanId: selected.routePlanId, sequence: selected.sequence };
 }
 
 function fallbackEtaStatus(
@@ -942,7 +1032,21 @@ function isCursorPayload(value: unknown): value is CursorPayload {
     && candidate.last !== null
     && typeof candidate.last === 'object'
     && (candidate.customerId === undefined || typeof candidate.customerId === 'string')
+    && (candidate.destinationName === undefined || typeof candidate.destinationName === 'string')
+    && (candidate.orderNumber === undefined || typeof candidate.orderNumber === 'string')
     && (candidate.serviceDate === undefined || typeof candidate.serviceDate === 'string');
+}
+
+function normalizeSearchText(value: string | null | undefined): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const normalized = value.trim().replace(/\s+/gu, ' ');
+  if (normalized === '') return undefined;
+  if (normalized.length > 120) {
+    throw new DsvV1ReadQueryError('BAD_REQUEST', 'search text exceeds the maximum length.', {
+      maxLength: 120,
+    });
+  }
+  return normalized;
 }
 
 function encodeCursor(context: CursorContext, last: Record<string, string | null>): string {

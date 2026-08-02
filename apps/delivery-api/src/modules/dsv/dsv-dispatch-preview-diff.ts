@@ -79,6 +79,7 @@ export type DsvDispatchCanonicalOrderSnapshot = {
   destinationId: string | null;
   id: string;
   sellerOrderKey: string;
+  serviceDate?: string | null;
   sourceKind: string;
 };
 
@@ -92,6 +93,7 @@ export type DsvDispatchCanonicalStopSnapshot = {
   longitude: number | null;
   notes: string | null;
   shippedBoxes?: number | null;
+  status?: string | null;
 };
 
 export type DsvDispatchPriorImportRowSnapshot = {
@@ -261,22 +263,25 @@ export function buildDsvDispatchPreviewDiff(input: DsvDispatchPreviewInput): Dsv
     }
 
     const canonicalOrder = findCanonicalOrder(input.snapshots.canonicalOrders, {
+      planDate: normalized.planDate,
       sellerOrderKey: normalized.sellerOrderKey,
       sourceKind,
     });
     const priorRow = findPriorImportRow(input.snapshots.priorImportRows ?? [], {
+      planDate: normalized.planDate,
       sellerOrderKey: normalized.sellerOrderKey,
       sourceKind,
     });
+    const resolvedDestinationId = resolveDestinationIdForDiff(canonicalOrder, normalized, destinationMatches);
     const candidateDiff = canonicalOrder === null
       ? []
       : diffCanonicalOrder(canonicalOrder, normalized, {
         conditionId: conditionMatches[0]?.id ?? null,
         customerId: customerMatches[0]?.id ?? null,
-        destinationId: destinationMatches[0]?.id ?? null,
+        destinationId: resolvedDestinationId,
       });
 
-    const conflictIssue = canonicalOrder === null ? null : resolveCanonicalConflict(canonicalOrder);
+    const conflictIssue = canonicalOrder === null ? null : resolveCanonicalConflict(canonicalOrder, candidateDiff);
     if (conflictIssue !== null) issues.push(conflictIssue);
 
     const diffKind = classifyDiff({
@@ -295,7 +300,7 @@ export function buildDsvDispatchPreviewDiff(input: DsvDispatchPreviewInput): Dsv
       conditionId: conditionMatches.length === 1 && conditionMatches[0]?.status === 'ACTIVE' ? conditionMatches[0].id : null,
       customerId: customerMatches.length === 1 ? customerMatches[0]?.id ?? null : null,
       deliveryStopId: canonicalOrder?.deliveryStop?.id ?? priorRow?.canonicalLink?.deliveryStopId ?? null,
-      destinationId: destinationMatches.length === 1 ? destinationMatches[0]?.id ?? null : canonicalOrder?.destinationId ?? null,
+      destinationId: destinationMatches.length === 1 ? destinationMatches[0]?.id ?? null : resolvedDestinationId,
       diffKind,
       driverId: driverMatches.length === 1 ? driverMatches[0]?.id ?? null : null,
       issues: sortIssues(issues),
@@ -337,8 +342,7 @@ export function buildDsvDispatchPreviewDiff(input: DsvDispatchPreviewInput): Dsv
     canApply: rows.length > 0
       && summary.errorRows === 0
       && summary.reviewRows === 0
-      && summary.conflictRows === 0
-      && summary.updateCandidateRows === 0,
+      && summary.conflictRows === 0,
     conditionCandidates: sortedConditionCandidates(conditionCandidates),
     fileName: input.fileName,
     planDate: input.planDate,
@@ -505,15 +509,37 @@ function resolveCustomerIssue(
   return null;
 }
 
-function resolveCanonicalConflict(order: DsvDispatchCanonicalOrderSnapshot): DsvDispatchPreviewIssue | null {
+function resolveCanonicalConflict(
+  order: DsvDispatchCanonicalOrderSnapshot,
+  candidateDiff: DsvDispatchCandidateDiff[],
+): DsvDispatchPreviewIssue | null {
   if ((order.activeDeliveryOwnershipCount ?? 0) > 1) {
     return issue('DUPLICATE_ACTIVE_DELIVERY', 'sellerOrderKey', '중복 활성 배송 상태입니다.');
+  }
+  if ((order.activeDeliveryOwnershipCount ?? 0) > 0 && candidateDiff.length > 0) {
+    return issue('CANONICAL_ORDER_ACTIVE_OWNERSHIP', 'sellerOrderKey', '이미 배차된 주문은 가져오기로 수정할 수 없습니다.');
   }
   if (order.cancelledAt !== null && order.cancelledAt !== undefined) {
     return issue('CANONICAL_ORDER_CANCELLED', 'sellerOrderKey', '취소된 주문입니다.');
   }
   if (order.deliveryStatus !== null && order.deliveryStatus !== undefined && lockedDeliveryStatuses.has(order.deliveryStatus)) {
     return issue('CANONICAL_ORDER_LOCKED', 'sellerOrderKey', '수정할 수 없는 배송 상태입니다.');
+  }
+  if (
+    candidateDiff.length > 0
+    && order.deliveryStop?.status !== null
+    && order.deliveryStop?.status !== undefined
+    && order.deliveryStop.status !== 'PENDING'
+  ) {
+    return issue('CANONICAL_STOP_NOT_PENDING', 'sellerOrderKey', '대기 상태가 아닌 배송지는 가져오기로 수정할 수 없습니다.');
+  }
+  if (
+    candidateDiff.length > 0
+    && order.deliveryStatus !== null
+    && order.deliveryStatus !== undefined
+    && order.deliveryStatus !== 'PENDING'
+  ) {
+    return issue('CANONICAL_ORDER_NOT_PENDING', 'sellerOrderKey', '대기 상태가 아닌 주문은 가져오기로 수정할 수 없습니다.');
   }
   return null;
 }
@@ -557,6 +583,15 @@ function classifyDiff(input: {
     if (input.canonicalOrder.deliveryStatus !== null
       && input.canonicalOrder.deliveryStatus !== undefined
       && lockedDeliveryStatuses.has(input.canonicalOrder.deliveryStatus)) return 'CONFLICT';
+    if (input.candidateDiff.length > 0
+      && input.canonicalOrder.deliveryStop?.status !== null
+      && input.canonicalOrder.deliveryStop?.status !== undefined
+      && input.canonicalOrder.deliveryStop.status !== 'PENDING') return 'CONFLICT';
+    if (input.candidateDiff.length > 0
+      && input.canonicalOrder.deliveryStatus !== null
+      && input.canonicalOrder.deliveryStatus !== undefined
+      && input.canonicalOrder.deliveryStatus !== 'PENDING') return 'CONFLICT';
+    if ((input.canonicalOrder.activeDeliveryOwnershipCount ?? 0) > 0 && input.candidateDiff.length > 0) return 'CONFLICT';
   }
   if (input.hasErrors) return 'ERROR';
   if (input.canonicalOrder === null) return 'NEW';
@@ -573,11 +608,27 @@ function summarize(rows: DsvDispatchPreviewRow[]): DsvDispatchPreviewDiff['summa
     errorRows,
     newRows: count('NEW'),
     noOpRows: count('NO_OP'),
-    readyRows: rows.length - errorRows - conflictRows - updateCandidateRows,
+    readyRows: rows.length - errorRows - conflictRows,
     reviewRows: rows.filter((row) => row.issues.some((item) => item.severity === 'review')).length,
     totalRows: rows.length,
     updateCandidateRows,
   };
+}
+
+function resolveDestinationIdForDiff(
+  canonicalOrder: DsvDispatchCanonicalOrderSnapshot | null,
+  normalized: DsvDispatchNormalizedRow,
+  destinationMatches: DsvDispatchDestinationSnapshot[],
+): string | null {
+  if (destinationMatches.length === 1) return destinationMatches[0]?.id ?? null;
+  if (destinationMatches.length > 1 || canonicalOrder === null) return null;
+  const stop = canonicalOrder.deliveryStop;
+  const existingName = normalizeNullableText(stop?.destinationName ?? null);
+  const existingAddress = normalizeNullableText(stop?.address ?? null);
+  if (existingName === normalized.destinationName && existingAddress === normalized.address) {
+    return canonicalOrder.destinationId;
+  }
+  return null;
 }
 
 function sortedConditionCandidates(
@@ -612,19 +663,25 @@ function recordConditionCandidate(
 
 function findCanonicalOrder(
   orders: DsvDispatchCanonicalOrderSnapshot[],
-  identity: { sellerOrderKey: string; sourceKind: string },
+  identity: { planDate: string; sellerOrderKey: string; sourceKind: string },
 ): DsvDispatchCanonicalOrderSnapshot | null {
   const matches = orders.filter(
-    (order) => order.sourceKind === identity.sourceKind && order.sellerOrderKey === identity.sellerOrderKey,
+    (order) =>
+      order.sourceKind === identity.sourceKind
+      && order.sellerOrderKey === identity.sellerOrderKey
+      && (order.serviceDate ?? order.deliveryStop?.deliveryDate ?? null) === identity.planDate,
   );
   return matches[0] ?? null;
 }
 
 function findPriorImportRow(
   rows: DsvDispatchPriorImportRowSnapshot[],
-  identity: { sellerOrderKey: string; sourceKind: string },
+  identity: { planDate: string; sellerOrderKey: string; sourceKind: string },
 ): DsvDispatchPriorImportRowSnapshot | null {
-  return rows.find((row) => row.sourceKind === identity.sourceKind && row.sellerOrderKey === identity.sellerOrderKey) ?? null;
+  return rows.find((row) =>
+    row.sourceKind === identity.sourceKind
+    && row.sellerOrderKey === identity.sellerOrderKey
+    && row.normalized.planDate === identity.planDate) ?? null;
 }
 
 function conditionKey(condition: DsvDispatchConditionSnapshot): string {

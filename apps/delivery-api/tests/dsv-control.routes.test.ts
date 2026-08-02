@@ -11,6 +11,7 @@ import {
   type DsvDispatchImportPreview,
   type DsvDispatchImportService,
 } from '../src/modules/dsv/dsv-dispatch-import.service.js';
+import type { DsvDispatchImportNotificationService } from '../src/modules/dsv/dsv-dispatch-import-notification.service.js';
 import { dsvAdminScopes } from '../src/modules/dsv/dsv-principal.js';
 import { DsvAssignmentCommandError } from '../src/modules/dsv/dsv-assignment-command.service.js';
 import type { DsvAdminAssignmentCommandService, DsvControlDependencies } from '../src/routes/dsv-control.routes.js';
@@ -560,7 +561,10 @@ describe('DSV control routes', () => {
   });
 
   test('applies a staged dispatch import with CSRF, apply scope, idempotency key, and canonical principal metadata', async () => {
-    const { app, dispatchImportService } = await createHarness();
+    const dispatchImportNotificationService = {
+      notifyApplied: vi.fn<DsvDispatchImportNotificationService['notifyApplied']>(() => Promise.resolve()),
+    };
+    const { app, dispatchImportService } = await createHarness({ dispatchImportNotificationService });
     try {
       const login = await loginToDsv(app);
 
@@ -587,7 +591,7 @@ describe('DSV control routes', () => {
             importId,
             sourceHash,
             status: 'APPLIED',
-            summary: { appliedRows: 1, newRows: 1, noOpRows: 0 },
+            summary: { appliedRows: 1, newRows: 1, noOpRows: 0, updatedRows: 0 },
           },
         },
         error: null,
@@ -606,6 +610,45 @@ describe('DSV control routes', () => {
         shopDomain: 'tomatonofood.com',
       });
       expect(applyInput?.principal?.requestId).toEqual(expect.any(String));
+      await vi.waitFor(() => {
+        expect(dispatchImportNotificationService.notifyApplied).toHaveBeenCalledOnce();
+      });
+      const notification = dispatchImportNotificationService.notifyApplied.mock.calls[0]?.[0];
+      expect(notification).toMatchObject({
+        actor: adminAccountId,
+        fileName: 'dsv-fixed-dispatch-10.csv',
+        importId,
+        planDate: '2026-07-23',
+        shopDomain: 'tomatonofood.com',
+        summary: { appliedRows: 1, newRows: 1, noOpRows: 0, updatedRows: 0 },
+      });
+      expect(notification?.appliedAt).toBeInstanceOf(Date);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('does not send the applied notification again when the import was already applied', async () => {
+    const dispatchImportNotificationService = {
+      notifyApplied: vi.fn<DsvDispatchImportNotificationService['notifyApplied']>(() => Promise.resolve()),
+    };
+    const { app, dispatchImportService } = await createHarness({ dispatchImportNotificationService });
+    dispatchImportService.getImport.mockResolvedValueOnce({
+      ...(await dispatchImportService.getImport({ importId, shopDomain: 'tomatonofood.com' })),
+      status: 'APPLIED',
+    } as NonNullable<Awaited<ReturnType<DsvDispatchImportService['getImport']>>>);
+    dispatchImportService.apply.mockResolvedValueOnce(applyResult({ commandId: 'apply-replay', outcome: 'NO_OP' }));
+    try {
+      const login = await loginToDsv(app);
+      const response = await app.inject({
+        headers: { cookie: login.cookie, 'idempotency-key': 'apply-replay', 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: { commandId: 'apply-replay', expectedSourceHash: sourceHash },
+        url: `/api/dsv/dispatch-imports/${importId}/apply`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(dispatchImportNotificationService.notifyApplied).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -1104,6 +1147,7 @@ describe('DSV control routes', () => {
 
 async function createHarness(overrides: {
   addressCanonicalizer?: DsvAddressCanonicalizer;
+  dispatchImportNotificationService?: DsvDispatchImportNotificationService;
 } = {}): Promise<{
   app: Awaited<ReturnType<typeof buildApp>>;
   assignmentCommandService: MockAssignmentCommandService;
@@ -1144,6 +1188,9 @@ async function createHarness(overrides: {
     allowedShopDomains: ['tomatonofood.com'],
     assignmentCommandService,
     cookieName: 'clever_dsv_admin',
+    ...(overrides.dispatchImportNotificationService === undefined
+      ? {}
+      : { dispatchImportNotificationService: overrides.dispatchImportNotificationService }),
     dispatchImportService,
     geocodingService,
     repository,
@@ -1370,7 +1417,7 @@ function assignmentResult(input: {
 
 function applyResult(input: {
   commandId: string;
-  outcome?: 'NEW' | 'NO_OP';
+  outcome?: 'NEW' | 'NO_OP' | 'UPDATE_CANDIDATE';
 }): DsvDispatchImportApplyResult {
   const outcome = input.outcome ?? 'NEW';
   return {
@@ -1394,6 +1441,7 @@ function applyResult(input: {
       appliedRows: 1,
       newRows: outcome === 'NEW' ? 1 : 0,
       noOpRows: outcome === 'NO_OP' ? 1 : 0,
+      updatedRows: outcome === 'UPDATE_CANDIDATE' ? 1 : 0,
     },
   };
 }

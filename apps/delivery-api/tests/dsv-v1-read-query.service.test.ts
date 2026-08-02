@@ -483,6 +483,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
         etaStatus: 'READY',
         id: 'route-stop-a',
         routePlanId: 'route-a',
+        sequence: 4,
       }],
     });
     const service = new PrismaDsvV1ReadQueryService(prismaMock({
@@ -492,14 +493,45 @@ describe('PrismaDsvV1ReadQueryService', () => {
 
     await expect(service.listCustomerDeliveries(customerPrincipal(), { serviceDate: '2026-07-22' })).resolves.toMatchObject({
       items: [{
+        destinationAddress: '1 Shared Way',
         estimatedArrivalAt: new Date('2026-07-22T02:00:00.000Z'),
         etaInputRouteVersionId: 'route-version-a',
         etaSource: 'ROUTE_CALCULATION',
         etaStatus: 'READY',
         eventRows: [{ eventType: 'STOP_DELIVERED', occurredAt: new Date('2026-07-22T01:00:00.000Z') }],
         proofRows: [{ deletedAt: new Date('2026-07-23T00:00:00.000Z') }, { deletedAt: null }],
+        sellerOrderId: 'order-a',
+        sellerOrderKey: 'SO-A',
+        vehicleDisplayName: '서울86바3800',
+        vehicleId: 'vehicle-a',
+        vehicleLatitude: 37.5,
+        vehicleLongitude: 127,
+      }],
+    });
+    await expect(service.listDispatches(adminPrincipal(), { serviceDate: '2026-07-22' })).resolves.toMatchObject({
+      items: [{
+        actualCompletedAt: new Date('2026-07-22T01:00:00.000Z'),
+        routeStopSequence: 4,
         sellerOrderKey: 'SO-A',
       }],
+    });
+  });
+
+  test('keeps administrator manufacturer inquiry scoped to the selected customer and shop', async () => {
+    const findMany = vi.fn(() => Promise.resolve([]));
+    const service = new PrismaDsvV1ReadQueryService(prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      order: { findMany },
+    }) as never, () => new Date('2026-07-22T12:00:00.000Z'));
+
+    await service.listCustomerDeliveriesForAdmin(adminPrincipal(), 'customer-selected', {
+      serviceDate: '2026-07-22',
+    });
+
+    const query = firstMockArg<OrderFindManyQuery>(findMany);
+    expect(query?.where).toMatchObject({
+      customerId: 'customer-selected',
+      shopId: 'shop-a',
     });
   });
 
@@ -511,7 +543,8 @@ describe('PrismaDsvV1ReadQueryService', () => {
         etaSource: 'ROUTE_CALCULATION',
         etaStatus: 'READY',
         id: 'route-stop-stale',
-        routePlanId: 'route-stale',
+        routePlanId: 'route-a',
+        sequence: 5,
       }],
     });
     const service = new PrismaDsvV1ReadQueryService(prismaMock({
@@ -529,13 +562,20 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(result.items[0]).not.toHaveProperty('estimatedArrivalAt');
     expect(result.items[0]).not.toHaveProperty('etaInputRouteVersionId');
     expect(result.items[0]).not.toHaveProperty('etaSource');
+    await expect(service.listDispatches(adminPrincipal(), { serviceDate: '2026-07-22' })).resolves.toMatchObject({
+      items: [{ etaStatus: 'PENDING', routeStopSequence: 5 }],
+    });
   });
 
   test('dispatch summaries derive ownership from current child driver and keep route plan while ETA is pending', async () => {
     const row = customerDeliveryOrderRow({
       currentRouteVersion: {
         driverId: null,
-        routePlan: { vehicleId: 'vehicle-a' },
+        routePlan: {
+          trackingGeometry: null,
+          vehicle: { id: 'vehicle-a', label: '차량 A', licensePlate: null },
+          vehicleId: 'vehicle-a',
+        },
         routePlanId: 'route-a',
       },
       latitude: '37.1234567',
@@ -570,6 +610,28 @@ describe('PrismaDsvV1ReadQueryService', () => {
         routePlan: { select: { vehicleId: true } },
         routePlanId: true,
       },
+    });
+  });
+
+  test('dispatch search applies partial order number and destination name to the same service date query', async () => {
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      order: { findMany: vi.fn(() => Promise.resolve([])) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-22T12:00:00.000Z'));
+
+    await service.listDispatches(adminPrincipal(), {
+      destinationName: '  명동  의원 ',
+      orderNumber: ' 123 ',
+      serviceDate: '2026-07-22',
+    });
+
+    expect(firstMockArg<OrderFindManyQuery>(prisma.order.findMany)?.where).toMatchObject({
+      OR: [
+        { destination: { canonicalName: { contains: '명동 의원', mode: 'insensitive' } } },
+        { deliveryStops: { some: { recipientName: { contains: '명동 의원', mode: 'insensitive' } } } },
+      ],
+      sellerOrderKey: { contains: '123', mode: 'insensitive' },
     });
   });
 
@@ -660,7 +722,11 @@ function replaceCursorSort(cursor: string, sort: string): string {
 function customerDeliveryOrderRow(input: {
   currentRouteVersion?: {
     driverId: string | null;
-    routePlan: { vehicleId: string | null } | null;
+    routePlan: {
+      trackingGeometry: { lastLatitude: unknown; lastLongitude: unknown } | null;
+      vehicle: { id: string; label: string; licensePlate: string | null } | null;
+      vehicleId: string | null;
+    } | null;
     routePlanId: string | null;
   } | null;
   driverEvents?: Array<{ eventType: string; id: string; occurredAt: Date }>;
@@ -675,13 +741,22 @@ function customerDeliveryOrderRow(input: {
     etaStatus: string;
     id: string;
     routePlanId: string;
+    sequence?: number;
   }>;
   sellerOrderKey?: string | null;
 } = {}) {
   return {
     currentRouteVersionId: 'route-version-a',
     currentRouteVersion: input.currentRouteVersion === undefined
-      ? { driverId: 'driver-a', routePlan: { vehicleId: 'vehicle-a' }, routePlanId: 'route-a' }
+      ? {
+          driverId: 'driver-a',
+          routePlan: {
+            trackingGeometry: { lastLatitude: '37.5000000', lastLongitude: '127.0000000' },
+            vehicle: { id: 'vehicle-a', label: '1톤 냉장탑차', licensePlate: '서울86바3800' },
+            vehicleId: 'vehicle-a',
+          },
+          routePlanId: 'route-a',
+        }
       : input.currentRouteVersion,
     customer: { displayName: 'Customer A', id: 'customer-a' },
     deliveryStatus: 'ASSIGNED',

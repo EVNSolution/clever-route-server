@@ -48,7 +48,8 @@ describe('DsvAssignmentCommandService', () => {
   });
 
   test('reassign preserves history and inserts target sequence in one saveDraft call', async () => {
-    const harness = createHarness();
+    const schedule = vi.fn();
+    const harness = createHarness({ routeOptimizationScheduler: { schedule } });
     await harness.service.reassign({
       ...adminInput({ commandId: 'cmd-reassign-1' }),
       targetDriverId: 'driver-b',
@@ -69,6 +70,10 @@ describe('DsvAssignmentCommandService', () => {
       status: 'SUCCEEDED',
     });
     expect(receiptUpdate.where).toMatchObject({ status: 'STARTED' });
+    expect(schedule).toHaveBeenCalledWith({
+      routePlanIds: ['route-a', 'route-b'],
+      shopDomain: 'example.myshopify.com',
+    });
   });
 
   test('reassign without target route uses the selected driver ready route when it exists', async () => {
@@ -137,7 +142,9 @@ describe('DsvAssignmentCommandService', () => {
     });
 
     const routes = harness.savedRoutes();
-    expect(routes.find((route) => route.driverId === null)?.orderIds).toEqual(['order-b']);
+    const remainingUnassigned = routes.find((route) => route.driverId === null);
+    expect(remainingUnassigned?.orderIds).toEqual(['order-b']);
+    expect(remainingUnassigned).not.toHaveProperty('routeIdx');
     expect(routes.find((route) => route.driverId === 'driver-c')?.orderIds).toEqual(['order-a']);
   });
 
@@ -340,6 +347,7 @@ function createHarness(input: {
   };
   failedRoutePlanStops?: number;
   grouping?: RouteGroupingDetailDto;
+  routeOptimizationScheduler?: { schedule(input: { routePlanIds: Array<string | null>; shopDomain: string }): void };
 } = {}) {
   const grouping = input.grouping ?? groupingFixture();
   const initialOwner = grouping.children.find((child) => child.orderIds.includes('order-a'));
@@ -436,7 +444,11 @@ function createHarness(input: {
       }),
     },
   };
-  const service = new DsvAssignmentCommandService(prisma as never, routeGroupingService as RouteGroupingService);
+  const service = new DsvAssignmentCommandService(
+    prisma as never,
+    routeGroupingService as RouteGroupingService,
+    input.routeOptimizationScheduler,
+  );
   return {
     prisma,
     routeGroupingService,

@@ -403,8 +403,8 @@ async function createFixture(
   const [orderA, orderB, orderANone, orderAExpired] = await Promise.all([
     createOrder(prisma, shop.id, customerA.id, sharedDestination.id, orderAKey, routeVersionA.id),
     createOrder(prisma, shop.id, customerB.id, sharedDestination.id, orderBKey, routeVersionA.id),
-    createOrder(prisma, shop.id, customerA.id, sharedDestination.id, `SO-A-NONE-${unique}`, routeVersionA.id),
-    createOrder(prisma, shop.id, customerA.id, sharedDestination.id, `SO-A-EXPIRED-${unique}`, routeVersionA.id),
+    createOrder(prisma, shop.id, customerA.id, sharedDestination.id, `SO-A-NONE-${unique}`, routeVersionA.id, '2026-07-24'),
+    createOrder(prisma, shop.id, customerA.id, sharedDestination.id, `SO-A-EXPIRED-${unique}`, routeVersionA.id, '2026-07-25'),
   ]);
   const [stopA, stopB, , stopAExpired] = await Promise.all([
     createStop(prisma, shop.id, orderA.id, 'Recipient A', '2026-07-23'),
@@ -918,8 +918,10 @@ async function createOrder(
   destinationId: string,
   sellerOrderKey: string | null,
   currentRouteVersionId: string | null,
+  serviceDate = '2026-07-23',
 ) {
   const sourceKey = sellerOrderKey ?? `NULL-SELLER-${randomUUID()}`;
+  const datedSourceKey = `${serviceDate}:${sourceKey}`;
   return prisma.order.create({
     data: {
       currentRouteVersionId,
@@ -929,9 +931,10 @@ async function createOrder(
       rawPayload: {},
       sellerOrderKey,
       sellerOrderSourceKind: 'DSV_DISPATCH_IMPORT',
+      serviceDate: dateOnly(serviceDate),
       shopId,
-      shopifyOrderGid: `gid://shopify/Order/${sourceKey}`,
-      sourceOrderId: sourceKey,
+      shopifyOrderGid: `dsv:DSV_DISPATCH_IMPORT:${datedSourceKey}`,
+      sourceOrderId: datedSourceKey,
       sourcePlatform: 'SHOPIFY',
     },
   });

@@ -16,6 +16,7 @@ import {
   createDsvCustomerUserPrincipalFromAccount,
 } from '../src/modules/dsv/dsv-principal.js';
 import { DsvV1ReadQueryError } from '../src/modules/dsv/dsv-v1-read-query.service.js';
+import type { RoutePlanDetail, RoutePlanSummary } from '../src/modules/route-plans/route-plan.types.js';
 
 const sessionSecret = '12345678901234567890123456789012';
 const cookieName = 'clever_dsv_admin';
@@ -130,7 +131,7 @@ describe('DSV v1 read routes', () => {
       const response = await app.inject({
         headers: { cookie: admin.cookie },
         method: 'GET',
-        url: '/api/dsv/v1/dispatches?serviceDate=2026-07-23&limit=25&cursor=opaque',
+        url: '/api/dsv/v1/dispatches?serviceDate=2026-07-23&limit=25&cursor=opaque&orderNumber=%20123%20&destinationName=%EB%AA%85%EB%8F%99%20%20%EC%9D%98%EC%9B%90',
       });
       expect(response.statusCode).toBe(200);
       expectDsvV1Envelope(response, {
@@ -146,7 +147,13 @@ describe('DSV v1 read routes', () => {
       });
       expect(queryService.listDispatches).toHaveBeenCalledWith(
         expect.objectContaining({ principalType: 'DSV_ADMIN', shopId }),
-        { cursor: 'opaque', limit: 25, serviceDate: '2026-07-23' },
+        {
+          cursor: 'opaque',
+          destinationName: '명동 의원',
+          limit: 25,
+          orderNumber: '123',
+          serviceDate: '2026-07-23',
+        },
       );
 
       queryService.listVehicles.mockResolvedValueOnce({
@@ -228,6 +235,45 @@ describe('DSV v1 read routes', () => {
         url: '/api/dsv/v1/drivers?limit=101',
       });
       expect(invalidLimit.statusCode).toBe(400);
+
+      const invalidSearch = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/dispatches?orderNumber=${'1'.repeat(121)}`,
+      });
+      expect(invalidSearch.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('serves cached control route geometry without invoking a routing provider', async () => {
+    const { app, routePlanService } = await createHarness();
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    routePlanService.listRoutePlans.mockResolvedValueOnce([routePlanSummary()]);
+    routePlanService.getRoutePlanDetail.mockResolvedValueOnce(routePlanDetail());
+    try {
+      const response = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/control/routes?serviceDate=2026-07-23',
+      });
+      expect(response.statusCode).toBe(200);
+      expectDsvV1Envelope(response, {
+        routes: [{
+          coordinates: [[126.9, 37.5], [127, 37.6]],
+          generatedAt: '2026-07-23T00:01:00.000Z',
+          geometryStatus: 'fresh',
+          legDurationsSeconds: [420],
+          routePlanId: 'route-plan-1',
+        }],
+        serviceDate: '2026-07-23',
+      });
+      expect(routePlanService.listRoutePlans).toHaveBeenCalledWith({
+        appId: 'clever',
+        deliveryDate: '2026-07-23',
+        shopDomain: 'tomatonofood.com',
+      });
     } finally {
       await app.close();
     }
@@ -277,6 +323,18 @@ describe('DSV v1 read routes', () => {
         url: '/api/dsv/v1/customer/deliveries',
       });
       expect(adminInquiry.statusCode).toBe(403);
+
+      const adminCustomerInquiry = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/customers/deliveries?customerId=${customerId}&serviceDate=2026-07-23`,
+      });
+      expect(adminCustomerInquiry.statusCode).toBe(200);
+      expect(queryService.listCustomerDeliveriesForAdmin).toHaveBeenCalledWith(
+        expect.objectContaining({ principalType: 'DSV_ADMIN', shopId }),
+        customerId,
+        { customerId, serviceDate: '2026-07-23' },
+      );
 
       const customerInquiry = await app.inject({
         headers: { cookie: customer.cookie },
@@ -426,19 +484,22 @@ describe('DSV v1 read routes', () => {
 async function createHarness(options: { mapProfile?: false } = {}): Promise<{
   app: Awaited<ReturnType<typeof buildApp>>;
   queryService: MockQueryService;
+  routePlanService: MockRoutePlanService;
   sessionResolver: MockSessionResolver;
 }> {
   const queryService = createQueryService();
+  const routePlanService = createRoutePlanService();
   const sessionResolver = createSessionResolver();
   const dependencies: DsvV1ReadDependencies = {
     cookieName,
     ...(options.mapProfile === false ? {} : { mapProfile: dsvMapProfile() }),
     queryService,
+    routePlanService,
     secureCookies: false,
     sessionResolver,
     sessionSecret,
   };
-  return { app: await buildApp({ dsvV1Read: dependencies }), queryService, sessionResolver };
+  return { app: await buildApp({ dsvV1Read: dependencies }), queryService, routePlanService, sessionResolver };
 }
 
 function dsvMapProfile(): NonNullable<DsvV1ReadDependencies['mapProfile']> {
@@ -476,6 +537,7 @@ function createQueryService(): MockQueryService {
       unassignedCount: 0,
     })),
     listCustomerDeliveries: vi.fn(() => Promise.resolve({ items: [], page: { hasMore: false }, serviceDate: '2026-07-23', timezone: 'Asia/Seoul' })),
+    listCustomerDeliveriesForAdmin: vi.fn(() => Promise.resolve({ items: [], page: { hasMore: false }, serviceDate: '2026-07-23', timezone: 'Asia/Seoul' })),
     listCustomers: vi.fn(() => Promise.resolve(list)),
     listDestinations: vi.fn(() => Promise.resolve(list)),
     listDispatches: vi.fn(() => Promise.resolve({
@@ -498,6 +560,56 @@ function createQueryService(): MockQueryService {
       today: '2026-07-23',
       tomorrow: '2026-07-24',
     })),
+  };
+}
+
+type MockRoutePlanService = {
+  getRoutePlanDetail: ReturnType<typeof vi.fn<NonNullable<DsvV1ReadDependencies['routePlanService']>['getRoutePlanDetail']>>;
+  listRoutePlans: ReturnType<typeof vi.fn<NonNullable<DsvV1ReadDependencies['routePlanService']>['listRoutePlans']>>;
+};
+
+function createRoutePlanService(): MockRoutePlanService {
+  return {
+    getRoutePlanDetail: vi.fn(() => Promise.resolve(null)),
+    listRoutePlans: vi.fn(() => Promise.resolve([])),
+  };
+}
+
+function routePlanSummary(): RoutePlanSummary {
+  return {
+    createdAt: '2026-07-23T00:00:00.000Z',
+    deliveryAreas: [],
+    deliveryDays: [],
+    depot: { latitude: 37.5, longitude: 126.9 },
+    id: 'route-plan-1',
+    missingCoordinates: 0,
+    name: '2026-07-23 route',
+    planDate: '2026-07-23',
+    routeEndMode: 'END_AT_LAST_STOP',
+    status: 'PUBLISHED',
+    stopsCount: 1,
+    updatedAt: '2026-07-23T00:01:00.000Z',
+  };
+}
+
+function routePlanDetail(): RoutePlanDetail {
+  return {
+    routeGeometry: { coordinates: [[126.9, 37.5], [127, 37.6]], type: 'LineString' },
+    routeGeometryGeneratedAt: '2026-07-23T00:01:00.000Z',
+    routeGeometryStatus: 'fresh',
+    routeMetrics: { distanceMeters: 1000, durationSeconds: 420 },
+    routePlan: routePlanSummary(),
+    routeStopPoints: [{
+      deliveryStopId: 'stop-1',
+      durationFromPreviousSeconds: 420,
+      inputCoordinates: [127, 37.6],
+      name: null,
+      sequence: 1,
+      shopifyOrderGid: 'order-1',
+      snapDistanceMeters: 0,
+      snappedCoordinates: [127, 37.6],
+    }],
+    stops: [],
   };
 }
 

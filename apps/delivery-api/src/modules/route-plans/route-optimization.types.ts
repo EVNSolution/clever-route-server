@@ -8,7 +8,7 @@ export type RouteOptimizationStopSequence = {
 
 export type RouteOptimizationResult = {
   missingCoordinateStops: number;
-  source: 'vroom';
+  source: 'osrm-trip' | 'vroom';
   stops: RouteOptimizationStopSequence[];
 };
 

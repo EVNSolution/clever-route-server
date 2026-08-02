@@ -103,6 +103,7 @@ describe('G003 DSV dispatch import service apply contract', () => {
     expect(source).toContain('function lockApplyImport');
     expect(source).toContain('function lockApplyCommand');
     expect(source).toContain('function lockSellerOrder');
+    expect(source).toContain('function lockCanonicalOrderRows');
     expect(source).toContain('function lockDestinationFingerprint');
     expect(source).toContain('function lockCondition');
     expect(source.match(/pg_advisory_xact_lock/g)).toHaveLength(5);
@@ -111,22 +112,27 @@ describe('G003 DSV dispatch import service apply contract', () => {
     expect(source).toContain('dsv-seller-order:');
     expect(source).toContain('dsv-destination:');
     expect(source).toContain('dsv-condition:');
+    expect(source).toContain('FOR UPDATE');
+    expect(source).toContain('await lockCanonicalOrderRows(tx, shop.id');
     expect(source).toContain('const destinationFingerprints = unique(sourceRows.map((row) => addressFingerprint(row))).sort');
     expect(source).toContain('await lockDestinationFingerprint(tx, shop.id, fingerprint)');
   });
 
   test('creates canonical rows and assignment ownership while leaving route-plan writes for G004', async () => {
     const source = await serviceSource();
+    const createStart = source.indexOf('private async createNewCanonicalRows');
+    const createEnd = source.indexOf('private async updateCanonicalRows', createStart);
+    const createCanonical = source.slice(createStart, createEnd);
 
-    expect(source).toContain('tx.order.upsert');
-    expect(source).toContain('tx.deliveryStop.upsert');
-    expect(source).toContain('tx.customer.upsert');
-    expect(source).toContain('findOrCreateDestination');
+    expect(createCanonical).toContain('tx.order.upsert');
+    expect(createCanonical).toContain('tx.deliveryStop.upsert');
+    expect(createCanonical).toContain('tx.customer.upsert');
+    expect(createCanonical).toContain('findOrCreateDestination');
     expect(source).toContain('await this.ensureDispatchGrouping(');
     expect(source).toContain('tx.routeGrouping.create');
     expect(source).toContain('tx.routeGroupingVersion.create');
     expect(source).toContain('tx.routeGroupingOrder.createMany');
-    expect(source).not.toMatch(/tx\.route(?:Plan|PlanStop)\.(?:create|update|upsert|delete|deleteMany|createMany|updateMany)/u);
+    expect(createCanonical).not.toMatch(/tx\.route(?:Plan|PlanStop)\.(?:create|update|upsert|delete|deleteMany|createMany|updateMany)/u);
   });
 
   test('uses a physical destination fingerprint that is independent of customer identity', async () => {
@@ -166,7 +172,72 @@ describe('G003 DSV dispatch import service apply contract', () => {
     expect(ownership).toContain("assignmentStatus: 'ASSIGNED'");
     expect(ownership).toContain("groupingVersion: { status: 'CURRENT' }");
     expect(ownership).toContain("status: { in: ['PUBLISHED', 'OPTIMIZED', 'ASSIGNED', 'IN_PROGRESS', 'READY'] }");
+    expect(ownership).toContain("const activeRoutePlanStatuses: ReadonlySet<string> = new Set(['PUBLISHED', 'OPTIMIZED', 'ASSIGNED', 'IN_PROGRESS'])");
+    expect(ownership).toContain('isMutableDsvReadyRouteVersion(child, groupingOrders)');
+    expect(ownership).toContain('child.routePlan !== null');
+    expect(ownership).toContain("child.routePlan.status === 'READY' && !isMutableDsvReadyRouteVersion(child, groupingOrders)");
+    expect(ownership).toContain('mutableReadyRoutePlanIds');
+    expect(ownership).toContain('if (mutableReadyRoutePlanIds.has(stop.routePlanId)) continue');
+    expect(ownership).toContain("version.grouping.serviceType === 'DSV_DISPATCH'");
+    expect(ownership).toContain("version.grouping.routeScopeKey?.startsWith('dsv-import:')");
+    expect(ownership).toContain('groupingOrders.every((order) => order.groupingId !== version.groupingId)');
     expect(ownership).not.toContain('.count(');
+  });
+
+  test('applies update candidates with row guards and invalidates READY route plan projections', async () => {
+    const source = await serviceSource();
+    const updateStart = source.indexOf('private async updateCanonicalRows');
+    const updateEnd = source.indexOf('private async resolveUpdateDestination', updateStart);
+    const update = source.slice(updateStart, updateEnd);
+    const invalidationStart = source.indexOf('async function invalidateReadyRoutePlansForUpdates');
+    const invalidationEnd = source.indexOf('async function findOrCreateUnassignedDispatchGrouping', invalidationStart);
+    const invalidation = source.slice(invalidationStart, invalidationEnd);
+
+    expect(update).toContain('tx.order.updateMany');
+    expect(update).toContain('tx.deliveryStop.updateMany');
+    expect(update).toContain('const deliveryDate = new Date(`${row.normalized.planDate}T00:00:00.000Z`)');
+    expect(update).toContain("deliveryStatus: 'PENDING'");
+    expect(update).toContain('serviceDate: deliveryDate');
+    expect(update).toContain("status: 'PENDING'");
+    expect(update).toContain('cancelledAt: null');
+    expect(update).toContain("throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT')");
+    expect(source).toContain('await invalidateReadyRoutePlansForUpdates(');
+    expect(invalidation).not.toContain('planDate: Date');
+    expect(invalidation).not.toContain('importId: string');
+    expect(invalidation).not.toContain('fileName: string');
+    expect(invalidation).not.toContain('actor: string');
+    expect(invalidation).toContain('routeGroupingChildVersions');
+    expect(invalidation).not.toContain('assertReadyRoutePlanDateMoveIsComplete');
+    expect(invalidation).not.toContain('tx.routePlan.updateMany');
+    expect(invalidation).not.toContain('tx.routeGrouping.updateMany');
+    expect(invalidation).toContain('tx.routePlanStop.updateMany');
+    expect(invalidation).toContain("etaStatus: 'NOT_REQUIRED'");
+    expect(invalidation).toContain('distanceFromPreviousMeters: null');
+    expect(invalidation).toContain('durationFromPreviousSeconds: null');
+    expect(invalidation).toContain('tx.routePlanGeometryCache.deleteMany');
+    expect(invalidation).toContain("serviceType: 'DSV_DISPATCH'");
+    expect(invalidation).toContain("routeScopeKey: { startsWith: 'dsv-import:' }");
+    expect(invalidation).not.toContain("assignmentStatus: 'UNASSIGNED'");
+    expect(source).toContain("throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT')");
+    expect(source).toContain('status: row.issues.length === 0 && isReadyDiffKind(row.diffKind) ?');
+  });
+
+  test('creates DSV canonical orders with service-date identity and dated source ids', async () => {
+    const source = await serviceSource();
+    const createStart = source.indexOf('private async createNewCanonicalRows');
+    const createEnd = source.indexOf('private async updateCanonicalRows', createStart);
+    const create = source.slice(createStart, createEnd);
+
+    expect(source).toContain('const serviceDate = new Date(`${input.planDate}T00:00:00.000Z`)');
+    expect(source).toContain('sellerOrderSourceKind: dsvDispatchImportSourceKind, serviceDate, shopId');
+    expect(source).toContain('serviceDate: order.serviceDate?.toISOString().slice(0, 10) ?? null');
+    expect(create).toContain('const serviceDate = new Date(`${row.normalized.planDate}T00:00:00.000Z`)');
+    expect(create).toContain('const datedSourceOrderId = `${row.normalized.planDate}:${row.sellerOrderKey}`');
+    expect(create).toContain('serviceDate,');
+    expect(create).toContain('shopifyOrderGid: `dsv:${dsvDispatchImportSourceKind}:${datedSourceOrderId}`');
+    expect(create).toContain('sourceOrderId: datedSourceOrderId');
+    expect(create).toContain('sourceOrderNumber: row.sellerOrderKey');
+    expect(create).toContain('shopId_sellerOrderSourceKind_sellerOrderKey_serviceDate');
   });
 
   test('links staged candidate rows to the upserted condition provenance', async () => {
@@ -197,14 +268,14 @@ describe('G003 DSV dispatch import service apply contract', () => {
     expect(update).toContain('rawValue: existing.rawValue ?? input.code');
   });
 
-  test('blocks candidates, inactive/missing/ambiguous resources, conflicts, and update candidates before canonical writes', async () => {
+  test('blocks candidates, inactive/missing/ambiguous resources, and conflicts before canonical writes', async () => {
     const source = await serviceSource();
     const assertApplicableIndex = source.indexOf('assertApplicable(recomputed)');
     const createCanonicalIndex = source.indexOf('this.createNewCanonicalRows');
 
     expect(assertApplicableIndex).toBeGreaterThan(0);
     expect(assertApplicableIndex).toBeLessThan(createCanonicalIndex);
-    expect(source).toContain("DISPATCH_IMPORT_HAS_UPDATE_CANDIDATES");
+    expect(source).not.toContain("throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_HAS_UPDATE_CANDIDATES')");
     expect(source).toContain("DISPATCH_IMPORT_HAS_CONDITION_CANDIDATES");
     expect(source).toContain("DISPATCH_IMPORT_INACTIVE_CONDITION");
     expect(source).toContain("DISPATCH_IMPORT_RESOURCE_AMBIGUOUS");

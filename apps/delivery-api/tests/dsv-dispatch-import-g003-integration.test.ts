@@ -203,7 +203,7 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     const result = await service.apply(applyInput(fixture.shopDomain, staged.id, staged.sourceHash ?? '', 'cmd-apply'));
     const row = await prisma.dsvDispatchImportRow.findFirstOrThrow({ where: { importId: staged.id } });
 
-    expect(result.summary).toEqual({ appliedRows: 1, newRows: 1, noOpRows: 0 });
+    expect(result.summary).toEqual({ appliedRows: 1, newRows: 1, noOpRows: 0, updatedRows: 0 });
     await expect(canonicalCounts(prisma, fixture.shopId)).resolves.toMatchObject({
       customers: 1,
       deliveryStops: 1,
@@ -219,6 +219,14 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     expect(row.sellerOrderId).toBe(result.rows[0]?.sellerOrderId);
     expect(row.deliveryStopId).toBe(result.rows[0]?.deliveryStopId);
     expect(row.applyReceiptId).toBe(result.receiptId);
+    await expect(prisma.order.findUniqueOrThrow({ where: { id_shopId: { id: result.rows[0]?.sellerOrderId ?? '', shopId: fixture.shopId } } }))
+      .resolves.toMatchObject({
+        sellerOrderKey: fixture.sellerOrderKey,
+        serviceDate: new Date('2026-07-22T00:00:00.000Z'),
+        shopifyOrderGid: `dsv:DSV_DISPATCH_IMPORT:2026-07-22:${fixture.sellerOrderKey}`,
+        sourceOrderId: `2026-07-22:${fixture.sellerOrderKey}`,
+        sourceOrderNumber: fixture.sellerOrderKey,
+      });
   });
 
   test('applies geocoded rows after coordinates are normalized to database precision', async () => {
@@ -251,7 +259,225 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     ));
 
     expect(staged.rows[0]).toMatchObject({ latitude: 37.500643, longitude: 127.0365451 });
-    expect(result.summary).toEqual({ appliedRows: 1, newRows: 1, noOpRows: 0 });
+    expect(result.summary).toEqual({ appliedRows: 1, newRows: 1, noOpRows: 0, updatedRows: 0 });
+  });
+
+  test('applies a same-date update candidate and invalidates READY route projections in place', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'update-candidate');
+    const service = new PrismaDsvDispatchImportService(prisma);
+    const firstStage = await service.commit({ ...fixture.input, actor: 'g003-test', shopDomain: fixture.shopDomain });
+    const firstApply = await service.apply(applyInput(
+      fixture.shopDomain,
+      firstStage.id,
+      firstStage.sourceHash ?? '',
+      'cmd-update-candidate-first',
+    ));
+    const firstCanonical = firstApply.rows[0];
+    if (firstCanonical === undefined) throw new Error('Missing first canonical row');
+    const readyRoute = await createReadyPredepartureRoutePlan(prisma, {
+      deliveryStopId: firstCanonical.deliveryStopId,
+      driverId: fixture.driverId,
+      orderId: firstCanonical.sellerOrderId,
+      shopId: fixture.shopId,
+      vehicleId: fixture.vehicleId,
+    });
+    const firstRow = fixture.input.rows[0];
+    if (firstRow === undefined) throw new Error('Missing fixture row');
+    const updatedInput: DsvDispatchImportInput = {
+      ...fixture.input,
+      rows: [{
+        ...firstRow,
+        address: '456 Updated Integration Road',
+        customerCode: 'CUST-G003-UPDATED',
+        destinationName: 'Updated Integration Destination',
+        latitude: 37.6001,
+        longitude: 127.1002,
+        notes: 'Updated dock note',
+        shippedBoxes: 7,
+      }],
+    };
+
+    const previewUpdate = await service.preview({ ...updatedInput, shopDomain: fixture.shopDomain });
+    const stagedUpdate = await service.commit({ ...updatedInput, actor: 'g003-test', shopDomain: fixture.shopDomain });
+    const result = await service.apply(applyInput(
+      fixture.shopDomain,
+      stagedUpdate.id,
+      stagedUpdate.sourceHash ?? '',
+      'cmd-update-candidate-second',
+    ));
+    const order = await prisma.order.findUniqueOrThrow({
+      include: { customer: true, deliveryStops: true, destination: true },
+      where: { id: firstCanonical.sellerOrderId },
+    });
+    const groupingRow = await prisma.routeGroupingOrder.findFirstOrThrow({
+      include: { grouping: true },
+      where: { orderId: order.id, shopId: fixture.shopId },
+    });
+    const routePlan = await prisma.routePlan.findUniqueOrThrow({ where: { id: readyRoute.routePlanId } });
+    const routePlanStop = await prisma.routePlanStop.findUniqueOrThrow({
+      where: {
+        routePlanId_deliveryStopId: {
+          deliveryStopId: firstCanonical.deliveryStopId,
+          routePlanId: readyRoute.routePlanId,
+        },
+      },
+    });
+
+    expect(previewUpdate.rows[0]).toMatchObject({ diffKind: 'UPDATE_CANDIDATE', status: 'READY' });
+    expect(stagedUpdate).toMatchObject({ status: 'READY' });
+    expect(stagedUpdate.rows[0]).toMatchObject({ diffKind: 'UPDATE_CANDIDATE', status: 'READY' });
+    expect(result.summary).toEqual({ appliedRows: 1, newRows: 0, noOpRows: 0, updatedRows: 1 });
+    expect(result.rows[0]).toMatchObject({
+      outcome: 'UPDATE_CANDIDATE',
+      sellerOrderId: firstCanonical.sellerOrderId,
+    });
+    expect(order.customer?.externalCustomerCode).toBe('CUST-G003-UPDATED');
+    expect(order.destination?.canonicalName).toBe('Updated Integration Destination');
+    expect(order.deliveryStops[0]).toMatchObject({
+      address1: '456 Updated Integration Road',
+      instructions: 'Updated dock note',
+      recipientName: 'Updated Integration Destination',
+      status: 'PENDING',
+    });
+    expect(order.serviceDate?.toISOString().slice(0, 10)).toBe('2026-07-22');
+    expect(order.deliveryStops[0]?.deliveryDate?.toISOString().slice(0, 10)).toBe('2026-07-22');
+    expect(groupingRow.assignmentStatus).toBe('UNASSIGNED');
+    expect(groupingRow.deliveryStopId).toBe(firstCanonical.deliveryStopId);
+    expect(groupingRow.groupingId).toBe(readyRoute.groupingId);
+    expect(groupingRow.grouping.planDate.toISOString().slice(0, 10)).toBe('2026-07-22');
+    expect(routePlan.planDate.toISOString().slice(0, 10)).toBe('2026-07-22');
+    expect(routePlanStop).toMatchObject({
+      distanceFromPreviousMeters: null,
+      durationFromPreviousSeconds: null,
+      estimatedArrivalAt: null,
+      etaCalculatedAt: null,
+      etaFailureCode: null,
+      etaFailureMessage: null,
+      etaInputRouteVersionId: null,
+      etaSource: null,
+      etaStatus: 'NOT_REQUIRED',
+    });
+    await expect(prisma.routePlanGeometryCache.count({ where: { routePlanId: readyRoute.routePlanId } })).resolves.toBe(0);
+    await expect(canonicalCounts(prisma, fixture.shopId)).resolves.toMatchObject({
+      customers: 2,
+      deliveryStops: 1,
+      destinations: 2,
+      orders: 1,
+      routeGroupingOrders: 1,
+      routePlanStops: 1,
+      routePlans: 1,
+    });
+  });
+
+  test('creates a separate canonical order for the same seller key on a different plan date', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'dated-identity');
+    const service = new PrismaDsvDispatchImportService(prisma);
+    const firstStage = await service.commit({ ...fixture.input, actor: 'g003-test', shopDomain: fixture.shopDomain });
+    const firstApply = await service.apply(applyInput(
+      fixture.shopDomain,
+      firstStage.id,
+      firstStage.sourceHash ?? '',
+      'cmd-dated-identity-first',
+    ));
+    const firstRow = fixture.input.rows[0];
+    if (firstRow === undefined) throw new Error('Missing fixture row');
+
+    const nextDateInput: DsvDispatchImportInput = {
+      ...fixture.input,
+      planDate: '2026-07-23',
+      rows: [{ ...firstRow, rowNumber: 2 }],
+    };
+    const preview = await service.preview({ ...nextDateInput, shopDomain: fixture.shopDomain });
+    const staged = await service.commit({ ...nextDateInput, actor: 'g003-test', shopDomain: fixture.shopDomain });
+    const result = await service.apply(applyInput(
+      fixture.shopDomain,
+      staged.id,
+      staged.sourceHash ?? '',
+      'cmd-dated-identity-second',
+    ));
+
+    expect(preview.rows[0]).toMatchObject({ diffKind: 'NEW', sellerOrderId: null, status: 'READY' });
+    expect(staged.rows[0]).toMatchObject({ diffKind: 'NEW', sellerOrderId: null, status: 'READY' });
+    expect(result.summary).toEqual({ appliedRows: 1, newRows: 1, noOpRows: 0, updatedRows: 0 });
+    expect(result.rows[0]).toMatchObject({ outcome: 'NEW', sellerOrderKey: fixture.sellerOrderKey });
+    expect(result.rows[0]?.sellerOrderId).not.toBe(firstApply.rows[0]?.sellerOrderId);
+    const orders = await prisma.order.findMany({
+      orderBy: { serviceDate: 'asc' },
+      where: {
+        sellerOrderKey: fixture.sellerOrderKey,
+        sellerOrderSourceKind: 'DSV_DISPATCH_IMPORT',
+        shopId: fixture.shopId,
+      },
+    });
+    expect(orders.map((order) => order.serviceDate?.toISOString().slice(0, 10))).toEqual(['2026-07-22', '2026-07-23']);
+    expect(orders.map((order) => order.sourceOrderId)).toEqual([
+      `2026-07-22:${fixture.sellerOrderKey}`,
+      `2026-07-23:${fixture.sellerOrderKey}`,
+    ]);
+    expect(orders.map((order) => order.sourceOrderNumber)).toEqual([fixture.sellerOrderKey, fixture.sellerOrderKey]);
+  });
+
+  test('keeps manual READY route ownership active for update candidates', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'manual-ready-owner');
+    const service = new PrismaDsvDispatchImportService(prisma);
+    const firstStage = await service.commit({ ...fixture.input, actor: 'g003-test', shopDomain: fixture.shopDomain });
+    const firstApply = await service.apply(applyInput(
+      fixture.shopDomain,
+      firstStage.id,
+      firstStage.sourceHash ?? '',
+      'cmd-manual-ready-owner-first',
+    ));
+    const firstCanonical = firstApply.rows[0];
+    const firstRow = fixture.input.rows[0];
+    if (firstCanonical === undefined || firstRow === undefined) throw new Error('Missing fixture row');
+    await createManualReadyRoutePlan(prisma, {
+      deliveryStopId: firstCanonical.deliveryStopId,
+      driverId: fixture.driverId,
+      shopId: fixture.shopId,
+      vehicleId: fixture.vehicleId,
+    });
+
+    const preview = await service.preview({
+      ...fixture.input,
+      rows: [{ ...firstRow, address: '789 Manual Ready Road' }],
+      shopDomain: fixture.shopDomain,
+    });
+
+    expect(preview.canApply).toBe(false);
+    expect(preview.rows[0]).toMatchObject({ diffKind: 'CONFLICT', status: 'NEEDS_REVIEW' });
+    expect(preview.rows[0]?.issues).toContainEqual(expect.objectContaining({ code: 'CANONICAL_ORDER_ACTIVE_OWNERSHIP' }));
+  });
+
+  test('rejects an update candidate when the canonical stop leaves pending before apply', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'stop-status-race');
+    const service = new PrismaDsvDispatchImportService(prisma);
+    const firstStage = await service.commit({ ...fixture.input, actor: 'g003-test', shopDomain: fixture.shopDomain });
+    const firstApply = await service.apply(applyInput(
+      fixture.shopDomain,
+      firstStage.id,
+      firstStage.sourceHash ?? '',
+      'cmd-stop-status-race-first',
+    ));
+    const firstCanonical = firstApply.rows[0];
+    const firstRow = fixture.input.rows[0];
+    if (firstCanonical === undefined || firstRow === undefined) throw new Error('Missing fixture row');
+    const stagedUpdate = await service.commit({
+      ...fixture.input,
+      rows: [{ ...firstRow, address: '321 Arrived Stop Road' }],
+      actor: 'g003-test',
+      shopDomain: fixture.shopDomain,
+    });
+    await prisma.deliveryStop.update({
+      data: { status: 'ARRIVED' },
+      where: { id_shopId: { id: firstCanonical.deliveryStopId, shopId: fixture.shopId } },
+    });
+
+    await expect(service.apply(applyInput(
+      fixture.shopDomain,
+      stagedUpdate.id,
+      stagedUpdate.sourceHash ?? '',
+      'cmd-stop-status-race-second',
+    ))).rejects.toMatchObject({ code: 'DISPATCH_IMPORT_PREVIEW_STALE' } satisfies Partial<DsvDispatchImportApplyError>);
   });
 
   test('applies and replays a valid 500-row max batch within the transaction budget', async () => {
@@ -283,7 +509,7 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     const replayElapsedMs = performance.now() - replayStartedAt;
 
     console.info(`[G003 max batch] apply=${applyElapsedMs.toFixed(1)}ms replay=${replayElapsedMs.toFixed(1)}ms`);
-    expect(result.summary).toEqual({ appliedRows: 500, newRows: 500, noOpRows: 0 });
+    expect(result.summary).toEqual({ appliedRows: 500, newRows: 500, noOpRows: 0, updatedRows: 0 });
     expect(result.rows).toHaveLength(500);
     expect(replay).toEqual(result);
     expect(applyElapsedMs).toBeLessThan(120_000);
@@ -1008,7 +1234,6 @@ async function createFixture(prisma: PrismaClient, createdShopIds: string[], nam
           gender: 'N/A',
           lookupName: 'Driver One',
           score: 'A',
-          shopId: shop.id,
           zone: 'SEOUL',
         },
       },
@@ -1201,6 +1426,119 @@ async function createOverlappingActiveOwnership(prisma: PrismaClient, input: {
       },
     }),
   ]);
+}
+
+async function createReadyPredepartureRoutePlan(prisma: PrismaClient, input: {
+  deliveryStopId: string;
+  driverId: string;
+  orderId: string;
+  shopId: string;
+  vehicleId: string;
+}) {
+  const groupingOrder = await prisma.routeGroupingOrder.findFirstOrThrow({
+    include: { grouping: true },
+    where: {
+      assignmentStatus: 'UNASSIGNED',
+      orderId: input.orderId,
+      shopId: input.shopId,
+    },
+  });
+  const groupingVersion = await prisma.routeGroupingVersion.findFirstOrThrow({
+    where: { groupingId: groupingOrder.groupingId, shopId: input.shopId, status: 'CURRENT' },
+  });
+  const routePlan = await prisma.routePlan.create({
+    data: {
+      constraints: {},
+      createdBy: 'g003-test',
+      driverId: input.driverId,
+      metrics: { stale: false },
+      name: 'Ready pre-departure route',
+      optimizerVersion: 'g003-test',
+      planDate: new Date('2026-07-22T00:00:00.000Z'),
+      shopId: input.shopId,
+      status: 'READY',
+      vehicleId: input.vehicleId,
+    },
+  });
+  const childVersion = await prisma.routeGroupingChildVersion.create({
+    data: {
+      driverId: input.driverId,
+      groupingId: groupingOrder.groupingId,
+      groupingVersionId: groupingVersion.id,
+      publishedAt: new Date('2026-07-22T00:00:00.000Z'),
+      routePlanId: routePlan.id,
+      shopId: input.shopId,
+      snapshot: { deliveryStopIds: [input.deliveryStopId] },
+      status: 'CURRENT',
+      version: 1,
+    },
+  });
+  await Promise.all([
+    prisma.order.update({
+      data: { currentRouteVersionId: childVersion.id },
+      where: { id_shopId: { id: input.orderId, shopId: input.shopId } },
+    }),
+    prisma.routePlanStop.create({
+      data: {
+        deliveryStopId: input.deliveryStopId,
+        distanceFromPreviousMeters: 1200,
+        durationFromPreviousSeconds: 600,
+        estimatedArrivalAt: new Date('2026-07-22T01:00:00.000Z'),
+        etaCalculatedAt: new Date('2026-07-22T00:30:00.000Z'),
+        etaInputRouteVersionId: childVersion.id,
+        etaSource: 'TEST_READY_ROUTE',
+        etaStatus: 'READY',
+        routePlanId: routePlan.id,
+        sequence: 1,
+        shopId: input.shopId,
+      },
+    }),
+    prisma.routePlanGeometryCache.create({
+      data: {
+        geometry: { coordinates: [[126.978, 37.5665], [127.1, 37.6]], type: 'LineString' },
+        metrics: { distanceMeters: 1200, durationSeconds: 600 },
+        overview: 'simplified',
+        provider: 'g003-test',
+        providerVersion: 'test',
+        routePlanId: routePlan.id,
+        shapeSignature: `ready-predeparture-${routePlan.id}`,
+        source: 'test',
+        stopPoints: [{ deliveryStopId: input.deliveryStopId }],
+      },
+    }),
+  ]);
+  return { childVersionId: childVersion.id, groupingId: groupingOrder.groupingId, routePlanId: routePlan.id };
+}
+
+async function createManualReadyRoutePlan(prisma: PrismaClient, input: {
+  deliveryStopId: string;
+  driverId: string;
+  shopId: string;
+  vehicleId: string;
+}) {
+  const routePlan = await prisma.routePlan.create({
+    data: {
+      constraints: {},
+      createdBy: 'manual-test',
+      driverId: input.driverId,
+      metrics: {},
+      name: 'Manual ready route',
+      optimizerVersion: 'manual-test',
+      planDate: new Date('2026-07-22T00:00:00.000Z'),
+      shopId: input.shopId,
+      status: 'READY',
+      vehicleId: input.vehicleId,
+    },
+  });
+  await prisma.routePlanStop.create({
+    data: {
+      deliveryStopId: input.deliveryStopId,
+      routePlanId: routePlan.id,
+      sequence: 1,
+      shopId: input.shopId,
+    },
+  });
+  return { routePlanId: routePlan.id };
 }
 
 function dispatchInput(sellerOrderKey: string): DsvDispatchImportInput {

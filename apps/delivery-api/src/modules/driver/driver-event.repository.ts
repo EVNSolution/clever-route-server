@@ -7,6 +7,7 @@ import { persistRouteTrackingGeometryPosition } from '../route-tracking/route-tr
 import {
   buildDriverRouteEtaSnapshot,
   calculateArrivalEtaUpdate,
+  calculateCompletionEtaUpdate,
   calculatePickupEtaUpdate,
   calculateRouteStartEtaUpdate,
   type DriverRouteEtaStop,
@@ -496,7 +497,30 @@ async function applyDriverEventStateTransition(
         shopId
       }
     });
-    return {};
+    if (input.eventType === 'STOP_FAILED') {
+      return {};
+    }
+
+    const stops = await loadRouteEtaStops(prisma, routePlanId);
+    const pickupCompletedAt = await loadPickupCompletedAt(prisma, input.driverId, routePlanId);
+    const inputRouteVersionId = await loadCurrentRouteVersionIdForEta(prisma, schemaCapabilities, routePlanId, shopId);
+    const etaUpdate = calculateCompletionEtaUpdate({
+      completedDeliveryStopId: requireDeliveryStopId(input),
+      inputRouteVersionId,
+      serverReceivedAt,
+      stops
+    });
+    await persistEtaUpdate(prisma, schemaCapabilities, shopId, routePlanId, etaUpdate);
+    if (pickupCompletedAt === null) {
+      return { etaUpdate };
+    }
+    return {
+      etaSnapshot: buildDriverRouteEtaSnapshot({
+        pickupCompletedAt,
+        stops: applyEtaUpdateToStops(stops, etaUpdate)
+      }),
+      etaUpdate
+    };
   }
 
   if (input.eventType === 'ROUTE_STARTED') {

@@ -34,6 +34,9 @@ import type {
   DsvDispatchImportService,
   DsvDispatchImportSourceRow,
 } from '../modules/dsv/dsv-dispatch-import.service.js';
+import type {
+  DsvDispatchImportNotificationService,
+} from '../modules/dsv/dsv-dispatch-import-notification.service.js';
 import {
   DsvResourceConflictError,
   DsvResourceNotFoundError,
@@ -121,6 +124,7 @@ export type DsvControlDependencies = {
   allowedShopDomains: AdminCommerceActor['allowedShopDomains'];
   assignmentCommandService?: DsvAdminAssignmentCommandService;
   cookieName: string;
+  dispatchImportNotificationService?: DsvDispatchImportNotificationService;
   dispatchImportService: DsvDispatchImportService;
   geocodingService?: Pick<GeocodingService, 'geocode'>;
   repository: DsvControlRepository;
@@ -646,6 +650,23 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
           },
           shopDomain,
         });
+        if (dispatchImport.status !== 'APPLIED') {
+          void dependencies.dispatchImportNotificationService?.notifyApplied({
+            actor: actorId,
+            appliedAt: new Date(),
+            fileName: dispatchImport.fileName,
+            importId,
+            planDate: dispatchImport.planDate,
+            shopDomain,
+            summary: applyResult.summary,
+          }).catch((notificationError: unknown) => {
+            request.log.error({
+              error: notificationError,
+              importId,
+              shopDomain,
+            }, 'dispatch import applied email notification failed');
+          });
+        }
         return sendData(reply, { applyResult });
       } catch (error) {
         return sendDispatchImportApplyError(reply, error);

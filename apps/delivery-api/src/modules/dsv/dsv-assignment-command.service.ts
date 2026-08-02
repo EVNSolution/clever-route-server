@@ -14,6 +14,7 @@ import {
 import type { DriverRouteAccessScope } from '../driver/driver-token-access.repository.js';
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import type { DsvAssignmentTransactionClient, DsvAssignmentTransactionPort } from './dsv-assignment-transaction-port.js';
+import type { DsvRouteOptimizationSchedulerPort } from './dsv-route-optimization.scheduler.js';
 
 type DsvAssignmentPrismaClient = DsvAssignmentTransactionPort & Pick<
   PrismaClient,
@@ -110,6 +111,7 @@ export class DsvAssignmentCommandService {
   constructor(
     private readonly prisma: DsvAssignmentPrismaClient,
     private readonly routeGroupingService: DsvAssignmentRouteGroupingService,
+    private readonly routeOptimizationScheduler?: DsvRouteOptimizationSchedulerPort,
   ) {}
 
   async unassign(input: DsvAssignmentCommandBaseInput): Promise<DsvAssignmentResult> {
@@ -232,10 +234,16 @@ export class DsvAssignmentCommandService {
     });
     if (shop === null) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
     const payloadHash = sha256CanonicalJson(input.payload);
-    return this.prisma.$transaction(async (tx) => {
+    const execution = await this.prisma.$transaction(async (tx) => {
       await lockAssignmentCommand(tx, shop.id, input.input.commandId);
       const claim = await this.claimCommand(tx, shop.id, input.commandName, input.input, payloadHash);
-      if ('result' in claim) return claim.result;
+      if ('result' in claim) {
+        return {
+          result: claim.result,
+          routePlanIds: [] as Array<string | null>,
+          scheduleOptimization: false,
+        };
+      }
 
       const order = await this.lockSellerOrder(tx, shop.id, input.input.sellerOrderId);
       const grouping = await this.loadGroupingForSellerOrder(tx, shop.id, input.input.shopDomain, input.input.sellerOrderId, order.currentRouteVersionId);
@@ -280,13 +288,38 @@ export class DsvAssignmentCommandService {
         routePlanId: nextOwner.routePlanId,
         sellerOrderId: input.input.sellerOrderId,
       } satisfies DsvAssignmentResult;
-      return this.completeCommand(tx, shop.id, input.commandName, input.input, payloadHash, claim.receiptId, movement, resultWithoutAudit);
+      const result = await this.completeCommand(
+        tx,
+        shop.id,
+        input.commandName,
+        input.input,
+        payloadHash,
+        claim.receiptId,
+        movement,
+        resultWithoutAudit,
+      );
+      return {
+        result,
+        routePlanIds: [movement.previousRoutePlanId, nextOwner.routePlanId],
+        scheduleOptimization: true,
+      };
     }, transactionOptions).catch((error: unknown) => {
       if (isPrismaTransactionConflict(error)) {
         throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
       }
       throw error;
     });
+    if (execution.scheduleOptimization) {
+      try {
+        this.routeOptimizationScheduler?.schedule({
+          routePlanIds: execution.routePlanIds,
+          shopDomain: input.input.shopDomain,
+        });
+      } catch {
+        // Assignment success must not depend on background route optimization scheduling.
+      }
+    }
+    return execution.result;
   }
 
   private async claimCommand(
@@ -880,7 +913,6 @@ function withUnassignedAssignments(grouping: RouteGroupingDetailDto): RouteGroup
   const route = {
     ...nullRouteOwner(grouping, firstUnassignedOrderId),
     orderIds: unassignedOrderIds,
-    routeIdx: nextSortOrder(grouping.children),
     sortOrder: nextSortOrder(grouping.children),
     stopsCount: unassignedOrderIds.length,
   };

@@ -285,7 +285,97 @@ describe('G003 DSV dispatch preview diff', () => {
     expect(preview.rows[0]?.candidateDiff).toEqual([
       { existing: '100 Old Road', field: 'address', incoming: '200 New Road' },
     ]);
+    expect(preview.canApply).toBe(true);
+  });
+
+  test('treats the same seller order key on a different plan date as a new canonical order', () => {
+    const previous = sourceRow({ rowNumber: 2, sellerOrderKey: 'SO-DATED' });
+    const incoming = sourceRow({ rowNumber: 2, sellerOrderKey: 'SO-DATED' });
+    const preview = buildDsvDispatchPreviewDiff(input({
+      rows: [incoming],
+      snapshots: {
+        canonicalOrders: [canonicalOrder(previous, {
+          deliveryDate: '2026-07-22',
+          id: 'order-dated-previous',
+          serviceDate: '2026-07-22',
+          stopId: 'stop-dated-previous',
+        })],
+      },
+    }));
+
+    expect(preview.canApply).toBe(true);
+    expect(preview.summary).toMatchObject({ newRows: 1, updateCandidateRows: 0 });
+    expect(preview.rows[0]).toMatchObject({
+      candidateDiff: [],
+      deliveryStopId: null,
+      diffKind: 'NEW',
+      sellerOrderId: null,
+    });
+  });
+
+  test('keeps an existing destination id when legacy fingerprint lookup misses but name and address are unchanged', () => {
+    const row = sourceRow({ rowNumber: 2, sellerOrderKey: 'SO-LEGACY-FINGERPRINT' });
+    const preview = buildDsvDispatchPreviewDiff(input({
+      rows: [row],
+      snapshots: {
+        canonicalOrders: [canonicalOrder(row, { id: 'order-legacy-fingerprint', stopId: 'stop-legacy-fingerprint' })],
+        destinations: [],
+      },
+    }));
+
+    expect(preview.canApply).toBe(true);
+    expect(preview.rows[0]).toMatchObject({
+      destinationId: 'destination-1',
+      diffKind: 'NO_OP',
+    });
+    expect(preview.rows[0]?.candidateDiff).toEqual([]);
+  });
+
+  test('classifies changed existing orders with active ownership as CONFLICT', () => {
+    const previous = sourceRow({ address: '100 Old Road', rowNumber: 2, sellerOrderKey: 'SO-ACTIVE-CHANGE' });
+    const incoming = sourceRow({ address: '200 New Road', rowNumber: 2, sellerOrderKey: 'SO-ACTIVE-CHANGE' });
+    const preview = buildDsvDispatchPreviewDiff(input({
+      rows: [incoming],
+      snapshots: {
+        canonicalOrders: [
+          canonicalOrder(previous, { activeDeliveryOwnershipCount: 1, id: 'order-active-change', stopId: 'stop-active-change' }),
+        ],
+        destinations: [{
+          address: incoming.address,
+          customerCode: incoming.customerCode,
+          id: 'destination-new',
+          name: incoming.destinationName,
+        }],
+      },
+    }));
+
     expect(preview.canApply).toBe(false);
+    expect(preview.rows[0]).toMatchObject({ diffKind: 'CONFLICT' });
+    expect(preview.rows[0]?.issues.map((issue) => issue.code)).toEqual(['CANONICAL_ORDER_ACTIVE_OWNERSHIP']);
+  });
+
+  test('classifies changed existing stops that are no longer pending as CONFLICT', () => {
+    const previous = sourceRow({ address: '100 Old Road', rowNumber: 2, sellerOrderKey: 'SO-STOP-STATUS' });
+    const incoming = sourceRow({ address: '200 New Road', rowNumber: 2, sellerOrderKey: 'SO-STOP-STATUS' });
+
+    for (const stopStatus of ['ARRIVED', 'DELIVERED'] as const) {
+      const preview = buildDsvDispatchPreviewDiff(input({
+        rows: [incoming],
+        snapshots: {
+          canonicalOrders: [canonicalOrder(previous, { id: `order-${stopStatus}`, stopId: `stop-${stopStatus}`, stopStatus })],
+          destinations: [{
+            address: incoming.address,
+            customerCode: incoming.customerCode,
+            id: 'destination-new',
+            name: incoming.destinationName,
+          }],
+        },
+      }));
+
+      expect(preview.canApply).toBe(false);
+      expect(preview.rows[0]).toMatchObject({ diffKind: 'CONFLICT' });
+      expect(preview.rows[0]?.issues.map((issue) => issue.code)).toEqual(['CANONICAL_STOP_NOT_PENDING']);
+    }
   });
 
   test('gates candidate and inactive conditions without creating active condition links', () => {
@@ -384,29 +474,34 @@ function canonicalOrder(
   row: DsvDispatchSourceRow,
   overrides: {
     activeDeliveryOwnershipCount?: number;
+    deliveryDate?: string;
     id: string;
+    serviceDate?: string;
     stopId: string;
+    stopStatus?: string;
   },
 ): DsvDispatchCanonicalOrderSnapshot {
   return {
-    activeDeliveryOwnershipCount: overrides.activeDeliveryOwnershipCount ?? 1,
+    activeDeliveryOwnershipCount: overrides.activeDeliveryOwnershipCount ?? 0,
     cancelledAt: null,
     customerId: 'customer-1',
     deliveryStatus: 'PENDING',
     deliveryStop: {
       address: row.address,
       conditionComparisonKey: conditionComparisonKey(row.conditionCode),
-      deliveryDate: '2026-07-23',
+      deliveryDate: overrides.deliveryDate ?? '2026-07-23',
       destinationName: row.destinationName,
       id: overrides.stopId,
       latitude: row.latitude,
       longitude: row.longitude,
       notes: row.notes,
       shippedBoxes: row.shippedBoxes,
+      status: overrides.stopStatus ?? 'PENDING',
     },
     destinationId: 'destination-1',
     id: overrides.id,
     sellerOrderKey: row.sellerOrderKey,
+    serviceDate: overrides.serviceDate ?? overrides.deliveryDate ?? '2026-07-23',
     sourceKind: dsvDispatchImportSourceKind,
   };
 }

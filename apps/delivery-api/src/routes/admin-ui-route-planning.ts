@@ -41,6 +41,7 @@ import {
 } from "../modules/route-plans/route-plan.types.js";
 import { RouteExecutionConflictError } from "../modules/route-plans/route-execution-ownership.js";
 import type {
+  RouteOptimizationResult,
   RouteOptimizationService,
   RouteOptimizationStopSequence,
 } from "../modules/route-plans/route-optimization.types.js";
@@ -1596,7 +1597,7 @@ export function readStopOrderLines(
 
 export type OptimizedStopOrder = {
   missingCoordinateStops: number;
-  source: "clever_v1" | "vroom";
+  source: "clever_v1" | RouteOptimizationResult["source"];
   stops: RouteOptimizationStopSequence[];
 };
 

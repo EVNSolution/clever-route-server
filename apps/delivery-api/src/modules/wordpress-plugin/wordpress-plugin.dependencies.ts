@@ -60,7 +60,7 @@ export function loadWordPressPluginDependencies(input: {
   });
   const wordpressRepository = new PrismaWordPressPluginRepository(input.prisma);
   const authService = new WordPressPluginAuthService({ repository: wordpressRepository });
-  const geocodingService = loadGeocodingService({ env: input.env });
+  const geocodingService = loadGeocodingService({ env: input.env, prisma: input.prisma });
 
   return {
     ...readAdminLaunchService(input.env),

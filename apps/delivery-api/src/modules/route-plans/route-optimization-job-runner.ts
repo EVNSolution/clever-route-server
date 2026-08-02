@@ -5,6 +5,7 @@ import type {
 } from './route-optimization.types.js';
 import type { RouteOptimizationJobService } from './route-optimization-job.service.js';
 import type { RouteOptimizationJobDto } from './route-optimization-job.types.js';
+import { computeRouteShapeSignature } from './route-plan-geometry-cache.js';
 import type { RoutePlanDetail, RoutePlanService } from './route-plan.types.js';
 
 type RouteOptimizationJobRunnerLogger = {
@@ -25,6 +26,7 @@ export type RunRouteOptimizationJobInput = {
   initialDetail: RoutePlanDetail | null;
   job: RouteOptimizationJobDto;
   logger?: RouteOptimizationJobRunnerLogger | undefined;
+  rejectStaleRouteShape?: boolean | undefined;
   sanitizeError?: ((error: unknown) => string) | undefined;
   services: RouteOptimizationJobRunnerServices;
   shopDomain: string;
@@ -82,6 +84,27 @@ export async function runRouteOptimizationJob(
   if (!outcome.ok) {
     await jobService.recordEngineOutcome({ jobId: input.job.id, outcome });
     return;
+  }
+
+  if (input.rejectStaleRouteShape === true) {
+    const latestDetail = await input.services.routePlanService.getRoutePlanDetail({
+      routePlanId: input.job.routePlanId,
+      shopDomain: input.shopDomain,
+    });
+    if (
+      latestDetail === null
+      || computeRouteShapeSignature(latestDetail) !== computeRouteShapeSignature(detail)
+    ) {
+      await jobService.recordEngineOutcome({
+        jobId: input.job.id,
+        outcome: routeOptimizationFailureOutcome({
+          code: 'invalid_input',
+          elapsedMs: elapsedSince(startedAt),
+          message: 'Route optimization result was not applied because the route changed while the optimizer was running.',
+        }),
+      });
+      return;
+    }
   }
 
   const latest = await jobService.findLatestJob({

@@ -1,7 +1,8 @@
 import { describe, expect, test, vi } from 'vitest';
 
+import type { PrismaClient } from '@prisma/client';
 import { loadGeocodingService } from '../src/modules/geocoding/geocoding.dependencies.js';
-import { buildGeocodingQueries, GeocodingService, SerializedGeocodingRateLimiter } from '../src/modules/geocoding/geocoding.service.js';
+import { buildGeocodingQueries, type GeocodingCacheRepository, GeocodingService, SerializedGeocodingRateLimiter } from '../src/modules/geocoding/geocoding.service.js';
 import { NominatimGeocodingClient } from '../src/modules/geocoding/nominatim-geocoding.client.js';
 import { GeocodingProviderError, type GeocodingQuery } from '../src/modules/geocoding/geocoding.types.js';
 
@@ -153,6 +154,85 @@ describe('Route Ops geocoding', () => {
     expect(first.ok).toBe(true);
     expect(second).toEqual(expect.objectContaining({ cached: true, ok: true }));
     expect(provider.geocodeAddress).toHaveBeenCalledOnce();
+  });
+
+  test('reuses persistent geocoding cache across service instances', async () => {
+    const cacheRepository = new MemoryGeocodingCacheRepository();
+    const provider = {
+      geocodeAddress: vi.fn(() => Promise.resolve({
+        addressLabel: '300 City Centre Dr, Mississauga, ON, L5B 3C1, CA',
+        latitude: 43.589045,
+        longitude: -79.644119,
+        provider: 'mock',
+        providerPlaceId: 'place-1',
+        rawLabel: 'City Centre'
+      })),
+      providerName: 'mock'
+    };
+    const firstService = new GeocodingService({
+      cacheRepository,
+      cacheTtlDays: 30,
+      minIntervalMs: 0,
+      mode: 'nominatim_compatible',
+      provider
+    });
+    const secondService = new GeocodingService({
+      cacheRepository,
+      cacheTtlDays: 30,
+      minIntervalMs: 0,
+      mode: 'nominatim_compatible',
+      provider
+    });
+
+    const first = await firstService.geocode({ address, shopDomain: 'Example.TEST' });
+    const second = await secondService.geocode({ address, shopDomain: 'example.test' });
+
+    expect(first).toEqual(expect.objectContaining({ cached: false, ok: true }));
+    expect(second).toEqual(expect.objectContaining({ cached: true, ok: true }));
+    expect(provider.geocodeAddress).toHaveBeenCalledOnce();
+  });
+
+  test('expires geocoding cache entries using GEOCODING_CACHE_TTL_DAYS semantics', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-08-02T00:00:00.000Z'));
+    try {
+      const cacheRepository = new MemoryGeocodingCacheRepository();
+      let providerCalls = 0;
+      const provider = {
+        geocodeAddress: vi.fn((query: GeocodingQuery) => {
+          providerCalls += 1;
+          return Promise.resolve({
+            addressLabel: query.shape,
+            latitude: 43.589045,
+            longitude: -79.644119,
+            provider: 'mock',
+            providerPlaceId: `place-${providerCalls}`,
+            rawLabel: 'City Centre'
+          });
+        }),
+        providerName: 'mock'
+      };
+      const service = new GeocodingService({
+        cacheRepository,
+        cacheTtlDays: 1,
+        minIntervalMs: 0,
+        mode: 'nominatim_compatible',
+        provider
+      });
+
+      const first = await service.geocode({ address, shopDomain: 'example.test' });
+      vi.setSystemTime(new Date('2026-08-02T23:59:59.000Z'));
+      const fresh = await service.geocode({ address, shopDomain: 'example.test' });
+      vi.setSystemTime(new Date('2026-08-03T00:00:01.000Z'));
+      const expired = await service.geocode({ address, shopDomain: 'example.test' });
+
+      expect(first).toEqual(expect.objectContaining({ cached: false, ok: true }));
+      expect(fresh).toEqual(expect.objectContaining({ cached: true, ok: true }));
+      expect(expired).toEqual(expect.objectContaining({ cached: false, ok: true }));
+      expect(provider.geocodeAddress).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
 
@@ -463,7 +543,8 @@ describe('Route Ops geocoding', () => {
         GEOCODING_PROVIDER_MODE: 'nominatim_compatible',
         GEOCODING_SEARCH_URL: 'https://geo.example.test/search',
         GEOCODING_USER_AGENT: 'CLEVER-Route-Test/1.0 ops@example.test'
-      }
+      },
+      prisma: createPrismaGeocodingCacheHarness()
     });
     expect(configured.status).toEqual(expect.objectContaining({
       mode: 'nominatim_compatible',
@@ -674,3 +755,49 @@ describe('Route Ops geocoding', () => {
     expect(JSON.stringify(result)).not.toContain('300 City Centre Dr');
   });
 });
+
+class MemoryGeocodingCacheRepository implements GeocodingCacheRepository {
+  private readonly records = new Map<string, {
+    cachedAt: number;
+    expiresAt: number;
+    result: Awaited<ReturnType<GeocodingService['geocode']>>;
+  }>();
+
+  findFresh(input: {
+    cacheKey: string;
+    now: Date;
+    shopDomain: string;
+  }): Promise<{
+    cachedAt: number;
+    expiresAt: number;
+    result: Awaited<ReturnType<GeocodingService['geocode']>>;
+  } | null> {
+    const record = this.records.get(`${input.shopDomain}|${input.cacheKey}`) ?? null;
+    if (record === null || record.expiresAt <= input.now.getTime()) return Promise.resolve(null);
+    return Promise.resolve(record);
+  }
+
+  upsert(input: {
+    cacheKey: string;
+    cachedAt: Date;
+    expiresAt: Date;
+    result: Awaited<ReturnType<GeocodingService['geocode']>>;
+    shopDomain: string;
+  }): Promise<void> {
+    this.records.set(`${input.shopDomain}|${input.cacheKey}`, {
+      cachedAt: input.cachedAt.getTime(),
+      expiresAt: input.expiresAt.getTime(),
+      result: input.result,
+    });
+    return Promise.resolve();
+  }
+}
+
+function createPrismaGeocodingCacheHarness(): PrismaClient {
+  return {
+    geocodingCache: {
+      findUnique: vi.fn(),
+      upsert: vi.fn(),
+    },
+  } as unknown as PrismaClient;
+}
