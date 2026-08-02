@@ -249,8 +249,8 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
         locale: current.locale,
         routeOpsUiSettings: {
           ...current.routeOpsUiSettings,
-          ...(hasLoadingStartTime ? { loadingStartTime: loadingStartTime ?? null } : {}),
-          ...(hasPlannedDepartureTime ? { plannedDepartureTime: plannedDepartureTime ?? null } : {}),
+          ...(hasLoadingStartTime ? { loadingStartTime: loadingStartTime ?? defaultLoadingStartTime } : {}),
+          ...(hasPlannedDepartureTime ? { plannedDepartureTime: plannedDepartureTime ?? defaultPlannedDepartureTime } : {}),
         },
         routeScopeConfig: current.routeScopeConfig,
         shopDomain,

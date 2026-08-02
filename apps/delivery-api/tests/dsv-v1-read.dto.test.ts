@@ -72,8 +72,9 @@ describe('G005 DSV v1 read DTO adapter', () => {
       principalType: 'DSV_ADMIN',
       scopes: ['dsv:session:read'],
       shopId: 'shop-1',
-    })).toEqual({
+    }, 'csrf-2')).toEqual({
       actorId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      csrfToken: 'csrf-2',
       displayName: '운영 관리자',
       principalType: 'DSV_ADMIN',
       scopes: ['dsv:session:read'],

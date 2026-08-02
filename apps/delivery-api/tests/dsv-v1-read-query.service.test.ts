@@ -473,7 +473,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
         type: 'Ambient',
         vehicleId: 'vehicle-b',
         vehiclePlate: 'B',
-        vehicleType: 'TRUCK',
+        vehicleType: 'Ambient',
       },
     ]);
     expect(prisma.dsvVehicleDriverAssignment.findMany).toHaveBeenCalledWith({
