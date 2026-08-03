@@ -70,6 +70,7 @@ type AssignedRoutePlanStopRecord = {
     longitude: unknown;
     order: {
       currencyCode: string | null;
+      destinationId: string | null;
       financialStatus: string | null;
       fulfillmentStatus: string | null;
       id: string;
@@ -312,7 +313,8 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssi
     deliverySession: readString(rawPayload?.deliverySession)
       ?? readString(rawPayload?.delivery_session),
     deliveryStopId: deliveryStop.id,
-    destinationId: readString(dsvNormalized?.destinationId)
+    destinationId: deliveryStop.order.destinationId
+      ?? readString(dsvNormalized?.destinationId)
       ?? readString(rawPayload?.destinationId)
       ?? readString(rawPayload?.destination_id),
     distanceFromPreviousMeters: routeStop.distanceFromPreviousMeters,

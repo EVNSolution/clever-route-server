@@ -28,6 +28,7 @@ const routePlanRecord = {
         longitude: '-79.3817000',
         order: {
           currencyCode: 'CAD',
+          destinationId: 'canonical-destination-id',
           financialStatus: 'Cash',
           fulfillmentStatus: 'PROCESSING',
           id: 'order-id',
@@ -149,7 +150,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             customerNote: 'Leave the box beside the loading entrance.',
             deliverySession: 'PICKUP',
             deliveryStopId: 'stop-id',
-            destinationId: 'destination-id',
+            destinationId: 'canonical-destination-id',
             distanceFromPreviousMeters: 1000,
             durationFromPreviousSeconds: 600,
             estimatedArrivalAt: null,
@@ -330,6 +331,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
 
   test('reads DSV stop fields from legacy top-level raw payload keys', async () => {
     const routePlan = structuredClone(routePlanRecord);
+    (routePlan.routeStops[0]!.deliveryStop.order as { destinationId: string | null }).destinationId = null;
     (routePlan.routeStops[0]!.deliveryStop.order as { rawPayload: unknown }).rawPayload = {
       condition_code: ' ambient ',
       destination_id: 'legacy-destination-id',
