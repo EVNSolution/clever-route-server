@@ -82,6 +82,7 @@ type AccountWithDrivers = Prisma.DriverAccountGetPayload<{
 type LinkedDriverRecord = {
   displayName: string;
   id: string;
+  phone: string | null;
   shop: { shopDomain: string };
 };
 
@@ -116,16 +117,15 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
             residentNumberFrontFingerprint,
           },
         });
-        const candidates = await transaction.driver.findMany({
+        const candidates = (await transaction.driver.findMany({
           include: { shop: { select: { shopDomain: true } } },
           where: {
             accountId: null,
             displayName: name,
             dsvProfile: { is: { residentNumberFrontFingerprint } },
-            phone,
             status: 'ACTIVE',
           },
-        });
+        })).filter((candidate) => normalizeDsvDriverPhone(candidate.phone ?? '') === phone);
         const linkedDrivers: LinkedDriverRecord[] = [];
         for (const candidate of candidates) {
           const linked = await transaction.driver.updateMany({
@@ -207,16 +207,17 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
 
   private async linkMatchingDrivers(account: AccountWithDrivers): Promise<AccountWithDrivers> {
     if (account.name === null || account.residentNumberFrontFingerprint === null) return account;
-    const candidates = await this.prisma.driver.findMany({
-      select: { id: true },
+    const candidates = (await this.prisma.driver.findMany({
+      select: { id: true, phone: true },
       where: {
         accountId: null,
         displayName: account.name,
         dsvProfile: { is: { residentNumberFrontFingerprint: account.residentNumberFrontFingerprint } },
-        phone: account.phone,
         status: 'ACTIVE',
       },
-    });
+    })).filter((candidate) => (
+      normalizeDsvDriverPhone(candidate.phone ?? '') === normalizeDsvDriverPhone(account.phone)
+    ));
     if (candidates.length === 0) return account;
     for (const candidate of candidates) {
       await this.prisma.driver.updateMany({
