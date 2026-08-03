@@ -137,7 +137,7 @@ export class PrismaDriverAuthRepository {
   async loginWithPin(input: LoginWithPinInput): Promise<DriverAccountSessionInfo> {
     const now = new Date();
     const account = await this.prisma.driverAccount.findUnique({ where: { phone: input.phone } });
-    const pinMatches = account === null
+    const pinMatches = account === null || account.pinSalt === null || account.pinHash === null
       ? await verifyPin(input.pin, DUMMY_PIN_SALT, DUMMY_PIN_HASH)
       : await verifyPin(input.pin, account.pinSalt, account.pinHash);
     const isLocked = account?.pinLockedUntil instanceof Date && account.pinLockedUntil.getTime() > now.getTime();
