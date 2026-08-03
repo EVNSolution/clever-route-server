@@ -7,6 +7,7 @@ import type {
 export type DeliverySession = "DAY" | "EVENING" | "PICKUP";
 export type DeliveryDateSource =
   | "EXPLICIT_ATTRIBUTE"
+  | "LINE_ITEM_EXACT_DATE"
   | "LINE_ITEM_DATE_RANGE"
   | "ORDER_DATE_CYCLE_RULE"
   | "ORDER_DATE_WEEK_RULE"
@@ -111,6 +112,10 @@ export function calculateDeliveryScope(
     input.ignoreLineItemDateRanges === true
       ? null
       : findLineItemDateRange(input.lineItems, orderDateLocal);
+  const lineItemExactDate =
+    input.ignoreLineItemDateRanges === true
+      ? null
+      : findLineItemExactDate(input.lineItems, orderDateLocal);
   const weekdayFallbackPolicy =
     input.weekdayFallbackPolicy ?? "DELIVERY_CYCLE";
   const orderDateFallbackRange =
@@ -127,13 +132,19 @@ export function calculateDeliveryScope(
             );
   const fallbackRange =
     lineItemRange ?? orderDateFallbackRange;
-  const explicitDeliveryDateWeekday = weekdayFromDate(explicitDeliveryDate);
+  const explicitDeliveryDateWeekday = weekdayFromDate(
+    lineItemExactDate ?? explicitDeliveryDate,
+  );
   const deliveryWeekday =
     service.deliveryWeekday ?? explicitDeliveryDateWeekday;
   const serviceType =
-    service.serviceType ?? (explicitDeliveryDate === null ? null : "DELIVERY");
+    service.serviceType ??
+    (lineItemExactDate === null && explicitDeliveryDate === null
+      ? null
+      : "DELIVERY");
   const deliverySession =
-    service.deliverySession ?? (explicitDeliveryDate === null ? null : "DAY");
+    service.deliverySession ??
+    (lineItemExactDate === null && explicitDeliveryDate === null ? null : "DAY");
   const lineItemDeliveryDate =
     lineItemRange === null || deliveryWeekday === null
       ? null
@@ -143,9 +154,14 @@ export function calculateDeliveryScope(
       ? null
       : findDateForWeekday(orderDateFallbackRange, deliveryWeekday);
   const deliveryDate =
-    lineItemDeliveryDate ?? explicitDeliveryDate ?? fallbackDeliveryDate;
+    lineItemExactDate ??
+    lineItemDeliveryDate ??
+    explicitDeliveryDate ??
+    fallbackDeliveryDate;
   const deliveryDateSource: DeliveryDateSource =
-    lineItemDeliveryDate !== null
+    lineItemExactDate !== null
+      ? "LINE_ITEM_EXACT_DATE"
+      : lineItemDeliveryDate !== null
       ? "LINE_ITEM_DATE_RANGE"
       : explicitDeliveryDate !== null
         ? "EXPLICIT_ATTRIBUTE"
@@ -549,6 +565,23 @@ function findLineItemDateRange(
   return null;
 }
 
+function findLineItemExactDate(
+  items: ShopifyOrderLineItem[],
+  orderDateLocal: string | null,
+): string | null {
+  for (const item of items) {
+    const candidates = [item.title, item.name, item.variantTitle].flatMap(
+      (value) => (value === null || value === undefined ? [] : [value]),
+    );
+    for (const candidate of candidates) {
+      if (parseDateRange(candidate, orderDateLocal) !== null) continue;
+      const date = parseExplicitDeliveryDate(candidate, orderDateLocal);
+      if (date !== null) return date;
+    }
+  }
+  return null;
+}
+
 function parseDateRange(
   value: string,
   orderDateLocal: string | null,
@@ -607,6 +640,15 @@ function parseExplicitDeliveryDate(
   );
   if (iso !== null) {
     const [, year, month, day] = iso;
+    if (year && month && day)
+      return formatValidYmd(Number(year), Number(month), Number(day));
+  }
+
+  const monthFirst = /\b(\d{1,2})[.\-/](\d{1,2})[.\-/](20\d{2})\b/u.exec(
+    normalizedValue,
+  );
+  if (monthFirst !== null) {
+    const [, month, day, year] = monthFirst;
     if (year && month && day)
       return formatValidYmd(Number(year), Number(month), Number(day));
   }

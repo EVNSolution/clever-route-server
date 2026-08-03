@@ -328,6 +328,29 @@ describe("calculateDeliveryScope", () => {
     );
   });
 
+  test("uses an exact product date without requiring a delivery-day attribute", () => {
+    const scope = calculateDeliveryScope({
+      createdAt: "2026-08-01T20:58:48Z",
+      deliveryArea: "Toronto",
+      deliveryDayRaw: null,
+      lineItems: [{ title: "Catering 08/05/2026" }],
+      pickupDayRaw: null,
+      processedAt: null,
+    });
+
+    expect(scope).toEqual(
+      expect.objectContaining({
+        deliveryDate: "2026-08-05",
+        deliveryDateSource: "LINE_ITEM_EXACT_DATE",
+        deliveryDateWeekday: "WEDNESDAY",
+        deliverySession: "DAY",
+        deliveryWeekday: "WEDNESDAY",
+        routeScopeKey: "2026-08-05|DELIVERY||",
+        serviceType: "DELIVERY",
+      }),
+    );
+  });
+
   test("keeps a Tuesday 16:59 order in the current configured cycle", () => {
     const scope = calculateDeliveryScope({
       createdAt: "2026-05-05T20:59:00Z",

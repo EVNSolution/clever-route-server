@@ -314,6 +314,58 @@ test('normalizes pickup-only snapshots by pickup day instead of marking the day 
   );
 });
 
+test('uses Pickup as the canonical area when Shopify omits Delivery Area', () => {
+  const mapped = mapShopifyOrderNodeToDeliveryInputs({
+    cancelledAt: null,
+    createdAt: '2026-07-21T14:00:00Z',
+    currentTotalPriceSet: null,
+    customAttributes: [
+      { key: 'Order Type', value: 'Pickup' },
+      { key: 'Pickup Day', value: 'Saturday 12pm - 5pm' }
+    ],
+    displayFinancialStatus: 'PAID',
+    displayFulfillmentStatus: 'UNFULFILLED',
+    email: null,
+    id: 'gid://shopify/Order/1349',
+    legacyResourceId: '1349',
+    lineItems: { nodes: [] },
+    name: '#1349',
+    note: null,
+    phone: null,
+    processedAt: null,
+    shippingAddress: {
+      address1: '40 Deep Roots Terr',
+      address2: null,
+      city: 'North York',
+      countryCodeV2: 'CA',
+      latitude: 43.7,
+      longitude: -79.4,
+      name: 'Pickup Customer',
+      phone: null,
+      province: 'Ontario',
+      provinceCode: 'ON',
+      zip: 'M6A 2L8'
+    },
+    updatedAt: '2026-08-01T20:27:12Z'
+  });
+
+  expect(mapped.deliveryFact).toEqual(
+    expect.objectContaining({
+      deliveryArea: 'Pickup',
+      rawDeliveryArea: null,
+      reviewReasons: []
+    })
+  );
+  expect(mapped.deliveryFact?.matchedMappingPaths.deliveryArea).toBe('derived.pickup');
+  expect(mapped.order).toEqual(
+    expect.objectContaining({
+      deliveryArea: 'Pickup',
+      readiness: 'READY_TO_PLAN',
+      reviewReasons: []
+    })
+  );
+});
+
 test('stores delivery route scope fields from line item date ranges', () => {
   const mapped = mapShopifyOrderNodeToDeliveryInputs({
     cancelledAt: null,
