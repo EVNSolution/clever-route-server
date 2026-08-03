@@ -40,13 +40,17 @@ const assignedRoute = {
         currencyCode: 'CAD',
         customerNote: 'Leave the box beside the loading entrance.',
         deliveryStopId: 'stop-id',
+        destinationId: 'destination-id',
         items: [],
+        conditionCode: 'COLD',
         normalizedPaymentStatus: 'TRANSFER_CHECK_PENDING' as const,
         orderName: '#1001',
         paymentMethodTitle: 'eTransfer',
         phone: '+14165550123',
         recipientName: 'Recipient One',
         sequence: 1,
+        sellerOrderKey: 'DSV-ORDER-1001',
+        shippedBoxes: 4,
         status: 'ASSIGNED',
         totalPriceAmount: '84.50'
       }

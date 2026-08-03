@@ -39,6 +39,10 @@ Success with an assigned route:
           "sequence": 1,
           "status": "ASSIGNED",
           "orderName": "#1001",
+          "sellerOrderKey": "DSV-ORDER-1001",
+          "destinationId": "33333333-3333-4333-8333-333333333333",
+          "conditionCode": "COLD",
+          "shippedBoxes": 4,
           "recipientName": "Recipient One",
           "phone": "+14165550123",
           "customerNote": "Leave the box beside the loading entrance.",
@@ -109,7 +113,7 @@ The query is scoped by all of the following:
 - persisted `COMPLETED`/`CANCELLED` routes and legacy rows with a prior
   `ROUTE_COMPLETED` event are excluded from operational assigned-route reads
 
-The response must not include other drivers' routes, unrelated orders, raw Shopify payloads, or admin-only planning metadata. Stop address, recipient, phone, customer note, order items, and coordinates are intentionally returned only after the driver boundary is verified.
+The response must not include other drivers' routes, unrelated orders, raw Shopify payloads, or admin-only planning metadata. Stop address, recipient, phone, customer note, order items, coordinates, and persisted DSV order fields (`sellerOrderKey`, `destinationId`, normalized `conditionCode`, `shippedBoxes`) are intentionally returned only after the driver boundary is verified. The DSV fields are nullable for legacy or non-DSV source orders.
 
 ## Server-authoritative ETA lifecycle
 

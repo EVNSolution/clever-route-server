@@ -67,6 +67,8 @@ const route: DriverAssignedRoute = {
       currencyCode: null,
       customerNote: null,
       deliveryStopId: 'stop-id-1',
+      destinationId: null,
+      conditionCode: null,
       items: [],
       normalizedPaymentStatus: 'CASH_COLLECT_REQUIRED',
       orderName: '#1001',
@@ -74,6 +76,8 @@ const route: DriverAssignedRoute = {
       phone: '+14165550123',
       recipientName: 'Recipient One',
       sequence: 1,
+      sellerOrderKey: null,
+      shippedBoxes: null,
       status: 'ASSIGNED',
       totalPriceAmount: null
     },
@@ -90,6 +94,8 @@ const route: DriverAssignedRoute = {
       currencyCode: null,
       customerNote: null,
       deliveryStopId: 'stop-id-2',
+      destinationId: null,
+      conditionCode: null,
       items: [],
       normalizedPaymentStatus: 'PAID_CONFIRMED',
       orderName: '#1002',
@@ -97,6 +103,8 @@ const route: DriverAssignedRoute = {
       phone: '+14165550124',
       recipientName: 'Recipient Two',
       sequence: 2,
+      sellerOrderKey: null,
+      shippedBoxes: null,
       status: 'ASSIGNED',
       totalPriceAmount: null
     }

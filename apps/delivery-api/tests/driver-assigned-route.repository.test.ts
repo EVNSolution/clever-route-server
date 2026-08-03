@@ -45,6 +45,14 @@ const routePlanRecord = {
           rawPayload: {
             customer_note: 'Leave the box beside the loading entrance.',
             deliverySession: 'PICKUP',
+            dsv: {
+              normalized: {
+                conditionComparisonKey: ' cold ',
+                destinationId: 'destination-id',
+                sellerOrderKey: 'DSV-ORDER-1001',
+                shippedBoxes: 4
+              }
+            },
             normalizedPaymentStatus: 'CASH_COLLECT_REQUIRED',
             paymentMethodTitle: 'Cash on delivery',
             serviceType: 'PICKUP'
@@ -141,9 +149,11 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             customerNote: 'Leave the box beside the loading entrance.',
             deliverySession: 'PICKUP',
             deliveryStopId: 'stop-id',
+            destinationId: 'destination-id',
             distanceFromPreviousMeters: 1000,
             durationFromPreviousSeconds: 600,
             estimatedArrivalAt: null,
+            conditionCode: 'COLD',
             items: [
               {
                 name: 'Tomato Box',
@@ -161,6 +171,8 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             recipientName: 'Recipient One',
             sequence: 1,
             serviceType: 'PICKUP',
+            sellerOrderKey: 'DSV-ORDER-1001',
+            shippedBoxes: 4,
             status: 'ASSIGNED',
             totalPriceAmount: '84.50'
           }
@@ -312,6 +324,39 @@ describe('PrismaDriverAssignedRouteRepository', () => {
       status: 'ASSIGNED_ROUTE',
       route: {
         stops: [{ normalizedPaymentStatus: 'PAID_CONFIRMED' }]
+      }
+    });
+  });
+
+  test('reads DSV stop fields from legacy top-level raw payload keys', async () => {
+    const routePlan = structuredClone(routePlanRecord);
+    (routePlan.routeStops[0]!.deliveryStop.order as { rawPayload: unknown }).rawPayload = {
+      condition_code: ' ambient ',
+      destination_id: 'legacy-destination-id',
+      seller_order_key: 'LEGACY-ORDER-1',
+      shipped_boxes: '7'
+    };
+    const { prisma } = createPrismaHarness({ routePlan });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(result).toMatchObject({
+      status: 'ASSIGNED_ROUTE',
+      route: {
+        stops: [
+          {
+            conditionCode: 'AMBIENT',
+            destinationId: 'legacy-destination-id',
+            sellerOrderKey: 'LEGACY-ORDER-1',
+            shippedBoxes: 7
+          }
+        ]
       }
     });
   });

@@ -92,7 +92,7 @@ describe('G009/G010 tenant-composite DSV foreign keys', () => {
     const schema = await readFile(schemaPath, 'utf8');
 
     expect(schema).toContain('order                         Order                          @relation(fields: [orderId, shopId], references: [id, shopId], onDelete: Cascade)');
-    expect(schema).toContain('driver     Driver   @relation(fields: [driverId, shopId], references: [id, shopId], onDelete: Cascade)');
+    expect(schema).toContain('driver                         Driver   @relation(fields: [driverId, shopId], references: [id, shopId], onDelete: Cascade)');
     expect(schema).toContain('vehicle   Vehicle  @relation(fields: [vehicleId, shopId], references: [id, shopId], onDelete: Cascade)');
     expect(schema).toContain('vehicle   Vehicle  @relation(fields: [vehicleId, shopId], references: [id, shopId], onDelete: Cascade)');
     expect(schema).toContain('driver    Driver   @relation(fields: [driverId, shopId], references: [id, shopId], onDelete: Cascade)');

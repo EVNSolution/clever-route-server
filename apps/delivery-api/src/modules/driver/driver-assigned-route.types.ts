@@ -30,9 +30,11 @@ export type DriverAssignedRouteStop = {
   customerNote: string | null;
   deliverySession?: string | null;
   deliveryStopId: string;
+  destinationId: string | null;
   distanceFromPreviousMeters?: number | null;
   durationFromPreviousSeconds?: number | null;
   estimatedArrivalAt?: string | null;
+  conditionCode: string | null;
   items: OrderItemDto[];
   normalizedPaymentStatus: NormalizedPaymentStatus | null;
   orderName: string;
@@ -41,6 +43,8 @@ export type DriverAssignedRouteStop = {
   recipientName: string | null;
   sequence: number;
   serviceType?: string | null;
+  sellerOrderKey: string | null;
+  shippedBoxes: number | null;
   status: string;
   totalPriceAmount: string | null;
 };

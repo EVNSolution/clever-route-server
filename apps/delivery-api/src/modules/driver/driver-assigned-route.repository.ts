@@ -293,6 +293,7 @@ function toRoutePlanDetailForCache(routePlan: AssignedRoutePlanRecord): RoutePla
 function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssignedRouteStop {
   const deliveryStop = routeStop.deliveryStop;
   const rawPayload = objectOrNull(deliveryStop.order.rawPayload);
+  const dsvNormalized = readDsvNormalizedPayload(rawPayload);
   return {
     address: {
       address1: deliveryStop.address1,
@@ -311,9 +312,13 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssi
     deliverySession: readString(rawPayload?.deliverySession)
       ?? readString(rawPayload?.delivery_session),
     deliveryStopId: deliveryStop.id,
+    destinationId: readString(dsvNormalized?.destinationId)
+      ?? readString(rawPayload?.destinationId)
+      ?? readString(rawPayload?.destination_id),
     distanceFromPreviousMeters: routeStop.distanceFromPreviousMeters,
     durationFromPreviousSeconds: routeStop.durationFromPreviousSeconds,
     estimatedArrivalAt: routeStop.estimatedArrivalAt?.toISOString() ?? null,
+    conditionCode: readConditionComparisonKey(dsvNormalized, rawPayload),
     items: (deliveryStop.order.orderItems ?? []).map((item) => toOrderItemDto(item)),
     normalizedPaymentStatus: resolveNormalizedPaymentStatus({
       financialStatus: deliveryStop.order.financialStatus,
@@ -326,6 +331,12 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssi
     sequence: routeStop.sequence,
     serviceType: readString(rawPayload?.serviceType)
       ?? readString(rawPayload?.service_type),
+    sellerOrderKey: readString(dsvNormalized?.sellerOrderKey)
+      ?? readString(rawPayload?.sellerOrderKey)
+      ?? readString(rawPayload?.seller_order_key),
+    shippedBoxes: readInteger(dsvNormalized?.shippedBoxes)
+      ?? readInteger(rawPayload?.shippedBoxes)
+      ?? readInteger(rawPayload?.shipped_boxes),
     status: deliveryStop.status,
     totalPriceAmount: decimalString(deliveryStop.order.totalPriceAmount)
   };
@@ -426,6 +437,41 @@ function readString(value: unknown): string | null {
 
   const trimmed = value.trim();
   return trimmed === '' ? null : trimmed;
+}
+
+function readInteger(value: unknown): number | null {
+  if (typeof value === 'number') {
+    return Number.isInteger(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!/^-?\d+$/u.test(trimmed)) return null;
+    const parsed = Number(trimmed);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function readDsvNormalizedPayload(rawPayload: Record<string, unknown> | null): Record<string, unknown> | null {
+  const dsv = objectOrNull(rawPayload?.dsv);
+  return objectOrNull(dsv?.normalized);
+}
+
+function readConditionComparisonKey(
+  dsvNormalized: Record<string, unknown> | null,
+  rawPayload: Record<string, unknown> | null
+): string | null {
+  return conditionComparisonKey(
+    readString(dsvNormalized?.conditionComparisonKey)
+      ?? readString(dsvNormalized?.conditionCode)
+      ?? readString(rawPayload?.conditionComparisonKey)
+      ?? readString(rawPayload?.conditionCode)
+      ?? readString(rawPayload?.condition_code)
+  );
+}
+
+function conditionComparisonKey(value: string | null): string | null {
+  return value === null ? null : value.trim().toUpperCase();
 }
 
 function readCustomerNote(rawPayload: Record<string, unknown> | null): string | null {
