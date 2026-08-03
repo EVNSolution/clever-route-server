@@ -5262,7 +5262,7 @@ components:
           required: [bundle, routePlanId, version]
           properties:
             bundle: { $ref: '#/components/schemas/DriverDeliveryBundle' }
-            routePlanId: { type: string, format: uuid }
+            routePlanId: { type: [string, 'null'], format: uuid }
             version: { type: string }
         error: { type: 'null' }
     DriverSellerOrderListEnvelope:
