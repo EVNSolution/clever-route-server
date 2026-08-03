@@ -1,8 +1,37 @@
 import { describe, expect, test, vi } from 'vitest';
-import { DriverDeliverySpaceService, type DriverDeliverySpaceRepositoryContract } from '../src/modules/driver/driver-delivery-space.service.js';
+import {
+  DriverDeliverySpaceService,
+  PrismaDriverDeliverySpaceRepository,
+  type DriverDeliverySpaceRepositoryContract
+} from '../src/modules/driver/driver-delivery-space.service.js';
 import { RouteGroupingConflictError, type RouteGroupingDetailDto, type RouteGroupingDraftRouteInput, type RouteGroupingService } from '../src/modules/route-grouping/route-grouping.types.js';
 
 describe('DriverDeliverySpaceService', () => {
+  test('passes only Prisma-supported route scope fields to the repository query', async () => {
+    const findFirst = vi.fn(() => Promise.resolve({
+      groupingId: 'group-1',
+      routePlan: { vehicleId: 'vehicle-1' }
+    }));
+    const repository = new PrismaDriverDeliverySpaceRepository({
+      dsvDispatchImportRow: {} as never,
+      routeGroupingChildVersion: { findFirst } as never
+    });
+
+    await expect(repository.findRouteContext(scope())).resolves.toEqual({
+      groupingId: 'group-1',
+      vehicleId: 'vehicle-1'
+    });
+    expect(findFirst).toHaveBeenCalledWith({
+      select: { groupingId: true, routePlan: { select: { vehicleId: true } } },
+      where: {
+        driverId: 'driver-1',
+        routePlanId: 'route-driver',
+        shopId: 'shop-1',
+        status: 'CURRENT'
+      }
+    });
+  });
+
   test('moves every order at one destination in one draft save', async () => {
     const harness = setup(grouping('mine'), grouping('public'));
     await expect(harness.service.getSpace(scope())).resolves.toMatchObject({ mine: [{ destinationId: 'dest-a', orderCount: 2 }] });
