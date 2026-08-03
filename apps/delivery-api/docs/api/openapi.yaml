@@ -488,6 +488,11 @@ paths:
     get:
       tags: [DSV API v1]
       summary: Read deliveries for the authenticated customer
+      description: >-
+        Returns only deliveries owned by the customer bound to the authenticated session.
+        Customer identifiers supplied by the browser are not accepted as authority. Destination
+        coordinates and the assigned vehicle's latest coordinates are included only for those
+        customer-owned deliveries so the customer map cannot infer another customer's stops.
       operationId: listDsvV1CustomerDeliveries
       x-source-file: src/routes/dsv-v1-read.routes.ts
       x-required-scopes: ['dsv:customer-deliveries:read']
@@ -511,6 +516,10 @@ paths:
     get:
       tags: [DSV API v1]
       summary: Read one customer's deliveries as a DSV administrator
+      description: >-
+        Administrator projection of the same customer-map contract. customerId is a filter inside
+        the authenticated DSV tenant, not an authorization credential; both customer and dispatch
+        read scopes are required.
       operationId: listDsvV1CustomerDeliveriesForAdmin
       x-source-file: src/routes/dsv-v1-read.routes.ts
       x-required-scopes: ['dsv:customers:read', 'dsv:dispatches:read']
@@ -3526,6 +3535,12 @@ components:
           type: string
         vehicleId:
           type: string
+        vehicleLatitude:
+          type: number
+          description: Latest available latitude for the assigned vehicle.
+        vehicleLongitude:
+          type: number
+          description: Latest available longitude for the assigned vehicle.
       additionalProperties: false
     DsvV1SellerOrderSummaryPage:
       type: object

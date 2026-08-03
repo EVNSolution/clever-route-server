@@ -144,6 +144,23 @@ describe('API documentation routes', () => {
     }
   });
 
+  test('GET /docs/openapi.yaml defines the customer map projection and tenant boundary', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('Customer identifiers supplied by the browser are not accepted as authority.');
+      expect(response.body).toContain("x-required-scopes: ['dsv:customer-deliveries:read']");
+      expect(response.body).toContain("x-required-scopes: ['dsv:customers:read', 'dsv:dispatches:read']");
+      expect(response.body).toContain('vehicleLatitude:');
+      expect(response.body).toContain('vehicleLongitude:');
+    } finally {
+      await app.close();
+    }
+  });
+
   test('GET /docs/openapi.yaml keeps forbidden G005 DSV v1 proof event route undocumented', async () => {
     const app = await buildApp();
 
