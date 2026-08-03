@@ -119,6 +119,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
       status: 'ASSIGNED_ROUTE',
       route: {
         deliveryDate: '2026-05-12',
+        depot: { latitude: 43.6532, longitude: -79.3832 },
         etaSnapshot: {
           calculatedAt: null,
           failureCode: null,

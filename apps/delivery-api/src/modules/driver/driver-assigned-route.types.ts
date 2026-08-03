@@ -72,6 +72,10 @@ export type DriverRouteMapPreview = {
 
 export type DriverAssignedRoute = {
   deliveryDate: string;
+  depot: {
+    latitude: number | null;
+    longitude: number | null;
+  };
   etaSnapshot: DriverRouteEtaSnapshot;
   id: string;
   name: string;

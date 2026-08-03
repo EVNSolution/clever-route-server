@@ -13,6 +13,7 @@ import { renderDriverRouteMapPreviewPng } from '../src/modules/driver/driver-rou
 const now = new Date('2026-05-12T06:40:00.000Z');
 const route: DriverAssignedRoute = {
   deliveryDate: '2026-05-12',
+  depot: { latitude: 43.6532, longitude: -79.3832 },
   etaSnapshot: {
     calculatedAt: null,
     failureCode: null,

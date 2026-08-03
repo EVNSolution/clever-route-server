@@ -9,6 +9,7 @@ const assignedRoute = {
   status: 'ASSIGNED_ROUTE' as const,
   route: {
     deliveryDate: '2026-06-15',
+    depot: { latitude: 43.6532, longitude: -79.3832 },
     etaSnapshot: {
       calculatedAt: null,
       failureCode: null,
