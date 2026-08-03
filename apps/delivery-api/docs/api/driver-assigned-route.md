@@ -29,6 +29,10 @@ Success with an assigned route:
       "id": "11111111-1111-4111-8111-111111111111",
       "name": "Tuesday AM Route",
       "deliveryDate": "2026-05-12",
+      "depot": {
+        "latitude": 43.6532,
+        "longitude": -79.3832
+      },
       "shopDomain": "example.myshopify.com",
       "timezone": "America/Toronto",
       "stops": [
@@ -113,7 +117,7 @@ The query is scoped by all of the following:
 - persisted `COMPLETED`/`CANCELLED` routes and legacy rows with a prior
   `ROUTE_COMPLETED` event are excluded from operational assigned-route reads
 
-The response must not include other drivers' routes, unrelated orders, raw Shopify payloads, or admin-only planning metadata. Stop address, recipient, phone, customer note, order items, coordinates, and persisted DSV order fields (`sellerOrderKey`, `destinationId`, normalized `conditionCode`, `shippedBoxes`) are intentionally returned only after the driver boundary is verified. The DSV fields are nullable for legacy or non-DSV source orders.
+The response must not include other drivers' routes, unrelated orders, raw Shopify payloads, or admin-only planning metadata. The route's persisted `depot` coordinate is returned for the driver's map start marker. Stop address, recipient, phone, customer note, order items, coordinates, and persisted DSV order fields (`sellerOrderKey`, `destinationId`, normalized `conditionCode`, `shippedBoxes`) are intentionally returned only after the driver boundary is verified. The DSV fields are nullable for legacy or non-DSV source orders.
 
 ## Server-authoritative ETA lifecycle
 

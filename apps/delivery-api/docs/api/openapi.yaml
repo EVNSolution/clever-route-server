@@ -5367,7 +5367,7 @@ components:
         error: { type: 'null' }
     DriverAssignedRoute:
       type: object
-      required: [deliveryDate, etaSnapshot, id, name, shopDomain, stops, timezone]
+      required: [deliveryDate, depot, etaSnapshot, id, name, shopDomain, stops, timezone]
       properties:
         id:
           type: string
@@ -5376,6 +5376,14 @@ components:
         deliveryDate:
           format: date
           type: string
+        depot:
+          type: object
+          required: [latitude, longitude]
+          properties:
+            latitude:
+              type: [number, 'null']
+            longitude:
+              type: [number, 'null']
         etaSnapshot:
           $ref: '#/components/schemas/DriverRouteEtaSnapshot'
         shopDomain:

@@ -240,6 +240,10 @@ function toAssignedRouteResult(
     status: 'ASSIGNED_ROUTE',
     route: {
       deliveryDate: formatDateOnly(routePlan.planDate),
+      depot: {
+        latitude: decimalNumber(routePlan.depotLatitude),
+        longitude: decimalNumber(routePlan.depotLongitude)
+      },
       etaSnapshot: buildDriverRouteEtaSnapshot({
         pickupCompletedAt: routePlan.driverEvents[0]?.createdAt ?? null,
         stops: routePlan.routeStops.map(toEtaStop)
