@@ -74,11 +74,13 @@ import {
 } from '../modules/route-tracking/route-tracking.service.js';
 import type { RouteTrackingStreamHub } from '../modules/route-tracking/route-tracking.stream.js';
 import type { AdminNotificationServiceApi } from '../modules/notifications/admin-notification.service.js';
+import { DriverDeliverySpaceError, type DriverDeliverySpaceServiceContract } from '../modules/driver/driver-delivery-space.service.js';
 
 export type DriverApiDependencies = {
   adminNotificationService?: Pick<AdminNotificationServiceApi, 'createAdminNotification'>;
   driverAssignedRouteService?: DriverAssignedRouteServiceContract;
   driverConsentService?: DriverConsentServiceContract;
+  driverDeliverySpaceService?: DriverDeliverySpaceServiceContract;
   driverEventService: {
     recordDriverEvent(input: {
       clientEventId: string | null;
@@ -122,6 +124,10 @@ type DriverSellerOrderParams = {
 type DriverSellerOrderAssignmentBody = {
   expectedVersion?: unknown;
 };
+
+type DriverDeliverySpaceParams = { destinationId?: unknown };
+type DriverDeliverySpaceCommandBody = { expectedVersion?: unknown };
+type DriverDeliverySpaceCommand = { destinationId: string; expectedVersion: string };
 
 type DriverRouteMapPreviewParams = {
   previewId?: unknown;
@@ -392,6 +398,47 @@ export function registerDriverEventRoutes(
         }
       }
     );
+  }
+
+  const deliverySpaceService = dependencies.driverDeliverySpaceService;
+  if (deliverySpaceService !== undefined) {
+    app.get('/driver/delivery-space', async (request, reply) => {
+      const auth = await authenticateDriverRequest(request, dependencies);
+      if (auth.status !== 'authenticated') return reply.code(401).send(driverAuthenticationErrorResponse(auth.status));
+      reply.header('Cache-Control', 'private, no-store');
+      try {
+        return reply.code(200).send({ data: await deliverySpaceService.getSpace(auth.context), error: null });
+      } catch (error) {
+        return sendDriverDeliverySpaceError(reply, error);
+      }
+    });
+    for (const action of ['acquire', 'release'] as const) {
+      app.post<{ Body: DriverDeliverySpaceCommandBody; Params: DriverDeliverySpaceParams }>(
+        `/driver/delivery-space/:destinationId/${action}`,
+        async (request, reply) => {
+          const auth = await authenticateDriverRequest(request, dependencies);
+          if (auth.status !== 'authenticated') return reply.code(401).send(driverAuthenticationErrorResponse(auth.status));
+          reply.header('Cache-Control', 'private, no-store');
+
+          let command: DriverDeliverySpaceCommand;
+          try {
+            command = readDriverDeliverySpaceCommand(request);
+          } catch {
+            return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid delivery space command'));
+          }
+
+          try {
+            const result = await deliverySpaceService[action]({
+              ...auth.context,
+              ...command
+            });
+            return reply.code(200).send({ data: result, error: null });
+          } catch (error) {
+            return sendDriverDeliverySpaceError(reply, error);
+          }
+        }
+      );
+    }
   }
 
   const driverRouteSessionRestoreService = dependencies.driverRouteSessionRestoreService;
@@ -1580,6 +1627,18 @@ function readDriverSellerOrderAssignmentCommand(
   };
 }
 
+function readDriverDeliverySpaceCommand(
+  request: FastifyRequest<{ Body: DriverDeliverySpaceCommandBody; Params: DriverDeliverySpaceParams }>
+): DriverDeliverySpaceCommand {
+  const body = request.body ?? {};
+  assertOnlyKeys(body, new Set(['expectedVersion']));
+
+  return {
+    destinationId: readRequiredString(request.params.destinationId),
+    expectedVersion: readBoundedText(request.body?.expectedVersion, { maxLength: 120, minLength: 1 })
+  };
+}
+
 function assertOnlyKeys(value: unknown, allowedKeys: Set<string>): void {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error('Payload must be an object');
@@ -1624,4 +1683,13 @@ function sendDriverSellerOrderError(
     return reply.code(503).send(errorResponse(error.code, error.message));
   }
   throw error;
+}
+
+function sendDriverDeliverySpaceError(reply: FastifyReply, error: unknown): FastifyReply {
+  if (!(error instanceof DriverDeliverySpaceError)) throw error;
+  if (error.code === 'DESTINATION_BUNDLE_NOT_FOUND') return reply.code(404).send(errorResponse(error.code, error.message));
+  if (error.code === 'DESTINATION_BUNDLE_ROUTE_SCOPE_REJECTED') return reply.code(403).send(errorResponse(error.code, error.message));
+  if (error.code === 'DESTINATION_BUNDLE_ROUTE_RECALCULATION_FAILED') return reply.code(422).send(errorResponse(error.code, error.message));
+  if (error.code === 'DESTINATION_BUNDLE_ROUTE_RECALCULATION_UNAVAILABLE') return reply.code(503).send(errorResponse(error.code, error.message));
+  return reply.code(409).send(errorResponse(error.code, error.message));
 }
