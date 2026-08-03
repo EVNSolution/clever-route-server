@@ -2182,6 +2182,108 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /driver/delivery-space:
+    get:
+      tags: [Driver Mobile]
+      summary: List the driver's and public whole-destination delivery bundles
+      operationId: getDriverDeliverySpace
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      responses:
+        '200':
+          description: Whole-destination bundles and the optimistic assignment version.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DriverDeliverySpaceEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /driver/delivery-space/{destinationId}/acquire:
+    post:
+      tags: [Driver Mobile]
+      summary: Atomically acquire every order at one public destination
+      operationId: acquireDriverDeliveryBundle
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      parameters:
+        - name: destinationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DriverDeliverySpaceCommand' }
+      responses:
+        '200':
+          description: The complete destination bundle moved to the bearer route.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DriverDeliverySpaceCommandEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Another driver won the claim, the version changed, transfer closed, or the route has no vehicle.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: The affected routes could not be recalculated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: Route recalculation is not configured in this runtime.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+  /driver/delivery-space/{destinationId}/release:
+    post:
+      tags: [Driver Mobile]
+      summary: Atomically release every order at one owned destination
+      operationId: releaseDriverDeliveryBundle
+      x-source-file: src/routes/driver-events.routes.ts
+      security:
+        - DriverAccessToken: []
+      parameters:
+        - name: destinationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DriverDeliverySpaceCommand' }
+      responses:
+        '200':
+          description: The complete destination bundle moved to the public route.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DriverDeliverySpaceCommandEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: The assignment version changed or transfer is closed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: The affected routes could not be recalculated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: Route recalculation is not configured in this runtime.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
   /driver/orders/{orderId}/acquire:
     post:
       tags: [Driver Mobile]
@@ -5101,6 +5203,53 @@ components:
         sellerOrderKey: { type: string }
         sourceSequence: { type: integer, minimum: 1 }
       additionalProperties: false
+    DriverDeliveryBundle:
+      type: object
+      required: [address, boxCount, conditionCodes, destinationId, destinationName, orderCount]
+      properties:
+        address: { type: string }
+        boxCount: { type: integer, minimum: 0 }
+        conditionCodes:
+          type: array
+          items: { type: string }
+        destinationId: { type: string, format: uuid }
+        destinationName: { type: string }
+        orderCount: { type: integer, minimum: 1 }
+      additionalProperties: false
+    DriverDeliverySpaceCommand:
+      type: object
+      required: [expectedVersion]
+      properties:
+        expectedVersion: { type: string, minLength: 1 }
+      additionalProperties: false
+    DriverDeliverySpaceEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [available, mine, version]
+          properties:
+            available:
+              type: array
+              items: { $ref: '#/components/schemas/DriverDeliveryBundle' }
+            mine:
+              type: array
+              items: { $ref: '#/components/schemas/DriverDeliveryBundle' }
+            version: { type: string }
+        error: { type: 'null' }
+    DriverDeliverySpaceCommandEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [bundle, routePlanId, version]
+          properties:
+            bundle: { $ref: '#/components/schemas/DriverDeliveryBundle' }
+            routePlanId: { type: string, format: uuid }
+            version: { type: string }
+        error: { type: 'null' }
     DriverSellerOrderListEnvelope:
       type: object
       required: [data, error]

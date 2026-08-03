@@ -18,6 +18,7 @@ import type { DriverProofMediaScanMonitor, DriverProofMediaScanner } from './dri
 import type { DriverApiDependencies } from '../../routes/driver-events.routes.js';
 import type { RouteTrackingStreamHub } from '../route-tracking/route-tracking.stream.js';
 import type { AdminNotificationServiceApi } from '../notifications/admin-notification.service.js';
+import { DriverDeliverySpaceService, PrismaDriverDeliverySpaceRepository } from './driver-delivery-space.service.js';
 import {
   DEFAULT_DRIVER_ROUTE_MAP_PREVIEW_TTL_SECONDS,
   DriverRouteMapPreviewService
@@ -130,6 +131,10 @@ export function loadDriverApiDependencies(
     ...(input.routeGroupingService === undefined
       ? {}
       : {
+          driverDeliverySpaceService: new DriverDeliverySpaceService(
+            new PrismaDriverDeliverySpaceRepository(input.prisma),
+            input.routeGroupingService
+          ),
           driverSellerOrderAssignmentService: new DriverSellerOrderAssignmentService(
             driverSellerOrderContextRepository,
             input.routeGroupingService,
