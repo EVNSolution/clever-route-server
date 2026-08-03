@@ -115,6 +115,9 @@ export function loadDriverApiDependencies(
 
   const driverAssignedRouteService = new PrismaDriverAssignedRouteRepository(input.prisma);
   const driverSellerOrderContextRepository = new PrismaDriverSellerOrderContextRepository(input.prisma);
+  const dsvAssignmentCommandService = input.routeGroupingService === undefined
+    ? undefined
+    : new DsvAssignmentCommandService(input.prisma, input.routeGroupingService);
   const driverRouteMapPreview = loadDriverRouteMapPreviewService({
     assignedRouteService: driverAssignedRouteService,
     env: input.env,
@@ -133,13 +136,14 @@ export function loadDriverApiDependencies(
       : {
           driverDeliverySpaceService: new DriverDeliverySpaceService(
             new PrismaDriverDeliverySpaceRepository(input.prisma),
-            input.routeGroupingService
+            input.routeGroupingService,
+            dsvAssignmentCommandService as DsvAssignmentCommandService
           ),
           driverSellerOrderAssignmentService: new DriverSellerOrderAssignmentService(
             driverSellerOrderContextRepository,
             input.routeGroupingService,
             createDsvDriverSellerOrderAssignmentCommandKernel({
-              commandService: new DsvAssignmentCommandService(input.prisma, input.routeGroupingService),
+              commandService: dsvAssignmentCommandService as DsvAssignmentCommandService,
               contextRepository: driverSellerOrderContextRepository,
               routeGroupingService: input.routeGroupingService
             })
