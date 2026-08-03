@@ -19,6 +19,7 @@ import type {
 import {
   DsvAssignmentCommandError,
   type DsvAdminBatchReassignInput,
+  type DsvAdminBatchUnassignInput,
   type DsvAssignmentCommandBaseInput,
   type DsvBatchAssignmentResult,
   type DsvAssignmentResult,
@@ -113,6 +114,7 @@ export type DsvAdminAssignmentCommandService = {
   reassign(input: DsvAdminReassignCommandInput): Promise<DsvAssignmentResult>;
   reassignMany(input: DsvAdminBatchReassignInput): Promise<DsvBatchAssignmentResult>;
   unassign(input: DsvAssignmentCommandBaseInput): Promise<DsvAssignmentResult>;
+  unassignMany(input: DsvAdminBatchUnassignInput): Promise<DsvBatchAssignmentResult>;
 };
 
 type DsvControlSession = {
@@ -682,6 +684,26 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
           targetDriverId: command.targetDriverId,
           ...(command.targetRoutePlanId === undefined ? {} : { targetRoutePlanId: command.targetRoutePlanId }),
           ...(command.targetVehicleId === undefined ? {} : { targetVehicleId: command.targetVehicleId }),
+        });
+        return sendData(reply, result);
+      } catch (error) {
+        return sendDsvAssignmentCommandError(reply, error);
+      }
+    }, ['dsv:dispatches:write']));
+
+  app.post(`${versionedApiRoot}/seller-order-assignments/unassign`, async (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async (session) => {
+      if (dependencies.assignmentCommandService === undefined) {
+        return sendError(reply, 503, 'DSV_ASSIGNMENT_SERVICE_UNAVAILABLE', 'DSV assignment command service is not configured');
+      }
+      const command = readDsvBatchUnassignCommand(request);
+      if (command === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid seller order batch unassign payload');
+      try {
+        const result = await dependencies.assignmentCommandService.unassignMany({
+          actor: dsvAdminCommandActor(session, request),
+          items: command.items,
+          reason: command.reason ?? null,
+          shopDomain: session.shopDomain,
         });
         return sendData(reply, result);
       } catch (error) {
@@ -1378,6 +1400,36 @@ function readDsvBatchReassignCommand(request: FastifyRequest): {
     targetDriverId,
     ...(targetRoutePlanId === undefined ? {} : { targetRoutePlanId }),
     ...(targetVehicleId === undefined ? {} : { targetVehicleId }),
+  };
+}
+
+function readDsvBatchUnassignCommand(request: FastifyRequest): {
+  items: Array<{ commandId: string; expectedVersion: string; sellerOrderId: string }>;
+  reason?: string;
+} | null {
+  const body = objectBody(request.body);
+  if (body === null || !hasOnlyAllowedKeys(body, ['items', 'reason'])) return null;
+  if (!Array.isArray(body.items) || body.items.length === 0 || body.items.length > 100) return null;
+
+  const reason = readOptionalBoundedText(body.reason, 500);
+  if (reason === null) return null;
+
+  const items: Array<{ commandId: string; expectedVersion: string; sellerOrderId: string }> = [];
+  const sellerOrderIds = new Set<string>();
+  for (const value of body.items) {
+    const item = objectBody(value);
+    if (item === null || !hasOnlyAllowedKeys(item, ['commandId', 'expectedVersion', 'sellerOrderId'])) return null;
+    const commandId = readBoundedText(item.commandId, 120);
+    const expectedVersion = readBoundedText(item.expectedVersion, 160);
+    const sellerOrderId = readUuidValue(item.sellerOrderId);
+    if (commandId === null || expectedVersion === null || sellerOrderId === null || sellerOrderIds.has(sellerOrderId)) return null;
+    sellerOrderIds.add(sellerOrderId);
+    items.push({ commandId, expectedVersion, sellerOrderId });
+  }
+
+  return {
+    items,
+    ...(reason === undefined ? {} : { reason }),
   };
 }
 

@@ -61,6 +61,13 @@ export type DsvAdminBatchReassignInput = {
   targetVehicleId?: string | null;
 };
 
+export type DsvAdminBatchUnassignInput = {
+  actor: DsvAssignmentActor;
+  items: Array<Pick<DsvAssignmentCommandBaseInput, 'commandId' | 'expectedVersion' | 'sellerOrderId'>>;
+  reason?: string | null | undefined;
+  shopDomain: string;
+};
+
 export type DsvBatchAssignmentResult = {
   assignmentResults: DsvAssignmentResult[];
   routePlanId: string | null;
@@ -291,6 +298,160 @@ export class DsvAssignmentCommandService {
     return {
       assignmentResults: execution.assignmentResults,
       routePlanId: execution.assignmentResults[0]?.routePlanId ?? input.targetRoutePlanId ?? null,
+    };
+  }
+
+  async unassignMany(input: DsvAdminBatchUnassignInput): Promise<DsvBatchAssignmentResult> {
+    const shop = await this.prisma.shop.findUnique({
+      select: { id: true },
+      where: appScopedShopWhere({ shopDomain: normalizeShopDomain(input.shopDomain) }),
+    });
+    if (shop === null) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+
+    const commands = input.items.map((item) => {
+      const commandInput: DsvAssignmentCommandBaseInput = {
+        actor: input.actor,
+        commandId: item.commandId,
+        expectedVersion: item.expectedVersion,
+        reason: input.reason,
+        sellerOrderId: item.sellerOrderId,
+        shopDomain: input.shopDomain,
+      };
+      return {
+        input: commandInput,
+        payloadHash: sha256CanonicalJson(assignmentPayload('unassignSellerOrder', commandInput)),
+      };
+    });
+
+    const execution = await this.prisma.$transaction(async (tx) => {
+      const claims: ClaimedCommand[] = [];
+      for (const command of commands) {
+        await lockAssignmentCommand(tx, shop.id, command.input.commandId);
+        claims.push(await this.claimCommand(
+          tx,
+          shop.id,
+          'unassignSellerOrder',
+          command.input,
+          command.payloadHash,
+        ));
+      }
+      const replayed = claims.flatMap((claim) => 'result' in claim ? [claim.result] : []);
+      if (replayed.length === claims.length) {
+        return { assignmentResults: replayed, routePlanIds: [] as Array<string | null>, scheduleOptimization: false };
+      }
+      if (replayed.length > 0) throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
+
+      const lockedOrders: Array<{ currentRouteVersionId: string | null }> = [];
+      for (const command of commands) lockedOrders.push(await this.lockSellerOrder(tx, shop.id, command.input.sellerOrderId));
+      const firstOrder = lockedOrders[0];
+      const firstCommand = commands[0];
+      if (firstOrder === undefined || firstCommand === undefined) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+      const grouping = await this.loadGroupingForSellerOrder(
+        tx,
+        shop.id,
+        input.shopDomain,
+        firstCommand.input.sellerOrderId,
+        firstOrder.currentRouteVersionId,
+      );
+      const owners: RouteOwner[] = [];
+      for (const [index, command] of commands.entries()) {
+        const order = lockedOrders[index];
+        if (order === undefined) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+        assertExpectedVersion(command.input.expectedVersion, order.currentRouteVersionId);
+        const owner = await this.requireOwner(tx, command.input.sellerOrderId, grouping, order.currentRouteVersionId);
+        assertTransferOpen(owner);
+        owners.push(owner);
+      }
+
+      const sellerOrderIds = commands.map((command) => command.input.sellerOrderId);
+      const target = firstUnassignedRoute(grouping) ?? null;
+      const saved = await this.saveDraft(tx, {
+        expectedUpdatedAt: grouping.updatedAt,
+        groupingId: grouping.id,
+        routes: moveOrdersToUnassignedRoute(grouping, sellerOrderIds, target),
+        shopDomain: input.shopDomain,
+      });
+      if (saved === null) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+
+      const results: DsvAssignmentResult[] = [];
+      for (const [index, command] of commands.entries()) {
+        const order = lockedOrders[index];
+        const owner = owners[index];
+        const claim = claims[index];
+        if (order === undefined || owner === undefined || claim === undefined || 'result' in claim) {
+          throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
+        }
+        const nextOwner = await this.requireOwner(tx, command.input.sellerOrderId, saved, null);
+        if (nextOwner.driverId !== null || nextOwner.currentVersionId === null) {
+          throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
+        }
+        await tx.order.updateMany({
+          data: { currentRouteVersionId: nextOwner.currentVersionId },
+          where: {
+            currentRouteVersionId: order.currentRouteVersionId,
+            id: command.input.sellerOrderId,
+            shopId: shop.id,
+          },
+        }).then((updated) => {
+          if (updated.count !== 1) throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
+        });
+        const movement: MovementPlan = {
+          assignmentStatus: 'UNASSIGNED',
+          etaStatus: 'NOT_REQUIRED',
+          previousRoutePlanId: owner.routePlanId,
+          previousRouteVersionId: owner.currentVersionId,
+          routes: [],
+          targetRoutePlanId: nextOwner.routePlanId,
+        };
+        results.push(await this.completeCommand(
+          tx,
+          shop.id,
+          'unassignSellerOrder',
+          command.input,
+          command.payloadHash,
+          claim.receiptId,
+          movement,
+          {
+            assignmentStatus: 'UNASSIGNED',
+            auditEventId: '',
+            commandId: command.input.commandId,
+            etaStatus: 'NOT_REQUIRED',
+            newRouteVersionId: nextOwner.currentVersionId,
+            previousRouteVersionId: owner.currentVersionId,
+            receiptId: claim.receiptId,
+            routePlanId: nextOwner.routePlanId,
+            sellerOrderId: command.input.sellerOrderId,
+          },
+        ));
+      }
+
+      const routePlanIds = [...new Set([...owners.map((owner) => owner.routePlanId), results[0]?.routePlanId ?? null])];
+      const affectedRouteVersions: AffectedRouteVersion[] = [];
+      for (const routePlanId of routePlanIds) {
+        const version = await tx.routeGroupingChildVersion.findFirst({
+          orderBy: { updatedAt: 'desc' },
+          select: { driverId: true, id: true, routePlanId: true },
+          where: { groupingId: grouping.id, routePlanId, shopId: shop.id, status: 'CURRENT', supersededAt: null },
+        });
+        if (version !== null) affectedRouteVersions.push({ driverId: version.driverId, routePlanId: version.routePlanId, routeVersionId: version.id });
+      }
+      await this.invalidateAffectedEtas(tx, affectedRouteVersions);
+      return { assignmentResults: results, routePlanIds, scheduleOptimization: true };
+    }, transactionOptions).catch((error: unknown) => {
+      if (isPrismaTransactionConflict(error)) throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
+      throw error;
+    });
+
+    if (execution.scheduleOptimization) {
+      try {
+        this.routeOptimizationScheduler?.schedule({ routePlanIds: execution.routePlanIds, shopDomain: input.shopDomain });
+      } catch {
+        // Assignment success must not depend on background route optimization scheduling.
+      }
+    }
+    return {
+      assignmentResults: execution.assignmentResults,
+      routePlanId: execution.assignmentResults[0]?.routePlanId ?? null,
     };
   }
 
@@ -966,6 +1127,31 @@ function moveOrdersToDriverRoute(
       sortOrder: target.sortOrder ?? nextSortOrder(grouping.children),
       tempId: `driver:${target.driverId ?? 'unassigned'}:${target.sortOrder ?? nextSortOrder(grouping.children)}`,
       vehicleId: targetVehicleId ?? null,
+    },
+  ];
+}
+
+function moveOrdersToUnassignedRoute(
+  grouping: RouteGroupingDetailDto,
+  orderIds: string[],
+  target: RouteGroupingChildDto | null,
+): RouteGroupingDraftRouteInput[] {
+  const selected = new Set(orderIds);
+  const routes = grouping.children.map((child) => {
+    const remaining = child.orderIds.filter((orderId) => !selected.has(orderId));
+    return childToDraftRoute(child, child === target ? [...remaining, ...orderIds] : remaining);
+  });
+  if (target !== null) return routes;
+  return [
+    ...routes,
+    {
+      branchId: null,
+      driverId: null,
+      label: '미배정',
+      orderIds,
+      routePlanId: null,
+      sortOrder: nextSortOrder(grouping.children),
+      tempId: 'unassigned',
     },
   ];
 }

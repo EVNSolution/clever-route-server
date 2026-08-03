@@ -106,6 +106,33 @@ describe('DsvAssignmentCommandService', () => {
     expect(schedule).toHaveBeenCalledTimes(1);
   });
 
+  test('unassignMany moves 53 orders atomically with one grouping save and one optimization schedule', async () => {
+    const schedule = vi.fn();
+    const orderIds = Array.from({ length: 53 }, (_, index) => `order-${index + 1}`);
+    const grouping = groupingFixture();
+    grouping.assignments = orderIds.map((orderId, index) => assignment(orderId, index + 1));
+    if (grouping.children[0] !== undefined) grouping.children[0].orderIds = orderIds;
+    grouping.totalOrders = orderIds.length;
+    const harness = createHarness({ grouping, routeOptimizationScheduler: { schedule } });
+
+    const result = await harness.service.unassignMany({
+      actor: adminInput().actor,
+      items: orderIds.map((sellerOrderId, index) => ({
+        commandId: `cmd-batch-unassign-${index + 1}`,
+        expectedVersion: 'version-route-a',
+        sellerOrderId,
+      })),
+      reason: 'batch unassignment',
+      shopDomain: 'example.myshopify.com',
+    });
+
+    expect(harness.routeGroupingService.saveDraft).toHaveBeenCalledTimes(1);
+    expect(harness.savedRoutes().find((route) => route.routePlanId === 'route-a')?.orderIds).toEqual([]);
+    expect(harness.savedRoutes().find((route) => route.routePlanId === 'route-unassigned')?.orderIds).toEqual(orderIds);
+    expect(result.assignmentResults.map((item) => item.sellerOrderId)).toEqual(orderIds);
+    expect(schedule).toHaveBeenCalledTimes(1);
+  });
+
   test('reassign without target route uses the selected driver ready route when it exists', async () => {
     const harness = createHarness();
 

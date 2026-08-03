@@ -985,6 +985,80 @@ describe('DSV control routes', () => {
     }
   });
 
+  test('accepts one bounded v1 batch unassignment command for multiple seller orders', async () => {
+    const { app, assignmentCommandService } = await createHarness();
+    try {
+      const login = await loginToDsv(app);
+      const secondSellerOrderId = 'edededed-eded-4ded-8ded-edededededed';
+      const response = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: {
+          items: [
+            { commandId: 'unassignment-batch-1', expectedVersion: routeVersionId, sellerOrderId },
+            { commandId: 'unassignment-batch-2', expectedVersion: nextRouteVersionId, sellerOrderId: secondSellerOrderId },
+          ],
+          reason: '관리자 배정 해제',
+        },
+        url: '/api/dsv/v1/seller-order-assignments/unassign',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(assignmentCommandService.unassignMany).toHaveBeenCalledTimes(1);
+      expect(assignmentCommandService.unassignMany).toHaveBeenCalledWith(expect.objectContaining({
+        items: [
+          { commandId: 'unassignment-batch-1', expectedVersion: routeVersionId, sellerOrderId },
+          { commandId: 'unassignment-batch-2', expectedVersion: nextRouteVersionId, sellerOrderId: secondSellerOrderId },
+        ],
+        reason: '관리자 배정 해제',
+        shopDomain: 'tomatonofood.com',
+      }));
+      expect(response.json()).toMatchObject({
+        data: { assignmentResults: [{ assignmentStatus: 'UNASSIGNED' }, { assignmentStatus: 'UNASSIGNED' }], routePlanId: null },
+        error: null,
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects v1 batch unassignment payloads that exceed bounds or repeat seller orders', async () => {
+    const { app, assignmentCommandService } = await createHarness();
+    try {
+      const login = await loginToDsv(app);
+      const headers = { cookie: login.cookie, 'x-csrf-token': login.csrfToken };
+      const oversizedItems = Array.from({ length: 101 }, (_, index) => ({
+        commandId: `unassignment-batch-${index + 1}`,
+        expectedVersion: routeVersionId,
+        sellerOrderId: `eeeeeeee-eeee-4eee-8eee-${(index + 1).toString().padStart(12, '0')}`,
+      }));
+
+      const oversized = await app.inject({
+        headers,
+        method: 'POST',
+        payload: { items: oversizedItems },
+        url: '/api/dsv/v1/seller-order-assignments/unassign',
+      });
+      expect(oversized.statusCode).toBe(400);
+
+      const duplicate = await app.inject({
+        headers,
+        method: 'POST',
+        payload: {
+          items: [
+            { commandId: 'unassignment-batch-1', expectedVersion: routeVersionId, sellerOrderId },
+            { commandId: 'unassignment-batch-2', expectedVersion: nextRouteVersionId, sellerOrderId },
+          ],
+        },
+        url: '/api/dsv/v1/seller-order-assignments/unassign',
+      });
+      expect(duplicate.statusCode).toBe(400);
+      expect(assignmentCommandService.unassignMany).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('validates admin assignment command payloads strictly and requires matching command IDs', async () => {
     const { app, assignmentCommandService } = await createHarness();
     try {
@@ -1302,13 +1376,23 @@ function createAssignmentCommandService(): MockAssignmentCommandService {
       assignmentResults: input.items.map((item) => assignmentResult({
         assignmentStatus: 'ASSIGNED',
         commandId: item.commandId,
+        sellerOrderId: item.sellerOrderId,
       })),
       routePlanId: targetRoutePlanId,
     })),
     unassign: vi.fn((input) => Promise.resolve(assignmentResult({
       assignmentStatus: 'UNASSIGNED',
       commandId: input.commandId,
+      sellerOrderId: input.sellerOrderId,
     }))),
+    unassignMany: vi.fn((input) => Promise.resolve({
+      assignmentResults: input.items.map((item) => assignmentResult({
+        assignmentStatus: 'UNASSIGNED',
+        commandId: item.commandId,
+        sellerOrderId: item.sellerOrderId,
+      })),
+      routePlanId: null,
+    })),
   };
 }
 
@@ -1486,6 +1570,7 @@ function validPreview(): DsvDispatchImportPreview {
 function assignmentResult(input: {
   assignmentStatus: 'ASSIGNED' | 'UNASSIGNED';
   commandId: string;
+  sellerOrderId?: string;
 }): Awaited<ReturnType<DsvAdminAssignmentCommandService['unassign']>> {
   return {
     assignmentStatus: input.assignmentStatus,
@@ -1496,7 +1581,7 @@ function assignmentResult(input: {
     previousRouteVersionId: routeVersionId,
     receiptId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     routePlanId: input.assignmentStatus === 'UNASSIGNED' ? null : targetRoutePlanId,
-    sellerOrderId,
+    sellerOrderId: input.sellerOrderId ?? sellerOrderId,
   };
 }
 
