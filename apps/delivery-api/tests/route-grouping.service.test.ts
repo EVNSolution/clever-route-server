@@ -1,7 +1,12 @@
 import { describe, expect, test } from 'vitest';
 import { classifyCoordinateInPolygons } from '../src/modules/route-grouping/route-grouping.geometry.js';
 import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
-import { newChildRouteName, resolveNewChildRouteIdx, resolveNextGlobalRouteIdx } from '../src/modules/route-grouping/route-grouping.service.js';
+import {
+  newChildRouteName,
+  rebindCurrentOrdersToRouteVersion,
+  resolveNewChildRouteIdx,
+  resolveNextGlobalRouteIdx
+} from '../src/modules/route-grouping/route-grouping.service.js';
 import {
   RouteGroupingConflictError,
   RouteGroupingStopMembershipConflictError
@@ -149,6 +154,41 @@ describe('route grouping contracts', () => {
     expect(source).toContain("route draft must not include a root route row");
     expect(source).toContain("route draft must include child routes only");
     expect(source).toContain("'route draft route keys must be unique'");
+  });
+
+  test('rebinds only already-assigned orders when a child route version is replaced', async () => {
+    const updates: unknown[] = [];
+    const count = await rebindCurrentOrdersToRouteVersion({
+      order: {
+        updateMany: (args: unknown) => {
+          updates.push(args);
+          return Promise.resolve({ count: 2 });
+        }
+      }
+    }, {
+      groupingId: 'grouping-a',
+      nextRouteVersionId: 'version-next',
+      orderIds: ['order-a', 'order-b', 'order-a'],
+      shopId: 'shop-a'
+    });
+
+    expect(count).toBe(2);
+    expect(updates).toEqual([{
+      data: { currentRouteVersionId: 'version-next' },
+      where: {
+        currentRouteVersion: { is: { groupingId: 'grouping-a' } },
+        currentRouteVersionId: { not: null },
+        id: { in: ['order-a', 'order-b'] },
+        shopId: 'shop-a'
+      }
+    }]);
+  });
+
+  test('rebinds current order ownership across every child-version replacement path', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const calls = source.match(/await rebindCurrentOrdersToRouteVersion\(tx,/gu) ?? [];
+
+    expect(calls).toHaveLength(5);
   });
 
   test('allows draft saves to persist a validated vehicle on child route plans', () => {
