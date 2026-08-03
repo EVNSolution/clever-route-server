@@ -17,9 +17,9 @@ import {
 import { PrismaDsvControlRepository } from './dsv-control.repository.js';
 import { PrismaDsvDispatchImportService } from './dsv-dispatch-import.service.js';
 import {
-  loadDsvDispatchImportNotificationService,
-  type DsvDispatchImportNotificationRuntimeEnv,
-} from './dsv-dispatch-import-notification.service.js';
+  loadDsvManualEmailService,
+  type DsvManualEmailRuntimeEnv,
+} from './dsv-manual-email.service.js';
 import { PrismaDsvResourceService } from './dsv-resource.service.js';
 import type { DsvControlDependencies } from '../../routes/dsv-control.routes.js';
 import { isStrongAdminWebSecret } from '../../routes/admin-ui-session.js';
@@ -34,7 +34,7 @@ import {
 import { DsvRouteOptimizationScheduler } from './dsv-route-optimization.scheduler.js';
 
 export type DsvControlRuntimeEnv = AdminRouteGroupRuntimeEnv
-  & DsvDispatchImportNotificationRuntimeEnv
+  & DsvManualEmailRuntimeEnv
   & GeocodingRuntimeEnv
   & Partial<Record<
   | 'CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS'
@@ -76,7 +76,7 @@ export function loadDsvControlDependencies(input: {
   const addressCanonicalizer = loadDsvAddressCanonicalizer({
     geocodingService,
   });
-  const dispatchImportNotificationService = loadDsvDispatchImportNotificationService(input.env);
+  const manualEmailService = loadDsvManualEmailService(input.env);
   const routeOptimizationScheduler = loadDsvRouteOptimizationScheduler(input);
 
   return {
@@ -89,9 +89,9 @@ export function loadDsvControlDependencies(input: {
       routeOptimizationScheduler,
     ),
     cookieName: readOptional(input.env.CLEVER_DSV_WEB_COOKIE_NAME) ?? 'clever_dsv_admin',
-    ...(dispatchImportNotificationService === undefined ? {} : { dispatchImportNotificationService }),
     dispatchImportService: new PrismaDsvDispatchImportService(input.prisma, { addressCanonicalizer }),
     geocodingService,
+    manualEmailService,
     repository: new PrismaDsvControlRepository(input.prisma),
     resourceService: new PrismaDsvResourceService(input.prisma),
     secureCookies: input.nodeEnv !== 'development' && input.nodeEnv !== 'test',

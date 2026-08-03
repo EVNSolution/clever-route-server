@@ -83,6 +83,22 @@ describe('API documentation routes', () => {
     }
   });
 
+  test('GET /docs/openapi.yaml documents the explicit manual email boundary', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('  /api/dsv/manual-email:');
+      expect(response.body).toContain('Dispatch apply, startup, schedules, and background events do not trigger this endpoint.');
+      expect(response.body).toContain('The server makes one Brevo request and does not retry automatically.');
+      expect(response.body).toContain('confirmed: { type: boolean, const: true }');
+    } finally {
+      await app.close();
+    }
+  });
+
   test('GET /docs/openapi.yaml documents the public CLEVER Routes distribution boundary', async () => {
     const app = await buildApp();
 

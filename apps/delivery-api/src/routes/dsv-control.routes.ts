@@ -41,8 +41,12 @@ import type {
   DsvDispatchImportSourceRow,
 } from '../modules/dsv/dsv-dispatch-import.service.js';
 import type {
-  DsvDispatchImportNotificationService,
-} from '../modules/dsv/dsv-dispatch-import-notification.service.js';
+  DsvManualEmailService,
+} from '../modules/dsv/dsv-manual-email.service.js';
+import {
+  DsvManualEmailConfigurationError,
+  DsvManualEmailSendError,
+} from '../modules/dsv/dsv-manual-email.service.js';
 import {
   DsvResourceConflictError,
   DsvResourceNotFoundError,
@@ -99,6 +103,9 @@ const operationSettingFields = [
   'forwardDelayAlerts',
   'gpsSilenceSeconds',
   'loadingStartTime',
+  'manualEmailBody',
+  'manualEmailSenderEmail',
+  'manualEmailSubject',
   'plannedDepartureTime',
   'recordMissingProof',
   'showTemperatureAlerts',
@@ -133,9 +140,9 @@ export type DsvControlDependencies = {
   allowedShopDomains: AdminCommerceActor['allowedShopDomains'];
   assignmentCommandService?: DsvAdminAssignmentCommandService;
   cookieName: string;
-  dispatchImportNotificationService?: DsvDispatchImportNotificationService;
   dispatchImportService: DsvDispatchImportService;
   geocodingService?: Pick<GeocodingService, 'geocode'>;
+  manualEmailService: DsvManualEmailService;
   repository: DsvControlRepository;
   resourceService: DsvResourceService;
   secureCookies: boolean;
@@ -322,6 +329,40 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
         latitude: geocode.result.latitude,
         longitude: geocode.result.longitude,
       });
+    }, ['dsv:settings:write']));
+
+  app.get(`${apiRoot}/manual-email`, async (request, reply) =>
+    withDsvSession(request, reply, dependencies, async ({ shopDomain }) => {
+      const settings = await dependencies.settingsService.getSettings({ shopDomain });
+      if (settings === null) return sendError(reply, 404, 'NOT_FOUND', 'Customer workspace not found');
+      const operationSettings = normalizeDsvOperationalSettings(settings.dsvOperationalSettings);
+      return sendData(reply, dependencies.manualEmailService.getConfig({
+        senderEmail: operationSettings.manualEmailSenderEmail,
+        subject: operationSettings.manualEmailSubject,
+        textContent: operationSettings.manualEmailBody,
+      }));
+    }, ['dsv:settings:read']));
+
+  app.post(`${apiRoot}/manual-email`, async (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {
+      const input = readManualEmailInput(request.body);
+      if (input === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid manual email payload');
+      try {
+        const settings = await dependencies.settingsService.getSettings({ shopDomain });
+        if (settings === null) return sendError(reply, 404, 'NOT_FOUND', 'Customer workspace not found');
+        const senderEmail = normalizeDsvOperationalSettings(settings.dsvOperationalSettings).manualEmailSenderEmail;
+        if (senderEmail === null) throw new DsvManualEmailConfigurationError();
+        const result = await dependencies.manualEmailService.send({ ...input, senderEmail });
+        return sendData(reply, result);
+      } catch (error) {
+        if (error instanceof DsvManualEmailConfigurationError) {
+          return sendError(reply, 503, 'MANUAL_EMAIL_NOT_CONFIGURED', '수동 이메일 발송 설정이 완료되지 않았습니다.');
+        }
+        if (error instanceof DsvManualEmailSendError) {
+          return sendError(reply, 502, 'MANUAL_EMAIL_SEND_FAILED', '이메일 발송에 실패했습니다.');
+        }
+        throw error;
+      }
     }, ['dsv:settings:write']));
 
   app.post(`${apiRoot}/addresses/resolve`, async (request, reply) =>
@@ -759,23 +800,6 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
           },
           shopDomain,
         });
-        if (dispatchImport.status !== 'APPLIED') {
-          void dependencies.dispatchImportNotificationService?.notifyApplied({
-            actor: actorId,
-            appliedAt: new Date(),
-            fileName: dispatchImport.fileName,
-            importId,
-            planDate: dispatchImport.planDate,
-            shopDomain,
-            summary: applyResult.summary,
-          }).catch((notificationError: unknown) => {
-            request.log.error({
-              error: notificationError,
-              importId,
-              shopDomain,
-            }, 'dispatch import applied email notification failed');
-          });
-        }
         return sendData(reply, { applyResult });
       } catch (error) {
         return sendDispatchImportApplyError(reply, error);
@@ -1006,6 +1030,41 @@ function objectBody(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
+function readManualEmailInput(value: unknown): {
+  commandId: string;
+  recipients: string[];
+  subject: string;
+  textContent: string;
+} | null {
+  const body = objectBody(value);
+  if (body === null || !hasOnlyKeys(body, ['commandId', 'confirmed', 'recipients', 'subject', 'textContent'])) return null;
+  const commandId = readTrimmed(body.commandId);
+  const subject = readBoundedText(body.subject, 200);
+  const textContent = readBoundedText(body.textContent, 10_000);
+  if (
+    commandId === null
+    || !uuidPattern.test(commandId)
+    || body.confirmed !== true
+    || subject === null
+    || textContent === null
+    || !Array.isArray(body.recipients)
+    || body.recipients.length === 0
+    || body.recipients.length > 10
+  ) return null;
+  const recipients = body.recipients.map((recipient) => readTrimmed(recipient));
+  if (recipients.some((recipient) => recipient === null || !isEmailAddress(recipient))) return null;
+  return {
+    commandId,
+    recipients: recipients as string[],
+    subject,
+    textContent,
+  };
+}
+
+function isEmailAddress(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(value);
+}
+
 function operationSettingsData(settings: AdminStoreSettings): Record<string, boolean | number | string | null> {
   return {
     departureAddress: settings.defaultDepotAddress,
@@ -1024,6 +1083,9 @@ function operationFieldsFrom(body: Record<string, unknown>): Record<string, unkn
     'etaDelayMinutes',
     'forwardDelayAlerts',
     'gpsSilenceSeconds',
+    'manualEmailBody',
+    'manualEmailSenderEmail',
+    'manualEmailSubject',
     'recordMissingProof',
     'showTemperatureAlerts',
     'temperatureLimit',

@@ -509,35 +509,43 @@ export class DsvAssignmentCommandService {
       }) as LockedSellerOrder[];
       if (orders.length !== sellerOrderIds.length) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
       const orderById = new Map(orders.map((order) => [order.id, order]));
-      const firstItem = input.items[0];
-      const firstOrder = firstItem === undefined ? undefined : orderById.get(firstItem.sellerOrderId);
-      if (firstItem === undefined || firstOrder === undefined) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
-
-      const grouping = await this.loadGroupingForSellerOrder(
-        tx,
-        shop.id,
-        input.shopDomain,
-        firstItem.sellerOrderId,
-        firstOrder.currentRouteVersionId,
-      );
-      const owners: RouteOwner[] = [];
+      const groupingOrderIds = new Map<string, string[]>();
+      const ownerByOrderId = new Map<string, RouteOwner | null>();
       for (const item of input.items) {
         const order = orderById.get(item.sellerOrderId);
         if (order === undefined) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
         assertExpectedVersion(item.expectedVersion, order.currentRouteVersionId);
-        const owner = await this.requireOwner(tx, item.sellerOrderId, grouping, order.currentRouteVersionId);
-        assertTransferOpen(owner);
-        owners.push(owner);
+        const groupingId = await this.findGroupingIdForSellerOrder(tx, shop.id, item.sellerOrderId, order.currentRouteVersionId);
+        if (groupingId === null) {
+          if (order.currentRouteVersionId !== null) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+          ownerByOrderId.set(item.sellerOrderId, null);
+          continue;
+        }
+        groupingOrderIds.set(groupingId, [...(groupingOrderIds.get(groupingId) ?? []), item.sellerOrderId]);
       }
 
-      const saved = await this.saveDraftAtomically(tx, {
-        expectedUpdatedAt: grouping.updatedAt,
-        groupingId: grouping.id,
-        removedOrderIds: sellerOrderIds,
-        routes: removeOrdersFromRoutes(grouping, sellerOrderIds),
-        shopDomain: input.shopDomain,
-      });
-      if (saved === null) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+      const affectedRouteScopes: Array<{ groupingId: string; routePlanId: string | null }> = [];
+      for (const [groupingId, groupedSellerOrderIds] of groupingOrderIds) {
+        const loaded = await this.routeGroupingService.getGrouping({ groupingId, shopDomain: input.shopDomain });
+        if (loaded === null) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+        const grouping = withUnassignedAssignments(loaded);
+        for (const sellerOrderId of groupedSellerOrderIds) {
+          const order = orderById.get(sellerOrderId);
+          if (order === undefined) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+          const owner = await this.requireOwner(tx, sellerOrderId, grouping, order.currentRouteVersionId);
+          assertTransferOpen(owner);
+          ownerByOrderId.set(sellerOrderId, owner);
+          affectedRouteScopes.push({ groupingId, routePlanId: owner.routePlanId });
+        }
+        const saved = await this.saveDraftAtomically(tx, {
+          expectedUpdatedAt: grouping.updatedAt,
+          groupingId,
+          removedOrderIds: groupedSellerOrderIds,
+          routes: removeOrdersFromRoutes(grouping, groupedSellerOrderIds),
+          shopDomain: input.shopDomain,
+        });
+        if (saved === null) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+      }
 
       await tx.dsvDispatchImportRow.updateMany({
         data: { deliveryStopId: null, sellerOrderId: null },
@@ -557,17 +565,17 @@ export class DsvAssignmentCommandService {
       if (deleted.count !== sellerOrderIds.length) throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
 
       await tx.dsvAuditEvent.createMany({
-        data: input.items.map((item, index) => {
+        data: input.items.map((item) => {
           const order = orderById.get(item.sellerOrderId);
-          const owner = owners[index];
+          const owner = ownerByOrderId.get(item.sellerOrderId);
           if (order === undefined || owner === undefined) throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
           return {
             actorId: input.actor.actorId ?? null,
             actorType: input.actor.actorType,
             afterSnapshotRef: canonicalJson({ deleted: true }),
             beforeSnapshotRef: canonicalJson({
-              previousRoutePlanId: owner.routePlanId,
-              previousRouteVersionId: owner.currentVersionId,
+              previousRoutePlanId: owner?.routePlanId ?? null,
+              previousRouteVersionId: owner?.currentVersionId ?? null,
             }),
             commandReceiptId: claim.receiptId,
             customerId: order.customerId,
@@ -575,8 +583,8 @@ export class DsvAssignmentCommandService {
             entityId: item.sellerOrderId,
             entityType: 'SellerOrder',
             eventType: 'deleteSellerOrders',
-            previousRoutePlanId: owner.routePlanId,
-            previousRouteVersionId: owner.currentVersionId,
+            previousRoutePlanId: owner?.routePlanId ?? null,
+            previousRouteVersionId: owner?.currentVersionId ?? null,
             principalType: input.actor.principalType,
             reason: input.reason ?? null,
             redactedDiff: {
@@ -609,18 +617,18 @@ export class DsvAssignmentCommandService {
       });
       if (completed.count !== 1) throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
 
-      const routePlanIds = [...new Set(owners.map((owner) => owner.routePlanId))];
+      const routePlanIds = [...new Set(affectedRouteScopes.map((scope) => scope.routePlanId))];
       const affectedRouteVersions: AffectedRouteVersion[] = [];
-      for (const routePlanId of routePlanIds) {
+      for (const scope of affectedRouteScopes) {
         const version = await tx.routeGroupingChildVersion.findFirst({
           orderBy: { updatedAt: 'desc' },
           select: { driverId: true, id: true, routePlanId: true },
-          where: { groupingId: grouping.id, routePlanId, shopId: shop.id, status: 'CURRENT', supersededAt: null },
+          where: { groupingId: scope.groupingId, routePlanId: scope.routePlanId, shopId: shop.id, status: 'CURRENT', supersededAt: null },
         });
         if (version !== null) affectedRouteVersions.push({ driverId: version.driverId, routePlanId: version.routePlanId, routeVersionId: version.id });
       }
       await this.invalidateAffectedEtas(tx, affectedRouteVersions);
-      return { result, routePlanIds, scheduleOptimization: true };
+      return { result, routePlanIds, scheduleOptimization: groupingOrderIds.size > 0 };
     }, transactionOptions).catch((error: unknown) => {
       if (isPrismaTransactionConflict(error)) throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
       throw error;
@@ -991,6 +999,19 @@ export class DsvAssignmentCommandService {
     sellerOrderId: string,
     currentRouteVersionId: string | null,
   ): Promise<RouteGroupingDetailDto> {
+    const groupingId = await this.findGroupingIdForSellerOrder(tx, shopId, sellerOrderId, currentRouteVersionId);
+    if (groupingId === null) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+    const grouping = await this.routeGroupingService.getGrouping({ groupingId, shopDomain });
+    if (grouping === null) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+    return withUnassignedAssignments(grouping);
+  }
+
+  private async findGroupingIdForSellerOrder(
+    tx: DsvAssignmentTransactionClient,
+    shopId: string,
+    sellerOrderId: string,
+    currentRouteVersionId: string | null,
+  ): Promise<string | null> {
     const groupingRef = currentRouteVersionId === null
       ? await tx.routeGroupingOrder.findFirst({
         orderBy: { createdAt: 'desc' },
@@ -1006,10 +1027,7 @@ export class DsvAssignmentCommandService {
           supersededAt: null,
         },
       });
-    if (groupingRef === null) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
-    const grouping = await this.routeGroupingService.getGrouping({ groupingId: groupingRef.groupingId, shopDomain });
-    if (grouping === null) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
-    return withUnassignedAssignments(grouping);
+    return groupingRef?.groupingId ?? null;
   }
 
   private async requireOwner(

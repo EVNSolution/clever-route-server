@@ -906,6 +906,9 @@ paths:
                 loadingStartTime:
                   type: string
                   pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+                manualEmailBody: { type: string, minLength: 1, maxLength: 10000 }
+                manualEmailSenderEmail: { type: [string, 'null'], format: email, maxLength: 320 }
+                manualEmailSubject: { type: string, minLength: 1, maxLength: 200 }
                 plannedDepartureTime:
                   type: string
                   pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
@@ -1437,6 +1440,69 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
         '503': { $ref: '#/components/responses/DsvSchemaNotReady' }
+  /api/dsv/manual-email:
+    get:
+      tags: [DSV Control]
+      summary: Read the safe manual email test configuration
+      description: Returns sender and default recipient metadata without exposing the Brevo API key.
+      operationId: getDsvManualEmailConfiguration
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [] }]
+      responses:
+        '200':
+          description: Safe manual email configuration.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [DSV Control]
+      summary: Send one explicitly confirmed Brevo test email
+      description: Sends only for this request. Dispatch apply, startup, schedules, and background events do not trigger this endpoint. The server makes one Brevo request and does not retry automatically.
+      operationId: sendDsvManualEmail
+      x-source-file: src/routes/dsv-control.routes.ts
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [commandId, confirmed, recipients, subject, textContent]
+              properties:
+                commandId: { type: string, format: uuid }
+                confirmed: { type: boolean, const: true }
+                recipients:
+                  type: array
+                  minItems: 1
+                  maxItems: 10
+                  uniqueItems: true
+                  items: { type: string, format: email }
+                subject: { type: string, minLength: 1, maxLength: 200 }
+                textContent: { type: string, minLength: 1, maxLength: 10000 }
+      responses:
+        '200':
+          description: Brevo accepted the single manual send request.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GenericDataEnvelope' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '502':
+          description: Brevo rejected the send request or was unavailable. The server did not retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503':
+          description: Manual email environment variables are incomplete.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
   /api/dsv/dispatch-imports/preview:
     post:
       tags: [DSV Control]
@@ -4098,6 +4164,9 @@ components:
             - forwardDelayAlerts
             - gpsSilenceSeconds
             - loadingStartTime
+            - manualEmailBody
+            - manualEmailSenderEmail
+            - manualEmailSubject
             - plannedDepartureTime
             - recordMissingProof
             - showTemperatureAlerts
@@ -4113,6 +4182,9 @@ components:
             loadingStartTime:
               type: string
               pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'
+            manualEmailBody: { type: string }
+            manualEmailSenderEmail: { type: [string, 'null'], format: email }
+            manualEmailSubject: { type: string }
             plannedDepartureTime:
               type: string
               pattern: '^(?:[01]\d|2[0-3]):[0-5]\d$'

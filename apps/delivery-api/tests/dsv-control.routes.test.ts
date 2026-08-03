@@ -11,7 +11,7 @@ import {
   type DsvDispatchImportPreview,
   type DsvDispatchImportService,
 } from '../src/modules/dsv/dsv-dispatch-import.service.js';
-import type { DsvDispatchImportNotificationService } from '../src/modules/dsv/dsv-dispatch-import-notification.service.js';
+import type { DsvManualEmailService } from '../src/modules/dsv/dsv-manual-email.service.js';
 import { dsvAdminScopes } from '../src/modules/dsv/dsv-principal.js';
 import { DsvAssignmentCommandError } from '../src/modules/dsv/dsv-assignment-command.service.js';
 import type { DsvAdminAssignmentCommandService, DsvControlDependencies } from '../src/routes/dsv-control.routes.js';
@@ -259,6 +259,7 @@ describe('DSV control routes', () => {
           departureLatitude: 37.330948,
           departureLongitude: 126.9372235,
           etaDelayMinutes: 15,
+          manualEmailSenderEmail: 'sender@example.com',
           loadingStartTime: '07:40',
           plannedDepartureTime: '08:20',
         },
@@ -274,7 +275,7 @@ describe('DSV control routes', () => {
         defaultDepotAddress: '경기도 군포시 번영로 82 군포복합물류센터',
         defaultDepotLatitude: 37.330948,
         defaultDepotLongitude: 126.9372235,
-        dsvOperationalSettings: { etaDelayMinutes: 15 },
+        dsvOperationalSettings: { etaDelayMinutes: 15, manualEmailSenderEmail: 'sender@example.com' },
       });
       expect(savedInput?.shopDomain).toBe('tomatonofood.com');
 
@@ -285,6 +286,15 @@ describe('DSV control routes', () => {
         url: '/api/dsv/settings/operations',
       });
       expect(invalid.statusCode).toBe(400);
+      expect(settingsService.saveSettings).toHaveBeenCalledTimes(1);
+
+      const invalidSender = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'PATCH',
+        payload: { manualEmailSenderEmail: 'invalid-address' },
+        url: '/api/dsv/settings/operations',
+      });
+      expect(invalidSender.statusCode).toBe(400);
       expect(settingsService.saveSettings).toHaveBeenCalledTimes(1);
 
       const unsupported = await app.inject({
@@ -560,11 +570,77 @@ describe('DSV control routes', () => {
     }
   });
 
+  test('exposes manual email configuration without the API key and sends only after explicit confirmation', async () => {
+    const manualEmailService = createManualEmailService({ configured: true });
+    const { app, settingsService } = await createHarness({ manualEmailService });
+    settingsService.getSettings.mockImplementation(() => Promise.resolve({
+      ...createCurrentSettings(),
+      dsvOperationalSettings: {
+        ...defaultDsvOperationalSettings(),
+        manualEmailSenderEmail: 'noreply@example.com',
+      },
+    }));
+    try {
+      const login = await loginToDsv(app);
+      const config = await app.inject({
+        headers: { cookie: login.cookie },
+        method: 'GET',
+        url: '/api/dsv/manual-email',
+      });
+      expect(config.statusCode).toBe(200);
+      expect(config.json()).toEqual({
+        data: {
+          apiConfigured: true,
+          configured: true,
+          defaultRecipients: ['ops@example.com'],
+          defaultSubject: defaultDsvOperationalSettings().manualEmailSubject,
+          defaultTextContent: defaultDsvOperationalSettings().manualEmailBody,
+          senderEmail: 'noreply@example.com',
+          senderName: 'CLEVER DSV',
+        },
+        error: null,
+      });
+      expect(JSON.stringify(config.json())).not.toContain('brevo-key');
+
+      const payload = {
+        commandId: '11111111-1111-4111-8111-111111111111',
+        confirmed: true,
+        recipients: ['ops@example.com'],
+        subject: '수동 발송 테스트',
+        textContent: '확인한 본문',
+      };
+      const missingCsrf = await app.inject({
+        headers: { cookie: login.cookie },
+        method: 'POST',
+        payload,
+        url: '/api/dsv/manual-email',
+      });
+      expect(missingCsrf.statusCode).toBe(403);
+      expect(manualEmailService.send).not.toHaveBeenCalled();
+
+      const sent = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload,
+        url: '/api/dsv/manual-email',
+      });
+      expect(sent.statusCode).toBe(200);
+      expect(manualEmailService.send).toHaveBeenCalledOnce();
+      expect(manualEmailService.send).toHaveBeenCalledWith({
+        commandId: payload.commandId,
+        recipients: payload.recipients,
+        senderEmail: 'noreply@example.com',
+        subject: payload.subject,
+        textContent: payload.textContent,
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('applies a staged dispatch import with CSRF, apply scope, idempotency key, and canonical principal metadata', async () => {
-    const dispatchImportNotificationService = {
-      notifyApplied: vi.fn<DsvDispatchImportNotificationService['notifyApplied']>(() => Promise.resolve()),
-    };
-    const { app, dispatchImportService } = await createHarness({ dispatchImportNotificationService });
+    const manualEmailService = createManualEmailService();
+    const { app, dispatchImportService } = await createHarness({ manualEmailService });
     try {
       const login = await loginToDsv(app);
 
@@ -610,29 +686,15 @@ describe('DSV control routes', () => {
         shopDomain: 'tomatonofood.com',
       });
       expect(applyInput?.principal?.requestId).toEqual(expect.any(String));
-      await vi.waitFor(() => {
-        expect(dispatchImportNotificationService.notifyApplied).toHaveBeenCalledOnce();
-      });
-      const notification = dispatchImportNotificationService.notifyApplied.mock.calls[0]?.[0];
-      expect(notification).toMatchObject({
-        actor: adminAccountId,
-        fileName: 'dsv-fixed-dispatch-10.csv',
-        importId,
-        planDate: '2026-07-23',
-        shopDomain: 'tomatonofood.com',
-        summary: { appliedRows: 1, newRows: 1, noOpRows: 0, updatedRows: 0 },
-      });
-      expect(notification?.appliedAt).toBeInstanceOf(Date);
+      expect(manualEmailService.send).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
   });
 
-  test('does not send the applied notification again when the import was already applied', async () => {
-    const dispatchImportNotificationService = {
-      notifyApplied: vi.fn<DsvDispatchImportNotificationService['notifyApplied']>(() => Promise.resolve()),
-    };
-    const { app, dispatchImportService } = await createHarness({ dispatchImportNotificationService });
+  test('keeps manual email detached when an already applied import is replayed', async () => {
+    const manualEmailService = createManualEmailService();
+    const { app, dispatchImportService } = await createHarness({ manualEmailService });
     dispatchImportService.getImport.mockResolvedValueOnce({
       ...(await dispatchImportService.getImport({ importId, shopDomain: 'tomatonofood.com' })),
       status: 'APPLIED',
@@ -648,7 +710,7 @@ describe('DSV control routes', () => {
       });
 
       expect(response.statusCode).toBe(200);
-      expect(dispatchImportNotificationService.notifyApplied).not.toHaveBeenCalled();
+      expect(manualEmailService.send).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -1365,7 +1427,7 @@ describe('DSV control routes', () => {
 
 async function createHarness(overrides: {
   addressCanonicalizer?: DsvAddressCanonicalizer;
-  dispatchImportNotificationService?: DsvDispatchImportNotificationService;
+  manualEmailService?: DsvManualEmailService;
 } = {}): Promise<{
   app: Awaited<ReturnType<typeof buildApp>>;
   assignmentCommandService: MockAssignmentCommandService;
@@ -1406,11 +1468,9 @@ async function createHarness(overrides: {
     allowedShopDomains: ['tomatonofood.com'],
     assignmentCommandService,
     cookieName: 'clever_dsv_admin',
-    ...(overrides.dispatchImportNotificationService === undefined
-      ? {}
-      : { dispatchImportNotificationService: overrides.dispatchImportNotificationService }),
     dispatchImportService,
     geocodingService,
+    manualEmailService: overrides.manualEmailService ?? createManualEmailService(),
     repository,
     resourceService,
     secureCookies: false,
@@ -1433,6 +1493,28 @@ function createGeocodingService() {
         providerPlaceId: null,
         rawLabel: null,
       },
+    })),
+  };
+}
+
+function createManualEmailService(config: { configured?: boolean } = {}): DsvManualEmailService & {
+  send: ReturnType<typeof vi.fn<DsvManualEmailService['send']>>;
+} {
+  const configured = config.configured ?? false;
+  return {
+    getConfig: () => ({
+      apiConfigured: configured,
+      configured,
+      defaultRecipients: ['ops@example.com'],
+      defaultSubject: defaultDsvOperationalSettings().manualEmailSubject,
+      defaultTextContent: defaultDsvOperationalSettings().manualEmailBody,
+      senderEmail: configured ? 'noreply@example.com' : null,
+      senderName: 'CLEVER DSV',
+    }),
+    send: vi.fn<DsvManualEmailService['send']>(() => Promise.resolve({
+      messageId: 'message-a',
+      recipientCount: 1,
+      sentAt: '2026-08-03T08:00:00.000Z',
     })),
   };
 }
@@ -1497,8 +1579,8 @@ function createResourceService(): MockResourceService {
   };
 }
 
-function createSettingsService() {
-  const current: AdminStoreSettings = {
+function createCurrentSettings(): AdminStoreSettings {
+  return {
     defaultDepotAddress: null,
     defaultDepotLatitude: null,
     defaultDepotLongitude: null,
@@ -1508,6 +1590,10 @@ function createSettingsService() {
     routeScopeConfig: defaultRouteScopeConfig(),
     shopDomain: 'tomatonofood.com',
   };
+}
+
+function createSettingsService() {
+  const current = createCurrentSettings();
   return {
     getSettings: vi.fn<(input: { shopDomain: string }) => Promise<AdminStoreSettings | null>>(() => Promise.resolve(current)),
     saveSettings: vi.fn<(input: SaveAdminStoreSettingsInput) => Promise<AdminStoreSettings>>((input) => Promise.resolve({
