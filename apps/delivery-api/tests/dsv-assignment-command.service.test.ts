@@ -76,6 +76,36 @@ describe('DsvAssignmentCommandService', () => {
     });
   });
 
+  test('reassignMany moves 53 orders with one grouping save and one optimization schedule', async () => {
+    const schedule = vi.fn();
+    const orderIds = Array.from({ length: 53 }, (_, index) => `order-${index + 1}`);
+    const grouping = groupingFixture();
+    grouping.assignments = orderIds.map((orderId, index) => assignment(orderId, index + 1));
+    if (grouping.children[0] !== undefined) grouping.children[0].orderIds = orderIds;
+    grouping.totalOrders = orderIds.length;
+    const harness = createHarness({ grouping, routeOptimizationScheduler: { schedule } });
+
+    const result = await harness.service.reassignMany({
+      actor: adminInput().actor,
+      items: orderIds.map((sellerOrderId, index) => ({
+        commandId: `cmd-batch-${index + 1}`,
+        expectedVersion: 'version-route-a',
+        sellerOrderId,
+      })),
+      reason: 'batch assignment',
+      shopDomain: 'example.myshopify.com',
+      targetDriverId: 'driver-b',
+      targetRoutePlanId: 'route-b',
+      targetVehicleId: 'vehicle-b',
+    });
+
+    expect(harness.routeGroupingService.saveDraft).toHaveBeenCalledTimes(1);
+    expect(harness.savedRoutes().find((route) => route.routePlanId === 'route-a')?.orderIds).toEqual([]);
+    expect(harness.savedRoutes().find((route) => route.routePlanId === 'route-b')?.orderIds).toEqual(orderIds);
+    expect(result.assignmentResults.map((item) => item.sellerOrderId)).toEqual(orderIds);
+    expect(schedule).toHaveBeenCalledTimes(1);
+  });
+
   test('reassign without target route uses the selected driver ready route when it exists', async () => {
     const harness = createHarness();
 
@@ -350,12 +380,20 @@ function createHarness(input: {
   routeOptimizationScheduler?: { schedule(input: { routePlanIds: Array<string | null>; shopDomain: string }): void };
 } = {}) {
   const grouping = input.grouping ?? groupingFixture();
-  const initialOwner = grouping.children.find((child) => child.orderIds.includes('order-a'));
-  let currentRouteVersionId: string | null = initialOwner === undefined
-    ? null
-    : initialOwner.routePlanId === 'route-unassigned'
+  const currentRouteVersionIds = new Map<string, string | null>();
+  for (const child of grouping.children) {
+    const versionId = child.routePlanId === 'route-unassigned'
       ? 'version-unassigned'
-      : 'version-route-a';
+      : child.routePlanId === 'route-b'
+        ? 'version-route-b'
+        : 'version-route-a';
+    for (const orderId of child.orderIds) {
+      if (!currentRouteVersionIds.has(orderId)) currentRouteVersionIds.set(orderId, versionId);
+    }
+  }
+  for (const assignment of grouping.assignments) {
+    if (!currentRouteVersionIds.has(assignment.orderId)) currentRouteVersionIds.set(assignment.orderId, null);
+  }
   const routeGroupingService: Pick<RouteGroupingService, 'getGrouping' | 'saveDraft'> = {
     getGrouping: vi.fn<RouteGroupingService['getGrouping']>(() => Promise.resolve(grouping)),
     saveDraft: vi.fn<RouteGroupingService['saveDraft']>((draftInput) => Promise.resolve(groupingFromDraftRoutes(grouping, draftInput.routes))),
@@ -392,13 +430,13 @@ function createHarness(input: {
       }),
     },
     order: {
-      findFirst: vi.fn((args: { select?: { currentRouteVersionId?: boolean } }) => Promise.resolve(
+      findFirst: vi.fn((args: { select?: { currentRouteVersionId?: boolean }; where?: { id?: string } }) => Promise.resolve(
         args.select?.currentRouteVersionId === true
-          ? { currentRouteVersionId }
+          ? { currentRouteVersionId: currentRouteVersionIds.get(args.where?.id ?? 'order-a') ?? null }
           : { customerId: 'customer-a', destinationId: 'destination-x' },
       )),
-      updateMany: vi.fn((args: { data: { currentRouteVersionId?: string | null } }) => {
-        currentRouteVersionId = args.data.currentRouteVersionId ?? null;
+      updateMany: vi.fn((args: { data: { currentRouteVersionId?: string | null }; where?: { id?: string } }) => {
+        currentRouteVersionIds.set(args.where?.id ?? 'order-a', args.data.currentRouteVersionId ?? null);
         return Promise.resolve({ count: 1 });
       }),
     },

@@ -943,6 +943,48 @@ describe('DSV control routes', () => {
     }
   });
 
+  test('accepts one bounded v1 batch assignment command for multiple seller orders', async () => {
+    const { app, assignmentCommandService } = await createHarness();
+    try {
+      const login = await loginToDsv(app);
+      const secondSellerOrderId = 'edededed-eded-4ded-8ded-edededededed';
+      const response = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: {
+          items: [
+            { commandId: 'assignment-batch-1', expectedVersion: routeVersionId, sellerOrderId },
+            { commandId: 'assignment-batch-2', expectedVersion: 'UNASSIGNED', sellerOrderId: secondSellerOrderId },
+          ],
+          reason: '관리자 배정',
+          targetDriverId,
+          targetRoutePlanId,
+          targetVehicleId,
+        },
+        url: '/api/dsv/v1/seller-order-assignments/reassign',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(assignmentCommandService.reassignMany).toHaveBeenCalledTimes(1);
+      expect(assignmentCommandService.reassignMany).toHaveBeenCalledWith(expect.objectContaining({
+        items: [
+          { commandId: 'assignment-batch-1', expectedVersion: routeVersionId, sellerOrderId },
+          { commandId: 'assignment-batch-2', expectedVersion: 'UNASSIGNED', sellerOrderId: secondSellerOrderId },
+        ],
+        shopDomain: 'tomatonofood.com',
+        targetDriverId,
+        targetRoutePlanId,
+        targetVehicleId,
+      }));
+      expect(response.json()).toMatchObject({
+        data: { assignmentResults: [{ assignmentStatus: 'ASSIGNED' }, { assignmentStatus: 'ASSIGNED' }] },
+        error: null,
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('validates admin assignment command payloads strictly and requires matching command IDs', async () => {
     const { app, assignmentCommandService } = await createHarness();
     try {
@@ -1256,6 +1298,13 @@ function createAssignmentCommandService(): MockAssignmentCommandService {
       assignmentStatus: 'ASSIGNED',
       commandId: input.commandId,
     }))),
+    reassignMany: vi.fn((input) => Promise.resolve({
+      assignmentResults: input.items.map((item) => assignmentResult({
+        assignmentStatus: 'ASSIGNED',
+        commandId: item.commandId,
+      })),
+      routePlanId: targetRoutePlanId,
+    })),
     unassign: vi.fn((input) => Promise.resolve(assignmentResult({
       assignmentStatus: 'UNASSIGNED',
       commandId: input.commandId,

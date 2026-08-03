@@ -129,6 +129,7 @@ describe('API documentation routes', () => {
         { method: 'get', path: '/api/dsv/v1/drivers' },
         { method: 'get', path: '/api/dsv/v1/map/profile' },
         { method: 'get', path: '/api/dsv/v1/records' },
+        { method: 'post', path: '/api/dsv/v1/seller-order-assignments/reassign' },
         { method: 'post', path: '/api/dsv/v1/seller-orders/:sellerOrderId/assignment/reassign' },
         { method: 'post', path: '/api/dsv/v1/seller-orders/:sellerOrderId/assignment/unassign' },
         { method: 'get', path: '/api/dsv/v1/session' },

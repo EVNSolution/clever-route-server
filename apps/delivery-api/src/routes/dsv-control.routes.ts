@@ -18,7 +18,9 @@ import type {
 } from '../modules/commerce/admin-store-settings.service.js';
 import {
   DsvAssignmentCommandError,
+  type DsvAdminBatchReassignInput,
   type DsvAssignmentCommandBaseInput,
+  type DsvBatchAssignmentResult,
   type DsvAssignmentResult,
 } from '../modules/dsv/dsv-assignment-command.service.js';
 import {
@@ -109,6 +111,7 @@ type DsvAdminReassignCommandInput = DsvAssignmentCommandBaseInput & {
 
 export type DsvAdminAssignmentCommandService = {
   reassign(input: DsvAdminReassignCommandInput): Promise<DsvAssignmentResult>;
+  reassignMany(input: DsvAdminBatchReassignInput): Promise<DsvBatchAssignmentResult>;
   unassign(input: DsvAssignmentCommandBaseInput): Promise<DsvAssignmentResult>;
 };
 
@@ -658,6 +661,29 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
           shopDomain: session.shopDomain,
         });
         return sendData(reply, { assignmentResult });
+      } catch (error) {
+        return sendDsvAssignmentCommandError(reply, error);
+      }
+    }, ['dsv:dispatches:write']));
+
+  app.post(`${versionedApiRoot}/seller-order-assignments/reassign`, async (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async (session) => {
+      if (dependencies.assignmentCommandService === undefined) {
+        return sendError(reply, 503, 'DSV_ASSIGNMENT_SERVICE_UNAVAILABLE', 'DSV assignment command service is not configured');
+      }
+      const command = readDsvBatchReassignCommand(request);
+      if (command === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid seller order batch reassign payload');
+      try {
+        const result = await dependencies.assignmentCommandService.reassignMany({
+          actor: dsvAdminCommandActor(session, request),
+          items: command.items,
+          reason: command.reason ?? null,
+          shopDomain: session.shopDomain,
+          targetDriverId: command.targetDriverId,
+          ...(command.targetRoutePlanId === undefined ? {} : { targetRoutePlanId: command.targetRoutePlanId }),
+          ...(command.targetVehicleId === undefined ? {} : { targetVehicleId: command.targetVehicleId }),
+        });
+        return sendData(reply, result);
       } catch (error) {
         return sendDsvAssignmentCommandError(reply, error);
       }
@@ -1306,6 +1332,51 @@ function readDsvReassignCommand(request: FastifyRequest): {
     targetDriverId,
     ...(targetRoutePlanId === undefined ? {} : { targetRoutePlanId }),
     ...(targetSequence === undefined ? {} : { targetSequence: targetSequence + 1 }),
+    ...(targetVehicleId === undefined ? {} : { targetVehicleId }),
+  };
+}
+
+function readDsvBatchReassignCommand(request: FastifyRequest): {
+  items: Array<{ commandId: string; expectedVersion: string; sellerOrderId: string }>;
+  reason?: string;
+  targetDriverId: string;
+  targetRoutePlanId?: string;
+  targetVehicleId?: string;
+} | null {
+  const body = objectBody(request.body);
+  if (body === null || !hasOnlyAllowedKeys(body, [
+    'items',
+    'reason',
+    'targetDriverId',
+    'targetRoutePlanId',
+    'targetVehicleId',
+  ])) return null;
+  if (!Array.isArray(body.items) || body.items.length === 0 || body.items.length > 100) return null;
+
+  const reason = readOptionalBoundedText(body.reason, 500);
+  const targetDriverId = readUuidValue(body.targetDriverId);
+  const targetRoutePlanId = Object.hasOwn(body, 'targetRoutePlanId') ? readUuidValue(body.targetRoutePlanId) : undefined;
+  const targetVehicleId = Object.hasOwn(body, 'targetVehicleId') ? readUuidValue(body.targetVehicleId) : undefined;
+  if (reason === null || targetDriverId === null || targetRoutePlanId === null || targetVehicleId === null) return null;
+
+  const items: Array<{ commandId: string; expectedVersion: string; sellerOrderId: string }> = [];
+  const sellerOrderIds = new Set<string>();
+  for (const value of body.items) {
+    const item = objectBody(value);
+    if (item === null || !hasOnlyAllowedKeys(item, ['commandId', 'expectedVersion', 'sellerOrderId'])) return null;
+    const commandId = readBoundedText(item.commandId, 120);
+    const expectedVersion = readBoundedText(item.expectedVersion, 160);
+    const sellerOrderId = readUuidValue(item.sellerOrderId);
+    if (commandId === null || expectedVersion === null || sellerOrderId === null || sellerOrderIds.has(sellerOrderId)) return null;
+    sellerOrderIds.add(sellerOrderId);
+    items.push({ commandId, expectedVersion, sellerOrderId });
+  }
+
+  return {
+    items,
+    ...(reason === undefined ? {} : { reason }),
+    targetDriverId,
+    ...(targetRoutePlanId === undefined ? {} : { targetRoutePlanId }),
     ...(targetVehicleId === undefined ? {} : { targetVehicleId }),
   };
 }
