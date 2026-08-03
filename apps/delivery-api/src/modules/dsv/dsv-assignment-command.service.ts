@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 
 import {
   RouteGroupingConflictError,
@@ -18,7 +18,7 @@ import type { DsvRouteOptimizationSchedulerPort } from './dsv-route-optimization
 
 type DsvAssignmentPrismaClient = DsvAssignmentTransactionPort & Pick<
   PrismaClient,
-  'dsvAuditEvent' | 'dsvCommandReceipt' | 'dsvVehicleDriverAssignment' | 'order' | 'routeGroupingChildVersion' | 'routeGroupingOrder' | 'routePlan' | 'routePlanStop' | 'shop' | 'vehicle'
+  'dsvAuditEvent' | 'dsvCommandReceipt' | 'dsvDispatchImportRow' | 'dsvVehicleDriverAssignment' | 'order' | 'routeGroupingChildVersion' | 'routeGroupingOrder' | 'routePlan' | 'routePlanStop' | 'shop' | 'vehicle'
 >;
 
 type DsvAssignmentRouteGroupingService = RouteGroupingService & {
@@ -68,6 +68,20 @@ export type DsvAdminBatchUnassignInput = {
   shopDomain: string;
 };
 
+export type DsvAdminBatchDeleteInput = {
+  actor: DsvAssignmentActor;
+  commandId: string;
+  items: Array<Pick<DsvAssignmentCommandBaseInput, 'expectedVersion' | 'sellerOrderId'>>;
+  reason?: string | null | undefined;
+  shopDomain: string;
+};
+
+export type DsvBatchDeleteResult = {
+  commandId: string;
+  deletedSellerOrderIds: string[];
+  receiptId: string;
+};
+
 export type DsvBatchAssignmentResult = {
   assignmentResults: DsvAssignmentResult[];
   routePlanId: string | null;
@@ -79,6 +93,7 @@ export type DsvDriverCommandInput = Omit<DsvAssignmentCommandBaseInput, 'actor' 
 
 export type DsvAssignmentCommandName =
   | 'acquireSellerOrder'
+  | 'deleteSellerOrders'
   | 'reassignSellerOrder'
   | 'releaseSellerOrder'
   | 'unassignSellerOrder';
@@ -114,6 +129,14 @@ export type DsvAssignmentCommandErrorCode =
   | 'SELLER_ORDER_TRANSFER_CLOSED';
 
 type ClaimedCommand = { receiptId: string } | { result: DsvAssignmentResult };
+type ClaimedDeleteCommand = { receiptId: string } | { result: DsvBatchDeleteResult };
+
+type LockedSellerOrder = {
+  currentRouteVersionId: string | null;
+  customerId: string | null;
+  destinationId: string | null;
+  id: string;
+};
 
 type MovementPlan = {
   assignmentStatus: 'ASSIGNED' | 'UNASSIGNED';
@@ -455,6 +478,164 @@ export class DsvAssignmentCommandService {
     };
   }
 
+  async deleteMany(input: DsvAdminBatchDeleteInput): Promise<DsvBatchDeleteResult> {
+    const distinctSellerOrderIds = new Set(input.items.map((item) => item.sellerOrderId));
+    if (input.items.length === 0 || input.items.length > 100 || distinctSellerOrderIds.size !== input.items.length) {
+      throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
+    }
+    const shop = await this.prisma.shop.findUnique({
+      select: { id: true },
+      where: appScopedShopWhere({ shopDomain: normalizeShopDomain(input.shopDomain) }),
+    });
+    if (shop === null) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+
+    const sellerOrderIds = input.items.map((item) => item.sellerOrderId);
+    const payloadHash = sha256CanonicalJson(assignmentPayload('deleteSellerOrders', input));
+    const execution = await this.prisma.$transaction(async (tx) => {
+      await lockAssignmentCommand(tx, shop.id, input.commandId);
+      const claim = await this.claimDeleteCommand(tx, shop.id, input, payloadHash);
+      if ('result' in claim) {
+        return {
+          result: claim.result,
+          routePlanIds: [] as Array<string | null>,
+          scheduleOptimization: false,
+        };
+      }
+
+      await lockSellerOrders(tx, shop.id, sellerOrderIds);
+      const orders = await tx.order.findMany({
+        select: { currentRouteVersionId: true, customerId: true, destinationId: true, id: true },
+        where: { id: { in: sellerOrderIds }, shopId: shop.id },
+      }) as LockedSellerOrder[];
+      if (orders.length !== sellerOrderIds.length) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+      const orderById = new Map(orders.map((order) => [order.id, order]));
+      const firstItem = input.items[0];
+      const firstOrder = firstItem === undefined ? undefined : orderById.get(firstItem.sellerOrderId);
+      if (firstItem === undefined || firstOrder === undefined) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+
+      const grouping = await this.loadGroupingForSellerOrder(
+        tx,
+        shop.id,
+        input.shopDomain,
+        firstItem.sellerOrderId,
+        firstOrder.currentRouteVersionId,
+      );
+      const owners: RouteOwner[] = [];
+      for (const item of input.items) {
+        const order = orderById.get(item.sellerOrderId);
+        if (order === undefined) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+        assertExpectedVersion(item.expectedVersion, order.currentRouteVersionId);
+        const owner = await this.requireOwner(tx, item.sellerOrderId, grouping, order.currentRouteVersionId);
+        assertTransferOpen(owner);
+        owners.push(owner);
+      }
+
+      const saved = await this.saveDraftAtomically(tx, {
+        expectedUpdatedAt: grouping.updatedAt,
+        groupingId: grouping.id,
+        removedOrderIds: sellerOrderIds,
+        routes: removeOrdersFromRoutes(grouping, sellerOrderIds),
+        shopDomain: input.shopDomain,
+      });
+      if (saved === null) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+
+      await tx.dsvDispatchImportRow.updateMany({
+        data: { deliveryStopId: null, sellerOrderId: null },
+        where: { sellerOrderId: { in: sellerOrderIds }, shopId: shop.id },
+      });
+      await tx.dsvCommandReceipt.updateMany({
+        data: { sellerOrderId: null },
+        where: { sellerOrderId: { in: sellerOrderIds }, shopId: shop.id },
+      });
+      await tx.dsvAuditEvent.updateMany({
+        data: { sellerOrderId: null },
+        where: { sellerOrderId: { in: sellerOrderIds }, shopId: shop.id },
+      });
+      const deleted = await tx.order.deleteMany({
+        where: { id: { in: sellerOrderIds }, shopId: shop.id },
+      });
+      if (deleted.count !== sellerOrderIds.length) throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
+
+      await tx.dsvAuditEvent.createMany({
+        data: input.items.map((item, index) => {
+          const order = orderById.get(item.sellerOrderId);
+          const owner = owners[index];
+          if (order === undefined || owner === undefined) throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
+          return {
+            actorId: input.actor.actorId ?? null,
+            actorType: input.actor.actorType,
+            afterSnapshotRef: canonicalJson({ deleted: true }),
+            beforeSnapshotRef: canonicalJson({
+              previousRoutePlanId: owner.routePlanId,
+              previousRouteVersionId: owner.currentVersionId,
+            }),
+            commandReceiptId: claim.receiptId,
+            customerId: order.customerId,
+            destinationId: order.destinationId,
+            entityId: item.sellerOrderId,
+            entityType: 'SellerOrder',
+            eventType: 'deleteSellerOrders',
+            previousRoutePlanId: owner.routePlanId,
+            previousRouteVersionId: owner.currentVersionId,
+            principalType: input.actor.principalType,
+            reason: input.reason ?? null,
+            redactedDiff: {
+              commandId: input.commandId,
+              deleted: true,
+              reasonPresent: input.reason !== undefined && input.reason !== null && input.reason.trim() !== '',
+            },
+            requestId: input.actor.requestId ?? input.commandId,
+            sellerOrderId: null,
+            shopId: shop.id,
+          };
+        }),
+      });
+
+      const result: DsvBatchDeleteResult = {
+        commandId: input.commandId,
+        deletedSellerOrderIds: sellerOrderIds,
+        receiptId: claim.receiptId,
+      };
+      const completed = await tx.dsvCommandReceipt.updateMany({
+        data: {
+          completedAt: new Date(),
+          responseBodyRef: canonicalJson(result),
+          responseStatus: 200,
+          resultEntityId: input.commandId,
+          resultEntityType: 'SellerOrderBatch',
+          status: 'SUCCEEDED',
+        },
+        where: { id: claim.receiptId, payloadHash, shopId: shop.id, status: 'STARTED' },
+      });
+      if (completed.count !== 1) throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
+
+      const routePlanIds = [...new Set(owners.map((owner) => owner.routePlanId))];
+      const affectedRouteVersions: AffectedRouteVersion[] = [];
+      for (const routePlanId of routePlanIds) {
+        const version = await tx.routeGroupingChildVersion.findFirst({
+          orderBy: { updatedAt: 'desc' },
+          select: { driverId: true, id: true, routePlanId: true },
+          where: { groupingId: grouping.id, routePlanId, shopId: shop.id, status: 'CURRENT', supersededAt: null },
+        });
+        if (version !== null) affectedRouteVersions.push({ driverId: version.driverId, routePlanId: version.routePlanId, routeVersionId: version.id });
+      }
+      await this.invalidateAffectedEtas(tx, affectedRouteVersions);
+      return { result, routePlanIds, scheduleOptimization: true };
+    }, transactionOptions).catch((error: unknown) => {
+      if (isPrismaTransactionConflict(error)) throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
+      throw error;
+    });
+
+    if (execution.scheduleOptimization) {
+      try {
+        this.routeOptimizationScheduler?.schedule({ routePlanIds: execution.routePlanIds, shopDomain: input.shopDomain });
+      } catch {
+        // Deletion success must not depend on background route optimization scheduling.
+      }
+    }
+    return execution.result;
+  }
+
   async unassign(input: DsvAssignmentCommandBaseInput): Promise<DsvAssignmentResult> {
     return this.execute({
       commandName: 'unassignSellerOrder',
@@ -700,6 +881,41 @@ export class DsvAssignmentCommandService {
     return { receiptId: receipt.id };
   }
 
+  private async claimDeleteCommand(
+    tx: DsvAssignmentTransactionClient,
+    shopId: string,
+    input: DsvAdminBatchDeleteInput,
+    payloadHash: string,
+  ): Promise<ClaimedDeleteCommand> {
+    const commandName = 'deleteSellerOrders';
+    const existing = await tx.dsvCommandReceipt.findUnique({
+      where: { shopId_commandName_commandId: { commandId: input.commandId, commandName, shopId } },
+    });
+    if (existing !== null) {
+      if (existing.payloadHash !== payloadHash) throw new DsvAssignmentCommandError('IDEMPOTENCY_PAYLOAD_MISMATCH');
+      if (existing.status === 'STARTED') throw new DsvAssignmentCommandError('COMMAND_IN_PROGRESS');
+      const replayResult = parseDeleteResultBody(existing.responseBodyRef);
+      if (existing.status === 'SUCCEEDED' && replayResult !== null) return { result: replayResult };
+      throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
+    }
+    const receipt = await tx.dsvCommandReceipt.create({
+      data: {
+        actorId: input.actor.actorId ?? null,
+        actorType: input.actor.actorType,
+        commandId: input.commandId,
+        commandName,
+        payloadHash,
+        principalType: input.actor.principalType,
+        requestId: input.actor.requestId ?? input.commandId,
+        sellerOrderId: null,
+        shopId,
+        status: 'STARTED',
+      },
+      select: { id: true },
+    });
+    return { receiptId: receipt.id };
+  }
+
   private async completeCommand(
     tx: DsvAssignmentTransactionClient,
     shopId: string,
@@ -935,6 +1151,26 @@ export class DsvAssignmentCommandService {
     }
   }
 
+  private async saveDraftAtomically(
+    tx: DsvAssignmentTransactionClient,
+    input: Parameters<RouteGroupingService['saveDraft']>[0],
+  ): Promise<RouteGroupingDetailDto | null> {
+    if (this.routeGroupingService.saveDraftInTransaction === undefined) {
+      throw new Error('Transactional route grouping draft save is required for seller order deletion');
+    }
+    try {
+      return await this.routeGroupingService.saveDraftInTransaction(tx, input);
+    } catch (error: unknown) {
+      if (error instanceof RouteGroupingConflictError) {
+        throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
+      }
+      if (error instanceof RouteGroupingValidationError) {
+        throw new DsvAssignmentCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED', error.blockers.join(', '));
+      }
+      throw error;
+    }
+  }
+
   private async invalidateAffectedEtas(
     tx: DsvAssignmentTransactionClient,
     affectedRouteVersions: AffectedRouteVersion[],
@@ -1156,6 +1392,17 @@ function moveOrdersToUnassignedRoute(
   ];
 }
 
+function removeOrdersFromRoutes(
+  grouping: RouteGroupingDetailDto,
+  orderIds: string[],
+): RouteGroupingDraftRouteInput[] {
+  const removed = new Set(orderIds);
+  return grouping.children.map((child) => childToDraftRoute(
+    child,
+    child.orderIds.filter((orderId) => !removed.has(orderId)),
+  ));
+}
+
 function releaseToNewUnassignedRoute(
   grouping: RouteGroupingDetailDto,
   orderId: string,
@@ -1259,6 +1506,21 @@ function parseAssignmentResultBody(value: string | null): DsvAssignmentResult | 
   }
 }
 
+function parseDeleteResultBody(value: string | null): DsvBatchDeleteResult | null {
+  if (value === null) return null;
+  try {
+    const parsed = JSON.parse(value) as Partial<DsvBatchDeleteResult>;
+    return typeof parsed.commandId === 'string'
+      && typeof parsed.receiptId === 'string'
+      && Array.isArray(parsed.deletedSellerOrderIds)
+      && parsed.deletedSellerOrderIds.every((sellerOrderId) => typeof sellerOrderId === 'string')
+      ? parsed as DsvBatchDeleteResult
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function isPrismaTransactionConflict(error: unknown): boolean {
   if (error === null || typeof error !== 'object') return false;
   const record = error as { code?: unknown; meta?: { code?: unknown } };
@@ -1272,6 +1534,15 @@ async function lockAssignmentCommand(tx: Pick<DsvAssignmentTransactionClient, '$
 
 async function lockSellerOrder(tx: Pick<DsvAssignmentTransactionClient, '$queryRaw'>, shopId: string, sellerOrderId: string): Promise<void> {
   await tx.$queryRaw<{ id: string }[]>`SELECT id FROM orders WHERE id = ${sellerOrderId}::uuid AND "shopId" = ${shopId}::uuid FOR UPDATE`;
+}
+
+async function lockSellerOrders(
+  tx: Pick<DsvAssignmentTransactionClient, '$queryRaw'>,
+  shopId: string,
+  sellerOrderIds: string[],
+): Promise<void> {
+  const ids = sellerOrderIds.map((sellerOrderId) => Prisma.sql`${sellerOrderId}::uuid`);
+  await tx.$queryRaw<{ id: string }[]>`SELECT id FROM orders WHERE "shopId" = ${shopId}::uuid AND id IN (${Prisma.join(ids)}) ORDER BY id FOR UPDATE`;
 }
 
 function normalizeShopDomain(value: string): string {

@@ -18,10 +18,12 @@ import type {
 } from '../modules/commerce/admin-store-settings.service.js';
 import {
   DsvAssignmentCommandError,
+  type DsvAdminBatchDeleteInput,
   type DsvAdminBatchReassignInput,
   type DsvAdminBatchUnassignInput,
   type DsvAssignmentCommandBaseInput,
   type DsvBatchAssignmentResult,
+  type DsvBatchDeleteResult,
   type DsvAssignmentResult,
 } from '../modules/dsv/dsv-assignment-command.service.js';
 import {
@@ -111,6 +113,7 @@ type DsvAdminReassignCommandInput = DsvAssignmentCommandBaseInput & {
 };
 
 export type DsvAdminAssignmentCommandService = {
+  deleteMany(input: DsvAdminBatchDeleteInput): Promise<DsvBatchDeleteResult>;
   reassign(input: DsvAdminReassignCommandInput): Promise<DsvAssignmentResult>;
   reassignMany(input: DsvAdminBatchReassignInput): Promise<DsvBatchAssignmentResult>;
   unassign(input: DsvAssignmentCommandBaseInput): Promise<DsvAssignmentResult>;
@@ -701,6 +704,27 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       try {
         const result = await dependencies.assignmentCommandService.unassignMany({
           actor: dsvAdminCommandActor(session, request),
+          items: command.items,
+          reason: command.reason ?? null,
+          shopDomain: session.shopDomain,
+        });
+        return sendData(reply, result);
+      } catch (error) {
+        return sendDsvAssignmentCommandError(reply, error);
+      }
+    }, ['dsv:dispatches:write']));
+
+  app.post(`${versionedApiRoot}/seller-order-deletions`, async (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async (session) => {
+      if (dependencies.assignmentCommandService === undefined) {
+        return sendError(reply, 503, 'DSV_ASSIGNMENT_SERVICE_UNAVAILABLE', 'DSV assignment command service is not configured');
+      }
+      const command = readDsvBatchDeleteCommand(request);
+      if (command === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid seller order batch deletion payload');
+      try {
+        const result = await dependencies.assignmentCommandService.deleteMany({
+          actor: dsvAdminCommandActor(session, request),
+          commandId: command.commandId,
           items: command.items,
           reason: command.reason ?? null,
           shopDomain: session.shopDomain,
@@ -1431,6 +1455,37 @@ function readDsvBatchUnassignCommand(request: FastifyRequest): {
     items,
     ...(reason === undefined ? {} : { reason }),
   };
+}
+
+function readDsvBatchDeleteCommand(request: FastifyRequest): {
+  commandId: string;
+  items: Array<{ expectedVersion: string; sellerOrderId: string }>;
+  reason?: string;
+} | null {
+  const body = objectBody(request.body);
+  if (body === null || !hasOnlyAllowedKeys(body, ['commandId', 'items', 'reason'])) return null;
+  if (!Array.isArray(body.items) || body.items.length === 0 || body.items.length > 100) return null;
+
+  const bodyCommandId = readBoundedText(body.commandId, 120);
+  const headerCommandId = readBoundedText(request.headers[assignmentCommandIdHeader], 120);
+  const reason = readOptionalBoundedText(body.reason, 500);
+  if (reason === null || (headerCommandId !== null && bodyCommandId !== null && headerCommandId !== bodyCommandId)) return null;
+  const commandId = headerCommandId ?? bodyCommandId;
+  if (commandId === null) return null;
+
+  const items: Array<{ expectedVersion: string; sellerOrderId: string }> = [];
+  const sellerOrderIds = new Set<string>();
+  for (const value of body.items) {
+    const item = objectBody(value);
+    if (item === null || !hasOnlyAllowedKeys(item, ['expectedVersion', 'sellerOrderId'])) return null;
+    const expectedVersion = readBoundedText(item.expectedVersion, 160);
+    const sellerOrderId = readUuidValue(item.sellerOrderId);
+    if (expectedVersion === null || sellerOrderId === null || sellerOrderIds.has(sellerOrderId)) return null;
+    sellerOrderIds.add(sellerOrderId);
+    items.push({ expectedVersion, sellerOrderId });
+  }
+
+  return { commandId, items, ...(reason === undefined ? {} : { reason }) };
 }
 
 function readDsvAssignmentCommandBase(request: FastifyRequest, body: Record<string, unknown>): {

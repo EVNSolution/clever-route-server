@@ -702,6 +702,58 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DsvV1LegacyAssignmentErrorEnvelope' }
+  /api/dsv/v1/seller-order-deletions:
+    post:
+      tags: [DSV API v1]
+      summary: Permanently delete up to 100 pre-departure seller orders atomically
+      operationId: batchDeleteDsvV1SellerOrders
+      x-source-file: src/routes/dsv-control.routes.ts
+      x-required-scopes: ['dsv:dispatches:write']
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/DsvV1AssignmentIdempotencyKeyHeader'
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DsvV1BatchDeleteCommandInput' }
+      responses:
+        '200':
+          description: All selected seller orders were permanently deleted or the completed command was replayed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvV1LegacyBatchDeleteCommandEnvelope' }
+        '400':
+          description: Invalid or duplicate seller-order deletion input.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvV1LegacyAssignmentErrorEnvelope' }
+        '401':
+          description: Missing or invalid DSV browser session cookie.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvV1LegacyAssignmentErrorEnvelope' }
+        '403':
+          description: Invalid CSRF token or missing dsv:dispatches:write scope.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvV1LegacyAssignmentErrorEnvelope' }
+        '404':
+          description: One selected seller order does not exist in this shop or grouping.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvV1LegacyAssignmentErrorEnvelope' }
+        '409':
+          description: One selected seller order changed or is no longer eligible for deletion.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvV1LegacyAssignmentErrorEnvelope' }
+        '503':
+          description: Assignment service is unavailable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvV1LegacyAssignmentErrorEnvelope' }
   /api/dsv/v1/seller-orders/{sellerOrderId}/assignment/reassign:
     post:
       tags: [DSV API v1]
@@ -3086,6 +3138,7 @@ components:
       properties:
         items:
           type: array
+          description: Each sellerOrderId must be unique within the batch.
           minItems: 1
           maxItems: 100
           uniqueItems: true
@@ -3140,6 +3193,40 @@ components:
                 minLength: 1
                 maxLength: 120
                 pattern: '\S'
+              expectedVersion:
+                type: string
+                minLength: 1
+                maxLength: 160
+                pattern: '\S'
+              sellerOrderId:
+                type: string
+                format: uuid
+            additionalProperties: false
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          pattern: '\S'
+      additionalProperties: false
+    DsvV1BatchDeleteCommandInput:
+      type: object
+      required: [commandId, items]
+      properties:
+        commandId:
+          type: string
+          minLength: 1
+          maxLength: 120
+          pattern: '\S'
+        items:
+          type: array
+          description: Each sellerOrderId must be unique within the batch.
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items:
+            type: object
+            required: [expectedVersion, sellerOrderId]
+            properties:
               expectedVersion:
                 type: string
                 minLength: 1
@@ -3217,6 +3304,28 @@ components:
                 $ref: '#/components/schemas/DsvV1AssignmentResult'
             routePlanId:
               type: [string, 'null']
+          additionalProperties: false
+        error:
+          type: 'null'
+      additionalProperties: false
+    DsvV1LegacyBatchDeleteCommandEnvelope:
+      type: object
+      required: [data, error]
+      properties:
+        data:
+          type: object
+          required: [commandId, deletedSellerOrderIds, receiptId]
+          properties:
+            commandId:
+              type: string
+            deletedSellerOrderIds:
+              type: array
+              items:
+                type: string
+                format: uuid
+            receiptId:
+              type: string
+              format: uuid
           additionalProperties: false
         error:
           type: 'null'

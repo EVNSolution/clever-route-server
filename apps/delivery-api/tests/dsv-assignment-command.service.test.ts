@@ -133,6 +133,110 @@ describe('DsvAssignmentCommandService', () => {
     expect(schedule).toHaveBeenCalledTimes(1);
   });
 
+  test('deleteMany removes 53 seller orders from one grouping and database transaction', async () => {
+    const schedule = vi.fn();
+    const orderIds = Array.from({ length: 53 }, (_, index) => `order-${index + 1}`);
+    const grouping = groupingFixture();
+    grouping.assignments = orderIds.map((orderId, index) => assignment(orderId, index + 1));
+    if (grouping.children[0] !== undefined) grouping.children[0].orderIds = orderIds;
+    grouping.totalOrders = orderIds.length;
+    const harness = createHarness({ grouping, routeOptimizationScheduler: { schedule } });
+
+    const result = await harness.service.deleteMany({
+      actor: adminInput().actor,
+      commandId: 'cmd-delete-53',
+      items: orderIds.map((sellerOrderId) => ({ expectedVersion: 'version-route-a', sellerOrderId })),
+      reason: 'demo hard delete',
+      shopDomain: 'example.myshopify.com',
+    });
+
+    expect(harness.routeGroupingService.saveDraft).toHaveBeenCalledTimes(1);
+    expect(harness.savedDraftInput()).toMatchObject({ removedOrderIds: orderIds });
+    expect(harness.savedRoutes().find((route) => route.routePlanId === 'route-a')?.orderIds).toEqual([]);
+    expect(harness.prisma.dsvDispatchImportRow.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: { deliveryStopId: null, sellerOrderId: null },
+    }));
+    expect(harness.prisma.dsvCommandReceipt.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: { sellerOrderId: null },
+      where: { sellerOrderId: { in: orderIds }, shopId: 'shop-1' },
+    }));
+    expect(harness.prisma.dsvAuditEvent.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: { sellerOrderId: null },
+      where: { sellerOrderId: { in: orderIds }, shopId: 'shop-1' },
+    }));
+    expect(harness.prisma.order.deleteMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: { in: orderIds }, shopId: 'shop-1' },
+    }));
+    expect(harness.prisma.dsvAuditEvent.createMany).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ commandId: 'cmd-delete-53', deletedSellerOrderIds: orderIds, receiptId: 'receipt-new' });
+    expect(schedule).toHaveBeenCalledTimes(1);
+  });
+
+  test('deleteMany replays a completed batch without deleting again', async () => {
+    const input = {
+      actor: adminInput().actor,
+      commandId: 'cmd-delete-replay',
+      items: [{ expectedVersion: 'version-route-a', sellerOrderId: 'order-a' }],
+      reason: 'demo hard delete',
+      shopDomain: 'example.myshopify.com',
+    };
+    const replayResult = {
+      commandId: input.commandId,
+      deletedSellerOrderIds: ['order-a'],
+      receiptId: 'receipt-existing',
+    };
+    const harness = createHarness({
+      existingReceipt: {
+        commandId: input.commandId,
+        commandName: 'deleteSellerOrders',
+        payloadHash: assignmentPayloadHash('deleteSellerOrders', input),
+        responseBodyRef: JSON.stringify(replayResult),
+        status: 'SUCCEEDED',
+      },
+    });
+
+    await expect(harness.service.deleteMany(input)).resolves.toEqual(replayResult);
+    expect(harness.routeGroupingService.saveDraft).not.toHaveBeenCalled();
+    expect(harness.prisma.order.deleteMany).not.toHaveBeenCalled();
+  });
+
+  test('deleteMany rejects a mismatched or in-progress command receipt without deleting', async () => {
+    const input = {
+      actor: adminInput().actor,
+      commandId: 'cmd-delete-guard',
+      items: [{ expectedVersion: 'version-route-a', sellerOrderId: 'order-a' }],
+      reason: 'demo hard delete',
+      shopDomain: 'example.myshopify.com',
+    };
+    const mismatch = createHarness({
+      existingReceipt: {
+        commandId: input.commandId,
+        commandName: 'deleteSellerOrders',
+        payloadHash: 'different',
+        responseBodyRef: null,
+        status: 'SUCCEEDED',
+      },
+    });
+    await expect(mismatch.service.deleteMany(input)).rejects.toMatchObject({
+      code: 'IDEMPOTENCY_PAYLOAD_MISMATCH',
+    } satisfies Partial<DsvAssignmentCommandError>);
+    expect(mismatch.prisma.order.deleteMany).not.toHaveBeenCalled();
+
+    const started = createHarness({
+      existingReceipt: {
+        commandId: input.commandId,
+        commandName: 'deleteSellerOrders',
+        payloadHash: assignmentPayloadHash('deleteSellerOrders', input),
+        responseBodyRef: null,
+        status: 'STARTED',
+      },
+    });
+    await expect(started.service.deleteMany(input)).rejects.toMatchObject({
+      code: 'COMMAND_IN_PROGRESS',
+    } satisfies Partial<DsvAssignmentCommandError>);
+    expect(started.prisma.order.deleteMany).not.toHaveBeenCalled();
+  });
+
   test('reassign without target route uses the selected driver ready route when it exists', async () => {
     const harness = createHarness();
 
@@ -421,9 +525,11 @@ function createHarness(input: {
   for (const assignment of grouping.assignments) {
     if (!currentRouteVersionIds.has(assignment.orderId)) currentRouteVersionIds.set(assignment.orderId, null);
   }
-  const routeGroupingService: Pick<RouteGroupingService, 'getGrouping' | 'saveDraft'> = {
+  const saveDraft = vi.fn<RouteGroupingService['saveDraft']>((draftInput) => Promise.resolve(groupingFromDraftRoutes(grouping, draftInput.routes)));
+  const routeGroupingService = {
     getGrouping: vi.fn<RouteGroupingService['getGrouping']>(() => Promise.resolve(grouping)),
-    saveDraft: vi.fn<RouteGroupingService['saveDraft']>((draftInput) => Promise.resolve(groupingFromDraftRoutes(grouping, draftInput.routes))),
+    saveDraft,
+    saveDraftInTransaction: vi.fn((_tx: unknown, draftInput: Parameters<RouteGroupingService['saveDraft']>[0]) => saveDraft(draftInput)),
   };
   const prisma = {
     $transaction: vi.fn((fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
@@ -433,6 +539,8 @@ function createHarness(input: {
         void args;
         return Promise.resolve({ id: 'audit-new' });
       }),
+      createMany: vi.fn(() => Promise.resolve({ count: currentRouteVersionIds.size })),
+      updateMany: vi.fn(() => Promise.resolve({ count: 0 })),
     },
     dsvCommandReceipt: {
       create: vi.fn(() => Promise.resolve({ id: 'receipt-new' })),
@@ -443,6 +551,9 @@ function createHarness(input: {
         void args;
         return Promise.resolve({ count: 1 });
       }),
+    },
+    dsvDispatchImportRow: {
+      updateMany: vi.fn(() => Promise.resolve({ count: currentRouteVersionIds.size })),
     },
     dsvVehicleDriverAssignment: {
       findFirst: vi.fn((args: { where?: { driverId?: string; vehicleId?: string } }) => {
@@ -457,6 +568,17 @@ function createHarness(input: {
       }),
     },
     order: {
+      deleteMany: vi.fn((args: { where?: { id?: { in?: string[] } } }) => Promise.resolve({
+        count: args.where?.id?.in?.length ?? 0,
+      })),
+      findMany: vi.fn((args: { where?: { id?: { in?: string[] } } }) => Promise.resolve(
+        (args.where?.id?.in ?? []).map((id) => ({
+          currentRouteVersionId: currentRouteVersionIds.get(id) ?? null,
+          customerId: 'customer-a',
+          destinationId: 'destination-x',
+          id,
+        })),
+      )),
       findFirst: vi.fn((args: { select?: { currentRouteVersionId?: boolean }; where?: { id?: string } }) => Promise.resolve(
         args.select?.currentRouteVersionId === true
           ? { currentRouteVersionId: currentRouteVersionIds.get(args.where?.id ?? 'order-a') ?? null }
@@ -511,7 +633,7 @@ function createHarness(input: {
   };
   const service = new DsvAssignmentCommandService(
     prisma as never,
-    routeGroupingService as RouteGroupingService,
+    routeGroupingService as unknown as RouteGroupingService,
     input.routeOptimizationScheduler,
   );
   return {

@@ -1059,6 +1059,81 @@ describe('DSV control routes', () => {
     }
   });
 
+  test('accepts one bounded v1 permanent deletion command for selected seller orders', async () => {
+    const { app, assignmentCommandService } = await createHarness();
+    try {
+      const login = await loginToDsv(app);
+      const secondSellerOrderId = 'edededed-eded-4ded-8ded-edededededed';
+      const response = await app.inject({
+        headers: { cookie: login.cookie, 'idempotency-key': 'delete-batch-1', 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: {
+          commandId: 'delete-batch-1',
+          items: [
+            { expectedVersion: routeVersionId, sellerOrderId },
+            { expectedVersion: nextRouteVersionId, sellerOrderId: secondSellerOrderId },
+          ],
+          reason: '관리자 영구 삭제',
+        },
+        url: '/api/dsv/v1/seller-order-deletions',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(assignmentCommandService.deleteMany).toHaveBeenCalledTimes(1);
+      expect(assignmentCommandService.deleteMany).toHaveBeenCalledWith(expect.objectContaining({
+        commandId: 'delete-batch-1',
+        items: [
+          { expectedVersion: routeVersionId, sellerOrderId },
+          { expectedVersion: nextRouteVersionId, sellerOrderId: secondSellerOrderId },
+        ],
+        reason: '관리자 영구 삭제',
+        shopDomain: 'tomatonofood.com',
+      }));
+      expect(response.json()).toMatchObject({
+        data: { commandId: 'delete-batch-1', deletedSellerOrderIds: [sellerOrderId, secondSellerOrderId] },
+        error: null,
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects permanent deletion payloads that exceed bounds or repeat seller orders', async () => {
+    const { app, assignmentCommandService } = await createHarness();
+    try {
+      const login = await loginToDsv(app);
+      const headers = { cookie: login.cookie, 'x-csrf-token': login.csrfToken };
+      const oversizedItems = Array.from({ length: 101 }, (_, index) => ({
+        expectedVersion: routeVersionId,
+        sellerOrderId: `eeeeeeee-eeee-4eee-8eee-${(index + 1).toString().padStart(12, '0')}`,
+      }));
+      const oversized = await app.inject({
+        headers,
+        method: 'POST',
+        payload: { commandId: 'delete-oversized', items: oversizedItems },
+        url: '/api/dsv/v1/seller-order-deletions',
+      });
+      expect(oversized.statusCode).toBe(400);
+
+      const duplicate = await app.inject({
+        headers,
+        method: 'POST',
+        payload: {
+          commandId: 'delete-duplicate',
+          items: [
+            { expectedVersion: routeVersionId, sellerOrderId },
+            { expectedVersion: nextRouteVersionId, sellerOrderId },
+          ],
+        },
+        url: '/api/dsv/v1/seller-order-deletions',
+      });
+      expect(duplicate.statusCode).toBe(400);
+      expect(assignmentCommandService.deleteMany).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('validates admin assignment command payloads strictly and requires matching command IDs', async () => {
     const { app, assignmentCommandService } = await createHarness();
     try {
@@ -1368,6 +1443,11 @@ type MockAssignmentCommandService = {
 
 function createAssignmentCommandService(): MockAssignmentCommandService {
   return {
+    deleteMany: vi.fn((input) => Promise.resolve({
+      commandId: input.commandId,
+      deletedSellerOrderIds: input.items.map((item) => item.sellerOrderId),
+      receiptId: '99999999-9999-4999-8999-999999999999',
+    })),
     reassign: vi.fn((input) => Promise.resolve(assignmentResult({
       assignmentStatus: 'ASSIGNED',
       commandId: input.commandId,

@@ -28,6 +28,7 @@ const isSafeDisposableTarget = (targetClass === legacySafeTargetClass && databas
 const describeG004Disposable = isAssignmentTargetClass ? describe.sequential : describe.skip;
 const commandNames = {
   acquire: 'acquireSellerOrder',
+  delete: 'deleteSellerOrders',
   reassign: 'reassignSellerOrder',
   release: 'releaseSellerOrder',
   unassign: 'unassignSellerOrder',
@@ -446,6 +447,46 @@ describeG004Disposable('G004 DSV assignment command DB integration', () => {
     await expect(receiptCount(fixture, commandNames.reassign, 'cmd-production-reassign')).resolves.toBe(1);
     await expect(auditCount(fixture, result.receiptId)).resolves.toBe(1);
     await expect(activeOperationalOwnerCount(fixture, fixture.orderAId)).resolves.toBe(1);
+  });
+
+  test('hard delete preserves import and command history while clearing seller order foreign keys', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'production-delete');
+    const productionGroupingService = new PrismaRouteGroupingService(prismaWithDomainCompat(prisma), new FakeDriverPushProvider());
+    const productionService = new DsvAssignmentCommandService(prismaWithDomainCompat(prisma), productionGroupingService);
+    const importRowBefore = await prisma.dsvDispatchImportRow.findFirstOrThrow({
+      where: { sellerOrderId: fixture.orderAId, shopId: fixture.shopId },
+    });
+    const previous = await productionService.unassign(adminCommand(fixture, 'cmd-delete-history-source'));
+
+    const result = await productionService.deleteMany({
+      actor: adminCommand(fixture, 'cmd-delete-history').actor,
+      commandId: 'cmd-delete-history',
+      items: [{ expectedVersion: previous.newRouteVersionId, sellerOrderId: fixture.orderAId }],
+      reason: 'demo hard delete',
+      shopDomain: fixture.shopDomain,
+    });
+
+    expect(result).toMatchObject({
+      commandId: 'cmd-delete-history',
+      deletedSellerOrderIds: [fixture.orderAId],
+    });
+    await expect(prisma.order.count({ where: { id: fixture.orderAId, shopId: fixture.shopId } })).resolves.toBe(0);
+    await expect(prisma.deliveryStop.count({ where: { id: fixture.stopAId, shopId: fixture.shopId } })).resolves.toBe(0);
+    await expect(prisma.dsvDispatchImportRow.findUniqueOrThrow({ where: { id: importRowBefore.id } })).resolves.toMatchObject({
+      deliveryStopId: null,
+      sellerOrderId: null,
+    });
+    await expect(prisma.dsvCommandReceipt.findMany({
+      select: { sellerOrderId: true },
+      where: { commandId: { in: ['cmd-delete-history-source', 'cmd-delete-history'] }, shopId: fixture.shopId },
+    })).resolves.toEqual([{ sellerOrderId: null }, { sellerOrderId: null }]);
+    await expect(prisma.dsvAuditEvent.findMany({
+      select: { entityId: true, eventType: true, sellerOrderId: true },
+      where: { commandReceiptId: { in: [previous.receiptId, result.receiptId] }, shopId: fixture.shopId },
+    })).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ sellerOrderId: null }),
+      { entityId: fixture.orderAId, eventType: commandNames.delete, sellerOrderId: null },
+    ]));
   });
 });
 
