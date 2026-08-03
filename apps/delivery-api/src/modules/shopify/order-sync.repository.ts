@@ -3137,6 +3137,7 @@ function readDeliveryDateSource(
   value: unknown,
 ): CanonicalOrderRow["deliveryDateSource"] {
   return value === "EXPLICIT_ATTRIBUTE" ||
+    value === "LINE_ITEM_EXACT_DATE" ||
     value === "LINE_ITEM_DATE_RANGE" ||
     value === "ORDER_DATE_CYCLE_RULE" ||
     value === "ORDER_DATE_WEEK_RULE" ||

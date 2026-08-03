@@ -319,11 +319,12 @@ export function mapShopifyOrderNodeToDeliveryInputs(
   options: { deliveryCycle?: DeliveryCycleConfig } = {},
 ): SyncedOrderWithDeliveryStopInput {
   const attributes = normalizeAttributes(node.customAttributes ?? []);
-  const deliveryArea = readAttribute(attributes, "Delivery Area");
+  const rawDeliveryArea = readAttribute(attributes, "Delivery Area");
   const deliveryDateRaw = readDeliveryDateAttribute(attributes);
   const deliveryDayRaw = readAttribute(attributes, "Delivery Day");
   const pickupDay = readAttribute(attributes, "Pickup Day");
   const pickup = pickupDay !== null;
+  const deliveryArea = rawDeliveryArea ?? (pickup ? "Pickup" : null);
   const canonicalDayRaw = deliveryDayRaw ?? pickupDay;
   const lineItems = normalizeLineItems(node.lineItems);
   const tags = normalizeTags(node.tags);
@@ -400,13 +401,18 @@ export function mapShopifyOrderNodeToDeliveryInputs(
         deliveryDateSource: scope.deliveryDateSource,
       },
       matchedMappingPaths: {
-        deliveryArea: deliveryArea === null ? null : "customAttributes.Delivery Area",
+        deliveryArea:
+          rawDeliveryArea !== null
+            ? "customAttributes.Delivery Area"
+            : pickup
+              ? "derived.pickup"
+              : null,
         deliveryDate: deliveryDateRaw === null ? null : "customAttributes.Delivery Date",
         deliveryDay: deliveryDayRaw === null ? null : "customAttributes.Delivery Day",
         deliveryTimeWindow: canonicalDayRaw === null ? null : "customAttributes.Delivery Day",
       },
       planningGroupKey: scope.planningGroupKey,
-      rawDeliveryArea: deliveryArea,
+      rawDeliveryArea,
       rawDeliveryDate: deliveryDateRaw,
       rawDeliveryDay: deliveryDayRaw,
       rawDeliveryTimeWindow: canonicalDayRaw,
