@@ -11,7 +11,7 @@ info:
     admin clients, legacy Shopify compatibility routes, native driver mobile
     clients, and operational health checks. Human behavior notes live beside
     this file in docs/api/*.md.
-  x-contract-revision: 2026-07-31
+  x-contract-revision: 2026-08-03
   x-source-repository: EVNSolution/clever-route-server
 servers:
   - url: http://localhost:3000
@@ -1914,6 +1914,90 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '409':
           $ref: '#/components/responses/Conflict'
+  /admin/customer-email/settings:
+    get:
+      tags: [Shopify Embedded Admin]
+      summary: Read manual customer delivery email settings for the authenticated shop
+      operationId: getAdminCustomerEmailSettings
+      x-source-file: src/routes/admin-customer-email.routes.ts
+      security:
+        - ShopifySessionToken: []
+      responses:
+        '200':
+          description: Settings envelope with `data.customerEmailSettings`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Shopify Embedded Admin]
+      summary: Save versioned manual customer delivery email settings
+      description: Payload must include `version: 1`, `nearbyStopsThreshold`, sender fields, and all five templates with `enabled`, `subject`, and `body`.
+      operationId: saveAdminCustomerEmailSettings
+      x-source-file: src/routes/admin-customer-email.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [version, senderName, senderEmail, nearbyStopsThreshold, templates]
+              additionalProperties: false
+      responses:
+        '200':
+          description: Saved settings envelope with `data.customerEmailSettings`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/customer-email/test:
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Send an administrator-triggered test customer email
+      description: Sends only to the arbitrary test recipient in the request. The Brevo API key remains server-side.
+      operationId: sendAdminCustomerEmailTest
+      x-source-file: src/routes/admin-customer-email.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [recipientEmail]
+              properties:
+                recipientEmail: { type: string, format: email }
+                signal:
+                  type: string
+                  enum: [DELIVERY_SCHEDULED, OUT_FOR_DELIVERY, DELIVERED, MISSED_DELIVERY, DRIVER_NEARBY]
+                subject: { type: string }
+                body: { type: string }
+      responses:
+        '202':
+          description: Test send result envelope with `data.test`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /admin/route-plans/{routePlanId}:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'
@@ -1951,6 +2035,76 @@ paths:
                 $ref: '#/components/schemas/GenericDataEnvelope'
         '401':
           $ref: '#/components/responses/Unauthorized'
+  /admin/route-plans/{routePlanId}/customer-email/preview:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Preview manual customer delivery email recipients for a route
+      description: Does not send email or enqueue automatic notification facts. Response is `data.preview`.
+      operationId: previewAdminRoutePlanCustomerEmail
+      x-source-file: src/routes/admin-customer-email.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerEmailRouteCommandRequest'
+      responses:
+        '200':
+          description: Preview envelope with rendered subject/body per eligible stop plus skipped rows and counts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /admin/route-plans/{routePlanId}/customer-email/send:
+    parameters:
+      - $ref: '#/components/parameters/RoutePlanId'
+    post:
+      tags: [Shopify Embedded Admin]
+      summary: Explicitly send manual customer delivery email for a route context
+      description: Requires `confirmed: true` and `commandId`. Uses a separate manual dispatch audit model; it never claims existing queued `CustomerRouteNotificationFact` rows.
+      operationId: sendAdminRoutePlanCustomerEmail
+      x-source-file: src/routes/admin-customer-email.routes.ts
+      security:
+        - ShopifySessionToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/CustomerEmailRouteCommandRequest'
+                - type: object
+                  required: [confirmed, commandId]
+                  properties:
+                    confirmed: { type: boolean, const: true }
+                    commandId: { type: string, minLength: 1 }
+      responses:
+        '202':
+          description: Dispatch envelope with `data.dispatch` counts and per-recipient results.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenericDataEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /admin/route-plans/{routePlanId}/stops:
     parameters:
       - $ref: '#/components/parameters/RoutePlanId'
@@ -2987,6 +3141,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorEnvelope'
+    BadGateway:
+      description: Upstream provider rejected or failed the request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    ServiceUnavailable:
+      description: Required runtime configuration or provider is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
     DsvSchemaNotReady:
       description: A required DSV schema migration has not been applied.
       content:
@@ -3035,6 +3201,23 @@ components:
           type: 'null'
         error:
           $ref: '#/components/schemas/Error'
+    CustomerEmailRouteCommandRequest:
+      type: object
+      required: [signal]
+      properties:
+        signal:
+          type: string
+          enum: [DELIVERY_SCHEDULED, OUT_FOR_DELIVERY, DELIVERED, MISSED_DELIVERY, DRIVER_NEARBY]
+        deliveryStopIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+        confirmed:
+          type: boolean
+        commandId:
+          type: string
+      additionalProperties: false
     RoutesAppInstallUnavailableResponse:
       type: object
       required: [message, ok]

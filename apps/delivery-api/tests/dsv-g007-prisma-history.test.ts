@@ -49,6 +49,7 @@ const dsvVehicleTelematicsMigrationName = '20260728090000_add_dsv_vehicle_telema
 const pickupCompletedDriverEventMigrationName = '20260728120000_add_pickup_completed_driver_event';
 const pickupCompletedUniqueIndexMigrationName = '20260728124500_add_pickup_completed_unique_index';
 const dsvDriverAppAuthMigrationName = '20260802120000_add_dsv_driver_app_auth';
+const manualCustomerEmailMigrationName = '20260803110000_add_manual_customer_email';
 const assignedDriverProfileBackfillMigrationName = '20260729170000_backfill_assigned_dsv_driver_profiles';
 const dispatchGroupingBackfillMigrationName = '20260730170000_backfill_dsv_dispatch_groupings';
 const accountScopedPushTokenMigrationName = '20260731140000_account_scope_driver_push_tokens';
@@ -125,7 +126,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(60);
+    expect(migrations).toHaveLength(61);
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -263,7 +264,10 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf(geocodingCacheMigrationName)).toBeLessThan(
       migrations.indexOf(dsvDriverAppAuthMigrationName)
     );
-    expect(migrations.at(-1)).toBe(dsvDriverAppAuthMigrationName);
+    expect(migrations.indexOf(dsvDriverAppAuthMigrationName)).toBeLessThan(
+      migrations.indexOf(manualCustomerEmailMigrationName)
+    );
+    expect(migrations.at(-1)).toBe(manualCustomerEmailMigrationName);
   });
 
   test('backfills only assigned drivers without replacing canonical contact or assignment data', async () => {
@@ -375,8 +379,8 @@ describe('G007 DSV Prisma migration history', () => {
   test('schema preserves historical DB defaults instead of planning default drops', async () => {
     const schema = await readFile(schemaPath, 'utf8');
 
-    expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(29);
-    expect(schema.match(/updatedAt\s+DateTime\s+@default\(now\(\)\)\s+@updatedAt/gu)).toHaveLength(12);
+    expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(31);
+    expect(schema.match(/updatedAt\s+DateTime\s+@default\(now\(\)\)\s+@updatedAt/gu)).toHaveLength(14);
     expect(schema).toContain('warnings             Json                          @default("[]")');
   });
 });

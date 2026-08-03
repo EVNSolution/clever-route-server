@@ -318,6 +318,7 @@ model Shop {
   locale                            String?                            @db.Text
   routeScopeConfig                  Json?
   routeOpsUiSettings                Json?
+  customerEmailSettings             Json?
   dsvOperationalSettings            Json?
   createdAt                         DateTime                           @default(now()) @db.Timestamptz(6)
   updatedAt                         DateTime                           @updatedAt @db.Timestamptz(6)
@@ -360,6 +361,8 @@ model Shop {
   inventoryEvents                   InventoryEvent[]
   driverRouteNotificationAttempts   DriverRouteNotificationAttempt[]
   customerRouteNotificationFacts    CustomerRouteNotificationFact[]
+  customerEmailManualDispatches     CustomerEmailManualDispatch[]
+  customerEmailManualRecipients     CustomerEmailManualDispatchRecipient[]
   adminRouteStopActionAudits        AdminRouteStopActionAudit[]
   dsvTransportConditions            DsvTransportCondition[]
   dsvDispatchImports                DsvDispatchImport[]
@@ -1659,6 +1662,55 @@ model CustomerRouteNotificationFact {
   @@index([status, leaseExpiresAt])
   @@index([deliveryStopId, occurredAt])
   @@map("customer_route_notification_facts")
+}
+
+model CustomerEmailManualDispatch {
+  id           String                                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId       String                                  @db.Uuid
+  shop         Shop                                    @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  routePlanId  String                                  @db.Uuid
+  commandId    String                                  @db.Text
+  actor        String                                  @db.Text
+  signal       String                                  @db.Text
+  source       String                                  @default("ADMIN_MANUAL_CUSTOMER_EMAIL") @db.Text
+  request      Json
+  template     Json
+  counts       Json
+  duplicate    Boolean                                 @default(false)
+  createdAt    DateTime                                @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime                                @default(now()) @updatedAt @db.Timestamptz(6)
+  recipients   CustomerEmailManualDispatchRecipient[]
+
+  @@unique([shopId, commandId])
+  @@index([shopId, routePlanId, createdAt])
+  @@index([shopId, signal, createdAt])
+  @@map("customer_email_manual_dispatches")
+}
+
+model CustomerEmailManualDispatchRecipient {
+  id                String                      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId            String                      @db.Uuid
+  shop              Shop                        @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  dispatchId        String                      @db.Uuid
+  dispatch          CustomerEmailManualDispatch @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  routePlanId       String                      @db.Uuid
+  deliveryStopId    String?                     @db.Uuid
+  orderId           String?                     @db.Uuid
+  recipientEmail    String?                     @db.Text
+  status            String                      @db.Text
+  errorCode         String?                     @db.Text
+  errorMessage      String?                     @db.Text
+  provider          String?                     @db.Text
+  providerMessageId String?                     @db.Text
+  renderedSubject   String?                     @db.Text
+  renderedBody      String?                     @db.Text
+  sentAt            DateTime?                   @db.Timestamptz(6)
+  createdAt         DateTime                    @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime                    @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@index([shopId, routePlanId, deliveryStopId])
+  @@index([dispatchId, status])
+  @@map("customer_email_manual_dispatch_recipients")
 }
 
 model AdminRouteStopActionAudit {

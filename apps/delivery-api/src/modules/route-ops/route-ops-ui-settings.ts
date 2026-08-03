@@ -66,7 +66,22 @@ export function normalizeRouteOpsUiSettings(
   value: unknown,
 ): RouteOpsUiSettingsDto {
   if (value === null || value === undefined) return defaultRouteOpsUiSettings();
-  return validateRouteOpsUiSettingsPayload(value);
+  if (!isRecord(value)) return defaultRouteOpsUiSettings();
+  const defaults = defaultRouteOpsUiSettings();
+  return validateRouteOpsUiSettingsPayload({
+    ...defaults,
+    ...value,
+    emailNotifications: {
+      ...defaults.emailNotifications,
+      ...(isRecord(value.emailNotifications) ? value.emailNotifications : {}),
+      template: {
+        ...defaults.emailNotifications.template,
+        ...(isRecord(value.emailNotifications) && isRecord(value.emailNotifications.template)
+          ? value.emailNotifications.template
+          : {}),
+      },
+    },
+  });
 }
 
 export function validateRouteOpsUiSettingsPayload(
