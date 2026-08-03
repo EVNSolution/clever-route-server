@@ -66,7 +66,9 @@ const routePlanRecord = {
         province: 'ON',
         recipientName: 'Recipient One',
         serviceMinutes: 5,
-        status: 'ASSIGNED'
+        status: 'ASSIGNED',
+        timeWindowEnd: new Date('2026-05-12T12:00:00.000Z'),
+        timeWindowStart: new Date('2026-05-12T10:00:00.000Z')
     },
       distanceFromPreviousMeters: 1000,
       durationFromPreviousSeconds: 600,
@@ -176,6 +178,8 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             sellerOrderKey: 'DSV-ORDER-1001',
             shippedBoxes: 4,
             status: 'ASSIGNED',
+            timeWindowEnd: '2026-05-12T12:00:00.000Z',
+            timeWindowStart: '2026-05-12T10:00:00.000Z',
             totalPriceAmount: '84.50'
           }
         ],

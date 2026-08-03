@@ -53,6 +53,8 @@ const assignedRoute = {
         sellerOrderKey: 'DSV-ORDER-1001',
         shippedBoxes: 4,
         status: 'ASSIGNED',
+        timeWindowEnd: null,
+        timeWindowStart: null,
         totalPriceAmount: '84.50'
       }
     ],

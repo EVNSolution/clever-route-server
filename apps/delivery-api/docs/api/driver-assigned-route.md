@@ -42,6 +42,8 @@ Success with an assigned route:
           "estimatedArrivalAt": "2026-05-12T11:08:00.000Z",
           "sequence": 1,
           "status": "ASSIGNED",
+          "timeWindowStart": "2026-05-12T10:00:00.000Z",
+          "timeWindowEnd": "2026-05-12T12:00:00.000Z",
           "orderName": "#1001",
           "sellerOrderKey": "DSV-ORDER-1001",
           "destinationId": "33333333-3333-4333-8333-333333333333",
@@ -117,7 +119,7 @@ The query is scoped by all of the following:
 - persisted `COMPLETED`/`CANCELLED` routes and legacy rows with a prior
   `ROUTE_COMPLETED` event are excluded from operational assigned-route reads
 
-The response must not include other drivers' routes, unrelated orders, raw Shopify payloads, or admin-only planning metadata. The route's persisted `depot` coordinate is returned for the driver's map start marker. Stop address, recipient, phone, customer note, order items, coordinates, and persisted DSV order fields (`sellerOrderKey`, `destinationId`, normalized `conditionCode`, `shippedBoxes`) are intentionally returned only after the driver boundary is verified. The DSV fields are nullable for legacy or non-DSV source orders.
+The response must not include other drivers' routes, unrelated orders, raw Shopify payloads, or admin-only planning metadata. The route's persisted `depot` coordinate is returned for the driver's map start marker. Stop address, recipient, phone, customer note, order items, coordinates, delivery time window, and persisted DSV order fields (`sellerOrderKey`, `destinationId`, normalized `conditionCode`, `shippedBoxes`) are intentionally returned only after the driver boundary is verified. `timeWindowStart` and `timeWindowEnd` are server timestamps and remain `null` when the order has no required arrival window. The DSV fields are nullable for legacy or non-DSV source orders.
 
 ## Server-authoritative ETA lifecycle
 

@@ -86,6 +86,8 @@ type AssignedRoutePlanStopRecord = {
     recipientName: string | null;
     serviceMinutes: number | null;
     status: string;
+    timeWindowEnd: Date | null;
+    timeWindowStart: Date | null;
   };
   durationFromPreviousSeconds: number | null;
   distanceFromPreviousMeters: number | null;
@@ -344,6 +346,8 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssi
       ?? readInteger(rawPayload?.shippedBoxes)
       ?? readInteger(rawPayload?.shipped_boxes),
     status: deliveryStop.status,
+    timeWindowEnd: deliveryStop.timeWindowEnd?.toISOString() ?? null,
+    timeWindowStart: deliveryStop.timeWindowStart?.toISOString() ?? null,
     totalPriceAmount: decimalString(deliveryStop.order.totalPriceAmount)
   };
 }
