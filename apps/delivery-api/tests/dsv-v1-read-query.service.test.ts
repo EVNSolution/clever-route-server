@@ -160,8 +160,8 @@ describe('PrismaDsvV1ReadQueryService', () => {
   test('customer list paginates nullable display names by the emitted fallback label', async () => {
     const prisma = prismaMock({
       $queryRaw: vi.fn(() => Promise.resolve([
-        { displayName: 'Alpha', externalCustomerCode: 'Alpha', id: 'customer-a', status: 'ACTIVE' },
-        { displayName: 'Beta', externalCustomerCode: 'Beta', id: 'customer-b', status: 'ACTIVE' },
+        { displayName: 'Alpha', externalCustomerCode: 'Alpha', id: 'customer-a', orderCount: 3, status: 'ACTIVE' },
+        { displayName: 'Beta', externalCustomerCode: 'Beta', id: 'customer-b', orderCount: 0, status: 'ACTIVE' },
       ])),
     });
     const service = new PrismaDsvV1ReadQueryService(prisma as never);
@@ -173,10 +173,13 @@ describe('PrismaDsvV1ReadQueryService', () => {
       customerId: 'customer-a',
       displayName: 'Alpha',
       externalCustomerCode: 'Alpha',
+      orderCount: 3,
       status: 'ACTIVE',
     }]);
     expect(result.page.nextCursor).toEqual(expect.any(String));
     expect(queryText).toContain('COALESCE("displayName", "externalCustomerCode") AS "displayName"');
+    expect(queryText).toContain('SELECT COUNT(*)::int');
+    expect(queryText).toContain('orders."customerId" = customers.id');
     expect(queryText).toContain('ORDER BY LOWER(COALESCE("displayName", "externalCustomerCode")) ASC, id ASC');
   });
 
@@ -328,8 +331,8 @@ describe('PrismaDsvV1ReadQueryService', () => {
         endpoint: 'customers',
         prisma: prismaMock({
           $queryRaw: vi.fn(() => Promise.resolve([
-            { displayName: 'Alpha Customer', externalCustomerCode: 'A', id: 'customer-a', status: 'ACTIVE' },
-            { displayName: 'Beta Customer', externalCustomerCode: 'B', id: 'customer-b', status: 'ACTIVE' },
+            { displayName: 'Alpha Customer', externalCustomerCode: 'A', id: 'customer-a', orderCount: 1, status: 'ACTIVE' },
+            { displayName: 'Beta Customer', externalCustomerCode: 'B', id: 'customer-b', orderCount: 2, status: 'ACTIVE' },
           ])),
         }),
         sort: 'displayName:asc,id:asc',

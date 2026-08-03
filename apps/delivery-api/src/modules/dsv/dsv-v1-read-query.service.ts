@@ -167,6 +167,7 @@ type CustomerManagementRow = {
   displayName: string;
   externalCustomerCode: string;
   id: string;
+  orderCount: number;
   status: string | null;
 };
 
@@ -503,6 +504,12 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
           id::text AS id,
           COALESCE("displayName", "externalCustomerCode") AS "displayName",
           "externalCustomerCode",
+          (
+            SELECT COUNT(*)::int
+            FROM orders
+            WHERE orders."shopId" = customers."shopId"
+              AND orders."customerId" = customers.id
+          ) AS "orderCount",
           status::text AS status
         FROM customers
         WHERE "shopId" = ${principal.shopId}::uuid
@@ -518,6 +525,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         customerId: row.id,
         displayName: row.displayName,
         externalCustomerCode: row.externalCustomerCode,
+        orderCount: row.orderCount,
         status: row.status,
       }));
     });

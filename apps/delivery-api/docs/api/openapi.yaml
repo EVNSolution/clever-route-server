@@ -3961,7 +3961,7 @@ components:
       additionalProperties: false
     DsvV1CustomerListItem:
       type: object
-      required: [customerId, displayName]
+      required: [customerId, displayName, orderCount]
       properties:
         customerId:
           type: string
@@ -3969,6 +3969,9 @@ components:
           type: string
         externalCustomerCode:
           type: string
+        orderCount:
+          type: integer
+          minimum: 0
         status:
           type: string
       additionalProperties: false

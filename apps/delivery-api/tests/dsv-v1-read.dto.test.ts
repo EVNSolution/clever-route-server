@@ -234,7 +234,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
           vehiclePlate: '11A1111',
           vehicleType: 'REFRIGERATED',
         }),
-        mapDsvV1CustomerListItem({ customerId: 'customer-1', displayName: 'Customer A', externalCustomerCode: 'C-1' }),
+        mapDsvV1CustomerListItem({ customerId: 'customer-1', displayName: 'Customer A', externalCustomerCode: 'C-1', orderCount: 4 }),
         mapDsvV1DestinationListItem({ address: null, destinationId: 'destination-1', displayName: 'Dock A' }),
         mapDsvV1ConditionListItem({
           code: 'COLD',
@@ -271,7 +271,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
           vehiclePlate: '11A1111',
           vehicleType: 'REFRIGERATED',
         },
-        { customerId: 'customer-1', displayName: 'Customer A', externalCustomerCode: 'C-1' },
+        { customerId: 'customer-1', displayName: 'Customer A', externalCustomerCode: 'C-1', orderCount: 4 },
         { destinationId: 'destination-1', displayName: 'Dock A' },
         {
           code: 'COLD',

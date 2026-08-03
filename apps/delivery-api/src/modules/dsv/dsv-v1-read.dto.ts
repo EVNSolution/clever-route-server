@@ -290,6 +290,7 @@ export type DsvV1CustomerListItemRow = {
   customerId: string;
   displayName: string;
   externalCustomerCode?: string | null;
+  orderCount: number;
   status?: string | null;
 };
 
@@ -297,6 +298,7 @@ export type DsvV1CustomerListItemDto = {
   customerId: string;
   displayName: string;
   externalCustomerCode?: string;
+  orderCount: number;
   status?: string;
 };
 
@@ -550,6 +552,7 @@ export function mapDsvV1CustomerListItem(row: DsvV1CustomerListItemRow): DsvV1Cu
     ...(row.externalCustomerCode === undefined || row.externalCustomerCode === null
       ? {}
       : { externalCustomerCode: row.externalCustomerCode }),
+    orderCount: row.orderCount,
     ...(row.status === undefined || row.status === null ? {} : { status: row.status }),
   };
 }
