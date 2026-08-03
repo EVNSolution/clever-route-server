@@ -127,9 +127,8 @@ export class GeocodingService {
   }
 
   async geocode(input: { address: GeocodingAddress; shopDomain: string }): Promise<GeocodingResult> {
-    const queries = buildGeocodingQueries(input.address);
-    const primaryQuery = queries[0] ?? null;
-    if (primaryQuery === null) {
+    const candidateQueries = buildGeocodingQueries(input.address);
+    if (candidateQueries.length === 0) {
       return { ok: false, code: 'BLANK_ADDRESS', message: 'Address is blank.' };
     }
     if (this.mode === 'disabled') {
@@ -137,6 +136,16 @@ export class GeocodingService {
     }
     if (this.provider === undefined) {
       return { ok: false, code: 'GEOCODER_NOT_CONFIGURED', message: 'Geocoding provider is not configured.' };
+    }
+    const provider = this.provider;
+    const queries = queriesSupportedByProvider(candidateQueries, provider);
+    const primaryQuery = queries[0] ?? null;
+    if (primaryQuery === null) {
+      return {
+        ok: false,
+        code: 'GEOCODER_NO_RESULT',
+        message: 'No geocoding result was found.',
+      };
     }
     if (this.requirePersistentCache && !this.persistentCacheEnabled) {
       return {
@@ -170,7 +179,6 @@ export class GeocodingService {
         : persistentCached.result;
     }
 
-    const provider = this.provider;
     const lookupTask = async (): Promise<GeocodingResult> => {
       const state: ProviderCallState = { attemptCount: 0, queryShapes: [] };
       let sawInvalidResult = false;
@@ -592,6 +600,20 @@ function uniqueGeocodingQueries(queries: Array<GeocodingQuery | null>): Geocodin
     unique.set(query.cacheKey, query);
   }
   return [...unique.values()];
+}
+
+function queriesSupportedByProvider(
+  queries: GeocodingQuery[],
+  provider: GeocodingProvider,
+): GeocodingQuery[] {
+  if (provider.lookupKey === undefined) return queries;
+  const seen = new Set<string>();
+  return queries.filter((query) => {
+    const lookupKey = provider.lookupKey?.(query);
+    if (lookupKey === null || lookupKey === undefined || seen.has(lookupKey)) return false;
+    seen.add(lookupKey);
+    return true;
+  });
 }
 
 function clean(value: string | null): string | null {

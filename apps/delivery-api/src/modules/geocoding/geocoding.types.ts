@@ -131,6 +131,7 @@ export type GeocodingResult =
 
 export type GeocodingProvider = {
   geocodeAddress(query: GeocodingQuery): Promise<GeocodingLookupResult | null>;
+  lookupKey?(query: GeocodingQuery): string | null;
   readonly providerName: string;
   searchPlaces?(query: { limit: number; text: string }): Promise<GeocodingPlaceCandidate[]>;
 };

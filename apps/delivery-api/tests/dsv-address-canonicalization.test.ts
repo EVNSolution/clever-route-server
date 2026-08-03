@@ -94,6 +94,15 @@ describe('DSV Korean address canonicalization', () => {
         searchAddress: '서울특별시 중구 퇴계로 131',
       },
     ],
+    [
+      '서울 영등포구 버드나루로 6길 10',
+      {
+        detailAddress: null,
+        postalCode: null,
+        rawAddress: '서울 영등포구 버드나루로 6길 10',
+        searchAddress: '서울 영등포구 버드나루로6길 10',
+      },
+    ],
   ])('parses %s into a searchable road address', (source, expected) => {
     expect(parseKoreanDeliveryAddress(source)).toEqual(expected);
   });
@@ -190,6 +199,57 @@ describe('DSV Korean address canonicalization', () => {
       detailAddress: '본관 지하 1층',
       jibunAddress: '서울특별시 강남구 도곡동 146-92',
       postalCode: '06273',
+      status: 'RESOLVED',
+    });
+  });
+
+  test.each([
+    {
+      expectedAddress: '인천광역시 서해구 북항단지로 91 (원창동)',
+      latitude: 37.50225697,
+      longitude: 126.61493262,
+      postalCode: '22856',
+      sourceAddress: '인천 서구 북항단지로 91',
+    },
+    {
+      expectedAddress: '서울특별시 영등포구 버드나루로6길 10 (영등포동2가)',
+      latitude: 37.522493915,
+      longitude: 126.912654115,
+      postalCode: '07254',
+      sourceAddress: '서울 영등포구 버드나루로 6길 10',
+    },
+  ])('accepts the current VWorld road form for $sourceAddress', async ({
+    expectedAddress,
+    latitude,
+    longitude,
+    postalCode,
+    sourceAddress,
+  }) => {
+    const geocode = vi.fn().mockResolvedValue({
+      cached: false,
+      ok: true,
+      result: {
+        addressLabel: 'structured_without_unit',
+        jibunAddress: null,
+        latitude,
+        longitude,
+        postalCode,
+        provider: 'vworld',
+        providerPlaceId: null,
+        rawLabel: expectedAddress,
+        roadAddress: expectedAddress,
+      },
+    });
+    const service = new GeocodingDsvAddressCanonicalizer({ geocode });
+
+    await expect(service.resolve({
+      address: sourceAddress,
+      shopDomain: 'dsv-demo.local',
+    })).resolves.toMatchObject({
+      address: expectedAddress,
+      latitude,
+      longitude,
+      postalCode,
       status: 'RESOLVED',
     });
   });

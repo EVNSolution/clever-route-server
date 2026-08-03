@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { loadGeocodingService } from '../src/modules/geocoding/geocoding.dependencies.js';
+import { GeocodingService } from '../src/modules/geocoding/geocoding.service.js';
 import type { GeocodingProviderError } from '../src/modules/geocoding/geocoding.types.js';
 import { VWorldGeocodingClient } from '../src/modules/geocoding/vworld-geocoding.client.js';
 
@@ -227,6 +228,41 @@ describe('VWorld geocoding provider', () => {
       shape: 'freeform',
     })).resolves.toBeNull();
     expect(rawFetch).not.toHaveBeenCalled();
+  });
+
+  test('collapses equivalent structured and freeform VWorld lookups', async () => {
+    const rawFetch = vi.fn(() => Promise.resolve(response({
+      response: { status: 'NOT_FOUND' },
+    })));
+    const client = new VWorldGeocodingClient({
+      apiKey: 'test-key',
+      fetchImpl: rawFetch,
+    });
+    const service = new GeocodingService({
+      maxRetries: 0,
+      minIntervalMs: 0,
+      mode: 'vworld',
+      provider: client,
+      providerPolicy: 'vworld',
+    });
+
+    await expect(service.geocode({
+      address: {
+        address1: '서울 영등포구 버드나루로6길 10',
+        address2: null,
+        city: null,
+        countryCode: 'KR',
+        postalCode: null,
+        province: null,
+      },
+      shopDomain: 'dsv-demo.local',
+    })).resolves.toMatchObject({
+      attemptCount: 1,
+      code: 'GEOCODER_NO_RESULT',
+      ok: false,
+      queryShapes: ['structured_without_unit'],
+    });
+    expect(rawFetch).toHaveBeenCalledTimes(2);
   });
 
   test('classifies VWorld body errors even when HTTP status is 200', async () => {

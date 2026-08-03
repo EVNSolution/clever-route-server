@@ -65,6 +65,10 @@ export class VWorldGeocodingClient implements GeocodingProvider {
         : 10000;
   }
 
+  lookupKey(query: GeocodingQuery): string | null {
+    return readAddress(query)?.toLocaleLowerCase('ko-KR') ?? null;
+  }
+
   async geocodeAddress(query: GeocodingQuery): Promise<GeocodingLookupResult | null> {
     if (!isKoreanQuery(query)) return null;
     const address = readAddress(query);

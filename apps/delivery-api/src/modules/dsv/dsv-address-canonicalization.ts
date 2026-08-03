@@ -8,6 +8,7 @@ const postalCodePattern = /(?:^|\s|\()(\d{5})(?:$|\s|\))/u;
 const roadAddressBasePattern =
   /^(.*?(?:(?:대로|로|길)\s*\d+(?:-\d+)?번길|(?:대로|로|길)\s*\d+길|(?:대로|로|길))\s*\d+(?:-\d+)?)(.*)$/u;
 const parcelAddressBasePattern = /^(.*(?:읍|면|동|리)\s*(?:산\s*)?\d+(?:-\d+)?)(?:\s+(.+))$/u;
+const formerIncheonSeoDistricts = new Set(['서구', '서해구', '검단구']);
 
 export type DsvAddressResolutionStatus =
   | 'ADDRESS_ONLY'
@@ -251,7 +252,7 @@ export function addressSuggestionScore(input: {
   if (
     source.locality !== null
     && candidate.locality !== null
-    && source.locality !== candidate.locality
+    && !sameAdministrativeLocality(source.province, source.locality, candidate.locality)
   ) return 0;
 
   const destinationName = normalizePlaceName(input.destinationName);
@@ -267,7 +268,11 @@ export function addressSuggestionScore(input: {
     containedPlaceName ? 45 : 0,
   );
   if (source.province !== null && source.province === candidate.province) score += 12;
-  if (source.locality !== null && source.locality === candidate.locality) score += 13;
+  if (
+    source.locality !== null
+    && candidate.locality !== null
+    && sameAdministrativeLocality(source.province, source.locality, candidate.locality)
+  ) score += 13;
   if (source.road !== null && candidate.road !== null) {
     if (source.road === candidate.road) score += 15;
     else if (withinOneCharacterEdit(source.road, candidate.road)) score += 12;
@@ -354,7 +359,7 @@ function resolvedAddressMatchesSource(
   if (
     source.locality !== null
     && resolved.locality !== null
-    && source.locality !== resolved.locality
+    && !sameAdministrativeLocality(source.province, source.locality, resolved.locality)
   ) return false;
   if (source.road !== null && resolved.road !== null && source.road !== resolved.road) return false;
   return !(
@@ -495,9 +500,21 @@ function normalizeProvince(value: string): string {
   return value;
 }
 
+function sameAdministrativeLocality(
+  province: string | null,
+  left: string,
+  right: string,
+): boolean {
+  if (left === right) return true;
+  return province === '인천'
+    && formerIncheonSeoDistricts.has(left)
+    && formerIncheonSeoDistricts.has(right);
+}
+
 function normalizeKoreanRoadSpacing(value: string): string {
   return value
     .replace(/(대로|로|길)\s+(\d+(?:-\d+)?)번길/gu, '$1$2번길')
+    .replace(/(대로|로|길)\s+(\d+(?:-\d+)?)길/gu, '$1$2길')
     .replace(/(\d+(?:-\d+)?번길|대로|로|길)\s*(\d+(?:-\d+)?)(?=$|\s|\()/gu, '$1 $2');
 }
 
