@@ -10,6 +10,7 @@ DSV 전용 Driver 앱은 기존 CLEVER Routes 앱의 Shopify 초대 및 전화�
 | --- | --- | --- |
 | `POST` | `/api/dsv/driver/auth/register` | 계정 생성, 정확히 일치하는 DSV 배송원 연결, 30일 갱신 세션 발급 |
 | `POST` | `/api/dsv/driver/auth/login` | 계정 로그인, 새로 등록된 일치 배송원 재탐색, 세션 발급 |
+| `POST` | `/api/dsv/driver/auth/refresh` | 유효한 refresh token으로 비밀번호 재입력 없이 15분 access token 갱신 |
 
 로그인 ID는 소문자 영문, 숫자, `.`, `_`, `-`만 허용하며 4~40자다. 비밀번호는
 8~128자, 이름은 1~80자, 휴대전화 번호는 `01`로 시작하는 숫자 10~11자리,
@@ -38,7 +39,8 @@ DSV 전용 Driver 앱은 기존 CLEVER Routes 앱의 Shopify 초대 및 전화�
 - 가입은 IP당 15분에 5회, 로그인은 IP당 15분에 10회로 제한한다.
 - access token은 15분, refresh token은 30일이며 응답 `use`는
   `dsv_driver_account`다.
-- 모바일 앱의 영구 토큰 저장 방식은 별도 보안 계약이 확정될 때까지 구현하지 않는다.
+- 모바일 앱은 비밀번호가 아닌 refresh token과 세션 표시 정보만 OS 보안 저장소에 보관한다.
+- 로그아웃 시 기기의 저장 세션을 삭제하고, 갱신 세션이 폐기·만료되면 다시 로그인한다.
 
 ## 운영 활성화와 테스트 신원 시드
 

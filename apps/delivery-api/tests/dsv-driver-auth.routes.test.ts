@@ -4,6 +4,7 @@ import { buildApp } from '../src/app.js';
 import {
   DsvDriverAuthConflictError,
   DsvDriverAuthCredentialsError,
+  DsvDriverAuthRefreshError,
   type DsvDriverAuthRepository,
 } from '../src/modules/dsv/dsv-driver-auth.repository.js';
 import { verifyDriverAccountToken } from '../src/modules/driver/driver-token-verifier.js';
@@ -92,11 +93,69 @@ describe('DSV Driver app auth routes', () => {
     }
   });
 
+  test('refreshes a DSV account session without asking for the password again', async () => {
+    const refresh = vi.fn<DsvDriverAuthRepository['refresh']>(() => Promise.resolve(session));
+    const app = await buildApp({
+      dsvDriverAuth: { jwtSecret: 'test-jwt-secret', repository: { refresh } as never },
+    });
+
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        payload: { refreshToken: ' refresh-token ' },
+        url: '/api/dsv/driver/auth/refresh',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(refresh).toHaveBeenCalledWith({ refreshToken: 'refresh-token' });
+      expect(response.json()).toMatchObject({
+        data: {
+          account: session.account,
+          refreshToken: 'refresh-token',
+          use: 'dsv_driver_account',
+        },
+        error: null,
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects missing and expired DSV refresh sessions', async () => {
+    const refresh = vi.fn<DsvDriverAuthRepository['refresh']>(() => Promise.reject(new DsvDriverAuthRefreshError()));
+    const app = await buildApp({
+      dsvDriverAuth: { jwtSecret: 'test-jwt-secret', repository: { refresh } as never },
+    });
+
+    try {
+      const missing = await app.inject({
+        method: 'POST',
+        payload: {},
+        url: '/api/dsv/driver/auth/refresh',
+      });
+      const expired = await app.inject({
+        method: 'POST',
+        payload: { refreshToken: 'expired-token' },
+        url: '/api/dsv/driver/auth/refresh',
+      });
+
+      expect(missing.statusCode).toBe(400);
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(expired.statusCode).toBe(401);
+      expect(expired.json()).toEqual({
+        data: null,
+        error: { code: 'SESSION_EXPIRED', message: 'Invalid or expired refresh token' },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('uses bounded validation and stable public conflict and credential errors', async () => {
     const register = vi.fn<DsvDriverAuthRepository['register']>(() => Promise.reject(new DsvDriverAuthConflictError()));
     const login = vi.fn<DsvDriverAuthRepository['login']>(() => Promise.reject(new DsvDriverAuthCredentialsError()));
     const app = await buildApp({
-      dsvDriverAuth: { jwtSecret: 'test-jwt-secret', repository: { login, register } },
+      dsvDriverAuth: { jwtSecret: 'test-jwt-secret', repository: { login, register } as never },
     });
 
     try {
