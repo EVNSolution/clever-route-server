@@ -46,6 +46,8 @@ export type DriverAssignedRouteStop = {
   sellerOrderKey: string | null;
   shippedBoxes: number | null;
   status: string;
+  timeWindowEnd: string | null;
+  timeWindowStart: string | null;
   totalPriceAmount: string | null;
 };
 
