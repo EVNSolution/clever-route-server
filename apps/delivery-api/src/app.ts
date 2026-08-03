@@ -18,6 +18,10 @@ import {
   type AdminCommerceConnectionsDependencies
 } from './routes/admin-commerce-connections.routes.js';
 import {
+  registerAdminCustomerEmailRoutes,
+  type AdminCustomerEmailDependencies
+} from './routes/admin-customer-email.routes.js';
+import {
   registerAdminCommerceConnectionsUiRoutes,
   type AdminCommerceConnectionsUiDependencies
 } from './routes/admin-commerce-connections-ui.routes.js';
@@ -50,6 +54,7 @@ import { registerDsvDriverAuthRoutes, type DsvDriverAuthDependencies } from './r
 export type BuildAppOptions = {
   adminCommerceConnections?: AdminCommerceConnectionsDependencies;
   adminCommerceConnectionsUi?: AdminCommerceConnectionsUiDependencies;
+  adminCustomerEmail?: AdminCustomerEmailDependencies;
   adminDrivers?: AdminDriversDependencies;
   adminInventories?: AdminInventoryDependencies;
   adminOrders?: AdminOrdersDependencies;
@@ -130,6 +135,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   if (options.adminCommerceConnectionsUi !== undefined) {
     registerAdminCommerceConnectionsUiRoutes(app, options.adminCommerceConnectionsUi);
+  }
+
+  if (options.adminCustomerEmail !== undefined) {
+    registerAdminCustomerEmailRoutes(app, options.adminCustomerEmail);
   }
 
   if (options.adminDrivers !== undefined) {

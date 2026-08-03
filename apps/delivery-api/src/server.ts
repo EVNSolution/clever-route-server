@@ -8,6 +8,7 @@ import {
 } from './modules/commerce/admin-commerce-connections.dependencies.js';
 import { loadAdminDriverDependencies } from './modules/driver/admin-driver.dependencies.js';
 import { loadAdminInventoryDependencies } from './modules/inventory/inventory.dependencies.js';
+import { loadAdminCustomerEmailDependencies } from './modules/customer-email/customer-email.dependencies.js';
 import { loadDriverApiDependencies } from './modules/driver/driver.dependencies.js';
 import { loadDriverAuthDependencies } from './modules/driver/driver-auth.dependencies.js';
 import { createRouteGroupingService, loadAdminRouteGroupDependencies } from './modules/route-grouping/route-grouping.dependencies.js';
@@ -36,6 +37,7 @@ import type { WooCommerceWebhookDependencies } from './routes/woocommerce-webhoo
 import type { WordPressPluginDependencies } from './routes/wordpress-plugin.routes.js';
 import type { AdminCommerceConnectionsDependencies } from './routes/admin-commerce-connections.routes.js';
 import type { AdminCommerceConnectionsUiDependencies } from './routes/admin-commerce-connections-ui.routes.js';
+import type { AdminCustomerEmailDependencies } from './routes/admin-customer-email.routes.js';
 import type { DsvControlDependencies } from './routes/dsv-control.routes.js';
 import type { DsvV1ReadDependencies } from './routes/dsv-v1-read.routes.js';
 import type { DsvDriverAuthDependencies } from './routes/dsv-driver-auth.routes.js';
@@ -45,6 +47,7 @@ const prisma = new PrismaClient();
 const adminCommerceConnections = loadAdminCommerceConnectionsDependencies({ env: process.env, prisma });
 const adminDrivers = loadAdminDriverDependencies({ env: process.env, prisma });
 const adminInventories = loadAdminInventoryDependencies({ env: process.env, prisma });
+const adminCustomerEmail = loadAdminCustomerEmailDependencies({ env: process.env, prisma });
 const routeGroupingService = createRouteGroupingService({ env: process.env, prisma });
 const adminRouteGroups = loadAdminRouteGroupDependencies({ env: process.env, prisma, routeGroupingService });
 const routeTrackingStreamHub = new RouteTrackingStreamHub();
@@ -99,6 +102,7 @@ const app = await buildApp(
   createBuildAppOptions({
     adminCommerceConnections,
     adminCommerceConnectionsUi,
+    adminCustomerEmail,
     adminDrivers,
     adminInventories,
     adminOrders,
@@ -157,6 +161,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 function createBuildAppOptions(input: {
   adminCommerceConnections: AdminCommerceConnectionsDependencies | undefined;
   adminCommerceConnectionsUi: AdminCommerceConnectionsUiDependencies | undefined;
+  adminCustomerEmail: AdminCustomerEmailDependencies | undefined;
   adminDrivers: AdminDriversDependencies | undefined;
   adminInventories: AdminInventoryDependencies | undefined;
   adminOrders: AdminOrdersDependencies | undefined;
@@ -176,6 +181,7 @@ function createBuildAppOptions(input: {
 }): {
   adminCommerceConnections?: AdminCommerceConnectionsDependencies;
   adminCommerceConnectionsUi?: AdminCommerceConnectionsUiDependencies;
+  adminCustomerEmail?: AdminCustomerEmailDependencies;
   adminDrivers?: AdminDriversDependencies;
   adminInventories?: AdminInventoryDependencies;
   adminOrders?: AdminOrdersDependencies;
@@ -196,6 +202,7 @@ function createBuildAppOptions(input: {
   return {
     ...(input.adminCommerceConnections === undefined ? {} : { adminCommerceConnections: input.adminCommerceConnections }),
     ...(input.adminCommerceConnectionsUi === undefined ? {} : { adminCommerceConnectionsUi: input.adminCommerceConnectionsUi }),
+    ...(input.adminCustomerEmail === undefined ? {} : { adminCustomerEmail: input.adminCustomerEmail }),
     ...(input.adminDrivers === undefined ? {} : { adminDrivers: input.adminDrivers }),
     ...(input.adminInventories === undefined ? {} : { adminInventories: input.adminInventories }),
     ...(input.adminOrders === undefined ? {} : { adminOrders: input.adminOrders }),

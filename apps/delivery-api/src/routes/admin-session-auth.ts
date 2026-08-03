@@ -7,6 +7,7 @@ export type AdminSessionTokenVerifier = {
 type AdminSessionAuthSurface =
   | 'admin_drivers'
   | 'admin_inventories'
+  | 'admin_customer_email'
   | 'admin_orders'
   | 'admin_route_groups'
   | 'admin_route_plans'
