@@ -21,6 +21,7 @@ import { createAdminNotificationRuntime } from './modules/notifications/admin-no
 import { RouteTrackingStreamHub } from './modules/route-tracking/route-tracking.stream.js';
 import { loadDsvControlDependencies } from './modules/dsv/dsv-control.dependencies.js';
 import { loadDsvV1ReadDependencies } from './modules/dsv/dsv-v1-read.dependencies.js';
+import { loadDsvDriverAuthDependencies } from './modules/dsv/dsv-driver-auth.dependencies.js';
 import { loadWordPressPluginDependencies } from './modules/wordpress-plugin/wordpress-plugin.dependencies.js';
 import type { AdminRoutePlanDependencies } from './routes/admin-route-plans.routes.js';
 import type { AdminRouteGroupDependencies } from './routes/admin-route-groups.routes.js';
@@ -37,6 +38,7 @@ import type { AdminCommerceConnectionsDependencies } from './routes/admin-commer
 import type { AdminCommerceConnectionsUiDependencies } from './routes/admin-commerce-connections-ui.routes.js';
 import type { DsvControlDependencies } from './routes/dsv-control.routes.js';
 import type { DsvV1ReadDependencies } from './routes/dsv-v1-read.routes.js';
+import type { DsvDriverAuthDependencies } from './routes/dsv-driver-auth.routes.js';
 
 const env = loadEnv();
 const prisma = new PrismaClient();
@@ -55,6 +57,7 @@ const adminNotificationRuntime = createAdminNotificationRuntime({
 });
 const adminNotificationService = adminNotificationRuntime.service;
 const dsvControl = loadDsvControlDependencies({ env: process.env, nodeEnv: env.nodeEnv, prisma, routeGroupingService });
+const dsvDriverAuth = loadDsvDriverAuthDependencies({ env: process.env, nodeEnv: env.nodeEnv, prisma });
 const dsvV1Read = loadDsvV1ReadDependencies({ env: process.env, nodeEnv: env.nodeEnv, prisma });
 const adminOrders = loadAdminOrdersDependencies({
   adminNotificationService,
@@ -105,6 +108,7 @@ const app = await buildApp(
     driverApi,
     driverAuth,
     dsvControl,
+    dsvDriverAuth,
     dsvV1Read,
     logger,
     shopifyAuth,
@@ -162,6 +166,7 @@ function createBuildAppOptions(input: {
   driverApi: DriverApiDependencies | undefined;
   driverAuth: DriverAuthDependencies | undefined;
   dsvControl: DsvControlDependencies | undefined;
+  dsvDriverAuth: DsvDriverAuthDependencies | undefined;
   dsvV1Read: DsvV1ReadDependencies | undefined;
   logger: false | { level: string };
   shopifyAuth: ShopifyAuthDependencies | undefined;
@@ -180,6 +185,7 @@ function createBuildAppOptions(input: {
   driverApi?: DriverApiDependencies;
   driverAuth?: DriverAuthDependencies;
   dsvControl?: DsvControlDependencies;
+  dsvDriverAuth?: DsvDriverAuthDependencies;
   dsvV1Read?: DsvV1ReadDependencies;
   logger: false | { level: string };
   shopifyAuth?: ShopifyAuthDependencies;
@@ -199,6 +205,7 @@ function createBuildAppOptions(input: {
     ...(input.driverApi === undefined ? {} : { driverApi: input.driverApi }),
     ...(input.driverAuth === undefined ? {} : { driverAuth: input.driverAuth }),
     ...(input.dsvControl === undefined ? {} : { dsvControl: input.dsvControl }),
+    ...(input.dsvDriverAuth === undefined ? {} : { dsvDriverAuth: input.dsvDriverAuth }),
     ...(input.dsvV1Read === undefined ? {} : { dsvV1Read: input.dsvV1Read }),
     logger: input.logger,
     ...(input.shopifyAuth === undefined ? {} : { shopifyAuth: input.shopifyAuth }),

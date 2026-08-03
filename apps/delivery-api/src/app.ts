@@ -1,6 +1,7 @@
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import helmet from '@fastify/helmet';
+import rateLimit from '@fastify/rate-limit';
 import Fastify from 'fastify';
 import type { FastifyInstance, FastifyRequest, FastifyServerOptions } from 'fastify';
 
@@ -44,6 +45,7 @@ import {
 } from './routes/wordpress-plugin.routes.js';
 import { registerDsvControlRoutes, type DsvControlDependencies } from './routes/dsv-control.routes.js';
 import { registerDsvV1ReadRoutes, type DsvV1ReadDependencies } from './routes/dsv-v1-read.routes.js';
+import { registerDsvDriverAuthRoutes, type DsvDriverAuthDependencies } from './routes/dsv-driver-auth.routes.js';
 
 export type BuildAppOptions = {
   adminCommerceConnections?: AdminCommerceConnectionsDependencies;
@@ -57,6 +59,7 @@ export type BuildAppOptions = {
   driverApi?: DriverApiDependencies;
   driverAuth?: DriverAuthDependencies;
   dsvControl?: DsvControlDependencies;
+  dsvDriverAuth?: DsvDriverAuthDependencies;
   dsvV1Read?: DsvV1ReadDependencies;
   logger?: FastifyServerOptions['logger'];
   shopifyAuth?: ShopifyAuthDependencies;
@@ -75,6 +78,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     done();
   });
   app.setErrorHandler((error, request, reply) => {
+    if (hasStatusCode(error, 429)) {
+      return reply.code(429).send({
+        data: null,
+        error: {
+          code: 'RATE_LIMITED',
+          message: 'Too many authentication attempts. Try again later.'
+        }
+      });
+    }
     if (isPrismaSchemaDriftError(error)) {
       const code = request.url.startsWith('/admin/inventories')
         ? 'INVENTORY_SCHEMA_NOT_READY'
@@ -103,6 +115,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
   await app.register(helmet);
   await app.register(cors, { origin: options.corsOrigin ?? false });
+  if (options.dsvDriverAuth !== undefined) {
+    await app.register(rateLimit, {
+      global: false
+    });
+  }
   registerApiDocsRoutes(app);
   registerPrivacyRoutes(app);
   registerHealthRoutes(app);
@@ -147,6 +164,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     registerDsvControlRoutes(app, options.dsvControl);
   }
 
+  if (options.dsvDriverAuth !== undefined) {
+    registerDsvDriverAuthRoutes(app, options.dsvDriverAuth);
+  }
+
   if (options.dsvV1Read !== undefined) {
     registerDsvV1ReadRoutes(app, options.dsvV1Read);
   }
@@ -172,6 +193,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
 function isPrismaSchemaDriftError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'P2022';
+}
+
+function hasStatusCode(error: unknown, statusCode: number): boolean {
+  return typeof error === 'object'
+    && error !== null
+    && 'statusCode' in error
+    && error.statusCode === statusCode;
 }
 
 function withSafeRequestLogging(logger: AppLoggerOption): AppLoggerOption {

@@ -1247,22 +1247,28 @@ model Driver {
 }
 
 model DriverAccount {
-  id                String                        @id @default(uuid()) @db.Uuid
-  phone             String                        @unique @db.Text
-  name              String?                       @db.VarChar(80)
-  pinHash           String                        @db.Text
-  pinSalt           String                        @db.Text
-  status            DriverStatus                  @default(ACTIVE)
-  tokenVersion      Int                           @default(0)
-  failedPinAttempts Int                           @default(0)
-  pinLockedUntil    DateTime?                     @db.Timestamptz(6)
-  createdAt         DateTime                      @default(now()) @db.Timestamptz(6)
-  updatedAt         DateTime                      @updatedAt @db.Timestamptz(6)
-  drivers           Driver[]
-  consentRecords    DriverConsentRecord[]
-  sessions          DriverAccountSession[]
-  deletionRequest   DriverAccountDeletionRequest?
-  pushTokens        DriverPushToken[]
+  id                             String                        @id @default(uuid()) @db.Uuid
+  phone                          String                        @unique @db.Text
+  name                           String?                       @db.VarChar(80)
+  pinHash                        String?                       @db.Text
+  pinSalt                        String?                       @db.Text
+  loginId                        String?                       @unique @db.Text
+  passwordHash                   String?                       @db.Text
+  passwordSalt                   String?                       @db.Text
+  residentNumberFrontFingerprint String?                       @db.Text
+  status                         DriverStatus                  @default(ACTIVE)
+  tokenVersion                   Int                           @default(0)
+  failedPinAttempts              Int                           @default(0)
+  pinLockedUntil                 DateTime?                     @db.Timestamptz(6)
+  failedPasswordAttempts         Int                           @default(0)
+  passwordLockedUntil            DateTime?                     @db.Timestamptz(6)
+  createdAt                      DateTime                      @default(now()) @db.Timestamptz(6)
+  updatedAt                      DateTime                      @updatedAt @db.Timestamptz(6)
+  drivers                        Driver[]
+  consentRecords                 DriverConsentRecord[]
+  sessions                       DriverAccountSession[]
+  deletionRequest                DriverAccountDeletionRequest?
+  pushTokens                     DriverPushToken[]
 
   @@index([status])
   @@map("driver_accounts")
@@ -1724,23 +1730,25 @@ model Vehicle {
 }
 
 model DsvDriverProfile {
-  driverId   String   @id @db.Uuid
-  driver     Driver   @relation(fields: [driverId, shopId], references: [id, shopId], onDelete: Cascade)
-  shopId     String   @db.Uuid
-  shop       Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  lookupName String   @db.Text
-  age        Int
-  gender     String   @db.Text
-  career     String   @db.Text
-  zone       String   @db.Text
-  score      String   @db.Text
-  traits     String[] @default([])
-  createdAt  DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt  DateTime @updatedAt @db.Timestamptz(6)
+  driverId                       String   @id @db.Uuid
+  driver                         Driver   @relation(fields: [driverId, shopId], references: [id, shopId], onDelete: Cascade)
+  shopId                         String   @db.Uuid
+  shop                           Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  lookupName                     String   @db.Text
+  residentNumberFrontFingerprint String?  @db.Text
+  age                            Int
+  gender                         String   @db.Text
+  career                         String   @db.Text
+  zone                           String   @db.Text
+  score                          String   @db.Text
+  traits                         String[] @default([])
+  createdAt                      DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt                      DateTime @updatedAt @db.Timestamptz(6)
 
   @@unique([driverId, shopId])
   @@unique([shopId, lookupName])
   @@index([shopId])
+  @@index([shopId, residentNumberFrontFingerprint])
   @@map("dsv_driver_profiles")
 }
 
