@@ -40,7 +40,12 @@ export class PrismaDriverDeliverySpaceRepository implements DriverDeliverySpaceR
   async findRouteContext(input: Pick<DriverRouteAccessScope, 'driverId' | 'routePlanId' | 'shopId'>) {
     const child = await this.prisma.routeGroupingChildVersion.findFirst({
       select: { groupingId: true, routePlan: { select: { vehicleId: true } } },
-      where: { ...input, status: 'CURRENT' }
+      where: {
+        driverId: input.driverId,
+        routePlanId: input.routePlanId,
+        shopId: input.shopId,
+        status: 'CURRENT'
+      }
     });
     return child?.routePlan === null || child === null ? null : { groupingId: child.groupingId, vehicleId: child.routePlan.vehicleId };
   }
