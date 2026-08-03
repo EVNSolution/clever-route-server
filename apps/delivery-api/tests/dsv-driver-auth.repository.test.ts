@@ -74,4 +74,63 @@ describe('Prisma DSV driver auth repository', () => {
       linkedDrivers: [{ driverId: candidate.id, name: '양우진' }],
     });
   });
+
+  test('restores an active DSV account from its refresh session', async () => {
+    const expiresAt = new Date(Date.now() + 60_000);
+    const account = {
+      drivers: [{
+        displayName: '양우진',
+        id: 'driver-id',
+        phone: '01012345678',
+        shop: { shopDomain: 'dsv-production.local' },
+      }],
+      id: 'account-id',
+      loginId: 'woojin',
+      name: '양우진',
+      phone: '01012345678',
+      status: 'ACTIVE',
+      tokenVersion: 1,
+    };
+    const prisma = {
+      driverAccountSession: {
+        findUnique: vi.fn((input: unknown) => {
+          void input;
+          return Promise.resolve({
+            account,
+            expiresAt,
+            id: 'session-id',
+            revokedAt: null,
+          });
+        }),
+        update: vi.fn((input: unknown) => {
+          void input;
+          return Promise.resolve({ id: 'session-id' });
+        }),
+      },
+    };
+    const repository = new PrismaDsvDriverAuthRepository(
+      prisma as never,
+      'identity-secret-that-is-at-least-32-characters',
+    );
+
+    const result = await repository.refresh({ refreshToken: ' refresh-token ' });
+
+    const findInput = prisma.driverAccountSession.findUnique.mock.calls[0]?.[0] as {
+      where: { refreshTokenHash: string };
+    };
+    const updateInput = prisma.driverAccountSession.update.mock.calls[0]?.[0] as {
+      data: { lastUsedAt: Date };
+      where: { id: string };
+    };
+    expect(findInput.where.refreshTokenHash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(updateInput.data.lastUsedAt).toBeInstanceOf(Date);
+    expect(updateInput.where).toEqual({ id: 'session-id' });
+    expect(result).toMatchObject({
+      account: { connectionStatus: 'LINKED', loginId: 'woojin' },
+      accountId: 'account-id',
+      expiresAt,
+      refreshToken: 'refresh-token',
+      tokenVersion: 1,
+    });
+  });
 });

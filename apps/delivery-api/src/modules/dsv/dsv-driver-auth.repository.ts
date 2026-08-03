@@ -46,8 +46,13 @@ export type DsvDriverLoginInput = {
   password: string;
 };
 
+export type DsvDriverRefreshInput = {
+  refreshToken: string;
+};
+
 export type DsvDriverAuthRepository = {
   login(input: DsvDriverLoginInput): Promise<DsvDriverAuthSession>;
+  refresh(input: DsvDriverRefreshInput): Promise<DsvDriverAuthSession>;
   register(input: DsvDriverRegistrationInput): Promise<DsvDriverAuthSession>;
 };
 
@@ -62,6 +67,13 @@ export class DsvDriverAuthCredentialsError extends Error {
   constructor() {
     super('Invalid login ID or password');
     this.name = 'DsvDriverAuthCredentialsError';
+  }
+}
+
+export class DsvDriverAuthRefreshError extends Error {
+  constructor() {
+    super('Invalid or expired refresh token');
+    this.name = 'DsvDriverAuthRefreshError';
   }
 }
 
@@ -203,6 +215,46 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
       where: { id: account.id },
     });
     return this.createSession(await this.linkMatchingDrivers(account));
+  }
+
+  async refresh(input: DsvDriverRefreshInput): Promise<DsvDriverAuthSession> {
+    const refreshToken = input.refreshToken.trim();
+    if (refreshToken.length === 0) throw new DsvDriverAuthRefreshError();
+
+    const now = new Date();
+    const session = await this.prisma.driverAccountSession.findUnique({
+      include: {
+        account: {
+          include: {
+            drivers: {
+              include: { shop: { select: { shopDomain: true } } },
+              where: { dsvProfile: { isNot: null }, status: 'ACTIVE' },
+            },
+          },
+        },
+      },
+      where: { refreshTokenHash: hashRefreshToken(refreshToken) },
+    });
+    if (
+      session === null
+      || session.revokedAt !== null
+      || session.expiresAt.getTime() <= now.getTime()
+      || session.account.status !== 'ACTIVE'
+    ) {
+      throw new DsvDriverAuthRefreshError();
+    }
+
+    await this.prisma.driverAccountSession.update({
+      data: { lastUsedAt: now },
+      where: { id: session.id },
+    });
+    return {
+      account: accountView(session.account, session.account.drivers),
+      accountId: session.account.id,
+      expiresAt: session.expiresAt,
+      refreshToken,
+      tokenVersion: session.account.tokenVersion,
+    };
   }
 
   private async linkMatchingDrivers(account: AccountWithDrivers): Promise<AccountWithDrivers> {

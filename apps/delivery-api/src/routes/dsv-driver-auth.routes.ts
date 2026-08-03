@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import {
   DsvDriverAuthConflictError,
   DsvDriverAuthCredentialsError,
+  DsvDriverAuthRefreshError,
   type DsvDriverAuthRepository,
   type DsvDriverAuthSession,
 } from '../modules/dsv/dsv-driver-auth.repository.js';
@@ -93,6 +94,40 @@ export function registerDsvDriverAuthRoutes(
       });
     }
   });
+
+  app.post<{ Body: unknown }>('/api/dsv/driver/auth/refresh', {
+    config: {
+      rateLimit: {
+        groupId: 'dsv-driver-refresh',
+        max: 30,
+        timeWindow: '15 minutes',
+      },
+    },
+  }, async (request, reply) => {
+    const input = readRefreshInput(request.body);
+    if (input === null) {
+      return reply.code(400).send({
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'refreshToken is required' },
+      });
+    }
+    try {
+      const session = await dependencies.repository.refresh(input);
+      return reply.code(200).send(buildSessionResponse(session, dependencies.jwtSecret));
+    } catch (error) {
+      if (error instanceof DsvDriverAuthRefreshError) {
+        return reply.code(401).send({
+          data: null,
+          error: { code: 'SESSION_EXPIRED', message: error.message },
+        });
+      }
+      request.log.error({ err: error }, 'DSV driver session refresh failed');
+      return reply.code(500).send({
+        data: null,
+        error: { code: 'INTERNAL_SERVER_ERROR', message: 'DSV driver session could not be refreshed' },
+      });
+    }
+  });
 }
 
 function buildSessionResponse(session: DsvDriverAuthSession, secret: string) {
@@ -145,6 +180,13 @@ function readLoginInput(value: unknown) {
   return LOGIN_ID_PATTERN.test(loginId) && password.length >= 8 && password.length <= 128
     ? { loginId, password }
     : null;
+}
+
+function readRefreshInput(value: unknown) {
+  const object = objectOrNull(value);
+  if (object === null || !hasOnlyKeys(object, ['refreshToken'])) return null;
+  const refreshToken = typeof object.refreshToken === 'string' ? object.refreshToken.trim() : '';
+  return refreshToken.length > 0 ? { refreshToken } : null;
 }
 
 function objectOrNull(value: unknown): Record<string, unknown> | null {
