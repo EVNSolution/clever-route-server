@@ -4,6 +4,8 @@ export type UvisRuntimeEnv = Partial<Record<
   | 'UVIS_ACCESS_KEY_URL'
   | 'UVIS_APP_ID'
   | 'UVIS_COMPANY_SERIAL_KEY'
+  | 'UVIS_LOCATION_DORMANT_GRACE_PERIOD_MS'
+  | 'UVIS_LOCATION_DORMANT_HEARTBEAT_INTERVAL_MS'
   | 'UVIS_ENABLED'
   | 'UVIS_LOCATION_POLL_INTERVAL_MS'
   | 'UVIS_LOCATION_GUBUN'
@@ -33,15 +35,21 @@ export type UvisClientConfig = {
 export type UvisRuntimeConfig = {
   appId: string;
   client: UvisClientConfig;
+  locationDormantGracePeriodMs: number;
+  locationDormantHeartbeatIntervalMs: number;
   locationPollIntervalMs: number;
   shopDomain: string;
   temperaturePollIntervalMs: number;
 };
 
 const DEFAULT_TIMEOUT_MS = 10000;
+const DEFAULT_LOCATION_DORMANT_GRACE_PERIOD_MS = 600_000;
+const DEFAULT_LOCATION_DORMANT_HEARTBEAT_INTERVAL_MS = 300_000;
 const DEFAULT_LOCATION_POLL_INTERVAL_MS = 60_000;
 const DEFAULT_TEMPERATURE_POLL_INTERVAL_MS = 300_000;
 const MAX_TIMEOUT_MS = 30_000;
+const MIN_LOCATION_DORMANT_GRACE_PERIOD_MS = 60_000;
+const MIN_LOCATION_DORMANT_HEARTBEAT_INTERVAL_MS = 60_000;
 const MIN_TIMEOUT_MS = 1_000;
 const MIN_LOCATION_POLL_INTERVAL_MS = 60_000;
 const MIN_TEMPERATURE_POLL_INTERVAL_MS = 300_000;
@@ -55,6 +63,18 @@ export function loadUvisRuntimeConfig(env: UvisRuntimeEnv = process.env): UvisRu
   return {
     appId: readOptional(env.UVIS_APP_ID) ?? 'clever',
     client,
+    locationDormantGracePeriodMs: readBoundedInteger(
+      env.UVIS_LOCATION_DORMANT_GRACE_PERIOD_MS,
+      'UVIS_LOCATION_DORMANT_GRACE_PERIOD_MS',
+      MIN_LOCATION_DORMANT_GRACE_PERIOD_MS,
+      Number.MAX_SAFE_INTEGER,
+    ) ?? DEFAULT_LOCATION_DORMANT_GRACE_PERIOD_MS,
+    locationDormantHeartbeatIntervalMs: readBoundedInteger(
+      env.UVIS_LOCATION_DORMANT_HEARTBEAT_INTERVAL_MS,
+      'UVIS_LOCATION_DORMANT_HEARTBEAT_INTERVAL_MS',
+      MIN_LOCATION_DORMANT_HEARTBEAT_INTERVAL_MS,
+      Number.MAX_SAFE_INTEGER,
+    ) ?? DEFAULT_LOCATION_DORMANT_HEARTBEAT_INTERVAL_MS,
     locationPollIntervalMs: readBoundedInteger(
       env.UVIS_LOCATION_POLL_INTERVAL_MS,
       'UVIS_LOCATION_POLL_INTERVAL_MS',

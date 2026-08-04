@@ -161,6 +161,11 @@ enum UvisTelemetrySourceKind {
   TEMPERATURE_RECORDER
 }
 
+enum UvisTelemetryActivity {
+  ACTIVE
+  DORMANT
+}
+
 enum DriverEventType {
   ROUTE_STARTED
   ROUTE_PAUSED
@@ -2071,6 +2076,10 @@ model UvisTelemetryPollState {
   shop                       Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
   leaseToken                 String?   @db.Text
   leaseExpiresAt             DateTime? @db.Timestamptz(6)
+  activity                   UvisTelemetryActivity @default(ACTIVE)
+  allVehiclesStoppedSince    DateTime? @db.Timestamptz(6)
+  activeProtectionEndedAt    DateTime? @db.Timestamptz(6)
+  lastActivitySignalAt       DateTime? @db.Timestamptz(6)
   lastLocationStartedAt      DateTime? @db.Timestamptz(6)
   lastLocationSucceededAt    DateTime? @db.Timestamptz(6)
   lastLocationFailedAt       DateTime? @db.Timestamptz(6)

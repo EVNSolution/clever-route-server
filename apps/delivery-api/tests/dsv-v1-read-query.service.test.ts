@@ -508,6 +508,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
         { driverId: 'driver-a', id: 'assignment-a', vehicleId: 'vehicle-a' },
         { driverId: 'driver-c', id: 'assignment-c', vehicleId: 'vehicle-b' },
       ])) },
+      uvisTelemetryPollState: { findUnique: vi.fn(() => Promise.resolve({ activity: 'DORMANT' })) },
       uvisVehicleTelemetryCurrent: { findMany: vi.fn(() => Promise.resolve([
         {
           distanceTodayKm: '83.40',
@@ -591,6 +592,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
         note: 'Alpha note',
         speedKph: 42.1,
         status: 'ACTIVE',
+        telemetryActivity: 'DORMANT',
         telematicsCapabilities: ['LOCATION', 'TEMPERATURE', 'TACHOMETER'],
         telematicsSerialNumber: '012-5273-8978',
         temperatureA: -18.5,
@@ -604,6 +606,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
         vehiclePlate: 'A',
         vehiclePositionObservedAt: new Date('2026-08-04T01:15:00.000Z'),
         vehiclePositionStale: false,
+        vehicleStopped: false,
         vehicleType: '봉고3 1톤 EV',
       },
       {
@@ -626,6 +629,10 @@ describe('PrismaDsvV1ReadQueryService', () => {
       /kind|displayName|phone|vehicleId/u
     );
     expect(JSON.stringify(result.items)).not.toMatch(/sourceDeviceIdentifier|sourceDevice|deviceId|serial-secret/u);
+    expect(prisma.uvisTelemetryPollState.findUnique).toHaveBeenCalledWith({
+      select: { activity: true },
+      where: { shopId: 'shop-a' },
+    });
   });
 
   test('driver and vehicle management reads are limited to DSV profiled resources', async () => {

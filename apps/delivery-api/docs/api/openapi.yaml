@@ -4359,6 +4359,9 @@ components:
           type: string
         status:
           type: string
+        telemetryActivity:
+          type: string
+          enum: [ACTIVE, DORMANT]
         telematicsCapabilities:
           type: array
           items:
@@ -4376,6 +4379,8 @@ components:
           type: number
         vehiclePlate:
           type: string
+        vehicleStopped:
+          type: boolean
         vehicleType:
           type: string
       additionalProperties: false

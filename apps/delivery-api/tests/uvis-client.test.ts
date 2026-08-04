@@ -144,6 +144,30 @@ describe('UVIS client', () => {
       UVIS_TEMPERATURE_GUBUN: 'TEMP_KIND',
       UVIS_TEMPERATURE_POLL_INTERVAL_MS: '299999',
     })).toThrow('UVIS_TEMPERATURE_POLL_INTERVAL_MS must be an integer between 300000');
+    expect(() => loadUvisRuntimeConfig({
+      UVIS_ACCESS_KEY_URL: 'https://uvis.test/access-key',
+      UVIS_ALLOWED_OUTBOUND_URLS: 'https://uvis.test/access-key,https://uvis.test/telematics',
+      UVIS_COMPANY_SERIAL_KEY: 'fake-company-serial-key',
+      UVIS_ENABLED: 'true',
+      UVIS_LOCATION_DORMANT_GRACE_PERIOD_MS: '59999',
+      UVIS_LOCATION_GUBUN: 'LOC_KIND',
+      UVIS_SHOP_DOMAIN: 'dsv-demo.local',
+      UVIS_TELEMETRY_URL: 'https://uvis.test/telematics',
+      UVIS_TEMPERATURE_GUBUN: 'TEMP_KIND',
+    })).toThrow('UVIS_LOCATION_DORMANT_GRACE_PERIOD_MS must be an integer between 60000');
+    expect(loadUvisRuntimeConfig({
+      UVIS_ACCESS_KEY_URL: 'https://uvis.test/access-key',
+      UVIS_ALLOWED_OUTBOUND_URLS: 'https://uvis.test/access-key,https://uvis.test/telematics',
+      UVIS_COMPANY_SERIAL_KEY: 'fake-company-serial-key',
+      UVIS_ENABLED: 'true',
+      UVIS_LOCATION_GUBUN: 'LOC_KIND',
+      UVIS_SHOP_DOMAIN: 'dsv-demo.local',
+      UVIS_TELEMETRY_URL: 'https://uvis.test/telematics',
+      UVIS_TEMPERATURE_GUBUN: 'TEMP_KIND',
+    })).toMatchObject({
+      locationDormantGracePeriodMs: 600_000,
+      locationDormantHeartbeatIntervalMs: 300_000,
+    });
   });
 
   test('rejects DNS results that resolve allowed hostnames to private or reserved addresses', async () => {

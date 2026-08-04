@@ -25,6 +25,8 @@ export function createUvisTelemetryRuntime(input: {
     appId: config.appId,
     client: new UvisClient(config.client),
     leaseDurationMs: Math.max(120_000, config.client.timeoutMs * 8),
+    locationDormantGracePeriodMs: config.locationDormantGracePeriodMs,
+    locationDormantHeartbeatIntervalMs: config.locationDormantHeartbeatIntervalMs,
     locationPollIntervalMs: config.locationPollIntervalMs,
     logger: input.logger,
     pollStore,

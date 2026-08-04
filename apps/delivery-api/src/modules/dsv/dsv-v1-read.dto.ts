@@ -311,7 +311,9 @@ export type DsvV1VehicleListItemRow = {
   vehiclePlate?: string | null;
   vehiclePositionObservedAt?: Date | string | null;
   vehiclePositionStale?: boolean | null;
+  vehicleStopped?: boolean | null;
   vehicleType?: string | null;
+  telemetryActivity?: 'ACTIVE' | 'DORMANT' | null;
 };
 
 export type DsvV1VehicleDriverAssignmentRow = {
@@ -340,7 +342,9 @@ export type DsvV1VehicleListItemDto = {
   vehiclePlate?: string;
   vehiclePositionObservedAt?: string;
   vehiclePositionStale?: boolean;
+  vehicleStopped?: boolean | null;
   vehicleType?: string;
+  telemetryActivity?: 'ACTIVE' | 'DORMANT';
 };
 
 export type DsvV1VehicleDriverAssignmentDto = {
@@ -644,7 +648,9 @@ export function mapDsvV1VehicleListItem(row: DsvV1VehicleListItemRow): DsvV1Vehi
     ...(row.vehiclePlate === undefined || row.vehiclePlate === null ? {} : { vehiclePlate: row.vehiclePlate }),
     ...optionalIso('vehiclePositionObservedAt', row.vehiclePositionObservedAt),
     ...(row.vehiclePositionStale === undefined || row.vehiclePositionStale === null ? {} : { vehiclePositionStale: row.vehiclePositionStale }),
+    ...(row.vehicleStopped === undefined || row.vehicleStopped === null ? {} : { vehicleStopped: row.vehicleStopped }),
     ...(row.vehicleType === undefined || row.vehicleType === null ? {} : { vehicleType: row.vehicleType }),
+    ...(row.telemetryActivity === undefined || row.telemetryActivity === null ? {} : { telemetryActivity: row.telemetryActivity }),
   };
 }
 

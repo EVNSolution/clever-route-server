@@ -163,7 +163,7 @@ type DsvV1ReadPrismaClient = Pick<
   | 'order'
   | 'routePlan'
   | 'vehicle'
-> & Partial<Pick<PrismaClient, 'uvisVehicleTelemetryCurrent'>>;
+> & Partial<Pick<PrismaClient, 'uvisTelemetryPollState' | 'uvisVehicleTelemetryCurrent'>>;
 
 type DsvV1VehicleGpsTelemetry = {
   ignitionOn: boolean | null;
@@ -196,6 +196,7 @@ type DsvV1VehicleTelemetryRead = Pick<DsvV1VehicleListItemRow,
   | 'vehicleLongitude'
   | 'vehiclePositionObservedAt'
   | 'vehiclePositionStale'
+  | 'vehicleStopped'
 > & {
   gps?: DsvV1VehicleGpsTelemetry;
   temperature?: DsvV1VehicleTemperatureTelemetry;
@@ -566,6 +567,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         rows.map((row) => row.id),
       );
       const telemetryByVehicleId = await this.listVehicleTelemetry(principal.shopId, rows.map((row) => row.id));
+      const telemetryActivity = await this.getTelemetryActivity(principal.shopId);
       return rows.map((row) => {
         const telemetry = { ...telemetryByVehicleId.get(row.id) };
         delete telemetry.gps;
@@ -579,6 +581,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
             type: row.dsvProfile.typeLabel,
           } : {}),
           status: row.status,
+          ...(row.dsvTelematicsDevice === null || telemetryActivity === null ? {} : { telemetryActivity }),
           ...(row.dsvTelematicsDevice?.serialNumber === undefined
             ? {}
             : {
@@ -881,6 +884,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         telemetry.ignitionOn = gps.ignitionOn;
         telemetry.speedKph = decimalToNumber(gps.speedKph);
         telemetry.distanceTodayKm = decimalToNumber(gps.distanceTodayKm);
+        telemetry.vehicleStopped = stoppedFlag(gps.ignitionOn, telemetry.speedKph);
       }
       if (row.sourceKind === 'TEMPERATURE_RECORDER' && telemetry.temperature === undefined) {
         const temperature: DsvV1VehicleTemperatureTelemetry = row;
@@ -893,6 +897,16 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       byVehicleId.set(row.vehicleId, telemetry);
     }
     return byVehicleId;
+  }
+
+  private async getTelemetryActivity(shopId: string): Promise<'ACTIVE' | 'DORMANT' | null> {
+    const pollState = this.prisma.uvisTelemetryPollState;
+    if (pollState === undefined) return null;
+    const state = await pollState.findUnique({
+      select: { activity: true },
+      where: { shopId },
+    });
+    return state?.activity ?? null;
   }
 }
 
@@ -1536,6 +1550,12 @@ function decimalToNumber(value: unknown): number | null {
       return Number.isFinite(parsed) ? parsed : null;
     }
   }
+  return null;
+}
+
+function stoppedFlag(ignitionOn: boolean | null, speedKph: number | null): boolean | null {
+  if (ignitionOn === true || (speedKph !== null && speedKph > 1)) return false;
+  if (ignitionOn === false && speedKph !== null && speedKph <= 1) return true;
   return null;
 }
 
