@@ -46,7 +46,10 @@ describe('Shopify order workers', () => {
       );
       const worker = new ShopifyOrderReconciliationWorker({
         intervalMs: 10,
-        service: { processNextDue },
+        service: {
+          enqueueDueInstalledShops: vi.fn(() => Promise.resolve({ enqueued: 0, failed: 0, skipped: 0 })),
+          processNextDue
+        },
         workerId: 'worker-1'
       });
 

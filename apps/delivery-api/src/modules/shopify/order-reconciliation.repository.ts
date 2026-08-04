@@ -1,15 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import type { PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 
 import { redactTelemetryMessage, safeErrorCode } from '../security/safe-telemetry-redaction.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from './shopify-app-scope.js';
 import type {
   ClaimedShopifyOrderReconciliationJob,
   EnqueueShopifyOrderReconciliationInput,
+  EnqueueShopifyOrderReconciliationResult,
   ShopifyOrderReconciliationJobDto
 } from './order-reconciliation.types.js';
 
-type ReconciliationPrismaClient = Pick<PrismaClient, 'order' | 'shop' | 'shopifyOrderReconciliationJob'>;
+type ReconciliationDataClient = Pick<PrismaClient, 'order' | 'shop' | 'shopifyOrderReconciliationJob'>;
+type ReconciliationPrismaClient = ReconciliationDataClient & Pick<PrismaClient, '$transaction'>;
 
 type JobRecord = Awaited<ReturnType<PrismaClient['shopifyOrderReconciliationJob']['findUnique']>>;
 
@@ -25,26 +27,148 @@ export class PrismaShopifyOrderReconciliationRepository {
     });
     if (shop === null) throw new Error(`Shop not installed: ${input.shopDomain}`);
 
-    const previous = await this.prisma.shopifyOrderReconciliationJob.findFirst({
+    return this.createJob(this.prisma, { appId, input, shopDomain, shopId: shop.id });
+  }
+
+  async enqueueIfIdle(input: EnqueueShopifyOrderReconciliationInput): Promise<EnqueueShopifyOrderReconciliationResult> {
+    const appId = normalizeShopifyAppId(input.appId);
+    const shopDomain = normalizeShopDomain(input.shopDomain);
+    return this.prisma.$transaction(async (tx) => {
+      const lock = await tx.$queryRaw<{ locked: boolean }[]>(Prisma.sql`
+        SELECT pg_try_advisory_xact_lock(
+          hashtextextended(${`shopify-order-reconciliation:${appId}:${shopDomain}`}, 0)
+        ) AS "locked"
+      `);
+      if (lock[0]?.locked !== true) return { enqueued: false, job: null };
+      const shop = await tx.shop.findUnique({
+        select: { id: true },
+        where: appScopedShopWhere({ appId, shopDomain })
+      });
+      if (shop === null) throw new Error(`Shop not installed: ${input.shopDomain}`);
+
+      const active = await tx.shopifyOrderReconciliationJob.findFirst({
+        orderBy: { createdAt: 'desc' },
+        where: {
+          appId,
+          shopId: shop.id,
+          status: { in: ['QUEUED', 'RUNNING', 'RETRY_WAIT', 'FAILED'] }
+        }
+      });
+      if (active !== null) {
+        if (active.status === 'RETRY_WAIT' || active.status === 'FAILED') {
+          const reactivated = await tx.shopifyOrderReconciliationJob.update({
+            data: {
+              attemptCount: 0,
+              deadLetteredAt: null,
+              finishedAt: null,
+              lastErrorCode: null,
+              lastErrorMessageRedacted: null,
+              nextRunAt: new Date(),
+              requestedBy: input.requestedBy ?? active.requestedBy,
+              status: 'QUEUED'
+            },
+            where: { id: active.id }
+          });
+          return { enqueued: false, job: toDto(reactivated) };
+        }
+        return { enqueued: false, job: toDto(active) };
+      }
+
+      const job = await this.createJob(tx, { appId, input, shopDomain, shopId: shop.id });
+      return { enqueued: true, job };
+    });
+  }
+
+  async enqueueDueInstalledShops(input: {
+    limit: number;
+    now?: Date | undefined;
+    requestedBy: string;
+    staleBefore: Date;
+  }): Promise<{ enqueued: number; failed: number; skipped: number }> {
+    const now = input.now ?? new Date();
+    const shops = await this.prisma.shop.findMany({
+      orderBy: { updatedAt: 'asc' },
+      select: { appId: true, shopDomain: true },
+      take: Math.min(500, Math.max(1, input.limit)),
+      where: {
+        adminAccessTokenCiphertext: { not: null },
+        tokenScopes: { has: 'read_orders' },
+        uninstalledAt: null,
+        AND: [
+          {
+            OR: [
+              { adminAccessTokenExpiresAt: null },
+              { adminAccessTokenExpiresAt: { gt: now } },
+              {
+                adminRefreshTokenCiphertext: { not: null },
+                OR: [
+                  { adminRefreshTokenExpiresAt: null },
+                  { adminRefreshTokenExpiresAt: { gt: now } }
+                ]
+              }
+            ]
+          },
+          {
+            shopifyOrderReconciliationJobs: {
+              none: {
+                OR: [
+                  { status: { in: ['QUEUED', 'RUNNING', 'RETRY_WAIT', 'FAILED'] } },
+                  { status: 'SUCCEEDED', finishedAt: { gte: input.staleBefore } },
+                  { status: 'DEAD_LETTER' }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    });
+
+    let enqueued = 0;
+    let failed = 0;
+    let skipped = 0;
+    for (const shop of shops) {
+      try {
+        const result = await this.enqueueIfIdle({
+          appId: shop.appId,
+          mode: 'INCREMENTAL',
+          requestedBy: input.requestedBy,
+          shopDomain: shop.shopDomain
+        });
+        if (result.enqueued) enqueued += 1;
+        else skipped += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    return { enqueued, failed, skipped };
+  }
+
+  private async createJob(client: ReconciliationDataClient, input: {
+    appId: string;
+    input: EnqueueShopifyOrderReconciliationInput;
+    shopDomain: string;
+    shopId: string;
+  }): Promise<ShopifyOrderReconciliationJobDto> {
+    const previous = await client.shopifyOrderReconciliationJob.findFirst({
       orderBy: { finishedAt: 'desc' },
       select: { highWatermark: true },
-      where: { appId, shopId: shop.id, status: 'SUCCEEDED' }
+      where: { appId: input.appId, shopId: input.shopId, status: 'SUCCEEDED' }
     });
-    const overlapWindowSeconds = clampInteger(input.overlapWindowSeconds, 60, 86_400, 600);
-    const startedFrom = input.mode === 'FULL'
+    const overlapWindowSeconds = clampInteger(input.input.overlapWindowSeconds, 60, 86_400, 600);
+    const startedFrom = input.input.mode === 'FULL'
       ? null
       : subtractSeconds(previous?.highWatermark ?? null, overlapWindowSeconds);
 
-    const job = await this.prisma.shopifyOrderReconciliationJob.create({
+    const job = await client.shopifyOrderReconciliationJob.create({
       data: {
-        appId,
-        correlationId: input.correlationId ?? randomUUID(),
-        mode: input.mode ?? 'INCREMENTAL',
+        appId: input.appId,
+        correlationId: input.input.correlationId ?? randomUUID(),
+        mode: input.input.mode ?? 'INCREMENTAL',
         overlapWindowSeconds,
-        pageSize: clampInteger(input.pageSize, 1, 100, 50),
-        requestedBy: input.requestedBy ?? null,
-        shopDomain,
-        shopId: shop.id,
+        pageSize: clampInteger(input.input.pageSize, 1, 100, 50),
+        requestedBy: input.input.requestedBy ?? null,
+        shopDomain: input.shopDomain,
+        shopId: input.shopId,
         startedFrom
       }
     });

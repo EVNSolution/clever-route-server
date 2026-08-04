@@ -43,7 +43,11 @@ export function loadAdminOrdersRuntime(input: {
   env: AdminOrdersRuntimeEnv;
   logger?: Pick<FastifyBaseLogger, 'error' | 'info'> | undefined;
   prisma: PrismaClient;
-}): { dependencies: AdminOrdersDependencies; reconciliationWorker?: ShopifyOrderReconciliationWorker } | undefined {
+}): {
+  dependencies: AdminOrdersDependencies;
+  reconciliationService?: ShopifyOrderReconciliationService;
+  reconciliationWorker?: ShopifyOrderReconciliationWorker;
+} | undefined {
   const appCredentials = loadShopifyAppCredentials(input.env);
   if (appCredentials.length === 0) {
     return undefined;
@@ -97,6 +101,7 @@ export function loadAdminOrdersRuntime(input: {
       orderReconciliationService: reconciliationService,
       orderSyncService
     },
+    reconciliationService,
     reconciliationWorker: new ShopifyOrderReconciliationWorker({
       enabled: readOptional(input.env.CLEVER_SHOPIFY_ORDER_RECONCILIATION_WORKER) !== '0',
       service: reconciliationService,

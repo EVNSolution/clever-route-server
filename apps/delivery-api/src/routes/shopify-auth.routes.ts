@@ -4,9 +4,18 @@ import {
   logRejectedAdminSessionToken,
   type AdminSessionTokenVerifier
 } from './admin-session-auth.js';
+import { redactTelemetry } from '../modules/security/safe-telemetry-redaction.js';
 
 export type ShopifyAuthDependencies = {
   apiVersion: string;
+  orderReconciliationService?: {
+    enqueueIfIdle(input: {
+      appId?: string | undefined;
+      mode: 'INCREMENTAL';
+      requestedBy: string;
+      shopDomain: string;
+    }): Promise<unknown>;
+  };
   sessionTokenVerifier: AdminSessionTokenVerifier;
   shopTokenService: {
     storeAdminApiToken(input: {
@@ -92,6 +101,26 @@ export function registerShopifyAuthRoutes(
         tokenIssuedAt: now,
         tokenScopes: splitScopes(exchanged.scope)
       });
+
+      if (
+        dependencies.orderReconciliationService !== undefined
+        && stored.tokenScopes.includes('read_orders')
+      ) {
+        try {
+          await dependencies.orderReconciliationService.enqueueIfIdle({
+            appId: stored.appId,
+            mode: 'INCREMENTAL',
+            requestedBy: 'system:token-exchange',
+            shopDomain: stored.shopDomain
+          });
+        } catch (error) {
+          request.log.warn({
+            error: redactTelemetry(error),
+            event: 'shopify_order_reconciliation_enqueue_failed',
+            shopDomain: stored.shopDomain
+          }, 'Shopify token stored but order reconciliation could not be queued');
+        }
+      }
 
       return reply.code(200).send({
         data: {

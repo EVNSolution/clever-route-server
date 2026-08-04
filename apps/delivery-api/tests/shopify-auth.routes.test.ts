@@ -66,7 +66,7 @@ describe('Shopify auth routes', () => {
   });
 
   test('exchanges a verified session token and stores encrypted shop token metadata', async () => {
-    const { dependencies, exchange, store, verify } = createDependencyHarness();
+    const { dependencies, enqueueIfIdle, exchange, store, verify } = createDependencyHarness();
     const app = await buildApp({ shopifyAuth: dependencies });
 
     try {
@@ -105,6 +105,64 @@ describe('Shopify auth routes', () => {
           tokenScopes: ['read_orders', 'read_customers']
         })
       );
+      expect(enqueueIfIdle).toHaveBeenCalledWith({
+        appId: 'clever',
+        mode: 'INCREMENTAL',
+        requestedBy: 'system:token-exchange',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('keeps token exchange successful when background reconciliation cannot be queued', async () => {
+    const { dependencies, enqueueIfIdle } = createDependencyHarness();
+    enqueueIfIdle.mockRejectedValueOnce(new Error('database temporarily unavailable'));
+    const logLines: string[] = [];
+    const app = await buildApp({
+      logger: {
+        level: 'warn',
+        stream: { write: (line: string) => logLines.push(line) }
+      },
+      shopifyAuth: dependencies
+    });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: { shopDomain: 'example.myshopify.com' },
+        url: '/shopify/auth/token-exchange'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ data: { tokenStored: true }, error: null });
+      expect(logLines.some((line) => line.includes('shopify_order_reconciliation_enqueue_failed'))).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('does not queue order reconciliation without read_orders scope', async () => {
+    const { dependencies, enqueueIfIdle, store } = createDependencyHarness();
+    store.mockResolvedValueOnce({
+      appId: 'clever',
+      shopDomain: 'example.myshopify.com',
+      tokenScopes: ['read_locations']
+    });
+    const app = await buildApp({ shopifyAuth: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: { shopDomain: 'example.myshopify.com' },
+        url: '/shopify/auth/token-exchange'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(enqueueIfIdle).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }
@@ -205,6 +263,7 @@ describe('Shopify auth routes', () => {
 
 function createDependencyHarness(): {
   dependencies: ShopifyAuthDependencies;
+  enqueueIfIdle: ReturnType<typeof vi.fn>;
   exchange: ReturnType<typeof vi.fn<typeof exchangeSessionTokenForOfflineToken>>;
   store: ReturnType<typeof vi.fn<typeof storeAdminApiToken>>;
   verify: ReturnType<typeof vi.fn<typeof verifySession>>;
@@ -212,10 +271,14 @@ function createDependencyHarness(): {
   const verify = vi.fn(verifySession);
   const store = vi.fn(storeAdminApiToken);
   const exchange = vi.fn(exchangeSessionTokenForOfflineToken);
+  const enqueueIfIdle = vi.fn(() => Promise.resolve(null));
 
   return {
     dependencies: {
       apiVersion: baseDependencies.apiVersion,
+      orderReconciliationService: {
+        enqueueIfIdle
+      },
       sessionTokenVerifier: {
         verify
       },
@@ -226,6 +289,7 @@ function createDependencyHarness(): {
         exchangeSessionTokenForOfflineToken: exchange
       }
     },
+    enqueueIfIdle,
     exchange,
     store,
     verify

@@ -55,3 +55,8 @@ export type EnqueueShopifyOrderReconciliationInput = {
   requestedBy?: string | undefined;
   shopDomain: string;
 };
+
+export type EnqueueShopifyOrderReconciliationResult = {
+  enqueued: boolean;
+  job: ShopifyOrderReconciliationJobDto | null;
+};

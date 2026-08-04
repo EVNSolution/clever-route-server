@@ -9,11 +9,46 @@ import type {
 } from '../src/modules/shopify/order-sync.repository.js';
 
 describe('ShopifyOrderReconciliationService', () => {
+  test('delegates token-triggered enqueue through the idle-job guard', async () => {
+    const repository = repositoryHarness();
+    repository.enqueueIfIdle.mockResolvedValueOnce(null);
+    const service = serviceHarness({ repository });
+
+    await service.enqueueIfIdle({
+      appId: 'clever',
+      mode: 'INCREMENTAL',
+      requestedBy: 'system:token-exchange',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(repository.enqueueIfIdle).toHaveBeenCalledWith({
+      appId: 'clever',
+      mode: 'INCREMENTAL',
+      requestedBy: 'system:token-exchange',
+      shopDomain: 'example.myshopify.com'
+    });
+  });
+
+  test('delegates periodic stale-shop discovery to the repository', async () => {
+    const repository = repositoryHarness();
+    repository.enqueueDueInstalledShops.mockResolvedValueOnce({ enqueued: 2, failed: 1, skipped: 3 });
+    const service = serviceHarness({ repository });
+    const staleBefore = new Date('2026-08-04T00:00:00Z');
+
+    await expect(service.enqueueDueInstalledShops({
+      limit: 100,
+      requestedBy: 'system:periodic-reconciliation',
+      staleBefore
+    })).resolves.toEqual({ enqueued: 2, failed: 1, skipped: 3 });
+  });
+
   test('commits cursor only after page sync and marks final high-watermark/counts', async () => {
     const requests: ShopifyAdminGraphqlRequest[] = [];
     const repository = {
       claimNext: vi.fn(),
       enqueue: vi.fn(),
+      enqueueDueInstalledShops: vi.fn(),
+      enqueueIfIdle: vi.fn(),
       findById: vi.fn(),
       markFailed: vi.fn(),
       markPageCommitted: vi.fn(() => Promise.resolve(job())),
@@ -120,6 +155,8 @@ describe('ShopifyOrderReconciliationService', () => {
 function repositoryHarness(overrides: Partial<{
   claimNext: ReturnType<typeof vi.fn>;
   enqueue: ReturnType<typeof vi.fn>;
+  enqueueDueInstalledShops: ReturnType<typeof vi.fn>;
+  enqueueIfIdle: ReturnType<typeof vi.fn>;
   findById: ReturnType<typeof vi.fn>;
   markFailed: ReturnType<typeof vi.fn>;
   markPageCommitted: ReturnType<typeof vi.fn>;
@@ -128,6 +165,8 @@ function repositoryHarness(overrides: Partial<{
   return {
     claimNext: overrides.claimNext ?? vi.fn(),
     enqueue: overrides.enqueue ?? vi.fn(),
+    enqueueDueInstalledShops: overrides.enqueueDueInstalledShops ?? vi.fn(),
+    enqueueIfIdle: overrides.enqueueIfIdle ?? vi.fn(),
     findById: overrides.findById ?? vi.fn(),
     markFailed: overrides.markFailed ?? vi.fn(),
     markPageCommitted: overrides.markPageCommitted ?? vi.fn(() => Promise.resolve(job())),

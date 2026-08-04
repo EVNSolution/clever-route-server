@@ -16,6 +16,7 @@ export type ShopifyAuthRuntimeEnv = ShopifyAppCredentialsEnv &
 type CreateShopifyAuthDependenciesInput = {
   env: ShopifyAuthRuntimeEnv;
   fetchImpl?: typeof fetch;
+  orderReconciliationService?: ShopifyAuthDependencies['orderReconciliationService'];
   prisma: PrismaClient;
 };
 
@@ -38,6 +39,9 @@ export function loadShopifyAuthDependencies(
 
   return {
     apiVersion,
+    ...(input.orderReconciliationService === undefined
+      ? {}
+      : { orderReconciliationService: input.orderReconciliationService }),
     sessionTokenVerifier: new ShopifySessionTokenVerifier({ appCredentials }),
     shopTokenService,
     tokenExchangeClient: new ShopifyTokenExchangeClient(
