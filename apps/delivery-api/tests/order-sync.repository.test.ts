@@ -7,11 +7,25 @@ import { AdminNotificationStreamHub } from '../src/modules/notifications/admin-n
 import {
   OrderSyncRouteLockedError,
   PrismaOrderSyncRepository,
+  toCanonicalOrderWhere,
   type OrderSyncNotificationLogger
 } from '../src/modules/shopify/order-sync.repository.js';
 import type { CanonicalOrderRow, SyncedOrderWithDeliveryStopInput } from '../src/modules/shopify/order-sync.mapper.js';
 
 describe('PrismaOrderSyncRepository canonical orders', () => {
+  test('pushes every user-visible search surface into the canonical database query', () => {
+    const customerSearch = JSON.stringify(toCanonicalOrderWhere('shop-id', { search: 'Hannah' }));
+    expect(customerSearch).toContain('recipientName');
+    expect(customerSearch).toContain('address1');
+    expect(customerSearch).toContain('deliveryArea');
+    expect(customerSearch).toContain('rawDeliveryDate');
+    expect(customerSearch).toContain('serviceType');
+
+    const unplannedSearch = JSON.stringify(toCanonicalOrderWhere('shop-id', { search: 'unplanned' }));
+    expect(unplannedSearch).toContain('routePlanStops');
+    expect(unplannedSearch).toContain('"none"');
+  });
+
   test('creates new orders and lists canonical rows with planned status derived from route stops', async () => {
     const { prisma } = createPrismaHarness({ existingOrder: null, routeStopCount: 1 });
     const repository = createOrderSyncRepository(prisma);

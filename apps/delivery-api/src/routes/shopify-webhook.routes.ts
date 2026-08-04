@@ -7,14 +7,6 @@ export type ShopifyWebhookDependencies = {
   appCredentials: Array<{ appId: string; clientSecret: string }>;
   orderWebhookProcessor?: {
     canProcessTopic(topic: string): boolean;
-    process(input: {
-      apiVersion: string | null;
-      appId?: string | undefined;
-      payload: unknown;
-      shopDomain: string;
-      topic: string;
-      webhookId: string;
-    }): Promise<{ duplicate: boolean; statusCode: 200 | 409 | 500; webhookId: string }>;
   } | undefined;
   webhookService: {
     recordWebhook(input: {
@@ -27,7 +19,7 @@ export type ShopifyWebhookDependencies = {
       topic: string;
       triggeredAt: Date | null;
       webhookId: string;
-    }): Promise<{ duplicate: boolean; webhookId: string }>;
+    }): Promise<{ duplicate: boolean; status?: string; webhookId: string }>;
   };
 };
 
@@ -84,20 +76,11 @@ export function registerShopifyWebhookRoutes(
     };
     const result = await dependencies.webhookService.recordWebhook(record);
 
-    if (dependencies.orderWebhookProcessor?.canProcessTopic(headers.topic) === true) {
-      const processed = await dependencies.orderWebhookProcessor.process(record);
-      return reply.code(processed.statusCode).send({
-        data: {
-          duplicate: processed.duplicate,
-          webhookId: processed.webhookId
-        },
-        error: null
-      });
-    }
-
     return reply.code(result.duplicate ? 200 : 202).send({
       data: {
         duplicate: result.duplicate,
+        queued: dependencies.orderWebhookProcessor?.canProcessTopic(headers.topic) === true,
+        status: result.status ?? (result.duplicate ? 'DUPLICATE' : 'RECEIVED'),
         webhookId: result.webhookId
       },
       error: null

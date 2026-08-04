@@ -71,7 +71,14 @@ describe('ShopifyOrderSyncService', () => {
     ).resolves.toEqual({
       endCursor: 'cursor-2',
       hasNextPage: true,
-      ordersSynced: 1
+      highWatermark: new Date('2026-05-07T05:00:00Z'),
+      ordersSynced: 1,
+      sync: {
+        created: 1,
+        skipped: 0,
+        unchanged: 0,
+        updated: 0
+      }
     });
 
     expect(graphqlRequests[0]?.variables?.first).toBe(25);
@@ -90,14 +97,15 @@ test('syncs app-provided order snapshots and summarizes repository outcomes', as
   const repository = {
     assertOrdersSnapshotRefreshable: vi.fn(() => Promise.resolve()),
     listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+    listCanonicalOrdersBySourceIdentity: vi.fn(() => Promise.resolve([
+      { orderId: 'order-1', readiness: 'READY_TO_PLAN' } as CanonicalOrderRow,
+      { orderId: 'order-2', readiness: 'NEEDS_REVIEW' } as CanonicalOrderRow
+    ])),
     upsertOrderWithDeliveryStop: vi
       .fn()
       .mockResolvedValueOnce({ orderId: 'order-1', status: 'created', stopId: 'stop-1' })
       .mockResolvedValueOnce({ orderId: 'order-2', status: 'unchanged', stopId: 'stop-2' }),
-    findCanonicalOrderById: vi
-      .fn()
-      .mockResolvedValueOnce({ readiness: 'READY_TO_PLAN' })
-      .mockResolvedValueOnce({ readiness: 'NEEDS_REVIEW' })
+    findCanonicalOrderById: vi.fn()
   };
   const service = new ShopifyOrderSyncService({
     graphqlClient: { request: vi.fn() },
@@ -113,7 +121,10 @@ test('syncs app-provided order snapshots and summarizes repository outcomes', as
       subject: 'shopify-user-id'
     })
   ).resolves.toEqual({
-    orders: [{ readiness: 'READY_TO_PLAN' }, { readiness: 'NEEDS_REVIEW' }],
+    orders: [
+      { orderId: 'order-1', readiness: 'READY_TO_PLAN' },
+      { orderId: 'order-2', readiness: 'NEEDS_REVIEW' }
+    ],
     sync: {
       created: 1,
       needsReview: 1,
@@ -131,6 +142,8 @@ test('syncs app-provided order snapshots and summarizes repository outcomes', as
   expect(repository.assertOrdersSnapshotRefreshable.mock.invocationCallOrder[0]).toBeLessThan(
     repository.upsertOrderWithDeliveryStop.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER
   );
+  expect(repository.findCanonicalOrderById).not.toHaveBeenCalled();
+  expect(repository.listCanonicalOrdersBySourceIdentity).toHaveBeenCalledOnce();
 });
 
 function snapshotOrder(overrides: Partial<ShopifyOrderNode> = {}): ShopifyOrderNode {

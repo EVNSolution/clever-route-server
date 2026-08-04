@@ -72,7 +72,7 @@ describe('PrismaShopifyWebhookEventRepository privacy compliance handling', () =
       webhookId: 'webhook-id'
     });
 
-    expect(result).toEqual({ duplicate: false, webhookId: 'webhook-id' });
+    expect(result).toEqual({ duplicate: false, status: 'PROCESSED', webhookId: 'webhook-id' });
     expect(prisma.order.deleteMany).toHaveBeenCalledWith({
       where: {
         shopId: 'shop-id',
@@ -113,7 +113,7 @@ describe('PrismaShopifyWebhookEventRepository privacy compliance handling', () =
       webhookId: 'webhook-id'
     });
 
-    expect(result).toEqual({ duplicate: false, webhookId: 'webhook-id' });
+    expect(result).toEqual({ duplicate: false, status: 'PROCESSED', webhookId: 'webhook-id' });
     expect(prisma.shop.delete).toHaveBeenCalledWith({ where: { id: 'shop-id' } });
     expect(prisma.shopifyWebhookEvent.create).not.toHaveBeenCalled();
   });
@@ -121,16 +121,13 @@ describe('PrismaShopifyWebhookEventRepository privacy compliance handling', () =
 
 
 describe('PrismaShopifyWebhookEventRepository order webhook lifecycle', () => {
-  test('claims retryable states and leaves completed/permanent/recent processing events alone', async () => {
+  test('reports duplicate delivery disposition without stealing queued or in-flight work', async () => {
     const retryable = createOrderWebhookPrismaHarness({ status: 'FAILED', lastError: 'TRANSIENT:upstream' });
     const retryableRepository = new PrismaShopifyWebhookEventRepository(
       retryable as unknown as ConstructorParameters<typeof PrismaShopifyWebhookEventRepository>[0]
     );
-    await expect(retryableRepository.claimOrderWebhook(orderClaimInput())).resolves.toEqual({ action: 'process' });
-    const retryClaimInput = retryable.shopifyWebhookEvent.updateMany.mock.calls[0]?.[0] as
-      | { data: { status: string } }
-      | undefined;
-    expect(retryClaimInput?.data.status).toBe('PROCESSING');
+    await expect(retryableRepository.getOrderWebhookDeliveryDisposition(orderClaimInput())).resolves.toEqual({ action: 'queued', reason: 'retry_wait' });
+    expect(retryable.shopifyWebhookEvent.updateMany).not.toHaveBeenCalled();
 
     const permanent = createOrderWebhookPrismaHarness({
       status: 'FAILED',
@@ -139,7 +136,7 @@ describe('PrismaShopifyWebhookEventRepository order webhook lifecycle', () => {
     const permanentRepository = new PrismaShopifyWebhookEventRepository(
       permanent as unknown as ConstructorParameters<typeof PrismaShopifyWebhookEventRepository>[0]
     );
-    await expect(permanentRepository.claimOrderWebhook(orderClaimInput())).resolves.toEqual({
+    await expect(permanentRepository.getOrderWebhookDeliveryDisposition(orderClaimInput())).resolves.toEqual({
       action: 'noop',
       reason: 'permanent_failure'
     });
@@ -149,7 +146,7 @@ describe('PrismaShopifyWebhookEventRepository order webhook lifecycle', () => {
     const processedRepository = new PrismaShopifyWebhookEventRepository(
       processed as unknown as ConstructorParameters<typeof PrismaShopifyWebhookEventRepository>[0]
     );
-    await expect(processedRepository.claimOrderWebhook(orderClaimInput())).resolves.toEqual({
+    await expect(processedRepository.getOrderWebhookDeliveryDisposition(orderClaimInput())).resolves.toEqual({
       action: 'noop',
       reason: 'already_done'
     });
@@ -162,16 +159,12 @@ describe('PrismaShopifyWebhookEventRepository order webhook lifecycle', () => {
       recent as unknown as ConstructorParameters<typeof PrismaShopifyWebhookEventRepository>[0]
     );
     await expect(
-      recentRepository.claimOrderWebhook({
-        ...orderClaimInput(),
-        now: new Date('2026-07-08T00:02:00.000Z'),
-        processingStaleAfterMs: 120_000
-      })
-    ).resolves.toEqual({ action: 'conflict', retryAfterSeconds: 120 });
+      recentRepository.getOrderWebhookDeliveryDisposition(orderClaimInput())
+    ).resolves.toEqual({ action: 'queued', reason: 'processing' });
     expect(recent.shopifyWebhookEvent.updateMany).not.toHaveBeenCalled();
   });
 
-  test('reclaims stale processing and marks processed/failed without deleting orders', async () => {
+  test('worker claims due and expired rows and marks processed/retry without deleting orders', async () => {
     const prisma = createOrderWebhookPrismaHarness({
       status: 'PROCESSING',
       updatedAt: new Date('2026-07-08T00:00:00.000Z')
@@ -181,24 +174,65 @@ describe('PrismaShopifyWebhookEventRepository order webhook lifecycle', () => {
     );
 
     await expect(
-      repository.claimOrderWebhook({
-        ...orderClaimInput(),
+      repository.claimNextOrderWebhook({
+        leaseMs: 120_000,
         now: new Date('2026-07-08T00:03:00.000Z'),
-        processingStaleAfterMs: 120_000
+        workerId: 'worker-1'
       })
-    ).resolves.toEqual({ action: 'process' });
+    ).resolves.toMatchObject({ action: 'process', event: { webhookId: 'webhook-id' } });
 
-    await repository.markOrderWebhookProcessed(orderClaimInput());
-    await repository.markOrderWebhookFailed({ ...orderClaimInput(), error: 'TRANSIENT:boom' });
+    const claimedEvent = {
+      appId: 'clever',
+      id: 'event-row-id',
+      leaseToken: 'lease-token'
+    };
+    await expect(repository.markOrderWebhookProcessed(claimedEvent)).resolves.toBe(true);
+    await expect(repository.markOrderWebhookFailed({
+      ...claimedEvent,
+      attemptCount: 2,
+      error: 'TRANSIENT:boom',
+      maxAttempts: 8
+    })).resolves.toBe(true);
 
     expect(prisma.order.deleteMany).not.toHaveBeenCalled();
-    const processedUpdateInput = prisma.shopifyWebhookEvent.update.mock.calls[0]?.[0] as
+    const processedUpdateInput = prisma.shopifyWebhookEvent.updateMany.mock.calls[1]?.[0] as
       | { data: { status: string } }
       | undefined;
     expect(processedUpdateInput?.data.status).toBe('PROCESSED');
-    expect(prisma.shopifyWebhookEvent.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { lastError: 'TRANSIENT:boom', status: 'FAILED' } })
+    const retryUpdateDataMatcher: unknown = expect.objectContaining({
+      lastError: 'TRANSIENT:boom',
+      status: 'RETRY_WAIT'
+    });
+    const retryUpdateMatcher: unknown = expect.objectContaining({ data: retryUpdateDataMatcher });
+    expect(prisma.shopifyWebhookEvent.updateMany).toHaveBeenCalledWith(retryUpdateMatcher);
+  });
+
+  test('dead-letters at max attempts and refuses stale lease-token settle writes', async () => {
+    const prisma = createOrderWebhookPrismaHarness({ status: 'QUEUED' });
+    const repository = new PrismaShopifyWebhookEventRepository(
+      prisma as unknown as ConstructorParameters<typeof PrismaShopifyWebhookEventRepository>[0]
     );
+
+    await expect(repository.markOrderWebhookFailed({
+      appId: 'clever',
+      attemptCount: 8,
+      error: 'TRANSIENT:boom',
+      id: 'event-row-id',
+      leaseToken: 'lease-token',
+      maxAttempts: 8
+    })).resolves.toBe(true);
+    const deadLetterUpdateMatcher: unknown = expect.objectContaining({
+      data: expect.objectContaining({ status: 'DEAD_LETTER' }) as unknown,
+      where: { id: 'event-row-id', leaseToken: 'lease-token', status: 'PROCESSING' }
+    });
+    expect(prisma.shopifyWebhookEvent.updateMany).toHaveBeenCalledWith(deadLetterUpdateMatcher);
+
+    prisma.shopifyWebhookEvent.updateMany.mockResolvedValueOnce({ count: 0 });
+    await expect(repository.markOrderWebhookProcessed({
+      appId: 'clever',
+      id: 'event-row-id',
+      leaseToken: 'stale-token'
+    })).resolves.toBe(false);
   });
 });
 
@@ -245,7 +279,7 @@ function readCreateWebhookEventInput(prisma: PrismaHarness): CreateWebhookEventI
   return input;
 }
 
-type OrderWebhookEventStatus = 'RECEIVED' | 'PROCESSING' | 'PROCESSED' | 'FAILED' | 'IGNORED';
+type OrderWebhookEventStatus = 'RECEIVED' | 'QUEUED' | 'RETRY_WAIT' | 'PROCESSING' | 'PROCESSED' | 'FAILED' | 'IGNORED' | 'DEAD_LETTER';
 
 type OrderWebhookPrismaHarness = PrismaHarness & {
   shop: PrismaHarness['shop'] & {
@@ -255,13 +289,23 @@ type OrderWebhookPrismaHarness = PrismaHarness & {
     findUnique: ReturnType<
       typeof vi.fn<
         (input: unknown) => Promise<{
+          apiVersion?: string | null;
+          attemptCount?: number;
           id: string;
           lastError: string | null;
+          leaseToken?: string | null;
+          maxAttempts?: number;
+          payload?: unknown;
+          shop?: { appId: string; id: string; shopDomain: string };
           status: OrderWebhookEventStatus;
+          topic?: string;
+          triggeredAt?: Date | null;
           updatedAt: Date;
+          webhookId?: string;
         } | null>
       >
     >;
+    findFirst: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ id: string; status: OrderWebhookEventStatus } | null>>>;
     update: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ id: string }>>>;
     updateMany: ReturnType<typeof vi.fn<(input: unknown) => Promise<{ count: number }>>>;
   };
@@ -274,12 +318,22 @@ function createOrderWebhookPrismaHarness(input: {
 }): OrderWebhookPrismaHarness {
   const base = createPrismaHarness() as OrderWebhookPrismaHarness;
   base.shop.findUnique = vi.fn(() => Promise.resolve({ id: 'shop-id' }));
+  base.shopifyWebhookEvent.findFirst = vi.fn(() => Promise.resolve({ id: 'event-row-id', status: input.status }));
   base.shopifyWebhookEvent.findUnique = vi.fn(() =>
     Promise.resolve({
+      apiVersion: '2026-04',
+      attemptCount: 2,
       id: 'event-row-id',
       lastError: input.lastError ?? null,
+      leaseToken: 'lease-token',
+      maxAttempts: 8,
+      payload: { id: 123 },
+      shop: { appId: 'clever', id: 'shop-id', shopDomain: 'clever-route-test.myshopify.com' },
       status: input.status,
-      updatedAt: input.updatedAt ?? new Date('2026-07-08T00:00:00.000Z')
+      topic: 'orders/updated',
+      triggeredAt: new Date('2026-07-08T00:00:00.000Z'),
+      updatedAt: input.updatedAt ?? new Date('2026-07-08T00:00:00.000Z'),
+      webhookId: 'webhook-id'
     })
   );
   base.shopifyWebhookEvent.update = vi.fn(() => Promise.resolve({ id: 'event-row-id' }));

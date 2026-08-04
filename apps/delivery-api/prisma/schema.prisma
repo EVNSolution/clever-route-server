@@ -9,10 +9,28 @@ datasource db {
 
 enum ShopifyWebhookEventStatus {
   RECEIVED
+  QUEUED
+  RETRY_WAIT
   PROCESSING
   PROCESSED
   FAILED
   IGNORED
+  DEAD_LETTER
+}
+
+enum ShopifyOrderReconciliationJobStatus {
+  QUEUED
+  RUNNING
+  RETRY_WAIT
+  SUCCEEDED
+  FAILED
+  DEAD_LETTER
+  CANCELLED
+}
+
+enum ShopifyOrderReconciliationJobMode {
+  INCREMENTAL
+  FULL
 }
 
 enum CommerceSourcePlatform {
@@ -324,7 +342,9 @@ model Shop {
   createdAt                         DateTime                           @default(now()) @db.Timestamptz(6)
   updatedAt                         DateTime                           @updatedAt @db.Timestamptz(6)
   webhookEvents                     ShopifyWebhookEvent[]
+  shopifyOrderReconciliationJobs    ShopifyOrderReconciliationJob[]
   orders                            Order[]
+  orderSelectionSnapshots           OrderSelectionSnapshot[]
   orderItems                        OrderItem[]
   deliveryStops                     DeliveryStop[]
   routePlans                        RoutePlan[]
@@ -627,28 +647,83 @@ model WordPressPluginPairingCode {
 }
 
 model ShopifyWebhookEvent {
-  id            String                    @id @default(uuid()) @db.Uuid
-  shopId        String                    @db.Uuid
-  shop          Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  webhookId     String                    @db.Text
-  eventId       String?                   @db.Text
-  topic         String                    @db.Text
-  apiVersion    String?                   @db.Text
-  triggeredAt   DateTime?                 @db.Timestamptz(6)
-  rawBodySha256 String                    @db.Text
-  payload       Json
-  status        ShopifyWebhookEventStatus @default(RECEIVED)
-  attemptCount  Int                       @default(0)
-  lastError     String?                   @db.Text
-  receivedAt    DateTime                  @default(now()) @db.Timestamptz(6)
-  processedAt   DateTime?                 @db.Timestamptz(6)
-  createdAt     DateTime                  @default(now()) @db.Timestamptz(6)
-  updatedAt     DateTime                  @updatedAt @db.Timestamptz(6)
+  id                       String                    @id @default(uuid()) @db.Uuid
+  shopId                   String                    @db.Uuid
+  shop                     Shop                      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  webhookId                String                    @db.Text
+  eventId                  String?                   @db.Text
+  topic                    String                    @db.Text
+  apiVersion               String?                   @db.Text
+  triggeredAt              DateTime?                 @db.Timestamptz(6)
+  rawBodySha256            String                    @db.Text
+  payload                  Json
+  status                   ShopifyWebhookEventStatus @default(RECEIVED)
+  attemptCount             Int                       @default(0)
+  maxAttempts              Int                       @default(8)
+  nextRunAt                DateTime                  @default(now()) @db.Timestamptz(6)
+  leaseToken               String?                   @db.Text
+  leaseExpiresAt           DateTime?                 @db.Timestamptz(6)
+  workerId                 String?                   @db.Text
+  deadLetteredAt           DateTime?                 @db.Timestamptz(6)
+  lastErrorCode            String?                   @db.Text
+  lastErrorMessageRedacted String?                   @db.Text
+  lastError                String?                   @db.Text
+  receivedAt               DateTime                  @default(now()) @db.Timestamptz(6)
+  processedAt              DateTime?                 @db.Timestamptz(6)
+  createdAt                DateTime                  @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime                  @updatedAt @db.Timestamptz(6)
 
   @@unique([shopId, webhookId])
   @@index([shopId, topic, receivedAt])
   @@index([status, receivedAt])
+  @@index([status, nextRunAt])
+  @@index([leaseExpiresAt])
   @@map("shopify_webhook_events")
+}
+
+model ShopifyOrderReconciliationJob {
+  id                       String                              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId                   String                              @db.Uuid
+  shop                     Shop                                @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  appId                    String                              @default("clever") @db.Text
+  shopDomain               String                              @db.Text
+  mode                     ShopifyOrderReconciliationJobMode   @default(INCREMENTAL)
+  status                   ShopifyOrderReconciliationJobStatus @default(QUEUED)
+  pageCursor               String?                             @db.Text
+  highWatermark            DateTime?                           @db.Timestamptz(6)
+  startedFrom              DateTime?                           @db.Timestamptz(6)
+  overlapWindowSeconds     Int                                 @default(600)
+  pageSize                 Int                                 @default(50)
+  attemptCount             Int                                 @default(0)
+  maxAttempts              Int                                 @default(5)
+  nextRunAt                DateTime                            @default(now()) @db.Timestamptz(6)
+  leaseToken               String?                             @db.Text
+  leaseExpiresAt           DateTime?                           @db.Timestamptz(6)
+  workerId                 String?                             @db.Text
+  scannedCount             Int                                 @default(0)
+  createdCount             Int                                 @default(0)
+  updatedCount             Int                                 @default(0)
+  unchangedCount           Int                                 @default(0)
+  staleSkippedCount        Int                                 @default(0)
+  failedCount              Int                                 @default(0)
+  warningCount             Int                                 @default(0)
+  finalCanonicalCount      Int?
+  lastErrorCode            String?                             @db.Text
+  lastErrorMessageRedacted String?                             @db.Text
+  warnings                 Json?
+  requestedBy              String?                             @db.Text
+  correlationId            String                              @db.Text
+  startedAt                DateTime?                           @db.Timestamptz(6)
+  finishedAt               DateTime?                           @db.Timestamptz(6)
+  deadLetteredAt           DateTime?                           @db.Timestamptz(6)
+  createdAt                DateTime                            @default(now()) @db.Timestamptz(6)
+  updatedAt                DateTime                            @updatedAt @db.Timestamptz(6)
+
+  @@index([shopId, status, createdAt])
+  @@index([status, nextRunAt])
+  @@index([leaseExpiresAt])
+  @@index([correlationId])
+  @@map("shopify_order_reconciliation_jobs")
 }
 
 model Order {
@@ -657,6 +732,7 @@ model Order {
   shop                          Shop                               @relation(fields: [shopId], references: [id], onDelete: Cascade)
   shopifyOrderGid               String                             @db.Text
   shopifyOrderLegacyId          BigInt?
+  displayOrderSequence          BigInt?
   sourcePlatform                CommerceSourcePlatform             @default(SHOPIFY)
   sourceSiteUrl                 String?                            @db.Text
   sourceOrderId                 String?                            @db.Text
@@ -699,12 +775,14 @@ model Order {
   dsvCommandReceipts            DsvCommandReceipt[]
   dsvAuditEvents                DsvAuditEvent[]
   dsvDispatchImportRows         DsvDispatchImportRow[]
+  selectionSnapshotOrders       OrderSelectionSnapshotOrder[]
 
   @@unique([id, shopId])
   @@unique([shopId, shopifyOrderGid])
   @@unique([shopId, sourcePlatform, sourceSiteUrl, sourceOrderId])
   @@unique([shopId, sellerOrderSourceKind, sellerOrderKey, serviceDate])
   @@index([shopId, name])
+  @@index([shopId, displayOrderSequence(sort: Desc), id(sort: Desc)])
   @@index([shopId, sourcePlatform, sourceSiteUrl, sourceOrderNumber])
   @@index([shopId, sourcePlatform, sourceUpdatedAt])
   @@index([shopId, deliveryStatus, processedAt])
@@ -712,6 +790,40 @@ model Order {
   @@index([shopId, destinationId])
   @@index([shopId, currentRouteVersionId])
   @@map("orders")
+}
+
+model OrderSelectionSnapshot {
+  id               String                           @id @default(uuid()) @db.Uuid
+  shopId           String                           @db.Uuid
+  shop             Shop                             @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  appId            String                           @db.Text
+  actorSubjectHash String                           @db.Text
+  tokenHash        String                           @unique @db.Text
+  filterHash       String                           @db.Text
+  sort             String                           @db.Text
+  selectedCount    Int
+  snapshotWatermark DateTime                        @db.Timestamptz(6)
+  expiresAt        DateTime                         @db.Timestamptz(6)
+  consumedAt       DateTime?                        @db.Timestamptz(6)
+  createdAt        DateTime                         @default(now()) @db.Timestamptz(6)
+  orders           OrderSelectionSnapshotOrder[]
+
+  @@index([shopId, appId, actorSubjectHash, expiresAt])
+  @@index([expiresAt, consumedAt])
+  @@map("order_selection_snapshots")
+}
+
+model OrderSelectionSnapshotOrder {
+  snapshotId String                 @db.Uuid
+  snapshot   OrderSelectionSnapshot @relation(fields: [snapshotId], references: [id], onDelete: Cascade)
+  orderId    String                 @db.Uuid
+  order      Order                  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  excludedAt DateTime?              @db.Timestamptz(6)
+
+  @@id([snapshotId, orderId])
+  @@index([snapshotId, excludedAt])
+  @@index([orderId])
+  @@map("order_selection_snapshot_orders")
 }
 
 model Customer {

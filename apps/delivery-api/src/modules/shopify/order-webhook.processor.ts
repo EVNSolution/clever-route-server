@@ -6,7 +6,8 @@ import type {
   UpsertOrderWithDeliveryStopInput,
   UpsertOrderWithDeliveryStopResult
 } from './order-sync.repository.js';
-import type { ClaimOrderWebhookResult } from './webhook-event.repository.js';
+import { redactTelemetryMessage } from '../security/safe-telemetry-redaction.js';
+import type { ClaimedShopifyWebhookEvent, ClaimOrderWebhookResult } from './webhook-event.repository.js';
 
 const ORDER_TOPICS = new Set([
   'orders/create',
@@ -22,24 +23,32 @@ const PROCESSING_STALE_AFTER_MS = 2 * 60 * 1000;
 const PROCESSING_DEADLINE_MS = 3_000;
 
 type OrderWebhookEventStore = {
-  claimOrderWebhook(input: {
-    appId?: string | undefined;
+  claimNextOrderWebhook(input: {
+    leaseMs: number;
     now?: Date | undefined;
-    processingStaleAfterMs?: number | undefined;
+    workerId: string;
+  }): Promise<ClaimOrderWebhookResult>;
+  getOrderWebhookDeliveryDisposition(input: {
+    appId?: string | undefined;
     shopDomain: string;
     webhookId: string;
   }): Promise<ClaimOrderWebhookResult>;
   markOrderWebhookFailed(input: {
     appId?: string | undefined;
+    attemptCount: number;
     error: string;
-    shopDomain: string;
+    id: string;
+    leaseToken: string;
+    maxAttempts: number;
+    nextRunAt?: Date | undefined;
     webhookId: string;
-  }): Promise<void>;
+  }): Promise<boolean>;
   markOrderWebhookProcessed(input: {
     appId?: string | undefined;
-    shopDomain: string;
+    id: string;
+    leaseToken: string;
     webhookId: string;
-  }): Promise<void>;
+  }): Promise<boolean>;
 };
 
 type ShopTokenReader = {
@@ -64,7 +73,7 @@ type OrderByIdResponse = {
 
 export type ShopifyOrderWebhookProcessorResult = {
   duplicate: boolean;
-  statusCode: 200 | 409 | 500;
+  statusCode: 200 | 202;
   webhookId: string;
 };
 
@@ -95,32 +104,48 @@ export class ShopifyOrderWebhookProcessor {
       return { duplicate: false, statusCode: 200, webhookId: input.webhookId };
     }
 
-    const claim = await this.options.eventStore.claimOrderWebhook({
+    const disposition = await this.options.eventStore.getOrderWebhookDeliveryDisposition({
       appId: input.appId,
-      processingStaleAfterMs: PROCESSING_STALE_AFTER_MS,
       shopDomain: input.shopDomain,
       webhookId: input.webhookId
     });
 
-    if (claim.action === 'noop') {
+    if (disposition.action === 'noop' || disposition.action === 'queued') {
       return { duplicate: true, statusCode: 200, webhookId: input.webhookId };
     }
-    if (claim.action === 'conflict') {
-      return { duplicate: true, statusCode: 409, webhookId: input.webhookId };
-    }
 
+    return { duplicate: false, statusCode: 202, webhookId: input.webhookId };
+  }
+
+  async processNextDue(input: {
+    leaseMs?: number | undefined;
+    now?: Date | undefined;
+    workerId: string;
+  }): Promise<{ processed: boolean; webhookId: string | null }> {
+    const claim = await this.options.eventStore.claimNextOrderWebhook({
+      leaseMs: input.leaseMs ?? PROCESSING_STALE_AFTER_MS,
+      now: input.now,
+      workerId: input.workerId
+    });
+    if (claim.action !== 'process') return { processed: false, webhookId: null };
+    await this.processClaimedEvent(claim.event);
+    return { processed: true, webhookId: claim.event.webhookId };
+  }
+
+  async processClaimedEvent(input: ClaimedShopifyWebhookEvent): Promise<void> {
     if (input.topic === 'orders/delete') {
       await this.options.eventStore.markOrderWebhookProcessed(input);
-      return { duplicate: false, statusCode: 200, webhookId: input.webhookId };
+      return;
     }
 
     const orderId = extractShopifyOrderGid(input.payload);
     if (orderId === null) {
       await this.options.eventStore.markOrderWebhookFailed({
         ...input,
-        error: 'TRANSIENT:ORDER_NODE_NOT_FOUND'
+        error: 'TRANSIENT:ORDER_NODE_NOT_FOUND',
+        nextRunAt: nextRetryAt(input.attemptCount)
       });
-      return { duplicate: false, statusCode: 500, webhookId: input.webhookId };
+      return;
     }
 
     let accessToken: string | null;
@@ -132,16 +157,17 @@ export class ShopifyOrderWebhookProcessor {
     } catch (error) {
       await this.options.eventStore.markOrderWebhookFailed({
         ...input,
-        error: `TRANSIENT:${error instanceof Error ? error.message : 'SHOPIFY_TOKEN_REFRESH_FAILED'}`
+        error: `TRANSIENT:${redactTelemetryMessage(error instanceof Error ? error : 'SHOPIFY_TOKEN_REFRESH_FAILED')}`,
+        nextRunAt: nextRetryAt(input.attemptCount)
       });
-      return { duplicate: false, statusCode: 500, webhookId: input.webhookId };
+      return;
     }
     if (accessToken === null) {
       await this.options.eventStore.markOrderWebhookFailed({
         ...input,
         error: 'PERMANENT:MISSING_OFFLINE_TOKEN'
       });
-      return { duplicate: false, statusCode: 200, webhookId: input.webhookId };
+      return;
     }
 
     try {
@@ -156,13 +182,12 @@ export class ShopifyOrderWebhookProcessor {
         PROCESSING_DEADLINE_MS
       );
       await this.options.eventStore.markOrderWebhookProcessed(input);
-      return { duplicate: false, statusCode: 200, webhookId: input.webhookId };
     } catch (error) {
       await this.options.eventStore.markOrderWebhookFailed({
         ...input,
-        error: `TRANSIENT:${error instanceof Error ? error.message : 'ORDER_WEBHOOK_PROCESSING_FAILED'}`
+        error: `TRANSIENT:${redactTelemetryMessage(error instanceof Error ? error : 'ORDER_WEBHOOK_PROCESSING_FAILED')}`,
+        nextRunAt: nextRetryAt(input.attemptCount)
       });
-      return { duplicate: false, statusCode: 500, webhookId: input.webhookId };
     }
   }
 
@@ -225,4 +250,9 @@ async function withDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<
   } finally {
     if (timeout !== undefined) clearTimeout(timeout);
   }
+}
+
+function nextRetryAt(attemptCount: number, now = new Date()): Date {
+  const seconds = Math.min(15 * 60, 2 ** Math.max(0, attemptCount - 1) * 30);
+  return new Date(now.getTime() + seconds * 1000);
 }
