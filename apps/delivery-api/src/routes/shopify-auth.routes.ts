@@ -90,17 +90,29 @@ export function registerShopifyAuthRoutes(
         shopDomain: verified.shopDomain
       });
       const now = dependencies.now?.() ?? new Date();
+      const accessTokenExpiresAt = secondsFromNow(now, exchanged.expiresIn);
+      const refreshTokenExpiresAt = secondsFromNow(now, exchanged.refreshTokenExpiresIn);
+      const tokenScopes = splitScopes(exchanged.scope);
       const stored = await dependencies.shopTokenService.storeAdminApiToken({
         appId: verified.appId,
         accessToken: exchanged.accessToken,
-        accessTokenExpiresAt: secondsFromNow(now, exchanged.expiresIn),
+        accessTokenExpiresAt,
         apiVersion: dependencies.apiVersion,
         refreshToken: exchanged.refreshToken,
-        refreshTokenExpiresAt: secondsFromNow(now, exchanged.refreshTokenExpiresIn),
+        refreshTokenExpiresAt,
         shopDomain: verified.shopDomain,
         tokenIssuedAt: now,
-        tokenScopes: splitScopes(exchanged.scope)
+        tokenScopes
       });
+      request.log.info({
+        appId: stored.appId,
+        event: 'shopify_admin_token_persisted',
+        requestCorrelationId: readCorrelationId(request.headers['x-correlation-id']) ?? request.id,
+        scopes: stored.tokenScopes,
+        shopDomain: stored.shopDomain,
+        tokenAccessExpiresAt: accessTokenExpiresAt?.toISOString() ?? null,
+        tokenRefreshExpiresAt: refreshTokenExpiresAt?.toISOString() ?? null
+      }, 'Shopify Admin token persisted');
 
       if (
         dependencies.orderReconciliationService !== undefined
@@ -177,6 +189,11 @@ function splitScopes(scope: string): string[] {
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
+}
+
+function readCorrelationId(value: string | string[] | undefined): string | null {
+  const candidate = (Array.isArray(value) ? value[0] : value)?.trim();
+  return candidate && candidate.length <= 128 ? candidate : null;
 }
 
 function errorResponse(code: string, message: string): { data: null; error: { code: string; message: string } } {

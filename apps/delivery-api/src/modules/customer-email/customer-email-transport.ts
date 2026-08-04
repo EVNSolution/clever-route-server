@@ -1,6 +1,11 @@
-import type { CustomerEmailSignal } from './customer-email-settings.js';
+import {
+  defaultCustomerEmailBranding,
+  type CustomerEmailBranding,
+  type CustomerEmailSignal,
+} from './customer-email-settings.js';
 
 export type CustomerEmailTransportMessage = {
+  branding?: CustomerEmailBranding | undefined;
   body: string;
   commandId: string;
   recipientEmail: string;
@@ -56,7 +61,7 @@ export class BrevoCustomerEmailTransport implements CustomerEmailTransport {
         headers: {
           'Idempotency-Key': `customer-email:${message.commandId}`,
         },
-        htmlContent: plainTextHtml(message.body),
+        htmlContent: brandedHtml(message),
         ...(message.replyTo === null ? {} : { replyTo: { email: message.replyTo } }),
         sender: {
           email: message.senderEmail,
@@ -115,8 +120,49 @@ function readPositiveInteger(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-function plainTextHtml(value: string): string {
-  return `<div style="font-family:Arial,sans-serif;color:#1d1d1f;line-height:1.6;white-space:pre-wrap">${escapeHtml(value)}</div>`;
+function brandedHtml(message: CustomerEmailTransportMessage): string {
+  const branding = message.branding ?? defaultCustomerEmailBranding();
+  const preview = branding.previewText === ''
+    ? ''
+    : `<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent">${escapeHtml(branding.previewText)}</div>`;
+  const logo = renderLogo(branding);
+  const footerText = branding.footerText === ''
+    ? ''
+    : `<div style="margin-top:24px;color:#6b7280;font-size:13px;line-height:1.5">${escapeHtml(branding.footerText)}</div>`;
+  const poweredBy = branding.showPoweredByClever
+    ? '<div style="margin-top:12px;color:#6b7280;font-size:12px;line-height:1.5">Powered by CLEVER</div>'
+    : '';
+  return `<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:${branding.backgroundColor};color:${branding.textColor};font-family:Arial,sans-serif">
+    ${preview}
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;background:${branding.backgroundColor};margin:0;padding:0;width:100%">
+      <tr>
+        <td align="center" style="padding:28px 16px">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;max-width:640px;width:100%">
+            ${logo}
+            <tr>
+              <td style="background:${branding.surfaceColor};border-top:4px solid ${branding.accentColor};padding:28px">
+                <div style="color:${branding.textColor};font-size:16px;line-height:1.65;white-space:pre-wrap">${escapeHtml(message.body)}</div>
+                ${footerText}
+                ${poweredBy}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+}
+
+function renderLogo(branding: CustomerEmailBranding): string {
+  if (branding.logoMode !== 'image' || branding.logoUrl === null) return '';
+  const image = `<img src="${escapeHtml(branding.logoUrl)}" width="${branding.logoWidth}" alt="${escapeHtml(branding.logoAltText)}" style="border:0;display:block;height:auto;max-width:100%;width:${branding.logoWidth}px" />`;
+  const content = branding.logoLinkUrl === null
+    ? image
+    : `<a href="${escapeHtml(branding.logoLinkUrl)}" style="display:inline-block;text-decoration:none">${image}</a>`;
+  return `<tr><td align="left" style="padding:0 0 16px">${content}</td></tr>`;
 }
 
 function escapeHtml(value: string): string {

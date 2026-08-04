@@ -67,11 +67,18 @@ describe('Shopify auth routes', () => {
 
   test('exchanges a verified session token and stores encrypted shop token metadata', async () => {
     const { dependencies, enqueueIfIdle, exchange, store, verify } = createDependencyHarness();
-    const app = await buildApp({ shopifyAuth: dependencies });
+    const logLines: string[] = [];
+    const app = await buildApp({
+      logger: {
+        level: 'info',
+        stream: { write: (line: string) => logLines.push(line) }
+      },
+      shopifyAuth: dependencies
+    });
 
     try {
       const response = await app.inject({
-        headers: { authorization: 'Bearer session-token' },
+        headers: { authorization: 'Bearer session-token', 'x-correlation-id': 'request-123' },
         method: 'POST',
         payload: { shopDomain: 'example.myshopify.com' },
         url: '/shopify/auth/token-exchange'
@@ -111,6 +118,20 @@ describe('Shopify auth routes', () => {
         requestedBy: 'system:token-exchange',
         shopDomain: 'example.myshopify.com'
       });
+      const successLog = logLines
+        .map((line) => JSON.parse(line) as Record<string, unknown>)
+        .find((line) => line.event === 'shopify_admin_token_persisted');
+      expect(successLog).toMatchObject({
+        appId: 'clever',
+        requestCorrelationId: 'request-123',
+        scopes: ['read_orders', 'read_customers'],
+        shopDomain: 'example.myshopify.com',
+        tokenAccessExpiresAt: expect.any(String) as unknown,
+        tokenRefreshExpiresAt: expect.any(String) as unknown
+      });
+      expect(JSON.stringify(successLog)).not.toContain('shpat_access_token');
+      expect(JSON.stringify(successLog)).not.toContain('shprt_refresh_token');
+      expect(JSON.stringify(successLog)).not.toContain('session-token');
     } finally {
       await app.close();
     }

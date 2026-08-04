@@ -5,6 +5,34 @@ import { defaultCustomerEmailSettings } from '../src/modules/customer-email/cust
 import { BrevoCustomerEmailTransport } from '../src/modules/customer-email/customer-email-transport.js';
 
 describe('CustomerEmailService', () => {
+  test('migrates a v1 settings write to v2 during a rolling app deployment', async () => {
+    const { prisma, service } = createHarness();
+    const current = defaultCustomerEmailSettings();
+    const v1Settings = {
+      nearbyStopsThreshold: 4,
+      replyTo: 'reply@example.com',
+      senderEmail: 'sender@example.com',
+      senderName: 'Legacy Sender',
+      templates: current.templates,
+      version: 1,
+    };
+    prisma.shop.findUnique.mockResolvedValue({ id: 'shop-id' });
+
+    await expect(service.saveSettings({
+      payload: v1Settings,
+      shopDomain: 'example.myshopify.com',
+    })).resolves.toMatchObject({
+      branding: current.branding,
+      nearbyStopsThreshold: 4,
+      senderName: 'Legacy Sender',
+      version: 2,
+    });
+    expect(prisma.shop.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: { customerEmailSettings: expect.objectContaining({ version: 2 }) as unknown },
+      where: { id: 'shop-id' },
+    }));
+  });
+
   test('previews eligible recipients and reports missing canonical order email', async () => {
     const { prisma, service } = createHarness();
     prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
@@ -98,6 +126,9 @@ describe('CustomerEmailService', () => {
       counts: { duplicate: 0, failed: 0, sent: 1, skipped: 0 },
       results: [{ providerMessageId: 'message-id', status: 'SENT' }],
     });
+    expect(transport.send).toHaveBeenCalledWith(expect.objectContaining({
+      branding: expect.objectContaining({ showPoweredByClever: true }) as unknown,
+    }));
     expect(prisma.customerEmailManualDispatch.create).toHaveBeenCalledOnce();
     expect(prisma.customerEmailManualDispatchRecipient.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
@@ -142,10 +173,44 @@ describe('CustomerEmailService', () => {
     });
     expect(transport.send).not.toHaveBeenCalled();
   });
+
+  test('test sends include normalized branding', async () => {
+    const { prisma, service, transport } = createHarness();
+    prisma.shop.findUnique.mockResolvedValue({
+      customerEmailSettings: {
+        ...defaultCustomerEmailSettings(),
+        branding: {
+          ...defaultCustomerEmailSettings().branding,
+          accentColor: '#0055aa',
+          footerText: 'Footer',
+          previewText: 'Preview',
+        },
+        senderEmail: 'sender@example.com',
+      },
+    });
+    transport.send.mockResolvedValue({ provider: 'brevo', providerMessageId: 'message-id' });
+
+    await expect(service.sendTest({
+      recipientEmail: 'customer@example.com',
+      shopDomain: 'example.myshopify.com',
+    })).resolves.toMatchObject({
+      messageId: 'message-id',
+      provider: 'brevo',
+    });
+
+    expect(transport.send).toHaveBeenCalledWith(expect.objectContaining({
+      branding: expect.objectContaining({
+        accentColor: '#0055aa',
+        footerText: 'Footer',
+        previewText: 'Preview',
+      }) as unknown,
+      signal: 'TEST',
+    }));
+  });
 });
 
 describe('BrevoCustomerEmailTransport', () => {
-  test('sends escaped HTML, sender, replyTo, tags, idempotency, and timeout', async () => {
+  test('sends escaped branded HTML, sender, replyTo, tags, idempotency, and timeout', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ messageId: 'brevo-id' }), { status: 201 }));
     const transport = new BrevoCustomerEmailTransport({
       apiKey: 'secret',
@@ -154,6 +219,17 @@ describe('BrevoCustomerEmailTransport', () => {
     });
 
     await expect(transport.send({
+      branding: {
+        ...defaultCustomerEmailSettings().branding,
+        accentColor: '#0055aa',
+        footerText: 'Footer <script>alert(1)</script>',
+        logoAltText: 'Brand <Logo>',
+        logoLinkUrl: 'https://example.com/email',
+        logoMode: 'image',
+        logoUrl: 'https://example.com/logo.png',
+        previewText: 'Preview <hidden>',
+        showPoweredByClever: false,
+      },
       body: 'Hello <customer>',
       commandId: 'command-1:stop-1',
       recipientEmail: 'customer@example.com',
@@ -176,6 +252,15 @@ describe('BrevoCustomerEmailTransport', () => {
       tags: ['customer-delivery-email', 'delivery_scheduled'],
       textContent: 'Hello <customer>',
     });
+    const parsedBody = JSON.parse(request.body as string) as { htmlContent: string; textContent: string };
+    expect(parsedBody.htmlContent).toContain('Preview &lt;hidden&gt;');
+    expect(parsedBody.htmlContent).toContain('Footer &lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(parsedBody.htmlContent).toContain('alt="Brand &lt;Logo&gt;"');
+    expect(parsedBody.htmlContent).toContain('border-top:4px solid #0055aa');
+    expect(parsedBody.htmlContent).not.toContain('<customer>');
+    expect(parsedBody.htmlContent).not.toContain('<script>');
+    expect(parsedBody.htmlContent).not.toContain('Powered by CLEVER');
+    expect(parsedBody.textContent).toBe('Hello <customer>');
     expect(request.signal).toBeDefined();
   });
 });

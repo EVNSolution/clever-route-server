@@ -144,7 +144,10 @@ export class CustomerEmailService {
     payload: unknown;
     shopDomain: string;
   }): Promise<CustomerEmailSettings | null> {
-    const settings = validateCustomerEmailSettingsPayload(input.payload);
+    if (input.payload === null || typeof input.payload !== 'object' || Array.isArray(input.payload)) {
+      throw new Error('Customer email settings must be an object.');
+    }
+    const settings = normalizeCustomerEmailSettings(input.payload);
     const shop = await this.prisma.shop.findUnique({
       select: { id: true },
       where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }),
@@ -172,6 +175,7 @@ export class CustomerEmailService {
     const signal = input.signal ?? 'DELIVERY_SCHEDULED';
     const template = settings.templates[signal];
     const result = await this.transport.send({
+      branding: settings.branding,
       body: input.body?.trim() || renderTemplate(template.body, testTemplateContext(settings)),
       commandId: `test:${cryptoRandomId()}`,
       recipientEmail: input.recipientEmail.trim().toLowerCase(),
@@ -238,6 +242,7 @@ export class CustomerEmailService {
       const rowCommandId = `${input.commandId}:${recipient.deliveryStopId}`;
       try {
         const result = await this.transport.send({
+          branding: settings.branding,
           body: recipient.rendered.body,
           commandId: rowCommandId,
           recipientEmail: recipient.email,
