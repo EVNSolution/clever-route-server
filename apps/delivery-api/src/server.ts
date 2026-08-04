@@ -86,7 +86,13 @@ const driverApi = loadDriverApiDependencies({
   routeTrackingStreamHub
 });
 const driverAuth = loadDriverAuthDependencies({ env: process.env, prisma });
-const shopifyAuth = loadShopifyAuthDependencies({ env: process.env, prisma });
+const shopifyAuth = loadShopifyAuthDependencies({
+  env: process.env,
+  ...(adminOrdersRuntime?.reconciliationService === undefined
+    ? {}
+    : { orderReconciliationService: adminOrdersRuntime.reconciliationService }),
+  prisma
+});
 const shopifyWebhookRuntime = loadShopifyWebhookRuntime({ env: process.env, prisma });
 const shopifyWebhook = shopifyWebhookRuntime?.dependencies;
 const wooCommerceWebhook = loadWooCommerceWebhookDependencies({

@@ -141,7 +141,7 @@ export type AdminOrdersDependencies = {
     }): Promise<SyncOrdersSnapshotResult['orders'][number] | null>;
   };
   orderReconciliationService?: {
-    enqueue(input: {
+    enqueueIfIdle(input: {
       appId?: string | undefined;
       correlationId?: string | undefined;
       mode?: ShopifyOrderReconciliationJobMode | undefined;
@@ -149,7 +149,7 @@ export type AdminOrdersDependencies = {
       pageSize?: number | undefined;
       requestedBy?: string | undefined;
       shopDomain: string;
-    }): Promise<ShopifyOrderReconciliationJobDto>;
+    }): Promise<{ enqueued: boolean; job: ShopifyOrderReconciliationJobDto | null }>;
     status(input: {
       appId?: string | undefined;
       jobId: string;
@@ -417,14 +417,23 @@ export function registerAdminOrdersRoutes(
       return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid order reconciliation payload'));
     }
 
-    const job = await dependencies.orderReconciliationService.enqueue({
+    const result = await dependencies.orderReconciliationService.enqueueIfIdle({
       ...payload,
       appId: authenticated.appId,
       requestedBy: authenticated.subject,
       shopDomain: authenticated.shopDomain
     });
+    if (result.job === null) {
+      return reply.code(409).send(errorResponse('CONFLICT', 'Order reconciliation is already being queued.'));
+    }
 
-    return reply.code(202).send({ data: { job: toAdminReconciliationJobResponse(job) }, error: null });
+    return reply.code(202).send({
+      data: {
+        job: toAdminReconciliationJobResponse(result.job),
+        reused: !result.enqueued
+      },
+      error: null
+    });
   });
 
   app.get<{ Params: { jobId: string } }>(

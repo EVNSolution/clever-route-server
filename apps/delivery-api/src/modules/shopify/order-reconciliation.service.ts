@@ -2,6 +2,7 @@ import type { ShopifyAdminGraphqlClient } from './admin-graphql.client.js';
 import type {
   ClaimedShopifyOrderReconciliationJob,
   EnqueueShopifyOrderReconciliationInput,
+  EnqueueShopifyOrderReconciliationResult,
   ShopifyOrderReconciliationJobDto
 } from './order-reconciliation.types.js';
 import { ShopifyOrderSyncService } from './order-sync.service.js';
@@ -10,6 +11,8 @@ import type { PrismaOrderSyncRepository } from './order-sync.repository.js';
 type ReconciliationRepository = {
   claimNext(input: { leaseMs: number; now?: Date | undefined; workerId: string }): Promise<ClaimedShopifyOrderReconciliationJob | null>;
   enqueue(input: EnqueueShopifyOrderReconciliationInput): Promise<ShopifyOrderReconciliationJobDto>;
+  enqueueDueInstalledShops(input: { limit: number; now?: Date | undefined; requestedBy: string; staleBefore: Date }): Promise<{ enqueued: number; failed: number; skipped: number }>;
+  enqueueIfIdle(input: EnqueueShopifyOrderReconciliationInput): Promise<EnqueueShopifyOrderReconciliationResult>;
   findById(input: { appId?: string | undefined; jobId: string; shopDomain: string }): Promise<ShopifyOrderReconciliationJobDto | null>;
   markFailed(input: { error: unknown; jobId: string; leaseToken: string; maxAttemptsReached?: boolean | undefined; nextRunAt?: Date | undefined }): Promise<ShopifyOrderReconciliationJobDto | null>;
   markPageCommitted(input: {
@@ -47,6 +50,19 @@ export class ShopifyOrderReconciliationService {
 
   enqueue(input: EnqueueShopifyOrderReconciliationInput): Promise<ShopifyOrderReconciliationJobDto> {
     return this.options.repository.enqueue(input);
+  }
+
+  enqueueIfIdle(input: EnqueueShopifyOrderReconciliationInput): Promise<EnqueueShopifyOrderReconciliationResult> {
+    return this.options.repository.enqueueIfIdle(input);
+  }
+
+  enqueueDueInstalledShops(input: {
+    limit: number;
+    now?: Date | undefined;
+    requestedBy: string;
+    staleBefore: Date;
+  }): Promise<{ enqueued: number; failed: number; skipped: number }> {
+    return this.options.repository.enqueueDueInstalledShops(input);
   }
 
   status(input: {

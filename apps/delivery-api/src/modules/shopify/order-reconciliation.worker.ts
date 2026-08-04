@@ -12,6 +12,8 @@ export class ShopifyOrderReconciliationWorker {
   private readonly enabled: boolean;
   private readonly intervalMs: number;
   private readonly leaseMs: number;
+  private nextReconciliationSweepAt = 0;
+  private readonly reconciliationIntervalMs: number;
   private readonly workerId: string;
 
   constructor(
@@ -20,13 +22,15 @@ export class ShopifyOrderReconciliationWorker {
       intervalMs?: number;
       leaseMs?: number;
       logger?: Pick<FastifyBaseLogger, 'error' | 'info'>;
-      service: Pick<ShopifyOrderReconciliationService, 'processNextDue'>;
+      reconciliationIntervalMs?: number;
+      service: Pick<ShopifyOrderReconciliationService, 'enqueueDueInstalledShops' | 'processNextDue'>;
       workerId?: string;
     }
   ) {
     this.enabled = options.enabled ?? true;
     this.intervalMs = options.intervalMs ?? 5_000;
     this.leaseMs = options.leaseMs ?? 5 * 60 * 1000;
+    this.reconciliationIntervalMs = options.reconciliationIntervalMs ?? 5 * 60 * 1000;
     this.workerId = options.workerId ?? `order-reconciliation-${process.pid}-${randomUUID()}`;
   }
 
@@ -64,6 +68,25 @@ export class ShopifyOrderReconciliationWorker {
     }
     this.running = true;
     try {
+      const now = Date.now();
+      if (now >= this.nextReconciliationSweepAt) {
+        this.nextReconciliationSweepAt = now + this.reconciliationIntervalMs;
+        try {
+          const sweep = await this.options.service.enqueueDueInstalledShops({
+            limit: 100,
+            requestedBy: 'system:periodic-reconciliation',
+            staleBefore: new Date(now - this.reconciliationIntervalMs)
+          });
+          if (sweep.enqueued > 0) {
+            this.options.logger?.info({ enqueued: sweep.enqueued, event: 'shopify_order_reconciliation_sweep' }, 'queued stale Shopify shops for order reconciliation');
+          }
+          if (sweep.failed > 0) {
+            this.options.logger?.error({ event: 'shopify_order_reconciliation_sweep_partial_failure', failed: sweep.failed }, 'some stale Shopify shops could not be queued for order reconciliation');
+          }
+        } catch (error) {
+          this.options.logger?.error({ error: redactTelemetry(error), event: 'shopify_order_reconciliation_sweep_failed' }, 'Shopify order reconciliation sweep failed');
+        }
+      }
       const result = await this.options.service.processNextDue({
         leaseMs: this.leaseMs,
         workerId: this.workerId

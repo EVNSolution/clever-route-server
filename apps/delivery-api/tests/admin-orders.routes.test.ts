@@ -839,7 +839,7 @@ describe('Admin orders routes', () => {
   });
 
   test('enqueues and reads background order reconciliation jobs for the token shop', async () => {
-    const { dependencies, enqueueReconciliation, reconciliationStatus } = createDependencyHarness();
+    const { dependencies, enqueueReconciliationIfIdle, reconciliationStatus } = createDependencyHarness();
     const app = await buildApp({ adminOrders: dependencies });
 
     try {
@@ -850,8 +850,8 @@ describe('Admin orders routes', () => {
         url: '/admin/orders/reconciliations'
       });
       expect(enqueue.statusCode).toBe(202);
-      expect(enqueue.json()).toEqual({ data: { job: reconciliationJob() }, error: null });
-      expect(enqueueReconciliation).toHaveBeenCalledWith({
+      expect(enqueue.json()).toEqual({ data: { job: reconciliationJob(), reused: false }, error: null });
+      expect(enqueueReconciliationIfIdle).toHaveBeenCalledWith({
         appId: 'clever',
         correlationId: 'corr-1',
         mode: 'INCREMENTAL',
@@ -873,6 +873,16 @@ describe('Admin orders routes', () => {
         jobId: 'job-id',
         shopDomain: 'example.myshopify.com'
       });
+
+      enqueueReconciliationIfIdle.mockResolvedValueOnce({ enqueued: false, job: reconciliationJob() });
+      const duplicate = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: { mode: 'INCREMENTAL' },
+        url: '/admin/orders/reconciliations'
+      });
+      expect(duplicate.statusCode).toBe(202);
+      expect(duplicate.json()).toEqual({ data: { job: reconciliationJob(), reused: true }, error: null });
     } finally {
       await app.close();
     }
@@ -922,8 +932,8 @@ function createDependencyHarness(): {
   patchCanonicalOrder: ReturnType<
     typeof vi.fn<NonNullable<AdminOrdersDependencies['orderSyncService']['patchCanonicalOrder']>>
   >;
-  enqueueReconciliation: ReturnType<
-    typeof vi.fn<NonNullable<AdminOrdersDependencies['orderReconciliationService']>['enqueue']>
+  enqueueReconciliationIfIdle: ReturnType<
+    typeof vi.fn<NonNullable<AdminOrdersDependencies['orderReconciliationService']>['enqueueIfIdle']>
   >;
   reconciliationStatus: ReturnType<
     typeof vi.fn<NonNullable<AdminOrdersDependencies['orderReconciliationService']>['status']>
@@ -970,8 +980,8 @@ function createDependencyHarness(): {
   const patchCanonicalOrder = vi.fn<NonNullable<AdminOrdersDependencies['orderSyncService']['patchCanonicalOrder']>>(
     () => Promise.resolve({ ...canonicalOrder, deliveryArea: 'North York', deliveryDate: '2026-05-10' })
   );
-  const enqueueReconciliation = vi.fn<NonNullable<AdminOrdersDependencies['orderReconciliationService']>['enqueue']>(
-    () => Promise.resolve(reconciliationJob())
+  const enqueueReconciliationIfIdle = vi.fn<NonNullable<AdminOrdersDependencies['orderReconciliationService']>['enqueueIfIdle']>(
+    () => Promise.resolve({ enqueued: true, job: reconciliationJob() })
   );
   const reconciliationStatus = vi.fn<NonNullable<AdminOrdersDependencies['orderReconciliationService']>['status']>(
     () => Promise.resolve(reconciliationJob())
@@ -987,12 +997,12 @@ function createDependencyHarness(): {
         syncOrdersSnapshot
       },
       orderReconciliationService: {
-        enqueue: enqueueReconciliation,
+        enqueueIfIdle: enqueueReconciliationIfIdle,
         status: reconciliationStatus
       },
       sessionTokenVerifier: { verify }
     },
-    enqueueReconciliation,
+    enqueueReconciliationIfIdle,
     listCanonicalOrders,
     patchCanonicalOrder,
     reconciliationStatus,
