@@ -1,6 +1,6 @@
 import { lookup } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
-import { isIP } from 'node:net';
+import { isIP, type LookupFunction } from 'node:net';
 
 import type { UvisClientConfig } from './uvis-config.js';
 import {
@@ -364,7 +364,7 @@ async function fetchPinned(url: URL, init: Parameters<FetchLike>[1], addresses: 
   return new Promise<Response>((resolve, reject) => {
     const request = httpsRequest(url, {
       headers: init.headers,
-      lookup: (_hostname, _options, callback) => callback(null, address, 4),
+      lookup: createPinnedLookup(address),
       method: init.method,
       signal: init.signal,
     }, (incoming) => {
@@ -392,6 +392,16 @@ async function fetchPinned(url: URL, init: Parameters<FetchLike>[1], addresses: 
     request.on('error', reject);
     request.end();
   });
+}
+
+export function createPinnedLookup(address: string): LookupFunction {
+  return (_hostname, options, callback) => {
+    if (options.all === true) {
+      callback(null, [{ address, family: 4 }]);
+      return;
+    }
+    callback(null, address, 4);
+  };
 }
 
 function normalizeHost(hostname: string): string {

@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from 'vitest';
 
-import { UvisClient } from '../src/modules/uvis/uvis-client.js';
+import { createPinnedLookup, UvisClient } from '../src/modules/uvis/uvis-client.js';
 import { loadUvisClientConfig, loadUvisRuntimeConfig } from '../src/modules/uvis/uvis-config.js';
 import {
   parseUvisLocationResponse,
@@ -229,6 +229,18 @@ describe('UVIS client', () => {
     await expect(client.getAccessKey()).resolves.toBe('fake-access-key');
     expect(pinnedFetch).toHaveBeenCalledTimes(1);
     expect(pinnedFetch.mock.calls[0]?.[2]).toEqual(addresses);
+  });
+
+  test('returns the callback shape requested by Node 22 pinned HTTPS lookups', () => {
+    const lookup = createPinnedLookup('8.8.8.8');
+    const allCallback = vi.fn();
+    const singleCallback = vi.fn();
+
+    lookup('uvis.test', { all: true }, allCallback);
+    lookup('uvis.test', { all: false }, singleCallback);
+
+    expect(allCallback).toHaveBeenCalledWith(null, [{ address: '8.8.8.8', family: 4 }]);
+    expect(singleCallback).toHaveBeenCalledWith(null, '8.8.8.8', 4);
   });
 
   test('requests UVIS with manual redirects and rejects 3xx responses without following them', async () => {
