@@ -1379,6 +1379,26 @@ describe('DSV control routes', () => {
       expect(createdDriver.statusCode).toBe(201);
       expect(resourceService.createDriver).toHaveBeenCalledWith({ ...driverPayload, shopDomain: 'tomatonofood.com' });
 
+      const signupInvite = await app.inject({
+        headers,
+        method: 'POST',
+        url: `/api/dsv/drivers/${targetDriverId}/signup-invite`,
+      });
+      expect(signupInvite.statusCode).toBe(201);
+      expect(signupInvite.json()).toMatchObject({
+        data: {
+          invite: {
+            expiresAt: '2026-08-05T00:00:00.000Z',
+            signupUrl: 'clever-driver://signup?token=secure-token',
+          },
+        },
+        error: null,
+      });
+      expect(resourceService.issueDriverSignupInvite).toHaveBeenCalledWith({
+        driverId: targetDriverId,
+        shopDomain: 'tomatonofood.com',
+      });
+
       const vehiclePayload = { note: '군포복합물류센터', plate: '21사 6101', type: '냉장탑차' };
       const createdVehicle = await app.inject({ headers, method: 'POST', payload: vehiclePayload, url: '/api/dsv/vehicles' });
       expect(createdVehicle.statusCode).toBe(201);
@@ -1573,6 +1593,10 @@ function createResourceService(): MockResourceService {
     deleteDriver: vi.fn(() => Promise.resolve()),
     deleteVehicle: vi.fn(() => Promise.resolve()),
     list: vi.fn(() => Promise.resolve({ assignments: [], drivers: [], vehicles: [] })),
+    issueDriverSignupInvite: vi.fn(() => Promise.resolve({
+      expiresAt: '2026-08-05T00:00:00.000Z',
+      signupUrl: 'clever-driver://signup?token=secure-token',
+    })),
     unassignDriver: vi.fn(() => Promise.resolve()),
     updateDriver: vi.fn(() => Promise.resolve(driver)),
     updateVehicle: vi.fn(() => Promise.resolve(vehicle)),

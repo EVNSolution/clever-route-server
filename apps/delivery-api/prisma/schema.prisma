@@ -1242,12 +1242,27 @@ model Driver {
   dsvDispatchImportRows      DsvDispatchImportRow[]
   dsvProfile                 DsvDriverProfile?
   dsvVehicleAssignments      DsvVehicleDriverAssignment[]
+  accountSignupInvites       DsvDriverAccountSignupInvite[]
 
   @@unique([id, shopId])
   @@unique([shopId, inviteCode])
   @@index([accountId, status])
   @@index([shopId, status])
   @@map("drivers")
+}
+
+model DsvDriverAccountSignupInvite {
+  id         String    @id @default(uuid()) @db.Uuid
+  driverId   String    @db.Uuid
+  driver     Driver    @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique @db.Text
+  expiresAt  DateTime  @db.Timestamptz(6)
+  consumedAt DateTime? @db.Timestamptz(6)
+  revokedAt  DateTime? @db.Timestamptz(6)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([driverId, expiresAt])
+  @@map("dsv_driver_account_signup_invites")
 }
 
 model DriverAccount {
