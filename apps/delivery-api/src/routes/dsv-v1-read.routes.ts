@@ -28,6 +28,7 @@ import {
   mapDsvV1VehicleListItem,
   toDsvV1ErrorEnvelope,
   toDsvV1SuccessEnvelope,
+  type DsvV1DepartureLocationDto,
   type DsvV1CustomerRouteDto,
   type DsvV1ErrorCode,
 } from '../modules/dsv/dsv-v1-read.dto.js';
@@ -238,11 +239,12 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
         : [];
       return mapDsvV1CustomerDeliveryInquiryPage({
         ...page,
-        routes: await buildCustomerScopedRoutes({
+        customerDisplayName: customerDisplayNameFromDeliveries(page.items),
+        ...(await buildCustomerScopedRoutes({
           items: routeScope,
           ...(dependencies.routePlanService === undefined ? {} : { routePlanService: dependencies.routePlanService }),
           shopDomain: requireCustomerShopDomain(customerPrincipal),
-        }),
+        })),
       });
     },
     parseQuery: parseCustomerDeliveriesQuery,
@@ -266,11 +268,12 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
         : [];
       return mapDsvV1CustomerDeliveryInquiryPage({
         ...page,
-        routes: await buildCustomerScopedRoutes({
+        customerDisplayName: customerDisplayNameFromDeliveries(page.items),
+        ...(await buildCustomerScopedRoutes({
           items: routeScope,
           ...(dependencies.routePlanService === undefined ? {} : { routePlanService: dependencies.routePlanService }),
           shopDomain: requireAdminShopDomain(adminPrincipal),
-        }),
+        })),
       });
     },
     parseQuery: parseAdminCustomerDeliveriesQuery,
@@ -282,30 +285,42 @@ async function buildCustomerScopedRoutes(input: {
   items: readonly DsvV1CustomerRouteScopeRow[];
   routePlanService?: Pick<RoutePlanService, 'getRoutePlanDetail' | 'listRoutePlans'>;
   shopDomain: string;
-}): Promise<DsvV1CustomerRouteDto[]> {
+}): Promise<{ departureLocation?: DsvV1DepartureLocationDto; routes: DsvV1CustomerRouteDto[] }> {
   const routeKeys = uniqueRouteKeys(input.items);
-  if (routeKeys.length === 0) return [];
+  if (routeKeys.length === 0) return { routes: [] };
   if (input.routePlanService === undefined) {
     throw new DsvV1DependencyError('DSV route plan read service is not configured');
   }
   const routes: DsvV1CustomerRouteDto[] = [];
+  let departureLocation: DsvV1DepartureLocationDto | undefined;
   for (const routeKey of routeKeys) {
     const detail = await input.routePlanService.getRoutePlanDetail({
       appId: 'clever',
       routePlanId: routeKey.routePlanId,
       shopDomain: input.shopDomain,
     });
-    if (detail === null || detail.routeGeometry === null) continue;
+    if (detail === null) continue;
+    const depot = routePlanDepotCoordinates(detail);
+    departureLocation ??= depot === null ? undefined : { latitude: depot[1], longitude: depot[0] };
+    if (detail.routeGeometry === null) continue;
     const customerOrderIds = new Set(input.items
       .filter((item) => item.routePlanId === routeKey.routePlanId && item.vehicleId === routeKey.vehicleId)
       .map((item) => item.sellerOrderId));
-    const lastCustomerStop = detail.stops
+    const customerStops = detail.stops
       .filter((stop) => customerOrderIds.has(stop.orderId))
-      .sort((left, right) => right.sequence - left.sequence)[0] ?? null;
+      .sort((left, right) => left.sequence - right.sequence);
+    const firstCustomerStop = customerStops[0] ?? null;
+    const lastCustomerStop = customerStops.at(-1) ?? null;
     const end = routeStopEndpoint(detail.routeStopPoints, lastCustomerStop?.deliveryStopId ?? null)
       ?? stopCoordinates(lastCustomerStop);
-    const start = routeKey.vehiclePosition;
+    const firstCustomerEndpoint = routeStopEndpoint(detail.routeStopPoints, firstCustomerStop?.deliveryStopId ?? null)
+      ?? stopCoordinates(firstCustomerStop);
+    const hasHiddenRouteBeforeCustomer = firstCustomerStop !== null && detail.stops.some((stop) => (
+      stop.sequence < firstCustomerStop.sequence && !customerOrderIds.has(stop.orderId)
+    ));
+    const start = hasHiddenRouteBeforeCustomer ? firstCustomerEndpoint : routeKey.vehiclePosition ?? depot;
     if (end === null) continue;
+    if (start === null) continue;
     const coordinates = cutCustomerScopedRouteGeometry({
       coordinates: detail.routeGeometry.coordinates,
       end,
@@ -314,36 +329,56 @@ async function buildCustomerScopedRoutes(input: {
     if (coordinates === null) continue;
     routes.push({ coordinates, vehicleId: routeKey.vehicleId });
   }
-  return routes;
+  return {
+    ...(departureLocation === undefined ? {} : { departureLocation }),
+    routes,
+  };
 }
 
 function uniqueRouteKeys(items: readonly DsvV1CustomerRouteScopeRow[]): Array<{
   routePlanId: string;
   vehicleId: string;
-  vehiclePosition: DsvV1LngLat;
+  vehiclePosition: DsvV1LngLat | null;
 }> {
-  const byRouteAndVehicle = new Map<string, { routePlanId: string; vehicleId: string; vehiclePosition: DsvV1LngLat }>();
+  const byRouteAndVehicle = new Map<string, { routePlanId: string; vehicleId: string; vehiclePosition: DsvV1LngLat | null }>();
   for (const item of items) {
     if (
       item.routePlanId === undefined
       || item.routePlanId === null
       || item.vehicleId === undefined
       || item.vehicleId === null
-      || item.vehicleLatitude === undefined
-      || item.vehicleLatitude === null
-      || item.vehicleLongitude === undefined
-      || item.vehicleLongitude === null
     ) continue;
     const key = `${item.routePlanId}:${item.vehicleId}`;
     if (!byRouteAndVehicle.has(key)) {
       byRouteAndVehicle.set(key, {
         routePlanId: item.routePlanId,
         vehicleId: item.vehicleId,
-        vehiclePosition: [item.vehicleLongitude, item.vehicleLatitude],
+        vehiclePosition: lngLatFromLatLng(item.vehicleLatitude ?? null, item.vehicleLongitude ?? null),
       });
     }
   }
   return [...byRouteAndVehicle.values()];
+}
+
+function customerDisplayNameFromDeliveries(items: readonly { customerDisplayName?: string | null }[]): string | null {
+  return items.find((item) => item.customerDisplayName !== undefined && item.customerDisplayName !== null)?.customerDisplayName ?? null;
+}
+
+function routePlanDepotCoordinates(detail: RoutePlanDetail): DsvV1LngLat | null {
+  return lngLatFromLatLng(detail.routePlan.depot.latitude, detail.routePlan.depot.longitude);
+}
+
+function lngLatFromLatLng(latitude: number | null, longitude: number | null): DsvV1LngLat | null {
+  if (!isValidLatitude(latitude) || !isValidLongitude(longitude)) return null;
+  return [longitude, latitude];
+}
+
+function isValidLatitude(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= -90 && value <= 90;
+}
+
+function isValidLongitude(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= -180 && value <= 180;
 }
 
 function routeStopEndpoint(
@@ -356,8 +391,8 @@ function routeStopEndpoint(
 }
 
 function stopCoordinates(stop: RoutePlanDetail['stops'][number] | null): DsvV1LngLat | null {
-  if (stop === null || stop.coordinates.latitude === null || stop.coordinates.longitude === null) return null;
-  return [stop.coordinates.longitude, stop.coordinates.latitude];
+  if (stop === null) return null;
+  return lngLatFromLatLng(stop.coordinates.latitude, stop.coordinates.longitude);
 }
 
 function registerTimeConstraintCommandRoutes(app: FastifyInstance, dependencies: DsvV1ReadDependencies): void {

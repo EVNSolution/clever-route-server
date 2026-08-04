@@ -376,6 +376,7 @@ export type DsvV1ManagementListPageDto<TItem> = {
 };
 
 export type DsvV1CustomerDeliveryInquiryRow = DsvV1RoutePlanStopEtaInput & {
+  customerDisplayName?: string | null;
   deliveryStatus: string;
   destinationAddress?: string | null;
   destinationDisplayName: string;
@@ -399,6 +400,11 @@ export type DsvV1CustomerRouteDto = {
   vehicleId: string;
 };
 
+export type DsvV1DepartureLocationDto = {
+  latitude: number;
+  longitude: number;
+};
+
 export type DsvV1CustomerDeliveryInquiryItemDto = {
   deliveryStatus: string;
   destinationAddress?: string;
@@ -420,6 +426,8 @@ export type DsvV1CustomerDeliveryInquiryItemDto = {
 };
 
 export type DsvV1CustomerDeliveryInquiryPageDto = {
+  customerDisplayName?: string;
+  departureLocation?: DsvV1DepartureLocationDto;
   emptyReason?: string;
   items: DsvV1CustomerDeliveryInquiryItemDto[];
   page?: DsvV1PageInfo;
@@ -672,12 +680,16 @@ export function mapDsvV1CustomerDeliveryInquiryItem(
 }
 
 export function mapDsvV1CustomerDeliveryInquiryPage(input: {
+  customerDisplayName?: string | null;
+  departureLocation?: DsvV1DepartureLocationDto | null;
   emptyReason?: string;
   items: readonly DsvV1CustomerDeliveryInquiryRow[];
   page?: DsvV1PageInfo;
   routes: readonly DsvV1CustomerRouteDto[];
 }): DsvV1CustomerDeliveryInquiryPageDto {
   return {
+    ...(input.customerDisplayName === undefined || input.customerDisplayName === null ? {} : { customerDisplayName: input.customerDisplayName }),
+    ...(input.departureLocation === undefined || input.departureLocation === null ? {} : { departureLocation: input.departureLocation }),
     ...(input.emptyReason === undefined ? {} : { emptyReason: input.emptyReason }),
     items: input.items.map(mapDsvV1CustomerDeliveryInquiryItem),
     ...optionalPage(input.page),

@@ -627,6 +627,7 @@ describe('DSV v1 read routes', () => {
       queryService.listCustomerDeliveries.mockResolvedValueOnce({
         items: [
           customerDeliveryRow({
+            customerDisplayName: 'Tomato Customer',
             routePlanId: 'route-plan-1',
             sellerOrderId: 'order-customer-first',
             sellerOrderKey: 'SO-C1',
@@ -661,10 +662,10 @@ describe('DSV v1 read routes', () => {
           type: 'LineString',
         },
         routeStopPoints: [
-          routeStopPoint({ deliveryStopId: 'other-before-stop', sequence: 1, shopifyOrderGid: 'other-before' }),
-          routeStopPoint({ deliveryStopId: 'customer-first-stop', sequence: 2, shopifyOrderGid: 'order-customer-first' }),
-          routeStopPoint({ deliveryStopId: 'customer-last-stop', sequence: 3, shopifyOrderGid: 'order-customer-last' }),
-          routeStopPoint({ deliveryStopId: 'other-after-stop', sequence: 4, shopifyOrderGid: 'other-after' }),
+          routeStopPoint({ deliveryStopId: 'other-before-stop', sequence: 1, shopifyOrderGid: 'other-before', snappedCoordinates: [126.91, 37.5] }),
+          routeStopPoint({ deliveryStopId: 'customer-first-stop', sequence: 2, shopifyOrderGid: 'order-customer-first', snappedCoordinates: [126.92, 37.5] }),
+          routeStopPoint({ deliveryStopId: 'customer-last-stop', sequence: 3, shopifyOrderGid: 'order-customer-last', snappedCoordinates: [126.93, 37.5] }),
+          routeStopPoint({ deliveryStopId: 'other-after-stop', sequence: 4, shopifyOrderGid: 'other-after', snappedCoordinates: [126.94, 37.5] }),
         ],
         stops: [
           routeDetailStop({ deliveryStopId: 'other-before-stop', orderId: 'other-before', orderName: 'OTHER-BEFORE', sequence: 1 }),
@@ -683,8 +684,10 @@ describe('DSV v1 read routes', () => {
       expect(response.statusCode).toBe(200);
       const body = expectDsvV1Metadata(response);
       expect(body.data).toMatchObject({
+        customerDisplayName: 'Tomato Customer',
+        departureLocation: { latitude: 37.5, longitude: 126.9 },
         routes: [{
-          coordinates: [[126.905, 37.5], [126.91, 37.5], [126.92, 37.5]],
+          coordinates: [[126.92, 37.5], [126.93, 37.5]],
           vehicleId: 'vehicle-1',
         }],
       });
@@ -703,6 +706,89 @@ describe('DSV v1 read routes', () => {
       expect(serialized).not.toContain('other-after');
       expect(serialized).not.toContain('other-before-stop');
       expect(serialized).not.toContain('other-after-stop');
+      expect(serialized).not.toContain('126.91');
+      expect(serialized).not.toContain('126.94');
+      expect(serialized).not.toContain('shopifyOrderGid');
+      expect(serialized).not.toContain('deliveryStopId');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('falls back customer-scoped route geometry to depot when assigned vehicle has no live position', async () => {
+    const { app, queryService, routePlanService } = await createHarness();
+    const customer = signedCookie(`dsv-customer-account:${accountId}`);
+    try {
+      queryService.listCustomerDeliveries.mockResolvedValueOnce({
+        items: [
+          customerDeliveryRow({
+            customerDisplayName: 'Tomato Customer',
+            routePlanId: 'route-plan-1',
+            sellerOrderId: 'order-customer-first',
+            sellerOrderKey: 'SO-C1',
+            vehicleId: 'vehicle-1',
+            vehicleLatitude: null,
+            vehicleLongitude: null,
+          }),
+        ],
+        page: { hasMore: false },
+        serviceDate: '2026-07-23',
+        timezone: 'Asia/Seoul',
+      });
+      queryService.listCustomerRouteScope.mockResolvedValueOnce([
+        {
+          routePlanId: 'route-plan-1',
+          sellerOrderId: 'order-customer-first',
+          vehicleId: 'vehicle-1',
+          vehicleLatitude: null,
+          vehicleLongitude: null,
+        },
+        {
+          routePlanId: 'route-plan-1',
+          sellerOrderId: 'order-customer-last',
+          vehicleId: 'vehicle-1',
+          vehicleLatitude: null,
+          vehicleLongitude: null,
+        },
+      ]);
+      routePlanService.getRoutePlanDetail.mockResolvedValueOnce(routePlanDetail({
+        routeGeometry: {
+          coordinates: [[126.9, 37.5], [126.91, 37.5], [126.92, 37.5], [126.93, 37.5], [126.94, 37.5]],
+          type: 'LineString',
+        },
+        routeStopPoints: [
+          routeStopPoint({ deliveryStopId: 'customer-first-stop', sequence: 1, shopifyOrderGid: 'order-customer-first', snappedCoordinates: [126.91, 37.5] }),
+          routeStopPoint({ deliveryStopId: 'customer-last-stop', sequence: 2, shopifyOrderGid: 'order-customer-last', snappedCoordinates: [126.92, 37.5] }),
+          routeStopPoint({ deliveryStopId: 'other-after-stop', sequence: 3, shopifyOrderGid: 'other-after', snappedCoordinates: [126.94, 37.5] }),
+        ],
+        stops: [
+          routeDetailStop({ deliveryStopId: 'customer-first-stop', orderId: 'order-customer-first', orderName: 'SO-C1', sequence: 1 }),
+          routeDetailStop({ deliveryStopId: 'customer-last-stop', orderId: 'order-customer-last', orderName: 'SO-C2', sequence: 2 }),
+          routeDetailStop({ deliveryStopId: 'other-after-stop', orderId: 'other-after', orderName: 'OTHER-AFTER', sequence: 3 }),
+        ],
+      }));
+
+      const response = await app.inject({
+        headers: { cookie: customer.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/customer/deliveries?serviceDate=2026-07-23',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = expectDsvV1Metadata(response);
+      expect(body.data).toMatchObject({
+        customerDisplayName: 'Tomato Customer',
+        departureLocation: { latitude: 37.5, longitude: 126.9 },
+        routes: [{
+          coordinates: [[126.9, 37.5], [126.91, 37.5], [126.92, 37.5]],
+          vehicleId: 'vehicle-1',
+        }],
+      });
+      const serialized = JSON.stringify(body.data);
+      expect(serialized).not.toContain('route-plan-1');
+      expect(serialized).not.toContain('other-after');
+      expect(serialized).not.toContain('other-after-stop');
+      expect(serialized).not.toContain('126.94');
       expect(serialized).not.toContain('shopifyOrderGid');
       expect(serialized).not.toContain('deliveryStopId');
     } finally {

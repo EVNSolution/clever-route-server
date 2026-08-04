@@ -51,6 +51,16 @@ describe('PrismaDsvV1ReadQueryService', () => {
           },
           id: 'order-a',
         },
+        {
+          currentRouteVersion: {
+            routePlanId: 'route-without-position',
+            routePlan: {
+              trackingGeometry: null,
+              vehicleId: 'vehicle-without-position',
+            },
+          },
+          id: 'order-without-position',
+        },
         { currentRouteVersion: null, id: 'order-without-route' },
       ])) },
     });
@@ -62,6 +72,12 @@ describe('PrismaDsvV1ReadQueryService', () => {
       vehicleId: 'vehicle-a',
       vehicleLatitude: 37.5,
       vehicleLongitude: 127,
+    }, {
+      routePlanId: 'route-without-position',
+      sellerOrderId: 'order-without-position',
+      vehicleId: 'vehicle-without-position',
+      vehicleLatitude: null,
+      vehicleLongitude: null,
     }]);
     const query = firstMockArg<OrderFindManyQuery>(prisma.order.findMany);
     expect(query?.take).toBeUndefined();
@@ -574,6 +590,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
 
     await expect(service.listCustomerDeliveries(customerPrincipal(), { serviceDate: '2026-07-22' })).resolves.toMatchObject({
       items: [{
+        customerDisplayName: 'Customer A',
         destinationAddress: '1 Shared Way',
         destinationId: 'destination-x',
         estimatedArrivalAt: new Date('2026-07-22T02:00:00.000Z'),
