@@ -9,7 +9,7 @@
 
 ## Query-plan gate
 
-Run `apps/delivery-api/scripts/orders-pagination-query-plan.sql` against a production-like clone with non-PII fixture parameters. Approve only when the JSON plan uses `orders_shopId_displayOrderSequence_id_idx`, reads no more than 51 post-filter candidates, and does not perform a sequential scan at the measured cohort size. Store the plan in private change-control evidence, not the repository.
+Run `apps/delivery-api/scripts/orders-pagination-query-plan.sql.example` against a production-like clone with non-PII fixture parameters. Approve only when the JSON plan uses `orders_shopId_displayOrderSequence_id_idx`, reads no more than 51 post-filter candidates, and does not perform a sequential scan at the measured cohort size. Store the plan in private change-control evidence, not the repository.
 
 Planning-scope page, facet, map, and selection requests must carry the shop-local
 `routeOpsToday=YYYY-MM-DD`. The API rejects a missing reference date with `400`
