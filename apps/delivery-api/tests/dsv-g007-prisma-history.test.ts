@@ -52,11 +52,16 @@ const dsvDriverAppAuthMigrationName = '20260802120000_add_dsv_driver_app_auth';
 const manualCustomerEmailMigrationName = '20260803110000_add_manual_customer_email';
 const timeConstraintAcknowledgedDriverEventMigrationName = '20260803120000_add_time_constraint_acknowledged_driver_event';
 const dsvDriverSignupInviteMigrationName = '20260804120000_add_dsv_driver_account_signup_invites';
+const shopScopedDriverSignupInviteMigrationName = '20260804150000_scope_driver_signup_invites_to_shop';
 const assignedDriverProfileBackfillMigrationName = '20260729170000_backfill_assigned_dsv_driver_profiles';
 const dispatchGroupingBackfillMigrationName = '20260730170000_backfill_dsv_dispatch_groupings';
 const accountScopedPushTokenMigrationName = '20260731140000_account_scope_driver_push_tokens';
 const orderServiceDateIdentityMigrationName = '20260731120000_dsv_order_service_date_identity';
 const geocodingCacheMigrationName = '20260802090000_add_geocoding_cache';
+const shopScopedDriverSignupInviteMigrationPath = new URL(
+  `../prisma/migrations/${shopScopedDriverSignupInviteMigrationName}/migration.sql`,
+  import.meta.url
+);
 const pickupCompletedDriverEventMigrationPath = new URL(
   `../prisma/migrations/${pickupCompletedDriverEventMigrationName}/migration.sql`,
   import.meta.url
@@ -132,7 +137,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(63);
+    expect(migrations).toHaveLength(66);
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -220,6 +225,7 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations).toContain(manualCustomerEmailMigrationName);
     expect(migrations).toContain(timeConstraintAcknowledgedDriverEventMigrationName);
     expect(migrations).toContain(dsvDriverSignupInviteMigrationName);
+    expect(migrations).toContain(shopScopedDriverSignupInviteMigrationName);
     expect(migrations).toContain(assignedDriverProfileBackfillMigrationName);
     expect(migrations).toContain(dispatchGroupingBackfillMigrationName);
     expect(migrations).toContain(accountScopedPushTokenMigrationName);
@@ -282,7 +288,23 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf(timeConstraintAcknowledgedDriverEventMigrationName)).toBeLessThan(
       migrations.indexOf(dsvDriverSignupInviteMigrationName)
     );
-    expect(migrations.at(-1)).toBe(dsvDriverSignupInviteMigrationName);
+    expect(migrations.indexOf(dsvDriverSignupInviteMigrationName)).toBeLessThan(
+      migrations.indexOf(shopScopedDriverSignupInviteMigrationName)
+    );
+    expect(migrations.at(-1)).toBe(shopScopedDriverSignupInviteMigrationName);
+  });
+
+  test('backfills shop ownership before allowing driverless signup invites', async () => {
+    const migration = await readFile(shopScopedDriverSignupInviteMigrationPath, 'utf8');
+
+    expect(migration).toContain('ADD COLUMN "shopId" UUID');
+    expect(migration).toContain('SET "shopId" = driver."shopId"');
+    expect(migration.indexOf('SET "shopId" = driver."shopId"')).toBeLessThan(
+      migration.indexOf('ALTER COLUMN "shopId" SET NOT NULL')
+    );
+    expect(migration).toContain('ALTER COLUMN "driverId" DROP NOT NULL');
+    expect(migration).toContain('FOREIGN KEY ("shopId") REFERENCES "shops"("id")');
+    expect(migration).not.toMatch(/\bDELETE\s+FROM\b|\bTRUNCATE\b|\bDROP\s+(?:TABLE|INDEX|SCHEMA|TYPE)\b/iu);
   });
 
   test('backfills only assigned drivers without replacing canonical contact or assignment data', async () => {
@@ -401,7 +423,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('schema preserves historical DB defaults instead of planning default drops', async () => {
     const schema = await readFile(schemaPath, 'utf8');
 
-    expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(31);
+    expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(32);
     expect(schema.match(/updatedAt\s+DateTime\s+@default\(now\(\)\)\s+@updatedAt/gu)).toHaveLength(14);
     expect(schema).toContain('warnings             Json                          @default("[]")');
   });

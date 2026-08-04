@@ -1379,6 +1379,25 @@ describe('DSV control routes', () => {
       expect(createdDriver.statusCode).toBe(201);
       expect(resourceService.createDriver).toHaveBeenCalledWith({ ...driverPayload, shopDomain: 'tomatonofood.com' });
 
+      const shopSignupInvite = await app.inject({
+        headers,
+        method: 'POST',
+        url: '/api/dsv/drivers/signup-invite',
+      });
+      expect(shopSignupInvite.statusCode).toBe(201);
+      expect(shopSignupInvite.json()).toMatchObject({
+        data: {
+          invite: {
+            expiresAt: '2026-08-05T00:00:00.000Z',
+            signupUrl: 'clever-driver://signup?token=secure-token',
+          },
+        },
+        error: null,
+      });
+      expect(resourceService.issueDriverSignupInvite).toHaveBeenNthCalledWith(1, {
+        shopDomain: 'tomatonofood.com',
+      });
+
       const signupInvite = await app.inject({
         headers,
         method: 'POST',
@@ -1394,7 +1413,7 @@ describe('DSV control routes', () => {
         },
         error: null,
       });
-      expect(resourceService.issueDriverSignupInvite).toHaveBeenCalledWith({
+      expect(resourceService.issueDriverSignupInvite).toHaveBeenNthCalledWith(2, {
         driverId: targetDriverId,
         shopDomain: 'tomatonofood.com',
       });

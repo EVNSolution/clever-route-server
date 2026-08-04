@@ -19,7 +19,17 @@ export type DsvDriverInput = {
   zone: string;
 };
 
-export type DsvDriverView = DsvDriverInput & { id: string };
+export type DsvDriverView = {
+  age?: number;
+  career?: string;
+  gender?: string;
+  id: string;
+  name: string;
+  phone?: string;
+  score?: string;
+  traits?: string[];
+  zone?: string;
+};
 
 export type DsvVehicleInput = {
   note: string;
@@ -49,7 +59,7 @@ export type DsvResourceService = {
   deleteDriver(input: { driverId: string; shopDomain: string }): Promise<void>;
   deleteVehicle(input: { shopDomain: string; vehicleId: string }): Promise<void>;
   list(input: { shopDomain: string }): Promise<DsvResourceSnapshot | null>;
-  issueDriverSignupInvite(input: { driverId: string; shopDomain: string }): Promise<DsvDriverSignupInviteView>;
+  issueDriverSignupInvite(input: { driverId?: string; shopDomain: string }): Promise<DsvDriverSignupInviteView>;
   unassignDriver(input: { assignmentId: string; shopDomain: string; vehicleId: string }): Promise<void>;
   updateDriver(input: DsvDriverInput & { driverId: string; shopDomain: string }): Promise<DsvDriverView>;
   updateVehicle(input: DsvVehicleInput & { shopDomain: string; vehicleId: string }): Promise<DsvVehicleView>;
@@ -129,12 +139,26 @@ export class PrismaDsvResourceService implements DsvResourceService {
     }
   }
 
-  async issueDriverSignupInvite(input: { driverId: string; shopDomain: string }): Promise<DsvDriverSignupInviteView> {
+  async issueDriverSignupInvite(input: { driverId?: string; shopDomain: string }): Promise<DsvDriverSignupInviteView> {
     const shop = await this.requireShop(input.shopDomain);
     const rawToken = createDsvDriverSignupToken();
     const expiresAt = new Date(Date.now() + DSV_DRIVER_SIGNUP_INVITE_TTL_MS);
     const now = new Date();
     await this.prisma.$transaction(async (transaction) => {
+      if (input.driverId === undefined) {
+        await transaction.dsvDriverAccountSignupInvite.updateMany({
+          data: { revokedAt: now },
+          where: { consumedAt: null, driverId: null, revokedAt: null, shopId: shop.id },
+        });
+        await transaction.dsvDriverAccountSignupInvite.create({
+          data: {
+            expiresAt,
+            shopId: shop.id,
+            tokenHash: hashDsvDriverSignupToken(rawToken),
+          },
+        });
+        return;
+      }
       const driver = await transaction.driver.findFirst({
         select: { accountId: true, id: true },
         where: {
@@ -154,6 +178,7 @@ export class PrismaDsvResourceService implements DsvResourceService {
         data: {
           driverId: driver.id,
           expiresAt,
+          shopId: shop.id,
           tokenHash: hashDsvDriverSignupToken(rawToken),
         },
       });
@@ -319,18 +344,18 @@ function driverProfileData(input: DsvDriverInput) {
 
 function driverView(
   driver: { displayName: string; id: string; phone?: string | null },
-  profile: { age: number; career: string; gender: string; score: string; traits: string[]; zone: string },
+  profile: { age: number | null; career: string | null; gender: string | null; score: string | null; traits: string[]; zone: string | null },
 ): DsvDriverView {
   return {
-    age: profile.age,
-    career: profile.career,
-    gender: profile.gender,
+    ...(profile.age === null ? {} : { age: profile.age }),
+    ...(profile.career === null ? {} : { career: profile.career }),
+    ...(profile.gender === null ? {} : { gender: profile.gender }),
     id: driver.id,
     name: driver.displayName,
     ...(driver.phone === null || driver.phone === undefined ? {} : { phone: driver.phone }),
-    score: profile.score,
+    ...(profile.score === null ? {} : { score: profile.score }),
     traits: profile.traits,
-    zone: profile.zone,
+    ...(profile.zone === null ? {} : { zone: profile.zone }),
   };
 }
 

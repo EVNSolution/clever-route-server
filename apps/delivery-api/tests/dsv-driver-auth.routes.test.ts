@@ -137,6 +137,7 @@ describe('DSV Driver app auth routes', () => {
         driverName: 'QA 배송원 01',
         expiresAt: '2026-09-01T00:00:00.000Z',
         phoneLast4: '0001',
+        shopDomain: 'dsv-demo.local',
       })
       .mockRejectedValueOnce(new DsvDriverSignupInviteError());
     const app = await buildApp({
@@ -162,6 +163,7 @@ describe('DSV Driver app auth routes', () => {
             driverName: 'QA 배송원 01',
             expiresAt: '2026-09-01T00:00:00.000Z',
             phoneLast4: '0001',
+            shopDomain: 'dsv-demo.local',
           },
         },
         error: null,
