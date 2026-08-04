@@ -499,7 +499,7 @@ export function mapDsvV1SellerOrderSummary(row: DsvV1SellerOrderSummaryRow): Dsv
     ...(row.routeVersionId === undefined || row.routeVersionId === null ? {} : { routeVersionId: row.routeVersionId }),
     sellerOrderId: row.sellerOrderId,
     sellerOrderKey: row.sellerOrderKey,
-    ...(row.timeConstraint === undefined ? {} : { timeConstraint: row.timeConstraint }),
+    ...(row.timeConstraint === undefined || row.timeConstraint === null ? {} : { timeConstraint: row.timeConstraint }),
     ...(row.vehicleId === undefined || row.vehicleId === null ? {} : { vehicleId: row.vehicleId }),
   };
 }
@@ -543,7 +543,7 @@ export function mapDsvV1Record(row: DsvV1RecordRow): DsvV1RecordDto {
     ...(row.routeConstraintStatus === undefined ? {} : { routeConstraintStatus: row.routeConstraintStatus }),
     sellerOrderId: row.sellerOrderId,
     sellerOrderKey: row.sellerOrderKey,
-    ...(row.timeConstraint === undefined ? {} : { timeConstraint: row.timeConstraint }),
+    ...(row.timeConstraint === undefined || row.timeConstraint === null ? {} : { timeConstraint: row.timeConstraint }),
   };
 }
 

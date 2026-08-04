@@ -183,6 +183,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
       }],
       sellerOrderId: 'order-1',
       sellerOrderKey: 'SO-001',
+      timeConstraint: null,
     })).toEqual({
       deliveryStatus: 'DELIVERED',
       destinationDisplayName: 'Front Dock',
