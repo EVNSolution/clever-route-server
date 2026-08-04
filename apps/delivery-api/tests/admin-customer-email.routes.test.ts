@@ -1,8 +1,16 @@
 import { describe, expect, test, vi } from 'vitest';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { buildApp } from '../src/app.js';
 import { defaultCustomerEmailSettings } from '../src/modules/customer-email/customer-email-settings.js';
 import type { AdminCustomerEmailDependencies } from '../src/routes/admin-customer-email.routes.js';
+
+const pngBytes = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x00, 0x00, 0x00, 0x0d,
+]);
 
 describe('admin customer email routes', () => {
   test('rejects settings reads without a Shopify admin bearer token', async () => {
@@ -178,9 +186,198 @@ describe('admin customer email routes', () => {
       await app.close();
     }
   });
+
+  test('stores authenticated customer email logo uploads as content-addressed public assets', async () => {
+    const assetsDirectory = await mkdtemp(join(tmpdir(), 'customer-email-assets-'));
+    const { dependencies } = createHarness({
+      assetsDirectory,
+      publicBaseUrl: 'https://clever-route-api.example.com/root/',
+    });
+    const app = await buildApp({ adminCustomerEmail: dependencies });
+
+    try {
+      const upload = multipartLogoRequest({ bytes: pngBytes, contentType: 'image/png', filename: 'logo.png' });
+      const uploadResponse = await app.inject({
+        ...upload,
+        headers: {
+          ...upload.headers,
+          authorization: 'Bearer session-token',
+        },
+        method: 'POST',
+        url: '/admin/customer-email/logo',
+      });
+
+      expect(uploadResponse.statusCode).toBe(201);
+      expect(uploadResponse.json()).toEqual({
+        data: {
+          logoAsset: {
+            contentType: 'image/png',
+            sizeBytes: pngBytes.byteLength,
+            url: expect.stringMatching(/^https:\/\/clever-route-api\.example\.com\/root\/customer-email\/assets\/[a-f0-9]{64}\.png$/u) as unknown,
+          },
+        },
+        error: null,
+      });
+
+      const uploadBody = uploadResponse.json<{ data: { logoAsset: { url: string } } }>();
+      const fileName = new URL(uploadBody.data.logoAsset.url).pathname.split('/').at(-1);
+      expect(fileName).toBeDefined();
+      await expect(readFile(join(assetsDirectory, fileName as string))).resolves.toEqual(pngBytes);
+
+      const publicResponse = await app.inject({
+        method: 'GET',
+        url: `/customer-email/assets/${fileName}`,
+      });
+      expect(publicResponse.statusCode).toBe(200);
+      expect(publicResponse.headers['cache-control']).toBe('public, max-age=31536000, immutable');
+      expect(publicResponse.headers['x-content-type-options']).toBe('nosniff');
+      expect(publicResponse.headers['content-type']).toContain('image/png');
+      expect(publicResponse.rawPayload).toEqual(pngBytes);
+    } finally {
+      await app.close();
+      await rm(assetsDirectory, { force: true, recursive: true });
+    }
+  });
+
+  test('rejects customer email logo uploads without authentication', async () => {
+    const assetsDirectory = await mkdtemp(join(tmpdir(), 'customer-email-assets-'));
+    const { dependencies } = createHarness({ assetsDirectory });
+    const app = await buildApp({ adminCustomerEmail: dependencies });
+
+    try {
+      const response = await app.inject({
+        ...multipartLogoRequest({ bytes: pngBytes, contentType: 'image/png', filename: 'logo.png' }),
+        method: 'POST',
+        url: '/admin/customer-email/logo',
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'UNAUTHORIZED', message: 'Missing bearer session token' },
+      });
+    } finally {
+      await app.close();
+      await rm(assetsDirectory, { force: true, recursive: true });
+    }
+  });
+
+  test('keeps existing customer email routes available when logo storage is not configured', async () => {
+    const { dependencies, service } = createHarness({ assetsConfigured: false });
+    const app = await buildApp({ adminCustomerEmail: dependencies });
+    const settings = defaultCustomerEmailSettings();
+    service.getSettings.mockResolvedValue(settings);
+
+    try {
+      const settingsResponse = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'GET',
+        url: '/admin/customer-email/settings',
+      });
+      const upload = multipartLogoRequest({ bytes: pngBytes, contentType: 'image/png', filename: 'logo.png' });
+      const uploadResponse = await app.inject({
+        ...upload,
+        headers: { ...upload.headers, authorization: 'Bearer session-token' },
+        method: 'POST',
+        url: '/admin/customer-email/logo',
+      });
+
+      expect(settingsResponse.statusCode).toBe(200);
+      expect(uploadResponse.statusCode).toBe(503);
+      expect(uploadResponse.json()).toEqual({
+        data: null,
+        error: {
+          code: 'CUSTOMER_EMAIL_ASSET_STORAGE_NOT_CONFIGURED',
+          message: 'Customer email logo storage is not configured.',
+        },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects customer email logo uploads with mismatched magic bytes', async () => {
+    const assetsDirectory = await mkdtemp(join(tmpdir(), 'customer-email-assets-'));
+    const { dependencies } = createHarness({ assetsDirectory });
+    const app = await buildApp({ adminCustomerEmail: dependencies });
+    const upload = multipartLogoRequest({
+      bytes: Buffer.from('not-a-png'),
+      contentType: 'image/png',
+      filename: 'logo.png',
+    });
+
+    try {
+      const response = await app.inject({
+        ...upload,
+        headers: { ...upload.headers, authorization: 'Bearer session-token' },
+        method: 'POST',
+        url: '/admin/customer-email/logo',
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'Logo must be a PNG, JPEG, or WebP image.' },
+      });
+    } finally {
+      await app.close();
+      await rm(assetsDirectory, { force: true, recursive: true });
+    }
+  });
+
+  test('rejects customer email logo uploads over one MiB', async () => {
+    const assetsDirectory = await mkdtemp(join(tmpdir(), 'customer-email-assets-'));
+    const { dependencies } = createHarness({ assetsDirectory });
+    const app = await buildApp({ adminCustomerEmail: dependencies });
+    const upload = multipartLogoRequest({
+      bytes: Buffer.concat([pngBytes, Buffer.alloc(1024 * 1024)]),
+      contentType: 'image/png',
+      filename: 'logo.png',
+    });
+
+    try {
+      const response = await app.inject({
+        ...upload,
+        headers: { ...upload.headers, authorization: 'Bearer session-token' },
+        method: 'POST',
+        url: '/admin/customer-email/logo',
+      });
+
+      expect(response.statusCode).toBe(413);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'PAYLOAD_TOO_LARGE', message: 'Logo must be at most 1 MiB.' },
+      });
+    } finally {
+      await app.close();
+      await rm(assetsDirectory, { force: true, recursive: true });
+    }
+  });
+
+  test('does not serve invalid customer email asset names', async () => {
+    const assetsDirectory = await mkdtemp(join(tmpdir(), 'customer-email-assets-'));
+    const { dependencies } = createHarness({ assetsDirectory });
+    const app = await buildApp({ adminCustomerEmail: dependencies });
+
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/customer-email/assets/not-a-content-address.png',
+      });
+
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({
+        data: null,
+        error: { code: 'NOT_FOUND', message: 'Customer email asset not found' },
+      });
+    } finally {
+      await app.close();
+      await rm(assetsDirectory, { force: true, recursive: true });
+    }
+  });
 });
 
-function createHarness() {
+function createHarness(input: { assetsConfigured?: boolean; assetsDirectory?: string; publicBaseUrl?: string } = {}) {
   const service = {
     getSettings: vi.fn(),
     preview: vi.fn(),
@@ -188,8 +385,13 @@ function createHarness() {
     send: vi.fn(),
     sendTest: vi.fn(),
   };
+  const logoAssets = {
+    directory: input.assetsDirectory ?? join(tmpdir(), 'customer-email-assets-test'),
+    publicBaseUrl: input.publicBaseUrl ?? 'https://clever-route-api.example.com',
+  };
   const dependencies: AdminCustomerEmailDependencies = {
     customerEmailService: service as never,
+    ...(input.assetsConfigured === false ? {} : { logoAssets }),
     sessionTokenVerifier: {
       verify: vi.fn().mockReturnValue({
         appId: undefined,
@@ -199,4 +401,26 @@ function createHarness() {
     },
   };
   return { dependencies, service };
+}
+
+function multipartLogoRequest(input: { bytes: Buffer; contentType: string; filename: string }): {
+  headers: Record<string, string>;
+  payload: Buffer;
+} {
+  const boundary = 'customer-email-logo-boundary';
+  return {
+    headers: {
+      'content-type': `multipart/form-data; boundary=${boundary}`,
+    },
+    payload: Buffer.concat([
+      Buffer.from(
+        `--${boundary}\r\n` +
+          `Content-Disposition: form-data; name="logo"; filename="${input.filename}"\r\n` +
+          `Content-Type: ${input.contentType}\r\n\r\n`,
+        'utf8',
+      ),
+      input.bytes,
+      Buffer.from(`\r\n--${boundary}--\r\n`, 'utf8'),
+    ]),
+  };
 }

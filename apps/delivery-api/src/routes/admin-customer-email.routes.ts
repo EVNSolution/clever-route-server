@@ -1,4 +1,8 @@
+import type { MultipartFile } from '@fastify/multipart';
 import type { FastifyInstance } from 'fastify';
+import { createHash } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import {
   CustomerEmailNotFoundError,
@@ -19,8 +23,17 @@ import { DEFAULT_SHOPIFY_APP_ID } from '../modules/shopify/shopify-app-scope.js'
 
 export type AdminCustomerEmailDependencies = {
   customerEmailService: CustomerEmailService;
+  logoAssets?: CustomerEmailLogoAssetStore;
   sessionTokenVerifier: AdminSessionTokenVerifier;
 };
+
+export type CustomerEmailLogoAssetStore = {
+  directory: string;
+  publicBaseUrl: string;
+};
+
+const maxLogoBytes = 1024 * 1024;
+const logoFileNamePattern = /^[a-f0-9]{64}\.(?:jpg|png|webp)$/u;
 
 export function registerAdminCustomerEmailRoutes(
   app: FastifyInstance,
@@ -87,6 +100,74 @@ export function registerAdminCustomerEmailRoutes(
         providerStatus: error instanceof CustomerEmailTransportSendError ? error.statusCode : null,
       }, 'customer email test failed');
       return sendCustomerEmailError(reply, error);
+    }
+  });
+
+  app.post('/admin/customer-email/logo', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, request.log);
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+    if (dependencies.logoAssets === undefined) {
+      return reply.code(503).send(errorResponse('CUSTOMER_EMAIL_ASSET_STORAGE_NOT_CONFIGURED', 'Customer email logo storage is not configured.'));
+    }
+    if (!request.isMultipart()) return reply.code(400).send(errorResponse('BAD_REQUEST', 'Logo upload must be multipart/form-data.'));
+
+    const file = await request.file();
+    if (file === undefined || file.fieldname !== 'logo') {
+      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Logo upload must include a logo file.'));
+    }
+
+    const collected = await readLogoFile(file);
+    if (collected.status !== 'ok') {
+      return collected.status === 'too-large'
+        ? reply.code(413).send(errorResponse('PAYLOAD_TOO_LARGE', 'Logo must be at most 1 MiB.'))
+        : reply.code(400).send(errorResponse('BAD_REQUEST', 'Logo must be a PNG, JPEG, or WebP image.'));
+    }
+
+    const sha256 = createHash('sha256').update(collected.bytes).digest('hex');
+    const fileName = `${sha256}.${collected.extension}`;
+    await mkdir(dependencies.logoAssets.directory, { recursive: true });
+    await writeFile(join(dependencies.logoAssets.directory, fileName), collected.bytes, { flag: 'wx' }).catch((error: unknown) => {
+      if (isFileAlreadyExistsError(error)) return;
+      throw error;
+    });
+
+    return reply.code(201).send({
+      data: {
+        logoAsset: {
+          contentType: collected.contentType,
+          sizeBytes: collected.bytes.byteLength,
+          url: `${dependencies.logoAssets.publicBaseUrl.replace(/\/+$/u, '')}/customer-email/assets/${fileName}`,
+        },
+      },
+      error: null,
+    });
+  });
+
+  app.get<{ Params: { fileName: string } }>('/customer-email/assets/:fileName', async (request, reply) => {
+    if (dependencies.logoAssets === undefined) {
+      return reply.code(404).send(errorResponse('NOT_FOUND', 'Customer email asset not found'));
+    }
+    const fileName = request.params.fileName;
+    if (!logoFileNamePattern.test(fileName)) {
+      return reply.code(404).send(errorResponse('NOT_FOUND', 'Customer email asset not found'));
+    }
+    const contentType = contentTypeForLogoFileName(fileName);
+    if (contentType === null) {
+      return reply.code(404).send(errorResponse('NOT_FOUND', 'Customer email asset not found'));
+    }
+    try {
+      const bytes = await readFile(join(dependencies.logoAssets.directory, fileName));
+      return reply
+        .code(200)
+        .header('cache-control', 'public, max-age=31536000, immutable')
+        .header('x-content-type-options', 'nosniff')
+        .type(contentType)
+        .send(bytes);
+    } catch (error) {
+      if (isFileNotFoundError(error)) {
+        return reply.code(404).send(errorResponse('NOT_FOUND', 'Customer email asset not found'));
+      }
+      throw error;
     }
   });
 
@@ -197,4 +278,64 @@ function readEmailDomain(value: string): string | null {
 
 function errorResponse(code: string, message: string): { data: null; error: { code: string; message: string } } {
   return { data: null, error: { code, message } };
+}
+
+async function readLogoFile(file: MultipartFile): Promise<
+  | { bytes: Buffer; contentType: 'image/jpeg' | 'image/png' | 'image/webp'; extension: 'jpg' | 'png' | 'webp'; status: 'ok' }
+  | { status: 'invalid' | 'too-large' }
+> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of file.file as AsyncIterable<Buffer | string>) {
+    const buffer = typeof chunk === 'string' ? Buffer.from(chunk) : Buffer.from(chunk);
+    size += buffer.byteLength;
+    if (size > maxLogoBytes) return { status: 'too-large' };
+    chunks.push(buffer);
+  }
+  const bytes = Buffer.concat(chunks);
+  const detected = detectLogoImageType(bytes);
+  if (detected === null || detected.contentType !== file.mimetype) return { status: 'invalid' };
+  return { bytes, ...detected, status: 'ok' };
+}
+
+function detectLogoImageType(bytes: Buffer): { contentType: 'image/jpeg' | 'image/png' | 'image/webp'; extension: 'jpg' | 'png' | 'webp' } | null {
+  if (
+    bytes.length >= 8
+    && bytes[0] === 0x89
+    && bytes[1] === 0x50
+    && bytes[2] === 0x4e
+    && bytes[3] === 0x47
+    && bytes[4] === 0x0d
+    && bytes[5] === 0x0a
+    && bytes[6] === 0x1a
+    && bytes[7] === 0x0a
+  ) {
+    return { contentType: 'image/png', extension: 'png' };
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return { contentType: 'image/jpeg', extension: 'jpg' };
+  }
+  if (
+    bytes.length >= 12
+    && bytes.subarray(0, 4).toString('ascii') === 'RIFF'
+    && bytes.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return { contentType: 'image/webp', extension: 'webp' };
+  }
+  return null;
+}
+
+function contentTypeForLogoFileName(fileName: string): 'image/jpeg' | 'image/png' | 'image/webp' | null {
+  if (fileName.endsWith('.png')) return 'image/png';
+  if (fileName.endsWith('.jpg')) return 'image/jpeg';
+  if (fileName.endsWith('.webp')) return 'image/webp';
+  return null;
+}
+
+function isFileAlreadyExistsError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'EEXIST';
+}
+
+function isFileNotFoundError(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
 }
