@@ -141,6 +141,43 @@ describe('admin customer email routes', () => {
       await app.close();
     }
   });
+
+  test('returns the caller correlation id when a test email is accepted', async () => {
+    const { dependencies, service } = createHarness();
+    const app = await buildApp({ adminCustomerEmail: dependencies });
+    service.sendTest.mockResolvedValue({
+      messageId: 'provider-message-id',
+      provider: 'brevo',
+      recipientEmail: 'customer@example.com',
+      sentAt: '2026-08-04T00:00:00.000Z',
+    });
+
+    try {
+      const response = await app.inject({
+        headers: {
+          authorization: 'Bearer session-token',
+          'x-correlation-id': 'attempt-123',
+        },
+        method: 'POST',
+        payload: {
+          recipientEmail: 'customer@example.com',
+          signal: 'DELIVERY_SCHEDULED',
+        },
+        url: '/admin/customer-email/test',
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(response.json()).toMatchObject({
+        data: {
+          correlationId: 'attempt-123',
+          test: { messageId: 'provider-message-id', provider: 'brevo' },
+        },
+        error: null,
+      });
+    } finally {
+      await app.close();
+    }
+  });
 });
 
 function createHarness() {
