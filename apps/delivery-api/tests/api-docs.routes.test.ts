@@ -150,11 +150,47 @@ describe('API documentation routes', () => {
         { method: 'post', path: '/api/dsv/v1/seller-order-deletions' },
         { method: 'post', path: '/api/dsv/v1/seller-orders/:sellerOrderId/assignment/reassign' },
         { method: 'post', path: '/api/dsv/v1/seller-orders/:sellerOrderId/assignment/unassign' },
+        { method: 'post', path: '/api/dsv/v1/seller-orders/:sellerOrderId/time-constraint/clear' },
+        { method: 'post', path: '/api/dsv/v1/seller-orders/:sellerOrderId/time-constraint/confirm' },
         { method: 'get', path: '/api/dsv/v1/session' },
         { method: 'post', path: '/api/dsv/v1/session/logout' },
         { method: 'get', path: '/api/dsv/v1/vehicles' },
       ]);
       expect(missingDocumentedRoutes(implementedRoutes, documentedRoutes)).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('GET /docs/openapi.yaml documents DSV v1 dispatch deliveryStopId as a required SellerOrder-owned stop identity', async () => {
+    const app = await buildApp();
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('DsvV1SellerOrderSummary:');
+      expect(response.body).toContain('required: [assignmentStatus, customerId, deliveryStopId, destinationId, etaStatus, sellerOrderId, sellerOrderKey]');
+      expect(response.body).toContain('deliveryStopId:');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('GET /docs/openapi.yaml documents destination-grouped customer delivery fields without relaxing strict items', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+      const customerDeliveryItem = schemaBlock(response.body, 'DsvV1CustomerDeliveryInquiryItem');
+
+      expect(response.statusCode).toBe(200);
+      expect(customerDeliveryItem).toContain('DsvV1CustomerDeliveryInquiryItem:');
+      expect(customerDeliveryItem).toContain('required: [deliveryStatus, destinationDisplayName, destinationId, etaStatus, eventSummary, proofStatus, sellerOrderId, sellerOrderKey, shippedBoxes]');
+      expect(customerDeliveryItem).toContain('destinationId:\n          type: string');
+      expect(customerDeliveryItem).toContain('shippedBoxes:\n          type: integer\n          minimum: 1');
+      expect(customerDeliveryItem).toContain('vehicleLatitude:\n          type: number');
+      expect(customerDeliveryItem).toContain('vehicleLongitude:\n          type: number');
+      expect(customerDeliveryItem).toContain('additionalProperties: false');
     } finally {
       await app.close();
     }
@@ -228,6 +264,31 @@ describe('API documentation routes', () => {
       expect(response.body).toContain('estimatedCompletionAt:');
       expect(response.body).toContain('enum: [ROUTE_STARTED, STOP_ARRIVED, STOP_DELIVERED, PICKUP_COMPLETED]');
       expect(response.body).not.toMatch(/DriverEventEnvelope:[\s\S]*required: \[duplicate, eventId, status\]/u);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('GET /docs/openapi.yaml documents the G002 driver time-constraint contract', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+      const assignedRouteStop = schemaBlock(response.body, 'DriverAssignedRouteStop');
+      const driverEventRequest = schemaBlock(response.body, 'DriverEventRequest');
+      const routeConstraintStatus = schemaBlock(response.body, 'DsvV1RouteConstraintStatus');
+      const honestStatuses = 'enum: [NOT_APPLICABLE, UNCONFIRMED, PENDING_RECALCULATION, NOT_EVALUATED]';
+
+      expect(response.statusCode).toBe(200);
+      expect(driverEventRequest).toContain('TIME_CONSTRAINT_ACKNOWLEDGED');
+      expect(assignedRouteStop).toContain('specialInstructionNote:');
+      expect(assignedRouteStop).toContain('timeWindow:');
+      expect(assignedRouteStop).toContain('routeConstraintStatus:');
+      expect(assignedRouteStop).toContain('timeConstraintAcknowledgement:');
+      expect(assignedRouteStop).toContain(honestStatuses);
+      expect(routeConstraintStatus).toContain(honestStatuses);
+      expect(assignedRouteStop).not.toMatch(/FEASIBLE|INFEASIBLE/u);
+      expect(routeConstraintStatus).not.toMatch(/FEASIBLE|INFEASIBLE/u);
     } finally {
       await app.close();
     }
@@ -315,6 +376,16 @@ function pathBlock(openApiYaml: string, path: string): string {
   return nextPathOffset === -1
     ? openApiYaml.slice(start)
     : openApiYaml.slice(start, start + marker.length + nextPathOffset);
+}
+
+function schemaBlock(openApiYaml: string, schemaName: string): string {
+  const marker = `    ${schemaName}:`;
+  const start = openApiYaml.indexOf(marker);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const nextSchemaOffset = openApiYaml.slice(start + marker.length).search(/\n {4}[A-Za-z][A-Za-z0-9]*:\s*$/mu);
+  return nextSchemaOffset === -1
+    ? openApiYaml.slice(start)
+    : openApiYaml.slice(start, start + marker.length + nextSchemaOffset);
 }
 
 function missingDocumentedRoutes(

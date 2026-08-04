@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from 'vitest';
 import { PrismaDriverAssignedRouteRepository } from '../src/modules/driver/driver-assigned-route.repository.js';
 import { computeRouteShapeSignature } from '../src/modules/route-plans/route-plan-geometry-cache.js';
 import { ROUTE_DRIVER_OPERATIONAL_STATUSES } from '../src/modules/route-plans/route-plan-lifecycle.js';
+import { dsvCanonicalNoteHash } from '../src/modules/dsv/dsv-time-constraint.js';
 
 const routePlanRecord = {
   createdAt: new Date('2026-05-12T06:00:00.000Z'),
@@ -12,6 +13,7 @@ const routePlanRecord = {
   depotLatitude: '43.6532000',
   depotLongitude: '-79.3832000',
   id: 'route-plan-id',
+  driverId: 'driver-id',
   driverEvents: [],
   metrics: {},
   name: 'Tuesday AM Route',
@@ -23,12 +25,37 @@ const routePlanRecord = {
         address2: null,
         city: 'Toronto',
         countryCode: 'CA',
+        driverEvents: [],
         id: 'stop-id',
+        instructions: '오전 11시 배송',
         latitude: '43.6487000',
         longitude: '-79.3817000',
         order: {
+          currentRouteVersion: {
+            createdAt: new Date('2026-05-12T06:45:00.000Z')
+          },
+          currentRouteVersionId: 'route-version-id',
           currencyCode: 'CAD',
           destinationId: 'canonical-destination-id',
+          dsvAuditEvents: [
+            {
+              actorId: 'admin-subject',
+              eventType: 'TIME_CONSTRAINT_CONFIRMED',
+              id: 'time-constraint-audit-id',
+              occurredAt: new Date('2026-05-12T06:30:00.000Z'),
+              redactedDiff: {
+                commandId: 'confirm-row-2',
+                deliveryStopId: 'stop-id',
+                newTimeWindowEnd: '12:00',
+                newTimeWindowStart: '10:00',
+                noteHash: dsvCanonicalNoteHash('오전 11시 배송'),
+                priorTimeWindowEnd: null,
+                priorTimeWindowStart: null,
+                sellerOrderId: 'order-id',
+                sourceNotePresent: true
+              }
+            }
+          ],
           financialStatus: 'Cash',
           fulfillmentStatus: 'PROCESSING',
           id: 'order-id',
@@ -98,6 +125,21 @@ type MutableRoutePlanRecord = Omit<typeof routePlanRecord, 'driverEvents' | 'rou
     etaFailureMessage: string | null;
   }>;
 };
+type LooseAssignedRouteStop = Omit<MutableRoutePlanRecord['routeStops'][number], 'deliveryStop'> & {
+  deliveryStop: Omit<
+    MutableRoutePlanRecord['routeStops'][number]['deliveryStop'],
+    'driverEvents' | 'instructions' | 'order' | 'timeWindowEnd' | 'timeWindowStart'
+  > & {
+    driverEvents: Array<{ driverId: string; id: string; occurredAt: Date; routePlanId: string }>;
+    instructions: string | null;
+    order: Omit<MutableRoutePlanRecord['routeStops'][number]['deliveryStop']['order'], 'dsvAuditEvents' | 'rawPayload'> & {
+      dsvAuditEvents: Array<Record<string, unknown>>;
+      rawPayload: unknown;
+    };
+    timeWindowEnd: Date | null;
+    timeWindowStart: Date | null;
+  };
+};
 
 describe('PrismaDriverAssignedRouteRepository', () => {
   test('returns the token driver assigned route with ordered stops', async () => {
@@ -119,7 +161,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
     });
     expect(result).toEqual({
       status: 'ASSIGNED_ROUTE',
-      route: {
+            route: {
         deliveryDate: '2026-05-12',
         depot: { latitude: 43.6532, longitude: -79.3832 },
         etaSnapshot: {
@@ -177,7 +219,14 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             serviceType: 'PICKUP',
             sellerOrderKey: 'DSV-ORDER-1001',
             shippedBoxes: 4,
+            specialInstructionNote: '오전 11시 배송',
             status: 'ASSIGNED',
+            routeConstraintStatus: 'NOT_EVALUATED',
+            timeConstraintAcknowledgement: null,
+            timeWindow: {
+              end: '12:00',
+              start: '10:00'
+            },
             timeWindowEnd: '2026-05-12T12:00:00.000Z',
             timeWindowStart: '2026-05-12T10:00:00.000Z',
             totalPriceAmount: '84.50'
@@ -269,6 +318,89 @@ describe('PrismaDriverAssignedRouteRepository', () => {
           },
           status: 'READY'
         }
+      }
+    });
+  });
+
+  test('projects confirmed time constraint and acknowledgement without propagating to same-address stops', async () => {
+    const routePlan = structuredClone(routePlanRecord) as Omit<MutableRoutePlanRecord, 'routeStops'> & {
+      routeStops: LooseAssignedRouteStop[];
+    };
+    routePlan.routeStops[0]!.deliveryStop.driverEvents = [
+      {
+        driverId: 'driver-id',
+        id: 'ack-event-id',
+        occurredAt: new Date('2026-05-12T07:00:00.000Z'),
+        routePlanId: 'route-plan-id'
+      }
+    ];
+    routePlan.routeStops.push({
+      ...structuredClone(routePlan.routeStops[0]!),
+      deliveryStop: {
+        ...structuredClone(routePlan.routeStops[0]!.deliveryStop),
+        driverEvents: [],
+        id: 'row-3-stop-id',
+        instructions: null,
+        order: {
+          ...structuredClone(routePlan.routeStops[0]!.deliveryStop.order),
+          currentRouteVersion: {
+            createdAt: new Date('2026-05-12T06:45:00.000Z')
+          },
+          currentRouteVersionId: 'route-version-id',
+          dsvAuditEvents: [],
+          id: 'row-3-order-id',
+          name: '#1002',
+          rawPayload: {
+            dsv: {
+              normalized: {
+                sellerOrderKey: 'DSV-ORDER-1002'
+              }
+            }
+          }
+        },
+        timeWindowEnd: null,
+        timeWindowStart: null
+      },
+      distanceFromPreviousMeters: 120,
+      durationFromPreviousSeconds: 80,
+      sequence: 2
+    });
+    const { prisma } = createPrismaHarness({ routePlan });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(result).toMatchObject({
+      status: 'ASSIGNED_ROUTE',
+      route: {
+        stops: [
+          {
+            deliveryStopId: 'stop-id',
+            routeConstraintStatus: 'NOT_EVALUATED',
+            sellerOrderKey: 'DSV-ORDER-1001',
+            specialInstructionNote: '오전 11시 배송',
+            timeConstraintAcknowledgement: {
+              acknowledgedAt: '2026-05-12T07:00:00.000Z',
+              eventId: 'ack-event-id'
+            },
+            timeWindow: { end: '12:00', start: '10:00' }
+          },
+          {
+            deliveryStopId: 'row-3-stop-id',
+            routeConstraintStatus: 'NOT_APPLICABLE',
+            sellerOrderKey: 'DSV-ORDER-1002',
+            specialInstructionNote: null,
+            timeConstraintAcknowledgement: null,
+            timeWindow: null,
+            timeWindowEnd: null,
+            timeWindowStart: null
+          }
+        ]
       }
     });
   });
@@ -530,7 +662,7 @@ function createPrismaHarness(input: {
   driverShopId?: string;
   routeGeometryCacheFindFirst?: Record<string, unknown> | null;
   routeGeometryCacheFindUnique?: Record<string, unknown> | null;
-  routePlan?: MutableRoutePlanRecord | typeof routePlanRecord | null;
+  routePlan?: unknown;
 } = {}) {
   return {
     prisma: {

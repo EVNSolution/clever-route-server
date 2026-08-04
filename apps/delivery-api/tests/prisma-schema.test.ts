@@ -86,6 +86,10 @@ const pickupCompletedUniqueIndexMigrationPath = new URL(
   '../prisma/migrations/20260728124500_add_pickup_completed_unique_index/migration.sql',
   import.meta.url
 );
+const timeConstraintAcknowledgedMigrationPath = new URL(
+  '../prisma/migrations/20260803120000_add_time_constraint_acknowledged_driver_event/migration.sql',
+  import.meta.url
+);
 const accountScopedPushTokenMigrationPath = new URL(
   '../prisma/migrations/20260731140000_account_scope_driver_push_tokens/migration.sql',
   import.meta.url
@@ -153,6 +157,16 @@ describe('Prisma schema', () => {
       'WHERE "eventType" = \'PICKUP_COMPLETED\' AND "driverId" IS NOT NULL AND "routePlanId" IS NOT NULL'
     );
     expect(schema).not.toContain('PickupEtaSnapshot');
+  });
+
+  test('defines time constraint acknowledgement as an additive driver event migration', async () => {
+    const schema = await readSchema();
+    const migration = await readFile(timeConstraintAcknowledgedMigrationPath, 'utf8');
+    const driverEventType = /enum DriverEventType \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+
+    expect(driverEventType).toContain('TIME_CONSTRAINT_ACKNOWLEDGED');
+    expect(migration.trim()).toBe(`ALTER TYPE "DriverEventType" ADD VALUE IF NOT EXISTS 'TIME_CONSTRAINT_ACKNOWLEDGED';`);
+    expect(migration).not.toContain('CREATE TABLE');
   });
 
   test('allows multiple planning memberships while retaining indexed stop lookup', async () => {

@@ -100,7 +100,7 @@ export function loadDsvControlDependencies(input: {
   };
 }
 
-function loadDsvRouteOptimizationScheduler(input: {
+export function loadDsvRouteOptimizationScheduler(input: {
   env: DsvControlRuntimeEnv;
   nodeEnv: string;
   prisma: PrismaClient;

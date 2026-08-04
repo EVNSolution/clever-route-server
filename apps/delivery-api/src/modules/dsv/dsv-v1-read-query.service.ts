@@ -18,6 +18,10 @@ import type {
   DsvV1SellerOrderSummaryRow,
   DsvV1VehicleListItemRow,
 } from './dsv-v1-read.dto.js';
+import {
+  deriveDsvTimeConstraintState,
+  dsvTimeConstraintAuditEvents,
+} from './dsv-time-constraint.js';
 
 export const dsvV1ReadDefaultLimit = 50;
 export const dsvV1ReadMaxLimit = 100;
@@ -136,6 +140,7 @@ type DsvV1ReadPrismaClient = Pick<
   | 'deliveryStop'
   | 'driverEvent'
   | 'driver'
+  | 'dsvAuditEvent'
   | 'dsvVehicleDriverAssignment'
   | 'dsvTransportCondition'
   | 'order'
@@ -713,11 +718,20 @@ const routePlanStopSelect = {
   sequence: true,
 } satisfies Prisma.RoutePlanStopSelect;
 
+const timeConstraintAuditSelect = {
+  actorId: true,
+  eventType: true,
+  id: true,
+  occurredAt: true,
+  redactedDiff: true,
+} satisfies Prisma.DsvAuditEventSelect;
+
 function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
   return {
     currentRouteVersionId: true,
     currentRouteVersion: {
       select: {
+        createdAt: true,
         driverId: true,
         routePlanId: true,
         routePlan: {
@@ -756,11 +770,18 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
           select: proofStatusSelect,
           where: { shopId },
         },
+        dsvDispatchImportRows: {
+          orderBy: [{ appliedAt: 'desc' }, { createdAt: 'desc' }],
+          select: { shippedBoxes: true },
+          take: 1,
+          where: { shopId, status: 'APPLIED' },
+        },
         id: true,
         address1: true,
         address2: true,
         city: true,
         countryCode: true,
+        instructions: true,
         latitude: true,
         longitude: true,
         postalCode: true,
@@ -772,8 +793,15 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
           where: { shopId },
         },
         status: true,
+        timeWindowEnd: true,
+        timeWindowStart: true,
       },
       where: { deliveryDate: serviceDateAsDbDate(serviceDate), shopId },
+    },
+    dsvAuditEvents: {
+      orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+      select: timeConstraintAuditSelect,
+      where: { eventType: { in: [...dsvTimeConstraintAuditEvents] }, shopId },
     },
     destination: {
       select: {
@@ -782,6 +810,7 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
         normalizedAddress: true,
       },
     },
+    destinationId: true,
     id: true,
     sellerOrderKey: true,
     sellerOrderSourceKind: true,
@@ -797,7 +826,7 @@ function recordStopSelect(shopId: string) {
     countryCode: true,
     dsvDispatchImportRows: {
       orderBy: [{ appliedAt: 'desc' }, { createdAt: 'desc' }],
-      select: { address: true },
+      select: { address: true, notes: true },
       take: 1,
       where: { shopId, status: 'APPLIED' },
     },
@@ -815,7 +844,13 @@ function recordStopSelect(shopId: string) {
     order: {
       select: {
         currentRouteVersionId: true,
+        currentRouteVersion: { select: { createdAt: true } },
         deliveryStatus: true,
+        dsvAuditEvents: {
+          orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+          select: timeConstraintAuditSelect,
+          where: { eventType: { in: [...dsvTimeConstraintAuditEvents] }, shopId },
+        },
         destination: { select: { canonicalName: true } },
         id: true,
         sellerOrderKey: true,
@@ -826,11 +861,14 @@ function recordStopSelect(shopId: string) {
     postalCode: true,
     province: true,
     recipientName: true,
+    instructions: true,
     routePlanStops: {
       orderBy: [{ createdAt: 'desc' }],
       select: routePlanStopSelect,
     },
     status: true,
+    timeWindowEnd: true,
+    timeWindowStart: true,
     updatedAt: true,
   } satisfies Prisma.DeliveryStopSelect;
 }
@@ -840,27 +878,55 @@ type RecordStopRow = Prisma.DeliveryStopGetPayload<{ select: ReturnType<typeof r
 type RecordCursorRow = DsvV1RecordRow & { cursorStopId: string; cursorUpdatedAt: Date };
 
 function toCustomerDeliveryInquiryRow(row: CustomerDeliveryOrderRow): DsvV1CustomerDeliveryInquiryRow {
-  const stop = row.deliveryStops[0] ?? null;
-  const eta = stop === null ? null : selectCanonicalEta(stop.routePlanStops, row.currentRouteVersionId);
+  const stop = requireSelectedCustomerDeliveryStop(row.deliveryStops[0] ?? null, row.id);
+  const eta = selectCanonicalEta(stop.routePlanStops, row.currentRouteVersionId);
   const vehicle = row.currentRouteVersion?.routePlan?.vehicle ?? null;
   const vehiclePosition = row.currentRouteVersion?.routePlan?.trackingGeometry ?? null;
   return {
     deliveryStatus: row.deliveryStatus,
-    destinationAddress: stop === null ? normalizedAddressLabel(row.destination?.normalizedAddress ?? null) : deliveryStopAddressLabel(stop),
+    destinationAddress: deliveryStopAddressLabel(stop),
     destinationDisplayName: row.destination?.canonicalName ?? '',
+    destinationId: requireOrderDestinationId(row.destinationId, row.id),
     ...etaFields(eta),
     etaStatus: fallbackEtaStatus(row.currentRouteVersionId, eta),
-    eventRows: stop?.driverEvents.map(toDtoEventRow) ?? [],
-    latitude: decimalToNumber(stop?.latitude ?? null),
-    longitude: decimalToNumber(stop?.longitude ?? null),
-    proofRows: stop?.driverProofMedia.map(toDtoProofRow) ?? [],
+    eventRows: stop.driverEvents.map(toDtoEventRow),
+    latitude: decimalToNumber(stop.latitude),
+    longitude: decimalToNumber(stop.longitude),
+    proofRows: stop.driverProofMedia.map(toDtoProofRow),
     sellerOrderId: row.id,
     sellerOrderKey: row.sellerOrderKey ?? row.id,
+    shippedBoxes: requireSelectedStopShippedBoxes(stop, row.id),
     vehicleDisplayName: vehicle === null ? null : vehicle.licensePlate ?? vehicle.label,
     vehicleId: vehicle?.id ?? null,
     vehicleLatitude: decimalToNumber(vehiclePosition?.lastLatitude ?? null),
     vehicleLongitude: decimalToNumber(vehiclePosition?.lastLongitude ?? null),
   };
+}
+
+function requireSelectedCustomerDeliveryStop(
+  stop: CustomerDeliveryOrderRow['deliveryStops'][number] | null,
+  orderId: string,
+): CustomerDeliveryOrderRow['deliveryStops'][number] {
+  if (stop !== null) return stop;
+  throw new DsvV1ReadQueryError('DEPENDENCY_UNAVAILABLE', 'Customer delivery order is missing its selected service-date stop.', {
+    orderId,
+  });
+}
+
+function requireSelectedStopShippedBoxes(stop: CustomerDeliveryOrderRow['deliveryStops'][number], orderId: string): number {
+  const shippedBoxes = stop.dsvDispatchImportRows[0]?.shippedBoxes ?? null;
+  if (shippedBoxes !== null) return shippedBoxes;
+  throw new DsvV1ReadQueryError('DEPENDENCY_UNAVAILABLE', 'Customer delivery stop is missing shippedBoxes.', {
+    deliveryStopId: stop.id,
+    orderId,
+  });
+}
+
+function requireOrderDestinationId(destinationId: string | null, orderId: string): string {
+  if (destinationId !== null) return destinationId;
+  throw new DsvV1ReadQueryError('DEPENDENCY_UNAVAILABLE', 'Customer delivery order is missing destinationId.', {
+    orderId,
+  });
 }
 
 function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow): DsvV1SellerOrderSummaryRow {
@@ -872,10 +938,19 @@ function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow): DsvV1SellerOrde
     ? null
     : selectCurrentRouteStop(stop.routePlanStops, currentRoute?.routePlanId ?? null);
   const routePlanId = currentRouteStop?.routePlanId ?? eta?.routePlanId ?? currentRoute?.routePlanId ?? null;
+  const constraintState = deriveDsvTimeConstraintState({
+    audits: row.dsvAuditEvents,
+    currentRouteVersionCreatedAt: currentRoute?.createdAt ?? null,
+    currentRouteVersionId: row.currentRouteVersionId,
+    rawNote: stop?.instructions ?? null,
+    timeWindowEnd: stop?.timeWindowEnd ?? null,
+    timeWindowStart: stop?.timeWindowStart ?? null,
+  });
   return {
     actualCompletedAt: latestDeliveredAt(stop?.driverEvents ?? []),
     assignmentStatus: currentRouteDriverId === null ? 'UNASSIGNED' : 'ASSIGNED',
     customerId: row.customer?.id ?? '',
+    deliveryStopId: stop?.id ?? '',
     destinationAddress: stop === null ? normalizedAddressLabel(row.destination?.normalizedAddress ?? null) : deliveryStopAddressLabel(stop),
     destinationDisplayName: row.destination?.canonicalName ?? stop?.recipientName ?? '',
     destinationId: row.destination?.id ?? '',
@@ -885,10 +960,14 @@ function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow): DsvV1SellerOrde
     latitude: decimalToNumber(stop?.latitude ?? null),
     longitude: decimalToNumber(stop?.longitude ?? null),
     ...(routePlanId === null ? {} : { routePlanId }),
+    rawNote: constraintState.rawNote,
+    reviewStatus: constraintState.reviewStatus,
+    routeConstraintStatus: constraintState.routeConstraintStatus,
     ...(currentRouteStop === null ? {} : { routeStopSequence: currentRouteStop.sequence }),
     ...(row.currentRouteVersionId === null ? {} : { routeVersionId: row.currentRouteVersionId }),
     sellerOrderId: row.id,
     sellerOrderKey: row.sellerOrderKey ?? row.id,
+    timeConstraint: constraintState.timeConstraint,
     vehicleId: currentRoute?.routePlan?.vehicleId ?? null,
   };
 }
@@ -900,6 +979,14 @@ function latestDeliveredAt(events: readonly { eventType: string; occurredAt: Dat
 function toRecordRow(stop: RecordStopRow): RecordCursorRow {
   const eta = selectCanonicalEta(stop.routePlanStops, stop.order.currentRouteVersionId);
   const sourceAddress = stop.dsvDispatchImportRows[0]?.address.trim();
+  const constraintState = deriveDsvTimeConstraintState({
+    audits: stop.order.dsvAuditEvents,
+    currentRouteVersionCreatedAt: stop.order.currentRouteVersion?.createdAt ?? null,
+    currentRouteVersionId: stop.order.currentRouteVersionId,
+    rawNote: stop.instructions ?? stop.dsvDispatchImportRows[0]?.notes ?? null,
+    timeWindowEnd: stop.timeWindowEnd,
+    timeWindowStart: stop.timeWindowStart,
+  });
   return {
     cursorStopId: stop.id,
     cursorUpdatedAt: stop.updatedAt,
@@ -912,8 +999,12 @@ function toRecordRow(stop: RecordStopRow): RecordCursorRow {
     etaStatus: fallbackEtaStatus(stop.order.currentRouteVersionId, eta),
     eventRows: stop.driverEvents.map(toRecordDtoEventRow),
     proofRows: stop.driverProofMedia.map(toRecordDtoProofRow),
+    rawNote: constraintState.rawNote,
+    reviewStatus: constraintState.reviewStatus,
+    routeConstraintStatus: constraintState.routeConstraintStatus,
     sellerOrderId: stop.order.id,
     sellerOrderKey: stop.order.sellerOrderKey ?? stop.order.id,
+    timeConstraint: constraintState.timeConstraint,
   };
 }
 

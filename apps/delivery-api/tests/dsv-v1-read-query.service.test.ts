@@ -30,8 +30,11 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(deliveryStopsSelect?.select.driverEvents.where.shopId).toBe('shop-a');
     expect(deliveryStopsSelect?.select.driverEvents.where.eventType.in).toContain('STOP_DELIVERED');
     expect(deliveryStopsSelect?.select.driverEvents.where.eventType.in).not.toContain('PICKUP_COMPLETED');
+    expect(deliveryStopsSelect?.select.dsvDispatchImportRows.select).toEqual({ shippedBoxes: true });
+    expect(deliveryStopsSelect?.select.dsvDispatchImportRows.where).toEqual({ shopId: 'shop-a', status: 'APPLIED' });
     expect(deliveryStopsSelect?.select.driverProofMedia.where).toEqual({ shopId: 'shop-a' });
     expect(deliveryStopsSelect?.select.routePlanStops.where).toEqual({ shopId: 'shop-a' });
+    expect(firstOrderQuery?.select?.destinationId).toBe(true);
     expect(prisma.$transaction).toBeUndefined();
   });
 
@@ -538,6 +541,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     await expect(service.listCustomerDeliveries(customerPrincipal(), { serviceDate: '2026-07-22' })).resolves.toMatchObject({
       items: [{
         destinationAddress: '1 Shared Way',
+        destinationId: 'destination-x',
         estimatedArrivalAt: new Date('2026-07-22T02:00:00.000Z'),
         etaInputRouteVersionId: 'route-version-a',
         etaSource: 'ROUTE_CALCULATION',
@@ -546,6 +550,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
         proofRows: [{ deletedAt: new Date('2026-07-23T00:00:00.000Z') }, { deletedAt: null }],
         sellerOrderId: 'order-a',
         sellerOrderKey: 'SO-A',
+        shippedBoxes: 6,
         vehicleDisplayName: '서울86바3800',
         vehicleId: 'vehicle-a',
         vehicleLatitude: 37.5,
@@ -730,6 +735,10 @@ type DeliveryStopFindManyQuery = {
 
 type NestedDeliveryStopsSelect = {
   select: {
+    dsvDispatchImportRows: {
+      select: { shippedBoxes: true };
+      where: { shopId: string; status: string };
+    };
     driverEvents: { where: { eventType: { in: string[] }; shopId: string } };
     driverProofMedia: { where: { shopId: string } };
     routePlanStops: { where: { shopId: string } };
@@ -805,6 +814,7 @@ function customerDeliveryOrderRow(input: {
     customer: { displayName: 'Customer A', id: 'customer-a' },
     deliveryStatus: 'ASSIGNED',
     deliveryStops: [{
+      dsvDispatchImportRows: [{ shippedBoxes: 6 }],
       driverEvents: input.driverEvents ?? [],
       driverProofMedia: input.driverProofMedia ?? [],
       id: `stop-${input.id ?? 'a'}`,
@@ -825,6 +835,8 @@ function customerDeliveryOrderRow(input: {
       id: 'destination-x',
       normalizedAddress: { address1: '1 Shared Way' },
     },
+    destinationId: 'destination-x',
+    dsvAuditEvents: [],
     id: input.id ?? 'order-a',
     sellerOrderKey: input.sellerOrderKey === undefined ? 'SO-A' : input.sellerOrderKey,
     sellerOrderSourceKind: 'DSV_DISPATCH_IMPORT',

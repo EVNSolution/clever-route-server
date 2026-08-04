@@ -16,6 +16,10 @@ import {
   createDsvCustomerUserPrincipalFromAccount,
 } from '../src/modules/dsv/dsv-principal.js';
 import { DsvV1ReadQueryError } from '../src/modules/dsv/dsv-v1-read-query.service.js';
+import {
+  DsvTimeConstraintCommandError,
+  type DsvTimeConstraintCommandService,
+} from '../src/modules/dsv/dsv-time-constraint-command.service.js';
 import type { RoutePlanDetail, RoutePlanSummary } from '../src/modules/route-plans/route-plan.types.js';
 
 const sessionSecret = '12345678901234567890123456789012';
@@ -139,6 +143,7 @@ describe('DSV v1 read routes', () => {
         items: [{
           assignmentStatus: 'ASSIGNED',
           customerId: 'customer-a',
+          deliveryStopId: 'stop-1',
           destinationId: 'destination-a',
           etaStatus: 'READY',
           sellerOrderId: 'order-1',
@@ -280,6 +285,203 @@ describe('DSV v1 read routes', () => {
     }
   });
 
+  test('exposes strict DSV v1 time constraint confirm and clear commands', async () => {
+    const timeConstraintCommandService = {
+      clear: vi.fn(() => Promise.resolve(timeConstraintCommandResult('CLEARED'))),
+      confirm: vi.fn(() => Promise.resolve(timeConstraintCommandResult('CONFIRMED'))),
+    };
+    const { app } = await createHarness({ timeConstraintCommandService });
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    try {
+      const missingCsrf = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'POST',
+        payload: {
+          commandId: 'cmd-confirm',
+          deliveryStopId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          expectedVersion: 'UNASSIGNED',
+          timeWindowEnd: '11:00',
+          timeWindowStart: '10:30',
+        },
+        url: '/api/dsv/v1/seller-orders/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/time-constraint/confirm',
+      });
+      expect(missingCsrf.statusCode).toBe(403);
+
+      const invalidExtraField = await app.inject({
+        headers: { 'content-type': 'application/json', cookie: admin.cookie, 'x-csrf-token': admin.csrfToken },
+        method: 'POST',
+        payload: {
+          commandId: 'cmd-confirm',
+          deliveryStopId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          expectedVersion: 'UNASSIGNED',
+          sourceNote: '오전 11시 배송',
+          timeWindowEnd: '11:00',
+          timeWindowStart: '10:30',
+        },
+        url: '/api/dsv/v1/seller-orders/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/time-constraint/confirm',
+      });
+      expect(invalidExtraField.statusCode).toBe(400);
+
+      const confirmed = await app.inject({
+        headers: { 'content-type': 'application/json', cookie: admin.cookie, 'x-csrf-token': admin.csrfToken },
+        method: 'POST',
+        payload: {
+          commandId: 'cmd-confirm',
+          deliveryStopId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          expectedVersion: 'UNASSIGNED',
+          timeWindowEnd: '11:00',
+          timeWindowStart: '10:30',
+        },
+        url: '/api/dsv/v1/seller-orders/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/time-constraint/confirm',
+      });
+      expect(confirmed.statusCode).toBe(200);
+      expectDsvV1Envelope(confirmed, timeConstraintCommandResult('CONFIRMED'));
+      expect(timeConstraintCommandService.confirm).toHaveBeenCalledWith(expect.objectContaining({
+        commandId: 'cmd-confirm',
+        deliveryStopId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        expectedVersion: 'UNASSIGNED',
+        sellerOrderId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        shopDomain: 'tomatonofood.com',
+        timeWindowEnd: '11:00',
+        timeWindowStart: '10:30',
+      }));
+
+      timeConstraintCommandService.confirm.mockRejectedValueOnce(
+        new DsvTimeConstraintCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED'),
+      );
+      const reassigned = await app.inject({
+        headers: { 'content-type': 'application/json', cookie: admin.cookie, 'x-csrf-token': admin.csrfToken },
+        method: 'POST',
+        payload: {
+          commandId: 'cmd-reassigned',
+          deliveryStopId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          expectedVersion: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          timeWindowEnd: '11:00',
+          timeWindowStart: '10:30',
+        },
+        url: '/api/dsv/v1/seller-orders/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/time-constraint/confirm',
+      });
+      expect(reassigned.statusCode).toBe(409);
+      expectDsvV1Error(reassigned, {
+        code: 'SELLER_ORDER_ASSIGNMENT_CHANGED',
+        message: 'SELLER_ORDER_ASSIGNMENT_CHANGED',
+      });
+
+      const cleared = await app.inject({
+        headers: { 'content-type': 'application/json', cookie: admin.cookie, 'x-csrf-token': admin.csrfToken },
+        method: 'POST',
+        payload: {
+          commandId: 'cmd-clear',
+          deliveryStopId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          expectedVersion: 'UNASSIGNED',
+          reason: 'reviewed',
+        },
+        url: '/api/dsv/v1/seller-orders/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/time-constraint/clear',
+      });
+      expect(cleared.statusCode).toBe(200);
+      expectDsvV1Envelope(cleared, timeConstraintCommandResult('CLEARED'));
+      expect(timeConstraintCommandService.clear).toHaveBeenCalledWith(expect.objectContaining({
+        commandId: 'cmd-clear',
+        reason: 'reviewed',
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('passes missing and JSON-null v1 time constraint expectedVersion to the service as 409 conflicts', async () => {
+    const timeConstraintCommandService = {
+      clear: vi.fn<DsvTimeConstraintCommandService['clear']>(() => Promise.reject(new DsvTimeConstraintCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED'))),
+      confirm: vi.fn<DsvTimeConstraintCommandService['confirm']>(() => Promise.reject(new DsvTimeConstraintCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED'))),
+    };
+    const { app } = await createHarness({ timeConstraintCommandService });
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    try {
+      const missing = await app.inject({
+        headers: { 'content-type': 'application/json', cookie: admin.cookie, 'x-csrf-token': admin.csrfToken },
+        method: 'POST',
+        payload: {
+          commandId: 'cmd-missing-version',
+          deliveryStopId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          timeWindowEnd: '11:00',
+          timeWindowStart: '10:30',
+        },
+        url: '/api/dsv/v1/seller-orders/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/time-constraint/confirm',
+      });
+      expect(missing.statusCode).toBe(409);
+      expectDsvV1Error(missing, {
+        code: 'SELLER_ORDER_ASSIGNMENT_CHANGED',
+        message: 'SELLER_ORDER_ASSIGNMENT_CHANGED',
+      });
+      expect(timeConstraintCommandService.confirm.mock.calls[0]?.[0]?.commandId).toBe('cmd-missing-version');
+      expect(timeConstraintCommandService.confirm.mock.calls[0]?.[0]?.expectedVersion).toBeUndefined();
+
+      const jsonNull = await app.inject({
+        headers: { 'content-type': 'application/json', cookie: admin.cookie, 'x-csrf-token': admin.csrfToken },
+        method: 'POST',
+        payload: {
+          commandId: 'cmd-null-version',
+          deliveryStopId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          expectedVersion: null,
+          reason: 'reviewed',
+        },
+        url: '/api/dsv/v1/seller-orders/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/time-constraint/clear',
+      });
+      expect(jsonNull.statusCode).toBe(409);
+      expectDsvV1Error(jsonNull, {
+        code: 'SELLER_ORDER_ASSIGNMENT_CHANGED',
+        message: 'SELLER_ORDER_ASSIGNMENT_CHANGED',
+      });
+      expect(timeConstraintCommandService.clear).toHaveBeenCalledWith(expect.objectContaining({
+        commandId: 'cmd-null-version',
+        expectedVersion: null,
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects malformed v1 time constraint expectedVersion values before calling the service', async () => {
+    const timeConstraintCommandService = {
+      clear: vi.fn<DsvTimeConstraintCommandService['clear']>(() => Promise.resolve(timeConstraintCommandResult('CLEARED'))),
+      confirm: vi.fn<DsvTimeConstraintCommandService['confirm']>(() => Promise.resolve(timeConstraintCommandResult('CONFIRMED'))),
+    };
+    const { app } = await createHarness({ timeConstraintCommandService });
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    try {
+      const malformedConfirm = await app.inject({
+        headers: { 'content-type': 'application/json', cookie: admin.cookie, 'x-csrf-token': admin.csrfToken },
+        method: 'POST',
+        payload: {
+          commandId: 'cmd-malformed-confirm',
+          deliveryStopId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          expectedVersion: { value: 'UNASSIGNED' },
+          timeWindowEnd: '11:00',
+          timeWindowStart: '10:30',
+        },
+        url: '/api/dsv/v1/seller-orders/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/time-constraint/confirm',
+      });
+      expect(malformedConfirm.statusCode).toBe(400);
+
+      const malformedClear = await app.inject({
+        headers: { 'content-type': 'application/json', cookie: admin.cookie, 'x-csrf-token': admin.csrfToken },
+        method: 'POST',
+        payload: {
+          commandId: 'cmd-malformed-clear',
+          deliveryStopId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          expectedVersion: { value: 'UNASSIGNED' },
+          reason: 'reviewed',
+        },
+        url: '/api/dsv/v1/seller-orders/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/time-constraint/clear',
+      });
+      expect(malformedClear.statusCode).toBe(400);
+      expect(timeConstraintCommandService.confirm).not.toHaveBeenCalled();
+      expect(timeConstraintCommandService.clear).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('enforces admin-only management endpoints and customer-only inquiry without /resources path', async () => {
     const { app, queryService } = await createHarness();
     const admin = signedCookie('dsv-shop:tomatonofood.com');
@@ -337,12 +539,68 @@ describe('DSV v1 read routes', () => {
         { customerId, serviceDate: '2026-07-23' },
       );
 
+      queryService.listCustomerDeliveries.mockResolvedValueOnce({
+        items: [
+          {
+            deliveryStatus: 'PENDING',
+            destinationDisplayName: 'Shared Destination X',
+            destinationId: 'destination-shared',
+            etaStatus: 'READY',
+            eventRows: [],
+            proofRows: [],
+            sellerOrderId: 'order-a',
+            sellerOrderKey: 'SO-A',
+            shippedBoxes: 6,
+          },
+          {
+            deliveryStatus: 'DELIVERED',
+            destinationDisplayName: 'Shared Destination X',
+            destinationId: 'destination-shared',
+            etaStatus: 'READY',
+            eventRows: [{ eventType: 'STOP_DELIVERED', occurredAt: '2026-07-23T03:00:00.000Z' }],
+            proofRows: [],
+            sellerOrderId: 'order-b',
+            sellerOrderKey: 'SO-B',
+            shippedBoxes: 4,
+          },
+        ],
+        page: { hasMore: false },
+        serviceDate: '2026-07-23',
+        timezone: 'Asia/Seoul',
+      });
       const customerInquiry = await app.inject({
         headers: { cookie: customer.cookie },
         method: 'GET',
         url: '/api/dsv/v1/customer/deliveries?window=today&limit=10',
       });
       expect(customerInquiry.statusCode).toBe(200);
+      expectDsvV1Envelope(customerInquiry, {
+        items: [
+          {
+            deliveryStatus: 'PENDING',
+            destinationDisplayName: 'Shared Destination X',
+            destinationId: 'destination-shared',
+            etaStatus: 'READY',
+            eventSummary: [],
+            proofStatus: 'NONE',
+            sellerOrderId: 'order-a',
+            sellerOrderKey: 'SO-A',
+            shippedBoxes: 6,
+          },
+          {
+            deliveryStatus: 'DELIVERED',
+            destinationDisplayName: 'Shared Destination X',
+            destinationId: 'destination-shared',
+            etaStatus: 'READY',
+            eventSummary: [{ type: 'STOP_DELIVERED', occurredAt: '2026-07-23T03:00:00.000Z' }],
+            proofStatus: 'NONE',
+            sellerOrderId: 'order-b',
+            sellerOrderKey: 'SO-B',
+            shippedBoxes: 4,
+          },
+        ],
+        page: { hasMore: false },
+      });
       expect(queryService.listCustomerDeliveries).toHaveBeenCalledWith(
         expect.objectContaining({ customerId, principalType: 'CUSTOMER_USER', shopId }),
         { limit: 10, window: 'today' },
@@ -482,7 +740,38 @@ describe('DSV v1 read routes', () => {
   });
 });
 
-async function createHarness(options: { mapProfile?: false } = {}): Promise<{
+function timeConstraintCommandResult(status: 'CLEARED' | 'CONFIRMED') {
+  return {
+    auditEventId: `audit-${status.toLowerCase()}`,
+    commandId: `cmd-${status.toLowerCase()}`,
+    deliveryStopId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    rawNote: '오전 11시 배송',
+    recalculation: {
+      reason: status === 'CLEARED' ? 'TIME_CONSTRAINT_CLEARED' as const : 'UNASSIGNED_ORDER' as const,
+      retryable: false,
+      routePlanId: null,
+      status: 'NOT_REQUIRED' as const,
+    },
+    reviewStatus: status,
+    routeConstraintStatus: status === 'CONFIRMED' ? 'NOT_EVALUATED' as const : 'NOT_APPLICABLE' as const,
+    sellerOrderId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    sellerOrderKey: '2018330248',
+    timeConstraint: status === 'CONFIRMED'
+      ? {
+          auditEventId: 'audit-confirmed',
+          confirmedAt: '2026-08-03T09:50:00.000Z',
+          status: 'CONFIRMED' as const,
+          timeWindowEnd: '11:00',
+          timeWindowStart: '10:30',
+        }
+      : null,
+  };
+}
+
+async function createHarness(options: {
+  mapProfile?: false;
+  timeConstraintCommandService?: DsvTimeConstraintCommandService;
+} = {}): Promise<{
   app: Awaited<ReturnType<typeof buildApp>>;
   queryService: MockQueryService;
   routePlanService: MockRoutePlanService;
@@ -499,6 +788,7 @@ async function createHarness(options: { mapProfile?: false } = {}): Promise<{
     secureCookies: false,
     sessionResolver,
     sessionSecret,
+    ...(options.timeConstraintCommandService === undefined ? {} : { timeConstraintCommandService: options.timeConstraintCommandService }),
   };
   return { app: await buildApp({ dsvV1Read: dependencies }), queryService, routePlanService, sessionResolver };
 }
@@ -543,11 +833,12 @@ function createQueryService(): MockQueryService {
     listDestinations: vi.fn(() => Promise.resolve(list)),
     listDispatches: vi.fn(() => Promise.resolve({
       items: [{
-        assignmentStatus: 'ASSIGNED',
-        customerId: 'customer-a',
-        destinationId: 'destination-a',
-        etaStatus: 'READY',
-        sellerOrderId: 'order-1',
+          assignmentStatus: 'ASSIGNED',
+          customerId: 'customer-a',
+          deliveryStopId: 'stop-1',
+          destinationId: 'destination-a',
+          etaStatus: 'READY',
+          sellerOrderId: 'order-1',
         sellerOrderKey: 'SO-001',
       }],
       page: { hasMore: false },

@@ -330,6 +330,89 @@ describe('Driver events route', () => {
     }
   });
 
+  test('accepts time constraint acknowledgement with assigned route token context', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: {
+          clientEventId: 'ack-stop-id-v1',
+          deliveryStopId: 'stop-id',
+          eventType: 'TIME_CONSTRAINT_ACKNOWLEDGED',
+          occurredAt: '2026-05-07T06:09:30.000Z',
+          routePlanId: 'route-plan-id'
+        },
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(response.json()).toEqual({
+        data: {
+          duplicate: false,
+          eventId: 'driver-event-id'
+        },
+        error: null
+      });
+      expect(recordDriverEvent).toHaveBeenCalledWith(expect.objectContaining({
+        clientEventId: 'ack-stop-id-v1',
+        deliveryStopId: 'stop-id',
+        driverId: 'driver-id',
+        eventType: 'TIME_CONSTRAINT_ACKNOWLEDGED',
+        routePlanId: 'route-plan-id',
+        shopId: 'shop-id'
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects malformed time constraint acknowledgements before persistence', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      for (const payload of [
+        {
+          deliveryStopId: 'stop-id',
+          eventType: 'TIME_CONSTRAINT_ACKNOWLEDGED',
+          occurredAt: '2026-05-07T06:09:30.000Z',
+          routePlanId: 'route-plan-id'
+        },
+        {
+          clientEventId: 'ack-stop-id-v1',
+          eventType: 'TIME_CONSTRAINT_ACKNOWLEDGED',
+          occurredAt: '2026-05-07T06:09:30.000Z',
+          routePlanId: 'route-plan-id'
+        },
+        {
+          clientEventId: 'ack-stop-id-v1',
+          deliveryStopId: 'stop-id',
+          eventType: 'TIME_CONSTRAINT_ACKNOWLEDGED',
+          occurredAt: '2026-05-07T06:09:30.000Z'
+        }
+      ]) {
+        const response = await app.inject({
+          headers: { authorization: `Bearer ${driverToken()}` },
+          method: 'POST',
+          payload,
+          url: '/driver/events'
+        });
+
+        expect(response.statusCode).toBe(400);
+        expect(response.json()).toEqual({
+          data: null,
+          error: { code: 'BAD_REQUEST', message: 'Invalid driver event payload' }
+        });
+      }
+      expect(recordDriverEvent).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('creates a durable administrator alert when the server detects an out-of-order stop', async () => {
     const { dependencies, recordDriverEvent } = createDependencyHarness();
     const createAdminNotification = vi.fn(() => Promise.resolve({
@@ -519,6 +602,38 @@ describe('Driver events route', () => {
         data: {
           duplicate: true,
           eventId: 'driver-event-id'
+        },
+        error: null
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('reports duplicate time constraint acknowledgements idempotently', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    recordDriverEvent.mockResolvedValueOnce({ duplicate: true, eventId: 'ack-event-id' });
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: {
+          clientEventId: 'ack-stop-id-v1',
+          deliveryStopId: 'stop-id',
+          eventType: 'TIME_CONSTRAINT_ACKNOWLEDGED',
+          occurredAt: '2026-05-07T06:09:30.000Z',
+          routePlanId: 'route-plan-id'
+        },
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({
+        data: {
+          duplicate: true,
+          eventId: 'ack-event-id'
         },
         error: null
       });

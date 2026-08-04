@@ -79,7 +79,10 @@ const route: DriverAssignedRoute = {
       sequence: 1,
       sellerOrderKey: null,
       shippedBoxes: null,
+      specialInstructionNote: null,
       status: 'ASSIGNED',
+      timeConstraintAcknowledgement: null,
+      timeWindow: null,
       timeWindowEnd: null,
       timeWindowStart: null,
       totalPriceAmount: null
@@ -108,7 +111,10 @@ const route: DriverAssignedRoute = {
       sequence: 2,
       sellerOrderKey: null,
       shippedBoxes: null,
+      specialInstructionNote: null,
       status: 'ASSIGNED',
+      timeConstraintAcknowledgement: null,
+      timeWindow: null,
       timeWindowEnd: null,
       timeWindowStart: null,
       totalPriceAmount: null

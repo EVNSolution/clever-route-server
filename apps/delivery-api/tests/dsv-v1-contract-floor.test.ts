@@ -39,6 +39,7 @@ describe('G005 DSV v1 OpenAPI contract floor', () => {
       'UNAUTHENTICATED',
       'FORBIDDEN',
       'NOT_FOUND',
+      'SELLER_ORDER_ASSIGNMENT_CHANGED',
       'VERSION_CONFLICT',
       'SELLER_ORDER_ALREADY_ACQUIRED',
       'COMMAND_IN_PROGRESS',
@@ -69,6 +70,7 @@ describe('G005 DSV v1 OpenAPI contract floor', () => {
     const dto = mapDsvV1SellerOrderSummary({
       assignmentStatus: 'ASSIGNED',
       customerId: 'customer-1',
+      deliveryStopId: 'delivery-stop-1',
       destinationId: 'destination-1',
       estimatedArrivalAt: '2026-07-23T02:30:00.000Z',
       etaStatus: 'READY',
@@ -81,6 +83,7 @@ describe('G005 DSV v1 OpenAPI contract floor', () => {
     expect(dsvV1SellerOrderSummaryRequiredFields).toEqual([
       'sellerOrderId',
       'sellerOrderKey',
+      'deliveryStopId',
       'customerId',
       'destinationId',
       'assignmentStatus',
@@ -92,6 +95,7 @@ describe('G005 DSV v1 OpenAPI contract floor', () => {
     expect(dto).toEqual({
       assignmentStatus: 'ASSIGNED',
       customerId: 'customer-1',
+      deliveryStopId: 'delivery-stop-1',
       destinationId: 'destination-1',
       estimatedArrivalAt: '2026-07-23T02:30:00.000Z',
       etaStatus: 'READY',
@@ -106,6 +110,7 @@ describe('G005 DSV v1 OpenAPI contract floor', () => {
     const dto = mapDsvV1CustomerDeliveryInquiryItem({
       deliveryStatus: 'DELIVERED',
       destinationDisplayName: 'Dock A',
+      destinationId: 'destination-1',
       estimatedArrivalAt: new Date('2026-07-23T02:30:00.000Z'),
       etaInputRouteVersionId: 'private-route-version',
       etaSource: 'ROUTE_STARTED',
@@ -117,12 +122,15 @@ describe('G005 DSV v1 OpenAPI contract floor', () => {
       proofRows: [{ deletedAt: '2026-07-22T00:00:00.000Z' }],
       sellerOrderId: 'seller-order-1',
       sellerOrderKey: 'SO-001',
+      shippedBoxes: 3,
     });
 
     expect(dsvV1CustomerDeliveryRequiredFields).toEqual([
       'sellerOrderId',
       'sellerOrderKey',
+      'destinationId',
       'destinationDisplayName',
+      'shippedBoxes',
       'deliveryStatus',
       'etaStatus',
       'eventSummary',
@@ -134,12 +142,14 @@ describe('G005 DSV v1 OpenAPI contract floor', () => {
     expect(dto).toEqual({
       deliveryStatus: 'DELIVERED',
       destinationDisplayName: 'Dock A',
+      destinationId: 'destination-1',
       estimatedArrivalAt: '2026-07-23T02:30:00.000Z',
       etaStatus: 'READY',
       eventSummary: [{ type: 'STOP_DELIVERED', occurredAt: '2026-07-23T03:00:00.000Z' }],
       proofStatus: 'EXPIRED',
       sellerOrderId: 'seller-order-1',
       sellerOrderKey: 'SO-001',
+      shippedBoxes: 3,
     });
     expect(Object.keys(dto.eventSummary[0] ?? {}).sort()).toEqual(['occurredAt', 'type']);
     expect(JSON.stringify(dto)).not.toMatch(/REDACTED|LOCATION_UPDATED|etaInputRouteVersionId|etaSource/u);

@@ -16,6 +16,11 @@ import {
   PrismaDsvV1ReadQueryService,
   type DsvV1ReadQueryService,
 } from './dsv-v1-read-query.service.js';
+import { PrismaDsvTimeConstraintCommandService } from './dsv-time-constraint-command.service.js';
+import {
+  loadDsvRouteOptimizationScheduler,
+  type DsvControlRuntimeEnv,
+} from './dsv-control.dependencies.js';
 import { loadDsvMapProfileFromEnv, type DsvMapProfileEnv } from './dsv-map-profile.config.js';
 import { PrismaRoutePlanRepository } from '../route-plans/route-plan.repository.js';
 import { RoutePlanAdminService } from '../route-plans/route-plan.service.js';
@@ -32,7 +37,14 @@ import { isStrongAdminWebSecret } from '../../routes/admin-ui-session.js';
 const customerSubjectPrefix = 'dsv-customer-account:';
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
-export type DsvV1ReadRuntimeEnv = DsvMapProfileEnv & Partial<Record<
+export type DsvV1ReadRuntimeEnv = DsvMapProfileEnv & Pick<
+  DsvControlRuntimeEnv,
+  | 'CLEVER_DSV_ROUTE_OPTIMIZATION_DEBOUNCE_MS'
+  | 'CLEVER_DSV_ROUTE_OPTIMIZATION_ENABLED'
+  | 'OSRM_BASE_URL'
+  | 'OSRM_KOREA_BASE_URL'
+  | 'OSRM_TIMEOUT_MS'
+> & Partial<Record<
   | 'CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS'
   | 'CLEVER_ADMIN_WEB_SESSION_SECRET'
   | 'CLEVER_DSV_ENABLED'
@@ -63,6 +75,7 @@ export function loadDsvV1ReadDependencies(input: {
     return undefined;
   }
   const mapProfile = loadDsvMapProfileFromEnv(input.env);
+  const routeOptimizationScheduler = loadDsvRouteOptimizationScheduler(input);
   return {
     cookieName: readOptional(input.env.CLEVER_DSV_WEB_COOKIE_NAME) ?? 'clever_dsv_admin',
     ...(mapProfile === undefined ? {} : { mapProfile }),
@@ -76,6 +89,7 @@ export function loadDsvV1ReadDependencies(input: {
       prisma: input.prisma,
     }),
     sessionSecret,
+    timeConstraintCommandService: new PrismaDsvTimeConstraintCommandService(input.prisma, routeOptimizationScheduler),
   };
 }
 

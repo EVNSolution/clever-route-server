@@ -34,6 +34,13 @@ import {
   type DsvV1ReadQueryService,
   type DsvV1ServiceDateInput,
 } from '../modules/dsv/dsv-v1-read-query.service.js';
+import {
+  DsvTimeConstraintCommandError,
+  type DsvClearTimeConstraintInput,
+  type DsvConfirmTimeConstraintInput,
+  type DsvTimeConstraintActor,
+  type DsvTimeConstraintCommandService,
+} from '../modules/dsv/dsv-time-constraint-command.service.js';
 import type { DsvMapProfile } from '../modules/dsv/dsv-map-profile.config.js';
 import type { RoutePlanService } from '../modules/route-plans/route-plan.types.js';
 import {
@@ -64,6 +71,7 @@ export type DsvV1ReadDependencies = {
   secureCookies: boolean;
   sessionResolver: DsvV1SessionResolver;
   sessionSecret: string;
+  timeConstraintCommandService?: DsvTimeConstraintCommandService;
 };
 
 type RouteSpec<Query> = {
@@ -213,6 +221,7 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     parseQuery: parsePagedQuery,
     requiredScopes: ['dsv:conditions:read'],
   });
+  registerTimeConstraintCommandRoutes(app, dependencies);
   registerReadRoute(app, dependencies, 'customer/deliveries', {
     allowedQuery: ['cursor', 'limit', 'serviceDate', 'window'],
     handler: async (principal, query) => mapDsvV1CustomerDeliveryInquiryPage(
@@ -233,6 +242,64 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     parseQuery: parseAdminCustomerDeliveriesQuery,
     requiredScopes: ['dsv:customers:read', 'dsv:dispatches:read'],
   });
+}
+
+function registerTimeConstraintCommandRoutes(app: FastifyInstance, dependencies: DsvV1ReadDependencies): void {
+  app.post(`${apiRoot}/seller-orders/:sellerOrderId/time-constraint/confirm`, (request, reply) =>
+    withDsvV1Session(request, reply, dependencies, async (session) => {
+      const principal = requireAdminPrincipal(session.principal);
+      requireDsvScopes(principal, ['dsv:dispatches:write']);
+      if (!verifyAdminWebCsrfToken({ session: session.session, token: request.headers['x-csrf-token'] as string | undefined })) {
+        return sendV1Error(reply, request, 403, 'FORBIDDEN', 'Invalid CSRF token');
+      }
+      const service = dependencies.timeConstraintCommandService;
+      if (service === undefined) {
+        return sendV1Error(reply, request, 503, 'DEPENDENCY_UNAVAILABLE', 'DSV time constraint command service is not configured');
+      }
+      const sellerOrderId = readUuidParam(request, 'sellerOrderId');
+      const command = readConfirmTimeConstraintCommand(request);
+      if (sellerOrderId === null || command === null) {
+        return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid time constraint confirmation payload');
+      }
+      try {
+        return sendV1Data(reply, request, await service.confirm({
+          actor: dsvV1AdminCommandActor(principal, request),
+          ...command,
+          sellerOrderId,
+          shopDomain: requireAdminShopDomain(principal),
+        }));
+      } catch (error) {
+        return sendTimeConstraintCommandError(reply, request, error);
+      }
+    }));
+
+  app.post(`${apiRoot}/seller-orders/:sellerOrderId/time-constraint/clear`, (request, reply) =>
+    withDsvV1Session(request, reply, dependencies, async (session) => {
+      const principal = requireAdminPrincipal(session.principal);
+      requireDsvScopes(principal, ['dsv:dispatches:write']);
+      if (!verifyAdminWebCsrfToken({ session: session.session, token: request.headers['x-csrf-token'] as string | undefined })) {
+        return sendV1Error(reply, request, 403, 'FORBIDDEN', 'Invalid CSRF token');
+      }
+      const service = dependencies.timeConstraintCommandService;
+      if (service === undefined) {
+        return sendV1Error(reply, request, 503, 'DEPENDENCY_UNAVAILABLE', 'DSV time constraint command service is not configured');
+      }
+      const sellerOrderId = readUuidParam(request, 'sellerOrderId');
+      const command = readClearTimeConstraintCommand(request);
+      if (sellerOrderId === null || command === null) {
+        return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid time constraint clear payload');
+      }
+      try {
+        return sendV1Data(reply, request, await service.clear({
+          actor: dsvV1AdminCommandActor(principal, request),
+          ...command,
+          sellerOrderId,
+          shopDomain: requireAdminShopDomain(principal),
+        }));
+      } catch (error) {
+        return sendTimeConstraintCommandError(reply, request, error);
+      }
+    }));
 }
 
 function registerReadRoute<Query>(
@@ -312,7 +379,7 @@ function sendV1Error(
   reply: FastifyReply,
   request: FastifyRequest,
   statusCode: number,
-  code: Extract<DsvV1ErrorCode, 'BAD_REQUEST' | 'DEPENDENCY_UNAVAILABLE' | 'FORBIDDEN' | 'UNAUTHENTICATED'>,
+  code: DsvV1ErrorCode,
   message: string,
   details?: Record<string, unknown>,
 ): unknown {
@@ -324,6 +391,20 @@ function sendV1Error(
       requestId: request.id,
     })
   );
+}
+
+function sendTimeConstraintCommandError(reply: FastifyReply, request: FastifyRequest, error: unknown): unknown {
+  if (!(error instanceof DsvTimeConstraintCommandError)) throw error;
+  switch (error.code) {
+    case 'COMMAND_IN_PROGRESS':
+    case 'IDEMPOTENCY_PAYLOAD_MISMATCH':
+    case 'SELLER_ORDER_ASSIGNMENT_CHANGED':
+      return sendV1Error(reply, request, 409, error.code, error.message);
+    case 'SELLER_ORDER_NOT_FOUND':
+      return sendV1Error(reply, request, 404, 'NOT_FOUND', error.message);
+    case 'VALIDATION_FAILED':
+      return sendV1Error(reply, request, 400, 'BAD_REQUEST', error.message);
+  }
 }
 
 function safeDsvV1ErrorDetails(details: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
@@ -442,6 +523,90 @@ function readSingleQueryString(request: FastifyRequest, key: string): string | u
   if (value === undefined) return undefined;
   if (Array.isArray(value)) return null;
   return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
+function readConfirmTimeConstraintCommand(request: FastifyRequest): Omit<DsvConfirmTimeConstraintInput, 'actor' | 'sellerOrderId' | 'shopDomain'> | null {
+  const body = objectBody(request.body);
+  if (body === null || !hasOnlyAllowedBodyKeys(body, ['commandId', 'deliveryStopId', 'expectedVersion', 'timeWindowEnd', 'timeWindowStart'])) return null;
+  const base = readTimeConstraintCommandBase(body);
+  const timeWindowStart = readBoundedText(body.timeWindowStart, 5);
+  const timeWindowEnd = readBoundedText(body.timeWindowEnd, 5);
+  if (base === null || timeWindowStart === null || timeWindowEnd === null) return null;
+  return { ...base, timeWindowEnd, timeWindowStart };
+}
+
+function readClearTimeConstraintCommand(request: FastifyRequest): Omit<DsvClearTimeConstraintInput, 'actor' | 'sellerOrderId' | 'shopDomain'> | null {
+  const body = objectBody(request.body);
+  if (body === null || !hasOnlyAllowedBodyKeys(body, ['commandId', 'deliveryStopId', 'expectedVersion', 'reason'])) return null;
+  const base = readTimeConstraintCommandBase(body);
+  const reason = readOptionalBoundedText(body.reason, 500);
+  if (base === null || reason === null) return null;
+  return { ...base, ...(reason === undefined ? {} : { reason }) };
+}
+
+function readTimeConstraintCommandBase(body: Record<string, unknown>): {
+  commandId: string;
+  deliveryStopId: string;
+  expectedVersion?: string | null;
+} | null {
+  const commandId = readBoundedText(body.commandId, 120);
+  const deliveryStopId = readUuidValue(body.deliveryStopId);
+  const expectedVersion = readExpectedVersion(body);
+  if (commandId === null || deliveryStopId === null || expectedVersion === invalidExpectedVersion) return null;
+  return {
+    commandId,
+    deliveryStopId,
+    ...(expectedVersion === undefined ? {} : { expectedVersion }),
+  };
+}
+
+const invalidExpectedVersion = Symbol('invalidExpectedVersion');
+
+function readExpectedVersion(body: Record<string, unknown>): string | null | undefined | typeof invalidExpectedVersion {
+  if (!Object.hasOwn(body, 'expectedVersion')) return undefined;
+  if (body.expectedVersion === null) return null;
+  return readBoundedText(body.expectedVersion, 160) ?? invalidExpectedVersion;
+}
+
+function objectBody(value: unknown): Record<string, unknown> | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function hasOnlyAllowedBodyKeys(body: Record<string, unknown>, allowedKeys: readonly string[]): boolean {
+  return Object.keys(body).every((key) => allowedKeys.includes(key));
+}
+
+function readUuidParam(request: FastifyRequest, key: string): string | null {
+  const params = request.params;
+  if (params === null || typeof params !== 'object' || Array.isArray(params)) return null;
+  return readUuidValue((params as Record<string, unknown>)[key]);
+}
+
+function readUuidValue(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value)) return null;
+  return value;
+}
+
+function readBoundedText(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  return normalized !== '' && normalized.length <= maxLength ? normalized : null;
+}
+
+function readOptionalBoundedText(value: unknown, maxLength: number): string | undefined | null {
+  if (value === undefined || value === null || value === '') return undefined;
+  return readBoundedText(value, maxLength);
+}
+
+function dsvV1AdminCommandActor(principal: DsvAdminPrincipal, request: FastifyRequest): DsvTimeConstraintActor {
+  return {
+    actorId: principal.actorId ?? null,
+    actorType: 'DSV_ADMIN' as const,
+    principalType: 'DSV_ADMIN' as const,
+    requestId: request.id,
+  };
 }
 
 function hasUnsupportedQuery(request: FastifyRequest, allowedKeys: readonly string[]): boolean {

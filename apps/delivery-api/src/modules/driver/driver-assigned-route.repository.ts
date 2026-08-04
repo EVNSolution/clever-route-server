@@ -25,6 +25,11 @@ import {
   toOrderItemDto,
   type OrderItemRecordLike
 } from '../order-items/order-items.js';
+import {
+  deriveDsvTimeConstraintState,
+  dsvTimeConstraintAuditEvents,
+  normalizeRawNote
+} from '../dsv/dsv-time-constraint.js';
 type DriverAssignedRoutePrismaClient = Pick<PrismaClient, 'routePlan' | 'routePlanGeometryCache'>;
 
 type AssignedRoutePlanRecord = {
@@ -32,6 +37,7 @@ type AssignedRoutePlanRecord = {
   constraints: unknown;
   depotLatitude: unknown;
   depotLongitude: unknown;
+  driverId: string | null;
   id: string;
   metrics: unknown;
   name: string;
@@ -66,11 +72,29 @@ type AssignedRoutePlanStopRecord = {
     city: string | null;
     countryCode: string | null;
     id: string;
+    instructions: string | null;
     latitude: unknown;
     longitude: unknown;
+    driverEvents: Array<{
+      driverId: string | null;
+      id: string;
+      occurredAt: Date;
+      routePlanId: string | null;
+    }>;
     order: {
+      currentRouteVersion: {
+        createdAt: Date;
+      } | null;
+      currentRouteVersionId: string | null;
       currencyCode: string | null;
       destinationId: string | null;
+      dsvAuditEvents: Array<{
+        actorId: string | null;
+        eventType: string;
+        id: string;
+        occurredAt: Date;
+        redactedDiff: unknown;
+      }>;
       financialStatus: string | null;
       fulfillmentStatus: string | null;
       id: string;
@@ -109,8 +133,27 @@ const assignedRouteInclude = {
     include: {
       deliveryStop: {
         include: {
+          driverEvents: {
+            orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+            select: { driverId: true, id: true, occurredAt: true, routePlanId: true },
+            where: { eventType: 'TIME_CONSTRAINT_ACKNOWLEDGED' }
+          },
           order: {
             include: {
+              currentRouteVersion: {
+                select: { createdAt: true }
+              },
+              dsvAuditEvents: {
+                orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+                select: {
+                  actorId: true,
+                  eventType: true,
+                  id: true,
+                  occurredAt: true,
+                  redactedDiff: true
+                },
+                where: { eventType: { in: dsvTimeConstraintAuditEvents.slice() } }
+              },
               orderItems: {
                 orderBy: { lineIndex: 'asc' }
               }
@@ -128,7 +171,7 @@ const assignedRouteInclude = {
       shopDomain: true
     }
   }
-} as const;
+} satisfies Prisma.RoutePlanInclude;
 
 export class PrismaDriverAssignedRouteRepository {
   constructor(private readonly prisma: DriverAssignedRoutePrismaClient) {}
@@ -259,7 +302,7 @@ function toAssignedRouteResult(
       shopDomain: normalizeDriverCommerceDomain(routePlan.shop.shopDomain),
       stops: [...routePlan.routeStops]
         .sort((left, right) => left.sequence - right.sequence)
-        .map(toAssignedRouteStop),
+        .map((routeStop) => toAssignedRouteStop(routeStop, routePlan)),
       timezone: readTimezone(routePlan.constraints)
     }
   };
@@ -297,10 +340,21 @@ function toRoutePlanDetailForCache(routePlan: AssignedRoutePlanRecord): RoutePla
   };
 }
 
-function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssignedRouteStop {
+function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord, routePlan: AssignedRoutePlanRecord): DriverAssignedRouteStop {
   const deliveryStop = routeStop.deliveryStop;
   const rawPayload = objectOrNull(deliveryStop.order.rawPayload);
   const dsvNormalized = readDsvNormalizedPayload(rawPayload);
+  const timeConstraintState = deriveDsvTimeConstraintState({
+    audits: deliveryStop.order.dsvAuditEvents,
+    currentRouteVersionCreatedAt: deliveryStop.order.currentRouteVersion?.createdAt ?? null,
+    currentRouteVersionId: deliveryStop.order.currentRouteVersionId,
+    rawNote: deliveryStop.instructions,
+    timeWindowEnd: deliveryStop.timeWindowEnd,
+    timeWindowStart: deliveryStop.timeWindowStart
+  });
+  const acknowledgement = deliveryStop.driverEvents.find((event) =>
+    event.driverId === routePlan.driverId && event.routePlanId === routePlan.id
+  ) ?? null;
   return {
     address: {
       address1: deliveryStop.address1,
@@ -345,7 +399,21 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord): DriverAssi
     shippedBoxes: readInteger(dsvNormalized?.shippedBoxes)
       ?? readInteger(rawPayload?.shippedBoxes)
       ?? readInteger(rawPayload?.shipped_boxes),
+    specialInstructionNote: normalizeRawNote(deliveryStop.instructions),
     status: deliveryStop.status,
+    routeConstraintStatus: timeConstraintState.routeConstraintStatus,
+    timeConstraintAcknowledgement: acknowledgement === null
+      ? null
+      : {
+          acknowledgedAt: acknowledgement.occurredAt.toISOString(),
+          eventId: acknowledgement.id
+        },
+    timeWindow: timeConstraintState.timeConstraint === null
+      ? null
+      : {
+          end: timeConstraintState.timeConstraint.timeWindowEnd,
+          start: timeConstraintState.timeConstraint.timeWindowStart
+        },
     timeWindowEnd: deliveryStop.timeWindowEnd?.toISOString() ?? null,
     timeWindowStart: deliveryStop.timeWindowStart?.toISOString() ?? null,
     totalPriceAmount: decimalString(deliveryStop.order.totalPriceAmount)

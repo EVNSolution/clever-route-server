@@ -52,7 +52,10 @@ const assignedRoute = {
         sequence: 1,
         sellerOrderKey: 'DSV-ORDER-1001',
         shippedBoxes: 4,
+        specialInstructionNote: null,
         status: 'ASSIGNED',
+        timeConstraintAcknowledgement: null,
+        timeWindow: null,
         timeWindowEnd: null,
         timeWindowStart: null,
         totalPriceAmount: '84.50'

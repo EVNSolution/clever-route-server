@@ -4,6 +4,7 @@ import { assertRoutePlanExecutionOwnership, RouteExecutionConflictError } from '
 import { ROUTE_ACTIVE_COMPATIBILITY_STATUSES, ROUTE_READY_COMPATIBILITY_STATUSES } from '../route-plans/route-plan-lifecycle.js';
 import { readRouteStopPoints } from '../route-plans/route-plan-geometry-cache.js';
 import { persistRouteTrackingGeometryPosition } from '../route-tracking/route-tracking.geometry.js';
+import { deriveDsvTimeConstraintState, dsvTimeConstraintAuditEvents } from '../dsv/dsv-time-constraint.js';
 import {
   buildDriverRouteEtaSnapshot,
   calculateArrivalEtaUpdate,
@@ -310,6 +311,26 @@ async function findMatchingDriverEvent(
     });
   }
 
+  if (input.eventType === 'TIME_CONSTRAINT_ACKNOWLEDGED' && input.clientEventId !== null) {
+    const event = await prisma.driverEvent.findUnique({
+      select: { deliveryStopId: true, eventType: true, id: true, routePlanId: true },
+      where: {
+        driverId_clientEventId: {
+          clientEventId: input.clientEventId,
+          driverId: input.driverId
+        }
+      }
+    });
+    if (event === null) {
+      return null;
+    }
+    if (!driverEventContextMatchesInput(event, input)) {
+      throw new DriverEventContextError('clientEventId is already used by a different driver event');
+    }
+
+    return { id: event.id };
+  }
+
   if (
     input.clientEventId === null
     || (input.eventType !== 'ROUTE_COMPLETED' && input.eventType !== 'ROUTE_PAUSED')
@@ -419,6 +440,15 @@ async function validateDriverEventStateContext(
 
   if (input.eventType === 'STOP_ARRIVED' || input.eventType === 'STOP_DELIVERED' || input.eventType === 'STOP_FAILED') {
     await requireOwnedRoutePlanStop(prisma, {
+      deliveryStopId: requireDeliveryStopId(input),
+      driverId: input.driverId,
+      routePlanId,
+      shopId
+    });
+  }
+
+  if (input.eventType === 'TIME_CONSTRAINT_ACKNOWLEDGED') {
+    await requireOwnedConfirmedTimeConstraintStop(prisma, {
       deliveryStopId: requireDeliveryStopId(input),
       driverId: input.driverId,
       routePlanId,
@@ -994,6 +1024,66 @@ async function requireOwnedRoutePlanStop(
   });
   if (routePlanStop === null) {
     throw new DriverEventScopeError('Driver stop context is outside the authenticated route scope');
+  }
+}
+
+async function requireOwnedConfirmedTimeConstraintStop(
+  prisma: DriverEventTransactionClient,
+  input: { deliveryStopId: string; driverId: string; routePlanId: string; shopId: string }
+): Promise<void> {
+  const routePlanStop = await prisma.routePlanStop.findFirst({
+    select: {
+      deliveryStop: {
+        select: {
+          instructions: true,
+          order: {
+            select: {
+              currentRouteVersion: { select: { createdAt: true } },
+              currentRouteVersionId: true,
+              dsvAuditEvents: {
+                orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+                select: {
+                  actorId: true,
+                  eventType: true,
+                  id: true,
+                  occurredAt: true,
+                  redactedDiff: true
+                },
+                where: { eventType: { in: dsvTimeConstraintAuditEvents.slice() }, shopId: input.shopId }
+              }
+            }
+          },
+          timeWindowEnd: true,
+          timeWindowStart: true
+        }
+      },
+      id: true
+    },
+    where: {
+      deliveryStopId: input.deliveryStopId,
+      routePlan: {
+        driverId: input.driverId,
+        id: input.routePlanId,
+        shopId: input.shopId
+      },
+      routePlanId: input.routePlanId,
+      shopId: input.shopId
+    }
+  });
+  if (routePlanStop === null) {
+    throw new DriverEventScopeError('Driver stop context is outside the authenticated route scope');
+  }
+
+  const state = deriveDsvTimeConstraintState({
+    audits: routePlanStop.deliveryStop.order.dsvAuditEvents,
+    currentRouteVersionCreatedAt: routePlanStop.deliveryStop.order.currentRouteVersion?.createdAt ?? null,
+    currentRouteVersionId: routePlanStop.deliveryStop.order.currentRouteVersionId,
+    rawNote: routePlanStop.deliveryStop.instructions,
+    timeWindowEnd: routePlanStop.deliveryStop.timeWindowEnd,
+    timeWindowStart: routePlanStop.deliveryStop.timeWindowStart
+  });
+  if (state.reviewStatus !== 'CONFIRMED' || state.timeConstraint === null) {
+    throw new DriverEventContextError('Time constraint acknowledgement requires a confirmed stop window');
   }
 }
 

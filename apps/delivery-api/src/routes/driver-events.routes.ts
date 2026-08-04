@@ -205,6 +205,7 @@ const DRIVER_EVENT_TYPES = new Set([
   'ROUTE_PAUSED',
   'ROUTE_COMPLETED',
   'PICKUP_COMPLETED',
+  'TIME_CONSTRAINT_ACKNOWLEDGED',
   'STOP_ARRIVED',
   'STOP_DELIVERED',
   'STOP_FAILED',
@@ -1364,6 +1365,11 @@ function readDriverEventBody(body: DriverEventRequestBody): {
     }
     if (deliveryStopId !== null) {
       throw new Error('Pickup completed must not include deliveryStopId');
+    }
+  }
+  if (eventType === 'TIME_CONSTRAINT_ACKNOWLEDGED') {
+    if (clientEventId === null || deliveryStopId === null || readOptionalString(body.routePlanId) === null) {
+      throw new Error('Time constraint acknowledgement requires clientEventId, deliveryStopId, and routePlanId');
     }
   }
 

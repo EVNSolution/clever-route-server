@@ -45,7 +45,17 @@ export type DriverAssignedRouteStop = {
   serviceType?: string | null;
   sellerOrderKey: string | null;
   shippedBoxes: number | null;
+  specialInstructionNote: string | null;
   status: string;
+  routeConstraintStatus?: 'NOT_APPLICABLE' | 'UNCONFIRMED' | 'PENDING_RECALCULATION' | 'NOT_EVALUATED';
+  timeConstraintAcknowledgement: {
+    acknowledgedAt: string;
+    eventId: string;
+  } | null;
+  timeWindow: {
+    end: string;
+    start: string;
+  } | null;
   timeWindowEnd: string | null;
   timeWindowStart: string | null;
   totalPriceAmount: string | null;

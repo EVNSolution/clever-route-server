@@ -54,6 +54,7 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
 
     expect(result.items).toHaveLength(1);
     expect(result.items[0]).toMatchObject({
+      destinationId: fixture.sharedDestinationId,
       destinationDisplayName: 'Shared Destination X',
       estimatedArrivalAt: new Date('2026-07-23T02:00:00.000Z'),
       etaInputRouteVersionId: fixture.routeVersionAId,
@@ -62,6 +63,7 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
       eventRows: [{ eventType: 'STOP_DELIVERED', occurredAt: new Date('2026-07-23T03:00:00.000Z') }],
       proofRows: [{ deletedAt: null }],
       sellerOrderKey: fixture.orderAKey,
+      shippedBoxes: 6,
     });
     expect(result.items[0]?.eventRows).toHaveLength(1);
     expect(result.items[0]?.proofRows).toHaveLength(1);
@@ -78,7 +80,54 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
     expect(ownRecord?.proofRows).toEqual([{ deletedAt: null }]);
     expect(JSON.stringify(records.items)).not.toContain(fixture.mismatchedShopEventId);
     expect(JSON.stringify(records.items)).not.toContain('storage-key-mismatched-shop');
+
+    const dispatches = await service.listDispatches(customerlessAdmin(fixture.shopId), { serviceDate: '2026-07-23' });
+    expect(dispatches.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        deliveryStopId: fixture.stopAId,
+        sellerOrderId: fixture.orderAId,
+        sellerOrderKey: fixture.orderAKey,
+      }),
+      expect.objectContaining({
+        deliveryStopId: fixture.stopBId,
+        sellerOrderId: fixture.orderBId,
+        sellerOrderKey: fixture.orderBKey,
+      }),
+    ]));
+    expect(dispatches.items.find((item) => item.sellerOrderId === fixture.orderAId)?.deliveryStopId).toBe(fixture.stopAId);
+    expect(dispatches.items.find((item) => item.sellerOrderId === fixture.orderBId)?.deliveryStopId).toBe(fixture.stopBId);
     expect(countsAfter).toEqual(countsBefore);
+  });
+
+  test('keeps same-destination customer deliveries order-granular with per-stop shipped boxes', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'same-destination-order-granular', {
+      extraSameDayCustomerAOrder: true,
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma, () => new Date('2026-07-22T15:30:00.000Z'));
+
+    const result = await service.listCustomerDeliveries(customerPrincipal(fixture.shopId, fixture.customerAId), {
+      serviceDate: '2026-07-23',
+    });
+
+    expect(result.items).toHaveLength(2);
+    expect(result.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        deliveryStatus: 'PENDING',
+        destinationId: fixture.sharedDestinationId,
+        sellerOrderId: fixture.orderAId,
+        sellerOrderKey: fixture.orderAKey,
+        shippedBoxes: 6,
+      }),
+      expect.objectContaining({
+        deliveryStatus: 'PENDING',
+        destinationId: fixture.sharedDestinationId,
+        sellerOrderId: fixture.extraCustomerAOrderId,
+        sellerOrderKey: fixture.extraCustomerAOrderKey,
+        shippedBoxes: 4,
+      }),
+    ]));
+    expect(new Set(result.items.map((item) => item.destinationId))).toEqual(new Set([fixture.sharedDestinationId]));
+    expect(new Set(result.items.map((item) => item.sellerOrderId)).size).toBe(2);
   });
 
   test('does not serialize stale RoutePlanStop ETA when no row is owned by the current route version', async () => {
@@ -406,11 +455,18 @@ async function createFixture(
     createOrder(prisma, shop.id, customerA.id, sharedDestination.id, `SO-A-NONE-${unique}`, routeVersionA.id, '2026-07-24'),
     createOrder(prisma, shop.id, customerA.id, sharedDestination.id, `SO-A-EXPIRED-${unique}`, routeVersionA.id, '2026-07-25'),
   ]);
-  const [stopA, stopB, , stopAExpired] = await Promise.all([
+  const [stopA, stopB, stopANone, stopAExpired] = await Promise.all([
     createStop(prisma, shop.id, orderA.id, 'Recipient A', '2026-07-23'),
     createStop(prisma, shop.id, orderB.id, 'Recipient B', '2026-07-23'),
     createStop(prisma, shop.id, orderANone.id, 'Recipient A None', '2026-07-24'),
     createStop(prisma, shop.id, orderAExpired.id, 'Recipient A Expired', '2026-07-25'),
+  ]);
+  const importRecord = await createAppliedDispatchImport(prisma, shop.id, unique, '2026-07-23');
+  await Promise.all([
+    createAppliedDispatchImportRow(prisma, importRecord.id, shop.id, stopA.id, orderA.id, customerA.id, sharedDestination.id, orderAKey, 1, 6),
+    createAppliedDispatchImportRow(prisma, importRecord.id, shop.id, stopB.id, orderB.id, customerB.id, sharedDestination.id, orderBKey, 2, 2),
+    createAppliedDispatchImportRow(prisma, importRecord.id, shop.id, stopANone.id, orderANone.id, customerA.id, sharedDestination.id, `SO-A-NONE-${unique}`, 3, 1),
+    createAppliedDispatchImportRow(prisma, importRecord.id, shop.id, stopAExpired.id, orderAExpired.id, customerA.id, sharedDestination.id, `SO-A-EXPIRED-${unique}`, 4, 8),
   ]);
   await Promise.all([
     prisma.routePlanStop.create({
@@ -491,22 +547,29 @@ async function createFixture(
     await createProof(prisma, extraShop.id, extraRoutePlan.id, stopA.id, null, 'storage-key-mismatched-shop', null);
     mismatchedShopEventId = mismatchedEvent.id;
   }
+  let extraCustomerAOrderId = '';
+  let extraCustomerAOrderKey = '';
   if (options.extraSameDayCustomerAOrder === true) {
+    extraCustomerAOrderKey = `SO-A-CURSOR-${unique}`;
     const extraOrder = await createOrder(
       prisma,
       shop.id,
       customerA.id,
       sharedDestination.id,
-      `SO-A-CURSOR-${unique}`,
+      extraCustomerAOrderKey,
       routeVersionA.id,
     );
-    await createStop(prisma, shop.id, extraOrder.id, 'Recipient A Cursor', '2026-07-23');
+    const extraStop = await createStop(prisma, shop.id, extraOrder.id, 'Recipient A Cursor', '2026-07-23');
+    await createAppliedDispatchImportRow(prisma, importRecord.id, shop.id, extraStop.id, extraOrder.id, customerA.id, sharedDestination.id, extraCustomerAOrderKey, 5, 4);
+    extraCustomerAOrderId = extraOrder.id;
   }
 
   return {
     allowedEventId: allowedEvent.id,
     customerAId: customerA.id,
     customerBId: customerB.id,
+    extraCustomerAOrderId,
+    extraCustomerAOrderKey,
     forbiddenEventId: forbiddenEvent.id,
     mismatchedShopEventId,
     orderAId: orderA.id,
@@ -518,6 +581,7 @@ async function createFixture(
     sharedDestinationId: sharedDestination.id,
     shopId: shop.id,
     stopAId: stopA.id,
+    stopBId: stopB.id,
   };
 }
 
@@ -956,6 +1020,66 @@ async function createStop(
       recipientName,
       shopId,
       status: 'PENDING',
+    },
+  });
+}
+
+function createAppliedDispatchImport(
+  prisma: PrismaClient,
+  shopId: string,
+  unique: string,
+  serviceDate: string,
+) {
+  return prisma.dsvDispatchImport.create({
+    data: {
+      appliedAt: new Date(`${serviceDate}T00:30:00.000Z`),
+      fileName: `${unique}.csv`,
+      planDate: dateOnly(serviceDate),
+      previewHash: `preview-${unique}`,
+      rowCount: 5,
+      shopId,
+      sourceHash: `source-${unique}`,
+      status: 'APPLIED',
+    },
+  });
+}
+
+function createAppliedDispatchImportRow(
+  prisma: PrismaClient,
+  importId: string,
+  shopId: string,
+  deliveryStopId: string,
+  sellerOrderId: string,
+  customerId: string,
+  destinationId: string,
+  sellerOrderKey: string,
+  rowNumber: number,
+  shippedBoxes: number,
+) {
+  return prisma.dsvDispatchImportRow.create({
+    data: {
+      address: '1 Shared Way',
+      appliedAt: new Date('2026-07-23T00:35:00.000Z'),
+      conditionCode: 'AMBIENT',
+      customerCode: `CUST-${rowNumber}`,
+      customerId,
+      deliveryStopId,
+      destinationId,
+      destinationName: 'Shared Destination X',
+      diffKind: 'UNCHANGED',
+      driverName: 'Driver A',
+      importId,
+      issues: [],
+      normalized: { shippedBoxes },
+      previewHash: `preview-row-${rowNumber}-${sellerOrderId}`,
+      rowNumber,
+      sellerOrderId,
+      sellerOrderKey,
+      shippedBoxes,
+      shopId,
+      sourceHash: `source-row-${rowNumber}-${sellerOrderId}`,
+      status: 'APPLIED',
+      vehiclePlate: '서울86바3800',
     },
   });
 }

@@ -763,6 +763,67 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DsvV1LegacyAssignmentErrorEnvelope' }
+  /api/dsv/v1/seller-orders/{sellerOrderId}/time-constraint/confirm:
+    post:
+      tags: [DSV API v1]
+      summary: Confirm an explicit seller-order delivery time constraint
+      description: >-
+        Stores the explicit HH:mm hard range on the existing DeliveryStop time-window fields.
+        The raw special-instruction note remains canonical server data and is not accepted from
+        the request body.
+      operationId: confirmDsvV1SellerOrderTimeConstraint
+      x-source-file: src/routes/dsv-v1-read.routes.ts
+      x-required-scopes: ['dsv:dispatches:write']
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/DsvV1SellerOrderIdPath'
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DsvV1TimeConstraintConfirmInput' }
+      responses:
+        '200':
+          description: Time constraint was confirmed or the completed command was replayed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvV1TimeConstraintCommandEnvelope' }
+        '400': { $ref: '#/components/responses/DsvV1BadRequest' }
+        '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
+        '403': { $ref: '#/components/responses/DsvV1Forbidden' }
+        '404': { $ref: '#/components/responses/DsvV1NotFound' }
+        '409': { $ref: '#/components/responses/DsvV1Conflict' }
+        '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
+  /api/dsv/v1/seller-orders/{sellerOrderId}/time-constraint/clear:
+    post:
+      tags: [DSV API v1]
+      summary: Clear a seller-order delivery time constraint
+      description: Nulls the existing DeliveryStop time-window fields and records a redacted reviewed decision.
+      operationId: clearDsvV1SellerOrderTimeConstraint
+      x-source-file: src/routes/dsv-v1-read.routes.ts
+      x-required-scopes: ['dsv:dispatches:write']
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/DsvV1SellerOrderIdPath'
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DsvV1TimeConstraintClearInput' }
+      responses:
+        '200':
+          description: Time constraint was cleared or the completed command was replayed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvV1TimeConstraintCommandEnvelope' }
+        '400': { $ref: '#/components/responses/DsvV1BadRequest' }
+        '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
+        '403': { $ref: '#/components/responses/DsvV1Forbidden' }
+        '404': { $ref: '#/components/responses/DsvV1NotFound' }
+        '409': { $ref: '#/components/responses/DsvV1Conflict' }
+        '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
   /api/dsv/v1/seller-orders/{sellerOrderId}/assignment/reassign:
     post:
       tags: [DSV API v1]
@@ -3177,6 +3238,18 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/DsvV1ErrorEnvelope'
+    DsvV1NotFound:
+      description: Requested DSV v1 resource was not found in the authenticated tenant.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/DsvV1ErrorEnvelope'
+    DsvV1Conflict:
+      description: DSV v1 command conflicts with current assignment or idempotency state.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/DsvV1ErrorEnvelope'
     DsvV1DependencyUnavailable:
       description: DSV v1 read dependency is unavailable or not configured.
       content:
@@ -3352,6 +3425,7 @@ components:
         - UNAUTHENTICATED
         - FORBIDDEN
         - NOT_FOUND
+        - SELLER_ORDER_ASSIGNMENT_CHANGED
         - VERSION_CONFLICT
         - SELLER_ORDER_ALREADY_ACQUIRED
         - COMMAND_IN_PROGRESS
@@ -3450,6 +3524,55 @@ components:
           minLength: 1
           maxLength: 160
           pattern: '\S'
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          pattern: '\S'
+      additionalProperties: false
+    DsvV1TimeConstraintConfirmInput:
+      type: object
+      required: [commandId, deliveryStopId, expectedVersion, timeWindowStart, timeWindowEnd]
+      properties:
+        commandId:
+          type: string
+          minLength: 1
+          maxLength: 120
+          pattern: '\S'
+        deliveryStopId:
+          type: string
+          format: uuid
+        expectedVersion:
+          type: string
+          minLength: 1
+          maxLength: 160
+          pattern: '\S'
+          description: Exact Order.currentRouteVersionId UUID or literal UNASSIGNED.
+        timeWindowStart:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+        timeWindowEnd:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+      additionalProperties: false
+    DsvV1TimeConstraintClearInput:
+      type: object
+      required: [commandId, deliveryStopId, expectedVersion]
+      properties:
+        commandId:
+          type: string
+          minLength: 1
+          maxLength: 120
+          pattern: '\S'
+        deliveryStopId:
+          type: string
+          format: uuid
+        expectedVersion:
+          type: string
+          minLength: 1
+          maxLength: 160
+          pattern: '\S'
+          description: Exact Order.currentRouteVersionId UUID or literal UNASSIGNED.
         reason:
           type: string
           minLength: 1
@@ -3636,6 +3759,105 @@ components:
         sellerOrderId:
           type: string
       additionalProperties: false
+    DsvV1SpecialInstructionReviewStatus:
+      type: string
+      enum: [CLEARED, CONFIRMED, NOT_APPLICABLE, UNCONFIRMED]
+    DsvV1RouteConstraintStatus:
+      type: string
+      enum: [NOT_APPLICABLE, UNCONFIRMED, PENDING_RECALCULATION, NOT_EVALUATED]
+    DsvV1TimeConstraint:
+      type: object
+      required: [auditEventId, confirmedAt, status, timeWindowEnd, timeWindowStart]
+      properties:
+        auditEventId:
+          type: string
+        confirmedAt:
+          type: string
+          format: date-time
+        confirmedBy:
+          type: string
+        status:
+          type: string
+          enum: [CONFIRMED]
+        timeWindowEnd:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+        timeWindowStart:
+          type: string
+          pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$'
+      additionalProperties: false
+    DsvV1TimeConstraintRecalculation:
+      type: object
+      required: [reason, retryable, routePlanId, status]
+      properties:
+        reason:
+          type: string
+          enum:
+            - ASSIGNED_ROUTE_TIME_CONSTRAINT_CLEARED
+            - ASSIGNED_ROUTE_TIME_CONSTRAINT_CONFIRMED
+            - SCHEDULER_UNAVAILABLE
+            - TIME_CONSTRAINT_CLEARED
+            - UNASSIGNED_ORDER
+        retryable:
+          type: boolean
+        routePlanId:
+          type: [string, 'null']
+        status:
+          type: string
+          enum: [FAILED_TO_SCHEDULE, NOT_REQUIRED, SCHEDULED]
+      additionalProperties: false
+    DsvV1TimeConstraintCommandResult:
+      type: object
+      required:
+        - auditEventId
+        - commandId
+        - deliveryStopId
+        - rawNote
+        - recalculation
+        - reviewStatus
+        - routeConstraintStatus
+        - sellerOrderId
+        - sellerOrderKey
+        - timeConstraint
+      properties:
+        auditEventId:
+          type: string
+        clearedAt:
+          type: string
+          format: date-time
+        clearedBy:
+          type: string
+        commandId:
+          type: string
+        deliveryStopId:
+          type: string
+          format: uuid
+        rawNote:
+          type: [string, 'null']
+        recalculation:
+          $ref: '#/components/schemas/DsvV1TimeConstraintRecalculation'
+        reviewStatus:
+          $ref: '#/components/schemas/DsvV1SpecialInstructionReviewStatus'
+        routeConstraintStatus:
+          $ref: '#/components/schemas/DsvV1RouteConstraintStatus'
+        sellerOrderId:
+          type: string
+          format: uuid
+        sellerOrderKey:
+          type: string
+        timeConstraint:
+          oneOf:
+            - $ref: '#/components/schemas/DsvV1TimeConstraint'
+            - type: 'null'
+      additionalProperties: false
+    DsvV1TimeConstraintCommandEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/DsvV1SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: '#/components/schemas/DsvV1TimeConstraintCommandResult'
     DsvV1LegacyAssignmentCommandEnvelope:
       type: object
       required: [data, error]
@@ -3744,7 +3966,7 @@ components:
       additionalProperties: false
     DsvV1SellerOrderSummary:
       type: object
-      required: [assignmentStatus, customerId, destinationId, etaStatus, sellerOrderId, sellerOrderKey]
+      required: [assignmentStatus, customerId, deliveryStopId, destinationId, etaStatus, sellerOrderId, sellerOrderKey]
       properties:
         actualCompletedAt:
           type: string
@@ -3753,6 +3975,8 @@ components:
           type: string
           enum: [UNASSIGNED, ASSIGNED]
         customerId:
+          type: string
+        deliveryStopId:
           type: string
         destinationAddress:
           type: string
@@ -3773,6 +3997,12 @@ components:
           type: number
         routePlanId:
           type: string
+        rawNote:
+          type: string
+        reviewStatus:
+          $ref: '#/components/schemas/DsvV1SpecialInstructionReviewStatus'
+        routeConstraintStatus:
+          $ref: '#/components/schemas/DsvV1RouteConstraintStatus'
         routeStopSequence:
           type: integer
           minimum: 1
@@ -3782,6 +4012,10 @@ components:
           type: string
         sellerOrderKey:
           type: string
+        timeConstraint:
+          oneOf:
+            - $ref: '#/components/schemas/DsvV1TimeConstraint'
+            - type: 'null'
         vehicleId:
           type: string
         vehicleLatitude:
@@ -3999,10 +4233,20 @@ components:
             $ref: '#/components/schemas/DsvV1RecordProof'
         proofStatus:
           $ref: '#/components/schemas/DsvV1ProofStatus'
+        rawNote:
+          type: string
+        reviewStatus:
+          $ref: '#/components/schemas/DsvV1SpecialInstructionReviewStatus'
+        routeConstraintStatus:
+          $ref: '#/components/schemas/DsvV1RouteConstraintStatus'
         sellerOrderId:
           type: string
         sellerOrderKey:
           type: string
+        timeConstraint:
+          oneOf:
+            - $ref: '#/components/schemas/DsvV1TimeConstraint'
+            - type: 'null'
       additionalProperties: false
     DsvV1RecordEvent:
       type: object
@@ -4281,13 +4525,15 @@ components:
               $ref: '#/components/schemas/DsvV1ConditionListPage'
     DsvV1CustomerDeliveryInquiryItem:
       type: object
-      required: [deliveryStatus, destinationDisplayName, etaStatus, eventSummary, proofStatus, sellerOrderId, sellerOrderKey]
+      required: [deliveryStatus, destinationDisplayName, destinationId, etaStatus, eventSummary, proofStatus, sellerOrderId, sellerOrderKey, shippedBoxes]
       properties:
         deliveryStatus:
           type: string
         destinationAddress:
           type: string
         destinationDisplayName:
+          type: string
+        destinationId:
           type: string
         estimatedArrivalAt:
           type: string
@@ -4308,10 +4554,17 @@ components:
           type: string
         sellerOrderKey:
           type: string
+        shippedBoxes:
+          type: integer
+          minimum: 1
         vehicleDisplayName:
           type: string
         vehicleId:
           type: string
+        vehicleLatitude:
+          type: number
+        vehicleLongitude:
+          type: number
       additionalProperties: false
     DsvV1CustomerDeliveryInquiryPage:
       type: object
@@ -5579,7 +5832,7 @@ components:
             $ref: '#/components/schemas/DriverAssignedRouteStop'
     DriverAssignedRouteStop:
       type: object
-      required: [address, coordinates, deliveryStopId, distanceFromPreviousMeters, durationFromPreviousSeconds, estimatedArrivalAt, orderName, phone, recipientName, sequence, status, timeWindowEnd, timeWindowStart]
+      required: [address, coordinates, deliveryStopId, distanceFromPreviousMeters, durationFromPreviousSeconds, estimatedArrivalAt, orderName, phone, recipientName, sequence, specialInstructionNote, status, timeConstraintAcknowledgement, timeWindow, timeWindowEnd, timeWindowStart]
       properties:
         deliveryStopId:
           type: string
@@ -5596,6 +5849,38 @@ components:
           type:
             - string
             - 'null'
+        specialInstructionNote:
+          description: Canonical raw DSV special-instruction note for this SellerOrder/DeliveryStop; never inferred into a window.
+          type:
+            - string
+            - 'null'
+        routeConstraintStatus:
+          enum: [NOT_APPLICABLE, UNCONFIRMED, PENDING_RECALCULATION, NOT_EVALUATED]
+          type: string
+        timeConstraintAcknowledgement:
+          type:
+            - object
+            - 'null'
+          required: [acknowledgedAt, eventId]
+          properties:
+            acknowledgedAt:
+              format: date-time
+              type: string
+            eventId:
+              type: string
+        timeWindow:
+          description: Confirmed DSV time constraint window. Null when no current confirmed time constraint exists.
+          type:
+            - object
+            - 'null'
+          required: [end, start]
+          properties:
+            end:
+              pattern: '^\d{2}:\d{2}$'
+              type: string
+            start:
+              pattern: '^\d{2}:\d{2}$'
+              type: string
         timeWindowStart:
           format: date-time
           type:
@@ -5961,20 +6246,20 @@ components:
     DriverEventRequest:
       type: object
       required: [eventType, occurredAt]
-      description: PICKUP_COMPLETED requires a nonblank clientEventId and deliveryStopId must be omitted or null.
+      description: PICKUP_COMPLETED requires a nonblank clientEventId and deliveryStopId must be omitted or null. TIME_CONSTRAINT_ACKNOWLEDGED requires nonblank clientEventId, deliveryStopId, and routePlanId for the authenticated route.
       properties:
         clientEventId:
-          description: Client-side idempotency key. Required and nonblank when eventType is PICKUP_COMPLETED.
+          description: Client-side idempotency key. Required and nonblank when eventType is PICKUP_COMPLETED or TIME_CONSTRAINT_ACKNOWLEDGED.
           type:
             - string
             - 'null'
         deliveryStopId:
-          description: Stop-scoped event target. Must be omitted or null when eventType is PICKUP_COMPLETED.
+          description: Stop-scoped event target. Must be omitted or null when eventType is PICKUP_COMPLETED; required when eventType is TIME_CONSTRAINT_ACKNOWLEDGED.
           type:
             - string
             - 'null'
         eventType:
-          enum: [ROUTE_STARTED, ROUTE_PAUSED, ROUTE_COMPLETED, PICKUP_COMPLETED, STOP_ARRIVED, STOP_DELIVERED, STOP_FAILED, LOCATION_UPDATED, NOTE_ADDED]
+          enum: [ROUTE_STARTED, ROUTE_PAUSED, ROUTE_COMPLETED, PICKUP_COMPLETED, TIME_CONSTRAINT_ACKNOWLEDGED, STOP_ARRIVED, STOP_DELIVERED, STOP_FAILED, LOCATION_UPDATED, NOTE_ADDED]
           type: string
         latitude:
           type:

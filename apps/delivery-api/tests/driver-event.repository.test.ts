@@ -9,9 +9,11 @@ import {
   DriverEventScopeError,
   PrismaDriverEventRepository
 } from '../src/modules/driver/driver-event.repository.js';
+import { dsvCanonicalNoteHash } from '../src/modules/dsv/dsv-time-constraint.js';
 
 const occurredAt = new Date('2026-06-01T05:54:16.000Z');
 const serverReceivedAt = new Date('2026-06-01T06:00:00.000Z');
+type RoutePlanStopFixture = { id: string } | ReturnType<typeof confirmedTimeConstraintRoutePlanStop>;
 
 describe('PrismaDriverEventRepository', () => {
   test('records driver events for Woo customer-domain shops', async () => {
@@ -1019,6 +1021,112 @@ describe('PrismaDriverEventRepository', () => {
     });
   });
 
+  test('records time constraint acknowledgement only for an owned assigned-route stop with current confirmed window', async () => {
+    const { prisma } = createPrismaHarness({ routePlanStop: confirmedTimeConstraintRoutePlanStop() });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      clientEventId: 'ack-stop-id-v1',
+      deliveryStopId: 'stop-id',
+      eventType: 'TIME_CONSTRAINT_ACKNOWLEDGED',
+      routePlanId: 'route-plan-id'
+    }))).resolves.toEqual({ duplicate: false, eventId: 'driver-event-id' });
+
+    const routePlanStopFindArgs = prisma.routePlanStop.findFirst.mock.calls[0]?.[0] as {
+      where?: Record<string, unknown>;
+    } | undefined;
+    expect(routePlanStopFindArgs?.where).toMatchObject({
+      deliveryStopId: 'stop-id',
+      routePlan: {
+        driverId: 'driver-id',
+        id: 'route-plan-id',
+        shopId: 'shop-id'
+      },
+      routePlanId: 'route-plan-id',
+      shopId: 'shop-id'
+    });
+    const driverEventCreateArgs = prisma.driverEvent.create.mock.calls[0]?.[0] as {
+      data?: Record<string, unknown>;
+    } | undefined;
+    expect(driverEventCreateArgs?.data).toMatchObject({
+      clientEventId: 'ack-stop-id-v1',
+      deliveryStopId: 'stop-id',
+      driverId: 'driver-id',
+      eventType: 'TIME_CONSTRAINT_ACKNOWLEDGED',
+      routePlanId: 'route-plan-id',
+      shopId: 'shop-id'
+    });
+    expect(prisma.deliveryStop.updateMany).not.toHaveBeenCalled();
+    expect(prisma.routePlan.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('rejects time constraint acknowledgement for stops without a current confirmed window', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlanStop: confirmedTimeConstraintRoutePlanStop({
+        dsvAuditEvents: [],
+        instructions: null,
+        timeWindowEnd: null,
+        timeWindowStart: null
+      })
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      clientEventId: 'ack-stop-id-v1',
+      deliveryStopId: 'stop-id',
+      eventType: 'TIME_CONSTRAINT_ACKNOWLEDGED',
+      routePlanId: 'route-plan-id'
+    }))).rejects.toBeInstanceOf(DriverEventContextError);
+
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+  });
+
+  test('rejects time constraint acknowledgement outside the authenticated route assignment scope', async () => {
+    const { prisma } = createPrismaHarness({ routePlanStop: null });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      clientEventId: 'ack-stop-id-v1',
+      deliveryStopId: 'foreign-stop-id',
+      eventType: 'TIME_CONSTRAINT_ACKNOWLEDGED',
+      routePlanId: 'route-plan-id'
+    }))).rejects.toBeInstanceOf(DriverEventScopeError);
+
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+  });
+
+  test('returns duplicate time constraint acknowledgement by driver and client event id', async () => {
+    const { prisma } = createPrismaHarness({
+      existingEvent: {
+        deliveryStopId: 'stop-id',
+        eventType: 'TIME_CONSTRAINT_ACKNOWLEDGED',
+        id: 'recorded-ack-id',
+        routePlanId: 'route-plan-id'
+      },
+      routePlan: null
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      clientEventId: 'ack-stop-id-v1',
+      deliveryStopId: 'stop-id',
+      eventType: 'TIME_CONSTRAINT_ACKNOWLEDGED',
+      routePlanId: 'route-plan-id'
+    }))).resolves.toEqual({ duplicate: true, eventId: 'recorded-ack-id' });
+
+    expect(prisma.driverEvent.findUnique).toHaveBeenCalledWith({
+      select: { deliveryStopId: true, eventType: true, id: true, routePlanId: true },
+      where: {
+        driverId_clientEventId: {
+          clientEventId: 'ack-stop-id-v1',
+          driverId: 'driver-id'
+        }
+      }
+    });
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+    expect(prisma.routePlan.findFirst).not.toHaveBeenCalled();
+  });
+
   test('acknowledges matching duplicate client events after a unique constraint race', async () => {
     const { prisma } = createPrismaHarness({
       existingEvent: {
@@ -1189,7 +1297,7 @@ function createPrismaHarness(input: {
   routePlan?: { id: string; status?: string } | null;
   routeEtaInputVersionId?: string | null;
   routeEtaPersistenceRows?: Array<{ id: string }>;
-  routePlanStop?: { id: string } | null;
+  routePlanStop?: RoutePlanStopFixture | null;
   routeEtaStops?: Array<{
     deliveryStop: { serviceMinutes: number | null; status?: string | null };
     deliveryStopId: string;
@@ -1373,6 +1481,56 @@ function routeStopPoint(deliveryStopId: string, sequence: number, duration: numb
     shopifyOrderGid: `gid://shopify/Order/${sequence}`,
     snapDistanceMeters: 0,
     snappedCoordinates: [-79.38, 43.65]
+  };
+}
+
+function confirmedTimeConstraintRoutePlanStop(overrides: {
+  dsvAuditEvents?: Array<{
+    actorId: string | null;
+    eventType: string;
+    id: string;
+    occurredAt: Date;
+    redactedDiff: unknown;
+  }>;
+  instructions?: string | null;
+  timeWindowEnd?: Date | null;
+  timeWindowStart?: Date | null;
+} = {}) {
+  const instructions = overrides.instructions === undefined ? '오전 11시 배송' : overrides.instructions;
+  return {
+    id: 'route-plan-stop-id',
+    deliveryStop: {
+      instructions,
+      order: {
+        currentRouteVersion: { createdAt: new Date('2026-06-01T05:00:00.000Z') },
+        currentRouteVersionId: 'route-version-id',
+        dsvAuditEvents: overrides.dsvAuditEvents ?? [
+          {
+            actorId: 'admin-subject',
+            eventType: 'TIME_CONSTRAINT_CONFIRMED',
+            id: 'audit-event-id',
+            occurredAt: new Date('2026-06-01T05:30:00.000Z'),
+            redactedDiff: {
+              commandId: 'confirm-row-2',
+              deliveryStopId: 'stop-id',
+              newTimeWindowEnd: '11:00',
+              newTimeWindowStart: '10:30',
+              noteHash: dsvCanonicalNoteHash(instructions ?? ''),
+              priorTimeWindowEnd: null,
+              priorTimeWindowStart: null,
+              sellerOrderId: 'order-id',
+              sourceNotePresent: instructions !== null
+            }
+          }
+        ]
+      },
+      timeWindowEnd: overrides.timeWindowEnd === undefined
+        ? new Date('1970-01-01T11:00:00.000Z')
+        : overrides.timeWindowEnd,
+      timeWindowStart: overrides.timeWindowStart === undefined
+        ? new Date('1970-01-01T10:30:00.000Z')
+        : overrides.timeWindowStart
+    }
   };
 }
 

@@ -86,6 +86,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
     const dto = mapDsvV1SellerOrderSummary({
       assignmentStatus: 'ASSIGNED',
       customerId: 'customer-1',
+      deliveryStopId: 'stop-1',
       destinationAddress: '1 Shared Way, Seoul',
       destinationDisplayName: 'Destination A',
       destinationId: 'destination-1',
@@ -107,6 +108,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
     expect(dto).toEqual({
       assignmentStatus: 'ASSIGNED',
       customerId: 'customer-1',
+      deliveryStopId: 'stop-1',
       destinationAddress: '1 Shared Way, Seoul',
       destinationDisplayName: 'Destination A',
       destinationId: 'destination-1',
@@ -338,6 +340,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
       deliveryStatus: 'DELIVERED',
       destinationAddress: '서울 중구 퇴계로 131',
       destinationDisplayName: 'Shared Dock',
+      destinationId: 'destination-1',
       estimatedArrivalAt: '2026-07-23T02:30:00.000Z',
       etaStatus: 'READY',
       eventSummary: [{ type: 'STOP_DELIVERED', occurredAt: '2026-07-23T03:00:00.000Z' }],
@@ -346,6 +349,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
       proofStatus: 'AVAILABLE',
       sellerOrderId: 'seller-order-private-id',
       sellerOrderKey: 'SO-REDIRECT',
+      shippedBoxes: 7,
       vehicleDisplayName: '서울86바3800',
       vehicleId: 'vehicle-1',
       vehicleLatitude: 37.5,
@@ -355,6 +359,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
       'deliveryStatus',
       'destinationAddress',
       'destinationDisplayName',
+      'destinationId',
       'estimatedArrivalAt',
       'etaStatus',
       'eventSummary',
@@ -363,6 +368,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
       'proofStatus',
       'sellerOrderId',
       'sellerOrderKey',
+      'shippedBoxes',
       'vehicleDisplayName',
       'vehicleId',
       'vehicleLatitude',
@@ -388,6 +394,7 @@ function summaryRow(sellerOrderKey: string) {
   return {
     assignmentStatus: 'UNASSIGNED' as const,
     customerId: 'customer-1',
+    deliveryStopId: 'stop-1',
     destinationId: 'destination-1',
     etaStatus: 'NOT_REQUIRED' as const,
     sellerOrderId: 'order-1',
@@ -403,6 +410,7 @@ function customerDeliveryRow(
     customerId: 'other-customer-id',
     deliveryStatus: 'DELIVERED',
     destinationDisplayName: 'Shared Dock',
+    destinationId: 'destination-1',
     driver: { privatePhone: '010-0000-0000' },
     driverId: 'driver-private-id',
     estimatedArrivalAt: '2026-07-23T02:30:00.000Z',
@@ -414,6 +422,7 @@ function customerDeliveryRow(
     routePlanId: 'route-plan-private-id',
     sellerOrderId: 'seller-order-private-id',
     sellerOrderKey: 'SO-REDIRECT',
+    shippedBoxes: 7,
     ...overrides,
   } as DsvV1CustomerDeliveryInquiryRow;
 }

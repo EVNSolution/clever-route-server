@@ -50,6 +50,7 @@ const pickupCompletedDriverEventMigrationName = '20260728120000_add_pickup_compl
 const pickupCompletedUniqueIndexMigrationName = '20260728124500_add_pickup_completed_unique_index';
 const dsvDriverAppAuthMigrationName = '20260802120000_add_dsv_driver_app_auth';
 const manualCustomerEmailMigrationName = '20260803110000_add_manual_customer_email';
+const timeConstraintAcknowledgedDriverEventMigrationName = '20260803120000_add_time_constraint_acknowledged_driver_event';
 const assignedDriverProfileBackfillMigrationName = '20260729170000_backfill_assigned_dsv_driver_profiles';
 const dispatchGroupingBackfillMigrationName = '20260730170000_backfill_dsv_dispatch_groupings';
 const accountScopedPushTokenMigrationName = '20260731140000_account_scope_driver_push_tokens';
@@ -61,6 +62,10 @@ const pickupCompletedDriverEventMigrationPath = new URL(
 );
 const pickupCompletedUniqueIndexMigrationPath = new URL(
   `../prisma/migrations/${pickupCompletedUniqueIndexMigrationName}/migration.sql`,
+  import.meta.url
+);
+const timeConstraintAcknowledgedDriverEventMigrationPath = new URL(
+  `../prisma/migrations/${timeConstraintAcknowledgedDriverEventMigrationName}/migration.sql`,
   import.meta.url
 );
 const assignedDriverProfileBackfillMigrationPath = new URL(
@@ -126,7 +131,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(61);
+    expect(migrations).toHaveLength(62);
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -211,6 +216,8 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations).toContain(dsvVehicleTelematicsMigrationName);
     expect(migrations).toContain(pickupCompletedDriverEventMigrationName);
     expect(migrations).toContain(pickupCompletedUniqueIndexMigrationName);
+    expect(migrations).toContain(manualCustomerEmailMigrationName);
+    expect(migrations).toContain(timeConstraintAcknowledgedDriverEventMigrationName);
     expect(migrations).toContain(assignedDriverProfileBackfillMigrationName);
     expect(migrations).toContain(dispatchGroupingBackfillMigrationName);
     expect(migrations).toContain(accountScopedPushTokenMigrationName);
@@ -267,7 +274,10 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf(dsvDriverAppAuthMigrationName)).toBeLessThan(
       migrations.indexOf(manualCustomerEmailMigrationName)
     );
-    expect(migrations.at(-1)).toBe(manualCustomerEmailMigrationName);
+    expect(migrations.indexOf(manualCustomerEmailMigrationName)).toBeLessThan(
+      migrations.indexOf(timeConstraintAcknowledgedDriverEventMigrationName)
+    );
+    expect(migrations.at(-1)).toBe(timeConstraintAcknowledgedDriverEventMigrationName);
   });
 
   test('backfills only assigned drivers without replacing canonical contact or assignment data', async () => {
@@ -309,6 +319,13 @@ describe('G007 DSV Prisma migration history', () => {
     expect(indexMigration).toContain(
       'WHERE "eventType" = \'PICKUP_COMPLETED\' AND "driverId" IS NOT NULL AND "routePlanId" IS NOT NULL'
     );
+  });
+
+  test('adds time constraint acknowledgement as a single-purpose additive enum migration', async () => {
+    const migration = await readFile(timeConstraintAcknowledgedDriverEventMigrationPath, 'utf8');
+
+    expect(migration.trim()).toBe(`ALTER TYPE "DriverEventType" ADD VALUE IF NOT EXISTS 'TIME_CONSTRAINT_ACKNOWLEDGED';`);
+    expect(stripSqlLineComments(migration)).not.toMatch(/\bCREATE\s+(?:TABLE|INDEX)\b|\bDROP\b|\bDELETE\b|\bTRUNCATE\b/iu);
   });
 
   test('keeps the production baseline drift repair additive and fail closed', async () => {
