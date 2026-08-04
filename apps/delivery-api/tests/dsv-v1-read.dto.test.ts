@@ -387,10 +387,12 @@ describe('G005 DSV v1 read DTO adapter', () => {
       emptyReason: 'NO_DELIVERIES',
       items: [],
       page: { hasMore: false },
+      routes: [],
     })).toEqual({
       emptyReason: 'NO_DELIVERIES',
       items: [],
       page: { hasMore: false },
+      routes: [],
     });
   });
 });

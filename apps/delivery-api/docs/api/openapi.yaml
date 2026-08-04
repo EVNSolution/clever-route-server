@@ -491,8 +491,10 @@ paths:
       description: >-
         Returns only deliveries owned by the customer bound to the authenticated session.
         Customer identifiers supplied by the browser are not accepted as authority. Destination
-        coordinates and the assigned vehicle's latest coordinates are included only for those
-        customer-owned deliveries so the customer map cannot infer another customer's stops.
+        coordinates, the assigned vehicle's latest coordinates, and customer-scoped route
+        geometry are included only for those customer-owned deliveries so the customer map cannot
+        infer another customer's stops. Customer routes start at the assigned vehicle's latest
+        location and end at that vehicle's last delivery site for this customer.
       operationId: listDsvV1CustomerDeliveries
       x-source-file: src/routes/dsv-v1-read.routes.ts
       x-required-scopes: ['dsv:customer-deliveries:read']
@@ -4566,9 +4568,21 @@ components:
         vehicleLongitude:
           type: number
       additionalProperties: false
+    DsvV1CustomerRoute:
+      type: object
+      required: [vehicleId, coordinates]
+      properties:
+        vehicleId:
+          type: string
+        coordinates:
+          type: array
+          minItems: 2
+          items:
+            $ref: '#/components/schemas/DsvV1LngLat'
+      additionalProperties: false
     DsvV1CustomerDeliveryInquiryPage:
       type: object
-      required: [items]
+      required: [items, routes]
       properties:
         emptyReason:
           type: string
@@ -4579,6 +4593,10 @@ components:
             $ref: '#/components/schemas/DsvV1CustomerDeliveryInquiryItem'
         page:
           $ref: '#/components/schemas/DsvV1PageInfo'
+        routes:
+          type: array
+          items:
+            $ref: '#/components/schemas/DsvV1CustomerRoute'
       additionalProperties: false
     DsvV1CustomerDeliveryInquiryEnvelope:
       allOf:

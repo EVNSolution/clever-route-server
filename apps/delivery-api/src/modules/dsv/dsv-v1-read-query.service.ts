@@ -882,6 +882,8 @@ function toCustomerDeliveryInquiryRow(row: CustomerDeliveryOrderRow): DsvV1Custo
   const eta = selectCanonicalEta(stop.routePlanStops, row.currentRouteVersionId);
   const vehicle = row.currentRouteVersion?.routePlan?.vehicle ?? null;
   const vehiclePosition = row.currentRouteVersion?.routePlan?.trackingGeometry ?? null;
+  const currentRouteStop = selectCurrentRouteStop(stop.routePlanStops, row.currentRouteVersion?.routePlanId ?? null);
+  const routePlanId = currentRouteStop?.routePlanId ?? eta?.routePlanId ?? row.currentRouteVersion?.routePlanId ?? null;
   return {
     deliveryStatus: row.deliveryStatus,
     destinationAddress: deliveryStopAddressLabel(stop),
@@ -893,6 +895,7 @@ function toCustomerDeliveryInquiryRow(row: CustomerDeliveryOrderRow): DsvV1Custo
     latitude: decimalToNumber(stop.latitude),
     longitude: decimalToNumber(stop.longitude),
     proofRows: stop.driverProofMedia.map(toDtoProofRow),
+    ...(routePlanId === null ? {} : { routePlanId }),
     sellerOrderId: row.id,
     sellerOrderKey: row.sellerOrderKey ?? row.id,
     shippedBoxes: requireSelectedStopShippedBoxes(stop, row.id),

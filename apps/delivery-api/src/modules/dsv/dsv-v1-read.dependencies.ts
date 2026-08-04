@@ -146,7 +146,7 @@ class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
         customerId: true,
         id: true,
         issuer: true,
-        shop: { select: { id: true } },
+        shop: { select: { id: true, shopDomain: true } },
         shopId: true,
         status: true,
         subject: true,
@@ -158,7 +158,7 @@ class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
     if (account.shop.id !== account.shopId || account.customer.id !== account.customerId || account.customer.shopId !== account.shopId) {
       throw new DsvV1ForbiddenError('DSV customer account scope is invalid');
     }
-    return createDsvCustomerUserPrincipalFromAccount({ account });
+    return createDsvCustomerUserPrincipalFromAccount({ account, shopDomain: account.shop.shopDomain });
   }
 
   private canAccessShopDomain(shopDomain: string): boolean {
