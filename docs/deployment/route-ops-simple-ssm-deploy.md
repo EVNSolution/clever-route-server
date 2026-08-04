@@ -108,6 +108,15 @@ UVIS vehicle GPS and temperature collection is disabled unless `UVIS_ENABLED=tru
 5. Keep the location and temperature poll intervals explicit. Current defaults are 60 seconds and 300 seconds.
 6. Verify dry-run and secret scanning before a real deploy. Deployment evidence may contain key names and the SSM parameter name, but never decrypted values.
 
+The delivery API shares one EC2 network interface with other integrations. Do not
+claim UVIS isolation by attaching an additional restrictive security group while
+another attached group still permits broad egress; security-group permissions are
+combined. The UVIS client instead validates each exact HTTPS endpoint, rejects
+private/reserved DNS results and redirects, and pins the validated IPv4 result into
+the TLS connection so the connection cannot perform a second DNS lookup. A future
+network-level domain allowlist requires an isolated worker/network interface or an
+egress firewall with the complete set of required application domains.
+
 The host deploy script only accepts these server keys: `UVIS_ENABLED`, `UVIS_APP_ID`, `UVIS_SHOP_DOMAIN`, `UVIS_ACCESS_KEY_URL`, `UVIS_TELEMETRY_URL`, `UVIS_ALLOWED_OUTBOUND_URLS`, `UVIS_COMPANY_SERIAL_KEY`, `UVIS_LOCATION_GUBUN`, `UVIS_TEMPERATURE_GUBUN`, `UVIS_TIMEOUT_MS`, `UVIS_LOCATION_POLL_INTERVAL_MS`, and `UVIS_TEMPERATURE_POLL_INTERVAL_MS`.
 
 ## Commands

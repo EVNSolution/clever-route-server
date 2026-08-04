@@ -161,6 +161,21 @@ describe('UVIS client', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  test('rejects malformed DNS results instead of passing them to the pinned transport', async () => {
+    const fetch = vi.fn().mockResolvedValue(jsonResponse({ AccessKey: 'unused' }));
+    const client = new UvisClient({
+      ...config,
+      fetchImpl: fetch,
+      resolveHostAddresses: () => Promise.resolve(['not-an-ip-address']),
+    });
+
+    await expect(client.getAccessKey()).rejects.toMatchObject({
+      code: 'INVALID_CONFIG',
+      message: 'UVIS access-key request target is not allowed.',
+    });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   test('rejects DNS results that resolve allowed hostnames to unsafe IPv6 ranges', async () => {
     for (const address of ['::', '::1', '::ffff:192.0.2.1', 'ff02::1', 'fe80::1', 'fc00::1', '2001:db8::1', '2001:2::1', '2001:10::1', '3000::1', '3fff::1']) {
       const fetch = vi.fn().mockResolvedValue(jsonResponse({ AccessKey: 'unused' }));
@@ -176,6 +191,20 @@ describe('UVIS client', () => {
       });
       expect(fetch).not.toHaveBeenCalled();
     }
+  });
+
+  test('pins each request to the public addresses that passed DNS validation', async () => {
+    const addresses = ['8.8.8.8', '1.1.1.1'];
+    const pinnedFetch = vi.fn().mockResolvedValue(jsonResponse({ AccessKey: 'fake-access-key' }));
+    const client = new UvisClient({
+      ...config,
+      fetchImpl: pinnedFetch,
+      resolveHostAddresses: () => Promise.resolve(addresses),
+    });
+
+    await expect(client.getAccessKey()).resolves.toBe('fake-access-key');
+    expect(pinnedFetch).toHaveBeenCalledTimes(1);
+    expect(pinnedFetch.mock.calls[0]?.[2]).toEqual(addresses);
   });
 
   test('requests UVIS with manual redirects and rejects 3xx responses without following them', async () => {

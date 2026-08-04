@@ -1,4 +1,5 @@
 import { lookup } from 'node:dns/promises';
+import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 
 import type { UvisClientConfig } from './uvis-config.js';
@@ -17,7 +18,7 @@ type FetchLike = (url: URL, init: {
   method: 'GET';
   redirect: 'manual';
   signal?: AbortSignal;
-}) => Promise<Response>;
+}, addresses: string[]) => Promise<Response>;
 type ResolveHostAddresses = (hostname: string) => Promise<string[]>;
 
 export type UvisClientOptions = UvisClientConfig & {
@@ -51,7 +52,7 @@ export class UvisClient {
   private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(private readonly options: UvisClientOptions) {
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.fetchImpl = options.fetchImpl ?? fetchPinned;
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
     this.resolveHostAddresses = options.resolveHostAddresses ?? resolveHostAddresses;
@@ -186,7 +187,7 @@ export class UvisClient {
   }
 
   private async fetchWithTimeout(url: URL, operation: 'access-key' | UvisTelemetryKind): Promise<Response> {
-    await assertResolvedHostAllowed(url.hostname, operation, this.resolveHostAddresses);
+    const addresses = await resolveAllowedHostAddresses(url.hostname, operation, this.resolveHostAddresses);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.options.timeoutMs);
     try {
@@ -195,7 +196,7 @@ export class UvisClient {
         method: 'GET',
         redirect: 'manual',
         signal: controller.signal,
-      });
+      }, addresses);
     } finally {
       clearTimeout(timeout);
     }
@@ -322,11 +323,11 @@ function isForbiddenIpv6(value: string): boolean {
   return true;
 }
 
-async function assertResolvedHostAllowed(
+async function resolveAllowedHostAddresses(
   hostname: string,
   operation: 'access-key' | UvisTelemetryKind,
   resolveHostAddresses: ResolveHostAddresses,
-): Promise<void> {
+): Promise<string[]> {
   let addresses: string[];
   try {
     addresses = await resolveHostAddresses(hostname);
@@ -338,7 +339,9 @@ async function assertResolvedHostAllowed(
       transient: true,
     });
   }
-  if (addresses.length === 0 || addresses.some((address) => isForbiddenHost(address))) {
+  if (addresses.length === 0 || addresses.some((address) => (
+    isIP(normalizeHost(address)) !== 4 || isForbiddenHost(address)
+  ))) {
     throw new UvisClientError({
       code: 'INVALID_CONFIG',
       message: `UVIS ${operation} request target is not allowed.`,
@@ -346,11 +349,49 @@ async function assertResolvedHostAllowed(
       transient: false,
     });
   }
+  return addresses;
 }
 
 async function resolveHostAddresses(hostname: string): Promise<string[]> {
   const records = await lookup(normalizeHost(hostname), { all: true });
   return records.map((record) => record.address);
+}
+
+async function fetchPinned(url: URL, init: Parameters<FetchLike>[1], addresses: string[]): Promise<Response> {
+  const address = addresses[0];
+  if (address === undefined) throw new Error('UVIS pinned request requires a resolved address.');
+
+  return new Promise<Response>((resolve, reject) => {
+    const request = httpsRequest(url, {
+      headers: init.headers,
+      lookup: (_hostname, _options, callback) => callback(null, address, 4),
+      method: init.method,
+      signal: init.signal,
+    }, (incoming) => {
+      const chunks: Buffer[] = [];
+      incoming.on('data', (chunk: Buffer | string) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      incoming.on('end', () => {
+        const headers = new Headers();
+        for (const [name, value] of Object.entries(incoming.headers)) {
+          if (Array.isArray(value)) {
+            for (const item of value) headers.append(name, item);
+          } else if (value !== undefined) {
+            headers.set(name, value);
+          }
+        }
+        resolve(new Response(Buffer.concat(chunks), {
+          headers,
+          status: incoming.statusCode ?? 500,
+          statusText: incoming.statusMessage ?? '',
+        }));
+      });
+      incoming.on('error', reject);
+    });
+    request.on('error', reject);
+    request.end();
+  });
 }
 
 function normalizeHost(hostname: string): string {
