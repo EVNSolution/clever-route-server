@@ -309,16 +309,10 @@ async function buildCustomerScopedRoutes(input: {
     const customerStops = detail.stops
       .filter((stop) => customerOrderIds.has(stop.orderId))
       .sort((left, right) => left.sequence - right.sequence);
-    const firstCustomerStop = customerStops[0] ?? null;
     const lastCustomerStop = customerStops.at(-1) ?? null;
     const end = routeStopEndpoint(detail.routeStopPoints, lastCustomerStop?.deliveryStopId ?? null)
       ?? stopCoordinates(lastCustomerStop);
-    const firstCustomerEndpoint = routeStopEndpoint(detail.routeStopPoints, firstCustomerStop?.deliveryStopId ?? null)
-      ?? stopCoordinates(firstCustomerStop);
-    const hasHiddenRouteBeforeCustomer = firstCustomerStop !== null && detail.stops.some((stop) => (
-      stop.sequence < firstCustomerStop.sequence && !customerOrderIds.has(stop.orderId)
-    ));
-    const start = hasHiddenRouteBeforeCustomer ? firstCustomerEndpoint : routeKey.vehiclePosition ?? depot;
+    const start = routeKey.vehiclePosition ?? depot;
     if (end === null) continue;
     if (start === null) continue;
     const coordinates = cutCustomerScopedRouteGeometry({

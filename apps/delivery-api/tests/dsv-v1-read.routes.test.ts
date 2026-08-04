@@ -620,7 +620,7 @@ describe('DSV v1 read routes', () => {
     }
   });
 
-  test('returns only customer-scoped route geometry without route or stop metadata', async () => {
+  test('returns route geometry from a vehicle before the first customer stop without route or stop metadata', async () => {
     const { app, queryService, routePlanService } = await createHarness();
     const customer = signedCookie(`dsv-customer-account:${accountId}`);
     try {
@@ -687,7 +687,7 @@ describe('DSV v1 read routes', () => {
         customerDisplayName: 'Tomato Customer',
         departureLocation: { latitude: 37.5, longitude: 126.9 },
         routes: [{
-          coordinates: [[126.92, 37.5], [126.93, 37.5]],
+          coordinates: [[126.905, 37.5], [126.91, 37.5], [126.92, 37.5], [126.93, 37.5]],
           vehicleId: 'vehicle-1',
         }],
       });
@@ -706,7 +706,6 @@ describe('DSV v1 read routes', () => {
       expect(serialized).not.toContain('other-after');
       expect(serialized).not.toContain('other-before-stop');
       expect(serialized).not.toContain('other-after-stop');
-      expect(serialized).not.toContain('126.91');
       expect(serialized).not.toContain('126.94');
       expect(serialized).not.toContain('shopifyOrderGid');
       expect(serialized).not.toContain('deliveryStopId');
@@ -757,14 +756,16 @@ describe('DSV v1 read routes', () => {
           type: 'LineString',
         },
         routeStopPoints: [
-          routeStopPoint({ deliveryStopId: 'customer-first-stop', sequence: 1, shopifyOrderGid: 'order-customer-first', snappedCoordinates: [126.91, 37.5] }),
-          routeStopPoint({ deliveryStopId: 'customer-last-stop', sequence: 2, shopifyOrderGid: 'order-customer-last', snappedCoordinates: [126.92, 37.5] }),
-          routeStopPoint({ deliveryStopId: 'other-after-stop', sequence: 3, shopifyOrderGid: 'other-after', snappedCoordinates: [126.94, 37.5] }),
+          routeStopPoint({ deliveryStopId: 'other-before-stop', sequence: 1, shopifyOrderGid: 'other-before', snappedCoordinates: [126.905, 37.5] }),
+          routeStopPoint({ deliveryStopId: 'customer-first-stop', sequence: 2, shopifyOrderGid: 'order-customer-first', snappedCoordinates: [126.91, 37.5] }),
+          routeStopPoint({ deliveryStopId: 'customer-last-stop', sequence: 3, shopifyOrderGid: 'order-customer-last', snappedCoordinates: [126.92, 37.5] }),
+          routeStopPoint({ deliveryStopId: 'other-after-stop', sequence: 4, shopifyOrderGid: 'other-after', snappedCoordinates: [126.94, 37.5] }),
         ],
         stops: [
-          routeDetailStop({ deliveryStopId: 'customer-first-stop', orderId: 'order-customer-first', orderName: 'SO-C1', sequence: 1 }),
-          routeDetailStop({ deliveryStopId: 'customer-last-stop', orderId: 'order-customer-last', orderName: 'SO-C2', sequence: 2 }),
-          routeDetailStop({ deliveryStopId: 'other-after-stop', orderId: 'other-after', orderName: 'OTHER-AFTER', sequence: 3 }),
+          routeDetailStop({ deliveryStopId: 'other-before-stop', orderId: 'other-before', orderName: 'OTHER-BEFORE', sequence: 1 }),
+          routeDetailStop({ deliveryStopId: 'customer-first-stop', orderId: 'order-customer-first', orderName: 'SO-C1', sequence: 2 }),
+          routeDetailStop({ deliveryStopId: 'customer-last-stop', orderId: 'order-customer-last', orderName: 'SO-C2', sequence: 3 }),
+          routeDetailStop({ deliveryStopId: 'other-after-stop', orderId: 'other-after', orderName: 'OTHER-AFTER', sequence: 4 }),
         ],
       }));
 
@@ -786,6 +787,8 @@ describe('DSV v1 read routes', () => {
       });
       const serialized = JSON.stringify(body.data);
       expect(serialized).not.toContain('route-plan-1');
+      expect(serialized).not.toContain('other-before');
+      expect(serialized).not.toContain('other-before-stop');
       expect(serialized).not.toContain('other-after');
       expect(serialized).not.toContain('other-after-stop');
       expect(serialized).not.toContain('126.94');
