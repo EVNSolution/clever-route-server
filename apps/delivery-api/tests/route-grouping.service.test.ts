@@ -1,11 +1,12 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
 import { classifyCoordinateInPolygons } from '../src/modules/route-grouping/route-grouping.geometry.js';
 import { FakeDriverPushProvider } from '../src/modules/route-grouping/driver-push.provider.js';
 import {
   newChildRouteName,
   rebindCurrentOrdersToRouteVersion,
   resolveNewChildRouteIdx,
-  resolveNextGlobalRouteIdx
+  resolveNextGlobalRouteIdx,
+  syncRoutePlanStopsPreservingRows
 } from '../src/modules/route-grouping/route-grouping.service.js';
 import {
   RouteGroupingConflictError,
@@ -15,6 +16,34 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 describe('route grouping contracts', () => {
+  test('moves retained route stops to temporary sequences before compacting them', async () => {
+    const updateMany = vi.fn<(input: { data: { sequence: number }; where: Record<string, unknown> }) => Promise<{ count: number }>>()
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 1 });
+    const tx = {
+      routePlanStop: {
+        create: vi.fn(),
+        deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+        updateMany
+      }
+    };
+
+    await syncRoutePlanStopsPreservingRows(tx as never, 'shop-1', 'route-1', [
+      { deliveryStopId: 'stop-2' },
+      { deliveryStopId: 'stop-1' }
+    ] as never);
+
+    expect(updateMany.mock.calls.map(([input]) => input.data.sequence)).toEqual([
+      -1_000_000_000,
+      -999_999_999,
+      1,
+      2
+    ]);
+    expect(tx.routePlanStop.create).not.toHaveBeenCalled();
+  });
+
   test('creates route plans and groups immediately in Ready state', () => {
     const schema = readFileSync(join(process.cwd(), 'prisma/schema.prisma'), 'utf8');
     const routePlanModel = /model RoutePlan \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';

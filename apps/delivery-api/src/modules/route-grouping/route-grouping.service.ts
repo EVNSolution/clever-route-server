@@ -2416,7 +2416,9 @@ async function rewriteRoutePlanStops(tx: Tx, shopId: string, routePlanId: string
   });
 }
 
-async function syncRoutePlanStopsPreservingRows(tx: Tx, shopId: string, routePlanId: string, assignments: LoadedAssignment[]): Promise<void> {
+const TEMPORARY_ROUTE_PLAN_STOP_SEQUENCE_BASE = -1_000_000_000;
+
+export async function syncRoutePlanStopsPreservingRows(tx: Tx, shopId: string, routePlanId: string, assignments: LoadedAssignment[]): Promise<void> {
   const deliveryStopIds = assignments.map((assignment) => assignment.deliveryStopId);
   await tx.routePlanStop.deleteMany({
     where: {
@@ -2425,6 +2427,17 @@ async function syncRoutePlanStopsPreservingRows(tx: Tx, shopId: string, routePla
       ...(deliveryStopIds.length === 0 ? {} : { deliveryStopId: { notIn: deliveryStopIds } })
     }
   });
+
+  // Move retained rows out of the positive sequence range before compacting them.
+  // Updating directly from e.g. [1, 2, 3] to [2, 1, 3] can transiently violate
+  // the (routePlanId, sequence) unique constraint even though the final order is valid.
+  for (const [index, assignment] of assignments.entries()) {
+    await tx.routePlanStop.updateMany({
+      data: { sequence: TEMPORARY_ROUTE_PLAN_STOP_SEQUENCE_BASE + index },
+      where: { deliveryStopId: assignment.deliveryStopId, routePlanId, shopId }
+    });
+  }
+
   for (const [index, assignment] of assignments.entries()) {
     const updated = await tx.routePlanStop.updateMany({
       data: { sequence: index + 1 },
