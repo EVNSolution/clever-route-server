@@ -50,6 +50,7 @@ checks = {
     'firebase_runtime_env': "'FIREBASE_PROJECT_ID': 'clever-routes-prod'" in wrapper and "'GOOGLE_APPLICATION_CREDENTIALS': '/run/secrets/firebase-fcm.json'" in wrapper,
     'firebase_credential_mount': '/srv/clever-route-server/secrets/firebase-fcm.json:/run/secrets/firebase-fcm.json:ro' in compose,
     'uvis_default_disabled': "'UVIS_ENABLED': 'false'" in wrapper and 'UVIS_ENABLED=false' in pathlib.Path('apps/delivery-api/.env.example').read_text(),
+    'uvis_aws_region_rendered_for_host': 'AWS_REGION=ap-northeast-2' in command and 'export AWS_REGION UVIS_ENV_PARAM' in command,
     'uvis_uses_ssm_parameter_name_only': 'UVIS_ENV_PARAM=/clever/route-ops/uvis/runtime-env' in command and 'export AWS_REGION UVIS_ENV_PARAM' in command and 'uvis_param = os.environ.get' in command and 'uvis_param,' in command and "'--with-decryption'" in command,
     'uvis_whitelists_server_env': 'uvis_allowed_keys = {' in command and "'UVIS_ALLOWED_OUTBOUND_URLS'" in command and "'UVIS_COMPANY_SERIAL_KEY'" in command and "'UVIS_SHOP_DOMAIN'" in command and 'unsupported key: {key}' in command,
     'uvis_runtime_env_permissions': 'path.chmod(0o600)' in command,
