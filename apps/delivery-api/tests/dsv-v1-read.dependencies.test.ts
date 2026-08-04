@@ -248,7 +248,7 @@ describe('DsvV1SessionResolver', () => {
         customerId: true,
         id: true,
         issuer: true,
-        shop: { select: { id: true } },
+        shop: { select: { id: true, shopDomain: true } },
         shopId: true,
         status: true,
         subject: true,
@@ -259,6 +259,7 @@ describe('DsvV1SessionResolver', () => {
       customerId,
       principalType: 'CUSTOMER_USER',
       scopes: ['dsv:session:read', 'dsv:customer-deliveries:read'],
+      shopDomain: 'example.myshopify.com',
       shopId,
     });
   });
@@ -313,7 +314,7 @@ type CustomerAccountRow = {
   customerId: string;
   id: string;
   issuer: string;
-  shop: { id: string };
+  shop: { id: string; shopDomain: string };
   shopId: string;
   status: string;
   subject: string;
@@ -325,7 +326,7 @@ type CustomerAccountFindUnique = (args: {
     customerId: true;
     id: true;
     issuer: true;
-    shop: { select: { id: true } };
+    shop: { select: { id: true; shopDomain: true } };
     shopId: true;
     status: true;
     subject: true;
@@ -394,7 +395,7 @@ function customerAccountRow(input: {
     customerId,
     id: accountId,
     issuer: 'customer-portal',
-    shop: { id: input.canonicalShopId ?? shopId },
+    shop: { id: input.canonicalShopId ?? shopId, shopDomain: 'example.myshopify.com' },
     shopId,
     status: input.status ?? 'ACTIVE',
     subject: 'customer@example.com',

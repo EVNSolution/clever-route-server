@@ -45,6 +45,7 @@ export type DsvAdminPrincipal = DsvPrincipalBase & {
 export type DsvCustomerUserPrincipal = DsvPrincipalBase & {
   customerId: string;
   principalType: 'CUSTOMER_USER';
+  shopDomain?: string;
 };
 
 export type DsvDriverPrincipal = DsvPrincipalBase & {
@@ -133,6 +134,7 @@ export function normalizeDsvScopes(values: readonly string[]): DsvScope[] | null
 
 export function createDsvCustomerUserPrincipalFromAccount(input: {
   account: { customerId: string; shopId: string; status: string };
+  shopDomain?: string;
 }): DsvCustomerUserPrincipal {
   if (input.account.status !== 'ACTIVE') {
     const principal: DsvPrincipal = {
@@ -147,6 +149,7 @@ export function createDsvCustomerUserPrincipalFromAccount(input: {
     customerId: input.account.customerId,
     principalType: 'CUSTOMER_USER',
     scopes: ['dsv:session:read', 'dsv:customer-deliveries:read'],
+    ...(input.shopDomain === undefined ? {} : { shopDomain: input.shopDomain }),
     shopId: input.account.shopId,
   };
 }

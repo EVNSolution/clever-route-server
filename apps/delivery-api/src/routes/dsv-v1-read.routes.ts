@@ -11,6 +11,10 @@ import type {
   DsvScope,
 } from '../modules/dsv/dsv-principal.js';
 import {
+  cutCustomerScopedRouteGeometry,
+  type DsvV1LngLat,
+} from '../modules/dsv/dsv-customer-route-geometry.js';
+import {
   mapDsvV1ConditionListItem,
   mapDsvV1ControlSummary,
   mapDsvV1CustomerDeliveryInquiryPage,
@@ -24,10 +28,12 @@ import {
   mapDsvV1VehicleListItem,
   toDsvV1ErrorEnvelope,
   toDsvV1SuccessEnvelope,
+  type DsvV1CustomerRouteDto,
   type DsvV1ErrorCode,
 } from '../modules/dsv/dsv-v1-read.dto.js';
 import {
   DsvV1ReadQueryError,
+  type DsvV1CustomerRouteScopeRow,
   type DsvV1CustomerDeliveriesInput,
   type DsvV1DispatchListInput,
   type DsvV1ReadListInput,
@@ -42,7 +48,7 @@ import {
   type DsvTimeConstraintCommandService,
 } from '../modules/dsv/dsv-time-constraint-command.service.js';
 import type { DsvMapProfile } from '../modules/dsv/dsv-map-profile.config.js';
-import type { RoutePlanService } from '../modules/route-plans/route-plan.types.js';
+import type { RoutePlanDetail, RoutePlanService } from '../modules/route-plans/route-plan.types.js';
 import {
   clearAdminWebSessionCookie,
   verifyAdminWebCsrfToken,
@@ -224,24 +230,134 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
   registerTimeConstraintCommandRoutes(app, dependencies);
   registerReadRoute(app, dependencies, 'customer/deliveries', {
     allowedQuery: ['cursor', 'limit', 'serviceDate', 'window'],
-    handler: async (principal, query) => mapDsvV1CustomerDeliveryInquiryPage(
-      await requireQueryService(dependencies).listCustomerDeliveries(requireCustomerPrincipal(principal), query)
-    ),
+    handler: async (principal, query) => {
+      const customerPrincipal = requireCustomerPrincipal(principal);
+      const page = await requireQueryService(dependencies).listCustomerDeliveries(customerPrincipal, query);
+      const routeScope = page.emptyReason === undefined
+        ? await requireQueryService(dependencies).listCustomerRouteScope(customerPrincipal, page.serviceDate)
+        : [];
+      return mapDsvV1CustomerDeliveryInquiryPage({
+        ...page,
+        routes: await buildCustomerScopedRoutes({
+          items: routeScope,
+          ...(dependencies.routePlanService === undefined ? {} : { routePlanService: dependencies.routePlanService }),
+          shopDomain: requireCustomerShopDomain(customerPrincipal),
+        }),
+      });
+    },
     parseQuery: parseCustomerDeliveriesQuery,
     requiredScopes: ['dsv:customer-deliveries:read'],
   });
   registerReadRoute(app, dependencies, 'customers/deliveries', {
     allowedQuery: ['cursor', 'customerId', 'limit', 'serviceDate', 'window'],
-    handler: async (principal, query) => mapDsvV1CustomerDeliveryInquiryPage(
-      await requireQueryService(dependencies).listCustomerDeliveriesForAdmin(
-        requireAdminPrincipal(principal),
+    handler: async (principal, query) => {
+      const adminPrincipal = requireAdminPrincipal(principal);
+      const page = await requireQueryService(dependencies).listCustomerDeliveriesForAdmin(
+        adminPrincipal,
         query.customerId,
         query,
-      )
-    ),
+      );
+      const routeScope = page.emptyReason === undefined
+        ? await requireQueryService(dependencies).listCustomerRouteScopeForAdmin(
+            adminPrincipal,
+            query.customerId,
+            page.serviceDate,
+          )
+        : [];
+      return mapDsvV1CustomerDeliveryInquiryPage({
+        ...page,
+        routes: await buildCustomerScopedRoutes({
+          items: routeScope,
+          ...(dependencies.routePlanService === undefined ? {} : { routePlanService: dependencies.routePlanService }),
+          shopDomain: requireAdminShopDomain(adminPrincipal),
+        }),
+      });
+    },
     parseQuery: parseAdminCustomerDeliveriesQuery,
     requiredScopes: ['dsv:customers:read', 'dsv:dispatches:read'],
   });
+}
+
+async function buildCustomerScopedRoutes(input: {
+  items: readonly DsvV1CustomerRouteScopeRow[];
+  routePlanService?: Pick<RoutePlanService, 'getRoutePlanDetail' | 'listRoutePlans'>;
+  shopDomain: string;
+}): Promise<DsvV1CustomerRouteDto[]> {
+  const routeKeys = uniqueRouteKeys(input.items);
+  if (routeKeys.length === 0) return [];
+  if (input.routePlanService === undefined) {
+    throw new DsvV1DependencyError('DSV route plan read service is not configured');
+  }
+  const routes: DsvV1CustomerRouteDto[] = [];
+  for (const routeKey of routeKeys) {
+    const detail = await input.routePlanService.getRoutePlanDetail({
+      appId: 'clever',
+      routePlanId: routeKey.routePlanId,
+      shopDomain: input.shopDomain,
+    });
+    if (detail === null || detail.routeGeometry === null) continue;
+    const customerOrderIds = new Set(input.items
+      .filter((item) => item.routePlanId === routeKey.routePlanId && item.vehicleId === routeKey.vehicleId)
+      .map((item) => item.sellerOrderId));
+    const lastCustomerStop = detail.stops
+      .filter((stop) => customerOrderIds.has(stop.orderId))
+      .sort((left, right) => right.sequence - left.sequence)[0] ?? null;
+    const end = routeStopEndpoint(detail.routeStopPoints, lastCustomerStop?.deliveryStopId ?? null)
+      ?? stopCoordinates(lastCustomerStop);
+    const start = routeKey.vehiclePosition;
+    if (end === null) continue;
+    const coordinates = cutCustomerScopedRouteGeometry({
+      coordinates: detail.routeGeometry.coordinates,
+      end,
+      start,
+    });
+    if (coordinates === null) continue;
+    routes.push({ coordinates, vehicleId: routeKey.vehicleId });
+  }
+  return routes;
+}
+
+function uniqueRouteKeys(items: readonly DsvV1CustomerRouteScopeRow[]): Array<{
+  routePlanId: string;
+  vehicleId: string;
+  vehiclePosition: DsvV1LngLat;
+}> {
+  const byRouteAndVehicle = new Map<string, { routePlanId: string; vehicleId: string; vehiclePosition: DsvV1LngLat }>();
+  for (const item of items) {
+    if (
+      item.routePlanId === undefined
+      || item.routePlanId === null
+      || item.vehicleId === undefined
+      || item.vehicleId === null
+      || item.vehicleLatitude === undefined
+      || item.vehicleLatitude === null
+      || item.vehicleLongitude === undefined
+      || item.vehicleLongitude === null
+    ) continue;
+    const key = `${item.routePlanId}:${item.vehicleId}`;
+    if (!byRouteAndVehicle.has(key)) {
+      byRouteAndVehicle.set(key, {
+        routePlanId: item.routePlanId,
+        vehicleId: item.vehicleId,
+        vehiclePosition: [item.vehicleLongitude, item.vehicleLatitude],
+      });
+    }
+  }
+  return [...byRouteAndVehicle.values()];
+}
+
+function routeStopEndpoint(
+  stopPoints: RoutePlanDetail['routeStopPoints'],
+  deliveryStopId: string | null,
+): DsvV1LngLat | null {
+  if (deliveryStopId === null) return null;
+  const stopPoint = stopPoints.find((point) => point.deliveryStopId === deliveryStopId) ?? null;
+  return stopPoint?.snappedCoordinates ?? stopPoint?.inputCoordinates ?? null;
+}
+
+function stopCoordinates(stop: RoutePlanDetail['stops'][number] | null): DsvV1LngLat | null {
+  if (stop === null || stop.coordinates.latitude === null || stop.coordinates.longitude === null) return null;
+  return [stop.coordinates.longitude, stop.coordinates.latitude];
 }
 
 function registerTimeConstraintCommandRoutes(app: FastifyInstance, dependencies: DsvV1ReadDependencies): void {
@@ -656,6 +772,14 @@ function requireAdminShopDomain(principal: DsvAdminPrincipal): string {
 function requireCustomerPrincipal(principal: DsvPrincipal): DsvCustomerUserPrincipal {
   if (principal.principalType === 'CUSTOMER_USER') return principal;
   throw new DsvForbiddenError({ principal, requiredScopes: ['dsv:customer-deliveries:read'] });
+}
+
+function requireCustomerShopDomain(principal: DsvCustomerUserPrincipal): string {
+  const shopDomain = principal.shopDomain?.trim();
+  if (shopDomain === undefined || shopDomain === '') {
+    throw new DsvV1DependencyError('DSV customer shop domain is not available');
+  }
+  return shopDomain;
 }
 
 export class DsvV1AuthenticationError extends Error {

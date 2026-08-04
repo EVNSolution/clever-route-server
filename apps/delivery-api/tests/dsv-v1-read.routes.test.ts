@@ -16,6 +16,7 @@ import {
   createDsvCustomerUserPrincipalFromAccount,
 } from '../src/modules/dsv/dsv-principal.js';
 import { DsvV1ReadQueryError } from '../src/modules/dsv/dsv-v1-read-query.service.js';
+import type { DsvV1CustomerDeliveryInquiryRow } from '../src/modules/dsv/dsv-v1-read.dto.js';
 import {
   DsvTimeConstraintCommandError,
   type DsvTimeConstraintCommandService,
@@ -600,6 +601,7 @@ describe('DSV v1 read routes', () => {
           },
         ],
         page: { hasMore: false },
+        routes: [],
       });
       expect(queryService.listCustomerDeliveries).toHaveBeenCalledWith(
         expect.objectContaining({ customerId, principalType: 'CUSTOMER_USER', shopId }),
@@ -613,6 +615,96 @@ describe('DSV v1 read routes', () => {
       });
       expect(overrideAttempt.statusCode).toBe(400);
       expectDsvV1Error(overrideAttempt, { code: 'BAD_REQUEST', message: 'Unsupported query parameter' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns only customer-scoped route geometry without route or stop metadata', async () => {
+    const { app, queryService, routePlanService } = await createHarness();
+    const customer = signedCookie(`dsv-customer-account:${accountId}`);
+    try {
+      queryService.listCustomerDeliveries.mockResolvedValueOnce({
+        items: [
+          customerDeliveryRow({
+            routePlanId: 'route-plan-1',
+            sellerOrderId: 'order-customer-first',
+            sellerOrderKey: 'SO-C1',
+            vehicleId: 'vehicle-1',
+            vehicleLatitude: 37.5,
+            vehicleLongitude: 126.905,
+          }),
+        ],
+        page: { hasMore: true, nextCursor: 'next-customer-page' },
+        serviceDate: '2026-07-23',
+        timezone: 'Asia/Seoul',
+      });
+      queryService.listCustomerRouteScope.mockResolvedValueOnce([
+        {
+          routePlanId: 'route-plan-1',
+          sellerOrderId: 'order-customer-first',
+          vehicleId: 'vehicle-1',
+          vehicleLatitude: 37.5,
+          vehicleLongitude: 126.905,
+        },
+        {
+          routePlanId: 'route-plan-1',
+          sellerOrderId: 'order-customer-last',
+          vehicleId: 'vehicle-1',
+          vehicleLatitude: 37.5,
+          vehicleLongitude: 126.905,
+        },
+      ]);
+      routePlanService.getRoutePlanDetail.mockResolvedValueOnce(routePlanDetail({
+        routeGeometry: {
+          coordinates: [[126.9, 37.5], [126.91, 37.5], [126.92, 37.5], [126.93, 37.5], [126.94, 37.5]],
+          type: 'LineString',
+        },
+        routeStopPoints: [
+          routeStopPoint({ deliveryStopId: 'other-before-stop', sequence: 1, shopifyOrderGid: 'other-before' }),
+          routeStopPoint({ deliveryStopId: 'customer-first-stop', sequence: 2, shopifyOrderGid: 'order-customer-first' }),
+          routeStopPoint({ deliveryStopId: 'customer-last-stop', sequence: 3, shopifyOrderGid: 'order-customer-last' }),
+          routeStopPoint({ deliveryStopId: 'other-after-stop', sequence: 4, shopifyOrderGid: 'other-after' }),
+        ],
+        stops: [
+          routeDetailStop({ deliveryStopId: 'other-before-stop', orderId: 'other-before', orderName: 'OTHER-BEFORE', sequence: 1 }),
+          routeDetailStop({ deliveryStopId: 'customer-first-stop', orderId: 'order-customer-first', orderName: 'SO-C1', sequence: 2 }),
+          routeDetailStop({ deliveryStopId: 'customer-last-stop', orderId: 'order-customer-last', orderName: 'SO-C2', sequence: 3 }),
+          routeDetailStop({ deliveryStopId: 'other-after-stop', orderId: 'other-after', orderName: 'OTHER-AFTER', sequence: 4 }),
+        ],
+      }));
+
+      const response = await app.inject({
+        headers: { cookie: customer.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/customer/deliveries?serviceDate=2026-07-23',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = expectDsvV1Metadata(response);
+      expect(body.data).toMatchObject({
+        routes: [{
+          coordinates: [[126.905, 37.5], [126.91, 37.5], [126.92, 37.5]],
+          vehicleId: 'vehicle-1',
+        }],
+      });
+      expect(routePlanService.getRoutePlanDetail).toHaveBeenCalledWith({
+        appId: 'clever',
+        routePlanId: 'route-plan-1',
+        shopDomain: 'tomatonofood.com',
+      });
+      expect(queryService.listCustomerRouteScope).toHaveBeenCalledWith(
+        expect.objectContaining({ customerId, principalType: 'CUSTOMER_USER', shopId }),
+        '2026-07-23',
+      );
+      const serialized = JSON.stringify(body.data);
+      expect(serialized).not.toContain('route-plan-1');
+      expect(serialized).not.toContain('other-before');
+      expect(serialized).not.toContain('other-after');
+      expect(serialized).not.toContain('other-before-stop');
+      expect(serialized).not.toContain('other-after-stop');
+      expect(serialized).not.toContain('shopifyOrderGid');
+      expect(serialized).not.toContain('deliveryStopId');
     } finally {
       await app.close();
     }
@@ -829,6 +921,8 @@ function createQueryService(): MockQueryService {
     })),
     listCustomerDeliveries: vi.fn(() => Promise.resolve({ items: [], page: { hasMore: false }, serviceDate: '2026-07-23', timezone: 'Asia/Seoul' })),
     listCustomerDeliveriesForAdmin: vi.fn(() => Promise.resolve({ items: [], page: { hasMore: false }, serviceDate: '2026-07-23', timezone: 'Asia/Seoul' })),
+    listCustomerRouteScope: vi.fn(() => Promise.resolve([])),
+    listCustomerRouteScopeForAdmin: vi.fn(() => Promise.resolve([])),
     listCustomers: vi.fn(() => Promise.resolve(list)),
     listDestinations: vi.fn(() => Promise.resolve(list)),
     listDispatches: vi.fn(() => Promise.resolve({
@@ -884,7 +978,25 @@ function routePlanSummary(): RoutePlanSummary {
   };
 }
 
-function routePlanDetail(): RoutePlanDetail {
+function customerDeliveryRow(overrides: Partial<DsvV1CustomerDeliveryInquiryRow> = {}): DsvV1CustomerDeliveryInquiryRow {
+  return { ...customerDeliveryDefaults(), ...overrides };
+}
+
+function customerDeliveryDefaults(): DsvV1CustomerDeliveryInquiryRow {
+  return {
+    deliveryStatus: 'PENDING',
+    destinationDisplayName: 'Shared Destination X',
+    destinationId: 'destination-shared',
+    etaStatus: 'READY' as const,
+    eventRows: [],
+    proofRows: [],
+    sellerOrderId: 'order-a',
+    sellerOrderKey: 'SO-A',
+    shippedBoxes: 1,
+  };
+}
+
+function routePlanDetail(overrides: Partial<RoutePlanDetail> = {}): RoutePlanDetail {
   return {
     routeGeometry: { coordinates: [[126.9, 37.5], [127, 37.6]], type: 'LineString' },
     routeGeometryGeneratedAt: '2026-07-23T00:01:00.000Z',
@@ -902,6 +1014,49 @@ function routePlanDetail(): RoutePlanDetail {
       snappedCoordinates: [127, 37.6],
     }],
     stops: [],
+    ...overrides,
+  };
+}
+
+function routeStopPoint(overrides: Partial<RoutePlanDetail['routeStopPoints'][number]> = {}): RoutePlanDetail['routeStopPoints'][number] {
+  return {
+    deliveryStopId: 'stop-1',
+    durationFromPreviousSeconds: 420,
+    inputCoordinates: [126.92, 37.5],
+    name: null,
+    sequence: 1,
+    shopifyOrderGid: 'order-1',
+    snapDistanceMeters: 0,
+    snappedCoordinates: [126.92, 37.5],
+    ...overrides,
+  };
+}
+
+function routeDetailStop(overrides: Partial<RoutePlanDetail['stops'][number]> = {}): RoutePlanDetail['stops'][number] {
+  return {
+    address: {
+      address1: null,
+      address2: null,
+      city: null,
+      countryCode: null,
+      postalCode: null,
+      province: null,
+    },
+    attributes: [],
+    coordinates: { latitude: 37.5, longitude: 126.92 },
+    deliveryArea: null,
+    deliveryDay: null,
+    deliveryStopId: 'stop-1',
+    financialStatus: null,
+    fulfillmentStatus: null,
+    orderId: 'order-1',
+    orderName: 'SO-1',
+    paymentStatus: null,
+    recipientName: null,
+    sequence: 1,
+    shopifyOrderGid: 'order-1',
+    status: 'PENDING',
+    ...overrides,
   };
 }
 
@@ -922,6 +1077,7 @@ function createSessionResolver(): MockSessionResolver {
             shopId,
             status: 'ACTIVE',
           },
+          shopDomain: 'tomatonofood.com',
         }));
       }
       return Promise.reject(new DsvV1AuthenticationError());

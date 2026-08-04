@@ -38,6 +38,40 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(prisma.$transaction).toBeUndefined();
   });
 
+  test('loads the complete lightweight customer route scope independently of page size', async () => {
+    const prisma = prismaMock({
+      order: { findMany: vi.fn(() => Promise.resolve([
+        {
+          currentRouteVersion: {
+            routePlanId: 'route-a',
+            routePlan: {
+              trackingGeometry: { lastLatitude: '37.5000000', lastLongitude: '127.0000000' },
+              vehicleId: 'vehicle-a',
+            },
+          },
+          id: 'order-a',
+        },
+        { currentRouteVersion: null, id: 'order-without-route' },
+      ])) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never);
+
+    await expect(service.listCustomerRouteScope(customerPrincipal(), '2026-07-22')).resolves.toEqual([{
+      routePlanId: 'route-a',
+      sellerOrderId: 'order-a',
+      vehicleId: 'vehicle-a',
+      vehicleLatitude: 37.5,
+      vehicleLongitude: 127,
+    }]);
+    const query = firstMockArg<OrderFindManyQuery>(prisma.order.findMany);
+    expect(query?.take).toBeUndefined();
+    expect(query?.where).toMatchObject({
+      customerId: 'customer-a',
+      deliveryStops: { some: { deliveryDate: new Date('2026-07-22T00:00:00.000Z'), shopId: 'shop-a' } },
+      shopId: 'shop-a',
+    });
+  });
+
   test('resolves tenant timezone from the single active commerce connection timezone', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'America/Toronto' }])) },

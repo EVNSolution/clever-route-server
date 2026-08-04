@@ -384,6 +384,7 @@ export type DsvV1CustomerDeliveryInquiryRow = DsvV1RoutePlanStopEtaInput & {
   latitude?: number | null;
   longitude?: number | null;
   proofRows?: readonly DsvV1ProofRowInput[];
+  routePlanId?: string | null;
   sellerOrderId: string;
   sellerOrderKey: string;
   shippedBoxes: number;
@@ -391,6 +392,11 @@ export type DsvV1CustomerDeliveryInquiryRow = DsvV1RoutePlanStopEtaInput & {
   vehicleId?: string | null;
   vehicleLatitude?: number | null;
   vehicleLongitude?: number | null;
+};
+
+export type DsvV1CustomerRouteDto = {
+  coordinates: Array<[number, number]>;
+  vehicleId: string;
 };
 
 export type DsvV1CustomerDeliveryInquiryItemDto = {
@@ -417,6 +423,7 @@ export type DsvV1CustomerDeliveryInquiryPageDto = {
   emptyReason?: string;
   items: DsvV1CustomerDeliveryInquiryItemDto[];
   page?: DsvV1PageInfo;
+  routes: DsvV1CustomerRouteDto[];
 };
 
 const allowedPublicEventTypes = new Set([
@@ -668,11 +675,16 @@ export function mapDsvV1CustomerDeliveryInquiryPage(input: {
   emptyReason?: string;
   items: readonly DsvV1CustomerDeliveryInquiryRow[];
   page?: DsvV1PageInfo;
+  routes: readonly DsvV1CustomerRouteDto[];
 }): DsvV1CustomerDeliveryInquiryPageDto {
   return {
     ...(input.emptyReason === undefined ? {} : { emptyReason: input.emptyReason }),
     items: input.items.map(mapDsvV1CustomerDeliveryInquiryItem),
     ...optionalPage(input.page),
+    routes: input.routes.map((route) => ({
+      coordinates: route.coordinates.map((coordinate) => [coordinate[0], coordinate[1]]),
+      vehicleId: route.vehicleId,
+    })),
   };
 }
 
