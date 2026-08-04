@@ -120,6 +120,68 @@ describe('PrismaOrderQueryRepository page query', () => {
     expect(findMany).not.toHaveBeenCalled();
   });
 
+  test('uses one stable snapshot filter for numeric page 3 exact count and offset', async () => {
+    const findMany = vi.fn<(query: unknown) => Promise<unknown[]>>(() => Promise.resolve([]));
+    const count = vi.fn<(query: unknown) => Promise<number>>(() => Promise.resolve(123));
+    const repository = new PrismaOrderQueryRepository(
+      prismaHarness({ count, findMany, missingSequence: null }),
+      'test-secret'
+    );
+
+    const page = await repository.listPage({
+      page: 3,
+      readWatermark: '2026-08-04T00:00:00.000Z',
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(page).toMatchObject({
+      count: 123,
+      countPrecision: 'exact',
+      pageInfo: {
+        currentPage: 3,
+        hasNextPage: false,
+        hasPreviousPage: true,
+        readWatermark: '2026-08-04T00:00:00.000Z',
+        totalPages: 3
+      },
+      rows: []
+    });
+    expect(count).toHaveBeenCalledOnce();
+    expect(findMany).toHaveBeenCalledOnce();
+    const countQuery = firstCallArg(count) as { where: unknown };
+    const findManyQuery = firstCallArg(findMany) as { orderBy?: unknown; skip?: unknown; take?: unknown; where?: unknown };
+    expect(findManyQuery.orderBy).toEqual([{ displayOrderSequence: 'desc' }, { id: 'desc' }]);
+    expect(findManyQuery.skip).toBe(100);
+    expect(findManyQuery.take).toBe(50);
+    expect(findManyQuery.where).toEqual(countQuery.where);
+    expect(JSON.stringify(findManyQuery.where)).toContain('2026-08-04T00:00:00.000Z');
+  });
+
+  test('keeps numeric page totals consistent with normalized filters', async () => {
+    const findMany = vi.fn<(query: unknown) => Promise<unknown[]>>(() => Promise.resolve([]));
+    const count = vi.fn<(query: unknown) => Promise<number>>(() => Promise.resolve(8));
+    const repository = new PrismaOrderQueryRepository(
+      prismaHarness({ count, findMany, missingSequence: null }),
+      'test-secret'
+    );
+
+    const page = await repository.listPage({
+      filters: { deliveryState: 'planned', routeOpsToday: '2026-08-04', scope: 'planning' },
+      page: 1,
+      shopDomain: 'example.myshopify.com'
+    });
+
+    expect(page.count).toBe(8);
+    expect(page.pageInfo.currentPage).toBe(1);
+    expect(page.pageInfo.totalPages).toBe(1);
+    const countQuery = firstCallArg(count);
+    const findManyQuery = firstCallArg(findMany) as { where?: unknown };
+    expect(findManyQuery.where).toEqual((countQuery as { where: unknown }).where);
+    const whereJson = JSON.stringify(countQuery);
+    expect(whereJson).toContain('routePlanStops');
+    expect(whereJson).toContain('2026-08-04T00:00:00.000Z');
+  });
+
   test('persists only keyed hashes and canonical ids for a PII-bearing selection filter', async () => {
     const snapshotCreate = vi.fn<(input: { data: unknown }) => Promise<{
       expiresAt: Date;
@@ -614,9 +676,10 @@ function firstCallArg(mock: { mock: { calls: unknown[][] } }): unknown {
   return firstCall[0];
 }
 
-function prismaHarness(input: { findMany: ReturnType<typeof vi.fn>; missingSequence: { id: string } | null }): PrismaClient {
+function prismaHarness(input: { count?: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn>; missingSequence: { id: string } | null }): PrismaClient {
   return {
     order: {
+      count: input.count ?? vi.fn(() => Promise.resolve(0)),
       findFirst: vi.fn(() => Promise.resolve(input.missingSequence)),
       findMany: input.findMany
     },

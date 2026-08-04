@@ -29,13 +29,17 @@ type SnapshotSkippedReason = typeof SNAPSHOT_SKIPPED_REASON_KEYS[number];
 type SnapshotSkippedReasonCounts = Record<SnapshotSkippedReason, number>;
 
 export type OrdersPageResult = {
+  count: number | null;
+  countPrecision: 'exact' | 'unknown';
   filterHash: string;
   pageInfo: {
+    currentPage?: number;
     endCursor: string | null;
     hasNextPage: boolean;
     hasPreviousPage: boolean;
     readWatermark: string;
     startCursor: string | null;
+    totalPages?: number;
   };
   rows: CanonicalOrderRow[];
   sort: typeof ORDERS_SORT;
@@ -70,16 +74,31 @@ export class PrismaOrderQueryRepository {
     appId?: string;
     before?: string;
     filters?: ListCanonicalOrdersFilters;
+    page?: number;
+    readWatermark?: string;
     shopDomain: string;
   }): Promise<OrdersPageResult> {
     if (input.after !== undefined && input.before !== undefined) {
       throw new Error('after and before are mutually exclusive');
+    }
+    if (input.page !== undefined && (input.after !== undefined || input.before !== undefined)) {
+      throw new Error('page cannot be combined with cursors');
     }
     const filters = input.filters ?? {};
     const shop = await this.findShop(input);
     if (shop === null) return emptyPage(createOrdersFilterHash(filters, this.secret));
     const appId = normalizeShopifyAppId(input.appId);
     const filterHash = createOrdersFilterHash(filters, this.secret);
+    if (input.page !== undefined) {
+      return this.listNumericPage({
+        appId,
+        filterHash,
+        filters,
+        page: input.page,
+        ...(input.readWatermark === undefined ? {} : { readWatermark: input.readWatermark }),
+        shopId: shop.id
+      });
+    }
     const cursorValue = input.after ?? input.before;
     const boundary = input.before === undefined ? 'after' : 'before';
     const cursor = cursorValue === undefined ? null : decodeOrdersCursor(cursorValue, {
@@ -134,6 +153,8 @@ export class PrismaOrderQueryRepository {
     const start = kept[0];
     const end = kept.at(-1);
     return {
+      count: null,
+      countPrecision: 'unknown',
       filterHash,
       pageInfo: {
         endCursor: end === undefined ? null : this.cursorFor(end, { appId, boundary: 'after', filterHash, readWatermark, shopId: shop.id }),
@@ -143,6 +164,58 @@ export class PrismaOrderQueryRepository {
         startCursor: start === undefined ? null : this.cursorFor(start, { appId, boundary: 'before', filterHash, readWatermark, shopId: shop.id })
       },
       rows: mapped,
+      sort: ORDERS_SORT
+    };
+  }
+
+  private async listNumericPage(input: {
+    appId: string;
+    filterHash: string;
+    filters: ListCanonicalOrdersFilters;
+    page: number;
+    readWatermark?: string;
+    shopId: string;
+  }): Promise<OrdersPageResult> {
+    if (!Number.isSafeInteger(input.page) || input.page < 1) throw new Error('invalid page');
+    const readWatermark = input.readWatermark ?? new Date().toISOString();
+    if (!Number.isFinite(Date.parse(readWatermark))) throw new Error('invalid readWatermark');
+    const missingSequence = await this.prisma.order.findFirst({
+      select: { id: true },
+      where: { AND: [toCanonicalOrderWhere(input.shopId, input.filters), { displayOrderSequence: null }] }
+    });
+    if (missingSequence !== null) throw new OrdersPaginationNotReadyError();
+
+    const where: Prisma.OrderWhereInput = {
+      AND: [
+        toCanonicalOrderWhere(input.shopId, input.filters),
+        { createdAt: { lte: new Date(readWatermark) }, displayOrderSequence: { not: null } }
+      ]
+    };
+    const count = await this.prisma.order.count({ where });
+    const totalPages = Math.ceil(count / ORDERS_PAGE_SIZE);
+    const rows = await this.prisma.order.findMany({
+      include: canonicalOrderInclude(),
+      orderBy: [{ displayOrderSequence: 'desc' }, { id: 'desc' }],
+      skip: (input.page - 1) * ORDERS_PAGE_SIZE,
+      take: ORDERS_PAGE_SIZE,
+      where
+    }) as CanonicalOrderRecord[];
+    const start = rows[0];
+    const end = rows.at(-1);
+    return {
+      count,
+      countPrecision: 'exact',
+      filterHash: input.filterHash,
+      pageInfo: {
+        currentPage: input.page,
+        endCursor: end === undefined ? null : this.cursorFor(end, { appId: input.appId, boundary: 'after', filterHash: input.filterHash, readWatermark, shopId: input.shopId }),
+        hasNextPage: input.page < totalPages,
+        hasPreviousPage: count > 0 && input.page > 1,
+        readWatermark,
+        startCursor: start === undefined ? null : this.cursorFor(start, { appId: input.appId, boundary: 'before', filterHash: input.filterHash, readWatermark, shopId: input.shopId }),
+        totalPages
+      },
+      rows: rows.map(toCanonicalOrderRow),
       sort: ORDERS_SORT
     };
   }
@@ -484,7 +557,7 @@ export class PrismaOrderQueryRepository {
 }
 
 function emptyPage(filterHash: string): OrdersPageResult {
-  return { filterHash, pageInfo: { endCursor: null, hasNextPage: false, hasPreviousPage: false, readWatermark: new Date().toISOString(), startCursor: null }, rows: [], sort: ORDERS_SORT };
+  return { count: 0, countPrecision: 'exact', filterHash, pageInfo: { currentPage: 1, endCursor: null, hasNextPage: false, hasPreviousPage: false, readWatermark: new Date().toISOString(), startCursor: null, totalPages: 0 }, rows: [], sort: ORDERS_SORT };
 }
 
 function emptyFacets() {

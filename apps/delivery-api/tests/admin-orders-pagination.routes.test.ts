@@ -6,6 +6,8 @@ import type { AdminOrdersDependencies } from '../src/routes/admin-orders.routes.
 describe('admin orders pagination resources', () => {
   test('normalizes the app filter grammar before invoking the page query', async () => {
     const listCanonicalOrdersPage = vi.fn(() => Promise.resolve({
+      count: null,
+      countPrecision: 'unknown' as const,
       filterHash: 'hmac-sha256:filter',
       pageInfo: { endCursor: null, hasNextPage: false, hasPreviousPage: false, readWatermark: '2026-08-04T00:00:00.000Z', startCursor: null },
       rows: [],
@@ -56,15 +58,78 @@ describe('admin orders pagination resources', () => {
     } finally { await app.close(); }
   });
 
-  test('rejects unknown filters and ambiguous cursor direction before repository invocation', async () => {
+  test('returns exact counts and numeric page metadata for page requests', async () => {
+    const listCanonicalOrdersPage = vi.fn(() => Promise.resolve({
+      count: 123,
+      countPrecision: 'exact' as const,
+      filterHash: 'hmac-sha256:filter',
+      pageInfo: {
+        currentPage: 3,
+        endCursor: 'end-cursor',
+        hasNextPage: false,
+        hasPreviousPage: true,
+        readWatermark: '2026-08-04T00:00:00.000Z',
+        startCursor: 'start-cursor',
+        totalPages: 3
+      },
+      rows: [],
+      sort: 'id_desc' as const
+    }));
+    const app = await buildApp({ adminOrders: dependencies({ listCanonicalOrdersPage }) });
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'GET',
+        url: '/admin/orders/page?pageSize=50&sort=id_desc&page=3&readWatermark=2026-08-04T00%3A00%3A00.000Z&deliveryState=planned'
+      });
+      expect(response.statusCode).toBe(200);
+      expect(JSON.parse(response.body)).toEqual({
+        data: {
+          freshness: {},
+          pageInfo: {
+            currentPage: 3,
+            endCursor: 'end-cursor',
+            hasNextPage: false,
+            hasPreviousPage: true,
+            pageSize: 50,
+            readWatermark: '2026-08-04T00:00:00.000Z',
+            sort: 'id_desc',
+            startCursor: 'start-cursor',
+            totalPages: 3
+          },
+          result: {
+            count: 123,
+            countPrecision: 'exact',
+            filterHash: 'hmac-sha256:filter',
+            readWatermark: '2026-08-04T00:00:00.000Z'
+          },
+          rows: []
+        },
+        error: null
+      });
+      expect(listCanonicalOrdersPage).toHaveBeenCalledWith({
+        appId: 'clever',
+        filters: { deliveryState: 'planned' },
+        page: 3,
+        readWatermark: '2026-08-04T00:00:00.000Z',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally { await app.close(); }
+  });
+
+  test('rejects unknown filters, invalid page values, and ambiguous cursor direction before repository invocation', async () => {
     const listCanonicalOrdersPage = vi.fn();
     const app = await buildApp({ adminOrders: dependencies({ listCanonicalOrdersPage }) });
     try {
       const unknown = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'GET', url: '/admin/orders/page?pageSize=50&sort=id_desc&unknown=value' });
       const ambiguous = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'GET', url: '/admin/orders/page?pageSize=50&sort=id_desc&after=a&before=b' });
+      const invalidPage = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'GET', url: '/admin/orders/page?pageSize=50&sort=id_desc&page=0' });
+      const mixedPageAndCursor = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'GET', url: '/admin/orders/page?pageSize=50&sort=id_desc&page=1&after=a' });
       const missingToday = await app.inject({ headers: { authorization: 'Bearer session-token' }, method: 'GET', url: '/admin/orders/page?pageSize=50&sort=id_desc&scope=planning' });
       expect(unknown.statusCode).toBe(400);
       expect(ambiguous.statusCode).toBe(400);
+      expect(invalidPage.statusCode).toBe(400);
+      expect(mixedPageAndCursor.statusCode).toBe(400);
       expect(missingToday.statusCode).toBe(400);
       expect(JSON.parse(missingToday.body) as unknown).toEqual({
         data: null,
