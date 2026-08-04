@@ -46,7 +46,7 @@ describe('PrismaUvisTelemetryRepository', () => {
       vehicleId,
     });
 
-    expect(sample.create).toHaveBeenCalledWith({
+    expect(sample.createMany).toHaveBeenCalledWith({
       data: {
         deviceId,
         distanceTodayKm: '82.40',
@@ -64,9 +64,9 @@ describe('PrismaUvisTelemetryRepository', () => {
         staleAfter,
         vehicleId,
       },
-      select: { id: true },
+      skipDuplicates: true,
     });
-    const sampleCreateInput = sample.create.mock.calls[0]?.[0] as { data: Record<string, unknown> };
+    const sampleCreateInput = sample.createMany.mock.calls[0]?.[0] as { data: Record<string, unknown> };
     const sampleData = sampleCreateInput.data;
     expect(sampleData).not.toHaveProperty('payload');
     expect(sampleData).not.toHaveProperty('rawPayload');
@@ -107,7 +107,7 @@ describe('PrismaUvisTelemetryRepository', () => {
       vehicleId,
     });
 
-    expect(sample.create).toHaveBeenCalledOnce();
+    expect(sample.createMany).toHaveBeenCalledOnce();
     expect(current.create).not.toHaveBeenCalled();
     const currentUpdateInput = current.updateMany.mock.calls[0]?.[0] as {
       data: Record<string, unknown>;
@@ -128,7 +128,7 @@ describe('PrismaUvisTelemetryRepository', () => {
 
   test('treats device source kind observedAt conflicts as duplicate samples and leaves current unchanged', async () => {
     const { current, prisma, sample } = createHarness({
-      createSampleError: Object.assign(new Error('duplicate telemetry sample'), { code: 'P2002' }),
+      sampleInsertCount: 0,
       existingSampleId: 'existing-sample-id',
       vehiclePlate: '21사 6101',
     });
@@ -187,7 +187,7 @@ describe('PrismaUvisTelemetryRepository', () => {
       vehicleId,
     });
 
-    const sampleCreateInput = sample.create.mock.calls[0]?.[0] as { data: Record<string, unknown> };
+    const sampleCreateInput = sample.createMany.mock.calls[0]?.[0] as { data: Record<string, unknown> };
     const currentUpdateInput = current.updateMany.mock.calls[0]?.[0] as { data: Record<string, unknown> };
     expect(sampleCreateInput.data).toMatchObject({
       plateMatched: false,
@@ -228,30 +228,29 @@ describe('PrismaUvisTelemetryRepository', () => {
     })).rejects.toBeInstanceOf(UvisTelemetryObservedAtSkewError);
 
     expect(device.findUnique).not.toHaveBeenCalled();
-    expect(sample.create).not.toHaveBeenCalled();
+    expect(sample.createMany).not.toHaveBeenCalled();
     expect(current.updateMany).not.toHaveBeenCalled();
     expect(current.create).not.toHaveBeenCalled();
   });
 });
 
 function createHarness(input: {
-  createSampleError?: Error;
   currentUpdateCount?: number;
   device?: { id: string; shopId: string; vehicleId: string; vehicle: { licensePlate: string | null } } | null;
   existingCurrent?: { id: string; observedAt: Date } | null;
   existingSampleId?: string;
+  sampleInsertCount?: number;
   sampleId?: string;
   vehiclePlate?: string | null;
 }) {
   const sample = {
-    create: vi.fn((args: unknown) => {
+    createMany: vi.fn((args: unknown) => {
       void args;
-      if (input.createSampleError !== undefined) return Promise.reject(input.createSampleError);
-      return Promise.resolve({ id: input.sampleId ?? 'sample-id' });
+      return Promise.resolve({ count: input.sampleInsertCount ?? 1 });
     }),
     findUnique: vi.fn((args: unknown) => {
       void args;
-      return Promise.resolve({ id: input.existingSampleId ?? 'existing-sample-id' });
+      return Promise.resolve({ id: input.existingSampleId ?? input.sampleId ?? 'sample-id' });
     }),
   };
   const current = {

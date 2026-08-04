@@ -192,27 +192,24 @@ async function createSample(
   input: UvisTelemetrySampleInput,
   sampleData: ReturnType<typeof telemetryData>,
 ): Promise<{ duplicate: boolean; id: string }> {
-  try {
-    const sample = await transaction.uvisVehicleTelemetrySample.create({
-      data: sampleData,
-      select: { id: true },
-    });
-    return { duplicate: false, id: sample.id };
-  } catch (error) {
-    if (!isUniqueConstraintError(error)) throw error;
-    const existing = await transaction.uvisVehicleTelemetrySample.findUnique({
-      select: { id: true },
-      where: {
-        deviceId_sourceKind_observedAt: {
-          deviceId: input.deviceId,
-          observedAt: input.observedAt,
-          sourceKind: input.sourceKind,
-        },
+  const inserted = await transaction.uvisVehicleTelemetrySample.createMany({
+    data: sampleData,
+    skipDuplicates: true,
+  });
+  const sample = await transaction.uvisVehicleTelemetrySample.findUnique({
+    select: { id: true },
+    where: {
+      deviceId_sourceKind_observedAt: {
+        deviceId: input.deviceId,
+        observedAt: input.observedAt,
+        sourceKind: input.sourceKind,
       },
-    });
-    if (existing === null) throw error;
-    return { duplicate: true, id: existing.id };
+    },
+  });
+  if (sample === null) {
+    throw new Error('UVIS telemetry sample was not found after insert');
   }
+  return { duplicate: inserted.count === 0, id: sample.id };
 }
 
 function telemetryData(
