@@ -187,6 +187,30 @@ describe('admin customer email routes', () => {
     }
   });
 
+  test('rejects oversized test subject and body overrides before sending', async () => {
+    const { dependencies, service } = createHarness();
+    const app = await buildApp({ adminCustomerEmail: dependencies });
+
+    try {
+      for (const payload of [
+        { recipientEmail: 'customer@example.com', subject: 's'.repeat(201) },
+        { body: 'b'.repeat(10_001), recipientEmail: 'customer@example.com' },
+      ]) {
+        const response = await app.inject({
+          headers: { authorization: 'Bearer session-token' },
+          method: 'POST',
+          payload,
+          url: '/admin/customer-email/test',
+        });
+
+        expect(response.statusCode).toBe(400);
+      }
+      expect(service.sendTest).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('stores authenticated customer email logo uploads as content-addressed public assets', async () => {
     const assetsDirectory = await mkdtemp(join(tmpdir(), 'customer-email-assets-'));
     const { dependencies } = createHarness({

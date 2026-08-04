@@ -720,6 +720,8 @@ export function readCustomerEmailTestPayload(value: unknown): {
   subject?: string | undefined;
 } | null {
   if (!isRecord(value) || typeof value.recipientEmail !== 'string') return null;
+  if (typeof value.subject === 'string' && value.subject.length > 200) return null;
+  if (typeof value.body === 'string' && value.body.length > 10_000) return null;
   const signal = value.signal === undefined ? undefined : readCustomerEmailSignal(value.signal);
   if (value.signal !== undefined && signal === null) return null;
   return {
