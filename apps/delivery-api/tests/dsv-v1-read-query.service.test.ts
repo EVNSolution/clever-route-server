@@ -63,15 +63,45 @@ describe('PrismaDsvV1ReadQueryService', () => {
         },
         { currentRouteVersion: null, id: 'order-without-route' },
       ])) },
+      uvisVehicleTelemetryCurrent: { findMany: vi.fn(() => Promise.resolve([
+        {
+          distanceTodayKm: null,
+          id: 'fresh-gps',
+          ignitionOn: true,
+          latitude: '37.6000000',
+          longitude: '127.1000000',
+          observedAt: new Date('2026-07-22T01:00:00.000Z'),
+          sourceKind: 'VEHICLE_GPS',
+          speedKph: '10.00',
+          staleAfter: new Date('2026-07-22T01:10:00.000Z'),
+          temperatureA: null,
+          temperatureB: null,
+          vehicleId: 'vehicle-a',
+        },
+        {
+          distanceTodayKm: null,
+          id: 'stale-gps',
+          ignitionOn: true,
+          latitude: '37.7000000',
+          longitude: '127.2000000',
+          observedAt: new Date('2026-07-22T01:00:00.000Z'),
+          sourceKind: 'VEHICLE_GPS',
+          speedKph: '10.00',
+          staleAfter: new Date('2026-07-22T00:59:00.000Z'),
+          temperatureA: null,
+          temperatureB: null,
+          vehicleId: 'vehicle-without-position',
+        },
+      ])) },
     });
-    const service = new PrismaDsvV1ReadQueryService(prisma as never);
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-22T01:05:00.000Z'));
 
     await expect(service.listCustomerRouteScope(customerPrincipal(), '2026-07-22')).resolves.toEqual([{
       routePlanId: 'route-a',
       sellerOrderId: 'order-a',
       vehicleId: 'vehicle-a',
-      vehicleLatitude: 37.5,
-      vehicleLongitude: 127,
+      vehicleLatitude: 37.6,
+      vehicleLongitude: 127.1,
     }, {
       routePlanId: 'route-without-position',
       sellerOrderId: 'order-without-position',
@@ -478,6 +508,51 @@ describe('PrismaDsvV1ReadQueryService', () => {
         { driverId: 'driver-a', id: 'assignment-a', vehicleId: 'vehicle-a' },
         { driverId: 'driver-c', id: 'assignment-c', vehicleId: 'vehicle-b' },
       ])) },
+      uvisTelemetryPollState: { findUnique: vi.fn(() => Promise.resolve({ activity: 'DORMANT' })) },
+      uvisVehicleTelemetryCurrent: { findMany: vi.fn(() => Promise.resolve([
+        {
+          distanceTodayKm: '83.40',
+          id: 'gps-new',
+          ignitionOn: true,
+          latitude: '37.5500000',
+          longitude: '127.0100000',
+          observedAt: new Date('2026-08-04T01:15:00.000Z'),
+          sourceKind: 'VEHICLE_GPS',
+          speedKph: '42.10',
+          staleAfter: new Date('2026-08-04T01:20:00.000Z'),
+          temperatureA: null,
+          temperatureB: null,
+          vehicleId: 'vehicle-a',
+        },
+        {
+          distanceTodayKm: '12.00',
+          id: 'gps-old',
+          ignitionOn: false,
+          latitude: '37.5000000',
+          longitude: '127.0000000',
+          observedAt: new Date('2026-08-04T01:10:00.000Z'),
+          sourceKind: 'VEHICLE_GPS',
+          speedKph: '1.00',
+          staleAfter: new Date('2026-08-04T01:30:00.000Z'),
+          temperatureA: null,
+          temperatureB: null,
+          vehicleId: 'vehicle-a',
+        },
+        {
+          distanceTodayKm: null,
+          id: 'temp-current',
+          ignitionOn: null,
+          latitude: null,
+          longitude: null,
+          observedAt: new Date('2026-08-04T01:16:00.000Z'),
+          sourceKind: 'TEMPERATURE_RECORDER',
+          speedKph: null,
+          staleAfter: new Date('2026-08-04T01:14:00.000Z'),
+          temperatureA: '-18.50',
+          temperatureB: null,
+          vehicleId: 'vehicle-a',
+        },
+      ])) },
       vehicle: { findMany: vi.fn(() => Promise.resolve([
         {
           dsvProfile: { note: 'Alpha note', typeLabel: '봉고3 1톤 EV' },
@@ -502,23 +577,36 @@ describe('PrismaDsvV1ReadQueryService', () => {
         },
       ])) },
     });
-    const service = new PrismaDsvV1ReadQueryService(prisma as never);
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-08-04T01:15:00.000Z'));
 
     const result = await service.listVehicles(adminPrincipal(), { limit: 2 });
 
     expect(result.items).toEqual([
       {
         displayName: 'Alpha Vehicle',
+        distanceTodayKm: 83.4,
         driverAssignments: [
           { assignmentId: 'assignment-a', driverId: 'driver-a' },
         ],
+        ignitionOn: true,
         note: 'Alpha note',
+        speedKph: 42.1,
         status: 'ACTIVE',
+        telemetryActivity: 'DORMANT',
         telematicsCapabilities: ['LOCATION', 'TEMPERATURE', 'TACHOMETER'],
         telematicsSerialNumber: '012-5273-8978',
+        temperatureA: -18.5,
+        temperatureB: null,
+        temperatureObservedAt: new Date('2026-08-04T01:16:00.000Z'),
+        temperatureStale: true,
         type: '봉고3 1톤 EV',
         vehicleId: 'vehicle-a',
+        vehicleLatitude: 37.55,
+        vehicleLongitude: 127.01,
         vehiclePlate: 'A',
+        vehiclePositionObservedAt: new Date('2026-08-04T01:15:00.000Z'),
+        vehiclePositionStale: false,
+        vehicleStopped: false,
         vehicleType: '봉고3 1톤 EV',
       },
       {
@@ -540,6 +628,11 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(JSON.stringify(result.items.flatMap((item) => item.driverAssignments))).not.toMatch(
       /kind|displayName|phone|vehicleId/u
     );
+    expect(JSON.stringify(result.items)).not.toMatch(/sourceDeviceIdentifier|sourceDevice|deviceId|serial-secret/u);
+    expect(prisma.uvisTelemetryPollState.findUnique).toHaveBeenCalledWith({
+      select: { activity: true },
+      where: { shopId: 'shop-a' },
+    });
   });
 
   test('driver and vehicle management reads are limited to DSV profiled resources', async () => {
@@ -617,6 +710,53 @@ describe('PrismaDsvV1ReadQueryService', () => {
         shippedBoxes: 6,
       }],
     });
+  });
+
+  test('customer delivery vehicle location prefers fresh UVIS GPS over tracking geometry', async () => {
+    const row = customerDeliveryOrderRow();
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      order: { findMany: vi.fn(() => Promise.resolve([row])) },
+      uvisVehicleTelemetryCurrent: { findMany: vi.fn(() => Promise.resolve([
+        {
+          distanceTodayKm: '83.40',
+          id: 'fresh-gps',
+          ignitionOn: true,
+          latitude: '37.6100000',
+          longitude: '127.1100000',
+          observedAt: new Date('2026-07-22T01:00:00.000Z'),
+          sourceKind: 'VEHICLE_GPS',
+          speedKph: '42.10',
+          staleAfter: new Date('2026-07-22T01:10:00.000Z'),
+          temperatureA: null,
+          temperatureB: null,
+          vehicleId: 'vehicle-a',
+        },
+      ])) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-22T01:05:00.000Z'));
+
+    await expect(service.listCustomerDeliveries(customerPrincipal(), { serviceDate: '2026-07-22' })).resolves.toMatchObject({
+      items: [{
+        vehicleId: 'vehicle-a',
+        vehicleLatitude: 37.61,
+        vehicleLongitude: 127.11,
+      }],
+    });
+    expect(prisma.uvisVehicleTelemetryCurrent.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      select: expect.not.objectContaining({
+        deviceId: true,
+        sourceDeviceIdentifier: true,
+        temperatureA: true,
+        temperatureB: true,
+      }) as unknown,
+      where: {
+        shopId: 'shop-a',
+        sourceKind: 'VEHICLE_GPS',
+        staleAfter: { gt: new Date('2026-07-22T01:05:00.000Z') },
+        vehicleId: { in: ['vehicle-a'] },
+      },
+    }));
   });
 
   test('keeps administrator manufacturer inquiry scoped to the selected customer and shop', async () => {

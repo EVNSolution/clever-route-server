@@ -292,15 +292,28 @@ export type DsvV1DriverListItemDto = {
 
 export type DsvV1VehicleListItemRow = {
   displayName: string;
+  distanceTodayKm?: number | null;
   driverAssignments: DsvV1VehicleDriverAssignmentRow[];
+  ignitionOn?: boolean | null;
   note?: string | null;
+  speedKph?: number | null;
   status?: string | null;
   telematicsCapabilities?: string[] | null;
   telematicsSerialNumber?: string | null;
+  temperatureA?: number | null;
+  temperatureB?: number | null;
+  temperatureObservedAt?: Date | string | null;
+  temperatureStale?: boolean | null;
   type?: string | null;
   vehicleId: string;
+  vehicleLatitude?: number | null;
+  vehicleLongitude?: number | null;
   vehiclePlate?: string | null;
+  vehiclePositionObservedAt?: Date | string | null;
+  vehiclePositionStale?: boolean | null;
+  vehicleStopped?: boolean | null;
   vehicleType?: string | null;
+  telemetryActivity?: 'ACTIVE' | 'DORMANT' | null;
 };
 
 export type DsvV1VehicleDriverAssignmentRow = {
@@ -310,15 +323,28 @@ export type DsvV1VehicleDriverAssignmentRow = {
 
 export type DsvV1VehicleListItemDto = {
   displayName: string;
+  distanceTodayKm?: number | null;
   driverAssignments: DsvV1VehicleDriverAssignmentDto[];
+  ignitionOn?: boolean | null;
   note?: string;
+  speedKph?: number | null;
   status?: string;
   telematicsCapabilities?: string[];
   telematicsSerialNumber?: string;
+  temperatureA?: number | null;
+  temperatureB?: number | null;
+  temperatureObservedAt?: string;
+  temperatureStale?: boolean;
   type?: string;
   vehicleId: string;
+  vehicleLatitude?: number | null;
+  vehicleLongitude?: number | null;
   vehiclePlate?: string;
+  vehiclePositionObservedAt?: string;
+  vehiclePositionStale?: boolean;
+  vehicleStopped?: boolean | null;
   vehicleType?: string;
+  telemetryActivity?: 'ACTIVE' | 'DORMANT';
 };
 
 export type DsvV1VehicleDriverAssignmentDto = {
@@ -596,11 +622,14 @@ export function mapDsvV1DriverListItem(row: DsvV1DriverListItemRow): DsvV1Driver
 export function mapDsvV1VehicleListItem(row: DsvV1VehicleListItemRow): DsvV1VehicleListItemDto {
   return {
     displayName: row.displayName,
+    ...(row.distanceTodayKm === undefined ? {} : { distanceTodayKm: row.distanceTodayKm }),
     driverAssignments: row.driverAssignments.map((assignment) => ({
       assignmentId: assignment.assignmentId,
       driverId: assignment.driverId,
     })),
+    ...(row.ignitionOn === undefined ? {} : { ignitionOn: row.ignitionOn }),
     ...(row.note === undefined || row.note === null ? {} : { note: row.note }),
+    ...(row.speedKph === undefined ? {} : { speedKph: row.speedKph }),
     ...(row.status === undefined || row.status === null ? {} : { status: row.status }),
     ...(row.telematicsCapabilities === undefined || row.telematicsCapabilities === null
       ? {}
@@ -608,10 +637,20 @@ export function mapDsvV1VehicleListItem(row: DsvV1VehicleListItemRow): DsvV1Vehi
     ...(row.telematicsSerialNumber === undefined || row.telematicsSerialNumber === null
       ? {}
       : { telematicsSerialNumber: row.telematicsSerialNumber }),
+    ...(row.temperatureA === undefined ? {} : { temperatureA: row.temperatureA }),
+    ...(row.temperatureB === undefined ? {} : { temperatureB: row.temperatureB }),
+    ...optionalIso('temperatureObservedAt', row.temperatureObservedAt),
+    ...(row.temperatureStale === undefined || row.temperatureStale === null ? {} : { temperatureStale: row.temperatureStale }),
     ...(row.type === undefined || row.type === null ? {} : { type: row.type }),
     vehicleId: row.vehicleId,
+    ...(row.vehicleLatitude === undefined ? {} : { vehicleLatitude: row.vehicleLatitude }),
+    ...(row.vehicleLongitude === undefined ? {} : { vehicleLongitude: row.vehicleLongitude }),
     ...(row.vehiclePlate === undefined || row.vehiclePlate === null ? {} : { vehiclePlate: row.vehiclePlate }),
+    ...optionalIso('vehiclePositionObservedAt', row.vehiclePositionObservedAt),
+    ...(row.vehiclePositionStale === undefined || row.vehiclePositionStale === null ? {} : { vehiclePositionStale: row.vehiclePositionStale }),
+    ...(row.vehicleStopped === undefined || row.vehicleStopped === null ? {} : { vehicleStopped: row.vehicleStopped }),
     ...(row.vehicleType === undefined || row.vehicleType === null ? {} : { vehicleType: row.vehicleType }),
+    ...(row.telemetryActivity === undefined || row.telemetryActivity === null ? {} : { telemetryActivity: row.telemetryActivity }),
   };
 }
 

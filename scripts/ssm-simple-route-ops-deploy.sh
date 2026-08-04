@@ -31,6 +31,7 @@ DSV_RESTORE_REHEARSAL_SHA256="${DSV_RESTORE_REHEARSAL_SHA256:-}"
 DSV_PRODUCTION_BASELINE_APPROVED="${DSV_PRODUCTION_BASELINE_APPROVED:-}"
 DSV_PRODUCTION_BASELINE_MANIFEST_SHA256="${DSV_PRODUCTION_BASELINE_MANIFEST_SHA256:-}"
 FIREBASE_CREDENTIALS_PARAM="${ROUTE_OPS_FIREBASE_CREDENTIALS_PARAM:-/clever/route-ops/firebase/fcm-service-account-json}"
+UVIS_ENV_PARAM="${ROUTE_OPS_UVIS_ENV_PARAM:-}"
 
 usage() {
   cat <<USAGE
@@ -49,6 +50,7 @@ Env:
   ROUTE_OPS_WEB_STATIC_IMAGE     optional full static image ref, preferably repo@sha256
   ROUTE_OPS_FORCE_STATIC_RESTAGE  set to 1 to stage static even when digest matches current
   ROUTE_OPS_FIREBASE_CREDENTIALS_PARAM encrypted SSM parameter containing FCM credentials
+  ROUTE_OPS_UVIS_ENV_PARAM        optional encrypted SSM parameter containing server-only UVIS_* dotenv lines
   AWS_REGION                     default: ap-northeast-2
   ROUTE_OPS_SSM_TAG_KEY          default: Service
   ROUTE_OPS_SSM_TAG_VALUE        default: clever-delivery-server
@@ -164,6 +166,7 @@ DSV_RESTORE_REHEARSAL_SHA256=__DSV_RESTORE_REHEARSAL_SHA256__
 DSV_PRODUCTION_BASELINE_APPROVED=__DSV_PRODUCTION_BASELINE_APPROVED__
 DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=__DSV_PRODUCTION_BASELINE_MANIFEST_SHA256__
 FIREBASE_CREDENTIALS_PARAM=__FIREBASE_CREDENTIALS_PARAM__
+UVIS_ENV_PARAM=__UVIS_ENV_PARAM__
 COMPOSE_FILE_B64=__COMPOSE_FILE_B64__
 VROOM_CONFIG_B64=__VROOM_CONFIG_B64__
 VROOM_KOREA_CONFIG_B64=__VROOM_KOREA_CONFIG_B64__
@@ -277,7 +280,9 @@ rollback_delivery_api() {
   echo 'simple deploy rollback failed health check; manual intervention required' >&2
   return 1
 }
+export AWS_REGION UVIS_ENV_PARAM
 python3 - <<'ENVUP'
+import os
 from pathlib import Path
 path = Path('apps/delivery-api/.env')
 updates = {
@@ -293,7 +298,56 @@ updates = {
     'OSRM_TIMEOUT_MS': '10000',
     'FIREBASE_PROJECT_ID': 'clever-routes-prod',
     'GOOGLE_APPLICATION_CREDENTIALS': '/run/secrets/firebase-fcm.json',
+    'UVIS_ENABLED': 'false',
 }
+uvis_allowed_keys = {
+    'UVIS_ENABLED',
+    'UVIS_APP_ID',
+    'UVIS_SHOP_DOMAIN',
+    'UVIS_ACCESS_KEY_URL',
+    'UVIS_TELEMETRY_URL',
+    'UVIS_ALLOWED_OUTBOUND_URLS',
+    'UVIS_COMPANY_SERIAL_KEY',
+    'UVIS_LOCATION_GUBUN',
+    'UVIS_TEMPERATURE_GUBUN',
+    'UVIS_TIMEOUT_MS',
+    'UVIS_LOCATION_POLL_INTERVAL_MS',
+    'UVIS_LOCATION_DORMANT_GRACE_PERIOD_MS',
+    'UVIS_LOCATION_DORMANT_HEARTBEAT_INTERVAL_MS',
+    'UVIS_TEMPERATURE_POLL_INTERVAL_MS',
+}
+uvis_param = os.environ.get('UVIS_ENV_PARAM', '')
+if uvis_param:
+    import subprocess
+
+    uvis_payload = subprocess.check_output(
+        [
+            'aws',
+            'ssm',
+            'get-parameter',
+            '--name',
+            uvis_param,
+            '--with-decryption',
+            '--query',
+            'Parameter.Value',
+            '--output',
+            'text',
+            '--region',
+            os.environ['AWS_REGION'],
+        ],
+        text=True,
+    )
+    for raw_line in uvis_payload.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if '=' not in line:
+            raise SystemExit('UVIS SSM parameter contains a non-dotenv line')
+        key, value = line.split('=', 1)
+        key = key.strip()
+        if key not in uvis_allowed_keys:
+            raise SystemExit(f'UVIS SSM parameter contains unsupported key: {key}')
+        updates[key] = value.strip()
 text = path.read_text().splitlines()
 out, seen = [], set()
 for line in text:
@@ -310,6 +364,7 @@ for key, value in updates.items():
     if key not in seen:
         out.append(f'{key}={value}')
 path.write_text('\n'.join(out) + '\n')
+path.chmod(0o600)
 ENVUP
 mkdir -p /srv/clever-route-server/data/driver-proof-media
 chown -R 100:101 /srv/clever-route-server/data/driver-proof-media
@@ -378,6 +433,7 @@ replacements = {
     '__DSV_PRODUCTION_BASELINE_APPROVED__': shlex.quote(os.environ['DSV_PRODUCTION_BASELINE_APPROVED']),
     '__DSV_PRODUCTION_BASELINE_MANIFEST_SHA256__': shlex.quote(os.environ['DSV_PRODUCTION_BASELINE_MANIFEST_SHA256']),
     '__FIREBASE_CREDENTIALS_PARAM__': shlex.quote(os.environ['FIREBASE_CREDENTIALS_PARAM']),
+    '__UVIS_ENV_PARAM__': shlex.quote(os.environ['UVIS_ENV_PARAM']),
     '__COMPOSE_FILE_B64__': shlex.quote(os.environ['COMPOSE_FILE_B64']),
     '__VROOM_CONFIG_B64__': shlex.quote(os.environ['VROOM_CONFIG_B64']),
     '__VROOM_KOREA_CONFIG_B64__': shlex.quote(os.environ['VROOM_KOREA_CONFIG_B64']),
@@ -399,7 +455,7 @@ COMPOSE_FILE_B64="$(base64 < "$COMPOSE_FILE" | tr -d '\n')"
 VROOM_CONFIG_B64="$(base64 < "$VROOM_CONFIG" | tr -d '\n')"
 VROOM_KOREA_CONFIG_B64="$(base64 < "$VROOM_KOREA_CONFIG" | tr -d '\n')"
 DOCKER_CLEANUP_SCRIPT_B64="$(base64 < scripts/route-ops-docker-cleanup.sh | tr -d '\n')"
-export APP_DIR COMPOSE_FILE VROOM_CONFIG VROOM_KOREA_CONFIG COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL SMOKE_URLS DRY_RUN FORCE_STATIC_RESTAGE DSV_MIGRATION_APPROVED DSV_MIGRATION_MANIFEST_SHA256 DSV_RESTORE_REHEARSAL_SHA256 DSV_PRODUCTION_BASELINE_APPROVED DSV_PRODUCTION_BASELINE_MANIFEST_SHA256 FIREBASE_CREDENTIALS_PARAM COMPOSE_FILE_B64 VROOM_CONFIG_B64 VROOM_KOREA_CONFIG_B64 DOCKER_CLEANUP_SCRIPT_B64
+export APP_DIR COMPOSE_FILE VROOM_CONFIG VROOM_KOREA_CONFIG COMPOSE_PROJECT COMMIT_SHA CHANNEL_TAG PRISMA_SCHEMA_SHA RUNTIME_IMAGE STATIC_IMAGE STATIC_VOLUME VROOM_IMAGE BASE_URL SMOKE_URLS DRY_RUN FORCE_STATIC_RESTAGE DSV_MIGRATION_APPROVED DSV_MIGRATION_MANIFEST_SHA256 DSV_RESTORE_REHEARSAL_SHA256 DSV_PRODUCTION_BASELINE_APPROVED DSV_PRODUCTION_BASELINE_MANIFEST_SHA256 FIREBASE_CREDENTIALS_PARAM UVIS_ENV_PARAM COMPOSE_FILE_B64 VROOM_CONFIG_B64 VROOM_KOREA_CONFIG_B64 DOCKER_CLEANUP_SCRIPT_B64
 parameters_path="$(mktemp /tmp/route-ops-simple-ssm.XXXXXX)"
 write_parameters "$parameters_path"
 if [ "$SEND_COMMAND" = "0" ]; then

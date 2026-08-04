@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-params_path="$(DSV_MIGRATION_APPROVED=1 DSV_MIGRATION_MANIFEST_SHA256=3333333333333333333333333333333333333333333333333333333333333333 DSV_RESTORE_REHEARSAL_SHA256=4444444444444444444444444444444444444444444444444444444444444444 DSV_PRODUCTION_BASELINE_APPROVED=1 DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=5555555555555555555555555555555555555555555555555555555555555555 ROUTE_OPS_SIMPLE_CHANNEL_TAG=prod-test ROUTE_OPS_RUNTIME_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:1111111111111111111111111111111111111111111111111111111111111111 ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static@sha256:2222222222222222222222222222222222222222222222222222222222222222 scripts/ssm-simple-route-ops-deploy.sh --dry-run --no-send)"
+params_path="$(DSV_MIGRATION_APPROVED=1 DSV_MIGRATION_MANIFEST_SHA256=3333333333333333333333333333333333333333333333333333333333333333 DSV_RESTORE_REHEARSAL_SHA256=4444444444444444444444444444444444444444444444444444444444444444 DSV_PRODUCTION_BASELINE_APPROVED=1 DSV_PRODUCTION_BASELINE_MANIFEST_SHA256=5555555555555555555555555555555555555555555555555555555555555555 ROUTE_OPS_UVIS_ENV_PARAM=/clever/route-ops/uvis/runtime-env ROUTE_OPS_SIMPLE_CHANNEL_TAG=prod-test ROUTE_OPS_RUNTIME_IMAGE=ghcr.io/evnsolution/clever-route-server-delivery-api@sha256:1111111111111111111111111111111111111111111111111111111111111111 ROUTE_OPS_WEB_STATIC_IMAGE=ghcr.io/evnsolution/clever-route-server-route-ops-web-static@sha256:2222222222222222222222222222222222222222222222222222222222222222 scripts/ssm-simple-route-ops-deploy.sh --dry-run --no-send)"
 cleanup() { rm -f "$params_path"; }
 trap cleanup EXIT
 
@@ -49,6 +49,12 @@ checks = {
     'firebase_credential_bootstrap': 'FIREBASE_CREDENTIALS_PARAM=' in command and 'aws ssm get-parameter --name "$FIREBASE_CREDENTIALS_PARAM" --with-decryption' in command and 'chown 100:101 "$FIREBASE_CREDENTIALS_FILE"' in command and 'chmod 400 "$FIREBASE_CREDENTIALS_FILE"' in command,
     'firebase_runtime_env': "'FIREBASE_PROJECT_ID': 'clever-routes-prod'" in wrapper and "'GOOGLE_APPLICATION_CREDENTIALS': '/run/secrets/firebase-fcm.json'" in wrapper,
     'firebase_credential_mount': '/srv/clever-route-server/secrets/firebase-fcm.json:/run/secrets/firebase-fcm.json:ro' in compose,
+    'uvis_default_disabled': "'UVIS_ENABLED': 'false'" in wrapper and 'UVIS_ENABLED=false' in pathlib.Path('apps/delivery-api/.env.example').read_text(),
+    'uvis_uses_ssm_parameter_name_only': 'UVIS_ENV_PARAM=/clever/route-ops/uvis/runtime-env' in command and 'export AWS_REGION UVIS_ENV_PARAM' in command and 'uvis_param = os.environ.get' in command and 'uvis_param,' in command and "'--with-decryption'" in command,
+    'uvis_whitelists_server_env': 'uvis_allowed_keys = {' in command and "'UVIS_ALLOWED_OUTBOUND_URLS'" in command and "'UVIS_COMPANY_SERIAL_KEY'" in command and "'UVIS_SHOP_DOMAIN'" in command and 'unsupported key: {key}' in command,
+    'uvis_runtime_env_permissions': 'path.chmod(0o600)' in command,
+    'uvis_not_in_candidate_image_env': 'UVIS_COMPANY_SERIAL_KEY=$' not in command and 'UVIS_ACCESS_KEY_URL=$' not in command and 'UVIS_ENABLED=$' not in command,
+    'uvis_not_in_static_image_workflow': 'ROUTE_OPS_UVIS_ENV_PARAM: ${{ vars.ROUTE_OPS_UVIS_ENV_PARAM }}' in workflow and 'secrets.UVIS' not in workflow,
     'compose_pull_only_on_host': '--profile osrm --profile vroom --profile korea pull clever-route-api vroom vroom-korea' in command and 'pull route-ops-web-static' in command and 'docker pull "$DELIVERY_API_IMAGE"' not in command,
     'migrate_uses_compose_service': 'run --rm clever-route-api-migrate' in command,
     'migrate_before_static_stage': command.index('run --rm clever-route-api-migrate') < command.index('simple deploy static stage required', command.index('run --rm clever-route-api-migrate')),

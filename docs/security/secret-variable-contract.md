@@ -24,6 +24,10 @@ These variables are maintained in `apps/delivery-api/.env` for every environment
 | `SHOPIFY_APP_CREDENTIALS` | additional Shopify embedded apps enabled | Comma-separated `appId:clientId:clientSecret` entries for any extra Shopify apps beyond the default/dev shortcuts. |
 | `SHOPIFY_WEBHOOK_SECRET` | legacy Shopify webhook-only compatibility enabled | Legacy Shopify webhook HMAC fallback secret used only when no Shopify app credential pair is configured. |
 | `SHOPIFY_TOKEN_ENCRYPTION_KEY` | legacy Shopify token storage enabled before migration | Existing Shopify-token encryption key. New generic connector storage should use `CREDENTIAL_ENCRYPTION_KEY`. |
+| `UVIS_COMPANY_SERIAL_KEY` | `UVIS_ENABLED=true` | Server-only UVIS company key. Store only in encrypted runtime secret storage. |
+| `UVIS_ACCESS_KEY_URL`, `UVIS_TELEMETRY_URL`, `UVIS_ALLOWED_OUTBOUND_URLS` | `UVIS_ENABLED=true` | Server-only UVIS endpoint contract. Do not expose to frontend builds or logs. |
+| `UVIS_LOCATION_GUBUN`, `UVIS_TEMPERATURE_GUBUN` | `UVIS_ENABLED=true` | Server-only provider query selectors. |
+| `UVIS_LOCATION_POLL_INTERVAL_MS`, `UVIS_LOCATION_DORMANT_GRACE_PERIOD_MS`, `UVIS_LOCATION_DORMANT_HEARTBEAT_INTERVAL_MS`, `UVIS_TEMPERATURE_POLL_INTERVAL_MS` | optional UVIS runtime tuning | Operational cadence values. They are not credentials, but travel through the same server-only SSM dotenv contract to avoid frontend exposure. |
 
 ### `CREDENTIAL_ENCRYPTION_KEY` format
 

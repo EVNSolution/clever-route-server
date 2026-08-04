@@ -24,6 +24,7 @@ import { loadDsvControlDependencies } from './modules/dsv/dsv-control.dependenci
 import { loadDsvV1ReadDependencies } from './modules/dsv/dsv-v1-read.dependencies.js';
 import { loadDsvDriverAuthDependencies } from './modules/dsv/dsv-driver-auth.dependencies.js';
 import { loadWordPressPluginDependencies } from './modules/wordpress-plugin/wordpress-plugin.dependencies.js';
+import { createUvisTelemetryRuntime } from './modules/uvis/uvis-runtime.js';
 import type { AdminRoutePlanDependencies } from './routes/admin-route-plans.routes.js';
 import type { AdminRouteGroupDependencies } from './routes/admin-route-groups.routes.js';
 import type { AdminDriversDependencies } from './routes/admin-drivers.routes.js';
@@ -134,11 +135,17 @@ const customerDeliveryNotificationRuntime = createCustomerDeliveryNotificationRu
   logger: app.log,
   prisma
 });
+const uvisTelemetryRuntime = createUvisTelemetryRuntime({
+  env: process.env,
+  logger: app.log,
+  prisma
+});
 
 try {
   await app.listen({ host: '0.0.0.0', port: env.port });
   await adminNotificationRuntime.start();
   await customerDeliveryNotificationRuntime.start();
+  uvisTelemetryRuntime.start();
   shopifyWebhookRuntime?.worker?.start();
   adminOrdersRuntime?.reconciliationWorker?.start();
   app.log.info({ port: env.port }, 'clever-route-server listening');
@@ -148,6 +155,7 @@ try {
     app.close(),
     adminNotificationRuntime.close(),
     customerDeliveryNotificationRuntime.close(),
+    uvisTelemetryRuntime.close(),
     shopifyWebhookRuntime?.worker?.close() ?? Promise.resolve(),
     adminOrdersRuntime?.reconciliationWorker?.close() ?? Promise.resolve(),
     prisma.$disconnect()
@@ -161,6 +169,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       void Promise.all([
         adminNotificationRuntime.close(),
         customerDeliveryNotificationRuntime.close(),
+        uvisTelemetryRuntime.close(),
         shopifyWebhookRuntime?.worker?.close() ?? Promise.resolve(),
         adminOrdersRuntime?.reconciliationWorker?.close() ?? Promise.resolve()
       ]).finally(() => {
