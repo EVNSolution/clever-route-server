@@ -85,6 +85,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
   test('maps seller order summaries and page info from supplied route-stop ETA only', () => {
     const dto = mapDsvV1SellerOrderSummary({
       assignmentStatus: 'ASSIGNED',
+      conditionCode: 'COLD',
       customerId: 'customer-1',
       deliveryStopId: 'stop-1',
       destinationAddress: '1 Shared Way, Seoul',
@@ -102,11 +103,13 @@ describe('G005 DSV v1 read DTO adapter', () => {
       routeVersionId: 'route-version-1',
       sellerOrderId: 'order-1',
       sellerOrderKey: 'SO-001',
+      shippedBoxes: 4,
       vehicleId: 'vehicle-1',
     });
 
     expect(dto).toEqual({
       assignmentStatus: 'ASSIGNED',
+      conditionCode: 'COLD',
       customerId: 'customer-1',
       deliveryStopId: 'stop-1',
       destinationAddress: '1 Shared Way, Seoul',
@@ -122,6 +125,7 @@ describe('G005 DSV v1 read DTO adapter', () => {
       routeVersionId: 'route-version-1',
       sellerOrderId: 'order-1',
       sellerOrderKey: 'SO-001',
+      shippedBoxes: 4,
       vehicleId: 'vehicle-1',
     });
     expect(dto).not.toHaveProperty('etaInputRouteVersionId');

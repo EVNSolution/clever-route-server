@@ -772,7 +772,7 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
         },
         dsvDispatchImportRows: {
           orderBy: [{ appliedAt: 'desc' }, { createdAt: 'desc' }],
-          select: { shippedBoxes: true },
+          select: { conditionCode: true, shippedBoxes: true },
           take: 1,
           where: { shopId, status: 'APPLIED' },
         },
@@ -931,6 +931,7 @@ function requireOrderDestinationId(destinationId: string | null, orderId: string
 
 function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow): DsvV1SellerOrderSummaryRow {
   const stop = row.deliveryStops[0] ?? null;
+  const importRow = stop?.dsvDispatchImportRows[0] ?? null;
   const eta = stop === null ? null : selectCanonicalEta(stop.routePlanStops, row.currentRouteVersionId);
   const currentRoute = row.currentRouteVersion;
   const currentRouteDriverId = currentRoute?.driverId ?? null;
@@ -949,6 +950,7 @@ function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow): DsvV1SellerOrde
   return {
     actualCompletedAt: latestDeliveredAt(stop?.driverEvents ?? []),
     assignmentStatus: currentRouteDriverId === null ? 'UNASSIGNED' : 'ASSIGNED',
+    ...(importRow === null ? {} : { conditionCode: importRow.conditionCode, shippedBoxes: importRow.shippedBoxes }),
     customerId: row.customer?.id ?? '',
     deliveryStopId: stop?.id ?? '',
     destinationAddress: stop === null ? normalizedAddressLabel(row.destination?.normalizedAddress ?? null) : deliveryStopAddressLabel(stop),

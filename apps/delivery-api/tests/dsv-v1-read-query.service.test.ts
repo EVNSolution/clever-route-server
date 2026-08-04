@@ -30,7 +30,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(deliveryStopsSelect?.select.driverEvents.where.shopId).toBe('shop-a');
     expect(deliveryStopsSelect?.select.driverEvents.where.eventType.in).toContain('STOP_DELIVERED');
     expect(deliveryStopsSelect?.select.driverEvents.where.eventType.in).not.toContain('PICKUP_COMPLETED');
-    expect(deliveryStopsSelect?.select.dsvDispatchImportRows.select).toEqual({ shippedBoxes: true });
+    expect(deliveryStopsSelect?.select.dsvDispatchImportRows.select).toEqual({ conditionCode: true, shippedBoxes: true });
     expect(deliveryStopsSelect?.select.dsvDispatchImportRows.where).toEqual({ shopId: 'shop-a', status: 'APPLIED' });
     expect(deliveryStopsSelect?.select.driverProofMedia.where).toEqual({ shopId: 'shop-a' });
     expect(deliveryStopsSelect?.select.routePlanStops.where).toEqual({ shopId: 'shop-a' });
@@ -560,8 +560,10 @@ describe('PrismaDsvV1ReadQueryService', () => {
     await expect(service.listDispatches(adminPrincipal(), { serviceDate: '2026-07-22' })).resolves.toMatchObject({
       items: [{
         actualCompletedAt: new Date('2026-07-22T01:00:00.000Z'),
+        conditionCode: 'COLD',
         routeStopSequence: 4,
         sellerOrderKey: 'SO-A',
+        shippedBoxes: 6,
       }],
     });
   });
@@ -814,7 +816,7 @@ function customerDeliveryOrderRow(input: {
     customer: { displayName: 'Customer A', id: 'customer-a' },
     deliveryStatus: 'ASSIGNED',
     deliveryStops: [{
-      dsvDispatchImportRows: [{ shippedBoxes: 6 }],
+      dsvDispatchImportRows: [{ conditionCode: 'COLD', shippedBoxes: 6 }],
       driverEvents: input.driverEvents ?? [],
       driverProofMedia: input.driverProofMedia ?? [],
       id: `stop-${input.id ?? 'a'}`,

@@ -103,6 +103,7 @@ export type DsvV1RoutePlanStopEtaInput = {
 export type DsvV1SellerOrderSummaryRow = DsvV1RoutePlanStopEtaInput & {
   actualCompletedAt?: Date | string | null;
   assignmentStatus: 'UNASSIGNED' | 'ASSIGNED';
+  conditionCode?: string | null;
   customerId: string;
   deliveryStopId: string;
   destinationAddress?: string | null;
@@ -119,6 +120,7 @@ export type DsvV1SellerOrderSummaryRow = DsvV1RoutePlanStopEtaInput & {
   routeVersionId?: string | null;
   sellerOrderId: string;
   sellerOrderKey: string;
+  shippedBoxes?: number | null;
   timeConstraint?: {
     auditEventId: string;
     confirmedAt: string;
@@ -133,6 +135,7 @@ export type DsvV1SellerOrderSummaryRow = DsvV1RoutePlanStopEtaInput & {
 export type DsvV1SellerOrderSummaryDto = {
   actualCompletedAt?: string;
   assignmentStatus: 'UNASSIGNED' | 'ASSIGNED';
+  conditionCode?: string;
   customerId: string;
   deliveryStopId: string;
   destinationAddress?: string;
@@ -151,6 +154,7 @@ export type DsvV1SellerOrderSummaryDto = {
   routeVersionId?: string;
   sellerOrderId: string;
   sellerOrderKey: string;
+  shippedBoxes?: number;
   timeConstraint?: {
     auditEventId: string;
     confirmedAt: string;
@@ -481,6 +485,7 @@ export function mapDsvV1SellerOrderSummary(row: DsvV1SellerOrderSummaryRow): Dsv
   return {
     ...optionalIso('actualCompletedAt', row.actualCompletedAt),
     assignmentStatus: row.assignmentStatus,
+    ...(row.conditionCode === undefined || row.conditionCode === null ? {} : { conditionCode: row.conditionCode }),
     customerId: row.customerId,
     deliveryStopId: row.deliveryStopId,
     ...(row.destinationAddress === undefined || row.destinationAddress === null ? {} : { destinationAddress: row.destinationAddress }),
@@ -499,6 +504,7 @@ export function mapDsvV1SellerOrderSummary(row: DsvV1SellerOrderSummaryRow): Dsv
     ...(row.routeVersionId === undefined || row.routeVersionId === null ? {} : { routeVersionId: row.routeVersionId }),
     sellerOrderId: row.sellerOrderId,
     sellerOrderKey: row.sellerOrderKey,
+    ...(row.shippedBoxes === undefined || row.shippedBoxes === null ? {} : { shippedBoxes: row.shippedBoxes }),
     ...(row.timeConstraint === undefined || row.timeConstraint === null ? {} : { timeConstraint: row.timeConstraint }),
     ...(row.vehicleId === undefined || row.vehicleId === null ? {} : { vehicleId: row.vehicleId }),
   };
