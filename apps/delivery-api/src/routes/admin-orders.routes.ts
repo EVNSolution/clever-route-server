@@ -75,6 +75,8 @@ export type AdminOrdersDependencies = {
       appId?: string;
       before?: string;
       filters?: ListCanonicalOrdersFilters;
+      page?: number;
+      readWatermark?: string;
       shopDomain: string;
     }): Promise<OrdersPageResult>;
     listCanonicalOrderFacets?(input: {
@@ -272,10 +274,15 @@ export function registerAdminOrdersRoutes(
         const after = readSingleQueryValue(request.query.after);
         const before = readSingleQueryValue(request.query.before);
         if (after !== null && before !== null) return reply.code(400).send(errorResponse('BAD_REQUEST', 'after and before are mutually exclusive'));
+        const page = readNumericPage(request.query.page);
+        if (page !== undefined && (after !== null || before !== null)) return reply.code(400).send(errorResponse('BAD_REQUEST', 'page cannot be combined with cursors'));
+        const readWatermark = readOptionalReadWatermark(request.query.readWatermark);
         const result = await dependencies.orderSyncService.listCanonicalOrdersPage({
           ...(after === null ? {} : { after }),
           appId: authenticated.appId,
           ...(before === null ? {} : { before }),
+          ...(page === undefined ? {} : { page }),
+          ...(readWatermark === undefined ? {} : { readWatermark }),
           filters: readFilters(withoutResourceQuery(request.query)),
           shopDomain: authenticated.shopDomain
         });
@@ -294,8 +301,8 @@ export function registerAdminOrdersRoutes(
               sort: result.sort
             },
             result: {
-              count: null,
-              countPrecision: 'unknown',
+              count: result.count,
+              countPrecision: result.countPrecision,
               filterHash: result.filterHash,
               readWatermark: result.pageInfo.readWatermark
             },
@@ -1398,13 +1405,31 @@ function withoutResourceQuery(query: Record<string, string | string[] | undefine
   delete filters.after;
   delete filters.before;
   delete filters.limit;
+  delete filters.page;
   delete filters.pageSize;
+  delete filters.readWatermark;
   delete filters.sort;
   return filters;
 }
 
 function readSingleQueryValue(value: string | string[] | undefined): string | null {
   return readSingleQuery(value);
+}
+
+function readNumericPage(value: string | string[] | undefined): number | undefined {
+  const raw = readSingleQuery(value);
+  if (raw === null) return undefined;
+  if (!/^[1-9]\d*$/u.test(raw)) throw new Error('invalid page');
+  const page = Number(raw);
+  if (!Number.isSafeInteger(page)) throw new Error('invalid page');
+  return page;
+}
+
+function readOptionalReadWatermark(value: string | string[] | undefined): string | undefined {
+  const raw = readSingleQuery(value);
+  if (raw === null) return undefined;
+  if (!Number.isFinite(Date.parse(raw))) throw new Error('invalid readWatermark');
+  return raw;
 }
 
 function selectionSnapshotError(reply: FastifyReply, error: unknown) {
