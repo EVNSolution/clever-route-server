@@ -4,6 +4,60 @@ import { PrismaDsvDriverAuthRepository } from '../src/modules/dsv/dsv-driver-aut
 import { fingerprintResidentNumberFront } from '../src/modules/dsv/dsv-driver-identity.js';
 
 describe('Prisma DSV driver auth repository', () => {
+  test('creates an unlinked account without querying drivers when resident identity is null', async () => {
+    const account = {
+      id: 'account-id',
+      loginId: 'driver.without-resident',
+      name: '양우진',
+      phone: '01012345678',
+      tokenVersion: 0,
+    };
+    const candidate = {
+      displayName: '양우진',
+      id: 'driver-id',
+      phone: '010-1234-5678',
+      shop: { shopDomain: 'dsv-production.local' },
+    };
+    const transaction = {
+      driver: {
+        findMany: vi.fn(() => Promise.resolve([candidate])),
+        updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
+      },
+      driverAccount: {
+        create: vi.fn((input: unknown) => {
+          void input;
+          return Promise.resolve(account);
+        }),
+      },
+      driverAccountSession: {
+        create: vi.fn(() => Promise.resolve({ id: 'session-id' })),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn((operation: (client: typeof transaction) => unknown) => operation(transaction)),
+    };
+    const repository = new PrismaDsvDriverAuthRepository(
+      prisma as never,
+      'identity-secret-that-is-at-least-32-characters',
+    );
+
+    const result = await repository.register({
+      loginId: account.loginId,
+      name: account.name,
+      password: 'temporary-password',
+      phone: account.phone,
+      residentNumberFront: null,
+    });
+
+    const createInput = transaction.driverAccount.create.mock.calls[0]?.[0] as {
+      data: { residentNumberFrontFingerprint: string | null };
+    };
+    expect(createInput.data.residentNumberFrontFingerprint).toBeNull();
+    expect(transaction.driver.findMany).not.toHaveBeenCalled();
+    expect(transaction.driver.updateMany).not.toHaveBeenCalled();
+    expect(result.account.connectionStatus).toBe('UNLINKED');
+  });
+
   test('links a production driver whose stored phone contains separators', async () => {
     const identitySecret = 'identity-secret-that-is-at-least-32-characters';
     const account = {

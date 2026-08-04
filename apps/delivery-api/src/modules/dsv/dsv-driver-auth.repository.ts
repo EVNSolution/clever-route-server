@@ -38,7 +38,7 @@ export type DsvDriverRegistrationInput = {
   name: string;
   password: string;
   phone: string;
-  residentNumberFront: string;
+  residentNumberFront: string | null;
 };
 
 export type DsvDriverLoginInput = {
@@ -108,10 +108,12 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
     const loginId = normalizeDsvDriverLoginId(input.loginId);
     const name = input.name.trim();
     const phone = normalizeDsvDriverPhone(input.phone);
-    const residentNumberFrontFingerprint = fingerprintResidentNumberFront(
-      input.residentNumberFront,
-      this.identityFingerprintSecret,
-    );
+    const residentNumberFrontFingerprint = input.residentNumberFront === null
+      ? null
+      : fingerprintResidentNumberFront(
+          input.residentNumberFront,
+          this.identityFingerprintSecret,
+        );
     const passwordSalt = randomBytes(16).toString('base64url');
     const passwordHash = await hashPassword(input.password, passwordSalt);
     const refreshToken = randomBytes(32).toString('hex');
@@ -129,15 +131,17 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
             residentNumberFrontFingerprint,
           },
         });
-        const candidates = (await transaction.driver.findMany({
-          include: { shop: { select: { shopDomain: true } } },
-          where: {
-            accountId: null,
-            displayName: name,
-            dsvProfile: { is: { residentNumberFrontFingerprint } },
-            status: 'ACTIVE',
-          },
-        })).filter((candidate) => normalizeDsvDriverPhone(candidate.phone ?? '') === phone);
+        const candidates = residentNumberFrontFingerprint === null
+          ? []
+          : (await transaction.driver.findMany({
+              include: { shop: { select: { shopDomain: true } } },
+              where: {
+                accountId: null,
+                displayName: name,
+                dsvProfile: { is: { residentNumberFrontFingerprint } },
+                status: 'ACTIVE',
+              },
+            })).filter((candidate) => normalizeDsvDriverPhone(candidate.phone ?? '') === phone);
         const linkedDrivers: LinkedDriverRecord[] = [];
         for (const candidate of candidates) {
           const linked = await transaction.driver.updateMany({

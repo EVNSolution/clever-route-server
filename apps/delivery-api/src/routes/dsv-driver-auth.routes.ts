@@ -159,7 +159,12 @@ function readRegistrationInput(value: unknown) {
   const name = typeof object.name === 'string' ? object.name.trim() : '';
   const password = typeof object.password === 'string' ? object.password : '';
   const phone = typeof object.phone === 'string' ? normalizeDsvDriverPhone(object.phone) : '';
-  const residentNumberFront = typeof object.residentNumberFront === 'string' ? object.residentNumberFront.trim() : '';
+  const residentNumberFront = object.residentNumberFront === undefined
+    || object.residentNumberFront === null
+    ? null
+    : typeof object.residentNumberFront === 'string'
+      ? object.residentNumberFront.trim()
+      : undefined;
   if (
     !LOGIN_ID_PATTERN.test(loginId)
     || name.length === 0
@@ -167,7 +172,8 @@ function readRegistrationInput(value: unknown) {
     || password.length < 8
     || password.length > 128
     || !PHONE_PATTERN.test(phone)
-    || !RESIDENT_NUMBER_FRONT_PATTERN.test(residentNumberFront)
+    || residentNumberFront === undefined
+    || (residentNumberFront !== null && !RESIDENT_NUMBER_FRONT_PATTERN.test(residentNumberFront))
   ) return null;
   return { loginId, name, password, phone, residentNumberFront };
 }
