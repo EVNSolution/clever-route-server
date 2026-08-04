@@ -194,6 +194,24 @@ describe('DsvAssignmentCommandService', () => {
     expect(result.deletedSellerOrderIds).toEqual(['order-a', 'order-orphan']);
   });
 
+  test('deleteMany removes an existing assigned order when its route grouping projection is stale', async () => {
+    const harness = createHarness({ staleRouteVersionOrderIds: ['order-a'] });
+
+    const result = await harness.service.deleteMany({
+      actor: adminInput().actor,
+      commandId: 'cmd-delete-stale-route-projection',
+      items: [{ expectedVersion: 'version-route-a', sellerOrderId: 'order-a' }],
+      reason: 'remove stale dispatch row',
+      shopDomain: 'example.myshopify.com',
+    });
+
+    expect(harness.routeGroupingService.saveDraft).not.toHaveBeenCalled();
+    expect(harness.prisma.order.deleteMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: { in: ['order-a'] }, shopId: 'shop-1' },
+    }));
+    expect(result.deletedSellerOrderIds).toEqual(['order-a']);
+  });
+
   test('deleteMany removes seller orders that belong to different route groupings', async () => {
     const secondGrouping = groupingFixture();
     secondGrouping.id = 'grouping-2';
@@ -562,6 +580,7 @@ function createHarness(input: {
   grouping?: RouteGroupingDetailDto;
   routeOptimizationScheduler?: { schedule(input: { routePlanIds: Array<string | null>; shopDomain: string }): void };
   secondaryGrouping?: RouteGroupingDetailDto;
+  staleRouteVersionOrderIds?: string[];
   ungroupedOrderIds?: string[];
 } = {}) {
   const grouping = input.grouping ?? groupingFixture();
@@ -651,6 +670,8 @@ function createHarness(input: {
       findFirst: vi.fn((args: { where?: { currentOrders?: unknown; id?: string; routePlanId?: string | null } }) => {
         if (args.where?.currentOrders !== undefined) return { groupingId: 'grouping-1' };
         if (args.where?.id !== undefined) {
+          const staleOrderId = [...currentRouteVersionIds.entries()].find(([, versionId]) => versionId === args.where?.id)?.[0];
+          if (staleOrderId !== undefined && input.staleRouteVersionOrderIds?.includes(staleOrderId) === true) return null;
           const groupingId = groupingIdByVersionId.get(args.where.id);
           const routePlanId = groupings.flatMap((candidate) => candidate.children).find((candidate) => routeVersionId(candidate.routePlanId) === args.where?.id)?.routePlanId;
           return groupingId === undefined || routePlanId === undefined ? null : { groupingId, routePlanId };

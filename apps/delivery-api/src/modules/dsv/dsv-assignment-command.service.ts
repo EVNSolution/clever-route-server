@@ -517,7 +517,8 @@ export class DsvAssignmentCommandService {
         assertExpectedVersion(item.expectedVersion, order.currentRouteVersionId);
         const groupingId = await this.findGroupingIdForSellerOrder(tx, shop.id, item.sellerOrderId, order.currentRouteVersionId);
         if (groupingId === null) {
-          if (order.currentRouteVersionId !== null) throw new DsvAssignmentCommandError('SELLER_ORDER_NOT_FOUND');
+          // Hard deletion targets the canonical order. A stale or missing route-grouping
+          // projection must not make an existing, version-matched order look absent.
           ownerByOrderId.set(item.sellerOrderId, null);
           continue;
         }
