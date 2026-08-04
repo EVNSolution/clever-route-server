@@ -28,12 +28,12 @@ import {
   mapDsvV1VehicleListItem,
   toDsvV1ErrorEnvelope,
   toDsvV1SuccessEnvelope,
-  type DsvV1CustomerDeliveryInquiryRow,
   type DsvV1CustomerRouteDto,
   type DsvV1ErrorCode,
 } from '../modules/dsv/dsv-v1-read.dto.js';
 import {
   DsvV1ReadQueryError,
+  type DsvV1CustomerRouteScopeRow,
   type DsvV1CustomerDeliveriesInput,
   type DsvV1DispatchListInput,
   type DsvV1ReadListInput,
@@ -233,10 +233,13 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     handler: async (principal, query) => {
       const customerPrincipal = requireCustomerPrincipal(principal);
       const page = await requireQueryService(dependencies).listCustomerDeliveries(customerPrincipal, query);
+      const routeScope = page.emptyReason === undefined
+        ? await requireQueryService(dependencies).listCustomerRouteScope(customerPrincipal, page.serviceDate)
+        : [];
       return mapDsvV1CustomerDeliveryInquiryPage({
         ...page,
         routes: await buildCustomerScopedRoutes({
-          items: page.items,
+          items: routeScope,
           ...(dependencies.routePlanService === undefined ? {} : { routePlanService: dependencies.routePlanService }),
           shopDomain: requireCustomerShopDomain(customerPrincipal),
         }),
@@ -254,10 +257,17 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
         query.customerId,
         query,
       );
+      const routeScope = page.emptyReason === undefined
+        ? await requireQueryService(dependencies).listCustomerRouteScopeForAdmin(
+            adminPrincipal,
+            query.customerId,
+            page.serviceDate,
+          )
+        : [];
       return mapDsvV1CustomerDeliveryInquiryPage({
         ...page,
         routes: await buildCustomerScopedRoutes({
-          items: page.items,
+          items: routeScope,
           ...(dependencies.routePlanService === undefined ? {} : { routePlanService: dependencies.routePlanService }),
           shopDomain: requireAdminShopDomain(adminPrincipal),
         }),
@@ -269,7 +279,7 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
 }
 
 async function buildCustomerScopedRoutes(input: {
-  items: readonly DsvV1CustomerDeliveryInquiryRow[];
+  items: readonly DsvV1CustomerRouteScopeRow[];
   routePlanService?: Pick<RoutePlanService, 'getRoutePlanDetail' | 'listRoutePlans'>;
   shopDomain: string;
 }): Promise<DsvV1CustomerRouteDto[]> {
@@ -307,7 +317,7 @@ async function buildCustomerScopedRoutes(input: {
   return routes;
 }
 
-function uniqueRouteKeys(items: readonly DsvV1CustomerDeliveryInquiryRow[]): Array<{
+function uniqueRouteKeys(items: readonly DsvV1CustomerRouteScopeRow[]): Array<{
   routePlanId: string;
   vehicleId: string;
   vehiclePosition: DsvV1LngLat;

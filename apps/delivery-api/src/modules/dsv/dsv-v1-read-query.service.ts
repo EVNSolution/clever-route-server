@@ -68,6 +68,14 @@ export type DsvV1CustomerDeliveryReadResult = DsvV1PaginatedRead<DsvV1CustomerDe
   timezone: string;
 };
 
+export type DsvV1CustomerRouteScopeRow = {
+  routePlanId: string;
+  sellerOrderId: string;
+  vehicleId: string;
+  vehicleLatitude: number;
+  vehicleLongitude: number;
+};
+
 export type DsvV1ControlReadResult = DsvV1ControlSummaryInput & { timezone: string };
 
 type DsvV1EtaReadRow = {
@@ -122,6 +130,15 @@ export type DsvV1ReadQueryService = {
     customerId: string,
     input?: DsvV1CustomerDeliveriesInput,
   ): Promise<DsvV1CustomerDeliveryReadResult>;
+  listCustomerRouteScope(
+    principal: DsvCustomerUserPrincipal,
+    serviceDate: string,
+  ): Promise<DsvV1CustomerRouteScopeRow[]>;
+  listCustomerRouteScopeForAdmin(
+    principal: DsvAdminPrincipal,
+    customerId: string,
+    serviceDate: string,
+  ): Promise<DsvV1CustomerRouteScopeRow[]>;
   listCustomers(principal: DsvAdminPrincipal, input?: DsvV1ReadListInput): Promise<DsvV1PaginatedRead<DsvV1CustomerListItemRow>>;
   listDestinations(principal: DsvAdminPrincipal, input?: DsvV1ReadListInput): Promise<DsvV1PaginatedRead<DsvV1DestinationListItemRow>>;
   listDispatches(principal: DsvAdminPrincipal, input?: DsvV1DispatchListInput): Promise<DsvV1PaginatedRead<DsvV1SellerOrderSummaryRow>>;
@@ -302,6 +319,37 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       scopes: ['dsv:customer-deliveries:read'],
       shopId: principal.shopId,
     }, input);
+  }
+
+  async listCustomerRouteScope(
+    principal: DsvCustomerUserPrincipal,
+    serviceDate: string,
+  ): Promise<DsvV1CustomerRouteScopeRow[]> {
+    assertIsoDate(serviceDate);
+    const rows = await this.prisma.order.findMany({
+      select: customerRouteScopeOrderSelect,
+      where: {
+        customerId: principal.customerId,
+        shopId: principal.shopId,
+        deliveryStops: {
+          some: { deliveryDate: serviceDateAsDbDate(serviceDate), shopId: principal.shopId },
+        },
+      },
+    });
+    return rows.flatMap(toCustomerRouteScopeRow);
+  }
+
+  async listCustomerRouteScopeForAdmin(
+    principal: DsvAdminPrincipal,
+    customerId: string,
+    serviceDate: string,
+  ): Promise<DsvV1CustomerRouteScopeRow[]> {
+    return this.listCustomerRouteScope({
+      customerId,
+      principalType: 'CUSTOMER_USER',
+      scopes: ['dsv:customer-deliveries:read'],
+      shopId: principal.shopId,
+    }, serviceDate);
   }
 
   async listDispatches(
@@ -718,6 +766,26 @@ const routePlanStopSelect = {
   sequence: true,
 } satisfies Prisma.RoutePlanStopSelect;
 
+const customerRouteScopeOrderSelect = {
+  currentRouteVersion: {
+    select: {
+      routePlanId: true,
+      routePlan: {
+        select: {
+          trackingGeometry: {
+            select: {
+              lastLatitude: true,
+              lastLongitude: true,
+            },
+          },
+          vehicleId: true,
+        },
+      },
+    },
+  },
+  id: true,
+} satisfies Prisma.OrderSelect;
+
 const timeConstraintAuditSelect = {
   actorId: true,
   eventType: true,
@@ -874,6 +942,7 @@ function recordStopSelect(shopId: string) {
 }
 
 type CustomerDeliveryOrderRow = Prisma.OrderGetPayload<{ select: ReturnType<typeof customerDeliveryOrderSelect> }>;
+type CustomerRouteScopeOrderRow = Prisma.OrderGetPayload<{ select: typeof customerRouteScopeOrderSelect }>;
 type RecordStopRow = Prisma.DeliveryStopGetPayload<{ select: ReturnType<typeof recordStopSelect> }>;
 type RecordCursorRow = DsvV1RecordRow & { cursorStopId: string; cursorUpdatedAt: Date };
 
@@ -904,6 +973,29 @@ function toCustomerDeliveryInquiryRow(row: CustomerDeliveryOrderRow): DsvV1Custo
     vehicleLatitude: decimalToNumber(vehiclePosition?.lastLatitude ?? null),
     vehicleLongitude: decimalToNumber(vehiclePosition?.lastLongitude ?? null),
   };
+}
+
+function toCustomerRouteScopeRow(row: CustomerRouteScopeOrderRow): DsvV1CustomerRouteScopeRow[] {
+  const routeVersion = row.currentRouteVersion;
+  const routePlan = routeVersion?.routePlan ?? null;
+  const vehiclePosition = routePlan?.trackingGeometry ?? null;
+  const vehicleLatitude = decimalToNumber(vehiclePosition?.lastLatitude ?? null);
+  const vehicleLongitude = decimalToNumber(vehiclePosition?.lastLongitude ?? null);
+  if (
+    routeVersion === null
+    || routeVersion.routePlanId === null
+    || routePlan?.vehicleId === null
+    || routePlan?.vehicleId === undefined
+    || vehicleLatitude === null
+    || vehicleLongitude === null
+  ) return [];
+  return [{
+    routePlanId: routeVersion.routePlanId,
+    sellerOrderId: row.id,
+    vehicleId: routePlan.vehicleId,
+    vehicleLatitude,
+    vehicleLongitude,
+  }];
 }
 
 function requireSelectedCustomerDeliveryStop(

@@ -634,19 +634,27 @@ describe('DSV v1 read routes', () => {
             vehicleLatitude: 37.5,
             vehicleLongitude: 126.905,
           }),
-          customerDeliveryRow({
-            routePlanId: 'route-plan-1',
-            sellerOrderId: 'order-customer-last',
-            sellerOrderKey: 'SO-C2',
-            vehicleId: 'vehicle-1',
-            vehicleLatitude: 37.5,
-            vehicleLongitude: 126.905,
-          }),
         ],
-        page: { hasMore: false },
+        page: { hasMore: true, nextCursor: 'next-customer-page' },
         serviceDate: '2026-07-23',
         timezone: 'Asia/Seoul',
       });
+      queryService.listCustomerRouteScope.mockResolvedValueOnce([
+        {
+          routePlanId: 'route-plan-1',
+          sellerOrderId: 'order-customer-first',
+          vehicleId: 'vehicle-1',
+          vehicleLatitude: 37.5,
+          vehicleLongitude: 126.905,
+        },
+        {
+          routePlanId: 'route-plan-1',
+          sellerOrderId: 'order-customer-last',
+          vehicleId: 'vehicle-1',
+          vehicleLatitude: 37.5,
+          vehicleLongitude: 126.905,
+        },
+      ]);
       routePlanService.getRoutePlanDetail.mockResolvedValueOnce(routePlanDetail({
         routeGeometry: {
           coordinates: [[126.9, 37.5], [126.91, 37.5], [126.92, 37.5], [126.93, 37.5], [126.94, 37.5]],
@@ -685,6 +693,10 @@ describe('DSV v1 read routes', () => {
         routePlanId: 'route-plan-1',
         shopDomain: 'tomatonofood.com',
       });
+      expect(queryService.listCustomerRouteScope).toHaveBeenCalledWith(
+        expect.objectContaining({ customerId, principalType: 'CUSTOMER_USER', shopId }),
+        '2026-07-23',
+      );
       const serialized = JSON.stringify(body.data);
       expect(serialized).not.toContain('route-plan-1');
       expect(serialized).not.toContain('other-before');
@@ -909,6 +921,8 @@ function createQueryService(): MockQueryService {
     })),
     listCustomerDeliveries: vi.fn(() => Promise.resolve({ items: [], page: { hasMore: false }, serviceDate: '2026-07-23', timezone: 'Asia/Seoul' })),
     listCustomerDeliveriesForAdmin: vi.fn(() => Promise.resolve({ items: [], page: { hasMore: false }, serviceDate: '2026-07-23', timezone: 'Asia/Seoul' })),
+    listCustomerRouteScope: vi.fn(() => Promise.resolve([])),
+    listCustomerRouteScopeForAdmin: vi.fn(() => Promise.resolve([])),
     listCustomers: vi.fn(() => Promise.resolve(list)),
     listDestinations: vi.fn(() => Promise.resolve(list)),
     listDispatches: vi.fn(() => Promise.resolve({
