@@ -122,30 +122,50 @@ function readPositiveInteger(value: string | undefined): number | undefined {
 
 function brandedHtml(message: CustomerEmailTransportMessage): string {
   const branding = message.branding ?? defaultCustomerEmailBranding();
-  const preview = branding.previewText === ''
-    ? ''
-    : `<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent">${escapeHtml(branding.previewText)}</div>`;
-  const footerLogo = renderLogo(branding);
+  const footerLogo = renderLogo(branding, message.senderName);
   const footerText = branding.footerText === ''
     ? ''
-    : `<div style="margin-top:24px;color:#6b7280;font-size:13px;line-height:1.5">${escapeHtml(branding.footerText)}</div>`;
-  const poweredBy = branding.showPoweredByClever
-    ? '<div style="margin-top:12px;color:#6b7280;font-size:12px;line-height:1.5">Powered by CLEVER</div>'
-    : '';
+    : `<div class="email-muted" style="color:#57606a;font-size:13px;line-height:1.55">${escapeHtml(branding.footerText)}</div>`;
+  const footerColumns = footerLogo === ''
+    ? `<td valign="top" class="email-muted" style="color:#57606a">${footerText}</td>`
+    : `<td valign="top" width="1" style="padding:0 16px 0 0">${footerLogo}</td>
+                          <td valign="top" class="email-muted" style="color:#57606a">${footerText}</td>`;
   return `<!doctype html>
 <html>
-  <body style="margin:0;padding:0;background:${branding.backgroundColor};color:${branding.textColor};font-family:Arial,sans-serif">
-    ${preview}
-    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;background:${branding.backgroundColor};margin:0;padding:0;width:100%">
+  <head>
+    <meta name="color-scheme" content="light dark">
+    <meta name="supported-color-schemes" content="light dark">
+    <style>
+      :root { color-scheme: light dark; supported-color-schemes: light dark; }
+      @media (prefers-color-scheme: dark) {
+        .email-page { background:#000000 !important;color:#ffffff !important; }
+        .email-text { color:#ffffff !important; }
+        .email-muted { color:#c9d1d9 !important; }
+        .email-footer { border-color:#8b949e !important; }
+      }
+    </style>
+  </head>
+  <body class="email-page" style="margin:0;padding:0;background:#ffffff;color:#111111;font-family:Arial,sans-serif">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" class="email-page" style="border-collapse:collapse;background:#ffffff;color:#111111;margin:0;padding:0;width:100%">
       <tr>
         <td align="center" style="padding:28px 16px">
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;max-width:640px;width:100%">
             <tr>
-              <td style="background:${branding.surfaceColor};border-top:4px solid ${branding.accentColor};padding:28px">
-                <div style="color:${branding.textColor};font-size:16px;line-height:1.65;white-space:pre-wrap">${escapeHtml(message.body)}</div>
-                ${footerLogo}
-                ${footerText}
-                ${poweredBy}
+              <td style="padding:28px 0">
+                <h1 class="email-text" style="color:#111111;font-size:28px;font-weight:700;line-height:1.2;margin:0 0 20px">${escapeHtml(message.subject)}</h1>
+                <div class="email-text" style="color:#111111;font-size:16px;line-height:1.65;white-space:pre-wrap">${escapeHtml(message.body)}</div>
+                <hr style="border:0;border-top:1px solid #d0d7de;margin:28px 0" />
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%">
+                  <tr>
+                    <td class="email-footer" style="border:1px solid #d0d7de;border-radius:8px;padding:18px">
+                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%">
+                        <tr>
+                          ${footerColumns}
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                </table>
               </td>
             </tr>
           </table>
@@ -156,13 +176,18 @@ function brandedHtml(message: CustomerEmailTransportMessage): string {
 </html>`;
 }
 
-function renderLogo(branding: CustomerEmailBranding): string {
+function renderLogo(branding: CustomerEmailBranding, senderName: string): string {
   if (branding.logoMode !== 'image' || branding.logoUrl === null) return '';
-  const image = `<img src="${escapeHtml(branding.logoUrl)}" width="${branding.logoWidth}" alt="${escapeHtml(branding.logoAltText)}" style="border:0;display:block;height:auto;max-width:100%;width:${branding.logoWidth}px" />`;
+  const image = `<img src="${escapeHtml(branding.logoUrl)}" width="${branding.logoWidth}" alt="${escapeHtml(deriveLogoAltText(senderName))}" style="border:0;display:block;height:auto;max-width:100%;width:${branding.logoWidth}px" />`;
   const content = branding.logoLinkUrl === null
     ? image
     : `<a href="${escapeHtml(branding.logoLinkUrl)}" style="display:inline-block;text-decoration:none">${image}</a>`;
-  return `<div style="margin-top:24px;text-align:left">${content}</div>`;
+  return content;
+}
+
+function deriveLogoAltText(senderName: string): string {
+  const normalized = senderName.replace(/[<>]/gu, '').replace(/\s+/gu, ' ').trim();
+  return normalized === '' ? 'Brand' : normalized;
 }
 
 function escapeHtml(value: string): string {

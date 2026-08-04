@@ -210,7 +210,7 @@ describe('CustomerEmailService', () => {
 });
 
 describe('BrevoCustomerEmailTransport', () => {
-  test('sends escaped branded HTML, sender, replyTo, tags, idempotency, and timeout', async () => {
+  test('sends escaped neutral HTML with subject heading, body, divider, and boxed footer', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ messageId: 'brevo-id' }), { status: 201 }));
     const transport = new BrevoCustomerEmailTransport({
       apiKey: 'secret',
@@ -222,22 +222,25 @@ describe('BrevoCustomerEmailTransport', () => {
       branding: {
         ...defaultCustomerEmailSettings().branding,
         accentColor: '#0055aa',
+        backgroundColor: '#112233',
         footerText: 'Footer <script>alert(1)</script>',
-        logoAltText: 'Brand <Logo>',
+        logoAltText: 'User controlled <Logo>',
         logoLinkUrl: 'https://example.com/email',
         logoMode: 'image',
         logoUrl: 'https://example.com/logo.png',
         previewText: 'Preview <hidden>',
-        showPoweredByClever: false,
+        showPoweredByClever: true,
+        surfaceColor: '#223344',
+        textColor: '#334455',
       },
       body: 'Hello <customer>',
       commandId: 'command-1:stop-1',
       recipientEmail: 'customer@example.com',
       replyTo: 'reply@example.com',
       senderEmail: 'sender@example.com',
-      senderName: 'CLEVER',
+      senderName: 'Sender & Co <Team>',
       signal: 'DELIVERY_SCHEDULED',
-      subject: 'Subject',
+      subject: 'Subject <urgent>',
       tags: ['customer-delivery-email', 'delivery_scheduled'],
     })).resolves.toEqual({ provider: 'brevo', providerMessageId: 'brevo-id' });
 
@@ -248,19 +251,27 @@ describe('BrevoCustomerEmailTransport', () => {
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       htmlContent: expect.stringContaining('&lt;customer&gt;'),
       replyTo: { email: 'reply@example.com' },
-      sender: { email: 'sender@example.com', name: 'CLEVER' },
+      sender: { email: 'sender@example.com', name: 'Sender & Co <Team>' },
       tags: ['customer-delivery-email', 'delivery_scheduled'],
       textContent: 'Hello <customer>',
     });
     const parsedBody = JSON.parse(request.body as string) as { htmlContent: string; textContent: string };
-    expect(parsedBody.htmlContent).toContain('Preview &lt;hidden&gt;');
+    expect(parsedBody.htmlContent).toContain('<meta name="color-scheme" content="light dark">');
+    expect(parsedBody.htmlContent).toContain('<meta name="supported-color-schemes" content="light dark">');
+    expect(parsedBody.htmlContent).toMatch(/<h1[^>]*>Subject &lt;urgent&gt;<\/h1>[\s\S]*Hello &lt;customer&gt;[\s\S]*<hr/u);
     expect(parsedBody.htmlContent).toContain('Footer &lt;script&gt;alert(1)&lt;/script&gt;');
-    expect(parsedBody.htmlContent).toContain('alt="Brand &lt;Logo&gt;"');
-    expect(parsedBody.htmlContent).toContain('border-top:4px solid #0055aa');
-    expect(parsedBody.htmlContent).toMatch(/Hello &lt;customer&gt;[\s\S]*alt="Brand &lt;Logo&gt;"[\s\S]*Footer &lt;script&gt;alert\(1\)&lt;\/script&gt;/u);
-    expect(parsedBody.htmlContent).not.toContain('padding:0 0 16px');
+    expect(parsedBody.htmlContent).toContain('alt="Sender &amp; Co Team"');
+    expect(parsedBody.htmlContent).toMatch(/<td[^>]*border:1px solid #d0d7de[^>]*>[\s\S]*<table role="presentation"[\s\S]*alt="Sender &amp; Co Team"[\s\S]*Footer &lt;script&gt;alert\(1\)&lt;\/script&gt;/u);
+    expect(parsedBody.htmlContent).not.toContain('Preview &lt;hidden&gt;');
+    expect(parsedBody.htmlContent).not.toContain('display:none');
+    expect(parsedBody.htmlContent).not.toContain('User controlled');
+    expect(parsedBody.htmlContent).not.toContain('#0055aa');
+    expect(parsedBody.htmlContent).not.toContain('#112233');
+    expect(parsedBody.htmlContent).not.toContain('#223344');
+    expect(parsedBody.htmlContent).not.toContain('#334455');
     expect(parsedBody.htmlContent).not.toContain('<customer>');
     expect(parsedBody.htmlContent).not.toContain('<script>');
+    expect(parsedBody.htmlContent).not.toContain('<urgent>');
     expect(parsedBody.htmlContent).not.toContain('Powered by CLEVER');
     expect(parsedBody.textContent).toBe('Hello <customer>');
     expect(request.signal).toBeDefined();
