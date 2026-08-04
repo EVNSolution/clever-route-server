@@ -473,6 +473,7 @@ describeG004Disposable('G004 DSV assignment command DB integration', () => {
     await expect(prisma.order.count({ where: { id: fixture.orderAId, shopId: fixture.shopId } })).resolves.toBe(0);
     await expect(prisma.deliveryStop.count({ where: { id: fixture.stopAId, shopId: fixture.shopId } })).resolves.toBe(0);
     await expect(prisma.dsvDispatchImportRow.findUniqueOrThrow({ where: { id: importRowBefore.id } })).resolves.toMatchObject({
+      canonicalLink: null,
       deliveryStopId: null,
       sellerOrderId: null,
     });

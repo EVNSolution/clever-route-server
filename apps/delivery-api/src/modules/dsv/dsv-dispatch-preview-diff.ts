@@ -267,11 +267,6 @@ export function buildDsvDispatchPreviewDiff(input: DsvDispatchPreviewInput): Dsv
       sellerOrderKey: normalized.sellerOrderKey,
       sourceKind,
     });
-    const priorRow = findPriorImportRow(input.snapshots.priorImportRows ?? [], {
-      planDate: normalized.planDate,
-      sellerOrderKey: normalized.sellerOrderKey,
-      sourceKind,
-    });
     const resolvedDestinationId = resolveDestinationIdForDiff(canonicalOrder, normalized, destinationMatches);
     const candidateDiff = canonicalOrder === null
       ? []
@@ -299,14 +294,14 @@ export function buildDsvDispatchPreviewDiff(input: DsvDispatchPreviewInput): Dsv
       candidateDiff: sortCandidateDiff(candidateDiff),
       conditionId: conditionMatches.length === 1 && conditionMatches[0]?.status === 'ACTIVE' ? conditionMatches[0].id : null,
       customerId: customerMatches.length === 1 ? customerMatches[0]?.id ?? null : null,
-      deliveryStopId: canonicalOrder?.deliveryStop?.id ?? priorRow?.canonicalLink?.deliveryStopId ?? null,
+      deliveryStopId: canonicalOrder?.deliveryStop?.id ?? null,
       destinationId: destinationMatches.length === 1 ? destinationMatches[0]?.id ?? null : resolvedDestinationId,
       diffKind,
       driverId: driverMatches.length === 1 ? driverMatches[0]?.id ?? null : null,
       issues: sortIssues(issues),
       normalized,
       rowNumber: source.rowNumber,
-      sellerOrderId: canonicalOrder?.id ?? priorRow?.canonicalLink?.sellerOrderId ?? null,
+      sellerOrderId: canonicalOrder?.id ?? null,
       sellerOrderKey: normalized.sellerOrderKey,
       vehicleId: vehicleMatches.length === 1 ? vehicleMatches[0]?.id ?? null : null,
     };
@@ -672,16 +667,6 @@ function findCanonicalOrder(
       && (order.serviceDate ?? order.deliveryStop?.deliveryDate ?? null) === identity.planDate,
   );
   return matches[0] ?? null;
-}
-
-function findPriorImportRow(
-  rows: DsvDispatchPriorImportRowSnapshot[],
-  identity: { planDate: string; sellerOrderKey: string; sourceKind: string },
-): DsvDispatchPriorImportRowSnapshot | null {
-  return rows.find((row) =>
-    row.sourceKind === identity.sourceKind
-    && row.sellerOrderKey === identity.sellerOrderKey
-    && row.normalized.planDate === identity.planDate) ?? null;
 }
 
 function conditionKey(condition: DsvDispatchConditionSnapshot): string {

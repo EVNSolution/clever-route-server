@@ -264,6 +264,48 @@ describe('G003 DSV dispatch preview diff', () => {
     expect(preview.canApply).toBe(true);
   });
 
+  test('does not restore deleted canonical identities from retained import history', () => {
+    const row = sourceRow({ rowNumber: 2, sellerOrderKey: 'SO-DELETED-REIMPORT' });
+    const preview = buildDsvDispatchPreviewDiff(input({
+      rows: [row],
+      snapshots: {
+        canonicalOrders: [],
+        priorImportRows: [{
+          canonicalLink: {
+            customerId: 'customer-1',
+            deliveryStopId: 'deleted-stop',
+            destinationId: 'destination-1',
+            sellerOrderId: 'deleted-order',
+          },
+          normalized: {
+            address: row.address,
+            conditionComparisonKey: 'COLD',
+            customerCode: row.customerCode,
+            destinationName: row.destinationName,
+            driverName: row.driverName,
+            latitude: row.latitude,
+            longitude: row.longitude,
+            notes: row.notes,
+            planDate: '2026-07-23',
+            sellerOrderKey: row.sellerOrderKey,
+            shippedBoxes: row.shippedBoxes,
+            sourceKind: dsvDispatchImportSourceKind,
+            vehiclePlate: row.vehiclePlate,
+          },
+          sellerOrderKey: row.sellerOrderKey,
+          sourceKind: dsvDispatchImportSourceKind,
+        }],
+      },
+    }));
+
+    expect(preview.canApply).toBe(true);
+    expect(preview.rows[0]).toMatchObject({
+      deliveryStopId: null,
+      diffKind: 'NEW',
+      sellerOrderId: null,
+    });
+  });
+
   test('classifies changed existing order fields as UPDATE_CANDIDATE', () => {
     const previous = sourceRow({ address: '100 Old Road', rowNumber: 2, sellerOrderKey: 'SO-CHANGE' });
     const incoming = sourceRow({ address: '200 New Road', rowNumber: 2, sellerOrderKey: 'SO-CHANGE' });

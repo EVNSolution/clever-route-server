@@ -549,7 +549,7 @@ export class DsvAssignmentCommandService {
       }
 
       await tx.dsvDispatchImportRow.updateMany({
-        data: { deliveryStopId: null, sellerOrderId: null },
+        data: { canonicalLink: Prisma.JsonNull, deliveryStopId: null, sellerOrderId: null },
         where: { sellerOrderId: { in: sellerOrderIds }, shopId: shop.id },
       });
       await tx.dsvCommandReceipt.updateMany({

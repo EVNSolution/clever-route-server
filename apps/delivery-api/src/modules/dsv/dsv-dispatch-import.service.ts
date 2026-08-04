@@ -17,7 +17,6 @@ import {
   type DsvDispatchCanonicalOrderSnapshot,
   type DsvDispatchPreviewDiff,
   type DsvDispatchPreviewRow as DsvDispatchDiffRow,
-  type DsvDispatchPreviewSnapshots,
 } from './dsv-dispatch-preview-diff.js';
 
 export type DsvDispatchImportSourceRow = {
@@ -734,7 +733,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
   }
 
   private async buildPreviewForRows(
-    prisma: Pick<Tx, 'customer' | 'deliveryCustomerProfile' | 'deliveryStop' | 'dsvDispatchImportRow' | 'dsvDriverProfile' | 'dsvTransportCondition' | 'order' | 'routeGroupingBranchOrderLock' | 'routeGroupingChildVersion' | 'routeGroupingOrder' | 'routePlanStop' | 'vehicle'>,
+    prisma: Pick<Tx, 'customer' | 'deliveryCustomerProfile' | 'deliveryStop' | 'dsvDriverProfile' | 'dsvTransportCondition' | 'order' | 'routeGroupingBranchOrderLock' | 'routeGroupingChildVersion' | 'routeGroupingOrder' | 'routePlanStop' | 'vehicle'>,
     shopId: string,
     input: Pick<DsvDispatchImportInput, 'fileName' | 'planDate' | 'rows'>,
   ): Promise<DsvDispatchPreviewDiff> {
@@ -746,7 +745,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     const addressFingerprints = unique(normalizedRows.map((row) => addressFingerprint(row)));
     const serviceDate = new Date(`${input.planDate}T00:00:00.000Z`);
 
-    const [drivers, vehicles, conditions, customers, destinations, orders, priorRows] = await Promise.all([
+    const [drivers, vehicles, conditions, customers, destinations, orders] = await Promise.all([
       prisma.dsvDriverProfile.findMany({
         select: { driver: { select: { id: true, status: true } }, lookupName: true },
         where: { lookupName: { in: driverNames }, shopId },
@@ -771,10 +770,6 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         include: { deliveryStops: { orderBy: { createdAt: 'asc' }, take: 1 } },
         where: { sellerOrderKey: { in: sellerOrderKeys }, sellerOrderSourceKind: dsvDispatchImportSourceKind, serviceDate, shopId },
       }),
-      prisma.dsvDispatchImportRow.findMany({
-        select: { canonicalLink: true, normalized: true, sellerOrderKey: true, sourceKind: true },
-        where: { sellerOrderKey: { in: sellerOrderKeys }, shopId, status: 'APPLIED' },
-      }),
     ]);
 
     const activeCounts = new Map<string, number>();
@@ -789,19 +784,6 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         order.currentRouteVersionId,
       ));
     }));
-
-    const priorImportRows: NonNullable<DsvDispatchPreviewSnapshots['priorImportRows']> = [];
-    for (const row of priorRows) {
-      const normalized = normalizedFromJson(row.normalized);
-      if (normalized !== null) {
-        priorImportRows.push({
-          canonicalLink: isCanonicalLink(row.canonicalLink) ? row.canonicalLink : null,
-          normalized,
-          sellerOrderKey: row.sellerOrderKey,
-          sourceKind: row.sourceKind,
-        });
-      }
-    }
 
     return buildDsvDispatchPreviewDiff({
       fileName: input.fileName,
@@ -852,7 +834,6 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
           id: profile.driver.id,
           status: profile.driver.status,
         })),
-        priorImportRows,
         vehicles: vehicles.map((vehicle) => ({ id: vehicle.id, licensePlate: vehicle.licensePlate, status: vehicle.status })),
       },
     });
@@ -2034,15 +2015,6 @@ function normalizedFromJson(value: Prisma.JsonValue | undefined): DsvDispatchDif
     }
   }
   return null;
-}
-
-function isCanonicalLink(value: Prisma.JsonValue): value is {
-  customerId: string | null;
-  deliveryStopId: string | null;
-  destinationId: string | null;
-  sellerOrderId: string | null;
-} {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function isApplyResult(value: Prisma.JsonValue | undefined): value is DsvDispatchImportApplyResult {

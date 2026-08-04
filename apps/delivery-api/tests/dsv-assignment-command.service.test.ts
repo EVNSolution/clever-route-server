@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { Prisma } from '@prisma/client';
 import { describe, expect, test, vi } from 'vitest';
 
 import {
@@ -154,7 +155,7 @@ describe('DsvAssignmentCommandService', () => {
     expect(harness.savedDraftInput()).toMatchObject({ removedOrderIds: orderIds });
     expect(harness.savedRoutes().find((route) => route.routePlanId === 'route-a')?.orderIds).toEqual([]);
     expect(harness.prisma.dsvDispatchImportRow.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-      data: { deliveryStopId: null, sellerOrderId: null },
+      data: { canonicalLink: Prisma.JsonNull, deliveryStopId: null, sellerOrderId: null },
     }));
     expect(harness.prisma.dsvCommandReceipt.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       data: { sellerOrderId: null },
