@@ -8,7 +8,7 @@ describe('orders pagination completion evidence', () => {
       scripts?: Record<string, string>;
     };
     const commonFilterSql = readFileSync(
-      new URL('../scripts/orders-pagination-query-plan-common-filters.sql', import.meta.url),
+      new URL('../scripts/orders-pagination-query-plan-common-filters.sql.example', import.meta.url),
       'utf8'
     );
 

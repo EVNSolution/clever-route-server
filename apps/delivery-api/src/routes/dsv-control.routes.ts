@@ -1236,7 +1236,12 @@ function readAddressResolutionStatus(value: unknown): DsvAddressResolutionStatus
 
 function readDriverInput(value: unknown): DsvDriverInput | null {
   const body = objectBody(value);
-  if (body === null || !hasOnlyKeys(body, ['age', 'career', 'gender', 'name', 'phone', 'score', 'traits', 'zone'])) return null;
+  const requiredKeys = ['age', 'career', 'gender', 'name', 'score', 'traits', 'zone'];
+  if (
+    body === null
+    || !hasOnlyAllowedKeys(body, [...requiredKeys, 'phone'])
+    || !requiredKeys.every((key) => Object.hasOwn(body, key))
+  ) return null;
   const age = readInteger(body.age);
   const career = readBoundedText(body.career, 160);
   const gender = readBoundedText(body.gender, 40);
@@ -1245,17 +1250,22 @@ function readDriverInput(value: unknown): DsvDriverInput | null {
   const score = readBoundedText(body.score, 40);
   const traits = readBoundedTextArray(body.traits, 20, 160);
   const zone = readBoundedText(body.zone, 160);
-  if (age === null || age < 18 || age > 100 || career === null || gender === null || name === null || phone === null || score === null || traits === null || zone === null) return null;
+  if (age === null || (age !== 0 && age < 18) || age > 100 || career === null || gender === null || name === null || phone === null || score === null || traits === null || zone === null) return null;
   return { age, career, gender, name, ...(phone === undefined ? {} : { phone }), score, traits, zone };
 }
 
 function readVehicleInput(value: unknown): DsvVehicleInput | null {
   const body = objectBody(value);
-  if (body === null || !hasOnlyKeys(body, ['note', 'plate', 'type'])) return null;
+  if (body === null || !hasOnlyAllowedKeys(body, ['note', 'plate', 'telematicsSerialNumber', 'type'])) return null;
   const note = readBoundedTextAllowEmpty(body.note, 1_000);
   const plate = readBoundedText(body.plate, 40);
+  const telematicsSerialNumber = Object.hasOwn(body, 'telematicsSerialNumber')
+    ? readBoundedTextAllowEmpty(body.telematicsSerialNumber, 160)
+    : undefined;
   const type = readBoundedText(body.type, 160);
-  return note === null || plate === null || type === null ? null : { note, plate, type };
+  return note === null || plate === null || telematicsSerialNumber === null || type === null
+    ? null
+    : { note, plate, ...(telematicsSerialNumber === undefined ? {} : { telematicsSerialNumber }), type };
 }
 
 function readUuidBodyField(value: unknown, field: string): string | null {
