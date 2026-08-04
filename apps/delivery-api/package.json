@@ -34,7 +34,10 @@
     "wordpress-plugin:pairing-code:create": "tsx src/scripts/create-wordpress-plugin-pairing-code.ts",
     "woocommerce:delivery-facts:evidence": "tsx src/scripts/woocommerce-delivery-facts-evidence.ts",
     "woocommerce:order-items:backfill": "tsx src/scripts/backfill-woocommerce-order-items.ts",
-    "route-geometry:refresh": "node dist/scripts/refresh-route-geometry-cache.js"
+    "route-geometry:refresh": "node dist/scripts/refresh-route-geometry-cache.js",
+    "orders:display-sequence:backfill": "tsx src/scripts/backfill-order-display-sequence.ts",
+    "perf:orders:cohorts": "tsx src/scripts/orders-performance-cohorts.ts",
+    "perf:orders:completion-evidence": "tsx src/scripts/orders-pagination-completion-evidence.ts"
   },
   "keywords": [
     "delivery",

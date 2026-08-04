@@ -14,9 +14,9 @@ import { loadDriverAuthDependencies } from './modules/driver/driver-auth.depende
 import { createRouteGroupingService, loadAdminRouteGroupDependencies } from './modules/route-grouping/route-grouping.dependencies.js';
 import { loadAdminRoutePlanDependencies } from './modules/route-plans/route-plan.dependencies.js';
 import { createCustomerDeliveryNotificationRuntime } from './modules/route-plans/customer-delivery-notification.runtime.js';
-import { loadAdminOrdersDependencies } from './modules/shopify/order-sync.dependencies.js';
+import { loadAdminOrdersRuntime } from './modules/shopify/order-sync.dependencies.js';
 import { loadShopifyAuthDependencies } from './modules/shopify/auth.dependencies.js';
-import { loadShopifyWebhookDependencies } from './modules/shopify/webhook.dependencies.js';
+import { loadShopifyWebhookRuntime } from './modules/shopify/webhook.dependencies.js';
 import { loadWooCommerceWebhookDependencies } from './modules/woocommerce/woocommerce.dependencies.js';
 import { createAdminNotificationRuntime } from './modules/notifications/admin-notification.dependencies.js';
 import { RouteTrackingStreamHub } from './modules/route-tracking/route-tracking.stream.js';
@@ -62,11 +62,12 @@ const adminNotificationService = adminNotificationRuntime.service;
 const dsvControl = loadDsvControlDependencies({ env: process.env, nodeEnv: env.nodeEnv, prisma, routeGroupingService });
 const dsvDriverAuth = loadDsvDriverAuthDependencies({ env: process.env, nodeEnv: env.nodeEnv, prisma });
 const dsvV1Read = loadDsvV1ReadDependencies({ env: process.env, nodeEnv: env.nodeEnv, prisma });
-const adminOrders = loadAdminOrdersDependencies({
+const adminOrdersRuntime = loadAdminOrdersRuntime({
   adminNotificationService,
   env: process.env,
   prisma
 });
+const adminOrders = adminOrdersRuntime?.dependencies;
 const adminCommerceConnectionsUi = loadAdminCommerceConnectionsUiDependencies({
   adminCommerceConnections,
   adminDrivers,
@@ -86,7 +87,8 @@ const driverApi = loadDriverApiDependencies({
 });
 const driverAuth = loadDriverAuthDependencies({ env: process.env, prisma });
 const shopifyAuth = loadShopifyAuthDependencies({ env: process.env, prisma });
-const shopifyWebhook = loadShopifyWebhookDependencies({ env: process.env, prisma });
+const shopifyWebhookRuntime = loadShopifyWebhookRuntime({ env: process.env, prisma });
+const shopifyWebhook = shopifyWebhookRuntime?.dependencies;
 const wooCommerceWebhook = loadWooCommerceWebhookDependencies({
   adminNotificationService,
   env: process.env,
@@ -131,6 +133,8 @@ try {
   await app.listen({ host: '0.0.0.0', port: env.port });
   await adminNotificationRuntime.start();
   await customerDeliveryNotificationRuntime.start();
+  shopifyWebhookRuntime?.worker?.start();
+  adminOrdersRuntime?.reconciliationWorker?.start();
   app.log.info({ port: env.port }, 'clever-route-server listening');
 } catch (error) {
   app.log.error(error, 'failed to start clever-route-server');
@@ -138,6 +142,8 @@ try {
     app.close(),
     adminNotificationRuntime.close(),
     customerDeliveryNotificationRuntime.close(),
+    shopifyWebhookRuntime?.worker?.close() ?? Promise.resolve(),
+    adminOrdersRuntime?.reconciliationWorker?.close() ?? Promise.resolve(),
     prisma.$disconnect()
   ]);
   process.exitCode = 1;
@@ -148,7 +154,9 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     void app.close().finally(() => {
       void Promise.all([
         adminNotificationRuntime.close(),
-        customerDeliveryNotificationRuntime.close()
+        customerDeliveryNotificationRuntime.close(),
+        shopifyWebhookRuntime?.worker?.close() ?? Promise.resolve(),
+        adminOrdersRuntime?.reconciliationWorker?.close() ?? Promise.resolve()
       ]).finally(() => {
         void prisma.$disconnect().finally(() => {
           process.kill(process.pid, signal);

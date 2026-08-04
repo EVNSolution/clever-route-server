@@ -1,6 +1,7 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import type { PrismaClient } from '@prisma/client';
+import { redactTelemetryMessage, safeErrorCode } from '../security/safe-telemetry-redaction.js';
 import { appScopedShopWhere, normalizeShopifyAppId } from './shopify-app-scope.js';
 
 export type RecordShopifyWebhookEventInput = {
@@ -17,15 +18,31 @@ export type RecordShopifyWebhookEventInput = {
 
 export type RecordShopifyWebhookEventResult = {
   duplicate: boolean;
+  status: string;
   webhookId: string;
 };
 
-type ShopifyWebhookPrivacyPrismaClient = Pick<PrismaClient, 'order' | 'shop' | 'shopifyWebhookEvent'>;
+type ShopifyWebhookPrivacyPrismaClient = Pick<PrismaClient, '$transaction' | 'order' | 'shop' | 'shopifyWebhookEvent'>;
 
 export type ClaimOrderWebhookResult =
-  | { action: 'process' }
+  | { action: 'process'; event: ClaimedShopifyWebhookEvent }
   | { action: 'noop'; reason: 'already_done' | 'permanent_failure' }
-  | { action: 'conflict'; retryAfterSeconds: number };
+  | { action: 'queued'; reason: 'already_queued' | 'retry_wait' | 'processing' };
+
+export type ClaimedShopifyWebhookEvent = {
+  apiVersion: string | null;
+  appId: string;
+  attemptCount: number;
+  id: string;
+  leaseToken: string;
+  maxAttempts: number;
+  payload: unknown;
+  shopDomain: string;
+  shopId: string;
+  topic: string;
+  triggeredAt: Date | null;
+  webhookId: string;
+};
 
 export class PrismaShopifyWebhookEventRepository {
   constructor(private readonly prisma: ShopifyWebhookPrivacyPrismaClient) {}
@@ -36,14 +53,11 @@ export class PrismaShopifyWebhookEventRepository {
     return this.recordWebhookEvent(input);
   }
 
-  async claimOrderWebhook(input: {
+  async getOrderWebhookDeliveryDisposition(input: {
     appId?: string | undefined;
-    now?: Date | undefined;
-    processingStaleAfterMs?: number | undefined;
     shopDomain: string;
     webhookId: string;
   }): Promise<ClaimOrderWebhookResult> {
-    const now = input.now ?? new Date();
     const shop = await this.prisma.shop.findUnique({
       select: { id: true },
       where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) })
@@ -53,7 +67,7 @@ export class PrismaShopifyWebhookEventRepository {
     }
 
     const event = await this.prisma.shopifyWebhookEvent.findUnique({
-      select: { id: true, lastError: true, status: true, updatedAt: true },
+      select: { id: true, lastError: true, status: true },
       where: { shopId_webhookId: { shopId: shop.id, webhookId: input.webhookId } }
     });
     if (event === null) {
@@ -63,60 +77,144 @@ export class PrismaShopifyWebhookEventRepository {
     if (event.status === 'PROCESSED' || event.status === 'IGNORED') {
       return { action: 'noop', reason: 'already_done' };
     }
-    if (event.status === 'FAILED' && event.lastError?.startsWith('PERMANENT:')) {
+    if (event.status === 'DEAD_LETTER' || (event.status === 'FAILED' && event.lastError?.startsWith('PERMANENT:'))) {
       return { action: 'noop', reason: 'permanent_failure' };
     }
-    if (event.status === 'PROCESSING') {
-      const staleAfterMs = input.processingStaleAfterMs ?? 120_000;
-      if (now.getTime() - event.updatedAt.getTime() < staleAfterMs) {
-        return { action: 'conflict', retryAfterSeconds: Math.ceil(staleAfterMs / 1000) };
+
+    return {
+      action: 'queued',
+      reason: event.status === 'PROCESSING'
+        ? 'processing'
+        : event.status === 'RETRY_WAIT' || event.status === 'FAILED'
+          ? 'retry_wait'
+          : 'already_queued'
+    };
+  }
+
+  async claimNextOrderWebhook(input: {
+    leaseMs: number;
+    now?: Date | undefined;
+    workerId: string;
+  }): Promise<ClaimOrderWebhookResult> {
+    const now = input.now ?? new Date();
+    const due = await this.prisma.shopifyWebhookEvent.findFirst({
+      orderBy: { nextRunAt: 'asc' },
+      select: { id: true, status: true },
+      where: {
+        topic: { in: ORDER_TOPICS },
+        OR: [
+          { status: { in: ['RECEIVED', 'QUEUED', 'RETRY_WAIT', 'FAILED'] }, nextRunAt: { lte: now } },
+          { status: 'PROCESSING', leaseExpiresAt: { lt: now } }
+        ]
       }
+    });
+    if (due === null) {
+      return { action: 'queued', reason: 'already_queued' };
     }
 
+    const leaseToken = randomUUID();
     const claimed = await this.prisma.shopifyWebhookEvent.updateMany({
       data: {
         attemptCount: { increment: 1 },
         lastError: null,
-        status: 'PROCESSING'
+        lastErrorCode: null,
+        lastErrorMessageRedacted: null,
+        leaseExpiresAt: new Date(now.getTime() + input.leaseMs),
+        leaseToken,
+        status: 'PROCESSING',
+        workerId: input.workerId
       },
       where: {
-        id: event.id,
-        status: event.status
+        id: due.id,
+        OR: [
+          { status: { in: ['RECEIVED', 'QUEUED', 'RETRY_WAIT', 'FAILED'] }, nextRunAt: { lte: now } },
+          { status: 'PROCESSING', leaseExpiresAt: { lt: now } }
+        ]
       }
     });
     if (claimed.count !== 1) {
-      return { action: 'conflict', retryAfterSeconds: 120 };
+      return { action: 'queued', reason: 'processing' };
     }
 
-    return { action: 'process' };
+    const event = await this.prisma.shopifyWebhookEvent.findUnique({
+      select: {
+        apiVersion: true,
+        id: true,
+        attemptCount: true,
+        leaseToken: true,
+        maxAttempts: true,
+        payload: true,
+        shop: { select: { appId: true, id: true, shopDomain: true } },
+        topic: true,
+        triggeredAt: true,
+        webhookId: true
+      },
+      where: { id: due.id }
+    });
+    if (event === null || event.leaseToken === null) return { action: 'queued', reason: 'already_queued' };
+
+    return {
+      action: 'process',
+      event: {
+        apiVersion: event.apiVersion,
+        appId: event.shop.appId,
+        attemptCount: event.attemptCount,
+        id: event.id,
+        leaseToken: event.leaseToken,
+        maxAttempts: event.maxAttempts,
+        payload: event.payload,
+        shopDomain: event.shop.shopDomain,
+        shopId: event.shop.id,
+        topic: event.topic,
+        triggeredAt: event.triggeredAt,
+        webhookId: event.webhookId
+      }
+    };
   }
 
   async markOrderWebhookProcessed(input: {
     appId?: string | undefined;
-    shopDomain: string;
-    webhookId: string;
-  }): Promise<void> {
-    await this.updateOrderWebhookStatus({
+    id: string;
+    leaseToken: string;
+  }): Promise<boolean> {
+    return await this.updateOrderWebhookStatus({
       ...input,
       data: {
+        deadLetteredAt: null,
         lastError: null,
+        lastErrorCode: null,
+        lastErrorMessageRedacted: null,
+        leaseExpiresAt: null,
+        leaseToken: null,
         processedAt: new Date(),
-        status: 'PROCESSED'
+        status: 'PROCESSED',
+        workerId: null
       }
     });
   }
 
   async markOrderWebhookFailed(input: {
     appId?: string | undefined;
+    attemptCount: number;
     error: string;
-    shopDomain: string;
-    webhookId: string;
-  }): Promise<void> {
-    await this.updateOrderWebhookStatus({
+    id: string;
+    leaseToken: string;
+    maxAttempts: number;
+    nextRunAt?: Date | undefined;
+  }): Promise<boolean> {
+    const permanent = input.error.startsWith('PERMANENT:') || input.attemptCount >= input.maxAttempts;
+    return await this.updateOrderWebhookStatus({
       ...input,
       data: {
+        deadLetteredAt: permanent ? new Date() : null,
         lastError: input.error,
-        status: 'FAILED'
+        lastErrorCode: safeErrorCode(input.error.split(':')[0] ?? 'ERROR'),
+        lastErrorMessageRedacted: redactTelemetryMessage(input.error),
+        leaseExpiresAt: null,
+        leaseToken: null,
+        nextRunAt: input.nextRunAt ?? nextRetryAt(input.attemptCount),
+        status: permanent ? 'DEAD_LETTER' : 'RETRY_WAIT',
+        workerId: null
       }
     });
   }
@@ -124,25 +222,25 @@ export class PrismaShopifyWebhookEventRepository {
   private async updateOrderWebhookStatus(input: {
     appId?: string | undefined;
     data: {
+      deadLetteredAt?: Date | null;
       lastError: string | null;
+      lastErrorCode?: string | null;
+      lastErrorMessageRedacted?: string | null;
+      leaseExpiresAt?: Date | null;
+      leaseToken?: string | null;
+      nextRunAt?: Date;
       processedAt?: Date;
-      status: 'PROCESSED' | 'FAILED';
+      status: 'PROCESSED' | 'RETRY_WAIT' | 'DEAD_LETTER';
+      workerId?: string | null;
     };
-    shopDomain: string;
-    webhookId: string;
-  }): Promise<void> {
-    const shop = await this.prisma.shop.findUnique({
-      select: { id: true },
-      where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) })
-    });
-    if (shop === null) {
-      throw new Error(`Shop not installed: ${input.shopDomain}`);
-    }
-
-    await this.prisma.shopifyWebhookEvent.update({
+    id: string;
+    leaseToken: string;
+  }): Promise<boolean> {
+    const updated = await this.prisma.shopifyWebhookEvent.updateMany({
       data: input.data,
-      where: { shopId_webhookId: { shopId: shop.id, webhookId: input.webhookId } }
+      where: { id: input.id, leaseToken: input.leaseToken, status: 'PROCESSING' }
     });
+    return updated.count === 1;
   }
 
   async recordWebhookEvent(
@@ -167,7 +265,7 @@ export class PrismaShopifyWebhookEventRepository {
 
     if (complianceAction.type === 'shop_redact') {
       await this.prisma.shop.delete({ where: { id: shop.id } });
-      return { duplicate: false, webhookId: input.webhookId };
+      return { duplicate: false, status: 'PROCESSED', webhookId: input.webhookId };
     }
 
     if (complianceAction.type === 'customers_redact') {
@@ -187,7 +285,7 @@ export class PrismaShopifyWebhookEventRepository {
           payload: toPrismaJson(getStoredPayload(input.payload, complianceAction.type)),
           rawBodySha256: createHash('sha256').update(input.rawBody).digest('hex'),
           shopId: shop.id,
-          status: getInitialStatus(complianceAction.type),
+          status: getInitialStatus(complianceAction.type, input.topic),
           topic: input.topic,
           triggeredAt: input.triggeredAt,
           webhookId: input.webhookId
@@ -195,15 +293,29 @@ export class PrismaShopifyWebhookEventRepository {
       });
     } catch (error) {
       if (isUniqueConstraintError(error)) {
-        return { duplicate: true, webhookId: input.webhookId };
+        const existing = await this.prisma.shopifyWebhookEvent.findUnique({
+          select: { status: true },
+          where: { shopId_webhookId: { shopId: shop.id, webhookId: input.webhookId } }
+        });
+        return { duplicate: true, status: existing?.status ?? 'QUEUED', webhookId: input.webhookId };
       }
 
       throw error;
     }
 
-    return { duplicate: false, webhookId: input.webhookId };
+    return { duplicate: false, status: getInitialStatus(complianceAction.type, input.topic), webhookId: input.webhookId };
   }
 }
+
+const ORDER_TOPICS = [
+  'orders/create',
+  'orders/updated',
+  'orders/edited',
+  'orders/cancelled',
+  'orders/fulfilled',
+  'orders/partially_fulfilled',
+  'orders/delete'
+];
 
 type ComplianceAction =
   | { type: 'customers_data_request' }
@@ -242,8 +354,9 @@ function getStoredPayload(payload: unknown, type: ComplianceAction['type']): unk
   return payload;
 }
 
-function getInitialStatus(type: ComplianceAction['type']): 'PROCESSED' | 'RECEIVED' {
-  return type === 'customers_redact' ? 'PROCESSED' : 'RECEIVED';
+function getInitialStatus(type: ComplianceAction['type'], topic: string): 'PROCESSED' | 'QUEUED' | 'RECEIVED' {
+  if (type === 'customers_redact') return 'PROCESSED';
+  return ORDER_TOPICS.includes(topic) ? 'QUEUED' : 'RECEIVED';
 }
 
 function sanitizeCustomerCompliancePayload(payload: unknown): Record<string, unknown> {
@@ -324,6 +437,11 @@ function objectOrNull(value: unknown): Record<string, unknown> | null {
 
 function isUniqueConstraintError(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+}
+
+function nextRetryAt(attemptCount: number, now = new Date()): Date {
+  const seconds = Math.min(15 * 60, 2 ** Math.max(0, attemptCount - 1) * 30);
+  return new Date(now.getTime() + seconds * 1000);
 }
 
 function toPrismaJson(value: unknown): Prisma.InputJsonValue {

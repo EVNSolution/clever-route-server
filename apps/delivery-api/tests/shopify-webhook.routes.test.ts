@@ -48,6 +48,8 @@ describe('Shopify webhook routes', () => {
       expect(response.json()).toEqual({
         data: {
           duplicate: false,
+          queued: false,
+          status: 'QUEUED',
           webhookId: 'b54557e4-bdd9-4b37-8a5f-bf7d70bcd043'
         },
         error: null
@@ -100,14 +102,10 @@ describe('Shopify webhook routes', () => {
     }
   });
 
-  test('processes order topics after recording the receipt', async () => {
+  test('queues order topics after recording the receipt without inline processing', async () => {
     const { dependencies, recordWebhook } = createDependencyHarness();
-    const process = vi.fn<NonNullable<ShopifyWebhookDependencies['orderWebhookProcessor']>['process']>(() =>
-      Promise.resolve({ duplicate: false, statusCode: 200, webhookId: 'b54557e4-bdd9-4b37-8a5f-bf7d70bcd043' })
-    );
     dependencies.orderWebhookProcessor = {
-      canProcessTopic: (topic) => topic === 'orders/create',
-      process
+      canProcessTopic: (topic) => topic === 'orders/create'
     };
     const app = await buildApp({ shopifyWebhook: dependencies });
 
@@ -119,15 +117,17 @@ describe('Shopify webhook routes', () => {
         url: '/shopify/webhooks'
       });
 
-      expect(response.statusCode).toBe(200);
+      expect(response.statusCode).toBe(202);
       expect(recordWebhook).toHaveBeenCalledOnce();
-      expect(process).toHaveBeenCalledWith(
-        expect.objectContaining({
-          payload: { id: 123, name: '#1001' },
-          topic: 'orders/create',
+      expect(response.json()).toEqual({
+        data: {
+          duplicate: false,
+          queued: true,
+          status: 'QUEUED',
           webhookId: 'b54557e4-bdd9-4b37-8a5f-bf7d70bcd043'
-        })
-      );
+        },
+        error: null
+      });
     } finally {
       await app.close();
     }
@@ -153,6 +153,8 @@ describe('Shopify webhook routes', () => {
       expect(response.json()).toEqual({
         data: {
           duplicate: true,
+          queued: false,
+          status: 'DUPLICATE',
           webhookId: 'b54557e4-bdd9-4b37-8a5f-bf7d70bcd043'
         },
         error: null
@@ -172,6 +174,7 @@ function createDependencyHarness(input: {
   const recordWebhook = vi.fn<ShopifyWebhookDependencies['webhookService']['recordWebhook']>(() =>
     Promise.resolve({
       duplicate: false,
+      status: 'QUEUED',
       webhookId: 'b54557e4-bdd9-4b37-8a5f-bf7d70bcd043'
     })
   );

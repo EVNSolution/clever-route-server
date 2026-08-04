@@ -1,4 +1,6 @@
-import type { FastifyInstance } from 'fastify';
+import { performance } from 'node:perf_hooks';
+
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import {
   logRejectedAdminSessionToken,
@@ -19,6 +21,19 @@ import {
 import type { ShopifyOrderNode } from '../modules/shopify/order-sync.mapper.js';
 import type { DeliveryCycleConfig } from '../modules/shopify/order-delivery-scope.js';
 import type { SyncOrdersSnapshotInput, SyncOrdersSnapshotResult } from '../modules/shopify/order-sync.service.js';
+import {
+  InvalidOrdersCursorError,
+  OrdersPlanningReferenceDateError,
+  ORDERS_PAGE_SIZE,
+  ORDERS_SORT,
+  requireOrdersPlanningReferenceDate
+} from '../modules/shopify/order-pagination.js';
+import { OrderSelectionSnapshotError, OrdersPaginationNotReadyError, type OrdersPageResult } from '../modules/shopify/order-query.repository.js';
+import type {
+  ShopifyOrderReconciliationJobDto,
+  ShopifyOrderReconciliationJobMode
+} from '../modules/shopify/order-reconciliation.types.js';
+import { hashTelemetryShop, redactTelemetry } from '../modules/security/safe-telemetry-redaction.js';
 
 type SyncPayloadErrorDetail = {
   field: string;
@@ -46,12 +61,68 @@ type ParsedOrderSyncPayload = {
 const ORDER_SYNC_TIMESTAMP_FIELDS = new Set(['cancelledAt', 'createdAt', 'processedAt', 'updatedAt']);
 
 export type AdminOrdersDependencies = {
+  ordersMapProjectionEnabled?: boolean;
+  ordersPaginationEnabled?: boolean;
+  ordersSelectionSnapshotsEnabled?: boolean;
   orderSyncService: {
     listCanonicalOrders(input: {
       filters?: ListCanonicalOrdersFilters;
       appId?: string | undefined;
       shopDomain: string;
     }): Promise<SyncOrdersSnapshotResult['orders']>;
+    listCanonicalOrdersPage?(input: {
+      after?: string;
+      appId?: string;
+      before?: string;
+      filters?: ListCanonicalOrdersFilters;
+      shopDomain: string;
+    }): Promise<OrdersPageResult>;
+    listCanonicalOrderFacets?(input: {
+      appId?: string;
+      filters?: ListCanonicalOrdersFilters;
+      shopDomain: string;
+    }): Promise<unknown>;
+    listCanonicalOrderMapPoints?(input: {
+      appId?: string;
+      filters?: ListCanonicalOrdersFilters;
+      limit: number;
+      shopDomain: string;
+    }): Promise<unknown>;
+    createOrderSelectionSnapshot?(input: {
+      actor: string;
+      appId?: string;
+      excludeOrderIds?: string[];
+      filters?: ListCanonicalOrdersFilters;
+      shopDomain: string;
+    }): Promise<unknown>;
+    replaceOrderSelectionExclusions?(input: {
+      actor: string;
+      appId?: string;
+      excludeOrderIds: string[];
+      selectionToken: string;
+      shopDomain: string;
+    }): Promise<unknown>;
+    consumeOrderSelectionSnapshot?(input: {
+      actor: string;
+      appId?: string;
+      selectionToken: string;
+      shopDomain: string;
+    }): Promise<string[]>;
+    bulkPatchOrderSelectionSnapshot?(input: {
+      actor: string;
+      appId?: string;
+      field: 'payment' | 'state';
+      selectionToken: string;
+      shopDomain: string;
+      value: BulkOrderPaymentValue | BulkOrderStateValue;
+    }): Promise<{
+      noOp: number;
+      resolved: number;
+      selected: number;
+      skipped: number;
+      skippedByReason?: Record<string, number>;
+      updated: number;
+    }>;
     syncOrdersSnapshot(input: SyncOrdersSnapshotInput): Promise<SyncOrdersSnapshotResult>;
     bulkPatchCanonicalOrderStatus?(input: {
       actor: string;
@@ -68,6 +139,22 @@ export type AdminOrdersDependencies = {
       patch: RouteOpsCanonicalMetadataPatch;
       shopDomain: string;
     }): Promise<SyncOrdersSnapshotResult['orders'][number] | null>;
+  };
+  orderReconciliationService?: {
+    enqueue(input: {
+      appId?: string | undefined;
+      correlationId?: string | undefined;
+      mode?: ShopifyOrderReconciliationJobMode | undefined;
+      overlapWindowSeconds?: number | undefined;
+      pageSize?: number | undefined;
+      requestedBy?: string | undefined;
+      shopDomain: string;
+    }): Promise<ShopifyOrderReconciliationJobDto>;
+    status(input: {
+      appId?: string | undefined;
+      jobId: string;
+      shopDomain: string;
+    }): Promise<ShopifyOrderReconciliationJobDto | null>;
   };
   sessionTokenVerifier: AdminSessionTokenVerifier;
 };
@@ -171,6 +258,202 @@ export function registerAdminOrdersRoutes(
     }
   );
 
+  app.get<{ Querystring: Record<string, string | string[] | undefined> }>(
+    '/admin/orders/page',
+    async (request, reply) => {
+      const startedAt = performance.now();
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, { log: request.log, surface: 'admin_orders' });
+      if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+      if (dependencies.ordersPaginationEnabled === false || dependencies.orderSyncService.listCanonicalOrdersPage === undefined) return reply.code(404).send(errorResponse('NOT_FOUND', 'Orders pagination is not enabled'));
+      try {
+        if (readSingleQueryValue(request.query.pageSize) !== String(ORDERS_PAGE_SIZE) || readSingleQueryValue(request.query.sort) !== ORDERS_SORT) {
+          return reply.code(400).send(errorResponse('BAD_REQUEST', 'pageSize=50 and sort=id_desc are required'));
+        }
+        const after = readSingleQueryValue(request.query.after);
+        const before = readSingleQueryValue(request.query.before);
+        if (after !== null && before !== null) return reply.code(400).send(errorResponse('BAD_REQUEST', 'after and before are mutually exclusive'));
+        const result = await dependencies.orderSyncService.listCanonicalOrdersPage({
+          ...(after === null ? {} : { after }),
+          appId: authenticated.appId,
+          ...(before === null ? {} : { before }),
+          filters: readFilters(withoutResourceQuery(request.query)),
+          shopDomain: authenticated.shopDomain
+        });
+        logAdminOrdersMetric(request, authenticated, 'admin_orders.page.query', startedAt, {
+          cursorVersion: 1,
+          filterHash: result.filterHash,
+          rowCount: result.rows.length,
+          status: 'success'
+        });
+        return reply.code(200).send({
+          data: {
+            freshness: {},
+            pageInfo: {
+              ...result.pageInfo,
+              pageSize: ORDERS_PAGE_SIZE,
+              sort: result.sort
+            },
+            result: {
+              count: null,
+              countPrecision: 'unknown',
+              filterHash: result.filterHash,
+              readWatermark: result.pageInfo.readWatermark
+            },
+            rows: result.rows.map(toAdminOrderResponse)
+          },
+          error: null
+        });
+      } catch (error) {
+        logAdminOrdersMetric(request, authenticated, 'admin_orders.page.query', startedAt, {
+          status: 'error'
+        });
+        if (error instanceof InvalidOrdersCursorError) return reply.code(400).send(errorResponse(error.code, error.message));
+        if (error instanceof OrdersPlanningReferenceDateError) return reply.code(400).send(errorResponse(error.code, error.message));
+        if (error instanceof OrdersPaginationNotReadyError) return reply.code(409).send(errorResponse(error.code, error.message));
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid orders page request'));
+      }
+    }
+  );
+
+  app.get<{ Querystring: Record<string, string | string[] | undefined> }>('/admin/orders/facets', async (request, reply) => {
+    const startedAt = performance.now();
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, { log: request.log, surface: 'admin_orders' });
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+    if (dependencies.ordersPaginationEnabled === false || dependencies.orderSyncService.listCanonicalOrderFacets === undefined) return reply.code(404).send(errorResponse('NOT_FOUND', 'Orders facets are not enabled'));
+    try {
+      const data = await dependencies.orderSyncService.listCanonicalOrderFacets({ appId: authenticated.appId, filters: readFilters(request.query), shopDomain: authenticated.shopDomain });
+      const metricData = objectOrNull(data) ?? {};
+      logAdminOrdersMetric(request, authenticated, 'admin_orders.facets.query', startedAt, {
+        countPrecision: metricData.countPrecision,
+        filterHash: metricData.filterHash,
+        status: 'success',
+        totalCount: metricData.totalCount
+      });
+      return reply.code(200).send({ data, error: null });
+    } catch (error) {
+      logAdminOrdersMetric(request, authenticated, 'admin_orders.facets.query', startedAt, { status: 'error' });
+      return ordersFilterError(reply, error);
+    }
+  });
+
+  app.get<{ Querystring: Record<string, string | string[] | undefined> }>('/admin/orders/map-points', async (request, reply) => {
+    const startedAt = performance.now();
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, { log: request.log, surface: 'admin_orders' });
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+    if (dependencies.ordersMapProjectionEnabled === false || dependencies.orderSyncService.listCanonicalOrderMapPoints === undefined) return reply.code(404).send(errorResponse('NOT_FOUND', 'Orders map projection is not enabled'));
+    try {
+      if (request.query.after !== undefined || request.query.before !== undefined) return reply.code(400).send(errorResponse('BAD_REQUEST', 'Map points do not accept table cursors'));
+      const limitValue = readSingleQueryValue(request.query.limit);
+      const limit = limitValue === null ? 500 : Number(limitValue);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 2_000) return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid map point limit'));
+      const data = await dependencies.orderSyncService.listCanonicalOrderMapPoints({ appId: authenticated.appId, filters: readFilters(withoutResourceQuery(request.query)), limit, shopDomain: authenticated.shopDomain });
+      const metricData = objectOrNull(data) ?? {};
+      logAdminOrdersMetric(request, authenticated, 'admin_orders.map_points.query', startedAt, {
+        filterHash: metricData.filterHash,
+        pointCount: Array.isArray(metricData.points) ? metricData.points.length : 0,
+        status: 'success'
+      });
+      return reply.code(200).send({ data, error: null });
+    } catch (error) {
+      logAdminOrdersMetric(request, authenticated, 'admin_orders.map_points.query', startedAt, { status: 'error' });
+      return ordersFilterError(reply, error);
+    }
+  });
+
+  app.post<{ Body: unknown }>('/admin/orders/selection-snapshots', async (request, reply) => {
+    const startedAt = performance.now();
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, { log: request.log, surface: 'admin_orders' });
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+    if (dependencies.ordersSelectionSnapshotsEnabled === false || dependencies.orderSyncService.createOrderSelectionSnapshot === undefined) return reply.code(404).send(errorResponse('NOT_FOUND', 'Order selection snapshots are not enabled'));
+    try {
+      const body = readSelectionSnapshotCreatePayload(request.body);
+      const data = await dependencies.orderSyncService.createOrderSelectionSnapshot({ actor: authenticated.subject, appId: authenticated.appId, ...body, shopDomain: authenticated.shopDomain });
+      const metricData = objectOrNull(data) ?? {};
+      logAdminOrdersMetric(request, authenticated, 'admin_orders.selection_snapshot.create', startedAt, {
+        filterHash: metricData.filterHash,
+        selectedCount: metricData.selectedCount,
+        skippedCount: body.excludeOrderIds?.length ?? 0,
+        status: 'success'
+      });
+      return reply.code(201).send({ data, error: null });
+    } catch (error) {
+      logAdminOrdersMetric(request, authenticated, 'admin_orders.selection_snapshot.create', startedAt, { status: 'error' });
+      return selectionSnapshotError(reply, error);
+    }
+  });
+
+  app.patch<{ Body: unknown }>('/admin/orders/selection-snapshots', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, { log: request.log, surface: 'admin_orders' });
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+    if (dependencies.ordersSelectionSnapshotsEnabled === false || dependencies.orderSyncService.replaceOrderSelectionExclusions === undefined) return reply.code(404).send(errorResponse('NOT_FOUND', 'Order selection snapshots are not enabled'));
+    try {
+      const body = readSelectionSnapshotPatchPayload(request.body);
+      const data = await dependencies.orderSyncService.replaceOrderSelectionExclusions({ actor: authenticated.subject, appId: authenticated.appId, ...body, shopDomain: authenticated.shopDomain });
+      return reply.code(200).send({ data, error: null });
+    } catch (error) { return selectionSnapshotError(reply, error); }
+  });
+
+  app.post<{ Body: unknown }>('/admin/orders/reconciliations', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+      log: request.log,
+      surface: 'admin_orders'
+    });
+    if (authenticated.status === 'unauthorized') {
+      return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+    }
+    if (dependencies.orderReconciliationService === undefined) {
+      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Order reconciliation jobs are not enabled in this runtime.'));
+    }
+
+    let payload: {
+      correlationId?: string | undefined;
+      mode?: ShopifyOrderReconciliationJobMode | undefined;
+      overlapWindowSeconds?: number | undefined;
+      pageSize?: number | undefined;
+    };
+    try {
+      payload = readReconciliationPayload(request.body);
+    } catch {
+      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid order reconciliation payload'));
+    }
+
+    const job = await dependencies.orderReconciliationService.enqueue({
+      ...payload,
+      appId: authenticated.appId,
+      requestedBy: authenticated.subject,
+      shopDomain: authenticated.shopDomain
+    });
+
+    return reply.code(202).send({ data: { job: toAdminReconciliationJobResponse(job) }, error: null });
+  });
+
+  app.get<{ Params: { jobId: string } }>(
+    '/admin/orders/reconciliations/:jobId',
+    async (request, reply) => {
+      const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
+        log: request.log,
+        surface: 'admin_orders'
+      });
+      if (authenticated.status === 'unauthorized') {
+        return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+      }
+      if (dependencies.orderReconciliationService === undefined) {
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Order reconciliation jobs are not enabled in this runtime.'));
+      }
+
+      const job = await dependencies.orderReconciliationService.status({
+        appId: authenticated.appId,
+        jobId: request.params.jobId,
+        shopDomain: authenticated.shopDomain
+      });
+      if (job === null) {
+        return reply.code(404).send(errorResponse('NOT_FOUND', 'Order reconciliation job not found'));
+      }
+
+      return reply.code(200).send({ data: { job: toAdminReconciliationJobResponse(job) }, error: null });
+    }
+  );
+
   app.patch<{ Body: unknown; Params: { orderId: string } }>(
     '/admin/orders/:orderId/metadata',
     async (request, reply) => {
@@ -208,6 +491,7 @@ export function registerAdminOrdersRoutes(
   );
 
   app.patch<{ Body: unknown }>('/admin/orders/bulk-update', async (request, reply) => {
+    const startedAt = performance.now();
     const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, {
       log: request.log,
       surface: 'admin_orders'
@@ -215,13 +499,10 @@ export function registerAdminOrdersRoutes(
     if (authenticated.status === 'unauthorized') {
       return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
     }
-    if (dependencies.orderSyncService.bulkPatchCanonicalOrderStatus === undefined) {
-      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Order bulk update is not enabled in this runtime.'));
-    }
-
     let payload: {
       field: 'payment' | 'state';
       orderIds: string[];
+      selectionToken?: string;
       value: BulkOrderPaymentValue | BulkOrderStateValue;
     };
     try {
@@ -230,6 +511,37 @@ export function registerAdminOrdersRoutes(
       return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid order bulk update payload'));
     }
 
+    if (payload.selectionToken !== undefined) {
+      if (dependencies.ordersSelectionSnapshotsEnabled === false || dependencies.orderSyncService.bulkPatchOrderSelectionSnapshot === undefined) {
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Snapshot bulk update is not enabled in this runtime.'));
+      }
+      try {
+        const data = await dependencies.orderSyncService.bulkPatchOrderSelectionSnapshot({
+          actor: authenticated.subject,
+          appId: authenticated.appId,
+          field: payload.field,
+          selectionToken: payload.selectionToken,
+          shopDomain: authenticated.shopDomain,
+          value: payload.value
+        });
+        logAdminOrdersMetric(request, authenticated, 'admin_orders.bulk.resolve', startedAt, {
+          noOpCount: data.noOp,
+          resolvedCount: data.resolved,
+          selectedCount: data.selected,
+          skippedCount: data.skipped,
+          skippedByReason: data.skippedByReason,
+          status: 'success',
+          updatedCount: data.updated
+        });
+        return reply.code(200).send({ data: { ...data, orders: [] }, error: null });
+      } catch (error) {
+        logAdminOrdersMetric(request, authenticated, 'admin_orders.bulk.resolve', startedAt, { status: 'error' });
+        return selectionSnapshotError(reply, error);
+      }
+    }
+    if (dependencies.orderSyncService.bulkPatchCanonicalOrderStatus === undefined) {
+      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Order bulk update is not enabled in this runtime.'));
+    }
     const orders = await dependencies.orderSyncService.bulkPatchCanonicalOrderStatus({
       actor: authenticated.subject,
       appId: authenticated.appId,
@@ -252,6 +564,76 @@ function toAdminOrderResponse(
   const responseOrder: Record<string, unknown> = { ...order };
   delete responseOrder.rawWooGeocodeAddress;
   return responseOrder;
+}
+
+function toAdminReconciliationJobResponse(
+  job: ShopifyOrderReconciliationJobDto
+): ShopifyOrderReconciliationJobDto {
+  const responseJob: Record<string, unknown> = { ...job };
+  delete responseJob.leaseToken;
+  return responseJob as ShopifyOrderReconciliationJobDto;
+}
+
+function readReconciliationPayload(value: unknown): {
+  correlationId?: string | undefined;
+  mode?: ShopifyOrderReconciliationJobMode | undefined;
+  overlapWindowSeconds?: number | undefined;
+  pageSize?: number | undefined;
+} {
+  const object = objectOrNull(value) ?? {};
+  const mode = readReconciliationMode(object.mode);
+  const correlationId = typeof object.correlationId === 'string' && /^[A-Za-z0-9._:-]{1,120}$/u.test(object.correlationId)
+    ? object.correlationId
+    : undefined;
+  return {
+    ...(correlationId === undefined ? {} : { correlationId }),
+    ...(mode === undefined ? {} : { mode }),
+    ...readOptionalIntegerField(object, 'overlapWindowSeconds', 60, 86_400),
+    ...readOptionalIntegerField(object, 'pageSize', 1, 100)
+  };
+}
+
+function readReconciliationMode(value: unknown): ShopifyOrderReconciliationJobMode | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value === 'INCREMENTAL' || value === 'FULL') return value;
+  throw new Error('Invalid reconciliation mode');
+}
+
+function readOptionalIntegerField(
+  object: Record<string, unknown>,
+  field: 'overlapWindowSeconds' | 'pageSize',
+  min: number,
+  max: number
+): { [key in typeof field]?: number } {
+  const value = object[field];
+  if (value === undefined) return {};
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`Invalid ${field}`);
+  }
+  return { [field]: value };
+}
+
+function objectOrNull(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function logAdminOrdersMetric(
+  request: FastifyRequest,
+  authenticated: { appId: string; shopDomain: string; status: 'authenticated'; subject: string },
+  event: string,
+  startedAt: number,
+  metric: Record<string, unknown>
+): void {
+  const payload = redactTelemetry({
+    ...metric,
+    durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+    event,
+    requestId: request.id,
+    shopHash: hashTelemetryShop(`${authenticated.appId}:${authenticated.shopDomain}`)
+  }) as Record<string, unknown>;
+  request.log.info(payload, 'Admin Orders performance metric');
 }
 
 function authenticate(
@@ -420,9 +802,11 @@ function isValidTimeZone(value: string): boolean {
 function readBulkUpdatePayload(value: unknown): {
   field: 'payment' | 'state';
   orderIds: string[];
+  selectionToken?: string;
   value: BulkOrderPaymentValue | BulkOrderStateValue;
 } {
   const object = requireObject(value);
+  const selectionToken = readNullableString(object.selectionToken);
   const orderIds = Array.isArray(object.orderIds)
     ? object.orderIds.flatMap((orderId) => {
         const text = readNullableString(orderId);
@@ -432,7 +816,7 @@ function readBulkUpdatePayload(value: unknown): {
   const field = readStringFromAllowedValues(object.field, {
     allowedValues: ['payment', 'state'] as const
   });
-  if (orderIds.length === 0 || field === null) {
+  if ((orderIds.length === 0 && selectionToken === null) || (orderIds.length > 0 && selectionToken !== null) || field === null) {
     throw new Error('invalid bulk update payload');
   }
 
@@ -444,7 +828,48 @@ function readBulkUpdatePayload(value: unknown): {
     throw new Error('invalid bulk update value');
   }
 
-  return { field, orderIds: [...new Set(orderIds)], value: parsedValue };
+  return { field, orderIds: [...new Set(orderIds)], ...(selectionToken === null ? {} : { selectionToken }), value: parsedValue };
+}
+
+function readSelectionSnapshotCreatePayload(value: unknown): {
+  excludeOrderIds?: string[];
+  filters?: ListCanonicalOrdersFilters;
+} {
+  const object = requireObject(value);
+  const allowed = new Set(['excludeOrderIds', 'filters', 'sort']);
+  if (Object.keys(object).some((key) => !allowed.has(key)) || (object.sort !== undefined && object.sort !== ORDERS_SORT)) {
+    throw new Error('invalid selection snapshot payload');
+  }
+  const excludeOrderIds = readStringArrayValue(object.excludeOrderIds);
+  const rawFilters = object.filters === undefined ? {} : requireObject(object.filters);
+  const query = Object.fromEntries(Object.entries(rawFilters).map(([key, item]) => {
+    if (typeof item === 'boolean') return [key, String(item)];
+    if (typeof item !== 'string') throw new Error('invalid selection filter');
+    return [key, item];
+  }));
+  return {
+    ...(excludeOrderIds.length === 0 ? {} : { excludeOrderIds }),
+    filters: readFilters(query)
+  };
+}
+
+function readSelectionSnapshotPatchPayload(value: unknown): {
+  excludeOrderIds: string[];
+  selectionToken: string;
+} {
+  const object = requireObject(value);
+  if (Object.keys(object).some((key) => key !== 'excludeOrderIds' && key !== 'selectionToken')) throw new Error('invalid snapshot patch payload');
+  const selectionToken = readNullableString(object.selectionToken);
+  if (selectionToken === null) throw new Error('selection token required');
+  return { excludeOrderIds: readStringArrayValue(object.excludeOrderIds), selectionToken };
+}
+
+function readStringArrayValue(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error('expected string array');
+  const result = value.map(readNullableString);
+  if (result.some((item) => item === null)) throw new Error('expected non-empty strings');
+  return [...new Set(result as string[])];
 }
 
 function readMetadataPatchPayload(value: unknown): RouteOpsCanonicalMetadataPatch {
@@ -819,6 +1244,14 @@ function readDateOrIssue(
 }
 
 function readFilters(query: Record<string, string | string[] | undefined>): ListCanonicalOrdersFilters {
+  const knownKeys = new Set([
+    'deliveryArea', 'deliveryBatchEndDate', 'deliveryBatchStartDate', 'deliveryDate', 'deliveryDateFrom',
+    'deliverySession', 'deliveryState', 'deliveryWeekday', 'geocodeStatus', 'operateDeliveryStatus',
+    'orderHealth', 'orderedDate', 'orderedDateFrom', 'orderedDateTo', 'planned', 'planningGroupKey', 'q',
+    'readiness', 'routeOpsScope', 'routeOpsTab', 'routeOpsToday', 'routeScopeKey', 'scope', 'search',
+    'serviceType', 'tab'
+  ]);
+  if (Object.keys(query).some((key) => !knownKeys.has(key))) throw new Error('unknown order filter');
   const filters: ListCanonicalOrdersFilters = {};
   const readiness = readSingleQuery(query.readiness);
   if (readiness !== null) {
@@ -868,9 +1301,16 @@ function readFilters(query: Record<string, string | string[] | undefined>): List
   }
   const deliveryDate = readSingleQuery(query.deliveryDate);
   if (deliveryDate !== null) {
-    requireDateOnly(deliveryDate);
+    if (deliveryDate !== 'pending') requireDateOnly(deliveryDate);
     filters.deliveryDate = deliveryDate;
   }
+  const deliveryDateFrom = readSingleQuery(query.deliveryDateFrom);
+  if (deliveryDateFrom !== null) {
+    requireDateOnly(deliveryDateFrom);
+    filters.deliveryDateFrom = deliveryDateFrom;
+  }
+  const deliveryArea = readSingleQuery(query.deliveryArea);
+  if (deliveryArea !== null) filters.deliveryArea = deliveryArea;
   const deliveryBatchStartDate = readSingleQuery(query.deliveryBatchStartDate);
   if (deliveryBatchStartDate !== null) {
     requireDateOnly(deliveryBatchStartDate);
@@ -893,8 +1333,80 @@ function readFilters(query: Record<string, string | string[] | undefined>): List
   const planningGroupKey = readSingleQuery(query.planningGroupKey);
   if (planningGroupKey !== null) filters.planningGroupKey = planningGroupKey;
   const search = readSingleQuery(query.search);
-  if (search !== null) filters.search = search;
+  const legacySearch = readSingleQuery(query.q);
+  if (search !== null || legacySearch !== null) filters.search = (search ?? legacySearch) as string;
+  const deliveryState = readSingleQuery(query.deliveryState);
+  if (deliveryState !== null) {
+    if (!['unplanned', 'planned', 'assigned_undelivered', 'past_due', 'delivered', 'fulfilled', 'unfulfilled'].includes(deliveryState)) throw new Error('invalid deliveryState');
+    filters.deliveryState = deliveryState as NonNullable<ListCanonicalOrdersFilters['deliveryState']>;
+  }
+  const legacyOrderedDate = readSingleQuery(query.orderedDate);
+  const orderedDateFrom = readSingleQuery(query.orderedDateFrom) ?? legacyOrderedDate;
+  const orderedDateTo = readSingleQuery(query.orderedDateTo) ?? legacyOrderedDate;
+  if (orderedDateFrom !== null) { requireDateOnly(orderedDateFrom); filters.orderedDateFrom = orderedDateFrom; }
+  if (orderedDateTo !== null) { requireDateOnly(orderedDateTo); filters.orderedDateTo = orderedDateTo; }
+  if (filters.orderedDateFrom !== undefined && filters.orderedDateTo !== undefined && filters.orderedDateFrom > filters.orderedDateTo) {
+    [filters.orderedDateFrom, filters.orderedDateTo] = [filters.orderedDateTo, filters.orderedDateFrom];
+  }
+  const scope = readSingleQuery(query.scope);
+  if (scope !== null) {
+    if (scope !== 'history' && scope !== 'planning') throw new Error('invalid scope');
+    filters.scope = scope;
+  }
+  const tab = readSingleQuery(query.tab);
+  if (tab !== null) {
+    if (!['all', 'needs_review', 'planned', 'unplanned'].includes(tab)) throw new Error('invalid tab');
+    filters.tab = tab as NonNullable<ListCanonicalOrdersFilters['tab']>;
+  }
+  const routeOpsScope = readSingleQuery(query.routeOpsScope);
+  if (routeOpsScope !== null) {
+    if (routeOpsScope !== 'history' && routeOpsScope !== 'planning') throw new Error('invalid routeOpsScope');
+    filters.routeOpsScope = routeOpsScope;
+  }
+  const routeOpsTab = readSingleQuery(query.routeOpsTab);
+  if (routeOpsTab !== null) {
+    if (!['all', 'needs_review', 'planned', 'unplanned'].includes(routeOpsTab)) throw new Error('invalid routeOpsTab');
+    filters.routeOpsTab = routeOpsTab as NonNullable<ListCanonicalOrdersFilters['routeOpsTab']>;
+  }
+  const routeOpsToday = readSingleQuery(query.routeOpsToday);
+  if (routeOpsToday !== null) { requireDateOnly(routeOpsToday); filters.routeOpsToday = routeOpsToday; }
+  const operateDeliveryStatus = readSingleQuery(query.operateDeliveryStatus);
+  if (operateDeliveryStatus !== null) {
+    if (!['preparing', 'ready', 'in_progress', 'completed'].includes(operateDeliveryStatus)) throw new Error('invalid operateDeliveryStatus');
+    filters.operateDeliveryStatus = operateDeliveryStatus as NonNullable<ListCanonicalOrdersFilters['operateDeliveryStatus']>;
+  }
+  const orderHealth = readSingleQuery(query.orderHealth);
+  if (orderHealth !== null) {
+    if (orderHealth !== 'normal' && orderHealth !== 'needs_review') throw new Error('invalid orderHealth');
+    filters.orderHealth = orderHealth;
+  }
+  requireOrdersPlanningReferenceDate(filters);
   return filters;
+}
+
+function withoutResourceQuery(query: Record<string, string | string[] | undefined>) {
+  const filters = { ...query };
+  delete filters.after;
+  delete filters.before;
+  delete filters.limit;
+  delete filters.pageSize;
+  delete filters.sort;
+  return filters;
+}
+
+function readSingleQueryValue(value: string | string[] | undefined): string | null {
+  return readSingleQuery(value);
+}
+
+function selectionSnapshotError(reply: FastifyReply, error: unknown) {
+  if (error instanceof OrdersPlanningReferenceDateError) return reply.code(400).send(errorResponse(error.code, error.message));
+  if (error instanceof OrderSelectionSnapshotError) return reply.code(400).send(errorResponse(error.code, error.message));
+  return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid selection snapshot request'));
+}
+
+function ordersFilterError(reply: FastifyReply, error: unknown) {
+  if (error instanceof OrdersPlanningReferenceDateError) return reply.code(400).send(errorResponse(error.code, error.message));
+  return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid order filters'));
 }
 
 

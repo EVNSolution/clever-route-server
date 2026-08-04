@@ -23,6 +23,7 @@ import { resolveNormalizedPaymentStatus } from "../payments/normalized-payment-s
 import type { AdminNotificationServiceApi } from "../notifications/admin-notification.service.js";
 import type { AssignedRouteAddressChangedEvent } from "../notifications/admin-web-notification-events.js";
 import { readWooCommerceRawGeocodingAddress } from "../woocommerce/woocommerce-order.mapper.js";
+import { requireOrdersPlanningReferenceDate } from "./order-pagination.js";
 import { appScopedShopWhere, normalizeShopifyAppId } from "./shopify-app-scope.js";
 import { isRouteReadyStatus } from "../route-plans/route-plan-lifecycle.js";
 
@@ -59,6 +60,7 @@ export type AssertOrdersSnapshotRefreshableInput = {
 };
 
 export type ListCanonicalOrdersFilters = {
+  deliveryState?: "unplanned" | "planned" | "assigned_undelivered" | "past_due" | "delivered" | "fulfilled" | "unfulfilled";
   deliveryBatchEndDate?: string;
   deliveryBatchStartDate?: string;
   deliveryArea?: string;
@@ -69,6 +71,8 @@ export type ListCanonicalOrdersFilters = {
   geocodeStatus?: "PENDING" | "RESOLVED" | "FAILED" | "NOT_REQUIRED";
   operateDeliveryStatus?: OperateDeliveryStatus;
   orderHealth?: OrderHealth;
+  orderedDateFrom?: string;
+  orderedDateTo?: string;
   planned?: boolean;
   planningGroupKey?: string;
   readiness?: CanonicalOrderReadiness;
@@ -76,8 +80,10 @@ export type ListCanonicalOrdersFilters = {
   routeOpsScope?: "history" | "planning";
   routeOpsTab?: "all" | "needs_review" | "planned" | "unplanned";
   routeOpsToday?: string;
+  scope?: "history" | "planning";
   search?: string;
   serviceType?: string;
+  tab?: "all" | "needs_review" | "planned" | "unplanned";
 };
 
 export type ListCanonicalOrdersInput = {
@@ -274,7 +280,7 @@ type ExistingDeliveryStop = {
   timeWindowStart: Date | null;
 };
 
-type CanonicalOrderRecord = {
+export type CanonicalOrderRecord = {
   cancelledAt: Date | null;
   currencyCode: string | null;
   deliveryFacts?: DeliveryFactCanonicalRecord[];
@@ -283,6 +289,7 @@ type CanonicalOrderRecord = {
   financialStatus: string | null;
   fulfillmentStatus: string | null;
   id: string;
+  displayOrderSequence?: bigint | number | string | null;
   name: string;
   orderItems?: OrderItemRecordLike[];
   phone: string | null;
@@ -518,7 +525,7 @@ export class PrismaOrderSyncRepository {
     const orders = (await this.prisma.order.findMany({
       include: canonicalOrderInclude(),
       orderBy: { updatedAtShopify: "desc" },
-      where: toOrderWhere(shop.id, input.filters ?? {}),
+      where: toCanonicalOrderWhere(shop.id, input.filters ?? {}),
     })) as CanonicalOrderRecord[];
 
     return orders
@@ -1208,9 +1215,12 @@ export class PrismaOrderSyncRepository {
         ...(manualDeliveryStatus === null ? {} : { cleverManualDeliveryStatus: manualDeliveryStatus }),
       });
     }
+    const { displayOrderSequence, ...mutableOrderWrite } = orderWrite;
     const order = await input.tx.order.upsert({
-      create: { ...orderWrite, shopId: input.shopId },
-      update: orderWrite,
+      create: { ...mutableOrderWrite, displayOrderSequence, shopId: input.shopId },
+      // The visible-order sequence is a pagination key. Once inserted it is
+      // immutable; controlled backfill/correction must happen with pagination off.
+      update: mutableOrderWrite,
       where: {
         shopId_shopifyOrderGid: {
           shopId: input.shopId,
@@ -1354,6 +1364,12 @@ export class PrismaOrderSyncRepository {
   }
 }
 
+function parseDisplayOrderSequence(value: string | null): bigint | null {
+  if (value === null || !/^#?[0-9]+$/u.test(value.trim())) return null;
+  const parsed = BigInt(value.trim().replace(/^#/u, ''));
+  return parsed <= 9_223_372_036_854_775_807n ? parsed : null;
+}
+
 type OrderWriteWithNotificationIntents = {
   notificationEvents: AssignedRouteAddressChangedEvent[];
   result: UpsertOrderWithDeliveryStopResult;
@@ -1417,7 +1433,7 @@ function isExistingNewerThanSnapshot(
   );
 }
 
-function canonicalOrderInclude(): Prisma.OrderInclude {
+export function canonicalOrderInclude(): Prisma.OrderInclude {
   return {
     deliveryFacts: {
       take: 1,
@@ -1440,21 +1456,151 @@ function canonicalOrderInclude(): Prisma.OrderInclude {
   };
 }
 
-function toOrderWhere(
+export function toCanonicalOrderWhere(
   shopId: string,
   filters: ListCanonicalOrdersFilters,
 ): Prisma.OrderWhereInput {
-  const where: Prisma.OrderWhereInput = { shopId };
+  const AND: Prisma.OrderWhereInput[] = [];
   if (filters.search !== undefined && filters.search.trim() !== "") {
     const search = filters.search.trim();
-    where.OR = [
+    const textFields = [
       { name: { contains: search, mode: "insensitive" } },
       { email: { contains: search, mode: "insensitive" } },
       { phone: { contains: search, mode: "insensitive" } },
+      { sourceOrderId: { contains: search, mode: "insensitive" } },
       { sourceOrderNumber: { contains: search, mode: "insensitive" } },
-    ];
+      { shopifyOrderGid: { contains: search, mode: "insensitive" } },
+      {
+        deliveryStops: {
+          some: {
+            OR: [
+              { recipientName: { contains: search, mode: "insensitive" } },
+              { phone: { contains: search, mode: "insensitive" } },
+              { address1: { contains: search, mode: "insensitive" } },
+              { address2: { contains: search, mode: "insensitive" } },
+              { city: { contains: search, mode: "insensitive" } },
+              { province: { contains: search, mode: "insensitive" } },
+              { postalCode: { contains: search, mode: "insensitive" } },
+              { countryCode: { contains: search, mode: "insensitive" } },
+            ],
+          },
+        },
+      },
+      {
+        deliveryFacts: {
+          some: {
+            OR: [
+              { deliveryArea: { contains: search, mode: "insensitive" } },
+              { rawDeliveryArea: { contains: search, mode: "insensitive" } },
+              { rawDeliveryDate: { contains: search, mode: "insensitive" } },
+              { rawDeliveryDay: { contains: search, mode: "insensitive" } },
+              { rawDeliveryTimeWindow: { contains: search, mode: "insensitive" } },
+              { rawPickupDay: { contains: search, mode: "insensitive" } },
+              { deliveryWeekday: { contains: search, mode: "insensitive" } },
+              { deliveryDateWeekday: { contains: search, mode: "insensitive" } },
+              { deliverySession: { contains: search, mode: "insensitive" } },
+              { serviceType: { contains: search, mode: "insensitive" } },
+              { routeScopeKey: { contains: search, mode: "insensitive" } },
+              { planningGroupKey: { contains: search, mode: "insensitive" } },
+            ],
+          },
+        },
+      },
+      ...planningStatusSearchPredicates(search),
+    ] satisfies Prisma.OrderWhereInput[];
+    AND.push({ OR: textFields });
   }
-  return where;
+  const fact: Prisma.OrderDeliveryFactWhereInput = {};
+  if (filters.deliveryArea !== undefined) fact.deliveryArea = { equals: filters.deliveryArea.trim(), mode: 'insensitive' };
+  if (filters.deliveryDate !== undefined) fact.deliveryDate = parseDateOnly(filters.deliveryDate);
+  if (filters.deliveryDateFrom !== undefined) {
+    const deliveryDateFrom = parseDateOnly(filters.deliveryDateFrom);
+    if (deliveryDateFrom !== null) fact.deliveryDate = { gte: deliveryDateFrom };
+  }
+  if (filters.deliverySession !== undefined) fact.deliverySession = filters.deliverySession;
+  if (filters.deliveryWeekday !== undefined) fact.deliveryWeekday = filters.deliveryWeekday;
+  if (filters.geocodeStatus !== undefined) fact.geocodeStatus = filters.geocodeStatus;
+  if (filters.planningGroupKey !== undefined) fact.planningGroupKey = filters.planningGroupKey;
+  if (filters.readiness !== undefined) fact.readiness = filters.readiness;
+  if (filters.routeScopeKey !== undefined) fact.routeScopeKey = filters.routeScopeKey;
+  if (filters.serviceType !== undefined) fact.serviceType = filters.serviceType;
+  if (Object.keys(fact).length > 0) AND.push({ deliveryFacts: { some: fact } });
+
+  if (filters.planned !== undefined) {
+    AND.push({ deliveryStops: { some: { routePlanStops: filters.planned ? { some: {} } : { none: {} } } } });
+  }
+  if (filters.deliveryBatchStartDate !== undefined) {
+    AND.push({ rawPayload: { path: ['deliveryBatchStartDate'], equals: filters.deliveryBatchStartDate } });
+  }
+  if (filters.deliveryBatchEndDate !== undefined) {
+    AND.push({ rawPayload: { path: ['deliveryBatchEndDate'], equals: filters.deliveryBatchEndDate } });
+  }
+  if (filters.orderedDateFrom !== undefined) {
+    const from = parseDateOnly(filters.orderedDateFrom);
+    if (from !== null) AND.push({ processedAt: { gte: from } });
+  }
+  if (filters.orderedDateTo !== undefined) {
+    const to = parseDateOnly(filters.orderedDateTo);
+    if (to !== null) AND.push({ processedAt: { lt: new Date(to.getTime() + 86_400_000) } });
+  }
+  if (filters.deliveryState === 'fulfilled') AND.push({ fulfillmentStatus: { equals: 'FULFILLED', mode: 'insensitive' } });
+  if (filters.deliveryState === 'unfulfilled') AND.push({ fulfillmentStatus: { equals: 'UNFULFILLED', mode: 'insensitive' } });
+  if (filters.deliveryState === 'delivered') AND.push({ deliveryStops: { some: { status: 'DELIVERED' } } });
+  if (filters.deliveryState === 'assigned_undelivered') AND.push({ deliveryStops: { some: { status: { in: ['ASSIGNED', 'EN_ROUTE', 'ARRIVED'] } } } });
+  if (filters.deliveryState === 'planned') AND.push({ deliveryStops: { some: { routePlanStops: { some: {} }, status: { not: 'DELIVERED' } } } });
+  if (filters.deliveryState === 'unplanned') AND.push({ deliveryStops: { some: { routePlanStops: { none: {} }, status: { notIn: ['ASSIGNED', 'EN_ROUTE', 'ARRIVED', 'DELIVERED'] } } } });
+  if (filters.deliveryState === 'past_due') {
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    AND.push({ deliveryFacts: { some: { deliveryDate: { lt: today } } }, deliveryStops: { some: { status: { not: 'DELIVERED' } } } });
+  }
+  if (filters.orderHealth === 'normal') {
+    AND.push({ cancelledAt: null, deliveryFacts: { some: { readiness: 'READY_TO_PLAN' } } });
+  } else if (filters.orderHealth === 'needs_review') {
+    AND.push({ OR: [{ cancelledAt: { not: null } }, { deliveryFacts: { some: { readiness: { not: 'READY_TO_PLAN' } } } }] });
+  }
+  if (filters.operateDeliveryStatus !== undefined) {
+    const active = { deliveryStops: { some: { status: { in: ['ASSIGNED', 'EN_ROUTE', 'ARRIVED'] } } } } satisfies Prisma.OrderWhereInput;
+    const completed = { deliveryStops: { some: { status: 'DELIVERED' } } } satisfies Prisma.OrderWhereInput;
+    if (filters.operateDeliveryStatus === 'completed') AND.push(completed);
+    if (filters.operateDeliveryStatus === 'in_progress') AND.push(active);
+    if (filters.operateDeliveryStatus === 'ready') {
+      AND.push({ cancelledAt: null, deliveryFacts: { some: { readiness: 'READY_TO_PLAN' } }, deliveryStops: { some: { routePlanStops: { none: {} } } } });
+    }
+    if (filters.operateDeliveryStatus === 'preparing') AND.push({ NOT: [active, completed] });
+  }
+  const routeOpsScope = filters.scope ?? filters.routeOpsScope;
+  const routeOpsTab = filters.tab ?? filters.routeOpsTab;
+  if (routeOpsScope === 'planning') {
+    requireOrdersPlanningReferenceDate(filters);
+    const today = parseDateOnly(filters.routeOpsToday ?? '');
+    if (today === null) throw new Error('unreachable invalid routeOpsToday');
+    AND.push({
+      cancelledAt: null,
+      deliveryStops: { none: { status: 'DELIVERED' } },
+      OR: [
+        { deliveryFacts: { none: {} } },
+        { deliveryFacts: { some: { deliveryDate: null } } },
+        { deliveryFacts: { some: { deliveryDate: { gte: today } } } }
+      ]
+    });
+    if (routeOpsTab === 'planned') AND.push({ deliveryStops: { some: { routePlanStops: { some: {} } } } });
+    if (routeOpsTab === 'unplanned') AND.push({ cancelledAt: null, deliveryFacts: { some: { readiness: 'READY_TO_PLAN' } }, deliveryStops: { some: { routePlanStops: { none: {} } } } });
+    if (routeOpsTab === 'needs_review') AND.push({ deliveryFacts: { some: { readiness: { not: 'READY_TO_PLAN' } } } });
+  }
+  return { shopId, ...(AND.length === 0 ? {} : { AND }) };
+}
+
+function planningStatusSearchPredicates(search: string): Prisma.OrderWhereInput[] {
+  const normalized = search.trim().toLowerCase();
+  const predicates: Prisma.OrderWhereInput[] = [];
+  if (normalized !== '' && 'planned'.includes(normalized)) {
+    predicates.push({ deliveryStops: { some: { routePlanStops: { some: {} } } } });
+  }
+  if (normalized !== '' && 'unplanned'.includes(normalized)) {
+    predicates.push({ deliveryStops: { some: { routePlanStops: { none: {} } } } });
+  }
+  return predicates;
 }
 
 function clearedDeliveryStopWrite(): {
@@ -2530,6 +2676,7 @@ function readSourceIdentity(input: SyncedOrderWithDeliveryStopInput["order"]): {
 function toOrderWrite(input: SyncedOrderWithDeliveryStopInput["order"]): {
   cancelledAt: Date | null;
   currencyCode: string | null;
+  displayOrderSequence: bigint | null;
   email: string | null;
   financialStatus: string | null;
   fulfillmentStatus: string | null;
@@ -2552,6 +2699,7 @@ function toOrderWrite(input: SyncedOrderWithDeliveryStopInput["order"]): {
   return {
     cancelledAt: input.cancelledAt,
     currencyCode: input.currencyCode,
+    displayOrderSequence: parseDisplayOrderSequence(sourceIdentity.sourceOrderNumber ?? input.name),
     email: input.email,
     financialStatus: input.financialStatus,
     fulfillmentStatus: input.fulfillmentStatus,
@@ -2856,7 +3004,7 @@ function hasMetadataResolved(input: {
   return !input.reviewReasons.some((reason) => metadataBlockers.has(reason));
 }
 
-function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
+export function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
   const stop = order.deliveryStops[0] ?? null;
   const fact = order.deliveryFacts?.[0] ?? null;
   const raw = objectOrNull(order.rawPayload);
@@ -2947,6 +3095,10 @@ function toCanonicalOrderRow(order: CanonicalOrderRecord): CanonicalOrderRow {
     deliveryMetadataDiagnostics,
     deliveryStopId: stop?.id ?? null,
     deliveryStopStatus: stop?.status ?? null,
+    displayOrderSequence:
+      order.displayOrderSequence === null || order.displayOrderSequence === undefined
+        ? null
+        : String(order.displayOrderSequence),
     deliveryWeekday,
     email: order.email,
     financialStatus:

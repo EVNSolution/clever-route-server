@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { buildApp } from '../src/app.js';
+import type { ShopifyOrderReconciliationJobDto } from '../src/modules/shopify/order-reconciliation.types.js';
 import type { CanonicalOrderRow } from '../src/modules/shopify/order-sync.mapper.js';
 import type { AdminOrdersDependencies } from '../src/routes/admin-orders.routes.js';
 
@@ -837,6 +838,74 @@ describe('Admin orders routes', () => {
     }
   });
 
+  test('enqueues and reads background order reconciliation jobs for the token shop', async () => {
+    const { dependencies, enqueueReconciliation, reconciliationStatus } = createDependencyHarness();
+    const app = await buildApp({ adminOrders: dependencies });
+
+    try {
+      const enqueue = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'POST',
+        payload: { correlationId: 'corr-1', mode: 'INCREMENTAL', overlapWindowSeconds: 600, pageSize: 25 },
+        url: '/admin/orders/reconciliations'
+      });
+      expect(enqueue.statusCode).toBe(202);
+      expect(enqueue.json()).toEqual({ data: { job: reconciliationJob() }, error: null });
+      expect(enqueueReconciliation).toHaveBeenCalledWith({
+        appId: 'clever',
+        correlationId: 'corr-1',
+        mode: 'INCREMENTAL',
+        overlapWindowSeconds: 600,
+        pageSize: 25,
+        requestedBy: 'shopify-user-id',
+        shopDomain: 'example.myshopify.com'
+      });
+
+      const status = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'GET',
+        url: '/admin/orders/reconciliations/job-id'
+      });
+      expect(status.statusCode).toBe(200);
+      expect(status.json()).toEqual({ data: { job: reconciliationJob() }, error: null });
+      expect(reconciliationStatus).toHaveBeenCalledWith({
+        appId: 'clever',
+        jobId: 'job-id',
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('does not serialize internal reconciliation lease tokens on status responses', async () => {
+    const internalLeaseToken = 'internal-lease-token';
+    const { dependencies, reconciliationStatus } = createDependencyHarness();
+    reconciliationStatus.mockResolvedValueOnce({
+      ...reconciliationJob(),
+      leaseToken: internalLeaseToken,
+      startedAt: '2026-05-07T00:00:01.000Z',
+      status: 'RUNNING'
+    } as unknown as ShopifyOrderReconciliationJobDto);
+    const app = await buildApp({ adminOrders: dependencies });
+
+    try {
+      const status = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'GET',
+        url: '/admin/orders/reconciliations/job-id'
+      });
+
+      expect(status.statusCode).toBe(200);
+      expect(status.body).not.toContain('leaseToken');
+      expect(status.body).not.toContain(internalLeaseToken);
+      const body = status.json<{ data: { job: Record<string, unknown> } }>();
+      expect(body.data.job).not.toHaveProperty('leaseToken');
+    } finally {
+      await app.close();
+    }
+  });
+
 });
 
 function createDependencyHarness(): {
@@ -852,6 +921,12 @@ function createDependencyHarness(): {
   >;
   patchCanonicalOrder: ReturnType<
     typeof vi.fn<NonNullable<AdminOrdersDependencies['orderSyncService']['patchCanonicalOrder']>>
+  >;
+  enqueueReconciliation: ReturnType<
+    typeof vi.fn<NonNullable<AdminOrdersDependencies['orderReconciliationService']>['enqueue']>
+  >;
+  reconciliationStatus: ReturnType<
+    typeof vi.fn<NonNullable<AdminOrdersDependencies['orderReconciliationService']>['status']>
   >;
 } {
   const verify = vi.fn(() => ({
@@ -895,6 +970,12 @@ function createDependencyHarness(): {
   const patchCanonicalOrder = vi.fn<NonNullable<AdminOrdersDependencies['orderSyncService']['patchCanonicalOrder']>>(
     () => Promise.resolve({ ...canonicalOrder, deliveryArea: 'North York', deliveryDate: '2026-05-10' })
   );
+  const enqueueReconciliation = vi.fn<NonNullable<AdminOrdersDependencies['orderReconciliationService']>['enqueue']>(
+    () => Promise.resolve(reconciliationJob())
+  );
+  const reconciliationStatus = vi.fn<NonNullable<AdminOrdersDependencies['orderReconciliationService']>['status']>(
+    () => Promise.resolve(reconciliationJob())
+  );
 
   return {
     bulkPatchCanonicalOrderStatus,
@@ -905,11 +986,52 @@ function createDependencyHarness(): {
         patchCanonicalOrder,
         syncOrdersSnapshot
       },
+      orderReconciliationService: {
+        enqueue: enqueueReconciliation,
+        status: reconciliationStatus
+      },
       sessionTokenVerifier: { verify }
     },
+    enqueueReconciliation,
     listCanonicalOrders,
     patchCanonicalOrder,
+    reconciliationStatus,
     syncOrdersSnapshot
+  };
+}
+
+function reconciliationJob() {
+  return {
+    appId: 'clever',
+    attemptCount: 0,
+    correlationId: 'corr-1',
+    counts: {
+      created: 0,
+      failed: 0,
+      finalCanonical: null,
+      scanned: 0,
+      staleSkipped: 0,
+      unchanged: 0,
+      updated: 0
+    },
+    createdAt: '2026-05-07T00:00:00.000Z',
+    deadLetteredAt: null,
+    finishedAt: null,
+    highWatermark: null,
+    id: 'job-id',
+    lastError: null,
+    mode: 'INCREMENTAL' as const,
+    nextRunAt: '2026-05-07T00:00:00.000Z',
+    overlapWindowSeconds: 600,
+    pageCursor: null,
+    pageSize: 25,
+    requestedBy: 'shopify-user-id',
+    shopDomain: 'example.myshopify.com',
+    startedAt: null,
+    startedFrom: null,
+    status: 'QUEUED' as const,
+    updatedAt: '2026-05-07T00:00:00.000Z',
+    warningCount: 0
   };
 }
 

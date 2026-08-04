@@ -145,6 +145,7 @@ export type CanonicalOrderRow = {
   deliveryMetadataDiagnostics?: DeliveryMetadataDiagnostics | null;
   deliveryStopId: string | null;
   deliveryStopStatus: string | null;
+  displayOrderSequence?: string | null;
   deliveryWeekday: DeliveryWeekday | null;
   email: string | null;
   financialStatus: string | null;
