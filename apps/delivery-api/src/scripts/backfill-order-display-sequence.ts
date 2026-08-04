@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { parseOrderDisplaySequence } from '../modules/shopify/order-display-sequence.js';
 
 const prisma = new PrismaClient();
 const batchSize = readBatchSize(process.env.ORDERS_DISPLAY_SEQUENCE_BACKFILL_BATCH_SIZE);
@@ -25,7 +26,7 @@ try {
       const outcome = outcomes.get(row.sourcePlatform) ?? { rejected: 0, scanned: 0, updated: 0 };
       outcome.scanned += 1;
       outcomes.set(row.sourcePlatform, outcome);
-      const sequence = parseSequence(row.sourceOrderNumber ?? row.name);
+      const sequence = parseOrderDisplaySequence(row.sourceOrderNumber ?? row.name);
       if (sequence === null) {
         rejected += 1;
         outcome.rejected += 1;
@@ -51,13 +52,6 @@ try {
   if (remaining > 0) process.exitCode = 2;
 } finally {
   await prisma.$disconnect();
-}
-
-function parseSequence(value: string): bigint | null {
-  const normalized = value.trim().replace(/^#/u, '');
-  if (!/^(0|[1-9][0-9]*)$/u.test(normalized)) return null;
-  const parsed = BigInt(normalized);
-  return parsed <= 9_223_372_036_854_775_807n ? parsed : null;
 }
 
 function readBatchSize(value: string | undefined): number {
