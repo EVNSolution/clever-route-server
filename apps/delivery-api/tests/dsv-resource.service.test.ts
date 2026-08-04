@@ -105,6 +105,69 @@ describe('PrismaDsvResourceService', () => {
     });
   });
 
+  test('revokes older signup links and stores only a hash for the exact DSV driver', async () => {
+    const transaction = {
+      driver: {
+        findFirst: vi.fn(() => Promise.resolve({ accountId: null, id: driverId })),
+      },
+      dsvDriverAccountSignupInvite: {
+        create: vi.fn((input: unknown) => {
+          void input;
+          return Promise.resolve({ id: 'invite-id' });
+        }),
+        updateMany: vi.fn((input: unknown) => {
+          void input;
+          return Promise.resolve({ count: 1 });
+        }),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn((operation: (client: typeof transaction) => unknown) => operation(transaction)),
+      shop: {
+        findUnique: vi.fn(() => Promise.resolve({ id: shopId })),
+      },
+    };
+    const service = new PrismaDsvResourceService(prisma as never);
+
+    const result = await service.issueDriverSignupInvite({
+      driverId,
+      shopDomain: 'tomatonofood.com',
+    });
+
+    expect(result.signupUrl).toMatch(/^clever-driver:\/\/signup\?token=[A-Za-z0-9_-]{43}$/u);
+    expect(transaction.driver.findFirst).toHaveBeenCalledWith({
+      select: { accountId: true, id: true },
+      where: {
+        accountId: null,
+        dsvProfile: { isNot: null },
+        id: driverId,
+        shopId,
+        status: 'ACTIVE',
+      },
+    });
+    const revokeInput = transaction.dsvDriverAccountSignupInvite.updateMany.mock.calls[0]?.[0] as {
+      data: { revokedAt: Date };
+    };
+    const createInput = transaction.dsvDriverAccountSignupInvite.create.mock.calls[0]?.[0] as {
+      data: { driverId: string; expiresAt: Date; tokenHash: string };
+    };
+    expect(revokeInput.data.revokedAt).toBeInstanceOf(Date);
+    expect(createInput.data.expiresAt).toBeInstanceOf(Date);
+    expect(createInput.data.tokenHash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(transaction.dsvDriverAccountSignupInvite.updateMany).toHaveBeenCalledWith({
+      data: { revokedAt: revokeInput.data.revokedAt },
+      where: { consumedAt: null, driverId, revokedAt: null },
+    });
+    expect(transaction.dsvDriverAccountSignupInvite.create).toHaveBeenCalledWith({
+      data: {
+        driverId,
+        expiresAt: createInput.data.expiresAt,
+        tokenHash: createInput.data.tokenHash,
+      },
+    });
+    expect(result.signupUrl).not.toContain(createInput.data.tokenHash);
+  });
+
   test('blocks assigning a driver or vehicle that already has a default assignment', async () => {
     const prisma = {
       driver: {

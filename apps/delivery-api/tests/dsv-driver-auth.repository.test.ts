@@ -1,10 +1,9 @@
 import { describe, expect, test, vi } from 'vitest';
 
 import { PrismaDsvDriverAuthRepository } from '../src/modules/dsv/dsv-driver-auth.repository.js';
-import { fingerprintResidentNumberFront } from '../src/modules/dsv/dsv-driver-identity.js';
 
 describe('Prisma DSV driver auth repository', () => {
-  test('creates an unlinked account without querying drivers when resident identity is null', async () => {
+  test('consumes a secure invite and links its exact DSV driver when resident identity is null', async () => {
     const account = {
       id: 'account-id',
       loginId: 'driver.without-resident',
@@ -13,14 +12,32 @@ describe('Prisma DSV driver auth repository', () => {
       tokenVersion: 0,
     };
     const candidate = {
+      accountId: null,
       displayName: '양우진',
+      dsvProfile: {},
       id: 'driver-id',
       phone: '010-1234-5678',
       shop: { shopDomain: 'dsv-production.local' },
+      status: 'ACTIVE',
     };
     const transaction = {
+      dsvDriverAccountSignupInvite: {
+        findUnique: vi.fn((input: unknown) => {
+          void input;
+          return Promise.resolve({
+            consumedAt: null,
+            driver: candidate,
+            expiresAt: new Date(Date.now() + 60_000),
+            id: 'invite-id',
+            revokedAt: null,
+          });
+        }),
+        updateMany: vi.fn((input: unknown) => {
+          void input;
+          return Promise.resolve({ count: 1 });
+        }),
+      },
       driver: {
-        findMany: vi.fn(() => Promise.resolve([candidate])),
         updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
       },
       driverAccount: {
@@ -47,73 +64,13 @@ describe('Prisma DSV driver auth repository', () => {
       password: 'temporary-password',
       phone: account.phone,
       residentNumberFront: null,
+      signupInviteToken: 'A'.repeat(43),
     });
 
     const createInput = transaction.driverAccount.create.mock.calls[0]?.[0] as {
       data: { residentNumberFrontFingerprint: string | null };
     };
     expect(createInput.data.residentNumberFrontFingerprint).toBeNull();
-    expect(transaction.driver.findMany).not.toHaveBeenCalled();
-    expect(transaction.driver.updateMany).not.toHaveBeenCalled();
-    expect(result.account.connectionStatus).toBe('UNLINKED');
-  });
-
-  test('links a production driver whose stored phone contains separators', async () => {
-    const identitySecret = 'identity-secret-that-is-at-least-32-characters';
-    const account = {
-      id: 'account-id',
-      loginId: 'yang.woojin.temp.260803',
-      name: '양우진',
-      phone: '01012345678',
-      tokenVersion: 0,
-    };
-    const candidate = {
-      displayName: '양우진',
-      id: 'driver-id',
-      phone: '010-1234-5678',
-      shop: { shopDomain: 'dsv-production.local' },
-    };
-    const transaction = {
-      driver: {
-        findMany: vi.fn(() => Promise.resolve([candidate])),
-        updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
-      },
-      driverAccount: {
-        create: vi.fn(() => Promise.resolve(account)),
-      },
-      driverAccountSession: {
-        create: vi.fn(() => Promise.resolve({ id: 'session-id' })),
-      },
-    };
-    const prisma = {
-      $transaction: vi.fn((operation: (client: typeof transaction) => unknown) => operation(transaction)),
-    };
-    const repository = new PrismaDsvDriverAuthRepository(prisma as never, identitySecret);
-
-    const result = await repository.register({
-      loginId: account.loginId,
-      name: account.name,
-      password: 'temporary-password',
-      phone: '01012345678',
-      residentNumberFront: '9001011',
-    });
-
-    expect(transaction.driver.findMany).toHaveBeenCalledWith({
-      include: { shop: { select: { shopDomain: true } } },
-      where: {
-        accountId: null,
-        displayName: '양우진',
-        dsvProfile: {
-          is: {
-            residentNumberFrontFingerprint: fingerprintResidentNumberFront(
-              '9001011',
-              identitySecret,
-            ),
-          },
-        },
-        status: 'ACTIVE',
-      },
-    });
     expect(transaction.driver.updateMany).toHaveBeenCalledWith({
       data: {
         accountId: account.id,
@@ -121,12 +78,101 @@ describe('Prisma DSV driver auth repository', () => {
         inviteCode: null,
         inviteCodeExpiresAt: null,
       },
-      where: { accountId: null, id: candidate.id },
+      where: { accountId: null, id: candidate.id, status: 'ACTIVE' },
     });
-    expect(result.account).toMatchObject({
-      connectionStatus: 'LINKED',
-      linkedDrivers: [{ driverId: candidate.id, name: '양우진' }],
+    const consumeInput = transaction.dsvDriverAccountSignupInvite.updateMany.mock.calls[0]?.[0] as {
+      data: { consumedAt: Date };
+      where: { consumedAt: null; id: string; revokedAt: null };
+    };
+    expect(consumeInput.data.consumedAt).toBeInstanceOf(Date);
+    expect(transaction.dsvDriverAccountSignupInvite.updateMany).toHaveBeenCalledWith({
+      data: { consumedAt: consumeInput.data.consumedAt },
+      where: { consumedAt: null, id: 'invite-id', revokedAt: null },
     });
+    expect(result.account.connectionStatus).toBe('LINKED');
+  });
+
+  test('validates an unconsumed invite without returning the full phone number', async () => {
+    const expiresAt = new Date(Date.now() + 60_000);
+    const prisma = {
+      dsvDriverAccountSignupInvite: {
+        findUnique: vi.fn((input: unknown) => {
+          void input;
+          return Promise.resolve({
+            consumedAt: null,
+            driver: {
+              accountId: null,
+              displayName: '양우진',
+              dsvProfile: {},
+              phone: '010-1234-5678',
+              status: 'ACTIVE',
+            },
+            expiresAt,
+            revokedAt: null,
+          });
+        }),
+      },
+    };
+    const repository = new PrismaDsvDriverAuthRepository(
+      prisma as never,
+      'identity-secret-that-is-at-least-32-characters',
+    );
+
+    const result = await repository.validateSignupInvite({ token: 'A'.repeat(43) });
+
+    expect(result).toEqual({
+      driverName: '양우진',
+      expiresAt: expiresAt.toISOString(),
+      phoneLast4: '5678',
+    });
+    const findInput = prisma.dsvDriverAccountSignupInvite.findUnique.mock.calls[0]?.[0] as {
+      include: unknown;
+      where: { tokenHash: string };
+    };
+    expect(findInput.where.tokenHash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(prisma.dsvDriverAccountSignupInvite.findUnique).toHaveBeenCalledWith({
+      include: { driver: { include: { dsvProfile: true } } },
+      where: { tokenHash: findInput.where.tokenHash },
+    });
+  });
+
+  test('rejects registration when invite identity does not match the submitted driver identity', async () => {
+    const candidate = {
+      accountId: null,
+      displayName: '양우진',
+      dsvProfile: {},
+      id: 'driver-id',
+      phone: '010-1234-5678',
+      shop: { shopDomain: 'dsv-production.local' },
+      status: 'ACTIVE',
+    };
+    const transaction = {
+      dsvDriverAccountSignupInvite: {
+        findUnique: vi.fn(() => Promise.resolve({
+          consumedAt: null,
+          driver: candidate,
+          expiresAt: new Date(Date.now() + 60_000),
+          id: 'invite-id',
+          revokedAt: null,
+        })),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn((operation: (client: typeof transaction) => unknown) => operation(transaction)),
+    };
+    const repository = new PrismaDsvDriverAuthRepository(
+      prisma as never,
+      'identity-secret-that-is-at-least-32-characters',
+    );
+
+    await expect(repository.register({
+      loginId: 'yang.woojin',
+      name: '다른 이름',
+      password: 'temporary-password',
+      phone: '01012345678',
+      residentNumberFront: null,
+      signupInviteToken: 'A'.repeat(43),
+    })).rejects.toMatchObject({ name: 'DsvDriverSignupInviteError' });
   });
 
   test('restores an active DSV account from its refresh session', async () => {
