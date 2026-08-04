@@ -4584,6 +4584,17 @@ components:
       type: object
       required: [items, routes]
       properties:
+        customerDisplayName:
+          type: string
+        departureLocation:
+          type: object
+          required: [latitude, longitude]
+          properties:
+            latitude:
+              type: number
+            longitude:
+              type: number
+          additionalProperties: false
         emptyReason:
           type: string
           enum: [DATE_OUT_OF_WINDOW, NO_ACTIVE_CUSTOMER_SCOPE, NO_DELIVERIES, NO_SERVICE_DATE]

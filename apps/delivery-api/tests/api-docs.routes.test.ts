@@ -193,6 +193,8 @@ describe('API documentation routes', () => {
       expect(customerDeliveryItem).toContain('additionalProperties: false');
       const customerDeliveryPage = schemaBlock(response.body, 'DsvV1CustomerDeliveryInquiryPage');
       expect(customerDeliveryPage).toContain('required: [items, routes]');
+      expect(customerDeliveryPage).toContain('customerDisplayName:\n          type: string');
+      expect(customerDeliveryPage).toContain('departureLocation:');
       expect(customerDeliveryPage).toContain('$ref: \'#/components/schemas/DsvV1CustomerRoute\'');
       const customerRoute = schemaBlock(response.body, 'DsvV1CustomerRoute');
       expect(customerRoute).toContain('required: [vehicleId, coordinates]');

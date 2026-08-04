@@ -72,8 +72,8 @@ export type DsvV1CustomerRouteScopeRow = {
   routePlanId: string;
   sellerOrderId: string;
   vehicleId: string;
-  vehicleLatitude: number;
-  vehicleLongitude: number;
+  vehicleLatitude?: number | null;
+  vehicleLongitude?: number | null;
 };
 
 export type DsvV1ControlReadResult = DsvV1ControlSummaryInput & { timezone: string };
@@ -954,6 +954,7 @@ function toCustomerDeliveryInquiryRow(row: CustomerDeliveryOrderRow): DsvV1Custo
   const currentRouteStop = selectCurrentRouteStop(stop.routePlanStops, row.currentRouteVersion?.routePlanId ?? null);
   const routePlanId = currentRouteStop?.routePlanId ?? eta?.routePlanId ?? row.currentRouteVersion?.routePlanId ?? null;
   return {
+    customerDisplayName: row.customer?.displayName ?? null,
     deliveryStatus: row.deliveryStatus,
     destinationAddress: deliveryStopAddressLabel(stop),
     destinationDisplayName: row.destination?.canonicalName ?? '',
@@ -986,8 +987,6 @@ function toCustomerRouteScopeRow(row: CustomerRouteScopeOrderRow): DsvV1Customer
     || routeVersion.routePlanId === null
     || routePlan?.vehicleId === null
     || routePlan?.vehicleId === undefined
-    || vehicleLatitude === null
-    || vehicleLongitude === null
   ) return [];
   return [{
     routePlanId: routeVersion.routePlanId,

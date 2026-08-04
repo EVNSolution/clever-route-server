@@ -394,6 +394,18 @@ describe('G005 DSV v1 read DTO adapter', () => {
       page: { hasMore: false },
       routes: [],
     });
+
+    expect(mapDsvV1CustomerDeliveryInquiryPage({
+      customerDisplayName: 'Customer A',
+      departureLocation: { latitude: 37.5, longitude: 126.9 },
+      items: [],
+      routes: [],
+    })).toEqual({
+      customerDisplayName: 'Customer A',
+      departureLocation: { latitude: 37.5, longitude: 126.9 },
+      items: [],
+      routes: [],
+    });
   });
 });
 
