@@ -22,6 +22,7 @@ import {
   type DsvTimeConstraintCommandService,
 } from '../src/modules/dsv/dsv-time-constraint-command.service.js';
 import type { RoutePlanDetail, RoutePlanSummary } from '../src/modules/route-plans/route-plan.types.js';
+import type { RouteGeometryProvider } from '../src/modules/route-plans/route-plan.service.js';
 
 const sessionSecret = '12345678901234567890123456789012';
 const cookieName = 'clever_dsv_admin';
@@ -799,6 +800,129 @@ describe('DSV v1 read routes', () => {
     }
   });
 
+  test('rebuilds a missing customer route through OSRM in the existing stop order', async () => {
+    const { app, queryService, routeGeometryProvider, routePlanService } = await createHarness();
+    const customer = signedCookie(`dsv-customer-account:${accountId}`);
+    try {
+      queryService.listCustomerDeliveries.mockResolvedValueOnce({
+        items: [customerDeliveryRow({ routePlanId: 'route-plan-1', sellerOrderId: 'order-customer-first', vehicleId: 'vehicle-1' })],
+        page: { hasMore: false },
+        serviceDate: '2026-07-23',
+        timezone: 'Asia/Seoul',
+      });
+      queryService.listCustomerRouteScope.mockResolvedValueOnce([
+        { routePlanId: 'route-plan-1', sellerOrderId: 'order-customer-first', vehicleId: 'vehicle-1', vehicleLatitude: null, vehicleLongitude: null },
+        { routePlanId: 'route-plan-1', sellerOrderId: 'order-customer-last', vehicleId: 'vehicle-1', vehicleLatitude: null, vehicleLongitude: null },
+      ]);
+      routePlanService.getRoutePlanDetail.mockResolvedValueOnce(routePlanDetail({
+        routeGeometry: null,
+        stops: [
+          routeDetailStop({ deliveryStopId: 'other-stop', orderId: 'other-order', sequence: 1 }),
+          routeDetailStop({ coordinates: { latitude: 37.52, longitude: 126.92 }, deliveryStopId: 'customer-first-stop', orderId: 'order-customer-first', sequence: 2 }),
+          routeDetailStop({ coordinates: { latitude: 37.53, longitude: 126.93 }, deliveryStopId: 'customer-last-stop', orderId: 'order-customer-last', sequence: 3 }),
+        ],
+      }));
+      routeGeometryProvider.buildRoute.mockResolvedValueOnce({
+        routeGeometry: { coordinates: [[126.9, 37.5], [126.905, 37.51], [126.92, 37.52], [126.93, 37.53]], type: 'LineString' },
+        routeMetrics: null,
+        routeStopPoints: [],
+      });
+
+      const response = await app.inject({
+        headers: { cookie: customer.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/customer/deliveries?serviceDate=2026-07-23',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(expectDsvV1Metadata(response).data).toMatchObject({
+        routes: [{
+          coordinates: [[126.9, 37.5], [126.905, 37.51], [126.92, 37.52], [126.93, 37.53]],
+          vehicleId: 'vehicle-1',
+        }],
+      });
+      expect(routeGeometryProvider.buildRoute).toHaveBeenCalledOnce();
+      const scopedDetail = routeGeometryProvider.buildRoute.mock.calls[0]?.[0];
+      expect(scopedDetail?.routePlan.depot).toEqual({ latitude: 37.5, longitude: 126.9 });
+      expect(scopedDetail?.routePlan.routeEndMode).toBe('END_AT_LAST_STOP');
+      expect(scopedDetail?.stops.map((stop) => stop.orderId)).toEqual(['order-customer-first', 'order-customer-last']);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rebuilds through OSRM when cached geometry cannot be cut from the live vehicle position', async () => {
+    const { app, queryService, routeGeometryProvider, routePlanService } = await createHarness();
+    const customer = signedCookie(`dsv-customer-account:${accountId}`);
+    try {
+      queryService.listCustomerDeliveries.mockResolvedValueOnce({
+        items: [customerDeliveryRow({ routePlanId: 'route-plan-1', sellerOrderId: 'order-customer', vehicleId: 'vehicle-1' })],
+        page: { hasMore: false },
+        serviceDate: '2026-07-23',
+        timezone: 'Asia/Seoul',
+      });
+      queryService.listCustomerRouteScope.mockResolvedValueOnce([
+        { routePlanId: 'route-plan-1', sellerOrderId: 'order-customer', vehicleId: 'vehicle-1', vehicleLatitude: 37.6, vehicleLongitude: 127.1 },
+      ]);
+      routePlanService.getRoutePlanDetail.mockResolvedValueOnce(routePlanDetail({
+        routeGeometry: { coordinates: [[126.9, 37.5], [126.92, 37.52]], type: 'LineString' },
+        stops: [routeDetailStop({ coordinates: { latitude: 37.52, longitude: 126.92 }, orderId: 'order-customer' })],
+      }));
+      routeGeometryProvider.buildRoute.mockResolvedValueOnce({
+        routeGeometry: { coordinates: [[127.1, 37.6], [127, 37.56], [126.92, 37.52]], type: 'LineString' },
+        routeMetrics: null,
+        routeStopPoints: [],
+      });
+
+      const response = await app.inject({
+        headers: { cookie: customer.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/customer/deliveries?serviceDate=2026-07-23',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(expectDsvV1Metadata(response).data).toMatchObject({
+        routes: [{ coordinates: [[127.1, 37.6], [127, 37.56], [126.92, 37.52]], vehicleId: 'vehicle-1' }],
+      });
+      expect(routeGeometryProvider.buildRoute.mock.calls[0]?.[0].routePlan.depot).toEqual({ latitude: 37.6, longitude: 127.1 });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('does not synthesize a straight customer route when OSRM regeneration fails', async () => {
+    const { app, queryService, routeGeometryProvider, routePlanService } = await createHarness();
+    const customer = signedCookie(`dsv-customer-account:${accountId}`);
+    try {
+      queryService.listCustomerDeliveries.mockResolvedValueOnce({
+        items: [customerDeliveryRow({ routePlanId: 'route-plan-1', sellerOrderId: 'order-customer', vehicleId: 'vehicle-1' })],
+        page: { hasMore: false },
+        serviceDate: '2026-07-23',
+        timezone: 'Asia/Seoul',
+      });
+      queryService.listCustomerRouteScope.mockResolvedValueOnce([
+        { routePlanId: 'route-plan-1', sellerOrderId: 'order-customer', vehicleId: 'vehicle-1', vehicleLatitude: null, vehicleLongitude: null },
+      ]);
+      routePlanService.getRoutePlanDetail.mockResolvedValueOnce(routePlanDetail({
+        routeGeometry: null,
+        stops: [routeDetailStop({ orderId: 'order-customer' })],
+      }));
+      routeGeometryProvider.buildRoute.mockRejectedValueOnce(new Error('OSRM unavailable'));
+
+      const response = await app.inject({
+        headers: { cookie: customer.cookie },
+        method: 'GET',
+        url: '/api/dsv/v1/customer/deliveries?serviceDate=2026-07-23',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(expectDsvV1Metadata(response).data).toMatchObject({ routes: [] });
+      expect(routeGeometryProvider.buildRoute).toHaveBeenCalledOnce();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('maps typed query cursor, service date window, and timezone errors to v1 error envelopes', async () => {
     const { app, queryService } = await createHarness();
     const admin = signedCookie('dsv-shop:tomatonofood.com');
@@ -955,23 +1079,36 @@ async function createHarness(options: {
 } = {}): Promise<{
   app: Awaited<ReturnType<typeof buildApp>>;
   queryService: MockQueryService;
+  routeGeometryProvider: MockRouteGeometryProvider;
   routePlanService: MockRoutePlanService;
   sessionResolver: MockSessionResolver;
 }> {
   const queryService = createQueryService();
+  const routeGeometryProvider = createRouteGeometryProvider();
   const routePlanService = createRoutePlanService();
   const sessionResolver = createSessionResolver();
   const dependencies: DsvV1ReadDependencies = {
     cookieName,
     ...(options.mapProfile === false ? {} : { mapProfile: dsvMapProfile() }),
     queryService,
+    routeGeometryProvider,
     routePlanService,
     secureCookies: false,
     sessionResolver,
     sessionSecret,
     ...(options.timeConstraintCommandService === undefined ? {} : { timeConstraintCommandService: options.timeConstraintCommandService }),
   };
-  return { app: await buildApp({ dsvV1Read: dependencies }), queryService, routePlanService, sessionResolver };
+  return { app: await buildApp({ dsvV1Read: dependencies }), queryService, routeGeometryProvider, routePlanService, sessionResolver };
+}
+
+type MockRouteGeometryProvider = {
+  buildRoute: ReturnType<typeof vi.fn<RouteGeometryProvider['buildRoute']>>;
+};
+
+function createRouteGeometryProvider(): MockRouteGeometryProvider {
+  return {
+    buildRoute: vi.fn(() => Promise.resolve({ routeGeometry: null, routeMetrics: null, routeStopPoints: [] })),
+  };
 }
 
 function dsvMapProfile(): NonNullable<DsvV1ReadDependencies['mapProfile']> {

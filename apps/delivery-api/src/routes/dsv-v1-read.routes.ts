@@ -49,6 +49,7 @@ import {
   type DsvTimeConstraintCommandService,
 } from '../modules/dsv/dsv-time-constraint-command.service.js';
 import type { DsvMapProfile } from '../modules/dsv/dsv-map-profile.config.js';
+import type { RouteGeometryProvider } from '../modules/route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanService } from '../modules/route-plans/route-plan.types.js';
 import {
   clearAdminWebSessionCookie,
@@ -74,6 +75,7 @@ export type DsvV1ReadDependencies = {
   cookieName: string;
   mapProfile?: DsvMapProfile;
   queryService?: DsvV1ReadQueryService;
+  routeGeometryProvider?: Pick<RouteGeometryProvider, 'buildRoute'>;
   routePlanService?: Pick<RoutePlanService, 'getRoutePlanDetail' | 'listRoutePlans'>;
   secureCookies: boolean;
   sessionResolver: DsvV1SessionResolver;
@@ -242,6 +244,7 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
         customerDisplayName: customerDisplayNameFromDeliveries(page.items),
         ...(await buildCustomerScopedRoutes({
           items: routeScope,
+          ...(dependencies.routeGeometryProvider === undefined ? {} : { routeGeometryProvider: dependencies.routeGeometryProvider }),
           ...(dependencies.routePlanService === undefined ? {} : { routePlanService: dependencies.routePlanService }),
           shopDomain: requireCustomerShopDomain(customerPrincipal),
         })),
@@ -271,6 +274,7 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
         customerDisplayName: customerDisplayNameFromDeliveries(page.items),
         ...(await buildCustomerScopedRoutes({
           items: routeScope,
+          ...(dependencies.routeGeometryProvider === undefined ? {} : { routeGeometryProvider: dependencies.routeGeometryProvider }),
           ...(dependencies.routePlanService === undefined ? {} : { routePlanService: dependencies.routePlanService }),
           shopDomain: requireAdminShopDomain(adminPrincipal),
         })),
@@ -283,6 +287,7 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
 
 async function buildCustomerScopedRoutes(input: {
   items: readonly DsvV1CustomerRouteScopeRow[];
+  routeGeometryProvider?: Pick<RouteGeometryProvider, 'buildRoute'>;
   routePlanService?: Pick<RoutePlanService, 'getRoutePlanDetail' | 'listRoutePlans'>;
   shopDomain: string;
 }): Promise<{ departureLocation?: DsvV1DepartureLocationDto; routes: DsvV1CustomerRouteDto[] }> {
@@ -302,7 +307,6 @@ async function buildCustomerScopedRoutes(input: {
     if (detail === null) continue;
     const depot = routePlanDepotCoordinates(detail);
     departureLocation ??= depot === null ? undefined : { latitude: depot[1], longitude: depot[0] };
-    if (detail.routeGeometry === null) continue;
     const customerOrderIds = new Set(input.items
       .filter((item) => item.routePlanId === routeKey.routePlanId && item.vehicleId === routeKey.vehicleId)
       .map((item) => item.sellerOrderId));
@@ -315,11 +319,23 @@ async function buildCustomerScopedRoutes(input: {
     const start = routeKey.vehiclePosition ?? depot;
     if (end === null) continue;
     if (start === null) continue;
-    const coordinates = cutCustomerScopedRouteGeometry({
-      coordinates: detail.routeGeometry.coordinates,
-      end,
-      start,
-    });
+    const coordinates = detail.routeGeometry === null
+      ? await rebuildCustomerScopedRouteGeometry({
+          customerStops,
+          detail,
+          provider: input.routeGeometryProvider,
+          start,
+        })
+      : cutCustomerScopedRouteGeometry({
+          coordinates: detail.routeGeometry.coordinates,
+          end,
+          start,
+        }) ?? await rebuildCustomerScopedRouteGeometry({
+          customerStops,
+          detail,
+          provider: input.routeGeometryProvider,
+          start,
+        });
     if (coordinates === null) continue;
     routes.push({ coordinates, vehicleId: routeKey.vehicleId });
   }
@@ -327,6 +343,31 @@ async function buildCustomerScopedRoutes(input: {
     ...(departureLocation === undefined ? {} : { departureLocation }),
     routes,
   };
+}
+
+async function rebuildCustomerScopedRouteGeometry(input: {
+  customerStops: RoutePlanDetail['stops'];
+  detail: RoutePlanDetail;
+  provider: Pick<RouteGeometryProvider, 'buildRoute'> | undefined;
+  start: DsvV1LngLat;
+}): Promise<DsvV1LngLat[] | null> {
+  if (input.provider === undefined || input.customerStops.length === 0) return null;
+  try {
+    const result = await input.provider.buildRoute({
+      ...input.detail,
+      routePlan: {
+        ...input.detail.routePlan,
+        depot: { latitude: input.start[1], longitude: input.start[0] },
+        routeEndMode: 'END_AT_LAST_STOP',
+      },
+      routeGeometry: null,
+      routeStopPoints: [],
+      stops: input.customerStops,
+    });
+    return result.routeGeometry?.coordinates ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function uniqueRouteKeys(items: readonly DsvV1CustomerRouteScopeRow[]): Array<{

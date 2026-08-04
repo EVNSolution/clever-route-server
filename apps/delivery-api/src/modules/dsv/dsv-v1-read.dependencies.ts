@@ -23,6 +23,7 @@ import {
 } from './dsv-control.dependencies.js';
 import { loadDsvMapProfileFromEnv, type DsvMapProfileEnv } from './dsv-map-profile.config.js';
 import { PrismaRoutePlanRepository } from '../route-plans/route-plan.repository.js';
+import { OsrmRouteGeometryProvider } from '../route-plans/osrm-route-geometry.client.js';
 import { RoutePlanAdminService } from '../route-plans/route-plan.service.js';
 import type {
   DsvV1ReadDependencies,
@@ -76,10 +77,12 @@ export function loadDsvV1ReadDependencies(input: {
   }
   const mapProfile = loadDsvMapProfileFromEnv(input.env);
   const routeOptimizationScheduler = loadDsvRouteOptimizationScheduler(input);
+  const routeGeometryProvider = loadCustomerRouteGeometryProvider(input);
   return {
     cookieName: readOptional(input.env.CLEVER_DSV_WEB_COOKIE_NAME) ?? 'clever_dsv_admin',
     ...(mapProfile === undefined ? {} : { mapProfile }),
     queryService: input.queryService ?? new PrismaDsvV1ReadQueryService(input.prisma),
+    ...(routeGeometryProvider === undefined ? {} : { routeGeometryProvider }),
     routePlanService: new RoutePlanAdminService(
       new PrismaRoutePlanRepository(input.prisma, { allowAnyShopDomain: true }),
     ),
@@ -91,6 +94,20 @@ export function loadDsvV1ReadDependencies(input: {
     sessionSecret,
     timeConstraintCommandService: new PrismaDsvTimeConstraintCommandService(input.prisma, routeOptimizationScheduler),
   };
+}
+
+function loadCustomerRouteGeometryProvider(input: {
+  env: DsvV1ReadRuntimeEnv;
+  nodeEnv: string;
+}): OsrmRouteGeometryProvider | undefined {
+  const configuredBaseUrl = readOptional(input.env.OSRM_KOREA_BASE_URL) ?? readOptional(input.env.OSRM_BASE_URL);
+  const baseUrl = configuredBaseUrl ?? (input.nodeEnv === 'development' ? 'https://router.project-osrm.org' : undefined);
+  if (baseUrl === undefined) return undefined;
+  const timeoutMs = readOptionalPositiveNumber(input.env.OSRM_TIMEOUT_MS);
+  return new OsrmRouteGeometryProvider({
+    baseUrl,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+  });
 }
 
 class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
@@ -177,4 +194,11 @@ function readBoolean(value: string | undefined): boolean | undefined {
   if (normalized === 'true') return true;
   if (normalized === 'false') return false;
   throw new Error('CLEVER_DSV_ENABLED must be true or false');
+}
+
+function readOptionalPositiveNumber(value: string | undefined): number | undefined {
+  const normalized = readOptional(value);
+  if (normalized === undefined) return undefined;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
