@@ -24,6 +24,7 @@ import type { AdminNotificationServiceApi } from "../notifications/admin-notific
 import type { AssignedRouteAddressChangedEvent } from "../notifications/admin-web-notification-events.js";
 import { readWooCommerceRawGeocodingAddress } from "../woocommerce/woocommerce-order.mapper.js";
 import { requireOrdersPlanningReferenceDate } from "./order-pagination.js";
+import { parseOrderDisplaySequence } from "./order-display-sequence.js";
 import { appScopedShopWhere, normalizeShopifyAppId } from "./shopify-app-scope.js";
 import { isRouteReadyStatus } from "../route-plans/route-plan-lifecycle.js";
 
@@ -1364,12 +1365,6 @@ export class PrismaOrderSyncRepository {
   }
 }
 
-function parseDisplayOrderSequence(value: string | null): bigint | null {
-  if (value === null || !/^#?[0-9]+$/u.test(value.trim())) return null;
-  const parsed = BigInt(value.trim().replace(/^#/u, ''));
-  return parsed <= 9_223_372_036_854_775_807n ? parsed : null;
-}
-
 type OrderWriteWithNotificationIntents = {
   notificationEvents: AssignedRouteAddressChangedEvent[];
   result: UpsertOrderWithDeliveryStopResult;
@@ -2699,7 +2694,7 @@ function toOrderWrite(input: SyncedOrderWithDeliveryStopInput["order"]): {
   return {
     cancelledAt: input.cancelledAt,
     currencyCode: input.currencyCode,
-    displayOrderSequence: parseDisplayOrderSequence(sourceIdentity.sourceOrderNumber ?? input.name),
+    displayOrderSequence: parseOrderDisplaySequence(sourceIdentity.sourceOrderNumber ?? input.name),
     email: input.email,
     financialStatus: input.financialStatus,
     fulfillmentStatus: input.fulfillmentStatus,
