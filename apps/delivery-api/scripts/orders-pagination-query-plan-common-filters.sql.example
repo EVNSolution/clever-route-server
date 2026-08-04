@@ -1,0 +1,42 @@
+-- Run with non-PII fixture values in the isolated performance schema:
+-- PGOPTIONS='-c search_path=orders_perf_20260804' psql "$DATABASE_URL_WITHOUT_SCHEMA_QUERY" \
+--   -v shop_id=... -v watermark=... -v sequence=... -v order_id=... -f scripts/orders-pagination-query-plan-common-filters.sql.example
+BEGIN;
+SET LOCAL statement_timeout = '5s';
+
+EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
+SELECT o."id", o."displayOrderSequence"
+FROM "orders" o
+WHERE o."shopId" = :'shop_id'::uuid
+  AND o."createdAt" <= :'watermark'::timestamptz
+  AND o."displayOrderSequence" IS NOT NULL
+  AND o."displayOrderSequence" <= :'sequence'::bigint
+  AND (
+    o."displayOrderSequence" < :'sequence'::bigint
+    OR (o."displayOrderSequence" = :'sequence'::bigint AND o."id" < :'order_id'::uuid)
+  )
+  AND o."processedAt" >= (:'watermark'::timestamptz - interval '30 days')
+  AND EXISTS (
+    SELECT 1
+    FROM "order_delivery_facts" f
+    WHERE f."orderId" = o."id"
+      AND f."shopId" = o."shopId"
+      AND f."deliveryArea" = 'Area-01'
+      AND f."readiness" = 'READY_TO_PLAN'::"OrderDeliveryFactReadiness"
+  )
+  AND EXISTS (
+    SELECT 1
+    FROM "delivery_stops" s
+    WHERE s."orderId" = o."id"
+      AND s."shopId" = o."shopId"
+      AND s."status" NOT IN ('ASSIGNED'::"DeliveryStopStatus", 'EN_ROUTE'::"DeliveryStopStatus", 'ARRIVED'::"DeliveryStopStatus", 'DELIVERED'::"DeliveryStopStatus")
+      AND NOT EXISTS (
+        SELECT 1
+        FROM "route_plan_stops" rps
+        WHERE rps."deliveryStopId" = s."id"
+      )
+  )
+ORDER BY o."displayOrderSequence" DESC, o."id" DESC
+LIMIT 51;
+
+ROLLBACK;

@@ -72,15 +72,20 @@ describe('PrismaDsvResourceService', () => {
   test('creates a vehicle profile through the parent composite relation', async () => {
     const vehicle = {
       dsvProfile: { note: '', typeLabel: '미지정' },
+      dsvTelematicsDevice: { serialNumber: 'TMS-6101' },
       id: vehicleId,
       licensePlate: '21사 6101',
     };
+    let vehicleCreateInput: unknown;
     const prisma = {
       shop: {
         findUnique: vi.fn(() => Promise.resolve({ id: shopId })),
       },
       vehicle: {
-        create: vi.fn(() => Promise.resolve(vehicle)),
+        create: vi.fn((input: unknown) => {
+          vehicleCreateInput = input;
+          return Promise.resolve(vehicle);
+        }),
       },
     };
     const service = new PrismaDsvResourceService(prisma as never);
@@ -89,19 +94,31 @@ describe('PrismaDsvResourceService', () => {
       note: '',
       plate: '21사 6101',
       shopDomain: 'tomatonofood.com',
+      telematicsSerialNumber: 'TMS-6101',
       type: '미지정',
     })).resolves.toMatchObject({ id: vehicleId, plate: '21사 6101' });
 
+    const createInput = vehicleCreateInput as {
+      data: { dsvTelematicsDevice: { create: { installedAt: Date } } };
+    };
+    expect(createInput.data.dsvTelematicsDevice.create.installedAt).toBeInstanceOf(Date);
     expect(prisma.vehicle.create).toHaveBeenCalledWith({
       data: {
         dsvProfile: { create: { note: '', typeLabel: '미지정' } },
+        dsvTelematicsDevice: {
+          create: {
+            capabilities: [],
+            installedAt: createInput.data.dsvTelematicsDevice.create.installedAt,
+            serialNumber: 'TMS-6101',
+          },
+        },
         label: '미지정',
         licensePlate: '21사 6101',
         shopId,
         status: 'ACTIVE',
         vehicleType: 'OTHER',
       },
-      include: { dsvProfile: true },
+      include: { dsvProfile: true, dsvTelematicsDevice: true },
     });
   });
 
@@ -150,6 +167,73 @@ describe('PrismaDsvResourceService', () => {
     });
     expect(createInput.data.tokenHash).toMatch(/^[a-f0-9]{64}$/u);
     expect(result.signupUrl).not.toContain(createInput.data.tokenHash);
+  });
+
+  test('updates and clears the vehicle TMS serial number with the editable profile', async () => {
+    let serialNumber: string | null = 'TMS-OLD';
+    let telematicsUpsertInput: { create: { installedAt: Date }; update: { serialNumber: string } } | undefined;
+    const transaction = {
+      dsvVehicleProfile: {
+        findFirst: vi.fn(() => Promise.resolve({ vehicleId })),
+        update: vi.fn(() => Promise.resolve({ vehicleId })),
+      },
+      dsvVehicleTelematicsDevice: {
+        deleteMany: vi.fn(() => {
+          serialNumber = null;
+          return Promise.resolve({ count: 1 });
+        }),
+        upsert: vi.fn((input: { create: { installedAt: Date }; update: { serialNumber: string } }) => {
+          telematicsUpsertInput = input;
+          serialNumber = input.update.serialNumber;
+          return Promise.resolve({ id: 'device-id' });
+        }),
+      },
+      vehicle: {
+        findUniqueOrThrow: vi.fn(() => Promise.resolve({
+          dsvProfile: { note: '운영 메모', typeLabel: '냉장탑차' },
+          dsvTelematicsDevice: serialNumber === null ? null : { serialNumber },
+          id: vehicleId,
+          licensePlate: '21사 6101',
+        })),
+        update: vi.fn(() => Promise.resolve({ id: vehicleId })),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn((operation: (client: typeof transaction) => unknown) => operation(transaction)),
+      shop: { findUnique: vi.fn(() => Promise.resolve({ id: shopId })) },
+    };
+    const service = new PrismaDsvResourceService(prisma as never);
+
+    await expect(service.updateVehicle({
+      note: '운영 메모',
+      plate: '21사 6101',
+      shopDomain: 'tomatonofood.com',
+      telematicsSerialNumber: 'TMS-NEW',
+      type: '냉장탑차',
+      vehicleId,
+    })).resolves.toMatchObject({ telematicsSerialNumber: 'TMS-NEW' });
+    expect(telematicsUpsertInput?.create.installedAt).toBeInstanceOf(Date);
+    expect(transaction.dsvVehicleTelematicsDevice.upsert).toHaveBeenCalledWith({
+      create: {
+        capabilities: [],
+        installedAt: telematicsUpsertInput?.create.installedAt,
+        serialNumber: 'TMS-NEW',
+        shopId,
+        vehicleId,
+      },
+      update: { serialNumber: 'TMS-NEW' },
+      where: { vehicleId_shopId: { shopId, vehicleId } },
+    });
+
+    await expect(service.updateVehicle({
+      note: '운영 메모',
+      plate: '21사 6101',
+      shopDomain: 'tomatonofood.com',
+      telematicsSerialNumber: '',
+      type: '냉장탑차',
+      vehicleId,
+    })).resolves.not.toHaveProperty('telematicsSerialNumber');
+    expect(transaction.dsvVehicleTelematicsDevice.deleteMany).toHaveBeenCalledWith({ where: { shopId, vehicleId } });
   });
 
   test('revokes older signup links and stores only a hash for the exact DSV driver', async () => {

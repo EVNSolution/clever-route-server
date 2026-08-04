@@ -1418,7 +1418,7 @@ describe('DSV control routes', () => {
         shopDomain: 'tomatonofood.com',
       });
 
-      const vehiclePayload = { note: '군포복합물류센터', plate: '21사 6101', type: '냉장탑차' };
+      const vehiclePayload = { note: '군포복합물류센터', plate: '21사 6101', telematicsSerialNumber: 'TMS-6101', type: '냉장탑차' };
       const createdVehicle = await app.inject({ headers, method: 'POST', payload: vehiclePayload, url: '/api/dsv/vehicles' });
       expect(createdVehicle.statusCode).toBe(201);
       expect(resourceService.createVehicle).toHaveBeenCalledWith({ ...vehiclePayload, shopDomain: 'tomatonofood.com' });
@@ -1436,6 +1436,53 @@ describe('DSV control routes', () => {
         shopDomain: 'tomatonofood.com',
         vehicleId: '77777777-7777-4777-8777-777777777777',
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('accepts age zero as an unknown-age driver sentinel', async () => {
+    const { app, resourceService } = await createHarness();
+    try {
+      const login = await loginToDsv(app);
+      const headers = { cookie: login.cookie, 'x-csrf-token': login.csrfToken };
+      const driverPayload = {
+        age: 0,
+        career: '미입력',
+        gender: '미입력',
+        name: '신규 배송원',
+        score: '미평가',
+        traits: [],
+        zone: '미배정',
+      };
+
+      const createdDriver = await app.inject({ headers, method: 'POST', payload: driverPayload, url: '/api/dsv/drivers' });
+
+      expect(createdDriver.statusCode).toBe(201);
+      expect(resourceService.createDriver).toHaveBeenCalledWith({ ...driverPayload, shopDomain: 'tomatonofood.com' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rejects nonzero underage driver ages', async () => {
+    const { app, resourceService } = await createHarness();
+    try {
+      const login = await loginToDsv(app);
+      const headers = { cookie: login.cookie, 'x-csrf-token': login.csrfToken };
+      const response = await app.inject({
+        headers,
+        method: 'POST',
+        payload: { age: 17, career: '미입력', gender: '미입력', name: '신규 배송원', score: '미평가', traits: [], zone: '미배정' },
+        url: '/api/dsv/drivers',
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        data: null,
+        error: { code: 'BAD_REQUEST' },
+      });
+      expect(resourceService.createDriver).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

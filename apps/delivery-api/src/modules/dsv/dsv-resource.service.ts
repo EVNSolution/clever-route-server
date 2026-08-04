@@ -34,6 +34,7 @@ export type DsvDriverView = {
 export type DsvVehicleInput = {
   note: string;
   plate: string;
+  telematicsSerialNumber?: string;
   type: string;
 };
 
@@ -78,13 +79,14 @@ export class DsvResourceNotFoundError extends Error {
 }
 
 export class DsvResourceConflictError extends Error {
-  constructor(readonly code: 'ASSIGNMENT_EXISTS' | 'DRIVER_ASSIGNMENT_EXISTS' | 'DRIVER_NAME_EXISTS' | 'VEHICLE_ASSIGNMENT_EXISTS' | 'VEHICLE_PLATE_EXISTS') {
+  constructor(readonly code: 'ASSIGNMENT_EXISTS' | 'DRIVER_ASSIGNMENT_EXISTS' | 'DRIVER_NAME_EXISTS' | 'VEHICLE_ASSIGNMENT_EXISTS' | 'VEHICLE_PLATE_EXISTS' | 'VEHICLE_TELEMATICS_SERIAL_EXISTS') {
     super({
       ASSIGNMENT_EXISTS: '이미 기본 배정된 차량 또는 배송원입니다.',
       DRIVER_ASSIGNMENT_EXISTS: '이미 기본 배정된 배송원입니다.',
       DRIVER_NAME_EXISTS: '같은 이름의 배송원이 이미 등록되어 있습니다.',
       VEHICLE_ASSIGNMENT_EXISTS: '이미 기본 배정된 차량입니다.',
       VEHICLE_PLATE_EXISTS: '같은 차량 번호가 이미 등록되어 있습니다.',
+      VEHICLE_TELEMATICS_SERIAL_EXISTS: '같은 TMS 일련번호가 이미 등록되어 있습니다.',
     }[code]);
     this.name = 'DsvResourceConflictError';
   }
@@ -103,7 +105,7 @@ export class PrismaDsvResourceService implements DsvResourceService {
         where: { dsvProfile: { isNot: null }, shopId: shop.id },
       }),
       this.prisma.vehicle.findMany({
-        include: { dsvProfile: true },
+        include: { dsvProfile: true, dsvTelematicsDevice: true },
         orderBy: [{ licensePlate: 'asc' }],
         where: { dsvProfile: { isNot: null }, shopId: shop.id },
       }),
@@ -115,7 +117,7 @@ export class PrismaDsvResourceService implements DsvResourceService {
     return {
       assignments: assignments.map(assignmentView),
       drivers: drivers.flatMap((driver) => driver.dsvProfile === null ? [] : [driverView(driver, driver.dsvProfile)]),
-      vehicles: vehicles.flatMap((vehicle) => vehicle.dsvProfile === null ? [] : [vehicleView(vehicle, vehicle.dsvProfile)]),
+      vehicles: vehicles.flatMap((vehicle) => vehicle.dsvProfile === null ? [] : [vehicleView(vehicle, vehicle.dsvProfile, vehicle.dsvTelematicsDevice)]),
     };
   }
 
@@ -226,17 +228,22 @@ export class PrismaDsvResourceService implements DsvResourceService {
       const vehicle = await this.prisma.vehicle.create({
         data: {
           dsvProfile: { create: { note: input.note, typeLabel: input.type } },
+          ...(input.telematicsSerialNumber === undefined || input.telematicsSerialNumber === '' ? {} : {
+            dsvTelematicsDevice: {
+              create: { capabilities: [], installedAt: new Date(), serialNumber: input.telematicsSerialNumber },
+            },
+          }),
           label: input.type,
           licensePlate: input.plate,
           shopId: shop.id,
           status: 'ACTIVE',
           vehicleType: vehicleType(input.type),
         },
-        include: { dsvProfile: true },
+        include: { dsvProfile: true, dsvTelematicsDevice: true },
       });
-      return vehicleView(vehicle, vehicle.dsvProfile!);
+      return vehicleView(vehicle, vehicle.dsvProfile!, vehicle.dsvTelematicsDevice);
     } catch (error) {
-      if (isUniqueConflict(error)) throw new DsvResourceConflictError('VEHICLE_PLATE_EXISTS');
+      if (isUniqueConflict(error)) throw new DsvResourceConflictError(vehicleConflictCode(error));
       throw error;
     }
   }
@@ -255,13 +262,30 @@ export class PrismaDsvResourceService implements DsvResourceService {
           data: { note: input.note, typeLabel: input.type },
           where: { vehicleId: input.vehicleId },
         });
-        return tx.vehicle.findUniqueOrThrow({ include: { dsvProfile: true }, where: { id: input.vehicleId } });
+        if (input.telematicsSerialNumber !== undefined) {
+          if (input.telematicsSerialNumber === '') {
+            await tx.dsvVehicleTelematicsDevice.deleteMany({ where: { shopId: shop.id, vehicleId: input.vehicleId } });
+          } else {
+            await tx.dsvVehicleTelematicsDevice.upsert({
+              create: {
+                capabilities: [],
+                installedAt: new Date(),
+                serialNumber: input.telematicsSerialNumber,
+                shopId: shop.id,
+                vehicleId: input.vehicleId,
+              },
+              update: { serialNumber: input.telematicsSerialNumber },
+              where: { vehicleId_shopId: { shopId: shop.id, vehicleId: input.vehicleId } },
+            });
+          }
+        }
+        return tx.vehicle.findUniqueOrThrow({ include: { dsvProfile: true, dsvTelematicsDevice: true }, where: { id: input.vehicleId } });
       });
-      return vehicleView(vehicle, vehicle.dsvProfile!);
+      return vehicleView(vehicle, vehicle.dsvProfile!, vehicle.dsvTelematicsDevice);
     } catch (error) {
       if (error instanceof DsvResourceNotFoundError) throw error;
       if (isNotFound(error)) throw new DsvResourceNotFoundError('vehicle');
-      if (isUniqueConflict(error)) throw new DsvResourceConflictError('VEHICLE_PLATE_EXISTS');
+      if (isUniqueConflict(error)) throw new DsvResourceConflictError(vehicleConflictCode(error));
       throw error;
     }
   }
@@ -367,8 +391,15 @@ function normalizedPhone(phone: string | undefined): string | null {
 function vehicleView(
   vehicle: { id: string; licensePlate: string | null },
   profile: { note: string; typeLabel: string },
+  telematicsDevice?: { serialNumber: string } | null,
 ): DsvVehicleView {
-  return { id: vehicle.id, note: profile.note, plate: vehicle.licensePlate ?? '', type: profile.typeLabel };
+  return {
+    id: vehicle.id,
+    note: profile.note,
+    plate: vehicle.licensePlate ?? '',
+    ...(telematicsDevice === undefined || telematicsDevice === null ? {} : { telematicsSerialNumber: telematicsDevice.serialNumber }),
+    type: profile.typeLabel,
+  };
 }
 
 function assignmentView(assignment: { driverId: string; id: string; vehicleId: string }): DsvVehicleDriverAssignmentView {
@@ -387,6 +418,12 @@ function vehicleType(type: string): 'BIKE' | 'CAR' | 'OTHER' | 'SCOOTER' | 'TRUC
 
 function isUniqueConflict(error: unknown): error is Prisma.PrismaClientKnownRequestError {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+}
+
+function vehicleConflictCode(error: Prisma.PrismaClientKnownRequestError): 'VEHICLE_PLATE_EXISTS' | 'VEHICLE_TELEMATICS_SERIAL_EXISTS' {
+  const target = error.meta?.target;
+  const targetText = Array.isArray(target) ? target.join(' ') : typeof target === 'string' ? target : '';
+  return /serialNumber/u.test(targetText) ? 'VEHICLE_TELEMATICS_SERIAL_EXISTS' : 'VEHICLE_PLATE_EXISTS';
 }
 
 function isNotFound(error: unknown): boolean {
