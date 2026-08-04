@@ -392,6 +392,7 @@ model Shop {
   dsvVehicleProfiles                DsvVehicleProfile[]
   dsvVehicleDriverAssignments       DsvVehicleDriverAssignment[]
   dsvVehicleTelematicsDevices       DsvVehicleTelematicsDevice[]
+  dsvDriverAccountSignupInvites     DsvDriverAccountSignupInvite[]
   customers                         Customer[]
   customerAccounts                  CustomerAccount[]
   dsvCommandReceipts                DsvCommandReceipt[]
@@ -1365,8 +1366,10 @@ model Driver {
 
 model DsvDriverAccountSignupInvite {
   id         String    @id @default(uuid()) @db.Uuid
-  driverId   String    @db.Uuid
-  driver     Driver    @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  shopId     String    @db.Uuid
+  shop       Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  driverId   String?   @db.Uuid
+  driver     Driver?   @relation(fields: [driverId], references: [id], onDelete: Cascade)
   tokenHash  String    @unique @db.Text
   expiresAt  DateTime  @db.Timestamptz(6)
   consumedAt DateTime? @db.Timestamptz(6)
@@ -1374,6 +1377,7 @@ model DsvDriverAccountSignupInvite {
   createdAt  DateTime  @default(now()) @db.Timestamptz(6)
 
   @@index([driverId, expiresAt])
+  @@index([shopId, expiresAt])
   @@map("dsv_driver_account_signup_invites")
 }
 
@@ -1916,11 +1920,11 @@ model DsvDriverProfile {
   shop                           Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
   lookupName                     String   @db.Text
   residentNumberFrontFingerprint String?  @db.Text
-  age                            Int
-  gender                         String   @db.Text
-  career                         String   @db.Text
-  zone                           String   @db.Text
-  score                          String   @db.Text
+  age                            Int?
+  gender                         String?  @db.Text
+  career                         String?  @db.Text
+  zone                           String?  @db.Text
+  score                          String?  @db.Text
   traits                         String[] @default([])
   createdAt                      DateTime @default(now()) @db.Timestamptz(6)
   updatedAt                      DateTime @updatedAt @db.Timestamptz(6)

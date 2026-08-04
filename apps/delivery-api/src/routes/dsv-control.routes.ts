@@ -421,6 +421,16 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       }
     }, ['dsv:resources:write']));
 
+  app.post(`${apiRoot}/drivers/signup-invite`, async (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {
+      try {
+        const invite = await dependencies.resourceService.issueDriverSignupInvite({ shopDomain });
+        return sendData(reply, { invite }, 201);
+      } catch (error) {
+        return sendResourceError(reply, error);
+      }
+    }, ['dsv:resources:write']));
+
   app.post(`${apiRoot}/drivers/:driverId/signup-invite`, async (request, reply) =>
     withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {
       const driverId = readUuidParam(request, 'driverId');

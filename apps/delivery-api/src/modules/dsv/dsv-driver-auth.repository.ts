@@ -1,6 +1,7 @@
 import {
   createHash,
   randomBytes,
+  randomUUID,
   scrypt,
   timingSafeEqual,
 } from 'node:crypto';
@@ -47,6 +48,7 @@ export type DsvDriverSignupInviteView = {
   driverName: string;
   expiresAt: string;
   phoneLast4: string;
+  shopDomain: string;
 };
 
 export type DsvDriverLoginInput = {
@@ -141,6 +143,7 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
         const invite = await transaction.dsvDriverAccountSignupInvite.findUnique({
           include: {
             driver: { include: { dsvProfile: true, shop: { select: { shopDomain: true } } } },
+            shop: { select: { shopDomain: true } },
           },
           where: { tokenHash: hashDsvDriverSignupToken(input.signupInviteToken) },
         });
@@ -149,11 +152,13 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
           || invite.consumedAt !== null
           || invite.revokedAt !== null
           || invite.expiresAt.getTime() <= now.getTime()
-          || invite.driver.accountId !== null
-          || invite.driver.dsvProfile === null
-          || invite.driver.status !== 'ACTIVE'
-          || invite.driver.displayName.trim() !== name
-          || normalizeDsvDriverPhone(invite.driver.phone ?? '') !== phone
+          || (invite.driver !== null && (
+            invite.driver.accountId !== null
+            || invite.driver.dsvProfile === null
+            || invite.driver.status !== 'ACTIVE'
+            || invite.driver.displayName.trim() !== name
+            || normalizeDsvDriverPhone(invite.driver.phone ?? '') !== phone
+          ))
         ) {
           throw new DsvDriverSignupInviteError();
         }
@@ -167,20 +172,45 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
             residentNumberFrontFingerprint,
           },
         });
-        const linked = await transaction.driver.updateMany({
-          data: {
-            accountId: account.id,
-            authSubject: `driver-${invite.driver.id}`,
-            inviteCode: null,
-            inviteCodeExpiresAt: null,
-          },
-          where: { accountId: null, id: invite.driver.id, status: 'ACTIVE' },
-        });
+        let linkedDriver: LinkedDriverRecord;
+        if (invite.driver === null) {
+          const driverId = randomUUID();
+          linkedDriver = await transaction.driver.create({
+            data: {
+              accountId: account.id,
+              authSubject: `driver-${driverId}`,
+              displayName: name,
+              dsvProfile: {
+                create: {
+                  lookupName: name,
+                  residentNumberFrontFingerprint,
+                },
+              },
+              id: driverId,
+              phone,
+              shopId: invite.shopId,
+              status: 'ACTIVE',
+            },
+            include: { shop: { select: { shopDomain: true } } },
+          });
+        } else {
+          const linked = await transaction.driver.updateMany({
+            data: {
+              accountId: account.id,
+              authSubject: `driver-${invite.driver.id}`,
+              inviteCode: null,
+              inviteCodeExpiresAt: null,
+            },
+            where: { accountId: null, id: invite.driver.id, status: 'ACTIVE' },
+          });
+          if (linked.count !== 1) throw new DsvDriverSignupInviteError();
+          linkedDriver = invite.driver;
+        }
         const consumed = await transaction.dsvDriverAccountSignupInvite.updateMany({
           data: { consumedAt: now },
-          where: { consumedAt: null, id: invite.id, revokedAt: null },
+          where: { consumedAt: null, expiresAt: { gt: now }, id: invite.id, revokedAt: null },
         });
-        if (linked.count !== 1 || consumed.count !== 1) {
+        if (consumed.count !== 1) {
           throw new DsvDriverSignupInviteError();
         }
         await transaction.driverAccountSession.create({
@@ -191,7 +221,7 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
           },
         });
         return {
-          account: accountView(account, [invite.driver]),
+          account: accountView(account, [linkedDriver]),
           accountId: account.id,
           expiresAt,
           refreshToken,
@@ -207,7 +237,10 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
 
   async validateSignupInvite(input: { token: string }): Promise<DsvDriverSignupInviteView> {
     const invite = await this.prisma.dsvDriverAccountSignupInvite.findUnique({
-      include: { driver: { include: { dsvProfile: true } } },
+      include: {
+        driver: { include: { dsvProfile: true } },
+        shop: { select: { shopDomain: true } },
+      },
       where: { tokenHash: hashDsvDriverSignupToken(input.token) },
     });
     const now = Date.now();
@@ -216,18 +249,21 @@ export class PrismaDsvDriverAuthRepository implements DsvDriverAuthRepository {
       || invite.consumedAt !== null
       || invite.revokedAt !== null
       || invite.expiresAt.getTime() <= now
-      || invite.driver.accountId !== null
-      || invite.driver.dsvProfile === null
-      || invite.driver.status !== 'ACTIVE'
+      || (invite.driver !== null && (
+        invite.driver.accountId !== null
+        || invite.driver.dsvProfile === null
+        || invite.driver.status !== 'ACTIVE'
+      ))
     ) {
       throw new DsvDriverSignupInviteError();
     }
-    const phone = normalizeDsvDriverPhone(invite.driver.phone ?? '');
-    if (phone.length < 4) throw new DsvDriverSignupInviteError();
+    const phone = normalizeDsvDriverPhone(invite.driver?.phone ?? '');
+    if (invite.driver !== null && phone.length < 4) throw new DsvDriverSignupInviteError();
     return {
-      driverName: invite.driver.displayName,
+      driverName: invite.driver?.displayName ?? '',
       expiresAt: invite.expiresAt.toISOString(),
-      phoneLast4: phone.slice(-4),
+      phoneLast4: invite.driver === null ? '' : phone.slice(-4),
+      shopDomain: invite.shop.shopDomain,
     };
   }
 

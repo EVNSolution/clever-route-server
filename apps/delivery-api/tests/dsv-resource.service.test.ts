@@ -105,6 +105,53 @@ describe('PrismaDsvResourceService', () => {
     });
   });
 
+  test('issues a shop signup link without requiring an existing driver', async () => {
+    const transaction = {
+      dsvDriverAccountSignupInvite: {
+        create: vi.fn((input: unknown) => {
+          void input;
+          return Promise.resolve({ id: 'invite-id' });
+        }),
+        updateMany: vi.fn((input: unknown) => {
+          void input;
+          return Promise.resolve({ count: 1 });
+        }),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn((operation: (client: typeof transaction) => unknown) => operation(transaction)),
+      shop: {
+        findUnique: vi.fn(() => Promise.resolve({ id: shopId })),
+      },
+    };
+    const service = new PrismaDsvResourceService(prisma as never);
+
+    const result = await service.issueDriverSignupInvite({
+      shopDomain: 'tomatonofood.com',
+    });
+
+    expect(result.signupUrl).toMatch(/^clever-driver:\/\/signup\?token=[A-Za-z0-9_-]{43}$/u);
+    const revokeInput = transaction.dsvDriverAccountSignupInvite.updateMany.mock.calls[0]?.[0] as {
+      data: { revokedAt: Date };
+    };
+    const createInput = transaction.dsvDriverAccountSignupInvite.create.mock.calls[0]?.[0] as {
+      data: { expiresAt: Date; shopId: string; tokenHash: string };
+    };
+    expect(transaction.dsvDriverAccountSignupInvite.updateMany).toHaveBeenCalledWith({
+      data: { revokedAt: revokeInput.data.revokedAt },
+      where: { consumedAt: null, driverId: null, revokedAt: null, shopId },
+    });
+    expect(transaction.dsvDriverAccountSignupInvite.create).toHaveBeenCalledWith({
+      data: {
+        expiresAt: createInput.data.expiresAt,
+        shopId,
+        tokenHash: createInput.data.tokenHash,
+      },
+    });
+    expect(createInput.data.tokenHash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(result.signupUrl).not.toContain(createInput.data.tokenHash);
+  });
+
   test('revokes older signup links and stores only a hash for the exact DSV driver', async () => {
     const transaction = {
       driver: {
@@ -149,7 +196,7 @@ describe('PrismaDsvResourceService', () => {
       data: { revokedAt: Date };
     };
     const createInput = transaction.dsvDriverAccountSignupInvite.create.mock.calls[0]?.[0] as {
-      data: { driverId: string; expiresAt: Date; tokenHash: string };
+      data: { driverId: string; expiresAt: Date; shopId: string; tokenHash: string };
     };
     expect(revokeInput.data.revokedAt).toBeInstanceOf(Date);
     expect(createInput.data.expiresAt).toBeInstanceOf(Date);
@@ -162,6 +209,7 @@ describe('PrismaDsvResourceService', () => {
       data: {
         driverId,
         expiresAt: createInput.data.expiresAt,
+        shopId,
         tokenHash: createInput.data.tokenHash,
       },
     });
