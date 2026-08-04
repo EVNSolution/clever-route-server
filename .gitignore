@@ -83,3 +83,6 @@ worktrees/
 Thumbs.db
 .idea/
 .vscode/
+# Secret-bearing vendor specifications are local evidence, never repository content.
+docs/private/
+docs/**/*인터페이스사양서*.pdf

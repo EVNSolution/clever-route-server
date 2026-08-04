@@ -97,6 +97,19 @@ The EC2 host does not build. A real deploy does this in order:
 14. Verifies public `/healthz`.
 15. Backs up `.deploy/current-image.env`, promotes the candidate env, and appends deploy history including `staticStage`.
 
+### UVIS server-only runtime secret
+
+UVIS vehicle GPS and temperature collection is disabled unless `UVIS_ENABLED=true` is supplied through an encrypted SSM parameter. Never place the vendor company key, access key, endpoint URLs, or vendor specification in Git, GitHub Actions secrets, image build arguments, compose inline environment, or frontend variables.
+
+1. Store dotenv lines for the allowlisted `UVIS_*` keys in one encrypted SSM Parameter Store value.
+2. Register only that parameter name as the repository variable `ROUTE_OPS_UVIS_ENV_PARAM`.
+3. Keep `UVIS_ENABLED=false` until the migration is applied, the two registered vehicle mappings are confirmed, and change approval is complete.
+4. Use `UVIS_SHOP_DOMAIN` and `UVIS_APP_ID` to scope polling to one tenant. Do not infer a tenant from the first database row.
+5. Keep the location and temperature poll intervals explicit. Current defaults are 60 seconds and 300 seconds.
+6. Verify dry-run and secret scanning before a real deploy. Deployment evidence may contain key names and the SSM parameter name, but never decrypted values.
+
+The host deploy script only accepts these server keys: `UVIS_ENABLED`, `UVIS_APP_ID`, `UVIS_SHOP_DOMAIN`, `UVIS_ACCESS_KEY_URL`, `UVIS_TELEMETRY_URL`, `UVIS_ALLOWED_OUTBOUND_URLS`, `UVIS_COMPANY_SERIAL_KEY`, `UVIS_LOCATION_GUBUN`, `UVIS_TEMPERATURE_GUBUN`, `UVIS_TIMEOUT_MS`, `UVIS_LOCATION_POLL_INTERVAL_MS`, and `UVIS_TEMPERATURE_POLL_INTERVAL_MS`.
+
 ## Commands
 
 Local preflight only:

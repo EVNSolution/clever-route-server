@@ -53,6 +53,7 @@ const manualCustomerEmailMigrationName = '20260803110000_add_manual_customer_ema
 const timeConstraintAcknowledgedDriverEventMigrationName = '20260803120000_add_time_constraint_acknowledged_driver_event';
 const dsvDriverSignupInviteMigrationName = '20260804120000_add_dsv_driver_account_signup_invites';
 const shopScopedDriverSignupInviteMigrationName = '20260804150000_scope_driver_signup_invites_to_shop';
+const uvisVehicleTelematicsMigrationName = '20260804170000_add_uvis_vehicle_telematics';
 const assignedDriverProfileBackfillMigrationName = '20260729170000_backfill_assigned_dsv_driver_profiles';
 const dispatchGroupingBackfillMigrationName = '20260730170000_backfill_dsv_dispatch_groupings';
 const accountScopedPushTokenMigrationName = '20260731140000_account_scope_driver_push_tokens';
@@ -137,7 +138,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(66);
+    expect(migrations).toHaveLength(67);
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -226,6 +227,7 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations).toContain(timeConstraintAcknowledgedDriverEventMigrationName);
     expect(migrations).toContain(dsvDriverSignupInviteMigrationName);
     expect(migrations).toContain(shopScopedDriverSignupInviteMigrationName);
+    expect(migrations).toContain(uvisVehicleTelematicsMigrationName);
     expect(migrations).toContain(assignedDriverProfileBackfillMigrationName);
     expect(migrations).toContain(dispatchGroupingBackfillMigrationName);
     expect(migrations).toContain(accountScopedPushTokenMigrationName);
@@ -291,7 +293,10 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf(dsvDriverSignupInviteMigrationName)).toBeLessThan(
       migrations.indexOf(shopScopedDriverSignupInviteMigrationName)
     );
-    expect(migrations.at(-1)).toBe(shopScopedDriverSignupInviteMigrationName);
+    expect(migrations.indexOf(shopScopedDriverSignupInviteMigrationName)).toBeLessThan(
+      migrations.indexOf(uvisVehicleTelematicsMigrationName)
+    );
+    expect(migrations.at(-1)).toBe(uvisVehicleTelematicsMigrationName);
   });
 
   test('backfills shop ownership before allowing driverless signup invites', async () => {

@@ -163,7 +163,43 @@ type DsvV1ReadPrismaClient = Pick<
   | 'order'
   | 'routePlan'
   | 'vehicle'
->;
+> & Partial<Pick<PrismaClient, 'uvisVehicleTelemetryCurrent'>>;
+
+type DsvV1VehicleGpsTelemetry = {
+  ignitionOn: boolean | null;
+  latitude: Prisma.Decimal | number | string | null;
+  longitude: Prisma.Decimal | number | string | null;
+  observedAt: Date;
+  speedKph: Prisma.Decimal | number | string | null;
+  distanceTodayKm: Prisma.Decimal | number | string | null;
+  staleAfter: Date;
+  vehicleId: string;
+};
+
+type DsvV1VehicleTemperatureTelemetry = {
+  observedAt: Date;
+  staleAfter: Date;
+  temperatureA: Prisma.Decimal | number | string | null;
+  temperatureB: Prisma.Decimal | number | string | null;
+  vehicleId: string;
+};
+
+type DsvV1VehicleTelemetryRead = Pick<DsvV1VehicleListItemRow,
+  | 'distanceTodayKm'
+  | 'ignitionOn'
+  | 'speedKph'
+  | 'temperatureA'
+  | 'temperatureB'
+  | 'temperatureObservedAt'
+  | 'temperatureStale'
+  | 'vehicleLatitude'
+  | 'vehicleLongitude'
+  | 'vehiclePositionObservedAt'
+  | 'vehiclePositionStale'
+> & {
+  gps?: DsvV1VehicleGpsTelemetry;
+  temperature?: DsvV1VehicleTemperatureTelemetry;
+};
 
 type CursorPayload = {
   customerId?: string;
@@ -298,7 +334,10 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         },
       },
     });
-    const items = rows.slice(0, limit).map(toCustomerDeliveryInquiryRow);
+    const items = await this.enrichCustomerVehiclePositions(
+      principal.shopId,
+      rows.slice(0, limit).map(toCustomerDeliveryInquiryRow),
+    );
     return {
       ...(items.length === 0 ? { emptyReason: 'NO_DELIVERIES' as const } : {}),
       items,
@@ -336,7 +375,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         },
       },
     });
-    return rows.flatMap(toCustomerRouteScopeRow);
+    return this.enrichCustomerRouteScopePositions(principal.shopId, rows.flatMap(toCustomerRouteScopeRow));
   }
 
   async listCustomerRouteScopeForAdmin(
@@ -526,24 +565,31 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         principal.shopId,
         rows.map((row) => row.id),
       );
-      return rows.map((row) => ({
-        displayName: row.label,
-        driverAssignments: assignmentsByVehicleId.get(row.id) ?? [],
-        ...(row.dsvProfile ? {
-          note: row.dsvProfile.note,
-          type: row.dsvProfile.typeLabel,
-        } : {}),
-        status: row.status,
-        ...(row.dsvTelematicsDevice?.serialNumber === undefined
-          ? {}
-          : {
-              telematicsCapabilities: row.dsvTelematicsDevice.capabilities,
-              telematicsSerialNumber: row.dsvTelematicsDevice.serialNumber,
-            }),
-        vehicleId: row.id,
-        vehiclePlate: row.licensePlate,
-        vehicleType: row.dsvProfile?.typeLabel || row.vehicleType,
-      }));
+      const telemetryByVehicleId = await this.listVehicleTelemetry(principal.shopId, rows.map((row) => row.id));
+      return rows.map((row) => {
+        const telemetry = { ...telemetryByVehicleId.get(row.id) };
+        delete telemetry.gps;
+        delete telemetry.temperature;
+        return {
+          displayName: row.label,
+          driverAssignments: assignmentsByVehicleId.get(row.id) ?? [],
+          ...telemetry,
+          ...(row.dsvProfile ? {
+            note: row.dsvProfile.note,
+            type: row.dsvProfile.typeLabel,
+          } : {}),
+          status: row.status,
+          ...(row.dsvTelematicsDevice?.serialNumber === undefined
+            ? {}
+            : {
+                telematicsCapabilities: row.dsvTelematicsDevice.capabilities,
+                telematicsSerialNumber: row.dsvTelematicsDevice.serialNumber,
+              }),
+          vehicleId: row.id,
+          vehiclePlate: row.licensePlate,
+          vehicleType: row.dsvProfile?.typeLabel || row.vehicleType,
+        };
+      });
     });
   }
 
@@ -719,6 +765,132 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       const assignments = byVehicleId.get(row.vehicleId) ?? [];
       assignments.push({ assignmentId: row.id, driverId: row.driverId });
       byVehicleId.set(row.vehicleId, assignments);
+    }
+    return byVehicleId;
+  }
+
+  private async enrichCustomerVehiclePositions(
+    shopId: string,
+    items: DsvV1CustomerDeliveryInquiryRow[],
+  ): Promise<DsvV1CustomerDeliveryInquiryRow[]> {
+    const gpsByVehicleId = await this.listFreshVehicleGpsTelemetry(
+      shopId,
+      items.map((item) => item.vehicleId ?? null).filter(isNonEmpty),
+    );
+    if (gpsByVehicleId.size === 0) return items;
+    return items.map((item) => {
+      const gps = item.vehicleId === undefined || item.vehicleId === null ? undefined : gpsByVehicleId.get(item.vehicleId);
+      const latitude = decimalToNumber(gps?.latitude ?? null);
+      const longitude = decimalToNumber(gps?.longitude ?? null);
+      if (latitude === null || longitude === null) return item;
+      return { ...item, vehicleLatitude: latitude, vehicleLongitude: longitude };
+    });
+  }
+
+  private async enrichCustomerRouteScopePositions(
+    shopId: string,
+    rows: DsvV1CustomerRouteScopeRow[],
+  ): Promise<DsvV1CustomerRouteScopeRow[]> {
+    const gpsByVehicleId = await this.listFreshVehicleGpsTelemetry(shopId, rows.map((row) => row.vehicleId));
+    if (gpsByVehicleId.size === 0) return rows;
+    return rows.map((row) => {
+      const gps = gpsByVehicleId.get(row.vehicleId);
+      const latitude = decimalToNumber(gps?.latitude ?? null);
+      const longitude = decimalToNumber(gps?.longitude ?? null);
+      if (latitude === null || longitude === null) return row;
+      return { ...row, vehicleLatitude: latitude, vehicleLongitude: longitude };
+    });
+  }
+
+  private async listFreshVehicleGpsTelemetry(
+    shopId: string,
+    vehicleIds: readonly string[],
+  ): Promise<Map<string, DsvV1VehicleGpsTelemetry>> {
+    const current = this.prisma.uvisVehicleTelemetryCurrent;
+    const uniqueVehicleIds = [...new Set(vehicleIds)];
+    if (current === undefined || uniqueVehicleIds.length === 0) return new Map();
+    const now = this.clock();
+    const rows = await current.findMany({
+      orderBy: [{ observedAt: 'desc' }, { id: 'desc' }],
+      select: {
+        distanceTodayKm: true,
+        ignitionOn: true,
+        latitude: true,
+        longitude: true,
+        observedAt: true,
+        speedKph: true,
+        staleAfter: true,
+        vehicleId: true,
+      },
+      where: {
+        shopId,
+        sourceKind: 'VEHICLE_GPS',
+        staleAfter: { gt: now },
+        vehicleId: { in: uniqueVehicleIds },
+      },
+    });
+    const gpsByVehicleId = new Map<string, DsvV1VehicleGpsTelemetry>();
+    for (const row of rows) {
+      if (gpsByVehicleId.has(row.vehicleId) || row.staleAfter.getTime() <= now.getTime()) {
+        continue;
+      }
+      gpsByVehicleId.set(row.vehicleId, row);
+    }
+    return gpsByVehicleId;
+  }
+
+  private async listVehicleTelemetry(
+    shopId: string,
+    vehicleIds: readonly string[],
+  ): Promise<Map<string, DsvV1VehicleTelemetryRead>> {
+    const current = this.prisma.uvisVehicleTelemetryCurrent;
+    const uniqueVehicleIds = [...new Set(vehicleIds)];
+    if (current === undefined || uniqueVehicleIds.length === 0) return new Map();
+    const rows = await current.findMany({
+      orderBy: [{ observedAt: 'desc' }, { id: 'desc' }],
+      select: {
+        distanceTodayKm: true,
+        ignitionOn: true,
+        latitude: true,
+        longitude: true,
+        observedAt: true,
+        sourceKind: true,
+        speedKph: true,
+        staleAfter: true,
+        temperatureA: true,
+        temperatureB: true,
+        vehicleId: true,
+      },
+      where: {
+        shopId,
+        sourceKind: { in: ['VEHICLE_GPS', 'TEMPERATURE_RECORDER'] },
+        vehicleId: { in: uniqueVehicleIds },
+      },
+    });
+    const byVehicleId = new Map<string, DsvV1VehicleTelemetryRead>();
+    const now = this.clock();
+    for (const row of rows) {
+      const telemetry = byVehicleId.get(row.vehicleId) ?? {};
+      if (row.sourceKind === 'VEHICLE_GPS' && telemetry.gps === undefined) {
+        const gps: DsvV1VehicleGpsTelemetry = row;
+        telemetry.gps = gps;
+        telemetry.vehicleLatitude = decimalToNumber(gps.latitude);
+        telemetry.vehicleLongitude = decimalToNumber(gps.longitude);
+        telemetry.vehiclePositionObservedAt = gps.observedAt;
+        telemetry.vehiclePositionStale = gps.staleAfter.getTime() <= now.getTime();
+        telemetry.ignitionOn = gps.ignitionOn;
+        telemetry.speedKph = decimalToNumber(gps.speedKph);
+        telemetry.distanceTodayKm = decimalToNumber(gps.distanceTodayKm);
+      }
+      if (row.sourceKind === 'TEMPERATURE_RECORDER' && telemetry.temperature === undefined) {
+        const temperature: DsvV1VehicleTemperatureTelemetry = row;
+        telemetry.temperature = temperature;
+        telemetry.temperatureA = decimalToNumber(temperature.temperatureA);
+        telemetry.temperatureB = decimalToNumber(temperature.temperatureB);
+        telemetry.temperatureObservedAt = temperature.observedAt;
+        telemetry.temperatureStale = temperature.staleAfter.getTime() <= now.getTime();
+      }
+      byVehicleId.set(row.vehicleId, telemetry);
     }
     return byVehicleId;
   }

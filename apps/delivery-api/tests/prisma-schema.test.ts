@@ -98,12 +98,31 @@ const geocodingCacheMigrationPath = new URL(
   '../prisma/migrations/20260802090000_add_geocoding_cache/migration.sql',
   import.meta.url
 );
+const uvisTelemetryMigrationPath = new URL(
+  '../prisma/migrations/20260804170000_add_uvis_vehicle_telematics/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
 }
 
 describe('Prisma schema', () => {
+  test('enforces UVIS current last sample tenant device and source integrity', async () => {
+    const schema = await readSchema();
+    const migration = await readFile(uvisTelemetryMigrationPath, 'utf8');
+    const currentModel = /model UvisVehicleTelemetryCurrent \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+    const sampleModel = /model UvisVehicleTelemetrySample \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+
+    expect(currentModel).toContain('lastSampleId');
+    expect(currentModel).toContain('fields: [lastSampleId, shopId, deviceId, sourceKind]');
+    expect(currentModel).toContain('references: [id, shopId, deviceId, sourceKind]');
+    expect(sampleModel).toContain('@@unique([id, shopId, deviceId, sourceKind])');
+    expect(migration).toContain('CREATE UNIQUE INDEX "uvis_vehicle_telemetry_samples_id_shopId_deviceId_sourceKind_key"');
+    expect(migration).toContain('FOREIGN KEY ("lastSampleId", "shopId", "deviceId", "sourceKind")');
+    expect(migration).toContain('REFERENCES "uvis_vehicle_telemetry_samples"("id", "shopId", "deviceId", "sourceKind")');
+  });
+
   test('owns mobile Push installations by the global driver account', async () => {
     const schema = await readSchema();
     const migration = await readFile(accountScopedPushTokenMigrationPath, 'utf8');

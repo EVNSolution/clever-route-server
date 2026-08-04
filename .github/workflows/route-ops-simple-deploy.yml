@@ -347,6 +347,7 @@ jobs:
           DSV_RESTORE_REHEARSAL_SHA256: ${{ inputs.restore_rehearsal_sha256 }}
           DSV_PRODUCTION_BASELINE_APPROVED: ${{ inputs.approve_production_baseline && '1' || '' }}
           DSV_PRODUCTION_BASELINE_MANIFEST_SHA256: ${{ steps.migration.outputs.production_baseline_manifest_sha256 }}
+          ROUTE_OPS_UVIS_ENV_PARAM: ${{ vars.ROUTE_OPS_UVIS_ENV_PARAM }}
           AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
           DRY_RUN: ${{ inputs.dry_run }}
         run: |

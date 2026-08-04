@@ -156,6 +156,11 @@ enum VehicleStatus {
   MAINTENANCE
 }
 
+enum UvisTelemetrySourceKind {
+  VEHICLE_GPS
+  TEMPERATURE_RECORDER
+}
+
 enum DriverEventType {
   ROUTE_STARTED
   ROUTE_PAUSED
@@ -392,6 +397,9 @@ model Shop {
   dsvVehicleProfiles                DsvVehicleProfile[]
   dsvVehicleDriverAssignments       DsvVehicleDriverAssignment[]
   dsvVehicleTelematicsDevices       DsvVehicleTelematicsDevice[]
+  uvisVehicleTelemetryCurrents      UvisVehicleTelemetryCurrent[]
+  uvisVehicleTelemetrySamples       UvisVehicleTelemetrySample[]
+  uvisTelemetryPollState            UvisTelemetryPollState?
   dsvDriverAccountSignupInvites     DsvDriverAccountSignupInvite[]
   customers                         Customer[]
   customerAccounts                  CustomerAccount[]
@@ -1906,6 +1914,8 @@ model Vehicle {
   dsvProfile            DsvVehicleProfile?
   dsvDriverAssignments  DsvVehicleDriverAssignment[]
   dsvTelematicsDevice   DsvVehicleTelematicsDevice?
+  uvisTelemetryCurrents UvisVehicleTelemetryCurrent[]
+  uvisTelemetrySamples  UvisVehicleTelemetrySample[]
 
   @@unique([id, shopId])
   @@unique([shopId, licensePlate])
@@ -1978,12 +1988,102 @@ model DsvVehicleTelematicsDevice {
   installedAt  DateTime @db.Timestamptz(6)
   createdAt    DateTime @default(now()) @db.Timestamptz(6)
   updatedAt    DateTime @updatedAt @db.Timestamptz(6)
+  uvisCurrents UvisVehicleTelemetryCurrent[]
+  uvisSamples  UvisVehicleTelemetrySample[]
 
   @@unique([id, shopId])
   @@unique([vehicleId, shopId])
   @@unique([shopId, serialNumber])
   @@index([shopId, installedAt])
   @@map("dsv_vehicle_telematics_devices")
+}
+
+model UvisVehicleTelemetryCurrent {
+  id                     String                     @id @default(uuid()) @db.Uuid
+  shopId                 String                     @db.Uuid
+  shop                   Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  vehicleId              String                     @db.Uuid
+  vehicle                Vehicle                    @relation(fields: [vehicleId, shopId], references: [id, shopId], onDelete: Cascade)
+  deviceId               String                     @db.Uuid
+  device                 DsvVehicleTelematicsDevice @relation(fields: [deviceId, shopId], references: [id, shopId], onDelete: Cascade)
+  sourceDeviceIdentifier String                     @db.Text
+  sourceKind             UvisTelemetrySourceKind
+  observedAt             DateTime                   @db.Timestamptz(6)
+  receivedAt             DateTime                   @db.Timestamptz(6)
+  staleAfter             DateTime                   @db.Timestamptz(6)
+  latitude               Decimal?                   @db.Decimal(10, 7)
+  longitude              Decimal?                   @db.Decimal(10, 7)
+  ignitionOn             Boolean?
+  speedKph               Decimal?                   @db.Decimal(8, 2)
+  distanceTodayKm        Decimal?                   @db.Decimal(10, 2)
+  temperatureA           Decimal?                   @db.Decimal(6, 2)
+  temperatureB           Decimal?                   @db.Decimal(6, 2)
+  sourcePlate            String?                    @db.Text
+  plateMatched           Boolean?
+  lastSampleId           String                     @db.Uuid
+  lastSample             UvisVehicleTelemetrySample @relation("UvisCurrentLastSample", fields: [lastSampleId, shopId, deviceId, sourceKind], references: [id, shopId, deviceId, sourceKind], onDelete: Restrict)
+  createdAt              DateTime                   @default(now()) @db.Timestamptz(6)
+  updatedAt              DateTime                   @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, deviceId, sourceKind])
+  @@index([shopId, vehicleId])
+  @@index([shopId, observedAt])
+  @@index([shopId, staleAfter])
+  @@index([shopId, sourceKind, observedAt])
+  @@map("uvis_vehicle_telemetry_current")
+}
+
+model UvisVehicleTelemetrySample {
+  id                     String                     @id @default(uuid()) @db.Uuid
+  shopId                 String                     @db.Uuid
+  shop                   Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  vehicleId              String                     @db.Uuid
+  vehicle                Vehicle                    @relation(fields: [vehicleId, shopId], references: [id, shopId], onDelete: Cascade)
+  deviceId               String                     @db.Uuid
+  device                 DsvVehicleTelematicsDevice @relation(fields: [deviceId, shopId], references: [id, shopId], onDelete: Cascade)
+  sourceDeviceIdentifier String                     @db.Text
+  sourceKind             UvisTelemetrySourceKind
+  observedAt             DateTime                   @db.Timestamptz(6)
+  receivedAt             DateTime                   @db.Timestamptz(6)
+  staleAfter             DateTime                   @db.Timestamptz(6)
+  latitude               Decimal?                   @db.Decimal(10, 7)
+  longitude              Decimal?                   @db.Decimal(10, 7)
+  ignitionOn             Boolean?
+  speedKph               Decimal?                   @db.Decimal(8, 2)
+  distanceTodayKm        Decimal?                   @db.Decimal(10, 2)
+  temperatureA           Decimal?                   @db.Decimal(6, 2)
+  temperatureB           Decimal?                   @db.Decimal(6, 2)
+  sourcePlate            String?                    @db.Text
+  plateMatched           Boolean?
+  createdAt              DateTime                   @default(now()) @db.Timestamptz(6)
+  currentRefs            UvisVehicleTelemetryCurrent[] @relation("UvisCurrentLastSample")
+
+  @@unique([id, shopId, deviceId, sourceKind])
+  @@unique([deviceId, sourceKind, observedAt])
+  @@index([shopId, vehicleId, observedAt])
+  @@index([shopId, deviceId, observedAt])
+  @@index([shopId, staleAfter])
+  @@map("uvis_vehicle_telemetry_samples")
+}
+
+model UvisTelemetryPollState {
+  shopId                     String    @id @db.Uuid
+  shop                       Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  leaseToken                 String?   @db.Text
+  leaseExpiresAt             DateTime? @db.Timestamptz(6)
+  lastLocationStartedAt      DateTime? @db.Timestamptz(6)
+  lastLocationSucceededAt    DateTime? @db.Timestamptz(6)
+  lastLocationFailedAt       DateTime? @db.Timestamptz(6)
+  lastLocationErrorCode      String?   @db.Text
+  lastTemperatureStartedAt   DateTime? @db.Timestamptz(6)
+  lastTemperatureSucceededAt DateTime? @db.Timestamptz(6)
+  lastTemperatureFailedAt    DateTime? @db.Timestamptz(6)
+  lastTemperatureErrorCode   String?   @db.Text
+  createdAt                  DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt                  DateTime  @updatedAt @db.Timestamptz(6)
+
+  @@index([leaseExpiresAt])
+  @@map("uvis_telemetry_poll_states")
 }
 
 model DsvTransportCondition {
