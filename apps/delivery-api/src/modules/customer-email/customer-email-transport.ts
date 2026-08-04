@@ -125,7 +125,7 @@ function brandedHtml(message: CustomerEmailTransportMessage): string {
   const preview = branding.previewText === ''
     ? ''
     : `<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent">${escapeHtml(branding.previewText)}</div>`;
-  const logo = renderLogo(branding);
+  const footerLogo = renderLogo(branding);
   const footerText = branding.footerText === ''
     ? ''
     : `<div style="margin-top:24px;color:#6b7280;font-size:13px;line-height:1.5">${escapeHtml(branding.footerText)}</div>`;
@@ -140,10 +140,10 @@ function brandedHtml(message: CustomerEmailTransportMessage): string {
       <tr>
         <td align="center" style="padding:28px 16px">
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;max-width:640px;width:100%">
-            ${logo}
             <tr>
               <td style="background:${branding.surfaceColor};border-top:4px solid ${branding.accentColor};padding:28px">
                 <div style="color:${branding.textColor};font-size:16px;line-height:1.65;white-space:pre-wrap">${escapeHtml(message.body)}</div>
+                ${footerLogo}
                 ${footerText}
                 ${poweredBy}
               </td>
@@ -162,7 +162,7 @@ function renderLogo(branding: CustomerEmailBranding): string {
   const content = branding.logoLinkUrl === null
     ? image
     : `<a href="${escapeHtml(branding.logoLinkUrl)}" style="display:inline-block;text-decoration:none">${image}</a>`;
-  return `<tr><td align="left" style="padding:0 0 16px">${content}</td></tr>`;
+  return `<div style="margin-top:24px;text-align:left">${content}</div>`;
 }
 
 function escapeHtml(value: string): string {

@@ -314,6 +314,9 @@ ENVUP
 mkdir -p /srv/clever-route-server/data/driver-proof-media
 chown -R 100:101 /srv/clever-route-server/data/driver-proof-media
 chmod 750 /srv/clever-route-server/data/driver-proof-media
+mkdir -p /srv/clever-route-server/data/customer-email-assets
+chown -R 100:101 /srv/clever-route-server/data/customer-email-assets
+chmod 750 /srv/clever-route-server/data/customer-email-assets
 .deploy/route-ops-docker-cleanup.sh --enforce
 username="$(aws ssm get-parameter --name "$GHCR_USERNAME_PARAM" --query 'Parameter.Value' --output text)"
 token="$(aws ssm get-parameter --name "$GHCR_TOKEN_PARAM" --with-decryption --query 'Parameter.Value' --output text)"

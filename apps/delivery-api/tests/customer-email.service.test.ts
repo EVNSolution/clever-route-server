@@ -257,6 +257,8 @@ describe('BrevoCustomerEmailTransport', () => {
     expect(parsedBody.htmlContent).toContain('Footer &lt;script&gt;alert(1)&lt;/script&gt;');
     expect(parsedBody.htmlContent).toContain('alt="Brand &lt;Logo&gt;"');
     expect(parsedBody.htmlContent).toContain('border-top:4px solid #0055aa');
+    expect(parsedBody.htmlContent).toMatch(/Hello &lt;customer&gt;[\s\S]*alt="Brand &lt;Logo&gt;"[\s\S]*Footer &lt;script&gt;alert\(1\)&lt;\/script&gt;/u);
+    expect(parsedBody.htmlContent).not.toContain('padding:0 0 16px');
     expect(parsedBody.htmlContent).not.toContain('<customer>');
     expect(parsedBody.htmlContent).not.toContain('<script>');
     expect(parsedBody.htmlContent).not.toContain('Powered by CLEVER');

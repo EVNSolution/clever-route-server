@@ -45,6 +45,7 @@ checks = {
     'multi_coverage_env': 'OSRM_ONTARIO_BASE_URL' in command and 'http://osrm-ontario:5000' in command and 'OSRM_KOREA_BASE_URL' in command and 'http://osrm-korea:5000' in command and 'VROOM_KOREA_BASE_URL' in command and 'http://vroom-korea:3000' in command and 'OSRM_DEFAULT_COVERAGE' in command and 'korea' in command,
     'vroom_configs_synced_to_host': 'VROOM_CONFIG_B64=' in command and 'VROOM_KOREA_CONFIG_B64=' in command and 'base64 -d > "$VROOM_KOREA_CONFIG"' in command,
     'proof_media_bootstrap': 'chown -R 100:101 /srv/clever-route-server/data/driver-proof-media' in command and 'chmod 750 /srv/clever-route-server/data/driver-proof-media' in command,
+    'customer_email_assets_bootstrap': 'chown -R 100:101 /srv/clever-route-server/data/customer-email-assets' in command and 'chmod 750 /srv/clever-route-server/data/customer-email-assets' in command,
     'firebase_credential_bootstrap': 'FIREBASE_CREDENTIALS_PARAM=' in command and 'aws ssm get-parameter --name "$FIREBASE_CREDENTIALS_PARAM" --with-decryption' in command and 'chown 100:101 "$FIREBASE_CREDENTIALS_FILE"' in command and 'chmod 400 "$FIREBASE_CREDENTIALS_FILE"' in command,
     'firebase_runtime_env': "'FIREBASE_PROJECT_ID': 'clever-routes-prod'" in wrapper and "'GOOGLE_APPLICATION_CREDENTIALS': '/run/secrets/firebase-fcm.json'" in wrapper,
     'firebase_credential_mount': '/srv/clever-route-server/secrets/firebase-fcm.json:/run/secrets/firebase-fcm.json:ro' in compose,
