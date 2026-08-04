@@ -72,6 +72,56 @@ describe('DSV Driver app auth routes', () => {
     }
   });
 
+  test('keeps the resident identity field nullable for the simplified app signup', async () => {
+    const register = vi.fn<DsvDriverAuthRepository['register']>(() => Promise.resolve(session));
+    const app = await buildApp({
+      dsvDriverAuth: { jwtSecret: 'test-jwt-secret', repository: { register } as never },
+    });
+
+    try {
+      const explicitNull = await app.inject({
+        method: 'POST',
+        payload: {
+          loginId: 'driver.null',
+          name: 'QA 배송원 01',
+          password: 'test-password-01',
+          phone: '01090000001',
+          residentNumberFront: null,
+        },
+        url: '/api/dsv/driver/auth/register',
+      });
+      const omitted = await app.inject({
+        method: 'POST',
+        payload: {
+          loginId: 'driver.omitted',
+          name: 'QA 배송원 01',
+          password: 'test-password-01',
+          phone: '01090000002',
+        },
+        url: '/api/dsv/driver/auth/register',
+      });
+
+      expect(explicitNull.statusCode).toBe(201);
+      expect(omitted.statusCode).toBe(201);
+      expect(register).toHaveBeenNthCalledWith(1, {
+        loginId: 'driver.null',
+        name: 'QA 배송원 01',
+        password: 'test-password-01',
+        phone: '01090000001',
+        residentNumberFront: null,
+      });
+      expect(register).toHaveBeenNthCalledWith(2, {
+        loginId: 'driver.omitted',
+        name: 'QA 배송원 01',
+        password: 'test-password-01',
+        phone: '01090000002',
+        residentNumberFront: null,
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('logs in with a normalized identifier without accepting identity fields', async () => {
     const login = vi.fn<DsvDriverAuthRepository['login']>(() => Promise.resolve(session));
     const app = await buildApp({
