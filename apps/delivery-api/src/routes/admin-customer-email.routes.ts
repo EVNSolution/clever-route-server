@@ -51,17 +51,41 @@ export function registerAdminCustomerEmailRoutes(
   });
 
   app.post<{ Body: unknown }>('/admin/customer-email/test', async (request, reply) => {
+    const correlationId = readCorrelationId(request.headers['x-correlation-id']) ?? request.id;
     const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, request.log);
-    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+    if (authenticated.status === 'unauthorized') {
+      request.log.warn({ correlationId }, 'customer email test rejected before authentication');
+      return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+    }
     const payload = readCustomerEmailTestPayload(request.body);
-    if (payload === null) return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid customer email test payload'));
+    if (payload === null) {
+      request.log.warn({ appId: authenticated.appId, correlationId, shopDomain: authenticated.shopDomain }, 'customer email test rejected because payload is invalid');
+      return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid customer email test payload'));
+    }
+    request.log.info({
+      appId: authenticated.appId,
+      correlationId,
+      recipientDomain: readEmailDomain(payload.recipientEmail),
+      shopDomain: authenticated.shopDomain,
+      signal: payload.signal ?? 'DELIVERY_SCHEDULED',
+    }, 'customer email test requested');
     try {
       const result = await dependencies.customerEmailService.sendTest({
         ...authenticated,
         ...payload,
       });
-      return reply.code(202).send({ data: { test: result }, error: null });
+      request.log.info({
+        correlationId,
+        messageId: result.messageId,
+        provider: result.provider,
+      }, 'customer email test accepted by provider');
+      return reply.code(202).send({ data: { correlationId, test: result }, error: null });
     } catch (error) {
+      request.log.error({
+        correlationId,
+        errorName: error instanceof Error ? error.name : 'UnknownError',
+        providerStatus: error instanceof CustomerEmailTransportSendError ? error.statusCode : null,
+      }, 'customer email test failed');
       return sendCustomerEmailError(reply, error);
     }
   });
@@ -159,6 +183,16 @@ function readBearerToken(value: string | undefined): string | null {
 function readAppIdHeader(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) return value[0];
   return value;
+}
+
+function readCorrelationId(value: string | string[] | undefined): string | null {
+  const candidate = (Array.isArray(value) ? value[0] : value)?.trim();
+  return candidate && candidate.length <= 128 ? candidate : null;
+}
+
+function readEmailDomain(value: string): string | null {
+  const separator = value.lastIndexOf('@');
+  return separator >= 0 ? value.slice(separator + 1).trim().toLowerCase() || null : null;
 }
 
 function errorResponse(code: string, message: string): { data: null; error: { code: string; message: string } } {
