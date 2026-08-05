@@ -4004,7 +4004,7 @@ components:
       additionalProperties: false
     DsvV1SellerOrderSummary:
       type: object
-      required: [assignmentStatus, customerId, deliveryStopId, destinationId, etaStatus, sellerOrderId, sellerOrderKey]
+      required: [assignmentStatus, customerId, deliveryStopId, destinationId, etaStatus, eventSummary, sellerOrderId, sellerOrderKey]
       properties:
         actualCompletedAt:
           type: string
@@ -4029,6 +4029,10 @@ components:
           format: date-time
         etaStatus:
           $ref: '#/components/schemas/DsvV1EtaStatus'
+        eventSummary:
+          type: array
+          items:
+            $ref: '#/components/schemas/DsvV1EventSummary'
         latitude:
           type: number
         longitude:

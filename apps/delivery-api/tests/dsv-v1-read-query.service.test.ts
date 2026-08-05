@@ -705,6 +705,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
       items: [{
         actualCompletedAt: new Date('2026-07-22T01:00:00.000Z'),
         conditionCode: 'COLD',
+        eventRows: [{ eventType: 'STOP_DELIVERED', occurredAt: new Date('2026-07-22T01:00:00.000Z') }],
         routeStopSequence: 4,
         sellerOrderKey: 'SO-A',
         shippedBoxes: 6,

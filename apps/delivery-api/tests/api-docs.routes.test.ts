@@ -167,11 +167,14 @@ describe('API documentation routes', () => {
     const app = await buildApp();
     try {
       const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+      const sellerOrderSummary = schemaBlock(response.body, 'DsvV1SellerOrderSummary');
 
       expect(response.statusCode).toBe(200);
-      expect(response.body).toContain('DsvV1SellerOrderSummary:');
-      expect(response.body).toContain('required: [assignmentStatus, customerId, deliveryStopId, destinationId, etaStatus, sellerOrderId, sellerOrderKey]');
-      expect(response.body).toContain('deliveryStopId:');
+      expect(sellerOrderSummary).toContain('DsvV1SellerOrderSummary:');
+      expect(sellerOrderSummary).toContain('required: [assignmentStatus, customerId, deliveryStopId, destinationId, etaStatus, eventSummary, sellerOrderId, sellerOrderKey]');
+      expect(sellerOrderSummary).toContain('deliveryStopId:');
+      expect(sellerOrderSummary).toContain('eventSummary:\n          type: array');
+      expect(sellerOrderSummary).toContain('$ref: \'#/components/schemas/DsvV1EventSummary\'');
     } finally {
       await app.close();
     }

@@ -88,6 +88,7 @@ describe('G005 DSV v1 OpenAPI contract floor', () => {
       'destinationId',
       'assignmentStatus',
       'etaStatus',
+      'eventSummary',
     ]);
     for (const key of dsvV1SellerOrderSummaryRequiredFields) {
       expect(dto).toHaveProperty(key);
@@ -99,6 +100,7 @@ describe('G005 DSV v1 OpenAPI contract floor', () => {
       destinationId: 'destination-1',
       estimatedArrivalAt: '2026-07-23T02:30:00.000Z',
       etaStatus: 'READY',
+      eventSummary: [],
       routePlanId: 'route-plan-1',
       routeVersionId: 'route-version-1',
       sellerOrderId: 'seller-order-1',
