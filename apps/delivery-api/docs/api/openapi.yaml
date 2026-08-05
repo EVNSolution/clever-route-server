@@ -421,6 +421,42 @@ paths:
         '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
         '403': { $ref: '#/components/responses/DsvV1Forbidden' }
         '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
+  /api/dsv/v1/vehicles/{vehicleId}/temperature-history:
+    get:
+      tags: [DSV API v1]
+      summary: Read vehicle temperature recorder history
+      operationId: getDsvV1VehicleTemperatureHistory
+      x-source-file: src/routes/dsv-v1-read.routes.ts
+      x-required-scopes: ['dsv:control:read']
+      security: [{ DsvSessionCookie: [] }]
+      parameters:
+        - name: vehicleId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 288, default: 288 }
+      responses:
+        '200':
+          description: Vehicle temperature samples ordered by observedAt ascending.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvV1VehicleTemperatureHistoryEnvelope' }
+        '400': { $ref: '#/components/responses/DsvV1BadRequest' }
+        '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
+        '403': { $ref: '#/components/responses/DsvV1Forbidden' }
+        '404': { $ref: '#/components/responses/DsvV1NotFound' }
+        '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
   /api/dsv/v1/customers:
     get:
       tags: [DSV API v1]
@@ -4422,7 +4458,7 @@ components:
       additionalProperties: false
     DsvV1ConditionListItem:
       type: object
-      required: [code, conditionId, description, name]
+      required: [code, conditionId, description, name, temperatureAlertEnabled, temperatureMaxC, temperatureMinC]
       properties:
         code:
           type: string
@@ -4434,6 +4470,40 @@ components:
           type: string
         status:
           type: string
+        temperatureAlertEnabled:
+          type: boolean
+        temperatureMinC:
+          type: number
+          nullable: true
+        temperatureMaxC:
+          type: number
+          nullable: true
+      additionalProperties: false
+    DsvV1VehicleTemperatureHistorySample:
+      type: object
+      required: [observedAt, temperatureA, temperatureB]
+      properties:
+        observedAt:
+          type: string
+          format: date-time
+        temperatureA:
+          type: number
+          nullable: true
+        temperatureB:
+          type: number
+          nullable: true
+      additionalProperties: false
+    DsvV1VehicleTemperatureHistory:
+      type: object
+      required: [vehicleId, samples]
+      properties:
+        vehicleId:
+          type: string
+          format: uuid
+        samples:
+          type: array
+          items:
+            $ref: '#/components/schemas/DsvV1VehicleTemperatureHistorySample'
       additionalProperties: false
     DsvV1DriverListPage:
       type: object
@@ -4506,6 +4576,14 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/DsvV1VehicleListPage'
+    DsvV1VehicleTemperatureHistoryEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/DsvV1SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: '#/components/schemas/DsvV1VehicleTemperatureHistory'
     DsvV1CustomerListEnvelope:
       allOf:
         - $ref: '#/components/schemas/DsvV1SuccessEnvelope'

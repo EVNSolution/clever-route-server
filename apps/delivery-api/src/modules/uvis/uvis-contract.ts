@@ -101,7 +101,10 @@ export function parseUvisTemperatureResponse(payload: unknown): UvisTemperatureR
     }
     const temperatureA = readSignedTemperature(record.TPL_SIGNAL_A, record.TPL_DEGREE_A);
     const temperatureB = readSignedTemperature(record.TPL_SIGNAL_B, record.TPL_DEGREE_B);
-    if ((hasValue(record.TPL_DEGREE_A) && temperatureA === null) || (hasValue(record.TPL_DEGREE_B) && temperatureB === null)) {
+    if (
+      (hasValue(record.TPL_DEGREE_A) && !isUnusedTemperatureDegree(record.TPL_DEGREE_A) && temperatureA === null)
+      || (hasValue(record.TPL_DEGREE_B) && !isUnusedTemperatureDegree(record.TPL_DEGREE_B) && temperatureB === null)
+    ) {
       throw invalidResponse('temperature', 'UVIS temperature response contained invalid signed temperature.');
     }
 
@@ -184,12 +187,17 @@ function readIgnition(value: unknown): boolean | null {
 }
 
 function readSignedTemperature(signal: unknown, degree: unknown): number | null {
+  if (isUnusedTemperatureDegree(degree)) return null;
   const unsigned = readOptionalNumber(degree);
   if (unsigned === null) return null;
   const sign = readTemperatureSign(signal);
   if (sign === null) return null;
   const signed = Math.abs(unsigned) * sign;
   return signed >= -100 && signed <= 100 ? signed : null;
+}
+
+function isUnusedTemperatureDegree(value: unknown): boolean {
+  return typeof value === 'string' && value.trim().toUpperCase() === 'NOUSE';
 }
 
 function readTemperatureSign(value: unknown): 1 | -1 | null {

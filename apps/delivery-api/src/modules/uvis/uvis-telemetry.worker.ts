@@ -357,5 +357,7 @@ function safeErrorCode(error: unknown): string {
 }
 
 function isDue(lastStartedAt: Date | null, now: Date, intervalMs: number): boolean {
-  return lastStartedAt === null || now.getTime() - lastStartedAt.getTime() >= intervalMs;
+  if (lastStartedAt === null) return true;
+  const timerBoundaryToleranceMs = Math.min(1_000, Math.floor(intervalMs / 10));
+  return now.getTime() - lastStartedAt.getTime() >= intervalMs - timerBoundaryToleranceMs;
 }

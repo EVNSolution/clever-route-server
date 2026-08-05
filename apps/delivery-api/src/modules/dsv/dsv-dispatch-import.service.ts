@@ -97,6 +97,9 @@ export type DsvTransportConditionView = {
   id: string;
   name: string;
   status?: string | null | undefined;
+  temperatureAlertEnabled: boolean;
+  temperatureMaxC: number | null;
+  temperatureMinC: number | null;
   updatedAt: string;
 };
 
@@ -151,6 +154,12 @@ export type DsvDispatchImportApplyResult = {
   };
 };
 
+export type DsvTransportConditionTemperaturePolicyInput = {
+  temperatureAlertEnabled?: boolean | undefined;
+  temperatureMaxC?: number | null | undefined;
+  temperatureMinC?: number | null | undefined;
+};
+
 export type DsvDispatchImportService = {
   commit(input: DsvDispatchImportInput & { actor: string; shopDomain: string }): Promise<DsvDispatchImportView>;
   createCondition(input: {
@@ -160,7 +169,7 @@ export type DsvDispatchImportService = {
     name: string;
     principal?: DsvDispatchImportApplyInput['principal'];
     shopDomain: string;
-  }): Promise<DsvTransportConditionView>;
+  } & DsvTransportConditionTemperaturePolicyInput): Promise<DsvTransportConditionView>;
   deleteCondition(input: { conditionId: string; shopDomain: string }): Promise<void>;
   getImport(input: { importId: string; shopDomain: string }): Promise<DsvDispatchImportView | null>;
   listConditions(input: { shopDomain: string }): Promise<DsvTransportConditionView[] | null>;
@@ -171,7 +180,7 @@ export type DsvDispatchImportService = {
     description: string;
     name: string;
     shopDomain: string;
-  }): Promise<DsvTransportConditionView>;
+  } & DsvTransportConditionTemperaturePolicyInput): Promise<DsvTransportConditionView>;
 };
 
 type Tx = Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
@@ -596,10 +605,11 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     name: string;
     principal?: DsvDispatchImportApplyInput['principal'];
     shopDomain: string;
-  }): Promise<DsvTransportConditionView> {
+  } & DsvTransportConditionTemperaturePolicyInput): Promise<DsvTransportConditionView> {
     const shop = await this.findShop(input.shopDomain);
     if (shop === null) throw new DsvDispatchImportShopNotFoundError();
     const comparisonKey = conditionComparisonKey(input.code);
+    const temperaturePolicy = conditionTemperaturePolicyCreateData(input);
     try {
       const condition = await this.prisma.$transaction(async (tx) => {
         await lockCondition(tx, shop.id, comparisonKey);
@@ -625,6 +635,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
               rawValue: input.code,
               shopId: shop.id,
               status: 'ACTIVE',
+              ...temperaturePolicy,
             },
           })
           : await tx.dsvTransportCondition.update({
@@ -637,6 +648,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
               name: input.name,
               rawValue: existing.rawValue ?? input.code,
               status: 'ACTIVE',
+              ...temperaturePolicy,
             },
             where: { id_shopId: { id: existing.id, shopId: shop.id } },
           });
@@ -699,10 +711,11 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     description: string;
     name: string;
     shopDomain: string;
-  }): Promise<DsvTransportConditionView> {
+  } & DsvTransportConditionTemperaturePolicyInput): Promise<DsvTransportConditionView> {
     const shop = await this.findShop(input.shopDomain);
     if (shop === null) throw new DsvDispatchImportShopNotFoundError();
     const comparisonKey = conditionComparisonKey(input.code);
+    const temperaturePolicy = conditionTemperaturePolicyUpdateData(input);
     try {
       const condition = await this.prisma.$transaction(async (tx) => {
         await lockCondition(tx, shop.id, comparisonKey);
@@ -721,6 +734,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
             description: input.description,
             name: input.name,
             rawValue: input.code,
+            ...temperaturePolicy,
           },
           where: { id_shopId: { id: current.id, shopId: shop.id } },
         });
@@ -1880,6 +1894,9 @@ function conditionView(condition: {
   id: string;
   name: string;
   status?: string | null;
+  temperatureAlertEnabled?: boolean;
+  temperatureMaxC?: unknown;
+  temperatureMinC?: unknown;
   updatedAt: Date;
 }): DsvTransportConditionView {
   return {
@@ -1889,8 +1906,56 @@ function conditionView(condition: {
     id: condition.id,
     name: condition.name,
     status: condition.status ?? null,
+    temperatureAlertEnabled: condition.temperatureAlertEnabled ?? false,
+    temperatureMaxC: decimalToNumber(condition.temperatureMaxC),
+    temperatureMinC: decimalToNumber(condition.temperatureMinC),
     updatedAt: condition.updatedAt.toISOString(),
   };
+}
+
+function conditionTemperaturePolicyCreateData(input: DsvTransportConditionTemperaturePolicyInput): {
+  temperatureAlertEnabled: boolean;
+  temperatureMaxC: number | null;
+  temperatureMinC: number | null;
+} {
+  return {
+    temperatureAlertEnabled: input.temperatureAlertEnabled ?? false,
+    temperatureMaxC: input.temperatureMaxC ?? null,
+    temperatureMinC: input.temperatureMinC ?? null,
+  };
+}
+
+function conditionTemperaturePolicyUpdateData(input: DsvTransportConditionTemperaturePolicyInput): {
+  temperatureAlertEnabled?: boolean;
+  temperatureMaxC?: number | null;
+  temperatureMinC?: number | null;
+} {
+  return {
+    ...(input.temperatureAlertEnabled === undefined ? {} : { temperatureAlertEnabled: input.temperatureAlertEnabled }),
+    ...(input.temperatureMaxC === undefined ? {} : { temperatureMaxC: input.temperatureMaxC }),
+    ...(input.temperatureMinC === undefined ? {} : { temperatureMinC: input.temperatureMinC }),
+  };
+}
+
+function decimalToNumber(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  if (typeof value === 'object') {
+    const record = value as { toNumber?: unknown; toString?: unknown };
+    if (typeof record.toNumber === 'function') {
+      const parsed = (record.toNumber as () => unknown)();
+      return typeof parsed === 'number' && Number.isFinite(parsed) ? parsed : null;
+    }
+    if (typeof record.toString === 'function' && record.toString !== Object.prototype.toString) {
+      const parsed = Number((record.toString as () => string)());
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+  }
+  return null;
 }
 
 function importView(record: {

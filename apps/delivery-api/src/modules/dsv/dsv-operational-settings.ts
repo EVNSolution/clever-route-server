@@ -7,6 +7,7 @@ export type DsvOperationalSettings = {
   manualEmailSenderEmail: string | null;
   manualEmailSubject: string;
   recordMissingProof: boolean;
+  // Legacy compatibility/display fields only. Per-condition DsvTransportCondition temperature policy is the source of truth for new alert decisions.
   showTemperatureAlerts: boolean;
   temperatureLimit: number;
 };

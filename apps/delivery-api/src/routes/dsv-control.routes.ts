@@ -39,6 +39,7 @@ import type {
   DsvDispatchImportInput,
   DsvDispatchImportService,
   DsvDispatchImportSourceRow,
+  DsvTransportConditionTemperaturePolicyInput,
 } from '../modules/dsv/dsv-dispatch-import.service.js';
 import type {
   DsvManualEmailService,
@@ -524,7 +525,8 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       const code = readBoundedText(body?.code, 80);
       const name = readBoundedText(body?.name, 160);
       const description = readBoundedText(body?.description, 1_000);
-      if (code === null || name === null || description === null) {
+      const temperaturePolicy = readConditionTemperaturePolicy(body);
+      if (code === null || name === null || description === null || temperaturePolicy === null) {
         return sendError(reply, 400, 'BAD_REQUEST', 'Invalid transport condition payload');
       }
       try {
@@ -540,6 +542,7 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
             requestId: request.id,
           },
           shopDomain,
+          ...temperaturePolicy,
         });
         return sendData(reply, { condition }, 201);
       } catch (error) {
@@ -558,7 +561,8 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       const code = readBoundedText(body?.code, 80);
       const name = readBoundedText(body?.name, 160);
       const description = readBoundedText(body?.description, 1_000);
-      if (conditionId === null || code === null || name === null || description === null) {
+      const temperaturePolicy = readConditionTemperaturePolicy(body);
+      if (conditionId === null || code === null || name === null || description === null || temperaturePolicy === null) {
         return sendError(reply, 400, 'BAD_REQUEST', 'Invalid transport condition payload');
       }
       try {
@@ -568,6 +572,7 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
           description,
           name,
           shopDomain,
+          ...temperaturePolicy,
         });
         return sendData(reply, { condition });
       } catch (error) {
@@ -1081,6 +1086,47 @@ function readManualEmailInput(value: unknown): {
     subject,
     textContent,
   };
+}
+
+function readConditionTemperaturePolicy(
+  body: Record<string, unknown> | null,
+): DsvTransportConditionTemperaturePolicyInput | null {
+  if (body === null) return null;
+  const hasTemperatureAlertEnabled = Object.prototype.hasOwnProperty.call(body, 'temperatureAlertEnabled');
+  const hasTemperatureMinC = Object.prototype.hasOwnProperty.call(body, 'temperatureMinC');
+  const hasTemperatureMaxC = Object.prototype.hasOwnProperty.call(body, 'temperatureMaxC');
+  const temperatureAlertEnabled = readOptionalBoolean(body.temperatureAlertEnabled);
+  const temperatureMinC = readOptionalTemperatureC(body.temperatureMinC);
+  const temperatureMaxC = readOptionalTemperatureC(body.temperatureMaxC);
+  if (
+    (hasTemperatureAlertEnabled && temperatureAlertEnabled === null)
+    || (hasTemperatureMinC && temperatureMinC === undefined)
+    || (hasTemperatureMaxC && temperatureMaxC === undefined)
+  ) return null;
+  if (
+    temperatureMinC !== undefined
+    && temperatureMinC !== null
+    && temperatureMaxC !== undefined
+    && temperatureMaxC !== null
+    && temperatureMinC > temperatureMaxC
+  ) return null;
+  return {
+    ...(temperatureAlertEnabled === undefined || temperatureAlertEnabled === null ? {} : { temperatureAlertEnabled }),
+    ...(temperatureMaxC === undefined ? {} : { temperatureMaxC }),
+    ...(temperatureMinC === undefined ? {} : { temperatureMinC }),
+  };
+}
+
+function readOptionalBoolean(value: unknown): boolean | null | undefined {
+  if (value === undefined) return undefined;
+  return typeof value === 'boolean' ? value : null;
+}
+
+function readOptionalTemperatureC(value: unknown): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === '') return null;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < -100 || value > 100) return undefined;
+  return Math.round(value * 100) / 100;
 }
 
 function isEmailAddress(value: string): boolean {

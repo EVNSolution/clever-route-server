@@ -40,6 +40,7 @@ import {
   type DsvV1ReadListInput,
   type DsvV1ReadQueryService,
   type DsvV1ServiceDateInput,
+  type DsvV1VehicleTemperatureHistoryInput,
 } from '../modules/dsv/dsv-v1-read-query.service.js';
 import {
   DsvTimeConstraintCommandError,
@@ -202,6 +203,13 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     },
     parseQuery: parsePagedQuery,
     requiredScopes: ['dsv:resources:read'],
+  });
+  registerReadRoute(app, dependencies, 'vehicles/:vehicleId/temperature-history', {
+    allowedQuery: ['from', 'limit', 'to'],
+    handler: async (principal, query) =>
+      requireQueryService(dependencies).listVehicleTemperatureHistory(requireAdminPrincipal(principal), query),
+    parseQuery: parseVehicleTemperatureHistoryQuery,
+    requiredScopes: ['dsv:control:read'],
   });
   registerReadRoute(app, dependencies, 'customers', {
     allowedQuery: ['cursor', 'limit'],
@@ -670,6 +678,21 @@ function parseCustomerDeliveriesQuery(request: FastifyRequest): DsvV1CustomerDel
   };
 }
 
+function parseVehicleTemperatureHistoryQuery(request: FastifyRequest): DsvV1VehicleTemperatureHistoryInput | null {
+  const vehicleId = readUuidParam(request, 'vehicleId');
+  const from = readIsoDateTimeQuery(request, 'from');
+  const to = readIsoDateTimeQuery(request, 'to');
+  const limit = readTemperatureHistoryLimit(request);
+  if (vehicleId === null || from === null || to === null || limit === null) return null;
+  if (from !== undefined && to !== undefined && from.getTime() > to.getTime()) return null;
+  return {
+    ...(from === undefined ? {} : { from }),
+    ...(limit === undefined ? {} : { limit }),
+    ...(to === undefined ? {} : { to }),
+    vehicleId,
+  };
+}
+
 function parseAdminCustomerDeliveriesQuery(
   request: FastifyRequest,
 ): (DsvV1CustomerDeliveriesInput & { customerId: string }) | null {
@@ -695,6 +718,22 @@ function readLimit(request: FastifyRequest): number | undefined | null {
   if (!/^\d+$/u.test(value)) return null;
   const limit = Number(value);
   return Number.isInteger(limit) && limit >= 1 && limit <= 100 ? limit : null;
+}
+
+function readTemperatureHistoryLimit(request: FastifyRequest): number | undefined | null {
+  const value = readSingleQueryString(request, 'limit');
+  if (value === undefined || value === null) return value;
+  if (!/^\d+$/u.test(value)) return null;
+  const limit = Number(value);
+  return Number.isInteger(limit) && limit >= 1 && limit <= 288 ? limit : null;
+}
+
+function readIsoDateTimeQuery(request: FastifyRequest, key: string): Date | undefined | null {
+  const value = readSingleQueryString(request, key);
+  if (value === undefined || value === null) return value;
+  if (!/^\d{4}-\d{2}-\d{2}T/u.test(value)) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
 function readOptionalSearchText(request: FastifyRequest, key: string): string | undefined | null {

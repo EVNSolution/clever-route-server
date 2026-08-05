@@ -102,6 +102,10 @@ const uvisTelemetryMigrationPath = new URL(
   '../prisma/migrations/20260804170000_add_uvis_vehicle_telematics/migration.sql',
   import.meta.url
 );
+const dsvConditionTemperaturePolicyMigrationPath = new URL(
+  '../prisma/migrations/20260805120000_add_dsv_condition_temperature_policy/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
@@ -121,6 +125,22 @@ describe('Prisma schema', () => {
     expect(migration).toContain('CREATE UNIQUE INDEX "uvis_vehicle_telemetry_samples_id_shopId_deviceId_sourceKind_key"');
     expect(migration).toContain('FOREIGN KEY ("lastSampleId", "shopId", "deviceId", "sourceKind")');
     expect(migration).toContain('REFERENCES "uvis_vehicle_telemetry_samples"("id", "shopId", "deviceId", "sourceKind")');
+  });
+
+  test('adds DSV condition temperature policy without changing import row condition ownership', async () => {
+    const schema = await readSchema();
+    const migration = await readFile(dsvConditionTemperaturePolicyMigrationPath, 'utf8');
+    const conditionModel = /model DsvTransportCondition \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+    const importRowModel = /model DsvDispatchImportRow \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+
+    expect(conditionModel).toContain('temperatureAlertEnabled Boolean                      @default(false)');
+    expect(conditionModel).toContain('temperatureMinC         Decimal?                     @db.Decimal(6, 2)');
+    expect(conditionModel).toContain('temperatureMaxC         Decimal?                     @db.Decimal(6, 2)');
+    expect(importRowModel).toContain('fields: [conditionId, shopId], references: [id, shopId]');
+    expect(migration).toContain('ADD COLUMN "temperatureAlertEnabled" BOOLEAN NOT NULL DEFAULT false');
+    expect(migration).toContain('ADD COLUMN "temperatureMinC" DECIMAL(6,2)');
+    expect(migration).toContain('ADD COLUMN "temperatureMaxC" DECIMAL(6,2)');
+    expect(migration).toContain('"temperatureMinC" <= "temperatureMaxC"');
   });
 
   test('owns mobile Push installations by the global driver account', async () => {
