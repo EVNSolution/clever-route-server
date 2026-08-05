@@ -157,6 +157,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
     expect(routePlanFindArgs?.where).toMatchObject({
       driverId: 'driver-id',
       id: 'route-plan-id',
+      routeStops: { some: {} },
       shopId: 'shop-id'
     });
     expect(result).toEqual({

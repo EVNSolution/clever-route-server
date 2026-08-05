@@ -184,6 +184,7 @@ export class PrismaDriverAssignedRouteRepository {
         driverId: input.driverId,
         ...(input.routeContext === null ? {} : { id: input.routeContext }),
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        routeStops: { some: {} },
         shopId: input.shopId,
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
