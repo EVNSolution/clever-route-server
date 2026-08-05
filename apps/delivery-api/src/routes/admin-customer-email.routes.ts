@@ -177,33 +177,41 @@ export function registerAdminCustomerEmailRoutes(
     });
   });
 
-  app.get<{ Params: { fileName: string } }>('/customer-email/assets/:fileName', async (request, reply) => {
-    if (dependencies.logoAssets === undefined) {
-      return reply.code(404).send(errorResponse('NOT_FOUND', 'Customer email asset not found'));
-    }
-    const fileName = request.params.fileName;
-    if (!logoFileNamePattern.test(fileName)) {
-      return reply.code(404).send(errorResponse('NOT_FOUND', 'Customer email asset not found'));
-    }
-    const contentType = contentTypeForLogoFileName(fileName);
-    if (contentType === null) {
-      return reply.code(404).send(errorResponse('NOT_FOUND', 'Customer email asset not found'));
-    }
-    try {
-      const bytes = await readFile(join(dependencies.logoAssets.directory, fileName));
-      return reply
-        .code(200)
-        .header('cache-control', 'public, max-age=31536000, immutable')
-        .header('x-content-type-options', 'nosniff')
-        .type(contentType)
-        .send(bytes);
-    } catch (error) {
-      if (isFileNotFoundError(error)) {
+  app.get<{ Params: { fileName: string } }>(
+    '/customer-email/assets/:fileName',
+    {
+      helmet: {
+        crossOriginResourcePolicy: { policy: 'cross-origin' },
+      },
+    },
+    async (request, reply) => {
+      if (dependencies.logoAssets === undefined) {
         return reply.code(404).send(errorResponse('NOT_FOUND', 'Customer email asset not found'));
       }
-      throw error;
-    }
-  });
+      const fileName = request.params.fileName;
+      if (!logoFileNamePattern.test(fileName)) {
+        return reply.code(404).send(errorResponse('NOT_FOUND', 'Customer email asset not found'));
+      }
+      const contentType = contentTypeForLogoFileName(fileName);
+      if (contentType === null) {
+        return reply.code(404).send(errorResponse('NOT_FOUND', 'Customer email asset not found'));
+      }
+      try {
+        const bytes = await readFile(join(dependencies.logoAssets.directory, fileName));
+        return reply
+          .code(200)
+          .header('cache-control', 'public, max-age=31536000, immutable')
+          .header('x-content-type-options', 'nosniff')
+          .type(contentType)
+          .send(bytes);
+      } catch (error) {
+        if (isFileNotFoundError(error)) {
+          return reply.code(404).send(errorResponse('NOT_FOUND', 'Customer email asset not found'));
+        }
+        throw error;
+      }
+    },
+  );
 
   app.post<{ Body: unknown; Params: { routePlanId: string } }>(
     '/admin/route-plans/:routePlanId/customer-email/preview',
