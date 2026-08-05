@@ -5,7 +5,7 @@ import { defaultCustomerEmailSettings } from '../src/modules/customer-email/cust
 import { BrevoCustomerEmailTransport } from '../src/modules/customer-email/customer-email-transport.js';
 
 describe('CustomerEmailService', () => {
-  test('migrates a v1 settings write to v2 during a rolling app deployment', async () => {
+  test('migrates a v1 settings write to v3 during a rolling app deployment', async () => {
     const { prisma, service } = createHarness();
     const current = defaultCustomerEmailSettings();
     const v1Settings = {
@@ -22,22 +22,316 @@ describe('CustomerEmailService', () => {
       payload: v1Settings,
       shopDomain: 'example.myshopify.com',
     })).resolves.toMatchObject({
+      automatic: { enabled: false },
       branding: current.branding,
-      nearbyStopsThreshold: 4,
+      compatibility: { nearbyStopsThreshold: 4 },
       senderName: 'Legacy Sender',
-      version: 2,
+      version: 3,
     });
     expect(prisma.shop.update).toHaveBeenCalledWith(expect.objectContaining({
-      data: { customerEmailSettings: expect.objectContaining({ version: 2 }) as unknown },
+      data: { customerEmailSettings: expect.objectContaining({ version: 3 }) as unknown },
       where: { id: 'shop-id' },
+    }));
+  });
+
+  test('allows only legacy full settings migration and rejects V3 full writes', async () => {
+    const { prisma, service } = createHarness();
+    const current = defaultCustomerEmailSettings();
+    const v2Settings = {
+      ...current,
+      automatic: undefined,
+      compatibility: undefined,
+      nearbyStopsThreshold: 5,
+      version: 2,
+    };
+    prisma.shop.findUnique.mockResolvedValue({ id: 'shop-id' });
+
+    await expect(service.saveSettings({
+      payload: v2Settings,
+      shopDomain: 'example.myshopify.com',
+    })).resolves.toMatchObject({
+      automatic: { enabled: false },
+      compatibility: { nearbyStopsThreshold: 5 },
+      version: 3,
+    });
+    await expect(service.saveSettings({
+      payload: {
+        ...current,
+        automatic: { ...current.automatic, enabled: true },
+      },
+      shopDomain: 'example.myshopify.com',
+    })).rejects.toMatchObject({
+      code: 'CUSTOMER_EMAIL_BAD_REQUEST',
+      message: expect.stringContaining('V3 full settings writes are not allowed') as unknown,
+    });
+  });
+
+  test('saves global settings only when globalVersion matches and preserves templates and automatic off', async () => {
+    const { prisma, service } = createHarness();
+    const updatedAt = new Date('2026-08-05T00:00:00.000Z');
+    const current = {
+      ...defaultCustomerEmailSettings(),
+      automatic: {
+        consent: {
+          acceptedAt: null,
+          acceptedBy: null,
+          noticeVersion: null,
+          settingsVersion: null,
+        },
+        enabled: false,
+      },
+      globalVersion: 3,
+      senderEmail: 'old@example.com',
+      templates: {
+        ...defaultCustomerEmailSettings().templates,
+        DELIVERY_SCHEDULED: {
+          body: 'Original {{orderNumber}}',
+          enabled: true,
+          subject: 'Original subject',
+          version: 9,
+        },
+      },
+    };
+    prisma.shop.findUnique.mockResolvedValue({ customerEmailSettings: current, id: 'shop-id', updatedAt });
+    prisma.shop.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(service.saveGlobalSettings({
+      payload: {
+        branding: {
+          ...current.branding,
+          businessName: 'New Brand',
+        },
+        expectedVersion: 3,
+        replyTo: 'reply@example.com',
+        senderEmail: 'new@example.com',
+        senderName: 'New Sender',
+      },
+      shopDomain: 'example.myshopify.com',
+    })).resolves.toMatchObject({
+      automatic: { enabled: false },
+      globalVersion: 4,
+      replyTo: 'reply@example.com',
+      senderEmail: 'new@example.com',
+      senderName: 'New Sender',
+      templates: {
+        DELIVERY_SCHEDULED: {
+          body: 'Original {{orderNumber}}',
+          subject: 'Original subject',
+          version: 9,
+        },
+      },
+    });
+    expect(prisma.shop.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: {
+        customerEmailSettings: expect.objectContaining({
+          automatic: expect.objectContaining({ enabled: false }) as unknown,
+          globalVersion: 4,
+          templates: expect.objectContaining({
+            DELIVERY_SCHEDULED: expect.objectContaining({ version: 9 }) as unknown,
+          }) as unknown,
+        }) as unknown,
+      },
+      where: { id: 'shop-id', updatedAt },
+    }));
+  });
+
+  test('rejects stale global settings saves without updating', async () => {
+    const { prisma, service } = createHarness();
+    const current = { ...defaultCustomerEmailSettings(), globalVersion: 3 };
+    prisma.shop.findUnique.mockResolvedValue({ customerEmailSettings: current, id: 'shop-id', updatedAt: new Date('2026-08-05T00:00:00.000Z') });
+
+    await expect(service.saveGlobalSettings({
+      payload: {
+        branding: current.branding,
+        expectedVersion: 2,
+        replyTo: null,
+        senderEmail: 'new@example.com',
+        senderName: 'New Sender',
+      },
+      shopDomain: 'example.myshopify.com',
+    })).rejects.toMatchObject({ code: 'SETTINGS_VERSION_CONFLICT' });
+    expect(prisma.shop.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('detects concurrent global settings writes against the same updatedAt snapshot', async () => {
+    const { prisma, service } = createHarness();
+    const updatedAt = new Date('2026-08-05T00:00:00.000Z');
+    const current = { ...defaultCustomerEmailSettings(), globalVersion: 1, senderEmail: 'old@example.com' };
+    prisma.shop.findUnique.mockResolvedValue({ customerEmailSettings: current, id: 'shop-id', updatedAt });
+    prisma.shop.updateMany
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+    const payload = {
+      branding: current.branding,
+      expectedVersion: 1,
+      replyTo: null,
+      senderEmail: 'new@example.com',
+      senderName: 'New Sender',
+    };
+
+    await expect(service.saveGlobalSettings({
+      payload,
+      shopDomain: 'example.myshopify.com',
+    })).resolves.toMatchObject({ globalVersion: 2 });
+    await expect(service.saveGlobalSettings({
+      payload,
+      shopDomain: 'example.myshopify.com',
+    })).rejects.toMatchObject({ code: 'SETTINGS_VERSION_CONFLICT' });
+
+    expect(prisma.shop.updateMany).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      where: { id: 'shop-id', updatedAt },
+    }));
+    expect(prisma.shop.updateMany).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      where: { id: 'shop-id', updatedAt },
+    }));
+  });
+
+  test('saves one template version and preserves global fields and other templates', async () => {
+    const { prisma, service } = createHarness();
+    const current = {
+      ...defaultCustomerEmailSettings(),
+      globalVersion: 5,
+      senderEmail: 'sender@example.com',
+      templates: {
+        ...defaultCustomerEmailSettings().templates,
+        OUT_FOR_DELIVERY: {
+          body: 'Old body',
+          enabled: false,
+          subject: 'Old subject',
+          version: 4,
+        },
+        DELIVERED: {
+          body: 'Delivered body',
+          enabled: true,
+          subject: 'Delivered subject',
+          version: 8,
+        },
+      },
+    };
+    const updatedAt = new Date('2026-08-05T00:00:00.000Z');
+    prisma.shop.findUnique.mockResolvedValue({ customerEmailSettings: current, id: 'shop-id', updatedAt });
+    prisma.shop.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(service.saveTemplateSettings({
+      payload: {
+        body: 'New body {{inventoryList}}',
+        enabled: true,
+        expectedVersion: 4,
+        subject: 'New subject {{deliveryWeekday}}',
+      },
+      shopDomain: 'example.myshopify.com',
+      signal: 'OUT_FOR_DELIVERY',
+    })).resolves.toMatchObject({
+      automatic: { enabled: false },
+      globalVersion: 5,
+      senderEmail: 'sender@example.com',
+      templates: {
+        OUT_FOR_DELIVERY: {
+          body: 'New body {{inventoryList}}',
+          enabled: true,
+          subject: 'New subject {{deliveryWeekday}}',
+          version: 5,
+        },
+        DELIVERED: {
+          body: 'Delivered body',
+          version: 8,
+        },
+      },
+    });
+  });
+
+  test('rejects stale or invalid template saves without updating', async () => {
+    const { prisma, service } = createHarness();
+    const current = { ...defaultCustomerEmailSettings(), senderEmail: 'sender@example.com' };
+    prisma.shop.findUnique.mockResolvedValue({ customerEmailSettings: current, id: 'shop-id', updatedAt: new Date('2026-08-05T00:00:00.000Z') });
+
+    await expect(service.saveTemplateSettings({
+      payload: {
+        body: 'New body',
+        enabled: true,
+        expectedVersion: 999,
+        subject: 'New subject',
+      },
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).rejects.toMatchObject({ code: 'TEMPLATE_VERSION_CONFLICT' });
+    await expect(service.saveTemplateSettings({
+      payload: {
+        body: '<strong>Raw HTML</strong> {{notAllowed}}',
+        enabled: true,
+        expectedVersion: 1,
+        subject: 'New subject',
+      },
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).rejects.toMatchObject({ code: 'CUSTOMER_EMAIL_BAD_REQUEST' });
+    expect(prisma.shop.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('detects concurrent template writes against the same updatedAt snapshot', async () => {
+    const { prisma, service } = createHarness();
+    const updatedAt = new Date('2026-08-05T00:00:00.000Z');
+    const current = { ...defaultCustomerEmailSettings(), senderEmail: 'sender@example.com' };
+    prisma.shop.findUnique.mockResolvedValue({ customerEmailSettings: current, id: 'shop-id', updatedAt });
+    prisma.shop.updateMany
+      .mockResolvedValueOnce({ count: 1 })
+      .mockResolvedValueOnce({ count: 0 });
+    const payload = {
+      body: 'New body',
+      enabled: true,
+      expectedVersion: 1,
+      subject: 'New subject',
+    };
+
+    await expect(service.saveTemplateSettings({
+      payload,
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).resolves.toMatchObject({
+      templates: { DELIVERY_SCHEDULED: { version: 2 } },
+    });
+    await expect(service.saveTemplateSettings({
+      payload,
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).rejects.toMatchObject({ code: 'TEMPLATE_VERSION_CONFLICT' });
+
+    expect(prisma.shop.updateMany).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      where: { id: 'shop-id', updatedAt },
+    }));
+    expect(prisma.shop.updateMany).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      where: { id: 'shop-id', updatedAt },
     }));
   });
 
   test('previews eligible recipients and reports missing canonical order email', async () => {
     const { prisma, service } = createHarness();
+    const settings = defaultCustomerEmailSettings();
     prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      customerEmailSettings: {
+        ...settings,
+        templates: {
+          ...settings.templates,
+          DELIVERY_SCHEDULED: {
+            body: 'Order {{orderNumber}}\nWeekday {{deliveryWeekday}}\nItems:\n{{inventoryList}}',
+            enabled: true,
+            subject: 'Scheduled {{deliveryDate}}',
+            version: 2,
+          },
+        },
+      },
       stops: [
-        stopRow({ email: 'customer@example.com', id: 'stop-1', sequence: 1, status: 'PENDING' }),
+        stopRow({
+          deliveryWeekday: 'TUESDAY',
+          email: 'customer@example.com',
+          id: 'stop-1',
+          items: [
+            { lineIndex: 0, name: 'Kimchi', options: [{ name: 'Size', value: 'Large' }], quantity: 2 },
+            { lineIndex: 1, name: 'Rice', options: [], quantity: 1 },
+          ],
+          sequence: 1,
+          status: 'PENDING',
+        }),
         stopRow({ email: null, id: 'stop-2', sequence: 2, status: 'PENDING' }),
       ],
     }));
@@ -56,13 +350,291 @@ describe('CustomerEmailService', () => {
         rendered: {
           // Vitest asymmetric matchers are intentionally typed as any inside object literals.
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-          body: expect.stringContaining('Order #1'),
+          body: expect.stringContaining('2 x Kimchi (Size: Large)\n1 x Rice'),
           // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-          subject: expect.stringContaining('scheduled'),
+          subject: expect.stringContaining('Scheduled'),
         },
       }],
       skipped: [{ code: 'CUSTOMER_EMAIL_MISSING', deliveryStopId: 'stop-2' }],
     });
+  });
+
+  test('adds manual send history summaries with one content-free recipient query', async () => {
+    const { prisma, service } = createHarness();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      stops: [stopRow({ email: 'customer@example.com', id: 'stop-1', sequence: 1, status: 'PENDING' })],
+    }));
+    prisma.customerEmailManualDispatchRecipient.findMany.mockResolvedValue([
+      {
+        createdAt: new Date('2026-08-05T12:00:00.000Z'),
+        deliveryStopId: 'stop-1',
+        sentAt: null,
+        status: 'FAILED',
+      },
+      {
+        createdAt: new Date('2026-08-05T11:00:00.000Z'),
+        deliveryStopId: 'stop-1',
+        sentAt: new Date('2026-08-05T11:01:00.000Z'),
+        status: 'SENT',
+      },
+    ]);
+
+    await expect(service.preview({
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).resolves.toMatchObject({
+      recipients: [{
+        deliveryStopId: 'stop-1',
+        history: {
+          lastSentAt: '2026-08-05T11:01:00.000Z',
+          lastStatus: 'FAILED',
+          sendCount: 1,
+        },
+      }],
+    });
+
+    expect(prisma.customerEmailManualDispatchRecipient.findMany).toHaveBeenCalledWith({
+      orderBy: { createdAt: 'desc' },
+      select: {
+        createdAt: true,
+        deliveryStopId: true,
+        sentAt: true,
+        status: true,
+      },
+      where: {
+        deliveryStopId: { in: ['stop-1'] },
+        dispatch: { signal: 'DELIVERY_SCHEDULED' },
+        routePlanId: 'route-id',
+        shopId: 'shop-id',
+      },
+    });
+  });
+
+  test('renders missing non-email template values blank and returns diagnostics while preserving missing email skips', async () => {
+    const { prisma, service } = createHarness();
+    const settings = defaultCustomerEmailSettings();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      customerEmailSettings: {
+        ...settings,
+        templates: {
+          ...settings.templates,
+          DELIVERY_SCHEDULED: {
+            body: 'Hello {{customerName}} ETA {{eta}} Items {{inventoryList}}',
+            enabled: true,
+            subject: 'Weekday {{deliveryWeekday}}',
+            version: 1,
+          },
+        },
+      },
+      stops: [
+        stopRow({
+          email: 'customer@example.com',
+          estimatedArrivalAt: null,
+          id: 'stop-1',
+          items: [],
+          recipientName: null,
+          sequence: 1,
+          status: 'PENDING',
+        }),
+        stopRow({ email: null, id: 'stop-2', sequence: 2, status: 'PENDING' }),
+      ],
+    }));
+
+    const preview = await service.preview({
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    });
+
+    expect(preview).toMatchObject({
+      counts: { eligible: 2, rendered: 1, skipped: 1, totalStops: 2 },
+      recipients: [{
+        diagnostics: {
+          body: [
+            { code: 'MISSING_TEMPLATE_VALUE', key: 'customerName' },
+            { code: 'MISSING_TEMPLATE_VALUE', key: 'eta' },
+            { code: 'MISSING_TEMPLATE_VALUE', key: 'inventoryList' },
+          ],
+          subject: [{ code: 'MISSING_TEMPLATE_VALUE', key: 'deliveryWeekday' }],
+        },
+        rendered: {
+          body: 'Hello  ETA  Items ',
+          subject: 'Weekday ',
+        },
+      }],
+      skipped: [{ code: 'CUSTOMER_EMAIL_MISSING', deliveryStopId: 'stop-2' }],
+    });
+  });
+
+  test('blocks manual send with missing template diagnostics until missing values are confirmed', async () => {
+    const { prisma, service, transport } = createHarness();
+    const settings = defaultCustomerEmailSettings();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      customerEmailSettings: {
+        ...settings,
+        senderEmail: 'sender@example.com',
+        templates: {
+          ...settings.templates,
+          DELIVERY_SCHEDULED: {
+            body: 'Hello {{customerName}} ETA {{eta}} Items {{inventoryList}}',
+            enabled: true,
+            subject: 'Weekday {{deliveryWeekday}}',
+            version: 1,
+          },
+        },
+      },
+      stops: [stopRow({
+        email: 'customer@example.com',
+        estimatedArrivalAt: null,
+        id: 'stop-1',
+        items: [],
+        recipientName: null,
+        sequence: 1,
+        status: 'PENDING',
+      })],
+    }));
+
+    await expect(service.send({
+      actor: 'admin-user',
+      commandId: 'command-1',
+      confirmed: true,
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).rejects.toMatchObject({ code: 'MISSING_TEMPLATE_VALUES_CONFIRMATION_REQUIRED' });
+    expect(prisma.customerEmailManualDispatch.create).not.toHaveBeenCalled();
+    expect(transport.send).not.toHaveBeenCalled();
+
+    prisma.customerEmailManualDispatch.create.mockResolvedValue({ id: 'dispatch-id' });
+    transport.send.mockResolvedValue({ provider: 'brevo', providerMessageId: 'message-id' });
+    await expect(service.send({
+      actor: 'admin-user',
+      commandId: 'command-1',
+      confirmed: true,
+      missingValuesConfirmed: true,
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).resolves.toMatchObject({
+      counts: { duplicate: 0, failed: 0, sent: 1, skipped: 0 },
+      results: [{ status: 'SENT' }],
+    });
+    expect(transport.send).toHaveBeenCalledWith(expect.objectContaining({
+      body: 'Hello  ETA  Items ',
+      subject: 'Weekday ',
+    }));
+  });
+
+  test('blocks manual resend after a prior same-signal SENT until resend is confirmed', async () => {
+    const { prisma, service, transport } = createHarness();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      stops: [stopRow({ email: 'customer@example.com', id: 'stop-1', sequence: 1, status: 'PENDING' })],
+    }));
+    prisma.customerEmailManualDispatchRecipient.findMany.mockResolvedValue([{
+      createdAt: new Date('2026-08-05T12:00:00.000Z'),
+      deliveryStopId: 'stop-1',
+      sentAt: new Date('2026-08-05T12:00:01.000Z'),
+      status: 'SENT',
+    }]);
+
+    await expect(service.send({
+      actor: 'admin-user',
+      commandId: 'command-1',
+      confirmed: true,
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).rejects.toMatchObject({ code: 'RESEND_CONFIRMATION_REQUIRED' });
+    expect(prisma.customerEmailManualDispatch.create).not.toHaveBeenCalled();
+    expect(transport.send).not.toHaveBeenCalled();
+
+    prisma.customerEmailManualDispatch.create.mockResolvedValue({ id: 'dispatch-id' });
+    transport.send.mockResolvedValue({ provider: 'brevo', providerMessageId: 'message-id' });
+    await expect(service.send({
+      actor: 'admin-user',
+      commandId: 'command-2',
+      confirmed: true,
+      resendConfirmed: true,
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).resolves.toMatchObject({
+      counts: { duplicate: 0, failed: 0, sent: 1, skipped: 0 },
+      results: [{ deliveryStopId: 'stop-1', status: 'SENT' }],
+    });
+    expect(transport.send).toHaveBeenCalledOnce();
+  });
+
+  test('does not treat another signal history as resend and combines resend with missing-value confirmation', async () => {
+    const { prisma, service, transport } = createHarness();
+    const settings = defaultCustomerEmailSettings();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      customerEmailSettings: {
+        ...settings,
+        senderEmail: 'sender@example.com',
+        templates: {
+          ...settings.templates,
+          DELIVERY_SCHEDULED: {
+            body: 'Hello {{customerName}}',
+            enabled: true,
+            subject: 'Subject',
+            version: 1,
+          },
+        },
+      },
+      stops: [stopRow({
+        email: 'customer@example.com',
+        id: 'stop-1',
+        recipientName: null,
+        sequence: 1,
+        status: 'PENDING',
+      })],
+    }));
+    prisma.customerEmailManualDispatchRecipient.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([{
+        createdAt: new Date('2026-08-05T12:00:00.000Z'),
+        deliveryStopId: 'stop-1',
+        sentAt: new Date('2026-08-05T12:00:01.000Z'),
+        status: 'SENT',
+      }]);
+    prisma.customerEmailManualDispatch.create.mockResolvedValue({ id: 'dispatch-id' });
+    transport.send.mockResolvedValue({ provider: 'brevo', providerMessageId: 'message-id' });
+
+    await expect(service.send({
+      actor: 'admin-user',
+      commandId: 'other-signal-command',
+      confirmed: true,
+      missingValuesConfirmed: true,
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).resolves.toMatchObject({ counts: { sent: 1 } });
+    expect(prisma.customerEmailManualDispatchRecipient.findMany).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      where: expect.objectContaining({ dispatch: { signal: 'DELIVERY_SCHEDULED' } }) as unknown,
+    }));
+
+    await expect(service.send({
+      actor: 'admin-user',
+      commandId: 'missing-confirm-only',
+      confirmed: true,
+      missingValuesConfirmed: true,
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).rejects.toMatchObject({ code: 'RESEND_CONFIRMATION_REQUIRED' });
+
+    await expect(service.send({
+      actor: 'admin-user',
+      commandId: 'both-confirms',
+      confirmed: true,
+      missingValuesConfirmed: true,
+      resendConfirmed: true,
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DELIVERY_SCHEDULED',
+    })).resolves.toMatchObject({ counts: { sent: 1 } });
   });
 
   test('computes signal eligibility from stop status and nearby route progress', async () => {
@@ -102,6 +674,47 @@ describe('CustomerEmailService', () => {
       signal: 'DRIVER_NEARBY',
     })).resolves.toMatchObject({
       recipients: [{ deliveryStopId: 'stop-5' }],
+    });
+  });
+
+  test('uses Route Ops nearby threshold instead of legacy customer email compatibility for DRIVER_NEARBY only', async () => {
+    const { prisma, service } = createHarness();
+    prisma.routePlan.findFirst.mockResolvedValue(routePlanRow({
+      customerEmailSettings: {
+        ...defaultCustomerEmailSettings(),
+        compatibility: { nearbyStopsThreshold: 1 },
+        senderEmail: 'sender@example.com',
+      },
+      routeOpsUiSettings: {
+        nearbyStopsThreshold: 3,
+        version: 1,
+      },
+      stops: [
+        stopRow({ id: 'stop-1', sequence: 1, status: 'EN_ROUTE' }),
+        stopRow({ id: 'stop-2', sequence: 2, status: 'PENDING' }),
+        stopRow({ id: 'stop-3', sequence: 3, status: 'PENDING' }),
+        stopRow({ id: 'stop-4', sequence: 4, status: 'PENDING' }),
+      ],
+    }));
+
+    await expect(service.preview({
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'DRIVER_NEARBY',
+    })).resolves.toMatchObject({
+      recipients: [{ deliveryStopId: 'stop-4' }],
+    });
+    await expect(service.preview({
+      routePlanId: 'route-id',
+      shopDomain: 'example.myshopify.com',
+      signal: 'OUT_FOR_DELIVERY',
+    })).resolves.toMatchObject({
+      recipients: [
+        { deliveryStopId: 'stop-1' },
+        { deliveryStopId: 'stop-2' },
+        { deliveryStopId: 'stop-3' },
+        { deliveryStopId: 'stop-4' },
+      ],
     });
   });
 
@@ -183,6 +796,7 @@ describe('CustomerEmailService', () => {
           ...defaultCustomerEmailSettings().branding,
           accentColor: '#0055aa',
           footerText: 'Footer',
+          note: 'Footer',
           previewText: 'Preview',
         },
         senderEmail: 'sender@example.com',
@@ -201,7 +815,7 @@ describe('CustomerEmailService', () => {
     expect(transport.send).toHaveBeenCalledWith(expect.objectContaining({
       branding: expect.objectContaining({
         accentColor: '#0055aa',
-        footerText: 'Footer',
+        note: 'Footer',
         previewText: 'Preview',
       }) as unknown,
       signal: 'TEST',
@@ -223,15 +837,20 @@ describe('BrevoCustomerEmailTransport', () => {
         ...defaultCustomerEmailSettings().branding,
         accentColor: '#0055aa',
         backgroundColor: '#112233',
+        businessName: 'Sender & Co',
+        contactEmail: 'hello@example.com',
         footerText: 'Footer <script>alert(1)</script>',
         logoAltText: 'User controlled <Logo>',
         logoLinkUrl: 'https://example.com/email',
         logoMode: 'image',
         logoUrl: 'https://example.com/logo.png',
+        note: 'Footer <script>alert(1)</script>',
+        phone: '+1 555 0100',
         previewText: 'Preview <hidden>',
         showPoweredByClever: true,
         surfaceColor: '#223344',
         textColor: '#334455',
+        websiteUrl: 'https://example.com',
       },
       body: 'Hello <customer>',
       commandId: 'command-1:stop-1',
@@ -253,13 +872,15 @@ describe('BrevoCustomerEmailTransport', () => {
       replyTo: { email: 'reply@example.com' },
       sender: { email: 'sender@example.com', name: 'Sender & Co <Team>' },
       tags: ['customer-delivery-email', 'delivery_scheduled'],
-      textContent: 'Hello <customer>',
+      textContent: 'Hello <customer>\n\n--\nSender & Co\n+1 555 0100\nhello@example.com\nhttps://example.com\nFooter <script>alert(1)</script>',
     });
     const parsedBody = JSON.parse(request.body as string) as { htmlContent: string; textContent: string };
     expect(parsedBody.htmlContent).toContain('<meta name="color-scheme" content="light dark">');
     expect(parsedBody.htmlContent).toContain('<meta name="supported-color-schemes" content="light dark">');
     expect(parsedBody.htmlContent).toMatch(/<h1[^>]*>Subject &lt;urgent&gt;<\/h1>[\s\S]*Hello &lt;customer&gt;[\s\S]*<hr/u);
     expect(parsedBody.htmlContent).toContain('Footer &lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(parsedBody.htmlContent).toContain('+1 555 0100');
+    expect(parsedBody.htmlContent).toContain('mailto:hello@example.com');
     expect(parsedBody.htmlContent).toContain('alt="Sender &amp; Co Team"');
     expect(parsedBody.htmlContent).toMatch(/<td[^>]*border:1px solid #d0d7de[^>]*>[\s\S]*<table role="presentation"[\s\S]*alt="Sender &amp; Co Team"[\s\S]*Footer &lt;script&gt;alert\(1\)&lt;\/script&gt;/u);
     expect(parsedBody.htmlContent).not.toContain('Preview &lt;hidden&gt;');
@@ -273,8 +894,35 @@ describe('BrevoCustomerEmailTransport', () => {
     expect(parsedBody.htmlContent).not.toContain('<script>');
     expect(parsedBody.htmlContent).not.toContain('<urgent>');
     expect(parsedBody.htmlContent).not.toContain('Powered by CLEVER');
-    expect(parsedBody.textContent).toBe('Hello <customer>');
+    expect(parsedBody.textContent).toBe('Hello <customer>\n\n--\nSender & Co\n+1 555 0100\nhello@example.com\nhttps://example.com\nFooter <script>alert(1)</script>');
     expect(request.signal).toBeDefined();
+  });
+
+  test('omits the boxed footer when footer fields and logo are empty even with a sender name', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ messageId: 'brevo-id' }), { status: 201 }));
+    const transport = new BrevoCustomerEmailTransport({ apiKey: 'secret', fetchImpl });
+
+    await transport.send({
+      branding: {
+        ...defaultCustomerEmailSettings().branding,
+        businessName: '',
+      },
+      body: 'Body',
+      commandId: 'command-2',
+      recipientEmail: 'customer@example.com',
+      replyTo: null,
+      senderEmail: 'sender@example.com',
+      senderName: 'Sender Name',
+      signal: 'TEST',
+      subject: 'Subject',
+      tags: ['customer-delivery-email', 'test'],
+    });
+
+    const [, request] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const parsedBody = JSON.parse(request.body as string) as { htmlContent: string; textContent: string };
+    expect(parsedBody.htmlContent).not.toContain('border:1px solid #d0d7de;border-radius:8px;padding:18px');
+    expect(parsedBody.htmlContent).not.toContain('Sender Name');
+    expect(parsedBody.textContent).toBe('Body');
   });
 });
 
@@ -287,6 +935,7 @@ function createHarness() {
       update: vi.fn(),
     },
     customerEmailManualDispatchRecipient: {
+      findMany: vi.fn().mockResolvedValue([]),
       updateMany: vi.fn(),
     },
     routePlan: {
@@ -295,6 +944,7 @@ function createHarness() {
     shop: {
       findUnique: vi.fn(),
       update: vi.fn(),
+      updateMany: vi.fn(),
     },
   };
   const transport = {
@@ -309,26 +959,31 @@ function createHarness() {
   };
 }
 
-function routePlanRow(input: { stops: ReturnType<typeof stopRow>[] }) {
+function routePlanRow(input: { customerEmailSettings?: unknown; routeOpsUiSettings?: unknown; stops: ReturnType<typeof stopRow>[] }) {
   return {
     id: 'route-id',
     name: 'Route A',
     planDate: new Date('2026-08-03T00:00:00.000Z'),
     routeStops: input.stops,
     shop: {
-      customerEmailSettings: {
+      customerEmailSettings: input.customerEmailSettings ?? {
         ...defaultCustomerEmailSettings(),
         senderEmail: 'sender@example.com',
       },
       id: 'shop-id',
+      routeOpsUiSettings: input.routeOpsUiSettings ?? null,
       shopDomain: 'example.myshopify.com',
     },
   };
 }
 
 function stopRow(input: {
+  deliveryWeekday?: string | null;
   email?: string | null;
+  estimatedArrivalAt?: Date | null;
   id: string;
+  items?: Array<{ lineIndex: number; name: string; options: unknown; quantity: number }>;
+  recipientName?: string | null;
   sequence: number;
   status: string;
 }) {
@@ -341,17 +996,19 @@ function stopRow(input: {
       deliveryDate: new Date('2026-08-04T00:00:00.000Z'),
       id: input.id,
       order: {
+        deliveryFacts: [{ deliveryWeekday: input.deliveryWeekday ?? null }],
         email: input.email === undefined ? `${input.id}@example.com` : input.email,
         id: `order-${input.sequence}`,
         name: `Order #${input.sequence}`,
+        orderItems: input.items ?? [],
       },
       orderId: `order-${input.sequence}`,
       postalCode: 'M1M 1M1',
       province: 'ON',
-      recipientName: 'Jane Customer',
+      recipientName: input.recipientName === undefined ? 'Jane Customer' : input.recipientName,
       status: input.status,
     },
-    estimatedArrivalAt: new Date('2026-08-04T10:00:00.000Z'),
+    estimatedArrivalAt: input.estimatedArrivalAt === undefined ? new Date('2026-08-04T10:00:00.000Z') : input.estimatedArrivalAt,
     sequence: input.sequence,
   };
 }

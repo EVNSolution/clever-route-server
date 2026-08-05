@@ -288,25 +288,43 @@ export function SettingsPage({
             eyebrow={t.deliveryDefaultsEyebrow}
             title={t.deliveryDefaultsTitle}
           >
-            <label className="settings-field settings-field--wide">
-              {t.destinationDwellMinutes}
-              <input
-                min={0}
-                max={240}
-                step={1}
-                type="number"
-                value={
-                  normalizedUiSettings.destinationDwellMinutes?.toString() ?? ""
-                }
-                onChange={(event) =>
-                  updateUiSettings({
-                    destinationDwellMinutes: toNullableNumber(
-                      event.target.value,
-                    ),
-                  })
-                }
-              />
-            </label>
+            <div className="settings-field-grid">
+              <label className="settings-field">
+                {t.destinationDwellMinutes}
+                <input
+                  min={0}
+                  max={240}
+                  step={1}
+                  type="number"
+                  value={
+                    normalizedUiSettings.destinationDwellMinutes?.toString() ??
+                    ""
+                  }
+                  onChange={(event) =>
+                    updateUiSettings({
+                      destinationDwellMinutes: toNullableNumber(
+                        event.target.value,
+                      ),
+                    })
+                  }
+                />
+              </label>
+              <label className="settings-field">
+                {t.nearbyStopsThreshold}
+                <input
+                  min={1}
+                  max={25}
+                  step={1}
+                  type="number"
+                  value={normalizedUiSettings.nearbyStopsThreshold}
+                  onChange={(event) =>
+                    updateUiSettings({
+                      nearbyStopsThreshold: Number(event.target.value),
+                    })
+                  }
+                />
+              </label>
+            </div>
           </SettingsCategorySection>
 
           <SettingsCategorySection

@@ -2437,6 +2437,7 @@ describe("Admin WooCommerce connection UI routes", () => {
                   subject: "Order {{orderNumber}} delivery",
                 },
               },
+              nearbyStopsThreshold: 6,
               version: 1,
             },
           },
@@ -2446,13 +2447,22 @@ describe("Admin WooCommerce connection UI routes", () => {
 
       expect(response.statusCode).toBe(200);
       const payload = readApiData<{
-        settings: { routeOpsUiSettings: { destinationDwellMinutes: number } };
+        settings: {
+          routeOpsUiSettings: {
+            destinationDwellMinutes: number;
+            nearbyStopsThreshold: number;
+          };
+        };
       }>(response);
       expect(payload.settings.routeOpsUiSettings.destinationDwellMinutes).toBe(
         12,
       );
+      expect(payload.settings.routeOpsUiSettings.nearbyStopsThreshold).toBe(6);
       expect(saveSettings.mock.calls[0]?.[0].routeOpsUiSettings).toEqual(
-        expect.objectContaining({ destinationDwellMinutes: 12 }),
+        expect.objectContaining({
+          destinationDwellMinutes: 12,
+          nearbyStopsThreshold: 6,
+        }),
       );
       expect(saveSettings.mock.calls[0]?.[0]).not.toHaveProperty(
         "customerEmailProvider",
@@ -2477,6 +2487,10 @@ describe("Admin WooCommerce connection UI routes", () => {
         {
           ...defaultRouteOpsUiSettings(),
           destinationDwellMinutes: 241,
+        },
+        {
+          ...defaultRouteOpsUiSettings(),
+          nearbyStopsThreshold: 0,
         },
         {
           ...defaultRouteOpsUiSettings(),

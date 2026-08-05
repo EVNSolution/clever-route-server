@@ -61,6 +61,12 @@ The Shopify app/source baseline is preserved outside the active Route workspace 
 
 Use it as reference/backup when explicitly useful. Do not modify it as part of Route Ops implementation unless the user explicitly scopes that repo.
 
+The Customer Notification settings and Route Detail manual-send lane is an
+explicit exception governed by
+`docs/adr/2026-08-05-customer-notification-settings-ownership.md`: the Shopify
+app owns the merchant-facing UI, the delivery API remains canonical for
+render/send behavior, and Route Ops retains operational timing/rules.
+
 ## First-pass non-goals
 
 - No GitHub repo split by default.

@@ -7,6 +7,7 @@ import {
   normalizeCustomerEmailSettings,
   readCustomerEmailSignal,
   validateCustomerEmailSettingsPayload,
+  type CustomerEmailBranding,
   type CustomerEmailSettings,
   type CustomerEmailSignal,
 } from './customer-email-settings.js';
@@ -15,6 +16,7 @@ import {
   CustomerEmailTransportSendError,
   type CustomerEmailTransport,
 } from './customer-email-transport.js';
+import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
 import { DEFAULT_SHOPIFY_APP_ID, appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 
 export type CustomerEmailPreviewInput = {
@@ -29,6 +31,8 @@ export type CustomerEmailSendInput = CustomerEmailPreviewInput & {
   actor: string;
   commandId: string;
   confirmed: boolean;
+  missingValuesConfirmed?: boolean | undefined;
+  resendConfirmed?: boolean | undefined;
 };
 
 export type CustomerEmailPreview = {
@@ -56,15 +60,31 @@ export type CustomerEmailDispatch = {
 };
 
 export type CustomerEmailRenderedRecipient = {
+  diagnostics: {
+    body: CustomerEmailRenderDiagnostic[];
+    subject: CustomerEmailRenderDiagnostic[];
+  };
   deliveryStopId: string;
   email: string;
   orderId: string;
   orderNumber: string;
+  history: CustomerEmailManualHistorySummary;
   rendered: {
     body: string;
     subject: string;
   };
   sequence: number;
+};
+
+export type CustomerEmailRenderDiagnostic = {
+  code: 'MISSING_TEMPLATE_VALUE';
+  key: string;
+};
+
+export type CustomerEmailManualHistorySummary = {
+  lastSentAt: string | null;
+  lastStatus: string | null;
+  sendCount: number;
 };
 
 export type CustomerEmailSkippedRecipient = {
@@ -105,9 +125,18 @@ type CustomerEmailRoutePlanRow = {
       deliveryDate: Date | null;
       id: string;
       order: {
+        deliveryFacts: Array<{
+          deliveryWeekday: string | null;
+        }>;
         email: string | null;
         id: string;
         name: string;
+        orderItems: Array<{
+          lineIndex: number;
+          name: string;
+          options: unknown;
+          quantity: number;
+        }>;
       };
       orderId: string;
       postalCode: string | null;
@@ -121,6 +150,7 @@ type CustomerEmailRoutePlanRow = {
   shop: {
     customerEmailSettings: unknown;
     id: string;
+    routeOpsUiSettings: unknown;
     shopDomain: string;
   };
 };
@@ -147,6 +177,9 @@ export class CustomerEmailService {
     if (input.payload === null || typeof input.payload !== 'object' || Array.isArray(input.payload)) {
       throw new Error('Customer email settings must be an object.');
     }
+    if (isRecord(input.payload) && input.payload.version === 3) {
+      throw new CustomerEmailValidationError('Customer email V3 full settings writes are not allowed. Use scoped global or template settings endpoints.');
+    }
     const settings = normalizeCustomerEmailSettings(input.payload);
     const shop = await this.prisma.shop.findUnique({
       select: { id: true },
@@ -158,6 +191,80 @@ export class CustomerEmailService {
       where: { id: shop.id },
     });
     return settings;
+  }
+
+  async saveGlobalSettings(input: {
+    appId?: string | undefined;
+    payload: unknown;
+    shopDomain: string;
+  }): Promise<CustomerEmailSettings | null> {
+    const payload = readCustomerEmailGlobalSettingsPayload(input.payload);
+    if (payload === null) throw new CustomerEmailValidationError('Invalid customer email global settings payload.');
+    const shop = await this.prisma.shop.findUnique({
+      select: { customerEmailSettings: true, id: true, updatedAt: true },
+      where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }),
+    });
+    if (shop === null) return null;
+    const current = normalizeCustomerEmailSettings(shop.customerEmailSettings);
+    if (payload.expectedVersion !== current.globalVersion) {
+      throw new CustomerEmailVersionConflictError('SETTINGS_VERSION_CONFLICT', 'Customer email global settings version conflict.');
+    }
+    const next = validateCustomerEmailSettingsPayload({
+      ...current,
+      branding: payload.branding,
+      globalVersion: current.globalVersion + 1,
+      replyTo: payload.replyTo,
+      senderEmail: payload.senderEmail,
+      senderName: payload.senderName,
+    });
+    const updateResult = await this.prisma.shop.updateMany({
+      data: { customerEmailSettings: next },
+      where: { id: shop.id, updatedAt: shop.updatedAt },
+    });
+    if (updateResult.count === 0) {
+      throw new CustomerEmailVersionConflictError('SETTINGS_VERSION_CONFLICT', 'Customer email global settings version conflict.');
+    }
+    return next;
+  }
+
+  async saveTemplateSettings(input: {
+    appId?: string | undefined;
+    payload: unknown;
+    shopDomain: string;
+    signal: CustomerEmailSignal;
+  }): Promise<CustomerEmailSettings | null> {
+    const payload = readCustomerEmailTemplateSettingsPayload(input.payload);
+    if (payload === null) throw new CustomerEmailValidationError('Invalid customer email template settings payload.');
+    const shop = await this.prisma.shop.findUnique({
+      select: { customerEmailSettings: true, id: true, updatedAt: true },
+      where: appScopedShopWhere({ appId: input.appId, shopDomain: normalizeShopDomain(input.shopDomain) }),
+    });
+    if (shop === null) return null;
+    const current = normalizeCustomerEmailSettings(shop.customerEmailSettings);
+    const currentTemplate = current.templates[input.signal];
+    if (payload.expectedVersion !== currentTemplate.version) {
+      throw new CustomerEmailVersionConflictError('TEMPLATE_VERSION_CONFLICT', 'Customer email template version conflict.');
+    }
+    const next = validateCustomerEmailSettingsPayload({
+      ...current,
+      templates: {
+        ...current.templates,
+        [input.signal]: {
+          body: payload.body,
+          enabled: payload.enabled,
+          subject: payload.subject,
+          version: currentTemplate.version + 1,
+        },
+      },
+    });
+    const updateResult = await this.prisma.shop.updateMany({
+      data: { customerEmailSettings: next },
+      where: { id: shop.id, updatedAt: shop.updatedAt },
+    });
+    if (updateResult.count === 0) {
+      throw new CustomerEmailVersionConflictError('TEMPLATE_VERSION_CONFLICT', 'Customer email template version conflict.');
+    }
+    return next;
   }
 
   async sendTest(input: {
@@ -174,16 +281,17 @@ export class CustomerEmailService {
     if (!isEmail(input.recipientEmail.trim().toLowerCase())) throw new CustomerEmailValidationError('Test recipient email is invalid.');
     const signal = input.signal ?? 'DELIVERY_SCHEDULED';
     const template = settings.templates[signal];
+    const testContext = testTemplateContext(settings);
     const result = await this.transport.send({
       branding: settings.branding,
-      body: input.body?.trim() || renderTemplate(template.body, testTemplateContext(settings)),
+      body: input.body?.trim() || renderTemplate(template.body, testContext).value,
       commandId: `test:${cryptoRandomId()}`,
       recipientEmail: input.recipientEmail.trim().toLowerCase(),
       replyTo: settings.replyTo,
       senderEmail: settings.senderEmail,
       senderName: settings.senderName,
       signal: 'TEST',
-      subject: input.subject?.trim() || renderTemplate(template.subject, testTemplateContext(settings)),
+      subject: input.subject?.trim() || renderTemplate(template.subject, testContext).value,
       tags: ['customer-delivery-email', 'test'],
     });
     return {
@@ -198,7 +306,10 @@ export class CustomerEmailService {
     const routePlan = await this.findRoutePlan(input);
     if (routePlan === null) return null;
     const settings = normalizeCustomerEmailSettings(routePlan.shop.customerEmailSettings);
-    return buildPreview(routePlan, settings, input);
+    const eligibleStopIds = selectEligibleStops(routePlan, input.signal, input.deliveryStopIds, routeOpsNearbyStopsThreshold(routePlan))
+      .map((stop) => stop.deliveryStop.id);
+    const history = await this.readManualHistory(routePlan.shop.id, input.routePlanId, input.signal, eligibleStopIds);
+    return buildPreview(routePlan, settings, input, history);
   }
 
   async send(input: CustomerEmailSendInput): Promise<CustomerEmailDispatch | null> {
@@ -209,9 +320,24 @@ export class CustomerEmailService {
     if (routePlan === null) return null;
     const settings = normalizeCustomerEmailSettings(routePlan.shop.customerEmailSettings);
     assertConfigured(settings);
-    const preview = buildPreview(routePlan, settings, input);
+    const eligibleStopIds = selectEligibleStops(routePlan, input.signal, input.deliveryStopIds, routeOpsNearbyStopsThreshold(routePlan))
+      .map((stop) => stop.deliveryStop.id);
+    const history = await this.readManualHistory(routePlan.shop.id, input.routePlanId, input.signal, eligibleStopIds);
+    const preview = buildPreview(routePlan, settings, input, history);
     const template = settings.templates[input.signal];
     if (!template.enabled) throw new CustomerEmailValidationError('Selected customer email template is disabled.');
+    if (previewHasMissingTemplateValues(preview) && input.missingValuesConfirmed !== true) {
+      throw new CustomerEmailValidationError(
+        'Missing customer email template values must be confirmed before sending.',
+        'MISSING_TEMPLATE_VALUES_CONFIRMATION_REQUIRED',
+      );
+    }
+    if (previewHasPriorSent(preview) && input.resendConfirmed !== true) {
+      throw new CustomerEmailValidationError(
+        'Prior customer email send must be confirmed before resending.',
+        'RESEND_CONFIRMATION_REQUIRED',
+      );
+    }
 
     const created = await this.createDispatch({
       actor: input.actor,
@@ -326,7 +452,27 @@ export class CustomerEmailService {
                 countryCode: true,
                 deliveryDate: true,
                 id: true,
-                order: { select: { email: true, id: true, name: true } },
+                order: {
+                  select: {
+                    deliveryFacts: {
+                      orderBy: { computedAt: 'desc' },
+                      select: { deliveryWeekday: true },
+                      take: 1,
+                    },
+                    email: true,
+                    id: true,
+                    name: true,
+                    orderItems: {
+                      orderBy: { lineIndex: 'asc' },
+                      select: {
+                        lineIndex: true,
+                        name: true,
+                        options: true,
+                        quantity: true,
+                      },
+                    },
+                  },
+                },
                 orderId: true,
                 postalCode: true,
                 province: true,
@@ -338,7 +484,7 @@ export class CustomerEmailService {
             sequence: true,
           },
         },
-        shop: { select: { customerEmailSettings: true, id: true, shopDomain: true } },
+        shop: { select: { customerEmailSettings: true, id: true, routeOpsUiSettings: true, shopDomain: true } },
       },
       where: {
         id: input.routePlanId,
@@ -479,14 +625,65 @@ export class CustomerEmailService {
       where: { deliveryStopId, dispatchId },
     });
   }
+
+  private async readManualHistory(
+    shopId: string,
+    routePlanId: string,
+    signal: CustomerEmailSignal,
+    deliveryStopIds: string[],
+  ): Promise<Map<string, CustomerEmailManualHistorySummary>> {
+    if (deliveryStopIds.length === 0) return new Map();
+    const rows = await this.prisma.customerEmailManualDispatchRecipient.findMany({
+      orderBy: { createdAt: 'desc' },
+      select: {
+        createdAt: true,
+        deliveryStopId: true,
+        sentAt: true,
+        status: true,
+      },
+      where: {
+        deliveryStopId: { in: deliveryStopIds },
+        dispatch: { signal },
+        routePlanId,
+        shopId,
+      },
+    });
+    const summaries = new Map<string, CustomerEmailManualHistorySummary>();
+    for (const row of rows) {
+      if (row.deliveryStopId === null) continue;
+      const current = summaries.get(row.deliveryStopId);
+      if (current === undefined) {
+        summaries.set(row.deliveryStopId, {
+          lastSentAt: row.status === 'SENT' ? row.sentAt?.toISOString() ?? null : null,
+          lastStatus: row.status,
+          sendCount: row.status === 'SENT' ? 1 : 0,
+        });
+      } else if (row.status === 'SENT') {
+        current.sendCount += 1;
+        if (current.lastSentAt === null) current.lastSentAt = row.sentAt?.toISOString() ?? null;
+      }
+    }
+    return summaries;
+  }
 }
 
 export class CustomerEmailValidationError extends Error {
-  readonly code = 'CUSTOMER_EMAIL_BAD_REQUEST';
+  readonly code: 'CUSTOMER_EMAIL_BAD_REQUEST' | 'MISSING_TEMPLATE_VALUES_CONFIRMATION_REQUIRED' | 'RESEND_CONFIRMATION_REQUIRED';
 
-  constructor(message: string) {
+  constructor(
+    message: string,
+    code: 'CUSTOMER_EMAIL_BAD_REQUEST' | 'MISSING_TEMPLATE_VALUES_CONFIRMATION_REQUIRED' | 'RESEND_CONFIRMATION_REQUIRED' = 'CUSTOMER_EMAIL_BAD_REQUEST',
+  ) {
     super(message);
+    this.code = code;
     this.name = 'CustomerEmailValidationError';
+  }
+}
+
+export class CustomerEmailVersionConflictError extends Error {
+  constructor(readonly code: 'SETTINGS_VERSION_CONFLICT' | 'TEMPLATE_VERSION_CONFLICT', message: string) {
+    super(message);
+    this.name = 'CustomerEmailVersionConflictError';
   }
 }
 
@@ -503,9 +700,10 @@ function buildPreview(
   routePlan: CustomerEmailRoutePlanRow,
   settings: CustomerEmailSettings,
   input: CustomerEmailPreviewInput,
+  history: Map<string, CustomerEmailManualHistorySummary> = new Map(),
 ): CustomerEmailPreview {
   const template = settings.templates[input.signal];
-  const eligibleStops = selectEligibleStops(routePlan, input.signal, input.deliveryStopIds, settings.nearbyStopsThreshold);
+  const eligibleStops = selectEligibleStops(routePlan, input.signal, input.deliveryStopIds, routeOpsNearbyStopsThreshold(routePlan));
   const recipients: CustomerEmailRenderedRecipient[] = [];
   const skipped: CustomerEmailSkippedRecipient[] = [];
   for (const stop of eligibleStops) {
@@ -522,14 +720,21 @@ function buildPreview(
       continue;
     }
     const context = renderContext(routePlan, stop);
+    const renderedBody = renderTemplate(template.body, context);
+    const renderedSubject = renderTemplate(template.subject, context);
     recipients.push({
+      diagnostics: {
+        body: renderedBody.diagnostics,
+        subject: renderedSubject.diagnostics,
+      },
       deliveryStopId: stop.deliveryStop.id,
       email,
+      history: history.get(stop.deliveryStop.id) ?? emptyManualHistorySummary(),
       orderId: stop.deliveryStop.order.id,
       orderNumber: stop.deliveryStop.order.name,
       rendered: {
-        body: renderTemplate(template.body, context),
-        subject: renderTemplate(template.subject, context),
+        body: renderedBody.value,
+        subject: renderedSubject.value,
       },
       sequence: stop.sequence,
     });
@@ -575,6 +780,10 @@ function selectEligibleStops(
   }
 }
 
+function routeOpsNearbyStopsThreshold(routePlan: CustomerEmailRoutePlanRow): number {
+  return normalizeRouteOpsUiSettings(routePlan.shop.routeOpsUiSettings).nearbyStopsThreshold;
+}
+
 function computeCurrentProgressSequence(stops: CustomerEmailRoutePlanRow['routeStops']): number {
   const active = stops.find((stop) => ['ARRIVED', 'EN_ROUTE'].includes(stop.deliveryStop.status));
   if (active !== undefined) return active.sequence;
@@ -586,10 +795,12 @@ function computeCurrentProgressSequence(stops: CustomerEmailRoutePlanRow['routeS
 
 function renderContext(routePlan: CustomerEmailRoutePlanRow, stop: CustomerEmailRoutePlanRow['routeStops'][number]): Record<string, string> {
   return {
-    customerName: stop.deliveryStop.recipientName ?? 'Customer',
+    customerName: stop.deliveryStop.recipientName ?? '',
     deliveryAddress: formatAddress(stop.deliveryStop),
     deliveryDate: formatDate(stop.deliveryStop.deliveryDate ?? routePlan.planDate),
-    eta: stop.estimatedArrivalAt === null ? 'TBD' : stop.estimatedArrivalAt.toISOString(),
+    deliveryWeekday: stop.deliveryStop.order.deliveryFacts[0]?.deliveryWeekday ?? '',
+    eta: stop.estimatedArrivalAt === null ? '' : stop.estimatedArrivalAt.toISOString(),
+    inventoryList: formatInventoryList(stop.deliveryStop.order.orderItems),
     orderNumber: stop.deliveryStop.order.name,
     routeName: routePlan.name,
     sequence: String(stop.sequence),
@@ -602,7 +813,9 @@ function testTemplateContext(settings: CustomerEmailSettings): Record<string, st
     customerName: 'Customer',
     deliveryAddress: '123 Delivery St',
     deliveryDate: formatDate(new Date()),
+    deliveryWeekday: '',
     eta: 'TBD',
+    inventoryList: '',
     orderNumber: '#1001',
     routeName: 'Test route',
     sequence: '1',
@@ -610,8 +823,18 @@ function testTemplateContext(settings: CustomerEmailSettings): Record<string, st
   };
 }
 
-function renderTemplate(template: string, context: Record<string, string>): string {
-  return template.replace(/\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/gu, (_match, token: string) => context[token] ?? '');
+function renderTemplate(template: string, context: Record<string, string>): { diagnostics: CustomerEmailRenderDiagnostic[]; value: string } {
+  const diagnostics: CustomerEmailRenderDiagnostic[] = [];
+  const missingKeys = new Set<string>();
+  const value = template.replace(/\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/gu, (_match, token: string) => {
+    const rendered = context[token] ?? '';
+    if (rendered === '' && !missingKeys.has(token)) {
+      missingKeys.add(token);
+      diagnostics.push({ code: 'MISSING_TEMPLATE_VALUE', key: token });
+    }
+    return rendered;
+  });
+  return { diagnostics, value };
 }
 
 function formatAddress(stop: CustomerEmailRoutePlanRow['routeStops'][number]['deliveryStop']): string {
@@ -625,12 +848,49 @@ function formatAddress(stop: CustomerEmailRoutePlanRow['routeStops'][number]['de
   ].filter((value): value is string => typeof value === 'string' && value.trim() !== '').join(', ');
 }
 
+function formatInventoryList(items: CustomerEmailRoutePlanRow['routeStops'][number]['deliveryStop']['order']['orderItems']): string {
+  return items.map((item) => {
+    const options = formatItemOptions(item.options);
+    const name = options === '' ? item.name : `${item.name} (${options})`;
+    return `${item.quantity} x ${name}`;
+  }).join('\n');
+}
+
+function formatItemOptions(value: unknown): string {
+  if (!Array.isArray(value)) return '';
+  return value.map((option) => {
+    if (typeof option === 'string') return option.trim();
+    if (option !== null && typeof option === 'object') {
+      const record = option as Record<string, unknown>;
+      const name = typeof record.name === 'string' ? record.name.trim() : '';
+      const optionValue = typeof record.value === 'string' ? record.value.trim() : '';
+      if (name !== '' && optionValue !== '') return `${name}: ${optionValue}`;
+      if (optionValue !== '') return optionValue;
+      if (name !== '') return name;
+    }
+    return '';
+  }).filter((option) => option !== '').join(', ');
+}
+
 function formatDate(value: Date): string {
   return value.toISOString().slice(0, 10);
 }
 
 function assertConfigured(settings: CustomerEmailSettings): void {
   if (settings.senderEmail === '') throw new CustomerEmailValidationError('Customer email senderEmail is required.');
+}
+
+function previewHasMissingTemplateValues(preview: CustomerEmailPreview): boolean {
+  return preview.recipients.some((recipient) =>
+    recipient.diagnostics.body.length > 0 || recipient.diagnostics.subject.length > 0);
+}
+
+function previewHasPriorSent(preview: CustomerEmailPreview): boolean {
+  return preview.recipients.some((recipient) => recipient.history.lastStatus === 'SENT' || recipient.history.sendCount > 0);
+}
+
+function emptyManualHistorySummary(): CustomerEmailManualHistorySummary {
+  return { lastSentAt: null, lastStatus: null, sendCount: 0 };
 }
 
 function countDispatchResults(results: CustomerEmailDispatchResult[]): CustomerEmailDispatch['counts'] {
@@ -692,10 +952,76 @@ export function readCustomerEmailSettingsPayload(value: unknown): CustomerEmailS
   }
 }
 
+export function readCustomerEmailGlobalSettingsPayload(value: unknown): {
+  branding: CustomerEmailBranding;
+  expectedVersion: number;
+  replyTo: string | null;
+  senderEmail: string;
+  senderName: string;
+} | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['branding', 'expectedVersion', 'replyTo', 'senderEmail', 'senderName'])) return null;
+  if (typeof value.expectedVersion !== 'number' || !Number.isInteger(value.expectedVersion)) return null;
+  try {
+    const current = defaultCustomerEmailSettings();
+    const settings = validateCustomerEmailSettingsPayload({
+      ...current,
+      branding: value.branding,
+      replyTo: value.replyTo,
+      senderEmail: value.senderEmail,
+      senderName: value.senderName,
+    });
+    return {
+      branding: settings.branding,
+      expectedVersion: value.expectedVersion,
+      replyTo: settings.replyTo,
+      senderEmail: settings.senderEmail,
+      senderName: settings.senderName,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function readCustomerEmailTemplateSettingsPayload(value: unknown): {
+  body: string;
+  enabled: boolean;
+  expectedVersion: number;
+  subject: string;
+} | null {
+  if (!isRecord(value) || !hasOnlyKeys(value, ['body', 'enabled', 'expectedVersion', 'subject'])) return null;
+  if (typeof value.expectedVersion !== 'number' || !Number.isInteger(value.expectedVersion)) return null;
+  try {
+    const current = defaultCustomerEmailSettings();
+    const settings = validateCustomerEmailSettingsPayload({
+      ...current,
+      templates: {
+        ...current.templates,
+        DELIVERY_SCHEDULED: {
+          body: value.body,
+          enabled: value.enabled,
+          subject: value.subject,
+          version: current.templates.DELIVERY_SCHEDULED.version,
+        },
+      },
+    });
+    const template = settings.templates.DELIVERY_SCHEDULED;
+    return {
+      body: template.body,
+      enabled: template.enabled,
+      expectedVersion: value.expectedVersion,
+      subject: template.subject,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function readCustomerEmailCommandPayload(value: unknown): {
   commandId?: string | undefined;
   confirmed?: boolean | undefined;
   deliveryStopIds?: string[] | undefined;
+  missingValuesConfirmed?: boolean | undefined;
+  resendConfirmed?: boolean | undefined;
   signal: CustomerEmailSignal;
 } | null {
   if (!isRecord(value)) return null;
@@ -709,6 +1035,8 @@ export function readCustomerEmailCommandPayload(value: unknown): {
     ...(typeof value.commandId === 'string' ? { commandId: value.commandId } : {}),
     ...(typeof value.confirmed === 'boolean' ? { confirmed: value.confirmed } : {}),
     ...(Array.isArray(deliveryStopIds) ? { deliveryStopIds } : {}),
+    ...(typeof value.missingValuesConfirmed === 'boolean' ? { missingValuesConfirmed: value.missingValuesConfirmed } : {}),
+    ...(typeof value.resendConfirmed === 'boolean' ? { resendConfirmed: value.resendConfirmed } : {}),
     signal,
   };
 }
@@ -734,6 +1062,11 @@ export function readCustomerEmailTestPayload(value: unknown): {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: string[]): boolean {
+  const allowed = new Set(allowedKeys);
+  return Object.keys(value).every((key) => allowed.has(key)) && allowedKeys.every((key) => key in value);
 }
 
 export { customerEmailSignals, defaultCustomerEmailSettings };

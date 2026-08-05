@@ -69,7 +69,7 @@ export class BrevoCustomerEmailTransport implements CustomerEmailTransport {
         },
         subject: message.subject,
         tags: message.tags,
-        textContent: message.body,
+        textContent: textContent(message),
         to: [{ email: message.recipientEmail }],
       }),
       headers: {
@@ -123,13 +123,22 @@ function readPositiveInteger(value: string | undefined): number | undefined {
 function brandedHtml(message: CustomerEmailTransportMessage): string {
   const branding = message.branding ?? defaultCustomerEmailBranding();
   const footerLogo = renderLogo(branding, message.senderName);
-  const footerText = branding.footerText === ''
+  const footerDetails = renderFooterDetails(branding);
+  const footer = footerLogo === '' && footerDetails === ''
     ? ''
-    : `<div class="email-muted" style="color:#57606a;font-size:13px;line-height:1.55">${escapeHtml(branding.footerText)}</div>`;
-  const footerColumns = footerLogo === ''
-    ? `<td valign="top" class="email-muted" style="color:#57606a">${footerText}</td>`
-    : `<td valign="top" width="1" style="padding:0 16px 0 0">${footerLogo}</td>
-                          <td valign="top" class="email-muted" style="color:#57606a">${footerText}</td>`;
+    : `<hr style="border:0;border-top:1px solid #d0d7de;margin:28px 0" />
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%">
+                  <tr>
+                    <td class="email-footer" style="border:1px solid #d0d7de;border-radius:8px;padding:18px">
+                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%">
+                        <tr>
+                          ${footerLogo === '' ? '' : `<td valign="top" width="1" style="padding:0 16px 0 0">${footerLogo}</td>`}
+                          <td valign="top" class="email-muted" style="color:#57606a">${footerDetails}</td>
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                </table>`;
   return `<!doctype html>
 <html>
   <head>
@@ -154,18 +163,7 @@ function brandedHtml(message: CustomerEmailTransportMessage): string {
               <td style="padding:28px 0">
                 <h1 class="email-text" style="color:#111111;font-size:28px;font-weight:700;line-height:1.2;margin:0 0 20px">${escapeHtml(message.subject)}</h1>
                 <div class="email-text" style="color:#111111;font-size:16px;line-height:1.65;white-space:pre-wrap">${escapeHtml(message.body)}</div>
-                <hr style="border:0;border-top:1px solid #d0d7de;margin:28px 0" />
-                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%">
-                  <tr>
-                    <td class="email-footer" style="border:1px solid #d0d7de;border-radius:8px;padding:18px">
-                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%">
-                        <tr>
-                          ${footerColumns}
-                        </tr>
-                      </table>
-                    </td>
-                  </tr>
-                </table>
+                ${footer}
               </td>
             </tr>
           </table>
@@ -174,6 +172,18 @@ function brandedHtml(message: CustomerEmailTransportMessage): string {
     </table>
   </body>
 </html>`;
+}
+
+function renderFooterDetails(branding: CustomerEmailBranding): string {
+  const rows = [
+    branding.businessName === '' ? '' : `<div style="color:#111111;font-size:14px;font-weight:700;line-height:1.4;margin:0 0 6px">${escapeHtml(branding.businessName)}</div>`,
+    branding.address === '' ? '' : `<div style="font-size:13px;line-height:1.55;margin:0">${escapeHtml(branding.address)}</div>`,
+    branding.phone === '' ? '' : `<div style="font-size:13px;line-height:1.55;margin:0">${escapeHtml(branding.phone)}</div>`,
+    branding.contactEmail === null ? '' : `<div style="font-size:13px;line-height:1.55;margin:0"><a href="mailto:${escapeHtml(branding.contactEmail)}" style="color:#57606a;text-decoration:underline">${escapeHtml(branding.contactEmail)}</a></div>`,
+    branding.websiteUrl === null ? '' : `<div style="font-size:13px;line-height:1.55;margin:0"><a href="${escapeHtml(branding.websiteUrl)}" style="color:#57606a;text-decoration:underline">${escapeHtml(branding.websiteUrl)}</a></div>`,
+    branding.note === '' ? '' : `<div style="font-size:13px;line-height:1.55;margin:8px 0 0">${escapeHtml(branding.note)}</div>`,
+  ].filter((row) => row !== '');
+  return rows.join('');
 }
 
 function renderLogo(branding: CustomerEmailBranding, senderName: string): string {
@@ -188,6 +198,21 @@ function renderLogo(branding: CustomerEmailBranding, senderName: string): string
 function deriveLogoAltText(senderName: string): string {
   const normalized = senderName.replace(/[<>]/gu, '').replace(/\s+/gu, ' ').trim();
   return normalized === '' ? 'Brand' : normalized;
+}
+
+function textContent(message: CustomerEmailTransportMessage): string {
+  const branding = message.branding ?? defaultCustomerEmailBranding();
+  const footerLines = [
+    branding.businessName,
+    branding.address,
+    branding.phone,
+    branding.contactEmail ?? '',
+    branding.websiteUrl ?? '',
+    branding.note,
+  ].map((value) => value.trim()).filter((value) => value !== '');
+  return footerLines.length === 0
+    ? message.body
+    : `${message.body}\n\n--\n${footerLines.join('\n')}`;
 }
 
 function escapeHtml(value: string): string {
