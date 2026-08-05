@@ -519,12 +519,42 @@ describe('admin customer email routes', () => {
     }
   });
 
-  test('rejects customer email logo uploads over one MiB', async () => {
+  test('accepts customer email logo uploads larger than one MiB and within three MiB', async () => {
+    const assetsDirectory = await mkdtemp(join(tmpdir(), 'customer-email-assets-'));
+    const { dependencies } = createHarness({ assetsDirectory });
+    const app = await buildApp({ adminCustomerEmail: dependencies });
+    const logoBytes = Buffer.concat([pngBytes, Buffer.alloc(2 * 1024 * 1024)]);
+    const upload = multipartLogoRequest({
+      bytes: logoBytes,
+      contentType: 'image/png',
+      filename: 'logo.png',
+    });
+
+    try {
+      const response = await app.inject({
+        ...upload,
+        headers: { ...upload.headers, authorization: 'Bearer session-token' },
+        method: 'POST',
+        url: '/admin/customer-email/logo',
+      });
+
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toMatchObject({
+        data: { logoAsset: { contentType: 'image/png', sizeBytes: logoBytes.byteLength } },
+        error: null,
+      });
+    } finally {
+      await app.close();
+      await rm(assetsDirectory, { force: true, recursive: true });
+    }
+  });
+
+  test('rejects customer email logo uploads over three MiB', async () => {
     const assetsDirectory = await mkdtemp(join(tmpdir(), 'customer-email-assets-'));
     const { dependencies } = createHarness({ assetsDirectory });
     const app = await buildApp({ adminCustomerEmail: dependencies });
     const upload = multipartLogoRequest({
-      bytes: Buffer.concat([pngBytes, Buffer.alloc(1024 * 1024)]),
+      bytes: Buffer.concat([pngBytes, Buffer.alloc(3 * 1024 * 1024)]),
       contentType: 'image/png',
       filename: 'logo.png',
     });
@@ -540,7 +570,7 @@ describe('admin customer email routes', () => {
       expect(response.statusCode).toBe(413);
       expect(response.json()).toEqual({
         data: null,
-        error: { code: 'PAYLOAD_TOO_LARGE', message: 'Logo must be at most 1 MiB.' },
+        error: { code: 'PAYLOAD_TOO_LARGE', message: 'Logo must be at most 3 MiB.' },
       });
     } finally {
       await app.close();
