@@ -424,6 +424,7 @@ describe('admin customer email routes', () => {
       });
       expect(publicResponse.statusCode).toBe(200);
       expect(publicResponse.headers['cache-control']).toBe('public, max-age=31536000, immutable');
+      expect(publicResponse.headers['cross-origin-resource-policy']).toBe('cross-origin');
       expect(publicResponse.headers['x-content-type-options']).toBe('nosniff');
       expect(publicResponse.headers['content-type']).toContain('image/png');
       expect(publicResponse.rawPayload).toEqual(pngBytes);
