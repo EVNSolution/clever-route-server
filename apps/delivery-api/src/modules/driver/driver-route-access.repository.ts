@@ -74,6 +74,7 @@ export class PrismaDriverRouteAccessRepository {
       where: {
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
         id: routeContext,
+        routeStops: { some: {} },
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
@@ -92,6 +93,7 @@ export class PrismaDriverRouteAccessRepository {
       where: {
         driver: { is: { accountId, authSubject: { not: null }, status: 'ACTIVE' } },
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        routeStops: { some: {} },
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
@@ -149,6 +151,7 @@ export class PrismaDriverRouteAccessRepository {
         constraints: { path: ['routeScope', 'routeScopeKey'], equals: input.routeContext },
         driver: { is: { accountId: input.accountId, authSubject: { not: null }, status: 'ACTIVE' } },
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        routeStops: { some: {} },
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });

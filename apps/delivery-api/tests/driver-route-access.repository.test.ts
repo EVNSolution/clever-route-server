@@ -38,6 +38,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
       where: {
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
         id: routePlanId,
+        routeStops: { some: {} },
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
@@ -112,6 +113,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
       where: {
         driver: { is: { authSubject: { not: null }, accountId: 'account-id', status: 'ACTIVE' } },
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        routeStops: { some: {} },
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
@@ -231,6 +233,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
       where: {
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
         id: routePlanId,
+        routeStops: { some: {} },
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     }));
@@ -281,6 +284,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
         constraints: { path: ['routeScope', 'routeScopeKey'], equals: 'toronto-shared-route-scope' },
         driver: { is: { authSubject: { not: null }, accountId: 'account-id', status: 'ACTIVE' } },
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
+        routeStops: { some: {} },
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
