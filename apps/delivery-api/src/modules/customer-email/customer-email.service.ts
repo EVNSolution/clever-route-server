@@ -211,7 +211,10 @@ export class CustomerEmailService {
     }
     const next = validateCustomerEmailSettingsPayload({
       ...current,
-      branding: payload.branding,
+      branding: {
+        ...current.branding,
+        ...payload.branding,
+      },
       globalVersion: current.globalVersion + 1,
       replyTo: payload.replyTo,
       senderEmail: payload.senderEmail,
@@ -953,7 +956,7 @@ export function readCustomerEmailSettingsPayload(value: unknown): CustomerEmailS
 }
 
 export function readCustomerEmailGlobalSettingsPayload(value: unknown): {
-  branding: CustomerEmailBranding;
+  branding: Partial<CustomerEmailBranding>;
   expectedVersion: number;
   replyTo: string | null;
   senderEmail: string;
@@ -961,17 +964,17 @@ export function readCustomerEmailGlobalSettingsPayload(value: unknown): {
 } | null {
   if (!isRecord(value) || !hasOnlyKeys(value, ['branding', 'expectedVersion', 'replyTo', 'senderEmail', 'senderName'])) return null;
   if (typeof value.expectedVersion !== 'number' || !Number.isInteger(value.expectedVersion)) return null;
+  if (!isRecord(value.branding)) return null;
   try {
     const current = defaultCustomerEmailSettings();
     const settings = validateCustomerEmailSettingsPayload({
       ...current,
-      branding: value.branding,
       replyTo: value.replyTo,
       senderEmail: value.senderEmail,
       senderName: value.senderName,
     });
     return {
-      branding: settings.branding,
+      branding: value.branding,
       expectedVersion: value.expectedVersion,
       replyTo: settings.replyTo,
       senderEmail: settings.senderEmail,

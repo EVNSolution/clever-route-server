@@ -98,8 +98,8 @@ describe('CustomerEmailService', () => {
     await expect(service.saveGlobalSettings({
       payload: {
         branding: {
-          ...current.branding,
           businessName: 'New Brand',
+          note: 'New footer note',
         },
         expectedVersion: 3,
         replyTo: 'reply@example.com',
@@ -113,6 +113,14 @@ describe('CustomerEmailService', () => {
       replyTo: 'reply@example.com',
       senderEmail: 'new@example.com',
       senderName: 'New Sender',
+      branding: {
+        accentColor: current.branding.accentColor,
+        backgroundColor: current.branding.backgroundColor,
+        businessName: 'New Brand',
+        note: 'New footer note',
+        surfaceColor: current.branding.surfaceColor,
+        textColor: current.branding.textColor,
+      },
       templates: {
         DELIVERY_SCHEDULED: {
           body: 'Original {{orderNumber}}',
