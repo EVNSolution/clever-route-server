@@ -132,7 +132,7 @@ function brandedHtml(message: CustomerEmailTransportMessage): string {
                     <td class="email-footer" style="border:1px solid #d0d7de;border-radius:8px;padding:18px">
                       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;width:100%">
                         <tr>
-                          ${footerLogo === '' ? '' : `<td valign="top" width="1" style="padding:0 16px 0 0">${footerLogo}</td>`}
+                          ${footerLogo === '' ? '' : `<td valign="top" width="${branding.logoWidth}" style="padding:0 16px 0 0;width:${branding.logoWidth}px">${footerLogo}</td>`}
                           <td valign="top" class="email-muted" style="color:#57606a">${footerDetails}</td>
                         </tr>
                       </table>

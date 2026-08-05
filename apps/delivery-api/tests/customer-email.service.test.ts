@@ -890,6 +890,7 @@ describe('BrevoCustomerEmailTransport', () => {
     expect(parsedBody.htmlContent).toContain('+1 555 0100');
     expect(parsedBody.htmlContent).toContain('mailto:hello@example.com');
     expect(parsedBody.htmlContent).toContain('alt="Sender &amp; Co Team"');
+    expect(parsedBody.htmlContent).toContain('<td valign="top" width="160" style="padding:0 16px 0 0;width:160px">');
     expect(parsedBody.htmlContent).toMatch(/<td[^>]*border:1px solid #d0d7de[^>]*>[\s\S]*<table role="presentation"[\s\S]*alt="Sender &amp; Co Team"[\s\S]*Footer &lt;script&gt;alert\(1\)&lt;\/script&gt;/u);
     expect(parsedBody.htmlContent).not.toContain('Preview &lt;hidden&gt;');
     expect(parsedBody.htmlContent).not.toContain('display:none');
