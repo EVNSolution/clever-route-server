@@ -328,29 +328,29 @@ enum DsvEtaStatus {
 }
 
 model Shop {
-  id                                String                             @id @default(uuid()) @db.Uuid
-  appId                             String                             @default("clever") @db.Text
-  shopDomain                        String                             @db.Text
-  shopifyShopGid                    String?                            @db.Text
-  apiVersion                        String                             @default("2026-04") @db.Text
-  adminAccessTokenCiphertext        String?                            @db.Text
-  adminAccessTokenExpiresAt         DateTime?                          @db.Timestamptz(6)
-  adminRefreshTokenCiphertext       String?                            @db.Text
-  adminRefreshTokenExpiresAt        DateTime?                          @db.Timestamptz(6)
-  tokenScopes                       String[]                           @default([])
-  tokenIssuedAt                     DateTime?                          @db.Timestamptz(6)
-  installedAt                       DateTime                           @default(now()) @db.Timestamptz(6)
-  uninstalledAt                     DateTime?                          @db.Timestamptz(6)
-  defaultDepotAddress               String?                            @db.Text
-  defaultDepotLatitude              Decimal?                           @db.Decimal(10, 7)
-  defaultDepotLongitude             Decimal?                           @db.Decimal(10, 7)
-  locale                            String?                            @db.Text
+  id                                String                                 @id @default(uuid()) @db.Uuid
+  appId                             String                                 @default("clever") @db.Text
+  shopDomain                        String                                 @db.Text
+  shopifyShopGid                    String?                                @db.Text
+  apiVersion                        String                                 @default("2026-04") @db.Text
+  adminAccessTokenCiphertext        String?                                @db.Text
+  adminAccessTokenExpiresAt         DateTime?                              @db.Timestamptz(6)
+  adminRefreshTokenCiphertext       String?                                @db.Text
+  adminRefreshTokenExpiresAt        DateTime?                              @db.Timestamptz(6)
+  tokenScopes                       String[]                               @default([])
+  tokenIssuedAt                     DateTime?                              @db.Timestamptz(6)
+  installedAt                       DateTime                               @default(now()) @db.Timestamptz(6)
+  uninstalledAt                     DateTime?                              @db.Timestamptz(6)
+  defaultDepotAddress               String?                                @db.Text
+  defaultDepotLatitude              Decimal?                               @db.Decimal(10, 7)
+  defaultDepotLongitude             Decimal?                               @db.Decimal(10, 7)
+  locale                            String?                                @db.Text
   routeScopeConfig                  Json?
   routeOpsUiSettings                Json?
   customerEmailSettings             Json?
   dsvOperationalSettings            Json?
-  createdAt                         DateTime                           @default(now()) @db.Timestamptz(6)
-  updatedAt                         DateTime                           @updatedAt @db.Timestamptz(6)
+  createdAt                         DateTime                               @default(now()) @db.Timestamptz(6)
+  updatedAt                         DateTime                               @updatedAt @db.Timestamptz(6)
   webhookEvents                     ShopifyWebhookEvent[]
   shopifyOrderReconciliationJobs    ShopifyOrderReconciliationJob[]
   orders                            Order[]
@@ -807,20 +807,20 @@ model Order {
 }
 
 model OrderSelectionSnapshot {
-  id               String                           @id @default(uuid()) @db.Uuid
-  shopId           String                           @db.Uuid
-  shop             Shop                             @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  appId            String                           @db.Text
-  actorSubjectHash String                           @db.Text
-  tokenHash        String                           @unique @db.Text
-  filterHash       String                           @db.Text
-  sort             String                           @db.Text
-  selectedCount    Int
-  snapshotWatermark DateTime                        @db.Timestamptz(6)
-  expiresAt        DateTime                         @db.Timestamptz(6)
-  consumedAt       DateTime?                        @db.Timestamptz(6)
-  createdAt        DateTime                         @default(now()) @db.Timestamptz(6)
-  orders           OrderSelectionSnapshotOrder[]
+  id                String                        @id @default(uuid()) @db.Uuid
+  shopId            String                        @db.Uuid
+  shop              Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  appId             String                        @db.Text
+  actorSubjectHash  String                        @db.Text
+  tokenHash         String                        @unique @db.Text
+  filterHash        String                        @db.Text
+  sort              String                        @db.Text
+  selectedCount     Int
+  snapshotWatermark DateTime                      @db.Timestamptz(6)
+  expiresAt         DateTime                      @db.Timestamptz(6)
+  consumedAt        DateTime?                     @db.Timestamptz(6)
+  createdAt         DateTime                      @default(now()) @db.Timestamptz(6)
+  orders            OrderSelectionSnapshotOrder[]
 
   @@index([shopId, appId, actorSubjectHash, expiresAt])
   @@index([expiresAt, consumedAt])
@@ -1394,6 +1394,21 @@ model DsvDriverAccountSignupInvite {
   @@map("dsv_driver_account_signup_invites")
 }
 
+model DsvDriverAppRelease {
+  platform                    String   @id @db.Text
+  packageId                   String   @db.Text
+  latestVersionCode           Int
+  latestVersionName           String   @db.Text
+  minimumSupportedVersionCode Int
+  installUrl                  String   @db.Text
+  apkSha256                   String   @db.Text
+  publishedAt                 DateTime @db.Timestamptz(6)
+  createdAt                   DateTime @default(now()) @db.Timestamptz(6)
+  updatedAt                   DateTime @updatedAt @db.Timestamptz(6)
+
+  @@map("dsv_driver_app_releases")
+}
+
 model DriverAccount {
   id                             String                        @id @default(uuid()) @db.Uuid
   phone                          String                        @unique @db.Text
@@ -1810,21 +1825,21 @@ model CustomerRouteNotificationFact {
 }
 
 model CustomerEmailManualDispatch {
-  id           String                                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  shopId       String                                  @db.Uuid
-  shop         Shop                                    @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  routePlanId  String                                  @db.Uuid
-  commandId    String                                  @db.Text
-  actor        String                                  @db.Text
-  signal       String                                  @db.Text
-  source       String                                  @default("ADMIN_MANUAL_CUSTOMER_EMAIL") @db.Text
-  request      Json
-  template     Json
-  counts       Json
-  duplicate    Boolean                                 @default(false)
-  createdAt    DateTime                                @default(now()) @db.Timestamptz(6)
-  updatedAt    DateTime                                @default(now()) @updatedAt @db.Timestamptz(6)
-  recipients   CustomerEmailManualDispatchRecipient[]
+  id          String                                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId      String                                 @db.Uuid
+  shop        Shop                                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  routePlanId String                                 @db.Uuid
+  commandId   String                                 @db.Text
+  actor       String                                 @db.Text
+  signal      String                                 @db.Text
+  source      String                                 @default("ADMIN_MANUAL_CUSTOMER_EMAIL") @db.Text
+  request     Json
+  template    Json
+  counts      Json
+  duplicate   Boolean                                @default(false)
+  createdAt   DateTime                               @default(now()) @db.Timestamptz(6)
+  updatedAt   DateTime                               @default(now()) @updatedAt @db.Timestamptz(6)
+  recipients  CustomerEmailManualDispatchRecipient[]
 
   @@unique([shopId, commandId])
   @@index([shopId, routePlanId, createdAt])
@@ -1904,16 +1919,16 @@ model RetentionJobRun {
 }
 
 model Vehicle {
-  id                    String                       @id @default(uuid()) @db.Uuid
-  shopId                String                       @db.Uuid
-  shop                  Shop                         @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  label                 String                       @db.Text
-  licensePlate          String?                      @db.Text
-  vehicleType           VehicleType                  @default(OTHER)
-  capacityUnits         Int                          @default(0)
-  status                VehicleStatus                @default(ACTIVE)
-  createdAt             DateTime                     @default(now()) @db.Timestamptz(6)
-  updatedAt             DateTime                     @updatedAt @db.Timestamptz(6)
+  id                    String                        @id @default(uuid()) @db.Uuid
+  shopId                String                        @db.Uuid
+  shop                  Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  label                 String                        @db.Text
+  licensePlate          String?                       @db.Text
+  vehicleType           VehicleType                   @default(OTHER)
+  capacityUnits         Int                           @default(0)
+  status                VehicleStatus                 @default(ACTIVE)
+  createdAt             DateTime                      @default(now()) @db.Timestamptz(6)
+  updatedAt             DateTime                      @updatedAt @db.Timestamptz(6)
   routePlans            RoutePlan[]
   dsvDispatchImportRows DsvDispatchImportRow[]
   dsvProfile            DsvVehicleProfile?
@@ -1983,16 +1998,16 @@ model DsvVehicleDriverAssignment {
 }
 
 model DsvVehicleTelematicsDevice {
-  id           String   @id @default(uuid()) @db.Uuid
-  shopId       String   @db.Uuid
-  shop         Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  vehicleId    String   @db.Uuid
-  vehicle      Vehicle  @relation(fields: [vehicleId, shopId], references: [id, shopId], onDelete: Cascade)
-  serialNumber String   @db.Text
-  capabilities String[] @default([])
-  installedAt  DateTime @db.Timestamptz(6)
-  createdAt    DateTime @default(now()) @db.Timestamptz(6)
-  updatedAt    DateTime @updatedAt @db.Timestamptz(6)
+  id           String                        @id @default(uuid()) @db.Uuid
+  shopId       String                        @db.Uuid
+  shop         Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  vehicleId    String                        @db.Uuid
+  vehicle      Vehicle                       @relation(fields: [vehicleId, shopId], references: [id, shopId], onDelete: Cascade)
+  serialNumber String                        @db.Text
+  capabilities String[]                      @default([])
+  installedAt  DateTime                      @db.Timestamptz(6)
+  createdAt    DateTime                      @default(now()) @db.Timestamptz(6)
+  updatedAt    DateTime                      @updatedAt @db.Timestamptz(6)
   uvisCurrents UvisVehicleTelemetryCurrent[]
   uvisSamples  UvisVehicleTelemetrySample[]
 
@@ -2039,28 +2054,28 @@ model UvisVehicleTelemetryCurrent {
 }
 
 model UvisVehicleTelemetrySample {
-  id                     String                     @id @default(uuid()) @db.Uuid
-  shopId                 String                     @db.Uuid
-  shop                   Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  vehicleId              String                     @db.Uuid
-  vehicle                Vehicle                    @relation(fields: [vehicleId, shopId], references: [id, shopId], onDelete: Cascade)
-  deviceId               String                     @db.Uuid
-  device                 DsvVehicleTelematicsDevice @relation(fields: [deviceId, shopId], references: [id, shopId], onDelete: Cascade)
-  sourceDeviceIdentifier String                     @db.Text
+  id                     String                        @id @default(uuid()) @db.Uuid
+  shopId                 String                        @db.Uuid
+  shop                   Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  vehicleId              String                        @db.Uuid
+  vehicle                Vehicle                       @relation(fields: [vehicleId, shopId], references: [id, shopId], onDelete: Cascade)
+  deviceId               String                        @db.Uuid
+  device                 DsvVehicleTelematicsDevice    @relation(fields: [deviceId, shopId], references: [id, shopId], onDelete: Cascade)
+  sourceDeviceIdentifier String                        @db.Text
   sourceKind             UvisTelemetrySourceKind
-  observedAt             DateTime                   @db.Timestamptz(6)
-  receivedAt             DateTime                   @db.Timestamptz(6)
-  staleAfter             DateTime                   @db.Timestamptz(6)
-  latitude               Decimal?                   @db.Decimal(10, 7)
-  longitude              Decimal?                   @db.Decimal(10, 7)
+  observedAt             DateTime                      @db.Timestamptz(6)
+  receivedAt             DateTime                      @db.Timestamptz(6)
+  staleAfter             DateTime                      @db.Timestamptz(6)
+  latitude               Decimal?                      @db.Decimal(10, 7)
+  longitude              Decimal?                      @db.Decimal(10, 7)
   ignitionOn             Boolean?
-  speedKph               Decimal?                   @db.Decimal(8, 2)
-  distanceTodayKm        Decimal?                   @db.Decimal(10, 2)
-  temperatureA           Decimal?                   @db.Decimal(6, 2)
-  temperatureB           Decimal?                   @db.Decimal(6, 2)
-  sourcePlate            String?                    @db.Text
+  speedKph               Decimal?                      @db.Decimal(8, 2)
+  distanceTodayKm        Decimal?                      @db.Decimal(10, 2)
+  temperatureA           Decimal?                      @db.Decimal(6, 2)
+  temperatureB           Decimal?                      @db.Decimal(6, 2)
+  sourcePlate            String?                       @db.Text
   plateMatched           Boolean?
-  createdAt              DateTime                   @default(now()) @db.Timestamptz(6)
+  createdAt              DateTime                      @default(now()) @db.Timestamptz(6)
   currentRefs            UvisVehicleTelemetryCurrent[] @relation("UvisCurrentLastSample")
 
   @@unique([id, shopId, deviceId, sourceKind])
@@ -2072,24 +2087,24 @@ model UvisVehicleTelemetrySample {
 }
 
 model UvisTelemetryPollState {
-  shopId                     String    @id @db.Uuid
-  shop                       Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  leaseToken                 String?   @db.Text
-  leaseExpiresAt             DateTime? @db.Timestamptz(6)
+  shopId                     String                @id @db.Uuid
+  shop                       Shop                  @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  leaseToken                 String?               @db.Text
+  leaseExpiresAt             DateTime?             @db.Timestamptz(6)
   activity                   UvisTelemetryActivity @default(ACTIVE)
-  allVehiclesStoppedSince    DateTime? @db.Timestamptz(6)
-  activeProtectionEndedAt    DateTime? @db.Timestamptz(6)
-  lastActivitySignalAt       DateTime? @db.Timestamptz(6)
-  lastLocationStartedAt      DateTime? @db.Timestamptz(6)
-  lastLocationSucceededAt    DateTime? @db.Timestamptz(6)
-  lastLocationFailedAt       DateTime? @db.Timestamptz(6)
-  lastLocationErrorCode      String?   @db.Text
-  lastTemperatureStartedAt   DateTime? @db.Timestamptz(6)
-  lastTemperatureSucceededAt DateTime? @db.Timestamptz(6)
-  lastTemperatureFailedAt    DateTime? @db.Timestamptz(6)
-  lastTemperatureErrorCode   String?   @db.Text
-  createdAt                  DateTime  @default(now()) @db.Timestamptz(6)
-  updatedAt                  DateTime  @updatedAt @db.Timestamptz(6)
+  allVehiclesStoppedSince    DateTime?             @db.Timestamptz(6)
+  activeProtectionEndedAt    DateTime?             @db.Timestamptz(6)
+  lastActivitySignalAt       DateTime?             @db.Timestamptz(6)
+  lastLocationStartedAt      DateTime?             @db.Timestamptz(6)
+  lastLocationSucceededAt    DateTime?             @db.Timestamptz(6)
+  lastLocationFailedAt       DateTime?             @db.Timestamptz(6)
+  lastLocationErrorCode      String?               @db.Text
+  lastTemperatureStartedAt   DateTime?             @db.Timestamptz(6)
+  lastTemperatureSucceededAt DateTime?             @db.Timestamptz(6)
+  lastTemperatureFailedAt    DateTime?             @db.Timestamptz(6)
+  lastTemperatureErrorCode   String?               @db.Text
+  createdAt                  DateTime              @default(now()) @db.Timestamptz(6)
+  updatedAt                  DateTime              @updatedAt @db.Timestamptz(6)
 
   @@index([leaseExpiresAt])
   @@map("uvis_telemetry_poll_states")

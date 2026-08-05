@@ -23,6 +23,7 @@ import { RouteTrackingStreamHub } from './modules/route-tracking/route-tracking.
 import { loadDsvControlDependencies } from './modules/dsv/dsv-control.dependencies.js';
 import { loadDsvV1ReadDependencies } from './modules/dsv/dsv-v1-read.dependencies.js';
 import { loadDsvDriverAuthDependencies } from './modules/dsv/dsv-driver-auth.dependencies.js';
+import { PrismaDsvDriverAppReleaseRepository } from './modules/dsv/dsv-driver-app-release.repository.js';
 import { loadWordPressPluginDependencies } from './modules/wordpress-plugin/wordpress-plugin.dependencies.js';
 import { createUvisTelemetryRuntime } from './modules/uvis/uvis-runtime.js';
 import type { AdminRoutePlanDependencies } from './routes/admin-route-plans.routes.js';
@@ -42,6 +43,7 @@ import type { AdminCustomerEmailDependencies } from './routes/admin-customer-ema
 import type { DsvControlDependencies } from './routes/dsv-control.routes.js';
 import type { DsvV1ReadDependencies } from './routes/dsv-v1-read.routes.js';
 import type { DsvDriverAuthDependencies } from './routes/dsv-driver-auth.routes.js';
+import type { DsvDriverAppReleaseDependencies } from './routes/dsv-driver-app-release.routes.js';
 
 const env = loadEnv();
 const prisma = new PrismaClient();
@@ -62,6 +64,7 @@ const adminNotificationRuntime = createAdminNotificationRuntime({
 const adminNotificationService = adminNotificationRuntime.service;
 const dsvControl = loadDsvControlDependencies({ env: process.env, nodeEnv: env.nodeEnv, prisma, routeGroupingService });
 const dsvDriverAuth = loadDsvDriverAuthDependencies({ env: process.env, nodeEnv: env.nodeEnv, prisma });
+const dsvDriverAppRelease = { repository: new PrismaDsvDriverAppReleaseRepository(prisma) };
 const dsvV1Read = loadDsvV1ReadDependencies({ env: process.env, nodeEnv: env.nodeEnv, prisma });
 const adminOrdersRuntime = loadAdminOrdersRuntime({
   adminNotificationService,
@@ -122,6 +125,7 @@ const app = await buildApp(
     driverAuth,
     dsvControl,
     dsvDriverAuth,
+    dsvDriverAppRelease,
     dsvV1Read,
     logger,
     shopifyAuth,
@@ -195,6 +199,7 @@ function createBuildAppOptions(input: {
   driverAuth: DriverAuthDependencies | undefined;
   dsvControl: DsvControlDependencies | undefined;
   dsvDriverAuth: DsvDriverAuthDependencies | undefined;
+  dsvDriverAppRelease: DsvDriverAppReleaseDependencies;
   dsvV1Read: DsvV1ReadDependencies | undefined;
   logger: false | { level: string };
   shopifyAuth: ShopifyAuthDependencies | undefined;
@@ -215,6 +220,7 @@ function createBuildAppOptions(input: {
   driverAuth?: DriverAuthDependencies;
   dsvControl?: DsvControlDependencies;
   dsvDriverAuth?: DsvDriverAuthDependencies;
+  dsvDriverAppRelease: DsvDriverAppReleaseDependencies;
   dsvV1Read?: DsvV1ReadDependencies;
   logger: false | { level: string };
   shopifyAuth?: ShopifyAuthDependencies;
@@ -236,6 +242,7 @@ function createBuildAppOptions(input: {
     ...(input.driverAuth === undefined ? {} : { driverAuth: input.driverAuth }),
     ...(input.dsvControl === undefined ? {} : { dsvControl: input.dsvControl }),
     ...(input.dsvDriverAuth === undefined ? {} : { dsvDriverAuth: input.dsvDriverAuth }),
+    dsvDriverAppRelease: input.dsvDriverAppRelease,
     ...(input.dsvV1Read === undefined ? {} : { dsvV1Read: input.dsvV1Read }),
     logger: input.logger,
     ...(input.shopifyAuth === undefined ? {} : { shopifyAuth: input.shopifyAuth }),

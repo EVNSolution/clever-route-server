@@ -50,6 +50,10 @@ import {
 import { registerDsvControlRoutes, type DsvControlDependencies } from './routes/dsv-control.routes.js';
 import { registerDsvV1ReadRoutes, type DsvV1ReadDependencies } from './routes/dsv-v1-read.routes.js';
 import { registerDsvDriverAuthRoutes, type DsvDriverAuthDependencies } from './routes/dsv-driver-auth.routes.js';
+import {
+  registerDsvDriverAppReleaseRoutes,
+  type DsvDriverAppReleaseDependencies
+} from './routes/dsv-driver-app-release.routes.js';
 
 export type BuildAppOptions = {
   adminCommerceConnections?: AdminCommerceConnectionsDependencies;
@@ -65,6 +69,7 @@ export type BuildAppOptions = {
   driverAuth?: DriverAuthDependencies;
   dsvControl?: DsvControlDependencies;
   dsvDriverAuth?: DsvDriverAuthDependencies;
+  dsvDriverAppRelease?: DsvDriverAppReleaseDependencies;
   dsvV1Read?: DsvV1ReadDependencies;
   logger?: FastifyServerOptions['logger'];
   shopifyAuth?: ShopifyAuthDependencies;
@@ -175,6 +180,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   if (options.dsvDriverAuth !== undefined) {
     registerDsvDriverAuthRoutes(app, options.dsvDriverAuth);
+  }
+
+  if (options.dsvDriverAppRelease !== undefined) {
+    registerDsvDriverAppReleaseRoutes(app, options.dsvDriverAppRelease);
   }
 
   if (options.dsvV1Read !== undefined) {
