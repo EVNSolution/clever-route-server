@@ -34,7 +34,7 @@ export type CustomerEmailLogoAssetStore = {
   publicBaseUrl: string;
 };
 
-const maxLogoBytes = 1024 * 1024;
+const maxLogoBytes = 3 * 1024 * 1024;
 const logoFileNamePattern = /^[a-f0-9]{64}\.(?:jpg|png|webp)$/u;
 
 export function registerAdminCustomerEmailRoutes(
@@ -153,7 +153,7 @@ export function registerAdminCustomerEmailRoutes(
     const collected = await readLogoFile(file);
     if (collected.status !== 'ok') {
       return collected.status === 'too-large'
-        ? reply.code(413).send(errorResponse('PAYLOAD_TOO_LARGE', 'Logo must be at most 1 MiB.'))
+        ? reply.code(413).send(errorResponse('PAYLOAD_TOO_LARGE', 'Logo must be at most 3 MiB.'))
         : reply.code(400).send(errorResponse('BAD_REQUEST', 'Logo must be a PNG, JPEG, or WebP image.'));
     }
 
