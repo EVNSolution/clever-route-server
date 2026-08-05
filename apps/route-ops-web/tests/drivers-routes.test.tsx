@@ -1312,6 +1312,7 @@ function settingsFixture(overrides: Partial<StoreSettingsDto> = {}): StoreSettin
       forwardDelayAlerts: true,
       gpsSilenceSeconds: 30,
       loadingStartTime: '07:30',
+      nearbyStopsThreshold: 3,
       plannedDepartureTime: '08:30',
       recordMissingProof: true,
       showTemperatureAlerts: true,

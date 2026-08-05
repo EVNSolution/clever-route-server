@@ -7,10 +7,12 @@ import { join } from 'node:path';
 import {
   CustomerEmailNotFoundError,
   CustomerEmailValidationError,
+  CustomerEmailVersionConflictError,
   readCustomerEmailCommandPayload,
   readCustomerEmailTestPayload,
   type CustomerEmailService,
 } from '../modules/customer-email/customer-email.service.js';
+import { readCustomerEmailSignal } from '../modules/customer-email/customer-email-settings.js';
 import {
   CustomerEmailTransportConfigurationError,
   CustomerEmailTransportSendError,
@@ -58,8 +60,40 @@ export function registerAdminCustomerEmailRoutes(
       if (customerEmailSettings === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Shop not found'));
       return reply.code(200).send({ data: { customerEmailSettings }, error: null });
     } catch (error) {
-      if (error instanceof Error) return reply.code(400).send(errorResponse('BAD_REQUEST', error.message));
-      throw error;
+      return sendCustomerEmailError(reply, error);
+    }
+  });
+
+  app.patch<{ Body: unknown }>('/admin/customer-email/settings/global', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, request.log);
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+    try {
+      const customerEmailSettings = await dependencies.customerEmailService.saveGlobalSettings({
+        ...authenticated,
+        payload: request.body,
+      });
+      if (customerEmailSettings === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Shop not found'));
+      return reply.code(200).send({ data: { customerEmailSettings }, error: null });
+    } catch (error) {
+      return sendCustomerEmailError(reply, error);
+    }
+  });
+
+  app.patch<{ Body: unknown; Params: { signal: string } }>('/admin/customer-email/settings/templates/:signal', async (request, reply) => {
+    const authenticated = authenticate(request.headers.authorization, request.headers['x-clever-app-id'], dependencies, request.log);
+    if (authenticated.status === 'unauthorized') return reply.code(401).send(errorResponse('UNAUTHORIZED', authenticated.message));
+    const signal = readCustomerEmailSignal(request.params.signal);
+    if (signal === null) return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid customer email template signal'));
+    try {
+      const customerEmailSettings = await dependencies.customerEmailService.saveTemplateSettings({
+        ...authenticated,
+        payload: request.body,
+        signal,
+      });
+      if (customerEmailSettings === null) return reply.code(404).send(errorResponse('NOT_FOUND', 'Shop not found'));
+      return reply.code(200).send({ data: { customerEmailSettings }, error: null });
+    } catch (error) {
+      return sendCustomerEmailError(reply, error);
     }
   });
 
@@ -205,6 +239,8 @@ export function registerAdminCustomerEmailRoutes(
           commandId: payload.commandId,
           confirmed: payload.confirmed ?? false,
           deliveryStopIds: payload.deliveryStopIds,
+          ...(payload.missingValuesConfirmed === undefined ? {} : { missingValuesConfirmed: payload.missingValuesConfirmed }),
+          ...(payload.resendConfirmed === undefined ? {} : { resendConfirmed: payload.resendConfirmed }),
           routePlanId: request.params.routePlanId,
           signal: payload.signal,
         });
@@ -245,6 +281,7 @@ function authenticate(
 
 function sendCustomerEmailError(reply: { code: (statusCode: number) => { send: (payload: unknown) => unknown } }, error: unknown): unknown {
   if (error instanceof CustomerEmailNotFoundError) return reply.code(404).send(errorResponse('NOT_FOUND', error.message));
+  if (error instanceof CustomerEmailVersionConflictError) return reply.code(409).send(errorResponse(error.code, error.message));
   if (error instanceof CustomerEmailValidationError) return reply.code(400).send(errorResponse(error.code, error.message));
   if (error instanceof CustomerEmailTransportConfigurationError) {
     return reply.code(503).send(errorResponse('CUSTOMER_EMAIL_NOT_CONFIGURED', 'Customer email transport is not configured.'));

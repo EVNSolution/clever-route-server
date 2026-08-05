@@ -423,6 +423,7 @@ export type RouteOpsUiSettingsDto = {
   forwardDelayAlerts: boolean;
   gpsSilenceSeconds: number;
   loadingStartTime: string;
+  nearbyStopsThreshold: number;
   plannedDepartureTime: string;
   recordMissingProof: boolean;
   showTemperatureAlerts: boolean;

@@ -4,6 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { buildApp } from '../src/app.js';
+import {
+  CustomerEmailValidationError,
+  CustomerEmailVersionConflictError,
+} from '../src/modules/customer-email/customer-email.service.js';
 import { defaultCustomerEmailSettings } from '../src/modules/customer-email/customer-email-settings.js';
 import type { AdminCustomerEmailDependencies } from '../src/routes/admin-customer-email.routes.js';
 
@@ -30,12 +34,30 @@ describe('admin customer email routes', () => {
     }
   });
 
-  test('gets and saves settings with authenticated shop/app scope', async () => {
+  test('gets settings, rejects V3 full writes, and still routes legacy full settings migration', async () => {
     const { dependencies, service } = createHarness();
     const app = await buildApp({ adminCustomerEmail: dependencies });
     const settings = { ...defaultCustomerEmailSettings(), senderEmail: 'sender@example.com' };
+    const legacySettings = {
+      nearbyStopsThreshold: 4,
+      replyTo: null,
+      senderEmail: 'legacy@example.com',
+      senderName: 'Legacy Sender',
+      templates: settings.templates,
+      version: 1,
+    };
+    const migratedSettings = {
+      ...settings,
+      compatibility: { nearbyStopsThreshold: 4 },
+      senderEmail: 'legacy@example.com',
+      senderName: 'Legacy Sender',
+    };
     service.getSettings.mockResolvedValue(settings);
-    service.saveSettings.mockResolvedValue(settings);
+    service.saveSettings
+      .mockRejectedValueOnce(new CustomerEmailValidationError(
+        'Customer email V3 full settings writes are not allowed. Use scoped global or template settings endpoints.',
+      ))
+      .mockResolvedValueOnce(migratedSettings);
 
     try {
       const getResponse = await app.inject({
@@ -49,10 +71,25 @@ describe('admin customer email routes', () => {
         payload: settings,
         url: '/admin/customer-email/settings',
       });
+      const legacyPatchResponse = await app.inject({
+        headers: { authorization: 'Bearer session-token', 'x-clever-app-id': 'custom-app' },
+        method: 'PATCH',
+        payload: legacySettings,
+        url: '/admin/customer-email/settings',
+      });
 
       expect(getResponse.statusCode).toBe(200);
       expect(getResponse.json()).toEqual({ data: { customerEmailSettings: settings }, error: null });
-      expect(patchResponse.statusCode).toBe(200);
+      expect(patchResponse.statusCode).toBe(400);
+      expect(patchResponse.json()).toEqual({
+        data: null,
+        error: {
+          code: 'CUSTOMER_EMAIL_BAD_REQUEST',
+          message: 'Customer email V3 full settings writes are not allowed. Use scoped global or template settings endpoints.',
+        },
+      });
+      expect(legacyPatchResponse.statusCode).toBe(200);
+      expect(legacyPatchResponse.json()).toEqual({ data: { customerEmailSettings: migratedSettings }, error: null });
       expect(service.getSettings).toHaveBeenCalledWith({
         appId: 'custom-app',
         shopDomain: 'example.myshopify.com',
@@ -64,6 +101,135 @@ describe('admin customer email routes', () => {
         payload: settings,
         shopDomain: 'example.myshopify.com',
       }));
+      expect(service.saveSettings).toHaveBeenCalledWith(expect.objectContaining({
+        appId: 'custom-app',
+        payload: legacySettings,
+        shopDomain: 'example.myshopify.com',
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('saves global settings and maps stale global version conflicts', async () => {
+    const { dependencies, service } = createHarness();
+    const app = await buildApp({ adminCustomerEmail: dependencies });
+    const settings = { ...defaultCustomerEmailSettings(), globalVersion: 2, senderEmail: 'sender@example.com' };
+    service.saveGlobalSettings.mockResolvedValue(settings);
+
+    try {
+      const payload = {
+        branding: settings.branding,
+        expectedVersion: 1,
+        replyTo: null,
+        senderEmail: 'sender@example.com',
+        senderName: 'Sender',
+      };
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token', 'x-clever-app-id': 'custom-app' },
+        method: 'PATCH',
+        payload,
+        url: '/admin/customer-email/settings/global',
+      });
+      expect(response.statusCode).toBe(200);
+      expect(service.saveGlobalSettings).toHaveBeenCalledWith(expect.objectContaining({
+        appId: 'custom-app',
+        payload,
+        shopDomain: 'example.myshopify.com',
+      }));
+
+      service.saveGlobalSettings.mockRejectedValueOnce(new CustomerEmailVersionConflictError(
+        'SETTINGS_VERSION_CONFLICT',
+        'Customer email global settings version conflict.',
+      ));
+      const conflictResponse = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload,
+        url: '/admin/customer-email/settings/global',
+      });
+      expect(conflictResponse.statusCode).toBe(409);
+      expect(conflictResponse.json()).toEqual({
+        data: null,
+        error: {
+          code: 'SETTINGS_VERSION_CONFLICT',
+          message: 'Customer email global settings version conflict.',
+        },
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('saves one template and rejects invalid template signals', async () => {
+    const { dependencies, service } = createHarness();
+    const app = await buildApp({ adminCustomerEmail: dependencies });
+    const settings = defaultCustomerEmailSettings();
+    service.saveTemplateSettings.mockResolvedValue({
+      ...settings,
+      templates: {
+        ...settings.templates,
+        DELIVERY_SCHEDULED: {
+          body: 'Updated body',
+          enabled: true,
+          subject: 'Updated subject',
+          version: 2,
+        },
+      },
+    });
+
+    try {
+      const payload = {
+        body: 'Updated body',
+        enabled: true,
+        expectedVersion: 1,
+        subject: 'Updated subject',
+      };
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload,
+        url: '/admin/customer-email/settings/templates/DELIVERY_SCHEDULED',
+      });
+      const invalidSignalResponse = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload,
+        url: '/admin/customer-email/settings/templates/NOT_A_SIGNAL',
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(service.saveTemplateSettings).toHaveBeenCalledWith(expect.objectContaining({
+        appId: 'clever',
+        payload,
+        shopDomain: 'example.myshopify.com',
+        signal: 'DELIVERY_SCHEDULED',
+      }));
+
+      service.saveTemplateSettings.mockRejectedValueOnce(new CustomerEmailVersionConflictError(
+        'TEMPLATE_VERSION_CONFLICT',
+        'Customer email template version conflict.',
+      ));
+      const conflictResponse = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload,
+        url: '/admin/customer-email/settings/templates/DELIVERY_SCHEDULED',
+      });
+      expect(conflictResponse.statusCode).toBe(409);
+      expect(conflictResponse.json()).toEqual({
+        data: null,
+        error: {
+          code: 'TEMPLATE_VERSION_CONFLICT',
+          message: 'Customer email template version conflict.',
+        },
+      });
+
+      expect(invalidSignalResponse.statusCode).toBe(400);
+      expect(invalidSignalResponse.json()).toEqual({
+        data: null,
+        error: { code: 'BAD_REQUEST', message: 'Invalid customer email template signal' },
+      });
     } finally {
       await app.close();
     }
@@ -115,6 +281,8 @@ describe('admin customer email routes', () => {
           commandId: 'command-1',
           confirmed: true,
           deliveryStopIds: ['stop-1'],
+          missingValuesConfirmed: true,
+          resendConfirmed: true,
           signal: 'DELIVERY_SCHEDULED',
         },
         url: '/admin/route-plans/route-id/customer-email/send',
@@ -139,6 +307,8 @@ describe('admin customer email routes', () => {
         commandId: 'command-1',
         confirmed: true,
         deliveryStopIds: ['stop-1'],
+        missingValuesConfirmed: true,
+        resendConfirmed: true,
         routePlanId: 'route-id',
         shopDomain: 'example.myshopify.com',
         signal: 'DELIVERY_SCHEDULED',
@@ -405,7 +575,9 @@ function createHarness(input: { assetsConfigured?: boolean; assetsDirectory?: st
   const service = {
     getSettings: vi.fn(),
     preview: vi.fn(),
+    saveGlobalSettings: vi.fn(),
     saveSettings: vi.fn(),
+    saveTemplateSettings: vi.fn(),
     send: vi.fn(),
     sendTest: vi.fn(),
   };

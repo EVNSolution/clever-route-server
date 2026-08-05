@@ -18,6 +18,7 @@ export type RouteOpsUiSettingsDto = {
   forwardDelayAlerts: boolean;
   gpsSilenceSeconds: number;
   loadingStartTime: string;
+  nearbyStopsThreshold: number;
   plannedDepartureTime: string;
   recordMissingProof: boolean;
   showTemperatureAlerts: boolean;
@@ -54,6 +55,7 @@ export function defaultRouteOpsUiSettings(): RouteOpsUiSettingsDto {
     forwardDelayAlerts: true,
     gpsSilenceSeconds: 30,
     loadingStartTime: "07:30",
+    nearbyStopsThreshold: 3,
     plannedDepartureTime: "08:30",
     recordMissingProof: true,
     showTemperatureAlerts: true,
@@ -120,6 +122,13 @@ export function validateRouteOpsUiSettingsPayload(
     defaults.loadingStartTime,
     "Loading start time",
   );
+  const nearbyStopsThreshold = readDefaultedIntegerInRange(
+    value.nearbyStopsThreshold,
+    defaults.nearbyStopsThreshold,
+    1,
+    25,
+    "Nearby stops threshold",
+  );
   const plannedDepartureTime = readDefaultedTimeOfDay(
     value.plannedDepartureTime,
     defaults.plannedDepartureTime,
@@ -167,6 +176,7 @@ export function validateRouteOpsUiSettingsPayload(
     forwardDelayAlerts,
     gpsSilenceSeconds,
     loadingStartTime,
+    nearbyStopsThreshold,
     plannedDepartureTime,
     recordMissingProof,
     showTemperatureAlerts,

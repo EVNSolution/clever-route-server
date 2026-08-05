@@ -422,6 +422,7 @@ describe('route ops layout components', () => {
     expect(html).toContain('Store settings');
     expect(html).not.toContain('Language selection');
     expect(html).toContain('Stop dwell minutes');
+    expect(html).toContain('Nearby stop threshold');
     expect(html).toContain('Customer email notification settings');
     expect(html).toContain('Add reminder');
     expect(html).toContain('Edit template');
@@ -445,6 +446,7 @@ describe('route ops layout components', () => {
     expect(html).not.toContain('주소로 좌표 저장');
     expect(html).not.toContain('언어 선택');
     expect(html).toContain('배송지 체류 시간');
+    expect(html).toContain('근접 정류지 기준');
     expect(html).toContain('고객 이메일 알림 설정');
     expect(html).not.toContain('서비스/세션 값');
     expect(html).not.toContain('서비스 타입');
@@ -542,7 +544,7 @@ describe('route ops layout components', () => {
       expect.objectContaining({
         csrfToken: 'csrf',
         locale: 'ko-KR',
-        routeOpsUiSettings: expect.objectContaining({ destinationDwellMinutes: 12 })
+        routeOpsUiSettings: expect.objectContaining({ destinationDwellMinutes: 12, nearbyStopsThreshold: 3 })
       })
     );
     expect(buildSettingsSaveInput({ csrfToken: 'csrf', draft })).not.toHaveProperty('routeScopeConfig');

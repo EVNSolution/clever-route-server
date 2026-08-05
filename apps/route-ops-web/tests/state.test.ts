@@ -53,6 +53,7 @@ describe('route ops web state helpers', () => {
     expect(hasReminderDuplicate([...existing, { daysBefore: 1, id: 'dupe', timeOfDay: '09:00' }])).toBe(true);
     expect(insertTemplateToken('Delivery date:', 'deliveryDate')).toBe('Delivery date: {{deliveryDate}}');
     expect(listUnknownTemplateTokens('Hi {{customerName}} {{badToken}}')).toEqual(['badToken']);
+    expect(defaultRouteOpsUiSettings().nearbyStopsThreshold).toBe(3);
   });
 
   test('serializes order filters without empty/all values', () => {

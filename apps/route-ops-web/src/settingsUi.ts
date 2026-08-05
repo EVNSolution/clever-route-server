@@ -48,6 +48,7 @@ export function defaultRouteOpsUiSettings(): RouteOpsUiSettingsDto {
     forwardDelayAlerts: true,
     gpsSilenceSeconds: 30,
     loadingStartTime: "07:30",
+    nearbyStopsThreshold: 3,
     plannedDepartureTime: "08:30",
     recordMissingProof: true,
     showTemperatureAlerts: true,
@@ -90,6 +91,12 @@ export function normalizeRouteOpsUiSettings(
       typeof value.loadingStartTime === "string"
         ? value.loadingStartTime
         : defaults.loadingStartTime,
+    nearbyStopsThreshold:
+      Number.isInteger(value.nearbyStopsThreshold) &&
+      value.nearbyStopsThreshold >= 1 &&
+      value.nearbyStopsThreshold <= 25
+        ? value.nearbyStopsThreshold
+        : defaults.nearbyStopsThreshold,
     plannedDepartureTime:
       typeof value.plannedDepartureTime === "string"
         ? value.plannedDepartureTime
