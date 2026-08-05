@@ -495,6 +495,7 @@ describe('DSV v1 read routes', () => {
         '/records',
         '/drivers',
         '/vehicles',
+        `/vehicles/${shopId}/temperature-history`,
         '/customers',
         '/destinations',
         '/conditions',
@@ -616,6 +617,55 @@ describe('DSV v1 read routes', () => {
       });
       expect(overrideAttempt.statusCode).toBe(400);
       expectDsvV1Error(overrideAttempt, { code: 'BAD_REQUEST', message: 'Unsupported query parameter' });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns vehicle temperature history with control read scope and parsed ISO window', async () => {
+    const { app, queryService } = await createHarness();
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    const vehicleId = '77777777-7777-4777-8777-777777777777';
+    queryService.listVehicleTemperatureHistory.mockResolvedValueOnce({
+      samples: [{
+        observedAt: '2026-08-04T01:16:00.000Z',
+        temperatureA: -18.5,
+        temperatureB: null,
+      }],
+      vehicleId,
+    });
+    try {
+      const response = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/vehicles/${vehicleId}/temperature-history?from=2026-08-04T00%3A00%3A00.000Z&to=2026-08-04T02%3A00%3A00.000Z&limit=12`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expectDsvV1Envelope(response, {
+        samples: [{
+          observedAt: '2026-08-04T01:16:00.000Z',
+          temperatureA: -18.5,
+          temperatureB: null,
+        }],
+        vehicleId,
+      });
+      expect(queryService.listVehicleTemperatureHistory).toHaveBeenCalledWith(
+        expect.objectContaining({ principalType: 'DSV_ADMIN', shopId }),
+        {
+          from: new Date('2026-08-04T00:00:00.000Z'),
+          limit: 12,
+          to: new Date('2026-08-04T02:00:00.000Z'),
+          vehicleId,
+        },
+      );
+
+      const invalid = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/vehicles/${vehicleId}/temperature-history?limit=289`,
+      });
+      expect(invalid.statusCode).toBe(400);
     } finally {
       await app.close();
     }
@@ -1165,6 +1215,7 @@ function createQueryService(): MockQueryService {
     })),
     listDrivers: vi.fn(() => Promise.resolve(list)),
     listRecords: vi.fn(() => Promise.resolve({ items: [], page: { hasMore: false } })),
+    listVehicleTemperatureHistory: vi.fn(() => Promise.resolve({ samples: [], vehicleId: 'vehicle-a' })),
     listVehicles: vi.fn(() => Promise.resolve(list)),
     resolveTenantDates: vi.fn(() => Promise.resolve({
       dayAfterTomorrow: '2026-07-25',

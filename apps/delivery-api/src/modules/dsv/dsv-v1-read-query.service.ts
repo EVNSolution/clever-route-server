@@ -39,7 +39,7 @@ export type DsvV1ReadEndpoint =
   | 'drivers'
   | 'records'
   | 'vehicles';
-export type DsvV1ReadErrorCode = 'BAD_REQUEST' | 'DEPENDENCY_UNAVAILABLE';
+export type DsvV1ReadErrorCode = 'BAD_REQUEST' | 'DEPENDENCY_UNAVAILABLE' | 'NOT_FOUND';
 export type DsvV1EmptyReason =
   | 'DATE_OUT_OF_WINDOW'
   | 'NO_ACTIVE_CUSTOMER_SCOPE'
@@ -97,6 +97,24 @@ export type DsvV1ReadListInput = {
   limit?: number | string | null;
 };
 
+export type DsvV1VehicleTemperatureHistoryInput = {
+  from?: Date;
+  limit?: number;
+  to?: Date;
+  vehicleId: string;
+};
+
+export type DsvV1VehicleTemperatureHistorySample = {
+  observedAt: string;
+  temperatureA: number | null;
+  temperatureB: number | null;
+};
+
+export type DsvV1VehicleTemperatureHistoryResult = {
+  samples: DsvV1VehicleTemperatureHistorySample[];
+  vehicleId: string;
+};
+
 export type DsvV1ServiceDateInput = DsvV1ReadListInput & {
   serviceDate?: string | null;
 };
@@ -144,6 +162,10 @@ export type DsvV1ReadQueryService = {
   listDispatches(principal: DsvAdminPrincipal, input?: DsvV1DispatchListInput): Promise<DsvV1PaginatedRead<DsvV1SellerOrderSummaryRow>>;
   listDrivers(principal: DsvAdminPrincipal, input?: DsvV1ReadListInput): Promise<DsvV1PaginatedRead<DsvV1DriverListItemRow>>;
   listRecords(principal: DsvAdminPrincipal, input?: DsvV1ServiceDateInput): Promise<DsvV1PaginatedRead<DsvV1RecordRow>>;
+  listVehicleTemperatureHistory(
+    principal: DsvAdminPrincipal,
+    input: DsvV1VehicleTemperatureHistoryInput,
+  ): Promise<DsvV1VehicleTemperatureHistoryResult>;
   listVehicles(principal: DsvAdminPrincipal, input?: DsvV1ReadListInput): Promise<DsvV1PaginatedRead<DsvV1VehicleListItemRow>>;
   resolveTenantDates(shopId: string, now?: Date): Promise<DsvV1TenantDateResolution>;
 };
@@ -162,6 +184,7 @@ type DsvV1ReadPrismaClient = Pick<
   | 'dsvTransportCondition'
   | 'order'
   | 'routePlan'
+  | 'uvisVehicleTelemetrySample'
   | 'vehicle'
 > & Partial<Pick<PrismaClient, 'uvisTelemetryPollState' | 'uvisVehicleTelemetryCurrent'>>;
 
@@ -260,12 +283,12 @@ const recordEventAllowlist = new Set<DsvV1RecordEventType>([
 ]);
 
 export class DsvV1ReadQueryError extends Error {
-  readonly httpStatus: 400 | 503;
+  readonly httpStatus: 400 | 404 | 503;
 
   constructor(readonly code: DsvV1ReadErrorCode, message: string, readonly details?: Record<string, unknown>) {
     super(message);
     this.name = 'DsvV1ReadQueryError';
-    this.httpStatus = code === 'BAD_REQUEST' ? 400 : 503;
+    this.httpStatus = code === 'BAD_REQUEST' ? 400 : code === 'NOT_FOUND' ? 404 : 503;
   }
 }
 
@@ -668,7 +691,16 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     return this.listManagement('conditions', principal.shopId, input, async (page) => {
       const rows = await this.prisma.dsvTransportCondition.findMany({
         orderBy: [{ name: 'asc' }, { id: 'asc' }],
-        select: { code: true, description: true, id: true, name: true, status: true },
+        select: {
+          code: true,
+          description: true,
+          id: true,
+          name: true,
+          status: true,
+          temperatureAlertEnabled: true,
+          temperatureMaxC: true,
+          temperatureMinC: true,
+        },
         take: page.limit + 1,
         where: { shopId: principal.shopId, ...labelCursorWhere(page.cursor, 'name') },
       });
@@ -678,8 +710,47 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         description: row.description,
         name: row.name,
         status: row.status,
+        temperatureAlertEnabled: row.temperatureAlertEnabled,
+        temperatureMaxC: decimalToNumber(row.temperatureMaxC),
+        temperatureMinC: decimalToNumber(row.temperatureMinC),
       }));
     });
+  }
+
+  async listVehicleTemperatureHistory(
+    principal: DsvAdminPrincipal,
+    input: DsvV1VehicleTemperatureHistoryInput,
+  ): Promise<DsvV1VehicleTemperatureHistoryResult> {
+    const vehicle = await this.prisma.vehicle.findFirst({
+      select: { id: true },
+      where: { id: input.vehicleId, shopId: principal.shopId },
+    });
+    if (vehicle === null) throw new DsvV1ReadQueryError('NOT_FOUND', 'Vehicle not found.');
+    const to = input.to ?? this.clock();
+    const from = input.from ?? new Date(to.getTime() - 24 * 60 * 60 * 1000);
+    if (from.getTime() > to.getTime()) {
+      throw new DsvV1ReadQueryError('BAD_REQUEST', 'from must be before or equal to to.');
+    }
+    const limit = input.limit ?? 288;
+    const rows = await this.prisma.uvisVehicleTelemetrySample.findMany({
+      orderBy: [{ observedAt: 'desc' }],
+      select: { observedAt: true, temperatureA: true, temperatureB: true },
+      take: limit,
+      where: {
+        observedAt: { gte: from, lte: to },
+        shopId: principal.shopId,
+        sourceKind: 'TEMPERATURE_RECORDER',
+        vehicleId: vehicle.id,
+      },
+    });
+    return {
+      samples: rows.reverse().map((row) => ({
+        observedAt: row.observedAt.toISOString(),
+        temperatureA: decimalToNumber(row.temperatureA),
+        temperatureB: decimalToNumber(row.temperatureB),
+      })),
+      vehicleId: vehicle.id,
+    };
   }
 
   private async resolveTenantTimezone(shopId: string): Promise<string> {

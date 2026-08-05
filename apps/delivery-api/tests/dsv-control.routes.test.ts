@@ -1315,7 +1315,14 @@ describe('DSV control routes', () => {
       const response = await app.inject({
         headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
         method: 'POST',
-        payload: { code: 'TS03', description: '계약 조건에 따른 운송', name: 'TS03' },
+        payload: {
+          code: 'TS03',
+          description: '계약 조건에 따른 운송',
+          name: 'TS03',
+          temperatureAlertEnabled: true,
+          temperatureMaxC: 8,
+          temperatureMinC: 2,
+        },
         url: '/api/dsv/conditions',
       });
       expect(response.statusCode).toBe(201);
@@ -1331,6 +1338,9 @@ describe('DSV control routes', () => {
           principalType: 'DSV_ADMIN',
         },
         shopDomain: 'tomatonofood.com',
+        temperatureAlertEnabled: true,
+        temperatureMaxC: 8,
+        temperatureMinC: 2,
       });
       expect(conditionInput?.principal?.requestId).toEqual(expect.any(String));
 
@@ -1338,7 +1348,14 @@ describe('DSV control routes', () => {
       const updated = await app.inject({
         headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
         method: 'PATCH',
-        payload: { code: 'TS03', description: '수정한 운송 설명', name: '특수 운송 03' },
+        payload: {
+          code: 'TS03',
+          description: '수정한 운송 설명',
+          name: '특수 운송 03',
+          temperatureAlertEnabled: false,
+          temperatureMaxC: null,
+          temperatureMinC: null,
+        },
         url: `/api/dsv/conditions/${conditionId}`,
       });
       expect(updated.statusCode).toBe(200);
@@ -1348,7 +1365,43 @@ describe('DSV control routes', () => {
         description: '수정한 운송 설명',
         name: '특수 운송 03',
         shopDomain: 'tomatonofood.com',
+        temperatureAlertEnabled: false,
+        temperatureMaxC: null,
+        temperatureMinC: null,
       });
+
+      const legacyUpdate = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'PATCH',
+        payload: {
+          code: 'TS03',
+          description: '기존 클라이언트 수정',
+          name: '특수 운송 03',
+        },
+        url: `/api/dsv/conditions/${conditionId}`,
+      });
+      expect(legacyUpdate.statusCode).toBe(200);
+      expect(dispatchImportService.updateCondition).toHaveBeenLastCalledWith({
+        code: 'TS03',
+        conditionId,
+        description: '기존 클라이언트 수정',
+        name: '특수 운송 03',
+        shopDomain: 'tomatonofood.com',
+      });
+
+      const invalidPolicy = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: {
+          code: 'BAD',
+          description: 'invalid range',
+          name: 'BAD',
+          temperatureMaxC: 2,
+          temperatureMinC: 8,
+        },
+        url: '/api/dsv/conditions',
+      });
+      expect(invalidPolicy.statusCode).toBe(400);
 
       const deleted = await app.inject({
         headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
@@ -1761,12 +1814,15 @@ function createDispatchImportService(): MockDispatchImportService {
   return {
     apply: vi.fn((input) => Promise.resolve(applyResult({ commandId: input.commandId }))),
     commit: vi.fn(() => Promise.resolve(dispatchImport)),
-    createCondition: vi.fn(() => Promise.resolve({
+    createCondition: vi.fn((input) => Promise.resolve({
       code: 'TS03',
       createdAt: '2026-07-22T00:00:00.000Z',
       description: '계약 조건에 따른 운송',
       id: '55555555-5555-4555-8555-555555555555',
       name: 'TS03',
+      temperatureAlertEnabled: input.temperatureAlertEnabled ?? false,
+      temperatureMaxC: input.temperatureMaxC ?? null,
+      temperatureMinC: input.temperatureMinC ?? null,
       updatedAt: '2026-07-22T00:00:00.000Z',
     })),
     deleteCondition: vi.fn(() => Promise.resolve()),
@@ -1779,6 +1835,9 @@ function createDispatchImportService(): MockDispatchImportService {
       description: input.description,
       id: input.conditionId,
       name: input.name,
+      temperatureAlertEnabled: input.temperatureAlertEnabled ?? false,
+      temperatureMaxC: input.temperatureMaxC ?? null,
+      temperatureMinC: input.temperatureMinC ?? null,
       updatedAt: '2026-07-22T00:00:00.000Z',
     })),
   };

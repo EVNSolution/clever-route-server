@@ -2096,21 +2096,24 @@ model UvisTelemetryPollState {
 }
 
 model DsvTransportCondition {
-  id            String                       @id @default(uuid()) @db.Uuid
-  shopId        String                       @db.Uuid
-  shop          Shop                         @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  code          String                       @db.Text
-  name          String                       @db.Text
-  description   String                       @db.Text
-  rawValue      String?                      @db.Text
-  comparisonKey String?                      @db.Text
-  status        DsvTransportConditionStatus? @default(CANDIDATE)
-  activatedAt   DateTime?                    @db.Timestamptz(6)
-  deactivatedAt DateTime?                    @db.Timestamptz(6)
-  createdBy     String?                      @db.Text
-  createdAt     DateTime                     @default(now()) @db.Timestamptz(6)
-  updatedAt     DateTime                     @updatedAt @db.Timestamptz(6)
-  importRows    DsvDispatchImportRow[]
+  id                      String                       @id @default(uuid()) @db.Uuid
+  shopId                  String                       @db.Uuid
+  shop                    Shop                         @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  code                    String                       @db.Text
+  name                    String                       @db.Text
+  description             String                       @db.Text
+  rawValue                String?                      @db.Text
+  comparisonKey           String?                      @db.Text
+  status                  DsvTransportConditionStatus? @default(CANDIDATE)
+  temperatureAlertEnabled Boolean                      @default(false)
+  temperatureMinC         Decimal?                     @db.Decimal(6, 2)
+  temperatureMaxC         Decimal?                     @db.Decimal(6, 2)
+  activatedAt             DateTime?                    @db.Timestamptz(6)
+  deactivatedAt           DateTime?                    @db.Timestamptz(6)
+  createdBy               String?                      @db.Text
+  createdAt               DateTime                     @default(now()) @db.Timestamptz(6)
+  updatedAt               DateTime                     @updatedAt @db.Timestamptz(6)
+  importRows              DsvDispatchImportRow[]
 
   @@unique([id, shopId])
   @@unique([shopId, code])

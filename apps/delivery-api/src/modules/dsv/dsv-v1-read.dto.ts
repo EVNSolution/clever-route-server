@@ -386,6 +386,9 @@ export type DsvV1ConditionListItemRow = {
   description: string;
   name: string;
   status?: string | null;
+  temperatureAlertEnabled?: boolean;
+  temperatureMaxC?: number | null;
+  temperatureMinC?: number | null;
 };
 
 export type DsvV1ConditionListItemDto = {
@@ -394,6 +397,9 @@ export type DsvV1ConditionListItemDto = {
   description: string;
   name: string;
   status?: string;
+  temperatureAlertEnabled: boolean;
+  temperatureMaxC: number | null;
+  temperatureMinC: number | null;
 };
 
 export type DsvV1ManagementListPageDto<TItem> = {
@@ -681,6 +687,9 @@ export function mapDsvV1ConditionListItem(row: DsvV1ConditionListItemRow): DsvV1
     description: row.description,
     name: row.name,
     ...(row.status === undefined || row.status === null ? {} : { status: row.status }),
+    temperatureAlertEnabled: row.temperatureAlertEnabled ?? false,
+    temperatureMaxC: row.temperatureMaxC ?? null,
+    temperatureMinC: row.temperatureMinC ?? null,
   };
 }
 

@@ -399,6 +399,9 @@ describe('UVIS client', () => {
     expect(parseUvisTemperatureResponse({
       Result: [temperatureRow({ TPL_SIGNAL_A: '-', TPL_DEGREE_A: '0.5', TPL_SIGNAL_B: '+', TPL_DEGREE_B: '4.0' })],
     })).toMatchObject([{ temperatureA: -0.5, temperatureB: 4 }]);
+    expect(parseUvisTemperatureResponse({
+      Result: [temperatureRow({ TPL_DEGREE_A: 'NOUSE', TPL_DEGREE_B: 'NOUSE' })],
+    })).toMatchObject([{ temperatureA: null, temperatureB: null }]);
     expect(() => parseUvisLocationResponse({
       Data: [locationRow({ BI_X_POSITION: '91' })],
     })).toThrow(UvisClientError);
@@ -410,6 +413,9 @@ describe('UVIS client', () => {
     })).toThrow(UvisClientError);
     expect(() => parseUvisTemperatureResponse({
       Result: [temperatureRow({ TPL_SIGNAL_A: 'BAD', TPL_DEGREE_A: '4.5' })],
+    })).toThrow(UvisClientError);
+    expect(() => parseUvisTemperatureResponse({
+      Result: [temperatureRow({ TPL_DEGREE_A: 'OFFLINE' })],
     })).toThrow(UvisClientError);
     expect(() => parseUvisLocationResponse({
       Data: [{ latitude: '37.1', longitude: '127.1', recordedAt: '2026-08-04 10:00:00' }],

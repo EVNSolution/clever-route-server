@@ -87,8 +87,11 @@ describe('G002 DSV Prisma foundation', () => {
 
     expect(schema).toContain('enum DsvTransportConditionStatus');
     expect(condition).toContain('rawValue');
-    expect(condition).toContain('comparisonKey String?');
-    expect(condition).toContain('status        DsvTransportConditionStatus? @default(CANDIDATE)');
+    expect(condition).toContain('comparisonKey           String?                      @db.Text');
+    expect(condition).toContain('status                  DsvTransportConditionStatus? @default(CANDIDATE)');
+    expect(condition).toContain('temperatureAlertEnabled Boolean                      @default(false)');
+    expect(condition).toContain('temperatureMinC         Decimal?                     @db.Decimal(6, 2)');
+    expect(condition).toContain('temperatureMaxC         Decimal?                     @db.Decimal(6, 2)');
     expect(condition).toContain('activatedAt');
     expect(condition).toContain('deactivatedAt');
     expect(condition).toContain('@@unique([shopId, comparisonKey])');

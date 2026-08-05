@@ -438,8 +438,8 @@ describe('PrismaDsvV1ReadQueryService', () => {
         endpoint: 'conditions',
         prisma: prismaMock({
           dsvTransportCondition: { findMany: vi.fn(() => Promise.resolve([
-            { code: 'A', description: 'Alpha description', id: 'condition-a', name: 'Alpha Condition', status: 'ACTIVE' },
-            { code: 'B', description: 'Beta description', id: 'condition-b', name: 'Beta Condition', status: 'ACTIVE' },
+            { code: 'A', description: 'Alpha description', id: 'condition-a', name: 'Alpha Condition', status: 'ACTIVE', temperatureAlertEnabled: true, temperatureMaxC: '8.00', temperatureMinC: '2.00' },
+            { code: 'B', description: 'Beta description', id: 'condition-b', name: 'Beta Condition', status: 'ACTIVE', temperatureAlertEnabled: false, temperatureMaxC: null, temperatureMinC: null },
           ])) },
         }),
         sort: 'name:asc,id:asc',
@@ -888,6 +888,49 @@ describe('PrismaDsvV1ReadQueryService', () => {
     await service.listControl(adminPrincipal(), { serviceDate: '2026-07-22' });
 
     expect(firstMockArg<OrderFindManyQuery>(prisma.order.findMany)).not.toHaveProperty('take');
+  });
+
+  test('vehicle temperature history verifies tenant vehicle ownership and returns recorder samples oldest first', async () => {
+    const prisma = prismaMock({
+      uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve([
+        {
+          observedAt: new Date('2026-08-04T01:16:00.000Z'),
+          temperatureA: '-18.50',
+          temperatureB: null,
+        },
+      ])) },
+      vehicle: { findFirst: vi.fn(() => Promise.resolve({ id: 'vehicle-a' })) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-08-04T02:00:00.000Z'));
+
+    const result = await service.listVehicleTemperatureHistory(adminPrincipal(), { vehicleId: 'vehicle-a' });
+
+    expect(prisma.vehicle.findFirst).toHaveBeenCalledWith({
+      select: { id: true },
+      where: { id: 'vehicle-a', shopId: 'shop-a' },
+    });
+    expect(prisma.uvisVehicleTelemetrySample.findMany).toHaveBeenCalledWith({
+      orderBy: [{ observedAt: 'desc' }],
+      select: { observedAt: true, temperatureA: true, temperatureB: true },
+      take: 288,
+      where: {
+        observedAt: {
+          gte: new Date('2026-08-03T02:00:00.000Z'),
+          lte: new Date('2026-08-04T02:00:00.000Z'),
+        },
+        shopId: 'shop-a',
+        sourceKind: 'TEMPERATURE_RECORDER',
+        vehicleId: 'vehicle-a',
+      },
+    });
+    expect(result).toEqual({
+      samples: [{
+        observedAt: '2026-08-04T01:16:00.000Z',
+        temperatureA: -18.5,
+        temperatureB: null,
+      }],
+      vehicleId: 'vehicle-a',
+    });
   });
 });
 

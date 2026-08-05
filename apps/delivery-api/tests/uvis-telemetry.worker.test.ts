@@ -76,6 +76,18 @@ describe('UvisTelemetryWorker', () => {
     expect(harness.pollStore.releaseLease).toHaveBeenCalledWith({ leaseToken: 'lease-token', shopId: 'shop-id' });
   });
 
+  test('does not skip a poll when the runtime timer reaches the interval boundary a few milliseconds early', async () => {
+    const harness = createHarness({
+      lastLocationStartedAt: new Date(now.getTime() - 59_999),
+      lastTemperatureStartedAt: now,
+    });
+
+    await harness.worker.runOnce();
+
+    expect(harness.client.getLatestLocations).toHaveBeenCalledOnce();
+    expect(harness.client.getLatestTemperatures).not.toHaveBeenCalled();
+  });
+
   test('backs dormant location polling off to the heartbeat while temperature cadence stays active', async () => {
     const harness = createHarness({
       activeProtectionEndedAt: new Date('2026-08-03T22:30:00.000Z'),
