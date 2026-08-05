@@ -1310,6 +1310,7 @@ function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow): DsvV1SellerOrde
     driverId: currentRouteDriverId,
     ...etaFields(eta),
     etaStatus: fallbackEtaStatus(currentRouteDriverId === null ? null : row.currentRouteVersionId, eta),
+    eventRows: stop?.driverEvents.map(toDtoEventRow) ?? [],
     latitude: decimalToNumber(stop?.latitude ?? null),
     longitude: decimalToNumber(stop?.longitude ?? null),
     ...(routePlanId === null ? {} : { routePlanId }),

@@ -44,6 +44,7 @@ export const dsvV1SellerOrderSummaryRequiredFields = [
   'destinationId',
   'assignmentStatus',
   'etaStatus',
+  'eventSummary',
 ] as const;
 
 export const dsvV1SessionRequiredFields = ['csrfToken', 'principalType', 'shopId', 'scopes'] as const;
@@ -110,6 +111,7 @@ export type DsvV1SellerOrderSummaryRow = DsvV1RoutePlanStopEtaInput & {
   destinationDisplayName?: string | null;
   destinationId: string;
   driverId?: string | null;
+  eventRows?: readonly DsvV1EventRowInput[];
   latitude?: number | null;
   longitude?: number | null;
   routePlanId?: string | null;
@@ -144,6 +146,7 @@ export type DsvV1SellerOrderSummaryDto = {
   driverId?: string;
   estimatedArrivalAt?: string;
   etaStatus: DsvV1EtaStatus;
+  eventSummary: DsvV1EventSummaryDto[];
   latitude?: number;
   longitude?: number;
   routePlanId?: string;
@@ -541,6 +544,7 @@ export function mapDsvV1SellerOrderSummary(row: DsvV1SellerOrderSummaryRow): Dsv
     ...(row.driverId === undefined || row.driverId === null ? {} : { driverId: row.driverId }),
     ...optionalIso('estimatedArrivalAt', row.estimatedArrivalAt),
     etaStatus: row.etaStatus,
+    eventSummary: mapDsvV1EventSummary(row.eventRows ?? []),
     ...(row.latitude === undefined || row.latitude === null ? {} : { latitude: row.latitude }),
     ...(row.longitude === undefined || row.longitude === null ? {} : { longitude: row.longitude }),
     ...(row.routePlanId === undefined || row.routePlanId === null ? {} : { routePlanId: row.routePlanId }),

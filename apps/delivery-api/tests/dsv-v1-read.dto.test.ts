@@ -93,6 +93,10 @@ describe('G005 DSV v1 read DTO adapter', () => {
       destinationId: 'destination-1',
       driverId: 'driver-1',
       estimatedArrivalAt: new Date('2026-07-23T01:02:03.000Z'),
+      eventRows: [
+        { eventType: 'STOP_ARRIVED', occurredAt: new Date('2026-07-23T00:58:00.000Z') },
+        { eventType: 'STOP_FAILED', occurredAt: new Date('2026-07-23T01:00:00.000Z') },
+      ],
       etaInputRouteVersionId: 'route-version-private',
       etaSource: 'ROUTE_STARTED',
       etaStatus: 'READY',
@@ -118,6 +122,10 @@ describe('G005 DSV v1 read DTO adapter', () => {
       driverId: 'driver-1',
       estimatedArrivalAt: '2026-07-23T01:02:03.000Z',
       etaStatus: 'READY',
+      eventSummary: [
+        { occurredAt: '2026-07-23T00:58:00.000Z', type: 'STOP_ARRIVED' },
+        { occurredAt: '2026-07-23T01:00:00.000Z', type: 'STOP_FAILED' },
+      ],
       latitude: 37.1234567,
       longitude: 127.1234567,
       routePlanId: 'route-plan-1',
