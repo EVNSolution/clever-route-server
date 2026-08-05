@@ -860,7 +860,7 @@ describe('BrevoCustomerEmailTransport', () => {
         textColor: '#334455',
         websiteUrl: 'https://example.com',
       },
-      body: 'Hello <customer>',
+      body: 'Hello <customer>\n\nItems:\nFresh kimchi × 2\nKorean pear × 1',
       commandId: 'command-1:stop-1',
       recipientEmail: 'customer@example.com',
       replyTo: 'reply@example.com',
@@ -880,12 +880,14 @@ describe('BrevoCustomerEmailTransport', () => {
       replyTo: { email: 'reply@example.com' },
       sender: { email: 'sender@example.com', name: 'Sender & Co <Team>' },
       tags: ['customer-delivery-email', 'delivery_scheduled'],
-      textContent: 'Hello <customer>\n\n--\nSender & Co\n+1 555 0100\nhello@example.com\nhttps://example.com\nFooter <script>alert(1)</script>',
+      textContent: 'Hello <customer>\n\nItems:\nFresh kimchi × 2\nKorean pear × 1\n\n--\nSender & Co\n+1 555 0100\nhello@example.com\nhttps://example.com\nFooter <script>alert(1)</script>',
     });
     const parsedBody = JSON.parse(request.body as string) as { htmlContent: string; textContent: string };
     expect(parsedBody.htmlContent).toContain('<meta name="color-scheme" content="light dark">');
     expect(parsedBody.htmlContent).toContain('<meta name="supported-color-schemes" content="light dark">');
-    expect(parsedBody.htmlContent).toMatch(/<h1[^>]*>Subject &lt;urgent&gt;<\/h1>[\s\S]*Hello &lt;customer&gt;[\s\S]*<hr/u);
+    expect(parsedBody.htmlContent).toMatch(/<h1[^>]*>Subject &lt;urgent&gt;<\/h1>[\s\S]*Hello &lt;customer&gt;<br \/><br \/>Items:<br \/>Fresh kimchi × 2<br \/>Korean pear × 1[\s\S]*<hr/u);
+    expect(parsedBody.htmlContent).toContain('overflow-wrap:anywhere');
+    expect(parsedBody.htmlContent).not.toContain('white-space:pre-wrap');
     expect(parsedBody.htmlContent).toContain('Footer &lt;script&gt;alert(1)&lt;/script&gt;');
     expect(parsedBody.htmlContent).toContain('+1 555 0100');
     expect(parsedBody.htmlContent).toContain('mailto:hello@example.com');
@@ -903,7 +905,7 @@ describe('BrevoCustomerEmailTransport', () => {
     expect(parsedBody.htmlContent).not.toContain('<script>');
     expect(parsedBody.htmlContent).not.toContain('<urgent>');
     expect(parsedBody.htmlContent).not.toContain('Powered by CLEVER');
-    expect(parsedBody.textContent).toBe('Hello <customer>\n\n--\nSender & Co\n+1 555 0100\nhello@example.com\nhttps://example.com\nFooter <script>alert(1)</script>');
+    expect(parsedBody.textContent).toBe('Hello <customer>\n\nItems:\nFresh kimchi × 2\nKorean pear × 1\n\n--\nSender & Co\n+1 555 0100\nhello@example.com\nhttps://example.com\nFooter <script>alert(1)</script>');
     expect(request.signal).toBeDefined();
   });
 

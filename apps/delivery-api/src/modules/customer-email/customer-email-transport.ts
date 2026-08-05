@@ -162,7 +162,7 @@ function brandedHtml(message: CustomerEmailTransportMessage): string {
             <tr>
               <td style="padding:28px 0">
                 <h1 class="email-text" style="color:#111111;font-size:28px;font-weight:700;line-height:1.2;margin:0 0 20px">${escapeHtml(message.subject)}</h1>
-                <div class="email-text" style="color:#111111;font-size:16px;line-height:1.65;white-space:pre-wrap">${escapeHtml(message.body)}</div>
+                <div class="email-text" style="color:#111111;font-size:16px;line-height:1.65;overflow-wrap:anywhere;word-wrap:break-word">${renderMultilineText(message.body)}</div>
                 ${footer}
               </td>
             </tr>
@@ -198,6 +198,10 @@ function renderLogo(branding: CustomerEmailBranding, senderName: string): string
 function deriveLogoAltText(senderName: string): string {
   const normalized = senderName.replace(/[<>]/gu, '').replace(/\s+/gu, ' ').trim();
   return normalized === '' ? 'Brand' : normalized;
+}
+
+function renderMultilineText(value: string): string {
+  return escapeHtml(value).replace(/\r\n|\r|\n/gu, '<br />');
 }
 
 function textContent(message: CustomerEmailTransportMessage): string {
