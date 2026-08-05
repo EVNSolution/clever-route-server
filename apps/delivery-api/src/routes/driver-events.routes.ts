@@ -82,6 +82,17 @@ export type DriverApiDependencies = {
   driverConsentService?: DriverConsentServiceContract;
   driverDeliverySpaceService?: DriverDeliverySpaceServiceContract;
   driverEventService: {
+    completeDeliveryDestination?(input: {
+      clientEventId: string;
+      deliveryStopIds: string[];
+      destinationId: string;
+      driverId: string;
+      occurredAt: Date;
+      payload: unknown;
+      routePlanId: string;
+      shopDomain: string;
+      shopId: string;
+    }): Promise<RecordDriverEventResult[]>;
     recordDriverEvent(input: {
       clientEventId: string | null;
       deliveryStopId: string | null;
@@ -182,6 +193,14 @@ type DriverEventRequestBody = {
   eventType?: unknown;
   latitude?: unknown;
   longitude?: unknown;
+  occurredAt?: unknown;
+  routePlanId?: unknown;
+};
+
+type DriverDestinationCompletionRequestBody = {
+  clientEventId?: unknown;
+  deliveryStopIds?: unknown;
+  destinationId?: unknown;
   occurredAt?: unknown;
   routePlanId?: unknown;
 };
@@ -933,6 +952,86 @@ export function registerDriverEventRoutes(
     });
   }
 
+  app.post<{ Body: DriverDestinationCompletionRequestBody }>(
+    '/driver/destinations/complete',
+    async (request, reply) => {
+      const authentication = await authenticateDriverRequest(request, dependencies);
+      if (authentication.status !== 'authenticated') {
+        return reply.code(401).send(driverAuthenticationErrorResponse(authentication.status));
+      }
+      const driverEventService = dependencies.driverEventService;
+      if (driverEventService.completeDeliveryDestination === undefined) {
+        return reply.code(503).send(errorResponse(
+          'DESTINATION_COMPLETION_UNAVAILABLE',
+          'Destination completion is temporarily unavailable'
+        ));
+      }
+
+      let input: ReturnType<typeof readDriverDestinationCompletionBody>;
+      try {
+        input = readDriverDestinationCompletionBody(request.body);
+      } catch {
+        return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid destination completion payload'));
+      }
+      const driverContext = authentication.context;
+      if (input.routePlanId !== driverContext.routePlanId) {
+        return reply
+          .code(403)
+          .send(errorResponse('ROUTE_ASSIGNMENT_ACCOUNT_MISMATCH', 'Driver route assignment rejected'));
+      }
+
+      try {
+        const results = await driverEventService.completeDeliveryDestination({
+          ...input,
+          driverId: driverContext.driverId,
+          payload: request.body,
+          routePlanId: driverContext.routePlanId,
+          shopDomain: driverContext.shopDomain,
+          shopId: driverContext.shopId
+        });
+        for (let index = 0; index < results.length; index += 1) {
+          const result = results[index];
+          const deliveryStopId = input.deliveryStopIds[index];
+          if (result === undefined || deliveryStopId === undefined || result.duplicate) continue;
+          const progressEvent = createRouteTrackingProgressEvent({
+            deliveryStopId,
+            driverId: driverContext.driverId,
+            eventId: result.eventId,
+            eventType: 'STOP_DELIVERED',
+            occurredAt: input.occurredAt,
+            receivedAt: dependencies.now?.() ?? new Date(),
+            routePlanId: driverContext.routePlanId
+          });
+          if (progressEvent !== null) dependencies.routeTrackingStreamHub?.publishProgress(progressEvent);
+        }
+        return reply.code(results.every(({ duplicate }) => duplicate) ? 200 : 202).send({
+          data: {
+            completedStopCount: results.length,
+            eventIds: results.map(({ eventId }) => eventId)
+          },
+          error: null
+        });
+      } catch (error) {
+        if (error instanceof DriverEventContextError) {
+          return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid destination or stop context'));
+        }
+        if (error instanceof DriverEventRouteNotInProgressError) {
+          return reply.code(409).send(errorResponse('ROUTE_NOT_IN_PROGRESS', 'Route is not in progress'));
+        }
+        if (error instanceof DriverEventExecutionConflictError) {
+          return reply.code(409).send(errorResponse('ROUTE_EXECUTION_CONFLICT', 'An overlapping route is already in progress'));
+        }
+        if (error instanceof DriverEventEtaStaleConflictError) {
+          return reply.code(409).send(errorResponse('ETA_STALE_CONFLICT', 'ETA update is stale'));
+        }
+        if (error instanceof DriverEventScopeError) {
+          return reply.code(403).send(errorResponse('FORBIDDEN', 'Destination completion scope rejected'));
+        }
+        throw error;
+      }
+    }
+  );
+
   app.post<{ Body: DriverEventRequestBody }>('/driver/events', async (request, reply) => {
     const authentication = await authenticateDriverRequest(request, dependencies, {
       allowCompletedRoute: request.body?.eventType === 'ROUTE_COMPLETED'
@@ -1381,6 +1480,34 @@ function readDriverEventBody(body: DriverEventRequestBody): {
     longitude: readOptionalCoordinate(body.longitude),
     occurredAt: readRequiredDate(body.occurredAt),
     routePlanId: readOptionalString(body.routePlanId)
+  };
+}
+
+function readDriverDestinationCompletionBody(body: DriverDestinationCompletionRequestBody): {
+  clientEventId: string;
+  deliveryStopIds: string[];
+  destinationId: string;
+  occurredAt: Date;
+  routePlanId: string;
+} {
+  const clientEventId = readRequiredString(body.clientEventId);
+  const destinationId = readRequiredString(body.destinationId);
+  const routePlanId = readRequiredString(body.routePlanId);
+  if (!Array.isArray(body.deliveryStopIds)) throw new Error('deliveryStopIds are required');
+  const deliveryStopIds = body.deliveryStopIds.map(readRequiredString);
+  if (
+    deliveryStopIds.length === 0
+    || deliveryStopIds.length > 50
+    || new Set(deliveryStopIds).size !== deliveryStopIds.length
+  ) {
+    throw new Error('deliveryStopIds must contain 1 to 50 unique values');
+  }
+  return {
+    clientEventId,
+    deliveryStopIds,
+    destinationId,
+    occurredAt: readRequiredDate(body.occurredAt),
+    routePlanId
   };
 }
 

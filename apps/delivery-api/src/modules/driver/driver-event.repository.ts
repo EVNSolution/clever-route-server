@@ -38,6 +38,18 @@ export type RecordDriverEventResult = {
   sequenceDeviation?: DriverStopSequenceDeviation;
 };
 
+export type CompleteDriverDeliveryDestinationInput = {
+  clientEventId: string;
+  deliveryStopIds: string[];
+  destinationId: string;
+  driverId: string;
+  occurredAt: Date;
+  payload: unknown;
+  routePlanId: string;
+  shopDomain: string;
+  shopId: string;
+};
+
 export type DriverStopSequenceDeviation = {
   expectedDeliveryStopId: string;
   expectedSequence: number;
@@ -119,6 +131,50 @@ export class PrismaDriverEventRepository {
 
   constructor(private readonly prisma: DriverEventPrismaClient) {
     this.schemaCapabilityLoader = schemaCapabilityLoaderFor(prisma);
+  }
+
+  async completeDeliveryDestination(
+    input: CompleteDriverDeliveryDestinationInput
+  ): Promise<RecordDriverEventResult[]> {
+    const deliveryStopIds = [...new Set(input.deliveryStopIds)];
+    if (
+      deliveryStopIds.length === 0
+      || deliveryStopIds.length !== input.deliveryStopIds.length
+      || deliveryStopIds.length > 50
+    ) {
+      throw new DriverEventContextError('Destination completion requires 1 to 50 unique delivery stops');
+    }
+    const eligibleStops = await this.prisma.deliveryStop.findMany({
+      select: { id: true },
+      where: {
+        id: { in: deliveryStopIds },
+        order: { destinationId: input.destinationId },
+        routePlanStops: { some: { routePlanId: input.routePlanId } },
+        shopId: input.shopId
+      }
+    });
+    const eligibleStopIds = new Set(eligibleStops.map(({ id }) => id));
+    if (deliveryStopIds.some((deliveryStopId) => !eligibleStopIds.has(deliveryStopId))) {
+      throw new DriverEventScopeError('All delivery stops must belong to the selected destination and route');
+    }
+
+    const results: RecordDriverEventResult[] = [];
+    for (const deliveryStopId of deliveryStopIds) {
+      results.push(await this.recordDriverEvent({
+        clientEventId: `${input.clientEventId}:${deliveryStopId}`,
+        deliveryStopId,
+        driverId: input.driverId,
+        eventType: 'STOP_DELIVERED',
+        latitude: null,
+        longitude: null,
+        occurredAt: input.occurredAt,
+        payload: input.payload,
+        routePlanId: input.routePlanId,
+        shopDomain: input.shopDomain,
+        shopId: input.shopId
+      }));
+    }
+    return results;
   }
 
   async recordDriverEvent(input: RecordDriverEventInput): Promise<RecordDriverEventResult> {
