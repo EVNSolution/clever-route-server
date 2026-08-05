@@ -25,6 +25,7 @@
     "dsv:dispatch-demo:seed": "tsx src/scripts/seed-dsv-dispatch-demo.ts",
     "dsv:admin-account:bootstrap": "tsx src/scripts/bootstrap-dsv-admin-account.ts",
     "dsv:driver-auth:smoke": "tsx src/scripts/smoke-dsv-driver-auth.ts",
+    "dsv:driver-app-release:publish": "tsx src/scripts/publish-dsv-driver-app-release.ts",
     "dsv:dispatch-demo:smoke": "tsx src/scripts/smoke-dsv-dispatch-import.ts",
     "dsv:g002:backfill:dry-run": "tsx src/scripts/dsv-g002-backfill-dry-run.ts",
     "dsv:g002:baseline:empty": "bash scripts/dsv-g002-empty-baseline-rehearsal.sh",
