@@ -1344,7 +1344,7 @@ function toRecordRow(stop: RecordStopRow): RecordCursorRow {
   return {
     cursorStopId: stop.id,
     cursorUpdatedAt: stop.updatedAt,
-    deliveryStatus: stop.order.deliveryStatus,
+    deliveryStatus: recordDeliveryStatus(stop),
     destinationAddress: sourceAddress === undefined || sourceAddress === ''
       ? deliveryStopAddressLabel(stop)
       : sourceAddress,
@@ -1360,6 +1360,16 @@ function toRecordRow(stop: RecordStopRow): RecordCursorRow {
     sellerOrderKey: stop.order.sellerOrderKey ?? stop.order.id,
     timeConstraint: constraintState.timeConstraint,
   };
+}
+
+function recordDeliveryStatus(stop: RecordStopRow): string {
+  const latestTerminalEvent = stop.driverEvents.find(({ eventType }) =>
+    eventType === 'STOP_DELIVERED' || eventType === 'STOP_FAILED');
+  if (latestTerminalEvent?.eventType === 'STOP_DELIVERED') return 'DELIVERED';
+  if (latestTerminalEvent?.eventType === 'STOP_FAILED') return 'FAILED';
+  if (stop.status === 'DELIVERED') return 'DELIVERED';
+  if (stop.status === 'FAILED') return 'FAILED';
+  return stop.order.deliveryStatus;
 }
 
 function etaFields(eta: (DsvV1EtaReadRow & { etaStatus: DsvV1EtaStatus }) | null): Partial<DsvV1RoutePlanStopEtaInput> {

@@ -340,7 +340,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
           id: 'stop-1',
           order: {
             currentRouteVersionId: null,
-            deliveryStatus: 'DELIVERED',
+            deliveryStatus: 'OUT_FOR_DELIVERY',
             destination: { canonicalName: '명동 병원' },
             id: 'order-1',
             sellerOrderKey: 'SO-001',
@@ -359,6 +359,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-22T12:00:00.000Z'));
 
     const result = await service.listRecords(adminPrincipal(), { serviceDate: '2026-07-22' });
+    expect(result.items[0]?.deliveryStatus).toBe('DELIVERED');
     expect(result.items[0]?.destinationAddress).toBe('서울 중구 퇴계로 131, 5층(충무로2가, 신일빌딩)');
     expect(result).toMatchObject({
       items: [{
