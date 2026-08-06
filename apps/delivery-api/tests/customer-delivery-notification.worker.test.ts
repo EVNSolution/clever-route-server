@@ -36,6 +36,40 @@ describe('CustomerDeliveryNotificationWorker', () => {
     });
   });
 
+  test('sends customer memo notifications from durable metadata without route payload', async () => {
+    const { outbox, sender } = createHarness({
+      deliveryStopId: null,
+      metadata: { body: 'Customer-visible memo', orderMessageId: 'message-id' },
+      requestedUiStatus: null,
+      routePlanId: null
+    });
+    sender.send.mockResolvedValue({
+      provider: 'http',
+      providerMessageId: 'provider-id',
+      status: 'SENT'
+    });
+    const worker = new CustomerDeliveryNotificationWorker(outbox as never, sender, { batchSize: 1 });
+
+    await expect(worker.runDueBatch(now)).resolves.toBe(1);
+
+    expect(sender.send).toHaveBeenCalledWith({
+      body: 'Customer-visible memo',
+      idempotencyKey: 'notification-key',
+      kind: 'CUSTOMER_MESSAGE',
+      orderId: 'order-id',
+      orderMessageId: 'message-id',
+      recipientEmail: 'customer@example.com',
+      shopDomain: 'example.myshopify.com'
+    });
+    expect(outbox.markSent).toHaveBeenCalledWith({
+      factId: 'fact-id',
+      leaseToken: 'lease-token',
+      now,
+      provider: 'http',
+      providerMessageId: 'provider-id'
+    });
+  });
+
   test('releases retryable failures with exponential backoff', async () => {
     const { outbox, sender } = createHarness();
     sender.send.mockResolvedValue({
@@ -143,6 +177,7 @@ function createHarness(overrides: Partial<CustomerDeliveryNotificationJob> = {})
     deliveryStopId: 'stop-id',
     factId: 'fact-id',
     idempotencyKey: 'notification-key',
+    metadata: null,
     leaseToken: 'lease-token',
     occurredAt: new Date('2026-07-23T07:55:00.000Z'),
     orderId: 'order-id',

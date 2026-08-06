@@ -222,11 +222,11 @@ export class CustomerDeliveryNotificationWorker {
 function buildJobMessage(job: CustomerDeliveryNotificationJob):
   | { message: CustomerDeliveryNotificationMessage }
   | { error: { code: string; message: string } } {
-  if (job.idempotencyKey === null || job.deliveryStopId === null || job.routePlanId === null) {
+  if (job.idempotencyKey === null) {
     return {
       error: {
-        code: 'CUSTOMER_NOTIFICATION_PAYLOAD_INCOMPLETE',
-        message: 'Customer notification is missing its durable route payload.'
+        code: 'CUSTOMER_NOTIFICATION_IDEMPOTENCY_MISSING',
+        message: 'Customer notification is missing its idempotency key.'
       }
     };
   }
@@ -235,6 +235,36 @@ function buildJobMessage(job: CustomerDeliveryNotificationJob):
       error: {
         code: 'CUSTOMER_EMAIL_MISSING',
         message: 'Customer email is missing from the notification snapshot.'
+      }
+    };
+  }
+  if (job.requestedUiStatus === null && isCustomerMessageSource(job)) {
+    const customerMessage = readCustomerMessageMetadata(job.metadata);
+    if (customerMessage === null) {
+      return {
+        error: {
+          code: 'CUSTOMER_MESSAGE_PAYLOAD_INCOMPLETE',
+          message: 'Customer message notification is missing its durable message payload.'
+        }
+      };
+    }
+    return {
+      message: {
+        body: customerMessage.body,
+        idempotencyKey: job.idempotencyKey,
+        kind: 'CUSTOMER_MESSAGE',
+        orderId: job.orderId,
+        orderMessageId: customerMessage.orderMessageId,
+        recipientEmail: job.recipientEmail,
+        shopDomain: job.shopDomain
+      }
+    };
+  }
+  if (job.deliveryStopId === null || job.routePlanId === null) {
+    return {
+      error: {
+        code: 'CUSTOMER_NOTIFICATION_PAYLOAD_INCOMPLETE',
+        message: 'Customer notification is missing its durable route payload.'
       }
     };
   }
@@ -257,6 +287,23 @@ function buildJobMessage(job: CustomerDeliveryNotificationJob):
       status: job.requestedUiStatus
     }
   };
+}
+
+function isCustomerMessageSource(job: CustomerDeliveryNotificationJob): boolean {
+  return readMetadataString(job.metadata, 'orderMessageId') !== null;
+}
+
+function readCustomerMessageMetadata(metadata: CustomerDeliveryNotificationJob['metadata']): { body: string; orderMessageId: string } | null {
+  const body = readMetadataString(metadata, 'body');
+  const orderMessageId = readMetadataString(metadata, 'orderMessageId');
+  if (body === null || orderMessageId === null) return null;
+  return { body, orderMessageId };
+}
+
+function readMetadataString(metadata: CustomerDeliveryNotificationJob['metadata'], key: string): string | null {
+  if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const value = (metadata as Record<string, unknown>)[key];
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
 }
 
 function isNotificationUiStatus(value: string | null): value is 'COMPLETED' | 'IN_PROGRESS' | 'READY' {

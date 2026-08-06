@@ -57,6 +57,41 @@ describe('customer delivery notification sender', () => {
     expect(requestInit?.signal).toBeInstanceOf(AbortSignal);
   });
 
+  test('configured HTTP sender posts customer memo payload without route fields', async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(
+      JSON.stringify({ providerMessageId: 'provider-message-id' }),
+      { headers: { 'Content-Type': 'application/json' }, status: 202 }
+    ));
+    const sender = new HttpCustomerDeliveryNotificationSender({
+      fetchImpl,
+      url: 'https://notifications.example.com/customer-delivery'
+    });
+
+    await expect(sender.send({
+      body: 'Customer-visible memo',
+      idempotencyKey: 'memo-command:customer-message-email',
+      kind: 'CUSTOMER_MESSAGE',
+      orderId: 'order-1',
+      orderMessageId: 'message-id',
+      recipientEmail: 'customer@example.com',
+      shopDomain: 'example.myshopify.com'
+    })).resolves.toEqual({
+      provider: 'http',
+      providerMessageId: 'provider-message-id',
+      status: 'SENT'
+    });
+    const [, requestInit] = fetchImpl.mock.calls[0] ?? [];
+    expect(requestInit?.body).toBe(JSON.stringify({
+      body: 'Customer-visible memo',
+      idempotencyKey: 'memo-command:customer-message-email',
+      kind: 'CUSTOMER_MESSAGE',
+      orderId: 'order-1',
+      orderMessageId: 'message-id',
+      recipientEmail: 'customer@example.com',
+      shopDomain: 'example.myshopify.com'
+    }));
+  });
+
   test('configured HTTP sender reports failure without leaking bearer token', async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response('nope', { status: 500 }));
     const sender = new HttpCustomerDeliveryNotificationSender({

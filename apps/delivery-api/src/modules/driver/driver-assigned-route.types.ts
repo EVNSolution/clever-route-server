@@ -33,6 +33,12 @@ export type DriverAssignedRouteStop = {
   destinationId: string | null;
   distanceFromPreviousMeters?: number | null;
   durationFromPreviousSeconds?: number | null;
+  driverMessages: Array<{
+    body: string;
+    createdAt: string;
+    messageId: string;
+    readAt: string | null;
+  }>;
   estimatedArrivalAt?: string | null;
   conditionCode: string | null;
   items: OrderItemDto[];
@@ -48,6 +54,16 @@ export type DriverAssignedRouteStop = {
   specialInstructionNote: string | null;
   status: string;
   routeConstraintStatus?: 'NOT_APPLICABLE' | 'UNCONFIRMED' | 'PENDING_RECALCULATION' | 'NOT_EVALUATED';
+  pendingTimeConstraintChange?: {
+    pendingChangeId: string;
+    requestedAt: string;
+    status: 'PENDING_ACK';
+    type: 'TIME_CONSTRAINT_CHANGE';
+    timeWindow: {
+      end: string;
+      start: string;
+    } | null;
+  } | null | undefined;
   timeConstraintAcknowledgement: {
     acknowledgedAt: string;
     eventId: string;

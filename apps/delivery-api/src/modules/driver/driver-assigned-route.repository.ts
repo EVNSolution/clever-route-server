@@ -75,6 +75,14 @@ type AssignedRoutePlanStopRecord = {
     instructions: string | null;
     latitude: unknown;
     longitude: unknown;
+    dsvDispatchChangeRequests: Array<{
+      createdAt: Date;
+      id: string;
+      status: string;
+      timeWindowEnd: Date | null;
+      timeWindowStart: Date | null;
+      type: string;
+    }>;
     driverEvents: Array<{
       driverId: string | null;
       id: string;
@@ -100,6 +108,12 @@ type AssignedRoutePlanStopRecord = {
       id: string;
       name: string;
       orderItems?: OrderItemRecordLike[];
+      orderMessages: Array<{
+        body: string;
+        createdAt: Date;
+        id: string;
+        readByDriverAt: Date | null;
+      }>;
       rawPayload: unknown;
       shopifyOrderGid: string;
       totalPriceAmount: unknown;
@@ -138,6 +152,12 @@ const assignedRouteInclude = {
             select: { driverId: true, id: true, occurredAt: true, routePlanId: true },
             where: { eventType: 'TIME_CONSTRAINT_ACKNOWLEDGED' }
           },
+          dsvDispatchChangeRequests: {
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+            select: { createdAt: true, id: true, status: true, timeWindowEnd: true, timeWindowStart: true, type: true },
+            take: 1,
+            where: { status: 'PENDING_ACK', type: 'TIME_CONSTRAINT_CHANGE' }
+          },
           order: {
             include: {
               currentRouteVersion: {
@@ -156,6 +176,11 @@ const assignedRouteInclude = {
               },
               orderItems: {
                 orderBy: { lineIndex: 'asc' }
+              },
+              orderMessages: {
+                orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+                select: { body: true, createdAt: true, id: true, readByDriverAt: true },
+                where: { audience: 'DRIVER' }
               }
             }
           }
@@ -380,6 +405,12 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord, routePlan: 
       ?? readString(rawPayload?.destination_id),
     distanceFromPreviousMeters: routeStop.distanceFromPreviousMeters,
     durationFromPreviousSeconds: routeStop.durationFromPreviousSeconds,
+    driverMessages: deliveryStop.order.orderMessages.map((message) => ({
+      body: message.body,
+      createdAt: message.createdAt.toISOString(),
+      messageId: message.id,
+      readAt: message.readByDriverAt?.toISOString() ?? null
+    })),
     estimatedArrivalAt: routeStop.estimatedArrivalAt?.toISOString() ?? null,
     conditionCode: readConditionComparisonKey(dsvNormalized, rawPayload),
     items: (deliveryStop.order.orderItems ?? []).map((item) => toOrderItemDto(item)),
@@ -389,6 +420,7 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord, routePlan: 
     }),
     orderName: deliveryStop.order.name,
     paymentMethodTitle: readPaymentMethodTitle(rawPayload),
+    ...optionalPendingTimeConstraintChange(toPendingTimeConstraintChange(deliveryStop.dsvDispatchChangeRequests?.[0] ?? null)),
     phone: deliveryStop.phone,
     recipientName: deliveryStop.recipientName,
     sequence: routeStop.sequence,
@@ -418,6 +450,28 @@ function toAssignedRouteStop(routeStop: AssignedRoutePlanStopRecord, routePlan: 
     timeWindowEnd: deliveryStop.timeWindowEnd?.toISOString() ?? null,
     timeWindowStart: deliveryStop.timeWindowStart?.toISOString() ?? null,
     totalPriceAmount: decimalString(deliveryStop.order.totalPriceAmount)
+  };
+}
+
+function optionalPendingTimeConstraintChange(
+  value: DriverAssignedRouteStop['pendingTimeConstraintChange'],
+): Pick<DriverAssignedRouteStop, 'pendingTimeConstraintChange'> | Record<string, never> {
+  return value === null || value === undefined ? {} : { pendingTimeConstraintChange: value };
+}
+
+function toPendingTimeConstraintChange(change: AssignedRoutePlanStopRecord['deliveryStop']['dsvDispatchChangeRequests'][number] | null): DriverAssignedRouteStop['pendingTimeConstraintChange'] {
+  if (change === null || change.status !== 'PENDING_ACK' || change.type !== 'TIME_CONSTRAINT_CHANGE') return null;
+  return {
+    pendingChangeId: change.id,
+    requestedAt: change.createdAt.toISOString(),
+    status: 'PENDING_ACK',
+    type: 'TIME_CONSTRAINT_CHANGE',
+    timeWindow: change.timeWindowStart === null || change.timeWindowEnd === null
+      ? null
+      : {
+          end: formatTimeOnly(change.timeWindowEnd),
+          start: formatTimeOnly(change.timeWindowStart)
+        }
   };
 }
 
@@ -631,6 +685,10 @@ function hasToNumber(value: unknown): value is { toNumber: () => unknown } {
 
 function formatDateOnly(date: Date): string {
   return date.toISOString().slice(0, 10);
+}
+
+function formatTimeOnly(date: Date): string {
+  return date.toISOString().slice(11, 16);
 }
 
 function emptyRouteResult(): RoutePlanRouteResult {

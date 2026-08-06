@@ -85,7 +85,9 @@ const adminCommerceConnectionsUi = loadAdminCommerceConnectionsUiDependencies({
 const driverApi = loadDriverApiDependencies({
   adminNotificationService,
   env: process.env,
+  ...(dsvV1Read?.orderMessageService === undefined ? {} : { orderMessageService: dsvV1Read.orderMessageService }),
   prisma,
+  ...(dsvV1Read?.routeOptimizationScheduler === undefined ? {} : { routeOptimizationScheduler: dsvV1Read.routeOptimizationScheduler }),
   routeGroupingService,
   routeTrackingStreamHub
 });
@@ -149,6 +151,7 @@ try {
   await app.listen({ host: '0.0.0.0', port: env.port });
   await adminNotificationRuntime.start();
   await customerDeliveryNotificationRuntime.start();
+  await dsvV1Read?.driverNotificationRuntime?.start();
   uvisTelemetryRuntime.start();
   shopifyWebhookRuntime?.worker?.start();
   adminOrdersRuntime?.reconciliationWorker?.start();
@@ -159,6 +162,7 @@ try {
     app.close(),
     adminNotificationRuntime.close(),
     customerDeliveryNotificationRuntime.close(),
+    dsvV1Read?.driverNotificationRuntime?.close() ?? Promise.resolve(),
     uvisTelemetryRuntime.close(),
     shopifyWebhookRuntime?.worker?.close() ?? Promise.resolve(),
     adminOrdersRuntime?.reconciliationWorker?.close() ?? Promise.resolve(),
@@ -173,6 +177,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       void Promise.all([
         adminNotificationRuntime.close(),
         customerDeliveryNotificationRuntime.close(),
+        dsvV1Read?.driverNotificationRuntime?.close() ?? Promise.resolve(),
         uvisTelemetryRuntime.close(),
         shopifyWebhookRuntime?.worker?.close() ?? Promise.resolve(),
         adminOrdersRuntime?.reconciliationWorker?.close() ?? Promise.resolve()

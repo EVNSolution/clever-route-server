@@ -4,6 +4,7 @@ export type DriverRoutePushMessage = {
   action: DriverRoutePushAction;
   childVersion: number;
   devicePushToken: string;
+  metadata?: Record<string, string> | undefined;
   routeGroupingId: string;
   routePlanId: string;
 };
@@ -63,6 +64,7 @@ export class FirebaseAdminDriverPushProvider implements DriverPushProvider {
         data: {
           action: message.action,
           childVersion: String(message.childVersion),
+          ...(message.metadata ?? {}),
           routeGroupingId: message.routeGroupingId,
           routePlanId: message.routePlanId,
           type: 'driver_route_changed'

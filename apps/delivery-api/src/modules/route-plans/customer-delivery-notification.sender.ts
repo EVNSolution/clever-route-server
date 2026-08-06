@@ -1,4 +1,4 @@
-export type CustomerDeliveryNotificationMessage = {
+export type CustomerDeliveryStatusNotificationMessage = {
   deliveryStopId: string;
   idempotencyKey: string;
   orderId: string;
@@ -7,6 +7,20 @@ export type CustomerDeliveryNotificationMessage = {
   shopDomain: string;
   status: 'COMPLETED' | 'IN_PROGRESS' | 'READY';
 };
+
+export type CustomerMessageNotificationMessage = {
+  body: string;
+  idempotencyKey: string;
+  kind: 'CUSTOMER_MESSAGE';
+  orderId: string;
+  orderMessageId: string;
+  recipientEmail: string;
+  shopDomain: string;
+};
+
+export type CustomerDeliveryNotificationMessage =
+  | CustomerDeliveryStatusNotificationMessage
+  | CustomerMessageNotificationMessage;
 
 export type CustomerDeliveryNotificationSendResult = {
   errorCode?: string | null;
@@ -53,15 +67,7 @@ export class HttpCustomerDeliveryNotificationSender implements CustomerDeliveryN
       const timeout = setTimeout(() => abortController.abort(), this.timeoutMs);
       try {
         const response = await this.fetchImpl(this.options.url, {
-          body: JSON.stringify({
-            deliveryStopId: message.deliveryStopId,
-            idempotencyKey: message.idempotencyKey,
-            orderId: message.orderId,
-            recipientEmail: message.recipientEmail,
-            routePlanId: message.routePlanId,
-            shopDomain: message.shopDomain,
-            status: message.status
-          }),
+          body: JSON.stringify(toRequestBody(message)),
           headers: {
             'Content-Type': 'application/json',
             ...(this.options.bearerToken === undefined ? {} : { Authorization: `Bearer ${this.options.bearerToken}` })
@@ -116,6 +122,33 @@ export class HttpCustomerDeliveryNotificationSender implements CustomerDeliveryN
 
 const maxNotificationSendAttempts = 3;
 const notificationSendRetryDelaysMs = [100, 200] as const;
+
+function toRequestBody(message: CustomerDeliveryNotificationMessage): Record<string, string> {
+  if (isCustomerMessageNotification(message)) {
+    return {
+      body: message.body,
+      idempotencyKey: message.idempotencyKey,
+      kind: message.kind,
+      orderId: message.orderId,
+      orderMessageId: message.orderMessageId,
+      recipientEmail: message.recipientEmail,
+      shopDomain: message.shopDomain
+    };
+  }
+  return {
+    deliveryStopId: message.deliveryStopId,
+    idempotencyKey: message.idempotencyKey,
+    orderId: message.orderId,
+    recipientEmail: message.recipientEmail,
+    routePlanId: message.routePlanId,
+    shopDomain: message.shopDomain,
+    status: message.status
+  };
+}
+
+function isCustomerMessageNotification(message: CustomerDeliveryNotificationMessage): message is CustomerMessageNotificationMessage {
+  return 'kind' in message && message.kind === 'CUSTOMER_MESSAGE';
+}
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));

@@ -106,6 +106,8 @@ export type DsvV1SellerOrderSummaryRow = DsvV1RoutePlanStopEtaInput & {
   assignmentStatus: 'UNASSIGNED' | 'ASSIGNED';
   conditionCode?: string | null;
   customerId: string;
+  customerNotificationEmailEnabled?: boolean | null;
+  customerNotificationEmailRecipient?: string | null;
   deliveryStopId: string;
   destinationAddress?: string | null;
   destinationDisplayName?: string | null;
@@ -113,7 +115,10 @@ export type DsvV1SellerOrderSummaryRow = DsvV1RoutePlanStopEtaInput & {
   driverId?: string | null;
   eventRows?: readonly DsvV1EventRowInput[];
   latitude?: number | null;
+  latestCustomerMessage?: DsvV1OrderMessageSummaryRow | null;
+  latestDriverMessage?: DsvV1OrderMessageSummaryRow | null;
   longitude?: number | null;
+  operationStatus?: 'UNASSIGNED' | 'READY' | 'IN_PROGRESS' | 'CANCELLED' | 'COMPLETED';
   routePlanId?: string | null;
   rawNote?: string | null;
   reviewStatus?: 'CLEARED' | 'CONFIRMED' | 'NOT_APPLICABLE' | 'UNCONFIRMED';
@@ -123,6 +128,7 @@ export type DsvV1SellerOrderSummaryRow = DsvV1RoutePlanStopEtaInput & {
   sellerOrderId: string;
   sellerOrderKey: string;
   shippedBoxes?: number | null;
+  changeRequest?: DsvV1DispatchChangeRequestDto | null;
   timeConstraint?: {
     auditEventId: string;
     confirmedAt: string;
@@ -139,6 +145,8 @@ export type DsvV1SellerOrderSummaryDto = {
   assignmentStatus: 'UNASSIGNED' | 'ASSIGNED';
   conditionCode?: string;
   customerId: string;
+  customerNotificationEmailEnabled?: boolean;
+  customerNotificationEmailRecipient?: string;
   deliveryStopId: string;
   destinationAddress?: string;
   destinationDisplayName?: string;
@@ -148,7 +156,10 @@ export type DsvV1SellerOrderSummaryDto = {
   etaStatus: DsvV1EtaStatus;
   eventSummary: DsvV1EventSummaryDto[];
   latitude?: number;
+  latestCustomerMessage?: DsvV1OrderMessageSummaryDto;
+  latestDriverMessage?: DsvV1OrderMessageSummaryDto;
   longitude?: number;
+  operationStatus?: 'UNASSIGNED' | 'READY' | 'IN_PROGRESS' | 'CANCELLED' | 'COMPLETED';
   routePlanId?: string;
   rawNote?: string;
   reviewStatus?: 'CLEARED' | 'CONFIRMED' | 'NOT_APPLICABLE' | 'UNCONFIRMED';
@@ -158,6 +169,7 @@ export type DsvV1SellerOrderSummaryDto = {
   sellerOrderId: string;
   sellerOrderKey: string;
   shippedBoxes?: number;
+  changeRequest?: DsvV1DispatchChangeRequestDto;
   timeConstraint?: {
     auditEventId: string;
     confirmedAt: string;
@@ -167,6 +179,38 @@ export type DsvV1SellerOrderSummaryDto = {
     timeWindowStart: string;
   } | null;
   vehicleId?: string;
+};
+
+export type DsvV1DispatchChangeRequestDto = {
+  commandId: string;
+  changeRequestId: string;
+  requestedAt: string;
+  routePlanId: string;
+  routeVersionId: string;
+  status: 'PENDING_ACK';
+  type: 'TIME_CONSTRAINT_CHANGE' | 'ACTIVE_ROUTE_ORDER_REMOVAL';
+  timeWindowEnd?: string | null;
+  timeWindowStart?: string | null;
+};
+
+export type DsvV1OrderMessageSummaryRow = {
+  audience: 'CUSTOMER' | 'DRIVER';
+  authorId?: string | null;
+  authorType: string;
+  body: string;
+  createdAt: Date | string;
+  messageId: string;
+  readByDriverAt?: Date | string | null;
+};
+
+export type DsvV1OrderMessageSummaryDto = {
+  audience: 'CUSTOMER' | 'DRIVER';
+  authorId?: string;
+  authorType: string;
+  body: string;
+  createdAt: string;
+  messageId: string;
+  readByDriverAt?: string;
 };
 
 export type DsvV1SellerOrderSummaryPageDto = {
@@ -418,6 +462,7 @@ export type DsvV1CustomerDeliveryInquiryRow = DsvV1RoutePlanStopEtaInput & {
   destinationId: string;
   eventRows?: readonly DsvV1EventRowInput[];
   latitude?: number | null;
+  latestCustomerMessage?: DsvV1OrderMessageSummaryRow | null;
   longitude?: number | null;
   proofRows?: readonly DsvV1ProofRowInput[];
   routePlanId?: string | null;
@@ -449,6 +494,7 @@ export type DsvV1CustomerDeliveryInquiryItemDto = {
   etaStatus: DsvV1EtaStatus;
   eventSummary: DsvV1EventSummaryDto[];
   latitude?: number;
+  latestCustomerMessage?: DsvV1OrderMessageSummaryDto;
   longitude?: number;
   proofStatus: DsvV1EmittedProofStatus;
   sellerOrderId: string;
@@ -537,6 +583,8 @@ export function mapDsvV1SellerOrderSummary(row: DsvV1SellerOrderSummaryRow): Dsv
     assignmentStatus: row.assignmentStatus,
     ...(row.conditionCode === undefined || row.conditionCode === null ? {} : { conditionCode: row.conditionCode }),
     customerId: row.customerId,
+    ...(row.customerNotificationEmailEnabled === undefined || row.customerNotificationEmailEnabled === null ? {} : { customerNotificationEmailEnabled: row.customerNotificationEmailEnabled }),
+    ...(row.customerNotificationEmailRecipient === undefined || row.customerNotificationEmailRecipient === null ? {} : { customerNotificationEmailRecipient: row.customerNotificationEmailRecipient }),
     deliveryStopId: row.deliveryStopId,
     ...(row.destinationAddress === undefined || row.destinationAddress === null ? {} : { destinationAddress: row.destinationAddress }),
     ...(row.destinationDisplayName === undefined || row.destinationDisplayName === null ? {} : { destinationDisplayName: row.destinationDisplayName }),
@@ -546,7 +594,10 @@ export function mapDsvV1SellerOrderSummary(row: DsvV1SellerOrderSummaryRow): Dsv
     etaStatus: row.etaStatus,
     eventSummary: mapDsvV1EventSummary(row.eventRows ?? []),
     ...(row.latitude === undefined || row.latitude === null ? {} : { latitude: row.latitude }),
+    ...(row.latestCustomerMessage === undefined || row.latestCustomerMessage === null ? {} : { latestCustomerMessage: mapDsvV1OrderMessageSummary(row.latestCustomerMessage) }),
+    ...(row.latestDriverMessage === undefined || row.latestDriverMessage === null ? {} : { latestDriverMessage: mapDsvV1OrderMessageSummary(row.latestDriverMessage) }),
     ...(row.longitude === undefined || row.longitude === null ? {} : { longitude: row.longitude }),
+    ...(row.operationStatus === undefined ? {} : { operationStatus: row.operationStatus }),
     ...(row.routePlanId === undefined || row.routePlanId === null ? {} : { routePlanId: row.routePlanId }),
     ...(row.rawNote === undefined || row.rawNote === null ? {} : { rawNote: row.rawNote }),
     ...(row.reviewStatus === undefined ? {} : { reviewStatus: row.reviewStatus }),
@@ -556,6 +607,7 @@ export function mapDsvV1SellerOrderSummary(row: DsvV1SellerOrderSummaryRow): Dsv
     sellerOrderId: row.sellerOrderId,
     sellerOrderKey: row.sellerOrderKey,
     ...(row.shippedBoxes === undefined || row.shippedBoxes === null ? {} : { shippedBoxes: row.shippedBoxes }),
+    ...(row.changeRequest === undefined || row.changeRequest === null ? {} : { changeRequest: row.changeRequest }),
     ...(row.timeConstraint === undefined || row.timeConstraint === null ? {} : { timeConstraint: row.timeConstraint }),
     ...(row.vehicleId === undefined || row.vehicleId === null ? {} : { vehicleId: row.vehicleId }),
   };
@@ -719,6 +771,7 @@ export function mapDsvV1CustomerDeliveryInquiryItem(
     etaStatus: row.etaStatus,
     eventSummary: mapDsvV1EventSummary(row.eventRows ?? []),
     ...(row.latitude === undefined || row.latitude === null ? {} : { latitude: row.latitude }),
+    ...(row.latestCustomerMessage === undefined || row.latestCustomerMessage === null ? {} : { latestCustomerMessage: mapDsvV1OrderMessageSummary(row.latestCustomerMessage) }),
     ...(row.longitude === undefined || row.longitude === null ? {} : { longitude: row.longitude }),
     proofStatus: deriveDsvV1ProofStatus(row.proofRows ?? []),
     sellerOrderId: row.sellerOrderId,
@@ -728,6 +781,18 @@ export function mapDsvV1CustomerDeliveryInquiryItem(
     ...(row.vehicleId === undefined || row.vehicleId === null ? {} : { vehicleId: row.vehicleId }),
     ...(row.vehicleLatitude === undefined || row.vehicleLatitude === null ? {} : { vehicleLatitude: row.vehicleLatitude }),
     ...(row.vehicleLongitude === undefined || row.vehicleLongitude === null ? {} : { vehicleLongitude: row.vehicleLongitude }),
+  };
+}
+
+function mapDsvV1OrderMessageSummary(row: DsvV1OrderMessageSummaryRow): DsvV1OrderMessageSummaryDto {
+  return {
+    audience: row.audience,
+    ...(row.authorId === undefined || row.authorId === null ? {} : { authorId: row.authorId }),
+    authorType: row.authorType,
+    body: row.body,
+    createdAt: toIsoDateTime(row.createdAt),
+    messageId: row.messageId,
+    ...optionalIso('readByDriverAt', row.readByDriverAt),
   };
 }
 

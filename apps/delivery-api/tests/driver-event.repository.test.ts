@@ -6,6 +6,7 @@ import {
   DriverEventEtaStaleConflictError,
   DriverEventExecutionConflictError,
   DriverEventRouteNotInProgressError,
+  DriverEventSellerOrderAssignmentChangedError,
   DriverEventScopeError,
   PrismaDriverEventRepository
 } from '../src/modules/driver/driver-event.repository.js';
@@ -700,7 +701,7 @@ describe('PrismaDriverEventRepository', () => {
     });
 
     expect(prisma.driverEvent.findUnique).toHaveBeenCalledWith({
-      select: { createdAt: true, deliveryStopId: true, eventType: true, id: true, routePlanId: true },
+      select: { createdAt: true, deliveryStopId: true, eventType: true, id: true, payload: true, routePlanId: true },
       where: {
         driverId_clientEventId: {
           clientEventId: 'second-pickup-client-id',
@@ -1115,7 +1116,7 @@ describe('PrismaDriverEventRepository', () => {
     }))).resolves.toEqual({ duplicate: true, eventId: 'recorded-ack-id' });
 
     expect(prisma.driverEvent.findUnique).toHaveBeenCalledWith({
-      select: { deliveryStopId: true, eventType: true, id: true, routePlanId: true },
+      select: { deliveryStopId: true, eventType: true, id: true, payload: true, routePlanId: true },
       where: {
         driverId_clientEventId: {
           clientEventId: 'ack-stop-id-v1',
@@ -1125,6 +1126,134 @@ describe('PrismaDriverEventRepository', () => {
     });
     expect(prisma.driverEvent.create).not.toHaveBeenCalled();
     expect(prisma.routePlan.findFirst).not.toHaveBeenCalled();
+  });
+
+  test('applies one active route removal dispatch change when acknowledged by request id', async () => {
+    const { prisma } = createPrismaHarness({
+      dispatchChangeRequest: {
+        deliveryStopId: 'stop-id',
+        id: 'change-request-id',
+        routeVersionId: 'route-version-id',
+        sellerOrderId: 'order-id',
+        timeWindowEnd: null,
+        timeWindowStart: null,
+        type: 'ACTIVE_ROUTE_ORDER_REMOVAL'
+      },
+      orderAssignmentVersionId: 'route-version-id'
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      changeRequestId: 'change-request-id',
+      clientEventId: 'ack-change-request-id-v1',
+      deliveryStopId: null,
+      eventType: 'DISPATCH_CHANGE_ACKNOWLEDGED',
+      routePlanId: 'route-plan-id'
+    }))).resolves.toEqual({ duplicate: false, eventId: 'driver-event-id' });
+
+    expect(prisma.order.updateMany).toHaveBeenCalledWith({
+      data: { currentRouteVersionId: null },
+      where: {
+        currentRouteVersionId: 'route-version-id',
+        id: 'order-id',
+        shopId: 'shop-id'
+      }
+    });
+    expect(prisma.routePlanStop.deleteMany).toHaveBeenCalledWith({
+      where: {
+        deliveryStopId: 'stop-id',
+        routePlanId: 'route-plan-id'
+      }
+    });
+    expect(prisma.dsvDispatchChangeRequest.updateMany).toHaveBeenCalledWith({
+      data: {
+        appliedAt: serverReceivedAt,
+        appliedDriverEventId: 'driver-event-id',
+        status: 'APPLIED'
+      },
+      where: {
+        id: 'change-request-id',
+        shopId: 'shop-id',
+        status: 'PENDING_ACK'
+      }
+    });
+  });
+
+  test('does not apply dispatch change acknowledgement when the order assignment changed', async () => {
+    const { prisma } = createPrismaHarness({
+      dispatchChangeRequest: {
+        deliveryStopId: 'stop-id',
+        id: 'change-request-id',
+        routeVersionId: 'route-version-id',
+        sellerOrderId: 'order-id',
+        timeWindowEnd: null,
+        timeWindowStart: null,
+        type: 'ACTIVE_ROUTE_ORDER_REMOVAL'
+      },
+      orderAssignmentVersionId: 'new-route-version-id'
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      changeRequestId: 'change-request-id',
+      clientEventId: 'ack-change-request-id-v1',
+      deliveryStopId: null,
+      eventType: 'DISPATCH_CHANGE_ACKNOWLEDGED',
+      routePlanId: 'route-plan-id'
+    }))).rejects.toBeInstanceOf(DriverEventSellerOrderAssignmentChangedError);
+
+    expect(prisma.order.updateMany).not.toHaveBeenCalled();
+    expect(prisma.dsvDispatchChangeRequest.updateMany).not.toHaveBeenCalled();
+  });
+
+  test('returns duplicate dispatch change acknowledgement by driver and client event id', async () => {
+    const { prisma } = createPrismaHarness({
+      existingEvent: {
+        deliveryStopId: null,
+        eventType: 'DISPATCH_CHANGE_ACKNOWLEDGED',
+        id: 'recorded-dispatch-ack-id',
+        payload: { changeRequestId: 'change-request-id' },
+        routePlanId: 'route-plan-id'
+      },
+      routePlan: null
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      changeRequestId: 'change-request-id',
+      clientEventId: 'ack-change-request-id-v1',
+      deliveryStopId: null,
+      eventType: 'DISPATCH_CHANGE_ACKNOWLEDGED',
+      routePlanId: 'route-plan-id'
+    }))).resolves.toEqual({ duplicate: true, eventId: 'recorded-dispatch-ack-id' });
+
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+    expect(prisma.dsvDispatchChangeRequest.findFirst).not.toHaveBeenCalled();
+  });
+
+  test('rejects a reused dispatch acknowledgement client event id for another change request', async () => {
+    const { prisma } = createPrismaHarness({
+      existingEvent: {
+        deliveryStopId: null,
+        eventType: 'DISPATCH_CHANGE_ACKNOWLEDGED',
+        id: 'recorded-dispatch-ack-id',
+        payload: { changeRequestId: 'first-change-request-id' },
+        routePlanId: 'route-plan-id'
+      },
+      routePlan: null
+    });
+    const repository = new PrismaDriverEventRepository(prisma as never);
+
+    await expect(repository.recordDriverEvent(baseInput({
+      changeRequestId: 'second-change-request-id',
+      clientEventId: 'reused-dispatch-ack-v1',
+      deliveryStopId: null,
+      eventType: 'DISPATCH_CHANGE_ACKNOWLEDGED',
+      routePlanId: 'route-plan-id'
+    }))).rejects.toBeInstanceOf(DriverEventContextError);
+
+    expect(prisma.driverEvent.create).not.toHaveBeenCalled();
+    expect(prisma.dsvDispatchChangeRequest.findFirst).not.toHaveBeenCalled();
   });
 
   test('acknowledges matching duplicate client events after a unique constraint race', async () => {
@@ -1254,7 +1383,7 @@ describe('PrismaDriverEventRepository', () => {
     }))).resolves.toEqual({ duplicate: true, eventId: 'recorded-completion-id' });
 
     expect(prisma.driverEvent.findUnique).toHaveBeenCalledWith({
-      select: { deliveryStopId: true, eventType: true, id: true, routePlanId: true },
+      select: { deliveryStopId: true, eventType: true, id: true, payload: true, routePlanId: true },
       where: {
         driverId_clientEventId: {
           clientEventId: 'route-completed-client-id',
@@ -1287,10 +1416,21 @@ function baseInput(overrides: Partial<Parameters<PrismaDriverEventRepository['re
 function createPrismaHarness(input: {
   conflictingRoutePlanStop?: { deliveryStopId: string; routePlanId: string } | null;
   completionEvent?: { id: string } | null;
+  dispatchChangeRequest?: {
+    deliveryStopId: string;
+    id: string;
+    routeVersionId: string;
+    sellerOrderId: string;
+    timeWindowEnd: Date | null;
+    timeWindowStart: Date | null;
+    type: 'TIME_CONSTRAINT_CHANGE' | 'ACTIVE_ROUTE_ORDER_REMOVAL';
+  } | null;
   driverEventCreateError?: Error;
   driverEventRouteVersionColumnExists?: boolean;
   etaOwnershipColumnsExist?: boolean;
-  existingEvent?: { deliveryStopId: string | null; eventType: string; id: string; routePlanId: string | null } | null;
+  existingEvent?: { deliveryStopId: string | null; eventType: string; id: string; payload?: unknown; routePlanId: string | null } | null;
+  orderAssignmentVersionId?: string | null;
+  otherOrdersOnStop?: number;
   pickupEvent?: { createdAt: Date; id: string } | null;
   pickupEventAfterCreateError?: { createdAt: Date; id: string } | null;
   routeGeometryCache?: { stopPoints: unknown } | null;
@@ -1339,9 +1479,19 @@ function createPrismaHarness(input: {
       findFirst: ReturnType<typeof vi.fn>;
       findUnique: ReturnType<typeof vi.fn>;
     };
+    dsvDispatchChangeRequest: {
+      findFirst: ReturnType<typeof vi.fn>;
+      updateMany: ReturnType<typeof vi.fn>;
+    };
+    order: {
+      count: ReturnType<typeof vi.fn>;
+      findFirst: ReturnType<typeof vi.fn>;
+      updateMany: ReturnType<typeof vi.fn>;
+    };
     routePlan: { findFirst: ReturnType<typeof vi.fn>; updateMany: ReturnType<typeof vi.fn> };
     routePlanGeometryCache: { findFirst: ReturnType<typeof vi.fn> };
     routePlanStop: {
+      deleteMany: ReturnType<typeof vi.fn>;
       findFirst: ReturnType<typeof vi.fn>;
       findMany: ReturnType<typeof vi.fn>;
       update: ReturnType<typeof vi.fn>;
@@ -1413,6 +1563,29 @@ function createPrismaHarness(input: {
       }),
       findUnique: vi.fn(() => Promise.resolve(input.existingEvent ?? null))
     },
+    dsvDispatchChangeRequest: {
+      findFirst: vi.fn((args: { select?: { id?: boolean } }) => {
+        const request = input.dispatchChangeRequest === undefined
+          ? {
+              deliveryStopId: 'stop-id',
+              id: 'change-request-id',
+              routeVersionId: 'route-version-id',
+              sellerOrderId: 'order-id',
+              timeWindowEnd: null,
+              timeWindowStart: null,
+              type: 'ACTIVE_ROUTE_ORDER_REMOVAL'
+            }
+          : input.dispatchChangeRequest;
+        if (request === null) return Promise.resolve(null);
+        return Promise.resolve(args.select?.id === true && Object.keys(args.select).length === 1 ? { id: request.id } : request);
+      }),
+      updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
+    },
+    order: {
+      count: vi.fn(() => Promise.resolve(input.otherOrdersOnStop ?? 0)),
+      findFirst: vi.fn(() => Promise.resolve({ currentRouteVersionId: input.orderAssignmentVersionId ?? 'route-version-id' })),
+      updateMany: vi.fn(() => Promise.resolve({ count: 1 }))
+    },
     routePlan: {
       findFirst: vi.fn((args: { select?: { routeStops?: unknown } }) => {
         const routePlan = input.routePlan === undefined ? { id: 'route-plan-id', status: 'IN_PROGRESS' } : input.routePlan;
@@ -1434,6 +1607,7 @@ function createPrismaHarness(input: {
       findFirst: vi.fn(() => Promise.resolve(input.routeGeometryCache ?? null))
     },
     routePlanStop: {
+      deleteMany: vi.fn(() => Promise.resolve({ count: 1 })),
       findFirst: vi.fn((args: { where?: { routePlan?: { status?: string } } }) => Promise.resolve(
         args.where?.routePlan?.status === 'IN_PROGRESS'
           ? input.conflictingRoutePlanStop ?? null

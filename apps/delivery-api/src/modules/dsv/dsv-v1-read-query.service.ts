@@ -8,9 +8,11 @@ import type {
   DsvV1CustomerDeliveryInquiryRow,
   DsvV1CustomerListItemRow,
   DsvV1DestinationListItemRow,
+  DsvV1DispatchChangeRequestDto,
   DsvV1DriverListItemRow,
   DsvV1EtaStatus,
   DsvV1EventRowInput,
+  DsvV1OrderMessageSummaryRow,
   DsvV1PageInfo,
   DsvV1ProofRowInput,
   DsvV1RecordRow,
@@ -1029,15 +1031,15 @@ const customerRouteScopeOrderSelect = {
       routePlanId: true,
       routePlan: {
         select: {
-          trackingGeometry: {
-            select: {
-              lastLatitude: true,
-              lastLongitude: true,
+            trackingGeometry: {
+              select: {
+                lastLatitude: true,
+                lastLongitude: true,
+              },
             },
+            vehicleId: true,
           },
-          vehicleId: true,
         },
-      },
     },
   },
   id: true,
@@ -1075,12 +1077,18 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
                 lastLongitude: true,
               },
             },
+            driverEvents: {
+              orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+              select: publicEventSelect,
+              where: { eventType: { in: ['ROUTE_COMPLETED', 'ROUTE_PAUSED', 'ROUTE_STARTED'] }, shopId },
+            },
+            status: true,
           },
         },
       },
     },
     customer: {
-      select: { displayName: true, id: true },
+      select: { displayName: true, id: true, notificationEmailEnabled: true, notificationEmailRecipient: true },
     },
     deliveryStatus: true,
     deliveryStops: {
@@ -1100,6 +1108,22 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
           select: { conditionCode: true, shippedBoxes: true },
           take: 1,
           where: { shopId, status: 'APPLIED' },
+        },
+        dsvDispatchChangeRequests: {
+          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+          select: {
+            commandReceipt: { select: { commandId: true } },
+            createdAt: true,
+            id: true,
+            routePlanId: true,
+            routeVersionId: true,
+            status: true,
+            timeWindowEnd: true,
+            timeWindowStart: true,
+            type: true,
+          },
+          take: 1,
+          where: { shopId, status: 'PENDING_ACK' },
         },
         id: true,
         address1: true,
@@ -1137,6 +1161,20 @@ function customerDeliveryOrderSelect(serviceDate: string, shopId: string) {
     },
     destinationId: true,
     id: true,
+    orderMessages: {
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: {
+        audience: true,
+        authorId: true,
+        authorType: true,
+        body: true,
+        createdAt: true,
+        id: true,
+        readByDriverAt: true,
+      },
+      take: 20,
+      where: { shopId },
+    },
     sellerOrderKey: true,
     sellerOrderSourceKind: true,
     sourceOrderNumber: true,
@@ -1220,6 +1258,7 @@ function toCustomerDeliveryInquiryRow(row: CustomerDeliveryOrderRow): DsvV1Custo
     etaStatus: fallbackEtaStatus(row.currentRouteVersionId, eta),
     eventRows: stop.driverEvents.map(toDtoEventRow),
     latitude: decimalToNumber(stop.latitude),
+    latestCustomerMessage: latestOrderMessage(row.orderMessages ?? [], 'CUSTOMER'),
     longitude: decimalToNumber(stop.longitude),
     proofRows: stop.driverProofMedia.map(toDtoProofRow),
     ...(routePlanId === null ? {} : { routePlanId }),
@@ -1303,6 +1342,8 @@ function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow): DsvV1SellerOrde
     assignmentStatus: currentRouteDriverId === null ? 'UNASSIGNED' : 'ASSIGNED',
     ...(importRow === null ? {} : { conditionCode: importRow.conditionCode, shippedBoxes: importRow.shippedBoxes }),
     customerId: row.customer?.id ?? '',
+    customerNotificationEmailEnabled: row.customer?.notificationEmailEnabled ?? null,
+    customerNotificationEmailRecipient: row.customer?.notificationEmailRecipient ?? null,
     deliveryStopId: stop?.id ?? '',
     destinationAddress: stop === null ? normalizedAddressLabel(row.destination?.normalizedAddress ?? null) : deliveryStopAddressLabel(stop),
     destinationDisplayName: row.destination?.canonicalName ?? stop?.recipientName ?? '',
@@ -1312,7 +1353,15 @@ function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow): DsvV1SellerOrde
     etaStatus: fallbackEtaStatus(currentRouteDriverId === null ? null : row.currentRouteVersionId, eta),
     eventRows: stop?.driverEvents.map(toDtoEventRow) ?? [],
     latitude: decimalToNumber(stop?.latitude ?? null),
+    latestCustomerMessage: latestOrderMessage(row.orderMessages ?? [], 'CUSTOMER'),
+    latestDriverMessage: latestOrderMessage(row.orderMessages ?? [], 'DRIVER'),
     longitude: decimalToNumber(stop?.longitude ?? null),
+    operationStatus: deriveOperationStatus({
+      currentRouteDriverId,
+      deliveryStatus: row.deliveryStatus,
+      routeEvents: currentRoute?.routePlan?.driverEvents ?? [],
+      routeStatus: currentRoute?.routePlan?.status ?? null,
+    }),
     ...(routePlanId === null ? {} : { routePlanId }),
     rawNote: constraintState.rawNote,
     reviewStatus: constraintState.reviewStatus,
@@ -1321,13 +1370,86 @@ function toSellerOrderSummaryRow(row: CustomerDeliveryOrderRow): DsvV1SellerOrde
     ...(row.currentRouteVersionId === null ? {} : { routeVersionId: row.currentRouteVersionId }),
     sellerOrderId: row.id,
     sellerOrderKey: row.sellerOrderKey ?? row.id,
+    changeRequest: toDsvV1ChangeRequest(stop?.dsvDispatchChangeRequests?.[0] ?? null),
     timeConstraint: constraintState.timeConstraint,
     vehicleId: currentRoute?.routePlan?.vehicleId ?? null,
   };
 }
 
+function latestOrderMessage(
+  messages: readonly {
+    audience: string;
+    authorId: string | null;
+    authorType: string;
+    body: string;
+    createdAt: Date;
+    id: string;
+    readByDriverAt: Date | null;
+  }[],
+  audience: 'CUSTOMER' | 'DRIVER',
+): DsvV1OrderMessageSummaryRow | null {
+  const message = messages.find((item) => item.audience === audience) ?? null;
+  if (message === null) return null;
+  return {
+    audience,
+    authorId: message.authorId,
+    authorType: message.authorType,
+    body: message.body,
+    createdAt: message.createdAt,
+    messageId: message.id,
+    readByDriverAt: message.readByDriverAt,
+  };
+}
+
 function latestDeliveredAt(events: readonly { eventType: string; occurredAt: Date }[]): Date | null {
   return events.find((event) => event.eventType === 'STOP_DELIVERED')?.occurredAt ?? null;
+}
+
+function deriveOperationStatus(input: {
+  currentRouteDriverId: string | null;
+  deliveryStatus: string;
+  routeEvents: readonly { eventType: string; occurredAt: Date }[];
+  routeStatus: string | null;
+}): NonNullable<DsvV1SellerOrderSummaryRow['operationStatus']> {
+  if (input.deliveryStatus === 'DELIVERED') return 'COMPLETED';
+  if (input.deliveryStatus === 'CANCELLED') return 'CANCELLED';
+  if (input.routeEvents.some((event) => event.eventType === 'ROUTE_COMPLETED')) return 'COMPLETED';
+  if (input.routeStatus === 'COMPLETED') return 'COMPLETED';
+  if (input.routeStatus === 'CANCELLED') return 'CANCELLED';
+  if (input.routeStatus === 'IN_PROGRESS') return 'IN_PROGRESS';
+  if (input.routeEvents.some((event) => event.eventType === 'ROUTE_STARTED' || event.eventType === 'ROUTE_PAUSED')) return 'IN_PROGRESS';
+  if (input.currentRouteDriverId !== null || input.routeStatus === 'READY') return 'READY';
+  return 'UNASSIGNED';
+}
+
+function toDsvV1ChangeRequest(changeRequest: {
+  commandReceipt: { commandId: string };
+  createdAt: Date;
+  id: string;
+  routePlanId: string;
+  routeVersionId: string;
+  status: string;
+  timeWindowEnd: Date | null;
+  timeWindowStart: Date | null;
+  type: string;
+} | null): DsvV1DispatchChangeRequestDto | null {
+  if (changeRequest === null || changeRequest.status !== 'PENDING_ACK') return null;
+  if (changeRequest.type !== 'TIME_CONSTRAINT_CHANGE' && changeRequest.type !== 'ACTIVE_ROUTE_ORDER_REMOVAL') return null;
+  return {
+    changeRequestId: changeRequest.id,
+    commandId: changeRequest.commandReceipt.commandId,
+    requestedAt: changeRequest.createdAt.toISOString(),
+    routePlanId: changeRequest.routePlanId,
+    routeVersionId: changeRequest.routeVersionId,
+    status: 'PENDING_ACK',
+    type: changeRequest.type,
+    ...(changeRequest.timeWindowEnd === null ? {} : { timeWindowEnd: formatTimeOnly(changeRequest.timeWindowEnd) }),
+    ...(changeRequest.timeWindowStart === null ? {} : { timeWindowStart: formatTimeOnly(changeRequest.timeWindowStart) }),
+  };
+}
+
+function formatTimeOnly(date: Date): string {
+  return date.toISOString().slice(11, 16);
 }
 
 function toRecordRow(stop: RecordStopRow): RecordCursorRow {

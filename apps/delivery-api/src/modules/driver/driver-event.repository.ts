@@ -17,6 +17,7 @@ import {
 } from './driver-route-eta.js';
 
 export type RecordDriverEventInput = {
+  changeRequestId?: string | null;
   clientEventId: string | null;
   deliveryStopId: string | null;
   driverId: string;
@@ -59,12 +60,12 @@ export type DriverStopSequenceDeviation = {
 
 type DriverEventPrismaClient = Pick<
   PrismaClient,
-  '$queryRaw' | '$transaction' | 'deliveryStop' | 'driverEvent' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry'
+  '$queryRaw' | '$transaction' | 'deliveryStop' | 'driverEvent' | 'dsvDispatchChangeRequest' | 'order' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry'
 >;
 
 type DriverEventTransactionClient = Pick<
   Prisma.TransactionClient,
-  '$queryRaw' | 'deliveryStop' | 'driverEvent' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry'
+  '$queryRaw' | 'deliveryStop' | 'driverEvent' | 'dsvDispatchChangeRequest' | 'order' | 'routePlan' | 'routePlanGeometryCache' | 'routePlanStop' | 'routeTrackingGeometry'
 >;
 
 type DriverEventSchemaCapabilities = {
@@ -81,6 +82,7 @@ type ExistingDriverEventContext = {
   deliveryStopId: string | null;
   eventType: string;
   id: string;
+  payload?: unknown;
   routePlanId: string | null;
 };
 
@@ -123,6 +125,13 @@ export class DriverEventEtaStaleConflictError extends Error {
   constructor(routePlanId: string) {
     super(`ETA update is stale for route plan ${routePlanId}`);
     this.name = 'DriverEventEtaStaleConflictError';
+  }
+}
+
+export class DriverEventSellerOrderAssignmentChangedError extends Error {
+  constructor(message = 'Seller order assignment changed before acknowledgement') {
+    super(message);
+    this.name = 'DriverEventSellerOrderAssignmentChangedError';
   }
 }
 
@@ -208,7 +217,7 @@ export class PrismaDriverEventRepository {
             latitude: input.latitude,
             longitude: input.longitude,
             occurredAt: input.occurredAt,
-            payload: JSON.parse(JSON.stringify(input.payload)) as Prisma.InputJsonValue,
+            payload: persistedDriverEventPayload(input),
             routePlanId: input.routePlanId,
             ...(routeVersionId === undefined ? {} : { routeVersionId }),
             shopId: input.shopId
@@ -219,6 +228,7 @@ export class PrismaDriverEventRepository {
         if (trackingPosition !== null) {
           await persistRouteTrackingGeometryPosition(transaction, trackingPosition);
         }
+        await applyDispatchChangeRequestAck(transaction, input, event.id, event.createdAt);
 
         const etaResult = await applyDriverEventStateTransition(
           transaction,
@@ -252,6 +262,93 @@ export class PrismaDriverEventRepository {
 
       throw error;
     }
+  }
+}
+
+async function applyDispatchChangeRequestAck(
+  prisma: Pick<DriverEventTransactionClient, '$queryRaw' | 'deliveryStop' | 'dsvDispatchChangeRequest' | 'order' | 'routePlanStop'>,
+  input: RecordDriverEventInput,
+  driverEventId: string,
+  appliedAt: Date
+): Promise<void> {
+  if (input.eventType !== 'DISPATCH_CHANGE_ACKNOWLEDGED') return;
+  if (prisma.dsvDispatchChangeRequest === undefined) return;
+  const routePlanId = requireRoutePlanId(input);
+  const changeRequestId = requireChangeRequestId(input);
+  await prisma.$queryRaw`
+    SELECT id
+    FROM dsv_dispatch_change_requests
+    WHERE id = ${changeRequestId}::uuid
+      AND "shopId" = ${input.shopId}::uuid
+    FOR UPDATE
+  `;
+  const request = await prisma.dsvDispatchChangeRequest.findFirst({
+    select: { deliveryStopId: true, id: true, routeVersionId: true, sellerOrderId: true, timeWindowEnd: true, timeWindowStart: true, type: true },
+    where: {
+      id: changeRequestId,
+      routePlanId,
+      shopId: input.shopId,
+      status: 'PENDING_ACK'
+    }
+  });
+  if (request === null) throw new DriverEventContextError('Dispatch change request is not pending acknowledgement');
+  const assignment = await prisma.order.findFirst({
+    select: { currentRouteVersionId: true },
+    where: { id: request.sellerOrderId, shopId: input.shopId }
+  });
+  if (assignment?.currentRouteVersionId !== request.routeVersionId) {
+    throw new DriverEventSellerOrderAssignmentChangedError();
+  }
+  if (request.type === 'TIME_CONSTRAINT_CHANGE') {
+    const updated = await prisma.deliveryStop.updateMany({
+      data: {
+        timeWindowEnd: request.timeWindowEnd,
+        timeWindowStart: request.timeWindowStart
+      },
+      where: { id: request.deliveryStopId, shopId: input.shopId }
+    });
+    if (updated.count !== 1) throw new DriverEventContextError('Dispatch change request stop is unavailable');
+  } else if (request.type === 'ACTIVE_ROUTE_ORDER_REMOVAL') {
+    const otherOrdersOnStop = await prisma.order.count({
+      where: {
+        currentRouteVersionId: request.routeVersionId,
+        deliveryStops: { some: { id: request.deliveryStopId } },
+        id: { not: request.sellerOrderId },
+        shopId: input.shopId
+      }
+    });
+    const updated = await prisma.order.updateMany({
+      data: { currentRouteVersionId: null },
+      where: {
+        currentRouteVersionId: request.routeVersionId,
+        id: request.sellerOrderId,
+        shopId: input.shopId
+      }
+    });
+    if (updated.count !== 1) throw new DriverEventSellerOrderAssignmentChangedError();
+    if (otherOrdersOnStop === 0) {
+      await prisma.routePlanStop.deleteMany({
+        where: {
+          deliveryStopId: request.deliveryStopId,
+          routePlanId
+        }
+      });
+    }
+  }
+  const applied = await prisma.dsvDispatchChangeRequest.updateMany({
+    data: {
+      appliedAt,
+      appliedDriverEventId: driverEventId,
+      status: 'APPLIED'
+    },
+    where: {
+      id: request.id,
+      shopId: input.shopId,
+      status: 'PENDING_ACK'
+    }
+  });
+  if (applied.count !== 1) {
+    throw new DriverEventContextError('Dispatch change request acknowledgement already applied');
   }
 }
 
@@ -328,7 +425,7 @@ async function findMatchingDriverEvent(
   if (input.eventType === 'PICKUP_COMPLETED') {
     if (input.clientEventId !== null) {
       const event = await prisma.driverEvent.findUnique({
-        select: { createdAt: true, deliveryStopId: true, eventType: true, id: true, routePlanId: true },
+        select: { createdAt: true, deliveryStopId: true, eventType: true, id: true, payload: true, routePlanId: true },
         where: {
           driverId_clientEventId: {
             clientEventId: input.clientEventId,
@@ -367,9 +464,9 @@ async function findMatchingDriverEvent(
     });
   }
 
-  if (input.eventType === 'TIME_CONSTRAINT_ACKNOWLEDGED' && input.clientEventId !== null) {
+  if ((input.eventType === 'TIME_CONSTRAINT_ACKNOWLEDGED' || input.eventType === 'DISPATCH_CHANGE_ACKNOWLEDGED') && input.clientEventId !== null) {
     const event = await prisma.driverEvent.findUnique({
-      select: { deliveryStopId: true, eventType: true, id: true, routePlanId: true },
+      select: { deliveryStopId: true, eventType: true, id: true, payload: true, routePlanId: true },
       where: {
         driverId_clientEventId: {
           clientEventId: input.clientEventId,
@@ -395,7 +492,7 @@ async function findMatchingDriverEvent(
   }
 
   const event = await prisma.driverEvent.findUnique({
-    select: { deliveryStopId: true, eventType: true, id: true, routePlanId: true },
+    select: { deliveryStopId: true, eventType: true, id: true, payload: true, routePlanId: true },
     where: {
       driverId_clientEventId: {
         clientEventId: input.clientEventId,
@@ -422,7 +519,7 @@ async function findDuplicateDriverEventAfterUniqueConstraint(
   }
 
   const event = await prisma.driverEvent.findUnique({
-    select: { createdAt: true, deliveryStopId: true, eventType: true, id: true, routePlanId: true },
+    select: { createdAt: true, deliveryStopId: true, eventType: true, id: true, payload: true, routePlanId: true },
     where: {
       driverId_clientEventId: {
         clientEventId: input.clientEventId,
@@ -457,11 +554,31 @@ function driverEventContextMatchesInput(
   event: ExistingDriverEventContext,
   input: RecordDriverEventInput
 ): boolean {
-  return (
+  const baseContextMatches = (
     event.eventType === input.eventType
     && event.routePlanId === input.routePlanId
     && event.deliveryStopId === input.deliveryStopId
   );
+  if (!baseContextMatches) return false;
+  if (input.eventType !== 'DISPATCH_CHANGE_ACKNOWLEDGED') return true;
+  return driverEventPayloadChangeRequestId(event.payload) === input.changeRequestId;
+}
+
+function driverEventPayloadChangeRequestId(payload: unknown): string | null {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return null;
+  const changeRequestId = (payload as Record<string, unknown>).changeRequestId;
+  return typeof changeRequestId === 'string' ? changeRequestId : null;
+}
+
+function persistedDriverEventPayload(input: RecordDriverEventInput): Prisma.InputJsonValue {
+  const payload = JSON.parse(JSON.stringify(input.payload)) as Prisma.InputJsonValue;
+  if (input.eventType !== 'DISPATCH_CHANGE_ACKNOWLEDGED' || input.changeRequestId === null || input.changeRequestId === undefined) {
+    return payload;
+  }
+  if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)) {
+    return { ...payload, changeRequestId: input.changeRequestId };
+  }
+  return { changeRequestId: input.changeRequestId, payload };
 }
 
 async function validateDriverEventStateContext(
@@ -506,6 +623,15 @@ async function validateDriverEventStateContext(
   if (input.eventType === 'TIME_CONSTRAINT_ACKNOWLEDGED') {
     await requireOwnedConfirmedTimeConstraintStop(prisma, {
       deliveryStopId: requireDeliveryStopId(input),
+      driverId: input.driverId,
+      routePlanId,
+      shopId
+    });
+  }
+
+  if (input.eventType === 'DISPATCH_CHANGE_ACKNOWLEDGED') {
+    await requireOwnedDispatchChangeRequest(prisma, {
+      changeRequestId: requireChangeRequestId(input),
       driverId: input.driverId,
       routePlanId,
       shopId
@@ -1091,6 +1217,16 @@ async function requireOwnedConfirmedTimeConstraintStop(
     select: {
       deliveryStop: {
         select: {
+          dsvDispatchChangeRequests: {
+            select: { id: true },
+            take: 1,
+            where: {
+              routePlanId: input.routePlanId,
+              shopId: input.shopId,
+              status: 'PENDING_ACK',
+              type: 'TIME_CONSTRAINT_CHANGE'
+            }
+          },
           instructions: true,
           order: {
             select: {
@@ -1129,6 +1265,7 @@ async function requireOwnedConfirmedTimeConstraintStop(
   if (routePlanStop === null) {
     throw new DriverEventScopeError('Driver stop context is outside the authenticated route scope');
   }
+  if ((routePlanStop.deliveryStop.dsvDispatchChangeRequests ?? []).length > 0) return;
 
   const state = deriveDsvTimeConstraintState({
     audits: routePlanStop.deliveryStop.order.dsvAuditEvents,
@@ -1143,12 +1280,37 @@ async function requireOwnedConfirmedTimeConstraintStop(
   }
 }
 
+async function requireOwnedDispatchChangeRequest(
+  prisma: DriverEventTransactionClient,
+  input: { changeRequestId: string; driverId: string; routePlanId: string; shopId: string }
+): Promise<void> {
+  const request = await prisma.dsvDispatchChangeRequest.findFirst({
+    select: { id: true },
+    where: {
+      id: input.changeRequestId,
+      routePlanId: input.routePlanId,
+      shopId: input.shopId,
+      status: 'PENDING_ACK',
+      OR: [{ driverId: input.driverId }, { driverId: null }]
+    }
+  });
+  if (request === null) throw new DriverEventScopeError('Dispatch change request is outside the authenticated route scope');
+}
+
 function requireRoutePlanId(input: RecordDriverEventInput): string {
   if (input.routePlanId === null || input.routePlanId.trim().length === 0) {
     throw new DriverEventContextError('Driver event requires routePlanId for terminal route state changes');
   }
 
   return input.routePlanId;
+}
+
+function requireChangeRequestId(input: RecordDriverEventInput): string {
+  const changeRequestId = input.changeRequestId?.trim();
+  if (changeRequestId === undefined || changeRequestId === '') {
+    throw new DriverEventContextError('Driver event requires changeRequestId for dispatch change acknowledgement');
+  }
+  return changeRequestId;
 }
 
 function requireDeliveryStopId(input: RecordDriverEventInput): string {

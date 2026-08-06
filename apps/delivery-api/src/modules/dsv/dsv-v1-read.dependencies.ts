@@ -17,6 +17,13 @@ import {
   type DsvV1ReadQueryService,
 } from './dsv-v1-read-query.service.js';
 import { PrismaDsvTimeConstraintCommandService } from './dsv-time-constraint-command.service.js';
+import { PrismaDsvDispatchChangeRequestService } from './dsv-dispatch-change-request.service.js';
+import { PrismaDsvOrderMessageService } from './dsv-order-message.service.js';
+import { PrismaDsvOperationalNotificationService } from './dsv-operational-notification.service.js';
+import {
+  createDsvDriverNotificationRuntime,
+  type DsvDriverNotificationRuntimeEnv,
+} from './dsv-driver-notification.runtime.js';
 import {
   loadDsvRouteOptimizationScheduler,
   type DsvControlRuntimeEnv,
@@ -38,7 +45,7 @@ import { isStrongAdminWebSecret } from '../../routes/admin-ui-session.js';
 const customerSubjectPrefix = 'dsv-customer-account:';
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
-export type DsvV1ReadRuntimeEnv = DsvMapProfileEnv & Pick<
+export type DsvV1ReadRuntimeEnv = DsvDriverNotificationRuntimeEnv & DsvMapProfileEnv & Pick<
   DsvControlRuntimeEnv,
   | 'CLEVER_DSV_ROUTE_OPTIMIZATION_DEBOUNCE_MS'
   | 'CLEVER_DSV_ROUTE_OPTIMIZATION_ENABLED'
@@ -78,11 +85,13 @@ export function loadDsvV1ReadDependencies(input: {
   const mapProfile = loadDsvMapProfileFromEnv(input.env);
   const routeOptimizationScheduler = loadDsvRouteOptimizationScheduler(input);
   const routeGeometryProvider = loadCustomerRouteGeometryProvider(input);
+  const driverNotificationRuntime = createDsvDriverNotificationRuntime(input);
   return {
     cookieName: readOptional(input.env.CLEVER_DSV_WEB_COOKIE_NAME) ?? 'clever_dsv_admin',
     ...(mapProfile === undefined ? {} : { mapProfile }),
     queryService: input.queryService ?? new PrismaDsvV1ReadQueryService(input.prisma),
     ...(routeGeometryProvider === undefined ? {} : { routeGeometryProvider }),
+    ...(routeOptimizationScheduler === undefined ? {} : { routeOptimizationScheduler }),
     routePlanService: new RoutePlanAdminService(
       new PrismaRoutePlanRepository(input.prisma, { allowAnyShopDomain: true }),
     ),
@@ -92,7 +101,16 @@ export function loadDsvV1ReadDependencies(input: {
       prisma: input.prisma,
     }),
     sessionSecret,
-    timeConstraintCommandService: new PrismaDsvTimeConstraintCommandService(input.prisma, routeOptimizationScheduler),
+    dispatchChangeRequestService: new PrismaDsvDispatchChangeRequestService(input.prisma, driverNotificationRuntime.dispatcher),
+    driverNotificationRuntime,
+    orderMessageService: new PrismaDsvOrderMessageService(input.prisma, driverNotificationRuntime.dispatcher),
+    operationalNotificationService: new PrismaDsvOperationalNotificationService(input.prisma),
+    timeConstraintCommandService: new PrismaDsvTimeConstraintCommandService(
+      input.prisma,
+      routeOptimizationScheduler,
+      undefined,
+      driverNotificationRuntime.dispatcher,
+    ),
   };
 }
 

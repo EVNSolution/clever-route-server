@@ -630,11 +630,13 @@ describe('route grouping contracts', () => {
       action: 'changed',
       childVersion: 2,
       devicePushToken: 'token',
+      metadata: { changeRequestId: 'change-request-id', orderMessageId: 'message-id' },
       routeGroupingId: 'group',
       routePlanId: 'route'
     });
     expect(result.status).toBe('SENT');
     expect(provider.sentMessages).toHaveLength(1);
     expect(provider.sentMessages[0]?.childVersion).toBe(2);
+    expect(provider.sentMessages[0]?.metadata).toEqual({ changeRequestId: 'change-request-id', orderMessageId: 'message-id' });
   });
 });

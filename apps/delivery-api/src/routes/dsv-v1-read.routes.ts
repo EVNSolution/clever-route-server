@@ -49,7 +49,21 @@ import {
   type DsvTimeConstraintActor,
   type DsvTimeConstraintCommandService,
 } from '../modules/dsv/dsv-time-constraint-command.service.js';
+import {
+  DsvDispatchChangeRequestError,
+  type DsvDispatchChangeRequestCancelInput,
+  type DsvDispatchChangeRequestCommandInput,
+  type DsvDispatchRecoveryInput,
+  type DsvDispatchChangeRequestService,
+} from '../modules/dsv/dsv-dispatch-change-request.service.js';
+import {
+  DsvOrderMessageError,
+  type DsvOrderMessageService,
+} from '../modules/dsv/dsv-order-message.service.js';
+import type { DsvOperationalNotificationService } from '../modules/dsv/dsv-operational-notification.service.js';
+import type { DsvDriverNotificationRuntime } from '../modules/dsv/dsv-driver-notification.runtime.js';
 import type { DsvMapProfile } from '../modules/dsv/dsv-map-profile.config.js';
+import type { DsvRouteOptimizationSchedulerPort } from '../modules/dsv/dsv-route-optimization.scheduler.js';
 import type { RouteGeometryProvider } from '../modules/route-plans/route-plan.service.js';
 import type { RoutePlanDetail, RoutePlanService } from '../modules/route-plans/route-plan.types.js';
 import {
@@ -77,10 +91,15 @@ export type DsvV1ReadDependencies = {
   mapProfile?: DsvMapProfile;
   queryService?: DsvV1ReadQueryService;
   routeGeometryProvider?: Pick<RouteGeometryProvider, 'buildRoute'>;
+  routeOptimizationScheduler?: DsvRouteOptimizationSchedulerPort;
   routePlanService?: Pick<RoutePlanService, 'getRoutePlanDetail' | 'listRoutePlans'>;
   secureCookies: boolean;
   sessionResolver: DsvV1SessionResolver;
   sessionSecret: string;
+  dispatchChangeRequestService?: DsvDispatchChangeRequestService;
+  driverNotificationRuntime?: DsvDriverNotificationRuntime;
+  orderMessageService?: DsvOrderMessageService;
+  operationalNotificationService?: DsvOperationalNotificationService;
   timeConstraintCommandService?: DsvTimeConstraintCommandService;
 };
 
@@ -239,6 +258,9 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     requiredScopes: ['dsv:conditions:read'],
   });
   registerTimeConstraintCommandRoutes(app, dependencies);
+  registerDispatchChangeRequestRoutes(app, dependencies);
+  registerOrderMessageRoutes(app, dependencies);
+  registerOperationalNotificationRoutes(app, dependencies);
   registerReadRoute(app, dependencies, 'customer/deliveries', {
     allowedQuery: ['cursor', 'limit', 'serviceDate', 'window'],
     handler: async (principal, query) => {
@@ -291,6 +313,155 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     parseQuery: parseAdminCustomerDeliveriesQuery,
     requiredScopes: ['dsv:customers:read', 'dsv:dispatches:read'],
   });
+}
+
+function registerOperationalNotificationRoutes(app: FastifyInstance, dependencies: DsvV1ReadDependencies): void {
+  app.get(`${apiRoot}/operational-notifications`, (request, reply) =>
+    withDsvV1Session(request, reply, dependencies, async (session) => {
+      const principal = requireAdminPrincipal(session.principal);
+      requireDsvScopes(principal, ['dsv:dispatches:read']);
+      const service = dependencies.operationalNotificationService;
+      if (service === undefined) return sendV1Error(reply, request, 503, 'DEPENDENCY_UNAVAILABLE', 'DSV operational notification service is not configured');
+      return sendV1Data(reply, request, await service.list({ shopDomain: requireAdminShopDomain(principal) }));
+    }));
+}
+
+function registerDispatchChangeRequestRoutes(app: FastifyInstance, dependencies: DsvV1ReadDependencies): void {
+  app.post(`${apiRoot}/seller-orders/:sellerOrderId/active-removal/request`, (request, reply) =>
+    withDsvV1Session(request, reply, dependencies, async (session) => {
+      const principal = requireAdminPrincipal(session.principal);
+      requireDsvScopes(principal, ['dsv:dispatches:write']);
+      if (!verifyAdminWebCsrfToken({ session: session.session, token: request.headers['x-csrf-token'] as string | undefined })) {
+        return sendV1Error(reply, request, 403, 'FORBIDDEN', 'Invalid CSRF token');
+      }
+      const service = dependencies.dispatchChangeRequestService;
+      if (service === undefined) return sendV1Error(reply, request, 503, 'DEPENDENCY_UNAVAILABLE', 'DSV dispatch change request service is not configured');
+      const sellerOrderId = readUuidParam(request, 'sellerOrderId');
+      const command = readActiveRemovalCommand(request);
+      if (sellerOrderId === null || command === null) return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid active removal payload');
+      try {
+        return sendV1Data(reply, request, await service.requestActiveRemoval({
+          actor: dsvV1AdminCommandActor(principal, request),
+          ...command,
+          sellerOrderId,
+          shopDomain: requireAdminShopDomain(principal),
+        }));
+      } catch (error) {
+        return sendDispatchChangeRequestError(reply, request, error);
+      }
+    }));
+
+  app.post(`${apiRoot}/seller-orders/:sellerOrderId/recover-unassigned`, (request, reply) =>
+    withDsvV1Session(request, reply, dependencies, async (session) => {
+      const principal = requireAdminPrincipal(session.principal);
+      requireDsvScopes(principal, ['dsv:dispatches:write']);
+      if (!verifyAdminWebCsrfToken({ session: session.session, token: request.headers['x-csrf-token'] as string | undefined })) {
+        return sendV1Error(reply, request, 403, 'FORBIDDEN', 'Invalid CSRF token');
+      }
+      const service = dependencies.dispatchChangeRequestService;
+      if (service === undefined) return sendV1Error(reply, request, 503, 'DEPENDENCY_UNAVAILABLE', 'DSV dispatch change request service is not configured');
+      const sellerOrderId = readUuidParam(request, 'sellerOrderId');
+      const command = readRecoverUnassignedCommand(request);
+      if (sellerOrderId === null || command === null) return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid recovery payload');
+      try {
+        return sendV1Data(reply, request, await service.recoverCancelledToUnassigned({
+          actor: dsvV1AdminCommandActor(principal, request),
+          ...command,
+          sellerOrderId,
+          shopDomain: requireAdminShopDomain(principal),
+        }));
+      } catch (error) {
+        return sendDispatchChangeRequestError(reply, request, error);
+      }
+    }));
+
+  app.post(`${apiRoot}/dispatch-change-requests/:changeRequestId/cancel`, (request, reply) =>
+    withDsvV1Session(request, reply, dependencies, async (session) => {
+      const principal = requireAdminPrincipal(session.principal);
+      requireDsvScopes(principal, ['dsv:dispatches:write']);
+      if (!verifyAdminWebCsrfToken({ session: session.session, token: request.headers['x-csrf-token'] as string | undefined })) {
+        return sendV1Error(reply, request, 403, 'FORBIDDEN', 'Invalid CSRF token');
+      }
+      const service = dependencies.dispatchChangeRequestService;
+      if (service === undefined) return sendV1Error(reply, request, 503, 'DEPENDENCY_UNAVAILABLE', 'DSV dispatch change request service is not configured');
+      const changeRequestId = readUuidParam(request, 'changeRequestId');
+      const command = readCancelChangeRequestCommand(request);
+      if (changeRequestId === null || command === null) return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid dispatch change cancel payload');
+      try {
+        return sendV1Data(reply, request, await service.cancel({
+          actor: dsvV1AdminCommandActor(principal, request),
+          ...command,
+          changeRequestId,
+          shopDomain: requireAdminShopDomain(principal),
+        }));
+      } catch (error) {
+        return sendDispatchChangeRequestError(reply, request, error);
+      }
+    }));
+}
+
+function registerOrderMessageRoutes(app: FastifyInstance, dependencies: DsvV1ReadDependencies): void {
+  app.post(`${apiRoot}/seller-orders/:sellerOrderId/messages`, (request, reply) =>
+    withDsvV1Session(request, reply, dependencies, async (session) => {
+      const principal = requireAdminPrincipal(session.principal);
+      requireDsvScopes(principal, ['dsv:dispatches:write']);
+      if (!verifyAdminWebCsrfToken({ session: session.session, token: request.headers['x-csrf-token'] as string | undefined })) {
+        return sendV1Error(reply, request, 403, 'FORBIDDEN', 'Invalid CSRF token');
+      }
+      const service = dependencies.orderMessageService;
+      if (service === undefined) return sendV1Error(reply, request, 503, 'DEPENDENCY_UNAVAILABLE', 'DSV order message service is not configured');
+      const sellerOrderId = readUuidParam(request, 'sellerOrderId');
+      const body = readCreateOrderMessageBody(request);
+      if (sellerOrderId === null || body === null) return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid order message payload');
+      try {
+        return sendV1Data(reply, request, await service.create({
+          actor: dsvV1AdminCommandActor(principal, request),
+          ...body,
+          sellerOrderId,
+          shopDomain: requireAdminShopDomain(principal),
+        }));
+      } catch (error) {
+        return sendOrderMessageError(reply, request, error);
+      }
+    }));
+
+  app.get(`${apiRoot}/customer/seller-orders/:sellerOrderId/messages`, (request, reply) =>
+    withDsvV1Session(request, reply, dependencies, async (session) => {
+      const principal = requireCustomerPrincipal(session.principal);
+      requireDsvScopes(principal, ['dsv:customer-deliveries:read']);
+      const service = dependencies.orderMessageService;
+      if (service === undefined) return sendV1Error(reply, request, 503, 'DEPENDENCY_UNAVAILABLE', 'DSV order message service is not configured');
+      const sellerOrderId = readUuidParam(request, 'sellerOrderId');
+      if (sellerOrderId === null) return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid seller order id');
+      try {
+        return sendV1Data(reply, request, { messages: await service.listCustomerMessages({ customerId: principal.customerId, sellerOrderId, shopId: principal.shopId }) });
+      } catch (error) {
+        return sendOrderMessageError(reply, request, error);
+      }
+    }));
+
+  app.patch(`${apiRoot}/customers/:customerId/notification-settings`, (request, reply) =>
+    withDsvV1Session(request, reply, dependencies, async (session) => {
+      const principal = requireAdminPrincipal(session.principal);
+      requireDsvScopes(principal, ['dsv:customers:write']);
+      if (!verifyAdminWebCsrfToken({ session: session.session, token: request.headers['x-csrf-token'] as string | undefined })) {
+        return sendV1Error(reply, request, 403, 'FORBIDDEN', 'Invalid CSRF token');
+      }
+      const service = dependencies.orderMessageService;
+      if (service === undefined) return sendV1Error(reply, request, 503, 'DEPENDENCY_UNAVAILABLE', 'DSV order message service is not configured');
+      const customerId = readUuidParam(request, 'customerId');
+      const body = readCustomerNotificationSettingsBody(request);
+      if (customerId === null || body === null) return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Invalid customer notification settings payload');
+      try {
+        return sendV1Data(reply, request, await service.updateCustomerNotificationSettings({
+          customerId,
+          ...body,
+          shopDomain: requireAdminShopDomain(principal),
+        }));
+      } catch (error) {
+        return sendOrderMessageError(reply, request, error);
+      }
+    }));
 }
 
 async function buildCustomerScopedRoutes(input: {
@@ -601,6 +772,30 @@ function sendTimeConstraintCommandError(reply: FastifyReply, request: FastifyReq
   }
 }
 
+function sendDispatchChangeRequestError(reply: FastifyReply, request: FastifyRequest, error: unknown): unknown {
+  if (!(error instanceof DsvDispatchChangeRequestError)) throw error;
+  switch (error.code) {
+    case 'COMMAND_IN_PROGRESS':
+    case 'IDEMPOTENCY_PAYLOAD_MISMATCH':
+    case 'VERSION_CONFLICT':
+      return sendV1Error(reply, request, 409, error.code === 'VERSION_CONFLICT' ? 'VERSION_CONFLICT' : error.code, error.message);
+    case 'NOT_FOUND':
+      return sendV1Error(reply, request, 404, 'NOT_FOUND', error.message);
+  }
+}
+
+function sendOrderMessageError(reply: FastifyReply, request: FastifyRequest, error: unknown): unknown {
+  if (!(error instanceof DsvOrderMessageError)) throw error;
+  switch (error.code) {
+    case 'IDEMPOTENCY_PAYLOAD_MISMATCH':
+      return sendV1Error(reply, request, 409, error.code, error.message);
+    case 'NOT_FOUND':
+      return sendV1Error(reply, request, 404, 'NOT_FOUND', error.message);
+    case 'VALIDATION_FAILED':
+      return sendV1Error(reply, request, 400, 'BAD_REQUEST', error.message);
+  }
+}
+
 function safeDsvV1ErrorDetails(details: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
   if (details === undefined) return undefined;
   const safeEntries = Object.entries(details).flatMap(([key, value]) => {
@@ -767,6 +962,54 @@ function readClearTimeConstraintCommand(request: FastifyRequest): Omit<DsvClearT
   const reason = readOptionalBoundedText(body.reason, 500);
   if (base === null || reason === null) return null;
   return { ...base, ...(reason === undefined ? {} : { reason }) };
+}
+
+function readActiveRemovalCommand(request: FastifyRequest): Omit<DsvDispatchChangeRequestCommandInput, 'actor' | 'sellerOrderId' | 'shopDomain'> | null {
+  const body = objectBody(request.body);
+  if (body === null || !hasOnlyAllowedBodyKeys(body, ['commandId', 'deliveryStopId', 'expectedVersion'])) return null;
+  const commandId = readBoundedText(body.commandId, 120);
+  const deliveryStopId = readUuidValue(body.deliveryStopId);
+  const expectedVersion = readBoundedText(body.expectedVersion, 160);
+  if (commandId === null || deliveryStopId === null || expectedVersion === null) return null;
+  return { commandId, deliveryStopId, expectedVersion };
+}
+
+function readCancelChangeRequestCommand(request: FastifyRequest): Omit<DsvDispatchChangeRequestCancelInput, 'actor' | 'changeRequestId' | 'shopDomain'> | null {
+  const body = objectBody(request.body);
+  if (body === null || !hasOnlyAllowedBodyKeys(body, ['commandId', 'expectedVersion'])) return null;
+  const commandId = readBoundedText(body.commandId, 120);
+  const expectedVersion = readExpectedVersion(body);
+  if (commandId === null || expectedVersion === invalidExpectedVersion) return null;
+  return {
+    commandId,
+    ...(expectedVersion === undefined ? {} : { expectedVersion }),
+  };
+}
+
+function readRecoverUnassignedCommand(request: FastifyRequest): Omit<DsvDispatchRecoveryInput, 'actor' | 'sellerOrderId' | 'shopDomain'> | null {
+  const body = objectBody(request.body);
+  if (body === null || !hasOnlyAllowedBodyKeys(body, ['commandId'])) return null;
+  const commandId = readBoundedText(body.commandId, 120);
+  return commandId === null ? null : { commandId };
+}
+
+function readCreateOrderMessageBody(request: FastifyRequest): { audience: 'CUSTOMER' | 'DRIVER'; body: string; commandId: string } | null {
+  const body = objectBody(request.body);
+  if (body === null || !hasOnlyAllowedBodyKeys(body, ['audience', 'body', 'commandId'])) return null;
+  const audience = body.audience === 'CUSTOMER' || body.audience === 'DRIVER' ? body.audience : null;
+  const text = readBoundedText(body.body, 500);
+  const commandId = readBoundedText(body.commandId, 120);
+  return audience === null || text === null || commandId === null ? null : { audience, body: text, commandId };
+}
+
+function readCustomerNotificationSettingsBody(request: FastifyRequest): { enabled: boolean; recipient: string | null } | null {
+  const body = objectBody(request.body);
+  if (body === null || !hasOnlyAllowedBodyKeys(body, ['enabled', 'recipient'])) return null;
+  if (typeof body.enabled !== 'boolean') return null;
+  const recipient = body.recipient === null || body.recipient === undefined || body.recipient === ''
+    ? null
+    : readBoundedText(body.recipient, 320);
+  return recipient === null && body.enabled ? null : { enabled: body.enabled, recipient };
 }
 
 function readTimeConstraintCommandBase(body: Record<string, unknown>): {

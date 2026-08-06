@@ -65,6 +65,7 @@ import {
   DriverEventEtaStaleConflictError,
   DriverEventExecutionConflictError,
   DriverEventRouteNotInProgressError,
+  DriverEventSellerOrderAssignmentChangedError,
   DriverEventScopeError,
   type RecordDriverEventResult
 } from '../modules/driver/driver-event.repository.js';
@@ -74,6 +75,8 @@ import {
 } from '../modules/route-tracking/route-tracking.service.js';
 import type { RouteTrackingStreamHub } from '../modules/route-tracking/route-tracking.stream.js';
 import type { AdminNotificationServiceApi } from '../modules/notifications/admin-notification.service.js';
+import type { DsvRouteOptimizationSchedulerPort } from '../modules/dsv/dsv-route-optimization.scheduler.js';
+import { DsvOrderMessageError, type DsvOrderMessageService } from '../modules/dsv/dsv-order-message.service.js';
 import { DriverDeliverySpaceError, type DriverDeliverySpaceServiceContract } from '../modules/driver/driver-delivery-space.service.js';
 
 export type DriverApiDependencies = {
@@ -94,6 +97,7 @@ export type DriverApiDependencies = {
       shopId: string;
     }): Promise<RecordDriverEventResult[]>;
     recordDriverEvent(input: {
+      changeRequestId?: string | null;
       clientEventId: string | null;
       deliveryStopId: string | null;
       driverId: string;
@@ -114,7 +118,9 @@ export type DriverApiDependencies = {
   driverRouteMapPreviewService?: DriverRouteMapPreviewServiceApi;
   driverTokenAccessRepository?: DriverTokenAccessRepositoryApi;
   jwtSecret: string;
+  orderMessageService?: Pick<DsvOrderMessageService, 'markDriverMessageRead'>;
   proofMediaService?: DriverProofMediaServiceContract;
+  routeOptimizationScheduler?: DsvRouteOptimizationSchedulerPort;
   routeTrackingStreamHub?: RouteTrackingStreamHub;
   now?: () => Date;
   routeAccessService?: DriverRouteAccessServiceApi;
@@ -188,6 +194,7 @@ type DriverConsentRequestBody = {
 };
 
 type DriverEventRequestBody = {
+  changeRequestId?: unknown;
   clientEventId?: unknown;
   deliveryStopId?: unknown;
   eventType?: unknown;
@@ -225,6 +232,7 @@ const DRIVER_EVENT_TYPES = new Set([
   'ROUTE_COMPLETED',
   'PICKUP_COMPLETED',
   'TIME_CONSTRAINT_ACKNOWLEDGED',
+  'DISPATCH_CHANGE_ACKNOWLEDGED',
   'STOP_ARRIVED',
   'STOP_DELIVERED',
   'STOP_FAILED',
@@ -347,6 +355,35 @@ export function registerDriverEventRoutes(
   }
 
   const driverSellerOrderAssignmentService = dependencies.driverSellerOrderAssignmentService;
+
+  const orderMessageService = dependencies.orderMessageService;
+  if (orderMessageService !== undefined) {
+    app.post<{ Params: { messageId: string } }>('/driver/order-messages/:messageId/read', async (request, reply) => {
+      const authentication = await authenticateDriverRequest(request, dependencies);
+      if (authentication.status !== 'authenticated') {
+        return reply.code(401).send(driverAuthenticationErrorResponse(authentication.status));
+      }
+      const messageId = readOptionalString(request.params.messageId);
+      const routePlanId = authentication.context.routePlanId;
+      if (messageId === null) return reply.code(400).send(errorResponse('BAD_REQUEST', 'Invalid order message id'));
+      if (routePlanId === null) return reply.code(409).send(errorResponse('ROUTE_NOT_ASSIGNED', 'Driver route is not assigned'));
+      try {
+        const result = await orderMessageService.markDriverMessageRead({
+          driverId: authentication.context.driverId,
+          messageId,
+          routePlanId,
+          shopId: authentication.context.shopId
+        });
+        return reply.code(200).send({ data: result, error: null });
+      } catch (error) {
+        if (error instanceof DsvOrderMessageError && error.code === 'NOT_FOUND') {
+          return reply.code(404).send(errorResponse('NOT_FOUND', 'Driver order message not found'));
+        }
+        throw error;
+      }
+    });
+  }
+
   if (driverSellerOrderAssignmentService !== undefined) {
     app.get('/driver/orders/unassigned', async (request, reply) => {
       const authentication = await authenticateDriverRequest(request, dependencies);
@@ -1078,11 +1115,32 @@ export function registerDriverEventRoutes(
       if (error instanceof DriverEventEtaStaleConflictError) {
         return reply.code(409).send(errorResponse('ETA_STALE_CONFLICT', 'ETA update is stale'));
       }
+      if (error instanceof DriverEventSellerOrderAssignmentChangedError) {
+        return reply.code(409).send(errorResponse('SELLER_ORDER_ASSIGNMENT_CHANGED', 'Seller order assignment changed'));
+      }
       if (error instanceof DriverEventScopeError) {
         return reply.code(403).send(errorResponse('FORBIDDEN', 'Driver event route or stop scope rejected'));
       }
 
       throw error;
+    }
+
+    if (
+      !result.duplicate
+      && eventInput.eventType === 'DISPATCH_CHANGE_ACKNOWLEDGED'
+      && driverContext.routePlanId !== null
+    ) {
+      try {
+        dependencies.routeOptimizationScheduler?.schedule({
+          routePlanIds: [driverContext.routePlanId],
+          shopDomain: driverContext.shopDomain
+        });
+      } catch (error) {
+        request.log.warn(
+          { error, eventId: result.eventId, routePlanId: driverContext.routePlanId },
+          'failed to schedule route optimization after dispatch change acknowledgement'
+        );
+      }
     }
 
     if (!result.duplicate && result.sequenceDeviation !== undefined) {
@@ -1443,6 +1501,7 @@ function isDriverConsentType(value: string): value is DriverConsentRecordInput['
 }
 
 function readDriverEventBody(body: DriverEventRequestBody): {
+  changeRequestId: string | null;
   clientEventId: string | null;
   deliveryStopId: string | null;
   eventType: string;
@@ -1471,8 +1530,17 @@ function readDriverEventBody(body: DriverEventRequestBody): {
       throw new Error('Time constraint acknowledgement requires clientEventId, deliveryStopId, and routePlanId');
     }
   }
+  const changeRequestId = readOptionalString(body.changeRequestId);
+  if (eventType === 'DISPATCH_CHANGE_ACKNOWLEDGED') {
+    if (clientEventId === null || changeRequestId === null || readOptionalString(body.routePlanId) === null) {
+      throw new Error('Dispatch change acknowledgement requires clientEventId, changeRequestId, and routePlanId');
+    }
+  } else if (changeRequestId !== null) {
+    throw new Error('changeRequestId is only supported for dispatch change acknowledgement');
+  }
 
   return {
+    changeRequestId,
     clientEventId,
     deliveryStopId,
     eventType,

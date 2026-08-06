@@ -36,9 +36,9 @@ describe('G004 DSV Prisma assignment contract', () => {
     expect(routeVersion).toContain('etaInputRouteStops   RoutePlanStop[]                  @relation("RoutePlanStopEtaInputRouteVersion")');
     expect(routeVersion).toContain('driverEvents         DriverEvent[]                    @relation("DriverEventRouteVersion")');
     expect(routeVersion).toContain('@@unique([id, shopId, routePlanId])');
-    expect(driverEvent).toContain('routePlan      RoutePlan?                 @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: NoAction)');
-    expect(driverEvent).toContain('routeVersionId String?                    @db.Uuid');
-    expect(driverEvent).toContain('routeVersion   RouteGroupingChildVersion? @relation("DriverEventRouteVersion", fields: [routeVersionId, shopId, routePlanId], references: [id, shopId, routePlanId], onDelete: NoAction)');
+    expect(driverEvent).toContain('routePlan                     RoutePlan?                 @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: NoAction)');
+    expect(driverEvent).toContain('routeVersionId                String?                    @db.Uuid');
+    expect(driverEvent).toContain('routeVersion                  RouteGroupingChildVersion? @relation("DriverEventRouteVersion", fields: [routeVersionId, shopId, routePlanId], references: [id, shopId, routePlanId], onDelete: NoAction)');
     expect(driverEvent).toContain('@@index([shopId, routeVersionId, occurredAt])');
 
     expect(migration).toContain('CREATE TYPE "DsvEtaStatus" AS ENUM');

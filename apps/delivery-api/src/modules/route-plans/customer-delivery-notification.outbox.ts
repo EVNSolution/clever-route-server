@@ -7,6 +7,7 @@ export type CustomerDeliveryNotificationJob = {
   deliveryStopId: string | null;
   factId: string;
   idempotencyKey: string | null;
+  metadata: Prisma.JsonValue | null;
   leaseToken: string;
   occurredAt: Date;
   orderId: string;
@@ -53,6 +54,7 @@ export class PrismaCustomerDeliveryNotificationOutbox {
           deliveryStopId: true,
           id: true,
           idempotencyKey: true,
+          metadata: true,
           occurredAt: true,
           orderId: true,
           recipientEmailSnapshot: true,
@@ -88,6 +90,7 @@ export class PrismaCustomerDeliveryNotificationOutbox {
         deliveryStopId: fact.deliveryStopId,
         factId: fact.id,
         idempotencyKey: fact.idempotencyKey,
+        metadata: fact.metadata,
         leaseToken,
         occurredAt: fact.occurredAt,
         orderId: fact.orderId,

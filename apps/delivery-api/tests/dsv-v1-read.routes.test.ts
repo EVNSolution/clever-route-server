@@ -21,6 +21,10 @@ import {
   DsvTimeConstraintCommandError,
   type DsvTimeConstraintCommandService,
 } from '../src/modules/dsv/dsv-time-constraint-command.service.js';
+import {
+  DsvOrderMessageError,
+  type DsvOrderMessageService,
+} from '../src/modules/dsv/dsv-order-message.service.js';
 import type { RoutePlanDetail, RoutePlanSummary } from '../src/modules/route-plans/route-plan.types.js';
 import type { RouteGeometryProvider } from '../src/modules/route-plans/route-plan.service.js';
 
@@ -483,6 +487,33 @@ describe('DSV v1 read routes', () => {
       expect(malformedClear.statusCode).toBe(400);
       expect(timeConstraintCommandService.confirm).not.toHaveBeenCalled();
       expect(timeConstraintCommandService.clear).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('maps order message idempotency payload mismatch to a stable 409 response', async () => {
+    const orderMessageService: DsvOrderMessageService = {
+      create: vi.fn().mockRejectedValue(new DsvOrderMessageError('IDEMPOTENCY_PAYLOAD_MISMATCH')),
+      listCustomerMessages: vi.fn(),
+      markDriverMessageRead: vi.fn(),
+      updateCustomerNotificationSettings: vi.fn(),
+    };
+    const { app } = await createHarness({ orderMessageService });
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    try {
+      const response = await app.inject({
+        headers: { cookie: admin.cookie, 'x-csrf-token': admin.csrfToken },
+        method: 'POST',
+        payload: { audience: 'DRIVER', body: '운행 전 확인', commandId: 'message-command-1' },
+        url: '/api/dsv/v1/seller-orders/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/messages',
+      });
+
+      expect(response.statusCode).toBe(409);
+      expectDsvV1Error(response, {
+        code: 'IDEMPOTENCY_PAYLOAD_MISMATCH',
+        message: 'IDEMPOTENCY_PAYLOAD_MISMATCH',
+      });
     } finally {
       await app.close();
     }
@@ -1129,6 +1160,7 @@ function timeConstraintCommandResult(status: 'CLEARED' | 'CONFIRMED') {
 
 async function createHarness(options: {
   mapProfile?: false;
+  orderMessageService?: DsvOrderMessageService;
   timeConstraintCommandService?: DsvTimeConstraintCommandService;
 } = {}): Promise<{
   app: Awaited<ReturnType<typeof buildApp>>;
@@ -1150,6 +1182,7 @@ async function createHarness(options: {
     secureCookies: false,
     sessionResolver,
     sessionSecret,
+    ...(options.orderMessageService === undefined ? {} : { orderMessageService: options.orderMessageService }),
     ...(options.timeConstraintCommandService === undefined ? {} : { timeConstraintCommandService: options.timeConstraintCommandService }),
   };
   return { app: await buildApp({ dsvV1Read: dependencies }), queryService, routeGeometryProvider, routePlanService, sessionResolver };

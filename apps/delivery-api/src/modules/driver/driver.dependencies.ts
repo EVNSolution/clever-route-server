@@ -38,6 +38,8 @@ import {
 } from './driver-seller-order-assignment.service.js';
 import type { RouteGroupingService } from '../route-grouping/route-grouping.types.js';
 import type { RouteGroupingAssignmentDto } from '../route-grouping/route-grouping.types.js';
+import type { DsvRouteOptimizationSchedulerPort } from '../dsv/dsv-route-optimization.scheduler.js';
+import type { DsvOrderMessageService } from '../dsv/dsv-order-message.service.js';
 import {
   DsvAssignmentCommandError,
   DsvAssignmentCommandService,
@@ -98,7 +100,9 @@ type LoadDriverApiDependenciesInput = {
   adminNotificationService?: Pick<AdminNotificationServiceApi, 'createAdminNotification'>;
   env: DriverApiRuntimeEnv;
   prisma: PrismaClient;
+  orderMessageService?: Pick<DsvOrderMessageService, 'markDriverMessageRead'>;
   routeGroupingService?: RouteGroupingService;
+  routeOptimizationScheduler?: DsvRouteOptimizationSchedulerPort;
   routeTrackingStreamHub?: RouteTrackingStreamHub;
 };
 
@@ -159,12 +163,14 @@ export function loadDriverApiDependencies(
     driverRouteSessionRestoreService: new PrismaDriverRouteSessionRepository(input.prisma, driverAssignedRouteService),
     driverTokenAccessRepository: new PrismaDriverTokenAccessRepository(input.prisma),
     jwtSecret,
+    ...(input.orderMessageService === undefined ? {} : { orderMessageService: input.orderMessageService }),
     proofMediaService: new PrismaDriverProofMediaRepository(input.prisma, {
       readAccessTtlSeconds: loadDriverProofMediaReadAccessPolicy(input.env).readAccessTtlSeconds,
       ...proofMediaStorageOptions,
       ...proofMediaSafetyOptions
     }),
     ...(input.routeTrackingStreamHub === undefined ? {} : { routeTrackingStreamHub: input.routeTrackingStreamHub }),
+    ...(input.routeOptimizationScheduler === undefined ? {} : { routeOptimizationScheduler: input.routeOptimizationScheduler }),
     routeAccessService: new PrismaDriverRouteAccessRepository(input.prisma)
   };
 }

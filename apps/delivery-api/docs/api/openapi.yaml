@@ -801,6 +801,156 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/DsvV1LegacyAssignmentErrorEnvelope' }
+  /api/dsv/v1/operational-notifications:
+    get:
+      tags: [DSV API v1]
+      summary: List dispatch change and recovery notifications
+      operationId: listDsvV1OperationalNotifications
+      x-source-file: src/routes/dsv-v1-read.routes.ts
+      x-required-scopes: ['dsv:dispatches:read']
+      security: [{ DsvSessionCookie: [] }]
+      responses:
+        '200': { description: Current operational notifications. }
+        '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
+        '403': { $ref: '#/components/responses/DsvV1Forbidden' }
+        '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
+  /api/dsv/v1/dispatch-change-requests/{changeRequestId}/cancel:
+    post:
+      tags: [DSV API v1]
+      summary: Cancel a pending driver-acknowledged dispatch change
+      operationId: cancelDsvV1DispatchChangeRequest
+      x-source-file: src/routes/dsv-v1-read.routes.ts
+      x-required-scopes: ['dsv:dispatches:write']
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - name: changeRequestId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        '200': { description: Pending request was cancelled. }
+        '400': { $ref: '#/components/responses/DsvV1BadRequest' }
+        '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
+        '403': { $ref: '#/components/responses/DsvV1Forbidden' }
+        '404': { $ref: '#/components/responses/DsvV1NotFound' }
+        '409': { $ref: '#/components/responses/DsvV1Conflict' }
+  /api/dsv/v1/seller-orders/{sellerOrderId}/active-removal/request:
+    post:
+      tags: [DSV API v1]
+      summary: Request driver acknowledgement before removing an active order from its route
+      operationId: requestDsvV1ActiveRouteOrderRemoval
+      x-source-file: src/routes/dsv-v1-read.routes.ts
+      x-required-scopes: ['dsv:dispatches:write']
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/DsvV1SellerOrderIdPath'
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        '200': { description: Change request is pending driver acknowledgement. }
+        '400': { $ref: '#/components/responses/DsvV1BadRequest' }
+        '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
+        '403': { $ref: '#/components/responses/DsvV1Forbidden' }
+        '404': { $ref: '#/components/responses/DsvV1NotFound' }
+        '409': { $ref: '#/components/responses/DsvV1Conflict' }
+  /api/dsv/v1/seller-orders/{sellerOrderId}/recover-unassigned:
+    post:
+      tags: [DSV API v1]
+      summary: Restore a cancelled seller order to the unassigned queue
+      operationId: recoverDsvV1CancelledSellerOrder
+      x-source-file: src/routes/dsv-v1-read.routes.ts
+      x-required-scopes: ['dsv:dispatches:write']
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/DsvV1SellerOrderIdPath'
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        '200': { description: Cancelled seller order was restored as unassigned. }
+        '400': { $ref: '#/components/responses/DsvV1BadRequest' }
+        '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
+        '403': { $ref: '#/components/responses/DsvV1Forbidden' }
+        '404': { $ref: '#/components/responses/DsvV1NotFound' }
+        '409': { $ref: '#/components/responses/DsvV1Conflict' }
+  /api/dsv/v1/seller-orders/{sellerOrderId}/messages:
+    post:
+      tags: [DSV API v1]
+      summary: Store a driver or customer order message
+      operationId: createDsvV1SellerOrderMessage
+      x-source-file: src/routes/dsv-v1-read.routes.ts
+      x-required-scopes: ['dsv:dispatches:write']
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - $ref: '#/components/parameters/DsvV1SellerOrderIdPath'
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        '200': { description: Message was stored and notification delivery was queued when applicable. }
+        '400': { $ref: '#/components/responses/DsvV1BadRequest' }
+        '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
+        '403': { $ref: '#/components/responses/DsvV1Forbidden' }
+        '404': { $ref: '#/components/responses/DsvV1NotFound' }
+        '409': { $ref: '#/components/responses/DsvV1Conflict' }
+  /api/dsv/v1/customer/seller-orders/{sellerOrderId}/messages:
+    get:
+      tags: [DSV API v1]
+      summary: List customer-visible messages for one seller order
+      operationId: listDsvV1CustomerSellerOrderMessages
+      x-source-file: src/routes/dsv-v1-read.routes.ts
+      x-required-scopes: ['dsv:customer-deliveries:read']
+      security: [{ DsvSessionCookie: [] }]
+      parameters:
+        - $ref: '#/components/parameters/DsvV1SellerOrderIdPath'
+      responses:
+        '200': { description: Customer-visible order messages. }
+        '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
+        '403': { $ref: '#/components/responses/DsvV1Forbidden' }
+        '404': { $ref: '#/components/responses/DsvV1NotFound' }
+        '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
+  /api/dsv/v1/customers/{customerId}/notification-settings:
+    patch:
+      tags: [DSV API v1]
+      summary: Update one customer's representative email notification setting
+      operationId: updateDsvV1CustomerNotificationSettings
+      x-source-file: src/routes/dsv-v1-read.routes.ts
+      x-required-scopes: ['dsv:customers:write']
+      security: [{ DsvSessionCookie: [], DsvCsrfToken: [] }]
+      parameters:
+        - name: customerId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/AdminUiCsrfTokenHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, additionalProperties: false }
+      responses:
+        '200': { description: Notification setting was updated. }
+        '400': { $ref: '#/components/responses/DsvV1BadRequest' }
+        '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
+        '403': { $ref: '#/components/responses/DsvV1Forbidden' }
+        '404': { $ref: '#/components/responses/DsvV1NotFound' }
+        '409': { $ref: '#/components/responses/DsvV1Conflict' }
   /api/dsv/v1/seller-orders/{sellerOrderId}/time-constraint/confirm:
     post:
       tags: [DSV API v1]

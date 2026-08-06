@@ -60,6 +60,7 @@ const routePlanRecord = {
           fulfillmentStatus: 'PROCESSING',
           id: 'order-id',
           name: '#1001',
+          orderMessages: [],
           orderItems: [
             {
               name: 'Tomato Box',
@@ -193,12 +194,13 @@ describe('PrismaDriverAssignedRouteRepository', () => {
             },
             coordinates: { latitude: 43.6487, longitude: -79.3817 },
             currencyCode: 'CAD',
-            customerNote: 'Leave the box beside the loading entrance.',
-            deliverySession: 'PICKUP',
-            deliveryStopId: 'stop-id',
-            destinationId: 'canonical-destination-id',
-            distanceFromPreviousMeters: 1000,
-            durationFromPreviousSeconds: 600,
+          customerNote: 'Leave the box beside the loading entrance.',
+          deliverySession: 'PICKUP',
+          deliveryStopId: 'stop-id',
+          destinationId: 'canonical-destination-id',
+          distanceFromPreviousMeters: 1000,
+          driverMessages: [],
+          durationFromPreviousSeconds: 600,
             estimatedArrivalAt: null,
             conditionCode: 'COLD',
             items: [

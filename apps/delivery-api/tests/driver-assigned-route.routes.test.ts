@@ -42,6 +42,7 @@ const assignedRoute = {
         customerNote: 'Leave the box beside the loading entrance.',
         deliveryStopId: 'stop-id',
         destinationId: 'destination-id',
+        driverMessages: [],
         items: [],
         conditionCode: 'COLD',
         normalizedPaymentStatus: 'TRANSFER_CHECK_PENDING' as const,

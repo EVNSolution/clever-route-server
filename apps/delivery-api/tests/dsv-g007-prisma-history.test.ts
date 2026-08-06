@@ -57,6 +57,7 @@ const uvisVehicleTelematicsMigrationName = '20260804170000_add_uvis_vehicle_tele
 const uvisActivityStateMigrationName = '20260805090000_add_uvis_activity_state';
 const dsvConditionTemperaturePolicyMigrationName = '20260805120000_add_dsv_condition_temperature_policy';
 const dsvDriverAppReleaseMigrationName = '20260805150000_add_dsv_driver_app_releases';
+const dsvDispatchChangeRequestMigrationName = '20260806120000_add_dsv_dispatch_change_requests';
 const assignedDriverProfileBackfillMigrationName = '20260729170000_backfill_assigned_dsv_driver_profiles';
 const dispatchGroupingBackfillMigrationName = '20260730170000_backfill_dsv_dispatch_groupings';
 const accountScopedPushTokenMigrationName = '20260731140000_account_scope_driver_push_tokens';
@@ -141,7 +142,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(70);
+    expect(migrations).toHaveLength(71);
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -309,7 +310,10 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf(dsvConditionTemperaturePolicyMigrationName)).toBeLessThan(
       migrations.indexOf(dsvDriverAppReleaseMigrationName)
     );
-    expect(migrations.at(-1)).toBe(dsvDriverAppReleaseMigrationName);
+    expect(migrations.indexOf(dsvDriverAppReleaseMigrationName)).toBeLessThan(
+      migrations.indexOf(dsvDispatchChangeRequestMigrationName)
+    );
+    expect(migrations.at(-1)).toBe(dsvDispatchChangeRequestMigrationName);
   });
 
   test('backfills shop ownership before allowing driverless signup invites', async () => {
@@ -441,7 +445,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('schema preserves historical DB defaults instead of planning default drops', async () => {
     const schema = await readFile(schemaPath, 'utf8');
 
-    expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(32);
+    expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(34);
     expect(schema.match(/updatedAt\s+DateTime\s+@default\(now\(\)\)\s+@updatedAt/gu)).toHaveLength(14);
     expect(schema).toContain('warnings             Json                          @default("[]")');
   });

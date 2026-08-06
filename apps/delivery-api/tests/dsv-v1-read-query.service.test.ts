@@ -34,6 +34,20 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(deliveryStopsSelect?.select.dsvDispatchImportRows.where).toEqual({ shopId: 'shop-a', status: 'APPLIED' });
     expect(deliveryStopsSelect?.select.driverProofMedia.where).toEqual({ shopId: 'shop-a' });
     expect(deliveryStopsSelect?.select.routePlanStops.where).toEqual({ shopId: 'shop-a' });
+    expect(firstOrderQuery?.select?.orderMessages).toMatchObject({
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: {
+        audience: true,
+        authorId: true,
+        authorType: true,
+        body: true,
+        createdAt: true,
+        id: true,
+        readByDriverAt: true,
+      },
+      take: 20,
+      where: { shopId: 'shop-a' },
+    });
     expect(firstOrderQuery?.select?.destinationId).toBe(true);
     expect(prisma.$transaction).toBeUndefined();
   });
@@ -857,6 +871,21 @@ describe('PrismaDsvV1ReadQueryService', () => {
     });
   });
 
+  test.each([
+    ['CANCELLED', 'CANCELLED'],
+    ['DELIVERED', 'COMPLETED'],
+  ] as const)('dispatch summaries derive %s as authoritative %s operation status', async (deliveryStatus, operationStatus) => {
+    const row = customerDeliveryOrderRow({ deliveryStatus });
+    const service = new PrismaDsvV1ReadQueryService(prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      order: { findMany: vi.fn(() => Promise.resolve([row])) },
+    }) as never, () => new Date('2026-07-22T12:00:00.000Z'));
+
+    await expect(service.listDispatches(adminPrincipal(), { serviceDate: '2026-07-22' })).resolves.toMatchObject({
+      items: [{ operationStatus }],
+    });
+  });
+
   test('dispatch search applies partial order number and destination name to the same service date query', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
@@ -1022,6 +1051,7 @@ function customerDeliveryOrderRow(input: {
   } | null;
   driverEvents?: Array<{ eventType: string; id: string; occurredAt: Date }>;
   driverProofMedia?: Array<{ deletedAt: Date | null; id: string }>;
+  deliveryStatus?: string;
   id?: string;
   latitude?: unknown;
   longitude?: unknown;
@@ -1050,7 +1080,7 @@ function customerDeliveryOrderRow(input: {
         }
       : input.currentRouteVersion,
     customer: { displayName: 'Customer A', id: 'customer-a' },
-    deliveryStatus: 'ASSIGNED',
+    deliveryStatus: input.deliveryStatus ?? 'ASSIGNED',
     deliveryStops: [{
       dsvDispatchImportRows: [{ conditionCode: 'COLD', shippedBoxes: 6 }],
       driverEvents: input.driverEvents ?? [],
@@ -1076,6 +1106,7 @@ function customerDeliveryOrderRow(input: {
     destinationId: 'destination-x',
     dsvAuditEvents: [],
     id: input.id ?? 'order-a',
+    orderMessages: [],
     sellerOrderKey: input.sellerOrderKey === undefined ? 'SO-A' : input.sellerOrderKey,
     sellerOrderSourceKind: 'DSV_DISPATCH_IMPORT',
     sourceOrderNumber: null,

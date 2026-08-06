@@ -4,6 +4,7 @@ import type { PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
 import type { DsvRouteOptimizationSchedulerPort } from './dsv-route-optimization.scheduler.js';
+import type { PrismaDsvDriverNotificationDispatcher } from './dsv-driver-notification.dispatcher.js';
 import {
   deriveDsvTimeConstraintState,
   dsvCanonicalNoteHash,
@@ -40,10 +41,10 @@ export type DsvClearTimeConstraintInput = DsvTimeConstraintCommandInput & {
 };
 
 export type DsvTimeConstraintRecalculation = {
-  reason: 'ASSIGNED_ROUTE_TIME_CONSTRAINT_CLEARED' | 'ASSIGNED_ROUTE_TIME_CONSTRAINT_CONFIRMED' | 'SCHEDULER_UNAVAILABLE' | 'TIME_CONSTRAINT_CLEARED' | 'UNASSIGNED_ORDER';
+  reason: 'ACTIVE_ROUTE_PENDING_DRIVER_ACK' | 'ASSIGNED_ROUTE_TIME_CONSTRAINT_CLEARED' | 'ASSIGNED_ROUTE_TIME_CONSTRAINT_CONFIRMED' | 'SCHEDULER_UNAVAILABLE' | 'TIME_CONSTRAINT_CLEARED' | 'UNASSIGNED_ORDER';
   retryable: boolean;
   routePlanId: string | null;
-  status: 'FAILED_TO_SCHEDULE' | 'NOT_REQUIRED' | 'SCHEDULED';
+  status: 'FAILED_TO_SCHEDULE' | 'NOT_REQUIRED' | 'PENDING_DRIVER_ACK' | 'SCHEDULED';
 };
 
 export type DsvTimeConstraintCommandResult = DsvCanonicalTimeConstraintState & {
@@ -51,6 +52,7 @@ export type DsvTimeConstraintCommandResult = DsvCanonicalTimeConstraintState & {
   clearedAt?: string;
   clearedBy?: string;
   commandId: string;
+  changeRequestId?: string;
   deliveryStopId: string;
   recalculation: DsvTimeConstraintRecalculation;
   sellerOrderId: string;
@@ -90,7 +92,7 @@ export type DsvTimeConstraintCommandLogger = {
 
 type DsvTimeConstraintPrismaClient = Pick<
   PrismaClient,
-  '$queryRaw' | '$transaction' | 'deliveryStop' | 'dsvAuditEvent' | 'dsvCommandReceipt' | 'order' | 'shop'
+  '$queryRaw' | '$transaction' | 'deliveryStop' | 'driverRouteNotificationAttempt' | 'dsvAuditEvent' | 'dsvCommandReceipt' | 'dsvDispatchChangeRequest' | 'order' | 'shop'
 >;
 
 type Tx = Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
@@ -105,6 +107,7 @@ export class PrismaDsvTimeConstraintCommandService implements DsvTimeConstraintC
     private readonly prisma: DsvTimeConstraintPrismaClient,
     private readonly routeOptimizationScheduler?: DsvRouteOptimizationSchedulerPort,
     private readonly logger: DsvTimeConstraintCommandLogger = consoleLogger,
+    private readonly driverNotificationDispatcher?: Pick<PrismaDsvDriverNotificationDispatcher, 'dispatchByIdempotencyKey'>,
   ) {}
 
   async confirm(input: DsvConfirmTimeConstraintInput): Promise<DsvTimeConstraintCommandResult> {
@@ -151,7 +154,17 @@ export class PrismaDsvTimeConstraintCommandService implements DsvTimeConstraintC
       const order = await tx.order.findFirst({
         select: {
           currentRouteVersionId: true,
-          currentRouteVersion: { select: { createdAt: true, routePlanId: true } },
+          currentRouteVersion: {
+            select: {
+              createdAt: true,
+              driverId: true,
+              groupingId: true,
+              id: true,
+              routePlan: { select: { status: true } },
+              routePlanId: true,
+              version: true,
+            },
+          },
           id: true,
           sellerOrderKey: true,
         },
@@ -175,16 +188,37 @@ export class PrismaDsvTimeConstraintCommandService implements DsvTimeConstraintC
       });
       if (stop === null) throw new DsvTimeConstraintCommandError('SELLER_ORDER_NOT_FOUND');
 
-      await tx.deliveryStop.updateMany({
-        data: input.nextWindow,
-        where: { id: stop.id, orderId: order.id, shopId: shop.id },
-      }).then((updated) => {
-        if (updated.count !== 1) throw new DsvTimeConstraintCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
-      });
-
       const rawNote = normalizeRawNote(stop.instructions);
       const noteHash = rawNote === null ? dsvCanonicalNoteHash('') : dsvCanonicalNoteHash(rawNote);
       const eventType = timeConstraintEventType(input.commandName);
+      const activeRouteVersionId = order.currentRouteVersionId;
+      const activeRoutePlanId = order.currentRouteVersion?.routePlanId ?? null;
+      const assignedRoute = activeRouteVersionId !== null && activeRoutePlanId !== null;
+      const activeRoute = assignedRoute && order.currentRouteVersion?.routePlan?.status === 'IN_PROGRESS';
+      const changeRequestDelegate = (tx as { dsvDispatchChangeRequest?: Tx['dsvDispatchChangeRequest'] }).dsvDispatchChangeRequest;
+      const deferForDriverAck = activeRoute && activeRoutePlanId !== null && changeRequestDelegate !== undefined;
+      if (deferForDriverAck) {
+        const existingChangeRequest = await changeRequestDelegate.findFirst({
+          select: { id: true },
+          where: {
+            deliveryStopId: stop.id,
+            routePlanId: activeRoutePlanId,
+            shopId: shop.id,
+            status: 'PENDING_ACK',
+          },
+        });
+        if (existingChangeRequest !== null) {
+          throw new DsvTimeConstraintCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED', 'A dispatch change request is already pending driver acknowledgement');
+        }
+      }
+      if (!deferForDriverAck) {
+        await tx.deliveryStop.updateMany({
+          data: input.nextWindow,
+          where: { id: stop.id, orderId: order.id, shopId: shop.id },
+        }).then((updated) => {
+          if (updated.count !== 1) throw new DsvTimeConstraintCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
+        });
+      }
       const audit = await tx.dsvAuditEvent.create({
         data: {
           actorId: input.input.actor.actorId ?? null,
@@ -221,12 +255,57 @@ export class PrismaDsvTimeConstraintCommandService implements DsvTimeConstraintC
         currentRouteVersionCreatedAt: order.currentRouteVersion?.createdAt ?? null,
         currentRouteVersionId: order.currentRouteVersionId,
         rawNote,
-        timeWindowEnd: input.nextWindow.timeWindowEnd,
-        timeWindowStart: input.nextWindow.timeWindowStart,
+        timeWindowEnd: deferForDriverAck ? stop.timeWindowEnd : input.nextWindow.timeWindowEnd,
+        timeWindowStart: deferForDriverAck ? stop.timeWindowStart : input.nextWindow.timeWindowStart,
       });
+      const changeRequest = deferForDriverAck && activeRouteVersionId !== null && activeRoutePlanId !== null
+        ? await changeRequestDelegate.create({
+            data: {
+              commandReceiptId: claim.receiptId,
+              deliveryStopId: stop.id,
+              driverId: order.currentRouteVersion?.driverId ?? null,
+              priorSnapshot: {
+                timeWindowEnd: formatTimeOnly(stop.timeWindowEnd),
+                timeWindowStart: formatTimeOnly(stop.timeWindowStart),
+              },
+              requestId: input.input.actor.requestId ?? input.input.commandId,
+              requestedByActorId: input.input.actor.actorId ?? null,
+              requestedByActorType: input.input.actor.actorType,
+              routePlanId: activeRoutePlanId,
+              routeVersionId: activeRouteVersionId,
+              sellerOrderId: order.id,
+              shopId: shop.id,
+              status: 'PENDING_ACK',
+              timeWindowEnd: input.nextWindow.timeWindowEnd,
+              timeWindowStart: input.nextWindow.timeWindowStart,
+              type: 'TIME_CONSTRAINT_CHANGE',
+            },
+            select: { id: true },
+          })
+        : null;
+      if (changeRequest !== null && order.currentRouteVersion !== null && activeRoutePlanId !== null) {
+        await tx.driverRouteNotificationAttempt.upsert({
+          create: {
+            action: 'CHANGED',
+            childVersionId: order.currentRouteVersion.id,
+            driverId: order.currentRouteVersion.driverId,
+            groupingId: order.currentRouteVersion.groupingId,
+            groupingVersion: order.currentRouteVersion.version,
+            idempotencyKey: `dsv-dispatch-change:${changeRequest.id}`,
+            metadata: { changeRequestId: changeRequest.id },
+            provider: 'FCM',
+            routePlanId: activeRoutePlanId,
+            shopId: shop.id,
+            status: 'PENDING',
+          },
+          update: { attemptedAt: new Date(), metadata: { changeRequestId: changeRequest.id }, status: 'PENDING' },
+          where: { idempotencyKey: `dsv-dispatch-change:${changeRequest.id}` },
+        });
+      }
       const baseResult: DsvTimeConstraintCommandResult = {
         ...state,
         auditEventId: audit.id,
+        ...(changeRequest === null ? {} : { changeRequestId: changeRequest.id }),
         ...(eventType === 'TIME_CONSTRAINT_CLEARED'
           ? {
               clearedAt: audit.occurredAt.toISOString(),
@@ -235,7 +314,14 @@ export class PrismaDsvTimeConstraintCommandService implements DsvTimeConstraintC
           : {}),
         commandId: input.input.commandId,
         deliveryStopId: stop.id,
-        recalculation: recalculationNotRequired(eventType, order.currentRouteVersionId, order.currentRouteVersion?.routePlanId ?? null),
+        recalculation: deferForDriverAck
+          ? {
+              reason: 'ACTIVE_ROUTE_PENDING_DRIVER_ACK',
+              retryable: false,
+              routePlanId: order.currentRouteVersion?.routePlanId ?? null,
+              status: 'PENDING_DRIVER_ACK',
+            }
+          : recalculationNotRequired(eventType, order.currentRouteVersionId, order.currentRouteVersion?.routePlanId ?? null),
         sellerOrderId: order.id,
         sellerOrderKey: order.sellerOrderKey ?? order.id,
       };
@@ -247,12 +333,9 @@ export class PrismaDsvTimeConstraintCommandService implements DsvTimeConstraintC
           routeVersionId: order.currentRouteVersionId,
         },
         result: baseResult,
-        schedule: order.currentRouteVersionId === null
-          ? null
-          : {
-              eventType,
-              routePlanId: order.currentRouteVersion?.routePlanId ?? null,
-            },
+        schedule: assignedRoute && !deferForDriverAck
+          ? { eventType, routePlanId: activeRoutePlanId }
+          : null,
       };
     }, transactionOptions).catch((error: unknown) => {
       if (isPrismaTransactionConflict(error)) throw new DsvTimeConstraintCommandError('SELLER_ORDER_ASSIGNMENT_CHANGED');
@@ -284,6 +367,11 @@ export class PrismaDsvTimeConstraintCommandService implements DsvTimeConstraintC
       sellerOrderId: input.input.sellerOrderId,
       shopId: shop.id,
     });
+    if (result.changeRequestId !== undefined) {
+      await this.driverNotificationDispatcher
+        ?.dispatchByIdempotencyKey(`dsv-dispatch-change:${result.changeRequestId}`)
+        .catch(() => undefined);
+    }
     return result;
   }
 

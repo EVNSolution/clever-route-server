@@ -172,6 +172,7 @@ enum DriverEventType {
   ROUTE_COMPLETED
   PICKUP_COMPLETED
   TIME_CONSTRAINT_ACKNOWLEDGED
+  DISPATCH_CHANGE_ACKNOWLEDGED
   STOP_ARRIVED
   STOP_DELIVERED
   STOP_FAILED
@@ -182,6 +183,11 @@ enum DriverEventType {
 enum DriverConsentType {
   LOCATION_INFORMATION
   PERSONAL_INFORMATION
+}
+
+enum OrderMessageAudience {
+  DRIVER
+  CUSTOMER
 }
 
 enum DriverProofMediaKind {
@@ -327,6 +333,17 @@ enum DsvEtaStatus {
   STALE
 }
 
+enum DsvDispatchChangeRequestType {
+  TIME_CONSTRAINT_CHANGE
+  ACTIVE_ROUTE_ORDER_REMOVAL
+}
+
+enum DsvDispatchChangeRequestStatus {
+  PENDING_ACK
+  APPLIED
+  CANCELLED
+}
+
 model Shop {
   id                                String                                 @id @default(uuid()) @db.Uuid
   appId                             String                                 @default("clever") @db.Text
@@ -392,6 +409,7 @@ model Shop {
   inventoryEvents                   InventoryEvent[]
   driverRouteNotificationAttempts   DriverRouteNotificationAttempt[]
   customerRouteNotificationFacts    CustomerRouteNotificationFact[]
+  orderMessages                     OrderMessage[]
   customerEmailManualDispatches     CustomerEmailManualDispatch[]
   customerEmailManualRecipients     CustomerEmailManualDispatchRecipient[]
   adminRouteStopActionAudits        AdminRouteStopActionAudit[]
@@ -410,6 +428,7 @@ model Shop {
   customerAccounts                  CustomerAccount[]
   dsvCommandReceipts                DsvCommandReceipt[]
   dsvAuditEvents                    DsvAuditEvent[]
+  dsvDispatchChangeRequests         DsvDispatchChangeRequest[]
 
   @@unique([appId, shopDomain])
   @@unique([appId, shopifyShopGid])
@@ -786,9 +805,11 @@ model Order {
   inventoryOrders               InventoryOrder[]
   inventoryEvents               InventoryEvent[]
   customerRouteNotifications    CustomerRouteNotificationFact[]
+  orderMessages                 OrderMessage[]
   dsvCommandReceipts            DsvCommandReceipt[]
   dsvAuditEvents                DsvAuditEvent[]
   dsvDispatchImportRows         DsvDispatchImportRow[]
+  dsvDispatchChangeRequests     DsvDispatchChangeRequest[]
   selectionSnapshotOrders       OrderSelectionSnapshotOrder[]
 
   @@unique([id, shopId])
@@ -841,20 +862,22 @@ model OrderSelectionSnapshotOrder {
 }
 
 model Customer {
-  id                    String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  shopId                String                 @db.Uuid
-  shop                  Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  sourceKind            String                 @db.Text
-  externalCustomerCode  String                 @db.Text
-  displayName           String?                @db.Text
-  status                CustomerStatus         @default(ACTIVE)
-  metadata              Json?
-  createdAt             DateTime               @default(now()) @db.Timestamptz(6)
-  updatedAt             DateTime               @updatedAt @db.Timestamptz(6)
-  accounts              CustomerAccount[]
-  orders                Order[]
-  dsvAuditEvents        DsvAuditEvent[]
-  dsvDispatchImportRows DsvDispatchImportRow[]
+  id                         String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId                     String                 @db.Uuid
+  shop                       Shop                   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  sourceKind                 String                 @db.Text
+  externalCustomerCode       String                 @db.Text
+  displayName                String?                @db.Text
+  notificationEmailEnabled   Boolean                @default(false)
+  notificationEmailRecipient String?                @db.Text
+  status                     CustomerStatus         @default(ACTIVE)
+  metadata                   Json?
+  createdAt                  DateTime               @default(now()) @db.Timestamptz(6)
+  updatedAt                  DateTime               @updatedAt @db.Timestamptz(6)
+  accounts                   CustomerAccount[]
+  orders                     Order[]
+  dsvAuditEvents             DsvAuditEvent[]
+  dsvDispatchImportRows      DsvDispatchImportRow[]
 
   @@unique([id, shopId])
   @@unique([shopId, sourceKind, externalCustomerCode])
@@ -1020,6 +1043,7 @@ model DeliveryStop {
   routeGroupingBranchOrderLocks RouteGroupingBranchOrderLock[]
   sourcedDestinationTips        DestinationTip[]
   dsvDispatchImportRows         DsvDispatchImportRow[]
+  dsvDispatchChangeRequests     DsvDispatchChangeRequest[]
 
   @@unique([shopId, orderId])
   @@unique([id, shopId])
@@ -1776,6 +1800,7 @@ model DriverRouteNotificationAttempt {
   providerMessageId String?                       @db.Text
   errorCode         String?                       @db.Text
   errorMessage      String?                       @db.Text
+  metadata          Json?
   attemptedAt       DateTime                      @default(now()) @db.Timestamptz(6)
   completedAt       DateTime?                     @db.Timestamptz(6)
   createdAt         DateTime                      @default(now()) @db.Timestamptz(6)
@@ -1822,6 +1847,26 @@ model CustomerRouteNotificationFact {
   @@index([status, leaseExpiresAt])
   @@index([deliveryStopId, occurredAt])
   @@map("customer_route_notification_facts")
+}
+
+model OrderMessage {
+  id             String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId         String               @db.Uuid
+  shop           Shop                 @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  orderId        String               @db.Uuid
+  order          Order                @relation(fields: [orderId, shopId], references: [id, shopId], onDelete: Cascade)
+  audience       OrderMessageAudience
+  commandId      String               @db.Text
+  body           String               @db.Text
+  authorType     String               @db.Text
+  authorId       String?              @db.Text
+  readByDriverAt DateTime?            @db.Timestamptz(6)
+  createdAt      DateTime             @default(now()) @db.Timestamptz(6)
+  updatedAt      DateTime             @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, commandId])
+  @@index([shopId, orderId, audience, createdAt])
+  @@map("order_messages")
 }
 
 model CustomerEmailManualDispatch {
@@ -2264,6 +2309,7 @@ model DsvCommandReceipt {
   auditEvents            DsvAuditEvent[]
   appliedImports         DsvDispatchImport[]        @relation("DsvDispatchImportApplyReceipt")
   appliedImportRows      DsvDispatchImportRow[]     @relation("DsvDispatchImportRowApplyReceipt")
+  dispatchChangeRequests DsvDispatchChangeRequest[]
 
   @@unique([id, shopId])
   @@unique([shopId, commandName, commandId])
@@ -2322,25 +2368,61 @@ model DsvAuditEvent {
   @@map("dsv_audit_events")
 }
 
+model DsvDispatchChangeRequest {
+  id                   String                         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId               String                         @db.Uuid
+  shop                 Shop                           @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  commandReceiptId     String                         @db.Uuid
+  commandReceipt       DsvCommandReceipt              @relation(fields: [commandReceiptId, shopId], references: [id, shopId], onDelete: NoAction)
+  sellerOrderId        String                         @db.Uuid
+  sellerOrder          Order                          @relation(fields: [sellerOrderId, shopId], references: [id, shopId], onDelete: NoAction)
+  deliveryStopId       String                         @db.Uuid
+  deliveryStop         DeliveryStop                   @relation(fields: [deliveryStopId, shopId], references: [id, shopId], onDelete: NoAction)
+  routePlanId          String                         @db.Uuid
+  routeVersionId       String                         @db.Uuid
+  driverId             String?                        @db.Uuid
+  type                 DsvDispatchChangeRequestType
+  status               DsvDispatchChangeRequestStatus @default(PENDING_ACK)
+  timeWindowStart      DateTime?                      @db.Timestamptz(6)
+  timeWindowEnd        DateTime?                      @db.Timestamptz(6)
+  removalReason        String?                        @db.Text
+  priorSnapshot        Json
+  requestedByActorType String                         @db.Text
+  requestedByActorId   String?                        @db.Text
+  requestId            String                         @db.Text
+  appliedDriverEventId String?                        @db.Uuid
+  appliedDriverEvent   DriverEvent?                   @relation("DsvDispatchChangeRequestAppliedDriverEvent", fields: [appliedDriverEventId], references: [id], onDelete: NoAction)
+  appliedAt            DateTime?                      @db.Timestamptz(6)
+  createdAt            DateTime                       @default(now()) @db.Timestamptz(6)
+  updatedAt            DateTime                       @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, commandReceiptId])
+  @@unique([shopId, appliedDriverEventId])
+  @@index([shopId, status, routePlanId, deliveryStopId, createdAt])
+  @@index([shopId, sellerOrderId, status])
+  @@map("dsv_dispatch_change_requests")
+}
+
 model DriverEvent {
-  id             String                     @id @default(uuid()) @db.Uuid
-  shopId         String                     @db.Uuid
-  shop           Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  driverId       String?                    @db.Uuid
-  driver         Driver?                    @relation(fields: [driverId], references: [id], onDelete: SetNull)
-  routePlanId    String?                    @db.Uuid
-  routePlan      RoutePlan?                 @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: NoAction)
-  routeVersionId String?                    @db.Uuid
-  routeVersion   RouteGroupingChildVersion? @relation("DriverEventRouteVersion", fields: [routeVersionId, shopId, routePlanId], references: [id, shopId, routePlanId], onDelete: NoAction)
-  deliveryStopId String?                    @db.Uuid
-  deliveryStop   DeliveryStop?              @relation(fields: [deliveryStopId], references: [id], onDelete: SetNull)
-  clientEventId  String?                    @db.Text
-  eventType      DriverEventType
-  occurredAt     DateTime                   @db.Timestamptz(6)
-  latitude       Decimal?                   @db.Decimal(10, 7)
-  longitude      Decimal?                   @db.Decimal(10, 7)
-  payload        Json
-  createdAt      DateTime                   @default(now()) @db.Timestamptz(6)
+  id                            String                     @id @default(uuid()) @db.Uuid
+  shopId                        String                     @db.Uuid
+  shop                          Shop                       @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  driverId                      String?                    @db.Uuid
+  driver                        Driver?                    @relation(fields: [driverId], references: [id], onDelete: SetNull)
+  routePlanId                   String?                    @db.Uuid
+  routePlan                     RoutePlan?                 @relation(fields: [routePlanId, shopId], references: [id, shopId], onDelete: NoAction)
+  routeVersionId                String?                    @db.Uuid
+  routeVersion                  RouteGroupingChildVersion? @relation("DriverEventRouteVersion", fields: [routeVersionId, shopId, routePlanId], references: [id, shopId, routePlanId], onDelete: NoAction)
+  deliveryStopId                String?                    @db.Uuid
+  deliveryStop                  DeliveryStop?              @relation(fields: [deliveryStopId], references: [id], onDelete: SetNull)
+  clientEventId                 String?                    @db.Text
+  eventType                     DriverEventType
+  occurredAt                    DateTime                   @db.Timestamptz(6)
+  latitude                      Decimal?                   @db.Decimal(10, 7)
+  longitude                     Decimal?                   @db.Decimal(10, 7)
+  payload                       Json
+  createdAt                     DateTime                   @default(now()) @db.Timestamptz(6)
+  appliedDispatchChangeRequests DsvDispatchChangeRequest[] @relation("DsvDispatchChangeRequestAppliedDriverEvent")
 
   @@unique([driverId, clientEventId])
   @@index([shopId, routePlanId, occurredAt])

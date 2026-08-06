@@ -57,6 +57,7 @@ describe('Driver events route', () => {
         error: null
       });
       expect(recordDriverEvent).toHaveBeenCalledWith({
+        changeRequestId: null,
         clientEventId: 'mobile-event-1',
         deliveryStopId: 'stop-id',
         driverId: 'driver-id',
@@ -364,6 +365,71 @@ describe('Driver events route', () => {
         routePlanId: 'route-plan-id',
         shopId: 'shop-id'
       }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('schedules route optimization once after a nonduplicate dispatch change acknowledgement', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    const schedule = vi.fn();
+    dependencies.routeOptimizationScheduler = { schedule };
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: {
+          changeRequestId: 'change-request-1',
+          clientEventId: 'dispatch-change-ack-1',
+          deliveryStopId: null,
+          eventType: 'DISPATCH_CHANGE_ACKNOWLEDGED',
+          occurredAt: '2026-05-07T06:09:30.000Z',
+          routePlanId: 'route-plan-id'
+        },
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(202);
+      expect(recordDriverEvent).toHaveBeenCalledWith(expect.objectContaining({
+        changeRequestId: 'change-request-1',
+        eventType: 'DISPATCH_CHANGE_ACKNOWLEDGED'
+      }));
+      expect(schedule).toHaveBeenCalledOnce();
+      expect(schedule).toHaveBeenCalledWith({
+        routePlanIds: ['route-plan-id'],
+        shopDomain: 'example.myshopify.com'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('does not reschedule route optimization for a duplicate dispatch change acknowledgement', async () => {
+    const { dependencies, recordDriverEvent } = createDependencyHarness();
+    recordDriverEvent.mockResolvedValueOnce({ duplicate: true, eventId: 'driver-event-id' });
+    const schedule = vi.fn();
+    dependencies.routeOptimizationScheduler = { schedule };
+    const app = await buildApp({ driverApi: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: `Bearer ${driverToken()}` },
+        method: 'POST',
+        payload: {
+          changeRequestId: 'change-request-1',
+          clientEventId: 'dispatch-change-ack-1',
+          deliveryStopId: null,
+          eventType: 'DISPATCH_CHANGE_ACKNOWLEDGED',
+          occurredAt: '2026-05-07T06:09:30.000Z',
+          routePlanId: 'route-plan-id'
+        },
+        url: '/driver/events'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(schedule).not.toHaveBeenCalled();
     } finally {
       await app.close();
     }

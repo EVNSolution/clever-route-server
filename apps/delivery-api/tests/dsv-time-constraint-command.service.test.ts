@@ -164,6 +164,36 @@ describe('DSV time constraint command service', () => {
     expect(JSON.stringify(firstMockArg(logger.warn))).not.toMatch(/오전|rawNote|address|customer|destination|driver|vehicle|geometry/u);
   });
 
+  test('defers an in-progress route time change until driver acknowledgement', async () => {
+    const harness = createHarness({
+      currentRouteVersionId: routeVersionId,
+      currentRouteVersion: {
+        createdAt: new Date('2026-08-03T09:40:00.000Z'),
+        driverId: 'driver-1',
+        groupingId: 'grouping-1',
+        id: routeVersionId,
+        routePlan: { status: 'IN_PROGRESS' },
+        routePlanId,
+        version: 7,
+      },
+      instructions: '오전 11시 배송',
+    });
+    const dispatcher = { dispatchByIdempotencyKey: vi.fn().mockResolvedValue({ attemptId: 'attempt-1', status: 'SENT' }) };
+    const service = new PrismaDsvTimeConstraintCommandService(harness.prisma as never, undefined, undefined, dispatcher);
+
+    const result = await service.confirm(command({
+      expectedVersion: routeVersionId,
+      timeWindowEnd: '11:00',
+      timeWindowStart: '10:30',
+    }));
+
+    expect(result.changeRequestId).toBe('change-request-1');
+    expect(harness.tx.deliveryStop.updateMany).not.toHaveBeenCalled();
+    expect(harness.tx.dsvDispatchChangeRequest.create).toHaveBeenCalledOnce();
+    expect(harness.tx.driverRouteNotificationAttempt.upsert).toHaveBeenCalledOnce();
+    expect(dispatcher.dispatchByIdempotencyKey).toHaveBeenCalledWith('dsv-dispatch-change:change-request-1');
+  });
+
   test('requires exact expected version including literal UNASSIGNED', async () => {
     const missing = createHarness({
       currentRouteVersionId: null,
@@ -309,7 +339,15 @@ function clearCommand() {
 }
 
 function createHarness(input: {
-  currentRouteVersion: { createdAt: Date; routePlanId: string } | null;
+  currentRouteVersion: {
+    createdAt: Date;
+    driverId?: string;
+    groupingId?: string;
+    id?: string;
+    routePlan?: { status: string };
+    routePlanId: string;
+    version?: number;
+  } | null;
   currentRouteVersionId: string | null;
   existingReceipt?: { payloadHash: string | null; responseBodyRef: string | null; status: string };
   instructions: string | null;
@@ -363,6 +401,9 @@ function createHarness(input: {
       })),
       updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
     },
+    driverRouteNotificationAttempt: {
+      upsert: vi.fn().mockResolvedValue({}),
+    },
     dsvAuditEvent: {
       create: vi.fn(() => Promise.resolve({
         actorId: 'admin-1',
@@ -376,6 +417,10 @@ function createHarness(input: {
       create: receiptRepository.create,
       findUnique: receiptRepository.findUnique,
       updateMany: receiptRepository.updateMany,
+    },
+    dsvDispatchChangeRequest: {
+      create: vi.fn().mockResolvedValue({ id: 'change-request-1' }),
+      findFirst: vi.fn().mockResolvedValue(null),
     },
     order: {
       findFirst: vi.fn(() => Promise.resolve({
