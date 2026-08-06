@@ -8,6 +8,7 @@ import { dsvCanonicalNoteHash } from '../src/modules/dsv/dsv-time-constraint.js'
 const routePlanRecord = {
   createdAt: new Date('2026-05-12T06:00:00.000Z'),
   constraints: {
+    scheduledStartAt: '2026-05-12T10:00:00.000Z',
     timezone: 'America/Toronto'
   },
   depotLatitude: '43.6532000',
@@ -108,6 +109,7 @@ const routePlanRecord = {
     }
   ],
   shop: {
+    commerceConnections: [{ timezone: 'America/Toronto' }],
     shopDomain: 'dev1.tomatonofood.com'
   },
   status: 'ASSIGNED',
@@ -181,6 +183,7 @@ describe('PrismaDriverAssignedRouteRepository', () => {
         routeMapPreview: null,
         routeMetrics: null,
         routeStopPoints: [],
+        scheduledStartAt: '2026-05-12T10:00:00.000Z',
         shopDomain: 'dev1.tomatonofood.com',
         stops: [
           {
@@ -237,6 +240,54 @@ describe('PrismaDriverAssignedRouteRepository', () => {
         ],
         timezone: 'America/Toronto'
       }
+    });
+  });
+
+  test.each([
+    ['2026-05-12T06:00:00-04:00', '2026-05-12T10:00:00.000Z'],
+    ['2026-05-12T10:00', null],
+    ['not-an-instant', null]
+  ])('normalizes only scheduled start instants with an explicit timezone', async (scheduledStartAt, expected) => {
+    const { prisma } = createPrismaHarness({
+      routePlan: {
+        ...routePlanRecord,
+        constraints: { ...routePlanRecord.constraints, scheduledStartAt }
+      }
+    });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(result.status).toBe('ASSIGNED_ROUTE');
+    if (result.status === 'ASSIGNED_ROUTE') {
+      expect(result.route.scheduledStartAt).toBe(expected);
+    }
+  });
+
+  test('falls back to the active commerce connection timezone for legacy route plans', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlan: {
+        ...routePlanRecord,
+        constraints: { scheduledStartAt: routePlanRecord.constraints.scheduledStartAt }
+      }
+    });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(result).toMatchObject({
+      status: 'ASSIGNED_ROUTE',
+      route: { timezone: 'America/Toronto' }
     });
   });
 

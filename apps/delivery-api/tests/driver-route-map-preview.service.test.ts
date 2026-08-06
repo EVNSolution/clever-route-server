@@ -53,6 +53,7 @@ const route: DriverAssignedRoute = {
       snappedCoordinates: [-79.391, 43.651]
     }
   ],
+  scheduledStartAt: '2026-05-12T10:00:00.000Z',
   shopDomain: 'example.myshopify.com',
   stops: [
     {

@@ -111,6 +111,7 @@ export type DriverAssignedRoute = {
   routeMapPreview: DriverRouteMapPreview | null;
   routeMetrics: RoutePlanRouteMetrics | null;
   routeStopPoints: DriverAssignedRouteStopPoint[];
+  scheduledStartAt: string | null;
   shopDomain: string;
   stops: DriverAssignedRouteStop[];
   timezone: string;

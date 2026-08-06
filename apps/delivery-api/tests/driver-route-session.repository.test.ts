@@ -25,6 +25,7 @@ const assignedRoute = {
     routeMapPreview: null,
     routeMetrics: null,
     routeStopPoints: [],
+    scheduledStartAt: '2026-06-15T12:00:00.000Z',
     shopDomain: 'dev1.tomatonofood.com',
     stops: [],
     timezone: 'America/Toronto'
