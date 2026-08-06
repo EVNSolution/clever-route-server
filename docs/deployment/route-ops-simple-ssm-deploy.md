@@ -48,6 +48,23 @@ Advance the latest version only after the stable APK has been replaced and
 verified. The JSON response returns the stable server URL and never exposes
 `ROUTES_APP_DOWNLOAD_URL`.
 
+After the release registry migration is deployed, the database current pointer
+is authoritative when seeded and these env values remain a bootstrap fallback
+for an empty registry. Publish a new Android release without rebuilding or
+restarting the server:
+
+```bash
+npm --prefix apps/delivery-api run routes-app:release:publish -- \
+  --version-code 2 \
+  --version-name 1.0.1 \
+  --minimum-version-code 1 \
+  --download-url https://downloads.example.com/clever-routes.apk \
+  --apk-sha256 <64-hex-sha256>
+```
+
+The publish command only accepts a monotonic `latest-version-code`. Repeating the
+same version is allowed only when every release field is identical.
+
 Before deploying the matching mobile build, verify the public cutover:
 
 ```bash

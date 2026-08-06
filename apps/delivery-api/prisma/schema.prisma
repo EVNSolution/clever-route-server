@@ -1433,6 +1433,38 @@ model DsvDriverAppRelease {
   @@map("dsv_driver_app_releases")
 }
 
+model RoutesAppReleaseArtifact {
+  id                          String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  platform                    String                    @db.Text
+  packageId                   String                    @db.Text
+  versionCode                 Int
+  versionName                 String                    @db.Text
+  minimumSupportedVersionCode Int
+  distributionChannel         String                    @db.Text
+  downloadUrl                 String                    @db.Text
+  sha256                      String                    @db.Text
+  publishedAt                 DateTime                  @db.Timestamptz(6)
+  createdAt                   DateTime                  @default(now()) @db.Timestamptz(6)
+  currentChannels             RoutesAppReleaseChannel[]
+
+  @@unique([platform, packageId, versionCode])
+  @@index([platform, distributionChannel, versionCode])
+  @@map("routes_app_release_artifacts")
+}
+
+model RoutesAppReleaseChannel {
+  channel           String                   @db.Text
+  platform          String                   @db.Text
+  currentArtifactId String                   @db.Uuid
+  currentArtifact   RoutesAppReleaseArtifact @relation(fields: [currentArtifactId], references: [id], onDelete: Restrict)
+  updatedAt         DateTime                 @updatedAt @db.Timestamptz(6)
+  createdAt         DateTime                 @default(now()) @db.Timestamptz(6)
+
+  @@id([channel, platform])
+  @@index([currentArtifactId])
+  @@map("routes_app_release_channels")
+}
+
 model DriverAccount {
   id                             String                        @id @default(uuid()) @db.Uuid
   phone                          String                        @unique @db.Text

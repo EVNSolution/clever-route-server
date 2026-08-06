@@ -142,6 +142,7 @@ import type { GeocodingService } from "../modules/geocoding/geocoding.service.js
 import type { GeocodingResult } from "../modules/geocoding/geocoding.types.js";
 import type { AdminNotificationServiceApi } from "../modules/notifications/admin-notification.service.js";
 import type { PrismaDeliveryCustomerProfileService } from "../modules/delivery-customer/delivery-customer-profile.service.js";
+import type { RoutesAppReleaseRepository } from "../modules/routes-app/routes-app-release.repository.js";
 import {
   createAdminWebSession,
   verifyAdminWebCsrfToken,
@@ -469,6 +470,7 @@ export type AdminCommerceConnectionsUiDependencies = {
   wooSyncService?: AdminWooSyncServiceApi;
   routesAppDownloadUrl?: string;
   routesAppAndroidRelease?: RoutesAppAndroidReleaseConfig;
+  routesAppReleaseRepository?: RoutesAppReleaseRepository;
   publicBaseUrl?: string;
   routeOptimizationJobService?: Pick<
     RouteOptimizationJobService,
@@ -517,6 +519,12 @@ export type RoutesAppAndroidReleaseConfig = {
   latestVersionCode: number;
   latestVersionName: string;
   minimumSupportedVersionCode: number;
+  packageId?: string;
+};
+
+type RoutesAppReleaseState = {
+  downloadUrl: string;
+  release: Required<RoutesAppAndroidReleaseConfig>;
 };
 
 export function registerAdminCommerceConnectionsUiRoutes(
@@ -533,7 +541,7 @@ export function registerAdminCommerceConnectionsUiRoutes(
     _request: FastifyRequest,
     reply: FastifyReply,
   ): Promise<unknown> => {
-    const downloadUrl = dependencies.routesAppDownloadUrl;
+    const downloadUrl = await readRoutesAppDownloadUrl(dependencies);
     if (downloadUrl === undefined) {
       return sendJson(reply, 404, {
         ok: false,
@@ -547,7 +555,7 @@ export function registerAdminCommerceConnectionsUiRoutes(
     _request: FastifyRequest,
     reply: FastifyReply,
   ): Promise<unknown> => {
-    const downloadUrl = dependencies.routesAppDownloadUrl;
+    const downloadUrl = await readRoutesAppDownloadUrl(dependencies);
     if (downloadUrl === undefined) {
       return sendJson(reply, 404, {
         ok: false,
@@ -561,7 +569,7 @@ export function registerAdminCommerceConnectionsUiRoutes(
     _request: FastifyRequest,
     reply: FastifyReply,
   ): Promise<unknown> => {
-    const downloadUrl = dependencies.routesAppDownloadUrl;
+    const downloadUrl = await readRoutesAppDownloadUrl(dependencies);
     if (downloadUrl === undefined) {
       return sendJson(reply, 404, {
         ok: false,
@@ -575,13 +583,14 @@ export function registerAdminCommerceConnectionsUiRoutes(
     request: FastifyRequest,
     reply: FastifyReply,
   ): Promise<unknown> => {
-    const release = dependencies.routesAppAndroidRelease;
-    if (release === undefined) {
+    const releaseState = await readRoutesAppReleaseState(dependencies);
+    if (releaseState === null) {
       return sendPublicApiEnvelope(reply, 404, null, {
         code: "ROUTES_APP_RELEASE_UNAVAILABLE",
         message: "Routes app Android release manifest is not configured.",
       });
     }
+    const release = releaseState.release;
 
     return sendPublicApiEnvelope(reply, 200, {
       distributionChannel: release.distributionChannel,
@@ -589,7 +598,7 @@ export function registerAdminCommerceConnectionsUiRoutes(
         guideUrl: `${resolveBaseUrl(request, dependencies)}${LEGACY_DRIVER_APP_INSTALL_PATH}`,
         mode: "package_migration",
         replacesPackageIds: [LEGACY_DRIVER_APP_PACKAGE_ID],
-        targetPackageId: ROUTES_APP_PACKAGE_ID,
+        targetPackageId: release.packageId,
       },
       installUrl: `${resolveBaseUrl(request, dependencies)}${
         request.url.startsWith(LEGACY_DRIVER_APP_INSTALL_PATH)
@@ -1428,7 +1437,7 @@ function registerRouteOpsAppRoutes(
           csrfToken: session.csrfToken,
           routesApp: {
             installUrl:
-              dependencies.routesAppDownloadUrl === undefined
+              (await readRoutesAppDownloadUrl(dependencies)) === undefined
                 ? null
                 : `${resolveBaseUrl(request, dependencies)}${ROUTES_APP_INSTALL_PATH}`,
           },
@@ -3243,6 +3252,45 @@ function registerRouteOpsAppRoutes(
     `${ADMIN_UI_APP_API_PATH}/*`,
     async (_request, reply) => reply.callNotFound(),
   );
+}
+
+async function readRoutesAppDownloadUrl(
+  dependencies: AdminCommerceConnectionsUiDependencies,
+): Promise<string | undefined> {
+  const release = await dependencies.routesAppReleaseRepository?.getAndroidRelease();
+  return release?.downloadUrl ?? dependencies.routesAppDownloadUrl;
+}
+
+async function readRoutesAppReleaseState(
+  dependencies: AdminCommerceConnectionsUiDependencies,
+): Promise<RoutesAppReleaseState | null> {
+  const release = await dependencies.routesAppReleaseRepository?.getAndroidRelease();
+  if (release !== undefined && release !== null) {
+    return {
+      downloadUrl: release.downloadUrl,
+      release: {
+        distributionChannel: release.distributionChannel,
+        latestVersionCode: release.latestVersionCode,
+        latestVersionName: release.latestVersionName,
+        minimumSupportedVersionCode: release.minimumSupportedVersionCode,
+        packageId: release.packageId,
+      },
+    };
+  }
+
+  if (
+    dependencies.routesAppDownloadUrl === undefined
+    || dependencies.routesAppAndroidRelease === undefined
+  ) {
+    return null;
+  }
+  return {
+    downloadUrl: dependencies.routesAppDownloadUrl,
+    release: {
+      ...dependencies.routesAppAndroidRelease,
+      packageId: dependencies.routesAppAndroidRelease.packageId ?? ROUTES_APP_PACKAGE_ID,
+    },
+  };
 }
 
 async function openAdminNotificationStream(

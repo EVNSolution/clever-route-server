@@ -17,6 +17,7 @@ import {
 } from "../src/modules/route-plans/route-plan.types.js";
 import { defaultRouteScopeConfig } from "../src/modules/route-ops/route-scope-config.js";
 import { defaultRouteOpsUiSettings } from "../src/modules/route-ops/route-ops-ui-settings.js";
+import type { RoutesAppReleaseRepository } from "../src/modules/routes-app/routes-app-release.repository.js";
 import type { AdminCommerceConnectionsDependencies } from "../src/routes/admin-commerce-connections.routes.js";
 import type { RouteOptimizationJobDto } from "../src/modules/route-plans/route-optimization-job.types.js";
 import type { AdminCommerceConnectionsUiDependencies } from "../src/routes/admin-commerce-connections-ui.routes.js";
@@ -979,6 +980,67 @@ describe("Admin WooCommerce connection UI routes", () => {
         ...readApiData<Record<string, unknown>>(response),
         installUrl: "https://clever-route-api.cleversystem.ai/driver-app",
       });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("prefers the DB-backed routes app release registry over env fallback values", async () => {
+    const registryDownloadUrl = "https://downloads.example.test/clever-routes-43.apk";
+    const routesAppReleaseRepository: RoutesAppReleaseRepository = {
+      getAndroidRelease: vi.fn().mockResolvedValue({
+        distributionChannel: "direct",
+        downloadUrl: registryDownloadUrl,
+        latestVersionCode: 43,
+        latestVersionName: "1.4.3",
+        minimumSupportedVersionCode: 41,
+        packageId: "com.evnsolution.clever.routes",
+        platform: "android",
+        publishedAt: new Date("2026-08-06T01:00:00.000Z"),
+        sha256: "b".repeat(64),
+      }),
+      publishAndroidRelease: vi.fn(),
+    };
+    const { app } = await createUiHarness({
+      routesAppAndroidRelease: {
+        distributionChannel: "direct",
+        latestVersionCode: 42,
+        latestVersionName: "1.4.2",
+        minimumSupportedVersionCode: 40,
+      },
+      routesAppDownloadUrl: "https://drive.example.test/uc?id=env-apk&export=download",
+      routesAppReleaseRepository,
+    });
+
+    try {
+      const download = await app.inject({
+        method: "GET",
+        url: "/routes-app/download",
+      });
+      expect(download.statusCode).toBe(302);
+      expect(download.headers.location).toBe(registryDownloadUrl);
+
+      const manifest = await app.inject({
+        method: "GET",
+        url: "/routes-app/release/android",
+      });
+      expect(manifest.statusCode).toBe(200);
+      expect(readApiData(manifest)).toEqual({
+        distributionChannel: "direct",
+        installation: {
+          guideUrl: "https://clever-route-api.cleversystem.ai/driver-app",
+          mode: "package_migration",
+          replacesPackageIds: ["com.evns.cleverdriverapp"],
+          targetPackageId: "com.evnsolution.clever.routes",
+        },
+        installUrl: "https://clever-route-api.cleversystem.ai/routes-app",
+        latestVersionCode: 43,
+        latestVersionName: "1.4.3",
+        minimumSupportedVersionCode: 41,
+        platform: "android",
+      });
+      expect(manifest.body).not.toContain("downloads.example.test");
+      expect(manifest.body).not.toContain("drive.example.test");
     } finally {
       await app.close();
     }
@@ -6805,6 +6867,7 @@ async function createUiHarness(
     createConnection: ReturnType<typeof vi.fn>;
     routesAppAndroidRelease: AdminCommerceConnectionsUiDependencies["routesAppAndroidRelease"];
     routesAppDownloadUrl: string | null;
+    routesAppReleaseRepository: RoutesAppReleaseRepository;
     deliveryCustomerService: AdminCommerceConnectionsUiDependencies["deliveryCustomerService"];
     driverService: AdminCommerceConnectionsUiDependencies["driverService"];
     geocodingService: AdminCommerceConnectionsUiDependencies["geocodingService"];
@@ -6908,6 +6971,9 @@ async function createUiHarness(
     ...(overrides.routesAppAndroidRelease === undefined
       ? {}
       : { routesAppAndroidRelease: overrides.routesAppAndroidRelease }),
+    ...(overrides.routesAppReleaseRepository === undefined
+      ? {}
+      : { routesAppReleaseRepository: overrides.routesAppReleaseRepository }),
     ...(overrides.geocodingService === undefined
       ? {}
       : { geocodingService: overrides.geocodingService }),
