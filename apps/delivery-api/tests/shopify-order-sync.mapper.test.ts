@@ -18,6 +18,7 @@ describe('buildOrdersUpdatedSinceQuery', () => {
     });
     expect(payload.query).toContain('orders(first: $first, after: $after, query: $query');
     expect(payload.query).toContain('shippingAddress');
+    expect(payload.query).toContain('currentShippingPriceSet');
     expect(payload.query).toContain('paymentGatewayNames');
     expect(payload.query).toContain('tags');
   });
@@ -29,6 +30,12 @@ describe('mapShopifyOrderNodeToDeliveryInputs', () => {
       currentTotalPriceSet: {
         shopMoney: {
           amount: '123.45',
+          currencyCode: 'USD'
+        }
+      },
+      currentShippingPriceSet: {
+        shopMoney: {
+          amount: '12.34',
           currencyCode: 'USD'
         }
       },
@@ -57,6 +64,12 @@ describe('mapShopifyOrderNodeToDeliveryInputs', () => {
     });
 
     expect(mapped.order.rawPayload.id).toBe('gid://shopify/Order/123');
+    expect(mapped.order.rawPayload.currentShippingPriceSet).toEqual({
+      shopMoney: {
+        amount: '12.34',
+        currencyCode: 'USD'
+      }
+    });
     expect(mapped.order.rawPayload.paymentGatewayNames).toEqual(['Cash on Delivery (COD)']);
     expect(mapped.deliveryStop).toEqual(
       expect.objectContaining({
