@@ -459,6 +459,21 @@ describe('route grouping contracts', () => {
     expect(source).toContain('route draft orders cannot be both routed and removed');
   });
 
+  test('adds selected orders to a ready child route in the membership transaction', () => {
+    const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
+    const start = source.indexOf('async updateGroupingOrders(');
+    const end = source.indexOf('async previewOptimization(', start);
+    const body = source.slice(start, end);
+
+    expect(body).toContain('input.targetRoutePlanId');
+    expect(body).toContain('await appendGroupingOrdersToChildRoute(tx, loaded, input.targetRoutePlanId, addOrderIds)');
+    expect(body).toContain('await recomputeAssignments(tx, group.id)');
+    expect(body.indexOf('await appendGroupingOrdersToChildRoute'))
+      .toBeLessThan(body.indexOf('await recomputeAssignments'));
+    expect(source).toContain("selected orders are already assigned to another child route");
+    expect(source).toContain("orders can only be added to a Ready child route");
+  });
+
   test('blocks draft save stop membership changes for non-ready child routes before inventory sync', () => {
     const source = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.service.ts'), 'utf8');
     const types = readFileSync(join(process.cwd(), 'src/modules/route-grouping/route-grouping.types.ts'), 'utf8');

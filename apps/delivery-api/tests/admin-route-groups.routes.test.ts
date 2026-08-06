@@ -146,6 +146,36 @@ describe('Admin route group routes', () => {
     }
   });
 
+  test('passes a target child route when orders must be added atomically', async () => {
+    const { dependencies, updateGroupingOrders } = createDependencyHarness();
+    const app = await buildApp({ adminRouteGroups: dependencies });
+
+    try {
+      const response = await app.inject({
+        headers: { authorization: 'Bearer session-token' },
+        method: 'PATCH',
+        payload: {
+          addOrderIds: ['order-3'],
+          expectedUpdatedAt: '2026-06-24T12:00:00.000Z',
+          targetRoutePlanId: 'route-plan-2'
+        },
+        url: '/admin/route-groups/route-group-id/orders'
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(updateGroupingOrders).toHaveBeenCalledWith({
+        addOrderIds: ['order-3'],
+        appId: 'clever',
+        expectedUpdatedAt: '2026-06-24T12:00:00.000Z',
+        groupingId: 'route-group-id',
+        shopDomain: 'example.myshopify.com',
+        targetRoutePlanId: 'route-plan-2'
+      });
+    } finally {
+      await app.close();
+    }
+  });
+
   test('creates branch locks without generating child routes', async () => {
     const { createBranch, dependencies, generateChildRoutes } = createDependencyHarness();
     const app = await buildApp({ adminRouteGroups: dependencies });

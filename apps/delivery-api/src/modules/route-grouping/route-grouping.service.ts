@@ -545,6 +545,11 @@ export class PrismaRouteGroupingService implements RouteGroupingService {
         removeOrderIds,
         shopId: group.shopId
       });
+      if (input.targetRoutePlanId !== undefined) {
+        const loaded = await tx.routeGrouping.findUnique({ include: groupingInclude(), where: { id: group.id } });
+        if (loaded === null) return null;
+        await appendGroupingOrdersToChildRoute(tx, loaded, input.targetRoutePlanId, addOrderIds);
+      }
       await recomputeAssignments(tx, group.id);
       return group.id;
     });
@@ -2401,6 +2406,66 @@ function currentChildAssignments(group: LoadedGrouping, child: LoadedChild): Loa
   return stopIds
     .map((deliveryStopId) => assignmentsByStopId.get(deliveryStopId) ?? null)
     .filter((assignment): assignment is LoadedAssignment => assignment !== null);
+}
+
+async function appendGroupingOrdersToChildRoute(
+  tx: Tx,
+  group: LoadedGrouping,
+  targetRoutePlanId: string,
+  orderIds: string[]
+): Promise<void> {
+  const targetChild = group.childVersions
+    .filter((child) => isOperationalCurrentChild(child))
+    .find((child) => child.routePlanId === targetRoutePlanId);
+  if (targetChild?.routePlan === null || targetChild?.routePlan === undefined) {
+    throw new RouteGroupingValidationError(['target route plan must belong to the current route grouping']);
+  }
+  if (deriveChildDisplayStatus(targetChild) !== 'READY') {
+    throw new RouteGroupingValidationError(['orders can only be added to a Ready child route']);
+  }
+
+  const assignmentsByOrderId = new Map(group.orders.map((assignment) => [assignment.orderId, assignment]));
+  const additions = orderIds.map((orderId) => assignmentsByOrderId.get(orderId));
+  if (additions.some((assignment) => assignment === undefined)) {
+    throw new RouteGroupingValidationError(['selected orders must belong to the current route grouping']);
+  }
+
+  const currentAssignments = currentChildAssignments(group, targetChild);
+  const currentStopIds = new Set(currentAssignments.map((assignment) => assignment.deliveryStopId));
+  const additionsToAppend = (additions as LoadedAssignment[]).filter((assignment) => {
+    const otherRouteMembership = assignment.deliveryStop.routePlanStops.some(
+      ({ routePlanId }) => routePlanId !== targetRoutePlanId
+    );
+    if (otherRouteMembership) {
+      throw new RouteGroupingValidationError(['selected orders are already assigned to another child route']);
+    }
+    return !currentStopIds.has(assignment.deliveryStopId);
+  });
+  if (additionsToAppend.length === 0) return;
+
+  const assignments = [...currentAssignments, ...additionsToAppend];
+  const snapshot = readChildSnapshot(targetChild.snapshot);
+  await syncRoutePlanStopsPreservingRows(tx, group.shopId, targetRoutePlanId, assignments);
+  await tx.routePlan.update({
+    data: { metrics: routeMetrics(assignments) },
+    where: { id: targetRoutePlanId }
+  });
+  await tx.routePlanGeometryCache.deleteMany({ where: { routePlanId: targetRoutePlanId } });
+  await tx.routeGroupingChildVersion.update({
+    data: {
+      snapshot: createChildSnapshot(
+        group,
+        assignments,
+        targetChild.routePlan.driverId ?? targetChild.driverId,
+        childRouteSlotName(targetChild),
+        group.currentVersion,
+        snapshot.color,
+        snapshot.sortOrder,
+        snapshot.routeIdx
+      )
+    },
+    where: { id: targetChild.id }
+  });
 }
 
 async function rewriteRoutePlanStops(tx: Tx, shopId: string, routePlanId: string, assignments: LoadedAssignment[]): Promise<void> {

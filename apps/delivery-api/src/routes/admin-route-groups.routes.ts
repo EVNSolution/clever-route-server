@@ -472,11 +472,12 @@ function readDepot(value: unknown): RoutePlanDepotInput {
   };
 }
 
-function readUpdateGroupingOrdersPayload(value: unknown): { addOrderIds?: string[]; expectedUpdatedAt?: string; removeOrderIds?: string[] } {
+function readUpdateGroupingOrdersPayload(value: unknown): { addOrderIds?: string[]; expectedUpdatedAt?: string; removeOrderIds?: string[]; targetRoutePlanId?: string } {
   const object = requireObject(value);
   return {
     ...(object.addOrderIds === undefined ? {} : { addOrderIds: readStringArray(object.addOrderIds) }),
     ...(object.removeOrderIds === undefined ? {} : { removeOrderIds: readStringArray(object.removeOrderIds) }),
+    ...(object.targetRoutePlanId === undefined ? {} : { targetRoutePlanId: requireNonEmptyString(object.targetRoutePlanId) }),
     ...optionalStringField(object, 'expectedUpdatedAt')
   };
 }
