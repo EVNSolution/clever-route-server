@@ -123,7 +123,7 @@ describe('DSV v1 read routes', () => {
         '/dispatches?serviceDate=2026-07-23',
         '/control?serviceDate=2026-07-23',
         '/map/profile',
-        '/records?serviceDate=2026-07-23',
+        '/records?serviceDate=2026-07-23&limit=50&page=2',
         '/drivers',
         '/vehicles',
         '/customers',
@@ -138,6 +138,11 @@ describe('DSV v1 read routes', () => {
         expect(registered.statusCode, path).toBe(200);
         expectDsvV1Metadata(registered);
       }
+
+      expect(queryService.listRecords).toHaveBeenCalledWith(
+        expect.objectContaining({ principalType: 'DSV_ADMIN', shopId }),
+        { limit: 50, page: 2, serviceDate: '2026-07-23' },
+      );
 
       const response = await app.inject({
         headers: { cookie: admin.cookie },
@@ -1337,7 +1342,10 @@ function createQueryService(): MockQueryService {
       page: { hasMore: false },
     })),
     listDrivers: vi.fn(() => Promise.resolve(list)),
-    listRecords: vi.fn(() => Promise.resolve({ items: [], page: { hasMore: false } })),
+    listRecords: vi.fn(() => Promise.resolve({
+      items: [],
+      page: { currentPage: 1, hasMore: false, pageSize: 50, totalItems: 0, totalPages: 0 },
+    })),
     listVehicleGpsTrailHistory: vi.fn(() => Promise.resolve({ serviceDate: '2026-07-23', sessions: [], timezone: 'Asia/Seoul', vehicleId: 'vehicle-a' })),
     listVehicleTemperatureHistory: vi.fn(() => Promise.resolve({ samples: [], vehicleId: 'vehicle-a' })),
     listVehicles: vi.fn(() => Promise.resolve(list)),

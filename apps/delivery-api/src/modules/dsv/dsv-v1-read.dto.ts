@@ -69,8 +69,12 @@ export type DsvV1ErrorEnvelope = {
 };
 
 export type DsvV1PageInfo = {
+  currentPage?: number;
   hasMore?: boolean;
   nextCursor?: string;
+  pageSize?: number;
+  totalItems?: number;
+  totalPages?: number;
 };
 
 export type DsvV1SessionPrincipalInput = {
@@ -556,8 +560,12 @@ export function toDsvV1ErrorEnvelope(input: {
 export function mapDsvV1PageInfo(input?: DsvV1PageInfo): DsvV1PageInfo | undefined {
   if (input === undefined) return undefined;
   return {
+    ...(input.currentPage === undefined ? {} : { currentPage: input.currentPage }),
     ...(input.hasMore === undefined ? {} : { hasMore: input.hasMore }),
     ...(input.nextCursor === undefined ? {} : { nextCursor: input.nextCursor }),
+    ...(input.pageSize === undefined ? {} : { pageSize: input.pageSize }),
+    ...(input.totalItems === undefined ? {} : { totalItems: input.totalItems }),
+    ...(input.totalPages === undefined ? {} : { totalPages: input.totalPages }),
   };
 }
 

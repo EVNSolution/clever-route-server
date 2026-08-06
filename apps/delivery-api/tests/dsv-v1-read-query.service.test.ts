@@ -176,14 +176,14 @@ describe('PrismaDsvV1ReadQueryService', () => {
     } satisfies Partial<DsvV1ReadQueryError>);
   });
 
-  test('enforces three-day customer date window and window/serviceDate mismatch', async () => {
+  test('allows an explicit historical customer date and rejects window/serviceDate mismatch', async () => {
     const service = new PrismaDsvV1ReadQueryService(prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
       order: { findMany: vi.fn(() => Promise.resolve([])) },
     }) as never, () => new Date('2026-07-22T12:00:00.000Z'));
 
-    await expect(service.listCustomerDeliveries(customerPrincipal(), { serviceDate: '2026-08-01' }))
-      .resolves.toMatchObject({ emptyReason: 'DATE_OUT_OF_WINDOW', items: [], serviceDate: '2026-08-01' });
+    const historical = await service.listCustomerDeliveries(customerPrincipal(), { serviceDate: '2026-08-01' });
+    expect(historical).toMatchObject({ emptyReason: 'NO_DELIVERIES', items: [], serviceDate: '2026-08-01' });
     await expect(service.listCustomerDeliveries(customerPrincipal(), {
       serviceDate: '2026-07-23',
       window: 'today',
@@ -308,7 +308,10 @@ describe('PrismaDsvV1ReadQueryService', () => {
   test('scopes one record per delivery stop through the related order shop', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
-      deliveryStop: { findMany: vi.fn(() => Promise.resolve([])) },
+      deliveryStop: {
+        count: vi.fn(() => Promise.resolve(0)),
+        findMany: vi.fn(() => Promise.resolve([])),
+      },
     });
     const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-07-22T12:00:00.000Z'));
 
@@ -320,10 +323,39 @@ describe('PrismaDsvV1ReadQueryService', () => {
     expect(query?.where?.order).toEqual({ shopId: 'shop-a' });
   });
 
+  test('lists all record dates by default and applies numbered page offsets', async () => {
+    const prisma = prismaMock({
+      deliveryStop: {
+        count: vi.fn(() => Promise.resolve(125)),
+        findMany: vi.fn(() => Promise.resolve([])),
+      },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never);
+
+    const result = await service.listRecords(adminPrincipal(), { limit: 50, page: 2 });
+
+    expect(prisma.deliveryStop.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      skip: 50,
+      take: 50,
+      where: {
+        order: { shopId: 'shop-a' },
+        shopId: 'shop-a',
+      },
+    }));
+    expect(result.page).toEqual({
+      currentPage: 2,
+      hasMore: true,
+      pageSize: 50,
+      totalItems: 125,
+      totalPages: 3,
+    });
+  });
+
   test('returns proof metadata and an ordered event timeline for each delivery record', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
       deliveryStop: {
+        count: vi.fn(() => Promise.resolve(1)),
         findMany: vi.fn(() => Promise.resolve([{
           address1: '퇴계로 131',
           address2: '5층',
@@ -375,6 +407,13 @@ describe('PrismaDsvV1ReadQueryService', () => {
     const result = await service.listRecords(adminPrincipal(), { serviceDate: '2026-07-22' });
     expect(result.items[0]?.deliveryStatus).toBe('DELIVERED');
     expect(result.items[0]?.destinationAddress).toBe('서울 중구 퇴계로 131, 5층(충무로2가, 신일빌딩)');
+    expect(result.page).toEqual({
+      currentPage: 1,
+      hasMore: false,
+      pageSize: 50,
+      totalItems: 1,
+      totalPages: 1,
+    });
     expect(result).toMatchObject({
       items: [{
         eventRows: [{

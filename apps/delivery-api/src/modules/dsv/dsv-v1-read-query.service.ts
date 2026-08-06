@@ -166,6 +166,12 @@ export type DsvV1ServiceDateInput = DsvV1ReadListInput & {
   serviceDate?: string | null;
 };
 
+export type DsvV1RecordsInput = {
+  limit?: number | string | null;
+  page?: number | string | null;
+  serviceDate?: string | null;
+};
+
 export type DsvV1DispatchListInput = DsvV1ServiceDateInput & {
   destinationName?: string | null;
   orderNumber?: string | null;
@@ -208,7 +214,7 @@ export type DsvV1ReadQueryService = {
   listDestinations(principal: DsvAdminPrincipal, input?: DsvV1ReadListInput): Promise<DsvV1PaginatedRead<DsvV1DestinationListItemRow>>;
   listDispatches(principal: DsvAdminPrincipal, input?: DsvV1DispatchListInput): Promise<DsvV1PaginatedRead<DsvV1SellerOrderSummaryRow>>;
   listDrivers(principal: DsvAdminPrincipal, input?: DsvV1ReadListInput): Promise<DsvV1PaginatedRead<DsvV1DriverListItemRow>>;
-  listRecords(principal: DsvAdminPrincipal, input?: DsvV1ServiceDateInput): Promise<DsvV1PaginatedRead<DsvV1RecordRow>>;
+  listRecords(principal: DsvAdminPrincipal, input?: DsvV1RecordsInput): Promise<DsvV1PaginatedRead<DsvV1RecordRow>>;
   listVehicleTemperatureHistory(
     principal: DsvAdminPrincipal,
     input: DsvV1VehicleTemperatureHistoryInput,
@@ -312,7 +318,6 @@ type DestinationManagementRow = {
 };
 
 const dispatchSort = 'serviceDate:asc,sellerOrderKey:asc,orderId:asc';
-const recordsSort = 'updatedAt:desc,stopId:desc';
 const managementSortByEndpoint = {
   conditions: 'name:asc,id:asc',
   customers: 'displayName:asc,id:asc',
@@ -554,33 +559,38 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
 
   async listRecords(
     principal: DsvAdminPrincipal,
-    input: DsvV1ServiceDateInput = {},
+    input: DsvV1RecordsInput = {},
   ): Promise<DsvV1PaginatedRead<DsvV1RecordRow>> {
-    const serviceDate = await this.resolveAdminServiceDate(principal.shopId, input.serviceDate);
+    const serviceDate = input.serviceDate ?? undefined;
+    if (serviceDate !== undefined) assertIsoDate(serviceDate);
     const limit = parseLimit(input.limit);
-    const context: CursorContext = {
-      endpoint: 'records',
-      limit,
-      serviceDate,
+    const currentPage = parsePageNumber(input.page);
+    const where: Prisma.DeliveryStopWhereInput = {
+      ...(serviceDate === undefined ? {} : { deliveryDate: serviceDateAsDbDate(serviceDate) }),
+      order: { shopId: principal.shopId },
       shopId: principal.shopId,
-      sort: recordsSort,
     };
-    const page = readCursor(input.cursor, context);
-    const rows = await this.prisma.deliveryStop.findMany({
-      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
-      select: recordStopSelect(principal.shopId),
-      take: limit + 1,
-      where: {
-        deliveryDate: serviceDateAsDbDate(serviceDate),
-        order: { shopId: principal.shopId },
-        shopId: principal.shopId,
-        ...recordStopCursorWhere(page.cursor),
-      },
-    });
+    const [totalItems, rows] = await Promise.all([
+      this.prisma.deliveryStop.count({ where }),
+      this.prisma.deliveryStop.findMany({
+        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+        select: recordStopSelect(principal.shopId),
+        skip: (currentPage - 1) * limit,
+        take: limit,
+        where,
+      }),
+    ]);
     const records = rows.map(toRecordRow);
+    const totalPages = Math.ceil(totalItems / limit);
     return {
-      items: records.slice(0, limit).map(stripRecordCursor),
-      page: toPage(nextRecordCursor(records, limit, context)),
+      items: records.map(stripRecordCursor),
+      page: {
+        currentPage,
+        hasMore: currentPage < totalPages,
+        pageSize: limit,
+        totalItems,
+        totalPages,
+      },
     };
   }
 
@@ -928,9 +938,6 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
         window: input.window,
         windowDate,
       });
-    }
-    if (![dates.today, dates.tomorrow, dates.dayAfterTomorrow].includes(serviceDate)) {
-      return { emptyReason: 'DATE_OUT_OF_WINDOW', serviceDate, timezone: dates.timezone };
     }
     return { serviceDate, timezone: dates.timezone };
   }
@@ -2006,6 +2013,15 @@ function parseLimit(raw: number | string | null | undefined): number {
   return value;
 }
 
+function parsePageNumber(raw: number | string | null | undefined): number {
+  if (raw === undefined || raw === null || raw === '') return 1;
+  const value = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isInteger(value) || value < 1) {
+    throw new DsvV1ReadQueryError('BAD_REQUEST', 'page must be a positive integer.', { page: raw });
+  }
+  return value;
+}
+
 function readCursor(raw: string | null | undefined, context: CursorContext): PageSpec {
   if (raw === undefined || raw === null || raw === '') return { cursor: null, limit: context.limit };
   let payload: unknown;
@@ -2062,17 +2078,6 @@ function nextOrderCursor(rows: CustomerDeliveryOrderRow[], limit: number, contex
     orderId: last.id,
     sellerOrderKey: last.sellerOrderKey,
     serviceDate: context.serviceDate ?? null,
-  });
-}
-
-function nextRecordCursor(rows: RecordCursorRow[], limit: number, context: CursorContext): string | null {
-  if (rows.length <= limit) return null;
-  const last = rows[limit - 1];
-  if (last === undefined) return null;
-  return encodeCursor(context, {
-    stopId: last.cursorStopId,
-    serviceDate: context.serviceDate ?? null,
-    updatedAt: last.cursorUpdatedAt.toISOString(),
   });
 }
 
@@ -2180,25 +2185,6 @@ function orderCursorWhere(cursor: CursorPayload | null): Prisma.OrderWhereInput 
     OR: [
       { sellerOrderKey: { gt: sellerOrderKey } },
       { sellerOrderKey, id: { gt: orderId } },
-    ],
-  };
-}
-
-function recordStopCursorWhere(cursor: CursorPayload | null): Prisma.DeliveryStopWhereInput {
-  if (cursor === null) return {};
-  const updatedAt = cursor.last.updatedAt;
-  const stopId = cursor.last.stopId;
-  if (updatedAt === undefined || stopId === undefined || updatedAt === null || stopId === null) {
-    throw new DsvV1ReadQueryError('BAD_REQUEST', 'cursor is missing record position.');
-  }
-  const updatedAtDate = new Date(updatedAt);
-  if (Number.isNaN(updatedAtDate.getTime())) {
-    throw new DsvV1ReadQueryError('BAD_REQUEST', 'cursor has invalid record position.');
-  }
-  return {
-    OR: [
-      { updatedAt: { lt: updatedAtDate } },
-      { updatedAt: updatedAtDate, id: { lt: stopId } },
     ],
   };
 }
