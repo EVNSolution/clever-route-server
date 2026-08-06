@@ -291,6 +291,75 @@ describe('PrismaDriverAssignedRouteRepository', () => {
     });
   });
 
+  test('uses the route grouping schedule timezone when general timezone metadata is absent', async () => {
+    const routePlan = structuredClone(routePlanRecord);
+    Reflect.deleteProperty(routePlan.constraints, 'timezone');
+    Object.assign(routePlan.constraints, { scheduledStartTimeZone: 'America/Toronto' });
+    routePlan.shop.commerceConnections = [];
+    const { prisma } = createPrismaHarness({ routePlan });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(result).toMatchObject({
+      status: 'ASSIGNED_ROUTE',
+      route: { timezone: 'America/Toronto' }
+    });
+  });
+
+  test('falls through invalid schedule timezone metadata to a valid legacy route timezone', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlan: {
+        ...routePlanRecord,
+        constraints: { ...routePlanRecord.constraints, scheduledStartTimeZone: 'Mars/Olympus' }
+      }
+    });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(result).toMatchObject({
+      status: 'ASSIGNED_ROUTE',
+      route: { timezone: 'America/Toronto' }
+    });
+  });
+
+  test('preserves an explicit route timezone when schedule timezone metadata conflicts', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlan: {
+        ...routePlanRecord,
+        constraints: {
+          ...routePlanRecord.constraints,
+          scheduledStartTimeZone: 'America/Toronto',
+          timezone: 'Asia/Seoul'
+        }
+      }
+    });
+    const repository = new PrismaDriverAssignedRouteRepository(prisma as never);
+
+    const result = await repository.getAssignedRoute({
+      driverId: 'driver-id',
+      routeContext: 'route-plan-id',
+      shopDomain: 'dev1.tomatonofood.com',
+      shopId: 'shop-id'
+    });
+
+    expect(result).toMatchObject({
+      status: 'ASSIGNED_ROUTE',
+      route: { timezone: 'Asia/Seoul' }
+    });
+  });
+
   test('returns cached route geometry without calling OSRM on assigned-route reads', async () => {
     const routeGeometryProvider = { buildRoute: vi.fn() };
     const { prisma } = createPrismaHarness({ routeGeometryCacheFindUnique: cachedGeometryRecord(routePlanRecord) });
