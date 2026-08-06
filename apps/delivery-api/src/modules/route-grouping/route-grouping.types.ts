@@ -165,6 +165,7 @@ export type UpdateRouteGroupingOrdersInput = {
   groupingId: string;
   removeOrderIds?: string[];
   shopDomain: string;
+  targetRoutePlanId?: string;
 };
 
 export type CreateRouteGroupingBranchInput = {
