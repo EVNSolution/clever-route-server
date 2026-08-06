@@ -173,7 +173,7 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
     const service = new PrismaDsvV1ReadQueryService(prisma, () => new Date('2026-07-22T15:30:00.000Z'));
 
     const today = await service.listCustomerDeliveries(customerPrincipal(fixture.shopId, fixture.customerAId), { window: 'today' });
-    const outOfWindow = await service.listCustomerDeliveries(customerPrincipal(fixture.shopId, fixture.customerAId), {
+    const historical = await service.listCustomerDeliveries(customerPrincipal(fixture.shopId, fixture.customerAId), {
       serviceDate: '2026-07-27',
     });
     const firstPage = await service.listCustomerDeliveries(customerPrincipal(fixture.shopId, fixture.customerAId), {
@@ -183,8 +183,8 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
 
     expect(today.serviceDate).toBe('2026-07-23');
     expect(today.timezone).toBe('Asia/Seoul');
-    expect(outOfWindow).toMatchObject({
-      emptyReason: 'DATE_OUT_OF_WINDOW',
+    expect(historical).toMatchObject({
+      emptyReason: 'NO_DELIVERIES',
       items: [],
       serviceDate: '2026-07-27',
     });
@@ -224,16 +224,14 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
     const service = new PrismaDsvV1ReadQueryService(prisma, () => new Date('2026-07-22T15:30:00.000Z'));
 
     const pages = [];
-    let cursor: string | null = null;
-    do {
+    for (let pageNumber = 1; pageNumber <= 3; pageNumber += 1) {
       const page = await service.listRecords(customerlessAdmin(fixture.shopId), {
-        cursor,
         limit: 2,
+        page: pageNumber,
         serviceDate: '2026-07-23',
       });
       pages.push(page);
-      cursor = page.page.nextCursor ?? null;
-    } while (cursor !== null);
+    }
     const eventSummaries = pages.flatMap((page) => page.items.flatMap((item) => item.eventRows ?? []));
 
     expect(eventSummaries.map((event) => `${new Date(event.occurredAt).toISOString()}:${event.eventType}`).sort())
@@ -241,6 +239,11 @@ describeG005Disposable('G005 DSV v1 read query DB integration', () => {
     expect(new Set(eventSummaries.map((event) => `${new Date(event.occurredAt).toISOString()}:${event.eventType}`)).size)
       .toBe(fixture.expectedEvents.length);
     expect(pages.map((page) => page.items).flat()).toHaveLength(5);
+    expect(pages.map(({ page }) => page)).toEqual([
+      { currentPage: 1, hasMore: true, pageSize: 2, totalItems: 5, totalPages: 3 },
+      { currentPage: 2, hasMore: true, pageSize: 2, totalItems: 5, totalPages: 3 },
+      { currentPage: 3, hasMore: false, pageSize: 2, totalItems: 5, totalPages: 3 },
+    ]);
   });
 
   test('keeps a shop-A synthetic record when its only public event belongs to shop B', async () => {

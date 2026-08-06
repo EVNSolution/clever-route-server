@@ -40,6 +40,7 @@ import {
   type DsvV1ReadListInput,
   type DsvV1ReadQueryService,
   type DsvV1ServiceDateInput,
+  type DsvV1RecordsInput,
   type DsvV1VehicleGpsTrailHistoryInput,
   type DsvV1VehicleTemperatureHistoryInput,
 } from '../modules/dsv/dsv-v1-read-query.service.js';
@@ -199,11 +200,11 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     requiredScopes: [],
   });
   registerReadRoute(app, dependencies, 'records', {
-    allowedQuery: ['cursor', 'limit', 'serviceDate'],
+    allowedQuery: ['limit', 'page', 'serviceDate'],
     handler: async (principal, query) => mapDsvV1RecordPage(
       await requireQueryService(dependencies).listRecords(requireAdminPrincipal(principal), query)
     ),
-    parseQuery: parsePagedDateQuery,
+    parseQuery: parseRecordsQuery,
     requiredScopes: ['dsv:records:read'],
   });
   registerReadRoute(app, dependencies, 'drivers', {
@@ -847,6 +848,18 @@ function parsePagedDateQuery(request: FastifyRequest): DsvV1ServiceDateInput | n
   };
 }
 
+function parseRecordsQuery(request: FastifyRequest): DsvV1RecordsInput | null {
+  const limit = readLimit(request);
+  const page = readPageNumber(request);
+  const serviceDate = readServiceDate(request);
+  if (limit === null || page === null || serviceDate === null) return null;
+  return {
+    ...(limit === undefined ? {} : { limit }),
+    ...(page === undefined ? {} : { page }),
+    ...(serviceDate === undefined ? {} : { serviceDate }),
+  };
+}
+
 function parseDispatchesQuery(request: FastifyRequest): DsvV1DispatchListInput | null {
   const base = parsePagedDateQuery(request);
   const destinationName = readOptionalSearchText(request, 'destinationName');
@@ -931,6 +944,14 @@ function readLimit(request: FastifyRequest): number | undefined | null {
   if (!/^\d+$/u.test(value)) return null;
   const limit = Number(value);
   return Number.isInteger(limit) && limit >= 1 && limit <= 100 ? limit : null;
+}
+
+function readPageNumber(request: FastifyRequest): number | undefined | null {
+  const value = readSingleQueryString(request, 'page');
+  if (value === undefined || value === null) return value;
+  if (!/^\d+$/u.test(value)) return null;
+  const page = Number(value);
+  return Number.isSafeInteger(page) && page >= 1 ? page : null;
 }
 
 function readTemperatureHistoryLimit(request: FastifyRequest): number | undefined | null {
