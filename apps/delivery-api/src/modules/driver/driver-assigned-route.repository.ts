@@ -558,8 +558,12 @@ function readRouteEndMode(value: unknown): RoutePlanEndMode {
 function readTimezone(value: unknown, commerceConnections: Array<{ timezone: string | null }>): string {
   const constraints = objectOrNull(value);
   const routeScope = objectOrNull(constraints?.routeScope);
-  const routeTimezone = readString(constraints?.timezone) ?? readString(routeScope?.timezone);
-  if (routeTimezone !== null && isIanaTimezone(routeTimezone)) return routeTimezone;
+  const routeTimezone = [
+    readString(constraints?.timezone),
+    readString(routeScope?.timezone),
+    readString(constraints?.scheduledStartTimeZone)
+  ].find((timezone): timezone is string => timezone !== null && isIanaTimezone(timezone));
+  if (routeTimezone !== undefined) return routeTimezone;
 
   const connectionTimezones = [...new Set(
     commerceConnections
