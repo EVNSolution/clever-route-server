@@ -457,6 +457,34 @@ paths:
         '403': { $ref: '#/components/responses/DsvV1Forbidden' }
         '404': { $ref: '#/components/responses/DsvV1NotFound' }
         '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
+  /api/dsv/v1/vehicles/{vehicleId}/gps-trail-history:
+    get:
+      tags: [DSV API v1]
+      summary: Read vehicle UVIS GPS trail history by service date
+      operationId: getDsvV1VehicleGpsTrailHistory
+      x-source-file: src/routes/dsv-v1-read.routes.ts
+      x-required-scopes: ['dsv:control:read']
+      security: [{ DsvSessionCookie: [] }]
+      parameters:
+        - name: vehicleId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: serviceDate
+          in: query
+          required: false
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Vehicle GPS trail sessions and stale-gap segments from UVIS vehicle GPS telemetry samples only.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DsvV1VehicleGpsTrailHistoryEnvelope' }
+        '400': { $ref: '#/components/responses/DsvV1BadRequest' }
+        '401': { $ref: '#/components/responses/DsvV1Unauthenticated' }
+        '403': { $ref: '#/components/responses/DsvV1Forbidden' }
+        '404': { $ref: '#/components/responses/DsvV1NotFound' }
+        '503': { $ref: '#/components/responses/DsvV1DependencyUnavailable' }
   /api/dsv/v1/customers:
     get:
       tags: [DSV API v1]
@@ -4659,6 +4687,113 @@ components:
           items:
             $ref: '#/components/schemas/DsvV1VehicleTemperatureHistorySample'
       additionalProperties: false
+    DsvV1VehicleGpsTrailSample:
+      type: object
+      required: [distanceTodayKm, ignitionOn, latitude, longitude, observedAt, speedKph]
+      properties:
+        observedAt:
+          type: string
+          format: date-time
+        latitude:
+          type: number
+        longitude:
+          type: number
+        ignitionOn:
+          type: boolean
+          nullable: true
+        speedKph:
+          type: number
+          nullable: true
+        distanceTodayKm:
+          type: number
+          nullable: true
+      additionalProperties: false
+    DsvV1VehicleGpsTrailSegment:
+      type: object
+      required: [samples]
+      properties:
+        samples:
+          type: array
+          items:
+            $ref: '#/components/schemas/DsvV1VehicleGpsTrailSample'
+      additionalProperties: false
+    DsvV1VehicleGpsTrailSessionEndpoint:
+      type: object
+      required: [endedAt, reason]
+      properties:
+        endedAt:
+          type: string
+          format: date-time
+          nullable: true
+        reason:
+          type: string
+          enum: [DEPOT_RETURNED, LAST_VALID_SAMPLE, NO_SAMPLES, RESTARTED, ROUTE_COMPLETED, ROUTE_PAUSED]
+      additionalProperties: false
+    DsvV1VehicleGpsTrailSessionRestart:
+      type: object
+      required: [restartedAt, restartEventId]
+      properties:
+        restartedAt:
+          type: string
+          format: date-time
+        restartEventId:
+          type: string
+          nullable: true
+      additionalProperties: false
+    DsvV1VehicleGpsTrailSession:
+      type: object
+      required: [completedAt, completionEventId, endpoint, restart, routePlanId, segments, sessionIndex, startedAt, startEventId, startSource]
+      properties:
+        routePlanId:
+          type: string
+          format: uuid
+        sessionIndex:
+          type: integer
+          minimum: 0
+        startedAt:
+          type: string
+          format: date-time
+        startSource:
+          type: string
+          enum: [PLANNED_DEPARTURE, ROUTE_STARTED]
+        startEventId:
+          type: string
+          nullable: true
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        completionEventId:
+          type: string
+          nullable: true
+        endpoint:
+          $ref: '#/components/schemas/DsvV1VehicleGpsTrailSessionEndpoint'
+        restart:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/DsvV1VehicleGpsTrailSessionRestart'
+        segments:
+          type: array
+          items:
+            $ref: '#/components/schemas/DsvV1VehicleGpsTrailSegment'
+      additionalProperties: false
+    DsvV1VehicleGpsTrailHistory:
+      type: object
+      required: [serviceDate, sessions, timezone, vehicleId]
+      properties:
+        vehicleId:
+          type: string
+          format: uuid
+        serviceDate:
+          type: string
+          format: date
+        timezone:
+          type: string
+        sessions:
+          type: array
+          items:
+            $ref: '#/components/schemas/DsvV1VehicleGpsTrailSession'
+      additionalProperties: false
     DsvV1DriverListPage:
       type: object
       required: [items, page]
@@ -4738,6 +4873,14 @@ components:
           properties:
             data:
               $ref: '#/components/schemas/DsvV1VehicleTemperatureHistory'
+    DsvV1VehicleGpsTrailHistoryEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/DsvV1SuccessEnvelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: '#/components/schemas/DsvV1VehicleGpsTrailHistory'
     DsvV1CustomerListEnvelope:
       allOf:
         - $ref: '#/components/schemas/DsvV1SuccessEnvelope'

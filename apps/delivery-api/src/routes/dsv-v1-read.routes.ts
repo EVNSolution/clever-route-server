@@ -40,6 +40,7 @@ import {
   type DsvV1ReadListInput,
   type DsvV1ReadQueryService,
   type DsvV1ServiceDateInput,
+  type DsvV1VehicleGpsTrailHistoryInput,
   type DsvV1VehicleTemperatureHistoryInput,
 } from '../modules/dsv/dsv-v1-read-query.service.js';
 import {
@@ -228,6 +229,13 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     handler: async (principal, query) =>
       requireQueryService(dependencies).listVehicleTemperatureHistory(requireAdminPrincipal(principal), query),
     parseQuery: parseVehicleTemperatureHistoryQuery,
+    requiredScopes: ['dsv:control:read'],
+  });
+  registerReadRoute(app, dependencies, 'vehicles/:vehicleId/gps-trail-history', {
+    allowedQuery: ['serviceDate'],
+    handler: async (principal, query) =>
+      requireQueryService(dependencies).listVehicleGpsTrailHistory(requireAdminPrincipal(principal), query),
+    parseQuery: parseVehicleGpsTrailHistoryQuery,
     requiredScopes: ['dsv:control:read'],
   });
   registerReadRoute(app, dependencies, 'customers', {
@@ -884,6 +892,16 @@ function parseVehicleTemperatureHistoryQuery(request: FastifyRequest): DsvV1Vehi
     ...(from === undefined ? {} : { from }),
     ...(limit === undefined ? {} : { limit }),
     ...(to === undefined ? {} : { to }),
+    vehicleId,
+  };
+}
+
+function parseVehicleGpsTrailHistoryQuery(request: FastifyRequest): DsvV1VehicleGpsTrailHistoryInput | null {
+  const vehicleId = readUuidParam(request, 'vehicleId');
+  const serviceDate = readServiceDate(request);
+  if (vehicleId === null || serviceDate === null) return null;
+  return {
+    ...(serviceDate === undefined ? {} : { serviceDate }),
     vehicleId,
   };
 }

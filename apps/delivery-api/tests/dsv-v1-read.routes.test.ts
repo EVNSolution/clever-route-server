@@ -531,6 +531,7 @@ describe('DSV v1 read routes', () => {
         '/drivers',
         '/vehicles',
         `/vehicles/${shopId}/temperature-history`,
+        `/vehicles/${shopId}/gps-trail-history`,
         '/customers',
         '/destinations',
         '/conditions',
@@ -699,6 +700,86 @@ describe('DSV v1 read routes', () => {
         headers: { cookie: admin.cookie },
         method: 'GET',
         url: `/api/dsv/v1/vehicles/${vehicleId}/temperature-history?limit=289`,
+      });
+      expect(invalid.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('returns vehicle GPS trail history with control read scope and parsed service date', async () => {
+    const { app, queryService } = await createHarness();
+    const admin = signedCookie('dsv-shop:tomatonofood.com');
+    const vehicleId = '77777777-7777-4777-8777-777777777777';
+    queryService.listVehicleGpsTrailHistory.mockResolvedValueOnce({
+      serviceDate: '2026-08-04',
+      sessions: [{
+        completedAt: '2026-08-04T02:00:00.000Z',
+        completionEventId: 'event-complete',
+        endpoint: { endedAt: '2026-08-04T02:15:00.000Z', reason: 'DEPOT_RETURNED' },
+        restart: null,
+        routePlanId: 'route-a',
+        segments: [{
+          samples: [{
+            distanceTodayKm: 12.4,
+            ignitionOn: true,
+            latitude: 37.5,
+            longitude: 127,
+            observedAt: '2026-08-04T01:16:00.000Z',
+            speedKph: 30,
+          }],
+        }],
+        sessionIndex: 0,
+        startedAt: '2026-08-04T00:30:00.000Z',
+        startEventId: 'event-start',
+        startSource: 'ROUTE_STARTED',
+      }],
+      timezone: 'Asia/Seoul',
+      vehicleId,
+    });
+    try {
+      const response = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/vehicles/${vehicleId}/gps-trail-history?serviceDate=2026-08-04`,
+      });
+
+      expect(response.statusCode).toBe(200);
+      expectDsvV1Envelope(response, {
+        serviceDate: '2026-08-04',
+        sessions: [{
+          completedAt: '2026-08-04T02:00:00.000Z',
+          completionEventId: 'event-complete',
+          endpoint: { endedAt: '2026-08-04T02:15:00.000Z', reason: 'DEPOT_RETURNED' },
+          restart: null,
+          routePlanId: 'route-a',
+          segments: [{
+            samples: [{
+              distanceTodayKm: 12.4,
+              ignitionOn: true,
+              latitude: 37.5,
+              longitude: 127,
+              observedAt: '2026-08-04T01:16:00.000Z',
+              speedKph: 30,
+            }],
+          }],
+          sessionIndex: 0,
+          startedAt: '2026-08-04T00:30:00.000Z',
+          startEventId: 'event-start',
+          startSource: 'ROUTE_STARTED',
+        }],
+        timezone: 'Asia/Seoul',
+        vehicleId,
+      });
+      expect(queryService.listVehicleGpsTrailHistory).toHaveBeenCalledWith(
+        expect.objectContaining({ principalType: 'DSV_ADMIN', shopId }),
+        { serviceDate: '2026-08-04', vehicleId },
+      );
+
+      const invalid = await app.inject({
+        headers: { cookie: admin.cookie },
+        method: 'GET',
+        url: `/api/dsv/v1/vehicles/${vehicleId}/gps-trail-history?serviceDate=2026-8-4`,
       });
       expect(invalid.statusCode).toBe(400);
     } finally {
@@ -1257,6 +1338,7 @@ function createQueryService(): MockQueryService {
     })),
     listDrivers: vi.fn(() => Promise.resolve(list)),
     listRecords: vi.fn(() => Promise.resolve({ items: [], page: { hasMore: false } })),
+    listVehicleGpsTrailHistory: vi.fn(() => Promise.resolve({ serviceDate: '2026-07-23', sessions: [], timezone: 'Asia/Seoul', vehicleId: 'vehicle-a' })),
     listVehicleTemperatureHistory: vi.fn(() => Promise.resolve({ samples: [], vehicleId: 'vehicle-a' })),
     listVehicles: vi.fn(() => Promise.resolve(list)),
     resolveTenantDates: vi.fn(() => Promise.resolve({

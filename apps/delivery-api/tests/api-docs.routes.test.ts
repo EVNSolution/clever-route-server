@@ -162,6 +162,7 @@ describe('API documentation routes', () => {
         { method: 'get', path: '/api/dsv/v1/session' },
         { method: 'post', path: '/api/dsv/v1/session/logout' },
         { method: 'get', path: '/api/dsv/v1/vehicles' },
+        { method: 'get', path: '/api/dsv/v1/vehicles/:vehicleId/gps-trail-history' },
         { method: 'get', path: '/api/dsv/v1/vehicles/:vehicleId/temperature-history' },
       ]);
       expect(missingDocumentedRoutes(implementedRoutes, documentedRoutes)).toEqual([]);

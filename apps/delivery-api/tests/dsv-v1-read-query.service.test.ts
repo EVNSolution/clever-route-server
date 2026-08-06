@@ -963,6 +963,247 @@ describe('PrismaDsvV1ReadQueryService', () => {
       vehicleId: 'vehicle-a',
     });
   });
+
+  test('vehicle GPS trail history builds restart sessions from UVIS GPS samples and stale gaps only', async () => {
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      routePlan: { findMany: vi.fn(() => Promise.resolve([{
+        constraints: { scheduledStartAt: '2026-08-04T00:00:00.000Z' },
+        depotLatitude: '37.5000000',
+        depotLongitude: '127.0000000',
+        driverEvents: [
+          { eventType: 'ROUTE_STARTED', id: 'start-1', occurredAt: new Date('2026-08-04T00:00:00.000Z') },
+          { eventType: 'ROUTE_COMPLETED', id: 'complete-1', occurredAt: new Date('2026-08-04T00:08:00.000Z') },
+          { eventType: 'ROUTE_STARTED', id: 'start-2', occurredAt: new Date('2026-08-04T00:30:00.000Z') },
+        ],
+        id: 'route-a',
+        planDate: new Date('2026-08-04T00:00:00.000Z'),
+      }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve({ routeOpsUiSettings: { version: 1, plannedDepartureTime: '08:30' } })) },
+      uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve([
+        gpsSample({ observedAt: '2026-08-04T00:01:00.000Z', staleAfter: '2026-08-04T00:03:00.000Z' }),
+        gpsSample({ observedAt: '2026-08-04T00:04:00.000Z', staleAfter: '2026-08-04T00:06:00.000Z' }),
+        gpsSample({ observedAt: '2026-08-04T00:10:00.000Z', staleAfter: '2026-08-04T00:12:00.000Z', latitude: '37.5000000', longitude: '127.0000000' }),
+        gpsSample({ observedAt: '2026-08-04T00:31:00.000Z', staleAfter: '2026-08-04T00:33:00.000Z', latitude: '37.7000000' }),
+      ])) },
+      vehicle: { findFirst: vi.fn(() => Promise.resolve({ id: 'vehicle-a' })) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-08-04T12:00:00.000Z'));
+
+    const result = await service.listVehicleGpsTrailHistory(adminPrincipal(), {
+      serviceDate: '2026-08-04',
+      vehicleId: 'vehicle-a',
+    });
+
+    expect(prisma.vehicle.findFirst).toHaveBeenCalledWith({
+      select: { id: true },
+      where: { id: 'vehicle-a', shopId: 'shop-a' },
+    });
+    const routePlanQuery = firstMockArg<{
+      select?: { driverEvents?: { where?: unknown } };
+      where?: unknown;
+    }>(prisma.routePlan.findMany);
+    expect(routePlanQuery?.select?.driverEvents?.where).toEqual({
+      eventType: { in: ['ROUTE_COMPLETED', 'ROUTE_PAUSED', 'ROUTE_STARTED'] },
+      shopId: 'shop-a',
+    });
+    expect(routePlanQuery?.where).toEqual({
+        planDate: new Date('2026-08-04T00:00:00.000Z'),
+        shopId: 'shop-a',
+        status: { not: 'CANCELLED' },
+        vehicleId: 'vehicle-a',
+    });
+    expect(prisma.uvisVehicleTelemetrySample.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        latitude: { not: null },
+        longitude: { not: null },
+        sourceKind: 'VEHICLE_GPS',
+        vehicleId: 'vehicle-a',
+      }) as unknown,
+    }));
+    expect(JSON.stringify(prisma.uvisVehicleTelemetrySample.findMany.mock.calls)).not.toMatch(/LOCATION_UPDATED|driverEvent/u);
+    expect(result).toMatchObject({
+      serviceDate: '2026-08-04',
+      sessions: [
+        {
+          completedAt: '2026-08-04T00:08:00.000Z',
+          completionEventId: 'complete-1',
+          endpoint: { endedAt: '2026-08-04T00:10:00.000Z', reason: 'DEPOT_RETURNED' },
+          restart: { restartedAt: '2026-08-04T00:30:00.000Z', restartEventId: 'start-2' },
+          routePlanId: 'route-a',
+          segments: [
+            { samples: [{ observedAt: '2026-08-04T00:01:00.000Z' }] },
+            { samples: [{ observedAt: '2026-08-04T00:04:00.000Z' }] },
+            { samples: [{ observedAt: '2026-08-04T00:10:00.000Z' }] },
+          ],
+          sessionIndex: 0,
+          startedAt: '2026-08-04T00:00:00.000Z',
+          startEventId: 'start-1',
+          startSource: 'ROUTE_STARTED',
+        },
+        {
+          completedAt: null,
+          completionEventId: null,
+          endpoint: { endedAt: '2026-08-04T00:31:00.000Z', reason: 'LAST_VALID_SAMPLE' },
+          restart: null,
+          routePlanId: 'route-a',
+          segments: [{ samples: [{ observedAt: '2026-08-04T00:31:00.000Z' }] }],
+          sessionIndex: 1,
+          startedAt: '2026-08-04T00:30:00.000Z',
+          startEventId: 'start-2',
+          startSource: 'ROUTE_STARTED',
+        },
+      ],
+      timezone: 'Asia/Seoul',
+      vehicleId: 'vehicle-a',
+    });
+  });
+
+  test('vehicle GPS trail history falls back to planned departure when no route start exists', async () => {
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      routePlan: { findMany: vi.fn(() => Promise.resolve([{
+        constraints: {},
+        depotLatitude: null,
+        depotLongitude: null,
+        driverEvents: [],
+        id: 'route-a',
+        planDate: new Date('2026-08-04T00:00:00.000Z'),
+      }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve({ routeOpsUiSettings: { version: 1, plannedDepartureTime: '08:45' } })) },
+      uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve([
+        gpsSample({ observedAt: '2026-08-03T23:46:00.000Z', staleAfter: '2026-08-03T23:48:00.000Z' }),
+      ])) },
+      vehicle: { findFirst: vi.fn(() => Promise.resolve({ id: 'vehicle-a' })) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-08-04T12:00:00.000Z'));
+
+    await expect(service.listVehicleGpsTrailHistory(adminPrincipal(), {
+      serviceDate: '2026-08-04',
+      vehicleId: 'vehicle-a',
+    })).resolves.toMatchObject({
+      sessions: [{
+        endpoint: { endedAt: '2026-08-03T23:46:00.000Z', reason: 'LAST_VALID_SAMPLE' },
+        segments: [{ samples: [{ observedAt: '2026-08-03T23:46:00.000Z' }] }],
+        startedAt: '2026-08-03T23:45:00.000Z',
+        startEventId: null,
+        startSource: 'PLANNED_DEPARTURE',
+      }],
+    });
+  });
+
+  test('vehicle GPS trail history starts at the earlier planned time and closes a paused session', async () => {
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      routePlan: { findMany: vi.fn(() => Promise.resolve([{
+        constraints: { departureTime: '08:30' },
+        depotLatitude: null,
+        depotLongitude: null,
+        driverEvents: [
+          { eventType: 'ROUTE_STARTED', id: 'start-1', occurredAt: new Date('2026-08-03T23:40:00.000Z') },
+          { eventType: 'ROUTE_PAUSED', id: 'pause-1', occurredAt: new Date('2026-08-03T23:50:00.000Z') },
+          { eventType: 'ROUTE_STARTED', id: 'start-2', occurredAt: new Date('2026-08-04T00:10:00.000Z') },
+        ],
+        id: 'route-a',
+        planDate: new Date('2026-08-04T00:00:00.000Z'),
+      }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve({ routeOpsUiSettings: { version: 1, plannedDepartureTime: '08:45' } })) },
+      uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve([
+        gpsSample({ observedAt: '2026-08-03T23:31:00.000Z', staleAfter: '2026-08-03T23:33:00.000Z' }),
+        gpsSample({ observedAt: '2026-08-03T23:49:00.000Z', staleAfter: '2026-08-03T23:51:00.000Z' }),
+        gpsSample({ observedAt: '2026-08-03T23:55:00.000Z', staleAfter: '2026-08-03T23:57:00.000Z' }),
+        gpsSample({ observedAt: '2026-08-04T00:11:00.000Z', staleAfter: '2026-08-04T00:13:00.000Z' }),
+      ])) },
+      vehicle: { findFirst: vi.fn(() => Promise.resolve({ id: 'vehicle-a' })) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-08-04T12:00:00.000Z'));
+
+    const result = await service.listVehicleGpsTrailHistory(adminPrincipal(), {
+      serviceDate: '2026-08-04',
+      vehicleId: 'vehicle-a',
+    });
+
+    expect(result.sessions).toMatchObject([
+      {
+        endpoint: { endedAt: '2026-08-03T23:49:00.000Z', reason: 'ROUTE_PAUSED' },
+        segments: [
+          { samples: [{ observedAt: '2026-08-03T23:31:00.000Z' }] },
+          { samples: [{ observedAt: '2026-08-03T23:49:00.000Z' }] },
+        ],
+        startedAt: '2026-08-03T23:30:00.000Z',
+        startEventId: null,
+        startSource: 'PLANNED_DEPARTURE',
+      },
+      {
+        segments: [{ samples: [{ observedAt: '2026-08-04T00:11:00.000Z' }] }],
+        startedAt: '2026-08-04T00:10:00.000Z',
+        startEventId: 'start-2',
+        startSource: 'ROUTE_STARTED',
+      },
+    ]);
+  });
+
+  test('vehicle GPS trail history assigns planned start once and prevents samples overlapping route plans', async () => {
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      routePlan: { findMany: vi.fn(() => Promise.resolve([{
+        constraints: {},
+        depotLatitude: null,
+        depotLongitude: null,
+        driverEvents: [
+          { eventType: 'ROUTE_STARTED', id: 'start-a', occurredAt: new Date('2026-08-04T00:00:00.000Z') },
+        ],
+        id: 'route-a',
+        planDate: new Date('2026-08-04T00:00:00.000Z'),
+      }, {
+        constraints: {},
+        depotLatitude: null,
+        depotLongitude: null,
+        driverEvents: [
+          { eventType: 'ROUTE_STARTED', id: 'start-b', occurredAt: new Date('2026-08-04T00:30:00.000Z') },
+        ],
+        id: 'route-b',
+        planDate: new Date('2026-08-04T00:00:00.000Z'),
+      }])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve({ routeOpsUiSettings: { version: 1, plannedDepartureTime: '08:30' } })) },
+      uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve([
+        gpsSample({ observedAt: '2026-08-03T23:40:00.000Z', staleAfter: '2026-08-03T23:42:00.000Z' }),
+        gpsSample({ observedAt: '2026-08-04T00:10:00.000Z', staleAfter: '2026-08-04T00:12:00.000Z' }),
+        gpsSample({ observedAt: '2026-08-04T00:31:00.000Z', staleAfter: '2026-08-04T00:33:00.000Z' }),
+      ])) },
+      vehicle: { findFirst: vi.fn(() => Promise.resolve({ id: 'vehicle-a' })) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-08-04T12:00:00.000Z'));
+
+    const result = await service.listVehicleGpsTrailHistory(adminPrincipal(), {
+      serviceDate: '2026-08-04',
+      vehicleId: 'vehicle-a',
+    });
+
+    expect(result.sessions).toMatchObject([
+      {
+        endpoint: { endedAt: '2026-08-04T00:10:00.000Z', reason: 'RESTARTED' },
+        restart: { restartedAt: '2026-08-04T00:30:00.000Z', restartEventId: 'start-b' },
+        routePlanId: 'route-a',
+        startedAt: '2026-08-03T23:30:00.000Z',
+        startEventId: null,
+        startSource: 'PLANNED_DEPARTURE',
+      },
+      {
+        routePlanId: 'route-b',
+        startedAt: '2026-08-04T00:30:00.000Z',
+        startEventId: 'start-b',
+        startSource: 'ROUTE_STARTED',
+      },
+    ]);
+    expect(result.sessions.flatMap((session) => session.segments.flatMap((segment) =>
+      segment.samples.map((sample) => sample.observedAt)
+    ))).toEqual([
+      '2026-08-03T23:40:00.000Z',
+      '2026-08-04T00:10:00.000Z',
+      '2026-08-04T00:31:00.000Z',
+    ]);
+  });
 });
 
 function adminPrincipal(): DsvAdminPrincipal {
@@ -979,6 +1220,26 @@ function customerPrincipal(): DsvCustomerUserPrincipal {
     principalType: 'CUSTOMER_USER',
     scopes: ['dsv:customer-deliveries:read'],
     shopId: 'shop-a',
+  };
+}
+
+function gpsSample(overrides: Partial<{
+  distanceTodayKm: string | null;
+  ignitionOn: boolean | null;
+  latitude: string | null;
+  longitude: string | null;
+  observedAt: string;
+  speedKph: string | null;
+  staleAfter: string;
+}> = {}) {
+  return {
+    distanceTodayKm: overrides.distanceTodayKm ?? '10.00',
+    ignitionOn: overrides.ignitionOn ?? true,
+    latitude: overrides.latitude ?? '37.6000000',
+    longitude: overrides.longitude ?? '127.1000000',
+    observedAt: new Date(overrides.observedAt ?? '2026-08-04T00:00:00.000Z'),
+    speedKph: overrides.speedKph ?? '30.00',
+    staleAfter: new Date(overrides.staleAfter ?? '2026-08-04T00:02:00.000Z'),
   };
 }
 
