@@ -8,7 +8,7 @@ import type {
   DriverAssignedRouteStopPoint
 } from './driver-assigned-route.types.js';
 import { buildDriverRouteEtaSnapshot, type DriverRouteEtaStop } from './driver-route-eta.js';
-import { coerceIanaTimezone } from './driver-route-timezone.js';
+import { coerceIanaTimezone, isIanaTimezone } from './driver-route-timezone.js';
 import type {
   RoutePlanDetail,
   RoutePlanDetailStop,
@@ -45,6 +45,7 @@ type AssignedRoutePlanRecord = {
   routeStops: AssignedRoutePlanStopRecord[];
   driverEvents: Array<{ createdAt: Date }>;
   shop: {
+    commerceConnections: Array<{ timezone: string | null }>;
     shopDomain: string;
   };
   status: string;
@@ -193,6 +194,10 @@ const assignedRouteInclude = {
   },
   shop: {
     select: {
+      commerceConnections: {
+        select: { timezone: true },
+        where: { status: 'ACTIVE' }
+      },
       shopDomain: true
     }
   }
@@ -325,11 +330,12 @@ function toAssignedRouteResult(
       routeMapPreview: null,
       routeMetrics: routeResult.routeMetrics,
       routeStopPoints: routeResult.routeStopPoints.map(toAssignedRouteStopPoint),
+      scheduledStartAt: readScheduledStartAt(routePlan.constraints),
       shopDomain: normalizeDriverCommerceDomain(routePlan.shop.shopDomain),
       stops: [...routePlan.routeStops]
         .sort((left, right) => left.sequence - right.sequence)
         .map((routeStop) => toAssignedRouteStop(routeStop, routePlan)),
-      timezone: readTimezone(routePlan.constraints)
+      timezone: readTimezone(routePlan.constraints, routePlan.shop.commerceConnections)
     }
   };
 }
@@ -549,10 +555,25 @@ function readRouteEndMode(value: unknown): RoutePlanEndMode {
   return constraints?.routeEndMode === 'RETURN_TO_DEPOT' ? 'RETURN_TO_DEPOT' : 'END_AT_LAST_STOP';
 }
 
-function readTimezone(value: unknown): string {
+function readTimezone(value: unknown, commerceConnections: Array<{ timezone: string | null }>): string {
   const constraints = objectOrNull(value);
   const routeScope = objectOrNull(constraints?.routeScope);
-  return coerceIanaTimezone(readString(constraints?.timezone) ?? readString(routeScope?.timezone));
+  const routeTimezone = readString(constraints?.timezone) ?? readString(routeScope?.timezone);
+  if (routeTimezone !== null && isIanaTimezone(routeTimezone)) return routeTimezone;
+
+  const connectionTimezones = [...new Set(
+    commerceConnections
+      .map((connection) => connection.timezone?.trim() ?? '')
+      .filter((timezone) => timezone !== '' && isIanaTimezone(timezone))
+  )];
+  return coerceIanaTimezone(connectionTimezones.length === 1 ? connectionTimezones[0] ?? null : null);
+}
+
+function readScheduledStartAt(value: unknown): string | null {
+  const scheduledStartAt = readString(objectOrNull(value)?.scheduledStartAt);
+  if (scheduledStartAt === null || !/T.+(?:Z|[+-]\d{2}:\d{2})$/iu.test(scheduledStartAt)) return null;
+  const instant = new Date(scheduledStartAt);
+  return Number.isNaN(instant.getTime()) ? null : instant.toISOString();
 }
 
 function objectOrNull(value: unknown): Record<string, unknown> | null {

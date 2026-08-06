@@ -26,6 +26,7 @@ const assignedRoute = {
     routeMapPreview: null,
     routeMetrics: null,
     routeStopPoints: [],
+    scheduledStartAt: '2026-05-12T10:00:00.000Z',
     shopDomain: 'example.myshopify.com',
     stops: [
       {

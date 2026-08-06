@@ -11,7 +11,7 @@ info:
     admin clients, legacy Shopify compatibility routes, native driver mobile
     clients, and operational health checks. Human behavior notes live beside
     this file in docs/api/*.md.
-  x-contract-revision: 2026-08-03
+  x-contract-revision: 2026-08-06
   x-source-repository: EVNSolution/clever-route-server
 servers:
   - url: http://localhost:3000
@@ -6070,7 +6070,7 @@ components:
         error: { type: 'null' }
     DriverAssignedRoute:
       type: object
-      required: [deliveryDate, depot, etaSnapshot, id, name, shopDomain, stops, timezone]
+      required: [deliveryDate, depot, etaSnapshot, id, name, scheduledStartAt, shopDomain, stops, timezone]
       properties:
         id:
           type: string
@@ -6089,6 +6089,12 @@ components:
               type: [number, 'null']
         etaSnapshot:
           $ref: '#/components/schemas/DriverRouteEtaSnapshot'
+        scheduledStartAt:
+          description: Canonical scheduled route start instant used for the pre-pickup departure countdown.
+          format: date-time
+          type:
+            - string
+            - 'null'
         shopDomain:
           type: string
         timezone:

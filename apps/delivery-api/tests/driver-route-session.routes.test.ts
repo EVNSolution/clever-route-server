@@ -28,6 +28,7 @@ const activeSession = {
     routeMapPreview: null,
     routeMetrics: null,
     routeStopPoints: [],
+    scheduledStartAt: '2026-06-15T12:00:00.000Z',
     shopDomain: 'example.myshopify.com',
     stops: [],
     timezone: 'America/Toronto'
