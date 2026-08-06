@@ -59,6 +59,12 @@ const ORDER_FIELDS = `#graphql
             currencyCode
           }
         }
+        currentShippingPriceSet {
+          shopMoney {
+            amount
+            currencyCode
+          }
+        }
         shippingAddress {
           name
           phone

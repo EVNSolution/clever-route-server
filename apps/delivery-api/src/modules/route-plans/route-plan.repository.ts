@@ -2504,6 +2504,7 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
     paymentMethodTitle: readPaymentMethodTitle(rawPayload),
     phone: deliveryStop.phone ?? order.phone ?? null,
     serviceMinutes: deliveryStop.serviceMinutes,
+    shippingPriceAmount: readShippingPriceAmount(rawPayload),
     totalPriceAmount: stringOrNull(order.totalPriceAmount),
     orderId: order.id,
     orderName: order.name,
@@ -2515,7 +2516,11 @@ function toRoutePlanDetailStop(routeStop: RoutePlanStopRecord): RoutePlanDetailS
   };
 }
 
-
+function readShippingPriceAmount(rawPayload: Record<string, unknown> | null): string | null {
+  const shippingPriceSet = objectOrNull(rawPayload?.currentShippingPriceSet);
+  const shopMoney = objectOrNull(shippingPriceSet?.shopMoney);
+  return readString(shopMoney?.amount);
+}
 
 function createMetrics(orders: RoutePlanOrderInput[]): Prisma.InputJsonObject {
   const itemSummary = aggregateOrderItems(orders.flatMap((order) => order.items ?? []));
