@@ -53,6 +53,7 @@ import { loadGeocodingService } from '../geocoding/geocoding.dependencies.js';
 import { PrismaDeliveryCustomerProfileService } from '../delivery-customer/delivery-customer-profile.service.js';
 import { loadDriverPushProvider } from '../route-grouping/driver-push.provider.js';
 import { DEFAULT_MAX_CHILD_ROUTE_STOP_DISTANCE_FROM_DEPOT_METERS, PrismaRouteGroupingService } from '../route-grouping/route-grouping.service.js';
+import { PrismaRoutesAppReleaseRepository } from '../routes-app/routes-app-release.repository.js';
 
 export type AdminCommerceConnectionsRuntimeEnv = Partial<
   Record<
@@ -188,6 +189,9 @@ export function loadAdminCommerceConnectionsUiDependencies(input: {
     ...readAdminUiDriverService(input),
     geocodingService: loadGeocodingService({ env: input.env, prisma: input.prisma }),
     onboardingService: input.adminCommerceConnections.onboardingService,
+    ...(input.prisma === undefined
+      ? {}
+      : { routesAppReleaseRepository: new PrismaRoutesAppReleaseRepository(input.prisma) }),
     ...(notificationService === undefined ? {} : { notificationService }),
     ...readAdminUiOrderIngestAuditService(input),
     ...readAdminUiOrderSyncService(input, notificationService),
