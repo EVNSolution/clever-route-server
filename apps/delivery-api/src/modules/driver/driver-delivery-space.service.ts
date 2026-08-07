@@ -9,6 +9,7 @@ import {
   type RouteGroupingService
 } from '../route-grouping/route-grouping.types.js';
 import type { DriverRouteAccessScope } from './driver-token-access.repository.js';
+import { driverServiceDate } from './driver-route-timezone.js';
 
 export type DriverDeliveryBundle = {
   address: string;
@@ -163,7 +164,8 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
   constructor(
     private readonly repository: DriverDeliverySpaceRepositoryContract,
     private readonly groupingService: RouteGroupingService,
-    private readonly assignmentCommands: AssignmentCommands
+    private readonly assignmentCommands: AssignmentCommands,
+    private readonly now: () => Date = () => new Date()
   ) {}
 
   async getSpace(input: DriverRouteAccessScope): Promise<DriverDeliverySpace> {
@@ -171,15 +173,17 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
     if (context.vehicleId === null) {
       throw error('DESTINATION_BUNDLE_TARGET_VEHICLE_REQUIRED', '등록된 차량이 있어야 주문 목록을 확인할 수 있습니다.');
     }
+    const visibleBundles = isToday(grouping.planDate, this.now()) ? bundles : [];
     return {
-      available: bundles.filter(isAvailable).map(expose),
-      mine: bundles.filter((bundle) => isMine(bundle, input)).map(expose),
+      available: visibleBundles.filter(isAvailable).map(expose),
+      mine: visibleBundles.filter((bundle) => isMine(bundle, input)).map(expose),
       version: grouping.updatedAt
     };
   }
 
   async release(input: DriverDeliverySpaceCommand): Promise<DriverDeliverySpaceCommandResult> {
     const { bundles, grouping } = await this.context(input);
+    assertToday(grouping.planDate, this.now());
     assertVersion(grouping.updatedAt, input.expectedVersion);
     const bundle = requireBundle(bundles, input.destinationId);
     if (!isMine(bundle, input)) {
@@ -202,6 +206,7 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
 
   async acquire(input: DriverDeliverySpaceCommand): Promise<DriverDeliverySpaceCommandResult> {
     const { bundles, context, grouping } = await this.context(input);
+    assertToday(grouping.planDate, this.now());
     assertVersion(grouping.updatedAt, input.expectedVersion);
     if (context.vehicleId === null) {
       throw error('DESTINATION_BUNDLE_TARGET_VEHICLE_REQUIRED', '차량이 연결된 경로에서만 배송을 가져올 수 있습니다.');
@@ -302,6 +307,16 @@ function requireBundle(bundles: InternalBundle[], destinationId: string): Intern
 
 function assertVersion(actual: string, expected: string): void {
   if (actual !== expected) throw error('DESTINATION_BUNDLE_ASSIGNMENT_CHANGED', '배송 배정이 변경되었습니다.');
+}
+
+function assertToday(planDate: string, now: Date): void {
+  if (!isToday(planDate, now)) {
+    throw error('DESTINATION_BUNDLE_TRANSFER_CLOSED', '공용 배송은 당일 배차에서만 변경할 수 있습니다.');
+  }
+}
+
+function isToday(planDate: string, now: Date): boolean {
+  return planDate === driverServiceDate(now);
 }
 
 function commandId(action: 'acquire' | 'release', input: DriverDeliverySpaceCommand, orderId: string): string {

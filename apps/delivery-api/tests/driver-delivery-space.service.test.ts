@@ -67,13 +67,47 @@ describe('DriverDeliverySpaceService', () => {
     await expect(harness.service.getSpace(scope()))
       .rejects.toMatchObject({ code: 'DESTINATION_BUNDLE_TARGET_VEHICLE_REQUIRED' });
   });
+
+  test('hides and rejects public delivery bundles outside the current Seoul service date', async () => {
+    const options = {
+      now: new Date('2026-08-04T14:59:59.000Z'),
+      planDate: '2026-08-03'
+    };
+    const publicHarness = setup(bundleOrders('public'), 'vehicle-1', options);
+    const mineHarness = setup(bundleOrders('mine'), 'vehicle-1', options);
+
+    await expect(publicHarness.service.getSpace(scope())).resolves.toMatchObject({
+      available: []
+    });
+    await expect(mineHarness.service.getSpace(scope())).resolves.toMatchObject({
+      mine: []
+    });
+    await expect(publicHarness.service.acquire({ ...scope(), destinationId: 'dest-a', expectedVersion: 'v1' }))
+      .rejects.toMatchObject({ code: 'DESTINATION_BUNDLE_TRANSFER_CLOSED' });
+    await expect(mineHarness.service.release({ ...scope(), destinationId: 'dest-a', expectedVersion: 'v1' }))
+      .rejects.toMatchObject({ code: 'DESTINATION_BUNDLE_TRANSFER_CLOSED' });
+    expect(publicHarness.reassignMany).not.toHaveBeenCalled();
+    expect(mineHarness.unassignMany).not.toHaveBeenCalled();
+  });
+
+  test('uses the Seoul calendar date at the UTC day boundary', async () => {
+    const harness = setup(bundleOrders('public'), 'vehicle-1', {
+      now: new Date('2026-08-03T15:00:00.000Z'),
+      planDate: '2026-08-04'
+    });
+
+    await expect(harness.service.getSpace(scope())).resolves.toMatchObject({
+      available: [{ destinationId: 'dest-a' }]
+    });
+  });
 });
 
 function setup(
   rows: Awaited<ReturnType<DriverDeliverySpaceRepositoryContract['listBundleOrders']>>,
-  vehicleId: string | null = 'vehicle-1'
+  vehicleId: string | null = 'vehicle-1',
+  options: { now?: Date; planDate?: string } = {}
 ) {
-  const grouping = groupingDetail();
+  const grouping = groupingDetail(options.planDate);
   const getGrouping = vi.fn(() => Promise.resolve(grouping));
   const reassignMany = vi.fn(() => Promise.resolve({ assignmentResults: [], routePlanId: 'route-driver' }));
   const unassignMany = vi.fn(() => Promise.resolve({ assignmentResults: [], routePlanId: 'route-public' }));
@@ -86,7 +120,8 @@ function setup(
     service: new DriverDeliverySpaceService(
       repository,
       { getGrouping } as unknown as RouteGroupingService,
-      { reassignMany, unassignMany }
+      { reassignMany, unassignMany },
+      () => options.now ?? new Date('2026-08-03T00:00:00.000Z')
     ),
     unassignMany
   };
@@ -105,10 +140,10 @@ function scope() {
   return { accountId: 'account-1', driverId: 'driver-1', routePlanId: 'route-driver', shopDomain: 'dsv.test', shopId: 'shop-1', tokenVersion: 1 };
 }
 
-function groupingDetail(): RouteGroupingDetailDto {
+function groupingDetail(planDate = '2026-08-03'): RouteGroupingDetailDto {
   return {
-    assignments: [], branches: [], children: [], currentVersion: 1, dateRangeEnd: '2026-08-03', dateRangeStart: '2026-08-03',
-    displayStatus: 'READY', id: 'group-1', linkedInventoryId: null, name: '배송', planDate: '2026-08-03', polygons: [],
+    assignments: [], branches: [], children: [], currentVersion: 1, dateRangeEnd: planDate, dateRangeStart: planDate,
+    displayStatus: 'READY', id: 'group-1', linkedInventoryId: null, name: '배송', planDate, polygons: [],
     status: 'READY', totalOrders: 0, unresolvedOrders: 0, updatedAt: 'v1', warningState: []
   };
 }

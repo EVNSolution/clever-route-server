@@ -14,3 +14,19 @@ export function isIanaTimezone(value: string): boolean {
     return false;
   }
 }
+
+export function driverServiceDate(now: Date): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    day: '2-digit',
+    month: '2-digit',
+    timeZone: 'Asia/Seoul',
+    year: 'numeric'
+  }).formatToParts(now);
+  const part = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((item) => item.type === type)?.value ?? '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+
+export function driverServiceDateAsDbDate(now: Date): Date {
+  return new Date(`${driverServiceDate(now)}T00:00:00.000Z`);
+}

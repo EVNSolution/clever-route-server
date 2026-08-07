@@ -10,6 +10,7 @@ import type {
 } from '../route-grouping/route-grouping.types.js';
 
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
+import { driverServiceDate, driverServiceDateAsDbDate } from './driver-route-timezone.js';
 import type {
   DriverRouteAccessAmbiguousMatch,
   DriverRouteAccessCompanyGuidance,
@@ -69,7 +70,8 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 export class PrismaDriverRouteAccessRepository {
   constructor(
     private readonly prisma: DriverRouteAccessPrismaClient,
-    private readonly routeGroupingService?: RouteGroupingService
+    private readonly routeGroupingService?: RouteGroupingService,
+    private readonly now: () => Date = () => new Date()
   ) {}
 
   async lookupRouteAccess(input: DriverRouteAccessLookupInput): Promise<DriverRouteAccessLookupResult> {
@@ -115,6 +117,15 @@ export class PrismaDriverRouteAccessRepository {
     });
 
     if (routes.length > 0) {
+      if (
+        this.routeGroupingService !== undefined &&
+        !routes.some((route) => route.companyGuidance.deliveryDate === driverServiceDate(this.now()))
+      ) {
+        const standbyStatus = await this.ensureStandbyRoute(accountId);
+        if (standbyStatus === 'CREATED') {
+          return this.lookupAccountRouteAccess(accountId);
+        }
+      }
       return {
         status: 'ROUTES_FOUND',
         routes
@@ -196,7 +207,10 @@ export class PrismaDriverRouteAccessRepository {
         where: {
           currentOrders: { some: {} },
           driverId: null,
-          grouping: { status: 'READY' },
+          grouping: {
+            planDate: driverServiceDateAsDbDate(this.now()),
+            status: 'READY'
+          },
           routePlanId: { not: null },
           shopId: assignment.driver.shop.id,
           status: 'CURRENT',
