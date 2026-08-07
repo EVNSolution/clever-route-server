@@ -60,15 +60,25 @@ describe('DriverDeliverySpaceService', () => {
     await expect(harness.service.acquire({ ...scope(), destinationId: 'dest-a', expectedVersion: 'v1' }))
       .rejects.toMatchObject({ code: 'DESTINATION_BUNDLE_ALREADY_ACQUIRED' });
   });
+
+  test('requires a registered route vehicle before exposing the shared delivery space', async () => {
+    const harness = setup(bundleOrders('public'), null);
+
+    await expect(harness.service.getSpace(scope()))
+      .rejects.toMatchObject({ code: 'DESTINATION_BUNDLE_TARGET_VEHICLE_REQUIRED' });
+  });
 });
 
-function setup(rows: Awaited<ReturnType<DriverDeliverySpaceRepositoryContract['listBundleOrders']>>) {
+function setup(
+  rows: Awaited<ReturnType<DriverDeliverySpaceRepositoryContract['listBundleOrders']>>,
+  vehicleId: string | null = 'vehicle-1'
+) {
   const grouping = groupingDetail();
   const getGrouping = vi.fn(() => Promise.resolve(grouping));
   const reassignMany = vi.fn(() => Promise.resolve({ assignmentResults: [], routePlanId: 'route-driver' }));
   const unassignMany = vi.fn(() => Promise.resolve({ assignmentResults: [], routePlanId: 'route-public' }));
   const repository: DriverDeliverySpaceRepositoryContract = {
-    findRouteContext: vi.fn(() => Promise.resolve({ groupingId: 'group-1', vehicleId: 'vehicle-1' })),
+    findRouteContext: vi.fn(() => Promise.resolve({ groupingId: 'group-1', vehicleId })),
     listBundleOrders: vi.fn(() => Promise.resolve(rows))
   };
   return {

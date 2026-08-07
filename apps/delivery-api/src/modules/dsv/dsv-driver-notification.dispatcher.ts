@@ -7,6 +7,8 @@ import type {
   DriverRoutePushResult
 } from '../route-grouping/driver-push.provider.js';
 
+const CLEVER_DRIVER_ANDROID_APP_ID = 'com.evnsolution.clever.driver';
+
 type LoggerLike = {
   warn?(bindings: unknown, message?: string): void;
 };
@@ -139,7 +141,7 @@ export class PrismaDsvDriverNotificationDispatcher {
     }
     const tokens = await this.prisma.driverPushToken.findMany({
       orderBy: { lastSeenAt: 'desc' },
-      where: { accountId, status: 'ACTIVE' }
+      where: { accountId, appId: CLEVER_DRIVER_ANDROID_APP_ID, status: 'ACTIVE' }
     });
     if (tokens.length === 0) {
       return {
@@ -216,6 +218,13 @@ function readMinimalMetadata(metadata: Prisma.JsonValue | null): Record<string, 
   const output: Record<string, string> = {};
   const changeRequestId = metadata.changeRequestId;
   if (typeof changeRequestId === 'string' && changeRequestId.trim() !== '') output.changeRequestId = changeRequestId;
+  const handoffRequestId = metadata.handoffRequestId;
+  if (typeof handoffRequestId === 'string' && handoffRequestId.trim() !== '') output.handoffRequestId = handoffRequestId;
+  const handoffEvent = metadata.handoffEvent;
+  if (
+    typeof handoffEvent === 'string'
+    && ['applied', 'cancelled', 'invalidated', 'proposed', 'rejected'].includes(handoffEvent)
+  ) output.handoffEvent = handoffEvent;
   const orderMessageId = metadata.orderMessageId;
   if (typeof orderMessageId === 'string' && orderMessageId.trim() !== '') output.orderMessageId = orderMessageId;
   return Object.keys(output).length === 0 ? undefined : output;

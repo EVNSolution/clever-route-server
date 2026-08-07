@@ -18,7 +18,12 @@ The primary lookup uses the `clever-driver-account` bearer token returned by reg
 - server finds `READY` or `IN_PROGRESS` route plans assigned to active drivers
   linked to that account; completed/cancelled routes and legacy rows with a
   prior completion event are excluded
+- a vehicle-backed route plan remains selectable even when it currently has no
+  route stops, so the driver can open the public delivery Space and acquire a
+  destination bundle before departure
 - if active route assignments exist, server returns `ROUTES_FOUND` with route choices; each choice carries company guidance, route access identifiers, and short-lived `driverAccess`
+- if matching operational route plans exist but none has a registered vehicle,
+  server returns `VEHICLE_REQUIRED` without issuing route access
 - if the account has active driver assignments but no active route, server returns `ROUTES_FOUND` with an empty `routes` array
 - if the account has no driver assignment, server returns `NOT_FOUND`
 - if the account is linked only to inactive/suspended drivers, server returns `DISABLED` or `BLOCKED`
@@ -113,9 +118,10 @@ Safe denial statuses return `200` with no guidance payload:
 { "data": { "status": "NOT_FOUND" }, "error": null }
 { "data": { "status": "DISABLED" }, "error": null }
 { "data": { "status": "BLOCKED" }, "error": null }
+{ "data": { "status": "VEHICLE_REQUIRED" }, "error": null }
 ```
 
-`NOT_FOUND` covers accounts without driver assignments and exact/narrowed lookups that do not belong to the authenticated account. Registered accounts with no active route assignments return `ROUTES_FOUND` with an empty `routes` array.
+`NOT_FOUND` covers accounts without driver assignments and exact/narrowed lookups that do not belong to the authenticated account. `VEHICLE_REQUIRED` covers an otherwise matching operational route that cannot enter the delivery Space because no registered vehicle is assigned. Registered accounts with no active route assignments return `ROUTES_FOUND` with an empty `routes` array.
 
 Ambiguous shared route/company scope response:
 

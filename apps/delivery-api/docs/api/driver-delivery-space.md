@@ -7,6 +7,11 @@
 - `POST /driver/delivery-space/{destinationId}/release`: 내 배송지 전체 반납
 - `POST /driver/delivery-space/{destinationId}/acquire`: 공용 배송지 전체 확보
 
+배송지가 아직 하나도 없는 `READY` 배차도 등록 차량이 있으면 route access와
+Space 조회가 가능하다. 등록 차량이 없는 배차는 route access 단계에서
+`VEHICLE_REQUIRED`, Space 조회 단계에서
+`DESTINATION_BUNDLE_TARGET_VEHICLE_REQUIRED`로 차단한다.
+
 명령 본문은 `{ "expectedVersion": "..." }`이다. 서버는 묶음 전체를 한 번의
 route grouping draft 저장으로 이동한다. 경로가 `READY`이고 확보 경로에 차량이
 있을 때만 허용한다. 동시 확보 시 첫 저장만 성공하고 후속 요청은

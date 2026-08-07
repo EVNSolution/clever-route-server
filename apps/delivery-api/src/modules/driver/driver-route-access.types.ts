@@ -51,4 +51,4 @@ export type DriverRouteAccessLookupResult =
       matches: DriverRouteAccessAmbiguousMatch[];
       resolutionHint: string;
     }
-  | { status: 'BLOCKED' | 'DISABLED' | 'NOT_FOUND' };
+  | { status: 'BLOCKED' | 'DISABLED' | 'NOT_FOUND' | 'VEHICLE_REQUIRED' };
