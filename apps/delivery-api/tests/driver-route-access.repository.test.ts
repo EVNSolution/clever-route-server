@@ -33,12 +33,12 @@ describe('PrismaDriverRouteAccessRepository', () => {
         name: true,
         planDate: true,
         shop: { select: { shopDomain: true } },
-        status: true
+        status: true,
+        vehicleId: true
       },
       where: {
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
         id: routePlanId,
-        routeStops: { some: {} },
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
@@ -108,12 +108,12 @@ describe('PrismaDriverRouteAccessRepository', () => {
         name: true,
         planDate: true,
         shop: { select: { shopDomain: true } },
-        status: true
+        status: true,
+        vehicleId: true
       },
       where: {
         driver: { is: { authSubject: { not: null }, accountId: 'account-id', status: 'ACTIVE' } },
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
-        routeStops: { some: {} },
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
@@ -196,6 +196,18 @@ describe('PrismaDriverRouteAccessRepository', () => {
     });
   });
 
+  test('requires a registered vehicle before issuing route access', async () => {
+    const { prisma } = createPrismaHarness({
+      phoneRoutePlans: [routePlanRecord({ vehicleId: null })]
+    });
+    const repository = new PrismaDriverRouteAccessRepository(prisma as never);
+
+    await expect(repository.lookupRouteAccess({
+      accountId: 'account-id',
+      routeContext: null
+    })).resolves.toEqual({ status: 'VEHICLE_REQUIRED' });
+  });
+
   test('does not reveal route guidance when the phone does not match the assigned driver', async () => {
     const { prisma } = createPrismaHarness();
     const repository = new PrismaDriverRouteAccessRepository(prisma as never);
@@ -233,7 +245,6 @@ describe('PrismaDriverRouteAccessRepository', () => {
       where: {
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
         id: routePlanId,
-        routeStops: { some: {} },
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     }));
@@ -277,14 +288,14 @@ describe('PrismaDriverRouteAccessRepository', () => {
         name: true,
         planDate: true,
         shop: { select: { shopDomain: true } },
-        status: true
+        status: true,
+        vehicleId: true
       },
       take: 3,
       where: {
         constraints: { path: ['routeScope', 'routeScopeKey'], equals: 'toronto-shared-route-scope' },
         driver: { is: { authSubject: { not: null }, accountId: 'account-id', status: 'ACTIVE' } },
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
-        routeStops: { some: {} },
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
@@ -401,6 +412,7 @@ function routePlanRecord(
     name?: string;
     shopDomain?: string;
     status?: string;
+    vehicleId?: string | null;
   } = {}
 ) {
   const shopDomain = overrides.shopDomain ?? 'tomatono.myshopify.com';
@@ -432,6 +444,7 @@ function routePlanRecord(
     shop: {
       shopDomain
     },
-    status: overrides.status ?? 'READY'
+    status: overrides.status ?? 'READY',
+    vehicleId: overrides.vehicleId === undefined ? 'vehicle-id' : overrides.vehicleId
   };
 }

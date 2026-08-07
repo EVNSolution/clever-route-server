@@ -167,7 +167,10 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
   ) {}
 
   async getSpace(input: DriverRouteAccessScope): Promise<DriverDeliverySpace> {
-    const { bundles, grouping } = await this.context(input);
+    const { bundles, context, grouping } = await this.context(input);
+    if (context.vehicleId === null) {
+      throw error('DESTINATION_BUNDLE_TARGET_VEHICLE_REQUIRED', '등록된 차량이 있어야 주문 목록을 확인할 수 있습니다.');
+    }
     return {
       available: bundles.filter(isAvailable).map(expose),
       mine: bundles.filter((bundle) => isMine(bundle, input)).map(expose),

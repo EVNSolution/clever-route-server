@@ -34,6 +34,7 @@ type DriverRoutePlanRecord = {
     shopDomain: string;
   };
   status: string;
+  vehicleId: string | null;
 };
 
 const routePlanSelect = {
@@ -51,7 +52,8 @@ const routePlanSelect = {
   name: true,
   planDate: true,
   shop: { select: { shopDomain: true } },
-  status: true
+  status: true,
+  vehicleId: true
 } as const;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -74,7 +76,6 @@ export class PrismaDriverRouteAccessRepository {
       where: {
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
         id: routeContext,
-        routeStops: { some: {} },
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
@@ -93,7 +94,6 @@ export class PrismaDriverRouteAccessRepository {
       where: {
         driver: { is: { accountId, authSubject: { not: null }, status: 'ACTIVE' } },
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
-        routeStops: { some: {} },
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
@@ -108,6 +108,10 @@ export class PrismaDriverRouteAccessRepository {
         status: 'ROUTES_FOUND',
         routes
       };
+    }
+
+    if (routePlans.some(({ vehicleId }) => vehicleId === null)) {
+      return { status: 'VEHICLE_REQUIRED' };
     }
 
     const drivers = await this.prisma.driver.findMany({
@@ -133,7 +137,7 @@ export class PrismaDriverRouteAccessRepository {
       return { status: 'NOT_FOUND' };
     }
 
-  return {
+    return {
       status: 'DISABLED'
     };
   }
@@ -151,7 +155,6 @@ export class PrismaDriverRouteAccessRepository {
         constraints: { path: ['routeScope', 'routeScopeKey'], equals: input.routeContext },
         driver: { is: { accountId: input.accountId, authSubject: { not: null }, status: 'ACTIVE' } },
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
-        routeStops: { some: {} },
         status: { in: [...ROUTE_DRIVER_OPERATIONAL_STATUSES] }
       }
     });
@@ -160,8 +163,13 @@ export class PrismaDriverRouteAccessRepository {
       return { status: 'NOT_FOUND' };
     }
 
-    if (routePlans.length === 1) {
-      const routePlan = routePlans[0];
+    const vehicleRoutes = routePlans.filter(({ vehicleId }) => vehicleId !== null);
+    if (vehicleRoutes.length === 0) {
+      return { status: 'VEHICLE_REQUIRED' };
+    }
+
+    if (vehicleRoutes.length === 1) {
+      const routePlan = vehicleRoutes[0];
       if (routePlan === undefined) {
         return { status: 'NOT_FOUND' };
       }
@@ -171,7 +179,7 @@ export class PrismaDriverRouteAccessRepository {
 
     return {
       status: 'MULTIPLE_MATCHES',
-      matches: routePlans.slice(0, 2).map(buildAmbiguousMatch),
+      matches: vehicleRoutes.slice(0, 2).map(buildAmbiguousMatch),
       resolutionHint: 'Use the account route list or contact dispatch.'
     };
   }
@@ -209,7 +217,11 @@ function mapRoutePlan(
     return { status: 'NOT_FOUND' };
   }
 
-    return {
+  if (routePlan.vehicleId === null) {
+    return { status: 'VEHICLE_REQUIRED' };
+  }
+
+  return {
     driverContext: {
       accountId: routePlan.driver.account.id,
       routePlanId: routePlan.id,
