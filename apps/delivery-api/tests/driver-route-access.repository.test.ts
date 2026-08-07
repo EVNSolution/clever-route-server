@@ -196,6 +196,99 @@ describe('PrismaDriverRouteAccessRepository', () => {
     });
   });
 
+  test('materializes a vehicle-backed standby route for the latest public delivery grouping', async () => {
+    const standbyRoutePlanId = '44444444-4444-4444-8444-444444444444';
+    const { prisma } = createPrismaHarness({
+      phoneDrivers: [{ status: 'ACTIVE' }],
+      phoneRoutePlanResponses: [[], [routePlanRecord({ id: standbyRoutePlanId })]],
+      publicRouteContext: { groupingId: 'grouping-id' },
+      vehicleAssignments: [{
+        driver: {
+          id: 'driver-id',
+          shop: { id: 'shop-id', shopDomain: 'tomatono.myshopify.com' }
+        },
+        vehicle: { id: 'vehicle-id' }
+      }]
+    });
+    const grouping = {
+      children: [{
+        color: null,
+        displayStatus: 'READY',
+        driverId: null,
+        orderIds: ['order-id'],
+        routeIdx: 1,
+        routePlan: { updatedAt: '2026-08-07T00:00:00.000Z' },
+        routePlanId: 'public-route-id',
+        sortOrder: 1,
+        updatedAt: '2026-08-07T00:00:00.000Z'
+      }, {
+        color: null,
+        displayStatus: 'READY',
+        driverId: null,
+        orderIds: [],
+        routeIdx: 2,
+        routePlan: null,
+        routePlanId: null,
+        sortOrder: 2,
+        updatedAt: '2026-08-07T00:00:00.000Z'
+      }],
+      id: 'grouping-id',
+      updatedAt: '2026-08-07T00:00:00.000Z'
+    };
+    const routeGroupingService = {
+      getGrouping: vi.fn(() => Promise.resolve(grouping)),
+      saveDraft: vi.fn(() => Promise.resolve(grouping))
+    };
+    const repository = new PrismaDriverRouteAccessRepository(
+      prisma as never,
+      routeGroupingService as never
+    );
+
+    const result = await repository.lookupRouteAccess({
+      accountId: 'account-id',
+      routeContext: null
+    });
+
+    expect(result).toMatchObject({
+      status: 'ROUTES_FOUND',
+      routes: [{ routeAccess: { routePlanId: standbyRoutePlanId } }]
+    });
+    expect(routeGroupingService.saveDraft).toHaveBeenCalledWith({
+      expectedUpdatedAt: grouping.updatedAt,
+      groupingId: grouping.id,
+      routes: [
+        expect.objectContaining({ orderIds: ['order-id'], routePlanId: 'public-route-id' }),
+        {
+          branchId: null,
+          driverId: 'driver-id',
+          label: null,
+          orderIds: [],
+          routePlanId: null,
+          sortOrder: 3,
+          tempId: 'standby:driver-id',
+          vehicleId: 'vehicle-id'
+        }
+      ],
+      shopDomain: 'tomatono.myshopify.com'
+    });
+  });
+
+  test('requires a vehicle when an active route-less driver opens public delivery', async () => {
+    const { prisma } = createPrismaHarness({
+      phoneDrivers: [{ status: 'ACTIVE' }],
+      phoneRoutePlans: []
+    });
+    const repository = new PrismaDriverRouteAccessRepository(
+      prisma as never,
+      { getGrouping: vi.fn(), saveDraft: vi.fn() } as never
+    );
+
+    await expect(repository.lookupRouteAccess({
+      accountId: 'account-id',
+      routeContext: null
+    })).resolves.toEqual({ status: 'VEHICLE_REQUIRED' });
+  });
+
   test('requires a registered vehicle before issuing route access', async () => {
     const { prisma } = createPrismaHarness({
       phoneRoutePlans: [routePlanRecord({ vehicleId: null })]
@@ -369,11 +462,23 @@ function createPrismaHarness(
     routePlan?: ReturnType<typeof routePlanRecord> | null;
     sharedRoutePlans?: ReturnType<typeof routePlanRecord>[];
     phoneRoutePlans?: ReturnType<typeof routePlanRecord>[];
+    phoneRoutePlanResponses?: Array<ReturnType<typeof routePlanRecord>[]>;
+    publicRouteContext?: { groupingId: string } | null;
+    vehicleAssignments?: Array<{
+      driver: { id: string; shop: { id: string; shopDomain: string } };
+      vehicle: { id: string };
+    }>;
   } = {}
 ): {
   prisma: {
+    dsvVehicleDriverAssignment: {
+      findMany: ReturnType<typeof vi.fn>;
+    };
     driver: {
       findMany: ReturnType<typeof vi.fn>;
+    };
+    routeGroupingChildVersion: {
+      findFirst: ReturnType<typeof vi.fn>;
     };
     routePlan: {
       findMany: ReturnType<typeof vi.fn>;
@@ -384,10 +489,17 @@ function createPrismaHarness(
   const routePlan = overrides.routePlan === undefined
     ? routePlanRecord(overrides.driverStatus === undefined ? {} : { driverStatus: overrides.driverStatus })
     : overrides.routePlan;
+  const phoneRoutePlanResponses = [...(overrides.phoneRoutePlanResponses ?? [])];
   return {
     prisma: {
+      dsvVehicleDriverAssignment: {
+        findMany: vi.fn(() => Promise.resolve(overrides.vehicleAssignments ?? []))
+      },
       driver: {
         findMany: vi.fn(() => Promise.resolve(overrides.phoneDrivers ?? []))
+      },
+      routeGroupingChildVersion: {
+        findFirst: vi.fn(() => Promise.resolve(overrides.publicRouteContext ?? null))
       },
       routePlan: {
         findMany: vi.fn((query?: unknown) => {
@@ -396,6 +508,8 @@ function createPrismaHarness(
             return Promise.resolve(overrides.sharedRoutePlans ?? []);
           }
 
+          const response = phoneRoutePlanResponses.shift();
+          if (response !== undefined) return Promise.resolve(response);
           return Promise.resolve(overrides.phoneRoutePlans ?? overrides.sharedRoutePlans ?? []);
         }),
         findUnique: vi.fn(() => Promise.resolve(routePlan))
