@@ -6,6 +6,7 @@ import type { DriverPushProvider } from '../src/modules/route-grouping/driver-pu
 import { hashPushToken } from '../src/modules/route-grouping/driver-push-token.service.js';
 
 const now = new Date('2026-08-06T08:00:00.000Z');
+const driverAppId = 'com.evnsolution.clever.driver';
 
 describe('PrismaDsvDriverNotificationDispatcher', () => {
   test('sends pending DSV change request attempts with only minimal identifiers', async () => {
@@ -33,6 +34,10 @@ describe('PrismaDsvDriverNotificationDispatcher', () => {
       routePlanId: 'route-plan-id'
     });
     expect(JSON.stringify(provider.sendRouteNotification.mock.calls[0]?.[0])).not.toContain('do not send this memo body');
+    expect(prisma.driverPushToken.findMany).toHaveBeenCalledWith({
+      orderBy: { lastSeenAt: 'desc' },
+      where: { accountId: 'account-id', appId: driverAppId, status: 'ACTIVE' }
+    });
     expect(prisma.driverRouteNotificationAttempt.update).toHaveBeenCalledWith({
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       data: expect.objectContaining({
@@ -44,6 +49,36 @@ describe('PrismaDsvDriverNotificationDispatcher', () => {
       }),
       where: { id: 'attempt-id' }
     });
+  });
+
+  test('forwards only the handoff request routing identifiers', async () => {
+    const { prisma, provider } = createHarness({
+      metadata: {
+        address: '잠금 화면에 노출하면 안 되는 주소',
+        handoffEvent: 'proposed',
+        handoffRequestId: 'handoff-request-id',
+        orderCount: 3
+      }
+    });
+    provider.sendRouteNotification.mockResolvedValue({ providerMessageId: 'fcm-id', status: 'SENT' });
+    const dispatcher = new PrismaDsvDriverNotificationDispatcher(prisma as never, provider);
+
+    await expect(dispatcher.dispatchByIdempotencyKey('driver-bundle-handoff:handoff-request-id:proposed', now))
+      .resolves.toEqual({ attemptId: 'attempt-id', status: 'SENT' });
+
+    expect(provider.sendRouteNotification).toHaveBeenCalledWith({
+      action: 'changed',
+      childVersion: 7,
+      devicePushToken: 'push-token',
+      metadata: {
+        handoffEvent: 'proposed',
+        handoffRequestId: 'handoff-request-id'
+      },
+      routeGroupingId: 'grouping-id',
+      routePlanId: 'route-plan-id'
+    });
+    expect(JSON.stringify(provider.sendRouteNotification.mock.calls[0]?.[0])).not.toContain('잠금 화면');
+    expect(JSON.stringify(provider.sendRouteNotification.mock.calls[0]?.[0])).not.toContain('orderCount');
   });
 
   test('invalidates bad active driver tokens and records a failed retryable attempt', async () => {

@@ -59,6 +59,7 @@ export class FirebaseAdminDriverPushProvider implements DriverPushProvider {
         initializeApp({ credential: applicationDefault(), projectId: this.options.projectId });
         this.initialized = true;
       }
+      const isBundleHandoff = message.metadata?.handoffRequestId !== undefined;
       const id = await getMessaging().send({
         android: { notification: { channelId: 'route-updates' }, priority: 'high' },
         data: {
@@ -67,11 +68,11 @@ export class FirebaseAdminDriverPushProvider implements DriverPushProvider {
           ...(message.metadata ?? {}),
           routeGroupingId: message.routeGroupingId,
           routePlanId: message.routePlanId,
-          type: 'driver_route_changed'
+          type: isBundleHandoff ? 'driver_bundle_handoff' : 'driver_route_changed'
         },
         notification: {
-          body: routeNotificationBody(message.action),
-          title: routeNotificationTitle(message.action)
+          body: isBundleHandoff ? '앱에서 요청 내용을 확인해 주세요.' : routeNotificationBody(message.action),
+          title: isBundleHandoff ? '배송지 인계 요청' : routeNotificationTitle(message.action)
         },
         token: message.devicePushToken
       });
