@@ -196,11 +196,14 @@ describe('PrismaDriverRouteAccessRepository', () => {
     });
   });
 
-  test('materializes a vehicle-backed standby route for the latest public delivery grouping', async () => {
+  test('materializes a vehicle-backed standby route only for today\'s public delivery grouping', async () => {
     const standbyRoutePlanId = '44444444-4444-4444-8444-444444444444';
     const { prisma } = createPrismaHarness({
       phoneDrivers: [{ status: 'ACTIVE' }],
-      phoneRoutePlanResponses: [[], [routePlanRecord({ id: standbyRoutePlanId })]],
+      phoneRoutePlanResponses: [
+        [routePlanRecord({ planDate: '2026-08-05' })],
+        [routePlanRecord({ id: standbyRoutePlanId, planDate: '2026-08-07' })]
+      ],
       publicRouteContext: { groupingId: 'grouping-id' },
       vehicleAssignments: [{
         driver: {
@@ -241,7 +244,8 @@ describe('PrismaDriverRouteAccessRepository', () => {
     };
     const repository = new PrismaDriverRouteAccessRepository(
       prisma as never,
-      routeGroupingService as never
+      routeGroupingService as never,
+      () => new Date('2026-08-07T14:00:00.000Z')
     );
 
     const result = await repository.lookupRouteAccess({
@@ -252,6 +256,13 @@ describe('PrismaDriverRouteAccessRepository', () => {
     expect(result).toMatchObject({
       status: 'ROUTES_FOUND',
       routes: [{ routeAccess: { routePlanId: standbyRoutePlanId } }]
+    });
+    const publicRouteQuery = prisma.routeGroupingChildVersion.findFirst.mock.calls[0]?.[0] as {
+      where?: { grouping?: { planDate?: Date; status?: string } };
+    } | undefined;
+    expect(publicRouteQuery?.where?.grouping).toEqual({
+      planDate: new Date('2026-08-07T00:00:00.000Z'),
+      status: 'READY'
     });
     expect(routeGroupingService.saveDraft).toHaveBeenCalledWith({
       expectedUpdatedAt: grouping.updatedAt,
@@ -524,6 +535,7 @@ function routePlanRecord(
     driverStatus?: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
     id?: string;
     name?: string;
+    planDate?: string;
     shopDomain?: string;
     status?: string;
     vehicleId?: string | null;
@@ -554,7 +566,7 @@ function routePlanRecord(
     },
     id: overrides.id ?? routePlanId,
     name: overrides.name ?? 'Tuesday AM Route',
-    planDate: new Date('2026-05-12T00:00:00.000Z'),
+    planDate: new Date(`${overrides.planDate ?? '2026-05-12'}T00:00:00.000Z`),
     shop: {
       shopDomain
     },

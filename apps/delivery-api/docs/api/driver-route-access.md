@@ -21,10 +21,12 @@ The primary lookup uses the `clever-driver-account` bearer token returned by reg
 - a vehicle-backed route plan remains selectable even when it currently has no
   route stops, so the driver can open the public delivery Space and acquire a
   destination bundle before departure
-- when an active driver has a registered vehicle but no route plan, the server
-  materializes one empty `READY` child route in the latest route grouping that
-  still contains public unassigned orders; the normal route-scoped token and
-  delivery Space contracts are then reused without granting account-wide order access
+- when an active driver has a registered vehicle but no route plan for the
+  current `Asia/Seoul` service date, the server materializes one empty `READY`
+  child route in that day's route grouping when it still contains public
+  unassigned orders; older operational routes do not block this daily standby
+  route, and the normal route-scoped token and delivery Space contracts are
+  reused without granting account-wide order access
 - if active route assignments exist, server returns `ROUTES_FOUND` with route choices; each choice carries company guidance, route access identifiers, and short-lived `driverAccess`
 - if matching operational route plans exist but none has a registered vehicle,
   server returns `VEHICLE_REQUIRED` without issuing route access

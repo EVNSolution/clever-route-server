@@ -11,8 +11,13 @@
 Space 조회가 가능하다. 등록 차량이 없는 배차는 route access 단계에서
 `VEHICLE_REQUIRED`, Space 조회 단계에서
 `DESTINATION_BUNDLE_TARGET_VEHICLE_REQUIRED`로 차단한다.
-등록 차량은 있지만 배차가 전혀 없는 배송원은 최신 공용 배송 그룹에 빈
-`READY` 배차를 한 번만 만들고 동일한 route-scoped 계약으로 진입한다.
+등록 차량은 있지만 당일 배차가 없는 배송원은 `Asia/Seoul` 기준 당일 공용
+배송 그룹에 빈 `READY` 배차를 한 번만 만들고 동일한 route-scoped 계약으로
+진입한다. 과거 `READY` 배차가 남아 있어도 당일 빈 배차 생성을 막지 않는다.
+
+`mine`과 `available`은 `Asia/Seoul` 기준 당일 그룹에서만 반환한다. 과거 또는
+미래 그룹은 두 목록을 비워 반환하며 `acquire`와 `release`는
+`DESTINATION_BUNDLE_TRANSFER_CLOSED`로 차단한다.
 
 명령 본문은 `{ "expectedVersion": "..." }`이다. 서버는 묶음 전체를 한 번의
 route grouping draft 저장으로 이동한다. 경로가 `READY`이고 확보 경로에 차량이
