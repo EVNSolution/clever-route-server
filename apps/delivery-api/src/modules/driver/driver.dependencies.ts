@@ -171,7 +171,7 @@ export function loadDriverApiDependencies(
     }),
     ...(input.routeTrackingStreamHub === undefined ? {} : { routeTrackingStreamHub: input.routeTrackingStreamHub }),
     ...(input.routeOptimizationScheduler === undefined ? {} : { routeOptimizationScheduler: input.routeOptimizationScheduler }),
-    routeAccessService: new PrismaDriverRouteAccessRepository(input.prisma)
+    routeAccessService: new PrismaDriverRouteAccessRepository(input.prisma, input.routeGroupingService)
   };
 }
 

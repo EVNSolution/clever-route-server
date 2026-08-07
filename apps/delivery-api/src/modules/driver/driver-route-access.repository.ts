@@ -3,6 +3,11 @@ import {
   ROUTE_DRIVER_OPERATIONAL_STATUSES,
   toRouteExecutionStatus
 } from '../route-plans/route-plan-lifecycle.js';
+import type {
+  RouteGroupingChildDto,
+  RouteGroupingDraftRouteInput,
+  RouteGroupingService
+} from '../route-grouping/route-grouping.types.js';
 
 import { normalizeDriverCommerceDomain } from './driver-commerce-domain.js';
 import type {
@@ -12,7 +17,10 @@ import type {
   DriverRouteAccessLookupInput,
   DriverRouteAccessLookupResult
 } from './driver-route-access.types.js';
-type DriverRouteAccessPrismaClient = Pick<PrismaClient, 'driver' | 'routePlan'>;
+type DriverRouteAccessPrismaClient = Pick<
+  PrismaClient,
+  'driver' | 'dsvVehicleDriverAssignment' | 'routeGroupingChildVersion' | 'routePlan'
+>;
 
 type DriverRoutePlanRecord = {
   constraints: unknown;
@@ -59,7 +67,10 @@ const routePlanSelect = {
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 export class PrismaDriverRouteAccessRepository {
-  constructor(private readonly prisma: DriverRouteAccessPrismaClient) {}
+  constructor(
+    private readonly prisma: DriverRouteAccessPrismaClient,
+    private readonly routeGroupingService?: RouteGroupingService
+  ) {}
 
   async lookupRouteAccess(input: DriverRouteAccessLookupInput): Promise<DriverRouteAccessLookupResult> {
     const routeContext = input.routeContext;
@@ -123,6 +134,13 @@ export class PrismaDriverRouteAccessRepository {
     }
 
     if (drivers.some((driver) => driver.status === 'ACTIVE' && driver.authSubject !== null)) {
+      const standbyStatus = await this.ensureStandbyRoute(accountId);
+      if (standbyStatus === 'CREATED') {
+        return this.lookupAccountRouteAccess(accountId);
+      }
+      if (standbyStatus === 'VEHICLE_REQUIRED') {
+        return { status: 'VEHICLE_REQUIRED' };
+      }
       return {
         status: 'ROUTES_FOUND',
         routes: []
@@ -140,6 +158,88 @@ export class PrismaDriverRouteAccessRepository {
     return {
       status: 'DISABLED'
     };
+  }
+
+  private async ensureStandbyRoute(
+    accountId: string
+  ): Promise<'CREATED' | 'NO_PUBLIC_DELIVERY' | 'UNAVAILABLE' | 'VEHICLE_REQUIRED'> {
+    if (this.routeGroupingService === undefined) return 'UNAVAILABLE';
+
+    const assignments = await this.prisma.dsvVehicleDriverAssignment.findMany({
+      select: {
+        driver: {
+          select: {
+            id: true,
+            shop: { select: { id: true, shopDomain: true } }
+          }
+        },
+        vehicle: { select: { id: true } }
+      },
+      where: {
+        driver: {
+          accountId,
+          authSubject: { not: null },
+          status: 'ACTIVE'
+        },
+        vehicle: { status: 'ACTIVE' }
+      }
+    });
+    if (assignments.length === 0) return 'VEHICLE_REQUIRED';
+
+    for (const assignment of assignments) {
+      const publicRoute = await this.prisma.routeGroupingChildVersion.findFirst({
+        orderBy: [
+          { grouping: { planDate: 'desc' } },
+          { updatedAt: 'desc' }
+        ],
+        select: { groupingId: true },
+        where: {
+          currentOrders: { some: {} },
+          driverId: null,
+          grouping: { status: 'READY' },
+          routePlanId: { not: null },
+          shopId: assignment.driver.shop.id,
+          status: 'CURRENT',
+          supersededAt: null
+        }
+      });
+      if (publicRoute === null) continue;
+
+      const grouping = await this.routeGroupingService.getGrouping({
+        groupingId: publicRoute.groupingId,
+        shopDomain: assignment.driver.shop.shopDomain
+      });
+      if (grouping === null) continue;
+      if (grouping.children.some((child) => (
+        child.driverId === assignment.driver.id &&
+        child.displayStatus === 'READY' &&
+        child.routePlanId !== null
+      ))) continue;
+
+      const saved = await this.routeGroupingService.saveDraft({
+        expectedUpdatedAt: grouping.updatedAt,
+        groupingId: grouping.id,
+        routes: [
+          ...grouping.children
+            .filter((child) => child.routePlanId !== null || child.orderIds.length > 0)
+            .map(toDraftRoute),
+          {
+            branchId: null,
+            driverId: assignment.driver.id,
+            label: null,
+            orderIds: [],
+            routePlanId: null,
+            sortOrder: nextSortOrder(grouping.children),
+            tempId: `standby:${assignment.driver.id}`,
+            vehicleId: assignment.vehicle.id
+          }
+        ],
+        shopDomain: assignment.driver.shop.shopDomain
+      });
+      if (saved !== null) return 'CREATED';
+    }
+
+    return 'NO_PUBLIC_DELIVERY';
   }
 
   private async lookupRouteScopeAccess(input: DriverRouteAccessLookupInput): Promise<DriverRouteAccessLookupResult> {
@@ -253,6 +353,29 @@ function buildCompanyGuidance(routePlan: DriverRoutePlanRecord): DriverRouteAcce
     shopDomain,
     timezone: readString(constraints?.timezone)
   };
+}
+
+function toDraftRoute(child: RouteGroupingChildDto): RouteGroupingDraftRouteInput {
+  return {
+    branchId: null,
+    color: child.color,
+    driverId: child.driverId,
+    expectedChildUpdatedAt: child.updatedAt,
+    ...(child.routePlan?.updatedAt === undefined
+      ? {}
+      : { expectedRoutePlanUpdatedAt: child.routePlan.updatedAt }),
+    orderIds: child.orderIds,
+    ...(child.routePlanId === null
+      ? { tempId: `child:${child.updatedAt}:${child.sortOrder ?? child.routeIdx ?? 'null-route'}` }
+      : {}),
+    ...(child.routeIdx === null ? {} : { routeIdx: child.routeIdx }),
+    routePlanId: child.routePlanId,
+    ...(child.sortOrder === null ? {} : { sortOrder: child.sortOrder })
+  };
+}
+
+function nextSortOrder(children: RouteGroupingChildDto[]): number {
+  return children.reduce((highest, child) => Math.max(highest, child.sortOrder ?? 0), 0) + 1;
 }
 
 function buildAmbiguousMatch(routePlan: DriverRoutePlanRecord): DriverRouteAccessAmbiguousMatch {
