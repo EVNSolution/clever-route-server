@@ -88,6 +88,30 @@ describe('UvisTelemetryWorker', () => {
     expect(harness.client.getLatestTemperatures).not.toHaveBeenCalled();
   });
 
+  test('applies the same timer-boundary tolerance to temperature polling', async () => {
+    const harness = createHarness({
+      lastLocationStartedAt: now,
+      lastTemperatureStartedAt: new Date(now.getTime() - 299_999),
+    });
+
+    await harness.worker.runOnce();
+
+    expect(harness.client.getLatestLocations).not.toHaveBeenCalled();
+    expect(harness.client.getLatestTemperatures).toHaveBeenCalledOnce();
+  });
+
+  test('does not poll early outside the timer-boundary tolerance', async () => {
+    const harness = createHarness({
+      lastLocationStartedAt: new Date(now.getTime() - 58_999),
+      lastTemperatureStartedAt: new Date(now.getTime() - 298_999),
+    });
+
+    await harness.worker.runOnce();
+
+    expect(harness.client.getLatestLocations).not.toHaveBeenCalled();
+    expect(harness.client.getLatestTemperatures).not.toHaveBeenCalled();
+  });
+
   test('backs dormant location polling off to the heartbeat while temperature cadence stays active', async () => {
     const harness = createHarness({
       activeProtectionEndedAt: new Date('2026-08-03T22:30:00.000Z'),
