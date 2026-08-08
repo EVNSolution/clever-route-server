@@ -324,15 +324,19 @@ describe('DsvAssignmentCommandService', () => {
     expect(routes).not.toContainEqual(expect.objectContaining({ routePlanId: null, vehicleId: 'vehicle-b' }));
   });
 
-  test('reassign without target route creates a driver draft route and requires a target vehicle', async () => {
+  test('reassign without target route creates a vehicle-less driver draft route', async () => {
     const missingVehicle = createHarness();
     await expect(missingVehicle.service.reassign({
       ...adminInput({ commandId: 'cmd-reassign-new-route-no-vehicle' }),
       targetDriverId: 'driver-c',
-    })).rejects.toMatchObject({
-      code: 'SELLER_ORDER_TARGET_VEHICLE_REQUIRED',
-    } satisfies Partial<DsvAssignmentCommandError>);
-    expect(missingVehicle.routeGroupingService.saveDraft).not.toHaveBeenCalled();
+    })).resolves.toMatchObject({
+      assignmentStatus: 'ASSIGNED',
+      routePlanId: 'route-new',
+    });
+    expect(missingVehicle.savedRoutes().find((route: RouteGroupingDraftRouteInput) => route.routePlanId === null && route.driverId === 'driver-c')).toMatchObject({
+      orderIds: ['order-a'],
+      vehicleId: null,
+    });
 
     const harness = createHarness();
     const result = await harness.service.reassign({
@@ -478,6 +482,7 @@ describe('DsvAssignmentCommandService', () => {
     const acquire = createHarness({ grouping: groupingFixture({ initiallyUnassigned: true }) });
     await acquire.service.acquire(driverInput({ commandId: 'cmd-acquire', expectedVersion: 'version-unassigned', sellerOrderId: 'order-a' }));
     expect(acquire.savedRoutes().find((route: RouteGroupingDraftRouteInput) => route.routePlanId === 'route-a')?.orderIds).toEqual(['order-a']);
+    expect(acquire.prisma.routePlan.findFirst).not.toHaveBeenCalled();
 
     const alreadyOwned = createHarness();
     await expect(alreadyOwned.service.acquire(driverInput({ commandId: 'cmd-acquire-owned' }))).rejects.toMatchObject({

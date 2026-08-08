@@ -44,9 +44,7 @@ export type DriverSellerOrderAssignmentServiceContract = {
   release(input: DriverSellerOrderAssignmentCommandInput): Promise<DriverSellerOrderAssignmentResult>;
 };
 
-export type DriverSellerOrderAssignmentCommandKernelInput = DriverSellerOrderAssignmentCommandInput & {
-  bearerRouteVehicleId: string | null;
-};
+export type DriverSellerOrderAssignmentCommandKernelInput = DriverSellerOrderAssignmentCommandInput;
 
 export type DriverSellerOrderAssignmentCommandKernel = {
   acquireDriverSellerOrder(
@@ -59,7 +57,6 @@ export type DriverSellerOrderAssignmentCommandKernel = {
 
 type DriverSellerOrderRouteContext = {
   groupingId: string;
-  vehicleId: string | null;
 };
 
 export type DriverSellerOrderContextRepositoryContract = {
@@ -76,8 +73,7 @@ export class PrismaDriverSellerOrderContextRepository implements DriverSellerOrd
   ): Promise<DriverSellerOrderRouteContext | null> {
     const child = await this.prisma.routeGroupingChildVersion.findFirst({
       select: {
-        groupingId: true,
-        routePlan: { select: { vehicleId: true } }
+        groupingId: true
       },
       where: {
         driverId: input.driverId,
@@ -87,8 +83,8 @@ export class PrismaDriverSellerOrderContextRepository implements DriverSellerOrd
       }
     });
 
-    if (child === null || child.routePlan === null) return null;
-    return { groupingId: child.groupingId, vehicleId: child.routePlan.vehicleId };
+    if (child === null) return null;
+    return { groupingId: child.groupingId };
   }
 }
 
@@ -186,16 +182,11 @@ export class DriverSellerOrderAssignmentService implements DriverSellerOrderAssi
 
   async acquire(input: DriverSellerOrderAssignmentCommandInput): Promise<DriverSellerOrderAssignmentResult> {
     if (this.commandKernel !== undefined) {
-      const context = await this.loadBearerRouteContext(input);
-      if (context.vehicleId === null) throw new DriverSellerOrderVehicleRequiredError();
-      return this.commandKernel.acquireDriverSellerOrder({
-        ...input,
-        bearerRouteVehicleId: context.vehicleId
-      });
+      await this.loadBearerRouteContext(input);
+      return this.commandKernel.acquireDriverSellerOrder(input);
     }
 
-    const { context, grouping } = await this.loadScopedGrouping(input);
-    if (context.vehicleId === null) throw new DriverSellerOrderVehicleRequiredError();
+    const { grouping } = await this.loadScopedGrouping(input);
 
     const target = requireDriverRoute(grouping, input);
     assertTransferOpen(target);
@@ -232,11 +223,8 @@ export class DriverSellerOrderAssignmentService implements DriverSellerOrderAssi
 
   async release(input: DriverSellerOrderAssignmentCommandInput): Promise<DriverSellerOrderAssignmentResult> {
     if (this.commandKernel !== undefined) {
-      const context = await this.loadBearerRouteContext(input);
-      return this.commandKernel.releaseDriverSellerOrder({
-        ...input,
-        bearerRouteVehicleId: context.vehicleId
-      });
+      await this.loadBearerRouteContext(input);
+      return this.commandKernel.releaseDriverSellerOrder(input);
     }
 
     const { grouping } = await this.loadScopedGrouping(input);

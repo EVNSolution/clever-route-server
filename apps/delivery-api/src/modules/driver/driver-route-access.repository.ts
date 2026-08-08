@@ -20,7 +20,7 @@ import type {
 } from './driver-route-access.types.js';
 type DriverRouteAccessPrismaClient = Pick<
   PrismaClient,
-  'driver' | 'dsvVehicleDriverAssignment' | 'routeGroupingChildVersion' | 'routePlan'
+  'driver' | 'routeGroupingChildVersion' | 'routePlan'
 >;
 
 type DriverRoutePlanRecord = {
@@ -43,7 +43,6 @@ type DriverRoutePlanRecord = {
     shopDomain: string;
   };
   status: string;
-  vehicleId: string | null;
 };
 
 const routePlanSelect = {
@@ -61,8 +60,7 @@ const routePlanSelect = {
   name: true,
   planDate: true,
   shop: { select: { shopDomain: true } },
-  status: true,
-  vehicleId: true
+  status: true
 } as const;
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -132,10 +130,6 @@ export class PrismaDriverRouteAccessRepository {
       };
     }
 
-    if (routePlans.some(({ vehicleId }) => vehicleId === null)) {
-      return { status: 'VEHICLE_REQUIRED' };
-    }
-
     const drivers = await this.prisma.driver.findMany({
       select: { authSubject: true, status: true },
       where: { accountId }
@@ -148,9 +142,6 @@ export class PrismaDriverRouteAccessRepository {
       const standbyStatus = await this.ensureStandbyRoute(accountId);
       if (standbyStatus === 'CREATED') {
         return this.lookupAccountRouteAccess(accountId);
-      }
-      if (standbyStatus === 'VEHICLE_REQUIRED') {
-        return { status: 'VEHICLE_REQUIRED' };
       }
       return {
         status: 'ROUTES_FOUND',
@@ -173,31 +164,22 @@ export class PrismaDriverRouteAccessRepository {
 
   private async ensureStandbyRoute(
     accountId: string
-  ): Promise<'CREATED' | 'NO_PUBLIC_DELIVERY' | 'UNAVAILABLE' | 'VEHICLE_REQUIRED'> {
+  ): Promise<'CREATED' | 'NO_PUBLIC_DELIVERY' | 'UNAVAILABLE'> {
     if (this.routeGroupingService === undefined) return 'UNAVAILABLE';
 
-    const assignments = await this.prisma.dsvVehicleDriverAssignment.findMany({
+    const drivers = await this.prisma.driver.findMany({
       select: {
-        driver: {
-          select: {
-            id: true,
-            shop: { select: { id: true, shopDomain: true } }
-          }
-        },
-        vehicle: { select: { id: true } }
+        id: true,
+        shop: { select: { id: true, shopDomain: true } }
       },
       where: {
-        driver: {
-          accountId,
-          authSubject: { not: null },
-          status: 'ACTIVE'
-        },
-        vehicle: { status: 'ACTIVE' }
+        accountId,
+        authSubject: { not: null },
+        status: 'ACTIVE'
       }
     });
-    if (assignments.length === 0) return 'VEHICLE_REQUIRED';
 
-    for (const assignment of assignments) {
+    for (const driver of drivers) {
       const publicRoute = await this.prisma.routeGroupingChildVersion.findFirst({
         orderBy: [
           { grouping: { planDate: 'desc' } },
@@ -212,7 +194,7 @@ export class PrismaDriverRouteAccessRepository {
             status: 'READY'
           },
           routePlanId: { not: null },
-          shopId: assignment.driver.shop.id,
+          shopId: driver.shop.id,
           status: 'CURRENT',
           supersededAt: null
         }
@@ -221,11 +203,11 @@ export class PrismaDriverRouteAccessRepository {
 
       const grouping = await this.routeGroupingService.getGrouping({
         groupingId: publicRoute.groupingId,
-        shopDomain: assignment.driver.shop.shopDomain
+        shopDomain: driver.shop.shopDomain
       });
       if (grouping === null) continue;
       if (grouping.children.some((child) => (
-        child.driverId === assignment.driver.id &&
+        child.driverId === driver.id &&
         child.displayStatus === 'READY' &&
         child.routePlanId !== null
       ))) continue;
@@ -239,16 +221,16 @@ export class PrismaDriverRouteAccessRepository {
             .map(toDraftRoute),
           {
             branchId: null,
-            driverId: assignment.driver.id,
+            driverId: driver.id,
             label: null,
             orderIds: [],
             routePlanId: null,
             sortOrder: nextSortOrder(grouping.children),
-            tempId: `standby:${assignment.driver.id}`,
-            vehicleId: assignment.vehicle.id
+            tempId: `standby:${driver.id}`,
+            vehicleId: null
           }
         ],
-        shopDomain: assignment.driver.shop.shopDomain
+        shopDomain: driver.shop.shopDomain
       });
       if (saved !== null) return 'CREATED';
     }
@@ -277,13 +259,8 @@ export class PrismaDriverRouteAccessRepository {
       return { status: 'NOT_FOUND' };
     }
 
-    const vehicleRoutes = routePlans.filter(({ vehicleId }) => vehicleId !== null);
-    if (vehicleRoutes.length === 0) {
-      return { status: 'VEHICLE_REQUIRED' };
-    }
-
-    if (vehicleRoutes.length === 1) {
-      const routePlan = vehicleRoutes[0];
+    if (routePlans.length === 1) {
+      const routePlan = routePlans[0];
       if (routePlan === undefined) {
         return { status: 'NOT_FOUND' };
       }
@@ -293,7 +270,7 @@ export class PrismaDriverRouteAccessRepository {
 
     return {
       status: 'MULTIPLE_MATCHES',
-      matches: vehicleRoutes.slice(0, 2).map(buildAmbiguousMatch),
+      matches: routePlans.slice(0, 2).map(buildAmbiguousMatch),
       resolutionHint: 'Use the account route list or contact dispatch.'
     };
   }
@@ -329,10 +306,6 @@ function mapRoutePlan(
 
   if (routePlan.driver.authSubject === null) {
     return { status: 'NOT_FOUND' };
-  }
-
-  if (routePlan.vehicleId === null) {
-    return { status: 'VEHICLE_REQUIRED' };
   }
 
   return {

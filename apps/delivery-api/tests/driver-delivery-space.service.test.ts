@@ -11,8 +11,7 @@ import type { RouteGroupingDetailDto, RouteGroupingService } from '../src/module
 describe('DriverDeliverySpaceService', () => {
   test('passes only Prisma-supported route scope fields to the repository query', async () => {
     const findFirst = vi.fn(() => Promise.resolve({
-      groupingId: 'group-1',
-      routePlan: { vehicleId: 'vehicle-1' }
+      groupingId: 'group-1'
     }));
     const repository = new PrismaDriverDeliverySpaceRepository({
       dsvDispatchImportRow: {} as never,
@@ -20,11 +19,10 @@ describe('DriverDeliverySpaceService', () => {
     });
 
     await expect(repository.findRouteContext(scope())).resolves.toEqual({
-      groupingId: 'group-1',
-      vehicleId: 'vehicle-1'
+      groupingId: 'group-1'
     });
     expect(findFirst).toHaveBeenCalledWith({
-      select: { groupingId: true, routePlan: { select: { vehicleId: true } } },
+      select: { groupingId: true },
       where: {
         driverId: 'driver-1',
         routePlanId: 'route-driver',
@@ -61,11 +59,17 @@ describe('DriverDeliverySpaceService', () => {
       .rejects.toMatchObject({ code: 'DESTINATION_BUNDLE_ALREADY_ACQUIRED' });
   });
 
-  test('requires a registered route vehicle before exposing the shared delivery space', async () => {
-    const harness = setup(bundleOrders('public'), null);
+  test('exposes and acquires shared delivery without a registered route vehicle', async () => {
+    const harness = setup(bundleOrders('public'));
 
     await expect(harness.service.getSpace(scope()))
-      .rejects.toMatchObject({ code: 'DESTINATION_BUNDLE_TARGET_VEHICLE_REQUIRED' });
+      .resolves.toMatchObject({ available: [{ destinationId: 'dest-a' }] });
+    await expect(harness.service.acquire({ ...scope(), destinationId: 'dest-a', expectedVersion: 'v1' }))
+      .resolves.toMatchObject({ routePlanId: 'route-driver' });
+    expect(harness.reassignMany).toHaveBeenCalledWith(expect.objectContaining({
+      targetDriverId: 'driver-1',
+      targetRoutePlanId: 'route-driver'
+    }));
   });
 
   test('hides and rejects public delivery bundles outside the current Seoul service date', async () => {
@@ -73,8 +77,8 @@ describe('DriverDeliverySpaceService', () => {
       now: new Date('2026-08-04T14:59:59.000Z'),
       planDate: '2026-08-03'
     };
-    const publicHarness = setup(bundleOrders('public'), 'vehicle-1', options);
-    const mineHarness = setup(bundleOrders('mine'), 'vehicle-1', options);
+    const publicHarness = setup(bundleOrders('public'), options);
+    const mineHarness = setup(bundleOrders('mine'), options);
 
     await expect(publicHarness.service.getSpace(scope())).resolves.toMatchObject({
       available: []
@@ -91,7 +95,7 @@ describe('DriverDeliverySpaceService', () => {
   });
 
   test('uses the Seoul calendar date at the UTC day boundary', async () => {
-    const harness = setup(bundleOrders('public'), 'vehicle-1', {
+    const harness = setup(bundleOrders('public'), {
       now: new Date('2026-08-03T15:00:00.000Z'),
       planDate: '2026-08-04'
     });
@@ -104,7 +108,6 @@ describe('DriverDeliverySpaceService', () => {
 
 function setup(
   rows: Awaited<ReturnType<DriverDeliverySpaceRepositoryContract['listBundleOrders']>>,
-  vehicleId: string | null = 'vehicle-1',
   options: { now?: Date; planDate?: string } = {}
 ) {
   const grouping = groupingDetail(options.planDate);
@@ -112,7 +115,7 @@ function setup(
   const reassignMany = vi.fn(() => Promise.resolve({ assignmentResults: [], routePlanId: 'route-driver' }));
   const unassignMany = vi.fn(() => Promise.resolve({ assignmentResults: [], routePlanId: 'route-public' }));
   const repository: DriverDeliverySpaceRepositoryContract = {
-    findRouteContext: vi.fn(() => Promise.resolve({ groupingId: 'group-1', vehicleId })),
+    findRouteContext: vi.fn(() => Promise.resolve({ groupingId: 'group-1' })),
     listBundleOrders: vi.fn(() => Promise.resolve(rows))
   };
   return {

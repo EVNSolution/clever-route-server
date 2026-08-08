@@ -228,9 +228,9 @@ export class DsvAssignmentCommandService {
       if (target.driverId !== input.targetDriverId) throw new DsvAssignmentCommandError('SELLER_ORDER_ROUTE_SCOPE_REJECTED');
       assertTransferOpen(target);
       if (target.routePlanId === null) {
-        await this.assertNewRouteTargetVehicle(tx, shop.id, input.targetDriverId, input.targetVehicleId);
+        await this.validateSpecifiedNewRouteVehicle(tx, shop.id, input.targetDriverId, input.targetVehicleId);
       } else {
-        await this.assertTargetVehicle(tx, shop.id, target, input.targetVehicleId);
+        await this.validateSpecifiedRouteVehicle(tx, shop.id, target, input.targetVehicleId);
       }
 
       const sellerOrderIds = commands.map((command) => command.input.sellerOrderId);
@@ -680,9 +680,9 @@ export class DsvAssignmentCommandService {
         assertTransferOpen(source);
         assertTransferOpen(target);
         if (target.routePlanId === null) {
-          await this.assertNewRouteTargetVehicle(tx, shopId, input.targetDriverId, input.targetVehicleId);
+          await this.validateSpecifiedNewRouteVehicle(tx, shopId, input.targetDriverId, input.targetVehicleId);
         } else {
-          await this.assertTargetVehicle(tx, shopId, target, input.targetVehicleId);
+          await this.validateSpecifiedRouteVehicle(tx, shopId, target, input.targetVehicleId);
         }
         return {
           assignmentStatus: 'ASSIGNED',
@@ -732,7 +732,7 @@ export class DsvAssignmentCommandService {
       plan: async (tx, grouping, shopId, currentRouteVersionId) => {
         const target = requireDriverRoute(grouping, input);
         assertTransferOpen(target);
-        await this.assertTargetVehicle(tx, shopId, target, null);
+        await this.validateSpecifiedRouteVehicle(tx, shopId, target, null);
         const source = await this.requireOwner(tx, input.sellerOrderId, grouping, currentRouteVersionId);
         if (source.driverId !== null) throw new DsvAssignmentCommandError('SELLER_ORDER_ALREADY_ACQUIRED');
         assertTransferOpen(source);
@@ -1080,29 +1080,27 @@ export class DsvAssignmentCommandService {
     return current?.id ?? null;
   }
 
-  private async assertTargetVehicle(tx: DsvAssignmentTransactionClient, shopId: string, route: RouteGroupingChildDto, targetVehicleId: string | null | undefined): Promise<void> {
+  private async validateSpecifiedRouteVehicle(tx: DsvAssignmentTransactionClient, shopId: string, route: RouteGroupingChildDto, targetVehicleId: string | null | undefined): Promise<void> {
+    if (targetVehicleId === undefined || targetVehicleId === null) return;
     if (route.routePlanId === null) throw new DsvAssignmentCommandError('SELLER_ORDER_TARGET_VEHICLE_REQUIRED');
     const routePlan = await tx.routePlan.findFirst({
       select: { vehicleId: true },
       where: { id: route.routePlanId, shopId },
     });
     const routeVehicleId = routePlan?.vehicleId ?? null;
-    if (routeVehicleId === null && (targetVehicleId === undefined || targetVehicleId === null)) {
-      throw new DsvAssignmentCommandError('SELLER_ORDER_TARGET_VEHICLE_REQUIRED');
-    }
-    if (routeVehicleId !== null && targetVehicleId !== undefined && targetVehicleId !== null && routeVehicleId !== targetVehicleId) {
+    if (routeVehicleId !== targetVehicleId) {
       throw new DsvAssignmentCommandError('SELLER_ORDER_TARGET_VEHICLE_REQUIRED');
     }
   }
 
-  private async assertNewRouteTargetVehicle(
+  private async validateSpecifiedNewRouteVehicle(
     tx: DsvAssignmentTransactionClient,
     shopId: string,
     targetDriverId: string,
     targetVehicleId: string | null | undefined,
   ): Promise<void> {
     if (targetVehicleId === undefined || targetVehicleId === null) {
-      throw new DsvAssignmentCommandError('SELLER_ORDER_TARGET_VEHICLE_REQUIRED');
+      return;
     }
     const [vehicle, assignment] = await Promise.all([
       tx.vehicle.findFirst({
@@ -1132,7 +1130,7 @@ export class DsvAssignmentCommandService {
       .filter((child) => child.driverId === input.targetDriverId && child.displayStatus === 'READY' && child.routePlanId !== null)
       .sort((left, right) => (left.sortOrder ?? Number.MAX_SAFE_INTEGER) - (right.sortOrder ?? Number.MAX_SAFE_INTEGER))[0];
     if (existingReadyRoute !== undefined) return existingReadyRoute;
-    await this.assertNewRouteTargetVehicle(tx, shopId, input.targetDriverId, input.targetVehicleId);
+    await this.validateSpecifiedNewRouteVehicle(tx, shopId, input.targetDriverId, input.targetVehicleId);
     return newDriverRoute(grouping, input.targetDriverId);
   }
 

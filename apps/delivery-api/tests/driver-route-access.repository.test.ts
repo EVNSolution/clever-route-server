@@ -33,8 +33,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
         name: true,
         planDate: true,
         shop: { select: { shopDomain: true } },
-        status: true,
-        vehicleId: true
+        status: true
       },
       where: {
         driverEvents: { none: { eventType: 'ROUTE_COMPLETED' } },
@@ -108,8 +107,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
         name: true,
         planDate: true,
         shop: { select: { shopDomain: true } },
-        status: true,
-        vehicleId: true
+        status: true
       },
       where: {
         driver: { is: { authSubject: { not: null }, accountId: 'account-id', status: 'ACTIVE' } },
@@ -176,7 +174,11 @@ describe('PrismaDriverRouteAccessRepository', () => {
 
   test('allows a registered active driver phone even when no active routes are assigned', async () => {
     const { prisma } = createPrismaHarness({
-      phoneDrivers: [{ status: 'ACTIVE' }],
+      phoneDrivers: [{
+        id: 'driver-id',
+        shop: { id: 'shop-id', shopDomain: 'tomatono.myshopify.com' },
+        status: 'ACTIVE'
+      }],
       phoneRoutePlans: []
     });
     const repository = new PrismaDriverRouteAccessRepository(prisma as never);
@@ -196,22 +198,19 @@ describe('PrismaDriverRouteAccessRepository', () => {
     });
   });
 
-  test('materializes a vehicle-backed standby route only for today\'s public delivery grouping', async () => {
+  test('materializes a vehicle-less standby route only for today\'s public delivery grouping', async () => {
     const standbyRoutePlanId = '44444444-4444-4444-8444-444444444444';
     const { prisma } = createPrismaHarness({
-      phoneDrivers: [{ status: 'ACTIVE' }],
+      phoneDrivers: [{
+        id: 'driver-id',
+        shop: { id: 'shop-id', shopDomain: 'tomatono.myshopify.com' },
+        status: 'ACTIVE'
+      }],
       phoneRoutePlanResponses: [
         [routePlanRecord({ planDate: '2026-08-05' })],
         [routePlanRecord({ id: standbyRoutePlanId, planDate: '2026-08-07' })]
       ],
-      publicRouteContext: { groupingId: 'grouping-id' },
-      vehicleAssignments: [{
-        driver: {
-          id: 'driver-id',
-          shop: { id: 'shop-id', shopDomain: 'tomatono.myshopify.com' }
-        },
-        vehicle: { id: 'vehicle-id' }
-      }]
+      publicRouteContext: { groupingId: 'grouping-id' }
     });
     const grouping = {
       children: [{
@@ -277,16 +276,20 @@ describe('PrismaDriverRouteAccessRepository', () => {
           routePlanId: null,
           sortOrder: 3,
           tempId: 'standby:driver-id',
-          vehicleId: 'vehicle-id'
+          vehicleId: null
         }
       ],
       shopDomain: 'tomatono.myshopify.com'
     });
   });
 
-  test('requires a vehicle when an active route-less driver opens public delivery', async () => {
+  test('allows an active route-less driver to open public delivery without a vehicle', async () => {
     const { prisma } = createPrismaHarness({
-      phoneDrivers: [{ status: 'ACTIVE' }],
+      phoneDrivers: [{
+        id: 'driver-id',
+        shop: { id: 'shop-id', shopDomain: 'tomatono.myshopify.com' },
+        status: 'ACTIVE'
+      }],
       phoneRoutePlans: []
     });
     const repository = new PrismaDriverRouteAccessRepository(
@@ -297,19 +300,58 @@ describe('PrismaDriverRouteAccessRepository', () => {
     await expect(repository.lookupRouteAccess({
       accountId: 'account-id',
       routeContext: null
-    })).resolves.toEqual({ status: 'VEHICLE_REQUIRED' });
+    })).resolves.toEqual({ status: 'ROUTES_FOUND', routes: [] });
   });
 
-  test('requires a registered vehicle before issuing route access', async () => {
+  test('issues account route access when the assigned route has no vehicle', async () => {
     const { prisma } = createPrismaHarness({
       phoneRoutePlans: [routePlanRecord({ vehicleId: null })]
     });
     const repository = new PrismaDriverRouteAccessRepository(prisma as never);
 
-    await expect(repository.lookupRouteAccess({
+    const result = await repository.lookupRouteAccess({
       accountId: 'account-id',
       routeContext: null
-    })).resolves.toEqual({ status: 'VEHICLE_REQUIRED' });
+    });
+
+    expect(result).toMatchObject({
+      status: 'ROUTES_FOUND',
+      routes: [{
+        status: 'INVITED',
+        routeAccess: { routePlanId }
+      }]
+    });
+  });
+
+  test('issues exact route access when the assigned route has no vehicle', async () => {
+    const { prisma } = createPrismaHarness({
+      routePlan: routePlanRecord({ vehicleId: null })
+    });
+    const repository = new PrismaDriverRouteAccessRepository(prisma as never);
+
+    await expect(repository.lookupRouteAccess({
+      accountId: 'account-id',
+      routeContext: routePlanId
+    })).resolves.toMatchObject({
+      status: 'INVITED',
+      routeAccess: { routePlanId }
+    });
+  });
+
+  test('issues shared scope route access when the assigned route has no vehicle', async () => {
+    const sharedRoutePlanId = '22222222-2222-4222-8222-222222222222';
+    const { prisma } = createPrismaHarness({
+      sharedRoutePlans: [routePlanRecord({ id: sharedRoutePlanId, vehicleId: null })]
+    });
+    const repository = new PrismaDriverRouteAccessRepository(prisma as never);
+
+    await expect(repository.lookupRouteAccess({
+      accountId: 'account-id',
+      routeContext: 'toronto-shared-route-scope'
+    })).resolves.toMatchObject({
+      status: 'INVITED',
+      routeAccess: { routePlanId: sharedRoutePlanId }
+    });
   });
 
   test('does not reveal route guidance when the phone does not match the assigned driver', async () => {
@@ -392,8 +434,7 @@ describe('PrismaDriverRouteAccessRepository', () => {
         name: true,
         planDate: true,
         shop: { select: { shopDomain: true } },
-        status: true,
-        vehicleId: true
+        status: true
       },
       take: 3,
       where: {
@@ -469,22 +510,20 @@ describe('PrismaDriverRouteAccessRepository', () => {
 function createPrismaHarness(
   overrides: {
     driverStatus?: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
-    phoneDrivers?: Array<{ authSubject?: string | null; status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED' }>;
+    phoneDrivers?: Array<{
+      authSubject?: string | null;
+      id?: string;
+      shop?: { id: string; shopDomain: string };
+      status: 'ACTIVE' | 'INACTIVE' | 'SUSPENDED';
+    }>;
     routePlan?: ReturnType<typeof routePlanRecord> | null;
     sharedRoutePlans?: ReturnType<typeof routePlanRecord>[];
     phoneRoutePlans?: ReturnType<typeof routePlanRecord>[];
     phoneRoutePlanResponses?: Array<ReturnType<typeof routePlanRecord>[]>;
     publicRouteContext?: { groupingId: string } | null;
-    vehicleAssignments?: Array<{
-      driver: { id: string; shop: { id: string; shopDomain: string } };
-      vehicle: { id: string };
-    }>;
   } = {}
 ): {
   prisma: {
-    dsvVehicleDriverAssignment: {
-      findMany: ReturnType<typeof vi.fn>;
-    };
     driver: {
       findMany: ReturnType<typeof vi.fn>;
     };
@@ -503,9 +542,6 @@ function createPrismaHarness(
   const phoneRoutePlanResponses = [...(overrides.phoneRoutePlanResponses ?? [])];
   return {
     prisma: {
-      dsvVehicleDriverAssignment: {
-        findMany: vi.fn(() => Promise.resolve(overrides.vehicleAssignments ?? []))
-      },
       driver: {
         findMany: vi.fn(() => Promise.resolve(overrides.phoneDrivers ?? []))
       },
