@@ -4,8 +4,7 @@ import {
   DriverSellerOrderAlreadyAcquiredError,
   DriverSellerOrderAssignmentConflictError,
   DriverSellerOrderAssignmentService,
-  DriverSellerOrderRecalculationUnavailableError,
-  DriverSellerOrderVehicleRequiredError
+  DriverSellerOrderRecalculationUnavailableError
 } from '../src/modules/driver/driver-seller-order-assignment.service.js';
 import {
   RouteGroupingConflictError,
@@ -83,14 +82,13 @@ describe('DriverSellerOrderAssignmentService', () => {
 
     expect(acquireDriverSellerOrder).toHaveBeenCalledWith({
       ...commandScope({ expectedVersion: 'version-from-command' }),
-      bearerRouteVehicleId: 'vehicle-1',
       orderId: 'order-3'
     });
     expect(saveDraft).not.toHaveBeenCalled();
   });
 
-  test('rejects vehicle-less acquire before delegating to the assignment command kernel', async () => {
-    const acquireDriverSellerOrder = vi.fn();
+  test('delegates vehicle-less acquire to the assignment command kernel', async () => {
+    const acquireDriverSellerOrder = vi.fn(() => Promise.resolve(assignmentCommandResult('receipt-no-vehicle')));
     const service = createService({
       commandKernel: {
         acquireDriverSellerOrder,
@@ -101,15 +99,18 @@ describe('DriverSellerOrderAssignmentService', () => {
     });
 
     await expect(service.acquire({ ...commandScope(), orderId: 'order-3' }))
-      .rejects.toBeInstanceOf(DriverSellerOrderVehicleRequiredError);
-    expect(acquireDriverSellerOrder).not.toHaveBeenCalled();
+      .resolves.toMatchObject({ receiptId: 'receipt-no-vehicle' });
+    expect(acquireDriverSellerOrder).toHaveBeenCalledWith({ ...commandScope(), orderId: 'order-3' });
   });
 
-  test('requires a vehicle on the target route instead of guessing WMS vehicle identity', async () => {
-    const service = createService({ grouping: createGrouping(), vehicleId: null });
+  test('acquires into a vehicle-less target route', async () => {
+    const grouping = createGrouping();
+    const saveDraft = vi.fn((input: SaveRouteGroupingDraftInput) => Promise.resolve(applyDraft(grouping, input)));
+    const service = createService({ grouping, saveDraft, vehicleId: null });
 
     await expect(service.acquire({ ...commandScope(), orderId: 'order-3' }))
-      .rejects.toBeInstanceOf(DriverSellerOrderVehicleRequiredError);
+      .resolves.toMatchObject({ routePlanId: 'route-1' });
+    expect(saveDraft).toHaveBeenCalledOnce();
   });
 
   test('maps a stale concurrent acquisition to the first-writer-wins conflict', async () => {
@@ -183,7 +184,6 @@ describe('DriverSellerOrderAssignmentService', () => {
 
     expect(releaseDriverSellerOrder).toHaveBeenCalledWith({
       ...commandScope({ expectedVersion: 'release-version-from-command' }),
-      bearerRouteVehicleId: 'vehicle-1',
       orderId: 'order-1'
     });
     expect(saveDraft).not.toHaveBeenCalled();

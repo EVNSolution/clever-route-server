@@ -60,7 +60,6 @@ type InternalBundle = DriverDeliveryBundle & { orders: BundleOrder[] };
 export type DriverDeliverySpaceRepositoryContract = {
   findRouteContext(input: Pick<DriverRouteAccessScope, 'driverId' | 'routePlanId' | 'shopId'>): Promise<{
     groupingId: string;
-    vehicleId: string | null;
   } | null>;
   listBundleOrders(input: { groupingId: string; shopId: string }): Promise<BundleOrder[]>;
 };
@@ -73,7 +72,7 @@ export class PrismaDriverDeliverySpaceRepository implements DriverDeliverySpaceR
 
   async findRouteContext(input: Pick<DriverRouteAccessScope, 'driverId' | 'routePlanId' | 'shopId'>) {
     const child = await this.prisma.routeGroupingChildVersion.findFirst({
-      select: { groupingId: true, routePlan: { select: { vehicleId: true } } },
+      select: { groupingId: true },
       where: {
         driverId: input.driverId,
         routePlanId: input.routePlanId,
@@ -81,9 +80,7 @@ export class PrismaDriverDeliverySpaceRepository implements DriverDeliverySpaceR
         status: 'CURRENT'
       }
     });
-    return child === null || child.routePlan === null
-      ? null
-      : { groupingId: child.groupingId, vehicleId: child.routePlan.vehicleId };
+    return child === null ? null : { groupingId: child.groupingId };
   }
 
   async listBundleOrders(input: { groupingId: string; shopId: string }): Promise<BundleOrder[]> {
@@ -169,10 +166,7 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
   ) {}
 
   async getSpace(input: DriverRouteAccessScope): Promise<DriverDeliverySpace> {
-    const { bundles, context, grouping } = await this.context(input);
-    if (context.vehicleId === null) {
-      throw error('DESTINATION_BUNDLE_TARGET_VEHICLE_REQUIRED', '등록된 차량이 있어야 주문 목록을 확인할 수 있습니다.');
-    }
+    const { bundles, grouping } = await this.context(input);
     const visibleBundles = isToday(grouping.planDate, this.now()) ? bundles : [];
     return {
       available: visibleBundles.filter(isAvailable).map(expose),
@@ -205,12 +199,9 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
   }
 
   async acquire(input: DriverDeliverySpaceCommand): Promise<DriverDeliverySpaceCommandResult> {
-    const { bundles, context, grouping } = await this.context(input);
+    const { bundles, grouping } = await this.context(input);
     assertToday(grouping.planDate, this.now());
     assertVersion(grouping.updatedAt, input.expectedVersion);
-    if (context.vehicleId === null) {
-      throw error('DESTINATION_BUNDLE_TARGET_VEHICLE_REQUIRED', '차량이 연결된 경로에서만 배송을 가져올 수 있습니다.');
-    }
     const bundle = requireBundle(bundles, input.destinationId);
     if (!isAvailable(bundle)) {
       const ownedByAnotherDriver = bundle.orders.some((order) => order.driverId !== null && order.driverId !== input.driverId);
@@ -230,8 +221,7 @@ export class DriverDeliverySpaceService implements DriverDeliverySpaceServiceCon
       reason: 'DRIVER_DESTINATION_BUNDLE_ACQUIRE',
       shopDomain: input.shopDomain,
       targetDriverId: input.driverId,
-      targetRoutePlanId: input.routePlanId,
-      targetVehicleId: context.vehicleId
+      targetRoutePlanId: input.routePlanId
     }));
     const version = await this.latestVersion(input);
     return { bundle: expose(bundle), routePlanId: result.routePlanId, version };
