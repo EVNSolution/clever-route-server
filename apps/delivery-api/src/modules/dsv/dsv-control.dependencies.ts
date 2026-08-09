@@ -21,6 +21,10 @@ import {
   loadDsvManualEmailService,
   type DsvManualEmailRuntimeEnv,
 } from './dsv-manual-email.service.js';
+import {
+  loadDsvCustomerAccountWebPublicOrigin,
+  PrismaDsvCustomerAccountService,
+} from './dsv-customer-account-invitations.service.js';
 import { PrismaDsvResourceService } from './dsv-resource.service.js';
 import type { DsvControlDependencies } from '../../routes/dsv-control.routes.js';
 import { isStrongAdminWebSecret } from '../../routes/admin-ui-session.js';
@@ -43,7 +47,8 @@ export type DsvControlRuntimeEnv = AdminRouteGroupRuntimeEnv
   | 'CLEVER_DSV_ENABLED'
   | 'CLEVER_DSV_ROUTE_OPTIMIZATION_DEBOUNCE_MS'
   | 'CLEVER_DSV_ROUTE_OPTIMIZATION_ENABLED'
-  | 'CLEVER_DSV_WEB_COOKIE_NAME',
+  | 'CLEVER_DSV_WEB_COOKIE_NAME'
+  | 'CLEVER_DSV_WEB_PUBLIC_URL',
   string
 >>;
 
@@ -80,6 +85,8 @@ export function loadDsvControlDependencies(input: {
   });
   const manualEmailService = loadDsvManualEmailService(input.env);
   const routeOptimizationScheduler = loadDsvRouteOptimizationScheduler(input);
+  const settingsService = new PrismaAdminStoreSettingsService(input.prisma);
+  const webPublicOrigin = loadDsvCustomerAccountWebPublicOrigin(input.env.CLEVER_DSV_WEB_PUBLIC_URL);
 
   return {
     addressCanonicalizer,
@@ -92,6 +99,11 @@ export function loadDsvControlDependencies(input: {
       routeOptimizationScheduler,
     ),
     cookieName: readOptional(input.env.CLEVER_DSV_WEB_COOKIE_NAME) ?? 'clever_dsv_admin',
+    customerAccountService: new PrismaDsvCustomerAccountService(input.prisma, {
+      manualEmailService,
+      settingsService,
+      ...(webPublicOrigin === undefined ? {} : { webPublicOrigin }),
+    }),
     dispatchImportService: new PrismaDsvDispatchImportService(input.prisma, { addressCanonicalizer }),
     geocodingService,
     manualEmailService,
@@ -99,7 +111,7 @@ export function loadDsvControlDependencies(input: {
     resourceService: new PrismaDsvResourceService(input.prisma),
     secureCookies: input.nodeEnv !== 'development' && input.nodeEnv !== 'test',
     sessionSecret,
-    settingsService: new PrismaAdminStoreSettingsService(input.prisma),
+    settingsService,
   };
 }
 

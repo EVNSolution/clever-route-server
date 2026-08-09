@@ -23,6 +23,7 @@ import { defaultRouteScopeConfig } from '../src/modules/route-ops/route-scope-co
 import type { AdminStoreSettings, SaveAdminStoreSettingsInput } from '../src/modules/commerce/admin-store-settings.service.js';
 import { defaultDsvOperationalSettings } from '../src/modules/dsv/dsv-operational-settings.js';
 import type { DsvAddressCanonicalizer } from '../src/modules/dsv/dsv-address-canonicalization.js';
+import type { DsvCustomerAccountService } from '../src/modules/dsv/dsv-customer-account-invitations.service.js';
 
 const stopId = '11111111-1111-4111-8111-111111111111';
 const destinationId = '22222222-2222-4222-8222-222222222222';
@@ -38,6 +39,8 @@ const targetDriverId = '66666666-6666-4666-8666-666666666666';
 const targetVehicleId = '77777777-7777-4777-8777-777777777777';
 const targetRoutePlanId = '12121212-1212-4121-8121-121212121212';
 const adminAccountId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const customerId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const customerAccountId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
 describe('DSV control routes', () => {
   test('requires a DSV session before returning selected delivery context', async () => {
@@ -172,6 +175,172 @@ describe('DSV control routes', () => {
       });
       expect(selfDisable.statusCode).toBe(409);
       expect(selfDisable.json()).toMatchObject({ error: { code: 'ADMIN_ACCOUNT_SELF_DISABLE_FORBIDDEN' } });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('manages customer account invitations behind customer scopes and CSRF', async () => {
+    const customerAccountService = createCustomerAccountService();
+    const { app } = await createHarness({ customerAccountService });
+    try {
+      const login = await loginToDsv(app);
+      const missingCsrf = await app.inject({
+        headers: { cookie: login.cookie },
+        method: 'POST',
+        payload: { email: 'customer@example.com' },
+        url: `/api/dsv/customers/${customerId}/accounts/invitations`,
+      });
+      expect(missingCsrf.statusCode).toBe(403);
+      expect(customerAccountService.createSignupInvitation).not.toHaveBeenCalled();
+
+      const create = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: { displayName: '고객 운영자', email: 'Customer@Example.com' },
+        url: `/api/dsv/customers/${customerId}/accounts/invitations`,
+      });
+      expect(create.statusCode).toBe(201);
+      expect(create.json()).toMatchObject({
+        data: { account: { email: 'customer@example.com', id: customerAccountId, status: 'INVITED' } },
+        error: null,
+      });
+      expect(JSON.stringify(create.json())).not.toContain('secret-token');
+      expect(customerAccountService.createSignupInvitation).toHaveBeenCalledWith(expect.objectContaining({
+        actorId: adminAccountId,
+        customerId,
+        displayName: '고객 운영자',
+        email: 'Customer@Example.com',
+        shopDomain: 'tomatonofood.com',
+      }));
+
+      const list = await app.inject({
+        headers: { cookie: login.cookie },
+        method: 'GET',
+        url: `/api/dsv/customers/${customerId}/accounts`,
+      });
+      expect(list.statusCode).toBe(200);
+      expect(list.json()).toMatchObject({
+        data: { accounts: [{ id: customerAccountId, status: 'INVITED' }] },
+        error: null,
+      });
+
+      const disable = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'PATCH',
+        payload: { status: 'DISABLED' },
+        url: `/api/dsv/customer-accounts/${customerAccountId}/status`,
+      });
+      expect(disable.statusCode).toBe(200);
+      expect(customerAccountService.setStatus).toHaveBeenCalledWith(expect.objectContaining({
+        accountId: customerAccountId,
+        actorId: adminAccountId,
+        status: 'DISABLED',
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('validates and completes customer account invitations with a Lax DSV cookie session', async () => {
+    const customerAccountService = createCustomerAccountService();
+    const { app } = await createHarness({ customerAccountService });
+    try {
+      const validate = await app.inject({
+        method: 'POST',
+        payload: { shopDomain: 'tomatonofood.com', token: 'secret-token' },
+        url: '/api/dsv/customer/auth/invitations/validate',
+      });
+      expect(validate.statusCode).toBe(200);
+      expect(validate.json()).toEqual({
+        data: {
+          customerName: '토마토물류',
+          displayName: '고객 운영자',
+          email: 'customer@example.com',
+          expiresAt: '2026-08-11T01:00:00.000Z',
+          loginId: null,
+          purpose: 'SIGNUP',
+        },
+        error: null,
+      });
+      expect(JSON.stringify(validate.json())).not.toContain('secret-token');
+
+      const complete = await app.inject({
+        method: 'POST',
+        payload: {
+          loginId: 'customer-login',
+          password: 'StrongPassw0rd!',
+          shopDomain: 'tomatonofood.com',
+          token: 'secret-token',
+        },
+        url: '/api/dsv/customer/auth/complete',
+      });
+      expect(complete.statusCode).toBe(200);
+      expect(complete.headers['set-cookie']).toContain('Path=/api/dsv/');
+      expect(complete.headers['set-cookie']).toContain('HttpOnly');
+      expect(complete.headers['set-cookie']).toContain('SameSite=Lax');
+      expect(complete.json()).toMatchObject({
+        data: {
+          accountId: customerAccountId,
+          customerId,
+          shopDomain: 'tomatonofood.com',
+          shopId,
+        },
+        error: null,
+      });
+      expect(customerAccountService.complete).toHaveBeenCalledWith(expect.objectContaining({
+        loginId: 'customer-login',
+        password: 'StrongPassw0rd!',
+        shopDomain: 'tomatonofood.com',
+        token: 'secret-token',
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('logs a customer in with loginId, password, and shopDomain', async () => {
+    const customerAccountService = createCustomerAccountService();
+    const { app } = await createHarness({ customerAccountService });
+    try {
+      const login = await app.inject({
+        method: 'POST',
+        payload: { id: 'customer-login', password: 'StrongPassw0rd!', shopDomain: 'tomatonofood.com' },
+        url: '/api/dsv/customer/auth/login',
+      });
+      expect(login.statusCode).toBe(200);
+      expect(login.headers['set-cookie']).toContain('SameSite=Lax');
+      expect(customerAccountService.login).toHaveBeenCalledWith(expect.objectContaining({
+        id: 'customer-login',
+        password: 'StrongPassw0rd!',
+        shopDomain: 'tomatonofood.com',
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('rate limits repeated customer login attempts', async () => {
+    const customerAccountService = createCustomerAccountService();
+    customerAccountService.login.mockResolvedValue(null);
+    const { app } = await createHarness({ customerAccountService });
+    try {
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const response = await app.inject({
+          method: 'POST',
+          payload: { id: 'customer-login', password: 'WrongPassw0rd!', shopDomain: 'tomatonofood.com' },
+          url: '/api/dsv/customer/auth/login',
+        });
+        expect(response.statusCode).toBe(401);
+      }
+
+      const limited = await app.inject({
+        method: 'POST',
+        payload: { id: 'customer-login', password: 'WrongPassw0rd!', shopDomain: 'tomatonofood.com' },
+        url: '/api/dsv/customer/auth/login',
+      });
+      expect(limited.statusCode).toBe(429);
+      expect(limited.json()).toMatchObject({ error: { code: 'RATE_LIMITED' } });
     } finally {
       await app.close();
     }
@@ -1620,6 +1789,7 @@ describe('DSV control routes', () => {
 async function createHarness(overrides: {
   adminAccountManagement?: DsvAdminAccountManager;
   addressCanonicalizer?: DsvAddressCanonicalizer;
+  customerAccountService?: DsvCustomerAccountService;
   manualEmailService?: DsvManualEmailService;
 } = {}): Promise<{
   app: Awaited<ReturnType<typeof buildApp>>;
@@ -1662,6 +1832,7 @@ async function createHarness(overrides: {
     allowedShopDomains: ['tomatonofood.com'],
     assignmentCommandService,
     cookieName: 'clever_dsv_admin',
+    ...(overrides.customerAccountService === undefined ? {} : { customerAccountService: overrides.customerAccountService }),
     dispatchImportService,
     geocodingService,
     manualEmailService: overrides.manualEmailService ?? createManualEmailService(),
@@ -1672,6 +1843,51 @@ async function createHarness(overrides: {
     settingsService,
   };
   return { app: await buildApp({ dsvControl: dependencies }), assignmentCommandService, dispatchImportService, geocodingService, repository, resourceService, settingsService };
+}
+
+function createCustomerAccountService(): DsvCustomerAccountService & {
+  complete: ReturnType<typeof vi.fn<DsvCustomerAccountService['complete']>>;
+  createSignupInvitation: ReturnType<typeof vi.fn<DsvCustomerAccountService['createSignupInvitation']>>;
+  listAccounts: ReturnType<typeof vi.fn<DsvCustomerAccountService['listAccounts']>>;
+  login: ReturnType<typeof vi.fn<DsvCustomerAccountService['login']>>;
+  setStatus: ReturnType<typeof vi.fn<DsvCustomerAccountService['setStatus']>>;
+} {
+  const account = {
+    displayName: '고객 운영자',
+    email: 'customer@example.com',
+    id: customerAccountId,
+    invitedAt: new Date('2026-08-09T01:00:00.000Z'),
+    inviteExpiresAt: new Date('2026-08-11T01:00:00.000Z'),
+    lastAuthenticatedAt: null,
+    loginId: null,
+    status: 'INVITED' as const,
+  };
+  const identity = {
+    accountId: customerAccountId,
+    customerId,
+    scopeVersion: 2,
+    shopDomain: 'tomatonofood.com',
+    shopId,
+  };
+  return {
+    complete: vi.fn<DsvCustomerAccountService['complete']>(() => Promise.resolve(identity)),
+    createSignupInvitation: vi.fn<DsvCustomerAccountService['createSignupInvitation']>(() => Promise.resolve({ account })),
+    listAccounts: vi.fn<DsvCustomerAccountService['listAccounts']>(() => Promise.resolve([account])),
+    login: vi.fn<DsvCustomerAccountService['login']>(() => Promise.resolve(identity)),
+    reinvite: vi.fn<DsvCustomerAccountService['reinvite']>(() => Promise.resolve({ account })),
+    requestPasswordReset: vi.fn<DsvCustomerAccountService['requestPasswordReset']>(() => Promise.resolve({ account })),
+    setStatus: vi.fn<DsvCustomerAccountService['setStatus']>(() => Promise.resolve({
+      account: { ...account, status: 'DISABLED' },
+    })),
+    validateInvitation: vi.fn<DsvCustomerAccountService['validateInvitation']>(() => Promise.resolve({
+      customerName: '토마토물류',
+      displayName: '고객 운영자',
+      email: 'customer@example.com',
+      expiresAt: new Date('2026-08-11T01:00:00.000Z'),
+      loginId: null,
+      purpose: 'SIGNUP',
+    })),
+  };
 }
 
 function createGeocodingService() {
