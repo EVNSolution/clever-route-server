@@ -62,7 +62,13 @@ import {
   createDsvAdminPrincipal,
   requireDsvScopes,
 } from '../modules/dsv/dsv-principal.js';
-import type { DsvAdminAccountAuthenticator } from '../modules/dsv/dsv-admin-account.repository.js';
+import {
+  DsvAdminAccountManagementError,
+  type DsvAdminAccountAuthenticator,
+  type DsvAdminAccountManager,
+  type DsvAdminAccountStatus,
+  type DsvAdminAccountSummary,
+} from '../modules/dsv/dsv-admin-account.repository.js';
 import {
   createDsvAdminSessionSubject,
   parseDsvAdminSessionSubject,
@@ -137,6 +143,7 @@ type DsvControlSession = {
 
 export type DsvControlDependencies = {
   addressCanonicalizer?: DsvAddressCanonicalizer;
+  adminAccountManagement?: DsvAdminAccountManager;
   adminAccounts: DsvAdminAccountAuthenticator;
   allowedShopDomains: AdminCommerceActor['allowedShopDomains'];
   assignmentCommandService?: DsvAdminAssignmentCommandService;
@@ -203,6 +210,69 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       expiresAt: new Date(session.session.expiresAt).toISOString(),
       shopDomain: session.shopDomain,
     })));
+
+  app.get(`${apiRoot}/admin-accounts`, (request, reply) =>
+    withDsvSession(request, reply, dependencies, async () => {
+      if (dependencies.adminAccountManagement === undefined) {
+        return sendError(reply, 503, 'ADMIN_ACCOUNT_MANAGEMENT_UNAVAILABLE', '계정 관리 기능을 사용할 수 없습니다.');
+      }
+      const accounts = await dependencies.adminAccountManagement.list();
+      return sendData(reply, { accounts: accounts.map(adminAccountData) });
+    }, ['dsv:accounts:read']));
+
+  app.post(`${apiRoot}/admin-accounts`, (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async () => {
+      if (dependencies.adminAccountManagement === undefined) {
+        return sendError(reply, 503, 'ADMIN_ACCOUNT_MANAGEMENT_UNAVAILABLE', '계정 관리 기능을 사용할 수 없습니다.');
+      }
+      const input = readAdminAccountCreateInput(request.body);
+      if (input === null) return sendError(reply, 400, 'BAD_REQUEST', '아이디와 표시 이름을 확인해 주세요.');
+      try {
+        const result = await dependencies.adminAccountManagement.create(input);
+        return sendData(reply, {
+          account: adminAccountData(result.account),
+          temporaryPassword: result.temporaryPassword,
+        }, 201);
+      } catch (error) {
+        return sendAdminAccountManagementError(reply, error);
+      }
+    }, ['dsv:accounts:write']));
+
+  app.post<{ Params: { accountId: string } }>(`${apiRoot}/admin-accounts/:accountId/password-reset`, (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async () => {
+      if (dependencies.adminAccountManagement === undefined) {
+        return sendError(reply, 503, 'ADMIN_ACCOUNT_MANAGEMENT_UNAVAILABLE', '계정 관리 기능을 사용할 수 없습니다.');
+      }
+      if (!uuidPattern.test(request.params.accountId)) return sendError(reply, 400, 'BAD_REQUEST', '계정 식별자가 올바르지 않습니다.');
+      try {
+        const result = await dependencies.adminAccountManagement.resetPassword({ accountId: request.params.accountId });
+        return sendData(reply, {
+          account: adminAccountData(result.account),
+          temporaryPassword: result.temporaryPassword,
+        });
+      } catch (error) {
+        return sendAdminAccountManagementError(reply, error);
+      }
+    }, ['dsv:accounts:write']));
+
+  app.patch<{ Params: { accountId: string } }>(`${apiRoot}/admin-accounts/:accountId/status`, (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async ({ actor }) => {
+      if (dependencies.adminAccountManagement === undefined) {
+        return sendError(reply, 503, 'ADMIN_ACCOUNT_MANAGEMENT_UNAVAILABLE', '계정 관리 기능을 사용할 수 없습니다.');
+      }
+      if (!uuidPattern.test(request.params.accountId)) return sendError(reply, 400, 'BAD_REQUEST', '계정 식별자가 올바르지 않습니다.');
+      const status = readAdminAccountStatus(request.body);
+      if (status === null) return sendError(reply, 400, 'BAD_REQUEST', '계정 상태가 올바르지 않습니다.');
+      if (actor === request.params.accountId && status === 'DISABLED') {
+        return sendError(reply, 409, 'ADMIN_ACCOUNT_SELF_DISABLE_FORBIDDEN', '현재 로그인한 계정은 비활성화할 수 없습니다.');
+      }
+      try {
+        const account = await dependencies.adminAccountManagement.setStatus({ accountId: request.params.accountId, status });
+        return sendData(reply, { account: adminAccountData(account) });
+      } catch (error) {
+        return sendAdminAccountManagementError(reply, error);
+      }
+    }, ['dsv:accounts:write']));
 
   app.get(`${apiRoot}/settings/operations`, async (request, reply) =>
     withDsvSession(request, reply, dependencies, async ({ shopDomain }) => {
@@ -1024,6 +1094,16 @@ function sendConditionMutationError(reply: FastifyReply, error: unknown): unknow
   throw error;
 }
 
+function sendAdminAccountManagementError(reply: FastifyReply, error: unknown): unknown {
+  if (error instanceof DsvAdminAccountManagementError) {
+    if (error.code === 'ADMIN_ACCOUNT_LOGIN_ID_EXISTS') {
+      return sendError(reply, 409, error.code, '이미 사용 중인 아이디입니다.');
+    }
+    return sendError(reply, 404, error.code, '계정을 찾을 수 없습니다.');
+  }
+  throw error;
+}
+
 function sendError(
   reply: FastifyReply,
   statusCode: number,
@@ -1055,6 +1135,36 @@ function sendAddressResolutionError(
 
 function objectBody(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function readAdminAccountCreateInput(value: unknown): { displayName?: string; loginId: string } | null {
+  const body = objectBody(value);
+  if (body === null || !hasOnlyAllowedKeys(body, ['displayName', 'loginId'])) return null;
+  const loginId = readBoundedText(body.loginId, 80);
+  const displayName = Object.hasOwn(body, 'displayName') ? readOptionalBoundedText(body.displayName, 80) : undefined;
+  if (loginId === null || displayName === null) return null;
+  return { loginId, ...(displayName === undefined ? {} : { displayName }) };
+}
+
+function readAdminAccountStatus(value: unknown): DsvAdminAccountStatus | null {
+  const body = objectBody(value);
+  if (body === null || !hasOnlyKeys(body, ['status'])) return null;
+  return body.status === 'ACTIVE' || body.status === 'DISABLED' ? body.status : null;
+}
+
+function adminAccountData(account: DsvAdminAccountSummary): Record<string, unknown> {
+  return {
+    createdAt: account.createdAt.toISOString(),
+    displayName: account.displayName,
+    failedLoginAttempts: account.failedLoginAttempts,
+    id: account.id,
+    lastAuthenticatedAt: account.lastAuthenticatedAt?.toISOString() ?? null,
+    lockedUntil: account.lockedUntil?.toISOString() ?? null,
+    loginId: account.loginId,
+    scopes: account.scopes,
+    status: account.status,
+    updatedAt: account.updatedAt.toISOString(),
+  };
 }
 
 function readManualEmailInput(value: unknown): {
