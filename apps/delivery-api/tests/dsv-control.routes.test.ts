@@ -12,6 +12,7 @@ import {
   type DsvDispatchImportService,
 } from '../src/modules/dsv/dsv-dispatch-import.service.js';
 import type { DsvManualEmailService } from '../src/modules/dsv/dsv-manual-email.service.js';
+import type { DsvAdminAccountManager } from '../src/modules/dsv/dsv-admin-account.repository.js';
 import { dsvAdminScopes } from '../src/modules/dsv/dsv-principal.js';
 import { DsvAssignmentCommandError } from '../src/modules/dsv/dsv-assignment-command.service.js';
 import type { DsvAdminAssignmentCommandService, DsvControlDependencies } from '../src/routes/dsv-control.routes.js';
@@ -119,6 +120,58 @@ describe('DSV control routes', () => {
       expect(repository.resolveShopId).toHaveBeenCalledWith('tomatonofood.com');
       await expect(repository.resolveShopId.mock.results.at(-1)?.value).resolves.toBe(shopId);
       expect(Number.isNaN(Date.parse(body.data.expiresAt))).toBe(false);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('lets a highest-privilege administrator create and manage persistent operator accounts', async () => {
+    const account = {
+      createdAt: new Date('2026-08-09T01:00:00.000Z'),
+      displayName: 'DSV 운영 관리자',
+      failedLoginAttempts: 0,
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      lastAuthenticatedAt: null,
+      lockedUntil: null,
+      loginId: 'dsv-admin',
+      scopes: dsvAdminScopes,
+      status: 'ACTIVE' as const,
+      updatedAt: new Date('2026-08-09T01:00:00.000Z'),
+    };
+    const adminAccountManagement: DsvAdminAccountManager = {
+      create: vi.fn(() => Promise.resolve({ account, temporaryPassword: 'temporary-password-2026' })),
+      list: vi.fn(() => Promise.resolve([account])),
+      resetPassword: vi.fn(() => Promise.resolve({ account, temporaryPassword: 'replacement-password-2026' })),
+      setStatus: vi.fn(() => Promise.resolve({ ...account, status: 'DISABLED' as const })),
+    };
+    const { app } = await createHarness({ adminAccountManagement });
+    try {
+      const login = await loginToDsv(app);
+      const list = await app.inject({
+        headers: { cookie: login.cookie },
+        method: 'GET',
+        url: '/api/dsv/admin-accounts',
+      });
+      expect(list.statusCode).toBe(200);
+      expect(list.json()).toMatchObject({ data: { accounts: [{ loginId: 'dsv-admin', status: 'ACTIVE' }] } });
+
+      const create = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: { displayName: 'DSV 운영 관리자', loginId: 'dsv-admin' },
+        url: '/api/dsv/admin-accounts',
+      });
+      expect(create.statusCode).toBe(201);
+      expect(create.json()).toMatchObject({ data: { account: { loginId: 'dsv-admin' }, temporaryPassword: 'temporary-password-2026' } });
+
+      const selfDisable = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'PATCH',
+        payload: { status: 'DISABLED' },
+        url: `/api/dsv/admin-accounts/${adminAccountId}/status`,
+      });
+      expect(selfDisable.statusCode).toBe(409);
+      expect(selfDisable.json()).toMatchObject({ error: { code: 'ADMIN_ACCOUNT_SELF_DISABLE_FORBIDDEN' } });
     } finally {
       await app.close();
     }
@@ -1565,6 +1618,7 @@ describe('DSV control routes', () => {
 });
 
 async function createHarness(overrides: {
+  adminAccountManagement?: DsvAdminAccountManager;
   addressCanonicalizer?: DsvAddressCanonicalizer;
   manualEmailService?: DsvManualEmailService;
 } = {}): Promise<{
@@ -1583,6 +1637,7 @@ async function createHarness(overrides: {
   const settingsService = createSettingsService();
   const resourceService = createResourceService();
   const dependencies: DsvControlDependencies = {
+    ...(overrides.adminAccountManagement === undefined ? {} : { adminAccountManagement: overrides.adminAccountManagement }),
     ...(overrides.addressCanonicalizer === undefined ? {} : { addressCanonicalizer: overrides.addressCanonicalizer }),
     adminAccounts: {
       authenticate: vi.fn(({ loginId, password }) =>

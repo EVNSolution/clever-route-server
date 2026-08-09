@@ -17,6 +17,8 @@ export const dsvScopes = [
   'dsv:records:read',
   'dsv:settings:read',
   'dsv:settings:write',
+  'dsv:accounts:read',
+  'dsv:accounts:write',
   'dsv:customer-deliveries:read',
   'driver:assignments:read',
   'driver:assignments:release',
@@ -68,7 +70,7 @@ export type DsvPrincipal =
   | DsvImportWorkerPrincipal
   | DsvDevicePrincipal;
 
-export const dsvAdminScopes = [
+export const dsvOperatorScopes = [
   'dsv:session:read',
   'dsv:customers:read',
   'dsv:customers:write',
@@ -87,6 +89,12 @@ export const dsvAdminScopes = [
   'dsv:records:read',
   'dsv:settings:read',
   'dsv:settings:write',
+] as const satisfies readonly DsvScope[];
+
+export const dsvAdminScopes = [
+  ...dsvOperatorScopes,
+  'dsv:accounts:read',
+  'dsv:accounts:write',
 ] as const satisfies readonly DsvScope[];
 
 export class DsvForbiddenError extends Error {

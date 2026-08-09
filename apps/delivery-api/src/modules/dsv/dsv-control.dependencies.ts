@@ -13,6 +13,7 @@ import { DsvAssignmentCommandService } from './dsv-assignment-command.service.js
 import {
   PrismaDsvAdminAccountRepository,
   type DsvAdminAccountAuthenticator,
+  type DsvAdminAccountManager,
 } from './dsv-admin-account.repository.js';
 import { PrismaDsvControlRepository } from './dsv-control.repository.js';
 import { PrismaDsvDispatchImportService } from './dsv-dispatch-import.service.js';
@@ -72,6 +73,7 @@ export function loadDsvControlDependencies(input: {
   }
 
   const routeGroupingService = input.routeGroupingService ?? createRouteGroupingService(input);
+  const adminAccounts = input.adminAccounts ?? new PrismaDsvAdminAccountRepository(input.prisma);
   const geocodingService = loadGeocodingService({ env: input.env, prisma: input.prisma });
   const addressCanonicalizer = loadDsvAddressCanonicalizer({
     geocodingService,
@@ -81,7 +83,8 @@ export function loadDsvControlDependencies(input: {
 
   return {
     addressCanonicalizer,
-    adminAccounts: input.adminAccounts ?? new PrismaDsvAdminAccountRepository(input.prisma),
+    ...(isDsvAdminAccountManager(adminAccounts) ? { adminAccountManagement: adminAccounts } : {}),
+    adminAccounts,
     allowedShopDomains,
     assignmentCommandService: new DsvAssignmentCommandService(
       input.prisma,
@@ -98,6 +101,14 @@ export function loadDsvControlDependencies(input: {
     sessionSecret,
     settingsService: new PrismaAdminStoreSettingsService(input.prisma),
   };
+}
+
+function isDsvAdminAccountManager(value: DsvAdminAccountAuthenticator): value is DsvAdminAccountAuthenticator & DsvAdminAccountManager {
+  const candidate = value as Partial<DsvAdminAccountManager>;
+  return typeof candidate.create === 'function'
+    && typeof candidate.list === 'function'
+    && typeof candidate.resetPassword === 'function'
+    && typeof candidate.setStatus === 'function';
 }
 
 export function loadDsvRouteOptimizationScheduler(input: {

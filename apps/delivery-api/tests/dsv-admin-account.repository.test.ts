@@ -4,7 +4,7 @@ import {
   PrismaDsvAdminAccountRepository,
   type DsvAdminAccountPrismaClient,
 } from '../src/modules/dsv/dsv-admin-account.repository.js';
-import { dsvAdminScopes } from '../src/modules/dsv/dsv-principal.js';
+import { dsvAdminScopes, dsvOperatorScopes } from '../src/modules/dsv/dsv-principal.js';
 
 type Account = {
   createdAt: Date;
@@ -85,20 +85,46 @@ describe('PrismaDsvAdminAccountRepository', () => {
       password: 'replacement-password-2026',
     })).toMatchObject({ accountId: bootstrap.accountId, tokenVersion: 1 });
   });
+
+  test('creates, lists, resets, and disables managed administrator accounts without exposing password material', async () => {
+    const fake = createPrisma();
+    const repository = new PrismaDsvAdminAccountRepository(fake.prisma);
+    const created = await repository.create({ displayName: 'DSV 운영 관리자', loginId: 'Dsv-Admin' });
+
+    expect(created.temporaryPassword).toHaveLength(24);
+    expect(created.account).toMatchObject({
+      displayName: 'DSV 운영 관리자',
+      loginId: 'dsv-admin',
+      scopes: dsvOperatorScopes,
+      status: 'ACTIVE',
+    });
+    expect(created.account).not.toHaveProperty('passwordHash');
+    expect(await repository.authenticate({ loginId: 'dsv-admin', password: created.temporaryPassword })).not.toBeNull();
+    expect(await repository.list()).toHaveLength(1);
+
+    const reset = await repository.resetPassword({ accountId: created.account.id });
+    expect(reset.temporaryPassword).not.toBe(created.temporaryPassword);
+    expect(await repository.authenticate({ loginId: 'dsv-admin', password: created.temporaryPassword })).toBeNull();
+    expect(await repository.authenticate({ loginId: 'dsv-admin', password: reset.temporaryPassword })).not.toBeNull();
+
+    const disabled = await repository.setStatus({ accountId: created.account.id, status: 'DISABLED' });
+    expect(disabled.status).toBe('DISABLED');
+    expect(await repository.authenticate({ loginId: 'dsv-admin', password: reset.temporaryPassword })).toBeNull();
+  });
 });
 
 function createPrisma(): {
   account: Account | null;
   prisma: DsvAdminAccountPrismaClient;
 } {
-  const state: { account: Account | null } = { account: null };
+  const state: { accounts: Account[] } = { accounts: [] };
   const delegate = {
     create: ({ data }: { data: Partial<Account> }) => {
-      state.account = {
+      const account: Account = {
         createdAt: new Date(),
         displayName: data.displayName ?? null,
         failedLoginAttempts: 0,
-        id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        id: `${String(state.accounts.length + 1).padStart(8, '0')}-aaaa-4aaa-8aaa-aaaaaaaaaaaa`,
         lastAuthenticatedAt: null,
         lockedUntil: null,
         loginId: data.loginId ?? '',
@@ -109,29 +135,32 @@ function createPrisma(): {
         tokenVersion: 0,
         updatedAt: new Date(),
       };
-      return Promise.resolve({ id: state.account.id });
+      state.accounts.push(account);
+      return Promise.resolve(account);
     },
     findFirst: ({ where }: { where: Partial<Account> }) =>
-      Promise.resolve(matches(state.account, where) ? state.account : null),
+      Promise.resolve(state.accounts.find((account) => matches(account, where)) ?? null),
+    findMany: () => Promise.resolve([...state.accounts]),
     findUnique: ({ where }: { where: Partial<Account> }) =>
-      Promise.resolve(matches(state.account, where) ? state.account : null),
+      Promise.resolve(state.accounts.find((account) => matches(account, where)) ?? null),
     update: ({ data, where }: { data: Record<string, unknown>; where: { id: string } }) => {
-      if (state.account === null || state.account.id !== where.id) throw new Error('account not found');
-      applyData(state.account, data);
-      return Promise.resolve(state.account);
+      const account = state.accounts.find((candidate) => candidate.id === where.id);
+      if (account === undefined) throw new Error('account not found');
+      applyData(account, data);
+      account.updatedAt = new Date();
+      return Promise.resolve(account);
     },
   };
   const result = {
     get account() {
-      return state.account;
+      return state.accounts[0] ?? null;
     },
     prisma: { dsvAdminAccount: delegate } as unknown as DsvAdminAccountPrismaClient,
   };
   return result;
 }
 
-function matches(account: Account | null, where: Partial<Account>): boolean {
-  if (account === null) return false;
+function matches(account: Account, where: Partial<Account>): boolean {
   return Object.entries(where).every(([key, value]) => account[key as keyof Account] === value);
 }
 
