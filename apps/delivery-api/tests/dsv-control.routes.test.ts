@@ -188,7 +188,7 @@ describe('DSV control routes', () => {
       const missingCsrf = await app.inject({
         headers: { cookie: login.cookie },
         method: 'POST',
-        payload: { email: 'customer@example.com' },
+        payload: { email: 'customer@example.com', generateLoginId: true },
         url: `/api/dsv/customers/${customerId}/accounts/invitations`,
       });
       expect(missingCsrf.statusCode).toBe(403);
@@ -197,7 +197,7 @@ describe('DSV control routes', () => {
       const create = await app.inject({
         headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
         method: 'POST',
-        payload: { displayName: '고객 운영자', email: 'Customer@Example.com' },
+        payload: { displayName: '고객 운영자', email: 'Customer@Example.com', loginId: 'customer-login' },
         url: `/api/dsv/customers/${customerId}/accounts/invitations`,
       });
       expect(create.statusCode).toBe(201);
@@ -211,6 +211,7 @@ describe('DSV control routes', () => {
         customerId,
         displayName: '고객 운영자',
         email: 'Customer@Example.com',
+        loginId: 'customer-login',
         shopDomain: 'tomatonofood.com',
       }));
 
@@ -258,7 +259,7 @@ describe('DSV control routes', () => {
           displayName: '고객 운영자',
           email: 'customer@example.com',
           expiresAt: '2026-08-11T01:00:00.000Z',
-          loginId: null,
+          loginId: 'customer-login',
           purpose: 'SIGNUP',
         },
         error: null,
@@ -268,7 +269,6 @@ describe('DSV control routes', () => {
       const complete = await app.inject({
         method: 'POST',
         payload: {
-          loginId: 'customer-login',
           password: 'StrongPassw0rd!',
           shopDomain: 'tomatonofood.com',
           token: 'secret-token',
@@ -289,7 +289,6 @@ describe('DSV control routes', () => {
         error: null,
       });
       expect(customerAccountService.complete).toHaveBeenCalledWith(expect.objectContaining({
-        loginId: 'customer-login',
         password: 'StrongPassw0rd!',
         shopDomain: 'tomatonofood.com',
         token: 'secret-token',
@@ -1859,7 +1858,7 @@ function createCustomerAccountService(): DsvCustomerAccountService & {
     invitedAt: new Date('2026-08-09T01:00:00.000Z'),
     inviteExpiresAt: new Date('2026-08-11T01:00:00.000Z'),
     lastAuthenticatedAt: null,
-    loginId: null,
+    loginId: 'customer-login',
     status: 'INVITED' as const,
   };
   const identity = {
@@ -1884,7 +1883,7 @@ function createCustomerAccountService(): DsvCustomerAccountService & {
       displayName: '고객 운영자',
       email: 'customer@example.com',
       expiresAt: new Date('2026-08-11T01:00:00.000Z'),
-      loginId: null,
+      loginId: 'customer-login',
       purpose: 'SIGNUP',
     })),
   };

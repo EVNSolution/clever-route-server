@@ -303,6 +303,8 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
           customerId: request.params.customerId,
           email: input.email,
           ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
+          ...(input.loginId === undefined ? {} : { loginId: input.loginId }),
+          ...(input.generateLoginId === true ? { generateLoginId: true } : {}),
           requestId: request.id,
           shopDomain,
         }), 201);
@@ -1349,13 +1351,27 @@ function readAdminAccountStatus(value: unknown): DsvAdminAccountStatus | null {
   return body.status === 'ACTIVE' || body.status === 'DISABLED' ? body.status : null;
 }
 
-function readCustomerAccountInvitationBody(value: unknown): { displayName?: string; email: string } | null {
+function readCustomerAccountInvitationBody(value: unknown): { displayName?: string; email: string; generateLoginId?: true; loginId?: string } | null {
   const body = objectBody(value);
-  if (body === null || !hasOnlyAllowedKeys(body, ['displayName', 'email'])) return null;
+  if (body === null || !hasOnlyAllowedKeys(body, ['displayName', 'email', 'generateLoginId', 'loginId'])) return null;
   const email = readBoundedText(body.email, 320);
   const displayName = Object.hasOwn(body, 'displayName') ? readOptionalBoundedText(body.displayName, 120) : undefined;
-  if (email === null || displayName === null) return null;
-  return { email, ...(displayName === undefined ? {} : { displayName }) };
+  const loginId = Object.hasOwn(body, 'loginId') ? readOptionalBoundedText(body.loginId, 80) : undefined;
+  const generateLoginId = body.generateLoginId === true ? true : undefined;
+  if (
+    email === null
+    || displayName === null
+    || loginId === null
+    || ((loginId === undefined) === (generateLoginId !== true))
+  ) {
+    return null;
+  }
+  return {
+    email,
+    ...(displayName === undefined ? {} : { displayName }),
+    ...(generateLoginId === true ? { generateLoginId } : {}),
+    ...(loginId === undefined ? {} : { loginId }),
+  };
 }
 
 function readCustomerAccountStatus(value: unknown): 'ACTIVE' | 'DISABLED' | null {
@@ -1372,15 +1388,14 @@ function readCustomerInviteTokenBody(value: unknown): { shopDomain: string; toke
   return shopDomain === null || token === null ? null : { shopDomain, token };
 }
 
-function readCustomerCompleteBody(value: unknown): { loginId?: string; password: string; shopDomain: string; token: string } | null {
+function readCustomerCompleteBody(value: unknown): { password: string; shopDomain: string; token: string } | null {
   const body = objectBody(value);
-  if (body === null || !hasOnlyAllowedKeys(body, ['loginId', 'password', 'shopDomain', 'token'])) return null;
+  if (body === null || !hasOnlyAllowedKeys(body, ['password', 'shopDomain', 'token'])) return null;
   const shopDomain = normalizeShopDomain(readTrimmed(body.shopDomain));
   const token = readBoundedText(body.token, 200);
   const password = readCustomerPassword(body.password);
-  const loginId = Object.hasOwn(body, 'loginId') ? readOptionalBoundedText(body.loginId, 80) : undefined;
-  if (shopDomain === null || token === null || password === null || loginId === null) return null;
-  return { ...(loginId === undefined ? {} : { loginId }), password, shopDomain, token };
+  if (shopDomain === null || token === null || password === null) return null;
+  return { password, shopDomain, token };
 }
 
 function readCustomerLoginBody(value: unknown): { id: string; password: string; shopDomain: string } | null {

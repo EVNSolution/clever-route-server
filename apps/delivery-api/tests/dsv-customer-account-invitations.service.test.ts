@@ -46,11 +46,9 @@ describe('PrismaDsvCustomerAccountService', () => {
   test('completes an invite once and rejects a consumed race', async () => {
     const harness = createHarness();
     harness.prisma.dsvCustomerAccountInvite.findUnique.mockResolvedValue(invite());
-    harness.prisma.customerAccount.findUnique.mockResolvedValue(null);
     harness.tx.dsvCustomerAccountInvite.updateMany.mockResolvedValueOnce({ count: 0 });
 
     await expect(harness.service.complete({
-      loginId: 'customer-login',
       password: 'StrongPassw0rd!',
       requestId: 'req-1',
       shopDomain: 'tomatonofood.com',
@@ -65,7 +63,6 @@ describe('PrismaDsvCustomerAccountService', () => {
       shopId,
     });
     await expect(harness.service.complete({
-      loginId: 'customer-login',
       password: 'StrongPassw0rd!',
       requestId: 'req-2',
       shopDomain: 'tomatonofood.com',
@@ -90,13 +87,14 @@ describe('PrismaDsvCustomerAccountService', () => {
     harness.prisma.shop.findUnique.mockResolvedValueOnce({ id: shopId, shopDomain: 'tomatonofood.com' });
     harness.prisma.shop.findUnique.mockResolvedValueOnce({ customers: [{ displayName: '토마토물류', id: customerId }] });
     harness.tx.customerAccount.findFirst.mockResolvedValue(null);
-    harness.tx.customerAccount.findUniqueOrThrow.mockResolvedValue(accountWithInvite());
+    harness.tx.customerAccount.findUniqueOrThrow.mockResolvedValue(accountWithInvite({ loginId: 'tomato-customer' }));
 
     const result = await harness.service.createSignupInvitation({
       actorId: 'admin-1',
       customerId,
       displayName: '고객 운영자',
       email: 'Customer@Example.com',
+      loginId: 'tomato-customer',
       requestId: 'req-invite',
       shopDomain: 'tomatonofood.com',
     });
@@ -106,7 +104,12 @@ describe('PrismaDsvCustomerAccountService', () => {
     const token = /#token=([A-Za-z0-9_-]+)/u.exec(emailBody)?.[1] ?? '';
     expect(token).not.toBe('');
     expect(emailBody).toContain('https://dsv.example.com/customer/account/setup#token=');
+    expect(emailBody).toContain('예약된 로그인 ID: tomato-customer');
+    expect(emailBody).toContain('https://dsv.example.com/customer/login');
     expect(JSON.stringify(result)).not.toContain(token);
+    expect(result.account.loginId).toBe('tomato-customer');
+    const accountCreateCalls = harness.tx.customerAccount.create.mock.calls as unknown as Array<[{ data: { loginId: string } }]>;
+    expect(accountCreateCalls[0]?.[0].data.loginId).toBe('tomato-customer');
     const inviteCreateCalls = harness.tx.dsvCustomerAccountInvite.create.mock.calls as unknown as Array<[{ data: { tokenHash: string } }]>;
     const auditCreateCalls = harness.tx.dsvAuditEvent.create.mock.calls as unknown as Array<[{ data: unknown }]>;
     expect(inviteCreateCalls[0]?.[0].data.tokenHash).not.toBe(token);
@@ -131,6 +134,7 @@ describe('PrismaDsvCustomerAccountService', () => {
       actorId: 'admin-1',
       customerId,
       email: 'customer@example.com',
+      generateLoginId: true,
       requestId: 'req-invite',
       shopDomain: 'tomatonofood.com',
     })).rejects.toBeInstanceOf(DsvCustomerAccountServiceError);
@@ -151,6 +155,7 @@ describe('PrismaDsvCustomerAccountService', () => {
       actorId: 'admin-1',
       customerId,
       email: 'customer@example.com',
+      loginId: 'existing-login',
       requestId: 'req-existing',
       shopDomain: 'tomatonofood.com',
     })).rejects.toMatchObject({ code: 'ACCOUNT_EXISTS' });
@@ -158,6 +163,51 @@ describe('PrismaDsvCustomerAccountService', () => {
     expect(harness.tx.customerAccount.findFirst.mock.calls[0]?.[0]).toMatchObject({
       where: { issuer: 'CLEVER_DSV' },
     });
+    expect(harness.tx.dsvCustomerAccountInvite.create).not.toHaveBeenCalled();
+    expect(harness.manualEmailService.send).not.toHaveBeenCalled();
+  });
+
+  test('generates a readable loginId before emailing signup invitations', async () => {
+    const harness = createHarness();
+    harness.prisma.shop.findUnique.mockResolvedValueOnce({ id: shopId, shopDomain: 'tomatonofood.com' });
+    harness.prisma.shop.findUnique.mockResolvedValueOnce({ customers: [{ displayName: '토마토물류', id: customerId }] });
+    harness.tx.customerAccount.findFirst.mockResolvedValue(null);
+    harness.tx.customerAccount.findUnique.mockResolvedValueOnce(null);
+    harness.tx.customerAccount.findUniqueOrThrow.mockResolvedValue(accountWithInvite({ loginId: 'customer' }));
+
+    const result = await harness.service.createSignupInvitation({
+      actorId: 'admin-1',
+      customerId,
+      displayName: '고객 운영자',
+      email: 'Customer@Example.com',
+      generateLoginId: true,
+      requestId: 'req-generated',
+      shopDomain: 'tomatonofood.com',
+    });
+
+    expect(result.account.loginId).toBe('customer');
+    const accountCreateCalls = harness.tx.customerAccount.create.mock.calls as unknown as Array<[{ data: { loginId: string } }]>;
+    expect(accountCreateCalls[0]?.[0].data.loginId).toBe('customer');
+    const sendCalls = harness.manualEmailService.send.mock.calls as unknown as Array<[{ textContent: string }]>;
+    const emailBody = sendCalls[0]?.[0].textContent ?? '';
+    expect(emailBody).toContain('예약된 로그인 ID: customer');
+  });
+
+  test('rejects duplicate explicit loginIds before sending signup invitations', async () => {
+    const harness = createHarness();
+    harness.prisma.shop.findUnique.mockResolvedValueOnce({ id: shopId, shopDomain: 'tomatonofood.com' });
+    harness.prisma.shop.findUnique.mockResolvedValueOnce({ customers: [{ displayName: '토마토물류', id: customerId }] });
+    harness.tx.customerAccount.findFirst.mockResolvedValue(null);
+    harness.tx.customerAccount.findUnique.mockResolvedValueOnce({ id: 'other-account' } as never);
+
+    await expect(harness.service.createSignupInvitation({
+      actorId: 'admin-1',
+      customerId,
+      email: 'customer@example.com',
+      loginId: 'taken-login',
+      requestId: 'req-duplicate-login',
+      shopDomain: 'tomatonofood.com',
+    })).rejects.toMatchObject({ code: 'LOGIN_ID_EXISTS' });
     expect(harness.tx.dsvCustomerAccountInvite.create).not.toHaveBeenCalled();
     expect(harness.manualEmailService.send).not.toHaveBeenCalled();
   });
@@ -214,6 +264,7 @@ function createHarness(options: { webPublicOrigin?: string | undefined } = {}) {
     customerAccount: {
       create: vi.fn(() => Promise.resolve({ id: accountId })),
       findFirst: vi.fn(),
+      findUnique: vi.fn(() => Promise.resolve(null)),
       findUniqueOrThrow: vi.fn(),
       update: vi.fn(),
     },
@@ -275,7 +326,7 @@ function invite(overrides: Record<string, unknown> = {}) {
     account: {
       displayName: '고객 운영자',
       email: 'customer@example.com',
-      loginId: null,
+      loginId: 'customer-login',
     },
     accountId,
     consumedAt: null,
@@ -289,7 +340,7 @@ function invite(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function accountWithInvite() {
+function accountWithInvite(overrides: Record<string, unknown> = {}) {
   return {
     displayName: '고객 운영자',
     email: 'customer@example.com',
@@ -299,8 +350,9 @@ function accountWithInvite() {
       expiresAt: new Date('2026-08-11T01:00:00.000Z'),
     }],
     lastAuthenticatedAt: null,
-    loginId: null,
+    loginId: 'customer-login',
     passwordHash: null,
     status: 'INACTIVE',
+    ...overrides,
   };
 }
