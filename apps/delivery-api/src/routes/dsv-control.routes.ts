@@ -70,6 +70,11 @@ import {
   type DsvAdminAccountSummary,
 } from '../modules/dsv/dsv-admin-account.repository.js';
 import {
+  createCustomerSessionSubject,
+  DsvCustomerAccountServiceError,
+  type DsvCustomerAccountService,
+} from '../modules/dsv/dsv-customer-account-invitations.service.js';
+import {
   createDsvAdminSessionSubject,
   parseDsvAdminSessionSubject,
 } from '../modules/dsv/dsv-admin-session-subject.js';
@@ -148,6 +153,7 @@ export type DsvControlDependencies = {
   allowedShopDomains: AdminCommerceActor['allowedShopDomains'];
   assignmentCommandService?: DsvAdminAssignmentCommandService;
   cookieName: string;
+  customerAccountService?: DsvCustomerAccountService;
   dispatchImportService: DsvDispatchImportService;
   geocodingService?: Pick<GeocodingService, 'geocode'>;
   manualEmailService: DsvManualEmailService;
@@ -159,6 +165,8 @@ export type DsvControlDependencies = {
 };
 
 export function registerDsvControlRoutes(app: FastifyInstance, dependencies: DsvControlDependencies): void {
+  registerDsvCustomerAccountRoutes(app, dependencies);
+
   app.post(`${apiRoot}/auth/login`, async (request, reply) => {
     const body = objectBody(request.body);
     const id = readTrimmed(body?.id);
@@ -273,6 +281,88 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
         return sendAdminAccountManagementError(reply, error);
       }
     }, ['dsv:accounts:write']));
+
+  app.get<{ Params: { customerId: string } }>(`${apiRoot}/customers/:customerId/accounts`, (request, reply) =>
+    withDsvSession(request, reply, dependencies, async ({ shopDomain }) => {
+      const service = requireCustomerAccountService(dependencies);
+      if (!uuidPattern.test(request.params.customerId)) return sendError(reply, 400, 'BAD_REQUEST', 'customerId must be a UUID');
+      return sendData(reply, {
+        accounts: await service.listAccounts({ customerId: request.params.customerId, shopDomain }),
+      });
+    }, ['dsv:customers:read']));
+
+  app.post<{ Params: { customerId: string } }>(`${apiRoot}/customers/:customerId/accounts/invitations`, (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async ({ actor, shopDomain }) => {
+      const service = requireCustomerAccountService(dependencies);
+      if (!uuidPattern.test(request.params.customerId)) return sendError(reply, 400, 'BAD_REQUEST', 'customerId must be a UUID');
+      const input = readCustomerAccountInvitationBody(request.body);
+      if (input === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid customer account invitation payload');
+      try {
+        return sendData(reply, await service.createSignupInvitation({
+          actorId: actor,
+          customerId: request.params.customerId,
+          email: input.email,
+          ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
+          ...(input.loginId === undefined ? {} : { loginId: input.loginId }),
+          ...(input.generateLoginId === true ? { generateLoginId: true } : {}),
+          requestId: request.id,
+          shopDomain,
+        }), 201);
+      } catch (error) {
+        return sendCustomerAccountServiceError(reply, error);
+      }
+    }, ['dsv:customers:write']));
+
+  app.post<{ Params: { accountId: string } }>(`${apiRoot}/customer-accounts/:accountId/reinvite`, (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async ({ actor, shopDomain }) => {
+      const service = requireCustomerAccountService(dependencies);
+      if (!uuidPattern.test(request.params.accountId)) return sendError(reply, 400, 'BAD_REQUEST', 'accountId must be a UUID');
+      try {
+        return sendData(reply, await service.reinvite({
+          accountId: request.params.accountId,
+          actorId: actor,
+          requestId: request.id,
+          shopDomain,
+        }));
+      } catch (error) {
+        return sendCustomerAccountServiceError(reply, error);
+      }
+    }, ['dsv:customers:write']));
+
+  app.post<{ Params: { accountId: string } }>(`${apiRoot}/customer-accounts/:accountId/password-reset`, (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async ({ actor, shopDomain }) => {
+      const service = requireCustomerAccountService(dependencies);
+      if (!uuidPattern.test(request.params.accountId)) return sendError(reply, 400, 'BAD_REQUEST', 'accountId must be a UUID');
+      try {
+        return sendData(reply, await service.requestPasswordReset({
+          accountId: request.params.accountId,
+          actorId: actor,
+          requestId: request.id,
+          shopDomain,
+        }));
+      } catch (error) {
+        return sendCustomerAccountServiceError(reply, error);
+      }
+    }, ['dsv:customers:write']));
+
+  app.patch<{ Params: { accountId: string } }>(`${apiRoot}/customer-accounts/:accountId/status`, (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async ({ actor, shopDomain }) => {
+      const service = requireCustomerAccountService(dependencies);
+      if (!uuidPattern.test(request.params.accountId)) return sendError(reply, 400, 'BAD_REQUEST', 'accountId must be a UUID');
+      const status = readCustomerAccountStatus(request.body);
+      if (status === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid customer account status');
+      try {
+        return sendData(reply, await service.setStatus({
+          accountId: request.params.accountId,
+          actorId: actor,
+          requestId: request.id,
+          shopDomain,
+          status,
+        }));
+      } catch (error) {
+        return sendCustomerAccountServiceError(reply, error);
+      }
+    }, ['dsv:customers:write']));
 
   app.get(`${apiRoot}/settings/operations`, async (request, reply) =>
     withDsvSession(request, reply, dependencies, async ({ shopDomain }) => {
@@ -995,6 +1085,97 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:destinations:write']));
 }
 
+function registerDsvCustomerAccountRoutes(app: FastifyInstance, dependencies: DsvControlDependencies): void {
+  app.post(`${apiRoot}/customer/auth/invitations/validate`, {
+    config: {
+      rateLimit: {
+        groupId: 'dsv-customer-invitation-validate',
+        max: 20,
+        timeWindow: '15 minutes',
+      },
+    },
+  }, async (request, reply) => {
+    const service = requireCustomerAccountService(dependencies);
+    const input = readCustomerInviteTokenBody(request.body);
+    if (input === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid invitation validation payload');
+    const metadata = await service.validateInvitation(input);
+    return metadata === null
+      ? sendError(reply, 401, 'INVALID_TOKEN', 'Invitation token is invalid')
+      : sendData(reply, {
+          customerName: metadata.customerName,
+          displayName: metadata.displayName,
+          email: metadata.email,
+          expiresAt: metadata.expiresAt.toISOString(),
+          loginId: metadata.loginId,
+          purpose: metadata.purpose,
+        });
+  });
+
+  app.post(`${apiRoot}/customer/auth/complete`, {
+    config: {
+      rateLimit: {
+        groupId: 'dsv-customer-account-complete',
+        max: 10,
+        timeWindow: '15 minutes',
+      },
+    },
+  }, async (request, reply) => {
+    const service = requireCustomerAccountService(dependencies);
+    const input = readCustomerCompleteBody(request.body);
+    if (input === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid customer account completion payload');
+    try {
+      const identity = await service.complete({ ...input, requestId: request.id });
+      return sendCustomerSession(reply, dependencies, identity);
+    } catch (error) {
+      return sendCustomerAccountServiceError(reply, error);
+    }
+  });
+
+  app.post(`${apiRoot}/customer/auth/login`, {
+    config: {
+      rateLimit: {
+        groupId: 'dsv-customer-login',
+        max: 10,
+        timeWindow: '15 minutes',
+      },
+    },
+  }, async (request, reply) => {
+    const service = requireCustomerAccountService(dependencies);
+    const input = readCustomerLoginBody(request.body);
+    if (input === null) return sendError(reply, 400, 'BAD_REQUEST', 'ID, password, and shopDomain are required');
+    const identity = await service.login({ ...input, requestId: request.id });
+    return identity === null
+      ? sendError(reply, 401, 'UNAUTHORIZED', '로그인 정보가 올바르지 않습니다.')
+      : sendCustomerSession(reply, dependencies, identity);
+  });
+}
+
+function sendCustomerSession(
+  reply: FastifyReply,
+  dependencies: DsvControlDependencies,
+  identity: { accountId: string; customerId: string; scopeVersion: number; shopDomain: string; shopId: string },
+): unknown {
+  const { cookieHeader, session } = createAdminWebSession({
+    cookieName: dependencies.cookieName,
+    path: cookiePath,
+    sameSite: 'Lax',
+    secure: dependencies.secureCookies,
+    sessionSecret: dependencies.sessionSecret,
+    subject: createCustomerSessionSubject({
+      accountId: identity.accountId,
+      scopeVersion: identity.scopeVersion,
+    }),
+  });
+  return sendData(reply.header('Set-Cookie', cookieHeader), {
+    accountId: identity.accountId,
+    csrfToken: session.csrfToken,
+    customerId: identity.customerId,
+    expiresAt: new Date(session.expiresAt).toISOString(),
+    shopDomain: identity.shopDomain,
+    shopId: identity.shopId,
+  });
+}
+
 function actor(dependencies: DsvControlDependencies): AdminCommerceActor {
   return { allowedShopDomains: dependencies.allowedShopDomains, subject: 'dsv-admin-login' };
 }
@@ -1104,6 +1285,17 @@ function sendAdminAccountManagementError(reply: FastifyReply, error: unknown): u
   throw error;
 }
 
+function sendCustomerAccountServiceError(reply: FastifyReply, error: unknown): unknown {
+  if (!(error instanceof DsvCustomerAccountServiceError)) throw error;
+  if (error.code === 'NOT_FOUND') return sendError(reply, 404, error.code, error.message);
+  if (error.code === 'ACCOUNT_EXISTS' || error.code === 'LOGIN_ID_EXISTS') return sendError(reply, 409, error.code, error.message);
+  if (error.code === 'INVALID_TOKEN') return sendError(reply, 401, error.code, error.message);
+  if (error.code === 'EMAIL_NOT_CONFIGURED' || error.code === 'INVITATION_LINK_NOT_CONFIGURED') {
+    return sendError(reply, 503, error.code, error.message);
+  }
+  return sendError(reply, 400, error.code, error.message);
+}
+
 function sendError(
   reply: FastifyReply,
   statusCode: number,
@@ -1133,6 +1325,13 @@ function sendAddressResolutionError(
   return sendError(reply, 422, 'ADDRESS_COORDINATES_NOT_RESOLVED', 'The address was found but map coordinates could not be resolved');
 }
 
+function requireCustomerAccountService(dependencies: DsvControlDependencies): DsvCustomerAccountService {
+  if (dependencies.customerAccountService === undefined) {
+    throw new DsvCustomerAccountServiceError('NOT_FOUND', 'Customer account service is not configured');
+  }
+  return dependencies.customerAccountService;
+}
+
 function objectBody(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
@@ -1150,6 +1349,62 @@ function readAdminAccountStatus(value: unknown): DsvAdminAccountStatus | null {
   const body = objectBody(value);
   if (body === null || !hasOnlyKeys(body, ['status'])) return null;
   return body.status === 'ACTIVE' || body.status === 'DISABLED' ? body.status : null;
+}
+
+function readCustomerAccountInvitationBody(value: unknown): { displayName?: string; email: string; generateLoginId?: true; loginId?: string } | null {
+  const body = objectBody(value);
+  if (body === null || !hasOnlyAllowedKeys(body, ['displayName', 'email', 'generateLoginId', 'loginId'])) return null;
+  const email = readBoundedText(body.email, 320);
+  const displayName = Object.hasOwn(body, 'displayName') ? readOptionalBoundedText(body.displayName, 120) : undefined;
+  const loginId = Object.hasOwn(body, 'loginId') ? readOptionalBoundedText(body.loginId, 80) : undefined;
+  const generateLoginId = body.generateLoginId === true ? true : undefined;
+  if (
+    email === null
+    || displayName === null
+    || loginId === null
+    || ((loginId === undefined) === (generateLoginId !== true))
+  ) {
+    return null;
+  }
+  return {
+    email,
+    ...(displayName === undefined ? {} : { displayName }),
+    ...(generateLoginId === true ? { generateLoginId } : {}),
+    ...(loginId === undefined ? {} : { loginId }),
+  };
+}
+
+function readCustomerAccountStatus(value: unknown): 'ACTIVE' | 'DISABLED' | null {
+  const body = objectBody(value);
+  if (body === null || !hasOnlyKeys(body, ['status'])) return null;
+  return body.status === 'ACTIVE' || body.status === 'DISABLED' ? body.status : null;
+}
+
+function readCustomerInviteTokenBody(value: unknown): { shopDomain: string; token: string } | null {
+  const body = objectBody(value);
+  if (body === null || !hasOnlyKeys(body, ['shopDomain', 'token'])) return null;
+  const shopDomain = normalizeShopDomain(readTrimmed(body.shopDomain));
+  const token = readBoundedText(body.token, 200);
+  return shopDomain === null || token === null ? null : { shopDomain, token };
+}
+
+function readCustomerCompleteBody(value: unknown): { password: string; shopDomain: string; token: string } | null {
+  const body = objectBody(value);
+  if (body === null || !hasOnlyAllowedKeys(body, ['password', 'shopDomain', 'token'])) return null;
+  const shopDomain = normalizeShopDomain(readTrimmed(body.shopDomain));
+  const token = readBoundedText(body.token, 200);
+  const password = readCustomerPassword(body.password);
+  if (shopDomain === null || token === null || password === null) return null;
+  return { password, shopDomain, token };
+}
+
+function readCustomerLoginBody(value: unknown): { id: string; password: string; shopDomain: string } | null {
+  const body = objectBody(value);
+  if (body === null || !hasOnlyKeys(body, ['id', 'password', 'shopDomain'])) return null;
+  const id = readBoundedText(body.id, 80);
+  const password = readCustomerPassword(body.password);
+  const shopDomain = normalizeShopDomain(readTrimmed(body.shopDomain));
+  return id === null || password === null || shopDomain === null ? null : { id, password, shopDomain };
 }
 
 function adminAccountData(account: DsvAdminAccountSummary): Record<string, unknown> {
@@ -1783,6 +2038,10 @@ function readTrimmed(value: unknown): string | null {
 
 function readPassword(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function readCustomerPassword(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 && value.length <= 256 ? value : null;
 }
 
 function normalizeShopDomain(value: string | null): string | null {

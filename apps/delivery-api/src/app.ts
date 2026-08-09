@@ -125,7 +125,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   });
   await app.register(helmet);
   await app.register(cors, { origin: options.corsOrigin ?? false });
-  if (options.dsvDriverAuth !== undefined) {
+  if (options.dsvDriverAuth !== undefined || options.dsvControl !== undefined) {
     await app.register(rateLimit, {
       global: false
     });

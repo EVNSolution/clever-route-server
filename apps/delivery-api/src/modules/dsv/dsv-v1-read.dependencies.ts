@@ -143,7 +143,9 @@ class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
     const adminSubject = parseDsvAdminSessionSubject(subject);
     if (adminSubject !== null) return this.resolveAdmin(adminSubject);
     if (subject.startsWith(customerSubjectPrefix)) {
-      return this.resolveCustomer(subject.slice(customerSubjectPrefix.length));
+      const customerSubject = parseCustomerSubject(subject.slice(customerSubjectPrefix.length));
+      if (customerSubject === null) throw new DsvV1AuthenticationError();
+      return this.resolveCustomer(customerSubject);
     }
     throw new DsvV1AuthenticationError();
   }
@@ -173,8 +175,7 @@ class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
     });
   }
 
-  private async resolveCustomer(accountId: string): Promise<DsvPrincipal> {
-    if (!uuidPattern.test(accountId)) throw new DsvV1AuthenticationError();
+  private async resolveCustomer(subject: { accountId: string; scopeVersion?: number }): Promise<DsvPrincipal> {
     const account = await this.prisma.customerAccount.findUnique({
       select: {
         customer: { select: { id: true, shopId: true } },
@@ -185,10 +186,12 @@ class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
         shopId: true,
         status: true,
         subject: true,
+        scopeVersion: true,
       },
-      where: { id: accountId },
+      where: { id: subject.accountId },
     });
     if (account === null) throw new DsvV1AuthenticationError();
+    if (subject.scopeVersion !== undefined && account.scopeVersion !== subject.scopeVersion) throw new DsvV1AuthenticationError();
     if (account.status !== 'ACTIVE') throw new DsvV1ForbiddenError('DSV customer account is inactive');
     if (account.shop.id !== account.shopId || account.customer.id !== account.customerId || account.customer.shopId !== account.shopId) {
       throw new DsvV1ForbiddenError('DSV customer account scope is invalid');
@@ -199,6 +202,17 @@ class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
   private canAccessShopDomain(shopDomain: string): boolean {
     return canAccessShopDomain({ allowedShopDomains: this.allowedShopDomains, subject: 'dsv-v1-session' }, shopDomain);
   }
+}
+
+function parseCustomerSubject(value: string): { accountId: string; scopeVersion?: number } | null {
+  const parts = value.split(':');
+  const accountId = parts[0] ?? '';
+  if (!uuidPattern.test(accountId)) return null;
+  if (parts.length === 1) return { accountId };
+  if (parts.length !== 2) return null;
+  const scopeVersion = Number(parts[1]);
+  if (!Number.isInteger(scopeVersion) || scopeVersion < 0) return null;
+  return { accountId, scopeVersion };
 }
 
 function readOptional(value: string | undefined): string | undefined {

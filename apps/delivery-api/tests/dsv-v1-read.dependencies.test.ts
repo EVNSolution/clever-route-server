@@ -248,6 +248,7 @@ describe('DsvV1SessionResolver', () => {
         customerId: true,
         id: true,
         issuer: true,
+        scopeVersion: true,
         shop: { select: { id: true, shopDomain: true } },
         shopId: true,
         status: true,
@@ -262,6 +263,19 @@ describe('DsvV1SessionResolver', () => {
       shopDomain: 'example.myshopify.com',
       shopId,
     });
+  });
+
+  test('accepts scope-versioned customer subjects and rejects stale versions', async () => {
+    const { customerAccount, prisma } = createPrismaMock();
+    customerAccount.findUnique.mockResolvedValueOnce(customerAccountRow({ scopeVersion: 3 }));
+    const resolver = loadResolver(prisma);
+
+    await expect(resolver.resolve(`dsv-customer-account:${accountId}:3`))
+      .resolves.toMatchObject({ customerId, principalType: 'CUSTOMER_USER' });
+
+    customerAccount.findUnique.mockResolvedValueOnce(customerAccountRow({ scopeVersion: 4 }));
+    await expect(resolver.resolve(`dsv-customer-account:${accountId}:3`))
+      .rejects.toBeInstanceOf(DsvV1AuthenticationError);
   });
 
   test('throws an authentication error when the customer account does not exist', async () => {
@@ -316,6 +330,7 @@ type CustomerAccountRow = {
   issuer: string;
   shop: { id: string; shopDomain: string };
   shopId: string;
+  scopeVersion: number;
   status: string;
   subject: string;
 };
@@ -385,6 +400,7 @@ function customerAccountRow(input: {
   canonicalCustomerId?: string;
   canonicalCustomerShopId?: string;
   canonicalShopId?: string;
+  scopeVersion?: number;
   status?: string;
 } = {}): CustomerAccountRow {
   return {
@@ -395,6 +411,7 @@ function customerAccountRow(input: {
     customerId,
     id: accountId,
     issuer: 'customer-portal',
+    scopeVersion: input.scopeVersion ?? 1,
     shop: { id: input.canonicalShopId ?? shopId, shopDomain: 'example.myshopify.com' },
     shopId,
     status: input.status ?? 'ACTIVE',
