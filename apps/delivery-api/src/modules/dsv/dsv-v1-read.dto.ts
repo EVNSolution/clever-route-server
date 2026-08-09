@@ -484,6 +484,11 @@ export type DsvV1CustomerRouteDto = {
   vehicleId: string;
 };
 
+export type DsvV1CustomerTrailDto = {
+  segments: Array<{ coordinates: Array<[number, number]> }>;
+  vehicleId: string;
+};
+
 export type DsvV1DepartureLocationDto = {
   latitude: number;
   longitude: number;
@@ -517,6 +522,7 @@ export type DsvV1CustomerDeliveryInquiryPageDto = {
   items: DsvV1CustomerDeliveryInquiryItemDto[];
   page?: DsvV1PageInfo;
   routes: DsvV1CustomerRouteDto[];
+  trails?: DsvV1CustomerTrailDto[];
 };
 
 const allowedPublicEventTypes = new Set([
@@ -811,6 +817,7 @@ export function mapDsvV1CustomerDeliveryInquiryPage(input: {
   items: readonly DsvV1CustomerDeliveryInquiryRow[];
   page?: DsvV1PageInfo;
   routes: readonly DsvV1CustomerRouteDto[];
+  trails?: readonly DsvV1CustomerTrailDto[];
 }): DsvV1CustomerDeliveryInquiryPageDto {
   return {
     ...(input.customerDisplayName === undefined || input.customerDisplayName === null ? {} : { customerDisplayName: input.customerDisplayName }),
@@ -822,6 +829,14 @@ export function mapDsvV1CustomerDeliveryInquiryPage(input: {
       coordinates: route.coordinates.map((coordinate) => [coordinate[0], coordinate[1]]),
       vehicleId: route.vehicleId,
     })),
+    ...(input.trails === undefined ? {} : {
+      trails: input.trails.map((trail) => ({
+        segments: trail.segments.map((segment) => ({
+          coordinates: segment.coordinates.map((coordinate) => [coordinate[0], coordinate[1]]),
+        })),
+        vehicleId: trail.vehicleId,
+      })),
+    }),
   };
 }
 

@@ -30,6 +30,7 @@ import {
   toDsvV1SuccessEnvelope,
   type DsvV1DepartureLocationDto,
   type DsvV1CustomerRouteDto,
+  type DsvV1CustomerTrailDto,
   type DsvV1ErrorCode,
 } from '../modules/dsv/dsv-v1-read.dto.js';
 import {
@@ -42,6 +43,7 @@ import {
   type DsvV1ServiceDateInput,
   type DsvV1RecordsInput,
   type DsvV1VehicleGpsTrailHistoryInput,
+  type DsvV1VehicleGpsTrailHistoryResult,
   type DsvV1VehicleTemperatureHistoryInput,
 } from '../modules/dsv/dsv-v1-read-query.service.js';
 import {
@@ -271,12 +273,15 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
   registerOrderMessageRoutes(app, dependencies);
   registerOperationalNotificationRoutes(app, dependencies);
   registerReadRoute(app, dependencies, 'customer/deliveries', {
-    allowedQuery: ['cursor', 'limit', 'serviceDate', 'window'],
+    allowedQuery: ['cursor', 'includeGpsTrails', 'limit', 'serviceDate', 'window'],
     handler: async (principal, query) => {
       const customerPrincipal = requireCustomerPrincipal(principal);
       const page = await requireQueryService(dependencies).listCustomerDeliveries(customerPrincipal, query);
       const routeScope = page.emptyReason === undefined
         ? await requireQueryService(dependencies).listCustomerRouteScope(customerPrincipal, page.serviceDate)
+        : [];
+      const trailHistories = query.includeGpsTrails === true && routeScope.length > 0
+        ? await requireQueryService(dependencies).listCustomerGpsTrailHistories(customerPrincipal, page.serviceDate, routeScope)
         : [];
       return mapDsvV1CustomerDeliveryInquiryPage({
         ...page,
@@ -286,6 +291,7 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
           ...(dependencies.routeGeometryProvider === undefined ? {} : { routeGeometryProvider: dependencies.routeGeometryProvider }),
           ...(dependencies.routePlanService === undefined ? {} : { routePlanService: dependencies.routePlanService }),
           shopDomain: requireCustomerShopDomain(customerPrincipal),
+          trailHistories,
         })),
       });
     },
@@ -293,7 +299,7 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
     requiredScopes: ['dsv:customer-deliveries:read'],
   });
   registerReadRoute(app, dependencies, 'customers/deliveries', {
-    allowedQuery: ['cursor', 'customerId', 'limit', 'serviceDate', 'window'],
+    allowedQuery: ['cursor', 'customerId', 'includeGpsTrails', 'limit', 'serviceDate', 'window'],
     handler: async (principal, query) => {
       const adminPrincipal = requireAdminPrincipal(principal);
       const page = await requireQueryService(dependencies).listCustomerDeliveriesForAdmin(
@@ -308,6 +314,13 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
             page.serviceDate,
           )
         : [];
+      const trailHistories = query.includeGpsTrails === true && routeScope.length > 0
+        ? await requireQueryService(dependencies).listCustomerGpsTrailHistoriesForAdmin(
+            adminPrincipal,
+            page.serviceDate,
+            routeScope,
+          )
+        : [];
       return mapDsvV1CustomerDeliveryInquiryPage({
         ...page,
         customerDisplayName: customerDisplayNameFromDeliveries(page.items),
@@ -316,6 +329,7 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
           ...(dependencies.routeGeometryProvider === undefined ? {} : { routeGeometryProvider: dependencies.routeGeometryProvider }),
           ...(dependencies.routePlanService === undefined ? {} : { routePlanService: dependencies.routePlanService }),
           shopDomain: requireAdminShopDomain(adminPrincipal),
+          trailHistories,
         })),
       });
     },
@@ -478,13 +492,19 @@ async function buildCustomerScopedRoutes(input: {
   routeGeometryProvider?: Pick<RouteGeometryProvider, 'buildRoute'>;
   routePlanService?: Pick<RoutePlanService, 'getRoutePlanDetail' | 'listRoutePlans'>;
   shopDomain: string;
-}): Promise<{ departureLocation?: DsvV1DepartureLocationDto; routes: DsvV1CustomerRouteDto[] }> {
+  trailHistories?: readonly DsvV1VehicleGpsTrailHistoryResult[];
+}): Promise<{
+  departureLocation?: DsvV1DepartureLocationDto;
+  routes: DsvV1CustomerRouteDto[];
+  trails?: DsvV1CustomerTrailDto[];
+}> {
   const routeKeys = uniqueRouteKeys(input.items);
   if (routeKeys.length === 0) return { routes: [] };
   if (input.routePlanService === undefined) {
     throw new DsvV1DependencyError('DSV route plan read service is not configured');
   }
   const routes: DsvV1CustomerRouteDto[] = [];
+  const trails: DsvV1CustomerTrailDto[] = [];
   let departureLocation: DsvV1DepartureLocationDto | undefined;
   for (const routeKey of routeKeys) {
     const detail = await input.routePlanService.getRoutePlanDetail({
@@ -502,6 +522,7 @@ async function buildCustomerScopedRoutes(input: {
       .filter((stop) => customerOrderIds.has(stop.orderId))
       .sort((left, right) => left.sequence - right.sequence);
     const lastCustomerStop = customerStops.at(-1) ?? null;
+    const firstCustomerStop = customerStops[0] ?? null;
     const end = routeStopEndpoint(detail.routeStopPoints, lastCustomerStop?.deliveryStopId ?? null)
       ?? stopCoordinates(lastCustomerStop);
     const start = routeKey.vehiclePosition ?? depot;
@@ -524,13 +545,95 @@ async function buildCustomerScopedRoutes(input: {
           provider: input.routeGeometryProvider,
           start,
         });
-    if (coordinates === null) continue;
-    routes.push({ coordinates, vehicleId: routeKey.vehicleId });
+    const firstRouteSequence = detail.stops.reduce(
+      (minimum, stop) => Math.min(minimum, stop.sequence),
+      Number.POSITIVE_INFINITY,
+    );
+    const trailStart = firstCustomerStop?.sequence === firstRouteSequence
+      ? depot
+      : routeStopEndpoint(detail.routeStopPoints, firstCustomerStop?.deliveryStopId ?? null)
+        ?? stopCoordinates(firstCustomerStop);
+    const trailEnd = routeStopEndpoint(detail.routeStopPoints, lastCustomerStop?.deliveryStopId ?? null)
+      ?? stopCoordinates(lastCustomerStop);
+    const history = input.trailHistories?.find((item) => item.vehicleId === routeKey.vehicleId);
+    if (history !== undefined && trailStart !== null && trailEnd !== null) {
+      const segments = customerScopedTrailSegments(history, routeKey.routePlanId, trailStart, trailEnd);
+      if (segments.length > 0) trails.push({ segments, vehicleId: routeKey.vehicleId });
+    }
+    if (coordinates !== null) routes.push({ coordinates, vehicleId: routeKey.vehicleId });
   }
   return {
     ...(departureLocation === undefined ? {} : { departureLocation }),
     routes,
+    ...(input.trailHistories === undefined ? {} : { trails }),
   };
+}
+
+function customerScopedTrailSegments(
+  history: DsvV1VehicleGpsTrailHistoryResult,
+  routePlanId: string,
+  start: DsvV1LngLat,
+  end: DsvV1LngLat,
+): DsvV1CustomerTrailDto['segments'] {
+  return history.sessions
+    .filter((session) => session.routePlanId === routePlanId)
+    .flatMap((session) => clipTrailSession(session.segments, start, end));
+}
+
+function clipTrailSession(
+  segments: DsvV1VehicleGpsTrailHistoryResult['sessions'][number]['segments'],
+  start: DsvV1LngLat,
+  end: DsvV1LngLat,
+): DsvV1CustomerTrailDto['segments'] {
+  const samples = segments.flatMap((segment) => segment.samples.map((sample) => ({
+    coordinate: [sample.longitude, sample.latitude] as DsvV1LngLat,
+  })));
+  if (samples.length < 2) return [];
+  const startIndex = nearestTrailSampleIndex(samples, start);
+  const nearestEndIndex = nearestTrailSampleIndex(samples, end);
+  if (startIndex === null || nearestEndIndex === null) return [];
+  const startDistance = coordinateDistanceMeters(samples[startIndex]!.coordinate, start);
+  if (startDistance > 1_000) return [];
+  const endIndex = coordinateDistanceMeters(samples[nearestEndIndex]!.coordinate, end) <= 1_000
+    ? nearestEndIndex
+    : samples.length - 1;
+  if (endIndex <= startIndex) return [];
+  let segmentStartIndex = 0;
+  return segments.flatMap((segment) => {
+    const localStart = Math.max(0, startIndex - segmentStartIndex);
+    const localEnd = Math.min(segment.samples.length - 1, endIndex - segmentStartIndex);
+    segmentStartIndex += segment.samples.length;
+    const coordinates = localEnd >= localStart
+      ? segment.samples.slice(localStart, localEnd + 1).map((sample) => [sample.longitude, sample.latitude] as DsvV1LngLat)
+      : [];
+    return coordinates.length >= 2 ? [{ coordinates }] : [];
+  });
+}
+
+function nearestTrailSampleIndex(
+  samples: readonly { coordinate: DsvV1LngLat }[],
+  target: DsvV1LngLat,
+): number | null {
+  let nearestIndex: number | null = null;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  samples.forEach((sample, index) => {
+    const distance = coordinateDistanceMeters(sample.coordinate, target);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestIndex = index;
+    }
+  });
+  return nearestIndex;
+}
+
+function coordinateDistanceMeters(left: DsvV1LngLat, right: DsvV1LngLat): number {
+  const latitudeDelta = (right[1] - left[1]) * Math.PI / 180;
+  const longitudeDelta = (right[0] - left[0]) * Math.PI / 180;
+  const leftLatitude = left[1] * Math.PI / 180;
+  const rightLatitude = right[1] * Math.PI / 180;
+  const haversine = Math.sin(latitudeDelta / 2) ** 2
+    + Math.cos(leftLatitude) * Math.cos(rightLatitude) * Math.sin(longitudeDelta / 2) ** 2;
+  return 2 * 6_371_000 * Math.asin(Math.sqrt(haversine));
 }
 
 async function rebuildCustomerScopedRouteGeometry(input: {
@@ -880,8 +983,10 @@ function parseServiceDateOnlyQuery(request: FastifyRequest): Pick<DsvV1ServiceDa
 
 function parseCustomerDeliveriesQuery(request: FastifyRequest): DsvV1CustomerDeliveriesInput | null {
   const base = parsePagedDateQuery(request);
+  const includeGpsTrails = readSingleQueryString(request, 'includeGpsTrails');
   const window = readSingleQueryString(request, 'window');
-  if (base === null || window === null) return null;
+  if (base === null || includeGpsTrails === null || window === null) return null;
+  if (includeGpsTrails !== undefined && includeGpsTrails !== 'true' && includeGpsTrails !== 'false') return null;
   if (
     window !== undefined
     && window !== 'today'
@@ -890,6 +995,7 @@ function parseCustomerDeliveriesQuery(request: FastifyRequest): DsvV1CustomerDel
   ) return null;
   return {
     ...base,
+    ...(includeGpsTrails === undefined ? {} : { includeGpsTrails: includeGpsTrails === 'true' }),
     ...(window === undefined ? {} : { window }),
   };
 }
