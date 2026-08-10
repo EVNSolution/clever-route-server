@@ -39,6 +39,7 @@ export type DsvAdminAccountSummary = {
 
 export type DsvAdminAccountManager = {
   create(input: { displayName?: string; loginId: string }): Promise<{ account: DsvAdminAccountSummary; temporaryPassword: string }>;
+  delete(input: { accountId: string }): Promise<void>;
   list(): Promise<DsvAdminAccountSummary[]>;
   resetPassword(input: { accountId: string }): Promise<{ account: DsvAdminAccountSummary; temporaryPassword: string }>;
   setStatus(input: { accountId: string; status: DsvAdminAccountStatus }): Promise<DsvAdminAccountSummary>;
@@ -46,7 +47,7 @@ export type DsvAdminAccountManager = {
 
 export class DsvAdminAccountManagementError extends Error {
   constructor(
-    readonly code: 'ADMIN_ACCOUNT_LOGIN_ID_EXISTS' | 'ADMIN_ACCOUNT_NOT_FOUND',
+    readonly code: 'ADMIN_ACCOUNT_DELETE_REQUIRES_DISABLED' | 'ADMIN_ACCOUNT_LOGIN_ID_EXISTS' | 'ADMIN_ACCOUNT_NOT_FOUND',
   ) {
     super(code);
     this.name = 'DsvAdminAccountManagementError';
@@ -173,7 +174,7 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
 
   async list(): Promise<DsvAdminAccountSummary[]> {
     const accounts = await this.prisma.dsvAdminAccount.findMany({
-      orderBy: [{ status: 'asc' }, { loginId: 'asc' }],
+      orderBy: { loginId: 'asc' },
     });
     return accounts.map((account) => {
       const scopes = normalizeDsvScopes(account.scopes);
@@ -243,6 +244,16 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
     const scopes = normalizeDsvScopes(account.scopes);
     if (scopes === null) throw new Error('DSV admin account contains unsupported scopes');
     return summary(account, scopes);
+  }
+
+  async delete(input: { accountId: string }): Promise<void> {
+    const deleted = await this.prisma.dsvAdminAccount.deleteMany({
+      where: { id: input.accountId, status: 'DISABLED' },
+    });
+    if (deleted.count === 1) return;
+    const existing = await this.prisma.dsvAdminAccount.findUnique({ select: { id: true }, where: { id: input.accountId } });
+    if (existing === null) throw new DsvAdminAccountManagementError('ADMIN_ACCOUNT_NOT_FOUND');
+    throw new DsvAdminAccountManagementError('ADMIN_ACCOUNT_DELETE_REQUIRES_DISABLED');
   }
 }
 
