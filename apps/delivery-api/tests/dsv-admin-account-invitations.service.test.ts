@@ -22,6 +22,7 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
       actorId: accountId,
       displayName: 'DSV 운영자',
       email: 'Operator@Example.com',
+      message: 'DSV 관제팀에서 사용할 계정입니다.',
       requestId: 'req-invite',
       shopDomain: 'tomatonofood.com',
     });
@@ -34,6 +35,7 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
     expect(emailBody).toContain('https://dsv.example.com/login');
     expect(emailBody).toContain('48시간');
     expect(emailBody).toContain('한 번만');
+    expect(emailBody).toContain('DSV 관제팀에서 사용할 계정입니다.');
     expect(JSON.stringify(result)).not.toContain(tokenFromEmail);
     const revokeCalls = harness.tx.dsvAdminAccountInvite.updateMany.mock.calls as unknown as Array<[{
       data: { revokedAt?: unknown };

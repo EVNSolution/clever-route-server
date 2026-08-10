@@ -37,7 +37,7 @@ export type DsvAdminOperatorAccountMetadata = {
 
 export type DsvAdminOperatorInvitationService = {
   complete(input: { loginId: string; password: string; requestId: string; shopDomain: string; token: string }): Promise<DsvAdminOperatorAccountMetadata>;
-  createInvitation(input: { actorId: string | null; displayName?: string; email: string; requestId: string; shopDomain: string }): Promise<DsvAdminOperatorInviteMetadata>;
+  createInvitation(input: { actorId: string | null; displayName?: string; email: string; message?: string; requestId: string; shopDomain: string }): Promise<DsvAdminOperatorInviteMetadata>;
   updateCredentials(input: { accountId: string; currentPassword: string; loginId?: string; password?: string }): Promise<DsvAdminOperatorAccountMetadata>;
   validateInvitation(input: { shopDomain: string; token: string }): Promise<DsvAdminOperatorInviteValidation | null>;
 };
@@ -66,7 +66,7 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
     },
   ) {}
 
-  async createInvitation(input: { actorId: string | null; displayName?: string; email: string; requestId: string; shopDomain: string }): Promise<DsvAdminOperatorInviteMetadata> {
+  async createInvitation(input: { actorId: string | null; displayName?: string; email: string; message?: string; requestId: string; shopDomain: string }): Promise<DsvAdminOperatorInviteMetadata> {
     const email = normalizeEmail(input.email);
     if (email === null) throw new DsvAdminOperatorInvitationError('BAD_REQUEST', 'Operator account email is required');
     const displayName = normalizeDisplayName(input.displayName);
@@ -104,6 +104,7 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
       await this.sendInviteEmail({
         displayName,
         email,
+        ...(input.message === undefined ? {} : { message: input.message }),
         requestId: input.requestId,
         shopDomain: input.shopDomain,
         token,
@@ -219,7 +220,7 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
     return accountMetadata(updated);
   }
 
-  private async sendInviteEmail(input: { displayName: string | null; email: string; requestId: string; shopDomain: string; token: string }): Promise<void> {
+  private async sendInviteEmail(input: { displayName: string | null; email: string; message?: string; requestId: string; shopDomain: string; token: string }): Promise<void> {
     if (this.dependencies.webPublicOrigin === undefined) {
       throw new DsvAdminOperatorInvitationError('INVITATION_LINK_NOT_CONFIGURED', 'CLEVER_DSV_WEB_PUBLIC_URL is required for admin account invitation links');
     }
@@ -233,7 +234,9 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
     setupUrl.hash = `token=${encodeURIComponent(input.token)}`;
     const loginUrl = new URL('/login', this.dependencies.webPublicOrigin);
     const greeting = input.displayName ?? '운영자';
-    const body = `안녕하세요 ${greeting}님.\n\nCLEVER DSV 운영자 계정 초대 링크입니다.\n48시간 안에 아래 일회용 링크로 접속해 로그인 ID와 비밀번호를 설정해 주세요.\n\n${setupUrl.toString()}\n\n초대 링크는 한 번만 사용할 수 있습니다.\n설정 후에는 아래 주소에서 계속 로그인할 수 있습니다.\n${loginUrl.toString()}`;
+    const message = input.message?.trim();
+    const introduction = message === undefined || message === '' ? 'CLEVER DSV 운영자 계정 초대 링크입니다.' : message;
+    const body = `안녕하세요 ${greeting}님.\n\n${introduction}\n\n48시간 안에 아래 일회용 링크로 접속해 로그인 ID와 비밀번호를 설정해 주세요.\n\n${setupUrl.toString()}\n\n초대 링크는 한 번만 사용할 수 있습니다.\n설정 후에는 아래 주소에서 계속 로그인할 수 있습니다.\n${loginUrl.toString()}`;
     await this.dependencies.manualEmailService.send({
       commandId: input.requestId,
       recipients: [input.email],

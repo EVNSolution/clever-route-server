@@ -247,6 +247,7 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
           requestId: request.id,
           shopDomain,
           ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
+          ...(input.message === undefined ? {} : { message: input.message }),
         });
         return sendData(reply, { invitation: operatorInvitationData(invitation) }, 201);
       } catch (error) {
@@ -1440,13 +1441,18 @@ function objectBody(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-function readOperatorInvitationBody(value: unknown): { displayName?: string; email: string } | null {
+function readOperatorInvitationBody(value: unknown): { displayName?: string; email: string; message?: string } | null {
   const body = objectBody(value);
-  if (body === null || !hasOnlyAllowedKeys(body, ['displayName', 'email'])) return null;
+  if (body === null || !hasOnlyAllowedKeys(body, ['displayName', 'email', 'message'])) return null;
   const email = readBoundedText(body.email, 320);
   const displayName = Object.hasOwn(body, 'displayName') ? readOptionalBoundedText(body.displayName, 120) : undefined;
-  if (email === null || displayName === null) return null;
-  return { email, ...(displayName === undefined ? {} : { displayName }) };
+  const message = Object.hasOwn(body, 'message') ? readOptionalBoundedText(body.message, 1000) : undefined;
+  if (email === null || displayName === null || message === null) return null;
+  return {
+    email,
+    ...(displayName === undefined ? {} : { displayName }),
+    ...(message === undefined ? {} : { message }),
+  };
 }
 
 function readOperatorCredentialsBody(value: unknown): { currentPassword: string; loginId?: string; password?: string } | null {
