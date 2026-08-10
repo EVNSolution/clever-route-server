@@ -1168,6 +1168,72 @@ describe('PrismaDsvV1ReadQueryService', () => {
     });
   });
 
+  test('vehicle GPS trail history enriches segments with confident materialized lines and markers without changing samples', async () => {
+    const materializedDocument = {
+      generatedAt: '2026-08-04T01:00:00.000Z',
+      retryable: false,
+      schemaVersion: 'uvis_vehicle_trail.v1',
+      segments: [{
+        endedAt: '2026-08-03T23:31:30.000Z',
+        roadMatchedGeometry: { type: 'MultiLineString', coordinates: [[[126.9, 37.4], [126.95, 37.45]]] },
+        samples: [],
+        startedAt: '2026-08-03T23:30:00.000Z',
+        trailMarker: { kind: 'START', latitude: 37.4, longitude: 126.9, observedAt: '2026-08-03T23:30:00.000Z' },
+      }, {
+        endedAt: '2026-08-03T23:32:00.000Z',
+        roadMatchedGeometry: { type: 'MultiLineString', coordinates: [[[127.0, 37.5], [127.1, 37.6]]] },
+        samples: [],
+        startedAt: '2026-08-03T23:31:00.000Z',
+        trailMarker: { kind: 'START', latitude: 37.5, longitude: 127.0, observedAt: '2026-08-03T23:31:00.000Z' },
+      }, {
+        endedAt: '2026-08-03T23:33:00.000Z',
+        roadMatchedGeometry: { type: 'MultiLineString', coordinates: [[[127.2, 37.7], [127.3, 37.8]]] },
+        samples: [],
+        startedAt: '2026-08-03T23:32:30.000Z',
+        trailMarker: { kind: 'RESTART', latitude: 37.7, longitude: 127.2, observedAt: '2026-08-03T23:32:30.000Z' },
+      }],
+      serviceDate: '2026-08-04',
+      sourceSampleCount: 3,
+      sourceWatermark: 'sha256:trail',
+      timezone: 'Asia/Seoul',
+      vehicleId: 'vehicle-unassigned',
+    };
+    const prisma = prismaMock({
+      commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },
+      routePlan: { findMany: vi.fn(() => Promise.resolve([])) },
+      shop: { findUnique: vi.fn(() => Promise.resolve({ routeOpsUiSettings: { version: 1, plannedDepartureTime: '08:30' } })) },
+      uvisVehicleTelemetrySample: { findMany: vi.fn(() => Promise.resolve([
+        gpsSample({ observedAt: '2026-08-03T23:31:00.000Z', staleAfter: '2026-08-03T23:35:00.000Z' }),
+        gpsSample({ observedAt: '2026-08-03T23:32:00.000Z', staleAfter: '2026-08-03T23:35:00.000Z' }),
+        gpsSample({ observedAt: '2026-08-03T23:33:00.000Z', staleAfter: '2026-08-03T23:35:00.000Z' }),
+      ])) },
+      uvisVehicleTrailMaterialization: { findUnique: vi.fn(() => Promise.resolve({ document: materializedDocument })) },
+      vehicle: { findFirst: vi.fn(() => Promise.resolve({ id: 'vehicle-unassigned' })) },
+    });
+    const service = new PrismaDsvV1ReadQueryService(prisma as never, () => new Date('2026-08-04T12:00:00.000Z'));
+
+    const result = await service.listVehicleGpsTrailHistory(adminPrincipal(), {
+      serviceDate: '2026-08-04',
+      vehicleId: 'vehicle-unassigned',
+    });
+
+    expect(result.sessions[0]?.segments).toEqual([{
+      roadMatchedGeometry: {
+        coordinates: [
+          [[127.0, 37.5], [127.1, 37.6]],
+          [[127.2, 37.7], [127.3, 37.8]],
+        ],
+        type: 'MultiLineString',
+      },
+      samples: [
+        expect.objectContaining({ observedAt: '2026-08-03T23:31:00.000Z' }),
+        expect.objectContaining({ observedAt: '2026-08-03T23:32:00.000Z' }),
+        expect.objectContaining({ observedAt: '2026-08-03T23:33:00.000Z' }),
+      ],
+      trailMarker: { kind: 'START', latitude: 37.5, longitude: 127.0, observedAt: '2026-08-03T23:31:00.000Z' },
+    }]);
+  });
+
   test('vehicle GPS trail history starts at the earlier planned time and closes a paused session', async () => {
     const prisma = prismaMock({
       commerceConnection: { findMany: vi.fn(() => Promise.resolve([{ timezone: 'Asia/Seoul' }])) },

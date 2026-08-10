@@ -106,6 +106,10 @@ const dsvConditionTemperaturePolicyMigrationPath = new URL(
   '../prisma/migrations/20260805120000_add_dsv_condition_temperature_policy/migration.sql',
   import.meta.url
 );
+const uvisTrailMaterializationMigrationPath = new URL(
+  '../prisma/migrations/20260810150000_add_uvis_vehicle_trail_materializations/migration.sql',
+  import.meta.url
+);
 
 async function readSchema(): Promise<string> {
   return readFile(schemaPath, 'utf8');
@@ -125,6 +129,22 @@ describe('Prisma schema', () => {
     expect(migration).toContain('CREATE UNIQUE INDEX "uvis_vehicle_telemetry_samples_id_shopId_deviceId_sourceKind_key"');
     expect(migration).toContain('FOREIGN KEY ("lastSampleId", "shopId", "deviceId", "sourceKind")');
     expect(migration).toContain('REFERENCES "uvis_vehicle_telemetry_samples"("id", "shopId", "deviceId", "sourceKind")');
+  });
+
+  test('adds additive UVIS vehicle trail materialization storage scoped by shop vehicle and service day', async () => {
+    const schema = await readSchema();
+    const migration = await readFile(uvisTrailMaterializationMigrationPath, 'utf8');
+    const model = /model UvisVehicleTrailMaterialization \{(?<body>[\s\S]*?)\n\}/u.exec(schema)?.groups?.body ?? '';
+
+    expect(model).toMatch(/serviceDate\s+DateTime\s+@db\.Date/u);
+    expect(model).toContain('schemaVersion     String');
+    expect(model).toContain('sourceWatermark   String');
+    expect(model).toContain('sourceSampleCount Int');
+    expect(model).toContain('document          Json');
+    expect(model).toContain('@@unique([shopId, vehicleId, serviceDate, schemaVersion])');
+    expect(migration).toContain('CREATE TABLE "uvis_vehicle_trail_materializations"');
+    expect(migration).toContain('"document" JSONB NOT NULL');
+    expect(migration).toContain('FOREIGN KEY ("vehicleId", "shopId") REFERENCES "vehicles"("id", "shopId")');
   });
 
   test('adds DSV condition temperature policy without changing import row condition ownership', async () => {

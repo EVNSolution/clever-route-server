@@ -545,14 +545,8 @@ async function buildCustomerScopedRoutes(input: {
           provider: input.routeGeometryProvider,
           start,
         });
-    const firstRouteSequence = detail.stops.reduce(
-      (minimum, stop) => Math.min(minimum, stop.sequence),
-      Number.POSITIVE_INFINITY,
-    );
-    const trailStart = firstCustomerStop?.sequence === firstRouteSequence
-      ? depot
-      : routeStopEndpoint(detail.routeStopPoints, firstCustomerStop?.deliveryStopId ?? null)
-        ?? stopCoordinates(firstCustomerStop);
+    const trailStart = routeStopEndpoint(detail.routeStopPoints, firstCustomerStop?.deliveryStopId ?? null)
+      ?? stopCoordinates(firstCustomerStop);
     const trailEnd = routeStopEndpoint(detail.routeStopPoints, lastCustomerStop?.deliveryStopId ?? null)
       ?? stopCoordinates(lastCustomerStop);
     const history = input.trailHistories?.find((item) => item.vehicleId === routeKey.vehicleId);
@@ -585,45 +579,117 @@ function clipTrailSession(
   start: DsvV1LngLat,
   end: DsvV1LngLat,
 ): DsvV1CustomerTrailDto['segments'] {
-  const samples = segments.flatMap((segment) => segment.samples.map((sample) => ({
-    coordinate: [sample.longitude, sample.latitude] as DsvV1LngLat,
-  })));
-  if (samples.length < 2) return [];
-  const startIndex = nearestTrailSampleIndex(samples, start);
-  const nearestEndIndex = nearestTrailSampleIndex(samples, end);
-  if (startIndex === null || nearestEndIndex === null) return [];
-  const startDistance = coordinateDistanceMeters(samples[startIndex]!.coordinate, start);
-  if (startDistance > 1_000) return [];
-  const endIndex = coordinateDistanceMeters(samples[nearestEndIndex]!.coordinate, end) <= 1_000
-    ? nearestEndIndex
-    : samples.length - 1;
-  if (endIndex <= startIndex) return [];
-  let segmentStartIndex = 0;
-  return segments.flatMap((segment) => {
-    const localStart = Math.max(0, startIndex - segmentStartIndex);
-    const localEnd = Math.min(segment.samples.length - 1, endIndex - segmentStartIndex);
-    segmentStartIndex += segment.samples.length;
-    const coordinates = localEnd >= localStart
-      ? segment.samples.slice(localStart, localEnd + 1).map((sample) => [sample.longitude, sample.latitude] as DsvV1LngLat)
-      : [];
+  const roadMatchedLines = segments.flatMap((segment) => segment.roadMatchedGeometry?.coordinates ?? []);
+  return clipRoadMatchedTrailLines(roadMatchedLines, start, end);
+}
+
+type RoadLineProjection = {
+  coordinate: DsvV1LngLat;
+  distanceMeters: number;
+  lineIndex: number;
+  order: number;
+  ratio: number;
+  segmentIndex: number;
+};
+
+function clipRoadMatchedTrailLines(
+  lines: Array<Array<[number, number]>>,
+  start: DsvV1LngLat,
+  end: DsvV1LngLat,
+): DsvV1CustomerTrailDto['segments'] {
+  const usableLines = lines.filter((line) => line.length >= 2);
+  if (usableLines.length === 0) return [];
+  const startProjection = nearestRoadLineProjection(usableLines, start);
+  const endProjection = nearestRoadLineProjection(usableLines, end);
+  if (startProjection === null || endProjection === null) return [];
+  if (startProjection.distanceMeters > 1_000 || endProjection.distanceMeters > 1_000) return [];
+  if (endProjection.order <= startProjection.order) return [];
+
+  return usableLines.flatMap((line, lineIndex) => {
+    if (lineIndex < startProjection.lineIndex || lineIndex > endProjection.lineIndex) return [];
+    const coordinates = clippedRoadLine(line, lineIndex, startProjection, endProjection);
     return coordinates.length >= 2 ? [{ coordinates }] : [];
   });
 }
 
-function nearestTrailSampleIndex(
-  samples: readonly { coordinate: DsvV1LngLat }[],
+function clippedRoadLine(
+  line: DsvV1LngLat[],
+  lineIndex: number,
+  start: RoadLineProjection,
+  end: RoadLineProjection,
+): DsvV1LngLat[] {
+  const from = lineIndex === start.lineIndex ? start : null;
+  const to = lineIndex === end.lineIndex ? end : null;
+  const firstVertexIndex = from === null ? 0 : from.segmentIndex + 1;
+  const lastVertexExclusive = to === null ? line.length : to.segmentIndex + 1;
+  const coordinates = [
+    ...(from === null ? [] : [from.coordinate]),
+    ...line.slice(firstVertexIndex, lastVertexExclusive),
+    ...(to === null ? [] : [to.coordinate]),
+  ];
+  return dedupeAdjacentCoordinates(coordinates);
+}
+
+function nearestRoadLineProjection(
+  lines: DsvV1LngLat[][],
   target: DsvV1LngLat,
-): number | null {
-  let nearestIndex: number | null = null;
+): RoadLineProjection | null {
+  let nearest: RoadLineProjection | null = null;
   let nearestDistance = Number.POSITIVE_INFINITY;
-  samples.forEach((sample, index) => {
-    const distance = coordinateDistanceMeters(sample.coordinate, target);
-    if (distance < nearestDistance) {
-      nearestDistance = distance;
-      nearestIndex = index;
+  let orderBase = 0;
+  lines.forEach((line, lineIndex) => {
+    for (let segmentIndex = 0; segmentIndex < line.length - 1; segmentIndex += 1) {
+      const projection = projectCoordinateToSegment(target, line[segmentIndex]!, line[segmentIndex + 1]!);
+      const distance = coordinateDistanceMeters(projection.coordinate, target);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = {
+          ...projection,
+          distanceMeters: distance,
+          lineIndex,
+          order: orderBase + segmentIndex + projection.ratio,
+          segmentIndex,
+        };
+      }
     }
+    orderBase += line.length;
   });
-  return nearestIndex;
+  return nearest;
+}
+
+function projectCoordinateToSegment(
+  target: DsvV1LngLat,
+  left: DsvV1LngLat,
+  right: DsvV1LngLat,
+): { coordinate: DsvV1LngLat; ratio: number } {
+  const latitude = target[1] * Math.PI / 180;
+  const metersPerDegreeLatitude = 111_320;
+  const metersPerDegreeLongitude = Math.max(1, Math.cos(latitude) * 111_320);
+  const ax = left[0] * metersPerDegreeLongitude;
+  const ay = left[1] * metersPerDegreeLatitude;
+  const bx = right[0] * metersPerDegreeLongitude;
+  const by = right[1] * metersPerDegreeLatitude;
+  const tx = target[0] * metersPerDegreeLongitude;
+  const ty = target[1] * metersPerDegreeLatitude;
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSquared = dx ** 2 + dy ** 2;
+  const rawRatio = lengthSquared === 0 ? 0 : ((tx - ax) * dx + (ty - ay) * dy) / lengthSquared;
+  const ratio = Math.min(1, Math.max(0, rawRatio));
+  return {
+    coordinate: [
+      left[0] + ((right[0] - left[0]) * ratio),
+      left[1] + ((right[1] - left[1]) * ratio),
+    ],
+    ratio,
+  };
+}
+
+function dedupeAdjacentCoordinates(coordinates: DsvV1LngLat[]): DsvV1LngLat[] {
+  return coordinates.filter((coordinate, index) => {
+    const previous = coordinates[index - 1];
+    return previous === undefined || previous[0] !== coordinate[0] || previous[1] !== coordinate[1];
+  });
 }
 
 function coordinateDistanceMeters(left: DsvV1LngLat, right: DsvV1LngLat): number {

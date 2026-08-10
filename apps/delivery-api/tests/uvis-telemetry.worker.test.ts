@@ -50,6 +50,25 @@ describe('UvisTelemetryWorker', () => {
     }));
   });
 
+  test('queues UVIS GPS trail materialization after newly recorded samples without blocking polling on road matching', async () => {
+    const trailMaterializationQueue: { enqueue: (input: { observedAt: Date; shopId: string; vehicleId: string }) => void } = {
+      enqueue: vi.fn(),
+    };
+    const harness = createHarness(undefined, { trailMaterializationQueue });
+    harness.client.getLatestLocations.mockResolvedValue([
+      locationReading({ recordedAt: new Date('2026-08-04T04:01:00.000Z') }),
+    ]);
+
+    await harness.worker.runOnce();
+
+    expect(trailMaterializationQueue.enqueue).toHaveBeenCalledWith({
+      observedAt: new Date('2026-08-04T04:01:00.000Z'),
+      shopId: 'shop-id',
+      vehicleId: 'vehicle-id',
+    });
+    expect(harness.pollStore.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({ kind: 'location' }));
+  });
+
   test('rejects a mapped reading when unique serial and unique plate point to different configured devices', async () => {
     const harness = createHarness();
     harness.client.getLatestLocations.mockResolvedValue([
@@ -323,15 +342,16 @@ describe('UvisTelemetryWorker', () => {
   });
 });
 
-function createHarness(lease: {
+function createHarness(lease: Partial<{
   activeProtectionEndedAt?: Date | null;
   activity?: 'ACTIVE' | 'DORMANT';
   lastLocationStartedAt: Date | null;
   lastTemperatureStartedAt: Date | null;
-} = { lastLocationStartedAt: null, lastTemperatureStartedAt: null }, options: {
+}> = { lastLocationStartedAt: null, lastTemperatureStartedAt: null }, options: {
   latestFinalEstimatedArrivalAt?: Date | null;
   loadingStartTime?: string;
   now?: Date;
+  trailMaterializationQueue?: { enqueue: (input: { observedAt: Date; shopId: string; vehicleId: string }) => void };
 } = {}) {
   const clock = options.now ?? now;
   const loadingStartTime = options.loadingStartTime ?? '07:30';
@@ -385,6 +405,7 @@ function createHarness(lease: {
     shopDomain: 'dsv-demo.local',
     telemetryStore,
     temperaturePollIntervalMs: 300_000,
+    ...(options.trailMaterializationQueue === undefined ? {} : { trailMaterializationQueue: options.trailMaterializationQueue }),
     tokenFactory: () => 'lease-token',
   });
   return { client, logger, pollStore, telemetryStore, worker };

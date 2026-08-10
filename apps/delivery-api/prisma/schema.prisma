@@ -427,6 +427,7 @@ model Shop {
   dsvVehicleTelematicsDevices       DsvVehicleTelematicsDevice[]
   uvisVehicleTelemetryCurrents      UvisVehicleTelemetryCurrent[]
   uvisVehicleTelemetrySamples       UvisVehicleTelemetrySample[]
+  uvisVehicleTrailMaterializations  UvisVehicleTrailMaterialization[]
   uvisTelemetryPollState            UvisTelemetryPollState?
   dsvDriverAccountSignupInvites     DsvDriverAccountSignupInvite[]
   dsvCustomerAccountInvites         DsvCustomerAccountInvite[]
@@ -2048,23 +2049,24 @@ model RetentionJobRun {
 }
 
 model Vehicle {
-  id                    String                        @id @default(uuid()) @db.Uuid
-  shopId                String                        @db.Uuid
-  shop                  Shop                          @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  label                 String                        @db.Text
-  licensePlate          String?                       @db.Text
-  vehicleType           VehicleType                   @default(OTHER)
-  capacityUnits         Int                           @default(0)
-  status                VehicleStatus                 @default(ACTIVE)
-  createdAt             DateTime                      @default(now()) @db.Timestamptz(6)
-  updatedAt             DateTime                      @updatedAt @db.Timestamptz(6)
-  routePlans            RoutePlan[]
-  dsvDispatchImportRows DsvDispatchImportRow[]
-  dsvProfile            DsvVehicleProfile?
-  dsvDriverAssignments  DsvVehicleDriverAssignment[]
-  dsvTelematicsDevice   DsvVehicleTelematicsDevice?
-  uvisTelemetryCurrents UvisVehicleTelemetryCurrent[]
-  uvisTelemetrySamples  UvisVehicleTelemetrySample[]
+  id                        String                            @id @default(uuid()) @db.Uuid
+  shopId                    String                            @db.Uuid
+  shop                      Shop                              @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  label                     String                            @db.Text
+  licensePlate              String?                           @db.Text
+  vehicleType               VehicleType                       @default(OTHER)
+  capacityUnits             Int                               @default(0)
+  status                    VehicleStatus                     @default(ACTIVE)
+  createdAt                 DateTime                          @default(now()) @db.Timestamptz(6)
+  updatedAt                 DateTime                          @updatedAt @db.Timestamptz(6)
+  routePlans                RoutePlan[]
+  dsvDispatchImportRows     DsvDispatchImportRow[]
+  dsvProfile                DsvVehicleProfile?
+  dsvDriverAssignments      DsvVehicleDriverAssignment[]
+  dsvTelematicsDevice       DsvVehicleTelematicsDevice?
+  uvisTelemetryCurrents     UvisVehicleTelemetryCurrent[]
+  uvisTelemetrySamples      UvisVehicleTelemetrySample[]
+  uvisTrailMaterializations UvisVehicleTrailMaterialization[]
 
   @@unique([id, shopId])
   @@unique([shopId, licensePlate])
@@ -2213,6 +2215,29 @@ model UvisVehicleTelemetrySample {
   @@index([shopId, deviceId, observedAt])
   @@index([shopId, staleAfter])
   @@map("uvis_vehicle_telemetry_samples")
+}
+
+model UvisVehicleTrailMaterialization {
+  id                String    @id @default(uuid()) @db.Uuid
+  shopId            String    @db.Uuid
+  shop              Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  vehicleId         String    @db.Uuid
+  vehicle           Vehicle   @relation(fields: [vehicleId, shopId], references: [id, shopId], onDelete: Cascade)
+  serviceDate       DateTime  @db.Date
+  schemaVersion     String    @db.Text
+  sourceWatermark   String    @db.Text
+  sourceSampleCount Int
+  generatedAt       DateTime  @db.Timestamptz(6)
+  finalizedAt       DateTime? @db.Timestamptz(6)
+  document          Json
+  createdAt         DateTime  @default(now()) @db.Timestamptz(6)
+  updatedAt         DateTime  @updatedAt @db.Timestamptz(6)
+
+  @@unique([shopId, vehicleId, serviceDate, schemaVersion])
+  @@index([shopId, serviceDate])
+  @@index([shopId, vehicleId, serviceDate])
+  @@index([finalizedAt])
+  @@map("uvis_vehicle_trail_materializations")
 }
 
 model UvisTelemetryPollState {

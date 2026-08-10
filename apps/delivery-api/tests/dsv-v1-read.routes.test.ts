@@ -886,7 +886,7 @@ describe('DSV v1 read routes', () => {
     }
   });
 
-  test('returns the current-day customer trail only for the scoped route plan', async () => {
+  test('returns the current-day customer trail only for the scoped route plan and prefers confident road-matched lines', async () => {
     const { app, queryService, routeGeometryProvider, routePlanService } = await createHarness();
     const customer = signedCookie(`dsv-customer-account:${accountId}`);
     try {
@@ -908,11 +908,21 @@ describe('DSV v1 read routes', () => {
           endpoint: { endedAt: '2026-08-09T01:02:00.000Z', reason: 'LAST_VALID_SAMPLE' },
           restart: null,
           routePlanId: 'route-plan-1',
-          segments: [{ samples: [
-            { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.9, observedAt: '2026-08-09T01:00:00.000Z', speedKph: 10 },
-            { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.91, observedAt: '2026-08-09T01:01:00.000Z', speedKph: 10 },
-            { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.92, observedAt: '2026-08-09T01:02:00.000Z', speedKph: 10 },
-          ] }],
+          segments: [{
+            roadMatchedGeometry: {
+              coordinates: [
+                [[126.905, 37.5], [126.915, 37.5]],
+                [[126.918, 37.5], [126.94, 37.5]],
+              ],
+              type: 'MultiLineString',
+            },
+            samples: [
+              { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.9, observedAt: '2026-08-09T01:00:00.000Z', speedKph: 10 },
+              { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.91, observedAt: '2026-08-09T01:01:00.000Z', speedKph: 10 },
+              { distanceTodayKm: null, ignitionOn: true, latitude: 37.5, longitude: 126.92, observedAt: '2026-08-09T01:02:00.000Z', speedKph: 10 },
+            ],
+            trailMarker: { kind: 'START', latitude: 37.5, longitude: 126.9, observedAt: '2026-08-09T01:00:00.000Z' },
+          }],
           sessionIndex: 0,
           startedAt: '2026-08-09T01:00:00.000Z',
           startEventId: 'start-1',
@@ -944,10 +954,17 @@ describe('DSV v1 read routes', () => {
       expect(expectDsvV1Metadata(response).data).toMatchObject({
         routes: [],
         trails: [{
-          segments: [{ coordinates: [[126.9, 37.5], [126.91, 37.5], [126.92, 37.5]] }],
+          segments: [
+            { coordinates: [[126.91, 37.5], [126.915, 37.5]] },
+            { coordinates: [[126.918, 37.5], [126.93, 37.5]] },
+          ],
           vehicleId: 'vehicle-1',
         }],
       });
+      const serialized = JSON.stringify(expectDsvV1Metadata(response).data);
+      expect(serialized).not.toContain('126.905');
+      expect(serialized).not.toContain('126.94');
+      expect(serialized).not.toContain('126.9,37.5');
       expect(queryService.listCustomerGpsTrailHistories).toHaveBeenCalledWith(
         expect.objectContaining({ customerId, principalType: 'CUSTOMER_USER', shopId }),
         '2026-08-09',

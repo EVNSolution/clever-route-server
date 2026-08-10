@@ -25,6 +25,12 @@ import {
   dsvTimeConstraintAuditEvents,
 } from './dsv-time-constraint.js';
 import { normalizeRouteOpsUiSettings } from '../route-ops/route-ops-ui-settings.js';
+import {
+  UVIS_VEHICLE_TRAIL_SCHEMA_VERSION,
+  type UvisVehicleTrailDocumentV1,
+  type UvisVehicleTrailMarker,
+} from '../uvis/uvis-vehicle-trail-materializer.js';
+import type { RouteTrackingRoadMatchedGeometryV1 } from '../route-tracking/route-tracking.types.js';
 
 export const dsvV1ReadDefaultLimit = 50;
 export const dsvV1ReadMaxLimit = 100;
@@ -133,7 +139,9 @@ export type DsvV1VehicleGpsTrailSample = {
 };
 
 export type DsvV1VehicleGpsTrailSegment = {
+  roadMatchedGeometry?: RouteTrackingRoadMatchedGeometryV1 | null;
   samples: DsvV1VehicleGpsTrailSample[];
+  trailMarker?: UvisVehicleTrailMarker | null;
 };
 
 export type DsvV1VehicleGpsTrailSession = {
@@ -255,7 +263,7 @@ type DsvV1ReadPrismaClient = Pick<
   | 'shop'
   | 'uvisVehicleTelemetrySample'
   | 'vehicle'
-> & Partial<Pick<PrismaClient, 'uvisTelemetryPollState' | 'uvisVehicleTelemetryCurrent'>>;
+> & Partial<Pick<PrismaClient, 'uvisTelemetryPollState' | 'uvisVehicleTelemetryCurrent' | 'uvisVehicleTrailMaterialization'>>;
 
 type DsvV1VehicleGpsTelemetry = {
   ignitionOn: boolean | null;
@@ -932,10 +940,16 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       if (latitude === null || longitude === null) return [];
       return [{ ...sample, latitude, longitude }];
     });
+    const materializedTrail = await this.readUvisTrailMaterialization({
+      serviceDate,
+      shopId,
+      vehicleId: vehicle.id,
+    });
 
     const plannedStartRoutePlanId = selectPlannedStartRoutePlanId(routePlans);
     const routeSessions = routePlans.flatMap((routePlan) => gpsTrailSessionsForRoutePlan({
       includePlannedStart: routePlan.id === plannedStartRoutePlanId,
+      materializedTrail,
       plannedDepartureTime,
       routePlan,
       samples: validSamples,
@@ -946,6 +960,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     const sessions = routeSessions.length > 0
       ? routeSessions
       : gpsTrailSessionsWithoutRoutePlan({
+          materializedTrail,
           plannedDepartureTime,
           samples: validSamples,
           serviceDate,
@@ -958,6 +973,26 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       timezone,
       vehicleId: vehicle.id,
     };
+  }
+
+  private async readUvisTrailMaterialization(input: {
+    serviceDate: string;
+    shopId: string;
+    vehicleId: string;
+  }): Promise<UvisVehicleTrailDocumentV1 | null> {
+    if (this.prisma.uvisVehicleTrailMaterialization === undefined) return null;
+    const row = await this.prisma.uvisVehicleTrailMaterialization.findUnique({
+      select: { document: true },
+      where: {
+        shopId_vehicleId_serviceDate_schemaVersion: {
+          schemaVersion: UVIS_VEHICLE_TRAIL_SCHEMA_VERSION,
+          serviceDate: serviceDateAsDbDate(input.serviceDate),
+          shopId: input.shopId,
+          vehicleId: input.vehicleId,
+        },
+      },
+    });
+    return readUvisTrailDocument(row?.document);
   }
 
   private async resolveTenantTimezone(shopId: string): Promise<string> {
@@ -1186,6 +1221,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
 }
 
 function gpsTrailSessionsWithoutRoutePlan(input: {
+  materializedTrail: UvisVehicleTrailDocumentV1 | null;
   plannedDepartureTime: string;
   samples: GpsTrailSampleRow[];
   serviceDate: string;
@@ -1202,7 +1238,7 @@ function gpsTrailSessionsWithoutRoutePlan(input: {
     endpoint: { endedAt: endedAt?.toISOString() ?? null, reason: 'LAST_VALID_SAMPLE' },
     restart: null,
     routePlanId: `unassigned:${input.vehicleId}:${input.serviceDate}`,
-    segments: splitGpsTrailSegments(samples).map((segment) => ({ samples: segment.map(toGpsTrailSample) })),
+    segments: buildGpsTrailSegments(samples, input.materializedTrail),
     sessionIndex: 0,
     startedAt: startedAt.toISOString(),
     startEventId: null,
@@ -1827,6 +1863,7 @@ function selectCurrentRouteStop(
 
 function gpsTrailSessionsForRoutePlan(input: {
   includePlannedStart: boolean;
+  materializedTrail: UvisVehicleTrailDocumentV1 | null;
   plannedDepartureTime: string;
   routePlan: GpsTrailRoutePlanRow;
   samples: GpsTrailSampleRow[];
@@ -1901,9 +1938,7 @@ function gpsTrailSessionsForRoutePlan(input: {
         restartEventId: nextStart.eventId,
       },
       routePlanId: input.routePlan.id,
-      segments: splitGpsTrailSegments(clippedSamples).map((segment) => ({
-        samples: segment.map(toGpsTrailSample),
-      })),
+      segments: buildGpsTrailSegments(clippedSamples, input.materializedTrail),
       sessionIndex: index,
       startedAt: start.startedAt.toISOString(),
       startEventId: start.eventId,
@@ -1942,7 +1977,9 @@ function normalizeGpsTrailSessionTimeline(
     if (endpointAt <= nextStartedAt) return { ...session, restart };
     const segments = session.segments
       .map((segment) => ({
+        ...(segment.roadMatchedGeometry === undefined ? {} : { roadMatchedGeometry: segment.roadMatchedGeometry }),
         samples: segment.samples.filter((sample) => Date.parse(sample.observedAt) < nextStartedAt),
+        ...(segment.trailMarker === undefined ? {} : { trailMarker: segment.trailMarker }),
       }))
       .filter((segment) => segment.samples.length > 0);
     const endedAt = segments.at(-1)?.samples.at(-1)?.observedAt ?? null;
@@ -2001,6 +2038,47 @@ function splitGpsTrailSegments(samples: GpsTrailSampleRow[]): GpsTrailSampleRow[
   return segments;
 }
 
+function buildGpsTrailSegments(
+  samples: GpsTrailSampleRow[],
+  materializedTrail: UvisVehicleTrailDocumentV1 | null,
+): DsvV1VehicleGpsTrailSegment[] {
+  return splitGpsTrailSegments(samples).map((segment) => {
+    const base: DsvV1VehicleGpsTrailSegment = { samples: segment.map(toGpsTrailSample) };
+    const enrichment = segmentTrailEnrichment(segment, materializedTrail);
+    return {
+      ...base,
+      ...(enrichment.roadMatchedGeometry === undefined ? {} : { roadMatchedGeometry: enrichment.roadMatchedGeometry }),
+      ...(enrichment.trailMarker === undefined ? {} : { trailMarker: enrichment.trailMarker }),
+    };
+  });
+}
+
+function segmentTrailEnrichment(
+  samples: GpsTrailSampleRow[],
+  materializedTrail: UvisVehicleTrailDocumentV1 | null,
+): {
+  roadMatchedGeometry?: RouteTrackingRoadMatchedGeometryV1 | null;
+  trailMarker?: UvisVehicleTrailMarker | null;
+} {
+  if (samples.length === 0 || materializedTrail === null) return {};
+  const start = samples[0]!.observedAt.getTime();
+  const end = samples.at(-1)!.observedAt.getTime();
+  const overlapping = materializedTrail.segments.filter((segment) =>
+    Date.parse(segment.startedAt) >= start && Date.parse(segment.endedAt) <= end
+  );
+  const lines = overlapping.flatMap((segment) => segment.roadMatchedGeometry?.coordinates ?? []);
+  const marker = overlapping
+    .map((segment) => segment.trailMarker)
+    .find((candidate) => {
+      const observedAt = Date.parse(candidate.observedAt);
+      return observedAt >= start && observedAt <= end;
+    }) ?? null;
+  return {
+    ...(lines.length === 0 ? {} : { roadMatchedGeometry: { coordinates: lines, type: 'MultiLineString' as const } }),
+    ...(marker === null ? {} : { trailMarker: marker }),
+  };
+}
+
 function toGpsTrailSample(sample: GpsTrailSampleRow): DsvV1VehicleGpsTrailSample {
   return {
     distanceTodayKm: decimalToNumber(sample.distanceTodayKm),
@@ -2010,6 +2088,12 @@ function toGpsTrailSample(sample: GpsTrailSampleRow): DsvV1VehicleGpsTrailSample
     observedAt: sample.observedAt.toISOString(),
     speedKph: decimalToNumber(sample.speedKph),
   };
+}
+
+function readUvisTrailDocument(value: unknown): UvisVehicleTrailDocumentV1 | null {
+  const object = objectOrNull(value);
+  if (object?.schemaVersion !== UVIS_VEHICLE_TRAIL_SCHEMA_VERSION || !Array.isArray(object.segments)) return null;
+  return object as UvisVehicleTrailDocumentV1;
 }
 
 function plannedRouteStart(

@@ -38,6 +38,7 @@
     "woocommerce:order-items:backfill": "tsx src/scripts/backfill-woocommerce-order-items.ts",
     "route-geometry:refresh": "node dist/scripts/refresh-route-geometry-cache.js",
     "orders:display-sequence:backfill": "tsx src/scripts/backfill-order-display-sequence.ts",
+    "uvis:vehicle-trails:backfill": "tsx src/scripts/backfill-uvis-vehicle-trails.ts",
     "perf:orders:cohorts": "tsx src/scripts/orders-performance-cohorts.ts",
     "perf:orders:completion-evidence": "tsx src/scripts/orders-pagination-completion-evidence.ts"
   },

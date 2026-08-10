@@ -34,6 +34,10 @@ export type UvisTelemetryStore = {
   recordSample: (input: UvisTelemetrySampleInput) => Promise<UvisTelemetryStoreResult>;
 };
 
+export type UvisVehicleTrailMaterializationQueuePort = {
+  enqueue: (input: { observedAt: Date; shopId: string; vehicleId: string }) => void;
+};
+
 export type UvisTelemetryWorkerOptions = {
   appId: string;
   client: Pick<UvisClient, 'getLatestLocations' | 'getLatestTemperatures'>;
@@ -47,6 +51,7 @@ export type UvisTelemetryWorkerOptions = {
   shopDomain: string;
   telemetryStore: UvisTelemetryStore;
   temperaturePollIntervalMs: number;
+  trailMaterializationQueue?: UvisVehicleTrailMaterializationQueuePort | undefined;
   tokenFactory?: () => string;
 };
 
@@ -215,12 +220,24 @@ export class UvisTelemetryWorker {
           ));
         }
         try {
-          await this.options.telemetryStore.recordSample(input.toSample(
+          const sampleInput = input.toSample(
             reading,
             mapping.deviceId,
             receivedAt,
             new Date(reading.recordedAt.getTime() + (input.intervalMs * 2)),
-          ));
+          );
+          const result = await this.options.telemetryStore.recordSample(sampleInput);
+          if (
+            sampleInput.sourceKind === 'VEHICLE_GPS' &&
+            result.sampleStatus === 'RECORDED' &&
+            this.options.trailMaterializationQueue !== undefined
+          ) {
+            this.options.trailMaterializationQueue.enqueue({
+              observedAt: sampleInput.observedAt,
+              shopId: result.shopId,
+              vehicleId: result.vehicleId,
+            });
+          }
           matched += 1;
         } catch {
           failed += 1;
