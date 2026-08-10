@@ -934,7 +934,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     });
 
     const plannedStartRoutePlanId = selectPlannedStartRoutePlanId(routePlans);
-    const sessions = routePlans.flatMap((routePlan) => gpsTrailSessionsForRoutePlan({
+    const routeSessions = routePlans.flatMap((routePlan) => gpsTrailSessionsForRoutePlan({
       includePlannedStart: routePlan.id === plannedStartRoutePlanId,
       plannedDepartureTime,
       routePlan,
@@ -943,6 +943,15 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       timezone,
       window,
     }));
+    const sessions = routeSessions.length > 0
+      ? routeSessions
+      : gpsTrailSessionsWithoutRoutePlan({
+          plannedDepartureTime,
+          samples: validSamples,
+          serviceDate,
+          timezone,
+          vehicleId: vehicle.id,
+        });
     return {
       serviceDate,
       sessions: normalizeGpsTrailSessionTimeline(sessions),
@@ -1174,6 +1183,31 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
     });
     return state?.activity ?? null;
   }
+}
+
+function gpsTrailSessionsWithoutRoutePlan(input: {
+  plannedDepartureTime: string;
+  samples: GpsTrailSampleRow[];
+  serviceDate: string;
+  timezone: string;
+  vehicleId: string;
+}): DsvV1VehicleGpsTrailSession[] {
+  const startedAt = localDateTimeInTimeZoneToUtc(input.serviceDate, input.plannedDepartureTime, input.timezone);
+  const samples = input.samples.filter((sample) => sample.observedAt.getTime() >= startedAt.getTime());
+  if (samples.length === 0) return [];
+  const endedAt = lastSampleAt(samples);
+  return [{
+    completedAt: null,
+    completionEventId: null,
+    endpoint: { endedAt: endedAt?.toISOString() ?? null, reason: 'LAST_VALID_SAMPLE' },
+    restart: null,
+    routePlanId: `unassigned:${input.vehicleId}:${input.serviceDate}`,
+    segments: splitGpsTrailSegments(samples).map((segment) => ({ samples: segment.map(toGpsTrailSample) })),
+    sessionIndex: 0,
+    startedAt: startedAt.toISOString(),
+    startEventId: null,
+    startSource: 'PLANNED_DEPARTURE',
+  }];
 }
 
 const proofStatusSelect = {
