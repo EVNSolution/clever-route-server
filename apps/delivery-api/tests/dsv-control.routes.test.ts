@@ -208,7 +208,7 @@ describe('DSV control routes', () => {
       const create = await app.inject({
         headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
         method: 'POST',
-        payload: { displayName: 'DSV 운영자', email: 'Operator@Example.com' },
+        payload: { displayName: 'DSV 운영자', email: 'Operator@Example.com', message: 'DSV 관제팀 계정 설정을 안내드립니다.' },
         url: '/api/dsv/admin-accounts/invitations',
       });
       expect(create.statusCode).toBe(201);
@@ -230,6 +230,7 @@ describe('DSV control routes', () => {
         actorId: adminAccountId,
         displayName: 'DSV 운영자',
         email: 'Operator@Example.com',
+        message: 'DSV 관제팀 계정 설정을 안내드립니다.',
         shopDomain: 'tomatonofood.com',
       }));
     } finally {
