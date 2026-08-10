@@ -210,7 +210,7 @@ describe('DsvV1SessionResolver', () => {
     });
   });
 
-  test('maps a valid admin subject to the canonical shop and admin principal', async () => {
+  test('rejects legacy accountless admin subjects', async () => {
     const { prisma, shop } = createPrismaMock();
     shop.findFirst.mockResolvedValueOnce({
       id: shopId,
@@ -220,19 +220,8 @@ describe('DsvV1SessionResolver', () => {
       CLEVER_ADMIN_ALLOWED_SHOP_DOMAINS: 'example.myshopify.com',
     });
 
-    const principal = await resolver.resolve('dsv-shop: Example.MyShopify.com ');
-
-    expect(shop.findFirst).toHaveBeenCalledWith({
-      select: { id: true, shopDomain: true },
-      where: { appId: 'clever', shopDomain: 'example.myshopify.com' },
-    });
-    expect(principal).toMatchObject({
-      principalType: 'DSV_ADMIN',
-      shopDomain: 'example.myshopify.com',
-      shopId,
-    });
-    expect(principal.scopes).toContain('dsv:session:read');
-    expect(principal.scopes).toContain('dsv:dispatches:read');
+    await expect(resolver.resolve('dsv-shop: Example.MyShopify.com ')).rejects.toBeInstanceOf(DsvV1AuthenticationError);
+    expect(shop.findFirst).not.toHaveBeenCalled();
   });
 
   test('loads an active customer account and returns exact customer scopes', async () => {

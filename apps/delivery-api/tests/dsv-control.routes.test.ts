@@ -597,7 +597,7 @@ describe('DSV control routes', () => {
     }
   });
 
-  test('rejects invalid DSV credentials without issuing a session cookie', async () => {
+  test('rejects invalid DSV credentials and clears any existing DSV session cookie', async () => {
     const { app } = await createHarness();
     try {
       const response = await app.inject({
@@ -607,7 +607,8 @@ describe('DSV control routes', () => {
       });
 
       expect(response.statusCode).toBe(401);
-      expect(response.headers['set-cookie']).toBeUndefined();
+      expect(response.headers['set-cookie']).toContain('clever_dsv_admin=');
+      expect(response.headers['set-cookie']).toContain('Max-Age=0');
       expect(response.json()).toEqual({
         data: null,
         error: { code: 'UNAUTHORIZED', message: '로그인 정보가 올바르지 않습니다.' },

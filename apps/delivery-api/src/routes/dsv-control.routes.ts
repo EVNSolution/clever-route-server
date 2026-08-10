@@ -184,7 +184,11 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }
     const account = await dependencies.adminAccounts.authenticate({ loginId: id, password });
     if (account === null) {
-      return sendError(reply, 401, 'UNAUTHORIZED', '로그인 정보가 올바르지 않습니다.');
+      return sendError(reply.header('Set-Cookie', clearAdminWebSessionCookie({
+        cookieName: dependencies.cookieName,
+        path: cookiePath,
+        secure: dependencies.secureCookies,
+      })), 401, 'UNAUTHORIZED', '로그인 정보가 올바르지 않습니다.');
     }
     if (!canAccessShopDomain(actor(dependencies), shopDomain) || !(await dependencies.repository.hasShop(shopDomain))) {
       return sendError(reply, 404, 'NOT_FOUND', 'Customer workspace not found');
@@ -1301,25 +1305,23 @@ async function readDsvSession(request: FastifyRequest, dependencies: DsvControlD
   });
   if (session === null) return null;
   const subject = parseDsvAdminSessionSubject(session.subject);
-  if (subject === null) return null;
+  if (subject === null || subject.kind !== 'account') return null;
   const shopDomain = subject.shopDomain;
   if (shopDomain === null || !canAccessShopDomain(actor(dependencies), shopDomain)) return null;
   const shopId = await dependencies.repository.resolveShopId(shopDomain);
   if (shopId === null) return null;
-  const account = subject.kind === 'account'
-    ? await dependencies.adminAccounts.resolveSession({
-        accountId: subject.accountId,
-        tokenVersion: subject.tokenVersion,
-      })
-    : null;
-  if (subject.kind === 'account' && account === null) return null;
-  const actorId = account?.accountId ?? 'legacy-env-admin';
+  const account = await dependencies.adminAccounts.resolveSession({
+    accountId: subject.accountId,
+    tokenVersion: subject.tokenVersion,
+  });
+  if (account === null) return null;
+  const actorId = account.accountId;
   return {
     actor: actorId,
     principal: createDsvAdminPrincipal({
       actorId,
-      ...(account?.displayName === undefined ? {} : { displayName: account.displayName }),
-      ...(account === null ? {} : { scopes: account.scopes }),
+      ...(account.displayName === undefined ? {} : { displayName: account.displayName }),
+      scopes: account.scopes,
       shopDomain,
       shopId,
     }),
