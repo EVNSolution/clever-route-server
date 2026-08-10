@@ -151,6 +151,7 @@ class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
   }
 
   private async resolveAdmin(subject: NonNullable<ReturnType<typeof parseDsvAdminSessionSubject>>): Promise<DsvPrincipal> {
+    if (subject.kind === 'legacy') throw new DsvV1AuthenticationError();
     const shopDomain = subject.shopDomain;
     if (!this.canAccessShopDomain(shopDomain)) throw new DsvV1AuthenticationError();
     const shop = await this.prisma.shop.findFirst({
@@ -158,9 +159,6 @@ class PrismaDsvV1SessionResolver implements DsvV1SessionResolver {
       where: { appId: 'clever', shopDomain },
     });
     if (shop === null) throw new DsvV1AuthenticationError();
-    if (subject.kind === 'legacy') {
-      return createDsvAdminPrincipal({ shopDomain: shop.shopDomain, shopId: shop.id });
-    }
     const account = await this.adminAccounts.resolveSession({
       accountId: subject.accountId,
       tokenVersion: subject.tokenVersion,

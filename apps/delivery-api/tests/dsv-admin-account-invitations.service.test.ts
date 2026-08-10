@@ -4,7 +4,7 @@ import {
   PrismaDsvAdminOperatorInvitationService,
 } from '../src/modules/dsv/dsv-admin-account-invitations.service.js';
 import { defaultDsvOperationalSettings } from '../src/modules/dsv/dsv-operational-settings.js';
-import { dsvOperatorScopes } from '../src/modules/dsv/dsv-principal.js';
+import { dsvAdminScopes, dsvOperatorScopes } from '../src/modules/dsv/dsv-principal.js';
 import { defaultRouteOpsUiSettings } from '../src/modules/route-ops/route-ops-ui-settings.js';
 import { defaultRouteScopeConfig } from '../src/modules/route-ops/route-scope-config.js';
 
@@ -141,17 +141,17 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
       loginId: 'operator-new',
     })).rejects.toMatchObject({ code: 'CURRENT_PASSWORD_INVALID' });
 
-    const existing = account({ passwordHash: 'u8cQd0OCZBOk6AIvkd2Yhdo-y2lZ_TINAqO12jhqiVRlNq3PraljjgTaSYKPmlr5y4XedfYMh98iADbAbdwlcw', passwordSalt: 'known-salt' });
+    const existing = account({ passwordHash: 'u8cQd0OCZBOk6AIvkd2Yhdo-y2lZ_TINAqO12jhqiVRlNq3PraljjgTaSYKPmlr5y4XedfYMh98iADbAbdwlcw', passwordSalt: 'known-salt', scopes: dsvAdminScopes });
     harness.prisma.dsvAdminAccount.findFirst.mockResolvedValueOnce(existing);
     harness.prisma.dsvAdminAccount.findUnique.mockResolvedValueOnce(null);
-    harness.prisma.dsvAdminAccount.update.mockResolvedValueOnce(account({ loginId: 'operator-new', tokenVersion: 2 }));
+    harness.prisma.dsvAdminAccount.update.mockResolvedValueOnce(account({ loginId: 'operator-new', scopes: dsvAdminScopes, tokenVersion: 2 }));
 
     await expect(harness.service.updateCredentials({
       accountId,
       currentPassword: 'KnownStrongPassw0rd!',
       loginId: 'operator-new',
       password: 'NewStrongPassw0rd!',
-    })).resolves.toMatchObject({ loginId: 'operator-new', tokenVersion: 2 });
+    })).resolves.toMatchObject({ loginId: 'operator-new', scopes: dsvAdminScopes, tokenVersion: 2 });
     const updateCalls = harness.prisma.dsvAdminAccount.update.mock.calls as unknown as Array<[{
       data: { tokenVersion: { increment: number }; passwordHash?: string; passwordSalt?: string };
     }]>;
