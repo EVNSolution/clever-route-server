@@ -12,7 +12,7 @@ import {
   type DsvDispatchImportService,
 } from '../src/modules/dsv/dsv-dispatch-import.service.js';
 import type { DsvManualEmailService } from '../src/modules/dsv/dsv-manual-email.service.js';
-import type { DsvAdminAccountManager } from '../src/modules/dsv/dsv-admin-account.repository.js';
+import { DsvAdminAccountManagementError, type DsvAdminAccountManager } from '../src/modules/dsv/dsv-admin-account.repository.js';
 import { dsvAdminScopes, dsvOperatorScopes } from '../src/modules/dsv/dsv-principal.js';
 import { DsvAssignmentCommandError } from '../src/modules/dsv/dsv-assignment-command.service.js';
 import type { DsvAdminAssignmentCommandService, DsvControlDependencies } from '../src/routes/dsv-control.routes.js';
@@ -143,9 +143,11 @@ describe('DSV control routes', () => {
       updatedAt: new Date('2026-08-09T01:00:00.000Z'),
     };
     const createAccount = vi.fn(() => Promise.resolve({ account, temporaryPassword: 'temporary-password-2026' }));
+    const deleteAccount = vi.fn(() => Promise.resolve());
     const resetPassword = vi.fn(() => Promise.resolve({ account, temporaryPassword: 'replacement-password-2026' }));
     const adminAccountManagement: DsvAdminAccountManager = {
       create: createAccount,
+      delete: deleteAccount,
       list: vi.fn(() => Promise.resolve([account])),
       resetPassword,
       setStatus: vi.fn(() => Promise.resolve({ ...account, status: 'DISABLED' as const })),
@@ -186,6 +188,32 @@ describe('DSV control routes', () => {
       });
       expect(selfDisable.statusCode).toBe(409);
       expect(selfDisable.json()).toMatchObject({ error: { code: 'ADMIN_ACCOUNT_SELF_DISABLE_FORBIDDEN' } });
+
+      const selfDelete = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'DELETE',
+        url: `/api/dsv/admin-accounts/${adminAccountId}`,
+      });
+      expect(selfDelete.statusCode).toBe(409);
+      expect(selfDelete.json()).toMatchObject({ error: { code: 'ADMIN_ACCOUNT_SELF_DELETE_FORBIDDEN' } });
+
+      const deleted = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'DELETE',
+        url: `/api/dsv/admin-accounts/${account.id}`,
+      });
+      expect(deleted.statusCode).toBe(200);
+      expect(deleted.json()).toEqual({ data: { deletedAccountId: account.id }, error: null });
+      expect(deleteAccount).toHaveBeenCalledWith({ accountId: account.id });
+
+      deleteAccount.mockRejectedValueOnce(new DsvAdminAccountManagementError('ADMIN_ACCOUNT_DELETE_REQUIRES_DISABLED'));
+      const activeDelete = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'DELETE',
+        url: `/api/dsv/admin-accounts/${account.id}`,
+      });
+      expect(activeDelete.statusCode).toBe(409);
+      expect(activeDelete.json()).toMatchObject({ error: { code: 'ADMIN_ACCOUNT_DELETE_REQUIRES_DISABLED' } });
     } finally {
       await app.close();
     }

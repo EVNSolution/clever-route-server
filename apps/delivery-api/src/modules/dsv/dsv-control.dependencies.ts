@@ -126,6 +126,7 @@ export function loadDsvControlDependencies(input: {
 function isDsvAdminAccountManager(value: DsvAdminAccountAuthenticator): value is DsvAdminAccountAuthenticator & DsvAdminAccountManager {
   const candidate = value as Partial<DsvAdminAccountManager>;
   return typeof candidate.create === 'function'
+    && typeof candidate.delete === 'function'
     && typeof candidate.list === 'function'
     && typeof candidate.resetPassword === 'function'
     && typeof candidate.setStatus === 'function';

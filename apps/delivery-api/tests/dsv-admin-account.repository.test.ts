@@ -110,6 +110,23 @@ describe('PrismaDsvAdminAccountRepository', () => {
     const disabled = await repository.setStatus({ accountId: created.account.id, status: 'DISABLED' });
     expect(disabled.status).toBe('DISABLED');
     expect(await repository.authenticate({ loginId: 'dsv-admin', password: reset.temporaryPassword })).toBeNull();
+    await repository.delete({ accountId: created.account.id });
+    expect(await repository.list()).toHaveLength(0);
+  });
+
+  test('deletes only disabled managed administrator accounts', async () => {
+    const fake = createPrisma();
+    const repository = new PrismaDsvAdminAccountRepository(fake.prisma);
+    const created = await repository.create({ loginId: 'operator' });
+
+    await expect(repository.delete({ accountId: created.account.id })).rejects.toMatchObject({
+      code: 'ADMIN_ACCOUNT_DELETE_REQUIRES_DISABLED',
+    });
+    await repository.setStatus({ accountId: created.account.id, status: 'DISABLED' });
+    await expect(repository.delete({ accountId: created.account.id })).resolves.toBeUndefined();
+    await expect(repository.delete({ accountId: created.account.id })).rejects.toMatchObject({
+      code: 'ADMIN_ACCOUNT_NOT_FOUND',
+    });
   });
 });
 
@@ -137,6 +154,11 @@ function createPrisma(): {
       };
       state.accounts.push(account);
       return Promise.resolve(account);
+    },
+    deleteMany: ({ where }: { where: Partial<Account> }) => {
+      const before = state.accounts.length;
+      state.accounts = state.accounts.filter((account) => !matches(account, where));
+      return Promise.resolve({ count: before - state.accounts.length });
     },
     findFirst: ({ where }: { where: Partial<Account> }) =>
       Promise.resolve(state.accounts.find((account) => matches(account, where)) ?? null),

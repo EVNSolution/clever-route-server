@@ -274,6 +274,23 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       }
     }, ['dsv:accounts:write']));
 
+  app.delete<{ Params: { accountId: string } }>(`${apiRoot}/admin-accounts/:accountId`, (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async ({ actor }) => {
+      if (dependencies.adminAccountManagement === undefined) {
+        return sendError(reply, 503, 'ADMIN_ACCOUNT_MANAGEMENT_UNAVAILABLE', '계정 관리 기능을 사용할 수 없습니다.');
+      }
+      if (!uuidPattern.test(request.params.accountId)) return sendError(reply, 400, 'BAD_REQUEST', '계정 식별자가 올바르지 않습니다.');
+      if (actor === request.params.accountId) {
+        return sendError(reply, 409, 'ADMIN_ACCOUNT_SELF_DELETE_FORBIDDEN', '현재 로그인한 계정은 삭제할 수 없습니다.');
+      }
+      try {
+        await dependencies.adminAccountManagement.delete({ accountId: request.params.accountId });
+        return sendData(reply, { deletedAccountId: request.params.accountId });
+      } catch (error) {
+        return sendAdminAccountManagementError(reply, error);
+      }
+    }, ['dsv:accounts:write']));
+
   app.patch(`${apiRoot}/auth/credentials`, (request, reply) =>
     withDsvMutation(request, reply, dependencies, async (session) => {
       const service = requireOperatorInvitationService(dependencies);
@@ -1366,6 +1383,9 @@ function sendAdminAccountManagementError(reply: FastifyReply, error: unknown): u
   if (error instanceof DsvAdminAccountManagementError) {
     if (error.code === 'ADMIN_ACCOUNT_LOGIN_ID_EXISTS') {
       return sendError(reply, 409, error.code, '이미 사용 중인 아이디입니다.');
+    }
+    if (error.code === 'ADMIN_ACCOUNT_DELETE_REQUIRES_DISABLED') {
+      return sendError(reply, 409, error.code, '비활성 계정만 삭제할 수 있습니다.');
     }
     return sendError(reply, 404, error.code, '계정을 찾을 수 없습니다.');
   }
