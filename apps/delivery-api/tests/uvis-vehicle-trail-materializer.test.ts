@@ -105,9 +105,10 @@ describe('PrismaUvisVehicleTrailMaterializationRepository', () => {
     ]);
     const repository = new PrismaUvisVehicleTrailMaterializationRepository(prisma as never);
 
+    const match = vi.fn().mockResolvedValue(null);
     const document = await repository.materializeVehicleDay({
       finalizing: true,
-      roadMatchProvider: { match: vi.fn().mockResolvedValue(null) },
+      roadMatchProvider: { match },
       serviceDate: '2026-08-04',
       shopId: 'shop-a',
       vehicleId: 'vehicle-a',
@@ -115,6 +116,32 @@ describe('PrismaUvisVehicleTrailMaterializationRepository', () => {
 
     expect(document.retryable).toBe(true);
     expect(document.segments[0]?.roadMatchedGeometry).toBeNull();
+    expect(match).toHaveBeenCalledTimes(3);
+  });
+
+  test('recovers a UVIS road match after a transient null response', async () => {
+    const prisma = prismaMock([
+      gpsSample('sample-0', '2026-08-03T23:50:00.000Z', 37.0000, 127.0000),
+      gpsSample('sample-1', '2026-08-03T23:51:00.000Z', 37.0010, 127.0000),
+      gpsSample('sample-2', '2026-08-03T23:52:00.000Z', 37.0020, 127.0000),
+    ]);
+    const matchedGeometry = { type: 'MultiLineString' as const, coordinates: [[[127, 37], [127, 37.002]]] };
+    const match = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ matchedGeometry, uncertainGeometry: null });
+    const repository = new PrismaUvisVehicleTrailMaterializationRepository(prisma as never);
+
+    const document = await repository.materializeVehicleDay({
+      finalizing: true,
+      roadMatchProvider: { match },
+      serviceDate: '2026-08-04',
+      shopId: 'shop-a',
+      vehicleId: 'vehicle-a',
+    });
+
+    expect(document.retryable).toBe(false);
+    expect(document.segments[0]?.roadMatchedGeometry).toEqual(matchedGeometry);
+    expect(match).toHaveBeenCalledTimes(2);
   });
 
   test('sends chronological samples to OSRM when movement starts after a stationary interval', async () => {

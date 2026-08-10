@@ -9,6 +9,7 @@ export const UVIS_VEHICLE_TRAIL_SCHEMA_VERSION = 'uvis_vehicle_trail.v1' as cons
 export const UVIS_ROAD_MATCH_GPS_PRECISION_METERS = 75;
 const SERVICE_TIMEZONE = 'Asia/Seoul';
 const MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND = 55;
+const MAX_ROAD_MATCH_ATTEMPTS = 3;
 
 export type UvisVehicleTrailMarker = {
   kind: 'RESTART' | 'START';
@@ -388,23 +389,25 @@ async function matchRoadGeometry(
   if (roadMatchProvider === undefined || samples.length < 2) return { geometry: null, retryable: false };
   const preparedSamples = prepareRoadMatchSamples(samples);
   if (preparedSamples.length < 2) return { geometry: null, retryable: false };
-  try {
-    const result = await roadMatchProvider.match({
-      coordinates: preparedSamples.map((sample) => [sample.longitude, sample.latitude]),
-      samples: preparedSamples.map((sample) => ({
-        driverId: null,
-        eventId: sample.id,
-        occurredAt: sample.observedAt,
-        receivedAt: sample.observedAt,
-      })),
-      sourcePointCount: preparedSamples.length,
-    });
-    return result === null
-      ? { geometry: null, retryable: true }
-      : { geometry: result.matchedGeometry, retryable: false };
-  } catch {
-    return { geometry: null, retryable: true };
+  const document = {
+    coordinates: preparedSamples.map((sample) => [sample.longitude, sample.latitude] as [number, number]),
+    samples: preparedSamples.map((sample) => ({
+      driverId: null,
+      eventId: sample.id,
+      occurredAt: sample.observedAt,
+      receivedAt: sample.observedAt,
+    })),
+    sourcePointCount: preparedSamples.length,
+  };
+  for (let attempt = 0; attempt < MAX_ROAD_MATCH_ATTEMPTS; attempt += 1) {
+    try {
+      const result = await roadMatchProvider.match(document);
+      if (result !== null) return { geometry: result.matchedGeometry, retryable: false };
+    } catch {
+      // A later UVIS-only attempt may recover from a transient OSRM or network failure.
+    }
   }
+  return { geometry: null, retryable: true };
 }
 
 function prepareRoadMatchSamples(samples: TrailPoint[]): TrailPoint[] {
