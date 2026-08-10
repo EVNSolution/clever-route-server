@@ -153,7 +153,7 @@ function readOptional(value: string | undefined): string | undefined {
 }
 
 function plainTextHtml(value: string): string {
-  return `<div style="font-family:Arial,sans-serif;color:#1d1d1f;line-height:1.6;white-space:pre-wrap">${escapeHtml(value)}</div>`;
+  return `<div style="font-family:Arial,sans-serif;color:#1d1d1f;line-height:1.6">${escapeHtml(value).replace(/\r\n?|\n/gu, '<br>')}</div>`;
 }
 
 function escapeHtml(value: string): string {
