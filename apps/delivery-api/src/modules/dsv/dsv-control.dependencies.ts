@@ -15,6 +15,9 @@ import {
   type DsvAdminAccountAuthenticator,
   type DsvAdminAccountManager,
 } from './dsv-admin-account.repository.js';
+import {
+  PrismaDsvAdminOperatorInvitationService,
+} from './dsv-admin-account-invitations.service.js';
 import { PrismaDsvControlRepository } from './dsv-control.repository.js';
 import { PrismaDsvDispatchImportService } from './dsv-dispatch-import.service.js';
 import {
@@ -100,6 +103,11 @@ export function loadDsvControlDependencies(input: {
     ),
     cookieName: readOptional(input.env.CLEVER_DSV_WEB_COOKIE_NAME) ?? 'clever_dsv_admin',
     customerAccountService: new PrismaDsvCustomerAccountService(input.prisma, {
+      manualEmailService,
+      settingsService,
+      ...(webPublicOrigin === undefined ? {} : { webPublicOrigin }),
+    }),
+    operatorInvitationService: new PrismaDsvAdminOperatorInvitationService(input.prisma, {
       manualEmailService,
       settingsService,
       ...(webPublicOrigin === undefined ? {} : { webPublicOrigin }),

@@ -430,6 +430,7 @@ model Shop {
   uvisTelemetryPollState            UvisTelemetryPollState?
   dsvDriverAccountSignupInvites     DsvDriverAccountSignupInvite[]
   dsvCustomerAccountInvites         DsvCustomerAccountInvite[]
+  dsvAdminAccountInvites            DsvAdminAccountInvite[]
   customers                         Customer[]
   customerAccounts                  CustomerAccount[]
   dsvCommandReceipts                DsvCommandReceipt[]
@@ -942,6 +943,7 @@ model DsvCustomerAccountInvite {
 model DsvAdminAccount {
   id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   loginId             String                @unique @db.Text
+  email               String?               @unique @db.Text
   displayName         String?               @db.Text
   passwordHash        String                @db.Text
   passwordSalt        String                @db.Text
@@ -956,6 +958,23 @@ model DsvAdminAccount {
 
   @@index([status])
   @@map("dsv_admin_accounts")
+}
+
+model DsvAdminAccountInvite {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  shopId      String    @db.Uuid
+  shop        Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  displayName String?   @db.Text
+  email       String    @db.Text
+  tokenHash   String    @unique @db.Text
+  expiresAt   DateTime  @db.Timestamptz(6)
+  consumedAt  DateTime? @db.Timestamptz(6)
+  revokedAt   DateTime? @db.Timestamptz(6)
+  createdBy   String?   @db.Uuid
+  createdAt   DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([shopId, email, expiresAt])
+  @@map("dsv_admin_account_invites")
 }
 
 model OrderItem {

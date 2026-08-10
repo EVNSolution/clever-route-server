@@ -60,6 +60,7 @@ const dsvDriverAppReleaseMigrationName = '20260805150000_add_dsv_driver_app_rele
 const dsvDispatchChangeRequestMigrationName = '20260806120000_add_dsv_dispatch_change_requests';
 const routesAppReleaseRegistryMigrationName = '20260806150000_add_routes_app_release_registry';
 const dsvCustomerAccountInvitesMigrationName = '20260809120000_add_dsv_customer_account_invites';
+const dsvAdminAccountInvitesMigrationName = '20260810120000_add_dsv_admin_account_invites';
 const assignedDriverProfileBackfillMigrationName = '20260729170000_backfill_assigned_dsv_driver_profiles';
 const dispatchGroupingBackfillMigrationName = '20260730170000_backfill_dsv_dispatch_groupings';
 const accountScopedPushTokenMigrationName = '20260731140000_account_scope_driver_push_tokens';
@@ -144,7 +145,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('orders compatibility bridges around the broken mapped-table migrations', async () => {
     const migrations = await readMigrationNames();
 
-    expect(migrations).toHaveLength(73);
+    expect(migrations).toHaveLength(74);
     expect(migrations).toContain('20260618022400_create_mapped_table_compatibility_bridges');
     expect(migrations).toContain('20260618022500_add_route_ops_ui_settings');
     expect(migrations).toContain('20260628170000_collapse_route_lifecycle_statuses');
@@ -321,7 +322,10 @@ describe('G007 DSV Prisma migration history', () => {
     expect(migrations.indexOf(routesAppReleaseRegistryMigrationName)).toBeLessThan(
       migrations.indexOf(dsvCustomerAccountInvitesMigrationName)
     );
-    expect(migrations.at(-1)).toBe(dsvCustomerAccountInvitesMigrationName);
+    expect(migrations.indexOf(dsvCustomerAccountInvitesMigrationName)).toBeLessThan(
+      migrations.indexOf(dsvAdminAccountInvitesMigrationName)
+    );
+    expect(migrations.at(-1)).toBe(dsvAdminAccountInvitesMigrationName);
   });
 
   test('backfills shop ownership before allowing driverless signup invites', async () => {
@@ -453,7 +457,7 @@ describe('G007 DSV Prisma migration history', () => {
   test('schema preserves historical DB defaults instead of planning default drops', async () => {
     const schema = await readFile(schemaPath, 'utf8');
 
-    expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(36);
+    expect(schema.match(/@default\(dbgenerated\("gen_random_uuid\(\)"\)\)/gu) ?? []).toHaveLength(37);
     expect(schema.match(/updatedAt\s+DateTime\s+@default\(now\(\)\)\s+@updatedAt/gu)).toHaveLength(14);
     expect(schema).toContain('warnings             Json                          @default("[]")');
   });
