@@ -125,6 +125,7 @@ describe('loadDsvControlDependencies', () => {
       routeGroupingService: {} as RouteGroupingService
     });
     expect(dependencies?.assignmentCommandService).toBeDefined();
+    expect(dependencies?.operatorInvitationService).toBeDefined();
     if (dependencies === undefined || dependencies.assignmentCommandService === undefined) {
       throw new Error('DSV control dependencies did not load assignment commands');
     }

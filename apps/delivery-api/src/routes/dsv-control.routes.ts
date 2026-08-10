@@ -70,6 +70,11 @@ import {
   type DsvAdminAccountSummary,
 } from '../modules/dsv/dsv-admin-account.repository.js';
 import {
+  DsvAdminOperatorInvitationError,
+  type DsvAdminOperatorAccountMetadata,
+  type DsvAdminOperatorInvitationService,
+} from '../modules/dsv/dsv-admin-account-invitations.service.js';
+import {
   createCustomerSessionSubject,
   DsvCustomerAccountServiceError,
   type DsvCustomerAccountService,
@@ -157,6 +162,7 @@ export type DsvControlDependencies = {
   dispatchImportService: DsvDispatchImportService;
   geocodingService?: Pick<GeocodingService, 'geocode'>;
   manualEmailService: DsvManualEmailService;
+  operatorInvitationService?: DsvAdminOperatorInvitationService;
   repository: DsvControlRepository;
   resourceService: DsvResourceService;
   secureCookies: boolean;
@@ -165,6 +171,7 @@ export type DsvControlDependencies = {
 };
 
 export function registerDsvControlRoutes(app: FastifyInstance, dependencies: DsvControlDependencies): void {
+  registerDsvAdminOperatorInvitationRoutes(app, dependencies);
   registerDsvCustomerAccountRoutes(app, dependencies);
 
   app.post(`${apiRoot}/auth/login`, async (request, reply) => {
@@ -228,38 +235,22 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
       return sendData(reply, { accounts: accounts.map(adminAccountData) });
     }, ['dsv:accounts:read']));
 
-  app.post(`${apiRoot}/admin-accounts`, (request, reply) =>
-    withDsvMutation(request, reply, dependencies, async () => {
-      if (dependencies.adminAccountManagement === undefined) {
-        return sendError(reply, 503, 'ADMIN_ACCOUNT_MANAGEMENT_UNAVAILABLE', '계정 관리 기능을 사용할 수 없습니다.');
-      }
-      const input = readAdminAccountCreateInput(request.body);
-      if (input === null) return sendError(reply, 400, 'BAD_REQUEST', '아이디와 표시 이름을 확인해 주세요.');
+  app.post(`${apiRoot}/admin-accounts/invitations`, (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async ({ actor, shopDomain }) => {
+      const service = requireOperatorInvitationService(dependencies);
+      const input = readOperatorInvitationBody(request.body);
+      if (input === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid operator invitation payload');
       try {
-        const result = await dependencies.adminAccountManagement.create(input);
-        return sendData(reply, {
-          account: adminAccountData(result.account),
-          temporaryPassword: result.temporaryPassword,
-        }, 201);
-      } catch (error) {
-        return sendAdminAccountManagementError(reply, error);
-      }
-    }, ['dsv:accounts:write']));
-
-  app.post<{ Params: { accountId: string } }>(`${apiRoot}/admin-accounts/:accountId/password-reset`, (request, reply) =>
-    withDsvMutation(request, reply, dependencies, async () => {
-      if (dependencies.adminAccountManagement === undefined) {
-        return sendError(reply, 503, 'ADMIN_ACCOUNT_MANAGEMENT_UNAVAILABLE', '계정 관리 기능을 사용할 수 없습니다.');
-      }
-      if (!uuidPattern.test(request.params.accountId)) return sendError(reply, 400, 'BAD_REQUEST', '계정 식별자가 올바르지 않습니다.');
-      try {
-        const result = await dependencies.adminAccountManagement.resetPassword({ accountId: request.params.accountId });
-        return sendData(reply, {
-          account: adminAccountData(result.account),
-          temporaryPassword: result.temporaryPassword,
+        const invitation = await service.createInvitation({
+          actorId: actor,
+          email: input.email,
+          requestId: request.id,
+          shopDomain,
+          ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
         });
+        return sendData(reply, { invitation: operatorInvitationData(invitation) }, 201);
       } catch (error) {
-        return sendAdminAccountManagementError(reply, error);
+        return sendOperatorInvitationError(reply, error);
       }
     }, ['dsv:accounts:write']));
 
@@ -281,6 +272,24 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
         return sendAdminAccountManagementError(reply, error);
       }
     }, ['dsv:accounts:write']));
+
+  app.patch(`${apiRoot}/auth/credentials`, (request, reply) =>
+    withDsvMutation(request, reply, dependencies, async (session) => {
+      const service = requireOperatorInvitationService(dependencies);
+      const input = readOperatorCredentialsBody(request.body);
+      if (input === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid credential update payload');
+      try {
+        const account = await service.updateCredentials({
+          accountId: session.actor,
+          currentPassword: input.currentPassword,
+          ...(input.loginId === undefined ? {} : { loginId: input.loginId }),
+          ...(input.password === undefined ? {} : { password: input.password }),
+        });
+        return await sendDsvAdminSession(reply, dependencies, account, session.shopDomain);
+      } catch (error) {
+        return sendOperatorInvitationError(reply, error);
+      }
+    }, ['dsv:session:read']));
 
   app.get<{ Params: { customerId: string } }>(`${apiRoot}/customers/:customerId/accounts`, (request, reply) =>
     withDsvSession(request, reply, dependencies, async ({ shopDomain }) => {
@@ -1085,6 +1094,50 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
     }, ['dsv:destinations:write']));
 }
 
+function registerDsvAdminOperatorInvitationRoutes(app: FastifyInstance, dependencies: DsvControlDependencies): void {
+  app.post(`${apiRoot}/admin/auth/invitations/validate`, {
+    config: {
+      rateLimit: {
+        groupId: 'dsv-admin-invitation-validate',
+        max: 20,
+        timeWindow: '15 minutes',
+      },
+    },
+  }, async (request, reply) => {
+    const service = requireOperatorInvitationService(dependencies);
+    const input = readInviteTokenBody(request.body);
+    if (input === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid invitation validation payload');
+    const metadata = await service.validateInvitation(input);
+    return metadata === null
+      ? sendError(reply, 401, 'INVALID_TOKEN', 'Invitation token is invalid')
+      : sendData(reply, {
+          displayName: metadata.displayName,
+          email: metadata.email,
+          expiresAt: metadata.expiresAt.toISOString(),
+        });
+  });
+
+  app.post(`${apiRoot}/admin/auth/complete`, {
+    config: {
+      rateLimit: {
+        groupId: 'dsv-admin-account-complete',
+        max: 10,
+        timeWindow: '15 minutes',
+      },
+    },
+  }, async (request, reply) => {
+    const service = requireOperatorInvitationService(dependencies);
+    const input = readOperatorCompleteBody(request.body);
+    if (input === null) return sendError(reply, 400, 'BAD_REQUEST', 'Invalid operator account completion payload');
+    try {
+      const account = await service.complete({ ...input, requestId: request.id });
+      return await sendDsvAdminSession(reply, dependencies, account, input.shopDomain);
+    } catch (error) {
+      return sendOperatorInvitationError(reply, error);
+    }
+  });
+}
+
 function registerDsvCustomerAccountRoutes(app: FastifyInstance, dependencies: DsvControlDependencies): void {
   app.post(`${apiRoot}/customer/auth/invitations/validate`, {
     config: {
@@ -1173,6 +1226,39 @@ function sendCustomerSession(
     expiresAt: new Date(session.expiresAt).toISOString(),
     shopDomain: identity.shopDomain,
     shopId: identity.shopId,
+  });
+}
+
+async function sendDsvAdminSession(
+  reply: FastifyReply,
+  dependencies: DsvControlDependencies,
+  account: DsvAdminOperatorAccountMetadata,
+  shopDomain: string,
+): Promise<unknown> {
+  const { cookieHeader, session } = createAdminWebSession({
+    cookieName: dependencies.cookieName,
+    path: cookiePath,
+    sameSite: 'Lax',
+    secure: dependencies.secureCookies,
+    sessionSecret: dependencies.sessionSecret,
+    subject: createDsvAdminSessionSubject({
+      accountId: account.id,
+      shopDomain,
+      tokenVersion: account.tokenVersion,
+    }),
+  });
+  const shopId = await dependencies.repository.resolveShopId(shopDomain);
+  if (shopId === null) return sendError(reply, 404, 'NOT_FOUND', 'Customer workspace not found');
+  return sendData(reply.header('Set-Cookie', cookieHeader), {
+    account: adminOperatorAccountData(account),
+    actorId: account.id,
+    csrfToken: session.csrfToken,
+    ...(account.displayName === null ? {} : { displayName: account.displayName }),
+    expiresAt: new Date(session.expiresAt).toISOString(),
+    principalType: 'DSV_ADMIN',
+    scopes: [...account.scopes],
+    shopDomain,
+    shopId,
   });
 }
 
@@ -1296,6 +1382,17 @@ function sendCustomerAccountServiceError(reply: FastifyReply, error: unknown): u
   return sendError(reply, 400, error.code, error.message);
 }
 
+function sendOperatorInvitationError(reply: FastifyReply, error: unknown): unknown {
+  if (!(error instanceof DsvAdminOperatorInvitationError)) throw error;
+  if (error.code === 'NOT_FOUND') return sendError(reply, 404, error.code, error.message);
+  if (error.code === 'ACCOUNT_EXISTS' || error.code === 'LOGIN_ID_EXISTS') return sendError(reply, 409, error.code, error.message);
+  if (error.code === 'INVALID_TOKEN' || error.code === 'CURRENT_PASSWORD_INVALID') return sendError(reply, 401, error.code, error.message);
+  if (error.code === 'EMAIL_NOT_CONFIGURED' || error.code === 'INVITATION_LINK_NOT_CONFIGURED') {
+    return sendError(reply, 503, error.code, error.message);
+  }
+  return sendError(reply, 400, error.code, error.message);
+}
+
 function sendError(
   reply: FastifyReply,
   statusCode: number,
@@ -1332,17 +1429,38 @@ function requireCustomerAccountService(dependencies: DsvControlDependencies): Ds
   return dependencies.customerAccountService;
 }
 
+function requireOperatorInvitationService(dependencies: DsvControlDependencies): DsvAdminOperatorInvitationService {
+  if (dependencies.operatorInvitationService === undefined) {
+    throw new DsvAdminOperatorInvitationError('NOT_FOUND', 'Operator invitation service is not configured');
+  }
+  return dependencies.operatorInvitationService;
+}
+
 function objectBody(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-function readAdminAccountCreateInput(value: unknown): { displayName?: string; loginId: string } | null {
+function readOperatorInvitationBody(value: unknown): { displayName?: string; email: string } | null {
   const body = objectBody(value);
-  if (body === null || !hasOnlyAllowedKeys(body, ['displayName', 'loginId'])) return null;
-  const loginId = readBoundedText(body.loginId, 80);
-  const displayName = Object.hasOwn(body, 'displayName') ? readOptionalBoundedText(body.displayName, 80) : undefined;
-  if (loginId === null || displayName === null) return null;
-  return { loginId, ...(displayName === undefined ? {} : { displayName }) };
+  if (body === null || !hasOnlyAllowedKeys(body, ['displayName', 'email'])) return null;
+  const email = readBoundedText(body.email, 320);
+  const displayName = Object.hasOwn(body, 'displayName') ? readOptionalBoundedText(body.displayName, 120) : undefined;
+  if (email === null || displayName === null) return null;
+  return { email, ...(displayName === undefined ? {} : { displayName }) };
+}
+
+function readOperatorCredentialsBody(value: unknown): { currentPassword: string; loginId?: string; password?: string } | null {
+  const body = objectBody(value);
+  if (body === null || !hasOnlyAllowedKeys(body, ['currentPassword', 'loginId', 'password'])) return null;
+  const currentPassword = readPassword(body.currentPassword);
+  const loginId = Object.hasOwn(body, 'loginId') ? readOptionalBoundedText(body.loginId, 80) : undefined;
+  const password = Object.hasOwn(body, 'password') ? readOptionalPassword(body.password) : undefined;
+  if (currentPassword === null || loginId === null || password === null || (loginId === undefined && password === undefined)) return null;
+  return {
+    currentPassword,
+    ...(loginId === undefined ? {} : { loginId }),
+    ...(password === undefined ? {} : { password }),
+  };
 }
 
 function readAdminAccountStatus(value: unknown): DsvAdminAccountStatus | null {
@@ -1381,11 +1499,26 @@ function readCustomerAccountStatus(value: unknown): 'ACTIVE' | 'DISABLED' | null
 }
 
 function readCustomerInviteTokenBody(value: unknown): { shopDomain: string; token: string } | null {
+  return readInviteTokenBody(value);
+}
+
+function readInviteTokenBody(value: unknown): { shopDomain: string; token: string } | null {
   const body = objectBody(value);
   if (body === null || !hasOnlyKeys(body, ['shopDomain', 'token'])) return null;
   const shopDomain = normalizeShopDomain(readTrimmed(body.shopDomain));
   const token = readBoundedText(body.token, 200);
   return shopDomain === null || token === null ? null : { shopDomain, token };
+}
+
+function readOperatorCompleteBody(value: unknown): { loginId: string; password: string; shopDomain: string; token: string } | null {
+  const body = objectBody(value);
+  if (body === null || !hasOnlyAllowedKeys(body, ['loginId', 'password', 'shopDomain', 'token'])) return null;
+  const shopDomain = normalizeShopDomain(readTrimmed(body.shopDomain));
+  const token = readBoundedText(body.token, 200);
+  const loginId = readBoundedText(body.loginId, 80);
+  const password = readCustomerPassword(body.password);
+  if (shopDomain === null || token === null || loginId === null || password === null) return null;
+  return { loginId, password, shopDomain, token };
 }
 
 function readCustomerCompleteBody(value: unknown): { password: string; shopDomain: string; token: string } | null {
@@ -1418,6 +1551,39 @@ function adminAccountData(account: DsvAdminAccountSummary): Record<string, unkno
     loginId: account.loginId,
     scopes: account.scopes,
     status: account.status,
+    updatedAt: account.updatedAt.toISOString(),
+  };
+}
+
+function operatorInvitationData(invitation: {
+  createdAt: Date;
+  displayName: string | null;
+  email: string;
+  expiresAt: Date;
+  id: string;
+  revokedAt: Date | null;
+}): Record<string, unknown> {
+  return {
+    createdAt: invitation.createdAt.toISOString(),
+    displayName: invitation.displayName,
+    email: invitation.email,
+    expiresAt: invitation.expiresAt.toISOString(),
+    id: invitation.id,
+    revokedAt: invitation.revokedAt?.toISOString() ?? null,
+  };
+}
+
+function adminOperatorAccountData(account: DsvAdminOperatorAccountMetadata): Record<string, unknown> {
+  return {
+    createdAt: account.createdAt.toISOString(),
+    displayName: account.displayName,
+    email: account.email,
+    id: account.id,
+    lastAuthenticatedAt: account.lastAuthenticatedAt?.toISOString() ?? null,
+    loginId: account.loginId,
+    scopes: account.scopes,
+    status: account.status,
+    tokenVersion: account.tokenVersion,
     updatedAt: account.updatedAt.toISOString(),
   };
 }
@@ -2042,6 +2208,10 @@ function readPassword(value: unknown): string | null {
 
 function readCustomerPassword(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 && value.length <= 256 ? value : null;
+}
+
+function readOptionalPassword(value: unknown): string | null | undefined {
+  return value === undefined ? undefined : readCustomerPassword(value);
 }
 
 function normalizeShopDomain(value: string | null): string | null {

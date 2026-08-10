@@ -13,7 +13,7 @@ import {
 } from '../src/modules/dsv/dsv-dispatch-import.service.js';
 import type { DsvManualEmailService } from '../src/modules/dsv/dsv-manual-email.service.js';
 import type { DsvAdminAccountManager } from '../src/modules/dsv/dsv-admin-account.repository.js';
-import { dsvAdminScopes } from '../src/modules/dsv/dsv-principal.js';
+import { dsvAdminScopes, dsvOperatorScopes } from '../src/modules/dsv/dsv-principal.js';
 import { DsvAssignmentCommandError } from '../src/modules/dsv/dsv-assignment-command.service.js';
 import type { DsvAdminAssignmentCommandService, DsvControlDependencies } from '../src/routes/dsv-control.routes.js';
 import { DsvResourceConflictError } from '../src/modules/dsv/dsv-resource.service.js';
@@ -24,6 +24,7 @@ import type { AdminStoreSettings, SaveAdminStoreSettingsInput } from '../src/mod
 import { defaultDsvOperationalSettings } from '../src/modules/dsv/dsv-operational-settings.js';
 import type { DsvAddressCanonicalizer } from '../src/modules/dsv/dsv-address-canonicalization.js';
 import type { DsvCustomerAccountService } from '../src/modules/dsv/dsv-customer-account-invitations.service.js';
+import type { DsvAdminOperatorInvitationService } from '../src/modules/dsv/dsv-admin-account-invitations.service.js';
 
 const stopId = '11111111-1111-4111-8111-111111111111';
 const destinationId = '22222222-2222-4222-8222-222222222222';
@@ -128,7 +129,7 @@ describe('DSV control routes', () => {
     }
   });
 
-  test('lets a highest-privilege administrator create and manage persistent operator accounts', async () => {
+  test('keeps account listing and status management while rejecting temporary-password issuance', async () => {
     const account = {
       createdAt: new Date('2026-08-09T01:00:00.000Z'),
       displayName: 'DSV 운영 관리자',
@@ -141,10 +142,12 @@ describe('DSV control routes', () => {
       status: 'ACTIVE' as const,
       updatedAt: new Date('2026-08-09T01:00:00.000Z'),
     };
+    const createAccount = vi.fn(() => Promise.resolve({ account, temporaryPassword: 'temporary-password-2026' }));
+    const resetPassword = vi.fn(() => Promise.resolve({ account, temporaryPassword: 'replacement-password-2026' }));
     const adminAccountManagement: DsvAdminAccountManager = {
-      create: vi.fn(() => Promise.resolve({ account, temporaryPassword: 'temporary-password-2026' })),
+      create: createAccount,
       list: vi.fn(() => Promise.resolve([account])),
-      resetPassword: vi.fn(() => Promise.resolve({ account, temporaryPassword: 'replacement-password-2026' })),
+      resetPassword,
       setStatus: vi.fn(() => Promise.resolve({ ...account, status: 'DISABLED' as const })),
     };
     const { app } = await createHarness({ adminAccountManagement });
@@ -164,8 +167,16 @@ describe('DSV control routes', () => {
         payload: { displayName: 'DSV 운영 관리자', loginId: 'dsv-admin' },
         url: '/api/dsv/admin-accounts',
       });
-      expect(create.statusCode).toBe(201);
-      expect(create.json()).toMatchObject({ data: { account: { loginId: 'dsv-admin' }, temporaryPassword: 'temporary-password-2026' } });
+      expect(create.statusCode).toBe(404);
+      expect(createAccount).not.toHaveBeenCalled();
+
+      const reset = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        url: `/api/dsv/admin-accounts/${account.id}/password-reset`,
+      });
+      expect(reset.statusCode).toBe(404);
+      expect(resetPassword).not.toHaveBeenCalled();
 
       const selfDisable = await app.inject({
         headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
@@ -175,6 +186,161 @@ describe('DSV control routes', () => {
       });
       expect(selfDisable.statusCode).toBe(409);
       expect(selfDisable.json()).toMatchObject({ error: { code: 'ADMIN_ACCOUNT_SELF_DISABLE_FORBIDDEN' } });
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('invites top-level DSV operator accounts behind account write scope and CSRF', async () => {
+    const operatorInvitationService = createOperatorInvitationService();
+    const { app } = await createHarness({ operatorInvitationService });
+    try {
+      const login = await loginToDsv(app);
+      const missingCsrf = await app.inject({
+        headers: { cookie: login.cookie },
+        method: 'POST',
+        payload: { displayName: 'DSV 운영자', email: 'Operator@Example.com' },
+        url: '/api/dsv/admin-accounts/invitations',
+      });
+      expect(missingCsrf.statusCode).toBe(403);
+      expect(operatorInvitationService.createInvitation).not.toHaveBeenCalled();
+
+      const create = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        payload: { displayName: 'DSV 운영자', email: 'Operator@Example.com' },
+        url: '/api/dsv/admin-accounts/invitations',
+      });
+      expect(create.statusCode).toBe(201);
+      expect(create.json()).toEqual({
+        data: {
+          invitation: {
+            createdAt: '2026-08-09T01:00:00.000Z',
+            displayName: 'DSV 운영자',
+            email: 'operator@example.com',
+            expiresAt: '2026-08-11T01:00:00.000Z',
+            id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+            revokedAt: null,
+          },
+        },
+        error: null,
+      });
+      expect(JSON.stringify(create.json())).not.toContain('secret-token');
+      expect(operatorInvitationService.createInvitation).toHaveBeenCalledWith(expect.objectContaining({
+        actorId: adminAccountId,
+        displayName: 'DSV 운영자',
+        email: 'Operator@Example.com',
+        shopDomain: 'tomatonofood.com',
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('validates and completes DSV operator invitations with the normal admin session cookie', async () => {
+    const operatorInvitationService = createOperatorInvitationService();
+    const { app } = await createHarness({ operatorInvitationService });
+    try {
+      const validate = await app.inject({
+        method: 'POST',
+        payload: { shopDomain: 'tomatonofood.com', token: 'secret-token' },
+        url: '/api/dsv/admin/auth/invitations/validate',
+      });
+      expect(validate.statusCode).toBe(200);
+      expect(validate.json()).toEqual({
+        data: {
+          displayName: 'DSV 운영자',
+          email: 'operator@example.com',
+          expiresAt: '2026-08-11T01:00:00.000Z',
+        },
+        error: null,
+      });
+      expect(JSON.stringify(validate.json())).not.toContain('secret-token');
+
+      const complete = await app.inject({
+        method: 'POST',
+        payload: {
+          loginId: 'operator-login',
+          password: 'StrongPassw0rd!',
+          shopDomain: 'tomatonofood.com',
+          token: 'secret-token',
+        },
+        url: '/api/dsv/admin/auth/complete',
+      });
+      expect(complete.statusCode).toBe(200);
+      expect(complete.headers['set-cookie']).toContain('Path=/api/dsv/');
+      expect(complete.headers['set-cookie']).toContain('HttpOnly');
+      expect(complete.headers['set-cookie']).toContain('SameSite=Lax');
+      expect(complete.json()).toMatchObject({
+        data: {
+          account: {
+            email: 'operator@example.com',
+            id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+            loginId: 'operator-login',
+            scopes: dsvOperatorScopes,
+            tokenVersion: 1,
+          },
+          actorId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+          principalType: 'DSV_ADMIN',
+          scopes: dsvOperatorScopes,
+          shopDomain: 'tomatonofood.com',
+          shopId,
+        },
+        error: null,
+      });
+      expect(operatorInvitationService.complete).toHaveBeenCalledWith(expect.objectContaining({
+        loginId: 'operator-login',
+        password: 'StrongPassw0rd!',
+        shopDomain: 'tomatonofood.com',
+        token: 'secret-token',
+      }));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('updates current DSV operator credentials and refreshes tokenVersion in the session cookie', async () => {
+    const operatorInvitationService = createOperatorInvitationService();
+    const { app } = await createHarness({ operatorInvitationService });
+    try {
+      const login = await loginToDsv(app);
+      const missingNewCredential = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'PATCH',
+        payload: { currentPassword: 'correct-password' },
+        url: '/api/dsv/auth/credentials',
+      });
+      expect(missingNewCredential.statusCode).toBe(400);
+      expect(operatorInvitationService.updateCredentials).not.toHaveBeenCalled();
+
+      const update = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'PATCH',
+        payload: { currentPassword: 'correct-password', loginId: 'operator-renamed', password: 'NewStrongPassw0rd!' },
+        url: '/api/dsv/auth/credentials',
+      });
+      expect(update.statusCode).toBe(200);
+      expect(update.headers['set-cookie']).toContain('Path=/api/dsv/');
+      expect(update.json()).toMatchObject({
+        data: {
+          account: {
+            loginId: 'operator-login',
+            tokenVersion: 1,
+          },
+          actorId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+          principalType: 'DSV_ADMIN',
+          scopes: dsvOperatorScopes,
+          shopDomain: 'tomatonofood.com',
+          shopId,
+        },
+        error: null,
+      });
+      expect(operatorInvitationService.updateCredentials).toHaveBeenCalledWith({
+        accountId: adminAccountId,
+        currentPassword: 'correct-password',
+        loginId: 'operator-renamed',
+        password: 'NewStrongPassw0rd!',
+      });
     } finally {
       await app.close();
     }
@@ -1790,6 +1956,7 @@ async function createHarness(overrides: {
   addressCanonicalizer?: DsvAddressCanonicalizer;
   customerAccountService?: DsvCustomerAccountService;
   manualEmailService?: DsvManualEmailService;
+  operatorInvitationService?: DsvAdminOperatorInvitationService;
 } = {}): Promise<{
   app: Awaited<ReturnType<typeof buildApp>>;
   assignmentCommandService: MockAssignmentCommandService;
@@ -1835,6 +2002,7 @@ async function createHarness(overrides: {
     dispatchImportService,
     geocodingService,
     manualEmailService: overrides.manualEmailService ?? createManualEmailService(),
+    ...(overrides.operatorInvitationService === undefined ? {} : { operatorInvitationService: overrides.operatorInvitationService }),
     repository,
     resourceService,
     secureCookies: false,
@@ -1842,6 +2010,43 @@ async function createHarness(overrides: {
     settingsService,
   };
   return { app: await buildApp({ dsvControl: dependencies }), assignmentCommandService, dispatchImportService, geocodingService, repository, resourceService, settingsService };
+}
+
+function createOperatorInvitationService(): DsvAdminOperatorInvitationService & {
+  complete: ReturnType<typeof vi.fn<DsvAdminOperatorInvitationService['complete']>>;
+  createInvitation: ReturnType<typeof vi.fn<DsvAdminOperatorInvitationService['createInvitation']>>;
+  updateCredentials: ReturnType<typeof vi.fn<DsvAdminOperatorInvitationService['updateCredentials']>>;
+  validateInvitation: ReturnType<typeof vi.fn<DsvAdminOperatorInvitationService['validateInvitation']>>;
+} {
+  const account = {
+    createdAt: new Date('2026-08-09T01:00:00.000Z'),
+    displayName: 'DSV 운영자',
+    email: 'operator@example.com',
+    id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    lastAuthenticatedAt: new Date('2026-08-09T01:00:00.000Z'),
+    loginId: 'operator-login',
+    scopes: dsvOperatorScopes,
+    status: 'ACTIVE' as const,
+    tokenVersion: 1,
+    updatedAt: new Date('2026-08-09T01:00:00.000Z'),
+  };
+  return {
+    complete: vi.fn<DsvAdminOperatorInvitationService['complete']>(() => Promise.resolve(account)),
+    createInvitation: vi.fn<DsvAdminOperatorInvitationService['createInvitation']>(() => Promise.resolve({
+      createdAt: new Date('2026-08-09T01:00:00.000Z'),
+      displayName: 'DSV 운영자',
+      email: 'operator@example.com',
+      expiresAt: new Date('2026-08-11T01:00:00.000Z'),
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      revokedAt: null,
+    })),
+    updateCredentials: vi.fn<DsvAdminOperatorInvitationService['updateCredentials']>(() => Promise.resolve(account)),
+    validateInvitation: vi.fn<DsvAdminOperatorInvitationService['validateInvitation']>(() => Promise.resolve({
+      displayName: 'DSV 운영자',
+      email: 'operator@example.com',
+      expiresAt: new Date('2026-08-11T01:00:00.000Z'),
+    })),
+  };
 }
 
 function createCustomerAccountService(): DsvCustomerAccountService & {
