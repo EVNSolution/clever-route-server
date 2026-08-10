@@ -8,6 +8,7 @@ import { UvisTelemetryWorker, type UvisWorkerLogger } from './uvis-telemetry.wor
 import {
   PrismaUvisVehicleTrailMaterializationRepository,
   serviceDateForInstant,
+  UVIS_ROAD_MATCH_GPS_PRECISION_METERS,
   UvisVehicleTrailMaterializationQueue,
 } from './uvis-vehicle-trail-materializer.js';
 import { readConfiguredCoverageBaseUrls, type RouteEngineRuntimeEnv } from '../route-plans/route-engine-coverage.js';
@@ -110,6 +111,7 @@ function createRoadMatchProvider(
   if (Object.keys(baseUrls).length === 0) return undefined;
   return new OsrmRouteTrackingRoadMatchProvider({
     baseUrls,
+    gpsPrecisionMeters: UVIS_ROAD_MATCH_GPS_PRECISION_METERS,
     ...optionalTimeout(env.OSRM_TIMEOUT_MS),
   });
 }

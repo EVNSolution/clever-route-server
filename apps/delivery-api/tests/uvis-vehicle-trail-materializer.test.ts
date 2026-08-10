@@ -64,7 +64,7 @@ describe('PrismaUvisVehicleTrailMaterializationRepository', () => {
     })).resolves.toMatchObject({ segments: [] });
   });
 
-  test('omits low-confidence road geometry and leaves finalization retryable', async () => {
+  test('omits low-confidence road geometry without retrying a completed OSRM response forever', async () => {
     const prisma = prismaMock([
       gpsSample('sample-0', '2026-08-03T23:50:00.000Z', 37.0000, 127.0000),
       gpsSample('sample-1', '2026-08-03T23:51:00.000Z', 37.0010, 127.0000),
@@ -86,15 +86,83 @@ describe('PrismaUvisVehicleTrailMaterializationRepository', () => {
       vehicleId: 'vehicle-a',
     });
 
-    expect(document.retryable).toBe(true);
+    expect(document.retryable).toBe(false);
     expect(document.segments[0]?.roadMatchedGeometry).toBeNull();
     const upsertCalls = prisma.uvisVehicleTrailMaterialization.upsert.mock.calls as unknown as Array<[{
       create?: { finalizedAt?: Date | null };
       update?: { finalizedAt?: Date | null };
     }]>;
     const upsertInput = upsertCalls[0]?.[0];
-    expect(upsertInput?.create?.finalizedAt).toBeNull();
-    expect(upsertInput?.update?.finalizedAt).toBeNull();
+    expect(upsertInput?.create?.finalizedAt).toBeInstanceOf(Date);
+    expect(upsertInput?.update?.finalizedAt).toBeInstanceOf(Date);
+  });
+
+  test('keeps a null provider response retryable because it may be a transient OSRM failure', async () => {
+    const prisma = prismaMock([
+      gpsSample('sample-0', '2026-08-03T23:50:00.000Z', 37.0000, 127.0000),
+      gpsSample('sample-1', '2026-08-03T23:51:00.000Z', 37.0010, 127.0000),
+      gpsSample('sample-2', '2026-08-03T23:52:00.000Z', 37.0020, 127.0000),
+    ]);
+    const repository = new PrismaUvisVehicleTrailMaterializationRepository(prisma as never);
+
+    const document = await repository.materializeVehicleDay({
+      finalizing: true,
+      roadMatchProvider: { match: vi.fn().mockResolvedValue(null) },
+      serviceDate: '2026-08-04',
+      shopId: 'shop-a',
+      vehicleId: 'vehicle-a',
+    });
+
+    expect(document.retryable).toBe(true);
+    expect(document.segments[0]?.roadMatchedGeometry).toBeNull();
+  });
+
+  test('sends chronological samples to OSRM when movement starts after a stationary interval', async () => {
+    const prisma = prismaMock([
+      gpsSample('sample-0', '2026-08-03T23:50:00.000Z', 37.0000, 127.0000),
+      gpsSample('sample-1', '2026-08-03T23:51:00.000Z', 37.0000, 127.0000),
+      gpsSample('sample-2', '2026-08-03T23:52:00.000Z', 37.0010, 127.0000),
+      gpsSample('sample-3', '2026-08-03T23:53:00.000Z', 37.0020, 127.0000),
+    ]);
+    const match = vi.fn().mockResolvedValue(null);
+    const repository = new PrismaUvisVehicleTrailMaterializationRepository(prisma as never);
+
+    await repository.materializeVehicleDay({
+      roadMatchProvider: { match },
+      serviceDate: '2026-08-04',
+      shopId: 'shop-a',
+      vehicleId: 'vehicle-a',
+    });
+
+    const calls = match.mock.calls as unknown as Array<[{
+      samples: Array<{ occurredAt: string }>;
+    }]>;
+    const occurredAt = calls[0]![0].samples.map((sample) => sample.occurredAt);
+    expect(occurredAt).toEqual([...occurredAt].sort());
+  });
+
+  test('drops an isolated impossible GPS jump and connects the surrounding samples for OSRM', async () => {
+    const prisma = prismaMock([
+      gpsSample('sample-0', '2026-08-03T23:50:00.000Z', 37.5000, 126.9000),
+      gpsSample('sample-1', '2026-08-03T23:51:00.000Z', 37.5010, 126.9010),
+      gpsSample('jump', '2026-08-03T23:52:00.000Z', 35.1000, 129.0000),
+      gpsSample('sample-2', '2026-08-03T23:53:00.000Z', 37.5020, 126.9020),
+      gpsSample('sample-3', '2026-08-03T23:54:00.000Z', 37.5030, 126.9030),
+    ]);
+    const match = vi.fn().mockResolvedValue(null);
+    const repository = new PrismaUvisVehicleTrailMaterializationRepository(prisma as never);
+
+    await repository.materializeVehicleDay({
+      roadMatchProvider: { match },
+      serviceDate: '2026-08-04',
+      shopId: 'shop-a',
+      vehicleId: 'vehicle-a',
+    });
+
+    const calls = match.mock.calls as unknown as Array<[{
+      samples: Array<{ eventId: string }>;
+    }]>;
+    expect(calls[0]![0].samples.map((sample) => sample.eventId)).not.toContain('jump');
   });
 
   test('preserves finalizedAt on non-finalizing refresh and rewrites it on re-finalization', async () => {

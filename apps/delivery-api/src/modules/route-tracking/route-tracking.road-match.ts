@@ -32,6 +32,7 @@ export type RouteTrackingRoadMatchProvider = {
 export type OsrmRouteTrackingRoadMatchProviderOptions = {
   baseUrls: Partial<Record<RouteEngineCoverage, string>>;
   fetch?: FetchLike | undefined;
+  gpsPrecisionMeters?: number | undefined;
   timeoutMs?: number | undefined;
 };
 
@@ -53,6 +54,7 @@ type MatchChunk = {
 export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatchProvider {
   private readonly baseUrls: Partial<Record<RouteEngineCoverage, string>>;
   private readonly fetch: FetchLike;
+  private readonly gpsPrecisionMeters: number | null;
   private readonly timeoutMs: number;
 
   constructor(options: OsrmRouteTrackingRoadMatchProviderOptions) {
@@ -62,6 +64,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
         .filter((entry): entry is [RouteEngineCoverage, string] => entry[1] !== null)
     );
     this.fetch = options.fetch ?? fetch;
+    this.gpsPrecisionMeters = normalizeGpsPrecision(options.gpsPrecisionMeters);
     this.timeoutMs =
       typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
         ? Math.max(1000, Math.floor(options.timeoutMs))
@@ -120,7 +123,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     let response: Response;
     try {
-      response = await this.fetch(buildMatchUrl(baseUrl, chunk), {
+      response = await this.fetch(buildMatchUrl(baseUrl, chunk, this.gpsPrecisionMeters), {
         method: 'GET',
         signal: controller.signal,
       });
@@ -287,7 +290,7 @@ function splitByMaxPoints(chunk: MatchChunk): MatchChunk[] {
   return chunks;
 }
 
-function buildMatchUrl(baseUrl: string, chunk: MatchChunk): string {
+function buildMatchUrl(baseUrl: string, chunk: MatchChunk, gpsPrecisionMeters: number | null): string {
   const coordinatePath = chunk.coordinates.map(([longitude, latitude]) => `${longitude},${latitude}`).join(';');
   const timestamps = chunk.samples
     .map((sample) => Math.floor(Date.parse(sample.occurredAt) / 1000))
@@ -299,6 +302,9 @@ function buildMatchUrl(baseUrl: string, chunk: MatchChunk): string {
     tidy: 'true',
     timestamps,
   });
+  if (gpsPrecisionMeters !== null) {
+    params.set('radiuses', chunk.coordinates.map(() => String(gpsPrecisionMeters)).join(';'));
+  }
   return `${baseUrl}/match/v1/driving/${coordinatePath}?${params.toString()}`;
 }
 
@@ -465,6 +471,12 @@ function toJsonOrNull(value: unknown): Prisma.JsonObject | typeof Prisma.JsonNul
 function normalizeBaseUrl(value: string | undefined): string | null {
   if (value === undefined || value.trim() === '') return null;
   return value.trim().replace(/\/+$/u, '');
+}
+
+function normalizeGpsPrecision(value: number | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.round(value * 100) / 100
+    : null;
 }
 
 function objectOrNull(value: unknown): Record<string, unknown> | null {

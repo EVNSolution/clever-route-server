@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 
 import {
   PrismaUvisVehicleTrailMaterializationRepository,
+  UVIS_ROAD_MATCH_GPS_PRECISION_METERS,
 } from '../modules/uvis/uvis-vehicle-trail-materializer.js';
 import { readConfiguredCoverageBaseUrls, type RouteEngineRuntimeEnv } from '../modules/route-plans/route-engine-coverage.js';
 import { OsrmRouteTrackingRoadMatchProvider } from '../modules/route-tracking/route-tracking.road-match.js';
@@ -100,6 +101,7 @@ function createRoadMatchProvider(
   if (Object.keys(baseUrls).length === 0) return undefined;
   return new OsrmRouteTrackingRoadMatchProvider({
     baseUrls,
+    gpsPrecisionMeters: UVIS_ROAD_MATCH_GPS_PRECISION_METERS,
     ...optionalTimeout(env.OSRM_TIMEOUT_MS),
   });
 }

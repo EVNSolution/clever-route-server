@@ -6,7 +6,9 @@ import type { RouteTrackingRoadMatchProvider } from '../route-tracking/route-tra
 import type { RouteTrackingRoadMatchedGeometryV1 } from '../route-tracking/route-tracking.types.js';
 
 export const UVIS_VEHICLE_TRAIL_SCHEMA_VERSION = 'uvis_vehicle_trail.v1' as const;
+export const UVIS_ROAD_MATCH_GPS_PRECISION_METERS = 75;
 const SERVICE_TIMEZONE = 'Asia/Seoul';
+const MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND = 55;
 
 export type UvisVehicleTrailMarker = {
   kind: 'RESTART' | 'START';
@@ -134,13 +136,11 @@ export class PrismaUvisVehicleTrailMaterializationRepository {
     let retryable = false;
 
     for (const segment of detected) {
-      const roadMatchedGeometry = await matchRoadGeometry(segment.samples, input.roadMatchProvider);
-      if (input.roadMatchProvider !== undefined && roadMatchedGeometry === null && segment.samples.length >= 2) {
-        retryable = true;
-      }
+      const roadMatch = await matchRoadGeometry(segment.samples, input.roadMatchProvider);
+      retryable ||= roadMatch.retryable;
       materializedSegments.push({
         endedAt: segment.samples.at(-1)!.observedAt,
-        roadMatchedGeometry,
+        roadMatchedGeometry: roadMatch.geometry,
         samples: segment.samples.map(toDocumentSample),
         startedAt: segment.samples[0]!.observedAt,
         trailMarker: segment.marker,
@@ -337,11 +337,7 @@ function detectMovingSegments(points: TrailPoint[]): DetectedSegment[] {
       pending.push(interval);
       pending = pending.slice(-3);
       if (pending.filter((item) => item.movement).length >= 2) {
-        const firstEvidence = pending.find((item) => item.movement) ?? pending[0]!;
-        current = uniquePoints([
-          firstEvidence.previous,
-          ...pending.flatMap((item) => [item.previous, item.current]),
-        ]);
+        current = uniquePoints(pending.flatMap((item) => [item.previous, item.current]));
         pending = [];
         stableStopCount = interval.stableStop ? 1 : 0;
       }
@@ -366,7 +362,7 @@ function classifyInterval(previous: TrailPoint, current: TrailPoint): IntervalEv
   const maxSpeed = Math.max(previous.speedKph ?? 0, current.speedKph ?? 0);
   return {
     current,
-    movement: maxSpeed > 3 || displacementMeters >= 80,
+    movement: displacementMeters >= 80 || (maxSpeed > 3 && displacementMeters >= 40),
     previous,
     stableStop: maxSpeed <= 1 && displacementMeters <= 30,
   };
@@ -388,23 +384,62 @@ function toDetectedSegment(samples: TrailPoint[], index: number): DetectedSegmen
 async function matchRoadGeometry(
   samples: TrailPoint[],
   roadMatchProvider?: RouteTrackingRoadMatchProvider,
-): Promise<RouteTrackingRoadMatchedGeometryV1 | null> {
-  if (roadMatchProvider === undefined || samples.length < 2) return null;
+): Promise<{ geometry: RouteTrackingRoadMatchedGeometryV1 | null; retryable: boolean }> {
+  if (roadMatchProvider === undefined || samples.length < 2) return { geometry: null, retryable: false };
+  const preparedSamples = prepareRoadMatchSamples(samples);
+  if (preparedSamples.length < 2) return { geometry: null, retryable: false };
   try {
     const result = await roadMatchProvider.match({
-      coordinates: samples.map((sample) => [sample.longitude, sample.latitude]),
-      samples: samples.map((sample) => ({
+      coordinates: preparedSamples.map((sample) => [sample.longitude, sample.latitude]),
+      samples: preparedSamples.map((sample) => ({
         driverId: null,
         eventId: sample.id,
         occurredAt: sample.observedAt,
         receivedAt: sample.observedAt,
       })),
-      sourcePointCount: samples.length,
+      sourcePointCount: preparedSamples.length,
     });
-    return result?.matchedGeometry ?? null;
+    return result === null
+      ? { geometry: null, retryable: true }
+      : { geometry: result.matchedGeometry, retryable: false };
   } catch {
-    return null;
+    return { geometry: null, retryable: true };
   }
+}
+
+function prepareRoadMatchSamples(samples: TrailPoint[]): TrailPoint[] {
+  const chronological = [...samples]
+    .sort((left, right) => left.observedAtDate.getTime() - right.observedAtDate.getTime() || left.id.localeCompare(right.id))
+    .filter((sample, index, ordered) => (
+      index === 0 || Math.floor(sample.observedAtDate.getTime() / 1000)
+        > Math.floor(ordered[index - 1]!.observedAtDate.getTime() / 1000)
+    ));
+  if (chronological.length < 3) return chronological;
+
+  const prepared: TrailPoint[] = [chronological[0]!];
+  for (let index = 1; index < chronological.length - 1; index += 1) {
+    const previous = prepared.at(-1)!;
+    const current = chronological[index]!;
+    const next = chronological[index + 1]!;
+    if (isIsolatedGpsJump(previous, current, next)) continue;
+    prepared.push(current);
+  }
+  prepared.push(chronological.at(-1)!);
+  return prepared;
+}
+
+function isIsolatedGpsJump(previous: TrailPoint, current: TrailPoint, next: TrailPoint): boolean {
+  const incoming = impliedSpeedMetersPerSecond(previous, current);
+  const outgoing = impliedSpeedMetersPerSecond(current, next);
+  const bypass = impliedSpeedMetersPerSecond(previous, next);
+  return incoming > MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND
+    && outgoing > MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND
+    && bypass <= MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND;
+}
+
+function impliedSpeedMetersPerSecond(previous: TrailPoint, current: TrailPoint): number {
+  const elapsedSeconds = (current.observedAtDate.getTime() - previous.observedAtDate.getTime()) / 1000;
+  return elapsedSeconds > 0 ? distanceMeters(previous, current) / elapsedSeconds : Number.POSITIVE_INFINITY;
 }
 
 function toTrailPoint(row: SourceSample): TrailPoint[] {

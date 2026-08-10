@@ -44,6 +44,7 @@ describe('route tracking road matching', () => {
     expect(requestedUrl).toContain('gaps=split');
     expect(requestedUrl).toContain('tidy=true');
     expect(requestedUrl).toContain('timestamps=1784592000%3B1784592030%3B1784592060');
+    expect(requestedUrl).not.toContain('radiuses=');
     expect(result?.coverage).toBe('korea');
     expect(result?.matchedGeometry?.type).toBe('MultiLineString');
     expect(result?.matchedGeometry?.coordinates).toEqual([[
@@ -60,6 +61,27 @@ describe('route tracking road matching', () => {
       occurredAt: '2026-07-21T00:01:00.000Z',
     });
     expect(result?.watermark).toContain('route_tracking_road_match.v1:korea:3:3:2026-07-21T00:01:00.000Z');
+  });
+
+  test('applies an explicit GPS precision only for callers that configure one', async () => {
+    const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      code: 'Ok',
+      matchings: [{
+        confidence: 0.9,
+        geometry: { coordinates: [[126.9, 37.5], [126.901, 37.501]], type: 'LineString' },
+      }],
+      tracepoints: [{}, {}],
+    }))));
+    const provider = new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { korea: 'https://osrm-korea.example' },
+      fetch,
+      gpsPrecisionMeters: 75,
+    });
+
+    await provider.match(document([[126.9, 37.5], [126.901, 37.501]]));
+
+    const requestedUrl = String((fetch.mock.calls as unknown as Array<[string]>)[0]![0]);
+    expect(requestedUrl).toContain('radiuses=75%3B75');
   });
 
   test('splits by GPS gaps and by 80-point OSRM match request limit', async () => {
