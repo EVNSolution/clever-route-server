@@ -40,6 +40,28 @@ describe('DSV manual Brevo email', () => {
     expect(result).toMatchObject({ messageId: 'message-a', recipientCount: 1 });
   });
 
+  test('renders text line breaks explicitly in HTML for mail clients', async () => {
+    const fetchMock = vi.fn<typeof fetch>(() =>
+      Promise.resolve(new Response(JSON.stringify({ messageId: 'message-a' }), { status: 201 })));
+    const service = new BrevoDsvManualEmailService({
+      apiKey: 'brevo-key',
+      senderName: 'CLEVER DSV',
+    }, fetchMock);
+
+    await service.send({
+      commandId: '11111111-1111-4111-8111-111111111111',
+      recipients: ['ops@example.com'],
+      senderEmail: 'noreply@example.com',
+      subject: '줄바꿈 테스트',
+      textContent: '첫 줄\n\n둘째 문단\r\n&lt;링크>',
+    });
+
+    const [, init] = fetchMock.mock.calls[0] ?? [];
+    const body = JSON.parse(typeof init?.body === 'string' ? init.body : '') as { htmlContent: string };
+    expect(body.htmlContent).toContain('첫 줄<br><br>둘째 문단<br>&amp;lt;링크&gt;');
+    expect(body.htmlContent).not.toContain('white-space:pre-wrap');
+  });
+
   test('does not retry a quota response', async () => {
     const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(new Response(null, { status: 429 })));
     const service = new BrevoDsvManualEmailService({
