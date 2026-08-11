@@ -2066,7 +2066,7 @@ function segmentTrailEnrichment(
   const overlapping = materializedTrail.segments.filter((segment) =>
     Date.parse(segment.startedAt) >= start && Date.parse(segment.endedAt) <= end
   );
-  const lines = overlapping.flatMap((segment) => segment.roadMatchedGeometry?.coordinates ?? []);
+  const roadMatchedGeometry = mergeRoadMatchedGeometry(overlapping);
   const marker = overlapping
     .map((segment) => segment.trailMarker)
     .find((candidate) => {
@@ -2074,9 +2074,46 @@ function segmentTrailEnrichment(
       return observedAt >= start && observedAt <= end;
     }) ?? null;
   return {
-    ...(lines.length === 0 ? {} : { roadMatchedGeometry: { coordinates: lines, type: 'MultiLineString' as const } }),
+    ...(roadMatchedGeometry === null ? {} : { roadMatchedGeometry }),
     ...(marker === null ? {} : { trailMarker: marker }),
   };
+}
+
+function mergeRoadMatchedGeometry(
+  segments: UvisVehicleTrailDocumentV1['segments'],
+): RouteTrackingRoadMatchedGeometryV1 | null {
+  const coordinates: RouteTrackingRoadMatchedGeometryV1['coordinates'] = [];
+  const anchors: NonNullable<RouteTrackingRoadMatchedGeometryV1['anchors']> = [];
+  for (const segment of segments) {
+    const geometry = segment.roadMatchedGeometry;
+    if (geometry === null || geometry === undefined) continue;
+    const lineOffset = coordinates.length;
+    coordinates.push(...geometry.coordinates);
+    anchors.push(...(geometry.anchors ?? []).flatMap((anchor) => {
+      if (geometry.coordinates[anchor.lineIndex]?.[anchor.coordinateIndex] === undefined) return [];
+      return [{
+        observedAt: anchor.observedAt,
+        lineIndex: anchor.lineIndex + lineOffset,
+        coordinateIndex: anchor.coordinateIndex,
+      }];
+    }));
+  }
+  if (coordinates.length === 0) return null;
+  return {
+    ...(anchors.length === 0 ? {} : { anchors: anchors.sort(compareRoadMatchedAnchors) }),
+    coordinates,
+    type: 'MultiLineString',
+  };
+}
+
+function compareRoadMatchedAnchors(
+  left: NonNullable<RouteTrackingRoadMatchedGeometryV1['anchors']>[number],
+  right: NonNullable<RouteTrackingRoadMatchedGeometryV1['anchors']>[number],
+): number {
+  const timeOrder = Date.parse(left.observedAt) - Date.parse(right.observedAt);
+  if (timeOrder !== 0) return timeOrder;
+  const lineOrder = left.lineIndex - right.lineIndex;
+  return lineOrder === 0 ? left.coordinateIndex - right.coordinateIndex : lineOrder;
 }
 
 function toGpsTrailSample(sample: GpsTrailSampleRow): DsvV1VehicleGpsTrailSample {

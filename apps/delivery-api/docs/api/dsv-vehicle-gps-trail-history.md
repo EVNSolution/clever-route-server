@@ -25,6 +25,12 @@ Response:
   `scheduledStartAt`, route `departureTime`, or the shop planned departure time.
 - `segments[]` are split when the previous GPS sample's persisted `staleAfter`
   is before the next sample's `observedAt`.
+- `segments[].roadMatchedGeometry` is additive and optional. When present, it
+  keeps the existing GeoJSON `MultiLineString` shape and may include
+  `anchors: Array<{ observedAt: string; lineIndex: number; coordinateIndex:
+  number }>` sorted by `observedAt` ascending. Each anchor points directly into
+  `roadMatchedGeometry.coordinates[lineIndex][coordinateIndex]` for raw UVIS
+  sample replay.
 - Completion does not force the GPS trail to stop. When depot coordinates are
   available, the endpoint continues through the first depot-return sample; when
   that is not available, it ends at the last valid UVIS GPS sample in the

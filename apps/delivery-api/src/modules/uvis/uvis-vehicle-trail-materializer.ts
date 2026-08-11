@@ -402,12 +402,65 @@ async function matchRoadGeometry(
   for (let attempt = 0; attempt < MAX_ROAD_MATCH_ATTEMPTS; attempt += 1) {
     try {
       const result = await roadMatchProvider.match(document);
-      if (result !== null) return { geometry: result.matchedGeometry, retryable: false };
+      if (result !== null) {
+        return {
+          geometry: addRoadMatchedGeometryAnchors(result.matchedGeometry, preparedSamples),
+          retryable: false,
+        };
+      }
     } catch {
       // A later UVIS-only attempt may recover from a transient OSRM or network failure.
     }
   }
   return { geometry: null, retryable: true };
+}
+
+function addRoadMatchedGeometryAnchors(
+  geometry: RouteTrackingRoadMatchedGeometryV1 | null,
+  samples: TrailPoint[],
+): RouteTrackingRoadMatchedGeometryV1 | null {
+  if (geometry === null) return null;
+  const anchors: NonNullable<RouteTrackingRoadMatchedGeometryV1['anchors']> = [];
+  let previous: { coordinateIndex: number; lineIndex: number } | undefined;
+  for (const sample of samples) {
+    const nearest = nearestRoadMatchedCoordinate(
+      geometry.coordinates,
+      [sample.longitude, sample.latitude],
+      previous,
+    );
+    if (nearest === null) continue;
+    anchors.push({
+      observedAt: sample.observedAt,
+      lineIndex: nearest.lineIndex,
+      coordinateIndex: nearest.coordinateIndex,
+    });
+    previous = nearest;
+  }
+  return anchors.length === 0 ? geometry : { ...geometry, anchors };
+}
+
+function nearestRoadMatchedCoordinate(
+  lines: Array<Array<[number, number]>>,
+  target: [number, number],
+  minimum?: { coordinateIndex: number; lineIndex: number },
+): { coordinateIndex: number; lineIndex: number } | null {
+  let nearest: { coordinateIndex: number; distance: number; lineIndex: number } | null = null;
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex]!;
+    for (let coordinateIndex = 0; coordinateIndex < line.length; coordinateIndex += 1) {
+      if (
+        minimum !== undefined
+        && (lineIndex < minimum.lineIndex
+          || (lineIndex === minimum.lineIndex && coordinateIndex < minimum.coordinateIndex))
+      ) continue;
+      const coordinate = line[coordinateIndex]!;
+      const distance = ((coordinate[0] - target[0]) ** 2) + ((coordinate[1] - target[1]) ** 2);
+      if (nearest === null || distance < nearest.distance) {
+        nearest = { coordinateIndex, distance, lineIndex };
+      }
+    }
+  }
+  return nearest === null ? null : { coordinateIndex: nearest.coordinateIndex, lineIndex: nearest.lineIndex };
 }
 
 function prepareRoadMatchSamples(samples: TrailPoint[]): TrailPoint[] {

@@ -251,7 +251,14 @@ describe('route tracking road matching', () => {
   test('serializes cached road-matched geometry into the snapshot contract', () => {
     const path = buildRouteTrackingRoadMatchedPath(trackingRecord({
       roadMatchedCoverage: 'korea',
-      roadMatchedGeometry: { coordinates: [[[126.9, 37.5], [126.91, 37.51]]], type: 'MultiLineString' },
+      roadMatchedGeometry: {
+        anchors: [
+          { observedAt: '2026-07-21T00:01:00.000Z', lineIndex: 0, coordinateIndex: 1 },
+          { observedAt: '2026-07-21T00:00:00.000Z', lineIndex: 0, coordinateIndex: 0 },
+        ],
+        coordinates: [[[126.9, 37.5], [126.91, 37.51]]],
+        type: 'MultiLineString',
+      },
       roadMatchedLastInputOccurredAt: new Date('2026-07-21T00:01:00.000Z'),
       roadMatchedLastPosition: { latitude: 37.51, longitude: 126.91, occurredAt: '2026-07-21T00:01:00.000Z' },
       roadMatchedPointCount: 2,
@@ -266,7 +273,14 @@ describe('route tracking road matching', () => {
       inputPointCount: 3,
       lastInputOccurredAt: '2026-07-21T00:01:00.000Z',
       lastMatchedPosition: { latitude: 37.51, longitude: 126.91, occurredAt: '2026-07-21T00:01:00.000Z' },
-      matchedGeometry: { coordinates: [[[126.9, 37.5], [126.91, 37.51]]], type: 'MultiLineString' },
+      matchedGeometry: {
+        anchors: [
+          { observedAt: '2026-07-21T00:00:00.000Z', lineIndex: 0, coordinateIndex: 0 },
+          { observedAt: '2026-07-21T00:01:00.000Z', lineIndex: 0, coordinateIndex: 1 },
+        ],
+        coordinates: [[[126.9, 37.5], [126.91, 37.51]]],
+        type: 'MultiLineString',
+      },
       matchedPointCount: 2,
       schemaVersion: 'route_tracking_road_match.v1',
       uncertainGeometry: null,

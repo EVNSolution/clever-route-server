@@ -171,6 +171,23 @@ describe('API documentation routes', () => {
     }
   });
 
+  test('GET /docs/openapi.yaml keeps the vehicle trail marker and geometry contract strict', async () => {
+    const app = await buildApp();
+
+    try {
+      const response = await app.inject({ method: 'GET', url: '/docs/openapi.yaml' });
+      const segmentSchema = response.body.match(/ {4}DsvV1VehicleGpsTrailSegment:[\s\S]*? {6}additionalProperties: false/u)?.[0] ?? '';
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('DsvV1VehicleGpsTrailMarker:');
+      expect(segmentSchema).toContain('roadMatchedGeometry:');
+      expect(segmentSchema).toContain('trailMarker:');
+      expect(segmentSchema).toContain("$ref: '#/components/schemas/DsvV1VehicleGpsTrailMarker'");
+    } finally {
+      await app.close();
+    }
+  });
+
   test('GET /docs/openapi.yaml documents DSV v1 dispatch deliveryStopId as a required SellerOrder-owned stop identity', async () => {
     const app = await buildApp();
     try {
