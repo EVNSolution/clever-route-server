@@ -49,6 +49,35 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
     await expect(canonicalCounts(prisma, fixture.shopId)).resolves.toEqual(countsBefore);
   });
 
+  test('applies a consolidated order with zero shipped boxes', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'zero-boxes');
+    const service = new PrismaDsvDispatchImportService(prisma);
+    const staged = await service.commit({
+      ...fixture.input,
+      actor: 'g003-test',
+      rows: fixture.input.rows.map((row) => ({ ...row, shippedBoxes: 0 })),
+      shopDomain: fixture.shopDomain,
+    });
+
+    expect(staged.status).toBe('READY');
+    expect(staged.rows[0]?.issues).toContainEqual(expect.objectContaining({
+      code: 'SHIPPED_BOXES_ZERO',
+      severity: 'review',
+    }));
+
+    const applied = await service.apply(applyInput(
+      fixture.shopDomain,
+      staged.id,
+      staged.sourceHash ?? '',
+      'cmd-zero-boxes',
+    ));
+
+    expect(applied.summary).toEqual({ appliedRows: 1, newRows: 1, noOpRows: 0, updatedRows: 0 });
+    await expect(prisma.deliveryStop.findUniqueOrThrow({
+      where: { id_shopId: { id: applied.rows[0]?.deliveryStopId ?? '', shopId: fixture.shopId } },
+    })).resolves.toMatchObject({ shippedBoxes: 0 });
+  });
+
   test('allows the same seller order key in a later import history batch', async () => {
     const fixture = await createFixture(prisma, createdShopIds, 'history');
     const service = new PrismaDsvDispatchImportService(prisma);

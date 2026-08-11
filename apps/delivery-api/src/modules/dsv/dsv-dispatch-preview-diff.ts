@@ -339,10 +339,13 @@ export function buildDsvDispatchPreviewDiff(input: DsvDispatchPreviewInput): Dsv
   });
 
   const summary = summarize(rows);
+  const blockingReviewRows = rows.filter((row) => row.issues.some((item) => (
+    item.severity === 'review' && item.code !== 'SHIPPED_BOXES_ZERO'
+  ))).length;
   return {
     canApply: rows.length > 0
       && summary.errorRows === 0
-      && summary.reviewRows === 0
+      && blockingReviewRows === 0
       && summary.conflictRows === 0,
     conditionCandidates: sortedConditionCandidates(conditionCandidates),
     fileName: input.fileName,
@@ -444,7 +447,16 @@ function validateSourceRow(row: DsvDispatchSourceRow): DsvDispatchPreviewIssue[]
     if (value !== '' && value.length > maxLength) issues.push(issue('TOO_LONG', field, `${maxLength}자 이하여야 합니다.`));
   }
   if (!Number.isInteger(row.rowNumber) || row.rowNumber < 2) issues.push(issue('ROW_NUMBER_INVALID', 'rowNumber', '행 번호가 올바르지 않습니다.'));
-  if (!Number.isInteger(row.shippedBoxes) || row.shippedBoxes <= 0) issues.push(issue('SHIPPED_BOXES_INVALID', 'shippedBoxes', '박스 수량은 1 이상의 정수여야 합니다.'));
+  if (!Number.isInteger(row.shippedBoxes) || row.shippedBoxes < 0) {
+    issues.push(issue('SHIPPED_BOXES_INVALID', 'shippedBoxes', '박스 수량은 0 이상의 정수여야 합니다.'));
+  } else if (row.shippedBoxes === 0) {
+    issues.push(issue(
+      'SHIPPED_BOXES_ZERO',
+      'shippedBoxes',
+      '같은 배송지의 다른 주문에 박스를 합산한 경우인지 확인하세요. 0박스로 업로드할 수 있습니다.',
+      'review',
+    ));
+  }
   if (row.notes !== null && row.notes.length > 1_000) issues.push(issue('TOO_LONG', 'notes', '특이사항은 1,000자 이하여야 합니다.'));
   if ((row.latitude === null) !== (row.longitude === null)) issues.push(issue('LOCATION_INCOMPLETE', 'row', '위도와 경도는 함께 입력해야 합니다.'));
   if (row.latitude !== null && (row.latitude < -90 || row.latitude > 90)) issues.push(issue('LATITUDE_INVALID', 'latitude', '위도 범위가 올바르지 않습니다.'));

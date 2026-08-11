@@ -146,6 +146,35 @@ describe('G003 DSV dispatch preview diff', () => {
     expect(preview.rows[0]?.issues.map((issue) => issue.code)).toEqual(['DRIVER_MISSING']);
   });
 
+  test('allows zero shipped boxes as a non-blocking review warning', () => {
+    const preview = buildDsvDispatchPreviewDiff(input({
+      rows: [sourceRow({ sellerOrderKey: 'SO-CONSOLIDATED', shippedBoxes: 0 })],
+    }));
+
+    expect(preview.canApply).toBe(true);
+    expect(preview.summary).toMatchObject({ errorRows: 0, reviewRows: 1 });
+    expect(preview.rows[0]).toMatchObject({ diffKind: 'NEW' });
+    expect(preview.rows[0]?.issues).toEqual([expect.objectContaining({
+      code: 'SHIPPED_BOXES_ZERO',
+      field: 'shippedBoxes',
+      severity: 'review',
+    })]);
+  });
+
+  test('rejects negative shipped boxes as an error', () => {
+    const preview = buildDsvDispatchPreviewDiff(input({
+      rows: [sourceRow({ sellerOrderKey: 'SO-INVALID-BOXES', shippedBoxes: -1 })],
+    }));
+
+    expect(preview.canApply).toBe(false);
+    expect(preview.summary.errorRows).toBe(1);
+    expect(preview.rows[0]?.issues).toEqual([expect.objectContaining({
+      code: 'SHIPPED_BOXES_INVALID',
+      field: 'shippedBoxes',
+      severity: 'error',
+    })]);
+  });
+
   test('keeps unknown nonblank driver and vehicle values as deterministic errors', () => {
     const preview = buildDsvDispatchPreviewDiff(input({
       rows: [

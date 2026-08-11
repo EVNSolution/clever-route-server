@@ -216,7 +216,7 @@ describe('API documentation routes', () => {
       expect(customerDeliveryItem).toContain('DsvV1CustomerDeliveryInquiryItem:');
       expect(customerDeliveryItem).toContain('required: [deliveryStatus, destinationDisplayName, destinationId, etaStatus, eventSummary, proofStatus, sellerOrderId, sellerOrderKey, shippedBoxes]');
       expect(customerDeliveryItem).toContain('destinationId:\n          type: string');
-      expect(customerDeliveryItem).toContain('shippedBoxes:\n          type: integer\n          minimum: 1');
+      expect(customerDeliveryItem).toContain('shippedBoxes:\n          type: integer\n          minimum: 0');
       expect(customerDeliveryItem).toContain('vehicleLatitude:\n          type: number');
       expect(customerDeliveryItem).toContain('vehicleLongitude:\n          type: number');
       expect(customerDeliveryItem).toContain('additionalProperties: false');

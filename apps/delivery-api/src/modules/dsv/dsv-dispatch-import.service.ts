@@ -1349,8 +1349,11 @@ export function buildDispatchImportPreview(input: {
   });
   const errorRows = rows.filter((row) => row.issues.some((item) => item.severity === 'error')).length;
   const reviewRows = rows.filter((row) => row.status === 'NEEDS_REVIEW' && !row.issues.some((item) => item.severity === 'error')).length;
+  const blockingReviewRows = rows.filter((row) => row.issues.some((item) => (
+    item.severity === 'review' && item.code !== 'SHIPPED_BOXES_ZERO'
+  ))).length;
   return {
-    canApply: rows.length > 0 && errorRows === 0 && reviewRows === 0,
+    canApply: rows.length > 0 && errorRows === 0 && blockingReviewRows === 0,
     canCommit: rows.length > 0 && errorRows === 0,
     conditionCandidates,
     fileName: input.fileName,
@@ -1497,7 +1500,9 @@ function assertApplicable(diff: DsvDispatchPreviewDiff): void {
         : 'DISPATCH_IMPORT_CANONICAL_CONFLICT',
     );
   }
-  const issues = diff.rows.flatMap((row) => row.issues);
+  const issues = diff.rows
+    .flatMap((row) => row.issues)
+    .filter((issue) => issue.code !== 'SHIPPED_BOXES_ZERO' || issue.severity !== 'review');
   if (issues.some((issue) => issue.code === 'CONDITION_CANDIDATE')) {
     throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_HAS_CONDITION_CANDIDATES');
   }
@@ -1910,7 +1915,10 @@ function sourceRowFromRecord(row: {
 }
 
 function stageStatus(diff: DsvDispatchPreviewDiff): 'READY' | 'NEEDS_REVIEW' {
-  return diff.rows.every((row) => row.issues.length === 0 && isReadyDiffKind(row.diffKind))
+  return diff.rows.every((row) => (
+    row.issues.every((issue) => issue.code === 'SHIPPED_BOXES_ZERO' && issue.severity === 'review')
+    && isReadyDiffKind(row.diffKind)
+  ))
     ? 'READY'
     : 'NEEDS_REVIEW';
 }
@@ -2225,7 +2233,16 @@ function validateSourceRow(row: DsvDispatchImportSourceRow): DsvDispatchIssue[] 
     if (row[field].length > maxLength) issues.push(legacyIssue('TOO_LONG', field, `${maxLength}자 이하여야 합니다.`));
   }
   if (!Number.isInteger(row.rowNumber) || row.rowNumber < 2) issues.push(legacyIssue('ROW_NUMBER_INVALID', 'rowNumber', '행 번호가 올바르지 않습니다.'));
-  if (!Number.isInteger(row.shippedBoxes) || row.shippedBoxes <= 0) issues.push(legacyIssue('SHIPPED_BOXES_INVALID', 'shippedBoxes', '박스 수량은 1 이상의 정수여야 합니다.'));
+  if (!Number.isInteger(row.shippedBoxes) || row.shippedBoxes < 0) {
+    issues.push(legacyIssue('SHIPPED_BOXES_INVALID', 'shippedBoxes', '박스 수량은 0 이상의 정수여야 합니다.'));
+  } else if (row.shippedBoxes === 0) {
+    issues.push(legacyIssue(
+      'SHIPPED_BOXES_ZERO',
+      'shippedBoxes',
+      '같은 배송지의 다른 주문에 박스를 합산한 경우인지 확인하세요. 0박스로 업로드할 수 있습니다.',
+      'review',
+    ));
+  }
   if (row.notes !== null && row.notes.length > 1_000) issues.push(legacyIssue('TOO_LONG', 'notes', '특이사항은 1,000자 이하여야 합니다.'));
   if ((row.latitude === null) !== (row.longitude === null)) issues.push(legacyIssue('LOCATION_INCOMPLETE', 'row', '위도와 경도는 함께 입력해야 합니다.'));
   if (row.latitude !== null && (row.latitude < -90 || row.latitude > 90)) issues.push(legacyIssue('LATITUDE_INVALID', 'latitude', '위도 범위가 올바르지 않습니다.'));
