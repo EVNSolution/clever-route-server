@@ -40,6 +40,7 @@ export type DsvDispatchDriverSnapshot = {
   displayName: string;
   id: string;
   status: string;
+  vehicleId?: string | null;
 };
 
 export type DsvDispatchVehicleSnapshot = {
@@ -217,17 +218,20 @@ export function buildDsvDispatchPreviewDiff(input: DsvDispatchPreviewInput): Dsv
   const rows = orderedSourceRows.map((source): DsvDispatchPreviewRow => {
     const normalized = normalizeRow(source, input.planDate, sourceKind);
     const issues = validateSourceRow(source);
-    const isUnassignedResourceRow = normalized.driverName === '' || normalized.vehiclePlate === '';
-    const driverMatches = isUnassignedResourceRow
+    const hasDriverName = normalized.driverName !== '';
+    const driverMatches = !hasDriverName
       ? []
       : input.snapshots.drivers.filter(
         (driver) => driver.status === 'ACTIVE' && normalizeText(driver.displayName) === normalized.driverName,
       );
-    const vehicleMatches = isUnassignedResourceRow
+    const vehicleMatches = !hasDriverName || normalized.vehiclePlate === ''
       ? []
       : input.snapshots.vehicles.filter(
         (vehicle) => vehicle.status === 'ACTIVE' && normalizeNullableText(vehicle.licensePlate) === normalized.vehiclePlate,
       );
+    const vehicleId = normalized.vehiclePlate === ''
+      ? driverMatches.length === 1 ? driverMatches[0]?.vehicleId ?? null : null
+      : vehicleMatches.length === 1 ? vehicleMatches[0]?.id ?? null : null;
     const conditionMatches = input.snapshots.conditions.filter(
       (condition) => conditionKey(condition) === normalized.conditionComparisonKey,
     );
@@ -242,8 +246,10 @@ export function buildDsvDispatchPreviewDiff(input: DsvDispatchPreviewInput): Dsv
         && normalizeText(destination.address) === normalized.address,
     );
 
-    if (!isUnassignedResourceRow) {
+    if (hasDriverName) {
       addCardinalityIssues(issues, 'DRIVER', 'driverName', driverMatches.length);
+    }
+    if (hasDriverName && normalized.vehiclePlate !== '') {
       addCardinalityIssues(issues, 'VEHICLE', 'vehiclePlate', vehicleMatches.length);
     }
     const customerIssue = resolveCustomerIssue(exactCustomerMatches, customerMatches);
@@ -303,7 +309,7 @@ export function buildDsvDispatchPreviewDiff(input: DsvDispatchPreviewInput): Dsv
       rowNumber: source.rowNumber,
       sellerOrderId: canonicalOrder?.id ?? null,
       sellerOrderKey: normalized.sellerOrderKey,
-      vehicleId: vehicleMatches.length === 1 ? vehicleMatches[0]?.id ?? null : null,
+      vehicleId,
     };
   }).sort(comparePreviewRows);
 
