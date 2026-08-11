@@ -1366,7 +1366,7 @@ describe('PrismaDsvV1ReadQueryService', () => {
     ]);
   });
 
-  test('vehicle GPS trail history clips partial materialized geometry by anchors and omits unanchored partial lines', async () => {
+  test('vehicle GPS trail history clips partial materialized geometry and omits unusable partial lines', async () => {
     const materializedDocument = {
       generatedAt: '2026-08-04T01:00:00.000Z',
       retryable: false,
@@ -1379,9 +1379,13 @@ describe('PrismaDsvV1ReadQueryService', () => {
             { coordinateIndex: 1, lineIndex: 0, observedAt: '2026-08-03T23:32:00.000Z' },
             { coordinateIndex: 2, lineIndex: 0, observedAt: '2026-08-03T23:33:00.000Z' },
             { coordinateIndex: 3, lineIndex: 0, observedAt: '2026-08-03T23:33:30.000Z' },
+            { coordinateIndex: 0, lineIndex: 1, observedAt: '2026-08-03T23:32:30.000Z' },
           ],
           type: 'MultiLineString',
-          coordinates: [[[126.9, 37.4], [127.0, 37.5], [127.1, 37.6], [127.2, 37.7]]],
+          coordinates: [
+            [[126.9, 37.4], [127.0, 37.5], [127.1, 37.6], [127.2, 37.7]],
+            [[127.3, 37.8], [127.4, 37.9]],
+          ],
         },
         samples: [],
         startedAt: '2026-08-03T23:31:00.000Z',
