@@ -42,6 +42,7 @@ export type OsrmRouteTrackingRoadMatchProviderOptions = {
   baseUrls: Partial<Record<RouteEngineCoverage, string>>;
   fetch?: FetchLike | undefined;
   gpsPrecisionMeters?: number | undefined;
+  maxMatchPoints?: number | undefined;
   timeoutMs?: number | undefined;
 };
 
@@ -64,6 +65,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
   private readonly baseUrls: Partial<Record<RouteEngineCoverage, string>>;
   private readonly fetch: FetchLike;
   private readonly gpsPrecisionMeters: number | null;
+  private readonly maxMatchPoints: number;
   private readonly timeoutMs: number;
 
   constructor(options: OsrmRouteTrackingRoadMatchProviderOptions) {
@@ -74,6 +76,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     );
     this.fetch = options.fetch ?? fetch;
     this.gpsPrecisionMeters = normalizeGpsPrecision(options.gpsPrecisionMeters);
+    this.maxMatchPoints = normalizeMaxMatchPoints(options.maxMatchPoints);
     this.timeoutMs =
       typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
         ? Math.max(1000, Math.floor(options.timeoutMs))
@@ -95,7 +98,7 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
     const matchedLines: MatchedLine[] = [];
     let lastMatchedPosition: RouteTrackingRoadMatchedPathV1['lastMatchedPosition'] = null;
     let retryable = false;
-    for (const chunk of splitForOsrmMatch(input, coverage)) {
+    for (const chunk of splitForOsrmMatch(input, coverage, this.maxMatchPoints)) {
       if (chunk.coordinates.length < 2) continue;
       const result = await this.matchChunk(baseUrl, chunk);
       retryable ||= result.retryable;
@@ -248,7 +251,11 @@ function normalizeInputDocument(document: RouteTrackingGeometryDocumentV1): Rout
   return { coordinates, samples, sourcePointCount: Math.max(document.sourcePointCount, coordinates.length) };
 }
 
-function splitForOsrmMatch(document: RouteTrackingGeometryDocumentV1, coverage: RouteEngineCoverage): MatchChunk[] {
+function splitForOsrmMatch(
+  document: RouteTrackingGeometryDocumentV1,
+  coverage: RouteEngineCoverage,
+  maxMatchPoints: number,
+): MatchChunk[] {
   const byGap: MatchChunk[] = [];
   let current: MatchChunk = { coordinates: [], samples: [] };
   for (let index = 0; index < document.coordinates.length; index += 1) {
@@ -281,7 +288,7 @@ function splitForOsrmMatch(document: RouteTrackingGeometryDocumentV1, coverage: 
   }
   if (current.coordinates.length >= 2) byGap.push(current);
 
-  return byGap.flatMap((chunk) => splitByMaxPoints(chunk));
+  return byGap.flatMap((chunk) => splitByMaxPoints(chunk, maxMatchPoints));
 }
 
 function distanceBetweenCoordinatesMeters(left: [number, number], right: [number, number]): number {
@@ -298,12 +305,12 @@ function toRadians(degrees: number): number {
   return degrees * Math.PI / 180;
 }
 
-function splitByMaxPoints(chunk: MatchChunk): MatchChunk[] {
-  if (chunk.coordinates.length <= MAX_OSRM_MATCH_POINTS) return [chunk];
+function splitByMaxPoints(chunk: MatchChunk, maxMatchPoints: number): MatchChunk[] {
+  if (chunk.coordinates.length <= maxMatchPoints) return [chunk];
   const chunks: MatchChunk[] = [];
   let start = 0;
   while (start < chunk.coordinates.length - 1) {
-    const end = Math.min(chunk.coordinates.length, start + MAX_OSRM_MATCH_POINTS);
+    const end = Math.min(chunk.coordinates.length, start + maxMatchPoints);
     const coordinates = chunk.coordinates.slice(start, end);
     const samples = chunk.samples.slice(start, end);
     if (coordinates.length >= 2) chunks.push({ coordinates, samples });
@@ -311,6 +318,11 @@ function splitByMaxPoints(chunk: MatchChunk): MatchChunk[] {
     start = end - 1;
   }
   return chunks;
+}
+
+function normalizeMaxMatchPoints(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return MAX_OSRM_MATCH_POINTS;
+  return Math.max(2, Math.min(100, Math.floor(value)));
 }
 
 function buildMatchUrl(baseUrl: string, chunk: MatchChunk, gpsPrecisionMeters: number | null): string {

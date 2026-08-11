@@ -3,6 +3,8 @@ import { PrismaClient } from '@prisma/client';
 import {
   PrismaUvisVehicleTrailMaterializationRepository,
   UVIS_ROAD_MATCH_GPS_PRECISION_METERS,
+  UVIS_ROAD_MATCH_MAX_POINTS,
+  UVIS_ROAD_MATCH_TIMEOUT_MS,
 } from '../modules/uvis/uvis-vehicle-trail-materializer.js';
 import { readConfiguredCoverageBaseUrls, type RouteEngineRuntimeEnv } from '../modules/route-plans/route-engine-coverage.js';
 import { OsrmRouteTrackingRoadMatchProvider } from '../modules/route-tracking/route-tracking.road-match.js';
@@ -95,18 +97,19 @@ function serviceDateAsDbDate(serviceDate: string): Date {
 }
 
 function createRoadMatchProvider(
-  env: RouteEngineRuntimeEnv & Partial<Record<'OSRM_TIMEOUT_MS', string>>,
+  env: RouteEngineRuntimeEnv & Partial<Record<'UVIS_ROAD_MATCH_TIMEOUT_MS', string>>,
 ): OsrmRouteTrackingRoadMatchProvider | undefined {
   const baseUrls = readConfiguredCoverageBaseUrls(env, 'OSRM');
   if (Object.keys(baseUrls).length === 0) return undefined;
   return new OsrmRouteTrackingRoadMatchProvider({
     baseUrls,
     gpsPrecisionMeters: UVIS_ROAD_MATCH_GPS_PRECISION_METERS,
-    ...optionalTimeout(env.OSRM_TIMEOUT_MS),
+    maxMatchPoints: UVIS_ROAD_MATCH_MAX_POINTS,
+    timeoutMs: readTimeout(env.UVIS_ROAD_MATCH_TIMEOUT_MS),
   });
 }
 
-function optionalTimeout(value: string | undefined): { timeoutMs?: number } {
+function readTimeout(value: string | undefined): number {
   const parsed = Number.parseInt(value ?? '', 10);
-  return Number.isFinite(parsed) && parsed > 0 ? { timeoutMs: parsed } : {};
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : UVIS_ROAD_MATCH_TIMEOUT_MS;
 }
