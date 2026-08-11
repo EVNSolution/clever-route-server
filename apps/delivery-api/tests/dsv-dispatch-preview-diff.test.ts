@@ -98,7 +98,7 @@ describe('G003 DSV dispatch preview diff', () => {
     expect(preview.canApply).toBe(false);
   });
 
-  test('treats blank driver or vehicle fields as explicit unassigned rows', () => {
+  test('assigns a known driver without a vehicle value and keeps a blank driver unassigned', () => {
     const preview = buildDsvDispatchPreviewDiff(input({
       rows: [
         sourceRow({
@@ -108,12 +108,15 @@ describe('G003 DSV dispatch preview diff', () => {
           vehiclePlate: 'Unknown Vehicle',
         }),
         sourceRow({
-          driverName: 'Unknown Driver',
+          driverName: 'Driver One',
           rowNumber: 3,
-          sellerOrderKey: 'SO-UNASSIGNED-VEHICLE',
+          sellerOrderKey: 'SO-DRIVER-ONLY',
           vehiclePlate: '   ',
         }),
       ],
+      snapshots: {
+        drivers: [{ displayName: 'Driver One', id: 'driver-1', status: 'ACTIVE', vehicleId: 'vehicle-1' }],
+      },
     }));
 
     expect(preview.canApply).toBe(true);
@@ -125,12 +128,22 @@ describe('G003 DSV dispatch preview diff', () => {
       vehicleId: row.vehicleId,
     }))).toEqual([
       { diffKind: 'NEW', driverId: null, issueCodes: [], vehicleId: null },
-      { diffKind: 'NEW', driverId: null, issueCodes: [], vehicleId: null },
+      { diffKind: 'NEW', driverId: 'driver-1', issueCodes: [], vehicleId: 'vehicle-1' },
     ]);
     expect(preview.rows.map((row) => row.normalized)).toMatchObject([
       { driverName: '', vehiclePlate: 'Unknown Vehicle' },
-      { driverName: 'Unknown Driver', vehiclePlate: '' },
+      { driverName: 'Driver One', vehiclePlate: '' },
     ]);
+  });
+
+  test('rejects an unknown nonblank driver even when the vehicle value is blank', () => {
+    const preview = buildDsvDispatchPreviewDiff(input({
+      rows: [sourceRow({ driverName: 'Unknown Driver', vehiclePlate: '' })],
+    }));
+
+    expect(preview.canApply).toBe(false);
+    expect(preview.rows[0]).toMatchObject({ driverId: null, vehicleId: null });
+    expect(preview.rows[0]?.issues.map((issue) => issue.code)).toEqual(['DRIVER_MISSING']);
   });
 
   test('keeps unknown nonblank driver and vehicle values as deterministic errors', () => {

@@ -229,6 +229,43 @@ describeDisposable('G003 DSV dispatch import DB integration', () => {
       });
   });
 
+  test('assigns an imported order to the registered driver named in the file', async () => {
+    const fixture = await createFixture(prisma, createdShopIds, 'driver-name-assignment');
+    const service = new PrismaDsvDispatchImportService(prisma);
+    const firstRow = fixture.input.rows[0];
+    if (firstRow === undefined) throw new Error('Missing fixture row');
+    const input = {
+      ...fixture.input,
+      rows: [{ ...firstRow, driverName: 'Driver One', vehiclePlate: '' }],
+    };
+
+    const staged = await service.commit({ ...input, actor: 'g003-test', shopDomain: fixture.shopDomain });
+    const result = await service.apply(applyInput(
+      fixture.shopDomain,
+      staged.id,
+      staged.sourceHash ?? '',
+      'cmd-driver-name-assignment',
+    ));
+    const appliedRow = result.rows[0];
+    if (appliedRow === undefined) throw new Error('Missing applied row');
+    const order = await prisma.order.findUniqueOrThrow({
+      include: { currentRouteVersion: { include: { routePlan: true } } },
+      where: { id: appliedRow.sellerOrderId },
+    });
+
+    expect(staged.rows[0]).toMatchObject({ driverId: fixture.driverId, vehicleId: fixture.vehicleId });
+    expect(order.currentRouteVersion).toMatchObject({ driverId: fixture.driverId });
+    expect(order.currentRouteVersion?.routePlan).toMatchObject({
+      driverId: fixture.driverId,
+      vehicleId: fixture.vehicleId,
+    });
+    await expect(canonicalCounts(prisma, fixture.shopId)).resolves.toMatchObject({
+      routeGroupingOrders: 1,
+      routePlanStops: 1,
+      routePlans: 1,
+    });
+  });
+
   test('applies geocoded rows after coordinates are normalized to database precision', async () => {
     const fixture = await createFixture(prisma, createdShopIds, 'apply-geocoded-precision');
     const service = new PrismaDsvDispatchImportService(prisma, {
@@ -1247,6 +1284,14 @@ async function createFixture(prisma: PrismaClient, createdShopIds: string[], nam
       status: 'ACTIVE',
     },
   });
+  await prisma.dsvVehicleDriverAssignment.create({
+    data: {
+      createdBy: 'g003-test',
+      driverId: driver.id,
+      shopId: shop.id,
+      vehicleId: vehicle.id,
+    },
+  });
   await prisma.dsvTransportCondition.create({
     data: {
       activatedAt: new Date('2026-07-22T00:00:00.000Z'),
@@ -1550,14 +1595,14 @@ function dispatchInput(sellerOrderKey: string): DsvDispatchImportInput {
       conditionCode: 'TS01',
       customerCode: 'CUST-G003',
       destinationName: 'Integration Destination',
-      driverName: 'Driver One',
+      driverName: '',
       latitude: 37.5665,
       longitude: 126.978,
       notes: 'Leave at dock',
       rowNumber: 2,
       sellerOrderKey,
       shippedBoxes: 3,
-      vehiclePlate: '12A3456',
+      vehiclePlate: '',
     }],
   };
 }

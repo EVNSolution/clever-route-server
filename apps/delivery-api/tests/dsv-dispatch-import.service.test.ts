@@ -76,6 +76,36 @@ describe('DSV dispatch import validation', () => {
       expect.objectContaining({ code: 'LOCATION_NOT_RESOLVED', severity: 'review' }),
     ]);
   });
+
+  test('resolves a known driver without requiring a vehicle value', () => {
+    const preview = buildDispatchImportPreview({
+      conditions: ['Cold'],
+      drivers,
+      fileName: 'driver-only.csv',
+      planDate: '2026-07-23',
+      priorSellerOrderKeys: [],
+      rows: [{ ...sourceRow(0), vehiclePlate: '' }],
+      vehicles,
+    });
+
+    expect(preview.canCommit).toBe(true);
+    expect(preview.rows[0]).toMatchObject({ driverId: 'driver-1', issues: [], vehicleId: null });
+  });
+
+  test('keeps a blank driver and vehicle as an unassigned row', () => {
+    const preview = buildDispatchImportPreview({
+      conditions: ['Cold'],
+      drivers,
+      fileName: 'unassigned.csv',
+      planDate: '2026-07-23',
+      priorSellerOrderKeys: [],
+      rows: [{ ...sourceRow(0), driverName: '', vehiclePlate: '' }],
+      vehicles,
+    });
+
+    expect(preview.canCommit).toBe(true);
+    expect(preview.rows[0]).toMatchObject({ driverId: null, issues: [], vehicleId: null });
+  });
 });
 
 function sourceRow(index: number): DsvDispatchImportSourceRow {

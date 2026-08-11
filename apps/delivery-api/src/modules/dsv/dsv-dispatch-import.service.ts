@@ -3,6 +3,9 @@ import { createHash } from 'node:crypto';
 import { Prisma, type PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
+import { DisabledDriverPushProvider } from '../route-grouping/driver-push.provider.js';
+import { PrismaRouteGroupingService } from '../route-grouping/route-grouping.service.js';
+import type { RouteGroupingDraftRouteInput } from '../route-grouping/route-grouping.types.js';
 import type {
   DsvAddressSuggestion,
   DsvAddressCanonicalizer,
@@ -256,10 +259,14 @@ export class DsvTransportConditionNotFoundError extends Error {
 }
 
 export class PrismaDsvDispatchImportService implements DsvDispatchImportService {
+  private readonly routeGroupingService: Pick<PrismaRouteGroupingService, 'saveDraftInTransaction'>;
+
   constructor(
     private readonly prisma: PrismaClient,
     private readonly options: DsvDispatchImportServiceOptions = {},
-  ) {}
+  ) {
+    this.routeGroupingService = new PrismaRouteGroupingService(prisma, new DisabledDriverPushProvider());
+  }
 
   async preview(input: DsvDispatchImportInput & { shopDomain: string }): Promise<DsvDispatchImportPreview> {
     const shop = await this.findShop(input.shopDomain);
@@ -406,6 +413,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         }
 
         const resultRows: DsvDispatchImportApplyResult['rows'] = [];
+        const groupingRows: DispatchGroupingRow[] = [];
         const importRowsByRowNumber = new Map(lockedImport.rows.map((row) => [row.rowNumber, row]));
         const sourceRowsByIdentity = new Map(sourceRows.map((row) => [`${row.rowNumber}:${row.sellerOrderKey}`, row]));
         let canonicalWrites = 0;
@@ -448,6 +456,11 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
             rowNumber: row.rowNumber,
             sellerOrderKey: row.sellerOrderKey,
           });
+          groupingRows.push({
+            ...link,
+            driverId: row.driverId,
+            vehicleId: row.vehicleId,
+          });
         }
         await invalidateReadyRoutePlansForUpdates(tx, shop.id, resultRows.filter((row) => row.outcome === 'UPDATE_CANDIDATE'));
         await this.ensureDispatchGrouping(
@@ -457,7 +470,8 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
           lockedImport.fileName,
           lockedImport.planDate,
           input.actor,
-          resultRows,
+          input.shopDomain,
+          groupingRows,
         );
 
         const result: DsvDispatchImportApplyResult = {
@@ -761,7 +775,18 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
 
     const [drivers, vehicles, conditions, customers, destinations, orders] = await Promise.all([
       prisma.dsvDriverProfile.findMany({
-        select: { driver: { select: { id: true, status: true } }, lookupName: true },
+        select: {
+          driver: {
+            select: {
+              dsvVehicleAssignments: {
+                select: { vehicle: { select: { id: true, status: true } } },
+              },
+              id: true,
+              status: true,
+            },
+          },
+          lookupName: true,
+        },
         where: { lookupName: { in: driverNames }, shopId },
       }),
       prisma.vehicle.findMany({
@@ -847,6 +872,7 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
           displayName: profile.lookupName,
           id: profile.driver.id,
           status: profile.driver.status,
+          vehicleId: profile.driver.dsvVehicleAssignments.find((assignment) => assignment.vehicle.status === 'ACTIVE')?.vehicle.id ?? null,
         })),
         vehicles: vehicles.map((vehicle) => ({ id: vehicle.id, licensePlate: vehicle.licensePlate, status: vehicle.status })),
       },
@@ -1147,7 +1173,8 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
     fileName: string,
     planDate: Date,
     actor: string,
-    rows: DsvDispatchImportApplyResult['rows'],
+    shopDomain: string,
+    rows: DispatchGroupingRow[],
   ): Promise<void> {
     const orderIds = rows.map((row) => row.sellerOrderId);
     const ownedOrderIds = new Set((await tx.routeGroupingOrder.findMany({
@@ -1168,6 +1195,44 @@ export class PrismaDsvDispatchImportService implements DsvDispatchImportService 
         sourceSequence: index + 1,
       })),
     });
+    const routes = dispatchGroupingRoutes(unownedRows);
+    if (routes.every((route) => route.driverId === null)) return;
+    const saved = await this.routeGroupingService.saveDraftInTransaction(tx, {
+      groupingId: grouping.id,
+      routes,
+      shopDomain,
+    });
+    if (saved === null) throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT');
+    const assignedRoutes = routes.filter((route): route is RouteGroupingDraftRouteInput & { driverId: string } =>
+      route.driverId !== null && route.driverId !== undefined);
+    const currentChildren = await tx.routeGroupingChildVersion.findMany({
+      select: { driverId: true, id: true, routePlan: { select: { vehicleId: true } } },
+      where: {
+        groupingId: grouping.id,
+        routePlanId: { not: null },
+        shopId,
+        status: 'CURRENT',
+        supersededAt: null,
+      },
+    });
+    for (const route of assignedRoutes) {
+      const child = currentChildren.find((candidate) =>
+        candidate.driverId === route.driverId && candidate.routePlan?.vehicleId === (route.vehicleId ?? null));
+      if (child === undefined) throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT');
+      const [orders, assignments] = await Promise.all([
+        tx.order.updateMany({
+          data: { currentRouteVersionId: child.id },
+          where: { id: { in: route.orderIds }, shopId },
+        }),
+        tx.routeGroupingOrder.updateMany({
+          data: { assignedDriverId: route.driverId, assignmentStatus: 'ASSIGNED' },
+          where: { groupingId: grouping.id, orderId: { in: route.orderIds }, shopId },
+        }),
+      ]);
+      if (orders.count !== route.orderIds.length || assignments.count !== route.orderIds.length) {
+        throw new DsvDispatchImportApplyError('DISPATCH_IMPORT_CANONICAL_CONFLICT');
+      }
+    }
   }
 
   private async recordFailedApplyAttempt(
@@ -1249,18 +1314,23 @@ export function buildDispatchImportPreview(input: {
   vehicles: Array<{ id: string; licensePlate: string | null }>;
 }): DsvDispatchImportPreview {
   const duplicateKeys = duplicateValues(input.rows.map((row) => row.sellerOrderKey));
-  const conflictingDrivers = conflictingMappings(input.rows, (row) => row.driverName, (row) => row.vehiclePlate);
-  const conflictingVehicles = conflictingMappings(input.rows, (row) => row.vehiclePlate, (row) => row.driverName);
+  const assignedResourceRows = input.rows.filter((row) => row.driverName.trim() !== '' && row.vehiclePlate.trim() !== '');
+  const conflictingDrivers = conflictingMappings(assignedResourceRows, (row) => row.driverName, (row) => row.vehiclePlate);
+  const conflictingVehicles = conflictingMappings(assignedResourceRows, (row) => row.vehiclePlate, (row) => row.driverName);
   const knownConditions = new Set(input.conditions);
   const priorKeys = new Set(input.priorSellerOrderKeys);
   const conditionCandidates = unique(input.rows.map((row) => row.conditionCode)).filter((code) => !knownConditions.has(code));
   const rows = input.rows.map((source): DsvDispatchPreviewRow => {
     const issues = validateSourceRow(source);
-    const matchingDrivers = input.drivers.filter((driver) => driver.displayName === source.driverName);
-    const matchingVehicles = input.vehicles.filter((vehicle) => vehicle.licensePlate === source.vehiclePlate);
-    if (matchingDrivers.length === 0) issues.push(legacyIssue('DRIVER_NOT_FOUND', 'driverName', '등록된 배송원을 찾을 수 없습니다.'));
-    if (matchingDrivers.length > 1) issues.push(legacyIssue('DRIVER_AMBIGUOUS', 'driverName', '같은 이름의 배송원이 둘 이상입니다. 고유 식별자가 필요합니다.'));
-    if (matchingVehicles.length === 0) issues.push(legacyIssue('VEHICLE_NOT_FOUND', 'vehiclePlate', '등록된 차량 번호를 찾을 수 없습니다.'));
+    const hasDriverName = source.driverName.trim() !== '';
+    const hasVehiclePlate = source.vehiclePlate.trim() !== '';
+    const matchingDrivers = hasDriverName ? input.drivers.filter((driver) => driver.displayName === source.driverName) : [];
+    const matchingVehicles = hasDriverName && hasVehiclePlate
+      ? input.vehicles.filter((vehicle) => vehicle.licensePlate === source.vehiclePlate)
+      : [];
+    if (hasDriverName && matchingDrivers.length === 0) issues.push(legacyIssue('DRIVER_NOT_FOUND', 'driverName', '등록된 배송원을 찾을 수 없습니다.'));
+    if (hasDriverName && matchingDrivers.length > 1) issues.push(legacyIssue('DRIVER_AMBIGUOUS', 'driverName', '같은 이름의 배송원이 둘 이상입니다. 고유 식별자가 필요합니다.'));
+    if (hasDriverName && hasVehiclePlate && matchingVehicles.length === 0) issues.push(legacyIssue('VEHICLE_NOT_FOUND', 'vehiclePlate', '등록된 차량 번호를 찾을 수 없습니다.'));
     if (duplicateKeys.has(source.sellerOrderKey)) issues.push(legacyIssue('SELLER_ORDER_DUPLICATED', 'sellerOrderKey', '파일 안에서 SellerOrderKey가 중복됩니다.'));
     if (priorKeys.has(source.sellerOrderKey)) issues.push(legacyIssue('SELLER_ORDER_ALREADY_IMPORTED', 'sellerOrderKey', '이미 업로드된 SellerOrderKey입니다.'));
     if (conflictingDrivers.has(source.driverName)) issues.push(legacyIssue('DRIVER_VEHICLE_CONFLICT', 'vehiclePlate', '한 배송원에게 파일 내 여러 차량이 지정되었습니다.'));
@@ -1606,6 +1676,47 @@ type ApplyCanonicalLink = {
   destinationId: string;
   sellerOrderId: string;
 };
+
+type DispatchGroupingRow = ApplyCanonicalLink & {
+  driverId: string | null;
+  vehicleId: string | null;
+};
+
+function dispatchGroupingRoutes(rows: DispatchGroupingRow[]): RouteGroupingDraftRouteInput[] {
+  const assigned = new Map<string, { driverId: string; orderIds: string[]; vehicleId: string | null }>();
+  const unassignedOrderIds: string[] = [];
+  for (const row of rows) {
+    if (row.driverId === null) {
+      unassignedOrderIds.push(row.sellerOrderId);
+      continue;
+    }
+    const key = `${row.driverId}:${row.vehicleId ?? ''}`;
+    const route = assigned.get(key) ?? { driverId: row.driverId, orderIds: [], vehicleId: row.vehicleId };
+    route.orderIds.push(row.sellerOrderId);
+    assigned.set(key, route);
+  }
+  const routes: RouteGroupingDraftRouteInput[] = [...assigned.values()].map((route, index) => ({
+    branchId: null,
+    driverId: route.driverId,
+    orderIds: route.orderIds,
+    routePlanId: null,
+    sortOrder: index + 1,
+    tempId: `import-driver:${route.driverId}:${route.vehicleId ?? 'no-vehicle'}`,
+    vehicleId: route.vehicleId,
+  }));
+  if (unassignedOrderIds.length > 0) {
+    routes.push({
+      branchId: null,
+      driverId: null,
+      label: '미배정',
+      orderIds: unassignedOrderIds,
+      routePlanId: null,
+      sortOrder: routes.length + 1,
+      tempId: 'import-unassigned',
+    });
+  }
+  return routes;
+}
 
 async function invalidateReadyRoutePlansForUpdates(
   tx: Tx,
@@ -2097,8 +2208,6 @@ function isDiffKind(value: string | undefined): value is DsvDispatchDiffRow['dif
 function validateSourceRow(row: DsvDispatchImportSourceRow): DsvDispatchIssue[] {
   const issues: DsvDispatchIssue[] = [];
   for (const [field, maxLength] of [
-    ['driverName', 80],
-    ['vehiclePlate', 40],
     ['destinationName', 160],
     ['conditionCode', 80],
     ['address', 500],
@@ -2108,6 +2217,12 @@ function validateSourceRow(row: DsvDispatchImportSourceRow): DsvDispatchIssue[] 
     const value = row[field];
     if (value === '') issues.push(legacyIssue('REQUIRED', field, '필수 값입니다.'));
     else if (value.length > maxLength) issues.push(legacyIssue('TOO_LONG', field, `${maxLength}자 이하여야 합니다.`));
+  }
+  for (const [field, maxLength] of [
+    ['driverName', 80],
+    ['vehiclePlate', 40],
+  ] as const) {
+    if (row[field].length > maxLength) issues.push(legacyIssue('TOO_LONG', field, `${maxLength}자 이하여야 합니다.`));
   }
   if (!Number.isInteger(row.rowNumber) || row.rowNumber < 2) issues.push(legacyIssue('ROW_NUMBER_INVALID', 'rowNumber', '행 번호가 올바르지 않습니다.'));
   if (!Number.isInteger(row.shippedBoxes) || row.shippedBoxes <= 0) issues.push(legacyIssue('SHIPPED_BOXES_INVALID', 'shippedBoxes', '박스 수량은 1 이상의 정수여야 합니다.'));
