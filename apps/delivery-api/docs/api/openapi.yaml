@@ -5007,7 +5007,7 @@ components:
           type: string
         shippedBoxes:
           type: integer
-          minimum: 1
+          minimum: 0
         vehicleDisplayName:
           type: string
         vehicleId:
@@ -5239,7 +5239,7 @@ components:
         vehiclePlate: { type: string, maxLength: 40 }
         destinationName: { type: string, maxLength: 160 }
         conditionCode: { type: string, maxLength: 80 }
-        shippedBoxes: { type: integer }
+        shippedBoxes: { type: integer, minimum: 0 }
         address: { type: string, maxLength: 500 }
         customerCode: { type: string, maxLength: 160 }
         sellerOrderKey: { type: string, maxLength: 160 }
