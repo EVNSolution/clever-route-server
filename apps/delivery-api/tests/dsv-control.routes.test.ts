@@ -44,6 +44,46 @@ const customerId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const customerAccountId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
 describe('DSV control routes', () => {
+  test('serves the operator guide only to authenticated settings readers with byte ranges and downloads', async () => {
+    const { app } = await createHarness();
+    try {
+      const unauthorized = await app.inject({ method: 'GET', url: '/api/dsv/guides/operator' });
+      expect(unauthorized.statusCode).toBe(401);
+
+      const login = await loginToDsv(app);
+      const partial = await app.inject({
+        headers: { cookie: login.cookie, range: 'bytes=0-3' },
+        method: 'GET',
+        url: '/api/dsv/guides/operator',
+      });
+      expect(partial.statusCode).toBe(206);
+      expect(partial.headers['accept-ranges']).toBe('bytes');
+      expect(partial.headers['cache-control']).toBe('private, no-store');
+      expect(partial.headers['content-range']).toMatch(/^bytes 0-3\/\d+$/u);
+      expect(partial.headers['content-type']).toContain('application/pdf');
+      expect(partial.rawPayload.toString('ascii')).toBe('%PDF');
+
+      const download = await app.inject({
+        headers: { cookie: login.cookie, range: 'bytes=-4' },
+        method: 'GET',
+        url: '/api/dsv/guides/operator?download=1',
+      });
+      expect(download.statusCode).toBe(206);
+      expect(download.headers['content-disposition']).toContain('attachment');
+      expect(download.headers['content-disposition']).toContain("filename*=UTF-8''CLEVER_DSV_");
+
+      const invalid = await app.inject({
+        headers: { cookie: login.cookie, range: 'bytes=999999999-' },
+        method: 'GET',
+        url: '/api/dsv/guides/operator',
+      });
+      expect(invalid.statusCode).toBe(416);
+      expect(invalid.headers['content-range']).toMatch(/^bytes \*\/\d+$/u);
+    } finally {
+      await app.close();
+    }
+  });
+
   test('requires a DSV session before returning selected delivery context', async () => {
     const { app, repository } = await createHarness();
     try {

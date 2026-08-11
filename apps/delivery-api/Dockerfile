@@ -33,6 +33,7 @@ COPY --from=pruned /app/apps/delivery-api/node_modules ./node_modules
 COPY --from=build /app/apps/delivery-api/prisma ./prisma
 COPY --from=build /app/apps/delivery-api/prisma ./apps/delivery-api/prisma
 COPY --from=build /app/apps/delivery-api/dist ./dist
+COPY apps/delivery-api/assets ./assets
 COPY apps/delivery-api/scripts/guard-prisma-db-push.sh ./scripts/guard-prisma-db-push.sh
 COPY apps/delivery-api/scripts/dsv-g007-migrate-deploy.sh ./scripts/dsv-g007-migrate-deploy.sh
 RUN ln -s ../../node_modules ./apps/delivery-api/node_modules \
