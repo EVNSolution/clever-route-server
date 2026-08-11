@@ -166,6 +166,60 @@ describe('route tracking road matching', () => {
     expect(result?.uncertainGeometry?.coordinates).toEqual([[[-79.4, 43.65], [-79.41, 43.66]]]);
   });
 
+  test('classifies OSRM transport failures as retryable without changing match null behavior', async () => {
+    const fetch = vi.fn(() => Promise.reject(new Error('OSRM unavailable')));
+    const provider = new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { korea: 'https://osrm-korea.example' },
+      fetch,
+    });
+
+    await expect(provider.match(document([[126.9, 37.5], [126.901, 37.501]]))).resolves.toBeNull();
+    await expect(provider.matchWithStatus(document([[126.9, 37.5], [126.901, 37.501]]))).resolves.toEqual({
+      path: null,
+      retryable: true,
+    });
+  });
+
+  test('classifies completed OSRM NoMatch responses as non-retryable', async () => {
+    const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ code: 'NoMatch' }))));
+    const provider = new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { korea: 'https://osrm-korea.example' },
+      fetch,
+    });
+
+    await expect(provider.matchWithStatus(document([[126.9, 37.5], [126.901, 37.501]]))).resolves.toEqual({
+      path: null,
+      retryable: false,
+    });
+  });
+
+  test('preserves retryable status when one OSRM chunk succeeds and a later chunk fails', async () => {
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        code: 'Ok',
+        matchings: [{
+          confidence: 0.9,
+          geometry: { coordinates: [[126.9, 37.5], [126.901, 37.501]], type: 'LineString' },
+        }],
+        tracepoints: [{}, {}],
+      })))
+      .mockRejectedValueOnce(new Error('OSRM unavailable'));
+    const provider = new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { korea: 'https://osrm-korea.example' },
+      fetch,
+    });
+
+    const outcome = await provider.matchWithStatus(document([
+      [126.9, 37.5],
+      [126.901, 37.501],
+      [126.902, 37.502],
+      [126.903, 37.503],
+    ], { gapBeforeIndex: 2 }));
+
+    expect(outcome.retryable).toBe(true);
+    expect(outcome.path?.matchedGeometry?.coordinates).toEqual([[[126.9, 37.5], [126.901, 37.501]]]);
+  });
+
   test('keeps the actual last matched tracepoint so unmatched live GPS can remain dashed', async () => {
     const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
       code: 'Ok',

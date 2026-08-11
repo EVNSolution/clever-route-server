@@ -958,7 +958,7 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
       window,
     }));
     const sessions = routeSessions.length > 0
-      ? routeSessions
+      ? normalizeGpsTrailSessionTimeline(routeSessions)
       : gpsTrailSessionsWithoutRoutePlan({
           materializedTrail,
           plannedDepartureTime,
@@ -967,9 +967,16 @@ export class PrismaDsvV1ReadQueryService implements DsvV1ReadQueryService {
           timezone,
           vehicleId: vehicle.id,
         });
+    const uncoveredSessions = gpsTrailSessionsForUncoveredSamples({
+      materializedTrail,
+      samples: validSamples,
+      serviceDate,
+      sessions,
+      vehicleId: vehicle.id,
+    });
     return {
       serviceDate,
-      sessions: normalizeGpsTrailSessionTimeline(sessions),
+      sessions: sortGpsTrailSessions([...sessions, ...uncoveredSessions]),
       timezone,
       vehicleId: vehicle.id,
     };
@@ -1244,6 +1251,53 @@ function gpsTrailSessionsWithoutRoutePlan(input: {
     startEventId: null,
     startSource: 'PLANNED_DEPARTURE',
   }];
+}
+
+function gpsTrailSessionsForUncoveredSamples(input: {
+  materializedTrail: UvisVehicleTrailDocumentV1 | null;
+  samples: GpsTrailSampleRow[];
+  serviceDate: string;
+  sessions: DsvV1VehicleGpsTrailSession[];
+  vehicleId: string;
+}): DsvV1VehicleGpsTrailSession[] {
+  const covered = new Set(input.sessions.flatMap((session) => session.segments.flatMap((segment) =>
+    segment.samples.map(gpsTrailSampleKey)
+  )));
+  const runs: GpsTrailSampleRow[][] = [];
+  let current: GpsTrailSampleRow[] | undefined;
+  for (const sample of input.samples) {
+    if (covered.has(gpsTrailSampleKey(sample))) {
+      current = undefined;
+      continue;
+    }
+    const previous = current?.at(-1);
+    if (previous === undefined || previous.staleAfter.getTime() < sample.observedAt.getTime()) {
+      current = [sample];
+      runs.push(current);
+    }
+    else if (current !== undefined) current.push(sample);
+  }
+  return runs.map((samples, sessionIndex) => ({
+    completedAt: null,
+    completionEventId: null,
+    endpoint: { endedAt: samples.at(-1)?.observedAt.toISOString() ?? null, reason: 'LAST_VALID_SAMPLE' },
+    restart: null,
+    routePlanId: `collected:${input.vehicleId}:${input.serviceDate}:${sessionIndex}`,
+    segments: buildGpsTrailSegments(samples, input.materializedTrail),
+    sessionIndex,
+    startedAt: samples[0]!.observedAt.toISOString(),
+    startEventId: null,
+    startSource: 'PLANNED_DEPARTURE',
+  }));
+}
+
+function gpsTrailSampleKey(sample: {
+  latitude: number;
+  longitude: number;
+  observedAt: Date | string;
+}): string {
+  const observedAt = sample.observedAt instanceof Date ? sample.observedAt.toISOString() : sample.observedAt;
+  return `${observedAt}:${sample.latitude}:${sample.longitude}`;
 }
 
 const proofStatusSelect = {
@@ -1962,12 +2016,7 @@ function selectPlannedStartRoutePlanId(routePlans: GpsTrailRoutePlanRow[]): stri
 function normalizeGpsTrailSessionTimeline(
   sessions: DsvV1VehicleGpsTrailSession[],
 ): DsvV1VehicleGpsTrailSession[] {
-  const ordered = [...sessions].sort((left, right) => {
-    const timeOrder = Date.parse(left.startedAt) - Date.parse(right.startedAt);
-    if (timeOrder !== 0) return timeOrder;
-    const routeOrder = left.routePlanId.localeCompare(right.routePlanId);
-    return routeOrder === 0 ? left.sessionIndex - right.sessionIndex : routeOrder;
-  });
+  const ordered = sortGpsTrailSessions(sessions);
   return ordered.map((session, index) => {
     const next = ordered[index + 1] ?? null;
     if (next === null) return { ...session, restart: null };
@@ -1992,6 +2041,17 @@ function normalizeGpsTrailSessionTimeline(
       restart,
       segments,
     };
+  });
+}
+
+function sortGpsTrailSessions(
+  sessions: DsvV1VehicleGpsTrailSession[],
+): DsvV1VehicleGpsTrailSession[] {
+  return [...sessions].sort((left, right) => {
+    const timeOrder = Date.parse(left.startedAt) - Date.parse(right.startedAt);
+    if (timeOrder !== 0) return timeOrder;
+    const routeOrder = left.routePlanId.localeCompare(right.routePlanId);
+    return routeOrder === 0 ? left.sessionIndex - right.sessionIndex : routeOrder;
   });
 }
 
@@ -2064,9 +2124,15 @@ function segmentTrailEnrichment(
   const start = samples[0]!.observedAt.getTime();
   const end = samples.at(-1)!.observedAt.getTime();
   const overlapping = materializedTrail.segments.filter((segment) =>
-    Date.parse(segment.startedAt) >= start && Date.parse(segment.endedAt) <= end
+    Date.parse(segment.startedAt) <= end && Date.parse(segment.endedAt) >= start
   );
-  const roadMatchedGeometry = mergeRoadMatchedGeometry(overlapping);
+  const roadMatchedGeometry = mergeRoadMatchedGeometry(overlapping.flatMap((segment) => {
+    const segmentStart = Date.parse(segment.startedAt);
+    const segmentEnd = Date.parse(segment.endedAt);
+    if (segmentStart >= start && segmentEnd <= end) return segment.roadMatchedGeometry === null ? [] : [segment.roadMatchedGeometry];
+    const clipped = clipRoadMatchedGeometryToSampleWindow(segment.roadMatchedGeometry, start, end);
+    return clipped === null ? [] : [clipped];
+  }));
   const marker = overlapping
     .map((segment) => segment.trailMarker)
     .find((candidate) => {
@@ -2080,13 +2146,11 @@ function segmentTrailEnrichment(
 }
 
 function mergeRoadMatchedGeometry(
-  segments: UvisVehicleTrailDocumentV1['segments'],
+  geometries: RouteTrackingRoadMatchedGeometryV1[],
 ): RouteTrackingRoadMatchedGeometryV1 | null {
   const coordinates: RouteTrackingRoadMatchedGeometryV1['coordinates'] = [];
   const anchors: NonNullable<RouteTrackingRoadMatchedGeometryV1['anchors']> = [];
-  for (const segment of segments) {
-    const geometry = segment.roadMatchedGeometry;
-    if (geometry === null || geometry === undefined) continue;
+  for (const geometry of geometries) {
     const lineOffset = coordinates.length;
     coordinates.push(...geometry.coordinates);
     anchors.push(...(geometry.anchors ?? []).flatMap((anchor) => {
@@ -2101,6 +2165,46 @@ function mergeRoadMatchedGeometry(
   if (coordinates.length === 0) return null;
   return {
     ...(anchors.length === 0 ? {} : { anchors: anchors.sort(compareRoadMatchedAnchors) }),
+    coordinates,
+    type: 'MultiLineString',
+  };
+}
+
+function clipRoadMatchedGeometryToSampleWindow(
+  geometry: RouteTrackingRoadMatchedGeometryV1 | null | undefined,
+  start: number,
+  end: number,
+): RouteTrackingRoadMatchedGeometryV1 | null {
+  if (geometry === null || geometry === undefined || geometry.anchors === undefined) return null;
+  const anchorsByLine = new Map<number, NonNullable<RouteTrackingRoadMatchedGeometryV1['anchors']>>();
+  for (const anchor of geometry.anchors) {
+    const observedAt = Date.parse(anchor.observedAt);
+    if (observedAt < start || observedAt > end || geometry.coordinates[anchor.lineIndex]?.[anchor.coordinateIndex] === undefined) {
+      continue;
+    }
+    const lineAnchors = anchorsByLine.get(anchor.lineIndex) ?? [];
+    lineAnchors.push(anchor);
+    anchorsByLine.set(anchor.lineIndex, lineAnchors);
+  }
+  const coordinates: RouteTrackingRoadMatchedGeometryV1['coordinates'] = [];
+  const anchors: NonNullable<RouteTrackingRoadMatchedGeometryV1['anchors']> = [];
+  for (const [lineIndex, lineAnchors] of [...anchorsByLine.entries()].sort(([left], [right]) => left - right)) {
+    const coordinateIndexes = lineAnchors.map((anchor) => anchor.coordinateIndex);
+    const first = Math.min(...coordinateIndexes);
+    const last = Math.max(...coordinateIndexes);
+    const line = geometry.coordinates[lineIndex]?.slice(first, last + 1);
+    if (line === undefined || line.length === 0) continue;
+    const nextLineIndex = coordinates.length;
+    coordinates.push(line);
+    anchors.push(...lineAnchors.map((anchor) => ({
+      observedAt: anchor.observedAt,
+      lineIndex: nextLineIndex,
+      coordinateIndex: anchor.coordinateIndex - first,
+    })));
+  }
+  if (coordinates.length === 0) return null;
+  return {
+    anchors: anchors.sort(compareRoadMatchedAnchors),
     coordinates,
     type: 'MultiLineString',
   };
