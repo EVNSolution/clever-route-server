@@ -2193,7 +2193,7 @@ function clipRoadMatchedGeometryToSampleWindow(
     const first = Math.min(...coordinateIndexes);
     const last = Math.max(...coordinateIndexes);
     const line = geometry.coordinates[lineIndex]?.slice(first, last + 1);
-    if (line === undefined || line.length === 0) continue;
+    if (line === undefined || line.length < 2) continue;
     const nextLineIndex = coordinates.length;
     coordinates.push(line);
     anchors.push(...lineAnchors.map((anchor) => ({
