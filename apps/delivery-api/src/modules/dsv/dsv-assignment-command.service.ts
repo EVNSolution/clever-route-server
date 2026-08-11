@@ -257,8 +257,11 @@ export class DsvAssignmentCommandService {
         await tx.order.updateMany({
           data: { currentRouteVersionId: nextOwner.currentVersionId },
           where: {
-            currentRouteVersionId: order.currentRouteVersionId,
             id: command.input.sellerOrderId,
+            OR: [
+              { currentRouteVersionId: order.currentRouteVersionId },
+              { currentRouteVersionId: nextOwner.currentVersionId },
+            ],
             shopId: shop.id,
           },
         }).then((updated) => {
@@ -411,8 +414,11 @@ export class DsvAssignmentCommandService {
         await tx.order.updateMany({
           data: { currentRouteVersionId: nextOwner.currentVersionId },
           where: {
-            currentRouteVersionId: order.currentRouteVersionId,
             id: command.input.sellerOrderId,
+            OR: [
+              { currentRouteVersionId: order.currentRouteVersionId },
+              { currentRouteVersionId: nextOwner.currentVersionId },
+            ],
             shopId: shop.id,
           },
         }).then((updated) => {

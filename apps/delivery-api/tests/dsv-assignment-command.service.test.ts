@@ -134,6 +134,51 @@ describe('DsvAssignmentCommandService', () => {
     expect(schedule).toHaveBeenCalledTimes(1);
   });
 
+  test('unassignMany accepts orders already rebound by a five-route draft save', async () => {
+    const assignedOrderIds = Array.from({ length: 50 }, (_, index) => `assigned-order-${index + 1}`);
+    const unassignedOrderIds = Array.from({ length: 3 }, (_, index) => `unassigned-order-${index + 1}`);
+    const grouping = groupingFixture();
+    grouping.assignments = [...assignedOrderIds, ...unassignedOrderIds].map((orderId, index) => assignment(orderId, index + 1));
+    grouping.children = [11, 11, 15, 6, 7].map((count, routeIndex) => {
+      const start = [0, 11, 22, 37, 43][routeIndex] ?? 0;
+      return child({
+        driverId: `driver-${routeIndex + 1}`,
+        orderIds: assignedOrderIds.slice(start, start + count),
+        routePlanId: `route-${routeIndex + 1}`,
+        sortOrder: routeIndex + 1,
+        vehicleId: `vehicle-${routeIndex + 1}`,
+      });
+    });
+    grouping.children.push(child({
+      driverId: null,
+      orderIds: unassignedOrderIds,
+      routePlanId: null,
+      sortOrder: 6,
+      vehicleId: null,
+    }));
+    grouping.totalOrders = 53;
+    const harness = createHarness({ grouping, rebindOrderIdsOnSave: assignedOrderIds });
+
+    const result = await harness.service.unassignMany({
+      actor: adminInput().actor,
+      items: assignedOrderIds.map((sellerOrderId, index) => ({
+        commandId: `cmd-rebound-unassign-${index + 1}`,
+        expectedVersion: routeVersionId(grouping.children.find((route) => route.orderIds.includes(sellerOrderId))?.routePlanId ?? null),
+        sellerOrderId,
+      })),
+      reason: 'whole-list unassignment',
+      shopDomain: 'example.myshopify.com',
+    });
+
+    expect(result.assignmentResults).toHaveLength(50);
+    const firstOrderUpdate = harness.prisma.order.updateMany.mock.calls
+      .find(([call]) => call.where?.id === assignedOrderIds[0])?.[0];
+    expect(firstOrderUpdate?.where?.OR).toEqual([
+      { currentRouteVersionId: 'version-route-1' },
+      { currentRouteVersionId: 'version-null-route' },
+    ]);
+  });
+
   test('deleteMany removes 53 seller orders from one grouping and database transaction', async () => {
     const schedule = vi.fn();
     const orderIds = Array.from({ length: 53 }, (_, index) => `order-${index + 1}`);
@@ -586,6 +631,7 @@ function createHarness(input: {
   grouping?: RouteGroupingDetailDto;
   routeOptimizationScheduler?: { schedule(input: { routePlanIds: Array<string | null>; shopDomain: string }): void };
   secondaryGrouping?: RouteGroupingDetailDto;
+  rebindOrderIdsOnSave?: string[];
   staleRouteVersionOrderIds?: string[];
   ungroupedOrderIds?: string[];
 } = {}) {
@@ -607,7 +653,12 @@ function createHarness(input: {
   }
   const saveDraft = vi.fn<RouteGroupingService['saveDraft']>((draftInput) => {
     const sourceGrouping = groupings.find((candidate) => candidate.id === draftInput.groupingId) ?? grouping;
-    return Promise.resolve(groupingFromDraftRoutes(sourceGrouping, draftInput.routes));
+    const saved = groupingFromDraftRoutes(sourceGrouping, draftInput.routes);
+    for (const orderId of input.rebindOrderIdsOnSave ?? []) {
+      const route = draftInput.routes.find((candidate) => candidate.orderIds.includes(orderId));
+      if (route !== undefined) currentRouteVersionIds.set(orderId, routeVersionId(route.routePlanId ?? null));
+    }
+    return Promise.resolve(saved);
   });
   const routeGroupingService = {
     getGrouping: vi.fn<RouteGroupingService['getGrouping']>(({ groupingId }) => Promise.resolve(groupings.find((candidate) => candidate.id === groupingId) ?? null)),
@@ -667,8 +718,17 @@ function createHarness(input: {
           ? { currentRouteVersionId: currentRouteVersionIds.get(args.where?.id ?? 'order-a') ?? null }
           : { customerId: 'customer-a', destinationId: 'destination-x' },
       )),
-      updateMany: vi.fn((args: { data: { currentRouteVersionId?: string | null }; where?: { id?: string } }) => {
-        currentRouteVersionIds.set(args.where?.id ?? 'order-a', args.data.currentRouteVersionId ?? null);
+      updateMany: vi.fn((args: {
+        data: { currentRouteVersionId?: string | null };
+        where?: { currentRouteVersionId?: string | null; id?: string; OR?: Array<{ currentRouteVersionId: string | null }> };
+      }) => {
+        const orderId = args.where?.id ?? 'order-a';
+        const currentVersion = currentRouteVersionIds.get(orderId) ?? null;
+        const matches = args.where?.OR !== undefined
+          ? args.where.OR.some((candidate) => candidate.currentRouteVersionId === currentVersion)
+          : args.where?.currentRouteVersionId === undefined || args.where.currentRouteVersionId === currentVersion;
+        if (!matches) return Promise.resolve({ count: 0 });
+        currentRouteVersionIds.set(orderId, args.data.currentRouteVersionId ?? null);
         return Promise.resolve({ count: 1 });
       }),
     },
@@ -878,7 +938,7 @@ function child(input: {
   displayStatus?: 'READY' | 'IN_PROGRESS';
   driverId: string | null;
   orderIds: string[];
-  routePlanId: string;
+  routePlanId: string | null;
   sortOrder: number;
   vehicleId: string | null;
 }): RouteGroupingDetailDto['children'][number] {
@@ -893,7 +953,7 @@ function child(input: {
     routeGeometry: null,
     routeIdx: input.sortOrder,
     routeMetrics: null,
-    routePlan: {
+    routePlan: input.routePlanId === null ? null : {
       createdAt: '2026-07-22T09:00:00.000Z',
       deliveryAreas: [],
       deliveryDays: [],
