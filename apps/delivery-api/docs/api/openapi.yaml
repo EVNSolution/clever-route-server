@@ -4713,6 +4713,62 @@ components:
           type: number
           nullable: true
       additionalProperties: false
+    DsvV1RoadMatchedGeometryAnchor:
+      type: object
+      required: [observedAt, lineIndex, coordinateIndex]
+      properties:
+        observedAt:
+          type: string
+          format: date-time
+          description: Source UVIS GPS sample timestamp linked to this road-matched coordinate.
+        lineIndex:
+          type: integer
+          minimum: 0
+          description: Zero-based index into roadMatchedGeometry.coordinates.
+        coordinateIndex:
+          type: integer
+          minimum: 0
+          description: Zero-based index into the selected roadMatchedGeometry.coordinates line.
+      additionalProperties: false
+    DsvV1RoadMatchedGeometry:
+      type: object
+      required: [type, coordinates]
+      properties:
+        type:
+          type: string
+          enum: [MultiLineString]
+        coordinates:
+          type: array
+          items:
+            type: array
+            minItems: 2
+            items:
+              type: array
+              minItems: 2
+              maxItems: 2
+              items:
+                type: number
+        anchors:
+          type: array
+          description: Time-ascending anchors from raw UVIS GPS samples to MultiLineString coordinates.
+          items:
+            $ref: '#/components/schemas/DsvV1RoadMatchedGeometryAnchor'
+      additionalProperties: false
+    DsvV1VehicleGpsTrailMarker:
+      type: object
+      required: [kind, latitude, longitude, observedAt]
+      properties:
+        kind:
+          type: string
+          enum: [START, RESTART]
+        latitude:
+          type: number
+        longitude:
+          type: number
+        observedAt:
+          type: string
+          format: date-time
+      additionalProperties: false
     DsvV1VehicleGpsTrailSegment:
       type: object
       required: [samples]
@@ -4721,6 +4777,14 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DsvV1VehicleGpsTrailSample'
+        roadMatchedGeometry:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/DsvV1RoadMatchedGeometry'
+        trailMarker:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/DsvV1VehicleGpsTrailMarker'
       additionalProperties: false
     DsvV1VehicleGpsTrailSessionEndpoint:
       type: object

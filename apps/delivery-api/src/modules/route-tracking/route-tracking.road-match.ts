@@ -437,7 +437,47 @@ function readMultiLineString(value: unknown): RouteTrackingRoadMatchedGeometryV1
     const withoutClosedTail = removeClosedTail(coordinates);
     return withoutClosedTail.length >= 2 ? [withoutClosedTail] : [];
   });
-  return coordinates.length === 0 ? null : { coordinates, type: 'MultiLineString' };
+  if (coordinates.length === 0) return null;
+  const anchors = readGeometryAnchors(object.anchors, coordinates);
+  return {
+    ...(anchors.length === 0 ? {} : { anchors }),
+    coordinates,
+    type: 'MultiLineString',
+  };
+}
+
+function readGeometryAnchors(
+  value: unknown,
+  coordinates: Array<Array<[number, number]>>,
+): NonNullable<RouteTrackingRoadMatchedGeometryV1['anchors']> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const object = objectOrNull(item);
+    const lineIndex = Number(object?.lineIndex);
+    const coordinateIndex = Number(object?.coordinateIndex);
+    const observedAt = typeof object?.observedAt === 'string' && Number.isFinite(Date.parse(object.observedAt))
+      ? new Date(object.observedAt).toISOString()
+      : null;
+    if (
+      !Number.isInteger(lineIndex)
+      || !Number.isInteger(coordinateIndex)
+      || lineIndex < 0
+      || coordinateIndex < 0
+      || coordinates[lineIndex]?.[coordinateIndex] === undefined
+      || observedAt === null
+    ) return [];
+    return [{ observedAt, lineIndex, coordinateIndex }];
+  }).sort(compareRoadMatchedAnchors);
+}
+
+function compareRoadMatchedAnchors(
+  left: NonNullable<RouteTrackingRoadMatchedGeometryV1['anchors']>[number],
+  right: NonNullable<RouteTrackingRoadMatchedGeometryV1['anchors']>[number],
+): number {
+  const timeOrder = Date.parse(left.observedAt) - Date.parse(right.observedAt);
+  if (timeOrder !== 0) return timeOrder;
+  const lineOrder = left.lineIndex - right.lineIndex;
+  return lineOrder === 0 ? left.coordinateIndex - right.coordinateIndex : lineOrder;
 }
 
 function readLastMatchedPosition(value: unknown): RouteTrackingRoadMatchedPathV1['lastMatchedPosition'] {

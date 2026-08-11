@@ -725,6 +725,13 @@ describe('DSV v1 read routes', () => {
         restart: null,
         routePlanId: 'route-a',
         segments: [{
+          roadMatchedGeometry: {
+            anchors: [
+              { coordinateIndex: 0, lineIndex: 0, observedAt: '2026-08-04T01:16:00.000Z' },
+            ],
+            coordinates: [[[127, 37.5], [127.001, 37.501]]],
+            type: 'MultiLineString',
+          },
           samples: [{
             distanceTodayKm: 12.4,
             ignitionOn: true,
@@ -759,6 +766,13 @@ describe('DSV v1 read routes', () => {
           restart: null,
           routePlanId: 'route-a',
           segments: [{
+            roadMatchedGeometry: {
+              anchors: [
+                { coordinateIndex: 0, lineIndex: 0, observedAt: '2026-08-04T01:16:00.000Z' },
+              ],
+              coordinates: [[[127, 37.5], [127.001, 37.501]]],
+              type: 'MultiLineString',
+            },
             samples: [{
               distanceTodayKm: 12.4,
               ignitionOn: true,

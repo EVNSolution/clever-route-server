@@ -77,6 +77,11 @@ export type RouteTrackingRecordedPathV1 = {
 };
 
 export type RouteTrackingRoadMatchedGeometryV1 = {
+  anchors?: Array<{
+    observedAt: string;
+    lineIndex: number;
+    coordinateIndex: number;
+  }>;
   coordinates: Array<Array<[number, number]>>;
   type: 'MultiLineString';
 };

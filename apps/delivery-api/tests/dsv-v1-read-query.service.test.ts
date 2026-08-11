@@ -1181,13 +1181,26 @@ describe('PrismaDsvV1ReadQueryService', () => {
         trailMarker: { kind: 'START', latitude: 37.4, longitude: 126.9, observedAt: '2026-08-03T23:30:00.000Z' },
       }, {
         endedAt: '2026-08-03T23:32:00.000Z',
-        roadMatchedGeometry: { type: 'MultiLineString', coordinates: [[[127.0, 37.5], [127.1, 37.6]]] },
+        roadMatchedGeometry: {
+          anchors: [
+            { coordinateIndex: 0, lineIndex: 0, observedAt: '2026-08-03T23:31:00.000Z' },
+            { coordinateIndex: 1, lineIndex: 0, observedAt: '2026-08-03T23:32:00.000Z' },
+          ],
+          type: 'MultiLineString',
+          coordinates: [[[127.0, 37.5], [127.1, 37.6]]],
+        },
         samples: [],
         startedAt: '2026-08-03T23:31:00.000Z',
         trailMarker: { kind: 'START', latitude: 37.5, longitude: 127.0, observedAt: '2026-08-03T23:31:00.000Z' },
       }, {
         endedAt: '2026-08-03T23:33:00.000Z',
-        roadMatchedGeometry: { type: 'MultiLineString', coordinates: [[[127.2, 37.7], [127.3, 37.8]]] },
+        roadMatchedGeometry: {
+          anchors: [
+            { coordinateIndex: 0, lineIndex: 0, observedAt: '2026-08-03T23:33:00.000Z' },
+          ],
+          type: 'MultiLineString',
+          coordinates: [[[127.2, 37.7], [127.3, 37.8]]],
+        },
         samples: [],
         startedAt: '2026-08-03T23:32:30.000Z',
         trailMarker: { kind: 'RESTART', latitude: 37.7, longitude: 127.2, observedAt: '2026-08-03T23:32:30.000Z' },
@@ -1219,6 +1232,11 @@ describe('PrismaDsvV1ReadQueryService', () => {
 
     expect(result.sessions[0]?.segments).toEqual([{
       roadMatchedGeometry: {
+        anchors: [
+          { coordinateIndex: 0, lineIndex: 0, observedAt: '2026-08-03T23:31:00.000Z' },
+          { coordinateIndex: 1, lineIndex: 0, observedAt: '2026-08-03T23:32:00.000Z' },
+          { coordinateIndex: 0, lineIndex: 1, observedAt: '2026-08-03T23:33:00.000Z' },
+        ],
         coordinates: [
           [[127.0, 37.5], [127.1, 37.6]],
           [[127.2, 37.7], [127.3, 37.8]],
