@@ -10,7 +10,7 @@ import type { RouteTrackingRoadMatchedGeometryV1 } from '../route-tracking/route
 
 export const UVIS_VEHICLE_TRAIL_SCHEMA_VERSION = 'uvis_vehicle_trail.v1' as const;
 export const UVIS_ROAD_MATCH_GPS_PRECISION_METERS = 75;
-export const UVIS_ROAD_MATCH_MAX_POINTS = 32;
+export const UVIS_ROAD_MATCH_MAX_POINTS = 16;
 export const UVIS_ROAD_MATCH_TIMEOUT_MS = 25_000;
 const SERVICE_TIMEZONE = 'Asia/Seoul';
 const MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND = 55;
