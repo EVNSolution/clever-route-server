@@ -113,6 +113,52 @@ describe('route tracking road matching', () => {
     expect(requestPointCounts).toEqual([80, 2, 2]);
   });
 
+  test('allows UVIS callers to use smaller overlapping match chunks without changing the default', async () => {
+    const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      code: 'Ok',
+      matchings: [{
+        confidence: 0.8,
+        geometry: { coordinates: [[126.9, 37.5], [126.91, 37.51]], type: 'LineString' },
+      }],
+      tracepoints: [{}, {}],
+    }))));
+    const provider = new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { korea: 'https://osrm-korea.example' },
+      fetch,
+      maxMatchPoints: 32,
+    });
+    const coordinates = Array.from({ length: 65 }, (_, index) => [126.9 + index * 0.0001, 37.5] as [number, number]);
+
+    await provider.match(document(coordinates));
+
+    const requestPointCounts = (fetch.mock.calls as unknown as Array<[string]>)
+      .map((call) => decodeURIComponent(String(call[0])).split('/driving/')[1]!.split('?')[0]!.split(';').length);
+    expect(requestPointCounts).toEqual([32, 32, 3]);
+  });
+
+  test('keeps caller-provided match chunk sizes inside OSRM trace limits', async () => {
+    const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      code: 'Ok',
+      matchings: [{
+        confidence: 0.8,
+        geometry: { coordinates: [[126.9, 37.5], [126.91, 37.51]], type: 'LineString' },
+      }],
+      tracepoints: [{}, {}],
+    }))));
+    const provider = new OsrmRouteTrackingRoadMatchProvider({
+      baseUrls: { korea: 'https://osrm-korea.example' },
+      fetch,
+      maxMatchPoints: 500,
+    });
+    const coordinates = Array.from({ length: 101 }, (_, index) => [126.9 + index * 0.0001, 37.5] as [number, number]);
+
+    await provider.match(document(coordinates));
+
+    const requestPointCounts = (fetch.mock.calls as unknown as Array<[string]>)
+      .map((call) => decodeURIComponent(String(call[0])).split('/driving/')[1]!.split('?')[0]!.split(';').length);
+    expect(requestPointCounts).toEqual([100, 2]);
+  });
+
   test('splits implausible GPS jumps before asking OSRM to match the path', async () => {
     const fetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({
       code: 'Ok',
