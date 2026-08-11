@@ -1,3 +1,7 @@
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 
 import { canAccessShopDomain } from '../modules/commerce/admin-commerce-auth.js';
@@ -105,6 +109,8 @@ import {
 
 const apiRoot = '/api/dsv';
 const cookiePath = `${apiRoot}/`;
+const operatorGuideFileName = 'CLEVER_DSV_관제_운영자_사용자_가이드_20260811.pdf';
+const operatorGuidePath = fileURLToPath(new URL(`../../assets/dsv-guides/${operatorGuideFileName}`, import.meta.url));
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const applyCommandIdHeader = 'idempotency-key';
 const assignmentCommandIdHeader = 'idempotency-key';
@@ -402,6 +408,9 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
         ? sendError(reply, 404, 'NOT_FOUND', 'Customer workspace not found')
         : sendData(reply, operationSettingsData(settings));
     }, ['dsv:settings:read']));
+
+  app.get<{ Querystring: { download?: string } }>(`${apiRoot}/guides/operator`, async (request, reply) =>
+    withDsvSession(request, reply, dependencies, async () => sendOperatorGuide(request, reply), ['dsv:settings:read']));
 
   app.patch(`${apiRoot}/settings/operations`, async (request, reply) =>
     withDsvMutation(request, reply, dependencies, async ({ shopDomain }) => {
@@ -1371,6 +1380,55 @@ async function withDsvMutation(
 
 function sendData<T>(reply: FastifyReply, data: T, statusCode = 200): unknown {
   return reply.code(statusCode).type('application/json; charset=utf-8').header('Cache-Control', 'private, no-store').send({ data, error: null });
+}
+
+async function sendOperatorGuide(
+  request: FastifyRequest<{ Querystring: { download?: string } }>,
+  reply: FastifyReply,
+): Promise<unknown> {
+  let size: number;
+  try {
+    size = (await stat(operatorGuidePath)).size;
+  } catch {
+    return sendError(reply, 503, 'DSV_GUIDE_UNAVAILABLE', '사용자 가이드 파일을 사용할 수 없습니다.');
+  }
+
+  const disposition = request.query.download === '1' ? 'attachment' : 'inline';
+  const range = parseByteRange(request.headers.range, size);
+  reply
+    .type('application/pdf')
+    .header('Accept-Ranges', 'bytes')
+    .header('Cache-Control', 'private, no-store')
+    .header('Content-Disposition', `${disposition}; filename="CLEVER_DSV_Operator_User_Guide_20260811.pdf"; filename*=UTF-8''${encodeURIComponent(operatorGuideFileName)}`);
+
+  if (range === null) {
+    return reply.code(200).header('Content-Length', size).send(createReadStream(operatorGuidePath));
+  }
+  if (range === 'invalid') {
+    return reply.code(416).header('Content-Range', `bytes */${size}`).send();
+  }
+  return reply
+    .code(206)
+    .header('Content-Length', range.end - range.start + 1)
+    .header('Content-Range', `bytes ${range.start}-${range.end}/${size}`)
+    .send(createReadStream(operatorGuidePath, range));
+}
+
+function parseByteRange(value: string | undefined, size: number): { end: number; start: number } | 'invalid' | null {
+  if (value === undefined) return null;
+  const match = /^bytes=(\d*)-(\d*)$/u.exec(value.trim());
+  if (match === null || (match[1] === '' && match[2] === '')) return 'invalid';
+
+  if (match[1] === '') {
+    const suffixLength = Number(match[2]);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return 'invalid';
+    return { end: size - 1, start: Math.max(0, size - suffixLength) };
+  }
+
+  const start = Number(match[1]);
+  const requestedEnd = match[2] === '' ? size - 1 : Number(match[2]);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(requestedEnd) || start < 0 || start >= size || requestedEnd < start) return 'invalid';
+  return { end: Math.min(requestedEnd, size - 1), start };
 }
 
 function sendConditionMutationError(reply: FastifyReply, error: unknown): unknown {
