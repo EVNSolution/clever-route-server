@@ -125,7 +125,7 @@ describe('route tracking road matching', () => {
     const provider = new OsrmRouteTrackingRoadMatchProvider({
       baseUrls: { korea: 'https://osrm-korea.example' },
       fetch,
-      maxMatchPoints: 32,
+      maxMatchPoints: 16,
     });
     const coordinates = Array.from({ length: 65 }, (_, index) => [126.9 + index * 0.0001, 37.5] as [number, number]);
 
@@ -133,7 +133,7 @@ describe('route tracking road matching', () => {
 
     const requestPointCounts = (fetch.mock.calls as unknown as Array<[string]>)
       .map((call) => decodeURIComponent(String(call[0])).split('/driving/')[1]!.split('?')[0]!.split(';').length);
-    expect(requestPointCounts).toEqual([32, 32, 3]);
+    expect(requestPointCounts).toEqual([16, 16, 16, 16, 5]);
   });
 
   test('keeps caller-provided match chunk sizes inside OSRM trace limits', async () => {
