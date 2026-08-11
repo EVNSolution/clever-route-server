@@ -29,6 +29,15 @@ export type RouteTrackingRoadMatchProvider = {
   match(document: RouteTrackingGeometryDocumentV1): Promise<RouteTrackingRoadMatchedPathV1 | null>;
 };
 
+export type RouteTrackingRoadMatchOutcome = {
+  path: RouteTrackingRoadMatchedPathV1 | null;
+  retryable: boolean;
+};
+
+export type RouteTrackingRoadMatchClassifyingProvider = RouteTrackingRoadMatchProvider & {
+  matchWithStatus(document: RouteTrackingGeometryDocumentV1): Promise<RouteTrackingRoadMatchOutcome>;
+};
+
 export type OsrmRouteTrackingRoadMatchProviderOptions = {
   baseUrls: Partial<Record<RouteEngineCoverage, string>>;
   fetch?: FetchLike | undefined;
@@ -72,22 +81,28 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
   }
 
   async match(document: RouteTrackingGeometryDocumentV1): Promise<RouteTrackingRoadMatchedPathV1 | null> {
+    return (await this.matchWithStatus(document)).path;
+  }
+
+  async matchWithStatus(document: RouteTrackingGeometryDocumentV1): Promise<RouteTrackingRoadMatchOutcome> {
     const input = normalizeInputDocument(document);
-    if (input.coordinates.length < 2) return null;
+    if (input.coordinates.length < 2) return { path: null, retryable: false };
     const coverage = selectCoverageForGps(input.coordinates, Object.keys(this.baseUrls) as RouteEngineCoverage[]);
-    if (coverage === null) return null;
+    if (coverage === null) return { path: null, retryable: false };
     const baseUrl = this.baseUrls[coverage];
-    if (baseUrl === undefined) return null;
+    if (baseUrl === undefined) return { path: null, retryable: false };
 
     const matchedLines: MatchedLine[] = [];
     let lastMatchedPosition: RouteTrackingRoadMatchedPathV1['lastMatchedPosition'] = null;
+    let retryable = false;
     for (const chunk of splitForOsrmMatch(input, coverage)) {
       if (chunk.coordinates.length < 2) continue;
       const result = await this.matchChunk(baseUrl, chunk);
+      retryable ||= result.retryable;
       matchedLines.push(...result.lines);
       lastMatchedPosition = result.lastMatchedPosition ?? lastMatchedPosition;
     }
-    if (matchedLines.length === 0 || lastMatchedPosition === null) return null;
+    if (matchedLines.length === 0 || lastMatchedPosition === null) return { path: null, retryable };
 
     const confident = matchedLines
       .filter((line) => line.confidence >= MIN_CONFIDENT_MATCH)
@@ -96,29 +111,32 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
       .filter((line) => line.confidence < MIN_CONFIDENT_MATCH)
       .map((line) => line.coordinates);
     const matchedPointCount = [...confident, ...uncertain].reduce((sum, line) => sum + line.length, 0);
-    if (matchedPointCount < 2) return null;
+    if (matchedPointCount < 2) return { path: null, retryable };
     const lastSample = input.samples.at(-1)!;
 
     return {
-      coverage,
-      inputPointCount: input.sourcePointCount,
-      lastInputOccurredAt: lastSample.occurredAt,
-      lastMatchedPosition,
-      matchedGeometry: toMultiLineString(confident),
-      matchedPointCount,
-      schemaVersion: ROUTE_TRACKING_ROAD_MATCH_SCHEMA_VERSION,
-      uncertainGeometry: toMultiLineString(uncertain),
-      watermark: buildWatermark({
+      path: {
         coverage,
         inputPointCount: input.sourcePointCount,
         lastInputOccurredAt: lastSample.occurredAt,
+        lastMatchedPosition,
+        matchedGeometry: toMultiLineString(confident),
         matchedPointCount,
-        lines: [...confident, ...uncertain],
-      }),
+        schemaVersion: ROUTE_TRACKING_ROAD_MATCH_SCHEMA_VERSION,
+        uncertainGeometry: toMultiLineString(uncertain),
+        watermark: buildWatermark({
+          coverage,
+          inputPointCount: input.sourcePointCount,
+          lastInputOccurredAt: lastSample.occurredAt,
+          matchedPointCount,
+          lines: [...confident, ...uncertain],
+        }),
+      },
+      retryable,
     };
   }
 
-  private async matchChunk(baseUrl: string, chunk: MatchChunk): Promise<MatchChunkResult> {
+  private async matchChunk(baseUrl: string, chunk: MatchChunk): Promise<MatchChunkResult & { retryable: boolean }> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     let response: Response;
@@ -128,16 +146,21 @@ export class OsrmRouteTrackingRoadMatchProvider implements RouteTrackingRoadMatc
         signal: controller.signal,
       });
     } catch {
-      return { lastMatchedPosition: null, lines: [] };
+      return { lastMatchedPosition: null, lines: [], retryable: true };
     } finally {
       clearTimeout(timeout);
     }
-    if (!response.ok) return { lastMatchedPosition: null, lines: [] };
-    const payload = await response.json().catch(() => null);
+    if (!response.ok) return { lastMatchedPosition: null, lines: [], retryable: response.status === 408 || response.status === 429 || response.status >= 500 };
+    let retryable = false;
+    const payload = await response.json().catch(() => {
+      retryable = true;
+      return null;
+    });
     const lines = readMatchedLines(payload);
     return {
       lastMatchedPosition: readLastMatchedPositionFromResponse(payload, chunk, lines),
       lines,
+      retryable,
     };
   }
 }

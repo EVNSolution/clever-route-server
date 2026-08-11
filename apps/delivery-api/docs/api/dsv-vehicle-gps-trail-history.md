@@ -21,6 +21,9 @@ Response:
   the first `ROUTE_STARTED` event.
 - `ROUTE_PAUSED` closes the current session so paused movement is not joined to
   a later restart.
+- Every valid UVIS GPS sample in the service-date window is returned. Samples
+  collected before departure, while route execution is paused, or while
+  telemetry polling is dormant are preserved in collection-only sessions.
 - If no `ROUTE_STARTED` event exists, the session starts from route
   `scheduledStartAt`, route `departureTime`, or the shop planned departure time.
 - `segments[]` are split when the previous GPS sample's persisted `staleAfter`
@@ -30,7 +33,9 @@ Response:
   `anchors: Array<{ observedAt: string; lineIndex: number; coordinateIndex:
   number }>` sorted by `observedAt` ascending. Each anchor points directly into
   `roadMatchedGeometry.coordinates[lineIndex][coordinateIndex]` for raw UVIS
-  sample replay.
+  sample replay. Partially overlapping materialized lines are returned only when
+  anchors allow clipping to the segment sample window; otherwise raw samples
+  remain the fallback.
 - Completion does not force the GPS trail to stop. When depot coordinates are
   available, the endpoint continues through the first depot-return sample; when
   that is not available, it ends at the last valid UVIS GPS sample in the

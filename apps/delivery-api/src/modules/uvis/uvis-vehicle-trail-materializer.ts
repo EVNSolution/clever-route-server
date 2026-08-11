@@ -2,14 +2,17 @@ import { createHash } from 'node:crypto';
 
 import type { Prisma, PrismaClient } from '@prisma/client';
 
-import type { RouteTrackingRoadMatchProvider } from '../route-tracking/route-tracking.road-match.js';
+import type {
+  RouteTrackingRoadMatchClassifyingProvider,
+  RouteTrackingRoadMatchProvider,
+} from '../route-tracking/route-tracking.road-match.js';
 import type { RouteTrackingRoadMatchedGeometryV1 } from '../route-tracking/route-tracking.types.js';
 
 export const UVIS_VEHICLE_TRAIL_SCHEMA_VERSION = 'uvis_vehicle_trail.v1' as const;
 export const UVIS_ROAD_MATCH_GPS_PRECISION_METERS = 75;
 const SERVICE_TIMEZONE = 'Asia/Seoul';
 const MAX_PLAUSIBLE_SPEED_METERS_PER_SECOND = 55;
-const MAX_ROAD_MATCH_ATTEMPTS = 3;
+const TRAIL_MATERIALIZATION_RETRY_DELAYS_MS = [60_000, 300_000, 900_000, 3_600_000] as const;
 
 export type UvisVehicleTrailMarker = {
   kind: 'RESTART' | 'START';
@@ -20,11 +23,21 @@ export type UvisVehicleTrailMarker = {
 
 export type UvisVehicleTrailDocumentSegmentV1 = {
   endedAt: string;
+  roadMatchFailureReason?: UvisVehicleTrailRoadMatchFailureReason | null;
   roadMatchedGeometry: RouteTrackingRoadMatchedGeometryV1 | null;
+  roadMatchRetryable?: boolean;
   samples: UvisVehicleTrailSampleV1[];
   startedAt: string;
   trailMarker: UvisVehicleTrailMarker;
 };
+
+export type UvisVehicleTrailRoadMatchFailureReason =
+  | 'INVALID_INPUT'
+  | 'LOW_CONFIDENCE'
+  | 'NO_MATCH'
+  | 'PARTIAL_TRANSIENT_FAILURE'
+  | 'PROVIDER_UNAVAILABLE'
+  | 'TRANSIENT_FAILURE';
 
 export type UvisVehicleTrailDocumentV1 = {
   generatedAt: string;
@@ -133,16 +146,27 @@ export class PrismaUvisVehicleTrailMaterializationRepository {
     });
     const points = sourceRows.flatMap(toTrailPoint);
     const detected = detectMovingSegments(points);
+    const previousDocument = await this.findDocument(input);
     const materializedSegments: UvisVehicleTrailDocumentSegmentV1[] = [];
     let retryable = false;
 
     for (const segment of detected) {
-      const roadMatch = await matchRoadGeometry(segment.samples, input.roadMatchProvider);
+      const documentSamples = segment.samples.map(toDocumentSample);
+      const reusableSegment = findReusableSegment(previousDocument, documentSamples);
+      const roadMatch = reusableSegment === null
+        ? await matchRoadGeometry(segment.samples, input.roadMatchProvider)
+        : {
+            failureReason: reusableSegment.roadMatchFailureReason ?? null,
+            geometry: reusableSegment.roadMatchedGeometry,
+            retryable: false,
+          };
       retryable ||= roadMatch.retryable;
       materializedSegments.push({
         endedAt: segment.samples.at(-1)!.observedAt,
+        roadMatchFailureReason: roadMatch.failureReason,
         roadMatchedGeometry: roadMatch.geometry,
-        samples: segment.samples.map(toDocumentSample),
+        roadMatchRetryable: roadMatch.retryable,
+        samples: documentSamples,
         startedAt: segment.samples[0]!.observedAt,
         trailMarker: segment.marker,
       });
@@ -220,20 +244,30 @@ export class PrismaUvisVehicleTrailMaterializationRepository {
 }
 
 export class UvisVehicleTrailMaterializationQueue {
-  private readonly pending = new Map<string, { finalizing: boolean; serviceDate: string; shopId: string; vehicleId: string }>();
+  private readonly pending = new Map<string, {
+    attempt: number;
+    finalizing: boolean;
+    readyAt: number;
+    serviceDate: string;
+    shopId: string;
+    vehicleId: string;
+  }>();
   private flushing = false;
-  private scheduled: NodeJS.Immediate | null = null;
+  private scheduled: NodeJS.Immediate | NodeJS.Timeout | null = null;
 
   constructor(private readonly input: {
     logger?: { warn: (context: Record<string, unknown>, message: string) => void } | undefined;
     repository: PrismaUvisVehicleTrailMaterializationRepository;
+    retryDelaysMs?: readonly number[] | undefined;
     roadMatchProvider?: RouteTrackingRoadMatchProvider | undefined;
   }) {}
 
   enqueue(input: { observedAt: Date; shopId: string; vehicleId: string }): void {
     const serviceDate = serviceDateForInstant(input.observedAt);
-    this.pending.set(queueKey(input.shopId, input.vehicleId, serviceDate), {
+    this.upsertPending(queueKey(input.shopId, input.vehicleId, serviceDate), {
+      attempt: 0,
       finalizing: serviceDate < serviceDateForInstant(new Date()),
+      readyAt: Date.now(),
       serviceDate,
       shopId: input.shopId,
       vehicleId: input.vehicleId,
@@ -253,28 +287,38 @@ export class UvisVehicleTrailMaterializationQueue {
     const previousEnd = todayWindow.start;
     const previousStart = new Date(previousEnd.getTime() - 24 * 60 * 60 * 1000);
     const days = await this.input.repository.findVehicleDaysWithGpsSamples({ from: previousStart, to: previousEnd });
-    await Promise.all(days.map((day) => this.input.repository.materializeVehicleDay({
-      ...day,
-      finalizing: true,
-      now,
-      roadMatchProvider: this.input.roadMatchProvider,
-    })));
+    for (const day of days) {
+      this.upsertPending(queueKey(day.shopId, day.vehicleId, day.serviceDate), {
+        ...day,
+        attempt: 0,
+        finalizing: true,
+        readyAt: Date.now(),
+      });
+    }
+    this.schedule();
   }
 
   private async enqueueVehicleDays(from: Date, to: Date): Promise<void> {
     const days = await this.input.repository.findVehicleDaysWithGpsSamples({ from, to });
     for (const day of days) {
-      this.pending.set(queueKey(day.shopId, day.vehicleId, day.serviceDate), { ...day, finalizing: false });
+      this.upsertPending(queueKey(day.shopId, day.vehicleId, day.serviceDate), {
+        ...day,
+        attempt: 0,
+        finalizing: false,
+        readyAt: Date.now(),
+      });
     }
     this.schedule();
   }
 
   private schedule(): void {
     if (this.scheduled !== null || this.flushing) return;
-    this.scheduled = setImmediate(() => {
+    const delayMs = this.nextDelayMs();
+    const run = (): void => {
       this.scheduled = null;
       void this.flush();
-    });
+    };
+    this.scheduled = delayMs === 0 ? setImmediate(run) : setTimeout(run, delayMs);
     this.scheduled.unref();
   }
 
@@ -282,26 +326,93 @@ export class UvisVehicleTrailMaterializationQueue {
     if (this.flushing) return;
     this.flushing = true;
     try {
-      while (this.pending.size > 0) {
-        const nextKey = this.pending.keys().next().value as string;
+      while (true) {
+        const nextKey = this.nextReadyKey();
+        if (nextKey === null) break;
         const next = this.pending.get(nextKey)!;
         this.pending.delete(nextKey);
         try {
-          await this.input.repository.materializeVehicleDay({
+          const document = await this.input.repository.materializeVehicleDay({
             serviceDate: next.serviceDate,
             shopId: next.shopId,
             vehicleId: next.vehicleId,
             finalizing: next.finalizing,
             roadMatchProvider: this.input.roadMatchProvider,
           });
+          if (document.retryable) {
+            this.rescheduleRetry(nextKey, next);
+          }
         } catch (error) {
           this.input.logger?.warn({ error, vehicleId: next.vehicleId }, 'UVIS trail materialization failed');
+          this.rescheduleRetry(nextKey, next);
         }
       }
     } finally {
       this.flushing = false;
       if (this.pending.size > 0) this.schedule();
     }
+  }
+
+  private upsertPending(
+    key: string,
+    next: { attempt: number; finalizing: boolean; readyAt: number; serviceDate: string; shopId: string; vehicleId: string },
+  ): void {
+    const existing = this.pending.get(key);
+    this.pending.set(key, {
+      ...next,
+      attempt: Math.min(existing?.attempt ?? next.attempt, next.attempt),
+      finalizing: next.finalizing || existing?.finalizing === true,
+      readyAt: Math.min(existing?.readyAt ?? next.readyAt, next.readyAt),
+    });
+    if (!this.flushing && (existing === undefined || next.readyAt < existing.readyAt)) {
+      this.clearScheduled();
+      this.schedule();
+    }
+  }
+
+  private rescheduleRetry(
+    key: string,
+    item: { attempt: number; finalizing: boolean; serviceDate: string; shopId: string; vehicleId: string },
+  ): void {
+    const retryDelaysMs = this.input.retryDelaysMs ?? TRAIL_MATERIALIZATION_RETRY_DELAYS_MS;
+    if (item.attempt >= retryDelaysMs.length) {
+      this.input.logger?.warn({
+        serviceDate: item.serviceDate,
+        shopId: item.shopId,
+        vehicleId: item.vehicleId,
+      }, 'UVIS trail materialization retry limit reached');
+      return;
+    }
+    this.upsertPending(key, {
+      ...item,
+      attempt: item.attempt + 1,
+      readyAt: Date.now() + Math.max(0, retryDelaysMs[item.attempt] ?? 0),
+    });
+  }
+
+  private nextReadyKey(): string | null {
+    const now = Date.now();
+    for (const [key, item] of this.pending) {
+      if (item.readyAt <= now) return key;
+    }
+    return null;
+  }
+
+  private nextDelayMs(): number {
+    if (this.pending.size === 0) return 0;
+    const now = Date.now();
+    let nextReadyAt = Number.POSITIVE_INFINITY;
+    for (const item of this.pending.values()) {
+      nextReadyAt = Math.min(nextReadyAt, item.readyAt);
+    }
+    return Math.max(0, nextReadyAt - now);
+  }
+
+  private clearScheduled(): void {
+    if (this.scheduled === null) return;
+    clearImmediate(this.scheduled as NodeJS.Immediate);
+    clearTimeout(this.scheduled as NodeJS.Timeout);
+    this.scheduled = null;
   }
 }
 
@@ -327,6 +438,10 @@ function detectMovingSegments(points: TrailPoint[]): DetectedSegment[] {
     const point = points[index]!;
     if (previous.staleAfterDate.getTime() < point.observedAtDate.getTime()) {
       if (current.length > 0) segments.push(toDetectedSegment(current, segments.length));
+      else {
+        const pendingMovement = pendingMovementPoints(pending);
+        if (pendingMovement !== null) segments.push(toDetectedSegment(pendingMovement, segments.length));
+      }
       current = [];
       pending = [];
       stableStopCount = 0;
@@ -355,7 +470,18 @@ function detectMovingSegments(points: TrailPoint[]): DetectedSegment[] {
     }
   }
   if (current.length > 0) segments.push(toDetectedSegment(current, segments.length));
+  if (current.length === 0) {
+    const pendingMovement = pendingMovementPoints(pending);
+    if (pendingMovement !== null) segments.push(toDetectedSegment(pendingMovement, segments.length));
+  }
   return segments;
+}
+
+function pendingMovementPoints(pending: IntervalEvidence[]): TrailPoint[] | null {
+  const samples = uniquePoints(pending
+    .filter((item) => item.movement)
+    .flatMap((item) => [item.previous, item.current]));
+  return samples.length >= 2 ? samples : null;
 }
 
 function classifyInterval(previous: TrailPoint, current: TrailPoint): IntervalEvidence {
@@ -385,10 +511,17 @@ function toDetectedSegment(samples: TrailPoint[], index: number): DetectedSegmen
 async function matchRoadGeometry(
   samples: TrailPoint[],
   roadMatchProvider?: RouteTrackingRoadMatchProvider,
-): Promise<{ geometry: RouteTrackingRoadMatchedGeometryV1 | null; retryable: boolean }> {
-  if (roadMatchProvider === undefined || samples.length < 2) return { geometry: null, retryable: false };
+): Promise<{
+  failureReason: UvisVehicleTrailRoadMatchFailureReason | null;
+  geometry: RouteTrackingRoadMatchedGeometryV1 | null;
+  retryable: boolean;
+}> {
+  if (roadMatchProvider === undefined) {
+    return { failureReason: 'PROVIDER_UNAVAILABLE', geometry: null, retryable: false };
+  }
+  if (samples.length < 2) return { failureReason: 'INVALID_INPUT', geometry: null, retryable: false };
   const preparedSamples = prepareRoadMatchSamples(samples);
-  if (preparedSamples.length < 2) return { geometry: null, retryable: false };
+  if (preparedSamples.length < 2) return { failureReason: 'INVALID_INPUT', geometry: null, retryable: false };
   const document = {
     coordinates: preparedSamples.map((sample) => [sample.longitude, sample.latitude] as [number, number]),
     samples: preparedSamples.map((sample) => ({
@@ -399,20 +532,75 @@ async function matchRoadGeometry(
     })),
     sourcePointCount: preparedSamples.length,
   };
-  for (let attempt = 0; attempt < MAX_ROAD_MATCH_ATTEMPTS; attempt += 1) {
-    try {
-      const result = await roadMatchProvider.match(document);
-      if (result !== null) {
-        return {
-          geometry: addRoadMatchedGeometryAnchors(result.matchedGeometry, preparedSamples),
-          retryable: false,
-        };
-      }
-    } catch {
-      // A later UVIS-only attempt may recover from a transient OSRM or network failure.
+  try {
+    const outcome = isClassifyingRoadMatchProvider(roadMatchProvider)
+      ? await roadMatchProvider.matchWithStatus(document)
+      : await matchWithoutStatus(roadMatchProvider, document);
+    if (outcome.path !== null) {
+      const geometry = addRoadMatchedGeometryAnchors(outcome.path.matchedGeometry, preparedSamples);
+      return {
+        failureReason: outcome.retryable
+          ? 'PARTIAL_TRANSIENT_FAILURE'
+          : geometry === null && outcome.path.uncertainGeometry !== null
+            ? 'LOW_CONFIDENCE'
+            : null,
+        geometry,
+        retryable: outcome.retryable,
+      };
     }
+    return {
+      failureReason: outcome.retryable ? 'TRANSIENT_FAILURE' : 'NO_MATCH',
+      geometry: null,
+      retryable: outcome.retryable,
+    };
+  } catch {
+    // A later UVIS-only queue attempt may recover from a transient OSRM or network failure.
+    return { failureReason: 'TRANSIENT_FAILURE', geometry: null, retryable: true };
   }
-  return { geometry: null, retryable: true };
+}
+
+async function matchWithoutStatus(
+  provider: RouteTrackingRoadMatchProvider,
+  document: Parameters<RouteTrackingRoadMatchProvider['match']>[0],
+): Promise<{ path: Awaited<ReturnType<RouteTrackingRoadMatchProvider['match']>>; retryable: boolean }> {
+  const path = await provider.match(document);
+  return { path, retryable: path === null };
+}
+
+function isClassifyingRoadMatchProvider(
+  provider: RouteTrackingRoadMatchProvider,
+): provider is RouteTrackingRoadMatchClassifyingProvider {
+  return typeof (provider as Partial<RouteTrackingRoadMatchClassifyingProvider>).matchWithStatus === 'function';
+}
+
+function findReusableSegment(
+  previousDocument: UvisVehicleTrailDocumentV1 | null,
+  samples: UvisVehicleTrailSampleV1[],
+): UvisVehicleTrailDocumentSegmentV1 | null {
+  if (previousDocument === null) return null;
+  const signature = sampleSignature(samples);
+  return previousDocument.segments.find((segment) => (
+    sampleSignature(segment.samples) === signature
+    && !isPreviousSegmentRetryable(previousDocument, segment)
+  )) ?? null;
+}
+
+function isPreviousSegmentRetryable(
+  previousDocument: UvisVehicleTrailDocumentV1,
+  segment: UvisVehicleTrailDocumentSegmentV1,
+): boolean {
+  return typeof segment.roadMatchRetryable === 'boolean'
+    ? segment.roadMatchRetryable
+    : segment.roadMatchedGeometry === null && previousDocument.retryable;
+}
+
+function sampleSignature(samples: UvisVehicleTrailSampleV1[]): string {
+  return JSON.stringify(samples.map((sample) => [
+    sample.observedAt,
+    sample.staleAfter,
+    sample.latitude,
+    sample.longitude,
+  ]));
 }
 
 function addRoadMatchedGeometryAnchors(
