@@ -229,7 +229,7 @@ describe('DsvV1SessionResolver', () => {
     customerAccount.findUnique.mockResolvedValueOnce(customerAccountRow());
     const resolver = loadResolver(prisma);
 
-    const principal = await resolver.resolve(`dsv-customer-account:${accountId}`);
+    const principal = await resolver.resolve(`dsv-customer-account:${accountId}:1`);
 
     expect(customerAccount.findUnique).toHaveBeenCalledWith({
       select: {
@@ -267,12 +267,39 @@ describe('DsvV1SessionResolver', () => {
       .rejects.toBeInstanceOf(DsvV1AuthenticationError);
   });
 
+  test('rejects legacy customer subjects without a session version', async () => {
+    const { customerAccount, prisma } = createPrismaMock();
+    const resolver = loadResolver(prisma);
+
+    await expect(resolver.resolve(`dsv-customer-account:${accountId}`))
+      .rejects.toBeInstanceOf(DsvV1AuthenticationError);
+    expect(customerAccount.findUnique).not.toHaveBeenCalled();
+  });
+
+  test('invalidates only the active customer session version', async () => {
+    const { customerAccount, prisma } = createPrismaMock();
+    customerAccount.updateMany.mockResolvedValueOnce({ count: 1 });
+    const resolver = loadResolver(prisma);
+
+    await resolver.invalidate(`dsv-customer-account:${accountId}:3`);
+
+    expect(customerAccount.updateMany).toHaveBeenCalledWith({
+      data: { scopeVersion: { increment: 1 } },
+      where: {
+        id: accountId,
+        issuer: 'CLEVER_DSV',
+        scopeVersion: 3,
+        status: 'ACTIVE',
+      },
+    });
+  });
+
   test('throws an authentication error when the customer account does not exist', async () => {
     const { customerAccount, prisma } = createPrismaMock();
     customerAccount.findUnique.mockResolvedValueOnce(null);
     const resolver = loadResolver(prisma);
 
-    await expect(resolver.resolve(`dsv-customer-account:${accountId}`))
+    await expect(resolver.resolve(`dsv-customer-account:${accountId}:1`))
       .rejects.toBeInstanceOf(DsvV1AuthenticationError);
   });
 
@@ -281,7 +308,7 @@ describe('DsvV1SessionResolver', () => {
     customerAccount.findUnique.mockResolvedValueOnce(customerAccountRow({ status: 'INACTIVE' }));
     const resolver = loadResolver(prisma);
 
-    await expect(resolver.resolve(`dsv-customer-account:${accountId}`))
+    await expect(resolver.resolve(`dsv-customer-account:${accountId}:1`))
       .rejects.toMatchObject({
         message: 'DSV customer account is inactive',
         name: 'DsvV1ForbiddenError',
@@ -296,7 +323,7 @@ describe('DsvV1SessionResolver', () => {
     customerAccount.findUnique.mockResolvedValueOnce(account);
     const resolver = loadResolver(prisma);
 
-    await expect(resolver.resolve(`dsv-customer-account:${accountId}`))
+    await expect(resolver.resolve(`dsv-customer-account:${accountId}:1`))
       .rejects.toMatchObject({
         message: 'DSV customer account scope is invalid',
         name: 'DsvV1ForbiddenError',
@@ -344,16 +371,21 @@ type ShopFindFirst = (args: {
 }) => Promise<{ id: string; shopDomain: string } | null>;
 
 function createPrismaMock(): {
-  customerAccount: { findUnique: ReturnType<typeof vi.fn<CustomerAccountFindUnique>> };
-  dsvAdminAccount: { findFirst: ReturnType<typeof vi.fn> };
+  customerAccount: {
+    findUnique: ReturnType<typeof vi.fn<CustomerAccountFindUnique>>;
+    updateMany: ReturnType<typeof vi.fn>;
+  };
+  dsvAdminAccount: { findFirst: ReturnType<typeof vi.fn>; updateMany: ReturnType<typeof vi.fn> };
   prisma: PrismaClient;
   shop: { findFirst: ReturnType<typeof vi.fn<ShopFindFirst>> };
 } {
   const customerAccount = {
     findUnique: vi.fn<CustomerAccountFindUnique>(),
+    updateMany: vi.fn(),
   };
   const dsvAdminAccount = {
     findFirst: vi.fn(),
+    updateMany: vi.fn(),
   };
   const shop = {
     findFirst: vi.fn<ShopFindFirst>(),

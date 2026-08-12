@@ -44,6 +44,27 @@ const customerId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const customerAccountId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 
 describe('DSV control routes', () => {
+  test('invalidates the active server session before clearing the admin cookie', async () => {
+    const { app, invalidateSession } = await createHarness();
+    try {
+      const login = await loginToDsv(app);
+      const logout = await app.inject({
+        headers: { cookie: login.cookie, 'x-csrf-token': login.csrfToken },
+        method: 'POST',
+        url: '/api/dsv/auth/logout',
+      });
+
+      expect(logout.statusCode).toBe(200);
+      expect(invalidateSession).toHaveBeenCalledWith({
+        accountId: adminAccountId,
+        tokenVersion: 0,
+      });
+      expect(logout.headers['set-cookie']).toContain('Max-Age=0');
+    } finally {
+      await app.close();
+    }
+  });
+
   test('serves the operator guide only to authenticated settings readers with byte ranges and downloads', async () => {
     const { app } = await createHarness();
     try {
@@ -2028,10 +2049,12 @@ async function createHarness(overrides: {
   manualEmailService?: DsvManualEmailService;
   operatorInvitationService?: DsvAdminOperatorInvitationService;
 } = {}): Promise<{
+  adminAccounts: DsvControlDependencies['adminAccounts'];
   app: Awaited<ReturnType<typeof buildApp>>;
   assignmentCommandService: MockAssignmentCommandService;
   dispatchImportService: MockDispatchImportService;
   geocodingService: ReturnType<typeof createGeocodingService>;
+  invalidateSession: ReturnType<typeof vi.fn>;
   repository: MockRepository;
   resourceService: MockResourceService;
   settingsService: ReturnType<typeof createSettingsService>;
@@ -2042,29 +2065,32 @@ async function createHarness(overrides: {
   const geocodingService = createGeocodingService();
   const settingsService = createSettingsService();
   const resourceService = createResourceService();
+  const invalidateSession = vi.fn(() => Promise.resolve());
+  const adminAccounts = {
+    authenticate: vi.fn(({ loginId, password }) =>
+      Promise.resolve(loginId === 'operator' && password === 'correct-password'
+        ? {
+            accountId: adminAccountId,
+            displayName: '운영 관리자',
+            scopes: dsvAdminScopes,
+            tokenVersion: 0,
+          }
+        : null)),
+    invalidateSession,
+    resolveSession: vi.fn(({ accountId, tokenVersion }) =>
+      Promise.resolve(accountId === adminAccountId && tokenVersion === 0
+        ? {
+            accountId: adminAccountId,
+            displayName: '운영 관리자',
+            scopes: dsvAdminScopes,
+            tokenVersion: 0,
+          }
+        : null)),
+  } satisfies DsvControlDependencies['adminAccounts'];
   const dependencies: DsvControlDependencies = {
     ...(overrides.adminAccountManagement === undefined ? {} : { adminAccountManagement: overrides.adminAccountManagement }),
     ...(overrides.addressCanonicalizer === undefined ? {} : { addressCanonicalizer: overrides.addressCanonicalizer }),
-    adminAccounts: {
-      authenticate: vi.fn(({ loginId, password }) =>
-        Promise.resolve(loginId === 'operator' && password === 'correct-password'
-          ? {
-              accountId: adminAccountId,
-              displayName: '운영 관리자',
-              scopes: dsvAdminScopes,
-              tokenVersion: 0,
-            }
-          : null)),
-      resolveSession: vi.fn(({ accountId, tokenVersion }) =>
-        Promise.resolve(accountId === adminAccountId && tokenVersion === 0
-          ? {
-              accountId: adminAccountId,
-              displayName: '운영 관리자',
-              scopes: dsvAdminScopes,
-              tokenVersion: 0,
-            }
-          : null)),
-    },
+    adminAccounts,
     allowedShopDomains: ['tomatonofood.com'],
     assignmentCommandService,
     cookieName: 'clever_dsv_admin',
@@ -2079,7 +2105,7 @@ async function createHarness(overrides: {
     sessionSecret: '12345678901234567890123456789012',
     settingsService,
   };
-  return { app: await buildApp({ dsvControl: dependencies }), assignmentCommandService, dispatchImportService, geocodingService, repository, resourceService, settingsService };
+  return { adminAccounts, app: await buildApp({ dsvControl: dependencies }), assignmentCommandService, dispatchImportService, geocodingService, invalidateSession, repository, resourceService, settingsService };
 }
 
 function createOperatorInvitationService(): DsvAdminOperatorInvitationService & {

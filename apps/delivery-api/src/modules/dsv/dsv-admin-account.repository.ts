@@ -19,6 +19,7 @@ export type DsvAdminAccountIdentity = {
 
 export type DsvAdminAccountAuthenticator = {
   authenticate(input: { loginId: string; password: string }): Promise<DsvAdminAccountIdentity | null>;
+  invalidateSession(input: { accountId: string; tokenVersion: number }): Promise<void>;
   resolveSession(input: { accountId: string; tokenVersion: number }): Promise<DsvAdminAccountIdentity | null>;
 };
 
@@ -101,15 +102,27 @@ export class PrismaDsvAdminAccountRepository implements DsvAdminAccountAuthentic
     const scopes = normalizeDsvScopes(account.scopes);
     if (scopes === null || !scopes.includes('dsv:session:read')) return null;
 
-    await this.prisma.dsvAdminAccount.update({
+    const updated = await this.prisma.dsvAdminAccount.update({
       data: {
         failedLoginAttempts: 0,
         lastAuthenticatedAt: now,
         lockedUntil: null,
+        tokenVersion: { increment: 1 },
       },
       where: { id: account.id },
     });
-    return identity(account, scopes);
+    return identity(updated, scopes);
+  }
+
+  async invalidateSession(input: { accountId: string; tokenVersion: number }): Promise<void> {
+    await this.prisma.dsvAdminAccount.updateMany({
+      data: { tokenVersion: { increment: 1 } },
+      where: {
+        id: input.accountId,
+        status: 'ACTIVE',
+        tokenVersion: input.tokenVersion,
+      },
+    });
   }
 
   async resolveSession(input: { accountId: string; tokenVersion: number }): Promise<DsvAdminAccountIdentity | null> {

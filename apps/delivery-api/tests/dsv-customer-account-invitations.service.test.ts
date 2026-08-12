@@ -1,3 +1,4 @@
+import { scrypt } from 'node:crypto';
 import { describe, expect, test, vi } from 'vitest';
 
 import {
@@ -80,6 +81,46 @@ describe('PrismaDsvCustomerAccountService', () => {
     }]>;
     expect(consumeCalls.at(-1)?.[0].data.consumedAt).toBeInstanceOf(Date);
     expect(consumeCalls.at(-1)?.[0].where).toMatchObject({ consumedAt: null, id: 'invite-1', revokedAt: null });
+  });
+
+  test('rotates scopeVersion on every successful customer login', async () => {
+    const harness = createHarness();
+    const password = 'StrongPassw0rd!';
+    const passwordSalt = 'customer-login-salt';
+    const passwordHash = await hashPassword(password, passwordSalt);
+    harness.prisma.customerAccount.findUnique.mockResolvedValueOnce({
+      customerId,
+      id: accountId,
+      issuer: 'CLEVER_DSV',
+      passwordHash,
+      passwordSalt,
+      scopeVersion: 4,
+      shop: { id: shopId, shopDomain: 'tomatonofood.com' },
+      shopId,
+      status: 'ACTIVE',
+    });
+    harness.prisma.customerAccount.update.mockResolvedValueOnce({
+      customerId,
+      id: accountId,
+      scopeVersion: 5,
+      shopId,
+    });
+
+    await expect(harness.service.login({
+      id: 'customer-login',
+      password,
+      requestId: 'req-login',
+      shopDomain: 'tomatonofood.com',
+    })).resolves.toMatchObject({ accountId, scopeVersion: 5 });
+    const updateCalls = harness.prisma.customerAccount.update.mock.calls as unknown as Array<[{
+      data: { lastAuthenticatedAt: unknown; scopeVersion: { increment: number } };
+      where: { id: string };
+    }]>;
+    expect(updateCalls[0]?.[0].data.lastAuthenticatedAt).toBeInstanceOf(Date);
+    expect(updateCalls[0]?.[0]).toMatchObject({
+      data: { scopeVersion: { increment: 1 } },
+      where: { id: accountId },
+    });
   });
 
   test('creates signup invites with fragment links, token hashes only in storage, and redacted audit', async () => {
@@ -355,4 +396,13 @@ function accountWithInvite(overrides: Record<string, unknown> = {}) {
     status: 'INACTIVE',
     ...overrides,
   };
+}
+
+function hashPassword(password: string, salt: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    scrypt(password, salt, 64, (error, derivedKey) => {
+      if (error) reject(error);
+      else resolve(derivedKey.toString('base64url'));
+    });
+  });
 }

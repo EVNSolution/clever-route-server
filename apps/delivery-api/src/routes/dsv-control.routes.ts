@@ -155,6 +155,7 @@ type DsvControlSession = {
   principal: DsvPrincipal;
   session: NonNullable<ReturnType<typeof verifyAdminWebSessionFromRequest>>;
   shopDomain: string;
+  tokenVersion: number;
 };
 
 export type DsvControlDependencies = {
@@ -218,15 +219,20 @@ export function registerDsvControlRoutes(app: FastifyInstance, dependencies: Dsv
   });
 
   app.post(`${apiRoot}/auth/logout`, (request, reply) =>
-    withDsvSession(request, reply, dependencies, (session) => {
+    withDsvSession(request, reply, dependencies, async (session) => {
       if (!verifyAdminWebCsrfToken({ session: session.session, token: request.headers['x-csrf-token'] as string | undefined })) {
         return sendError(reply, 403, 'FORBIDDEN', 'Invalid CSRF token');
       }
-      return sendData(reply.header('Set-Cookie', clearAdminWebSessionCookie({
+      const clearedReply = reply.header('Set-Cookie', clearAdminWebSessionCookie({
         cookieName: dependencies.cookieName,
         path: cookiePath,
         secure: dependencies.secureCookies,
-      })), { loggedOut: true });
+      }));
+      await dependencies.adminAccounts.invalidateSession({
+        accountId: session.actor,
+        tokenVersion: session.tokenVersion,
+      });
+      return sendData(clearedReply, { loggedOut: true });
     }));
 
   app.get(`${apiRoot}/auth/session`, (request, reply) =>
@@ -1336,6 +1342,7 @@ async function readDsvSession(request: FastifyRequest, dependencies: DsvControlD
     }),
     session,
     shopDomain,
+    tokenVersion: subject.tokenVersion,
   };
 }
 

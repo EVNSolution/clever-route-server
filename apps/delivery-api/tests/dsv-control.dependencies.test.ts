@@ -68,6 +68,7 @@ describe('loadDsvControlDependencies', () => {
           Promise.resolve(loginId === 'operator' && password === loginSecret
             ? { accountId: adminAccountId, scopes: dsvAdminScopes, tokenVersion: 0 }
             : null)),
+        invalidateSession: vi.fn(() => Promise.resolve()),
         resolveSession: vi.fn(({ accountId, tokenVersion }) =>
           Promise.resolve(accountId === adminAccountId && tokenVersion === 0
             ? { accountId: adminAccountId, scopes: dsvAdminScopes, tokenVersion: 0 }
@@ -111,6 +112,7 @@ describe('loadDsvControlDependencies', () => {
           Promise.resolve(loginId === 'operator' && password === loginSecret
             ? { accountId: adminAccountId, scopes: dsvAdminScopes, tokenVersion: 0 }
             : null)),
+        invalidateSession: vi.fn(() => Promise.resolve()),
         resolveSession: vi.fn(({ accountId, tokenVersion }) =>
           Promise.resolve(accountId === adminAccountId && tokenVersion === 0
             ? { accountId: adminAccountId, scopes: dsvAdminScopes, tokenVersion: 0 }
