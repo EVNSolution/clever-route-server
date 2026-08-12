@@ -45,10 +45,11 @@ describe('DSV v1 read routes', () => {
         url: '/api/dsv/v1/session',
       });
       expect(adminResponse.statusCode).toBe(200);
+      expect(adminResponse.headers['cache-control']).toBe('private, no-store');
       const adminBody = expectDsvV1Metadata(adminResponse);
       expectDsvAdminSessionData(adminBody.data);
 
-      const customer = signedCookie(`dsv-customer-account:${accountId}`);
+      const customer = signedCookie(`dsv-customer-account:${accountId}:1`);
       const customerResponse = await app.inject({
         headers: { cookie: customer.cookie },
         method: 'GET',
@@ -63,7 +64,7 @@ describe('DSV v1 read routes', () => {
         shopId,
       });
       expect(sessionResolver.resolve).toHaveBeenCalledWith('dsv-shop:tomatonofood.com');
-      expect(sessionResolver.resolve).toHaveBeenCalledWith(`dsv-customer-account:${accountId}`);
+      expect(sessionResolver.resolve).toHaveBeenCalledWith(`dsv-customer-account:${accountId}:1`);
       expect(queryService.listDispatches).not.toHaveBeenCalled();
     } finally {
       await app.close();
@@ -86,7 +87,7 @@ describe('DSV v1 read routes', () => {
       });
       expect(invalid.statusCode).toBe(401);
 
-      const expired = signedCookie(`dsv-customer-account:${accountId}`, -1);
+      const expired = signedCookie(`dsv-customer-account:${accountId}:1`, -1);
       const expiredResponse = await app.inject({
         headers: { cookie: expired.cookie },
         method: 'GET',
@@ -102,7 +103,7 @@ describe('DSV v1 read routes', () => {
       });
       expect(unknownResponse.statusCode).toBe(401);
 
-      const inactive = signedCookie(`dsv-customer-account:${accountId}`);
+      const inactive = signedCookie(`dsv-customer-account:${accountId}:1`);
       const inactiveResponse = await app.inject({
         headers: { cookie: inactive.cookie },
         method: 'GET',
@@ -527,7 +528,7 @@ describe('DSV v1 read routes', () => {
   test('enforces admin-only management endpoints and customer-only inquiry without /resources path', async () => {
     const { app, queryService } = await createHarness();
     const admin = signedCookie('dsv-shop:tomatonofood.com');
-    const customer = signedCookie(`dsv-customer-account:${accountId}`);
+    const customer = signedCookie(`dsv-customer-account:${accountId}:1`);
     try {
       for (const path of [
         '/dispatches',
@@ -808,7 +809,7 @@ describe('DSV v1 read routes', () => {
 
   test('returns route geometry from a vehicle before the first customer stop without route or stop metadata', async () => {
     const { app, queryService, routePlanService } = await createHarness();
-    const customer = signedCookie(`dsv-customer-account:${accountId}`);
+    const customer = signedCookie(`dsv-customer-account:${accountId}:1`);
     try {
       queryService.listCustomerDeliveries.mockResolvedValueOnce({
         items: [
@@ -902,7 +903,7 @@ describe('DSV v1 read routes', () => {
 
   test('returns the current-day customer trail only for the scoped route plan and prefers confident road-matched lines', async () => {
     const { app, queryService, routeGeometryProvider, routePlanService } = await createHarness();
-    const customer = signedCookie(`dsv-customer-account:${accountId}`);
+    const customer = signedCookie(`dsv-customer-account:${accountId}:1`);
     try {
       queryService.listCustomerDeliveries.mockResolvedValueOnce({
         items: [customerDeliveryRow({ routePlanId: 'route-plan-1', sellerOrderId: 'order-customer-first', vehicleId: 'vehicle-1' })],
@@ -992,7 +993,7 @@ describe('DSV v1 read routes', () => {
 
   test('falls back customer-scoped route geometry to depot when assigned vehicle has no live position', async () => {
     const { app, queryService, routePlanService } = await createHarness();
-    const customer = signedCookie(`dsv-customer-account:${accountId}`);
+    const customer = signedCookie(`dsv-customer-account:${accountId}:1`);
     try {
       queryService.listCustomerDeliveries.mockResolvedValueOnce({
         items: [
@@ -1077,7 +1078,7 @@ describe('DSV v1 read routes', () => {
 
   test('rebuilds a missing customer route through OSRM in the existing stop order', async () => {
     const { app, queryService, routeGeometryProvider, routePlanService } = await createHarness();
-    const customer = signedCookie(`dsv-customer-account:${accountId}`);
+    const customer = signedCookie(`dsv-customer-account:${accountId}:1`);
     try {
       queryService.listCustomerDeliveries.mockResolvedValueOnce({
         items: [customerDeliveryRow({ routePlanId: 'route-plan-1', sellerOrderId: 'order-customer-first', vehicleId: 'vehicle-1' })],
@@ -1128,7 +1129,7 @@ describe('DSV v1 read routes', () => {
 
   test('rebuilds through OSRM when cached geometry cannot be cut from the live vehicle position', async () => {
     const { app, queryService, routeGeometryProvider, routePlanService } = await createHarness();
-    const customer = signedCookie(`dsv-customer-account:${accountId}`);
+    const customer = signedCookie(`dsv-customer-account:${accountId}:1`);
     try {
       queryService.listCustomerDeliveries.mockResolvedValueOnce({
         items: [customerDeliveryRow({ routePlanId: 'route-plan-1', sellerOrderId: 'order-customer', vehicleId: 'vehicle-1' })],
@@ -1167,7 +1168,7 @@ describe('DSV v1 read routes', () => {
 
   test('does not synthesize a straight customer route when OSRM regeneration fails', async () => {
     const { app, queryService, routeGeometryProvider, routePlanService } = await createHarness();
-    const customer = signedCookie(`dsv-customer-account:${accountId}`);
+    const customer = signedCookie(`dsv-customer-account:${accountId}:1`);
     try {
       queryService.listCustomerDeliveries.mockResolvedValueOnce({
         items: [customerDeliveryRow({ routePlanId: 'route-plan-1', sellerOrderId: 'order-customer', vehicleId: 'vehicle-1' })],
@@ -1201,7 +1202,7 @@ describe('DSV v1 read routes', () => {
   test('maps typed query cursor, service date window, and timezone errors to v1 error envelopes', async () => {
     const { app, queryService } = await createHarness();
     const admin = signedCookie('dsv-shop:tomatonofood.com');
-    const customer = signedCookie(`dsv-customer-account:${accountId}`);
+    const customer = signedCookie(`dsv-customer-account:${accountId}:1`);
     try {
       queryService.listDrivers.mockRejectedValueOnce(new DsvV1ReadQueryError(
         'BAD_REQUEST',
@@ -1293,9 +1294,9 @@ describe('DSV v1 read routes', () => {
     }
   });
 
-  test('logout requires CSRF and clears only the configured DSV cookie', async () => {
-    const { app } = await createHarness();
-    const customer = signedCookie(`dsv-customer-account:${accountId}`);
+  test('logout requires CSRF, invalidates the server session, and clears only the configured DSV cookie', async () => {
+    const { app, sessionResolver } = await createHarness();
+    const customer = signedCookie(`dsv-customer-account:${accountId}:1`);
     try {
       const missingCsrf = await app.inject({
         headers: { cookie: customer.cookie },
@@ -1314,6 +1315,7 @@ describe('DSV v1 read routes', () => {
       expect(logout.headers['set-cookie']).toContain(`${cookieName}=;`);
       expect(logout.headers['set-cookie']).toContain('Path=/api/dsv/');
       expect(logout.headers['set-cookie']).not.toContain('clever_admin_ui');
+      expect(sessionResolver.invalidate).toHaveBeenCalledWith(`dsv-customer-account:${accountId}:1`);
     } finally {
       await app.close();
     }
@@ -1581,11 +1583,12 @@ type MockSessionResolver = {
 
 function createSessionResolver(): MockSessionResolver {
   return {
+    invalidate: vi.fn(() => Promise.resolve()),
     resolve: vi.fn((subject) => {
       if (subject === 'dsv-shop:tomatonofood.com') {
         return Promise.resolve(createDsvAdminPrincipal({ shopDomain: 'tomatonofood.com', shopId }));
       }
-      if (subject === `dsv-customer-account:${accountId}`) {
+      if (subject === `dsv-customer-account:${accountId}:1`) {
         return Promise.resolve(createDsvCustomerUserPrincipalFromAccount({
           account: {
             customerId,

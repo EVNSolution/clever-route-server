@@ -41,7 +41,7 @@ describe('PrismaDsvAdminAccountRepository', () => {
       accountId: bootstrap.accountId,
       displayName: '운영 관리자',
       scopes: dsvAdminScopes,
-      tokenVersion: 0,
+      tokenVersion: 1,
     });
     expect(fake.account?.lastAuthenticatedAt).toBeInstanceOf(Date);
   });
@@ -83,7 +83,23 @@ describe('PrismaDsvAdminAccountRepository', () => {
     expect(await repository.authenticate({
       loginId: 'operator',
       password: 'replacement-password-2026',
-    })).toMatchObject({ accountId: bootstrap.accountId, tokenVersion: 1 });
+    })).toMatchObject({ accountId: bootstrap.accountId, tokenVersion: 2 });
+  });
+
+  test('keeps only the latest successful login active and invalidates it on logout', async () => {
+    const fake = createPrisma();
+    const repository = new PrismaDsvAdminAccountRepository(fake.prisma);
+    const bootstrap = await repository.bootstrap({ loginId: 'operator', password: 'correct-password-2026' });
+
+    const first = await repository.authenticate({ loginId: 'operator', password: 'correct-password-2026' });
+    const second = await repository.authenticate({ loginId: 'operator', password: 'correct-password-2026' });
+    expect(first?.tokenVersion).toBe(1);
+    expect(second?.tokenVersion).toBe(2);
+    expect(await repository.resolveSession({ accountId: bootstrap.accountId, tokenVersion: 1 })).toBeNull();
+    expect(await repository.resolveSession({ accountId: bootstrap.accountId, tokenVersion: 2 })).not.toBeNull();
+
+    await repository.invalidateSession({ accountId: bootstrap.accountId, tokenVersion: 2 });
+    expect(await repository.resolveSession({ accountId: bootstrap.accountId, tokenVersion: 2 })).toBeNull();
   });
 
   test('creates, lists, resets, and disables managed administrator accounts without exposing password material', async () => {
@@ -171,6 +187,11 @@ function createPrisma(): {
       applyData(account, data);
       account.updatedAt = new Date();
       return Promise.resolve(account);
+    },
+    updateMany: ({ data, where }: { data: Record<string, unknown>; where: Partial<Account> }) => {
+      const accounts = state.accounts.filter((account) => matches(account, where));
+      for (const account of accounts) applyData(account, data);
+      return Promise.resolve({ count: accounts.length });
     },
   };
   const result = {

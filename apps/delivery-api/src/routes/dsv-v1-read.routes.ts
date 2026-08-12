@@ -87,6 +87,7 @@ type DsvV1Session = {
 };
 
 export type DsvV1SessionResolver = {
+  invalidate(subject: string): Promise<void>;
   resolve(subject: string): Promise<DsvPrincipal>;
 };
 
@@ -118,23 +119,25 @@ export function registerDsvV1ReadRoutes(app: FastifyInstance, dependencies: DsvV
   app.get(`${apiRoot}/session`, (request, reply) =>
     withDsvV1Session(request, reply, dependencies, (session) =>
       sendV1Data(
-        reply,
+        reply.header('Cache-Control', 'private, no-store'),
         request,
         mapDsvV1SessionPrincipal(session.principal, session.session.csrfToken),
       )));
 
   app.post(`${apiRoot}/session/logout`, (request, reply) =>
-    withDsvV1Session(request, reply, dependencies, (session) => {
+    withDsvV1Session(request, reply, dependencies, async (session) => {
       if (hasUnsupportedQuery(request, [])) return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Unsupported query parameter');
       if (!isEmptyObjectBody(request.body)) return sendV1Error(reply, request, 400, 'BAD_REQUEST', 'Unsupported request body');
       if (!verifyAdminWebCsrfToken({ session: session.session, token: request.headers['x-csrf-token'] as string | undefined })) {
         return sendV1Error(reply, request, 403, 'FORBIDDEN', 'Invalid CSRF token');
       }
-      return sendV1Data(reply.header('Set-Cookie', clearAdminWebSessionCookie({
+      const clearedReply = reply.header('Set-Cookie', clearAdminWebSessionCookie({
         cookieName: dependencies.cookieName,
         path: cookiePath,
         secure: dependencies.secureCookies,
-      })), request, { ok: true });
+      }));
+      await dependencies.sessionResolver.invalidate(session.session.subject);
+      return sendV1Data(clearedReply, request, { ok: true });
     }));
 
   registerReadRoute(app, dependencies, 'dispatches', {

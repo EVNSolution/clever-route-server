@@ -289,7 +289,10 @@ export class PrismaDsvCustomerAccountService implements DsvCustomerAccountServic
       return null;
     }
     const updated = await this.prisma.customerAccount.update({
-      data: { lastAuthenticatedAt: new Date() },
+      data: {
+        lastAuthenticatedAt: new Date(),
+        scopeVersion: { increment: 1 },
+      },
       where: { id: account.id },
     });
     await this.audit({
