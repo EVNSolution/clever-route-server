@@ -13,6 +13,7 @@ const shopId = '99999999-9999-4999-8999-999999999999';
 const accountId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const activeSessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const token = 'valid_token_value_12345678901234567890';
+const credentialContext = { requestId: 'req-credentials', shopDomain: 'tomatonofood.com' };
 
 describe('PrismaDsvAdminOperatorInvitationService', () => {
   test('creates operator invitations with hash-only tokens, revokes prior unused invites, and emails /login', async () => {
@@ -53,6 +54,14 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
     const createCalls = harness.tx.dsvAdminAccountInvite.create.mock.calls as unknown as Array<[{ data: { tokenHash: string } }]>;
     expect(createCalls[0]?.[0].data.tokenHash).not.toBe(tokenFromEmail);
     expect(createCalls[0]?.[0].data.tokenHash).toHaveLength(64);
+    const auditCalls = harness.tx.dsvAuditEvent.create.mock.calls as unknown as Array<[{ data: Record<string, unknown> }]>;
+    expect(auditCalls[0]?.[0].data).toMatchObject({
+      actorId: accountId,
+      entityId: 'invite-1',
+      eventType: 'DSV_ADMIN_ACCOUNT_INVITATION_CREATED',
+      requestId: 'req-invite',
+      shopId,
+    });
   });
 
   test('revokes the freshly-created invite if email sending fails', async () => {
@@ -77,6 +86,8 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
         revokedAt: null,
       },
     });
+    const auditCalls = harness.tx.dsvAuditEvent.create.mock.calls as unknown as Array<[{ data: Record<string, unknown> }]>;
+    expect(auditCalls.at(-1)?.[0].data).toMatchObject({ eventType: 'DSV_ADMIN_ACCOUNT_INVITATION_DELIVERY_FAILED' });
   });
 
   test('validates only unexpired unused tokens for the requested shop', async () => {
@@ -131,6 +142,14 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
     const createCalls = harness.tx.dsvAdminAccount.create.mock.calls as unknown as Array<[{ data: { scopes: string[]; status: string } }]>;
     expect(createCalls[0]?.[0].data.scopes).toEqual(dsvOperatorScopes);
     expect(createCalls[0]?.[0].data.status).toBe('ACTIVE');
+    const auditCalls = harness.tx.dsvAuditEvent.create.mock.calls as unknown as Array<[{ data: Record<string, unknown> }]>;
+    expect(auditCalls.at(-1)?.[0].data).toMatchObject({
+      actorId: accountId,
+      entityId: accountId,
+      eventType: 'DSV_ADMIN_ACCOUNT_ACTIVATED',
+      requestId: 'req-complete',
+      shopId,
+    });
   });
 
   test('updates credentials only after current password verification and rotates the active session ID', async () => {
@@ -141,6 +160,7 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
       accountId,
       currentPassword: 'wrong-password',
       loginId: 'operator-new',
+      ...credentialContext,
     })).rejects.toMatchObject({ code: 'CURRENT_PASSWORD_INVALID' });
 
     const previousPasswordSalt = 'previous-salt';
@@ -157,6 +177,7 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
       accountId,
       currentPassword: 'KnownStrongPassw0rd!',
       password: 'KnownStrongPassw0rd!',
+      ...credentialContext,
     })).rejects.toMatchObject({ code: 'PASSWORD_REUSED' });
 
     harness.prisma.dsvAdminAccount.findFirst.mockResolvedValueOnce(existing);
@@ -164,6 +185,7 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
       accountId,
       currentPassword: 'KnownStrongPassw0rd!',
       password: 'PreviousStrongPassw0rd!',
+      ...credentialContext,
     })).rejects.toMatchObject({ code: 'PASSWORD_REUSED' });
 
     harness.prisma.dsvAdminAccount.findFirst.mockResolvedValueOnce(account({ ...existing, mustChangePassword: true }));
@@ -171,6 +193,7 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
       accountId,
       currentPassword: 'KnownStrongPassw0rd!',
       loginId: 'operator-new',
+      ...credentialContext,
     })).rejects.toMatchObject({ code: 'PASSWORD_CHANGE_REQUIRED' });
 
     harness.prisma.dsvAdminAccount.findFirst.mockResolvedValueOnce(existing);
@@ -182,6 +205,7 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
       currentPassword: 'KnownStrongPassw0rd!',
       loginId: 'operator-new',
       password: 'NewStrongPassw0rd!',
+      ...credentialContext,
     })).resolves.toMatchObject({ activeSessionId, loginId: 'operator-new', scopes: dsvAdminScopes });
     const updateCalls = harness.prisma.dsvAdminAccount.update.mock.calls as unknown as Array<[{
       data: {
@@ -199,6 +223,19 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
     expect(updateCalls.at(-1)?.[0].data.mustChangePassword).toBe(false);
     expect(updateCalls[0]?.[0].data.previousPasswordHash).toBe(existing.passwordHash);
     expect(updateCalls[0]?.[0].data.previousPasswordSalt).toBe(existing.passwordSalt);
+    const auditCalls = harness.tx.dsvAuditEvent.create.mock.calls as unknown as Array<[{ data: Record<string, unknown> }]>;
+    expect(auditCalls.at(-1)?.[0].data).toMatchObject({
+      actorId: accountId,
+      entityId: accountId,
+      eventType: 'DSV_ADMIN_ACCOUNT_CREDENTIALS_UPDATED',
+      redactedDiff: {
+        loginIdChanged: true,
+        passwordChanged: true,
+        sessionRotated: true,
+      },
+      requestId: credentialContext.requestId,
+      shopId,
+    });
   });
 
   test('maps unique races to public operator invitation errors', async () => {
@@ -228,34 +265,35 @@ describe('PrismaDsvAdminOperatorInvitationService', () => {
       accountId,
       currentPassword: 'KnownStrongPassw0rd!',
       loginId: 'operator-new',
+      ...credentialContext,
     })).rejects.toMatchObject({ code: 'LOGIN_ID_EXISTS' });
   });
 });
 
 function createHarness(options: { webPublicOrigin?: string | undefined } = {}) {
+  const dsvAdminAccount = {
+    create: vi.fn(),
+    findFirst: vi.fn(),
+    findUnique: vi.fn(() => Promise.resolve(null)),
+    update: vi.fn(),
+  };
+  const dsvAdminAccountInvite = {
+    create: vi.fn(() => Promise.resolve(invite())),
+    findUnique: vi.fn(),
+    updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
+  };
+  const dsvAuditEvent = { create: vi.fn(() => Promise.resolve({ id: 'audit-1' })) };
   const tx = {
-    dsvAdminAccount: {
-      create: vi.fn(),
-      findUnique: vi.fn(() => Promise.resolve(null)),
-    },
-    dsvAdminAccountInvite: {
-      create: vi.fn(() => Promise.resolve(invite())),
-      updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
-    },
+    dsvAdminAccount,
+    dsvAdminAccountInvite,
+    dsvAuditEvent,
   };
   const prisma = {
     $transaction: vi.fn((callback: (transaction: typeof tx) => unknown) => callback(tx)),
-    dsvAdminAccount: {
-      create: vi.fn(),
-      findFirst: vi.fn(),
-      findUnique: vi.fn(),
-      update: vi.fn(),
-    },
-    dsvAdminAccountInvite: {
-      findUnique: vi.fn(),
-      updateMany: vi.fn(() => Promise.resolve({ count: 1 })),
-    },
-    shop: { findUnique: vi.fn() },
+    dsvAdminAccount,
+    dsvAdminAccountInvite,
+    dsvAuditEvent,
+    shop: { findUnique: vi.fn(() => Promise.resolve({ id: shopId, shopDomain: 'tomatonofood.com' })) },
   };
   const manualEmailService = {
     getConfig: vi.fn(),

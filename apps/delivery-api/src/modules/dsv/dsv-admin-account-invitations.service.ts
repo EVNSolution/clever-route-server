@@ -39,13 +39,13 @@ export type DsvAdminOperatorAccountMetadata = {
 export type DsvAdminOperatorInvitationService = {
   complete(input: { loginId: string; password: string; requestId: string; shopDomain: string; token: string }): Promise<DsvAdminOperatorAccountMetadata>;
   createInvitation(input: { actorId: string | null; displayName?: string; email: string; message?: string; requestId: string; shopDomain: string }): Promise<DsvAdminOperatorInviteMetadata>;
-  updateCredentials(input: { accountId: string; currentPassword: string; loginId?: string; password?: string }): Promise<DsvAdminOperatorAccountMetadata>;
+  updateCredentials(input: { accountId: string; currentPassword: string; loginId?: string; password?: string; requestId: string; shopDomain: string }): Promise<DsvAdminOperatorAccountMetadata>;
   validateInvitation(input: { shopDomain: string; token: string }): Promise<DsvAdminOperatorInviteValidation | null>;
 };
 
 export type DsvAdminOperatorInvitationPrisma = Pick<
   PrismaClient,
-  '$transaction' | 'dsvAdminAccount' | 'dsvAdminAccountInvite' | 'shop'
+  '$transaction' | 'dsvAdminAccount' | 'dsvAdminAccountInvite' | 'dsvAuditEvent' | 'shop'
 >;
 
 export type DsvAdminOperatorInvitationSettingsService = Pick<{
@@ -90,7 +90,7 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
           shopId: shop.id,
         },
       });
-      return tx.dsvAdminAccountInvite.create({
+      const created = await tx.dsvAdminAccountInvite.create({
         data: {
           createdBy: input.actorId,
           displayName,
@@ -100,6 +100,16 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
           tokenHash,
         },
       });
+      await createAdminSecurityAudit(tx, {
+        actorId: input.actorId,
+        entityId: created.id,
+        entityType: 'DSV_ADMIN_ACCOUNT_INVITE',
+        eventType: 'DSV_ADMIN_ACCOUNT_INVITATION_CREATED',
+        redactedDiff: { expiresAt: expiresAt.toISOString() },
+        requestId: input.requestId,
+        shopId: shop.id,
+      });
+      return created;
     });
     try {
       await this.sendInviteEmail({
@@ -111,13 +121,23 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
         token,
       });
     } catch (error) {
-      await this.prisma.dsvAdminAccountInvite.updateMany({
-        data: { revokedAt: new Date() },
-        where: {
-          consumedAt: null,
-          id: invite.id,
-          revokedAt: null,
-        },
+      await this.prisma.$transaction(async (tx) => {
+        await tx.dsvAdminAccountInvite.updateMany({
+          data: { revokedAt: new Date() },
+          where: {
+            consumedAt: null,
+            id: invite.id,
+            revokedAt: null,
+          },
+        });
+        await createAdminSecurityAudit(tx, {
+          actorId: input.actorId,
+          entityId: invite.id,
+          entityType: 'DSV_ADMIN_ACCOUNT_INVITE',
+          eventType: 'DSV_ADMIN_ACCOUNT_INVITATION_DELIVERY_FAILED',
+          requestId: input.requestId,
+          shopId: shop.id,
+        });
       });
       throw error;
     }
@@ -158,7 +178,7 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
       if (consumed.count !== 1) throw new DsvAdminOperatorInvitationError('INVALID_TOKEN', 'Invitation token is invalid');
       await assertLoginIdAvailable(tx, loginId);
       await assertEmailAvailable(tx, invite.email);
-      return tx.dsvAdminAccount.create({
+      const created = await tx.dsvAdminAccount.create({
         data: {
           activeSessionId: randomUUID(),
           displayName: invite.displayName,
@@ -171,13 +191,23 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
           status: 'ACTIVE',
         },
       });
+      await createAdminSecurityAudit(tx, {
+        actorId: created.id,
+        entityId: created.id,
+        entityType: 'DSV_ADMIN_ACCOUNT',
+        eventType: 'DSV_ADMIN_ACCOUNT_ACTIVATED',
+        redactedDiff: { invitationId: invite.id },
+        requestId: input.requestId,
+        shopId: invite.shopId,
+      });
+      return created;
     }).catch((error: unknown) => {
       throw mapUniqueConflict(error);
     });
     return accountMetadata(account);
   }
 
-  async updateCredentials(input: { accountId: string; currentPassword: string; loginId?: string; password?: string }): Promise<DsvAdminOperatorAccountMetadata> {
+  async updateCredentials(input: { accountId: string; currentPassword: string; loginId?: string; password?: string; requestId: string; shopDomain: string }): Promise<DsvAdminOperatorAccountMetadata> {
     const loginId = input.loginId === undefined ? undefined : normalizeLoginId(input.loginId);
     if (loginId === null) throw new DsvAdminOperatorInvitationError('BAD_REQUEST', 'loginId is invalid');
     if (input.loginId === undefined && input.password === undefined) {
@@ -187,6 +217,8 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
       await constantTimePasswordCheck(input.currentPassword);
       throw new DsvAdminOperatorInvitationError('WEAK_PASSWORD', 'Password does not meet strength requirements');
     }
+    const shop = await this.findShop(input.shopDomain);
+    if (shop === null) throw new DsvAdminOperatorInvitationError('NOT_FOUND', 'Customer workspace not found');
     const existing = await this.prisma.dsvAdminAccount.findFirst({
       where: { id: input.accountId, status: 'ACTIVE' },
     });
@@ -225,16 +257,32 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
       passwordCredentials.passwordSalt = randomBytes(16).toString('base64url');
       passwordCredentials.passwordHash = await hashPassword(input.password, passwordCredentials.passwordSalt);
     }
-    const updated = await this.prisma.dsvAdminAccount.update({
-      data: {
-        activeSessionId: randomUUID(),
-        failedLoginAttempts: 0,
-        lockedUntil: null,
-        ...(loginId === undefined ? {} : { loginId }),
-        ...passwordCredentials,
-        ...(input.password === undefined ? {} : { mustChangePassword: false }),
-      },
-      where: { id: existing.id },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const account = await tx.dsvAdminAccount.update({
+        data: {
+          activeSessionId: randomUUID(),
+          failedLoginAttempts: 0,
+          lockedUntil: null,
+          ...(loginId === undefined ? {} : { loginId }),
+          ...passwordCredentials,
+          ...(input.password === undefined ? {} : { mustChangePassword: false }),
+        },
+        where: { id: existing.id },
+      });
+      await createAdminSecurityAudit(tx, {
+        actorId: existing.id,
+        entityId: existing.id,
+        entityType: 'DSV_ADMIN_ACCOUNT',
+        eventType: 'DSV_ADMIN_ACCOUNT_CREDENTIALS_UPDATED',
+        redactedDiff: {
+          loginIdChanged: loginId !== undefined && loginId !== existing.loginId,
+          passwordChanged: input.password !== undefined,
+          sessionRotated: true,
+        },
+        requestId: input.requestId,
+        shopId: shop.id,
+      });
+      return account;
     }).catch((error: unknown) => {
       throw mapUniqueConflict(error);
     });
@@ -293,6 +341,34 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
       where: appScopedShopWhere({ shopDomain }),
     });
   }
+}
+
+async function createAdminSecurityAudit(
+  tx: Pick<Prisma.TransactionClient, 'dsvAuditEvent'>,
+  input: {
+    actorId: string | null;
+    entityId: string;
+    entityType: 'DSV_ADMIN_ACCOUNT' | 'DSV_ADMIN_ACCOUNT_INVITE';
+    eventType: string;
+    redactedDiff?: Record<string, unknown>;
+    requestId: string;
+    shopId: string;
+  },
+): Promise<void> {
+  await tx.dsvAuditEvent.create({
+    data: {
+      actorId: input.actorId,
+      actorType: 'DSV_ADMIN',
+      entityId: input.entityId,
+      entityType: input.entityType,
+      eventType: input.eventType,
+      principalType: 'DSV_ADMIN',
+      redactedDiff: (input.redactedDiff ?? {}) as Prisma.InputJsonObject,
+      redactionClass: 'PII_REDACTED',
+      requestId: input.requestId,
+      shopId: input.shopId,
+    },
+  });
 }
 
 export class DsvAdminOperatorInvitationError extends Error {

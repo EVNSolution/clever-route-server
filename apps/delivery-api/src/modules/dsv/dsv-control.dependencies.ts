@@ -129,6 +129,7 @@ function isDsvAdminAccountManager(value: DsvAdminAccountAuthenticator): value is
     && typeof candidate.delete === 'function'
     && typeof candidate.list === 'function'
     && typeof candidate.resetPassword === 'function'
+    && typeof candidate.revokeSession === 'function'
     && typeof candidate.setStatus === 'function';
 }
 
