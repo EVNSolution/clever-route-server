@@ -1848,6 +1848,370 @@ describe("Admin WooCommerce connection UI routes", () => {
     }
   });
 
+  test("blocks ordinary admin Route Ops GET access outside actor shop allowlist before service access", async () => {
+    const listCanonicalOrders = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["orderSyncService"]
+      >["listCanonicalOrders"]
+    >(() => Promise.resolve([canonicalOrder()]));
+    const { app } = await createUiHarness({
+      actor: {
+        allowedShopDomains: ["tenant-a.example.test"],
+        subject: "tenant-a-operator",
+      },
+      orderSyncService: { listCanonicalOrders },
+    });
+
+    try {
+      const { cookie } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        headers: { cookie, accept: "application/json" },
+        method: "GET",
+        url: "/admin/ui/app/api/orders?shopDomain=tenant-b.example.test",
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(readApiError(response).message).toContain(
+        "Admin actor is not allowed to access this shopDomain.",
+      );
+      expect(listCanonicalOrders).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test("blocks ordinary admin Route Ops mutations outside actor shop allowlist before service access", async () => {
+    const requestSync = vi.fn<
+      NonNullable<
+        AdminCommerceConnectionsUiDependencies["wooSyncService"]
+      >["requestSync"]
+    >(() =>
+      Promise.resolve({
+        alreadyRunning: false,
+        message: "Sync accepted. Processing is running in the background.",
+        startBackgroundProcessing: true,
+        syncRun: {
+          acceptedAt: "2026-05-24T00:00:00.000Z",
+          completedAt: null,
+          errorMessage: null,
+          request: {
+            modifiedAfter: null,
+            pageSize: 50,
+            status: null,
+          },
+          result: null,
+          startedAt: null,
+          status: "QUEUED" as const,
+          syncRunId: "sync-run-id",
+        },
+      }),
+    );
+    const { app } = await createUiHarness({
+      actor: {
+        allowedShopDomains: ["tenant-a.example.test"],
+        subject: "tenant-a-operator",
+      },
+      wooSyncService: {
+        processSyncRun: vi.fn(),
+        readLatestSyncRun: vi.fn(),
+        readSyncRun: vi.fn(),
+        requestSync,
+        syncSingleOrder: vi.fn(),
+      },
+    });
+
+    try {
+      const { cookie, csrfToken } = await loginAndReadCsrf(app);
+      const response = await app.inject({
+        method: "POST",
+        url: "/admin/ui/app/api/orders/sync?shopDomain=tenant-b.example.test",
+        ...authenticatedJsonRequest(cookie, { pageSize: 50 }, csrfToken),
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(readApiError(response).message).toContain(
+        "Admin actor is not allowed to access this shopDomain.",
+      );
+      expect(requestSync).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test.each([
+    {
+      expectedError: "Admin actor is not allowed to access this shopDomain.",
+      name: "driver invite form",
+      serviceName: "createPendingDriver",
+      setup: async () => {
+        const createPendingDriver = vi.fn<
+          NonNullable<
+            AdminCommerceConnectionsUiDependencies["driverService"]
+          >["createPendingDriver"]
+        >(() => Promise.resolve(driverRow()));
+        const { app } = await createUiHarness({
+          actor: {
+            allowedShopDomains: ["tenant-a.example.test"],
+            subject: "tenant-a-operator",
+          },
+          driverService: {
+            createPendingDriver,
+            deleteDriver: vi.fn(),
+            listDrivers: vi.fn(() => Promise.resolve([])),
+            regenerateInviteCode: vi.fn(),
+          },
+        });
+        return {
+          app,
+          serviceCall: createPendingDriver,
+          submit: (cookie: string, csrfToken: string) =>
+            app.inject({
+              method: "POST",
+              url: "/admin/ui/app/drivers",
+              ...authenticatedMultipartRequest(cookie, {
+                csrfToken,
+                displayName: "Wrong Shop Driver",
+                phone: "+14165550999",
+                shopDomain: "tenant-b.example.test",
+              }),
+            }),
+        };
+      },
+    },
+    {
+      expectedError: "Admin actor is not allowed to access this shopDomain.",
+      name: "settings form",
+      serviceName: "saveSettings",
+      setup: async () => {
+        const saveSettings = vi.fn<
+          NonNullable<
+            AdminCommerceConnectionsUiDependencies["settingsService"]
+          >["saveSettings"]
+        >(() => Promise.resolve(storeSettings()));
+        const { app } = await createUiHarness({
+          actor: {
+            allowedShopDomains: ["tenant-a.example.test"],
+            subject: "tenant-a-operator",
+          },
+          settingsService: {
+            getSettings: vi.fn(() => Promise.resolve(storeSettings())),
+            saveSettings,
+          },
+        });
+        return {
+          app,
+          serviceCall: saveSettings,
+          submit: (cookie: string, csrfToken: string) =>
+            app.inject({
+              method: "POST",
+              url: "/admin/ui/app/settings",
+              ...authenticatedMultipartRequest(cookie, {
+                csrfToken,
+                defaultDepotAddress: "Wrong shop depot",
+                shopDomain: "tenant-b.example.test",
+              }),
+            }),
+        };
+      },
+    },
+    {
+      expectedError: "Admin actor is not allowed to access this shopDomain.",
+      name: "route creation form",
+      serviceName: "listCanonicalOrders",
+      setup: async () => {
+        const listCanonicalOrders = vi.fn<
+          NonNullable<
+            AdminCommerceConnectionsUiDependencies["orderSyncService"]
+          >["listCanonicalOrders"]
+        >(() => Promise.resolve([canonicalOrder()]));
+        const createRoutePlan = vi.fn<
+          NonNullable<
+            AdminCommerceConnectionsUiDependencies["routePlanService"]
+          >["createRoutePlan"]
+        >(() => Promise.resolve(routePlanSummary()));
+        const { app } = await createUiHarness({
+          actor: {
+            allowedShopDomains: ["tenant-a.example.test"],
+            subject: "tenant-a-operator",
+          },
+          orderSyncService: { listCanonicalOrders },
+          routePlanService: {
+            assignRoutePlanDriver: vi.fn(),
+            createRoutePlan,
+            getRoutePlanDetail: vi.fn(),
+            listRoutePlans: vi.fn(() => Promise.resolve([])),
+            updateRoutePlanStops: vi.fn(),
+          },
+        });
+        return {
+          app,
+          serviceCall: listCanonicalOrders,
+          submit: (cookie: string, csrfToken: string) =>
+            app.inject({
+              method: "POST",
+              url: "/admin/ui/app/routes/create",
+              ...authenticatedMultipartRequest(cookie, {
+                csrfToken,
+                planDate: "2026-05-26",
+                routeName: "Wrong shop route",
+                selectedOrderGids: "gid://woocommerce/Order/1001",
+                shopDomain: "tenant-b.example.test",
+              }),
+            }),
+        };
+      },
+    },
+    {
+      expectedError: "Admin actor is not allowed to access this shopDomain.",
+      name: "route stops form",
+      serviceName: "getRoutePlanDetail",
+      setup: async () => {
+        const getRoutePlanDetail = vi.fn<
+          NonNullable<
+            AdminCommerceConnectionsUiDependencies["routePlanService"]
+          >["getRoutePlanDetail"]
+        >(() => Promise.resolve(routePlanDetail()));
+        const { app } = await createUiHarness({
+          actor: {
+            allowedShopDomains: ["tenant-a.example.test"],
+            subject: "tenant-a-operator",
+          },
+          orderSyncService: {
+            listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+          },
+          routePlanService: {
+            assignRoutePlanDriver: vi.fn(),
+            createRoutePlan: vi.fn(),
+            getRoutePlanDetail,
+            listRoutePlans: vi.fn(() => Promise.resolve([])),
+            updateRoutePlanStops: vi.fn(),
+          },
+        });
+        return {
+          app,
+          serviceCall: getRoutePlanDetail,
+          submit: (cookie: string, csrfToken: string) =>
+            app.inject({
+              method: "POST",
+              url: "/admin/ui/app/routes/route-plan-id/stops",
+              ...authenticatedMultipartRequest(cookie, {
+                csrfToken,
+                shopDomain: "tenant-b.example.test",
+                stopOrder:
+                  "gid://woocommerce/Order/1002\ngid://woocommerce/Order/1001",
+              }),
+            }),
+        };
+      },
+    },
+    {
+      expectedError: "Admin actor is not allowed to access this shopDomain.",
+      name: "route driver assignment form",
+      serviceName: "assignRoutePlanDriver",
+      setup: async () => {
+        const assignRoutePlanDriver = vi.fn<
+          NonNullable<
+            AdminCommerceConnectionsUiDependencies["routePlanService"]
+          >["assignRoutePlanDriver"]
+        >(() => Promise.resolve(routePlanDetail()));
+        const { app } = await createUiHarness({
+          actor: {
+            allowedShopDomains: ["tenant-a.example.test"],
+            subject: "tenant-a-operator",
+          },
+          orderSyncService: {
+            listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+          },
+          routePlanService: {
+            assignRoutePlanDriver,
+            createRoutePlan: vi.fn(),
+            getRoutePlanDetail: vi.fn(),
+            listRoutePlans: vi.fn(() => Promise.resolve([])),
+            updateRoutePlanStops: vi.fn(),
+          },
+        });
+        return {
+          app,
+          serviceCall: assignRoutePlanDriver,
+          submit: (cookie: string, csrfToken: string) =>
+            app.inject({
+              method: "POST",
+              url: "/admin/ui/app/routes/route-plan-id/driver",
+              ...authenticatedMultipartRequest(cookie, {
+                csrfToken,
+                driverId: "driver-id",
+                shopDomain: "tenant-b.example.test",
+              }),
+            }),
+        };
+      },
+    },
+    {
+      expectedError: "Admin actor is not allowed to access this shopDomain.",
+      name: "route optimize form override",
+      serviceName: "createJob",
+      setup: async () => {
+        const createJob = vi.fn<
+          NonNullable<
+            AdminCommerceConnectionsUiDependencies["routeOptimizationJobService"]
+          >["createJob"]
+        >(() => Promise.resolve(routeOptimizationJob()));
+        const { app } = await createUiHarness({
+          actor: {
+            allowedShopDomains: ["tenant-a.example.test"],
+            subject: "tenant-a-operator",
+          },
+          orderSyncService: {
+            listCanonicalOrders: vi.fn(() => Promise.resolve([])),
+          },
+          routeOptimizationJobService: routeOptimizationJobServiceMock({
+            createJob,
+          }),
+          routePlanService: {
+            assignRoutePlanDriver: vi.fn(),
+            createRoutePlan: vi.fn(),
+            getRoutePlanDetail: vi.fn(() => Promise.resolve(routePlanDetail())),
+            listRoutePlans: vi.fn(() => Promise.resolve([])),
+            updateRoutePlanStops: vi.fn(),
+          },
+        });
+        return {
+          app,
+          serviceCall: createJob,
+          submit: (cookie: string, csrfToken: string) =>
+            app.inject({
+              method: "POST",
+              url: "/admin/ui/app/routes/route-plan-id/optimize",
+              ...authenticatedMultipartRequest(cookie, {
+                csrfToken,
+                shopDomain: "tenant-b.example.test",
+              }),
+            }),
+        };
+      },
+    },
+  ])(
+    "blocks ordinary admin cross-tenant $name before $serviceName service access",
+    async ({ expectedError, setup }) => {
+      const { app, serviceCall, submit } = await setup();
+
+      try {
+        const { cookie, csrfToken } = await loginAndReadCsrf(app);
+        const response = await submit(cookie, csrfToken);
+
+        expect(response.statusCode).toBe(303);
+        const redirectUrl = new URL(
+          String(response.headers.location),
+          "https://clever-route-api.cleversystem.ai",
+        );
+        expect(redirectUrl.searchParams.get("error")).toBe(expectedError);
+        expect(serviceCall).not.toHaveBeenCalled();
+      } finally {
+        await app.close();
+      }
+    },
+  );
+
   test("serves the Route Ops SPA shell and WP-session JSON APIs for orders, routes, drivers, and settings", async () => {
     const listCanonicalOrders = vi.fn<
       NonNullable<

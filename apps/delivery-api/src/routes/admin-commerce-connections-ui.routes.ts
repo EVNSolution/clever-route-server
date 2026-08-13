@@ -4,7 +4,10 @@ import { fileURLToPath } from "node:url";
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
-import type { AdminCommerceActor } from "../modules/commerce/admin-commerce-auth.js";
+import {
+  canAccessShopDomain,
+  type AdminCommerceActor,
+} from "../modules/commerce/admin-commerce-auth.js";
 import type { AdminDriverServiceContract } from "../modules/driver/admin-driver.types.js";
 import type { SafeWooCommerceConnection } from "../modules/commerce/commerce-connection.service.js";
 import type {
@@ -1421,7 +1424,7 @@ function registerRouteOpsAppRoutes(
       reply,
       readSession(request, dependencies),
       async (session) => {
-        const shopDomain = readRouteOpsShopDomain(request, session);
+        const shopDomain = readRouteOpsShopDomain(request, session, dependencies);
         const settings =
           shopDomain === null || dependencies.settingsService === undefined
             ? null
@@ -1457,7 +1460,7 @@ function registerRouteOpsAppRoutes(
       reply,
       readSession(request, dependencies),
       async (session) => {
-        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
         if (dependencies.notificationService === undefined) {
           throw new WooCommerceOnboardingError(
             "BAD_REQUEST",
@@ -1493,7 +1496,7 @@ function registerRouteOpsAppRoutes(
         readSession(request, dependencies),
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           if (dependencies.notificationService === undefined) {
             throw new WooCommerceOnboardingError(
               "BAD_REQUEST",
@@ -1524,7 +1527,7 @@ function registerRouteOpsAppRoutes(
       reply,
       readSession(request, dependencies),
       async (session) => {
-        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
         if (dependencies.orderIngestAuditService === undefined) {
           throw new WooCommerceOnboardingError(
             "BAD_REQUEST",
@@ -1556,7 +1559,7 @@ function registerRouteOpsAppRoutes(
       reply,
       readSession(request, dependencies),
       async (session) => {
-        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
         if (dependencies.orderSyncService === undefined) {
           throw new WooCommerceOnboardingError(
             "BAD_REQUEST",
@@ -1617,7 +1620,7 @@ function registerRouteOpsAppRoutes(
       readSession(request, dependencies),
       async (session) => {
         assertRouteOpsMutationCsrf(request, session);
-        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
         if (dependencies.wooSyncService === undefined) {
           throw new WooCommerceOnboardingError(
             "BAD_REQUEST",
@@ -1649,7 +1652,7 @@ function registerRouteOpsAppRoutes(
         reply,
         readSession(request, dependencies),
         async (session) => {
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           if (dependencies.wooSyncService === undefined) {
             throw new WooCommerceOnboardingError(
               "BAD_REQUEST",
@@ -1673,7 +1676,7 @@ function registerRouteOpsAppRoutes(
         reply,
         readSession(request, dependencies),
         async (session) => {
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           if (dependencies.wooSyncService === undefined) {
             throw new WooCommerceOnboardingError(
               "BAD_REQUEST",
@@ -1713,7 +1716,7 @@ function registerRouteOpsAppRoutes(
         readSession(request, dependencies),
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           if (dependencies.wooSyncService === undefined) {
             throw new WooCommerceOnboardingError(
               "BAD_REQUEST",
@@ -1745,7 +1748,7 @@ function registerRouteOpsAppRoutes(
         readSession(request, dependencies),
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           const services = requireBulkGeocodeServices(dependencies);
           const filters = await readRouteOpsOrderFilters({
             dependencies,
@@ -1775,7 +1778,7 @@ function registerRouteOpsAppRoutes(
         (session) => {
           const job = readBulkGeocodeJobForSession(
             request.params.jobId,
-            requireRouteOpsShopDomain(request, session),
+            requireRouteOpsShopDomain(request, session, dependencies),
           );
           return routeOpsData(toBulkGeocodeOrderResponse(job));
         },
@@ -1789,7 +1792,7 @@ function registerRouteOpsAppRoutes(
       readSession(request, dependencies),
       async (session) => {
         assertRouteOpsMutationCsrf(request, session);
-        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
         const services = requireBulkGeocodeServices(dependencies);
         const filters = await readRouteOpsOrderFilters({
           dependencies,
@@ -1824,7 +1827,7 @@ function registerRouteOpsAppRoutes(
         (session) => {
           const job = readBulkGeocodeJobForSession(
             request.params.jobId,
-            requireRouteOpsShopDomain(request, session),
+            requireRouteOpsShopDomain(request, session, dependencies),
           );
           return routeOpsData({ geocode: toBulkGeocodeJobDto(job) });
         },
@@ -1839,7 +1842,7 @@ function registerRouteOpsAppRoutes(
         reply,
         readSession(request, dependencies),
         async (session) => {
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           if (dependencies.orderSyncService === undefined) {
             throw new WooCommerceOnboardingError(
               "BAD_REQUEST",
@@ -1875,7 +1878,7 @@ function registerRouteOpsAppRoutes(
         readSession(request, dependencies),
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           if (dependencies.deliveryCustomerService === undefined) {
             throw new WooCommerceOnboardingError(
               "BAD_REQUEST",
@@ -1916,7 +1919,7 @@ function registerRouteOpsAppRoutes(
         readSession(request, dependencies),
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           if (dependencies.deliveryCustomerService === undefined) {
             throw new WooCommerceOnboardingError(
               "BAD_REQUEST",
@@ -1957,7 +1960,7 @@ function registerRouteOpsAppRoutes(
         readSession(request, dependencies),
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           if (dependencies.deliveryCustomerService === undefined) {
             throw new WooCommerceOnboardingError(
               "BAD_REQUEST",
@@ -1998,7 +2001,7 @@ function registerRouteOpsAppRoutes(
         reply,
         readSession(request, dependencies),
         async (session) => {
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           if (dependencies.orderSyncService === undefined) {
             throw new WooCommerceOnboardingError(
               "BAD_REQUEST",
@@ -2037,7 +2040,7 @@ function registerRouteOpsAppRoutes(
         readSession(request, dependencies),
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           if (
             dependencies.orderSyncService?.patchCanonicalOrder === undefined
           ) {
@@ -2080,7 +2083,7 @@ function registerRouteOpsAppRoutes(
         readSession(request, dependencies),
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           if (
             dependencies.orderSyncService?.patchCanonicalOrderCoordinates ===
             undefined
@@ -2121,7 +2124,7 @@ function registerRouteOpsAppRoutes(
         readSession(request, dependencies),
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           if (dependencies.orderSyncService === undefined) {
             throw new WooCommerceOnboardingError(
               "BAD_REQUEST",
@@ -2239,7 +2242,7 @@ function registerRouteOpsAppRoutes(
       reply,
       readSession(request, dependencies),
       async (session) => {
-        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
         if (
           dependencies.orderSyncService?.listDeliveryBatchCandidates ===
           undefined
@@ -2268,7 +2271,7 @@ function registerRouteOpsAppRoutes(
       readSession(request, dependencies),
       async (session) => {
         const services = requireRouteUiServices(dependencies);
-        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
         const deliveryDate = normalizeOptionalDate(
           readQueryString(request.query, "deliveryDate"),
         );
@@ -2310,7 +2313,7 @@ function registerRouteOpsAppRoutes(
       async (session) => {
         assertRouteOpsMutationCsrf(request, session);
         const services = requireRouteUiServices(dependencies);
-        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
         const body = readRouteOpsBodyObject(request.body);
         const planDate = normalizeRequiredDate(
           readRequiredJsonString(body, "planDate"),
@@ -2349,7 +2352,7 @@ function registerRouteOpsAppRoutes(
         assertRouteOpsMutationCsrf(request, session);
         const services = requireRouteUiServices(dependencies);
         const routeGroupingService = requireRouteGroupingService(services);
-        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
         const body = readRouteOpsBodyObject(request.body);
         try {
           const grouping = await routeGroupingService.createGrouping({
@@ -2377,7 +2380,7 @@ function registerRouteOpsAppRoutes(
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
           const routeGroupingService = requireRouteGroupingService(requireRouteUiServices(dependencies));
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           try {
             const result = await routeGroupingService.deleteGrouping({
               groupingId: request.params.routeGroupId,
@@ -2401,7 +2404,7 @@ function registerRouteOpsAppRoutes(
         readSession(request, dependencies),
         async (session) => {
           const routeGroupingService = requireRouteGroupingService(requireRouteUiServices(dependencies));
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           const grouping = await routeGroupingService.getGrouping({
             groupingId: request.params.routeGroupId,
             shopDomain,
@@ -2424,7 +2427,7 @@ function registerRouteOpsAppRoutes(
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
           const routeGroupingService = requireRouteGroupingService(requireRouteUiServices(dependencies));
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           const body = readRouteOpsBodyObject(request.body);
           try {
             const deletePolygonIds = readOptionalJsonStringArray(body, "deletePolygonIds");
@@ -2454,7 +2457,7 @@ function registerRouteOpsAppRoutes(
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
           const routeGroupingService = requireRouteGroupingService(requireRouteUiServices(dependencies));
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           const body = readRouteOpsBodyObject(request.body);
           try {
             const grouping = await routeGroupingService.resolveAssignments({
@@ -2481,7 +2484,7 @@ function registerRouteOpsAppRoutes(
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
           const routeGroupingService = requireRouteGroupingService(requireRouteUiServices(dependencies));
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           const body = readRouteOpsBodyObject(request.body);
           try {
             const grouping = await routeGroupingService.generateChildRoutes({
@@ -2509,7 +2512,7 @@ function registerRouteOpsAppRoutes(
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
           const routeGroupingService = requireRouteGroupingService(requireRouteUiServices(dependencies));
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           const body = readRouteOpsBodyObject(request.body);
           try {
             const grouping = await routeGroupingService.rollback({
@@ -2536,7 +2539,7 @@ function registerRouteOpsAppRoutes(
         readSession(request, dependencies),
         async (session) => {
           const services = requireRouteUiServices(dependencies);
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           const detail = await services.routePlanService.getRoutePlanDetail({
             routePlanId: request.params.routePlanId,
             shopDomain,
@@ -2571,7 +2574,7 @@ function registerRouteOpsAppRoutes(
                 400,
               );
             }
-            const shopDomain = requireRouteOpsShopDomain(request, session);
+            const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
             const result = await services.routePlanService.deleteRoutePlan({
               routePlanId: request.params.routePlanId,
               shopDomain,
@@ -2604,7 +2607,7 @@ function registerRouteOpsAppRoutes(
               400,
             );
           }
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           const body = readRouteOpsBodyObject(request.body);
           const detail = await services.routePlanService.getRoutePlanDetail({
             routePlanId: request.params.routePlanId,
@@ -2701,7 +2704,7 @@ function registerRouteOpsAppRoutes(
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
           const services = requireRouteUiServices(dependencies);
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           const body = readRouteOpsBodyObject(request.body);
           const detail = await services.routePlanService.getRoutePlanDetail({
             routePlanId: request.params.routePlanId,
@@ -2752,6 +2755,7 @@ function registerRouteOpsAppRoutes(
           assertRouteOpsMutationCsrf(request, session);
           const services = requireRouteUiServices(dependencies);
           const job = await createRouteOptimizationJobForRequest({
+            dependencies,
             request,
             routePlanId: request.params.routePlanId,
             services,
@@ -2772,7 +2776,7 @@ function registerRouteOpsAppRoutes(
         async (session) => {
           const services = requireRouteUiServices(dependencies);
           const jobService = requireRouteOptimizationJobService(services);
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           await assertRoutePlanExistsForOptimizationRead({
             routePlanId: request.params.routePlanId,
             services,
@@ -2797,7 +2801,7 @@ function registerRouteOpsAppRoutes(
         async (session) => {
           const services = requireRouteUiServices(dependencies);
           const jobService = requireRouteOptimizationJobService(services);
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           await assertRoutePlanExistsForOptimizationRead({
             routePlanId: request.params.routePlanId,
             services,
@@ -2831,6 +2835,7 @@ function registerRouteOpsAppRoutes(
           assertRouteOpsMutationCsrf(request, session);
           const services = requireRouteUiServices(dependencies);
           const job = await createRouteOptimizationJobForRequest({
+            dependencies,
             request,
             routePlanId: request.params.routePlanId,
             services,
@@ -2851,7 +2856,7 @@ function registerRouteOpsAppRoutes(
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
           const services = requireRouteUiServices(dependencies);
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           const body = readRouteOpsBodyObject(request.body);
           const updated = await services.routePlanService.assignRoutePlanDriver(
             {
@@ -2889,7 +2894,7 @@ function registerRouteOpsAppRoutes(
               400,
             );
           }
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           const body = readRouteOpsBodyObject(request.body);
           try {
             const updated =
@@ -2937,7 +2942,7 @@ function registerRouteOpsAppRoutes(
               400,
             );
           }
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           try {
             const updated = await services.routePlanService.publishRoutePlan({
               routePlanId: request.params.routePlanId,
@@ -2975,7 +2980,7 @@ function registerRouteOpsAppRoutes(
       reply,
       readSession(request, dependencies),
       async (session) => {
-        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
         if (dependencies.driverService === undefined) {
           return routeOpsData({ drivers: [] });
         }
@@ -2994,7 +2999,7 @@ function registerRouteOpsAppRoutes(
       readSession(request, dependencies),
       async (session) => {
         assertRouteOpsMutationCsrf(request, session);
-        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
         if (dependencies.driverService === undefined) {
           throw new WooCommerceOnboardingError(
             "BAD_REQUEST",
@@ -3028,7 +3033,7 @@ function registerRouteOpsAppRoutes(
         readSession(request, dependencies),
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           if (dependencies.driverService === undefined) {
             throw new WooCommerceOnboardingError(
               "BAD_REQUEST",
@@ -3071,7 +3076,7 @@ function registerRouteOpsAppRoutes(
         readSession(request, dependencies),
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           if (dependencies.driverService === undefined) {
             throw new WooCommerceOnboardingError(
               "BAD_REQUEST",
@@ -3111,7 +3116,7 @@ function registerRouteOpsAppRoutes(
       reply,
       readSession(request, dependencies),
       async (session) => {
-        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
         const settings =
           dependencies.settingsService === undefined
             ? null
@@ -3133,7 +3138,7 @@ function registerRouteOpsAppRoutes(
       readSession(request, dependencies),
       async (session) => {
         assertRouteOpsMutationCsrf(request, session);
-        const shopDomain = requireRouteOpsShopDomain(request, session);
+        const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
         if (dependencies.settingsService === undefined) {
           throw new WooCommerceOnboardingError(
             "BAD_REQUEST",
@@ -3181,7 +3186,7 @@ function registerRouteOpsAppRoutes(
         readSession(request, dependencies),
         async (session) => {
           assertRouteOpsMutationCsrf(request, session);
-          const shopDomain = requireRouteOpsShopDomain(request, session);
+          const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
           if (dependencies.settingsService === undefined) {
             throw new WooCommerceOnboardingError(
               "BAD_REQUEST",
@@ -3309,7 +3314,7 @@ async function openAdminNotificationStream(
   }
   let cleanup: (() => void) | null = null;
   try {
-    const shopDomain = requireRouteOpsShopDomain(request, session);
+    const shopDomain = requireRouteOpsShopDomain(request, session, dependencies);
     if (dependencies.notificationService === undefined) {
       throw new WooCommerceOnboardingError(
         "BAD_REQUEST",
@@ -3427,11 +3432,11 @@ function writeAdminNotificationStreamEvent(reply: FastifyReply): void {
 function renderRouteOpsSpaShell(
   reply: FastifyReply,
   request: FastifyRequest,
-  _dependencies: AdminCommerceConnectionsUiDependencies,
+  dependencies: AdminCommerceConnectionsUiDependencies,
   session: AdminWebSession,
 ): unknown {
   try {
-    readRouteOpsShopDomain(request, session);
+    readRouteOpsShopDomain(request, session, dependencies);
   } catch (error) {
     return sendRouteOpsHtml(
       reply,
@@ -3583,7 +3588,11 @@ async function handleDriverCreate(
     shopDomain = normalizeRequiredShopDomain(
       readRequiredField(fields, "shopDomain", "shopDomain"),
     );
-    assertWpPluginShopAccess(session, shopDomain);
+    shopDomain = requireAllowedRouteOpsShopDomain({
+      dependencies,
+      session,
+      shopDomain,
+    });
     await dependencies.driverService.createPendingDriver({
       createdBy: dependencies.actor.subject,
       displayName: readOptionalField(fields, "displayName"),
@@ -3635,7 +3644,11 @@ async function handleSettingsSave(
     shopDomain = normalizeRequiredShopDomain(
       readRequiredField(fields, "shopDomain", "shopDomain"),
     );
-    assertWpPluginShopAccess(session, shopDomain);
+    shopDomain = requireAllowedRouteOpsShopDomain({
+      dependencies,
+      session,
+      shopDomain,
+    });
     await dependencies.settingsService.saveSettings({
       defaultDepotAddress: readOptionalField(fields, "defaultDepotAddress"),
       defaultDepotLatitude: readOptionalCoordinate(fields.defaultDepotLatitude),
@@ -3685,7 +3698,11 @@ async function handleRoutePlanCreate(
     shopDomain = normalizeRequiredShopDomain(
       readRequiredField(fields, "shopDomain", "shopDomain"),
     );
-    assertWpPluginShopAccess(session, shopDomain);
+    shopDomain = requireAllowedRouteOpsShopDomain({
+      dependencies,
+      session,
+      shopDomain,
+    });
     planDate = normalizeRequiredDate(
       readRequiredField(fields, "planDate", "plan date"),
     );
@@ -3755,7 +3772,11 @@ async function handleRouteStopsUpdate(
     shopDomain = normalizeRequiredShopDomain(
       readRequiredField(fields, "shopDomain", "shopDomain"),
     );
-    assertWpPluginShopAccess(session, shopDomain);
+    shopDomain = requireAllowedRouteOpsShopDomain({
+      dependencies,
+      session,
+      shopDomain,
+    });
     const detail = await services.routePlanService.getRoutePlanDetail({
       routePlanId,
       shopDomain,
@@ -3809,7 +3830,11 @@ async function handleRouteDriverAssignment(
     shopDomain = normalizeRequiredShopDomain(
       readRequiredField(fields, "shopDomain", "shopDomain"),
     );
-    assertWpPluginShopAccess(session, shopDomain);
+    shopDomain = requireAllowedRouteOpsShopDomain({
+      dependencies,
+      session,
+      shopDomain,
+    });
     const detail = await services.routePlanService.assignRoutePlanDriver({
       payload: { driverId: readOptionalField(fields, "driverId") },
       routePlanId,
@@ -3858,8 +3883,13 @@ async function handleRouteOptimize(
     shopDomain = normalizeRequiredShopDomain(
       readRequiredField(fields, "shopDomain", "shopDomain"),
     );
-    assertWpPluginShopAccess(session, shopDomain);
+    shopDomain = requireAllowedRouteOpsShopDomain({
+      dependencies,
+      session,
+      shopDomain,
+    });
     const job = await createRouteOptimizationJobForRequest({
+      dependencies,
       request,
       routePlanId,
       services,
@@ -4788,6 +4818,7 @@ function requireRouteOptimizationJobService(
 }
 
 type CreateRouteOptimizationJobRequestInput = {
+  dependencies: AdminCommerceConnectionsUiDependencies;
   request: FastifyRequest;
   routePlanId: string;
   services: RouteUiServices;
@@ -4800,8 +4831,17 @@ async function createRouteOptimizationJobForRequest(
 ): Promise<RouteOptimizationJobDto> {
   const jobService = requireRouteOptimizationJobService(input.services);
   const shopDomain =
-    input.shopDomainOverride ??
-    requireRouteOpsShopDomain(input.request, input.session);
+    input.shopDomainOverride === undefined
+      ? requireRouteOpsShopDomain(
+          input.request,
+          input.session,
+          input.dependencies,
+        )
+      : requireAllowedRouteOpsShopDomain({
+          dependencies: input.dependencies,
+          session: input.session,
+          shopDomain: input.shopDomainOverride,
+        });
   let job: RouteOptimizationJobDto | null;
   try {
     job = await jobService.createJob({
@@ -4881,25 +4921,50 @@ async function assertRoutePlanExistsForOptimizationRead(input: {
 function readRouteOpsShopDomain(
   request: FastifyRequest,
   session: AdminWebSession,
+  dependencies: AdminCommerceConnectionsUiDependencies,
 ): string | null {
   const sessionShopDomain = readWpPluginSessionShopDomain(session);
   const requestedShopDomain = normalizeOptionalShopDomain(
     readQueryString(request.query, "shopDomain"),
   );
   assertWpPluginShopAccess(session, requestedShopDomain);
-  return sessionShopDomain ?? requestedShopDomain;
+  const shopDomain = sessionShopDomain ?? requestedShopDomain;
+  if (shopDomain === null) return null;
+  return requireAllowedRouteOpsShopDomain({
+    dependencies,
+    session,
+    shopDomain,
+  });
 }
 
 function requireRouteOpsShopDomain(
   request: FastifyRequest,
   session: AdminWebSession,
+  dependencies: AdminCommerceConnectionsUiDependencies,
 ): string {
-  const shopDomain = readRouteOpsShopDomain(request, session);
+  const shopDomain = readRouteOpsShopDomain(request, session, dependencies);
   if (shopDomain === null) {
     throw new WooCommerceOnboardingError(
       "BAD_REQUEST",
       "shopDomain is required for this workspace.",
       400,
+    );
+  }
+  return shopDomain;
+}
+
+function requireAllowedRouteOpsShopDomain(input: {
+  dependencies: AdminCommerceConnectionsUiDependencies;
+  session: AdminWebSession;
+  shopDomain: string;
+}): string {
+  const shopDomain = normalizeRequiredShopDomain(input.shopDomain);
+  assertWpPluginShopAccess(input.session, shopDomain);
+  if (!canAccessShopDomain(input.dependencies.actor, shopDomain)) {
+    throw new WooCommerceOnboardingError(
+      "FORBIDDEN",
+      "Admin actor is not allowed to access this shopDomain.",
+      403,
     );
   }
   return shopDomain;
