@@ -13,6 +13,7 @@ import { defaultRouteScopeConfig } from '../src/modules/route-ops/route-scope-co
 const shopId = '99999999-9999-4999-8999-999999999999';
 const customerId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const accountId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const activeSessionId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
 const token = 'valid_token_value_12345678901234567890';
 
 describe('PrismaDsvCustomerAccountService', () => {
@@ -58,9 +59,9 @@ describe('PrismaDsvCustomerAccountService', () => {
 
     harness.tx.dsvCustomerAccountInvite.updateMany.mockResolvedValueOnce({ count: 1 });
     harness.tx.customerAccount.update.mockResolvedValueOnce({
+      activeSessionId,
       customerId,
       id: accountId,
-      scopeVersion: 2,
       shopId,
     });
     await expect(harness.service.complete({
@@ -70,8 +71,8 @@ describe('PrismaDsvCustomerAccountService', () => {
       token,
     })).resolves.toMatchObject({
       accountId,
+      activeSessionId,
       customerId,
-      scopeVersion: 2,
       shopDomain: 'tomatonofood.com',
       shopId,
     });
@@ -83,7 +84,7 @@ describe('PrismaDsvCustomerAccountService', () => {
     expect(consumeCalls.at(-1)?.[0].where).toMatchObject({ consumedAt: null, id: 'invite-1', revokedAt: null });
   });
 
-  test('rotates scopeVersion on every successful customer login', async () => {
+  test('rotates the active session ID on every successful customer login', async () => {
     const harness = createHarness();
     const password = 'StrongPassw0rd!';
     const passwordSalt = 'customer-login-salt';
@@ -94,15 +95,15 @@ describe('PrismaDsvCustomerAccountService', () => {
       issuer: 'CLEVER_DSV',
       passwordHash,
       passwordSalt,
-      scopeVersion: 4,
+      activeSessionId: null,
       shop: { id: shopId, shopDomain: 'tomatonofood.com' },
       shopId,
       status: 'ACTIVE',
     });
     harness.prisma.customerAccount.update.mockResolvedValueOnce({
+      activeSessionId,
       customerId,
       id: accountId,
-      scopeVersion: 5,
       shopId,
     });
 
@@ -111,16 +112,14 @@ describe('PrismaDsvCustomerAccountService', () => {
       password,
       requestId: 'req-login',
       shopDomain: 'tomatonofood.com',
-    })).resolves.toMatchObject({ accountId, scopeVersion: 5 });
+    })).resolves.toMatchObject({ accountId, activeSessionId });
     const updateCalls = harness.prisma.customerAccount.update.mock.calls as unknown as Array<[{
-      data: { lastAuthenticatedAt: unknown; scopeVersion: { increment: number } };
+      data: { activeSessionId: string; lastAuthenticatedAt: unknown };
       where: { id: string };
     }]>;
     expect(updateCalls[0]?.[0].data.lastAuthenticatedAt).toBeInstanceOf(Date);
-    expect(updateCalls[0]?.[0]).toMatchObject({
-      data: { scopeVersion: { increment: 1 } },
-      where: { id: accountId },
-    });
+    expect(updateCalls[0]?.[0].data.activeSessionId).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(updateCalls[0]?.[0].where).toEqual({ id: accountId });
   });
 
   test('creates signup invites with fragment links, token hashes only in storage, and redacted audit', async () => {

@@ -1,4 +1,4 @@
-import { createHash, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual } from 'node:crypto';
 import type { Prisma, PrismaClient } from '@prisma/client';
 
 import { appScopedShopWhere } from '../shopify/shopify-app-scope.js';
@@ -23,6 +23,7 @@ export type DsvAdminOperatorInviteValidation = {
 };
 
 export type DsvAdminOperatorAccountMetadata = {
+  activeSessionId: string;
   createdAt: Date;
   displayName: string | null;
   email: string | null;
@@ -31,7 +32,6 @@ export type DsvAdminOperatorAccountMetadata = {
   loginId: string;
   scopes: readonly DsvScope[];
   status: 'ACTIVE' | 'DISABLED';
-  tokenVersion: number;
   updatedAt: Date;
 };
 
@@ -159,6 +159,7 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
       await assertEmailAvailable(tx, invite.email);
       return tx.dsvAdminAccount.create({
         data: {
+          activeSessionId: randomUUID(),
           displayName: invite.displayName,
           email: invite.email,
           lastAuthenticatedAt: now,
@@ -207,11 +208,11 @@ export class PrismaDsvAdminOperatorInvitationService implements DsvAdminOperator
     }
     const updated = await this.prisma.dsvAdminAccount.update({
       data: {
+        activeSessionId: randomUUID(),
         failedLoginAttempts: 0,
         lockedUntil: null,
         ...(loginId === undefined ? {} : { loginId }),
         ...passwordCredentials,
-        tokenVersion: { increment: 1 },
       },
       where: { id: existing.id },
     }).catch((error: unknown) => {
@@ -312,6 +313,7 @@ function inviteMetadata(invite: {
 }
 
 function accountMetadata(account: {
+  activeSessionId: string | null;
   createdAt: Date;
   displayName: string | null;
   email: string | null;
@@ -320,12 +322,13 @@ function accountMetadata(account: {
   loginId: string;
   scopes: string[];
   status: 'ACTIVE' | 'DISABLED';
-  tokenVersion: number;
   updatedAt: Date;
 }): DsvAdminOperatorAccountMetadata {
   const scopes = normalizeDsvScopes(account.scopes);
   if (scopes === null) throw new Error('DSV admin account contains unsupported scopes');
+  if (account.activeSessionId === null) throw new Error('DSV admin account has no active session');
   return {
+    activeSessionId: account.activeSessionId,
     createdAt: account.createdAt,
     displayName: account.displayName,
     email: account.email,
@@ -334,7 +337,6 @@ function accountMetadata(account: {
     loginId: account.loginId,
     scopes,
     status: account.status,
-    tokenVersion: account.tokenVersion,
     updatedAt: account.updatedAt,
   };
 }
